@@ -1,0 +1,17 @@
+{
+  "system": {
+    "device_name": "FastBee_Device_001",
+    "timezone": "CST-8",
+    "log_level": "INFO",
+    "auto_start": true
+  },
+  "timers": [
+    {
+      "id": 1,
+      "name": "每日重启",
+      "enable": true,
+      "time": "03:00",
+      "action": "restart"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "server": "coap.me",
+  "port": 5683,
+  "localPort": 5683,
+  "defaultMethod": "POST",
+  "timeout": 5000,
+  "retransmitCount": 3,
+  "resources": {
+    "temperature": "sensors/temp",
+    "humidity": "sensors/humidity",
+    "status": "device/status"
+  }
+}

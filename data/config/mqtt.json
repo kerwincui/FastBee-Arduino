@@ -1,0 +1,9 @@
+{
+  "server": "mqtt.broker.com",
+  "port": 1883,
+  "clientId": "ESP32-Office",
+  "username": "user",
+  "password": "pass",
+  "topicPrefix": "home/office",
+  "keepAlive": 60
+}

@@ -1,0 +1,11 @@
+{
+  "baseURL": "https://api.example.com/v1",
+  "timeout": 15000,
+  "contentType": "application/json",
+  "username": "user",
+  "password": "pass",
+  "headers": {
+    "User-Agent": "ESP32-HTTP-Client",
+    "X-Device-ID": "ESP32_001"
+  }
+}

@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FastBee设备配置管理</title>
+    <link rel="icon" href="./assets/favicon.ico" type="image/x-icon">
+    <link rel="stylesheet" href="./css/main.css">
+    <script src="./js/axios.min.js"></script>
+</head>
+<body>
+    <!-- 登录页面 -->
+    <div id="login-page" class="login-container">
+        <div class="login-card">
+            <div class="login-logo">
+                <div class="icon"><img src="./assets/logo.png"></div>
+                <h1 class="login-title">设备配置管理</h1>
+            </div>
+            
+            <form id="login-form">
+                <div class="form-group">
+                    <label class="form-label" for="username">用户名</label>
+                    <input type="text" id="username" class="form-control" placeholder="请输入用户名" required>
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label" for="password">密码</label>
+                    <input type="password" id="password" class="form-control" placeholder="请输入密码" required>
+                </div>
+
+                <div class="form-options">
+                        <label class="checkbox">
+                            <input type="checkbox" id="remember-me">
+                            <span>记住我</span>
+                        </label>
+                        <a href="www.fastbee.cn" class="forgot-password">蜂信物联>></a>
+                    </div>
+                
+                <button type="submit" class="btn btn-block">登录系统</button>
+            </form>
+            
+            <div class="copyright">
+                © 2025 FastBee物联网平台
+            </div>
+        </div>
+    </div>
+
+    <!-- 主应用 -->
+    <div id="app" class="app-container">
+        <!-- 侧边栏 -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2>设备管理</h2>
+            </div>
+            
+            <div class="sidebar-menu">
+                <div class="menu-item active" data-page="dashboard">
+                    <div class="icon">📊</div>
+                    <span>设备监控仪表盘</span>
+                </div>
+                
+                <div class="menu-item" data-page="device-config">
+                    <div class="icon">⚙️</div>
+                    <span>设备配置</span>
+                </div>
+                
+                <div class="menu-item" data-page="network">
+                    <div class="icon">🌐</div>
+                    <span>网络设置</span>
+                </div>
+                
+                <div class="menu-item" data-page="data-management">
+                    <div class="icon">💾</div>
+                    <span>数据管理</span>
+                </div>
+                
+                <div class="menu-item" data-page="system-monitor">
+                    <div class="icon">📈</div>
+                    <span>系统监控</span>
+                </div>
+                
+                <div class="menu-item" data-page="user-management">
+                    <div class="icon">👥</div>
+                    <span>用户管理</span>
+                </div>
+                
+                <div class="menu-item" data-page="logs">
+                    <div class="icon">📋</div>
+                    <span>设备日志</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 主内容区 -->
+        <div class="main-content">
+            <!-- 顶部栏 -->
+            <div class="header">
+                <h2 class="page-title">设备监控仪表盘</h2>
+                
+                <div class="user-actions">
+                    <div class="user-info">
+                        <div class="user-avatar">AD</div>
+                        <span class="user-name">管理员</span>
+                    </div>
+                    
+                    <button class="btn btn-outline" id="change-password-btn">修改密码</button>
+                    <button class="btn btn-outline" id="logout-btn">退出登录</button>
+                </div>
+            </div>
+
+            <!-- 内容区域 -->
+            <div class="content">
+                <!-- 仪表盘页面 -->
+                <div id="dashboard" class="page active">
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-icon" style="background-color: var(--primary);">C</div>
+                            <div class="stat-info">
+                                <div class="stat-value">42%</div>
+                                <div class="stat-label">CPU使用率</div>
+                            </div>
+                        </div>
+                        
+                        <div class="stat-card">
+                            <div class="stat-icon" style="background-color: var(--success);">M</div>
+                            <div class="stat-info">
+                                <div class="stat-value">68%</div>
+                                <div class="stat-label">内存使用率</div>
+                            </div>
+                        </div>
+                        
+                        <div class="stat-card">
+                            <div class="stat-icon" style="background-color: var(--warning);">S</div>
+                            <div class="stat-info">
+                                <div class="stat-value">35%</div>
+                                <div class="stat-label">存储使用率</div>
+                            </div>
+                        </div>
+                        
+                        <div class="stat-card">
+                            <div class="stat-icon" style="background-color: var(--danger);">T</div>
+                            <div class="stat-info">
+                                <div class="stat-value">42°C</div>
+                                <div class="stat-label">设备温度</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">设备状态</h3>
+                        </div>
+                        <div class="card-body">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>设备名称</th>
+                                        <th>状态</th>
+                                        <th>最后更新</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td>主控制器</td>
+                                        <td><span class="status-badge status-online">运行正常</span></td>
+                                        <td>2023-07-20 14:30:25</td>
+                                        <td><button class="btn">查看详情</button></td>
+                                    </tr>
+                                    <tr>
+                                        <td>传感器模块</td>
+                                        <td><span class="status-badge status-online">运行正常</span></td>
+                                        <td>2023-07-20 14:28:10</td>
+                                        <td><button class="btn">查看详情</button></td>
+                                    </tr>
+                                    <tr>
+                                        <td>通信模块</td>
+                                        <td><span class="status-badge status-warning">警告</span></td>
+                                        <td>2023-07-20 13:45:33</td>
+                                        <td><button class="btn">查看详情</button></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 设备配置页面 -->
+                <div id="device-config" class="page">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">通信协议配置</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="config-tabs">
+                                <div class="config-tab active" data-tab="modbus-rtu">Modbus RTU</div>
+                                <div class="config-tab" data-tab="mqtt">MQTT</div>
+                                <div class="config-tab" data-tab="http">HTTP</div>
+                            </div>
+                            
+                            <!-- Modbus RTU 配置 -->
+                            <div id="modbus-rtu" class="config-content active">
+                                <form id="modbus-rtu-form">
+                                    <div class="form-row">
+                                        <div class="form-col">
+                                            <div class="form-group">
+                                                <label class="form-label" for="rtu-port">串口端口</label>
+                                                <input type="text" id="rtu-port" class="form-control" value="/dev/ttyS0">
+                                            </div>
+                                        </div>
+                                        <div class="form-col">
+                                            <div class="form-group">
+                                                <label class="form-label" for="rtu-baudrate">波特率</label>
+                                                <select id="rtu-baudrate" class="form-control">
+                                                    <option value="9600">9600</option>
+                                                    <option value="19200" selected>19200</option>
+                                                    <option value="38400">38400</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="alert alert-success" id="modbus-rtu-success" style="display: none;">配置保存成功！</div>
+                                    
+                                    <button type="submit" class="btn">保存配置</button>
+                                </form>
+                            </div>
+                            
+                            <!-- MQTT 配置 -->
+                            <div id="mqtt" class="config-content">
+                                <form id="mqtt-form">
+                                    <div class="form-row">
+                                        <div class="form-col">
+                                            <div class="form-group">
+                                                <label class="form-label" for="mqtt-broker">MQTT Broker</label>
+                                                <input type="text" id="mqtt-broker" class="form-control" value="mqtt.broker.com">
+                                            </div>
+                                        </div>
+                                        <div class="form-col">
+                                            <div class="form-group">
+                                                <label class="form-label" for="mqtt-port">端口</label>
+                                                <input type="number" id="mqtt-port" class="form-control" value="1883">
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="alert alert-success" id="mqtt-success" style="display: none;">配置保存成功！</div>
+                                    
+                                    <button type="submit" class="btn">保存配置</button>
+                                </form>
+                            </div>
+                            
+                            <!-- HTTP 配置 -->
+                            <div id="http" class="config-content">
+                                <form id="http-form">
+                                    <div class="form-row">
+                                        <div class="form-col">
+                                            <div class="form-group">
+                                                <label class="form-label" for="http-url">服务地址</label>
+                                                <input type="text" id="http-url" class="form-control" value="https://api.example.com">
+                                            </div>
+                                        </div>
+                                        <div class="form-col">
+                                            <div class="form-group">
+                                                <label class="form-label" for="http-interval">上报间隔(秒)</label>
+                                                <input type="number" id="http-interval" class="form-control" value="60">
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="alert alert-success" id="http-success" style="display: none;">配置保存成功！</div>
+                                    
+                                    <button type="submit" class="btn">保存配置</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 网络设置页面 -->
+                <div id="network" class="page">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">网络设置</h3>
+                        </div>
+                        <div class="card-body">
+                            <form id="network-form">
+                                <div class="form-row">
+                                    <div class="form-col">
+                                        <div class="form-group">
+                                            <label class="form-label" for="network-ip">IP地址</label>
+                                            <input type="text" id="network-ip" class="form-control" value="192.168.1.100">
+                                        </div>
+                                    </div>
+                                    <div class="form-col">
+                                        <div class="form-group">
+                                            <label class="form-label" for="network-gateway">网关</label>
+                                            <input type="text" id="network-gateway" class="form-control" value="192.168.1.1">
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div class="alert alert-success" id="network-success" style="display: none;">配置保存成功！</div>
+                                
+                                <button type="submit" class="btn">保存配置</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 数据管理页面 -->
+                <div id="data-management" class="page">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">数据管理</h3>
+                        </div>
+                        <div class="card-body">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>数据ID</th>
+                                        <th>数据类型</th>
+                                        <th>数值</th>
+                                        <th>时间戳</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td>001</td>
+                                        <td>温度</td>
+                                        <td>25.6°C</td>
+                                        <td>2023-07-20 14:30:25</td>
+                                        <td><button class="btn">导出</button></td>
+                                    </tr>
+                                    <tr>
+                                        <td>002</td>
+                                        <td>湿度</td>
+                                        <td>65%</td>
+                                        <td>2023-07-20 14:30:25</td>
+                                        <td><button class="btn">导出</button></td>
+                                    </tr>
+                                    <tr>
+                                        <td>003</td>
+                                        <td>压力</td>
+                                        <td>101.3kPa</td>
+                                        <td>2023-07-20 14:30:25</td>
+                                        <td><button class="btn">导出</button></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 系统监控页面 -->
+                <div id="system-monitor" class="page">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">系统监控</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="stats-grid">
+                                <div class="stat-card">
+                                    <div class="stat-icon" style="background-color: var(--primary);">U</div>
+                                    <div class="stat-info">
+                                        <div class="stat-value">12小时</div>
+                                        <div class="stat-label">运行时间</div>
+                                    </div>
+                                </div>
+                                
+                                <div class="stat-card">
+                                    <div class="stat-icon" style="background-color: var(--success);">N</div>
+                                    <div class="stat-info">
+                                        <div class="stat-value">256</div>
+                                        <div class="stat-label">连接数</div>
+                                    </div>
+                                </div>
+                                
+                                <div class="stat-card">
+                                    <div class="stat-icon" style="background-color: var(--warning);">D</div>
+                                    <div class="stat-info">
+                                        <div class="stat-value">1.2MB</div>
+                                        <div class="stat-label">数据流量</div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>服务名称</th>
+                                        <th>状态</th>
+                                        <th>CPU使用</th>
+                                        <th>内存使用</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td>数据采集服务</td>
+                                        <td><span class="status-badge status-online">运行中</span></td>
+                                        <td>15%</td>
+                                        <td>32MB</td>
+                                        <td><button class="btn">重启</button></td>
+                                    </tr>
+                                    <tr>
+                                        <td>通信服务</td>
+                                        <td><span class="status-badge status-online">运行中</span></td>
+                                        <td>8%</td>
+                                        <td>24MB</td>
+                                        <td><button class="btn">重启</button></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Web服务</td>
+                                        <td><span class="status-badge status-online">运行中</span></td>
+                                        <td>5%</td>
+                                        <td>16MB</td>
+                                        <td><button class="btn">重启</button></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 用户管理页面 -->
+                <div id="user-management" class="page">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">用户管理</h3>
+                            <button class="btn" id="add-user-btn">添加用户</button>
+                        </div>
+                        <div class="card-body">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>用户名</th>
+                                        <th>角色</th>
+                                        <th>最后登录</th>
+                                        <th>状态</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td>admin</td>
+                                        <td>管理员</td>
+                                        <td>2023-07-20 14:30:25</td>
+                                        <td><span class="status-badge status-online">启用</span></td>
+                                        <td>
+                                            <button class="btn">编辑</button>
+                                            <button class="btn">禁用</button>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td>user1</td>
+                                        <td>操作员</td>
+                                        <td>2023-07-20 10:15:33</td>
+                                        <td><span class="status-badge status-online">启用</span></td>
+                                        <td>
+                                            <button class="btn">编辑</button>
+                                            <button class="btn">禁用</button>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td>user2</td>
+                                        <td>查看者</td>
+                                        <td>2023-07-19 16:45:22</td>
+                                        <td><span class="status-badge status-offline">禁用</span></td>
+                                        <td>
+                                            <button class="btn">编辑</button>
+                                            <button class="btn">启用</button>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 设备日志页面 -->
+                <div id="logs" class="page">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">设备日志</h3>
+                            <button class="btn" id="clear-logs-btn">清空日志</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="log-item">
+                                <span class="log-time">2023-07-20 14:30:25</span>
+                                <span class="log-level log-info">INFO</span>
+                                系统启动完成
+                            </div>
+                            <div class="log-item">
+                                <span class="log-time">2023-07-20 14:28:10</span>
+                                <span class="log-level log-info">INFO</span>
+                                数据采集服务启动
+                            </div>
+                            <div class="log-item">
+                                <span class="log-time">2023-07-20 14:25:33</span>
+                                <span class="log-level log-warning">WARN</span>
+                                传感器连接超时
+                            </div>
+                            <div class="log-item">
+                                <span class="log-time">2023-07-20 14:20:15</span>
+                                <span class="log-level log-error">ERROR</span>
+                                通信模块初始化失败
+                            </div>
+                            <div class="log-item">
+                                <span class="log-time">2023-07-20 14:15:42</span>
+                                <span class="log-level log-info">INFO</span>
+                                设备重启完成
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="copyright">
+                © 2023 FastBee物联网平台 - FB100设备管理系统
+            </div>
+        </div>
+    </div>
+
+    <!-- 修改密码模态框 -->
+    <div id="change-password-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">修改密码</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            
+            <div class="modal-body">
+                <form id="change-password-form">
+                    <div class="form-group">
+                        <label class="form-label" for="current-password">当前密码</label>
+                        <input type="password" id="current-password" class="form-control" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label" for="new-password">新密码</label>
+                        <input type="password" id="new-password" class="form-control" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label" for="confirm-password">确认新密码</label>
+                        <input type="password" id="confirm-password" class="form-control" required>
+                    </div>
+                    
+                    <div class="alert alert-danger" id="password-error">密码错误或新密码不匹配！</div>
+                    <div class="alert alert-success" id="password-success">密码修改成功！</div>
+                </form>
+            </div>
+            
+            <div class="modal-footer">
+                <button class="btn btn-outline" id="cancel-password-btn">取消</button>
+                <button class="btn" id="confirm-password-btn">确认修改</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="./js/main.js"></script>
+</body>
+</html>
