@@ -1,3 +1,5 @@
+[![gitee投票](https://gitee.com/beecue/fastbee/raw/master/images/banner1.png)](https://gitee.com/activity/2025opensource?ident=IKKZS9)
+
 ### 环境
 * 开发工具: VSCode+platformIO
 * 芯片: ESP32
