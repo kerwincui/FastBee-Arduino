@@ -755,3 +755,51 @@ if (usage > 0.8) {
     Serial.println("Warning: Storage space is running low!");
 }
 ```
+
+### 规则脚本示例
+```
+// main.cpp
+#include "FastBeeLuaIntegration.h"
+
+FastBeeLuaIntegration* luaIntegration;
+
+void setup() {
+    Serial.begin(115200);
+    
+    // 初始化FastBee核心
+    FastBeeCore core;
+    core.init();
+    
+    // 初始化Lua集成
+    luaIntegration = FastBeeLuaIntegration::getInstance();
+    if (!luaIntegration->init(&core)) {
+        Serial.println("Failed to initialize Lua integration");
+        return;
+    }
+    
+    // 加载启动脚本
+    loadStartupScripts();
+    
+    Serial.println("Lua script system initialized");
+}
+
+void loop() {
+    // 处理定时任务
+    luaIntegration->processScheduledEvents();
+    
+    // 其他主循环逻辑...
+    delay(100);
+}
+
+void loadStartupScripts() {
+    ScriptManager* scriptManager = luaIntegration->getScriptManager();
+    
+    // 加载系统脚本
+    scriptManager->loadScript("/scripts/system_monitor.lua");
+    scriptManager->loadScript("/scripts/network_manager.lua");
+    scriptManager->loadScript("/scripts/web_api.lua");
+    
+    // 启动自动启动的脚本
+    scriptManager->startAllScripts();
+}
+```

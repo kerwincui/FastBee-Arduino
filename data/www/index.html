@@ -50,13 +50,14 @@
         <!-- 侧边栏 -->
         <div class="sidebar">
             <div class="sidebar-header">
-                <h2>设备管理</h2>
+                <img src="./assets/logo.png">
+                <h2>设备管理平台</h2>
             </div>
             
             <div class="sidebar-menu">
                 <div class="menu-item active" data-page="dashboard">
                     <div class="icon">📊</div>
-                    <span>设备监控仪表盘</span>
+                    <span>监控仪表</span>
                 </div>
                 
                 <div class="menu-item" data-page="device-config">
@@ -72,6 +73,11 @@
                 <div class="menu-item" data-page="data-management">
                     <div class="icon">💾</div>
                     <span>数据管理</span>
+                </div>
+
+                <div class="menu-item" data-page="rule-script">
+                    <div class="icon">👥</div>
+                    <span>规则脚本</span>
                 </div>
                 
                 <div class="menu-item" data-page="system-monitor">
@@ -346,6 +352,42 @@
                                         <td>101.3kPa</td>
                                         <td>2023-07-20 14:30:25</td>
                                         <td><button class="btn">导出</button></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 规则脚本界面 -->
+                <div id="rule-script" class="page">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">规则脚本</h3>
+                            <button class="btn" id="add-user-btn">添加脚本</button>
+                        </div>
+                        <div class="card-body">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>脚本名称</th>
+                                        <th>脚本状态</th>
+                                        <th>运行次数</th>
+                                        <th>最后运行</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td>消息转发</td>
+                                        <td><span class="status-badge status-online">启用</span></td>
+                                        <td>6次</td>
+                                        <td>2023-07-20 14:30:25</td>
+                                        <td>
+                                            <button class="btn">编辑</button>
+                                            <button class="btn">禁用</button>
+                                            <button class="btn">删除</button>
+                                        </td>
                                     </tr>
                                 </tbody>
                             </table>
