@@ -61,11 +61,6 @@ const systemState = {
 // 登录功能
 document.getElementById('login-form').addEventListener('submit', async function(e) {
     e.preventDefault();
-
-    // 跳过登录
-    document.getElementById('login-page').style.display = 'none';
-            document.getElementById('app').style.display = 'flex';
-            
     const username = document.getElementById('username').value.trim();
     const password = document.getElementById('password').value;
     const rememberMe = document.getElementById('remember-me').checked;

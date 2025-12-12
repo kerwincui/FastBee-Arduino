@@ -129,38 +129,27 @@ void NetworkManager::update() {
         dnsServer.processNextRequest();
     }
 
-    // 处理非阻塞连接状态检查
-    if (connecting) {
-        if (WiFi.status() == WL_CONNECTED) {
-            connecting = false;
-            statusInfo.status = NetworkStatus::CONNECTED;
-            statusInfo.lastConnectionTime = currentTime;
-            statusInfo.reconnectAttempts = 0;
-            
-            // 启动mDNS服务
-            if (wifiConfig.enableMDNS) {
-                startMDNS();
-            }
-            
-            String message = "WiFi connected: " + WiFi.localIP().toString();
-            LOG_INFO("NetworkManager: " + message);
-            triggerEvent(NetworkStatus::CONNECTED, message);
-        } 
-        else if (currentTime - connectingStartTime >= wifiConfig.connectTimeout) {
-            connecting = false;
-            statusInfo.status = NetworkStatus::CONNECTION_FAILED;
-            String message = "Failed to connect to WiFi: " + wifiConfig.staSSID;
-            LOG_WARNING("NetworkManager: " + message);
-            triggerEvent(NetworkStatus::CONNECTION_FAILED, message);
-        }
+    // 处理连接超时（当事件回调未及时触发时的备用检查）
+    // 注意：此检查仅在事件回调没有正确处理超时的情况下生效
+    if (connecting && (currentTime - connectingStartTime >= wifiConfig.connectTimeout)) {
+        LOG_WARNING("NetworkManager: Connection timeout detected in update()");
+        connecting = false;
+        statusInfo.status = NetworkStatus::CONNECTION_FAILED;
+        String message = "Connection timeout: " + wifiConfig.staSSID;
+        LOG_WARNING("NetworkManager: " + message);
+        triggerEvent(NetworkStatus::CONNECTION_FAILED, message);
+        
+        // 由于连接失败，增加重连尝试计数
+        statusInfo.reconnectAttempts++;
     }
 
-    // 自动重连逻辑
+    // 自动重连逻辑（不依赖connecting标志，而是根据网络状态）
     if (autoReconnectEnabled && 
         (wifiConfig.mode == WiFiMode::STA_ONLY || wifiConfig.mode == WiFiMode::AP_STA) &&
-        statusInfo.status != NetworkStatus::CONNECTED &&
-        statusInfo.status != NetworkStatus::CONNECTING &&
+        // 只在未连接状态且不在连接过程中尝试重连
         !connecting &&
+        (statusInfo.status == NetworkStatus::DISCONNECTED || 
+         statusInfo.status == NetworkStatus::CONNECTION_FAILED) &&
         currentTime - lastReconnectAttempt >= wifiConfig.reconnectInterval) {
         
         attemptReconnect();
@@ -365,15 +354,17 @@ bool NetworkManager::connectToWiFi() {
         }
     }
 
+    // 设置连接状态
     statusInfo.status = NetworkStatus::CONNECTING;
+    connecting = true;
+    connectingStartTime = millis();
+
+    // 触发连接事件
     triggerEvent(NetworkStatus::CONNECTING, "Connecting to WiFi: " + wifiConfig.staSSID);
+    LOG_INFO("NetworkManager: Attempting to connect to " + wifiConfig.staSSID);
 
     // 开始连接（非阻塞方式）
     WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
-    
-    connecting = true;
-    connectingStartTime = millis();
-    
     return true;
 }
 
@@ -432,17 +423,15 @@ bool NetworkManager::startMDNS() {
     // 清理无效字符
     hostname.replace(" ", "-");
     hostname.toLowerCase();
-
     if (!MDNS.begin(hostname.c_str())) {
         LOG_ERROR("NetworkManager: Failed to start mDNS");
         return false;
     }
-
+    MDNS.setInstanceName(hostname.c_str());
     // 添加服务
     if (webServer) {
         MDNS.addService("http", "tcp", 80);
     }
-
     mdnsStarted = true;
     LOG_INFO("NetworkManager: mDNS started: " + hostname + ".local");
     return true;
@@ -485,13 +474,24 @@ void NetworkManager::handleWiFiEvent(arduino_event_id_t event) {
         case ARDUINO_EVENT_WIFI_STA_CONNECTED:
             LOG_INFO("NetworkManager: WiFi STA connected");
             statusInfo.status = NetworkStatus::CONNECTING;
+            connecting = true;
             break;
             
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
             statusInfo.ipAddress = WiFi.localIP().toString();
             statusInfo.status = NetworkStatus::CONNECTED;
             connecting = false;
+            statusInfo.lastConnectionTime = millis();
+            statusInfo.reconnectAttempts = 0;
+
             LOG_INFO("NetworkManager: Got IP: " + statusInfo.ipAddress);
+
+            // 启动mDNS服务
+            if (wifiConfig.enableMDNS && !mdnsStarted) {
+                startMDNS();
+            }
+            
+            triggerEvent(NetworkStatus::CONNECTED, "WiFi connected: " + statusInfo.ipAddress);
             break;
             
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
@@ -526,13 +526,16 @@ void NetworkManager::updateStatusInfo() {
             statusInfo.rssi = WiFi.RSSI();
             statusInfo.internetAvailable = checkInternetConnection();
             
-            if (statusInfo.status != NetworkStatus::CONNECTED) {
+            // 如果事件回调没有正确设置状态，这里进行补充
+            if (statusInfo.status != NetworkStatus::CONNECTED && !connecting) {
                 statusInfo.status = NetworkStatus::CONNECTED;
                 statusInfo.ipAddress = WiFi.localIP().toString();
             }
         } else if (statusInfo.status == NetworkStatus::CONNECTED) {
+            // 如果WiFi已断开但状态未更新
             statusInfo.status = NetworkStatus::DISCONNECTED;
             statusInfo.ipAddress = "";
+            connecting = false;
         }
     }
     
