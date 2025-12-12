@@ -711,7 +711,7 @@ void handleLogin() {
 * 审计日志：完整的认证事件记录
 
 
-### 示例
+### 命名空间示例
 ```
 // 使用网络配置
 // WiFi.softAP(Network::DEFAULT_AP_SSID, Network::DEFAULT_AP_PASSWORD);
