@@ -1,5 +1,5 @@
 // axios全局配置
-axios.defaults.baseURL = 'http://192.168.1.10';
+axios.defaults.baseURL = 'http://fastbee.local';
 axios.defaults.timeout = 3000; // 5秒超时
 
 // 如果需要，可以设置每次请求默认携带的参数或认证信息

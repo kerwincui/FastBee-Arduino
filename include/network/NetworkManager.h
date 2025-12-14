@@ -13,6 +13,7 @@
 #include <DNSServer.h>
 #include <vector>
 #include <functional>
+#include <core/ConfigDefines.h>
 
 // 网络模式枚举
 enum class WiFiMode {
@@ -40,7 +41,7 @@ enum class NetworkStatus {
 struct WiFiConfig {
     // 基本配置
     WiFiMode mode = WiFiMode::STA_ONLY;
-    String deviceName = "FBE100368MQTT";
+    String deviceName = "FBE10000001";
     
     // AP配置
     String apSSID;
@@ -67,7 +68,7 @@ struct WiFiConfig {
     uint8_t maxReconnectAttempts = 5;    // 最大重连尝试次数
     
     // 域名配置
-    String customDomain ="fasebee";
+    String customDomain = MDNS_HOSTNAME;
     bool enableMDNS = true;
     bool enableDNS = false;
 };

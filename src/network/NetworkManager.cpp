@@ -417,6 +417,23 @@ bool NetworkManager::startMDNS() {
         return true;
     }
 
+    // 增强的网络状态检查
+    if (!(WiFi.getMode() & WIFI_STA)) {
+        LOG_WARNING("NetworkManager: Cannot start mDNS - not in STA mode");
+        return false;
+    }
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        LOG_WARNING("NetworkManager: Cannot start mDNS - WiFi not connected");
+        return false;
+    }
+    
+    IPAddress staIP = WiFi.localIP();
+    if (staIP == INADDR_NONE || staIP == IPAddress(0,0,0,0)) {
+        LOG_WARNING("NetworkManager: Cannot start mDNS - no valid IP address");
+        return false;
+    }
+
     String hostname = wifiConfig.customDomain.isEmpty() ? 
                      wifiConfig.deviceName : wifiConfig.customDomain;
     
@@ -431,9 +448,12 @@ bool NetworkManager::startMDNS() {
     // 添加服务
     if (webServer) {
         MDNS.addService("http", "tcp", 80);
+        LOG_INFO("NetworkManager: Added HTTP service to mDNS");
     }
     mdnsStarted = true;
     LOG_INFO("NetworkManager: mDNS started: " + hostname + ".local");
+    LOG_INFO("NetworkManager: IP Address: " + WiFi.localIP().toString());
+    LOG_INFO("NetworkManager: AP IP Address: " + WiFi.softAPIP().toString());
     return true;
 }
 
