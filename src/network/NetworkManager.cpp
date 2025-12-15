@@ -1,39 +1,40 @@
 /**
- *@description: 
- *@author: kerwincui
- *@copyright:FastBee All rights reserved.
- *@date: 2025-12-02 17:29:56
+ * @file NetworkManager.cpp
+ * @brief 网络管理器实现
+ * @author kerwincui
+ * @date 2025-12-02
  */
 
 #include "network/NetworkManager.h"
 #include "systems/LoggerSystem.h"
+#include <WiFi.h>
 #include <ESPmDNS.h>
-#include <ESPAsyncWebServer.h>
-#include <ArduinoJson.h>
-#include <core/SystemConstants.h>
-#include <core/ConfigDefines.h>
+#include <lwip/netif.h>
+#include <lwip/etharp.h>
 
 NetworkManager::NetworkManager(AsyncWebServer* webServerPtr) 
     : webServer(webServerPtr),
       lastReconnectAttempt(0),
       lastStatusUpdate(0),
+      lastConflictCheck(0),
+      lastFailoverAttempt(0),
       autoReconnectEnabled(true),
       isInitialized(false),
       dnsServerStarted(false),
       mdnsStarted(false),
       connecting(false),
-      connectingStartTime(0) {
+      connectingStartTime(0),
+      ipConflictDetected(false),
+      currentFailoverAttempts(0),
+      currentBackupIPIndex(0),
+      conflictDetectionCount(0) {
     
-    // 设置默认配置
     wifiConfig = WiFiConfig();
     statusInfo = NetworkStatusInfo();
 }
 
 NetworkManager::~NetworkManager() {
-    // 在析构函数中调用 disconnect
-    disconnect(); 
-    //  webServer 指针很可能由 WebConfigManager 创建和管理，这里只置空
-    webServer = nullptr;
+    disconnect();
     if (preferences.isKey("initialized")) {
         preferences.end();
     }
@@ -53,6 +54,9 @@ bool NetworkManager::initialize() {
     // 加载网络配置
     if (!loadNetworkConfig()) {
         LOG_WARNING("NetworkManager: Using default network configuration");
+        // 生成默认备用IP
+        generateBackupIPs();
+        saveNetworkConfig();
     }
 
     // 设置WiFi事件回调
@@ -63,22 +67,22 @@ bool NetworkManager::initialize() {
     // 根据配置启动网络
     bool success = false;
     switch (wifiConfig.mode) {
-        case WiFiMode::STA_ONLY:
+        case NetworkMode::NETWORK_STA:
             success = connectToWiFi();
             break;
-        case WiFiMode::AP_ONLY:
+        case NetworkMode::NETWORK_AP:
             success = startAPMode();
             break;
-        case WiFiMode::AP_STA:
+        case NetworkMode::NETWORK_AP_STA:
             success = startAPMode() && connectToWiFi();
             break;
     }
 
     if (success) {
         isInitialized = true;
-        LOG_INFO("NetworkManager: Network manager initialized successfully");
+        LOG_INFO("NetworkManager: Initialized successfully");
     } else {
-        LOG_WARNING("NetworkManager: Network manager initialization failed");
+        LOG_WARNING("NetworkManager: Initialization failed");
     }
 
     return success;
@@ -87,30 +91,24 @@ bool NetworkManager::initialize() {
 void NetworkManager::disconnect() {
     LOG_INFO("NetworkManager: Disconnecting all network connections...");
     
-    // 停止所有网络服务
     stopDNSServer();
     stopMDNS();
     stopAPMode();
     disconnectWiFi();
     
-    // 重置状态
     isInitialized = false;
     dnsServerStarted = false;
     mdnsStarted = false;
     autoReconnectEnabled = false;
     connecting = false;
     connectingStartTime = 0;
+    currentFailoverAttempts = 0;
+    ipConflictDetected = false;
+    conflictDetectionCount = 0;
     
     // 重置状态信息
+    statusInfo = NetworkStatusInfo();
     statusInfo.status = NetworkStatus::DISCONNECTED;
-    statusInfo.ipAddress = "";
-    statusInfo.apIPAddress = "";
-    statusInfo.apClientCount = 0;
-    statusInfo.rssi = 0;
-    statusInfo.ssid = "";
-    statusInfo.internetAvailable = false;
-    statusInfo.reconnectAttempts = 0;
-    statusInfo.lastConnectionTime = 0;
     
     LOG_INFO("NetworkManager: All network connections disconnected");
 }
@@ -129,24 +127,34 @@ void NetworkManager::update() {
         dnsServer.processNextRequest();
     }
 
-    // 处理连接超时（当事件回调未及时触发时的备用检查）
-    // 注意：此检查仅在事件回调没有正确处理超时的情况下生效
-    if (connecting && (currentTime - connectingStartTime >= wifiConfig.connectTimeout)) {
-        LOG_WARNING("NetworkManager: Connection timeout detected in update()");
-        connecting = false;
-        statusInfo.status = NetworkStatus::CONNECTION_FAILED;
-        String message = "Connection timeout: " + wifiConfig.staSSID;
-        LOG_WARNING("NetworkManager: " + message);
-        triggerEvent(NetworkStatus::CONNECTION_FAILED, message);
-        
-        // 由于连接失败，增加重连尝试计数
-        statusInfo.reconnectAttempts++;
+    // IP冲突检测（按配置间隔）
+    if (currentTime - lastConflictCheck >= wifiConfig.conflictCheckInterval) {
+        if (wifiConfig.conflictDetection != IPConflictMode::NONE && 
+            statusInfo.status == NetworkStatus::CONNECTED &&
+            wifiConfig.ipConfigType == IPConfigType::STATIC) {
+            
+            updateIPConflictStatus();
+        }
+        lastConflictCheck = currentTime;
     }
 
-    // 自动重连逻辑（不依赖connecting标志，而是根据网络状态）
+    // 处理连接超时
+    if (connecting && (currentTime - connectingStartTime >= wifiConfig.connectTimeout)) {
+        LOG_WARNING("NetworkManager: Connection timeout");
+        connecting = false;
+        
+        if (wifiConfig.autoFailover) {
+            LOG_INFO("NetworkManager: Attempting failover...");
+            performFailover();
+        } else {
+            statusInfo.status = NetworkStatus::CONNECTION_FAILED;
+            triggerEvent(NetworkStatus::CONNECTION_FAILED, "Connection timeout");
+        }
+    }
+
+    // 自动重连逻辑
     if (autoReconnectEnabled && 
-        (wifiConfig.mode == WiFiMode::STA_ONLY || wifiConfig.mode == WiFiMode::AP_STA) &&
-        // 只在未连接状态且不在连接过程中尝试重连
+        (wifiConfig.mode == NetworkMode::NETWORK_STA || wifiConfig.mode == NetworkMode::NETWORK_AP_STA) &&
         !connecting &&
         (statusInfo.status == NetworkStatus::DISCONNECTED || 
          statusInfo.status == NetworkStatus::CONNECTION_FAILED) &&
@@ -154,36 +162,37 @@ void NetworkManager::update() {
         
         attemptReconnect();
     }
-}
-
-bool NetworkManager::initializeFileSystem() {
-    // 检查文件系统是否已初始化
-    // 这里假设文件系统已在主程序初始化
-    return true;
+    
+    // 清理冲突缓存（每小时一次）
+    if (currentTime - lastStatusUpdate >= 3600000) {
+        cleanupConflictCache();
+    }
 }
 
 bool NetworkManager::loadNetworkConfig() {
     if (!preferences.isKey("initialized")) {
-        LOG_INFO("NetworkManager: No saved network config found, using defaults");
+        LOG_INFO("NetworkManager: No saved network config found");
         return false;
     }
 
     try {
         // 基本配置
-        wifiConfig.mode = static_cast<WiFiMode>(preferences.getUInt("mode", static_cast<uint8_t>(WiFiMode::AP_STA)));
-        wifiConfig.deviceName = preferences.getString("device_name", SystemInfo::DEFAULT_DEVICE_NAME);
+        wifiConfig.mode = static_cast<NetworkMode>(preferences.getUInt("mode", 
+            static_cast<uint8_t>(NetworkMode::NETWORK_STA)));
+        wifiConfig.deviceName = preferences.getString("device_name", "FBE10000001");
 
         // AP配置
-        wifiConfig.apSSID = preferences.getString("ap_ssid", Network::DEFAULT_AP_SSID);
-        wifiConfig.apPassword = preferences.getString("ap_password", Network::DEFAULT_AP_PASSWORD);
-        wifiConfig.apChannel = preferences.getUChar("ap_channel", Network::DEFAULT_AP_CHANNEL);
-        wifiConfig.apHidden = preferences.getBool("ap_hidden", Network::DEFAULT_AP_HIDDEN);
-        wifiConfig.apMaxConnections = preferences.getUChar("ap_max_conn", Network::DEFAULT_AP_MAX_CONNECTIONS);
+        wifiConfig.apSSID = preferences.getString("ap_ssid", "");
+        wifiConfig.apPassword = preferences.getString("ap_password", "");
+        wifiConfig.apChannel = preferences.getUChar("ap_channel", 1);
+        wifiConfig.apHidden = preferences.getBool("ap_hidden", false);
+        wifiConfig.apMaxConnections = preferences.getUChar("ap_max_conn", 4);
 
         // STA配置
-        wifiConfig.staSSID = preferences.getString("sta_ssid", "");
-        wifiConfig.staPassword = preferences.getString("sta_password", "");
-        wifiConfig.ipConfigType = static_cast<IPConfigType>(preferences.getUInt("ip_config", static_cast<uint8_t>(IPConfigType::DHCP)));
+        wifiConfig.staSSID = preferences.getString("sta_ssid", "CMCC-7mnN");
+        wifiConfig.staPassword = preferences.getString("sta_password", "eb66bcm9");
+        wifiConfig.ipConfigType = static_cast<IPConfigType>(
+            preferences.getUInt("ip_config", static_cast<uint8_t>(IPConfigType::DHCP)));
 
         // 静态IP配置
         wifiConfig.staticIP = preferences.getString("static_ip", "");
@@ -192,20 +201,48 @@ bool NetworkManager::loadNetworkConfig() {
         wifiConfig.dns1 = preferences.getString("dns1", "");
         wifiConfig.dns2 = preferences.getString("dns2", "");
 
+        // IP冲突检测配置
+        wifiConfig.conflictDetection = static_cast<IPConflictMode>(
+            preferences.getUInt("conflict_detection", 
+            static_cast<uint8_t>(IPConflictMode::ARP)));
+        wifiConfig.failoverStrategy = static_cast<IPFailoverStrategy>(
+            preferences.getUInt("failover_strategy", 
+            static_cast<uint8_t>(IPFailoverStrategy::SMART)));
+        wifiConfig.autoFailover = preferences.getBool("auto_failover", true);
+        wifiConfig.conflictCheckInterval = preferences.getUShort(
+            "conflict_check_interval", 30000);
+        wifiConfig.maxFailoverAttempts = preferences.getUChar(
+            "max_failover_attempts", 3);
+        wifiConfig.conflictThreshold = preferences.getUChar(
+            "conflict_threshold", 2);
+        wifiConfig.fallbackToDHCP = preferences.getBool("fallback_to_dhcp", true);
+
+        // 加载备用IP列表
+        wifiConfig.backupIPs.clear();
+        size_t backupCount = preferences.getUInt("backup_ip_count", 0);
+        for (size_t i = 0; i < backupCount; i++) {
+            char key[20];
+            snprintf(key, sizeof(key), "backup_ip_%d", i);
+            String ip = preferences.getString(key, "");
+            if (ip.length() > 0 && isValidIP(ip)) {
+                wifiConfig.backupIPs.push_back(ip);
+            }
+        }
+
         // 高级配置
-        wifiConfig.connectTimeout = preferences.getULong("connect_timeout", WIFI_CONNECT_TIMEOUT);
-        wifiConfig.reconnectInterval = preferences.getULong("reconnect_interval", WIFI_RECONNECT_INTERVAL);
-        wifiConfig.maxReconnectAttempts = preferences.getUChar("max_reconnect", MAX_WIFI_ATTEMPTS);
+        wifiConfig.connectTimeout = preferences.getULong("connect_timeout", 10000);
+        wifiConfig.reconnectInterval = preferences.getULong("reconnect_interval", 5000);
+        wifiConfig.maxReconnectAttempts = preferences.getUChar("max_reconnect", 5);
 
         // 域名配置
-        wifiConfig.customDomain = preferences.getString("custom_domain", CUSTOM_DOMAIN);
+        wifiConfig.customDomain = preferences.getString("custom_domain", MDNS_HOSTNAME);
         wifiConfig.enableMDNS = preferences.getBool("enable_mdns", true);
         wifiConfig.enableDNS = preferences.getBool("enable_dns", false);
 
-        LOG_INFO("NetworkManager: Network configuration loaded successfully");
+        LOG_INFO("NetworkManager: Configuration loaded successfully");
         return true;
     } catch (...) {
-        LOG_ERROR("NetworkManager: Failed to load network configuration");
+        LOG_ERROR("NetworkManager: Failed to load configuration");
         return false;
     }
 }
@@ -235,6 +272,28 @@ bool NetworkManager::saveNetworkConfig() {
         preferences.putString("dns1", wifiConfig.dns1);
         preferences.putString("dns2", wifiConfig.dns2);
 
+        // IP冲突检测配置
+        preferences.putUInt("conflict_detection", 
+            static_cast<uint8_t>(wifiConfig.conflictDetection));
+        preferences.putUInt("failover_strategy", 
+            static_cast<uint8_t>(wifiConfig.failoverStrategy));
+        preferences.putBool("auto_failover", wifiConfig.autoFailover);
+        preferences.putUShort("conflict_check_interval", 
+            wifiConfig.conflictCheckInterval);
+        preferences.putUChar("max_failover_attempts", 
+            wifiConfig.maxFailoverAttempts);
+        preferences.putUChar("conflict_threshold", 
+            wifiConfig.conflictThreshold);
+        preferences.putBool("fallback_to_dhcp", wifiConfig.fallbackToDHCP);
+
+        // 保存备用IP列表
+        preferences.putUInt("backup_ip_count", wifiConfig.backupIPs.size());
+        for (size_t i = 0; i < wifiConfig.backupIPs.size(); i++) {
+            char key[20];
+            snprintf(key, sizeof(key), "backup_ip_%d", i);
+            preferences.putString(key, wifiConfig.backupIPs[i]);
+        }
+
         // 高级配置
         preferences.putULong("connect_timeout", wifiConfig.connectTimeout);
         preferences.putULong("reconnect_interval", wifiConfig.reconnectInterval);
@@ -246,22 +305,22 @@ bool NetworkManager::saveNetworkConfig() {
         preferences.putBool("enable_dns", wifiConfig.enableDNS);
 
         preferences.putBool("initialized", true);
+        preferences.end();
 
-        LOG_INFO("NetworkManager: Network configuration saved successfully");
+        LOG_INFO("NetworkManager: Configuration saved successfully");
         return true;
     } catch (...) {
-        LOG_ERROR("NetworkManager: Failed to save network configuration");
+        LOG_ERROR("NetworkManager: Failed to save configuration");
         return false;
     }
 }
 
 bool NetworkManager::startAPMode() {
     if (WiFi.getMode() & WIFI_AP) {
-        // AP模式已经启动
         return true;
     }
 
-    // 根据当前模式设置WiFi模式
+    // 设置WiFi模式
     WiFiMode_t currentMode = WiFi.getMode();
     if (currentMode == WIFI_MODE_NULL || currentMode == WIFI_MODE_STA) {
         if (!WiFi.mode(WIFI_MODE_APSTA)) {
@@ -275,11 +334,10 @@ bool NetworkManager::startAPMode() {
         }
     }
 
-     // 配置AP参数
+    // 配置AP参数
     String apSSID;
     if (wifiConfig.apSSID.isEmpty()) {
-        apSSID.reserve(32); // 预分配内存
-        apSSID = SystemInfo::DEFAULT_DEVICE_NAME;
+        apSSID = wifiConfig.deviceName;
         apSSID += "_";
         apSSID += getChipID().substring(0, 6);
     } else {
@@ -302,12 +360,12 @@ bool NetworkManager::startAPMode() {
         LOG_WARNING("NetworkManager: Failed to configure AP network");
     }
 
-    // 启动DNS服务器（如果启用）
+    // 启动DNS服务器
     if (wifiConfig.enableDNS) {
         startDNSServer();
     }
 
-    // 启动mDNS服务（如果启用）
+    // 启动mDNS服务
     if (wifiConfig.enableMDNS) {
         startMDNS();
     }
@@ -338,20 +396,29 @@ bool NetworkManager::connectToWiFi() {
 
     // 确保WiFi模式正确
     WiFiMode_t currentMode = WiFi.getMode();
-    if (wifiConfig.mode == WiFiMode::STA_ONLY && !(currentMode & WIFI_STA)) {
+    if (wifiConfig.mode == NetworkMode::NETWORK_STA && !(currentMode & WIFI_STA)) {
         WiFi.mode(WIFI_STA);
-    } else if (wifiConfig.mode == WiFiMode::AP_STA && currentMode != WIFI_MODE_APSTA) {
+    } else if (wifiConfig.mode == NetworkMode::NETWORK_AP_STA && currentMode != WIFI_MODE_APSTA) {
         if (!WiFi.mode(WIFI_MODE_APSTA)) {
             LOG_ERROR("NetworkManager: Failed to set WiFi mode to AP_STA");
             return false;
         }
     }
 
-    // 配置静态IP（如果需要）
+    // 重置故障转移状态
+    currentFailoverAttempts = 0;
+    currentBackupIPIndex = 0;
+    ipConflictDetected = false;
+    conflictDetectionCount = 0;
+
+    // 配置网络
     if (wifiConfig.ipConfigType == IPConfigType::STATIC) {
         if (!configureStaticIP()) {
-            LOG_WARNING("NetworkManager: Static IP configuration failed, falling back to DHCP");
+            LOG_WARNING("NetworkManager: Static IP configuration failed");
+            return false;
         }
+    } else if (wifiConfig.ipConfigType == IPConfigType::DHCP) {
+        configureDHCP();
     }
 
     // 设置连接状态
@@ -359,12 +426,12 @@ bool NetworkManager::connectToWiFi() {
     connecting = true;
     connectingStartTime = millis();
 
-    // 触发连接事件
-    triggerEvent(NetworkStatus::CONNECTING, "Connecting to WiFi: " + wifiConfig.staSSID);
-    LOG_INFO("NetworkManager: Attempting to connect to " + wifiConfig.staSSID);
-
-    // 开始连接（非阻塞方式）
+    // 开始连接
     WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
+    
+    LOG_INFO("NetworkManager: Attempting to connect to " + wifiConfig.staSSID);
+    triggerEvent(NetworkStatus::CONNECTING, "Connecting to WiFi: " + wifiConfig.staSSID);
+    
     return true;
 }
 
@@ -373,17 +440,22 @@ void NetworkManager::disconnectWiFi() {
     connecting = false;
     statusInfo.status = NetworkStatus::DISCONNECTED;
     stopMDNS();
+    
     LOG_INFO("NetworkManager: WiFi disconnected");
     triggerEvent(NetworkStatus::DISCONNECTED, "WiFi disconnected");
 }
 
 bool NetworkManager::configureStaticIP() {
-    if (wifiConfig.staticIP.isEmpty() || wifiConfig.gateway.isEmpty() || wifiConfig.subnet.isEmpty()) {
+    if (wifiConfig.staticIP.isEmpty() || 
+        wifiConfig.gateway.isEmpty() || 
+        wifiConfig.subnet.isEmpty()) {
         LOG_WARNING("NetworkManager: Incomplete static IP configuration");
         return false;
     }
 
-    if (!isValidIP(wifiConfig.staticIP) || !isValidIP(wifiConfig.gateway) || !isValidSubnet(wifiConfig.subnet)) {
+    if (!isValidIP(wifiConfig.staticIP) || 
+        !isValidIP(wifiConfig.gateway) || 
+        !isValidSubnet(wifiConfig.subnet)) {
         LOG_WARNING("NetworkManager: Invalid static IP configuration");
         return false;
     }
@@ -409,6 +481,14 @@ bool NetworkManager::configureStaticIP() {
     }
 
     LOG_INFO("NetworkManager: Static IP configured: " + wifiConfig.staticIP);
+    statusInfo.activeIPType = "Static";
+    return true;
+}
+
+bool NetworkManager::configureDHCP() {
+    WiFi.config(IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0));
+    LOG_INFO("NetworkManager: DHCP configured");
+    statusInfo.activeIPType = "DHCP";
     return true;
 }
 
@@ -417,7 +497,7 @@ bool NetworkManager::startMDNS() {
         return true;
     }
 
-    // 增强的网络状态检查
+    // 检查网络状态
     if (!(WiFi.getMode() & WIFI_STA)) {
         LOG_WARNING("NetworkManager: Cannot start mDNS - not in STA mode");
         return false;
@@ -440,20 +520,25 @@ bool NetworkManager::startMDNS() {
     // 清理无效字符
     hostname.replace(" ", "-");
     hostname.toLowerCase();
+    
     if (!MDNS.begin(hostname.c_str())) {
         LOG_ERROR("NetworkManager: Failed to start mDNS");
         return false;
     }
+    
     MDNS.setInstanceName(hostname.c_str());
+    
     // 添加服务
     if (webServer) {
         MDNS.addService("http", "tcp", 80);
+        // FastBee设备提供一个独特的服务标识
+        MDNS.addService("fastbee", "tcp", 80);
+        MDNS.addService("ws", "tcp", 81); 
         LOG_INFO("NetworkManager: Added HTTP service to mDNS");
     }
+    
     mdnsStarted = true;
     LOG_INFO("NetworkManager: mDNS started: " + hostname + ".local");
-    LOG_INFO("NetworkManager: IP Address: " + WiFi.localIP().toString());
-    LOG_INFO("NetworkManager: AP IP Address: " + WiFi.softAPIP().toString());
     return true;
 }
 
@@ -501,17 +586,25 @@ void NetworkManager::handleWiFiEvent(arduino_event_id_t event) {
             statusInfo.ipAddress = WiFi.localIP().toString();
             statusInfo.status = NetworkStatus::CONNECTED;
             connecting = false;
+            connectingStartTime = 0;
             statusInfo.lastConnectionTime = millis();
             statusInfo.reconnectAttempts = 0;
+            currentFailoverAttempts = 0;
 
             LOG_INFO("NetworkManager: Got IP: " + statusInfo.ipAddress);
+
+            // 更新网络信息
+            statusInfo.currentGateway = WiFi.gatewayIP().toString();
+            statusInfo.currentSubnet = WiFi.subnetMask().toString();
+            statusInfo.dnsServer = WiFi.dnsIP().toString();
 
             // 启动mDNS服务
             if (wifiConfig.enableMDNS && !mdnsStarted) {
                 startMDNS();
             }
             
-            triggerEvent(NetworkStatus::CONNECTED, "WiFi connected: " + statusInfo.ipAddress);
+            triggerEvent(NetworkStatus::CONNECTED, 
+                "WiFi connected: " + statusInfo.ipAddress);
             break;
             
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
@@ -546,13 +639,11 @@ void NetworkManager::updateStatusInfo() {
             statusInfo.rssi = WiFi.RSSI();
             statusInfo.internetAvailable = checkInternetConnection();
             
-            // 如果事件回调没有正确设置状态，这里进行补充
             if (statusInfo.status != NetworkStatus::CONNECTED && !connecting) {
                 statusInfo.status = NetworkStatus::CONNECTED;
                 statusInfo.ipAddress = WiFi.localIP().toString();
             }
         } else if (statusInfo.status == NetworkStatus::CONNECTED) {
-            // 如果WiFi已断开但状态未更新
             statusInfo.status = NetworkStatus::DISCONNECTED;
             statusInfo.ipAddress = "";
             connecting = false;
@@ -562,6 +653,318 @@ void NetworkManager::updateStatusInfo() {
     if (WiFi.getMode() & WIFI_AP) {
         statusInfo.apClientCount = WiFi.softAPgetStationNum();
         statusInfo.apIPAddress = WiFi.softAPIP().toString();
+    }
+}
+
+void NetworkManager::updateIPConflictStatus() {
+    if (wifiConfig.conflictDetection == IPConflictMode::NONE) {
+        return;
+    }
+
+    String currentIP = WiFi.localIP().toString();
+    if (currentIP.isEmpty() || currentIP == "0.0.0.0") {
+        return;
+    }
+
+    // 检查缓存中是否有这个IP的记录
+    bool cachedConflict = false;
+    for (auto& cache : conflictCache) {
+        if (cache.ip == currentIP && 
+            (millis() - cache.timestamp < 300000)) { // 5分钟缓存
+            cachedConflict = cache.conflicted;
+            break;
+        }
+    }
+
+    bool conflict = false;
+    String detectionMethod = "";
+    
+    if (!cachedConflict) {
+        // 根据配置的检测模式进行检测
+        switch (wifiConfig.conflictDetection) {
+            case IPConflictMode::PING:
+                conflict = detectConflictByPing(currentIP);
+                detectionMethod = "Ping";
+                break;
+            case IPConflictMode::ARP:
+                conflict = detectConflictByARP(currentIP);
+                detectionMethod = "ARP";
+                break;
+            case IPConflictMode::AUTO:
+                conflict = detectConflictByGateway(currentIP);
+                detectionMethod = "Gateway";
+                break;
+            default:
+                return;
+        }
+
+        // 缓存结果
+        ConflictCache cache = {currentIP, conflict, millis()};
+        conflictCache.push_back(cache);
+    } else {
+        conflict = cachedConflict;
+        detectionMethod = "Cached";
+    }
+
+    if (conflict) {
+        conflictDetectionCount++;
+        statusInfo.conflictDetected = detectionMethod + ": Conflict detected";
+        
+        LOG_WARNING("NetworkManager: IP conflict detected (" + 
+                   detectionMethod + ") on IP: " + currentIP);
+        
+        if (conflictDetectionCount >= wifiConfig.conflictThreshold) {
+            ipConflictDetected = true;
+            statusInfo.status = NetworkStatus::IP_CONFLICT;
+            triggerEvent(NetworkStatus::IP_CONFLICT, 
+                "IP conflict detected: " + currentIP);
+            
+            // 自动故障转移
+            if (wifiConfig.autoFailover) {
+                LOG_INFO("NetworkManager: Starting automatic failover...");
+                performFailover();
+            }
+        }
+    } else {
+        conflictDetectionCount = 0;
+        statusInfo.conflictDetected = "No conflict";
+    }
+}
+
+bool NetworkManager::detectConflictByARP(const String& ip) {
+    // 这是一个简化的ARP检测实现
+    LOG_DEBUG("NetworkManager: ARP conflict detection for IP: " + ip);
+    return false; // 暂时返回false，需要根据实际情况实现
+}
+
+bool NetworkManager::detectConflictByPing(const String& ip) {
+    LOG_DEBUG("NetworkManager: Ping conflict detection for IP: " + ip);
+    // 这里可以实现ICMP ping检测
+    // 注意：ESP32的ping功能可能需要额外的库
+    return false;
+}
+
+bool NetworkManager::detectConflictByGateway(const String& ip) {
+    LOG_DEBUG("NetworkManager: Gateway conflict detection for IP: " + ip);
+    
+    // 尝试与网关通信，如果失败可能表示IP冲突
+    String gateway = WiFi.gatewayIP().toString();
+    if (gateway.isEmpty() || gateway == "0.0.0.0") {
+        return false;
+    }
+    
+    // 简化的网关可达性检测
+    // 实际实现可能需要尝试连接网关的特定端口
+    return false;
+}
+
+bool NetworkManager::performFailover() {
+    if (currentFailoverAttempts >= wifiConfig.maxFailoverAttempts) {
+        LOG_ERROR("NetworkManager: Max failover attempts reached");
+        
+        if (wifiConfig.fallbackToDHCP) {
+            LOG_INFO("NetworkManager: Falling back to DHCP");
+            return switchToDHCP();
+        }
+        
+        return false;
+    }
+
+    statusInfo.status = NetworkStatus::FAILOVER_IN_PROGRESS;
+    currentFailoverAttempts++;
+    statusInfo.failoverCount++;
+
+    LOG_INFO("NetworkManager: Failover attempt " + 
+             String(currentFailoverAttempts) + "/" + 
+             String(wifiConfig.maxFailoverAttempts));
+
+    String nextIP = selectNextIP();
+    if (nextIP.isEmpty()) {
+        LOG_WARNING("NetworkManager: No more backup IPs available");
+        
+        if (wifiConfig.fallbackToDHCP) {
+            return switchToDHCP();
+        }
+        
+        return false;
+    }
+
+    LOG_INFO("NetworkManager: Switching to IP: " + nextIP);
+    
+    // 更新配置并重新连接
+    wifiConfig.staticIP = nextIP;
+    disconnectWiFi();
+    delay(1000);
+    
+    return connectToWiFi();
+}
+
+String NetworkManager::selectNextIP() {
+    if (wifiConfig.backupIPs.empty()) {
+        return "";
+    }
+
+    String selectedIP;
+    
+    switch (wifiConfig.failoverStrategy) {
+        case IPFailoverStrategy::SEQUENTIAL:
+            selectedIP = wifiConfig.backupIPs[currentBackupIPIndex];
+            currentBackupIPIndex = (currentBackupIPIndex + 1) % wifiConfig.backupIPs.size();
+            break;
+            
+        case IPFailoverStrategy::RANDOM:
+            {
+                int index = random(0, wifiConfig.backupIPs.size());
+                selectedIP = wifiConfig.backupIPs[index];
+            }
+            break;
+            
+        case IPFailoverStrategy::SMART:
+            // 智能选择：测试每个备用IP的可用性
+            for (const auto& ip : wifiConfig.backupIPs) {
+                if (testIPAvailability(ip)) {
+                    selectedIP = ip;
+                    break;
+                }
+            }
+            if (selectedIP.isEmpty() && !wifiConfig.backupIPs.empty()) {
+                selectedIP = wifiConfig.backupIPs[0];
+            }
+            break;
+    }
+
+    return selectedIP;
+}
+
+bool NetworkManager::testIPAvailability(const String& ip) {
+    LOG_DEBUG("NetworkManager: Testing IP availability: " + ip);
+    // 这里可以实现IP可用性测试逻辑
+    // 例如：发送ARP请求或尝试连接
+    return true; // 暂时返回true
+}
+
+bool NetworkManager::checkIPConflict() {
+    return ipConflictDetected;
+}
+
+bool NetworkManager::switchToBackupIP() {
+    return performFailover();
+}
+
+bool NetworkManager::switchToRandomIP() {
+    String randomIP = getRandomIPInRange(wifiConfig.staticIP, wifiConfig.subnet);
+    if (randomIP.isEmpty()) {
+        return false;
+    }
+    
+    wifiConfig.staticIP = randomIP;
+    disconnectWiFi();
+    delay(1000);
+    
+    return connectToWiFi();
+}
+
+bool NetworkManager::switchToDHCP() {
+    wifiConfig.ipConfigType = IPConfigType::DHCP;
+    disconnectWiFi();
+    delay(1000);
+    
+    return connectToWiFi();
+}
+
+void NetworkManager::generateBackupIPs() {
+    wifiConfig.backupIPs.clear();
+    
+    if (wifiConfig.staticIP.isEmpty() || 
+        wifiConfig.subnet.isEmpty() || 
+        wifiConfig.gateway.isEmpty()) {
+        return;
+    }
+
+    // 解析网络地址和掩码
+    IPAddress ip, subnet, gateway;
+    ip.fromString(wifiConfig.staticIP.c_str());
+    subnet.fromString(wifiConfig.subnet.c_str());
+    gateway.fromString(wifiConfig.gateway.c_str());
+
+    // 计算网络地址
+    IPAddress network(ip[0] & subnet[0], 
+                     ip[1] & subnet[1], 
+                     ip[2] & subnet[2], 
+                     ip[3] & subnet[3]);
+
+    // 生成3个备用IP（避免.0、.1、.255和网关）
+    int hostCount = 0;
+    for (int i = 2; i < 254 && hostCount < 3; i++) {
+        // 跳过网关
+        if (i == gateway[3]) {
+            continue;
+        }
+        
+        // 跳过当前IP
+        if (i == ip[3]) {
+            continue;
+        }
+        
+        IPAddress backupIP(network[0], network[1], network[2], i);
+        wifiConfig.backupIPs.push_back(backupIP.toString());
+        hostCount++;
+    }
+
+    LOG_INFO("NetworkManager: Generated " + String(hostCount) + " backup IPs");
+}
+
+String NetworkManager::getRandomIPInRange(const String& network, const String& mask) {
+    if (!isValidIP(network) || !isValidSubnet(mask)) {
+        return "";
+    }
+
+    IPAddress net, subnet;
+    net.fromString(network.c_str());
+    subnet.fromString(mask.c_str());
+
+    // 计算网络地址
+    IPAddress networkAddr(net[0] & subnet[0], 
+                         net[1] & subnet[1], 
+                         net[2] & subnet[2], 
+                         net[3] & subnet[3]);
+
+    // 计算广播地址
+    IPAddress broadcastAddr;
+    for (int i = 0; i < 4; i++) {
+        broadcastAddr[i] = networkAddr[i] | (~subnet[i] & 0xFF);
+    }
+
+    // 生成随机IP（避免.0、.1、.255）
+    IPAddress randomIP;
+    do {
+        for (int i = 0; i < 4; i++) {
+            if (subnet[i] == 255) {
+                randomIP[i] = networkAddr[i];
+            } else {
+                uint8_t min = (i == 3) ? 2 : networkAddr[i];
+                uint8_t max = (i == 3) ? 254 : broadcastAddr[i];
+                randomIP[i] = random(min, max + 1);
+            }
+        }
+    } while (randomIP == networkAddr || 
+             randomIP == broadcastAddr || 
+             randomIP[3] == 0 || 
+             randomIP[3] == 1 || 
+             randomIP[3] == 255);
+
+    return randomIP.toString();
+}
+
+void NetworkManager::cleanupConflictCache() {
+    unsigned long currentTime = millis();
+    auto it = conflictCache.begin();
+    while (it != conflictCache.end()) {
+        if (currentTime - it->timestamp > 3600000) { // 1小时
+            it = conflictCache.erase(it);
+        } else {
+            ++it;
+        }
     }
 }
 
@@ -575,8 +978,9 @@ void NetworkManager::attemptReconnect() {
     lastReconnectAttempt = millis();
     statusInfo.reconnectAttempts++;
     
-    LOG_INFO("NetworkManager: Reconnection attempt " + String(statusInfo.reconnectAttempts) + 
-                    "/" + String(wifiConfig.maxReconnectAttempts));    
+    LOG_INFO("NetworkManager: Reconnection attempt " + 
+             String(statusInfo.reconnectAttempts) + 
+             "/" + String(wifiConfig.maxReconnectAttempts));    
     connectToWiFi();
 }
 
@@ -590,6 +994,9 @@ void NetworkManager::triggerEvent(NetworkStatus status, const String& message) {
         case NetworkStatus::DISCONNECTED:
             callback = disconnectionCallback;
             break;
+        case NetworkStatus::IP_CONFLICT:
+            callback = ipConflictCallback;
+            break;
         default:
             break;
     }
@@ -599,36 +1006,12 @@ void NetworkManager::triggerEvent(NetworkStatus status, const String& message) {
     }
 }
 
-NetworkStatusInfo NetworkManager::getStatusInfo() const {
-    return statusInfo;
-}
-
 WiFiConfig NetworkManager::getConfig() const {
     return wifiConfig;
 }
 
-bool NetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStorage) {
-    bool restartRequired = false;
-    
-    // 检查是否需要重启网络
-    if (newConfig.mode != wifiConfig.mode ||
-        newConfig.apSSID != wifiConfig.apSSID ||
-        newConfig.staSSID != wifiConfig.staSSID ||
-        newConfig.ipConfigType != wifiConfig.ipConfigType) {
-        restartRequired = true;
-    }
-    
-    wifiConfig = newConfig;
-    
-    if (saveToStorage) {
-        saveNetworkConfig();
-    }
-    
-    if (restartRequired) {
-        return restartNetwork();
-    }
-    
-    return true;
+NetworkStatusInfo NetworkManager::getStatusInfo() const {
+    return statusInfo;
 }
 
 String NetworkManager::scanNetworks() {
@@ -675,7 +1058,6 @@ bool NetworkManager::restartNetwork() {
 }
 
 bool NetworkManager::checkInternetConnection() {
-    // 简单的互联网连接检查
     return WiFi.status() == WL_CONNECTED && 
            WiFi.localIP() != IPAddress(0, 0, 0, 0);
 }
@@ -688,9 +1070,14 @@ void NetworkManager::setDisconnectionCallback(NetworkEventCallback callback) {
     disconnectionCallback = callback;
 }
 
+void NetworkManager::setIPConflictCallback(NetworkEventCallback callback) {
+    ipConflictCallback = callback;
+}
+
 void NetworkManager::setAutoReconnect(bool enabled) {
     autoReconnectEnabled = enabled;
-    LOG_INFO("NetworkManager: Auto reconnect: " + String(enabled ? "enabled" : "disabled"));
+    LOG_INFO("NetworkManager: Auto reconnect: " + 
+             String(enabled ? "enabled" : "disabled"));
 }
 
 String NetworkManager::getConfigJSON() {
@@ -719,6 +1106,21 @@ String NetworkManager::getConfigJSON() {
     doc["dns1"] = wifiConfig.dns1;
     doc["dns2"] = wifiConfig.dns2;
     
+    // IP冲突检测配置
+    doc["conflictDetection"] = static_cast<uint8_t>(wifiConfig.conflictDetection);
+    doc["failoverStrategy"] = static_cast<uint8_t>(wifiConfig.failoverStrategy);
+    doc["autoFailover"] = wifiConfig.autoFailover;
+    doc["conflictCheckInterval"] = wifiConfig.conflictCheckInterval;
+    doc["maxFailoverAttempts"] = wifiConfig.maxFailoverAttempts;
+    doc["conflictThreshold"] = wifiConfig.conflictThreshold;
+    doc["fallbackToDHCP"] = wifiConfig.fallbackToDHCP;
+    
+    // 备用IP列表
+    JsonArray backupIPs = doc.createNestedArray("backupIPs");
+    for (const auto& ip : wifiConfig.backupIPs) {
+        backupIPs.add(ip);
+    }
+    
     // 高级配置
     doc["connectTimeout"] = wifiConfig.connectTimeout;
     doc["reconnectInterval"] = wifiConfig.reconnectInterval;
@@ -734,6 +1136,29 @@ String NetworkManager::getConfigJSON() {
     return result;
 }
 
+bool NetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStorage) {
+    bool restartRequired = false;
+    
+    if (newConfig.mode != wifiConfig.mode ||
+        newConfig.apSSID != wifiConfig.apSSID ||
+        newConfig.staSSID != wifiConfig.staSSID ||
+        newConfig.ipConfigType != wifiConfig.ipConfigType) {
+        restartRequired = true;
+    }
+    
+    wifiConfig = newConfig;
+    
+    if (saveToStorage) {
+        saveNetworkConfig();
+    }
+    
+    if (restartRequired) {
+        return restartNetwork();
+    }
+    
+    return true;
+}
+
 bool NetworkManager::updateConfigFromJSON(const String& jsonConfig) {
     DynamicJsonDocument doc(2048);
     DeserializationError error = deserializeJson(doc, jsonConfig);
@@ -746,32 +1171,80 @@ bool NetworkManager::updateConfigFromJSON(const String& jsonConfig) {
     WiFiConfig newConfig = wifiConfig;
     
     // 更新配置
-    if (doc.containsKey("mode")) newConfig.mode = static_cast<WiFiMode>(doc["mode"].as<uint8_t>());
-    if (doc.containsKey("deviceName")) newConfig.deviceName = doc["deviceName"].as<String>();
+    if (doc.containsKey("mode")) 
+        newConfig.mode = static_cast<NetworkMode>(doc["mode"].as<uint8_t>());
+    if (doc.containsKey("deviceName")) 
+        newConfig.deviceName = doc["deviceName"].as<String>();
     
-    if (doc.containsKey("apSSID")) newConfig.apSSID = doc["apSSID"].as<String>();
-    if (doc.containsKey("apPassword")) newConfig.apPassword = doc["apPassword"].as<String>();
-    if (doc.containsKey("apChannel")) newConfig.apChannel = doc["apChannel"].as<uint8_t>();
-    if (doc.containsKey("apHidden")) newConfig.apHidden = doc["apHidden"].as<bool>();
-    if (doc.containsKey("apMaxConnections")) newConfig.apMaxConnections = doc["apMaxConnections"].as<uint8_t>();
+    if (doc.containsKey("apSSID")) 
+        newConfig.apSSID = doc["apSSID"].as<String>();
+    if (doc.containsKey("apPassword")) 
+        newConfig.apPassword = doc["apPassword"].as<String>();
+    if (doc.containsKey("apChannel")) 
+        newConfig.apChannel = doc["apChannel"].as<uint8_t>();
+    if (doc.containsKey("apHidden")) 
+        newConfig.apHidden = doc["apHidden"].as<bool>();
+    if (doc.containsKey("apMaxConnections")) 
+        newConfig.apMaxConnections = doc["apMaxConnections"].as<uint8_t>();
     
-    if (doc.containsKey("staSSID")) newConfig.staSSID = doc["staSSID"].as<String>();
-    if (doc.containsKey("staPassword")) newConfig.staPassword = doc["staPassword"].as<String>();
-    if (doc.containsKey("ipConfigType")) newConfig.ipConfigType = static_cast<IPConfigType>(doc["ipConfigType"].as<uint8_t>());
+    if (doc.containsKey("staSSID")) 
+        newConfig.staSSID = doc["staSSID"].as<String>();
+    if (doc.containsKey("staPassword")) 
+        newConfig.staPassword = doc["staPassword"].as<String>();
+    if (doc.containsKey("ipConfigType")) 
+        newConfig.ipConfigType = static_cast<IPConfigType>(doc["ipConfigType"].as<uint8_t>());
     
-    if (doc.containsKey("staticIP")) newConfig.staticIP = doc["staticIP"].as<String>();
-    if (doc.containsKey("gateway")) newConfig.gateway = doc["gateway"].as<String>();
-    if (doc.containsKey("subnet")) newConfig.subnet = doc["subnet"].as<String>();
-    if (doc.containsKey("dns1")) newConfig.dns1 = doc["dns1"].as<String>();
-    if (doc.containsKey("dns2")) newConfig.dns2 = doc["dns2"].as<String>();
+    if (doc.containsKey("staticIP")) 
+        newConfig.staticIP = doc["staticIP"].as<String>();
+    if (doc.containsKey("gateway")) 
+        newConfig.gateway = doc["gateway"].as<String>();
+    if (doc.containsKey("subnet")) 
+        newConfig.subnet = doc["subnet"].as<String>();
+    if (doc.containsKey("dns1")) 
+        newConfig.dns1 = doc["dns1"].as<String>();
+    if (doc.containsKey("dns2")) 
+        newConfig.dns2 = doc["dns2"].as<String>();
     
-    if (doc.containsKey("connectTimeout")) newConfig.connectTimeout = doc["connectTimeout"].as<uint32_t>();
-    if (doc.containsKey("reconnectInterval")) newConfig.reconnectInterval = doc["reconnectInterval"].as<uint32_t>();
-    if (doc.containsKey("maxReconnectAttempts")) newConfig.maxReconnectAttempts = doc["maxReconnectAttempts"].as<uint8_t>();
+    // IP冲突检测配置
+    if (doc.containsKey("conflictDetection")) 
+        newConfig.conflictDetection = static_cast<IPConflictMode>(
+            doc["conflictDetection"].as<uint8_t>());
+    if (doc.containsKey("failoverStrategy")) 
+        newConfig.failoverStrategy = static_cast<IPFailoverStrategy>(
+            doc["failoverStrategy"].as<uint8_t>());
+    if (doc.containsKey("autoFailover")) 
+        newConfig.autoFailover = doc["autoFailover"].as<bool>();
+    if (doc.containsKey("conflictCheckInterval")) 
+        newConfig.conflictCheckInterval = doc["conflictCheckInterval"].as<uint16_t>();
+    if (doc.containsKey("maxFailoverAttempts")) 
+        newConfig.maxFailoverAttempts = doc["maxFailoverAttempts"].as<uint8_t>();
+    if (doc.containsKey("conflictThreshold")) 
+        newConfig.conflictThreshold = doc["conflictThreshold"].as<uint8_t>();
+    if (doc.containsKey("fallbackToDHCP")) 
+        newConfig.fallbackToDHCP = doc["fallbackToDHCP"].as<bool>();
     
-    if (doc.containsKey("customDomain")) newConfig.customDomain = doc["customDomain"].as<String>();
-    if (doc.containsKey("enableMDNS")) newConfig.enableMDNS = doc["enableMDNS"].as<bool>();
-    if (doc.containsKey("enableDNS")) newConfig.enableDNS = doc["enableDNS"].as<bool>();
+    // 备用IP列表
+    if (doc.containsKey("backupIPs")) {
+        newConfig.backupIPs.clear();
+        JsonArray backupIPs = doc["backupIPs"];
+        for (JsonVariant ip : backupIPs) {
+            newConfig.backupIPs.push_back(ip.as<String>());
+        }
+    }
+    
+    if (doc.containsKey("connectTimeout")) 
+        newConfig.connectTimeout = doc["connectTimeout"].as<uint32_t>();
+    if (doc.containsKey("reconnectInterval")) 
+        newConfig.reconnectInterval = doc["reconnectInterval"].as<uint32_t>();
+    if (doc.containsKey("maxReconnectAttempts")) 
+        newConfig.maxReconnectAttempts = doc["maxReconnectAttempts"].as<uint8_t>();
+    
+    if (doc.containsKey("customDomain")) 
+        newConfig.customDomain = doc["customDomain"].as<String>();
+    if (doc.containsKey("enableMDNS")) 
+        newConfig.enableMDNS = doc["enableMDNS"].as<bool>();
+    if (doc.containsKey("enableDNS")) 
+        newConfig.enableDNS = doc["enableDNS"].as<bool>();
     
     return updateConfig(newConfig, true);
 }
@@ -798,13 +1271,18 @@ String NetworkManager::getStatistics() {
     doc["internetAvailable"] = statusInfo.internetAvailable;
     doc["apClientCount"] = statusInfo.apClientCount;
     doc["apIPAddress"] = statusInfo.apIPAddress;
+    doc["activeIPType"] = statusInfo.activeIPType;
+    doc["failoverCount"] = statusInfo.failoverCount;
+    doc["conflictDetected"] = statusInfo.conflictDetected;
+    doc["currentGateway"] = statusInfo.currentGateway;
+    doc["currentSubnet"] = statusInfo.currentSubnet;
+    doc["dnsServer"] = statusInfo.dnsServer;
     
     String result;
     serializeJson(doc, result);
     return result;
 }
 
-// 静态工具方法
 bool NetworkManager::isValidIP(const String& ip) {
     IPAddress addr;
     return addr.fromString(ip);

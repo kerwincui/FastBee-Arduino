@@ -11,6 +11,8 @@
 #include <core/FastBeeFramework.h>
 #include "systems/HealthMonitor.h"
 #include <utils/FileUtils.h>
+#include "utils/JsonSerializationHelper.h"
+#include "utils/JsonConverters.h"
 
 WebConfigManager::WebConfigManager(AsyncWebServer* webServerPtr) : server(webServerPtr){
     isRunning = false;
@@ -178,6 +180,54 @@ void WebConfigManager::setupRoutes() {
         handleAPIFileSystemInfo(request);
     });
 
+    // 网络配置API路由
+    server->on("/api/network/config", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        this->handleAPINetworkConfig(request);
+    });
+    server->on("/api/network/config", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        this->handleAPINetworkConfig(request);
+    });
+
+    server->on("/api/network/config/apply", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        this->handleAPINetworkApply(request);
+    });
+
+    server->on("/api/network/status", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        this->handleAPINetworkStatus(request);
+    });
+
+    server->on("/api/network/scan", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        this->handleAPINetworkScan(request);
+    });
+
+    server->on("/api/network/test-connection", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        this->handleAPINetworkTest(request);
+    });
+
+    server->on("/api/network/reset", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        this->handleAPINetworkReset(request);
+    });
+
+    server->on("/api/network/generate-backup-ips", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        this->handleAPIGenerateBackupIPs(request);
+    });
+
+    server->on("/api/network/switch-random-ip", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        this->handleAPISwitchRandomIP(request);
+    });
+
+    server->on("/api/network/check-conflict", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        this->handleAPIIPConflictCheck(request);
+    });
+
+    server->on("/api/network/failover", HTTP_POST, [this](AsyncWebServerRequest* request) {
+        this->handleAPIFailover(request);
+    });
+
+    server->on("/api/network/diagnostic", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        this->handleAPINetworkDiagnostic(request);
+    });
+
     // 404处理
     server->onNotFound([this](AsyncWebServerRequest *request) {
         String notFoundPage = readHTMLFile("/www/404.html");
@@ -333,6 +383,51 @@ void WebConfigManager::handleProtocolConfig(AsyncWebServerRequest *request) {
         return;
     }
     serveFile(request, "/www/index.html");
+}
+
+
+/**
+ * @brief 发送成功响应
+ * @param request HTTP请求
+ * @param jsonBody JSON响应体
+ */
+void WebConfigManager::sendSuccessResponse(AsyncWebServerRequest* request, const String& jsonBody) {
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonBody);
+    
+    // 添加必要的响应头
+    response->addHeader("Access-Control-Allow-Origin", "*");
+    response->addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    response->addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+    response->addHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    response->addHeader("Pragma", "no-cache");
+    response->addHeader("Expires", "0");
+    
+    request->send(response);
+}
+
+/**
+ * @brief 发送错误响应
+ * @param request HTTP请求
+ * @param errorCode 错误代码
+ * @param errorMessage 错误消息
+ */
+void WebConfigManager::sendErrorResponse(AsyncWebServerRequest* request, int errorCode, const String& errorMessage) {
+    DynamicJsonDocument doc(256);
+    doc["error"] = errorMessage;
+    doc["code"] = errorCode;
+    doc["timestamp"] = millis();
+    
+    String jsonResponse;
+    serializeJson(doc, jsonResponse);
+    
+    AsyncWebServerResponse* response = request->beginResponse(errorCode, "application/json", jsonResponse);
+    
+    // 添加必要的响应头
+    response->addHeader("Access-Control-Allow-Origin", "*");
+    response->addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    response->addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+    
+    request->send(response);
 }
 
 // API处理函数
@@ -501,6 +596,928 @@ void WebConfigManager::handleSystemRestart(AsyncWebServerRequest* request) {
 void WebConfigManager::handleAPIFileSystemInfo(AsyncWebServerRequest* request) {
     String jsonInfo = FileUtils::getFileSystemInfoJSON();
     request->send(200, "application/json", jsonInfo);
+}
+
+/**
+ * @brief 处理网络配置获取/更新请求
+ */
+void WebConfigManager::handleAPINetworkConfig(AsyncWebServerRequest* request) {
+    LOG_INFO("[API] 处理网络配置请求: " + String(request->method()) + " " + request->url());
+    
+    // 1. 认证检查
+    if (!isAuthenticated(request)) {
+        LOG_WARNING("[API] 未认证的网络配置请求");
+        sendErrorResponse(request, 401, "未认证，请先登录");
+        return;
+    }
+
+    // 2. 获取NetworkManager实例
+    NetworkManager* networkManager = FastBeeFramework::getInstance()->getNetworkManager();
+    if (!networkManager) {
+        LOG_ERROR("[API] 网络管理器未初始化");
+        sendErrorResponse(request, 500, "网络服务不可用");
+        return;
+    }
+
+    // 3. 根据请求方法处理
+    if (request->method() == HTTP_GET) {
+        handleAPINetworkConfig_GET(request, networkManager);
+    } else if (request->method() == HTTP_POST) {
+        handleAPINetworkConfig_POST(request, networkManager);
+    } else {
+        sendErrorResponse(request, 405, "不支持的HTTP方法");
+    }
+}
+
+/**
+ * @brief 处理GET请求 - 获取网络配置和状态
+ */
+void WebConfigManager::handleAPINetworkConfig_GET(AsyncWebServerRequest* request, NetworkManager* networkManager) {
+    LOG_DEBUG("[API] 获取网络配置");
+    
+    try {
+        // 1. 获取配置和状态
+        WiFiConfig config = networkManager->getConfig();
+        NetworkStatusInfo status = networkManager->getStatusInfo();
+        
+        // 2. 创建JSON文档
+        DynamicJsonDocument doc(4096);
+        
+        // 3. 使用辅助类序列化完整信息
+        String jsonResponse = JsonSerializationHelper::fullNetworkInfoToJson(config, status, doc);
+        
+        LOG_DEBUG("[API] 生成的JSON大小: " + String(jsonResponse.length()) + " 字节");
+        
+        // 4. 发送成功响应
+        sendSuccessResponse(request, jsonResponse);
+        
+        LOG_INFO("[API] 网络配置获取成功");
+        
+    } catch (const std::exception& e) {
+        LOG_ERROR("[API] 获取网络配置异常: " + String(e.what()));
+        sendErrorResponse(request, 500, "服务器内部错误: " + String(e.what()));
+    } catch (...) {
+        LOG_ERROR("[API] 获取网络配置时发生未知异常");
+        sendErrorResponse(request, 500, "服务器内部错误");
+    }
+}
+
+/**
+ * @brief 处理POST请求 - 更新网络配置
+ */
+void WebConfigManager::handleAPINetworkConfig_POST(AsyncWebServerRequest* request, NetworkManager* networkManager) {
+    LOG_DEBUG("[API] 更新网络配置");
+    
+    // 1. 检查Content-Type
+    if (request->contentType() != "application/json") {
+        LOG_WARNING("[API] 无效的Content-Type: " + String(request->contentType()));
+        sendErrorResponse(request, 400, "Content-Type必须是application/json");
+        return;
+    }
+    
+    // 2. 获取请求体
+    String body = request->arg("plain");
+    if (body.length() == 0) {
+        LOG_WARNING("[API] 请求体为空");
+        sendErrorResponse(request, 400, "请求体不能为空");
+        return;
+    }
+    
+    LOG_DEBUG("[API] 收到配置JSON (长度: " + String(body.length()) + " 字节)");
+    
+    try {
+        // 3. 解析JSON
+        DynamicJsonDocument doc(2048);
+        DeserializationError error = deserializeJson(doc, body);
+        
+        if (error) {
+            LOG_ERROR("[API] JSON解析失败: " + String(error.c_str()));
+            sendErrorResponse(request, 400, "JSON解析失败: " + String(error.c_str()));
+            return;
+        }
+        
+        // 4. 验证JSON结构
+        if (!doc.is<JsonObject>()) {
+            LOG_WARNING("[API] JSON不是对象格式");
+            sendErrorResponse(request, 400, "JSON必须是对象格式");
+            return;
+        }
+        
+        JsonObject jsonObj = doc.as<JsonObject>();
+        
+        // 5. 获取当前配置作为基础
+        WiFiConfig currentConfig = networkManager->getConfig();
+        WiFiConfig newConfig = currentConfig; // 复制当前配置
+        
+        // 6. 使用辅助类解析配置
+        if (!JsonSerializationHelper::wifiConfigFromJson(jsonObj, newConfig)) {
+            LOG_ERROR("[API] 配置解析失败");
+            sendErrorResponse(request, 400, "配置解析失败");
+            return;
+        }
+        
+        // 7. 检查配置是否有变化
+        bool configChanged = false;
+        bool restartRequired = false;
+        
+        // 检查关键配置变化
+        if (newConfig.mode != currentConfig.mode) {
+            configChanged = true;
+            restartRequired = true;
+            LOG_INFO("[API] 网络模式变更: " + String(static_cast<uint8_t>(currentConfig.mode)) + 
+                    " -> " + String(static_cast<uint8_t>(newConfig.mode)));
+        }
+        
+        if (newConfig.staSSID != currentConfig.staSSID) {
+            configChanged = true;
+            LOG_INFO("[API] WiFi SSID变更: " + currentConfig.staSSID + " -> " + newConfig.staSSID);
+        }
+        
+        if (newConfig.ipConfigType != currentConfig.ipConfigType) {
+            configChanged = true;
+            LOG_INFO("[API] IP配置类型变更");
+        }
+        
+        // 8. 如果配置有变化，则更新
+        if (configChanged) {
+            LOG_INFO("[API] 正在更新网络配置...");
+            
+            // 更新配置
+            bool updateSuccess = networkManager->updateConfig(newConfig, true);
+            
+            if (updateSuccess) {
+                LOG_INFO("[API] 网络配置更新成功");
+                
+                // 创建响应
+                DynamicJsonDocument responseDoc(1024);
+                JsonObject responseObj = responseDoc.to<JsonObject>();
+                
+                responseObj["success"] = true;
+                responseObj["message"] = "网络配置更新成功";
+                responseObj["requiresRestart"] = restartRequired;
+                
+                // 如果不需要重启，立即获取新状态
+                if (!restartRequired) {
+                    NetworkStatusInfo newStatus = networkManager->getStatusInfo();
+                    JsonObject statusObj = responseObj.createNestedObject("newStatus");
+                    JsonSerializationHelper::networkStatusToJson(newStatus, statusObj);
+                } else {
+                    responseObj["restartNote"] = "网络模式变更需要重启网络连接";
+                }
+                
+                String responseJson;
+                serializeJson(responseDoc, responseJson);
+                sendSuccessResponse(request, responseJson);
+                
+            } else {
+                LOG_ERROR("[API] 网络配置更新失败");
+                sendErrorResponse(request, 500, "网络配置更新失败");
+            }
+        } else {
+            LOG_DEBUG("[API] 配置无变化，跳过更新");
+            
+            // 配置无变化，返回当前状态
+            DynamicJsonDocument responseDoc(512);
+            JsonObject responseObj = responseDoc.to<JsonObject>();
+            
+            responseObj["success"] = true;
+            responseObj["message"] = "配置无变化";
+            responseObj["configChanged"] = false;
+            
+            String responseJson;
+            serializeJson(responseDoc, responseJson);
+            sendSuccessResponse(request, responseJson);
+        }
+        
+    } catch (const std::exception& e) {
+        LOG_ERROR("[API] 更新网络配置异常: " + String(e.what()));
+        sendErrorResponse(request, 500, "服务器内部错误: " + String(e.what()));
+    } catch (...) {
+        LOG_ERROR("[API] 更新网络配置时发生未知异常");
+        sendErrorResponse(request, 500, "服务器内部错误");
+    }
+}
+
+
+/**
+ * @brief 处理网络配置应用请求（重启网络）
+ */
+void WebConfigManager::handleAPINetworkApply(AsyncWebServerRequest* request) {
+    LOG_INFO("[API] 处理网络配置应用请求");
+    
+    if (!isAuthenticated(request)) {
+        sendErrorResponse(request, 401, "未认证");
+        return;
+    }
+
+    NetworkManager* networkManager = FastBeeFramework::getInstance()->getNetworkManager();
+    if (!networkManager) {
+        sendErrorResponse(request, 500, "网络服务不可用");
+        return;
+    }
+
+    try {
+        // 重启网络
+        LOG_INFO("[API] 正在重启网络...");
+        bool restartSuccess = networkManager->restartNetwork();
+        
+        if (restartSuccess) {
+            LOG_INFO("[API] 网络重启成功");
+            
+            // 等待网络稳定
+            delay(2000);
+            
+            // 获取新的状态
+            NetworkStatusInfo status = networkManager->getStatusInfo();
+            
+            DynamicJsonDocument doc(1024);
+            JsonObject root = doc.to<JsonObject>();
+            
+            root["success"] = true;
+            root["message"] = "网络配置已应用并重启";
+            root["newIP"] = status.ipAddress;
+            root["newStatus"] = static_cast<uint8_t>(status.status);
+            
+            String responseJson;
+            serializeJson(doc, responseJson);
+            sendSuccessResponse(request, responseJson);
+        } else {
+            LOG_ERROR("[API] 网络重启失败");
+            sendErrorResponse(request, 500, "网络重启失败，请检查配置");
+        }
+    } catch (...) {
+        LOG_ERROR("[API] 网络应用过程中发生异常");
+        sendErrorResponse(request, 500, "应用配置时发生内部错误");
+    }
+}
+
+/**
+ * @brief 处理网络状态请求
+ */
+void WebConfigManager::handleAPINetworkStatus(AsyncWebServerRequest* request) {
+    LOG_DEBUG("[API] 处理网络状态请求");
+    
+    if (!isAuthenticated(request)) {
+        sendErrorResponse(request, 401, "未认证");
+        return;
+    }
+
+    NetworkManager* networkManager = FastBeeFramework::getInstance()->getNetworkManager();
+    if (!networkManager) {
+        sendErrorResponse(request, 500, "网络服务不可用");
+        return;
+    }
+
+    try {
+        // 获取状态
+        NetworkStatusInfo status = networkManager->getStatusInfo();
+        
+        DynamicJsonDocument doc(2048);
+        JsonObject root = doc.to<JsonObject>();
+        
+        // 使用辅助类序列化状态
+        JsonSerializationHelper::networkStatusToJson(status, root);
+        
+        // 添加额外信息
+        root["timestamp"] = millis();
+        root["uptime"] = millis();
+        root["freeHeap"] = ESP.getFreeHeap();
+        root["wifiMode"] = NetworkManager::getWiFiModeString();
+        
+        // 检查互联网连接
+        bool internetAvailable = networkManager->checkInternetConnection();
+        root["internetAvailable"] = internetAvailable;
+        
+        String responseJson;
+        serializeJson(doc, responseJson);
+        sendSuccessResponse(request, responseJson);
+        
+    } catch (...) {
+        LOG_ERROR("[API] 获取网络状态时发生异常");
+        sendErrorResponse(request, 500, "获取状态时发生内部错误");
+    }
+}
+
+/**
+ * @brief 处理WiFi网络扫描请求
+ */
+void WebConfigManager::handleAPINetworkScan(AsyncWebServerRequest* request) {
+    LOG_INFO("[API] 处理WiFi扫描请求");
+    
+    if (!isAuthenticated(request)) {
+        sendErrorResponse(request, 401, "未认证");
+        return;
+    }
+
+    NetworkManager* networkManager = FastBeeFramework::getInstance()->getNetworkManager();
+    if (!networkManager) {
+        sendErrorResponse(request, 500, "网络服务不可用");
+        return;
+    }
+
+    try {
+        // 获取当前状态
+        NetworkStatusInfo currentStatus = networkManager->getStatusInfo();
+        
+        LOG_INFO("[API] 开始扫描WiFi网络...");
+        
+        // 执行扫描
+        String scanResult = networkManager->scanNetworks();
+        
+        LOG_INFO("[API] WiFi扫描完成");
+        
+        // 解析扫描结果
+        DynamicJsonDocument doc(4096);
+        DeserializationError error = deserializeJson(doc, scanResult);
+        
+        if (!error) {
+            // 添加扫描元数据
+            doc["scanTime"] = millis();
+            doc["networksFound"] = doc.size();
+            doc["currentNetwork"] = currentStatus.ssid;
+            doc["currentRSSI"] = currentStatus.rssi;
+            
+            String responseJson;
+            serializeJson(doc, responseJson);
+            sendSuccessResponse(request, responseJson);
+        } else {
+            // 返回原始结果
+            sendSuccessResponse(request, scanResult);
+        }
+    } catch (...) {
+        LOG_ERROR("[API] WiFi扫描发生未知异常");
+        sendErrorResponse(request, 500, "扫描过程中发生内部错误");
+    }
+}
+
+/**
+ * @brief 处理网络连接测试请求
+ */
+void WebConfigManager::handleAPINetworkTest(AsyncWebServerRequest* request) {
+    LOG_INFO("[API] 处理网络测试请求");
+    
+    if (!isAuthenticated(request)) {
+        sendErrorResponse(request, 401, "未认证");
+        return;
+    }
+
+    NetworkManager* networkManager = FastBeeFramework::getInstance()->getNetworkManager();
+    if (!networkManager) {
+        sendErrorResponse(request, 500, "网络服务不可用");
+        return;
+    }
+
+    try {
+        // 获取当前状态
+        NetworkStatusInfo status = networkManager->getStatusInfo();
+        
+        DynamicJsonDocument doc(1024);
+        JsonObject root = doc.to<JsonObject>();
+        
+        root["testTime"] = millis();
+        
+        // 基本连接状态
+        bool isConnected = (status.status == NetworkStatus::CONNECTED);
+        root["wifiConnected"] = isConnected;
+        root["wifiSSID"] = status.ssid;
+        root["wifiRSSI"] = status.rssi;
+        root["signalStrength"] = NetworkManager::rssiToPercentage(status.rssi);
+        root["localIP"] = status.ipAddress;
+        
+        // 网络评估
+        int score = 0;
+        if (isConnected) score += 40;
+        if (status.rssi > -70) score += 30;
+        if (status.internetAvailable) score += 30;
+        
+        root["testScore"] = score;
+        root["healthStatus"] = (score >= 80) ? "健康" : 
+                              (score >= 60) ? "一般" : "差";
+        
+        // 建议
+        JsonArray suggestions = root.createNestedArray("suggestions");
+        if (!isConnected) {
+            suggestions.add("WiFi未连接，请检查SSID和密码");
+        }
+        if (status.rssi < -80) {
+            suggestions.add("信号强度较弱，请靠近路由器或检查天线");
+        }
+        if (!status.internetAvailable && isConnected) {
+            suggestions.add("互联网连接不可用，请检查路由器外网连接");
+        }
+        
+        String responseJson;
+        serializeJson(doc, responseJson);
+        sendSuccessResponse(request, responseJson);
+        
+        LOG_INFO("[API] 网络测试完成，得分: " + String(score));
+        
+    } catch (...) {
+        LOG_ERROR("[API] 网络测试过程中发生异常");
+        sendErrorResponse(request, 500, "网络测试失败");
+    }
+}
+
+/**
+ * @brief 处理网络配置重置请求
+ */
+void WebConfigManager::handleAPINetworkReset(AsyncWebServerRequest* request) {
+    LOG_WARNING("[API] 处理网络配置重置请求");
+    
+    if (!isAuthenticated(request)) {
+        sendErrorResponse(request, 401, "未认证");
+        return;
+    }
+
+    NetworkManager* networkManager = FastBeeFramework::getInstance()->getNetworkManager();
+    if (!networkManager) {
+        sendErrorResponse(request, 500, "网络服务不可用");
+        return;
+    }
+
+    try {
+        // 需要确认参数
+        bool confirmed = false;
+        if (request->hasParam("confirm")) {
+            String confirmValue = request->getParam("confirm")->value();
+            confirmed = (confirmValue == "true" || confirmValue == "1" || confirmValue == "yes");
+        }
+        
+        if (!confirmed) {
+            sendErrorResponse(request, 400, "需要确认，请添加confirm=true参数");
+            return;
+        }
+        
+        LOG_INFO("[API] 正在重置网络配置...");
+        bool resetSuccess = networkManager->resetToDefaults();
+        
+        if (resetSuccess) {
+            LOG_INFO("[API] 网络配置重置成功");
+            
+            DynamicJsonDocument doc(256);
+            doc["success"] = true;
+            doc["message"] = "网络配置已重置为默认值";
+            
+            String responseJson;
+            serializeJson(doc, responseJson);
+            sendSuccessResponse(request, responseJson);
+        } else {
+            LOG_ERROR("[API] 网络配置重置失败");
+            sendErrorResponse(request, 500, "重置网络配置失败");
+        }
+    } catch (...) {
+        LOG_ERROR("[API] 重置网络配置时发生异常");
+        sendErrorResponse(request, 500, "重置过程中发生内部错误");
+    }
+}
+
+/**
+ * @brief 处理生成备用IP请求
+ */
+void WebConfigManager::handleAPIGenerateBackupIPs(AsyncWebServerRequest* request) {
+    LOG_INFO("[API] 处理生成备用IP请求");
+    
+    if (!isAuthenticated(request)) {
+        request->send(401, "application/json", "{\"error\":\"未认证\"}");
+        return;
+    }
+
+    if (request->method() != HTTP_POST) {
+        request->send(405, "application/json", "{\"error\":\"只支持POST方法\"}");
+        return;
+    }
+
+    String body = request->arg("plain");
+    DynamicJsonDocument doc(1024);
+    DeserializationError error = deserializeJson(doc, body);
+    
+    if (error) {
+        request->send(400, "application/json", "{\"error\":\"无效的JSON格式\"}");
+        return;
+    }
+    
+    try {
+        // 验证必要参数
+        if (!doc.containsKey("staticIP") || !doc.containsKey("subnet") || !doc.containsKey("gateway")) {
+            request->send(400, "application/json", 
+                "{\"error\":\"缺少必要参数: staticIP, subnet, gateway\"}");
+            return;
+        }
+        
+        String staticIP = doc["staticIP"].as<String>();
+        String subnet = doc["subnet"].as<String>();
+        String gateway = doc["gateway"].as<String>();
+        
+        // 验证IP格式
+        if (!NetworkManager::isValidIP(staticIP) || 
+            !NetworkManager::isValidSubnet(subnet) || 
+            !NetworkManager::isValidIP(gateway)) {
+            request->send(400, "application/json", 
+                "{\"error\":\"IP地址或子网掩码格式无效\"}");
+            return;
+        }
+        
+        NetworkManager* networkManager = FastBeeFramework::getInstance()->getNetworkManager();
+        if (!networkManager) {
+            request->send(500, "application/json", "{\"error\":\"网络服务不可用\"}");
+            return;
+        }
+        
+        // 模拟生成备用IP（实际应该调用NetworkManager的方法）
+        // 这里简化处理，实际应该根据网络配置计算
+        std::vector<String> backupIPs;
+        
+        // 解析IP地址
+        IPAddress ip, netmask, gw;
+        ip.fromString(staticIP.c_str());
+        netmask.fromString(subnet.c_str());
+        gw.fromString(gateway.c_str());
+        
+        // 计算网络地址
+        IPAddress network(ip[0] & netmask[0], 
+                         ip[1] & netmask[1], 
+                         ip[2] & netmask[2], 
+                         ip[3] & netmask[3]);
+        
+        // 生成3个备用IP（避免.0、.1、.255和网关）
+        int generated = 0;
+        for (int i = 2; i < 254 && generated < 3; i++) {
+            // 跳过网关和当前IP
+            if (i == gw[3] || i == ip[3]) continue;
+            
+            IPAddress backup(network[0], network[1], network[2], i);
+            backupIPs.push_back(backup.toString());
+            generated++;
+        }
+        
+        // 返回结果
+        DynamicJsonDocument resultDoc(1024);
+        resultDoc["success"] = true;
+        resultDoc["message"] = "备用IP生成成功";
+        resultDoc["count"] = generated;
+        
+        JsonArray ips = resultDoc.createNestedArray("backupIPs");
+        for (const String& ip : backupIPs) {
+            ips.add(ip);
+        }
+        
+        // 更新NetworkManager的配置
+        WiFiConfig config = networkManager->getConfig();
+        config.backupIPs = backupIPs;
+        networkManager->updateConfig(config, true);
+        
+        String response;
+        serializeJson(resultDoc, response);
+        request->send(200, "application/json", response);
+        
+        LOG_INFO("[API] 生成备用IP成功，数量: " + String(generated));
+        
+    } catch (...) {
+        LOG_ERROR("[API] 生成备用IP时发生异常");
+        request->send(500, "application/json", "{\"error\":\"生成备用IP失败\"}");
+    }
+}
+
+/**
+ * @brief 处理切换到随机IP请求
+ */
+void WebConfigManager::handleAPISwitchRandomIP(AsyncWebServerRequest* request) {
+    LOG_INFO("[API] 处理切换到随机IP请求");
+    
+    if (!isAuthenticated(request)) {
+        request->send(401, "application/json", "{\"error\":\"未认证\"}");
+        return;
+    }
+
+    if (request->method() != HTTP_POST) {
+        request->send(405, "application/json", "{\"error\":\"只支持POST方法\"}");
+        return;
+    }
+
+    NetworkManager* networkManager = FastBeeFramework::getInstance()->getNetworkManager();
+    if (!networkManager) {
+        request->send(500, "application/json", "{\"error\":\"网络服务不可用\"}");
+        return;
+    }
+
+    try {
+        // 检查当前网络状态
+        NetworkStatusInfo status = networkManager->getStatusInfo();
+        if (status.status != NetworkStatus::CONNECTED) {
+            request->send(400, "application/json", 
+                "{\"error\":\"当前未连接到网络，无法切换IP\"}");
+            return;
+        }
+        
+        // 获取当前配置
+        WiFiConfig config = networkManager->getConfig();
+        if (config.ipConfigType != IPConfigType::STATIC) {
+            request->send(400, "application/json", 
+                "{\"error\":\"当前使用DHCP，无需切换IP\"}");
+            return;
+        }
+        
+        // 生成随机IP
+        String randomIP = networkManager->getRandomIPInRange(config.staticIP, config.subnet);
+        if (randomIP.isEmpty()) {
+            request->send(500, "application/json", 
+                "{\"error\":\"无法生成随机IP，请检查网络配置\"}");
+            return;
+        }
+        
+        LOG_INFO("[API] 生成随机IP: " + randomIP);
+        
+        // 切换到随机IP
+        bool switchSuccess = networkManager->switchToRandomIP();
+        
+        if (switchSuccess) {
+            // 等待网络重新连接
+            delay(2000);
+            
+            // 获取新状态
+            NetworkStatusInfo newStatus = networkManager->getStatusInfo();
+            
+            DynamicJsonDocument doc(512);
+            doc["success"] = true;
+            doc["message"] = "已切换到随机IP";
+            doc["oldIP"] = status.ipAddress;
+            doc["newIP"] = newStatus.ipAddress;
+            doc["randomIP"] = randomIP;
+            
+            String response;
+            serializeJson(doc, response);
+            request->send(200, "application/json", response);
+            
+            LOG_INFO("[API] 成功切换到随机IP: " + newStatus.ipAddress);
+        } else {
+            request->send(500, "application/json", 
+                "{\"error\":\"切换到随机IP失败\"}");
+        }
+    } catch (...) {
+        LOG_ERROR("[API] 切换到随机IP时发生异常");
+        request->send(500, "application/json", "{\"error\":\"切换IP过程中发生内部错误\"}");
+    }
+}
+
+/**
+ * @brief 处理IP冲突检测请求
+ */
+void WebConfigManager::handleAPIIPConflictCheck(AsyncWebServerRequest* request) {
+    LOG_INFO("[API] 处理IP冲突检测请求");
+    
+    if (!isAuthenticated(request)) {
+        request->send(401, "application/json", "{\"error\":\"未认证\"}");
+        return;
+    }
+
+    NetworkManager* networkManager = FastBeeFramework::getInstance()->getNetworkManager();
+    if (!networkManager) {
+        request->send(500, "application/json", "{\"error\":\"网络服务不可用\"}");
+        return;
+    }
+
+    try {
+        bool hasConflict = networkManager->checkIPConflict();
+        
+        DynamicJsonDocument doc(512);
+        doc["hasConflict"] = hasConflict;
+        doc["detectionTime"] = millis();
+        
+        if (hasConflict) {
+            doc["message"] = "检测到IP地址冲突";
+            doc["recommendation"] = "建议切换到备用IP或使用DHCP";
+            
+            // 获取备用IP列表
+            WiFiConfig config = networkManager->getConfig();
+            if (!config.backupIPs.empty()) {
+                JsonArray backups = doc.createNestedArray("availableBackups");
+                for (const String& ip : config.backupIPs) {
+                    backups.add(ip);
+                }
+            }
+        } else {
+            doc["message"] = "未检测到IP地址冲突";
+        }
+        
+        String response;
+        serializeJson(doc, response);
+        request->send(200, "application/json", response);
+        
+    } catch (...) {
+        LOG_ERROR("[API] IP冲突检测时发生异常");
+        request->send(500, "application/json", "{\"error\":\"冲突检测失败\"}");
+    }
+}
+
+/**
+ * @brief 处理故障转移请求
+ */
+void WebConfigManager::handleAPIFailover(AsyncWebServerRequest* request) {
+    LOG_INFO("[API] 处理故障转移请求");
+    
+    if (!isAuthenticated(request)) {
+        request->send(401, "application/json", "{\"error\":\"未认证\"}");
+        return;
+    }
+
+    if (request->method() != HTTP_POST) {
+        request->send(405, "application/json", "{\"error\":\"只支持POST方法\"}");
+        return;
+    }
+
+    NetworkManager* networkManager = FastBeeFramework::getInstance()->getNetworkManager();
+    if (!networkManager) {
+        request->send(500, "application/json", "{\"error\":\"网络服务不可用\"}");
+        return;
+    }
+
+    try {
+        String body = request->arg("plain");
+        DynamicJsonDocument doc(256);
+        DeserializationError error = deserializeJson(doc, body);
+        
+        String targetIP;
+        if (!error && doc.containsKey("targetIP")) {
+            targetIP = doc["targetIP"].as<String>();
+        }
+        
+        bool success = false;
+        String message;
+        
+        if (!targetIP.isEmpty()) {
+            // 切换到指定IP
+            LOG_INFO("[API] 切换到指定IP: " + targetIP);
+            
+            // 这里需要实现切换到指定IP的逻辑
+            // 由于NetworkManager可能没有直接的方法，这里简化处理
+            success = networkManager->switchToBackupIP(); // 使用默认故障转移
+            message = "正在尝试故障转移";
+        } else {
+            // 使用自动故障转移
+            LOG_INFO("[API] 执行自动故障转移");
+            success = networkManager->switchToBackupIP();
+            message = "正在执行自动故障转移";
+        }
+        
+        // 等待网络稳定
+        delay(2000);
+        
+        // 获取新状态
+        NetworkStatusInfo status = networkManager->getStatusInfo();
+        
+        DynamicJsonDocument resultDoc(512);
+        resultDoc["success"] = success;
+        resultDoc["message"] = message;
+        resultDoc["newIP"] = status.ipAddress;
+        resultDoc["newStatus"] = static_cast<uint8_t>(status.status);
+        
+        String response;
+        serializeJson(resultDoc, response);
+        request->send(200, "application/json", response);
+        
+    } catch (...) {
+        LOG_ERROR("[API] 故障转移时发生异常");
+        request->send(500, "application/json", "{\"error\":\"故障转移失败\"}");
+    }
+}
+
+/**
+ * @brief 处理网络诊断报告请求
+ */
+void WebConfigManager::handleAPINetworkDiagnostic(AsyncWebServerRequest* request) {
+    LOG_INFO("[API] 处理网络诊断报告请求");
+    
+    if (!isAuthenticated(request)) {
+        request->send(401, "application/json", "{\"error\":\"未认证\"}");
+        return;
+    }
+
+    NetworkManager* networkManager = FastBeeFramework::getInstance()->getNetworkManager();
+    if (!networkManager) {
+        request->send(500, "application/json", "{\"error\":\"网络服务不可用\"}");
+        return;
+    }
+
+    try {
+        // 获取详细的状态信息
+        NetworkStatusInfo status = networkManager->getStatusInfo();
+        WiFiConfig config = networkManager->getConfig();
+        
+        DynamicJsonDocument doc(4096);
+        
+        // 基本信息
+        doc["diagnosticTime"] = millis();
+        doc["deviceID"] = NetworkManager::getChipID();
+        doc["deviceName"] = config.deviceName;
+        
+        // 网络状态
+        doc["networkStatus"] = static_cast<uint8_t>(status.status);
+        doc["statusText"] = getNetworkStatusText(status.status);
+        doc["ipAddress"] = status.ipAddress;
+        doc["macAddress"] = status.macAddress;
+        doc["ssid"] = status.ssid;
+        doc["rssi"] = status.rssi;
+        doc["signalStrength"] = networkManager->rssiToPercentage(status.rssi);
+        doc["gateway"] = status.currentGateway;
+        doc["subnet"] = status.currentSubnet;
+        doc["dns"] = status.dnsServer;
+        doc["internetAvailable"] = status.internetAvailable;
+        
+        // 配置信息
+        doc["wifiMode"] = config.mode;
+        doc["ipConfigType"] = config.ipConfigType;
+        doc["staticIP"] = config.staticIP;
+        doc["enableMDNS"] = config.enableMDNS;
+        doc["customDomain"] = config.customDomain;
+        
+        // IP冲突信息
+        doc["conflictDetection"] = config.conflictDetection;
+        doc["autoFailover"] = config.autoFailover;
+        doc["failoverCount"] = status.failoverCount;
+        
+        // 备用IP列表
+        JsonArray backupIPs = doc.createNestedArray("backupIPs");
+        for (const String& ip : config.backupIPs) {
+            backupIPs.add(ip);
+        }
+        
+        // 系统信息
+        doc["freeHeap"] = ESP.getFreeHeap();
+        doc["heapFragmentation"] = ESP.getHeapSize() - ESP.getFreeHeap();
+        doc["uptime"] = millis();
+        doc["resetReason"] = esp_reset_reason();
+        
+        // 网络事件日志
+        JsonArray events = doc.createNestedArray("recentEvents");
+        // 这里可以添加最近的事件记录
+        
+        // 诊断结果
+        JsonArray issues = doc.createNestedArray("identifiedIssues");
+        JsonArray recommendations = doc.createNestedArray("recommendations");
+        
+        // 分析问题
+        if (status.status != NetworkStatus::CONNECTED) {
+            issues.add("设备未连接到WiFi网络");
+            recommendations.add("检查WiFi配置并重新连接");
+        }
+        
+        if (status.rssi < -80) {
+            issues.add("WiFi信号强度较弱 (" + String(status.rssi) + " dBm)");
+            recommendations.add("将设备靠近路由器或检查天线连接");
+        }
+        
+        if (config.ipConfigType == IPConfigType::STATIC && config.staticIP.isEmpty()) {
+            issues.add("静态IP配置不完整");
+            recommendations.add("配置完整的静态IP、网关和子网掩码");
+        }
+        
+        if (config.backupIPs.empty() && config.ipConfigType == IPConfigType::STATIC) {
+            issues.add("未配置备用IP地址");
+            recommendations.add("生成备用IP列表以提高网络可靠性");
+        }
+        
+        // 总体评估
+        int healthScore = 100;
+        if (issues.size() > 0) healthScore -= (issues.size() * 20);
+        if (healthScore < 0) healthScore = 0;
+        
+        doc["healthScore"] = healthScore;
+        doc["healthStatus"] = (healthScore >= 80) ? "健康" : 
+                              (healthScore >= 60) ? "警告" : "故障";
+        
+        // 生成报告ID
+        char reportID[20];
+        snprintf(reportID, sizeof(reportID), "DIA%08X", (uint32_t)millis());
+        doc["reportID"] = String(reportID);
+        
+        String response;
+        serializeJson(doc, response);
+        request->send(200, "application/json", response);
+        
+        LOG_INFO("[API] 网络诊断报告生成完成，健康分数: " + String(healthScore));
+        
+    } catch (...) {
+        LOG_ERROR("[API] 生成网络诊断报告时发生异常");
+        request->send(500, "application/json", "{\"error\":\"诊断报告生成失败\"}");
+    }
+}
+
+// ==================== 辅助函数 ====================
+
+/**
+ * @brief 获取网络状态文本描述
+ */
+String WebConfigManager::getNetworkStatusText(NetworkStatus status) {
+    switch (status) {
+        case NetworkStatus::DISCONNECTED: return "未连接";
+        case NetworkStatus::CONNECTING: return "连接中";
+        case NetworkStatus::CONNECTED: return "已连接";
+        case NetworkStatus::AP_MODE: return "热点模式";
+        case NetworkStatus::CONNECTION_FAILED: return "连接失败";
+        case NetworkStatus::IP_CONFLICT: return "IP冲突";
+        case NetworkStatus::FAILOVER_IN_PROGRESS: return "故障转移中";
+        default: return "未知状态";
+    }
 }
 
 // 配置管理方法

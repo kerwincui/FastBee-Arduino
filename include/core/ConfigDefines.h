@@ -3,9 +3,9 @@
 
 // 系统配置常量
 #define FASTBEE_VERSION "1.0.0"
-#define FASTBEE_DEVICE_NAME "FastBee-Device"
-#define FASTBEE_DEFAULT_SSID "FastBee-Config"
-#define FASTBEE_DEFAULT_PASSWORD "fastbee123"
+#define FASTBEE_DEVICE_NAME "FBE10000001"
+#define FASTBEE_DEFAULT_SSID "CMCC-7mnN"
+#define FASTBEE_DEFAULT_PASSWORD "eb66bcm9"
 
 // DNS配置
 #define MDNS_HOSTNAME "fastbee"

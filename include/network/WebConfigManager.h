@@ -6,6 +6,7 @@
 #include <Preferences.h>
 #include <LittleFS.h>
 #include <utils/StringUtils.h>
+#include "NetworkManager.h"
 
 class WebConfigManager {
 private:
@@ -28,7 +29,12 @@ private:
     void handleDeviceMonitor(AsyncWebServerRequest *request);
     void handleOTAUpdate(AsyncWebServerRequest *request);
     void handleProtocolConfig(AsyncWebServerRequest *request);
-    
+
+    // 发送成功响应
+    void sendSuccessResponse(AsyncWebServerRequest* request, const String& jsonBody);
+    // 发送错误响应
+    void sendErrorResponse(AsyncWebServerRequest* request, int errorCode, const String& errorMessage);
+        
     // API端点
     void handleAPIStatus(AsyncWebServerRequest *request);
     void handleAPIConfig(AsyncWebServerRequest *request);
@@ -38,6 +44,23 @@ private:
     void handleSystemInfo(AsyncWebServerRequest* request);
     void handleSystemRestart(AsyncWebServerRequest* request);
     void handleAPIFileSystemInfo(AsyncWebServerRequest* request);
+    // 网络API处理器
+    void handleAPINetworkConfig(AsyncWebServerRequest* request);
+    void handleAPINetworkApply(AsyncWebServerRequest* request);
+    void handleAPINetworkStatus(AsyncWebServerRequest* request);
+    void handleAPINetworkScan(AsyncWebServerRequest* request);
+    void handleAPINetworkTest(AsyncWebServerRequest* request);
+    void handleAPINetworkReset(AsyncWebServerRequest* request);
+    void handleAPIGenerateBackupIPs(AsyncWebServerRequest* request);
+    void handleAPISwitchRandomIP(AsyncWebServerRequest* request);
+    void handleAPIIPConflictCheck(AsyncWebServerRequest* request);
+    void handleAPIFailover(AsyncWebServerRequest* request);
+    void handleAPINetworkDiagnostic(AsyncWebServerRequest* request);
+    void handleAPINetworkConfig_GET(AsyncWebServerRequest* request, NetworkManager* networkManager);
+    void handleAPINetworkConfig_POST(AsyncWebServerRequest* request, NetworkManager* networkManager);
+    
+    // 辅助函数
+    String getNetworkStatusText(NetworkStatus status);
     
     // 文件服务方法 
     bool serveFile(AsyncWebServerRequest *request,const String& path, const String& contentType = "text/html");
