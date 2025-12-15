@@ -618,3 +618,23 @@ body {
 .forgot-password:hover {
     color:#0446aa;
 }
+
+.network-status{
+    border:1px solid #ccc;
+    border-radius:5px;
+    padding:20px 10px;
+    display:flex;
+    h3{
+        flex:1
+    }
+    span{
+        flex:1;
+    }
+}
+
+.wifi-config{
+    border:1px solid #ccc;
+    border-radius:5px;
+    padding:20px 10px;
+    margin:10px 0 20px 0;
+}

@@ -61,6 +61,11 @@ const systemState = {
 // 登录功能
 document.getElementById('login-form').addEventListener('submit', async function(e) {
     e.preventDefault();
+    // 调试使用
+    document.getElementById('login-page').style.display = 'none';
+    document.getElementById('app').style.display = 'flex';
+    return;
+
     const username = document.getElementById('username').value.trim();
     const password = document.getElementById('password').value;
     const rememberMe = document.getElementById('remember-me').checked;
@@ -387,4 +392,13 @@ function showNotification(message, type = 'info') {
         `;
         document.head.appendChild(style);
     }
+}
+
+// 调用一次 
+toggleStaticIP();
+// 切换静态IP显示
+function toggleStaticIP() {
+    let value = document.getElementById('use-static-ip').value;
+    document.getElementById('static-ip-config').style.visibility = value=='enabled' ? 'visible' : 'hidden';
+    document.getElementById('static-ip-config-1').style.visibility = value=='enabled' ? 'visible' : 'hidden';
 }
