@@ -62,9 +62,9 @@ const systemState = {
 document.getElementById('login-form').addEventListener('submit', async function(e) {
     e.preventDefault();
     // 调试使用
-    document.getElementById('login-page').style.display = 'none';
-    document.getElementById('app').style.display = 'flex';
-    return;
+    // document.getElementById('login-page').style.display = 'none';
+    // document.getElementById('app').style.display = 'flex';
+    // return;
 
     const username = document.getElementById('username').value.trim();
     const password = document.getElementById('password').value;
@@ -401,4 +401,344 @@ function toggleStaticIP() {
     let value = document.getElementById('use-static-ip').value;
     document.getElementById('static-ip-config').style.visibility = value=='enabled' ? 'visible' : 'hidden';
     document.getElementById('static-ip-config-1').style.visibility = value=='enabled' ? 'visible' : 'hidden';
+}
+
+// 打开WiFi扫描器
+function openWifiScanner() {
+    document.getElementById('wifi-scanner-modal').classList.add('active');
+}
+
+// 关闭WiFi扫描器
+function closeWifiScanner() {
+    document.getElementById('wifi-scanner-modal').classList.remove('active');
+}
+
+// 开始扫描
+function startScan() {
+    const scanningStatus = document.getElementById('scanning-status');
+    const wifiList = document.getElementById('wifi-list');
+    
+    scanningStatus.style.display = 'block';
+    wifiList.innerHTML = '';
+    
+    fetch('/api/network/scan')
+        .then(response => response.json())
+        .then(networks => {
+            wifiNetworks = networks;
+            displayWifiList();
+            scanningStatus.style.display = 'none';
+        })
+        .catch(error => {
+            console.error('扫描失败:', error);
+            scanningStatus.style.display = 'none';
+            showMessage('扫描失败: ' + error.message, 'danger');
+        });
+}
+
+// 显示WiFi列表
+function displayWifiList() {
+    const wifiList = document.getElementById('wifi-list');
+    
+    if (!wifiNetworks || wifiNetworks.length === 0) {
+        wifiList.innerHTML = '<div style="text-align: center; color: #666; padding: 20px;">未发现WiFi网络</div>';
+        return;
+    }
+    
+    let html = '';
+    wifiNetworks.forEach(network => {
+        const strength = getSignalStrength(network.rssi);
+        const strengthBars = getStrengthBars(strength);
+        const encryption = network.encryption === 'open' ? '开放网络' : '加密网络';
+        
+        html += `
+            <div class="wifi-item" onclick="selectWifi('${network.ssid.replace(/'/g, "\\'")}')">
+                <div class="wifi-ssid">${network.ssid}</div>
+                <div class="wifi-info">
+                    <div>
+                        <span>${encryption}</span> · 
+                        <span>信道 ${network.channel}</span>
+                    </div>
+                    <div class="wifi-strength">
+                        <span>${strength}%</span>
+                        ${strengthBars}
+                    </div>
+                </div>
+            </div>
+        `;
+    });
+    
+    wifiList.innerHTML = html;
+}
+
+// 选择WiFi
+function selectWifi(ssid) {
+    document.getElementById('sta-ssid').value = ssid;
+    closeWifiScanner();
+    showMessage(`已选择WiFi: ${ssid}`, 'success');
+}
+
+// 获取信号强度
+function getSignalStrength(rssi) {
+    if (rssi >= -50) return 100;
+    if (rssi <= -100) return 0;
+    return 2 * (rssi + 100);
+}
+
+// 获取信号强度条
+function getStrengthBars(strength) {
+    let bars = '';
+    for (let i = 1; i <= 4; i++) {
+        const active = strength >= (i * 25);
+        bars += `<div class="strength-bar ${active ? 'active' : ''}"></div>`;
+    }
+    return bars;
+}
+
+// 生成备用IP
+function generateBackupIPs() {
+    fetch('/api/network/generate-backup-ips', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            staticIP: document.getElementById('static-ip').value,
+            subnet: document.getElementById('subnet').value,
+            gateway: document.getElementById('gateway').value
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            currentConfig.backupIPs = data.backupIPs;
+            updateBackupIPList();
+            showMessage('备用IP生成成功', 'success');
+        } else {
+            showMessage('生成失败: ' + data.message, 'danger');
+        }
+    })
+    .catch(error => {
+        console.error('生成失败:', error);
+        showMessage('生成失败: ' + error.message, 'danger');
+    });
+}
+
+// 切换到随机IP
+function switchToRandomIP() {
+    if (!confirm('确定要切换到随机IP吗？当前连接可能会中断。')) {
+        return;
+    }
+    
+    fetch('/api/network/switch-random-ip', {
+        method: 'POST'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showMessage('已切换到随机IP，正在重新连接...', 'success');
+            setTimeout(() => {
+                loadCurrentConfig();
+                updateNetworkStatus();
+            }, 3000);
+        } else {
+            showMessage('切换失败: ' + data.message, 'danger');
+        }
+    })
+    .catch(error => {
+        console.error('切换失败:', error);
+        showMessage('切换失败: ' + error.message, 'danger');
+    });
+}
+
+// 收集配置数据
+function collectConfig() {
+    return {
+        mode: parseInt(document.getElementById('wifi-mode').value),
+        deviceName: document.getElementById('device-name').value,
+        
+        // STA配置
+        staSSID: document.getElementById('sta-ssid').value,
+        staPassword: document.getElementById('sta-password').value,
+        ipConfigType: parseInt(document.getElementById('ip-config-type').value),
+        
+        // 静态IP配置
+        staticIP: document.getElementById('static-ip').value,
+        gateway: document.getElementById('gateway').value,
+        subnet: document.getElementById('subnet').value,
+        dns1: document.getElementById('dns1').value,
+        dns2: document.getElementById('dns2').value,
+        
+        // AP配置
+        apSSID: document.getElementById('ap-ssid').value,
+        apPassword: document.getElementById('ap-password').value,
+        apChannel: 1,
+        apHidden: false,
+        apMaxConnections: 4,
+        
+        // IP冲突检测
+        conflictDetection: parseInt(document.getElementById('conflict-detection').value),
+        autoFailover: document.getElementById('auto-failover').checked,
+        conflictCheckInterval: 30000,
+        maxFailoverAttempts: 3,
+        conflictThreshold: 2,
+        fallbackToDHCP: true,
+        
+        // 备用IP列表
+        backupIPs: currentConfig.backupIPs || [],
+        
+        // 域名配置
+        customDomain: document.getElementById('custom-domain').value,
+        enableMDNS: document.getElementById('enable-mdns').checked,
+        enableDNS: document.getElementById('enable-dns').checked,
+        
+        // 连接参数
+        connectTimeout: parseInt(document.getElementById('connect-timeout').value),
+        reconnectInterval: parseInt(document.getElementById('reconnect-interval').value),
+        maxReconnectAttempts: parseInt(document.getElementById('max-reconnect-attempts').value)
+    };
+}
+
+// 保存配置
+function saveConfig() {
+    const config = collectConfig();
+    
+    fetch('/api/network/config', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(config)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showMessage('配置保存成功', 'success');
+            loadCurrentConfig();
+        } else {
+            showMessage('保存失败: ' + data.message, 'danger');
+        }
+    })
+    .catch(error => {
+        console.error('保存失败:', error);
+        showMessage('保存失败: ' + error.message, 'danger');
+    });
+}
+
+// 保存并应用配置
+function applyConfig() {
+    if (!confirm('应用配置将重启网络连接，确定要继续吗？')) {
+        return;
+    }
+    
+    const config = collectConfig();
+    
+    fetch('/api/network/config/apply', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(config)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showMessage('配置已应用，网络正在重新连接...', 'success');
+            setTimeout(() => {
+                loadCurrentConfig();
+                updateNetworkStatus();
+            }, 5000);
+        } else {
+            showMessage('应用失败: ' + data.message, 'danger');
+        }
+    })
+    .catch(error => {
+        console.error('应用失败:', error);
+        showMessage('应用失败: ' + error.message, 'danger');
+    });
+}
+
+// 测试连接
+function testConnection() {
+    fetch('/api/network/test-connection')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showMessage('连接测试成功: ' + data.message, 'success');
+            } else {
+                showMessage('连接测试失败: ' + data.message, 'danger');
+            }
+        })
+        .catch(error => {
+            console.error('测试失败:', error);
+            showMessage('测试失败: ' + error.message, 'danger');
+        });
+}
+
+// 重置配置
+function resetConfig() {
+    if (!confirm('确定要重置为默认配置吗？所有自定义设置都将丢失。')) {
+        return;
+    }
+    
+    fetch('/api/network/reset', {
+        method: 'POST'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showMessage('配置已重置', 'success');
+            setTimeout(() => {
+                loadCurrentConfig();
+                updateNetworkStatus();
+            }, 2000);
+        } else {
+            showMessage('重置失败: ' + data.message, 'danger');
+        }
+    })
+    .catch(error => {
+        console.error('重置失败:', error);
+        showMessage('重置失败: ' + error.message, 'danger');
+    });
+}
+
+// 导出配置
+function exportConfig() {
+    const config = collectConfig();
+    const configStr = JSON.stringify(config, null, 2);
+    
+    const blob = new Blob([configStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'fastbee-network-config.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    showMessage('配置导出成功', 'success');
+}
+
+// 显示消息
+function showMessage(message, type) {
+    const container = document.getElementById('message-container');
+    const alert = document.createElement('div');
+    alert.className = `alert alert-${type}`;
+    alert.innerHTML = `
+        <i class="fas fa-${type === 'success' ? 'check-circle' : 'exclamation-circle'}"></i>
+        <span>${message}</span>
+    `;
+    
+    container.appendChild(alert);
+    
+    // 3秒后自动移除
+    setTimeout(() => {
+        alert.style.opacity = '0';
+        alert.style.transition = 'opacity 0.3s';
+        setTimeout(() => {
+            if (alert.parentNode) {
+                alert.parentNode.removeChild(alert);
+            }
+        }, 300);
+    }, 3000);
 }
