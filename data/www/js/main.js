@@ -259,7 +259,6 @@ const i18n = {
             'password-label': '密码',
             'remember-label': '记住密码',
             'login-button': '登录系统',
-            'login-error': '用户名或密码错误！',
             
             // 应用通用
             'app-title': '设备管理系统',
@@ -363,7 +362,6 @@ const i18n = {
             'password-label': 'Password',
             'remember-label': 'Remember password',
             'login-button': 'Login',
-            'login-error': 'Invalid username or password!',
             
             // App common
             'app-title': 'Device Manage',
@@ -704,11 +702,10 @@ const AppState = {
         const username = document.getElementById('username').value;
         const password = document.getElementById('password').value;
         const remember = document.getElementById('remember').checked;
-        const errorDiv = document.getElementById('login-error');
 
         // 校验
         if (!username || !password) {
-            showNotification('请输入用户名和密码', 'error');
+            NotificationSystem.warning('请输入用户名或密码', '登录失败');
             return;
         }
 
@@ -717,43 +714,7 @@ const AppState = {
         const originalText = submitBtn.innerHTML;
         submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 登录中...';
         submitBtn.disabled = true;
-        
-        // 简单验证
-        if (username === 'admin' && password === 'admin') {
-            // 保存登录信息
-            if (remember) {
-                localStorage.setItem('login_username', username);
-                localStorage.setItem('login_password', password);
-                localStorage.setItem('login_remember', 'true');
-            }
-            
-            // 切换到主应用
-            document.getElementById('login-page').style.display = 'none';
-            document.getElementById('app-container').style.display = 'block';
-            
-            errorDiv.style.display = 'none';
-            
-            // 显示登录成功消息
-            NotificationSystem.success('登录成功！欢迎使用设备管理系统', '登录成功');
-            
-        } else {
-            errorDiv.textContent = i18n.t('login-error');
-            errorDiv.style.display = 'block';
-            
-            // 显示登录失败消息
-            NotificationSystem.error('用户名或密码错误，请重试', '登录失败');
-        }
-    },
 
-    // 登录功能
-    document.getElementById('login-form').addEventListener('submit', async function(e) {
-        e.preventDefault();
-
-        
-
-        
-        
-        
         // 登录请求
         axios.post('/login', new URLSearchParams({
             username: username,
@@ -761,22 +722,14 @@ const AppState = {
         })
         ).then(response => {
             console.log('登录请求', response);
-            if(response.status==1){
-                // 认证成功
-                systemState.isAuthenticated = true;
-                systemState.currentUser = {
-                    username: 'admin',
-                    role: 'ADMIN',
-                    email: 'admin@example.com'
-                };
-                
+            if(response.status==1){                
                 // 保存登录状态
-                if (rememberMe) {
-                    localStorage.setItem('rememberMe', 'true');
+                if (remember) {
+                    localStorage.setItem('remember', 'true');
                     localStorage.setItem('username', username);
                     localStorage.setItem('password', password);
                 } else {
-                    localStorage.removeItem('rememberMe');
+                    localStorage.removeItem('remember');
                     localStorage.removeItem('username');
                     localStorage.removeItem('password');
                 }
@@ -784,36 +737,25 @@ const AppState = {
                 // 保存会话
                 sessionStorage.setItem('userRole', 'ADMIN');
 
+                // 切换到主应用
                 document.getElementById('login-page').style.display = 'none';
-                document.getElementById('app').style.display = 'flex';
+                document.getElementById('app-container').style.display = 'block';
 
-                showNotification(response.msg,"error");
+
+                NotificationSystem.success(response.msg, '登录成功');
             }else{
-                showNotification(response.msg , "error");
+                NotificationSystem.error(response.msg, '登录失败');
             }
             
         }).catch(error=>{
-            showNotification("登录发生错误" , "error");
+            NotificationSystem.error('登录发生错误', '登录失败');
         }).finally(function(){
             // 恢复按钮状态
             submitBtn.innerHTML = originalText;
             submitBtn.disabled = false;
         });
-
-    });
-
-    // 检查自动登录
-    function checkAutoLogin() {
-        const rememberMe = localStorage.getItem('rememberMe');
-        const savedUsername = localStorage.getItem('username');
-        const savedPassowrd = localStorage.getItem('password');
         
-        if (rememberMe === 'true' && savedUsername) {
-            document.getElementById('username').value = savedUsername;
-            document.getElementById('password').value = savedPassowrd;
-            document.getElementById('remember-me').checked = true;
-        }
-    }
+    },
     
     // 切换页面
     changePage(page) {
@@ -1215,7 +1157,6 @@ const AppState = {
             document.getElementById('app-container').style.display = 'none';
             document.getElementById('login-page').style.display = 'flex';
             document.getElementById('login-form').reset();
-            document.getElementById('login-error').style.display = 'none';
             
             NotificationSystem.info('已成功退出登录', '退出登录');
         }
@@ -1283,9 +1224,9 @@ document.addEventListener('DOMContentLoaded', () => {
     i18n.updatePageText();
     
     // 加载保存的登录信息
-    const savedUsername = localStorage.getItem('login_username');
-    const savedPassword = localStorage.getItem('login_password');
-    const remember = localStorage.getItem('login_remember') === 'true';
+    const savedUsername = localStorage.getItem('username');
+    const savedPassword = localStorage.getItem('password');
+    const remember = localStorage.getItem('remember') === 'true';
     
     if (savedUsername && savedPassword && remember) {
         document.getElementById('username').value = savedUsername;
