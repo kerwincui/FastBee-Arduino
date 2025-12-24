@@ -7,7 +7,6 @@
     <link rel="icon" href="./assets/favicon.ico" type="image/x-icon">
     <link rel="stylesheet" href="./css/pure-min.css">
     <link rel="stylesheet" href="./css/main.css">
-    <script src="./js/axios.min.js"></script>
 </head>
 <body>
     <!-- 消息通知容器 -->
@@ -977,7 +976,13 @@
             </div>
         </div>
     </div>
-
+    <!---便于开发，顺序引入js文件，可压缩成一个文件-->
+    <script src="./js/modules/axios.min.js"></script>
+    <script src="./js/modules/config.js"></script>
+    <script src="./js/modules/notification.js"></script>
+    <script src="./js/modules/i18n.js"></script>
+    <script src="./js/modules/utils.js"></script>
+    <script src="./js/state.js"></script>
     <script src="./js/main.js"></script>
 </body>
 </html>
