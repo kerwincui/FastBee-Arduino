@@ -1,5 +1,5 @@
 // 消息通知系统
-const NotificationSystem = {
+const Notification = {
     container: null,
     notifications: [],
     
@@ -46,7 +46,7 @@ const NotificationSystem = {
                     <i>${icons[options.type] || icons.info}</i>
                     <span>${options.title || this.getDefaultTitle(options.type)}</span>
                 </div>
-                <button class="notification-close" onclick="NotificationSystem.close('${id}')">×</button>
+                <button class="notification-close" onclick="Notification.close('${id}')">×</button>
             </div>
             <div class="notification-body">
                 ${options.message || ''}

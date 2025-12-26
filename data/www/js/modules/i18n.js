@@ -223,7 +223,7 @@ const i18n = {
             this.updatePageText();
             
             // 显示语言切换成功的消息
-            NotificationSystem.success(
+            Notification.success(
                 lang === 'zh-CN' ? '语言已切换为中文' : 'Language switched to English',
                 lang === 'zh-CN' ? '成功' : 'Success'
             );

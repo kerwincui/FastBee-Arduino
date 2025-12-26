@@ -139,7 +139,7 @@ const AppState = {
                                     protocol === 'http' ? 'HTTP' : 
                                     protocol === 'coap' ? 'CoAP' : 'TCP';
                 
-                NotificationSystem.success(`${protocolName}配置保存成功！`);
+                Notification.success(`${protocolName}配置保存成功！`);
                 
                 // 显示配置成功消息
                 const successElement = form.querySelector('.message-success');
@@ -204,7 +204,7 @@ const AppState = {
 
         // 校验
         if (!username || !password) {
-            NotificationSystem.warning('请输入用户名或密码', '登录失败');
+            Notification.warning('请输入用户名或密码', '登录失败');
             return;
         }
 
@@ -240,13 +240,13 @@ const AppState = {
                 document.getElementById('login-page').style.display = 'none';
                 document.getElementById('app-container').style.display = 'block';
 
-                NotificationSystem.success(response.msg, '登录成功');
+                Notification.success(response.msg, '登录成功');
             } else {
-                NotificationSystem.error(response.msg, '登录失败');
+                Notification.error(response.msg, '登录失败');
             }
             
         }).catch(error => {
-            NotificationSystem.error('登录发生错误', '登录失败');
+            Notification.error('登录发生错误', '登录失败');
         }).finally(function() {
             // 恢复按钮状态
             submitBtn.innerHTML = originalText;
@@ -360,7 +360,7 @@ const AppState = {
             viewButton.className = 'pure-button pure-button-small pure-button-primary';
             viewButton.textContent = i18n.t('view-details');
             viewButton.addEventListener('click', () => {
-                NotificationSystem.info(
+                Notification.info(
                     `${i18n.t('view-details')}: ${i18n.currentLang === 'zh-CN' ? device.name_zh : device.name}`,
                     '设备详情'
                 );
@@ -420,7 +420,7 @@ const AppState = {
             editButton.className = 'pure-button pure-button-small pure-button-primary';
             editButton.textContent = i18n.t('edit-user');
             editButton.addEventListener('click', () => {
-                NotificationSystem.primary(
+                Notification.primary(
                     `${i18n.t('edit-user')}: ${user.username}`,
                     '编辑用户'
                 );
@@ -491,7 +491,7 @@ const AppState = {
             errorDiv.textContent = '请填写所有字段！';
             errorDiv.style.display = 'block';
             
-            NotificationSystem.error('请填写所有字段！', '修改密码失败');
+            Notification.error('请填写所有字段！', '修改密码失败');
             return;
         }
         
@@ -499,7 +499,7 @@ const AppState = {
             errorDiv.textContent = i18n.t('password-error');
             errorDiv.style.display = 'block';
             
-            NotificationSystem.error('新密码与确认密码不一致！', '修改密码失败');
+            Notification.error('新密码与确认密码不一致！', '修改密码失败');
             return;
         }
         
@@ -507,13 +507,13 @@ const AppState = {
             errorDiv.textContent = '新密码长度至少6位！';
             errorDiv.style.display = 'block';
             
-            NotificationSystem.warning('新密码长度至少6位！', '密码要求');
+            Notification.warning('新密码长度至少6位！', '密码要求');
             return;
         }
         
         // 模拟修改密码
         errorDiv.style.display = 'none';
-        NotificationSystem.success(i18n.t('password-changed'), '修改密码成功');
+        Notification.success(i18n.t('password-changed'), '修改密码成功');
         document.getElementById('change-password-modal').style.display = 'none';
     },
     
@@ -540,7 +540,7 @@ const AppState = {
             errorDiv.textContent = '请输入用户名！';
             errorDiv.style.display = 'block';
             
-            NotificationSystem.error('请输入用户名！', '添加用户失败');
+            Notification.error('请输入用户名！', '添加用户失败');
             return;
         }
         
@@ -550,7 +550,7 @@ const AppState = {
             errorDiv.textContent = '用户名已存在！';
             errorDiv.style.display = 'block';
             
-            NotificationSystem.warning('用户名已存在！', '添加用户失败');
+            Notification.warning('用户名已存在！', '添加用户失败');
             return;
         }
         
@@ -558,7 +558,7 @@ const AppState = {
             errorDiv.textContent = '请输入密码！';
             errorDiv.style.display = 'block';
             
-            NotificationSystem.error('请输入密码！', '添加用户失败');
+            Notification.error('请输入密码！', '添加用户失败');
             return;
         }
         
@@ -566,7 +566,7 @@ const AppState = {
             errorDiv.textContent = '密码与确认密码不一致！';
             errorDiv.style.display = 'block';
             
-            NotificationSystem.error('密码与确认密码不一致！', '添加用户失败');
+            Notification.error('密码与确认密码不一致！', '添加用户失败');
             return;
         }
         
@@ -574,7 +574,7 @@ const AppState = {
             errorDiv.textContent = '密码长度至少6位！';
             errorDiv.style.display = 'block';
             
-            NotificationSystem.warning('密码长度至少6位！', '密码要求');
+            Notification.warning('密码长度至少6位！', '密码要求');
             return;
         }
         
@@ -597,7 +597,7 @@ const AppState = {
         this.renderUsers();
         
         errorDiv.style.display = 'none';
-        NotificationSystem.success(i18n.t('user-added'), '添加用户成功');
+        Notification.success(i18n.t('user-added'), '添加用户成功');
         document.getElementById('add-user-modal').style.display = 'none';
     },
     
@@ -612,9 +612,9 @@ const AppState = {
             
             const message = `${user.username} 已${confirmText}！`;
             if (action === 'enable') {
-                NotificationSystem.success(message, '用户状态更新');
+                Notification.success(message, '用户状态更新');
             } else {
-                NotificationSystem.warning(message, '用户状态更新');
+                Notification.warning(message, '用户状态更新');
             }
         }
     },
@@ -625,7 +625,7 @@ const AppState = {
         this.users = this.users.filter(u => u.id !== userId);
         this.renderUsers();
         
-        NotificationSystem.error(`用户 ${user.username} 已删除！`, '删除用户');
+        Notification.error(`用户 ${user.username} 已删除！`, '删除用户');
     },
     
     // 退出登录
@@ -635,7 +635,7 @@ const AppState = {
             document.getElementById('login-page').style.display = 'flex';
             document.getElementById('login-form').reset();
             
-            NotificationSystem.info('已成功退出登录', '退出登录');
+            Notification.info('已成功退出登录', '退出登录');
         }
     }
 };

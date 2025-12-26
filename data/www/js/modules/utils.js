@@ -33,11 +33,11 @@ window.openWifiScanner = function() {
             const ssid = this.querySelector('.wifi-ssid').textContent;
             document.getElementById('wifi-ssid').value = ssid;
             
-            NotificationSystem.primary(`已选择WiFi网络: ${ssid}`, '网络选择');
+            Notification.primary(`已选择WiFi网络: ${ssid}`, '网络选择');
         });
     });
     
-    NotificationSystem.success('已扫描到3个WiFi网络', '网络扫描完成');
+    Notification.success('已扫描到3个WiFi网络', '网络扫描完成');
 };
 
 // 静态IP切换功能
@@ -46,7 +46,7 @@ window.toggleStaticIP = function() {
     const staticIpSection = document.getElementById('static-ip-section');
     if (useStaticIP === 'enabled') {
         staticIpSection.style.display = 'block';
-        NotificationSystem.info('已启用静态IP配置', '网络设置');
+        Notification.info('已启用静态IP配置', '网络设置');
     } else {
         staticIpSection.style.display = 'none';
     }

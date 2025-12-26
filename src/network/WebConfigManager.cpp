@@ -69,55 +69,20 @@ void WebConfigManager::shutdown() {
     Serial.println("WebConfigManager: Shutdown completed");
 }
 
-// 过滤器：排除所有.gz文件和隐藏文件
-bool WebConfigManager::requestFilter(AsyncWebServerRequest* request) {
-    String url = request->url();  // 获取请求的URL路径
-    
-    // 检查路径是否应该被拒绝
-    if (url.endsWith(".gz")) return false;
-    if (url.endsWith(".map")) return false;
-    
-    // 只允许特定类型的文件请求
-    if (url.endsWith(".css") || 
-        url.endsWith(".js") || 
-        url.endsWith(".html") || 
-        url.endsWith(".htm") ||
-        url.endsWith(".png") || 
-        url.endsWith(".jpg") || 
-        url.endsWith(".jpeg") ||
-        url.endsWith(".gif") || 
-        url.endsWith(".ico") || 
-        url.endsWith(".svg") ||
-        url.endsWith(".ttf") || 
-        url.endsWith(".woff") || 
-        url.endsWith(".woff2") ||
-        url.endsWith(".eot") || 
-        url.endsWith(".json") || 
-        url.endsWith(".txt") ||
-        url.endsWith(".xml") ||
-        url.equals("/") ||  // 允许根路径
-        url.startsWith("/api/")) {  // 允许API请求
-        return true;
-    }
-    
-    // 默认拒绝
-    return false;
-}
 
 void WebConfigManager::setupRoutes() {
-    // 设置请求过滤器
-    auto configureHandler = [](AsyncStaticWebHandler* handler, const char* cacheControl = nullptr) {
-        handler->setFilter(WebConfigManager::requestFilter);
-        handler->setIsDir(false);
-        if (cacheControl) {
-            handler->setCacheControl(cacheControl);
-        }
-    };
+    // 静态文件服务,setIsDir禁用目录列表，精确匹配路径
+    server->serveStatic("/css/", LittleFS, "/www/css/")
+        ->setIsDir(false)
+        ->setCacheControl("max-age=3600");
 
-    // 静态文件服务 - 直接从 LittleFS 提供文件
-    configureHandler(&server->serveStatic("/css/", LittleFS, "/www/css/"));
-    configureHandler(&server->serveStatic("/js/", LittleFS, "/www/js/"));
-    configureHandler(&server->serveStatic("/assets/", LittleFS, "/www/assets/"));
+    server->serveStatic("/js/", LittleFS, "/www/js/")
+        ->setIsDir(false)
+        ->setCacheControl("max-age=3600");
+
+    server->serveStatic("/assets/", LittleFS, "/www/assets/")
+        ->setIsDir(false)
+        ->setCacheControl("max-age=86400");
     
     // 页面路由
     server->on("/", HTTP_GET, [this](AsyncWebServerRequest *request) {
