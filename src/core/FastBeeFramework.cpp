@@ -153,24 +153,32 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     LOG_INFO("Network manager initialized");
-    
-    // 步骤5: 初始化Web配置管理器
-    webConfig = new WebConfigManager(server);
-    if (!webConfig || !webConfig->initialize()) {
-        LOG_ERROR("Failed to initialize web config manager");
+
+    // 步骤5: 初始化用户管理器
+    userManager = new UserManager();
+    if (!userManager || !userManager->initialize()) {
+        LOG_ERROR("Failed to initialize user manager");
         return false;
     }
-    LOG_INFO("Web config manager initialized");
-    
+    LOG_INFO("User manager initialized");
+
     // 步骤6: 初始化认证管理器
-    authManager = new AuthManager();
+    authManager = new AuthManager(userManager);
     if (!authManager || !authManager->initialize()) {
         LOG_ERROR("Failed to initialize auth manager!");
         return false;
     }
     LOG_INFO("Auth manager initialized");
     
-    // 步骤7: 初始化OTA管理器
+    // 步骤7: 初始化Web配置管理器
+    webConfig = new WebConfigManager(server,authManager,userManager);
+    if (!webConfig || !webConfig->initialize()) {
+        LOG_ERROR("Failed to initialize web config manager");
+        return false;
+    }
+    LOG_INFO("Web config manager initialized");   
+    
+    // 步骤8: 初始化OTA管理器
     ota = new OTAManager(server);
     if (!ota || !ota->initialize()) {
         LOG_ERROR("Failed to initialize OTA manager");
@@ -178,7 +186,7 @@ bool FastBeeFramework::initialize() {
     }
     LOG_INFO("OTA manager initialized");
     
-    // 步骤8: 初始化任务管理器
+    // 步骤9: 初始化任务管理器
     taskManager = new TaskManager();
     if (!taskManager || !taskManager->initialize()) {
         LOG_ERROR("Failed to initialize task manager");
@@ -186,21 +194,13 @@ bool FastBeeFramework::initialize() {
     }
     LOG_INFO("Task manager initialized");
     
-    // 步骤9: 初始化健康监控器
+    // 步骤10: 初始化健康监控器
     healthMonitor = new HealthMonitor();
     if (!healthMonitor || !healthMonitor->initialize()) {
         LOG_ERROR("Failed to initialize health monitor");
         return false;
     }
     LOG_INFO("Health monitor initialized");
-    
-    // 步骤10: 初始化用户管理器
-    userManager = new UserManager();
-    if (!userManager || !userManager->initialize()) {
-        LOG_ERROR("Failed to initialize user manager");
-        return false;
-    }
-    LOG_INFO("User manager initialized");
     
     // 步骤11: 初始化协议管理器
     protocolManager = new ProtocolManager();
@@ -364,7 +364,7 @@ void FastBeeFramework::shutdown() {
     }
     
     if (userManager) {
-        userManager->saveUsersToConfig();
+        // userManager->saveUsersToConfig();
     }
     
     if (authManager) {
@@ -373,7 +373,7 @@ void FastBeeFramework::shutdown() {
     }
     
     if (webConfig) {
-        webConfig->shutdown();
+        webConfig->stop();
     }
     
     if (ota) {

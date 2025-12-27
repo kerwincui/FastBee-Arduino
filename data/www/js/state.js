@@ -215,22 +215,34 @@ const AppState = {
         submitBtn.disabled = true;
 
         // 登录请求
-        axios.post('/login', new URLSearchParams({
-            username: username,
-            password: password
-        }))
+        axios.post('/api/auth/login',  {
+            username,
+            password
+        }, {
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        })
         .then(response => {
             console.log('登录请求', response);
-            if(response.status == 1){                
+            if(response.success){                
                 // 保存登录状态
                 if (remember) {
                     localStorage.setItem('remember', 'true');
                     localStorage.setItem('username', username);
                     localStorage.setItem('password', password);
+                    localStorage.setItem('sessionId', sessionId);
                 } else {
                     localStorage.removeItem('remember');
                     localStorage.removeItem('username');
                     localStorage.removeItem('password');
+                    localStorage.removeItem('sessionId');
+                }
+
+                // 更新axios默认header
+                if (sessionId) {
+                    axios.defaults.headers.common['Authorization'] = `Bearer ${data.sessionId}`;
+                    localStorage.setItem('auth_token', data.sessionId);
                 }
                 
                 // 保存会话
@@ -627,6 +639,20 @@ const AppState = {
         
         Notification.error(`用户 ${user.username} 已删除！`, '删除用户');
     },
+
+    getAuthHeader() {
+        // 从cookie或localStorage获取认证信息
+        const token = localStorage.getItem('auth_token');
+        if (token) {
+            return {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            };
+        }
+        return {
+            'Content-Type': 'application/json'
+        };
+    },
     
     // 退出登录
     logout() {
@@ -634,8 +660,23 @@ const AppState = {
             document.getElementById('app-container').style.display = 'none';
             document.getElementById('login-page').style.display = 'flex';
             document.getElementById('login-form').reset();
-            
-            Notification.info('已成功退出登录', '退出登录');
+
+            // 登录请求
+            axios.post('/api/auth/logout', {}, {
+                headers: getAuthHeader()
+            })
+            .then(response => {
+                if (response.data && response.data.success) {
+                    // 清除本地存储
+                    localStorage.removeItem('password');
+                    localStorage.removeItem('auth_token');
+                    delete axios.defaults.headers.common['Authorization'];
+                    Notification.success('已成功退出登录', '退出登录');
+                }
+                return response.data;
+            }).catch(error => {
+                Notification.error('退出发生错误', '登录失败');
+            })
         }
     }
 };

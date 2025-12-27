@@ -1,146 +1,94 @@
-/**
- *@description: 
- *@author: kerwincui
- *@copyright:FastBee All rights reserved.
- *@date: 2025-12-02 17:31:54
- */
+#include "./security/AuthManager.h"
+#include <esp_random.h>
 
-#include "security/AuthManager.h"
-#include "Security/UserManager.h"
-#include "Systems/LoggerSystem.h"
-#include "Security/CryptoUtils.h"
-#include "Utils/TimeUtils.h"
-#include <algorithm>
+// 前向声明LoggerSystem的空实现（如果未提供）
+#ifndef LOGGER_SYSTEM_H
+class LoggerSystem {
+public:
+    void log(const String& msg) { Serial.println(msg); }
+    void error(const String& msg) { Serial.println("ERROR: " + msg); }
+    void info(const String& msg) { Serial.println("INFO: " + msg); }
+};
+#endif
 
-AuthManager::AuthManager(UserManager* userMgr, LoggerSystem* loggerPtr) 
-    : userManager(userMgr), logger(loggerPtr) {
-    
-    // 初始化默认安全配置
-    securityConfig = SecurityConfig();
-    
-    // 初始化权限系统
-    initializePermissions();
+AuthManager::AuthManager(UserManager* userMgr, LoggerSystem* loggerPtr)
+    : userManager(userMgr), logger(loggerPtr), lastSessionCleanup(0) {
+    preferences.begin("auth_manager", false);
 }
 
 AuthManager::~AuthManager() {
-    // 清理资源
-    activeSessions.clear();
-    loginAttempts.clear();
-    lockedAccounts.clear();
+    if (securityConfig.enableSessionPersistence) {
+        saveSessionsToStorage();
+    }
+    preferences.end();
 }
 
 bool AuthManager::initialize() {
-    if (logger) logger->info("Initializing AuthManager...", "AUTH");
-    
-    // 初始化Preferences
-    if (!preferences.begin("auth_manager", false)) {
-        if (logger) logger->error("Failed to initialize Preferences", "AUTH");
-        return false;
-    }
-    
     // 加载安全配置
     if (!loadSecurityConfig()) {
-        if (logger) logger->warning("Failed to load security config, using defaults", "AUTH");
+        Serial.println("[AuthManager] Using default security config");
     }
     
-    // 清理过期的会话和锁定账户
-    cleanupExpiredSessions();
+    // 初始化权限系统
+    initializePermissions();
     
-    if (logger) logger->info("AuthManager initialized successfully", "AUTH");
+    // 加载持久化的会话
+    if (securityConfig.enableSessionPersistence) {
+        loadSessionsFromStorage();
+    }
+    
+    Serial.printf("[AuthManager] Initialized with %d permissions, %d active sessions\n", 
+                 permissions.size(), activeSessions.size());
+    
     return true;
 }
 
 void AuthManager::initializePermissions() {
-    permissions.clear();
-    
-    // 系统配置权限
-    Permission sysConfig;
-    sysConfig.name = "system_config";
-    sysConfig.description = "系统配置管理";
-    sysConfig.allowedRoles = {UserRole::ADMIN};
-    permissions.push_back(sysConfig);
-    
-    // 网络配置权限
-    Permission netConfig;
-    netConfig.name = "network_config";
-    netConfig.description = "网络配置管理";
-    netConfig.allowedRoles = {UserRole::ADMIN, UserRole::USER};
-    permissions.push_back(netConfig);
+    // 系统权限
+    permissions["system.info"] = Permission("system.info", "查看系统信息", UserRole::VIEWER);
+    permissions["system.restart"] = Permission("system.restart", "重启系统", UserRole::ADMIN);
     
     // 用户管理权限
-    Permission userManage;
-    userManage.name = "user_manage";
-    userManage.description = "用户管理";
-    userManage.allowedRoles = {UserRole::ADMIN};
-    permissions.push_back(userManage);
+    permissions["user.view"] = Permission("user.view", "查看用户", UserRole::VIEWER);
+    permissions["user.create"] = Permission("user.create", "创建用户", UserRole::ADMIN);
+    permissions["user.edit"] = Permission("user.edit", "编辑用户", UserRole::ADMIN);
+    permissions["user.delete"] = Permission("user.delete", "删除用户", UserRole::ADMIN);
     
-    // 设备监控权限
-    Permission deviceMonitor;
-    deviceMonitor.name = "device_monitor";
-    deviceMonitor.description = "设备监控";
-    deviceMonitor.allowedRoles = {UserRole::ADMIN, UserRole::USER, UserRole::VIEWER};
-    permissions.push_back(deviceMonitor);
+    // 配置权限
+    permissions["config.view"] = Permission("config.view", "查看配置", UserRole::VIEWER);
+    permissions["config.edit"] = Permission("config.edit", "编辑配置", UserRole::ADMIN);
     
-    // OTA升级权限
-    Permission otaUpdate;
-    otaUpdate.name = "ota_update";
-    otaUpdate.description = "固件OTA升级";
-    otaUpdate.allowedRoles = {UserRole::ADMIN};
-    permissions.push_back(otaUpdate);
+    // 网络权限
+    permissions["network.view"] = Permission("network.view", "查看网络状态", UserRole::VIEWER);
+    permissions["network.edit"] = Permission("network.edit", "编辑网络配置", UserRole::ADMIN);
     
-    // 协议配置权限
-    Permission protocolConfig;
-    protocolConfig.name = "protocol_config";
-    protocolConfig.description = "协议配置";
-    protocolConfig.allowedRoles = {UserRole::ADMIN, UserRole::USER};
-    permissions.push_back(protocolConfig);
+    // OTA权限
+    permissions["ota.update"] = Permission("ota.update", "OTA更新", UserRole::ADMIN);
     
-    // 数据查看权限
-    Permission dataView;
-    dataView.name = "data_view";
-    dataView.description = "数据查看";
-    dataView.allowedRoles = {UserRole::ADMIN, UserRole::USER, UserRole::VIEWER};
-    permissions.push_back(dataView);
-    
-    // 数据修改权限
-    Permission dataModify;
-    dataModify.name = "data_modify";
-    dataModify.description = "数据修改";
-    dataModify.allowedRoles = {UserRole::ADMIN, UserRole::USER};
-    permissions.push_back(dataModify);
-}
-
-bool AuthManager::validatePasswordStrength(const String& password) {
-    if (password.length() < securityConfig.minPasswordLength) {
-        return false;
-    }
-    
-    if (password.length() > securityConfig.maxPasswordLength) {
-        return false;
-    }
-    
-    if (securityConfig.requireStrongPasswords) {
-        // 检查密码复杂度（至少包含数字、字母）
-        bool hasDigit = false;
-        bool hasAlpha = false;
-        
-        for (size_t i = 0; i < password.length(); i++) {
-            char c = password[i];
-            if (isdigit(c)) hasDigit = true;
-            if (isAlpha(c)) hasAlpha = true;
-        }
-        
-        if (!hasDigit || !hasAlpha) {
-            return false;
-        }
-    }
-    
-    return true;
+    // 文件系统权限
+    permissions["fs.view"] = Permission("fs.view", "查看文件系统", UserRole::VIEWER);
+    permissions["fs.manage"] = Permission("fs.manage", "管理文件系统", UserRole::ADMIN);
 }
 
 String AuthManager::generateSessionId(const String& username) {
-    String rawToken = username + ":" + String(micros()) + ":" + generateRandomToken(16);
-    return CryptoUtils::simpleHash(rawToken).substring(0, 32);
+    // 组合多个随机源增加唯一性
+    unsigned long timestamp = millis();
+    uint32_t random1 = esp_random();
+    uint32_t random2 = esp_random();
+    
+    // 创建唯一字符串
+    String uniqueString = username + "_" + 
+                         String(timestamp) + "_" + 
+                         String(random1, HEX) + "_" + 
+                         String(random2, HEX);
+    
+    // 计算 MD5 哈希
+    MD5Builder md5;
+    md5.begin();
+    md5.add(uniqueString);
+    md5.calculate();
+    
+    return md5.toString();
 }
 
 SessionStatus AuthManager::validateSession(const UserSession& session) {
@@ -149,10 +97,23 @@ SessionStatus AuthManager::validateSession(const UserSession& session) {
     }
     
     unsigned long currentTime = millis();
-    unsigned long sessionAge = currentTime - session.lastAccessTime;
     
-    if (sessionAge > securityConfig.sessionTimeout) {
+    // 检查会话是否过期
+    if (currentTime > session.expireTime) {
         return SessionStatus::EXPIRED;
+    }
+    
+    // 检查账户是否被锁定
+    if (isAccountLocked(session.username)) {
+        return SessionStatus::LOCKED;
+    }
+    
+    // 检查用户是否仍然存在和启用
+    if (userManager) {
+        User* user = userManager->getUser(session.username);
+        if (!user || !user->enabled) {
+            return SessionStatus::INVALID;
+        }
     }
     
     return SessionStatus::VALID;
@@ -160,108 +121,223 @@ SessionStatus AuthManager::validateSession(const UserSession& session) {
 
 void AuthManager::cleanupExpiredSessions() {
     unsigned long currentTime = millis();
-    std::vector<String> sessionsToRemove;
     
-    // 查找过期会话
-    for (const auto& pair : activeSessions) {
-        const UserSession& session = pair.second;
-        unsigned long sessionAge = currentTime - session.lastAccessTime;
-        
-        if (sessionAge > securityConfig.sessionTimeout) {
-            sessionsToRemove.push_back(pair.first);
-        }
-    }
-    
-    // 移除过期会话
-    for (const String& sessionId : sessionsToRemove) {
-        activeSessions.erase(sessionId);
-        if (logger) {
-            logger->info("Cleaned up expired session: " + sessionId, "AUTH");
-        }
-    }
-    
-    // 清理过期的账户锁定
-    std::vector<String> accountsToUnlock;
-    for (const auto& pair : lockedAccounts) {
-        unsigned long lockTime = pair.second;
-        if (currentTime - lockTime > securityConfig.loginLockoutTime) {
-            accountsToUnlock.push_back(pair.first);
-        }
-    }
-    
-    for (const String& username : accountsToUnlock) {
-        lockedAccounts.erase(username);
-        loginAttempts[username] = 0;
-        if (logger) {
-            logger->info("Auto-unlocked account: " + username, "AUTH");
+    for (auto it = activeSessions.begin(); it != activeSessions.end();) {
+        if (currentTime > it->second.expireTime || !it->second.isActive) {
+            logAuthEvent("session_expired", it->second.username, 
+                        "Session expired or invalidated", true);
+            it = activeSessions.erase(it);
+        } else {
+            ++it;
         }
     }
 }
 
-AuthResult AuthManager::authenticate(const String& username, const String& password, 
-                                    const String& ipAddress, const String& userAgent) {
+bool AuthManager::isAccountLocked(const String& username) {
+    auto it = lockedAccounts.find(username);
+    if (it != lockedAccounts.end()) {
+        if (userManager) {
+            User* user = userManager->getUser(username);
+            if (user) {
+                // UserManager::UserConfig config;
+                // 假设UserManager有获取配置的方法
+                // 这里简化处理，实际应该从配置获取
+                unsigned long lockoutTime = 300000; // 5分钟
+                
+                if (millis() - it->second < lockoutTime) {
+                    return true;
+                } else {
+                    // 锁定时间已过，解锁账户
+                    lockedAccounts.erase(it);
+                    userManager->resetLoginAttempts(username);
+                    return false;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+void AuthManager::lockAccount(const String& username) {
+    lockedAccounts[username] = millis();
+    logAuthEvent("account_locked", username, "Too many failed login attempts", false);
+}
+
+void AuthManager::unlockAccount(const String& username) {
+    lockedAccounts.erase(username);
+    if (userManager) {
+        userManager->resetLoginAttempts(username);
+    }
+    logAuthEvent("account_unlocked", username, "Account unlocked", true);
+}
+
+void AuthManager::logAuthEvent(const String& event, const String& username, 
+                              const String& details, bool success) {
+    String logMsg = "AuthEvent: " + event + " - User: " + username + 
+                   " - Details: " + details + " - Success: " + String(success);
+    
+    if (logger) {
+        if (success) {
+            logger->info(logMsg);
+        } else {
+            logger->error(logMsg);
+        }
+    } else {
+        Serial.println(logMsg);
+    }
+    
+    // 触发回调
+    if (authEventCallback) {
+        authEventCallback(event, username, details, success);
+    }
+}
+
+bool AuthManager::checkIpWhitelist(const String& ipAddress) {
+    if (!securityConfig.enableIpWhitelist || securityConfig.ipWhitelist.empty()) {
+        return true;
+    }
+    
+    for (const String& ip : securityConfig.ipWhitelist) {
+        if (ipAddress == ip) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+bool AuthManager::loadSecurityConfig() {
+    securityConfig.sessionTimeout = preferences.getULong("session_timeout", 3600000);
+    securityConfig.sessionCleanupInterval = preferences.getULong("cleanup_interval", 60000);
+    securityConfig.enableSessionPersistence = preferences.getBool("session_persistence", true);
+    securityConfig.enableIpWhitelist = preferences.getBool("ip_whitelist", false);
+    securityConfig.cookieName = preferences.getString("cookie_name", "session");
+    securityConfig.cookieMaxAge = preferences.getULong("cookie_max_age", 3600);
+    securityConfig.cookieHttpOnly = preferences.getBool("cookie_http_only", true);
+    securityConfig.cookieSecure = preferences.getBool("cookie_secure", false);
+    
+    // 加载IP白名单
+    String ipListStr = preferences.getString("ip_whitelist", "");
+    if (!ipListStr.isEmpty()) {
+        StaticJsonDocument<512> doc;
+        DeserializationError error = deserializeJson(doc, ipListStr);
+        if (!error) {
+            JsonArray ipArray = doc.as<JsonArray>();
+            for (String ip : ipArray) {
+                securityConfig.ipWhitelist.push_back(ip);
+            }
+        }
+    }
+    
+    return true;
+}
+
+bool AuthManager::saveSecurityConfig() {
+    preferences.putULong("session_timeout", securityConfig.sessionTimeout);
+    preferences.putULong("cleanup_interval", securityConfig.sessionCleanupInterval);
+    preferences.putBool("session_persistence", securityConfig.enableSessionPersistence);
+    preferences.putBool("ip_whitelist", securityConfig.enableIpWhitelist);
+    preferences.putString("cookie_name", securityConfig.cookieName);
+    preferences.putULong("cookie_max_age", securityConfig.cookieMaxAge);
+    preferences.putBool("cookie_http_only", securityConfig.cookieHttpOnly);
+    preferences.putBool("cookie_secure", securityConfig.cookieSecure);
+    
+    // 保存IP白名单
+    StaticJsonDocument<512> doc;
+    JsonArray ipArray = doc.to<JsonArray>();
+    for (const String& ip : securityConfig.ipWhitelist) {
+        ipArray.add(ip);
+    }
+    
+    String ipListStr;
+    serializeJson(doc, ipListStr);
+    preferences.putString("ip_whitelist", ipListStr);
+    
+    return true;
+}
+
+// ============ 认证管理方法 ============
+
+AuthResult AuthManager::login(const String& username, const String& password,
+                             const String& ipAddress, const String& userAgent) {
     AuthResult result;
+    result.username = username;
+    
+    // 检查IP白名单
+    if (!checkIpWhitelist(ipAddress)) {
+        result.message = "IP address not allowed";
+        result.status = SessionStatus::INVALID;
+        logAuthEvent("login_failed_ip", username, "IP not in whitelist: " + ipAddress, false);
+        return result;
+    }
     
     // 检查账户是否被锁定
     if (isAccountLocked(username)) {
-        result.success = false;
-        result.message = "Account is temporarily locked due to too many failed login attempts";
+        result.message = "Account is locked";
         result.status = SessionStatus::LOCKED;
-        
-        logAuthEvent(username, "LOGIN_FAILED_LOCKED", "Account locked", false);
+        logAuthEvent("login_failed_locked", username, "Account locked", false);
         return result;
     }
     
     // 验证用户凭据
     if (!userManager || !userManager->authenticateUser(username, password)) {
-        // 登录失败
-        loginAttempts[username]++;
+        result.message = "Invalid username or password";
+        result.status = SessionStatus::INVALID;
         
-        if (loginAttempts[username] >= securityConfig.maxLoginAttempts) {
-            lockAccount(username);
-            result.message = "Too many failed login attempts. Account locked for " + 
-                           String(securityConfig.loginLockoutTime / 60000) + " minutes";
-            result.status = SessionStatus::LOCKED;
-        } else {
-            result.message = "Invalid username or password. Attempts remaining: " + 
-                           String(securityConfig.maxLoginAttempts - loginAttempts[username]);
+        // 记录登录失败
+        if (userManager) {
+            uint8_t attempts = userManager->getLoginAttempts(username);
+            User* user = userManager->getUser(username);
+            if (user) {
+                // 检查是否达到最大尝试次数
+                // 这里简化处理，实际应该从配置获取
+                if (attempts >= 5) {
+                    lockAccount(username);
+                    result.message = "Too many failed attempts, account locked";
+                    result.status = SessionStatus::LOCKED;
+                }
+            }
         }
         
-        result.success = false;
-        logAuthEvent(username, "LOGIN_FAILED", result.message, false);
+        logAuthEvent("login_failed", username, "Invalid credentials", false);
         return result;
     }
     
-    // 登录成功
-    resetLoginAttempts(username);
+    // 获取用户角色
+    UserRole role = UserRole::VIEWER;
+    if (userManager) {
+        role = userManager->getUserRole(username);
+    }
     
-    // 生成新会话
-    UserSession newSession;
-    newSession.sessionId = generateSessionId(username);
-    newSession.username = username;
-    newSession.role = getUserRole(username);
-    newSession.loginTime = millis();
-    newSession.lastAccessTime = newSession.loginTime;
-    newSession.ipAddress = ipAddress;
-    newSession.userAgent = userAgent;
-    newSession.isActive = true;
+    // 检查是否允许多会话
+    if (!securityConfig.enableSessionPersistence) {
+        // 如果不允许多会话，登出该用户的其他会话
+        forceLogout(username);
+    }
+    
+    // 创建新会话
+    UserSession session;
+    session.sessionId = generateSessionId(username);
+    session.username = username;
+    session.role = role;
+    session.loginTime = millis();
+    session.lastAccessTime = session.loginTime;
+    session.expireTime = session.loginTime + securityConfig.sessionTimeout;
+    session.ipAddress = ipAddress;
+    session.userAgent = userAgent;
+    session.isActive = true;
     
     // 保存会话
-    activeSessions[newSession.sessionId] = newSession;
+    activeSessions[session.sessionId] = session;
     
-    // 设置返回结果
+    // 准备返回结果
     result.success = true;
     result.message = "Login successful";
-    result.sessionId = newSession.sessionId;
+    result.sessionId = session.sessionId;
     result.status = SessionStatus::VALID;
-    result.userRole = newSession.role;
+    result.userRole = role;
     
-    logAuthEvent(username, "LOGIN_SUCCESS", "User logged in from " + ipAddress);
-    
-    // 触发事件回调
-    if (authEventCallback) {
-        authEventCallback(username, "login", "Successful login from " + ipAddress);
-    }
+    logAuthEvent("login_success", username, "User logged in from " + ipAddress, true);
     
     return result;
 }
@@ -269,43 +345,49 @@ AuthResult AuthManager::authenticate(const String& username, const String& passw
 AuthResult AuthManager::verifySession(const String& sessionId, bool updateAccessTime) {
     AuthResult result;
     
+    // 定期清理过期会话
+    unsigned long currentTime = millis();
+    if (currentTime - lastSessionCleanup > securityConfig.sessionCleanupInterval) {
+        cleanupExpiredSessions();
+        lastSessionCleanup = currentTime;
+    }
+    
     // 查找会话
     auto it = activeSessions.find(sessionId);
     if (it == activeSessions.end()) {
-        result.success = false;
         result.message = "Session not found";
         result.status = SessionStatus::INVALID;
         return result;
     }
     
     UserSession& session = it->second;
+    result.username = session.username;
     
     // 验证会话状态
     SessionStatus status = validateSession(session);
     if (status != SessionStatus::VALID) {
-        result.success = false;
-        String statusStr = sessionStatusToString(status);
-        statusStr.toLowerCase();
-        result.message = "Session " + statusStr;
+        result.message = "Session " + sessionStatusToString(status);
         result.status = status;
+        result.userRole = session.role;
         
-        // 移除无效会话
-        if (status == SessionStatus::EXPIRED) {
-            activeSessions.erase(sessionId);
-            logAuthEvent(session.username, "SESSION_EXPIRED", "Session expired");
+        // 如果会话无效，删除它
+        if (status == SessionStatus::EXPIRED || status == SessionStatus::INVALID) {
+            activeSessions.erase(it);
         }
         
+        logAuthEvent("session_invalid", session.username, result.message, false);
         return result;
     }
     
     // 更新访问时间
     if (updateAccessTime) {
-        session.lastAccessTime = millis();
+        session.lastAccessTime = currentTime;
+        session.expireTime = currentTime + securityConfig.sessionTimeout;
     }
     
-    // 返回成功结果
+    // 返回验证结果
     result.success = true;
-    result.message = "Session is valid";
+    result.message = "Session valid";
     result.sessionId = sessionId;
     result.status = SessionStatus::VALID;
     result.userRole = session.role;
@@ -319,100 +401,210 @@ bool AuthManager::logout(const String& sessionId) {
         String username = it->second.username;
         activeSessions.erase(it);
         
-        logAuthEvent(username, "LOGOUT", "User logged out");
+        logAuthEvent("logout", username, "User logged out", true);
         
-        if (authEventCallback) {
-            authEventCallback(username, "logout", "User logged out");
+        // 持久化会话数据
+        if (securityConfig.enableSessionPersistence) {
+            saveSessionsToStorage();
         }
         
         return true;
     }
-    
     return false;
 }
 
 bool AuthManager::forceLogout(const String& username) {
     bool found = false;
-    std::vector<String> sessionsToRemove;
     
-    for (const auto& pair : activeSessions) {
-        if (pair.second.username == username) {
-            sessionsToRemove.push_back(pair.first);
+    for (auto it = activeSessions.begin(); it != activeSessions.end();) {
+        if (it->second.username == username) {
+            it = activeSessions.erase(it);
             found = true;
+        } else {
+            ++it;
         }
     }
     
-    for (const String& sessionId : sessionsToRemove) {
-        activeSessions.erase(sessionId);
-    }
-    
     if (found) {
-        logAuthEvent(username, "FORCE_LOGOUT", "All sessions terminated by administrator");
+        logAuthEvent("force_logout", username, "User forced logout", true);
+        
+        if (securityConfig.enableSessionPersistence) {
+            saveSessionsToStorage();
+        }
     }
     
     return found;
 }
 
-bool AuthManager::checkPermission(const String& username, const String& permission) {
-    UserRole userRole = getUserRole(username);
+size_t AuthManager::forceLogoutAll() {
+    size_t count = activeSessions.size();
+    activeSessions.clear();
     
-    // 查找权限定义
-    for (const auto& perm : permissions) {
-        if (perm.name == permission) {
-            // 检查用户角色是否在允许的角色列表中
-            for (UserRole allowedRole : perm.allowedRoles) {
-                if (userRole == allowedRole) {
-                    return true;
-                }
-            }
-            break;
-        }
+    logAuthEvent("logout_all", "system", "All users logged out", true);
+    
+    if (securityConfig.enableSessionPersistence) {
+        saveSessionsToStorage();
     }
     
-    return false;
+    return count;
 }
 
-bool AuthManager::checkSessionPermission(const String& sessionId, const String& permission) {
-    AuthResult authResult = verifySession(sessionId, false);
-    if (!authResult.success) {
-        return false;
-    }
-    
-    return checkPermission(authResult.sessionId, permission);
-}
-
-UserRole AuthManager::getUserRole(const String& username) {
-    if (!userManager) {
-        return UserRole::VIEWER;
-    }
-    
-    // 这里需要UserManager提供获取用户角色的方法
-    // 简化实现，实际应该从UserManager获取
-    if (username == "admin") {
-        return UserRole::ADMIN;
-    } else if (username == "user") {
-        return UserRole::USER;
-    } else {
-        return UserRole::VIEWER;
-    }
-}
+// ============ 会话管理方法 ============
 
 UserSession AuthManager::getSessionInfo(const String& sessionId) {
     auto it = activeSessions.find(sessionId);
     if (it != activeSessions.end()) {
         return it->second;
     }
-    
-    return UserSession(); // 返回空的会话
+    return UserSession();
 }
 
 std::vector<UserSession> AuthManager::getActiveSessions() {
     std::vector<UserSession> sessions;
+    
     for (const auto& pair : activeSessions) {
         sessions.push_back(pair.second);
     }
+    
     return sessions;
 }
+
+std::vector<UserSession> AuthManager::getUserSessions(const String& username) {
+    std::vector<UserSession> userSessions;
+    
+    for (const auto& pair : activeSessions) {
+        if (pair.second.username == username) {
+            userSessions.push_back(pair.second);
+        }
+    }
+    
+    return userSessions;
+}
+
+bool AuthManager::updateSessionAccessTime(const String& sessionId) {
+    auto it = activeSessions.find(sessionId);
+    if (it != activeSessions.end()) {
+        unsigned long currentTime = millis();
+        it->second.lastAccessTime = currentTime;
+        it->second.expireTime = currentTime + securityConfig.sessionTimeout;
+        return true;
+    }
+    return false;
+}
+
+size_t AuthManager::getActiveSessionCount() {
+    return activeSessions.size();
+}
+
+// ============ 权限管理方法 ============
+
+bool AuthManager::checkPermission(const String& username, const String& permission, 
+                                 const String& method) {
+    // 检查权限是否存在
+    auto permIt = permissions.find(permission);
+    if (permIt == permissions.end()) {
+        return false;
+    }
+    
+    // 获取用户角色
+    UserRole userRole = getUserRole(username);
+    
+    // 检查角色权限
+    if (static_cast<int>(userRole) < static_cast<int>(permIt->second.minRole)) {
+        return false;
+    }
+    
+    // 检查HTTP方法（如果指定）
+    if (!method.isEmpty() && !permIt->second.allowedMethods.empty()) {
+        bool methodAllowed = false;
+        for (const String& allowedMethod : permIt->second.allowedMethods) {
+            if (method.equalsIgnoreCase(allowedMethod)) {
+                methodAllowed = true;
+                break;
+            }
+        }
+        if (!methodAllowed) {
+            return false;
+        }
+    }
+    
+    return true;
+}
+
+bool AuthManager::checkSessionPermission(const String& sessionId, const String& permission,
+                                        const String& method) {
+    // 验证会话
+    AuthResult authResult = verifySession(sessionId, false);
+    if (!authResult.success) {
+        return false;
+    }
+    
+    // 检查权限
+    return checkPermission(authResult.username, permission, method);
+}
+
+void AuthManager::addPermission(const Permission& permission) {
+    permissions[permission.name] = permission;
+}
+
+void AuthManager::removePermission(const String& permissionName) {
+    permissions.erase(permissionName);
+}
+
+std::vector<Permission> AuthManager::getAllPermissions() {
+    std::vector<Permission> permList;
+    
+    for (const auto& pair : permissions) {
+        permList.push_back(pair.second);
+    }
+    
+    return permList;
+}
+
+UserRole AuthManager::getUserRole(const String& username) {
+    if (userManager) {
+        return userManager->getUserRole(username);
+    }
+    return UserRole::VIEWER;
+}
+
+// ============ 在线用户管理 ============
+
+std::vector<String> AuthManager::getOnlineUsers() {
+    std::vector<String> onlineUsers;
+    
+    for (const auto& pair : activeSessions) {
+        // 去重
+        bool found = false;
+        for (const String& user : onlineUsers) {
+            if (user == pair.second.username) {
+                found = true;
+                break;
+            }
+        }
+        
+        if (!found) {
+            onlineUsers.push_back(pair.second.username);
+        }
+    }
+    
+    return onlineUsers;
+}
+
+bool AuthManager::isUserOnline(const String& username) {
+    for (const auto& pair : activeSessions) {
+        if (pair.second.username == username) {
+            return true;
+        }
+    }
+    return false;
+}
+
+size_t AuthManager::getOnlineUserCount() {
+    return getOnlineUsers().size();
+}
+
+// ============ 配置管理 ============
 
 SecurityConfig AuthManager::getSecurityConfig() const {
     return securityConfig;
@@ -423,142 +615,154 @@ bool AuthManager::updateSecurityConfig(const SecurityConfig& newConfig) {
     return saveSecurityConfig();
 }
 
+// ============ 事件回调 ============
+
 void AuthManager::setAuthEventCallback(AuthEventCallback callback) {
     authEventCallback = callback;
 }
 
-void AuthManager::resetLoginAttempts(const String& username) {
-    loginAttempts[username] = 0;
-    lockedAccounts.erase(username);
+// ============ 系统维护 ============
+
+void AuthManager::performMaintenance() {
+    cleanupExpiredSessions();
+    lastSessionCleanup = millis();
 }
 
-uint8_t AuthManager::getLoginAttempts(const String& username) {
-    auto it = loginAttempts.find(username);
-    if (it != loginAttempts.end()) {
-        return it->second;
+// ============ 持久化方法 ============
+
+bool AuthManager::saveSessionsToStorage() {
+    if (!securityConfig.enableSessionPersistence) {
+        return true;
     }
-    return 0;
-}
-
-size_t AuthManager::getActiveSessionCount() {
-    return activeSessions.size();
-}
-
-std::vector<Permission> AuthManager::getPermissions() const {
-    return permissions;
-}
-
-void AuthManager::addPermission(const Permission& permission) {
-    permissions.push_back(permission);
-}
-
-void AuthManager::logAuthEvent(const String& username, const String& event, const String& details, bool success) {
-    if (!logger) return;
     
-    String logMessage = "Auth event - User: " + username + ", Event: " + event + ", Details: " + details;
+    StaticJsonDocument<4096> doc;
+    JsonArray sessionsArray = doc.createNestedArray("sessions");
     
+    for (const auto& pair : activeSessions) {
+        const UserSession& session = pair.second;
+        JsonObject sessionObj = sessionsArray.createNestedObject();
+        
+        sessionObj["sessionId"] = session.sessionId;
+        sessionObj["username"] = session.username;
+        sessionObj["role"] = static_cast<int>(session.role);
+        sessionObj["loginTime"] = session.loginTime;
+        sessionObj["lastAccessTime"] = session.lastAccessTime;
+        sessionObj["expireTime"] = session.expireTime;
+        sessionObj["ipAddress"] = session.ipAddress;
+        sessionObj["userAgent"] = session.userAgent;
+        sessionObj["isActive"] = session.isActive;
+    }
+    
+    String jsonStr;
+    serializeJson(doc, jsonStr);
+    
+    bool success = preferences.putString("sessions", jsonStr) > 0;
     if (success) {
-        logger->info(logMessage, "AUTH");
-    } else {
-        logger->warning(logMessage, "AUTH");
+        Serial.println("[AuthManager] Sessions saved to storage");
     }
+    
+    return success;
 }
 
-bool AuthManager::isAccountLocked(const String& username) {
-    auto it = lockedAccounts.find(username);
-    if (it != lockedAccounts.end()) {
-        unsigned long lockTime = it->second;
-        if (millis() - lockTime < securityConfig.loginLockoutTime) {
-            return true;
-        } else {
-            // 锁定时间已过，自动解锁
-            lockedAccounts.erase(username);
-            loginAttempts[username] = 0;
+bool AuthManager::loadSessionsFromStorage() {
+    if (!securityConfig.enableSessionPersistence) {
+        return true;
+    }
+    
+    String jsonStr = preferences.getString("sessions", "");
+    if (jsonStr.isEmpty()) {
+        return true; // 没有会话数据是正常的
+    }
+    
+    StaticJsonDocument<4096> doc;
+    DeserializationError error = deserializeJson(doc, jsonStr);
+    if (error) {
+        Serial.printf("[AuthManager] Failed to parse session data: %s\n", error.c_str());
+        return false;
+    }
+    
+    activeSessions.clear();
+    
+    JsonArray sessionsArray = doc["sessions"];
+    for (JsonObject sessionObj : sessionsArray) {
+        UserSession session;
+        session.sessionId = sessionObj["sessionId"].as<String>();
+        session.username = sessionObj["username"].as<String>();
+        session.role = static_cast<UserRole>(sessionObj["role"].as<int>());
+        session.loginTime = sessionObj["loginTime"];
+        session.lastAccessTime = sessionObj["lastAccessTime"];
+        session.expireTime = sessionObj["expireTime"];
+        session.ipAddress = sessionObj["ipAddress"].as<String>();
+        session.userAgent = sessionObj["userAgent"].as<String>();
+        session.isActive = sessionObj["isActive"];
+        
+        // 只加载未过期的会话
+        if (session.isActive && millis() < session.expireTime) {
+            activeSessions[session.sessionId] = session;
         }
     }
-    return false;
-}
-
-void AuthManager::lockAccount(const String& username) {
-    lockedAccounts[username] = millis();
-    logAuthEvent(username, "ACCOUNT_LOCKED", 
-                "Account locked due to too many failed login attempts", false);
-}
-
-void AuthManager::unlockAccount(const String& username) {
-    lockedAccounts.erase(username);
-    loginAttempts[username] = 0;
-    logAuthEvent(username, "ACCOUNT_UNLOCKED", "Account unlocked by administrator");
-}
-
-bool AuthManager::loadSecurityConfig() {
-    // 从Preferences加载安全配置
-    securityConfig.maxLoginAttempts = preferences.getUChar("max_login_attempts", Security::MAX_LOGIN_ATTEMPTS);
-    securityConfig.sessionTimeout = preferences.getULong("session_timeout", Security::SESSION_TIMEOUT);
-    securityConfig.loginLockoutTime = preferences.getULong("login_lockout_time", Security::LOGIN_LOCKOUT_TIME);
-    securityConfig.minPasswordLength = preferences.getUChar("min_password_len", Security::MIN_PASSWORD_LENGTH);
-    securityConfig.maxPasswordLength = preferences.getUChar("max_password_len", Security::MAX_PASSWORD_LENGTH);
-    securityConfig.enableBruteForceProtection = preferences.getBool("brute_force_protection", true);
-    securityConfig.enableSessionManagement = preferences.getBool("session_management", true);
-    securityConfig.requireStrongPasswords = preferences.getBool("strong_passwords", false);
     
+    Serial.printf("[AuthManager] Loaded %d sessions from storage\n", activeSessions.size());
     return true;
 }
 
-bool AuthManager::saveSecurityConfig() {
-    // 保存安全配置到Preferences
-    preferences.putUChar("max_login_attempts", securityConfig.maxLoginAttempts);
-    preferences.putULong("session_timeout", securityConfig.sessionTimeout);
-    preferences.putULong("login_lockout_time", securityConfig.loginLockoutTime);
-    preferences.putUChar("min_password_len", securityConfig.minPasswordLength);
-    preferences.putUChar("max_password_len", securityConfig.maxPasswordLength);
-    preferences.putBool("brute_force_protection", securityConfig.enableBruteForceProtection);
-    preferences.putBool("session_management", securityConfig.enableSessionManagement);
-    preferences.putBool("strong_passwords", securityConfig.requireStrongPasswords);
-    
-    return preferences.isKey("max_login_attempts"); // 简单验证是否保存成功
-}
+// ============ 静态工具方法 ============
 
-// 静态工具方法实现
-String AuthManager::roleToString(UserRole role) {
-    switch (role) {
-        case UserRole::ADMIN: return "admin";
-        case UserRole::USER: return "user";
-        case UserRole::VIEWER: return "viewer";
+String AuthManager::sessionStatusToString(SessionStatus status) {
+    switch (status) {
+        case SessionStatus::VALID: return "valid";
+        case SessionStatus::EXPIRED: return "expired";
+        case SessionStatus::INVALID: return "invalid";
+        case SessionStatus::LOCKED: return "locked";
         default: return "unknown";
     }
 }
 
-UserRole AuthManager::stringToRole(const String& roleStr) {
-    if (roleStr == "admin") return UserRole::ADMIN;
-    if (roleStr == "user") return UserRole::USER;
-    if (roleStr == "viewer") return UserRole::VIEWER;
-    return UserRole::VIEWER; // 默认
-}
-
-String AuthManager::sessionStatusToString(SessionStatus status) {
-    switch (status) {
-        case SessionStatus::VALID: return "VALID";
-        case SessionStatus::EXPIRED: return "EXPIRED";
-        case SessionStatus::INVALID: return "INVALID";
-        case SessionStatus::LOCKED: return "LOCKED";
-        default: return "UNKNOWN";
-    }
-}
-
 String AuthManager::generateRandomToken(uint8_t length) {
-    String token = "";
-    const char* chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    const char charset[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    String token;
     
-    for (int i = 0; i < length; i++) {
-        token += chars[random(0, 62)];
+    for (uint8_t i = 0; i < length; i++) {
+        uint32_t randomValue = esp_random();
+        token += charset[randomValue % (sizeof(charset) - 1)];
     }
     
     return token;
 }
 
-String AuthManager::hashPassword(const String& password, const String& salt) {
-    // 使用CryptoUtils进行密码哈希
-    String data = password + salt;
-    return CryptoUtils::simpleHash(data);
+String AuthManager::extractSessionIdFromRequest(AsyncWebServerRequest* request, 
+                                               const String& cookieName) {
+    if (!request) return "";
+    
+    // 1. 从Cookie获取
+    if (request->hasHeader("Cookie")) {
+        String cookieHeader = request->header("Cookie");
+        int start = cookieHeader.indexOf(cookieName + "=");
+        if (start != -1) {
+            start += cookieName.length() + 1;
+            int end = cookieHeader.indexOf(';', start);
+            if (end == -1) end = cookieHeader.length();
+            return cookieHeader.substring(start, end);
+        }
+    }
+    
+    // 2. 从Authorization头获取
+    if (request->hasHeader("Authorization")) {
+        String authHeader = request->header("Authorization");
+        if (authHeader.startsWith("Bearer ")) {
+            return authHeader.substring(7);
+        }
+    }
+    
+    // 3. 从查询参数获取
+    if (request->hasParam("session")) {
+        return request->getParam("session")->value();
+    }
+    
+    // 4. 从表单数据获取
+    if (request->hasParam("session", true)) {
+        return request->getParam("session", true)->value();
+    }
+    
+    return "";
 }
