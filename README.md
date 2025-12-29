@@ -18,7 +18,7 @@ FastBee-Arduino致力于成为ESP32平台上最全面、最易用的嵌入式物
 
 ---
 
-### 核心模块功能
+### 功能模块
 * web配置：完整的用户、权限、会话管理，响应式设计，原生web技术实现
 * 远程维护：ota升级，在线日志、故障诊断、远程重启和恢复出厂设置
 * 网络通信：支持mqtt、http、modbus、coap等协议接入，wifi配置、AP配网、蓝牙配网、AP+STA双模式运行、网络监测、mDNS和本地域名访问
@@ -56,7 +56,7 @@ FastBee-Arduino致力于成为ESP32平台上最全面、最易用的嵌入式物
 
 
 
-### 开发环境和技术栈
+### 开发环境
 * 开发工具: VSCode+platformIO
 * 芯片: ESP32
 * flash: 4MB以上
@@ -99,14 +99,16 @@ FastBee-Arduino致力于成为ESP32平台上最全面、最易用的嵌入式物
 
 <table>
   <tr>
-    <td>![](./device_01.png)</td>
-    <td>![](./device_02.png)</td>
+    <td><img src="https://gitee.com/beecue/fastbee-arduino/raw/master/device_01.png"/></td>
+    <td><img src="https://gitee.com/beecue/fastbee-arduino/raw/master/device_02.png"/></td>
   </tr>
   <tr>
-    <td>![](./device_03.png)</td>
-    <td>![](./device_04.png)</td>
+    <td><img src="https://gitee.com/beecue/fastbee-arduino/raw/master/device_03.png"/></td>
+    <td><img src="https://gitee.com/beecue/fastbee-arduino/raw/master/device_04.png"/></td>
   </tr>
 </table>
+
+---
 
 ### 系统结构
 ```
