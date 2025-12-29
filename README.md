@@ -97,16 +97,13 @@ FastBee-Arduino致力于成为ESP32平台上最全面、最易用的嵌入式物
 
 ### 部分图片
 
-<table>
-  <tr>
-    <td><img src="https://gitee.com/beecue/fastbee-arduino/raw/master/device_01.png"/></td>
-    <td><img src="https://gitee.com/beecue/fastbee-arduino/raw/master/device_02.png"/></td>
-  </tr>
-  <tr>
-    <td><img src="https://gitee.com/beecue/fastbee-arduino/raw/master/device_03.png"/></td>
-    <td><img src="https://gitee.com/beecue/fastbee-arduino/raw/master/device_04.png"/></td>
-  </tr>
-</table>
+<img src="https://gitee.com/beecue/fastbee-arduino/raw/master/device_01.png"/>
+
+<img src="https://gitee.com/beecue/fastbee-arduino/raw/master/device_02.png"/>
+
+<img src="https://gitee.com/beecue/fastbee-arduino/raw/master/device_03.png"/>
+
+<img src="https://gitee.com/beecue/fastbee-arduino/raw/master/device_04.png"/>
 
 ---
 
