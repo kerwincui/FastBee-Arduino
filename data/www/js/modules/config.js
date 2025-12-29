@@ -3,7 +3,7 @@
 axios.defaults.baseURL = 'http://fastbee.local';
 axios.defaults.timeout = 3000; // 3秒超时
 axios.defaults.withCredentials = true;
-axios.defaults.headers.common['Content-Type'] = `application/json`;
+axios.defaults.headers.common['Content-Type'] = `application/x-www-form-urlencoded`;
 
 // 配置请求拦截器
 axios.interceptors.request.use(
@@ -13,8 +13,8 @@ axios.interceptors.request.use(
         // config.headers['X-Requested-With'] = 'XMLHttpRequest';
         
         // 添加认证令牌
-        const token = localStorage.getItem('auth_token');
-        if (token) config.headers.Authorization = `Bearer ${token}`;
+        const sessionId  = localStorage.getItem('auth_token');
+        if (sessionId ) config.headers.Authorization = `Bearer ${sessionId }`;
         // config.headers.Cookie = "fastbee_session=authenticated";
         
         return config; // 必须返回配置对象
@@ -40,8 +40,10 @@ axios.interceptors.response.use(
             console.error('请求失败，状态码:', error.response.status);
              switch (error.response.status) {
                 case 401:
-                    // 未授权，跳转到登录页
-                    window.location.href = '/login';
+                    // 会话过期，重定向到登录页
+                    localStorage.removeItem('sessionId');
+                    localStorage.removeItem('userInfo');
+                    // window.location.href = '/login';
                     break;
                 case 403:
                     Notification.warn(`权限不足`, '接口响应');

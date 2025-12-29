@@ -33,11 +33,11 @@ const Notification = {
         
         // 图标映射
         const icons = {
-            primary: '🔷',
-            success: '✅',
-            warning: '⚠️',
-            error: '❌',
-            info: 'ℹ️'
+            primary: '🔵',
+            success: '🟢',
+            warning: '🟡',
+            error: '🔴',
+            info: '🔵'
         };
         
         notification.innerHTML = `

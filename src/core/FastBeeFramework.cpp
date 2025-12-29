@@ -171,7 +171,7 @@ bool FastBeeFramework::initialize() {
     LOG_INFO("Auth manager initialized");
     
     // 步骤7: 初始化Web配置管理器
-    webConfig = new WebConfigManager(server,authManager,userManager);
+    webConfig = new WebConfigManager(server, authManager, userManager);
     if (!webConfig || !webConfig->initialize()) {
         LOG_ERROR("Failed to initialize web config manager");
         return false;

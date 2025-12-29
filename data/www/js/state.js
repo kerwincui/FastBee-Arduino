@@ -215,23 +215,15 @@ const AppState = {
         submitBtn.disabled = true;
 
         // 登录请求
-        axios.post('/api/auth/login',  {
-            username,
-            password
-        }, {
-            headers: {
-                'Content-Type': 'application/json'
-            }
-        })
+        axios.post('/api/auth/login',  toUrlEncoded({ username, password }))
         .then(response => {
-            console.log('登录请求', response);
             if(response.success){                
                 // 保存登录状态
                 if (remember) {
                     localStorage.setItem('remember', 'true');
                     localStorage.setItem('username', username);
                     localStorage.setItem('password', password);
-                    localStorage.setItem('sessionId', sessionId);
+                    localStorage.setItem('sessionId', response.sessionId);
                 } else {
                     localStorage.removeItem('remember');
                     localStorage.removeItem('username');
@@ -240,9 +232,9 @@ const AppState = {
                 }
 
                 // 更新axios默认header
-                if (sessionId) {
-                    axios.defaults.headers.common['Authorization'] = `Bearer ${data.sessionId}`;
-                    localStorage.setItem('auth_token', data.sessionId);
+                if (response.sessionId) {
+                    axios.defaults.headers.common['Authorization'] = `Bearer ${response.sessionId}`;
+                    localStorage.setItem('auth_token', response.sessionId);
                 }
                 
                 // 保存会话
@@ -258,7 +250,7 @@ const AppState = {
             }
             
         }).catch(error => {
-            Notification.error('登录发生错误', '登录失败');
+            Notification.error('登录发生错误' + error, '登录失败');
         }).finally(function() {
             // 恢复按钮状态
             submitBtn.innerHTML = originalText;
@@ -662,9 +654,7 @@ const AppState = {
             document.getElementById('login-form').reset();
 
             // 登录请求
-            axios.post('/api/auth/logout', {}, {
-                headers: getAuthHeader()
-            })
+            axios.post('/api/auth/logout')
             .then(response => {
                 if (response.data && response.data.success) {
                     // 清除本地存储

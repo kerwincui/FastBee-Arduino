@@ -51,3 +51,10 @@ window.toggleStaticIP = function() {
         staticIpSection.style.display = 'none';
     }
 };
+
+// 工具函数：将对象转换为 URL 编码字符串
+function toUrlEncoded(data) {
+  return Object.keys(data)
+    .map(key => encodeURIComponent(key) + '=' + encodeURIComponent(data[key]))
+    .join('&');
+}
