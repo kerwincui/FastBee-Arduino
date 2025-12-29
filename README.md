@@ -1,6 +1,6 @@
 [![gitee投票](https://gitee.com/beecue/fastbee/raw/master/images/banner1.png)](https://gitee.com/activity/2025opensource?ident=IKKZS9)
 
-FastBee-Arduino是一个基于ESP32-Arduino平台构建的、功能完整的嵌入式物联网设备开发框架。
+**FastBee-Arduino是一个基于ESP32-Arduino平台构建的、功能完整的嵌入式物联网设备开发框架。**
 
 ---
 
@@ -19,15 +19,15 @@ FastBee-Arduino致力于成为ESP32平台上最全面、最易用的嵌入式物
 ---
 
 ### 功能模块
-* web配置：完整的用户、权限、会话管理，响应式设计，原生web技术实现
-* 远程维护：ota升级，在线日志、故障诊断、远程重启和恢复出厂设置
-* 网络通信：支持mqtt、http、modbus、coap等协议接入，wifi配置、AP配网、蓝牙配网、AP+STA双模式运行、网络监测、mDNS和本地域名访问
-* 数据存储：LittleFS和Preferences双存储，配置管理
-* 规则引擎：定时任务管理，web可视化配置、异步事件处理机制，规则脚本
-* 健康监测：实施cpu、内存、存储监测，网络连接和任务运行状态监测，异常检测和告警
-* 日志系统：分级日志系统，本地存储和web查看管理
-* GPIO管理：可视化配置GPIO引脚
-* 多语言：web管理界面目前支持中文和英文
+* **web配置：** 完整的用户、权限、会话管理，响应式设计，原生web技术实现
+* **远程维护：** OTA升级，在线日志、故障诊断、远程重启和恢复出厂设置
+* **网络通信：** 支持mqtt、http、modbus、coap等协议接入，wifi配置、AP配网、蓝牙配网、AP+STA双模式运行、网络监测、mDNS和本地域名访问
+* **数据存储：** LittleFS和Preferences双存储，配置管理
+* **规则引擎：** 定时任务管理，web可视化配置、异步事件处理机制，规则脚本
+* **健康监测：** 实施cpu、内存、存储监测，网络连接和任务运行状态监测，异常检测和告警
+* **日志系统：** 分级日志系统，本地存储和web查看管理
+* **GPIO管理：** 可视化配置GPIO引脚
+* **多语言：** web管理界面目前支持中文和英文
 
 ---
 
