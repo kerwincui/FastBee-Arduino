@@ -95,6 +95,19 @@ FastBee-Arduino致力于成为ESP32平台上最全面、最易用的嵌入式物
 
 ---
 
+### 部分图片
+
+<table>
+  <tr>
+    <td>![](./device_01.png)</td>
+    <td>![](./device_02.png)</td>
+  </tr>
+  <tr>
+    <td>![](./device_03.png)</td>
+    <td>![](./device_04.png)</td>
+  </tr>
+</table>
+
 ### 系统结构
 ```
 FastBee_IoT_Platform  
