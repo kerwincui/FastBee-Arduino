@@ -766,12 +766,11 @@ body {
     background: #1e1e1e;
     color: #00ff00;
     padding: 15px;
-    border-radius: 8px;
-    margin-top: 15px;
     font-family: 'Courier New', monospace;
     font-size: 0.85em;
-    min-height: 50px;
-    overflow-y: auto;
+    height: 720px;
+    overflow: auto;
+    margin:-20px;
 }
 /**pure优化**/
 .pure-form .pure-input-1{
