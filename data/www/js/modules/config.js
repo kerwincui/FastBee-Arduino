@@ -40,29 +40,28 @@ axios.interceptors.response.use(
             console.error('请求失败，状态码:', error.response.status);
              switch (error.response.status) {
                 case 401:
-                    // 会话过期，重定向到登录页
+                    // 会话过期
                     localStorage.removeItem('sessionId');
-                    localStorage.removeItem('userInfo');
-                    // window.location.href = '/login';
+                    localStorage.removeItem('password');
                     break;
                 case 403:
-                    Notification.warn(`权限不足`, '接口响应');
+                    Notification.warn(`权限不足`, '消息提示');
                     break;
                 case 404:
-                    Notification.warn(`资源不存在`, '接口响应');
+                    Notification.warn(`资源不存在`, '消息提示');
                     break;
                 case 500:
-                    Notification.warn(`服务器内部错误`, '接口响应');
+                    Notification.warn(`服务器内部错误`, '消息提示');
                     break;
                 default:
-                    Notification.warn(error.response.data?.error || '请求失败', '接口响应');
+                    Notification.warn(error.response.data?.error || '请求失败', '消息提示');
             }
         } else if (error.request) {
             // 请求已发出但无响应（网络问题）
-            Notification.error(`网络错误，无服务器响应`, '提示');
+            Notification.error(`网络错误，无服务器响应`, '消息提示');
         } else {
             // 请求配置出错
-            Notification.error('请求配置错误:' + error.message, '提示');
+            Notification.error('请求配置错误:' + error.message, '消息提示');
         }
         return Promise.reject(error); // 将错误继续抛出，以便在具体请求的catch中处理
     }

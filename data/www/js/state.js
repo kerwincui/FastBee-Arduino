@@ -28,12 +28,32 @@ const AppState = {
     
     // 初始化
     init() {
+        this.refreshPage();
         this.setupEventListeners();
         this.renderDashboard();
         this.renderUsers();
         this.setupLanguage();
         this.setupConfigTabs();
         this.setupSidebarToggle();
+    },
+    // 刷新页面
+    refreshPage(){
+        // token校验
+        const sessionId  = localStorage.getItem('auth_token');
+        if(!sessionId) return;
+        axios.get('/api/auth/session')
+        .then(response => {
+            if(response.success && response.data.sessionValid){                
+                // 切换到主应用
+                document.getElementById('login-page').style.display = 'none';
+                document.getElementById('app-container').style.display = 'block';
+            }
+        }).catch(error => {
+            // 登录
+            document.getElementById('login-page').style.display = 'flex';
+            document.getElementById('app-container').style.display = 'none';
+            console.log("token校验发生错误：" + error);
+        })
     },
     
     // 设置侧边栏折叠按钮
@@ -250,7 +270,7 @@ const AppState = {
             }
             
         }).catch(error => {
-            Notification.error('登录发生错误' + error, '登录失败');
+            console.log("登录发生错误：" + error)
         }).finally(function() {
             // 恢复按钮状态
             submitBtn.innerHTML = originalText;
