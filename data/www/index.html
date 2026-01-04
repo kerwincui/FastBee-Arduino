@@ -63,7 +63,7 @@
                         <span class="menu-icon">🌐</span> <span id="menu-network">网络设置</span>
                     </a>
                     <a href="#" class="menu-item" data-page="data">
-                        <span class="menu-icon">💾</span> <span id="menu-data">文件管理</span>
+                        <span class="menu-icon">📁</span> <span id="menu-data">文件管理</span>
                     </a>
                     <a href="#" class="menu-item" data-page="system">
                         <span class="menu-icon">📈</span> <span id="menu-system">系统监控</span>
@@ -73,6 +73,9 @@
                     </a>
                     <a href="#" class="menu-item" data-page="logs">
                         <span class="menu-icon">📋</span> <span id="menu-logs">设备日志</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="gpio">
+                        <span class="menu-icon">🔗</span> <span id="menu-gpio">GPIO配置</span>
                     </a>
                 </div>
                 
@@ -251,13 +254,13 @@
                                             
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="tcp-port">端口</label>
-                                                    <input type="number" id="tcp-port" class="pure-input-1" value="502" min="1" max="65535">
+                                                    <label for="tcp-mport">端口</label>
+                                                    <input type="number" id="tcp-mport" class="pure-input-1" value="502" min="1" max="65535">
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="tcp-timeout">超时时间(ms)</label>
-                                                    <input type="number" id="tcp-timeout" class="pure-input-1" value="5000" min="100" max="30000">
+                                                    <label for="tcp-mtimeout">超时时间(ms)</label>
+                                                    <input type="number" id="tcp-mtimeout" class="pure-input-1" value="5000" min="100" max="30000">
                                                 </div>
                                             </div>
                                         </div>
@@ -293,8 +296,8 @@
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="mqtt-topic">发布主题</label>
-                                                    <input type="text" id="mqtt-topic" class="pure-input-1" value="/1/FB100900001/property/post">
+                                                    <label for="mqtt-publish">发布主题</label>
+                                                    <input type="text" id="mqtt-publish" class="pure-input-1" value="/1/FB100900001/property/post">
                                                 </div>
                                                 
                                             </div>
@@ -316,8 +319,8 @@
                                                 </div>
 
                                                 <div class="pure-control-group">
-                                                    <label for="mqtt-topic">订阅主题</label>
-                                                    <input type="text" id="mqtt-topic" class="pure-input-1" value="/1/FB100900001/function/get">
+                                                    <label for="mqtt-subscribe">订阅主题</label>
+                                                    <input type="text" id="mqtt-subscribe" class="pure-input-1" value="/1/FB100900001/function/get">
                                                 </div>
                                             </div>
                                         </div>
@@ -951,6 +954,19 @@ Config storage system initialized
                                         📝 添加日志
                                     </button>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="gpio-page" class="page">
+                        <div class="card">
+                            <div class="card-header">
+                                <h2 class="card-title">GPIO配置</h2>
+                            </div>
+                            <div class="card-body">
+                                
+                                
+                                
                             </div>
                         </div>
                     </div>

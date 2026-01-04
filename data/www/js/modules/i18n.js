@@ -20,6 +20,7 @@ const i18n = {
             'page-title-system': '系统监控',
             'page-title-users': '用户管理',
             'page-title-logs': '设备日志',
+            'page-title-gpio': 'GPIO配置',
             
             // 菜单
             'menu-dashboard': '设备监控',
@@ -29,6 +30,7 @@ const i18n = {
             'menu-system': '系统监控',
             'menu-users': '用户管理',
             'menu-logs': '设备日志',
+            'menu-gpio': 'GPIO配置',
             
             // 头部按钮
             'user-name': '管理员',
@@ -123,6 +125,7 @@ const i18n = {
             'page-title-system': 'System Monitoring',
             'page-title-users': 'User Management',
             'page-title-logs': 'Device Logs',
+            'page-title-gpio': 'GPIO Config',
             
             // Menu
             'menu-dashboard': 'Dashboard',
@@ -132,6 +135,7 @@ const i18n = {
             'menu-system': 'System',
             'menu-users': 'Users',
             'menu-logs': 'Logs',
+            'menu-gpio': 'Gpio',
             
             // Header buttons
             'user-name': 'Administrator',
