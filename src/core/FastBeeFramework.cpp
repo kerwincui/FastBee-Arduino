@@ -22,91 +22,31 @@
 #include <ArduinoJson.h>
 
 // 静态实例指针
-FastBeeFramework* FastBeeFramework::instance = nullptr;
+std::unique_ptr<FastBeeFramework> FastBeeFramework::instance = nullptr;
+std::mutex FastBeeFramework::instanceMutex;
 
 // 构造函数
 FastBeeFramework::FastBeeFramework() 
     : systemInitialized(false),
-      lastHealthCheck(0),
-      server(nullptr),
-      webConfig(nullptr),
-      network(nullptr),
-      ota(nullptr),
-      taskManager(nullptr),
-      healthMonitor(nullptr),
-      userManager(nullptr),
-      authManager(nullptr),
-      protocolManager(nullptr) {
-    
-    // 设置单例实例
-    if (instance == nullptr) {
-        instance = this;
-    }
+      lastHealthCheck(0) {
+    // 智能指针会自动初始化为nullptr
 }
 
 // 析构函数
 FastBeeFramework::~FastBeeFramework() {
     shutdown();
-    
-    // 清理子系统，按创建顺序反向清理
-    if (protocolManager) {
-        delete protocolManager;
-        protocolManager = nullptr;
-    }
-    
-    if (authManager) {
-        delete authManager;
-        authManager = nullptr;
-    }
-    
-    if (userManager) {
-        delete userManager;
-        userManager = nullptr;
-    }
-    
-    if (healthMonitor) {
-        delete healthMonitor;
-        healthMonitor = nullptr;
-    }
-    
-    if (taskManager) {
-        delete taskManager;
-        taskManager = nullptr;
-    }
-    
-    if (ota) {
-        delete ota;
-        ota = nullptr;
-    }
-    
-    if (webConfig) {
-        delete webConfig;
-        webConfig = nullptr;
-    }
-    
-    if (network) {
-        delete network;
-        network = nullptr;
-    }
-    
-    // 最后删除server，因为其他管理器可能还在使用
-    if (server) {
-        delete server;
-        server = nullptr;
-    }
-    
-    // 清理单例实例
-    if (instance == this) {
-        instance = nullptr;
-    }
+    // 智能指针会自动清理所有子系统
 }
 
 // 获取单例实例
 FastBeeFramework* FastBeeFramework::getInstance() {
-    if (instance == nullptr) {
-        instance = new FastBeeFramework();
+    if (!instance) {
+        std::lock_guard<std::mutex> lock(instanceMutex);
+        if (!instance) {
+            instance.reset(new FastBeeFramework());
+        }
     }
-    return instance;
+    return instance.get();
 }
 
 // 初始化框架
@@ -139,7 +79,7 @@ bool FastBeeFramework::initialize() {
     LOG_INFO("Logger system initialized");
     
     // 步骤3: 创建HTTP服务器
-    server = new AsyncWebServer(80);
+    server.reset(new AsyncWebServer(80));
     if (!server) {
         LOG_ERROR("Failed to create HTTP server");
         return false;
@@ -147,7 +87,7 @@ bool FastBeeFramework::initialize() {
     LOG_INFO("HTTP server created");
     
     // 步骤4: 初始化网络管理器
-    network = new NetworkManager(server);
+    network.reset(new NetworkManager(server.get()));
     if (!network || !network->initialize()) {
         LOG_ERROR("Failed to initialize network manager");
         return false;
@@ -155,7 +95,7 @@ bool FastBeeFramework::initialize() {
     LOG_INFO("Network manager initialized");
 
     // 步骤5: 初始化用户管理器
-    userManager = new UserManager();
+    userManager.reset(new UserManager());
     if (!userManager || !userManager->initialize()) {
         LOG_ERROR("Failed to initialize user manager");
         return false;
@@ -163,7 +103,7 @@ bool FastBeeFramework::initialize() {
     LOG_INFO("User manager initialized");
 
     // 步骤6: 初始化认证管理器
-    authManager = new AuthManager(userManager);
+    authManager.reset(new AuthManager(userManager.get()));
     if (!authManager || !authManager->initialize()) {
         LOG_ERROR("Failed to initialize auth manager!");
         return false;
@@ -171,7 +111,7 @@ bool FastBeeFramework::initialize() {
     LOG_INFO("Auth manager initialized");
     
     // 步骤7: 初始化Web配置管理器
-    webConfig = new WebConfigManager(server, authManager, userManager);
+    webConfig.reset(new WebConfigManager(server.get(), authManager.get(), userManager.get()));
     if (!webConfig || !webConfig->initialize()) {
         LOG_ERROR("Failed to initialize web config manager");
         return false;
@@ -179,7 +119,7 @@ bool FastBeeFramework::initialize() {
     LOG_INFO("Web config manager initialized");   
     
     // 步骤8: 初始化OTA管理器
-    ota = new OTAManager(server);
+    ota.reset(new OTAManager(server.get()));
     if (!ota || !ota->initialize()) {
         LOG_ERROR("Failed to initialize OTA manager");
         return false;
@@ -187,7 +127,7 @@ bool FastBeeFramework::initialize() {
     LOG_INFO("OTA manager initialized");
     
     // 步骤9: 初始化任务管理器
-    taskManager = new TaskManager();
+    taskManager.reset(new TaskManager());
     if (!taskManager || !taskManager->initialize()) {
         LOG_ERROR("Failed to initialize task manager");
         return false;
@@ -195,7 +135,7 @@ bool FastBeeFramework::initialize() {
     LOG_INFO("Task manager initialized");
     
     // 步骤10: 初始化健康监控器
-    healthMonitor = new HealthMonitor();
+    healthMonitor.reset(new HealthMonitor());
     if (!healthMonitor || !healthMonitor->initialize()) {
         LOG_ERROR("Failed to initialize health monitor");
         return false;
@@ -203,7 +143,7 @@ bool FastBeeFramework::initialize() {
     LOG_INFO("Health monitor initialized");
     
     // 步骤11: 初始化协议管理器
-    protocolManager = new ProtocolManager();
+    protocolManager.reset(new ProtocolManager());
     if (!protocolManager || !protocolManager->initialize()) {
         LOG_ERROR("Failed to initialize protocol manager");
         return false;
@@ -398,14 +338,14 @@ void FastBeeFramework::shutdown() {
 }
 
 // 获取子系统指针
-NetworkManager* FastBeeFramework::getNetworkManager() const { return network; }
-WebConfigManager* FastBeeFramework::getWebConfigManager() const { return webConfig; }
-OTAManager* FastBeeFramework::getOTAManager() const { return ota; }
-TaskManager* FastBeeFramework::getTaskManager() const { return taskManager; }
-HealthMonitor* FastBeeFramework::getHealthMonitor() const { return healthMonitor; }
-UserManager* FastBeeFramework::getUserManager() const { return userManager; }
-AuthManager* FastBeeFramework::getAuthManager() const { return authManager; }
-ProtocolManager* FastBeeFramework::getProtocolManager() const { return protocolManager; }
+NetworkManager* FastBeeFramework::getNetworkManager() const { return network.get(); }
+WebConfigManager* FastBeeFramework::getWebConfigManager() const { return webConfig.get(); }
+OTAManager* FastBeeFramework::getOTAManager() const { return ota.get(); }
+TaskManager* FastBeeFramework::getTaskManager() const { return taskManager.get(); }
+HealthMonitor* FastBeeFramework::getHealthMonitor() const { return healthMonitor.get(); }
+UserManager* FastBeeFramework::getUserManager() const { return userManager.get(); }
+AuthManager* FastBeeFramework::getAuthManager() const { return authManager.get(); }
+ProtocolManager* FastBeeFramework::getProtocolManager() const { return protocolManager.get(); }
 
 // 检查系统是否已初始化
 bool FastBeeFramework::isInitialized() const {

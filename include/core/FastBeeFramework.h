@@ -10,6 +10,8 @@
 
 #include <Arduino.h>
 #include <functional>
+#include <memory>
+#include <mutex>
 
 // 前向声明（减少头文件依赖）
 class AsyncWebServer;
@@ -99,24 +101,25 @@ private:
     void checkForRestart();
     
     // 静态实例
-    static FastBeeFramework* instance;
+    static std::unique_ptr<FastBeeFramework> instance;
+    static std::mutex instanceMutex;
     
     // 系统状态
     bool systemInitialized;
     unsigned long lastHealthCheck;
     
     // HTTP服务器
-    AsyncWebServer* server;
+    std::unique_ptr<AsyncWebServer> server;
     
     // 子系统指针
-    NetworkManager* network;
-    WebConfigManager* webConfig;
-    OTAManager* ota;
-    TaskManager* taskManager;
-    HealthMonitor* healthMonitor;
-    UserManager* userManager;
-    AuthManager* authManager;
-    ProtocolManager* protocolManager;
+    std::unique_ptr<NetworkManager> network;
+    std::unique_ptr<WebConfigManager> webConfig;
+    std::unique_ptr<OTAManager> ota;
+    std::unique_ptr<TaskManager> taskManager;
+    std::unique_ptr<HealthMonitor> healthMonitor;
+    std::unique_ptr<UserManager> userManager;
+    std::unique_ptr<AuthManager> authManager;
+    std::unique_ptr<ProtocolManager> protocolManager;
 };
 
 #endif
