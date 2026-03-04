@@ -1,49 +1,98 @@
 #ifndef CONFIG_DEFINES_H
 #define CONFIG_DEFINES_H
 
-// 系统配置常量
-#define FASTBEE_VERSION "1.0.0"
-#define FASTBEE_DEVICE_NAME "FBE10000001"
-#define FASTBEE_DEFAULT_SSID "CMCC-7mnN"
-#define FASTBEE_DEFAULT_PASSWORD "eb66bcm9"
+/**
+ * @file ConfigDefines.h
+ * @brief 【已废弃】历史遗留宏定义文件
+ *
+ * 所有常量已迁移至 SystemConstants.h 中的对应 constexpr namespace：
+ *   - 网络配置  →  namespace Network
+ *   - 文件路径  →  namespace FileSystem
+ *   - 存储配置  →  namespace Storage
+ *   - 安全配置  →  namespace Security
+ *   - 任务调度  →  namespace TaskScheduler
+ *
+ * 新代码请直接包含 <core/SystemConstants.h> 并使用命名空间常量。
+ * 本文件保留仅为向后兼容，不得在此添加新的宏定义。
+ */
+#include "core/SystemConstants.h"
 
-// DNS配置
-#define MDNS_HOSTNAME "fastbee"
-#define CUSTOM_DOMAIN "fastbee"
-
-// 网络配置
-#define WIFI_CONNECT_TIMEOUT 30000
-#define WIFI_RECONNECT_INTERVAL 10000
-#define MAX_WIFI_ATTEMPTS 3
-
-// Web服务器配置
-#define WEB_SERVER_PORT 80
-#define WEB_SOCKET_PORT 81
-#define WEB_UPLOAD_BUFFER_SIZE 4096
-#define WEB_SESSION_TIMEOUT 3600000 // 1小时 (毫秒)
-
-// OTA配置
-// #define OTA_TIMEOUT 300000 // 5分钟
-// #define OTA_BUFFER_SIZE 4096
-
-// 存储配置
-// #define PREFERENCES_NAMESPACE "fastbee"
-#define PREFERENCES_NETWORK "network"
-#define CONFIG_FILE_SYSTEM "/config/system.json"
-#define CONFIG_FILE_NETWORK "/config/network.json"
-#define CONFIG_FILE_USERS "/config/users.json"
-#define CONFIG_FILE_MQTT "/config/mqtt.json"
-#define CONFIG_FILE_MODBUS "/config/modbus.json"
-#define CONFIG_FILE_TCP "/config/tcp.json"
-#define CONFIG_FILE_HTTP "/config/http.json"
-#define CONFIG_FILE_COAP "/config/coap.json"
-
-// 任务调度配置
-// #define MAX_TASKS 20
-// #define TASK_QUEUE_SIZE 10
-
-// 健康检查阈值
-// #define MIN_FREE_HEAP 10000
-// #define MAX_HEAP_FRAGMENTATION 50
-
+// ---------------------------------------------------------------------------
+// 向后兼容别名（仅供已使用旧宏的遗留代码过渡期使用，后续将逐步移除）
+// ---------------------------------------------------------------------------
+#ifndef FASTBEE_VERSION
+#define FASTBEE_VERSION SystemInfo::VERSION
 #endif
+
+#ifndef FASTBEE_DEVICE_NAME
+#define FASTBEE_DEVICE_NAME SystemInfo::DEFAULT_DEVICE_NAME
+#endif
+
+// WiFi 默认 SSID/Password：留空，首次启动进入 AP 配网模式
+#ifndef FASTBEE_DEFAULT_SSID
+#define FASTBEE_DEFAULT_SSID     ""
+#endif
+#ifndef FASTBEE_DEFAULT_PASSWORD
+#define FASTBEE_DEFAULT_PASSWORD ""
+#endif
+
+#ifndef MDNS_HOSTNAME
+#define MDNS_HOSTNAME Network::DEFAULT_MDNS_HOSTNAME
+#endif
+#ifndef CUSTOM_DOMAIN
+#define CUSTOM_DOMAIN Network::DEFAULT_CUSTOM_DOMAIN
+#endif
+
+#ifndef WIFI_CONNECT_TIMEOUT
+#define WIFI_CONNECT_TIMEOUT Network::WIFI_CONNECT_TIMEOUT
+#endif
+#ifndef WIFI_RECONNECT_INTERVAL
+#define WIFI_RECONNECT_INTERVAL Network::WIFI_RECONNECT_INTERVAL
+#endif
+#ifndef MAX_WIFI_ATTEMPTS
+#define MAX_WIFI_ATTEMPTS Network::MAX_WIFI_ATTEMPTS
+#endif
+
+#ifndef WEB_SERVER_PORT
+#define WEB_SERVER_PORT Network::WEB_SERVER_PORT
+#endif
+#ifndef WEB_SOCKET_PORT
+#define WEB_SOCKET_PORT Network::WEB_SOCKET_PORT
+#endif
+#ifndef WEB_UPLOAD_BUFFER_SIZE
+#define WEB_UPLOAD_BUFFER_SIZE Network::WEB_UPLOAD_BUFFER_SIZE
+#endif
+#ifndef WEB_SESSION_TIMEOUT
+#define WEB_SESSION_TIMEOUT Network::WEB_SESSION_TIMEOUT
+#endif
+
+#ifndef PREFERENCES_NETWORK
+#define PREFERENCES_NETWORK "network"
+#endif
+
+#ifndef CONFIG_FILE_SYSTEM
+#define CONFIG_FILE_SYSTEM FileSystem::SYSTEM_CONFIG_FILE
+#endif
+#ifndef CONFIG_FILE_NETWORK
+#define CONFIG_FILE_NETWORK FileSystem::NETWORK_CONFIG_FILE
+#endif
+#ifndef CONFIG_FILE_USERS
+#define CONFIG_FILE_USERS FileSystem::USER_CONFIG_FILE
+#endif
+#ifndef CONFIG_FILE_MQTT
+#define CONFIG_FILE_MQTT FileSystem::MQTT_CONFIG_FILE
+#endif
+#ifndef CONFIG_FILE_MODBUS
+#define CONFIG_FILE_MODBUS FileSystem::MODBUS_CONFIG_FILE
+#endif
+#ifndef CONFIG_FILE_TCP
+#define CONFIG_FILE_TCP FileSystem::TCP_CONFIG_FILE
+#endif
+#ifndef CONFIG_FILE_HTTP
+#define CONFIG_FILE_HTTP FileSystem::HTTP_CONFIG_FILE
+#endif
+#ifndef CONFIG_FILE_COAP
+#define CONFIG_FILE_COAP FileSystem::COAP_CONFIG_FILE
+#endif
+
+#endif // CONFIG_DEFINES_H

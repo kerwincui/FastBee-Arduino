@@ -5,7 +5,7 @@
 #include <WiFiUdp.h>
 #include <functional>
 #include <map>
-#include <core/ConfigDefines.h>
+#include <core/SystemConstants.h>
 
 enum class CoAPType {
     CON = 0,  // Confirmable
@@ -37,11 +37,11 @@ public:
     ~CoAPHandler();
     
     // 从LittleFS加载配置
-    bool loadConfigFromLittleFS(const char* configPath = CONFIG_FILE_COAP);
+    bool loadConfigFromLittleFS(const char* configPath = FileSystem::COAP_CONFIG_FILE);
     
     // 初始化方法
     bool begin(const CoAPConfig& config);
-    bool beginFromConfig(const char* configPath = CONFIG_FILE_COAP);
+    bool beginFromConfig(const char* configPath = FileSystem::COAP_CONFIG_FILE);
     
     // 清理资源
     void end();

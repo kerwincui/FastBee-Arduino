@@ -9,8 +9,6 @@
 #include "systems/LoggerSystem.h"
 #include <esp_system.h>
 
-// 自定义标签用于调试
-static const char* TAG = "CRYPTO";
 
 CryptoUtils::CryptoUtils() : initialized(false) {
     // 初始化mbedTLS上下文
@@ -45,15 +43,14 @@ bool CryptoUtils::initialize(const CryptoConfig& customConfig) {
 bool CryptoUtils::initializeRNG() {
     const char* pers = "fastbee_crypto_rng";
     
-    int ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy, 
+    int ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
                                    (const unsigned char*)pers, strlen(pers));
     if (ret != 0) {
-        if (config.enableDebug) {
-            Serial.printf("Failed to initialize CTR_DRBG: -0x%04X\n", -ret);
-        }
+        char buf[64];
+        snprintf(buf, sizeof(buf), "CryptoUtils: CTR_DRBG init failed: -0x%04X", -ret);
+        LOG_ERROR(buf);
         return false;
     }
-    
     return true;
 }
 
@@ -77,13 +74,11 @@ CryptoResult CryptoUtils::hash(const String& data, HashAlgorithm algorithm) {
         case HashAlgorithm::MD5: {
             mbedtls_md5_context ctx;
             mbedtls_md5_init(&ctx);
-            
-            // ret = mbedtls_md5_starts(&ctx);
-            // if (ret == 0) ret = mbedtls_md5_update(&ctx, input, inputLength);
-            // if (ret == 0) ret = mbedtls_md5_finish(&ctx, output);
-            
-            // mbedtls_md5_free(&ctx);
-            // outputLength = 16;
+            ret = mbedtls_md5_starts_ret(&ctx);
+            if (ret == 0) ret = mbedtls_md5_update_ret(&ctx, input, inputLength);
+            if (ret == 0) ret = mbedtls_md5_finish_ret(&ctx, output);
+            mbedtls_md5_free(&ctx);
+            outputLength = 16;
             break;
         }
         
@@ -96,11 +91,9 @@ CryptoResult CryptoUtils::hash(const String& data, HashAlgorithm algorithm) {
         case HashAlgorithm::SHA256: {
             mbedtls_sha256_context ctx;
             mbedtls_sha256_init(&ctx);
-            
-            // ret = mbedtls_sha256_starts(&ctx, 0); // 0 = SHA256, 1 = SHA224
-            // if (ret == 0) ret = mbedtls_sha256_update(&ctx, input, inputLength);
-            // if (ret == 0) ret = mbedtls_sha256_finish(&ctx, output);
-            
+            ret = mbedtls_sha256_starts_ret(&ctx, 0); // 0 = SHA256
+            if (ret == 0) ret = mbedtls_sha256_update_ret(&ctx, input, inputLength);
+            if (ret == 0) ret = mbedtls_sha256_finish_ret(&ctx, output);
             mbedtls_sha256_free(&ctx);
             outputLength = 32;
             break;
@@ -511,26 +504,37 @@ CryptoResult CryptoUtils::generateRandomBytes(size_t length) {
 
 CryptoResult CryptoUtils::generateRandomString(size_t length, const String& charset) {
     CryptoResult result;
-    
-    auto randomBytes = generateRandomBytes(length);
-    if (!randomBytes.success) {
-        result.error = randomBytes.error;
+
+    if (!initialized && !initialize()) {
+        result.error = "Crypto utils not initialized";
         return result;
     }
-    
-    String randomString;
+
     size_t charsetSize = charset.length();
-    
-    // 将随机字节转换为字符集索引
-    for (size_t i = 0; i < length; i++) {
-        uint8_t randomByte = randomBytes.data[i * 2] * 16 + randomBytes.data[i * 2 + 1];
-        randomString += charset[randomByte % charsetSize];
+    if (charsetSize == 0) {
+        result.error = "Charset is empty";
+        return result;
     }
-    
+
+    // 直接生成随机字节，对字符集取模映射
+    uint8_t* rawBytes = new uint8_t[length];
+    int ret = mbedtls_ctr_drbg_random(&ctr_drbg, rawBytes, length);
+    if (ret != 0) {
+        result.error = "Random generation failed: " + String(ret);
+        delete[] rawBytes;
+        return result;
+    }
+
+    String randomString;
+    randomString.reserve(length);
+    for (size_t i = 0; i < length; i++) {
+        randomString += charset[rawBytes[i] % charsetSize];
+    }
+
+    delete[] rawBytes;
     result.success = true;
     result.data = randomString;
     result.outputLength = length;
-    
     return result;
 }
 

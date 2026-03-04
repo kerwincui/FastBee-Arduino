@@ -1,9 +1,9 @@
 {
-  "server": "mqtt.broker.com",
+  "server": "iot.fastbee.cn",
   "port": 1883,
-  "clientId": "ESP32-Office",
-  "username": "user",
-  "password": "pass",
-  "topicPrefix": "home/office",
+  "clientId": "",
+  "username": "15208747707",
+  "password": "fastbee",
+  "topicPrefix": "",
   "keepAlive": 60
 }

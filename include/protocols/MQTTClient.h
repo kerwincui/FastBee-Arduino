@@ -4,7 +4,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
-#include <core/ConfigDefines.h>
+#include <esp_random.h>
+#include <core/SystemConstants.h>
 
 // MQTT配置结构体
 struct MQTTConfig {
@@ -25,7 +26,7 @@ public:
     MQTTClient();
     ~MQTTClient();
 
-    bool loadMqttConfig(const String& filename = CONFIG_FILE_MQTT); 
+    bool loadMqttConfig(const String& filename = FileSystem::MQTT_CONFIG_FILE); 
     bool begin();
     bool connect();
     void disconnect();

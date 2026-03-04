@@ -58,29 +58,40 @@ namespace Network {
     constexpr const char* DEFAULT_AP_PASSWORD = "fastbee123";
     constexpr uint8_t DEFAULT_AP_CHANNEL = 1;
     constexpr uint8_t DEFAULT_AP_MAX_CONNECTIONS = 4;
-    constexpr bool DEFAULT_AP_HIDDEN = false;    
+    constexpr bool DEFAULT_AP_HIDDEN = false;
+
+    // mDNS / DNS 配置
+    constexpr const char* DEFAULT_MDNS_HOSTNAME = "fastbee";  // mDNS 主机名
+    constexpr const char* DEFAULT_CUSTOM_DOMAIN = "fastbee";  // 自定义域名
     
-    // MQTT配置
-    constexpr const char* DEFAULT_MQTT_SERVER = "mqtt.broker.com";
-    constexpr uint16_t DEFAULT_MQTT_PORT = 1883;
-    constexpr const char* DEFAULT_MQTT_USER = "";
-    constexpr const char* DEFAULT_MQTT_PASSWORD = "";
-    constexpr uint16_t MQTT_KEEPALIVE = 60; // 秒
-    constexpr uint16_t MQTT_SOCKET_TIMEOUT = 15; // 秒
-    constexpr uint16_t MQTT_BUFFER_SIZE = 1024;
+    // WiFi 连接配置
+    constexpr uint32_t WIFI_CONNECT_TIMEOUT = 30000;      // 30秒
+    constexpr uint32_t WIFI_RECONNECT_INTERVAL = 10000;   // 10秒
+    constexpr uint8_t MAX_WIFI_ATTEMPTS = 3;
     
-    // TCP服务器配置
+    // Web 服务器配置
+    constexpr uint16_t WEB_SERVER_PORT = 80;
+    constexpr uint16_t WEB_SOCKET_PORT = 81;
+    constexpr uint16_t WEB_UPLOAD_BUFFER_SIZE = 4096;
+    constexpr uint32_t WEB_SESSION_TIMEOUT = 3600000;  // 1小时（毫秒）
+
+    // MQTT默认配置（FastBee 官方服务器）
+    constexpr const char* DEFAULT_MQTT_SERVER   = "iot.fastbee.cn";
+    constexpr uint16_t    DEFAULT_MQTT_PORT     = 1883;
+    constexpr const char* DEFAULT_MQTT_USER     = "15208747707";
+    constexpr const char* DEFAULT_MQTT_PASSWORD = "fastbee";
+    constexpr uint16_t FB_MQTT_KEEPALIVE = 60;       // 秒（避免与 PubSubClient::MQTT_KEEPALIVE 宏冲突）
+    constexpr uint16_t FB_MQTT_SOCKET_TIMEOUT = 15;  // 秒
+
+    // TCP服务器默认配置
     constexpr uint16_t TCP_SERVER_PORT = 8080;
     constexpr uint16_t TCP_MAX_CLIENTS = 5;
-    constexpr uint16_t TCP_BUFFER_SIZE = 1024;
-    
-    // HTTP客户端配置
-    constexpr uint16_t HTTP_TIMEOUT = 10000; // 10秒
+
+    // HTTP客户端默认配置
     constexpr uint16_t HTTP_RETRY_COUNT = 3;
-    
-    // CoAP配置
+
+    // CoAP默认配置
     constexpr uint16_t COAP_PORT = 5683;
-    constexpr uint16_t COAP_BUFFER_SIZE = 512;
 }
 
 // ============================================================================
@@ -178,17 +189,7 @@ namespace TaskScheduler {
 // 日志系统配置常量
 // ============================================================================
 namespace Logging {
-    // 日志级别
-    enum LogLevel {
-        LOG_LEVEL_ERROR = 0,
-        LOG_LEVEL_WARNING = 1,
-        LOG_LEVEL_INFO = 2,
-        LOG_LEVEL_DEBUG = 3,
-        LOG_LEVEL_VERBOSE = 4
-    };
-    
-    // 默认日志级别
-    constexpr LogLevel DEFAULT_LOG_LEVEL = LOG_LEVEL_INFO;
+    // 日志级别枚举定义在 LoggerSystem.h 中（LogLevel），此处不重复定义
     
     // 日志模块名称
     constexpr const char* MODULE_SYSTEM = "SYSTEM";
@@ -236,25 +237,25 @@ namespace OTA {
 // 协议配置常量
 // ============================================================================
 namespace Protocols {
-    // Modbus配置
+    // Modbus默认配置
     constexpr uint32_t MODBUS_BAUDRATE = 9600;
     constexpr uint8_t MODBUS_DATA_BITS = 8;
     constexpr uint8_t MODBUS_STOP_BITS = 1;
-    constexpr uint8_t MODBUS_PARITY = 0; // 0=None, 1=Odd, 2=Even
-    
-    // 协议缓冲区大小
-    constexpr uint16_t MQTT_BUFFER_SIZE = 1024;
+    constexpr uint8_t MODBUS_PARITY = 0;  // 0=None, 1=Odd, 2=Even
+
+    // 协议缓冲区大小（各协议独立值，无重复）
+    constexpr uint16_t MQTT_BUFFER_SIZE   = 1024;
     constexpr uint16_t MODBUS_BUFFER_SIZE = 256;
-    constexpr uint16_t TCP_BUFFER_SIZE = 1024;
-    constexpr uint16_t HTTP_BUFFER_SIZE = 2048;
-    constexpr uint16_t COAP_BUFFER_SIZE = 512;
-    
-    // 协议超时
-    constexpr uint16_t MQTT_TIMEOUT = 15000;
+    constexpr uint16_t TCP_BUFFER_SIZE    = 1024;
+    constexpr uint16_t HTTP_BUFFER_SIZE   = 2048;
+    constexpr uint16_t COAP_BUFFER_SIZE   = 512;
+
+    // 协议超时（毫秒）
+    constexpr uint16_t MQTT_TIMEOUT   = 15000;
     constexpr uint16_t MODBUS_TIMEOUT = 1000;
-    constexpr uint16_t TCP_TIMEOUT = 30000;
-    constexpr uint16_t HTTP_TIMEOUT = 10000;
-    constexpr uint16_t COAP_TIMEOUT = 5000;
+    constexpr uint16_t TCP_TIMEOUT    = 30000;
+    constexpr uint16_t HTTP_TIMEOUT   = 10000;
+    constexpr uint16_t COAP_TIMEOUT   = 5000;
 }
 
 // ============================================================================
@@ -276,9 +277,9 @@ namespace Security {
     constexpr uint8_t MIN_PASSWORD_LENGTH = 6;
     constexpr uint8_t MAX_PASSWORD_LENGTH = 32;
     
-    // 默认用户凭据
+    // 默认用户凭据（与 UserManager::DEFAULT_ADMIN_PASS 保持一致）
     constexpr const char* DEFAULT_ADMIN_USERNAME = "admin";
-    constexpr const char* DEFAULT_ADMIN_PASSWORD = "admin";
+    constexpr const char* DEFAULT_ADMIN_PASSWORD = "admin123";
 }
 
 // ============================================================================
@@ -371,9 +372,9 @@ namespace ErrorCodes {
     constexpr int CONFIG_SAVE_FAILED = -101;
     constexpr int CONFIG_INVALID = -102;
     
-    // 网络错误
+    // 网络错误（FB_ 前缀避免与 PubSubClient 中的宏名冲突）
     constexpr int WIFI_CONNECT_FAILED = -200;
-    constexpr int MQTT_CONNECT_FAILED = -201;
+    constexpr int FB_MQTT_CONNECT_FAILED = -201;
     constexpr int HTTP_REQUEST_FAILED = -202;
     
     // 安全错误

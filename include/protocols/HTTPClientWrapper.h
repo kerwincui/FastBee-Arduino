@@ -4,7 +4,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <core/ConfigDefines.h>
+#include <core/SystemConstants.h>
 
 // HTTP配置结构体
 struct HTTPConfig {
@@ -20,7 +20,7 @@ public:
 
     bool begin(const HTTPConfig& config);
     // 从LittleFS加载配置
-    bool beginFromConfig(const char* configPath = CONFIG_FILE_HTTP);
+    bool beginFromConfig(const char* configPath = FileSystem::HTTP_CONFIG_FILE);
 
     void end();
     bool get(const String& endpoint, String& response);

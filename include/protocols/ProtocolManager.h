@@ -59,23 +59,16 @@ public:
     // 获取协议状态
     String getProtocolStatus(ProtocolType type);
     
-    // 处理循环（需要在loop中调用）
+    // 处理循环（需要在 loop 中调用）
     void handle();
 
     /**
      * @brief 完全关闭协议管理器，释放所有资源
-     * 
-     * 这个函数会：
-     * 1. 停止所有协议连接
-     * 2. 释放所有协议处理器资源
-     * 3. 清空协议配置列表
-     * 4. 重置消息回调
-     * 5. 重置初始化状态
      */
     void shutdown();
 
 private:
-    // unique_ptr智能指针，主要用于自动管理动态内存，避免内存泄漏并确保资源安全释放
+    // unique_ptr 智能指针，主要用于自动管理动态内存，避免内存泄漏并确保资源安全释放
     std::unique_ptr<MQTTClient> mqttClient;
     std::unique_ptr<ModbusHandler> modbusHandler;
     std::unique_ptr<TCPHandler> tcpHandler;

@@ -1,23 +1,13 @@
 /**
- *@description: 
+ *@description: 协议管理器实现
  *@author: kerwincui
  *@copyright:FastBee All rights reserved.
  *@date: 2025-12-02 17:31:25
  */
 
 #include "protocols/ProtocolManager.h"
+#include "systems/LoggerSystem.h"
 #include <memory>
-#include <systems/LoggerSystem.h>
-
-// 如果编译器不支持C++14的make_unique，我们自己实现一个
-#if __cplusplus < 201402L
-namespace std {
-    template<typename T, typename... Args>
-    std::unique_ptr<T> make_unique(Args&&... args) {
-        return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
-    }
-}
-#endif
 
 ProtocolManager::ProtocolManager() 
     : isInitialized(false) {
@@ -39,13 +29,16 @@ bool ProtocolManager::initialize() {
 
 bool ProtocolManager::addProtocol(ProtocolType type, const String& name, bool enabled) {
     ProtocolConfig config;
-    config.type = type;
-    config.name = name;
+    config.type    = type;
+    config.name    = name;
     config.enabled = enabled;
-    config.config = nullptr;
-    
+    config.config  = nullptr;
+
     protocols.push_back(config);
-    Serial.println("Protocol Manager: Added " + name + " protocol");
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Protocol Manager: Added [%s]", name.c_str());
+    LOG_INFO(buf);
     return true;
 }
 
@@ -75,83 +68,57 @@ bool ProtocolManager::setProtocolConfig(ProtocolType type, void* config) {
 }
 
 bool ProtocolManager::startAll() {
-    Serial.println("Protocol Manager: Starting all protocols...");
-    
+    LOG_INFO("Protocol Manager: Starting all protocols...");
+
     bool allStarted = true;
     for (const auto& protocol : protocols) {
-        if (protocol.enabled) {
-            bool started = false;
-            switch (protocol.type) {
-                case ProtocolType::MQTT:
-                    started = mqttClient && mqttClient->begin();
-                    break;
-                case ProtocolType::MODBUS:
-                    started = modbusHandler && modbusHandler->begin();
-                    break;
-                case ProtocolType::TCP:
-                    started = tcpHandler && tcpHandler->beginFromConfig();
-                    break;
-                case ProtocolType::HTTP:
-                    started = httpClientWrapper && httpClientWrapper->beginFromConfig();
-                    break;
-                case ProtocolType::COAP:
-                    started = coapHandler && coapHandler->beginFromConfig();
-                    break;
-            }
-            
-            if (!started) {
-                Serial.println("Protocol Manager: Failed to start " + protocol.name);
-                allStarted = false;
-            }
+        if (!protocol.enabled) continue;
+
+        bool started = false;
+        switch (protocol.type) {
+            case ProtocolType::MQTT:   started = mqttClient        && mqttClient->begin();             break;
+            case ProtocolType::MODBUS: started = modbusHandler     && modbusHandler->begin();          break;
+            case ProtocolType::TCP:    started = tcpHandler         && tcpHandler->beginFromConfig();   break;
+            case ProtocolType::HTTP:   started = httpClientWrapper  && httpClientWrapper->beginFromConfig(); break;
+            case ProtocolType::COAP:   started = coapHandler        && coapHandler->beginFromConfig();  break;
+        }
+
+        if (!started) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "Protocol Manager: Failed to start [%s]", protocol.name.c_str());
+            LOG_WARNING(buf);
+            allStarted = false;
         }
     }
-    
+
     return allStarted;
 }
 
 void ProtocolManager::stopAll() {
-    Serial.println("Protocol Manager: Stopping all protocols...");
-    
-    if (mqttClient) mqttClient->disconnect();
-    if (modbusHandler) modbusHandler->end();
-    if (tcpHandler) tcpHandler->disconnect();
+    LOG_INFO("Protocol Manager: Stopping all protocols...");
+    if (mqttClient)       mqttClient->disconnect();
+    if (modbusHandler)    modbusHandler->end();
+    if (tcpHandler)       tcpHandler->disconnect();
     if (httpClientWrapper) httpClientWrapper->end();
-    if (coapHandler) coapHandler->end();
+    if (coapHandler)      coapHandler->end();
 }
 
 void ProtocolManager::shutdown() {
-    Serial.println("Protocol Manager: Shutting down...");
-    
-    // 停止所有协议
+    LOG_INFO("Protocol Manager: Shutting down...");
+
     stopAll();
-    
-    // 释放所有协议处理器的资源
-    if (mqttClient) {
-        mqttClient.reset();
-    }
-    if (modbusHandler) {
-        modbusHandler.reset();
-    }
-    if (tcpHandler) {
-        tcpHandler.reset();
-    }
-    if (httpClientWrapper) {
-        httpClientWrapper.reset();
-    }
-    if (coapHandler) {
-        coapHandler.reset();
-    }
-    
-    // 清空协议配置列表
+
+    mqttClient.reset();
+    modbusHandler.reset();
+    tcpHandler.reset();
+    httpClientWrapper.reset();
+    coapHandler.reset();
+
     protocols.clear();
-    
-    // 重置消息回调
     messageCallback = nullptr;
-    
-    // 重置初始化状态
-    isInitialized = false;
-    
-    Serial.println("Protocol Manager: Shutdown complete");
+    isInitialized   = false;
+
+    LOG_INFO("Protocol Manager: Shutdown complete");
 }
 
 bool ProtocolManager::sendData(ProtocolType type, const String& topic, const String& data) {
@@ -212,7 +179,7 @@ bool ProtocolManager::initMQTT(void* config) {
     
     MQTTConfig* mqttConfig = static_cast<MQTTConfig*>(config);
     
-    // 使用自定义的make_unique实现
+    // 使用自定义的 make_unique 实现
     mqttClient = std::unique_ptr<MQTTClient>(new MQTTClient());
     
     // 设置回调

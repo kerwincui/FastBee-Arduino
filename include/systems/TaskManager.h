@@ -14,31 +14,43 @@
 #include <ArduinoJson.h>
 
 // 任务函数类型定义
-typedef std::function<void(void*)> TaskFunction;
+#include "core/interfaces/ITaskManager.h"
+
+// 任务优先级枚举
+enum class TaskPriority {
+    PRIORITY_LOW = 0,
+    PRIORITY_NORMAL = 1,
+    PRIORITY_HIGH = 2,
+    PRIORITY_CRITICAL = 3
+};
 
 // 任务统计结构
 struct TaskStatistics {
     String name;
+    TaskPriority priority;         // 任务优先级
     uint32_t executionCount;
-    unsigned long lastExecutionTime;
+    unsigned long lastExecutionTime; // 上次执行耗时
+    unsigned long maxExecutionTime; // 最大执行耗时
     unsigned long createdTime;
     unsigned long uptime;
 };
 
 // 任务结构定义
 struct ScheduledTask {
-    String name;                  // 任务名称
-    TaskFunction function;        // 任务函数
-    void* parameter;             // 任务参数
-    unsigned long interval;       // 执行间隔（毫秒）
-    unsigned long lastRun;        // 上次执行时间
-    bool enabled;                 // 是否启用
-    unsigned long createdTime;    // 创建时间
-    uint32_t executionCount;      // 执行次数统计
-    unsigned long lastExecutionTime; // 最后执行时间
+    char name[32];                 // 任务名称（固定长度，减少内存碎片）
+    TaskFunction function;         // 任务函数
+    void* parameter;               // 任务参数
+    unsigned long interval;        // 执行间隔（毫秒）
+    unsigned long lastRun;         // 上次执行时间
+    bool enabled;                  // 是否启用
+    TaskPriority priority;         // 任务优先级
+    unsigned long createdTime;     // 创建时间
+    unsigned long executionCount;  // 执行次数
+    unsigned long lastExecutionTime; // 上次执行耗时（毫秒）
+    unsigned long maxExecutionTime; // 最大执行耗时（毫秒）
 };
 
-class TaskManager {
+class TaskManager : public ITaskManager {
 public:
     TaskManager();
     ~TaskManager();
@@ -47,7 +59,10 @@ public:
     
     // 任务管理
     bool addTask(const String& name, TaskFunction func, void* param, 
-                unsigned long interval, bool enabled = true);
+                unsigned long interval, bool enabled = true) override;
+    bool addTask(const String& name, TaskFunction func, void* param, 
+                unsigned long interval, TaskPriority priority,
+                bool enabled = true);
     bool removeTask(const String& name);
     bool enableTask(const String& name);
     bool disableTask(const String& name);

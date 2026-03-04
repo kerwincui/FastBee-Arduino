@@ -6,6 +6,7 @@
  */
 
 #include "utils/FileUtils.h"
+#include "systems/LoggerSystem.h"
 #include <ArduinoJson.h>
 #include <vector>
 #include <map>
@@ -20,15 +21,18 @@ bool FileUtils::initialize(bool formatIfFailed) {
         return true;
     }
     
-    fsInitialized = LittleFS.begin(formatIfFailed);
-    if (!fsInitialized) {
-        Serial.println("[FileUtils] LittleFS 初始化失败!");
-        return false;
+    // LittleFS 由 ConfigStorage 统一挂载，此处检测挂载状态
+    if (LittleFS.totalBytes() > 0) {
+        fsInitialized = true;
+        return true;
     }
     
-    Serial.println("[FileUtils] LittleFS 初始化成功");
-    Serial.printf("总空间: %.2f MB\n", getTotalSpace() / 1024.0 / 1024.0);
-    Serial.printf("可用空间: %.2f MB\n", getFreeSpace() / 1024.0 / 1024.0);
+    // 若 ConfigStorage 尚未初始化（单独使用场景），则自行挂载
+    fsInitialized = LittleFS.begin(formatIfFailed);
+    if (!fsInitialized) {
+        LOG_ERROR("[FileUtils] LittleFS mount failed");
+        return false;
+    }
     
     return fsInitialized;
 }
@@ -680,118 +684,101 @@ String FileUtils::ensureAbsolutePath(const String& path, const String& baseDir) 
 }
 
 // ==================== 文件系统信息输出 ====================
-void FileUtils::listAllFiles(const String& path , int depth) {
-        if (!fsInitialized) {
-            Serial.println("[FileUtils] 文件系统未初始化");
-            return;
-        }
-        
-        String absPath = normalizePath(path);
-        
-        File dir = LittleFS.open(absPath);
-        if (!dir || !dir.isDirectory()) {
-            Serial.printf("[FileUtils] 无法打开目录: %s\n", absPath.c_str());
-            return;
-        }
-        
-        File file = dir.openNextFile();
-        while (file) {
-            // 缩进
-            for (int i = 0; i < depth; i++) {
-                Serial.print("  ");
-            }
-            
-            String filePath = file.name();
-            String displayName = getFileName(filePath);
-            
-            if (file.isDirectory()) {
-                Serial.print("📁 ");
-                Serial.print(displayName);
-                Serial.println("/");
-                
-                // 确保子目录路径是绝对路径
-                String childPath = ensureAbsolutePath(filePath, absPath);
-                FileUtils::listAllFiles(childPath, depth + 1);
-            } else {
-                Serial.print("  📄 ");
-                Serial.print(displayName);
-                Serial.print(" (");
-                Serial.print(file.size());
-                Serial.println(" 字节)");
-            }
-            
-            file = dir.openNextFile();
-        }
-        
-        dir.close();
+void FileUtils::listAllFiles(const String& path, int depth) {
+    if (!fsInitialized) {
+        LOG_ERROR("[FileUtils] File system not initialized");
+        return;
     }
+
+    String absPath = normalizePath(path);
+    File dir = LittleFS.open(absPath);
+    if (!dir || !dir.isDirectory()) {
+        char buf[80];
+        snprintf(buf, sizeof(buf), "[FileUtils] Cannot open directory: %s", absPath.c_str());
+        LOG_ERROR(buf);
+        return;
+    }
+
+    File file = dir.openNextFile();
+    while (file) {
+        String filePath    = file.name();
+        String displayName = getFileName(filePath);
+        char buf[96];
+
+        if (file.isDirectory()) {
+            snprintf(buf, sizeof(buf), "%*s[DIR] %s/", depth * 2, "", displayName.c_str());
+            LOG_INFO(buf);
+            String childPath = ensureAbsolutePath(filePath, absPath);
+            FileUtils::listAllFiles(childPath, depth + 1);
+        } else {
+            snprintf(buf, sizeof(buf), "%*s%s (%u bytes)", depth * 2, "",
+                     displayName.c_str(), (unsigned)file.size());
+            LOG_INFO(buf);
+        }
+        file = dir.openNextFile();
+    }
+    dir.close();
+}
 
 String FileUtils::getFileSystemInfoJSON() {
     if (!fsInitialized) {
         return "{\"error\": \"File system not initialized\"}";
     }
-    
-    DynamicJsonDocument doc(3072); // 更大的文档
-    
-    // 基本文件系统信息
-    doc["fs"]["total"] = getTotalSpace();
-    doc["fs"]["used"] = getTotalSpace() - getFreeSpace();
-    doc["fs"]["free"] = getFreeSpace();
+
+    JsonDocument doc;
+
+    // 文件系统空间信息
+    size_t total = getTotalSpace();
+    size_t used  = total - getFreeSpace();
+    doc["fs"]["total"]        = total;
+    doc["fs"]["used"]         = used;
+    doc["fs"]["free"]         = getFreeSpace();
     doc["fs"]["percent_used"] = getSpaceUsage() * 100;
-    
+
     // 关键目录大小
-    JsonObject sizes = doc.createNestedObject("folder_sizes");
-    
+    JsonObject sizes = doc["folder_sizes"].to<JsonObject>();
     const char* commonDirs[] = {"/www", "/config", "/logs", "/backup", "/tmp"};
     for (const char* dir : commonDirs) {
         if (exists(dir)) {
             sizes[String(dir).substring(1)] = calculateFolderSize(dir);
         }
     }
-    
+
     // 文件统计
-    JsonObject stats = doc.createNestedObject("statistics");
     std::vector<FileInfo> allFiles = listDirectory("/", true);
-    
-    int fileCount = 0;
-    int dirCount = 0;
+    int fileCount = 0, dirCount = 0;
     size_t totalSize = 0;
-    
-    for (const auto& file : allFiles) {
-        if (file.isDirectory) {
-            dirCount++;
-        } else {
-            fileCount++;
-            totalSize += file.size;
-        }
+    for (const auto& f : allFiles) {
+        if (f.isDirectory) { dirCount++; }
+        else { fileCount++; totalSize += f.size; }
     }
-    
-    stats["files"] = fileCount;
+    JsonObject stats     = doc["statistics"].to<JsonObject>();
+    stats["files"]       = fileCount;
     stats["directories"] = dirCount;
-    stats["total_size"] = totalSize;
+    stats["total_size"]  = totalSize;
     stats["avg_file_size"] = fileCount > 0 ? totalSize / fileCount : 0;
-    
+
     // 文件系统健康状态
-    JsonObject health = doc.createNestedObject("health");
-    health["initialized"] = fsInitialized;
-    health["space_warning"] = getSpaceUsage() > 0.8;
-    health["space_critical"] = getSpaceUsage() > 0.9;
-    health["has_www"] = exists("/www");
-    health["has_config"] = exists("/config");
-    
-    // 最近修改的文件（示例）
-    JsonArray recentFiles = doc.createNestedArray("recent_files");
+    JsonObject health       = doc["health"].to<JsonObject>();
+    health["initialized"]   = fsInitialized;
+    health["space_warning"] = getSpaceUsage() > 0.8f;
+    health["space_critical"]= getSpaceUsage() > 0.9f;
+    health["has_www"]       = exists("/www");
+    health["has_config"]    = exists("/config");
+
+    // 最多列出 10 个文件
+    JsonArray recentFiles = doc["recent_files"].to<JsonArray>();
     int count = 0;
-    for (const auto& file : allFiles) {
-        if (!file.isDirectory && count < 10) { // 最多10个文件
-            JsonObject fileInfo = recentFiles.createNestedObject();
-            fileInfo["name"] = file.name;
-            fileInfo["size"] = file.size;
-            fileInfo["path"] = file.path;
+    for (const auto& f : allFiles) {
+        if (!f.isDirectory && count < 10) {
+            JsonObject fi = recentFiles.add<JsonObject>();
+            fi["name"] = f.name;
+            fi["size"] = f.size;
+            fi["path"] = f.path;
             count++;
         }
     }
-    
+
     String jsonString;
     serializeJson(doc, jsonString);
     return jsonString;
@@ -800,46 +787,31 @@ String FileUtils::getFileSystemInfoJSON() {
 // ==================== 暂未实现的方法（占位符） ====================
 
 String FileUtils::calculateFileHash(const String& path) {
-    // 需要实现具体的哈希算法
     return "";
 }
 
 bool FileUtils::verifyFileIntegrity(const String& path, const String& expectedHash) {
-    String actualHash = calculateFileHash(path);
-    return actualHash == expectedHash;
+    return calculateFileHash(path) == expectedHash;
 }
 
 String FileUtils::createTempFile(const String& prefix, const String& content) {
-    // 生成唯一的临时文件名
     static int counter = 0;
     String tempPath = "/tmp/" + prefix + "_" + String(millis()) + "_" + String(counter++);
-    
     if (!content.isEmpty()) {
         writeFile(tempPath, content);
     }
-    
     return tempPath;
 }
 
 int FileUtils::cleanupTempFiles(const String& tempDir, time_t olderThan) {
-    // 实现临时文件清理逻辑
     return 0;
 }
 
 String FileUtils::backupFile(const String& sourcePath, const String& backupDir) {
-    // 创建备份文件
-    if (!exists(sourcePath)) {
-        return "";
-    }
-    
+    if (!exists(sourcePath)) return "";
     String backupName = getFileName(sourcePath) + "." + String(millis()) + ".bak";
     String backupPath = joinPath(backupDir, backupName);
-    
-    if (copyFile(sourcePath, backupPath)) {
-        return backupPath;
-    }
-    
-    return "";
+    return copyFile(sourcePath, backupPath) ? backupPath : "";
 }
 
 bool FileUtils::restoreBackup(const String& backupPath, const String& restorePath) {
@@ -847,6 +819,5 @@ bool FileUtils::restoreBackup(const String& backupPath, const String& restorePat
 }
 
 int FileUtils::cleanupOldBackups(const String& backupDir, int keepCount) {
-    // 实现备份清理逻辑
     return 0;
 }

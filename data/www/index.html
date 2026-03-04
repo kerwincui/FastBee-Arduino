@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -70,6 +70,9 @@
                     </a>
                     <a href="#" class="menu-item" data-page="users">
                         <span class="menu-icon">👥</span> <span id="menu-users">用户管理</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="roles">
+                        <span class="menu-icon">🛡️</span> <span id="menu-roles">角色管理</span>
                     </a>
                     <a href="#" class="menu-item" data-page="logs">
                         <span class="menu-icon">📋</span> <span id="menu-logs">设备日志</span>
@@ -811,8 +814,7 @@
         📄 main.css (12843 字节)
         📄 index.html (64040 字节)
     📁 js/
-        📄 axios.min.js.gz (19319 字节)
-        📄 axios.min88888.js (55258 字节)
+        📄 fetch-api.js (~4 KB，替代原 axios.min.js 54KB)
         📄 main.js (25187 字节)
                                     </pre>
                                 </div>
@@ -860,104 +862,63 @@
                         </div>
                     </div>
 
-                    <div id="logs-page" class="page">
+                    <!-- 角色管理页面 -->
+                    <div id="roles-page" class="page">
                         <div class="card">
-                            <div class="card-header">
-                                <h2 class="card-title">设备日志</h2>
+                            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                                <h2 class="card-title" id="roles-title">角色管理</h2>
+                                <button class="pure-button pure-button-primary" id="add-role-btn">
+                                    新增角色
+                                </button>
                             </div>
                             <div class="card-body">
-                                <div class="log-container" id="logContainer">
-<pre>
-Initializing FastBee IoT Platform...
-Config storage system initialized
-[FileUtils] LittleFS 初始化成功
-总空间: 1.38 MB
-可用空间: 1.05 MB
-📁 config/
-    📄 coap.json (267 字节)
-    📄 http.json (246 字节)
-    📄 modbus.json (146 字节)
-    📄 mqtt.json (182 字节)
-    📄 system.json (298 字节)
-    📄 tcp.json (94 字节)
-    📄 users.json (537 字节)
-📁 logs/
-    📄 system.log (2509 字节)
-📁 ota/
-    📄 firmware.bin (0 字节)
-📁 www/
-    📄 404.html (910 字节)
-  📁 assets/
-      📄 favicon.ico (1475 字节)
-      📄 logo.png (1940 字节)
-  📁 css/
-      📄 main.css (14656 字节)
-      📄 pure-min.css (15648 字节)
-    📄 index.html (66331 字节)
-  📁 js/
-      📄 main.js (3330 字节)
-    📁 modules/
-        📄 axios.min.js (55258 字节)
-        📄 config.js (2875 字节)
-        📄 i18n.js (9659 字节)
-        📄 notification.js (5834 字节)
-        📄 utils.js (2070 字节)
-      📄 state.js (27204 字节)
-[1769] [INFO] [Logger] Logger system initialized
-[1839] [INFO] [Logger] Log level set to: DEBUG
-[1883] [INFO] [src/core/FastBeeFramework.cpp] Logger system initialized
-[1929] [INFO] [src/core/FastBeeFramework.cpp] HTTP server created
-[1987] [INFO] [src/network/NetworkManager.cpp] NetworkManager: Configuration loaded successfully
-[2135] [INFO] [src/network/NetworkManager.cpp] NetworkManager: DHCP configured
-[2190] [INFO] [src/network/NetworkManager.cpp] NetworkManager: Attempting to connect to CMCC-7mnN
-[2245] [INFO] [src/network/NetworkManager.cpp] NetworkManager: Initialized successfully
-[2303] [INFO] [src/core/FastBeeFramework.cpp] Network manager initialized
-[2344] [INFO] [src/network/NetworkManager.cpp] NetworkManager: WiFi STA connected
-[UserManager] Loaded 1 users from storage
-[UserManager] Initialized with 1 users
-[2401] [INFO] [src/core/FastBeeFramework.cpp] User manager initialized
-[  2493][E][Preferences.cpp:483] getString(): nvs_get_str len fail: cookie_name NOT_FOUND
-[  2501][E][Preferences.cpp:483] getString(): nvs_get_str len fail: ip_whitelist NOT_FOUND
-[  2510][E][Preferences.cpp:483] getString(): nvs_get_str len fail: sessions NOT_FOUND
-[AuthManager] Initialized with 13 permissions, 0 active sessions
-[2519] [INFO] [src/core/FastBeeFramework.cpp] Auth manager initialized
-[2571] [INFO] [src/network/NetworkManager.cpp] NetworkManager: Got IP: 192.168.1.3
-[WebConfig] Web server started
-[WebConfig] Routes configured
-[2647] [INFO] [src/core/FastBeeFramework.cpp] Web config manager initialized
-[2706] [INFO] [src/network/NetworkManager.cpp] NetworkManager: Added HTTP service to mDNS
-[2727] [INFO] [src/network/OTAManager.cpp] OTAManager: Initialized successfully
-[2767] [INFO] [src/network/NetworkManager.cpp] NetworkManager: mDNS started: fastbee.local
-[2870] [INFO] [src/core/FastBeeFramework.cpp] OTA manager initialized
-[2923] [INFO] [src/systems/TaskManager.cpp] Task Manager: Initializing...
-[2981] [INFO] [src/systems/TaskManager.cpp] Task Manager: Initialization completed
-[3039] [INFO] [src/systems/TaskManager.cpp] Task Manager: Capacity for 20 tasks
-[3104] [INFO] [src/core/FastBeeFramework.cpp] Task manager initialized
-[3146] [INFO] [src/core/FastBeeFramework.cpp] Health monitor initialized
-[3181] [INFO] [src/protocols/ProtocolManager.cpp] Protocol Manager: Initializing...
-[3217] [INFO] [src/core/FastBeeFramework.cpp] Protocol manager initialized
-[3255] [INFO] [src/systems/TaskManager.cpp] Task Manager: Added task 'health_check' with interval 30000ms
-[3293] [INFO] [src/systems/TaskManager.cpp] Task Manager: Added task 'web_client_handler' with interval 100ms
-[3335] [INFO] [src/systems/TaskManager.cpp] Task Manager: Added task 'network_update' with interval 5000ms
-[3405] [INFO] [src/systems/TaskManager.cpp] Task Manager: Added task 'memory_monitor' with interval 60000ms
-[3427] [INFO] [src/core/FastBeeFramework.cpp] System tasks added
-[3452] [INFO] [src/core/FastBeeFramework.cpp] FastBee IoT Platform initialized successfully
-[3479] [INFO] [src/core/FastBeeFramework.cpp] Device ready for operation
-</pre>
-                                </div>
-                                
-                                <div style="margin-top:40px;text-align:right;">
-                                    <button class="pure-button pure-button-primary">
-                                        🗑️ 清空日志
-                                    </button>
-                                    <button class="pure-button pure-button-primary">
-                                        📝 添加日志
-                                    </button>
+                                <p style="color: #666; margin-bottom: 20px;">超级管理员(admin)角色不可编辑或删除，其他角色可进行管理操作。</p>
+                                <div style="overflow-x: auto;">
+                                    <table class="pure-table pure-table-bordered" style="width: 100%;">
+                                        <thead>
+                                            <tr>
+                                                <th>角色ID</th>
+                                                <th>角色名称</th>
+                                                <th>描述</th>
+                                                <th>权限数</th>
+                                                <th>类型</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="roles-table-body">
+                                            <!-- 角色数据将通过JS动态生成 -->
+                                        </tbody>
+                                    </table>
                                 </div>
                             </div>
                         </div>
                     </div>
 
+                    <div id="logs-page" class="page">
+                        <div class="card">
+                            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                                <h2 class="card-title" style="margin: 0;">设备日志</h2>
+                                <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                                    <span id="log-info" style="font-size: 12px; color: #666;"></span>
+                                    <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
+                                        <input type="checkbox" id="log-auto-refresh" checked>
+                                        自动刷新
+                                    </label>
+                                    <button class="pure-button pure-button-small" id="refresh-logs-btn">
+                                        <i class="fas fa-sync-alt"></i> 刷新日志
+                                    </button>
+                                    <button class="pure-button pure-button-small pure-button-error" id="clear-logs-btn">
+                                        <i class="fas fa-trash"></i> 清空日志
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div id="device-log-container" style="height: 500px; overflow-y: auto; background: #1e1e1e; color: #d4d4d4; padding: 10px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 12px; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word;">
+                                    <div style="color: #666; text-align: center; padding: 20px;">正在加载日志...</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                     <div id="gpio-page" class="page">
                         <div class="card">
                             <div class="card-header">
@@ -1060,12 +1021,58 @@ Config storage system initialized
             </div>
         </div>
     </div>
-    <!---便于开发，顺序引入js文件，可压缩成一个文件-->
-    <script src="./js/modules/axios.min.js"></script>
+    
+    <!-- 角色管理模态窗 -->
+    <div id="role-modal" class="modal">
+        <div class="modal-content" style="max-width: 700px;">
+            <div class="modal-header">
+                <h2 style="margin: 0; font-size: 18px;" id="role-modal-title">新增角色</h2>
+                <button id="close-role-modal" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer;">×</button>
+            </div>
+            <div class="modal-body">
+                <form id="role-form" class="pure-form pure-form-stacked">
+                    <fieldset>
+                        <div class="pure-control-group">
+                            <label for="role-id-input">角色ID</label>
+                            <input type="text" id="role-id-input" class="pure-input-1" placeholder="请输入角色ID（英文）" required>
+                            <small style="color: #999;">角色ID为唯一标识，创建后不可修改</small>
+                        </div>
+                        
+                        <div class="pure-control-group">
+                            <label for="role-name-input">角色名称</label>
+                            <input type="text" id="role-name-input" class="pure-input-1" placeholder="请输入角色名称" required>
+                        </div>
+                        
+                        <div class="pure-control-group">
+                            <label for="role-desc-input">角色描述</label>
+                            <input type="text" id="role-desc-input" class="pure-input-1" placeholder="请输入角色描述">
+                        </div>
+                        
+                        <div class="pure-control-group">
+                            <label>权限配置</label>
+                            <div id="role-permissions-container" style="max-height: 300px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 10px;">
+                                <!-- 权限列表将通过JS动态生成 -->
+                            </div>
+                        </div>
+                        
+                        <div id="role-error" class="message message-error" style="display: none;"></div>
+                    </fieldset>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="pure-button" id="cancel-role-btn">取消</button>
+                <button class="pure-button pure-button-primary" id="confirm-role-btn">保存</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 便于开发，顺序引入 JS 文件；fetch-api.js 替代原 axios.min.js（节省 ~54KB） -->
+    <script src="./js/modules/fetch-api.js"></script>
     <script src="./js/modules/notification.js"></script>
     <script src="./js/modules/config.js"></script>
     <script src="./js/modules/i18n.js"></script>
     <script src="./js/modules/utils.js"></script>
+    <script src="./js/modules/api-tester.js"></script>
     <script src="./js/state.js"></script>
     <script src="./js/main.js"></script>
 </body>

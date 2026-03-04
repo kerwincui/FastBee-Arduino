@@ -1,4 +1,4 @@
-#ifndef WEB_CONFIG_MANAGER_H
+﻿#ifndef WEB_CONFIG_MANAGER_H
 #define WEB_CONFIG_MANAGER_H
 
 #include <Arduino.h>
@@ -7,9 +7,14 @@
 #include <Preferences.h>
 #include <LittleFS.h>
 
+// 接口包含
+#include "core/interfaces/IAuthManager.h"
+#include "core/interfaces/IUserManager.h"
+
 // 前向声明
 class AuthManager;
 class UserManager;
+class RoleManager;
 class NetworkManager;
 class OTAManager;
 class ProtocolManager;
@@ -37,7 +42,7 @@ public:
      * @param userMgr 用户管理器指针
      */
     WebConfigManager(AsyncWebServer* webServer, 
-                    AuthManager* authMgr, UserManager* userMgr);
+                    IAuthManager* authMgr, IUserManager* userMgr);
     
     /**
      * @brief 析构函数
@@ -75,6 +80,12 @@ public:
     bool isServerRunning() const;
     
     /**
+     * @brief 设置角色管理器
+     * @param roleMgr 角色管理器指针
+     */
+    void setRoleManager(RoleManager* roleMgr);
+
+    /**
      * @brief 设置网络管理器
      * @param netMgr 网络管理器指针
      */
@@ -104,16 +115,17 @@ public:
     void performMaintenance();
 
 private:
-    AsyncWebServer* server;          ///< 异步Web服务器
-    AuthManager* authManager;        ///< 认证管理器
-    UserManager* userManager;        ///< 用户管理器
-    NetworkManager* networkManager;  ///< 网络管理器
-    OTAManager* otaManager;          ///< OTA管理器
+    AsyncWebServer* server;           ///< 异步Web服务器
+    IAuthManager*   authManager;      ///< 认证管理器
+    IUserManager*   userManager;      ///< 用户管理器
+    RoleManager*    roleManager;      ///< 角色管理器
+    NetworkManager* networkManager;   ///< 网络管理器
+    OTAManager*     otaManager;       ///< OTA管理器
     ProtocolManager* protocolManager; ///< 协议管理器
-    
-    Preferences preferences;         ///< 偏好设置
-    bool isRunning;                  ///< 服务器运行状态
-    String webRootPath;              ///< Web根目录路径
+
+    Preferences preferences;          ///< 偏好设置
+    bool isRunning;                   ///< 服务器运行状态
+    String webRootPath;               ///< Web根目录路径
     
     // ============ 配置加载 ============
     void loadConfiguration();
@@ -122,6 +134,7 @@ private:
     void setupStaticRoutes();
     void setupAuthRoutes();
     void setupUserRoutes();
+    void setupRoleRoutes();     ///< 角色管理 API 路由
     void setupSystemRoutes();
     void setupAPIRoutes();
     
@@ -148,7 +161,10 @@ private:
     void sendError(AsyncWebServerRequest* request, int code, const String& message);
     void sendUnauthorized(AsyncWebServerRequest* request);
     void sendForbidden(AsyncWebServerRequest* request);
-    void sendNotFound(AsyncWebServerRequest* request);
+        void sendNotFound(AsyncWebServerRequest* request);
+    void sendBuiltinLoginPage(AsyncWebServerRequest* request);
+    void sendBuiltinDashboard(AsyncWebServerRequest* request);
+    void sendBuiltinUsersPage(AsyncWebServerRequest* request);
     void sendBadRequest(AsyncWebServerRequest* request, const String& message);
     
     // ============ 文件服务方法 ============
@@ -163,7 +179,13 @@ private:
     void handleDashboard(AsyncWebServerRequest* request);
     void handleUsersPage(AsyncWebServerRequest* request);
     void handleSettingsPage(AsyncWebServerRequest* request);
-    void handleMonitorPage(AsyncWebServerRequest* request);
+        void handleMonitorPage(AsyncWebServerRequest* request);
+    void handleSetupPage(AsyncWebServerRequest* request);
+    
+    // ============ WiFi配置API ============
+    void handleAPIWiFiScan(AsyncWebServerRequest* request);
+    void handleAPIWiFiConnect(AsyncWebServerRequest* request);
+    void sendBuiltinSetupPage(AsyncWebServerRequest* request);
     
     // ============ 认证API处理器 ============
     void handleAPILogin(AsyncWebServerRequest* request);
@@ -175,16 +197,42 @@ private:
     void handleAPIGetUsers(AsyncWebServerRequest* request);
     void handleAPIGetUser(AsyncWebServerRequest* request);
     void handleAPIAddUser(AsyncWebServerRequest* request);
-    void handleAPIUpdateUser(AsyncWebServerRequest* request);
+        void handleAPIUpdateUser(AsyncWebServerRequest* request);
+    void handleAPIUpdateUserByPost(AsyncWebServerRequest* request);
     void handleAPIDeleteUser(AsyncWebServerRequest* request);
+    void handleAPIDeleteUserByPost(AsyncWebServerRequest* request);
     void handleAPIGetOnlineUsers(AsyncWebServerRequest* request);
+    void handleAPIAssignUserRole(AsyncWebServerRequest* request);   ///< 为用户赋予角色
+    void handleAPIRevokeUserRole(AsyncWebServerRequest* request);   ///< 撤销用户角色
+    void handleAPIUpdateUserMeta(AsyncWebServerRequest* request);   ///< 更新用户元数据
+
+    // ============ 角色管理API处理器 ============
+    void handleAPIGetRoles(AsyncWebServerRequest* request);
+    void handleAPIGetRole(AsyncWebServerRequest* request);
+    void handleAPICreateRole(AsyncWebServerRequest* request);
+    void handleAPIUpdateRole(AsyncWebServerRequest* request);
+    void handleAPIDeleteRole(AsyncWebServerRequest* request);
+    void handleAPIGetRolePermissions(AsyncWebServerRequest* request);
+    void handleAPISetRolePermissions(AsyncWebServerRequest* request);
+    void handleAPIUpdateRoleByPost(AsyncWebServerRequest* request);      ///< 更新角色(POST)
+    void handleAPIDeleteRoleByPost(AsyncWebServerRequest* request);      ///< 删除角色(POST)
+    void handleAPISetRolePermissionsByPost(AsyncWebServerRequest* request); ///< 设置角色权限(POST)
+    void handleAPIGetPermissions(AsyncWebServerRequest* request);   ///< 获取所有权限定义
+
+    // ============ 审计日志API处理器 ============
+    void handleAPIGetAuditLog(AsyncWebServerRequest* request);
+    void handleAPIClearAuditLog(AsyncWebServerRequest* request);
     
     // ============ 系统API处理器 ============
     void handleAPISystemInfo(AsyncWebServerRequest* request);
     void handleAPISystemStatus(AsyncWebServerRequest* request);
     void handleAPISystemRestart(AsyncWebServerRequest* request);
     void handleAPIFileSystemInfo(AsyncWebServerRequest* request);
-    void handleAPIHealthCheck(AsyncWebServerRequest* request);
+    void handleAPIHealthCheck(AsyncWebServerRequest* request);    
+    // ============ 日志管理 API 处理器 ============
+    void handleAPIGetLogs(AsyncWebServerRequest* request);       ///< 获取日志内容
+    void handleAPIGetLogInfo(AsyncWebServerRequest* request);    ///< 获取日志信息
+    void handleAPIClearLogs(AsyncWebServerRequest* request);     ///< 清空日志
     
     // ============ 配置API处理器 ============
     void handleAPIGetConfig(AsyncWebServerRequest* request);

@@ -1,68 +1,18 @@
-// HTTP请求配置和拦截器
-// axios全局配置
-axios.defaults.baseURL = 'http://fastbee.local';
-axios.defaults.timeout = 3000; // 3秒超时
-axios.defaults.withCredentials = true;
-axios.defaults.headers.common['Content-Type'] = `application/x-www-form-urlencoded`;
+/**
+ * config.js — HTTP 请求配置入口
+ *
+ * axios 已替换为原生 fetch 封装（fetch-api.js），节省约 54KB LittleFS 空间。
+ * 全局 apiGet / apiPost / apiPut / apiDelete 由 fetch-api.js 提供，接口不变。
+ *
+ * baseURL 自适应：
+ *   - localhost / 127.0.0.1 → http://fastbee.local（开发调试）
+ *   - 其他来源 → 当前页面 origin（生产设备访问）
+ *
+ * 超时：8 秒（ESP32 响应较慢时留足余量）
+ * Content-Type：application/x-www-form-urlencoded（POST/PUT）
+ * 认证：自动注入 Authorization: Bearer <auth_token>
+ * 错误处理：统一 Notification 提示（见 fetch-api.js）
+ */
 
-// 配置请求拦截器
-axios.interceptors.request.use(
-    function (config) {
-        // 发送请求前可修改配置，如添加统一请求头
-        console.log('请求即将发送:', config.url);
-        // config.headers['X-Requested-With'] = 'XMLHttpRequest';
-        
-        // 添加认证令牌
-        const sessionId  = localStorage.getItem('auth_token');
-        if (sessionId ) config.headers.Authorization = `Bearer ${sessionId }`;
-        // config.headers.Cookie = "fastbee_session=authenticated";
-        
-        return config; // 必须返回配置对象
-    },
-    function (error) {
-        // 处理请求错误（如配置无效）
-        return Promise.reject(error);
-    }
-);
-
-// 配置响应拦截器
-axios.interceptors.response.use(
-    function (response) {
-        // 对2xx范围内的响应状态码进行处理
-        console.log('收到响应:', response.status);
-        // 可以统一处理响应数据格式，例如直接返回data部分
-        return response.data;
-    },
-    function (error) {
-        // 处理2xx范围外的响应错误
-        if (error.response) {
-            // 服务器有响应但状态码错误
-            console.error('请求失败，状态码:', error.response.status);
-             switch (error.response.status) {
-                case 401:
-                    // 会话过期
-                    localStorage.removeItem('sessionId');
-                    localStorage.removeItem('password');
-                    break;
-                case 403:
-                    Notification.warn(`权限不足`, '消息提示');
-                    break;
-                case 404:
-                    Notification.warn(`资源不存在`, '消息提示');
-                    break;
-                case 500:
-                    Notification.warn(`服务器内部错误`, '消息提示');
-                    break;
-                default:
-                    Notification.warn(error.response.data?.error || '请求失败', '消息提示');
-            }
-        } else if (error.request) {
-            // 请求已发出但无响应（网络问题）
-            Notification.error(`网络错误，无服务器响应`, '消息提示');
-        } else {
-            // 请求配置出错
-            Notification.error('请求配置错误:' + error.message, '消息提示');
-        }
-        return Promise.reject(error); // 将错误继续抛出，以便在具体请求的catch中处理
-    }
-);
+// 此文件无需额外代码，fetch-api.js 已在 index.html 中于本文件之前加载。
+// 如需扩展全局请求配置，在此处添加即可。

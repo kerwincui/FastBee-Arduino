@@ -27,7 +27,7 @@ public:
      */
     static String fullNetworkInfoToJson(const WiFiConfig& config, 
                                         const NetworkStatusInfo& status,
-                                        DynamicJsonDocument& doc);
+                                        JsonDocument& doc);
     
     /**
      * @brief 打印WiFiConfig的详细信息（用于调试）

@@ -2,6 +2,7 @@
 #include "utils/JsonSerializationHelper.h"
 #include <ArduinoJson.h>
 #include "network/NetworkManager.h"
+#include "systems/LoggerSystem.h"
 #include <WiFi.h>
 #include "utils/JsonConverters.h"
 
@@ -28,14 +29,6 @@ bool JsonSerializationHelper::wifiConfigToJson(const WiFiConfig& config, JsonObj
         // 高级配置
         jsonObj["enableMDNS"] = config.enableMDNS;
         jsonObj["customDomain"] = config.customDomain;
-        jsonObj["enableOTA"] = config.enableOTA;
-        jsonObj["enableWebServer"] = config.enableWebServer;
-        
-        // 容错配置 - 根据错误信息调整：
-        // conflictDetection 是 IPConflictMode 类型
-        // conflictMode 是 bool 类型
-        jsonObj["conflictDetection"] = static_cast<uint8_t>(config.conflictDetection); // IPConflictMode枚举
-        jsonObj["conflictMode"] = config.conflictMode; // bool类型
         
         // 备用IP列表
         JsonArray backupIPs = jsonObj.createNestedArray("backupIPs");
@@ -45,7 +38,7 @@ bool JsonSerializationHelper::wifiConfigToJson(const WiFiConfig& config, JsonObj
         
         return true;
     } catch (const std::exception& e) {
-        Serial.printf("[JsonSerializationHelper] wifiConfigToJson异常: %s\n", e.what());
+        LOG_ERROR("[JsonHelper] wifiConfigToJson exception");
         return false;
     }
 }
@@ -75,16 +68,7 @@ bool JsonSerializationHelper::wifiConfigFromJson(JsonObject& jsonObj, WiFiConfig
         // 高级配置
         if (jsonObj.containsKey("enableMDNS")) config.enableMDNS = jsonObj["enableMDNS"].as<bool>();
         if (jsonObj.containsKey("customDomain")) config.customDomain = jsonObj["customDomain"].as<String>();
-        if (jsonObj.containsKey("enableOTA")) config.enableOTA = jsonObj["enableOTA"].as<bool>();
-        if (jsonObj.containsKey("enableWebServer")) config.enableWebServer = jsonObj["enableWebServer"].as<bool>();
-        
-        // 容错配置 - 根据错误信息调整：
-        if (jsonObj.containsKey("conflictDetection")) {
-            config.conflictDetection = static_cast<IPConflictMode>(jsonObj["conflictDetection"].as<uint8_t>()); // IPConflictMode枚举
-        }
-        if (jsonObj.containsKey("conflictMode")) {
-            config.conflictMode = jsonObj["conflictMode"].as<bool>(); // bool类型
-        }
+
         if (jsonObj.containsKey("autoFailover")) config.autoFailover = jsonObj["autoFailover"].as<bool>();
         
         // 备用IP列表
@@ -98,7 +82,7 @@ bool JsonSerializationHelper::wifiConfigFromJson(JsonObject& jsonObj, WiFiConfig
         
         return true;
     } catch (const std::exception& e) {
-        Serial.printf("[JsonSerializationHelper] wifiConfigFromJson异常: %s\n", e.what());
+        LOG_ERROR("[JsonHelper] wifiConfigFromJson exception");
         return false;
     }
 }
@@ -144,7 +128,6 @@ void JsonSerializationHelper::networkStatusToJson(const NetworkStatusInfo& statu
     jsonObj["macAddress"] = status.macAddress;
     jsonObj["ssid"] = status.ssid;
     jsonObj["rssi"] = status.rssi;
-    jsonObj["signalStrength"] = status.signalStrength;
     jsonObj["gateway"] = status.currentGateway;
     jsonObj["subnet"] = status.currentSubnet;
     jsonObj["dnsServer"] = status.dnsServer;
@@ -156,26 +139,26 @@ void JsonSerializationHelper::networkStatusToJson(const NetworkStatusInfo& statu
 
 String JsonSerializationHelper::fullNetworkInfoToJson(const WiFiConfig& config, 
                                                       const NetworkStatusInfo& status,
-                                                      DynamicJsonDocument& doc) {
+                                                      JsonDocument& doc) {
     JsonObject root = doc.to<JsonObject>();
-    
+
     // 配置部分
-    JsonObject configObj = root.createNestedObject("config");
+    JsonObject configObj = root["config"].to<JsonObject>();
     wifiConfigToJson(config, configObj);
-    
+
     // 状态部分
-    JsonObject statusObj = root.createNestedObject("status");
+    JsonObject statusObj = root["status"].to<JsonObject>();
     networkStatusToJson(status, statusObj);
-    
+
     // 可读字符串表示
-    root["modeText"] = networkModeToString(config.mode);
-    root["ipConfigTypeText"] = ipConfigTypeToString(config.ipConfigType);
-    root["statusText"] = networkStatusToString(status.status);
-    
+    root["modeText"]        = networkModeToString(config.mode);
+    root["ipConfigTypeText"]= ipConfigTypeToString(config.ipConfigType);
+    root["statusText"]      = networkStatusToString(status.status);
+
     // 系统信息
     root["timestamp"] = millis();
-    root["freeHeap"] = ESP.getFreeHeap();
-    
+    root["freeHeap"]  = ESP.getFreeHeap();
+
     String jsonString;
     serializeJson(doc, jsonString);
     return jsonString;

@@ -6,6 +6,7 @@
  */
 
 #include "core/FastBeeFramework.h"
+#include "core/SystemConstants.h"
 #include "systems/LoggerSystem.h"
 #include "network/NetworkManager.h"
 #include "network/WebConfigManager.h"
@@ -13,40 +14,35 @@
 #include "systems/TaskManager.h"
 #include "systems/HealthMonitor.h"
 #include "security/UserManager.h"
+#include "security/RoleManager.h"
 #include "security/AuthManager.h"
 #include "protocols/ProtocolManager.h"
 #include "systems/ConfigStorage.h"
+#include <WiFi.h>
+#include <ESPmDNS.h>
 #include "utils/TimeUtils.h"
+#include "utils/FileUtils.h"
 #include <Arduino.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 
-// 静态实例指针
-std::unique_ptr<FastBeeFramework> FastBeeFramework::instance = nullptr;
-std::mutex FastBeeFramework::instanceMutex;
-
 // 构造函数
-FastBeeFramework::FastBeeFramework() 
+FastBeeFramework::FastBeeFramework()
     : systemInitialized(false),
       lastHealthCheck(0) {
-    // 智能指针会自动初始化为nullptr
 }
 
 // 析构函数
 FastBeeFramework::~FastBeeFramework() {
     shutdown();
-    // 智能指针会自动清理所有子系统
 }
 
 // 获取单例实例
+// 使用 Meyers' Singleton（局部静态变量），C++11 标准保证线程安全初始化，
+// 无需 unique_ptr + mutex 的 DCL 双重检查锁定，消除非 std::atomic 内存序风险。
 FastBeeFramework* FastBeeFramework::getInstance() {
-    if (!instance) {
-        std::lock_guard<std::mutex> lock(instanceMutex);
-        if (!instance) {
-            instance.reset(new FastBeeFramework());
-        }
-    }
-    return instance.get();
+    static FastBeeFramework instance;
+    return &instance;
 }
 
 // 初始化框架
@@ -55,114 +51,233 @@ bool FastBeeFramework::initialize() {
         LOG_WARNING("Framework already initialized");
         return true;
     }
-    Serial.println("Initializing FastBee IoT Platform...");
     
-    // 步骤1: 初始化配置存储
-    if (!ConfigStorage::initialize()) {
-        Serial.println("Failed to initialize config storage!");
+    // 记录启动时间戳（用于日志）
+    unsigned long startTime = millis();
+    
+    Serial.println();
+    Serial.println("========================================");
+    Serial.println("  FastBee IoT Platform Starting...");
+    Serial.println("========================================");
+    Serial.println();
+
+    // 步骤1: 初始化配置存储（Logger 之前，只能用 Serial）
+    Serial.println("[STEP1] Initializing Config Storage...");
+    if (!ConfigStorage::getInstance().initialize()) {
+        Serial.println("[FATAL] Failed to initialize config storage!");
         return false;
     }
-    Serial.println("Config storage system initialized");
+    Serial.println("[STEP1] Config Storage initialized OK");
 
-    // 初始化文件系统
+    // 初始化文件系统工具
+    Serial.println("[STEP1] Initializing FileUtils...");
     FileUtils::initialize();
+    Serial.println("[STEP1] FileUtils initialized OK");
 
-    // 列出文件系统内容（调试用）
-    FileUtils::listAllFiles("/");
-    
-    // 步骤2: 初始化日志系统
+    // 步骤2: 初始化日志系统（之后统一用 LOG 宏）
+    Serial.println("[STEP2] Initializing Logger System...");
     if (!LOGGER.initialize()) {
-        Serial.println("Failed to initialize logger system!");
+        Serial.println("[FATAL] Failed to initialize logger system!");
         return false;
     }
     LOGGER.setLogLevel(LOG_DEBUG);
-    LOG_INFO("Logger system initialized");
+    
+    // 日志系统初始化完成后，补充记录早期启动信息到日志文件
+    LOGGER.info("========================================");
+    LOGGER.info("  FastBee IoT Platform Boot Log");
+    LOGGER.info("========================================");
+    LOGGER.infof("Boot started at %lu ms", startTime);
+    LOGGER.info("[STEP1] Config Storage: OK");
+    LOGGER.info("[STEP1] FileUtils: OK");
+    LOGGER.info("[STEP2] Logger System: OK");
+    LOG_INFO("Logger system initialized and file logging enabled");
     
     // 步骤3: 创建HTTP服务器
+    LOG_INFO("[STEP3] Creating HTTP server...");
     server.reset(new AsyncWebServer(80));
     if (!server) {
-        LOG_ERROR("Failed to create HTTP server");
+        LOG_ERROR("[STEP3] Failed to create HTTP server");
         return false;
     }
-    LOG_INFO("HTTP server created");
+    LOG_INFO("[STEP3] HTTP server created OK");
     
-    // 步骤4: 初始化网络管理器
+    // 步骤 4: 初始化网络管理器
+    LOG_INFO("[STEP4] Creating NetworkManager...");
     network.reset(new NetworkManager(server.get()));
-    if (!network || !network->initialize()) {
-        LOG_ERROR("Failed to initialize network manager");
+    if (!network) {
+        LOG_ERROR("[STEP4] Failed to create network manager");
         return false;
     }
-    LOG_INFO("Network manager initialized");
+    
+    // 初始化网络
+    if (!network->initialize()) {
+        LOG_WARNING("[STEP4] Network: No saved config, using defaults");
+    }
+    
+    // 测试阶段：硬编码 WiFi 配置
+    #define TEST_WIFI_SSID "fastbee-device"
+    #define TEST_WIFI_PASS "15208747707"
+    
+    LOGGER.infof("[STEP4] Connecting to WiFi: %s", TEST_WIFI_SSID);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(TEST_WIFI_SSID, TEST_WIFI_PASS);
+    
+    // 等待 WiFi 连接
+    LOG_INFO("[STEP4] Waiting for WiFi connection...");
+    int retries = 0;
+    while (WiFi.status() != WL_CONNECTED && retries < 30) {
+        delay(500);
+        retries++;
+    }
+    
+    // 检查网络状态并启动mDNS
+    if (WiFi.status() == WL_CONNECTED) {
+        LOGGER.infof("[STEP4] WiFi Connected! IP: %s", WiFi.localIP().toString().c_str());
+        // 启动 mDNS 服务
+        if (MDNS.begin("fastbee")) {
+            MDNS.addService("http", "tcp", 80);
+            LOG_INFO("[STEP4] mDNS started: http://fastbee.local");
+        }
+    } else {
+        // WiFi 连接失败，启动 AP 模式
+        LOG_WARNING("[STEP4] WiFi connection failed, starting AP mode");
+        WiFi.mode(WIFI_AP);
+        WiFi.softAP("FastBee-Config", "12345678");
+        LOGGER.infof("[STEP4] AP Mode IP: %s", WiFi.softAPIP().toString().c_str());
+        LOG_INFO("[STEP4] Connect to WiFi 'FastBee-Config' (pwd: 12345678)");
+    }
+    LOG_INFO("[STEP4] NetworkManager OK");
 
     // 步骤5: 初始化用户管理器
+    LOG_INFO("[STEP5] Initializing UserManager...");
     userManager.reset(new UserManager());
     if (!userManager || !userManager->initialize()) {
-        LOG_ERROR("Failed to initialize user manager");
+        LOG_ERROR("[STEP5] Failed to initialize user manager");
         return false;
     }
-    LOG_INFO("User manager initialized");
+    LOG_INFO("[STEP5] User manager OK");
 
-    // 步骤6: 初始化认证管理器
-    authManager.reset(new AuthManager(userManager.get()));
-    if (!authManager || !authManager->initialize()) {
-        LOG_ERROR("Failed to initialize auth manager!");
+    // 步骤5.5: 初始化角色管理器
+    LOG_INFO("[STEP5.5] Initializing RoleManager...");
+    roleManager.reset(new RoleManager());
+    if (!roleManager || !roleManager->initialize()) {
+        LOG_ERROR("[STEP5.5] Failed to initialize role manager");
         return false;
     }
-    LOG_INFO("Auth manager initialized");
-    
-    // 步骤7: 初始化Web配置管理器
+    LOG_INFO("[STEP5.5] Role manager OK");
+
+    // 步骤6: 初始化认证管理器（注入 RoleManager）
+    LOG_INFO("[STEP6] Initializing AuthManager...");
+    authManager.reset(new AuthManager(userManager.get(), roleManager.get()));
+    if (!authManager || !authManager->initialize()) {
+        LOG_ERROR("[STEP6] Failed to initialize auth manager!");
+        return false;
+    }
+    LOG_INFO("[STEP6] Auth manager OK");
+
+    // 步骤 7: 初始化 Web配置管理器
+    LOG_INFO("[STEP7] Initializing WebConfigManager...");
     webConfig.reset(new WebConfigManager(server.get(), authManager.get(), userManager.get()));
     if (!webConfig || !webConfig->initialize()) {
-        LOG_ERROR("Failed to initialize web config manager");
+        LOG_ERROR("[STEP7] Failed to initialize web config manager");
         return false;
     }
-    LOG_INFO("Web config manager initialized");   
+    // 注入 RoleManager 给 WebConfigManager
+    webConfig->setRoleManager(roleManager.get());
+        
+    // 启动 Web Server
+    LOG_INFO("[STEP7] Starting Web Server...");
+    if (!webConfig->start()) {
+        LOG_ERROR("[STEP7] Failed to start web server");
+        return false;
+    }
+    LOG_INFO("[STEP7] Web Server OK");
     
     // 步骤8: 初始化OTA管理器
+    LOG_INFO("[STEP8] Initializing OTAManager...");
     ota.reset(new OTAManager(server.get()));
     if (!ota || !ota->initialize()) {
-        LOG_ERROR("Failed to initialize OTA manager");
+        LOG_ERROR("[STEP8] Failed to initialize OTA manager");
         return false;
     }
-    LOG_INFO("OTA manager initialized");
+    LOG_INFO("[STEP8] OTA manager OK");
     
     // 步骤9: 初始化任务管理器
+    LOG_INFO("[STEP9] Initializing TaskManager...");
     taskManager.reset(new TaskManager());
     if (!taskManager || !taskManager->initialize()) {
-        LOG_ERROR("Failed to initialize task manager");
+        LOG_ERROR("[STEP9] Failed to initialize task manager");
         return false;
     }
-    LOG_INFO("Task manager initialized");
+    LOG_INFO("[STEP9] Task manager OK");
     
     // 步骤10: 初始化健康监控器
+    LOG_INFO("[STEP10] Initializing HealthMonitor...");
     healthMonitor.reset(new HealthMonitor());
     if (!healthMonitor || !healthMonitor->initialize()) {
-        LOG_ERROR("Failed to initialize health monitor");
+        LOG_ERROR("[STEP10] Failed to initialize health monitor");
         return false;
     }
-    LOG_INFO("Health monitor initialized");
+    LOG_INFO("[STEP10] Health monitor OK");
     
     // 步骤11: 初始化协议管理器
+    LOG_INFO("[STEP11] Initializing ProtocolManager...");
     protocolManager.reset(new ProtocolManager());
     if (!protocolManager || !protocolManager->initialize()) {
-        LOG_ERROR("Failed to initialize protocol manager");
+        LOG_ERROR("[STEP11] Failed to initialize protocol manager");
         return false;
     }
-    LOG_INFO("Protocol manager initialized");
+    LOG_INFO("[STEP11] Protocol manager OK");
     
     // 步骤12: 添加系统任务
+    LOG_INFO("[STEP12] Adding system tasks...");
     if (!addSystemTasks()) {
-        LOG_WARNING("Failed to add some system tasks");
+        LOG_WARNING("[STEP12] Failed to add some system tasks");
     }
+    LOG_INFO("[STEP12] System tasks OK");
     
     // 步骤13: 检查系统健康状态
+    LOG_INFO("[STEP13] Checking system health...");
     if (!healthMonitor->isSystemHealthy()) {
-        LOG_WARNING("System health check initial warning: " + healthMonitor->getHealthReport());
+        char buf[160];
+        healthMonitor->getHealthReport(buf, sizeof(buf));
+        LOG_WARNING(buf);
     }
+    LOG_INFO("[STEP13] Health check completed");
+    
+    // 计算启动耗时
+    unsigned long bootTime = millis() - startTime;
     
     systemInitialized = true;
+    LOGGER.info("========================================");
+    LOGGER.infof("System initialization completed in %lu ms", bootTime);
+    LOGGER.info("========================================");
     LOG_INFO("FastBee IoT Platform initialized successfully");
     LOG_INFO("Device ready for operation");
+    
+    // 输出访问信息（同时输出到串口和日志）
+    LOGGER.info("========================================");
+    LOGGER.info("  FastBee IoT Platform Ready!");
+    LOGGER.info("========================================");
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        LOGGER.info("Mode: STA (WiFi Client)");
+        LOGGER.infof("IP Address: %s", WiFi.localIP().toString().c_str());
+        LOGGER.infof("Access URL: http://%s", WiFi.localIP().toString().c_str());
+        LOGGER.info("mDNS URL: http://fastbee.local");
+    } else if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
+        LOGGER.info("Mode: AP (Access Point)");
+        LOGGER.info("WiFi Name: FastBee-Config");
+        LOGGER.info("WiFi Pass: 12345678");
+        LOGGER.infof("IP Address: %s", WiFi.softAPIP().toString().c_str());
+        LOGGER.infof("Setup URL: http://%s/setup", WiFi.softAPIP().toString().c_str());
+    } else {
+        LOGGER.info("Network: Not connected");
+    }
+    
+    LOGGER.info("----------------------------------------");
+    LOGGER.info("Default Login: admin / admin123");
+    LOGGER.info("========================================");
     
     return true;
 }
@@ -176,23 +291,26 @@ bool FastBeeFramework::addSystemTasks() {
     
     // 健康检查任务（每30秒）
     if (!taskManager->addTask("health_check", [](void* param) {
-        FastBeeFramework* framework = (FastBeeFramework*)param;
-        if (framework && framework->healthMonitor) {
-            framework->healthMonitor->update();
-            
-            // 定期报告健康状态
-            static unsigned long lastReport = 0;
-            unsigned long now = millis();
-            if (now - lastReport > 300000) { // 每5分钟报告一次
-                if (!framework->healthMonitor->isSystemHealthy()) {
-                    LOG_WARNING("System health check: " + framework->healthMonitor->getHealthReport());
-                } else {
-                    LOG_DEBUG("System health check: OK");
-                }
-                lastReport = now;
+        FastBeeFramework* framework = static_cast<FastBeeFramework*>(param);
+        if (!framework || !framework->healthMonitor) {
+            LOG_DEBUG("health_check: framework or healthMonitor null");
+            return;
+        }
+
+        framework->healthMonitor->update();
+
+        // 每5分钟输出一次健康报告
+        static unsigned long lastReport = 0;
+        unsigned long now = millis();
+        if (now - lastReport > 300000UL) {
+            lastReport = now;
+            char buf[160];
+            framework->healthMonitor->getHealthReport(buf, sizeof(buf));
+            if (!framework->healthMonitor->isSystemHealthy()) {
+                LOG_WARNING(buf);
+            } else {
+                LOG_DEBUG(buf);
             }
-        }else{
-            LOG_DEBUG("framework或者healthMonitor不存在");
         }
     }, this, 30000)) {
         LOG_ERROR("Failed to add health check task");
@@ -226,8 +344,10 @@ bool FastBeeFramework::addSystemTasks() {
         if (lastHeap > 0) {
             int32_t diff = currentHeap - lastHeap;
             if (abs(diff) > 1024) { // 变化超过1KB时记录
-                LOG_DEBUG("Memory: " + String(currentHeap / 1024) + "KB free" + 
-                         (diff > 0 ? " (+" : " (") + String(diff) + " bytes)");
+                static char buffer[100];
+                snprintf(buffer, sizeof(buffer), "Memory: %luKB free (%+ld bytes)", 
+                         currentHeap / 1024, diff);
+                LOG_DEBUG(buffer);
             }
         }
         lastHeap = currentHeap;
@@ -253,14 +373,13 @@ void FastBeeFramework::run() {
     
     // 定期健康检查（除了任务调度中的检查外）
     unsigned long currentTime = millis();
-    if (currentTime - lastHealthCheck > 60000) { // 每分钟额外检查一次
-        if (healthMonitor) {
-            SystemHealth health = healthMonitor->getHealthStatus();
-            if (!healthMonitor->isSystemHealthy()) {
-                LOG_WARNING("Periodic health check: " + healthMonitor->getHealthReport());
-            }
-        }
+    if (currentTime - lastHealthCheck > 60000UL) { // 每分钟额外检查一次
         lastHealthCheck = currentTime;
+        if (healthMonitor && !healthMonitor->isSystemHealthy()) {
+            char buf[160];
+            healthMonitor->getHealthReport(buf, sizeof(buf));
+            LOG_WARNING(buf);
+        }
     }
     
     // 检查是否需要重启（例如在OTA更新后）
@@ -269,19 +388,21 @@ void FastBeeFramework::run() {
 
 // 检查是否需要重启
 void FastBeeFramework::checkForRestart() {
-    // 这里可以添加重启条件检查
-    // 例如：内存过低、运行时间过长等
     static unsigned long lastRestartCheck = 0;
     unsigned long currentTime = millis();
-    
-    if (currentTime - lastRestartCheck > 3600000) { // 每小时检查一次
+
+    // 每小时检查一次（3600000ms）
+    if (currentTime - lastRestartCheck > 3600000UL) {
+        lastRestartCheck = currentTime;
         uint32_t freeHeap = ESP.getFreeHeap();
-        if (freeHeap < 10240) { // 如果可用内存低于10KB
-            LOG_ERROR("Low memory detected: " + String(freeHeap) + " bytes free, restarting...");
-            delay(1000);
+        if (freeHeap < HealthCheck::MIN_FREE_HEAP) {
+            char buf[64];
+            snprintf(buf, sizeof(buf),
+                     "Low memory: %lu bytes free, restarting...", (unsigned long)freeHeap);
+            LOG_ERROR(buf);
+            delay(500);
             ESP.restart();
         }
-        lastRestartCheck = currentTime;
     }
 }
 
@@ -290,61 +411,54 @@ void FastBeeFramework::shutdown() {
     if (!systemInitialized) {
         return;
     }
-    
+
     LOG_INFO("Shutting down FastBee IoT Platform...");
-    
-    // 停止所有任务
+
+    // 按依赖顺序反向关闭各子系统
     if (taskManager) {
         taskManager->stopAllTasks();
     }
-    
-    // 关闭各个子系统（按依赖顺序反向关闭）
+
     if (protocolManager) {
         protocolManager->shutdown();
     }
-    
-    if (userManager) {
-        // userManager->saveUsersToConfig();
-    }
-    
-    if (authManager) {
-        // AuthManager 没有 shutdown 方法，需要实现或忽略
-        LOG_WARNING("AuthManager::shutdown() not implemented");
-    }
-    
+
     if (webConfig) {
         webConfig->stop();
     }
-    
+
     if (ota) {
-        // OTA管理器没有shutdown方法
+        // OTAManager 无需额外关闭（无长连接）
     }
-    
+
+    if (authManager) {
+        authManager->shutdown();
+    }
+
+    if (healthMonitor) {
+        healthMonitor->shutdown();
+    }
+
     if (network) {
         network->disconnect();
     }
-    
-    if (healthMonitor) {
-        // 健康监控器没有shutdown方法
-    }
-    
-    // 停止HTTP服务器
-    if (server) {
-        // AsyncWebServer没有stop方法，我们只需要确保不再处理请求
-    }
-    
+
+    // AsyncWebServer 无 stop() 方法，析构时自动释放
+    // 各 unique_ptr 成员随 FastBeeFramework 析构自动释放
+
     systemInitialized = false;
     LOG_INFO("FastBee IoT Platform shutdown complete");
 }
 
 // 获取子系统指针
-NetworkManager* FastBeeFramework::getNetworkManager() const { return network.get(); }
+INetworkManager* FastBeeFramework::getNetworkManager() const { return network.get(); }
 WebConfigManager* FastBeeFramework::getWebConfigManager() const { return webConfig.get(); }
 OTAManager* FastBeeFramework::getOTAManager() const { return ota.get(); }
 TaskManager* FastBeeFramework::getTaskManager() const { return taskManager.get(); }
 HealthMonitor* FastBeeFramework::getHealthMonitor() const { return healthMonitor.get(); }
 UserManager* FastBeeFramework::getUserManager() const { return userManager.get(); }
 AuthManager* FastBeeFramework::getAuthManager() const { return authManager.get(); }
+RoleManager* FastBeeFramework::getRoleManager() const { return roleManager.get(); }
 ProtocolManager* FastBeeFramework::getProtocolManager() const { return protocolManager.get(); }
 
 // 检查系统是否已初始化

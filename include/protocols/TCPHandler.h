@@ -4,7 +4,7 @@
 #include <WiFi.h>
 #include <functional>
 #include <vector>
-#include <core/ConfigDefines.h>
+#include <core/SystemConstants.h>
 
 struct TCPConfig {
     bool isServer = false;
@@ -19,11 +19,11 @@ public:
     ~TCPHandler();
     
     // 从LittleFS加载配置
-    bool loadConfigFromLittleFS(const char* configPath =CONFIG_FILE_TCP);
+    bool loadConfigFromLittleFS(const char* configPath = FileSystem::TCP_CONFIG_FILE);
     
     // 初始化方法
     bool begin(const TCPConfig& config);
-    bool beginFromConfig(const char* configPath = CONFIG_FILE_TCP);
+    bool beginFromConfig(const char* configPath = FileSystem::TCP_CONFIG_FILE);
     
     // 连接管理
     bool connect();

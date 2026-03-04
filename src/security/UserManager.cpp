@@ -1,4 +1,6 @@
 #include "./security/UserManager.h"
+#include "security/RoleManager.h"
+#include "systems/LoggerSystem.h"
 #include <mbedtls/md5.h>
 #include <mbedtls/sha256.h>
 #include <esp_random.h>
@@ -49,31 +51,33 @@ UserManager::~UserManager() {
 }
 
 bool UserManager::initialize() {
-    // 加载配置
     if (!loadConfig()) {
-        Serial.println("[UserManager] Using default config");
+        LOG_INFO("UserManager: Using default config");
     }
-    
-    // 加载用户数据
+
     if (!loadUsersFromStorage()) {
-        Serial.println("[UserManager] No user data found, creating default admin");
+        LOG_INFO("UserManager: No user data found, creating default admin");
         initializeDefaultAdmin();
     }
-    
-    Serial.printf("[UserManager] Initialized with %d users\n", users.size());
+
+    char buf[48];
+    snprintf(buf, sizeof(buf), "UserManager: Initialized with %u users", (unsigned)users.size());
+    LOG_INFO(buf);
     return true;
 }
 
 void UserManager::initializeDefaultAdmin() {
     User admin;
-    admin.username = DEFAULT_ADMIN_USER;
-    admin.salt = generateSalt();
+    admin.username     = DEFAULT_ADMIN_USER;
+    admin.salt         = generateSalt();
     admin.passwordHash = hashPassword(DEFAULT_ADMIN_PASS, admin.salt);
-    admin.role = UserRole::ADMIN;
-    admin.enabled = true;
-    admin.createTime = millis();
+    admin.role         = UserRole::ADMIN;
+    admin.roles        = { BuiltinRoles::ADMIN };  // 绑定内置 admin 角色
+    admin.enabled      = true;
+    admin.createTime   = millis();
     admin.lastModified = millis();
-    
+    admin.createBy     = "system";
+
     users[DEFAULT_ADMIN_USER] = admin;
     saveUsersToStorage();
 }
@@ -136,31 +140,7 @@ void UserManager::updateUserLastModified(const String& username) {
 
 // ============ 用户管理方法 ============
 
-bool UserManager::addUser(const String& username, const String& password, UserRole role) {
-    // 检查用户名是否存在
-    if (users.find(username) != users.end()) {
-        return false;
-    }
-    
-    // 验证密码强度
-    if (!validatePasswordStrength(password)) {
-        return false;
-    }
-    
-    // 创建新用户
-    User newUser;
-    newUser.username = username;
-    newUser.salt = generateSalt();
-    newUser.passwordHash = hashPassword(password, newUser.salt);
-    newUser.role = role;
-    newUser.enabled = true;
-    newUser.createTime = millis();
-    newUser.lastModified = millis();
-    
-    users[username] = newUser;
-    
-    return saveUsersToStorage();
-}
+
 
 bool UserManager::deleteUser(const String& username) {
     // 不能删除默认管理员
@@ -256,37 +236,7 @@ bool UserManager::resetPassword(const String& username, const String& newPasswor
     return saveUsersToStorage();
 }
 
-bool UserManager::authenticateUser(const String& username, const String& password) {
-    // 检查账户是否被锁定
-    if (isAccountLocked(username)) {
-        return false;
-    }
-    
-    auto it = users.find(username);
-    if (it == users.end()) {
-        recordLoginFailure(username);
-        return false;
-    }
-    
-    User& user = it->second;
-    
-    // 检查用户是否启用
-    if (!user.enabled) {
-        return false;
-    }
-    
-    // 验证密码
-    if (!verifyPassword(password, user.passwordHash, user.salt)) {
-        recordLoginFailure(username);
-        return false;
-    }
-    
-    // 验证成功，重置登录尝试
-    resetLoginAttempts(username);
-    updateLastLogin(username);
-    
-    return true;
-}
+
 
 // ============ 用户查询方法 ============
 
@@ -303,13 +253,7 @@ std::vector<String> UserManager::getAllUsernames() {
     return usernames;
 }
 
-std::vector<User> UserManager::getAllUsers() {
-    std::vector<User> userList;
-    for (const auto& pair : users) {
-        userList.push_back(pair.second);
-    }
-    return userList;
-}
+
 
 bool UserManager::userExists(const String& username) {
     return users.find(username) != users.end();
@@ -320,10 +264,7 @@ bool UserManager::isUserEnabled(const String& username) {
     return (it != users.end()) ? it->second.enabled : false;
 }
 
-UserRole UserManager::getUserRole(const String& username) {
-    auto it = users.find(username);
-    return (it != users.end()) ? it->second.role : UserRole::VIEWER;
-}
+
 
 // ============ 登录保护方法 ============
 
@@ -334,8 +275,9 @@ void UserManager::recordLoginFailure(const String& username) {
     
     // 如果超过最大尝试次数，记录锁定时间（在AuthManager中处理）
     if (loginAttempts[username] >= config.maxLoginAttempts) {
-        Serial.printf("[UserManager] Account %s locked due to too many failed attempts\n", 
-                     username.c_str());
+        char buf[72];
+        snprintf(buf, sizeof(buf), "UserManager: Account %s locked (too many failures)", username.c_str());
+        LOG_WARNING(buf);
     }
 }
 
@@ -403,31 +345,39 @@ void UserManager::updateLastLogin(const String& username) {
 // ============ 持久化方法 ============
 
 bool UserManager::saveUsersToStorage() {
-    StaticJsonDocument<4096> doc;
-    JsonArray usersArray = doc.createNestedArray("users");
-    
+    JsonDocument doc;
+    JsonArray usersArray = doc["users"].to<JsonArray>();
+
     for (const auto& pair : users) {
         const User& user = pair.second;
-        JsonObject userObj = usersArray.createNestedObject();
-        
-        userObj["username"] = user.username;
+        JsonObject userObj = usersArray.add<JsonObject>();
+
+        userObj["username"]     = user.username;
         userObj["passwordHash"] = user.passwordHash;
-        userObj["salt"] = user.salt;
-        userObj["role"] = static_cast<int>(user.role);
-        userObj["enabled"] = user.enabled;
-        userObj["createTime"] = user.createTime;
-        userObj["lastLogin"] = user.lastLogin;
+        userObj["salt"]         = user.salt;
+        userObj["role"]         = static_cast<int>(user.role);
+        userObj["enabled"]      = user.enabled;
+        userObj["createTime"]   = user.createTime;
+        userObj["lastLogin"]    = user.lastLogin;
         userObj["lastModified"] = user.lastModified;
+        userObj["email"]        = user.email;
+        userObj["remark"]       = user.remark;
+        userObj["createBy"]     = user.createBy;
+
+        // 多角色列表
+        JsonArray rolesArr = userObj["roles"].to<JsonArray>();
+        for (const String& r : user.roles) {
+            rolesArr.add(r);
+        }
     }
-    
+
     String jsonStr;
     serializeJson(doc, jsonStr);
-    
+
     bool success = preferences.putString("users", jsonStr) > 0;
     if (success) {
-        Serial.println("[UserManager] Users saved to storage");
+        LOG_DEBUG("UserManager: Users saved to storage");
     }
-    
     return success;
 }
 
@@ -436,32 +386,49 @@ bool UserManager::loadUsersFromStorage() {
     if (jsonStr.isEmpty()) {
         return false;
     }
-    
-    StaticJsonDocument<4096> doc;
+
+    JsonDocument doc;
     DeserializationError error = deserializeJson(doc, jsonStr);
     if (error) {
-        Serial.printf("[UserManager] Failed to parse user data: %s\n", error.c_str());
+        char buf[64];
+        snprintf(buf, sizeof(buf), "UserManager: Failed to parse user data: %s", error.c_str());
+        LOG_ERROR(buf);
         return false;
     }
-    
+
     users.clear();
-    
+
     JsonArray usersArray = doc["users"];
     for (JsonObject userObj : usersArray) {
         User user;
-        user.username = userObj["username"].as<String>();
+        user.username     = userObj["username"].as<String>();
         user.passwordHash = userObj["passwordHash"].as<String>();
-        user.salt = userObj["salt"].as<String>();
-        user.role = static_cast<UserRole>(userObj["role"].as<int>());
-        user.enabled = userObj["enabled"];
-        user.createTime = userObj["createTime"];
-        user.lastLogin = userObj["lastLogin"];
-        user.lastModified = userObj["lastModified"];
-        
+        user.salt         = userObj["salt"].as<String>();
+        user.role         = static_cast<UserRole>(userObj["role"].as<int>());
+        user.enabled      = userObj["enabled"] | true;
+        user.createTime   = userObj["createTime"] | 0UL;
+        user.lastLogin    = userObj["lastLogin"]  | 0UL;
+        user.lastModified = userObj["lastModified"] | 0UL;
+        user.email        = userObj["email"].as<String>();
+        user.remark       = userObj["remark"].as<String>();
+        user.createBy     = userObj["createBy"].as<String>();
+
+        // 多角色列表（向下兼容：无 roles 字段时从旧枚举生成）
+        JsonArray rolesArr = userObj["roles"];
+        if (!rolesArr.isNull() && rolesArr.size() > 0) {
+            for (const auto& r : rolesArr) {
+                user.roles.push_back(r.as<String>());
+            }
+        } else {
+            user.roles.push_back(roleToString(user.role));
+        }
+
         users[user.username] = user;
     }
-    
-    Serial.printf("[UserManager] Loaded %d users from storage\n", users.size());
+
+    char buf[48];
+    snprintf(buf, sizeof(buf), "UserManager: Loaded %u users from storage", (unsigned)users.size());
+    LOG_INFO(buf);
     return true;
 }
 
@@ -473,7 +440,7 @@ bool UserManager::saveConfig() {
     preferences.putBool("require_strong_passwords", config.requireStrongPasswords);
     preferences.putBool("allow_multiple_sessions", config.allowMultipleSessions);
     
-    Serial.println("[UserManager] Config saved");
+    Serial.println("[UserManager] Config saved");  // saveConfig 在 Logger 前调用，保留 Serial
     return true;
 }
 
@@ -530,4 +497,149 @@ bool UserManager::validatePassword(const String& password, uint8_t minLength,
     }
     
     return true;
+}
+
+// ============ 多角色管理方法 ============
+
+bool UserManager::assignRole(const String& username, const String& roleId) {
+    auto it = users.find(username);
+    if (it == users.end()) return false;
+    if (!it->second.hasRole(roleId)) {
+        it->second.roles.push_back(roleId);
+    }
+    return saveUsersToStorage();
+}
+
+bool UserManager::removeRole(const String& username, const String& roleId) {
+    auto it = users.find(username);
+    if (it == users.end()) return false;
+    auto& roleVec = it->second.roles;
+    for (auto rit = roleVec.begin(); rit != roleVec.end(); ++rit) {
+        if (*rit == roleId) {
+            roleVec.erase(rit);
+            return saveUsersToStorage();
+        }
+    }
+    return false;
+}
+
+bool UserManager::setRoles(const String& username, const std::vector<String>& roleIds) {
+    auto it = users.find(username);
+    if (it == users.end()) return false;
+    it->second.roles = roleIds;
+    // 同步旧枚举字段（取第一个角色）
+    if (!roleIds.empty()) {
+        it->second.role = stringToRole(roleIds[0]);
+    }
+    return saveUsersToStorage();
+}
+
+std::vector<String> UserManager::getUserRoles(const String& username) const {
+    auto it = users.find(username);
+    return (it != users.end()) ? it->second.roles : std::vector<String>{};
+}
+
+bool UserManager::hasRole(const String& username, const String& roleId) const {
+    auto it = users.find(username);
+    return (it != users.end()) && it->second.hasRole(roleId);
+}
+
+bool UserManager::updateUserMeta(const String& username, const String& email, const String& remark) {
+    auto it = users.find(username);
+    if (it == users.end()) return false;
+    if (!email.isEmpty())  it->second.email  = email;
+    if (!remark.isEmpty()) it->second.remark = remark;
+    it->second.lastModified = millis();
+    return saveUsersToStorage();
+}
+
+// IUserManager 接口实现
+
+bool UserManager::addUser(const String& username, const String& password, const String& role) {
+    UserRole userRole = stringToRole(role);
+    if (users.find(username) != users.end()) {
+        return false;
+    }
+
+    if (!validatePasswordStrength(password)) {
+        return false;
+    }
+
+    User newUser;
+    newUser.username     = username;
+    newUser.salt         = generateSalt();
+    newUser.passwordHash = hashPassword(password, newUser.salt);
+    newUser.role         = userRole;
+    newUser.roles        = { role };   // 同步多角色列表
+    newUser.enabled      = true;
+    newUser.createTime   = millis();
+    newUser.lastModified = millis();
+
+    users[username] = newUser;
+    return saveUsersToStorage();
+}
+
+bool UserManager::updatePassword(const String& username, const String& newPassword) {
+    return resetPassword(username, newPassword);
+}
+
+bool UserManager::validateUser(const String& username, const String& password) {
+    auto it = users.find(username);
+    if (it == users.end()) {
+        recordLoginFailure(username);
+        return false;
+    }
+    
+    const User& user = it->second;
+    
+    // 检查用户是否启用
+    if (!user.enabled) {
+        recordLoginFailure(username);
+        return false;
+    }
+    
+    // 验证密码
+    if (!verifyPassword(password, user.passwordHash, user.salt)) {
+        recordLoginFailure(username);
+        return false;
+    }
+    
+    // 验证成功，重置登录尝试
+    resetLoginAttempts(username);
+    updateLastLogin(username);
+    
+    return true;
+}
+
+String UserManager::getUserRole(const String& username) {
+    auto it = users.find(username);
+    UserRole role = (it != users.end()) ? it->second.role : UserRole::VIEWER;
+    return roleToString(role);
+}
+
+String UserManager::getAllUsers() {
+    JsonDocument doc;
+    JsonArray usersArray = doc["users"].to<JsonArray>();
+
+    for (const auto& pair : users) {
+        const User& user = pair.second;
+        JsonObject userObj = usersArray.add<JsonObject>();
+        userObj["username"]   = user.username;
+        userObj["role"]       = roleToString(user.role);   // 兼容旧字段
+        userObj["enabled"]    = user.enabled;
+        userObj["createTime"] = user.createTime;
+        userObj["lastLogin"]  = user.lastLogin;
+        userObj["email"]      = user.email;
+        userObj["remark"]     = user.remark;
+        userObj["createBy"]   = user.createBy;
+
+        JsonArray rolesArr = userObj["roles"].to<JsonArray>();
+        for (const String& r : user.roles) {
+            rolesArr.add(r);
+        }
+    }
+
+    String jsonStr;
+    serializeJson(doc, jsonStr);
+    return jsonStr;
 }

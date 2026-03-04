@@ -129,32 +129,24 @@ bool StringUtils::contains(const String& str, const String& substring, bool case
 }
 
 String StringUtils::replace(const String& str, const String& from, const String& to, bool caseSensitive) {
-    if (from.isEmpty() || !contains(str, from, caseSensitive)) {
-        return str;
-    }
-    
+    if (from.isEmpty()) return str;
     int pos = caseSensitive ? str.indexOf(from) : toLower(str).indexOf(toLower(from));
     if (pos == -1) return str;
-    
-    String result = str;
-    // result.replace(pos, from.length(), to);
-    return result;
+    return str.substring(0, pos) + to + str.substring(pos + from.length());
 }
 
 String StringUtils::replaceAll(const String& str, const String& from, const String& to, bool caseSensitive) {
     if (from.isEmpty()) return str;
-    
     String result = str;
-    String searchStr = caseSensitive ? result : toLower(result);
-    String fromLower = toLower(from);
-    
+    String searchFrom = caseSensitive ? from : toLower(from);
     int pos = 0;
-    while ((pos = (caseSensitive ? searchStr.indexOf(from) : searchStr.indexOf(fromLower, pos))) != -1) {
-        // result.replace(pos, from.length(), to);
-        searchStr = caseSensitive ? result : toLower(result);
-        pos += to.length();
+    while (true) {
+        String searchIn = caseSensitive ? result : toLower(result);
+        int found = searchIn.indexOf(searchFrom, pos);
+        if (found == -1) break;
+        result = result.substring(0, found) + to + result.substring(found + from.length());
+        pos = found + to.length();
     }
-    
     return result;
 }
 
@@ -386,15 +378,14 @@ String StringUtils::md5(const String& str) {
 }
 
 String StringUtils::sha256(const String& str) {
-    // 简化实现
-    uint32_t hash = 0;
+    // 仅用于快速哈希，非密码学安全；安全场景请使用 CryptoUtils::hash()
+    uint32_t h = 0;
     for (size_t i = 0; i < str.length(); i++) {
-        hash = (hash * 31) + str[i];
+        h = (h * 31) + str[i];
     }
-    
-    char buffer[17];
-    snprintf(buffer, sizeof(buffer), "%016lx", (unsigned long)hash);
-    return String(buffer);
+    char buf[17];
+    snprintf(buf, sizeof(buf), "%016lx", (unsigned long)h);
+    return String(buf);
 }
 
 String StringUtils::base64Encode(const String& str) {
@@ -428,9 +419,8 @@ String StringUtils::base64Encode(const String& str) {
 }
 
 String StringUtils::base64Decode(const String& str) {
-    // 简化实现
-    String result;
-    return result; // 实际需要完整实现
+    // 仅为接口占位，完整实现请使用 CryptoUtils::base64Decode()
+    return "";
 }
 
 String StringUtils::randomString(size_t length, const String& charset) {

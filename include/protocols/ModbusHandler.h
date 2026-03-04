@@ -5,7 +5,7 @@
 #include <HardwareSerial.h>
 #include <functional>
 #include "utils/FileUtils.h"
-#include <core/ConfigDefines.h>
+#include <core/SystemConstants.h>
 
 // Modbus配置结构体
 struct ModbusConfig {
@@ -36,7 +36,7 @@ public:
 
     // 初始化方法
     bool begin(const ModbusConfig& config);
-    bool begin(const String& configPath = CONFIG_FILE_MODBUS);
+    bool begin(const String& configPath = FileSystem::MODBUS_CONFIG_FILE);
     void end();
     
     // 运行时处理

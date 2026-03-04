@@ -6,6 +6,8 @@
 #include <Preferences.h>
 #include <vector>
 #include <map>
+#include "core/interfaces/IUserManager.h"
+#include "core/SystemConstants.h"
 
 /**
  * @brief 用户角色枚举
@@ -23,14 +25,28 @@ struct User {
     String username;
     String passwordHash;
     String salt;
-    UserRole role;
+    UserRole role;                      ///< 兼容旧接口，等同于 roles[0]
+    std::vector<String> roles;          ///< 多角色列表（角色 ID，对应 RoleManager）
     bool enabled;
     unsigned long createTime;
     unsigned long lastLogin;
     unsigned long lastModified;
-    
-    User() : role(UserRole::VIEWER), enabled(true), 
+
+    // 扩展元数据
+    String email;       ///< 邮箱（可选）
+    String remark;      ///< 备注
+    String createBy;    ///< 创建人（username）
+
+    User() : role(UserRole::VIEWER), enabled(true),
              createTime(0), lastLogin(0), lastModified(0) {}
+
+    /** 检查是否拥有指定角色 */
+    bool hasRole(const String& roleId) const {
+        for (const String& r : roles) {
+            if (r == roleId) return true;
+        }
+        return false;
+    }
 };
 
 /**
@@ -51,7 +67,7 @@ struct UserStats {
  * @brief 用户管理器类
  * 负责用户数据的增删改查和存储管理
  */
-class UserManager {
+class UserManager : public IUserManager {
 private:
     // 存储
     Preferences preferences;
@@ -72,9 +88,9 @@ private:
         bool allowMultipleSessions = true;
     } config;
     
-    // 默认用户
-    static constexpr const char* DEFAULT_ADMIN_USER = "admin";
-    static constexpr const char* DEFAULT_ADMIN_PASS = "admin123";
+    // 默认用户（统一使用 SystemConstants 中定义的常量）
+    static constexpr const char* DEFAULT_ADMIN_USER = Security::DEFAULT_ADMIN_USERNAME;
+    static constexpr const char* DEFAULT_ADMIN_PASS = Security::DEFAULT_ADMIN_PASSWORD;
     
     // 私有方法
     void initializeDefaultAdmin();
@@ -103,93 +119,90 @@ public:
      * @param role 角色
      * @return 是否成功
      */
-    bool addUser(const String& username, const String& password, UserRole role);
+
     
+    // IUserManager 接口实现
+    bool addUser(const String& username, const String& password, const String& role) override;
+    bool deleteUser(const String& username) override;
+    bool updatePassword(const String& username, const String& newPassword) override;
+    bool validateUser(const String& username, const String& password) override;
+    String getUserRole(const String& username) override;
+    bool userExists(const String& username) override;
+    String getAllUsers() override;
+    User* getUser(const String& username) override;
+    void resetLoginAttempts(const String& username) override;
+    uint8_t getLoginAttempts(const String& username) override;
+    bool isAccountLocked(const String& username) override;
+    void unlockAccount(const String& username) override;
+    bool changePassword(const String& username, const String& oldPassword, const String& newPassword) override;
+    bool resetPassword(const String& username, const String& newPassword) override;
+    bool updateUser(const String& username, const String& newPassword, const String& newRole, bool enabled) override;
+    size_t getUserCount() override;
+    
+    // ============ 多角色管理 ============
+
     /**
-     * @brief 删除用户
+     * @brief 为用户追加角色（不重复）
      * @param username 用户名
+     * @param roleId   角色 ID
      * @return 是否成功
      */
-    bool deleteUser(const String& username);
-    
+    bool assignRole(const String& username, const String& roleId);
+
     /**
-     * @brief 更新用户
+     * @brief 从用户移除角色
      * @param username 用户名
-     * @param newPassword 新密码（空则不修改）
-     * @param newRole 新角色（空则不修改）
-     * @param enabled 是否启用
+     * @param roleId   角色 ID
      * @return 是否成功
      */
-    bool updateUser(const String& username, const String& newPassword = "", 
-                   const String& newRole = "", bool enabled = true);
-    
+    bool removeRole(const String& username, const String& roleId);
+
     /**
-     * @brief 修改密码
+     * @brief 替换用户的完整角色列表
      * @param username 用户名
-     * @param oldPassword 旧密码
-     * @param newPassword 新密码
+     * @param roleIds  新角色列表
      * @return 是否成功
      */
-    bool changePassword(const String& username, const String& oldPassword, 
-                       const String& newPassword);
-    
+    bool setRoles(const String& username, const std::vector<String>& roleIds);
+
     /**
-     * @brief 重置密码（管理员用）
+     * @brief 获取用户角色列表
      * @param username 用户名
-     * @param newPassword 新密码
+     * @return 角色 ID 列表
+     */
+    std::vector<String> getUserRoles(const String& username) const;
+
+    /**
+     * @brief 检查用户是否拥有指定角色
+     * @param username 用户名
+     * @param roleId   角色 ID
+     * @return 是否拥有
+     */
+    bool hasRole(const String& username, const String& roleId) const;
+
+    /**
+     * @brief 更新用户元数据（email/remark）
+     * @param username 用户名
+     * @param email    新邮箱（空则不修改）
+     * @param remark   新备注（空则不修改）
      * @return 是否成功
      */
-    bool resetPassword(const String& username, const String& newPassword);
-    
-    /**
-     * @brief 验证用户凭据
-     * @param username 用户名
-     * @param password 密码
-     * @return 是否验证通过
-     */
-    bool authenticateUser(const String& username, const String& password);
-    
+    bool updateUserMeta(const String& username, const String& email, const String& remark);
+
     // ============ 用户查询 ============
-    
-    /**
-     * @brief 获取用户
-     * @param username 用户名
-     * @return 用户指针（不存在返回nullptr）
-     */
-    User* getUser(const String& username);
-    
+
     /**
      * @brief 获取所有用户名
      * @return 用户名列表
      */
     std::vector<String> getAllUsernames();
-    
-    /**
-     * @brief 获取所有用户
-     * @return 用户列表
-     */
-    std::vector<User> getAllUsers();
-    
-    /**
-     * @brief 检查用户是否存在
-     * @param username 用户名
-     * @return 是否存在
-     */
-    bool userExists(const String& username);
-    
+
     /**
      * @brief 检查用户是否启用
      * @param username 用户名
      * @return 是否启用
      */
     bool isUserEnabled(const String& username);
-    
-    /**
-     * @brief 获取用户角色
-     * @param username 用户名
-     * @return 用户角色
-     */
-    UserRole getUserRole(const String& username);
     
     // ============ 登录保护 ============
     
@@ -198,32 +211,6 @@ public:
      * @param username 用户名
      */
     void recordLoginFailure(const String& username);
-    
-    /**
-     * @brief 重置登录尝试
-     * @param username 用户名
-     */
-    void resetLoginAttempts(const String& username);
-    
-    /**
-     * @brief 获取登录尝试次数
-     * @param username 用户名
-     * @return 尝试次数
-     */
-    uint8_t getLoginAttempts(const String& username);
-    
-    /**
-     * @brief 检查账户是否被锁定
-     * @param username 用户名
-     * @return 是否锁定
-     */
-    bool isAccountLocked(const String& username);
-    
-    /**
-     * @brief 解锁账户
-     * @param username 用户名
-     */
-    void unlockAccount(const String& username);
     
     // ============ 统计信息 ============
     
@@ -240,11 +227,7 @@ public:
      */
     std::vector<UserStats> getAllUserStats();
     
-    /**
-     * @brief 获取用户数量
-     * @return 用户数量
-     */
-    size_t getUserCount();
+
     
     /**
      * @brief 更新用户最后登录时间

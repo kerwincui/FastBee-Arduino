@@ -11,7 +11,6 @@
 #include <Arduino.h>
 #include <functional>
 #include <memory>
-#include <mutex>
 
 // 前向声明（减少头文件依赖）
 class AsyncWebServer;
@@ -23,9 +22,15 @@ class TaskManager;
 class HealthMonitor;
 class UserManager;
 class AuthManager;
+class RoleManager;
 class ProtocolManager;
 class SystemHealth;
 struct NetworkStatusInfo;
+
+// 接口类包含
+#include "core/interfaces/INetworkManager.h"
+#include "core/interfaces/ILoggerSystem.h"
+#include "core/interfaces/IConfigStorage.h"
 
 /**
  * @class FastBeeFramework
@@ -86,24 +91,32 @@ public:
     // if (!myFramework->getHealthMonitor()->isSystemHealthy()) {
     //     处理异常
     // }
-    NetworkManager* getNetworkManager() const;
+    INetworkManager* getNetworkManager() const;
     WebConfigManager* getWebConfigManager() const;
     OTAManager* getOTAManager() const;
     TaskManager* getTaskManager() const;
     HealthMonitor* getHealthMonitor() const;
     UserManager* getUserManager() const;
     AuthManager* getAuthManager() const;
+    RoleManager* getRoleManager() const;
     ProtocolManager* getProtocolManager() const;
     
 private:
-    // 私有方法
-    bool addSystemTasks();
-    void checkForRestart();
-    
-    // 静态实例
-    static std::unique_ptr<FastBeeFramework> instance;
-    static std::mutex instanceMutex;
-    
+    // 私有方法 - 初始化阶段拆分
+    bool initStorageAndFS();           // 阶段 1: 存储和文件系统
+    bool initLogger();                 // 阶段 2: 日志系统
+    bool initWebServer();              // 阶段 3: HTTP 服务器
+    bool initNetwork();                // 阶段 4: 网络管理器
+    bool initSecurity();               // 阶段 5: 用户和认证管理
+    bool initWebConfig();              // 阶段 6: Web配置管理
+    bool initOTA();                    // 阶段 7: OTA 管理
+    bool initSystems();                // 阶段 8: 任务和健康监控
+    bool initProtocols();              // 阶段 9: 协议管理
+
+    // 其他私有方法
+    bool addSystemTasks();             // 添加系统任务
+    void checkForRestart();            // 检查重启条件
+
     // 系统状态
     bool systemInitialized;
     unsigned long lastHealthCheck;
@@ -118,6 +131,7 @@ private:
     std::unique_ptr<TaskManager> taskManager;
     std::unique_ptr<HealthMonitor> healthMonitor;
     std::unique_ptr<UserManager> userManager;
+    std::unique_ptr<RoleManager> roleManager;
     std::unique_ptr<AuthManager> authManager;
     std::unique_ptr<ProtocolManager> protocolManager;
 };
