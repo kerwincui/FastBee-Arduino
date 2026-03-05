@@ -37,11 +37,11 @@ public:
     ~CoAPHandler();
     
     // 从LittleFS加载配置
-    bool loadConfigFromLittleFS(const char* configPath = FileSystem::COAP_CONFIG_FILE);
+    bool loadConfigFromLittleFS(const char* configPath = FileSystem::PROTOCOL_CONFIG_FILE);
     
     // 初始化方法
     bool begin(const CoAPConfig& config);
-    bool beginFromConfig(const char* configPath = FileSystem::COAP_CONFIG_FILE);
+    bool beginFromConfig(const char* configPath = FileSystem::PROTOCOL_CONFIG_FILE);
     
     // 清理资源
     void end();

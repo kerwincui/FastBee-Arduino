@@ -15,13 +15,20 @@ AuthManager::~AuthManager() {
 }
 
 bool AuthManager::initialize() {
+    LOG_INFO("AuthManager: Initializing...");
+    
     if (!loadSecurityConfig()) {
         LOG_INFO("AuthManager: Using default security config");
+    } else {
+        LOG_INFO("AuthManager: Security config loaded");
     }
 
+    LOG_DEBUG("AuthManager: Initializing permissions...");
     initializePermissions();
+    LOG_DEBUGF("AuthManager: %u permissions registered", (unsigned)permissions.size());
 
     if (securityConfig.enableSessionPersistence) {
+        LOG_DEBUG("AuthManager: Loading sessions from storage...");
         loadSessionsFromStorage();
     }
 

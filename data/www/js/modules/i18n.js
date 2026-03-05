@@ -14,7 +14,7 @@ const i18n = {
             // 应用通用
             'app-title': '设备管理系统',
             'page-title-dashboard': '设备监控仪表盘',
-            'page-title-config': '设备配置',
+            'page-title-protocol': '通信协议',
             'page-title-network': '网络设置',
             'page-title-data': '文件管理',
             'page-title-system': '系统监控',
@@ -24,7 +24,7 @@ const i18n = {
             
             // 菜单
             'menu-dashboard': '设备监控',
-            'menu-config': '设备配置',
+            'menu-protocol': '通信协议',
             'menu-network': '网络设置',
             'menu-data': '文件管理',
             'menu-system': '系统监控',
@@ -119,7 +119,7 @@ const i18n = {
             // App common
             'app-title': 'Device Manage',
             'page-title-dashboard': 'Device Dashboard',
-            'page-title-config': 'Device Configuration',
+            'page-title-protocol': 'Protocol Configuration',
             'page-title-network': 'Network Settings',
             'page-title-data': 'Data Management',
             'page-title-system': 'System Monitoring',
@@ -129,7 +129,7 @@ const i18n = {
             
             // Menu
             'menu-dashboard': 'Dashboard',
-            'menu-config': 'Configuration',
+            'menu-protocol': 'Protocol',
             'menu-network': 'Network',
             'menu-data': 'Data',
             'menu-system': 'System',

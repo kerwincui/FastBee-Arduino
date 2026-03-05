@@ -1,0 +1,37 @@
+{
+  "deviceName": "FastBee-Device",
+  "location": "",
+  "description": "",
+  "enableNTP": true,
+  "ntpServer1": "pool.ntp.org",
+  "ntpServer2": "time.nist.gov",
+  "timezone": "CST-8",
+  "syncInterval": 3600,
+  "logLevel": "INFO",
+  "autoStart": true,
+  "timers": [
+    {
+      "id": 1,
+      "name": "每日重启",
+      "enable": false,
+      "time": "03:00",
+      "action": "restart"
+    }
+  ],
+  "provisionSSID": "",
+  "provisionPassword": "",
+  "provisionTimeout": 300,
+  "provisionUserId": "",
+  "provisionProductId": "",
+  "provisionAuthCode": "",
+  "provisionIP": "192.168.4.1",
+  "provisionGateway": "192.168.4.1",
+  "provisionSubnet": "255.255.255.0",
+  "bleEnabled": false,
+  "bleName": "FBDevice",
+  "bleTimeout": 300,
+  "bleAutoStart": false,
+  "bleServiceUUID": "6E400001-B5A3-F393-E0A9-E50E24DCCA9F",
+  "bleRxUUID": "6E400002-B5A3-F393-E0A9-E50E24DCCA9F",
+  "bleTxUUID": "6E400003-B5A3-F393-E0A9-E50E24DCCA9F"
+}

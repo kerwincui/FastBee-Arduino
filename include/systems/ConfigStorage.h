@@ -52,23 +52,14 @@ public:
     bool loadJSONConfig(const String& filename, JsonDocument& config);
 
     // 特定配置类型快捷接口
-    bool saveSystemConfig  (const JsonDocument& config);
-    bool loadSystemConfig  (JsonDocument& config);
-    bool saveNetworkConfig (const JsonDocument& config);
-    bool loadNetworkConfig (JsonDocument& config);
-    bool saveUserConfig    (const JsonDocument& config);
-    bool loadUserConfig    (JsonDocument& config);
-    // 各协议独立存储接口（原 saveProtocolConfig 只能存 MQTT，已拆分为以下接口）
-    bool saveMQTTConfig    (const JsonDocument& config);
-    bool loadMQTTConfig    (JsonDocument& config);
-    bool saveModbusConfig  (const JsonDocument& config);
-    bool loadModbusConfig  (JsonDocument& config);
-    bool saveTCPConfig     (const JsonDocument& config);
-    bool loadTCPConfig     (JsonDocument& config);
-    bool saveHTTPConfig    (const JsonDocument& config);
-    bool loadHTTPConfig    (JsonDocument& config);
-    bool saveCoAPConfig    (const JsonDocument& config);
-    bool loadCoAPConfig    (JsonDocument& config);
+    bool saveNetworkConfig  (const JsonDocument& config);
+    bool loadNetworkConfig  (JsonDocument& config);
+    bool saveUserConfig     (const JsonDocument& config);
+    bool loadUserConfig     (JsonDocument& config);
+    bool saveProtocolConfig (const JsonDocument& config);  // 统一协议配置 (protocol.json)
+    bool loadProtocolConfig (JsonDocument& config);
+    bool saveGpioConfig     (const JsonDocument& config);
+    bool loadGpioConfig     (JsonDocument& config);
 
     // ── 文件系统管理 ────────────────────────────────────────────────────────
     bool isFileSystemOK();

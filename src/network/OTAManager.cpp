@@ -10,6 +10,22 @@
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
 #include <Update.h>
+#include <HTTPClient.h>
+#include <WiFi.h>
+
+// OTA状态枚举
+enum OTAStatus {
+    OTA_IDLE = 0,
+    OTA_DOWNLOADING = 1,
+    OTA_UPLOADING = 2,
+    OTA_COMPLETED = 3,
+    OTA_FAILED = 4
+};
+
+static OTAStatus otaStatus = OTA_IDLE;
+static String otaErrorMessage = "";
+static String otaFirmwareUrl = "";
+static int otaTaskId = 0;
 
 // 构造函数
 OTAManager::OTAManager(AsyncWebServer* webServer) 
@@ -225,10 +241,110 @@ bool OTAManager::startOTA(const String& url) {
     
     LOG_INFO("OTAManager: Starting OTA from URL: " + url);
     
-    // 这里需要实现HTTP客户端来下载固件
-    // 由于代码复杂性，这里仅提供框架
-    // 实际实现需要包含WiFiClient和HTTPClient
+    otaInProgress = true;
+    otaStartTime = millis();
+    otaStatus = OTA_DOWNLOADING;
+    otaFirmwareUrl = url;
+    otaErrorMessage = "";
+    currentSize = 0;
+    progress = 0;
     
+    WiFiClient client;
+    HTTPClient http;
+    
+    http.begin(client, url);
+    http.setTimeout(30000);  // 30秒超时
+    
+    int httpCode = http.GET();
+    
+    if (httpCode != HTTP_CODE_OK) {
+        otaErrorMessage = "HTTP error: " + String(httpCode);
+        LOG_ERROR("OTAManager: " + otaErrorMessage);
+        otaStatus = OTA_FAILED;
+        otaInProgress = false;
+        http.end();
+        return false;
+    }
+    
+    totalSize = http.getSize();
+    LOG_INFO("OTAManager: Firmware size: " + String(totalSize) + " bytes");
+    
+    if (totalSize <= 0) {
+        otaErrorMessage = "Invalid firmware size";
+        LOG_ERROR("OTAManager: " + otaErrorMessage);
+        otaStatus = OTA_FAILED;
+        otaInProgress = false;
+        http.end();
+        return false;
+    }
+    
+    // 开始更新
+    if (!Update.begin(totalSize)) {
+        otaErrorMessage = "Update begin failed: " + String(Update.errorString());
+        LOG_ERROR("OTAManager: " + otaErrorMessage);
+        otaStatus = OTA_FAILED;
+        otaInProgress = false;
+        http.end();
+        return false;
+    }
+    
+    // 设置进度回调
+    Update.onProgress([this](size_t prog, size_t total) {
+        this->currentSize = prog;
+        this->progress = total > 0 ? (prog * 100 / total) : 0;
+        if (this->progress % 10 == 0) {
+            LOG_INFO("OTAManager: Download progress: " + String(this->progress) + "%");
+        }
+    });
+    
+    // 获取流并写入
+    WiFiClient* stream = http.getStreamPtr();
+    uint8_t buff[1024];
+    int bytesRead = 0;
+    
+    while (http.connected() && (totalSize > 0 || totalSize == -1)) {
+        size_t available = stream->available();
+        if (available) {
+            int c = stream->readBytes(buff, ((available > sizeof(buff)) ? sizeof(buff) : available));
+            if (Update.write(buff, c) != c) {
+                otaErrorMessage = "Write failed: " + String(Update.errorString());
+                LOG_ERROR("OTAManager: " + otaErrorMessage);
+                Update.end(false);
+                otaStatus = OTA_FAILED;
+                otaInProgress = false;
+                http.end();
+                return false;
+            }
+            
+            currentSize += c;
+            progress = totalSize > 0 ? (currentSize * 100 / totalSize) : 0;
+            
+            if (totalSize > 0) {
+                totalSize -= c;
+            }
+        }
+        delay(1);
+    }
+    
+    http.end();
+    
+    if (Update.end(true)) {
+        if (Update.isFinished()) {
+            LOG_INFO("OTAManager: OTA update completed successfully");
+            otaStatus = OTA_COMPLETED;
+            progress = 100;
+            
+            // 延迟重启
+            delay(1000);
+            ESP.restart();
+            return true;
+        }
+    }
+    
+    otaErrorMessage = "Update failed: " + String(Update.errorString());
+    LOG_ERROR("OTAManager: " + otaErrorMessage);
+    otaStatus = OTA_FAILED;
+    otaInProgress = false;
     return false;
 }
 
@@ -265,4 +381,9 @@ size_t OTAManager::getTotalSize() const {
 // 获取已用时间
 unsigned long OTAManager::getElapsedTime() const {
     return millis() - otaStartTime;
+}
+
+// 获取错误信息
+String OTAManager::getErrorMessage() const {
+    return otaErrorMessage;
 }

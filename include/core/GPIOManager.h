@@ -5,7 +5,12 @@
 #include <map>
 #include <vector>
 #include <functional>
+#include <LittleFS.h>
+#include <ArduinoJson.h>
 #include "../systems/GpioConfig.h"
+
+// GPIO配置文件路径
+#define GPIO_CONFIG_FILE "/config/gpio.json"
 
 class GPIOManager {
 public:
@@ -22,6 +27,7 @@ public:
     bool configurePin(const GPIOConfig& config);
     bool configurePins(const std::vector<GPIOConfig>& configs);
     bool reconfigurePin(uint8_t pin, GPIOMode newMode);
+    bool removePin(uint8_t pin);  ///< 删除GPIO配置
     
     // 状态操作
     GPIOState readPin(uint8_t pin);

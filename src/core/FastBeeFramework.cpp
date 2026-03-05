@@ -109,42 +109,18 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     
-    // 初始化网络
+    // 初始化网络（会从 network.json 加载配置）
     if (!network->initialize()) {
-        LOG_WARNING("[STEP4] Network: No saved config, using defaults");
+        LOG_WARNING("[STEP4] Network initialization returned false");
     }
     
-    // 测试阶段：硬编码 WiFi 配置
-    #define TEST_WIFI_SSID "fastbee-device"
-    #define TEST_WIFI_PASS "15208747707"
-    
-    LOGGER.infof("[STEP4] Connecting to WiFi: %s", TEST_WIFI_SSID);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(TEST_WIFI_SSID, TEST_WIFI_PASS);
-    
-    // 等待 WiFi 连接
-    LOG_INFO("[STEP4] Waiting for WiFi connection...");
-    int retries = 0;
-    while (WiFi.status() != WL_CONNECTED && retries < 30) {
-        delay(500);
-        retries++;
-    }
-    
-    // 检查网络状态并启动mDNS
+    // 检查网络状态
     if (WiFi.status() == WL_CONNECTED) {
         LOGGER.infof("[STEP4] WiFi Connected! IP: %s", WiFi.localIP().toString().c_str());
-        // 启动 mDNS 服务
-        if (MDNS.begin("fastbee")) {
-            MDNS.addService("http", "tcp", 80);
-            LOG_INFO("[STEP4] mDNS started: http://fastbee.local");
-        }
-    } else {
-        // WiFi 连接失败，启动 AP 模式
-        LOG_WARNING("[STEP4] WiFi connection failed, starting AP mode");
-        WiFi.mode(WIFI_AP);
-        WiFi.softAP("FastBee-Config", "12345678");
+    } else if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
         LOGGER.infof("[STEP4] AP Mode IP: %s", WiFi.softAPIP().toString().c_str());
-        LOG_INFO("[STEP4] Connect to WiFi 'FastBee-Config' (pwd: 12345678)");
+    } else {
+        LOG_WARNING("[STEP4] Network not connected");
     }
     LOG_INFO("[STEP4] NetworkManager OK");
 
@@ -182,15 +158,9 @@ bool FastBeeFramework::initialize() {
         LOG_ERROR("[STEP7] Failed to initialize web config manager");
         return false;
     }
-    // 注入 RoleManager 给 WebConfigManager
+    // 注入 RoleManager 和 NetworkManager 给 WebConfigManager
     webConfig->setRoleManager(roleManager.get());
-        
-    // 启动 Web Server
-    LOG_INFO("[STEP7] Starting Web Server...");
-    if (!webConfig->start()) {
-        LOG_ERROR("[STEP7] Failed to start web server");
-        return false;
-    }
+    webConfig->setNetworkManager(network.get());
     LOG_INFO("[STEP7] Web Server OK");
     
     // 步骤8: 初始化OTA管理器

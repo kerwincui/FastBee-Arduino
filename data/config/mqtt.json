@@ -1,9 +1,0 @@
-{
-  "server": "iot.fastbee.cn",
-  "port": 1883,
-  "clientId": "",
-  "username": "15208747707",
-  "password": "fastbee",
-  "topicPrefix": "",
-  "keepAlive": 60
-}

@@ -1,0 +1,58 @@
+{
+  "modbusRtu": {
+    "enabled": false,
+    "port": "/dev/ttyS0",
+    "baudRate": 19200,
+    "dataBits": 8,
+    "stopBits": 1,
+    "parity": "none",
+    "timeout": 1000,
+    "slaveAddress": 1,
+    "txPin": 17,
+    "rxPin": 16,
+    "dePin": 4
+  },
+  "modbusTcp": {
+    "enabled": false,
+    "server": "192.168.1.100",
+    "port": 502,
+    "slaveId": 1,
+    "timeout": 5000
+  },
+  "mqtt": {
+    "enabled": true,
+    "server": "iot.fastbee.cn",
+    "port": 1883,
+    "clientId": "S&FB100900001&1&1",
+    "username": "FastBee",
+    "password": "P47T6OD5IPFWHUM6",
+    "keepAlive": 60,
+    "publishTopic": "/1/FB100900001/property/post",
+    "subscribeTopic": "/1/FB100900001/function/get"
+  },
+  "http": {
+    "enabled": false,
+    "url": "https://api.example.com",
+    "port": 80,
+    "method": "POST",
+    "timeout": 30,
+    "interval": 60,
+    "retry": 3
+  },
+  "coap": {
+    "enabled": false,
+    "server": "coap://example.com",
+    "port": 5683,
+    "method": "POST",
+    "path": "sensors/temperature"
+  },
+  "tcp": {
+    "enabled": false,
+    "server": "192.168.1.200",
+    "port": 5000,
+    "timeout": 5000,
+    "keepAlive": 60,
+    "maxRetry": 5,
+    "reconnectInterval": 10
+  }
+}

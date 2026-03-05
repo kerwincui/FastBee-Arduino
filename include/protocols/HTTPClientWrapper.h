@@ -20,7 +20,7 @@ public:
 
     bool begin(const HTTPConfig& config);
     // 从LittleFS加载配置
-    bool beginFromConfig(const char* configPath = FileSystem::HTTP_CONFIG_FILE);
+    bool beginFromConfig(const char* configPath = FileSystem::PROTOCOL_CONFIG_FILE);
 
     void end();
     bool get(const String& endpoint, String& response);

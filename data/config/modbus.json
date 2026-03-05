@@ -1,9 +1,0 @@
-{
-  "slaveAddress": 1,
-  "baudRate": 9600,
-  "txPin": 17,
-  "rxPin": 16,
-  "dePin": 4,
-  "responseTimeout": 1000,
-  "interFrameDelay": 5
-}

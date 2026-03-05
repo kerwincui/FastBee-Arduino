@@ -105,6 +105,12 @@ public:
      * @return 已用时间（毫秒）
      */
     unsigned long getElapsedTime() const;
+    
+    /**
+     * @brief 获取错误信息
+     * @return 错误信息字符串
+     */
+    String getErrorMessage() const;
 
 private:
     /**

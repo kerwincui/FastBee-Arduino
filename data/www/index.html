@@ -57,16 +57,16 @@
                         <span class="menu-icon">📊</span> <span id="menu-dashboard">设备监控</span>
                     </a>
                     <a href="#" class="menu-item" data-page="config">
-                        <span class="menu-icon">⚙️</span> <span id="menu-config">设备配置</span>
+                        <span class="menu-icon">🔌</span> <span id="menu-protocol">通信协议</span>
                     </a>
                     <a href="#" class="menu-item" data-page="network">
                         <span class="menu-icon">🌐</span> <span id="menu-network">网络设置</span>
                     </a>
+                    <a href="#" class="menu-item" data-page="device">
+                        <span class="menu-icon">🛠️</span> <span id="menu-device">设备配置</span>
+                    </a>
                     <a href="#" class="menu-item" data-page="data">
                         <span class="menu-icon">📁</span> <span id="menu-data">文件管理</span>
-                    </a>
-                    <a href="#" class="menu-item" data-page="system">
-                        <span class="menu-icon">📈</span> <span id="menu-system">系统监控</span>
                     </a>
                     <a href="#" class="menu-item" data-page="users">
                         <span class="menu-icon">👥</span> <span id="menu-users">用户管理</span>
@@ -75,10 +75,10 @@
                         <span class="menu-icon">🛡️</span> <span id="menu-roles">角色管理</span>
                     </a>
                     <a href="#" class="menu-item" data-page="logs">
-                        <span class="menu-icon">📋</span> <span id="menu-logs">设备日志</span>
+                        <span class="menu-icon">📊</span> <span id="menu-logs">设备日志</span>
                     </a>
                     <a href="#" class="menu-item" data-page="gpio">
-                        <span class="menu-icon">🔗</span> <span id="menu-gpio">GPIO配置</span>
+                        <span class="menu-icon">🔧</span> <span id="menu-gpio">GPIO配置</span>
                     </a>
                 </div>
                 
@@ -110,55 +110,127 @@
 
                 <!-- 内容区域 -->
                 <div class="content">
-                    <!-- 仪表盘页面 -->
+                    <!-- 设备监控页面 -->
                     <div id="dashboard-page" class="page active">
-                        <div class="stats-grid">
-                            <div class="stat-card">
-                                <div class="stat-value" style="color: var(--primary);" id="cpu-usage">42%</div>
-                                <div class="stat-label" id="cpu-label">CPU使用率</div>
+                        <!-- 设备信息卡片 -->
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                            <!-- 设备基本信息 -->
+                            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px;">
+                                <h3 style="margin: 0 0 10px; font-size: 14px; opacity: 0.9;">设备信息</h3>
+                                <div style="font-size: 24px; font-weight: bold; margin-bottom: 5px;" id="monitor-chip-model">--</div>
+                                <div style="font-size: 12px; opacity: 0.8;">
+                                    CPU: <span id="monitor-cpu-freq">--</span> MHz | 
+                                    SDK: <span id="monitor-sdk">--</span>
+                                </div>
                             </div>
-                            <div class="stat-card">
-                                <div class="stat-value" style="color: var(--success);" id="memory-usage">68%</div>
-                                <div class="stat-label" id="memory-label">内存使用率</div>
+                            
+                            <!-- 运行时间 -->
+                            <div style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); color: white; padding: 20px; border-radius: 8px;">
+                                <h3 style="margin: 0 0 10px; font-size: 14px; opacity: 0.9;">运行时间</h3>
+                                <div style="font-size: 28px; font-weight: bold; margin-bottom: 5px;" id="monitor-uptime">--</div>
+                                <div style="font-size: 12px; opacity: 0.8;">系统启动至今</div>
                             </div>
-                            <div class="stat-card">
-                                <div class="stat-value" style="color: var(--warning);" id="storage-usage">35%</div>
-                                <div class="stat-label" id="storage-label">存储使用率</div>
-                            </div>
-                            <div class="stat-card">
-                                <div class="stat-value" style="color: var(--danger);" id="temperature">42°C</div>
-                                <div class="stat-label" id="temp-label">设备温度</div>
+                            
+                            <!-- 网络状态 -->
+                            <div style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; padding: 20px; border-radius: 8px;">
+                                <h3 style="margin: 0 0 10px; font-size: 14px; opacity: 0.9;">网络状态</h3>
+                                <div style="font-size: 14px; margin-bottom: 5px;" id="monitor-network-status">--</div>
+                                <div style="font-size: 12px; opacity: 0.8;" id="monitor-ip">--</div>
                             </div>
                         </div>
 
-                        <div class="card">
-                            <div class="card-header">
-                                <h2 class="card-title" id="device-status-title">设备状态</h2>
-                                <div style="color: var(--gray); font-size: 14px;">
-                                    <span id="online-count">2</span>/<span id="total-count">4</span> <span id="online-text">在线</span>
-                                </div>
+                        <!-- 资源使用仪表盘 -->
+                        <div class="card" style="margin-bottom: 20px;">
+                            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                                <h2 class="card-title">资源使用情况</h2>
+                                <button class="pure-button pure-button-small" id="monitor-refresh-btn">
+                                    <i class="fas fa-sync-alt"></i> 刷新
+                                </button>
                             </div>
                             <div class="card-body">
-                                <div class="pure-table-container" style="overflow-x: auto;">
-                                    <table class="pure-table pure-table-bordered" style="width: 100%;">
-                                        <thead>
-                                            <tr>
-                                                <th id="device-name-col">设备名称</th>
-                                                <th id="device-status-col">状态</th>
-                                                <th id="last-update-col">最后更新</th>
-                                                <th id="device-actions-col">操作</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody id="device-table-body">
-                                            <!-- 设备数据将通过JS动态生成 -->
-                                        </tbody>
-                                    </table>
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;">
+                                    <!-- Flash 存储 -->
+                                    <div style="border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; background: #fafafa;">
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                            <span style="font-weight: bold; color: #333;"><i class="fas fa-microchip" style="color: #ff6b6b;"></i> Flash 存储</span>
+                                            <span style="font-size: 12px; color: #666;" id="monitor-flash-percent">--%</span>
+                                        </div>
+                                        <div style="background: #e0e0e0; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 10px;">
+                                            <div id="monitor-flash-bar" style="background: linear-gradient(90deg, #ff6b6b, #ee5a5a); height: 100%; width: 0%; transition: width 0.5s;"></div>
+                                        </div>
+                                        <div style="display: flex; justify-content: space-between; font-size: 12px; color: #666;">
+                                            <span>已用: <span id="monitor-flash-used">--</span></span>
+                                            <span>可用: <span id="monitor-flash-free">--</span></span>
+                                        </div>
+                                        <div style="margin-top: 10px; font-size: 11px; color: #999;">
+                                            总计: <span id="monitor-flash-total">--</span> | 固件: <span id="monitor-flash-sketch">--</span>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- 内存使用 -->
+                                    <div style="border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; background: #fafafa;">
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                            <span style="font-weight: bold; color: #333;"><i class="fas fa-memory" style="color: #4ecdc4;"></i> 内存 (Heap)</span>
+                                            <span style="font-size: 12px; color: #666;" id="monitor-heap-percent">--%</span>
+                                        </div>
+                                        <div style="background: #e0e0e0; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 10px;">
+                                            <div id="monitor-heap-bar" style="background: linear-gradient(90deg, #4ecdc4, #44a08d); height: 100%; width: 0%; transition: width 0.5s;"></div>
+                                        </div>
+                                        <div style="display: flex; justify-content: space-between; font-size: 12px; color: #666;">
+                                            <span>已用: <span id="monitor-heap-used">--</span></span>
+                                            <span>可用: <span id="monitor-heap-free">--</span></span>
+                                        </div>
+                                        <div style="margin-top: 10px; font-size: 11px; color: #999;">
+                                            总计: <span id="monitor-heap-total">--</span> | 最小可用: <span id="monitor-heap-min">--</span>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- 文件系统 -->
+                                    <div style="border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; background: #fafafa;">
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                            <span style="font-weight: bold; color: #333;"><i class="fas fa-hdd" style="color: #45b7d1;"></i> 文件系统 (LittleFS)</span>
+                                            <span style="font-size: 12px; color: #666;" id="monitor-fs-percent">--%</span>
+                                        </div>
+                                        <div style="background: #e0e0e0; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 10px;">
+                                            <div id="monitor-fs-bar" style="background: linear-gradient(90deg, #45b7d1, #96c93d); height: 100%; width: 0%; transition: width 0.5s;"></div>
+                                        </div>
+                                        <div style="display: flex; justify-content: space-between; font-size: 12px; color: #666;">
+                                            <span>已用: <span id="monitor-fs-used">--</span></span>
+                                            <span>可用: <span id="monitor-fs-free">--</span></span>
+                                        </div>
+                                        <div style="margin-top: 10px; font-size: 11px; color: #999;">
+                                            总计: <span id="monitor-fs-total">--</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 用户统计 -->
+                        <div class="card">
+                            <div class="card-header">
+                                <h2 class="card-title">用户统计</h2>
+                            </div>
+                            <div class="card-body">
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px;">
+                                    <div style="text-align: center; padding: 20px; background: #f0f7ff; border-radius: 8px;">
+                                        <div style="font-size: 32px; font-weight: bold; color: #1890ff;" id="monitor-user-total">--</div>
+                                        <div style="font-size: 12px; color: #666; margin-top: 5px;">总用户数</div>
+                                    </div>
+                                    <div style="text-align: center; padding: 20px; background: #f6ffed; border-radius: 8px;">
+                                        <div style="font-size: 32px; font-weight: bold; color: #52c41a;" id="monitor-user-online">--</div>
+                                        <div style="font-size: 12px; color: #666; margin-top: 5px;">在线用户</div>
+                                    </div>
+                                    <div style="text-align: center; padding: 20px; background: #fff7e6; border-radius: 8px;">
+                                        <div style="font-size: 32px; font-weight: bold; color: #fa8c16;" id="monitor-user-sessions">--</div>
+                                        <div style="font-size: 12px; color: #666; margin-top: 5px;">活跃会话</div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    <!-- 设备配置页面 -->
+                    <!-- 通信协议页面 -->
                     <div id="config-page" class="page">
                         <div class="card">
                             <div class="card-header">
@@ -498,18 +570,19 @@
                                 <div class="config-tabs">
                                     <div class="config-tab active" data-tab="base">基本配置</div>
                                     <div class="config-tab" data-tab="advance">高级配置</div>
-                                    <div class="config-tab" data-tab="monitor">网络监控</div>
+                                    <div class="config-tab" data-tab="netstatus">网络状态</div>
                                 </div>
 
                                 <!-- 基本配置 -->
                                 <div id="base" class="config-content active">
-                                    <div class="wifi-config">
-                                        <h3>WiFi列表</h3>
-                                        <button onclick="openWifiScanner()" class="pure-button pure-button-small" style="margin-bottom: 15px;">
-                                            扫描网络
+                                    <!-- WiFi扫描区域 -->
+                                    <div class="wifi-config" style="margin-bottom: 20px;">
+                                        <h3 style="margin-bottom: 10px;">WiFi列表</h3>
+                                        <button id="wifi-scan-btn" class="pure-button pure-button-small" style="margin-bottom: 15px;">
+                                            <i class="fas fa-search"></i> 扫描网络
                                         </button>
-                                        <div id="wifi-list" class="wifi-list">
-                                            <!-- WiFi列表动态加载 -->
+                                        <div id="wifi-scan-results" style="display: none; border: 1px solid #ddd; border-radius: 4px; max-height: 200px; overflow-y: auto;">
+                                            <!-- WiFi扫描结果动态加载 -->
                                         </div>
                                     </div>
 
@@ -519,15 +592,15 @@
                                                 <div class="pure-control-group">
                                                     <label for="wifi-mode">网络模式</label>
                                                     <select id="wifi-mode" class="pure-input-1">
-                                                        <option value="0" selected>仅客户端模式 (STA)</option>
+                                                        <option value="0">仅客户端模式 (STA)</option>
                                                         <option value="1">仅热点模式 (AP)</option>
-                                                        <option value="2">客户端+热点模式 (AP+STA)</option>
+                                                        <option value="2" selected>客户端+热点模式 (AP+STA)</option>
                                                     </select>
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
                                                     <label for="wifi-ssid">SSID</label>
-                                                    <input type="text" id="wifi-ssid" class="pure-input-1" value="MyWiFi">
+                                                    <input type="text" id="wifi-ssid" class="pure-input-1" placeholder="输入WiFi名称">
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
@@ -543,8 +616,8 @@
                                                 <div class="pure-control-group">
                                                     <label for="enable-mdns">mDNS</label>
                                                     <select id="enable-mdns" class="pure-input-1">
-                                                        <option value="enabled" selected>启用</option>
-                                                        <option value="disabled">禁用</option>
+                                                        <option value="1" selected>启用</option>
+                                                        <option value="0">禁用</option>
                                                     </select>
                                                 </div>
                                             </div>
@@ -557,51 +630,51 @@
                                                 
                                                 <div class="pure-control-group">
                                                     <label for="wifi-password">密码</label>
-                                                    <input type="password" id="wifi-password" class="pure-input-1" value="password">
+                                                    <input type="password" id="wifi-password" class="pure-input-1" placeholder="输入WiFi密码">
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
                                                     <label for="wifi-dhcp">DHCP</label>
                                                     <select id="wifi-dhcp" class="pure-input-1">
-                                                        <option value="enabled" selected>启用</option>
-                                                        <option value="disabled">禁用</option>
+                                                        <option value="0" selected>启用</option>
+                                                        <option value="1">禁用</option>
                                                     </select>
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
                                                     <label for="use-static-ip">启用静态IP</label>
-                                                    <select id="use-static-ip" class="pure-input-1" onchange="toggleStaticIP()">
-                                                        <option value="disabled" selected>禁用</option>
-                                                        <option value="enabled">启用</option>
+                                                    <select id="use-static-ip" class="pure-input-1">
+                                                        <option value="0" selected>禁用</option>
+                                                        <option value="1">启用</option>
                                                     </select>
                                                 </div>
                                             </div>
                                         </div>
 
                                         <div id="static-ip-section" style="display: none; margin-top: 20px;">
-                                            <h4>静态IP配置</h4>
+                                            <h4 style="margin-bottom: 15px;">静态IP配置</h4>
                                             <div class="config-form-grid">
                                                 <div class="config-form-column">
                                                     <div class="pure-control-group">
                                                         <label for="static-ip">IP地址</label>
-                                                        <input type="text" id="static-ip" class="pure-input-1" value="192.168.1.100">
+                                                        <input type="text" id="static-ip" class="pure-input-1" placeholder="192.168.1.100">
                                                     </div>
                                                     
                                                     <div class="pure-control-group">
                                                         <label for="subnet">子网掩码</label>
-                                                        <input type="text" id="subnet" class="pure-input-1" value="255.255.255.0">
+                                                        <input type="text" id="subnet" class="pure-input-1" placeholder="255.255.255.0">
                                                     </div>
                                                 </div>
                                                 
                                                 <div class="config-form-column">
                                                     <div class="pure-control-group">
                                                         <label for="gateway">网关</label>
-                                                        <input type="text" id="gateway" class="pure-input-1" value="192.168.1.1">
+                                                        <input type="text" id="gateway" class="pure-input-1" placeholder="192.168.1.1">
                                                     </div>
                                                     
                                                     <div class="pure-control-group">
-                                                        <label for="backup-ip">备用IP</label>
-                                                        <input type="text" id="backup-ip" class="pure-input-1" value="192.168.1.101">
+                                                        <label for="dns1">DNS服务器</label>
+                                                        <input type="text" id="dns1" class="pure-input-1" placeholder="8.8.8.8">
                                                     </div>
                                                 </div>
                                             </div>
@@ -609,12 +682,31 @@
 
                                         <hr style="margin: 20px 0; border-color: #e0e0e0;" />
 
-                                        <h4>热点配置</h4>
+                                        <h4 style="margin-bottom: 15px;">热点配置</h4>
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
                                                     <label for="ap-ssid">热点名称</label>
                                                     <input type="text" id="ap-ssid" class="pure-input-1" placeholder="输入热点名称">
+                                                </div>
+                                                
+                                                <div class="pure-control-group">
+                                                    <label for="ap-channel">信道</label>
+                                                    <select id="ap-channel" class="pure-input-1">
+                                                        <option value="1" selected>1</option>
+                                                        <option value="2">2</option>
+                                                        <option value="3">3</option>
+                                                        <option value="4">4</option>
+                                                        <option value="5">5</option>
+                                                        <option value="6">6</option>
+                                                        <option value="7">7</option>
+                                                        <option value="8">8</option>
+                                                        <option value="9">9</option>
+                                                        <option value="10">10</option>
+                                                        <option value="11">11</option>
+                                                        <option value="12">12</option>
+                                                        <option value="13">13</option>
+                                                    </select>
                                                 </div>
                                             </div>
                                             
@@ -623,15 +715,28 @@
                                                     <label for="ap-password">热点密码</label>
                                                     <input type="password" id="ap-password" class="pure-input-1" placeholder="输入热点密码">
                                                 </div>
+                                                
+                                                <div class="pure-control-group">
+                                                    <label for="ap-hidden">隐藏热点</label>
+                                                    <select id="ap-hidden" class="pure-input-1">
+                                                        <option value="0" selected>否</option>
+                                                        <option value="1">是</option>
+                                                    </select>
+                                                </div>
                                             </div>
                                         </div>
 
                                         <div class="message message-success" id="wifi-success" style="display: none; margin-top: 15px;">
                                             WiFi配置保存成功！
                                         </div>
+                                        <div class="message message-error" id="wifi-error" style="display: none; margin-top: 15px;">
+                                            WiFi配置保存失败！
+                                        </div>
 
                                         <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary">保存配置</button>
+                                            <button type="submit" class="pure-button pure-button-primary">
+                                                <i class="fas fa-save"></i> 保存配置
+                                            </button>
                                         </div>
                                     </form>
                                 </div>
@@ -707,132 +812,638 @@
                                     </form>
                                 </div>
 
-                                <!-- 网络监控 -->
-                                <div id="monitor" class="config-content">
-                                    <div>
-                                        <div class="info-grid">
-                                            <div class="info-item">
-                                                <div class="info-label">连接状态</div>
-                                                <div class="info-value" id="status-text">已连接</div>
+                                <!-- 网络状态 -->
+                                <div id="netstatus" class="config-content">
+                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                        <h3 style="margin: 0;">当前网络状态</h3>
+                                        <button id="net-status-refresh-btn" class="pure-button pure-button-small">
+                                            <i class="fas fa-sync-alt"></i> 刷新
+                                        </button>
+                                    </div>
+
+                                    <!-- 连接状态卡片 -->
+                                    <div class="config-form-grid">
+                                        <div class="config-form-column">
+                                            <div class="card" style="margin-bottom: 15px; border: 1px solid #e0e0e0;">
+                                                <div class="card-header" style="padding: 10px 15px; background: #f5f5f5;">
+                                                    <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-wifi"></i> STA 连接信息</h4>
+                                                </div>
+                                                <div class="card-body" style="padding: 12px 15px;">
+                                                    <table class="pure-table" style="width: 100%; font-size: 13px;">
+                                                        <tbody>
+                                                            <tr>
+                                                                <td style="color: #666; width: 120px;">状态</td>
+                                                                <td id="ns-status"><span class="badge badge-info">待加载...</span></td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="color: #666;">SSID</td>
+                                                                <td id="ns-ssid">--</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="color: #666;">IP 地址</td>
+                                                                <td id="ns-ip">--</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="color: #666;">网关</td>
+                                                                <td id="ns-gateway">--</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="color: #666;">子网掩码</td>
+                                                                <td id="ns-subnet">--</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="color: #666;">DNS</td>
+                                                                <td id="ns-dns">--</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="color: #666;">信号强度</td>
+                                                                <td id="ns-rssi">--</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="color: #666;">MAC 地址</td>
+                                                                <td id="ns-mac">--</td>
+                                                            </tr>
+                                                        </tbody>
+                                                    </table>
+                                                </div>
                                             </div>
-                                            <div class="info-item">
-                                                <div class="info-label">IP地址</div>
-                                                <div class="info-value" id="current-ip">192.168.1.100</div>
+                                        </div>
+
+                                        <div class="config-form-column">
+                                            <div class="card" style="margin-bottom: 15px; border: 1px solid #e0e0e0;">
+                                                <div class="card-header" style="padding: 10px 15px; background: #f5f5f5;">
+                                                    <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-broadcast-tower"></i> AP 热点信息</h4>
+                                                </div>
+                                                <div class="card-body" style="padding: 12px 15px;">
+                                                    <table class="pure-table" style="width: 100%; font-size: 13px;">
+                                                        <tbody>
+                                                            <tr>
+                                                                <td style="color: #666; width: 120px;">AP 名称</td>
+                                                                <td id="ns-ap-ssid">--</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="color: #666;">AP IP</td>
+                                                                <td id="ns-ap-ip">--</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="color: #666;">连接客户数</td>
+                                                                <td id="ns-ap-clients">--</td>
+                                                            </tr>
+                                                        </tbody>
+                                                    </table>
+                                                </div>
                                             </div>
-                                            <div class="info-item">
-                                                <div class="info-label">网关地址</div>
-                                                <div class="info-value" id="current-gateway">192.168.1.1</div>
-                                            </div>
-                                            <div class="info-item">
-                                                <div class="info-label">子网掩码</div>
-                                                <div class="info-value" id="current-subnet">255.255.255.0</div>
-                                            </div>
-                                            <div class="info-item">
-                                                <div class="info-label">DNS服务器</div>
-                                                <div class="info-value" id="current-dns">8.8.8.8, 8.8.4.4</div>
-                                            </div>
-                                            <div class="info-item">
-                                                <div class="info-label">信号强度</div>
-                                                <div class="info-value" id="signal-strength">-65 dBm</div>
-                                            </div>
-                                            <div class="info-item">
-                                                <div class="info-label">连接时间</div>
-                                                <div class="info-value" id="connection-time">2小时15分钟</div>
-                                            </div>
-                                            <div class="info-item">
-                                                <div class="info-label">IP类型</div>
-                                                <div class="info-value" id="ip-type">静态IP</div>
+
+                                            <div class="card" style="border: 1px solid #e0e0e0;">
+                                                <div class="card-header" style="padding: 10px 15px; background: #f5f5f5;">
+                                                    <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-chart-bar"></i> 连接统计</h4>
+                                                </div>
+                                                <div class="card-body" style="padding: 12px 15px;">
+                                                    <table class="pure-table" style="width: 100%; font-size: 13px;">
+                                                        <tbody>
+                                                            <tr>
+                                                                <td style="color: #666; width: 120px;">网络模式</td>
+                                                                <td id="ns-mode">--</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="color: #666;">mDNS 域名</td>
+                                                                <td id="ns-mdns">--</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="color: #666;">重连次数</td>
+                                                                <td id="ns-reconnect">--</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="color: #666;">互联网</td>
+                                                                <td id="ns-internet">--</td>
+                                                            </tr>
+                                                            <tr>
+                                                                <td style="color: #666;">IP 冲突</td>
+                                                                <td id="ns-conflict">--</td>
+                                                            </tr>
+                                                        </tbody>
+                                                    </table>
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- /网络设置页面 -->
 
-                                    <div style="margin-top: 30px;">
-                                        <h3>连接历史</h3>
-                                        <div style="overflow-x: auto;margin-top:10px;">
-                                            <table class="pure-table pure-table-bordered" style="width: 100%;">
-                                                <thead>
+                    <!-- 设备配置页面 -->
+                    <div id="device-page" class="page">
+                        <div class="card">
+                            <div class="card-header">
+                                <h2 class="card-title">设备配置</h2>
+                            </div>
+                            <div class="card-body">
+                                <div class="config-tabs">
+                                    <div class="config-tab active" data-tab="dev-basic">基本信息</div>
+                                    <div class="config-tab" data-tab="dev-ntp">NTP时间</div>
+                                    <div class="config-tab" data-tab="dev-provision">AP配网</div>
+                                    <div class="config-tab" data-tab="dev-ble">蓝牙配网</div>
+                                    <div class="config-tab" data-tab="dev-ota">OTA升级</div>
+                                    <div class="config-tab" data-tab="dev-system">系统操作</div>
+                                </div>
+
+                                <!-- 基本信息 tab -->
+                                <div id="dev-basic" class="config-content active">
+                                    <form id="device-basic-form" class="pure-form pure-form-stacked">
+                                        <div class="config-form-grid">
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="dev-name">设备名称</label>
+                                                    <input type="text" id="dev-name" class="pure-input-1" placeholder="输入设备名称">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="dev-location">安装位置</label>
+                                                    <input type="text" id="dev-location" class="pure-input-1" placeholder="例如：一楼服务器房">
+                                                </div>
+                                            </div>
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="dev-description">设备描述</label>
+                                                    <textarea id="dev-description" class="pure-input-1" rows="3" placeholder="输入设备描述"></textarea>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="message message-success" id="dev-basic-success" style="display:none; margin-top:15px;">设备信息保存成功！</div>
+                                        <div style="margin-top: 20px;">
+                                            <button type="submit" class="pure-button pure-button-primary">
+                                                <i class="fas fa-save"></i> 保存信息
+                                            </button>
+                                        </div>
+                                    </form>
+                                </div>
+
+                                <!-- NTP时间 tab -->
+                                <div id="dev-ntp" class="config-content">
+                                    <!-- 当前时间显示 -->
+                                    <div class="card" style="margin-bottom: 20px; border: 1px solid #e0e0e0;">
+                                        <div class="card-header" style="padding: 10px 15px; background: #f5f5f5; display: flex; justify-content: space-between; align-items: center;">
+                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-clock"></i> 当前时间</h4>
+                                            <button id="dev-time-refresh-btn" class="pure-button pure-button-small">
+                                                <i class="fas fa-sync-alt"></i> 刷新
+                                            </button>
+                                        </div>
+                                        <div class="card-body" style="padding: 12px 15px;">
+                                            <table class="pure-table" style="width: 100%; font-size: 13px;">
+                                                <tbody>
                                                     <tr>
-                                                        <th>时间</th>
-                                                        <th>事件</th>
-                                                        <th>详情</th>
+                                                        <td style="color: #666; width: 120px;">日期时间</td>
+                                                        <td><strong id="dev-time-datetime" style="font-size: 16px;">--</strong></td>
                                                     </tr>
-                                                </thead>
-                                                <tbody id="connection-history">
                                                     <tr>
-                                                        <td>2023-07-20 14:30</td>
-                                                        <td>连接成功</td>
-                                                        <td>连接到 WiFi: MyWiFi</td>
+                                                        <td style="color: #666;">NTP同步状态</td>
+                                                        <td id="dev-time-synced">--</td>
                                                     </tr>
                                                     <tr>
-                                                        <td>2023-07-20 13:45</td>
-                                                        <td>断开连接</td>
-                                                        <td>信号丢失</td>
-                                                    </tr>
-                                                    <tr>
-                                                        <td>2023-07-20 10:15</td>
-                                                        <td>连接成功</td>
-                                                        <td>DHCP分配IP: 192.168.1.100</td>
+                                                        <td style="color: #666;">设备运行时间</td>
+                                                        <td id="dev-time-uptime">--</td>
                                                     </tr>
                                                 </tbody>
                                             </table>
                                         </div>
                                     </div>
+
+                                    <!-- NTP配置表单 -->
+                                    <form id="device-ntp-form" class="pure-form pure-form-stacked">
+                                        <div class="config-form-grid">
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="dev-ntp-enable">NTP同步</label>
+                                                    <select id="dev-ntp-enable" class="pure-input-1">
+                                                        <option value="1" selected>启用</option>
+                                                        <option value="0">禁用</option>
+                                                    </select>
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="dev-ntp-server1">NTP服务器1</label>
+                                                    <input type="text" id="dev-ntp-server1" class="pure-input-1" placeholder="pool.ntp.org">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="dev-ntp-server2">NTP服务器2</label>
+                                                    <input type="text" id="dev-ntp-server2" class="pure-input-1" placeholder="time.nist.gov">
+                                                </div>
+                                            </div>
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="dev-timezone">时区</label>
+                                                    <select id="dev-timezone" class="pure-input-1">
+                                                        <option value="CST-8" selected>中国标准时间 (UTC+8)</option>
+                                                        <option value="UTC0">UTC (UTC+0)</option>
+                                                        <option value="JST-9">日本标准时间 (UTC+9)</option>
+                                                        <option value="EST5EDT">美国东部时间 (UTC-5)</option>
+                                                        <option value="PST8PDT">美国西部时间 (UTC-8)</option>
+                                                        <option value="CET-1CEST">中欧时间 (UTC+1)</option>
+                                                    </select>
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="dev-sync-interval">同步间隔 (秒)</label>
+                                                    <input type="number" id="dev-sync-interval" class="pure-input-1" value="3600" min="60" max="86400">
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="message message-success" id="dev-ntp-success" style="display:none; margin-top:15px;">NTP配置保存成功！</div>
+                                        <div style="margin-top: 20px;">
+                                            <button type="submit" class="pure-button pure-button-primary">
+                                                <i class="fas fa-save"></i> 保存NTP配置
+                                            </button>
+                                        </div>
+                                    </form>
+                                </div>
+
+                                <!-- AP配网 tab -->
+                                <div id="dev-provision" class="config-content">
+                                    <!-- 配网状态卡片 -->
+                                    <div class="card" style="margin-bottom: 20px; border: 1px solid #e0e0e0;">
+                                        <div class="card-header" style="padding: 10px 15px; background: #f5f5f5; display: flex; justify-content: space-between; align-items: center;">
+                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-wifi"></i> AP配网状态</h4>
+                                            <button id="provision-refresh-btn" class="pure-button pure-button-small">
+                                                <i class="fas fa-sync-alt"></i> 刷新
+                                            </button>
+                                        </div>
+                                        <div class="card-body" style="padding: 12px 15px;">
+                                            <table class="pure-table" style="width: 100%; font-size: 13px;">
+                                                <tbody>
+                                                    <tr>
+                                                        <td style="color: #666; width: 120px;">配网状态</td>
+                                                        <td><span id="provision-status" class="badge badge-info">未启动</span></td>
+                                                    </tr>
+                                                    <tr>
+                                                        <td style="color: #666;">热点名称</td>
+                                                        <td id="provision-ap-name">--</td>
+                                                    </tr>
+                                                    <tr>
+                                                        <td style="color: #666;">热点IP</td>
+                                                        <td id="provision-ap-ip">192.168.4.1</td>
+                                                    </tr>
+                                                    <tr>
+                                                        <td style="color: #666;">已连接设备</td>
+                                                        <td id="provision-clients">0</td>
+                                                    </tr>
+                                                </tbody>
+                                            </table>
+                                            <div style="margin-top: 15px; display: flex; gap: 10px;">
+                                                <button id="provision-start-btn" class="pure-button" style="background:#27ae60; color:#fff;">
+                                                    <i class="fas fa-play"></i> 启动配网
+                                                </button>
+                                                <button id="provision-stop-btn" class="pure-button" style="background:#e74c3c; color:#fff;">
+                                                    <i class="fas fa-stop"></i> 停止配网
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- 配网参数配置 -->
+                                    <form id="device-provision-form" class="pure-form pure-form-stacked">
+                                        <div class="config-form-grid">
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="provision-ssid">配网热点名称</label>
+                                                    <input type="text" id="provision-ssid" class="pure-input-1" placeholder="fastbee-device">
+                                                    <small style="color: #999;">留空则自动生成随机名称</small>
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="provision-password">配网热点密码</label>
+                                                    <input type="password" id="provision-password" class="pure-input-1" placeholder="留空为开放网络">
+                                                    <small style="color: #999;">留空则为开放网络，无需密码</small>
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="provision-timeout">配网超时 (秒)</label>
+                                                    <input type="number" id="provision-timeout" class="pure-input-1" value="300" min="60" max="3600">
+                                                    <small style="color: #999;">超时后自动关闭配网模式</small>
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="provision-ip">AP热点IP</label>
+                                                    <input type="text" id="provision-ip" class="pure-input-1" value="192.168.4.1" placeholder="192.168.4.1">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="provision-gateway">网关地址</label>
+                                                    <input type="text" id="provision-gateway" class="pure-input-1" value="192.168.4.1" placeholder="192.168.4.1">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="provision-subnet">子网掩码</label>
+                                                    <input type="text" id="provision-subnet" class="pure-input-1" value="255.255.255.0" placeholder="255.255.255.0">
+                                                </div>
+                                            </div>
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="provision-user-id">用户编号</label>
+                                                    <input type="text" id="provision-user-id" class="pure-input-1" placeholder="可选，用于设备绑定">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="provision-product-id">产品ID</label>
+                                                    <input type="text" id="provision-product-id" class="pure-input-1" placeholder="可选">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="provision-auth-code">授权码</label>
+                                                    <input type="text" id="provision-auth-code" class="pure-input-1" placeholder="可选，产品授权码">
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="message message-success" id="provision-success" style="display:none; margin-top:15px;">AP配网配置保存成功！</div>
+                                        <div style="margin-top: 20px;">
+                                            <button type="submit" class="pure-button pure-button-primary">
+                                                <i class="fas fa-save"></i> 保存AP配网配置
+                                            </button>
+                                        </div>
+                                    </form>
+
+                                    <!-- 配网说明 -->
+                                    <div class="card" style="margin-top: 20px; border: 1px solid #17a2b8;">
+                                        <div class="card-header" style="padding: 10px 15px; background: #d1ecf1;">
+                                            <h4 style="margin: 0; font-size: 14px; color: #0c5460;"><i class="fas fa-info-circle"></i> 配网说明</h4>
+                                        </div>
+                                        <div class="card-body" style="padding: 12px 15px; font-size: 13px; color: #0c5460;">
+                                            <ol style="margin: 0; padding-left: 20px;">
+                                                <li>点击"启动配网"开启AP热点模式</li>
+                                                <li>手机连接设备热点（如：fastbee-device-xxx）</li>
+                                                <li>打开配网APP或访问 <strong>http://192.168.4.1</strong></li>
+                                                <li>输入WiFi名称和密码完成配网</li>
+                                                <li>配网成功后设备自动连接目标WiFi</li>
+                                            </ol>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- 蓝牙配网 tab -->
+                                <div id="dev-ble" class="config-content">
+                                    <!-- 蓝牙配网状态卡片 -->
+                                    <div class="card" style="margin-bottom: 20px; border: 1px solid #e0e0e0;">
+                                        <div class="card-header" style="padding: 10px 15px; background: #f5f5f5; display: flex; justify-content: space-between; align-items: center;">
+                                            <h4 style="margin: 0; font-size: 14px;"><i class="fab fa-bluetooth-b"></i> 蓝牙配网状态</h4>
+                                            <button id="ble-provision-refresh-btn" class="pure-button pure-button-small">
+                                                <i class="fas fa-sync-alt"></i> 刷新
+                                            </button>
+                                        </div>
+                                        <div class="card-body" style="padding: 12px 15px;">
+                                            <div style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
+                                                <div style="display: flex; align-items: center; gap: 8px;">
+                                                    <span style="color: #666;">状态：</span>
+                                                    <span id="ble-provision-status-badge" class="status-badge status-offline">未启动</span>
+                                                </div>
+                                                <div style="display: flex; align-items: center; gap: 8px;">
+                                                    <span style="color: #666;">设备名：</span>
+                                                    <span id="ble-provision-device-name" style="font-family: monospace;">--</span>
+                                                </div>
+                                                <div id="ble-provision-remaining-wrap" style="display: none; align-items: center; gap: 8px;">
+                                                    <span style="color: #666;">剩余时间：</span>
+                                                    <span id="ble-provision-remaining" style="font-weight: bold; color: #f0ad4e;">--</span>
+                                                </div>
+                                            </div>
+                                            <div style="margin-top: 15px; display: flex; gap: 10px;">
+                                                <button id="ble-provision-start-btn" class="pure-button pure-button-primary">
+                                                    <i class="fas fa-play"></i> 启动蓝牙配网
+                                                </button>
+                                                <button id="ble-provision-stop-btn" class="pure-button button-error" style="display: none;">
+                                                    <i class="fas fa-stop"></i> 停止蓝牙配网
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- 蓝牙配网参数配置 -->
+                                    <form id="device-ble-provision-form" class="pure-form pure-form-stacked">
+                                        <div class="config-form-grid">
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="ble-device-name">蓝牙设备名称</label>
+                                                    <input type="text" id="ble-device-name" class="pure-input-1" placeholder="蓝牙广播名称" value="FBDevice">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="ble-timeout">配网超时(秒)</label>
+                                                    <input type="number" id="ble-timeout" class="pure-input-1" value="300" min="60" max="1800">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label class="pure-checkbox">
+                                                        <input type="checkbox" id="ble-auto-start"> 启动时自动开启蓝牙配网
+                                                    </label>
+                                                </div>
+                                            </div>
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="ble-service-uuid">服务UUID</label>
+                                                    <input type="text" id="ble-service-uuid" class="pure-input-1" value="6E400001-B5A3-F393-E0A9-E50E24DCCA9F">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="ble-rx-uuid">接收UUID</label>
+                                                    <input type="text" id="ble-rx-uuid" class="pure-input-1" value="6E400002-B5A3-F393-E0A9-E50E24DCCA9F">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="ble-tx-uuid">发送UUID</label>
+                                                    <input type="text" id="ble-tx-uuid" class="pure-input-1" value="6E400003-B5A3-F393-E0A9-E50E24DCCA9F">
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="message message-success" id="ble-provision-success" style="display:none; margin-top:15px;">蓝牙配网配置保存成功！</div>
+                                        <div style="margin-top: 20px;">
+                                            <button type="submit" class="pure-button pure-button-primary">
+                                                <i class="fas fa-save"></i> 保存蓝牙配网配置
+                                            </button>
+                                        </div>
+                                    </form>
+
+                                    <!-- 蓝牙配网说明 -->
+                                    <div style="margin-top: 20px; padding: 15px; background: #e7f3ff; border-radius: 4px; border-left: 4px solid #2196F3;">
+                                        <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #1976D2;"><i class="fas fa-info-circle"></i> 蓝牙配网说明</h4>
+                                        <ol style="margin: 0; padding-left: 20px; color: #666; line-height: 1.8;">
+                                            <li>点击"启动蓝牙配网"按钮，设备将开始蓝牙广播</li>
+                                            <li>使用手机APP搜索并连接到蓝牙设备</li>
+                                            <li>在APP中输入要连接的WiFi名称和密码</li>
+                                            <li>设备收到配置后自动连接WiFi，配网成功后蓝牙连接断开</li>
+                                        </ol>
+                                        <p style="margin: 10px 0 0 0; color: #888; font-size: 12px;">
+                                            <i class="fas fa-lightbulb"></i> 提示：蓝牙配网适用于无法使用AP配网的场景，需要配合支持蓝牙的手机APP使用。
+                                        </p>
+                                    </div>
+                                </div>
+
+                                <!-- OTA升级 tab -->
+                                <div id="dev-ota" class="config-content">
+                                    <!-- OTA状态卡片 -->
+                                    <div class="card" style="margin-bottom: 20px; border: 1px solid #e0e0e0;">
+                                        <div class="card-header" style="padding: 10px 15px; background: #f5f5f5; display: flex; justify-content: space-between; align-items: center;">
+                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-microchip"></i> 固件信息</h4>
+                                            <button id="ota-refresh-btn" class="pure-button pure-button-small">
+                                                <i class="fas fa-sync-alt"></i> 刷新
+                                            </button>
+                                        </div>
+                                        <div class="card-body" style="padding: 12px 15px;">
+                                            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;">
+                                                <div style="display: flex; align-items: center; gap: 8px;">
+                                                    <span style="color: #666;">当前版本：</span>
+                                                    <span id="ota-current-version" style="font-weight: bold;">--</span>
+                                                </div>
+                                                <div style="display: flex; align-items: center; gap: 8px;">
+                                                    <span style="color: #666;">状态：</span>
+                                                    <span id="ota-status-badge" class="status-badge status-online">就绪</span>
+                                                </div>
+                                                <div style="display: flex; align-items: center; gap: 8px;">
+                                                    <span style="color: #666;">Flash空间：</span>
+                                                    <span id="ota-flash-size">--</span>
+                                                </div>
+                                                <div style="display: flex; align-items: center; gap: 8px;">
+                                                    <span style="color: #666;">可用空间：</span>
+                                                    <span id="ota-free-space">--</span>
+                                                </div>
+                                            </div>
+                                            <!-- 进度条 -->
+                                            <div id="ota-progress-wrap" style="display: none; margin-top: 15px;">
+                                                <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                                                    <span style="color: #666;">升级进度</span>
+                                                    <span id="ota-progress-text">0%</span>
+                                                </div>
+                                                <div style="background: #e0e0e0; border-radius: 4px; height: 20px; overflow: hidden;">
+                                                    <div id="ota-progress-bar" style="background: #4CAF50; height: 100%; width: 0%; transition: width 0.3s;"></div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- 在线升级 -->
+                                    <div class="card" style="margin-bottom: 20px; border: 1px solid #e0e0e0;">
+                                        <div class="card-header" style="padding: 10px 15px; background: #e3f2fd;">
+                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-cloud-download-alt"></i> 在线升级</h4>
+                                        </div>
+                                        <div class="card-body" style="padding: 15px;">
+                                            <form id="ota-url-form" class="pure-form">
+                                                <div class="pure-control-group" style="margin-bottom: 15px;">
+                                                    <label for="ota-url">固件下载地址</label>
+                                                    <input type="url" id="ota-url" class="pure-input-1" placeholder="http://example.com/firmware.bin">
+                                                </div>
+                                                <button type="submit" class="pure-button pure-button-primary" id="ota-url-btn">
+                                                    <i class="fas fa-download"></i> 开始在线升级
+                                                </button>
+                                            </form>
+                                        </div>
+                                    </div>
+
+                                    <!-- 本地上传升级 -->
+                                    <div class="card" style="margin-bottom: 20px; border: 1px solid #e0e0e0;">
+                                        <div class="card-header" style="padding: 10px 15px; background: #fff3e0;">
+                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-upload"></i> 本地上传升级</h4>
+                                        </div>
+                                        <div class="card-body" style="padding: 15px;">
+                                            <form id="ota-upload-form" class="pure-form" enctype="multipart/form-data">
+                                                <div class="pure-control-group" style="margin-bottom: 15px;">
+                                                    <label for="ota-file">选择固件文件 (.bin)</label>
+                                                    <input type="file" id="ota-file" accept=".bin" style="display: block; margin-top: 8px;">
+                                                    <small style="color: #888;">仅支持 .bin 格式的固件文件</small>
+                                                </div>
+                                                <button type="submit" class="pure-button pure-button-primary" id="ota-upload-btn">
+                                                    <i class="fas fa-upload"></i> 上传并升级
+                                                </button>
+                                            </form>
+                                        </div>
+                                    </div>
+
+                                    <!-- OTA升级说明 -->
+                                    <div style="padding: 15px; background: #fff8e1; border-radius: 4px; border-left: 4px solid #ffc107;">
+                                        <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #f57c00;"><i class="fas fa-exclamation-triangle"></i> 升级注意事项</h4>
+                                        <ul style="margin: 0; padding-left: 20px; color: #666; line-height: 1.8;">
+                                            <li>升级过程中请勿断开电源或关闭浏览器</li>
+                                            <li>确保固件版本与当前硬件兼容</li>
+                                            <li>升级成功后设备将自动重启</li>
+                                            <li>建议在升级前备份重要配置</li>
+                                        </ul>
+                                    </div>
+                                </div>
+
+                                <!-- 系统操作 tab -->
+                                <div id="dev-system" class="config-content">
+                                    <div class="config-form-grid">
+                                        <div class="config-form-column">
+                                            <!-- 设备重启卡片 -->
+                                            <div class="card" style="border: 1px solid #e0e0e0; margin-bottom: 15px;">
+                                                <div class="card-header" style="padding: 10px 15px; background: #fff3cd;">
+                                                    <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-redo"></i> 重启设备</h4>
+                                                </div>
+                                                <div class="card-body" style="padding: 15px;">
+                                                    <p style="margin: 0 0 15px; font-size: 13px; color: #666;">重启设备将会断开所有连接，配置数据将保留。</p>
+                                                    <div style="display: flex; align-items: center; gap: 10px;">
+                                                        <label style="font-size: 13px;">延迟（秒）：</label>
+                                                        <select id="dev-restart-delay" class="pure-input" style="width: 80px;">
+                                                            <option value="1">1</option>
+                                                            <option value="3" selected>3</option>
+                                                            <option value="5">5</option>
+                                                            <option value="10">10</option>
+                                                        </select>
+                                                        <button id="dev-restart-btn" class="pure-button" style="background:#e67e22; color:#fff;">
+                                                            <i class="fas fa-power-off"></i> 立即重启
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="config-form-column">
+                                            <!-- 内存信息卡片 -->
+                                            <div class="card" style="border: 1px solid #e0e0e0;">
+                                                <div class="card-header" style="padding: 10px 15px; background: #f5f5f5;">
+                                                    <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-microchip"></i> 硬件信息</h4>
+                                                </div>
+                                                <div class="card-body" style="padding: 12px 15px;">
+                                                    <table class="pure-table" style="width: 100%; font-size: 13px;">
+                                                        <tbody>
+                                                            <tr><td style="color:#666; width:120px;">芯片型号</td><td id="dev-sys-chip">--</td></tr>
+                                                            <tr><td style="color:#666;">CPU频率</td><td id="dev-sys-cpu">--</td></tr>
+                                                            <tr><td style="color:#666;">空闲堆栈</td><td id="dev-sys-heap">--</td></tr>
+                                                            <tr><td style="color:#666;">Flash大小</td><td id="dev-sys-flash">--</td></tr>
+                                                            <tr><td style="color:#666;">SDK版本</td><td id="dev-sys-sdk">--</td></tr>
+                                                            <tr><td style="color:#666;">固件版本</td><td id="dev-sys-fw">--</td></tr>
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
+                    <!-- /设备配置页面 -->
 
-                    <!-- 其他页面占位符 -->
                     <div id="data-page" class="page">
                         <div class="card">
-                            <div class="card-header">
+                            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
                                 <h2 class="card-title">文件管理</h2>
+                                <span id="fs-info" style="font-size: 12px; color: #666;"></span>
                             </div>
                             <div class="card-body">
-                                <div class="log-container" id="logContainer">
-                                    <pre>
-    总空间: 1.38 MB
-    可用空间: 1.07 MB
-    📁 config/
-        📄 coap.json (267 字节)
-        📄 http.json (246 字节)
-        📄 modbus.json (146 字节)
-        📄 mqtt.json (182 字节)
-        📄 system.json (298 字节)
-        📄 tcp.json (94 字节)
-        📄 users.json (537 字节)
-    📁 logs/
-        📄 system.log (28469 字节)
-    📁 ota/
-        📄 firmware.bin (0 字节)
-    📁 www/
-        📄 404.html (910 字节)
-    📁 assets/
-        📄 favicon.ico (1475 字节)
-        📄 logo.png (1940 字节)
-    📁 css/
-        📄 main.css (12843 字节)
-        📄 index.html (64040 字节)
-    📁 js/
-        📄 fetch-api.js (~4 KB，替代原 axios.min.js 54KB)
-        📄 main.js (25187 字节)
-                                    </pre>
+                                <div style="display: flex; height: 600px; gap: 10px;">
+                                    <!-- 文件树 -->
+                                    <div style="width: 300px; min-width: 250px; border: 1px solid #ddd; border-radius: 4px; overflow-y: auto; background: #f5f5f5;">
+                                        <div style="padding: 10px; background: #e9e9e9; border-bottom: 1px solid #ddd; font-weight: bold;">
+                                            <button class="pure-button pure-button-small" id="fs-refresh-btn" style="float: right;">刷新</button>
+                                            <button class="pure-button pure-button-small" id="fs-up-btn" style="float: right; margin-right: 5px;">返回上级</button>
+                                            <span id="current-dir-path" style="font-size: 12px; color: #666; display: block; margin-top: 5px;">/</span>
+                                        </div>
+                                        <div id="file-tree" style="padding: 10px; font-family: 'Consolas', monospace; font-size: 13px;">
+                                            <div style="color: #999;">加载中...</div>
+                                        </div>
+                                    </div>
+                                    <!-- 文件编辑器 -->
+                                    <div style="flex: 1; border: 1px solid #ddd; border-radius: 4px; display: flex; flex-direction: column;">
+                                        <div style="padding: 10px; background: #e9e9e9; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center;">
+                                            <span id="current-file-path" style="font-family: monospace; font-size: 13px; color: #666;">请选择文件</span>
+                                            <div>
+                                                <button class="pure-button pure-button-small pure-button-primary" id="fs-save-btn" disabled>保存</button>
+                                                <button class="pure-button pure-button-small" id="fs-close-btn" disabled>关闭</button>
+                                            </div>
+                                        </div>
+                                        <textarea id="file-editor" style="flex: 1; border: none; padding: 10px; font-family: 'Consolas', monospace; font-size: 13px; resize: none;" placeholder="选择文件后在此编辑..." disabled></textarea>
+                                        <div id="file-status" style="padding: 5px 10px; background: #f0f0f0; border-top: 1px solid #ddd; font-size: 12px; color: #666;"></div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    <div id="system-page" class="page">
-                        <div class="card">
-                            <div class="card-header">
-                                <h2 class="card-title">系统监控</h2>
-                            </div>
-                            <div class="card-body">
-                                <p>系统监控页面内容正在开发中...</p>
-                            </div>
-                        </div>
-                    </div>
-
+                    <!-- 用户管理页面 -->
                     <div id="users-page" class="page">
                         <div class="card">
                             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
@@ -894,6 +1505,7 @@
                         </div>
                     </div>
 
+                    <!-- 设备日志页面 -->
                     <div id="logs-page" class="page">
                         <div class="card">
                             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
@@ -919,15 +1531,36 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- GPIO配置页面 -->
                     <div id="gpio-page" class="page">
                         <div class="card">
-                            <div class="card-header">
+                            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
                                 <h2 class="card-title">GPIO配置</h2>
+                                <button class="pure-button pure-button-primary" id="add-gpio-btn">
+                                    <i class="fas fa-plus"></i> 新增GPIO
+                                </button>
                             </div>
                             <div class="card-body">
-                                
-                                
-                                
+                                <!-- GPIO列表表格 -->
+                                <div style="overflow-x: auto;">
+                                    <table class="pure-table pure-table-bordered" style="width: 100%;">
+                                        <thead>
+                                            <tr>
+                                                <th>引脚号</th>
+                                                <th>名称</th>
+                                                <th>模式</th>
+                                                <th>当前状态</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="gpio-table-body">
+                                            <tr>
+                                                <td colspan="5" style="text-align: center; color: #999;">加载中...</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -973,6 +1606,60 @@
             <div class="modal-footer">
                 <button class="pure-button" id="cancel-password-btn">取消</button>
                 <button class="pure-button pure-button-primary" id="confirm-password-btn">确认修改</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- GPIO配置模态窗 -->
+    <div id="gpio-modal" class="modal">
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h2 style="margin: 0; font-size: 18px;" id="gpio-modal-title">新增GPIO</h2>
+                <button id="close-gpio-modal" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer;">×</button>
+            </div>
+            <div class="modal-body">
+                <form id="gpio-form" class="pure-form pure-form-stacked">
+                    <fieldset>
+                        <input type="hidden" id="gpio-original-pin" value="">
+                        
+                        <div class="pure-control-group">
+                            <label for="gpio-pin-input">引脚号 (0-39)</label>
+                            <input type="number" id="gpio-pin-input" class="pure-input-1" min="0" max="39" placeholder="请输入GPIO引脚号" required>
+                        </div>
+                        
+                        <div class="pure-control-group">
+                            <label for="gpio-name-input">名称</label>
+                            <input type="text" id="gpio-name-input" class="pure-input-1" placeholder="例如: LED、Relay" required>
+                        </div>
+                        
+                        <div class="pure-control-group">
+                            <label for="gpio-mode-input">模式</label>
+                            <select id="gpio-mode-input" class="pure-input-1">
+                                <option value="1">数字输入</option>
+                                <option value="2">数字输出</option>
+                                <option value="3">数字输入(上拉)</option>
+                                <option value="4">数字输入(下拉)</option>
+                                <option value="5">模拟输入</option>
+                                <option value="6">模拟输出</option>
+                                <option value="7">PWM输出</option>
+                            </select>
+                        </div>
+                        
+                        <div class="pure-control-group">
+                            <label for="gpio-default-input">初始值</label>
+                            <select id="gpio-default-input" class="pure-input-1">
+                                <option value="0">低电平 (LOW)</option>
+                                <option value="1">高电平 (HIGH)</option>
+                            </select>
+                        </div>
+                        
+                        <div id="gpio-error" class="message message-error" style="display: none;"></div>
+                    </fieldset>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="pure-button" id="cancel-gpio-btn">取消</button>
+                <button class="pure-button pure-button-primary" id="save-gpio-btn">保存</button>
             </div>
         </div>
     </div>

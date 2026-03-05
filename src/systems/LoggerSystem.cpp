@@ -34,10 +34,10 @@ LoggerSystem::LoggerSystem()
     : currentLevel(LOG_INFO),
       outputStream(&Serial),
       serialEnabled(true),
-      fileLoggingEnabled(true),
+      fileLoggingEnabled(false),  // 禁用文件日志以节省空间
       initialized(false),
       espLogCaptureEnabled(true),   // 默认启用 ESP 日志捕获
-      logFileSizeLimit(DEFAULT_LOG_FILE_SIZE_LIMIT) {
+      logFileSizeLimit(8192) {      // 限制日志文件大小为 8KB
 }
 
 bool LoggerSystem::initialize() {
@@ -57,9 +57,25 @@ bool LoggerSystem::initialize() {
 
     initialized = true;
     
+    // 检查文件系统状态
+    if (fileLoggingEnabled) {
+        size_t total = LittleFS.totalBytes();
+        size_t used = LittleFS.usedBytes();
+        Serial.printf("[Logger] FileSystem: total=%lu, used=%lu, free=%lu\n", 
+                      (unsigned long)total, (unsigned long)used, 
+                      (unsigned long)(total - used));
+        if (total == 0) {
+            fileLoggingEnabled = false;
+            Serial.println("[Logger] WARNING: LittleFS not mounted, file logging disabled");
+        } else {
+            Serial.printf("[Logger] File logging enabled, log file: %s\n", LOG_FILE_PATH);
+        }
+    }
+    
     // 启用 ESP-IDF 日志捕获
     if (espLogCaptureEnabled) {
         enableEspLogCapture(true);
+        Serial.println("[Logger] ESP-IDF log capture enabled");
     }
     
     info("Logger system initialized", "Logger");

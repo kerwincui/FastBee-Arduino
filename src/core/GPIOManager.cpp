@@ -16,7 +16,20 @@ GPIOManager& GPIOManager::getInstance() {
 bool GPIOManager::initialize() {
     LOG_INFO("GPIO Manager: Initializing...");
     
-    // 初始化默认引脚配置
+    // 优先从 LittleFS gpio.json 加载配置
+    if (LittleFS.exists(GPIO_CONFIG_FILE)) {
+        LOG_INFO("GPIO Manager: Loading pins from gpio.json");
+        if (loadConfiguration()) {
+            LOGGER.infof("GPIO Manager: Initialized %d pins from config file",
+                        static_cast<int>(pinStates.size()));
+            return true;
+        }
+        LOG_WARNING("GPIO Manager: Failed to load gpio.json, falling back to defaults");
+    } else {
+        LOG_INFO("GPIO Manager: No gpio.json found, using default pin configuration");
+    }
+    
+    // 回退：使用硬编码默认引脚配置
     std::vector<GPIOConfig> defaultPins = {
         GPIO_PINS::SYSTEM_LED,
         GPIO_PINS::USER_BUTTON,
@@ -300,6 +313,30 @@ bool GPIOManager::reconfigurePin(uint8_t pin, GPIOMode newMode) {
     return configurePin(newConfig);
 }
 
+bool GPIOManager::removePin(uint8_t pin) {
+    auto it = pinStates.find(pin);
+    if (it == pinStates.end()) return false;
+    
+    // 解绑中断
+    detachInterrupt(pin);
+    
+    // 删除名称映射
+    auto nameIt = nameToPin.begin();
+    while (nameIt != nameToPin.end()) {
+        if (nameIt->second == pin) {
+            nameIt = nameToPin.erase(nameIt);
+        } else {
+            ++nameIt;
+        }
+    }
+    
+    // 删除引脚状态
+    pinStates.erase(pin);
+    
+    LOGGER.infof("GPIO %d removed", pin);
+    return true;
+}
+
 bool GPIOManager::togglePin(uint8_t pin) {
     GPIOState current = readPin(pin);
     if (current == GPIOState::STATE_UNDEFINED) return false;
@@ -412,15 +449,109 @@ std::vector<String> GPIOManager::getConfiguredPins() const {
 }
 
 bool GPIOManager::saveConfiguration() {
-    // TODO: 使用 ConfigStorage::saveJSONConfig("/config/gpio.json") 持久化
-    LOG_WARNING("GPIOManager::saveConfiguration() not yet implemented");
-    return false;
+    JsonDocument doc;
+    JsonArray pins = doc["pins"].to<JsonArray>();
+    
+    for (const auto& pair : pinStates) {
+        const uint8_t pin = pair.first;
+        const PinState& state = pair.second;
+        
+        JsonObject pinObj = pins.add<JsonObject>();
+        pinObj["pin"] = pin;
+        pinObj["name"] = state.config.name;
+        pinObj["mode"] = static_cast<int>(state.config.mode);
+        pinObj["initialState"] = static_cast<int>(state.config.initialState);
+        pinObj["inverted"] = state.config.inverted;
+        pinObj["debounceMs"] = state.config.debounceMs;
+        // pullUp, pullDown 在GPIOConfig中不存在
+        // pinObj["pullUp"] = state.config.pullUp;
+        // pinObj["pullDown"] = state.config.pullDown;
+        pinObj["pwmEnabled"] = state.config.pwmChannel > 0;  // 根据通道判断是否启用PWM
+        pinObj["pwmFrequency"] = state.config.pwmFrequency;
+        pinObj["pwmResolution"] = state.config.pwmResolution;
+        // ADC和中断配置在GPIOConfig结构体中不存在
+        // pinObj["adcAttenuation"] = static_cast<int>(state.config.adcAttenuation);
+        // pinObj["interruptMode"] = static_cast<int>(state.config.interruptMode);
+    }
+    
+    String jsonStr;
+    serializeJson(doc, jsonStr);
+    
+    File file = LittleFS.open(GPIO_CONFIG_FILE, "w");
+    if (!file) {
+        LOG_ERROR("Failed to open GPIO config file for writing");
+        return false;
+    }
+    
+    size_t written = file.print(jsonStr);
+    file.close();
+    
+    if (written == jsonStr.length()) {
+        LOG_INFO("GPIO configuration saved successfully");
+        return true;
+    } else {
+        LOG_ERROR("Failed to write complete GPIO configuration");
+        return false;
+    }
 }
 
 bool GPIOManager::loadConfiguration() {
-    // TODO: 使用 ConfigStorage::loadJSONConfig("/config/gpio.json") 恢复
-    LOG_WARNING("GPIOManager::loadConfiguration() not yet implemented");
-    return false;
+    if (!LittleFS.exists(GPIO_CONFIG_FILE)) {
+        LOG_INFO("No GPIO configuration file found, using defaults");
+        return true;
+    }
+    
+    File file = LittleFS.open(GPIO_CONFIG_FILE, "r");
+    if (!file) {
+        LOG_ERROR("Failed to open GPIO config file for reading");
+        return false;
+    }
+    
+    String jsonStr = file.readString();
+    file.close();
+    
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, jsonStr);
+    
+    if (error) {
+        LOGGER.errorf("Failed to parse GPIO config: %s", error.c_str());
+        return false;
+    }
+    
+    JsonArray pins = doc["pins"].as<JsonArray>();
+    if (pins.isNull()) {
+        LOG_WARNING("No pins found in GPIO configuration");
+        return true;
+    }
+    
+    int loadedCount = 0;
+    for (JsonObject pinObj : pins) {
+        GPIOConfig config;
+        config.pin = pinObj["pin"] | 255;
+        config.name = pinObj["name"] | "";
+        config.mode = static_cast<GPIOMode>(pinObj["mode"] | 0);
+        config.initialState = static_cast<GPIOState>(pinObj["initialState"] | 0);
+        config.inverted = pinObj["inverted"] | false;
+        config.debounceMs = pinObj["debounceMs"] | 50;
+        // pullUp, pullDown, pwmEnabled 在GPIOConfig中不存在，使用mode来推断
+        // config.pullUp = pinObj["pullUp"] | false;
+        // config.pullDown = pinObj["pullDown"] | false;
+        // config.pwmEnabled = pinObj["pwmEnabled"] | false;
+        config.pwmFrequency = pinObj["pwmFrequency"] | 1000;
+        config.pwmResolution = pinObj["pwmResolution"] | 8;
+        // ADC和中断配置在GPIOConfig结构体中不存在，跳过
+        // config.adcAttenuation = static_cast<ADCAttenuation>(pinObj["adcAttenuation"] | 0);
+        // config.interruptMode = static_cast<InterruptMode>(pinObj["interruptMode"] | 0);
+        
+        if (config.pin != 255 && !config.name.isEmpty()) {
+            if (configurePin(config)) {
+                loadedCount++;
+            }
+        }
+    }
+    
+    LOGGER.infof("Loaded %d GPIO configurations", loadedCount);
+    return true;
 }
 
 void IRAM_ATTR GPIOManager::isrHandler(void* arg) {

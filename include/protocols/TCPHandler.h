@@ -19,11 +19,11 @@ public:
     ~TCPHandler();
     
     // 从LittleFS加载配置
-    bool loadConfigFromLittleFS(const char* configPath = FileSystem::TCP_CONFIG_FILE);
+    bool loadConfigFromLittleFS(const char* configPath = FileSystem::PROTOCOL_CONFIG_FILE);
     
     // 初始化方法
     bool begin(const TCPConfig& config);
-    bool beginFromConfig(const char* configPath = FileSystem::TCP_CONFIG_FILE);
+    bool beginFromConfig(const char* configPath = FileSystem::PROTOCOL_CONFIG_FILE);
     
     // 连接管理
     bool connect();

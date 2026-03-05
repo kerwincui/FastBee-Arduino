@@ -28,6 +28,7 @@ const AppState = {
                     this.currentUser.name = res.data.username || 'Admin';
                     this._showAppPage();
                     this.renderDashboard();
+                    this.loadSystemMonitor();  // 加载监控仪表盘数据
                     this.loadUsers();
                 } else {
                     this._showLoginPage();
@@ -96,7 +97,7 @@ const AppState = {
 
     // ============ 配置选项卡 ============
     setupConfigTabs() {
-        ['#config-page', '#network-page'].forEach(pageSelector => {
+        ['#config-page', '#network-page', '#device-page'].forEach(pageSelector => {
             const page = document.querySelector(pageSelector);
             if (!page) return;
             page.querySelectorAll('.config-tab').forEach(tab => {
@@ -106,8 +107,16 @@ const AppState = {
             });
         });
 
-        // 配置表单提交（协议配置，暂模拟，等待后端协议API）
-        document.querySelectorAll('#config-page form, #network-page form').forEach(form => {
+        // 协议配置表单提交
+        document.querySelectorAll('#config-page form').forEach(form => {
+            form.addEventListener('submit', e => {
+                e.preventDefault();
+                this.saveProtocolConfig(form.id);
+            });
+        });
+        
+        // 网络配置表单提交（已有单独处理）
+        document.querySelectorAll('#network-page form').forEach(form => {
             form.addEventListener('submit', e => {
                 e.preventDefault();
                 const protocolName = this._getProtocolName(form.id);
@@ -138,6 +147,38 @@ const AppState = {
         page.querySelectorAll('.config-content').forEach(c => c.classList.remove('active'));
         const target = page.querySelector(`#${tabId}`);
         if (target) target.classList.add('active');
+        
+        // 切换到协议配置页面时自动加载配置
+        if (pageId === 'config-page') {
+            this.loadProtocolConfig(tabId);
+        }
+        
+        // 切换到网络状态tab时自动刷新
+        if (pageId === 'network-page' && tabId === 'netstatus') {
+            this.loadNetworkStatus();
+        }
+        // 切换到NTP时间tab时自动加载时间
+        if (pageId === 'device-page' && tabId === 'dev-ntp') {
+            this.loadDeviceTime();
+        }
+        // 切换到系统操作tab时自动加载硬件信息
+        if (pageId === 'device-page' && tabId === 'dev-system') {
+            this._loadDeviceHardwareInfo();
+        }
+        // 切换到AP配网tab时自动加载配网状态和配置
+        if (pageId === 'device-page' && tabId === 'dev-provision') {
+            this.loadProvisionStatus();
+            this.loadProvisionConfig();
+        }
+        // 切换到蓝牙配网tab时自动加载蓝牙配网状态和配置
+        if (pageId === 'device-page' && tabId === 'dev-ble') {
+            this.loadBLEProvisionStatus();
+            this.loadBLEProvisionConfig();
+        }
+        // 切换到OTA升级tab时自动加载OTA状态
+        if (pageId === 'device-page' && tabId === 'dev-ota') {
+            this.loadOtaStatus();
+        }
     },
 
     // ============ 事件绑定 ============
@@ -219,6 +260,144 @@ const AppState = {
                 }
             });
         }
+        
+        // ============ 文件管理事件绑定 ============
+        
+        // 刷新文件列表按钮
+        const fsRefreshBtn = document.getElementById('fs-refresh-btn');
+        if (fsRefreshBtn) fsRefreshBtn.addEventListener('click', () => this.loadFileTree(this._currentDir || '/'));
+        
+        // 返回上级按钮
+        const fsUpBtn = document.getElementById('fs-up-btn');
+        if (fsUpBtn) fsUpBtn.addEventListener('click', () => this.navigateUp());
+        
+        // 保存文件按钮
+        const fsSaveBtn = document.getElementById('fs-save-btn');
+        if (fsSaveBtn) fsSaveBtn.addEventListener('click', () => this.saveCurrentFile());
+        
+        // 关闭文件按钮
+        const fsCloseBtn = document.getElementById('fs-close-btn');
+        if (fsCloseBtn) fsCloseBtn.addEventListener('click', () => this.closeCurrentFile());
+        
+        // ============ 系统监控事件绑定 ============
+        
+        // 刷新监控按钮
+        const monitorRefreshBtn = document.getElementById('monitor-refresh-btn');
+        if (monitorRefreshBtn) monitorRefreshBtn.addEventListener('click', () => this.loadSystemMonitor());
+        
+        // ============ 网络配置事件绑定 ============
+        
+        // WiFi扫描按钮
+        const wifiScanBtn = document.getElementById('wifi-scan-btn');
+        if (wifiScanBtn) wifiScanBtn.addEventListener('click', () => this.scanWifiNetworks());
+        
+        // WiFi表单提交
+        const wifiForm = document.getElementById('wifi-form');
+        if (wifiForm) {
+            wifiForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.saveNetworkConfig();
+            });
+        }
+        
+        // 静态IP切换
+        const useStaticIp = document.getElementById('use-static-ip');
+        if (useStaticIp) {
+            useStaticIp.addEventListener('change', (e) => {
+                const section = document.getElementById('static-ip-section');
+                if (section) {
+                    section.style.display = e.target.value === '1' ? 'block' : 'none';
+                }
+            });
+        }
+        
+        // ============ GPIO配置事件绑定 ============
+        
+        // 新增GPIO按钮
+        const addGpioBtn = document.getElementById('add-gpio-btn');
+        if (addGpioBtn) addGpioBtn.addEventListener('click', () => this.openGpioModal());
+        
+        // 关闭GPIO模态框
+        const closeGpioModal = document.getElementById('close-gpio-modal');
+        if (closeGpioModal) closeGpioModal.addEventListener('click', () => this.closeGpioModal());
+        
+        // 取消GPIO按钮
+        const cancelGpioBtn = document.getElementById('cancel-gpio-btn');
+        if (cancelGpioBtn) cancelGpioBtn.addEventListener('click', () => this.closeGpioModal());
+        
+        // 保存GPIO按钮
+        const saveGpioBtn = document.getElementById('save-gpio-btn');
+        if (saveGpioBtn) saveGpioBtn.addEventListener('click', () => this.saveGpioConfig());
+        
+        // ============ 网络状态事件绑定 ============
+        
+        // 刷新网络状态按钮
+        const netStatusRefreshBtn = document.getElementById('net-status-refresh-btn');
+        if (netStatusRefreshBtn) netStatusRefreshBtn.addEventListener('click', () => this.loadNetworkStatus());
+        
+        // ============ 设备配置事件绑定 ============
+        
+        // 设备基本信息表单提交
+        const deviceBasicForm = document.getElementById('device-basic-form');
+        if (deviceBasicForm) {
+            deviceBasicForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.saveDeviceBasic();
+            });
+        }
+        
+        // NTP表单提交
+        const deviceNtpForm = document.getElementById('device-ntp-form');
+        if (deviceNtpForm) {
+            deviceNtpForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.saveDeviceNTP();
+            });
+        }
+        
+        // 时间刷新按钮
+        const devTimeRefreshBtn = document.getElementById('dev-time-refresh-btn');
+        if (devTimeRefreshBtn) devTimeRefreshBtn.addEventListener('click', () => this.loadDeviceTime());
+        
+        // 重启按钮
+        const devRestartBtn = document.getElementById('dev-restart-btn');
+        if (devRestartBtn) devRestartBtn.addEventListener('click', () => this.restartDevice());
+
+        // AP配网事件绑定
+        const provisionForm = document.getElementById('device-provision-form');
+        if (provisionForm) provisionForm.addEventListener('submit', (e) => { e.preventDefault(); this.saveProvisionConfig(); });
+        
+        const provisionRefreshBtn = document.getElementById('provision-refresh-btn');
+        if (provisionRefreshBtn) provisionRefreshBtn.addEventListener('click', () => this.loadProvisionStatus());
+        
+        const provisionStartBtn = document.getElementById('provision-start-btn');
+        if (provisionStartBtn) provisionStartBtn.addEventListener('click', () => this.startProvision());
+        
+        const provisionStopBtn = document.getElementById('provision-stop-btn');
+        if (provisionStopBtn) provisionStopBtn.addEventListener('click', () => this.stopProvision());
+
+        // 蓝牙配网事件绑定
+        const bleProvisionForm = document.getElementById('device-ble-provision-form');
+        if (bleProvisionForm) bleProvisionForm.addEventListener('submit', (e) => { e.preventDefault(); this.saveBLEProvisionConfig(); });
+        
+        const bleProvisionRefreshBtn = document.getElementById('ble-provision-refresh-btn');
+        if (bleProvisionRefreshBtn) bleProvisionRefreshBtn.addEventListener('click', () => this.loadBLEProvisionStatus());
+        
+        const bleProvisionStartBtn = document.getElementById('ble-provision-start-btn');
+        if (bleProvisionStartBtn) bleProvisionStartBtn.addEventListener('click', () => this.startBLEProvision());
+        
+        const bleProvisionStopBtn = document.getElementById('ble-provision-stop-btn');
+        if (bleProvisionStopBtn) bleProvisionStopBtn.addEventListener('click', () => this.stopBLEProvision());
+
+        // OTA升级事件绑定
+        const otaUrlForm = document.getElementById('ota-url-form');
+        if (otaUrlForm) otaUrlForm.addEventListener('submit', (e) => { e.preventDefault(); this.startOtaUrl(); });
+        
+        const otaUploadForm = document.getElementById('ota-upload-form');
+        if (otaUploadForm) otaUploadForm.addEventListener('submit', (e) => { e.preventDefault(); this.startOtaUpload(); });
+        
+        const otaRefreshBtn = document.getElementById('ota-refresh-btn');
+        if (otaRefreshBtn) otaRefreshBtn.addEventListener('click', () => this.loadOtaStatus());
     },
 
     // ============ 登录 ============
@@ -259,6 +438,7 @@ const AppState = {
 
                     this._showAppPage();
                     this.renderDashboard();
+                    this.loadSystemMonitor();  // 加载监控仪表盘数据
                     this.loadUsers();
                     Notification.success('登录成功', '欢迎');
                 } else {
@@ -290,6 +470,7 @@ const AppState = {
         if (page === 'dashboard') this.renderDashboard();
         if (page === 'users') this.loadUsers();
         if (page === 'roles') this.loadRoles();
+        if (page === 'gpio') this.loadGpioList();
         if (page === 'monitor') this.loadSystemInfo();
         if (page === 'logs') {
             this.loadLogs();
@@ -301,6 +482,28 @@ const AppState = {
         } else {
             // 离开日志页面时停止自动刷新
             this.stopLogAutoRefresh();
+        }
+        
+        if (page === 'data') {
+            this.loadFileTree('/');
+            this.loadFileSystemInfo();
+        }
+        
+        if (page === 'dashboard') {
+            this.loadSystemMonitor();
+        }
+        
+        if (page === 'network') {
+            this.loadNetworkConfig();
+        }
+        
+        if (page === 'device') {
+            this.loadDeviceConfig();
+        }
+        
+        // 切换到协议配置页面时自动加载第一个tab的配置
+        if (page === 'config') {
+            this.loadProtocolConfig('modbus-rtu');
         }
     },
 
@@ -1236,5 +1439,1699 @@ const AppState = {
             this._logAutoRefreshTimer = null;
             console.log('[Logs] Auto refresh stopped');
         }
+    },
+    
+    // ============ 文件管理 ============
+    
+    /**
+     * 加载文件系统信息
+     */
+    loadFileSystemInfo() {
+        apiGet('/api/system/fs-info')
+            .then(res => {
+                if (res && res.success) {
+                    const d = res.data || {};
+                    const infoSpan = document.getElementById('fs-info');
+                    if (infoSpan) {
+                        const total = d.totalBytes ? (d.totalBytes / 1024 / 1024).toFixed(2) + ' MB' : 'N/A';
+                        const used = d.usedBytes ? (d.usedBytes / 1024 / 1024).toFixed(2) + ' MB' : 'N/A';
+                        infoSpan.textContent = `总空间: ${total} | 已用: ${used}`;
+                    }
+                }
+            })
+            .catch(() => {});
+    },
+    
+    /**
+     * 加载文件树
+     * @param {string} path 目录路径
+     */
+    loadFileTree(path) {
+        const treeContainer = document.getElementById('file-tree');
+        if (!treeContainer) return;
+        
+        // 记录当前路径
+        this._currentDir = path;
+        
+        // 更新路径显示
+        const pathEl = document.getElementById('current-dir-path');
+        if (pathEl) pathEl.textContent = path;
+        
+        treeContainer.innerHTML = '<div style="color: #999;">加载中...</div>';
+        
+        apiGet('/api/fs/list', { path: path })
+            .then(res => {
+                if (!res || !res.success) {
+                    treeContainer.innerHTML = '<div style="color: #f56c6c;">加载失败</div>';
+                    return;
+                }
+                
+                const data = res.data || {};
+                const dirs = data.dirs || [];
+                const files = data.files || [];
+                
+                let html = '';
+                
+                // 目录
+                dirs.forEach(dir => {
+                    html += `<div class="file-tree-item" style="padding: 3px 0; cursor: pointer;" data-path="${path}${dir.name}/" data-type="dir">
+                        <span style="color: #e6a23c;">📁</span> ${dir.name}
+                    </div>`;
+                });
+                
+                // 文件
+                files.forEach(file => {
+                    const size = file.size < 1024 ? `${file.size} B` : 
+                                file.size < 1024 * 1024 ? `${(file.size / 1024).toFixed(1)} KB` :
+                                `${(file.size / 1024 / 1024).toFixed(2)} MB`;
+                    html += `<div class="file-tree-item" style="padding: 3px 0; cursor: pointer;" data-path="${path}${file.name}" data-type="file">
+                        <span style="color: #409eff;">📄</span> ${file.name} <span style="color: #999; font-size: 11px;">(${size})</span>
+                    </div>`;
+                });
+                
+                if (dirs.length === 0 && files.length === 0) {
+                    html = '<div style="color: #999; padding: 20px;">空目录</div>';
+                }
+                
+                treeContainer.innerHTML = html;
+                
+                // 绑定点击事件
+                treeContainer.querySelectorAll('.file-tree-item').forEach(item => {
+                    item.addEventListener('click', (e) => {
+                        const path = e.currentTarget.dataset.path;
+                        const type = e.currentTarget.dataset.type;
+                        
+                        // 移除其他选中状态
+                        treeContainer.querySelectorAll('.file-tree-item').forEach(i => {
+                            i.style.background = '';
+                        });
+                        e.currentTarget.style.background = '#e6f7ff';
+                        
+                        if (type === 'dir') {
+                            this.loadFileTree(path);
+                        } else {
+                            this.openFile(path);
+                        }
+                    });
+                });
+            })
+            .catch(err => {
+                console.error('Load file tree failed:', err);
+                treeContainer.innerHTML = '<div style="color: #f56c6c;">加载失败</div>';
+            });
+    },
+    
+    /**
+     * 打开文件
+     * @param {string} path 文件路径
+     */
+    openFile(path) {
+        const editor = document.getElementById('file-editor');
+        const pathSpan = document.getElementById('current-file-path');
+        const saveBtn = document.getElementById('fs-save-btn');
+        const closeBtn = document.getElementById('fs-close-btn');
+        const statusDiv = document.getElementById('file-status');
+        
+        if (!editor || !pathSpan) return;
+        
+        // 检查是否可编辑
+        const editable = path.endsWith('.json') || path.endsWith('.txt') || path.endsWith('.log') ||
+                        path.endsWith('.html') || path.endsWith('.js') || path.endsWith('.css');
+        
+        if (!editable) {
+            statusDiv.textContent = '此文件类型不支持编辑';
+            return;
+        }
+        
+        pathSpan.textContent = path;
+        statusDiv.textContent = '加载中...';
+        
+        apiGet('/api/fs/read', { path: path })
+            .then(res => {
+                if (!res || !res.success) {
+                    statusDiv.textContent = '加载失败: ' + (res.error || '未知错误');
+                    return;
+                }
+                
+                const data = res.data || {};
+                editor.value = data.content || '';
+                editor.disabled = false;
+                saveBtn.disabled = false;
+                closeBtn.disabled = false;
+                
+                const size = data.size < 1024 ? `${data.size} B` : 
+                            data.size < 1024 * 1024 ? `${(data.size / 1024).toFixed(1)} KB` :
+                            `${(data.size / 1024 / 1024).toFixed(2)} MB`;
+                statusDiv.textContent = `大小: ${size} | 就绪`;
+                
+                this._currentFilePath = path;
+                this._currentFileModified = false;
+            })
+            .catch(err => {
+                console.error('Open file failed:', err);
+                statusDiv.textContent = '加载失败';
+            });
+    },
+    
+    /**
+     * 返回上级目录
+     */
+    navigateUp() {
+        const currentPath = this._currentDir || '/';
+        
+        // 如果当前是根目录，不做任何操作
+        if (currentPath === '/') {
+            return;
+        }
+        
+        // 移除末尾的斜杠
+        let path = currentPath;
+        if (path.endsWith('/')) {
+            path = path.slice(0, -1);
+        }
+        
+        // 找到最后一个斜杠的位置
+        const lastSlashIndex = path.lastIndexOf('/');
+        
+        if (lastSlashIndex === 0) {
+            // 上级是根目录
+            this.loadFileTree('/');
+        } else if (lastSlashIndex > 0) {
+            // 获取上级目录路径
+            const parentPath = path.substring(0, lastSlashIndex + 1);
+            this.loadFileTree(parentPath);
+        } else {
+            // 没有斜杠，回到根目录
+            this.loadFileTree('/');
+        }
+    },
+    
+    /**
+     * 保存当前文件
+     */
+    saveCurrentFile() {
+        if (!this._currentFilePath) return;
+        
+        const editor = document.getElementById('file-editor');
+        const statusDiv = document.getElementById('file-status');
+        const saveBtn = document.getElementById('fs-save-btn');
+        
+        if (!editor || !statusDiv) return;
+        
+        const content = editor.value;
+        statusDiv.textContent = '保存中...';
+        saveBtn.disabled = true;
+        
+        apiPost('/api/fs/save', { path: this._currentFilePath, content: content })
+            .then(res => {
+                if (res && res.success) {
+                    statusDiv.textContent = '保存成功';
+                    this._currentFileModified = false;
+                    Notification.success('文件保存成功', '文件管理');
+                } else {
+                    statusDiv.textContent = '保存失败: ' + (res.error || '未知错误');
+                    Notification.error(res.error || '保存失败', '文件管理');
+                }
+            })
+            .catch(err => {
+                console.error('Save file failed:', err);
+                statusDiv.textContent = '保存失败';
+                Notification.error('保存失败', '文件管理');
+            })
+            .finally(() => {
+                saveBtn.disabled = false;
+            });
+    },
+    
+    /**
+     * 关闭当前文件
+     */
+    closeCurrentFile() {
+        const editor = document.getElementById('file-editor');
+        const pathSpan = document.getElementById('current-file-path');
+        const saveBtn = document.getElementById('fs-save-btn');
+        const closeBtn = document.getElementById('fs-close-btn');
+        const statusDiv = document.getElementById('file-status');
+        
+        if (this._currentFileModified) {
+            if (!confirm('文件已修改，是否保存？')) {
+                return;
+            }
+            this.saveCurrentFile();
+        }
+        
+        if (editor) {
+            editor.value = '';
+            editor.disabled = true;
+        }
+        if (pathSpan) pathSpan.textContent = '请选择文件';
+        if (saveBtn) saveBtn.disabled = true;
+        if (closeBtn) closeBtn.disabled = true;
+        if (statusDiv) statusDiv.textContent = '';
+        
+        this._currentFilePath = null;
+        this._currentFileModified = false;
+        
+        // 取消文件树中的选中状态
+        const treeContainer = document.getElementById('file-tree');
+        if (treeContainer) {
+            treeContainer.querySelectorAll('.file-tree-item').forEach(i => {
+                i.style.background = '';
+            });
+        }
+    },
+    
+    // ============ 系统监控 ============
+    
+    /**
+     * 加载系统监控数据
+     */
+    loadSystemMonitor() {
+        apiGet('/api/system/info')
+            .then(res => {
+                if (!res || !res.success) return;
+                
+                const data = res.data || {};
+                
+                // 设备信息
+                const device = data.device || {};
+                this._setText('monitor-chip-model', device.chipModel || 'ESP32');
+                this._setText('monitor-cpu-freq', device.cpuFreqMHz || '--');
+                this._setText('monitor-sdk', device.sdkVersion || '--');
+                
+                // 运行时间
+                const uptime = data.uptime || {};
+                this._setText('monitor-uptime', uptime.formatted || '--');
+                
+                // 网络状态
+                const network = data.network || {};
+                const netStatus = network.connected ? 
+                    `<span style="color: #52c41a;">●</span> 已连接 (${network.ssid || 'N/A'})` : 
+                    '<span style="color: #f5222d;">●</span> 未连接';
+                this._setHtml('monitor-network-status', netStatus);
+                this._setText('monitor-ip', network.ipAddress || '--');
+                
+                // Flash 存储
+                const flash = data.flash || {};
+                this._setText('monitor-flash-percent', (flash.usagePercent || 0) + '%');
+                this._setBar('monitor-flash-bar', flash.usagePercent || 0);
+                this._setText('monitor-flash-used', this._formatBytes(flash.used || 0));
+                this._setText('monitor-flash-free', this._formatBytes(flash.free || 0));
+                this._setText('monitor-flash-total', this._formatBytes(flash.total || 0));
+                this._setText('monitor-flash-sketch', this._formatBytes(flash.sketchSize || 0));
+                
+                // 内存
+                const memory = data.memory || {};
+                this._setText('monitor-heap-percent', (memory.heapUsagePercent || 0) + '%');
+                this._setBar('monitor-heap-bar', memory.heapUsagePercent || 0);
+                this._setText('monitor-heap-used', this._formatBytes(memory.heapUsed || 0));
+                this._setText('monitor-heap-free', this._formatBytes(memory.heapFree || 0));
+                this._setText('monitor-heap-total', this._formatBytes(memory.heapTotal || 0));
+                this._setText('monitor-heap-min', this._formatBytes(memory.heapMinFree || 0));
+                
+                // 文件系统
+                const fs = data.filesystem || {};
+                this._setText('monitor-fs-percent', (fs.usagePercent || 0) + '%');
+                this._setBar('monitor-fs-bar', fs.usagePercent || 0);
+                this._setText('monitor-fs-used', this._formatBytes(fs.used || 0));
+                this._setText('monitor-fs-free', this._formatBytes(fs.free || 0));
+                this._setText('monitor-fs-total', this._formatBytes(fs.total || 0));
+                
+                // 用户统计
+                const users = data.users || {};
+                this._setText('monitor-user-total', users.total || 0);
+                this._setText('monitor-user-online', users.online || 0);
+                this._setText('monitor-user-sessions', users.activeSessions || 0);
+            })
+            .catch(err => {
+                console.error('Load system monitor failed:', err);
+            });
+    },
+    
+    /**
+     * 设置文本内容
+     */
+    _setText(id, text) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+    },
+    
+    /**
+     * 设置 HTML 内容
+     */
+    _setHtml(id, html) {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = html;
+    },
+    
+    /**
+     * 设置进度条宽度
+     */
+    _setBar(id, percent) {
+        const el = document.getElementById(id);
+        if (el) el.style.width = Math.min(percent, 100) + '%';
+    },
+    
+    /**
+     * 格式化字节数
+     */
+    _formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    },
+    
+    // ============ 网络配置 ============
+    
+    /**
+     * 加载网络配置
+     */
+    loadNetworkConfig() {
+        apiGet('/api/network/config')
+            .then(res => {
+                if (!res || !res.success) {
+                    Notification.error('加载网络配置失败', '网络设置');
+                    return;
+                }
+                
+                const data = res.data || {};
+                const device = data.device || {};
+                const network = data.network || {};
+                const sta = data.sta || {};
+                const ap = data.ap || {};
+                
+                // 设备名称
+                this._setValue('device-name', device.name || '');
+                
+                // 网络模式
+                this._setValue('wifi-mode', network.mode !== undefined ? network.mode.toString() : '2');
+                
+                // STA 配置
+                this._setValue('wifi-ssid', sta.ssid || '');
+                this._setValue('wifi-password', sta.password || '');
+                this._setValue('wifi-dhcp', network.ipConfigType !== undefined ? network.ipConfigType.toString() : '0');
+                this._setValue('use-static-ip', network.ipConfigType === 1 ? '1' : '0');
+                
+                // 静态IP配置
+                this._setValue('static-ip', sta.staticIP || '');
+                this._setValue('gateway', sta.gateway || '');
+                this._setValue('subnet', sta.subnet || '');
+                this._setValue('dns1', sta.dns1 || '');
+                
+                // 显示/隐藏静态IP区域
+                const staticSection = document.getElementById('static-ip-section');
+                if (staticSection) {
+                    staticSection.style.display = network.ipConfigType === 1 ? 'block' : 'none';
+                }
+                
+                // mDNS
+                this._setValue('enable-mdns', network.enableMDNS ? '1' : '0');
+                
+                // AP 配置
+                this._setValue('ap-ssid', ap.ssid || '');
+                this._setValue('ap-password', ap.password || '');
+                this._setValue('ap-channel', ap.channel !== undefined ? ap.channel.toString() : '1');
+                this._setValue('ap-hidden', ap.hidden ? '1' : '0');
+            })
+            .catch(err => {
+                console.error('Load network config failed:', err);
+                Notification.error('加载网络配置失败', '网络设置');
+            });
+    },
+    
+    /**
+     * 保存网络配置
+     */
+    saveNetworkConfig() {
+        const config = {
+            deviceName: document.getElementById('device-name')?.value || '',
+            mode: document.getElementById('wifi-mode')?.value || '2',
+            staSSID: document.getElementById('wifi-ssid')?.value || '',
+            staPassword: document.getElementById('wifi-password')?.value || '',
+            ipConfigType: document.getElementById('use-static-ip')?.value || '0',
+            staticIP: document.getElementById('static-ip')?.value || '',
+            gateway: document.getElementById('gateway')?.value || '',
+            subnet: document.getElementById('subnet')?.value || '',
+            dns1: document.getElementById('dns1')?.value || '',
+            apSSID: document.getElementById('ap-ssid')?.value || '',
+            apPassword: document.getElementById('ap-password')?.value || '',
+            apChannel: document.getElementById('ap-channel')?.value || '1',
+            apHidden: document.getElementById('ap-hidden')?.value || '0'
+        };
+        
+        // 显示加载状态
+        const submitBtn = document.querySelector('#wifi-form button[type="submit"]');
+        const originalText = submitBtn?.innerHTML;
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 保存中...';
+        }
+        
+        apiPut('/api/network/config', config)
+            .then(res => {
+                if (res && res.success) {
+                    this._showMessage('wifi-success', true);
+                    this._showMessage('wifi-error', false);
+                    Notification.success('网络配置保存成功', '网络设置');
+                } else {
+                    this._showMessage('wifi-success', false);
+                    this._showMessage('wifi-error', true);
+                    Notification.error(res?.error || '保存失败', '网络设置');
+                }
+            })
+            .catch(err => {
+                console.error('Save network config failed:', err);
+                this._showMessage('wifi-success', false);
+                this._showMessage('wifi-error', true);
+                Notification.error('保存失败', '网络设置');
+            })
+            .finally(() => {
+                if (submitBtn) {
+                    submitBtn.disabled = false;
+                    submitBtn.innerHTML = originalText;
+                }
+            });
+    },
+    
+    /**
+     * 加载并显示网络状态
+     */
+    loadNetworkStatus() {
+        const refreshBtn = document.getElementById('net-status-refresh-btn');
+        if (refreshBtn) {
+            refreshBtn.disabled = true;
+            refreshBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 刷新中...';
+        }
+
+        const setText = (id, val) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = (val !== undefined && val !== null && val !== '') ? val : '--';
+        };
+        const setHtml = (id, html) => {
+            const el = document.getElementById(id);
+            if (el) el.innerHTML = html;
+        };
+
+        apiGet('/api/network/status')
+            .then(res => {
+                if (!res || !res.success) {
+                    Notification.error('获取网络状态失败', '网络状态');
+                    return;
+                }
+                const d = res.data || {};
+
+                // 状态徽章
+                const statusMap = {
+                    connected:    '<span class="badge badge-success">已连接</span>',
+                    disconnected: '<span class="badge badge-danger">未连接</span>',
+                    connecting:   '<span class="badge badge-warning">连接中...</span>',
+                    ap_mode:      '<span class="badge badge-primary">AP模式</span>',
+                    failed:       '<span class="badge badge-danger">连接失败</span>',
+                };
+                setHtml('ns-status', statusMap[d.status] || `<span class="badge badge-info">${d.status || '--'}</span>`);
+
+                // STA 信息
+                setText('ns-ssid', d.ssid);
+                setText('ns-ip', d.ipAddress);
+                setText('ns-gateway', d.gateway);
+                setText('ns-subnet', d.subnet);
+                setText('ns-dns', d.dnsServer);
+                const rssi = d.rssi;
+                if (rssi && rssi !== 0) {
+                    const pct = d.signalStrength || 0;
+                    const color = pct >= 70 ? '#52c41a' : pct >= 40 ? '#faad14' : '#f5222d';
+                    setHtml('ns-rssi', `<span style="color:${color};">${rssi} dBm (${pct}%)</span>`);
+                } else {
+                    setText('ns-rssi', '--');
+                }
+                setText('ns-mac', d.macAddress);
+
+                // AP 信息
+                setText('ns-ap-ssid', d.apSSID);
+                setText('ns-ap-ip', d.apIPAddress);
+                setText('ns-ap-clients', d.apClientCount !== undefined ? d.apClientCount + ' 台' : '--');
+
+                // 连接统计
+                const modeLabel = { STA: '仅客户端 (STA)', AP: '仅热点 (AP)', 'AP+STA': '客户端+热点 (AP+STA)' };
+                setText('ns-mode', modeLabel[d.mode] || d.mode || '--');
+                setText('ns-mdns', d.enableMDNS ? (d.customDomain ? d.customDomain + '.local' : '已启用') : '禁用');
+                setText('ns-reconnect', d.reconnectAttempts !== undefined ? d.reconnectAttempts + ' 次' : '--');
+                setHtml('ns-internet', d.internetAvailable
+                    ? '<span class="badge badge-success">可访问</span>'
+                    : '<span class="badge badge-danger">不可访问</span>');
+                setHtml('ns-conflict', d.conflictDetected
+                    ? '<span class="badge badge-danger">已检测到冲突</span>'
+                    : '<span class="badge badge-success">无冲突</span>');
+            })
+            .catch(err => {
+                console.error('Load network status failed:', err);
+                Notification.error('获取网络状态失败', '网络状态');
+            })
+            .finally(() => {
+                if (refreshBtn) {
+                    refreshBtn.disabled = false;
+                    refreshBtn.innerHTML = '<i class="fas fa-sync-alt"></i> 刷新';
+                }
+            });
+    },
+
+    /**
+     * 加载设备配置（NTP+基本信息）
+     */
+    loadDeviceConfig() {
+        apiGet('/api/device/config')
+            .then(res => {
+                if (!res || !res.success) return;
+                const d = res.data || {};
+                this._setValue('dev-name',          d.deviceName   || '');
+                this._setValue('dev-location',      d.location     || '');
+                const desc = document.getElementById('dev-description');
+                if (desc) desc.value = d.description || '';
+                this._setValue('dev-ntp-enable',    d.enableNTP ? '1' : '0');
+                this._setValue('dev-ntp-server1',   d.ntpServer1   || 'pool.ntp.org');
+                this._setValue('dev-ntp-server2',   d.ntpServer2   || 'time.nist.gov');
+                this._setValue('dev-timezone',      d.timezone     || 'CST-8');
+                this._setValue('dev-sync-interval', d.syncInterval !== undefined ? String(d.syncInterval) : '3600');
+            })
+            .catch(err => console.error('Load device config failed:', err));
+        // 同时加载硬件信息
+        this._loadDeviceHardwareInfo();
+    },
+
+    _loadDeviceHardwareInfo() {
+        apiGet('/api/system/info')
+            .then(res => {
+                if (!res || !res.success) return;
+                const d = res.data || {};
+                const dev = d.device || {};
+                const fw  = d.firmware || {};
+                const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val || '--'; };
+                set('dev-sys-chip',  dev.chipModel);
+                set('dev-sys-cpu',   dev.cpuFreqMHz ? dev.cpuFreqMHz + ' MHz' : '--');
+                set('dev-sys-heap',  dev.freeHeap   ? Math.round(dev.freeHeap / 1024) + ' KB' : '--');
+                set('dev-sys-flash', dev.flashSize  ? Math.round(dev.flashSize / 1024 / 1024) + ' MB' : '--');
+                set('dev-sys-sdk',   dev.sdkVersion);
+                set('dev-sys-fw',    fw.version || dev.firmwareVersion || '--');
+            })
+            .catch(() => {});
+    },
+
+    saveDeviceBasic() {
+        const config = {
+            deviceName:   document.getElementById('dev-name')?.value || '',
+            location:     document.getElementById('dev-location')?.value || '',
+            description:  document.getElementById('dev-description')?.value || '',
+            ntpServer1:   document.getElementById('dev-ntp-server1')?.value || 'pool.ntp.org',
+            ntpServer2:   document.getElementById('dev-ntp-server2')?.value || 'time.nist.gov',
+            timezone:     document.getElementById('dev-timezone')?.value || 'CST-8',
+            enableNTP:    document.getElementById('dev-ntp-enable')?.value || '1',
+            syncInterval: document.getElementById('dev-sync-interval')?.value || '3600',
+        };
+        apiPut('/api/device/config', config)
+            .then(res => {
+                if (res && res.success) {
+                    this._showMessage('dev-basic-success', true);
+                    Notification.success('设备信息保存成功', '设备配置');
+                } else {
+                    Notification.error(res?.error || '保存失败', '设备配置');
+                }
+            })
+            .catch(() => Notification.error('保存失败', '设备配置'));
+    },
+
+    saveDeviceNTP() {
+        const config = {
+            ntpServer1:   document.getElementById('dev-ntp-server1')?.value || 'pool.ntp.org',
+            ntpServer2:   document.getElementById('dev-ntp-server2')?.value || 'time.nist.gov',
+            timezone:     document.getElementById('dev-timezone')?.value || 'CST-8',
+            enableNTP:    document.getElementById('dev-ntp-enable')?.value || '1',
+            syncInterval: document.getElementById('dev-sync-interval')?.value || '3600',
+            deviceName:   document.getElementById('dev-name')?.value || '',
+            location:     document.getElementById('dev-location')?.value || '',
+            description:  document.getElementById('dev-description')?.value || '',
+        };
+        apiPut('/api/device/config', config)
+            .then(res => {
+                if (res && res.success) {
+                    this._showMessage('dev-ntp-success', true);
+                    Notification.success('NTP配置保存成功', '设备配置');
+                    this.loadDeviceTime();
+                } else {
+                    Notification.error(res?.error || '保存失败', 'NTP配置');
+                }
+            })
+            .catch(() => Notification.error('保存失败', 'NTP配置'));
+    },
+
+    loadDeviceTime() {
+        const btn = document.getElementById('dev-time-refresh-btn');
+        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 刷新中...'; }
+        apiGet('/api/device/time')
+            .then(res => {
+                if (!res || !res.success) return;
+                const d = res.data || {};
+                const setEl   = (id, val)  => { const el = document.getElementById(id); if (el) el.textContent = val || '--'; };
+                const setHtml = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+                setEl('dev-time-datetime', d.datetime);
+                setHtml('dev-time-synced', d.synced
+                    ? '<span class="badge badge-success">已同步</span>'
+                    : '<span class="badge badge-warning">未同步 (等待连网)</span>');
+                if (d.uptime !== undefined) {
+                    const ms = d.uptime;
+                    const h  = Math.floor(ms / 3600000);
+                    const m  = Math.floor((ms % 3600000) / 60000);
+                    const s  = Math.floor((ms % 60000) / 1000);
+                    setEl('dev-time-uptime', `${h}时 ${m}分 ${s}秒`);
+                }
+            })
+            .catch(err => console.error('Load device time failed:', err))
+            .finally(() => {
+                if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sync-alt"></i> 刷新'; }
+            });
+    },
+
+    restartDevice() {
+        const delay = document.getElementById('dev-restart-delay')?.value || '3';
+        const btn   = document.getElementById('dev-restart-btn');
+        if (!confirm(`确定要重启设备？将在 ${delay} 秒后重启。`)) return;
+        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 处理中...'; }
+        apiPost('/api/system/restart', { delay })
+            .then(res => {
+                if (res && (res.success || res.message)) {
+                    Notification.warning(`设备将在 ${delay} 秒后重启，请稍后刷新页面。`, '设备重启');
+                } else {
+                    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-power-off"></i> 立即重启'; }
+                    Notification.error('重启指令发送失败', '设备重启');
+                }
+            })
+            .catch(() => {
+                if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-power-off"></i> 立即重启'; }
+                Notification.error('重启指令发送失败', '设备重启');
+            });
+    },
+
+    /**
+     * 扫描 WiFi 网络
+     */
+    scanWifiNetworks() {
+        const scanBtn = document.getElementById('wifi-scan-btn');
+        const resultsDiv = document.getElementById('wifi-scan-results');
+        
+        if (!scanBtn || !resultsDiv) return;
+        
+        // 显示加载状态
+        scanBtn.disabled = true;
+        scanBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 扫描中...';
+        resultsDiv.style.display = 'block';
+        resultsDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;"><i class="fas fa-spinner fa-spin"></i> 正在扫描...</div>';
+        
+        apiGet('/api/network/scan')
+            .then(res => {
+                if (!res || !res.success) {
+                    resultsDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #f56c6c;">扫描失败</div>';
+                    return;
+                }
+                
+                const networks = res.data || [];
+                
+                if (networks.length === 0) {
+                    resultsDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">未找到WiFi网络</div>';
+                    return;
+                }
+                
+                // 按信号强度排序
+                networks.sort((a, b) => b.rssi - a.rssi);
+                
+                let html = '';
+                networks.forEach(net => {
+                    const signalClass = net.rssi > -50 ? 'strong' : net.rssi > -70 ? 'medium' : 'weak';
+                    const signalIcon = net.rssi > -50 ? 'fas fa-signal' : net.rssi > -70 ? 'fas fa-signal' : 'fas fa-signal';
+                    const signalColor = net.rssi > -50 ? '#52c41a' : net.rssi > -70 ? '#faad14' : '#f5222d';
+                    const encryptIcon = net.encryption > 0 ? '<i class="fas fa-lock" style="color: #52c41a;"></i>' : '<i class="fas fa-lock-open" style="color: #999;"></i>';
+                    
+                    html += `
+                        <div class="wifi-item" style="padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" data-ssid="${net.ssid}">
+                            <div style="flex: 1;">
+                                <div style="font-weight: bold; color: #333;">${net.ssid}</div>
+                                <div style="font-size: 12px; color: #999;">
+                                    ${encryptIcon} ${net.encryption > 0 ? '加密' : '开放'} | 信道: ${net.channel}
+                                </div>
+                            </div>
+                            <div style="text-align: right;">
+                                <div style="color: ${signalColor};">
+                                    <i class="${signalIcon}"></i> ${net.rssi} dBm
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                resultsDiv.innerHTML = html;
+                
+                // 绑定点击事件
+                resultsDiv.querySelectorAll('.wifi-item').forEach(item => {
+                    item.addEventListener('click', (e) => {
+                        const ssid = e.currentTarget.dataset.ssid;
+                        document.getElementById('wifi-ssid').value = ssid;
+                        resultsDiv.style.display = 'none';
+                        Notification.success(`已选择: ${ssid}`, 'WiFi扫描');
+                    });
+                });
+            })
+            .catch(err => {
+                console.error('WiFi scan failed:', err);
+                resultsDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #f56c6c;">扫描失败</div>';
+            })
+            .finally(() => {
+                scanBtn.disabled = false;
+                scanBtn.innerHTML = '<i class="fas fa-search"></i> 扫描网络';
+            });
+    },
+    
+    /**
+     * 设置表单值
+     */
+    _setValue(id, value) {
+        const el = document.getElementById(id);
+        if (el) el.value = value;
+    },
+    
+    /**
+     * 显示/隐藏消息
+     */
+    _showMessage(id, show) {
+        const el = document.getElementById(id);
+        if (el) el.style.display = show ? 'block' : 'none';
+    },
+    
+    /**
+     * 设置元素文本内容
+     */
+    _setTextContent(id, text) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+    },
+    
+    /**
+     * 设置复选框状态
+     */
+    _setChecked(id, checked) {
+        const el = document.getElementById(id);
+        if (el) el.checked = !!checked;
+    },
+    
+    // ============ 协议配置 ============
+    
+    /**
+     * 协议配置缓存
+     */
+    _protocolConfig: null,
+    
+    /**
+     * 加载协议配置
+     */
+    loadProtocolConfig(tabId) {
+        // 如果已有缓存，直接填充表单
+        if (this._protocolConfig) {
+            this._fillProtocolForm(tabId, this._protocolConfig);
+            return;
+        }
+        
+        // 从服务器加载配置
+        apiGet('/api/protocol/config')
+            .then(res => {
+                if (!res || !res.success) return;
+                this._protocolConfig = res.data || {};
+                this._fillProtocolForm(tabId, this._protocolConfig);
+            })
+            .catch(err => {
+                console.error('加载协议配置失败:', err);
+            });
+    },
+    
+    /**
+     * 填充协议配置表单
+     */
+    _fillProtocolForm(tabId, config) {
+        if (tabId === 'modbus-rtu' && config.modbusRtu) {
+            const rtu = config.modbusRtu;
+            this._setValue('rtu-port', rtu.port || '/dev/ttyS0');
+            this._setValue('rtu-baudrate', rtu.baudRate || 19200);
+            this._setValue('rtu-databits', rtu.dataBits || 8);
+            this._setValue('rtu-stopbits', rtu.stopBits || 1);
+            this._setValue('rtu-parity', rtu.parity || 'none');
+            this._setValue('rtu-timeout', rtu.timeout || 1000);
+        }
+        
+        if (tabId === 'modbus-tcp' && config.modbusTcp) {
+            const tcp = config.modbusTcp;
+            this._setValue('tcp-ip', tcp.server || '192.168.1.100');
+            this._setValue('tcp-mport', tcp.port || 502);
+            this._setValue('tcp-slave-id', tcp.slaveId || 1);
+            this._setValue('tcp-mtimeout', tcp.timeout || 5000);
+        }
+        
+        if (tabId === 'mqtt' && config.mqtt) {
+            const mqtt = config.mqtt;
+            this._setValue('mqtt-broker', mqtt.server || 'iot.fastbee.cn');
+            this._setValue('mqtt-port', mqtt.port || 1883);
+            this._setValue('mqtt-client-id', mqtt.clientId || '');
+            this._setValue('mqtt-username', mqtt.username || '');
+            this._setValue('mqtt-password', mqtt.password || '');
+            this._setValue('mqtt-alive', mqtt.keepAlive || 60);
+            this._setValue('mqtt-publish', mqtt.publishTopic || '');
+            this._setValue('mqtt-subscribe', mqtt.subscribeTopic || '');
+        }
+        
+        if (tabId === 'http' && config.http) {
+            const http = config.http;
+            this._setValue('http-url', http.url || 'https://api.example.com');
+            this._setValue('http-port', http.port || 80);
+            this._setValue('http-method', http.method || 'POST');
+            this._setValue('http-timeout', http.timeout || 30);
+            this._setValue('http-interval', http.interval || 60);
+            this._setValue('http-retry', http.retry || 3);
+        }
+        
+        if (tabId === 'coap' && config.coap) {
+            const coap = config.coap;
+            this._setValue('coap-server', coap.server || 'coap://example.com');
+            this._setValue('coap-port', coap.port || 5683);
+            this._setValue('coap-method', coap.method || 'POST');
+            this._setValue('coap-path', coap.path || 'sensors/temperature');
+        }
+        
+        if (tabId === 'tcp' && config.tcp) {
+            const tcp = config.tcp;
+            this._setValue('tcp-server', tcp.server || '192.168.1.200');
+            this._setValue('tcp-port', tcp.port || 5000);
+            this._setValue('tcp-timeout', tcp.timeout || 5000);
+            this._setValue('tcp-keepalive', tcp.keepAlive || 60);
+            this._setValue('tcp-retry', tcp.maxRetry || 5);
+            this._setValue('tcp-reconnect', tcp.reconnectInterval || 10);
+        }
+    },
+    
+    /**
+     * 保存协议配置
+     */
+    saveProtocolConfig(formId) {
+        // 收集所有表单数据
+        const data = {};
+        
+        // Modbus RTU
+        data.modbusRtu_port = document.getElementById('rtu-port')?.value || '/dev/ttyS0';
+        data.modbusRtu_baudRate = document.getElementById('rtu-baudrate')?.value || '19200';
+        data.modbusRtu_dataBits = document.getElementById('rtu-databits')?.value || '8';
+        data.modbusRtu_stopBits = document.getElementById('rtu-stopbits')?.value || '1';
+        data.modbusRtu_parity = document.getElementById('rtu-parity')?.value || 'none';
+        data.modbusRtu_timeout = document.getElementById('rtu-timeout')?.value || '1000';
+        
+        // Modbus TCP
+        data.modbusTcp_server = document.getElementById('tcp-ip')?.value || '192.168.1.100';
+        data.modbusTcp_port = document.getElementById('tcp-mport')?.value || '502';
+        data.modbusTcp_slaveId = document.getElementById('tcp-slave-id')?.value || '1';
+        data.modbusTcp_timeout = document.getElementById('tcp-mtimeout')?.value || '5000';
+        
+        // MQTT
+        data.mqtt_server = document.getElementById('mqtt-broker')?.value || 'iot.fastbee.cn';
+        data.mqtt_port = document.getElementById('mqtt-port')?.value || '1883';
+        data.mqtt_clientId = document.getElementById('mqtt-client-id')?.value || '';
+        data.mqtt_username = document.getElementById('mqtt-username')?.value || '';
+        data.mqtt_password = document.getElementById('mqtt-password')?.value || '';
+        data.mqtt_keepAlive = document.getElementById('mqtt-alive')?.value || '60';
+        data.mqtt_publishTopic = document.getElementById('mqtt-publish')?.value || '';
+        data.mqtt_subscribeTopic = document.getElementById('mqtt-subscribe')?.value || '';
+        
+        // HTTP
+        data.http_url = document.getElementById('http-url')?.value || 'https://api.example.com';
+        data.http_port = document.getElementById('http-port')?.value || '80';
+        data.http_method = document.getElementById('http-method')?.value || 'POST';
+        data.http_timeout = document.getElementById('http-timeout')?.value || '30';
+        data.http_interval = document.getElementById('http-interval')?.value || '60';
+        data.http_retry = document.getElementById('http-retry')?.value || '3';
+        
+        // CoAP
+        data.coap_server = document.getElementById('coap-server')?.value || 'coap://example.com';
+        data.coap_port = document.getElementById('coap-port')?.value || '5683';
+        data.coap_method = document.getElementById('coap-method')?.value || 'POST';
+        data.coap_path = document.getElementById('coap-path')?.value || 'sensors/temperature';
+        
+        // TCP
+        data.tcp_server = document.getElementById('tcp-server')?.value || '192.168.1.200';
+        data.tcp_port = document.getElementById('tcp-port')?.value || '5000';
+        data.tcp_timeout = document.getElementById('tcp-timeout')?.value || '5000';
+        data.tcp_keepAlive = document.getElementById('tcp-keepalive')?.value || '60';
+        data.tcp_maxRetry = document.getElementById('tcp-retry')?.value || '5';
+        data.tcp_reconnectInterval = document.getElementById('tcp-reconnect')?.value || '10';
+        
+        const protocolName = this._getProtocolName(formId);
+        
+        apiPost('/api/protocol/config', data)
+            .then(res => {
+                if (res && res.success) {
+                    // 清除缓存，下次重新加载
+                    this._protocolConfig = null;
+                    Notification.success(`${protocolName}配置保存成功！`, '通信协议');
+                    
+                    // 显示成功消息
+                    const form = document.getElementById(formId);
+                    const ok = form?.querySelector('.message-success');
+                    if (ok) {
+                        ok.style.display = 'block';
+                        setTimeout(() => { ok.style.display = 'none'; }, 3000);
+                    }
+                } else {
+                    Notification.error(res?.message || '保存失败', '通信协议');
+                }
+            })
+            .catch(err => {
+                console.error('保存协议配置失败:', err);
+                Notification.error('保存协议配置失败', '通信协议');
+            });
+    },
+    
+    // ============ GPIO配置 ============
+    
+    /**
+     * 加载GPIO列表
+     */
+    loadGpioList() {
+        const tbody = document.getElementById('gpio-table-body');
+        if (!tbody) return;
+        
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #999;">加载中...</td></tr>';
+        
+        apiGet('/api/gpio/config')
+            .then(res => {
+                if (!res || !res.success) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #f56c6c;">加载失败</td></tr>';
+                    return;
+                }
+                
+                const pins = res.data?.pins || [];
+                
+                if (pins.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #999;">暂无GPIO配置</td></tr>';
+                    return;
+                }
+                
+                let html = '';
+                pins.forEach(pin => {
+                    const modeNames = {
+                        1: '数字输入', 2: '数字输出', 3: '数字输入(上拉)',
+                        4: '数字输入(下拉)', 5: '模拟输入', 6: '模拟输出', 7: 'PWM输出'
+                    };
+                    const modeName = modeNames[pin.mode] || '未知';
+                    const stateText = pin.state === 1 ? '高电平' : '低电平';
+                    const stateColor = pin.state === 1 ? '#52c41a' : '#999';
+                    // 仅输出模式才支持切换: 2=数字输出, 6=模拟输出, 7=PWM
+                    const canToggle = (pin.mode === 2 || pin.mode === 6 || pin.mode === 7);
+                    const toggleBtn = canToggle
+                        ? `<button class="pure-button pure-button-small" onclick="app.toggleGpio(${pin.pin})">切换</button>`
+                        : '';
+                    
+                    html += `
+                        <tr>
+                            <td>${pin.pin}</td>
+                            <td>${pin.name}</td>
+                            <td>${modeName}</td>
+                            <td style="color: ${stateColor};">${stateText}</td>
+                            <td>
+                                <button class="pure-button pure-button-small" onclick="app.editGpio(${pin.pin}, '${pin.name}', ${pin.mode}, ${pin.state || 0})">编辑</button>
+                                ${toggleBtn}
+                                <button class="pure-button pure-button-small" style="background: #ff4d4f; color: white;" onclick="app.deleteGpio(${pin.pin})">删除</button>
+                            </td>
+                        </tr>
+                    `;
+                });
+                
+                tbody.innerHTML = html;
+            })
+            .catch(err => {
+                console.error('Load GPIO list failed:', err);
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #f56c6c;">加载失败</td></tr>';
+            });
+    },
+    
+    /**
+     * 打开GPIO模态框
+     */
+    openGpioModal(isEdit = false, pinData = null) {
+        const modal = document.getElementById('gpio-modal');
+        const title = document.getElementById('gpio-modal-title');
+        const form = document.getElementById('gpio-form');
+        
+        if (!modal) return;
+        
+        form.reset();
+        document.getElementById('gpio-error').style.display = 'none';
+        
+        if (isEdit && pinData) {
+            title.textContent = '编辑GPIO';
+            document.getElementById('gpio-original-pin').value = pinData.pin;
+            document.getElementById('gpio-pin-input').value = pinData.pin;
+            document.getElementById('gpio-name-input').value = pinData.name;
+            document.getElementById('gpio-mode-input').value = pinData.mode;
+            document.getElementById('gpio-default-input').value = pinData.state || 0;
+            document.getElementById('gpio-pin-input').disabled = true;
+        } else {
+            title.textContent = '新增GPIO';
+            document.getElementById('gpio-original-pin').value = '';
+            document.getElementById('gpio-pin-input').disabled = false;
+        }
+        
+        modal.style.display = 'flex';
+    },
+    
+    /**
+     * 关闭GPIO模态框
+     */
+    closeGpioModal() {
+        const modal = document.getElementById('gpio-modal');
+        if (modal) modal.style.display = 'none';
+    },
+    
+    /**
+     * 保存GPIO配置
+     */
+    saveGpioConfig() {
+        const originalPin = document.getElementById('gpio-original-pin').value;
+        const pin = document.getElementById('gpio-pin-input').value;
+        const name = document.getElementById('gpio-name-input').value.trim();
+        const mode = document.getElementById('gpio-mode-input').value;
+        const defaultValue = document.getElementById('gpio-default-input').value;
+        const errEl = document.getElementById('gpio-error');
+        
+        if (!pin || !name) {
+            errEl.textContent = '请填写引脚号和名称';
+            errEl.style.display = 'block';
+            return;
+        }
+        
+        const isEdit = originalPin !== '';
+        
+        // 安全起见：禁用按钮防止重复提交
+        const saveBtn = document.getElementById('save-gpio-btn');
+        const origText = saveBtn.textContent;
+        saveBtn.disabled = true;
+        saveBtn.textContent = '保存中...';
+        
+        const data = { pin, name, mode, defaultValue };
+        
+        apiPost('/api/gpio/config', data)
+            .then(res => {
+                if (res && res.success) {
+                    this.closeGpioModal();
+                    this.loadGpioList();
+                    Notification.success(isEdit ? 'GPIO更新成功' : 'GPIO添加成功', 'GPIO配置');
+                } else {
+                    errEl.textContent = res?.error || '保存失败';
+                    errEl.style.display = 'block';
+                }
+            })
+            .catch(err => {
+                console.error('Save GPIO failed:', err);
+                errEl.textContent = '保存失败，请检查连接';
+                errEl.style.display = 'block';
+            })
+            .finally(() => {
+                saveBtn.disabled = false;
+                saveBtn.textContent = origText;
+            });
+    },
+    
+    /**
+     * 编辑GPIO
+     */
+    editGpio(pin, name, mode, state) {
+        this.openGpioModal(true, { pin, name, mode, state });
+    },
+    
+    /**
+     * 删除GPIO
+     */
+    deleteGpio(pin) {
+        if (!confirm(`确定要删除 GPIO ${pin} 吗？`)) return;
+        
+        apiPost('/api/gpio/delete', { pin: String(pin) })
+            .then(res => {
+                if (res && res.success) {
+                    Notification.success(`GPIO ${pin} 已删除`, 'GPIO配置');
+                    this.loadGpioList();
+                } else {
+                    Notification.error(res?.error || '删除失败', 'GPIO配置');
+                }
+            })
+            .catch(err => {
+                console.error('Delete GPIO failed:', err);
+                Notification.error('删除失败，请检查连接', 'GPIO配置');
+            });
+    },
+    
+    /**
+     * 切换GPIO状态
+     */
+    toggleGpio(pin) {
+        apiPost('/api/gpio/write', { pin: String(pin), state: 'toggle' })
+            .then(res => {
+                if (res && res.success) {
+                    Notification.success('状态已切换', 'GPIO配置');
+                    this.loadGpioList();
+                } else {
+                    Notification.error(res?.error || '切换失败', 'GPIO配置');
+                }
+            })
+            .catch(err => {
+                console.error('Toggle GPIO failed:', err);
+                Notification.error('切换失败', 'GPIO配置');
+            });
+    },
+    
+    /**
+     * 保存GPIO配置到文件 (gpio.json)
+     */
+    saveGpioToFile() {
+        apiPost('/api/gpio/save', {})
+            .then(res => {
+                if (res && res.success) {
+                    console.log('[GPIO] 配置已保存到 /config/gpio.json');
+                }
+            })
+            .catch(err => {
+                console.error('Save GPIO to file failed:', err);
+            });
+    },
+
+    // ============ AP配网功能 ============
+    
+    /**
+     * 加载配网状态
+     */
+    loadProvisionStatus() {
+        apiGet('/api/provision/status')
+            .then(res => {
+                if (!res || !res.success) return;
+                const d = res.data || {};
+                
+                // 更新状态显示
+                const statusEl = document.getElementById('provision-status');
+                if (statusEl) {
+                    if (d.active) {
+                        statusEl.textContent = '配网中';
+                        statusEl.className = 'badge badge-success';
+                    } else {
+                        statusEl.textContent = '未启动';
+                        statusEl.className = 'badge badge-info';
+                    }
+                }
+                
+                this._setTextContent('provision-ap-name', d.apSSID || '--');
+                this._setTextContent('provision-ap-ip', d.apIP || '192.168.4.1');
+                this._setTextContent('provision-clients', d.clients || '0');
+                
+                // 更新按钮状态
+                const startBtn = document.getElementById('provision-start-btn');
+                const stopBtn = document.getElementById('provision-stop-btn');
+                if (startBtn) startBtn.disabled = d.active;
+                if (stopBtn) stopBtn.disabled = !d.active;
+            })
+            .catch(err => {
+                console.error('Load provision status failed:', err);
+            });
+    },
+
+    /**
+     * 加载AP配网配置
+     */
+    loadProvisionConfig() {
+        apiGet('/api/provision/config')
+            .then(res => {
+                if (!res || !res.success) return;
+                const d = res.data || {};
+                
+                this._setValue('provision-ssid', d.provisionSSID || '');
+                this._setValue('provision-password', d.provisionPassword || '');
+                this._setValue('provision-timeout', d.provisionTimeout || 300);
+                this._setValue('provision-user-id', d.provisionUserId || '');
+                this._setValue('provision-product-id', d.provisionProductId || '');
+                this._setValue('provision-auth-code', d.provisionAuthCode || '');
+                this._setValue('provision-ip', d.provisionIP || '192.168.4.1');
+                this._setValue('provision-gateway', d.provisionGateway || '192.168.4.1');
+                this._setValue('provision-subnet', d.provisionSubnet || '255.255.255.0');
+            })
+            .catch(err => {
+                console.error('Load provision config failed:', err);
+            });
+    },
+
+    /**
+     * 保存AP配网配置
+     */
+    saveProvisionConfig() {
+        const data = {
+            provisionSSID:     document.getElementById('provision-ssid')?.value || '',
+            provisionPassword: document.getElementById('provision-password')?.value || '',
+            provisionTimeout:  document.getElementById('provision-timeout')?.value || '300',
+            provisionUserId:   document.getElementById('provision-user-id')?.value || '',
+            provisionProductId: document.getElementById('provision-product-id')?.value || '',
+            provisionAuthCode: document.getElementById('provision-auth-code')?.value || '',
+            provisionIP:       document.getElementById('provision-ip')?.value || '192.168.4.1',
+            provisionGateway:  document.getElementById('provision-gateway')?.value || '192.168.4.1',
+            provisionSubnet:   document.getElementById('provision-subnet')?.value || '255.255.255.0'
+        };
+
+        apiPut('/api/provision/config', data)
+            .then(res => {
+                if (res && res.success) {
+                    this._showMessage('provision-success', true);
+                    Notification.success('AP配网配置保存成功', 'AP配网');
+                } else {
+                    Notification.error(res?.message || '保存失败', 'AP配网');
+                }
+            })
+            .catch(err => {
+                Notification.error('保存失败: ' + (err.message || err), 'AP配网');
+            });
+    },
+
+    /**
+     * 启动AP配网
+     */
+    startProvision() {
+        const startBtn = document.getElementById('provision-start-btn');
+        if (startBtn) {
+            startBtn.disabled = true;
+            startBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 启动中...';
+        }
+
+        apiPost('/api/provision/start', {})
+            .then(res => {
+                if (res && res.success) {
+                    Notification.success(`配网热点已启动: ${res.data?.apSSID || ''}`, 'AP配网');
+                    this.loadProvisionStatus();
+                } else {
+                    Notification.error(res?.message || '启动失败', 'AP配网');
+                }
+            })
+            .catch(err => {
+                Notification.error('启动失败: ' + (err.message || err), 'AP配网');
+            })
+            .finally(() => {
+                if (startBtn) {
+                    startBtn.innerHTML = '<i class="fas fa-play"></i> 启动配网';
+                    // 按钮状态由 loadProvisionStatus 更新
+                }
+            });
+    },
+
+    /**
+     * 停止AP配网
+     */
+    stopProvision() {
+        const stopBtn = document.getElementById('provision-stop-btn');
+        if (stopBtn) {
+            stopBtn.disabled = true;
+            stopBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 停止中...';
+        }
+
+        apiPost('/api/provision/stop', {})
+            .then(res => {
+                if (res && res.success) {
+                    Notification.success('配网热点已停止', 'AP配网');
+                    this.loadProvisionStatus();
+                } else {
+                    Notification.error(res?.message || '停止失败', 'AP配网');
+                }
+            })
+            .catch(err => {
+                Notification.error('停止失败: ' + (err.message || err), 'AP配网');
+            })
+            .finally(() => {
+                if (stopBtn) {
+                    stopBtn.innerHTML = '<i class="fas fa-stop"></i> 停止配网';
+                }
+            });
+    },
+
+    // ============ 蓝牙配网 ============
+
+    /**
+     * 加载蓝牙配网状态
+     */
+    loadBLEProvisionStatus() {
+        apiGet('/api/ble/provision/status')
+            .then(res => {
+                if (!res || !res.success) return;
+                const d = res.data || {};
+                
+                const badge = document.getElementById('ble-provision-status-badge');
+                const deviceName = document.getElementById('ble-provision-device-name');
+                const remainingWrap = document.getElementById('ble-provision-remaining-wrap');
+                const remaining = document.getElementById('ble-provision-remaining');
+                const startBtn = document.getElementById('ble-provision-start-btn');
+                const stopBtn = document.getElementById('ble-provision-stop-btn');
+
+                if (d.active) {
+                    if (badge) { badge.className = 'status-badge status-online'; badge.textContent = '配网中'; }
+                    if (deviceName) deviceName.textContent = d.deviceName || '--';
+                    if (remainingWrap) remainingWrap.style.display = 'flex';
+                    if (remaining) remaining.textContent = (d.remainingTime || 0) + '秒';
+                    if (startBtn) startBtn.style.display = 'none';
+                    if (stopBtn) { stopBtn.style.display = 'inline-block'; stopBtn.disabled = false; }
+                } else {
+                    if (badge) { badge.className = 'status-badge status-offline'; badge.textContent = '未启动'; }
+                    if (deviceName) deviceName.textContent = '--';
+                    if (remainingWrap) remainingWrap.style.display = 'none';
+                    if (startBtn) { startBtn.style.display = 'inline-block'; startBtn.disabled = false; }
+                    if (stopBtn) stopBtn.style.display = 'none';
+                }
+            })
+            .catch(err => {
+                console.error('加载蓝牙配网状态失败:', err);
+            });
+    },
+
+    /**
+     * 加载蓝牙配网配置
+     */
+    loadBLEProvisionConfig() {
+        apiGet('/api/ble/provision/config')
+            .then(res => {
+                if (!res || !res.success) return;
+                const d = res.data || {};
+                
+                this._setValue('ble-device-name', d.bleName || 'FBDevice');
+                this._setValue('ble-timeout', d.bleTimeout || 300);
+                this._setChecked('ble-auto-start', d.bleAutoStart || false);
+                this._setValue('ble-service-uuid', d.bleServiceUUID || '6E400001-B5A3-F393-E0A9-E50E24DCCA9F');
+                this._setValue('ble-rx-uuid', d.bleRxUUID || '6E400002-B5A3-F393-E0A9-E50E24DCCA9F');
+                this._setValue('ble-tx-uuid', d.bleTxUUID || '6E400003-B5A3-F393-E0A9-E50E24DCCA9F');
+            })
+            .catch(err => {
+                console.error('加载蓝牙配网配置失败:', err);
+            });
+    },
+
+    /**
+     * 保存蓝牙配网配置
+     */
+    saveBLEProvisionConfig() {
+        const data = {
+            bleName:        document.getElementById('ble-device-name')?.value || 'FBDevice',
+            bleTimeout:     document.getElementById('ble-timeout')?.value || '300',
+            bleAutoStart:   document.getElementById('ble-auto-start')?.checked ? 'true' : 'false',
+            bleServiceUUID: document.getElementById('ble-service-uuid')?.value || '6E400001-B5A3-F393-E0A9-E50E24DCCA9F',
+            bleRxUUID:      document.getElementById('ble-rx-uuid')?.value || '6E400002-B5A3-F393-E0A9-E50E24DCCA9F',
+            bleTxUUID:      document.getElementById('ble-tx-uuid')?.value || '6E400003-B5A3-F393-E0A9-E50E24DCCA9F'
+        };
+
+        apiPut('/api/ble/provision/config', data)
+            .then(res => {
+                if (res && res.success) {
+                    this._showMessage('ble-provision-success', true);
+                    Notification.success('蓝牙配网配置保存成功', '蓝牙配网');
+                } else {
+                    Notification.error(res?.message || '保存失败', '蓝牙配网');
+                }
+            })
+            .catch(err => {
+                Notification.error('保存失败: ' + (err.message || err), '蓝牙配网');
+            });
+    },
+
+    /**
+     * 启动蓝牙配网
+     */
+    startBLEProvision() {
+        const startBtn = document.getElementById('ble-provision-start-btn');
+        if (startBtn) {
+            startBtn.disabled = true;
+            startBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 启动中...';
+        }
+
+        apiPost('/api/ble/provision/start', {})
+            .then(res => {
+                if (res && res.success) {
+                    Notification.success(`蓝牙配网已启动: ${res.data?.deviceName || ''}`, '蓝牙配网');
+                    this.loadBLEProvisionStatus();
+                } else {
+                    Notification.error(res?.message || '启动失败', '蓝牙配网');
+                }
+            })
+            .catch(err => {
+                Notification.error('启动失败: ' + (err.message || err), '蓝牙配网');
+            })
+            .finally(() => {
+                if (startBtn) {
+                    startBtn.innerHTML = '<i class="fas fa-play"></i> 启动蓝牙配网';
+                }
+            });
+    },
+
+    /**
+     * 停止蓝牙配网
+     */
+    stopBLEProvision() {
+        const stopBtn = document.getElementById('ble-provision-stop-btn');
+        if (stopBtn) {
+            stopBtn.disabled = true;
+            stopBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 停止中...';
+        }
+
+        apiPost('/api/ble/provision/stop', {})
+            .then(res => {
+                if (res && res.success) {
+                    Notification.success('蓝牙配网已停止', '蓝牙配网');
+                    this.loadBLEProvisionStatus();
+                } else {
+                    Notification.error(res?.message || '停止失败', '蓝牙配网');
+                }
+            })
+            .catch(err => {
+                Notification.error('停止失败: ' + (err.message || err), '蓝牙配网');
+            })
+            .finally(() => {
+                if (stopBtn) {
+                    stopBtn.innerHTML = '<i class="fas fa-stop"></i> 停止蓝牙配网';
+                }
+            });
+    },
+
+    // ============ OTA升级 ============
+
+    /**
+     * 加载OTA状态
+     */
+    loadOtaStatus() {
+        apiGet('/api/ota/status')
+            .then(res => {
+                if (!res) return;
+                
+                const badge = document.getElementById('ota-status-badge');
+                const progressWrap = document.getElementById('ota-progress-wrap');
+                const progressBar = document.getElementById('ota-progress-bar');
+                const progressText = document.getElementById('ota-progress-text');
+                
+                if (res.status === 'OTA ready') {
+                    if (badge) { badge.className = 'status-badge status-online'; badge.textContent = '就绪'; }
+                    if (progressWrap) progressWrap.style.display = 'none';
+                } else if (res.progress > 0 && res.progress < 100) {
+                    if (badge) { badge.className = 'status-badge status-warning'; badge.textContent = '升级中'; }
+                    if (progressWrap) progressWrap.style.display = 'block';
+                    if (progressBar) progressBar.style.width = res.progress + '%';
+                    if (progressText) progressText.textContent = res.progress + '%';
+                }
+            })
+            .catch(err => {
+                console.error('加载OTA状态失败:', err);
+            });
+        
+        // 同时加载系统信息以获取版本等
+        apiGet('/api/system/info')
+            .then(res => {
+                if (!res || !res.success) return;
+                const d = res.data || {};
+                
+                this._setValue('ota-current-version', d.firmwareVersion || '--');
+                
+                const flashSize = d.flashChipSize || 0;
+                const freeSketch = d.freeSketchSpace || 0;
+                
+                const flashSizeEl = document.getElementById('ota-flash-size');
+                const freeSpaceEl = document.getElementById('ota-free-space');
+                
+                if (flashSizeEl) flashSizeEl.textContent = flashSize > 0 ? (flashSize / 1024 / 1024).toFixed(2) + ' MB' : '--';
+                if (freeSpaceEl) freeSpaceEl.textContent = freeSketch > 0 ? (freeSketch / 1024).toFixed(0) + ' KB' : '--';
+            })
+            .catch(err => {
+                console.error('加载系统信息失败:', err);
+            });
+    },
+
+    /**
+     * 通过URL在线升级
+     */
+    startOtaUrl() {
+        const url = document.getElementById('ota-url')?.value || '';
+        
+        if (!url) {
+            Notification.error('请输入固件下载地址', 'OTA升级');
+            return;
+        }
+        
+        if (!url.startsWith('http://') && !url.startsWith('https://')) {
+            Notification.error('URL必须以http://或https://开头', 'OTA升级');
+            return;
+        }
+        
+        const btn = document.getElementById('ota-url-btn');
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 下载中...';
+        }
+        
+        // 显示进度条
+        const progressWrap = document.getElementById('ota-progress-wrap');
+        if (progressWrap) progressWrap.style.display = 'block';
+        
+        apiPost('/api/ota/url', { url })
+            .then(res => {
+                if (res && res.success) {
+                    Notification.success('开始从URL下载固件并升级', 'OTA升级');
+                    // 开始轮询状态
+                    this._pollOtaProgress();
+                } else {
+                    Notification.error(res?.message || '启动失败', 'OTA升级');
+                    if (progressWrap) progressWrap.style.display = 'none';
+                }
+            })
+            .catch(err => {
+                Notification.error('启动失败: ' + (err.message || err), 'OTA升级');
+                if (progressWrap) progressWrap.style.display = 'none';
+            })
+            .finally(() => {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fas fa-download"></i> 开始在线升级';
+                }
+            });
+    },
+
+    /**
+     * 本地文件上传升级
+     */
+    startOtaUpload() {
+        const fileInput = document.getElementById('ota-file');
+        const file = fileInput?.files?.[0];
+        
+        if (!file) {
+            Notification.error('请选择固件文件', 'OTA升级');
+            return;
+        }
+        
+        if (!file.name.endsWith('.bin')) {
+            Notification.error('仅支持.bin格式的固件文件', 'OTA升级');
+            return;
+        }
+        
+        const btn = document.getElementById('ota-upload-btn');
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 上传中...';
+        }
+        
+        // 显示进度条
+        const progressWrap = document.getElementById('ota-progress-wrap');
+        const progressBar = document.getElementById('ota-progress-bar');
+        const progressText = document.getElementById('ota-progress-text');
+        if (progressWrap) progressWrap.style.display = 'block';
+        
+        const formData = new FormData();
+        formData.append('firmware', file);
+        
+        const xhr = new XMLHttpRequest();
+        
+        xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) {
+                const percent = Math.round((e.loaded / e.total) * 100);
+                if (progressBar) progressBar.style.width = percent + '%';
+                if (progressText) progressText.textContent = percent + '%';
+            }
+        });
+        
+        xhr.addEventListener('load', () => {
+            if (xhr.status === 200) {
+                try {
+                    const res = JSON.parse(xhr.responseText);
+                    if (res.success) {
+                        Notification.success('固件上传成功，设备即将重启', 'OTA升级');
+                        // 设备会重启，等待后刷新页面
+                        setTimeout(() => {
+                            window.location.reload();
+                        }, 5000);
+                    } else {
+                        Notification.error(res.message || '上传失败', 'OTA升级');
+                    }
+                } catch (e) {
+                    Notification.success('固件上传完成', 'OTA升级');
+                }
+            } else {
+                Notification.error('上传失败: HTTP ' + xhr.status, 'OTA升级');
+            }
+            
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-upload"></i> 上传并升级';
+            }
+        });
+        
+        xhr.addEventListener('error', () => {
+            Notification.error('上传失败: 网络错误', 'OTA升级');
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-upload"></i> 上传并升级';
+            }
+            if (progressWrap) progressWrap.style.display = 'none';
+        });
+        
+        xhr.open('POST', '/api/ota/upload');
+        xhr.setRequestHeader('Authorization', 'Bearer ' + localStorage.getItem('token'));
+        xhr.send(formData);
+    },
+
+    /**
+     * 轮询OTA进度
+     */
+    _pollOtaProgress() {
+        const progressBar = document.getElementById('ota-progress-bar');
+        const progressText = document.getElementById('ota-progress-text');
+        const badge = document.getElementById('ota-status-badge');
+        
+        const poll = () => {
+            apiGet('/api/ota/status')
+                .then(res => {
+                    if (!res) return;
+                    
+                    const progress = res.progress || 0;
+                    if (progressBar) progressBar.style.width = progress + '%';
+                    if (progressText) progressText.textContent = progress + '%';
+                    
+                    if (progress < 100 && res.status !== 'OTA ready') {
+                        if (badge) { badge.className = 'status-badge status-warning'; badge.textContent = '升级中'; }
+                        setTimeout(poll, 1000);
+                    } else if (progress >= 100) {
+                        if (badge) { badge.className = 'status-badge status-online'; badge.textContent = '完成'; }
+                        Notification.success('固件升级完成，设备即将重启', 'OTA升级');
+                    }
+                })
+                .catch(err => {
+                    console.error('获取OTA进度失败:', err);
+                });
+        };
+        
+        poll();
     }
 };

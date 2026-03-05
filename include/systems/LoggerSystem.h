@@ -148,4 +148,11 @@ private:
 #define LOG_DEBUG_M(msg, mod)   LOGGER.debug  (msg, mod)
 #define LOG_VERBOSE_M(msg, mod) LOGGER.verbose(msg, mod)
 
+// 格式化日志宏
+#define LOG_ERRORF(fmt, ...)   LOGGER.errorf  (fmt, ##__VA_ARGS__)
+#define LOG_WARNINGF(fmt, ...) LOGGER.warningf(fmt, ##__VA_ARGS__)
+#define LOG_INFOF(fmt, ...)    LOGGER.infof   (fmt, ##__VA_ARGS__)
+#define LOG_DEBUGF(fmt, ...)   LOGGER.debugf  (fmt, ##__VA_ARGS__)
+#define LOG_VERBOSEF(fmt, ...) LOGGER.verbosef(fmt, ##__VA_ARGS__)
+
 #endif

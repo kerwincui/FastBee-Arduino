@@ -7,6 +7,11 @@
 #include <Preferences.h>
 #include <LittleFS.h>
 
+// JSON 文档大小限制（优化内存使用）
+#define JSON_DOC_SMALL  512    // 小型响应
+#define JSON_DOC_MEDIUM 2048   // 中型响应
+#define JSON_DOC_LARGE  4096   // 大型响应（列表数据）
+
 // 接口包含
 #include "core/interfaces/IAuthManager.h"
 #include "core/interfaces/IUserManager.h"
@@ -227,8 +232,16 @@ private:
     void handleAPISystemInfo(AsyncWebServerRequest* request);
     void handleAPISystemStatus(AsyncWebServerRequest* request);
     void handleAPISystemRestart(AsyncWebServerRequest* request);
+    
+    // 辅助函数
+    String formatUptime(unsigned long ms);
     void handleAPIFileSystemInfo(AsyncWebServerRequest* request);
-    void handleAPIHealthCheck(AsyncWebServerRequest* request);    
+    void handleAPIHealthCheck(AsyncWebServerRequest* request);
+    
+    // ============ 文件管理 API 处理器 ============
+    void handleAPIGetFileList(AsyncWebServerRequest* request);   ///< 获取文件列表
+    void handleAPIGetFileContent(AsyncWebServerRequest* request); ///< 获取文件内容
+    void handleAPISaveFileContent(AsyncWebServerRequest* request); ///< 保存文件内容    
     // ============ 日志管理 API 处理器 ============
     void handleAPIGetLogs(AsyncWebServerRequest* request);       ///< 获取日志内容
     void handleAPIGetLogInfo(AsyncWebServerRequest* request);    ///< 获取日志信息
@@ -239,14 +252,50 @@ private:
     void handleAPIUpdateConfig(AsyncWebServerRequest* request);
     void handleAPIGetNetworkConfig(AsyncWebServerRequest* request);
     void handleAPIUpdateNetworkConfig(AsyncWebServerRequest* request);
+    void handleAPIGetNetworkStatus(AsyncWebServerRequest* request);  ///< 获取网络实时状态
     
     // ============ OTA API处理器 ============
     void handleAPIOtaUpdate(AsyncWebServerRequest* request);
     void handleAPIOtaStatus(AsyncWebServerRequest* request);
+    void handleAPIOtaUrl(AsyncWebServerRequest* request);     ///< 通过URL在线升级
+    void handleAPIOtaUpload(AsyncWebServerRequest* request, const String& filename, 
+                           size_t index, uint8_t* data, size_t len, bool final);  ///< 本地文件上传
+    
+    // ============ GPIO API处理器 ============
+    void handleAPIGetGPIOConfig(AsyncWebServerRequest* request);   ///< 获取GPIO配置
+    void handleAPIConfigureGPIO(AsyncWebServerRequest* request);   ///< 配置GPIO
+    void handleAPIReadGPIO(AsyncWebServerRequest* request);        ///< 读取GPIO状态
+    void handleAPIWriteGPIO(AsyncWebServerRequest* request);       ///< 写入GPIO状态
+    void handleAPIDeleteGPIO(AsyncWebServerRequest* request);      ///< 删除GPIO配置
+    void handleAPISaveGPIOConfig(AsyncWebServerRequest* request);  ///< 保存GPIO配置
+    
+    // ============ 协议配置 API ============
+    void handleAPIGetProtocolConfig(AsyncWebServerRequest* request);   ///< 获取协议配置
+    void handleAPISaveProtocolConfig(AsyncWebServerRequest* request);  ///< 保存协议配置
     
     // ============ 额外工具方法 ============
     void handleResetPassword(AsyncWebServerRequest* request);
     void handleUnlockAccount(AsyncWebServerRequest* request);
+    
+    // ============ 设备配置 API 处理器 ============
+    void handleAPIGetDeviceConfig(AsyncWebServerRequest* request);   ///< 获取设备配置(NTP/时区等)
+    void handleAPIUpdateDeviceConfig(AsyncWebServerRequest* request); ///< 保存设备配置
+    void handleAPIGetDeviceTime(AsyncWebServerRequest* request);      ///< 获取当前时间
+    
+    // ============ AP配网 API 处理器 ============
+    void handleAPIGetProvisionStatus(AsyncWebServerRequest* request);  ///< 获取配网状态
+    void handleAPIStartProvision(AsyncWebServerRequest* request);      ///< 启动AP配网
+    void handleAPIStopProvision(AsyncWebServerRequest* request);       ///< 停止AP配网
+    void handleAPIGetProvisionConfig(AsyncWebServerRequest* request);  ///< 获取配网配置
+    void handleAPISaveProvisionConfig(AsyncWebServerRequest* request); ///< 保存配网配置
+    void handleAPIProvisionCallback(AsyncWebServerRequest* request);   ///< 配网回调(接收WiFi配置)
+    
+    // ============ 蓝牙配网 API 处理器 ============
+    void handleAPIGetBLEProvisionConfig(AsyncWebServerRequest* request);  ///< 获取蓝牙配网配置
+    void handleAPISaveBLEProvisionConfig(AsyncWebServerRequest* request); ///< 保存蓝牙配网配置
+    void handleAPIGetBLEProvisionStatus(AsyncWebServerRequest* request);  ///< 获取蓝牙配网状态
+    void handleAPIStartBLEProvision(AsyncWebServerRequest* request);      ///< 启动蓝牙配网
+    void handleAPIStopBLEProvision(AsyncWebServerRequest* request);       ///< 停止蓝牙配网
     
     // ============ 请求体处理回调 ============
     // 用于处理OTA上传等需要处理请求体的场景

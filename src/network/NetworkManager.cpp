@@ -10,6 +10,10 @@
 #include "utils/NetworkUtils.h"
 #include <WiFi.h>
 #include <ESPmDNS.h>
+#include <LittleFS.h>
+#include <ArduinoJson.h>
+
+static const char* NETWORK_CONFIG_FILE = "/config/network.json";
 
 NetworkManager::NetworkManager(AsyncWebServer* webServerPtr) 
     : webServer(webServerPtr),
@@ -87,26 +91,37 @@ bool NetworkManager::initialize() {
         wifiManager->handleWiFiEvent(event);
     });
 
-    // 根据配置启动网络
-    // STA 模式：阻塞等待连接（最多 connectTimeout ms），成功后启动 mDNS。
-    // 无凭据或超时则自动回退 AP 模式，保证 192.168.4.1 始终可访问配置页面。
+    // 网络启动策略：
+    // 1. network.json 中有 staSSID → 尝试连接 WiFi
+    //    - 连接成功 → STA 模式（仅站点，节省功耗）
+    //    - 连接失败 → 回退 AP 模式（192.168.4.1 始终可访问配置页面）
+    // 2. 没有 staSSID → 直接启动 AP 模式
     bool success = false;
-    switch (wifiConfig.mode) {
-        case NetworkMode::NETWORK_STA:
-            success = connectToWiFiBlocking();
-            if (!success) {
-                LOG_WARNING("NetworkManager: STA connect failed, falling back to AP mode");
-                success = startAPMode();
+    if (!wifiConfig.staSSID.isEmpty()) {
+        LOG_INFO("NetworkManager: staSSID found, attempting STA connection...");
+        success = connectToWiFiBlocking();
+        if (success) {
+            LOG_INFO("NetworkManager: STA connected, running in STA-only mode");
+            LOGGER.infof(">>> STA IP: %s <<<", WiFi.localIP().toString().c_str());
+        } else {
+            LOG_WARNING("NetworkManager: STA connect failed, falling back to AP mode");
+            success = startAPMode();
+            if (success) {
+                LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:[%s] <<<",
+                    WiFi.softAPIP().toString().c_str(),
+                    wifiConfig.apSSID.c_str(),
+                    wifiConfig.apPassword.c_str());
             }
-            break;
-        case NetworkMode::NETWORK_AP:
-            success = startAPMode();
-            break;
-        case NetworkMode::NETWORK_AP_STA:
-            // AP 先启，确保配置页面始终可用；STA 阻塞连接，成功则同时具备 STA 能力
-            success = startAPMode();
-            connectToWiFiBlocking();  // 失败不影响 AP 可用性
-            break;
+        }
+    } else {
+        LOG_INFO("NetworkManager: No staSSID configured, starting AP mode directly");
+        success = startAPMode();
+        if (success) {
+            LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:[%s] <<<",
+                WiFi.softAPIP().toString().c_str(),
+                wifiConfig.apSSID.c_str(),
+                wifiConfig.apPassword.c_str());
+        }
     }
 
     isInitialized = success;
@@ -156,11 +171,12 @@ void NetworkManager::update() {
         statusInfo.reconnectAttempts = 0;  // 重置重连计数器
         statusInfo.status = NetworkStatus::CONNECTED;
         
-        // 重新启动 mDNS
+        // 重新启动 mDNS（使用配置中的 customDomain）
         MDNS.end();
-        if (MDNS.begin("fastbee")) {
+        String hostname = wifiConfig.customDomain.length() > 0 ? wifiConfig.customDomain : "fastbee";
+        if (MDNS.begin(hostname.c_str())) {
             MDNS.addService("http", "tcp", 80);
-            LOG_INFO("NetworkManager: mDNS restarted");
+            LOGGER.infof("NetworkManager: mDNS started as %s.local", hostname.c_str());
         }
     }
     
@@ -230,10 +246,77 @@ void NetworkManager::update() {
 }
 
 bool NetworkManager::loadNetworkConfig() {
+    LOG_INFO("NetworkManager: Loading network configuration...");
+    
+    // 加载辅助函数：从文件读取配置
+    auto loadFromFile = [this](const char* path) -> bool {
+        LOG_DEBUGF("NetworkManager: Trying to load config from %s", path);
+        File f = LittleFS.open(path, "r");
+        if (!f) {
+            LOG_DEBUGF("NetworkManager: File not found: %s", path);
+            return false;
+        }
+        LOG_DEBUGF("NetworkManager: File opened: %s (size: %d bytes)", path, f.size());
+        
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, f);
+        f.close();
+        if (err) {
+            LOGGER.errorf("NetworkManager: JSON parse error (%s): %s", path, err.c_str());
+            return false;
+        }
+        LOG_DEBUG("NetworkManager: JSON parsed successfully");
+        if (doc.containsKey("mode"))                 wifiConfig.mode = static_cast<NetworkMode>(doc["mode"].as<uint8_t>());
+        if (doc.containsKey("deviceName"))           wifiConfig.deviceName = doc["deviceName"].as<String>();
+        if (doc.containsKey("apSSID"))               wifiConfig.apSSID = doc["apSSID"].as<String>();
+        if (doc.containsKey("apPassword"))           wifiConfig.apPassword = doc["apPassword"].as<String>();
+        if (doc.containsKey("apChannel"))            wifiConfig.apChannel = doc["apChannel"].as<uint8_t>();
+        if (doc.containsKey("apHidden"))             wifiConfig.apHidden = doc["apHidden"].as<bool>();
+        if (doc.containsKey("apMaxConnections"))     wifiConfig.apMaxConnections = doc["apMaxConnections"].as<uint8_t>();
+        if (doc.containsKey("staSSID"))              wifiConfig.staSSID = doc["staSSID"].as<String>();
+        if (doc.containsKey("staPassword"))          wifiConfig.staPassword = doc["staPassword"].as<String>();
+        if (doc.containsKey("ipConfigType"))         wifiConfig.ipConfigType = static_cast<IPConfigType>(doc["ipConfigType"].as<uint8_t>());
+        if (doc.containsKey("staticIP"))             wifiConfig.staticIP = doc["staticIP"].as<String>();
+        if (doc.containsKey("gateway"))              wifiConfig.gateway = doc["gateway"].as<String>();
+        if (doc.containsKey("subnet"))               wifiConfig.subnet = doc["subnet"].as<String>();
+        if (doc.containsKey("dns1"))                 wifiConfig.dns1 = doc["dns1"].as<String>();
+        if (doc.containsKey("dns2"))                 wifiConfig.dns2 = doc["dns2"].as<String>();
+        if (doc.containsKey("connectTimeout"))       wifiConfig.connectTimeout = doc["connectTimeout"].as<uint32_t>();
+        if (doc.containsKey("reconnectInterval"))    wifiConfig.reconnectInterval = doc["reconnectInterval"].as<uint32_t>();
+        if (doc.containsKey("maxReconnectAttempts")) wifiConfig.maxReconnectAttempts = doc["maxReconnectAttempts"].as<uint8_t>();
+        if (doc.containsKey("customDomain"))         wifiConfig.customDomain = doc["customDomain"].as<String>();
+        if (doc.containsKey("enableMDNS"))           wifiConfig.enableMDNS = doc["enableMDNS"].as<bool>();
+        if (doc.containsKey("enableDNS"))            wifiConfig.enableDNS = doc["enableDNS"].as<bool>();
+        if (doc.containsKey("conflictDetection"))    wifiConfig.conflictDetection = static_cast<IPConflictMode>(doc["conflictDetection"].as<uint8_t>());
+        if (doc.containsKey("failoverStrategy"))     wifiConfig.failoverStrategy = static_cast<IPFailoverStrategy>(doc["failoverStrategy"].as<uint8_t>());
+        if (doc.containsKey("autoFailover"))         wifiConfig.autoFailover = doc["autoFailover"].as<bool>();
+        if (doc.containsKey("conflictCheckInterval")) wifiConfig.conflictCheckInterval = doc["conflictCheckInterval"].as<uint16_t>();
+        if (doc.containsKey("maxFailoverAttempts"))  wifiConfig.maxFailoverAttempts = doc["maxFailoverAttempts"].as<uint8_t>();
+        if (doc.containsKey("conflictThreshold"))    wifiConfig.conflictThreshold = doc["conflictThreshold"].as<uint8_t>();
+        if (doc.containsKey("fallbackToDHCP"))       wifiConfig.fallbackToDHCP = doc["fallbackToDHCP"].as<bool>();
+        LOGGER.infof("NetworkManager: Config loaded from %s", path);
+        return true;
+    };
+
+    // 从 /config/network.json 加载配置
+    LOG_DEBUGF("NetworkManager: Checking if %s exists", NETWORK_CONFIG_FILE);
+    if (LittleFS.exists(NETWORK_CONFIG_FILE)) {
+        LOG_DEBUG("NetworkManager: network.json found, loading...");
+        if (loadFromFile(NETWORK_CONFIG_FILE)) {
+            LOG_INFO("NetworkManager: Config loaded from JSON file");
+            return true;
+        }
+        LOG_WARNING("NetworkManager: Failed to load from JSON, trying NVS fallback");
+    } else {
+        LOG_DEBUG("NetworkManager: network.json not found");
+    }
+
+    // 回退：从 NVS 加载
     if (!preferences.isKey("initialized")) {
-        LOG_INFO("NetworkManager: No saved network config found");
+        LOG_INFO("NetworkManager: No saved network config found (NVS not initialized)");
         return false;
     }
+    LOG_INFO("NetworkManager: Loading config from NVS fallback...");
 
     try {
         // 基本配置
@@ -308,6 +391,63 @@ bool NetworkManager::loadNetworkConfig() {
 }
 
 bool NetworkManager::saveNetworkConfig() {
+    // 构建 JSON内容共用
+    JsonDocument doc;
+    doc["mode"] = static_cast<uint8_t>(wifiConfig.mode);
+    doc["deviceName"] = wifiConfig.deviceName;
+    doc["apSSID"] = wifiConfig.apSSID;
+    doc["apPassword"] = wifiConfig.apPassword;
+    doc["apChannel"] = wifiConfig.apChannel;
+    doc["apHidden"] = wifiConfig.apHidden;
+    doc["apMaxConnections"] = wifiConfig.apMaxConnections;
+    doc["staSSID"] = wifiConfig.staSSID;
+    doc["staPassword"] = wifiConfig.staPassword;
+    doc["ipConfigType"] = static_cast<uint8_t>(wifiConfig.ipConfigType);
+    doc["staticIP"] = wifiConfig.staticIP;
+    doc["gateway"] = wifiConfig.gateway;
+    doc["subnet"] = wifiConfig.subnet;
+    doc["dns1"] = wifiConfig.dns1;
+    doc["dns2"] = wifiConfig.dns2;
+    doc["connectTimeout"] = wifiConfig.connectTimeout;
+    doc["reconnectInterval"] = wifiConfig.reconnectInterval;
+    doc["maxReconnectAttempts"] = wifiConfig.maxReconnectAttempts;
+    doc["customDomain"] = wifiConfig.customDomain;
+    doc["enableMDNS"] = wifiConfig.enableMDNS;
+    doc["enableDNS"] = wifiConfig.enableDNS;
+    doc["conflictDetection"] = static_cast<uint8_t>(wifiConfig.conflictDetection);
+    doc["failoverStrategy"] = static_cast<uint8_t>(wifiConfig.failoverStrategy);
+    doc["autoFailover"] = wifiConfig.autoFailover;
+    doc["conflictCheckInterval"] = wifiConfig.conflictCheckInterval;
+    doc["maxFailoverAttempts"] = wifiConfig.maxFailoverAttempts;
+    doc["conflictThreshold"] = wifiConfig.conflictThreshold;
+    doc["fallbackToDHCP"] = wifiConfig.fallbackToDHCP;
+
+    // 辅助写文件函数
+    auto writeToFile = [&doc](const char* path) -> bool {
+        // 确保目录存在
+        String p(path);
+        int slash = p.lastIndexOf('/');
+        if (slash > 0) {
+            String dir = p.substring(0, slash);
+            if (!LittleFS.exists(dir)) {
+                LittleFS.mkdir(dir);
+            }
+        }
+        File f = LittleFS.open(path, "w");
+        if (!f) return false;
+        serializeJson(doc, f);
+        f.close();
+        return true;
+    };
+
+    // ===== 写入 /config/network.json =====
+    if (writeToFile(NETWORK_CONFIG_FILE)) {
+        LOG_INFO("NetworkManager: Config saved to /config/network.json");
+    } else {
+        LOG_WARNING("NetworkManager: Failed to write /config/network.json");
+    }
+
+    // ===== 同步写入 NVS（备份） =====
     try {
         // 基本配置
         preferences.putUInt("mode", static_cast<uint8_t>(wifiConfig.mode));
@@ -475,6 +615,9 @@ bool NetworkManager::connectToWiFiBlocking() {
     char buf[80];
     snprintf(buf, sizeof(buf), "NetworkManager: Connecting to WiFi [%s]...", wifiConfig.staSSID.c_str());
     LOG_INFO(buf);
+    // 调试：打印实际使用的连接凭据
+    LOGGER.debugf("NetworkManager: staSSID=[%s] len=%d", wifiConfig.staSSID.c_str(), wifiConfig.staSSID.length());
+    LOGGER.debugf("NetworkManager: staPassword=[%s] len=%d", wifiConfig.staPassword.c_str(), wifiConfig.staPassword.length());
 
     // 阻塞等待，每 500ms 打印一个点，超时后退出
     uint32_t deadline = millis() + wifiConfig.connectTimeout;
@@ -510,6 +653,7 @@ bool NetworkManager::connectToWiFiBlocking() {
     statusInfo.status = NetworkStatus::CONNECTION_FAILED;
     snprintf(buf, sizeof(buf), "NetworkManager: WiFi connect timeout (SSID: %s)", wifiConfig.staSSID.c_str());
     LOG_WARNING(buf);
+    LOGGER.debugf("NetworkManager: WiFi status code = %d", (int)WiFi.status());
     return false;
 }
 

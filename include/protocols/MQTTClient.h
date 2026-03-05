@@ -26,7 +26,7 @@ public:
     MQTTClient();
     ~MQTTClient();
 
-    bool loadMqttConfig(const String& filename = FileSystem::MQTT_CONFIG_FILE); 
+    bool loadMqttConfig(const String& filename = FileSystem::PROTOCOL_CONFIG_FILE); 
     bool begin();
     bool connect();
     void disconnect();

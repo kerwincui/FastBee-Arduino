@@ -6,6 +6,12 @@
 #include "./network/OTAManager.h"
 #include "./protocols/ProtocolManager.h"
 #include "systems/LoggerSystem.h"
+#include "core/GPIOManager.h"
+#include "utils/NetworkUtils.h"
+#include <time.h>
+#include <esp_wifi.h>
+#include <NimBLEDevice.h>
+#include <Update.h>
 
 WebConfigManager::WebConfigManager(AsyncWebServer* webServer,
                                    IAuthManager* authMgr, IUserManager* userMgr)
@@ -22,6 +28,8 @@ WebConfigManager::~WebConfigManager() {
 }
 
 bool WebConfigManager::initialize() {
+    LOG_INFO("WebConfig: Initializing...");
+    
     if (!server) {
         LOG_ERROR("WebConfig: Web server is null");
         return false;
@@ -32,21 +40,38 @@ bool WebConfigManager::initialize() {
         return false;
     }
 
+    LOG_DEBUG("WebConfig: Loading configuration...");
     loadConfiguration();
 
     // LittleFS 由 ConfigStorage 统一挂载，此处仅检测挂载状态
-    if (LittleFS.totalBytes() == 0) {
+    size_t total = LittleFS.totalBytes();
+    if (total == 0) {
         LOG_WARNING("WebConfig: LittleFS not mounted, static files unavailable");
         // 不作为致命错误，API 仍可用
+    } else {
+        LOG_DEBUGF("WebConfig: LittleFS mounted (total=%lu bytes)", (unsigned long)total);
     }
 
+    LOG_DEBUG("WebConfig: Setting up routes...");
     setupStaticRoutes();
+    LOG_DEBUG("WebConfig: Static routes OK");
+    
     setupAuthRoutes();
+    LOG_DEBUG("WebConfig: Auth routes OK");
+    
     setupUserRoutes();
+    LOG_DEBUG("WebConfig: User routes OK");
+    
     setupRoleRoutes();
+    LOG_DEBUG("WebConfig: Role routes OK");
+    
     setupSystemRoutes();
+    LOG_DEBUG("WebConfig: System routes OK");
+    
     setupAPIRoutes();
+    LOG_DEBUG("WebConfig: API routes OK");
 
+    LOG_DEBUG("WebConfig: Starting web server...");
     start();
 
     LOG_INFO("WebConfig: Routes configured and server started");
@@ -54,8 +79,13 @@ bool WebConfigManager::initialize() {
 }
 
 bool WebConfigManager::start() {
-    if (!server) return false;
+    if (!server) {
+        LOG_ERROR("WebConfig: Server is null!");
+        return false;
+    }
+    LOG_DEBUG("WebConfig: Calling server->begin()...");
     server->begin();
+    LOG_DEBUG("WebConfig: server->begin() completed");
     isRunning = true;
     LOG_INFO("WebConfig: Web server started on port 80");
     return true;
@@ -90,10 +120,13 @@ void WebConfigManager::loadConfiguration() {
 }
 
 void WebConfigManager::setupStaticRoutes() {
-    // 静态文件服务,setIsDir禁用目录列表，精确匹配路径,max-age=86400=一天
-    server->serveStatic("/css/", LittleFS, "/www/css/").setIsDir(false).setCacheControl("no-cache");
-    server->serveStatic("/js/", LittleFS, "/www/js/").setIsDir(false).setCacheControl("no-cache");
-    server->serveStatic("/assets/", LittleFS, "/www/assets/").setIsDir(false).setCacheControl("max-age=86400");
+    // 静态文件服务，禁用 gzip 优先查找（设备上没有 .gz 文件，避免崩溃）
+    server->serveStatic("/css/", LittleFS, "/www/css/")
+        .setIsDir(false).setTryGzipFirst(false).setCacheControl("no-cache");
+    server->serveStatic("/js/", LittleFS, "/www/js/")
+        .setIsDir(false).setTryGzipFirst(false).setCacheControl("no-cache");
+    server->serveStatic("/assets/", LittleFS, "/www/assets/")
+        .setIsDir(false).setTryGzipFirst(false).setCacheControl("max-age=86400");
 
     // 根路径重定向到登录页或仪表板
     server->on("/", HTTP_GET, [this](AsyncWebServerRequest* request) {
@@ -348,6 +381,122 @@ void WebConfigManager::setupSystemRoutes() {
         handleAPIHealthCheck(request);
     });
     
+    // ============ 设备配置 API ============
+
+    // 获取设备配置
+    server->on("/api/device/config", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIGetDeviceConfig(request);
+    });
+
+    // 保存设备配置
+    server->on("/api/device/config", HTTP_PUT,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIUpdateDeviceConfig(request);
+    });
+
+    // 获取当前时间
+    server->on("/api/device/time", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIGetDeviceTime(request);
+    });
+    
+    // ============ AP配网 API ============
+    
+    // 获取配网状态
+    server->on("/api/provision/status", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIGetProvisionStatus(request);
+    });
+    
+    // 启动AP配网
+    server->on("/api/provision/start", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIStartProvision(request);
+    });
+    
+    // 停止AP配网
+    server->on("/api/provision/stop", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIStopProvision(request);
+    });
+    
+    // 获取配网配置
+    server->on("/api/provision/config", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIGetProvisionConfig(request);
+    });
+    
+    // 保存配网配置
+    server->on("/api/provision/config", HTTP_PUT,
+              [this](AsyncWebServerRequest* request) {
+        handleAPISaveProvisionConfig(request);
+    });
+    
+    // 配网回调接口（供手机APP调用）
+    server->on("/config", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIProvisionCallback(request);
+    });
+    
+    // 配网状态检测接口（供手机APP调用）
+    server->on("/status", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        request->send(200, "text/plain;charset=utf-8", "AP配网已准备就绪");
+    });
+    
+    // ============ 蓝牙配网 API ============
+    
+    // 获取蓝牙配网状态
+    server->on("/api/ble/provision/status", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIGetBLEProvisionStatus(request);
+    });
+    
+    // 启动蓝牙配网
+    server->on("/api/ble/provision/start", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIStartBLEProvision(request);
+    });
+    
+    // 停止蓝牙配网
+    server->on("/api/ble/provision/stop", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIStopBLEProvision(request);
+    });
+    
+    // 获取蓝牙配网配置
+    server->on("/api/ble/provision/config", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIGetBLEProvisionConfig(request);
+    });
+    
+    // 保存蓝牙配网配置
+    server->on("/api/ble/provision/config", HTTP_PUT,
+              [this](AsyncWebServerRequest* request) {
+        handleAPISaveBLEProvisionConfig(request);
+    });
+    
+    // ============ 文件管理 API ============
+    
+    // 获取文件列表
+    server->on("/api/fs/list", HTTP_GET, 
+              [this](AsyncWebServerRequest* request) {
+        handleAPIGetFileList(request);
+    });
+    
+    // 获取文件内容
+    server->on("/api/fs/read", HTTP_GET, 
+              [this](AsyncWebServerRequest* request) {
+        handleAPIGetFileContent(request);
+    });
+    
+    // 保存文件内容
+    server->on("/api/fs/save", HTTP_POST, 
+              [this](AsyncWebServerRequest* request) {
+        handleAPISaveFileContent(request);
+    });
+    
     // ============ 日志管理 API ============
     
     // 获取日志内容
@@ -392,6 +541,12 @@ void WebConfigManager::setupAPIRoutes() {
         handleAPIUpdateNetworkConfig(request);
     });
     
+    // 网络实时状态
+    server->on("/api/network/status", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIGetNetworkStatus(request);
+    });
+    
     // WiFi扫描（AP模式下无需登录）
     server->on("/api/wifi/scan", HTTP_GET, 
               [this](AsyncWebServerRequest* request) {
@@ -415,6 +570,27 @@ void WebConfigManager::setupAPIRoutes() {
               [this](AsyncWebServerRequest* request) {
         handleAPIOtaUpdate(request);
     });
+    
+    // OTA URL在线升级
+    server->on("/api/ota/url", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIOtaUrl(request);
+    });
+    
+    // OTA 固件上传
+    server->on("/api/ota/upload", HTTP_POST,
+        [this](AsyncWebServerRequest* request) {
+            // 上传完成后的响应
+            if (otaManager && otaManager->isOTAInProgress()) {
+                sendSuccess(request, "Firmware uploading...");
+            } else {
+                sendSuccess(request, "Upload completed");
+            }
+        },
+        [this](AsyncWebServerRequest* request, const String& filename, size_t index, uint8_t* data, size_t len, bool final) {
+            handleAPIOtaUpload(request, filename, index, data, len, final);
+        }
+    );
 
     // 管理员工具：重置密码
     server->on("/api/users/reset-password", HTTP_POST,
@@ -426,6 +602,58 @@ void WebConfigManager::setupAPIRoutes() {
     server->on("/api/users/unlock-account", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
         handleUnlockAccount(request);
+    });
+    
+    // ============ GPIO API ============
+    
+    // 获取GPIO配置列表
+    server->on("/api/gpio/config", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIGetGPIOConfig(request);
+    });
+    
+    // 配置GPIO
+    server->on("/api/gpio/config", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIConfigureGPIO(request);
+    });
+    
+    // 读取GPIO状态
+    server->on("/api/gpio/read", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIReadGPIO(request);
+    });
+    
+    // 写入GPIO状态
+    server->on("/api/gpio/write", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIWriteGPIO(request);
+    });
+    
+    // 删除GPIO配置
+    server->on("/api/gpio/delete", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIDeleteGPIO(request);
+    });
+    
+    // 保存GPIO配置
+    server->on("/api/gpio/save", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPISaveGPIOConfig(request);
+    });
+    
+    // ============ 协议配置 API ============
+    
+    // 获取协议配置
+    server->on("/api/protocol/config", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIGetProtocolConfig(request);
+    });
+    
+    // 保存协议配置
+    server->on("/api/protocol/config", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPISaveProtocolConfig(request);
     });
 }
 
@@ -806,7 +1034,8 @@ bool WebConfigManager::serveStaticFile(AsyncWebServerRequest* request, const Str
     }
     
     String contentType = getContentType(path);
-    request->send(LittleFS, path, contentType);
+    // 第四个参数 false = 禁用 gzip 自动查找（设备上没有 .gz 文件）
+    request->send(LittleFS, path, contentType, false);
     return true;
 }
 
@@ -1442,41 +1671,99 @@ void WebConfigManager::handleAPISystemInfo(AsyncWebServerRequest* request) {
     
     JsonDocument doc;
     
-    // 系统信息
-    doc["deviceId"] = String((uint32_t)ESP.getEfuseMac(), HEX);
-    doc["chipModel"] = ESP.getChipModel();
-    doc["chipRevision"] = ESP.getChipRevision();
-    doc["cpuFreqMHz"] = ESP.getCpuFreqMHz();
-    doc["flashChipSize"] = ESP.getFlashChipSize();
-    doc["flashChipSpeed"] = ESP.getFlashChipSpeed();
-    doc["sketchSize"] = ESP.getSketchSize();
-    doc["freeSketchSpace"] = ESP.getFreeSketchSpace();
-    doc["heapSize"] = ESP.getHeapSize();
-    doc["freeHeap"] = ESP.getFreeHeap();
-    doc["minFreeHeap"] = ESP.getMinFreeHeap();
-    doc["maxAllocHeap"] = ESP.getMaxAllocHeap();
-    doc["psramSize"] = ESP.getPsramSize();
-    doc["freePsram"] = ESP.getFreePsram();
-    doc["minFreePsram"] = ESP.getMinFreePsram();
-    doc["maxAllocPsram"] = ESP.getMaxAllocPsram();
+    // ========== 设备基本信息 ==========
+    doc["data"]["device"]["id"] = String((uint32_t)ESP.getEfuseMac(), HEX);
+    doc["data"]["device"]["chipModel"] = ESP.getChipModel();
+    doc["data"]["device"]["chipRevision"] = ESP.getChipRevision();
+    doc["data"]["device"]["cpuFreqMHz"] = ESP.getCpuFreqMHz();
+    doc["data"]["device"]["sdkVersion"] = ESP.getSdkVersion();
     
-    // SDK版本
-    doc["sdkVersion"] = ESP.getSdkVersion();
+    // ========== Flash 存储信息 ==========
+    size_t flashSize = ESP.getFlashChipSize();
+    size_t sketchSize = ESP.getSketchSize();
+    size_t freeSketchSpace = ESP.getFreeSketchSpace();
+    doc["data"]["flash"]["total"] = flashSize;
+    doc["data"]["flash"]["speed"] = ESP.getFlashChipSpeed();
+    doc["data"]["flash"]["sketchSize"] = sketchSize;
+    doc["data"]["flash"]["freeSketchSpace"] = freeSketchSpace;
+    doc["data"]["flash"]["used"] = sketchSize;
+    doc["data"]["flash"]["free"] = freeSketchSpace;
+    doc["data"]["flash"]["usagePercent"] = (int)((sketchSize * 100) / (sketchSize + freeSketchSpace));
     
-    // 运行时间
-    doc["uptime"] = millis();
+    // ========== 内存信息 ==========
+    size_t heapSize = ESP.getHeapSize();
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t minFreeHeap = ESP.getMinFreeHeap();
+    doc["data"]["memory"]["heapTotal"] = heapSize;
+    doc["data"]["memory"]["heapFree"] = freeHeap;
+    doc["data"]["memory"]["heapUsed"] = heapSize - freeHeap;
+    doc["data"]["memory"]["heapMinFree"] = minFreeHeap;
+    doc["data"]["memory"]["heapMaxAlloc"] = ESP.getMaxAllocHeap();
+    doc["data"]["memory"]["heapUsagePercent"] = (int)(((heapSize - freeHeap) * 100) / heapSize);
     
-    // 用户统计
+    // PSRAM 信息（如果有）
+    size_t psramSize = ESP.getPsramSize();
+    if (psramSize > 0) {
+        doc["data"]["memory"]["psramTotal"] = psramSize;
+        doc["data"]["memory"]["psramFree"] = ESP.getFreePsram();
+        doc["data"]["memory"]["psramMinFree"] = ESP.getMinFreePsram();
+    }
+    
+    // ========== 文件系统信息 ==========
+    size_t fsTotal = LittleFS.totalBytes();
+    size_t fsUsed = LittleFS.usedBytes();
+    doc["data"]["filesystem"]["total"] = fsTotal;
+    doc["data"]["filesystem"]["used"] = fsUsed;
+    doc["data"]["filesystem"]["free"] = fsTotal - fsUsed;
+    doc["data"]["filesystem"]["usagePercent"] = fsTotal > 0 ? (int)((fsUsed * 100) / fsTotal) : 0;
+    
+    // ========== 运行时间 ==========
+    unsigned long uptime = millis();
+    doc["data"]["uptime"]["ms"] = uptime;
+    doc["data"]["uptime"]["seconds"] = uptime / 1000;
+    doc["data"]["uptime"]["formatted"] = formatUptime(uptime);
+    
+    // ========== 网络信息 ==========
+    if (networkManager) {
+        NetworkStatusInfo info = networkManager->getStatusInfo();
+        doc["data"]["network"]["connected"] = (info.status == NetworkStatus::CONNECTED);
+        doc["data"]["network"]["ipAddress"] = info.ipAddress;
+        doc["data"]["network"]["ssid"] = info.ssid;
+        doc["data"]["network"]["rssi"] = info.rssi;
+        doc["data"]["network"]["macAddress"] = WiFi.macAddress();
+    }
+    
+    // ========== 用户统计 ==========
     if (userManager) {
-        doc["userCount"] = userManager->getUserCount();
+        doc["data"]["users"]["total"] = userManager->getUserCount();
     }
     
     if (authManager) {
-        doc["activeSessions"] = authManager->getActiveSessionCount();
-        doc["onlineUsers"] = authManager->getOnlineUserCount();
+        doc["data"]["users"]["activeSessions"] = authManager->getActiveSessionCount();
+        doc["data"]["users"]["online"] = authManager->getOnlineUserCount();
     }
     
-    sendSuccess(request, doc);
+    doc["success"] = true;
+    
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+// 格式化运行时间
+String WebConfigManager::formatUptime(unsigned long ms) {
+    unsigned long seconds = ms / 1000;
+    unsigned long minutes = seconds / 60;
+    unsigned long hours = minutes / 60;
+    unsigned long days = hours / 24;
+    
+    char buf[64];
+    if (days > 0) {
+        snprintf(buf, sizeof(buf), "%lu天 %02lu:%02lu:%02lu", days, hours % 24, minutes % 60, seconds % 60);
+    } else {
+        snprintf(buf, sizeof(buf), "%02lu:%02lu:%02lu", hours, minutes % 60, seconds % 60);
+    }
+    return String(buf);
 }
 
 void WebConfigManager::handleAPISystemStatus(AsyncWebServerRequest* request) {
@@ -1622,27 +1909,53 @@ void WebConfigManager::handleAPIGetNetworkConfig(AsyncWebServerRequest* request)
         // 通过 NetworkManager 的具体子类访问配置
         NetworkManager* netMgr = static_cast<NetworkManager*>(networkManager);
         WiFiConfig cfg = netMgr->getConfig();
-        doc["mode"]         = static_cast<uint8_t>(cfg.mode);
-        doc["staSSID"]      = cfg.staSSID;
-        doc["apSSID"]       = cfg.apSSID;
-        doc["ipConfigType"] = static_cast<uint8_t>(cfg.ipConfigType);
-        doc["staticIP"]     = cfg.staticIP;
-        doc["gateway"]      = cfg.gateway;
-        doc["subnet"]       = cfg.subnet;
-        doc["enableMDNS"]   = cfg.enableMDNS;
-        doc["customDomain"] = cfg.customDomain;
-
+        
+        // ========== 设备信息 ==========
+        doc["data"]["device"]["name"] = cfg.deviceName;
+        doc["data"]["device"]["macAddress"] = WiFi.macAddress();
+        
+        // ========== 网络模式 ==========
+        doc["data"]["network"]["mode"] = static_cast<uint8_t>(cfg.mode);
+        doc["data"]["network"]["ipConfigType"] = static_cast<uint8_t>(cfg.ipConfigType);
+        doc["data"]["network"]["enableMDNS"] = cfg.enableMDNS;
+        
+        // ========== STA 配置 ==========
+        doc["data"]["sta"]["ssid"] = cfg.staSSID;
+        doc["data"]["sta"]["password"] = cfg.staPassword.length() > 0 ? "********" : "";
+        doc["data"]["sta"]["hasPassword"] = cfg.staPassword.length() > 0;
+        doc["data"]["sta"]["staticIP"] = cfg.staticIP;
+        doc["data"]["sta"]["gateway"] = cfg.gateway;
+        doc["data"]["sta"]["subnet"] = cfg.subnet;
+        doc["data"]["sta"]["dns1"] = cfg.dns1;
+        doc["data"]["sta"]["dns2"] = cfg.dns2;
+        
+        // ========== AP 配置 ==========
+        doc["data"]["ap"]["ssid"] = cfg.apSSID;
+        doc["data"]["ap"]["password"] = cfg.apPassword.length() > 0 ? "********" : "";
+        doc["data"]["ap"]["hasPassword"] = cfg.apPassword.length() > 0;
+        doc["data"]["ap"]["channel"] = cfg.apChannel;
+        doc["data"]["ap"]["hidden"] = cfg.apHidden;
+        doc["data"]["ap"]["maxConnections"] = cfg.apMaxConnections;
+        
         // 当前连接状态
         NetworkStatusInfo info = netMgr->getStatusInfo();
-        doc["connected"]    = (info.status == NetworkStatus::CONNECTED);
-        doc["ipAddress"]    = info.ipAddress;
-        doc["macAddress"]   = info.macAddress;
-        doc["rssi"]         = info.rssi;
+        doc["data"]["status"]["connected"] = (info.status == NetworkStatus::CONNECTED);
+        doc["data"]["status"]["ipAddress"] = info.ipAddress;
+        doc["data"]["status"]["rssi"] = info.rssi;
+        doc["data"]["status"]["ssid"] = info.ssid;
     } else {
+        doc["success"] = false;
         doc["error"] = "Network service unavailable";
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+        return;
     }
 
-    sendSuccess(request, doc);
+    doc["success"] = true;
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
 }
 
 void WebConfigManager::handleAPIUpdateNetworkConfig(AsyncWebServerRequest* request) {
@@ -1656,21 +1969,150 @@ void WebConfigManager::handleAPIUpdateNetworkConfig(AsyncWebServerRequest* reque
         return;
     }
 
-    // 读取请求参数，构造新配置
-    String ssid     = getParamValue(request, "ssid", "");
-    String password = getParamValue(request, "password", "");
+    NetworkManager* netMgr = static_cast<NetworkManager*>(networkManager);
+    WiFiConfig cfg = netMgr->getConfig();
+    
+    // ========== 设备名称 ==========
+    String deviceName = getParamValue(request, "deviceName", "");
+    if (!deviceName.isEmpty()) {
+        cfg.deviceName = deviceName;
+    }
+    
+    // ========== 网络模式 ==========
+    String modeStr = getParamValue(request, "mode", "");
+    if (!modeStr.isEmpty()) {
+        cfg.mode = static_cast<NetworkMode>(modeStr.toInt());
+    }
+    
+    // ========== STA 配置 ==========
+    String staSSID = getParamValue(request, "staSSID", "");
+    if (!staSSID.isEmpty()) {
+        cfg.staSSID = staSSID;
+    }
+    
+    String staPassword = getParamValue(request, "staPassword", "");
+    if (!staPassword.isEmpty() && staPassword != "********") {
+        cfg.staPassword = staPassword;
+    }
+    
+    String ipConfigType = getParamValue(request, "ipConfigType", "");
+    if (!ipConfigType.isEmpty()) {
+        cfg.ipConfigType = static_cast<IPConfigType>(ipConfigType.toInt());
+    }
+    
+    String staticIP = getParamValue(request, "staticIP", "");
+    if (!staticIP.isEmpty()) {
+        cfg.staticIP = staticIP;
+    }
+    
+    String gateway = getParamValue(request, "gateway", "");
+    if (!gateway.isEmpty()) {
+        cfg.gateway = gateway;
+    }
+    
+    String subnet = getParamValue(request, "subnet", "");
+    if (!subnet.isEmpty()) {
+        cfg.subnet = subnet;
+    }
+    
+    // ========== AP 配置 ==========
+    String apSSID = getParamValue(request, "apSSID", "");
+    if (!apSSID.isEmpty()) {
+        cfg.apSSID = apSSID;
+    }
+    
+    String apPassword = getParamValue(request, "apPassword", "");
+    if (!apPassword.isEmpty() && apPassword != "********") {
+        cfg.apPassword = apPassword;
+    }
+    
+    String apChannel = getParamValue(request, "apChannel", "");
+    if (!apChannel.isEmpty()) {
+        cfg.apChannel = apChannel.toInt();
+    }
+    
+    String apHidden = getParamValue(request, "apHidden", "");
+    if (!apHidden.isEmpty()) cfg.apHidden = (apHidden == "1" || apHidden == "true");
+    
+    // 保存配置
+    if (netMgr->updateConfig(cfg, true)) {
+        LOGGER.info("Network configuration updated via web");
+        sendSuccess(request, "Network configuration saved successfully");
+    } else {
+        sendError(request, 500, "Failed to save network configuration");
+    }
+}
 
-    if (ssid.isEmpty()) {
-        sendBadRequest(request, "SSID is required");
+void WebConfigManager::handleAPIGetNetworkStatus(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "network.view")) {
+        sendUnauthorized(request);
         return;
     }
 
-    NetworkManager* netMgr = static_cast<NetworkManager*>(networkManager);
-    if (netMgr->connectToNetwork(ssid, password)) {
-        sendSuccess(request, "Network configuration updated. Reconnecting...");
+    JsonDocument doc;
+    doc["success"] = true;
+
+    if (networkManager) {
+        NetworkManager* netMgr = static_cast<NetworkManager*>(networkManager);
+        NetworkStatusInfo info = netMgr->getStatusInfo();
+        WiFiConfig cfg = netMgr->getConfig();
+
+        // 状态文本映射
+        const char* statusText = "unknown";
+        switch (info.status) {
+            case NetworkStatus::CONNECTED:        statusText = "connected";   break;
+            case NetworkStatus::DISCONNECTED:     statusText = "disconnected"; break;
+            case NetworkStatus::CONNECTING:       statusText = "connecting";  break;
+            case NetworkStatus::AP_MODE:          statusText = "ap_mode";     break;
+            case NetworkStatus::CONNECTION_FAILED:statusText = "failed";      break;
+            default: break;
+        }
+        doc["data"]["status"] = statusText;
+        doc["data"]["statusCode"] = static_cast<uint8_t>(info.status);
+
+        // STA 信息
+        doc["data"]["ssid"]          = info.ssid.isEmpty() ? cfg.staSSID : info.ssid;
+        doc["data"]["ipAddress"]     = info.ipAddress;
+        doc["data"]["macAddress"]    = info.macAddress.isEmpty() ? WiFi.macAddress() : info.macAddress;
+        doc["data"]["rssi"]          = info.rssi;
+        doc["data"]["signalStrength"]= NetworkUtils::rssiToPercentage(info.rssi);
+        doc["data"]["gateway"]       = info.currentGateway;
+        doc["data"]["subnet"]        = info.currentSubnet;
+        doc["data"]["dnsServer"]     = info.dnsServer;
+
+        // AP 信息
+        doc["data"]["apIPAddress"]   = info.apIPAddress;
+        doc["data"]["apClientCount"] = info.apClientCount;
+        doc["data"]["apSSID"]        = cfg.apSSID;
+
+        // 连接统计
+        doc["data"]["reconnectAttempts"] = info.reconnectAttempts;
+        doc["data"]["uptime"]            = info.uptime;
+        doc["data"]["internetAvailable"] = info.internetAvailable;
+        doc["data"]["conflictDetected"]  = info.conflictDetected;
+        doc["data"]["failoverCount"]     = info.failoverCount;
+        doc["data"]["activeIPType"]      = info.activeIPType;
+
+        // 模式描述
+        const char* modeText = "unknown";
+        switch (cfg.mode) {
+            case NetworkMode::NETWORK_STA:    modeText = "STA";    break;
+            case NetworkMode::NETWORK_AP:     modeText = "AP";     break;
+            case NetworkMode::NETWORK_AP_STA: modeText = "AP+STA"; break;
+            default: break;
+        }
+        doc["data"]["mode"]       = modeText;
+        doc["data"]["modeCode"]   = static_cast<uint8_t>(cfg.mode);
+        doc["data"]["enableMDNS"] = cfg.enableMDNS;
+        doc["data"]["customDomain"] = cfg.customDomain;
     } else {
-        sendError(request, 400, "Failed to update network configuration");
+        doc["success"] = false;
+        doc["error"] = "Network service unavailable";
     }
+
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
 }
 
 // ============ OTA API处理器 ============
@@ -1686,7 +2128,7 @@ void WebConfigManager::handleAPIOtaUpdate(AsyncWebServerRequest* request) {
 }
 
 void WebConfigManager::handleAPIOtaStatus(AsyncWebServerRequest* request) {
-    if (!checkPermission(request, "ota.view")) {
+    if (!checkPermission(request, "system.view")) {
         sendUnauthorized(request);
         return;
     }
@@ -1703,6 +2145,115 @@ void WebConfigManager::handleAPIOtaStatus(AsyncWebServerRequest* request) {
     }
     
     sendSuccess(request, doc);
+}
+
+void WebConfigManager::handleAPIOtaUrl(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "ota.update")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    String url = getParamValue(request, "url", "");
+    
+    if (url.isEmpty()) {
+        sendError(request, 400, "缺少固件URL参数");
+        return;
+    }
+    
+    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+        sendError(request, 400, "无效的URL格式，必须以http://或https://开头");
+        return;
+    }
+    
+    if (!otaManager) {
+        sendError(request, 500, "OTA管理器未初始化");
+        return;
+    }
+    
+    if (otaManager->isOTAInProgress()) {
+        sendError(request, 400, "OTA升级正在进行中");
+        return;
+    }
+    
+    LOGGER.infof("OTA: Starting URL upgrade from %s", url.c_str());
+    
+    // 返回响应后异步执行升级
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["message"] = "开始从URL下载固件并升级";
+    doc["url"] = url;
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+    
+    // 延迟执行OTA升级（让响应先发送）
+    delay(100);
+    otaManager->startOTA(url);
+}
+
+void WebConfigManager::handleAPIOtaUpload(AsyncWebServerRequest* request, const String& filename, 
+                                          size_t index, uint8_t* data, size_t len, bool final) {
+    if (!checkPermission(request, "ota.update")) {
+        return;
+    }
+    
+    // 文件开始上传
+    if (index == 0) {
+        LOGGER.infof("OTA: Upload started - file: %s", filename.c_str());
+        
+        // 计算最大可用空间
+        uint32_t maxSketchSpace = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
+        
+        if (!Update.begin(maxSketchSpace)) {
+            LOGGER.errorf("OTA: Update begin failed - %s", Update.errorString());
+            return;
+        }
+        
+        // 设置进度回调
+        Update.onProgress([](size_t progress, size_t total) {
+            int percent = total > 0 ? (progress * 100 / total) : 0;
+            if (percent % 10 == 0) {
+                LOGGER.infof("OTA: Upload progress: %d%%", percent);
+            }
+        });
+    }
+    
+    // 写入数据
+    if (Update.write(data, len) != len) {
+        LOGGER.errorf("OTA: Write failed - %s", Update.errorString());
+        Update.end(false);
+        return;
+    }
+    
+    // 上传完成
+    if (final) {
+        LOGGER.infof("OTA: Upload completed - total size: %d bytes", index + len);
+        
+        if (Update.end(true)) {
+            if (Update.isFinished()) {
+                LOGGER.info("OTA: Firmware verification passed, restarting...");
+                
+                // 发送成功响应
+                JsonDocument doc;
+                doc["success"] = true;
+                doc["message"] = "固件上传成功，设备将在3秒后重启";
+                doc["size"] = index + len;
+                doc["md5"] = Update.md5String();
+                
+                String out;
+                serializeJson(doc, out);
+                request->send(200, "application/json", out);
+                
+                delay(3000);
+                ESP.restart();
+            } else {
+                LOGGER.error("OTA: Firmware verification failed");
+            }
+        } else {
+            LOGGER.errorf("OTA: Update end failed - %s", Update.errorString());
+        }
+    }
 }
 
 // ============ 额外的工具方法 ============
@@ -2333,8 +2884,10 @@ void WebConfigManager::handleAPIWiFiConnect(AsyncWebServerRequest* request) {
         // 保存配置
         NetworkManager* netMgr = static_cast<NetworkManager*>(networkManager);
         netMgr->setWiFiCredentials(ssid, password);
-        // 启动 mDNS
-        MDNS.begin("fastbee");
+        // 启动 mDNS（从配置获取 hostname）
+        String hostname = netMgr->getConfig().customDomain;
+        if (hostname.isEmpty()) hostname = "fastbee";
+        MDNS.begin(hostname.c_str());
         MDNS.addService("http", "tcp", 80);
     }
 }
@@ -2900,3 +3453,1167 @@ void WebConfigManager::handleAPIClearLogs(AsyncWebServerRequest* request) {
         sendError(request, 500, "Failed to clear log file");
     }
 }
+
+// ============ 文件管理 API 处理函数 ============
+
+void WebConfigManager::handleAPIGetFileList(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "system.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    String path = "/";
+    if (request->hasParam("path")) {
+        path = request->getParam("path")->value();
+    }
+    
+    // 安全检查：确保路径在 /data 目录下
+    if (!path.startsWith("/")) {
+        path = "/" + path;
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["data"]["path"] = path;
+    
+    File root = LittleFS.open(path);
+    if (!root || !root.isDirectory()) {
+        doc["success"] = false;
+        doc["error"] = "Invalid directory";
+        String output;
+        serializeJson(doc, output);
+        request->send(200, "application/json", output);
+        return;
+    }
+    
+    JsonArray files = doc["data"]["files"].to<JsonArray>();
+    JsonArray dirs = doc["data"]["dirs"].to<JsonArray>();
+    
+    File file = root.openNextFile();
+    while (file) {
+        JsonObject item;
+        if (file.isDirectory()) {
+            item = dirs.add<JsonObject>();
+        } else {
+            item = files.add<JsonObject>();
+            item["size"] = file.size();
+        }
+        item["name"] = String(file.name());
+        file = root.openNextFile();
+    }
+    
+    root.close();
+    
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebConfigManager::handleAPIGetFileContent(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "system.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    if (!request->hasParam("path")) {
+        sendError(request, 400, "Missing path parameter");
+        return;
+    }
+    
+    String path = request->getParam("path")->value();
+    
+    // 安全检查
+    if (!path.startsWith("/")) {
+        path = "/" + path;
+    }
+    
+    // 禁止访问敏感路径
+    if (path.indexOf("..") >= 0) {
+        sendError(request, 403, "Invalid path");
+        return;
+    }
+    
+    if (!LittleFS.exists(path)) {
+        sendError(request, 404, "File not found");
+        return;
+    }
+    
+    File file = LittleFS.open(path, "r");
+    if (!file) {
+        sendError(request, 500, "Failed to open file");
+        return;
+    }
+    
+    size_t fileSize = file.size();
+    // 限制文件大小为 128KB
+    if (fileSize > 128 * 1024) {
+        file.close();
+        sendError(request, 413, "File too large (max 128KB)");
+        return;
+    }
+    
+    String content = file.readString();
+    file.close();
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["data"]["path"] = path;
+    doc["data"]["size"] = fileSize;
+    doc["data"]["content"] = content;
+    
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebConfigManager::handleAPISaveFileContent(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    if (!request->hasParam("path", true)) {
+        sendError(request, 400, "Missing path parameter");
+        return;
+    }
+    
+    String path = request->getParam("path", true)->value();
+    
+    // 安全检查
+    if (!path.startsWith("/")) {
+        path = "/" + path;
+    }
+    
+    // 禁止访问敏感路径
+    if (path.indexOf("..") >= 0) {
+        sendError(request, 403, "Invalid path");
+        return;
+    }
+    
+    // 只允许编辑特定类型的文件
+    if (!(path.endsWith(".json") || path.endsWith(".txt") || path.endsWith(".log") || 
+          path.endsWith(".html") || path.endsWith(".js") || path.endsWith(".css"))) {
+        sendError(request, 403, "File type not allowed for editing");
+        return;
+    }
+    
+    String content = "";
+    if (request->hasParam("content", true)) {
+        content = request->getParam("content", true)->value();
+    }
+    
+    // 确保父目录存在
+    int lastSlash = path.lastIndexOf('/');
+    if (lastSlash > 0) {
+        String parentDir = path.substring(0, lastSlash);
+        if (!LittleFS.exists(parentDir)) {
+            // 创建目录（递归创建需要手动实现）
+            sendError(request, 500, "Parent directory does not exist");
+            return;
+        }
+    }
+    
+    File file = LittleFS.open(path, "w");
+    if (!file) {
+        sendError(request, 500, "Failed to open file for writing");
+        return;
+    }
+    
+    size_t written = file.print(content);
+    file.close();
+    
+    if (written == content.length()) {
+        LOGGER.infof("File saved via web: %s", path.c_str());
+        sendSuccess(request, "File saved successfully");
+    } else {
+        sendError(request, 500, "Failed to write complete file");
+    }
+}
+
+// ============ GPIO API 处理函数 ============
+
+void WebConfigManager::handleAPIGetGPIOConfig(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "system.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    
+    GPIOManager& gpio = GPIOManager::getInstance();
+    std::vector<String> pinNames = gpio.getConfiguredPins();
+    
+    JsonArray pins = doc["data"]["pins"].to<JsonArray>();
+    for (const String& name : pinNames) {
+        // 通过名称查找引脚号
+        uint8_t pinNum = 255;
+        for (uint8_t i = 0; i < 40; i++) {
+            if (gpio.getPinName(i) == name) {
+                pinNum = i;
+                break;
+            }
+        }
+        if (pinNum == 255) continue;
+        
+        JsonObject pinObj = pins.add<JsonObject>();
+        pinObj["pin"] = pinNum;
+        pinObj["name"] = name;
+        pinObj["mode"] = static_cast<int>(gpio.getPinMode(pinNum));
+        GPIOState state = gpio.readPin(pinNum);
+        pinObj["state"] = (state == GPIOState::STATE_HIGH) ? 1 : 0;
+    }
+    
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebConfigManager::handleAPIConfigureGPIO(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    // 获取参数
+    String pinStr = getParamValue(request, "pin", "");
+    String name = getParamValue(request, "name", "");
+    String modeStr = getParamValue(request, "mode", "");
+    
+    if (pinStr.isEmpty() || name.isEmpty() || modeStr.isEmpty()) {
+        sendError(request, 400, "Missing required parameters: pin, name, mode");
+        return;
+    }
+    
+    uint8_t pin = pinStr.toInt();
+    GPIOMode mode = static_cast<GPIOMode>(modeStr.toInt());
+    
+    GPIOConfig config;
+    config.pin = pin;
+    config.name = name;
+    config.mode = mode;
+    config.initialState = static_cast<GPIOState>(getParamValue(request, "defaultValue", "0").toInt());
+    config.inverted = getParamValue(request, "invert", "0") == "1";
+    
+    GPIOManager& gpio = GPIOManager::getInstance();
+    if (gpio.configurePin(config)) {
+        // 配置成功后自动保存到 LittleFS
+        if (gpio.saveConfiguration()) {
+            LOGGER.infof("GPIO %d configured and saved via web API", pin);
+            sendSuccess(request, "GPIO configured and saved successfully");
+        } else {
+            LOGGER.warningf("GPIO %d configured but save failed", pin);
+            sendSuccess(request, "GPIO configured but save to file failed");
+        }
+    } else {
+        sendError(request, 500, "Failed to configure GPIO");
+    }
+}
+
+void WebConfigManager::handleAPIReadGPIO(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "system.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    String pinStr = getParamValue(request, "pin", "");
+    String name = getParamValue(request, "name", "");
+    
+    if (pinStr.isEmpty() && name.isEmpty()) {
+        sendError(request, 400, "Missing parameter: pin or name");
+        return;
+    }
+    
+    GPIOManager& gpio = GPIOManager::getInstance();
+    GPIOState state;
+    
+    if (!name.isEmpty()) {
+        state = gpio.readPin(name);
+    } else {
+        state = gpio.readPin(pinStr.toInt());
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["data"]["state"] = static_cast<int>(state);
+    doc["data"]["stateName"] = (state == GPIOState::STATE_HIGH) ? "HIGH" : "LOW";
+    
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+void WebConfigManager::handleAPIWriteGPIO(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    String pinStr = getParamValue(request, "pin", "");
+    String name = getParamValue(request, "name", "");
+    String stateStr = getParamValue(request, "state", "");
+    
+    if ((pinStr.isEmpty() && name.isEmpty()) || stateStr.isEmpty()) {
+        sendError(request, 400, "Missing required parameters");
+        return;
+    }
+    
+    GPIOManager& gpio = GPIOManager::getInstance();
+    bool success = false;
+    
+    // 支持 toggle 操作
+    if (stateStr == "toggle") {
+        if (!name.isEmpty()) {
+            success = gpio.togglePin(name);
+        } else {
+            success = gpio.togglePin((uint8_t)pinStr.toInt());
+        }
+    } else {
+        GPIOState state = static_cast<GPIOState>(stateStr.toInt());
+        if (!name.isEmpty()) {
+            success = gpio.writePin(name, state);
+        } else {
+            success = gpio.writePin((uint8_t)pinStr.toInt(), state);
+        }
+    }
+    
+    if (success) {
+        sendSuccess(request, "GPIO state updated");
+    } else {
+        sendError(request, 500, "Failed to write GPIO");
+    }
+}
+
+void WebConfigManager::handleAPIDeleteGPIO(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    String pinStr = getParamValue(request, "pin", "");
+    if (pinStr.isEmpty()) {
+        sendError(request, 400, "Missing required parameter: pin");
+        return;
+    }
+    
+    uint8_t pin = (uint8_t)pinStr.toInt();
+    GPIOManager& gpio = GPIOManager::getInstance();
+    
+    if (!gpio.isPinConfigured(pin)) {
+        sendError(request, 404, "GPIO pin not configured");
+        return;
+    }
+    
+    // 通过重配置为 UNCONFIGURED 实现删除
+    // 先永久化除出该引脚
+    if (gpio.removePin(pin)) {
+        // 自动保存配置
+        gpio.saveConfiguration();
+        LOGGER.infof("GPIO %d deleted via web API", pin);
+        sendSuccess(request, "GPIO deleted successfully");
+    } else {
+        sendError(request, 500, "Failed to delete GPIO");
+    }
+}
+
+void WebConfigManager::handleAPISaveGPIOConfig(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    GPIOManager& gpio = GPIOManager::getInstance();
+    if (gpio.saveConfiguration()) {
+        LOGGER.info("GPIO configuration saved via web API");
+        sendSuccess(request, "GPIO configuration saved");
+    } else {
+        sendError(request, 500, "Failed to save GPIO configuration");
+    }
+}
+
+// ============ 协议配置 API 处理器 ============
+
+static const char* PROTOCOL_CONFIG_PATH = "/config/protocol.json";
+
+void WebConfigManager::handleAPIGetProtocolConfig(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    JsonDocument doc;
+    
+    // 尝试从 LittleFS 读取配置
+    if (LittleFS.exists(PROTOCOL_CONFIG_PATH)) {
+        File f = LittleFS.open(PROTOCOL_CONFIG_PATH, "r");
+        if (f) {
+            JsonDocument fileCfg;
+            DeserializationError err = deserializeJson(fileCfg, f);
+            f.close();
+            
+            if (!err) {
+                doc["success"] = true;
+                doc["data"] = fileCfg;
+                String out;
+                serializeJson(doc, out);
+                request->send(200, "application/json", out);
+                return;
+            }
+        }
+    }
+    
+    // 文件不存在或解析失败，返回空配置
+    doc["success"] = true;
+    doc["data"].to<JsonObject>();
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+void WebConfigManager::handleAPISaveProtocolConfig(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    JsonDocument doc;
+    
+    // 辅助宏
+    #define GP(key, def) getParamValue(request, key, def)
+    #define GPI(key, def) GP(key, def).toInt()
+    
+    // Modbus RTU
+    doc["modbusRtu"]["enabled"] = GP("modbusRtu_enabled", "false") == "true";
+    doc["modbusRtu"]["port"] = GP("modbusRtu_port", "/dev/ttyS0");
+    doc["modbusRtu"]["baudRate"] = GPI("modbusRtu_baudRate", "19200");
+    doc["modbusRtu"]["dataBits"] = GPI("modbusRtu_dataBits", "8");
+    doc["modbusRtu"]["stopBits"] = GPI("modbusRtu_stopBits", "1");
+    doc["modbusRtu"]["parity"] = GP("modbusRtu_parity", "none");
+    doc["modbusRtu"]["timeout"] = GPI("modbusRtu_timeout", "1000");
+    
+    // Modbus TCP
+    doc["modbusTcp"]["enabled"] = GP("modbusTcp_enabled", "false") == "true";
+    doc["modbusTcp"]["server"] = GP("modbusTcp_server", "192.168.1.100");
+    doc["modbusTcp"]["port"] = GPI("modbusTcp_port", "502");
+    doc["modbusTcp"]["slaveId"] = GPI("modbusTcp_slaveId", "1");
+    doc["modbusTcp"]["timeout"] = GPI("modbusTcp_timeout", "5000");
+    
+    // MQTT
+    doc["mqtt"]["enabled"] = GP("mqtt_enabled", "true") == "true";
+    doc["mqtt"]["server"] = GP("mqtt_server", "iot.fastbee.cn");
+    doc["mqtt"]["port"] = GPI("mqtt_port", "1883");
+    doc["mqtt"]["clientId"] = GP("mqtt_clientId", "");
+    doc["mqtt"]["username"] = GP("mqtt_username", "");
+    doc["mqtt"]["password"] = GP("mqtt_password", "");
+    doc["mqtt"]["keepAlive"] = GPI("mqtt_keepAlive", "60");
+    doc["mqtt"]["publishTopic"] = GP("mqtt_publishTopic", "");
+    doc["mqtt"]["subscribeTopic"] = GP("mqtt_subscribeTopic", "");
+    
+    // HTTP
+    doc["http"]["enabled"] = GP("http_enabled", "false") == "true";
+    doc["http"]["url"] = GP("http_url", "https://api.example.com");
+    doc["http"]["port"] = GPI("http_port", "80");
+    doc["http"]["method"] = GP("http_method", "POST");
+    doc["http"]["timeout"] = GPI("http_timeout", "30");
+    doc["http"]["interval"] = GPI("http_interval", "60");
+    doc["http"]["retry"] = GPI("http_retry", "3");
+    
+    // CoAP
+    doc["coap"]["enabled"] = GP("coap_enabled", "false") == "true";
+    doc["coap"]["server"] = GP("coap_server", "coap://example.com");
+    doc["coap"]["port"] = GPI("coap_port", "5683");
+    doc["coap"]["method"] = GP("coap_method", "POST");
+    doc["coap"]["path"] = GP("coap_path", "sensors/temperature");
+    
+    // TCP
+    doc["tcp"]["enabled"] = GP("tcp_enabled", "false") == "true";
+    doc["tcp"]["server"] = GP("tcp_server", "192.168.1.200");
+    doc["tcp"]["port"] = GPI("tcp_port", "5000");
+    doc["tcp"]["timeout"] = GPI("tcp_timeout", "5000");
+    doc["tcp"]["keepAlive"] = GPI("tcp_keepAlive", "60");
+    doc["tcp"]["maxRetry"] = GPI("tcp_maxRetry", "5");
+    doc["tcp"]["reconnectInterval"] = GPI("tcp_reconnectInterval", "10");
+    
+    #undef GP
+    #undef GPI
+    
+    // 保存到文件
+    File f = LittleFS.open(PROTOCOL_CONFIG_PATH, "w");
+    if (!f) {
+        sendError(request, 500, "Failed to save protocol config");
+        return;
+    }
+    
+    serializeJsonPretty(doc, f);
+    f.close();
+    
+    sendSuccess(request, "Protocol configuration saved");
+}
+
+// ============ 设备配置 API 处理器 ============
+
+static const char* DEVICE_CONFIG_FILE = "/config/device.json";
+
+void WebConfigManager::handleAPIGetDeviceConfig(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "system.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+
+    JsonDocument doc;
+
+    // 尝试从 LittleFS 读取配置
+    if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
+        File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+        if (f) {
+            JsonDocument fileCfg;
+            if (!deserializeJson(fileCfg, f)) {
+                doc["success"] = true;
+                doc["data"] = fileCfg;
+                f.close();
+                String out;
+                serializeJson(doc, out);
+                request->send(200, "application/json", out);
+                return;
+            }
+            f.close();
+        }
+    }
+
+    // 返回默认配置
+    doc["success"] = true;
+    doc["data"]["ntpServer1"] = "pool.ntp.org";
+    doc["data"]["ntpServer2"] = "time.nist.gov";
+    doc["data"]["timezone"] = "CST-8";
+    doc["data"]["enableNTP"] = true;
+    doc["data"]["deviceName"] = "FastBee-Device";
+    doc["data"]["location"] = "";
+    doc["data"]["description"] = "";
+    doc["data"]["syncInterval"] = 3600;
+
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+// ============ AP配网 API 处理器实现 ============
+
+static bool provisionModeActive = false;
+static String provisionApSSID = "";
+static unsigned long provisionStartTime = 0;
+static uint32_t provisionTimeout = 300000; // 默认5分钟
+
+void WebConfigManager::handleAPIGetProvisionStatus(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "system.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["data"]["active"] = provisionModeActive;
+    doc["data"]["apSSID"] = provisionApSSID.isEmpty() ? "--" : provisionApSSID;
+    doc["data"]["apIP"] = "192.168.4.1";
+    
+    // 获取已连接的客户端数量
+    wifi_sta_list_t stationList;
+    esp_wifi_ap_get_sta_list(&stationList);
+    doc["data"]["clients"] = stationList.num;
+    
+    // 计算剩余时间
+    if (provisionModeActive && provisionStartTime > 0) {
+        unsigned long elapsed = millis() - provisionStartTime;
+        if (elapsed < provisionTimeout) {
+            doc["data"]["remainingTime"] = (provisionTimeout - elapsed) / 1000;
+        } else {
+            doc["data"]["remainingTime"] = 0;
+        }
+    } else {
+        doc["data"]["remainingTime"] = 0;
+    }
+
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+void WebConfigManager::handleAPIStartProvision(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+
+    // 加载配网配置（从 device.json）
+    String apSSID = "fastbee-device-" + String(random(1000, 9999));
+    String apPassword = "";
+    uint32_t timeout = 300000;
+    String apIP = "192.168.4.1";
+    String apGateway = "192.168.4.1";
+    String apSubnet = "255.255.255.0";
+
+    if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
+        File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+        if (f) {
+            JsonDocument cfg;
+            if (!deserializeJson(cfg, f)) {
+                if (cfg.containsKey("provisionSSID") && cfg["provisionSSID"].as<String>().length() > 0) {
+                    apSSID = cfg["provisionSSID"].as<String>();
+                }
+                if (cfg.containsKey("provisionPassword")) {
+                    apPassword = cfg["provisionPassword"].as<String>();
+                }
+                if (cfg.containsKey("provisionTimeout")) {
+                    timeout = cfg["provisionTimeout"].as<uint32_t>() * 1000;
+                }
+                // 读取AP网络参数
+                if (cfg.containsKey("provisionIP") && cfg["provisionIP"].as<String>().length() > 0) {
+                    apIP = cfg["provisionIP"].as<String>();
+                }
+                if (cfg.containsKey("provisionGateway") && cfg["provisionGateway"].as<String>().length() > 0) {
+                    apGateway = cfg["provisionGateway"].as<String>();
+                }
+                if (cfg.containsKey("provisionSubnet") && cfg["provisionSubnet"].as<String>().length() > 0) {
+                    apSubnet = cfg["provisionSubnet"].as<String>();
+                }
+            }
+            f.close();
+        }
+    }
+
+    // 解析IP地址
+    IPAddress localIP, gateway, subnet;
+    localIP.fromString(apIP);
+    gateway.fromString(apGateway);
+    subnet.fromString(apSubnet);
+
+    // 启动AP模式
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.softAPConfig(localIP, gateway, subnet);
+    
+    bool success;
+    if (apPassword.length() >= 8) {
+        success = WiFi.softAP(apSSID.c_str(), apPassword.c_str());
+    } else {
+        success = WiFi.softAP(apSSID.c_str());
+    }
+
+    if (success) {
+        provisionModeActive = true;
+        provisionApSSID = apSSID;
+        provisionStartTime = millis();
+        provisionTimeout = timeout;
+        
+        LOGGER.infof("Provision: AP started - SSID=%s IP=%s", 
+                     apSSID.c_str(), WiFi.softAPIP().toString().c_str());
+        
+        JsonDocument doc;
+        doc["success"] = true;
+        doc["message"] = "AP配网已启动";
+        doc["data"]["apSSID"] = apSSID;
+        doc["data"]["apIP"] = WiFi.softAPIP().toString();
+        
+        String out;
+        serializeJson(doc, out);
+        request->send(200, "application/json", out);
+    } else {
+        sendError(request, 500, "启动AP配网失败");
+    }
+}
+
+void WebConfigManager::handleAPIStopProvision(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+
+    WiFi.softAPdisconnect(true);
+    provisionModeActive = false;
+    provisionApSSID = "";
+    provisionStartTime = 0;
+    
+    LOGGER.info("Provision: AP stopped");
+    sendSuccess(request, "AP配网已停止");
+}
+
+void WebConfigManager::handleAPIGetProvisionConfig(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+
+    JsonDocument doc;
+    doc["success"] = true;
+
+    // 默认配置
+    doc["data"]["provisionSSID"] = "";
+    doc["data"]["provisionPassword"] = "";
+    doc["data"]["provisionTimeout"] = 300;
+    doc["data"]["provisionUserId"] = "";
+    doc["data"]["provisionProductId"] = "";
+    doc["data"]["provisionAuthCode"] = "";
+    doc["data"]["provisionIP"] = "192.168.4.1";
+    doc["data"]["provisionGateway"] = "192.168.4.1";
+    doc["data"]["provisionSubnet"] = "255.255.255.0";
+
+    if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
+        File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+        if (f) {
+            JsonDocument cfg;
+            if (!deserializeJson(cfg, f)) {
+                if (cfg.containsKey("provisionSSID"))     doc["data"]["provisionSSID"] = cfg["provisionSSID"];
+                if (cfg.containsKey("provisionPassword")) doc["data"]["provisionPassword"] = cfg["provisionPassword"];
+                if (cfg.containsKey("provisionTimeout"))  doc["data"]["provisionTimeout"] = cfg["provisionTimeout"];
+                if (cfg.containsKey("provisionUserId"))   doc["data"]["provisionUserId"] = cfg["provisionUserId"];
+                if (cfg.containsKey("provisionProductId")) doc["data"]["provisionProductId"] = cfg["provisionProductId"];
+                if (cfg.containsKey("provisionAuthCode")) doc["data"]["provisionAuthCode"] = cfg["provisionAuthCode"];
+                if (cfg.containsKey("provisionIP"))       doc["data"]["provisionIP"] = cfg["provisionIP"];
+                if (cfg.containsKey("provisionGateway"))  doc["data"]["provisionGateway"] = cfg["provisionGateway"];
+                if (cfg.containsKey("provisionSubnet"))   doc["data"]["provisionSubnet"] = cfg["provisionSubnet"];
+            }
+            f.close();
+        }
+    }
+
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+void WebConfigManager::handleAPISaveProvisionConfig(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+
+    // 先读取现有 device.json 配置
+    JsonDocument cfg;
+    if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
+        File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+        if (f) {
+            deserializeJson(cfg, f);
+            f.close();
+        }
+    }
+
+    // 更新配网相关字段
+    cfg["provisionSSID"]     = getParamValue(request, "provisionSSID", "");
+    cfg["provisionPassword"] = getParamValue(request, "provisionPassword", "");
+    cfg["provisionTimeout"]  = getParamValue(request, "provisionTimeout", "300").toInt();
+    cfg["provisionUserId"]   = getParamValue(request, "provisionUserId", "");
+    cfg["provisionProductId"] = getParamValue(request, "provisionProductId", "");
+    cfg["provisionAuthCode"] = getParamValue(request, "provisionAuthCode", "");
+    cfg["provisionIP"]       = getParamValue(request, "provisionIP", "192.168.4.1");
+    cfg["provisionGateway"]  = getParamValue(request, "provisionGateway", "192.168.4.1");
+    cfg["provisionSubnet"]   = getParamValue(request, "provisionSubnet", "255.255.255.0");
+
+    File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
+    if (!f) {
+        sendError(request, 500, "无法写入设备配置文件");
+        return;
+    }
+    serializeJson(cfg, f);
+    f.close();
+
+    LOGGER.info("Provision: Config saved to device.json");
+    sendSuccess(request, "AP配网配置已保存");
+}
+
+void WebConfigManager::handleAPIProvisionCallback(AsyncWebServerRequest* request) {
+    // 配网回调接口，供手机APP调用，不需要认证
+    
+    String ssid = getParamValue(request, "SSID", "");
+    String password = getParamValue(request, "password", "");
+    String userId = getParamValue(request, "userId", "");
+    
+    if (ssid.isEmpty() || password.isEmpty()) {
+        request->send(400, "text/plain;charset=utf-8", "缺少必要参数：SSID和password");
+        return;
+    }
+
+    LOGGER.infof("Provision: Received config - SSID=%s userId=%s", ssid.c_str(), userId.c_str());
+
+    // 保存到网络配置
+    if (networkManager) {
+        // 回复成功（先回复，再连接）
+        request->send(200, "text/plain;charset=utf-8", "配置已接收，设备正在连接WiFi...");
+        
+        // 延迟后尝试连接WiFi
+        delay(500);
+        
+        // 停止配网模式
+        provisionModeActive = false;
+        provisionApSSID = "";
+        
+        // 使用connectToNetwork连接WiFi（该方法会自动保存配置）
+        LOGGER.info("Provision: Attempting to connect to WiFi...");
+        networkManager->connectToNetwork(ssid, password);
+    } else {
+        request->send(500, "text/plain;charset=utf-8", "网络管理器未初始化");
+    }
+}
+
+void WebConfigManager::handleAPIUpdateDeviceConfig(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+
+    // 先读取现有配置，避免丢失其他字段
+    JsonDocument cfg;
+    if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
+        File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+        if (f) {
+            deserializeJson(cfg, f);
+            f.close();
+        }
+    }
+
+    // 只更新传入的字段
+    String val;
+    val = getParamValue(request, "ntpServer1", "");
+    if (!val.isEmpty()) cfg["ntpServer1"] = val;
+    val = getParamValue(request, "ntpServer2", "");
+    if (!val.isEmpty()) cfg["ntpServer2"] = val;
+    val = getParamValue(request, "timezone", "");
+    if (!val.isEmpty()) cfg["timezone"] = val;
+    val = getParamValue(request, "enableNTP", "");
+    if (!val.isEmpty()) cfg["enableNTP"] = (val == "1" || val == "true");
+    val = getParamValue(request, "deviceName", "");
+    if (!val.isEmpty()) cfg["deviceName"] = val;
+    val = getParamValue(request, "location", "");
+    if (request->hasParam("location")) cfg["location"] = val;
+    val = getParamValue(request, "description", "");
+    if (request->hasParam("description")) cfg["description"] = val;
+    val = getParamValue(request, "syncInterval", "");
+    if (!val.isEmpty()) cfg["syncInterval"] = val.toInt();
+
+    // 保存到 LittleFS
+    File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
+    if (!f) {
+        sendError(request, 500, "Failed to open device config file");
+        return;
+    }
+    serializeJsonPretty(cfg, f);
+    f.close();
+
+    // 如果启用 NTP，立即配置
+    if (cfg["enableNTP"].as<bool>()) {
+        const char* tz  = cfg["timezone"] | "CST-8";
+        const char* s1  = cfg["ntpServer1"] | "pool.ntp.org";
+        const char* s2  = cfg["ntpServer2"] | "time.nist.gov";
+        configTzTime(tz, s1, s2);
+        LOGGER.infof("Device: NTP configured - tz=%s srv1=%s srv2=%s", tz, s1, s2);
+    }
+
+    sendSuccess(request, "Device configuration saved");
+}
+
+void WebConfigManager::handleAPIGetDeviceTime(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "system.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+
+    JsonDocument doc;
+    doc["success"] = true;
+
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo, 100)) {
+        char buf[32];
+        strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+        doc["data"]["datetime"] = buf;
+        char dateBuf[12];
+        strftime(dateBuf, sizeof(dateBuf), "%Y-%m-%d", &timeinfo);
+        doc["data"]["date"] = dateBuf;
+        char timeBuf[10];
+        strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", &timeinfo);
+        doc["data"]["time"] = timeBuf;
+        doc["data"]["timestamp"] = (long long)mktime(&timeinfo);
+        doc["data"]["synced"] = true;
+    } else {
+        doc["data"]["datetime"] = "--";
+        doc["data"]["date"] = "--";
+        doc["data"]["time"] = "--";
+        doc["data"]["timestamp"] = (long long)(millis() / 1000);
+        doc["data"]["synced"] = false;
+    }
+    doc["data"]["uptime"] = millis();
+
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+// ============ 蓝牙配网 API 处理器实现 ============
+
+static bool bleProvisionActive = false;
+static NimBLEServer* pBLEServer = nullptr;
+static NimBLECharacteristic* pTxCharacteristic = nullptr;
+static String bleDeviceName = "FBDevice";
+static unsigned long bleProvisionStartTime = 0;
+static uint32_t bleProvisionTimeout = 300000;
+
+// 蓝牙服务端回调
+class BLEProvisionServerCallbacks : public NimBLEServerCallbacks {
+    void onConnect(NimBLEServer* server) override {
+        LOGGER.info("BLE: Device connected");
+    }
+    
+    void onDisconnect(NimBLEServer* server) override {
+        LOGGER.info("BLE: Device disconnected");
+        if (bleProvisionActive) {
+            server->startAdvertising();
+        }
+    }
+};
+
+// 蓝牙特征码回调 - 处理接收的WiFi配置数据
+class BLEProvisionCallbacks : public NimBLECharacteristicCallbacks {
+    void onWrite(NimBLECharacteristic* characteristic) override {
+        std::string rxValue = characteristic->getValue();
+        
+        if (rxValue.length() > 0) {
+            LOGGER.infof("BLE: Received data: %s", rxValue.c_str());
+            
+            if (rxValue.find("ssid") != std::string::npos) {
+                JsonDocument doc;
+                DeserializationError error = deserializeJson(doc, rxValue);
+                
+                if (error) {
+                    LOGGER.error("BLE: Invalid JSON format");
+                    if (pTxCharacteristic) {
+                        pTxCharacteristic->setValue("error");
+                        pTxCharacteristic->notify();
+                    }
+                    return;
+                }
+                
+                String ssid = doc["ssid"].as<String>();
+                String password = doc["password"].as<String>();
+                
+                if (ssid.length() > 0) {
+                    LOGGER.infof("BLE: Connecting to WiFi SSID=%s", ssid.c_str());
+                    
+                    WiFi.begin(ssid.c_str(), password.c_str());
+                    
+                    int count = 0;
+                    while (WiFi.status() != WL_CONNECTED && count < 20) {
+                        delay(500);
+                        count++;
+                    }
+                    
+                    bool success = (WiFi.status() == WL_CONNECTED);
+                    
+                    if (pTxCharacteristic) {
+                        pTxCharacteristic->setValue(success ? "true" : "false");
+                        pTxCharacteristic->notify();
+                    }
+                    
+                    if (success) {
+                        LOGGER.infof("BLE: WiFi connected, IP=%s", WiFi.localIP().toString().c_str());
+                    } else {
+                        LOGGER.error("BLE: WiFi connection failed");
+                    }
+                }
+            }
+        }
+    }
+};
+
+void WebConfigManager::handleAPIGetBLEProvisionConfig(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+
+    JsonDocument doc;
+    doc["success"] = true;
+
+    // 默认配置
+    doc["data"]["bleEnabled"] = false;
+    doc["data"]["bleName"] = "FBDevice";
+    doc["data"]["bleTimeout"] = 300;
+    doc["data"]["bleAutoStart"] = false;
+    doc["data"]["bleServiceUUID"] = "6E400001-B5A3-F393-E0A9-E50E24DCCA9F";
+    doc["data"]["bleRxUUID"] = "6E400002-B5A3-F393-E0A9-E50E24DCCA9F";
+    doc["data"]["bleTxUUID"] = "6E400003-B5A3-F393-E0A9-E50E24DCCA9F";
+
+    if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
+        File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+        if (f) {
+            JsonDocument cfg;
+            if (!deserializeJson(cfg, f)) {
+                if (cfg.containsKey("bleEnabled"))     doc["data"]["bleEnabled"] = cfg["bleEnabled"];
+                if (cfg.containsKey("bleName"))        doc["data"]["bleName"] = cfg["bleName"];
+                if (cfg.containsKey("bleTimeout"))     doc["data"]["bleTimeout"] = cfg["bleTimeout"];
+                if (cfg.containsKey("bleAutoStart"))   doc["data"]["bleAutoStart"] = cfg["bleAutoStart"];
+                if (cfg.containsKey("bleServiceUUID")) doc["data"]["bleServiceUUID"] = cfg["bleServiceUUID"];
+                if (cfg.containsKey("bleRxUUID"))      doc["data"]["bleRxUUID"] = cfg["bleRxUUID"];
+                if (cfg.containsKey("bleTxUUID"))      doc["data"]["bleTxUUID"] = cfg["bleTxUUID"];
+            }
+            f.close();
+        }
+    }
+
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+void WebConfigManager::handleAPISaveBLEProvisionConfig(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+
+    // 先读取现有 device.json 配置
+    JsonDocument cfg;
+    if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
+        File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+        if (f) {
+            deserializeJson(cfg, f);
+            f.close();
+        }
+    }
+
+    // 更新蓝牙配网相关字段
+    cfg["bleEnabled"]     = getParamValue(request, "bleEnabled", "false") == "true";
+    cfg["bleName"]        = getParamValue(request, "bleName", "FBDevice");
+    cfg["bleTimeout"]     = getParamValue(request, "bleTimeout", "300").toInt();
+    cfg["bleAutoStart"]   = getParamValue(request, "bleAutoStart", "false") == "true";
+    cfg["bleServiceUUID"] = getParamValue(request, "bleServiceUUID", "6E400001-B5A3-F393-E0A9-E50E24DCCA9F");
+    cfg["bleRxUUID"]      = getParamValue(request, "bleRxUUID", "6E400002-B5A3-F393-E0A9-E50E24DCCA9F");
+    cfg["bleTxUUID"]      = getParamValue(request, "bleTxUUID", "6E400003-B5A3-F393-E0A9-E50E24DCCA9F");
+
+    File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
+    if (!f) {
+        sendError(request, 500, "无法写入设备配置文件");
+        return;
+    }
+    serializeJson(cfg, f);
+    f.close();
+
+    LOGGER.info("BLE: Config saved to device.json");
+    sendSuccess(request, "蓝牙配网配置已保存");
+}
+
+void WebConfigManager::handleAPIGetBLEProvisionStatus(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["data"]["active"] = bleProvisionActive;
+    doc["data"]["deviceName"] = bleDeviceName;
+    
+    if (bleProvisionActive) {
+        unsigned long elapsed = millis() - bleProvisionStartTime;
+        unsigned long remaining = (bleProvisionTimeout > elapsed) ? (bleProvisionTimeout - elapsed) / 1000 : 0;
+        doc["data"]["remainingTime"] = remaining;
+    }
+
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+void WebConfigManager::handleAPIStartBLEProvision(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+
+    // 加载蓝牙配网配置（从 device.json）
+    String deviceName = "FBDevice";
+    uint32_t timeout = 300000;
+    String serviceUUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9F";
+    String rxUUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9F";
+    String txUUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9F";
+
+    if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
+        File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+        if (f) {
+            JsonDocument cfg;
+            if (!deserializeJson(cfg, f)) {
+                if (cfg.containsKey("bleName") && cfg["bleName"].as<String>().length() > 0) {
+                    deviceName = cfg["bleName"].as<String>();
+                }
+                if (cfg.containsKey("bleTimeout")) {
+                    timeout = cfg["bleTimeout"].as<uint32_t>() * 1000;
+                }
+                if (cfg.containsKey("bleServiceUUID") && cfg["bleServiceUUID"].as<String>().length() > 0) {
+                    serviceUUID = cfg["bleServiceUUID"].as<String>();
+                }
+                if (cfg.containsKey("bleRxUUID") && cfg["bleRxUUID"].as<String>().length() > 0) {
+                    rxUUID = cfg["bleRxUUID"].as<String>();
+                }
+                if (cfg.containsKey("bleTxUUID") && cfg["bleTxUUID"].as<String>().length() > 0) {
+                    txUUID = cfg["bleTxUUID"].as<String>();
+                }
+            }
+            f.close();
+        }
+    }
+
+    // 初始化 BLE
+    NimBLEDevice::init(deviceName.c_str());
+    pBLEServer = NimBLEDevice::createServer();
+    pBLEServer->setCallbacks(new BLEProvisionServerCallbacks());
+
+    // 创建 BLE 服务
+    NimBLEService* pService = pBLEServer->createService(serviceUUID.c_str());
+
+    // 创建 TX 特征码（发送/通知）
+    pTxCharacteristic = pService->createCharacteristic(
+        txUUID.c_str(),
+        NIMBLE_PROPERTY::NOTIFY
+    );
+
+    // 创建 RX 特征码（接收）
+    NimBLECharacteristic* pRxCharacteristic = pService->createCharacteristic(
+        rxUUID.c_str(),
+        NIMBLE_PROPERTY::WRITE
+    );
+    pRxCharacteristic->setCallbacks(new BLEProvisionCallbacks());
+
+    // 启动服务和广播
+    pService->start();
+    pBLEServer->getAdvertising()->start();
+
+    bleProvisionActive = true;
+    bleDeviceName = deviceName;
+    bleProvisionStartTime = millis();
+    bleProvisionTimeout = timeout;
+
+    LOGGER.infof("BLE: Provision started - Name=%s", deviceName.c_str());
+
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["message"] = "蓝牙配网已启动";
+    doc["data"]["deviceName"] = deviceName;
+
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+void WebConfigManager::handleAPIStopBLEProvision(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+
+    if (pBLEServer) {
+        NimBLEDevice::deinit(true);
+        pBLEServer = nullptr;
+        pTxCharacteristic = nullptr;
+    }
+
+    bleProvisionActive = false;
+
+    LOGGER.info("BLE: Provision stopped");
+    sendSuccess(request, "蓝牙配网已停止");
+}
+

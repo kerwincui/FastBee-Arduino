@@ -126,22 +126,14 @@ bool ConfigStorage::loadJSONConfig(const String& filename, JsonDocument& config)
 
 // ── 特定配置快捷接口 ─────────────────────────────────────────────────────────
 
-bool ConfigStorage::saveSystemConfig(const JsonDocument& config)  { return saveJSONConfig(FileSystem::SYSTEM_CONFIG_FILE,  config); }
-bool ConfigStorage::loadSystemConfig(JsonDocument& config)         { return loadJSONConfig(FileSystem::SYSTEM_CONFIG_FILE,  config); }
-bool ConfigStorage::saveNetworkConfig(const JsonDocument& config)  { return saveJSONConfig(FileSystem::NETWORK_CONFIG_FILE, config); }
-bool ConfigStorage::loadNetworkConfig(JsonDocument& config)        { return loadJSONConfig(FileSystem::NETWORK_CONFIG_FILE, config); }
-bool ConfigStorage::saveUserConfig(const JsonDocument& config)     { return saveJSONConfig(FileSystem::USER_CONFIG_FILE,    config); }
-bool ConfigStorage::loadUserConfig(JsonDocument& config)           { return loadJSONConfig(FileSystem::USER_CONFIG_FILE,    config); }
-bool ConfigStorage::saveMQTTConfig(const JsonDocument& config)     { return saveJSONConfig(FileSystem::MQTT_CONFIG_FILE,    config); }
-bool ConfigStorage::loadMQTTConfig(JsonDocument& config)           { return loadJSONConfig(FileSystem::MQTT_CONFIG_FILE,    config); }
-bool ConfigStorage::saveModbusConfig(const JsonDocument& config)   { return saveJSONConfig(FileSystem::MODBUS_CONFIG_FILE,  config); }
-bool ConfigStorage::loadModbusConfig(JsonDocument& config)         { return loadJSONConfig(FileSystem::MODBUS_CONFIG_FILE,  config); }
-bool ConfigStorage::saveTCPConfig(const JsonDocument& config)      { return saveJSONConfig(FileSystem::TCP_CONFIG_FILE,     config); }
-bool ConfigStorage::loadTCPConfig(JsonDocument& config)            { return loadJSONConfig(FileSystem::TCP_CONFIG_FILE,     config); }
-bool ConfigStorage::saveHTTPConfig(const JsonDocument& config)     { return saveJSONConfig(FileSystem::HTTP_CONFIG_FILE,    config); }
-bool ConfigStorage::loadHTTPConfig(JsonDocument& config)           { return loadJSONConfig(FileSystem::HTTP_CONFIG_FILE,    config); }
-bool ConfigStorage::saveCoAPConfig(const JsonDocument& config)     { return saveJSONConfig(FileSystem::COAP_CONFIG_FILE,    config); }
-bool ConfigStorage::loadCoAPConfig(JsonDocument& config)           { return loadJSONConfig(FileSystem::COAP_CONFIG_FILE,    config); }
+bool ConfigStorage::saveNetworkConfig(const JsonDocument& config)   { return saveJSONConfig(FileSystem::NETWORK_CONFIG_FILE,   config); }
+bool ConfigStorage::loadNetworkConfig(JsonDocument& config)         { return loadJSONConfig(FileSystem::NETWORK_CONFIG_FILE,   config); }
+bool ConfigStorage::saveUserConfig(const JsonDocument& config)      { return saveJSONConfig(FileSystem::USER_CONFIG_FILE,      config); }
+bool ConfigStorage::loadUserConfig(JsonDocument& config)            { return loadJSONConfig(FileSystem::USER_CONFIG_FILE,      config); }
+bool ConfigStorage::saveProtocolConfig(const JsonDocument& config)  { return saveJSONConfig(FileSystem::PROTOCOL_CONFIG_FILE,  config); }
+bool ConfigStorage::loadProtocolConfig(JsonDocument& config)        { return loadJSONConfig(FileSystem::PROTOCOL_CONFIG_FILE,  config); }
+bool ConfigStorage::saveGpioConfig(const JsonDocument& config)      { return saveJSONConfig(FileSystem::GPIO_CONFIG_FILE,      config); }
+bool ConfigStorage::loadGpioConfig(JsonDocument& config)            { return loadJSONConfig(FileSystem::GPIO_CONFIG_FILE,      config); }
 
 // ── IConfigStorage 接口实现 ──────────────────────────────────────────────────
 

@@ -28,6 +28,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // 初始化应用
     AppState.init();
     
+    // 暂露全局 app 引用，供表格内 onclick 使用（如 gpio 操作按钮）
+    window.app = AppState;
+    
     // 模拟实时数据更新
     // setInterval(() => {
     //     // 更新仪表盘数据

@@ -1,6 +1,0 @@
-{
-  "isServer": false,
-  "server": "192.168.1.100",
-  "port": 8080,
-  "localPort": 8080
-}

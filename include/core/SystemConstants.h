@@ -108,15 +108,11 @@ namespace FileSystem {
     constexpr const char* DATA_DIR = "/data";
     
     // 配置文件路径
-    constexpr const char* SYSTEM_CONFIG_FILE = "/config/system.json";
+    constexpr const char* DEVICE_CONFIG_FILE = "/config/device.json";
     constexpr const char* NETWORK_CONFIG_FILE = "/config/network.json";
     constexpr const char* USER_CONFIG_FILE = "/config/users.json";
-    constexpr const char* MQTT_CONFIG_FILE = "/config/mqtt.json";
-    constexpr const char* MODBUS_CONFIG_FILE = "/config/modbus.json";
-    constexpr const char* TCP_CONFIG_FILE = "/config/tcp.json";
-    constexpr const char* HTTP_CONFIG_FILE = "/config/http.json";
-    constexpr const char* COAP_CONFIG_FILE = "/config/coap.json";
-    constexpr const char* TIMER_CONFIG_FILE = "/config/timers.json";
+    constexpr const char* PROTOCOL_CONFIG_FILE = "/config/protocol.json";  // 统一协议配置
+    constexpr const char* GPIO_CONFIG_FILE = "/config/gpio.json";
     
     // 日志文件配置
     constexpr const char* SYSTEM_LOG_FILE = "/logs/system.log";
