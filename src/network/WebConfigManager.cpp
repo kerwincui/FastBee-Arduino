@@ -1220,6 +1220,15 @@ void WebConfigManager::handleAPIVerifySession(AsyncWebServerRequest* request) {
         responseDoc["username"] = authResult.username;
         responseDoc["sessionValid"] = true;
         responseDoc["timestamp"] = millis();
+
+        // 返回用户角色和文件管理权限，供前端 RBAC 控制
+        if (userManager) {
+            responseDoc["role"] = userManager->getUserRole(authResult.username);
+        } else {
+            responseDoc["role"] = "VIEWER";
+        }
+        responseDoc["canManageFs"] = authManager->checkSessionPermission(
+            authResult.sessionId, "fs.manage");
         
         sendSuccess(request, responseDoc);
     } else {
@@ -2862,14 +2871,15 @@ void WebConfigManager::handleSetupPage(AsyncWebServerRequest* request) {
 void WebConfigManager::handleAPIWiFiScan(AsyncWebServerRequest* request) {
     // WiFi扫描，AP模式下无需登录
     JsonDocument doc;
-    JsonArray networks = doc["networks"].to<JsonArray>();
+    JsonArray data = doc["data"].to<JsonArray>();
     
     int n = WiFi.scanNetworks();
     for (int i = 0; i < n && i < 20; i++) {
-        JsonObject net = networks.add<JsonObject>();
+        JsonObject net = data.add<JsonObject>();
         net["ssid"] = WiFi.SSID(i);
         net["rssi"] = WiFi.RSSI(i);
-        net["encrypted"] = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
+        net["channel"] = WiFi.channel(i);
+        net["encryption"] = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN) ? 1 : 0;
     }
     WiFi.scanDelete();
     

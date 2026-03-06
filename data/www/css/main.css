@@ -324,20 +324,22 @@ body {
     width:220px;
 }
 
-.language-select {
-    width: 175px;
-    background: rgba(255,255,255,0.1);
-    color: white;
-    border: 1px solid rgba(255,255,255,0.2);
+/* 头部语言切换 */
+.language-select-header {
+    background: #f5f5f5;
+    color: #333;
+    border: 1px solid #ddd;
     border-radius: 4px;
-    padding: 8px;
-    font-size: 14px;
+    padding: 6px 10px;
+    font-size: 13px;
     cursor: pointer;
+    margin-right: 15px;
+    height: 32px;
 }
 
-.language-select option {
-    background: var(--primary-dark);
-    color: white;
+.language-select-header option {
+    background: white;
+    color: #333;
 }
 
 /* 主内容区 */
@@ -717,10 +719,16 @@ body {
     color: var(--dark);
 }
 
-/* 响应式设计 */
+/* 响应式设计 - 移动端适配 */
 @media (max-width: 768px) {
+    body {
+        overflow: auto;
+        height: auto;
+    }
+    
     .app-wrapper {
         flex-direction: column;
+        min-height: 100vh;
     }
     
     .sidebar {
@@ -728,15 +736,103 @@ body {
         height: auto;
         max-height: 60px;
         overflow: hidden;
-        transition: max-height 0.3s;
+        transition: max-height 0.3s ease;
+        position: relative;
+        z-index: 1000;
     }
     
     .sidebar.expanded {
-        max-height: 400px;
+        max-height: 500px;
+        overflow-y: auto;
+    }
+    
+    /* 移动端侧边栏头部 */
+    .sidebar-header {
+        padding: 10px 15px;
+        min-height: 60px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background: var(--primary);
+    }
+    
+    .sidebar-header img {
+        width: 32px;
+        height: 32px;
+    }
+    
+    .sidebar-header h3 {
+        font-size: 16px;
+        margin: 0;
+        flex: 1;
+        margin-left: 10px;
+    }
+    
+    /* 移动端菜单 */
+    .sidebar-menu {
+        padding: 10px;
+    }
+    
+    .sidebar-menu .menu-item {
+        padding: 12px 15px;
+        font-size: 14px;
+        border-radius: 6px;
+        margin-bottom: 4px;
+    }
+    
+    .sidebar-menu .menu-icon {
+        font-size: 18px;
+        margin-right: 12px;
+    }
+    
+    /* 移动端头部语言切换 */
+    .language-select-header {
+        padding: 4px 8px;
+        font-size: 12px;
+        margin-right: 10px;
+        height: 28px;
     }
     
     .main-content {
         margin-left: 0;
+    }
+    
+    /* 移动端头部 */
+    .header {
+        padding: 10px 15px;
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+    
+    .header-left {
+        flex: 1;
+        min-width: 0;
+    }
+    
+    .page-title {
+        font-size: 16px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    
+    .sidebar-toggle {
+        width: 40px;
+        height: 40px;
+        font-size: 22px;
+    }
+    
+    .header-actions {
+        gap: 8px;
+    }
+    
+    .user-info {
+        font-size: 12px;
+    }
+    
+    .user-info button {
+        padding: 6px 12px;
+        font-size: 12px;
     }
     
     .stats-grid {
@@ -745,11 +841,21 @@ body {
     
     .content {
         padding: 15px;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        flex: 1;
+        min-height: 0;
+    }
+    
+    .main-content {
+        height: calc(100vh - 60px);
+        overflow: hidden;
     }
     
     .config-tabs {
         overflow-x: auto;
         flex-wrap: nowrap;
+        -webkit-overflow-scrolling: touch;
     }
     
     .info-grid {
@@ -764,6 +870,31 @@ body {
     
     .config-form-grid {
         grid-template-columns: 1fr;
+    }
+    
+    /* 移动端表格适配 */
+    .pure-table {
+        font-size: 12px;
+    }
+    
+    .pure-table th,
+    .pure-table td {
+        padding: 8px 10px;
+    }
+    
+    /* 移动端按钮 */
+    .pure-button {
+        padding: 8px 16px;
+        font-size: 14px;
+    }
+    
+    /* 移动端模态框 */
+    .modal-content {
+        width: 95%;
+        max-width: none;
+        margin: 10px;
+        max-height: 90vh;
+        overflow-y: auto;
     }
 }
 .log-container {
@@ -790,4 +921,89 @@ body {
     display: block;
     font-weight: 500;
     color: var(--dark);
+}
+
+/* 文件管理工具栏小按钮 */
+.fs-btn-sm {
+    padding: 3px 8px;
+    font-size: 12px;
+    line-height: 1.4;
+    height: 26px;
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    color: #555;
+    cursor: pointer;
+    vertical-align: middle;
+}
+
+.fs-btn-sm:hover {
+    background: #f0f0f0;
+    border-color: #aaa;
+}
+
+/* WiFi列表弹窗容器 */
+.wifi-list-container {
+    padding: 0;
+}
+
+.wifi-item {
+    padding: 12px 16px;
+    border-bottom: 1px solid #f0f0f0;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: all 0.2s ease;
+}
+
+.wifi-item:last-child {
+    border-bottom: none;
+}
+
+.wifi-item:hover {
+    background-color: #f5f7fa;
+}
+
+.wifi-item:active {
+    background-color: #e8f4ff;
+}
+
+.wifi-item .wifi-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.wifi-item .wifi-ssid {
+    font-weight: 600;
+    color: #333;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 14px;
+}
+
+.wifi-item .wifi-meta {
+    font-size: 12px;
+    color: #999;
+    margin-top: 4px;
+}
+
+.wifi-item .wifi-signal {
+    text-align: right;
+    margin-left: 12px;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.wifi-item .wifi-signal.strong {
+    color: #52c41a;
+}
+
+.wifi-item .wifi-signal.medium {
+    color: #faad14;
+}
+
+.wifi-item .wifi-signal.weak {
+    color: #f5222d;
 }

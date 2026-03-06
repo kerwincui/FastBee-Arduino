@@ -2,7 +2,7 @@
 const AppState = {
     currentPage: 'dashboard',
     configTab: 'modbus',
-    currentUser: { name: '', role: '' },
+    currentUser: { name: '', role: '', canManageFs: false },
     sidebarCollapsed: false,
     _logAutoRefreshTimer: null,  // 日志自动刷新定时器
 
@@ -26,6 +26,8 @@ const AppState = {
             .then(res => {
                 if (res && res.success && res.data && res.data.sessionValid) {
                     this.currentUser.name = res.data.username || 'Admin';
+                    this.currentUser.role = res.data.role || 'VIEWER';
+                    this.currentUser.canManageFs = res.data.canManageFs === true;
                     this._showAppPage();
                     this.renderDashboard();
                     this.loadSystemMonitor();  // 加载监控仪表盘数据
@@ -57,13 +59,37 @@ const AppState = {
     },
 
     toggleSidebar() {
-        this.sidebarCollapsed ? this.expandSidebar() : this.collapseSidebar();
+        // 移动端使用 expanded 类，桌面端使用 collapsed 类
+        const sidebar = document.getElementById('sidebar');
+        if (!sidebar) return;
+        
+        // 检测是否为移动端
+        const isMobile = window.innerWidth <= 768;
+        
+        if (isMobile) {
+            // 移动端：切换 expanded 类
+            if (sidebar.classList.contains('expanded')) {
+                sidebar.classList.remove('expanded');
+                this.sidebarCollapsed = true;
+                const btn = document.getElementById('sidebar-toggle');
+                if (btn) btn.textContent = '☰';
+            } else {
+                sidebar.classList.add('expanded');
+                this.sidebarCollapsed = false;
+                const btn = document.getElementById('sidebar-toggle');
+                if (btn) btn.textContent = '✕';
+            }
+        } else {
+            // 桌面端：使用原有逻辑
+            this.sidebarCollapsed ? this.expandSidebar() : this.collapseSidebar();
+        }
     },
 
     collapseSidebar() {
         const sidebar = document.getElementById('sidebar');
         if (sidebar) {
             sidebar.classList.add('collapsed');
+            sidebar.classList.remove('expanded');
             this.sidebarCollapsed = true;
             localStorage.setItem('sidebarCollapsed', 'true');
             const btn = document.getElementById('sidebar-toggle');
@@ -97,7 +123,7 @@ const AppState = {
 
     // ============ 配置选项卡 ============
     setupConfigTabs() {
-        ['#config-page', '#network-page', '#device-page'].forEach(pageSelector => {
+        ['#protocol-page', '#network-page', '#device-page'].forEach(pageSelector => {
             const page = document.querySelector(pageSelector);
             if (!page) return;
             page.querySelectorAll('.config-tab').forEach(tab => {
@@ -108,7 +134,7 @@ const AppState = {
         });
 
         // 协议配置表单提交
-        document.querySelectorAll('#config-page form').forEach(form => {
+        document.querySelectorAll('#protocol-page form').forEach(form => {
             form.addEventListener('submit', e => {
                 e.preventDefault();
                 this.saveProtocolConfig(form.id);
@@ -120,7 +146,7 @@ const AppState = {
             form.addEventListener('submit', e => {
                 e.preventDefault();
                 const protocolName = this._getProtocolName(form.id);
-                Notification.success(`${protocolName}配置保存成功！`);
+                Notification.success(`${protocolName} ${i18n.t('protocol-save-ok-suffix')}`);
                 const ok = form.querySelector('.message-success');
                 if (ok) {
                     ok.style.display = 'block';
@@ -149,7 +175,7 @@ const AppState = {
         if (target) target.classList.add('active');
         
         // 切换到协议配置页面时自动加载配置
-        if (pageId === 'config-page') {
+        if (pageId === 'protocol-page') {
             this.loadProtocolConfig(tabId);
         }
         
@@ -407,13 +433,13 @@ const AppState = {
         const remember = (document.getElementById('remember') || {}).checked;
 
         if (!username || !password) {
-            Notification.warning('请输入用户名和密码', '登录失败');
+            Notification.warning(i18n.t('login-empty-warning'), i18n.t('login-fail-title'));
             return;
         }
 
         const submitBtn = document.querySelector('#login-form button[type="submit"]');
         const originalText = submitBtn ? submitBtn.innerHTML : '';
-        if (submitBtn) { submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 登录中...'; submitBtn.disabled = true; }
+        if (submitBtn) { submitBtn.innerHTML = i18n.t('login-logging-in-html'); submitBtn.disabled = true; }
 
         apiPost('/api/auth/login', { username, password })
             .then(res => {
@@ -436,13 +462,21 @@ const AppState = {
                     this.currentUser.name = res.username || username;
                     sessionStorage.setItem('currentUsername', this.currentUser.name);
 
+                    // 获取角色和权限信息
+                    apiGet('/api/auth/session').then(sr => {
+                        if (sr && sr.success && sr.data) {
+                            this.currentUser.role = sr.data.role || 'VIEWER';
+                            this.currentUser.canManageFs = sr.data.canManageFs === true;
+                        }
+                    }).catch(() => {});
+
                     this._showAppPage();
                     this.renderDashboard();
                     this.loadSystemMonitor();  // 加载监控仪表盘数据
                     this.loadUsers();
-                    Notification.success('登录成功', '欢迎');
+                    Notification.success(i18n.t('login-success-msg'), i18n.t('login-welcome-title'));
                 } else {
-                    Notification.error((res && res.error) || '用户名或密码错误', '登录失败');
+                    Notification.error((res && res.error) || i18n.t('login-fail-title'), i18n.t('login-fail-title'));
                 }
             })
             .catch(() => { /* 错误已由拦截器处理 */ })
@@ -502,7 +536,7 @@ const AppState = {
         }
         
         // 切换到协议配置页面时自动加载第一个tab的配置
-        if (page === 'config') {
+        if (page === 'protocol') {
             this.loadProtocolConfig('modbus-rtu');
         }
     },
@@ -527,7 +561,7 @@ const AppState = {
                 const tbody = document.getElementById('device-table-body');
                 if (tbody) {
                     tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:#888">
-                        ${d.networkConnected ? '网络已连接 IP: ' + (d.ipAddress || '') : '网络未连接'}
+                        ${d.networkConnected ? i18n.t('dashboard-connected-prefix') + (d.ipAddress || '') : i18n.t('dashboard-disconnected')}
                     </td></tr>`;
                 }
             })
@@ -575,7 +609,7 @@ const AppState = {
 
         tbody.innerHTML = '';
         if (!users || users.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#888">暂无用户数据</td></tr>';
+            tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#888">${i18n.t('no-users-data')}</td></tr>`;
             return;
         }
 
@@ -602,7 +636,7 @@ const AppState = {
             badge.className = 'badge';
             if (user.isLocked) {
                 badge.classList.add('badge-warning');
-                badge.textContent = '已锁定';
+                badge.textContent = i18n.t('user-locked-badge');
             } else if (!user.enabled) {
                 badge.classList.add('badge-danger');
                 badge.textContent = i18n.t('user-status-inactive');
@@ -637,7 +671,7 @@ const AppState = {
             if (user.isLocked) {
                 const unlockBtn = document.createElement('button');
                 unlockBtn.className = 'pure-button pure-button-small pure-button-primary';
-                unlockBtn.textContent = '解锁';
+                unlockBtn.textContent = i18n.t('unlock-user');
                 unlockBtn.addEventListener('click', () => this.unlockUser(user.username));
                 actionCell.appendChild(unlockBtn);
             }
@@ -648,7 +682,7 @@ const AppState = {
                 delBtn.className = 'pure-button pure-button-small pure-button-error';
                 delBtn.textContent = i18n.t('delete-user');
                 delBtn.addEventListener('click', () => {
-                    if (confirm(`确定要删除用户 ${user.username} 吗？`)) {
+                    if (confirm(`${i18n.t('confirm-delete-user-msg')} ${user.username} ${i18n.t('confirm-suffix')}`)) {
                         this.deleteUser(user.username);
                     }
                 });
@@ -713,11 +747,11 @@ const AppState = {
             // 类型
             const tdType = document.createElement('td');
             if (role.id === 'admin') {
-                tdType.innerHTML = '<span style="background: #fff1f0; color: #f5222d; padding: 2px 8px; border-radius: 4px; font-size: 12px;">超级管理员</span>';
+                tdType.innerHTML = `<span style="background: #fff1f0; color: #f5222d; padding: 2px 8px; border-radius: 4px; font-size: 12px;">${i18n.t('role-type-super')}</span>`;
             } else if (role.isBuiltin) {
-                tdType.innerHTML = '<span style="background: #f6ffed; color: #52c41a; padding: 2px 8px; border-radius: 4px; font-size: 12px;">内置角色</span>';
+                tdType.innerHTML = `<span style="background: #f6ffed; color: #52c41a; padding: 2px 8px; border-radius: 4px; font-size: 12px;">${i18n.t('role-type-builtin')}</span>`;
             } else {
-                tdType.innerHTML = '<span style="background: #f0f5ff; color: #2f54eb; padding: 2px 8px; border-radius: 4px; font-size: 12px;">自定义</span>';
+                tdType.innerHTML = `<span style="background: #f0f5ff; color: #2f54eb; padding: 2px 8px; border-radius: 4px; font-size: 12px;">${i18n.t('role-type-custom')}</span>`;
             }
             row.appendChild(tdType);
             
@@ -727,7 +761,7 @@ const AppState = {
             // 查看权限按钮
             const viewBtn = document.createElement('button');
             viewBtn.className = 'pure-button pure-button-small';
-            viewBtn.textContent = '查看权限';
+            viewBtn.textContent = i18n.t('role-view-perms');
             viewBtn.style.marginRight = '5px';
             viewBtn.addEventListener('click', () => this.showRolePermissions(role));
             tdAction.appendChild(viewBtn);
@@ -737,7 +771,7 @@ const AppState = {
                 // 编辑按钮
                 const editBtn = document.createElement('button');
                 editBtn.className = 'pure-button pure-button-small pure-button-primary';
-                editBtn.textContent = '编辑';
+                editBtn.textContent = i18n.t('role-edit');
                 editBtn.style.marginRight = '5px';
                 editBtn.addEventListener('click', () => this.showEditRoleModal(role.id));
                 tdAction.appendChild(editBtn);
@@ -745,7 +779,7 @@ const AppState = {
                 // 删除按钮
                 const delBtn = document.createElement('button');
                 delBtn.className = 'pure-button pure-button-small pure-button-error';
-                delBtn.textContent = '删除';
+                delBtn.textContent = i18n.t('role-delete');
                 delBtn.addEventListener('click', () => this.deleteRole(role.id, role.name));
                 tdAction.appendChild(delBtn);
             }
@@ -788,7 +822,7 @@ const AppState = {
             <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 9999; display: flex; justify-content: center; align-items: center;" onclick="this.remove()">
                 <div style="background: white; border-radius: 8px; max-width: 600px; width: 90%; max-height: 80vh; overflow: hidden;" onclick="event.stopPropagation()">
                     <div style="background: linear-gradient(135deg, #1890ff 0%, #096dd9 100%); color: white; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center;">
-                        <h3 style="margin: 0;">${role.name} - 权限详情</h3>
+                        <h3 style="margin: 0;">${role.name}${i18n.t('role-detail-suffix')}</h3>
                         <button onclick="this.closest('div[style*=position]').remove()" style="background: none; border: none; color: white; font-size: 20px; cursor: pointer;">×</button>
                     </div>
                     <div style="padding: 20px;">${html}</div>
@@ -806,7 +840,7 @@ const AppState = {
         
         // 设置标题
         const title = document.getElementById('role-modal-title');
-        if (title) title.textContent = '新增角色';
+        if (title) title.textContent = i18n.t('role-add-title');
         
         // 清空输入
         const idInput = document.getElementById('role-id-input');
@@ -846,13 +880,13 @@ const AppState = {
                 const roles = (res.data && res.data.roles) ? res.data.roles : [];
                 const role = roles.find(r => r.id === roleId);
                 if (!role) {
-                    Notification.error('角色不存在', '错误');
+                    Notification.error(i18n.t('role-not-exist'), i18n.t('error-title'));
                     return;
                 }
                 
                 // 设置标题
                 const title = document.getElementById('role-modal-title');
-                if (title) title.textContent = '编辑角色';
+                if (title) title.textContent = i18n.t('role-edit-title');
                 
                 // 填充数据
                 const idInput = document.getElementById('role-id-input');
@@ -925,7 +959,7 @@ const AppState = {
     saveRole() {
         const modal = document.getElementById('role-modal');
         if (!modal) {
-            Notification.error('弹窗元素不存在', '错误');
+            Notification.error(i18n.t('role-modal-not-found'), i18n.t('error-title'));
             return;
         }
         
@@ -940,11 +974,11 @@ const AppState = {
         
         const showErr = (msg) => {
             if (errDiv) { errDiv.textContent = msg; errDiv.style.display = 'block'; }
-            Notification.error(msg, isEditMode ? '编辑角色失败' : '新增角色失败');
+            Notification.error(msg, isEditMode ? i18n.t('role-fail-edit') : i18n.t('role-fail-add'));
         };
         
-        if (!id) return showErr('请输入角色ID！');
-        if (!name) return showErr('请输入角色名称！');
+        if (!id) return showErr(i18n.t('role-validate-id'));
+        if (!name) return showErr(i18n.t('role-validate-name'));
         
         // 获取选中的权限
         const permCheckboxes = document.querySelectorAll('input[name="role-perm"]:checked');
@@ -953,7 +987,7 @@ const AppState = {
         if (errDiv) errDiv.style.display = 'none';
         
         const btn = document.getElementById('confirm-role-btn');
-        if (btn) { btn.disabled = true; btn.textContent = '保存中...'; }
+        if (btn) { btn.disabled = true; btn.textContent = i18n.t('role-saving-text'); }
         
         console.log('[saveRole] modal.dataset:', JSON.stringify(modal.dataset));
         console.log('[saveRole] isEditMode:', isEditMode, 'id:', id, 'editRoleId:', editRoleId);
@@ -967,7 +1001,7 @@ const AppState = {
                     if (res && res.success) {
                         return apiPost('/api/roles/permissions', { id, permissions });
                     }
-                    throw new Error(res.error || '更新角色失败');
+                    throw new Error(res.error || i18n.t('role-fail-update-msg'));
                 });
         } else {
             // 新增模式
@@ -976,38 +1010,38 @@ const AppState = {
                     if (res && res.success) {
                         return apiPost('/api/roles/permissions', { id, permissions });
                     }
-                    throw new Error(res.error || '创建角色失败');
+                    throw new Error(res.error || i18n.t('role-fail-create-msg'));
                 });
         }
         
         apiCall
             .then(res => {
                 if (res && res.success) {
-                    Notification.success(`角色 ${name} ${isEditMode ? '修改' : '创建'}成功`, '角色管理');
+                    Notification.success(`${i18n.t('role-mgmt-title')}: ${name} ${isEditMode ? i18n.t('role-updated') : i18n.t('role-created')}${i18n.t('role-success-suffix')}`, i18n.t('role-mgmt-title'));
                     if (modal) modal.style.display = 'none';
                     this.loadRoles();
                 } else {
-                    showErr((res && res.error) || '操作失败');
+                    showErr((res && res.error) || i18n.t('role-op-fail'));
                 }
             })
             .catch(err => {
-                showErr(err.message || '操作失败');
+                showErr(err.message || i18n.t('role-op-fail'));
             })
             .finally(() => {
-                if (btn) { btn.disabled = false; btn.textContent = '保存'; }
+                if (btn) { btn.disabled = false; btn.textContent = i18n.t('role-save-text'); }
             });
     },
     
     deleteRole(roleId, roleName) {
-        if (!confirm(`确定要删除角色 "${roleName || roleId}" 吗？`)) return;
+        if (!confirm(`${i18n.t('confirm-delete-role-msg')} "${roleName || roleId}" ${i18n.t('confirm-delete-role-suffix')}`)) return;
         
         apiPost('/api/roles/delete', { id: roleId })
             .then(res => {
                 if (res && res.success) {
-                    Notification.success(`角色 ${roleName || roleId} 已删除`, '删除成功');
+                    Notification.success(`${roleName || roleId} ${i18n.t('role-deleted-msg')}`, i18n.t('delete-success'));
                     this.loadRoles();
                 } else {
-                    Notification.error((res && res.error) || '删除失败', '操作失败');
+                    Notification.error((res && res.error) || i18n.t('operation-fail'), i18n.t('operation-fail'));
                 }
             })
             .catch(() => {});
@@ -1032,22 +1066,22 @@ const AppState = {
 
         const showErr = (msg) => {
             if (errDiv) { errDiv.textContent = msg; errDiv.style.display = 'block'; }
-            Notification.error(msg, '修改密码失败');
+            Notification.error(msg, i18n.t('change-pwd-fail'));
         };
 
-        if (!oldPwd || !newPwd || !confirmPwd) return showErr('请填写所有字段！');
-        if (newPwd !== confirmPwd) return showErr(i18n.t('password-error') || '新密码与确认密码不一致！');
-        if (newPwd.length < 6) return showErr('新密码长度至少6位！');
+        if (!oldPwd || !newPwd || !confirmPwd) return showErr(i18n.t('validate-all-fields'));
+        if (newPwd !== confirmPwd) return showErr(i18n.t('password-error') || i18n.t('validate-new-pwd-mismatch'));
+        if (newPwd.length < 6) return showErr(i18n.t('validate-new-pwd-len'));
 
         if (errDiv) errDiv.style.display = 'none';
 
         const btn = document.getElementById('confirm-password-btn');
-        if (btn) { btn.disabled = true; btn.textContent = '提交中...'; }
+        if (btn) { btn.disabled = true; btn.textContent = i18n.t('change-pwd-submitting'); }
 
         apiPost('/api/auth/change-password', { oldPassword: oldPwd, newPassword: newPwd })
             .then(res => {
                 if (res && res.success) {
-                    Notification.success('密码修改成功，请重新登录', '修改成功');
+                    Notification.success(i18n.t('change-pwd-success-msg'), i18n.t('change-pwd-success-title'));
                     const modal = document.getElementById('change-password-modal');
                     if (modal) modal.style.display = 'none';
                     // 修改密码后后端会踢出所有会话，需重新登录
@@ -1056,11 +1090,11 @@ const AppState = {
                         this._showLoginPage();
                     }, 1500);
                 } else {
-                    showErr((res && res.error) || '密码修改失败，请检查原密码是否正确');
+                    showErr((res && res.error) || i18n.t('change-pwd-fail-msg'));
                 }
             })
             .catch(() => {})
-            .finally(() => { if (btn) { btn.disabled = false; btn.textContent = '确认修改'; } });
+            .finally(() => { if (btn) { btn.disabled = false; btn.textContent = i18n.t('confirm-change-btn'); } });
     },
 
     // ============ 添加用户 ============
@@ -1075,11 +1109,11 @@ const AppState = {
         
         // 修改标题
         const title = document.getElementById('add-user-title');
-        if (title) title.textContent = '添加用户';
+        if (title) title.textContent = i18n.t('add-user-modal-title');
         
         // 修改按钮文本
         const confirmBtn = document.getElementById('confirm-add-user-btn');
-        if (confirmBtn) confirmBtn.textContent = '确认添加';
+        if (confirmBtn) confirmBtn.textContent = i18n.t('confirm-add-btn');
         
         // 清空输入框
         ['add-username-input', 'add-password-input', 'add-confirm-password-input'].forEach(id => {
@@ -1109,27 +1143,27 @@ const AppState = {
 
         const showErr = (msg) => {
             if (errDiv) { errDiv.textContent = msg; errDiv.style.display = 'block'; }
-            Notification.error(msg, isEditMode ? '编辑用户失败' : '添加用户失败');
+            Notification.error(msg, isEditMode ? i18n.t('edit-user-fail') : i18n.t('add-user-fail'));
         };
 
-        if (!username) return showErr('请输入用户名！');
+        if (!username) return showErr(i18n.t('validate-username-empty'));
         
         // 添加模式时验证
         if (!isEditMode) {
-            if (username.length < 3 || username.length > 32) return showErr('用户名长度3-32位！');
-            if (!password || !confirmPwd) return showErr('请输入密码！');
+            if (username.length < 3 || username.length > 32) return showErr(i18n.t('validate-username-len'));
+            if (!password || !confirmPwd) return showErr(i18n.t('validate-pwd-empty'));
         }
         
         // 密码验证（编辑模式密码可选，但如果填写了就要验证）
         if (password || confirmPwd) {
-            if (password !== confirmPwd) return showErr('密码与确认密码不一致！');
-            if (password.length < 6) return showErr('密码长度至少6位！');
+            if (password !== confirmPwd) return showErr(i18n.t('validate-pwd-mismatch'));
+            if (password.length < 6) return showErr(i18n.t('validate-pwd-len'));
         }
 
         if (errDiv) errDiv.style.display = 'none';
 
         const btn = document.getElementById('confirm-add-user-btn');
-        if (btn) { btn.disabled = true; btn.textContent = isEditMode ? '保存中...' : '添加中...'; }
+        if (btn) { btn.disabled = true; btn.textContent = isEditMode ? i18n.t('saving-btn') : i18n.t('adding-btn'); }
 
         // 根据模式选择 API
         let apiCall;
@@ -1144,15 +1178,15 @@ const AppState = {
         apiCall
             .then(res => {
                 if (res && res.success) {
-                    Notification.success(`用户 ${username} ${isEditMode ? '修改' : '添加'}成功`, isEditMode ? '编辑用户' : '添加用户');
+                    Notification.success(`${username} ${isEditMode ? i18n.t('role-updated') : i18n.t('role-created')}${i18n.t('role-success-suffix')}`, isEditMode ? i18n.t('edit-user-success') : i18n.t('add-user-success'));
                     if (modal) modal.style.display = 'none';
                     this.loadUsers(); // 刷新列表
                 } else {
-                    showErr((res && res.error) || (isEditMode ? '修改用户失败' : '添加用户失败，用户名可能已存在'));
+                    showErr((res && res.error) || (isEditMode ? i18n.t('modify-user-fail-msg') : i18n.t('add-user-fail-msg')));
                 }
             })
             .catch(() => {})
-            .finally(() => { if (btn) { btn.disabled = false; btn.textContent = '确认添加'; } });
+            .finally(() => { if (btn) { btn.disabled = false; btn.textContent = i18n.t('confirm-add-btn'); } });
     },
 
     // ============ 编辑用户（复用添加用户弹窗）============
@@ -1160,13 +1194,13 @@ const AppState = {
         // 复用添加用户的 modal
         const modal = document.getElementById('add-user-modal');
         if (!modal) {
-            Notification.info(`编辑用户功能：${user.username}（角色：${user.role}）`, '编辑用户');
+            Notification.info(`${i18n.t('edit-user-modal-title')}: ${user.username}`, i18n.t('edit-user-modal-title'));
             return;
         }
         
         // 修改标题
         const title = document.getElementById('add-user-title');
-        if (title) title.textContent = '编辑用户';
+        if (title) title.textContent = i18n.t('edit-user-modal-title');
         
         // 填充用户信息
         const usernameInput = document.getElementById('add-username-input');
@@ -1191,7 +1225,7 @@ const AppState = {
         
         // 修改确认按钮文本
         const confirmBtn = document.getElementById('confirm-add-user-btn');
-        if (confirmBtn) confirmBtn.textContent = '保存修改';
+        if (confirmBtn) confirmBtn.textContent = i18n.t('confirm-save-btn');
         
         // 显示弹窗
         modal.style.display = 'flex';
@@ -1203,16 +1237,17 @@ const AppState = {
 
     // ============ 切换用户状态（启用/禁用）============
     toggleUserStatus(username, enable) {
-        const action = enable ? '启用' : '禁用';
-        if (!confirm(`确定要${action}用户 ${username} 吗？`)) return;
+        const action = enable ? i18n.t('enable-user') : i18n.t('disable-user');
+        const confirmMsg = enable ? i18n.t('confirm-enable-user') : i18n.t('confirm-disable-user');
+        if (!confirm(`${confirmMsg} ${username} ${i18n.t('confirm-suffix')}`)) return;
 
         apiPost('/api/users/update', { username, enabled: enable ? 'true' : 'false' })
             .then(res => {
                 if (res && res.success) {
-                    Notification.success(`用户 ${username} 已${action}`, '状态更新');
+                    Notification.success(`${username} ${enable ? i18n.t('user-enabled-msg') : i18n.t('user-disabled-msg')}`, i18n.t('user-status-update'));
                     this.loadUsers();
                 } else {
-                    Notification.error((res && res.error) || `${action}失败`, '操作失败');
+                    Notification.error((res && res.error) || i18n.t('operation-fail'), i18n.t('operation-fail'));
                 }
             })
             .catch(() => {});
@@ -1220,14 +1255,14 @@ const AppState = {
 
     // ============ 解锁用户 ============
     unlockUser(username) {
-        if (!confirm(`确定要解锁账户 ${username} 吗？`)) return;
+        if (!confirm(`${i18n.t('confirm-unlock-user')} ${username} ${i18n.t('confirm-suffix')}`)) return;
         apiPost('/api/users/unlock-account', { username })
             .then(res => {
                 if (res && res.success) {
-                    Notification.success(`账户 ${username} 已解锁`, '解锁成功');
+                    Notification.success(`${username} ${i18n.t('user-unlocked-msg')}`, i18n.t('unlock-success'));
                     this.loadUsers();
                 } else {
-                    Notification.error((res && res.error) || '解锁失败', '操作失败');
+                    Notification.error((res && res.error) || i18n.t('operation-fail'), i18n.t('operation-fail'));
                 }
             })
             .catch(() => {});
@@ -1235,15 +1270,15 @@ const AppState = {
 
     // ============ 删除用户 ============
     deleteUser(username) {
-        if (!confirm(`确定要删除用户 ${username} 吗？`)) return;
+        if (!confirm(`${i18n.t('confirm-delete-user-msg')} ${username} ${i18n.t('confirm-suffix')}`)) return;
         
         apiPost('/api/users/delete', { username })
             .then(res => {
                 if (res && res.success) {
-                    Notification.success(`用户 ${username} 已删除`, '删除成功');
+                    Notification.success(`${username} ${i18n.t('user-deleted-msg')}`, i18n.t('delete-success'));
                     this.loadUsers();
                 } else {
-                    Notification.error((res && res.error) || '删除失败', '操作失败');
+                    Notification.error((res && res.error) || i18n.t('operation-fail'), i18n.t('operation-fail'));
                 }
             })
             .catch(() => {});
@@ -1265,7 +1300,7 @@ const AppState = {
                 localStorage.removeItem('password');
                 sessionStorage.removeItem('savedPassword');
                 sessionStorage.removeItem('currentUsername');
-                Notification.success('已成功退出登录', '退出登录');
+                Notification.success(i18n.t('logout-success'), i18n.t('logout-title'));
             });
     },
 
@@ -1290,7 +1325,7 @@ const AppState = {
         apiGet('/api/logs', { lines: maxLines })
             .then(res => {
                 if (!res || !res.success) {
-                    container.innerHTML = '<div style="color: #f56c6c; text-align: center; padding: 20px;">加载日志失败</div>';
+                    container.innerHTML = i18n.t('log-load-fail-html');
                     return;
                 }
                 
@@ -1305,14 +1340,14 @@ const AppState = {
                     const sizeStr = fileSize < 1024 ? `${fileSize} B` : 
                                    fileSize < 1024 * 1024 ? `${(fileSize / 1024).toFixed(1)} KB` :
                                    `${(fileSize / 1024 / 1024).toFixed(2)} MB`;
-                    let infoText = `${lineCount} 行 | ${sizeStr}`;
-                    if (truncated) infoText += ' (部分显示)';
+                    let infoText = `${lineCount}${i18n.t('log-line-unit')}${sizeStr}`;
+                    if (truncated) infoText += i18n.t('log-truncated-suffix');
                     infoSpan.textContent = infoText;
                 }
                 
                 // 格式化并显示日志内容
                 if (!content || content.trim() === '') {
-                    container.innerHTML = '<div style="color: #909399; text-align: center; padding: 20px;">日志文件为空</div>';
+                    container.innerHTML = i18n.t('log-empty-html');
                 } else {
                     container.innerHTML = this._formatLogContent(content);
                     // 滚动到底部
@@ -1321,7 +1356,7 @@ const AppState = {
             })
             .catch(err => {
                 console.error('Load logs failed:', err);
-                container.innerHTML = '<div style="color: #f56c6c; text-align: center; padding: 20px;">加载日志失败</div>';
+                container.innerHTML = i18n.t('log-load-fail-html');
             });
     },
     
@@ -1382,31 +1417,31 @@ const AppState = {
      * 清空日志
      */
     clearLogs() {
-        if (!confirm('确定要清空所有设备日志吗？此操作不可恢复。')) return;
+        if (!confirm(i18n.t('log-clear-confirm-msg'))) return;
         
         const btn = document.getElementById('clear-logs-btn');
         if (btn) {
             btn.disabled = true;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 清空中...';
+            btn.innerHTML = i18n.t('log-clearing-html');
         }
         
         apiPost('/api/logs/clear', {})
             .then(res => {
                 if (res && res.success) {
-                    Notification.success('日志已清空', '操作成功');
+                    Notification.success(i18n.t('log-cleared-msg'), i18n.t('log-op-title'));
                     this.loadLogs();  // 重新加载
                 } else {
-                    Notification.error((res && res.error) || '清空日志失败', '操作失败');
+                    Notification.error((res && res.error) || i18n.t('log-op-fail'), i18n.t('log-op-fail'));
                 }
             })
             .catch(err => {
                 console.error('Clear logs failed:', err);
-                Notification.error('清空日志失败', '操作失败');
+                Notification.error(i18n.t('log-op-fail'), i18n.t('log-op-fail'));
             })
             .finally(() => {
                 if (btn) {
                     btn.disabled = false;
-                    btn.innerHTML = '<i class="fas fa-trash"></i> 清空日志';
+                    btn.innerHTML = i18n.t('log-clear-btn-html');
                 }
             });
     },
@@ -1455,7 +1490,7 @@ const AppState = {
                     if (infoSpan) {
                         const total = d.totalBytes ? (d.totalBytes / 1024 / 1024).toFixed(2) + ' MB' : 'N/A';
                         const used = d.usedBytes ? (d.usedBytes / 1024 / 1024).toFixed(2) + ' MB' : 'N/A';
-                        infoSpan.textContent = `总空间: ${total} | 已用: ${used}`;
+                        infoSpan.textContent = `${i18n.t('fs-space-prefix')}${total}${i18n.t('fs-space-used-prefix')}${used}`;
                     }
                 }
             })
@@ -1477,12 +1512,12 @@ const AppState = {
         const pathEl = document.getElementById('current-dir-path');
         if (pathEl) pathEl.textContent = path;
         
-        treeContainer.innerHTML = '<div style="color: #999;">加载中...</div>';
+        treeContainer.innerHTML = i18n.t('fs-loading-text');
         
         apiGet('/api/fs/list', { path: path })
             .then(res => {
                 if (!res || !res.success) {
-                    treeContainer.innerHTML = '<div style="color: #f56c6c;">加载失败</div>';
+                    treeContainer.innerHTML = i18n.t('fs-load-fail-text');
                     return;
                 }
                 
@@ -1510,7 +1545,7 @@ const AppState = {
                 });
                 
                 if (dirs.length === 0 && files.length === 0) {
-                    html = '<div style="color: #999; padding: 20px;">空目录</div>';
+                    html = i18n.t('fs-empty-dir-html');
                 }
                 
                 treeContainer.innerHTML = html;
@@ -1537,7 +1572,7 @@ const AppState = {
             })
             .catch(err => {
                 console.error('Load file tree failed:', err);
-                treeContainer.innerHTML = '<div style="color: #f56c6c;">加载失败</div>';
+                treeContainer.innerHTML = i18n.t('fs-load-fail-text');
             });
     },
     
@@ -1559,37 +1594,54 @@ const AppState = {
                         path.endsWith('.html') || path.endsWith('.js') || path.endsWith('.css');
         
         if (!editable) {
-            statusDiv.textContent = '此文件类型不支持编辑';
+            statusDiv.textContent = i18n.t('fs-file-type-unsupported');
             return;
         }
         
         pathSpan.textContent = path;
-        statusDiv.textContent = '加载中...';
+        statusDiv.textContent = i18n.t('fs-file-loading');
         
         apiGet('/api/fs/read', { path: path })
             .then(res => {
                 if (!res || !res.success) {
-                    statusDiv.textContent = '加载失败: ' + (res.error || '未知错误');
+                    statusDiv.textContent = i18n.t('fs-file-load-fail-prefix') + (res.error || i18n.t('fs-file-unknown-error'));
                     return;
                 }
                 
                 const data = res.data || {};
                 editor.value = data.content || '';
                 editor.disabled = false;
-                saveBtn.disabled = false;
                 closeBtn.disabled = false;
+
+                if (!AppState.currentUser.canManageFs) {
+                    // 无 fs.manage 权限：保存按钮永久禁用，编辑器只读
+                    saveBtn.disabled = true;
+                    editor.readOnly = true;
+                    editor.title = i18n.t('fs-no-perm-tip');
+                    editor.oninput = null;
+                } else {
+                    // 有权限：打开文件后保存按钮保持禁用，需编辑后才可保存
+                    saveBtn.disabled = true;
+                    editor.readOnly = false;
+                    editor.title = '';
+                    // 监听编辑，有改动后才启用保存
+                    editor.oninput = () => {
+                        saveBtn.disabled = false;
+                        this._currentFileModified = true;
+                    };
+                }
                 
                 const size = data.size < 1024 ? `${data.size} B` : 
                             data.size < 1024 * 1024 ? `${(data.size / 1024).toFixed(1)} KB` :
                             `${(data.size / 1024 / 1024).toFixed(2)} MB`;
-                statusDiv.textContent = `大小: ${size} | 就绪`;
+                statusDiv.textContent = `${i18n.t('fs-file-ready-prefix')}${size}${i18n.t('fs-file-ready-suffix')}`;
                 
                 this._currentFilePath = path;
                 this._currentFileModified = false;
             })
             .catch(err => {
                 console.error('Open file failed:', err);
-                statusDiv.textContent = '加载失败';
+                statusDiv.textContent = i18n.t('fs-file-load-fail');
             });
     },
     
@@ -1631,6 +1683,12 @@ const AppState = {
      */
     saveCurrentFile() {
         if (!this._currentFilePath) return;
+
+        // 权限二次校验
+        if (!AppState.currentUser.canManageFs) {
+            Notification.warning(i18n.t('fs-no-perm-tip'), i18n.t('fs-mgmt-title'));
+            return;
+        }
         
         const editor = document.getElementById('file-editor');
         const statusDiv = document.getElementById('file-status');
@@ -1639,24 +1697,24 @@ const AppState = {
         if (!editor || !statusDiv) return;
         
         const content = editor.value;
-        statusDiv.textContent = '保存中...';
+        statusDiv.textContent = i18n.t('fs-saving-text');
         saveBtn.disabled = true;
         
         apiPost('/api/fs/save', { path: this._currentFilePath, content: content })
             .then(res => {
                 if (res && res.success) {
-                    statusDiv.textContent = '保存成功';
+                    statusDiv.textContent = i18n.t('fs-save-ok-text');
                     this._currentFileModified = false;
-                    Notification.success('文件保存成功', '文件管理');
+                    Notification.success(i18n.t('fs-save-ok-msg'), i18n.t('fs-mgmt-title'));
                 } else {
-                    statusDiv.textContent = '保存失败: ' + (res.error || '未知错误');
-                    Notification.error(res.error || '保存失败', '文件管理');
+                    statusDiv.textContent = i18n.t('fs-save-fail-prefix') + (res.error || '');
+                    Notification.error(res.error || i18n.t('fs-save-fail-text'), i18n.t('fs-mgmt-title'));
                 }
             })
             .catch(err => {
                 console.error('Save file failed:', err);
-                statusDiv.textContent = '保存失败';
-                Notification.error('保存失败', '文件管理');
+                statusDiv.textContent = i18n.t('fs-save-fail-text');
+                Notification.error(i18n.t('fs-save-fail-text'), i18n.t('fs-mgmt-title'));
             })
             .finally(() => {
                 saveBtn.disabled = false;
@@ -1674,7 +1732,7 @@ const AppState = {
         const statusDiv = document.getElementById('file-status');
         
         if (this._currentFileModified) {
-            if (!confirm('文件已修改，是否保存？')) {
+            if (!confirm(i18n.t('fs-modified-confirm'))) {
                 return;
             }
             this.saveCurrentFile();
@@ -1683,8 +1741,11 @@ const AppState = {
         if (editor) {
             editor.value = '';
             editor.disabled = true;
+            editor.readOnly = false;
+            editor.title = '';
+            editor.oninput = null;  // 清除编辑监听
         }
-        if (pathSpan) pathSpan.textContent = '请选择文件';
+        if (pathSpan) pathSpan.textContent = i18n.t('fs-select-file-text');
         if (saveBtn) saveBtn.disabled = true;
         if (closeBtn) closeBtn.disabled = true;
         if (statusDiv) statusDiv.textContent = '';
@@ -1726,8 +1787,8 @@ const AppState = {
                 // 网络状态
                 const network = data.network || {};
                 const netStatus = network.connected ? 
-                    `<span style="color: #52c41a;">●</span> 已连接 (${network.ssid || 'N/A'})` : 
-                    '<span style="color: #f5222d;">●</span> 未连接';
+                    `<span style="color: #52c41a;">●</span> ${i18n.t('monitor-connected')} (${network.ssid || 'N/A'})` : 
+                    `<span style="color: #f5222d;">●</span> ${i18n.t('monitor-disconnected')}`;
                 this._setHtml('monitor-network-status', netStatus);
                 this._setText('monitor-ip', network.ipAddress || '--');
                 
@@ -1812,7 +1873,7 @@ const AppState = {
         apiGet('/api/network/config')
             .then(res => {
                 if (!res || !res.success) {
-                    Notification.error('加载网络配置失败', '网络设置');
+                    Notification.error(i18n.t('net-load-fail'), i18n.t('net-settings-title'));
                     return;
                 }
                 
@@ -1857,7 +1918,7 @@ const AppState = {
             })
             .catch(err => {
                 console.error('Load network config failed:', err);
-                Notification.error('加载网络配置失败', '网络设置');
+                Notification.error(i18n.t('net-load-fail'), i18n.t('net-settings-title'));
             });
     },
     
@@ -1886,7 +1947,7 @@ const AppState = {
         const originalText = submitBtn?.innerHTML;
         if (submitBtn) {
             submitBtn.disabled = true;
-            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 保存中...';
+            submitBtn.innerHTML = i18n.t('net-saving-html');
         }
         
         apiPut('/api/network/config', config)
@@ -1894,18 +1955,18 @@ const AppState = {
                 if (res && res.success) {
                     this._showMessage('wifi-success', true);
                     this._showMessage('wifi-error', false);
-                    Notification.success('网络配置保存成功', '网络设置');
+                    Notification.success(i18n.t('net-save-ok'), i18n.t('net-settings-title'));
                 } else {
                     this._showMessage('wifi-success', false);
                     this._showMessage('wifi-error', true);
-                    Notification.error(res?.error || '保存失败', '网络设置');
+                    Notification.error(res?.error || i18n.t('net-save-fail'), i18n.t('net-settings-title'));
                 }
             })
             .catch(err => {
                 console.error('Save network config failed:', err);
                 this._showMessage('wifi-success', false);
                 this._showMessage('wifi-error', true);
-                Notification.error('保存失败', '网络设置');
+                Notification.error(i18n.t('net-save-fail'), i18n.t('net-settings-title'));
             })
             .finally(() => {
                 if (submitBtn) {
@@ -1922,7 +1983,7 @@ const AppState = {
         const refreshBtn = document.getElementById('net-status-refresh-btn');
         if (refreshBtn) {
             refreshBtn.disabled = true;
-            refreshBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 刷新中...';
+            refreshBtn.innerHTML = i18n.t('net-refreshing-html');
         }
 
         const setText = (id, val) => {
@@ -1937,18 +1998,18 @@ const AppState = {
         apiGet('/api/network/status')
             .then(res => {
                 if (!res || !res.success) {
-                    Notification.error('获取网络状态失败', '网络状态');
+                    Notification.error(i18n.t('net-status-load-fail'), i18n.t('net-status-title-msg'));
                     return;
                 }
                 const d = res.data || {};
 
                 // 状态徽章
                 const statusMap = {
-                    connected:    '<span class="badge badge-success">已连接</span>',
-                    disconnected: '<span class="badge badge-danger">未连接</span>',
-                    connecting:   '<span class="badge badge-warning">连接中...</span>',
-                    ap_mode:      '<span class="badge badge-primary">AP模式</span>',
-                    failed:       '<span class="badge badge-danger">连接失败</span>',
+                    connected:    `<span class="badge badge-success">${i18n.t('net-status-connected')}</span>`,
+                    disconnected: `<span class="badge badge-danger">${i18n.t('net-status-disconnected')}</span>`,
+                    connecting:   `<span class="badge badge-warning">${i18n.t('net-status-connecting')}</span>`,
+                    ap_mode:      `<span class="badge badge-primary">${i18n.t('net-status-ap')}</span>`,
+                    failed:       `<span class="badge badge-danger">${i18n.t('net-status-failed')}</span>`,
                 };
                 setHtml('ns-status', statusMap[d.status] || `<span class="badge badge-info">${d.status || '--'}</span>`);
 
@@ -1971,28 +2032,32 @@ const AppState = {
                 // AP 信息
                 setText('ns-ap-ssid', d.apSSID);
                 setText('ns-ap-ip', d.apIPAddress);
-                setText('ns-ap-clients', d.apClientCount !== undefined ? d.apClientCount + ' 台' : '--');
+                setText('ns-ap-clients', d.apClientCount !== undefined ? d.apClientCount + i18n.t('net-ap-clients-unit') : '--');
 
                 // 连接统计
-                const modeLabel = { STA: '仅客户端 (STA)', AP: '仅热点 (AP)', 'AP+STA': '客户端+热点 (AP+STA)' };
+                const modeLabel = { 
+                    STA: i18n.t('net-mode-sta'), 
+                    AP: i18n.t('net-mode-ap'), 
+                    'AP+STA': i18n.t('net-mode-apsta')
+                };
                 setText('ns-mode', modeLabel[d.mode] || d.mode || '--');
-                setText('ns-mdns', d.enableMDNS ? (d.customDomain ? d.customDomain + '.local' : '已启用') : '禁用');
-                setText('ns-reconnect', d.reconnectAttempts !== undefined ? d.reconnectAttempts + ' 次' : '--');
+                setText('ns-mdns', d.enableMDNS ? (d.customDomain ? d.customDomain + '.local' : i18n.t('net-mdns-enabled')) : i18n.t('net-mdns-disabled'));
+                setText('ns-reconnect', d.reconnectAttempts !== undefined ? d.reconnectAttempts + i18n.t('net-reconnect-unit') : '--');
                 setHtml('ns-internet', d.internetAvailable
-                    ? '<span class="badge badge-success">可访问</span>'
-                    : '<span class="badge badge-danger">不可访问</span>');
+                    ? `<span class="badge badge-success">${i18n.t('net-accessible')}</span>`
+                    : `<span class="badge badge-danger">${i18n.t('net-inaccessible')}</span>`);
                 setHtml('ns-conflict', d.conflictDetected
-                    ? '<span class="badge badge-danger">已检测到冲突</span>'
-                    : '<span class="badge badge-success">无冲突</span>');
+                    ? `<span class="badge badge-danger">${i18n.t('net-conflict-yes')}</span>`
+                    : `<span class="badge badge-success">${i18n.t('net-no-conflict')}</span>`);
             })
             .catch(err => {
                 console.error('Load network status failed:', err);
-                Notification.error('获取网络状态失败', '网络状态');
+                Notification.error(i18n.t('net-status-load-fail'), i18n.t('net-status-title-msg'));
             })
             .finally(() => {
                 if (refreshBtn) {
                     refreshBtn.disabled = false;
-                    refreshBtn.innerHTML = '<i class="fas fa-sync-alt"></i> 刷新';
+                    refreshBtn.innerHTML = i18n.t('net-refresh-html');
                 }
             });
     },
@@ -2053,12 +2118,12 @@ const AppState = {
             .then(res => {
                 if (res && res.success) {
                     this._showMessage('dev-basic-success', true);
-                    Notification.success('设备信息保存成功', '设备配置');
+                    Notification.success(i18n.t('dev-save-basic-ok'), i18n.t('dev-config-title'));
                 } else {
-                    Notification.error(res?.error || '保存失败', '设备配置');
+                    Notification.error(res?.error || i18n.t('dev-save-fail'), i18n.t('dev-config-title'));
                 }
             })
-            .catch(() => Notification.error('保存失败', '设备配置'));
+            .catch(() => Notification.error(i18n.t('dev-save-fail'), i18n.t('dev-config-title')));
     },
 
     saveDeviceNTP() {
@@ -2076,18 +2141,18 @@ const AppState = {
             .then(res => {
                 if (res && res.success) {
                     this._showMessage('dev-ntp-success', true);
-                    Notification.success('NTP配置保存成功', '设备配置');
+                    Notification.success(i18n.t('dev-save-ntp-ok'), i18n.t('dev-config-title'));
                     this.loadDeviceTime();
                 } else {
-                    Notification.error(res?.error || '保存失败', 'NTP配置');
+                    Notification.error(res?.error || i18n.t('dev-save-fail'), i18n.t('dev-ntp-config-title'));
                 }
             })
-            .catch(() => Notification.error('保存失败', 'NTP配置'));
+            .catch(() => Notification.error(i18n.t('dev-save-fail'), i18n.t('dev-ntp-config-title')));
     },
 
     loadDeviceTime() {
         const btn = document.getElementById('dev-time-refresh-btn');
-        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 刷新中...'; }
+        if (btn) { btn.disabled = true; btn.innerHTML = i18n.t('dev-refreshing-html'); }
         apiGet('/api/device/time')
             .then(res => {
                 if (!res || !res.success) return;
@@ -2096,39 +2161,39 @@ const AppState = {
                 const setHtml = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
                 setEl('dev-time-datetime', d.datetime);
                 setHtml('dev-time-synced', d.synced
-                    ? '<span class="badge badge-success">已同步</span>'
-                    : '<span class="badge badge-warning">未同步 (等待连网)</span>');
+                    ? i18n.t('dev-time-synced-html')
+                    : i18n.t('dev-time-not-synced-html'));
                 if (d.uptime !== undefined) {
                     const ms = d.uptime;
                     const h  = Math.floor(ms / 3600000);
                     const m  = Math.floor((ms % 3600000) / 60000);
                     const s  = Math.floor((ms % 60000) / 1000);
-                    setEl('dev-time-uptime', `${h}时 ${m}分 ${s}秒`);
+                    setEl('dev-time-uptime', `${h}${i18n.t('dev-time-uptime-unit')}${m}${i18n.t('dev-time-uptime-min')}${s}${i18n.t('dev-time-uptime-sec')}`);
                 }
             })
             .catch(err => console.error('Load device time failed:', err))
             .finally(() => {
-                if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-sync-alt"></i> 刷新'; }
+                if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-refresh-html'); }
             });
     },
 
     restartDevice() {
         const delay = document.getElementById('dev-restart-delay')?.value || '3';
         const btn   = document.getElementById('dev-restart-btn');
-        if (!confirm(`确定要重启设备？将在 ${delay} 秒后重启。`)) return;
-        if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 处理中...'; }
+        if (!confirm(`${i18n.t('dev-restart-confirm-prefix')}${delay}${i18n.t('dev-restart-confirm-suffix')}`)) return;
+        if (btn) { btn.disabled = true; btn.innerHTML = i18n.t('dev-restarting-html'); }
         apiPost('/api/system/restart', { delay })
             .then(res => {
                 if (res && (res.success || res.message)) {
-                    Notification.warning(`设备将在 ${delay} 秒后重启，请稍后刷新页面。`, '设备重启');
+                    Notification.warning(`${i18n.t('dev-restart-msg-prefix')}${delay}${i18n.t('dev-restart-msg-suffix')}`, i18n.t('dev-restart-title'));
                 } else {
-                    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-power-off"></i> 立即重启'; }
-                    Notification.error('重启指令发送失败', '设备重启');
+                    if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-restart-btn-html'); }
+                    Notification.error(i18n.t('dev-restart-fail'), i18n.t('dev-restart-title'));
                 }
             })
             .catch(() => {
-                if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-power-off"></i> 立即重启'; }
-                Notification.error('重启指令发送失败', '设备重启');
+                if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-restart-btn-html'); }
+                Notification.error(i18n.t('dev-restart-fail'), i18n.t('dev-restart-title'));
             });
     },
 
@@ -2137,76 +2202,107 @@ const AppState = {
      */
     scanWifiNetworks() {
         const scanBtn = document.getElementById('wifi-scan-btn');
-        const resultsDiv = document.getElementById('wifi-scan-results');
+        const modal = document.getElementById('wifi-modal');
+        const modalBody = document.getElementById('wifi-modal-body');
         
-        if (!scanBtn || !resultsDiv) return;
+        if (!modal || !modalBody) return;
         
-        // 显示加载状态
-        scanBtn.disabled = true;
-        scanBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 扫描中...';
-        resultsDiv.style.display = 'block';
-        resultsDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;"><i class="fas fa-spinner fa-spin"></i> 正在扫描...</div>';
+        // 打开弹窗，显示扫描中
+        modal.style.display = 'flex';
+        modalBody.innerHTML = i18n.t('wifi-scanning-result');
         
-        apiGet('/api/network/scan')
+        if (scanBtn) {
+            scanBtn.disabled = true;
+            scanBtn.innerHTML = i18n.t('wifi-scanning-html');
+        }
+
+        // 绑定关闭按钮（每次打开重新绑，避免重复）
+        const closeBtn = document.getElementById('close-wifi-modal');
+        if (closeBtn) {
+            closeBtn.onclick = () => { modal.style.display = 'none'; };
+        }
+        modal.onclick = (e) => {
+            if (e.target === modal) modal.style.display = 'none';
+        };
+        
+        apiGet('/api/wifi/scan')
             .then(res => {
                 if (!res || !res.success) {
-                    resultsDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #f56c6c;">扫描失败</div>';
+                    modalBody.innerHTML = i18n.t('wifi-scan-fail');
                     return;
                 }
                 
                 const networks = res.data || [];
                 
                 if (networks.length === 0) {
-                    resultsDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">未找到WiFi网络</div>';
+                    modalBody.innerHTML = i18n.t('wifi-no-network');
                     return;
                 }
                 
                 // 按信号强度排序
                 networks.sort((a, b) => b.rssi - a.rssi);
                 
-                let html = '';
-                networks.forEach(net => {
+                let html = '<div class="wifi-list-container">';
+                networks.forEach((net) => {
                     const signalClass = net.rssi > -50 ? 'strong' : net.rssi > -70 ? 'medium' : 'weak';
-                    const signalIcon = net.rssi > -50 ? 'fas fa-signal' : net.rssi > -70 ? 'fas fa-signal' : 'fas fa-signal';
-                    const signalColor = net.rssi > -50 ? '#52c41a' : net.rssi > -70 ? '#faad14' : '#f5222d';
-                    const encryptIcon = net.encryption > 0 ? '<i class="fas fa-lock" style="color: #52c41a;"></i>' : '<i class="fas fa-lock-open" style="color: #999;"></i>';
+                    const encryptIcon = net.encryption > 0
+                        ? '<i class="fas fa-lock" style="color: #52c41a;"></i>'
+                        : '<i class="fas fa-lock-open" style="color: #bbb;"></i>';
+                    const securityType = net.encryption > 0 ? 'wpa' : 'none';
                     
                     html += `
-                        <div class="wifi-item" style="padding: 10px; border-bottom: 1px solid #eee; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" data-ssid="${net.ssid}">
-                            <div style="flex: 1;">
-                                <div style="font-weight: bold; color: #333;">${net.ssid}</div>
-                                <div style="font-size: 12px; color: #999;">
-                                    ${encryptIcon} ${net.encryption > 0 ? '加密' : '开放'} | 信道: ${net.channel}
+                        <div class="wifi-item" data-ssid="${net.ssid}" data-encryption="${securityType}">
+                            <div class="wifi-info">
+                                <div class="wifi-ssid">${net.ssid}</div>
+                                <div class="wifi-meta">
+                                    ${encryptIcon} ${net.encryption > 0 ? i18n.t('wifi-encrypted') : i18n.t('wifi-open')} | ${i18n.t('wifi-channel-prefix')}${net.channel}
                                 </div>
                             </div>
-                            <div style="text-align: right;">
-                                <div style="color: ${signalColor};">
-                                    <i class="${signalIcon}"></i> ${net.rssi} dBm
-                                </div>
+                            <div class="wifi-signal ${signalClass}">
+                                <i class="fas fa-signal"></i> ${net.rssi} dBm
                             </div>
                         </div>
                     `;
                 });
+                html += '</div>';
                 
-                resultsDiv.innerHTML = html;
+                modalBody.innerHTML = html;
                 
-                // 绑定点击事件
-                resultsDiv.querySelectorAll('.wifi-item').forEach(item => {
+                // 绑定点击选择事件
+                modalBody.querySelectorAll('.wifi-item').forEach(item => {
                     item.addEventListener('click', (e) => {
                         const ssid = e.currentTarget.dataset.ssid;
-                        document.getElementById('wifi-ssid').value = ssid;
-                        resultsDiv.style.display = 'none';
-                        Notification.success(`已选择: ${ssid}`, 'WiFi扫描');
+                        const encryption = e.currentTarget.dataset.encryption;
+                        
+                        // 填充 SSID
+                        const ssidInput = document.getElementById('wifi-ssid');
+                        if (ssidInput) ssidInput.value = ssid;
+                        
+                        // 填充安全类型
+                        const securitySelect = document.getElementById('wifi-security');
+                        if (securitySelect) {
+                            securitySelect.value = encryption === 'none' ? '0' : '1';
+                        }
+                        
+                        // 清空密码字段（安全）
+                        const passwordInput = document.getElementById('wifi-password');
+                        if (passwordInput) passwordInput.value = '';
+                        
+                        // 关闭弹窗并提示
+                        modal.style.display = 'none';
+                        Notification.success(`${i18n.t('wifi-selected-prefix')}${ssid}`, i18n.t('wifi-scan-title'));
                     });
                 });
             })
             .catch(err => {
                 console.error('WiFi scan failed:', err);
-                resultsDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #f56c6c;">扫描失败</div>';
+                modalBody.innerHTML = i18n.t('wifi-scan-fail');
             })
             .finally(() => {
-                scanBtn.disabled = false;
-                scanBtn.innerHTML = '<i class="fas fa-search"></i> 扫描网络';
+                if (scanBtn) {
+                    scanBtn.disabled = false;
+                    scanBtn.innerHTML = i18n.t('wifi-scan-btn-html');
+                }
             });
     },
     
@@ -2394,7 +2490,7 @@ const AppState = {
                 if (res && res.success) {
                     // 清除缓存，下次重新加载
                     this._protocolConfig = null;
-                    Notification.success(`${protocolName}配置保存成功！`, '通信协议');
+                    Notification.success(`${protocolName} ${i18n.t('protocol-save-ok-suffix')}`, i18n.t('protocol-config-title'));
                     
                     // 显示成功消息
                     const form = document.getElementById(formId);
@@ -2404,12 +2500,12 @@ const AppState = {
                         setTimeout(() => { ok.style.display = 'none'; }, 3000);
                     }
                 } else {
-                    Notification.error(res?.message || '保存失败', '通信协议');
+                    Notification.error(res?.message || i18n.t('protocol-save-fail'), i18n.t('protocol-title'));
                 }
             })
             .catch(err => {
-                console.error('保存协议配置失败:', err);
-                Notification.error('保存协议配置失败', '通信协议');
+                console.error('saveProtocolConfig error:', err);
+                Notification.error(i18n.t('protocol-save-fail'), i18n.t('protocol-title'));
             });
     },
     
@@ -2422,35 +2518,35 @@ const AppState = {
         const tbody = document.getElementById('gpio-table-body');
         if (!tbody) return;
         
-        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #999;">加载中...</td></tr>';
+        tbody.innerHTML = i18n.t('gpio-loading-html');
         
         apiGet('/api/gpio/config')
             .then(res => {
                 if (!res || !res.success) {
-                    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #f56c6c;">加载失败</td></tr>';
+                    tbody.innerHTML = i18n.t('gpio-fail-html');
                     return;
                 }
                 
                 const pins = res.data?.pins || [];
                 
                 if (pins.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #999;">暂无GPIO配置</td></tr>';
+                    tbody.innerHTML = i18n.t('gpio-empty-html');
                     return;
                 }
                 
                 let html = '';
                 pins.forEach(pin => {
                     const modeNames = {
-                        1: '数字输入', 2: '数字输出', 3: '数字输入(上拉)',
-                        4: '数字输入(下拉)', 5: '模拟输入', 6: '模拟输出', 7: 'PWM输出'
+                        1: i18n.t('gpio-mode-1'), 2: i18n.t('gpio-mode-2'), 3: i18n.t('gpio-mode-3'),
+                        4: i18n.t('gpio-mode-4'), 5: i18n.t('gpio-mode-5'), 6: i18n.t('gpio-mode-6'), 7: i18n.t('gpio-mode-7')
                     };
-                    const modeName = modeNames[pin.mode] || '未知';
-                    const stateText = pin.state === 1 ? '高电平' : '低电平';
+                    const modeName = modeNames[pin.mode] || i18n.t('gpio-status-unknown');
+                    const stateText = pin.state === 1 ? i18n.t('gpio-state-high') : i18n.t('gpio-state-low');
                     const stateColor = pin.state === 1 ? '#52c41a' : '#999';
                     // 仅输出模式才支持切换: 2=数字输出, 6=模拟输出, 7=PWM
                     const canToggle = (pin.mode === 2 || pin.mode === 6 || pin.mode === 7);
                     const toggleBtn = canToggle
-                        ? `<button class="pure-button pure-button-small" onclick="app.toggleGpio(${pin.pin})">切换</button>`
+                        ? `<button class="pure-button pure-button-small" onclick="app.toggleGpio(${pin.pin})">${i18n.t('gpio-toggle')}</button>`
                         : '';
                     
                     html += `
@@ -2460,9 +2556,9 @@ const AppState = {
                             <td>${modeName}</td>
                             <td style="color: ${stateColor};">${stateText}</td>
                             <td>
-                                <button class="pure-button pure-button-small" onclick="app.editGpio(${pin.pin}, '${pin.name}', ${pin.mode}, ${pin.state || 0})">编辑</button>
+                                <button class="pure-button pure-button-small" onclick="app.editGpio(${pin.pin}, '${pin.name}', ${pin.mode}, ${pin.state || 0})">${i18n.t('gpio-edit')}</button>
                                 ${toggleBtn}
-                                <button class="pure-button pure-button-small" style="background: #ff4d4f; color: white;" onclick="app.deleteGpio(${pin.pin})">删除</button>
+                                <button class="pure-button pure-button-small" style="background: #ff4d4f; color: white;" onclick="app.deleteGpio(${pin.pin})">${i18n.t('gpio-delete')}</button>
                             </td>
                         </tr>
                     `;
@@ -2472,7 +2568,7 @@ const AppState = {
             })
             .catch(err => {
                 console.error('Load GPIO list failed:', err);
-                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #f56c6c;">加载失败</td></tr>';
+                tbody.innerHTML = i18n.t('gpio-fail-html');
             });
     },
     
@@ -2490,7 +2586,7 @@ const AppState = {
         document.getElementById('gpio-error').style.display = 'none';
         
         if (isEdit && pinData) {
-            title.textContent = '编辑GPIO';
+            title.textContent = i18n.t('gpio-edit-modal-title');
             document.getElementById('gpio-original-pin').value = pinData.pin;
             document.getElementById('gpio-pin-input').value = pinData.pin;
             document.getElementById('gpio-name-input').value = pinData.name;
@@ -2498,7 +2594,7 @@ const AppState = {
             document.getElementById('gpio-default-input').value = pinData.state || 0;
             document.getElementById('gpio-pin-input').disabled = true;
         } else {
-            title.textContent = '新增GPIO';
+            title.textContent = i18n.t('gpio-add-modal-title');
             document.getElementById('gpio-original-pin').value = '';
             document.getElementById('gpio-pin-input').disabled = false;
         }
@@ -2526,7 +2622,7 @@ const AppState = {
         const errEl = document.getElementById('gpio-error');
         
         if (!pin || !name) {
-            errEl.textContent = '请填写引脚号和名称';
+            errEl.textContent = i18n.t('gpio-validate-pin-name');
             errEl.style.display = 'block';
             return;
         }
@@ -2537,7 +2633,7 @@ const AppState = {
         const saveBtn = document.getElementById('save-gpio-btn');
         const origText = saveBtn.textContent;
         saveBtn.disabled = true;
-        saveBtn.textContent = '保存中...';
+        saveBtn.textContent = i18n.t('gpio-saving-text');
         
         const data = { pin, name, mode, defaultValue };
         
@@ -2546,16 +2642,16 @@ const AppState = {
                 if (res && res.success) {
                     this.closeGpioModal();
                     this.loadGpioList();
-                    Notification.success(isEdit ? 'GPIO更新成功' : 'GPIO添加成功', 'GPIO配置');
+                    Notification.success(isEdit ? i18n.t('gpio-update-ok') : i18n.t('gpio-add-ok'), i18n.t('gpio-config-title'));
                 } else {
-                    errEl.textContent = res?.error || '保存失败';
+                    errEl.textContent = res?.error || i18n.t('gpio-save-fail');
                     errEl.style.display = 'block';
                 }
             })
             .catch(err => {
                 console.error('Save GPIO failed:', err);
-                errEl.textContent = '保存失败，请检查连接';
-                errEl.style.display = 'block';
+                errEl.textContent = i18n.t('gpio-save-fail');
+                errEl.style.display = 'block;';
             })
             .finally(() => {
                 saveBtn.disabled = false;
@@ -2574,20 +2670,20 @@ const AppState = {
      * 删除GPIO
      */
     deleteGpio(pin) {
-        if (!confirm(`确定要删除 GPIO ${pin} 吗？`)) return;
+        if (!confirm(`${i18n.t('gpio-confirm-delete')}${pin} ${i18n.t('gpio-confirm-suffix')}`)) return;
         
         apiPost('/api/gpio/delete', { pin: String(pin) })
             .then(res => {
                 if (res && res.success) {
-                    Notification.success(`GPIO ${pin} 已删除`, 'GPIO配置');
+                    Notification.success(`GPIO ${pin}${i18n.t('gpio-deleted-prefix')}`, i18n.t('gpio-config-title'));
                     this.loadGpioList();
                 } else {
-                    Notification.error(res?.error || '删除失败', 'GPIO配置');
+                    Notification.error(res?.error || i18n.t('gpio-toggle-fail'), i18n.t('gpio-config-title'));
                 }
             })
             .catch(err => {
                 console.error('Delete GPIO failed:', err);
-                Notification.error('删除失败，请检查连接', 'GPIO配置');
+                Notification.error(i18n.t('gpio-delete-fail'), i18n.t('gpio-config-title'));
             });
     },
     
@@ -2598,15 +2694,15 @@ const AppState = {
         apiPost('/api/gpio/write', { pin: String(pin), state: 'toggle' })
             .then(res => {
                 if (res && res.success) {
-                    Notification.success('状态已切换', 'GPIO配置');
+                    Notification.success(i18n.t('gpio-toggle-ok'), i18n.t('gpio-config-title'));
                     this.loadGpioList();
                 } else {
-                    Notification.error(res?.error || '切换失败', 'GPIO配置');
+                    Notification.error(res?.error || i18n.t('gpio-toggle-fail'), i18n.t('gpio-config-title'));
                 }
             })
             .catch(err => {
                 console.error('Toggle GPIO failed:', err);
-                Notification.error('切换失败', 'GPIO配置');
+                Notification.error(i18n.t('gpio-toggle-fail'), i18n.t('gpio-config-title'));
             });
     },
     
@@ -2640,10 +2736,10 @@ const AppState = {
                 const statusEl = document.getElementById('provision-status');
                 if (statusEl) {
                     if (d.active) {
-                        statusEl.textContent = '配网中';
+                        statusEl.textContent = i18n.t('provision-active');
                         statusEl.className = 'badge badge-success';
                     } else {
-                        statusEl.textContent = '未启动';
+                        statusEl.textContent = i18n.t('provision-inactive');
                         statusEl.className = 'badge badge-info';
                     }
                 }
@@ -2707,13 +2803,13 @@ const AppState = {
             .then(res => {
                 if (res && res.success) {
                     this._showMessage('provision-success', true);
-                    Notification.success('AP配网配置保存成功', 'AP配网');
+                    Notification.success(i18n.t('provision-save-ok'), i18n.t('provision-title'));
                 } else {
-                    Notification.error(res?.message || '保存失败', 'AP配网');
+                    Notification.error(res?.message || i18n.t('dev-save-fail'), i18n.t('provision-title'));
                 }
             })
             .catch(err => {
-                Notification.error('保存失败: ' + (err.message || err), 'AP配网');
+                Notification.error(i18n.t('provision-start-fail') + ': ' + (err.message || err), i18n.t('provision-title'));
             });
     },
 
@@ -2724,24 +2820,24 @@ const AppState = {
         const startBtn = document.getElementById('provision-start-btn');
         if (startBtn) {
             startBtn.disabled = true;
-            startBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 启动中...';
+            startBtn.innerHTML = i18n.t('provision-starting-html');
         }
 
         apiPost('/api/provision/start', {})
             .then(res => {
                 if (res && res.success) {
-                    Notification.success(`配网热点已启动: ${res.data?.apSSID || ''}`, 'AP配网');
+                    Notification.success(`${i18n.t('provision-start-ok-prefix')}${res.data?.apSSID || ''}`, i18n.t('provision-title'));
                     this.loadProvisionStatus();
                 } else {
-                    Notification.error(res?.message || '启动失败', 'AP配网');
+                    Notification.error(res?.message || i18n.t('provision-start-fail'), i18n.t('provision-title'));
                 }
             })
             .catch(err => {
-                Notification.error('启动失败: ' + (err.message || err), 'AP配网');
+                Notification.error(i18n.t('provision-start-fail') + ': ' + (err.message || err), i18n.t('provision-title'));
             })
             .finally(() => {
                 if (startBtn) {
-                    startBtn.innerHTML = '<i class="fas fa-play"></i> 启动配网';
+                    startBtn.innerHTML = i18n.t('provision-start-html');
                     // 按钮状态由 loadProvisionStatus 更新
                 }
             });
@@ -2754,24 +2850,24 @@ const AppState = {
         const stopBtn = document.getElementById('provision-stop-btn');
         if (stopBtn) {
             stopBtn.disabled = true;
-            stopBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 停止中...';
+            stopBtn.innerHTML = i18n.t('provision-stopping-html');
         }
 
         apiPost('/api/provision/stop', {})
             .then(res => {
                 if (res && res.success) {
-                    Notification.success('配网热点已停止', 'AP配网');
+                    Notification.success(i18n.t('provision-stop-ok'), i18n.t('provision-title'));
                     this.loadProvisionStatus();
                 } else {
-                    Notification.error(res?.message || '停止失败', 'AP配网');
+                    Notification.error(res?.message || i18n.t('provision-stop-fail'), i18n.t('provision-title'));
                 }
             })
             .catch(err => {
-                Notification.error('停止失败: ' + (err.message || err), 'AP配网');
+                Notification.error(i18n.t('provision-stop-fail') + ': ' + (err.message || err), i18n.t('provision-title'));
             })
             .finally(() => {
                 if (stopBtn) {
-                    stopBtn.innerHTML = '<i class="fas fa-stop"></i> 停止配网';
+                    stopBtn.innerHTML = i18n.t('provision-stop-html');
                 }
             });
     },
@@ -2795,14 +2891,14 @@ const AppState = {
                 const stopBtn = document.getElementById('ble-provision-stop-btn');
 
                 if (d.active) {
-                    if (badge) { badge.className = 'status-badge status-online'; badge.textContent = '配网中'; }
+                    if (badge) { badge.className = 'status-badge status-online'; badge.textContent = i18n.t('ble-active'); }
                     if (deviceName) deviceName.textContent = d.deviceName || '--';
                     if (remainingWrap) remainingWrap.style.display = 'flex';
-                    if (remaining) remaining.textContent = (d.remainingTime || 0) + '秒';
+                    if (remaining) remaining.textContent = (d.remainingTime || 0) + i18n.t('ble-remaining-unit');
                     if (startBtn) startBtn.style.display = 'none';
                     if (stopBtn) { stopBtn.style.display = 'inline-block'; stopBtn.disabled = false; }
                 } else {
-                    if (badge) { badge.className = 'status-badge status-offline'; badge.textContent = '未启动'; }
+                    if (badge) { badge.className = 'status-badge status-offline'; badge.textContent = i18n.t('ble-inactive'); }
                     if (deviceName) deviceName.textContent = '--';
                     if (remainingWrap) remainingWrap.style.display = 'none';
                     if (startBtn) { startBtn.style.display = 'inline-block'; startBtn.disabled = false; }
@@ -2852,13 +2948,13 @@ const AppState = {
             .then(res => {
                 if (res && res.success) {
                     this._showMessage('ble-provision-success', true);
-                    Notification.success('蓝牙配网配置保存成功', '蓝牙配网');
+                    Notification.success(i18n.t('ble-save-ok'), i18n.t('ble-title'));
                 } else {
-                    Notification.error(res?.message || '保存失败', '蓝牙配网');
+                    Notification.error(res?.message || i18n.t('dev-save-fail'), i18n.t('ble-title'));
                 }
             })
             .catch(err => {
-                Notification.error('保存失败: ' + (err.message || err), '蓝牙配网');
+                Notification.error(i18n.t('ble-start-fail') + ': ' + (err.message || err), i18n.t('ble-title'));
             });
     },
 
@@ -2869,24 +2965,24 @@ const AppState = {
         const startBtn = document.getElementById('ble-provision-start-btn');
         if (startBtn) {
             startBtn.disabled = true;
-            startBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 启动中...';
+            startBtn.innerHTML = i18n.t('ble-starting-html');
         }
 
         apiPost('/api/ble/provision/start', {})
             .then(res => {
                 if (res && res.success) {
-                    Notification.success(`蓝牙配网已启动: ${res.data?.deviceName || ''}`, '蓝牙配网');
+                    Notification.success(i18n.t('ble-start-ok-prefix') + (res.data?.deviceName || ''), i18n.t('ble-title'));
                     this.loadBLEProvisionStatus();
                 } else {
-                    Notification.error(res?.message || '启动失败', '蓝牙配网');
+                    Notification.error(res?.message || i18n.t('ble-start-fail'), i18n.t('ble-title'));
                 }
             })
             .catch(err => {
-                Notification.error('启动失败: ' + (err.message || err), '蓝牙配网');
+                Notification.error(i18n.t('ble-start-fail') + ': ' + (err.message || err), i18n.t('ble-title'));
             })
             .finally(() => {
                 if (startBtn) {
-                    startBtn.innerHTML = '<i class="fas fa-play"></i> 启动蓝牙配网';
+                    startBtn.innerHTML = i18n.t('ble-start-html');
                 }
             });
     },
@@ -2898,24 +2994,24 @@ const AppState = {
         const stopBtn = document.getElementById('ble-provision-stop-btn');
         if (stopBtn) {
             stopBtn.disabled = true;
-            stopBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 停止中...';
+            stopBtn.innerHTML = i18n.t('ble-stopping-html');
         }
 
         apiPost('/api/ble/provision/stop', {})
             .then(res => {
                 if (res && res.success) {
-                    Notification.success('蓝牙配网已停止', '蓝牙配网');
+                    Notification.success(i18n.t('ble-stop-ok'), i18n.t('ble-title'));
                     this.loadBLEProvisionStatus();
                 } else {
-                    Notification.error(res?.message || '停止失败', '蓝牙配网');
+                    Notification.error(res?.message || i18n.t('ble-stop-fail'), i18n.t('ble-title'));
                 }
             })
             .catch(err => {
-                Notification.error('停止失败: ' + (err.message || err), '蓝牙配网');
+                Notification.error(i18n.t('ble-stop-fail') + ': ' + (err.message || err), i18n.t('ble-title'));
             })
             .finally(() => {
                 if (stopBtn) {
-                    stopBtn.innerHTML = '<i class="fas fa-stop"></i> 停止蓝牙配网';
+                    stopBtn.innerHTML = i18n.t('ble-stop-html');
                 }
             });
     },
@@ -2936,10 +3032,10 @@ const AppState = {
                 const progressText = document.getElementById('ota-progress-text');
                 
                 if (res.status === 'OTA ready') {
-                    if (badge) { badge.className = 'status-badge status-online'; badge.textContent = '就绪'; }
+                    if (badge) { badge.className = 'status-badge status-online'; badge.textContent = i18n.t('ota-ready'); }
                     if (progressWrap) progressWrap.style.display = 'none';
                 } else if (res.progress > 0 && res.progress < 100) {
-                    if (badge) { badge.className = 'status-badge status-warning'; badge.textContent = '升级中'; }
+                    if (badge) { badge.className = 'status-badge status-warning'; badge.textContent = i18n.t('ota-in-progress'); }
                     if (progressWrap) progressWrap.style.display = 'block';
                     if (progressBar) progressBar.style.width = res.progress + '%';
                     if (progressText) progressText.textContent = res.progress + '%';
@@ -2978,19 +3074,19 @@ const AppState = {
         const url = document.getElementById('ota-url')?.value || '';
         
         if (!url) {
-            Notification.error('请输入固件下载地址', 'OTA升级');
+            Notification.error(i18n.t('ota-url-empty'), i18n.t('ota-title'));
             return;
         }
         
         if (!url.startsWith('http://') && !url.startsWith('https://')) {
-            Notification.error('URL必须以http://或https://开头', 'OTA升级');
+            Notification.error(i18n.t('ota-url-invalid'), i18n.t('ota-title'));
             return;
         }
         
         const btn = document.getElementById('ota-url-btn');
         if (btn) {
             btn.disabled = true;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 下载中...';
+            btn.innerHTML = i18n.t('ota-downloading-html');
         }
         
         // 显示进度条
@@ -3000,22 +3096,22 @@ const AppState = {
         apiPost('/api/ota/url', { url })
             .then(res => {
                 if (res && res.success) {
-                    Notification.success('开始从URL下载固件并升级', 'OTA升级');
+                    Notification.success(i18n.t('ota-start-ok'), i18n.t('ota-title'));
                     // 开始轮询状态
                     this._pollOtaProgress();
                 } else {
-                    Notification.error(res?.message || '启动失败', 'OTA升级');
+                    Notification.error(res?.message || i18n.t('ota-start-fail'), i18n.t('ota-title'));
                     if (progressWrap) progressWrap.style.display = 'none';
                 }
             })
             .catch(err => {
-                Notification.error('启动失败: ' + (err.message || err), 'OTA升级');
+                Notification.error(i18n.t('ota-start-fail') + ': ' + (err.message || err), i18n.t('ota-title'));
                 if (progressWrap) progressWrap.style.display = 'none';
             })
             .finally(() => {
                 if (btn) {
                     btn.disabled = false;
-                    btn.innerHTML = '<i class="fas fa-download"></i> 开始在线升级';
+                    btn.innerHTML = i18n.t('ota-start-url-html');
                 }
             });
     },
@@ -3028,19 +3124,19 @@ const AppState = {
         const file = fileInput?.files?.[0];
         
         if (!file) {
-            Notification.error('请选择固件文件', 'OTA升级');
+            Notification.error(i18n.t('ota-file-empty'), i18n.t('ota-title'));
             return;
         }
         
         if (!file.name.endsWith('.bin')) {
-            Notification.error('仅支持.bin格式的固件文件', 'OTA升级');
+            Notification.error(i18n.t('ota-file-invalid'), i18n.t('ota-title'));
             return;
         }
         
         const btn = document.getElementById('ota-upload-btn');
         if (btn) {
             btn.disabled = true;
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 上传中...';
+            btn.innerHTML = i18n.t('ota-uploading-html');
         }
         
         // 显示进度条
@@ -3067,32 +3163,32 @@ const AppState = {
                 try {
                     const res = JSON.parse(xhr.responseText);
                     if (res.success) {
-                        Notification.success('固件上传成功，设备即将重启', 'OTA升级');
+                        Notification.success(i18n.t('ota-upload-ok'), i18n.t('ota-title'));
                         // 设备会重启，等待后刷新页面
                         setTimeout(() => {
                             window.location.reload();
                         }, 5000);
                     } else {
-                        Notification.error(res.message || '上传失败', 'OTA升级');
+                        Notification.error(res.message || i18n.t('ota-upload-fail'), i18n.t('ota-title'));
                     }
                 } catch (e) {
-                    Notification.success('固件上传完成', 'OTA升级');
+                    Notification.success(i18n.t('ota-upload-ok2'), i18n.t('ota-title'));
                 }
             } else {
-                Notification.error('上传失败: HTTP ' + xhr.status, 'OTA升级');
+                Notification.error(i18n.t('ota-upload-fail-prefix') + xhr.status, i18n.t('ota-title'));
             }
             
             if (btn) {
                 btn.disabled = false;
-                btn.innerHTML = '<i class="fas fa-upload"></i> 上传并升级';
+                btn.innerHTML = i18n.t('ota-upload-btn-html');
             }
         });
         
         xhr.addEventListener('error', () => {
-            Notification.error('上传失败: 网络错误', 'OTA升级');
+            Notification.error(i18n.t('ota-upload-network-fail'), i18n.t('ota-title'));
             if (btn) {
                 btn.disabled = false;
-                btn.innerHTML = '<i class="fas fa-upload"></i> 上传并升级';
+                btn.innerHTML = i18n.t('ota-upload-btn-html');
             }
             if (progressWrap) progressWrap.style.display = 'none';
         });
@@ -3120,15 +3216,15 @@ const AppState = {
                     if (progressText) progressText.textContent = progress + '%';
                     
                     if (progress < 100 && res.status !== 'OTA ready') {
-                        if (badge) { badge.className = 'status-badge status-warning'; badge.textContent = '升级中'; }
+                        if (badge) { badge.className = 'status-badge status-warning'; badge.textContent = i18n.t('ota-in-progress'); }
                         setTimeout(poll, 1000);
                     } else if (progress >= 100) {
-                        if (badge) { badge.className = 'status-badge status-online'; badge.textContent = '完成'; }
-                        Notification.success('固件升级完成，设备即将重启', 'OTA升级');
+                        if (badge) { badge.className = 'status-badge status-online'; badge.textContent = i18n.t('ota-done'); }
+                        Notification.success(i18n.t('ota-complete-msg'), i18n.t('ota-title'));
                     }
                 })
                 .catch(err => {
-                    console.error('获取OTA进度失败:', err);
+                    console.error(i18n.t('ota-progress-fail'), err);
                 });
         };
         

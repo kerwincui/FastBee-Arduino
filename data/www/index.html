@@ -56,39 +56,32 @@
                     <a href="#" class="menu-item active" data-page="dashboard">
                         <span class="menu-icon">📊</span> <span id="menu-dashboard">设备监控</span>
                     </a>
-                    <a href="#" class="menu-item" data-page="config">
-                        <span class="menu-icon">🔌</span> <span id="menu-protocol">通信协议</span>
+                    <a href="#" class="menu-item" data-page="device">
+                        <span class="menu-icon">🛠️</span> <span id="menu-device" data-i18n="menu-device">设备配置</span>
                     </a>
                     <a href="#" class="menu-item" data-page="network">
                         <span class="menu-icon">🌐</span> <span id="menu-network">网络设置</span>
                     </a>
-                    <a href="#" class="menu-item" data-page="device">
-                        <span class="menu-icon">🛠️</span> <span id="menu-device">设备配置</span>
+                    <a href="#" class="menu-item" data-page="gpio">
+                        <span class="menu-icon">🔧</span> <span id="menu-gpio">GPIO配置</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="protocol">
+                        <span class="menu-icon">🔌</span> <span id="menu-protocol">通信协议</span>
                     </a>
                     <a href="#" class="menu-item" data-page="data">
                         <span class="menu-icon">📁</span> <span id="menu-data">文件管理</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="logs">
+                        <span class="menu-icon">📊</span> <span id="menu-logs">设备日志</span>
                     </a>
                     <a href="#" class="menu-item" data-page="users">
                         <span class="menu-icon">👥</span> <span id="menu-users">用户管理</span>
                     </a>
                     <a href="#" class="menu-item" data-page="roles">
-                        <span class="menu-icon">🛡️</span> <span id="menu-roles">角色管理</span>
-                    </a>
-                    <a href="#" class="menu-item" data-page="logs">
-                        <span class="menu-icon">📊</span> <span id="menu-logs">设备日志</span>
-                    </a>
-                    <a href="#" class="menu-item" data-page="gpio">
-                        <span class="menu-icon">🔧</span> <span id="menu-gpio">GPIO配置</span>
+                        <span class="menu-icon">🛡️</span> <span id="menu-roles" data-i18n="menu-roles">角色管理</span>
                     </a>
                 </div>
                 
-                <!-- 语言切换菜单 -->
-                <div class="language-menu">
-                    <select id="language-select" class="language-select">
-                        <option value="zh-CN">中文</option>
-                        <option value="en">English</option>
-                    </select>
-                </div>
             </div>
 
             <!-- 主内容区 -->
@@ -100,6 +93,11 @@
                         <h1 class="page-title" id="page-title">设备监控仪表盘</h1>
                     </div>
                     <div class="header-actions">
+                        <!-- 语言切换 -->
+                        <select id="language-select" class="language-select-header">
+                            <option value="zh-CN">中文</option>
+                            <option value="en">English</option>
+                        </select>
                         <div class="user-info">
                             <span id="user-name">管理员</span>
                             <button class="pure-button pure-button-small" id="change-password-btn">修改密码</button>
@@ -116,7 +114,7 @@
                         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; margin-bottom: 20px;">
                             <!-- 设备基本信息 -->
                             <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px;">
-                                <h3 style="margin: 0 0 10px; font-size: 14px; opacity: 0.9;">设备信息</h3>
+                                <h3 style="margin: 0 0 10px; font-size: 14px; opacity: 0.9;" data-i18n="dashboard-device-info">设备信息</h3>
                                 <div style="font-size: 24px; font-weight: bold; margin-bottom: 5px;" id="monitor-chip-model">--</div>
                                 <div style="font-size: 12px; opacity: 0.8;">
                                     CPU: <span id="monitor-cpu-freq">--</span> MHz | 
@@ -126,14 +124,14 @@
                             
                             <!-- 运行时间 -->
                             <div style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); color: white; padding: 20px; border-radius: 8px;">
-                                <h3 style="margin: 0 0 10px; font-size: 14px; opacity: 0.9;">运行时间</h3>
+                                <h3 style="margin: 0 0 10px; font-size: 14px; opacity: 0.9;" data-i18n="dashboard-uptime">运行时间</h3>
                                 <div style="font-size: 28px; font-weight: bold; margin-bottom: 5px;" id="monitor-uptime">--</div>
-                                <div style="font-size: 12px; opacity: 0.8;">系统启动至今</div>
+                                <div style="font-size: 12px; opacity: 0.8;" data-i18n="dashboard-uptime-desc">系统启动至今</div>
                             </div>
                             
                             <!-- 网络状态 -->
                             <div style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; padding: 20px; border-radius: 8px;">
-                                <h3 style="margin: 0 0 10px; font-size: 14px; opacity: 0.9;">网络状态</h3>
+                                <h3 style="margin: 0 0 10px; font-size: 14px; opacity: 0.9;" data-i18n="dashboard-network">网络状态</h3>
                                 <div style="font-size: 14px; margin-bottom: 5px;" id="monitor-network-status">--</div>
                                 <div style="font-size: 12px; opacity: 0.8;" id="monitor-ip">--</div>
                             </div>
@@ -142,9 +140,9 @@
                         <!-- 资源使用仪表盘 -->
                         <div class="card" style="margin-bottom: 20px;">
                             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-                                <h2 class="card-title">资源使用情况</h2>
+                                <h2 class="card-title" data-i18n="dashboard-resource-usage">资源使用情况</h2>
                                 <button class="pure-button pure-button-small" id="monitor-refresh-btn">
-                                    <i class="fas fa-sync-alt"></i> 刷新
+                                    <i class="fas fa-sync-alt"></i> <span data-i18n="dashboard-refresh">刷新</span>
                                 </button>
                             </div>
                             <div class="card-body">
@@ -152,54 +150,54 @@
                                     <!-- Flash 存储 -->
                                     <div style="border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; background: #fafafa;">
                                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                                            <span style="font-weight: bold; color: #333;"><i class="fas fa-microchip" style="color: #ff6b6b;"></i> Flash 存储</span>
+                                            <span style="font-weight: bold; color: #333;"><i class="fas fa-microchip" style="color: #ff6b6b;"></i> <span data-i18n="dashboard-flash">Flash 存储</span></span>
                                             <span style="font-size: 12px; color: #666;" id="monitor-flash-percent">--%</span>
                                         </div>
                                         <div style="background: #e0e0e0; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 10px;">
                                             <div id="monitor-flash-bar" style="background: linear-gradient(90deg, #ff6b6b, #ee5a5a); height: 100%; width: 0%; transition: width 0.5s;"></div>
                                         </div>
                                         <div style="display: flex; justify-content: space-between; font-size: 12px; color: #666;">
-                                            <span>已用: <span id="monitor-flash-used">--</span></span>
-                                            <span>可用: <span id="monitor-flash-free">--</span></span>
+                                            <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-flash-used">--</span></span>
+                                            <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-flash-free">--</span></span>
                                         </div>
                                         <div style="margin-top: 10px; font-size: 11px; color: #999;">
-                                            总计: <span id="monitor-flash-total">--</span> | 固件: <span id="monitor-flash-sketch">--</span>
+                                            <span data-i18n="dashboard-total">总计</span>: <span id="monitor-flash-total">--</span> | <span data-i18n="dashboard-firmware">固件</span>: <span id="monitor-flash-sketch">--</span>
                                         </div>
                                     </div>
                                     
                                     <!-- 内存使用 -->
                                     <div style="border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; background: #fafafa;">
                                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                                            <span style="font-weight: bold; color: #333;"><i class="fas fa-memory" style="color: #4ecdc4;"></i> 内存 (Heap)</span>
+                                            <span style="font-weight: bold; color: #333;"><i class="fas fa-memory" style="color: #4ecdc4;"></i> <span data-i18n="dashboard-heap">内存 (Heap)</span></span>
                                             <span style="font-size: 12px; color: #666;" id="monitor-heap-percent">--%</span>
                                         </div>
                                         <div style="background: #e0e0e0; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 10px;">
                                             <div id="monitor-heap-bar" style="background: linear-gradient(90deg, #4ecdc4, #44a08d); height: 100%; width: 0%; transition: width 0.5s;"></div>
                                         </div>
                                         <div style="display: flex; justify-content: space-between; font-size: 12px; color: #666;">
-                                            <span>已用: <span id="monitor-heap-used">--</span></span>
-                                            <span>可用: <span id="monitor-heap-free">--</span></span>
+                                            <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-heap-used">--</span></span>
+                                            <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-heap-free">--</span></span>
                                         </div>
                                         <div style="margin-top: 10px; font-size: 11px; color: #999;">
-                                            总计: <span id="monitor-heap-total">--</span> | 最小可用: <span id="monitor-heap-min">--</span>
+                                            <span data-i18n="dashboard-total">总计</span>: <span id="monitor-heap-total">--</span> | <span data-i18n="dashboard-min-free">最小可用</span>: <span id="monitor-heap-min">--</span>
                                         </div>
                                     </div>
                                     
                                     <!-- 文件系统 -->
                                     <div style="border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; background: #fafafa;">
                                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                                            <span style="font-weight: bold; color: #333;"><i class="fas fa-hdd" style="color: #45b7d1;"></i> 文件系统 (LittleFS)</span>
+                                            <span style="font-weight: bold; color: #333;"><i class="fas fa-hdd" style="color: #45b7d1;"></i> <span data-i18n="dashboard-fs">文件系统 (LittleFS)</span></span>
                                             <span style="font-size: 12px; color: #666;" id="monitor-fs-percent">--%</span>
                                         </div>
                                         <div style="background: #e0e0e0; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 10px;">
                                             <div id="monitor-fs-bar" style="background: linear-gradient(90deg, #45b7d1, #96c93d); height: 100%; width: 0%; transition: width 0.5s;"></div>
                                         </div>
                                         <div style="display: flex; justify-content: space-between; font-size: 12px; color: #666;">
-                                            <span>已用: <span id="monitor-fs-used">--</span></span>
-                                            <span>可用: <span id="monitor-fs-free">--</span></span>
+                                            <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-fs-used">--</span></span>
+                                            <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-fs-free">--</span></span>
                                         </div>
                                         <div style="margin-top: 10px; font-size: 11px; color: #999;">
-                                            总计: <span id="monitor-fs-total">--</span>
+                                            <span data-i18n="dashboard-total">总计</span>: <span id="monitor-fs-total">--</span>
                                         </div>
                                     </div>
                                 </div>
@@ -209,21 +207,21 @@
                         <!-- 用户统计 -->
                         <div class="card">
                             <div class="card-header">
-                                <h2 class="card-title">用户统计</h2>
+                                <h2 class="card-title" data-i18n="dashboard-user-stats">用户统计</h2>
                             </div>
                             <div class="card-body">
                                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px;">
                                     <div style="text-align: center; padding: 20px; background: #f0f7ff; border-radius: 8px;">
                                         <div style="font-size: 32px; font-weight: bold; color: #1890ff;" id="monitor-user-total">--</div>
-                                        <div style="font-size: 12px; color: #666; margin-top: 5px;">总用户数</div>
+                                        <div style="font-size: 12px; color: #666; margin-top: 5px;" data-i18n="dashboard-total-users">总用户数</div>
                                     </div>
                                     <div style="text-align: center; padding: 20px; background: #f6ffed; border-radius: 8px;">
                                         <div style="font-size: 32px; font-weight: bold; color: #52c41a;" id="monitor-user-online">--</div>
-                                        <div style="font-size: 12px; color: #666; margin-top: 5px;">在线用户</div>
+                                        <div style="font-size: 12px; color: #666; margin-top: 5px;" data-i18n="dashboard-online-users">在线用户</div>
                                     </div>
                                     <div style="text-align: center; padding: 20px; background: #fff7e6; border-radius: 8px;">
                                         <div style="font-size: 32px; font-weight: bold; color: #fa8c16;" id="monitor-user-sessions">--</div>
-                                        <div style="font-size: 12px; color: #666; margin-top: 5px;">活跃会话</div>
+                                        <div style="font-size: 12px; color: #666; margin-top: 5px;" data-i18n="dashboard-active-sessions">活跃会话</div>
                                     </div>
                                 </div>
                             </div>
@@ -231,10 +229,10 @@
                     </div>
 
                     <!-- 通信协议页面 -->
-                    <div id="config-page" class="page">
+                    <div id="protocol-page" class="page">
                         <div class="card">
                             <div class="card-header">
-                                <h2 class="card-title" id="config-title">通信协议配置</h2>
+                                <h2 class="card-title" id="protocol-title">通信协议配置</h2>
                             </div>
                             <div class="card-body">
                                 <div class="config-tabs">
@@ -568,22 +566,18 @@
                             </div>
                             <div class="card-body">
                                 <div class="config-tabs">
-                                    <div class="config-tab active" data-tab="base">基本配置</div>
-                                    <div class="config-tab" data-tab="advance">高级配置</div>
-                                    <div class="config-tab" data-tab="netstatus">网络状态</div>
+                                    <div class="config-tab active" data-tab="base" data-i18n="net-tab-basic">基本配置</div>
+                                    <div class="config-tab" data-tab="advance" data-i18n="net-tab-advance">高级配置</div>
+                                    <div class="config-tab" data-tab="netstatus" data-i18n="net-tab-netstatus">网络状态</div>
                                 </div>
 
                                 <!-- 基本配置 -->
                                 <div id="base" class="config-content active">
-                                    <!-- WiFi扫描区域 -->
+                                    <!-- WiFi选择按钮 -->
                                     <div class="wifi-config" style="margin-bottom: 20px;">
-                                        <h3 style="margin-bottom: 10px;">WiFi列表</h3>
-                                        <button id="wifi-scan-btn" class="pure-button pure-button-small" style="margin-bottom: 15px;">
-                                            <i class="fas fa-search"></i> 扫描网络
+                                        <button id="wifi-scan-btn" class="pure-button pure-button-primary" style="margin-bottom: 5px;" data-i18n="wifi-scan-btn">
+                                            <i class="fas fa-wifi"></i> 选择Wifi网络
                                         </button>
-                                        <div id="wifi-scan-results" style="display: none; border: 1px solid #ddd; border-radius: 4px; max-height: 200px; overflow-y: auto;">
-                                            <!-- WiFi扫描结果动态加载 -->
-                                        </div>
                                     </div>
 
                                     <form id="wifi-form" class="pure-form pure-form-stacked">
@@ -937,16 +931,16 @@
                     <div id="device-page" class="page">
                         <div class="card">
                             <div class="card-header">
-                                <h2 class="card-title">设备配置</h2>
+                                <h2 class="card-title" data-i18n="device-config-title">设备配置</h2>
                             </div>
                             <div class="card-body">
                                 <div class="config-tabs">
-                                    <div class="config-tab active" data-tab="dev-basic">基本信息</div>
-                                    <div class="config-tab" data-tab="dev-ntp">NTP时间</div>
-                                    <div class="config-tab" data-tab="dev-provision">AP配网</div>
-                                    <div class="config-tab" data-tab="dev-ble">蓝牙配网</div>
-                                    <div class="config-tab" data-tab="dev-ota">OTA升级</div>
-                                    <div class="config-tab" data-tab="dev-system">系统操作</div>
+                                    <div class="config-tab active" data-tab="dev-basic" data-i18n="dev-tab-basic">基本信息</div>
+                                    <div class="config-tab" data-tab="dev-ntp" data-i18n="dev-tab-ntp">NTP时间</div>
+                                    <div class="config-tab" data-tab="dev-provision" data-i18n="dev-tab-provision">AP配网</div>
+                                    <div class="config-tab" data-tab="dev-ble" data-i18n="dev-tab-ble">蓝牙配网</div>
+                                    <div class="config-tab" data-tab="dev-ota" data-i18n="dev-tab-ota">OTA升级</div>
+                                    <div class="config-tab" data-tab="dev-system" data-i18n="dev-tab-system">系统操作</div>
                                 </div>
 
                                 <!-- 基本信息 tab -->
@@ -955,25 +949,25 @@
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="dev-name">设备名称</label>
-                                                    <input type="text" id="dev-name" class="pure-input-1" placeholder="输入设备名称">
+                                                    <label for="dev-name" data-i18n="dev-name-label">设备名称</label>
+                                                    <input type="text" id="dev-name" class="pure-input-1" placeholder="输入设备名称" data-i18n-placeholder="dev-name-label">
                                                 </div>
                                                 <div class="pure-control-group">
-                                                    <label for="dev-location">安装位置</label>
-                                                    <input type="text" id="dev-location" class="pure-input-1" placeholder="例如：一楼服务器房">
+                                                    <label for="dev-location" data-i18n="dev-location-label">安装位置</label>
+                                                    <input type="text" id="dev-location" class="pure-input-1" placeholder="例如：一楼服务器房" data-i18n-placeholder="dev-location-label">
                                                 </div>
                                             </div>
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="dev-description">设备描述</label>
-                                                    <textarea id="dev-description" class="pure-input-1" rows="3" placeholder="输入设备描述"></textarea>
+                                                    <label for="dev-description" data-i18n="dev-description-label">设备描述</label>
+                                                    <textarea id="dev-description" class="pure-input-1" rows="3" placeholder="输入设备描述" data-i18n-placeholder="dev-description-label"></textarea>
                                                 </div>
                                             </div>
                                         </div>
-                                        <div class="message message-success" id="dev-basic-success" style="display:none; margin-top:15px;">设备信息保存成功！</div>
+                                        <div class="message message-success" id="dev-basic-success" style="display:none; margin-top:15px;" data-i18n="dev-basic-save-ok">设备信息保存成功！</div>
                                         <div style="margin-top: 20px;">
                                             <button type="submit" class="pure-button pure-button-primary">
-                                                <i class="fas fa-save"></i> 保存信息
+                                                <i class="fas fa-save"></i> <span data-i18n="dev-basic-save-btn">保存信息</span>
                                             </button>
                                         </div>
                                     </form>
@@ -984,24 +978,24 @@
                                     <!-- 当前时间显示 -->
                                     <div class="card" style="margin-bottom: 20px; border: 1px solid #e0e0e0;">
                                         <div class="card-header" style="padding: 10px 15px; background: #f5f5f5; display: flex; justify-content: space-between; align-items: center;">
-                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-clock"></i> 当前时间</h4>
+                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-clock"></i> <span data-i18n="dev-time-title">当前时间</span></h4>
                                             <button id="dev-time-refresh-btn" class="pure-button pure-button-small">
-                                                <i class="fas fa-sync-alt"></i> 刷新
+                                                <i class="fas fa-sync-alt"></i> <span data-i18n="dev-time-refresh">刷新</span>
                                             </button>
                                         </div>
                                         <div class="card-body" style="padding: 12px 15px;">
                                             <table class="pure-table" style="width: 100%; font-size: 13px;">
                                                 <tbody>
                                                     <tr>
-                                                        <td style="color: #666; width: 120px;">日期时间</td>
+                                                        <td style="color: #666; width: 120px;" data-i18n="dev-time-datetime-label">日期时间</td>
                                                         <td><strong id="dev-time-datetime" style="font-size: 16px;">--</strong></td>
                                                     </tr>
                                                     <tr>
-                                                        <td style="color: #666;">NTP同步状态</td>
+                                                        <td style="color: #666;" data-i18n="dev-time-synced-label">NTP同步状态</td>
                                                         <td id="dev-time-synced">--</td>
                                                     </tr>
                                                     <tr>
-                                                        <td style="color: #666;">设备运行时间</td>
+                                                        <td style="color: #666;" data-i18n="dev-time-uptime-label">设备运行时间</td>
                                                         <td id="dev-time-uptime">--</td>
                                                     </tr>
                                                 </tbody>
@@ -1014,24 +1008,24 @@
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="dev-ntp-enable">NTP同步</label>
+                                                    <label for="dev-ntp-enable" data-i18n="dev-ntp-enable-label">NTP同步</label>
                                                     <select id="dev-ntp-enable" class="pure-input-1">
-                                                        <option value="1" selected>启用</option>
-                                                        <option value="0">禁用</option>
+                                                        <option value="1" selected data-i18n="wifi-enable">启用</option>
+                                                        <option value="0" data-i18n="wifi-disable">禁用</option>
                                                     </select>
                                                 </div>
                                                 <div class="pure-control-group">
-                                                    <label for="dev-ntp-server1">NTP服务器1</label>
+                                                    <label for="dev-ntp-server1" data-i18n="dev-ntp-server1-label">NTP服务器1</label>
                                                     <input type="text" id="dev-ntp-server1" class="pure-input-1" placeholder="pool.ntp.org">
                                                 </div>
                                                 <div class="pure-control-group">
-                                                    <label for="dev-ntp-server2">NTP服务器2</label>
+                                                    <label for="dev-ntp-server2" data-i18n="dev-ntp-server2-label">NTP服务器2</label>
                                                     <input type="text" id="dev-ntp-server2" class="pure-input-1" placeholder="time.nist.gov">
                                                 </div>
                                             </div>
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="dev-timezone">时区</label>
+                                                    <label for="dev-timezone" data-i18n="dev-timezone-label">时区</label>
                                                     <select id="dev-timezone" class="pure-input-1">
                                                         <option value="CST-8" selected>中国标准时间 (UTC+8)</option>
                                                         <option value="UTC0">UTC (UTC+0)</option>
@@ -1042,15 +1036,15 @@
                                                     </select>
                                                 </div>
                                                 <div class="pure-control-group">
-                                                    <label for="dev-sync-interval">同步间隔 (秒)</label>
+                                                    <label for="dev-sync-interval" data-i18n="dev-sync-interval-label">同步间隔 (秒)</label>
                                                     <input type="number" id="dev-sync-interval" class="pure-input-1" value="3600" min="60" max="86400">
                                                 </div>
                                             </div>
                                         </div>
-                                        <div class="message message-success" id="dev-ntp-success" style="display:none; margin-top:15px;">NTP配置保存成功！</div>
+                                        <div class="message message-success" id="dev-ntp-success" style="display:none; margin-top:15px;" data-i18n="dev-ntp-save-ok">NTP配置保存成功！</div>
                                         <div style="margin-top: 20px;">
                                             <button type="submit" class="pure-button pure-button-primary">
-                                                <i class="fas fa-save"></i> 保存NTP配置
+                                                <i class="fas fa-save"></i> <span data-i18n="dev-ntp-save-btn">保存NTP配置</span>
                                             </button>
                                         </div>
                                     </form>
@@ -1061,38 +1055,38 @@
                                     <!-- 配网状态卡片 -->
                                     <div class="card" style="margin-bottom: 20px; border: 1px solid #e0e0e0;">
                                         <div class="card-header" style="padding: 10px 15px; background: #f5f5f5; display: flex; justify-content: space-between; align-items: center;">
-                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-wifi"></i> AP配网状态</h4>
+                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-wifi"></i> <span data-i18n="dev-provision-status-title">AP配网状态</span></h4>
                                             <button id="provision-refresh-btn" class="pure-button pure-button-small">
-                                                <i class="fas fa-sync-alt"></i> 刷新
+                                                <i class="fas fa-sync-alt"></i> <span data-i18n="dev-provision-status-refresh">刷新</span>
                                             </button>
                                         </div>
                                         <div class="card-body" style="padding: 12px 15px;">
                                             <table class="pure-table" style="width: 100%; font-size: 13px;">
                                                 <tbody>
                                                     <tr>
-                                                        <td style="color: #666; width: 120px;">配网状态</td>
-                                                        <td><span id="provision-status" class="badge badge-info">未启动</span></td>
+                                                        <td style="color: #666; width: 120px;" data-i18n="dev-provision-status-label">配网状态</td>
+                                                        <td><span id="provision-status" class="badge badge-info" data-i18n="dev-provision-not-started">未启动</span></td>
                                                     </tr>
                                                     <tr>
-                                                        <td style="color: #666;">热点名称</td>
+                                                        <td style="color: #666;" data-i18n="dev-provision-ap-name-label">热点名称</td>
                                                         <td id="provision-ap-name">--</td>
                                                     </tr>
                                                     <tr>
-                                                        <td style="color: #666;">热点IP</td>
+                                                        <td style="color: #666;" data-i18n="dev-provision-ap-ip-label">热点IP</td>
                                                         <td id="provision-ap-ip">192.168.4.1</td>
                                                     </tr>
                                                     <tr>
-                                                        <td style="color: #666;">已连接设备</td>
+                                                        <td style="color: #666;" data-i18n="dev-provision-clients-label">已连接设备</td>
                                                         <td id="provision-clients">0</td>
                                                     </tr>
                                                 </tbody>
                                             </table>
                                             <div style="margin-top: 15px; display: flex; gap: 10px;">
                                                 <button id="provision-start-btn" class="pure-button" style="background:#27ae60; color:#fff;">
-                                                    <i class="fas fa-play"></i> 启动配网
+                                                    <i class="fas fa-play"></i> <span data-i18n="dev-provision-start-btn">启动配网</span>
                                                 </button>
                                                 <button id="provision-stop-btn" class="pure-button" style="background:#e74c3c; color:#fff;">
-                                                    <i class="fas fa-stop"></i> 停止配网
+                                                    <i class="fas fa-stop"></i> <span data-i18n="dev-provision-stop-btn">停止配网</span>
                                                 </button>
                                             </div>
                                         </div>
@@ -1145,10 +1139,10 @@
                                                 </div>
                                             </div>
                                         </div>
-                                        <div class="message message-success" id="provision-success" style="display:none; margin-top:15px;">AP配网配置保存成功！</div>
+                                        <div class="message message-success" id="provision-success" style="display:none; margin-top:15px;" data-i18n="dev-provision-save-ok">AP配网配置保存成功！</div>
                                         <div style="margin-top: 20px;">
                                             <button type="submit" class="pure-button pure-button-primary">
-                                                <i class="fas fa-save"></i> 保存AP配网配置
+                                                <i class="fas fa-save"></i> <span data-i18n="dev-provision-save-btn">保存AP配网配置</span>
                                             </button>
                                         </div>
                                     </form>
@@ -1175,9 +1169,9 @@
                                     <!-- 蓝牙配网状态卡片 -->
                                     <div class="card" style="margin-bottom: 20px; border: 1px solid #e0e0e0;">
                                         <div class="card-header" style="padding: 10px 15px; background: #f5f5f5; display: flex; justify-content: space-between; align-items: center;">
-                                            <h4 style="margin: 0; font-size: 14px;"><i class="fab fa-bluetooth-b"></i> 蓝牙配网状态</h4>
+                                            <h4 style="margin: 0; font-size: 14px;"><i class="fab fa-bluetooth-b"></i> <span data-i18n="dev-ble-status-title">蓝牙配网状态</span></h4>
                                             <button id="ble-provision-refresh-btn" class="pure-button pure-button-small">
-                                                <i class="fas fa-sync-alt"></i> 刷新
+                                                <i class="fas fa-sync-alt"></i> <span data-i18n="dev-time-refresh">刷新</span>
                                             </button>
                                         </div>
                                         <div class="card-body" style="padding: 12px 15px;">
@@ -1197,10 +1191,10 @@
                                             </div>
                                             <div style="margin-top: 15px; display: flex; gap: 10px;">
                                                 <button id="ble-provision-start-btn" class="pure-button pure-button-primary">
-                                                    <i class="fas fa-play"></i> 启动蓝牙配网
+                                                    <i class="fas fa-play"></i> <span data-i18n="dev-ble-start-btn">启动蓝牙配网</span>
                                                 </button>
                                                 <button id="ble-provision-stop-btn" class="pure-button button-error" style="display: none;">
-                                                    <i class="fas fa-stop"></i> 停止蓝牙配网
+                                                    <i class="fas fa-stop"></i> <span data-i18n="dev-ble-stop-btn">停止蓝牙配网</span>
                                                 </button>
                                             </div>
                                         </div>
@@ -1239,10 +1233,10 @@
                                                 </div>
                                             </div>
                                         </div>
-                                        <div class="message message-success" id="ble-provision-success" style="display:none; margin-top:15px;">蓝牙配网配置保存成功！</div>
+                                        <div class="message message-success" id="ble-provision-success" style="display:none; margin-top:15px;" data-i18n="dev-ble-save-ok">蓝牙配网配置保存成功！</div>
                                         <div style="margin-top: 20px;">
                                             <button type="submit" class="pure-button pure-button-primary">
-                                                <i class="fas fa-save"></i> 保存蓝牙配网配置
+                                                <i class="fas fa-save"></i> <span data-i18n="dev-ble-save-btn">保存蓝牙配网配置</span>
                                             </button>
                                         </div>
                                     </form>
@@ -1267,27 +1261,27 @@
                                     <!-- OTA状态卡片 -->
                                     <div class="card" style="margin-bottom: 20px; border: 1px solid #e0e0e0;">
                                         <div class="card-header" style="padding: 10px 15px; background: #f5f5f5; display: flex; justify-content: space-between; align-items: center;">
-                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-microchip"></i> 固件信息</h4>
+                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-microchip"></i> <span data-i18n="dev-ota-info-title">固件信息</span></h4>
                                             <button id="ota-refresh-btn" class="pure-button pure-button-small">
-                                                <i class="fas fa-sync-alt"></i> 刷新
+                                                <i class="fas fa-sync-alt"></i> <span data-i18n="dev-ota-refresh">刷新</span>
                                             </button>
                                         </div>
                                         <div class="card-body" style="padding: 12px 15px;">
                                             <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;">
                                                 <div style="display: flex; align-items: center; gap: 8px;">
-                                                    <span style="color: #666;">当前版本：</span>
+                                                    <span style="color: #666;" data-i18n="dev-ota-version-label">当前版本：</span>
                                                     <span id="ota-current-version" style="font-weight: bold;">--</span>
                                                 </div>
                                                 <div style="display: flex; align-items: center; gap: 8px;">
-                                                    <span style="color: #666;">状态：</span>
-                                                    <span id="ota-status-badge" class="status-badge status-online">就绪</span>
+                                                    <span style="color: #666;" data-i18n="dev-ota-status-label">状态：</span>
+                                                    <span id="ota-status-badge" class="status-badge status-online" data-i18n="dev-ota-ready">就绪</span>
                                                 </div>
                                                 <div style="display: flex; align-items: center; gap: 8px;">
-                                                    <span style="color: #666;">Flash空间：</span>
+                                                    <span style="color: #666;" data-i18n="dev-ota-flash-label">Flash空间：</span>
                                                     <span id="ota-flash-size">--</span>
                                                 </div>
                                                 <div style="display: flex; align-items: center; gap: 8px;">
-                                                    <span style="color: #666;">可用空间：</span>
+                                                    <span style="color: #666;" data-i18n="dev-ota-free-label">可用空间：</span>
                                                     <span id="ota-free-space">--</span>
                                                 </div>
                                             </div>
@@ -1307,16 +1301,16 @@
                                     <!-- 在线升级 -->
                                     <div class="card" style="margin-bottom: 20px; border: 1px solid #e0e0e0;">
                                         <div class="card-header" style="padding: 10px 15px; background: #e3f2fd;">
-                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-cloud-download-alt"></i> 在线升级</h4>
+                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-cloud-download-alt"></i> <span data-i18n="dev-ota-online-title">在线升级</span></h4>
                                         </div>
                                         <div class="card-body" style="padding: 15px;">
                                             <form id="ota-url-form" class="pure-form">
                                                 <div class="pure-control-group" style="margin-bottom: 15px;">
-                                                    <label for="ota-url">固件下载地址</label>
+                                                    <label for="ota-url" data-i18n="dev-ota-url-label">固件下载地址</label>
                                                     <input type="url" id="ota-url" class="pure-input-1" placeholder="http://example.com/firmware.bin">
                                                 </div>
                                                 <button type="submit" class="pure-button pure-button-primary" id="ota-url-btn">
-                                                    <i class="fas fa-download"></i> 开始在线升级
+                                                    <i class="fas fa-download"></i> <span data-i18n="dev-ota-url-btn">开始在线升级</span>
                                                 </button>
                                             </form>
                                         </div>
@@ -1325,17 +1319,17 @@
                                     <!-- 本地上传升级 -->
                                     <div class="card" style="margin-bottom: 20px; border: 1px solid #e0e0e0;">
                                         <div class="card-header" style="padding: 10px 15px; background: #fff3e0;">
-                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-upload"></i> 本地上传升级</h4>
+                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-upload"></i> <span data-i18n="dev-ota-upload-title">本地上传升级</span></h4>
                                         </div>
                                         <div class="card-body" style="padding: 15px;">
                                             <form id="ota-upload-form" class="pure-form" enctype="multipart/form-data">
                                                 <div class="pure-control-group" style="margin-bottom: 15px;">
-                                                    <label for="ota-file">选择固件文件 (.bin)</label>
+                                                    <label for="ota-file" data-i18n="dev-ota-file-label">选择固件文件 (.bin)</label>
                                                     <input type="file" id="ota-file" accept=".bin" style="display: block; margin-top: 8px;">
-                                                    <small style="color: #888;">仅支持 .bin 格式的固件文件</small>
+                                                    <small style="color: #888;" data-i18n="dev-ota-file-hint">仅支持 .bin 格式的固件文件</small>
                                                 </div>
                                                 <button type="submit" class="pure-button pure-button-primary" id="ota-upload-btn">
-                                                    <i class="fas fa-upload"></i> 上传并升级
+                                                    <i class="fas fa-upload"></i> <span data-i18n="dev-ota-upload-btn">上传并升级</span>
                                                 </button>
                                             </form>
                                         </div>
@@ -1360,12 +1354,12 @@
                                             <!-- 设备重启卡片 -->
                                             <div class="card" style="border: 1px solid #e0e0e0; margin-bottom: 15px;">
                                                 <div class="card-header" style="padding: 10px 15px; background: #fff3cd;">
-                                                    <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-redo"></i> 重启设备</h4>
+                                                    <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-redo"></i> <span data-i18n="dev-sys-restart-title">重启设备</span></h4>
                                                 </div>
                                                 <div class="card-body" style="padding: 15px;">
-                                                    <p style="margin: 0 0 15px; font-size: 13px; color: #666;">重启设备将会断开所有连接，配置数据将保留。</p>
+                                                    <p style="margin: 0 0 15px; font-size: 13px; color: #666;" data-i18n="dev-sys-restart-hint">重启设备将会断开所有连接，配置数据将保留。</p>
                                                     <div style="display: flex; align-items: center; gap: 10px;">
-                                                        <label style="font-size: 13px;">延迟（秒）：</label>
+                                                        <label style="font-size: 13px;" data-i18n="dev-sys-restart-delay">延迟（秒）：</label>
                                                         <select id="dev-restart-delay" class="pure-input" style="width: 80px;">
                                                             <option value="1">1</option>
                                                             <option value="3" selected>3</option>
@@ -1373,7 +1367,7 @@
                                                             <option value="10">10</option>
                                                         </select>
                                                         <button id="dev-restart-btn" class="pure-button" style="background:#e67e22; color:#fff;">
-                                                            <i class="fas fa-power-off"></i> 立即重启
+                                                            <i class="fas fa-power-off"></i> <span data-i18n="dev-sys-restart-btn">立即重启</span>
                                                         </button>
                                                     </div>
                                                 </div>
@@ -1384,17 +1378,17 @@
                                             <!-- 内存信息卡片 -->
                                             <div class="card" style="border: 1px solid #e0e0e0;">
                                                 <div class="card-header" style="padding: 10px 15px; background: #f5f5f5;">
-                                                    <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-microchip"></i> 硬件信息</h4>
+                                                    <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-microchip"></i> <span data-i18n="dev-sys-hw-title">硬件信息</span></h4>
                                                 </div>
                                                 <div class="card-body" style="padding: 12px 15px;">
                                                     <table class="pure-table" style="width: 100%; font-size: 13px;">
                                                         <tbody>
-                                                            <tr><td style="color:#666; width:120px;">芯片型号</td><td id="dev-sys-chip">--</td></tr>
-                                                            <tr><td style="color:#666;">CPU频率</td><td id="dev-sys-cpu">--</td></tr>
-                                                            <tr><td style="color:#666;">空闲堆栈</td><td id="dev-sys-heap">--</td></tr>
-                                                            <tr><td style="color:#666;">Flash大小</td><td id="dev-sys-flash">--</td></tr>
-                                                            <tr><td style="color:#666;">SDK版本</td><td id="dev-sys-sdk">--</td></tr>
-                                                            <tr><td style="color:#666;">固件版本</td><td id="dev-sys-fw">--</td></tr>
+                                                            <tr><td style="color:#666; width:120px;" data-i18n="dev-sys-chip-label">芯片型号</td><td id="dev-sys-chip">--</td></tr>
+                                                            <tr><td style="color:#666;" data-i18n="dev-sys-cpu-label">CPU频率</td><td id="dev-sys-cpu">--</td></tr>
+                                                            <tr><td style="color:#666;" data-i18n="dev-sys-heap-label">空闲堆栈</td><td id="dev-sys-heap">--</td></tr>
+                                                            <tr><td style="color:#666;" data-i18n="dev-sys-flash-label">Flash大小</td><td id="dev-sys-flash">--</td></tr>
+                                                            <tr><td style="color:#666;" data-i18n="dev-sys-sdk-label">SDK版本</td><td id="dev-sys-sdk">--</td></tr>
+                                                            <tr><td style="color:#666;" data-i18n="dev-sys-fw-label">固件版本</td><td id="dev-sys-fw">--</td></tr>
                                                         </tbody>
                                                     </table>
                                                 </div>
@@ -1410,7 +1404,7 @@
                     <div id="data-page" class="page">
                         <div class="card">
                             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-                                <h2 class="card-title">文件管理</h2>
+                                <h2 class="card-title" data-i18n="data-page-title">文件管理</h2>
                                 <span id="fs-info" style="font-size: 12px; color: #666;"></span>
                             </div>
                             <div class="card-body">
@@ -1418,21 +1412,21 @@
                                     <!-- 文件树 -->
                                     <div style="width: 300px; min-width: 250px; border: 1px solid #ddd; border-radius: 4px; overflow-y: auto; background: #f5f5f5;">
                                         <div style="padding: 10px; background: #e9e9e9; border-bottom: 1px solid #ddd; font-weight: bold;">
-                                            <button class="pure-button pure-button-small" id="fs-refresh-btn" style="float: right;">刷新</button>
-                                            <button class="pure-button pure-button-small" id="fs-up-btn" style="float: right; margin-right: 5px;">返回上级</button>
+                                            <button class="pure-button fs-btn-sm" id="fs-refresh-btn" style="float: right;" data-i18n="fs-refresh-btn">刷新</button>
+                                            <button class="pure-button fs-btn-sm" id="fs-up-btn" style="float: right; margin-right: 4px;" data-i18n="fs-up-btn">返回上级</button>
                                             <span id="current-dir-path" style="font-size: 12px; color: #666; display: block; margin-top: 5px;">/</span>
                                         </div>
                                         <div id="file-tree" style="padding: 10px; font-family: 'Consolas', monospace; font-size: 13px;">
-                                            <div style="color: #999;">加载中...</div>
+                                            <div style="color: #999;" data-i18n="fs-loading">加载中...</div>
                                         </div>
                                     </div>
                                     <!-- 文件编辑器 -->
                                     <div style="flex: 1; border: 1px solid #ddd; border-radius: 4px; display: flex; flex-direction: column;">
                                         <div style="padding: 10px; background: #e9e9e9; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center;">
-                                            <span id="current-file-path" style="font-family: monospace; font-size: 13px; color: #666;">请选择文件</span>
+                                            <span id="current-file-path" style="font-family: monospace; font-size: 13px; color: #666;" data-i18n="fs-select-file">请选择文件</span>
                                             <div>
-                                                <button class="pure-button pure-button-small pure-button-primary" id="fs-save-btn" disabled>保存</button>
-                                                <button class="pure-button pure-button-small" id="fs-close-btn" disabled>关闭</button>
+                                                <button class="pure-button pure-button-small pure-button-primary" id="fs-save-btn" disabled data-i18n="fs-save-btn">保存</button>
+                                                <button class="pure-button pure-button-small" id="fs-close-btn" disabled data-i18n="fs-close-btn">关闭</button>
                                             </div>
                                         </div>
                                         <textarea id="file-editor" style="flex: 1; border: none; padding: 10px; font-family: 'Consolas', monospace; font-size: 13px; resize: none;" placeholder="选择文件后在此编辑..." disabled></textarea>
@@ -1448,7 +1442,7 @@
                         <div class="card">
                             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
                                 <h2 class="card-title" id="users-title">用户管理</h2>
-                                <button class="pure-button pure-button-primary" id="add-user-btn">
+                                <button class="pure-button pure-button-primary" id="add-user-btn" data-i18n="add-user-btn-text">
                                     添加用户
                                 </button>
                             </div>
@@ -1478,22 +1472,22 @@
                         <div class="card">
                             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
                                 <h2 class="card-title" id="roles-title">角色管理</h2>
-                                <button class="pure-button pure-button-primary" id="add-role-btn">
+                                <button class="pure-button pure-button-primary" id="add-role-btn" data-i18n="add-role-btn-text">
                                     新增角色
                                 </button>
                             </div>
                             <div class="card-body">
-                                <p style="color: #666; margin-bottom: 20px;">超级管理员(admin)角色不可编辑或删除，其他角色可进行管理操作。</p>
+                                <p style="color: #666; margin-bottom: 20px;" data-i18n="roles-admin-hint">超级管理员(admin)角色不可编辑或删除，其他角色可进行管理操作。</p>
                                 <div style="overflow-x: auto;">
                                     <table class="pure-table pure-table-bordered" style="width: 100%;">
                                         <thead>
                                             <tr>
-                                                <th>角色ID</th>
-                                                <th>角色名称</th>
-                                                <th>描述</th>
-                                                <th>权限数</th>
-                                                <th>类型</th>
-                                                <th>操作</th>
+                                                <th data-i18n="role-id-col">角色ID</th>
+                                                <th data-i18n="role-name-col">角色名称</th>
+                                                <th data-i18n="role-desc-col">描述</th>
+                                                <th data-i18n="role-perm-count-col">权限数</th>
+                                                <th data-i18n="role-type-col">类型</th>
+                                                <th data-i18n="role-actions-col">操作</th>
                                             </tr>
                                         </thead>
                                         <tbody id="roles-table-body">
@@ -1509,24 +1503,24 @@
                     <div id="logs-page" class="page">
                         <div class="card">
                             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-                                <h2 class="card-title" style="margin: 0;">设备日志</h2>
+                                <h2 class="card-title" style="margin: 0;" data-i18n="logs-title">设备日志</h2>
                                 <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
                                     <span id="log-info" style="font-size: 12px; color: #666;"></span>
                                     <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
                                         <input type="checkbox" id="log-auto-refresh" checked>
-                                        自动刷新
+                                        <span data-i18n="log-auto-refresh-label">自动刷新</span>
                                     </label>
                                     <button class="pure-button pure-button-small" id="refresh-logs-btn">
-                                        <i class="fas fa-sync-alt"></i> 刷新日志
+                                        <i class="fas fa-sync-alt"></i> <span data-i18n="log-refresh-btn">刷新日志</span>
                                     </button>
                                     <button class="pure-button pure-button-small pure-button-error" id="clear-logs-btn">
-                                        <i class="fas fa-trash"></i> 清空日志
+                                        <i class="fas fa-trash"></i> <span data-i18n="log-clear-btn">清空日志</span>
                                     </button>
                                 </div>
                             </div>
                             <div class="card-body">
                                 <div id="device-log-container" style="height: 500px; overflow-y: auto; background: #1e1e1e; color: #d4d4d4; padding: 10px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 12px; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word;">
-                                    <div style="color: #666; text-align: center; padding: 20px;">正在加载日志...</div>
+                                    <div style="color: #666; text-align: center; padding: 20px;" data-i18n="log-loading">正在加载日志...</div>
                                 </div>
                             </div>
                         </div>
@@ -1536,8 +1530,8 @@
                     <div id="gpio-page" class="page">
                         <div class="card">
                             <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-                                <h2 class="card-title">GPIO配置</h2>
-                                <button class="pure-button pure-button-primary" id="add-gpio-btn">
+                                <h2 class="card-title" data-i18n="gpio-title">GPIO配置</h2>
+                                <button class="pure-button pure-button-primary" id="add-gpio-btn" data-i18n="add-gpio-btn-text">
                                     <i class="fas fa-plus"></i> 新增GPIO
                                 </button>
                             </div>
@@ -1547,16 +1541,16 @@
                                     <table class="pure-table pure-table-bordered" style="width: 100%;">
                                         <thead>
                                             <tr>
-                                                <th>引脚号</th>
-                                                <th>名称</th>
-                                                <th>模式</th>
-                                                <th>当前状态</th>
-                                                <th>操作</th>
+                                                <th data-i18n="gpio-pin-col">引脚号</th>
+                                                <th data-i18n="gpio-name-col">名称</th>
+                                                <th data-i18n="gpio-mode-col">模式</th>
+                                                <th data-i18n="gpio-status-col">当前状态</th>
+                                                <th data-i18n="gpio-actions-col">操作</th>
                                             </tr>
                                         </thead>
                                         <tbody id="gpio-table-body">
                                             <tr>
-                                                <td colspan="5" style="text-align: center; color: #999;">加载中...</td>
+                                                <td colspan="5" style="text-align: center; color: #999;" data-i18n="gpio-loading">加载中...</td>
                                             </tr>
                                         </tbody>
                                     </table>
@@ -1569,6 +1563,21 @@
                 <!-- 主应用页脚 -->
                 <div class="app-footer">
                     <div id="footer-copyright">© 2026 FastBee物联网平台 官网: www.fastbee.cn</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- WiFi选择弹窗 -->
+    <div id="wifi-modal" class="modal">
+        <div class="modal-content" style="max-width: 480px;">
+            <div class="modal-header">
+                <h2 style="margin: 0; font-size: 18px;" data-i18n="wifi-modal-title">选择WiFi网络</h2>
+                <button id="close-wifi-modal" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer;">×</button>
+            </div>
+            <div class="modal-body" style="padding: 0;">
+                <div id="wifi-modal-body" style="min-height: 120px;">
+                    <!-- 扫描结果动态加载 -->
                 </div>
             </div>
         </div>
@@ -1604,8 +1613,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-password-btn">取消</button>
-                <button class="pure-button pure-button-primary" id="confirm-password-btn">确认修改</button>
+                <button class="pure-button" id="cancel-password-btn" data-i18n="cancel">取消</button>
+                <button class="pure-button pure-button-primary" id="confirm-password-btn" data-i18n="confirm-change">确认修改</button>
             </div>
         </div>
     </div>
@@ -1614,7 +1623,7 @@
     <div id="gpio-modal" class="modal">
         <div class="modal-content" style="max-width: 500px;">
             <div class="modal-header">
-                <h2 style="margin: 0; font-size: 18px;" id="gpio-modal-title">新增GPIO</h2>
+                <h2 style="margin: 0; font-size: 18px;" id="gpio-modal-title" data-i18n="gpio-add-modal-title">新增GPIO</h2>
                 <button id="close-gpio-modal" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer;">×</button>
             </div>
             <div class="modal-body">
@@ -1623,33 +1632,33 @@
                         <input type="hidden" id="gpio-original-pin" value="">
                         
                         <div class="pure-control-group">
-                            <label for="gpio-pin-input">引脚号 (0-39)</label>
+                            <label for="gpio-pin-input" data-i18n="gpio-pin-label">引脚号 (0-39)</label>
                             <input type="number" id="gpio-pin-input" class="pure-input-1" min="0" max="39" placeholder="请输入GPIO引脚号" required>
                         </div>
                         
                         <div class="pure-control-group">
-                            <label for="gpio-name-input">名称</label>
+                            <label for="gpio-name-input" data-i18n="gpio-name-label">名称</label>
                             <input type="text" id="gpio-name-input" class="pure-input-1" placeholder="例如: LED、Relay" required>
                         </div>
                         
                         <div class="pure-control-group">
-                            <label for="gpio-mode-input">模式</label>
+                            <label for="gpio-mode-input" data-i18n="gpio-mode-label">模式</label>
                             <select id="gpio-mode-input" class="pure-input-1">
-                                <option value="1">数字输入</option>
-                                <option value="2">数字输出</option>
-                                <option value="3">数字输入(上拉)</option>
-                                <option value="4">数字输入(下拉)</option>
-                                <option value="5">模拟输入</option>
-                                <option value="6">模拟输出</option>
-                                <option value="7">PWM输出</option>
+                                <option value="1" data-i18n="gpio-mode-1">数字输入</option>
+                                <option value="2" data-i18n="gpio-mode-2">数字输出</option>
+                                <option value="3" data-i18n="gpio-mode-3">数字输入(上拉)</option>
+                                <option value="4" data-i18n="gpio-mode-4">数字输入(下拉)</option>
+                                <option value="5" data-i18n="gpio-mode-5">模拟输入</option>
+                                <option value="6" data-i18n="gpio-mode-6">模拟输出</option>
+                                <option value="7" data-i18n="gpio-mode-7">PWM输出</option>
                             </select>
                         </div>
                         
                         <div class="pure-control-group">
-                            <label for="gpio-default-input">初始值</label>
+                            <label for="gpio-default-input" data-i18n="gpio-default-label">初始值</label>
                             <select id="gpio-default-input" class="pure-input-1">
-                                <option value="0">低电平 (LOW)</option>
-                                <option value="1">高电平 (HIGH)</option>
+                                <option value="0" data-i18n="gpio-default-low">低电平 (LOW)</option>
+                                <option value="1" data-i18n="gpio-default-high">高电平 (HIGH)</option>
                             </select>
                         </div>
                         
@@ -1658,8 +1667,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-gpio-btn">取消</button>
-                <button class="pure-button pure-button-primary" id="save-gpio-btn">保存</button>
+                <button class="pure-button" id="cancel-gpio-btn" data-i18n="cancel">取消</button>
+                <button class="pure-button pure-button-primary" id="save-gpio-btn" data-i18n="role-save-btn">保存</button>
             </div>
         </div>
     </div>
@@ -1703,8 +1712,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-add-user-btn">取消</button>
-                <button class="pure-button pure-button-primary" id="confirm-add-user-btn">添加</button>
+                <button class="pure-button" id="cancel-add-user-btn" data-i18n="cancel">取消</button>
+                <button class="pure-button pure-button-primary" id="confirm-add-user-btn" data-i18n="add-user-confirm">添加</button>
             </div>
         </div>
     </div>
@@ -1713,30 +1722,30 @@
     <div id="role-modal" class="modal">
         <div class="modal-content" style="max-width: 700px;">
             <div class="modal-header">
-                <h2 style="margin: 0; font-size: 18px;" id="role-modal-title">新增角色</h2>
+                <h2 style="margin: 0; font-size: 18px;" id="role-modal-title" data-i18n="role-add-modal-title">新增角色</h2>
                 <button id="close-role-modal" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer;">×</button>
             </div>
             <div class="modal-body">
                 <form id="role-form" class="pure-form pure-form-stacked">
                     <fieldset>
                         <div class="pure-control-group">
-                            <label for="role-id-input">角色ID</label>
+                            <label for="role-id-input" data-i18n="role-id-label">角色ID</label>
                             <input type="text" id="role-id-input" class="pure-input-1" placeholder="请输入角色ID（英文）" required>
-                            <small style="color: #999;">角色ID为唯一标识，创建后不可修改</small>
+                            <small style="color: #999;" data-i18n="role-id-hint">角色ID为唯一标识，创建后不可修改</small>
                         </div>
                         
                         <div class="pure-control-group">
-                            <label for="role-name-input">角色名称</label>
+                            <label for="role-name-input" data-i18n="role-name-label">角色名称</label>
                             <input type="text" id="role-name-input" class="pure-input-1" placeholder="请输入角色名称" required>
                         </div>
                         
                         <div class="pure-control-group">
-                            <label for="role-desc-input">角色描述</label>
+                            <label for="role-desc-input" data-i18n="role-desc-label">角色描述</label>
                             <input type="text" id="role-desc-input" class="pure-input-1" placeholder="请输入角色描述">
                         </div>
                         
                         <div class="pure-control-group">
-                            <label>权限配置</label>
+                            <label data-i18n="role-perms-label">权限配置</label>
                             <div id="role-permissions-container" style="max-height: 300px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 10px;">
                                 <!-- 权限列表将通过JS动态生成 -->
                             </div>
@@ -1747,8 +1756,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-role-btn">取消</button>
-                <button class="pure-button pure-button-primary" id="confirm-role-btn">保存</button>
+                <button class="pure-button" id="cancel-role-btn" data-i18n="cancel">取消</button>
+                <button class="pure-button pure-button-primary" id="confirm-role-btn" data-i18n="role-save-btn">保存</button>
             </div>
         </div>
     </div>
