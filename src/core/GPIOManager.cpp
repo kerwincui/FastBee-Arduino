@@ -49,10 +49,12 @@ bool GPIOManager::initialize() {
 
 bool GPIOManager::configurePin(const GPIOConfig& config) {
     if (!isValidPin(config.pin)) {
+        LOGGER.warningf("GPIO %d: invalid pin number", config.pin);
         return false;
     }
     
     if (!isValidModeForPin(config.pin, config.mode)) {
+        LOGGER.warningf("GPIO %d: invalid mode %d for this pin", config.pin, (int)config.mode);
         return false;
     }
     
@@ -66,6 +68,7 @@ bool GPIOManager::configurePin(const GPIOConfig& config) {
     pinState.config = config;
     
     if (!setupPinMode(config)) {
+        LOGGER.warningf("GPIO %d: setupPinMode failed", config.pin);
         return false;
     }
     

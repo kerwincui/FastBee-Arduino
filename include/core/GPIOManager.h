@@ -55,6 +55,7 @@ public:
     String getPinName(uint8_t pin) const;
     bool isPinConfigured(uint8_t pin) const;
     bool isPinConfigured(const String& name) const;
+    bool isValidPin(uint8_t pin) const;  // 检查引脚是否有效
     
     // 系统状态
     void printStatus() const;
@@ -82,7 +83,6 @@ private:
     std::map<String, uint8_t> nameToPin;
     
     // 内部方法
-    bool isValidPin(uint8_t pin) const;
     bool isValidModeForPin(uint8_t pin, GPIOMode mode) const;
     bool setupPinMode(const GPIOConfig& config);
     bool setupPWM(const GPIOConfig& config);

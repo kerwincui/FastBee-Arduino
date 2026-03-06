@@ -31,10 +31,10 @@ vprintf_like_t LoggerSystem::originalEspLogFunc = nullptr;
 // ── 构造 / 初始化 ─────────────────────────────────────────────────────────
 
 LoggerSystem::LoggerSystem()
-    : currentLevel(LOG_INFO),
+    : currentLevel(LOG_DEBUG),  // 调试阶段显示所有日志
       outputStream(&Serial),
       serialEnabled(true),
-      fileLoggingEnabled(false),  // 禁用文件日志以节省空间
+      fileLoggingEnabled(true),   // 启用文件日志
       initialized(false),
       espLogCaptureEnabled(true),   // 默认启用 ESP 日志捕获
       logFileSizeLimit(8192) {      // 限制日志文件大小为 8KB
@@ -61,12 +61,19 @@ bool LoggerSystem::initialize() {
     if (fileLoggingEnabled) {
         size_t total = LittleFS.totalBytes();
         size_t used = LittleFS.usedBytes();
+        size_t freeSpace = (total > used) ? (total - used) : 0;
+        
         Serial.printf("[Logger] FileSystem: total=%lu, used=%lu, free=%lu\n", 
                       (unsigned long)total, (unsigned long)used, 
-                      (unsigned long)(total - used));
+                      (unsigned long)freeSpace);
+        
         if (total == 0) {
             fileLoggingEnabled = false;
             Serial.println("[Logger] WARNING: LittleFS not mounted, file logging disabled");
+        } else if (freeSpace < 1024) {
+            // 空闲空间小于 1KB 时禁用文件日志
+            fileLoggingEnabled = false;
+            Serial.println("[Logger] WARNING: LittleFS full (free < 1KB), file logging disabled");
         } else {
             Serial.printf("[Logger] File logging enabled, log file: %s\n", LOG_FILE_PATH);
         }
@@ -148,7 +155,9 @@ void LoggerSystem::verbosef(const char* format, ...) {
 // ── 内部实现 ─────────────────────────────────────────────────────────────
 
 void LoggerSystem::log(LogLevel level, const char* message, const char* module) {
-    if (level > currentLevel || !message) {
+    // 日志级别：LOG_DEBUG(0) < LOG_INFO(1) < LOG_WARNING(2) < LOG_ERROR(3)
+    // 只输出 >= currentLevel 的日志（数值越大越重要）
+    if (level < currentLevel || !message) {
         return;
     }
 

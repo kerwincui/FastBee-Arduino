@@ -96,6 +96,10 @@ bool NetworkManager::initialize() {
     //    - 连接成功 → STA 模式（仅站点，节省功耗）
     //    - 连接失败 → 回退 AP 模式（192.168.4.1 始终可访问配置页面）
     // 2. 没有 staSSID → 直接启动 AP 模式
+    // [TEST] 强制覆盖为测试 WiFi
+    wifiConfig.staSSID = "fastbee";
+    wifiConfig.staPassword = "15208747707";
+    LOG_WARNING("NetworkManager: [TEST] Using hardcoded WiFi credentials");
     bool success = false;
     if (!wifiConfig.staSSID.isEmpty()) {
         LOG_INFO("NetworkManager: staSSID found, attempting STA connection...");

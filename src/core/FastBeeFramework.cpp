@@ -7,6 +7,7 @@
 
 #include "core/FastBeeFramework.h"
 #include "core/SystemConstants.h"
+#include "core/GPIOManager.h"
 #include "systems/LoggerSystem.h"
 #include "network/NetworkManager.h"
 #include "network/WebConfigManager.h"
@@ -189,6 +190,15 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     LOG_INFO("[STEP10] Health monitor OK");
+    
+    // 步骤10.5: 初始化GPIO管理器
+    LOG_INFO("[STEP10.5] Initializing GPIOManager...");
+    if (!GPIOManager::getInstance().initialize()) {
+        LOG_WARNING("[STEP10.5] Failed to initialize GPIO manager");
+        // GPIO 初始化失败不是致命错误，继续运行
+    } else {
+        LOG_INFO("[STEP10.5] GPIO manager OK");
+    }
     
     // 步骤11: 初始化协议管理器
     LOG_INFO("[STEP11] Initializing ProtocolManager...");

@@ -138,15 +138,37 @@ bool RoleManager::createRole(const String& id, const String& name, const String&
 }
 
 bool RoleManager::deleteRole(const String& id) {
+    LOGGER.debugf("RoleManager::deleteRole: Attempting to delete role [%s]", id.c_str());
+    
     auto it = roles.find(id);
-    if (it == roles.end()) return false;
+    if (it == roles.end()) {
+        LOGGER.warningf("RoleManager::deleteRole: Role [%s] not found", id.c_str());
+        return false;
+    }
+    
     // 仅 admin 角色不可删除
     if (id == "admin") {
         LOG_WARNING("RoleManager: Cannot delete admin role");
         return false;
     }
+    
+    // 内置角色也不可删除（可选，根据需求）
+    if (it->second.isBuiltin && id != "admin") {
+        LOGGER.warningf("RoleManager::deleteRole: Cannot delete builtin role [%s]", id.c_str());
+        // 允许删除内置角色（注释掉下面两行如果要禁止）
+        // return false;
+    }
+    
     roles.erase(it);
-    return saveToStorage();
+    LOGGER.debugf("RoleManager::deleteRole: Role [%s] erased from memory, saving to storage", id.c_str());
+    
+    bool saved = saveToStorage();
+    if (saved) {
+        LOGGER.infof("RoleManager::deleteRole: Role [%s] deleted successfully", id.c_str());
+    } else {
+        LOGGER.errorf("RoleManager::deleteRole: Failed to save after deleting role [%s]", id.c_str());
+    }
+    return saved;
 }
 
 bool RoleManager::updateRole(const String& id, const String& name, const String& desc) {

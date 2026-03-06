@@ -2456,12 +2456,16 @@ void WebConfigManager::handleAPICreateRole(AsyncWebServerRequest* request) {
     String name = getParamValue(request, "name", "");
     String desc = getParamValue(request, "description", "");
 
+    LOGGER.debugf("CreateRole: id=[%s] name=[%s] desc=[%s]", id.c_str(), name.c_str(), desc.c_str());
+
     if (id.isEmpty() || name.isEmpty()) {
+        LOGGER.warning("CreateRole: id or name is empty");
         sendBadRequest(request, "id and name are required");
         return;
     }
 
     if (!roleManager->createRole(id, name, desc)) {
+        LOGGER.errorf("CreateRole: Failed to create role [%s]", id.c_str());
         sendError(request, 400, "Failed to create role (id may already exist)");
         return;
     }
@@ -2472,6 +2476,7 @@ void WebConfigManager::handleAPICreateRole(AsyncWebServerRequest* request) {
             ar.username, "role.create", id, "Created role: " + name,
             true, getClientIP(request));
     }
+    LOGGER.infof("CreateRole: Role [%s] created successfully", id.c_str());
     sendSuccess(request, "Role created");
 }
 
@@ -2670,7 +2675,10 @@ void WebConfigManager::handleAPIDeleteRoleByPost(AsyncWebServerRequest* request)
     }
 
     String roleId = getParamValue(request, "id", "");
+    LOGGER.debugf("DeleteRole: roleId=[%s]", roleId.c_str());
+    
     if (roleId.isEmpty()) {
+        LOGGER.warning("DeleteRole: Role id is empty");
         sendBadRequest(request, "Role id is required");
         return;
     }
@@ -2682,11 +2690,20 @@ void WebConfigManager::handleAPIDeleteRoleByPost(AsyncWebServerRequest* request)
     
     // 仅 admin 角色不可删除
     if (roleId == "admin") {
+        LOGGER.warning("DeleteRole: Cannot delete admin role");
         sendError(request, 400, "Cannot delete admin role");
+        return;
+    }
+    
+    // 检查角色是否存在
+    if (!roleManager->roleExists(roleId)) {
+        LOGGER.warningf("DeleteRole: Role [%s] not found", roleId.c_str());
+        sendNotFound(request);
         return;
     }
 
     if (!roleManager->deleteRole(roleId)) {
+        LOGGER.errorf("DeleteRole: Failed to delete role [%s]", roleId.c_str());
         sendError(request, 400, "Failed to delete role");
         return;
     }
@@ -2707,12 +2724,16 @@ void WebConfigManager::handleAPISetRolePermissionsByPost(AsyncWebServerRequest* 
     }
 
     String roleId = getParamValue(request, "id", "");
+    LOGGER.debugf("SetRolePermissions: roleId=[%s]", roleId.c_str());
+    
     if (roleId.isEmpty()) {
+        LOGGER.warning("SetRolePermissions: Role id is empty");
         sendBadRequest(request, "Role id is required");
         return;
     }
 
     if (!roleManager || !roleManager->roleExists(roleId)) {
+        LOGGER.warningf("SetRolePermissions: Role [%s] not found", roleId.c_str());
         sendNotFound(request);
         return;
     }
@@ -2725,6 +2746,8 @@ void WebConfigManager::handleAPISetRolePermissionsByPost(AsyncWebServerRequest* 
 
     // 权限列表通过逗号分隔的 "permissions" 参数传递
     String permsParam = getParamValue(request, "permissions", "");
+    LOGGER.debugf("SetRolePermissions: permissions=[%s]", permsParam.c_str());
+    
     std::vector<String> permList;
     int start = 0;
     while (start < (int)permsParam.length()) {
@@ -2741,7 +2764,10 @@ void WebConfigManager::handleAPISetRolePermissionsByPost(AsyncWebServerRequest* 
         start = comma + 1;
     }
 
+    LOGGER.debugf("SetRolePermissions: Parsed %d permissions", permList.size());
+    
     if (!roleManager->setRolePermissions(roleId, permList)) {
+        LOGGER.errorf("SetRolePermissions: Failed to set permissions for role [%s]", roleId.c_str());
         sendError(request, 400, "Failed to set permissions");
         return;
     }
@@ -2754,6 +2780,7 @@ void WebConfigManager::handleAPISetRolePermissionsByPost(AsyncWebServerRequest* 
             ar.username, "role.set_permissions", roleId, buf,
             true, getClientIP(request));
     }
+    LOGGER.infof("SetRolePermissions: Role [%s] permissions updated", roleId.c_str());
     sendSuccess(request, "Permissions updated");
 }
 
@@ -3680,13 +3707,19 @@ void WebConfigManager::handleAPIConfigureGPIO(AsyncWebServerRequest* request) {
     String name = getParamValue(request, "name", "");
     String modeStr = getParamValue(request, "mode", "");
     
+    LOGGER.debugf("GPIO config request: pin=[%s] name=[%s] mode=[%s]", 
+                  pinStr.c_str(), name.c_str(), modeStr.c_str());
+    
     if (pinStr.isEmpty() || name.isEmpty() || modeStr.isEmpty()) {
+        LOGGER.warning("GPIO config: Missing required parameters");
         sendError(request, 400, "Missing required parameters: pin, name, mode");
         return;
     }
     
     uint8_t pin = pinStr.toInt();
     GPIOMode mode = static_cast<GPIOMode>(modeStr.toInt());
+    
+    LOGGER.debugf("GPIO config: parsed pin=%d mode=%d", pin, (int)mode);
     
     GPIOConfig config;
     config.pin = pin;
@@ -3696,6 +3729,14 @@ void WebConfigManager::handleAPIConfigureGPIO(AsyncWebServerRequest* request) {
     config.inverted = getParamValue(request, "invert", "0") == "1";
     
     GPIOManager& gpio = GPIOManager::getInstance();
+    
+    // 先检查引脚有效性，给出明确错误信息
+    if (!gpio.isValidPin(pin)) {
+        LOGGER.warningf("GPIO %d: invalid pin (6-11 reserved for Flash)", pin);
+        sendError(request, 400, "Invalid GPIO pin (6-11 are reserved for internal Flash)");
+        return;
+    }
+    
     if (gpio.configurePin(config)) {
         // 配置成功后自动保存到 LittleFS
         if (gpio.saveConfiguration()) {
@@ -3706,6 +3747,7 @@ void WebConfigManager::handleAPIConfigureGPIO(AsyncWebServerRequest* request) {
             sendSuccess(request, "GPIO configured but save to file failed");
         }
     } else {
+        LOGGER.errorf("Failed to configure GPIO pin %d", pin);
         sendError(request, 500, "Failed to configure GPIO");
     }
 }
