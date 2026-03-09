@@ -333,20 +333,6 @@
                                                 </div>
 
                                                 <div class="pure-control-group">
-                                                    <label for="mqtt-publish">发布主题</label>
-                                                    <input type="text" id="mqtt-publish" class="pure-input-1" value="/1/FB100900001/property/post">
-                                                </div>
-
-                                                <div class="pure-control-group">
-                                                    <label for="mqtt-publish-qos">发布QoS</label>
-                                                    <select id="mqtt-publish-qos" class="pure-input-1">
-                                                        <option value="0">0 - 最多一次</option>
-                                                        <option value="1">1 - 至少一次</option>
-                                                        <option value="2">2 - 恰好一次</option>
-                                                    </select>
-                                                </div>
-
-                                                <div class="pure-control-group">
                                                     <label class="pure-checkbox">
                                                         <input type="checkbox" id="mqtt-direct-connect" checked> 是否直连
                                                     </label>
@@ -380,14 +366,20 @@
                                                 </div>
 
                                                 <div class="pure-control-group" style="margin-top: 28px;">
-                                                    <label class="pure-checkbox" style="margin-right: 20px;">
-                                                        <input type="checkbox" id="mqtt-auto-reconnect" checked> 自动重连
-                                                    </label>
                                                     <label class="pure-checkbox">
-                                                        <input type="checkbox" id="mqtt-publish-retain"> 保留消息
+                                                        <input type="checkbox" id="mqtt-auto-reconnect" checked> 自动重连
                                                     </label>
                                                 </div>
                                             </div>
+                                        </div>
+
+                                        <!-- 发布主题配置区域 -->
+                                        <div class="mqtt-publish-section" style="margin-top: 20px; padding: 15px; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 4px;">
+                                            <h4 style="margin: 0 0 15px 0; color: #333;" data-i18n="mqtt-publish-section-title">发布主题配置</h4>
+                                            <div id="mqtt-publish-topics">
+                                                <!-- 动态添加的发布主题组将在这里显示 -->
+                                            </div>
+                                            <button type="button" id="add-mqtt-topic-btn" class="pure-button" style="margin-top: 10px;" data-i18n="mqtt-add-topic-btn">增加主题</button>
                                         </div>
 
                                         <div class="message message-success" id="mqtt-success" style="display: none;" data-i18n="mqtt-save-success">
@@ -708,11 +700,6 @@
                                                         <option value="wpa3" data-i18n="wifi-security-wpa3">WPA3</option>
                                                     </select>
                                                 </div>
-                                                
-                                                <div class="pure-control-group">
-                                                    <label for="device-name" data-i18n="wifi-device-name-label">设备名称</label>
-                                                    <input type="text" id="device-name" class="pure-input-1" placeholder="输入设备名称" data-i18n-placeholder="wifi-device-name-label">
-                                                </div>
                                             </div>
                                         </div>
 
@@ -919,7 +906,8 @@
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
                                                     <label for="dev-id" data-i18n="dev-id-label">设备编号</label>
-                                                    <input type="text" id="dev-id" class="pure-input-1" readonly style="background-color: #f5f5f5; color: #666;">
+                                                    <input type="text" id="dev-id" class="pure-input-1" placeholder="留空则使用系统默认值(FBE+MAC)" data-i18n-placeholder="dev-id-placeholder" maxlength="32">
+                                                    <span class="field-hint" data-i18n="dev-id-hint">可自定义任意格式，留空自动生成</span>
                                                 </div>
                                                 <div class="pure-control-group">
                                                     <label for="dev-product-number" data-i18n="dev-product-number-label">产品编号</label>

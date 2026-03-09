@@ -58,13 +58,39 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     config.username    = doc["username"]    | "";
     config.password    = doc["password"]    | "";
     config.topicPrefix = doc["topicPrefix"] | "";
+    config.subscribeTopic = doc["subscribeTopic"] | "";
     config.keepAlive   = doc["keepAlive"]   | 60;
     // 新增字段（兼容旧配置，使用默认值）
     config.directConnect     = doc["directConnect"]     | true;
     config.autoReconnect     = doc["autoReconnect"]     | true;
     config.connectionTimeout = doc["connectionTimeout"] | 30000;
-    config.publishQos        = doc["publishQos"]        | 0;
-    config.publishRetain     = doc["publishRetain"]     | false;
+    
+    // 加载发布主题配置（支持多组）
+    config.publishTopics.clear();
+    JsonArray topicsArr = doc["publishTopics"].as<JsonArray>();
+    if (!topicsArr.isNull()) {
+        for (JsonVariant v : topicsArr) {
+            MqttPublishTopic topic;
+            topic.topic = v["topic"] | "";
+            topic.qos = v["qos"] | 0;
+            topic.retain = v["retain"] | false;
+            topic.content = v["content"] | "";
+            config.publishTopics.push_back(topic);
+        }
+    }
+    // 兼容旧配置：如果有单独的 publishTopic，添加到数组
+    if (config.publishTopics.empty() && !doc["publishTopic"].isNull()) {
+        MqttPublishTopic topic;
+        topic.topic = doc["publishTopic"] | "";
+        topic.qos = doc["publishQos"] | 0;
+        topic.retain = doc["publishRetain"] | false;
+        config.publishTopics.push_back(topic);
+    }
+    // 确保至少有一个默认配置
+    if (config.publishTopics.empty()) {
+        MqttPublishTopic topic;
+        config.publishTopics.push_back(topic);
+    }
 
     // clientId 若配置文件未指定，生成随机 ID
     if (doc["clientId"].isNull() || doc["clientId"].as<String>().isEmpty()) {
@@ -113,10 +139,36 @@ bool MQTTClient::publish(const String& topic, const String& message) {
     }
 
     String fullTopic = config.topicPrefix + topic;
-    // 使用配置的 QoS 和 Retain 参数
-    bool ok = mqttClient.publish(fullTopic.c_str(), message.c_str(), 
-                                  config.publishRetain);
+    // 查找对应的主题配置，使用其 QoS 和 Retain 设置
+    uint8_t qos = 0;
+    bool retain = false;
+    for (const auto& pt : config.publishTopics) {
+        if (pt.topic == topic) {
+            qos = pt.qos;
+            retain = pt.retain;
+            break;
+        }
+    }
+    
+    bool ok = mqttClient.publish(fullTopic.c_str(), message.c_str(), retain);
 
+    if (!ok) {
+        char buf[80];
+        snprintf(buf, sizeof(buf), "MQTT: Publish failed topic=%s", fullTopic.c_str());
+        LOG_WARNING(buf);
+    }
+    return ok;
+}
+
+bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
+    if (!isConnected || topicIndex >= config.publishTopics.size()) {
+        return false;
+    }
+    
+    const MqttPublishTopic& pt = config.publishTopics[topicIndex];
+    String fullTopic = config.topicPrefix + pt.topic;
+    bool ok = mqttClient.publish(fullTopic.c_str(), message.c_str(), pt.retain);
+    
     if (!ok) {
         char buf[80];
         snprintf(buf, sizeof(buf), "MQTT: Publish failed topic=%s", fullTopic.c_str());

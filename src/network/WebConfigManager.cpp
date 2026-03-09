@@ -2058,7 +2058,7 @@ void WebConfigManager::handleAPIGetNetworkConfig(AsyncWebServerRequest* request)
         WiFiConfig cfg = netMgr->getConfig();
         
         // ========== 设备信息 ==========
-        doc["data"]["device"]["name"] = cfg.deviceName;
+        // 设备名称从 device.json 读取，不在网络配置中处理
         doc["data"]["device"]["macAddress"] = WiFi.macAddress();
         
         // ========== 网络模式 ==========
@@ -2119,11 +2119,7 @@ void WebConfigManager::handleAPIUpdateNetworkConfig(AsyncWebServerRequest* reque
     NetworkManager* netMgr = static_cast<NetworkManager*>(networkManager);
     WiFiConfig cfg = netMgr->getConfig();
     
-    // ========== 设备名称 ==========
-    String deviceName = getParamValue(request, "deviceName", "");
-    if (!deviceName.isEmpty()) {
-        cfg.deviceName = deviceName;
-    }
+    // 注意：设备名称在 /api/device/config 中处理，不在网络配置中处理
     
     // ========== 网络模式 ==========
     String modeStr = getParamValue(request, "mode", "");
@@ -4096,14 +4092,38 @@ void WebConfigManager::handleAPISaveProtocolConfig(AsyncWebServerRequest* reques
     doc["mqtt"]["username"] = GP("mqtt_username", "");
     doc["mqtt"]["password"] = GP("mqtt_password", "");
     doc["mqtt"]["keepAlive"] = GPI("mqtt_keepAlive", "60");
-    doc["mqtt"]["publishTopic"] = GP("mqtt_publishTopic", "");
     doc["mqtt"]["subscribeTopic"] = GP("mqtt_subscribeTopic", "");
     // 新增字段
     doc["mqtt"]["directConnect"] = GP("mqtt_directConnect", "true") == "true";
     doc["mqtt"]["autoReconnect"] = GP("mqtt_autoReconnect", "true") == "true";
     doc["mqtt"]["connectionTimeout"] = GPI("mqtt_connectionTimeout", "30000");
-    doc["mqtt"]["publishQos"] = GPI("mqtt_publishQos", "0");
-    doc["mqtt"]["publishRetain"] = GP("mqtt_publishRetain", "false") == "true";
+    
+    // 发布主题配置（支持多组）- 从JSON字符串解析
+    String publishTopicsJson = GP("mqtt_publishTopics", "[]");
+    JsonArray publishTopics = doc["mqtt"]["publishTopics"].to<JsonArray>();
+    if (publishTopicsJson.length() > 2) { // 不是空数组 "[]"
+        // 尝试解析前端传来的JSON数组字符串
+        JsonDocument topicsDoc;
+        DeserializationError err = deserializeJson(topicsDoc, publishTopicsJson);
+        if (!err && topicsDoc.is<JsonArray>()) {
+            JsonArray arr = topicsDoc.as<JsonArray>();
+            for (JsonVariant v : arr) {
+                JsonObject topicObj = publishTopics.add<JsonObject>();
+                topicObj["topic"] = v["topic"] | "";
+                topicObj["qos"] = v["qos"] | 0;
+                topicObj["retain"] = v["retain"] | false;
+                topicObj["content"] = v["content"] | "";
+            }
+        }
+    }
+    // 如果没有配置，添加一个默认空配置
+    if (publishTopics.size() == 0) {
+        JsonObject defaultTopic = publishTopics.add<JsonObject>();
+        defaultTopic["topic"] = "";
+        defaultTopic["qos"] = 0;
+        defaultTopic["retain"] = false;
+        defaultTopic["content"] = "";
+    }
     
     // HTTP
     doc["http"]["enabled"] = GP("http_enabled", "false") == "true";
@@ -4481,6 +4501,22 @@ void WebConfigManager::handleAPIUpdateDeviceConfig(AsyncWebServerRequest* reques
 
     // 只更新传入的字段
     String val;
+    
+    // 设备编号：如果传入且不为空则保存，否则保留现有值或生成默认值
+    val = getParamValue(request, "deviceId", "");
+    if (!val.isEmpty()) {
+        // 用户可自定义任意格式，直接保存
+        cfg["deviceId"] = val;
+    }
+    // 如果 deviceId 为空且配置中也没有，生成基于MAC的默认值
+    if ((!cfg.containsKey("deviceId") || cfg["deviceId"].as<String>().isEmpty()) && 
+        WiFi.macAddress().length() > 0) {
+        String mac = WiFi.macAddress();
+        mac.replace(":", "");
+        mac.toUpperCase();
+        cfg["deviceId"] = "FBE" + mac;
+    }
+    
     val = getParamValue(request, "ntpServer1", "");
     if (!val.isEmpty()) cfg["ntpServer1"] = val;
     val = getParamValue(request, "ntpServer2", "");

@@ -105,6 +105,10 @@ const i18n = {
             'mqtt-direct-connect-label': '是否直连',
             'mqtt-auto-reconnect-label': '自动重连',
             'mqtt-publish-retain-label': '保留消息',
+            'mqtt-publish-section-title': '发布主题配置',
+            'mqtt-add-topic-btn': '增加主题',
+            'mqtt-delete-topic-btn': '删除',
+            'mqtt-publish-content-label': '发布内容',
             'save-config-btn': '保存配置',
             
             // 协议成功消息
@@ -176,6 +180,8 @@ const i18n = {
             
             // 设备基本信息
             'dev-id-label': '设备编号',
+            'dev-id-placeholder': '留空则使用系统默认值(FBE+MAC)',
+            'dev-id-hint': '可自定义任意格式，留空自动生成',
             'dev-product-number-label': '产品编号',
             'dev-name-label': '设备名称',
             'dev-location-label': '安装位置',
@@ -951,6 +957,10 @@ const i18n = {
             'mqtt-direct-connect-label': 'Direct Connect',
             'mqtt-auto-reconnect-label': 'Auto Reconnect',
             'mqtt-publish-retain-label': 'Retain Message',
+            'mqtt-publish-section-title': 'Publish Topics Config',
+            'mqtt-add-topic-btn': 'Add Topic',
+            'mqtt-delete-topic-btn': 'Delete',
+            'mqtt-publish-content-label': 'Publish Content',
             'save-config-btn': 'Save Config',
             
             // Protocol success messages
@@ -1022,6 +1032,8 @@ const i18n = {
             
             // Device basic info
             'dev-id-label': 'Device ID',
+            'dev-id-placeholder': 'Leave empty for default (FBE+MAC)',
+            'dev-id-hint': 'Any format allowed, auto-generated if empty',
             'dev-product-number-label': 'Product Number',
             'dev-name-label': 'Device Name',
             'dev-location-label': 'Location',

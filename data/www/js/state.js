@@ -141,6 +141,12 @@ const AppState = {
             });
         });
         
+        // MQTT增加主题按钮
+        const addMqttTopicBtn = document.getElementById('add-mqtt-topic-btn');
+        if (addMqttTopicBtn) {
+            addMqttTopicBtn.addEventListener('click', () => this.addMqttPublishTopic());
+        }
+        
         // 网络配置表单提交（已有单独处理）
         document.querySelectorAll('#network-page form').forEach(form => {
             form.addEventListener('submit', e => {
@@ -1937,9 +1943,6 @@ const AppState = {
                 const advanced = data.advanced || {};
                 
                 // ========== 基本配置 ==========
-                // 设备名称
-                this._setValue('device-name', device.name || '');
-                
                 // 网络模式
                 this._setValue('wifi-mode', network.mode !== undefined ? network.mode.toString() : '2');
                 
@@ -2004,7 +2007,6 @@ const AppState = {
      */
     saveNetworkConfig() {
         const config = {
-            deviceName: document.getElementById('device-name')?.value || '',
             mode: document.getElementById('wifi-mode')?.value || '2',
             staSSID: document.getElementById('wifi-ssid')?.value || '',
             staPassword: document.getElementById('wifi-password')?.value || '',
@@ -2227,14 +2229,9 @@ const AppState = {
             .then(res => {
                 if (!res || !res.success) return;
                 const d = res.data || {};
-                // 设备编号：优先使用配置中的，否则使用系统返回的，最后生成（FBE + 完整MAC地址）
-                let deviceId = d.deviceId || '';
-                if (!deviceId && d.macAddress) {
-                    // 从MAC地址生成 FBE+完整MAC（12位）
-                    const macClean = d.macAddress.replace(/:/g, '').toUpperCase();
-                    deviceId = 'FBE' + macClean;
-                }
-                this._setValue('dev-id', deviceId || 'FBE000000000000');
+                // 设备编号：显示配置中的值（可能是用户自定义的或系统生成的）
+                // 如果配置中没有，后端会返回基于MAC生成的默认值
+                this._setValue('dev-id', d.deviceId || '');
                 // 产品编号
                 this._setValue('dev-product-number', d.productNumber !== undefined ? String(d.productNumber) : '0');
                 this._setValue('dev-name',          d.deviceName   || '');
@@ -2271,8 +2268,14 @@ const AppState = {
     },
 
     saveDeviceBasic() {
+        // 获取设备编号（用户可自定义任意格式）
+        const deviceIdInput = document.getElementById('dev-id');
+        let deviceId = deviceIdInput?.value?.trim() || '';
+        // 如果为空，后端会使用基于MAC的默认值
+        
         const productNumberVal = document.getElementById('dev-product-number')?.value;
         const config = {
+            deviceId:       deviceId,
             deviceName:     document.getElementById('dev-name')?.value || '',
             productNumber:  productNumberVal !== undefined && productNumberVal !== '' ? parseInt(productNumberVal, 10) : 0,
             location:       document.getElementById('dev-location')?.value || '',
@@ -2527,7 +2530,140 @@ const AppState = {
      */
     _setCheckbox(id, checked) {
         const el = document.getElementById(id);
-        if (el) el.checked = !!checked;
+        if (el) el.checked = checked;
+    },
+        
+    /**
+     * 加载MQTT发布主题配置（支持多组）
+     */
+    _loadMqttPublishTopics(topics) {
+        const container = document.getElementById('mqtt-publish-topics');
+        if (!container) return;
+            
+        container.innerHTML = '';
+            
+        // 如果没有配置，添加一个默认空组
+        if (!topics || topics.length === 0) {
+            topics = [{ topic: '', qos: 0, retain: false, content: '' }];
+        }
+            
+        topics.forEach((topic, index) => {
+            this._createMqttPublishTopicElement(topic, index);
+        });
+    },
+        
+    /**
+     * 创建单个MQTT发布主题配置元素
+     */
+    _createMqttPublishTopicElement(topicData, index) {
+        const container = document.getElementById('mqtt-publish-topics');
+        if (!container) return;
+            
+        const div = document.createElement('div');
+        div.className = 'mqtt-publish-topic-item';
+        div.dataset.index = index;
+            
+        div.innerHTML = `
+            <span class="mqtt-publish-topic-index">${index + 1}</span>
+            <button type="button" class="mqtt-publish-topic-delete" onclick="app.deleteMqttPublishTopic(${index})">${i18n.t('mqtt-delete-topic-btn')}</button>
+            <div class="mqtt-publish-topic-grid">
+                <div class="mqtt-publish-topic-left">
+                    <div class="pure-control-group">
+                        <label>${i18n.t('mqtt-publish-label')}</label>
+                        <input type="text" class="pure-input-1 mqtt-topic-input" value="${topicData.topic || ''}" placeholder="/topic/path">
+                    </div>
+                    <div class="pure-control-group">
+                        <label>${i18n.t('mqtt-publish-qos-label')}</label>
+                        <select class="pure-input-1 mqtt-qos-input">
+                            <option value="0" ${topicData.qos === 0 ? 'selected' : ''}>0 - ${i18n.t('mqtt-qos-0') || '最多一次'}</option>
+                            <option value="1" ${topicData.qos === 1 ? 'selected' : ''}>1 - ${i18n.t('mqtt-qos-1') || '至少一次'}</option>
+                            <option value="2" ${topicData.qos === 2 ? 'selected' : ''}>2 - ${i18n.t('mqtt-qos-2') || '恰好一次'}</option>
+                        </select>
+                    </div>
+                    <div class="pure-control-group">
+                        <label class="pure-checkbox">
+                            <input type="checkbox" class="mqtt-retain-input" ${topicData.retain ? 'checked' : ''}> ${i18n.t('mqtt-publish-retain-label')}
+                        </label>
+                    </div>
+                </div>
+                <div class="mqtt-publish-topic-right">
+                    <div class="pure-control-group" style="height: 100%;">
+                        <label>${i18n.t('mqtt-publish-content-label')}</label>
+                        <textarea class="pure-input-1 mqtt-content-input" rows="5" placeholder="${i18n.t('mqtt-publish-content-placeholder') || '输入要发布的消息内容'}">${topicData.content || ''}</textarea>
+                    </div>
+                </div>
+            </div>
+        `;
+            
+        container.appendChild(div);
+    },
+        
+    /**
+     * 添加新的MQTT发布主题配置组
+     */
+    addMqttPublishTopic() {
+        const container = document.getElementById('mqtt-publish-topics');
+        if (!container) return;
+            
+        const index = container.children.length;
+        this._createMqttPublishTopicElement({ topic: '', qos: 0, retain: false, content: '' }, index);
+    },
+        
+    /**
+     * 删除MQTT发布主题配置组
+     */
+    deleteMqttPublishTopic(index) {
+        const container = document.getElementById('mqtt-publish-topics');
+        if (!container) return;
+            
+        const items = container.querySelectorAll('.mqtt-publish-topic-item');
+        if (items[index]) {
+            items[index].remove();
+        }
+            
+        // 重新索引
+        const remainingItems = container.querySelectorAll('.mqtt-publish-topic-item');
+        remainingItems.forEach((item, idx) => {
+            item.dataset.index = idx;
+            const indexSpan = item.querySelector('.mqtt-publish-topic-index');
+            if (indexSpan) indexSpan.textContent = idx + 1;
+            const deleteBtn = item.querySelector('.mqtt-publish-topic-delete');
+            if (deleteBtn) deleteBtn.setAttribute('onclick', `app.deleteMqttPublishTopic(${idx})`);
+        });
+            
+        // 如果全部删除了，添加一个默认空组
+        if (remainingItems.length === 0) {
+            this._createMqttPublishTopicElement({ topic: '', qos: 0, retain: false, content: '' }, 0);
+        }
+    },
+        
+    /**
+     * 收集所有MQTT发布主题配置
+     */
+    _collectMqttPublishTopics() {
+        const container = document.getElementById('mqtt-publish-topics');
+        if (!container) return [];
+            
+        const topics = [];
+        const items = container.querySelectorAll('.mqtt-publish-topic-item');
+            
+        items.forEach(item => {
+            const topicInput = item.querySelector('.mqtt-topic-input');
+            const qosInput = item.querySelector('.mqtt-qos-input');
+            const retainInput = item.querySelector('.mqtt-retain-input');
+            const contentInput = item.querySelector('.mqtt-content-input');
+                
+            if (topicInput) {
+                topics.push({
+                    topic: topicInput.value || '',
+                    qos: parseInt(qosInput?.value || '0'),
+                    retain: retainInput?.checked || false,
+                    content: contentInput?.value || ''
+                });
+            }
+        });
+            
+        return topics;
     },
 
     /**
@@ -2613,14 +2749,14 @@ const AppState = {
             this._setValue('mqtt-username', mqtt.username || '');
             this._setValue('mqtt-password', mqtt.password || '');
             this._setValue('mqtt-alive', mqtt.keepAlive || 60);
-            this._setValue('mqtt-publish', mqtt.publishTopic || '');
             this._setValue('mqtt-subscribe', mqtt.subscribeTopic || '');
             // 新增字段
-            this._setValue('mqtt-publish-qos', mqtt.publishQos ?? 0);
             this._setValue('mqtt-conn-timeout', mqtt.connectionTimeout ?? 30000);
             this._setCheckbox('mqtt-direct-connect', mqtt.directConnect ?? true);
             this._setCheckbox('mqtt-auto-reconnect', mqtt.autoReconnect ?? true);
-            this._setCheckbox('mqtt-publish-retain', mqtt.publishRetain ?? false);
+            
+            // 加载发布主题配置（支持多组）
+            this._loadMqttPublishTopics(mqtt.publishTopics || []);
         }
         
         if (tabId === 'http' && config.http) {
@@ -2680,14 +2816,12 @@ const AppState = {
         data.mqtt_username = document.getElementById('mqtt-username')?.value || '';
         data.mqtt_password = document.getElementById('mqtt-password')?.value || '';
         data.mqtt_keepAlive = document.getElementById('mqtt-alive')?.value || '60';
-        data.mqtt_publishTopic = document.getElementById('mqtt-publish')?.value || '';
         data.mqtt_subscribeTopic = document.getElementById('mqtt-subscribe')?.value || '';
-        // 新增字段
-        data.mqtt_publishQos = document.getElementById('mqtt-publish-qos')?.value || '0';
         data.mqtt_connectionTimeout = document.getElementById('mqtt-conn-timeout')?.value || '30000';
         data.mqtt_directConnect = document.getElementById('mqtt-direct-connect')?.checked ?? true;
         data.mqtt_autoReconnect = document.getElementById('mqtt-auto-reconnect')?.checked ?? true;
-        data.mqtt_publishRetain = document.getElementById('mqtt-publish-retain')?.checked ?? false;
+        // 收集发布主题配置（多组）
+        data.mqtt_publishTopics = this._collectMqttPublishTopics();
         
         // HTTP
         data.http_url = document.getElementById('http-url')?.value || 'https://api.example.com';
