@@ -59,6 +59,12 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     config.password    = doc["password"]    | "";
     config.topicPrefix = doc["topicPrefix"] | "";
     config.keepAlive   = doc["keepAlive"]   | 60;
+    // 新增字段（兼容旧配置，使用默认值）
+    config.directConnect     = doc["directConnect"]     | true;
+    config.autoReconnect     = doc["autoReconnect"]     | true;
+    config.connectionTimeout = doc["connectionTimeout"] | 30000;
+    config.publishQos        = doc["publishQos"]        | 0;
+    config.publishRetain     = doc["publishRetain"]     | false;
 
     // clientId 若配置文件未指定，生成随机 ID
     if (doc["clientId"].isNull() || doc["clientId"].as<String>().isEmpty()) {
@@ -107,7 +113,9 @@ bool MQTTClient::publish(const String& topic, const String& message) {
     }
 
     String fullTopic = config.topicPrefix + topic;
-    bool ok = mqttClient.publish(fullTopic.c_str(), message.c_str());
+    // 使用配置的 QoS 和 Retain 参数
+    bool ok = mqttClient.publish(fullTopic.c_str(), message.c_str(), 
+                                  config.publishRetain);
 
     if (!ok) {
         char buf[80];

@@ -7,6 +7,7 @@
 #include "./protocols/ProtocolManager.h"
 #include "systems/LoggerSystem.h"
 #include "core/GPIOManager.h"
+#include "core/ConfigDefines.h"
 #include "utils/NetworkUtils.h"
 #include <time.h>
 #include <esp_wifi.h>
@@ -127,6 +128,11 @@ void WebConfigManager::setupStaticRoutes() {
         .setIsDir(false).setTryGzipFirst(false).setCacheControl("no-cache");
     server->serveStatic("/assets/", LittleFS, "/www/assets/")
         .setIsDir(false).setTryGzipFirst(false).setCacheControl("max-age=86400");
+
+    // favicon.ico 重定向到 assets 目录
+    server->on("/favicon.ico", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        request->send(LittleFS, "/www/assets/favicon.ico", "image/x-icon");
+    });
 
     // 根路径重定向到登录页或仪表板
     server->on("/", HTTP_GET, [this](AsyncWebServerRequest* request) {
@@ -364,9 +370,15 @@ void WebConfigManager::setupSystemRoutes() {
     });
     
     // 系统重启
-    server->on("/api/system/restart", HTTP_POST, 
+    server->on("/api/system/restart", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
         handleAPISystemRestart(request);
+    });
+    
+    // 恢复出厂设置
+    server->on("/api/system/factory-reset", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIFactoryReset(request);
     });
     
     // 文件系统信息
@@ -640,6 +652,71 @@ void WebConfigManager::setupAPIRoutes() {
     server->on("/api/gpio/save", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
         handleAPISaveGPIOConfig(request);
+    });
+    
+    // ============ 外设接口 API ============
+    // 注意：更具体的路由必须放在通用路由之前，否则会被通用路由捕获
+    
+    // 获取外设类型列表
+    server->on("/api/peripherals/types", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIGetPeripheralTypes(request);
+    });
+    
+    // 启用/禁用外设（必须在 /api/peripherals POST 之前注册）
+    server->on("/api/peripherals/enable", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIEnablePeripheral(request);
+    });
+    
+    server->on("/api/peripherals/disable", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIDisablePeripheral(request);
+    });
+    
+    // 获取外设状态
+    server->on("/api/peripherals/status", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIGetPeripheralStatus(request);
+    });
+    
+    // 读取/写入外设数据
+    server->on("/api/peripherals/read", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIReadPeripheral(request);
+    });
+    
+    server->on("/api/peripherals/write", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIWritePeripheral(request);
+    });
+    
+    // 获取/更新/删除单个外设（带斜杠的路径）
+    server->on("/api/peripherals/", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIGetPeripheral(request);
+    });
+    
+    server->on("/api/peripherals/", HTTP_PUT,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIUpdatePeripheral(request);
+    });
+    
+    server->on("/api/peripherals/", HTTP_DELETE,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIDeletePeripheral(request);
+    });
+    
+    // 获取所有外设（支持按类型过滤）- 通用GET路由
+    server->on("/api/peripherals", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIGetPeripherals(request);
+    });
+    
+    // 添加外设 - 通用POST路由（放在最后）
+    server->on("/api/peripherals", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIAddPeripheral(request);
     });
     
     // ============ 协议配置 API ============
@@ -1686,6 +1763,9 @@ void WebConfigManager::handleAPISystemInfo(AsyncWebServerRequest* request) {
     doc["data"]["device"]["chipRevision"] = ESP.getChipRevision();
     doc["data"]["device"]["cpuFreqMHz"] = ESP.getCpuFreqMHz();
     doc["data"]["device"]["sdkVersion"] = ESP.getSdkVersion();
+    doc["data"]["device"]["freeHeap"] = ESP.getFreeHeap();
+    doc["data"]["device"]["flashSize"] = ESP.getFlashChipSize();
+    doc["data"]["device"]["firmwareVersion"] = SystemInfo::VERSION;
     
     // ========== Flash 存储信息 ==========
     size_t flashSize = ESP.getFlashChipSize();
@@ -1813,6 +1893,64 @@ void WebConfigManager::handleAPISystemRestart(AsyncWebServerRequest* request) {
     
     // 延迟重启
     delay(delaySeconds * 1000);
+    ESP.restart();
+}
+
+void WebConfigManager::handleAPIFactoryReset(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "system.restart")) {
+        sendUnauthorized(request);
+        return;
+    }
+
+    LOGGER.info("Factory reset initiated by user");
+
+    // 定义需要删除的配置文件列表
+    const char* configFiles[] = {
+        "/config/device.json",
+        "/config/network.json",
+        "/config/protocol.json",
+        "/config/gpio.json",
+        "/config/users.json",
+        "/config/system.json",
+        "/config/http.json",
+        "/config/mqtt.json",
+        "/config/tcp.json",
+        "/config/modbus.json",
+        "/config/coap.json"
+    };
+
+    // 删除所有配置文件
+    int deletedCount = 0;
+    for (int i = 0; i < sizeof(configFiles) / sizeof(configFiles[0]); i++) {
+        if (LittleFS.exists(configFiles[i])) {
+            if (LittleFS.remove(configFiles[i])) {
+                deletedCount++;
+                LOGGER.infof("Deleted config file: %s", configFiles[i]);
+            } else {
+                LOGGER.warningf("Failed to delete config file: %s", configFiles[i]);
+            }
+        }
+    }
+
+    // 清空日志文件
+    if (LittleFS.exists("/logs/system.log")) {
+        File logFile = LittleFS.open("/logs/system.log", "w");
+        if (logFile) {
+            logFile.close();
+            LOGGER.info("Cleared system log file");
+        }
+    }
+
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["message"] = "Factory reset completed. Device will restart.";
+    doc["deletedFiles"] = deletedCount;
+    doc["timestamp"] = millis();
+
+    sendJsonResponse(request, 200, doc);
+
+    // 延迟2秒后重启
+    delay(2000);
     ESP.restart();
 }
 
@@ -3960,6 +4098,12 @@ void WebConfigManager::handleAPISaveProtocolConfig(AsyncWebServerRequest* reques
     doc["mqtt"]["keepAlive"] = GPI("mqtt_keepAlive", "60");
     doc["mqtt"]["publishTopic"] = GP("mqtt_publishTopic", "");
     doc["mqtt"]["subscribeTopic"] = GP("mqtt_subscribeTopic", "");
+    // 新增字段
+    doc["mqtt"]["directConnect"] = GP("mqtt_directConnect", "true") == "true";
+    doc["mqtt"]["autoReconnect"] = GP("mqtt_autoReconnect", "true") == "true";
+    doc["mqtt"]["connectionTimeout"] = GPI("mqtt_connectionTimeout", "30000");
+    doc["mqtt"]["publishQos"] = GPI("mqtt_publishQos", "0");
+    doc["mqtt"]["publishRetain"] = GP("mqtt_publishRetain", "false") == "true";
     
     // HTTP
     doc["http"]["enabled"] = GP("http_enabled", "false") == "true";
@@ -4022,6 +4166,15 @@ void WebConfigManager::handleAPIGetDeviceConfig(AsyncWebServerRequest* request) 
             if (!deserializeJson(fileCfg, f)) {
                 doc["success"] = true;
                 doc["data"] = fileCfg;
+                // 添加 MAC 地址用于前端生成设备编号
+                doc["data"]["macAddress"] = WiFi.macAddress();
+                // 如果没有设备编号，生成一个（FBE + 完整MAC地址）
+                if (!fileCfg["deviceId"].is<String>() || fileCfg["deviceId"].as<String>().isEmpty()) {
+                    String mac = WiFi.macAddress();
+                    mac.replace(":", "");
+                    mac.toUpperCase();
+                    doc["data"]["deviceId"] = "FBE" + mac;
+                }
                 f.close();
                 String out;
                 serializeJson(doc, out);
@@ -4042,6 +4195,12 @@ void WebConfigManager::handleAPIGetDeviceConfig(AsyncWebServerRequest* request) 
     doc["data"]["location"] = "";
     doc["data"]["description"] = "";
     doc["data"]["syncInterval"] = 3600;
+    // 添加 MAC 地址和设备编号（FBE + 完整MAC地址）
+    String mac = WiFi.macAddress();
+    doc["data"]["macAddress"] = mac;
+    mac.replace(":", "");
+    mac.toUpperCase();
+    doc["data"]["deviceId"] = "FBE" + mac;
 
     String out;
     serializeJson(doc, out);
@@ -4338,6 +4497,8 @@ void WebConfigManager::handleAPIUpdateDeviceConfig(AsyncWebServerRequest* reques
     if (request->hasParam("description")) cfg["description"] = val;
     val = getParamValue(request, "syncInterval", "");
     if (!val.isEmpty()) cfg["syncInterval"] = val.toInt();
+    val = getParamValue(request, "productNumber", "");
+    if (request->hasParam("productNumber")) cfg["productNumber"] = val.toInt();
 
     // 保存到 LittleFS
     File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
@@ -4667,5 +4828,563 @@ void WebConfigManager::handleAPIStopBLEProvision(AsyncWebServerRequest* request)
 
     LOGGER.info("BLE: Provision stopped");
     sendSuccess(request, "蓝牙配网已停止");
+}
+
+// ============ 外设接口 API处理器 ============
+
+#include "core/PeripheralManager.h"
+
+void WebConfigManager::handleAPIGetPeripherals(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "system.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    // 获取类型过滤参数
+    String typeFilter = getParamValue(request, "type", "");
+    String categoryFilter = getParamValue(request, "category", "");
+    
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    std::vector<PeripheralConfig> peripherals;
+    
+    if (!typeFilter.isEmpty()) {
+        PeripheralType type = parsePeripheralType(typeFilter.c_str());
+        peripherals = pm.getPeripheralsByType(type);
+    } else if (!categoryFilter.isEmpty()) {
+        PeripheralCategory category = PeripheralCategory::CATEGORY_GPIO;
+        if (categoryFilter == "communication") category = PeripheralCategory::CATEGORY_COMMUNICATION;
+        else if (categoryFilter == "gpio") category = PeripheralCategory::CATEGORY_GPIO;
+        else if (categoryFilter == "analog") category = PeripheralCategory::CATEGORY_ANALOG_SIGNAL;
+        else if (categoryFilter == "debug") category = PeripheralCategory::CATEGORY_DEBUG;
+        else if (categoryFilter == "special") category = PeripheralCategory::CATEGORY_SPECIAL;
+        peripherals = pm.getPeripheralsByCategory(category);
+    } else {
+        peripherals = pm.getAllPeripherals();
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonArray data = doc["data"].to<JsonArray>();
+    
+    for (const auto& config : peripherals) {
+        JsonObject obj = data.add<JsonObject>();
+        obj["id"] = config.id;
+        obj["name"] = config.name;
+        obj["type"] = static_cast<int>(config.type);
+        obj["typeName"] = getPeripheralTypeName(config.type);
+        obj["category"] = getCategoryName(getPeripheralCategory(config.type));
+        obj["enabled"] = config.enabled;
+        
+        // 引脚信息
+        JsonArray pins = obj["pins"].to<JsonArray>();
+        for (int i = 0; i < config.pinCount && i < 8; i++) {
+            if (config.pins[i] != 255) {
+                pins.add(config.pins[i]);
+            }
+        }
+        
+        // 运行时状态
+        auto runtimeState = pm.getRuntimeState(config.id);
+        if (runtimeState) {
+            obj["status"] = static_cast<int>(runtimeState->status);
+        } else {
+            obj["status"] = 0;  // DISABLED
+        }
+    }
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+void WebConfigManager::handleAPIGetPeripheralTypes(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "system.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    
+    // 按类别组织类型
+    JsonObject data = doc["data"].to<JsonObject>();
+    
+    // 通信接口
+    JsonArray commTypes = data["communication"].to<JsonArray>();
+    for (int i = 1; i <= 5; i++) {
+        PeripheralType type = static_cast<PeripheralType>(i);
+        JsonObject typeObj = commTypes.add<JsonObject>();
+        typeObj["value"] = i;
+        typeObj["name"] = getPeripheralTypeName(type);
+        typeObj["pinCount"] = getPeripheralPinCount(type);
+    }
+    
+    // GPIO接口
+    JsonArray gpioTypes = data["gpio"].to<JsonArray>();
+    for (int i = 11; i <= 21; i++) {
+        PeripheralType type = static_cast<PeripheralType>(i);
+        JsonObject typeObj = gpioTypes.add<JsonObject>();
+        typeObj["value"] = i;
+        typeObj["name"] = getPeripheralTypeName(type);
+        typeObj["pinCount"] = getPeripheralPinCount(type);
+    }
+    
+    // 模拟信号
+    JsonArray analogTypes = data["analog"].to<JsonArray>();
+    for (int i = 26; i <= 27; i++) {
+        PeripheralType type = static_cast<PeripheralType>(i);
+        JsonObject typeObj = analogTypes.add<JsonObject>();
+        typeObj["value"] = i;
+        typeObj["name"] = getPeripheralTypeName(type);
+        typeObj["pinCount"] = getPeripheralPinCount(type);
+    }
+    
+    // 调试接口
+    JsonArray debugTypes = data["debug"].to<JsonArray>();
+    for (int i = 31; i <= 32; i++) {
+        PeripheralType type = static_cast<PeripheralType>(i);
+        JsonObject typeObj = debugTypes.add<JsonObject>();
+        typeObj["value"] = i;
+        typeObj["name"] = getPeripheralTypeName(type);
+        typeObj["pinCount"] = getPeripheralPinCount(type);
+    }
+    
+    // 专用外设
+    JsonArray specialTypes = data["special"].to<JsonArray>();
+    for (int i = 36; i <= 45; i++) {
+        PeripheralType type = static_cast<PeripheralType>(i);
+        JsonObject typeObj = specialTypes.add<JsonObject>();
+        typeObj["value"] = i;
+        typeObj["name"] = getPeripheralTypeName(type);
+        typeObj["pinCount"] = getPeripheralPinCount(type);
+    }
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+void WebConfigManager::handleAPIGetPeripheral(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "system.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    String id = getParamValue(request, "id", "");
+    if (id.isEmpty()) {
+        sendError(request, 400, "Missing id parameter");
+        return;
+    }
+    
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    auto config = pm.getPeripheral(id);
+    
+    if (!config) {
+        sendError(request, 404, "Peripheral not found");
+        return;
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    
+    data["id"] = config->id;
+    data["name"] = config->name;
+    data["type"] = static_cast<int>(config->type);
+    data["typeName"] = getPeripheralTypeName(config->type);
+    data["enabled"] = config->enabled;
+    
+    // 引脚信息
+    JsonArray pins = data["pins"].to<JsonArray>();
+    for (int i = 0; i < config->pinCount && i < 8; i++) {
+        if (config->pins[i] != 255) {
+            pins.add(config->pins[i]);
+        }
+    }
+    
+    // 类型特定参数
+    JsonObject params = data["params"].to<JsonObject>();
+    if (config->type == PeripheralType::UART) {
+        params["baudRate"] = config->params.uart.baudRate;
+        params["dataBits"] = config->params.uart.dataBits;
+        params["stopBits"] = config->params.uart.stopBits;
+        params["parity"] = config->params.uart.parity;
+    }
+    else if (config->type == PeripheralType::I2C) {
+        params["frequency"] = config->params.i2c.frequency;
+        params["address"] = config->params.i2c.address;
+        params["isMaster"] = config->params.i2c.isMaster;
+    }
+    else if (config->type == PeripheralType::SPI) {
+        params["frequency"] = config->params.spi.frequency;
+        params["mode"] = config->params.spi.mode;
+        params["msbFirst"] = config->params.spi.msbFirst;
+    }
+    else if (config->isGPIOPeripheral()) {
+        params["initialState"] = static_cast<int>(config->params.gpio.initialState);
+        params["inverted"] = config->params.gpio.inverted;
+        params["pwmChannel"] = config->params.gpio.pwmChannel;
+        params["pwmFrequency"] = config->params.gpio.pwmFrequency;
+        params["pwmResolution"] = config->params.gpio.pwmResolution;
+        params["debounceMs"] = config->params.gpio.debounceMs;
+    }
+    else if (config->type == PeripheralType::ADC) {
+        params["attenuation"] = config->params.adc.attenuation;
+        params["resolution"] = config->params.adc.resolution;
+    }
+    else if (config->type == PeripheralType::DAC) {
+        params["channel"] = config->params.dac.channel;
+    }
+    
+    // 运行时状态
+    auto runtimeState = pm.getRuntimeState(id);
+    if (runtimeState) {
+        JsonObject status = data["status"].to<JsonObject>();
+        status["state"] = static_cast<int>(runtimeState->status);
+        status["initTime"] = runtimeState->initTime;
+        status["lastActivity"] = runtimeState->lastActivity;
+        status["errorCount"] = runtimeState->errorCount;
+    }
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+void WebConfigManager::handleAPIAddPeripheral(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    PeripheralConfig config;
+    config.id = getParamValue(request, "id", "");
+    config.name = getParamValue(request, "name", "");
+    config.type = static_cast<PeripheralType>(getParamInt(request, "type", 0));
+    config.enabled = getParamBool(request, "enabled", true);
+    
+    // 解析引脚
+    String pinsStr = getParamValue(request, "pins", "");
+    config.pinCount = 0;
+    if (!pinsStr.isEmpty()) {
+        int start = 0;
+        int end = pinsStr.indexOf(',');
+        while (end != -1 && config.pinCount < 8) {
+            config.pins[config.pinCount++] = pinsStr.substring(start, end).toInt();
+            start = end + 1;
+            end = pinsStr.indexOf(',', start);
+        }
+        if (config.pinCount < 8) {
+            config.pins[config.pinCount++] = pinsStr.substring(start).toInt();
+        }
+    }
+    
+    // 类型特定参数
+    if (config.type == PeripheralType::UART) {
+        config.params.uart.baudRate = getParamInt(request, "baudRate", 115200);
+        config.params.uart.dataBits = getParamInt(request, "dataBits", 8);
+        config.params.uart.stopBits = getParamInt(request, "stopBits", 1);
+        config.params.uart.parity = getParamInt(request, "parity", 0);
+    }
+    else if (config.type == PeripheralType::I2C) {
+        config.params.i2c.frequency = getParamInt(request, "frequency", 100000);
+        config.params.i2c.address = getParamInt(request, "address", 0);
+        config.params.i2c.isMaster = getParamBool(request, "isMaster", true);
+    }
+    else if (config.type == PeripheralType::SPI) {
+        config.params.spi.frequency = getParamInt(request, "frequency", 1000000);
+        config.params.spi.mode = getParamInt(request, "mode", 0);
+        config.params.spi.msbFirst = getParamBool(request, "msbFirst", true);
+    }
+    else if (config.isGPIOPeripheral()) {
+        config.params.gpio.initialState = static_cast<GPIOState>(getParamInt(request, "initialState", 0));
+        config.params.gpio.inverted = getParamBool(request, "inverted", false);
+        config.params.gpio.pwmChannel = getParamInt(request, "pwmChannel", 0);
+        config.params.gpio.pwmFrequency = getParamInt(request, "pwmFrequency", 1000);
+        config.params.gpio.pwmResolution = getParamInt(request, "pwmResolution", 8);
+        config.params.gpio.debounceMs = getParamInt(request, "debounceMs", 50);
+    }
+    else if (config.type == PeripheralType::ADC) {
+        config.params.adc.attenuation = getParamInt(request, "attenuation", 0);
+        config.params.adc.resolution = getParamInt(request, "resolution", 12);
+    }
+    else if (config.type == PeripheralType::DAC) {
+        config.params.dac.channel = getParamInt(request, "channel", 1);
+    }
+    
+    // 生成ID（如果未提供）
+    if (config.id.isEmpty()) {
+        config.id = "periph_" + String(millis());
+    }
+    
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    if (pm.addPeripheral(config)) {
+        pm.saveConfiguration();
+        sendSuccess(request, "外设添加成功");
+    } else {
+        sendError(request, 400, "添加外设失败，请检查配置");
+    }
+}
+
+void WebConfigManager::handleAPIUpdatePeripheral(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    String id = getParamValue(request, "id", "");
+    if (id.isEmpty()) {
+        sendError(request, 400, "Missing id parameter");
+        return;
+    }
+    
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    auto existing = pm.getPeripheral(id);
+    if (!existing) {
+        sendError(request, 404, "Peripheral not found");
+        return;
+    }
+    
+    PeripheralConfig config = *existing;
+    
+    // 更新基本字段
+    String name = getParamValue(request, "name", "");
+    if (!name.isEmpty()) config.name = name;
+    
+    config.enabled = getParamBool(request, "enabled", config.enabled);
+    
+    // 更新引脚（如果提供）
+    String pinsStr = getParamValue(request, "pins", "");
+    if (!pinsStr.isEmpty()) {
+        config.pinCount = 0;
+        int start = 0;
+        int end = pinsStr.indexOf(',');
+        while (end != -1 && config.pinCount < 8) {
+            config.pins[config.pinCount++] = pinsStr.substring(start, end).toInt();
+            start = end + 1;
+            end = pinsStr.indexOf(',', start);
+        }
+        if (config.pinCount < 8) {
+            config.pins[config.pinCount++] = pinsStr.substring(start).toInt();
+        }
+    }
+    
+    // 更新类型特定参数
+    if (config.type == PeripheralType::UART) {
+        if (request->hasParam("baudRate", true)) config.params.uart.baudRate = getParamInt(request, "baudRate", config.params.uart.baudRate);
+        if (request->hasParam("dataBits", true)) config.params.uart.dataBits = getParamInt(request, "dataBits", config.params.uart.dataBits);
+    }
+    else if (config.isGPIOPeripheral()) {
+        if (request->hasParam("inverted", true)) config.params.gpio.inverted = getParamBool(request, "inverted", config.params.gpio.inverted);
+        if (request->hasParam("pwmFrequency", true)) config.params.gpio.pwmFrequency = getParamInt(request, "pwmFrequency", config.params.gpio.pwmFrequency);
+    }
+    
+    if (pm.updatePeripheral(id, config)) {
+        pm.saveConfiguration();
+        sendSuccess(request, "外设更新成功");
+    } else {
+        sendError(request, 400, "更新外设失败");
+    }
+}
+
+void WebConfigManager::handleAPIDeletePeripheral(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    String id = getParamValue(request, "id", "");
+    if (id.isEmpty()) {
+        sendError(request, 400, "Missing id parameter");
+        return;
+    }
+    
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    if (pm.removePeripheral(id)) {
+        pm.saveConfiguration();
+        sendSuccess(request, "外设删除成功");
+    } else {
+        sendError(request, 404, "外设不存在");
+    }
+}
+
+void WebConfigManager::handleAPIEnablePeripheral(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    String id = getParamValue(request, "id", "");
+    if (id.isEmpty()) {
+        sendError(request, 400, "Missing id parameter");
+        return;
+    }
+    
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    if (pm.enablePeripheral(id)) {
+        pm.saveConfiguration();
+        sendSuccess(request, "外设已启用");
+    } else {
+        sendError(request, 400, "启用外设失败");
+    }
+}
+
+void WebConfigManager::handleAPIDisablePeripheral(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    String id = getParamValue(request, "id", "");
+    if (id.isEmpty()) {
+        sendError(request, 400, "Missing id parameter");
+        return;
+    }
+    
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    if (pm.disablePeripheral(id)) {
+        pm.saveConfiguration();
+        sendSuccess(request, "外设已禁用");
+    } else {
+        sendError(request, 400, "禁用外设失败");
+    }
+}
+
+void WebConfigManager::handleAPIGetPeripheralStatus(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "system.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    String id = getParamValue(request, "id", "");
+    if (id.isEmpty()) {
+        sendError(request, 400, "Missing id parameter");
+        return;
+    }
+    
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    auto runtimeState = pm.getRuntimeState(id);
+    auto config = pm.getPeripheral(id);
+    
+    if (!config) {
+        sendError(request, 404, "Peripheral not found");
+        return;
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    
+    data["id"] = id;
+    data["enabled"] = config->enabled;
+    data["status"] = runtimeState ? static_cast<int>(runtimeState->status) : 0;
+    
+    if (runtimeState) {
+        data["initTime"] = runtimeState->initTime;
+        data["lastActivity"] = runtimeState->lastActivity;
+        data["errorCount"] = runtimeState->errorCount;
+        if (!runtimeState->lastError.isEmpty()) {
+            data["lastError"] = runtimeState->lastError;
+        }
+    }
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+void WebConfigManager::handleAPIReadPeripheral(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "system.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    String id = getParamValue(request, "id", "");
+    if (id.isEmpty()) {
+        sendError(request, 400, "Missing id parameter");
+        return;
+    }
+    
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    auto config = pm.getPeripheral(id);
+    
+    if (!config) {
+        sendError(request, 404, "Peripheral not found");
+        return;
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    
+    data["id"] = id;
+    
+    // 根据类型读取数据
+    if (config->isGPIOPeripheral()) {
+        GPIOState state = pm.readPin(id);
+        data["state"] = static_cast<int>(state);
+        data["stateName"] = (state == GPIOState::STATE_HIGH) ? "HIGH" : (state == GPIOState::STATE_LOW) ? "LOW" : "UNDEFINED";
+        
+        // 模拟输入返回数值
+        if (config->type == PeripheralType::GPIO_ANALOG_INPUT || config->type == PeripheralType::ADC) {
+            data["value"] = pm.readAnalog(id);
+        }
+    } else {
+        // 其他类型外设的数据读取（待实现）
+        data["value"] = nullptr;
+    }
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+void WebConfigManager::handleAPIWritePeripheral(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "config.edit")) {
+        sendUnauthorized(request);
+        return;
+    }
+    
+    String id = getParamValue(request, "id", "");
+    if (id.isEmpty()) {
+        sendError(request, 400, "Missing id parameter");
+        return;
+    }
+    
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    auto config = pm.getPeripheral(id);
+    
+    if (!config) {
+        sendError(request, 404, "Peripheral not found");
+        return;
+    }
+    
+    bool success = false;
+    
+    if (config->isGPIOPeripheral()) {
+        // GPIO写入
+        if (request->hasParam("state", true)) {
+            int stateValue = getParamInt(request, "state", 0);
+            GPIOState state = (stateValue == 1) ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
+            success = pm.writePin(id, state);
+        }
+        else if (request->hasParam("toggle", true)) {
+            success = pm.togglePin(id);
+        }
+        else if (request->hasParam("pwm", true) && 
+                 (config->type == PeripheralType::GPIO_PWM_OUTPUT || config->type == PeripheralType::PWM_SERVO)) {
+            uint32_t dutyCycle = getParamInt(request, "pwm", 0);
+            success = pm.writePWM(id, dutyCycle);
+        }
+    } else {
+        // 其他类型外设的数据写入（待实现）
+        success = false;
+    }
+    
+    if (success) {
+        sendSuccess(request, "数据写入成功");
+    } else {
+        sendError(request, 400, "数据写入失败");
+    }
 }
 

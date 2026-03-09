@@ -270,11 +270,18 @@ void WiFiManager::updateStatusInfo() {
             
             if (statusInfo.status != NetworkStatus::CONNECTED && !connecting) {
                 statusInfo.status = NetworkStatus::CONNECTED;
-                statusInfo.ipAddress = WiFi.localIP().toString();
             }
+            // 始终更新网络信息（IP、网关、子网、DNS）
+            statusInfo.ipAddress = WiFi.localIP().toString();
+            statusInfo.currentGateway = WiFi.gatewayIP().toString();
+            statusInfo.currentSubnet = WiFi.subnetMask().toString();
+            statusInfo.dnsServer = WiFi.dnsIP().toString();
         } else if (statusInfo.status == NetworkStatus::CONNECTED) {
             statusInfo.status = NetworkStatus::DISCONNECTED;
             statusInfo.ipAddress = "";
+            statusInfo.currentGateway = "";
+            statusInfo.currentSubnet = "";
+            statusInfo.dnsServer = "";
             connecting = false;
         }
     }

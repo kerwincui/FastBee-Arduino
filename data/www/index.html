@@ -62,8 +62,8 @@
                     <a href="#" class="menu-item" data-page="network">
                         <span class="menu-icon">🌐</span> <span id="menu-network">网络设置</span>
                     </a>
-                    <a href="#" class="menu-item" data-page="gpio">
-                        <span class="menu-icon">🔧</span> <span id="menu-gpio">GPIO配置</span>
+                    <a href="#" class="menu-item" data-page="peripheral">
+                        <span class="menu-icon">🔧</span> <span id="menu-peripheral" data-i18n="menu-peripheral">外设配置</span>
                     </a>
                     <a href="#" class="menu-item" data-page="protocol">
                         <span class="menu-icon">🔌</span> <span id="menu-protocol">通信协议</span>
@@ -226,6 +226,74 @@
                                 </div>
                             </div>
                         </div>
+
+                        <!-- 网络状态详情 -->
+                        <div class="card">
+                            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                                <h2 class="card-title" data-i18n="net-status-title">当前网络状态</h2>
+                                <button class="pure-button pure-button-small" id="dashboard-net-refresh-btn">
+                                    <i class="fas fa-sync-alt"></i> <span data-i18n="net-status-refresh">刷新</span>
+                                </button>
+                            </div>
+                            <div class="card-body">
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px;">
+                                    <!-- STA 连接信息 -->
+                                    <div style="border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
+                                        <div style="padding: 10px 15px; background: #f5f5f5; border-bottom: 1px solid #e0e0e0;">
+                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-wifi" style="color: #4facfe;"></i> <span data-i18n="net-sta-info">STA 连接信息</span></h4>
+                                        </div>
+                                        <div style="padding: 12px 15px;">
+                                            <table style="width: 100%; font-size: 13px; border-collapse: collapse;">
+                                                <tbody>
+                                                    <tr><td style="color: #666; padding: 4px 0; width: 100px;" data-i18n="net-status-title">状态</td><td id="ns-status" style="padding: 4px 0;"><span class="badge badge-info">待加载...</span></td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;">SSID</td><td id="ns-ssid" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="static-ip-label">IP 地址</td><td id="ns-ip" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="gateway-label">网关</td><td id="ns-gateway" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="subnet-label">子网掩码</td><td id="ns-subnet" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="dns1-label">DNS</td><td id="ns-dns" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;">RSSI</td><td id="ns-rssi" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;">MAC</td><td id="ns-mac" style="padding: 4px 0;">--</td></tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                    <!-- AP 热点信息 -->
+                                    <div style="border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
+                                        <div style="padding: 10px 15px; background: #f5f5f5; border-bottom: 1px solid #e0e0e0;">
+                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-broadcast-tower" style="color: #ff6b6b;"></i> <span data-i18n="net-ap-info">AP 热点信息</span></h4>
+                                        </div>
+                                        <div style="padding: 12px 15px;">
+                                            <table style="width: 100%; font-size: 13px; border-collapse: collapse;">
+                                                <tbody>
+                                                    <tr><td style="color: #666; padding: 4px 0; width: 100px;" data-i18n="ap-ssid-label">AP 名称</td><td id="ns-ap-ssid" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;">AP IP</td><td id="ns-ap-ip" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="dev-provision-clients-label">连接客户数</td><td id="ns-ap-clients" style="padding: 4px 0;">--</td></tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                    <!-- 连接统计 -->
+                                    <div style="border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
+                                        <div style="padding: 10px 15px; background: #f5f5f5; border-bottom: 1px solid #e0e0e0;">
+                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-chart-bar" style="color: #4ecdc4;"></i> <span data-i18n="net-stats">连接统计</span></h4>
+                                        </div>
+                                        <div style="padding: 12px 15px;">
+                                            <table style="width: 100%; font-size: 13px; border-collapse: collapse;">
+                                                <tbody>
+                                                    <tr><td style="color: #666; padding: 4px 0; width: 100px;" data-i18n="wifi-mode-label">网络模式</td><td id="ns-mode" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="wifi-mdns-label">mDNS</td><td id="ns-mdns" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;">重连次数</td><td id="ns-reconnect" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;">互联网</td><td id="ns-internet" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;">IP 冲突</td><td id="ns-conflict" style="padding: 4px 0;">--</td></tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- 通信协议页面 -->
@@ -236,16 +304,104 @@
                             </div>
                             <div class="card-body">
                                 <div class="config-tabs">
-                                    <div class="config-tab active" data-tab="modbus-rtu">Modbus RTU</div>
+                                    <div class="config-tab active" data-tab="mqtt">MQTT</div>
+                                    <div class="config-tab" data-tab="modbus-rtu">Modbus RTU</div>
                                     <div class="config-tab" data-tab="modbus-tcp">Modbus TCP</div>
-                                    <div class="config-tab" data-tab="mqtt">MQTT</div>
                                     <div class="config-tab" data-tab="http">HTTP</div>
                                     <div class="config-tab" data-tab="coap">CoAP</div>
                                     <div class="config-tab" data-tab="tcp">TCP</div>
                                 </div>
 
+                                <!-- MQTT 配置 - 两列布局 -->
+                                <div id="mqtt" class="config-content active">
+                                    <form id="mqtt-form" class="pure-form pure-form-stacked">
+                                        <div class="config-form-grid">
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="mqtt-broker">MQTT Broker</label>
+                                                    <input type="text" id="mqtt-broker" class="pure-input-1" value="iot.fastbee.cn">
+                                                </div>
+
+                                                <div class="pure-control-group">
+                                                    <label for="mqtt-client-id">客户端ID</label>
+                                                    <input type="text" id="mqtt-client-id" class="pure-input-1" value="S&FB100900001&1&1">
+                                                </div>
+
+                                                <div class="pure-control-group">
+                                                    <label for="mqtt-username">用户名</label>
+                                                    <input type="text" id="mqtt-username" class="pure-input-1" value="FastBee">
+                                                </div>
+
+                                                <div class="pure-control-group">
+                                                    <label for="mqtt-publish">发布主题</label>
+                                                    <input type="text" id="mqtt-publish" class="pure-input-1" value="/1/FB100900001/property/post">
+                                                </div>
+
+                                                <div class="pure-control-group">
+                                                    <label for="mqtt-publish-qos">发布QoS</label>
+                                                    <select id="mqtt-publish-qos" class="pure-input-1">
+                                                        <option value="0">0 - 最多一次</option>
+                                                        <option value="1">1 - 至少一次</option>
+                                                        <option value="2">2 - 恰好一次</option>
+                                                    </select>
+                                                </div>
+
+                                                <div class="pure-control-group">
+                                                    <label class="pure-checkbox">
+                                                        <input type="checkbox" id="mqtt-direct-connect" checked> 是否直连
+                                                    </label>
+                                                </div>
+                                            </div>
+
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="mqtt-port">端口</label>
+                                                    <input type="number" id="mqtt-port" class="pure-input-1" value="1883" min="1" max="65535">
+                                                </div>
+
+                                                <div class="pure-control-group">
+                                                    <label for="mqtt-alive">心跳(秒)</label>
+                                                    <input type="number" id="mqtt-alive" class="pure-input-1" value="60" min="10" max="300">
+                                                </div>
+
+                                                <div class="pure-control-group">
+                                                    <label for="mqtt-password">密码</label>
+                                                    <input type="password" id="mqtt-password" class="pure-input-1" value="P47T6OD5IPFWHUM6">
+                                                </div>
+
+                                                <div class="pure-control-group">
+                                                    <label for="mqtt-subscribe">订阅主题</label>
+                                                    <input type="text" id="mqtt-subscribe" class="pure-input-1" value="/1/FB100900001/function/get">
+                                                </div>
+
+                                                <div class="pure-control-group">
+                                                    <label for="mqtt-conn-timeout">连接超时(毫秒)</label>
+                                                    <input type="number" id="mqtt-conn-timeout" class="pure-input-1" value="30000" min="1000" max="120000">
+                                                </div>
+
+                                                <div class="pure-control-group" style="margin-top: 28px;">
+                                                    <label class="pure-checkbox" style="margin-right: 20px;">
+                                                        <input type="checkbox" id="mqtt-auto-reconnect" checked> 自动重连
+                                                    </label>
+                                                    <label class="pure-checkbox">
+                                                        <input type="checkbox" id="mqtt-publish-retain"> 保留消息
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="message message-success" id="mqtt-success" style="display: none;" data-i18n="mqtt-save-success">
+                                            MQTT配置保存成功！
+                                        </div>
+
+                                        <div style="margin-top: 20px;">
+                                            <button type="submit" class="pure-button pure-button-primary" data-i18n="btn-save-config">保存配置</button>
+                                        </div>
+                                    </form>
+                                </div>
+
                                 <!-- Modbus RTU 配置 - 两列布局 -->
-                                <div id="modbus-rtu" class="config-content active">
+                                <div id="modbus-rtu" class="config-content">
                                     <form id="modbus-rtu-form" class="pure-form pure-form-stacked">
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
@@ -340,66 +496,6 @@
                                         
                                         <div class="message message-success" id="modbus-tcp-success" style="display: none;">
                                             Modbus TCP配置保存成功！
-                                        </div>
-                                        
-                                        <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary">保存配置</button>
-                                        </div>
-                                    </form>
-                                </div>
-
-                                <!-- MQTT 配置 - 两列布局 -->
-                                <div id="mqtt" class="config-content">
-                                    <form id="mqtt-form" class="pure-form pure-form-stacked">
-                                        <div class="config-form-grid">
-                                            <div class="config-form-column">
-                                                <div class="pure-control-group">
-                                                    <label for="mqtt-broker">MQTT Broker</label>
-                                                    <input type="text" id="mqtt-broker" class="pure-input-1" value="mqtt://iot.fastbee.cn">
-                                                </div>
-
-                                                <div class="pure-control-group">
-                                                    <label for="mqtt-client-id">客户端ID</label>
-                                                    <input type="text" id="mqtt-client-id" class="pure-input-1" value="S&FB100900001&1&1">
-                                                </div>
-
-                                                 <div class="pure-control-group">
-                                                    <label for="mqtt-username">用户名</label>
-                                                    <input type="text" id="mqtt-username" class="pure-input-1" value="FastBee">
-                                                </div>
-                                                
-                                                <div class="pure-control-group">
-                                                    <label for="mqtt-publish">发布主题</label>
-                                                    <input type="text" id="mqtt-publish" class="pure-input-1" value="/1/FB100900001/property/post">
-                                                </div>
-                                                
-                                            </div>
-                                            
-                                            <div class="config-form-column">
-                                                <div class="pure-control-group">
-                                                    <label for="mqtt-port">端口</label>
-                                                    <input type="number" id="mqtt-port" class="pure-input-1" value="1883" min="1" max="65535">
-                                                </div>
-
-                                                <div class="pure-control-group">
-                                                    <label for="mqtt-broker">心跳</label>
-                                                    <input type="text" id="mqtt-alive" class="pure-input-1" value="60">
-                                                </div>
-                                                
-                                               <div class="pure-control-group">
-                                                    <label for="mqtt-password">密码</label>
-                                                    <input type="password" id="mqtt-password" class="pure-input-1" value="P47T6OD5IPFWHUM6">
-                                                </div>
-
-                                                <div class="pure-control-group">
-                                                    <label for="mqtt-subscribe">订阅主题</label>
-                                                    <input type="text" id="mqtt-subscribe" class="pure-input-1" value="/1/FB100900001/function/get">
-                                                </div>
-                                            </div>
-                                        </div>
-                                        
-                                        <div class="message message-success" id="mqtt-success" style="display: none;">
-                                            MQTT配置保存成功！
                                         </div>
                                         
                                         <div style="margin-top: 20px;">
@@ -562,20 +658,20 @@
                     <div id="network-page" class="page">
                         <div class="card">
                             <div class="card-header">
-                                <h2 class="card-title" id="network-title">网络设置</h2>
+                                <h2 class="card-title" id="network-title" data-i18n="network-title">网络设置</h2>
                             </div>
                             <div class="card-body">
                                 <div class="config-tabs">
                                     <div class="config-tab active" data-tab="base" data-i18n="net-tab-basic">基本配置</div>
+                                    <div class="config-tab" data-tab="ap-config" data-i18n="net-tab-ap">热点配置</div>
                                     <div class="config-tab" data-tab="advance" data-i18n="net-tab-advance">高级配置</div>
-                                    <div class="config-tab" data-tab="netstatus" data-i18n="net-tab-netstatus">网络状态</div>
                                 </div>
 
                                 <!-- 基本配置 -->
                                 <div id="base" class="config-content active">
                                     <!-- WiFi选择按钮 -->
                                     <div class="wifi-config" style="margin-bottom: 20px;">
-                                        <button id="wifi-scan-btn" class="pure-button pure-button-primary" style="margin-bottom: 5px;" data-i18n="wifi-scan-btn">
+                                        <button id="wifi-scan-btn" class="pure-button pure-button-primary" data-i18n="wifi-scan-btn">
                                             <i class="fas fa-wifi"></i> 选择Wifi网络
                                         </button>
                                     </div>
@@ -584,108 +680,72 @@
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="wifi-mode">网络模式</label>
+                                                    <label for="wifi-mode" data-i18n="wifi-mode-label">网络模式</label>
                                                     <select id="wifi-mode" class="pure-input-1">
-                                                        <option value="0">仅客户端模式 (STA)</option>
-                                                        <option value="1">仅热点模式 (AP)</option>
-                                                        <option value="2" selected>客户端+热点模式 (AP+STA)</option>
+                                                        <option value="0" data-i18n="wifi-mode-sta">仅客户端模式 (STA)</option>
+                                                        <option value="1" data-i18n="wifi-mode-ap">仅热点模式 (AP)</option>
+                                                        <option value="2" selected data-i18n="wifi-mode-apsta">客户端+热点模式 (AP+STA)</option>
                                                     </select>
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="wifi-ssid">SSID</label>
-                                                    <input type="text" id="wifi-ssid" class="pure-input-1" placeholder="输入WiFi名称">
+                                                    <label for="wifi-ssid" data-i18n="wifi-ssid-label">SSID</label>
+                                                    <input type="text" id="wifi-ssid" class="pure-input-1" placeholder="输入WiFi名称" data-i18n-placeholder="wifi-ssid-label">
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="wifi-security">安全类型</label>
-                                                    <select id="wifi-security" class="pure-input-1">
-                                                        <option value="none">无</option>
-                                                        <option value="wep">WEP</option>
-                                                        <option value="wpa" selected>WPA/WPA2</option>
-                                                        <option value="wpa3">WPA3</option>
-                                                    </select>
-                                                </div>
-                                                
-                                                <div class="pure-control-group">
-                                                    <label for="enable-mdns">mDNS</label>
-                                                    <select id="enable-mdns" class="pure-input-1">
-                                                        <option value="1" selected>启用</option>
-                                                        <option value="0">禁用</option>
-                                                    </select>
+                                                    <label for="wifi-password" data-i18n="wifi-password-label">密码</label>
+                                                    <input type="password" id="wifi-password" class="pure-input-1" placeholder="输入WiFi密码" data-i18n-placeholder="wifi-password-label">
                                                 </div>
                                             </div>
                                             
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="device-name">设备名称</label>
-                                                    <input type="text" id="device-name" class="pure-input-1" placeholder="输入设备名称">
-                                                </div>
-                                                
-                                                <div class="pure-control-group">
-                                                    <label for="wifi-password">密码</label>
-                                                    <input type="password" id="wifi-password" class="pure-input-1" placeholder="输入WiFi密码">
-                                                </div>
-                                                
-                                                <div class="pure-control-group">
-                                                    <label for="wifi-dhcp">DHCP</label>
-                                                    <select id="wifi-dhcp" class="pure-input-1">
-                                                        <option value="0" selected>启用</option>
-                                                        <option value="1">禁用</option>
+                                                    <label for="wifi-security" data-i18n="wifi-security-label">安全类型</label>
+                                                    <select id="wifi-security" class="pure-input-1">
+                                                        <option value="none" data-i18n="wifi-security-none">无</option>
+                                                        <option value="wpa" selected data-i18n="wifi-security-wpa">WPA/WPA2</option>
+                                                        <option value="wpa3" data-i18n="wifi-security-wpa3">WPA3</option>
                                                     </select>
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="use-static-ip">启用静态IP</label>
-                                                    <select id="use-static-ip" class="pure-input-1">
-                                                        <option value="0" selected>禁用</option>
-                                                        <option value="1">启用</option>
-                                                    </select>
+                                                    <label for="device-name" data-i18n="wifi-device-name-label">设备名称</label>
+                                                    <input type="text" id="device-name" class="pure-input-1" placeholder="输入设备名称" data-i18n-placeholder="wifi-device-name-label">
                                                 </div>
                                             </div>
                                         </div>
 
-                                        <div id="static-ip-section" style="display: none; margin-top: 20px;">
-                                            <h4 style="margin-bottom: 15px;">静态IP配置</h4>
-                                            <div class="config-form-grid">
-                                                <div class="config-form-column">
-                                                    <div class="pure-control-group">
-                                                        <label for="static-ip">IP地址</label>
-                                                        <input type="text" id="static-ip" class="pure-input-1" placeholder="192.168.1.100">
-                                                    </div>
-                                                    
-                                                    <div class="pure-control-group">
-                                                        <label for="subnet">子网掩码</label>
-                                                        <input type="text" id="subnet" class="pure-input-1" placeholder="255.255.255.0">
-                                                    </div>
-                                                </div>
-                                                
-                                                <div class="config-form-column">
-                                                    <div class="pure-control-group">
-                                                        <label for="gateway">网关</label>
-                                                        <input type="text" id="gateway" class="pure-input-1" placeholder="192.168.1.1">
-                                                    </div>
-                                                    
-                                                    <div class="pure-control-group">
-                                                        <label for="dns1">DNS服务器</label>
-                                                        <input type="text" id="dns1" class="pure-input-1" placeholder="8.8.8.8">
-                                                    </div>
-                                                </div>
-                                            </div>
+                                        <div class="message message-success" id="wifi-success" style="display: none; margin-top: 15px;" data-i18n="wifi-save-ok">WiFi配置保存成功！</div>
+                                        <div class="message message-error" id="wifi-error" style="display: none; margin-top: 15px;" data-i18n="wifi-save-fail">WiFi配置保存失败！</div>
+
+                                        <div style="margin-top: 20px;">
+                                            <button type="submit" class="pure-button pure-button-primary">
+                                                <i class="fas fa-save"></i> <span data-i18n="save-config-btn">保存配置</span>
+                                            </button>
                                         </div>
+                                    </form>
+                                </div>
 
-                                        <hr style="margin: 20px 0; border-color: #e0e0e0;" />
-
-                                        <h4 style="margin-bottom: 15px;">热点配置</h4>
+                                <!-- 热点配置 -->
+                                <div id="ap-config" class="config-content">
+                                    <form id="ap-form" class="pure-form pure-form-stacked">
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="ap-ssid">热点名称</label>
-                                                    <input type="text" id="ap-ssid" class="pure-input-1" placeholder="输入热点名称">
+                                                    <label for="ap-ssid" data-i18n="ap-ssid-label">热点名称</label>
+                                                    <input type="text" id="ap-ssid" class="pure-input-1" placeholder="输入热点名称" data-i18n-placeholder="ap-ssid-label">
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="ap-channel">信道</label>
+                                                    <label for="ap-password" data-i18n="ap-password-label">热点密码</label>
+                                                    <input type="password" id="ap-password" class="pure-input-1" placeholder="输入热点密码（至少8位）">
+                                                </div>
+                                            </div>
+                                            
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="ap-channel" data-i18n="ap-channel-label">信道</label>
                                                     <select id="ap-channel" class="pure-input-1">
                                                         <option value="1" selected>1</option>
                                                         <option value="2">2</option>
@@ -702,34 +762,22 @@
                                                         <option value="13">13</option>
                                                     </select>
                                                 </div>
-                                            </div>
-                                            
-                                            <div class="config-form-column">
-                                                <div class="pure-control-group">
-                                                    <label for="ap-password">热点密码</label>
-                                                    <input type="password" id="ap-password" class="pure-input-1" placeholder="输入热点密码">
-                                                </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="ap-hidden">隐藏热点</label>
+                                                    <label for="ap-hidden" data-i18n="ap-hidden-label">隐藏热点</label>
                                                     <select id="ap-hidden" class="pure-input-1">
-                                                        <option value="0" selected>否</option>
-                                                        <option value="1">是</option>
+                                                        <option value="0" selected data-i18n="ap-hidden-no">否</option>
+                                                        <option value="1" data-i18n="ap-hidden-yes">是</option>
                                                     </select>
                                                 </div>
                                             </div>
                                         </div>
 
-                                        <div class="message message-success" id="wifi-success" style="display: none; margin-top: 15px;">
-                                            WiFi配置保存成功！
-                                        </div>
-                                        <div class="message message-error" id="wifi-error" style="display: none; margin-top: 15px;">
-                                            WiFi配置保存失败！
-                                        </div>
+                                        <div class="message message-success" id="ap-success" style="display: none; margin-top: 15px;" data-i18n="ap-save-ok">热点配置保存成功！</div>
 
                                         <div style="margin-top: 20px;">
                                             <button type="submit" class="pure-button pure-button-primary">
-                                                <i class="fas fa-save"></i> 保存配置
+                                                <i class="fas fa-save"></i> <span data-i18n="save-config-btn">保存配置</span>
                                             </button>
                                         </div>
                                     </form>
@@ -738,189 +786,110 @@
                                 <!-- 高级配置 -->
                                 <div id="advance" class="config-content">
                                     <form id="advanced-form" class="pure-form pure-form-stacked">
+                                        <!-- IP配置 -->
+                                        <h4 style="margin-bottom: 15px; border-bottom: 1px solid #e0e0e0; padding-bottom: 8px;" data-i18n="static-ip-title">静态IP配置</h4>
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="ip-config-type">IP配置类型</label>
-                                                    <select id="ip-config-type" class="pure-input-1">
-                                                        <option value="0">DHCP (自动获取)</option>
-                                                        <option value="1">静态IP</option>
+                                                    <label for="wifi-dhcp" data-i18n="wifi-dhcp-label">IP获取方式</label>
+                                                    <select id="wifi-dhcp" class="pure-input-1">
+                                                        <option value="0" selected>DHCP (自动获取)</option>
+                                                        <option value="1">静态IP (手动配置)</option>
                                                     </select>
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="dns1">首选DNS</label>
-                                                    <input type="text" id="dns1" class="pure-input-1" placeholder="8.8.8.8">
+                                                    <label for="static-ip" data-i18n="static-ip-label">IP地址</label>
+                                                    <input type="text" id="static-ip" class="pure-input-1" placeholder="192.168.1.100">
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="connect-timeout">连接超时 (毫秒)</label>
-                                                    <input type="number" id="connect-timeout" class="pure-input-1" value="10000" min="1000" max="60000">
+                                                    <label for="subnet" data-i18n="subnet-label">子网掩码</label>
+                                                    <input type="text" id="subnet" class="pure-input-1" placeholder="255.255.255.0">
                                                 </div>
                                             </div>
                                             
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="dns2">备用DNS</label>
-                                                    <input type="text" id="dns2" class="pure-input-1" placeholder="8.8.4.4">
+                                                    <label for="gateway" data-i18n="gateway-label">网关</label>
+                                                    <input type="text" id="gateway" class="pure-input-1" placeholder="192.168.1.1">
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="conflict-detection">冲突检测模式</label>
+                                                    <label for="dns1" data-i18n="dns1-label">首选DNS</label>
+                                                    <input type="text" id="dns1" class="pure-input-1" placeholder="8.8.8.8">
+                                                </div>
+                                                
+                                                <div class="pure-control-group">
+                                                    <label for="dns2" data-i18n="dns2-label">备用DNS</label>
+                                                    <input type="text" id="dns2" class="pure-input-1" placeholder="8.8.4.4">
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <!-- 域名配置 -->
+                                        <h4 style="margin: 20px 0 15px; border-bottom: 1px solid #e0e0e0; padding-bottom: 8px;" data-i18n="domain-config-title">域名配置</h4>
+                                        <div class="config-form-grid">
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="enable-mdns" data-i18n="wifi-mdns-label">mDNS</label>
+                                                    <select id="enable-mdns" class="pure-input-1">
+                                                        <option value="1" selected data-i18n="wifi-enable">启用</option>
+                                                        <option value="0" data-i18n="wifi-disable">禁用</option>
+                                                    </select>
+                                                </div>
+                                            </div>
+                                            
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="custom-domain" data-i18n="custom-domain-label">自定义域名</label>
+                                                    <input type="text" id="custom-domain" class="pure-input-1" placeholder="fastbee">
+                                                    <small style="color: #999;">访问地址：fastbee.local</small>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <!-- 连接设置 -->
+                                        <h4 style="margin: 20px 0 15px; border-bottom: 1px solid #e0e0e0; padding-bottom: 8px;" data-i18n="connection-settings-title">连接设置</h4>
+                                        <div class="config-form-grid">
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="connect-timeout" data-i18n="connect-timeout-label">连接超时 (毫秒)</label>
+                                                    <input type="number" id="connect-timeout" class="pure-input-1" value="10000" min="1000" max="60000">
+                                                </div>
+                                                
+                                                <div class="pure-control-group">
+                                                    <label for="reconnect-interval" data-i18n="reconnect-interval-label">重连间隔 (毫秒)</label>
+                                                    <input type="number" id="reconnect-interval" class="pure-input-1" value="5000" min="1000" max="60000">
+                                                </div>
+                                            </div>
+                                            
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="max-reconnect-attempts" data-i18n="max-reconnect-label">最大重连次数</label>
+                                                    <input type="number" id="max-reconnect-attempts" class="pure-input-1" value="5" min="0" max="20">
+                                                </div>
+                                                
+                                                <div class="pure-control-group">
+                                                    <label for="conflict-detection" data-i18n="conflict-detection-label">IP冲突检测</label>
                                                     <select id="conflict-detection" class="pure-input-1">
                                                         <option value="0">不检测</option>
                                                         <option value="1">Ping检测</option>
                                                         <option value="2">ARP检测</option>
-                                                        <option value="3">自动检测</option>
+                                                        <option value="3" selected>自动检测</option>
                                                     </select>
                                                 </div>
-                                                
-                                                <div class="pure-control-group">
-                                                    <label for="reconnect-interval">重连间隔 (毫秒)</label>
-                                                    <input type="number" id="reconnect-interval" class="pure-input-1" value="5000" min="1000" max="60000">
-                                                </div>
                                             </div>
-
-                                            <div class="config-form-column">
-                                                <div class="pure-control-group">
-                                                    <label for="max-reconnect-attempts">最大重连次数</label>
-                                                    <input type="number" id="max-reconnect-attempts" class="pure-input-1" value="5" min="0" max="20">
-                                                </div>
-                                            </div>
-
-                                            <div class="config-form-column">
-                                                <div class="pure-control-group">
-                                                    <label for="custom-domain">自定义域名</label>
-                                                    <input type="text" id="custom-domain" class="pure-input-1" placeholder="fastbee">
-                                                </div>
-                                            </div>
-                                        </div>                                        
-
-                                        <div class="message message-success" id="advanced-success" style="display: none; margin-top: 15px;">
-                                            高级配置保存成功！
                                         </div>
+
+                                        <div class="message message-success" id="advanced-success" style="display: none; margin-top: 15px;" data-i18n="advanced-save-ok">高级配置保存成功！</div>
 
                                         <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary">保存配置</button>
+                                            <button type="submit" class="pure-button pure-button-primary">
+                                                <i class="fas fa-save"></i> <span data-i18n="save-config-btn">保存配置</span>
+                                            </button>
                                         </div>
                                     </form>
-                                </div>
-
-                                <!-- 网络状态 -->
-                                <div id="netstatus" class="config-content">
-                                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                                        <h3 style="margin: 0;">当前网络状态</h3>
-                                        <button id="net-status-refresh-btn" class="pure-button pure-button-small">
-                                            <i class="fas fa-sync-alt"></i> 刷新
-                                        </button>
-                                    </div>
-
-                                    <!-- 连接状态卡片 -->
-                                    <div class="config-form-grid">
-                                        <div class="config-form-column">
-                                            <div class="card" style="margin-bottom: 15px; border: 1px solid #e0e0e0;">
-                                                <div class="card-header" style="padding: 10px 15px; background: #f5f5f5;">
-                                                    <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-wifi"></i> STA 连接信息</h4>
-                                                </div>
-                                                <div class="card-body" style="padding: 12px 15px;">
-                                                    <table class="pure-table" style="width: 100%; font-size: 13px;">
-                                                        <tbody>
-                                                            <tr>
-                                                                <td style="color: #666; width: 120px;">状态</td>
-                                                                <td id="ns-status"><span class="badge badge-info">待加载...</span></td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="color: #666;">SSID</td>
-                                                                <td id="ns-ssid">--</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="color: #666;">IP 地址</td>
-                                                                <td id="ns-ip">--</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="color: #666;">网关</td>
-                                                                <td id="ns-gateway">--</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="color: #666;">子网掩码</td>
-                                                                <td id="ns-subnet">--</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="color: #666;">DNS</td>
-                                                                <td id="ns-dns">--</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="color: #666;">信号强度</td>
-                                                                <td id="ns-rssi">--</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="color: #666;">MAC 地址</td>
-                                                                <td id="ns-mac">--</td>
-                                                            </tr>
-                                                        </tbody>
-                                                    </table>
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        <div class="config-form-column">
-                                            <div class="card" style="margin-bottom: 15px; border: 1px solid #e0e0e0;">
-                                                <div class="card-header" style="padding: 10px 15px; background: #f5f5f5;">
-                                                    <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-broadcast-tower"></i> AP 热点信息</h4>
-                                                </div>
-                                                <div class="card-body" style="padding: 12px 15px;">
-                                                    <table class="pure-table" style="width: 100%; font-size: 13px;">
-                                                        <tbody>
-                                                            <tr>
-                                                                <td style="color: #666; width: 120px;">AP 名称</td>
-                                                                <td id="ns-ap-ssid">--</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="color: #666;">AP IP</td>
-                                                                <td id="ns-ap-ip">--</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="color: #666;">连接客户数</td>
-                                                                <td id="ns-ap-clients">--</td>
-                                                            </tr>
-                                                        </tbody>
-                                                    </table>
-                                                </div>
-                                            </div>
-
-                                            <div class="card" style="border: 1px solid #e0e0e0;">
-                                                <div class="card-header" style="padding: 10px 15px; background: #f5f5f5;">
-                                                    <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-chart-bar"></i> 连接统计</h4>
-                                                </div>
-                                                <div class="card-body" style="padding: 12px 15px;">
-                                                    <table class="pure-table" style="width: 100%; font-size: 13px;">
-                                                        <tbody>
-                                                            <tr>
-                                                                <td style="color: #666; width: 120px;">网络模式</td>
-                                                                <td id="ns-mode">--</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="color: #666;">mDNS 域名</td>
-                                                                <td id="ns-mdns">--</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="color: #666;">重连次数</td>
-                                                                <td id="ns-reconnect">--</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="color: #666;">互联网</td>
-                                                                <td id="ns-internet">--</td>
-                                                            </tr>
-                                                            <tr>
-                                                                <td style="color: #666;">IP 冲突</td>
-                                                                <td id="ns-conflict">--</td>
-                                                            </tr>
-                                                        </tbody>
-                                                    </table>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -948,6 +917,14 @@
                                     <form id="device-basic-form" class="pure-form pure-form-stacked">
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="dev-id" data-i18n="dev-id-label">设备编号</label>
+                                                    <input type="text" id="dev-id" class="pure-input-1" readonly style="background-color: #f5f5f5; color: #666;">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="dev-product-number" data-i18n="dev-product-number-label">产品编号</label>
+                                                    <input type="number" id="dev-product-number" class="pure-input-1" placeholder="输入产品编号" data-i18n-placeholder="dev-product-number-label" min="0">
+                                                </div>
                                                 <div class="pure-control-group">
                                                     <label for="dev-name" data-i18n="dev-name-label">设备名称</label>
                                                     <input type="text" id="dev-name" class="pure-input-1" placeholder="输入设备名称" data-i18n-placeholder="dev-name-label">
@@ -1372,6 +1349,24 @@
                                                     </div>
                                                 </div>
                                             </div>
+
+                                            <!-- 恢复出厂设置卡片 -->
+                                            <div class="card" style="margin-top: 15px; border: 1px solid #e0e0e0;">
+                                                <div class="card-header" style="padding: 10px 15px; background: #fff3cd;">
+                                                    <h4 style="margin: 0; font-size: 14px; color: #856404;"><i class="fas fa-exclamation-triangle"></i> <span data-i18n="dev-sys-factory-title">恢复出厂设置</span></h4>
+                                                </div>
+                                                <div class="card-body" style="padding: 15px;">
+                                                    <p style="margin: 0 0 10px; font-size: 13px; color: #dc3545; font-weight: bold;" data-i18n="dev-sys-factory-warning">警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！</p>
+                                                    <p style="margin: 0 0 15px; font-size: 13px; color: #666;" data-i18n="dev-sys-factory-hint">设备将自动重启，所有配置将丢失，请谨慎操作。</p>
+                                                    <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                                                        <label style="font-size: 13px;" data-i18n="dev-sys-factory-confirm-label">输入"RESET"确认：</label>
+                                                        <input type="text" id="dev-factory-confirm" class="pure-input" style="width: 100px;" placeholder="RESET">
+                                                        <button id="dev-factory-btn" class="pure-button" style="background:#dc3545; color:#fff;">
+                                                            <i class="fas fa-undo"></i> <span data-i18n="dev-sys-factory-btn">恢复出厂设置</span>
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
 
                                         <div class="config-form-column">
@@ -1526,31 +1521,42 @@
                         </div>
                     </div>
 
-                    <!-- GPIO配置页面 -->
-                    <div id="gpio-page" class="page">
+                    <!-- 外设配置页面 -->
+                    <div id="peripheral-page" class="page">
                         <div class="card">
-                            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-                                <h2 class="card-title" data-i18n="gpio-title">GPIO配置</h2>
-                                <button class="pure-button pure-button-primary" id="add-gpio-btn" data-i18n="add-gpio-btn-text">
-                                    <i class="fas fa-plus"></i> 新增GPIO
-                                </button>
+                            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                                <h2 class="card-title" data-i18n="peripheral-title">外设配置</h2>
+                                <div style="display: flex; gap: 10px; align-items: center;">
+                                    <select id="peripheral-filter-type" class="pure-input-1" style="width: auto;">
+                                        <option value="" data-i18n="peripheral-filter-all">全部外设</option>
+                                        <option value="communication" data-i18n="peripheral-filter-comm">通信接口</option>
+                                        <option value="gpio" data-i18n="peripheral-filter-gpio">GPIO接口</option>
+                                        <option value="analog" data-i18n="peripheral-filter-analog">模拟信号</option>
+                                        <option value="debug" data-i18n="peripheral-filter-debug">调试接口</option>
+                                        <option value="special" data-i18n="peripheral-filter-special">专用外设</option>
+                                    </select>
+                                    <button class="pure-button pure-button-primary" id="add-peripheral-btn" data-i18n="add-peripheral-btn-text">
+                                        <i class="fas fa-plus"></i> <span data-i18n="add-peripheral-btn">新增外设</span>
+                                    </button>
+                                </div>
                             </div>
                             <div class="card-body">
-                                <!-- GPIO列表表格 -->
+                                <!-- 外设列表表格 -->
                                 <div style="overflow-x: auto;">
                                     <table class="pure-table pure-table-bordered" style="width: 100%;">
                                         <thead>
                                             <tr>
-                                                <th data-i18n="gpio-pin-col">引脚号</th>
-                                                <th data-i18n="gpio-name-col">名称</th>
-                                                <th data-i18n="gpio-mode-col">模式</th>
-                                                <th data-i18n="gpio-status-col">当前状态</th>
-                                                <th data-i18n="gpio-actions-col">操作</th>
+                                                <th data-i18n="peripheral-id-col">ID</th>
+                                                <th data-i18n="peripheral-name-col">名称</th>
+                                                <th data-i18n="peripheral-type-col">类型</th>
+                                                <th data-i18n="peripheral-pins-col">引脚</th>
+                                                <th data-i18n="peripheral-status-col">状态</th>
+                                                <th data-i18n="peripheral-actions-col">操作</th>
                                             </tr>
                                         </thead>
-                                        <tbody id="gpio-table-body">
+                                        <tbody id="peripheral-table-body">
                                             <tr>
-                                                <td colspan="5" style="text-align: center; color: #999;" data-i18n="gpio-loading">加载中...</td>
+                                                <td colspan="6" style="text-align: center; color: #999;" data-i18n="peripheral-loading">加载中...</td>
                                             </tr>
                                         </tbody>
                                     </table>
@@ -1619,8 +1625,232 @@
         </div>
     </div>
 
-    <!-- GPIO配置模态窗 -->
-    <div id="gpio-modal" class="modal">
+    <!-- 外设配置模态窗 -->
+    <div id="peripheral-modal" class="modal">
+        <div class="modal-content" style="max-width: 600px;">
+            <div class="modal-header">
+                <h2 style="margin: 0; font-size: 18px;" id="peripheral-modal-title" data-i18n="peripheral-add-modal-title">新增外设</h2>
+                <button id="close-peripheral-modal" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer;">×</button>
+            </div>
+            <div class="modal-body">
+                <form id="peripheral-form" class="pure-form pure-form-stacked">
+                    <fieldset>
+                        <input type="hidden" id="peripheral-original-id" value="">
+                        
+                        <!-- 基本配置 -->
+                        <div class="pure-control-group">
+                            <label for="peripheral-id-input" data-i18n="peripheral-id-label">外设ID</label>
+                            <input type="text" id="peripheral-id-input" class="pure-input-1" placeholder="留空自动生成" data-i18n-placeholder="peripheral-id-hint">
+                        </div>
+                        
+                        <div class="pure-control-group">
+                            <label for="peripheral-name-input" data-i18n="peripheral-name-label">名称</label>
+                            <input type="text" id="peripheral-name-input" class="pure-input-1" placeholder="例如: LED、UART1" required data-i18n-placeholder="peripheral-name-hint">
+                        </div>
+                        
+                        <div class="pure-control-group">
+                            <label for="peripheral-type-input" data-i18n="peripheral-type-label">外设类型</label>
+                            <select id="peripheral-type-input" class="pure-input-1" required>
+                                <optgroup label="通信接口" data-i18n-label="peripheral-cat-comm">
+                                    <option value="1">UART</option>
+                                    <option value="2">I2C</option>
+                                    <option value="3">SPI</option>
+                                    <option value="4">CAN</option>
+                                    <option value="5">USB</option>
+                                </optgroup>
+                                <optgroup label="GPIO接口" data-i18n-label="peripheral-cat-gpio">
+                                    <option value="11">数字输入</option>
+                                    <option value="12">数字输出</option>
+                                    <option value="13">数字输入(上拉)</option>
+                                    <option value="14">数字输入(下拉)</option>
+                                    <option value="15">模拟输入</option>
+                                    <option value="16">模拟输出</option>
+                                    <option value="17">PWM输出</option>
+                                    <option value="18">中断(上升沿)</option>
+                                    <option value="19">中断(下降沿)</option>
+                                    <option value="20">中断(变化)</option>
+                                    <option value="21">触摸</option>
+                                </optgroup>
+                                <optgroup label="模拟信号" data-i18n-label="peripheral-cat-analog">
+                                    <option value="26">ADC</option>
+                                    <option value="27">DAC</option>
+                                </optgroup>
+                                <optgroup label="调试接口" data-i18n-label="peripheral-cat-debug">
+                                    <option value="31">JTAG</option>
+                                    <option value="32">SWD</option>
+                                </optgroup>
+                                <optgroup label="专用外设" data-i18n-label="peripheral-cat-special">
+                                    <option value="36">LCD</option>
+                                    <option value="37">SDIO</option>
+                                    <option value="38">传感器</option>
+                                    <option value="39">摄像头</option>
+                                    <option value="40">以太网</option>
+                                    <option value="41">舵机</option>
+                                    <option value="42">步进电机</option>
+                                    <option value="43">编码器</option>
+                                    <option value="44">单总线</option>
+                                    <option value="45">NeoPixel</option>
+                                </optgroup>
+                            </select>
+                        </div>
+                        
+                        <div class="pure-control-group">
+                            <label for="peripheral-enabled-input" data-i18n="peripheral-enabled-label">启用</label>
+                            <select id="peripheral-enabled-input" class="pure-input-1">
+                                <option value="1" selected data-i18n="peripheral-enabled-yes">是</option>
+                                <option value="0" data-i18n="peripheral-enabled-no">否</option>
+                            </select>
+                        </div>
+                        
+                        <!-- 引脚配置 -->
+                        <div class="pure-control-group">
+                            <label for="peripheral-pins-input" data-i18n="peripheral-pins-label">引脚配置</label>
+                            <input type="text" id="peripheral-pins-input" class="pure-input-1" placeholder="例如: 2,4,5 (逗号分隔)" required data-i18n-placeholder="peripheral-pins-hint">
+                            <small style="color: #999;" data-i18n="peripheral-pins-help">多个引脚用逗号分隔，如: 21,22 (I2C SDA,SCL)</small>
+                        </div>
+                        
+                        <!-- 动态参数区域（根据类型显示不同字段） -->
+                        <div id="peripheral-params-container" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e0e0e0;">
+                            <!-- GPIO参数 -->
+                            <div id="gpio-params" class="peripheral-params-group" style="display: none;">
+                                <h4 style="margin-bottom: 10px;" data-i18n="gpio-params-title">GPIO参数</h4>
+                                <div class="pure-control-group">
+                                    <label for="gpio-initial-state" data-i18n="gpio-initial-label">初始状态</label>
+                                    <select id="gpio-initial-state" class="pure-input-1">
+                                        <option value="0" selected data-i18n="gpio-state-low">低电平</option>
+                                        <option value="1" data-i18n="gpio-state-high">高电平</option>
+                                    </select>
+                                </div>
+                                <div class="pure-control-group">
+                                    <label for="gpio-inverted" data-i18n="gpio-inverted-label">反向逻辑</label>
+                                    <select id="gpio-inverted" class="pure-input-1">
+                                        <option value="0" selected data-i18n="gpio-inverted-no">否</option>
+                                        <option value="1" data-i18n="gpio-inverted-yes">是</option>
+                                    </select>
+                                </div>
+                                <div class="pure-control-group pwm-only" style="display: none;">
+                                    <label for="gpio-pwm-freq" data-i18n="gpio-pwm-freq-label">PWM频率 (Hz)</label>
+                                    <input type="number" id="gpio-pwm-freq" class="pure-input-1" value="1000" min="1" max="40000000">
+                                </div>
+                                <div class="pure-control-group pwm-only" style="display: none;">
+                                    <label for="gpio-pwm-resolution" data-i18n="gpio-pwm-res-label">PWM分辨率 (位)</label>
+                                    <input type="number" id="gpio-pwm-resolution" class="pure-input-1" value="8" min="1" max="16">
+                                </div>
+                            </div>
+                            
+                            <!-- UART参数 -->
+                            <div id="uart-params" class="peripheral-params-group" style="display: none;">
+                                <h4 style="margin-bottom: 10px;" data-i18n="uart-params-title">UART参数</h4>
+                                <div class="pure-control-group">
+                                    <label for="uart-baudrate" data-i18n="uart-baudrate-label">波特率</label>
+                                    <select id="uart-baudrate" class="pure-input-1">
+                                        <option value="9600">9600</option>
+                                        <option value="19200">19200</option>
+                                        <option value="38400">38400</option>
+                                        <option value="57600">57600</option>
+                                        <option value="115200" selected>115200</option>
+                                        <option value="230400">230400</option>
+                                        <option value="460800">460800</option>
+                                        <option value="921600">921600</option>
+                                    </select>
+                                </div>
+                                <div class="pure-control-group">
+                                    <label for="uart-databits" data-i18n="uart-databits-label">数据位</label>
+                                    <select id="uart-databits" class="pure-input-1">
+                                        <option value="5">5</option>
+                                        <option value="6">6</option>
+                                        <option value="7">7</option>
+                                        <option value="8" selected>8</option>
+                                    </select>
+                                </div>
+                                <div class="pure-control-group">
+                                    <label for="uart-stopbits" data-i18n="uart-stopbits-label">停止位</label>
+                                    <select id="uart-stopbits" class="pure-input-1">
+                                        <option value="1" selected>1</option>
+                                        <option value="2">2</option>
+                                    </select>
+                                </div>
+                                <div class="pure-control-group">
+                                    <label for="uart-parity" data-i18n="uart-parity-label">校验位</label>
+                                    <select id="uart-parity" class="pure-input-1">
+                                        <option value="0" selected>无</option>
+                                        <option value="1">奇校验</option>
+                                        <option value="2">偶校验</option>
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <!-- I2C参数 -->
+                            <div id="i2c-params" class="peripheral-params-group" style="display: none;">
+                                <h4 style="margin-bottom: 10px;" data-i18n="i2c-params-title">I2C参数</h4>
+                                <div class="pure-control-group">
+                                    <label for="i2c-frequency" data-i18n="i2c-freq-label">频率 (Hz)</label>
+                                    <select id="i2c-frequency" class="pure-input-1">
+                                        <option value="100000" selected>100kHz (标准模式)</option>
+                                        <option value="400000">400kHz (快速模式)</option>
+                                    </select>
+                                </div>
+                                <div class="pure-control-group">
+                                    <label for="i2c-address" data-i18n="i2c-addr-label">从机地址 (0=主机模式)</label>
+                                    <input type="number" id="i2c-address" class="pure-input-1" value="0" min="0" max="127">
+                                </div>
+                            </div>
+                            
+                            <!-- SPI参数 -->
+                            <div id="spi-params" class="peripheral-params-group" style="display: none;">
+                                <h4 style="margin-bottom: 10px;" data-i18n="spi-params-title">SPI参数</h4>
+                                <div class="pure-control-group">
+                                    <label for="spi-frequency" data-i18n="spi-freq-label">频率 (Hz)</label>
+                                    <input type="number" id="spi-frequency" class="pure-input-1" value="1000000" min="1000" max="80000000">
+                                </div>
+                                <div class="pure-control-group">
+                                    <label for="spi-mode" data-i18n="spi-mode-label">模式</label>
+                                    <select id="spi-mode" class="pure-input-1">
+                                        <option value="0" selected>模式0 (CPOL=0, CPHA=0)</option>
+                                        <option value="1">模式1 (CPOL=0, CPHA=1)</option>
+                                        <option value="2">模式2 (CPOL=1, CPHA=0)</option>
+                                        <option value="3">模式3 (CPOL=1, CPHA=1)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <!-- ADC参数 -->
+                            <div id="adc-params" class="peripheral-params-group" style="display: none;">
+                                <h4 style="margin-bottom: 10px;" data-i18n="adc-params-title">ADC参数</h4>
+                                <div class="pure-control-group">
+                                    <label for="adc-resolution" data-i18n="adc-res-label">分辨率 (位)</label>
+                                    <select id="adc-resolution" class="pure-input-1">
+                                        <option value="9">9位 (0-511)</option>
+                                        <option value="10">10位 (0-1023)</option>
+                                        <option value="11">11位 (0-2047)</option>
+                                        <option value="12" selected>12位 (0-4095)</option>
+                                    </select>
+                                </div>
+                                <div class="pure-control-group">
+                                    <label for="adc-attenuation" data-i18n="adc-att-label">衰减系数</label>
+                                    <select id="adc-attenuation" class="pure-input-1">
+                                        <option value="0">0dB (0-1.1V)</option>
+                                        <option value="1">2.5dB (0-1.5V)</option>
+                                        <option value="2">6dB (0-2.2V)</option>
+                                        <option value="3" selected>11dB (0-3.3V)</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div id="peripheral-error" class="message message-error" style="display: none;"></div>
+                    </fieldset>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="pure-button" id="cancel-peripheral-btn" data-i18n="cancel">取消</button>
+                <button class="pure-button pure-button-primary" id="save-peripheral-btn" data-i18n="save">保存</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 兼容旧版：GPIO配置模态窗 -->
+    <div id="gpio-modal" class="modal" style="display: none;">
         <div class="modal-content" style="max-width: 500px;">
             <div class="modal-header">
                 <h2 style="margin: 0; font-size: 18px;" id="gpio-modal-title" data-i18n="gpio-add-modal-title">新增GPIO</h2>

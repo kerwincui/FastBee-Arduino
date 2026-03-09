@@ -28,7 +28,12 @@
     "password": "P47T6OD5IPFWHUM6",
     "keepAlive": 60,
     "publishTopic": "/1/FB100900001/property/post",
-    "subscribeTopic": "/1/FB100900001/function/get"
+    "subscribeTopic": "/1/FB100900001/function/get",
+    "directConnect": true,
+    "autoReconnect": true,
+    "connectionTimeout": 30000,
+    "publishQos": 0,
+    "publishRetain": false
   },
   "http": {
     "enabled": false,

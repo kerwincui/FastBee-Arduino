@@ -179,8 +179,8 @@ const AppState = {
             this.loadProtocolConfig(tabId);
         }
         
-        // 切换到网络状态tab时自动刷新
-        if (pageId === 'network-page' && tabId === 'netstatus') {
+        // 切换到设备监控页面时自动加载网络状态
+        if (pageId === 'dashboard-page') {
             this.loadNetworkStatus();
         }
         // 切换到NTP时间tab时自动加载时间
@@ -317,7 +317,7 @@ const AppState = {
         const wifiScanBtn = document.getElementById('wifi-scan-btn');
         if (wifiScanBtn) wifiScanBtn.addEventListener('click', () => this.scanWifiNetworks());
         
-        // WiFi表单提交
+        // 基本配置表单提交
         const wifiForm = document.getElementById('wifi-form');
         if (wifiForm) {
             wifiForm.addEventListener('submit', (e) => {
@@ -326,40 +326,85 @@ const AppState = {
             });
         }
         
-        // 静态IP切换
-        const useStaticIp = document.getElementById('use-static-ip');
-        if (useStaticIp) {
-            useStaticIp.addEventListener('change', (e) => {
-                const section = document.getElementById('static-ip-section');
-                if (section) {
-                    section.style.display = e.target.value === '1' ? 'block' : 'none';
-                }
+        // 热点配置表单提交
+        const apForm = document.getElementById('ap-form');
+        if (apForm) {
+            apForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.saveAPConfig();
             });
         }
         
-        // ============ GPIO配置事件绑定 ============
+        // 高级配置表单提交
+        const advancedForm = document.getElementById('advanced-form');
+        if (advancedForm) {
+            advancedForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.saveAdvancedConfig();
+            });
+        }
+        
+        // DHCP/静态IP切换
+        const wifiDhcp = document.getElementById('wifi-dhcp');
+        if (wifiDhcp) {
+            wifiDhcp.addEventListener('change', (e) => {
+                this._toggleStaticIPFields(e.target.value === '1');
+            });
+        }
+        
+        // ============ 外设配置事件绑定 ============
+        
+        // 新增外设按钮
+        const addPeripheralBtn = document.getElementById('add-peripheral-btn');
+        if (addPeripheralBtn) addPeripheralBtn.addEventListener('click', () => this.openPeripheralModal());
+        
+        // 关闭外设模态框
+        const closePeripheralModal = document.getElementById('close-peripheral-modal');
+        if (closePeripheralModal) closePeripheralModal.addEventListener('click', () => this.closePeripheralModal());
+        
+        // 取消外设按钮
+        const cancelPeripheralBtn = document.getElementById('cancel-peripheral-btn');
+        if (cancelPeripheralBtn) cancelPeripheralBtn.addEventListener('click', () => this.closePeripheralModal());
+        
+        // 保存外设按钮
+        const savePeripheralBtn = document.getElementById('save-peripheral-btn');
+        if (savePeripheralBtn) savePeripheralBtn.addEventListener('click', () => this.savePeripheralConfig());
+        
+        // 外设类型选择变化
+        const peripheralTypeInput = document.getElementById('peripheral-type-input');
+        if (peripheralTypeInput) {
+            peripheralTypeInput.addEventListener('change', (e) => this.onPeripheralTypeChange(e.target.value));
+        }
+        
+        // 外设过滤器
+        const peripheralFilter = document.getElementById('peripheral-filter-type');
+        if (peripheralFilter) {
+            peripheralFilter.addEventListener('change', (e) => this.loadPeripherals(e.target.value));
+        }
+        
+        // ============ 兼容旧版：GPIO配置事件绑定 ============
         
         // 新增GPIO按钮
         const addGpioBtn = document.getElementById('add-gpio-btn');
-        if (addGpioBtn) addGpioBtn.addEventListener('click', () => this.openGpioModal());
+        if (addGpioBtn) addGpioBtn.addEventListener('click', () => this.openPeripheralModal());
         
         // 关闭GPIO模态框
         const closeGpioModal = document.getElementById('close-gpio-modal');
-        if (closeGpioModal) closeGpioModal.addEventListener('click', () => this.closeGpioModal());
+        if (closeGpioModal) closeGpioModal.addEventListener('click', () => this.closePeripheralModal());
         
         // 取消GPIO按钮
         const cancelGpioBtn = document.getElementById('cancel-gpio-btn');
-        if (cancelGpioBtn) cancelGpioBtn.addEventListener('click', () => this.closeGpioModal());
+        if (cancelGpioBtn) cancelGpioBtn.addEventListener('click', () => this.closePeripheralModal());
         
         // 保存GPIO按钮
         const saveGpioBtn = document.getElementById('save-gpio-btn');
-        if (saveGpioBtn) saveGpioBtn.addEventListener('click', () => this.saveGpioConfig());
+        if (saveGpioBtn) saveGpioBtn.addEventListener('click', () => this.savePeripheralConfig());
         
         // ============ 网络状态事件绑定 ============
         
-        // 刷新网络状态按钮
-        const netStatusRefreshBtn = document.getElementById('net-status-refresh-btn');
-        if (netStatusRefreshBtn) netStatusRefreshBtn.addEventListener('click', () => this.loadNetworkStatus());
+        // 仪表盘网络状态刷新按钮
+        const dashboardNetRefreshBtn = document.getElementById('dashboard-net-refresh-btn');
+        if (dashboardNetRefreshBtn) dashboardNetRefreshBtn.addEventListener('click', () => this.loadNetworkStatus());
         
         // ============ 设备配置事件绑定 ============
         
@@ -388,6 +433,10 @@ const AppState = {
         // 重启按钮
         const devRestartBtn = document.getElementById('dev-restart-btn');
         if (devRestartBtn) devRestartBtn.addEventListener('click', () => this.restartDevice());
+
+        // 恢复出厂设置按钮
+        const devFactoryBtn = document.getElementById('dev-factory-btn');
+        if (devFactoryBtn) devFactoryBtn.addEventListener('click', () => this.factoryReset());
 
         // AP配网事件绑定
         const provisionForm = document.getElementById('device-provision-form');
@@ -504,7 +553,7 @@ const AppState = {
         if (page === 'dashboard') this.renderDashboard();
         if (page === 'users') this.loadUsers();
         if (page === 'roles') this.loadRoles();
-        if (page === 'gpio') this.loadGpioList();
+        if (page === 'peripheral') this.loadPeripherals();
         if (page === 'monitor') this.loadSystemInfo();
         if (page === 'logs') {
             this.loadLogs();
@@ -535,9 +584,9 @@ const AppState = {
             this.loadDeviceConfig();
         }
         
-        // 切换到协议配置页面时自动加载第一个tab的配置
+        // 切换到协议配置页面时自动加载第一个tab的配置(MQTT)
         if (page === 'protocol') {
-            this.loadProtocolConfig('modbus-rtu');
+            this.loadProtocolConfig('mqtt');
         }
     },
 
@@ -1823,6 +1872,9 @@ const AppState = {
                 this._setText('monitor-user-total', users.total || 0);
                 this._setText('monitor-user-online', users.online || 0);
                 this._setText('monitor-user-sessions', users.activeSessions || 0);
+                
+                // 加载详细网络状态
+                this.loadNetworkStatus();
             })
             .catch(err => {
                 console.error('Load system monitor failed:', err);
@@ -1882,7 +1934,9 @@ const AppState = {
                 const network = data.network || {};
                 const sta = data.sta || {};
                 const ap = data.ap || {};
+                const advanced = data.advanced || {};
                 
+                // ========== 基本配置 ==========
                 // 设备名称
                 this._setValue('device-name', device.name || '');
                 
@@ -1892,29 +1946,36 @@ const AppState = {
                 // STA 配置
                 this._setValue('wifi-ssid', sta.ssid || '');
                 this._setValue('wifi-password', sta.password || '');
-                this._setValue('wifi-dhcp', network.ipConfigType !== undefined ? network.ipConfigType.toString() : '0');
-                this._setValue('use-static-ip', network.ipConfigType === 1 ? '1' : '0');
+                this._setValue('wifi-security', sta.security || 'wpa');
+                
+                // ========== 热点配置 ==========
+                this._setValue('ap-ssid', ap.ssid || '');
+                this._setValue('ap-password', ap.password || '');
+                this._setValue('ap-channel', ap.channel !== undefined ? ap.channel.toString() : '1');
+                this._setValue('ap-hidden', ap.hidden ? '1' : '0');
+                
+                // ========== 高级配置 ==========
+                // IP配置类型 (0=DHCP, 1=静态IP)
+                const ipConfigType = network.ipConfigType !== undefined ? network.ipConfigType : 0;
+                this._setValue('wifi-dhcp', ipConfigType.toString());
+                this._toggleStaticIPFields(ipConfigType === 1);
                 
                 // 静态IP配置
                 this._setValue('static-ip', sta.staticIP || '');
                 this._setValue('gateway', sta.gateway || '');
                 this._setValue('subnet', sta.subnet || '');
                 this._setValue('dns1', sta.dns1 || '');
+                this._setValue('dns2', sta.dns2 || '');
                 
-                // 显示/隐藏静态IP区域
-                const staticSection = document.getElementById('static-ip-section');
-                if (staticSection) {
-                    staticSection.style.display = network.ipConfigType === 1 ? 'block' : 'none';
-                }
-                
-                // mDNS
+                // 域名配置
                 this._setValue('enable-mdns', network.enableMDNS ? '1' : '0');
+                this._setValue('custom-domain', network.customDomain || '');
                 
-                // AP 配置
-                this._setValue('ap-ssid', ap.ssid || '');
-                this._setValue('ap-password', ap.password || '');
-                this._setValue('ap-channel', ap.channel !== undefined ? ap.channel.toString() : '1');
-                this._setValue('ap-hidden', ap.hidden ? '1' : '0');
+                // 连接设置
+                this._setValue('connect-timeout', advanced.connectTimeout !== undefined ? advanced.connectTimeout.toString() : '10000');
+                this._setValue('reconnect-interval', advanced.reconnectInterval !== undefined ? advanced.reconnectInterval.toString() : '5000');
+                this._setValue('max-reconnect-attempts', advanced.maxReconnectAttempts !== undefined ? advanced.maxReconnectAttempts.toString() : '5');
+                this._setValue('conflict-detection', advanced.conflictDetection !== undefined ? advanced.conflictDetection.toString() : '3');
             })
             .catch(err => {
                 console.error('Load network config failed:', err);
@@ -1923,7 +1984,23 @@ const AppState = {
     },
     
     /**
-     * 保存网络配置
+     * 切换静态IP字段显示/隐藏
+     */
+    _toggleStaticIPFields(show) {
+        const fields = ['static-ip', 'gateway', 'subnet', 'dns1', 'dns2'];
+        fields.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                const group = el.closest('.pure-control-group');
+                if (group) {
+                    group.style.display = show ? 'block' : 'none';
+                }
+            }
+        });
+    },
+    
+    /**
+     * 保存基本网络配置
      */
     saveNetworkConfig() {
         const config = {
@@ -1931,15 +2008,7 @@ const AppState = {
             mode: document.getElementById('wifi-mode')?.value || '2',
             staSSID: document.getElementById('wifi-ssid')?.value || '',
             staPassword: document.getElementById('wifi-password')?.value || '',
-            ipConfigType: document.getElementById('use-static-ip')?.value || '0',
-            staticIP: document.getElementById('static-ip')?.value || '',
-            gateway: document.getElementById('gateway')?.value || '',
-            subnet: document.getElementById('subnet')?.value || '',
-            dns1: document.getElementById('dns1')?.value || '',
-            apSSID: document.getElementById('ap-ssid')?.value || '',
-            apPassword: document.getElementById('ap-password')?.value || '',
-            apChannel: document.getElementById('ap-channel')?.value || '1',
-            apHidden: document.getElementById('ap-hidden')?.value || '0'
+            staSecurity: document.getElementById('wifi-security')?.value || 'wpa'
         };
         
         // 显示加载状态
@@ -1955,7 +2024,7 @@ const AppState = {
                 if (res && res.success) {
                     this._showMessage('wifi-success', true);
                     this._showMessage('wifi-error', false);
-                    Notification.success(i18n.t('net-save-ok'), i18n.t('net-settings-title'));
+                    Notification.success(i18n.t('wifi-save-ok'), i18n.t('net-settings-title'));
                 } else {
                     this._showMessage('wifi-success', false);
                     this._showMessage('wifi-error', true);
@@ -1977,10 +2046,98 @@ const AppState = {
     },
     
     /**
+     * 保存热点配置
+     */
+    saveAPConfig() {
+        const config = {
+            apSSID: document.getElementById('ap-ssid')?.value || '',
+            apPassword: document.getElementById('ap-password')?.value || '',
+            apChannel: document.getElementById('ap-channel')?.value || '1',
+            apHidden: document.getElementById('ap-hidden')?.value || '0'
+        };
+        
+        // 显示加载状态
+        const submitBtn = document.querySelector('#ap-form button[type="submit"]');
+        const originalText = submitBtn?.innerHTML;
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = i18n.t('net-saving-html');
+        }
+        
+        apiPut('/api/network/config', config)
+            .then(res => {
+                if (res && res.success) {
+                    this._showMessage('ap-success', true);
+                    Notification.success(i18n.t('ap-save-ok'), i18n.t('net-settings-title'));
+                } else {
+                    Notification.error(res?.error || i18n.t('net-save-fail'), i18n.t('net-settings-title'));
+                }
+            })
+            .catch(err => {
+                console.error('Save AP config failed:', err);
+                Notification.error(i18n.t('net-save-fail'), i18n.t('net-settings-title'));
+            })
+            .finally(() => {
+                if (submitBtn) {
+                    submitBtn.disabled = false;
+                    submitBtn.innerHTML = originalText;
+                }
+            });
+    },
+    
+    /**
+     * 保存高级配置
+     */
+    saveAdvancedConfig() {
+        const config = {
+            ipConfigType: document.getElementById('wifi-dhcp')?.value || '0',
+            staticIP: document.getElementById('static-ip')?.value || '',
+            gateway: document.getElementById('gateway')?.value || '',
+            subnet: document.getElementById('subnet')?.value || '',
+            dns1: document.getElementById('dns1')?.value || '',
+            dns2: document.getElementById('dns2')?.value || '',
+            enableMDNS: document.getElementById('enable-mdns')?.value || '0',
+            customDomain: document.getElementById('custom-domain')?.value || '',
+            connectTimeout: document.getElementById('connect-timeout')?.value || '10000',
+            reconnectInterval: document.getElementById('reconnect-interval')?.value || '5000',
+            maxReconnectAttempts: document.getElementById('max-reconnect-attempts')?.value || '5',
+            conflictDetection: document.getElementById('conflict-detection')?.value || '3'
+        };
+        
+        // 显示加载状态
+        const submitBtn = document.querySelector('#advanced-form button[type="submit"]');
+        const originalText = submitBtn?.innerHTML;
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = i18n.t('net-saving-html');
+        }
+        
+        apiPut('/api/network/config', config)
+            .then(res => {
+                if (res && res.success) {
+                    this._showMessage('advanced-success', true);
+                    Notification.success(i18n.t('advanced-save-ok'), i18n.t('net-settings-title'));
+                } else {
+                    Notification.error(res?.error || i18n.t('net-save-fail'), i18n.t('net-settings-title'));
+                }
+            })
+            .catch(err => {
+                console.error('Save advanced config failed:', err);
+                Notification.error(i18n.t('net-save-fail'), i18n.t('net-settings-title'));
+            })
+            .finally(() => {
+                if (submitBtn) {
+                    submitBtn.disabled = false;
+                    submitBtn.innerHTML = originalText;
+                }
+            });
+    },
+    
+    /**
      * 加载并显示网络状态
      */
     loadNetworkStatus() {
-        const refreshBtn = document.getElementById('net-status-refresh-btn');
+        const refreshBtn = document.getElementById('dashboard-net-refresh-btn');
         if (refreshBtn) {
             refreshBtn.disabled = true;
             refreshBtn.innerHTML = i18n.t('net-refreshing-html');
@@ -2070,6 +2227,16 @@ const AppState = {
             .then(res => {
                 if (!res || !res.success) return;
                 const d = res.data || {};
+                // 设备编号：优先使用配置中的，否则使用系统返回的，最后生成（FBE + 完整MAC地址）
+                let deviceId = d.deviceId || '';
+                if (!deviceId && d.macAddress) {
+                    // 从MAC地址生成 FBE+完整MAC（12位）
+                    const macClean = d.macAddress.replace(/:/g, '').toUpperCase();
+                    deviceId = 'FBE' + macClean;
+                }
+                this._setValue('dev-id', deviceId || 'FBE000000000000');
+                // 产品编号
+                this._setValue('dev-product-number', d.productNumber !== undefined ? String(d.productNumber) : '0');
                 this._setValue('dev-name',          d.deviceName   || '');
                 this._setValue('dev-location',      d.location     || '');
                 const desc = document.getElementById('dev-description');
@@ -2104,15 +2271,17 @@ const AppState = {
     },
 
     saveDeviceBasic() {
+        const productNumberVal = document.getElementById('dev-product-number')?.value;
         const config = {
-            deviceName:   document.getElementById('dev-name')?.value || '',
-            location:     document.getElementById('dev-location')?.value || '',
-            description:  document.getElementById('dev-description')?.value || '',
-            ntpServer1:   document.getElementById('dev-ntp-server1')?.value || 'pool.ntp.org',
-            ntpServer2:   document.getElementById('dev-ntp-server2')?.value || 'time.nist.gov',
-            timezone:     document.getElementById('dev-timezone')?.value || 'CST-8',
-            enableNTP:    document.getElementById('dev-ntp-enable')?.value || '1',
-            syncInterval: document.getElementById('dev-sync-interval')?.value || '3600',
+            deviceName:     document.getElementById('dev-name')?.value || '',
+            productNumber:  productNumberVal !== undefined && productNumberVal !== '' ? parseInt(productNumberVal, 10) : 0,
+            location:       document.getElementById('dev-location')?.value || '',
+            description:    document.getElementById('dev-description')?.value || '',
+            ntpServer1:     document.getElementById('dev-ntp-server1')?.value || 'pool.ntp.org',
+            ntpServer2:     document.getElementById('dev-ntp-server2')?.value || 'time.nist.gov',
+            timezone:       document.getElementById('dev-timezone')?.value || 'CST-8',
+            enableNTP:      document.getElementById('dev-ntp-enable')?.value || '1',
+            syncInterval:   document.getElementById('dev-sync-interval')?.value || '3600',
         };
         apiPut('/api/device/config', config)
             .then(res => {
@@ -2194,6 +2363,45 @@ const AppState = {
             .catch(() => {
                 if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-restart-btn-html'); }
                 Notification.error(i18n.t('dev-restart-fail'), i18n.t('dev-restart-title'));
+            });
+    },
+
+    /**
+     * 恢复出厂设置
+     */
+    factoryReset() {
+        const confirmInput = document.getElementById('dev-factory-confirm');
+        const btn = document.getElementById('dev-factory-btn');
+        const confirmValue = confirmInput?.value?.toUpperCase().trim();
+
+        // 验证确认文本
+        if (confirmValue !== 'RESET') {
+            Notification.warning(i18n.t('dev-sys-factory-confirm-error'), i18n.t('dev-sys-factory-title-msg'));
+            if (confirmInput) confirmInput.focus();
+            return;
+        }
+
+        // 二次确认
+        if (!confirm(i18n.t('dev-sys-factory-warning'))) {
+            if (confirmInput) confirmInput.value = '';
+            return;
+        }
+
+        // 禁用按钮，显示处理中
+        if (btn) { btn.disabled = true; btn.innerHTML = i18n.t('dev-sys-factory-processing'); }
+
+        apiPost('/api/system/factory-reset', {})
+            .then(res => {
+                if (res && res.success) {
+                    Notification.success(i18n.t('dev-sys-factory-success'), i18n.t('dev-sys-factory-title-msg'));
+                } else {
+                    if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-sys-factory-btn-html'); }
+                    Notification.error(i18n.t('dev-sys-factory-fail'), i18n.t('dev-sys-factory-title-msg'));
+                }
+            })
+            .catch(() => {
+                if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-sys-factory-btn-html'); }
+                Notification.error(i18n.t('dev-sys-factory-fail'), i18n.t('dev-sys-factory-title-msg'));
             });
     },
 
@@ -2313,7 +2521,15 @@ const AppState = {
         const el = document.getElementById(id);
         if (el) el.value = value;
     },
-    
+
+    /**
+     * 设置复选框状态
+     */
+    _setCheckbox(id, checked) {
+        const el = document.getElementById(id);
+        if (el) el.checked = !!checked;
+    },
+
     /**
      * 显示/隐藏消息
      */
@@ -2399,6 +2615,12 @@ const AppState = {
             this._setValue('mqtt-alive', mqtt.keepAlive || 60);
             this._setValue('mqtt-publish', mqtt.publishTopic || '');
             this._setValue('mqtt-subscribe', mqtt.subscribeTopic || '');
+            // 新增字段
+            this._setValue('mqtt-publish-qos', mqtt.publishQos ?? 0);
+            this._setValue('mqtt-conn-timeout', mqtt.connectionTimeout ?? 30000);
+            this._setCheckbox('mqtt-direct-connect', mqtt.directConnect ?? true);
+            this._setCheckbox('mqtt-auto-reconnect', mqtt.autoReconnect ?? true);
+            this._setCheckbox('mqtt-publish-retain', mqtt.publishRetain ?? false);
         }
         
         if (tabId === 'http' && config.http) {
@@ -2460,6 +2682,12 @@ const AppState = {
         data.mqtt_keepAlive = document.getElementById('mqtt-alive')?.value || '60';
         data.mqtt_publishTopic = document.getElementById('mqtt-publish')?.value || '';
         data.mqtt_subscribeTopic = document.getElementById('mqtt-subscribe')?.value || '';
+        // 新增字段
+        data.mqtt_publishQos = document.getElementById('mqtt-publish-qos')?.value || '0';
+        data.mqtt_connectionTimeout = document.getElementById('mqtt-conn-timeout')?.value || '30000';
+        data.mqtt_directConnect = document.getElementById('mqtt-direct-connect')?.checked ?? true;
+        data.mqtt_autoReconnect = document.getElementById('mqtt-auto-reconnect')?.checked ?? true;
+        data.mqtt_publishRetain = document.getElementById('mqtt-publish-retain')?.checked ?? false;
         
         // HTTP
         data.http_url = document.getElementById('http-url')?.value || 'https://api.example.com';
@@ -2718,6 +2946,420 @@ const AppState = {
             })
             .catch(err => {
                 console.error('Save GPIO to file failed:', err);
+            });
+    },
+    
+    // ============ 外设接口管理（新版） ============
+    
+    /**
+     * 加载外设列表
+     */
+    loadPeripherals(filterType = '') {
+        const tbody = document.getElementById('peripheral-table-body');
+        if (!tbody) return;
+        
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #999;">' + i18n.t('peripheral-loading') + '</td></tr>';
+        
+        let url = '/api/peripherals';
+        if (filterType) {
+            url += '?category=' + filterType;
+        }
+        
+        apiGet(url)
+            .then(res => {
+                if (!res || !res.success) {
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #f56c6c;">' + i18n.t('peripheral-load-fail') + '</td></tr>';
+                    return;
+                }
+                
+                const peripherals = res.data || [];
+                
+                if (peripherals.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #999;">' + i18n.t('peripheral-empty') + '</td></tr>';
+                    return;
+                }
+                
+                let html = '';
+                peripherals.forEach(periph => {
+                    const statusColors = {
+                        0: '#999',    // DISABLED
+                        1: '#faad14', // ENABLED
+                        2: '#52c41a', // INITIALIZED
+                        3: '#1890ff', // RUNNING
+                        4: '#ff4d4f'  // ERROR
+                    };
+                    const statusNames = {
+                        0: i18n.t('peripheral-status-disabled'),
+                        1: i18n.t('peripheral-status-enabled'),
+                        2: i18n.t('peripheral-status-initialized'),
+                        3: i18n.t('peripheral-status-running'),
+                        4: i18n.t('peripheral-status-error')
+                    };
+                    const statusColor = statusColors[periph.status] || '#999';
+                    const statusName = statusNames[periph.status] || i18n.t('peripheral-status-unknown');
+                    
+                    const pinsStr = periph.pins ? periph.pins.join(', ') : '--';
+                    
+                    html += `
+                        <tr>
+                            <td>${periph.id}</td>
+                            <td>${periph.name}</td>
+                            <td>${periph.typeName || periph.type}</td>
+                            <td>${pinsStr}</td>
+                            <td style="color: ${statusColor};">${statusName}</td>
+                            <td>
+                                <button class="pure-button pure-button-small" onclick="app.editPeripheral('${periph.id}')">${i18n.t('peripheral-edit')}</button>
+                                <button class="pure-button pure-button-small" onclick="app.togglePeripheral('${periph.id}')">${periph.enabled ? i18n.t('peripheral-disable') : i18n.t('peripheral-enable')}</button>
+                                <button class="pure-button pure-button-small" style="background: #ff4d4f; color: white;" onclick="app.deletePeripheral('${periph.id}')">${i18n.t('peripheral-delete')}</button>
+                            </td>
+                        </tr>
+                    `;
+                });
+                
+                tbody.innerHTML = html;
+            })
+            .catch(err => {
+                console.error('Load peripherals failed:', err);
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #f56c6c;">' + i18n.t('peripheral-load-fail') + '</td></tr>';
+            });
+    },
+    
+    /**
+     * 打开外设模态框
+     */
+    openPeripheralModal(isEdit = false, peripheralId = null) {
+        const modal = document.getElementById('peripheral-modal');
+        const title = document.getElementById('peripheral-modal-title');
+        const form = document.getElementById('peripheral-form');
+        
+        if (!modal) {
+            // 如果新模态框不存在，回退到旧GPIO模态框
+            this.openGpioModal(isEdit, peripheralId ? { pin: peripheralId } : null);
+            return;
+        }
+        
+        form?.reset();
+        const errorEl = document.getElementById('peripheral-error');
+        if (errorEl) errorEl.style.display = 'none';
+        
+        // 隐藏所有参数组
+        document.querySelectorAll('.peripheral-params-group').forEach(el => el.style.display = 'none');
+        
+        if (isEdit && peripheralId) {
+            title.textContent = i18n.t('peripheral-edit-modal-title');
+            this.loadPeripheralForEdit(peripheralId);
+        } else {
+            title.textContent = i18n.t('peripheral-add-modal-title');
+            document.getElementById('peripheral-original-id').value = '';
+            document.getElementById('peripheral-id-input').disabled = false;
+            // 默认显示GPIO参数
+            this.onPeripheralTypeChange('11');
+        }
+        
+        modal.style.display = 'flex';
+    },
+    
+    /**
+     * 关闭外设模态框
+     */
+    closePeripheralModal() {
+        const modal = document.getElementById('peripheral-modal');
+        if (modal) modal.style.display = 'none';
+        // 同时关闭旧版模态框
+        const oldModal = document.getElementById('gpio-modal');
+        if (oldModal) oldModal.style.display = 'none';
+    },
+    
+    /**
+     * 外设类型改变时更新参数显示
+     */
+    onPeripheralTypeChange(typeValue) {
+        const type = parseInt(typeValue);
+        
+        // 隐藏所有参数组
+        document.querySelectorAll('.peripheral-params-group').forEach(el => el.style.display = 'none');
+        
+        // 根据类型显示对应参数组
+        if (type >= 11 && type <= 21) {
+            // GPIO类型
+            const gpioParams = document.getElementById('gpio-params');
+            if (gpioParams) {
+                gpioParams.style.display = 'block';
+                // 显示/隐藏PWM相关字段
+                const pwmOnly = gpioParams.querySelectorAll('.pwm-only');
+                pwmOnly.forEach(el => {
+                    el.style.display = (type === 17) ? 'block' : 'none'; // 17 = PWM输出
+                });
+            }
+        } else if (type === 1) {
+            // UART
+            const uartParams = document.getElementById('uart-params');
+            if (uartParams) uartParams.style.display = 'block';
+        } else if (type === 2) {
+            // I2C
+            const i2cParams = document.getElementById('i2c-params');
+            if (i2cParams) i2cParams.style.display = 'block';
+        } else if (type === 3) {
+            // SPI
+            const spiParams = document.getElementById('spi-params');
+            if (spiParams) spiParams.style.display = 'block';
+        } else if (type === 26) {
+            // ADC
+            const adcParams = document.getElementById('adc-params');
+            if (adcParams) adcParams.style.display = 'block';
+        }
+    },
+    
+    /**
+     * 加载外设数据用于编辑
+     */
+    loadPeripheralForEdit(id) {
+        // 使用 apiGet 的标准参数方式调用
+        apiGet('/api/peripherals/', { id: id })
+            .then(res => {
+                console.log('Load peripheral response:', res);  // 调试日志
+                
+                if (res && res.success && res.data) {
+                    const data = res.data;
+                    
+                    // 安全赋值函数，防止 undefined
+                    const safeValue = (val, def = '') => (val !== undefined && val !== null) ? val : def;
+                    
+                    // 基本字段（带空值保护）
+                    document.getElementById('peripheral-original-id').value = safeValue(data.id);
+                    document.getElementById('peripheral-id-input').value = safeValue(data.id);
+                    document.getElementById('peripheral-id-input').disabled = true;
+                    document.getElementById('peripheral-name-input').value = safeValue(data.name);
+                    document.getElementById('peripheral-type-input').value = safeValue(data.type, '11');
+                    document.getElementById('peripheral-enabled-input').value = data.enabled ? '1' : '0';
+                    
+                    // 引脚配置：过滤掉 255（未配置的引脚）
+                    if (data.pins && Array.isArray(data.pins)) {
+                        const validPins = data.pins.filter(p => p !== 255 && p !== undefined && p !== null);
+                        document.getElementById('peripheral-pins-input').value = validPins.join(',');
+                    } else {
+                        document.getElementById('peripheral-pins-input').value = '';
+                    }
+                    
+                    // 更新类型相关参数显示
+                    this.onPeripheralTypeChange(data.type);
+                    
+                    // 填充类型特定参数
+                    if (data.params) {
+                        // GPIO参数
+                        if (data.params.initialState !== undefined) {
+                            document.getElementById('gpio-initial-state').value = data.params.initialState;
+                        }
+                        if (data.params.inverted !== undefined) {
+                            document.getElementById('gpio-inverted').value = data.params.inverted ? '1' : '0';
+                        }
+                        if (data.params.pwmFrequency !== undefined) {
+                            document.getElementById('gpio-pwm-freq').value = data.params.pwmFrequency;
+                        }
+                        if (data.params.pwmResolution !== undefined) {
+                            document.getElementById('gpio-pwm-resolution').value = data.params.pwmResolution;
+                        }
+                        
+                        // UART参数
+                        if (data.params.baudRate !== undefined) {
+                            document.getElementById('uart-baudrate').value = data.params.baudRate;
+                        }
+                        if (data.params.dataBits !== undefined) {
+                            document.getElementById('uart-databits').value = data.params.dataBits;
+                        }
+                        if (data.params.stopBits !== undefined) {
+                            document.getElementById('uart-stopbits').value = data.params.stopBits;
+                        }
+                        if (data.params.parity !== undefined) {
+                            document.getElementById('uart-parity').value = data.params.parity;
+                        }
+                        
+                        // I2C参数
+                        if (data.params.frequency !== undefined) {
+                            document.getElementById('i2c-frequency').value = data.params.frequency;
+                        }
+                        if (data.params.address !== undefined) {
+                            document.getElementById('i2c-address').value = data.params.address;
+                        }
+                        
+                        // SPI参数
+                        if (data.params.frequency !== undefined) {
+                            document.getElementById('spi-frequency').value = data.params.frequency;
+                        }
+                        if (data.params.mode !== undefined) {
+                            document.getElementById('spi-mode').value = data.params.mode;
+                        }
+                        
+                        // ADC参数
+                        if (data.params.resolution !== undefined) {
+                            document.getElementById('adc-resolution').value = data.params.resolution;
+                        }
+                        if (data.params.attenuation !== undefined) {
+                            document.getElementById('adc-attenuation').value = data.params.attenuation;
+                        }
+                    }
+                } else {
+                    console.error('Invalid response format:', res);
+                    Notification.error(i18n.t('peripheral-load-fail'), i18n.t('peripheral-title'));
+                }
+            })
+            .catch(err => {
+                console.error('Load peripheral for edit failed:', err);
+                Notification.error(i18n.t('peripheral-load-fail'), i18n.t('peripheral-title'));
+            });
+    },
+    
+    /**
+     * 保存外设配置
+     */
+    savePeripheralConfig() {
+        const originalId = document.getElementById('peripheral-original-id').value;
+        const id = document.getElementById('peripheral-id-input').value.trim();
+        const name = document.getElementById('peripheral-name-input').value.trim();
+        const type = document.getElementById('peripheral-type-input').value;
+        const enabled = document.getElementById('peripheral-enabled-input').value;
+        const pinsStr = document.getElementById('peripheral-pins-input').value.trim();
+        const errEl = document.getElementById('peripheral-error');
+        
+        if (!name || !type || !pinsStr) {
+            errEl.textContent = i18n.t('peripheral-validate-required');
+            errEl.style.display = 'block';
+            return;
+        }
+        
+        const isEdit = originalId !== '';
+        
+        // 构建数据对象
+        const data = {
+            id: isEdit ? originalId : (id || undefined),  // 编辑时使用原始ID，新增时如果为空则后端自动生成
+            name: name,
+            type: type,
+            enabled: enabled,
+            pins: pinsStr
+        };
+        
+        // 根据类型添加特定参数
+        const typeNum = parseInt(type);
+        if (typeNum >= 11 && typeNum <= 21) {
+            // GPIO参数
+            data.initialState = document.getElementById('gpio-initial-state')?.value || '0';
+            data.inverted = document.getElementById('gpio-inverted')?.value || '0';
+            if (typeNum === 17) { // PWM
+                data.pwmFrequency = document.getElementById('gpio-pwm-freq')?.value || '1000';
+                data.pwmResolution = document.getElementById('gpio-pwm-resolution')?.value || '8';
+            }
+        } else if (typeNum === 1) {
+            // UART参数
+            data.baudRate = document.getElementById('uart-baudrate')?.value || '115200';
+            data.dataBits = document.getElementById('uart-databits')?.value || '8';
+            data.stopBits = document.getElementById('uart-stopbits')?.value || '1';
+            data.parity = document.getElementById('uart-parity')?.value || '0';
+        } else if (typeNum === 2) {
+            // I2C参数
+            data.frequency = document.getElementById('i2c-frequency')?.value || '100000';
+            data.address = document.getElementById('i2c-address')?.value || '0';
+        } else if (typeNum === 3) {
+            // SPI参数
+            data.frequency = document.getElementById('spi-frequency')?.value || '1000000';
+            data.mode = document.getElementById('spi-mode')?.value || '0';
+        } else if (typeNum === 26) {
+            // ADC参数
+            data.resolution = document.getElementById('adc-resolution')?.value || '12';
+            data.attenuation = document.getElementById('adc-attenuation')?.value || '3';
+        }
+        
+        // 安全起见：禁用按钮防止重复提交
+        const saveBtn = document.getElementById('save-peripheral-btn');
+        const origText = saveBtn?.textContent;
+        if (saveBtn) {
+            saveBtn.disabled = true;
+            saveBtn.textContent = i18n.t('peripheral-saving-text');
+        }
+        
+        const url = isEdit ? '/api/peripherals/' : '/api/peripherals';
+        const method = isEdit ? apiPut : apiPost;
+        
+        method(url, data)
+            .then(res => {
+                if (res && res.success) {
+                    this.closePeripheralModal();
+                    this.loadPeripherals(document.getElementById('peripheral-filter-type')?.value || '');
+                    Notification.success(isEdit ? i18n.t('peripheral-update-ok') : i18n.t('peripheral-add-ok'), i18n.t('peripheral-title'));
+                } else {
+                    errEl.textContent = res?.error || i18n.t('peripheral-save-fail');
+                    errEl.style.display = 'block';
+                }
+            })
+            .catch(err => {
+                console.error('Save peripheral failed:', err);
+                errEl.textContent = i18n.t('peripheral-save-fail');
+                errEl.style.display = 'block';
+            })
+            .finally(() => {
+                if (saveBtn) {
+                    saveBtn.disabled = false;
+                    saveBtn.textContent = origText;
+                }
+            });
+    },
+    
+    /**
+     * 编辑外设
+     */
+    editPeripheral(id) {
+        this.openPeripheralModal(true, id);
+    },
+    
+    /**
+     * 删除外设
+     */
+    deletePeripheral(id) {
+        if (!confirm(i18n.t('peripheral-confirm-delete') + id + i18n.t('peripheral-confirm-suffix'))) return;
+        
+        apiDelete('/api/peripherals/?id=' + encodeURIComponent(id))
+            .then(res => {
+                if (res && res.success) {
+                    Notification.success(i18n.t('peripheral-deleted'), i18n.t('peripheral-title'));
+                    this.loadPeripherals(document.getElementById('peripheral-filter-type')?.value || '');
+                } else {
+                    Notification.error(res?.error || i18n.t('peripheral-delete-fail'), i18n.t('peripheral-title'));
+                }
+            })
+            .catch(err => {
+                console.error('Delete peripheral failed:', err);
+                Notification.error(i18n.t('peripheral-delete-fail'), i18n.t('peripheral-title'));
+            });
+    },
+    
+    /**
+     * 启用/禁用外设
+     */
+    togglePeripheral(id) {
+        // 先获取当前状态（使用标准参数方式）
+        apiGet('/api/peripherals/status', { id: id })
+            .then(res => {
+                if (res && res.success && res.data) {
+                    const isEnabled = res.data.enabled;
+                    const url = isEnabled ? '/api/peripherals/disable' : '/api/peripherals/enable';
+                    
+                    apiPost(url, { id: id })
+                        .then(res2 => {
+                            if (res2 && res2.success) {
+                                Notification.success(isEnabled ? i18n.t('peripheral-disabled') : i18n.t('peripheral-enabled'), i18n.t('peripheral-title'));
+                                this.loadPeripherals(document.getElementById('peripheral-filter-type')?.value || '');
+                            } else {
+                                Notification.error(res2?.error || i18n.t('peripheral-toggle-fail'), i18n.t('peripheral-title'));
+                            }
+                        })
+                        .catch(err => {
+                            console.error('Toggle peripheral failed:', err);
+                            Notification.error(i18n.t('peripheral-toggle-fail'), i18n.t('peripheral-title'));
+                        });
+                }
+            })
+            .catch(err => {
+                console.error('Get peripheral status failed:', err);
+                Notification.error(i18n.t('peripheral-toggle-fail'), i18n.t('peripheral-title'));
             });
     },
 

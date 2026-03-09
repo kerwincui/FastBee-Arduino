@@ -232,7 +232,8 @@ private:
     void handleAPISystemInfo(AsyncWebServerRequest* request);
     void handleAPISystemStatus(AsyncWebServerRequest* request);
     void handleAPISystemRestart(AsyncWebServerRequest* request);
-    
+    void handleAPIFactoryReset(AsyncWebServerRequest* request);
+
     // 辅助函数
     String formatUptime(unsigned long ms);
     void handleAPIFileSystemInfo(AsyncWebServerRequest* request);
@@ -261,13 +262,26 @@ private:
     void handleAPIOtaUpload(AsyncWebServerRequest* request, const String& filename, 
                            size_t index, uint8_t* data, size_t len, bool final);  ///< 本地文件上传
     
-    // ============ GPIO API处理器 ============
+    // ============ GPIO API处理器 (兼容旧版) ============
     void handleAPIGetGPIOConfig(AsyncWebServerRequest* request);   ///< 获取GPIO配置
     void handleAPIConfigureGPIO(AsyncWebServerRequest* request);   ///< 配置GPIO
     void handleAPIReadGPIO(AsyncWebServerRequest* request);        ///< 读取GPIO状态
     void handleAPIWriteGPIO(AsyncWebServerRequest* request);       ///< 写入GPIO状态
     void handleAPIDeleteGPIO(AsyncWebServerRequest* request);      ///< 删除GPIO配置
     void handleAPISaveGPIOConfig(AsyncWebServerRequest* request);  ///< 保存GPIO配置
+    
+    // ============ 外设接口 API处理器 ============
+    void handleAPIGetPeripherals(AsyncWebServerRequest* request);      ///< 获取所有外设
+    void handleAPIGetPeripheral(AsyncWebServerRequest* request);       ///< 获取单个外设
+    void handleAPIAddPeripheral(AsyncWebServerRequest* request);       ///< 添加外设
+    void handleAPIUpdatePeripheral(AsyncWebServerRequest* request);    ///< 更新外设
+    void handleAPIDeletePeripheral(AsyncWebServerRequest* request);    ///< 删除外设
+    void handleAPIEnablePeripheral(AsyncWebServerRequest* request);    ///< 启用外设
+    void handleAPIDisablePeripheral(AsyncWebServerRequest* request);   ///< 禁用外设
+    void handleAPIGetPeripheralStatus(AsyncWebServerRequest* request); ///< 获取外设状态
+    void handleAPIReadPeripheral(AsyncWebServerRequest* request);      ///< 读取外设数据
+    void handleAPIWritePeripheral(AsyncWebServerRequest* request);     ///< 写入外设数据
+    void handleAPIGetPeripheralTypes(AsyncWebServerRequest* request);  ///< 获取外设类型列表
     
     // ============ 协议配置 API ============
     void handleAPIGetProtocolConfig(AsyncWebServerRequest* request);   ///< 获取协议配置

@@ -16,9 +16,17 @@ struct MQTTConfig {
     String password;
     String topicPrefix;
     uint16_t keepAlive;
+    // 新增字段
+    bool directConnect;        // 是否直连（绕过协议管理器）
+    bool autoReconnect;        // 自动重连
+    uint32_t connectionTimeout;// 连接超时（毫秒）
+    uint8_t publishQos;        // 发布QoS (0/1/2)
+    bool publishRetain;        // 保留消息
 
     // 默认构造函数
-    MQTTConfig() : port(1883), keepAlive(60) {}
+    MQTTConfig() : port(1883), keepAlive(60), 
+                   directConnect(true), autoReconnect(true), 
+                   connectionTimeout(30000), publishQos(0), publishRetain(false) {}
 };
 
 class MQTTClient {
