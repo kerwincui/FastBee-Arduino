@@ -250,9 +250,11 @@
                                                     <tr><td style="color: #666; padding: 4px 0;" data-i18n="static-ip-label">IP 地址</td><td id="ns-ip" style="padding: 4px 0;">--</td></tr>
                                                     <tr><td style="color: #666; padding: 4px 0;" data-i18n="gateway-label">网关</td><td id="ns-gateway" style="padding: 4px 0;">--</td></tr>
                                                     <tr><td style="color: #666; padding: 4px 0;" data-i18n="subnet-label">子网掩码</td><td id="ns-subnet" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="dns1-label">DNS</td><td id="ns-dns" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="dns1-label">首选 DNS</td><td id="ns-dns" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="dns2-label">备用 DNS</td><td id="ns-dns2" style="padding: 4px 0;">--</td></tr>
                                                     <tr><td style="color: #666; padding: 4px 0;">RSSI</td><td id="ns-rssi" style="padding: 4px 0;">--</td></tr>
                                                     <tr><td style="color: #666; padding: 4px 0;">MAC</td><td id="ns-mac" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="ns-conn-time-label">连接时长</td><td id="ns-conn-time" style="padding: 4px 0;">--</td></tr>
                                                 </tbody>
                                             </table>
                                         </div>
@@ -268,6 +270,7 @@
                                                 <tbody>
                                                     <tr><td style="color: #666; padding: 4px 0; width: 100px;" data-i18n="ap-ssid-label">AP 名称</td><td id="ns-ap-ssid" style="padding: 4px 0;">--</td></tr>
                                                     <tr><td style="color: #666; padding: 4px 0;">AP IP</td><td id="ns-ap-ip" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="ap-channel-label">信道</td><td id="ns-ap-channel" style="padding: 4px 0;">--</td></tr>
                                                     <tr><td style="color: #666; padding: 4px 0;" data-i18n="dev-provision-clients-label">连接客户数</td><td id="ns-ap-clients" style="padding: 4px 0;">--</td></tr>
                                                 </tbody>
                                             </table>
@@ -284,9 +287,10 @@
                                                 <tbody>
                                                     <tr><td style="color: #666; padding: 4px 0; width: 100px;" data-i18n="wifi-mode-label">网络模式</td><td id="ns-mode" style="padding: 4px 0;">--</td></tr>
                                                     <tr><td style="color: #666; padding: 4px 0;" data-i18n="wifi-mdns-label">mDNS</td><td id="ns-mdns" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;">重连次数</td><td id="ns-reconnect" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;">互联网</td><td id="ns-internet" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;">IP 冲突</td><td id="ns-conflict" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="ns-reconnect-label">重连次数</td><td id="ns-reconnect" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="ns-internet-label">互联网</td><td id="ns-internet" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="ns-conflict-label">IP 冲突</td><td id="ns-conflict" style="padding: 4px 0;">--</td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="ns-uptime-label">运行时间</td><td id="ns-uptime" style="padding: 4px 0;">--</td></tr>
                                                 </tbody>
                                             </table>
                                         </div>
@@ -681,13 +685,8 @@
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="wifi-ssid" data-i18n="wifi-ssid-label">SSID</label>
+                                                    <label for="wifi-ssid" data-i18n="wifi-ssid-label">WiFi名称</label>
                                                     <input type="text" id="wifi-ssid" class="pure-input-1" placeholder="输入WiFi名称" data-i18n-placeholder="wifi-ssid-label">
-                                                </div>
-                                                
-                                                <div class="pure-control-group">
-                                                    <label for="wifi-password" data-i18n="wifi-password-label">密码</label>
-                                                    <input type="password" id="wifi-password" class="pure-input-1" placeholder="输入WiFi密码" data-i18n-placeholder="wifi-password-label">
                                                 </div>
                                             </div>
                                             
@@ -699,6 +698,11 @@
                                                         <option value="wpa" selected data-i18n="wifi-security-wpa">WPA/WPA2</option>
                                                         <option value="wpa3" data-i18n="wifi-security-wpa3">WPA3</option>
                                                     </select>
+                                                </div>
+                                                
+                                                <div class="pure-control-group">
+                                                    <label for="wifi-password" data-i18n="wifi-password-label">密码</label>
+                                                    <input type="password" id="wifi-password" class="pure-input-1" placeholder="输入WiFi密码" data-i18n-placeholder="wifi-password-label">
                                                 </div>
                                             </div>
                                         </div>
@@ -905,27 +909,23 @@
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="dev-id" data-i18n="dev-id-label">设备编号</label>
-                                                    <input type="text" id="dev-id" class="pure-input-1" placeholder="留空则使用系统默认值(FBE+MAC)" data-i18n-placeholder="dev-id-placeholder" maxlength="32">
-                                                    <span class="field-hint" data-i18n="dev-id-hint">可自定义任意格式，留空自动生成</span>
-                                                </div>
-                                                <div class="pure-control-group">
-                                                    <label for="dev-product-number" data-i18n="dev-product-number-label">产品编号</label>
-                                                    <input type="number" id="dev-product-number" class="pure-input-1" placeholder="输入产品编号" data-i18n-placeholder="dev-product-number-label" min="0">
-                                                </div>
-                                                <div class="pure-control-group">
                                                     <label for="dev-name" data-i18n="dev-name-label">设备名称</label>
                                                     <input type="text" id="dev-name" class="pure-input-1" placeholder="输入设备名称" data-i18n-placeholder="dev-name-label">
                                                 </div>
                                                 <div class="pure-control-group">
-                                                    <label for="dev-location" data-i18n="dev-location-label">安装位置</label>
-                                                    <input type="text" id="dev-location" class="pure-input-1" placeholder="例如：一楼服务器房" data-i18n-placeholder="dev-location-label">
+                                                    <label for="dev-description" data-i18n="dev-description-label">设备描述</label>
+                                                    <textarea id="dev-description" class="pure-input-1" rows="6" placeholder="输入设备描述" data-i18n-placeholder="dev-description-label"></textarea>
                                                 </div>
                                             </div>
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="dev-description" data-i18n="dev-description-label">设备描述</label>
-                                                    <textarea id="dev-description" class="pure-input-1" rows="3" placeholder="输入设备描述" data-i18n-placeholder="dev-description-label"></textarea>
+                                                    <label for="dev-id" data-i18n="dev-id-label">设备编号</label>
+                                                    <input type="text" id="dev-id" class="pure-input-1" placeholder="留空则使用系统默认值(FBE+MAC)" data-i18n-placeholder="dev-id-placeholder" maxlength="32">
+                                                    
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="dev-product-number" data-i18n="dev-product-number-label">产品编号</label>
+                                                    <input type="number" id="dev-product-number" class="pure-input-1" placeholder="输入产品编号" data-i18n-placeholder="dev-product-number-label" min="0">
                                                 </div>
                                             </div>
                                         </div>

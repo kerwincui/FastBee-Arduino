@@ -8,6 +8,8 @@
 #include "utils/TimeUtils.h"
 #include "utils/StringUtils.h"
 #include <Ticker.h>
+#include <ArduinoJson.h>
+#include <HTTPClient.h>
 
 // 定时器管理
 std::map<int, Ticker*> timers;
@@ -17,6 +19,11 @@ bool TimeUtils::initialize(const TimeZone& timezone, const String& ntpServer) {
     // 配置时区
     if (!setTimeZone(timezone)) {
         return false;
+    }
+    
+    // 判断是否为 HTTP URL 格式的 NTP 服务器
+    if (ntpServer.startsWith("http://") || ntpServer.startsWith("https://")) {
+        return syncNTPFromHTTP(ntpServer);
     }
     
     // 配置NTP
@@ -39,6 +46,86 @@ bool TimeUtils::syncNTP(unsigned long timeout) {
     }
     
     return false;
+}
+
+bool TimeUtils::syncNTPFromHTTPWithTimestamp(const String& url, long long& outTimestampMs, unsigned long timeout) {
+    float deviceSendTime = (float)millis();
+    String fullUrl = url;
+    
+    if (fullUrl.startsWith("https://")) {
+        fullUrl = "http://" + fullUrl.substring(8);
+    }
+    
+    int idx = fullUrl.indexOf("?deviceSendTime=");
+    if (idx >= 0) {
+        fullUrl = fullUrl.substring(0, idx + 16);
+    } else if (fullUrl.indexOf("?") >= 0) {
+        fullUrl += "&deviceSendTime=";
+    } else {
+        fullUrl += "?deviceSendTime=";
+    }
+    fullUrl += String((unsigned long)deviceSendTime);
+
+    WiFiClient wifiClient;
+    HTTPClient http;
+
+    if (!http.begin(wifiClient, fullUrl)) {
+        return false;
+    }
+    http.setTimeout((int)timeout);
+
+    int httpCode = http.GET();
+    bool success = false;
+
+    if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
+        float deviceRecvTime = (float)millis();
+        String payload = http.getString();
+        
+        float serverRecvTime = 0, serverSendTime = 0;
+        
+        DynamicJsonDocument doc(512);
+        DeserializationError parseErr = deserializeJson(doc, payload);
+        if (!parseErr) {
+            serverRecvTime = doc["serverRecvTime"] | 0.0f;
+            serverSendTime = doc["serverSendTime"] | 0.0f;
+            if (serverRecvTime == 0) {
+                serverRecvTime = doc["data"]["serverTime"] | 0.0f;
+                serverSendTime = serverRecvTime;
+            }
+        }
+
+        if (serverRecvTime == 0) {
+            auto extractTag = [&](const String& tag) -> float {
+                String open  = "<" + tag + ">";
+                String close = "</" + tag + ">";
+                int s = payload.indexOf(open);
+                int e = payload.indexOf(close, s);
+                if (s >= 0 && e > s) {
+                    return payload.substring(s + open.length(), e).toFloat();
+                }
+                return 0.0f;
+            };
+            serverRecvTime = extractTag("serverRecvTime");
+            serverSendTime = extractTag("serverSendTime");
+        }
+
+        if (serverRecvTime > 1000000000000.0f && serverSendTime > 1000000000000.0f) {
+            float nowMs = (serverRecvTime + serverSendTime + deviceRecvTime - deviceSendTime) / 2.0f;
+            outTimestampMs = (long long)nowMs;
+            time_t sec = (time_t)(outTimestampMs / 1000);
+            struct timeval tv = { sec, (suseconds_t)((outTimestampMs % 1000) * 1000) };
+            settimeofday(&tv, nullptr);
+            success = true;
+        }
+    }
+
+    http.end();
+    return success;
+}
+
+bool TimeUtils::syncNTPFromHTTP(const String& url, unsigned long timeout) {
+    long long timestampMs = 0;
+    return syncNTPFromHTTPWithTimestamp(url, timestampMs, timeout);
 }
 
 time_t TimeUtils::getTimestamp() {

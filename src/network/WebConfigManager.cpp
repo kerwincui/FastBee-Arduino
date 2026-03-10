@@ -9,6 +9,7 @@
 #include "core/GPIOManager.h"
 #include "core/ConfigDefines.h"
 #include "utils/NetworkUtils.h"
+#include "utils/TimeUtils.h"
 #include <time.h>
 #include <esp_wifi.h>
 #include <NimBLEDevice.h>
@@ -412,6 +413,12 @@ void WebConfigManager::setupSystemRoutes() {
               [this](AsyncWebServerRequest* request) {
         handleAPIGetDeviceTime(request);
     });
+
+    // NTP 时间同步（触发同步并返回新时间）
+    server->on("/api/device/time/sync", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleAPISyncDeviceTime(request);
+    });
     
     // ============ AP配网 API ============
     
@@ -548,9 +555,10 @@ void WebConfigManager::setupAPIRoutes() {
         handleAPIGetNetworkConfig(request);
     });
     
-    server->on("/api/network/config", HTTP_PUT, 
-              [this](AsyncWebServerRequest* request) {
-        handleAPIUpdateNetworkConfig(request);
+    // 使用 AsyncCallbackJsonWebHandler 处理 PUT 请求的 JSON body
+    server->on("/api/network/config", HTTP_PUT,
+              [this](AsyncWebServerRequest* request, JsonVariant& json) {
+        handleAPIUpdateNetworkConfig(request, json);
     });
     
     // 网络实时状态
@@ -2105,7 +2113,7 @@ void WebConfigManager::handleAPIGetNetworkConfig(AsyncWebServerRequest* request)
     request->send(200, "application/json", output);
 }
 
-void WebConfigManager::handleAPIUpdateNetworkConfig(AsyncWebServerRequest* request) {
+void WebConfigManager::handleAPIUpdateNetworkConfig(AsyncWebServerRequest* request, JsonVariant& json) {
     if (!checkPermission(request, "network.edit")) {
         sendUnauthorized(request);
         return;
@@ -2121,61 +2129,62 @@ void WebConfigManager::handleAPIUpdateNetworkConfig(AsyncWebServerRequest* reque
     
     // 注意：设备名称在 /api/device/config 中处理，不在网络配置中处理
     
+    // 从 JSON 解析参数
+    JsonObject obj = json.as<JsonObject>();
+    
     // ========== 网络模式 ==========
-    String modeStr = getParamValue(request, "mode", "");
-    if (!modeStr.isEmpty()) {
-        cfg.mode = static_cast<NetworkMode>(modeStr.toInt());
+    if (obj["mode"].is<String>()) {
+        cfg.mode = static_cast<NetworkMode>(obj["mode"].as<String>().toInt());
     }
     
     // ========== STA 配置 ==========
-    String staSSID = getParamValue(request, "staSSID", "");
-    if (!staSSID.isEmpty()) {
-        cfg.staSSID = staSSID;
+    if (obj["staSSID"].is<String>()) {
+        cfg.staSSID = obj["staSSID"].as<String>();
     }
     
-    String staPassword = getParamValue(request, "staPassword", "");
-    if (!staPassword.isEmpty() && staPassword != "********") {
-        cfg.staPassword = staPassword;
+    if (obj["staPassword"].is<String>()) {
+        String pwd = obj["staPassword"].as<String>();
+        if (!pwd.isEmpty() && pwd != "********") {
+            cfg.staPassword = pwd;
+        }
     }
     
-    String ipConfigType = getParamValue(request, "ipConfigType", "");
-    if (!ipConfigType.isEmpty()) {
-        cfg.ipConfigType = static_cast<IPConfigType>(ipConfigType.toInt());
+    if (obj["ipConfigType"].is<String>()) {
+        cfg.ipConfigType = static_cast<IPConfigType>(obj["ipConfigType"].as<String>().toInt());
     }
     
-    String staticIP = getParamValue(request, "staticIP", "");
-    if (!staticIP.isEmpty()) {
-        cfg.staticIP = staticIP;
+    if (obj["staticIP"].is<String>()) {
+        cfg.staticIP = obj["staticIP"].as<String>();
     }
     
-    String gateway = getParamValue(request, "gateway", "");
-    if (!gateway.isEmpty()) {
-        cfg.gateway = gateway;
+    if (obj["gateway"].is<String>()) {
+        cfg.gateway = obj["gateway"].as<String>();
     }
     
-    String subnet = getParamValue(request, "subnet", "");
-    if (!subnet.isEmpty()) {
-        cfg.subnet = subnet;
+    if (obj["subnet"].is<String>()) {
+        cfg.subnet = obj["subnet"].as<String>();
     }
     
     // ========== AP 配置 ==========
-    String apSSID = getParamValue(request, "apSSID", "");
-    if (!apSSID.isEmpty()) {
-        cfg.apSSID = apSSID;
+    if (obj["apSSID"].is<String>()) {
+        cfg.apSSID = obj["apSSID"].as<String>();
     }
     
-    String apPassword = getParamValue(request, "apPassword", "");
-    if (!apPassword.isEmpty() && apPassword != "********") {
-        cfg.apPassword = apPassword;
+    if (obj["apPassword"].is<String>()) {
+        String pwd = obj["apPassword"].as<String>();
+        if (!pwd.isEmpty() && pwd != "********") {
+            cfg.apPassword = pwd;
+        }
     }
     
-    String apChannel = getParamValue(request, "apChannel", "");
-    if (!apChannel.isEmpty()) {
-        cfg.apChannel = apChannel.toInt();
+    if (obj["apChannel"].is<String>() || obj["apChannel"].is<int>()) {
+        cfg.apChannel = obj["apChannel"].as<int>();
     }
     
-    String apHidden = getParamValue(request, "apHidden", "");
-    if (!apHidden.isEmpty()) cfg.apHidden = (apHidden == "1" || apHidden == "true");
+    if (obj["apHidden"].is<String>() || obj["apHidden"].is<bool>()) {
+        String hidden = obj["apHidden"].as<String>();
+        cfg.apHidden = (hidden == "1" || hidden == "true" || obj["apHidden"].as<bool>());
+    }
     
     // 保存配置
     if (netMgr->updateConfig(cfg, true)) {
@@ -2197,6 +2206,8 @@ void WebConfigManager::handleAPIGetNetworkStatus(AsyncWebServerRequest* request)
 
     if (networkManager) {
         NetworkManager* netMgr = static_cast<NetworkManager*>(networkManager);
+        // 先强制刷新状态，确保返回最新数据
+        netMgr->updateStatusInfo();
         NetworkStatusInfo info = netMgr->getStatusInfo();
         WiFiConfig cfg = netMgr->getConfig();
 
@@ -2222,11 +2233,16 @@ void WebConfigManager::handleAPIGetNetworkStatus(AsyncWebServerRequest* request)
         doc["data"]["gateway"]       = info.currentGateway;
         doc["data"]["subnet"]        = info.currentSubnet;
         doc["data"]["dnsServer"]     = info.dnsServer;
+        // 备用 DNS
+        doc["data"]["dnsServer2"]    = WiFi.status() == WL_CONNECTED ? WiFi.dnsIP(1).toString() : String("");
+        // 连接时长（秒）
+        doc["data"]["connectedTime"] = info.lastConnectionTime > 0 ? (millis() - info.lastConnectionTime) / 1000 : 0;
 
         // AP 信息
         doc["data"]["apIPAddress"]   = info.apIPAddress;
         doc["data"]["apClientCount"] = info.apClientCount;
         doc["data"]["apSSID"]        = cfg.apSSID;
+        doc["data"]["apChannel"]     = cfg.apChannel;
 
         // 连接统计
         doc["data"]["reconnectAttempts"] = info.reconnectAttempts;
@@ -2248,6 +2264,13 @@ void WebConfigManager::handleAPIGetNetworkStatus(AsyncWebServerRequest* request)
         doc["data"]["modeCode"]   = static_cast<uint8_t>(cfg.mode);
         doc["data"]["enableMDNS"] = cfg.enableMDNS;
         doc["data"]["customDomain"] = cfg.customDomain;
+        // 运行时间格式化
+        unsigned long uptimeSec = millis() / 1000;
+        char uptimeBuf[32];
+        snprintf(uptimeBuf, sizeof(uptimeBuf), "%lud %02lu:%02lu:%02lu",
+            uptimeSec / 86400, (uptimeSec % 86400) / 3600,
+            (uptimeSec % 3600) / 60, uptimeSec % 60);
+        doc["data"]["uptimeFormatted"] = uptimeBuf;
     } else {
         doc["success"] = false;
         doc["error"] = "Network service unavailable";
@@ -4207,7 +4230,7 @@ void WebConfigManager::handleAPIGetDeviceConfig(AsyncWebServerRequest* request) 
 
     // 返回默认配置
     doc["success"] = true;
-    doc["data"]["ntpServer1"] = "pool.ntp.org";
+    doc["data"]["ntpServer1"] = "https://iot.fastbee.cn/prod-api/iot/tool/ntp";
     doc["data"]["ntpServer2"] = "time.nist.gov";
     doc["data"]["timezone"] = "CST-8";
     doc["data"]["enableNTP"] = true;
@@ -4548,10 +4571,18 @@ void WebConfigManager::handleAPIUpdateDeviceConfig(AsyncWebServerRequest* reques
     // 如果启用 NTP，立即配置
     if (cfg["enableNTP"].as<bool>()) {
         const char* tz  = cfg["timezone"] | "CST-8";
-        const char* s1  = cfg["ntpServer1"] | "pool.ntp.org";
+        const char* s1  = cfg["ntpServer1"] | "https://iot.fastbee.cn/prod-api/iot/tool/ntp";
         const char* s2  = cfg["ntpServer2"] | "time.nist.gov";
-        configTzTime(tz, s1, s2);
-        LOGGER.infof("Device: NTP configured - tz=%s srv1=%s srv2=%s", tz, s1, s2);
+        String s1Str = s1;
+        if (s1Str.startsWith("http://") || s1Str.startsWith("https://")) {
+            // HTTP URL 格式：使用 FastBee HTTP NTP 接口同步时间
+            configTzTime(tz, s2, "time.google.com", nullptr);
+            TimeUtils::syncNTPFromHTTP(s1Str);
+            LOGGER.infof("Device: NTP(HTTP) configured - tz=%s url=%s", tz, s1);
+        } else {
+            configTzTime(tz, s1, s2);
+            LOGGER.infof("Device: NTP configured - tz=%s srv1=%s srv2=%s", tz, s1, s2);
+        }
     }
 
     sendSuccess(request, "Device configuration saved");
@@ -4593,7 +4624,66 @@ void WebConfigManager::handleAPIGetDeviceTime(AsyncWebServerRequest* request) {
     request->send(200, "application/json", out);
 }
 
-// ============ 蓝牙配网 API 处理器实现 ============
+void WebConfigManager::handleAPISyncDeviceTime(AsyncWebServerRequest* request) {
+    if (!checkPermission(request, "system.view")) {
+        sendUnauthorized(request);
+        return;
+    }
+
+    JsonDocument doc;
+    doc["success"] = true;
+
+    // 读取 NTP 配置中的 ntpServer1
+    String ntpUrl = "https://iot.fastbee.cn/prod-api/iot/tool/ntp?deviceSendTime=";
+    File cfgFile = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+    if (cfgFile) {
+        JsonDocument cfg;
+        if (deserializeJson(cfg, cfgFile) == DeserializationError::Ok) {
+            const char* s1 = cfg["ntpServer1"] | "";
+            if (strlen(s1) > 0) ntpUrl = String(s1);
+        }
+        cfgFile.close();
+    }
+
+    // 执行 HTTP NTP 同步，获取计算后的时间戳
+    bool synced = false;
+    if (ntpUrl.startsWith("http://") || ntpUrl.startsWith("https://")) {
+        long long timestampMs = 0;
+        synced = TimeUtils::syncNTPFromHTTPWithTimestamp(ntpUrl, timestampMs);
+        if (synced) {
+            LOGGER.infof("[NTP] HTTP sync success: %lld ms", timestampMs);
+        } else {
+            LOGGER.warning("[NTP] HTTP sync failed");
+        }
+    }
+
+    // 返回最新时间信息
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo, 100)) {
+        char buf[32];
+        strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+        doc["data"]["datetime"] = buf;
+        char dateBuf[12];
+        strftime(dateBuf, sizeof(dateBuf), "%Y-%m-%d", &timeinfo);
+        doc["data"]["date"] = dateBuf;
+        char timeBuf[10];
+        strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", &timeinfo);
+        doc["data"]["time"] = timeBuf;
+        doc["data"]["timestamp"] = (long long)mktime(&timeinfo);
+        doc["data"]["synced"] = true;
+    } else {
+        doc["data"]["datetime"] = "--";
+        doc["data"]["date"] = "--";
+        doc["data"]["time"] = "--";
+        doc["data"]["timestamp"] = (long long)(millis() / 1000);
+        doc["data"]["synced"] = false;
+    }
+    doc["data"]["uptime"] = millis();
+
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
 
 static bool bleProvisionActive = false;
 static NimBLEServer* pBLEServer = nullptr;

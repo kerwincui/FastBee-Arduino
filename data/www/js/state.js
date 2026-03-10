@@ -432,9 +432,9 @@ const AppState = {
             });
         }
         
-        // 时间刷新按钮
+        // 时间刷新按钮 - 触发NTP同步
         const devTimeRefreshBtn = document.getElementById('dev-time-refresh-btn');
-        if (devTimeRefreshBtn) devTimeRefreshBtn.addEventListener('click', () => this.loadDeviceTime());
+        if (devTimeRefreshBtn) devTimeRefreshBtn.addEventListener('click', () => this.syncDeviceTime());
         
         // 重启按钮
         const devRestartBtn = document.getElementById('dev-restart-btn');
@@ -534,7 +534,11 @@ const AppState = {
                     Notification.error((res && res.error) || i18n.t('login-fail-title'), i18n.t('login-fail-title'));
                 }
             })
-            .catch(() => { /* 错误已由拦截器处理 */ })
+            .catch((err) => {
+                // 登录失败，显示错误信息
+                const errorMsg = (err && err.data && err.data.error) || i18n.t('login-fail-msg');
+                Notification.error(errorMsg, i18n.t('login-fail-title'));
+            })
             .finally(() => {
                 if (submitBtn) { submitBtn.innerHTML = originalText; submitBtn.disabled = false; }
             });
@@ -2178,19 +2182,32 @@ const AppState = {
                 setText('ns-gateway', d.gateway);
                 setText('ns-subnet', d.subnet);
                 setText('ns-dns', d.dnsServer);
+                setText('ns-dns2', d.dnsServer2);
+                setText('ns-mac', d.macAddress);
+                // 连接时长
+                if (d.connectedTime !== undefined && d.connectedTime > 0) {
+                    const sec = d.connectedTime;
+                    const h = Math.floor(sec / 3600);
+                    const m = Math.floor((sec % 3600) / 60);
+                    const s = sec % 60;
+                    setText('ns-conn-time', `${h}h ${m}m ${s}s`);
+                } else {
+                    setText('ns-conn-time', '--');
+                }
+                // RSSI
                 const rssi = d.rssi;
-                if (rssi && rssi !== 0) {
+                if (rssi !== undefined && rssi !== null && rssi !== '') {
                     const pct = d.signalStrength || 0;
                     const color = pct >= 70 ? '#52c41a' : pct >= 40 ? '#faad14' : '#f5222d';
                     setHtml('ns-rssi', `<span style="color:${color};">${rssi} dBm (${pct}%)</span>`);
                 } else {
                     setText('ns-rssi', '--');
                 }
-                setText('ns-mac', d.macAddress);
 
                 // AP 信息
                 setText('ns-ap-ssid', d.apSSID);
                 setText('ns-ap-ip', d.apIPAddress);
+                setText('ns-ap-channel', d.apChannel !== undefined ? `CH ${d.apChannel}` : '--');
                 setText('ns-ap-clients', d.apClientCount !== undefined ? d.apClientCount + i18n.t('net-ap-clients-unit') : '--');
 
                 // 连接统计
@@ -2208,6 +2225,7 @@ const AppState = {
                 setHtml('ns-conflict', d.conflictDetected
                     ? `<span class="badge badge-danger">${i18n.t('net-conflict-yes')}</span>`
                     : `<span class="badge badge-success">${i18n.t('net-no-conflict')}</span>`);
+                setText('ns-uptime', d.uptimeFormatted || '--');
             })
             .catch(err => {
                 console.error('Load network status failed:', err);
@@ -2235,11 +2253,10 @@ const AppState = {
                 // 产品编号
                 this._setValue('dev-product-number', d.productNumber !== undefined ? String(d.productNumber) : '0');
                 this._setValue('dev-name',          d.deviceName   || '');
-                this._setValue('dev-location',      d.location     || '');
                 const desc = document.getElementById('dev-description');
                 if (desc) desc.value = d.description || '';
                 this._setValue('dev-ntp-enable',    d.enableNTP ? '1' : '0');
-                this._setValue('dev-ntp-server1',   d.ntpServer1   || 'pool.ntp.org');
+                this._setValue('dev-ntp-server1',   d.ntpServer1   || 'https://iot.fastbee.cn/prod-api/iot/tool/ntp');
                 this._setValue('dev-ntp-server2',   d.ntpServer2   || 'time.nist.gov');
                 this._setValue('dev-timezone',      d.timezone     || 'CST-8');
                 this._setValue('dev-sync-interval', d.syncInterval !== undefined ? String(d.syncInterval) : '3600');
@@ -2278,9 +2295,8 @@ const AppState = {
             deviceId:       deviceId,
             deviceName:     document.getElementById('dev-name')?.value || '',
             productNumber:  productNumberVal !== undefined && productNumberVal !== '' ? parseInt(productNumberVal, 10) : 0,
-            location:       document.getElementById('dev-location')?.value || '',
             description:    document.getElementById('dev-description')?.value || '',
-            ntpServer1:     document.getElementById('dev-ntp-server1')?.value || 'pool.ntp.org',
+            ntpServer1:     document.getElementById('dev-ntp-server1')?.value || 'https://iot.fastbee.cn/prod-api/iot/tool/ntp',
             ntpServer2:     document.getElementById('dev-ntp-server2')?.value || 'time.nist.gov',
             timezone:       document.getElementById('dev-timezone')?.value || 'CST-8',
             enableNTP:      document.getElementById('dev-ntp-enable')?.value || '1',
@@ -2300,13 +2316,12 @@ const AppState = {
 
     saveDeviceNTP() {
         const config = {
-            ntpServer1:   document.getElementById('dev-ntp-server1')?.value || 'pool.ntp.org',
+            ntpServer1:   document.getElementById('dev-ntp-server1')?.value || 'https://iot.fastbee.cn/prod-api/iot/tool/ntp',
             ntpServer2:   document.getElementById('dev-ntp-server2')?.value || 'time.nist.gov',
             timezone:     document.getElementById('dev-timezone')?.value || 'CST-8',
             enableNTP:    document.getElementById('dev-ntp-enable')?.value || '1',
             syncInterval: document.getElementById('dev-sync-interval')?.value || '3600',
             deviceName:   document.getElementById('dev-name')?.value || '',
-            location:     document.getElementById('dev-location')?.value || '',
             description:  document.getElementById('dev-description')?.value || '',
         };
         apiPut('/api/device/config', config)
@@ -2328,25 +2343,51 @@ const AppState = {
         apiGet('/api/device/time')
             .then(res => {
                 if (!res || !res.success) return;
-                const d = res.data || {};
-                const setEl   = (id, val)  => { const el = document.getElementById(id); if (el) el.textContent = val || '--'; };
-                const setHtml = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
-                setEl('dev-time-datetime', d.datetime);
-                setHtml('dev-time-synced', d.synced
-                    ? i18n.t('dev-time-synced-html')
-                    : i18n.t('dev-time-not-synced-html'));
-                if (d.uptime !== undefined) {
-                    const ms = d.uptime;
-                    const h  = Math.floor(ms / 3600000);
-                    const m  = Math.floor((ms % 3600000) / 60000);
-                    const s  = Math.floor((ms % 60000) / 1000);
-                    setEl('dev-time-uptime', `${h}${i18n.t('dev-time-uptime-unit')}${m}${i18n.t('dev-time-uptime-min')}${s}${i18n.t('dev-time-uptime-sec')}`);
-                }
+                this._renderDeviceTime(res.data || {});
             })
             .catch(err => console.error('Load device time failed:', err))
             .finally(() => {
                 if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-refresh-html'); }
             });
+    },
+
+    syncDeviceTime() {
+        const btn = document.getElementById('dev-time-refresh-btn');
+        if (btn) { btn.disabled = true; btn.innerHTML = i18n.t('dev-refreshing-html'); }
+        apiPost('/api/device/time/sync', {})
+            .then(res => {
+                if (!res || !res.success) {
+                    Notification.warning(i18n.t('dev-time-sync-fail') || 'NTP同步失败', 'NTP');
+                    return;
+                }
+                this._renderDeviceTime(res.data || {});
+                if (res.data && res.data.synced) {
+                    Notification.success(i18n.t('dev-time-sync-ok') || 'NTP同步成功', 'NTP');
+                }
+            })
+            .catch(err => {
+                console.error('Sync device time failed:', err);
+                Notification.error(i18n.t('dev-time-sync-fail') || 'NTP同步失败', 'NTP');
+            })
+            .finally(() => {
+                if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-refresh-html'); }
+            });
+    },
+
+    _renderDeviceTime(d) {
+        const setEl   = (id, val)  => { const el = document.getElementById(id); if (el) el.textContent = val || '--'; };
+        const setHtml = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+        setEl('dev-time-datetime', d.datetime);
+        setHtml('dev-time-synced', d.synced
+            ? i18n.t('dev-time-synced-html')
+            : i18n.t('dev-time-not-synced-html'));
+        if (d.uptime !== undefined) {
+            const ms = d.uptime;
+            const h  = Math.floor(ms / 3600000);
+            const m  = Math.floor((ms % 3600000) / 60000);
+            const s  = Math.floor((ms % 60000) / 1000);
+            setEl('dev-time-uptime', `${h}${i18n.t('dev-time-uptime-unit')}${m}${i18n.t('dev-time-uptime-min')}${s}${i18n.t('dev-time-uptime-sec')}`);
+        }
     },
 
     restartDevice() {

@@ -252,7 +252,7 @@ private:
     void handleAPIGetConfig(AsyncWebServerRequest* request);
     void handleAPIUpdateConfig(AsyncWebServerRequest* request);
     void handleAPIGetNetworkConfig(AsyncWebServerRequest* request);
-    void handleAPIUpdateNetworkConfig(AsyncWebServerRequest* request);
+    void handleAPIUpdateNetworkConfig(AsyncWebServerRequest* request, JsonVariant& json);
     void handleAPIGetNetworkStatus(AsyncWebServerRequest* request);  ///< 获取网络实时状态
     
     // ============ OTA API处理器 ============
@@ -295,6 +295,7 @@ private:
     void handleAPIGetDeviceConfig(AsyncWebServerRequest* request);   ///< 获取设备配置(NTP/时区等)
     void handleAPIUpdateDeviceConfig(AsyncWebServerRequest* request); ///< 保存设备配置
     void handleAPIGetDeviceTime(AsyncWebServerRequest* request);      ///< 获取当前时间
+    void handleAPISyncDeviceTime(AsyncWebServerRequest* request);     ///< 触发NTP时间同步并返回时间
     
     // ============ AP配网 API 处理器 ============
     void handleAPIGetProvisionStatus(AsyncWebServerRequest* request);  ///< 获取配网状态

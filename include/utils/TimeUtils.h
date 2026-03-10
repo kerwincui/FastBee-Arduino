@@ -62,6 +62,24 @@ public:
     static bool syncNTP(unsigned long timeout = 10000);
     
     /**
+     * @brief 通过 HTTP 接口同步时间（支持 FastBee NTP HTTP 接口）
+     * 使用 NTP 四报文算法: now = (serverRecvTime + serverSendTime + deviceRecvTime - deviceSendTime) / 2
+     * @param url HTTP/HTTPS NTP 服务器 URL（末尾不需要带时间戳，会自动拼接）
+     * @param timeout 超时时间（毫秒）
+     * @return 同步是否成功
+     */
+    static bool syncNTPFromHTTP(const String& url, unsigned long timeout = 10000);
+
+    /**
+     * @brief 通过 HTTP 接口同步时间并返回计算后的毫秒时间戳
+     * @param url HTTP/HTTPS NTP 服务器 URL
+     * @param outTimestampMs 输出：计算后的服务器时间（毫秒，Unix时间戳）
+     * @param timeout 超时时间（毫秒）
+     * @return 同步是否成功
+     */
+    static bool syncNTPFromHTTPWithTimestamp(const String& url, long long& outTimestampMs, unsigned long timeout = 10000);
+    
+    /**
      * @brief 获取当前时间戳（秒）
      * @return Unix时间戳
      */

@@ -20,13 +20,15 @@
 #include "security/AuthManager.h"
 #include "protocols/ProtocolManager.h"
 #include "systems/ConfigStorage.h"
-#include <WiFi.h>
-#include <ESPmDNS.h>
 #include "utils/TimeUtils.h"
 #include "utils/FileUtils.h"
+#include <WiFi.h>
+#include <ESPmDNS.h>
 #include <Arduino.h>
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
+#include <LittleFS.h>
+#include <time.h>
 
 // 构造函数
 FastBeeFramework::FastBeeFramework()
@@ -320,9 +322,47 @@ bool FastBeeFramework::addSystemTasks() {
         FastBeeFramework* framework = (FastBeeFramework*)param;
         if (framework && framework->network) {
             framework->network->update();
+            
+            // 标记WiFi已连接，触发NTP同步任务（仅执行一次）
+            if (!framework->ntpSynced && WiFi.status() == WL_CONNECTED) {
+                static unsigned long wifiConnectedTime = 0;
+                if (wifiConnectedTime == 0) {
+                    wifiConnectedTime = millis();
+                } else if (millis() - wifiConnectedTime > 3000) {
+                    // WiFi连接稳定3秒后标记需要同步
+                    LOG_INFO("[NTP] WiFi connected, NTP sync scheduled");
+                    framework->ntpSyncPending = true;
+                    framework->ntpSynced = true; // 标记已处理，避免重复
+                }
+            }
         }
     }, this, 5000)) {
         LOG_WARNING("Failed to add network update task");
+    }
+    
+    // NTP同步任务（每10秒检查一次，执行实际的NTP同步）
+    if (!taskManager->addTask("ntp_sync", [](void* param) {
+        FastBeeFramework* framework = (FastBeeFramework*)param;
+        if (framework && framework->ntpSyncPending && WiFi.status() == WL_CONNECTED) {
+            framework->ntpSyncPending = false;
+            LOG_INFO("[NTP] Starting NTP sync...");
+            framework->syncTimeFromConfig();
+            
+            // 如果同步失败（时间仍为1970年），下次继续尝试
+            struct tm timeinfo;
+            if (!getLocalTime(&timeinfo, 0) || timeinfo.tm_year < 100) {
+                LOG_WARNING("[NTP] Sync failed or time not set, will retry");
+                framework->ntpRetryCount++;
+                if (framework->ntpRetryCount < 10) {
+                    framework->ntpSyncPending = true; // 标记需要重试
+                }
+            } else {
+                LOG_INFO("[NTP] Sync successful");
+                framework->ntpRetryCount = 0;
+            }
+        }
+    }, this, 10000)) {
+        LOG_WARNING("Failed to add NTP sync task");
     }
     
     // 内存监控任务（每60秒）
@@ -458,4 +498,36 @@ bool FastBeeFramework::isInitialized() const {
 // 获取系统运行时间
 unsigned long FastBeeFramework::getUptime() const {
     return millis();
+}
+
+// 从配置同步NTP时间（非阻塞，使用短超时）
+void FastBeeFramework::syncTimeFromConfig() {
+    File cfgFile = LittleFS.open("/config/device.json", "r");
+    if (!cfgFile) return;
+    
+    JsonDocument cfg;
+    if (deserializeJson(cfg, cfgFile) != DeserializationError::Ok) {
+        cfgFile.close();
+        return;
+    }
+    cfgFile.close();
+    
+    if (!(cfg["enableNTP"] | true)) return;
+    
+    const char* tz = cfg["timezone"] | "CST-8";
+    const char* s1 = cfg["ntpServer1"] | "cn.pool.ntp.org";
+    const char* s2 = cfg["ntpServer2"] | "time.windows.com";
+    
+    setenv("TZ", tz, 1);
+    tzset();
+    
+    String s1Str = s1;
+    if (s1Str.startsWith("http://") || s1Str.startsWith("https://")) {
+        long long ts = 0;
+        // 使用3秒超时，避免阻塞任务调度
+        TimeUtils::syncNTPFromHTTPWithTimestamp(s1Str, ts, 3000);
+        configTzTime(tz, s2, "time.google.com", nullptr);
+    } else {
+        configTzTime(tz, s1, s2);
+    }
 }

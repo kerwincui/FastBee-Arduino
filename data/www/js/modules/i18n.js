@@ -440,6 +440,7 @@ const i18n = {
             'login-success-msg': '登录成功',
             'login-welcome-title': '欢迎',
             'login-fail-title': '登录失败',
+            'login-fail-msg': '用户名或密码错误',
             'login-empty-warning': '请输入用户名和密码',
             
             // 用户管理动态文本
@@ -574,6 +575,12 @@ const i18n = {
             'net-conflict-yes': '已检测到冲突',
             'net-no-conflict': '无冲突',
             'net-ap-clients-unit': ' 台',
+            // 网络状态新字段
+            'ns-conn-time-label': '连接时长',
+            'ns-reconnect-label': '重连次数',
+            'ns-internet-label': '互联网',
+            'ns-conflict-label': 'IP 冲突',
+            'ns-uptime-label': '运行时间',
             
             // WiFi扫描
             'wifi-scanning-html': '<i class="fas fa-spinner fa-spin"></i> 扫描中...',
@@ -1292,6 +1299,7 @@ const i18n = {
             'login-success-msg': 'Login successful',
             'login-welcome-title': 'Welcome',
             'login-fail-title': 'Login Failed',
+            'login-fail-msg': 'Invalid username or password',
             'login-empty-warning': 'Please enter username and password',
             
             // User management dynamic text
@@ -1426,6 +1434,12 @@ const i18n = {
             'net-conflict-yes': 'Conflict Detected',
             'net-no-conflict': 'No Conflict',
             'net-ap-clients-unit': ' clients',
+            // Network status new fields
+            'ns-conn-time-label': 'Conn. Time',
+            'ns-reconnect-label': 'Reconnects',
+            'ns-internet-label': 'Internet',
+            'ns-conflict-label': 'IP Conflict',
+            'ns-uptime-label': 'Uptime',
             
             // WiFi scan
             'wifi-scanning-html': '<i class="fas fa-spinner fa-spin"></i> Scanning...',

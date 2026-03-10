@@ -116,10 +116,14 @@ private:
     // 其他私有方法
     bool addSystemTasks();             // 添加系统任务
     void checkForRestart();            // 检查重启条件
+    void syncTimeFromConfig();         // 从配置同步NTP时间
 
     // 系统状态
     bool systemInitialized;
     unsigned long lastHealthCheck;
+    bool ntpSynced = false;            // NTP同步完成标志
+    bool ntpSyncPending = false;       // NTP同步待处理标志
+    int ntpRetryCount = 0;             // NTP同步重试计数
     
     // HTTP服务器
     std::unique_ptr<AsyncWebServer> server;

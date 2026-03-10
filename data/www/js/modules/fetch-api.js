@@ -174,15 +174,15 @@
     };
 
     /**
-     * PUT 请求（application/x-www-form-urlencoded）
+     * PUT 请求（application/json）
      * @param {string} url
-     * @param {Object} [data] - 表单数据
+     * @param {Object} [data] - JSON 数据
      * @returns {Promise<any>}
      */
     window.apiPut = function (url, data) {
         return request('PUT', url, {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: toUrlEncoded(data || {})
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data || {})
         });
     };
 

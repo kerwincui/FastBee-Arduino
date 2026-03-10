@@ -17,6 +17,7 @@
 #include <Arduino.h>
 #include <vector>
 #include <string.h>
+#include <time.h>
 #include <core/SystemConstants.h>
 
 // 日志文件固定路径（与 SystemConstants::FileSystem 对应）
@@ -167,16 +168,23 @@ void LoggerSystem::log(LogLevel level, const char* message, const char* module) 
     }
 
     // 使用栈缓冲区拼接日志条目，避免 String 堆碎片
-    // 格式：[<uptime_ms>] [LEVEL] [MODULE] message
+    // 格式：[YYYY-MM-DD HH:MM:SS] [LEVEL] [MODULE] message
     char entry[LOG_BUF_SIZE];
     const char* levelStr = getLevelString(level);
+    
+    // 获取当前时间
+    struct tm timeinfo;
+    char timeStr[32] = "1970-01-01 00:00:00";
+    if (getLocalTime(&timeinfo, 0)) {
+        strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
+    }
 
     if (module && module[0] != '\0') {
-        snprintf(entry, sizeof(entry), "[%lu] [%s] [%s] %s",
-                 millis(), levelStr, module, message);
+        snprintf(entry, sizeof(entry), "[%s] [%s] [%s] %s",
+                 timeStr, levelStr, module, message);
     } else {
-        snprintf(entry, sizeof(entry), "[%lu] [%s] %s",
-                 millis(), levelStr, message);
+        snprintf(entry, sizeof(entry), "[%s] [%s] %s",
+                 timeStr, levelStr, message);
     }
 
     // 输出到串口
@@ -232,14 +240,24 @@ bool LoggerSystem::rotateLogFile(const char* newName) {
         return false;
     }
 
+    bool renamed = false;
     if (newName && newName[0] != '\0') {
-        return LittleFS.rename(LOG_FILE_PATH, newName);
+        renamed = LittleFS.rename(LOG_FILE_PATH, newName);
+    } else {
+        // 生成带时间戳的备份文件名
+        char backup[48];
+        snprintf(backup, sizeof(backup), "/logs/system_%lu.log", millis());
+        renamed = LittleFS.rename(LOG_FILE_PATH, backup);
     }
 
-    // 生成带时间戳的备份文件名
-    char backup[48];
-    snprintf(backup, sizeof(backup), "/logs/system_%lu.log", millis());
-    return LittleFS.rename(LOG_FILE_PATH, backup);
+    if (renamed) {
+        // rename 后原路径不再存在，用 FILE_WRITE 创建新的空日志文件
+        File newLog = LittleFS.open(LOG_FILE_PATH, FILE_WRITE);
+        if (newLog) {
+            newLog.close();
+        }
+    }
+    return renamed;
 }
 
 size_t LoggerSystem::getLogFileSize() const {

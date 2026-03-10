@@ -275,7 +275,8 @@ void WiFiManager::updateStatusInfo() {
             statusInfo.ipAddress = WiFi.localIP().toString();
             statusInfo.currentGateway = WiFi.gatewayIP().toString();
             statusInfo.currentSubnet = WiFi.subnetMask().toString();
-            statusInfo.dnsServer = WiFi.dnsIP().toString();
+            // ESP32: dnsIP(0) 获取首选DNS，dnsIP(1) 获取备用DNS
+            statusInfo.dnsServer = WiFi.dnsIP(0).toString();
         } else if (statusInfo.status == NetworkStatus::CONNECTED) {
             statusInfo.status = NetworkStatus::DISCONNECTED;
             statusInfo.ipAddress = "";
@@ -313,7 +314,7 @@ void WiFiManager::handleWiFiEvent(arduino_event_id_t event) {
             // 更新网络信息
             statusInfo.currentGateway = WiFi.gatewayIP().toString();
             statusInfo.currentSubnet = WiFi.subnetMask().toString();
-            statusInfo.dnsServer = WiFi.dnsIP().toString();
+            statusInfo.dnsServer = WiFi.dnsIP(0).toString();
             
             char buffer[100];
             snprintf(buffer, sizeof(buffer), "WiFi connected: %s", statusInfo.ipAddress.c_str());
