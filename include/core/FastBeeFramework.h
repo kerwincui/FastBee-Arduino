@@ -123,6 +123,7 @@ private:
     unsigned long lastHealthCheck;
     bool ntpSynced = false;            // NTP同步完成标志
     bool ntpSyncPending = false;       // NTP同步待处理标志
+    bool ntpSyncStarted = false;       // NTP同步已启动标志
     int ntpRetryCount = 0;             // NTP同步重试计数
     
     // HTTP服务器

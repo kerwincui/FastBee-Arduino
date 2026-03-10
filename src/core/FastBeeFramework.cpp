@@ -340,25 +340,40 @@ bool FastBeeFramework::addSystemTasks() {
         LOG_WARNING("Failed to add network update task");
     }
     
-    // NTP同步任务（每10秒检查一次，执行实际的NTP同步）
+    // NTP同步任务（每10秒检查一次）
     if (!taskManager->addTask("ntp_sync", [](void* param) {
         FastBeeFramework* framework = (FastBeeFramework*)param;
-        if (framework && framework->ntpSyncPending && WiFi.status() == WL_CONNECTED) {
+        if (!framework) return;
+        
+        // 检查是否需要启动同步
+        if (framework->ntpSyncPending && WiFi.status() == WL_CONNECTED) {
             framework->ntpSyncPending = false;
             LOG_INFO("[NTP] Starting NTP sync...");
             framework->syncTimeFromConfig();
-            
-            // 如果同步失败（时间仍为1970年），下次继续尝试
+            framework->ntpSyncStarted = true;  // 标记已启动同步
+            return;  // 等待下一次任务检查结果
+        }
+        
+        // 检查同步结果（同步启动后）
+        if (framework->ntpSyncStarted) {
             struct tm timeinfo;
-            if (!getLocalTime(&timeinfo, 0) || timeinfo.tm_year < 100) {
-                LOG_WARNING("[NTP] Sync failed or time not set, will retry");
+            if (getLocalTime(&timeinfo, 100) && timeinfo.tm_year >= 100) {
+                // 同步成功
+                char timeStr[32];
+                strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
+                LOG_INFOF("[NTP] Sync successful: %s", timeStr);
+                framework->ntpSyncStarted = false;
+                framework->ntpRetryCount = 0;
+            } else {
+                // 同步失败，重试
                 framework->ntpRetryCount++;
                 if (framework->ntpRetryCount < 10) {
-                    framework->ntpSyncPending = true; // 标记需要重试
+                    LOG_WARNINGF("[NTP] Sync failed (attempt %d/10), will retry", framework->ntpRetryCount);
+                    framework->ntpSyncPending = true;  // 标记需要重试
+                } else {
+                    LOG_ERROR("[NTP] Sync failed after 10 attempts, giving up");
+                    framework->ntpSyncStarted = false;
                 }
-            } else {
-                LOG_INFO("[NTP] Sync successful");
-                framework->ntpRetryCount = 0;
             }
         }
     }, this, 10000)) {
@@ -518,16 +533,22 @@ void FastBeeFramework::syncTimeFromConfig() {
     const char* s1 = cfg["ntpServer1"] | "cn.pool.ntp.org";
     const char* s2 = cfg["ntpServer2"] | "time.windows.com";
     
+    // 设置时区
     setenv("TZ", tz, 1);
     tzset();
     
     String s1Str = s1;
     if (s1Str.startsWith("http://") || s1Str.startsWith("https://")) {
+        // HTTP NTP同步
         long long ts = 0;
-        // 使用3秒超时，避免阻塞任务调度
-        TimeUtils::syncNTPFromHTTPWithTimestamp(s1Str, ts, 3000);
+        if (TimeUtils::syncNTPFromHTTPWithTimestamp(s1Str, ts, 3000)) {
+            LOG_INFO("[NTP] HTTP sync successful");
+        }
+        // 同时启动标准NTP作为备份
         configTzTime(tz, s2, "time.google.com", nullptr);
     } else {
+        // 标准NTP同步（异步，需要等待后台完成）
+        LOG_INFOF("[NTP] Starting SNTP sync with %s, %s", s1, s2);
         configTzTime(tz, s1, s2);
     }
 }

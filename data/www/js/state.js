@@ -193,8 +193,8 @@ const AppState = {
         if (pageId === 'device-page' && tabId === 'dev-ntp') {
             this.loadDeviceTime();
         }
-        // 切换到系统操作tab时自动加载硬件信息
-        if (pageId === 'device-page' && tabId === 'dev-system') {
+        // 切换到基本信息tab时自动加载硬件信息
+        if (pageId === 'device-page' && tabId === 'dev-basic') {
             this._loadDeviceHardwareInfo();
         }
         // 切换到AP配网tab时自动加载配网状态和配置
