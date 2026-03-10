@@ -417,7 +417,12 @@ bool UserManager::loadUsersFromStorage() {
         JsonArray rolesArr = userObj["roles"];
         if (!rolesArr.isNull() && rolesArr.size() > 0) {
             for (const auto& r : rolesArr) {
-                user.roles.push_back(r.as<String>());
+                String roleId = r.as<String>();
+                // 迁移旧数据：将 'user' 转换为 'operator'
+                if (roleId == "user") {
+                    roleId = "operator";
+                }
+                user.roles.push_back(roleId);
             }
         } else {
             user.roles.push_back(roleToString(user.role));
@@ -460,15 +465,15 @@ bool UserManager::loadConfig() {
 String UserManager::roleToString(UserRole role) {
     switch (role) {
         case UserRole::ADMIN: return "admin";
-        case UserRole::USER: return "user";
+        case UserRole::USER: return "operator";  // 前端使用 operator 表示操作员
         case UserRole::VIEWER: return "viewer";
-        default: return "unknown";
+        default: return "viewer";
     }
 }
 
 UserRole UserManager::stringToRole(const String& roleStr) {
     if (roleStr == "admin") return UserRole::ADMIN;
-    if (roleStr == "user") return UserRole::USER;
+    if (roleStr == "user" || roleStr == "operator") return UserRole::USER;  // 兼容 user 和 operator
     return UserRole::VIEWER;
 }
 

@@ -242,9 +242,21 @@ const AppState = {
             const el = document.getElementById(id);
             if (el) el.addEventListener('click', () => closeId('change-password-modal'));
         });
+        // 关闭用户添加/编辑 modal 时重置状态
+        const closeUserModal = () => {
+            const modal = document.getElementById('add-user-modal');
+            if (modal) {
+                modal.style.display = 'none';
+                modal.dataset.editMode = 'add';
+                modal.dataset.editUsername = '';
+            }
+            // 重置用户名输入框状态
+            const usernameInput = document.getElementById('add-username-input');
+            if (usernameInput) usernameInput.disabled = false;
+        };
         ['close-add-user-modal', 'cancel-add-user-btn'].forEach(id => {
             const el = document.getElementById(id);
-            if (el) el.addEventListener('click', () => closeId('add-user-modal'));
+            if (el) el.addEventListener('click', closeUserModal);
         });
 
         // 确认修改密码
@@ -1238,7 +1250,15 @@ const AppState = {
             .then(res => {
                 if (res && res.success) {
                     Notification.success(`${username} ${isEditMode ? i18n.t('role-updated') : i18n.t('role-created')}${i18n.t('role-success-suffix')}`, isEditMode ? i18n.t('edit-user-success') : i18n.t('add-user-success'));
-                    if (modal) modal.style.display = 'none';
+                    // 关闭 modal 并重置状态
+                    if (modal) {
+                        modal.style.display = 'none';
+                        modal.dataset.editMode = 'add';
+                        modal.dataset.editUsername = '';
+                    }
+                    // 重置用户名输入框状态
+                    const usernameInput = document.getElementById('add-username-input');
+                    if (usernameInput) usernameInput.disabled = false;
                     this.loadUsers(); // 刷新列表
                 } else {
                     showErr((res && res.error) || (isEditMode ? i18n.t('modify-user-fail-msg') : i18n.t('add-user-fail-msg')));
