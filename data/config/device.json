@@ -5,7 +5,7 @@
   "location": "",
   "description": "",
   "enableNTP": true,
-  "ntpServer1": "cn.pool.ntp.org",
+  "ntpServer1": "https://iot.fastbee.cn/prod-api/iot/tool/ntp",
   "ntpServer2": "time.windows.com",
   "timezone": "CST-8",
   "syncInterval": 3600,

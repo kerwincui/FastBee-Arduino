@@ -358,6 +358,10 @@ bool FastBeeFramework::addSystemTasks() {
         if (framework->ntpSyncStarted) {
             struct tm timeinfo;
             if (getLocalTime(&timeinfo, 100) && timeinfo.tm_year >= 100) {
+                // 同步成功，确保时区设置生效
+                tzset();
+                // 重新获取本地时间（应用时区后）
+                getLocalTime(&timeinfo, 0);
                 // 同步成功
                 char timeStr[32];
                 strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
@@ -397,6 +401,16 @@ bool FastBeeFramework::addSystemTasks() {
         lastHeap = currentHeap;
     }, nullptr, 60000)) {
         LOG_WARNING("Failed to add memory monitor task");
+    }
+    
+    // Web服务器维护任务（每5分钟）
+    if (!taskManager->addTask("web_maintenance", [](void* param) {
+        FastBeeFramework* framework = static_cast<FastBeeFramework*>(param);
+        if (!framework || !framework->webConfig) return;
+        
+        framework->webConfig->performMaintenance();
+    }, this, 300000)) {
+        LOG_WARNING("Failed to add web maintenance task");
     }
     
     LOG_INFO("System tasks added");
@@ -518,31 +532,47 @@ unsigned long FastBeeFramework::getUptime() const {
 // 从配置同步NTP时间（非阻塞，使用短超时）
 void FastBeeFramework::syncTimeFromConfig() {
     File cfgFile = LittleFS.open("/config/device.json", "r");
-    if (!cfgFile) return;
-    
+    if (!cfgFile) {
+        LOG_WARNING("[NTP] Failed to open device.json");
+        return;
+    }
+
     JsonDocument cfg;
     if (deserializeJson(cfg, cfgFile) != DeserializationError::Ok) {
         cfgFile.close();
+        LOG_WARNING("[NTP] Failed to parse device.json");
         return;
     }
     cfgFile.close();
-    
-    if (!(cfg["enableNTP"] | true)) return;
-    
+
+    bool enableNTP = cfg["enableNTP"] | true;
+    LOG_INFOF("[NTP] enableNTP=%s", enableNTP ? "true" : "false");
+
+    if (!enableNTP) {
+        LOG_INFO("[NTP] NTP is disabled");
+        return;
+    }
+
     const char* tz = cfg["timezone"] | "CST-8";
     const char* s1 = cfg["ntpServer1"] | "cn.pool.ntp.org";
     const char* s2 = cfg["ntpServer2"] | "time.windows.com";
-    
-    // 设置时区
+
+    // 设置时区 - 使用 POSIX 格式 CST-8 (中国标准时间, UTC+8)
+    // 注意：POSIX 格式中，负号表示东时区，正号表示西时区
+    // 先设置环境变量，configTzTime 会使用这个设置
     setenv("TZ", tz, 1);
     tzset();
-    
+
+    LOG_INFOF("[NTP] Timezone set to: %s", tz);
+
     String s1Str = s1;
     if (s1Str.startsWith("http://") || s1Str.startsWith("https://")) {
         // HTTP NTP同步
         long long ts = 0;
         if (TimeUtils::syncNTPFromHTTPWithTimestamp(s1Str, ts, 3000)) {
             LOG_INFO("[NTP] HTTP sync successful");
+            // HTTP同步成功后，重新应用时区设置
+            tzset();
         }
         // 同时启动标准NTP作为备份
         configTzTime(tz, s2, "time.google.com", nullptr);
@@ -551,4 +581,7 @@ void FastBeeFramework::syncTimeFromConfig() {
         LOG_INFOF("[NTP] Starting SNTP sync with %s, %s", s1, s2);
         configTzTime(tz, s1, s2);
     }
+
+    // 确保时区设置生效
+    tzset();
 }

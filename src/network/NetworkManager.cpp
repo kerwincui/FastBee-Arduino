@@ -592,6 +592,9 @@ bool NetworkManager::connectToWiFiBlocking() {
         return false;
     }
 
+    // 同步配置到 WiFiManager
+    wifiManager->setNetworkConfig(wifiConfig);
+
     // 配置 IP 模式
     if (wifiConfig.ipConfigType == IPConfigType::STATIC) {
         if (!wifiManager->configureStaticIP()) {
@@ -726,10 +729,13 @@ void NetworkManager::attemptReconnect() {
 
     lastReconnectAttempt = millis();
     statusInfo.reconnectAttempts++;
-    
-    LOG_INFO("NetworkManager: Reconnection attempt " + 
-             String(statusInfo.reconnectAttempts) + 
-             "/" + String(wifiConfig.maxReconnectAttempts));    
+
+    LOG_INFO("NetworkManager: Reconnection attempt " +
+             String(statusInfo.reconnectAttempts) +
+             "/" + String(wifiConfig.maxReconnectAttempts));
+
+    // 同步配置到 WiFiManager 后再尝试重连
+    wifiManager->setNetworkConfig(wifiConfig);
     wifiManager->connectToWiFi();
 }
 
@@ -791,10 +797,13 @@ bool NetworkManager::connectToNetwork(const String& ssid, const String& password
         LOG_WARNING("NetworkManager: SSID cannot be empty");
         return false;
     }
-    
+
     wifiConfig.staSSID = ssid;
     wifiConfig.staPassword = password;
-    
+
+    // 同步设置 WiFiManager 的配置
+    wifiManager->setNetworkConfig(wifiConfig);
+
     saveNetworkConfig();
     return wifiManager->connectToWiFi();
 }

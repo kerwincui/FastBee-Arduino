@@ -905,6 +905,35 @@
                                 <!-- 基本信息 tab -->
                                 <div id="dev-basic" class="config-content active">
                                     <form id="device-basic-form" class="pure-form pure-form-stacked">
+                                        <!-- 硬件信息卡片 - 页面顶部整行展示（两列布局） -->
+                                        <div class="card" style="border: 1px solid #e0e0e0; margin-bottom: 20px;">
+                                            <div class="card-header" style="padding: 10px 15px; background: #f5f5f5;">
+                                                <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-microchip"></i> <span data-i18n="dev-sys-hw-title">硬件信息</span></h4>
+                                            </div>
+                                            <div class="card-body" style="padding: 12px 15px;">
+                                                <div style="display: flex; flex-wrap: wrap; gap: 0;">
+                                                    <div style="flex: 1; min-width: 280px;">
+                                                        <table class="pure-table" style="width: 100%; font-size: 13px;">
+                                                            <tbody>
+                                                                <tr><td style="color:#666; width:100px;" data-i18n="dev-sys-chip-label">芯片型号</td><td id="dev-sys-chip">--</td></tr>
+                                                                <tr><td style="color:#666;" data-i18n="dev-sys-cpu-label">CPU频率</td><td id="dev-sys-cpu">--</td></tr>
+                                                                <tr><td style="color:#666;" data-i18n="dev-sys-heap-label">空闲堆栈</td><td id="dev-sys-heap">--</td></tr>
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                    <div style="flex: 1; min-width: 280px;">
+                                                        <table class="pure-table" style="width: 100%; font-size: 13px;">
+                                                            <tbody>
+                                                                <tr><td style="color:#666; width:100px;" data-i18n="dev-sys-flash-label">Flash大小</td><td id="dev-sys-flash">--</td></tr>
+                                                                <tr><td style="color:#666;" data-i18n="dev-sys-sdk-label">SDK版本</td><td id="dev-sys-sdk">--</td></tr>
+                                                                <tr><td style="color:#666;" data-i18n="dev-sys-fw-label">固件版本</td><td id="dev-sys-fw">--</td></tr>
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
@@ -914,46 +943,6 @@
                                                 <div class="pure-control-group">
                                                     <label for="dev-description" data-i18n="dev-description-label">设备描述</label>
                                                     <textarea id="dev-description" class="pure-input-1" rows="3" placeholder="输入设备描述" data-i18n-placeholder="dev-description-label"></textarea>
-                                                </div>
-                                                
-                                                <!-- 设备重启卡片 -->
-                                                <div class="card" style="border: 1px solid #e0e0e0; margin-top: 15px;">
-                                                    <div class="card-header" style="padding: 10px 15px; background: #fff3cd;">
-                                                        <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-redo"></i> <span data-i18n="dev-sys-restart-title">重启设备</span></h4>
-                                                    </div>
-                                                    <div class="card-body" style="padding: 15px;">
-                                                        <p style="margin: 0 0 15px; font-size: 13px; color: #666;" data-i18n="dev-sys-restart-hint">重启设备将会断开所有连接，配置数据将保留。</p>
-                                                        <div style="display: flex; align-items: center; gap: 10px;">
-                                                            <label style="font-size: 13px;" data-i18n="dev-sys-restart-delay">延迟（秒）：</label>
-                                                            <select id="dev-restart-delay" class="pure-input" style="width: 80px;">
-                                                                <option value="1">1</option>
-                                                                <option value="3" selected>3</option>
-                                                                <option value="5">5</option>
-                                                                <option value="10">10</option>
-                                                            </select>
-                                                            <button id="dev-restart-btn" type="button" class="pure-button" style="background:#e67e22; color:#fff;">
-                                                                <i class="fas fa-power-off"></i> <span data-i18n="dev-sys-restart-btn">立即重启</span>
-                                                            </button>
-                                                        </div>
-                                                    </div>
-                                                </div>
-
-                                                <!-- 恢复出厂设置卡片 -->
-                                                <div class="card" style="margin-top: 15px; border: 1px solid #e0e0e0;">
-                                                    <div class="card-header" style="padding: 10px 15px; background: #fff3cd;">
-                                                        <h4 style="margin: 0; font-size: 14px; color: #856404;"><i class="fas fa-exclamation-triangle"></i> <span data-i18n="dev-sys-factory-title">恢复出厂设置</span></h4>
-                                                    </div>
-                                                    <div class="card-body" style="padding: 15px;">
-                                                        <p style="margin: 0 0 10px; font-size: 13px; color: #dc3545; font-weight: bold;" data-i18n="dev-sys-factory-warning">警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！</p>
-                                                        <p style="margin: 0 0 15px; font-size: 13px; color: #666;" data-i18n="dev-sys-factory-hint">设备将自动重启，所有配置将丢失，请谨慎操作。</p>
-                                                        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                                                            <label style="font-size: 13px;" data-i18n="dev-sys-factory-confirm-label">输入"RESET"确认：</label>
-                                                            <input type="text" id="dev-factory-confirm" class="pure-input" style="width: 100px;" placeholder="RESET">
-                                                            <button id="dev-factory-btn" type="button" class="pure-button" style="background:#dc3545; color:#fff;">
-                                                                <i class="fas fa-undo"></i> <span data-i18n="dev-sys-factory-btn">恢复出厂设置</span>
-                                                            </button>
-                                                        </div>
-                                                    </div>
                                                 </div>
                                             </div>
                                             
@@ -966,32 +955,56 @@
                                                     <label for="dev-product-number" data-i18n="dev-product-number-label">产品编号</label>
                                                     <input type="number" id="dev-product-number" class="pure-input-1" placeholder="输入产品编号" data-i18n-placeholder="dev-product-number-label" min="0">
                                                 </div>
-                                                
-                                                <!-- 硬件信息卡片 -->
-                                                <div class="card" style="border: 1px solid #e0e0e0; margin-top: 15px;">
-                                                    <div class="card-header" style="padding: 10px 15px; background: #f5f5f5;">
-                                                        <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-microchip"></i> <span data-i18n="dev-sys-hw-title">硬件信息</span></h4>
-                                                    </div>
-                                                    <div class="card-body" style="padding: 12px 15px;">
-                                                        <table class="pure-table" style="width: 100%; font-size: 13px;">
-                                                            <tbody>
-                                                                <tr><td style="color:#666; width:120px;" data-i18n="dev-sys-chip-label">芯片型号</td><td id="dev-sys-chip">--</td></tr>
-                                                                <tr><td style="color:#666;" data-i18n="dev-sys-cpu-label">CPU频率</td><td id="dev-sys-cpu">--</td></tr>
-                                                                <tr><td style="color:#666;" data-i18n="dev-sys-heap-label">空闲堆栈</td><td id="dev-sys-heap">--</td></tr>
-                                                                <tr><td style="color:#666;" data-i18n="dev-sys-flash-label">Flash大小</td><td id="dev-sys-flash">--</td></tr>
-                                                                <tr><td style="color:#666;" data-i18n="dev-sys-sdk-label">SDK版本</td><td id="dev-sys-sdk">--</td></tr>
-                                                                <tr><td style="color:#666;" data-i18n="dev-sys-fw-label">固件版本</td><td id="dev-sys-fw">--</td></tr>
-                                                            </tbody>
-                                                        </table>
-                                                    </div>
-                                                </div>
                                             </div>
                                         </div>
                                         <div class="message message-success" id="dev-basic-success" style="display:none; margin-top:15px;" data-i18n="dev-basic-save-ok">设备信息保存成功！</div>
-                                        <div style="margin-top: 20px;">
+                                        <div style="margin-top: 20px; margin-bottom: 20px;">
                                             <button type="submit" class="pure-button pure-button-primary">
                                                 <i class="fas fa-save"></i> <span data-i18n="dev-basic-save-btn">保存信息</span>
                                             </button>
+                                        </div>
+
+                                        <!-- 系统操作区域 - 左右并列布局 -->
+                                        <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+                                            <!-- 设备重启卡片 -->
+                                            <div class="card" style="border: 1px solid #e0e0e0; flex: 1; min-width: 300px;">
+                                                <div class="card-header" style="padding: 10px 15px; background: #fff3cd;">
+                                                    <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-redo"></i> <span data-i18n="dev-sys-restart-title">重启设备</span></h4>
+                                                </div>
+                                                <div class="card-body" style="padding: 15px;">
+                                                    <p style="margin: 0 0 15px; font-size: 13px; color: #666;" data-i18n="dev-sys-restart-hint">重启设备将会断开所有连接，配置数据将保留。</p>
+                                                    <div style="display: flex; align-items: center; gap: 10px;">
+                                                        <label style="font-size: 13px;" data-i18n="dev-sys-restart-delay">延迟（秒）：</label>
+                                                        <select id="dev-restart-delay" class="pure-input" style="width: 80px;">
+                                                            <option value="1">1</option>
+                                                            <option value="3" selected>3</option>
+                                                            <option value="5">5</option>
+                                                            <option value="10">10</option>
+                                                        </select>
+                                                        <button id="dev-restart-btn" type="button" class="pure-button" style="background:#e67e22; color:#fff;">
+                                                            <i class="fas fa-power-off"></i> <span data-i18n="dev-sys-restart-btn">立即重启</span>
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <!-- 恢复出厂设置卡片 -->
+                                            <div class="card" style="border: 1px solid #e0e0e0; flex: 1; min-width: 300px;">
+                                                <div class="card-header" style="padding: 10px 15px; background: #fff3cd;">
+                                                    <h4 style="margin: 0; font-size: 14px; color: #856404;"><i class="fas fa-exclamation-triangle"></i> <span data-i18n="dev-sys-factory-title">恢复出厂设置</span></h4>
+                                                </div>
+                                                <div class="card-body" style="padding: 15px;">
+                                                    <p style="margin: 0 0 10px; font-size: 13px; color: #dc3545; font-weight: bold;" data-i18n="dev-sys-factory-warning">警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！</p>
+                                                    <p style="margin: 0 0 15px; font-size: 13px; color: #666;" data-i18n="dev-sys-factory-hint">设备将自动重启，所有配置将丢失，请谨慎操作。</p>
+                                                    <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                                                        <label style="font-size: 13px;" data-i18n="dev-sys-factory-confirm-label">输入"RESET"确认：</label>
+                                                        <input type="text" id="dev-factory-confirm" class="pure-input" style="width: 100px;" placeholder="RESET">
+                                                        <button id="dev-factory-btn" type="button" class="pure-button" style="background:#dc3545; color:#fff;">
+                                                            <i class="fas fa-undo"></i> <span data-i18n="dev-sys-factory-btn">恢复出厂设置</span>
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
                                     </form>
                                 </div>
@@ -1118,47 +1131,48 @@
                                     <!-- 配网参数配置 -->
                                     <form id="device-provision-form" class="pure-form pure-form-stacked">
                                         <div class="config-form-grid">
+                                            <!-- 左侧列 -->
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="provision-ssid">配网热点名称</label>
+                                                    <label for="provision-ssid" data-i18n="dev-provision-ssid-label">热点名称</label>
                                                     <input type="text" id="provision-ssid" class="pure-input-1" placeholder="fastbee-device">
-                                                    <small style="color: #999;">留空则自动生成随机名称</small>
+                                                    <small style="color: #999;" data-i18n="dev-provision-ssid-hint">留空则自动生成随机名称</small>
                                                 </div>
                                                 <div class="pure-control-group">
-                                                    <label for="provision-password">配网热点密码</label>
-                                                    <input type="password" id="provision-password" class="pure-input-1" placeholder="留空为开放网络">
-                                                    <small style="color: #999;">留空则为开放网络，无需密码</small>
-                                                </div>
-                                                <div class="pure-control-group">
-                                                    <label for="provision-timeout">配网超时 (秒)</label>
-                                                    <input type="number" id="provision-timeout" class="pure-input-1" value="300" min="60" max="3600">
-                                                    <small style="color: #999;">超时后自动关闭配网模式</small>
-                                                </div>
-                                                <div class="pure-control-group">
-                                                    <label for="provision-ip">AP热点IP</label>
+                                                    <label for="provision-ip" data-i18n="dev-provision-ip-label">AP热点IP</label>
                                                     <input type="text" id="provision-ip" class="pure-input-1" value="192.168.4.1" placeholder="192.168.4.1">
                                                 </div>
                                                 <div class="pure-control-group">
-                                                    <label for="provision-gateway">网关地址</label>
+                                                    <label for="provision-gateway" data-i18n="dev-provision-gateway-label">网关地址</label>
                                                     <input type="text" id="provision-gateway" class="pure-input-1" value="192.168.4.1" placeholder="192.168.4.1">
                                                 </div>
                                                 <div class="pure-control-group">
-                                                    <label for="provision-subnet">子网掩码</label>
-                                                    <input type="text" id="provision-subnet" class="pure-input-1" value="255.255.255.0" placeholder="255.255.255.0">
-                                                </div>
-                                            </div>
-                                            <div class="config-form-column">
-                                                <div class="pure-control-group">
-                                                    <label for="provision-user-id">用户编号</label>
+                                                    <label for="provision-user-id" data-i18n="dev-provision-user-id-label">用户编号</label>
                                                     <input type="text" id="provision-user-id" class="pure-input-1" placeholder="可选，用于设备绑定">
                                                 </div>
                                                 <div class="pure-control-group">
-                                                    <label for="provision-product-id">产品ID</label>
-                                                    <input type="text" id="provision-product-id" class="pure-input-1" placeholder="可选">
+                                                    <label for="provision-auth-code" data-i18n="dev-provision-auth-code-label">授权码</label>
+                                                    <input type="text" id="provision-auth-code" class="pure-input-1" placeholder="可选，产品授权码">
+                                                </div>
+                                            </div>
+                                            <!-- 右侧列 -->
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="provision-password" data-i18n="dev-provision-password-label">热点密码</label>
+                                                    <input type="password" id="provision-password" class="pure-input-1" placeholder="留空为开放网络">
+                                                    <small style="color: #999;" data-i18n="dev-provision-password-hint">留空则为开放网络，无需密码</small>
                                                 </div>
                                                 <div class="pure-control-group">
-                                                    <label for="provision-auth-code">授权码</label>
-                                                    <input type="text" id="provision-auth-code" class="pure-input-1" placeholder="可选，产品授权码">
+                                                    <label for="provision-timeout" data-i18n="dev-provision-timeout-label">配网超时 (秒)</label>
+                                                    <input type="number" id="provision-timeout" class="pure-input-1" value="300" min="60" max="3600">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="provision-subnet" data-i18n="dev-provision-subnet-label">子网掩码</label>
+                                                    <input type="text" id="provision-subnet" class="pure-input-1" value="255.255.255.0" placeholder="255.255.255.0">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="provision-product-id" data-i18n="dev-provision-product-id-label">产品ID</label>
+                                                    <input type="text" id="provision-product-id" class="pure-input-1" placeholder="可选">
                                                 </div>
                                             </div>
                                         </div>

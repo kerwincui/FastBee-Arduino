@@ -19,6 +19,7 @@
         : (location.origin || 'http://fastbee.local');
 
     const DEFAULT_TIMEOUT = 8000; // ms，与原 axios 超时一致
+    const RESTART_TIMEOUT = 15000; // ms，重启操作需要更长超时
 
     // ── 工具：序列化为 URL 编码 ───────────────────────────────────────────────
     function toUrlEncoded(data) {
@@ -48,7 +49,7 @@
     }
 
     // ── 核心请求函数 ──────────────────────────────────────────────────────────
-    function request(method, path, options) {
+    function request(method, path, options, timeoutMs) {
         options = options || {};
         const token = localStorage.getItem('auth_token');
         const headers = Object.assign({}, options.headers);
@@ -68,8 +69,9 @@
         }
 
         const url = buildUrl(path, options.params);
+        const timeout = timeoutMs || DEFAULT_TIMEOUT;
 
-        return fetchWithTimeout(url, fetchOptions, DEFAULT_TIMEOUT)
+        return fetchWithTimeout(url, fetchOptions, timeout)
             .then(function (response) {
                 return response.json().catch(function () { return {}; })
                     .then(function (data) {
@@ -85,12 +87,13 @@
                     // HTTP 层面的错误（4xx / 5xx）
                     _handleHttpError(err.status, err.data);
                 } else if (err && err.name === 'AbortError') {
-                    // 超时
-                    if (typeof Notification !== 'undefined') {
-                        Notification.error('请求超时，设备可能繁忙，请稍后重试', '连接超时');
-                    }
+                    // 超时 - 对于重启等特殊操作，由调用方处理提示
+                    err._handled = false;
+                } else if (err && err.message && err.message.includes('fetch')) {
+                    // fetch 错误可能是连接被服务器关闭（正常情况）
+                    err._handled = false;
                 } else {
-                    // 网络错误
+                    // 其他网络错误
                     if (typeof Notification !== 'undefined') {
                         Notification.error('无法连接到设备，请检查网络连接', '网络错误');
                     }
@@ -193,6 +196,26 @@
      */
     window.apiDelete = function (url) {
         return request('DELETE', url, {});
+    };
+
+    /**
+     * 系统重启请求（使用更长超时）
+     * @param {Object} [data] - 表单数据（包含 delay 参数）
+     * @returns {Promise<any>}
+     */
+    window.apiRestart = function (data) {
+        return request('POST', '/api/system/restart', {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: toUrlEncoded(data || {})
+        }, RESTART_TIMEOUT);
+    };
+
+    /**
+     * 恢复出厂设置请求（使用更长超时）
+     * @returns {Promise<any>}
+     */
+    window.apiFactoryReset = function () {
+        return request('POST', '/api/system/factory-reset', {}, RESTART_TIMEOUT);
     };
 
 })();

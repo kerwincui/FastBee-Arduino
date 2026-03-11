@@ -12,6 +12,7 @@
 #include "utils/TimeUtils.h"
 #include <time.h>
 #include <esp_wifi.h>
+#include <esp_heap_caps.h>
 #include <NimBLEDevice.h>
 #include <Update.h>
 
@@ -94,8 +95,9 @@ bool WebConfigManager::start() {
 }
 
 void WebConfigManager::stop() {
-    if (isRunning) {
-        // AsyncWebServer 无 stop() 方法，仅标记状态
+    if (isRunning && server) {
+        // 重置 AsyncWebServer 以释放所有连接
+        server->reset();
         isRunning = false;
         LOG_INFO("WebConfig: Web server stopped");
     }
@@ -111,7 +113,50 @@ void WebConfigManager::setProtocolManager(ProtocolManager* protoMgr) { protocolM
 AsyncWebServer* WebConfigManager::getWebServer() const { return server; }
 
 void WebConfigManager::performMaintenance() {
-    // 定期清理任务预留位置
+    // 检查是否需要执行延迟重启
+    if (scheduleRestart && millis() >= scheduledRestartTime) {
+        LOG_INFO("[System] Executing scheduled restart now");
+        ESP.restart();
+    }
+
+    // 定期清理过期会话
+    if (authManager) {
+        // AuthManager 的 performMaintenance 会清理过期会话
+        authManager->performMaintenance();
+    }
+
+    // 检查内存碎片率，如果过高则记录警告
+    size_t freeHeap = esp_get_free_heap_size();
+    size_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    uint8_t frag = (freeHeap > 0) ? (uint8_t)(100 - (largestBlock * 100 / freeHeap)) : 0;
+
+    if (frag > 70) {
+        LOG_WARNINGF("[WebConfig] High memory fragmentation: %d%%", frag);
+    }
+
+    // 内存过低时强制清理
+    static unsigned long lastMemoryCheck = 0;
+    if (millis() - lastMemoryCheck > 60000) {  // 每分钟检查一次
+        lastMemoryCheck = millis();
+
+        if (freeHeap < 30000) {  // 可用内存低于 30KB
+            LOG_WARNINGF("[WebConfig] Low memory detected: %d bytes, forcing cleanup", freeHeap);
+
+            // 强制清理 WiFi 连接状态
+            if (WiFi.status() != WL_CONNECTED) {
+                WiFi.disconnect(false);
+                delay(10);
+            }
+
+            // 如果内存仍然很低，重启 Web 服务器
+            if (esp_get_free_heap_size() < 25000) {
+                LOG_WARNING("[WebConfig] Memory still low after cleanup, restarting web server");
+                stop();
+                delay(100);
+                start();
+            }
+        }
+    }
 }
 
 // ============ 私有方法实现 ============
@@ -402,10 +447,10 @@ void WebConfigManager::setupSystemRoutes() {
         handleAPIGetDeviceConfig(request);
     });
 
-    // 保存设备配置
+    // 保存设备配置（使用 AsyncCallbackJsonWebHandler 处理 JSON body）
     server->on("/api/device/config", HTTP_PUT,
-              [this](AsyncWebServerRequest* request) {
-        handleAPIUpdateDeviceConfig(request);
+              [this](AsyncWebServerRequest* request, JsonVariant& json) {
+        handleAPIUpdateDeviceConfig(request, json);
     });
 
     // 获取当前时间
@@ -448,8 +493,8 @@ void WebConfigManager::setupSystemRoutes() {
     
     // 保存配网配置
     server->on("/api/provision/config", HTTP_PUT,
-              [this](AsyncWebServerRequest* request) {
-        handleAPISaveProvisionConfig(request);
+              [this](AsyncWebServerRequest* request, JsonVariant& json) {
+        handleAPISaveProvisionConfig(request, json);
     });
     
     // 配网回调接口（供手机APP调用）
@@ -492,8 +537,8 @@ void WebConfigManager::setupSystemRoutes() {
     
     // 保存蓝牙配网配置
     server->on("/api/ble/provision/config", HTTP_PUT,
-              [this](AsyncWebServerRequest* request) {
-        handleAPISaveBLEProvisionConfig(request);
+              [this](AsyncWebServerRequest* request, JsonVariant& json) {
+        handleAPISaveBLEProvisionConfig(request, json);
     });
     
     // ============ 文件管理 API ============
@@ -859,51 +904,74 @@ void WebConfigManager::sendJsonResponse(AsyncWebServerRequest* request, int code
                                        const JsonDocument& doc) {
     if (!request) return;
     
-    String jsonStr;
-    serializeJson(doc, jsonStr);
-    
-    // 直接使用 request->send，它会自动处理响应对象
-    AsyncWebServerResponse* response = request->beginResponse(code, "application/json", jsonStr);
-    
-    // 添加 CORS 头
-    response->addHeader("Access-Control-Allow-Origin", "*");
-    response->addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    response->addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-    
-    request->send(response);
+    // 对于小文档，使用栈缓冲区避免堆碎片
+    size_t docSize = measureJson(doc);
+    if (docSize < 512) {
+        char jsonBuffer[512];
+        serializeJson(doc, jsonBuffer, sizeof(jsonBuffer));
+        
+        AsyncWebServerResponse* response = request->beginResponse(code, "application/json", jsonBuffer);
+        response->addHeader("Access-Control-Allow-Origin", "*");
+        response->addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+        response->addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        request->send(response);
+    } else {
+        // 大文档使用 String
+        String jsonStr;
+        serializeJson(doc, jsonStr);
+        
+        AsyncWebServerResponse* response = request->beginResponse(code, "application/json", jsonStr);
+        response->addHeader("Access-Control-Allow-Origin", "*");
+        response->addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+        response->addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        request->send(response);
+    }
 }
 
 void WebConfigManager::sendSuccess(AsyncWebServerRequest* request, const JsonDocument& data) {
-    JsonDocument doc;
-    doc["success"] = true;
-    doc["timestamp"] = millis();
+    // 使用栈缓冲区避免堆碎片
+    char jsonBuffer[512];
+    snprintf(jsonBuffer, sizeof(jsonBuffer), "{\"success\":true,\"timestamp\":%lu", millis());
     
     if (!data.isNull()) {
-        doc["data"] = data;
+        String dataStr;
+        serializeJson(data, dataStr);
+        snprintf(jsonBuffer + strlen(jsonBuffer), sizeof(jsonBuffer) - strlen(jsonBuffer), 
+                 ",\"data\":%s", dataStr.c_str());
     }
     
-    sendJsonResponse(request, 200, doc);
+    strncat(jsonBuffer, "}", sizeof(jsonBuffer) - strlen(jsonBuffer) - 1);
+    
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonBuffer);
+    response->addHeader("Access-Control-Allow-Origin", "*");
+    request->send(response);
 }
 
 void WebConfigManager::sendSuccess(AsyncWebServerRequest* request, const String& message) {
-    JsonDocument doc;
-    doc["success"] = true;
-    if (!message.isEmpty()) {
-        doc["message"] = message;
+    // 使用栈缓冲区避免堆碎片
+    char jsonBuffer[256];
+    if (message.isEmpty()) {
+        snprintf(jsonBuffer, sizeof(jsonBuffer), "{\"success\":true,\"timestamp\":%lu}", millis());
+    } else {
+        snprintf(jsonBuffer, sizeof(jsonBuffer), "{\"success\":true,\"message\":\"%s\",\"timestamp\":%lu}", 
+                 message.c_str(), millis());
     }
-    doc["timestamp"] = millis();
     
-    sendJsonResponse(request, 200, doc);
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonBuffer);
+    response->addHeader("Access-Control-Allow-Origin", "*");
+    request->send(response);
 }
 
 void WebConfigManager::sendError(AsyncWebServerRequest* request, int code, const String& message) {
-    JsonDocument doc;
-    doc["success"] = false;
-    doc["error"] = message;
-    doc["code"] = code;
-    doc["timestamp"] = millis();
+    // 使用栈缓冲区避免堆碎片
+    char jsonBuffer[256];
+    snprintf(jsonBuffer, sizeof(jsonBuffer), 
+             "{\"success\":false,\"error\":\"%s\",\"code\":%d,\"timestamp\":%lu}", 
+             message.c_str(), code, millis());
     
-    sendJsonResponse(request, code, doc);
+    AsyncWebServerResponse* response = request->beginResponse(code, "application/json", jsonBuffer);
+    response->addHeader("Access-Control-Allow-Origin", "*");
+    request->send(response);
 }
 
 void WebConfigManager::sendUnauthorized(AsyncWebServerRequest* request) {
@@ -1887,21 +1955,40 @@ void WebConfigManager::handleAPISystemRestart(AsyncWebServerRequest* request) {
         sendUnauthorized(request);
         return;
     }
-    
+
     // 获取延迟重启参数（可选）
     int delaySeconds = getParamInt(request, "delay", 3);
     delaySeconds = constrain(delaySeconds, 1, 30); // 限制在1-30秒之间
-    
+
+    LOG_INFOF("[System] Restart scheduled in %d seconds", delaySeconds);
+
+    // 先发送成功响应，确保客户端能收到
     JsonDocument doc;
+    doc["success"] = true;
     doc["message"] = "System will restart in " + String(delaySeconds) + " seconds";
     doc["delay"] = delaySeconds;
     doc["timestamp"] = millis();
-    
-    sendJsonResponse(request, 200, doc);
-    
-    // 延迟重启
-    delay(delaySeconds * 1000);
-    ESP.restart();
+
+    // 使用 AsyncWebServerResponse 发送响应，并设置回调确保响应发送完成
+    String jsonStr;
+    serializeJson(doc, jsonStr);
+
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonStr);
+    response->addHeader("Connection", "close"); // 告诉客户端关闭连接
+
+    // 计划重启 - 在响应发送后立即执行
+    static int savedDelay = 0;
+    savedDelay = delaySeconds;
+
+    // 使用 onDisconnect 回调在连接关闭后计划重启
+    request->onDisconnect([this]() {
+        // 连接已关闭，现在可以安全地计划重启
+        this->scheduleRestart = true;
+        this->scheduledRestartTime = millis() + (savedDelay * 1000);
+        LOG_INFO("[System] Connection closed, restart scheduled");
+    });
+
+    request->send(response);
 }
 
 void WebConfigManager::handleAPIFactoryReset(AsyncWebServerRequest* request) {
@@ -1955,11 +2042,21 @@ void WebConfigManager::handleAPIFactoryReset(AsyncWebServerRequest* request) {
     doc["deletedFiles"] = deletedCount;
     doc["timestamp"] = millis();
 
-    sendJsonResponse(request, 200, doc);
+    // 使用 AsyncWebServerResponse 发送响应，并设置回调确保响应发送完成后再重启
+    String jsonStr;
+    serializeJson(doc, jsonStr);
 
-    // 延迟2秒后重启
-    delay(2000);
-    ESP.restart();
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonStr);
+    response->addHeader("Connection", "close");
+
+    // 设置连接关闭回调，在响应发送完成后再执行重启
+    request->onDisconnect([this]() {
+        LOGGER.info("Factory reset response sent, scheduling restart in 2 seconds");
+        this->scheduleRestart = true;
+        this->scheduledRestartTime = millis() + 2000; // 2秒后重启
+    });
+
+    request->send(response);
 }
 
 void WebConfigManager::handleAPIFileSystemInfo(AsyncWebServerRequest* request) {
@@ -4199,29 +4296,60 @@ void WebConfigManager::handleAPIGetDeviceConfig(AsyncWebServerRequest* request) 
         return;
     }
 
-    JsonDocument doc;
-
+    // 使用静态缓冲区避免频繁的堆分配
+    static char jsonBuffer[1024];
+    
     // 尝试从 LittleFS 读取配置
     if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
         File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
         if (f) {
             JsonDocument fileCfg;
             if (!deserializeJson(fileCfg, f)) {
-                doc["success"] = true;
-                doc["data"] = fileCfg;
-                // 添加 MAC 地址用于前端生成设备编号
-                doc["data"]["macAddress"] = WiFi.macAddress();
-                // 如果没有设备编号，生成一个（FBE + 完整MAC地址）
+                // 获取 MAC 地址
+                String mac = WiFi.macAddress();
+                
+                // 如果没有设备编号，生成一个
+                String deviceId;
                 if (!fileCfg["deviceId"].is<String>() || fileCfg["deviceId"].as<String>().isEmpty()) {
-                    String mac = WiFi.macAddress();
-                    mac.replace(":", "");
-                    mac.toUpperCase();
-                    doc["data"]["deviceId"] = "FBE" + mac;
+                    deviceId = mac;
+                    deviceId.replace(":", "");
+                    deviceId.toUpperCase();
+                    deviceId = "FBE" + deviceId;
+                } else {
+                    deviceId = fileCfg["deviceId"].as<String>();
                 }
+                
                 f.close();
-                String out;
-                serializeJson(doc, out);
-                request->send(200, "application/json", out);
+                
+                // 使用 snprintf 构建 JSON 响应，避免 JsonDocument
+                snprintf(jsonBuffer, sizeof(jsonBuffer),
+                    "{\"success\":true,\"data\":{"
+                    "\"deviceId\":\"%s\","
+                    "\"deviceName\":\"%s\","
+                    "\"productNumber\":%d,"
+                    "\"location\":\"%s\","
+                    "\"description\":\"%s\","
+                    "\"enableNTP\":%s,"
+                    "\"ntpServer1\":\"%s\","
+                    "\"ntpServer2\":\"%s\","
+                    "\"timezone\":\"%s\","
+                    "\"syncInterval\":%d,"
+                    "\"macAddress\":\"%s\""
+                    "}}",
+                    deviceId.c_str(),
+                    fileCfg["deviceName"] | "FastBee-Device",
+                    fileCfg["productNumber"] | 0,
+                    fileCfg["location"] | "",
+                    fileCfg["description"] | "",
+                    (fileCfg["enableNTP"] | true) ? "true" : "false",
+                    fileCfg["ntpServer1"] | "https://iot.fastbee.cn/prod-api/iot/tool/ntp",
+                    fileCfg["ntpServer2"] | "time.nist.gov",
+                    fileCfg["timezone"] | "CST-8",
+                    fileCfg["syncInterval"] | 3600,
+                    mac.c_str()
+                );
+                
+                request->send(200, "application/json", jsonBuffer);
                 return;
             }
             f.close();
@@ -4229,25 +4357,31 @@ void WebConfigManager::handleAPIGetDeviceConfig(AsyncWebServerRequest* request) 
     }
 
     // 返回默认配置
-    doc["success"] = true;
-    doc["data"]["ntpServer1"] = "https://iot.fastbee.cn/prod-api/iot/tool/ntp";
-    doc["data"]["ntpServer2"] = "time.nist.gov";
-    doc["data"]["timezone"] = "CST-8";
-    doc["data"]["enableNTP"] = true;
-    doc["data"]["deviceName"] = "FastBee-Device";
-    doc["data"]["location"] = "";
-    doc["data"]["description"] = "";
-    doc["data"]["syncInterval"] = 3600;
-    // 添加 MAC 地址和设备编号（FBE + 完整MAC地址）
     String mac = WiFi.macAddress();
-    doc["data"]["macAddress"] = mac;
-    mac.replace(":", "");
-    mac.toUpperCase();
-    doc["data"]["deviceId"] = "FBE" + mac;
-
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    String deviceId = mac;
+    deviceId.replace(":", "");
+    deviceId.toUpperCase();
+    deviceId = "FBE" + deviceId;
+    
+    snprintf(jsonBuffer, sizeof(jsonBuffer),
+        "{\"success\":true,\"data\":{"
+        "\"deviceId\":\"%s\","
+        "\"deviceName\":\"FastBee-Device\","
+        "\"productNumber\":0,"
+        "\"location\":\"\","
+        "\"description\":\"\","
+        "\"enableNTP\":true,"
+        "\"ntpServer1\":\"https://iot.fastbee.cn/prod-api/iot/tool/ntp\","
+        "\"ntpServer2\":\"time.nist.gov\","
+        "\"timezone\":\"CST-8\","
+        "\"syncInterval\":3600,"
+        "\"macAddress\":\"%s\""
+        "}}",
+        deviceId.c_str(),
+        mac.c_str()
+    );
+    
+    request->send(200, "application/json", jsonBuffer);
 }
 
 // ============ AP配网 API 处理器实现 ============
@@ -4340,8 +4474,11 @@ void WebConfigManager::handleAPIStartProvision(AsyncWebServerRequest* request) {
     gateway.fromString(apGateway);
     subnet.fromString(apSubnet);
 
-    // 启动AP模式
+    // 切换到 AP+STA 模式（保持现有WiFi连接，同时启动热点）
+    LOGGER.info("Provision: Switching to AP+STA mode");
     WiFi.mode(WIFI_AP_STA);
+    delay(100);  // 等待模式切换完成
+    
     WiFi.softAPConfig(localIP, gateway, subnet);
     
     bool success;
@@ -4357,18 +4494,20 @@ void WebConfigManager::handleAPIStartProvision(AsyncWebServerRequest* request) {
         provisionStartTime = millis();
         provisionTimeout = timeout;
         
-        LOGGER.infof("Provision: AP started - SSID=%s IP=%s", 
-                     apSSID.c_str(), WiFi.softAPIP().toString().c_str());
+        LOGGER.infof("Provision: AP started in AP+STA mode - SSID=%s IP=%s STA_IP=%s", 
+                     apSSID.c_str(), 
+                     WiFi.softAPIP().toString().c_str(),
+                     WiFi.localIP().toString().c_str());
         
-        JsonDocument doc;
-        doc["success"] = true;
-        doc["message"] = "AP配网已启动";
-        doc["data"]["apSSID"] = apSSID;
-        doc["data"]["apIP"] = WiFi.softAPIP().toString();
+        // 使用栈缓冲区构建响应
+        char jsonBuffer[256];
+        snprintf(jsonBuffer, sizeof(jsonBuffer),
+            "{\"success\":true,\"message\":\"AP配网已启动\",\"data\":{\"apSSID\":\"%s\",\"apIP\":\"%s\",\"staIP\":\"%s\",\"mode\":\"AP+STA\"}}",
+            apSSID.c_str(),
+            WiFi.softAPIP().toString().c_str(),
+            WiFi.localIP().toString().c_str());
         
-        String out;
-        serializeJson(doc, out);
-        request->send(200, "application/json", out);
+        request->send(200, "application/json", jsonBuffer);
     } else {
         sendError(request, 500, "启动AP配网失败");
     }
@@ -4380,13 +4519,39 @@ void WebConfigManager::handleAPIStopProvision(AsyncWebServerRequest* request) {
         return;
     }
 
+    // 断开AP连接并关闭热点
     WiFi.softAPdisconnect(true);
+    
+    // 切换回纯 STA 模式（如果当前是AP+STA模式）
+    WiFiMode_t currentMode = WiFi.getMode();
+    if (currentMode == WIFI_MODE_APSTA) {
+        LOGGER.info("Provision: Switching back to STA mode");
+        WiFi.mode(WIFI_STA);
+        delay(100);  // 等待模式切换完成
+        
+        // 确保WiFi连接仍然保持
+        if (WiFi.status() != WL_CONNECTED) {
+            LOGGER.info("Provision: WiFi disconnected after mode switch, will reconnect automatically");
+            // WiFiManager 的自动重连机制会处理重连
+            // 不需要手动调用，避免访问私有方法
+        }
+    }
+    
     provisionModeActive = false;
     provisionApSSID = "";
     provisionStartTime = 0;
     
-    LOGGER.info("Provision: AP stopped");
-    sendSuccess(request, "AP配网已停止");
+    LOGGER.infof("Provision: AP stopped, current mode=%s, WiFi status=%d", 
+                 (WiFi.getMode() == WIFI_MODE_STA) ? "STA" : "OTHER",
+                 WiFi.status());
+    
+    // 使用栈缓冲区构建响应
+    char jsonBuffer[128];
+    snprintf(jsonBuffer, sizeof(jsonBuffer),
+        "{\"success\":true,\"message\":\"AP配网已停止\",\"data\":{\"mode\":\"STA\",\"wifiConnected\":%s}}",
+        (WiFi.status() == WL_CONNECTED) ? "true" : "false");
+    
+    request->send(200, "application/json", jsonBuffer);
 }
 
 void WebConfigManager::handleAPIGetProvisionConfig(AsyncWebServerRequest* request) {
@@ -4433,7 +4598,7 @@ void WebConfigManager::handleAPIGetProvisionConfig(AsyncWebServerRequest* reques
     request->send(200, "application/json", out);
 }
 
-void WebConfigManager::handleAPISaveProvisionConfig(AsyncWebServerRequest* request) {
+void WebConfigManager::handleAPISaveProvisionConfig(AsyncWebServerRequest* request, JsonVariant& json) {
     if (!checkPermission(request, "config.edit")) {
         sendUnauthorized(request);
         return;
@@ -4449,16 +4614,37 @@ void WebConfigManager::handleAPISaveProvisionConfig(AsyncWebServerRequest* reque
         }
     }
 
+    // 从 JSON 请求体解析参数
+    JsonObject obj = json.as<JsonObject>();
+    
     // 更新配网相关字段
-    cfg["provisionSSID"]     = getParamValue(request, "provisionSSID", "");
-    cfg["provisionPassword"] = getParamValue(request, "provisionPassword", "");
-    cfg["provisionTimeout"]  = getParamValue(request, "provisionTimeout", "300").toInt();
-    cfg["provisionUserId"]   = getParamValue(request, "provisionUserId", "");
-    cfg["provisionProductId"] = getParamValue(request, "provisionProductId", "");
-    cfg["provisionAuthCode"] = getParamValue(request, "provisionAuthCode", "");
-    cfg["provisionIP"]       = getParamValue(request, "provisionIP", "192.168.4.1");
-    cfg["provisionGateway"]  = getParamValue(request, "provisionGateway", "192.168.4.1");
-    cfg["provisionSubnet"]   = getParamValue(request, "provisionSubnet", "255.255.255.0");
+    if (obj["provisionSSID"].is<String>()) {
+        cfg["provisionSSID"] = obj["provisionSSID"].as<String>();
+    }
+    if (obj["provisionPassword"].is<String>()) {
+        cfg["provisionPassword"] = obj["provisionPassword"].as<String>();
+    }
+    if (obj["provisionTimeout"].is<int>() || obj["provisionTimeout"].is<String>()) {
+        cfg["provisionTimeout"] = obj["provisionTimeout"].as<int>();
+    }
+    if (obj["provisionUserId"].is<String>()) {
+        cfg["provisionUserId"] = obj["provisionUserId"].as<String>();
+    }
+    if (obj["provisionProductId"].is<String>()) {
+        cfg["provisionProductId"] = obj["provisionProductId"].as<String>();
+    }
+    if (obj["provisionAuthCode"].is<String>()) {
+        cfg["provisionAuthCode"] = obj["provisionAuthCode"].as<String>();
+    }
+    if (obj["provisionIP"].is<String>()) {
+        cfg["provisionIP"] = obj["provisionIP"].as<String>();
+    }
+    if (obj["provisionGateway"].is<String>()) {
+        cfg["provisionGateway"] = obj["provisionGateway"].as<String>();
+    }
+    if (obj["provisionSubnet"].is<String>()) {
+        cfg["provisionSubnet"] = obj["provisionSubnet"].as<String>();
+    }
 
     File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
     if (!f) {
@@ -4506,7 +4692,7 @@ void WebConfigManager::handleAPIProvisionCallback(AsyncWebServerRequest* request
     }
 }
 
-void WebConfigManager::handleAPIUpdateDeviceConfig(AsyncWebServerRequest* request) {
+void WebConfigManager::handleAPIUpdateDeviceConfig(AsyncWebServerRequest* request, JsonVariant& json) {
     if (!checkPermission(request, "config.edit")) {
         sendUnauthorized(request);
         return;
@@ -4522,42 +4708,46 @@ void WebConfigManager::handleAPIUpdateDeviceConfig(AsyncWebServerRequest* reques
         }
     }
 
-    // 只更新传入的字段
-    String val;
-    
+    // 从 JSON body 获取数据
+    JsonObject data = json.as<JsonObject>();
+
     // 设备编号：如果传入且不为空则保存，否则保留现有值或生成默认值
-    val = getParamValue(request, "deviceId", "");
-    if (!val.isEmpty()) {
-        // 用户可自定义任意格式，直接保存
-        cfg["deviceId"] = val;
+    if (data.containsKey("deviceId")) {
+        String val = data["deviceId"].as<String>();
+        if (!val.isEmpty()) {
+            cfg["deviceId"] = val;
+        }
     }
     // 如果 deviceId 为空且配置中也没有，生成基于MAC的默认值
-    if ((!cfg.containsKey("deviceId") || cfg["deviceId"].as<String>().isEmpty()) && 
+    if ((!cfg.containsKey("deviceId") || cfg["deviceId"].as<String>().isEmpty()) &&
         WiFi.macAddress().length() > 0) {
         String mac = WiFi.macAddress();
         mac.replace(":", "");
         mac.toUpperCase();
         cfg["deviceId"] = "FBE" + mac;
     }
-    
-    val = getParamValue(request, "ntpServer1", "");
-    if (!val.isEmpty()) cfg["ntpServer1"] = val;
-    val = getParamValue(request, "ntpServer2", "");
-    if (!val.isEmpty()) cfg["ntpServer2"] = val;
-    val = getParamValue(request, "timezone", "");
-    if (!val.isEmpty()) cfg["timezone"] = val;
-    val = getParamValue(request, "enableNTP", "");
-    if (!val.isEmpty()) cfg["enableNTP"] = (val == "1" || val == "true");
-    val = getParamValue(request, "deviceName", "");
-    if (!val.isEmpty()) cfg["deviceName"] = val;
-    val = getParamValue(request, "location", "");
-    if (request->hasParam("location")) cfg["location"] = val;
-    val = getParamValue(request, "description", "");
-    if (request->hasParam("description")) cfg["description"] = val;
-    val = getParamValue(request, "syncInterval", "");
-    if (!val.isEmpty()) cfg["syncInterval"] = val.toInt();
-    val = getParamValue(request, "productNumber", "");
-    if (request->hasParam("productNumber")) cfg["productNumber"] = val.toInt();
+
+    // NTP 相关字段
+    if (data.containsKey("ntpServer1")) cfg["ntpServer1"] = data["ntpServer1"].as<String>();
+    if (data.containsKey("ntpServer2")) cfg["ntpServer2"] = data["ntpServer2"].as<String>();
+    if (data.containsKey("timezone")) cfg["timezone"] = data["timezone"].as<String>();
+    if (data.containsKey("enableNTP")) {
+        // 处理字符串 "1"/"0" 或布尔值
+        JsonVariant val = data["enableNTP"];
+        if (val.is<bool>()) {
+            cfg["enableNTP"] = val.as<bool>();
+        } else {
+            String strVal = val.as<String>();
+            cfg["enableNTP"] = (strVal == "1" || strVal == "true");
+        }
+    }
+    if (data.containsKey("syncInterval")) cfg["syncInterval"] = data["syncInterval"].as<int>();
+
+    // 设备基本信息字段
+    if (data.containsKey("deviceName")) cfg["deviceName"] = data["deviceName"].as<String>();
+    if (data.containsKey("location")) cfg["location"] = data["location"].as<String>();
+    if (data.containsKey("description")) cfg["description"] = data["description"].as<String>();
+    if (data.containsKey("productNumber")) cfg["productNumber"] = data["productNumber"].as<int>();
 
     // 保存到 LittleFS
     File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
@@ -4799,7 +4989,7 @@ void WebConfigManager::handleAPIGetBLEProvisionConfig(AsyncWebServerRequest* req
     request->send(200, "application/json", out);
 }
 
-void WebConfigManager::handleAPISaveBLEProvisionConfig(AsyncWebServerRequest* request) {
+void WebConfigManager::handleAPISaveBLEProvisionConfig(AsyncWebServerRequest* request, JsonVariant& json) {
     if (!checkPermission(request, "config.edit")) {
         sendUnauthorized(request);
         return;
@@ -4815,14 +5005,31 @@ void WebConfigManager::handleAPISaveBLEProvisionConfig(AsyncWebServerRequest* re
         }
     }
 
+    // 从 JSON 请求体解析参数
+    JsonObject obj = json.as<JsonObject>();
+    
     // 更新蓝牙配网相关字段
-    cfg["bleEnabled"]     = getParamValue(request, "bleEnabled", "false") == "true";
-    cfg["bleName"]        = getParamValue(request, "bleName", "FBDevice");
-    cfg["bleTimeout"]     = getParamValue(request, "bleTimeout", "300").toInt();
-    cfg["bleAutoStart"]   = getParamValue(request, "bleAutoStart", "false") == "true";
-    cfg["bleServiceUUID"] = getParamValue(request, "bleServiceUUID", "6E400001-B5A3-F393-E0A9-E50E24DCCA9F");
-    cfg["bleRxUUID"]      = getParamValue(request, "bleRxUUID", "6E400002-B5A3-F393-E0A9-E50E24DCCA9F");
-    cfg["bleTxUUID"]      = getParamValue(request, "bleTxUUID", "6E400003-B5A3-F393-E0A9-E50E24DCCA9F");
+    if (obj["bleEnabled"].is<bool>()) {
+        cfg["bleEnabled"] = obj["bleEnabled"].as<bool>();
+    }
+    if (obj["bleName"].is<String>()) {
+        cfg["bleName"] = obj["bleName"].as<String>();
+    }
+    if (obj["bleTimeout"].is<int>() || obj["bleTimeout"].is<String>()) {
+        cfg["bleTimeout"] = obj["bleTimeout"].as<int>();
+    }
+    if (obj["bleAutoStart"].is<bool>()) {
+        cfg["bleAutoStart"] = obj["bleAutoStart"].as<bool>();
+    }
+    if (obj["bleServiceUUID"].is<String>()) {
+        cfg["bleServiceUUID"] = obj["bleServiceUUID"].as<String>();
+    }
+    if (obj["bleRxUUID"].is<String>()) {
+        cfg["bleRxUUID"] = obj["bleRxUUID"].as<String>();
+    }
+    if (obj["bleTxUUID"].is<String>()) {
+        cfg["bleTxUUID"] = obj["bleTxUUID"].as<String>();
+    }
 
     File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
     if (!f) {

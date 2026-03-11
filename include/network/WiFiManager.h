@@ -243,6 +243,12 @@ public:
      * @return WiFi 配置
      */
     WiFiConfig getConfig() const;
+
+    /**
+     * @brief 设置网络配置
+     * @param config 网络配置
+     */
+    void setNetworkConfig(const WiFiConfig& config);
     
     /**
      * @brief 获取状态信息

@@ -37,7 +37,15 @@ bool WiFiManager::connectToWiFi() {
         LOG_INFO("WiFiManager: No STA SSID configured");
         return false;
     }
-    
+
+    // 如果当前处于连接或连接中状态，先断开以清除可能的错误状态
+    wl_status_t currentStatus = WiFi.status();
+    if (currentStatus == WL_CONNECTED || currentStatus == WL_IDLE_STATUS) {
+        LOG_DEBUG("WiFiManager: Disconnecting before new connection attempt");
+        WiFi.disconnect(false);
+        delay(50);  // 短暂延迟确保断开完成
+    }
+
     // 确保 WiFi 模式正确
     WiFiMode_t currentMode = WiFi.getMode();
     if (wifiConfig.mode == NetworkMode::NETWORK_STA && !(currentMode & WIFI_STA)) {
@@ -48,7 +56,7 @@ bool WiFiManager::connectToWiFi() {
             return false;
         }
     }
-    
+
     // 配置网络
     if (wifiConfig.ipConfigType == IPConfigType::STATIC) {
         if (!configureStaticIP()) {
@@ -58,12 +66,12 @@ bool WiFiManager::connectToWiFi() {
     } else if (wifiConfig.ipConfigType == IPConfigType::DHCP) {
         configureDHCP();
     }
-    
+
     // 设置连接状态
     statusInfo.status = NetworkStatus::CONNECTING;
     connecting = true;
     connectingStartTime = millis();
-    
+
     // 开始连接
     WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
     
@@ -374,10 +382,18 @@ void WiFiManager::attemptReconnect() {
 
     lastReconnectAttempt = millis();
     statusInfo.reconnectAttempts++;
-    
-    LOG_INFO("WiFiManager: Reconnection attempt " + 
-             String(statusInfo.reconnectAttempts) + 
-             "/" + String(wifiConfig.maxReconnectAttempts));    
+
+    LOG_INFO("WiFiManager: Reconnection attempt " +
+             String(statusInfo.reconnectAttempts) +
+             "/" + String(wifiConfig.maxReconnectAttempts));
+
+    // 在重连前断开当前连接，清除可能的错误状态（如 AUTH_EXPIRE）
+    if (WiFi.status() != WL_DISCONNECTED) {
+        LOG_DEBUG("WiFiManager: Disconnecting before reconnect attempt");
+        WiFi.disconnect(false);  // 断开但不擦除配置
+        delay(100);  // 短暂延迟确保断开完成
+    }
+
     connectToWiFi();
 }
 
@@ -401,6 +417,11 @@ void WiFiManager::setAutoReconnect(bool enabled) {
 
 WiFiConfig WiFiManager::getConfig() const {
     return wifiConfig;
+}
+
+void WiFiManager::setNetworkConfig(const WiFiConfig& config) {
+    wifiConfig = config;
+    LOG_INFO("WiFiManager: Network config updated");
 }
 
 NetworkStatusInfo WiFiManager::getStatusInfo() const {

@@ -131,6 +131,10 @@ private:
     Preferences preferences;          ///< 偏好设置
     bool isRunning;                   ///< 服务器运行状态
     String webRootPath;               ///< Web根目录路径
+
+    // 延迟重启相关
+    bool scheduleRestart = false;     ///< 是否计划重启
+    unsigned long scheduledRestartTime = 0; ///< 计划重启时间
     
     // ============ 配置加载 ============
     void loadConfiguration();
@@ -293,7 +297,7 @@ private:
     
     // ============ 设备配置 API 处理器 ============
     void handleAPIGetDeviceConfig(AsyncWebServerRequest* request);   ///< 获取设备配置(NTP/时区等)
-    void handleAPIUpdateDeviceConfig(AsyncWebServerRequest* request); ///< 保存设备配置
+    void handleAPIUpdateDeviceConfig(AsyncWebServerRequest* request, JsonVariant& json); ///< 保存设备配置
     void handleAPIGetDeviceTime(AsyncWebServerRequest* request);      ///< 获取当前时间
     void handleAPISyncDeviceTime(AsyncWebServerRequest* request);     ///< 触发NTP时间同步并返回时间
     
@@ -302,12 +306,12 @@ private:
     void handleAPIStartProvision(AsyncWebServerRequest* request);      ///< 启动AP配网
     void handleAPIStopProvision(AsyncWebServerRequest* request);       ///< 停止AP配网
     void handleAPIGetProvisionConfig(AsyncWebServerRequest* request);  ///< 获取配网配置
-    void handleAPISaveProvisionConfig(AsyncWebServerRequest* request); ///< 保存配网配置
+    void handleAPISaveProvisionConfig(AsyncWebServerRequest* request, JsonVariant& json); ///< 保存配网配置
     void handleAPIProvisionCallback(AsyncWebServerRequest* request);   ///< 配网回调(接收WiFi配置)
     
     // ============ 蓝牙配网 API 处理器 ============
     void handleAPIGetBLEProvisionConfig(AsyncWebServerRequest* request);  ///< 获取蓝牙配网配置
-    void handleAPISaveBLEProvisionConfig(AsyncWebServerRequest* request); ///< 保存蓝牙配网配置
+    void handleAPISaveBLEProvisionConfig(AsyncWebServerRequest* request, JsonVariant& json); ///< 保存蓝牙配网配置
     void handleAPIGetBLEProvisionStatus(AsyncWebServerRequest* request);  ///< 获取蓝牙配网状态
     void handleAPIStartBLEProvision(AsyncWebServerRequest* request);      ///< 启动蓝牙配网
     void handleAPIStopBLEProvision(AsyncWebServerRequest* request);       ///< 停止蓝牙配网

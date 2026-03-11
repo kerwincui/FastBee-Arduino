@@ -178,6 +178,11 @@ public:
      * @param username 用户名
      */
     virtual void unlockAccount(const String& username) = 0;
+    
+    /**
+     * @brief 执行维护任务（清理过期会话等）
+     */
+    virtual void performMaintenance() = 0;
 };
 
 #endif // I_AUTH_MANAGER_H

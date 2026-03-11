@@ -2335,14 +2335,15 @@ const AppState = {
     },
 
     saveDeviceNTP() {
+        // 只保存 NTP 相关配置，不包含设备基本信息
+        // 避免覆盖设备名称等基本信息字段
         const config = {
             ntpServer1:   document.getElementById('dev-ntp-server1')?.value || 'https://iot.fastbee.cn/prod-api/iot/tool/ntp',
             ntpServer2:   document.getElementById('dev-ntp-server2')?.value || 'time.nist.gov',
             timezone:     document.getElementById('dev-timezone')?.value || 'CST-8',
             enableNTP:    document.getElementById('dev-ntp-enable')?.value || '1',
             syncInterval: document.getElementById('dev-sync-interval')?.value || '3600',
-            deviceName:   document.getElementById('dev-name')?.value || '',
-            description:  document.getElementById('dev-description')?.value || '',
+            // 注意：不发送 deviceName 和 description，避免覆盖基本信息
         };
         apiPut('/api/device/config', config)
             .then(res => {
@@ -2415,18 +2416,37 @@ const AppState = {
         const btn   = document.getElementById('dev-restart-btn');
         if (!confirm(`${i18n.t('dev-restart-confirm-prefix')}${delay}${i18n.t('dev-restart-confirm-suffix')}`)) return;
         if (btn) { btn.disabled = true; btn.innerHTML = i18n.t('dev-restarting-html'); }
-        apiPost('/api/system/restart', { delay })
+
+        // 使用专用重启 API（更长超时）
+        apiRestart({ delay })
             .then(res => {
-                if (res && (res.success || res.message)) {
-                    Notification.warning(`${i18n.t('dev-restart-msg-prefix')}${delay}${i18n.t('dev-restart-msg-suffix')}`, i18n.t('dev-restart-title'));
+                if (res && res.success) {
+                    // 重启指令发送成功，显示成功提示
+                    Notification.success(`${i18n.t('dev-restart-msg-prefix')}${delay}${i18n.t('dev-restart-msg-suffix')}`, i18n.t('dev-restart-title'));
                 } else {
+                    // 服务器返回了响应但表示失败
                     if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-restart-btn-html'); }
                     Notification.error(i18n.t('dev-restart-fail'), i18n.t('dev-restart-title'));
                 }
             })
-            .catch(() => {
-                if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-restart-btn-html'); }
-                Notification.error(i18n.t('dev-restart-fail'), i18n.t('dev-restart-title'));
+            .catch(err => {
+                // 重启请求可能会因为连接关闭而失败，这是正常的
+                // 检查是否在请求发送后一段时间内（说明服务器已收到请求）
+                const isConnectionClosed = err && (
+                    err.name === 'AbortError' ||
+                    err.name === 'TypeError' ||
+                    (err.message && (err.message.includes('fetch') || err.message.includes('network')))
+                );
+
+                if (isConnectionClosed) {
+                    // 连接关闭可能是正常的，设备可能已经开始重启
+                    // 显示成功提示而不是错误提示
+                    Notification.success(`${i18n.t('dev-restart-msg-prefix')}${delay}${i18n.t('dev-restart-msg-suffix')}`, i18n.t('dev-restart-title'));
+                } else {
+                    // 其他错误
+                    if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-restart-btn-html'); }
+                    Notification.error(i18n.t('dev-restart-fail'), i18n.t('dev-restart-title'));
+                }
             });
     },
 
@@ -2454,18 +2474,35 @@ const AppState = {
         // 禁用按钮，显示处理中
         if (btn) { btn.disabled = true; btn.innerHTML = i18n.t('dev-sys-factory-processing'); }
 
-        apiPost('/api/system/factory-reset', {})
+        // 使用专用 API（更长超时）
+        apiFactoryReset()
             .then(res => {
                 if (res && res.success) {
+                    // 恢复出厂设置指令发送成功，显示成功提示
                     Notification.success(i18n.t('dev-sys-factory-success'), i18n.t('dev-sys-factory-title-msg'));
                 } else {
+                    // 服务器返回了响应但表示失败
                     if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-sys-factory-btn-html'); }
                     Notification.error(i18n.t('dev-sys-factory-fail'), i18n.t('dev-sys-factory-title-msg'));
                 }
             })
-            .catch(() => {
-                if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-sys-factory-btn-html'); }
-                Notification.error(i18n.t('dev-sys-factory-fail'), i18n.t('dev-sys-factory-title-msg'));
+            .catch(err => {
+                // 对于恢复出厂设置操作，连接关闭通常意味着设备已开始执行
+                // 这种情况应该视为成功
+                const isConnectionClosed = err && (
+                    err.name === 'AbortError' ||
+                    err.name === 'TypeError' ||
+                    (err.message && (err.message.includes('fetch') || err.message.includes('network')))
+                );
+
+                if (isConnectionClosed) {
+                    // 连接被关闭，说明设备已收到指令并开始执行，显示成功
+                    Notification.success(i18n.t('dev-sys-factory-success'), i18n.t('dev-sys-factory-title-msg'));
+                } else {
+                    // 真正的错误
+                    if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-sys-factory-btn-html'); }
+                    Notification.error(i18n.t('dev-sys-factory-fail'), i18n.t('dev-sys-factory-title-msg'));
+                }
             });
     },
 
