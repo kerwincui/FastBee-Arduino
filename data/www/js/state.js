@@ -1980,6 +1980,7 @@ const AppState = {
                 this._setValue('ap-password', ap.password || '');
                 this._setValue('ap-channel', ap.channel !== undefined ? ap.channel.toString() : '1');
                 this._setValue('ap-hidden', ap.hidden ? '1' : '0');
+                this._setValue('ap-max-connections', ap.maxConnections !== undefined ? ap.maxConnections.toString() : '4');
                 
                 // ========== 高级配置 ==========
                 // IP配置类型 (0=DHCP, 1=静态IP)
@@ -2079,7 +2080,8 @@ const AppState = {
             apSSID: document.getElementById('ap-ssid')?.value || '',
             apPassword: document.getElementById('ap-password')?.value || '',
             apChannel: document.getElementById('ap-channel')?.value || '1',
-            apHidden: document.getElementById('ap-hidden')?.value || '0'
+            apHidden: document.getElementById('ap-hidden')?.value || '0',
+            apMaxConnections: document.getElementById('ap-max-connections')?.value || '4'
         };
         
         // 显示加载状态

@@ -54,7 +54,7 @@ namespace Hardware {
 // ============================================================================
 namespace Network {
     // WiFi配置
-    constexpr const char* DEFAULT_AP_SSID = "FastBee-Config";
+    constexpr const char* DEFAULT_AP_SSID = "fastbee-ap";
     constexpr const char* DEFAULT_AP_PASSWORD = "fastbee123";
     constexpr uint8_t DEFAULT_AP_CHANNEL = 1;
     constexpr uint8_t DEFAULT_AP_MAX_CONNECTIONS = 4;

@@ -147,6 +147,7 @@ const i18n = {
             'ap-hidden-label': '隐藏热点',
             'ap-hidden-no': '否',
             'ap-hidden-yes': '是',
+            'ap-max-connections-label': '最大连接数',
             'ap-save-ok': '热点配置保存成功！',
             
             // 高级配置
@@ -1010,6 +1011,7 @@ const i18n = {
             'ap-hidden-label': 'Hidden AP',
             'ap-hidden-no': 'No',
             'ap-hidden-yes': 'Yes',
+            'ap-max-connections-label': 'Max Connections',
             'ap-save-ok': 'AP config saved!',
             
             // Advanced Config

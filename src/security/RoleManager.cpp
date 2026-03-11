@@ -18,16 +18,82 @@ RoleManager::~RoleManager() {
 
 bool RoleManager::initialize() {
     initializeBuiltinPermissions();
+    
+    Serial.println("[RoleManager] initialize() called");
 
     if (!loadFromStorage()) {
+        Serial.println("[RoleManager] No role data found, creating builtin roles");
         LOG_INFO("RoleManager: No role data found, creating builtin roles");
         initializeBuiltinRoles();
-        saveToStorage();
+        bool saved = saveToStorage();
+        Serial.printf("[RoleManager] saveToStorage result: %s\n", saved ? "OK" : "FAILED");
+    } else {
+        // 从存储加载成功，但需确保内置角色存在（防止存储文件为空或缺失内置角色）
+        Serial.printf("[RoleManager] Load successful, current role count: %d\n", (int)roles.size());
+        LOG_INFO("RoleManager: Checking builtin roles existence");
+        using namespace BuiltinPermissions;
+        bool needSave = false;
+        
+        // 检查并创建缺失的内置角色
+        if (roles.find(BuiltinRoles::ADMIN) == roles.end()) {
+            LOG_INFO("RoleManager: Creating missing admin role");
+            // 创建 admin 角色（拥有全部权限）
+            Role admin(BuiltinRoles::ADMIN, "超级管理员", "拥有所有操作权限", true);
+            for (const auto& kv : permDefs) {
+                admin.permissions.push_back(kv.first);
+            }
+            roles[BuiltinRoles::ADMIN] = admin;
+            needSave = true;
+        }
+        
+        if (roles.find(BuiltinRoles::OPERATOR) == roles.end()) {
+            LOG_INFO("RoleManager: Creating missing operator role");
+            // 创建 operator 角色（与 initializeBuiltinRoles 保持一致）
+            Role oper(BuiltinRoles::OPERATOR, "操作员", "可操作设备、修改配置、OTA升级，不能管理用户或文件系统", true);
+            oper.permissions.push_back(SYSTEM_VIEW);
+            oper.permissions.push_back(SYSTEM_RESTART);
+            oper.permissions.push_back(CONFIG_VIEW);
+            oper.permissions.push_back(CONFIG_EDIT);
+            oper.permissions.push_back(NETWORK_VIEW);
+            oper.permissions.push_back(NETWORK_EDIT);
+            oper.permissions.push_back(DEVICE_VIEW);
+            oper.permissions.push_back(DEVICE_CONTROL);
+            oper.permissions.push_back(OTA_UPDATE);
+            oper.permissions.push_back(FS_VIEW);
+            oper.permissions.push_back(AUDIT_VIEW);
+            oper.permissions.push_back(USER_VIEW);
+            oper.permissions.push_back(ROLE_VIEW);
+            roles[BuiltinRoles::OPERATOR] = oper;
+            needSave = true;
+        }
+        
+        if (roles.find(BuiltinRoles::VIEWER) == roles.end()) {
+            LOG_INFO("RoleManager: Creating missing viewer role");
+            // 创建 viewer 角色
+            Role viewer(BuiltinRoles::VIEWER, "查看者", "只读权限，不能修改任何配置", true);
+            viewer.permissions.push_back(SYSTEM_VIEW);
+            viewer.permissions.push_back(CONFIG_VIEW);
+            viewer.permissions.push_back(NETWORK_VIEW);
+            viewer.permissions.push_back(DEVICE_VIEW);
+            viewer.permissions.push_back(FS_VIEW);
+            viewer.permissions.push_back(AUDIT_VIEW);
+            viewer.permissions.push_back(USER_VIEW);
+            viewer.permissions.push_back(ROLE_VIEW);
+            roles[BuiltinRoles::VIEWER] = viewer;
+            needSave = true;
+        }
+        
+        if (needSave) {
+            bool saved = saveToStorage();
+            Serial.printf("[RoleManager] saveToStorage in else branch result: %s\n", saved ? "OK" : "FAILED");
+            LOG_INFO("RoleManager: Builtin roles created and saved");
+        }
     }
 
     char buf[56];
     snprintf(buf, sizeof(buf), "RoleManager: Initialized with %u roles", (unsigned)roles.size());
     LOG_INFO(buf);
+    Serial.printf("[RoleManager] Final role count: %d\n", (int)roles.size());
     return true;
 }
 
@@ -77,6 +143,7 @@ void RoleManager::initializeBuiltinPermissions() {
 }
 
 void RoleManager::initializeBuiltinRoles() {
+    Serial.println("[RoleManager] initializeBuiltinRoles() called");
     using namespace BuiltinPermissions;
 
     // ── admin：拥有全部权限 ──
@@ -85,6 +152,7 @@ void RoleManager::initializeBuiltinRoles() {
         admin.permissions.push_back(kv.first);
     }
     roles[BuiltinRoles::ADMIN] = admin;
+    Serial.printf("[RoleManager] Created admin role with %d permissions\n", (int)admin.permissions.size());
 
     // ── operator：设备操作 + 系统配置，不含用户/角色管理和文件系统管理 ──
     Role oper(BuiltinRoles::OPERATOR, "操作员", "可操作设备、修改配置、OTA升级，不能管理用户或文件系统", true);
@@ -109,6 +177,7 @@ void RoleManager::initializeBuiltinRoles() {
         ROLE_VIEW
     };
     roles[BuiltinRoles::OPERATOR] = oper;
+    Serial.printf("[RoleManager] Created operator role with %d permissions\n", (int)oper.permissions.size());
 
     // ── viewer：仅只读 ──
     Role viewer(BuiltinRoles::VIEWER, "查看者", "只读权限，不能修改任何配置", true);
@@ -123,6 +192,9 @@ void RoleManager::initializeBuiltinRoles() {
         ROLE_VIEW
     };
     roles[BuiltinRoles::VIEWER] = viewer;
+    Serial.printf("[RoleManager] Created viewer role with %d permissions\n", (int)viewer.permissions.size());
+    
+    Serial.printf("[RoleManager] Total roles in map: %d\n", (int)roles.size());
 }
 
 // ─── 角色 CRUD ────────────────────────────────────────────────────────────────
@@ -308,7 +380,7 @@ String RoleManager::roleToJson(const String& id) const {
 // ─── 持久化 ───────────────────────────────────────────────────────────────────
 
 bool RoleManager::saveToStorage() {
-    Serial.println("[RoleManager] saveToStorage called");
+    Serial.printf("[RoleManager] saveToStorage called, roles count: %d\n", (int)roles.size());
     
     JsonDocument doc;
     JsonArray arr = doc["roles"].to<JsonArray>();
@@ -316,6 +388,7 @@ bool RoleManager::saveToStorage() {
         JsonObject obj = arr.add<JsonObject>();
         roleToJsonObj(kv.second, obj);
     }
+    Serial.printf("[RoleManager] Serialized %d roles to JSON\n", (int)arr.size());
     
     // 确保目录存在
     if (!LittleFS.exists("/config")) {
@@ -346,10 +419,13 @@ bool RoleManager::saveToStorage() {
 }
 
 bool RoleManager::loadFromStorage() {
+    Serial.printf("[RoleManager] loadFromStorage: checking file %s\n", ROLES_FILE);
     if (!LittleFS.exists(ROLES_FILE)) {
+        Serial.println("[RoleManager] Roles file not found");
         LOG_INFO("RoleManager: Roles file not found");
         return false;
     }
+    Serial.println("[RoleManager] Roles file exists");
     
     File file = LittleFS.open(ROLES_FILE, "r");
     if (!file) {
@@ -393,5 +469,13 @@ bool RoleManager::loadFromStorage() {
     char buf[64];
     snprintf(buf, sizeof(buf), "RoleManager: Loaded %u roles from storage", (unsigned)roles.size());
     LOG_INFO(buf);
+    Serial.printf("[RoleManager] Loaded %d roles from storage\n", (int)roles.size());
+    
+    // 如果加载的角色数量为0，视为加载失败，触发重新创建内置角色
+    if (roles.size() == 0) {
+        Serial.println("[RoleManager] No roles loaded, treating as failure");
+        return false;
+    }
+    
     return true;
 }

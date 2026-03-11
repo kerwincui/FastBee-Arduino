@@ -62,7 +62,7 @@ struct WiFiConfig {
     String deviceName = "FastBee";
     
     // AP 配置（首次启动或 STA 失败时的配网热点）
-    String apSSID = "FastBee-Config";  // 默认 AP 热点名称，确保不为空
+    String apSSID = "fastbee-ap";  // 默认 AP 热点名称，确保不为空
     String apPassword = "";            // 开放热点，方便首次配网
     uint8_t apChannel = 1;
     bool apHidden = false;
@@ -96,7 +96,7 @@ struct WiFiConfig {
     uint8_t maxReconnectAttempts = 5;
     
     // 域名配置
-    String customDomain = "FastBee";
+    String customDomain = "fastbee";
     bool enableMDNS = true;
     bool enableDNS = true;    // AP 模式下需要 DNS 提供 captive portal
 };

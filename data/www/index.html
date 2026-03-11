@@ -761,6 +761,20 @@
                                                         <option value="1" data-i18n="ap-hidden-yes">是</option>
                                                     </select>
                                                 </div>
+                                                
+                                                <div class="pure-control-group">
+                                                    <label for="ap-max-connections" data-i18n="ap-max-connections-label">最大连接数</label>
+                                                    <select id="ap-max-connections" class="pure-input-1">
+                                                        <option value="1">1</option>
+                                                        <option value="2">2</option>
+                                                        <option value="3">3</option>
+                                                        <option value="4" selected>4</option>
+                                                        <option value="5">5</option>
+                                                        <option value="6">6</option>
+                                                        <option value="7">7</option>
+                                                        <option value="8">8</option>
+                                                    </select>
+                                                </div>
                                             </div>
                                         </div>
 
@@ -1135,7 +1149,7 @@
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
                                                     <label for="provision-ssid" data-i18n="dev-provision-ssid-label">热点名称</label>
-                                                    <input type="text" id="provision-ssid" class="pure-input-1" placeholder="fastbee-device">
+                                                    <input type="text" id="provision-ssid" class="pure-input-1" placeholder="fastbee-ap">
                                                     <small style="color: #999;" data-i18n="dev-provision-ssid-hint">留空则自动生成随机名称</small>
                                                 </div>
                                                 <div class="pure-control-group">
@@ -1192,7 +1206,7 @@
                                         <div class="card-body" style="padding: 12px 15px; font-size: 13px; color: #0c5460;">
                                             <ol style="margin: 0; padding-left: 20px;">
                                                 <li>点击"启动配网"开启AP热点模式</li>
-                                                <li>手机连接设备热点（如：fastbee-device-xxx）</li>
+                                                <li>手机连接设备热点（如：fastbee-ap）</li>
                                                 <li>打开配网APP或访问 <strong>http://192.168.4.1</strong></li>
                                                 <li>输入WiFi名称和密码完成配网</li>
                                                 <li>配网成功后设备自动连接目标WiFi</li>

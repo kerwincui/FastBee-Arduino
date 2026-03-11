@@ -1,7 +1,7 @@
 {
   "mode": 0,
   "deviceName": "FastBee-Device",
-  "apSSID": "FastBee-AP",
+  "apSSID": "fastbee-ap",
   "apPassword": "12345678",
   "apChannel": 1,
   "apHidden": false,

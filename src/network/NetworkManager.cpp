@@ -69,6 +69,10 @@ bool NetworkManager::initialize() {
         ipManager->generateBackupIPs();
         saveNetworkConfig();
     }
+    
+    LOG_INFOF("NetworkManager: Config loaded - enableMDNS=%s, customDomain=%s", 
+              wifiConfig.enableMDNS ? "true" : "false", 
+              wifiConfig.customDomain.c_str());
 
     // 初始化子模块
     if (!wifiManager->initialize()) {
@@ -176,11 +180,21 @@ void NetworkManager::update() {
         statusInfo.status = NetworkStatus::CONNECTED;
         
         // 重新启动 mDNS（使用配置中的 customDomain）
-        MDNS.end();
-        String hostname = wifiConfig.customDomain.length() > 0 ? wifiConfig.customDomain : "fastbee";
-        if (MDNS.begin(hostname.c_str())) {
-            MDNS.addService("http", "tcp", 80);
-            LOGGER.infof("NetworkManager: mDNS started as %s.local", hostname.c_str());
+        LOG_INFOF("NetworkManager: Checking mDNS - enableMDNS=%s, customDomain=%s", 
+                  wifiConfig.enableMDNS ? "true" : "false", 
+                  wifiConfig.customDomain.c_str());
+        if (wifiConfig.enableMDNS) {
+            MDNS.end();
+            String hostname = wifiConfig.customDomain.length() > 0 ? wifiConfig.customDomain : "fastbee";
+            LOG_INFOF("NetworkManager: Starting mDNS with hostname: %s", hostname.c_str());
+            if (MDNS.begin(hostname.c_str())) {
+                MDNS.addService("http", "tcp", 80);
+                LOGGER.infof("NetworkManager: mDNS started as %s.local", hostname.c_str());
+            } else {
+                LOG_ERROR("NetworkManager: Failed to start mDNS");
+            }
+        } else {
+            LOG_INFO("NetworkManager: mDNS is disabled");
         }
     }
     
@@ -529,9 +543,9 @@ bool NetworkManager::startAPMode() {
         dnsManager->startDNSServer(WiFi.softAPIP());
     }
 
-    // 启动mDNS服务
+    // 启动mDNS服务（使用customDomain作为hostname）
     if (wifiConfig.enableMDNS) {
-        dnsManager->startMDNS(wifiConfig.deviceName);
+        dnsManager->startMDNS(wifiConfig.customDomain);
     }
 
     statusInfo.status = NetworkStatus::AP_MODE;
@@ -688,7 +702,7 @@ bool NetworkManager::configureDHCP() {
 }
 
 bool NetworkManager::startMDNS() {
-    return dnsManager->startMDNS(wifiConfig.deviceName);
+    return dnsManager->startMDNS(wifiConfig.customDomain);
 }
 
 void NetworkManager::stopMDNS() {

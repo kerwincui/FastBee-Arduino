@@ -258,7 +258,7 @@ bool FastBeeFramework::initialize() {
         LOGGER.info("mDNS URL: http://fastbee.local");
     } else if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
         LOGGER.info("Mode: AP (Access Point)");
-        LOGGER.info("WiFi Name: FastBee-Config");
+        LOGGER.info("WiFi Name: fastbee-ap");
         LOGGER.info("WiFi Pass: 12345678");
         LOGGER.infof("IP Address: %s", WiFi.softAPIP().toString().c_str());
         LOGGER.infof("Setup URL: http://%s/setup", WiFi.softAPIP().toString().c_str());

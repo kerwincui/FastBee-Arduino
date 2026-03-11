@@ -20,7 +20,7 @@
       "action": "restart"
     }
   ],
-  "provisionSSID": "",
+  "provisionSSID": "fastbee-ap",
   "provisionPassword": "",
   "provisionTimeout": 300,
   "provisionUserId": "",

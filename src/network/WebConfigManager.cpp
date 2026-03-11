@@ -313,12 +313,7 @@ void WebConfigManager::setupUserRoutes() {
     });
     
     // ============ 角色管理 API ============
-    
-    // 获取所有角色和权限定义
-    server->on("/api/roles", HTTP_GET,
-              [this](AsyncWebServerRequest* request) {
-        handleAPIGetRoles(request);
-    });
+    // 角色管理路由在 setupRoleRoutes() 中定义
 }
 
 void WebConfigManager::setupRoleRoutes() {
@@ -929,20 +924,22 @@ void WebConfigManager::sendJsonResponse(AsyncWebServerRequest* request, int code
 }
 
 void WebConfigManager::sendSuccess(AsyncWebServerRequest* request, const JsonDocument& data) {
-    // 使用栈缓冲区避免堆碎片
-    char jsonBuffer[512];
-    snprintf(jsonBuffer, sizeof(jsonBuffer), "{\"success\":true,\"timestamp\":%lu", millis());
+    // 将 data 序列化为字符串以判断大小
+    String dataStr;
+    serializeJson(data, dataStr);
     
+    // 构建完整响应
+    String out;
+    out.reserve(dataStr.length() + 64);
+    out = "{\"success\":true,\"timestamp\":";
+    out += String(millis());
     if (!data.isNull()) {
-        String dataStr;
-        serializeJson(data, dataStr);
-        snprintf(jsonBuffer + strlen(jsonBuffer), sizeof(jsonBuffer) - strlen(jsonBuffer), 
-                 ",\"data\":%s", dataStr.c_str());
+        out += ",\"data\":";
+        out += dataStr;
     }
+    out += "}";
     
-    strncat(jsonBuffer, "}", sizeof(jsonBuffer) - strlen(jsonBuffer) - 1);
-    
-    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonBuffer);
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", out);
     response->addHeader("Access-Control-Allow-Origin", "*");
     request->send(response);
 }
@@ -1820,6 +1817,7 @@ void WebConfigManager::handleAPIGetRoles(AsyncWebServerRequest* request) {
         permObj["group"] = perm.group;
     }
     
+    // 角色列表数据量大，sendSuccess 已支持动态长度
     sendSuccess(request, doc);
 }
 
@@ -2170,6 +2168,7 @@ void WebConfigManager::handleAPIGetNetworkConfig(AsyncWebServerRequest* request)
         doc["data"]["network"]["mode"] = static_cast<uint8_t>(cfg.mode);
         doc["data"]["network"]["ipConfigType"] = static_cast<uint8_t>(cfg.ipConfigType);
         doc["data"]["network"]["enableMDNS"] = cfg.enableMDNS;
+        doc["data"]["network"]["customDomain"] = cfg.customDomain;
         
         // ========== STA 配置 ==========
         doc["data"]["sta"]["ssid"] = cfg.staSSID;
@@ -2281,6 +2280,29 @@ void WebConfigManager::handleAPIUpdateNetworkConfig(AsyncWebServerRequest* reque
     if (obj["apHidden"].is<String>() || obj["apHidden"].is<bool>()) {
         String hidden = obj["apHidden"].as<String>();
         cfg.apHidden = (hidden == "1" || hidden == "true" || obj["apHidden"].as<bool>());
+    }
+    
+    if (obj["apMaxConnections"].is<String>() || obj["apMaxConnections"].is<int>()) {
+        cfg.apMaxConnections = obj["apMaxConnections"].as<int>();
+    }
+    
+    // ========== DNS 配置 ==========
+    if (obj["dns1"].is<String>()) {
+        cfg.dns1 = obj["dns1"].as<String>();
+    }
+    
+    if (obj["dns2"].is<String>()) {
+        cfg.dns2 = obj["dns2"].as<String>();
+    }
+    
+    // ========== 域名配置 ==========
+    if (obj["enableMDNS"].is<String>() || obj["enableMDNS"].is<bool>()) {
+        String mdns = obj["enableMDNS"].as<String>();
+        cfg.enableMDNS = (mdns == "1" || mdns == "true" || obj["enableMDNS"].as<bool>());
+    }
+    
+    if (obj["customDomain"].is<String>()) {
+        cfg.customDomain = obj["customDomain"].as<String>();
     }
     
     // 保存配置
@@ -4432,7 +4454,7 @@ void WebConfigManager::handleAPIStartProvision(AsyncWebServerRequest* request) {
     }
 
     // 加载配网配置（从 device.json）
-    String apSSID = "fastbee-device-" + String(random(1000, 9999));
+    String apSSID = "fastbee-ap";
     String apPassword = "";
     uint32_t timeout = 300000;
     String apIP = "192.168.4.1";
