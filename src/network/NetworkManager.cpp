@@ -23,7 +23,9 @@ NetworkManager::NetworkManager(AsyncWebServer* webServerPtr)
       autoReconnectEnabled(true),
       isInitialized(false),
       connecting(false),
-      connectingStartTime(0) {
+      pendingRestart(false),
+      connectingStartTime(0),
+      pendingRestartTime(0) {
     
     wifiConfig = WiFiConfig();
     statusInfo = NetworkStatusInfo();
@@ -96,23 +98,39 @@ bool NetworkManager::initialize() {
     });
 
     // 网络启动策略：
-    // 1. network.json 中有 staSSID → 尝试连接 WiFi
-    //    - 连接成功 → STA 模式（仅站点，节省功耗）
-    //    - 连接失败 → 回退 AP 模式（192.168.4.1 始终可访问配置页面）
-    // 2. 没有 staSSID → 直接启动 AP 模式
-    // [TEST] 强制覆盖为测试 WiFi
-    wifiConfig.staSSID = "fastbee";
-    wifiConfig.staPassword = "15208747707";
-    LOG_WARNING("NetworkManager: [TEST] Using hardcoded WiFi credentials");
+    // 1. NETWORK_STA (0): 仅STA模式，尝试连接WiFi，失败则回退AP模式
+    // 2. NETWORK_AP (1): 仅AP模式，直接启动热点
+    // 3. NETWORK_AP_STA (2): AP+STA双模式，同时启动热点和连接WiFi
     bool success = false;
-    if (!wifiConfig.staSSID.isEmpty()) {
-        LOG_INFO("NetworkManager: staSSID found, attempting STA connection...");
-        success = connectToWiFiBlocking();
-        if (success) {
-            LOG_INFO("NetworkManager: STA connected, running in STA-only mode");
-            LOGGER.infof(">>> STA IP: %s <<<", WiFi.localIP().toString().c_str());
-        } else {
-            LOG_WARNING("NetworkManager: STA connect failed, falling back to AP mode");
+    
+    switch (wifiConfig.mode) {
+        case NetworkMode::NETWORK_STA:
+            // 仅STA模式
+            LOG_INFO("NetworkManager: Starting in STA-only mode");
+            if (!wifiConfig.staSSID.isEmpty()) {
+                success = connectToWiFiBlocking();
+                if (success) {
+                    LOG_INFO("NetworkManager: STA connected successfully");
+                    LOGGER.infof(">>> STA IP: %s <<<", WiFi.localIP().toString().c_str());
+                } else {
+                    LOG_WARNING("NetworkManager: STA connection failed, falling back to AP mode");
+                    success = startAPMode();
+                    if (success) {
+                        LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:[%s] <<<",
+                            WiFi.softAPIP().toString().c_str(),
+                            wifiConfig.apSSID.c_str(),
+                            wifiConfig.apPassword.c_str());
+                    }
+                }
+            } else {
+                LOG_WARNING("NetworkManager: No staSSID configured, starting AP mode");
+                success = startAPMode();
+            }
+            break;
+            
+        case NetworkMode::NETWORK_AP:
+            // 仅AP模式
+            LOG_INFO("NetworkManager: Starting in AP-only mode");
             success = startAPMode();
             if (success) {
                 LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:[%s] <<<",
@@ -120,16 +138,49 @@ bool NetworkManager::initialize() {
                     wifiConfig.apSSID.c_str(),
                     wifiConfig.apPassword.c_str());
             }
-        }
-    } else {
-        LOG_INFO("NetworkManager: No staSSID configured, starting AP mode directly");
-        success = startAPMode();
-        if (success) {
-            LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:[%s] <<<",
-                WiFi.softAPIP().toString().c_str(),
-                wifiConfig.apSSID.c_str(),
-                wifiConfig.apPassword.c_str());
-        }
+            break;
+            
+        case NetworkMode::NETWORK_AP_STA:
+            // AP+STA双模式：先启动AP，再尝试连接WiFi
+            LOG_INFO("NetworkManager: Starting in AP+STA dual mode");
+            
+            // 启动AP热点（startAPMode会自动设置正确的WiFi模式）
+            success = startAPMode();
+            if (success) {
+                LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:[%s] <<<",
+                    WiFi.softAPIP().toString().c_str(),
+                    wifiConfig.apSSID.c_str(),
+                    wifiConfig.apPassword.c_str());
+            } else {
+                LOG_ERROR("NetworkManager: Failed to start AP mode in AP+STA");
+                break;
+            }
+            
+            // 尝试连接WiFi（不阻塞，让它在后台连接）
+            if (!wifiConfig.staSSID.isEmpty()) {
+                LOG_INFO("NetworkManager: Attempting to connect to WiFi in background...");
+                wifiManager->setNetworkConfig(wifiConfig);
+                if (wifiManager->connectToWiFi()) {
+                    // 等待一小段时间看能否快速连接
+                    unsigned long startTime = millis();
+                    while (WiFi.status() != WL_CONNECTED && millis() - startTime < 5000) {
+                        delay(100);
+                    }
+                    if (WiFi.status() == WL_CONNECTED) {
+                        LOGGER.infof(">>> STA IP: %s <<<", WiFi.localIP().toString().c_str());
+                    } else {
+                        LOG_INFO("NetworkManager: WiFi connecting in background, AP is available");
+                    }
+                }
+            } else {
+                LOG_INFO("NetworkManager: No staSSID configured, AP mode only");
+            }
+            break;
+            
+        default:
+            LOG_ERROR("NetworkManager: Unknown network mode, defaulting to AP");
+            success = startAPMode();
+            break;
     }
 
     isInitialized = success;
@@ -169,6 +220,19 @@ void NetworkManager::update() {
     unsigned long currentTime = millis();
     static bool wasConnected = false;
     static unsigned long lastMdnsUpdate = 0;
+
+    // 处理延迟重启（配置保存后延迟500ms执行，确保HTTP响应已返回）
+    if (pendingRestart) {
+        if (pendingRestartTime == 0) {
+            pendingRestartTime = currentTime;
+        } else if (currentTime - pendingRestartTime >= 500) {
+            LOG_INFO("NetworkManager: Executing delayed network restart...");
+            pendingRestart = false;
+            pendingRestartTime = 0;
+            restartNetwork();
+            return; // 重启后返回，下次循环再更新状态
+        }
+    }
 
     // 检测 WiFi 连接状态变化
     bool isConnected = (WiFi.status() == WL_CONNECTED);
@@ -914,6 +978,7 @@ String NetworkManager::getConfigJSON() {
 bool NetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStorage) {
     bool restartRequired = false;
     
+    // 检查是否需要重启网络
     if (newConfig.mode != wifiConfig.mode ||
         newConfig.apSSID != wifiConfig.apSSID ||
         newConfig.staSSID != wifiConfig.staSSID ||
@@ -923,15 +988,27 @@ bool NetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStorag
     
     wifiConfig = newConfig;
     
+    // 保存配置到存储
+    bool saveSuccess = true;
     if (saveToStorage) {
-        saveNetworkConfig();
+        saveSuccess = saveNetworkConfig();
+        if (!saveSuccess) {
+            LOG_ERROR("NetworkManager: Failed to save network configuration");
+            return false;
+        }
+        LOG_INFO("NetworkManager: Configuration saved successfully");
     }
     
+    // 如果需要重启网络，异步执行（不影响保存结果）
     if (restartRequired) {
-        return restartNetwork();
+        LOG_INFO("NetworkManager: Network restart required, restarting...");
+        // 延迟重启，让HTTP响应先返回
+        // 使用标志位在update()中处理重启
+        pendingRestart = true;
     }
     
-    return true;
+    // 返回保存结果（不等待网络重启完成）
+    return saveSuccess;
 }
 
 bool NetworkManager::updateConfigFromJSON(const String& jsonConfig) {

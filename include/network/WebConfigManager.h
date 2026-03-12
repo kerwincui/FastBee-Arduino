@@ -178,6 +178,7 @@ private:
     
     // ============ 文件服务方法 ============
     bool serveStaticFile(AsyncWebServerRequest* request, const String& path);
+    void serveGzippedFile(AsyncWebServerRequest* request, const String& path);
     String getContentType(const String& filename);
     String readFile(const String& path);
     bool fileExists(const String& path);

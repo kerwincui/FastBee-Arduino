@@ -143,7 +143,10 @@ void WebConfigManager::performMaintenance() {
             LOG_WARNINGF("[WebConfig] Low memory detected: %d bytes, forcing cleanup", freeHeap);
 
             // 强制清理 WiFi 连接状态
-            if (WiFi.status() != WL_CONNECTED) {
+            // 注意：只在STA模式且未连接时才执行，避免影响AP热点
+            wifi_mode_t wifiMode = WiFi.getMode();
+            if ((wifiMode & WIFI_STA) && WiFi.status() != WL_CONNECTED) {
+                // 只有在STA模式且未连接时才断开
                 WiFi.disconnect(false);
                 delay(10);
             }
@@ -167,11 +170,17 @@ void WebConfigManager::loadConfiguration() {
 }
 
 void WebConfigManager::setupStaticRoutes() {
-    // 静态文件服务，禁用 gzip 优先查找（设备上没有 .gz 文件，避免崩溃）
-    server->serveStatic("/css/", LittleFS, "/www/css/")
-        .setIsDir(false).setTryGzipFirst(false).setCacheControl("no-cache");
-    server->serveStatic("/js/", LittleFS, "/www/js/")
-        .setIsDir(false).setTryGzipFirst(false).setCacheControl("no-cache");
+    // 静态文件服务
+    // CSS 和 JS 文件使用自定义路由（支持只有 .gz 文件的情况）
+    server->on("/css/*", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        serveGzippedFile(request, "/www" + request->url());
+    });
+    
+    server->on("/js/*", HTTP_GET, [this](AsyncWebServerRequest* request) {
+        serveGzippedFile(request, "/www" + request->url());
+    });
+    
+    // assets 目录使用标准 serveStatic（不压缩图片/图标）
     server->serveStatic("/assets/", LittleFS, "/www/assets/")
         .setIsDir(false).setTryGzipFirst(false).setCacheControl("max-age=86400");
 
@@ -745,7 +754,14 @@ void WebConfigManager::setupAPIRoutes() {
         handleAPIGetPeripheral(request);
     });
     
+    // 更新外设 - PUT 方法
     server->on("/api/peripherals/", HTTP_PUT,
+              [this](AsyncWebServerRequest* request) {
+        handleAPIUpdatePeripheral(request);
+    });
+    
+    // 更新外设 - POST 方法（避免前端 JSON body 问题）
+    server->on("/api/peripherals/update", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
         handleAPIUpdatePeripheral(request);
     });
@@ -1179,14 +1195,58 @@ void WebConfigManager::sendBadRequest(AsyncWebServerRequest* request, const Stri
 // ============ 文件服务方法 ============
 
 bool WebConfigManager::serveStaticFile(AsyncWebServerRequest* request, const String& path) {
-    if (!fileExists(path)) {
-        return false;
+    // 先检查原始文件是否存在
+    if (fileExists(path)) {
+        String contentType = getContentType(path);
+        request->send(LittleFS, path, contentType, false);
+        return true;
     }
     
-    String contentType = getContentType(path);
-    // 第四个参数 false = 禁用 gzip 自动查找（设备上没有 .gz 文件）
-    request->send(LittleFS, path, contentType, false);
-    return true;
+    // 检查是否是可压缩文件类型（.html, .js, .css）
+    // 如果原始文件不存在，尝试提供 .gz 版本
+    String ext = path.substring(path.lastIndexOf('.'));
+    if (ext == ".html" || ext == ".js" || ext == ".css") {
+        String gzPath = path + ".gz";
+        if (fileExists(gzPath)) {
+            // 获取原始文件的 Content-Type
+            String contentType = getContentType(path);
+            
+            // 创建响应并设置 gzip 编码头
+            AsyncWebServerResponse* response = request->beginResponse(LittleFS, gzPath, contentType);
+            response->addHeader("Content-Encoding", "gzip");
+            request->send(response);
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+void WebConfigManager::serveGzippedFile(AsyncWebServerRequest* request, const String& path) {
+    // 优先尝试提供 .gz 文件（减少 LittleFS 空间占用）
+    String gzPath = path + ".gz";
+    
+    if (fileExists(gzPath)) {
+        // 获取原始文件的 Content-Type
+        String contentType = getContentType(path);
+        
+        // 创建响应并设置 gzip 编码头
+        AsyncWebServerResponse* response = request->beginResponse(LittleFS, gzPath, contentType);
+        response->addHeader("Content-Encoding", "gzip");
+        response->addHeader("Cache-Control", "no-cache");
+        request->send(response);
+        return;
+    }
+    
+    // 回退：尝试提供原始文件
+    if (fileExists(path)) {
+        String contentType = getContentType(path);
+        request->send(LittleFS, path, contentType, false);
+        return;
+    }
+    
+    // 文件不存在
+    sendNotFound(request);
 }
 
 String WebConfigManager::getContentType(const String& filename) {
@@ -2188,6 +2248,18 @@ void WebConfigManager::handleAPIGetNetworkConfig(AsyncWebServerRequest* request)
         doc["data"]["ap"]["hidden"] = cfg.apHidden;
         doc["data"]["ap"]["maxConnections"] = cfg.apMaxConnections;
         
+        // ========== 高级配置 ==========
+        doc["data"]["advanced"]["connectTimeout"] = cfg.connectTimeout;
+        doc["data"]["advanced"]["reconnectInterval"] = cfg.reconnectInterval;
+        doc["data"]["advanced"]["maxReconnectAttempts"] = cfg.maxReconnectAttempts;
+        doc["data"]["advanced"]["conflictDetection"] = static_cast<uint8_t>(cfg.conflictDetection);
+        doc["data"]["advanced"]["failoverStrategy"] = static_cast<uint8_t>(cfg.failoverStrategy);
+        doc["data"]["advanced"]["autoFailover"] = cfg.autoFailover;
+        doc["data"]["advanced"]["conflictCheckInterval"] = cfg.conflictCheckInterval;
+        doc["data"]["advanced"]["maxFailoverAttempts"] = cfg.maxFailoverAttempts;
+        doc["data"]["advanced"]["conflictThreshold"] = cfg.conflictThreshold;
+        doc["data"]["advanced"]["fallbackToDHCP"] = cfg.fallbackToDHCP;
+        
         // 当前连接状态
         NetworkStatusInfo info = netMgr->getStatusInfo();
         doc["data"]["status"]["connected"] = (info.status == NetworkStatus::CONNECTED);
@@ -2303,6 +2375,23 @@ void WebConfigManager::handleAPIUpdateNetworkConfig(AsyncWebServerRequest* reque
     
     if (obj["customDomain"].is<String>()) {
         cfg.customDomain = obj["customDomain"].as<String>();
+    }
+    
+    // ========== 高级连接配置 ==========
+    if (obj["connectTimeout"].is<String>() || obj["connectTimeout"].is<int>()) {
+        cfg.connectTimeout = obj["connectTimeout"].as<int>();
+    }
+    
+    if (obj["reconnectInterval"].is<String>() || obj["reconnectInterval"].is<int>()) {
+        cfg.reconnectInterval = obj["reconnectInterval"].as<int>();
+    }
+    
+    if (obj["maxReconnectAttempts"].is<String>() || obj["maxReconnectAttempts"].is<int>()) {
+        cfg.maxReconnectAttempts = obj["maxReconnectAttempts"].as<int>();
+    }
+    
+    if (obj["conflictDetection"].is<String>() || obj["conflictDetection"].is<int>()) {
+        cfg.conflictDetection = static_cast<IPConflictMode>(obj["conflictDetection"].as<int>());
     }
     
     // 保存配置
@@ -3147,9 +3236,35 @@ void WebConfigManager::handleSetupPage(AsyncWebServerRequest* request) {
 void WebConfigManager::handleAPIWiFiScan(AsyncWebServerRequest* request) {
     // WiFi扫描，AP模式下无需登录
     JsonDocument doc;
-    JsonArray data = doc["data"].to<JsonArray>();
     
+    // 执行WiFi扫描
+    // 返回值: >=0 表示扫描到的网络数量, -1 表示扫描失败, -2 表示扫描忙
     int n = WiFi.scanNetworks();
+    
+    if (n == WIFI_SCAN_FAILED) {
+        // 扫描失败
+        doc["success"] = false;
+        doc["error"] = "scan_failed";
+        doc["message"] = "WiFi scan failed, please try again";
+        String json;
+        serializeJson(doc, json);
+        request->send(200, "application/json", json);
+        return;
+    }
+    
+    if (n == WIFI_SCAN_RUNNING) {
+        // 扫描正在进行中
+        doc["success"] = false;
+        doc["error"] = "scan_busy";
+        doc["message"] = "WiFi scan is already running, please wait";
+        String json;
+        serializeJson(doc, json);
+        request->send(200, "application/json", json);
+        return;
+    }
+    
+    // 扫描成功，构建结果
+    JsonArray data = doc["data"].to<JsonArray>();
     for (int i = 0; i < n && i < 20; i++) {
         JsonObject net = data.add<JsonObject>();
         net["ssid"] = WiFi.SSID(i);
@@ -4234,17 +4349,16 @@ void WebConfigManager::handleAPISaveProtocolConfig(AsyncWebServerRequest* reques
     doc["mqtt"]["username"] = GP("mqtt_username", "");
     doc["mqtt"]["password"] = GP("mqtt_password", "");
     doc["mqtt"]["keepAlive"] = GPI("mqtt_keepAlive", "60");
-    doc["mqtt"]["subscribeTopic"] = GP("mqtt_subscribeTopic", "");
     // 新增字段
     doc["mqtt"]["directConnect"] = GP("mqtt_directConnect", "true") == "true";
     doc["mqtt"]["autoReconnect"] = GP("mqtt_autoReconnect", "true") == "true";
     doc["mqtt"]["connectionTimeout"] = GPI("mqtt_connectionTimeout", "30000");
-    
-    // 发布主题配置（支持多组）- 从JSON字符串解析
+        
+    // 发布主题配置（支持多组）- 从 JSON 字符串解析
     String publishTopicsJson = GP("mqtt_publishTopics", "[]");
     JsonArray publishTopics = doc["mqtt"]["publishTopics"].to<JsonArray>();
     if (publishTopicsJson.length() > 2) { // 不是空数组 "[]"
-        // 尝试解析前端传来的JSON数组字符串
+        // 尝试解析前端传来的 JSON 数组字符串
         JsonDocument topicsDoc;
         DeserializationError err = deserializeJson(topicsDoc, publishTopicsJson);
         if (!err && topicsDoc.is<JsonArray>()) {
@@ -4265,6 +4379,30 @@ void WebConfigManager::handleAPISaveProtocolConfig(AsyncWebServerRequest* reques
         defaultTopic["qos"] = 0;
         defaultTopic["retain"] = false;
         defaultTopic["content"] = "";
+    }
+        
+    // 订阅主题配置（支持多组）- 从 JSON 字符串解析
+    String subscribeTopicsJson = GP("mqtt_subscribeTopics", "[]");
+    JsonArray subscribeTopics = doc["mqtt"]["subscribeTopics"].to<JsonArray>();
+    if (subscribeTopicsJson.length() > 2) { // 不是空数组 "[]"
+        JsonDocument subTopicsDoc;
+        DeserializationError err = deserializeJson(subTopicsDoc, subscribeTopicsJson);
+        if (!err && subTopicsDoc.is<JsonArray>()) {
+            JsonArray arr = subTopicsDoc.as<JsonArray>();
+            for (JsonVariant v : arr) {
+                JsonObject topicObj = subscribeTopics.add<JsonObject>();
+                topicObj["topic"] = v["topic"] | "";
+                topicObj["qos"] = v["qos"] | 0;
+                topicObj["action"] = v["action"] | "";
+            }
+        }
+    }
+    // 如果没有配置，添加一个默认空配置
+    if (subscribeTopics.size() == 0) {
+        JsonObject defaultTopic = subscribeTopics.add<JsonObject>();
+        defaultTopic["topic"] = "";
+        defaultTopic["qos"] = 0;
+        defaultTopic["action"] = "";
     }
     
     // HTTP
@@ -4809,6 +4947,12 @@ void WebConfigManager::handleAPIGetDeviceTime(AsyncWebServerRequest* request) {
     JsonDocument doc;
     doc["success"] = true;
 
+    // 检查网络状态，确定NTP同步是否可能
+    bool hasInternet = false;
+    if (networkManager) {
+        hasInternet = networkManager->getStatusInfo().internetAvailable;
+    }
+
     struct tm timeinfo;
     if (getLocalTime(&timeinfo, 100)) {
         char buf[32];
@@ -4821,7 +4965,12 @@ void WebConfigManager::handleAPIGetDeviceTime(AsyncWebServerRequest* request) {
         strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", &timeinfo);
         doc["data"]["time"] = timeBuf;
         doc["data"]["timestamp"] = (long long)mktime(&timeinfo);
-        doc["data"]["synced"] = true;
+        
+        // NTP同步状态判断：
+        // 1. 必须有互联网连接
+        // 2. 时间必须有效（年份 >= 2020，即 tm_year >= 120）
+        bool validTime = (timeinfo.tm_year >= 120);  // 2020年以后
+        doc["data"]["synced"] = hasInternet && validTime;
     } else {
         doc["data"]["datetime"] = "--";
         doc["data"]["date"] = "--";

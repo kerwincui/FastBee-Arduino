@@ -49,6 +49,10 @@ const AppState = {
     _showAppPage() {
         document.getElementById('login-page').style.display = 'none';
         document.getElementById('app-container').style.display = 'block';
+        // 清除URL中的锚点/hash（如 #login、# 等）
+        if (location.hash) {
+            history.replaceState(null, '', location.pathname + location.search);
+        }
     },
 
     // ============ 侧边栏 ============
@@ -147,19 +151,13 @@ const AppState = {
             addMqttTopicBtn.addEventListener('click', () => this.addMqttPublishTopic());
         }
         
-        // 网络配置表单提交（已有单独处理）
-        document.querySelectorAll('#network-page form').forEach(form => {
-            form.addEventListener('submit', e => {
-                e.preventDefault();
-                const protocolName = this._getProtocolName(form.id);
-                Notification.success(`${protocolName} ${i18n.t('protocol-save-ok-suffix')}`);
-                const ok = form.querySelector('.message-success');
-                if (ok) {
-                    ok.style.display = 'block';
-                    setTimeout(() => { ok.style.display = 'none'; }, 3000);
-                }
-            });
-        });
+        // MQTT增加订阅按钮
+        const addMqttSubscribeBtn = document.getElementById('add-mqtt-subscribe-btn');
+        if (addMqttSubscribeBtn) {
+            addMqttSubscribeBtn.addEventListener('click', () => this.addMqttSubscribeTopic());
+        }
+        
+        // 网络配置表单已在 setupNetworkFormHandlers() 中专门处理，无需通用监听
     },
 
     _getProtocolName(formId) {
@@ -197,10 +195,9 @@ const AppState = {
         if (pageId === 'device-page' && tabId === 'dev-basic') {
             this._loadDeviceHardwareInfo();
         }
-        // 切换到AP配网tab时自动加载配网状态和配置
-        if (pageId === 'device-page' && tabId === 'dev-provision') {
+        // 切换到热点配置tab时自动加载配网状态
+        if (pageId === 'network-page' && tabId === 'ap-config') {
             this.loadProvisionStatus();
-            this.loadProvisionConfig();
         }
         // 切换到蓝牙配网tab时自动加载蓝牙配网状态和配置
         if (pageId === 'device-page' && tabId === 'dev-ble') {
@@ -456,18 +453,15 @@ const AppState = {
         const devFactoryBtn = document.getElementById('dev-factory-btn');
         if (devFactoryBtn) devFactoryBtn.addEventListener('click', () => this.factoryReset());
 
-        // AP配网事件绑定
-        const provisionForm = document.getElementById('device-provision-form');
-        if (provisionForm) provisionForm.addEventListener('submit', (e) => { e.preventDefault(); this.saveProvisionConfig(); });
+        // AP配网事件绑定（整合到热点配置页面）
+        const apProvisionRefreshBtn = document.getElementById('ap-provision-refresh-btn');
+        if (apProvisionRefreshBtn) apProvisionRefreshBtn.addEventListener('click', () => this.loadProvisionStatus());
         
-        const provisionRefreshBtn = document.getElementById('provision-refresh-btn');
-        if (provisionRefreshBtn) provisionRefreshBtn.addEventListener('click', () => this.loadProvisionStatus());
+        const apProvisionStartBtn = document.getElementById('ap-provision-start-btn');
+        if (apProvisionStartBtn) apProvisionStartBtn.addEventListener('click', () => this.startProvision());
         
-        const provisionStartBtn = document.getElementById('provision-start-btn');
-        if (provisionStartBtn) provisionStartBtn.addEventListener('click', () => this.startProvision());
-        
-        const provisionStopBtn = document.getElementById('provision-stop-btn');
-        if (provisionStopBtn) provisionStopBtn.addEventListener('click', () => this.stopProvision());
+        const apProvisionStopBtn = document.getElementById('ap-provision-stop-btn');
+        if (apProvisionStopBtn) apProvisionStopBtn.addEventListener('click', () => this.stopProvision());
 
         // 蓝牙配网事件绑定
         const bleProvisionForm = document.getElementById('device-ble-provision-form');
@@ -1205,6 +1199,11 @@ const AppState = {
         const modal = document.getElementById('add-user-modal');
         const isEditMode = modal && modal.dataset.editMode === 'edit';
         const editUsername = modal ? modal.dataset.editUsername : '';
+        
+        // 调试日志
+        console.log('[addUser] modal:', modal);
+        console.log('[addUser] modal.dataset:', modal ? JSON.stringify(modal.dataset) : 'null');
+        console.log('[addUser] isEditMode:', isEditMode, 'editUsername:', editUsername);
         
         const username = isEditMode ? editUsername : ((document.getElementById('add-username-input') || {}).value || '').trim();
         const password = (document.getElementById('add-password-input') || {}).value || '';
@@ -2539,7 +2538,12 @@ const AppState = {
         apiGet('/api/wifi/scan')
             .then(res => {
                 if (!res || !res.success) {
-                    modalBody.innerHTML = i18n.t('wifi-scan-fail');
+                    // 根据错误类型显示不同提示
+                    if (res && res.error === 'scan_busy') {
+                        modalBody.innerHTML = i18n.t('wifi-scan-busy');
+                    } else {
+                        modalBody.innerHTML = i18n.t('wifi-scan-fail');
+                    }
                     return;
                 }
                 
@@ -2766,6 +2770,131 @@ const AppState = {
         return topics;
     },
 
+    // ========== MQTT 订阅主题配置管理 ==========
+    
+    /**
+     * 加载并显示所有MQTT订阅主题配置
+     */
+    _loadMqttSubscribeTopics(topics) {
+        const container = document.getElementById('mqtt-subscribe-topics');
+        if (!container) return;
+            
+        container.innerHTML = '';
+            
+        // 如果没有配置，添加一个默认空组
+        if (!topics || topics.length === 0) {
+            topics = [{ topic: '', qos: 0, action: '' }];
+        }
+            
+        topics.forEach((topic, index) => {
+            this._createMqttSubscribeTopicElement(topic, index);
+        });
+    },
+        
+    /**
+     * 创建单个MQTT订阅主题配置元素
+     */
+    _createMqttSubscribeTopicElement(topicData, index) {
+        const container = document.getElementById('mqtt-subscribe-topics');
+        if (!container) return;
+            
+        const div = document.createElement('div');
+        div.className = 'mqtt-subscribe-topic-item';
+        div.dataset.index = index;
+        div.style.cssText = 'position: relative; padding: 15px; margin-bottom: 15px; background: #fff; border: 1px solid #ddd; border-radius: 4px;';
+            
+        div.innerHTML = `
+            <span class="mqtt-subscribe-topic-index" style="position: absolute; top: -10px; left: 10px; background: #4a90d9; color: #fff; padding: 2px 10px; border-radius: 3px; font-size: 12px;">${index + 1}</span>
+            <button type="button" class="mqtt-subscribe-topic-delete" style="position: absolute; top: 5px; right: 5px; background: #e74c3c; color: #fff; border: none; padding: 3px 8px; border-radius: 3px; cursor: pointer; font-size: 12px;" onclick="app.deleteMqttSubscribeTopic(${index})">${i18n.t('mqtt-delete-subscribe-btn') || '删除'}</button>
+            <div class="mqtt-subscribe-topic-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 10px;">
+                <div class="pure-control-group">
+                    <label>${i18n.t('mqtt-subscribe-topic-label') || '订阅主题'}</label>
+                    <input type="text" class="pure-input-1 mqtt-sub-topic-input" value="${topicData.topic || ''}" placeholder="/topic/path">
+                </div>
+                <div class="pure-control-group">
+                    <label>${i18n.t('mqtt-subscribe-qos-label') || 'QoS等级'}</label>
+                    <select class="pure-input-1 mqtt-sub-qos-input">
+                        <option value="0" ${topicData.qos === 0 ? 'selected' : ''}>0 - ${i18n.t('mqtt-qos-0') || '最多一次'}</option>
+                        <option value="1" ${topicData.qos === 1 ? 'selected' : ''}>1 - ${i18n.t('mqtt-qos-1') || '至少一次'}</option>
+                        <option value="2" ${topicData.qos === 2 ? 'selected' : ''}>2 - ${i18n.t('mqtt-qos-2') || '恰好一次'}</option>
+                    </select>
+                </div>
+            </div>
+            <div class="pure-control-group" style="margin-top: 10px;">
+                <label>${i18n.t('mqtt-subscribe-action-label') || '执行字段'}</label>
+                <input type="text" class="pure-input-1 mqtt-sub-action-input" value="${topicData.action || ''}" placeholder="${i18n.t('mqtt-subscribe-action-placeholder') || '定义接收到消息时的处理逻辑'}">
+            </div>
+        `;
+            
+        container.appendChild(div);
+    },
+        
+    /**
+     * 添加新的MQTT订阅主题配置组
+     */
+    addMqttSubscribeTopic() {
+        const container = document.getElementById('mqtt-subscribe-topics');
+        if (!container) return;
+            
+        const index = container.children.length;
+        this._createMqttSubscribeTopicElement({ topic: '', qos: 0, action: '' }, index);
+    },
+        
+    /**
+     * 删除MQTT订阅主题配置组
+     */
+    deleteMqttSubscribeTopic(index) {
+        const container = document.getElementById('mqtt-subscribe-topics');
+        if (!container) return;
+            
+        const items = container.querySelectorAll('.mqtt-subscribe-topic-item');
+        if (items[index]) {
+            items[index].remove();
+        }
+            
+        // 重新索引
+        const remainingItems = container.querySelectorAll('.mqtt-subscribe-topic-item');
+        remainingItems.forEach((item, idx) => {
+            item.dataset.index = idx;
+            const indexSpan = item.querySelector('.mqtt-subscribe-topic-index');
+            if (indexSpan) indexSpan.textContent = idx + 1;
+            const deleteBtn = item.querySelector('.mqtt-subscribe-topic-delete');
+            if (deleteBtn) deleteBtn.setAttribute('onclick', `app.deleteMqttSubscribeTopic(${idx})`);
+        });
+            
+        // 如果全部删除了，添加一个默认空组
+        if (remainingItems.length === 0) {
+            this._createMqttSubscribeTopicElement({ topic: '', qos: 0, action: '' }, 0);
+        }
+    },
+        
+    /**
+     * 收集所有MQTT订阅主题配置
+     */
+    _collectMqttSubscribeTopics() {
+        const container = document.getElementById('mqtt-subscribe-topics');
+        if (!container) return [];
+            
+        const topics = [];
+        const items = container.querySelectorAll('.mqtt-subscribe-topic-item');
+            
+        items.forEach(item => {
+            const topicInput = item.querySelector('.mqtt-sub-topic-input');
+            const qosInput = item.querySelector('.mqtt-sub-qos-input');
+            const actionInput = item.querySelector('.mqtt-sub-action-input');
+                
+            if (topicInput) {
+                topics.push({
+                    topic: topicInput.value || '',
+                    qos: parseInt(qosInput?.value || '0'),
+                    action: actionInput?.value || ''
+                });
+            }
+        });
+            
+        return topics;
+    },
+
     /**
      * 显示/隐藏消息
      */
@@ -2849,7 +2978,6 @@ const AppState = {
             this._setValue('mqtt-username', mqtt.username || '');
             this._setValue('mqtt-password', mqtt.password || '');
             this._setValue('mqtt-alive', mqtt.keepAlive || 60);
-            this._setValue('mqtt-subscribe', mqtt.subscribeTopic || '');
             // 新增字段
             this._setValue('mqtt-conn-timeout', mqtt.connectionTimeout ?? 30000);
             this._setCheckbox('mqtt-direct-connect', mqtt.directConnect ?? true);
@@ -2857,6 +2985,9 @@ const AppState = {
             
             // 加载发布主题配置（支持多组）
             this._loadMqttPublishTopics(mqtt.publishTopics || []);
+            
+            // 加载订阅主题配置（支持多组）
+            this._loadMqttSubscribeTopics(mqtt.subscribeTopics || []);
         }
         
         if (tabId === 'http' && config.http) {
@@ -2916,12 +3047,13 @@ const AppState = {
         data.mqtt_username = document.getElementById('mqtt-username')?.value || '';
         data.mqtt_password = document.getElementById('mqtt-password')?.value || '';
         data.mqtt_keepAlive = document.getElementById('mqtt-alive')?.value || '60';
-        data.mqtt_subscribeTopic = document.getElementById('mqtt-subscribe')?.value || '';
         data.mqtt_connectionTimeout = document.getElementById('mqtt-conn-timeout')?.value || '30000';
         data.mqtt_directConnect = document.getElementById('mqtt-direct-connect')?.checked ?? true;
         data.mqtt_autoReconnect = document.getElementById('mqtt-auto-reconnect')?.checked ?? true;
         // 收集发布主题配置（多组）
         data.mqtt_publishTopics = this._collectMqttPublishTopics();
+        // 收集订阅主题配置（多组）
+        data.mqtt_subscribeTopics = this._collectMqttSubscribeTopics();
         
         // HTTP
         data.http_url = document.getElementById('http-url')?.value || 'https://api.example.com';
@@ -3455,6 +3587,9 @@ const AppState = {
         const pinsStr = document.getElementById('peripheral-pins-input').value.trim();
         const errEl = document.getElementById('peripheral-error');
         
+        // 调试日志
+        console.log('[savePeripheralConfig] originalId:', originalId, 'id:', id);
+        
         if (!name || !type || !pinsStr) {
             errEl.textContent = i18n.t('peripheral-validate-required');
             errEl.style.display = 'block';
@@ -3462,10 +3597,15 @@ const AppState = {
         }
         
         const isEdit = originalId !== '';
+        console.log('[savePeripheralConfig] isEdit:', isEdit);
+        
+        // 编辑模式下确保 id 有值
+        const finalId = isEdit ? originalId : (id || undefined);
+        console.log('[savePeripheralConfig] finalId:', finalId);
         
         // 构建数据对象
         const data = {
-            id: isEdit ? originalId : (id || undefined),  // 编辑时使用原始ID，新增时如果为空则后端自动生成
+            id: finalId,
             name: name,
             type: type,
             enabled: enabled,
@@ -3510,8 +3650,8 @@ const AppState = {
             saveBtn.textContent = i18n.t('peripheral-saving-text');
         }
         
-        const url = isEdit ? '/api/peripherals/' : '/api/peripherals';
-        const method = isEdit ? apiPut : apiPost;
+        const url = isEdit ? '/api/peripherals/update' : '/api/peripherals';
+        const method = apiPost;  // 统一使用 POST
         
         method(url, data)
             .then(res => {
@@ -3609,7 +3749,7 @@ const AppState = {
                 const d = res.data || {};
                 
                 // 更新状态显示
-                const statusEl = document.getElementById('provision-status');
+                const statusEl = document.getElementById('ap-provision-status');
                 if (statusEl) {
                     if (d.active) {
                         statusEl.textContent = i18n.t('provision-active');
@@ -3620,13 +3760,12 @@ const AppState = {
                     }
                 }
                 
-                this._setTextContent('provision-ap-name', d.apSSID || '--');
-                this._setTextContent('provision-ap-ip', d.apIP || '192.168.4.1');
-                this._setTextContent('provision-clients', d.clients || '0');
+                this._setTextContent('ap-provision-ap-name', d.apSSID || '--');
+                this._setTextContent('ap-provision-clients', d.clients || '0');
                 
                 // 更新按钮状态
-                const startBtn = document.getElementById('provision-start-btn');
-                const stopBtn = document.getElementById('provision-stop-btn');
+                const startBtn = document.getElementById('ap-provision-start-btn');
+                const stopBtn = document.getElementById('ap-provision-stop-btn');
                 if (startBtn) startBtn.disabled = d.active;
                 if (stopBtn) stopBtn.disabled = !d.active;
             })
@@ -3693,7 +3832,7 @@ const AppState = {
      * 启动AP配网
      */
     startProvision() {
-        const startBtn = document.getElementById('provision-start-btn');
+        const startBtn = document.getElementById('ap-provision-start-btn');
         if (startBtn) {
             startBtn.disabled = true;
             startBtn.innerHTML = i18n.t('provision-starting-html');
@@ -3723,7 +3862,7 @@ const AppState = {
      * 停止AP配网
      */
     stopProvision() {
-        const stopBtn = document.getElementById('provision-stop-btn');
+        const stopBtn = document.getElementById('ap-provision-stop-btn');
         if (stopBtn) {
             stopBtn.disabled = true;
             stopBtn.innerHTML = i18n.t('provision-stopping-html');

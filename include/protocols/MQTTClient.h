@@ -18,6 +18,15 @@ struct MqttPublishTopic {
     MqttPublishTopic() : qos(0), retain(false) {}
 };
 
+// 订阅主题配置结构体
+struct MqttSubscribeTopic {
+    String topic;       // 订阅主题
+    uint8_t qos;        // QoS等级
+    String action;      // 执行字段，定义接收到消息时的处理逻辑
+    
+    MqttSubscribeTopic() : qos(0) {}
+};
+
 // MQTT配置结构体
 struct MQTTConfig {
     String server;
@@ -26,7 +35,7 @@ struct MQTTConfig {
     String username;
     String password;
     String topicPrefix;
-    String subscribeTopic;
+    String subscribeTopic;      // 兼容旧配置的单一订阅主题
     uint16_t keepAlive;
     // 新增字段
     bool directConnect;        // 是否直连（绕过协议管理器）
@@ -34,6 +43,8 @@ struct MQTTConfig {
     uint32_t connectionTimeout;// 连接超时（毫秒）
     // 发布主题配置（支持多组）
     std::vector<MqttPublishTopic> publishTopics;
+    // 订阅主题配置（支持多组）
+    std::vector<MqttSubscribeTopic> subscribeTopics;
 
     // 默认构造函数
     MQTTConfig() : port(1883), keepAlive(60), 
@@ -53,6 +64,7 @@ public:
     bool publish(const String& topic, const String& message);
     bool publishToTopic(size_t topicIndex, const String& message);
     bool subscribe(const String& topic);
+    bool subscribeAll();  // 订阅所有配置的主题
     void handle();
     String getStatus() const;
     

@@ -91,6 +91,26 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
         MqttPublishTopic topic;
         config.publishTopics.push_back(topic);
     }
+    
+    // 加载订阅主题配置（支持多组）
+    config.subscribeTopics.clear();
+    JsonArray subTopicsArr = doc["subscribeTopics"].as<JsonArray>();
+    if (!subTopicsArr.isNull()) {
+        for (JsonVariant v : subTopicsArr) {
+            MqttSubscribeTopic topic;
+            topic.topic = v["topic"] | "";
+            topic.qos = v["qos"] | 0;
+            topic.action = v["action"] | "";
+            config.subscribeTopics.push_back(topic);
+        }
+    }
+    // 兼容旧配置：如果有单独的 subscribeTopic，添加到数组
+    if (config.subscribeTopics.empty() && !config.subscribeTopic.isEmpty()) {
+        MqttSubscribeTopic topic;
+        topic.topic = config.subscribeTopic;
+        topic.qos = 0;
+        config.subscribeTopics.push_back(topic);
+    }
 
     // clientId 若配置文件未指定，生成随机 ID
     if (doc["clientId"].isNull() || doc["clientId"].as<String>().isEmpty()) {
@@ -192,6 +212,36 @@ bool MQTTClient::subscribe(const String& topic) {
     return ok;
 }
 
+bool MQTTClient::subscribeAll() {
+    if (!isConnected) {
+        return false;
+    }
+    
+    bool allOk = true;
+    
+    // 订阅所有配置的主题
+    for (const auto& st : config.subscribeTopics) {
+        if (!st.topic.isEmpty()) {
+            String fullTopic = config.topicPrefix + st.topic;
+            bool ok = mqttClient.subscribe(fullTopic.c_str(), st.qos);
+            
+            char buf[96];
+            snprintf(buf, sizeof(buf), "MQTT: %s topic=%s qos=%d",
+                     ok ? "Subscribed" : "Subscribe failed", fullTopic.c_str(), st.qos);
+            ok ? LOG_INFO(buf) : LOG_WARNING(buf);
+            
+            if (!ok) allOk = false;
+        }
+    }
+    
+    // 兼容旧配置：如果 subscribeTopics 为空但 subscribeTopic 不为空
+    if (config.subscribeTopics.empty() && !config.subscribeTopic.isEmpty()) {
+        allOk = subscribe(config.subscribeTopic);
+    }
+    
+    return allOk;
+}
+
 void MQTTClient::handle() {
     if (!mqttClient.connected()) {
         isConnected = false;
@@ -238,6 +288,8 @@ bool MQTTClient::reconnect() {
     if (ok) {
         isConnected = true;
         LOG_INFO("MQTT: Connected");
+        // 连接成功后订阅所有主题
+        subscribeAll();
     } else {
         char buf[48];
         snprintf(buf, sizeof(buf), "MQTT: Connect failed rc=%d", mqttClient.state());

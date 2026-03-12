@@ -360,11 +360,6 @@
                                                 </div>
 
                                                 <div class="pure-control-group">
-                                                    <label for="mqtt-subscribe">订阅主题</label>
-                                                    <input type="text" id="mqtt-subscribe" class="pure-input-1" value="/1/FB100900001/function/get">
-                                                </div>
-
-                                                <div class="pure-control-group">
                                                     <label for="mqtt-conn-timeout">连接超时(毫秒)</label>
                                                     <input type="number" id="mqtt-conn-timeout" class="pure-input-1" value="30000" min="1000" max="120000">
                                                 </div>
@@ -384,6 +379,15 @@
                                                 <!-- 动态添加的发布主题组将在这里显示 -->
                                             </div>
                                             <button type="button" id="add-mqtt-topic-btn" class="pure-button" style="margin-top: 10px;" data-i18n="mqtt-add-topic-btn">增加主题</button>
+                                        </div>
+
+                                        <!-- 订阅主题配置区域 -->
+                                        <div class="mqtt-subscribe-section" style="margin-top: 20px; padding: 15px; background: #f0f7ff; border: 1px solid #b3d4fc; border-radius: 4px;">
+                                            <h4 style="margin: 0 0 15px 0; color: #333;" data-i18n="mqtt-subscribe-section-title">订阅主题配置</h4>
+                                            <div id="mqtt-subscribe-topics">
+                                                <!-- 动态添加的订阅主题组将在这里显示 -->
+                                            </div>
+                                            <button type="button" id="add-mqtt-subscribe-btn" class="pure-button" style="margin-top: 10px;" data-i18n="mqtt-add-subscribe-btn">增加订阅</button>
                                         </div>
 
                                         <div class="message message-success" id="mqtt-success" style="display: none;" data-i18n="mqtt-save-success">
@@ -720,6 +724,43 @@
 
                                 <!-- 热点配置 -->
                                 <div id="ap-config" class="config-content">
+                                    <!-- AP配网状态卡片 -->
+                                    <div class="card" style="margin-bottom: 20px; border: 1px solid #e0e0e0;">
+                                        <div class="card-header" style="padding: 10px 15px; background: #f5f5f5; display: flex; justify-content: space-between; align-items: center;">
+                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-wifi"></i> <span data-i18n="ap-provision-status-title">AP配网状态</span></h4>
+                                            <button id="ap-provision-refresh-btn" type="button" class="pure-button pure-button-small">
+                                                <i class="fas fa-sync-alt"></i> <span data-i18n="refresh-btn">刷新</span>
+                                            </button>
+                                        </div>
+                                        <div class="card-body" style="padding: 12px 15px;">
+                                            <table class="pure-table" style="width: 100%; font-size: 13px;">
+                                                <tbody>
+                                                    <tr>
+                                                        <td style="color: #666; width: 120px;" data-i18n="ap-provision-status-label">配网状态</td>
+                                                        <td><span id="ap-provision-status" class="badge badge-info" data-i18n="ap-provision-not-started">未启动</span></td>
+                                                    </tr>
+                                                    <tr>
+                                                        <td style="color: #666;" data-i18n="ap-provision-ap-name-label">热点名称</td>
+                                                        <td id="ap-provision-ap-name">--</td>
+                                                    </tr>
+                                                    <tr>
+                                                        <td style="color: #666;" data-i18n="ap-provision-clients-label">已连接设备</td>
+                                                        <td id="ap-provision-clients">0</td>
+                                                    </tr>
+                                                </tbody>
+                                            </table>
+                                            <div style="margin-top: 15px; display: flex; gap: 10px;">
+                                                <button id="ap-provision-start-btn" type="button" class="pure-button" style="background:#27ae60; color:#fff;">
+                                                    <i class="fas fa-play"></i> <span data-i18n="ap-provision-start-btn">启动配网</span>
+                                                </button>
+                                                <button id="ap-provision-stop-btn" type="button" class="pure-button" style="background:#e74c3c; color:#fff;">
+                                                    <i class="fas fa-stop"></i> <span data-i18n="ap-provision-stop-btn">停止配网</span>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- 热点参数配置表单 -->
                                     <form id="ap-form" class="pure-form pure-form-stacked">
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
@@ -732,9 +773,7 @@
                                                     <label for="ap-password" data-i18n="ap-password-label">热点密码</label>
                                                     <input type="password" id="ap-password" class="pure-input-1" placeholder="输入热点密码（至少8位）">
                                                 </div>
-                                            </div>
-                                            
-                                            <div class="config-form-column">
+
                                                 <div class="pure-control-group">
                                                     <label for="ap-channel" data-i18n="ap-channel-label">信道</label>
                                                     <select id="ap-channel" class="pure-input-1">
@@ -753,7 +792,9 @@
                                                         <option value="13">13</option>
                                                     </select>
                                                 </div>
-                                                
+                                            </div>
+                                            
+                                            <div class="config-form-column">
                                                 <div class="pure-control-group">
                                                     <label for="ap-hidden" data-i18n="ap-hidden-label">隐藏热点</label>
                                                     <select id="ap-hidden" class="pure-input-1">
@@ -775,6 +816,11 @@
                                                         <option value="8">8</option>
                                                     </select>
                                                 </div>
+
+                                                <div class="pure-control-group">
+                                                    <label for="ap-provision-timeout" data-i18n="ap-provision-timeout-label">配网超时 (秒)</label>
+                                                    <input type="number" id="ap-provision-timeout" class="pure-input-1" value="300" min="60" max="3600">
+                                                </div>
                                             </div>
                                         </div>
 
@@ -786,6 +832,22 @@
                                             </button>
                                         </div>
                                     </form>
+
+                                    <!-- 配网说明 -->
+                                    <div class="card" style="margin-top: 20px; border: 1px solid #17a2b8;">
+                                        <div class="card-header" style="padding: 10px 15px; background: #d1ecf1;">
+                                            <h4 style="margin: 0; font-size: 14px; color: #0c5460;"><i class="fas fa-info-circle"></i> <span data-i18n="ap-provision-guide-title">配网说明</span></h4>
+                                        </div>
+                                        <div class="card-body" style="padding: 12px 15px; font-size: 13px; color: #0c5460;">
+                                            <ol style="margin: 0; padding-left: 20px;">
+                                                <li data-i18n="ap-provision-guide-1">点击"启动配网"开启AP热点模式</li>
+                                                <li data-i18n="ap-provision-guide-2">手机连接设备热点</li>
+                                                <li data-i18n="ap-provision-guide-3">打开配网APP或访问 http://192.168.4.1</li>
+                                                <li data-i18n="ap-provision-guide-4">输入WiFi名称和密码完成配网</li>
+                                                <li data-i18n="ap-provision-guide-5">配网成功后设备自动连接目标WiFi</li>
+                                            </ol>
+                                        </div>
+                                    </div>
                                 </div>
 
                                 <!-- 高级配置 -->
@@ -911,7 +973,6 @@
                                 <div class="config-tabs">
                                     <div class="config-tab active" data-tab="dev-basic" data-i18n="dev-tab-basic">基本信息</div>
                                     <div class="config-tab" data-tab="dev-ntp" data-i18n="dev-tab-ntp">NTP时间</div>
-                                    <div class="config-tab" data-tab="dev-provision" data-i18n="dev-tab-provision">AP配网</div>
                                     <div class="config-tab" data-tab="dev-ble" data-i18n="dev-tab-ble">蓝牙配网</div>
                                     <div class="config-tab" data-tab="dev-ota" data-i18n="dev-tab-ota">OTA升级</div>
                                 </div>
@@ -1098,121 +1159,6 @@
                                             </button>
                                         </div>
                                     </form>
-                                </div>
-
-                                <!-- AP配网 tab -->
-                                <div id="dev-provision" class="config-content">
-                                    <!-- 配网状态卡片 -->
-                                    <div class="card" style="margin-bottom: 20px; border: 1px solid #e0e0e0;">
-                                        <div class="card-header" style="padding: 10px 15px; background: #f5f5f5; display: flex; justify-content: space-between; align-items: center;">
-                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-wifi"></i> <span data-i18n="dev-provision-status-title">AP配网状态</span></h4>
-                                            <button id="provision-refresh-btn" class="pure-button pure-button-small">
-                                                <i class="fas fa-sync-alt"></i> <span data-i18n="dev-provision-status-refresh">刷新</span>
-                                            </button>
-                                        </div>
-                                        <div class="card-body" style="padding: 12px 15px;">
-                                            <table class="pure-table" style="width: 100%; font-size: 13px;">
-                                                <tbody>
-                                                    <tr>
-                                                        <td style="color: #666; width: 120px;" data-i18n="dev-provision-status-label">配网状态</td>
-                                                        <td><span id="provision-status" class="badge badge-info" data-i18n="dev-provision-not-started">未启动</span></td>
-                                                    </tr>
-                                                    <tr>
-                                                        <td style="color: #666;" data-i18n="dev-provision-ap-name-label">热点名称</td>
-                                                        <td id="provision-ap-name">--</td>
-                                                    </tr>
-                                                    <tr>
-                                                        <td style="color: #666;" data-i18n="dev-provision-ap-ip-label">热点IP</td>
-                                                        <td id="provision-ap-ip">192.168.4.1</td>
-                                                    </tr>
-                                                    <tr>
-                                                        <td style="color: #666;" data-i18n="dev-provision-clients-label">已连接设备</td>
-                                                        <td id="provision-clients">0</td>
-                                                    </tr>
-                                                </tbody>
-                                            </table>
-                                            <div style="margin-top: 15px; display: flex; gap: 10px;">
-                                                <button id="provision-start-btn" class="pure-button" style="background:#27ae60; color:#fff;">
-                                                    <i class="fas fa-play"></i> <span data-i18n="dev-provision-start-btn">启动配网</span>
-                                                </button>
-                                                <button id="provision-stop-btn" class="pure-button" style="background:#e74c3c; color:#fff;">
-                                                    <i class="fas fa-stop"></i> <span data-i18n="dev-provision-stop-btn">停止配网</span>
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <!-- 配网参数配置 -->
-                                    <form id="device-provision-form" class="pure-form pure-form-stacked">
-                                        <div class="config-form-grid">
-                                            <!-- 左侧列 -->
-                                            <div class="config-form-column">
-                                                <div class="pure-control-group">
-                                                    <label for="provision-ssid" data-i18n="dev-provision-ssid-label">热点名称</label>
-                                                    <input type="text" id="provision-ssid" class="pure-input-1" placeholder="fastbee-ap">
-                                                    <small style="color: #999;" data-i18n="dev-provision-ssid-hint">留空则自动生成随机名称</small>
-                                                </div>
-                                                <div class="pure-control-group">
-                                                    <label for="provision-ip" data-i18n="dev-provision-ip-label">AP热点IP</label>
-                                                    <input type="text" id="provision-ip" class="pure-input-1" value="192.168.4.1" placeholder="192.168.4.1">
-                                                </div>
-                                                <div class="pure-control-group">
-                                                    <label for="provision-gateway" data-i18n="dev-provision-gateway-label">网关地址</label>
-                                                    <input type="text" id="provision-gateway" class="pure-input-1" value="192.168.4.1" placeholder="192.168.4.1">
-                                                </div>
-                                                <div class="pure-control-group">
-                                                    <label for="provision-user-id" data-i18n="dev-provision-user-id-label">用户编号</label>
-                                                    <input type="text" id="provision-user-id" class="pure-input-1" placeholder="可选，用于设备绑定">
-                                                </div>
-                                                <div class="pure-control-group">
-                                                    <label for="provision-auth-code" data-i18n="dev-provision-auth-code-label">授权码</label>
-                                                    <input type="text" id="provision-auth-code" class="pure-input-1" placeholder="可选，产品授权码">
-                                                </div>
-                                            </div>
-                                            <!-- 右侧列 -->
-                                            <div class="config-form-column">
-                                                <div class="pure-control-group">
-                                                    <label for="provision-password" data-i18n="dev-provision-password-label">热点密码</label>
-                                                    <input type="password" id="provision-password" class="pure-input-1" placeholder="留空为开放网络">
-                                                    <small style="color: #999;" data-i18n="dev-provision-password-hint">留空则为开放网络，无需密码</small>
-                                                </div>
-                                                <div class="pure-control-group">
-                                                    <label for="provision-timeout" data-i18n="dev-provision-timeout-label">配网超时 (秒)</label>
-                                                    <input type="number" id="provision-timeout" class="pure-input-1" value="300" min="60" max="3600">
-                                                </div>
-                                                <div class="pure-control-group">
-                                                    <label for="provision-subnet" data-i18n="dev-provision-subnet-label">子网掩码</label>
-                                                    <input type="text" id="provision-subnet" class="pure-input-1" value="255.255.255.0" placeholder="255.255.255.0">
-                                                </div>
-                                                <div class="pure-control-group">
-                                                    <label for="provision-product-id" data-i18n="dev-provision-product-id-label">产品ID</label>
-                                                    <input type="text" id="provision-product-id" class="pure-input-1" placeholder="可选">
-                                                </div>
-                                            </div>
-                                        </div>
-                                        <div class="message message-success" id="provision-success" style="display:none; margin-top:15px;" data-i18n="dev-provision-save-ok">AP配网配置保存成功！</div>
-                                        <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary">
-                                                <i class="fas fa-save"></i> <span data-i18n="dev-provision-save-btn">保存AP配网配置</span>
-                                            </button>
-                                        </div>
-                                    </form>
-
-                                    <!-- 配网说明 -->
-                                    <div class="card" style="margin-top: 20px; border: 1px solid #17a2b8;">
-                                        <div class="card-header" style="padding: 10px 15px; background: #d1ecf1;">
-                                            <h4 style="margin: 0; font-size: 14px; color: #0c5460;"><i class="fas fa-info-circle"></i> 配网说明</h4>
-                                        </div>
-                                        <div class="card-body" style="padding: 12px 15px; font-size: 13px; color: #0c5460;">
-                                            <ol style="margin: 0; padding-left: 20px;">
-                                                <li>点击"启动配网"开启AP热点模式</li>
-                                                <li>手机连接设备热点（如：fastbee-ap）</li>
-                                                <li>打开配网APP或访问 <strong>http://192.168.4.1</strong></li>
-                                                <li>输入WiFi名称和密码完成配网</li>
-                                                <li>配网成功后设备自动连接目标WiFi</li>
-                                            </ol>
-                                        </div>
-                                    </div>
                                 </div>
 
                                 <!-- 蓝牙配网 tab -->
@@ -1625,8 +1571,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-password-btn" data-i18n="cancel">取消</button>
-                <button class="pure-button pure-button-primary" id="confirm-password-btn" data-i18n="confirm-change">确认修改</button>
+                                <button class="pure-button" id="cancel-password-btn" type="button" data-i18n="cancel">取消</button>
+                                <button class="pure-button pure-button-primary" id="confirm-password-btn" type="button" data-i18n="confirm-change">确认修改</button>
             </div>
         </div>
     </div>
@@ -1849,8 +1795,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-peripheral-btn" data-i18n="cancel">取消</button>
-                <button class="pure-button pure-button-primary" id="save-peripheral-btn" data-i18n="save">保存</button>
+                                <button class="pure-button" id="cancel-peripheral-btn" type="button" data-i18n="cancel">取消</button>
+                                <button class="pure-button pure-button-primary" id="save-peripheral-btn" type="button" data-i18n="save">保存</button>
             </div>
         </div>
     </div>
@@ -1903,8 +1849,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-gpio-btn" data-i18n="cancel">取消</button>
-                <button class="pure-button pure-button-primary" id="save-gpio-btn" data-i18n="role-save-btn">保存</button>
+                                <button class="pure-button" id="cancel-gpio-btn" type="button" data-i18n="cancel">取消</button>
+                                <button class="pure-button pure-button-primary" id="save-gpio-btn" type="button" data-i18n="role-save-btn">保存</button>
             </div>
         </div>
     </div>
@@ -1948,8 +1894,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-add-user-btn" data-i18n="cancel">取消</button>
-                <button class="pure-button pure-button-primary" id="confirm-add-user-btn" data-i18n="add-user-confirm">添加</button>
+                <button class="pure-button" id="cancel-add-user-btn" type="button" data-i18n="cancel">取消</button>
+                <button class="pure-button pure-button-primary" id="confirm-add-user-btn" type="button" data-i18n="add-user-confirm">添加</button>
             </div>
         </div>
     </div>
@@ -1992,8 +1938,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-role-btn" data-i18n="cancel">取消</button>
-                <button class="pure-button pure-button-primary" id="confirm-role-btn" data-i18n="role-save-btn">保存</button>
+                                <button class="pure-button" id="cancel-role-btn" type="button" data-i18n="cancel">取消</button>
+                                <button class="pure-button pure-button-primary" id="confirm-role-btn" type="button" data-i18n="role-save-btn">保存</button>
             </div>
         </div>
     </div>

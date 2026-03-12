@@ -93,22 +93,28 @@ void WiFiManager::disconnectWiFi() {
 }
 
 bool WiFiManager::startAPMode() {
-    if (WiFi.getMode() & WIFI_AP) {
+    // 检查AP是否已经真正启动（不仅仅是模式包含AP位，而是热点已广播）
+    // 通过检查softAPIP是否有效来判断
+    if ((WiFi.getMode() & WIFI_AP) && WiFi.softAPIP() != IPAddress(0, 0, 0, 0)) {
+        LOG_INFO("WiFiManager: AP mode already active");
         return true;
     }
     
-    // 设置 WiFi 模式
-    WiFiMode_t currentMode = WiFi.getMode();
-    if (currentMode == WIFI_MODE_NULL || currentMode == WIFI_MODE_STA) {
-        if (!WiFi.mode(WIFI_MODE_APSTA)) {
-            LOG_ERROR("WiFiManager: Failed to set WiFi mode to AP_STA");
-            return false;
-        }
-    } else if (!(currentMode & WIFI_AP)) {
-        if (!WiFi.mode(WIFI_MODE_AP)) {
-            LOG_ERROR("WiFiManager: Failed to set WiFi mode to AP");
-            return false;
-        }
+    // 根据配置的网络模式设置 WiFi 模式
+    WiFiMode_t targetMode;
+    if (wifiConfig.mode == NetworkMode::NETWORK_AP) {
+        // 纯AP模式：只作为热点，不连接外部WiFi
+        targetMode = WIFI_MODE_AP;
+        LOG_INFO("WiFiManager: Setting WiFi mode to AP-only");
+    } else {
+        // AP+STA双模式或STA模式回退时：同时作为热点和STA客户端
+        targetMode = WIFI_MODE_APSTA;
+        LOG_INFO("WiFiManager: Setting WiFi mode to AP+STA");
+    }
+    
+    if (!WiFi.mode(targetMode)) {
+        LOG_ERROR("WiFiManager: Failed to set WiFi mode");
+        return false;
     }
     
     // 配置 AP 参数
@@ -270,7 +276,9 @@ void WiFiManager::updateStatusInfo() {
     statusInfo.uptime = millis();
     statusInfo.macAddress = WiFi.macAddress();
     
-    if (WiFi.getMode() & WIFI_STA) {
+    wifi_mode_t mode = WiFi.getMode();
+    
+    if (mode & WIFI_STA) {
         if (WiFi.status() == WL_CONNECTED) {
             statusInfo.ssid = WiFi.SSID();
             statusInfo.rssi = WiFi.RSSI();
@@ -285,17 +293,24 @@ void WiFiManager::updateStatusInfo() {
             statusInfo.currentSubnet = WiFi.subnetMask().toString();
             // ESP32: dnsIP(0) 获取首选DNS，dnsIP(1) 获取备用DNS
             statusInfo.dnsServer = WiFi.dnsIP(0).toString();
-        } else if (statusInfo.status == NetworkStatus::CONNECTED) {
-            statusInfo.status = NetworkStatus::DISCONNECTED;
-            statusInfo.ipAddress = "";
-            statusInfo.currentGateway = "";
-            statusInfo.currentSubnet = "";
-            statusInfo.dnsServer = "";
-            connecting = false;
+        } else {
+            // STA未连接，清除互联网状态
+            statusInfo.internetAvailable = false;
+            if (statusInfo.status == NetworkStatus::CONNECTED) {
+                statusInfo.status = NetworkStatus::DISCONNECTED;
+                statusInfo.ipAddress = "";
+                statusInfo.currentGateway = "";
+                statusInfo.currentSubnet = "";
+                statusInfo.dnsServer = "";
+                connecting = false;
+            }
         }
+    } else {
+        // 纯AP模式（无STA），明确设置无互联网连接
+        statusInfo.internetAvailable = false;
     }
     
-    if (WiFi.getMode() & WIFI_AP) {
+    if (mode & WIFI_AP) {
         statusInfo.apClientCount = WiFi.softAPgetStationNum();
         statusInfo.apIPAddress = WiFi.softAPIP().toString();
     }

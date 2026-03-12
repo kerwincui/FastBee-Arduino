@@ -150,6 +150,22 @@ const i18n = {
             'ap-max-connections-label': '最大连接数',
             'ap-save-ok': '热点配置保存成功！',
             
+            // AP配网（整合到热点配置）
+            'ap-provision-status-title': 'AP配网状态',
+            'ap-provision-status-label': '配网状态',
+            'ap-provision-ap-name-label': '热点名称',
+            'ap-provision-clients-label': '已连接设备',
+            'ap-provision-start-btn': '启动配网',
+            'ap-provision-stop-btn': '停止配网',
+            'ap-provision-not-started': '未启动',
+            'ap-provision-timeout-label': '配网超时 (秒)',
+            'ap-provision-guide-title': '配网说明',
+            'ap-provision-guide-1': '点击"启动配网"开启AP热点模式',
+            'ap-provision-guide-2': '手机连接设备热点',
+            'ap-provision-guide-3': '打开配网APP或访问 http://192.168.4.1',
+            'ap-provision-guide-4': '输入WiFi名称和密码完成配网',
+            'ap-provision-guide-5': '配网成功后设备自动连接目标WiFi',
+            
             // 高级配置
             'static-ip-title': '静态IP配置',
             'static-ip-label': 'IP地址',
@@ -592,6 +608,7 @@ const i18n = {
             'wifi-scan-btn-html': '<i class="fas fa-wifi"></i> 选择Wifi网络',
             'wifi-scanning-result': '<div style="padding: 30px; text-align: center; color: #999;"><i class="fas fa-spinner fa-spin" style="font-size:24px;"></i><div style="margin-top:10px;">正在扫描...</div></div>',
             'wifi-scan-fail': '<div style="padding: 30px; text-align: center; color: #f56c6c;"><i class="fas fa-exclamation-circle" style="font-size:24px;"></i><div style="margin-top:10px;">扫描失败</div></div>',
+            'wifi-scan-busy': '<div style="padding: 30px; text-align: center; color: #e6a23c;"><i class="fas fa-spinner fa-spin" style="font-size:24px;"></i><div style="margin-top:10px;">扫描正在进行中，请稍后再试</div></div>',
             'wifi-no-network': '<div style="padding: 30px; text-align: center; color: #999;"><i class="fas fa-wifi" style="font-size:24px;"></i><div style="margin-top:10px;">未找到WiFi网络</div></div>',
             'wifi-selected-prefix': '已选择: ',
             'wifi-scan-title': 'WiFi',
@@ -1013,6 +1030,22 @@ const i18n = {
             'ap-hidden-yes': 'Yes',
             'ap-max-connections-label': 'Max Connections',
             'ap-save-ok': 'AP config saved!',
+            
+            // AP Provisioning (integrated into AP Config)
+            'ap-provision-status-title': 'AP Provisioning Status',
+            'ap-provision-status-label': 'Provisioning Status',
+            'ap-provision-ap-name-label': 'AP Name',
+            'ap-provision-clients-label': 'Connected Devices',
+            'ap-provision-start-btn': 'Start Provisioning',
+            'ap-provision-stop-btn': 'Stop Provisioning',
+            'ap-provision-not-started': 'Not Started',
+            'ap-provision-timeout-label': 'Provisioning Timeout (sec)',
+            'ap-provision-guide-title': 'Provisioning Guide',
+            'ap-provision-guide-1': 'Click "Start Provisioning" to enable AP hotspot mode',
+            'ap-provision-guide-2': 'Connect your phone to the device hotspot',
+            'ap-provision-guide-3': 'Open provisioning app or visit http://192.168.4.1',
+            'ap-provision-guide-4': 'Enter WiFi name and password to complete provisioning',
+            'ap-provision-guide-5': 'Device will auto-connect to target WiFi after provisioning',
             
             // Advanced Config
             'static-ip-title': 'Static IP Configuration',
@@ -1456,6 +1489,7 @@ const i18n = {
             'wifi-scan-btn-html': '<i class="fas fa-wifi"></i> Choose WiFi Network',
             'wifi-scanning-result': '<div style="padding: 30px; text-align: center; color: #999;"><i class="fas fa-spinner fa-spin" style="font-size:24px;"></i><div style="margin-top:10px;">Scanning...</div></div>',
             'wifi-scan-fail': '<div style="padding: 30px; text-align: center; color: #f56c6c;"><i class="fas fa-exclamation-circle" style="font-size:24px;"></i><div style="margin-top:10px;">Scan failed</div></div>',
+            'wifi-scan-busy': '<div style="padding: 30px; text-align: center; color: #e6a23c;"><i class="fas fa-spinner fa-spin" style="font-size:24px;"></i><div style="margin-top:10px;">Scan in progress, please wait</div></div>',
             'wifi-no-network': '<div style="padding: 30px; text-align: center; color: #999;"><i class="fas fa-wifi" style="font-size:24px;"></i><div style="margin-top:10px;">No WiFi networks found</div></div>',
             'wifi-selected-prefix': 'Selected: ',
             'wifi-scan-title': 'WiFi',

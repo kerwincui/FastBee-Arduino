@@ -233,7 +233,9 @@ private:
     bool isInitialized;
     bool autoReconnectEnabled;
     bool connecting;              // 是否正在连接
+    bool pendingRestart;          // 是否有待处理的网络重启
     unsigned long connectingStartTime; // 连接开始时间
+    unsigned long pendingRestartTime;  // 延迟重启时间
     
     // 时间相关
     unsigned long lastReconnectAttempt;
