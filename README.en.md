@@ -36,6 +36,7 @@ Under active development...
 ![Device](./images/device.png)
 
 * **Chip:** ESP32-WROOM-32U
+* **CPU:** 240 MHz
 * **Flash:** 4MB SPI Flash
 * **SRAM:** 520 kB
 * **Wireless:** WiFi 802.11 b/g/n + Bluetooth 4.2 + BLE
