@@ -37,6 +37,7 @@ Under active development...
 
 * **Chip:** ESP32-WROOM-32U
 * **Flash:** 4MB SPI Flash
+* **SRAM:** 520 kB
 * **Wireless:** WiFi 802.11 b/g/n + Bluetooth 4.2 + BLE
 * **Power:** DC 9-36V, external antenna, USB programming port and config button
 * **Terminal Connections:**
