@@ -35,11 +35,11 @@ FastBee-Arduino致力于成为ESP32平台上最全面、最易用的嵌入式物
 ### 硬件产品
 ![设备图](./images/device.png)
 
-* 芯片：ESP32-WROOM-32U
-* Flash：4MB SPI Flash
-* SRAM：‌520 kB
-* 无线：WiFi 802.11 b/g/n + Bluetooth 4.2 + BLE
-* 供电电压：DC 9-36V，带外置天线，USB烧录口和配置按键
+* **芯片：** ESP32-WROOM-32U
+* **Flash：** 4MB SPI Flash
+* **SRAM：‌** 520 kB
+* **无线：** WiFi 802.11 b/g/n + Bluetooth 4.2 + BLE
+* **供电电压：** DC 9-36V，带外置天线，USB烧录口和配置按键
 * **接线端子说明：**
   * A/L：RS485-A（TX），GPIO17
   * B/H：RS485-B（RX），GPIO18
