@@ -36,6 +36,7 @@ FastBee-Arduino致力于成为ESP32平台上最全面、最易用的嵌入式物
 ![设备图](./images/device.png)
 
 * **芯片：** ESP32-WROOM-32U
+* **CPU：** 240 MHz
 * **Flash：** 4MB SPI Flash
 * **SRAM：‌** 520 kB
 * **无线：** WiFi 802.11 b/g/n + Bluetooth 4.2 + BLE
