@@ -4,14 +4,14 @@
 
 AuthManager::AuthManager(IUserManager* userMgr, RoleManager* roleMgr, LoggerSystem* loggerPtr)
     : userManager(userMgr), roleManager(roleMgr), logger(loggerPtr), lastSessionCleanup(0) {
-    preferences.begin("auth_manager", false);
+    sessionPrefs.begin("auth_sessions", false);  // 仅用于会话持久化
 }
 
 AuthManager::~AuthManager() {
     if (securityConfig.enableSessionPersistence) {
         saveSessionsToStorage();
     }
-    preferences.end();
+    sessionPrefs.end();
 }
 
 bool AuthManager::initialize() {
@@ -238,53 +238,40 @@ bool AuthManager::checkIpWhitelist(const String& ipAddress) {
 }
 
 bool AuthManager::loadSecurityConfig() {
-    securityConfig.sessionTimeout = preferences.getULong("session_timeout", 3600000);
-    securityConfig.sessionCleanupInterval = preferences.getULong("cleanup_interval", 60000);
-    securityConfig.enableSessionPersistence = preferences.getBool("session_persistence", true);
-    securityConfig.enableIpWhitelist = preferences.getBool("ip_whitelist", false);
-    securityConfig.cookieName = preferences.getString("cookie_name", "session");
-    securityConfig.cookieMaxAge = preferences.getULong("cookie_max_age", 3600);
-    securityConfig.cookieHttpOnly = preferences.getBool("cookie_http_only", true);
-    securityConfig.cookieSecure = preferences.getBool("cookie_secure", false);
-    
-    // 加载IP白名单
-    String ipListStr = preferences.getString("ip_whitelist", "");
-    if (!ipListStr.isEmpty()) {
-        JsonDocument doc;
-        DeserializationError error = deserializeJson(doc, ipListStr);
-        if (!error) {
-            JsonArray ipArray = doc.as<JsonArray>();
-            for (String ip : ipArray) {
-                securityConfig.ipWhitelist.push_back(ip);
-            }
-        }
+    // 从 UserManager 获取安全配置（配置统一存储在 users.json）
+    if (userManager) {
+        UserManager* um = static_cast<UserManager*>(userManager);
+        securityConfig.sessionTimeout = um->getSessionTimeout();
+        securityConfig.sessionCleanupInterval = um->getSessionCleanupInterval();
+        securityConfig.enableSessionPersistence = um->isSessionPersistenceEnabled();
+        securityConfig.cookieName = um->getCookieName();
+        securityConfig.cookieMaxAge = um->getCookieMaxAge();
+        securityConfig.cookieHttpOnly = um->isCookieHttpOnly();
+        securityConfig.cookieSecure = um->isCookieSecure();
     }
+    
+    // IP白名单保持在内存中（运行时配置，不持久化）
+    securityConfig.enableIpWhitelist = false;
+    securityConfig.ipWhitelist.clear();
     
     return true;
 }
 
 bool AuthManager::saveSecurityConfig() {
-    preferences.putULong("session_timeout", securityConfig.sessionTimeout);
-    preferences.putULong("cleanup_interval", securityConfig.sessionCleanupInterval);
-    preferences.putBool("session_persistence", securityConfig.enableSessionPersistence);
-    preferences.putBool("ip_whitelist", securityConfig.enableIpWhitelist);
-    preferences.putString("cookie_name", securityConfig.cookieName);
-    preferences.putULong("cookie_max_age", securityConfig.cookieMaxAge);
-    preferences.putBool("cookie_http_only", securityConfig.cookieHttpOnly);
-    preferences.putBool("cookie_secure", securityConfig.cookieSecure);
-    
-    // 保存IP白名单
-    JsonDocument doc;
-    JsonArray ipArray = doc.to<JsonArray>();
-    for (const String& ip : securityConfig.ipWhitelist) {
-        ipArray.add(ip);
+    // 委托给 UserManager 保存（配置统一存储在 users.json）
+    if (userManager) {
+        UserManager* um = static_cast<UserManager*>(userManager);
+        return um->updateSecurityConfig(
+            securityConfig.sessionTimeout,
+            securityConfig.sessionCleanupInterval,
+            securityConfig.enableSessionPersistence,
+            securityConfig.cookieName,
+            securityConfig.cookieMaxAge,
+            securityConfig.cookieHttpOnly,
+            securityConfig.cookieSecure
+        );
     }
-    
-    String ipListStr;
-    serializeJson(doc, ipListStr);
-    preferences.putString("ip_whitelist", ipListStr);
-    
-    return true;
+    return false;
 }
 
 // ============ 认证管理方法 ============
@@ -760,7 +747,7 @@ bool AuthManager::saveSessionsToStorage() {
     String jsonStr;
     serializeJson(doc, jsonStr);
     
-    bool success = preferences.putString("sessions", jsonStr) > 0;
+    bool success = sessionPrefs.putString("sessions", jsonStr) > 0;
     if (success) {
         LOG_DEBUG("AuthManager: Sessions saved to storage");
     }
@@ -772,7 +759,7 @@ bool AuthManager::loadSessionsFromStorage() {
         return true;
     }
     
-    String jsonStr = preferences.getString("sessions", "");
+    String jsonStr = sessionPrefs.getString("sessions", "");
     if (jsonStr.isEmpty()) {
         return true; // 没有会话数据是正常的
     }
@@ -984,8 +971,8 @@ void AuthManager::shutdown() {
     // 清空所有活跃会话
     activeSessions.clear();
 
-    // 关闭 NVS
-    preferences.end();
+    // 关闭会话 NVS
+    sessionPrefs.end();
 
     LOG_INFO("AuthManager: Shutdown complete");
 }

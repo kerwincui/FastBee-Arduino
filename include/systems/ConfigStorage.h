@@ -58,8 +58,6 @@ public:
     bool loadUserConfig     (JsonDocument& config);
     bool saveProtocolConfig (const JsonDocument& config);  // 统一协议配置 (protocol.json)
     bool loadProtocolConfig (JsonDocument& config);
-    bool saveGpioConfig     (const JsonDocument& config);
-    bool loadGpioConfig     (JsonDocument& config);
 
     // ── 文件系统管理 ────────────────────────────────────────────────────────
     bool isFileSystemOK();

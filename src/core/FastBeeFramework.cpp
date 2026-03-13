@@ -7,7 +7,6 @@
 
 #include "core/FastBeeFramework.h"
 #include "core/SystemConstants.h"
-#include "core/GPIOManager.h"
 #include "core/PeripheralManager.h"
 #include "systems/LoggerSystem.h"
 #include "network/NetworkManager.h"
@@ -203,14 +202,6 @@ bool FastBeeFramework::initialize() {
         LOG_INFO("[STEP10.5] Peripheral manager OK");
     }
     
-    // 保持对旧版GPIO管理器的初始化（向后兼容）
-    LOG_INFO("[STEP10.5] Initializing GPIOManager (legacy)...");
-    if (!GPIOManager::getInstance().initialize()) {
-        LOG_WARNING("[STEP10.5] Failed to initialize GPIO manager");
-    } else {
-        LOG_INFO("[STEP10.5] GPIO manager OK (legacy)");
-    }
-    
     // 步骤11: 初始化协议管理器
     LOG_INFO("[STEP11] Initializing ProtocolManager...");
     protocolManager.reset(new ProtocolManager());
@@ -258,8 +249,16 @@ bool FastBeeFramework::initialize() {
         LOGGER.info("mDNS URL: http://fastbee.local");
     } else if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
         LOGGER.info("Mode: AP (Access Point)");
-        LOGGER.info("WiFi Name: fastbee-ap");
-        LOGGER.info("WiFi Pass: 12345678");
+        // 以 NetworkManager 的实际配置为准，避免误导用户
+        String apSSID = Network::DEFAULT_AP_SSID;
+        String apPass = Network::DEFAULT_AP_PASSWORD;
+        if (network) {
+            WiFiConfig cfg = network->getConfig();
+            if (cfg.apSSID.length() > 0) apSSID = cfg.apSSID;
+            if (cfg.apPassword.length() > 0) apPass = cfg.apPassword;
+        }
+        LOGGER.infof("WiFi Name: %s", apSSID.c_str());
+        LOGGER.infof("WiFi Pass: %s", apPass.c_str());
         LOGGER.infof("IP Address: %s", WiFi.softAPIP().toString().c_str());
         LOGGER.infof("Setup URL: http://%s/setup", WiFi.softAPIP().toString().c_str());
     } else {

@@ -938,6 +938,10 @@ const AppState = {
         
         console.log('[showEditRoleModal] Opening edit modal for roleId:', roleId);
         
+        // 先设置编辑模式，防止API回调前用户点击保存导致调用错误的API
+        modal.dataset.editMode = 'edit';
+        modal.dataset.editRoleId = roleId;
+        
         // 获取角色信息
         apiGet('/api/roles')
             .then(res => {
@@ -960,10 +964,6 @@ const AppState = {
                 if (idInput) { idInput.value = role.id; idInput.disabled = true; }
                 if (nameInput) nameInput.value = role.name;
                 if (descInput) descInput.value = role.description || '';
-                
-                // 标记为编辑模式
-                modal.dataset.editMode = 'edit';
-                modal.dataset.editRoleId = roleId;
                 
                 console.log('[showEditRoleModal] Set editMode:', modal.dataset.editMode, 'editRoleId:', modal.dataset.editRoleId);
                 
@@ -1166,10 +1166,10 @@ const AppState = {
         showAddUserModal() {
         const modal = document.getElementById('add-user-modal');
         if (modal) {
-            modal.style.display = 'flex';
-            // 重置为添加模式
+            // 先重置为添加模式，再显示弹窗
             modal.dataset.editMode = 'add';
             modal.dataset.editUsername = '';
+            modal.style.display = 'flex';
         }
         
         // 修改标题
@@ -1269,12 +1269,20 @@ const AppState = {
 
     // ============ 编辑用户（复用添加用户弹窗）============
     showEditUserModal(user) {
+        console.log('[showEditUserModal] Called with user:', user);
+        
         // 复用添加用户的 modal
         const modal = document.getElementById('add-user-modal');
         if (!modal) {
+            console.error('[showEditUserModal] Modal not found!');
             Notification.info(`${i18n.t('edit-user-modal-title')}: ${user.username}`, i18n.t('edit-user-modal-title'));
             return;
         }
+        
+        // 先标记为编辑模式，防止状态丢失
+        modal.dataset.editMode = 'edit';
+        modal.dataset.editUsername = user.username;
+        console.log('[showEditUserModal] Set editMode:', modal.dataset.editMode, 'editUsername:', modal.dataset.editUsername);
         
         // 修改标题
         const title = document.getElementById('add-user-title');
@@ -1296,10 +1304,6 @@ const AppState = {
         // 设置角色
         const roleSelect = document.getElementById('add-role-select');
         if (roleSelect) roleSelect.value = user.role || 'operator';
-        
-        // 标记为编辑模式
-        modal.dataset.editMode = 'edit';
-        modal.dataset.editUsername = user.username;
         
         // 修改确认按钮文本
         const confirmBtn = document.getElementById('confirm-add-user-btn');
@@ -2362,14 +2366,22 @@ const AppState = {
     loadDeviceTime() {
         const btn = document.getElementById('dev-time-refresh-btn');
         if (btn) { btn.disabled = true; btn.innerHTML = i18n.t('dev-refreshing-html'); }
-        apiGet('/api/device/time')
-            .then(res => {
-                if (!res || !res.success) return;
-                this._renderDeviceTime(res.data || {});
+        
+        // 同时获取时间和网络状态
+        Promise.all([
+            apiGet('/api/device/time'),
+            apiGet('/api/network/status')
+        ])
+            .then(([timeRes, netRes]) => {
+                const timeData = (timeRes && timeRes.success) ? timeRes.data || {} : {};
+                const netData = (netRes && netRes.success) ? netRes.data || {} : {};
+                const internetAvailable = netData.internetAvailable === true;
+                
+                this._renderDeviceTime(timeData, internetAvailable);
             })
             .catch(err => console.error('Load device time failed:', err))
             .finally(() => {
-                if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-refresh-html'); }
+                // 按钮状态由 _renderDeviceTime 根据网络状态设置
             });
     },
 
@@ -2380,9 +2392,11 @@ const AppState = {
             .then(res => {
                 if (!res || !res.success) {
                     Notification.warning(i18n.t('dev-time-sync-fail') || 'NTP同步失败', 'NTP');
+                    // 同步失败，重新加载状态
+                    this.loadDeviceTime();
                     return;
                 }
-                this._renderDeviceTime(res.data || {});
+                this._renderDeviceTime(res.data || {}, true);
                 if (res.data && res.data.synced) {
                     Notification.success(i18n.t('dev-time-sync-ok') || 'NTP同步成功', 'NTP');
                 }
@@ -2390,25 +2404,49 @@ const AppState = {
             .catch(err => {
                 console.error('Sync device time failed:', err);
                 Notification.error(i18n.t('dev-time-sync-fail') || 'NTP同步失败', 'NTP');
-            })
-            .finally(() => {
-                if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-refresh-html'); }
+                // 同步失败，重新加载状态
+                this.loadDeviceTime();
             });
     },
 
-    _renderDeviceTime(d) {
+    _renderDeviceTime(d, internetAvailable = true) {
         const setEl   = (id, val)  => { const el = document.getElementById(id); if (el) el.textContent = val || '--'; };
         const setHtml = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+        
         setEl('dev-time-datetime', d.datetime);
-        setHtml('dev-time-synced', d.synced
-            ? i18n.t('dev-time-synced-html')
-            : i18n.t('dev-time-not-synced-html'));
+        
+        // 根据网络状态和同步状态显示不同的提示
+        if (!internetAvailable) {
+            // 网络不可用
+            setHtml('dev-time-synced', i18n.t('dev-time-no-network-html'));
+        } else if (d.synced) {
+            // 已同步
+            setHtml('dev-time-synced', i18n.t('dev-time-synced-html'));
+        } else {
+            // 未同步但网络可用
+            setHtml('dev-time-synced', i18n.t('dev-time-not-synced-html'));
+        }
+        
         if (d.uptime !== undefined) {
             const ms = d.uptime;
             const h  = Math.floor(ms / 3600000);
             const m  = Math.floor((ms % 3600000) / 60000);
             const s  = Math.floor((ms % 60000) / 1000);
             setEl('dev-time-uptime', `${h}${i18n.t('dev-time-uptime-unit')}${m}${i18n.t('dev-time-uptime-min')}${s}${i18n.t('dev-time-uptime-sec')}`);
+        }
+        
+        // 根据网络状态设置刷新按钮
+        const btn = document.getElementById('dev-time-refresh-btn');
+        if (btn) {
+            if (internetAvailable) {
+                btn.disabled = false;
+                btn.innerHTML = i18n.t('dev-refresh-html');
+                btn.title = '';
+            } else {
+                btn.disabled = true;
+                btn.innerHTML = i18n.t('dev-refresh-disabled-html');
+                btn.title = i18n.t('dev-time-no-network-tip');
+            }
         }
     },
 
@@ -3100,218 +3138,6 @@ const AppState = {
             .catch(err => {
                 console.error('saveProtocolConfig error:', err);
                 Notification.error(i18n.t('protocol-save-fail'), i18n.t('protocol-title'));
-            });
-    },
-    
-    // ============ GPIO配置 ============
-    
-    /**
-     * 加载GPIO列表
-     */
-    loadGpioList() {
-        const tbody = document.getElementById('gpio-table-body');
-        if (!tbody) return;
-        
-        tbody.innerHTML = i18n.t('gpio-loading-html');
-        
-        apiGet('/api/gpio/config')
-            .then(res => {
-                if (!res || !res.success) {
-                    tbody.innerHTML = i18n.t('gpio-fail-html');
-                    return;
-                }
-                
-                const pins = res.data?.pins || [];
-                
-                if (pins.length === 0) {
-                    tbody.innerHTML = i18n.t('gpio-empty-html');
-                    return;
-                }
-                
-                let html = '';
-                pins.forEach(pin => {
-                    const modeNames = {
-                        1: i18n.t('gpio-mode-1'), 2: i18n.t('gpio-mode-2'), 3: i18n.t('gpio-mode-3'),
-                        4: i18n.t('gpio-mode-4'), 5: i18n.t('gpio-mode-5'), 6: i18n.t('gpio-mode-6'), 7: i18n.t('gpio-mode-7')
-                    };
-                    const modeName = modeNames[pin.mode] || i18n.t('gpio-status-unknown');
-                    const stateText = pin.state === 1 ? i18n.t('gpio-state-high') : i18n.t('gpio-state-low');
-                    const stateColor = pin.state === 1 ? '#52c41a' : '#999';
-                    // 仅输出模式才支持切换: 2=数字输出, 6=模拟输出, 7=PWM
-                    const canToggle = (pin.mode === 2 || pin.mode === 6 || pin.mode === 7);
-                    const toggleBtn = canToggle
-                        ? `<button class="pure-button pure-button-small" onclick="app.toggleGpio(${pin.pin})">${i18n.t('gpio-toggle')}</button>`
-                        : '';
-                    
-                    html += `
-                        <tr>
-                            <td>${pin.pin}</td>
-                            <td>${pin.name}</td>
-                            <td>${modeName}</td>
-                            <td style="color: ${stateColor};">${stateText}</td>
-                            <td>
-                                <button class="pure-button pure-button-small" onclick="app.editGpio(${pin.pin}, '${pin.name}', ${pin.mode}, ${pin.state || 0})">${i18n.t('gpio-edit')}</button>
-                                ${toggleBtn}
-                                <button class="pure-button pure-button-small" style="background: #ff4d4f; color: white;" onclick="app.deleteGpio(${pin.pin})">${i18n.t('gpio-delete')}</button>
-                            </td>
-                        </tr>
-                    `;
-                });
-                
-                tbody.innerHTML = html;
-            })
-            .catch(err => {
-                console.error('Load GPIO list failed:', err);
-                tbody.innerHTML = i18n.t('gpio-fail-html');
-            });
-    },
-    
-    /**
-     * 打开GPIO模态框
-     */
-    openGpioModal(isEdit = false, pinData = null) {
-        const modal = document.getElementById('gpio-modal');
-        const title = document.getElementById('gpio-modal-title');
-        const form = document.getElementById('gpio-form');
-        
-        if (!modal) return;
-        
-        form.reset();
-        document.getElementById('gpio-error').style.display = 'none';
-        
-        if (isEdit && pinData) {
-            title.textContent = i18n.t('gpio-edit-modal-title');
-            document.getElementById('gpio-original-pin').value = pinData.pin;
-            document.getElementById('gpio-pin-input').value = pinData.pin;
-            document.getElementById('gpio-name-input').value = pinData.name;
-            document.getElementById('gpio-mode-input').value = pinData.mode;
-            document.getElementById('gpio-default-input').value = pinData.state || 0;
-            document.getElementById('gpio-pin-input').disabled = true;
-        } else {
-            title.textContent = i18n.t('gpio-add-modal-title');
-            document.getElementById('gpio-original-pin').value = '';
-            document.getElementById('gpio-pin-input').disabled = false;
-        }
-        
-        modal.style.display = 'flex';
-    },
-    
-    /**
-     * 关闭GPIO模态框
-     */
-    closeGpioModal() {
-        const modal = document.getElementById('gpio-modal');
-        if (modal) modal.style.display = 'none';
-    },
-    
-    /**
-     * 保存GPIO配置
-     */
-    saveGpioConfig() {
-        const originalPin = document.getElementById('gpio-original-pin').value;
-        const pin = document.getElementById('gpio-pin-input').value;
-        const name = document.getElementById('gpio-name-input').value.trim();
-        const mode = document.getElementById('gpio-mode-input').value;
-        const defaultValue = document.getElementById('gpio-default-input').value;
-        const errEl = document.getElementById('gpio-error');
-        
-        if (!pin || !name) {
-            errEl.textContent = i18n.t('gpio-validate-pin-name');
-            errEl.style.display = 'block';
-            return;
-        }
-        
-        const isEdit = originalPin !== '';
-        
-        // 安全起见：禁用按钮防止重复提交
-        const saveBtn = document.getElementById('save-gpio-btn');
-        const origText = saveBtn.textContent;
-        saveBtn.disabled = true;
-        saveBtn.textContent = i18n.t('gpio-saving-text');
-        
-        const data = { pin, name, mode, defaultValue };
-        
-        apiPost('/api/gpio/config', data)
-            .then(res => {
-                if (res && res.success) {
-                    this.closeGpioModal();
-                    this.loadGpioList();
-                    Notification.success(isEdit ? i18n.t('gpio-update-ok') : i18n.t('gpio-add-ok'), i18n.t('gpio-config-title'));
-                } else {
-                    errEl.textContent = res?.error || i18n.t('gpio-save-fail');
-                    errEl.style.display = 'block';
-                }
-            })
-            .catch(err => {
-                console.error('Save GPIO failed:', err);
-                errEl.textContent = i18n.t('gpio-save-fail');
-                errEl.style.display = 'block;';
-            })
-            .finally(() => {
-                saveBtn.disabled = false;
-                saveBtn.textContent = origText;
-            });
-    },
-    
-    /**
-     * 编辑GPIO
-     */
-    editGpio(pin, name, mode, state) {
-        this.openGpioModal(true, { pin, name, mode, state });
-    },
-    
-    /**
-     * 删除GPIO
-     */
-    deleteGpio(pin) {
-        if (!confirm(`${i18n.t('gpio-confirm-delete')}${pin} ${i18n.t('gpio-confirm-suffix')}`)) return;
-        
-        apiPost('/api/gpio/delete', { pin: String(pin) })
-            .then(res => {
-                if (res && res.success) {
-                    Notification.success(`GPIO ${pin}${i18n.t('gpio-deleted-prefix')}`, i18n.t('gpio-config-title'));
-                    this.loadGpioList();
-                } else {
-                    Notification.error(res?.error || i18n.t('gpio-toggle-fail'), i18n.t('gpio-config-title'));
-                }
-            })
-            .catch(err => {
-                console.error('Delete GPIO failed:', err);
-                Notification.error(i18n.t('gpio-delete-fail'), i18n.t('gpio-config-title'));
-            });
-    },
-    
-    /**
-     * 切换GPIO状态
-     */
-    toggleGpio(pin) {
-        apiPost('/api/gpio/write', { pin: String(pin), state: 'toggle' })
-            .then(res => {
-                if (res && res.success) {
-                    Notification.success(i18n.t('gpio-toggle-ok'), i18n.t('gpio-config-title'));
-                    this.loadGpioList();
-                } else {
-                    Notification.error(res?.error || i18n.t('gpio-toggle-fail'), i18n.t('gpio-config-title'));
-                }
-            })
-            .catch(err => {
-                console.error('Toggle GPIO failed:', err);
-                Notification.error(i18n.t('gpio-toggle-fail'), i18n.t('gpio-config-title'));
-            });
-    },
-    
-    /**
-     * 保存GPIO配置到文件 (gpio.json)
-     */
-    saveGpioToFile() {
-        apiPost('/api/gpio/save', {})
-            .then(res => {
-                if (res && res.success) {
-                    console.log('[GPIO] 配置已保存到 /config/gpio.json');
-                }
-            })
-            .catch(err => {
-                console.error('Save GPIO to file failed:', err);
             });
     },
     
@@ -4037,48 +3863,72 @@ const AppState = {
      * 加载OTA状态
      */
     loadOtaStatus() {
-        apiGet('/api/ota/status')
-            .then(res => {
-                if (!res) return;
+        // 同时获取OTA状态和网络状态
+        Promise.all([
+            apiGet('/api/ota/status'),
+            apiGet('/api/network/status'),
+            apiGet('/api/system/info')
+        ])
+            .then(([otaRes, netRes, sysRes]) => {
+                const internetAvailable = (netRes && netRes.success && netRes.data) ? netRes.data.internetAvailable === true : false;
                 
-                const badge = document.getElementById('ota-status-badge');
-                const progressWrap = document.getElementById('ota-progress-wrap');
-                const progressBar = document.getElementById('ota-progress-bar');
-                const progressText = document.getElementById('ota-progress-text');
+                // OTA状态处理
+                if (otaRes) {
+                    const badge = document.getElementById('ota-status-badge');
+                    const progressWrap = document.getElementById('ota-progress-wrap');
+                    const progressBar = document.getElementById('ota-progress-bar');
+                    const progressText = document.getElementById('ota-progress-text');
+                    
+                    if (otaRes.status === 'OTA ready') {
+                        if (badge) { badge.className = 'status-badge status-online'; badge.textContent = i18n.t('ota-ready'); }
+                        if (progressWrap) progressWrap.style.display = 'none';
+                    } else if (otaRes.progress > 0 && otaRes.progress < 100) {
+                        if (badge) { badge.className = 'status-badge status-warning'; badge.textContent = i18n.t('ota-in-progress'); }
+                        if (progressWrap) progressWrap.style.display = 'block';
+                        if (progressBar) progressBar.style.width = otaRes.progress + '%';
+                        if (progressText) progressText.textContent = otaRes.progress + '%';
+                    }
+                }
                 
-                if (res.status === 'OTA ready') {
-                    if (badge) { badge.className = 'status-badge status-online'; badge.textContent = i18n.t('ota-ready'); }
-                    if (progressWrap) progressWrap.style.display = 'none';
-                } else if (res.progress > 0 && res.progress < 100) {
-                    if (badge) { badge.className = 'status-badge status-warning'; badge.textContent = i18n.t('ota-in-progress'); }
-                    if (progressWrap) progressWrap.style.display = 'block';
-                    if (progressBar) progressBar.style.width = res.progress + '%';
-                    if (progressText) progressText.textContent = res.progress + '%';
+                // 根据网络状态设置URL升级按钮
+                const urlBtn = document.getElementById('ota-url-btn');
+                const urlInput = document.getElementById('ota-url');
+                const urlHint = document.getElementById('ota-url-hint');
+                if (urlBtn) {
+                    if (internetAvailable) {
+                        urlBtn.disabled = false;
+                        urlBtn.title = '';
+                        if (urlInput) urlInput.disabled = false;
+                        if (urlHint) urlHint.style.display = 'none';
+                    } else {
+                        urlBtn.disabled = true;
+                        urlBtn.title = i18n.t('ota-no-network-tip');
+                        if (urlInput) urlInput.disabled = true;
+                        if (urlHint) {
+                            urlHint.style.display = 'block';
+                            urlHint.innerHTML = `<span class="badge badge-danger">${i18n.t('ota-no-network-msg')}</span>`;
+                        }
+                    }
+                }
+                
+                // 系统信息处理
+                if (sysRes && sysRes.success) {
+                    const d = sysRes.data || {};
+                    
+                    this._setValue('ota-current-version', d.firmwareVersion || '--');
+                    
+                    const flashSize = d.flashChipSize || 0;
+                    const freeSketch = d.freeSketchSpace || 0;
+                    
+                    const flashSizeEl = document.getElementById('ota-flash-size');
+                    const freeSpaceEl = document.getElementById('ota-free-space');
+                    
+                    if (flashSizeEl) flashSizeEl.textContent = flashSize > 0 ? (flashSize / 1024 / 1024).toFixed(2) + ' MB' : '--';
+                    if (freeSpaceEl) freeSpaceEl.textContent = freeSketch > 0 ? (freeSketch / 1024).toFixed(0) + ' KB' : '--';
                 }
             })
             .catch(err => {
                 console.error('加载OTA状态失败:', err);
-            });
-        
-        // 同时加载系统信息以获取版本等
-        apiGet('/api/system/info')
-            .then(res => {
-                if (!res || !res.success) return;
-                const d = res.data || {};
-                
-                this._setValue('ota-current-version', d.firmwareVersion || '--');
-                
-                const flashSize = d.flashChipSize || 0;
-                const freeSketch = d.freeSketchSpace || 0;
-                
-                const flashSizeEl = document.getElementById('ota-flash-size');
-                const freeSpaceEl = document.getElementById('ota-free-space');
-                
-                if (flashSizeEl) flashSizeEl.textContent = flashSize > 0 ? (flashSize / 1024 / 1024).toFixed(2) + ' MB' : '--';
-                if (freeSpaceEl) freeSpaceEl.textContent = freeSketch > 0 ? (freeSketch / 1024).toFixed(0) + ' KB' : '--';
-            })
-            .catch(err => {
-                console.error('加载系统信息失败:', err);
             });
     },
 

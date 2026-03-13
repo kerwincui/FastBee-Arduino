@@ -24,8 +24,7 @@ FastBee-Arduino致力于成为ESP32平台上最全面、最易用的嵌入式物
 * **协议支持：** MQTT协议接入、Modbus RTU/TCP、TCP服务器/客户端、HTTP客户端
 * **远程维护：** 固件OTA升级、文件系统OTA升级、在线日志查看、远程重启、恢复出厂设置
 * **数据存储：** LittleFS文件系统、NVS Preferences双存储、JSON配置文件管理、Gzip压缩优化
-* **外设管理：** RS485串口配置、数字输入/输出、模拟输入、PWM输出、I2C/SPI接口、可视化配置
-* **GPIO管理：** 可视化GPIO引脚配置、状态监控、PWM控制
+* **外设管理：** RS485串口配置、数字输入/输出、模拟输入、PWM输出、I2C/SPI接口、可视化GPIO引脚配置
 * **健康监测：** CPU/内存/存储实时监测、网络连接状态、任务运行状态、异常告警
 * **日志系统：** 分级日志（DEBUG/INFO/WARN/ERROR）、文件存储、Web在线查看、日志轮转
 * **任务调度：** 定时任务管理、异步事件处理、优先级调度
@@ -72,6 +71,7 @@ FastBee-Arduino致力于成为ESP32平台上最全面、最易用的嵌入式物
 ---
 
 ### Flash分区布局
+开发测试使用的设备Flash空间大小为4MB，空间有限，未设置OTA升级分区，根据设备空间大小可增加OTA分区实现OTA升级功能
 | 分区名 | 类型 | 偏移地址 | 大小 | 说明 |
 |--------|------|----------|------|------|
 | nvs | data | 0x9000 | 20KB | NVS键值存储 |
@@ -133,7 +133,6 @@ FastBee-Arduino/
 │   │   ├── FastBeeFramework.h     # 主框架类
 │   │   ├── ConfigDefines.h        # 配置常量
 │   │   ├── SystemConstants.h      # 系统常量
-│   │   ├── GPIOManager.h          # GPIO管理
 │   │   ├── PeripheralManager.h    # 外设管理
 │   │   └── FeatureFlags.h         # 功能开关
 │   ├── network/                   # 网络模块
@@ -182,7 +181,6 @@ FastBee-Arduino/
 │   │   ├── network.json           # 网络配置
 │   │   ├── protocol.json          # 协议配置
 │   │   ├── peripherals.json       # 外设配置
-│   │   ├── gpio.json              # GPIO配置
 │   │   └── users.json             # 用户配置
 │   └── logs/                      # 日志目录
 │       └── system.log

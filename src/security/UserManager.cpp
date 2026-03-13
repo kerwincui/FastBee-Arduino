@@ -42,12 +42,11 @@ static String base64Encode(const uint8_t* data, size_t length) {
 }
 
 UserManager::UserManager() {
-    preferences.begin("user_manager", false);
+    // JSON 文件存储，无需初始化 NVS
 }
 
 UserManager::~UserManager() {
     saveUsersToStorage();
-    preferences.end();
 }
 
 bool UserManager::initialize() {
@@ -55,8 +54,8 @@ bool UserManager::initialize() {
         LOG_INFO("UserManager: Using default config");
     }
 
-    if (!loadUsersFromStorage()) {
-        LOG_INFO("UserManager: No user data found, creating default admin");
+    if (!loadUsersFromStorage() || users.empty()) {
+        LOG_INFO("UserManager: No user data found, creating default users");
         initializeDefaultAdmin();
     }
 
@@ -67,6 +66,7 @@ bool UserManager::initialize() {
 }
 
 void UserManager::initializeDefaultAdmin() {
+    // 创建默认管理员用户
     User admin;
     admin.username     = DEFAULT_ADMIN_USER;
     admin.salt         = generateSalt();
@@ -79,6 +79,21 @@ void UserManager::initializeDefaultAdmin() {
     admin.createBy     = "system";
 
     users[DEFAULT_ADMIN_USER] = admin;
+    
+    // 创建默认查看者用户
+    User viewer;
+    viewer.username     = "viewer";
+    viewer.salt         = generateSalt();
+    viewer.passwordHash = hashPassword(DEFAULT_ADMIN_PASS, viewer.salt);  // 使用相同的默认密码 admin123
+    viewer.role         = UserRole::VIEWER;
+    viewer.roles        = { BuiltinRoles::VIEWER };  // 绑定内置 viewer 角色
+    viewer.enabled      = true;
+    viewer.createTime   = millis();
+    viewer.lastModified = millis();
+    viewer.createBy     = "system";
+
+    users["viewer"] = viewer;
+    
     saveUsersToStorage();
 }
 
@@ -346,8 +361,10 @@ void UserManager::updateLastLogin(const String& username) {
 
 bool UserManager::saveUsersToStorage() {
     JsonDocument doc;
+    doc["version"] = "2.0";
+    
+    // 保存用户数据
     JsonArray usersArray = doc["users"].to<JsonArray>();
-
     for (const auto& pair : users) {
         const User& user = pair.second;
         JsonObject userObj = usersArray.add<JsonObject>();
@@ -370,25 +387,66 @@ bool UserManager::saveUsersToStorage() {
             rolesArr.add(r);
         }
     }
+    
+    // 保存安全配置
+    JsonObject security = doc["security"].to<JsonObject>();
+    security["maxLoginAttempts"]        = config.maxLoginAttempts;
+    security["loginLockoutTime"]        = config.loginLockoutTime;
+    security["minPasswordLength"]       = config.minPasswordLength;
+    security["maxPasswordLength"]       = config.maxPasswordLength;
+    security["requireStrongPasswords"]  = config.requireStrongPasswords;
+    security["allowMultipleSessions"]   = config.allowMultipleSessions;
+    security["sessionTimeout"]          = config.sessionTimeout;
+    security["sessionCleanupInterval"]  = config.sessionCleanupInterval;
+    security["enableSessionPersistence"]= config.enableSessionPersistence;
+    security["cookieName"]              = config.cookieName;
+    security["cookieMaxAge"]            = config.cookieMaxAge;
+    security["cookieHttpOnly"]          = config.cookieHttpOnly;
+    security["cookieSecure"]            = config.cookieSecure;
 
-    String jsonStr;
-    serializeJson(doc, jsonStr);
-
-    bool success = preferences.putString("users", jsonStr) > 0;
-    if (success) {
-        LOG_DEBUG("UserManager: Users saved to storage");
+    // 确保目录存在
+    if (!LittleFS.exists("/config")) {
+        if (!LittleFS.mkdir("/config")) {
+            LOG_ERROR("UserManager: Failed to create /config directory");
+            return false;
+        }
     }
-    return success;
+    
+    // 写入文件
+    File file = LittleFS.open(USERS_CONFIG_FILE, "w");
+    if (!file) {
+        LOG_ERROR("UserManager: Failed to open users file for writing");
+        return false;
+    }
+    
+    size_t written = serializeJson(doc, file);
+    file.close();
+    
+    if (written > 0) {
+        LOG_DEBUG("UserManager: Users saved to file");
+        return true;
+    } else {
+        LOG_ERROR("UserManager: Failed to write users to file");
+        return false;
+    }
 }
 
 bool UserManager::loadUsersFromStorage() {
-    String jsonStr = preferences.getString("users", "");
-    if (jsonStr.isEmpty()) {
+    if (!LittleFS.exists(USERS_CONFIG_FILE)) {
+        LOG_INFO("UserManager: Users file not found");
+        return false;
+    }
+    
+    File file = LittleFS.open(USERS_CONFIG_FILE, "r");
+    if (!file) {
+        LOG_ERROR("UserManager: Failed to open users file for reading");
         return false;
     }
 
     JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, jsonStr);
+    DeserializationError error = deserializeJson(doc, file);
+    file.close();
+    
     if (error) {
         char buf[64];
         snprintf(buf, sizeof(buf), "UserManager: Failed to parse user data: %s", error.c_str());
@@ -398,6 +456,7 @@ bool UserManager::loadUsersFromStorage() {
 
     users.clear();
 
+    // 加载用户数据
     JsonArray usersArray = doc["users"];
     for (JsonObject userObj : usersArray) {
         User user;
@@ -430,34 +489,53 @@ bool UserManager::loadUsersFromStorage() {
 
         users[user.username] = user;
     }
+    
+    // 加载安全配置
+    JsonObject security = doc["security"];
+    if (!security.isNull()) {
+        config.maxLoginAttempts        = security["maxLoginAttempts"] | 5;
+        config.loginLockoutTime        = security["loginLockoutTime"] | 300000UL;
+        config.minPasswordLength       = security["minPasswordLength"] | 6;
+        config.maxPasswordLength       = security["maxPasswordLength"] | 32;
+        config.requireStrongPasswords  = security["requireStrongPasswords"] | false;
+        config.allowMultipleSessions   = security["allowMultipleSessions"] | true;
+        config.sessionTimeout          = security["sessionTimeout"] | 3600000UL;
+        config.sessionCleanupInterval  = security["sessionCleanupInterval"] | 60000UL;
+        config.enableSessionPersistence= security["enableSessionPersistence"] | true;
+        config.cookieName              = security["cookieName"] | "session";
+        config.cookieMaxAge            = security["cookieMaxAge"] | 3600UL;
+        config.cookieHttpOnly          = security["cookieHttpOnly"] | true;
+        config.cookieSecure            = security["cookieSecure"] | false;
+    }
 
     char buf[48];
-    snprintf(buf, sizeof(buf), "UserManager: Loaded %u users from storage", (unsigned)users.size());
+    snprintf(buf, sizeof(buf), "UserManager: Loaded %u users from file", (unsigned)users.size());
     LOG_INFO(buf);
     return true;
 }
 
 bool UserManager::saveConfig() {
-    preferences.putUChar("max_login_attempts", config.maxLoginAttempts);
-    preferences.putULong("login_lockout_time", config.loginLockoutTime);
-    preferences.putUChar("min_password_length", config.minPasswordLength);
-    preferences.putUChar("max_password_length", config.maxPasswordLength);
-    preferences.putBool("require_strong_passwords", config.requireStrongPasswords);
-    preferences.putBool("allow_multiple_sessions", config.allowMultipleSessions);
-    
-    Serial.println("[UserManager] Config saved");  // saveConfig 在 Logger 前调用，保留 Serial
-    return true;
+    // 安全配置已集成到 saveUsersToStorage() 中统一保存
+    return saveUsersToStorage();
 }
 
 bool UserManager::loadConfig() {
-    config.maxLoginAttempts = preferences.getUChar("max_login_attempts", 5);
-    config.loginLockoutTime = preferences.getULong("login_lockout_time", 300000);
-    config.minPasswordLength = preferences.getUChar("min_password_length", 6);
-    config.maxPasswordLength = preferences.getUChar("max_password_length", 32);
-    config.requireStrongPasswords = preferences.getBool("require_strong_passwords", false);
-    config.allowMultipleSessions = preferences.getBool("allow_multiple_sessions", true);
-    
+    // 安全配置已集成到 loadUsersFromStorage() 中统一加载
+    // 此处仅返回 true，实际加载在 loadUsersFromStorage() 中完成
     return true;
+}
+
+bool UserManager::updateSecurityConfig(uint32_t sessionTimeout, uint32_t sessionCleanupInterval,
+                                       bool enableSessionPersistence, const String& cookieName,
+                                       uint32_t cookieMaxAge, bool cookieHttpOnly, bool cookieSecure) {
+    config.sessionTimeout = sessionTimeout;
+    config.sessionCleanupInterval = sessionCleanupInterval;
+    config.enableSessionPersistence = enableSessionPersistence;
+    config.cookieName = cookieName;
+    config.cookieMaxAge = cookieMaxAge;
+    config.cookieHttpOnly = cookieHttpOnly;
+    config.cookieSecure = cookieSecure;
+    return saveUsersToStorage();
 }
 
 // ============ 静态工具方法 ============

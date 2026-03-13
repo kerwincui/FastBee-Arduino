@@ -3,7 +3,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <Preferences.h>
+#include <Preferences.h>  // 仅用于会话持久化
 #include <map>
 #include <vector>
 #include <functional>
@@ -50,7 +50,7 @@ struct Permission {
 };
 
 /**
- * @brief 安全配置结构体
+ * @brief 安全配置结构体（运行时缓存，实际配置存储在 UserManager 的 users.json 中）
  */
 struct SecurityConfig {
     uint32_t sessionTimeout = 3600000; // 1小时
@@ -93,9 +93,9 @@ struct AuditEntry {
  */
 class AuthManager : public IAuthManager {
 private:
-    // 配置和状态
+    // 配置和状态（运行时缓存，从 UserManager 同步）
     SecurityConfig securityConfig;
-    Preferences preferences;
+    Preferences sessionPrefs;  // 仅用于会话数据持久化
 
     // 依赖组件
     IUserManager* userManager;

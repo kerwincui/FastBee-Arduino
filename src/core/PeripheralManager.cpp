@@ -7,6 +7,8 @@
 
 #include "core/PeripheralManager.h"
 #include "systems/LoggerSystem.h"
+#include <Wire.h>
+#include <SPI.h>
 
 // 单例实现
 PeripheralManager& PeripheralManager::getInstance() {
@@ -758,31 +760,141 @@ bool PeripheralManager::migrateFromGPIOConfig() {
 // ========== 内部辅助方法 ==========
 
 bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& errorMsg) {
+    // 基本字段验证
     if (config.id.isEmpty()) {
-        errorMsg = "ID cannot be empty";
+        errorMsg = "ID 不能为空";
         return false;
     }
     
     if (config.name.isEmpty()) {
-        errorMsg = "Name cannot be empty";
+        errorMsg = "名称不能为空";
         return false;
     }
     
     if (config.type == PeripheralType::UNCONFIGURED) {
-        errorMsg = "Type cannot be unconfigured";
+        errorMsg = "外设类型不能为空";
         return false;
     }
     
     if (config.pinCount == 0) {
-        errorMsg = "At least one pin is required";
+        errorMsg = "至少需要配置一个引脚";
         return false;
     }
     
+    // 引脚验证
     for (int i = 0; i < config.pinCount && i < 8; i++) {
-        if (config.pins[i] != 255 && !isValidPin(config.pins[i])) {
-            errorMsg = "Invalid pin number: " + String(config.pins[i]);
-            return false;
+        if (config.pins[i] != 255) {
+            // 使用增强的引脚验证
+            if (!validatePinForType(config.pins[i], config.type, errorMsg)) {
+                return false;
+            }
         }
+    }
+    
+    // 类型特定参数验证
+    switch (config.type) {
+        case PeripheralType::UART:
+            // UART 波特率验证
+            if (config.params.uart.baudRate == 0 || config.params.uart.baudRate > 5000000) {
+                errorMsg = "UART 波特率无效 (有效范围: 1-5000000)";
+                return false;
+            }
+            if (config.params.uart.dataBits < 5 || config.params.uart.dataBits > 8) {
+                errorMsg = "UART 数据位无效 (有效值: 5-8)";
+                return false;
+            }
+            if (config.params.uart.stopBits < 1 || config.params.uart.stopBits > 2) {
+                errorMsg = "UART 停止位无效 (有效值: 1, 2)";
+                return false;
+            }
+            if (config.params.uart.parity > 2) {
+                errorMsg = "UART 校验位无效 (0=无, 1=奇, 2=偶)";
+                return false;
+            }
+            break;
+            
+        case PeripheralType::I2C:
+            // I2C 频率验证
+            if (config.params.i2c.frequency != 100000 && 
+                config.params.i2c.frequency != 400000 &&
+                config.params.i2c.frequency != 1000000) {
+                errorMsg = "I2C 频率无效 (支持: 100000, 400000, 1000000)";
+                return false;
+            }
+            if (!config.params.i2c.isMaster && config.params.i2c.address == 0) {
+                errorMsg = "I2C 从机模式需要设置地址";
+                return false;
+            }
+            if (config.params.i2c.address > 127) {
+                errorMsg = "I2C 地址无效 (有效范围: 0-127)";
+                return false;
+            }
+            break;
+            
+        case PeripheralType::SPI:
+            // SPI 频率验证
+            if (config.params.spi.frequency == 0 || config.params.spi.frequency > 80000000) {
+                errorMsg = "SPI 频率无效 (有效范围: 1-80000000)";
+                return false;
+            }
+            if (config.params.spi.mode > 3) {
+                errorMsg = "SPI 模式无效 (有效值: 0-3)";
+                return false;
+            }
+            break;
+            
+        case PeripheralType::GPIO_PWM_OUTPUT:
+        case PeripheralType::GPIO_ANALOG_OUTPUT:
+        case PeripheralType::PWM_SERVO:
+            // PWM 参数验证
+            if (config.params.gpio.pwmChannel > 15) {
+                errorMsg = "PWM 通道无效 (有效范围: 0-15)";
+                return false;
+            }
+            if (config.params.gpio.pwmFrequency == 0 || config.params.gpio.pwmFrequency > 40000000) {
+                errorMsg = "PWM 频率无效 (有效范围: 1-40000000)";
+                return false;
+            }
+            if (config.params.gpio.pwmResolution < 1 || config.params.gpio.pwmResolution > 16) {
+                errorMsg = "PWM 分辨率无效 (有效范围: 1-16 位)";
+                return false;
+            }
+            // 检查频率和分辨率组合是否有效
+            // ESP32: freq * (2^resolution) <= 80MHz
+            {
+                uint64_t maxFreqResProduct = 80000000ULL;
+                uint64_t freqResProduct = (uint64_t)config.params.gpio.pwmFrequency * (1ULL << config.params.gpio.pwmResolution);
+                if (freqResProduct > maxFreqResProduct) {
+                    errorMsg = "PWM 频率和分辨率组合无效 (freq * 2^resolution 不能超过 80MHz)";
+                    return false;
+                }
+            }
+            break;
+            
+        case PeripheralType::ADC:
+        case PeripheralType::GPIO_ANALOG_INPUT:
+            // ADC 参数验证
+            if (config.params.adc.attenuation > 3) {
+                errorMsg = "ADC 衰减系数无效 (有效值: 0-3)";
+                return false;
+            }
+            if (config.params.adc.resolution < 9 || config.params.adc.resolution > 12) {
+                errorMsg = "ADC 分辨率无效 (有效范围: 9-12 位)";
+                return false;
+            }
+            break;
+            
+        case PeripheralType::DAC:
+            // DAC 参数验证
+            if (config.params.dac.channel != 1 && config.params.dac.channel != 2) {
+                errorMsg = "DAC 通道无效 (有效值: 1, 2)";
+                return false;
+            }
+            break;
+            
+        default:
+            // 其他类型暂不需要特殊验证
+            break;
     }
     
     return true;
@@ -897,16 +1009,65 @@ void PeripheralManager::removePinMapping(const String& id) {
     }
 }
 
+// ========== 引脚验证与冲突检测 ==========
+
+// 系统保留引脚定义
+static const uint8_t RESERVED_PINS[] = {
+    0,    // Boot 模式选择（内部上拉），可用于输出但需谨慎
+    1,    // TX0 - 调试串口
+    3,    // RX0 - 调试串口
+    6, 7, 8, 9, 10, 11,  // 内部 Flash SPI（禁止使用）
+};
+
+// 输入专用引脚（仅支持输入）
+static const uint8_t INPUT_ONLY_PINS[] = {
+    34, 35, 36, 39  // GPIO34-39 只能作为输入
+};
+
+// 获取引脚保留原因
+static String getPinReservedReason(uint8_t pin) {
+    switch (pin) {
+        case 0: return "Boot 模式选择引脚，建议保留";
+        case 1: return "TX0 调试串口";
+        case 3: return "RX0 调试串口";
+        case 6: case 7: case 8: case 9: case 10: case 11:
+            return "内部 Flash SPI，禁止使用";
+        case 34: case 35: case 36: case 39:
+            return "仅支持输入模式";
+        default: return "";
+    }
+}
+
 bool PeripheralManager::isValidPin(uint8_t pin) const {
     // ESP32的有效GPIO引脚范围
     if (pin > 39) return false;
     
-    // 内部Flash使用的引脚
-    if (pin == 6 || pin == 7 || pin == 8 || pin == 9 || pin == 10 || pin == 11) {
+    // 内部Flash使用的引脚（绝对禁止）
+    if (pin >= 6 && pin <= 11) {
         return false;
     }
     
     return true;
+}
+
+// 检查引脚是否为系统保留引脚
+bool PeripheralManager::isReservedPin(uint8_t pin) const {
+    for (size_t i = 0; i < sizeof(RESERVED_PINS); i++) {
+        if (RESERVED_PINS[i] == pin) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 检查引脚是否只能用于输入
+bool PeripheralManager::isInputOnlyPin(uint8_t pin) const {
+    for (size_t i = 0; i < sizeof(INPUT_ONLY_PINS); i++) {
+        if (INPUT_ONLY_PINS[i] == pin) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool PeripheralManager::checkPinConflict(uint8_t pin, const String& excludeId) const {
@@ -915,6 +1076,83 @@ bool PeripheralManager::checkPinConflict(uint8_t pin, const String& excludeId) c
         return excludeId.isEmpty() || it->second != excludeId;
     }
     return false;
+}
+
+// 获取引脚冲突详细信息
+String PeripheralManager::getPinConflictInfo(uint8_t pin, const String& excludeId) const {
+    // 检查是否为无效引脚
+    if (!isValidPin(pin)) {
+        return String("GPIO") + String(pin) + " 不是有效的 GPIO 引脚";
+    }
+    
+    // 检查系统保留引脚
+    String reservedReason = getPinReservedReason(pin);
+    if (!reservedReason.isEmpty() && (pin >= 6 && pin <= 11)) {
+        return String("GPIO") + String(pin) + ": " + reservedReason;
+    }
+    
+    // 检查是否与现有外设冲突
+    auto it = pinToPeripheral.find(pin);
+    if (it != pinToPeripheral.end() && (excludeId.isEmpty() || it->second != excludeId)) {
+        auto config = getPeripheral(it->second);
+        if (config) {
+            return String("GPIO") + String(pin) + " 已被外设 \"" + config->name + "\" (" + it->second + ") 使用";
+        }
+        return String("GPIO") + String(pin) + " 已被外设 " + it->second + " 使用";
+    }
+    
+    // 系统保留引脚警告（非错误）
+    if (!reservedReason.isEmpty()) {
+        return String("警告: GPIO") + String(pin) + " - " + reservedReason;
+    }
+    
+    return "";  // 无冲突
+}
+
+// 验证引脚配置是否与外设类型兼容
+bool PeripheralManager::validatePinForType(uint8_t pin, PeripheralType type, String& errorMsg) const {
+    if (!isValidPin(pin)) {
+        errorMsg = String("GPIO") + String(pin) + " 不是有效的引脚";
+        return false;
+    }
+    
+    // 检查输入专用引脚
+    if (isInputOnlyPin(pin)) {
+        // GPIO34-39 只能用于输入类型
+        int typeVal = static_cast<int>(type);
+        bool isInputType = (type == PeripheralType::GPIO_DIGITAL_INPUT ||
+                           type == PeripheralType::GPIO_DIGITAL_INPUT_PULLUP ||
+                           type == PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN ||
+                           type == PeripheralType::GPIO_ANALOG_INPUT ||
+                           type == PeripheralType::ADC ||
+                           type == PeripheralType::GPIO_INTERRUPT_RISING ||
+                           type == PeripheralType::GPIO_INTERRUPT_FALLING ||
+                           type == PeripheralType::GPIO_INTERRUPT_CHANGE);
+        
+        if (!isInputType) {
+            errorMsg = String("GPIO") + String(pin) + " 只能用于输入模式，不能配置为 " + getPeripheralTypeName(type);
+            return false;
+        }
+    }
+    
+    // DAC 只能使用 GPIO25 或 GPIO26
+    if (type == PeripheralType::DAC && pin != 25 && pin != 26) {
+        errorMsg = "DAC 只能使用 GPIO25 或 GPIO26";
+        return false;
+    }
+    
+    // 触摸引脚验证（GPIO0, 2, 4, 12-15, 27, 32, 33）
+    if (type == PeripheralType::GPIO_TOUCH) {
+        bool isTouchPin = (pin == 0 || pin == 2 || pin == 4 || 
+                          (pin >= 12 && pin <= 15) || 
+                          pin == 27 || pin == 32 || pin == 33);
+        if (!isTouchPin) {
+            errorMsg = String("GPIO") + String(pin) + " 不支持触摸功能";
+            return false;
+        }
+    }
+    
+    return true;
 }
 
 String PeripheralManager::getPinPeripheralId(uint8_t pin) const {
@@ -982,17 +1220,189 @@ void PeripheralManager::handleInterrupt(uint8_t pin) {
     }
 }
 
-// 占位符实现（需要在后续完善）
+// ========== 通用数据读写接口 ==========
+
 bool PeripheralManager::writeData(const String& id, const uint8_t* data, size_t len) {
-    // TODO: 实现通用数据写入
-    (void)id; (void)data; (void)len;
-    return false;
+    auto config = getPeripheral(id);
+    if (!config || !config->enabled) {
+        LOG_WARNINGF("writeData: Peripheral '%s' not found or disabled", id.c_str());
+        return false;
+    }
+    
+    bool success = false;
+    
+    switch (config->type) {
+        // GPIO 数字输出
+        case PeripheralType::GPIO_DIGITAL_OUTPUT:
+            if (len >= 1) {
+                GPIOState state = (data[0] != 0) ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
+                success = writePin(id, state);
+            }
+            break;
+            
+        // PWM / 模拟输出
+        case PeripheralType::GPIO_PWM_OUTPUT:
+        case PeripheralType::GPIO_ANALOG_OUTPUT:
+        case PeripheralType::PWM_SERVO:
+            if (len >= 2) {
+                uint32_t dutyCycle = data[0] | (data[1] << 8);
+                if (len >= 4) {
+                    dutyCycle |= (data[2] << 16) | (data[3] << 24);
+                }
+                success = writePWM(id, dutyCycle);
+            } else if (len == 1) {
+                // 单字节作为 0-255 占空比
+                uint32_t maxVal = (1U << config->params.gpio.pwmResolution) - 1;
+                uint32_t dutyCycle = (data[0] * maxVal) / 255;
+                success = writePWM(id, dutyCycle);
+            }
+            break;
+            
+        // DAC 输出
+        case PeripheralType::DAC:
+            if (len >= 1) {
+                uint8_t pin = config->getPrimaryPin();
+                if (pin == 25 || pin == 26) {
+                    dacWrite(pin, data[0]);
+                    success = true;
+                }
+            }
+            break;
+            
+        // UART 发送
+        case PeripheralType::UART:
+            // 需要根据配置的 UART 端口发送数据
+            // 这里使用 Serial（UART0）作为示例
+            if (config->pins[0] == 1 && config->pins[1] == 3) {
+                Serial.write(data, len);
+                success = true;
+            }
+            // TODO: 支持 Serial1/Serial2
+            break;
+            
+        // I2C 写入
+        case PeripheralType::I2C:
+            if (config->params.i2c.isMaster && config->params.i2c.address > 0) {
+                Wire.beginTransmission(config->params.i2c.address);
+                Wire.write(data, len);
+                success = (Wire.endTransmission() == 0);
+            }
+            break;
+            
+        // SPI 传输
+        case PeripheralType::SPI:
+            SPI.beginTransaction(SPISettings(config->params.spi.frequency, 
+                config->params.spi.msbFirst ? MSBFIRST : LSBFIRST, 
+                config->params.spi.mode));
+            for (size_t i = 0; i < len; i++) {
+                SPI.transfer(data[i]);
+            }
+            SPI.endTransaction();
+            success = true;
+            break;
+            
+        default:
+            LOG_WARNINGF("writeData: Unsupported peripheral type %d", static_cast<int>(config->type));
+            break;
+    }
+    
+    // 更新运行时状态
+    if (success && runtimeStates.find(id) != runtimeStates.end()) {
+        runtimeStates[id].lastActivity = millis();
+        runtimeStates[id].state.comm.bytesSent += len;
+    }
+    
+    return success;
 }
 
 bool PeripheralManager::readData(const String& id, uint8_t* buffer, size_t& len) {
-    // TODO: 实现通用数据读取
-    (void)id; (void)buffer; (void)len;
-    return false;
+    auto config = getPeripheral(id);
+    if (!config || !config->enabled) {
+        LOG_WARNINGF("readData: Peripheral '%s' not found or disabled", id.c_str());
+        len = 0;
+        return false;
+    }
+    
+    bool success = false;
+    size_t maxLen = len;
+    len = 0;
+    
+    switch (config->type) {
+        // GPIO 数字输入
+        case PeripheralType::GPIO_DIGITAL_INPUT:
+        case PeripheralType::GPIO_DIGITAL_INPUT_PULLUP:
+        case PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN:
+        case PeripheralType::GPIO_TOUCH:
+            if (maxLen >= 1) {
+                GPIOState state = readPin(id);
+                buffer[0] = (state == GPIOState::STATE_HIGH) ? 1 : 0;
+                len = 1;
+                success = true;
+            }
+            break;
+            
+        // ADC / 模拟输入
+        case PeripheralType::GPIO_ANALOG_INPUT:
+        case PeripheralType::ADC:
+            if (maxLen >= 2) {
+                uint16_t value = readAnalog(id);
+                buffer[0] = value & 0xFF;
+                buffer[1] = (value >> 8) & 0xFF;
+                len = 2;
+                success = true;
+            }
+            break;
+            
+        // UART 接收
+        case PeripheralType::UART:
+            if (config->pins[0] == 1 && config->pins[1] == 3) {
+                len = 0;
+                while (Serial.available() && len < maxLen) {
+                    buffer[len++] = Serial.read();
+                }
+                success = true;
+            }
+            // TODO: 支持 Serial1/Serial2
+            break;
+            
+        // I2C 读取
+        case PeripheralType::I2C:
+            if (config->params.i2c.isMaster && config->params.i2c.address > 0) {
+                size_t requestLen = (maxLen < 32) ? maxLen : 32;  // I2C 一次最多读取 32 字节
+                Wire.requestFrom(config->params.i2c.address, (uint8_t)requestLen);
+                len = 0;
+                while (Wire.available() && len < maxLen) {
+                    buffer[len++] = Wire.read();
+                }
+                success = (len > 0);
+            }
+            break;
+            
+        // SPI 读取（需要先发送才能读取）
+        case PeripheralType::SPI:
+            SPI.beginTransaction(SPISettings(config->params.spi.frequency, 
+                config->params.spi.msbFirst ? MSBFIRST : LSBFIRST, 
+                config->params.spi.mode));
+            for (size_t i = 0; i < maxLen; i++) {
+                buffer[i] = SPI.transfer(0xFF);  // 发送 dummy 字节读取数据
+            }
+            SPI.endTransaction();
+            len = maxLen;
+            success = true;
+            break;
+            
+        default:
+            LOG_WARNINGF("readData: Unsupported peripheral type %d", static_cast<int>(config->type));
+            break;
+    }
+    
+    // 更新运行时状态
+    if (success && runtimeStates.find(id) != runtimeStates.end()) {
+        runtimeStates[id].lastActivity = millis();
+        runtimeStates[id].state.comm.bytesReceived += len;
+    }
+    
+    return success;
 }
 
 bool PeripheralManager::writeString(const String& id, const String& data) {

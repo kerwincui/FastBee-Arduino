@@ -141,6 +141,12 @@ public:
     bool checkPinConflict(uint8_t pin, const String& excludeId = "") const;
     std::vector<String> getConflictingPeripherals(uint8_t pin) const;
     
+    // 引脚验证（增强版）
+    String getPinConflictInfo(uint8_t pin, const String& excludeId = "") const;
+    bool validatePinForType(uint8_t pin, PeripheralType type, String& errorMsg) const;
+    bool isReservedPin(uint8_t pin) const;
+    bool isInputOnlyPin(uint8_t pin) const;
+    
     // 定期维护（在主循环中调用）
     void performMaintenance();
 

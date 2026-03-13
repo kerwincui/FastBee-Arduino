@@ -24,8 +24,7 @@ Under active development...
 * **Protocol Support:** MQTT, Modbus RTU/TCP, TCP server/client, HTTP client
 * **Remote Maintenance:** Firmware OTA update, filesystem OTA update, online log viewer, remote restart, factory reset
 * **Data Storage:** LittleFS filesystem, NVS Preferences dual storage, JSON configuration management, Gzip compression
-* **Peripheral Management:** RS485 serial port, digital I/O, analog input, PWM output, I2C/SPI interfaces, visual configuration
-* **GPIO Management:** Visual GPIO pin configuration, status monitoring, PWM control
+* **Peripheral Management:** RS485 serial port, digital I/O, analog input, PWM output, I2C/SPI interfaces, visual GPIO pin configuration
 * **Health Monitoring:** Real-time CPU/memory/storage monitoring, network connection status, task status, anomaly alerts
 * **Logging System:** Multi-level logging (DEBUG/INFO/WARN/ERROR), file storage, web viewer, log rotation
 * **Task Scheduling:** Scheduled tasks, async event handling, priority scheduling

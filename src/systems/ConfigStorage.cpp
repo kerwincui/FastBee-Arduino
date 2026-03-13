@@ -132,8 +132,6 @@ bool ConfigStorage::saveUserConfig(const JsonDocument& config)      { return sav
 bool ConfigStorage::loadUserConfig(JsonDocument& config)            { return loadJSONConfig(FileSystem::USER_CONFIG_FILE,      config); }
 bool ConfigStorage::saveProtocolConfig(const JsonDocument& config)  { return saveJSONConfig(FileSystem::PROTOCOL_CONFIG_FILE,  config); }
 bool ConfigStorage::loadProtocolConfig(JsonDocument& config)        { return loadJSONConfig(FileSystem::PROTOCOL_CONFIG_FILE,  config); }
-bool ConfigStorage::saveGpioConfig(const JsonDocument& config)      { return saveJSONConfig(FileSystem::GPIO_CONFIG_FILE,      config); }
-bool ConfigStorage::loadGpioConfig(JsonDocument& config)            { return loadJSONConfig(FileSystem::GPIO_CONFIG_FILE,      config); }
 
 // ── IConfigStorage 接口实现 ──────────────────────────────────────────────────
 

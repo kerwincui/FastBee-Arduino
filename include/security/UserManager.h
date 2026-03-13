@@ -3,11 +3,14 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <Preferences.h>
+#include <LittleFS.h>
 #include <vector>
 #include <map>
 #include "core/interfaces/IUserManager.h"
 #include "core/SystemConstants.h"
+
+// 用户配置文件路径
+static const char* USERS_CONFIG_FILE = "/config/users.json";
 
 /**
  * @brief 用户角色枚举
@@ -69,23 +72,30 @@ struct UserStats {
  */
 class UserManager : public IUserManager {
 private:
-    // 存储
-    Preferences preferences;
-    
     // 用户数据
     std::map<String, User> users;
     
     // 登录尝试记录
     std::map<String, uint8_t> loginAttempts;
     
-    // 配置
+    // 配置（包含安全配置，统一存储到 users.json）
     struct UserConfig {
+        // 用户安全配置
         uint8_t maxLoginAttempts = 5;
         uint32_t loginLockoutTime = 300000; // 5分钟
         uint8_t minPasswordLength = 6;
         uint8_t maxPasswordLength = 32;
         bool requireStrongPasswords = false;
         bool allowMultipleSessions = true;
+        
+        // 会话安全配置（从 AuthManager 合并）
+        uint32_t sessionTimeout = 3600000;        // 1小时
+        uint32_t sessionCleanupInterval = 60000;  // 1分钟
+        bool enableSessionPersistence = true;
+        String cookieName = "session";
+        uint32_t cookieMaxAge = 3600;             // 1小时
+        bool cookieHttpOnly = true;
+        bool cookieSecure = false;
     } config;
     
     // 默认用户（统一使用 SystemConstants 中定义的常量）
@@ -260,6 +270,60 @@ public:
      * @return 是否成功
      */
     bool loadConfig();
+    
+    // ============ 安全配置访问（供 AuthManager 使用） ============
+    
+    /**
+     * @brief 获取会话超时时间（毫秒）
+     */
+    uint32_t getSessionTimeout() const { return config.sessionTimeout; }
+    
+    /**
+     * @brief 获取会话清理间隔（毫秒）
+     */
+    uint32_t getSessionCleanupInterval() const { return config.sessionCleanupInterval; }
+    
+    /**
+     * @brief 是否启用会话持久化
+     */
+    bool isSessionPersistenceEnabled() const { return config.enableSessionPersistence; }
+    
+    /**
+     * @brief 获取 Cookie 名称
+     */
+    const String& getCookieName() const { return config.cookieName; }
+    
+    /**
+     * @brief 获取 Cookie 最大存活时间（秒）
+     */
+    uint32_t getCookieMaxAge() const { return config.cookieMaxAge; }
+    
+    /**
+     * @brief 是否启用 HttpOnly Cookie
+     */
+    bool isCookieHttpOnly() const { return config.cookieHttpOnly; }
+    
+    /**
+     * @brief 是否启用 Secure Cookie
+     */
+    bool isCookieSecure() const { return config.cookieSecure; }
+    
+    /**
+     * @brief 获取最大登录尝试次数
+     */
+    uint8_t getMaxLoginAttempts() const { return config.maxLoginAttempts; }
+    
+    /**
+     * @brief 获取登录锁定时间（毫秒）
+     */
+    uint32_t getLoginLockoutTime() const { return config.loginLockoutTime; }
+    
+    /**
+     * @brief 更新安全配置
+     */
+    bool updateSecurityConfig(uint32_t sessionTimeout, uint32_t sessionCleanupInterval,
+                              bool enableSessionPersistence, const String& cookieName,
+                              uint32_t cookieMaxAge, bool cookieHttpOnly, bool cookieSecure);
     
     // ============ 工具方法 ============
     

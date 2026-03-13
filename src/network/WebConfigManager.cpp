@@ -1,4 +1,4 @@
-﻿#include "./network/WebConfigManager.h"
+#include "./network/WebConfigManager.h"
 #include "./security/AuthManager.h"
 #include "./security/UserManager.h"
 #include "./security/RoleManager.h"
@@ -6,7 +6,6 @@
 #include "./network/OTAManager.h"
 #include "./protocols/ProtocolManager.h"
 #include "systems/LoggerSystem.h"
-#include "core/GPIOManager.h"
 #include "core/ConfigDefines.h"
 #include "utils/NetworkUtils.h"
 #include "utils/TimeUtils.h"
@@ -15,6 +14,7 @@
 #include <esp_heap_caps.h>
 #include <NimBLEDevice.h>
 #include <Update.h>
+#include <vector>
 
 WebConfigManager::WebConfigManager(AsyncWebServer* webServer,
                                    IAuthManager* authMgr, IUserManager* userMgr)
@@ -86,11 +86,30 @@ bool WebConfigManager::start() {
         LOG_ERROR("WebConfig: Server is null!");
         return false;
     }
+
+    // 启动前后打印内存快照，便于定位 Web 不可访问是否由内存导致
+    {
+        size_t freeHeap = esp_get_free_heap_size();
+        size_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+        uint8_t frag = (freeHeap > 0) ? (uint8_t)(100 - (largestBlock * 100 / freeHeap)) : 100;
+        LOG_INFOF("[WebConfig] Before begin: freeHeap=%u largest=%u frag=%u%% maxAlloc=%u",
+                  (unsigned)freeHeap, (unsigned)largestBlock, (unsigned)frag,
+                  (unsigned)ESP.getMaxAllocHeap());
+    }
     LOG_DEBUG("WebConfig: Calling server->begin()...");
     server->begin();
     LOG_DEBUG("WebConfig: server->begin() completed");
     isRunning = true;
     LOG_INFO("WebConfig: Web server started on port 80");
+
+    {
+        size_t freeHeap = esp_get_free_heap_size();
+        size_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+        uint8_t frag = (freeHeap > 0) ? (uint8_t)(100 - (largestBlock * 100 / freeHeap)) : 100;
+        LOG_INFOF("[WebConfig] After begin:  freeHeap=%u largest=%u frag=%u%% maxAlloc=%u",
+                  (unsigned)freeHeap, (unsigned)largestBlock, (unsigned)frag,
+                  (unsigned)ESP.getMaxAllocHeap());
+    }
     return true;
 }
 
@@ -125,10 +144,18 @@ void WebConfigManager::performMaintenance() {
         authManager->performMaintenance();
     }
 
-    // 检查内存碎片率，如果过高则记录警告
+    // 检查内存状态
     size_t freeHeap = esp_get_free_heap_size();
     size_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
-    uint8_t frag = (freeHeap > 0) ? (uint8_t)(100 - (largestBlock * 100 / freeHeap)) : 0;
+    uint8_t frag = (freeHeap > 0) ? (uint8_t)(100 - (largestBlock * 100 / freeHeap)) : 100;
+
+    // 紧急情况：内存极低或碎片率极高时立即重启
+    // 这是防止 Web 服务完全无响应的最后手段
+    if (freeHeap < 20000 || frag > 85) {
+        LOG_ERRORF("[WebConfig] CRITICAL: heap=%d frag=%d%%, forcing restart!", freeHeap, frag);
+        delay(100);  // 等待日志写入
+        ESP.restart();
+    }
 
     if (frag > 70) {
         LOG_WARNINGF("[WebConfig] High memory fragmentation: %d%%", frag);
@@ -139,7 +166,7 @@ void WebConfigManager::performMaintenance() {
     if (millis() - lastMemoryCheck > 60000) {  // 每分钟检查一次
         lastMemoryCheck = millis();
 
-        if (freeHeap < 30000) {  // 可用内存低于 30KB
+        if (freeHeap < 40000) {  // 可用内存低于 40KB 时开始清理
             LOG_WARNINGF("[WebConfig] Low memory detected: %d bytes, forcing cleanup", freeHeap);
 
             // 强制清理 WiFi 连接状态
@@ -152,7 +179,7 @@ void WebConfigManager::performMaintenance() {
             }
 
             // 如果内存仍然很低，重启 Web 服务器
-            if (esp_get_free_heap_size() < 25000) {
+            if (esp_get_free_heap_size() < 30000) {
                 LOG_WARNING("[WebConfig] Memory still low after cleanup, restarting web server");
                 stop();
                 delay(100);
@@ -673,44 +700,6 @@ void WebConfigManager::setupAPIRoutes() {
         handleUnlockAccount(request);
     });
     
-    // ============ GPIO API ============
-    
-    // 获取GPIO配置列表
-    server->on("/api/gpio/config", HTTP_GET,
-              [this](AsyncWebServerRequest* request) {
-        handleAPIGetGPIOConfig(request);
-    });
-    
-    // 配置GPIO
-    server->on("/api/gpio/config", HTTP_POST,
-              [this](AsyncWebServerRequest* request) {
-        handleAPIConfigureGPIO(request);
-    });
-    
-    // 读取GPIO状态
-    server->on("/api/gpio/read", HTTP_GET,
-              [this](AsyncWebServerRequest* request) {
-        handleAPIReadGPIO(request);
-    });
-    
-    // 写入GPIO状态
-    server->on("/api/gpio/write", HTTP_POST,
-              [this](AsyncWebServerRequest* request) {
-        handleAPIWriteGPIO(request);
-    });
-    
-    // 删除GPIO配置
-    server->on("/api/gpio/delete", HTTP_POST,
-              [this](AsyncWebServerRequest* request) {
-        handleAPIDeleteGPIO(request);
-    });
-    
-    // 保存GPIO配置
-    server->on("/api/gpio/save", HTTP_POST,
-              [this](AsyncWebServerRequest* request) {
-        handleAPISaveGPIOConfig(request);
-    });
-    
     // ============ 外设接口 API ============
     // 注意：更具体的路由必须放在通用路由之前，否则会被通用路由捕获
     
@@ -1195,15 +1184,8 @@ void WebConfigManager::sendBadRequest(AsyncWebServerRequest* request, const Stri
 // ============ 文件服务方法 ============
 
 bool WebConfigManager::serveStaticFile(AsyncWebServerRequest* request, const String& path) {
-    // 先检查原始文件是否存在
-    if (fileExists(path)) {
-        String contentType = getContentType(path);
-        request->send(LittleFS, path, contentType, false);
-        return true;
-    }
-    
     // 检查是否是可压缩文件类型（.html, .js, .css）
-    // 如果原始文件不存在，尝试提供 .gz 版本
+    // 优先尝试 .gz 版本（因为原始文件可能不存在）
     String ext = path.substring(path.lastIndexOf('.'));
     if (ext == ".html" || ext == ".js" || ext == ".css") {
         String gzPath = path + ".gz";
@@ -1211,12 +1193,20 @@ bool WebConfigManager::serveStaticFile(AsyncWebServerRequest* request, const Str
             // 获取原始文件的 Content-Type
             String contentType = getContentType(path);
             
-            // 创建响应并设置 gzip 编码头
+            // 使用 send 方法直接发送 .gz 文件
             AsyncWebServerResponse* response = request->beginResponse(LittleFS, gzPath, contentType);
             response->addHeader("Content-Encoding", "gzip");
+            response->addHeader("Cache-Control", "no-cache");
             request->send(response);
             return true;
         }
+    }
+    
+    // 检查原始文件是否存在
+    if (fileExists(path)) {
+        String contentType = getContentType(path);
+        request->send(LittleFS, path, contentType, false);
+        return true;
     }
     
     return false;
@@ -1230,12 +1220,15 @@ void WebConfigManager::serveGzippedFile(AsyncWebServerRequest* request, const St
         // 获取原始文件的 Content-Type
         String contentType = getContentType(path);
         
-        // 创建响应并设置 gzip 编码头
-        AsyncWebServerResponse* response = request->beginResponse(LittleFS, gzPath, contentType);
-        response->addHeader("Content-Encoding", "gzip");
-        response->addHeader("Cache-Control", "no-cache");
-        request->send(response);
-        return;
+        // 手动打开 .gz 文件，避免 AsyncFileResponse 尝试打开不存在的原始文件
+        File gzFile = LittleFS.open(gzPath, "r");
+        if (gzFile) {
+            AsyncWebServerResponse* response = request->beginResponse(gzFile, path, contentType);
+            response->addHeader("Content-Encoding", "gzip");
+            response->addHeader("Cache-Control", "no-cache");
+            request->send(response);
+            return;
+        }
     }
     
     // 回退：尝试提供原始文件
@@ -4058,222 +4051,6 @@ void WebConfigManager::handleAPISaveFileContent(AsyncWebServerRequest* request) 
     }
 }
 
-// ============ GPIO API 处理函数 ============
-
-void WebConfigManager::handleAPIGetGPIOConfig(AsyncWebServerRequest* request) {
-    if (!checkPermission(request, "system.view")) {
-        sendUnauthorized(request);
-        return;
-    }
-    
-    JsonDocument doc;
-    doc["success"] = true;
-    
-    GPIOManager& gpio = GPIOManager::getInstance();
-    std::vector<String> pinNames = gpio.getConfiguredPins();
-    
-    JsonArray pins = doc["data"]["pins"].to<JsonArray>();
-    for (const String& name : pinNames) {
-        // 通过名称查找引脚号
-        uint8_t pinNum = 255;
-        for (uint8_t i = 0; i < 40; i++) {
-            if (gpio.getPinName(i) == name) {
-                pinNum = i;
-                break;
-            }
-        }
-        if (pinNum == 255) continue;
-        
-        JsonObject pinObj = pins.add<JsonObject>();
-        pinObj["pin"] = pinNum;
-        pinObj["name"] = name;
-        pinObj["mode"] = static_cast<int>(gpio.getPinMode(pinNum));
-        GPIOState state = gpio.readPin(pinNum);
-        pinObj["state"] = (state == GPIOState::STATE_HIGH) ? 1 : 0;
-    }
-    
-    String output;
-    serializeJson(doc, output);
-    request->send(200, "application/json", output);
-}
-
-void WebConfigManager::handleAPIConfigureGPIO(AsyncWebServerRequest* request) {
-    if (!checkPermission(request, "config.edit")) {
-        sendUnauthorized(request);
-        return;
-    }
-    
-    // 获取参数
-    String pinStr = getParamValue(request, "pin", "");
-    String name = getParamValue(request, "name", "");
-    String modeStr = getParamValue(request, "mode", "");
-    
-    LOGGER.debugf("GPIO config request: pin=[%s] name=[%s] mode=[%s]", 
-                  pinStr.c_str(), name.c_str(), modeStr.c_str());
-    
-    if (pinStr.isEmpty() || name.isEmpty() || modeStr.isEmpty()) {
-        LOGGER.warning("GPIO config: Missing required parameters");
-        sendError(request, 400, "Missing required parameters: pin, name, mode");
-        return;
-    }
-    
-    uint8_t pin = pinStr.toInt();
-    GPIOMode mode = static_cast<GPIOMode>(modeStr.toInt());
-    
-    LOGGER.debugf("GPIO config: parsed pin=%d mode=%d", pin, (int)mode);
-    
-    GPIOConfig config;
-    config.pin = pin;
-    config.name = name;
-    config.mode = mode;
-    config.initialState = static_cast<GPIOState>(getParamValue(request, "defaultValue", "0").toInt());
-    config.inverted = getParamValue(request, "invert", "0") == "1";
-    
-    GPIOManager& gpio = GPIOManager::getInstance();
-    
-    // 先检查引脚有效性，给出明确错误信息
-    if (!gpio.isValidPin(pin)) {
-        LOGGER.warningf("GPIO %d: invalid pin (6-11 reserved for Flash)", pin);
-        sendError(request, 400, "Invalid GPIO pin (6-11 are reserved for internal Flash)");
-        return;
-    }
-    
-    if (gpio.configurePin(config)) {
-        // 配置成功后自动保存到 LittleFS
-        if (gpio.saveConfiguration()) {
-            LOGGER.infof("GPIO %d configured and saved via web API", pin);
-            sendSuccess(request, "GPIO configured and saved successfully");
-        } else {
-            LOGGER.warningf("GPIO %d configured but save failed", pin);
-            sendSuccess(request, "GPIO configured but save to file failed");
-        }
-    } else {
-        LOGGER.errorf("Failed to configure GPIO pin %d", pin);
-        sendError(request, 500, "Failed to configure GPIO");
-    }
-}
-
-void WebConfigManager::handleAPIReadGPIO(AsyncWebServerRequest* request) {
-    if (!checkPermission(request, "system.view")) {
-        sendUnauthorized(request);
-        return;
-    }
-    
-    String pinStr = getParamValue(request, "pin", "");
-    String name = getParamValue(request, "name", "");
-    
-    if (pinStr.isEmpty() && name.isEmpty()) {
-        sendError(request, 400, "Missing parameter: pin or name");
-        return;
-    }
-    
-    GPIOManager& gpio = GPIOManager::getInstance();
-    GPIOState state;
-    
-    if (!name.isEmpty()) {
-        state = gpio.readPin(name);
-    } else {
-        state = gpio.readPin(pinStr.toInt());
-    }
-    
-    JsonDocument doc;
-    doc["success"] = true;
-    doc["data"]["state"] = static_cast<int>(state);
-    doc["data"]["stateName"] = (state == GPIOState::STATE_HIGH) ? "HIGH" : "LOW";
-    
-    String output;
-    serializeJson(doc, output);
-    request->send(200, "application/json", output);
-}
-
-void WebConfigManager::handleAPIWriteGPIO(AsyncWebServerRequest* request) {
-    if (!checkPermission(request, "config.edit")) {
-        sendUnauthorized(request);
-        return;
-    }
-    
-    String pinStr = getParamValue(request, "pin", "");
-    String name = getParamValue(request, "name", "");
-    String stateStr = getParamValue(request, "state", "");
-    
-    if ((pinStr.isEmpty() && name.isEmpty()) || stateStr.isEmpty()) {
-        sendError(request, 400, "Missing required parameters");
-        return;
-    }
-    
-    GPIOManager& gpio = GPIOManager::getInstance();
-    bool success = false;
-    
-    // 支持 toggle 操作
-    if (stateStr == "toggle") {
-        if (!name.isEmpty()) {
-            success = gpio.togglePin(name);
-        } else {
-            success = gpio.togglePin((uint8_t)pinStr.toInt());
-        }
-    } else {
-        GPIOState state = static_cast<GPIOState>(stateStr.toInt());
-        if (!name.isEmpty()) {
-            success = gpio.writePin(name, state);
-        } else {
-            success = gpio.writePin((uint8_t)pinStr.toInt(), state);
-        }
-    }
-    
-    if (success) {
-        sendSuccess(request, "GPIO state updated");
-    } else {
-        sendError(request, 500, "Failed to write GPIO");
-    }
-}
-
-void WebConfigManager::handleAPIDeleteGPIO(AsyncWebServerRequest* request) {
-    if (!checkPermission(request, "config.edit")) {
-        sendUnauthorized(request);
-        return;
-    }
-    
-    String pinStr = getParamValue(request, "pin", "");
-    if (pinStr.isEmpty()) {
-        sendError(request, 400, "Missing required parameter: pin");
-        return;
-    }
-    
-    uint8_t pin = (uint8_t)pinStr.toInt();
-    GPIOManager& gpio = GPIOManager::getInstance();
-    
-    if (!gpio.isPinConfigured(pin)) {
-        sendError(request, 404, "GPIO pin not configured");
-        return;
-    }
-    
-    // 通过重配置为 UNCONFIGURED 实现删除
-    // 先永久化除出该引脚
-    if (gpio.removePin(pin)) {
-        // 自动保存配置
-        gpio.saveConfiguration();
-        LOGGER.infof("GPIO %d deleted via web API", pin);
-        sendSuccess(request, "GPIO deleted successfully");
-    } else {
-        sendError(request, 500, "Failed to delete GPIO");
-    }
-}
-
-void WebConfigManager::handleAPISaveGPIOConfig(AsyncWebServerRequest* request) {
-    if (!checkPermission(request, "config.edit")) {
-        sendUnauthorized(request);
-        return;
-    }
-    
-    GPIOManager& gpio = GPIOManager::getInstance();
-    if (gpio.saveConfiguration()) {
-        LOGGER.info("GPIO configuration saved via web API");
-        sendSuccess(request, "GPIO configuration saved");
-    } else {
-        sendError(request, 500, "Failed to save GPIO configuration");
-    }
-}
-
 // ============ 协议配置 API 处理器 ============
 
 static const char* PROTOCOL_CONFIG_PATH = "/config/protocol.json";
@@ -5822,6 +5599,8 @@ void WebConfigManager::handleAPIReadPeripheral(AsyncWebServerRequest* request) {
     JsonObject data = doc["data"].to<JsonObject>();
     
     data["id"] = id;
+    data["type"] = static_cast<int>(config->type);
+    data["typeName"] = getPeripheralTypeName(config->type);
     
     // 根据类型读取数据
     if (config->isGPIOPeripheral()) {
@@ -5833,9 +5612,61 @@ void WebConfigManager::handleAPIReadPeripheral(AsyncWebServerRequest* request) {
         if (config->type == PeripheralType::GPIO_ANALOG_INPUT || config->type == PeripheralType::ADC) {
             data["value"] = pm.readAnalog(id);
         }
+    } else if (config->isCommunicationPeripheral()) {
+        // 通信接口读取
+        uint8_t buffer[128];
+        size_t len = sizeof(buffer);
+        
+        if (pm.readData(id, buffer, len) && len > 0) {
+            // 尝试作为字符串返回
+            bool isText = true;
+            for (size_t i = 0; i < len; i++) {
+                if (buffer[i] < 32 && buffer[i] != '\n' && buffer[i] != '\r' && buffer[i] != '\t') {
+                    isText = false;
+                    break;
+                }
+            }
+            
+            if (isText) {
+                data["text"] = String((char*)buffer, len);
+            }
+            
+            // 同时返回十六进制数据
+            String hex;
+            for (size_t i = 0; i < len; i++) {
+                char hexBuf[4];
+                snprintf(hexBuf, sizeof(hexBuf), "%02X ", buffer[i]);
+                hex += hexBuf;
+            }
+            data["hex"] = hex;
+            data["length"] = len;
+        } else {
+            data["text"] = "";
+            data["hex"] = "";
+            data["length"] = 0;
+        }
+    } else if (config->type == PeripheralType::DAC) {
+        // DAC 当前值（无法直接读取，返回配置信息）
+        data["channel"] = config->params.dac.channel;
+        data["pin"] = config->getPrimaryPin();
     } else {
-        // 其他类型外设的数据读取（待实现）
-        data["value"] = nullptr;
+        // 其他类型使用通用数据读取
+        uint8_t buffer[64];
+        size_t len = sizeof(buffer);
+        
+        if (pm.readData(id, buffer, len) && len > 0) {
+            data["length"] = len;
+            if (len <= 4) {
+                // 小数据量作为整数返回
+                uint32_t value = 0;
+                for (size_t i = 0; i < len; i++) {
+                    value |= ((uint32_t)buffer[i]) << (i * 8);
+                }
+                data["value"] = value;
+            }
+        } else {
+            data["value"] = nullptr;
+        }
     }
     
     String out;
@@ -5864,6 +5695,7 @@ void WebConfigManager::handleAPIWritePeripheral(AsyncWebServerRequest* request) 
     }
     
     bool success = false;
+    String message;
     
     if (config->isGPIOPeripheral()) {
         // GPIO写入
@@ -5871,24 +5703,100 @@ void WebConfigManager::handleAPIWritePeripheral(AsyncWebServerRequest* request) 
             int stateValue = getParamInt(request, "state", 0);
             GPIOState state = (stateValue == 1) ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
             success = pm.writePin(id, state);
+            message = success ? "GPIO 状态已设置" : "GPIO 写入失败";
         }
         else if (request->hasParam("toggle", true)) {
             success = pm.togglePin(id);
+            message = success ? "GPIO 状态已切换" : "GPIO 切换失败";
         }
         else if (request->hasParam("pwm", true) && 
-                 (config->type == PeripheralType::GPIO_PWM_OUTPUT || config->type == PeripheralType::PWM_SERVO)) {
+                 (config->type == PeripheralType::GPIO_PWM_OUTPUT || 
+                  config->type == PeripheralType::GPIO_ANALOG_OUTPUT ||
+                  config->type == PeripheralType::PWM_SERVO)) {
             uint32_t dutyCycle = getParamInt(request, "pwm", 0);
             success = pm.writePWM(id, dutyCycle);
+            message = success ? "PWM 占空比已设置" : "PWM 写入失败";
+        }
+        else {
+            sendError(request, 400, "缺少必要参数 (state/toggle/pwm)");
+            return;
+        }
+    } else if (config->type == PeripheralType::DAC) {
+        // DAC 写入
+        if (request->hasParam("value", true)) {
+            int value = getParamInt(request, "value", 0);
+            if (value < 0) value = 0;
+            if (value > 255) value = 255;
+            uint8_t dacValue = (uint8_t)value;
+            success = pm.writeData(id, &dacValue, 1);
+            message = success ? "DAC 值已设置" : "DAC 写入失败";
+        } else {
+            sendError(request, 400, "缺少 value 参数");
+            return;
+        }
+    } else if (config->isCommunicationPeripheral()) {
+        // 通信接口写入
+        if (request->hasParam("data", true)) {
+            String dataStr = getParamValue(request, "data", "");
+            if (!dataStr.isEmpty()) {
+                // 检查是否为十六进制格式
+                if (request->hasParam("hex", true) && getParamInt(request, "hex", 0) == 1) {
+                    // 解析十六进制数据
+                    std::vector<uint8_t> bytes;
+                    String hexStr = dataStr;
+                    hexStr.replace(" ", "");
+                    
+                    for (size_t i = 0; i + 1 < hexStr.length(); i += 2) {
+                        String byteStr = hexStr.substring(i, i + 2);
+                        bytes.push_back((uint8_t)strtol(byteStr.c_str(), nullptr, 16));
+                    }
+                    
+                    if (!bytes.empty()) {
+                        success = pm.writeData(id, bytes.data(), bytes.size());
+                        message = success ? String("已发送 ") + String(bytes.size()) + " 字节(HEX)" : "发送失败";
+                    } else {
+                        sendError(request, 400, "无效的十六进制数据");
+                        return;
+                    }
+                } else {
+                    // 作为文本发送
+                    success = pm.writeData(id, (const uint8_t*)dataStr.c_str(), dataStr.length());
+                    message = success ? String("已发送 ") + String(dataStr.length()) + " 字节" : "发送失败";
+                }
+            } else {
+                sendError(request, 400, "数据为空");
+                return;
+            }
+        } else {
+            sendError(request, 400, "缺少 data 参数");
+            return;
         }
     } else {
-        // 其他类型外设的数据写入（待实现）
-        success = false;
+        // 其他类型 - 使用通用数据写入
+        if (request->hasParam("value", true)) {
+            int value = getParamInt(request, "value", 0);
+            uint8_t bytes[4];
+            bytes[0] = value & 0xFF;
+            bytes[1] = (value >> 8) & 0xFF;
+            bytes[2] = (value >> 16) & 0xFF;
+            bytes[3] = (value >> 24) & 0xFF;
+            
+            size_t len = 1;
+            if (value > 0xFF) len = 2;
+            if (value > 0xFFFF) len = 4;
+            
+            success = pm.writeData(id, bytes, len);
+            message = success ? "数据写入成功" : "数据写入失败";
+        } else {
+            sendError(request, 400, "缺少 value 参数");
+            return;
+        }
     }
     
     if (success) {
-        sendSuccess(request, "数据写入成功");
+        sendSuccess(request, message);
     } else {
-        sendError(request, 400, "数据写入失败");
+        sendError(request, 400, message);
     }
 }
 

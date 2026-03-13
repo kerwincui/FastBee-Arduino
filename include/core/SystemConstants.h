@@ -112,7 +112,6 @@ namespace FileSystem {
     constexpr const char* NETWORK_CONFIG_FILE = "/config/network.json";
     constexpr const char* USER_CONFIG_FILE = "/config/users.json";
     constexpr const char* PROTOCOL_CONFIG_FILE = "/config/protocol.json";  // 统一协议配置
-    constexpr const char* GPIO_CONFIG_FILE = "/config/gpio.json";
     
     // 日志文件配置
     constexpr const char* SYSTEM_LOG_FILE = "/logs/system.log";

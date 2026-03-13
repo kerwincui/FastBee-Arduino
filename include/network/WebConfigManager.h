@@ -267,14 +267,6 @@ private:
     void handleAPIOtaUpload(AsyncWebServerRequest* request, const String& filename, 
                            size_t index, uint8_t* data, size_t len, bool final);  ///< 本地文件上传
     
-    // ============ GPIO API处理器 (兼容旧版) ============
-    void handleAPIGetGPIOConfig(AsyncWebServerRequest* request);   ///< 获取GPIO配置
-    void handleAPIConfigureGPIO(AsyncWebServerRequest* request);   ///< 配置GPIO
-    void handleAPIReadGPIO(AsyncWebServerRequest* request);        ///< 读取GPIO状态
-    void handleAPIWriteGPIO(AsyncWebServerRequest* request);       ///< 写入GPIO状态
-    void handleAPIDeleteGPIO(AsyncWebServerRequest* request);      ///< 删除GPIO配置
-    void handleAPISaveGPIOConfig(AsyncWebServerRequest* request);  ///< 保存GPIO配置
-    
     // ============ 外设接口 API处理器 ============
     void handleAPIGetPeripherals(AsyncWebServerRequest* request);      ///< 获取所有外设
     void handleAPIGetPeripheral(AsyncWebServerRequest* request);       ///< 获取单个外设
