@@ -43,13 +43,13 @@ Under active development...
 * **Power:** DC 9-36V, external antenna, USB programming port and config button
 * **Terminal Connections:**
   * A/L: RS485-A (TX), GPIO17
-  * B/H: RS485-B (RX), GPIO18
+  * B/H: RS485-B (RX), GPIO16
   * VCC: Power positive, DC 9-36V
   * GND: Power negative
   * DGND: Digital ground (isolated)
   * EGND: Protective earth
-  * IO/L: Isolated digital I/O low side
-  * IO/H: Isolated digital I/O high side
+  * IO/L: Isolated digital I/O low side，GPIO21
+  * IO/H: Isolated digital I/O high side，GPIO22
 * **LED Indicators:**
   * POWER: Power indicator (solid = power OK)
   * STATE: Status LED, GPIO5 (active low)
