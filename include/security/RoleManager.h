@@ -60,7 +60,8 @@ namespace BuiltinPermissions {
     static constexpr const char* FS_MANAGE = "fs.manage";
 
     // 审计日志
-    static constexpr const char* AUDIT_VIEW = "audit.view";
+    static constexpr const char* AUDIT_VIEW  = "audit.view";
+    static constexpr const char* AUDIT_CLEAR = "audit.clear";
 }
 
 /**

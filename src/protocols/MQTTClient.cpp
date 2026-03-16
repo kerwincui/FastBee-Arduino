@@ -64,6 +64,11 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     config.directConnect     = doc["directConnect"]     | true;
     config.autoReconnect     = doc["autoReconnect"]     | true;
     config.connectionTimeout = doc["connectionTimeout"] | 30000;
+    // 遗嘱消息配置
+    config.willTopic   = doc["willTopic"]   | "";
+    config.willPayload = doc["willPayload"] | "";
+    config.willQos     = doc["willQos"]     | 0;
+    config.willRetain  = doc["willRetain"]  | false;
     
     // 加载发布主题配置（支持多组）
     config.publishTopics.clear();
@@ -280,10 +285,22 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
 bool MQTTClient::reconnect() {
     LOG_INFO("MQTT: Connecting...");
 
-    bool ok = mqttClient.connect(
-        config.clientId.c_str(),
-        config.username.c_str(),
-        config.password.c_str());
+    bool ok;
+    if (!config.willTopic.isEmpty()) {
+        ok = mqttClient.connect(
+            config.clientId.c_str(),
+            config.username.c_str(),
+            config.password.c_str(),
+            config.willTopic.c_str(),
+            config.willQos,
+            config.willRetain,
+            config.willPayload.c_str());
+    } else {
+        ok = mqttClient.connect(
+            config.clientId.c_str(),
+            config.username.c_str(),
+            config.password.c_str());
+    }
 
     if (ok) {
         isConnected = true;

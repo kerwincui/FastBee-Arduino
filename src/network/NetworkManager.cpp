@@ -848,9 +848,9 @@ NetworkStatusInfo NetworkManager::getStatusInfo() const {
 }
 
 String NetworkManager::scanNetworks() {
-    // 使用静态缓冲区减少内存分配和碎片
+    // 使用静态JSON文档减少内存碎片
     static char buffer[2048];
-    DynamicJsonDocument doc(2048);
+    StaticJsonDocument<2048> doc;
     JsonArray networks = doc.to<JsonArray>();
     
     int numNetworks = WiFi.scanNetworks();
@@ -920,7 +920,7 @@ void NetworkManager::setAutoReconnect(bool enabled) {
 }
 
 String NetworkManager::getConfigJSON() {
-    DynamicJsonDocument doc(2048);
+    StaticJsonDocument<2048> doc;
     
     // 基本配置
     doc["mode"] = static_cast<uint8_t>(wifiConfig.mode);
@@ -1012,7 +1012,7 @@ bool NetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStorag
 }
 
 bool NetworkManager::updateConfigFromJSON(const String& jsonConfig) {
-    DynamicJsonDocument doc(2048);
+    StaticJsonDocument<2048> doc;
     DeserializationError error = deserializeJson(doc, jsonConfig);
     
     if (error) {
@@ -1110,7 +1110,7 @@ bool NetworkManager::resetToDefaults() {
 }
 
 String NetworkManager::getStatistics() {
-    DynamicJsonDocument doc(1024);
+    StaticJsonDocument<1024> doc;
     
     doc["status"] = static_cast<uint8_t>(statusInfo.status);
     doc["ssid"] = statusInfo.ssid;

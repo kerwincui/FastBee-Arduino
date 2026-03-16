@@ -37,7 +37,7 @@ LoggerSystem::LoggerSystem()
       serialEnabled(true),
       fileLoggingEnabled(true),   // 启用文件日志
       initialized(false),
-      espLogCaptureEnabled(true),   // 默认启用 ESP 日志捕获
+      espLogCaptureEnabled(false),   // 默认禁用 ESP 日志捕获（降低 LittleFS/堆碎片压力）
       logFileSizeLimit(8192) {      // 限制日志文件大小为 8KB
 }
 
@@ -194,6 +194,7 @@ void LoggerSystem::log(LogLevel level, const char* message, const char* module) 
 
     // 追加写入日志文件（不频繁 begin/end，LittleFS 挂载后直接 open）
     if (fileLoggingEnabled && initialized) {
+        static bool fileOpenFailedOnce = false;
         // 检查日志文件大小，如果超过限制则旋转
         if (getLogFileSize() >= logFileSizeLimit) {
             if (rotateLogFile()) {
@@ -202,10 +203,19 @@ void LoggerSystem::log(LogLevel level, const char* message, const char* module) 
         }
 
         File logFile = LittleFS.open(LOG_FILE_PATH, FILE_APPEND);
-        if (logFile) {
-            logFile.println(entry);
-            logFile.close();
+        if (!logFile) {
+            // LittleFS 可能因堆碎片/内存不足无法分配内部结构，持续重试会进一步恶化
+            fileLoggingEnabled = false;
+            if (!fileOpenFailedOnce) {
+                fileOpenFailedOnce = true;
+                if (serialEnabled && outputStream) {
+                    outputStream->println("[Logger] ERROR: Failed to open log file, file logging disabled");
+                }
+            }
+            return;
         }
+        logFile.println(entry);
+        logFile.close();
     }
 }
 
@@ -235,6 +245,49 @@ const char* LoggerSystem::getLevelString(LogLevel level) {
 
 // ── 日志文件管理 ─────────────────────────────────────────────────────────
 
+// 清理多余的日志备份文件，保留最新的MAX_LOG_FILES个
+void LoggerSystem::cleanupOldLogFiles() {
+    constexpr size_t MAX_LOG_FILES = 10;
+    
+    // 收集所有 system_*.log 备份文件
+    std::vector<String> logFiles;
+    File root = LittleFS.open("/logs");
+    if (!root || !root.isDirectory()) {
+        if (root) root.close();
+        return;
+    }
+    
+    File file = root.openNextFile();
+    while (file) {
+        const char* name = file.name();
+        // 只收集 system_*.log 备份文件（不含当前日志文件）
+        if (strncmp(name, "system_", 7) == 0 && strstr(name, ".log") != nullptr) {
+            logFiles.push_back(String("/logs/") + name);
+        }
+        file = root.openNextFile();
+    }
+    root.close();
+    
+    // 如果文件数量超过限制，删除最旧的
+    while (logFiles.size() > MAX_LOG_FILES) {
+        // 文件名包含时间戳，按字母序排序即可找到最旧的
+        String oldest = logFiles[0];
+        for (const auto& f : logFiles) {
+            if (f < oldest) {
+                oldest = f;
+            }
+        }
+        LittleFS.remove(oldest);
+        // 从列表中移除
+        for (auto it = logFiles.begin(); it != logFiles.end(); ++it) {
+            if (*it == oldest) {
+                logFiles.erase(it);
+                break;
+            }
+        }
+    }
+}
+
 bool LoggerSystem::rotateLogFile(const char* newName) {
     if (!fileLoggingEnabled || !LittleFS.exists(LOG_FILE_PATH)) {
         return false;
@@ -256,6 +309,8 @@ bool LoggerSystem::rotateLogFile(const char* newName) {
         if (newLog) {
             newLog.close();
         }
+        // 清理多余的旧日志文件，保留最新的10个
+        cleanupOldLogFiles();
     }
     return renamed;
 }
@@ -354,13 +409,22 @@ int LoggerSystem::espLogCallback(const char* format, va_list args) {
     
     // 写入到日志文件
     if (logger.fileLoggingEnabled && logger.initialized) {
+        static bool espFileOpenFailedOnce = false;
         // 检查日志文件大小
         if (logger.getLogFileSize() >= logger.logFileSizeLimit) {
             logger.rotateLogFile();
         }
         
         File logFile = LittleFS.open(LOG_FILE_PATH, FILE_APPEND);
-        if (logFile) {
+        if (!logFile) {
+            logger.fileLoggingEnabled = false;
+            if (!espFileOpenFailedOnce) {
+                espFileOpenFailedOnce = true;
+                if (logger.serialEnabled && logger.outputStream) {
+                    logger.outputStream->println("[Logger] ERROR: Failed to open log file from ESP log capture, file logging disabled");
+                }
+            }
+        } else {
             logFile.println(buffer);
             logFile.close();
         }

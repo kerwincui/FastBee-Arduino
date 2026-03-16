@@ -6,21 +6,101 @@
 #include <functional>
 #include "utils/FileUtils.h"
 #include <core/SystemConstants.h>
+#include "systems/LoggerSystem.h"
+
+// Modbus异常码
+enum ModbusException : uint8_t {
+    MODBUS_EX_ILLEGAL_FUNCTION      = 0x01,
+    MODBUS_EX_ILLEGAL_DATA_ADDRESS  = 0x02,
+    MODBUS_EX_ILLEGAL_DATA_VALUE    = 0x03,
+    MODBUS_EX_SLAVE_DEVICE_FAILURE  = 0x04
+};
+
+// Modbus工作模式
+enum ModbusMode : uint8_t {
+    MODBUS_SLAVE  = 0,   // 从站模式（被动响应）
+    MODBUS_MASTER = 1    // 主站模式（主动轮询）
+};
+
+// Master轮询状态机
+enum MasterPollState : uint8_t {
+    POLL_IDLE     = 0,   // 空闲，等待下一轮询时机
+    POLL_SENDING  = 1,   // 正在发送请求帧
+    POLL_WAITING  = 2,   // 等待从站响应
+    POLL_COMPLETE = 3,   // 响应接收完成
+    POLL_ERROR    = 4    // 通信错误
+};
+
+// 轮询任务定义
+struct PollTask {
+    uint8_t  slaveAddress;   // 目标从站地址 (1-247)
+    uint8_t  functionCode;   // 功能码 (0x01-0x04)
+    uint16_t startAddress;   // 起始寄存器地址
+    uint16_t quantity;       // 寄存器/线圈数量
+    uint16_t pollInterval;   // 此任务轮询间隔（秒）
+    bool     enabled;        // 是否启用
+    char     label[Protocols::MODBUS_POLL_LABEL_MAX_LEN]; // 可读标签
+
+    PollTask()
+        : slaveAddress(1), functionCode(0x03), startAddress(0),
+          quantity(10), pollInterval(Protocols::MODBUS_DEFAULT_POLL_INTERVAL),
+          enabled(true) {
+        memset(label, 0, sizeof(label));
+    }
+};
+
+// Master写请求
+struct WriteRequest {
+    uint8_t  slaveAddress;
+    uint16_t regAddress;
+    uint16_t value;
+    bool     pending;
+
+    WriteRequest() : slaveAddress(0), regAddress(0), value(0), pending(false) {}
+};
+
+// Master模式专属配置
+struct MasterConfig {
+    uint16_t defaultPollInterval; // 默认轮询间隔（秒）
+    uint16_t responseTimeout;     // 响应超时（毫秒）
+    uint8_t  maxRetries;          // 最大重试次数
+    uint16_t interPollDelay;      // 两次请求间最小间隔（毫秒）
+    PollTask tasks[Protocols::MODBUS_MAX_POLL_TASKS];
+    uint8_t  taskCount;
+
+    MasterConfig()
+        : defaultPollInterval(Protocols::MODBUS_DEFAULT_POLL_INTERVAL),
+          responseTimeout(1000), maxRetries(2),
+          interPollDelay(100), taskCount(0) {}
+};
+
+// Master运行统计
+struct MasterStats {
+    uint32_t totalPolls;
+    uint32_t successPolls;
+    uint32_t failedPolls;
+    uint32_t timeoutPolls;
+
+    MasterStats() : totalPolls(0), successPolls(0), failedPolls(0), timeoutPolls(0) {}
+};
 
 // Modbus配置结构体
 struct ModbusConfig {
+    ModbusMode mode;          // 工作模式
     uint8_t slaveAddress;
     uint32_t baudRate;
     uint8_t txPin;
     uint8_t rxPin;
-    uint8_t dePin;  // 方向控制引脚（RS485）
+    uint8_t dePin;            // 方向控制引脚（RS485）
     uint16_t responseTimeout;
     uint16_t interFrameDelay;
     String configFile;
+    MasterConfig master;      // Master模式配置
     
     // 默认构造函数
     ModbusConfig() 
-        : slaveAddress(1), 
+        : mode(MODBUS_SLAVE),
+          slaveAddress(1), 
           baudRate(9600), 
           txPin(17), 
           rxPin(16), 
@@ -47,7 +127,7 @@ public:
     bool writeData(uint16_t address, const String& data);
     bool writeData(const String& address, const String& data);
     
-    // Modbus功能码实现
+    // Modbus功能码实现（从站模式）
     bool readCoils(uint16_t startAddr, uint16_t quantity, uint8_t* data);
     bool readDiscreteInputs(uint16_t startAddr, uint16_t quantity, uint8_t* data);
     bool readHoldingRegisters(uint16_t startAddr, uint16_t quantity, uint16_t* data);
@@ -66,6 +146,24 @@ public:
     bool loadConfigFromFile(const String& configPath = "");
     bool saveConfigToFile(const String& configPath = "");
     ModbusConfig getConfig() const { return config; }
+
+    // === Master模式公有接口 ===
+    void setMode(ModbusMode mode);
+    ModbusMode getMode() const { return config.mode; }
+    
+    // 轮询任务管理
+    bool addPollTask(const PollTask& task);
+    bool removePollTask(uint8_t index);
+    bool updatePollTask(uint8_t index, const PollTask& task);
+    uint8_t getPollTaskCount() const { return config.master.taskCount; }
+    PollTask getPollTask(uint8_t index) const;
+    
+    // Master写操作（排队异步执行）
+    bool masterWriteSingleRegister(uint8_t slaveAddr, uint16_t regAddr, uint16_t value);
+    
+    // Master运行状态
+    String getMasterStatus() const;
+    MasterStats getMasterStats() const { return masterStats; }
 
 private:
     bool isInitialized;
@@ -86,7 +184,45 @@ private:
     void sendResponse(const uint8_t* data, uint8_t length);
     void setTransmitMode(bool transmit);
     
-    // 寄存器模拟存储（实际应用中可能连接到真实设备）
+    // Slave模式FC处理函数
+    void handleSlave();
+    void handleReadCoils(const uint8_t* frame, uint8_t length);
+    void handleReadDiscreteInputs(const uint8_t* frame, uint8_t length);
+    void handleReadHoldingRegisters(const uint8_t* frame, uint8_t length);
+    void handleReadInputRegisters(const uint8_t* frame, uint8_t length);
+    void handleWriteSingleCoil(const uint8_t* frame, uint8_t length);
+    void handleWriteSingleRegister(const uint8_t* frame, uint8_t length);
+    void handleWriteMultipleCoils(const uint8_t* frame, uint8_t length);
+    void handleWriteMultipleRegisters(const uint8_t* frame, uint8_t length);
+    void sendExceptionResponse(uint8_t slaveAddr, uint8_t functionCode, uint8_t exceptionCode);
+    
+    // === Master模式私有方法 ===
+    void handleMaster();
+    uint8_t buildMasterRequest(const PollTask& task, uint8_t* buffer);
+    bool parseMasterResponse(const uint8_t* buffer, uint8_t length, const PollTask& task);
+    int8_t findNextPollTask();
+    void reportPollData(const PollTask& task, const uint16_t* data, uint16_t count);
+    bool processWriteQueue();
+    uint8_t buildWriteRequest(const WriteRequest& req, uint8_t* buffer);
+    
+    // Master状态机变量
+    MasterPollState pollState;
+    uint8_t  currentTaskIndex;
+    unsigned long pollStateTimestamp;
+    unsigned long taskLastPollTime[Protocols::MODBUS_MAX_POLL_TASKS];
+    uint8_t  currentRetryCount;
+    uint8_t  responseBuffer[Protocols::MODBUS_BUFFER_SIZE];
+    uint8_t  responseIndex;
+    unsigned long lastByteTime;
+    bool     currentIsWrite;   // 当前正在处理的是写请求还是轮询
+    
+    // 写请求队列
+    WriteRequest writeQueue[Protocols::MODBUS_MAX_WRITE_QUEUE];
+    
+    // 运行统计
+    MasterStats masterStats;
+    
+    // 寄存器模拟存储（从站模式使用）
     uint16_t holdingRegisters[100];
     uint16_t inputRegisters[100];
     uint8_t coils[20];

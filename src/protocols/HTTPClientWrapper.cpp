@@ -44,7 +44,8 @@ bool HTTPClientWrapper::beginFromConfig(const char* configPath) {
     configFile.readBytes(buf.get(), size);
     configFile.close();
 
-    DynamicJsonDocument doc(1024);
+    // 使用静态JSON文档减少内存碎片
+    StaticJsonDocument<1024> doc;
     DeserializationError error = deserializeJson(doc, buf.get());
     if (error) {
         Serial.printf("[HTTPClient] JSON deserialization failed: %s\n", error.c_str());
@@ -84,6 +85,16 @@ String HTTPClientWrapper::buildURL(const String& endpoint) {
     return url;
 }
 
+// 应用认证请求头
+static void applyAuthHeaders(::HTTPClient& httpClient, const HTTPConfig& config) {
+    applyAuthHeaders(httpClient, config);
+    if (config.authType == "basic" && !config.authUser.isEmpty()) {
+        httpClient.setAuthorization(config.authUser.c_str(), config.authToken.c_str());
+    } else if (config.authType == "bearer" && !config.authToken.isEmpty()) {
+        httpClient.addHeader("Authorization", "Bearer " + config.authToken);
+    }
+}
+
 bool HTTPClientWrapper::get(const String& endpoint, String& response) {
     if (!isInitialized) {
         Serial.println("[HTTPClient] Not initialized");
@@ -95,7 +106,7 @@ bool HTTPClientWrapper::get(const String& endpoint, String& response) {
 
     httpClient.begin(wifiClient, url);
     httpClient.setTimeout(config.timeout);
-    httpClient.addHeader("Content-Type", config.contentType);
+    applyAuthHeaders(httpClient, config);
 
     int httpCode = httpClient.GET();
     bool success = (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_CREATED);
@@ -129,7 +140,7 @@ bool HTTPClientWrapper::post(const String& endpoint, const String& data, String&
 
     httpClient.begin(wifiClient, url);
     httpClient.setTimeout(config.timeout);
-    httpClient.addHeader("Content-Type", config.contentType);
+    applyAuthHeaders(httpClient, config);
 
     int httpCode = httpClient.POST(data);
     bool success = (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_CREATED);
@@ -168,7 +179,7 @@ bool HTTPClientWrapper::put(const String& endpoint, const String& data, String& 
 
     httpClient.begin(wifiClient, url);
     httpClient.setTimeout(config.timeout);
-    httpClient.addHeader("Content-Type", config.contentType);
+    applyAuthHeaders(httpClient, config);
 
     int httpCode = httpClient.PUT(data);
     bool success = (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_CREATED);
@@ -202,7 +213,7 @@ bool HTTPClientWrapper::del(const String& endpoint, String& response) {
 
     httpClient.begin(wifiClient, url);
     httpClient.setTimeout(config.timeout);
-    httpClient.addHeader("Content-Type", config.contentType);
+    applyAuthHeaders(httpClient, config);
 
     int httpCode = httpClient.sendRequest("DELETE");
     bool success = (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_NO_CONTENT);

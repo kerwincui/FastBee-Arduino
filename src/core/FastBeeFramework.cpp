@@ -164,6 +164,11 @@ bool FastBeeFramework::initialize() {
     // 注入 RoleManager 和 NetworkManager 给 WebConfigManager
     webConfig->setRoleManager(roleManager.get());
     webConfig->setNetworkManager(network.get());
+    // 启动 HTTP 服务器（监听端口 80）
+    if (!webConfig->start()) {
+        LOG_ERROR("[STEP7] Failed to start web server");
+        return false;
+    }
     LOG_INFO("[STEP7] Web Server OK");
     
     // 步骤8: 初始化OTA管理器

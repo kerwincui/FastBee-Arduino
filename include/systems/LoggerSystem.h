@@ -103,6 +103,7 @@ private:
     // 内部实现：使用栈缓冲区格式化，零堆分配
     void log(LogLevel level, const char* message, const char* module);
     void logFormatted(LogLevel level, const char* format, va_list args);
+    void cleanupOldLogFiles();  // 清理多余的旧日志文件
 
     static const char* getLevelString(LogLevel level);
     
@@ -138,21 +139,36 @@ private:
 #define LOG_ERROR(msg)   LOGGER.error  (msg)
 #define LOG_WARNING(msg) LOGGER.warning(msg)
 #define LOG_INFO(msg)    LOGGER.info   (msg)
-#define LOG_DEBUG(msg)   LOGGER.debug  (msg)
-#define LOG_VERBOSE(msg) LOGGER.verbose(msg)
+
+// DEBUG 级别日志：生产版本编译时移除
+#if FASTBEE_DEBUG_LOG
+    #define LOG_DEBUG(msg)    LOGGER.debug  (msg)
+    #define LOG_VERBOSE(msg)  LOGGER.verbose(msg)
+    #define LOG_DEBUGF(fmt, ...)   LOGGER.debugf  (fmt, ##__VA_ARGS__)
+    #define LOG_VERBOSEF(fmt, ...) LOGGER.verbosef(fmt, ##__VA_ARGS__)
+#else
+    #define LOG_DEBUG(msg)    ((void)0)
+    #define LOG_VERBOSE(msg)  ((void)0)
+    #define LOG_DEBUGF(fmt, ...)   ((void)0)
+    #define LOG_VERBOSEF(fmt, ...) ((void)0)
+#endif
 
 // 带模块名的变体
 #define LOG_ERROR_M(msg, mod)   LOGGER.error  (msg, mod)
 #define LOG_WARNING_M(msg, mod) LOGGER.warning(msg, mod)
 #define LOG_INFO_M(msg, mod)    LOGGER.info   (msg, mod)
-#define LOG_DEBUG_M(msg, mod)   LOGGER.debug  (msg, mod)
-#define LOG_VERBOSE_M(msg, mod) LOGGER.verbose(msg, mod)
+
+#if FASTBEE_DEBUG_LOG
+    #define LOG_DEBUG_M(msg, mod)   LOGGER.debug  (msg, mod)
+    #define LOG_VERBOSE_M(msg, mod) LOGGER.verbose(msg, mod)
+#else
+    #define LOG_DEBUG_M(msg, mod)   ((void)0)
+    #define LOG_VERBOSE_M(msg, mod) ((void)0)
+#endif
 
 // 格式化日志宏
 #define LOG_ERRORF(fmt, ...)   LOGGER.errorf  (fmt, ##__VA_ARGS__)
 #define LOG_WARNINGF(fmt, ...) LOGGER.warningf(fmt, ##__VA_ARGS__)
 #define LOG_INFOF(fmt, ...)    LOGGER.infof   (fmt, ##__VA_ARGS__)
-#define LOG_DEBUGF(fmt, ...)   LOGGER.debugf  (fmt, ##__VA_ARGS__)
-#define LOG_VERBOSEF(fmt, ...) LOGGER.verbosef(fmt, ##__VA_ARGS__)
 
 #endif

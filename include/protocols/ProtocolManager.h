@@ -62,6 +62,9 @@ public:
     // 处理循环（需要在 loop 中调用）
     void handle();
 
+    // 获取 ModbusHandler 指针（供路由处理器访问Master模式接口）
+    ModbusHandler* getModbusHandler() const { return modbusHandler.get(); }
+
     /**
      * @brief 完全关闭协议管理器，释放所有资源
      */

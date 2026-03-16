@@ -208,9 +208,9 @@ bool WiFiManager::configureDHCP() {
 }
 
 String WiFiManager::scanNetworks() {
-    // 使用静态缓冲区减少内存分配和碎片
+    // 使用静态JSON文档减少内存碎片
     static char buffer[2048];
-    DynamicJsonDocument doc(2048);
+    StaticJsonDocument<2048> doc;
     JsonArray networks = doc.to<JsonArray>();
     
     int numNetworks = WiFi.scanNetworks();

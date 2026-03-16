@@ -18,7 +18,7 @@
         ? 'http://fastbee.local'
         : (location.origin || 'http://fastbee.local');
 
-    const DEFAULT_TIMEOUT = 8000; // ms，与原 axios 超时一致
+    const DEFAULT_TIMEOUT = 15000; // ms，ESP32 并发连接有限，需要更长超时
     const RESTART_TIMEOUT = 15000; // ms，重启操作需要更长超时
 
     // ── 工具：序列化为 URL 编码 ───────────────────────────────────────────────

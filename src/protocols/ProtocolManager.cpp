@@ -126,7 +126,20 @@ bool ProtocolManager::sendData(ProtocolType type, const String& topic, const Str
         case ProtocolType::MQTT:
             return mqttClient && mqttClient->publish(topic, data);
         case ProtocolType::MODBUS:
-            return modbusHandler && modbusHandler->writeData(topic.toInt(), data);
+            if (!modbusHandler) return false;
+            if (modbusHandler->getMode() == MODBUS_MASTER) {
+                // Master模式: topic格式 "slaveAddr:regAddr", data为写入值
+                int sepIdx = topic.indexOf(':');
+                if (sepIdx > 0) {
+                    uint8_t slaveAddr = (uint8_t)topic.substring(0, sepIdx).toInt();
+                    uint16_t regAddr = (uint16_t)topic.substring(sepIdx + 1).toInt();
+                    uint16_t value = (uint16_t)data.toInt();
+                    return modbusHandler->masterWriteSingleRegister(slaveAddr, regAddr, value);
+                }
+                return false;
+            }
+            // Slave模式: topic为寄存器地址
+            return modbusHandler->writeData(topic.toInt(), data);
         case ProtocolType::TCP:
             return tcpHandler && tcpHandler->send(data);
         case ProtocolType::HTTP:

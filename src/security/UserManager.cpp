@@ -669,6 +669,7 @@ bool UserManager::updatePassword(const String& username, const String& newPasswo
 bool UserManager::validateUser(const String& username, const String& password) {
     auto it = users.find(username);
     if (it == users.end()) {
+        Serial.printf("[AUTH] User '%s' not found\n", username.c_str());
         recordLoginFailure(username);
         return false;
     }
@@ -677,12 +678,17 @@ bool UserManager::validateUser(const String& username, const String& password) {
     
     // 检查用户是否启用
     if (!user.enabled) {
+        Serial.printf("[AUTH] User '%s' disabled\n", username.c_str());
         recordLoginFailure(username);
         return false;
     }
     
     // 验证密码
     if (!verifyPassword(password, user.passwordHash, user.salt)) {
+        Serial.printf("[AUTH] Password mismatch for '%s'\n", username.c_str());
+        Serial.printf("[AUTH] salt='%s'\n", user.salt.c_str());
+        Serial.printf("[AUTH] stored_hash='%s'\n", user.passwordHash.c_str());
+        Serial.printf("[AUTH] calc_hash  ='%s'\n", hashPassword(password, user.salt).c_str());
         recordLoginFailure(username);
         return false;
     }

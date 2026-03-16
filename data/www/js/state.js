@@ -49,9 +49,9 @@ const AppState = {
     _showAppPage() {
         document.getElementById('login-page').style.display = 'none';
         document.getElementById('app-container').style.display = 'block';
-        // 清除URL中的锚点/hash（如 #login、# 等）
-        if (location.hash) {
-            history.replaceState(null, '', location.pathname + location.search);
+        // 登录成功后将URL从 /login 等路径重定向到根路径 /
+        if (location.pathname !== '/' || location.hash) {
+            history.replaceState(null, '', '/');
         }
     },
 
@@ -120,6 +120,7 @@ const AppState = {
             langSelect.addEventListener('change', e => {
                 i18n.setLanguage(e.target.value);
                 this.renderDashboard();
+                this.loadSystemMonitor();  // 刷新网络状态区域的动态 i18n 内容
                 this.loadUsers();
             });
         }
@@ -281,6 +282,10 @@ const AppState = {
         if (confirmRole) confirmRole.addEventListener('click', () => this.saveRole());
         
         // ============ 日志管理事件绑定 ============
+        
+        // 刷新日志文件列表按钮
+        const refreshLogListBtn = document.getElementById('log-refresh-list-btn');
+        if (refreshLogListBtn) refreshLogListBtn.addEventListener('click', () => this.loadLogFileList());
         
         // 刷新日志按钮
         const refreshLogsBtn = document.getElementById('refresh-logs-btn');
@@ -572,6 +577,7 @@ const AppState = {
         if (page === 'peripheral') this.loadPeripherals();
         if (page === 'monitor') this.loadSystemInfo();
         if (page === 'logs') {
+            this._currentLogFile = 'system.log';  // 默认加载 system.log
             this.loadLogs();
             // 如果自动刷新复选框已选中，启动定时刷新
             const autoRefresh = document.getElementById('log-auto-refresh');
@@ -789,9 +795,11 @@ const AppState = {
             tdId.textContent = role.id;
             row.appendChild(tdId);
             
-            // 角色名称
+            // 角色名称 - 翻译内置角色名
             const tdName = document.createElement('td');
-            tdName.innerHTML = `<strong>${role.name}</strong>`;
+            const _rnm = {'管理员': 'role-admin', '操作员': 'role-operator', '查看者': 'role-viewer'};
+            const dName = _rnm[role.name] ? i18n.t(_rnm[role.name]) : role.name;
+            tdName.innerHTML = `<strong>${dName}</strong>`;
             row.appendChild(tdName);
             
             // 描述
@@ -845,7 +853,11 @@ const AppState = {
                 const delBtn = document.createElement('button');
                 delBtn.className = 'pure-button pure-button-small pure-button-error';
                 delBtn.textContent = i18n.t('role-delete');
-                delBtn.addEventListener('click', () => this.deleteRole(role.id, role.name));
+                delBtn.addEventListener('click', () => {
+                    const _rnm2 = {'管理员': 'role-admin', '操作员': 'role-operator', '查看者': 'role-viewer'};
+                    const dName2 = _rnm2[role.name] ? i18n.t(_rnm2[role.name]) : role.name;
+                    this.deleteRole(role.id, dName2);
+                });
                 tdAction.appendChild(delBtn);
             }
             
@@ -859,6 +871,9 @@ const AppState = {
         const permDefs = this._permDefs || [];
         const rolePerms = new Set(role.permissions || []);
         
+        // 权限组名中文→英文映射key
+        const _gpk = {'设备':'device','网络':'network','系统':'system','用户':'user','文件':'file','协议':'protocol','审计':'audit','GPIO':'gpio','外设':'peripheral'};
+        
         // 按分组整理
         const permGroups = {};
         permDefs.forEach(p => {
@@ -868,18 +883,25 @@ const AppState = {
         
         let html = `<div style="max-height: 400px; overflow-y: auto;">`;
         Object.keys(permGroups).sort().forEach(group => {
+            const gKey = _gpk[group] ? i18n.t('perm-group-' + _gpk[group]) : group;
             html += `<div style="margin-bottom: 15px;">`;
-            html += `<h4 style="margin: 0 0 8px; font-size: 14px; color: #333; border-bottom: 1px solid #eee; padding-bottom: 5px;">${group}</h4>`;
+            html += `<h4 style="margin: 0 0 8px; font-size: 14px; color: #333; border-bottom: 1px solid #eee; padding-bottom: 5px;">${gKey}</h4>`;
             html += `<div style="display: flex; flex-wrap: wrap; gap: 8px;">`;
             permGroups[group].forEach(perm => {
                 const hasPerm = rolePerms.has(perm.id);
+                const pName = i18n.t('perm-' + perm.id) !== ('perm-' + perm.id) ? i18n.t('perm-' + perm.id) : perm.name;
+                const pDesc = i18n.t('perm-' + perm.id) !== ('perm-' + perm.id) ? i18n.t('perm-' + perm.id) : perm.description;
                 html += `<span style="display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 4px; font-size: 12px; ${hasPerm ? 'background: #e6f7ff; color: #1890ff; border: 1px solid #91d5ff;' : 'background: #f5f5f5; color: #999; border: 1px solid #d9d9d9;'}">`;
                 html += `<span style="margin-right: 4px;">${hasPerm ? '✓' : '✗'}</span>`;
-                html += `<span title="${perm.description}">${perm.name}</span></span>`;
+                html += `<span title="${pDesc}">${pName}</span></span>`;
             });
             html += `</div></div>`;
         });
         html += `</div>`;
+        
+        // 翻译角色名
+        const roleNameMap = {'管理员': 'role-admin', '操作员': 'role-operator', '查看者': 'role-viewer'};
+        const displayRoleName = roleNameMap[role.name] ? i18n.t(roleNameMap[role.name]) : role.name;
         
         // 使用简单的 alert 弹窗显示（或可以创建一个模态窗）
         const div = document.createElement('div');
@@ -887,7 +909,7 @@ const AppState = {
             <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 9999; display: flex; justify-content: center; align-items: center;" onclick="this.remove()">
                 <div style="background: white; border-radius: 8px; max-width: 600px; width: 90%; max-height: 80vh; overflow: hidden;" onclick="event.stopPropagation()">
                     <div style="background: linear-gradient(135deg, #1890ff 0%, #096dd9 100%); color: white; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center;">
-                        <h3 style="margin: 0;">${role.name}${i18n.t('role-detail-suffix')}</h3>
+                        <h3 style="margin: 0;">${displayRoleName}${i18n.t('role-detail-suffix')}</h3>
                         <button onclick="this.closest('div[style*=position]').remove()" style="background: none; border: none; color: white; font-size: 20px; cursor: pointer;">×</button>
                     </div>
                     <div style="padding: 20px;">${html}</div>
@@ -987,6 +1009,9 @@ const AppState = {
         const permDefs = this._permDefs || [];
         const selectedSet = new Set(selectedPerms);
         
+        // 权限组名中文→英文映射key
+        const _gpk = {'设备':'device','网络':'network','系统':'system','用户':'user','文件':'file','协议':'protocol','审计':'audit','GPIO':'gpio','外设':'peripheral'};
+        
         // 按分组整理
         const permGroups = {};
         permDefs.forEach(p => {
@@ -998,20 +1023,23 @@ const AppState = {
             const groupDiv = document.createElement('div');
             groupDiv.style.cssText = 'margin-bottom: 12px;';
             
+            const gKey = _gpk[group] ? i18n.t('perm-group-' + _gpk[group]) : group;
             const groupTitle = document.createElement('h5');
             groupTitle.style.cssText = 'margin: 0 0 8px; font-size: 13px; color: #666; border-bottom: 1px solid #eee; padding-bottom: 5px;';
-            groupTitle.textContent = group;
+            groupTitle.textContent = gKey;
             groupDiv.appendChild(groupTitle);
             
             const permList = document.createElement('div');
             permList.style.cssText = 'display: flex; flex-wrap: wrap; gap: 10px;';
             
             permGroups[group].forEach(perm => {
+                const pName = i18n.t('perm-' + perm.id) !== ('perm-' + perm.id) ? i18n.t('perm-' + perm.id) : perm.name;
+                const pDesc = i18n.t('perm-' + perm.id) !== ('perm-' + perm.id) ? i18n.t('perm-' + perm.id) : perm.description;
                 const label = document.createElement('label');
                 label.style.cssText = 'display: flex; align-items: center; cursor: pointer; font-size: 12px;';
                 label.innerHTML = `
                     <input type="checkbox" name="role-perm" value="${perm.id}" ${selectedSet.has(perm.id) ? 'checked' : ''} style="margin-right: 4px;">
-                    <span title="${perm.description}">${perm.name}</span>
+                    <span title="${pDesc}">${pName}</span>
                 `;
                 permList.appendChild(label);
             });
@@ -1395,16 +1423,101 @@ const AppState = {
     // ============ 日志管理 ============
     
     /**
+     * 加载日志文件列表
+     */
+    loadLogFileList() {
+        const listContainer = document.getElementById('log-file-list');
+        if (!listContainer) return;
+        
+        apiGet('/api/logs/list')
+            .then(res => {
+                if (!res || !res.success) {
+                    listContainer.innerHTML = '<div style="color: #f56c6c; padding: 10px;">' + i18n.t('log-load-fail-html') + '</div>';
+                    return;
+                }
+                
+                const files = res.data || [];
+                if (files.length === 0) {
+                    listContainer.innerHTML = '<div style="color: #666; padding: 10px;">' + i18n.t('log-empty-html') + '</div>';
+                    return;
+                }
+                
+                // 按文件名排序，system.log 排最前面
+                files.sort((a, b) => {
+                    if (a.name === 'system.log') return -1;
+                    if (b.name === 'system.log') return 1;
+                    return b.name.localeCompare(a.name); // 新文件在前
+                });
+                
+                let html = '';
+                files.forEach(file => {
+                    const sizeStr = file.size < 1024 ? `${file.size} B` : `${(file.size / 1024).toFixed(1)} KB`;
+                    const isActive = file.name === this._currentLogFile;
+                    const activeStyle = isActive ? 'background: #3a3a3a; color: #fff;' : 'color: #ccc;';
+                    const icon = file.current ? '📄' : '📃';
+                    html += `<div class="log-file-item" style="padding: 8px 10px; cursor: pointer; border-bottom: 1px solid #333; ${activeStyle}" data-file="${file.name}">
+                        <span style="margin-right: 5px;">${icon}</span>
+                        <span style="font-size: 12px;">${file.name}</span>
+                        <span style="font-size: 11px; color: #888; float: right;">${sizeStr}</span>
+                    </div>`;
+                });
+                
+                listContainer.innerHTML = html;
+                
+                // 绑定点击事件
+                listContainer.querySelectorAll('.log-file-item').forEach(item => {
+                    item.addEventListener('click', () => {
+                        const fileName = item.dataset.file;
+                        this._currentLogFile = fileName;
+                        // 更新当前文件显示
+                        const currentSpan = document.getElementById('current-log-file');
+                        if (currentSpan) currentSpan.textContent = fileName;
+                        // 更新选中状态
+                        listContainer.querySelectorAll('.log-file-item').forEach(i => {
+                            i.style.background = '';
+                            i.style.color = '#ccc';
+                        });
+                        item.style.background = '#3a3a3a';
+                        item.style.color = '#fff';
+                        // 加载日志内容
+                        this.loadLogs(500, fileName);
+                    });
+                    
+                    // 鼠标悬停效果
+                    item.addEventListener('mouseenter', () => {
+                        if (item.style.background !== '#3a3a3a') {
+                            item.style.background = '#2a2a2a';
+                        }
+                    });
+                    item.addEventListener('mouseleave', () => {
+                        if (item.style.background === '#2a2a2a') {
+                            item.style.background = '';
+                        }
+                    });
+                });
+            })
+            .catch(err => {
+                console.error('Load log file list failed:', err);
+                listContainer.innerHTML = '<div style="color: #f56c6c; padding: 10px;">' + i18n.t('log-load-fail-html') + '</div>';
+            });
+    },
+    
+    /**
      * 加载日志内容
      * @param {number} maxLines 最大行数，默认500
+     * @param {string} fileName 日志文件名，默认为当前选中的文件
      */
-    loadLogs(maxLines = 500) {
+    loadLogs(maxLines = 500, fileName = null) {
         const container = document.getElementById('device-log-container');
         const infoSpan = document.getElementById('log-info');
         
         if (!container) return;
         
-        apiGet('/api/logs', { lines: maxLines })
+        // 使用传入的文件名或当前选中的文件
+        const logFile = fileName || this._currentLogFile || 'system.log';
+        this._currentLogFile = logFile;
+        
+        apiGet('/api/logs', { lines: maxLines, file: logFile })
             .then(res => {
                 if (!res || !res.success) {
                     container.innerHTML = i18n.t('log-load-fail-html');
@@ -1564,7 +1677,7 @@ const AppState = {
      * 加载文件系统信息
      */
     loadFileSystemInfo() {
-        apiGet('/api/system/fs-info')
+        apiGet('/api/filesystem')
             .then(res => {
                 if (res && res.success) {
                     const d = res.data || {};
@@ -1596,7 +1709,7 @@ const AppState = {
         
         treeContainer.innerHTML = i18n.t('fs-loading-text');
         
-        apiGet('/api/fs/list', { path: path })
+        apiGet('/api/files', { path: path })
             .then(res => {
                 if (!res || !res.success) {
                     treeContainer.innerHTML = i18n.t('fs-load-fail-text');
@@ -1683,7 +1796,7 @@ const AppState = {
         pathSpan.textContent = path;
         statusDiv.textContent = i18n.t('fs-file-loading');
         
-        apiGet('/api/fs/read', { path: path })
+        apiGet('/api/files/content', { path: path })
             .then(res => {
                 if (!res || !res.success) {
                     statusDiv.textContent = i18n.t('fs-file-load-fail-prefix') + (res.error || i18n.t('fs-file-unknown-error'));
@@ -1782,7 +1895,7 @@ const AppState = {
         statusDiv.textContent = i18n.t('fs-saving-text');
         saveBtn.disabled = true;
         
-        apiPost('/api/fs/save', { path: this._currentFilePath, content: content })
+        apiPost('/api/files/save', { path: this._currentFilePath, content: content })
             .then(res => {
                 if (res && res.success) {
                     statusDiv.textContent = i18n.t('fs-save-ok-text');
@@ -2992,16 +3105,44 @@ const AppState = {
     _fillProtocolForm(tabId, config) {
         if (tabId === 'modbus-rtu' && config.modbusRtu) {
             const rtu = config.modbusRtu;
+            this._setCheckbox('modbus-rtu-enabled', rtu.enabled ?? false);
             this._setValue('rtu-port', rtu.port || '/dev/ttyS0');
             this._setValue('rtu-baudrate', rtu.baudRate || 19200);
             this._setValue('rtu-databits', rtu.dataBits || 8);
             this._setValue('rtu-stopbits', rtu.stopBits || 1);
             this._setValue('rtu-parity', rtu.parity || 'none');
             this._setValue('rtu-timeout', rtu.timeout || 1000);
+            
+            // RS485 引脚配置
+            this._setValue('rtu-tx-pin', rtu.txPin ?? 17);
+            this._setValue('rtu-rx-pin', rtu.rxPin ?? 16);
+            this._setValue('rtu-de-pin', rtu.dePin ?? -1);
+            this._setValue('rtu-slave-addr', rtu.slaveAddress ?? 1);
+            
+            // Master 模式字段
+            const mode = rtu.mode || 'slave';
+            this._setValue('rtu-mode', mode);
+            this.onModbusModeChange(mode);
+            
+            if (rtu.master) {
+                this._setValue('master-poll-interval', rtu.master.defaultPollInterval || 30);
+                this._setValue('master-response-timeout', rtu.master.responseTimeout || 1000);
+                this._setValue('master-max-retries', rtu.master.maxRetries || 2);
+                this._setValue('master-inter-poll-delay', rtu.master.interPollDelay || 100);
+                this._masterTasks = rtu.master.tasks || [];
+            } else {
+                this._masterTasks = [];
+            }
+            this._renderMasterTasks();
+            
+            if (mode === 'master') {
+                this.refreshMasterStatus();
+            }
         }
         
         if (tabId === 'modbus-tcp' && config.modbusTcp) {
             const tcp = config.modbusTcp;
+            this._setCheckbox('modbus-tcp-enabled', tcp.enabled ?? false);
             this._setValue('tcp-ip', tcp.server || '192.168.1.100');
             this._setValue('tcp-mport', tcp.port || 502);
             this._setValue('tcp-slave-id', tcp.slaveId || 1);
@@ -3010,16 +3151,22 @@ const AppState = {
         
         if (tabId === 'mqtt' && config.mqtt) {
             const mqtt = config.mqtt;
+            this._setCheckbox('mqtt-enabled', mqtt.enabled ?? true);
             this._setValue('mqtt-broker', mqtt.server || 'iot.fastbee.cn');
             this._setValue('mqtt-port', mqtt.port || 1883);
             this._setValue('mqtt-client-id', mqtt.clientId || '');
             this._setValue('mqtt-username', mqtt.username || '');
             this._setValue('mqtt-password', mqtt.password || '');
             this._setValue('mqtt-alive', mqtt.keepAlive || 60);
-            // 新增字段
             this._setValue('mqtt-conn-timeout', mqtt.connectionTimeout ?? 30000);
             this._setCheckbox('mqtt-direct-connect', mqtt.directConnect ?? true);
             this._setCheckbox('mqtt-auto-reconnect', mqtt.autoReconnect ?? true);
+            
+            // 遗嘱消息
+            this._setValue('mqtt-will-topic', mqtt.willTopic || '');
+            this._setValue('mqtt-will-payload', mqtt.willPayload || '');
+            this._setValue('mqtt-will-qos', mqtt.willQos ?? 0);
+            this._setCheckbox('mqtt-will-retain', mqtt.willRetain ?? false);
             
             // 加载发布主题配置（支持多组）
             this._loadMqttPublishTopics(mqtt.publishTopics || []);
@@ -3030,30 +3177,50 @@ const AppState = {
         
         if (tabId === 'http' && config.http) {
             const http = config.http;
+            this._setCheckbox('http-enabled', http.enabled ?? false);
             this._setValue('http-url', http.url || 'https://api.example.com');
             this._setValue('http-port', http.port || 80);
             this._setValue('http-method', http.method || 'POST');
             this._setValue('http-timeout', http.timeout || 30);
             this._setValue('http-interval', http.interval || 60);
             this._setValue('http-retry', http.retry || 3);
+            
+            // 认证配置
+            this._setValue('http-auth-type', http.authType || 'none');
+            this._setValue('http-auth-user', http.authUser || '');
+            this._setValue('http-auth-token', http.authToken || '');
+            this._setValue('http-content-type', http.contentType || 'application/json');
+            this.onHttpAuthTypeChange(http.authType || 'none');
         }
         
         if (tabId === 'coap' && config.coap) {
             const coap = config.coap;
+            this._setCheckbox('coap-enabled', coap.enabled ?? false);
             this._setValue('coap-server', coap.server || 'coap://example.com');
             this._setValue('coap-port', coap.port || 5683);
             this._setValue('coap-method', coap.method || 'POST');
             this._setValue('coap-path', coap.path || 'sensors/temperature');
+            this._setValue('coap-msg-type', coap.msgType || 'CON');
+            this._setValue('coap-retransmit', coap.retransmit ?? 3);
+            this._setValue('coap-timeout', coap.timeout ?? 5000);
         }
         
         if (tabId === 'tcp' && config.tcp) {
             const tcp = config.tcp;
+            this._setCheckbox('tcp-enabled', tcp.enabled ?? false);
+            const tcpMode = tcp.mode || 'client';
+            this._setValue('tcp-mode', tcpMode);
+            this.onTcpModeChange(tcpMode);
             this._setValue('tcp-server', tcp.server || '192.168.1.200');
             this._setValue('tcp-port', tcp.port || 5000);
             this._setValue('tcp-timeout', tcp.timeout || 5000);
             this._setValue('tcp-keepalive', tcp.keepAlive || 60);
             this._setValue('tcp-retry', tcp.maxRetry || 5);
             this._setValue('tcp-reconnect', tcp.reconnectInterval || 10);
+            this._setValue('tcp-local-port', tcp.localPort ?? 8080);
+            this._setValue('tcp-max-clients', tcp.maxClients ?? 5);
+            this._setValue('tcp-heartbeat-msg', tcp.heartbeatMsg || '\\n');
+            this._setValue('tcp-idle-timeout', tcp.idleTimeout ?? 120);
         }
     },
     
@@ -3065,20 +3232,35 @@ const AppState = {
         const data = {};
         
         // Modbus RTU
+        data.modbusRtu_enabled = document.getElementById('modbus-rtu-enabled')?.checked ? 'true' : 'false';
         data.modbusRtu_port = document.getElementById('rtu-port')?.value || '/dev/ttyS0';
         data.modbusRtu_baudRate = document.getElementById('rtu-baudrate')?.value || '19200';
         data.modbusRtu_dataBits = document.getElementById('rtu-databits')?.value || '8';
         data.modbusRtu_stopBits = document.getElementById('rtu-stopbits')?.value || '1';
         data.modbusRtu_parity = document.getElementById('rtu-parity')?.value || 'none';
         data.modbusRtu_timeout = document.getElementById('rtu-timeout')?.value || '1000';
+        data.modbusRtu_mode = document.getElementById('rtu-mode')?.value || 'slave';
+        data.modbusRtu_txPin = document.getElementById('rtu-tx-pin')?.value || '17';
+        data.modbusRtu_rxPin = document.getElementById('rtu-rx-pin')?.value || '16';
+        data.modbusRtu_dePin = document.getElementById('rtu-de-pin')?.value || '-1';
+        data.modbusRtu_slaveAddress = document.getElementById('rtu-slave-addr')?.value || '1';
+        
+        // Modbus RTU Master 配置
+        data.modbusRtu_master_defaultPollInterval = document.getElementById('master-poll-interval')?.value || '30';
+        data.modbusRtu_master_responseTimeout = document.getElementById('master-response-timeout')?.value || '1000';
+        data.modbusRtu_master_maxRetries = document.getElementById('master-max-retries')?.value || '2';
+        data.modbusRtu_master_interPollDelay = document.getElementById('master-inter-poll-delay')?.value || '100';
+        data.modbusRtu_master_tasks = JSON.stringify(this._masterTasks || []);
         
         // Modbus TCP
+        data.modbusTcp_enabled = document.getElementById('modbus-tcp-enabled')?.checked ? 'true' : 'false';
         data.modbusTcp_server = document.getElementById('tcp-ip')?.value || '192.168.1.100';
         data.modbusTcp_port = document.getElementById('tcp-mport')?.value || '502';
         data.modbusTcp_slaveId = document.getElementById('tcp-slave-id')?.value || '1';
         data.modbusTcp_timeout = document.getElementById('tcp-mtimeout')?.value || '5000';
         
         // MQTT
+        data.mqtt_enabled = document.getElementById('mqtt-enabled')?.checked ? 'true' : 'false';
         data.mqtt_server = document.getElementById('mqtt-broker')?.value || 'iot.fastbee.cn';
         data.mqtt_port = document.getElementById('mqtt-port')?.value || '1883';
         data.mqtt_clientId = document.getElementById('mqtt-client-id')?.value || '';
@@ -3088,32 +3270,51 @@ const AppState = {
         data.mqtt_connectionTimeout = document.getElementById('mqtt-conn-timeout')?.value || '30000';
         data.mqtt_directConnect = document.getElementById('mqtt-direct-connect')?.checked ?? true;
         data.mqtt_autoReconnect = document.getElementById('mqtt-auto-reconnect')?.checked ?? true;
+        data.mqtt_willTopic = document.getElementById('mqtt-will-topic')?.value || '';
+        data.mqtt_willPayload = document.getElementById('mqtt-will-payload')?.value || '';
+        data.mqtt_willQos = document.getElementById('mqtt-will-qos')?.value || '0';
+        data.mqtt_willRetain = document.getElementById('mqtt-will-retain')?.checked ? 'true' : 'false';
         // 收集发布主题配置（多组）
         data.mqtt_publishTopics = this._collectMqttPublishTopics();
         // 收集订阅主题配置（多组）
         data.mqtt_subscribeTopics = this._collectMqttSubscribeTopics();
         
         // HTTP
+        data.http_enabled = document.getElementById('http-enabled')?.checked ? 'true' : 'false';
         data.http_url = document.getElementById('http-url')?.value || 'https://api.example.com';
         data.http_port = document.getElementById('http-port')?.value || '80';
         data.http_method = document.getElementById('http-method')?.value || 'POST';
         data.http_timeout = document.getElementById('http-timeout')?.value || '30';
         data.http_interval = document.getElementById('http-interval')?.value || '60';
         data.http_retry = document.getElementById('http-retry')?.value || '3';
+        data.http_authType = document.getElementById('http-auth-type')?.value || 'none';
+        data.http_authUser = document.getElementById('http-auth-user')?.value || '';
+        data.http_authToken = document.getElementById('http-auth-token')?.value || '';
+        data.http_contentType = document.getElementById('http-content-type')?.value || 'application/json';
         
         // CoAP
+        data.coap_enabled = document.getElementById('coap-enabled')?.checked ? 'true' : 'false';
         data.coap_server = document.getElementById('coap-server')?.value || 'coap://example.com';
         data.coap_port = document.getElementById('coap-port')?.value || '5683';
         data.coap_method = document.getElementById('coap-method')?.value || 'POST';
         data.coap_path = document.getElementById('coap-path')?.value || 'sensors/temperature';
+        data.coap_msgType = document.getElementById('coap-msg-type')?.value || 'CON';
+        data.coap_retransmit = document.getElementById('coap-retransmit')?.value || '3';
+        data.coap_timeout = document.getElementById('coap-timeout')?.value || '5000';
         
         // TCP
+        data.tcp_enabled = document.getElementById('tcp-enabled')?.checked ? 'true' : 'false';
+        data.tcp_mode = document.getElementById('tcp-mode')?.value || 'client';
         data.tcp_server = document.getElementById('tcp-server')?.value || '192.168.1.200';
         data.tcp_port = document.getElementById('tcp-port')?.value || '5000';
         data.tcp_timeout = document.getElementById('tcp-timeout')?.value || '5000';
         data.tcp_keepAlive = document.getElementById('tcp-keepalive')?.value || '60';
         data.tcp_maxRetry = document.getElementById('tcp-retry')?.value || '5';
         data.tcp_reconnectInterval = document.getElementById('tcp-reconnect')?.value || '10';
+        data.tcp_localPort = document.getElementById('tcp-local-port')?.value || '8080';
+        data.tcp_maxClients = document.getElementById('tcp-max-clients')?.value || '5';
+        data.tcp_heartbeatMsg = document.getElementById('tcp-heartbeat-msg')?.value || '\\n';
+        data.tcp_idleTimeout = document.getElementById('tcp-idle-timeout')?.value || '120';
         
         const protocolName = this._getProtocolName(formId);
         
@@ -3139,6 +3340,96 @@ const AppState = {
                 console.error('saveProtocolConfig error:', err);
                 Notification.error(i18n.t('protocol-save-fail'), i18n.t('protocol-title'));
             });
+    },
+    
+    // ============ Modbus Master 模式管理 ============
+    
+    _masterTasks: [],
+    
+    /**
+     * 切换 Master/Slave 模式显示
+     */
+    onModbusModeChange(mode) {
+        const section = document.getElementById('master-config-section');
+        if (section) {
+            section.style.display = (mode === 'master') ? 'block' : 'none';
+        }
+    },
+    
+    /**
+     * 渲染轮询任务表格
+     */
+    _renderMasterTasks() {
+        const tbody = document.getElementById('master-tasks-body');
+        if (!tbody) return;
+        
+        if (!this._masterTasks || this._masterTasks.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;">' + i18n.t('modbus-master-no-tasks') + '</td></tr>';
+            return;
+        }
+        
+        const fcNames = {1: 'FC01', 2: 'FC02', 3: 'FC03', 4: 'FC04'};
+        tbody.innerHTML = this._masterTasks.map((task, idx) => {
+            return '<tr>' +
+                '<td><input type="number" value="' + (task.slaveAddress || 1) + '" min="1" max="247" style="width:55px;" onchange="AppState._updateTask(' + idx + ',\'slaveAddress\',+this.value)"></td>' +
+                '<td><select onchange="AppState._updateTask(' + idx + ',\'functionCode\',+this.value)" style="width:70px;">' +
+                    [1,2,3,4].map(fc => '<option value="' + fc + '"' + (task.functionCode === fc ? ' selected' : '') + '>' + fcNames[fc] + '</option>').join('') +
+                '</select></td>' +
+                '<td><input type="number" value="' + (task.startAddress || 0) + '" min="0" max="65535" style="width:65px;" onchange="AppState._updateTask(' + idx + ',\'startAddress\',+this.value)"></td>' +
+                '<td><input type="number" value="' + (task.quantity || 10) + '" min="1" max="125" style="width:55px;" onchange="AppState._updateTask(' + idx + ',\'quantity\',+this.value)"></td>' +
+                '<td><input type="number" value="' + (task.pollInterval || 30) + '" min="1" max="3600" style="width:55px;" onchange="AppState._updateTask(' + idx + ',\'pollInterval\',+this.value)"></td>' +
+                '<td><input type="text" value="' + (task.label || '') + '" maxlength="15" style="width:80px;" onchange="AppState._updateTask(' + idx + ',\'label\',this.value)"></td>' +
+                '<td><input type="checkbox"' + (task.enabled !== false ? ' checked' : '') + ' onchange="AppState._updateTask(' + idx + ',\'enabled\',this.checked)"></td>' +
+                '<td><button type="button" class="pure-button" style="background:#f44336;color:white;font-size:11px;padding:2px 8px;" onclick="AppState.removeMasterPollTask(' + idx + ')">' + i18n.t('modbus-master-delete-task') + '</button></td>' +
+            '</tr>';
+        }).join('');
+    },
+    
+    _updateTask(idx, field, value) {
+        if (this._masterTasks && this._masterTasks[idx]) {
+            this._masterTasks[idx][field] = value;
+        }
+    },
+    
+    addMasterPollTask() {
+        if (!this._masterTasks) this._masterTasks = [];
+        if (this._masterTasks.length >= 8) {
+            Notification.warning('Max 8 tasks', i18n.t('modbus-master-title'));
+            return;
+        }
+        this._masterTasks.push({
+            slaveAddress: 1,
+            functionCode: 3,
+            startAddress: 0,
+            quantity: 10,
+            pollInterval: parseInt(document.getElementById('master-poll-interval')?.value) || 30,
+            enabled: true,
+            label: ''
+        });
+        this._renderMasterTasks();
+    },
+    
+    removeMasterPollTask(idx) {
+        if (this._masterTasks) {
+            this._masterTasks.splice(idx, 1);
+            this._renderMasterTasks();
+        }
+    },
+    
+    /**
+     * 刷新 Master 运行状态
+     */
+    refreshMasterStatus() {
+        apiGet('/api/modbus/status')
+            .then(res => {
+                if (!res || !res.success || !res.data) return;
+                const d = res.data;
+                this._setText('master-stat-total', d.totalPolls || 0);
+                this._setText('master-stat-success', d.successPolls || 0);
+                this._setText('master-stat-failed', d.failedPolls || 0);
+                this._setText('master-stat-timeout', d.timeoutPolls || 0);
+            })
+            .catch(() => {});
     },
     
     // ============ 外设接口管理（新版） ============
@@ -4094,5 +4385,190 @@ const AppState = {
         };
         
         poll();
+    },
+
+    // ============ 协议配置增强方法 ============
+    
+    /**
+     * 测试MQTT连接
+     */
+    testMqttConnection() {
+        const resultEl = document.getElementById('mqtt-test-result');
+        const btn = document.querySelector('#mqtt-form .mqtt-test-btn') || document.getElementById('mqtt-test-btn');
+        
+        const server = document.getElementById('mqtt-broker')?.value || '';
+        const port = document.getElementById('mqtt-port')?.value || '1883';
+        const clientId = document.getElementById('mqtt-client-id')?.value || '';
+        const username = document.getElementById('mqtt-username')?.value || '';
+        const password = document.getElementById('mqtt-password')?.value || '';
+        
+        if (!server) {
+            if (resultEl) {
+                resultEl.textContent = i18n.t('mqtt-test-no-server');
+                resultEl.style.color = '#f56c6c';
+            }
+            return;
+        }
+        
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = i18n.t('mqtt-test-testing');
+        }
+        if (resultEl) {
+            resultEl.textContent = i18n.t('mqtt-test-testing');
+            resultEl.style.color = '#909399';
+        }
+        
+        apiPost('/api/mqtt/test', { server, port, clientId, username, password })
+            .then(res => {
+                if (res && res.success && res.data) {
+                    if (res.data.connected) {
+                        if (resultEl) {
+                            resultEl.textContent = i18n.t('mqtt-test-success');
+                            resultEl.style.color = '#67c23a';
+                        }
+                    } else {
+                        if (resultEl) {
+                            resultEl.textContent = i18n.t('mqtt-test-fail-prefix') + (res.data.error || 'Unknown');
+                            resultEl.style.color = '#f56c6c';
+                        }
+                    }
+                } else {
+                    if (resultEl) {
+                        resultEl.textContent = i18n.t('mqtt-test-error');
+                        resultEl.style.color = '#f56c6c';
+                    }
+                }
+            })
+            .catch(err => {
+                console.error('MQTT test failed:', err);
+                if (resultEl) {
+                    resultEl.textContent = i18n.t('mqtt-test-error');
+                    resultEl.style.color = '#f56c6c';
+                }
+            })
+            .finally(() => {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = i18n.t('mqtt-test-btn-text');
+                }
+            });
+    },
+    
+    /**
+     * HTTP认证类型切换
+     */
+    onHttpAuthTypeChange(type) {
+        const userGroup = document.getElementById('http-auth-user')?.closest('.pure-control-group');
+        const tokenGroup = document.getElementById('http-auth-token')?.closest('.pure-control-group');
+        
+        if (userGroup) {
+            userGroup.style.display = (type === 'basic') ? 'block' : 'none';
+        }
+        if (tokenGroup) {
+            tokenGroup.style.display = (type === 'basic' || type === 'bearer') ? 'block' : 'none';
+        }
+    },
+    
+    /**
+     * TCP模式切换
+     */
+    onTcpModeChange(mode) {
+        const clientConfig = document.getElementById('tcp-client-config');
+        const serverConfig = document.getElementById('tcp-server-config');
+        
+        if (clientConfig) {
+            clientConfig.style.display = (mode === 'client') ? 'block' : 'none';
+        }
+        if (serverConfig) {
+            serverConfig.style.display = (mode === 'server') ? 'block' : 'none';
+        }
+    },
+    
+    /**
+     * 导出协议配置
+     */
+    exportProtocolConfig() {
+        apiGet('/api/protocol/config')
+            .then(res => {
+                if (!res || !res.success) {
+                    Notification.error(i18n.t('protocol-export-fail'), i18n.t('protocol-config-title'));
+                    return;
+                }
+                const jsonStr = JSON.stringify(res.data || {}, null, 2);
+                const blob = new Blob([jsonStr], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'protocol-config.json';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                Notification.success(i18n.t('protocol-export-ok'), i18n.t('protocol-config-title'));
+            })
+            .catch(err => {
+                console.error('Export protocol config failed:', err);
+                Notification.error(i18n.t('protocol-export-fail'), i18n.t('protocol-config-title'));
+            });
+    },
+    
+    /**
+     * 导入协议配置
+     */
+    importProtocolConfig() {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json';
+        input.onchange = (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = (evt) => {
+                try {
+                    const config = JSON.parse(evt.target.result);
+                    if (!confirm(i18n.t('protocol-import-confirm'))) return;
+                    
+                    // 将导入的JSON转换为flat参数格式并提交
+                    const data = {};
+                    const flatten = (obj, prefix) => {
+                        for (const key in obj) {
+                            const val = obj[key];
+                            const flatKey = prefix ? prefix + '_' + key : key;
+                            if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+                                flatten(val, flatKey);
+                            } else {
+                                data[flatKey] = typeof val === 'object' ? JSON.stringify(val) : String(val);
+                            }
+                        }
+                    };
+                    flatten(config, '');
+                    
+                    apiPost('/api/protocol/config', data)
+                        .then(res => {
+                            if (res && res.success) {
+                                this._protocolConfig = null;
+                                Notification.success(i18n.t('protocol-import-ok'), i18n.t('protocol-config-title'));
+                                // 重新加载当前tab
+                                const activeTab = document.querySelector('#protocol-page .config-tab.active');
+                                if (activeTab) {
+                                    const tabId = activeTab.getAttribute('data-tab');
+                                    this.loadProtocolConfig(tabId);
+                                }
+                            } else {
+                                Notification.error(i18n.t('protocol-import-fail'), i18n.t('protocol-config-title'));
+                            }
+                        })
+                        .catch(() => {
+                            Notification.error(i18n.t('protocol-import-fail'), i18n.t('protocol-config-title'));
+                        });
+                } catch (parseErr) {
+                    Notification.error(i18n.t('protocol-import-invalid'), i18n.t('protocol-config-title'));
+                }
+            };
+            reader.readAsText(file);
+        };
+        input.click();
     }
 };

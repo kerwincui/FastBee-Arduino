@@ -4,13 +4,25 @@
 #include <WiFi.h>
 #include <functional>
 #include <vector>
+#include <memory>
 #include <core/SystemConstants.h>
+#include "systems/LoggerSystem.h"
 
 struct TCPConfig {
     bool isServer = false;
     String server = "";
     uint16_t port = 8080;
     uint16_t localPort = 8080;
+    uint32_t keepAliveInterval = 30000;  // 心跳间隔 (ms)
+    uint32_t idleTimeout = 120000;       // 空闲超时 (ms)
+    uint8_t maxClients = 5;              // 最大客户端连接数
+    String keepAliveMessage = "\n";      // 心跳数据
+};
+
+struct ClientInfo {
+    WiFiClient client;
+    unsigned long lastActivityTime;
+    unsigned long lastKeepAliveTime;
 };
 
 class TCPHandler {
@@ -47,11 +59,15 @@ private:
     void handleClient();
     
     TCPConfig config;
-    WiFiServer* tcpServer;
+    std::unique_ptr<WiFiServer> tcpServer;
     WiFiClient tcpClient;
-    std::vector<WiFiClient> serverClients;
+    std::vector<ClientInfo> serverClients;
     bool isConnected;
     std::function<void(const String&)> messageCallback;
+    
+    // 客户端模式时间戳
+    unsigned long clientLastActivity;
+    unsigned long clientLastKeepAlive;
 };
 
 #endif

@@ -41,6 +41,11 @@ struct MQTTConfig {
     bool directConnect;        // 是否直连（绕过协议管理器）
     bool autoReconnect;        // 自动重连
     uint32_t connectionTimeout;// 连接超时（毫秒）
+    // 遗嘱消息配置
+    String willTopic;
+    String willPayload;
+    uint8_t willQos = 0;
+    bool willRetain = false;
     // 发布主题配置（支持多组）
     std::vector<MqttPublishTopic> publishTopics;
     // 订阅主题配置（支持多组）
@@ -49,7 +54,7 @@ struct MQTTConfig {
     // 默认构造函数
     MQTTConfig() : port(1883), keepAlive(60), 
                    directConnect(true), autoReconnect(true), 
-                   connectionTimeout(30000) {}
+                   connectionTimeout(30000), willQos(0), willRetain(false) {}
 };
 
 class MQTTClient {

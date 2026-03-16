@@ -111,7 +111,7 @@ private:
     std::map<String, Permission> permissions;
 
     // 审计日志（环形缓冲，最多保留 MAX_AUDIT_ENTRIES 条）
-    static constexpr size_t MAX_AUDIT_ENTRIES = 100;
+    static constexpr size_t MAX_AUDIT_ENTRIES = 20;
     std::vector<AuditEntry> auditLog;
 
     // 事件回调

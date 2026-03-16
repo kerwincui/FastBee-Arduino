@@ -139,7 +139,8 @@ void RoleManager::initializeBuiltinPermissions() {
     reg(FS_MANAGE, "管理文件系统", "上传/删除文件",            "文件系统");
 
     // 审计
-    reg(AUDIT_VIEW, "查看审计日志", "读取操作审计记录",        "审计");
+    reg(AUDIT_VIEW,  "查看审计日志", "读取操作审计记录",        "审计");
+    reg(AUDIT_CLEAR, "清除审计日志", "清空操作审计记录",        "审计");
 }
 
 void RoleManager::initializeBuiltinRoles() {

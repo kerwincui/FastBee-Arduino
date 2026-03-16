@@ -151,7 +151,7 @@ namespace Storage {
     constexpr size_t SYSTEM_CONFIG_DOC_SIZE = 2048;
     constexpr size_t NETWORK_CONFIG_DOC_SIZE = 2048;
     constexpr size_t USER_CONFIG_DOC_SIZE = 4096;
-    constexpr size_t PROTOCOL_CONFIG_DOC_SIZE = 2048;
+    constexpr size_t PROTOCOL_CONFIG_DOC_SIZE = 4096;
 }
 
 // ============================================================================
@@ -172,12 +172,12 @@ namespace TaskScheduler {
     constexpr uint8_t TASK_PRIORITY_LOW = 1;
     constexpr uint8_t TASK_PRIORITY_IDLE = 0;
     
-    // 系统任务间隔（毫秒）
+    // 系统任务间隔（毫秒）- 优化后降低CPU占用
     constexpr uint32_t HEALTH_CHECK_INTERVAL = 30000;      // 30秒
-    constexpr uint32_t WEB_CLIENT_INTERVAL = 100;          // 100ms
+    constexpr uint32_t WEB_CLIENT_INTERVAL = 200;          // 100ms → 200ms
     constexpr uint32_t NETWORK_CHECK_INTERVAL = 10000;     // 10秒
     constexpr uint32_t DATA_SYNC_INTERVAL = 60000;         // 1分钟
-    constexpr uint32_t STATUS_UPDATE_INTERVAL = 5000;      // 5秒
+    constexpr uint32_t STATUS_UPDATE_INTERVAL = 10000;     // 5s → 10s
 }
 
 // ============================================================================
@@ -237,6 +237,13 @@ namespace Protocols {
     constexpr uint8_t MODBUS_DATA_BITS = 8;
     constexpr uint8_t MODBUS_STOP_BITS = 1;
     constexpr uint8_t MODBUS_PARITY = 0;  // 0=None, 1=Odd, 2=Even
+
+    // Modbus Master模式常量
+    constexpr uint8_t  MODBUS_MAX_POLL_TASKS       = 8;    // 最大轮询任务数
+    constexpr uint16_t MODBUS_DEFAULT_POLL_INTERVAL = 30;   // 默认轮询间隔（秒）
+    constexpr uint16_t MODBUS_MAX_REGISTERS_PER_READ = 125; // 单次最大寄存器数
+    constexpr uint8_t  MODBUS_MAX_WRITE_QUEUE       = 4;    // 写请求队列深度
+    constexpr uint8_t  MODBUS_POLL_LABEL_MAX_LEN    = 16;   // 轮询标签最大长度
 
     // 协议缓冲区大小（各协议独立值，无重复）
     constexpr uint16_t MQTT_BUFFER_SIZE   = 1024;

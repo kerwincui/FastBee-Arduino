@@ -245,7 +245,7 @@
                                         <div style="padding: 12px 15px;">
                                             <table style="width: 100%; font-size: 13px; border-collapse: collapse;">
                                                 <tbody>
-                                                    <tr><td style="color: #666; padding: 4px 0; width: 100px;" data-i18n="net-status-title">状态</td><td id="ns-status" style="padding: 4px 0;"><span class="badge badge-info">待加载...</span></td></tr>
+                                                    <tr><td style="color: #666; padding: 4px 0; width: 100px;" data-i18n="net-sta-status-label">状态</td><td id="ns-status" style="padding: 4px 0;"><span class="badge badge-info">待加载...</span></td></tr>
                                                     <tr><td style="color: #666; padding: 4px 0;">SSID</td><td id="ns-ssid" style="padding: 4px 0;">--</td></tr>
                                                     <tr><td style="color: #666; padding: 4px 0;" data-i18n="static-ip-label">IP 地址</td><td id="ns-ip" style="padding: 4px 0;">--</td></tr>
                                                     <tr><td style="color: #666; padding: 4px 0;" data-i18n="gateway-label">网关</td><td id="ns-gateway" style="padding: 4px 0;">--</td></tr>
@@ -303,22 +303,31 @@
                     <!-- 通信协议页面 -->
                     <div id="protocol-page" class="page">
                         <div class="card">
-                            <div class="card-header">
+                            <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
                                 <h2 class="card-title" id="protocol-title">通信协议配置</h2>
+                                <div>
+                                    <button type="button" class="pure-button" style="font-size:12px; padding:4px 10px;" onclick="AppState.exportProtocolConfig()" data-i18n="protocol-export-btn">导出配置</button>
+                                    <button type="button" class="pure-button" style="font-size:12px; padding:4px 10px;" onclick="AppState.importProtocolConfig()" data-i18n="protocol-import-btn">导入配置</button>
+                                </div>
                             </div>
                             <div class="card-body">
                                 <div class="config-tabs">
                                     <div class="config-tab active" data-tab="mqtt">MQTT</div>
                                     <div class="config-tab" data-tab="modbus-rtu">Modbus RTU</div>
-                                    <div class="config-tab" data-tab="modbus-tcp">Modbus TCP</div>
-                                    <div class="config-tab" data-tab="http">HTTP</div>
-                                    <div class="config-tab" data-tab="coap">CoAP</div>
-                                    <div class="config-tab" data-tab="tcp">TCP</div>
+                                    <div class="config-tab tab-disabled" data-tab="modbus-tcp">Modbus TCP</div>
+                                    <div class="config-tab tab-disabled" data-tab="http">HTTP</div>
+                                    <div class="config-tab tab-disabled" data-tab="coap">CoAP</div>
+                                    <div class="config-tab tab-disabled" data-tab="tcp">TCP</div>
                                 </div>
 
                                 <!-- MQTT 配置 - 两列布局 -->
                                 <div id="mqtt" class="config-content active">
                                     <form id="mqtt-form" class="pure-form pure-form-stacked">
+                                        <div class="pure-control-group" style="margin-bottom:15px; padding-bottom:15px; border-bottom:1px solid #eee;">
+                                            <label class="pure-checkbox">
+                                                <input type="checkbox" id="mqtt-enabled" checked> <span data-i18n="mqtt-enabled-label">启用MQTT</span>
+                                            </label>
+                                        </div>
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
@@ -327,47 +336,80 @@
                                                 </div>
 
                                                 <div class="pure-control-group">
-                                                    <label for="mqtt-client-id">客户端ID</label>
+                                                    <label for="mqtt-client-id" data-i18n="mqtt-client-id-label">客户端ID</label>
                                                     <input type="text" id="mqtt-client-id" class="pure-input-1" value="S&FB100900001&1&1">
                                                 </div>
 
                                                 <div class="pure-control-group">
-                                                    <label for="mqtt-username">用户名</label>
+                                                    <label for="mqtt-username" data-i18n="mqtt-username-label">用户名</label>
                                                     <input type="text" id="mqtt-username" class="pure-input-1" value="FastBee">
                                                 </div>
 
                                                 <div class="pure-control-group">
                                                     <label class="pure-checkbox">
-                                                        <input type="checkbox" id="mqtt-direct-connect" checked> 是否直连
+                                                        <input type="checkbox" id="mqtt-direct-connect" checked> <span data-i18n="mqtt-direct-connect-text">是否直连</span>
                                                     </label>
                                                 </div>
                                             </div>
 
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="mqtt-port">端口</label>
+                                                    <label for="mqtt-port" data-i18n="mqtt-port-label">端口</label>
                                                     <input type="number" id="mqtt-port" class="pure-input-1" value="1883" min="1" max="65535">
                                                 </div>
 
                                                 <div class="pure-control-group">
-                                                    <label for="mqtt-alive">心跳(秒)</label>
+                                                    <label for="mqtt-alive" data-i18n="mqtt-alive-label">心跳(秒)</label>
                                                     <input type="number" id="mqtt-alive" class="pure-input-1" value="60" min="10" max="300">
                                                 </div>
 
                                                 <div class="pure-control-group">
-                                                    <label for="mqtt-password">密码</label>
+                                                    <label for="mqtt-password" data-i18n="mqtt-password-label">密码</label>
                                                     <input type="password" id="mqtt-password" class="pure-input-1" value="P47T6OD5IPFWHUM6">
                                                 </div>
 
                                                 <div class="pure-control-group">
-                                                    <label for="mqtt-conn-timeout">连接超时(毫秒)</label>
+                                                    <label for="mqtt-conn-timeout" data-i18n="mqtt-conn-timeout-label">连接超时(毫秒)</label>
                                                     <input type="number" id="mqtt-conn-timeout" class="pure-input-1" value="30000" min="1000" max="120000">
                                                 </div>
 
                                                 <div class="pure-control-group" style="margin-top: 28px;">
                                                     <label class="pure-checkbox">
-                                                        <input type="checkbox" id="mqtt-auto-reconnect" checked> 自动重连
+                                                        <input type="checkbox" id="mqtt-auto-reconnect" checked> <span data-i18n="mqtt-auto-reconnect-text">自动重连</span>
                                                     </label>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <!-- 遗嘱消息配置 -->
+                                        <div style="margin-top:15px; padding:12px; background:#fff8e1; border:1px solid #ffe082; border-radius:4px;">
+                                            <h4 style="margin:0 0 12px 0; color:#333;" data-i18n="mqtt-will-section-title">遗嘱消息配置</h4>
+                                            <div class="config-form-grid">
+                                                <div class="config-form-column">
+                                                    <div class="pure-control-group">
+                                                        <label for="mqtt-will-topic" data-i18n="mqtt-will-topic-label">遗嘱主题</label>
+                                                        <input type="text" id="mqtt-will-topic" class="pure-input-1" maxlength="64">
+                                                        <small class="field-hint" data-i18n="mqtt-will-topic-hint">设备异常断线时Broker发布的主题</small>
+                                                    </div>
+                                                    <div class="pure-control-group">
+                                                        <label for="mqtt-will-qos" data-i18n="mqtt-will-qos-label">遗嘱QoS</label>
+                                                        <select id="mqtt-will-qos" class="pure-input-1">
+                                                            <option value="0">QoS 0</option>
+                                                            <option value="1">QoS 1</option>
+                                                            <option value="2">QoS 2</option>
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                                <div class="config-form-column">
+                                                    <div class="pure-control-group">
+                                                        <label for="mqtt-will-payload" data-i18n="mqtt-will-payload-label">遗嘱内容</label>
+                                                        <input type="text" id="mqtt-will-payload" class="pure-input-1" maxlength="128">
+                                                    </div>
+                                                    <div class="pure-control-group" style="margin-top:28px;">
+                                                        <label class="pure-checkbox">
+                                                            <input type="checkbox" id="mqtt-will-retain"> <span data-i18n="mqtt-will-retain-label">遗嘱保留</span>
+                                                        </label>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>
@@ -396,6 +438,8 @@
 
                                         <div style="margin-top: 20px;">
                                             <button type="submit" class="pure-button pure-button-primary" data-i18n="btn-save-config">保存配置</button>
+                                            <button type="button" class="pure-button" style="margin-left:10px;" onclick="AppState.testMqttConnection()" data-i18n="mqtt-test-conn-btn">测试连接</button>
+                                            <span id="mqtt-test-result" style="margin-left:10px; font-size:13px;"></span>
                                         </div>
                                     </form>
                                 </div>
@@ -403,15 +447,30 @@
                                 <!-- Modbus RTU 配置 - 两列布局 -->
                                 <div id="modbus-rtu" class="config-content">
                                     <form id="modbus-rtu-form" class="pure-form pure-form-stacked">
+                                        <div class="pure-control-group" style="margin-bottom:15px; padding-bottom:15px; border-bottom:1px solid #eee;">
+                                            <label class="pure-checkbox">
+                                                <input type="checkbox" id="modbus-rtu-enabled"> <span data-i18n="modbus-rtu-enabled-label">启用Modbus RTU</span>
+                                            </label>
+                                        </div>
+                                        <!-- 工作模式选择 -->
+                                        <div class="pure-control-group" style="margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #eee;">
+                                            <label for="rtu-mode" data-i18n="modbus-mode-label">工作模式</label>
+                                            <select id="rtu-mode" class="pure-input-1" onchange="AppState.onModbusModeChange(this.value)">
+                                                <option value="slave" data-i18n="modbus-mode-slave">从站模式 (Slave)</option>
+                                                <option value="master" data-i18n="modbus-mode-master">主站模式 (Master)</option>
+                                            </select>
+                                        </div>
+                                        
+                                        <!-- 串口基本配置 -->
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="rtu-port">串口端口</label>
+                                                    <label for="rtu-port" data-i18n="rtu-port-label">串口端口</label>
                                                     <input type="text" id="rtu-port" class="pure-input-1" value="/dev/ttyS0">
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="rtu-databits">数据位</label>
+                                                    <label for="rtu-databits" data-i18n="rtu-databits-label">数据位</label>
                                                     <select id="rtu-databits" class="pure-input-1">
                                                         <option value="7">7</option>
                                                         <option value="8" selected>8</option>
@@ -419,7 +478,7 @@
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="rtu-stopbits">停止位</label>
+                                                    <label for="rtu-stopbits" data-i18n="rtu-stopbits-label">停止位</label>
                                                     <select id="rtu-stopbits" class="pure-input-1">
                                                         <option value="1" selected>1</option>
                                                         <option value="2">2</option>
@@ -429,7 +488,7 @@
                                             
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="rtu-baudrate">波特率</label>
+                                                    <label for="rtu-baudrate" data-i18n="rtu-baudrate-label">波特率</label>
                                                     <select id="rtu-baudrate" class="pure-input-1">
                                                         <option value="9600">9600</option>
                                                         <option value="19200" selected>19200</option>
@@ -440,17 +499,112 @@
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="rtu-parity">校验位</label>
+                                                    <label for="rtu-parity" data-i18n="rtu-parity-label">校验位</label>
                                                     <select id="rtu-parity" class="pure-input-1">
-                                                        <option value="none" selected>无</option>
-                                                        <option value="even">偶校验</option>
-                                                        <option value="odd">奇校验</option>
+                                                        <option value="none" selected data-i18n="rtu-parity-none">无</option>
+                                                        <option value="even" data-i18n="rtu-parity-even">偶校验</option>
+                                                        <option value="odd" data-i18n="rtu-parity-odd">奇校验</option>
                                                     </select>
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="rtu-timeout">超时时间(ms)</label>
+                                                    <label for="rtu-timeout" data-i18n="rtu-timeout-label">超时时间(ms)</label>
                                                     <input type="number" id="rtu-timeout" class="pure-input-1" value="1000" min="100" max="10000">
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <!-- RS485 引脚配置 -->
+                                        <div class="config-form-grid" style="margin-top:15px; padding-top:15px; border-top:1px solid #eee;">
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="rtu-tx-pin" data-i18n="rtu-tx-pin-label">TX引脚</label>
+                                                    <input type="number" id="rtu-tx-pin" class="pure-input-1" value="17" min="0" max="39">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="rtu-de-pin" data-i18n="rtu-de-pin-label">DE引脚 (RS485)</label>
+                                                    <input type="number" id="rtu-de-pin" class="pure-input-1" value="-1" min="-1" max="39">
+                                                    <small class="field-hint" data-i18n="rtu-de-pin-hint">RS485方向控制引脚，-1表示不使用</small>
+                                                </div>
+                                            </div>
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="rtu-rx-pin" data-i18n="rtu-rx-pin-label">RX引脚</label>
+                                                    <input type="number" id="rtu-rx-pin" class="pure-input-1" value="16" min="0" max="39">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="rtu-slave-addr" data-i18n="rtu-slave-addr-label">从站地址</label>
+                                                    <input type="number" id="rtu-slave-addr" class="pure-input-1" value="1" min="1" max="247">
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Master 模式配置区 -->
+                                        <div id="master-config-section" style="display: none; margin-top: 20px; padding-top: 15px; border-top: 2px solid #667eea;">
+                                            <h4 style="color: #667eea; margin-bottom: 15px;" data-i18n="modbus-master-title">主站轮询配置</h4>
+                                            <div class="config-form-grid">
+                                                <div class="config-form-column">
+                                                    <div class="pure-control-group">
+                                                        <label for="master-poll-interval" data-i18n="modbus-master-poll-interval">默认轮询间隔(秒)</label>
+                                                        <input type="number" id="master-poll-interval" class="pure-input-1" value="30" min="1" max="3600">
+                                                    </div>
+                                                    <div class="pure-control-group">
+                                                        <label for="master-max-retries" data-i18n="modbus-master-max-retries">最大重试次数</label>
+                                                        <input type="number" id="master-max-retries" class="pure-input-1" value="2" min="0" max="10">
+                                                    </div>
+                                                </div>
+                                                <div class="config-form-column">
+                                                    <div class="pure-control-group">
+                                                        <label for="master-response-timeout" data-i18n="modbus-master-response-timeout">响应超时(ms)</label>
+                                                        <input type="number" id="master-response-timeout" class="pure-input-1" value="1000" min="100" max="30000">
+                                                    </div>
+                                                    <div class="pure-control-group">
+                                                        <label for="master-inter-poll-delay" data-i18n="modbus-master-inter-poll-delay">轮询间隔延迟(ms)</label>
+                                                        <input type="number" id="master-inter-poll-delay" class="pure-input-1" value="100" min="10" max="5000">
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <!-- 轮询任务表 -->
+                                            <div style="margin-top: 15px;">
+                                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                                    <h4 style="color: #333; margin: 0;" data-i18n="modbus-master-tasks-title">轮询任务列表</h4>
+                                                    <button type="button" class="pure-button" style="background: #4CAF50; color: white; font-size: 12px; padding: 4px 12px;" onclick="AppState.addMasterPollTask()" data-i18n="modbus-master-add-task">添加任务</button>
+                                                </div>
+                                                <div style="overflow-x: auto;">
+                                                    <table class="pure-table pure-table-bordered" style="width: 100%; font-size: 13px;">
+                                                        <thead>
+                                                            <tr>
+                                                                <th data-i18n="modbus-master-slave-addr">从站地址</th>
+                                                                <th data-i18n="modbus-master-fc">功能码</th>
+                                                                <th data-i18n="modbus-master-start-addr">起始地址</th>
+                                                                <th data-i18n="modbus-master-quantity">数量</th>
+                                                                <th data-i18n="modbus-master-interval">间隔(秒)</th>
+                                                                <th data-i18n="modbus-master-label">标签</th>
+                                                                <th data-i18n="modbus-master-enabled">启用</th>
+                                                                <th data-i18n="modbus-master-actions">操作</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody id="master-tasks-body">
+                                                            <tr><td colspan="8" style="text-align: center; color: #999;" data-i18n="modbus-master-no-tasks">暂无轮询任务</td></tr>
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+
+                                            <!-- Master 状态显示 -->
+                                            <div id="master-status-section" style="margin-top: 15px; padding: 12px; background: #f5f6fa; border-radius: 5px;">
+                                                <h4 style="color: #333; margin-bottom: 10px;" data-i18n="modbus-master-status-title">主站运行状态</h4>
+                                                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; text-align: center;">
+                                                    <div><small data-i18n="modbus-master-total-polls">总轮询</small><br><strong id="master-stat-total">0</strong></div>
+                                                    <div><small data-i18n="modbus-master-success-polls">成功</small><br><strong id="master-stat-success" style="color:#4CAF50;">0</strong></div>
+                                                    <div><small data-i18n="modbus-master-failed-polls">失败</small><br><strong id="master-stat-failed" style="color:#f44336;">0</strong></div>
+                                                    <div><small data-i18n="modbus-master-timeout-polls">超时</small><br><strong id="master-stat-timeout" style="color:#FF9800;">0</strong></div>
+                                                </div>
+                                                <div style="text-align: right; margin-top: 8px;">
+                                                    <button type="button" class="pure-button" style="font-size: 11px; padding: 3px 10px;" onclick="AppState.refreshMasterStatus()">
+                                                        <i class="fas fa-sync-alt"></i>
+                                                    </button>
                                                 </div>
                                             </div>
                                         </div>
@@ -460,7 +614,7 @@
                                         </div>
                                         
                                         <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary">保存配置</button>
+                                            <button type="submit" class="pure-button pure-button-primary" data-i18n="btn-save-config">保存配置</button>
                                         </div>
                                     </form>
                                 </div>
@@ -468,38 +622,43 @@
                                 <!-- Modbus TCP 配置 - 两列布局 -->
                                 <div id="modbus-tcp" class="config-content">
                                     <form id="modbus-tcp-form" class="pure-form pure-form-stacked">
+                                        <div class="pure-control-group" style="margin-bottom:15px; padding-bottom:15px; border-bottom:1px solid #eee;">
+                                            <label class="pure-checkbox">
+                                                <input type="checkbox" id="modbus-tcp-enabled"> <span data-i18n="modbus-tcp-enabled-label">启用Modbus TCP</span>
+                                            </label>
+                                        </div>
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="tcp-ip">IP地址</label>
+                                                    <label for="tcp-ip" data-i18n="tcp-ip-label">IP地址</label>
                                                     <input type="text" id="tcp-ip" class="pure-input-1" value="192.168.1.100">
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="tcp-slave-id">从站ID</label>
+                                                    <label for="tcp-slave-id" data-i18n="tcp-slave-id-label">从站ID</label>
                                                     <input type="number" id="tcp-slave-id" class="pure-input-1" value="1" min="1" max="247">
                                                 </div>
                                             </div>
                                             
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="tcp-mport">端口</label>
+                                                    <label for="tcp-mport" data-i18n="tcp-port-label">端口</label>
                                                     <input type="number" id="tcp-mport" class="pure-input-1" value="502" min="1" max="65535">
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="tcp-mtimeout">超时时间(ms)</label>
+                                                    <label for="tcp-mtimeout" data-i18n="tcp-timeout-label">超时时间(ms)</label>
                                                     <input type="number" id="tcp-mtimeout" class="pure-input-1" value="5000" min="100" max="30000">
                                                 </div>
                                             </div>
                                         </div>
                                         
-                                        <div class="message message-success" id="modbus-tcp-success" style="display: none;">
+                                        <div class="message message-success" id="modbus-tcp-success" style="display: none;" data-i18n="modbus-tcp-save-ok">
                                             Modbus TCP配置保存成功！
                                         </div>
                                         
                                         <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary">保存配置</button>
+                                            <button type="submit" class="pure-button pure-button-primary" data-i18n="btn-save-config">保存配置</button>
                                         </div>
                                     </form>
                                 </div>
@@ -507,15 +666,20 @@
                                 <!-- HTTP 配置 - 两列布局 -->
                                 <div id="http" class="config-content">
                                     <form id="http-form" class="pure-form pure-form-stacked">
+                                        <div class="pure-control-group" style="margin-bottom:15px; padding-bottom:15px; border-bottom:1px solid #eee;">
+                                            <label class="pure-checkbox">
+                                                <input type="checkbox" id="http-enabled"> <span data-i18n="http-enabled-label">启用HTTP</span>
+                                            </label>
+                                        </div>
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="http-url">服务地址</label>
+                                                    <label for="http-url" data-i18n="http-url-label">服务地址</label>
                                                     <input type="text" id="http-url" class="pure-input-1" value="https://api.example.com">
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="http-method">请求方法</label>
+                                                    <label for="http-method" data-i18n="http-method-label">请求方法</label>
                                                     <select id="http-method" class="pure-input-1">
                                                         <option value="GET">GET</option>
                                                         <option value="POST" selected>POST</option>
@@ -525,35 +689,67 @@
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="http-timeout">超时时间(秒)</label>
+                                                    <label for="http-timeout" data-i18n="http-timeout-label">超时时间(秒)</label>
                                                     <input type="number" id="http-timeout" class="pure-input-1" value="30" min="1" max="120">
                                                 </div>
                                             </div>
                                             
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="http-port">端口</label>
+                                                    <label for="http-port" data-i18n="http-port-label">端口</label>
                                                     <input type="number" id="http-port" class="pure-input-1" value="80" min="1" max="65535">
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="http-interval">上报间隔(秒)</label>
+                                                    <label for="http-interval" data-i18n="http-interval-label">上报间隔(秒)</label>
                                                     <input type="number" id="http-interval" class="pure-input-1" value="60" min="5" max="3600">
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="http-retry">重试次数</label>
+                                                    <label for="http-retry" data-i18n="http-retry-label">重试次数</label>
                                                     <input type="number" id="http-retry" class="pure-input-1" value="3" min="0" max="10">
                                                 </div>
                                             </div>
                                         </div>
+
+                                        <!-- HTTP 认证配置 -->
+                                        <div class="config-form-grid" style="margin-top:15px; padding-top:15px; border-top:1px solid #eee;">
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="http-auth-type" data-i18n="http-auth-type-label">认证方式</label>
+                                                    <select id="http-auth-type" class="pure-input-1" onchange="AppState.onHttpAuthTypeChange(this.value)">
+                                                        <option value="none" data-i18n="http-auth-none">无认证</option>
+                                                        <option value="basic" data-i18n="http-auth-basic">Basic认证</option>
+                                                        <option value="bearer" data-i18n="http-auth-bearer">Bearer Token</option>
+                                                    </select>
+                                                </div>
+                                                <div class="pure-control-group" id="http-auth-user-group" style="display:none;">
+                                                    <label for="http-auth-user" data-i18n="http-auth-user-label">认证用户名</label>
+                                                    <input type="text" id="http-auth-user" class="pure-input-1">
+                                                </div>
+                                            </div>
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label for="http-content-type" data-i18n="http-content-type-label">内容类型</label>
+                                                    <select id="http-content-type" class="pure-input-1">
+                                                        <option value="application/json">application/json</option>
+                                                        <option value="text/plain">text/plain</option>
+                                                        <option value="application/x-www-form-urlencoded">x-www-form-urlencoded</option>
+                                                    </select>
+                                                </div>
+                                                <div class="pure-control-group" id="http-auth-token-group" style="display:none;">
+                                                    <label for="http-auth-token" data-i18n="http-auth-token-label">认证密码/Token</label>
+                                                    <input type="password" id="http-auth-token" class="pure-input-1">
+                                                </div>
+                                            </div>
+                                        </div>
                                         
-                                        <div class="message message-success" id="http-success" style="display: none;">
+                                        <div class="message message-success" id="http-success" style="display: none;" data-i18n="http-save-ok">
                                             HTTP配置保存成功！
                                         </div>
                                         
                                         <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary">保存配置</button>
+                                            <button type="submit" class="pure-button pure-button-primary" data-i18n="btn-save-config">保存配置</button>
                                         </div>
                                     </form>
                                 </div>
@@ -561,15 +757,20 @@
                                 <!-- CoAP 配置 - 两列布局 -->
                                 <div id="coap" class="config-content">
                                     <form id="coap-form" class="pure-form pure-form-stacked">
+                                        <div class="pure-control-group" style="margin-bottom:15px; padding-bottom:15px; border-bottom:1px solid #eee;">
+                                            <label class="pure-checkbox">
+                                                <input type="checkbox" id="coap-enabled"> <span data-i18n="coap-enabled-label">启用CoAP</span>
+                                            </label>
+                                        </div>
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="coap-server">服务器地址</label>
+                                                    <label for="coap-server" data-i18n="coap-server-label">服务器地址</label>
                                                     <input type="text" id="coap-server" class="pure-input-1" value="coap://example.com">
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="coap-method">方法</label>
+                                                    <label for="coap-method" data-i18n="coap-method-label">方法</label>
                                                     <select id="coap-method" class="pure-input-1">
                                                         <option value="GET">GET</option>
                                                         <option value="POST" selected>POST</option>
@@ -577,27 +778,45 @@
                                                         <option value="DELETE">DELETE</option>
                                                     </select>
                                                 </div>
+
+                                                <div class="pure-control-group">
+                                                    <label for="coap-msg-type" data-i18n="coap-msg-type-label">消息类型</label>
+                                                    <select id="coap-msg-type" class="pure-input-1">
+                                                        <option value="CON" data-i18n="coap-msg-type-con">需确认 (CON)</option>
+                                                        <option value="NON" data-i18n="coap-msg-type-non">无需确认 (NON)</option>
+                                                    </select>
+                                                </div>
                                             </div>
                                             
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="coap-port">端口</label>
+                                                    <label for="coap-port" data-i18n="coap-port-label">端口</label>
                                                     <input type="number" id="coap-port" class="pure-input-1" value="5683" min="1" max="65535">
                                                 </div>
                                                 
                                                 <div class="pure-control-group">
-                                                    <label for="coap-path">路径</label>
+                                                    <label for="coap-path" data-i18n="coap-path-label">路径</label>
                                                     <input type="text" id="coap-path" class="pure-input-1" value="sensors/temperature">
+                                                </div>
+
+                                                <div class="pure-control-group">
+                                                    <label for="coap-retransmit" data-i18n="coap-retransmit-label">重传次数</label>
+                                                    <input type="number" id="coap-retransmit" class="pure-input-1" value="3" min="0" max="4">
+                                                </div>
+
+                                                <div class="pure-control-group">
+                                                    <label for="coap-timeout" data-i18n="coap-timeout-label">超时时间(ms)</label>
+                                                    <input type="number" id="coap-timeout" class="pure-input-1" value="5000" min="1000" max="30000">
                                                 </div>
                                             </div>
                                         </div>
                                         
-                                        <div class="message message-success" id="coap-success" style="display: none;">
+                                        <div class="message message-success" id="coap-success" style="display: none;" data-i18n="coap-save-ok">
                                             CoAP配置保存成功！
                                         </div>
                                         
                                         <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary">保存配置</button>
+                                            <button type="submit" class="pure-button pure-button-primary" data-i18n="btn-save-config">保存配置</button>
                                         </div>
                                     </form>
                                 </div>
@@ -605,48 +824,91 @@
                                 <!-- TCP 配置 - 两列布局 -->
                                 <div id="tcp" class="config-content">
                                     <form id="tcp-form" class="pure-form pure-form-stacked">
-                                        <div class="config-form-grid">
-                                            <div class="config-form-column">
-                                                <div class="pure-control-group">
-                                                    <label for="tcp-server">服务器地址</label>
-                                                    <input type="text" id="tcp-server" class="pure-input-1" value="192.168.1.200">
+                                        <div class="pure-control-group" style="margin-bottom:15px; padding-bottom:15px; border-bottom:1px solid #eee;">
+                                            <label class="pure-checkbox">
+                                                <input type="checkbox" id="tcp-enabled"> <span data-i18n="tcp-enabled-label">启用TCP</span>
+                                            </label>
+                                        </div>
+                                        <!-- 工作模式选择 -->
+                                        <div class="pure-control-group" style="margin-bottom:15px; padding-bottom:15px; border-bottom:1px solid #eee;">
+                                            <label for="tcp-mode" data-i18n="tcp-mode-label">工作模式</label>
+                                            <select id="tcp-mode" class="pure-input-1" onchange="AppState.onTcpModeChange(this.value)">
+                                                <option value="client" data-i18n="tcp-mode-client">客户端模式</option>
+                                                <option value="server" data-i18n="tcp-mode-server">服务端模式</option>
+                                            </select>
+                                        </div>
+                                        <!-- 客户端配置 -->
+                                        <div id="tcp-client-config">
+                                            <div class="config-form-grid">
+                                                <div class="config-form-column">
+                                                    <div class="pure-control-group">
+                                                        <label for="tcp-server" data-i18n="tcp-server-label">服务器地址</label>
+                                                        <input type="text" id="tcp-server" class="pure-input-1" value="192.168.1.200">
+                                                    </div>
+                                                    <div class="pure-control-group">
+                                                        <label for="tcp-timeout" data-i18n="tcp-client-timeout-label">连接超时(ms)</label>
+                                                        <input type="number" id="tcp-timeout" class="pure-input-1" value="5000" min="1000" max="30000">
+                                                    </div>
+                                                    <div class="pure-control-group">
+                                                        <label for="tcp-retry" data-i18n="tcp-retry-label">最大重试次数</label>
+                                                        <input type="number" id="tcp-retry" class="pure-input-1" value="5" min="0" max="20">
+                                                    </div>
                                                 </div>
-                                                
-                                                <div class="pure-control-group">
-                                                    <label for="tcp-timeout">连接超时(ms)</label>
-                                                    <input type="number" id="tcp-timeout" class="pure-input-1" value="5000" min="1000" max="30000">
-                                                </div>
-                                                
-                                                <div class="pure-control-group">
-                                                    <label for="tcp-retry">最大重试次数</label>
-                                                    <input type="number" id="tcp-retry" class="pure-input-1" value="5" min="0" max="20">
+                                                <div class="config-form-column">
+                                                    <div class="pure-control-group">
+                                                        <label for="tcp-port" data-i18n="tcp-client-port-label">端口</label>
+                                                        <input type="number" id="tcp-port" class="pure-input-1" value="5000" min="1" max="65535">
+                                                    </div>
+                                                    <div class="pure-control-group">
+                                                        <label for="tcp-keepalive" data-i18n="tcp-keepalive-label">保活间隔(秒)</label>
+                                                        <input type="number" id="tcp-keepalive" class="pure-input-1" value="60" min="0" max="3600">
+                                                    </div>
+                                                    <div class="pure-control-group">
+                                                        <label for="tcp-reconnect" data-i18n="tcp-reconnect-label">重连间隔(秒)</label>
+                                                        <input type="number" id="tcp-reconnect" class="pure-input-1" value="10" min="1" max="300">
+                                                    </div>
                                                 </div>
                                             </div>
-                                            
+                                        </div>
+                                        <!-- 服务端配置（默认隐藏） -->
+                                        <div id="tcp-server-config" style="display:none;">
+                                            <div class="config-form-grid">
+                                                <div class="config-form-column">
+                                                    <div class="pure-control-group">
+                                                        <label for="tcp-local-port" data-i18n="tcp-local-port-label">本地端口</label>
+                                                        <input type="number" id="tcp-local-port" class="pure-input-1" value="8080" min="1" max="65535">
+                                                    </div>
+                                                </div>
+                                                <div class="config-form-column">
+                                                    <div class="pure-control-group">
+                                                        <label for="tcp-max-clients" data-i18n="tcp-max-clients-label">最大客户端数</label>
+                                                        <input type="number" id="tcp-max-clients" class="pure-input-1" value="5" min="1" max="10">
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <!-- 通用配置 -->
+                                        <div class="config-form-grid" style="margin-top:10px;">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="tcp-port">端口</label>
-                                                    <input type="number" id="tcp-port" class="pure-input-1" value="5000" min="1" max="65535">
+                                                    <label for="tcp-heartbeat-msg" data-i18n="tcp-heartbeat-msg-label">心跳消息</label>
+                                                    <input type="text" id="tcp-heartbeat-msg" class="pure-input-1" value="\n" maxlength="32">
                                                 </div>
-                                                
+                                            </div>
+                                            <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="tcp-keepalive">保活间隔(秒)</label>
-                                                    <input type="number" id="tcp-keepalive" class="pure-input-1" value="60" min="0" max="3600">
-                                                </div>
-                                                
-                                                <div class="pure-control-group">
-                                                    <label for="tcp-reconnect">重连间隔(秒)</label>
-                                                    <input type="number" id="tcp-reconnect" class="pure-input-1" value="10" min="1" max="300">
+                                                    <label for="tcp-idle-timeout" data-i18n="tcp-idle-timeout-label">空闲超时(秒)</label>
+                                                    <input type="number" id="tcp-idle-timeout" class="pure-input-1" value="120" min="0" max="3600">
                                                 </div>
                                             </div>
                                         </div>
                                         
-                                        <div class="message message-success" id="tcp-success" style="display: none;">
+                                        <div class="message message-success" id="tcp-success" style="display: none;" data-i18n="tcp-save-ok">
                                             TCP配置保存成功！
                                         </div>
                                         
                                         <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary">保存配置</button>
+                                            <button type="submit" class="pure-button pure-button-primary" data-i18n="btn-save-config">保存配置</button>
                                         </div>
                                     </form>
                                 </div>
@@ -860,8 +1122,8 @@
                                                 <div class="pure-control-group">
                                                     <label for="wifi-dhcp" data-i18n="wifi-dhcp-label">IP获取方式</label>
                                                     <select id="wifi-dhcp" class="pure-input-1">
-                                                        <option value="0" selected>DHCP (自动获取)</option>
-                                                        <option value="1">静态IP (手动配置)</option>
+                                                        <option value="0" selected data-i18n="wifi-dhcp-auto">DHCP (自动获取)</option>
+                                                        <option value="1" data-i18n="wifi-dhcp-static">静态IP (手动配置)</option>
                                                     </select>
                                                 </div>
                                                 
@@ -940,10 +1202,10 @@
                                                 <div class="pure-control-group">
                                                     <label for="conflict-detection" data-i18n="conflict-detection-label">IP冲突检测</label>
                                                     <select id="conflict-detection" class="pure-input-1">
-                                                        <option value="0">不检测</option>
-                                                        <option value="1">Ping检测</option>
-                                                        <option value="2">ARP检测</option>
-                                                        <option value="3" selected>自动检测</option>
+                                                        <option value="0" data-i18n="conflict-detect-none">不检测</option>
+                                                        <option value="1" data-i18n="conflict-detect-ping">Ping检测</option>
+                                                        <option value="2" data-i18n="conflict-detect-arp">ARP检测</option>
+                                                        <option value="3" selected data-i18n="conflict-detect-auto">自动检测</option>
                                                     </select>
                                                 </div>
                                             </div>
@@ -1138,12 +1400,12 @@
                                                 <div class="pure-control-group">
                                                     <label for="dev-timezone" data-i18n="dev-timezone-label">时区</label>
                                                     <select id="dev-timezone" class="pure-input-1">
-                                                        <option value="CST-8" selected>中国标准时间 (UTC+8)</option>
-                                                        <option value="UTC0">UTC (UTC+0)</option>
-                                                        <option value="JST-9">日本标准时间 (UTC+9)</option>
-                                                        <option value="EST5EDT">美国东部时间 (UTC-5)</option>
-                                                        <option value="PST8PDT">美国西部时间 (UTC-8)</option>
-                                                        <option value="CET-1CEST">中欧时间 (UTC+1)</option>
+                                                        <option value="CST-8" selected data-i18n="tz-china">中国标准时间 (UTC+8)</option>
+                                                        <option value="UTC0" data-i18n="tz-utc">UTC (UTC+0)</option>
+                                                        <option value="JST-9" data-i18n="tz-japan">日本标准时间 (UTC+9)</option>
+                                                        <option value="EST5EDT" data-i18n="tz-us-east">美国东部时间 (UTC-5)</option>
+                                                        <option value="PST8PDT" data-i18n="tz-us-west">美国西部时间 (UTC-8)</option>
+                                                        <option value="CET-1CEST" data-i18n="tz-europe">中欧时间 (UTC+1)</option>
                                                     </select>
                                                 </div>
                                                 <div class="pure-control-group">
@@ -1174,15 +1436,15 @@
                                         <div class="card-body" style="padding: 12px 15px;">
                                             <div style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
                                                 <div style="display: flex; align-items: center; gap: 8px;">
-                                                    <span style="color: #666;">状态：</span>
-                                                    <span id="ble-provision-status-badge" class="status-badge status-offline">未启动</span>
+                                                    <span style="color: #666;" data-i18n="dev-ble-status-label">状态：</span>
+                                                    <span id="ble-provision-status-badge" class="status-badge status-offline" data-i18n="dev-ble-not-started">未启动</span>
                                                 </div>
                                                 <div style="display: flex; align-items: center; gap: 8px;">
-                                                    <span style="color: #666;">设备名：</span>
+                                                    <span style="color: #666;" data-i18n="dev-ble-device-name-prefix">设备名：</span>
                                                     <span id="ble-provision-device-name" style="font-family: monospace;">--</span>
                                                 </div>
                                                 <div id="ble-provision-remaining-wrap" style="display: none; align-items: center; gap: 8px;">
-                                                    <span style="color: #666;">剩余时间：</span>
+                                                    <span style="color: #666;" data-i18n="dev-ble-remaining-prefix">剩余时间：</span>
                                                     <span id="ble-provision-remaining" style="font-weight: bold; color: #f0ad4e;">--</span>
                                                 </div>
                                             </div>
@@ -1202,30 +1464,30 @@
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="ble-device-name">蓝牙设备名称</label>
-                                                    <input type="text" id="ble-device-name" class="pure-input-1" placeholder="蓝牙广播名称" value="FBDevice">
+                                                    <label for="ble-device-name" data-i18n="dev-ble-name-label">蓝牙设备名称</label>
+                                                    <input type="text" id="ble-device-name" class="pure-input-1" data-i18n-placeholder="dev-ble-name-hint" placeholder="蓝牙广播名称" value="FBDevice">
                                                 </div>
                                                 <div class="pure-control-group">
-                                                    <label for="ble-timeout">配网超时(秒)</label>
+                                                    <label for="ble-timeout" data-i18n="dev-ble-timeout-label">配网超时(秒)</label>
                                                     <input type="number" id="ble-timeout" class="pure-input-1" value="300" min="60" max="1800">
                                                 </div>
                                                 <div class="pure-control-group">
                                                     <label class="pure-checkbox">
-                                                        <input type="checkbox" id="ble-auto-start"> 启动时自动开启蓝牙配网
+                                                        <input type="checkbox" id="ble-auto-start"> <span data-i18n="dev-ble-autostart-label">启动时自动开启蓝牙配网</span>
                                                     </label>
                                                 </div>
                                             </div>
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="ble-service-uuid">服务UUID</label>
+                                                    <label for="ble-service-uuid" data-i18n="dev-ble-service-uuid-label">服务UUID</label>
                                                     <input type="text" id="ble-service-uuid" class="pure-input-1" value="6E400001-B5A3-F393-E0A9-E50E24DCCA9F">
                                                 </div>
                                                 <div class="pure-control-group">
-                                                    <label for="ble-rx-uuid">接收UUID</label>
+                                                    <label for="ble-rx-uuid" data-i18n="dev-ble-rx-uuid-label">接收UUID</label>
                                                     <input type="text" id="ble-rx-uuid" class="pure-input-1" value="6E400002-B5A3-F393-E0A9-E50E24DCCA9F">
                                                 </div>
                                                 <div class="pure-control-group">
-                                                    <label for="ble-tx-uuid">发送UUID</label>
+                                                    <label for="ble-tx-uuid" data-i18n="dev-ble-tx-uuid-label">发送UUID</label>
                                                     <input type="text" id="ble-tx-uuid" class="pure-input-1" value="6E400003-B5A3-F393-E0A9-E50E24DCCA9F">
                                                 </div>
                                             </div>
@@ -1240,15 +1502,15 @@
 
                                     <!-- 蓝牙配网说明 -->
                                     <div style="margin-top: 20px; padding: 15px; background: #e7f3ff; border-radius: 4px; border-left: 4px solid #2196F3;">
-                                        <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #1976D2;"><i class="fas fa-info-circle"></i> 蓝牙配网说明</h4>
+                                        <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #1976D2;"><i class="fas fa-info-circle"></i> <span data-i18n="dev-ble-guide-title">蓝牙配网说明</span></h4>
                                         <ol style="margin: 0; padding-left: 20px; color: #666; line-height: 1.8;">
-                                            <li>点击"启动蓝牙配网"按钮，设备将开始蓝牙广播</li>
-                                            <li>使用手机APP搜索并连接到蓝牙设备</li>
-                                            <li>在APP中输入要连接的WiFi名称和密码</li>
-                                            <li>设备收到配置后自动连接WiFi，配网成功后蓝牙连接断开</li>
+                                            <li data-i18n="dev-ble-guide-1">点击"启动蓝牙配网"按钮，设备将开始蓝牙广播</li>
+                                            <li data-i18n="dev-ble-guide-2">使用手机APP搜索并连接到蓝牙设备</li>
+                                            <li data-i18n="dev-ble-guide-3">在APP中输入要连接的WiFi名称和密码</li>
+                                            <li data-i18n="dev-ble-guide-4">设备收到配置后自动连接WiFi，配网成功后蓝牙连接断开</li>
                                         </ol>
                                         <p style="margin: 10px 0 0 0; color: #888; font-size: 12px;">
-                                            <i class="fas fa-lightbulb"></i> 提示：蓝牙配网适用于无法使用AP配网的场景，需要配合支持蓝牙的手机APP使用。
+                                            <i class="fas fa-lightbulb"></i> <span data-i18n="dev-ble-guide-tip">提示：蓝牙配网适用于无法使用AP配网的场景，需要配合支持蓝牙的手机APP使用。</span>
                                         </p>
                                     </div>
                                 </div>
@@ -1285,7 +1547,7 @@
                                             <!-- 进度条 -->
                                             <div id="ota-progress-wrap" style="display: none; margin-top: 15px;">
                                                 <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
-                                                    <span style="color: #666;">升级进度</span>
+                                                    <span style="color: #666;" data-i18n="dev-ota-progress-label">升级进度</span>
                                                     <span id="ota-progress-text">0%</span>
                                                 </div>
                                                 <div style="background: #e0e0e0; border-radius: 4px; height: 20px; overflow: hidden;">
@@ -1335,12 +1597,12 @@
 
                                     <!-- OTA升级说明 -->
                                     <div style="padding: 15px; background: #fff8e1; border-radius: 4px; border-left: 4px solid #ffc107;">
-                                        <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #f57c00;"><i class="fas fa-exclamation-triangle"></i> 升级注意事项</h4>
+                                        <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #f57c00;"><i class="fas fa-exclamation-triangle"></i> <span data-i18n="dev-ota-notice-title">升级注意事项</span></h4>
                                         <ul style="margin: 0; padding-left: 20px; color: #666; line-height: 1.8;">
-                                            <li>升级过程中请勿断开电源或关闭浏览器</li>
-                                            <li>确保固件版本与当前硬件兼容</li>
-                                            <li>升级成功后设备将自动重启</li>
-                                            <li>建议在升级前备份重要配置</li>
+                                            <li data-i18n="dev-ota-notice-1">升级过程中请勿断开电源或关闭浏览器</li>
+                                            <li data-i18n="dev-ota-notice-2">确保固件版本与当前硬件兼容</li>
+                                            <li data-i18n="dev-ota-notice-3">升级成功后设备将自动重启</li>
+                                            <li data-i18n="dev-ota-notice-4">建议在升级前备份重要配置</li>
                                         </ul>
                                     </div>
                                 </div>
@@ -1449,16 +1711,17 @@
 
                     <!-- 设备日志页面 -->
                     <div id="logs-page" class="page">
-                        <div class="card">
-                            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
-                                <h2 class="card-title" style="margin: 0;" data-i18n="logs-title">设备日志</h2>
-                                <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                                    <span id="log-info" style="font-size: 12px; color: #666;"></span>
-                                    <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
-                                        <input type="checkbox" id="log-auto-refresh" checked>
+                        <!-- 日志内容显示区域（全宽） -->
+                        <div style="height: 600px; border: 1px solid #333; border-radius: 4px; display: flex; flex-direction: column; background: #1a1a1a;">
+                            <div style="padding: 10px; background: #2d2d2d; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center;">
+                                <span id="current-log-file" style="font-family: monospace; font-size: 13px; color: #aaa;">system.log</span>
+                                <div style="display: flex; gap: 10px; align-items: center;">
+                                    <span id="log-info" style="font-size: 12px; color: #888;"></span>
+                                    <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; color: #ccc;">
+                                        <input type="checkbox" id="log-auto-refresh" checked style="vertical-align: middle;">
                                         <span data-i18n="log-auto-refresh-label">自动刷新</span>
                                     </label>
-                                    <button class="pure-button pure-button-small" id="refresh-logs-btn">
+                                    <button class="pure-button pure-button-small" id="refresh-logs-btn" style="background: #3a3a3a; color: #fff; border: 1px solid #555;">
                                         <i class="fas fa-sync-alt"></i> <span data-i18n="log-refresh-btn">刷新日志</span>
                                     </button>
                                     <button class="pure-button pure-button-small pure-button-error" id="clear-logs-btn">
@@ -1466,10 +1729,8 @@
                                     </button>
                                 </div>
                             </div>
-                            <div class="card-body">
-                                <div id="device-log-container" style="height: 500px; overflow-y: auto; background: #1e1e1e; color: #d4d4d4; padding: 10px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 12px; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word;">
-                                    <div style="color: #666; text-align: center; padding: 20px;" data-i18n="log-loading">正在加载日志...</div>
-                                </div>
+                            <div id="device-log-container" style="flex: 1; overflow-y: auto; background: #1e1e1e; color: #d4d4d4; padding: 10px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 12px; white-space: pre-wrap; word-wrap: break-word;">
+                                <div style="color: #666; text-align: center; padding: 20px;" data-i18n="log-loading">正在加载日志...</div>
                             </div>
                         </div>
                     </div>
@@ -1884,9 +2145,9 @@
                         <div class="pure-control-group">
                             <label for="add-role-select" id="add-role-label">角色</label>
                             <select id="add-role-select" class="pure-input-1">
-                                <option value="admin">管理员</option>
-                                <option value="operator" selected>操作员</option>
-                                <option value="viewer">查看者</option>
+                                <option value="admin" data-i18n="role-admin">管理员</option>
+                                <option value="operator" selected data-i18n="role-operator">操作员</option>
+                                <option value="viewer" data-i18n="role-viewer">查看者</option>
                             </select>
                         </div>
                         
@@ -1946,13 +2207,13 @@
     </div>
     
     <!-- 便于开发，顺序引入 JS 文件；fetch-api.js 替代原 axios.min.js（节省 ~54KB） -->
-    <script src="./js/modules/fetch-api.js"></script>
-    <script src="./js/modules/notification.js"></script>
-    <script src="./js/modules/config.js"></script>
-    <script src="./js/modules/i18n.js"></script>
-    <script src="./js/modules/utils.js"></script>
+    <script defer src="./js/modules/fetch-api.js"></script>
+    <script defer src="./js/modules/notification.js"></script>
+    <script defer src="./js/modules/config.js"></script>
+    <script defer src="./js/modules/i18n.js"></script>
+    <script defer src="./js/modules/utils.js"></script>
     
-    <script src="./js/state.js"></script>
-    <script src="./js/main.js"></script>
+    <script defer src="./js/state.js"></script>
+    <script defer src="./js/main.js"></script>
 </body>
 </html>

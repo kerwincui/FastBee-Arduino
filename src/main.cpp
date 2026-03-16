@@ -1,12 +1,17 @@
 // main.cpp
 #include "core/FastBeeFramework.h"
 #include <esp_heap_caps.h>
+#include <esp_bt.h>
 
 FastBeeFramework* framework;
 
 void setup() {
     Serial.begin(115200);
     delay(500);
+
+    // 释放蓝牙控制器内存（~30KB），BLE配网需要时重启后启用
+    // 通过 device.json 的 "bleReserve":true 可保留BT内存
+    esp_bt_controller_mem_release(ESP_BT_MODE_BTDM);
 
     // 启动诊断：输出可用内存，快速判断 PSRAM / 堆是否正常
     Serial.printf("[BOOT] Free heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());

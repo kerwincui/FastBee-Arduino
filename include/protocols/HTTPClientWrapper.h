@@ -11,6 +11,10 @@ struct HTTPConfig {
     String baseURL;
     uint16_t timeout;
     String contentType;
+    // 认证配置
+    String authType = "none";   // "none", "basic", "bearer"
+    String authUser;            // Basic认证用户名
+    String authToken;           // Basic密码或Bearer Token
 };
 
 class HTTPClientWrapper {
