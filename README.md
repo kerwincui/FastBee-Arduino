@@ -1,5 +1,5 @@
 
-**FastBee-Arduino是一个基于ESP32-Arduino平台构建的、功能完整的嵌入式物联网设备开发框架。**
+**FastBee-Arduino是一个基于ESP32-Arduino平台构建的、功能完整的嵌入式物联网设备开发框架，零代码适配各类硬件设备**
 
 ---
 
@@ -43,7 +43,7 @@ FastBee-Arduino致力于成为ESP32平台上最全面、最易用的嵌入式物
 * **供电电压：** DC 9-36V，带外置天线，USB烧录口和配置按键
 * **接线端子说明：**
   * A/L：RS485-A（TX），GPIO17
-  * B/H：RS485-B（RX），GPIO18
+  * B/H：RS485-B（RX），GPIO16
   * VCC：供电正极，DC 9-36V
   * GND：供电负极
   * DGND：数字地（隔离GND）
