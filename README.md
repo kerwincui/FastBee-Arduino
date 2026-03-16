@@ -1,5 +1,5 @@
 
-**FastBee-Arduino是一个基于ESP32-Arduino平台构建的、功能完整的嵌入式物联网设备开发框架。**
+**FastBee-Arduino是一个基于ESP32-Arduino平台构建的、功能完整的嵌入式物联网设备开发框架，零代码适配各类硬件设备**
 
 ---
 
