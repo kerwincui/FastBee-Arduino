@@ -4042,8 +4042,9 @@ const AppState = {
             .then(res => {
                 if (res && res.success) {
                     Notification.success(i18n.t(isEdit ? 'exec-update-ok' : 'exec-add-ok'), i18n.t('exec-title'));
+                    const periphId = document.getElementById('peripheral-original-id').value;
                     this.closeExecRuleModal();
-                    this.loadExecRules();
+                    if (periphId) this.loadPeriphModalExecRules(periphId);
                 } else {
                     errEl.textContent = res?.error || i18n.t('exec-save-fail');
                     errEl.style.display = 'block';
@@ -4087,7 +4088,8 @@ const AppState = {
             .then(res => {
                 if (res && res.success) {
                     Notification.success(i18n.t('exec-delete-ok'), i18n.t('exec-title'));
-                    this.loadExecRules();
+                    const periphId = document.getElementById('peripheral-original-id').value;
+                    if (periphId) this.loadPeriphModalExecRules(periphId);
                 } else {
                     Notification.error(res?.error || i18n.t('exec-delete-fail'), i18n.t('exec-title'));
                 }
@@ -4103,11 +4105,8 @@ const AppState = {
         apiPost(url, { id: id })
             .then(res => {
                 if (res && res.success) {
-                    this.loadExecRules();
-                    if (this._execRuleContext) {
-                        this.loadPeriphModalExecRules(this._execRuleContext.periphId);
-                        this._execRuleContext = null;
-                    }
+                    const periphId = document.getElementById('peripheral-original-id').value;
+                    if (periphId) this.loadPeriphModalExecRules(periphId);
                 } else {
                     Notification.error(res?.error || i18n.t('exec-toggle-fail'), i18n.t('exec-title'));
                 }
@@ -4160,9 +4159,9 @@ const AppState = {
                     html += '<td>' + triggerText + '</td>';
                     html += '<td>' + actionText + (r.actionValue ? '(' + r.actionValue + ')' : '') + '</td>';
                     html += '<td style="white-space:nowrap;">';
-                    html += '<button class="pure-button btn-small" onclick="appState.editExecRuleFromPeriphModal(\'' + r.id + '\')" title="' + i18n.t('edit') + '"><i class="fas fa-edit"></i></button> ';
-                    html += '<button class="pure-button btn-small" onclick="appState.toggleExecRuleFromPeriphModal(\'' + r.id + '\', ' + (r.enabled ? 'false' : 'true') + ')" title="' + (r.enabled ? i18n.t('exec-disable') : i18n.t('exec-enable')) + '"><i class="fas fa-' + (r.enabled ? 'pause' : 'play') + '"></i></button> ';
-                    html += '<button class="pure-button btn-small btn-danger" onclick="appState.deleteExecRuleFromPeriphModal(\'' + r.id + '\')" title="' + i18n.t('delete') + '"><i class="fas fa-trash"></i></button>';
+                    html += '<button class="pure-button btn-small" onclick="app.editExecRule(\'' + r.id + '\')" title="' + i18n.t('edit') + '"><i class="fas fa-edit"></i></button> ';
+                    html += '<button class="pure-button btn-small" onclick="app.toggleExecRule(\'' + r.id + '\', ' + (r.enabled ? 'false' : 'true') + ')" title="' + (r.enabled ? i18n.t('exec-disable') : i18n.t('exec-enable')) + '"><i class="fas fa-' + (r.enabled ? 'pause' : 'play') + '"></i></button> ';
+                    html += '<button class="pure-button btn-small btn-danger" onclick="app.deleteExecRule(\'' + r.id + '\')" title="' + i18n.t('delete') + '"><i class="fas fa-trash"></i></button>';
                     html += '</td>';
                     html += '</tr>';
                 });
@@ -4171,43 +4170,6 @@ const AppState = {
             .catch(() => {
                 tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;">' + i18n.t('periph-exec-no-rules') + '</td></tr>';
             });
-    },
-
-    openExecRuleFromPeriphModal() {
-        const periphId = document.getElementById('peripheral-original-id').value;
-        if (!periphId) return;
-        this._execRuleContext = { periphId: periphId };
-        this.openExecRuleModal();
-        setTimeout(() => {
-            const sel = document.getElementById('exec-rule-target-periph');
-            if (sel) {
-                sel.value = periphId;
-                sel.disabled = true;
-            }
-        }, 300);
-    },
-
-    editExecRuleFromPeriphModal(id) {
-        const periphId = document.getElementById('peripheral-original-id').value;
-        if (!periphId) return;
-        this._execRuleContext = { periphId: periphId };
-        this.editExecRule(id);
-        setTimeout(() => {
-            const sel = document.getElementById('exec-rule-target-periph');
-            if (sel) sel.disabled = true;
-        }, 500);
-    },
-
-    deleteExecRuleFromPeriphModal(id) {
-        const periphId = document.getElementById('peripheral-original-id').value;
-        this._execRuleContext = periphId ? { periphId: periphId } : null;
-        this.deleteExecRule(id);
-    },
-
-    toggleExecRuleFromPeriphModal(id, enable) {
-        const periphId = document.getElementById('peripheral-original-id').value;
-        this._execRuleContext = periphId ? { periphId: periphId } : null;
-        this.toggleExecRule(id, enable);
     },
 
     // ============ AP配网功能 ============
