@@ -8,6 +8,13 @@
 // GPIO中断回调函数类型
 using GPIOInterruptCallback = void(*)(uint8_t pin, GPIOState state);
 
+// GPIO动作模式
+enum class GPIOActionMode : uint8_t {
+    ACTION_FIXED = 0,    // 固定状态（默认）
+    ACTION_BLINK = 1,    // 闪烁模式
+    ACTION_BREATHE = 2   // 呼吸灯模式（PWM渐变）
+};
+
 // 外设配置结构体
 struct PeripheralConfig {
     String id;                    // 唯一标识符
@@ -51,6 +58,10 @@ struct PeripheralConfig {
             uint32_t pwmFrequency;    // PWM频率
             uint8_t pwmResolution;    // PWM分辨率 (1-16位)
             uint16_t debounceMs;      // 消抖时间
+            uint8_t actionMode;       // GPIOActionMode: 0=固定, 1=闪烁, 2=呼吸
+            uint16_t blinkIntervalMs; // 闪烁间隔(ms), 仅ACTION_BLINK有效
+            uint16_t breatheSpeedMs;  // 呼吸周期(ms), 仅ACTION_BREATHE有效
+            uint16_t defaultDuty;     // PWM默认占空比(0~2^resolution-1)
             GPIOInterruptCallback interruptCallback;
         } gpio;
         
@@ -64,6 +75,7 @@ struct PeripheralConfig {
         // DAC参数
         struct {
             uint8_t channel;          // DAC通道 1或2
+            uint8_t defaultValue;     // DAC默认输出值 (0-255)
         } dac;
         
         // PWM/Servo参数
@@ -117,6 +129,10 @@ struct PeripheralConfig {
         params.gpio.pwmFrequency = 1000;
         params.gpio.pwmResolution = 8;
         params.gpio.debounceMs = 50;
+        params.gpio.actionMode = 0;           // ACTION_FIXED
+        params.gpio.blinkIntervalMs = 500;
+        params.gpio.breatheSpeedMs = 2000;
+        params.gpio.defaultDuty = 0;
         params.gpio.interruptCallback = nullptr;
     }
     

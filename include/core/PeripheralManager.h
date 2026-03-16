@@ -7,6 +7,7 @@
 #include <functional>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include <Ticker.h>
 #include "PeripheralTypes.h"
 #include "PeripheralConfig.h"
 
@@ -150,6 +151,17 @@ public:
     // 定期维护（在主循环中调用）
     void performMaintenance();
 
+    // 动作定时器上下文（公开供静态回调函数访问）
+    struct ActionTickerData {
+        PeripheralManager* mgr;
+        String id;
+        Ticker ticker;
+        uint8_t channel;
+        uint16_t maxDuty;
+        int16_t stepSize;
+        int16_t breatheState;  // 正值=递增(当前duty), 负值=递减
+    };
+
 private:
     PeripheralManager() = default;
     
@@ -157,6 +169,9 @@ private:
     std::map<String, PeripheralConfig> peripherals;
     std::map<String, PeripheralRuntimeState> runtimeStates;
     std::map<uint8_t, String> pinToPeripheral;  // 引脚到外设ID的映射
+    
+    // 动作定时器
+    std::map<String, ActionTickerData*> actionTickers;
     
     // 内部方法
     bool validateConfig(const PeripheralConfig& config, String& errorMsg);
@@ -181,6 +196,13 @@ private:
     // 检查引脚有效性
     bool isValidPin(uint8_t pin) const;
     bool isValidPinForType(uint8_t pin, PeripheralType type) const;
+    
+    // 动作定时器
+    void startActionTicker(const String& id, const PeripheralConfig& config);
+    void stopActionTicker(const String& id);
+    
+    // DAC硬件初始化
+    bool setupDACPin(const PeripheralConfig& config);
 };
 
 #endif // PERIPHERAL_MANAGER_H

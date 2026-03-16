@@ -396,6 +396,12 @@ const AppState = {
             peripheralTypeInput.addEventListener('change', (e) => this.onPeripheralTypeChange(e.target.value));
         }
         
+        // 动作模式选择变化
+        const gpioActionMode = document.getElementById('gpio-action-mode');
+        if (gpioActionMode) {
+            gpioActionMode.addEventListener('change', (e) => this.onActionModeChange(e.target.value));
+        }
+        
         // 外设过滤器
         const peripheralFilter = document.getElementById('peripheral-filter-type');
         if (peripheralFilter) {
@@ -3462,6 +3468,9 @@ const AppState = {
                     return;
                 }
                 
+                // 按启用状态排序，启用的排前面
+                peripherals.sort((a, b) => (b.enabled ? 1 : 0) - (a.enabled ? 1 : 0));
+                
                 let html = '';
                 peripherals.forEach(periph => {
                     const statusColors = {
@@ -3568,11 +3577,30 @@ const AppState = {
             const gpioParams = document.getElementById('gpio-params');
             if (gpioParams) {
                 gpioParams.style.display = 'block';
-                // 显示/隐藏PWM相关字段
-                const pwmOnly = gpioParams.querySelectorAll('.pwm-only');
-                pwmOnly.forEach(el => {
-                    el.style.display = (type === 17) ? 'block' : 'none'; // 17 = PWM输出
+                
+                // PWM 相关字段: PWM输出(17) 和 模拟输出(16)
+                gpioParams.querySelectorAll('.pwm-only').forEach(el => {
+                    el.style.display = (type === 17 || type === 16) ? 'block' : 'none';
                 });
+                
+                // Digital Output 动作模式(12)
+                gpioParams.querySelectorAll('.digital-output-only').forEach(el => {
+                    el.style.display = (type === 12) ? 'block' : 'none';
+                });
+                
+                // Digital Input 消抖时间(11, 13, 14)
+                gpioParams.querySelectorAll('.input-only').forEach(el => {
+                    el.style.display = (type === 11 || type === 13 || type === 14) ? 'block' : 'none';
+                });
+                
+                // 隐藏 blink/breathe 子字段（由 onActionModeChange 控制）
+                gpioParams.querySelectorAll('.blink-only').forEach(el => el.style.display = 'none');
+                gpioParams.querySelectorAll('.breathe-only').forEach(el => el.style.display = 'none');
+                
+                // 如果是 Digital Output，触发一次动作模式检查
+                if (type === 12) {
+                    this.onActionModeChange(document.getElementById('gpio-action-mode')?.value || '0');
+                }
             }
         } else if (type === 1) {
             // UART
@@ -3590,6 +3618,37 @@ const AppState = {
             // ADC
             const adcParams = document.getElementById('adc-params');
             if (adcParams) adcParams.style.display = 'block';
+        } else if (type === 27) {
+            // DAC
+            const dacParams = document.getElementById('dac-params');
+            if (dacParams) dacParams.style.display = 'block';
+        }
+    },
+    
+    /**
+     * 动作模式改变时更新子字段显示
+     */
+    onActionModeChange(modeValue) {
+        const mode = parseInt(modeValue);
+        const gpioParams = document.getElementById('gpio-params');
+        if (!gpioParams) return;
+        
+        // Blink 字段
+        gpioParams.querySelectorAll('.blink-only').forEach(el => {
+            el.style.display = (mode === 1) ? 'block' : 'none';
+        });
+        
+        // Breathe 字段
+        gpioParams.querySelectorAll('.breathe-only').forEach(el => {
+            el.style.display = (mode === 2) ? 'block' : 'none';
+        });
+        
+        // 呼吸灯模式下也显示 PWM 通道/频率/分辨率
+        const currentType = parseInt(document.getElementById('peripheral-type-input')?.value || '0');
+        if (currentType === 12) {
+            gpioParams.querySelectorAll('.pwm-only').forEach(el => {
+                el.style.display = (mode === 2) ? 'block' : 'none';
+            });
         }
     },
     
@@ -3680,6 +3739,35 @@ const AppState = {
                         if (data.params.attenuation !== undefined) {
                             document.getElementById('adc-attenuation').value = data.params.attenuation;
                         }
+                        
+                        // 动作模式
+                        if (data.params.actionMode !== undefined) {
+                            const actionEl = document.getElementById('gpio-action-mode');
+                            if (actionEl) { actionEl.value = data.params.actionMode; }
+                            this.onActionModeChange(data.params.actionMode);
+                        }
+                        if (data.params.blinkIntervalMs !== undefined) {
+                            const el = document.getElementById('gpio-blink-interval');
+                            if (el) el.value = data.params.blinkIntervalMs;
+                        }
+                        if (data.params.breatheSpeedMs !== undefined) {
+                            const el = document.getElementById('gpio-breathe-speed');
+                            if (el) el.value = data.params.breatheSpeedMs;
+                        }
+                        if (data.params.defaultDuty !== undefined) {
+                            const el = document.getElementById('gpio-default-duty');
+                            if (el) el.value = data.params.defaultDuty;
+                        }
+                        if (data.params.debounceMs !== undefined) {
+                            const el = document.getElementById('gpio-debounce-ms');
+                            if (el) el.value = data.params.debounceMs;
+                        }
+                        
+                        // DAC参数
+                        if (data.params.defaultValue !== undefined) {
+                            const el = document.getElementById('dac-default-value');
+                            if (el) el.value = data.params.defaultValue;
+                        }
                     }
                 } else {
                     console.error('Invalid response format:', res);
@@ -3735,9 +3823,30 @@ const AppState = {
             // GPIO参数
             data.initialState = document.getElementById('gpio-initial-state')?.value || '0';
             data.inverted = document.getElementById('gpio-inverted')?.value || '0';
-            if (typeNum === 17) { // PWM
+            
+            // Digital Output 动作模式
+            if (typeNum === 12) {
+                data.actionMode = document.getElementById('gpio-action-mode')?.value || '0';
+                data.blinkIntervalMs = document.getElementById('gpio-blink-interval')?.value || '500';
+                data.breatheSpeedMs = document.getElementById('gpio-breathe-speed')?.value || '2000';
+            }
+            
+            // PWM/Analog Output
+            if (typeNum === 17 || typeNum === 16) {
                 data.pwmFrequency = document.getElementById('gpio-pwm-freq')?.value || '1000';
                 data.pwmResolution = document.getElementById('gpio-pwm-resolution')?.value || '8';
+                data.defaultDuty = document.getElementById('gpio-default-duty')?.value || '0';
+            }
+            
+            // 呼吸灯模式的 Digital Output 也需要 PWM 参数
+            if (typeNum === 12 && (document.getElementById('gpio-action-mode')?.value === '2')) {
+                data.pwmFrequency = document.getElementById('gpio-pwm-freq')?.value || '1000';
+                data.pwmResolution = document.getElementById('gpio-pwm-resolution')?.value || '8';
+            }
+            
+            // Digital Input 消抖
+            if (typeNum === 11 || typeNum === 13 || typeNum === 14) {
+                data.debounceMs = document.getElementById('gpio-debounce-ms')?.value || '50';
             }
         } else if (typeNum === 1) {
             // UART参数
@@ -3757,6 +3866,9 @@ const AppState = {
             // ADC参数
             data.resolution = document.getElementById('adc-resolution')?.value || '12';
             data.attenuation = document.getElementById('adc-attenuation')?.value || '3';
+        } else if (typeNum === 27) {
+            // DAC参数
+            data.defaultValue = document.getElementById('dac-default-value')?.value || '0';
         }
         
         // 安全起见：禁用按钮防止重复提交

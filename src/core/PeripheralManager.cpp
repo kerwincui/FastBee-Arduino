@@ -537,6 +537,10 @@ bool PeripheralManager::saveConfiguration() {
             params["pwmFrequency"] = config.params.gpio.pwmFrequency;
             params["pwmResolution"] = config.params.gpio.pwmResolution;
             params["debounceMs"] = config.params.gpio.debounceMs;
+            params["actionMode"] = config.params.gpio.actionMode;
+            params["blinkIntervalMs"] = config.params.gpio.blinkIntervalMs;
+            params["breatheSpeedMs"] = config.params.gpio.breatheSpeedMs;
+            params["defaultDuty"] = config.params.gpio.defaultDuty;
         }
         else if (config.type == PeripheralType::ADC) {
             params["attenuation"] = config.params.adc.attenuation;
@@ -647,6 +651,10 @@ bool PeripheralManager::loadConfiguration() {
                 config.params.gpio.pwmFrequency = params["pwmFrequency"] | 1000;
                 config.params.gpio.pwmResolution = params["pwmResolution"] | 8;
                 config.params.gpio.debounceMs = params["debounceMs"] | 50;
+                config.params.gpio.actionMode = params["actionMode"] | 0;
+                config.params.gpio.blinkIntervalMs = params["blinkIntervalMs"] | 500;
+                config.params.gpio.breatheSpeedMs = params["breatheSpeedMs"] | 2000;
+                config.params.gpio.defaultDuty = params["defaultDuty"] | 0;
             }
             else if (config.type == PeripheralType::ADC) {
                 config.params.adc.attenuation = params["attenuation"] | 0;
@@ -981,6 +989,90 @@ bool PeripheralManager::setupPWMPin(const PeripheralConfig& config) {
         ledcWrite(channel, 0);
     }
     
+    return true;
+}
+
+// ========== 动作定时器管理 ==========
+
+void PeripheralManager::stopActionTicker(const String& id) {
+    auto it = actionTickers.find(id);
+    if (it != actionTickers.end()) {
+        it->second->ticker.detach();
+        delete it->second;
+        actionTickers.erase(it);
+    }
+}
+
+static void blinkTickerCallback(PeripheralManager::ActionTickerData* data) {
+    if (data && data->mgr) {
+        data->mgr->togglePin(data->id);
+    }
+}
+
+static void breatheTickerCallback(PeripheralManager::ActionTickerData* data) {
+    if (!data) return;
+    
+    int16_t current = data->breatheState;
+    bool increasing = (current >= 0);
+    uint16_t duty = increasing ? current : (-current);
+    
+    if (increasing) {
+        duty += data->stepSize;
+        if (duty >= data->maxDuty) { duty = data->maxDuty; data->breatheState = -duty; }
+        else { data->breatheState = duty; }
+    } else {
+        if (duty < data->stepSize) { duty = 0; data->breatheState = 0; }
+        else { duty -= data->stepSize; data->breatheState = -duty; }
+    }
+    ledcWrite(data->channel, duty);
+}
+
+void PeripheralManager::startActionTicker(const String& id, const PeripheralConfig& config) {
+    stopActionTicker(id);  // 先清理已有的
+    
+    if (config.params.gpio.actionMode == static_cast<uint8_t>(GPIOActionMode::ACTION_BLINK)) {
+        ActionTickerData* data = new ActionTickerData();
+        data->mgr = this;
+        data->id = id;
+        actionTickers[id] = data;
+        
+        float intervalSec = config.params.gpio.blinkIntervalMs / 1000.0f;
+        data->ticker.attach(intervalSec, blinkTickerCallback, data);
+        LOG_INFOF("Peripheral Manager: Blink ticker started for '%s' (interval=%dms)", 
+                  id.c_str(), config.params.gpio.blinkIntervalMs);
+    }
+    else if (config.params.gpio.actionMode == static_cast<uint8_t>(GPIOActionMode::ACTION_BREATHE)) {
+        ActionTickerData* data = new ActionTickerData();
+        data->mgr = this;
+        data->id = id;
+        data->channel = config.params.gpio.pwmChannel;
+        data->maxDuty = (1 << config.params.gpio.pwmResolution) - 1;
+        data->breatheState = 0;
+        
+        uint16_t speedMs = config.params.gpio.breatheSpeedMs;
+        uint16_t steps = speedMs / 40;  // 半周期步数
+        if (steps == 0) steps = 1;
+        data->stepSize = data->maxDuty / steps;
+        if (data->stepSize == 0) data->stepSize = 1;
+        
+        actionTickers[id] = data;
+        data->ticker.attach_ms(20, breatheTickerCallback, data);
+        LOG_INFOF("Peripheral Manager: Breathe ticker started for '%s' (speed=%dms)", 
+                  id.c_str(), speedMs);
+    }
+}
+
+// ========== DAC 硬件初始化 ==========
+
+bool PeripheralManager::setupDACPin(const PeripheralConfig& config) {
+    uint8_t pin = config.getPrimaryPin();
+    if (pin == 255) return false;
+    if (pin != 25 && pin != 26) {
+        LOG_ERROR("Peripheral Manager: DAC only supports GPIO 25 and 26");
+        return false;
+    }
+    dacWrite(pin, config.params.dac.defaultValue);
+    LOG_INFOF("Peripheral Manager: DAC pin %d set to %d", pin, config.params.dac.defaultValue);
     return true;
 }
 

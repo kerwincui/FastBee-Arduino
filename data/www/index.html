@@ -1942,6 +1942,30 @@
                                         <option value="1" data-i18n="gpio-inverted-yes">是</option>
                                     </select>
                                 </div>
+                                <!-- 动作模式 (仅Digital Output) -->
+                                <div class="pure-control-group digital-output-only" style="display: none;">
+                                    <label for="gpio-action-mode" data-i18n="gpio-action-label">动作模式</label>
+                                    <select id="gpio-action-mode" class="pure-input-1">
+                                        <option value="0" selected data-i18n="gpio-action-fixed">固定状态</option>
+                                        <option value="1" data-i18n="gpio-action-blink">闪烁</option>
+                                        <option value="2" data-i18n="gpio-action-breathe">呼吸灯</option>
+                                    </select>
+                                </div>
+                                <!-- 闪烁间隔 -->
+                                <div class="pure-control-group blink-only" style="display: none;">
+                                    <label for="gpio-blink-interval" data-i18n="gpio-blink-label">闪烁间隔 (ms)</label>
+                                    <input type="number" id="gpio-blink-interval" class="pure-input-1" value="500" min="50" max="10000">
+                                </div>
+                                <!-- 呼吸周期 -->
+                                <div class="pure-control-group breathe-only" style="display: none;">
+                                    <label for="gpio-breathe-speed" data-i18n="gpio-breathe-label">呼吸周期 (ms)</label>
+                                    <input type="number" id="gpio-breathe-speed" class="pure-input-1" value="2000" min="500" max="30000">
+                                </div>
+                                <!-- 消抖时间 (仅Digital Input) -->
+                                <div class="pure-control-group input-only" style="display: none;">
+                                    <label for="gpio-debounce-ms" data-i18n="gpio-debounce-label">消抖时间 (ms)</label>
+                                    <input type="number" id="gpio-debounce-ms" class="pure-input-1" value="50" min="0" max="1000">
+                                </div>
                                 <div class="pure-control-group pwm-only" style="display: none;">
                                     <label for="gpio-pwm-freq" data-i18n="gpio-pwm-freq-label">PWM频率 (Hz)</label>
                                     <input type="number" id="gpio-pwm-freq" class="pure-input-1" value="1000" min="1" max="40000000">
@@ -1949,6 +1973,12 @@
                                 <div class="pure-control-group pwm-only" style="display: none;">
                                     <label for="gpio-pwm-resolution" data-i18n="gpio-pwm-res-label">PWM分辨率 (位)</label>
                                     <input type="number" id="gpio-pwm-resolution" class="pure-input-1" value="8" min="1" max="16">
+                                </div>
+                                <!-- 默认占空比 -->
+                                <div class="pure-control-group pwm-only" style="display: none;">
+                                    <label for="gpio-default-duty" data-i18n="gpio-duty-label">默认占空比</label>
+                                    <input type="number" id="gpio-default-duty" class="pure-input-1" value="0" min="0" max="65535">
+                                    <small style="color: #999;" data-i18n="gpio-duty-help">根据分辨率计算，8位=0~255</small>
                                 </div>
                             </div>
                             
@@ -2048,6 +2078,15 @@
                                         <option value="2">6dB (0-2.2V)</option>
                                         <option value="3" selected>11dB (0-3.3V)</option>
                                     </select>
+                                </div>
+                            </div>
+                            
+                            <!-- DAC参数 -->
+                            <div id="dac-params" class="peripheral-params-group" style="display: none;">
+                                <h4 style="margin-bottom: 10px;" data-i18n="dac-params-title">DAC参数</h4>
+                                <div class="pure-control-group">
+                                    <label for="dac-default-value" data-i18n="dac-value-label">默认输出值 (0-255)</label>
+                                    <input type="number" id="dac-default-value" class="pure-input-1" value="0" min="0" max="255">
                                 </div>
                             </div>
                         </div>
