@@ -1176,3 +1176,6 @@ IPManager* NetworkManager::getIPManager() {
 DNSManager* NetworkManager::getDNSManager() {
     return dnsManager.get();
 }
+
+void NetworkManager::incrementTxCount() { statusInfo.txCount++; }
+void NetworkManager::incrementRxCount() { statusInfo.rxCount++; }

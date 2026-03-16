@@ -8,6 +8,7 @@
 #include "core/FastBeeFramework.h"
 #include "core/SystemConstants.h"
 #include "core/PeripheralManager.h"
+#include "core/PeriphExecManager.h"
 #include "systems/LoggerSystem.h"
 #include "network/NetworkManager.h"
 #include "network/WebConfigManager.h"
@@ -235,6 +236,30 @@ bool FastBeeFramework::initialize() {
     }
     LOG_INFO("[STEP11] Protocol manager OK");
     
+    // 注入 TX/RX 计数回调：协议层消息收发时递增网络层计数器
+    if (network && protocolManager) {
+        NetworkManager* netMgr = network.get();
+        protocolManager->setTxCallback([netMgr]() { netMgr->incrementTxCount(); });
+        protocolManager->setRxCallback([netMgr]() { netMgr->incrementRxCount(); });
+    }
+    
+    // 步骤11.5: 初始化外设执行管理器
+    LOG_INFO("[STEP11.5] Initializing PeriphExecManager...");
+    if (!PeriphExecManager::getInstance().initialize()) {
+        LOG_WARNING("[STEP11.5] Failed to initialize periph exec manager");
+    } else {
+        LOG_INFO("[STEP11.5] Periph exec manager OK");
+    }
+    
+    // 注入 MQTT 消息回调：消息到达时匹配外设执行规则
+    if (protocolManager) {
+        protocolManager->setMessageCallback([](ProtocolType type, const String& topic, const String& msg) {
+            if (type == ProtocolType::MQTT) {
+                PeriphExecManager::getInstance().handleMqttMessage(topic, msg);
+            }
+        });
+    }
+    
     // 步骤12: 添加系统任务
     LOG_INFO("[STEP12] Adding system tasks...");
     if (!addSystemTasks()) {
@@ -434,6 +459,13 @@ bool FastBeeFramework::addSystemTasks() {
         framework->webConfig->performMaintenance();
     }, this, 300000)) {
         LOG_WARNING("Failed to add web maintenance task");
+    }
+    
+    // 外设执行定时器检查任务（每1秒）
+    if (!taskManager->addTask("periph_exec_timer", [](void* param) {
+        PeriphExecManager::getInstance().checkTimers();
+    }, nullptr, 1000)) {
+        LOG_WARNING("Failed to add periph exec timer task");
     }
     
     LOG_INFO("System tasks added");

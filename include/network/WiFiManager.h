@@ -122,6 +122,8 @@ struct NetworkStatusInfo {
     String dnsServer = "";
     uint8_t failoverCount = 0;
     bool conflictDetected = false;
+    uint32_t txCount = 0;   // 协议消息发送计数
+    uint32_t rxCount = 0;   // 协议消息接收计数
 };
 
 /**

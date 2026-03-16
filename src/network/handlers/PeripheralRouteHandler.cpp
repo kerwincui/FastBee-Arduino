@@ -232,9 +232,6 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
         params["pwmFrequency"] = config->params.gpio.pwmFrequency;
         params["pwmResolution"] = config->params.gpio.pwmResolution;
         params["debounceMs"] = config->params.gpio.debounceMs;
-        params["actionMode"] = config->params.gpio.actionMode;
-        params["blinkIntervalMs"] = config->params.gpio.blinkIntervalMs;
-        params["breatheSpeedMs"] = config->params.gpio.breatheSpeedMs;
         params["defaultDuty"] = config->params.gpio.defaultDuty;
     } else if (config->type == PeripheralType::ADC) {
         params["attenuation"] = config->params.adc.attenuation;
@@ -305,9 +302,6 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
         config.params.gpio.pwmFrequency = ctx->getParamInt(request, "pwmFrequency", 1000);
         config.params.gpio.pwmResolution = ctx->getParamInt(request, "pwmResolution", 8);
         config.params.gpio.debounceMs = ctx->getParamInt(request, "debounceMs", 50);
-        config.params.gpio.actionMode = ctx->getParamInt(request, "actionMode", 0);
-        config.params.gpio.blinkIntervalMs = ctx->getParamInt(request, "blinkIntervalMs", 500);
-        config.params.gpio.breatheSpeedMs = ctx->getParamInt(request, "breatheSpeedMs", 2000);
         config.params.gpio.defaultDuty = ctx->getParamInt(request, "defaultDuty", 0);
     } else if (config.type == PeripheralType::ADC) {
         config.params.adc.attenuation = ctx->getParamInt(request, "attenuation", 0);

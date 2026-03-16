@@ -165,6 +165,16 @@ public:
     String getStatistics();
     
     /**
+     * @brief 递增发送计数
+     */
+    void incrementTxCount();
+    
+    /**
+     * @brief 递增接收计数
+     */
+    void incrementRxCount();
+    
+    /**
      * @brief 检查IP冲突
      * @return 是否检测到IP冲突
      */

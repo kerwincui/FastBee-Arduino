@@ -162,6 +162,10 @@ public:
         int16_t breatheState;  // 正值=递增(当前duty), 负值=递减
     };
 
+    // 动作定时器（公开供 PeriphExecManager 调用）
+    void startActionTicker(const String& id, const PeripheralConfig& config);
+    void stopActionTicker(const String& id);
+
 private:
     PeripheralManager() = default;
     
@@ -196,10 +200,6 @@ private:
     // 检查引脚有效性
     bool isValidPin(uint8_t pin) const;
     bool isValidPinForType(uint8_t pin, PeripheralType type) const;
-    
-    // 动作定时器
-    void startActionTicker(const String& id, const PeripheralConfig& config);
-    void stopActionTicker(const String& id);
     
     // DAC硬件初始化
     bool setupDACPin(const PeripheralConfig& config);

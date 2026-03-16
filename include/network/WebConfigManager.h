@@ -23,6 +23,7 @@ class SystemRouteHandler;
 class ProvisionRouteHandler;
 class OTARouteHandler;
 class PeripheralRouteHandler;
+class PeriphExecRouteHandler;
 class ProtocolRouteHandler;
 
 /**
@@ -60,7 +61,7 @@ private:
     // 共享上下文（所有 Handler 通过指针引用）
     std::unique_ptr<WebHandlerContext> ctx;
 
-    // 9 个专职路由处理器
+    // 10 个专职路由处理器
     std::unique_ptr<StaticRouteHandler>     staticHandler;
     std::unique_ptr<AuthRouteHandler>       authHandler;
     std::unique_ptr<UserRouteHandler>       userHandler;
@@ -69,6 +70,7 @@ private:
     std::unique_ptr<ProvisionRouteHandler>  provisionHandler;
     std::unique_ptr<OTARouteHandler>        otaHandler;
     std::unique_ptr<PeripheralRouteHandler> peripheralHandler;
+    std::unique_ptr<PeriphExecRouteHandler> periphExecHandler;
     std::unique_ptr<ProtocolRouteHandler>   protocolHandler;
 
     void setupAllRoutes();

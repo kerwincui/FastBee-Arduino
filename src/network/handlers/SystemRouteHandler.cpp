@@ -73,6 +73,8 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             doc["data"]["conflictDetected"]  = info.conflictDetected;
             doc["data"]["failoverCount"]     = info.failoverCount;
             doc["data"]["activeIPType"]      = info.activeIPType;
+            doc["data"]["txCount"]           = info.txCount;
+            doc["data"]["rxCount"]           = info.rxCount;
             const char* modeText = "unknown";
             switch (cfg.mode) {
                 case NetworkMode::NETWORK_STA:    modeText = "STA";    break;

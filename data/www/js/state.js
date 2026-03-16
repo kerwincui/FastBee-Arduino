@@ -1,4 +1,4 @@
-﻿// 应用状态管理
+// 应用状态管理
 const AppState = {
     currentPage: 'dashboard',
     configTab: 'modbus',
@@ -396,12 +396,6 @@ const AppState = {
             peripheralTypeInput.addEventListener('change', (e) => this.onPeripheralTypeChange(e.target.value));
         }
         
-        // 动作模式选择变化
-        const gpioActionMode = document.getElementById('gpio-action-mode');
-        if (gpioActionMode) {
-            gpioActionMode.addEventListener('change', (e) => this.onActionModeChange(e.target.value));
-        }
-        
         // 外设过滤器
         const peripheralFilter = document.getElementById('peripheral-filter-type');
         if (peripheralFilter) {
@@ -425,6 +419,29 @@ const AppState = {
         // 保存GPIO按钮
         const saveGpioBtn = document.getElementById('save-gpio-btn');
         if (saveGpioBtn) saveGpioBtn.addEventListener('click', () => this.savePeripheralConfig());
+        
+        // ============ 执行规则事件绑定 ============
+        
+        const periphModalAddExecBtn = document.getElementById('periph-modal-add-exec-btn');
+        if (periphModalAddExecBtn) periphModalAddExecBtn.addEventListener('click', () => this.openExecRuleModal());
+        
+        const closeExecRuleModal = document.getElementById('close-exec-rule-modal');
+        if (closeExecRuleModal) closeExecRuleModal.addEventListener('click', () => this.closeExecRuleModal());
+        
+        const cancelExecRuleBtn = document.getElementById('cancel-exec-rule-btn');
+        if (cancelExecRuleBtn) cancelExecRuleBtn.addEventListener('click', () => this.closeExecRuleModal());
+        
+        const saveExecRuleBtn = document.getElementById('save-exec-rule-btn');
+        if (saveExecRuleBtn) saveExecRuleBtn.addEventListener('click', () => this.saveExecRule());
+        
+        const execTriggerType = document.getElementById('exec-rule-trigger-type');
+        if (execTriggerType) execTriggerType.addEventListener('change', (e) => this.onExecTriggerTypeChange(e.target.value));
+        
+        const execTimerMode = document.getElementById('exec-rule-timer-mode');
+        if (execTimerMode) execTimerMode.addEventListener('change', (e) => this.onExecTimerModeChange(e.target.value));
+        
+        const execActionType = document.getElementById('exec-rule-action-type');
+        if (execActionType) execActionType.addEventListener('change', (e) => this.onExecActionTypeChange(e.target.value));
         
         // ============ 网络状态事件绑定 ============
         
@@ -580,7 +597,7 @@ const AppState = {
         if (page === 'dashboard') this.renderDashboard();
         if (page === 'users') this.loadUsers();
         if (page === 'roles') this.loadRoles();
-        if (page === 'peripheral') this.loadPeripherals();
+        if (page === 'peripheral') { this.loadPeripherals(); }
         if (page === 'monitor') this.loadSystemInfo();
         if (page === 'logs') {
             this._currentLogFile = 'system.log';  // 默认加载 system.log
@@ -2363,6 +2380,8 @@ const AppState = {
                 setText('ns-mode', modeLabel[d.mode] || d.mode || '--');
                 setText('ns-mdns', d.enableMDNS ? (d.customDomain ? d.customDomain + '.local' : i18n.t('net-mdns-enabled')) : i18n.t('net-mdns-disabled'));
                 setText('ns-reconnect', d.reconnectAttempts !== undefined ? d.reconnectAttempts + i18n.t('net-reconnect-unit') : '--');
+                setText('ns-tx-count', d.txCount !== undefined ? d.txCount + i18n.t('net-count-unit') : '--');
+                setText('ns-rx-count', d.rxCount !== undefined ? d.rxCount + i18n.t('net-count-unit') : '--');
                 setHtml('ns-internet', d.internetAvailable
                     ? `<span class="badge badge-success">${i18n.t('net-accessible')}</span>`
                     : `<span class="badge badge-danger">${i18n.t('net-inaccessible')}</span>`);
@@ -3548,6 +3567,21 @@ const AppState = {
             this.onPeripheralTypeChange('11');
         }
         
+        // 执行规则区域控制
+        const execHint = document.getElementById('periph-exec-save-first-hint');
+        const execTable = document.getElementById('periph-modal-exec-rules');
+        const execAddBtn = document.getElementById('periph-modal-add-exec-btn');
+        if (isEdit && peripheralId) {
+            if (execHint) execHint.style.display = 'none';
+            if (execTable) execTable.style.display = 'block';
+            if (execAddBtn) execAddBtn.disabled = false;
+            this.loadPeriphModalExecRules(peripheralId);
+        } else {
+            if (execHint) execHint.style.display = 'block';
+            if (execTable) execTable.style.display = 'none';
+            if (execAddBtn) execAddBtn.disabled = true;
+        }
+
         modal.style.display = 'flex';
     },
     
@@ -3583,24 +3617,10 @@ const AppState = {
                     el.style.display = (type === 17 || type === 16) ? 'block' : 'none';
                 });
                 
-                // Digital Output 动作模式(12)
-                gpioParams.querySelectorAll('.digital-output-only').forEach(el => {
-                    el.style.display = (type === 12) ? 'block' : 'none';
-                });
-                
                 // Digital Input 消抖时间(11, 13, 14)
                 gpioParams.querySelectorAll('.input-only').forEach(el => {
                     el.style.display = (type === 11 || type === 13 || type === 14) ? 'block' : 'none';
                 });
-                
-                // 隐藏 blink/breathe 子字段（由 onActionModeChange 控制）
-                gpioParams.querySelectorAll('.blink-only').forEach(el => el.style.display = 'none');
-                gpioParams.querySelectorAll('.breathe-only').forEach(el => el.style.display = 'none');
-                
-                // 如果是 Digital Output，触发一次动作模式检查
-                if (type === 12) {
-                    this.onActionModeChange(document.getElementById('gpio-action-mode')?.value || '0');
-                }
             }
         } else if (type === 1) {
             // UART
@@ -3622,33 +3642,6 @@ const AppState = {
             // DAC
             const dacParams = document.getElementById('dac-params');
             if (dacParams) dacParams.style.display = 'block';
-        }
-    },
-    
-    /**
-     * 动作模式改变时更新子字段显示
-     */
-    onActionModeChange(modeValue) {
-        const mode = parseInt(modeValue);
-        const gpioParams = document.getElementById('gpio-params');
-        if (!gpioParams) return;
-        
-        // Blink 字段
-        gpioParams.querySelectorAll('.blink-only').forEach(el => {
-            el.style.display = (mode === 1) ? 'block' : 'none';
-        });
-        
-        // Breathe 字段
-        gpioParams.querySelectorAll('.breathe-only').forEach(el => {
-            el.style.display = (mode === 2) ? 'block' : 'none';
-        });
-        
-        // 呼吸灯模式下也显示 PWM 通道/频率/分辨率
-        const currentType = parseInt(document.getElementById('peripheral-type-input')?.value || '0');
-        if (currentType === 12) {
-            gpioParams.querySelectorAll('.pwm-only').forEach(el => {
-                el.style.display = (mode === 2) ? 'block' : 'none';
-            });
         }
     },
     
@@ -3740,20 +3733,6 @@ const AppState = {
                             document.getElementById('adc-attenuation').value = data.params.attenuation;
                         }
                         
-                        // 动作模式
-                        if (data.params.actionMode !== undefined) {
-                            const actionEl = document.getElementById('gpio-action-mode');
-                            if (actionEl) { actionEl.value = data.params.actionMode; }
-                            this.onActionModeChange(data.params.actionMode);
-                        }
-                        if (data.params.blinkIntervalMs !== undefined) {
-                            const el = document.getElementById('gpio-blink-interval');
-                            if (el) el.value = data.params.blinkIntervalMs;
-                        }
-                        if (data.params.breatheSpeedMs !== undefined) {
-                            const el = document.getElementById('gpio-breathe-speed');
-                            if (el) el.value = data.params.breatheSpeedMs;
-                        }
                         if (data.params.defaultDuty !== undefined) {
                             const el = document.getElementById('gpio-default-duty');
                             if (el) el.value = data.params.defaultDuty;
@@ -3823,13 +3802,6 @@ const AppState = {
             // GPIO参数
             data.initialState = document.getElementById('gpio-initial-state')?.value || '0';
             data.inverted = document.getElementById('gpio-inverted')?.value || '0';
-            
-            // Digital Output 动作模式
-            if (typeNum === 12) {
-                data.actionMode = document.getElementById('gpio-action-mode')?.value || '0';
-                data.blinkIntervalMs = document.getElementById('gpio-blink-interval')?.value || '500';
-                data.breatheSpeedMs = document.getElementById('gpio-breathe-speed')?.value || '2000';
-            }
             
             // PWM/Analog Output
             if (typeNum === 17 || typeNum === 16) {
@@ -3964,6 +3936,278 @@ const AppState = {
                 console.error('Get peripheral status failed:', err);
                 Notification.error(i18n.t('peripheral-toggle-fail'), i18n.t('peripheral-title'));
             });
+    },
+
+    // ============ 执行规则管理 ============
+
+    openExecRuleModal(editId) {
+        const modal = document.getElementById('exec-rule-modal');
+        if (!modal) return;
+        const titleEl = document.getElementById('exec-rule-modal-title');
+        document.getElementById('exec-rule-original-id').value = editId || '';
+        document.getElementById('exec-rule-error').style.display = 'none';
+        if (editId) {
+            if (titleEl) titleEl.textContent = i18n.t('exec-edit-modal-title');
+        } else {
+            if (titleEl) titleEl.textContent = i18n.t('exec-add-modal-title');
+            document.getElementById('exec-rule-form').reset();
+            this.onExecTriggerTypeChange('0');
+            this.onExecTimerModeChange('0');
+            this.onExecActionTypeChange('0');
+        }
+        const periphId = document.getElementById('peripheral-original-id').value;
+        this.loadPeriphSelectOptions().then(() => {
+            const sel = document.getElementById('exec-rule-target-periph');
+            if (sel && periphId) { sel.value = periphId; sel.disabled = true; }
+        });
+        modal.style.display = 'flex';
+    },
+
+    closeExecRuleModal() {
+        const modal = document.getElementById('exec-rule-modal');
+        if (modal) modal.style.display = 'none';
+        const targetSel = document.getElementById('exec-rule-target-periph');
+        if (targetSel) targetSel.disabled = false;
+    },
+
+    loadPeriphSelectOptions() {
+        return apiGet('/api/peripherals')
+            .then(res => {
+                const sel = document.getElementById('exec-rule-target-periph');
+                if (!sel) return;
+                const currentVal = sel.value;
+                sel.innerHTML = '<option value="">' + i18n.t('exec-select-periph') + '</option>';
+                if (res && res.success && res.data) {
+                    res.data.forEach(p => {
+                        const opt = document.createElement('option');
+                        opt.value = p.id;
+                        opt.textContent = p.name + ' (' + p.id + ')';
+                        sel.appendChild(opt);
+                    });
+                }
+                if (currentVal) sel.value = currentVal;
+            });
+    },
+
+    onExecTriggerTypeChange(val) {
+        const deviceFields = document.getElementById('exec-device-trigger-fields');
+        const timerFields = document.getElementById('exec-timer-trigger-fields');
+        if (deviceFields) deviceFields.style.display = (val === '0') ? 'block' : 'none';
+        if (timerFields) timerFields.style.display = (val === '1') ? 'block' : 'none';
+    },
+
+    onExecTimerModeChange(val) {
+        const intervalFields = document.getElementById('exec-interval-fields');
+        const dailyFields = document.getElementById('exec-daily-fields');
+        if (intervalFields) intervalFields.style.display = (val === '0') ? 'block' : 'none';
+        if (dailyFields) dailyFields.style.display = (val === '1') ? 'block' : 'none';
+    },
+
+    onExecActionTypeChange(val) {
+        const actionType = parseInt(val);
+        const periphGroup = document.getElementById('exec-target-periph-group');
+        const valueGroup = document.getElementById('exec-action-value-group');
+        if (periphGroup) periphGroup.style.display = (actionType >= 6 && actionType <= 11) ? 'none' : 'block';
+        const needsValue = (actionType >= 2 && actionType <= 5);
+        if (valueGroup) valueGroup.style.display = needsValue ? 'block' : 'none';
+    },
+
+    saveExecRule() {
+        const errEl = document.getElementById('exec-rule-error');
+        errEl.style.display = 'none';
+        const originalId = document.getElementById('exec-rule-original-id').value;
+        const isEdit = originalId !== '';
+        const ruleData = {
+            name: document.getElementById('exec-rule-name').value.trim(),
+            enabled: document.getElementById('exec-rule-enabled').value,
+            triggerType: document.getElementById('exec-rule-trigger-type').value,
+            sourceId: document.getElementById('exec-rule-source-id').value.trim(),
+            operatorType: document.getElementById('exec-rule-operator').value,
+            compareValue: document.getElementById('exec-rule-compare-value').value.trim(),
+            timerMode: document.getElementById('exec-rule-timer-mode').value,
+            intervalSec: document.getElementById('exec-rule-interval').value,
+            timePoint: document.getElementById('exec-rule-timepoint').value,
+            actionType: document.getElementById('exec-rule-action-type').value,
+            targetPeriphId: document.getElementById('exec-rule-target-periph').value,
+            actionValue: document.getElementById('exec-rule-action-value').value.trim()
+        };
+        if (!ruleData.name) {
+            errEl.textContent = i18n.t('exec-validate-name');
+            errEl.style.display = 'block';
+            return;
+        }
+        if (isEdit) ruleData.id = originalId;
+        const url = isEdit ? '/api/periph-exec/update' : '/api/periph-exec';
+        apiPost(url, ruleData)
+            .then(res => {
+                if (res && res.success) {
+                    Notification.success(i18n.t(isEdit ? 'exec-update-ok' : 'exec-add-ok'), i18n.t('exec-title'));
+                    this.closeExecRuleModal();
+                    this.loadExecRules();
+                } else {
+                    errEl.textContent = res?.error || i18n.t('exec-save-fail');
+                    errEl.style.display = 'block';
+                }
+            })
+            .catch(err => {
+                console.error('Save exec rule failed:', err);
+                errEl.textContent = i18n.t('exec-save-fail');
+                errEl.style.display = 'block';
+            });
+    },
+
+    editExecRule(id) {
+        this.openExecRuleModal(id);
+        apiGet('/api/periph-exec')
+            .then(res => {
+                if (!res || !res.success || !res.data) return;
+                const rule = res.data.find(r => r.id === id);
+                if (!rule) return;
+                document.getElementById('exec-rule-name').value = rule.name || '';
+                document.getElementById('exec-rule-enabled').value = rule.enabled ? '1' : '0';
+                document.getElementById('exec-rule-trigger-type').value = String(rule.triggerType);
+                this.onExecTriggerTypeChange(String(rule.triggerType));
+                document.getElementById('exec-rule-source-id').value = rule.sourceId || '';
+                document.getElementById('exec-rule-operator').value = String(rule.operatorType);
+                document.getElementById('exec-rule-compare-value').value = rule.compareValue || '';
+                document.getElementById('exec-rule-timer-mode').value = String(rule.timerMode);
+                this.onExecTimerModeChange(String(rule.timerMode));
+                document.getElementById('exec-rule-interval').value = rule.intervalSec || 60;
+                document.getElementById('exec-rule-timepoint').value = rule.timePoint || '08:00';
+                document.getElementById('exec-rule-action-type').value = String(rule.actionType);
+                this.onExecActionTypeChange(String(rule.actionType));
+                document.getElementById('exec-rule-target-periph').value = rule.targetPeriphId || '';
+                document.getElementById('exec-rule-action-value').value = rule.actionValue || '';
+            });
+    },
+
+    deleteExecRule(id) {
+        if (!confirm(i18n.t('exec-confirm-delete'))) return;
+        apiDelete('/api/periph-exec/', { id: id })
+            .then(res => {
+                if (res && res.success) {
+                    Notification.success(i18n.t('exec-delete-ok'), i18n.t('exec-title'));
+                    this.loadExecRules();
+                } else {
+                    Notification.error(res?.error || i18n.t('exec-delete-fail'), i18n.t('exec-title'));
+                }
+            })
+            .catch(err => {
+                console.error('Delete exec rule failed:', err);
+                Notification.error(i18n.t('exec-delete-fail'), i18n.t('exec-title'));
+            });
+    },
+
+    toggleExecRule(id, enable) {
+        const url = enable ? '/api/periph-exec/enable' : '/api/periph-exec/disable';
+        apiPost(url, { id: id })
+            .then(res => {
+                if (res && res.success) {
+                    this.loadExecRules();
+                    if (this._execRuleContext) {
+                        this.loadPeriphModalExecRules(this._execRuleContext.periphId);
+                        this._execRuleContext = null;
+                    }
+                } else {
+                    Notification.error(res?.error || i18n.t('exec-toggle-fail'), i18n.t('exec-title'));
+                }
+            })
+            .catch(err => {
+                console.error('Toggle exec rule failed:', err);
+                Notification.error(i18n.t('exec-toggle-fail'), i18n.t('exec-title'));
+            });
+    },
+
+    // ============ 外设弹窗内执行规则管理 ============
+
+    loadPeriphModalExecRules(periphId) {
+        const tbody = document.getElementById('periph-modal-exec-table-body');
+        if (!tbody) return;
+        apiGet('/api/periph-exec')
+            .then(res => {
+                if (!res || !res.success || !res.data) {
+                    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;">' + i18n.t('periph-exec-no-rules') + '</td></tr>';
+                    return;
+                }
+                const rules = res.data.filter(r => r.targetPeriphId === periphId);
+                if (rules.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;">' + i18n.t('periph-exec-no-rules') + '</td></tr>';
+                    return;
+                }
+                const triggerLabels = [i18n.t('exec-trigger-device'), i18n.t('exec-trigger-timer')];
+                const actionLabels = [
+                    i18n.t('exec-action-high'), i18n.t('exec-action-low'),
+                    i18n.t('exec-action-blink'), i18n.t('exec-action-breathe'),
+                    i18n.t('exec-action-pwm'), i18n.t('exec-action-dac'),
+                    i18n.t('exec-action-restart'), i18n.t('exec-action-factory'),
+                    i18n.t('exec-action-ntp'), i18n.t('exec-action-ota'),
+                    i18n.t('exec-action-ap'), i18n.t('exec-action-ble'),
+                    i18n.t('exec-action-call-periph')
+                ];
+                const opLabels = ['=','!=','>','<','>=','<=','BETWEEN','NOT BETWEEN','CONTAIN','NOT CONTAIN'];
+                let html = '';
+                rules.forEach(r => {
+                    let triggerText = triggerLabels[r.triggerType] || '?';
+                    if (r.triggerType === 0) {
+                        triggerText += ': ' + (r.sourceId || '') + ' ' + (opLabels[r.operatorType] || '') + ' ' + (r.compareValue || '');
+                    } else if (r.triggerType === 1) {
+                        triggerText += ': ' + (r.timerMode === 0 ? i18n.t('exec-every') + ' ' + r.intervalSec + 's' : i18n.t('exec-daily') + ' ' + (r.timePoint || ''));
+                    }
+                    const actionText = actionLabels[r.actionType] || '?';
+                    const statusIcon = r.enabled ? '<span style="color:#67c23a">&#9679;</span>' : '<span style="color:#ccc">&#9679;</span>';
+                    html += '<tr>';
+                    html += '<td>' + statusIcon + ' ' + (r.name || r.id) + '</td>';
+                    html += '<td>' + triggerText + '</td>';
+                    html += '<td>' + actionText + (r.actionValue ? '(' + r.actionValue + ')' : '') + '</td>';
+                    html += '<td style="white-space:nowrap;">';
+                    html += '<button class="pure-button btn-small" onclick="appState.editExecRuleFromPeriphModal(\'' + r.id + '\')" title="' + i18n.t('edit') + '"><i class="fas fa-edit"></i></button> ';
+                    html += '<button class="pure-button btn-small" onclick="appState.toggleExecRuleFromPeriphModal(\'' + r.id + '\', ' + (r.enabled ? 'false' : 'true') + ')" title="' + (r.enabled ? i18n.t('exec-disable') : i18n.t('exec-enable')) + '"><i class="fas fa-' + (r.enabled ? 'pause' : 'play') + '"></i></button> ';
+                    html += '<button class="pure-button btn-small btn-danger" onclick="appState.deleteExecRuleFromPeriphModal(\'' + r.id + '\')" title="' + i18n.t('delete') + '"><i class="fas fa-trash"></i></button>';
+                    html += '</td>';
+                    html += '</tr>';
+                });
+                tbody.innerHTML = html;
+            })
+            .catch(() => {
+                tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;">' + i18n.t('periph-exec-no-rules') + '</td></tr>';
+            });
+    },
+
+    openExecRuleFromPeriphModal() {
+        const periphId = document.getElementById('peripheral-original-id').value;
+        if (!periphId) return;
+        this._execRuleContext = { periphId: periphId };
+        this.openExecRuleModal();
+        setTimeout(() => {
+            const sel = document.getElementById('exec-rule-target-periph');
+            if (sel) {
+                sel.value = periphId;
+                sel.disabled = true;
+            }
+        }, 300);
+    },
+
+    editExecRuleFromPeriphModal(id) {
+        const periphId = document.getElementById('peripheral-original-id').value;
+        if (!periphId) return;
+        this._execRuleContext = { periphId: periphId };
+        this.editExecRule(id);
+        setTimeout(() => {
+            const sel = document.getElementById('exec-rule-target-periph');
+            if (sel) sel.disabled = true;
+        }, 500);
+    },
+
+    deleteExecRuleFromPeriphModal(id) {
+        const periphId = document.getElementById('peripheral-original-id').value;
+        this._execRuleContext = periphId ? { periphId: periphId } : null;
+        this.deleteExecRule(id);
+    },
+
+    toggleExecRuleFromPeriphModal(id, enable) {
+        const periphId = document.getElementById('peripheral-original-id').value;
+        this._execRuleContext = periphId ? { periphId: periphId } : null;
+        this.toggleExecRule(id, enable);
     },
 
     // ============ AP配网功能 ============

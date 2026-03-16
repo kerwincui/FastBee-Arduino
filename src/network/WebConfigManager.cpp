@@ -8,6 +8,7 @@
 #include "./network/handlers/ProvisionRouteHandler.h"
 #include "./network/handlers/OTARouteHandler.h"
 #include "./network/handlers/PeripheralRouteHandler.h"
+#include "./network/handlers/PeriphExecRouteHandler.h"
 #include "./network/handlers/ProtocolRouteHandler.h"
 #include "systems/LoggerSystem.h"
 
@@ -31,20 +32,21 @@ bool WebConfigManager::initialize() {
         return false;
     }
 
-    // 创建 9 个专职 Handler
-    staticHandler     = std::unique_ptr<StaticRouteHandler>(new StaticRouteHandler(ctx.get()));
-    authHandler       = std::unique_ptr<AuthRouteHandler>(new AuthRouteHandler(ctx.get()));
-    userHandler       = std::unique_ptr<UserRouteHandler>(new UserRouteHandler(ctx.get()));
-    roleHandler       = std::unique_ptr<RoleRouteHandler>(new RoleRouteHandler(ctx.get()));
-    systemHandler     = std::unique_ptr<SystemRouteHandler>(new SystemRouteHandler(ctx.get()));
-    provisionHandler  = std::unique_ptr<ProvisionRouteHandler>(new ProvisionRouteHandler(ctx.get()));
-    otaHandler        = std::unique_ptr<OTARouteHandler>(new OTARouteHandler(ctx.get()));
-    peripheralHandler = std::unique_ptr<PeripheralRouteHandler>(new PeripheralRouteHandler(ctx.get()));
-    protocolHandler   = std::unique_ptr<ProtocolRouteHandler>(new ProtocolRouteHandler(ctx.get()));
+    // 创建 10 个专职 Handler
+    staticHandler      = std::unique_ptr<StaticRouteHandler>(new StaticRouteHandler(ctx.get()));
+    authHandler        = std::unique_ptr<AuthRouteHandler>(new AuthRouteHandler(ctx.get()));
+    userHandler        = std::unique_ptr<UserRouteHandler>(new UserRouteHandler(ctx.get()));
+    roleHandler        = std::unique_ptr<RoleRouteHandler>(new RoleRouteHandler(ctx.get()));
+    systemHandler      = std::unique_ptr<SystemRouteHandler>(new SystemRouteHandler(ctx.get()));
+    provisionHandler   = std::unique_ptr<ProvisionRouteHandler>(new ProvisionRouteHandler(ctx.get()));
+    otaHandler         = std::unique_ptr<OTARouteHandler>(new OTARouteHandler(ctx.get()));
+    peripheralHandler  = std::unique_ptr<PeripheralRouteHandler>(new PeripheralRouteHandler(ctx.get()));
+    periphExecHandler  = std::unique_ptr<PeriphExecRouteHandler>(new PeriphExecRouteHandler(ctx.get()));
+    protocolHandler    = std::unique_ptr<ProtocolRouteHandler>(new ProtocolRouteHandler(ctx.get()));
 
     setupAllRoutes();
 
-    LOG_INFO("[WebConfig] Initialized with 9 route handlers");
+    LOG_INFO("[WebConfig] Initialized with 10 route handlers");
     return true;
 }
 
@@ -134,10 +136,13 @@ void WebConfigManager::setupAllRoutes() {
     // 7. 外设路由（/api/peripherals/*）
     peripheralHandler->setupRoutes(server);
 
-    // 8. 协议路由（/api/protocol/*）
+    // 8. 外设执行路由（/api/periph-exec/*）
+    periphExecHandler->setupRoutes(server);
+
+    // 9. 协议路由（/api/protocol/*）
     protocolHandler->setupRoutes(server);
 
-    // 9. 静态文件与页面路由（/, /login, /dashboard, /users, 404 fallback）
+    // 10. 静态文件与页面路由（/, /login, /dashboard, /users, 404 fallback）
     // 必须最后注册，因为 onNotFound 是全局 fallback
     staticHandler->setupRoutes(server);
 }

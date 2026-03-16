@@ -116,6 +116,8 @@ void ProtocolManager::shutdown() {
 
     protocols.clear();
     messageCallback = nullptr;
+    txCallback = nullptr;
+    rxCallback = nullptr;
     isInitialized   = false;
 
     LOG_INFO("Protocol Manager: Shutdown complete");
@@ -181,10 +183,14 @@ void ProtocolManager::handle() {
 }
 
 void ProtocolManager::handleMessage(ProtocolType type, const String& topic, const String& message) {
+    if (rxCallback) rxCallback();
     if (messageCallback) {
         messageCallback(type, topic, message);
     }
 }
+
+void ProtocolManager::setTxCallback(CounterCallback cb) { txCallback = cb; }
+void ProtocolManager::setRxCallback(CounterCallback cb) { rxCallback = cb; }
 
 // 具体协议初始化实现
 bool ProtocolManager::initMQTT(void* config) {
