@@ -8,14 +8,26 @@
 #include <vector>
 #include <core/SystemConstants.h>
 
+// 主题类型枚举
+enum class MqttTopicType : uint8_t {
+    DATA_REPORT   = 0,  // 数据上报
+    DATA_COMMAND  = 1,  // 数据下发
+    DEVICE_INFO   = 2,  // 设备信息
+    REALTIME_MON  = 3,  // 实时监测
+    DEVICE_EVENT  = 4,  // 设备事件
+    OTA_UPGRADE   = 5,  // OTA升级
+    OTA_BINARY    = 6   // OTA二进制
+};
+
 // 发布主题配置结构体
 struct MqttPublishTopic {
     String topic;
     uint8_t qos;
     bool retain;
     String content;
+    MqttTopicType topicType;
     
-    MqttPublishTopic() : qos(0), retain(false) {}
+    MqttPublishTopic() : qos(0), retain(false), topicType(MqttTopicType::DATA_REPORT) {}
 };
 
 // 订阅主题配置结构体
@@ -23,8 +35,9 @@ struct MqttSubscribeTopic {
     String topic;       // 订阅主题
     uint8_t qos;        // QoS等级
     String action;      // 执行字段，定义接收到消息时的处理逻辑
+    MqttTopicType topicType;
     
-    MqttSubscribeTopic() : qos(0) {}
+    MqttSubscribeTopic() : qos(0), topicType(MqttTopicType::DATA_COMMAND) {}
 };
 
 // MQTT配置结构体
@@ -76,8 +89,17 @@ public:
     // 获取配置引用
     const MQTTConfig& getConfig() const { return config; }
     
-    // 设置消息回调
-    void setMessageCallback(std::function<void(const String&, const String&)> callback);
+    // 详细状态信息
+    bool getIsConnected() const { return isConnected; }
+    int  getLastErrorCode() const { return lastErrorCode; }
+    uint32_t getReconnectCount() const { return reconnectCount; }
+    unsigned long getLastConnectedTime() const { return lastConnectedTime; }
+    
+    // 设置消息回调（topic, message, topicType）
+    void setMessageCallback(std::function<void(const String&, const String&, MqttTopicType)> callback);
+
+    // 根据主题路径查找对应的主题类型
+    MqttTopicType getTopicTypeByPath(const String& topicPath) const;
 
 private:
     WiFiClient wifiClient;
@@ -85,8 +107,11 @@ private:
     MQTTConfig config;
     bool isConnected;
     unsigned long lastReconnectAttempt;
+    unsigned long lastConnectedTime;  // 上次连接成功时间
+    int  lastErrorCode;               // 上次错误码
+    uint32_t reconnectCount;          // 重连次数
     
-    std::function<void(const String&, const String&)> messageCallback;
+    std::function<void(const String&, const String&, MqttTopicType)> messageCallback;
     
     void mqttCallback(char* topic, byte* payload, unsigned int length);
     bool reconnect();

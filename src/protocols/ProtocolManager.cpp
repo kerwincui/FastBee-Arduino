@@ -192,6 +192,36 @@ void ProtocolManager::handleMessage(ProtocolType type, const String& topic, cons
 void ProtocolManager::setTxCallback(CounterCallback cb) { txCallback = cb; }
 void ProtocolManager::setRxCallback(CounterCallback cb) { rxCallback = cb; }
 
+bool ProtocolManager::restartMQTT() {
+    LOG_INFO("Protocol Manager: Restarting MQTT...");
+    
+    // 断开现有连接
+    if (mqttClient) {
+        mqttClient->disconnect();
+        mqttClient.reset();
+    }
+    
+    // 重新创建并初始化
+    mqttClient = std::unique_ptr<MQTTClient>(new MQTTClient());
+    mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
+        handleMessage(ProtocolType::MQTT, topic, message);
+    });
+    
+    if (!mqttClient->begin()) {
+        LOG_WARNING("Protocol Manager: MQTT restart begin() failed");
+        return false;
+    }
+    
+    // 尝试连接
+    bool ok = mqttClient->connect();
+    if (ok) {
+        LOG_INFO("Protocol Manager: MQTT restarted and connected");
+    } else {
+        LOG_WARNING("Protocol Manager: MQTT restarted but connect failed (will auto-retry)");
+    }
+    return ok;
+}
+
 // 具体协议初始化实现
 bool ProtocolManager::initMQTT(void* config) {
     if (!config) return false;
@@ -202,7 +232,7 @@ bool ProtocolManager::initMQTT(void* config) {
     mqttClient = std::unique_ptr<MQTTClient>(new MQTTClient());
     
     // 设置回调
-    mqttClient->setMessageCallback([this](const String& topic, const String& message) {
+    mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
         handleMessage(ProtocolType::MQTT, topic, message);
     });
     

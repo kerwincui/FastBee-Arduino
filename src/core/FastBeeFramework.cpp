@@ -236,6 +236,11 @@ bool FastBeeFramework::initialize() {
     }
     LOG_INFO("[STEP11] Protocol manager OK");
     
+    // 注入 ProtocolManager 到 WebConfig，供 API 路由访问
+    if (webConfig && protocolManager) {
+        webConfig->setProtocolManager(protocolManager.get());
+    }
+
     // 注入 TX/RX 计数回调：协议层消息收发时递增网络层计数器
     if (network && protocolManager) {
         NetworkManager* netMgr = network.get();
@@ -381,6 +386,35 @@ bool FastBeeFramework::addSystemTasks() {
                     LOG_INFO("[NTP] WiFi connected, NTP sync scheduled");
                     framework->ntpSyncPending = true;
                     framework->ntpSynced = true; // 标记已处理，避免重复
+                }
+            }
+            
+            // WiFi连接后自动启动MQTT（仅执行一次）
+            if (!framework->mqttAutoStarted && WiFi.status() == WL_CONNECTED && framework->protocolManager) {
+                static unsigned long mqttWaitStart = 0;
+                if (mqttWaitStart == 0) {
+                    mqttWaitStart = millis();
+                } else if (millis() - mqttWaitStart > 5000) {
+                    // WiFi稳定5秒后加载并启动MQTT
+                    framework->mqttAutoStarted = true;
+                    LOG_INFO("[MQTT] WiFi stable, auto-starting MQTT...");
+                    
+                    // 读取配置文件检查MQTT是否启用
+                    if (LittleFS.exists("/config/protocol.json")) {
+                        File f = LittleFS.open("/config/protocol.json", "r");
+                        if (f) {
+                            JsonDocument doc;
+                            DeserializationError err = deserializeJson(doc, f);
+                            f.close();
+                            if (!err && doc["mqtt"]["enabled"].as<bool>()) {
+                                framework->protocolManager->restartMQTT();
+                            } else {
+                                LOG_INFO("[MQTT] MQTT not enabled in config, skipping auto-start");
+                            }
+                        }
+                    } else {
+                        LOG_INFO("[MQTT] No protocol config found, skipping MQTT auto-start");
+                    }
                 }
             }
         }

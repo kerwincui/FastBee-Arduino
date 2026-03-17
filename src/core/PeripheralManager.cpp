@@ -369,11 +369,7 @@ GPIOState PeripheralManager::readPin(const String& peripheralId) {
             break;
     }
     
-    // 处理反向逻辑
-    if (config->params.gpio.inverted) {
-        state = (state == GPIOState::STATE_HIGH) ? GPIOState::STATE_LOW : GPIOState::STATE_HIGH;
-    }
-    
+    // 返回物理状态（电平反转已迁移至执行规则）
     return state;
 }
 
@@ -392,11 +388,8 @@ bool PeripheralManager::writePin(const String& peripheralId, GPIOState state) {
     uint8_t pin = config->getPrimaryPin();
     if (pin == 255) return false;
     
-    // 处理反向逻辑
+    // 直接写入物理状态（电平反转已迁移至执行规则层处理）
     GPIOState physicalState = state;
-    if (config->params.gpio.inverted) {
-        physicalState = (physicalState == GPIOState::STATE_HIGH) ? GPIOState::STATE_LOW : GPIOState::STATE_HIGH;
-    }
     
     bool success = true;
     
@@ -532,14 +525,9 @@ bool PeripheralManager::saveConfiguration() {
         }
         else if (config.isGPIOPeripheral()) {
             params["initialState"] = static_cast<int>(config.params.gpio.initialState);
-            params["inverted"] = config.params.gpio.inverted;
             params["pwmChannel"] = config.params.gpio.pwmChannel;
             params["pwmFrequency"] = config.params.gpio.pwmFrequency;
             params["pwmResolution"] = config.params.gpio.pwmResolution;
-            params["debounceMs"] = config.params.gpio.debounceMs;
-            params["actionMode"] = config.params.gpio.actionMode;
-            params["blinkIntervalMs"] = config.params.gpio.blinkIntervalMs;
-            params["breatheSpeedMs"] = config.params.gpio.breatheSpeedMs;
             params["defaultDuty"] = config.params.gpio.defaultDuty;
         }
         else if (config.type == PeripheralType::ADC) {
@@ -646,14 +634,9 @@ bool PeripheralManager::loadConfiguration() {
             }
             else if (config.isGPIOPeripheral()) {
                 config.params.gpio.initialState = static_cast<GPIOState>(params["initialState"] | 0);
-                config.params.gpio.inverted = params["inverted"] | false;
                 config.params.gpio.pwmChannel = params["pwmChannel"] | 0;
                 config.params.gpio.pwmFrequency = params["pwmFrequency"] | 1000;
                 config.params.gpio.pwmResolution = params["pwmResolution"] | 8;
-                config.params.gpio.debounceMs = params["debounceMs"] | 50;
-                config.params.gpio.actionMode = params["actionMode"] | 0;
-                config.params.gpio.blinkIntervalMs = params["blinkIntervalMs"] | 500;
-                config.params.gpio.breatheSpeedMs = params["breatheSpeedMs"] | 2000;
                 config.params.gpio.defaultDuty = params["defaultDuty"] | 0;
             }
             else if (config.type == PeripheralType::ADC) {
@@ -742,11 +725,9 @@ bool PeripheralManager::migrateFromGPIOConfig() {
         config.pins[0] = pin;
         
         config.params.gpio.initialState = static_cast<GPIOState>(pinObj["initialState"] | 0);
-        config.params.gpio.inverted = pinObj["inverted"] | false;
         config.params.gpio.pwmChannel = pin % 16;
         config.params.gpio.pwmFrequency = pinObj["pwmFrequency"] | 1000;
         config.params.gpio.pwmResolution = pinObj["pwmResolution"] | 8;
-        config.params.gpio.debounceMs = pinObj["debounceMs"] | 50;
         
         if (addPeripheral(config)) {
             migratedCount++;
@@ -1027,29 +1008,32 @@ static void breatheTickerCallback(PeripheralManager::ActionTickerData* data) {
     ledcWrite(data->channel, duty);
 }
 
-void PeripheralManager::startActionTicker(const String& id, const PeripheralConfig& config) {
+void PeripheralManager::startActionTicker(const String& id, uint8_t actionMode, uint16_t paramValue) {
     stopActionTicker(id);  // 先清理已有的
     
-    if (config.params.gpio.actionMode == static_cast<uint8_t>(GPIOActionMode::ACTION_BLINK)) {
+    auto config = getPeripheral(id);
+    if (!config) return;
+
+    if (actionMode == 1) {  // BLINK
         ActionTickerData* data = new ActionTickerData();
         data->mgr = this;
         data->id = id;
         actionTickers[id] = data;
         
-        float intervalSec = config.params.gpio.blinkIntervalMs / 1000.0f;
+        float intervalSec = paramValue / 1000.0f;
         data->ticker.attach(intervalSec, blinkTickerCallback, data);
         LOG_INFOF("Peripheral Manager: Blink ticker started for '%s' (interval=%dms)", 
-                  id.c_str(), config.params.gpio.blinkIntervalMs);
+                  id.c_str(), paramValue);
     }
-    else if (config.params.gpio.actionMode == static_cast<uint8_t>(GPIOActionMode::ACTION_BREATHE)) {
+    else if (actionMode == 2) {  // BREATHE
         ActionTickerData* data = new ActionTickerData();
         data->mgr = this;
         data->id = id;
-        data->channel = config.params.gpio.pwmChannel;
-        data->maxDuty = (1 << config.params.gpio.pwmResolution) - 1;
+        data->channel = config->params.gpio.pwmChannel;
+        data->maxDuty = (1 << config->params.gpio.pwmResolution) - 1;
         data->breatheState = 0;
         
-        uint16_t speedMs = config.params.gpio.breatheSpeedMs;
+        uint16_t speedMs = paramValue;
         uint16_t steps = speedMs / 40;  // 半周期步数
         if (steps == 0) steps = 1;
         data->stepSize = data->maxDuty / steps;

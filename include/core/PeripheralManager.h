@@ -163,7 +163,8 @@ public:
     };
 
     // 动作定时器（公开供 PeriphExecManager 调用）
-    void startActionTicker(const String& id, const PeripheralConfig& config);
+    // actionMode: 1=闪烁, 2=呼吸灯; paramValue: 闪烁间隔ms或呼吸周期ms
+    void startActionTicker(const String& id, uint8_t actionMode, uint16_t paramValue);
     void stopActionTicker(const String& id);
 
 private:

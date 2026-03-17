@@ -26,6 +26,8 @@ private:
     void handleGetModbusStatus(AsyncWebServerRequest* request);
     void handleModbusWrite(AsyncWebServerRequest* request);
     void handleTestMqttConnection(AsyncWebServerRequest* request);
+    void handleGetMqttStatus(AsyncWebServerRequest* request);
+    void handleMqttReconnect(AsyncWebServerRequest* request);
 };
 
 #endif // PROTOCOL_ROUTE_HANDLER_H

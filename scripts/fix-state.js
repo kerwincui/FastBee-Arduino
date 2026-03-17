@@ -1,63 +1,42 @@
 const fs = require('fs');
-const filePath = 'data/www/js/state.js';
-let content = fs.readFileSync(filePath, 'utf8');
+const f = 'd:\\project\\gitee\\FastBee-Arduino\\data\\www\\js\\state.js';
+let c = fs.readFileSync(f, 'utf8');
 
-// ===== Fix 1: Replace appState.xxxFromPeriphModal with app.xxx in onclick =====
-content = content.replace(/appState[.]editExecRuleFromPeriphModal/g, 'app.editExecRule');
-content = content.replace(/appState[.]toggleExecRuleFromPeriphModal/g, 'app.toggleExecRule');
-content = content.replace(/appState[.]deleteExecRuleFromPeriphModal/g, 'app.deleteExecRule');
-console.log('Fix 1: onclick replacements done');
-
-// ===== Fix 2: Fix saveExecRule - replace closeExecRuleModal+loadExecRules =====
-content = content.replace(
-  /this\.closeExecRuleModal\(\);\s*\n\s*this\.loadExecRules\(\);/,
-  "const periphId = document.getElementById('peripheral-original-id').value;\n                    this.closeExecRuleModal();\n                    if (periphId) this.loadPeriphModalExecRules(periphId);"
+// 1. saveExecRule: enabled .value -> .checked
+c = c.replace(
+  "enabled: document.getElementById('exec-rule-enabled').value,",
+  "enabled: document.getElementById('exec-rule-enabled').checked ? '1' : '0',"
 );
-console.log('Fix 2: saveExecRule done');
 
-// ===== Fix 3: Fix toggleExecRule - replace loadExecRules+_execRuleContext block =====
-content = content.replace(
-  /this\.loadExecRules\(\);\s*\n\s*if \(this\._execRuleContext\) \{\s*\n\s*this\.loadPeriphModalExecRules\(this\._execRuleContext\.periphId\);\s*\n\s*this\._execRuleContext = null;\s*\n\s*\}/,
-  "const periphId = document.getElementById('peripheral-original-id').value;\n                    if (periphId) this.loadPeriphModalExecRules(periphId);"
+// 2. saveExecRule: remove sourceId line
+c = c.replace(
+  "            sourceId: document.getElementById('exec-rule-source-id').value.trim(),\n",
+  ""
 );
-console.log('Fix 3: toggleExecRule done');
 
-// ===== Fix 4: Delete FromPeriphModal methods block =====
-let lines = content.split('\n');
-let startIdx = -1, endIdx = -1;
-for (let i = 0; i < lines.length; i++) {
-  if (lines[i].includes('openExecRuleFromPeriphModal()')) {
-    startIdx = i;
-  }
-  if (startIdx >= 0 && lines[i].includes('toggleExecRuleFromPeriphModal(id, enable)')) {
-    for (let j = i; j < lines.length; j++) {
-      if (lines[j].trim() === '},') { endIdx = j; break; }
-    }
-    break;
-  }
-}
-if (startIdx >= 0 && endIdx >= 0) {
-  if (startIdx > 0 && lines[startIdx - 1].trim() === '') startIdx--;
-  lines.splice(startIdx, endIdx - startIdx + 1);
-  console.log('Fix 4: Deleted FromPeriphModal methods, lines', startIdx + 1, '-', endIdx + 1);
-} else {
-  console.log('Fix 4: FromPeriphModal block not found (may already be deleted)');
-}
+// 3. editExecRule: enabled .value -> .checked
+c = c.replace(
+  "document.getElementById('exec-rule-enabled').value = rule.enabled ? '1' : '0';",
+  "document.getElementById('exec-rule-enabled').checked = !!rule.enabled;"
+);
 
-// ===== Fix 5: Remove trailing garbage after final }; =====
-content = lines.join('\n');
-const lastValid = content.lastIndexOf('\n};');
-if (lastValid >= 0) {
-  content = content.substring(0, lastValid + 3) + '\n';
-  console.log('Fix 5: Truncated at final };');
-}
+// 4. editExecRule: remove sourceId line
+c = c.replace(
+  "                document.getElementById('exec-rule-source-id').value = rule.sourceId || '';\n",
+  ""
+);
 
-// Write and verify
-fs.writeFileSync(filePath, content);
+// 5. loadPeriphModalExecRules: remove r.sourceId from trigger text
+c = c.replace(
+  "(r.sourceId || '') + ' ' + (opLabels",
+  "(opLabels"
+);
 
-const remaining = content.match(/FromPeriphModal|_execRuleContext|this\.loadExecRules\b|appState\./g);
-if (remaining) {
-  console.log('WARNING remaining:', [...new Set(remaining)]);
-} else {
-  console.log('ALL FIXES VERIFIED: no old patterns remaining');
-}
+fs.writeFileSync(f, c, 'utf8');
+
+// Verify
+const after = fs.readFileSync(f, 'utf8');
+const remaining = after.match(/sourceId|source-id|exec-rule-source/g);
+console.log('Remaining sourceId refs:', remaining ? remaining.length : 0);
+const enabledValue = (after.match(/exec-rule-enabled.*\.value/g) || []);
+console.log('Remaining .value on enabled:', enabledValue.length);

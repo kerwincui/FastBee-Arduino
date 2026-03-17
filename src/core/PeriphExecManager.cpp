@@ -102,7 +102,6 @@ bool PeriphExecManager::saveConfiguration() {
         obj["triggerType"] = r.triggerType;
 
         // 设备触发
-        obj["sourceId"] = r.sourceId;
         obj["operatorType"] = r.operatorType;
         obj["compareValue"] = r.compareValue;
 
@@ -115,6 +114,7 @@ bool PeriphExecManager::saveConfiguration() {
         obj["targetPeriphId"] = r.targetPeriphId;
         obj["actionType"] = r.actionType;
         obj["actionValue"] = r.actionValue;
+        obj["inverted"] = r.inverted;
     }
 
     File file = LittleFS.open(PERIPH_EXEC_CONFIG_FILE, "w");
@@ -160,7 +160,6 @@ bool PeriphExecManager::loadConfiguration() {
         r.enabled = obj["enabled"] | true;
         r.triggerType = obj["triggerType"] | 0;
 
-        r.sourceId = obj["sourceId"].as<String>();
         r.operatorType = obj["operatorType"] | 0;
         r.compareValue = obj["compareValue"].as<String>();
 
@@ -211,7 +210,6 @@ void PeriphExecManager::handleMqttMessage(const String& topic, const String& mes
         for (auto& pair : rules) {
             PeriphExecRule& rule = pair.second;
             if (!rule.enabled || rule.triggerType != 0) continue;
-            if (rule.sourceId != itemId) continue;
 
             // 防重复触发：同一规则最小间隔 1 秒
             if (rule.lastTriggerTime > 0 && (millis() - rule.lastTriggerTime) < 1000) continue;
@@ -339,35 +337,31 @@ bool PeriphExecManager::executePeripheralAction(const PeriphExecRule& rule) {
     ExecActionType action = static_cast<ExecActionType>(rule.actionType);
 
     switch (action) {
-        case ExecActionType::ACTION_HIGH:
-            LOGGER.infof("[PeriphExec] Execute HIGH on %s", rule.targetPeriphId.c_str());
+        case ExecActionType::ACTION_HIGH: {
+            LOGGER.infof("[PeriphExec] Execute HIGH on %s (inverted=%d)", rule.targetPeriphId.c_str(), rule.inverted);
             pm.stopActionTicker(rule.targetPeriphId);
-            return pm.writePin(rule.targetPeriphId, GPIOState::STATE_HIGH);
+            GPIOState targetState = rule.inverted ? GPIOState::STATE_LOW : GPIOState::STATE_HIGH;
+            return pm.writePin(rule.targetPeriphId, targetState);
+        }
 
-        case ExecActionType::ACTION_LOW:
-            LOGGER.infof("[PeriphExec] Execute LOW on %s", rule.targetPeriphId.c_str());
+        case ExecActionType::ACTION_LOW: {
+            LOGGER.infof("[PeriphExec] Execute LOW on %s (inverted=%d)", rule.targetPeriphId.c_str(), rule.inverted);
             pm.stopActionTicker(rule.targetPeriphId);
-            return pm.writePin(rule.targetPeriphId, GPIOState::STATE_LOW);
+            GPIOState targetState = rule.inverted ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
+            return pm.writePin(rule.targetPeriphId, targetState);
+        }
 
         case ExecActionType::ACTION_BLINK: {
             LOGGER.infof("[PeriphExec] Execute BLINK on %s", rule.targetPeriphId.c_str());
-            PeripheralConfig* cfg = pm.getPeripheral(rule.targetPeriphId);
-            if (!cfg) return false;
-            cfg->params.gpio.actionMode = 1;  // ACTION_BLINK
             uint16_t interval = rule.actionValue.isEmpty() ? 500 : rule.actionValue.toInt();
-            cfg->params.gpio.blinkIntervalMs = interval;
-            pm.startActionTicker(rule.targetPeriphId, *cfg);
+            pm.startActionTicker(rule.targetPeriphId, 1, interval);
             return true;
         }
 
         case ExecActionType::ACTION_BREATHE: {
             LOGGER.infof("[PeriphExec] Execute BREATHE on %s", rule.targetPeriphId.c_str());
-            PeripheralConfig* cfg = pm.getPeripheral(rule.targetPeriphId);
-            if (!cfg) return false;
-            cfg->params.gpio.actionMode = 2;  // ACTION_BREATHE
             uint16_t speed = rule.actionValue.isEmpty() ? 2000 : rule.actionValue.toInt();
-            cfg->params.gpio.breatheSpeedMs = speed;
-            pm.startActionTicker(rule.targetPeriphId, *cfg);
+            pm.startActionTicker(rule.targetPeriphId, 2, speed);
             return true;
         }
 

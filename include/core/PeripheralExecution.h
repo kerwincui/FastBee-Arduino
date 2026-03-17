@@ -54,7 +54,6 @@ struct PeriphExecRule {
     uint8_t triggerType = 0;    // 0=设备触发(MQTT), 1=定时触发
 
     // 设备触发字段
-    String sourceId;            // MQTT JSON 中的 id 字段值 (如 "temperature")
     uint8_t operatorType = 0;   // ExecOperator 枚举值
     String compareValue;        // 比较值 (between 时用逗号分隔: "20,30")
 
@@ -67,6 +66,7 @@ struct PeriphExecRule {
     String targetPeriphId;      // 目标外设 ID (系统功能时可为空)
     uint8_t actionType = 0;     // ExecActionType 枚举值
     String actionValue;         // 动作参数 (PWM值/DAC值/闪烁间隔ms等)
+    bool inverted = false;      // 电平反转 (GPIO动作时有效)
 
     // 运行时字段 (不持久化)
     unsigned long lastTriggerTime = 0;

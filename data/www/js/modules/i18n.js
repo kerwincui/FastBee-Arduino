@@ -899,8 +899,6 @@ const i18n = {
             'exec-trigger-type-label': '触发类型',
             'exec-trigger-device': '设备触发 (MQTT)',
             'exec-trigger-timer': '定时触发',
-            'exec-source-id-label': '数据源ID',
-            'exec-source-id-hint': 'MQTT消息中的id字段',
             'exec-operator-label': '比较运算符',
             'exec-compare-label': '比较值',
             'exec-compare-hint': '如: 30 或区间: 20,30',
@@ -931,6 +929,8 @@ const i18n = {
             'exec-action-value-label': '动作参数',
             'exec-action-value-hint': '如: PWM值、闪烁间隔ms',
             'exec-action-value-help': '闪烁/呼吸灯填间隔ms, PWM填占空比, DAC填0-255',
+            'exec-inverted-label': '电平反转',
+            'exec-inverted-help': '开启后高/低电平动作物理信号反转',
             'exec-validate-name': '请输入规则名称',
             'exec-add-ok': '规则添加成功',
             'exec-update-ok': '规则更新成功',
@@ -983,6 +983,28 @@ const i18n = {
             'mqtt-test-fail-prefix': '连接失败: ',
             'mqtt-test-error': '测试请求失败',
             'mqtt-test-no-server': '请先填写Broker地址',
+            
+            // MQTT 状态面板
+            'mqtt-status-label': '连接状态',
+            'mqtt-status-server-label': '服务器',
+            'mqtt-status-client-label': '客户端ID',
+            'mqtt-status-reconnect-label': '重连次数',
+            'mqtt-status-connected': '已连接',
+            'mqtt-status-disconnected': '未连接',
+            'mqtt-status-uninit': '未初始化',
+            'mqtt-status-offline': '未连接',
+            'mqtt-reconnect-ok': 'MQTT已重新连接',
+            'mqtt-reconnect-fail': 'MQTT重连失败',
+            
+            // MQTT 主题类型
+            'mqtt-topic-type-label': '主题类型',
+            'mqtt-topic-type-data-report': '数据上报',
+            'mqtt-topic-type-data-command': '数据下发',
+            'mqtt-topic-type-device-info': '设备信息',
+            'mqtt-topic-type-realtime-mon': '实时监测',
+            'mqtt-topic-type-device-event': '设备事件',
+            'mqtt-topic-type-ota-upgrade': 'OTA升级',
+            'mqtt-topic-type-ota-binary': 'OTA二进制',
             
             // Modbus RTU RS485引脚
             'rtu-pins-section-title': 'RS485 引脚配置',
@@ -2151,8 +2173,6 @@ const i18n = {
             'exec-trigger-type-label': 'Trigger Type',
             'exec-trigger-device': 'Device Trigger (MQTT)',
             'exec-trigger-timer': 'Timer Trigger',
-            'exec-source-id-label': 'Source ID',
-            'exec-source-id-hint': 'id field in MQTT message',
             'exec-operator-label': 'Operator',
             'exec-compare-label': 'Compare Value',
             'exec-compare-hint': 'e.g. 30 or range: 20,30',
@@ -2183,6 +2203,8 @@ const i18n = {
             'exec-action-value-label': 'Action Value',
             'exec-action-value-hint': 'e.g. PWM duty, blink interval ms',
             'exec-action-value-help': 'Blink/Breathe: interval ms, PWM: duty, DAC: 0-255',
+            'exec-inverted-label': 'Invert Level',
+            'exec-inverted-help': 'When enabled, HIGH/LOW actions are physically inverted',
             'exec-validate-name': 'Please enter a rule name',
             'exec-add-ok': 'Rule added',
             'exec-update-ok': 'Rule updated',
@@ -2235,6 +2257,28 @@ const i18n = {
             'mqtt-test-fail-prefix': 'Connection failed: ',
             'mqtt-test-error': 'Test request failed',
             'mqtt-test-no-server': 'Please enter broker address first',
+            
+            // MQTT Status Panel
+            'mqtt-status-label': 'Status',
+            'mqtt-status-server-label': 'Server',
+            'mqtt-status-client-label': 'Client ID',
+            'mqtt-status-reconnect-label': 'Reconnects',
+            'mqtt-status-connected': 'Connected',
+            'mqtt-status-disconnected': 'Disconnected',
+            'mqtt-status-uninit': 'Not Initialized',
+            'mqtt-status-offline': 'Offline',
+            'mqtt-reconnect-ok': 'MQTT reconnected',
+            'mqtt-reconnect-fail': 'MQTT reconnect failed',
+            
+            // MQTT Topic Types
+            'mqtt-topic-type-label': 'Topic Type',
+            'mqtt-topic-type-data-report': 'Data Report',
+            'mqtt-topic-type-data-command': 'Data Command',
+            'mqtt-topic-type-device-info': 'Device Info',
+            'mqtt-topic-type-realtime-mon': 'Realtime Monitor',
+            'mqtt-topic-type-device-event': 'Device Event',
+            'mqtt-topic-type-ota-upgrade': 'OTA Upgrade',
+            'mqtt-topic-type-ota-binary': 'OTA Binary',
             
             // Modbus RTU RS485 Pins
             'rtu-pins-section-title': 'RS485 Pin Config',

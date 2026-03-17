@@ -125,6 +125,7 @@ private:
     bool ntpSyncPending = false;       // NTP同步待处理标志
     bool ntpSyncStarted = false;       // NTP同步已启动标志
     int ntpRetryCount = 0;             // NTP同步重试计数
+    bool mqttAutoStarted = false;      // MQTT自动启动标志
     
     // HTTP服务器
     std::unique_ptr<AsyncWebServer> server;

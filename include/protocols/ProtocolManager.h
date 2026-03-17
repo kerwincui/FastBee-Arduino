@@ -66,6 +66,14 @@ public:
     // 获取 ModbusHandler 指针（供路由处理器访问Master模式接口）
     ModbusHandler* getModbusHandler() const { return modbusHandler.get(); }
 
+    // 获取 MQTTClient 指针（供路由处理器访问MQTT状态接口）
+    MQTTClient* getMQTTClient() const { return mqttClient.get(); }
+
+    /**
+     * @brief 重启MQTT连接（重新加载配置并连接）
+     */
+    bool restartMQTT();
+
     /**
      * @brief 完全关闭协议管理器，释放所有资源
      */

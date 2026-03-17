@@ -227,11 +227,9 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
         params["msbFirst"] = config->params.spi.msbFirst;
     } else if (config->isGPIOPeripheral()) {
         params["initialState"] = static_cast<int>(config->params.gpio.initialState);
-        params["inverted"] = config->params.gpio.inverted;
         params["pwmChannel"] = config->params.gpio.pwmChannel;
         params["pwmFrequency"] = config->params.gpio.pwmFrequency;
         params["pwmResolution"] = config->params.gpio.pwmResolution;
-        params["debounceMs"] = config->params.gpio.debounceMs;
         params["defaultDuty"] = config->params.gpio.defaultDuty;
     } else if (config->type == PeripheralType::ADC) {
         params["attenuation"] = config->params.adc.attenuation;
@@ -297,11 +295,9 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
         config.params.spi.msbFirst = ctx->getParamBool(request, "msbFirst", true);
     } else if (config.isGPIOPeripheral()) {
         config.params.gpio.initialState = static_cast<GPIOState>(ctx->getParamInt(request, "initialState", 0));
-        config.params.gpio.inverted = ctx->getParamBool(request, "inverted", false);
         config.params.gpio.pwmChannel = ctx->getParamInt(request, "pwmChannel", 0);
         config.params.gpio.pwmFrequency = ctx->getParamInt(request, "pwmFrequency", 1000);
         config.params.gpio.pwmResolution = ctx->getParamInt(request, "pwmResolution", 8);
-        config.params.gpio.debounceMs = ctx->getParamInt(request, "debounceMs", 50);
         config.params.gpio.defaultDuty = ctx->getParamInt(request, "defaultDuty", 0);
     } else if (config.type == PeripheralType::ADC) {
         config.params.adc.attenuation = ctx->getParamInt(request, "attenuation", 0);
@@ -370,14 +366,9 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
         if (request->hasParam("dataBits", true)) config.params.uart.dataBits = ctx->getParamInt(request, "dataBits", config.params.uart.dataBits);
     } else if (config.isGPIOPeripheral()) {
         if (request->hasParam("initialState", true)) config.params.gpio.initialState = static_cast<GPIOState>(ctx->getParamInt(request, "initialState", static_cast<int>(config.params.gpio.initialState)));
-        if (request->hasParam("inverted", true)) config.params.gpio.inverted = ctx->getParamBool(request, "inverted", config.params.gpio.inverted);
         if (request->hasParam("pwmChannel", true)) config.params.gpio.pwmChannel = ctx->getParamInt(request, "pwmChannel", config.params.gpio.pwmChannel);
         if (request->hasParam("pwmFrequency", true)) config.params.gpio.pwmFrequency = ctx->getParamInt(request, "pwmFrequency", config.params.gpio.pwmFrequency);
         if (request->hasParam("pwmResolution", true)) config.params.gpio.pwmResolution = ctx->getParamInt(request, "pwmResolution", config.params.gpio.pwmResolution);
-        if (request->hasParam("debounceMs", true)) config.params.gpio.debounceMs = ctx->getParamInt(request, "debounceMs", config.params.gpio.debounceMs);
-        if (request->hasParam("actionMode", true)) config.params.gpio.actionMode = ctx->getParamInt(request, "actionMode", config.params.gpio.actionMode);
-        if (request->hasParam("blinkIntervalMs", true)) config.params.gpio.blinkIntervalMs = ctx->getParamInt(request, "blinkIntervalMs", config.params.gpio.blinkIntervalMs);
-        if (request->hasParam("breatheSpeedMs", true)) config.params.gpio.breatheSpeedMs = ctx->getParamInt(request, "breatheSpeedMs", config.params.gpio.breatheSpeedMs);
         if (request->hasParam("defaultDuty", true)) config.params.gpio.defaultDuty = ctx->getParamInt(request, "defaultDuty", config.params.gpio.defaultDuty);
     } else if (config.type == PeripheralType::DAC) {
         if (request->hasParam("channel", true)) config.params.dac.channel = ctx->getParamInt(request, "channel", config.params.dac.channel);

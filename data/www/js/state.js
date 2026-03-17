@@ -632,6 +632,9 @@ const AppState = {
         // 切换到协议配置页面时自动加载第一个tab的配置(MQTT)
         if (page === 'protocol') {
             this.loadProtocolConfig('mqtt');
+            this._startMqttStatusPolling();
+        } else {
+            this._stopMqttStatusPolling();
         }
     },
 
@@ -2824,12 +2827,30 @@ const AppState = {
             
         // 如果没有配置，添加一个默认空组
         if (!topics || topics.length === 0) {
-            topics = [{ topic: '', qos: 0, retain: false, content: '' }];
+            topics = [{ topic: '', qos: 0, retain: false, content: '', topicType: 0 }];
         }
             
         topics.forEach((topic, index) => {
             this._createMqttPublishTopicElement(topic, index);
         });
+    },
+
+    /**
+     * 生成主题类型 <select> 的 options HTML
+     */
+    _mqttTopicTypeOptions(selected) {
+        const types = [
+            { value: 0, key: 'mqtt-topic-type-data-report' },
+            { value: 1, key: 'mqtt-topic-type-data-command' },
+            { value: 2, key: 'mqtt-topic-type-device-info' },
+            { value: 3, key: 'mqtt-topic-type-realtime-mon' },
+            { value: 4, key: 'mqtt-topic-type-device-event' },
+            { value: 5, key: 'mqtt-topic-type-ota-upgrade' },
+            { value: 6, key: 'mqtt-topic-type-ota-binary' }
+        ];
+        return types.map(t =>
+            `<option value="${t.value}" ${Number(selected) === t.value ? 'selected' : ''}>${i18n.t(t.key)}</option>`
+        ).join('');
     },
         
     /**
@@ -2851,6 +2872,12 @@ const AppState = {
                     <div class="pure-control-group">
                         <label>${i18n.t('mqtt-publish-label')}</label>
                         <input type="text" class="pure-input-1 mqtt-topic-input" value="${topicData.topic || ''}" placeholder="/topic/path">
+                    </div>
+                    <div class="pure-control-group">
+                        <label>${i18n.t('mqtt-topic-type-label')}</label>
+                        <select class="pure-input-1 mqtt-topic-type-input">
+                            ${this._mqttTopicTypeOptions(topicData.topicType ?? 0)}
+                        </select>
                     </div>
                     <div class="pure-control-group">
                         <label>${i18n.t('mqtt-publish-qos-label')}</label>
@@ -2886,7 +2913,7 @@ const AppState = {
         if (!container) return;
             
         const index = container.children.length;
-        this._createMqttPublishTopicElement({ topic: '', qos: 0, retain: false, content: '' }, index);
+        this._createMqttPublishTopicElement({ topic: '', qos: 0, retain: false, content: '', topicType: 0 }, index);
     },
         
     /**
@@ -2932,13 +2959,15 @@ const AppState = {
             const qosInput = item.querySelector('.mqtt-qos-input');
             const retainInput = item.querySelector('.mqtt-retain-input');
             const contentInput = item.querySelector('.mqtt-content-input');
+            const topicTypeInput = item.querySelector('.mqtt-topic-type-input');
                 
             if (topicInput) {
                 topics.push({
                     topic: topicInput.value || '',
                     qos: parseInt(qosInput?.value || '0'),
                     retain: retainInput?.checked || false,
-                    content: contentInput?.value || ''
+                    content: contentInput?.value || '',
+                    topicType: parseInt(topicTypeInput?.value || '0')
                 });
             }
         });
@@ -3058,12 +3087,14 @@ const AppState = {
             const topicInput = item.querySelector('.mqtt-sub-topic-input');
             const qosInput = item.querySelector('.mqtt-sub-qos-input');
             const actionInput = item.querySelector('.mqtt-sub-action-input');
+            const topicTypeInput = item.querySelector('.mqtt-sub-topic-type-input');
                 
             if (topicInput) {
                 topics.push({
                     topic: topicInput.value || '',
                     qos: parseInt(qosInput?.value || '0'),
-                    action: actionInput?.value || ''
+                    action: actionInput?.value || '',
+                    topicType: parseInt(topicTypeInput?.value || '1')
                 });
             }
         });
@@ -3348,6 +3379,21 @@ const AppState = {
                 if (res && res.success) {
                     // 清除缓存，下次重新加载
                     this._protocolConfig = null;
+                    
+                    // 检查MQTT重连结果
+                    if (res.data && typeof res.data.mqttReconnected !== 'undefined') {
+                        if (res.data.mqttReconnected) {
+                            Notification.success(i18n.t('mqtt-reconnect-ok'), i18n.t('protocol-config-title'));
+                        } else if (data.mqtt_enabled === 'true') {
+                            const errCode = res.data.mqttError || '';
+                            const errMsg = errCode ? this._mqttErrorCodeToText(errCode) : '';
+                            Notification.warning(
+                                i18n.t('mqtt-reconnect-fail') + (errMsg ? ' (' + errMsg + ')' : ''),
+                                i18n.t('protocol-config-title')
+                            );
+                        }
+                    }
+
                     Notification.success(`${protocolName} ${i18n.t('protocol-save-ok-suffix')}`, i18n.t('protocol-config-title'));
                     
                     // 显示成功消息
@@ -3357,6 +3403,9 @@ const AppState = {
                         ok.style.display = 'block';
                         setTimeout(() => { ok.style.display = 'none'; }, 3000);
                     }
+
+                    // 刷新MQTT状态
+                    setTimeout(() => this._loadMqttStatus(), 1000);
                 } else {
                     Notification.error(res?.message || i18n.t('protocol-save-fail'), i18n.t('protocol-title'));
                 }
@@ -3958,7 +4007,7 @@ const AppState = {
         const periphId = document.getElementById('peripheral-original-id').value;
         this.loadPeriphSelectOptions().then(() => {
             const sel = document.getElementById('exec-rule-target-periph');
-            if (sel && periphId) { sel.value = periphId; sel.disabled = true; }
+            if (sel && periphId) { sel.value = periphId; }
         });
         modal.style.display = 'flex';
     },
@@ -3978,7 +4027,7 @@ const AppState = {
                 const currentVal = sel.value;
                 sel.innerHTML = '<option value="">' + i18n.t('exec-select-periph') + '</option>';
                 if (res && res.success && res.data) {
-                    res.data.forEach(p => {
+                    res.data.filter(p => p.enabled).forEach(p => {
                         const opt = document.createElement('option');
                         opt.value = p.id;
                         opt.textContent = p.name + ' (' + p.id + ')';
@@ -3990,10 +4039,14 @@ const AppState = {
     },
 
     onExecTriggerTypeChange(val) {
-        const deviceFields = document.getElementById('exec-device-trigger-fields');
-        const timerFields = document.getElementById('exec-timer-trigger-fields');
-        if (deviceFields) deviceFields.style.display = (val === '0') ? 'block' : 'none';
-        if (timerFields) timerFields.style.display = (val === '1') ? 'block' : 'none';
+        const dl = document.getElementById('exec-device-trigger-left');
+        const dr = document.getElementById('exec-device-trigger-right');
+        const tl = document.getElementById('exec-timer-trigger-left');
+        const tr = document.getElementById('exec-timer-trigger-right');
+        if (dl) dl.style.display = (val === '0') ? 'block' : 'none';
+        if (dr) dr.style.display = (val === '0') ? 'block' : 'none';
+        if (tl) tl.style.display = (val === '1') ? 'block' : 'none';
+        if (tr) tr.style.display = (val === '1') ? 'block' : 'none';
     },
 
     onExecTimerModeChange(val) {
@@ -4007,9 +4060,12 @@ const AppState = {
         const actionType = parseInt(val);
         const periphGroup = document.getElementById('exec-target-periph-group');
         const valueGroup = document.getElementById('exec-action-value-group');
+        const invertedGroup = document.getElementById('exec-inverted-group');
         if (periphGroup) periphGroup.style.display = (actionType >= 6 && actionType <= 11) ? 'none' : 'block';
         const needsValue = (actionType >= 2 && actionType <= 5);
         if (valueGroup) valueGroup.style.display = needsValue ? 'block' : 'none';
+        const isGpioAction = (actionType >= 0 && actionType <= 3);
+        if (invertedGroup) invertedGroup.style.display = isGpioAction ? 'block' : 'none';
     },
 
     saveExecRule() {
@@ -4019,9 +4075,8 @@ const AppState = {
         const isEdit = originalId !== '';
         const ruleData = {
             name: document.getElementById('exec-rule-name').value.trim(),
-            enabled: document.getElementById('exec-rule-enabled').value,
+            enabled: document.getElementById('exec-rule-enabled').checked ? '1' : '0',
             triggerType: document.getElementById('exec-rule-trigger-type').value,
-            sourceId: document.getElementById('exec-rule-source-id').value.trim(),
             operatorType: document.getElementById('exec-rule-operator').value,
             compareValue: document.getElementById('exec-rule-compare-value').value.trim(),
             timerMode: document.getElementById('exec-rule-timer-mode').value,
@@ -4029,7 +4084,8 @@ const AppState = {
             timePoint: document.getElementById('exec-rule-timepoint').value,
             actionType: document.getElementById('exec-rule-action-type').value,
             targetPeriphId: document.getElementById('exec-rule-target-periph').value,
-            actionValue: document.getElementById('exec-rule-action-value').value.trim()
+            actionValue: document.getElementById('exec-rule-action-value').value.trim(),
+            inverted: document.getElementById('exec-rule-inverted').checked ? '1' : '0'
         };
         if (!ruleData.name) {
             errEl.textContent = i18n.t('exec-validate-name');
@@ -4065,10 +4121,9 @@ const AppState = {
                 const rule = res.data.find(r => r.id === id);
                 if (!rule) return;
                 document.getElementById('exec-rule-name').value = rule.name || '';
-                document.getElementById('exec-rule-enabled').value = rule.enabled ? '1' : '0';
+                document.getElementById('exec-rule-enabled').checked = !!rule.enabled;
                 document.getElementById('exec-rule-trigger-type').value = String(rule.triggerType);
                 this.onExecTriggerTypeChange(String(rule.triggerType));
-                document.getElementById('exec-rule-source-id').value = rule.sourceId || '';
                 document.getElementById('exec-rule-operator').value = String(rule.operatorType);
                 document.getElementById('exec-rule-compare-value').value = rule.compareValue || '';
                 document.getElementById('exec-rule-timer-mode').value = String(rule.timerMode);
@@ -4148,7 +4203,7 @@ const AppState = {
                 rules.forEach(r => {
                     let triggerText = triggerLabels[r.triggerType] || '?';
                     if (r.triggerType === 0) {
-                        triggerText += ': ' + (r.sourceId || '') + ' ' + (opLabels[r.operatorType] || '') + ' ' + (r.compareValue || '');
+                        triggerText += ': ' + (opLabels[r.operatorType] || '') + ' ' + (r.compareValue || '');
                     } else if (r.triggerType === 1) {
                         triggerText += ': ' + (r.timerMode === 0 ? i18n.t('exec-every') + ' ' + r.intervalSec + 's' : i18n.t('exec-daily') + ' ' + (r.timePoint || ''));
                     }
@@ -4712,7 +4767,7 @@ const AppState = {
      */
     testMqttConnection() {
         const resultEl = document.getElementById('mqtt-test-result');
-        const btn = document.querySelector('#mqtt-form .mqtt-test-btn') || document.getElementById('mqtt-test-btn');
+        const btn = document.querySelector('#mqtt-form .mqtt-test-btn');
         
         const server = document.getElementById('mqtt-broker')?.value || '';
         const port = document.getElementById('mqtt-port')?.value || '1883';
@@ -4731,6 +4786,7 @@ const AppState = {
         if (btn) {
             btn.disabled = true;
             btn.textContent = i18n.t('mqtt-test-testing');
+            btn.classList.remove('mqtt-test-success', 'mqtt-test-fail');
         }
         if (resultEl) {
             resultEl.textContent = i18n.t('mqtt-test-testing');
@@ -4745,17 +4801,26 @@ const AppState = {
                             resultEl.textContent = i18n.t('mqtt-test-success');
                             resultEl.style.color = '#67c23a';
                         }
+                        if (btn) btn.classList.add('mqtt-test-success');
+                        // 测试连接成功后，立即更新顶部状态面板显示表单中的值
+                        this._updateMqttStatusPanel(true, server, port, clientId);
                     } else {
+                        const errCode = res.data.error || 'Unknown';
+                        const errMsg = this._mqttErrorCodeToText(errCode);
                         if (resultEl) {
-                            resultEl.textContent = i18n.t('mqtt-test-fail-prefix') + (res.data.error || 'Unknown');
+                            resultEl.textContent = i18n.t('mqtt-test-fail-prefix') + errMsg;
                             resultEl.style.color = '#f56c6c';
                         }
+                        if (btn) btn.classList.add('mqtt-test-fail');
+                        // 测试连接失败后，更新状态面板显示断开状态
+                        this._updateMqttStatusPanel(false, server, port, clientId);
                     }
                 } else {
                     if (resultEl) {
                         resultEl.textContent = i18n.t('mqtt-test-error');
                         resultEl.style.color = '#f56c6c';
                     }
+                    if (btn) btn.classList.add('mqtt-test-fail');
                 }
             })
             .catch(err => {
@@ -4764,13 +4829,117 @@ const AppState = {
                     resultEl.textContent = i18n.t('mqtt-test-error');
                     resultEl.style.color = '#f56c6c';
                 }
+                if (btn) btn.classList.add('mqtt-test-fail');
             })
             .finally(() => {
                 if (btn) {
                     btn.disabled = false;
                     btn.textContent = i18n.t('mqtt-test-btn-text');
                 }
+                // 3秒后恢复按钮颜色
+                setTimeout(() => {
+                    if (btn) btn.classList.remove('mqtt-test-success', 'mqtt-test-fail');
+                }, 3000);
             });
+    },
+
+    /**
+     * MQTT错误码转可读文本
+     */
+    _mqttErrorCodeToText(code) {
+        const map = {
+            '-4': 'MQTT_CONNECTION_TIMEOUT',
+            '-3': 'MQTT_CONNECTION_LOST',
+            '-2': 'MQTT_CONNECT_FAILED',
+            '-1': 'MQTT_DISCONNECTED',
+            '1': 'MQTT_BAD_PROTOCOL',
+            '2': 'MQTT_BAD_CLIENT_ID',
+            '3': 'MQTT_UNAVAILABLE',
+            '4': 'MQTT_BAD_CREDENTIALS',
+            '5': 'MQTT_UNAUTHORIZED'
+        };
+        return map[String(code)] || ('Error ' + code);
+    },
+
+    /**
+     * MQTT 状态轮询定时器
+     */
+    _mqttStatusTimer: null,
+
+    /**
+     * 启动MQTT状态轮询
+     */
+    _startMqttStatusPolling() {
+        this._stopMqttStatusPolling();
+        this._loadMqttStatus();
+        this._mqttStatusTimer = setInterval(() => this._loadMqttStatus(), 5000);
+    },
+
+    /**
+     * 停止MQTT状态轮询
+     */
+    _stopMqttStatusPolling() {
+        if (this._mqttStatusTimer) {
+            clearInterval(this._mqttStatusTimer);
+            this._mqttStatusTimer = null;
+        }
+    },
+
+    /**
+     * 加载MQTT实时状态
+     */
+    _loadMqttStatus() {
+        apiGet('/api/mqtt/status')
+            .then(res => {
+                if (!res || !res.success) return;
+                const d = res.data || {};
+                const badge = document.getElementById('mqtt-status-badge');
+                const serverEl = document.getElementById('mqtt-status-server');
+                const clientEl = document.getElementById('mqtt-status-clientid');
+                const reconnEl = document.getElementById('mqtt-status-reconnects');
+
+                if (badge) {
+                    if (!d.initialized) {
+                        badge.className = 'mqtt-status-badge mqtt-status-offline';
+                        badge.textContent = i18n.t('mqtt-status-uninit');
+                    } else if (d.connected) {
+                        badge.className = 'mqtt-status-badge mqtt-status-online';
+                        badge.textContent = i18n.t('mqtt-status-connected');
+                    } else {
+                        badge.className = 'mqtt-status-badge mqtt-status-offline';
+                        badge.textContent = i18n.t('mqtt-status-disconnected');
+                    }
+                }
+                if (serverEl) serverEl.textContent = d.server ? (d.server + ':' + d.port) : '--';
+                if (clientEl) clientEl.textContent = d.clientId || '--';
+                if (reconnEl) reconnEl.textContent = d.reconnectCount ?? 0;
+            })
+            .catch(() => {});
+    },
+
+    /**
+     * 手动更新MQTT状态面板（用于测试连接后即时反馈）
+     * @param {boolean} connected 是否连接成功
+     * @param {string} server 服务器地址
+     * @param {string|number} port 端口
+     * @param {string} clientId 客户端ID
+     */
+    _updateMqttStatusPanel(connected, server, port, clientId) {
+        const badge = document.getElementById('mqtt-status-badge');
+        const serverEl = document.getElementById('mqtt-status-server');
+        const clientEl = document.getElementById('mqtt-status-clientid');
+
+        if (badge) {
+            if (connected) {
+                badge.className = 'mqtt-status-badge mqtt-status-online';
+                badge.textContent = i18n.t('mqtt-status-connected');
+            } else {
+                badge.className = 'mqtt-status-badge mqtt-status-offline';
+                badge.textContent = i18n.t('mqtt-status-disconnected');
+            }
+        }
+        if (serverEl) serverEl.textContent = server ? (server + ':' + port) : '--';
+        if (clientEl) clientEl.textContent = clientId || '--';
     },
     
     /**

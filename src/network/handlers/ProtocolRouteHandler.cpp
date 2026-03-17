@@ -39,6 +39,18 @@ void ProtocolRouteHandler::setupRoutes(AsyncWebServer* server) {
               [this](AsyncWebServerRequest* request) {
         handleTestMqttConnection(request);
     });
+
+    // MQTT Status API
+    server->on("/api/mqtt/status", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleGetMqttStatus(request);
+    });
+
+    // MQTT Reconnect API
+    server->on("/api/mqtt/reconnect", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleMqttReconnect(request);
+    });
 }
 
 void ProtocolRouteHandler::handleGetProtocolConfig(AsyncWebServerRequest* request) {
@@ -165,6 +177,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                 topicObj["qos"] = v["qos"] | 0;
                 topicObj["retain"] = v["retain"] | false;
                 topicObj["content"] = v["content"] | "";
+                topicObj["topicType"] = v["topicType"] | 0;
             }
         }
     }
@@ -174,6 +187,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         defaultTopic["qos"] = 0;
         defaultTopic["retain"] = false;
         defaultTopic["content"] = "";
+        defaultTopic["topicType"] = 0;
     }
 
     // 订阅主题配置
@@ -189,6 +203,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                 topicObj["topic"] = v["topic"] | "";
                 topicObj["qos"] = v["qos"] | 0;
                 topicObj["action"] = v["action"] | "";
+                topicObj["topicType"] = v["topicType"] | 1;
             }
         }
     }
@@ -197,6 +212,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         defaultTopic["topic"] = "";
         defaultTopic["qos"] = 0;
         defaultTopic["action"] = "";
+        defaultTopic["topicType"] = 1;
     }
 
     // HTTP
@@ -249,7 +265,30 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     serializeJsonPretty(doc, f);
     f.close();
 
-    ctx->sendSuccess(request, "Protocol configuration saved");
+    // 保存成功后，尝试重启MQTT（如果MQTT启用）
+    bool mqttReconnected = false;
+    int mqttError = 0;
+    if (doc["mqtt"]["enabled"].as<bool>()) {
+        ProtocolManager* pm = ctx->protocolManager;
+        if (pm) {
+            mqttReconnected = pm->restartMQTT();
+            if (!mqttReconnected) {
+                MQTTClient* mqtt = pm->getMQTTClient();
+                mqttError = mqtt ? mqtt->getLastErrorCode() : -99;
+            }
+        }
+    }
+
+    JsonDocument resp;
+    resp["success"] = true;
+    resp["message"] = "Protocol configuration saved";
+    resp["data"]["mqttReconnected"] = mqttReconnected;
+    if (!mqttReconnected && doc["mqtt"]["enabled"].as<bool>()) {
+        resp["data"]["mqttError"] = mqttError;
+    }
+    String out;
+    serializeJson(resp, out);
+    request->send(200, "application/json", out);
 }
 
 void ProtocolRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
@@ -384,6 +423,73 @@ void ProtocolRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* reque
 
     if (testClient.connected()) {
         testClient.disconnect();
+    }
+
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+void ProtocolRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.view")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+
+    ProtocolManager* pm = ctx->protocolManager;
+    if (!pm) {
+        ctx->sendError(request, 500, "Protocol manager not available");
+        return;
+    }
+
+    MQTTClient* mqtt = pm->getMQTTClient();
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+
+    if (mqtt) {
+        const MQTTConfig& cfg = mqtt->getConfig();
+        data["initialized"] = true;
+        data["connected"] = mqtt->getIsConnected();
+        data["server"] = cfg.server;
+        data["port"] = cfg.port;
+        data["clientId"] = cfg.clientId;
+        data["lastError"] = mqtt->getLastErrorCode();
+        data["reconnectCount"] = mqtt->getReconnectCount();
+        data["autoReconnect"] = cfg.autoReconnect;
+        unsigned long connTime = mqtt->getLastConnectedTime();
+        data["lastConnectedMs"] = connTime > 0 ? (millis() - connTime) / 1000 : 0;
+    } else {
+        data["initialized"] = false;
+        data["connected"] = false;
+    }
+
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+void ProtocolRouteHandler::handleMqttReconnect(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.edit")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+
+    ProtocolManager* pm = ctx->protocolManager;
+    if (!pm) {
+        ctx->sendError(request, 500, "Protocol manager not available");
+        return;
+    }
+
+    bool ok = pm->restartMQTT();
+
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["data"]["connected"] = ok;
+    if (!ok) {
+        MQTTClient* mqtt = pm->getMQTTClient();
+        doc["data"]["error"] = mqtt ? mqtt->getLastErrorCode() : -99;
     }
 
     String out;

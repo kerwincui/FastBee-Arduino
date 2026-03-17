@@ -52,7 +52,6 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         obj["triggerType"] = rule.triggerType;
 
         // 设备触发
-        obj["sourceId"] = rule.sourceId;
         obj["operatorType"] = rule.operatorType;
         obj["compareValue"] = rule.compareValue;
 
@@ -65,6 +64,7 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         obj["targetPeriphId"] = rule.targetPeriphId;
         obj["actionType"] = rule.actionType;
         obj["actionValue"] = rule.actionValue;
+        obj["inverted"] = rule.inverted;
 
         // 运行时状态
         obj["lastTriggerTime"] = rule.lastTriggerTime;
@@ -102,7 +102,6 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     rule.enabled = ctx->getParamBool(request, "enabled", true);
     rule.triggerType = ctx->getParamInt(request, "triggerType", 0);
 
-    rule.sourceId = ctx->getParamValue(request, "sourceId", "");
     rule.operatorType = ctx->getParamInt(request, "operatorType", 0);
     rule.compareValue = ctx->getParamValue(request, "compareValue", "");
 
@@ -155,7 +154,6 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     rule.enabled = ctx->getParamBool(request, "enabled", existing->enabled);
     rule.triggerType = ctx->getParamInt(request, "triggerType", existing->triggerType);
 
-    rule.sourceId = ctx->getParamValue(request, "sourceId", existing->sourceId);
     rule.operatorType = ctx->getParamInt(request, "operatorType", existing->operatorType);
     rule.compareValue = ctx->getParamValue(request, "compareValue", existing->compareValue);
 
@@ -166,6 +164,7 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     rule.targetPeriphId = ctx->getParamValue(request, "targetPeriphId", existing->targetPeriphId);
     rule.actionType = ctx->getParamInt(request, "actionType", existing->actionType);
     rule.actionValue = ctx->getParamValue(request, "actionValue", existing->actionValue);
+    rule.inverted = ctx->getParamBool(request, "inverted", existing->inverted);
 
     if (mgr.updateRule(id, rule)) {
         mgr.saveConfiguration();

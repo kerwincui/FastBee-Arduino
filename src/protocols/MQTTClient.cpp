@@ -18,7 +18,8 @@
 #include <LittleFS.h>
 
 MQTTClient::MQTTClient()
-    : isConnected(false), lastReconnectAttempt(0) {
+    : isConnected(false), lastReconnectAttempt(0),
+      lastConnectedTime(0), lastErrorCode(0), reconnectCount(0) {
 }
 
 MQTTClient::~MQTTClient() {
@@ -53,26 +54,32 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
         return false;
     }
 
-    config.server      = doc["server"]      | "";
-    config.port        = doc["port"]        | 1883;
-    config.username    = doc["username"]    | "";
-    config.password    = doc["password"]    | "";
-    config.topicPrefix = doc["topicPrefix"] | "";
-    config.subscribeTopic = doc["subscribeTopic"] | "";
-    config.keepAlive   = doc["keepAlive"]   | 60;
+    // protocol.json 结构为 { "mqtt": { ... }, "modbusRtu": { ... }, ... }
+    // 优先从 doc["mqtt"] 子对象读取；若不存在则兼容旧配置从根级别读取
+    JsonVariant mqttObj = doc["mqtt"];
+    bool nested = !mqttObj.isNull() && mqttObj.is<JsonObject>();
+    JsonVariant cfg = nested ? mqttObj : doc.as<JsonVariant>();
+
+    config.server      = cfg["server"]      | "";
+    config.port        = cfg["port"]        | 1883;
+    config.username    = cfg["username"]    | "";
+    config.password    = cfg["password"]    | "";
+    config.topicPrefix = cfg["topicPrefix"] | "";
+    config.subscribeTopic = cfg["subscribeTopic"] | "";
+    config.keepAlive   = cfg["keepAlive"]   | 60;
     // 新增字段（兼容旧配置，使用默认值）
-    config.directConnect     = doc["directConnect"]     | true;
-    config.autoReconnect     = doc["autoReconnect"]     | true;
-    config.connectionTimeout = doc["connectionTimeout"] | 30000;
+    config.directConnect     = cfg["directConnect"]     | true;
+    config.autoReconnect     = cfg["autoReconnect"]     | true;
+    config.connectionTimeout = cfg["connectionTimeout"] | 30000;
     // 遗嘱消息配置
-    config.willTopic   = doc["willTopic"]   | "";
-    config.willPayload = doc["willPayload"] | "";
-    config.willQos     = doc["willQos"]     | 0;
-    config.willRetain  = doc["willRetain"]  | false;
+    config.willTopic   = cfg["willTopic"]   | "";
+    config.willPayload = cfg["willPayload"] | "";
+    config.willQos     = cfg["willQos"]     | 0;
+    config.willRetain  = cfg["willRetain"]  | false;
     
     // 加载发布主题配置（支持多组）
     config.publishTopics.clear();
-    JsonArray topicsArr = doc["publishTopics"].as<JsonArray>();
+    JsonArray topicsArr = cfg["publishTopics"].as<JsonArray>();
     if (!topicsArr.isNull()) {
         for (JsonVariant v : topicsArr) {
             MqttPublishTopic topic;
@@ -80,15 +87,16 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
             topic.qos = v["qos"] | 0;
             topic.retain = v["retain"] | false;
             topic.content = v["content"] | "";
+            topic.topicType = static_cast<MqttTopicType>(v["topicType"] | 0);
             config.publishTopics.push_back(topic);
         }
     }
     // 兼容旧配置：如果有单独的 publishTopic，添加到数组
-    if (config.publishTopics.empty() && !doc["publishTopic"].isNull()) {
+    if (config.publishTopics.empty() && !cfg["publishTopic"].isNull()) {
         MqttPublishTopic topic;
-        topic.topic = doc["publishTopic"] | "";
-        topic.qos = doc["publishQos"] | 0;
-        topic.retain = doc["publishRetain"] | false;
+        topic.topic = cfg["publishTopic"] | "";
+        topic.qos = cfg["publishQos"] | 0;
+        topic.retain = cfg["publishRetain"] | false;
         config.publishTopics.push_back(topic);
     }
     // 确保至少有一个默认配置
@@ -99,13 +107,14 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     
     // 加载订阅主题配置（支持多组）
     config.subscribeTopics.clear();
-    JsonArray subTopicsArr = doc["subscribeTopics"].as<JsonArray>();
+    JsonArray subTopicsArr = cfg["subscribeTopics"].as<JsonArray>();
     if (!subTopicsArr.isNull()) {
         for (JsonVariant v : subTopicsArr) {
             MqttSubscribeTopic topic;
             topic.topic = v["topic"] | "";
             topic.qos = v["qos"] | 0;
             topic.action = v["action"] | "";
+            topic.topicType = static_cast<MqttTopicType>(v["topicType"] | 1);
             config.subscribeTopics.push_back(topic);
         }
     }
@@ -118,12 +127,12 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     }
 
     // clientId 若配置文件未指定，生成随机 ID
-    if (doc["clientId"].isNull() || doc["clientId"].as<String>().isEmpty()) {
+    if (cfg["clientId"].isNull() || cfg["clientId"].as<String>().isEmpty()) {
         char id[20];
         snprintf(id, sizeof(id), "ESP32-%04X", (unsigned)esp_random() & 0xFFFF);
         config.clientId = id;
     } else {
-        config.clientId = doc["clientId"].as<String>();
+        config.clientId = cfg["clientId"].as<String>();
     }
 
     char buf[96];
@@ -267,8 +276,29 @@ String MQTTClient::getStatus() const {
     return isConnected ? F("Connected") : F("Disconnected");
 }
 
-void MQTTClient::setMessageCallback(std::function<void(const String&, const String&)> callback) {
+void MQTTClient::setMessageCallback(std::function<void(const String&, const String&, MqttTopicType)> callback) {
     messageCallback = callback;
+}
+
+MqttTopicType MQTTClient::getTopicTypeByPath(const String& topicPath) const {
+    // 去掉前缀后匹配
+    String stripped = topicPath;
+    if (!config.topicPrefix.isEmpty() && topicPath.startsWith(config.topicPrefix)) {
+        stripped = topicPath.substring(config.topicPrefix.length());
+    }
+    // 先查订阅主题
+    for (const auto& st : config.subscribeTopics) {
+        if (st.topic == stripped || st.topic == topicPath) {
+            return st.topicType;
+        }
+    }
+    // 再查发布主题
+    for (const auto& pt : config.publishTopics) {
+        if (pt.topic == stripped || pt.topic == topicPath) {
+            return pt.topicType;
+        }
+    }
+    return MqttTopicType::DATA_COMMAND; // 默认
 }
 
 void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -277,8 +307,16 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
     String message((const char*)payload, length);
     String topicStr(topic);
 
+    // 根据主题路径查找对应的主题类型
+    MqttTopicType tType = getTopicTypeByPath(topicStr);
+
+    char buf[96];
+    snprintf(buf, sizeof(buf), "MQTT: Msg type=%d topic=%s len=%u",
+             (int)tType, topic, length);
+    LOG_DEBUG(buf);
+
     if (messageCallback) {
-        messageCallback(topicStr, message);
+        messageCallback(topicStr, message, tType);
     }
 }
 
@@ -304,12 +342,16 @@ bool MQTTClient::reconnect() {
 
     if (ok) {
         isConnected = true;
+        lastConnectedTime = millis();
+        lastErrorCode = 0;
         LOG_INFO("MQTT: Connected");
         // 连接成功后订阅所有主题
         subscribeAll();
     } else {
+        lastErrorCode = mqttClient.state();
+        reconnectCount++;
         char buf[48];
-        snprintf(buf, sizeof(buf), "MQTT: Connect failed rc=%d", mqttClient.state());
+        snprintf(buf, sizeof(buf), "MQTT: Connect failed rc=%d", lastErrorCode);
         LOG_WARNING(buf);
     }
     return ok;

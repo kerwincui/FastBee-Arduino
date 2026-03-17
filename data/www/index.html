@@ -325,6 +325,25 @@
                                 <!-- MQTT 配置 - 两列布局 -->
                                 <div id="mqtt" class="config-content active">
                                     <form id="mqtt-form" class="pure-form pure-form-stacked">
+                                        <!-- MQTT 连接状态面板 -->
+                                        <div id="mqtt-status-panel" class="mqtt-status-panel">
+                                            <div class="mqtt-status-row">
+                                                <span class="mqtt-status-label" data-i18n="mqtt-status-label">连接状态</span>
+                                                <span id="mqtt-status-badge" class="mqtt-status-badge mqtt-status-offline" data-i18n="mqtt-status-offline">未连接</span>
+                                            </div>
+                                            <div class="mqtt-status-row">
+                                                <span class="mqtt-status-label" data-i18n="mqtt-status-server-label">服务器</span>
+                                                <span id="mqtt-status-server" class="mqtt-status-value">--</span>
+                                            </div>
+                                            <div class="mqtt-status-row">
+                                                <span class="mqtt-status-label" data-i18n="mqtt-status-client-label">客户端ID</span>
+                                                <span id="mqtt-status-clientid" class="mqtt-status-value">--</span>
+                                            </div>
+                                            <div class="mqtt-status-row">
+                                                <span class="mqtt-status-label" data-i18n="mqtt-status-reconnect-label">重连次数</span>
+                                                <span id="mqtt-status-reconnects" class="mqtt-status-value">0</span>
+                                            </div>
+                                        </div>
                                         <div class="pure-control-group" style="margin-bottom:15px; padding-bottom:15px; border-bottom:1px solid #eee;">
                                             <label class="pure-checkbox">
                                                 <input type="checkbox" id="mqtt-enabled" checked> <span data-i18n="mqtt-enabled-label">启用MQTT</span>
@@ -383,8 +402,26 @@
                                             </div>
                                         </div>
 
-                                        <!-- 遗嘱消息配置 -->
-                                        <div style="margin-top:15px; padding:12px; background:#fff8e1; border:1px solid #ffe082; border-radius:4px;">
+                                        <!-- 发布主题配置区域 -->
+                                        <div class="mqtt-publish-section" style="margin-top: 20px; padding: 15px; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 4px;">
+                                            <h4 style="margin: 0 0 15px 0; color: #333;" data-i18n="mqtt-publish-section-title">发布主题配置</h4>
+                                            <div id="mqtt-publish-topics">
+                                                <!-- 动态添加的发布主题组将在这里显示 -->
+                                            </div>
+                                            <button type="button" id="add-mqtt-topic-btn" class="pure-button" style="margin-top: 10px;" data-i18n="mqtt-add-topic-btn">增加主题</button>
+                                        </div>
+
+                                        <!-- 订阅主题配置区域 -->
+                                        <div class="mqtt-subscribe-section" style="margin-top: 20px; padding: 15px; background: #f0f7ff; border: 1px solid #b3d4fc; border-radius: 4px;">
+                                            <h4 style="margin: 0 0 15px 0; color: #333;" data-i18n="mqtt-subscribe-section-title">订阅主题配置</h4>
+                                            <div id="mqtt-subscribe-topics">
+                                                <!-- 动态添加的订阅主题组将在这里显示 -->
+                                            </div>
+                                            <button type="button" id="add-mqtt-subscribe-btn" class="pure-button" style="margin-top: 10px;" data-i18n="mqtt-add-subscribe-btn">增加订阅</button>
+                                        </div>
+
+                                        <!-- 遗嘱消息配置（移至底部） -->
+                                        <div style="margin-top:20px; padding:12px; background:#fff8e1; border:1px solid #ffe082; border-radius:4px;">
                                             <h4 style="margin:0 0 12px 0; color:#333;" data-i18n="mqtt-will-section-title">遗嘱消息配置</h4>
                                             <div class="config-form-grid">
                                                 <div class="config-form-column">
@@ -416,31 +453,13 @@
                                             </div>
                                         </div>
 
-                                        <!-- 发布主题配置区域 -->
-                                        <div class="mqtt-publish-section" style="margin-top: 20px; padding: 15px; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 4px;">
-                                            <h4 style="margin: 0 0 15px 0; color: #333;" data-i18n="mqtt-publish-section-title">发布主题配置</h4>
-                                            <div id="mqtt-publish-topics">
-                                                <!-- 动态添加的发布主题组将在这里显示 -->
-                                            </div>
-                                            <button type="button" id="add-mqtt-topic-btn" class="pure-button" style="margin-top: 10px;" data-i18n="mqtt-add-topic-btn">增加主题</button>
-                                        </div>
-
-                                        <!-- 订阅主题配置区域 -->
-                                        <div class="mqtt-subscribe-section" style="margin-top: 20px; padding: 15px; background: #f0f7ff; border: 1px solid #b3d4fc; border-radius: 4px;">
-                                            <h4 style="margin: 0 0 15px 0; color: #333;" data-i18n="mqtt-subscribe-section-title">订阅主题配置</h4>
-                                            <div id="mqtt-subscribe-topics">
-                                                <!-- 动态添加的订阅主题组将在这里显示 -->
-                                            </div>
-                                            <button type="button" id="add-mqtt-subscribe-btn" class="pure-button" style="margin-top: 10px;" data-i18n="mqtt-add-subscribe-btn">增加订阅</button>
-                                        </div>
-
                                         <div class="message message-success" id="mqtt-success" style="display: none;" data-i18n="mqtt-save-success">
                                             MQTT配置保存成功！
                                         </div>
 
                                         <div style="margin-top: 20px;">
                                             <button type="submit" class="pure-button pure-button-primary" data-i18n="btn-save-config">保存配置</button>
-                                            <button type="button" class="pure-button" style="margin-left:10px;" onclick="AppState.testMqttConnection()" data-i18n="mqtt-test-conn-btn">测试连接</button>
+                                            <button type="button" class="mqtt-test-btn" style="margin-left:10px;" onclick="AppState.testMqttConnection()" data-i18n="mqtt-test-conn-btn">测试连接</button>
                                             <span id="mqtt-test-result" style="margin-left:10px; font-size:13px;"></span>
                                         </div>
                                     </form>
@@ -1940,18 +1959,6 @@
                                                 <option value="1" data-i18n="gpio-state-high">高电平</option>
                                             </select>
                                         </div>
-                                        <div class="pure-control-group">
-                                            <label for="gpio-inverted" data-i18n="gpio-inverted-label">反向逻辑</label>
-                                            <select id="gpio-inverted" class="pure-input-1">
-                                                <option value="0" selected data-i18n="gpio-inverted-no">否</option>
-                                                <option value="1" data-i18n="gpio-inverted-yes">是</option>
-                                            </select>
-                                        </div>
-                                        <!-- 消抖时间 (仅Digital Input) -->
-                                        <div class="pure-control-group input-only" style="display: none;">
-                                            <label for="gpio-debounce-ms" data-i18n="gpio-debounce-label">消抖时间 (ms)</label>
-                                            <input type="number" id="gpio-debounce-ms" class="pure-input-1" value="50" min="0" max="1000">
-                                        </div>
                                         <div class="pure-control-group pwm-only" style="display: none;">
                                             <label for="gpio-pwm-freq" data-i18n="gpio-pwm-freq-label">PWM频率 (Hz)</label>
                                             <input type="number" id="gpio-pwm-freq" class="pure-input-1" value="1000" min="1" max="40000000">
@@ -2129,33 +2136,22 @@
                         <input type="hidden" id="exec-rule-original-id" value="">
                         
                         <div class="config-form-grid">
-                            <!-- 左列：基本信息和触发配置 -->
+                            <!-- 左列：规则名称、触发配置、动作类型 -->
                             <div class="config-form-column">
                                 <div class="pure-control-group">
                                     <label for="exec-rule-name" data-i18n="exec-name-label">规则名称</label>
                                     <input type="text" id="exec-rule-name" class="pure-input-1" placeholder="例如: 温度过高报警" required data-i18n-placeholder="exec-name-hint">
                                 </div>
                                 <div class="pure-control-group">
-                                    <label for="exec-rule-enabled" data-i18n="exec-enabled-label">启用</label>
-                                    <select id="exec-rule-enabled" class="pure-input-1">
-                                        <option value="1" selected data-i18n="peripheral-enabled-yes">是</option>
-                                        <option value="0" data-i18n="peripheral-enabled-no">否</option>
-                                    </select>
-                                </div>
-                                <div class="pure-control-group">
                                     <label for="exec-rule-trigger-type" data-i18n="exec-trigger-type-label">触发类型</label>
-                                    <select id="exec-rule-trigger-type" class="pure-input-1">
+                                    <select id="exec-rule-trigger-type" class="pure-input-1" onchange="app.onExecTriggerTypeChange(this.value)">
                                         <option value="0" data-i18n="exec-trigger-device">设备触发 (MQTT)</option>
                                         <option value="1" data-i18n="exec-trigger-timer">定时触发</option>
                                     </select>
                                 </div>
                                 
-                                <!-- 设备触发字段 -->
-                                <div id="exec-device-trigger-fields">
-                                    <div class="pure-control-group">
-                                        <label for="exec-rule-source-id" data-i18n="exec-source-id-label">数据源ID</label>
-                                        <input type="text" id="exec-rule-source-id" class="pure-input-1" placeholder="MQTT消息中的id字段" data-i18n-placeholder="exec-source-id-hint">
-                                    </div>
+                                <!-- 设备触发 - 左列: 比较运算符 -->
+                                <div id="exec-device-trigger-left">
                                     <div class="pure-control-group">
                                         <label for="exec-rule-operator" data-i18n="exec-operator-label">比较运算符</label>
                                         <select id="exec-rule-operator" class="pure-input-1">
@@ -2171,41 +2167,22 @@
                                             <option value="9">NOT CONTAIN (不包含)</option>
                                         </select>
                                     </div>
-                                    <div class="pure-control-group">
-                                        <label for="exec-rule-compare-value" data-i18n="exec-compare-label">比较值</label>
-                                        <input type="text" id="exec-rule-compare-value" class="pure-input-1" placeholder="如: 30 或区间: 20,30" data-i18n-placeholder="exec-compare-hint">
-                                    </div>
                                 </div>
                                 
-                                <!-- 定时触发字段 -->
-                                <div id="exec-timer-trigger-fields" style="display: none;">
+                                <!-- 定时触发 - 左列: 定时模式 -->
+                                <div id="exec-timer-trigger-left" style="display: none;">
                                     <div class="pure-control-group">
                                         <label for="exec-rule-timer-mode" data-i18n="exec-timer-mode-label">定时模式</label>
-                                        <select id="exec-rule-timer-mode" class="pure-input-1">
+                                        <select id="exec-rule-timer-mode" class="pure-input-1" onchange="app.onExecTimerModeChange(this.value)">
                                             <option value="0" data-i18n="exec-timer-interval">间隔触发</option>
                                             <option value="1" data-i18n="exec-timer-daily">每日时间点</option>
                                         </select>
                                     </div>
-                                    <div id="exec-interval-fields">
-                                        <div class="pure-control-group">
-                                            <label for="exec-rule-interval" data-i18n="exec-interval-label">间隔 (秒)</label>
-                                            <input type="number" id="exec-rule-interval" class="pure-input-1" value="60" min="1" max="86400">
-                                        </div>
-                                    </div>
-                                    <div id="exec-daily-fields" style="display: none;">
-                                        <div class="pure-control-group">
-                                            <label for="exec-rule-timepoint" data-i18n="exec-timepoint-label">执行时间 (HH:MM)</label>
-                                            <input type="time" id="exec-rule-timepoint" class="pure-input-1" value="08:00">
-                                        </div>
-                                    </div>
                                 </div>
-                            </div>
-                            
-                            <!-- 右列：动作配置 -->
-                            <div class="config-form-column">
+                                
                                 <div class="pure-control-group">
                                     <label for="exec-rule-action-type" data-i18n="exec-action-type-label">动作类型</label>
-                                    <select id="exec-rule-action-type" class="pure-input-1">
+                                    <select id="exec-rule-action-type" class="pure-input-1" onchange="app.onExecActionTypeChange(this.value)">
                                         <optgroup label="GPIO操作" data-i18n-label="exec-action-cat-gpio">
                                             <option value="0" data-i18n="exec-action-high">设置高电平</option>
                                             <option value="1" data-i18n="exec-action-low">设置低电平</option>
@@ -2226,16 +2203,60 @@
                                         </optgroup>
                                     </select>
                                 </div>
+                            </div>
+                            
+                            <!-- 右列：目标外设、启用开关、条件值、动作参数 -->
+                            <div class="config-form-column">
                                 <div class="pure-control-group" id="exec-target-periph-group">
                                     <label for="exec-rule-target-periph" data-i18n="exec-target-periph-label">目标外设</label>
                                     <select id="exec-rule-target-periph" class="pure-input-1">
                                         <option value="" data-i18n="exec-select-periph">-- 选择外设 --</option>
                                     </select>
                                 </div>
+                                <div class="pure-control-group">
+                                    <label data-i18n="exec-enabled-label">启用</label>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="exec-rule-enabled" checked>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
+                                
+                                <!-- 设备触发 - 右列: 比较值 -->
+                                <div id="exec-device-trigger-right">
+                                    <div class="pure-control-group">
+                                        <label for="exec-rule-compare-value" data-i18n="exec-compare-label">比较值</label>
+                                        <input type="text" id="exec-rule-compare-value" class="pure-input-1" placeholder="如: 30 或区间: 20,30" data-i18n-placeholder="exec-compare-hint">
+                                    </div>
+                                </div>
+                                
+                                <!-- 定时触发 - 右列: 间隔/每日时间 -->
+                                <div id="exec-timer-trigger-right" style="display: none;">
+                                    <div id="exec-interval-fields">
+                                        <div class="pure-control-group">
+                                            <label for="exec-rule-interval" data-i18n="exec-interval-label">间隔 (秒)</label>
+                                            <input type="number" id="exec-rule-interval" class="pure-input-1" value="60" min="1" max="86400">
+                                        </div>
+                                    </div>
+                                    <div id="exec-daily-fields" style="display: none;">
+                                        <div class="pure-control-group">
+                                            <label for="exec-rule-timepoint" data-i18n="exec-timepoint-label">执行时间 (HH:MM)</label>
+                                            <input type="time" id="exec-rule-timepoint" class="pure-input-1" value="08:00">
+                                        </div>
+                                    </div>
+                                </div>
+                                
                                 <div class="pure-control-group" id="exec-action-value-group">
                                     <label for="exec-rule-action-value" data-i18n="exec-action-value-label">动作参数</label>
                                     <input type="text" id="exec-rule-action-value" class="pure-input-1" placeholder="如: PWM值、闪烁间隔ms" data-i18n-placeholder="exec-action-value-hint">
                                     <small style="color: #999;" data-i18n="exec-action-value-help">闪烁/呼吸灯填间隔ms, PWM填占空比, DAC填0-255</small>
+                                </div>
+                                <div class="pure-control-group" id="exec-inverted-group" style="display: none;">
+                                    <label data-i18n="exec-inverted-label">电平反转</label>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="exec-rule-inverted">
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                    <small style="color: #999;" data-i18n="exec-inverted-help">开启后高/低电平动作物理信号反转</small>
                                 </div>
                             </div>
                         </div>

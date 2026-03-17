@@ -780,11 +780,12 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
     String ext = path.substring(path.lastIndexOf('.'));
     if (ext == ".html" || ext == ".js" || ext == ".css") {
         String gzPath = path + ".gz";
-        // 如果只有 .gz 文件存在，使用 request->send 让库自动处理
-        if (LittleFS.exists(gzPath) && !LittleFS.exists(path)) {
+        // 如果 .gz 文件存在，优先发送压缩版本
+        if (LittleFS.exists(gzPath)) {
             String contentType = getContentType(path);
-            // 传入原始路径，库会自动查找 .gz 版本并添加 Content-Encoding
-            request->send(LittleFS, path, contentType);
+            AsyncWebServerResponse *response = request->beginResponse(LittleFS, gzPath, contentType);
+            response->addHeader("Content-Encoding", "gzip");
+            request->send(response);
             return true;
         }
     }
@@ -802,11 +803,12 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
 void WebHandlerContext::serveGzippedFile(AsyncWebServerRequest* request, const String& path) {
     String gzPath = path + ".gz";
 
-    // 如果只有 .gz 文件存在，传入原始路径让库自动处理
-    if (LittleFS.exists(gzPath) && !LittleFS.exists(path)) {
+    // 优先发送 .gz 文件
+    if (LittleFS.exists(gzPath)) {
         String contentType = getContentType(path);
-        // 传入原始路径，库会自动查找 .gz 版本并添加 Content-Encoding
-        request->send(LittleFS, path, contentType);
+        AsyncWebServerResponse *response = request->beginResponse(LittleFS, gzPath, contentType);
+        response->addHeader("Content-Encoding", "gzip");
+        request->send(response);
         return;
     }
 
