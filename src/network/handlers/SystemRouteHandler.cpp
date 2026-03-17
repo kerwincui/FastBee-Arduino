@@ -271,7 +271,8 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             "/config/device.json", "/config/network.json", "/config/protocol.json",
             "/config/gpio.json", "/config/users.json", "/config/system.json",
             "/config/http.json", "/config/mqtt.json", "/config/tcp.json",
-            "/config/modbus.json", "/config/coap.json"
+            "/config/modbus.json", "/config/coap.json",
+            "/config/roles.json"
         };
         int deletedCount = 0;
         for (int i = 0; i < (int)(sizeof(configFiles) / sizeof(configFiles[0])); i++) {

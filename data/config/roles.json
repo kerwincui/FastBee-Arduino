@@ -1,0 +1,54 @@
+{
+  "roles": [
+    {
+      "id": "admin",
+      "name": "超级管理员",
+      "description": "拥有所有操作权限",
+      "isBuiltin": true,
+      "permissions": [
+        "user.view", "user.create", "user.edit", "user.delete",
+        "role.view", "role.create", "role.edit", "role.delete",
+        "system.view", "system.restart",
+        "config.view", "config.edit",
+        "network.view", "network.edit",
+        "device.view", "device.control",
+        "ota.update",
+        "fs.view", "fs.manage",
+        "audit.view", "audit.clear"
+      ]
+    },
+    {
+      "id": "operator",
+      "name": "操作员",
+      "description": "可操作设备、修改配置、OTA升级，不能管理用户或文件系统",
+      "isBuiltin": true,
+      "permissions": [
+        "system.view", "system.restart",
+        "config.view", "config.edit",
+        "network.view", "network.edit",
+        "device.view", "device.control",
+        "ota.update",
+        "fs.view",
+        "audit.view",
+        "user.view",
+        "role.view"
+      ]
+    },
+    {
+      "id": "viewer",
+      "name": "查看者",
+      "description": "只读权限，不能修改任何配置",
+      "isBuiltin": true,
+      "permissions": [
+        "system.view",
+        "config.view",
+        "network.view",
+        "device.view",
+        "fs.view",
+        "audit.view",
+        "user.view",
+        "role.view"
+      ]
+    }
+  ]
+}

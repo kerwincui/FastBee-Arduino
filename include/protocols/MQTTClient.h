@@ -19,6 +19,12 @@ enum class MqttTopicType : uint8_t {
     OTA_BINARY    = 6   // OTA二进制
 };
 
+// MQTT认证类型枚举
+enum class MqttAuthType : uint8_t {
+    SIMPLE    = 0,  // 简单认证 (S) - 密码直接传输
+    ENCRYPTED = 1   // 加密认证 (E) - AES-CBC-128加密密码
+};
+
 // 发布主题配置结构体
 struct MqttPublishTopic {
     String topic;
@@ -54,6 +60,14 @@ struct MQTTConfig {
     bool directConnect;        // 是否直连（绕过协议管理器）
     bool autoReconnect;        // 自动重连
     uint32_t connectionTimeout;// 连接超时（毫秒）
+    // 认证配置
+    MqttAuthType authType;     // 认证类型: 简单认证(S) / 加密认证(E)
+    String deviceNum;          // 设备编号
+    String productId;          // 产品ID
+    String userId;             // 用户ID
+    String mqttSecret;         // 产品秘钥（AES加密密钥，16字节）
+    String authCode;           // 设备授权码（可选）
+    String ntpServer;          // NTP服务器地址
     // 遗嘱消息配置
     String willTopic;
     String willPayload;
@@ -67,7 +81,8 @@ struct MQTTConfig {
     // 默认构造函数
     MQTTConfig() : port(1883), keepAlive(60), 
                    directConnect(true), autoReconnect(true), 
-                   connectionTimeout(30000), willQos(0), willRetain(false) {}
+                   connectionTimeout(30000), authType(MqttAuthType::SIMPLE),
+                   willQos(0), willRetain(false) {}
 };
 
 class MQTTClient {
@@ -79,6 +94,7 @@ public:
     bool begin();
     bool connect();
     void disconnect();
+    void stop();           // 显式停止MQTT（断开并阻止自动重连）
     bool publish(const String& topic, const String& message);
     bool publishToTopic(size_t topicIndex, const String& message);
     bool subscribe(const String& topic);
@@ -106,6 +122,7 @@ private:
     PubSubClient mqttClient;
     MQTTConfig config;
     bool isConnected;
+    bool stopped;                     // 是否被显式停止（阻止自动重连）
     unsigned long lastReconnectAttempt;
     unsigned long lastConnectedTime;  // 上次连接成功时间
     int  lastErrorCode;               // 上次错误码
@@ -115,6 +132,13 @@ private:
     
     void mqttCallback(char* topic, byte* payload, unsigned int length);
     bool reconnect();
+    
+    // FastBee认证相关方法
+    String buildClientId();            // 构建认证clientId: 类型&设备编号&产品ID&用户ID
+    String buildSimplePassword();      // 简单认证密码: password 或 password&authCode
+    String buildEncryptedPassword();   // 加密认证密码: AES-CBC-128加密
+    String getNtpTime();               // 通过HTTP获取NTP时间
+    String aesEncrypt(const String& plainData, const String& key, const String& iv); // AES-CBC-128加密
 };
 
 #endif

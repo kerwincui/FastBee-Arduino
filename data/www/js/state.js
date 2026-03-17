@@ -3224,6 +3224,10 @@ const AppState = {
             this._setValue('mqtt-will-qos', mqtt.willQos ?? 0);
             this._setCheckbox('mqtt-will-retain', mqtt.willRetain ?? false);
             
+            // 认证配置
+            this._setValue('mqtt-auth-type', mqtt.authType ?? 0);
+            this._setValue('mqtt-auth-code', mqtt.authCode || '');
+            
             // 加载发布主题配置（支持多组）
             this._loadMqttPublishTopics(mqtt.publishTopics || []);
             
@@ -3384,6 +3388,8 @@ const AppState = {
                     if (res.data && typeof res.data.mqttReconnected !== 'undefined') {
                         if (res.data.mqttReconnected) {
                             Notification.success(i18n.t('mqtt-reconnect-ok'), i18n.t('protocol-config-title'));
+                        } else if (res.data.mqttDisconnected) {
+                            Notification.success(i18n.t('mqtt-disconnect-ok'), i18n.t('protocol-config-title'));
                         } else if (data.mqtt_enabled === 'true') {
                             const errCode = res.data.mqttError || '';
                             const errMsg = errCode ? this._mqttErrorCodeToText(errCode) : '';
@@ -4774,6 +4780,7 @@ const AppState = {
         const clientId = document.getElementById('mqtt-client-id')?.value || '';
         const username = document.getElementById('mqtt-username')?.value || '';
         const password = document.getElementById('mqtt-password')?.value || '';
+        const authCode = document.getElementById('mqtt-auth-code')?.value || '';
         
         if (!server) {
             if (resultEl) {
@@ -4793,17 +4800,27 @@ const AppState = {
             resultEl.style.color = '#909399';
         }
         
-        apiPost('/api/mqtt/test', { server, port, clientId, username, password })
+        apiPost('/api/mqtt/test', { server, port, clientId, username, password, authCode })
             .then(res => {
                 if (res && res.success && res.data) {
                     if (res.data.connected) {
-                        if (resultEl) {
-                            resultEl.textContent = i18n.t('mqtt-test-success');
-                            resultEl.style.color = '#67c23a';
+                        // 测试通过，检查实际连接结果
+                        if (res.data.realConnected) {
+                            if (resultEl) {
+                                resultEl.textContent = i18n.t('mqtt-test-success');
+                                resultEl.style.color = '#67c23a';
+                            }
+                            if (btn) btn.classList.add('mqtt-test-success');
+                        } else {
+                            // 临时测试通过但实际重连失败
+                            const realErr = res.data.realError;
+                            const errMsg = realErr ? this._mqttErrorCodeToText(realErr) : '';
+                            if (resultEl) {
+                                resultEl.textContent = i18n.t('mqtt-test-ok-real-fail') + (errMsg ? ' (' + errMsg + ')' : '');
+                                resultEl.style.color = '#e6a23c';
+                            }
+                            if (btn) btn.classList.add('mqtt-test-fail');
                         }
-                        if (btn) btn.classList.add('mqtt-test-success');
-                        // 测试连接成功后，立即更新顶部状态面板显示表单中的值
-                        this._updateMqttStatusPanel(true, server, port, clientId);
                     } else {
                         const errCode = res.data.error || 'Unknown';
                         const errMsg = this._mqttErrorCodeToText(errCode);
@@ -4812,8 +4829,6 @@ const AppState = {
                             resultEl.style.color = '#f56c6c';
                         }
                         if (btn) btn.classList.add('mqtt-test-fail');
-                        // 测试连接失败后，更新状态面板显示断开状态
-                        this._updateMqttStatusPanel(false, server, port, clientId);
                     }
                 } else {
                     if (resultEl) {
@@ -4836,10 +4851,49 @@ const AppState = {
                     btn.disabled = false;
                     btn.textContent = i18n.t('mqtt-test-btn-text');
                 }
+                // 刷新实际MQTT状态（由轮询接口获取真实连接状态）
+                setTimeout(() => this._loadMqttStatus(), 1000);
                 // 3秒后恢复按钮颜色
                 setTimeout(() => {
                     if (btn) btn.classList.remove('mqtt-test-success', 'mqtt-test-fail');
                 }, 3000);
+            });
+    },
+
+    /**
+     * MQTT断开连接
+     */
+    disconnectMqtt() {
+        const btn = document.querySelector('#mqtt-form .mqtt-disconnect-btn');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = i18n.t('mqtt-disconnecting');
+        }
+
+        apiPost('/api/mqtt/disconnect', {})
+            .then(res => {
+                if (res && res.success) {
+                    Notification.success(i18n.t('mqtt-disconnect-ok'), 'MQTT');
+                    // 更新状态面板
+                    const badge = document.getElementById('mqtt-status-badge');
+                    if (badge) {
+                        badge.className = 'mqtt-status-badge mqtt-status-offline';
+                        badge.textContent = i18n.t('mqtt-status-disconnected');
+                    }
+                } else {
+                    Notification.error(i18n.t('mqtt-disconnect-fail'), 'MQTT');
+                }
+            })
+            .catch(err => {
+                console.error('MQTT disconnect failed:', err);
+                Notification.error(i18n.t('mqtt-disconnect-fail'), 'MQTT');
+            })
+            .finally(() => {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = i18n.t('mqtt-disconnect-btn');
+                }
+                setTimeout(() => this._loadMqttStatus(), 1000);
             });
     },
 

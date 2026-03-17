@@ -1,6 +1,35 @@
 {
   "version": "2.0",
-  "users": [],
+  "users": [
+    {
+      "username": "admin",
+      "passwordHash": "MMqroQgcopTMz5bU/x3brwufT38Ks6YAWGPRkmE5jDw=",
+      "salt": "RmFzdEJlZURlZmF1bHQhIQ==",
+      "role": 0,
+      "enabled": true,
+      "createTime": 0,
+      "lastLogin": 0,
+      "lastModified": 0,
+      "email": "",
+      "remark": "",
+      "createBy": "system",
+      "roles": ["admin"]
+    },
+    {
+      "username": "viewer",
+      "passwordHash": "8GzolfPWya4MDDWln2gLrhPhcitJHQGboXspAgr1CDU=",
+      "salt": "Vmlld2VyRGVmYXVsdCEhIQ==",
+      "role": 2,
+      "enabled": true,
+      "createTime": 0,
+      "lastLogin": 0,
+      "lastModified": 0,
+      "email": "",
+      "remark": "",
+      "createBy": "system",
+      "roles": ["viewer"]
+    }
+  ],
   "security": {
     "maxLoginAttempts": 5,
     "loginLockoutTime": 300000,

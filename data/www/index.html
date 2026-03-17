@@ -365,6 +365,18 @@
                                                     <label for="mqtt-username" data-i18n="mqtt-username-label">用户名</label>
                                                     <input type="text" id="mqtt-username" class="pure-input-1" value="FastBee">
                                                 </div>
+                                                <div class="pure-control-group">
+                                                    <label for="mqtt-auth-type" data-i18n="mqtt-auth-type-label">认证方式</label>
+                                                    <select id="mqtt-auth-type" class="pure-input-1">
+                                                        <option value="0" data-i18n="mqtt-auth-simple">简单认证</option>
+                                                        <option value="1" data-i18n="mqtt-auth-encrypted">AES加密认证</option>
+                                                    </select>
+                                                </div>
+
+                                                <div class="pure-control-group">
+                                                    <label for="mqtt-auth-code" data-i18n="mqtt-auth-code-label">授权码</label>
+                                                    <input type="text" id="mqtt-auth-code" class="pure-input-1" placeholder="可选">
+                                                </div>
 
                                                 <div class="pure-control-group">
                                                     <label class="pure-checkbox">
@@ -460,6 +472,7 @@
                                         <div style="margin-top: 20px;">
                                             <button type="submit" class="pure-button pure-button-primary" data-i18n="btn-save-config">保存配置</button>
                                             <button type="button" class="mqtt-test-btn" style="margin-left:10px;" onclick="AppState.testMqttConnection()" data-i18n="mqtt-test-conn-btn">测试连接</button>
+                                            <button type="button" class="mqtt-disconnect-btn" style="margin-left:10px;" onclick="AppState.disconnectMqtt()" data-i18n="mqtt-disconnect-btn">断开连接</button>
                                             <span id="mqtt-test-result" style="margin-left:10px; font-size:13px;"></span>
                                         </div>
                                     </form>

@@ -28,6 +28,7 @@ private:
     void handleTestMqttConnection(AsyncWebServerRequest* request);
     void handleGetMqttStatus(AsyncWebServerRequest* request);
     void handleMqttReconnect(AsyncWebServerRequest* request);
+    void handleMqttDisconnect(AsyncWebServerRequest* request);
 };
 
 #endif // PROTOCOL_ROUTE_HANDLER_H

@@ -1202,6 +1202,25 @@ body {
     cursor: not-allowed;
 }
 
+.mqtt-disconnect-btn {
+    background: #f56c6c;
+    color: white;
+    border: none;
+    padding: 6px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.mqtt-disconnect-btn:hover {
+    background: #e04848;
+}
+
+.mqtt-disconnect-btn:disabled {
+    background: #c0c4cc;
+    cursor: not-allowed;
+}
+
 /* MQTT 状态面板 */
 .mqtt-status-panel {
     display: grid;

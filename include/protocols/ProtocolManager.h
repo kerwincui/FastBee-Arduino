@@ -75,6 +75,11 @@ public:
     bool restartMQTT();
 
     /**
+     * @brief 停止MQTT连接
+     */
+    void stopMQTT();
+
+    /**
      * @brief 完全关闭协议管理器，释放所有资源
      */
     void shutdown();

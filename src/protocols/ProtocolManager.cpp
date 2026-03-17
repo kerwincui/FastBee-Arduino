@@ -222,6 +222,13 @@ bool ProtocolManager::restartMQTT() {
     return ok;
 }
 
+void ProtocolManager::stopMQTT() {
+    LOG_INFO("Protocol Manager: Stopping MQTT...");
+    if (mqttClient) {
+        mqttClient->stop();
+    }
+}
+
 // 具体协议初始化实现
 bool ProtocolManager::initMQTT(void* config) {
     if (!config) return false;

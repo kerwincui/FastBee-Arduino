@@ -980,6 +980,7 @@ const i18n = {
             'mqtt-test-btn-text': '测试连接',
             'mqtt-test-testing': '测试中...',
             'mqtt-test-success': '连接成功！',
+            'mqtt-test-ok-real-fail': '凭证验证通过，但实际连接失败',
             'mqtt-test-fail-prefix': '连接失败: ',
             'mqtt-test-error': '测试请求失败',
             'mqtt-test-no-server': '请先填写Broker地址',
@@ -995,6 +996,10 @@ const i18n = {
             'mqtt-status-offline': '未连接',
             'mqtt-reconnect-ok': 'MQTT已重新连接',
             'mqtt-reconnect-fail': 'MQTT重连失败',
+            'mqtt-disconnect-btn': '断开连接',
+            'mqtt-disconnecting': '断开中...',
+            'mqtt-disconnect-ok': 'MQTT已断开连接',
+            'mqtt-disconnect-fail': 'MQTT断开失败',
             
             // MQTT 主题类型
             'mqtt-topic-type-label': '主题类型',
@@ -1005,6 +1010,11 @@ const i18n = {
             'mqtt-topic-type-device-event': '设备事件',
             'mqtt-topic-type-ota-upgrade': 'OTA升级',
             'mqtt-topic-type-ota-binary': 'OTA二进制',
+            // MQTT 认证
+            'mqtt-auth-type-label': '认证方式',
+            'mqtt-auth-simple': '简单认证',
+            'mqtt-auth-encrypted': 'AES加密认证',
+            'mqtt-auth-code-label': '授权码',
             
             // Modbus RTU RS485引脚
             'rtu-pins-section-title': 'RS485 引脚配置',
@@ -2254,6 +2264,7 @@ const i18n = {
             'mqtt-test-btn-text': 'Test Connection',
             'mqtt-test-testing': 'Testing...',
             'mqtt-test-success': 'Connected!',
+            'mqtt-test-ok-real-fail': 'Credentials verified, but actual connection failed',
             'mqtt-test-fail-prefix': 'Connection failed: ',
             'mqtt-test-error': 'Test request failed',
             'mqtt-test-no-server': 'Please enter broker address first',
@@ -2269,6 +2280,10 @@ const i18n = {
             'mqtt-status-offline': 'Offline',
             'mqtt-reconnect-ok': 'MQTT reconnected',
             'mqtt-reconnect-fail': 'MQTT reconnect failed',
+            'mqtt-disconnect-btn': 'Disconnect',
+            'mqtt-disconnecting': 'Disconnecting...',
+            'mqtt-disconnect-ok': 'MQTT disconnected',
+            'mqtt-disconnect-fail': 'MQTT disconnect failed',
             
             // MQTT Topic Types
             'mqtt-topic-type-label': 'Topic Type',
@@ -2279,6 +2294,11 @@ const i18n = {
             'mqtt-topic-type-device-event': 'Device Event',
             'mqtt-topic-type-ota-upgrade': 'OTA Upgrade',
             'mqtt-topic-type-ota-binary': 'OTA Binary',
+            // MQTT Auth
+            'mqtt-auth-type-label': 'Auth Method',
+            'mqtt-auth-simple': 'Simple Auth',
+            'mqtt-auth-encrypted': 'AES Encrypted Auth',
+            'mqtt-auth-code-label': 'Auth Code',
             
             // Modbus RTU RS485 Pins
             'rtu-pins-section-title': 'RS485 Pin Config',

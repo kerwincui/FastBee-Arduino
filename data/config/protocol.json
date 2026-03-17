@@ -7,10 +7,18 @@
     "stopBits": 1,
     "parity": "none",
     "timeout": 1000,
-    "slaveAddress": 1,
+    "mode": "slave",
     "txPin": 17,
     "rxPin": 16,
-    "dePin": 4
+    "dePin": 4,
+    "slaveAddress": 1,
+    "master": {
+      "defaultPollInterval": 30,
+      "responseTimeout": 1000,
+      "maxRetries": 2,
+      "interPollDelay": 100,
+      "tasks": []
+    }
   },
   "modbusTcp": {
     "enabled": false,
@@ -23,17 +31,36 @@
     "enabled": true,
     "server": "iot.fastbee.cn",
     "port": 1883,
-    "clientId": "S&FB100900001&1&1",
-    "username": "FastBee",
-    "password": "P47T6OD5IPFWHUM6",
+    "clientId": "S&FBE100900001&1070&1",
+    "username": "admin",
+    "password": "PE6987BNXN4NW98O",
     "keepAlive": 60,
-    "publishTopic": "/1/FB100900001/property/post",
-    "subscribeTopic": "/1/FB100900001/function/get",
     "directConnect": true,
     "autoReconnect": true,
     "connectionTimeout": 30000,
-    "publishQos": 0,
-    "publishRetain": false
+    "authType": 0,
+    "authCode": "",
+    "willTopic": "",
+    "willPayload": "",
+    "willQos": 0,
+    "willRetain": false,
+    "publishTopics": [
+      {
+        "topic": "",
+        "qos": 0,
+        "retain": false,
+        "content": "",
+        "topicType": 0
+      }
+    ],
+    "subscribeTopics": [
+      {
+        "topic": "",
+        "qos": 0,
+        "action": "",
+        "topicType": 1
+      }
+    ]
   },
   "http": {
     "enabled": false,
@@ -42,14 +69,21 @@
     "method": "POST",
     "timeout": 30,
     "interval": 60,
-    "retry": 3
+    "retry": 3,
+    "authType": "none",
+    "authUser": "",
+    "authToken": "",
+    "contentType": "application/json"
   },
   "coap": {
     "enabled": false,
     "server": "coap://example.com",
     "port": 5683,
     "method": "POST",
-    "path": "sensors/temperature"
+    "path": "sensors/temperature",
+    "msgType": "CON",
+    "retransmit": 3,
+    "timeout": 5000
   },
   "tcp": {
     "enabled": false,
@@ -58,6 +92,11 @@
     "timeout": 5000,
     "keepAlive": 60,
     "maxRetry": 5,
-    "reconnectInterval": 10
+    "reconnectInterval": 10,
+    "mode": "client",
+    "heartbeatMsg": "\\n",
+    "maxClients": 5,
+    "idleTimeout": 120,
+    "localPort": 8080
   }
 }

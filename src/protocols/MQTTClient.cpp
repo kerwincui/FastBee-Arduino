@@ -16,9 +16,12 @@
 #include <ArduinoJson.h>
 #include <core/ConfigDefines.h>
 #include <LittleFS.h>
+#include <HTTPClient.h>
+#include <mbedtls/aes.h>
+#include <mbedtls/base64.h>
 
 MQTTClient::MQTTClient()
-    : isConnected(false), lastReconnectAttempt(0),
+    : isConnected(false), stopped(false), lastReconnectAttempt(0),
       lastConnectedTime(0), lastErrorCode(0), reconnectCount(0) {
 }
 
@@ -77,6 +80,15 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     config.willQos     = cfg["willQos"]     | 0;
     config.willRetain  = cfg["willRetain"]  | false;
     
+    // 认证配置
+    config.authType    = static_cast<MqttAuthType>(cfg["authType"] | 0);
+    config.deviceNum   = cfg["deviceNum"]   | "";
+    config.productId   = cfg["productId"]   | "";
+    config.userId      = cfg["userId"]      | "";
+    config.mqttSecret  = cfg["mqttSecret"]  | "";
+    config.authCode    = cfg["authCode"]    | "";
+    config.ntpServer   = cfg["ntpServer"]   | "";
+
     // 加载发布主题配置（支持多组）
     config.publishTopics.clear();
     JsonArray topicsArr = cfg["publishTopics"].as<JsonArray>();
@@ -143,10 +155,14 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
 }
 
 bool MQTTClient::begin() {
+    stopped = false;
     loadMqttConfig();
 
     mqttClient.setClient(wifiClient);
     mqttClient.setServer(config.server.c_str(), config.port);
+    mqttClient.setBufferSize(1024);
+    mqttClient.setKeepAlive(config.keepAlive);
+    mqttClient.setSocketTimeout(15);
     mqttClient.setCallback([this](char* topic, byte* payload, unsigned int length) {
         this->mqttCallback(topic, payload, length);
     });
@@ -156,6 +172,7 @@ bool MQTTClient::begin() {
 }
 
 bool MQTTClient::connect() {
+    stopped = false;
     return reconnect();
 }
 
@@ -165,6 +182,12 @@ void MQTTClient::disconnect() {
     }
     isConnected = false;
     LOG_INFO("MQTT: Disconnected");
+}
+
+void MQTTClient::stop() {
+    disconnect();
+    stopped = true;
+    LOG_INFO("MQTT: Stopped (auto-reconnect disabled)");
 }
 
 bool MQTTClient::publish(const String& topic, const String& message) {
@@ -257,6 +280,8 @@ bool MQTTClient::subscribeAll() {
 }
 
 void MQTTClient::handle() {
+    if (stopped) return;  // 被显式停止时不做任何操作
+
     if (!mqttClient.connected()) {
         isConnected = false;
         unsigned long now = millis();
@@ -323,21 +348,52 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
 bool MQTTClient::reconnect() {
     LOG_INFO("MQTT: Connecting...");
 
+    // 根据认证类型构建clientId和密码
+    String connClientId = config.clientId;
+    String connPassword;
+
+    if (config.authType == MqttAuthType::ENCRYPTED &&
+        !config.deviceNum.isEmpty() && !config.productId.isEmpty()) {
+        // AES加密认证模式：自动构建clientId和加密密码
+        connClientId = buildClientId();
+        connPassword = buildEncryptedPassword();
+        if (connPassword.isEmpty()) {
+            LOG_WARNING("MQTT: AES password generation failed, falling back to simple auth");
+            connPassword = buildSimplePassword();
+        }
+    } else {
+        // 简单认证模式：使用配置的clientId，密码追加authCode
+        connPassword = buildSimplePassword();
+    }
+
+    // 如果clientId为空，生成随机ID
+    if (connClientId.isEmpty()) {
+        char id[20];
+        snprintf(id, sizeof(id), "ESP32-%04X", (unsigned)esp_random() & 0xFFFF);
+        connClientId = id;
+    }
+
+    char logBuf[128];
+    snprintf(logBuf, sizeof(logBuf), "MQTT: Auth=%s ClientId=%s",
+             config.authType == MqttAuthType::ENCRYPTED ? "AES" : "Simple",
+             connClientId.c_str());
+    LOG_INFO(logBuf);
+
     bool ok;
     if (!config.willTopic.isEmpty()) {
         ok = mqttClient.connect(
-            config.clientId.c_str(),
+            connClientId.c_str(),
             config.username.c_str(),
-            config.password.c_str(),
+            connPassword.c_str(),
             config.willTopic.c_str(),
             config.willQos,
             config.willRetain,
             config.willPayload.c_str());
     } else {
         ok = mqttClient.connect(
-            config.clientId.c_str(),
+            connClientId.c_str(),
             config.username.c_str(),
-            config.password.c_str());
+            connPassword.c_str());
     }
 
     if (ok) {
@@ -350,9 +406,164 @@ bool MQTTClient::reconnect() {
     } else {
         lastErrorCode = mqttClient.state();
         reconnectCount++;
-        char buf[48];
-        snprintf(buf, sizeof(buf), "MQTT: Connect failed rc=%d", lastErrorCode);
-        LOG_WARNING(buf);
+        char buf2[48];
+        snprintf(buf2, sizeof(buf2), "MQTT: Connect failed rc=%d", lastErrorCode);
+        LOG_WARNING(buf2);
     }
     return ok;
+}
+
+// ============ FastBee认证方法 ============
+
+String MQTTClient::buildClientId() {
+    // 客户端ID格式: 认证类型(E/S) & 设备编号 & 产品ID & 用户ID
+    String prefix = (config.authType == MqttAuthType::ENCRYPTED) ? "E" : "S";
+    return prefix + "&" + config.deviceNum + "&" + config.productId + "&" + config.userId;
+}
+
+String MQTTClient::buildSimplePassword() {
+    // 简单认证密码格式: mqtt密码 或 mqtt密码&授权码
+    if (config.authCode.isEmpty()) {
+        return config.password;
+    }
+    return config.password + "&" + config.authCode;
+}
+
+String MQTTClient::buildEncryptedPassword() {
+    // 加密认证密码生成流程:
+    // 1. 获取NTP时间
+    // 2. 计算过期时间 = 当前时间 + 1小时
+    // 3. 构造密码明文: mqtt密码&过期时间 或 mqtt密码&过期时间&授权码
+    // 4. AES-CBC-128加密, Base64编码
+
+    if (config.mqttSecret.isEmpty() || config.mqttSecret.length() < 16) {
+        LOG_WARNING("MQTT: mqttSecret too short for AES-128 (need 16 bytes)");
+        return "";
+    }
+
+    String ntpJson = getNtpTime();
+    if (ntpJson.isEmpty()) {
+        LOG_WARNING("MQTT: Failed to get NTP time");
+        return "";
+    }
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, ntpJson);
+    if (err) {
+        LOG_WARNING("MQTT: NTP response parse failed");
+        return "";
+    }
+
+    double deviceSendTime = doc["deviceSendTime"] | 0.0;
+    double serverSendTime = doc["serverSendTime"] | 0.0;
+    double serverRecvTime = doc["serverRecvTime"] | 0.0;
+    double deviceRecvTime = (double)millis();
+    double now = (serverSendTime + serverRecvTime + deviceRecvTime - deviceSendTime) / 2.0;
+    double expireTime = now + 3600000.0;
+
+    String plainPassword;
+    if (config.authCode.isEmpty()) {
+        plainPassword = config.password + "&" + String((unsigned long)expireTime);
+    } else {
+        plainPassword = config.password + "&" + String((unsigned long)expireTime) + "&" + config.authCode;
+    }
+
+    LOG_INFO("MQTT: Generating AES encrypted password");
+
+    String iv = "wumei-smart-open";
+    String encrypted = aesEncrypt(plainPassword, config.mqttSecret, iv);
+
+    if (encrypted.isEmpty()) {
+        LOG_WARNING("MQTT: AES encryption failed");
+        return "";
+    }
+
+    return encrypted;
+}
+
+String MQTTClient::getNtpTime() {
+    if (config.ntpServer.isEmpty()) {
+        LOG_WARNING("MQTT: NTP server not configured");
+        return "";
+    }
+
+    HTTPClient http;
+    String url = config.ntpServer + String(millis());
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "MQTT: Fetching NTP time from %s", url.c_str());
+    LOG_DEBUG(buf);
+
+    if (!http.begin(url)) {
+        LOG_WARNING("MQTT: HTTP begin failed for NTP");
+        return "";
+    }
+
+    http.setTimeout(5000);
+    int httpCode = http.GET();
+    String payload = "";
+
+    if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_MOVED_PERMANENTLY) {
+        payload = http.getString();
+    } else {
+        char buf2[64];
+        snprintf(buf2, sizeof(buf2), "MQTT: NTP HTTP failed, code=%d", httpCode);
+        LOG_WARNING(buf2);
+    }
+
+    http.end();
+    return payload;
+}
+
+String MQTTClient::aesEncrypt(const String& plainData, const String& key, const String& iv) {
+    int len = plainData.length();
+    int nBlocks = len / 16 + 1;
+    uint8_t nPadding = nBlocks * 16 - len;
+    size_t paddedLen = nBlocks * 16;
+
+    uint8_t* data = new uint8_t[paddedLen];
+    memcpy(data, plainData.c_str(), len);
+    for (size_t i = len; i < paddedLen; i++) {
+        data[i] = nPadding;
+    }
+
+    uint8_t keyBuf[16];
+    uint8_t ivBuf[16];
+    memcpy(keyBuf, key.c_str(), 16);
+    memcpy(ivBuf, iv.c_str(), 16);
+
+    mbedtls_aes_context aes;
+    mbedtls_aes_init(&aes);
+    int ret = mbedtls_aes_setkey_enc(&aes, keyBuf, 128);
+    if (ret != 0) {
+        mbedtls_aes_free(&aes);
+        delete[] data;
+        LOG_WARNING("MQTT: AES setkey failed");
+        return "";
+    }
+
+    ret = mbedtls_aes_crypt_cbc(&aes, MBEDTLS_AES_ENCRYPT, paddedLen, ivBuf, data, data);
+    mbedtls_aes_free(&aes);
+
+    if (ret != 0) {
+        delete[] data;
+        LOG_WARNING("MQTT: AES encrypt failed");
+        return "";
+    }
+
+    size_t b64Len = 0;
+    mbedtls_base64_encode(nullptr, 0, &b64Len, data, paddedLen);
+    uint8_t* b64Buf = new uint8_t[b64Len + 1];
+    ret = mbedtls_base64_encode(b64Buf, b64Len + 1, &b64Len, data, paddedLen);
+    delete[] data;
+
+    if (ret != 0) {
+        delete[] b64Buf;
+        LOG_WARNING("MQTT: Base64 encode failed");
+        return "";
+    }
+
+    String result = String((char*)b64Buf, b64Len);
+    delete[] b64Buf;
+    return result;
 }

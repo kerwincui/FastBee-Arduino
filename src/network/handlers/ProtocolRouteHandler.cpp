@@ -51,6 +51,12 @@ void ProtocolRouteHandler::setupRoutes(AsyncWebServer* server) {
               [this](AsyncWebServerRequest* request) {
         handleMqttReconnect(request);
     });
+
+    // MQTT Disconnect API
+    server->on("/api/mqtt/disconnect", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleMqttDisconnect(request);
+    });
 }
 
 void ProtocolRouteHandler::handleGetProtocolConfig(AsyncWebServerRequest* request) {
@@ -157,6 +163,9 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["mqtt"]["directConnect"] = GP("mqtt_directConnect", "true") == "true";
     doc["mqtt"]["autoReconnect"] = GP("mqtt_autoReconnect", "true") == "true";
     doc["mqtt"]["connectionTimeout"] = GPI("mqtt_connectionTimeout", "30000");
+    // MQTT 认证配置
+    doc["mqtt"]["authType"] = GPI("mqtt_authType", "0");
+    doc["mqtt"]["authCode"] = GP("mqtt_authCode", "");
     // MQTT 遗嘱消息
     doc["mqtt"]["willTopic"] = GP("mqtt_willTopic", "");
     doc["mqtt"]["willPayload"] = GP("mqtt_willPayload", "");
@@ -265,8 +274,9 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     serializeJsonPretty(doc, f);
     f.close();
 
-    // 保存成功后，尝试重启MQTT（如果MQTT启用）
+    // 保存成功后，根据MQTT启用状态处理连接
     bool mqttReconnected = false;
+    bool mqttDisconnected = false;
     int mqttError = 0;
     if (doc["mqtt"]["enabled"].as<bool>()) {
         ProtocolManager* pm = ctx->protocolManager;
@@ -277,12 +287,20 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                 mqttError = mqtt ? mqtt->getLastErrorCode() : -99;
             }
         }
+    } else {
+        // MQTT未启用，断开现有连接
+        ProtocolManager* pm = ctx->protocolManager;
+        if (pm) {
+            pm->stopMQTT();
+            mqttDisconnected = true;
+        }
     }
 
     JsonDocument resp;
     resp["success"] = true;
     resp["message"] = "Protocol configuration saved";
     resp["data"]["mqttReconnected"] = mqttReconnected;
+    resp["data"]["mqttDisconnected"] = mqttDisconnected;
     if (!mqttReconnected && doc["mqtt"]["enabled"].as<bool>()) {
         resp["data"]["mqttError"] = mqttError;
     }
@@ -393,6 +411,7 @@ void ProtocolRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* reque
     String clientId = ctx->getParamValue(request, "clientId", "");
     String username = ctx->getParamValue(request, "username", "");
     String password = ctx->getParamValue(request, "password", "");
+    String authCode = ctx->getParamValue(request, "authCode", "");
 
     if (server.isEmpty()) {
         ctx->sendBadRequest(request, "Server address is required");
@@ -405,14 +424,21 @@ void ProtocolRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* reque
         clientId = id;
     }
 
+    // 构建简单认证密码: password 或 password&authCode
+    String connPassword = password;
+    if (!authCode.isEmpty()) {
+        connPassword = password + "&" + authCode;
+    }
+
     WiFiClient testWifi;
     PubSubClient testClient(testWifi);
     testClient.setServer(server.c_str(), port);
+    testClient.setBufferSize(512);
 
     bool connected = testClient.connect(
         clientId.c_str(),
         username.isEmpty() ? nullptr : username.c_str(),
-        password.isEmpty() ? nullptr : password.c_str());
+        connPassword.isEmpty() ? nullptr : connPassword.c_str());
 
     JsonDocument doc;
     doc["success"] = true;
@@ -423,6 +449,19 @@ void ProtocolRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* reque
 
     if (testClient.connected()) {
         testClient.disconnect();
+    }
+
+    // 测试成功后，触发实际MQTT客户端重新连接（使用已保存的配置）
+    if (connected) {
+        ProtocolManager* pm = ctx->protocolManager;
+        if (pm) {
+            bool realConnected = pm->restartMQTT();
+            doc["data"]["realConnected"] = realConnected;
+            if (!realConnected) {
+                MQTTClient* mqtt = pm->getMQTTClient();
+                doc["data"]["realError"] = mqtt ? mqtt->getLastErrorCode() : -99;
+            }
+        }
     }
 
     String out;
@@ -495,4 +534,30 @@ void ProtocolRouteHandler::handleMqttReconnect(AsyncWebServerRequest* request) {
     String out;
     serializeJson(doc, out);
     request->send(200, "application/json", out);
+}
+
+void ProtocolRouteHandler::handleMqttDisconnect(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.edit")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+
+    ProtocolManager* pm = ctx->protocolManager;
+    if (!pm) {
+        ctx->sendError(request, 500, "Protocol manager not available");
+        return;
+    }
+
+    MQTTClient* mqtt = pm->getMQTTClient();
+    bool wasConnected = mqtt && mqtt->getIsConnected();
+    pm->stopMQTT();
+
+    JsonDocument resp;
+    resp["success"] = true;
+    resp["data"]["disconnected"] = true;
+    resp["data"]["wasConnected"] = wasConnected;
+
+    String respOut;
+    serializeJson(resp, respOut);
+    request->send(200, "application/json", respOut);
 }
