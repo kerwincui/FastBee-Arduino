@@ -2822,22 +2822,15 @@ const AppState = {
     _loadMqttPublishTopics(topics) {
         const container = document.getElementById('mqtt-publish-topics');
         if (!container) return;
-            
         container.innerHTML = '';
-            
-        // 如果没有配置，添加一个默认空组
         if (!topics || topics.length === 0) {
-            topics = [{ topic: '', qos: 0, retain: false, content: '', topicType: 0 }];
+            topics = [{ topic: '', qos: 0, retain: false, topicType: 0 }];
         }
-            
         topics.forEach((topic, index) => {
             this._createMqttPublishTopicElement(topic, index);
         });
     },
 
-    /**
-     * 生成主题类型 <select> 的 options HTML
-     */
     _mqttTopicTypeOptions(selected) {
         const types = [
             { value: 0, key: 'mqtt-topic-type-data-report' },
@@ -2852,126 +2845,89 @@ const AppState = {
             `<option value="${t.value}" ${Number(selected) === t.value ? 'selected' : ''}>${i18n.t(t.key)}</option>`
         ).join('');
     },
-        
-    /**
-     * 创建单个MQTT发布主题配置元素
-     */
+
     _createMqttPublishTopicElement(topicData, index) {
         const container = document.getElementById('mqtt-publish-topics');
         if (!container) return;
-            
         const div = document.createElement('div');
-        div.className = 'mqtt-publish-topic-item';
+        div.className = 'mqtt-topic-item';
         div.dataset.index = index;
-            
         div.innerHTML = `
-            <span class="mqtt-publish-topic-index">${index + 1}</span>
-            <button type="button" class="mqtt-publish-topic-delete" onclick="app.deleteMqttPublishTopic(${index})">${i18n.t('mqtt-delete-topic-btn')}</button>
-            <div class="mqtt-publish-topic-grid">
-                <div class="mqtt-publish-topic-left">
-                    <div class="pure-control-group">
-                        <label>${i18n.t('mqtt-publish-label')}</label>
-                        <input type="text" class="pure-input-1 mqtt-topic-input" value="${topicData.topic || ''}" placeholder="/topic/path">
-                    </div>
-                    <div class="pure-control-group">
-                        <label>${i18n.t('mqtt-topic-type-label')}</label>
-                        <select class="pure-input-1 mqtt-topic-type-input">
-                            ${this._mqttTopicTypeOptions(topicData.topicType ?? 0)}
-                        </select>
-                    </div>
-                    <div class="pure-control-group">
-                        <label>${i18n.t('mqtt-publish-qos-label')}</label>
-                        <select class="pure-input-1 mqtt-qos-input">
-                            <option value="0" ${topicData.qos === 0 ? 'selected' : ''}>0 - ${i18n.t('mqtt-qos-0') || '最多一次'}</option>
-                            <option value="1" ${topicData.qos === 1 ? 'selected' : ''}>1 - ${i18n.t('mqtt-qos-1') || '至少一次'}</option>
-                            <option value="2" ${topicData.qos === 2 ? 'selected' : ''}>2 - ${i18n.t('mqtt-qos-2') || '恰好一次'}</option>
-                        </select>
-                    </div>
-                    <div class="pure-control-group">
-                        <label class="pure-checkbox">
-                            <input type="checkbox" class="mqtt-retain-input" ${topicData.retain ? 'checked' : ''}> ${i18n.t('mqtt-publish-retain-label')}
-                        </label>
-                    </div>
+            <span class="mqtt-topic-index">${index + 1}</span>
+            <button type="button" class="mqtt-topic-delete" onclick="app.deleteMqttPublishTopic(${index})">${i18n.t('mqtt-delete-topic-btn')}</button>
+            <div class="mqtt-topic-grid">
+                <div class="pure-control-group">
+                    <label>${i18n.t('mqtt-publish-label')}</label>
+                    <input type="text" class="pure-input-1 mqtt-topic-input" value="${topicData.topic || ''}" placeholder="/topic/path">
                 </div>
-                <div class="mqtt-publish-topic-right">
-                    <div class="pure-control-group" style="height: 100%;">
-                        <label>${i18n.t('mqtt-publish-content-label')}</label>
-                        <textarea class="pure-input-1 mqtt-content-input" rows="5" placeholder="${i18n.t('mqtt-publish-content-placeholder') || '输入要发布的消息内容'}">${topicData.content || ''}</textarea>
-                    </div>
+                <div class="pure-control-group">
+                    <label>${i18n.t('mqtt-topic-type-label')}</label>
+                    <select class="pure-input-1 mqtt-topic-type-input">
+                        ${this._mqttTopicTypeOptions(topicData.topicType ?? 0)}
+                    </select>
+                </div>
+                <div class="pure-control-group">
+                    <label>${i18n.t('mqtt-publish-qos-label')}</label>
+                    <select class="pure-input-1 mqtt-qos-input">
+                        <option value="0" ${topicData.qos === 0 ? 'selected' : ''}>0</option>
+                        <option value="1" ${topicData.qos === 1 ? 'selected' : ''}>1</option>
+                        <option value="2" ${topicData.qos === 2 ? 'selected' : ''}>2</option>
+                    </select>
+                </div>
+                <div class="pure-control-group" style="display:flex;align-items:center;padding-top:20px;">
+                    <label class="pure-checkbox">
+                        <input type="checkbox" class="mqtt-retain-input" ${topicData.retain ? 'checked' : ''}> ${i18n.t('mqtt-publish-retain-label')}
+                    </label>
                 </div>
             </div>
         `;
-            
         container.appendChild(div);
     },
-        
-    /**
-     * 添加新的MQTT发布主题配置组
-     */
+
     addMqttPublishTopic() {
         const container = document.getElementById('mqtt-publish-topics');
         if (!container) return;
-            
         const index = container.children.length;
-        this._createMqttPublishTopicElement({ topic: '', qos: 0, retain: false, content: '', topicType: 0 }, index);
+        this._createMqttPublishTopicElement({ topic: '', qos: 0, retain: false, topicType: 0 }, index);
     },
-        
-    /**
-     * 删除MQTT发布主题配置组
-     */
+
     deleteMqttPublishTopic(index) {
         const container = document.getElementById('mqtt-publish-topics');
         if (!container) return;
-            
-        const items = container.querySelectorAll('.mqtt-publish-topic-item');
-        if (items[index]) {
-            items[index].remove();
-        }
-            
-        // 重新索引
-        const remainingItems = container.querySelectorAll('.mqtt-publish-topic-item');
+        const items = container.querySelectorAll('.mqtt-topic-item');
+        if (items[index]) { items[index].remove(); }
+        const remainingItems = container.querySelectorAll('.mqtt-topic-item');
         remainingItems.forEach((item, idx) => {
             item.dataset.index = idx;
-            const indexSpan = item.querySelector('.mqtt-publish-topic-index');
+            const indexSpan = item.querySelector('.mqtt-topic-index');
             if (indexSpan) indexSpan.textContent = idx + 1;
-            const deleteBtn = item.querySelector('.mqtt-publish-topic-delete');
+            const deleteBtn = item.querySelector('.mqtt-topic-delete');
             if (deleteBtn) deleteBtn.setAttribute('onclick', `app.deleteMqttPublishTopic(${idx})`);
         });
-            
-        // 如果全部删除了，添加一个默认空组
         if (remainingItems.length === 0) {
-            this._createMqttPublishTopicElement({ topic: '', qos: 0, retain: false, content: '' }, 0);
+            this._createMqttPublishTopicElement({ topic: '', qos: 0, retain: false, topicType: 0 }, 0);
         }
     },
-        
-    /**
-     * 收集所有MQTT发布主题配置
-     */
+
     _collectMqttPublishTopics() {
         const container = document.getElementById('mqtt-publish-topics');
         if (!container) return [];
-            
         const topics = [];
-        const items = container.querySelectorAll('.mqtt-publish-topic-item');
-            
+        const items = container.querySelectorAll('.mqtt-topic-item');
         items.forEach(item => {
             const topicInput = item.querySelector('.mqtt-topic-input');
             const qosInput = item.querySelector('.mqtt-qos-input');
             const retainInput = item.querySelector('.mqtt-retain-input');
-            const contentInput = item.querySelector('.mqtt-content-input');
             const topicTypeInput = item.querySelector('.mqtt-topic-type-input');
-                
             if (topicInput) {
                 topics.push({
                     topic: topicInput.value || '',
                     qos: parseInt(qosInput?.value || '0'),
                     retain: retainInput?.checked || false,
-                    content: contentInput?.value || '',
                     topicType: parseInt(topicTypeInput?.value || '0')
                 });
             }
         });
-            
         return topics;
     },
 
@@ -2983,122 +2939,90 @@ const AppState = {
     _loadMqttSubscribeTopics(topics) {
         const container = document.getElementById('mqtt-subscribe-topics');
         if (!container) return;
-            
         container.innerHTML = '';
-            
-        // 如果没有配置，添加一个默认空组
         if (!topics || topics.length === 0) {
-            topics = [{ topic: '', qos: 0, action: '' }];
+            topics = [{ topic: '', qos: 0, topicType: 1 }];
         }
-            
         topics.forEach((topic, index) => {
             this._createMqttSubscribeTopicElement(topic, index);
         });
     },
-        
-    /**
-     * 创建单个MQTT订阅主题配置元素
-     */
+
     _createMqttSubscribeTopicElement(topicData, index) {
         const container = document.getElementById('mqtt-subscribe-topics');
         if (!container) return;
-            
         const div = document.createElement('div');
-        div.className = 'mqtt-subscribe-topic-item';
+        div.className = 'mqtt-topic-item mqtt-topic-item-sub';
         div.dataset.index = index;
-        div.style.cssText = 'position: relative; padding: 15px; margin-bottom: 15px; background: #fff; border: 1px solid #ddd; border-radius: 4px;';
-            
         div.innerHTML = `
-            <span class="mqtt-subscribe-topic-index" style="position: absolute; top: -10px; left: 10px; background: #4a90d9; color: #fff; padding: 2px 10px; border-radius: 3px; font-size: 12px;">${index + 1}</span>
-            <button type="button" class="mqtt-subscribe-topic-delete" style="position: absolute; top: 5px; right: 5px; background: #e74c3c; color: #fff; border: none; padding: 3px 8px; border-radius: 3px; cursor: pointer; font-size: 12px;" onclick="app.deleteMqttSubscribeTopic(${index})">${i18n.t('mqtt-delete-subscribe-btn') || '删除'}</button>
-            <div class="mqtt-subscribe-topic-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 10px;">
+            <span class="mqtt-topic-index mqtt-topic-index-sub">${index + 1}</span>
+            <button type="button" class="mqtt-topic-delete" onclick="app.deleteMqttSubscribeTopic(${index})">${i18n.t('mqtt-delete-topic-btn')}</button>
+            <div class="mqtt-topic-grid">
                 <div class="pure-control-group">
-                    <label>${i18n.t('mqtt-subscribe-topic-label') || '订阅主题'}</label>
+                    <label>${i18n.t('mqtt-subscribe-topic-label')}</label>
                     <input type="text" class="pure-input-1 mqtt-sub-topic-input" value="${topicData.topic || ''}" placeholder="/topic/path">
                 </div>
                 <div class="pure-control-group">
-                    <label>${i18n.t('mqtt-subscribe-qos-label') || 'QoS等级'}</label>
+                    <label>${i18n.t('mqtt-subscribe-topictype-label')}</label>
+                    <select class="pure-input-1 mqtt-sub-topic-type-input">
+                        ${this._mqttTopicTypeOptions(topicData.topicType ?? 1)}
+                    </select>
+                </div>
+                <div class="pure-control-group">
+                    <label>${i18n.t('mqtt-subscribe-qos-label')}</label>
                     <select class="pure-input-1 mqtt-sub-qos-input">
-                        <option value="0" ${topicData.qos === 0 ? 'selected' : ''}>0 - ${i18n.t('mqtt-qos-0') || '最多一次'}</option>
-                        <option value="1" ${topicData.qos === 1 ? 'selected' : ''}>1 - ${i18n.t('mqtt-qos-1') || '至少一次'}</option>
-                        <option value="2" ${topicData.qos === 2 ? 'selected' : ''}>2 - ${i18n.t('mqtt-qos-2') || '恰好一次'}</option>
+                        <option value="0" ${topicData.qos === 0 ? 'selected' : ''}>0</option>
+                        <option value="1" ${topicData.qos === 1 ? 'selected' : ''}>1</option>
+                        <option value="2" ${topicData.qos === 2 ? 'selected' : ''}>2</option>
                     </select>
                 </div>
             </div>
-            <div class="pure-control-group" style="margin-top: 10px;">
-                <label>${i18n.t('mqtt-subscribe-action-label') || '执行字段'}</label>
-                <input type="text" class="pure-input-1 mqtt-sub-action-input" value="${topicData.action || ''}" placeholder="${i18n.t('mqtt-subscribe-action-placeholder') || '定义接收到消息时的处理逻辑'}">
-            </div>
         `;
-            
         container.appendChild(div);
     },
-        
-    /**
-     * 添加新的MQTT订阅主题配置组
-     */
+
     addMqttSubscribeTopic() {
         const container = document.getElementById('mqtt-subscribe-topics');
         if (!container) return;
-            
         const index = container.children.length;
-        this._createMqttSubscribeTopicElement({ topic: '', qos: 0, action: '' }, index);
+        this._createMqttSubscribeTopicElement({ topic: '', qos: 0, topicType: 1 }, index);
     },
-        
-    /**
-     * 删除MQTT订阅主题配置组
-     */
+
     deleteMqttSubscribeTopic(index) {
         const container = document.getElementById('mqtt-subscribe-topics');
         if (!container) return;
-            
-        const items = container.querySelectorAll('.mqtt-subscribe-topic-item');
-        if (items[index]) {
-            items[index].remove();
-        }
-            
-        // 重新索引
-        const remainingItems = container.querySelectorAll('.mqtt-subscribe-topic-item');
+        const items = container.querySelectorAll('.mqtt-topic-item');
+        if (items[index]) { items[index].remove(); }
+        const remainingItems = container.querySelectorAll('.mqtt-topic-item');
         remainingItems.forEach((item, idx) => {
             item.dataset.index = idx;
-            const indexSpan = item.querySelector('.mqtt-subscribe-topic-index');
+            const indexSpan = item.querySelector('.mqtt-topic-index');
             if (indexSpan) indexSpan.textContent = idx + 1;
-            const deleteBtn = item.querySelector('.mqtt-subscribe-topic-delete');
+            const deleteBtn = item.querySelector('.mqtt-topic-delete');
             if (deleteBtn) deleteBtn.setAttribute('onclick', `app.deleteMqttSubscribeTopic(${idx})`);
         });
-            
-        // 如果全部删除了，添加一个默认空组
         if (remainingItems.length === 0) {
-            this._createMqttSubscribeTopicElement({ topic: '', qos: 0, action: '' }, 0);
+            this._createMqttSubscribeTopicElement({ topic: '', qos: 0, topicType: 1 }, 0);
         }
     },
-        
-    /**
-     * 收集所有MQTT订阅主题配置
-     */
+
     _collectMqttSubscribeTopics() {
         const container = document.getElementById('mqtt-subscribe-topics');
         if (!container) return [];
-            
         const topics = [];
-        const items = container.querySelectorAll('.mqtt-subscribe-topic-item');
-            
+        const items = container.querySelectorAll('.mqtt-topic-item');
         items.forEach(item => {
             const topicInput = item.querySelector('.mqtt-sub-topic-input');
             const qosInput = item.querySelector('.mqtt-sub-qos-input');
-            const actionInput = item.querySelector('.mqtt-sub-action-input');
             const topicTypeInput = item.querySelector('.mqtt-sub-topic-type-input');
-                
             if (topicInput) {
                 topics.push({
                     topic: topicInput.value || '',
                     qos: parseInt(qosInput?.value || '0'),
-                    action: actionInput?.value || '',
                     topicType: parseInt(topicTypeInput?.value || '1')
                 });
             }
         });
-            
         return topics;
     },
 
@@ -3215,8 +3139,8 @@ const AppState = {
             this._setValue('mqtt-password', mqtt.password || '');
             this._setValue('mqtt-alive', mqtt.keepAlive || 60);
             this._setValue('mqtt-conn-timeout', mqtt.connectionTimeout ?? 30000);
-            this._setCheckbox('mqtt-direct-connect', mqtt.directConnect ?? true);
             this._setCheckbox('mqtt-auto-reconnect', mqtt.autoReconnect ?? true);
+            this._setValue('mqtt-access-mode', mqtt.accessMode ?? 0);
             
             // 遗嘱消息
             this._setValue('mqtt-will-topic', mqtt.willTopic || '');
@@ -3328,16 +3252,16 @@ const AppState = {
         data.mqtt_password = document.getElementById('mqtt-password')?.value || '';
         data.mqtt_keepAlive = document.getElementById('mqtt-alive')?.value || '60';
         data.mqtt_connectionTimeout = document.getElementById('mqtt-conn-timeout')?.value || '30000';
-        data.mqtt_directConnect = document.getElementById('mqtt-direct-connect')?.checked ?? true;
+        data.mqtt_accessMode = document.getElementById('mqtt-access-mode')?.value || '0';
         data.mqtt_autoReconnect = document.getElementById('mqtt-auto-reconnect')?.checked ?? true;
         data.mqtt_willTopic = document.getElementById('mqtt-will-topic')?.value || '';
         data.mqtt_willPayload = document.getElementById('mqtt-will-payload')?.value || '';
         data.mqtt_willQos = document.getElementById('mqtt-will-qos')?.value || '0';
         data.mqtt_willRetain = document.getElementById('mqtt-will-retain')?.checked ? 'true' : 'false';
         // 收集发布主题配置（多组）
-        data.mqtt_publishTopics = this._collectMqttPublishTopics();
+        data.mqtt_publishTopics = JSON.stringify(this._collectMqttPublishTopics());
         // 收集订阅主题配置（多组）
-        data.mqtt_subscribeTopics = this._collectMqttSubscribeTopics();
+        data.mqtt_subscribeTopics = JSON.stringify(this._collectMqttSubscribeTopics());
         
         // HTTP
         data.http_enabled = document.getElementById('http-enabled')?.checked ? 'true' : 'false';

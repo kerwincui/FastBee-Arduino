@@ -102,13 +102,14 @@ const i18n = {
             'mqtt-subscribe-label': '订阅主题',
             'mqtt-publish-qos-label': '发布QoS',
             'mqtt-conn-timeout-label': '连接超时(毫秒)',
-            'mqtt-direct-connect-label': '是否直连',
+            'mqtt-access-mode-label': '接入模式',
+            'mqtt-access-mode-direct': 'MQTT直连',
+            'mqtt-access-mode-transparent': 'MQTT透传',
             'mqtt-auto-reconnect-label': '自动重连',
             'mqtt-publish-retain-label': '保留消息',
             'mqtt-publish-section-title': '发布主题配置',
             'mqtt-add-topic-btn': '增加主题',
             'mqtt-delete-topic-btn': '删除',
-            'mqtt-publish-content-label': '发布内容',
             'save-config-btn': '保存配置',
             
             // 协议成功消息
@@ -2401,6 +2402,9 @@ const i18n = {
             'mqtt-direct-connect-text': 'Direct Connect',
             'mqtt-auto-reconnect-text': 'Auto Reconnect',
             'mqtt-subscribe-section-title': 'Subscribe Topics Config',
+            'mqtt-subscribe-topic-label': 'Subscribe Topic',
+            'mqtt-subscribe-topictype-label': 'Topic Type',
+            'mqtt-subscribe-qos-label': 'Subscribe QoS',
             'mqtt-add-subscribe-btn': 'Add Subscribe',
             'mqtt-save-success': 'MQTT config saved!',
             'btn-save-config': 'Save Config',
@@ -2640,6 +2644,10 @@ const i18n = {
         });
         
         // 5. 更新 html lang 属性
+        document.documentElement.lang = this.currentLang;
+    }
+};
+};
         document.documentElement.lang = this.currentLang;
     }
 };

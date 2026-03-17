@@ -1044,90 +1044,60 @@ body {
     color: #f5222d;
 }
 
-/* MQTT发布主题配置区域 */
-.mqtt-publish-section {
-    background: #f8f9fa;
-    border: 1px solid #e0e0e0;
-    border-radius: 4px;
-    padding: 15px;
-    margin-top: 20px;
-}
-
-.mqtt-publish-section h4 {
-    margin: 0 0 15px 0;
-    color: #333;
-    font-size: 16px;
-}
-
-.mqtt-publish-topic-item {
+/* MQTT主题配置通用样式 */
+.mqtt-topic-item {
     background: #fff;
     border: 1px solid #d9d9d9;
     border-radius: 4px;
-    padding: 15px;
-    margin-bottom: 15px;
+    padding: 10px 10px 6px;
+    margin-bottom: 10px;
     position: relative;
 }
-
-.mqtt-publish-topic-item:hover {
+.mqtt-topic-item:hover {
     border-color: #2c80ff;
-    box-shadow: 0 2px 8px rgba(44, 128, 255, 0.1);
+    box-shadow: 0 1px 4px rgba(44,128,255,0.1);
 }
-
-.mqtt-publish-topic-grid {
+.mqtt-topic-item-sub {
+    border-color: #b3d4fc;
+}
+.mqtt-topic-item-sub:hover {
+    border-color: #4a90d9;
+    box-shadow: 0 1px 4px rgba(74,144,217,0.15);
+}
+.mqtt-topic-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 15px;
+    gap: 8px;
 }
-
-.mqtt-publish-topic-left {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-
-.mqtt-publish-topic-right {
-    display: flex;
-    flex-direction: column;
-}
-
-.mqtt-publish-topic-right textarea {
-    flex: 1;
-    min-height: 100px;
-    resize: vertical;
-}
-
-.mqtt-publish-topic-delete {
+.mqtt-topic-delete {
     position: absolute;
-    top: 10px;
-    right: 10px;
+    top: 8px;
+    right: 8px;
     background: #ff4d4f;
-    color: white;
+    color: #fff;
     border: none;
-    border-radius: 4px;
-    padding: 4px 12px;
-    font-size: 12px;
+    border-radius: 3px;
+    padding: 2px 8px;
+    font-size: 11px;
     cursor: pointer;
 }
-
-.mqtt-publish-topic-delete:hover {
-    background: #ff7875;
-}
-
-.mqtt-publish-topic-index {
+.mqtt-topic-delete:hover { background: #ff7875; }
+.mqtt-topic-index {
     position: absolute;
-    top: 10px;
-    left: 15px;
+    top: 8px;
+    left: 10px;
     background: #2c80ff;
-    color: white;
+    color: #fff;
     border-radius: 50%;
-    width: 24px;
-    height: 24px;
+    width: 20px;
+    height: 20px;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: bold;
 }
+.mqtt-topic-index-sub { background: #4a90d9; }
 
 /* 协议配置增强样式 */
 .field-hint {

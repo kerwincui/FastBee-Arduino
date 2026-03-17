@@ -57,7 +57,7 @@ struct MQTTConfig {
     String subscribeTopic;      // 兼容旧配置的单一订阅主题
     uint16_t keepAlive;
     // 新增字段
-    bool directConnect;        // 是否直连（绕过协议管理器）
+    int accessMode;            // 接入模式: 0=MQTT直连, 1=MQTT透传
     bool autoReconnect;        // 自动重连
     uint32_t connectionTimeout;// 连接超时（毫秒）
     // 认证配置
@@ -80,7 +80,7 @@ struct MQTTConfig {
 
     // 默认构造函数
     MQTTConfig() : port(1883), keepAlive(60), 
-                   directConnect(true), autoReconnect(true), 
+                   accessMode(0), autoReconnect(true), 
                    connectionTimeout(30000), authType(MqttAuthType::SIMPLE),
                    willQos(0), willRetain(false) {}
 };

@@ -160,7 +160,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["mqtt"]["username"] = GP("mqtt_username", "");
     doc["mqtt"]["password"] = GP("mqtt_password", "");
     doc["mqtt"]["keepAlive"] = GPI("mqtt_keepAlive", "60");
-    doc["mqtt"]["directConnect"] = GP("mqtt_directConnect", "true") == "true";
+    doc["mqtt"]["accessMode"] = GPI("mqtt_accessMode", "0");
     doc["mqtt"]["autoReconnect"] = GP("mqtt_autoReconnect", "true") == "true";
     doc["mqtt"]["connectionTimeout"] = GPI("mqtt_connectionTimeout", "30000");
     // MQTT 认证配置
@@ -185,7 +185,6 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                 topicObj["topic"] = v["topic"] | "";
                 topicObj["qos"] = v["qos"] | 0;
                 topicObj["retain"] = v["retain"] | false;
-                topicObj["content"] = v["content"] | "";
                 topicObj["topicType"] = v["topicType"] | 0;
             }
         }
@@ -195,7 +194,6 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         defaultTopic["topic"] = "";
         defaultTopic["qos"] = 0;
         defaultTopic["retain"] = false;
-        defaultTopic["content"] = "";
         defaultTopic["topicType"] = 0;
     }
 
@@ -211,7 +209,6 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                 JsonObject topicObj = subscribeTopics.add<JsonObject>();
                 topicObj["topic"] = v["topic"] | "";
                 topicObj["qos"] = v["qos"] | 0;
-                topicObj["action"] = v["action"] | "";
                 topicObj["topicType"] = v["topicType"] | 1;
             }
         }
@@ -220,7 +217,6 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         JsonObject defaultTopic = subscribeTopics.add<JsonObject>();
         defaultTopic["topic"] = "";
         defaultTopic["qos"] = 0;
-        defaultTopic["action"] = "";
         defaultTopic["topicType"] = 1;
     }
 

@@ -71,7 +71,7 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     config.subscribeTopic = cfg["subscribeTopic"] | "";
     config.keepAlive   = cfg["keepAlive"]   | 60;
     // 新增字段（兼容旧配置，使用默认值）
-    config.directConnect     = cfg["directConnect"]     | true;
+    config.accessMode        = cfg["accessMode"]        | 0;
     config.autoReconnect     = cfg["autoReconnect"]     | true;
     config.connectionTimeout = cfg["connectionTimeout"] | 30000;
     // 遗嘱消息配置
