@@ -1124,6 +1124,9 @@ const i18n = {
             'mqtt-direct-connect-text': '是否直连',
             'mqtt-auto-reconnect-text': '自动重连',
             'mqtt-subscribe-section-title': '订阅主题配置',
+            'mqtt-subscribe-topic-label': '订阅主题',
+            'mqtt-subscribe-topictype-label': '主题类型',
+            'mqtt-subscribe-qos-label': '订阅QoS',
             'mqtt-add-subscribe-btn': '增加订阅',
             'mqtt-save-success': 'MQTT配置保存成功！',
             'btn-save-config': '保存配置',
@@ -2644,10 +2647,6 @@ const i18n = {
         });
         
         // 5. 更新 html lang 属性
-        document.documentElement.lang = this.currentLang;
-    }
-};
-};
         document.documentElement.lang = this.currentLang;
     }
 };
