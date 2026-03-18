@@ -163,6 +163,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["mqtt"]["accessMode"] = GPI("mqtt_accessMode", "0");
     doc["mqtt"]["autoReconnect"] = GP("mqtt_autoReconnect", "true") == "true";
     doc["mqtt"]["connectionTimeout"] = GPI("mqtt_connectionTimeout", "30000");
+    doc["mqtt"]["topicPrefix"] = GP("mqtt_topicPrefix", "");
     // MQTT 认证配置
     doc["mqtt"]["authType"] = GPI("mqtt_authType", "0");
     doc["mqtt"]["authCode"] = GP("mqtt_authCode", "");
@@ -185,6 +186,8 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                 topicObj["topic"] = v["topic"] | "";
                 topicObj["qos"] = v["qos"] | 0;
                 topicObj["retain"] = v["retain"] | false;
+                topicObj["enabled"] = v["enabled"] | true;
+                topicObj["autoPrefix"] = v["autoPrefix"] | false;
                 topicObj["topicType"] = v["topicType"] | 0;
             }
         }
@@ -194,6 +197,8 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         defaultTopic["topic"] = "";
         defaultTopic["qos"] = 0;
         defaultTopic["retain"] = false;
+        defaultTopic["enabled"] = true;
+        defaultTopic["autoPrefix"] = false;
         defaultTopic["topicType"] = 0;
     }
 
@@ -209,6 +214,8 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                 JsonObject topicObj = subscribeTopics.add<JsonObject>();
                 topicObj["topic"] = v["topic"] | "";
                 topicObj["qos"] = v["qos"] | 0;
+                topicObj["enabled"] = v["enabled"] | true;
+                topicObj["autoPrefix"] = v["autoPrefix"] | false;
                 topicObj["topicType"] = v["topicType"] | 1;
             }
         }
@@ -217,6 +224,8 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         JsonObject defaultTopic = subscribeTopics.add<JsonObject>();
         defaultTopic["topic"] = "";
         defaultTopic["qos"] = 0;
+        defaultTopic["enabled"] = true;
+        defaultTopic["autoPrefix"] = false;
         defaultTopic["topicType"] = 1;
     }
 

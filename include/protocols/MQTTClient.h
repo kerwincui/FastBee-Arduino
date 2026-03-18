@@ -16,7 +16,8 @@ enum class MqttTopicType : uint8_t {
     REALTIME_MON  = 3,  // 实时监测
     DEVICE_EVENT  = 4,  // 设备事件
     OTA_UPGRADE   = 5,  // OTA升级
-    OTA_BINARY    = 6   // OTA二进制
+    OTA_BINARY    = 6,  // OTA二进制
+    NTP_SYNC      = 7   // NTP时间同步
 };
 
 // MQTT认证类型枚举
@@ -30,20 +31,24 @@ struct MqttPublishTopic {
     String topic;
     uint8_t qos;
     bool retain;
+    bool enabled;
+    bool autoPrefix;    // 是否启用自动前缀（拼接topicPrefix到主题前）
     String content;
     MqttTopicType topicType;
     
-    MqttPublishTopic() : qos(0), retain(false), topicType(MqttTopicType::DATA_REPORT) {}
+    MqttPublishTopic() : qos(0), retain(false), enabled(true), autoPrefix(false), topicType(MqttTopicType::DATA_REPORT) {}
 };
 
 // 订阅主题配置结构体
 struct MqttSubscribeTopic {
     String topic;       // 订阅主题
     uint8_t qos;        // QoS等级
+    bool enabled;       // 是否启用此订阅
+    bool autoPrefix;    // 是否启用自动前缀（拼接topicPrefix到主题前）
     String action;      // 执行字段，定义接收到消息时的处理逻辑
     MqttTopicType topicType;
     
-    MqttSubscribeTopic() : qos(0), topicType(MqttTopicType::DATA_COMMAND) {}
+    MqttSubscribeTopic() : qos(0), enabled(true), autoPrefix(false), topicType(MqttTopicType::DATA_COMMAND) {}
 };
 
 // MQTT配置结构体
@@ -79,7 +84,7 @@ struct MQTTConfig {
     std::vector<MqttSubscribeTopic> subscribeTopics;
 
     // 默认构造函数
-    MQTTConfig() : port(1883), keepAlive(60), 
+    MQTTConfig() : port(1883), keepAlive(60),
                    accessMode(0), autoReconnect(true), 
                    connectionTimeout(30000), authType(MqttAuthType::SIMPLE),
                    willQos(0), willRetain(false) {}
@@ -127,11 +132,14 @@ private:
     unsigned long lastConnectedTime;  // 上次连接成功时间
     int  lastErrorCode;               // 上次错误码
     uint32_t reconnectCount;          // 重连次数
+    uint32_t reconnectInterval;       // 当前重连间隔（指数退避，毫秒）
+    unsigned long lastLoopTime;       // 上次loop()调用的时间（用于检测连接健康）
     
     std::function<void(const String&, const String&, MqttTopicType)> messageCallback;
     
     void mqttCallback(char* topic, byte* payload, unsigned int length);
     bool reconnect();
+    String buildFullTopic(const String& topic, bool autoPrefix) const; // 根据主题级autoPrefix构建完整主题
     
     // FastBee认证相关方法
     String buildClientId();            // 构建认证clientId: 类型&设备编号&产品ID&用户ID

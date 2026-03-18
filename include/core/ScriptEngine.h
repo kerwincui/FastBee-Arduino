@@ -4,6 +4,9 @@
 #include <Arduino.h>
 #include <vector>
 
+// 前向声明
+class MQTTClient;
+
 // 脚本命令类型
 enum class ScriptCmdType : uint8_t {
     CMD_GPIO   = 0,   // GPIO <pin> HIGH/LOW
@@ -11,7 +14,8 @@ enum class ScriptCmdType : uint8_t {
     CMD_PWM    = 2,   // PWM <pin> <duty>
     CMD_DAC    = 3,   // DAC <pin> <value>
     CMD_LOG    = 4,   // LOG <message...>
-    CMD_PERIPH = 5    // PERIPH <id> HIGH/LOW/PWM/BLINK/BREATHE/STOP [param]
+    CMD_PERIPH = 5,   // PERIPH <id> HIGH/LOW/PWM/BLINK/BREATHE/STOP [param]
+    CMD_MQTT   = 6    // MQTT <topicIndex> <message...> (支持 RANDOM/RANDOMF 表达式)
 };
 
 // 单条脚本命令
@@ -33,6 +37,11 @@ struct ScriptCommand {
  *   DAC <pin> <value>         - 设置DAC输出(0-255)
  *   LOG <message>             - 输出日志
  *   PERIPH <id> <action> [p]  - 通过外设ID控制
+ *   MQTT <idx> <message>      - 发布MQTT消息(支持RANDOM/RANDOMF表达式)
+ * 
+ * 随机数表达式(可用于 MQTT 消息和 LOG 消息):
+ *   RANDOM(min,max)            - 生成 [min,max] 范围的随机整数
+ *   RANDOMF(min,max,decimals)  - 生成 [min,max] 范围的随机浮点数
  * 
  * 注释行以 # 开头, 空行自动跳过
  */
@@ -50,8 +59,11 @@ public:
     // 验证命令列表合法性
     static bool validate(const std::vector<ScriptCommand>& cmds, String& errorMsg);
 
-    // 执行命令列表
-    static bool execute(const std::vector<ScriptCommand>& cmds);
+    // 执行命令列表 (mqtt 可为 nullptr, 此时 MQTT 命令会跳过)
+    static bool execute(const std::vector<ScriptCommand>& cmds, MQTTClient* mqtt = nullptr);
+
+    // 处理字符串中的 RANDOM(min,max) 和 RANDOMF(min,max,decimals) 表达式
+    static String processRandomExpressions(const String& input);
 
 private:
     // 解析单行命令

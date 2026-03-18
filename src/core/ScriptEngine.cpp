@@ -1,6 +1,8 @@
 #include "core/ScriptEngine.h"
 #include "core/PeripheralManager.h"
+#include "protocols/MQTTClient.h"
 #include "systems/LoggerSystem.h"
+#include <esp_random.h>
 
 // ========== 解析 ==========
 
@@ -124,6 +126,21 @@ bool ScriptEngine::parseLine(const String& line, ScriptCommand& cmd) {
         return true;
     }
 
+    if (cmdName == "MQTT") {
+        // MQTT <topicIndex> <message...>
+        if (tokens.size() < 3) return false;
+        cmd.type = ScriptCmdType::CMD_MQTT;
+        cmd.intParam = tokens[1].toInt(); // 发布主题索引
+        // 合并剩余 token 为消息模板 (支持 RANDOM/RANDOMF 表达式)
+        String msg;
+        for (size_t i = 2; i < tokens.size(); i++) {
+            if (i > 2) msg += ' ';
+            msg += tokens[i];
+        }
+        cmd.strParam = msg;
+        return true;
+    }
+
     // 未知命令
     return false;
 }
@@ -205,7 +222,7 @@ bool ScriptEngine::validate(const std::vector<ScriptCommand>& cmds, String& erro
 
 // ========== 执行 ==========
 
-bool ScriptEngine::execute(const std::vector<ScriptCommand>& cmds) {
+bool ScriptEngine::execute(const std::vector<ScriptCommand>& cmds, MQTTClient* mqtt) {
     unsigned long startTime = millis();
     PeripheralManager& pm = PeripheralManager::getInstance();
 
@@ -251,7 +268,8 @@ bool ScriptEngine::execute(const std::vector<ScriptCommand>& cmds) {
             }
 
             case ScriptCmdType::CMD_LOG: {
-                LOGGER.infof("[Script] %s", cmd.strParam.c_str());
+                String logMsg = processRandomExpressions(cmd.strParam);
+                LOGGER.infof("[Script] %s", logMsg.c_str());
                 break;
             }
 
@@ -282,6 +300,18 @@ bool ScriptEngine::execute(const std::vector<ScriptCommand>& cmds) {
                 LOGGER.infof("[Script] PERIPH %s %s", cmd.strParam.c_str(), cmd.subAction.c_str());
                 break;
             }
+
+            case ScriptCmdType::CMD_MQTT: {
+                if (!mqtt) {
+                    LOGGER.warning("[Script] MQTT not available, skipping MQTT command");
+                    break;
+                }
+                String message = processRandomExpressions(cmd.strParam);
+                bool ok = mqtt->publishToTopic((size_t)cmd.intParam, message);
+                LOGGER.infof("[Script] MQTT publish topic[%d] %s: %s",
+                    cmd.intParam, ok ? "OK" : "FAIL", message.c_str());
+                break;
+            }
         }
     }
 
@@ -301,4 +331,81 @@ bool ScriptEngine::scriptDelay(uint32_t ms, unsigned long scriptStartTime) {
     }
 
     return true;
+}
+
+// ========== 随机数表达式处理 ==========
+
+String ScriptEngine::processRandomExpressions(const String& input) {
+    String result = input;
+
+    // 处理 RANDOMF(min,max,decimals) — 必须先于 RANDOM 处理, 避免前缀匹配冲突
+    while (true) {
+        int pos = result.indexOf("RANDOMF(");
+        if (pos < 0) break;
+
+        int closePos = result.indexOf(')', pos + 8);
+        if (closePos < 0) break;
+
+        // 提取括号内参数: "min,max,decimals"
+        String params = result.substring(pos + 8, closePos);
+        int comma1 = params.indexOf(',');
+        if (comma1 < 0) break;
+        int comma2 = params.indexOf(',', comma1 + 1);
+        if (comma2 < 0) break;
+
+        float minVal = params.substring(0, comma1).toFloat();
+        float maxVal = params.substring(comma1 + 1, comma2).toFloat();
+        int decimals = params.substring(comma2 + 1).toInt();
+        if (decimals < 0) decimals = 0;
+        if (decimals > 6) decimals = 6;
+
+        // 确保 min <= max
+        if (minVal > maxVal) {
+            float tmp = minVal; minVal = maxVal; maxVal = tmp;
+        }
+
+        // 使用硬件随机数生成浮点值
+        uint32_t randVal = esp_random();
+        float range = maxVal - minVal;
+        float randomFloat = minVal + (float)(randVal % 1000000UL) / 1000000.0f * range;
+
+        // 格式化为指定小数位数
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.*f", decimals, randomFloat);
+
+        // 替换表达式
+        result = result.substring(0, pos) + String(buf) + result.substring(closePos + 1);
+    }
+
+    // 处理 RANDOM(min,max) — 整数随机
+    while (true) {
+        int pos = result.indexOf("RANDOM(");
+        if (pos < 0) break;
+
+        int closePos = result.indexOf(')', pos + 7);
+        if (closePos < 0) break;
+
+        // 提取括号内参数: "min,max"
+        String params = result.substring(pos + 7, closePos);
+        int commaIdx = params.indexOf(',');
+        if (commaIdx < 0) break;
+
+        int32_t minVal = params.substring(0, commaIdx).toInt();
+        int32_t maxVal = params.substring(commaIdx + 1).toInt();
+
+        // 确保 min <= max
+        if (minVal > maxVal) {
+            int32_t tmp = minVal; minVal = maxVal; maxVal = tmp;
+        }
+
+        // 使用硬件随机数生成整数值
+        uint32_t randVal = esp_random();
+        int32_t range = maxVal - minVal + 1;
+        int32_t randomInt = minVal + (int32_t)(randVal % (uint32_t)range);
+
+        // 替换表达式
+        result = result.substring(0, pos) + String(randomInt) + result.substring(closePos + 1);
+    }
+
+    return result;
 }

@@ -1030,6 +1030,11 @@ const i18n = {
             'mqtt-topic-type-device-event': '设备事件',
             'mqtt-topic-type-ota-upgrade': 'OTA升级',
             'mqtt-topic-type-ota-binary': 'OTA二进制',
+            'mqtt-topic-type-ntp-sync': 'NTP时间同步',
+            // MQTT 自动前缀
+            'mqtt-auto-prefix-label': '自动前缀',
+            'mqtt-topic-prefix-label': '主题前缀',
+            'mqtt-topic-enabled-label': '启用',
             // MQTT 认证
             'mqtt-auth-type-label': '认证方式',
             'mqtt-auth-simple': '简单认证',
@@ -2334,6 +2339,11 @@ const i18n = {
             'mqtt-topic-type-device-event': 'Device Event',
             'mqtt-topic-type-ota-upgrade': 'OTA Upgrade',
             'mqtt-topic-type-ota-binary': 'OTA Binary',
+            'mqtt-topic-type-ntp-sync': 'NTP Time Sync',
+            // MQTT Auto Prefix
+            'mqtt-auto-prefix-label': 'Auto Prefix',
+            'mqtt-topic-prefix-label': 'Topic Prefix',
+            'mqtt-topic-enabled-label': 'Enable',
             // MQTT Auth
             'mqtt-auth-type-label': 'Auth Method',
             'mqtt-auth-simple': 'Simple Auth',

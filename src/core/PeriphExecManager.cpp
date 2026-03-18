@@ -1,4 +1,6 @@
 #include "core/PeriphExecManager.h"
+#include "core/FastBeeFramework.h"
+#include "protocols/ProtocolManager.h"
 #include "systems/LoggerSystem.h"
 
 PeriphExecManager& PeriphExecManager::getInstance() {
@@ -487,7 +489,16 @@ bool PeriphExecManager::executeScriptAction(const PeriphExecRule& rule) {
     }
 
     LOGGER.infof("[PeriphExec] Executing script '%s' (%d commands)", rule.name.c_str(), cmds.size());
-    return ScriptEngine::execute(cmds);
+
+    // 获取 MQTTClient 指针供脚本 MQTT 命令使用
+    MQTTClient* mqtt = nullptr;
+    auto* fw = FastBeeFramework::getInstance();
+    if (fw) {
+        auto* pm = fw->getProtocolManager();
+        if (pm) mqtt = pm->getMQTTClient();
+    }
+
+    return ScriptEngine::execute(cmds, mqtt);
 }
 
 // ========== 工具 ==========

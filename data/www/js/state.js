@@ -157,7 +157,7 @@ const AppState = {
         if (addMqttSubscribeBtn) {
             addMqttSubscribeBtn.addEventListener('click', () => this.addMqttSubscribeTopic());
         }
-        
+
         // 网络配置表单已在 setupNetworkFormHandlers() 中专门处理，无需通用监听
     },
 
@@ -2822,7 +2822,7 @@ const AppState = {
         if (!container) return;
         container.innerHTML = '';
         if (!topics || topics.length === 0) {
-            topics = [{ topic: '', qos: 0, retain: false, topicType: 0 }];
+            topics = [{ topic: '', qos: 0, retain: false, enabled: true, autoPrefix: false, topicType: 0 }];
         }
         topics.forEach((topic, index) => {
             this._createMqttPublishTopicElement(topic, index);
@@ -2837,7 +2837,8 @@ const AppState = {
             { value: 3, key: 'mqtt-topic-type-realtime-mon' },
             { value: 4, key: 'mqtt-topic-type-device-event' },
             { value: 5, key: 'mqtt-topic-type-ota-upgrade' },
-            { value: 6, key: 'mqtt-topic-type-ota-binary' }
+            { value: 6, key: 'mqtt-topic-type-ota-binary' },
+            { value: 7, key: 'mqtt-topic-type-ntp-sync' }
         ];
         return types.map(t =>
             `<option value="${t.value}" ${Number(selected) === t.value ? 'selected' : ''}>${i18n.t(t.key)}</option>`
@@ -2850,6 +2851,8 @@ const AppState = {
         const div = document.createElement('div');
         div.className = 'mqtt-topic-item';
         div.dataset.index = index;
+        const isEnabled = topicData.enabled !== false;
+        const isAutoPrefix = topicData.autoPrefix === true;
         div.innerHTML = `
             <span class="mqtt-topic-index">${index + 1}</span>
             <button type="button" class="mqtt-topic-delete" onclick="app.deleteMqttPublishTopic(${index})">${i18n.t('mqtt-delete-topic-btn')}</button>
@@ -2872,9 +2875,15 @@ const AppState = {
                         <option value="2" ${topicData.qos === 2 ? 'selected' : ''}>2</option>
                     </select>
                 </div>
-                <div class="pure-control-group" style="display:flex;align-items:center;padding-top:20px;">
+                <div class="pure-control-group" style="display:flex;align-items:center;padding-top:20px;gap:12px;">
                     <label class="pure-checkbox">
                         <input type="checkbox" class="mqtt-retain-input" ${topicData.retain ? 'checked' : ''}> ${i18n.t('mqtt-publish-retain-label')}
+                    </label>
+                    <label class="pure-checkbox">
+                        <input type="checkbox" class="mqtt-enabled-input" ${isEnabled ? 'checked' : ''}> ${i18n.t('mqtt-topic-enabled-label')}
+                    </label>
+                    <label class="pure-checkbox">
+                        <input type="checkbox" class="mqtt-autoprefix-input" ${isAutoPrefix ? 'checked' : ''}> ${i18n.t('mqtt-auto-prefix-label')}
                     </label>
                 </div>
             </div>
@@ -2886,7 +2895,7 @@ const AppState = {
         const container = document.getElementById('mqtt-publish-topics');
         if (!container) return;
         const index = container.children.length;
-        this._createMqttPublishTopicElement({ topic: '', qos: 0, retain: false, topicType: 0 }, index);
+        this._createMqttPublishTopicElement({ topic: '', qos: 0, retain: false, enabled: true, autoPrefix: false, topicType: 0 }, index);
     },
 
     deleteMqttPublishTopic(index) {
@@ -2903,7 +2912,7 @@ const AppState = {
             if (deleteBtn) deleteBtn.setAttribute('onclick', `app.deleteMqttPublishTopic(${idx})`);
         });
         if (remainingItems.length === 0) {
-            this._createMqttPublishTopicElement({ topic: '', qos: 0, retain: false, topicType: 0 }, 0);
+            this._createMqttPublishTopicElement({ topic: '', qos: 0, retain: false, enabled: true, autoPrefix: false, topicType: 0 }, 0);
         }
     },
 
@@ -2916,12 +2925,16 @@ const AppState = {
             const topicInput = item.querySelector('.mqtt-topic-input');
             const qosInput = item.querySelector('.mqtt-qos-input');
             const retainInput = item.querySelector('.mqtt-retain-input');
+            const enabledInput = item.querySelector('.mqtt-enabled-input');
+            const autoPrefixInput = item.querySelector('.mqtt-autoprefix-input');
             const topicTypeInput = item.querySelector('.mqtt-topic-type-input');
             if (topicInput) {
                 topics.push({
                     topic: topicInput.value || '',
                     qos: parseInt(qosInput?.value || '0'),
                     retain: retainInput?.checked || false,
+                    enabled: enabledInput?.checked !== false,
+                    autoPrefix: autoPrefixInput?.checked || false,
                     topicType: parseInt(topicTypeInput?.value || '0')
                 });
             }
@@ -2939,7 +2952,7 @@ const AppState = {
         if (!container) return;
         container.innerHTML = '';
         if (!topics || topics.length === 0) {
-            topics = [{ topic: '', qos: 0, topicType: 1 }];
+            topics = [{ topic: '', qos: 0, enabled: true, autoPrefix: false, topicType: 1 }];
         }
         topics.forEach((topic, index) => {
             this._createMqttSubscribeTopicElement(topic, index);
@@ -2952,6 +2965,8 @@ const AppState = {
         const div = document.createElement('div');
         div.className = 'mqtt-topic-item mqtt-topic-item-sub';
         div.dataset.index = index;
+        const isEnabled = topicData.enabled !== false;
+        const isAutoPrefix = topicData.autoPrefix === true;
         div.innerHTML = `
             <span class="mqtt-topic-index mqtt-topic-index-sub">${index + 1}</span>
             <button type="button" class="mqtt-topic-delete" onclick="app.deleteMqttSubscribeTopic(${index})">${i18n.t('mqtt-delete-topic-btn')}</button>
@@ -2974,6 +2989,14 @@ const AppState = {
                         <option value="2" ${topicData.qos === 2 ? 'selected' : ''}>2</option>
                     </select>
                 </div>
+                <div class="pure-control-group" style="display:flex;align-items:center;padding-top:20px;gap:12px;">
+                    <label class="pure-checkbox">
+                        <input type="checkbox" class="mqtt-sub-enabled-input" ${isEnabled ? 'checked' : ''}> ${i18n.t('mqtt-topic-enabled-label')}
+                    </label>
+                    <label class="pure-checkbox">
+                        <input type="checkbox" class="mqtt-sub-autoprefix-input" ${isAutoPrefix ? 'checked' : ''}> ${i18n.t('mqtt-auto-prefix-label')}
+                    </label>
+                </div>
             </div>
         `;
         container.appendChild(div);
@@ -2983,7 +3006,7 @@ const AppState = {
         const container = document.getElementById('mqtt-subscribe-topics');
         if (!container) return;
         const index = container.children.length;
-        this._createMqttSubscribeTopicElement({ topic: '', qos: 0, topicType: 1 }, index);
+        this._createMqttSubscribeTopicElement({ topic: '', qos: 0, enabled: true, autoPrefix: false, topicType: 1 }, index);
     },
 
     deleteMqttSubscribeTopic(index) {
@@ -3000,7 +3023,7 @@ const AppState = {
             if (deleteBtn) deleteBtn.setAttribute('onclick', `app.deleteMqttSubscribeTopic(${idx})`);
         });
         if (remainingItems.length === 0) {
-            this._createMqttSubscribeTopicElement({ topic: '', qos: 0, topicType: 1 }, 0);
+            this._createMqttSubscribeTopicElement({ topic: '', qos: 0, enabled: true, autoPrefix: false, topicType: 1 }, 0);
         }
     },
 
@@ -3012,11 +3035,15 @@ const AppState = {
         items.forEach(item => {
             const topicInput = item.querySelector('.mqtt-sub-topic-input');
             const qosInput = item.querySelector('.mqtt-sub-qos-input');
+            const enabledInput = item.querySelector('.mqtt-sub-enabled-input');
+            const autoPrefixInput = item.querySelector('.mqtt-sub-autoprefix-input');
             const topicTypeInput = item.querySelector('.mqtt-sub-topic-type-input');
             if (topicInput) {
                 topics.push({
                     topic: topicInput.value || '',
                     qos: parseInt(qosInput?.value || '0'),
+                    enabled: enabledInput?.checked !== false,
+                    autoPrefix: autoPrefixInput?.checked || false,
                     topicType: parseInt(topicTypeInput?.value || '1')
                 });
             }
@@ -3140,6 +3167,9 @@ const AppState = {
             this._setCheckbox('mqtt-auto-reconnect', mqtt.autoReconnect ?? true);
             this._setValue('mqtt-access-mode', mqtt.accessMode ?? 0);
             
+            // 主题前缀
+            this._setValue('mqtt-topic-prefix', mqtt.topicPrefix || '');
+            
             // 遗嘱消息
             this._setValue('mqtt-will-topic', mqtt.willTopic || '');
             this._setValue('mqtt-will-payload', mqtt.willPayload || '');
@@ -3252,6 +3282,7 @@ const AppState = {
         data.mqtt_connectionTimeout = document.getElementById('mqtt-conn-timeout')?.value || '30000';
         data.mqtt_accessMode = document.getElementById('mqtt-access-mode')?.value || '0';
         data.mqtt_autoReconnect = document.getElementById('mqtt-auto-reconnect')?.checked ?? true;
+        data.mqtt_topicPrefix = document.getElementById('mqtt-topic-prefix')?.value || '';
         data.mqtt_willTopic = document.getElementById('mqtt-will-topic')?.value || '';
         data.mqtt_willPayload = document.getElementById('mqtt-will-payload')?.value || '';
         data.mqtt_willQos = document.getElementById('mqtt-will-qos')?.value || '0';

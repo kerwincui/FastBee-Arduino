@@ -22,7 +22,8 @@
 
 MQTTClient::MQTTClient()
     : isConnected(false), stopped(false), lastReconnectAttempt(0),
-      lastConnectedTime(0), lastErrorCode(0), reconnectCount(0) {
+      lastConnectedTime(0), lastErrorCode(0), reconnectCount(0),
+      reconnectInterval(5000), lastLoopTime(0) {
 }
 
 MQTTClient::~MQTTClient() {
@@ -98,6 +99,8 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
             topic.topic = v["topic"] | "";
             topic.qos = v["qos"] | 0;
             topic.retain = v["retain"] | false;
+            topic.enabled = v["enabled"] | true;
+            topic.autoPrefix = v["autoPrefix"] | false;
             topic.content = v["content"] | "";
             topic.topicType = static_cast<MqttTopicType>(v["topicType"] | 0);
             config.publishTopics.push_back(topic);
@@ -125,6 +128,8 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
             MqttSubscribeTopic topic;
             topic.topic = v["topic"] | "";
             topic.qos = v["qos"] | 0;
+            topic.enabled = v["enabled"] | true;
+            topic.autoPrefix = v["autoPrefix"] | false;
             topic.action = v["action"] | "";
             topic.topicType = static_cast<MqttTopicType>(v["topicType"] | 1);
             config.subscribeTopics.push_back(topic);
@@ -162,7 +167,8 @@ bool MQTTClient::begin() {
     mqttClient.setServer(config.server.c_str(), config.port);
     mqttClient.setBufferSize(1024);
     mqttClient.setKeepAlive(config.keepAlive);
-    mqttClient.setSocketTimeout(15);
+    // socketTimeout 需大于 keepAlive，避免 keepAlive ping 期间被超时断开
+    mqttClient.setSocketTimeout(config.keepAlive > 15 ? config.keepAlive : 15);
     mqttClient.setCallback([this](char* topic, byte* payload, unsigned int length) {
         this->mqttCallback(topic, payload, length);
     });
@@ -181,6 +187,7 @@ void MQTTClient::disconnect() {
         mqttClient.disconnect();
     }
     isConnected = false;
+    reconnectInterval = 5000;
     LOG_INFO("MQTT: Disconnected");
 }
 
@@ -195,17 +202,20 @@ bool MQTTClient::publish(const String& topic, const String& message) {
         return false;
     }
 
-    String fullTopic = config.topicPrefix + topic;
-    // 查找对应的主题配置，使用其 QoS 和 Retain 设置
+    // 查找对应的主题配置，使用其 QoS、Retain 和 autoPrefix 设置
     uint8_t qos = 0;
     bool retain = false;
+    bool topicAutoPrefix = false;
     for (const auto& pt : config.publishTopics) {
-        if (pt.topic == topic) {
+        if (pt.topic == topic && pt.enabled) {
             qos = pt.qos;
             retain = pt.retain;
+            topicAutoPrefix = pt.autoPrefix;
             break;
         }
     }
+    
+    String fullTopic = buildFullTopic(topic, topicAutoPrefix);
     
     bool ok = mqttClient.publish(fullTopic.c_str(), message.c_str(), retain);
 
@@ -223,7 +233,10 @@ bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
     }
     
     const MqttPublishTopic& pt = config.publishTopics[topicIndex];
-    String fullTopic = config.topicPrefix + pt.topic;
+    if (!pt.enabled) {
+        return false;
+    }
+    String fullTopic = buildFullTopic(pt.topic, pt.autoPrefix);
     bool ok = mqttClient.publish(fullTopic.c_str(), message.c_str(), pt.retain);
     
     if (!ok) {
@@ -239,7 +252,15 @@ bool MQTTClient::subscribe(const String& topic) {
         return false;
     }
 
-    String fullTopic = config.topicPrefix + topic;
+    // 查找对应订阅主题配置的autoPrefix设置
+    bool topicAutoPrefix = false;
+    for (const auto& st : config.subscribeTopics) {
+        if (st.topic == topic) {
+            topicAutoPrefix = st.autoPrefix;
+            break;
+        }
+    }
+    String fullTopic = buildFullTopic(topic, topicAutoPrefix);
     bool ok = mqttClient.subscribe(fullTopic.c_str());
 
     char buf[80];
@@ -258,8 +279,8 @@ bool MQTTClient::subscribeAll() {
     
     // 订阅所有配置的主题
     for (const auto& st : config.subscribeTopics) {
-        if (!st.topic.isEmpty()) {
-            String fullTopic = config.topicPrefix + st.topic;
+        if (!st.topic.isEmpty() && st.enabled) {
+            String fullTopic = buildFullTopic(st.topic, st.autoPrefix);
             bool ok = mqttClient.subscribe(fullTopic.c_str(), st.qos);
             
             char buf[96];
@@ -282,17 +303,43 @@ bool MQTTClient::subscribeAll() {
 void MQTTClient::handle() {
     if (stopped) return;  // 被显式停止时不做任何操作
 
+    // 检查WiFi连接状态，WiFi断开时不尝试重连
+    if (WiFi.status() != WL_CONNECTED) {
+        if (isConnected) {
+            isConnected = false;
+            LOG_WARNING("MQTT: WiFi disconnected, marking MQTT offline");
+        }
+        return;
+    }
+
     if (!mqttClient.connected()) {
-        isConnected = false;
+        if (isConnected) {
+            isConnected = false;
+            reconnectInterval = 5000;  // 刚断开时重置重连间隔
+            LOG_WARNING("MQTT: Connection lost");
+        }
+
+        if (!config.autoReconnect) return;
+
         unsigned long now = millis();
-        if (now - lastReconnectAttempt > 5000UL) {
+        if (now - lastReconnectAttempt >= reconnectInterval) {
             lastReconnectAttempt = now;
             if (reconnect()) {
-                lastReconnectAttempt = 0;
+                reconnectInterval = 5000;  // 连接成功，重置间隔
+            } else {
+                // 指数退避：5s -> 10s -> 20s -> 30s（上限）
+                reconnectInterval = min(reconnectInterval * 2, (uint32_t)30000);
+                char buf[64];
+                snprintf(buf, sizeof(buf), "MQTT: Next retry in %lus", reconnectInterval / 1000);
+                LOG_INFO(buf);
             }
         }
     } else {
-        isConnected = true;
+        if (!isConnected) {
+            isConnected = true;
+            lastConnectedTime = millis();
+        }
+        lastLoopTime = millis();
         mqttClient.loop();
     }
 }
@@ -306,24 +353,40 @@ void MQTTClient::setMessageCallback(std::function<void(const String&, const Stri
 }
 
 MqttTopicType MQTTClient::getTopicTypeByPath(const String& topicPath) const {
-    // 去掉前缀后匹配
-    String stripped = topicPath;
-    if (!config.topicPrefix.isEmpty() && topicPath.startsWith(config.topicPrefix)) {
-        stripped = topicPath.substring(config.topicPrefix.length());
-    }
+    // 去掉前缀后匹配（检查每个主题自身的autoPrefix设置）
     // 先查订阅主题
     for (const auto& st : config.subscribeTopics) {
-        if (st.topic == stripped || st.topic == topicPath) {
+        if (st.topic == topicPath) {
             return st.topicType;
+        }
+        // 如果该主题启用了autoPrefix，尝试去掉前缀后匹配
+        if (st.autoPrefix && !config.topicPrefix.isEmpty() && topicPath.startsWith(config.topicPrefix)) {
+            String stripped = topicPath.substring(config.topicPrefix.length());
+            if (st.topic == stripped) {
+                return st.topicType;
+            }
         }
     }
     // 再查发布主题
     for (const auto& pt : config.publishTopics) {
-        if (pt.topic == stripped || pt.topic == topicPath) {
+        if (pt.topic == topicPath) {
             return pt.topicType;
+        }
+        if (pt.autoPrefix && !config.topicPrefix.isEmpty() && topicPath.startsWith(config.topicPrefix)) {
+            String stripped = topicPath.substring(config.topicPrefix.length());
+            if (pt.topic == stripped) {
+                return pt.topicType;
+            }
         }
     }
     return MqttTopicType::DATA_COMMAND; // 默认
+}
+
+String MQTTClient::buildFullTopic(const String& topic, bool autoPrefix) const {
+    if (autoPrefix && !config.topicPrefix.isEmpty()) {
+        return config.topicPrefix + topic;
+    }
+    return topic;
 }
 
 void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {

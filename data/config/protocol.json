@@ -38,6 +38,7 @@
     "directConnect": true,
     "autoReconnect": true,
     "connectionTimeout": 30000,
+    "topicPrefix": "",
     "authType": 0,
     "authCode": "",
     "willTopic": "",
@@ -49,6 +50,8 @@
         "topic": "",
         "qos": 0,
         "retain": false,
+        "enabled": true,
+        "autoPrefix": false,
         "content": "",
         "topicType": 0
       }
@@ -57,6 +60,8 @@
       {
         "topic": "",
         "qos": 0,
+        "enabled": true,
+        "autoPrefix": false,
         "action": "",
         "topicType": 1
       }
