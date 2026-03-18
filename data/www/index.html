@@ -65,6 +65,9 @@
                     <a href="#" class="menu-item" data-page="peripheral">
                         <span class="menu-icon">🔧</span> <span id="menu-peripheral" data-i18n="menu-peripheral">外设配置</span>
                     </a>
+                    <a href="#" class="menu-item" data-page="periph-exec">
+                        <span class="menu-icon">⚡</span> <span id="menu-periph-exec" data-i18n="menu-periph-exec">外设执行</span>
+                    </a>
                     <a href="#" class="menu-item" data-page="protocol">
                         <span class="menu-icon">🔌</span> <span id="menu-protocol">通信协议</span>
                     </a>
@@ -1813,6 +1816,45 @@
 
 
                     </div>
+
+                    <!-- 外设执行独立页面 -->
+                    <div id="periph-exec-page" class="page">
+                        <div class="card">
+                            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                                <h2 class="card-title" data-i18n="periph-exec-page-title">外设执行管理</h2>
+                                <div style="display: flex; gap: 10px; align-items: center;">
+                                    <select id="periph-exec-filter-periph" class="pure-input-1" style="width: auto;" onchange="app.loadPeriphExecPage()">
+                                        <option value="" data-i18n="periph-exec-filter-all">全部规则</option>
+                                    </select>
+                                    <button class="pure-button pure-button-primary" id="periph-exec-page-add-btn" onclick="app.openPeriphExecModalStandalone()">
+                                        <i class="fas fa-plus"></i> <span data-i18n="periph-exec-add-btn">新增规则</span>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div style="overflow-x: auto;">
+                                    <table class="pure-table pure-table-bordered" style="width: 100%;">
+                                        <thead>
+                                            <tr>
+                                                <th data-i18n="periph-exec-col-name">名称</th>
+                                                <th data-i18n="periph-exec-col-status">状态</th>
+                                                <th data-i18n="periph-exec-col-trigger">触发方式</th>
+                                                <th data-i18n="periph-exec-col-target">目标外设</th>
+                                                <th data-i18n="periph-exec-col-action">动作</th>
+                                                <th data-i18n="periph-exec-col-stats">统计</th>
+                                                <th data-i18n="periph-exec-col-ops">操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="periph-exec-table-body">
+                                            <tr>
+                                                <td colspan="7" style="text-align: center; color: #999;" data-i18n="periph-exec-loading">加载中...</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 
                 <!-- 主应用页脚 -->
@@ -2096,33 +2138,6 @@
                                 </div>
                             </div>
                         </div>
-                        
-                        <!-- Execution Rules Section -->
-                        <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #eee;">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                <h4 style="margin: 0;" data-i18n="periph-exec-rules-title">执行规则</h4>
-                                <button type="button" class="pure-button pure-button-primary btn-small" id="periph-modal-add-exec-btn">
-                                    <i class="fas fa-plus"></i> <span data-i18n="periph-exec-add-btn">新增规则</span>
-                                </button>
-                            </div>
-                            <div id="periph-exec-save-first-hint" style="display: none; text-align: center; color: #999; padding: 15px 0;">
-                                <span data-i18n="periph-exec-save-first">请先保存外设后再添加执行规则</span>
-                            </div>
-                            <div id="periph-modal-exec-rules" style="display: none; overflow-x: auto;">
-                                <table class="pure-table pure-table-bordered" style="width: 100%; font-size: 13px;">
-                                    <thead>
-                                        <tr>
-                                            <th data-i18n="exec-col-name">名称</th>
-                                            <th data-i18n="exec-col-trigger">触发方式</th>
-                                            <th data-i18n="exec-col-action">动作</th>
-                                            <th data-i18n="exec-col-ops">操作</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="periph-modal-exec-table-body">
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
 
                         <div id="peripheral-error" class="message message-error" style="display: none;"></div>
                     </fieldset>
@@ -2135,38 +2150,38 @@
         </div>
     </div>
     
-    <!-- 执行规则模态窗 -->
-    <div id="exec-rule-modal" class="modal">
+    <!-- 外设执行模态窗 -->
+    <div id="periph-exec-modal" class="modal">
         <div class="modal-content" style="max-width: 800px;">
             <div class="modal-header">
-                <h2 style="margin: 0; font-size: 18px;" id="exec-rule-modal-title" data-i18n="exec-add-modal-title">新增执行规则</h2>
-                <button id="close-exec-rule-modal" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer;">&times;</button>
+                <h2 style="margin: 0; font-size: 18px;" id="periph-exec-modal-title" data-i18n="periph-exec-add-modal-title">新增外设执行</h2>
+                <button id="close-periph-exec-modal" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer;">&times;</button>
             </div>
             <div class="modal-body">
-                <form id="exec-rule-form" class="pure-form pure-form-stacked">
+                <form id="periph-exec-form" class="pure-form pure-form-stacked">
                     <fieldset>
-                        <input type="hidden" id="exec-rule-original-id" value="">
+                        <input type="hidden" id="periph-exec-original-id" value="">
                         
                         <div class="config-form-grid">
                             <!-- 左列：规则名称、触发配置、动作类型 -->
                             <div class="config-form-column">
                                 <div class="pure-control-group">
-                                    <label for="exec-rule-name" data-i18n="exec-name-label">规则名称</label>
-                                    <input type="text" id="exec-rule-name" class="pure-input-1" placeholder="例如: 温度过高报警" required data-i18n-placeholder="exec-name-hint">
+                                    <label for="periph-exec-name" data-i18n="periph-exec-name-label">规则名称</label>
+                                    <input type="text" id="periph-exec-name" class="pure-input-1" placeholder="例如: 温度过高报警" required data-i18n-placeholder="periph-exec-name-hint">
                                 </div>
                                 <div class="pure-control-group">
-                                    <label for="exec-rule-trigger-type" data-i18n="exec-trigger-type-label">触发类型</label>
-                                    <select id="exec-rule-trigger-type" class="pure-input-1" onchange="app.onExecTriggerTypeChange(this.value)">
-                                        <option value="0" data-i18n="exec-trigger-device">设备触发 (MQTT)</option>
-                                        <option value="1" data-i18n="exec-trigger-timer">定时触发</option>
+                                    <label for="periph-exec-trigger-type" data-i18n="periph-exec-trigger-type-label">触发类型</label>
+                                    <select id="periph-exec-trigger-type" class="pure-input-1" onchange="app.onPeriphExecTriggerTypeChange(this.value)">
+                                        <option value="0" data-i18n="periph-exec-trigger-device">设备触发 (MQTT)</option>
+                                        <option value="1" data-i18n="periph-exec-trigger-timer">定时触发</option>
                                     </select>
                                 </div>
                                 
                                 <!-- 设备触发 - 左列: 比较运算符 -->
-                                <div id="exec-device-trigger-left">
+                                <div id="periph-exec-device-trigger-left">
                                     <div class="pure-control-group">
-                                        <label for="exec-rule-operator" data-i18n="exec-operator-label">比较运算符</label>
-                                        <select id="exec-rule-operator" class="pure-input-1">
+                                        <label for="periph-exec-operator" data-i18n="periph-exec-operator-label">比较运算符</label>
+                                        <select id="periph-exec-operator" class="pure-input-1">
                                             <option value="0">=  (等于)</option>
                                             <option value="1">!= (不等于)</option>
                                             <option value="2">&gt;  (大于)</option>
@@ -2182,36 +2197,41 @@
                                 </div>
                                 
                                 <!-- 定时触发 - 左列: 定时模式 -->
-                                <div id="exec-timer-trigger-left" style="display: none;">
+                                <div id="periph-exec-timer-trigger-left" style="display: none;">
                                     <div class="pure-control-group">
-                                        <label for="exec-rule-timer-mode" data-i18n="exec-timer-mode-label">定时模式</label>
-                                        <select id="exec-rule-timer-mode" class="pure-input-1" onchange="app.onExecTimerModeChange(this.value)">
-                                            <option value="0" data-i18n="exec-timer-interval">间隔触发</option>
-                                            <option value="1" data-i18n="exec-timer-daily">每日时间点</option>
+                                        <label for="periph-exec-timer-mode" data-i18n="periph-exec-timer-mode-label">定时模式</label>
+                                        <select id="periph-exec-timer-mode" class="pure-input-1" onchange="app.onPeriphExecTimerModeChange(this.value)">
+                                            <option value="0" data-i18n="periph-exec-timer-interval">间隔触发</option>
+                                            <option value="1" data-i18n="periph-exec-timer-daily">每日时间点</option>
                                         </select>
                                     </div>
                                 </div>
                                 
                                 <div class="pure-control-group">
-                                    <label for="exec-rule-action-type" data-i18n="exec-action-type-label">动作类型</label>
-                                    <select id="exec-rule-action-type" class="pure-input-1" onchange="app.onExecActionTypeChange(this.value)">
-                                        <optgroup label="GPIO操作" data-i18n-label="exec-action-cat-gpio">
-                                            <option value="0" data-i18n="exec-action-high">设置高电平</option>
-                                            <option value="1" data-i18n="exec-action-low">设置低电平</option>
-                                            <option value="2" data-i18n="exec-action-blink">闪烁</option>
-                                            <option value="3" data-i18n="exec-action-breathe">呼吸灯</option>
+                                    <label for="periph-exec-action-type" data-i18n="periph-exec-action-type-label">动作类型</label>
+                                    <select id="periph-exec-action-type" class="pure-input-1" onchange="app.onPeriphExecActionTypeChange(this.value)">
+                                        <optgroup label="GPIO操作" data-i18n-label="periph-exec-action-cat-gpio">
+                                            <option value="0" data-i18n="periph-exec-action-high">设置高电平</option>
+                                            <option value="1" data-i18n="periph-exec-action-low">设置低电平</option>
+                                            <option value="13" data-i18n="periph-exec-action-high-inverted">设置高电平(反转)</option>
+                                            <option value="14" data-i18n="periph-exec-action-low-inverted">设置低电平(反转)</option>
+                                            <option value="2" data-i18n="periph-exec-action-blink">闪烁</option>
+                                            <option value="3" data-i18n="periph-exec-action-breathe">呼吸灯</option>
                                         </optgroup>
-                                        <optgroup label="模拟输出" data-i18n-label="exec-action-cat-analog">
-                                            <option value="4" data-i18n="exec-action-pwm">设置PWM</option>
-                                            <option value="5" data-i18n="exec-action-dac">设置DAC</option>
+                                        <optgroup label="模拟输出" data-i18n-label="periph-exec-action-cat-analog">
+                                            <option value="4" data-i18n="periph-exec-action-pwm">设置PWM</option>
+                                            <option value="5" data-i18n="periph-exec-action-dac">设置DAC</option>
                                         </optgroup>
-                                        <optgroup label="系统功能" data-i18n-label="exec-action-cat-system">
-                                            <option value="6" data-i18n="exec-action-restart">系统重启</option>
-                                            <option value="7" data-i18n="exec-action-factory">恢复出厂</option>
-                                            <option value="8" data-i18n="exec-action-ntp">NTP同步</option>
-                                            <option value="9" data-i18n="exec-action-ota">OTA升级</option>
-                                            <option value="10" data-i18n="exec-action-ap">AP配网</option>
-                                            <option value="11" data-i18n="exec-action-ble">BLE配网</option>
+                                        <optgroup label="系统功能" data-i18n-label="periph-exec-action-cat-system">
+                                            <option value="6" data-i18n="periph-exec-action-restart">系统重启</option>
+                                            <option value="7" data-i18n="periph-exec-action-factory">恢复出厂</option>
+                                            <option value="8" data-i18n="periph-exec-action-ntp">NTP同步</option>
+                                            <option value="9" data-i18n="periph-exec-action-ota">OTA升级</option>
+                                            <option value="10" data-i18n="periph-exec-action-ap">AP配网</option>
+                                            <option value="11" data-i18n="periph-exec-action-ble">BLE配网</option>
+                                        </optgroup>
+                                        <optgroup label="高级功能" data-i18n-label="periph-exec-action-cat-advanced">
+                                            <option value="15" data-i18n="periph-exec-action-script">命令脚本</option>
                                         </optgroup>
                                     </select>
                                 </div>
@@ -2219,67 +2239,68 @@
                             
                             <!-- 右列：目标外设、启用开关、条件值、动作参数 -->
                             <div class="config-form-column">
-                                <div class="pure-control-group" id="exec-target-periph-group">
-                                    <label for="exec-rule-target-periph" data-i18n="exec-target-periph-label">目标外设</label>
-                                    <select id="exec-rule-target-periph" class="pure-input-1">
-                                        <option value="" data-i18n="exec-select-periph">-- 选择外设 --</option>
+                                <div class="pure-control-group" id="periph-exec-target-group">
+                                    <label for="periph-exec-target-periph" data-i18n="periph-exec-target-periph-label">目标外设</label>
+                                    <select id="periph-exec-target-periph" class="pure-input-1">
+                                        <option value="" data-i18n="periph-exec-select-periph">-- 选择外设 --</option>
                                     </select>
                                 </div>
                                 <div class="pure-control-group">
-                                    <label data-i18n="exec-enabled-label">启用</label>
+                                    <label data-i18n="periph-exec-enabled-label">启用</label>
                                     <label class="toggle-switch">
-                                        <input type="checkbox" id="exec-rule-enabled" checked>
+                                        <input type="checkbox" id="periph-exec-enabled" checked>
                                         <span class="toggle-slider"></span>
                                     </label>
                                 </div>
                                 
                                 <!-- 设备触发 - 右列: 比较值 -->
-                                <div id="exec-device-trigger-right">
+                                <div id="periph-exec-device-trigger-right">
                                     <div class="pure-control-group">
-                                        <label for="exec-rule-compare-value" data-i18n="exec-compare-label">比较值</label>
-                                        <input type="text" id="exec-rule-compare-value" class="pure-input-1" placeholder="如: 30 或区间: 20,30" data-i18n-placeholder="exec-compare-hint">
+                                        <label for="periph-exec-compare-value" data-i18n="periph-exec-compare-label">比较值</label>
+                                        <input type="text" id="periph-exec-compare-value" class="pure-input-1" placeholder="如: 30 或区间: 20,30" data-i18n-placeholder="periph-exec-compare-hint">
                                     </div>
                                 </div>
                                 
                                 <!-- 定时触发 - 右列: 间隔/每日时间 -->
-                                <div id="exec-timer-trigger-right" style="display: none;">
-                                    <div id="exec-interval-fields">
+                                <div id="periph-exec-timer-trigger-right" style="display: none;">
+                                    <div id="periph-exec-interval-fields">
                                         <div class="pure-control-group">
-                                            <label for="exec-rule-interval" data-i18n="exec-interval-label">间隔 (秒)</label>
-                                            <input type="number" id="exec-rule-interval" class="pure-input-1" value="60" min="1" max="86400">
+                                            <label for="periph-exec-interval" data-i18n="periph-exec-interval-label">间隔 (秒)</label>
+                                            <input type="number" id="periph-exec-interval" class="pure-input-1" value="60" min="1" max="86400">
                                         </div>
                                     </div>
-                                    <div id="exec-daily-fields" style="display: none;">
+                                    <div id="periph-exec-daily-fields" style="display: none;">
                                         <div class="pure-control-group">
-                                            <label for="exec-rule-timepoint" data-i18n="exec-timepoint-label">执行时间 (HH:MM)</label>
-                                            <input type="time" id="exec-rule-timepoint" class="pure-input-1" value="08:00">
+                                            <label for="periph-exec-timepoint" data-i18n="periph-exec-timepoint-label">执行时间 (HH:MM)</label>
+                                            <input type="time" id="periph-exec-timepoint" class="pure-input-1" value="08:00">
                                         </div>
                                     </div>
                                 </div>
                                 
-                                <div class="pure-control-group" id="exec-action-value-group">
-                                    <label for="exec-rule-action-value" data-i18n="exec-action-value-label">动作参数</label>
-                                    <input type="text" id="exec-rule-action-value" class="pure-input-1" placeholder="如: PWM值、闪烁间隔ms" data-i18n-placeholder="exec-action-value-hint">
-                                    <small style="color: #999;" data-i18n="exec-action-value-help">闪烁/呼吸灯填间隔ms, PWM填占空比, DAC填0-255</small>
+                                <div class="pure-control-group" id="periph-exec-action-value-group">
+                                    <label for="periph-exec-action-value" data-i18n="periph-exec-action-value-label">动作参数</label>
+                                    <input type="text" id="periph-exec-action-value" class="pure-input-1" placeholder="如: PWM值、闪烁间隔ms" data-i18n-placeholder="periph-exec-action-value-hint">
+                                    <small style="color: #999;" data-i18n="periph-exec-action-value-help">闪烁/呼吸灯填间隔ms, PWM填占空比, DAC填0-255</small>
                                 </div>
-                                <div class="pure-control-group" id="exec-inverted-group" style="display: none;">
-                                    <label data-i18n="exec-inverted-label">电平反转</label>
-                                    <label class="toggle-switch">
-                                        <input type="checkbox" id="exec-rule-inverted">
-                                        <span class="toggle-slider"></span>
-                                    </label>
-                                    <small style="color: #999;" data-i18n="exec-inverted-help">开启后高/低电平动作物理信号反转</small>
+                                <div class="pure-control-group" id="periph-exec-script-group" style="display: none;">
+                                    <label for="periph-exec-script" data-i18n="periph-exec-script-label">脚本内容</label>
+                                    <textarea id="periph-exec-script" class="pure-input-1" rows="8"
+                                              style="font-family: monospace; font-size: 13px; resize: vertical;"
+                                              maxlength="1024"
+                                              placeholder="每行一条命令，如:&#10;GPIO 2 HIGH&#10;DELAY 500&#10;GPIO 2 LOW&#10;LOG 执行完成"
+                                              data-i18n-placeholder="periph-exec-script-placeholder"></textarea>
+                                    <small style="color: #999;" data-i18n="periph-exec-script-help">可用命令: GPIO pin HIGH/LOW, DELAY ms, PWM pin duty, DAC pin value, LOG msg, PERIPH id 动作</small>
                                 </div>
                             </div>
                         </div>
                         
-                        <div id="exec-rule-error" class="message message-error" style="display: none;"></div>
+                        <div id="periph-exec-error" class="message message-error" style="display: none;"></div>
                     </fieldset>
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-exec-rule-btn" type="button" data-i18n="cancel">取消</button>
-                <button class="pure-button pure-button-primary" id="save-exec-rule-btn" type="button" data-i18n="save">保存</button>
+                <button class="pure-button" id="cancel-periph-exec-btn" type="button" data-i18n="cancel">取消</button>
+                <button class="pure-button pure-button-primary" id="save-periph-exec-btn" type="button" data-i18n="save">保存</button>
             </div>
         </div>
     </div>

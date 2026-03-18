@@ -420,28 +420,25 @@ const AppState = {
         const saveGpioBtn = document.getElementById('save-gpio-btn');
         if (saveGpioBtn) saveGpioBtn.addEventListener('click', () => this.savePeripheralConfig());
         
-        // ============ 执行规则事件绑定 ============
+        // ============ 外设执行事件绑定 ============
         
-        const periphModalAddExecBtn = document.getElementById('periph-modal-add-exec-btn');
-        if (periphModalAddExecBtn) periphModalAddExecBtn.addEventListener('click', () => this.openExecRuleModal());
+        const closePeriphExecModal = document.getElementById('close-periph-exec-modal');
+        if (closePeriphExecModal) closePeriphExecModal.addEventListener('click', () => this.closePeriphExecModal());
         
-        const closeExecRuleModal = document.getElementById('close-exec-rule-modal');
-        if (closeExecRuleModal) closeExecRuleModal.addEventListener('click', () => this.closeExecRuleModal());
+        const cancelPeriphExecBtn = document.getElementById('cancel-periph-exec-btn');
+        if (cancelPeriphExecBtn) cancelPeriphExecBtn.addEventListener('click', () => this.closePeriphExecModal());
         
-        const cancelExecRuleBtn = document.getElementById('cancel-exec-rule-btn');
-        if (cancelExecRuleBtn) cancelExecRuleBtn.addEventListener('click', () => this.closeExecRuleModal());
+        const savePeriphExecBtn = document.getElementById('save-periph-exec-btn');
+        if (savePeriphExecBtn) savePeriphExecBtn.addEventListener('click', () => this.savePeriphExecRule());
         
-        const saveExecRuleBtn = document.getElementById('save-exec-rule-btn');
-        if (saveExecRuleBtn) saveExecRuleBtn.addEventListener('click', () => this.saveExecRule());
+        const periphExecTriggerType = document.getElementById('periph-exec-trigger-type');
+        if (periphExecTriggerType) periphExecTriggerType.addEventListener('change', (e) => this.onPeriphExecTriggerTypeChange(e.target.value));
         
-        const execTriggerType = document.getElementById('exec-rule-trigger-type');
-        if (execTriggerType) execTriggerType.addEventListener('change', (e) => this.onExecTriggerTypeChange(e.target.value));
+        const periphExecTimerMode = document.getElementById('periph-exec-timer-mode');
+        if (periphExecTimerMode) periphExecTimerMode.addEventListener('change', (e) => this.onPeriphExecTimerModeChange(e.target.value));
         
-        const execTimerMode = document.getElementById('exec-rule-timer-mode');
-        if (execTimerMode) execTimerMode.addEventListener('change', (e) => this.onExecTimerModeChange(e.target.value));
-        
-        const execActionType = document.getElementById('exec-rule-action-type');
-        if (execActionType) execActionType.addEventListener('change', (e) => this.onExecActionTypeChange(e.target.value));
+        const periphExecActionType = document.getElementById('periph-exec-action-type');
+        if (periphExecActionType) periphExecActionType.addEventListener('change', (e) => this.onPeriphExecActionTypeChange(e.target.value));
         
         // ============ 网络状态事件绑定 ============
         
@@ -598,6 +595,7 @@ const AppState = {
         if (page === 'users') this.loadUsers();
         if (page === 'roles') this.loadRoles();
         if (page === 'peripheral') { this.loadPeripherals(); }
+        if (page === 'periph-exec') { this.loadPeriphExecPage(); }
         if (page === 'monitor') this.loadSystemInfo();
         if (page === 'logs') {
             this._currentLogFile = 'system.log';  // 默认加载 system.log
@@ -3545,21 +3543,6 @@ const AppState = {
             // 默认显示GPIO参数
             this.onPeripheralTypeChange('11');
         }
-        
-        // 执行规则区域控制
-        const execHint = document.getElementById('periph-exec-save-first-hint');
-        const execTable = document.getElementById('periph-modal-exec-rules');
-        const execAddBtn = document.getElementById('periph-modal-add-exec-btn');
-        if (isEdit && peripheralId) {
-            if (execHint) execHint.style.display = 'none';
-            if (execTable) execTable.style.display = 'block';
-            if (execAddBtn) execAddBtn.disabled = false;
-            this.loadPeriphModalExecRules(peripheralId);
-        } else {
-            if (execHint) execHint.style.display = 'block';
-            if (execTable) execTable.style.display = 'none';
-            if (execAddBtn) execAddBtn.disabled = true;
-        }
 
         modal.style.display = 'flex';
     },
@@ -3663,9 +3646,6 @@ const AppState = {
                         // GPIO参数
                         if (data.params.initialState !== undefined) {
                             document.getElementById('gpio-initial-state').value = data.params.initialState;
-                        }
-                        if (data.params.inverted !== undefined) {
-                            document.getElementById('gpio-inverted').value = data.params.inverted ? '1' : '0';
                         }
                         if (data.params.pwmFrequency !== undefined) {
                             document.getElementById('gpio-pwm-freq').value = data.params.pwmFrequency;
@@ -3780,7 +3760,6 @@ const AppState = {
         if (typeNum >= 11 && typeNum <= 21) {
             // GPIO参数
             data.initialState = document.getElementById('gpio-initial-state')?.value || '0';
-            data.inverted = document.getElementById('gpio-inverted')?.value || '0';
             
             // PWM/Analog Output
             if (typeNum === 17 || typeNum === 16) {
@@ -3917,45 +3896,45 @@ const AppState = {
             });
     },
 
-    // ============ 执行规则管理 ============
+    // ============ 外设执行管理 ============
 
-    openExecRuleModal(editId) {
-        const modal = document.getElementById('exec-rule-modal');
+    openPeriphExecModal(editId) {
+        const modal = document.getElementById('periph-exec-modal');
         if (!modal) return;
-        const titleEl = document.getElementById('exec-rule-modal-title');
-        document.getElementById('exec-rule-original-id').value = editId || '';
-        document.getElementById('exec-rule-error').style.display = 'none';
+        const titleEl = document.getElementById('periph-exec-modal-title');
+        document.getElementById('periph-exec-original-id').value = editId || '';
+        document.getElementById('periph-exec-error').style.display = 'none';
         if (editId) {
-            if (titleEl) titleEl.textContent = i18n.t('exec-edit-modal-title');
+            if (titleEl) titleEl.textContent = i18n.t('periph-exec-edit-modal-title');
         } else {
-            if (titleEl) titleEl.textContent = i18n.t('exec-add-modal-title');
-            document.getElementById('exec-rule-form').reset();
-            this.onExecTriggerTypeChange('0');
-            this.onExecTimerModeChange('0');
-            this.onExecActionTypeChange('0');
+            if (titleEl) titleEl.textContent = i18n.t('periph-exec-add-modal-title');
+            document.getElementById('periph-exec-form').reset();
+            this.onPeriphExecTriggerTypeChange('0');
+            this.onPeriphExecTimerModeChange('0');
+            this.onPeriphExecActionTypeChange('0');
         }
-        const periphId = document.getElementById('peripheral-original-id').value;
-        this.loadPeriphSelectOptions().then(() => {
-            const sel = document.getElementById('exec-rule-target-periph');
-            if (sel && periphId) { sel.value = periphId; }
-        });
+        this.loadPeriphSelectOptions();
         modal.style.display = 'flex';
     },
 
-    closeExecRuleModal() {
-        const modal = document.getElementById('exec-rule-modal');
+    openPeriphExecModalStandalone() {
+        this.openPeriphExecModal();
+    },
+
+    closePeriphExecModal() {
+        const modal = document.getElementById('periph-exec-modal');
         if (modal) modal.style.display = 'none';
-        const targetSel = document.getElementById('exec-rule-target-periph');
+        const targetSel = document.getElementById('periph-exec-target-periph');
         if (targetSel) targetSel.disabled = false;
     },
 
     loadPeriphSelectOptions() {
         return apiGet('/api/peripherals')
             .then(res => {
-                const sel = document.getElementById('exec-rule-target-periph');
+                const sel = document.getElementById('periph-exec-target-periph');
                 if (!sel) return;
                 const currentVal = sel.value;
-                sel.innerHTML = '<option value="">' + i18n.t('exec-select-periph') + '</option>';
+                sel.innerHTML = '<option value="">' + i18n.t('periph-exec-select-periph') + '</option>';
                 if (res && res.success && res.data) {
                     res.data.filter(p => p.enabled).forEach(p => {
                         const opt = document.createElement('option');
@@ -3968,193 +3947,255 @@ const AppState = {
             });
     },
 
-    onExecTriggerTypeChange(val) {
-        const dl = document.getElementById('exec-device-trigger-left');
-        const dr = document.getElementById('exec-device-trigger-right');
-        const tl = document.getElementById('exec-timer-trigger-left');
-        const tr = document.getElementById('exec-timer-trigger-right');
+    onPeriphExecTriggerTypeChange(val) {
+        const dl = document.getElementById('periph-exec-device-trigger-left');
+        const dr = document.getElementById('periph-exec-device-trigger-right');
+        const tl = document.getElementById('periph-exec-timer-trigger-left');
+        const tr = document.getElementById('periph-exec-timer-trigger-right');
         if (dl) dl.style.display = (val === '0') ? 'block' : 'none';
         if (dr) dr.style.display = (val === '0') ? 'block' : 'none';
         if (tl) tl.style.display = (val === '1') ? 'block' : 'none';
         if (tr) tr.style.display = (val === '1') ? 'block' : 'none';
     },
 
-    onExecTimerModeChange(val) {
-        const intervalFields = document.getElementById('exec-interval-fields');
-        const dailyFields = document.getElementById('exec-daily-fields');
+    onPeriphExecTimerModeChange(val) {
+        const intervalFields = document.getElementById('periph-exec-interval-fields');
+        const dailyFields = document.getElementById('periph-exec-daily-fields');
         if (intervalFields) intervalFields.style.display = (val === '0') ? 'block' : 'none';
         if (dailyFields) dailyFields.style.display = (val === '1') ? 'block' : 'none';
     },
 
-    onExecActionTypeChange(val) {
+    onPeriphExecActionTypeChange(val) {
         const actionType = parseInt(val);
-        const periphGroup = document.getElementById('exec-target-periph-group');
-        const valueGroup = document.getElementById('exec-action-value-group');
-        const invertedGroup = document.getElementById('exec-inverted-group');
-        if (periphGroup) periphGroup.style.display = (actionType >= 6 && actionType <= 11) ? 'none' : 'block';
+        const periphGroup = document.getElementById('periph-exec-target-group');
+        const valueGroup = document.getElementById('periph-exec-action-value-group');
+        const scriptGroup = document.getElementById('periph-exec-script-group');
+        // 系统功能(6-11)和脚本(15)不需要目标外设
+        if (periphGroup) periphGroup.style.display = (actionType >= 6 && actionType <= 11) || actionType === 15 ? 'none' : 'block';
+        // 闪烁(2)/呼吸灯(3)/PWM(4)/DAC(5) 需要动作参数
         const needsValue = (actionType >= 2 && actionType <= 5);
         if (valueGroup) valueGroup.style.display = needsValue ? 'block' : 'none';
-        const isGpioAction = (actionType >= 0 && actionType <= 3);
-        if (invertedGroup) invertedGroup.style.display = isGpioAction ? 'block' : 'none';
+        // 脚本(15) 显示脚本编辑器
+        if (scriptGroup) scriptGroup.style.display = actionType === 15 ? 'block' : 'none';
     },
 
-    saveExecRule() {
-        const errEl = document.getElementById('exec-rule-error');
+    savePeriphExecRule() {
+        const errEl = document.getElementById('periph-exec-error');
         errEl.style.display = 'none';
-        const originalId = document.getElementById('exec-rule-original-id').value;
+        const originalId = document.getElementById('periph-exec-original-id').value;
         const isEdit = originalId !== '';
         const ruleData = {
-            name: document.getElementById('exec-rule-name').value.trim(),
-            enabled: document.getElementById('exec-rule-enabled').checked ? '1' : '0',
-            triggerType: document.getElementById('exec-rule-trigger-type').value,
-            operatorType: document.getElementById('exec-rule-operator').value,
-            compareValue: document.getElementById('exec-rule-compare-value').value.trim(),
-            timerMode: document.getElementById('exec-rule-timer-mode').value,
-            intervalSec: document.getElementById('exec-rule-interval').value,
-            timePoint: document.getElementById('exec-rule-timepoint').value,
-            actionType: document.getElementById('exec-rule-action-type').value,
-            targetPeriphId: document.getElementById('exec-rule-target-periph').value,
-            actionValue: document.getElementById('exec-rule-action-value').value.trim(),
-            inverted: document.getElementById('exec-rule-inverted').checked ? '1' : '0'
+            name: document.getElementById('periph-exec-name').value.trim(),
+            enabled: document.getElementById('periph-exec-enabled').checked ? '1' : '0',
+            triggerType: document.getElementById('periph-exec-trigger-type').value,
+            operatorType: document.getElementById('periph-exec-operator').value,
+            compareValue: document.getElementById('periph-exec-compare-value').value.trim(),
+            timerMode: document.getElementById('periph-exec-timer-mode').value,
+            intervalSec: document.getElementById('periph-exec-interval').value,
+            timePoint: document.getElementById('periph-exec-timepoint').value,
+            actionType: document.getElementById('periph-exec-action-type').value,
+            targetPeriphId: document.getElementById('periph-exec-target-periph').value,
+            actionValue: document.getElementById('periph-exec-action-value').value.trim()
         };
         if (!ruleData.name) {
-            errEl.textContent = i18n.t('exec-validate-name');
+            errEl.textContent = i18n.t('periph-exec-validate-name');
             errEl.style.display = 'block';
             return;
+        }
+        // 脚本类型: 从 textarea 获取脚本内容
+        if (ruleData.actionType === '15') {
+            const script = document.getElementById('periph-exec-script').value;
+            if (!script.trim()) {
+                errEl.textContent = i18n.t('periph-exec-script-empty');
+                errEl.style.display = 'block';
+                return;
+            }
+            if (script.length > 1024) {
+                errEl.textContent = i18n.t('periph-exec-script-too-long');
+                errEl.style.display = 'block';
+                return;
+            }
+            ruleData.actionValue = script;
         }
         if (isEdit) ruleData.id = originalId;
         const url = isEdit ? '/api/periph-exec/update' : '/api/periph-exec';
         apiPost(url, ruleData)
             .then(res => {
                 if (res && res.success) {
-                    Notification.success(i18n.t(isEdit ? 'exec-update-ok' : 'exec-add-ok'), i18n.t('exec-title'));
-                    const periphId = document.getElementById('peripheral-original-id').value;
-                    this.closeExecRuleModal();
-                    if (periphId) this.loadPeriphModalExecRules(periphId);
+                    Notification.success(i18n.t(isEdit ? 'periph-exec-update-ok' : 'periph-exec-add-ok'), i18n.t('periph-exec-title'));
+                    this.closePeriphExecModal();
+                    if (this.currentPage === 'periph-exec') this.loadPeriphExecPage();
                 } else {
-                    errEl.textContent = res?.error || i18n.t('exec-save-fail');
+                    errEl.textContent = res?.error || i18n.t('periph-exec-save-fail');
                     errEl.style.display = 'block';
                 }
             })
             .catch(err => {
-                console.error('Save exec rule failed:', err);
-                errEl.textContent = i18n.t('exec-save-fail');
+                console.error('Save periph exec rule failed:', err);
+                errEl.textContent = i18n.t('periph-exec-save-fail');
                 errEl.style.display = 'block';
             });
     },
 
-    editExecRule(id) {
-        this.openExecRuleModal(id);
+    editPeriphExecRule(id) {
+        this.openPeriphExecModal(id);
         apiGet('/api/periph-exec')
             .then(res => {
                 if (!res || !res.success || !res.data) return;
                 const rule = res.data.find(r => r.id === id);
                 if (!rule) return;
-                document.getElementById('exec-rule-name').value = rule.name || '';
-                document.getElementById('exec-rule-enabled').checked = !!rule.enabled;
-                document.getElementById('exec-rule-trigger-type').value = String(rule.triggerType);
-                this.onExecTriggerTypeChange(String(rule.triggerType));
-                document.getElementById('exec-rule-operator').value = String(rule.operatorType);
-                document.getElementById('exec-rule-compare-value').value = rule.compareValue || '';
-                document.getElementById('exec-rule-timer-mode').value = String(rule.timerMode);
-                this.onExecTimerModeChange(String(rule.timerMode));
-                document.getElementById('exec-rule-interval').value = rule.intervalSec || 60;
-                document.getElementById('exec-rule-timepoint').value = rule.timePoint || '08:00';
-                document.getElementById('exec-rule-action-type').value = String(rule.actionType);
-                this.onExecActionTypeChange(String(rule.actionType));
-                document.getElementById('exec-rule-target-periph').value = rule.targetPeriphId || '';
-                document.getElementById('exec-rule-action-value').value = rule.actionValue || '';
+                document.getElementById('periph-exec-name').value = rule.name || '';
+                document.getElementById('periph-exec-enabled').checked = !!rule.enabled;
+                document.getElementById('periph-exec-trigger-type').value = String(rule.triggerType);
+                this.onPeriphExecTriggerTypeChange(String(rule.triggerType));
+                document.getElementById('periph-exec-operator').value = String(rule.operatorType);
+                document.getElementById('periph-exec-compare-value').value = rule.compareValue || '';
+                document.getElementById('periph-exec-timer-mode').value = String(rule.timerMode);
+                this.onPeriphExecTimerModeChange(String(rule.timerMode));
+                document.getElementById('periph-exec-interval').value = rule.intervalSec || 60;
+                document.getElementById('periph-exec-timepoint').value = rule.timePoint || '08:00';
+                document.getElementById('periph-exec-action-type').value = String(rule.actionType);
+                this.onPeriphExecActionTypeChange(String(rule.actionType));
+                document.getElementById('periph-exec-target-periph').value = rule.targetPeriphId || '';
+                document.getElementById('periph-exec-action-value').value = rule.actionValue || '';
+                // 脚本类型: 回显脚本内容到 textarea
+                if (String(rule.actionType) === '15') {
+                    const scriptEl = document.getElementById('periph-exec-script');
+                    if (scriptEl) scriptEl.value = rule.actionValue || '';
+                }
             });
     },
 
-    deleteExecRule(id) {
-        if (!confirm(i18n.t('exec-confirm-delete'))) return;
+    deletePeriphExecRule(id) {
+        if (!confirm(i18n.t('periph-exec-confirm-delete'))) return;
         apiDelete('/api/periph-exec/', { id: id })
             .then(res => {
                 if (res && res.success) {
-                    Notification.success(i18n.t('exec-delete-ok'), i18n.t('exec-title'));
-                    const periphId = document.getElementById('peripheral-original-id').value;
-                    if (periphId) this.loadPeriphModalExecRules(periphId);
+                    Notification.success(i18n.t('periph-exec-delete-ok'), i18n.t('periph-exec-title'));
+                    if (this.currentPage === 'periph-exec') this.loadPeriphExecPage();
                 } else {
-                    Notification.error(res?.error || i18n.t('exec-delete-fail'), i18n.t('exec-title'));
+                    Notification.error(res?.error || i18n.t('periph-exec-delete-fail'), i18n.t('periph-exec-title'));
                 }
             })
             .catch(err => {
-                console.error('Delete exec rule failed:', err);
-                Notification.error(i18n.t('exec-delete-fail'), i18n.t('exec-title'));
+                console.error('Delete periph exec rule failed:', err);
+                Notification.error(i18n.t('periph-exec-delete-fail'), i18n.t('periph-exec-title'));
             });
     },
 
-    toggleExecRule(id, enable) {
+    togglePeriphExecRule(id, enable) {
         const url = enable ? '/api/periph-exec/enable' : '/api/periph-exec/disable';
         apiPost(url, { id: id })
             .then(res => {
                 if (res && res.success) {
-                    const periphId = document.getElementById('peripheral-original-id').value;
-                    if (periphId) this.loadPeriphModalExecRules(periphId);
+                    if (this.currentPage === 'periph-exec') this.loadPeriphExecPage();
                 } else {
-                    Notification.error(res?.error || i18n.t('exec-toggle-fail'), i18n.t('exec-title'));
+                    Notification.error(res?.error || i18n.t('periph-exec-toggle-fail'), i18n.t('periph-exec-title'));
                 }
             })
             .catch(err => {
-                console.error('Toggle exec rule failed:', err);
-                Notification.error(i18n.t('exec-toggle-fail'), i18n.t('exec-title'));
+                console.error('Toggle periph exec rule failed:', err);
+                Notification.error(i18n.t('periph-exec-toggle-fail'), i18n.t('periph-exec-title'));
             });
     },
 
-    // ============ 外设弹窗内执行规则管理 ============
+    // ============ 外设执行独立页面 ============
 
-    loadPeriphModalExecRules(periphId) {
-        const tbody = document.getElementById('periph-modal-exec-table-body');
+    loadPeriphExecPage() {
+        const tbody = document.getElementById('periph-exec-table-body');
         if (!tbody) return;
-        apiGet('/api/periph-exec')
-            .then(res => {
-                if (!res || !res.success || !res.data) {
-                    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;">' + i18n.t('periph-exec-no-rules') + '</td></tr>';
+        const filterSel = document.getElementById('periph-exec-filter-periph');
+        const filterPeriphId = filterSel ? filterSel.value : '';
+
+        this._populatePeriphExecFilter();
+
+        Promise.all([apiGet('/api/periph-exec'), apiGet('/api/peripherals')])
+            .then(([execRes, periphRes]) => {
+                const periphMap = {};
+                if (periphRes && periphRes.success && periphRes.data) {
+                    periphRes.data.forEach(p => { periphMap[p.id] = p.name; });
+                }
+                if (!execRes || !execRes.success || !execRes.data || execRes.data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">' + i18n.t('periph-exec-no-data') + '</td></tr>';
                     return;
                 }
-                const rules = res.data.filter(r => r.targetPeriphId === periphId);
+                let rules = execRes.data;
+                if (filterPeriphId) {
+                    rules = rules.filter(r => r.targetPeriphId === filterPeriphId);
+                }
                 if (rules.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;">' + i18n.t('periph-exec-no-rules') + '</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">' + i18n.t('periph-exec-no-data') + '</td></tr>';
                     return;
                 }
-                const triggerLabels = [i18n.t('exec-trigger-device'), i18n.t('exec-trigger-timer')];
-                const actionLabels = [
-                    i18n.t('exec-action-high'), i18n.t('exec-action-low'),
-                    i18n.t('exec-action-blink'), i18n.t('exec-action-breathe'),
-                    i18n.t('exec-action-pwm'), i18n.t('exec-action-dac'),
-                    i18n.t('exec-action-restart'), i18n.t('exec-action-factory'),
-                    i18n.t('exec-action-ntp'), i18n.t('exec-action-ota'),
-                    i18n.t('exec-action-ap'), i18n.t('exec-action-ble'),
-                    i18n.t('exec-action-call-periph')
-                ];
+                const triggerLabels = [i18n.t('periph-exec-trigger-device'), i18n.t('periph-exec-trigger-timer')];
+                const actionLabels = {
+                    0: i18n.t('periph-exec-action-high'), 1: i18n.t('periph-exec-action-low'),
+                    2: i18n.t('periph-exec-action-blink'), 3: i18n.t('periph-exec-action-breathe'),
+                    4: i18n.t('periph-exec-action-pwm'), 5: i18n.t('periph-exec-action-dac'),
+                    6: i18n.t('periph-exec-action-restart'), 7: i18n.t('periph-exec-action-factory'),
+                    8: i18n.t('periph-exec-action-ntp'), 9: i18n.t('periph-exec-action-ota'),
+                    10: i18n.t('periph-exec-action-ap'), 11: i18n.t('periph-exec-action-ble'),
+                    12: i18n.t('periph-exec-action-call-periph'),
+                    13: i18n.t('periph-exec-action-high-inverted'), 14: i18n.t('periph-exec-action-low-inverted'),
+                    15: i18n.t('periph-exec-action-script')
+                };
                 const opLabels = ['=','!=','>','<','>=','<=','BETWEEN','NOT BETWEEN','CONTAIN','NOT CONTAIN'];
                 let html = '';
                 rules.forEach(r => {
+                    const statusBadge = r.enabled
+                        ? '<span class="badge badge-success">' + i18n.t('periph-exec-status-on') + '</span>'
+                        : '<span class="badge badge-info">' + i18n.t('periph-exec-status-off') + '</span>';
                     let triggerText = triggerLabels[r.triggerType] || '?';
                     if (r.triggerType === 0) {
                         triggerText += ': ' + (opLabels[r.operatorType] || '') + ' ' + (r.compareValue || '');
                     } else if (r.triggerType === 1) {
-                        triggerText += ': ' + (r.timerMode === 0 ? i18n.t('exec-every') + ' ' + r.intervalSec + 's' : i18n.t('exec-daily') + ' ' + (r.timePoint || ''));
+                        triggerText += ': ' + (r.timerMode === 0 ? i18n.t('periph-exec-every') + ' ' + r.intervalSec + 's' : i18n.t('periph-exec-daily') + ' ' + (r.timePoint || ''));
                     }
+                    const periphName = r.targetPeriphId ? (periphMap[r.targetPeriphId] || r.targetPeriphId) : '-';
                     const actionText = actionLabels[r.actionType] || '?';
-                    const statusIcon = r.enabled ? '<span style="color:#67c23a">&#9679;</span>' : '<span style="color:#ccc">&#9679;</span>';
+                    let actionDisplay = actionText;
+                    if (r.actionType === 15 && r.actionValue) {
+                        const lineCount = r.actionValue.split('\n').filter(l => l.trim() && !l.trim().startsWith('#')).length;
+                        actionDisplay += ' (' + lineCount + i18n.t('periph-exec-script-lines') + ')';
+                    } else if (r.actionValue) {
+                        actionDisplay += ' (' + r.actionValue + ')';
+                    }
+                    const statsText = i18n.t('periph-exec-stats-count') + ': ' + (r.triggerCount || 0);
                     html += '<tr>';
-                    html += '<td>' + statusIcon + ' ' + (r.name || r.id) + '</td>';
-                    html += '<td>' + triggerText + '</td>';
-                    html += '<td>' + actionText + (r.actionValue ? '(' + r.actionValue + ')' : '') + '</td>';
+                    html += '<td>' + (r.name || r.id) + '</td>';
+                    html += '<td>' + statusBadge + '</td>';
+                    html += '<td style="font-size:12px;">' + triggerText + '</td>';
+                    html += '<td>' + periphName + '</td>';
+                    html += '<td style="font-size:12px;">' + actionDisplay + '</td>';
+                    html += '<td style="font-size:12px;">' + statsText + '</td>';
                     html += '<td style="white-space:nowrap;">';
-                    html += '<button class="pure-button btn-small" onclick="app.editExecRule(\'' + r.id + '\')" title="' + i18n.t('edit') + '"><i class="fas fa-edit"></i></button> ';
-                    html += '<button class="pure-button btn-small" onclick="app.toggleExecRule(\'' + r.id + '\', ' + (r.enabled ? 'false' : 'true') + ')" title="' + (r.enabled ? i18n.t('exec-disable') : i18n.t('exec-enable')) + '"><i class="fas fa-' + (r.enabled ? 'pause' : 'play') + '"></i></button> ';
-                    html += '<button class="pure-button btn-small btn-danger" onclick="app.deleteExecRule(\'' + r.id + '\')" title="' + i18n.t('delete') + '"><i class="fas fa-trash"></i></button>';
+                    html += '<button class="pure-button btn-small" onclick="app.editPeriphExecRule(\'' + r.id + '\')" title="' + i18n.t('edit') + '">&#9998;</button> ';
+                    html += '<button class="pure-button btn-small" onclick="app.togglePeriphExecRule(\'' + r.id + '\', ' + (r.enabled ? 'false' : 'true') + ')" title="' + (r.enabled ? i18n.t('periph-exec-disable') : i18n.t('periph-exec-enable')) + '">' + (r.enabled ? '&#9208;' : '&#9654;') + '</button> ';
+                    html += '<button class="pure-button btn-small btn-danger" onclick="app.deletePeriphExecRule(\'' + r.id + '\')" title="' + i18n.t('delete') + '">&#128465;</button>';
                     html += '</td>';
                     html += '</tr>';
                 });
                 tbody.innerHTML = html;
             })
             .catch(() => {
-                tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#999;">' + i18n.t('periph-exec-no-rules') + '</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">' + i18n.t('periph-exec-no-data') + '</td></tr>';
             });
+    },
+
+    _populatePeriphExecFilter() {
+        const sel = document.getElementById('periph-exec-filter-periph');
+        if (!sel || sel._populated) return;
+        apiGet('/api/peripherals').then(res => {
+            if (!res || !res.success || !res.data) return;
+            const currentVal = sel.value;
+            let opts = '<option value="">' + i18n.t('periph-exec-filter-all') + '</option>';
+            res.data.forEach(p => {
+                opts += '<option value="' + p.id + '">' + p.name + ' (' + p.id + ')' + '</option>';
+            });
+            sel.innerHTML = opts;
+            if (currentVal) sel.value = currentVal;
+            sel._populated = true;
+        });
     },
 
     // ============ AP配网功能 ============

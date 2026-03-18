@@ -8,6 +8,7 @@
 #include <LittleFS.h>
 #include "PeripheralExecution.h"
 #include "PeripheralManager.h"
+#include "ScriptEngine.h"
 
 class PeriphExecManager {
 public:
@@ -55,6 +56,7 @@ private:
     bool executeAction(PeriphExecRule& rule);
     bool executePeripheralAction(const PeriphExecRule& rule);
     bool executeSystemAction(const PeriphExecRule& rule);
+    bool executeScriptAction(const PeriphExecRule& rule);
 
     // ID 生成
     String generateUniqueId();

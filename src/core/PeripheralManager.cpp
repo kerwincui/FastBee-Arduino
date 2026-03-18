@@ -369,7 +369,7 @@ GPIOState PeripheralManager::readPin(const String& peripheralId) {
             break;
     }
     
-    // 返回物理状态（电平反转已迁移至执行规则）
+    // 返回物理状态（电平反转已迁移至外设执行）
     return state;
 }
 
@@ -388,7 +388,7 @@ bool PeripheralManager::writePin(const String& peripheralId, GPIOState state) {
     uint8_t pin = config->getPrimaryPin();
     if (pin == 255) return false;
     
-    // 直接写入物理状态（电平反转已迁移至执行规则层处理）
+    // 直接写入物理状态（电平反转已迁移至外设执行层处理）
     GPIOState physicalState = state;
     
     bool success = true;

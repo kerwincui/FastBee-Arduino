@@ -114,7 +114,6 @@ bool PeriphExecManager::saveConfiguration() {
         obj["targetPeriphId"] = r.targetPeriphId;
         obj["actionType"] = r.actionType;
         obj["actionValue"] = r.actionValue;
-        obj["inverted"] = r.inverted;
     }
 
     File file = LittleFS.open(PERIPH_EXEC_CONFIG_FILE, "w");
@@ -170,6 +169,17 @@ bool PeriphExecManager::loadConfiguration() {
         r.targetPeriphId = obj["targetPeriphId"].as<String>();
         r.actionType = obj["actionType"] | 0;
         r.actionValue = obj["actionValue"].as<String>();
+
+        // 向后兼容：旧版 inverted 字段迁移到新的 actionType
+        bool oldInverted = obj["inverted"] | false;
+        if (oldInverted) {
+            if (r.actionType == static_cast<uint8_t>(ExecActionType::ACTION_HIGH)) {
+                r.actionType = static_cast<uint8_t>(ExecActionType::ACTION_HIGH_INVERTED);
+            } else if (r.actionType == static_cast<uint8_t>(ExecActionType::ACTION_LOW)) {
+                r.actionType = static_cast<uint8_t>(ExecActionType::ACTION_LOW_INVERTED);
+            }
+        }
+        r.inverted = false;  // 不再使用独立的 inverted 字段
 
         r.lastTriggerTime = 0;
         r.triggerCount = 0;
@@ -312,9 +322,14 @@ bool PeriphExecManager::executeAction(PeriphExecRule& rule) {
 
     ExecActionType action = static_cast<ExecActionType>(rule.actionType);
 
-    // 系统功能 (actionType >= 6)
-    if (rule.actionType >= 6) {
+    // 系统功能 (actionType 6-11)
+    if (rule.actionType >= 6 && rule.actionType <= 11) {
         return executeSystemAction(rule);
+    }
+
+    // 命令脚本 (actionType 15)
+    if (rule.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT)) {
+        return executeScriptAction(rule);
     }
 
     // 外设动作
@@ -338,17 +353,15 @@ bool PeriphExecManager::executePeripheralAction(const PeriphExecRule& rule) {
 
     switch (action) {
         case ExecActionType::ACTION_HIGH: {
-            LOGGER.infof("[PeriphExec] Execute HIGH on %s (inverted=%d)", rule.targetPeriphId.c_str(), rule.inverted);
+            LOGGER.infof("[PeriphExec] Execute HIGH on %s", rule.targetPeriphId.c_str());
             pm.stopActionTicker(rule.targetPeriphId);
-            GPIOState targetState = rule.inverted ? GPIOState::STATE_LOW : GPIOState::STATE_HIGH;
-            return pm.writePin(rule.targetPeriphId, targetState);
+            return pm.writePin(rule.targetPeriphId, GPIOState::STATE_HIGH);
         }
 
         case ExecActionType::ACTION_LOW: {
-            LOGGER.infof("[PeriphExec] Execute LOW on %s (inverted=%d)", rule.targetPeriphId.c_str(), rule.inverted);
+            LOGGER.infof("[PeriphExec] Execute LOW on %s", rule.targetPeriphId.c_str());
             pm.stopActionTicker(rule.targetPeriphId);
-            GPIOState targetState = rule.inverted ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
-            return pm.writePin(rule.targetPeriphId, targetState);
+            return pm.writePin(rule.targetPeriphId, GPIOState::STATE_LOW);
         }
 
         case ExecActionType::ACTION_BLINK: {
@@ -380,6 +393,18 @@ bool PeriphExecManager::executePeripheralAction(const PeriphExecRule& rule) {
             uint8_t pin = cfg->getPrimaryPin();
             dacWrite(pin, dacVal);
             return true;
+        }
+
+        case ExecActionType::ACTION_HIGH_INVERTED: {
+            LOGGER.infof("[PeriphExec] Execute HIGH(inverted) on %s", rule.targetPeriphId.c_str());
+            pm.stopActionTicker(rule.targetPeriphId);
+            return pm.writePin(rule.targetPeriphId, GPIOState::STATE_LOW);
+        }
+
+        case ExecActionType::ACTION_LOW_INVERTED: {
+            LOGGER.infof("[PeriphExec] Execute LOW(inverted) on %s", rule.targetPeriphId.c_str());
+            pm.stopActionTicker(rule.targetPeriphId);
+            return pm.writePin(rule.targetPeriphId, GPIOState::STATE_HIGH);
         }
 
         default:
@@ -439,6 +464,30 @@ bool PeriphExecManager::executeSystemAction(const PeriphExecRule& rule) {
             LOGGER.warningf("[PeriphExec] Unknown system action: %d", rule.actionType);
             return false;
     }
+}
+
+// ========== 脚本执行 ==========
+
+bool PeriphExecManager::executeScriptAction(const PeriphExecRule& rule) {
+    if (rule.actionValue.isEmpty()) {
+        LOGGER.warning("[PeriphExec] Script is empty");
+        return false;
+    }
+
+    auto cmds = ScriptEngine::parse(rule.actionValue);
+    if (cmds.empty()) {
+        LOGGER.warning("[PeriphExec] Script parse failed");
+        return false;
+    }
+
+    String errMsg;
+    if (!ScriptEngine::validate(cmds, errMsg)) {
+        LOGGER.warningf("[PeriphExec] Script validation failed: %s", errMsg.c_str());
+        return false;
+    }
+
+    LOGGER.infof("[PeriphExec] Executing script '%s' (%d commands)", rule.name.c_str(), cmds.size());
+    return ScriptEngine::execute(cmds);
 }
 
 // ========== 工具 ==========

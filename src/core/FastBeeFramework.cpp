@@ -256,7 +256,7 @@ bool FastBeeFramework::initialize() {
         LOG_INFO("[STEP11.5] Periph exec manager OK");
     }
     
-    // 注入 MQTT 消息回调：消息到达时匹配外设执行规则
+    // 注入 MQTT 消息回调：消息到达时匹配外设执行
     if (protocolManager) {
         protocolManager->setMessageCallback([](ProtocolType type, const String& topic, const String& msg) {
             if (type == ProtocolType::MQTT) {

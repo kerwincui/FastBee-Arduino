@@ -64,7 +64,6 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         obj["targetPeriphId"] = rule.targetPeriphId;
         obj["actionType"] = rule.actionType;
         obj["actionValue"] = rule.actionValue;
-        obj["inverted"] = rule.inverted;
 
         // 运行时状态
         obj["lastTriggerTime"] = rule.lastTriggerTime;
@@ -112,9 +111,9 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     rule.targetPeriphId = ctx->getParamValue(request, "targetPeriphId", "");
     rule.actionType = ctx->getParamInt(request, "actionType", 0);
     rule.actionValue = ctx->getParamValue(request, "actionValue", "");
+    rule.inverted = false;  // 不再使用独立字段，由 actionType 决定
 
     if (rule.name.isEmpty()) {
-        ctx->sendError(request, 400, "Name is required");
         return;
     }
 
@@ -164,7 +163,7 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     rule.targetPeriphId = ctx->getParamValue(request, "targetPeriphId", existing->targetPeriphId);
     rule.actionType = ctx->getParamInt(request, "actionType", existing->actionType);
     rule.actionValue = ctx->getParamValue(request, "actionValue", existing->actionValue);
-    rule.inverted = ctx->getParamBool(request, "inverted", existing->inverted);
+    rule.inverted = false;  // 不再使用独立字段，由 actionType 决定
 
     if (mgr.updateRule(id, rule)) {
         mgr.saveConfiguration();

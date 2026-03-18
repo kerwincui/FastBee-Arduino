@@ -6,9 +6,9 @@
 class WebHandlerContext;
 
 /**
- * @brief 外设执行规则路由处理器
+ * @brief 外设执行路由处理器
  * 
- * 处理 /api/periph-exec/* 的执行规则 CRUD、启用/禁用等
+ * 处理 /api/periph-exec/* 的外设执行 CRUD、启用/禁用等
  */
 class PeriphExecRouteHandler {
 public:

@@ -31,7 +31,10 @@ enum class ExecActionType : uint8_t {
     ACTION_SYS_OTA = 9,          // OTA升级
     ACTION_SYS_AP_PROVISION = 10, // AP配网
     ACTION_SYS_BLE_PROVISION = 11,// BLE配网
-    ACTION_CALL_PERIPHERAL = 12   // 调用其他外设
+    ACTION_CALL_PERIPHERAL = 12,  // 调用其他外设
+    ACTION_HIGH_INVERTED = 13,    // 设置高电平(反转) - 物理输出低电平
+    ACTION_LOW_INVERTED = 14,     // 设置低电平(反转) - 物理输出高电平
+    ACTION_SCRIPT = 15            // 命令序列脚本
 };
 
 // 触发类型
@@ -46,7 +49,7 @@ enum class ExecTimerMode : uint8_t {
     DAILY_TIME = 1   // 每日时间点
 };
 
-// 执行规则结构体
+// 外设执行结构体
 struct PeriphExecRule {
     String id;                  // 唯一标识 (exec_<millis>)
     String name;                // 显示名称
