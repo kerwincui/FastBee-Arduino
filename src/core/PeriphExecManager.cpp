@@ -235,6 +235,63 @@ void PeriphExecManager::handleMqttMessage(const String& topic, const String& mes
     }
 }
 
+// ========== 数据下发命令处理 ==========
+
+String PeriphExecManager::handleDataCommand(const String& message) {
+    JsonDocument cmdDoc;
+    DeserializationError err = deserializeJson(cmdDoc, message);
+    if (err || !cmdDoc.is<JsonArray>()) {
+        LOGGER.warning("[PeriphExec] DataCommand: invalid JSON array");
+        return "";
+    }
+
+    JsonArray cmdArr = cmdDoc.as<JsonArray>();
+
+    // 构建响应 JSON 数组
+    JsonDocument reportDoc;
+    JsonArray reportArr = reportDoc.to<JsonArray>();
+
+    for (JsonObject item : cmdArr) {
+        if (!item.containsKey("id") || !item.containsKey("value")) continue;
+
+        String itemId = item["id"].as<String>();
+        String itemValue = item["value"].as<String>();
+
+        bool matched = false;
+
+        // 遍历所有规则，匹配 targetPeriphId == id 且为设备触发类型
+        for (auto& pair : rules) {
+            PeriphExecRule& rule = pair.second;
+            if (!rule.enabled) continue;
+            if (rule.triggerType != 0) continue;  // 排除定时触发
+            if (rule.targetPeriphId != itemId) continue;
+
+            matched = true;
+            LOGGER.infof("[PeriphExec] DataCommand matched rule '%s' for id='%s' value='%s'",
+                rule.name.c_str(), itemId.c_str(), itemValue.c_str());
+            bool ok = executeAction(rule);
+
+            JsonObject reportItem = reportArr.add<JsonObject>();
+            reportItem["id"] = itemId;
+            reportItem["value"] = itemValue;
+            reportItem["remark"] = ok ? "success" : "execute failed";
+        }
+
+        // 没有匹配到任何规则时也记录到响应中
+        if (!matched) {
+            LOGGER.infof("[PeriphExec] DataCommand no matching rule for id='%s'", itemId.c_str());
+            JsonObject reportItem = reportArr.add<JsonObject>();
+            reportItem["id"] = itemId;
+            reportItem["value"] = itemValue;
+            reportItem["remark"] = "no matching rule";
+        }
+    }
+
+    String result;
+    serializeJson(reportDoc, result);
+    return result;
+}
+
 // ========== 条件评估 ==========
 
 bool PeriphExecManager::evaluateCondition(const String& value, uint8_t op, const String& compareValue) {

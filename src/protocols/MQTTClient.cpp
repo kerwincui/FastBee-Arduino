@@ -18,6 +18,7 @@
 #include <LittleFS.h>
 #include <HTTPClient.h>
 #include <mbedtls/aes.h>
+#include <core/PeriphExecManager.h>
 #include <mbedtls/base64.h>
 
 MQTTClient::MQTTClient()
@@ -89,6 +90,35 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     config.mqttSecret  = cfg["mqttSecret"]  | "";
     config.authCode    = cfg["authCode"]    | "";
     config.ntpServer   = cfg["ntpServer"]   | "";
+    // Card 高级配置（设备信息发布用）
+    config.longitude      = cfg["longitude"]      | 0.0;
+    config.latitude       = cfg["latitude"]       | 0.0;
+    config.iccid          = cfg["iccid"]          | "";
+    config.cardPlatformId = cfg["cardPlatformId"] | 0;
+    config.summary        = cfg["summary"]        | "";
+
+    // 如果deviceNum/productId/userId为空，尝试从device.json中读取
+    if (config.deviceNum.isEmpty() || config.productId.isEmpty() || config.userId.isEmpty()) {
+        if (LittleFS.exists("/config/device.json")) {
+            File devFile = LittleFS.open("/config/device.json", "r");
+            if (devFile) {
+                JsonDocument devDoc;
+                if (!deserializeJson(devDoc, devFile)) {
+                    if (config.deviceNum.isEmpty()) {
+                        config.deviceNum = devDoc["deviceId"] | "";
+                    }
+                    if (config.productId.isEmpty()) {
+                        String pn = String(devDoc["productNumber"] | 0);
+                        if (pn != "0") config.productId = pn;
+                    }
+                    if (config.userId.isEmpty()) {
+                        config.userId = devDoc["userId"] | "";
+                    }
+                }
+                devFile.close();
+            }
+        }
+    }
 
     // 加载发布主题配置（支持多组）
     config.publishTopics.clear();
@@ -206,16 +236,18 @@ bool MQTTClient::publish(const String& topic, const String& message) {
     uint8_t qos = 0;
     bool retain = false;
     bool topicAutoPrefix = false;
+    MqttTopicType topicType = MqttTopicType::DATA_REPORT;
     for (const auto& pt : config.publishTopics) {
         if (pt.topic == topic && pt.enabled) {
             qos = pt.qos;
             retain = pt.retain;
             topicAutoPrefix = pt.autoPrefix;
+            topicType = pt.topicType;
             break;
         }
     }
     
-    String fullTopic = buildFullTopic(topic, topicAutoPrefix);
+    String fullTopic = buildFullTopicWithType(topic, topicAutoPrefix, topicType);
     
     bool ok = mqttClient.publish(fullTopic.c_str(), message.c_str(), retain);
 
@@ -236,7 +268,7 @@ bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
     if (!pt.enabled) {
         return false;
     }
-    String fullTopic = buildFullTopic(pt.topic, pt.autoPrefix);
+    String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
     bool ok = mqttClient.publish(fullTopic.c_str(), message.c_str(), pt.retain);
     
     if (!ok) {
@@ -247,20 +279,245 @@ bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
     return ok;
 }
 
+bool MQTTClient::publishDeviceInfo() {
+    if (!isConnected) {
+        return false;
+    }
+
+    // 查找 topicType==DEVICE_INFO 的发布主题
+    int infoTopicIdx = -1;
+    for (size_t i = 0; i < config.publishTopics.size(); i++) {
+        if (config.publishTopics[i].topicType == MqttTopicType::DEVICE_INFO &&
+            config.publishTopics[i].enabled) {
+            infoTopicIdx = (int)i;
+            break;
+        }
+    }
+    if (infoTopicIdx < 0) {
+        LOG_DEBUG("MQTT: No enabled DEVICE_INFO publish topic found");
+        return false;
+    }
+
+    // 构建设备信息 JSON
+    JsonDocument doc;
+    doc["rssi"] = WiFi.RSSI();
+    doc["firmwareVersion"] = SystemInfo::VERSION;
+    doc["status"] = 3;  // 在线
+
+    // userId: 优先使用配置值，默认为 1
+    if (!config.userId.isEmpty()) {
+        long uid = config.userId.toInt();
+        doc["userId"] = (uid > 0) ? uid : 1;
+    } else {
+        doc["userId"] = 1;
+    }
+
+    // 经纬度
+    doc["longitude"] = config.longitude;
+    doc["latitude"]  = config.latitude;
+
+    // 可选字段：非空/非零时才包含
+    if (!config.iccid.isEmpty()) {
+        doc["iccid"] = config.iccid;
+    }
+    if (config.cardPlatformId != 0) {
+        doc["cardPlatformId"] = config.cardPlatformId;
+    }
+
+    // summary: 解析配置的 JSON 字符串，为空时自动生成默认值
+    if (!config.summary.isEmpty()) {
+        JsonDocument summaryDoc;
+        DeserializationError err = deserializeJson(summaryDoc, config.summary);
+        if (!err) {
+            doc["summary"] = summaryDoc.as<JsonObject>();
+        }
+    } else {
+        // 自动生成默认 summary
+        JsonObject summary = doc["summary"].to<JsonObject>();
+        summary["name"] = "FastBee";
+        summary["chip"] = ESP.getChipModel();
+    }
+
+    String payload;
+    serializeJson(doc, payload);
+
+    // 获取完整主题用于日志输出
+    const MqttPublishTopic& pt = config.publishTopics[infoTopicIdx];
+    String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
+
+    bool ok = publishToTopic((size_t)infoTopicIdx, payload);
+
+    // 打印发布主题和内容
+    LOG_INFO(ok ? "MQTT: Published device info" : "MQTT: Failed to publish device info");
+    {
+        char topicBuf[128];
+        snprintf(topicBuf, sizeof(topicBuf), "MQTT: Topic: %s", fullTopic.c_str());
+        LOG_INFO(topicBuf);
+    }
+    {
+        // payload 可能较长，分段打印
+        String logMsg = "MQTT: Payload: " + payload;
+        LOG_INFO(logMsg.c_str());
+    }
+
+    return ok;
+}
+
+bool MQTTClient::publishMonitorData() {
+    if (!isConnected) {
+        return false;
+    }
+
+    // 查找 topicType==REALTIME_MON 的发布主题
+    int monTopicIdx = -1;
+    for (size_t i = 0; i < config.publishTopics.size(); i++) {
+        if (config.publishTopics[i].topicType == MqttTopicType::REALTIME_MON &&
+            config.publishTopics[i].enabled) {
+            monTopicIdx = (int)i;
+            break;
+        }
+    }
+    if (monTopicIdx < 0) {
+        LOG_DEBUG("MQTT: No enabled REALTIME_MON publish topic found");
+        return false;
+    }
+
+    // 构建监测数据 JSON 数组
+    // 模拟温湿度数据（实际项目可替换为真实传感器读数）
+    float temperature = 20.0 + (float)(esp_random() % 1500) / 100.0;  // 20.00~35.00
+    float humidity    = 30.0 + (float)(esp_random() % 5000) / 100.0;  // 30.00~80.00
+
+    // 获取当前时间作为 remark
+    String remark = "";
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo, 0) && timeinfo.tm_year >= 100) {
+        char timeBuf[24];
+        strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+        remark = timeBuf;
+    }
+
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+
+    JsonObject tempObj = arr.add<JsonObject>();
+    tempObj["id"] = "temperature";
+    char tempVal[8];
+    snprintf(tempVal, sizeof(tempVal), "%.2f", temperature);
+    tempObj["value"] = tempVal;
+    tempObj["remark"] = remark;
+
+    JsonObject humiObj = arr.add<JsonObject>();
+    humiObj["id"] = "humidity";
+    char humiVal[8];
+    snprintf(humiVal, sizeof(humiVal), "%.2f", humidity);
+    humiObj["value"] = humiVal;
+    humiObj["remark"] = remark;
+
+    String payload;
+    serializeJson(doc, payload);
+
+    bool ok = publishToTopic((size_t)monTopicIdx, payload);
+    return ok;
+}
+
+bool MQTTClient::publishReportData(const String& payload) {
+    if (!isConnected) {
+        return false;
+    }
+
+    // 查找 topicType==DATA_REPORT 的发布主题
+    int reportTopicIdx = -1;
+    for (size_t i = 0; i < config.publishTopics.size(); i++) {
+        if (config.publishTopics[i].topicType == MqttTopicType::DATA_REPORT &&
+            config.publishTopics[i].enabled) {
+            reportTopicIdx = (int)i;
+            break;
+        }
+    }
+    if (reportTopicIdx < 0) {
+        LOG_DEBUG("MQTT: No enabled DATA_REPORT publish topic found");
+        return false;
+    }
+
+    const MqttPublishTopic& pt = config.publishTopics[reportTopicIdx];
+    String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
+
+    bool ok = publishToTopic((size_t)reportTopicIdx, payload);
+
+    char logBuf[128];
+    snprintf(logBuf, sizeof(logBuf), "MQTT: %s DATA_REPORT topic=%s",
+             ok ? "Published" : "Failed to publish", fullTopic.c_str());
+    ok ? LOG_INFO(logBuf) : LOG_WARNING(logBuf);
+    {
+        String logMsg = "MQTT: Report payload: " + payload;
+        LOG_DEBUG(logMsg.c_str());
+    }
+
+    return ok;
+}
+
+bool MQTTClient::publishNtpSync() {
+    if (!isConnected) {
+        return false;
+    }
+
+    // 查找 topicType==NTP_SYNC 的发布主题
+    int ntpTopicIdx = -1;
+    for (size_t i = 0; i < config.publishTopics.size(); i++) {
+        if (config.publishTopics[i].topicType == MqttTopicType::NTP_SYNC &&
+            config.publishTopics[i].enabled) {
+            ntpTopicIdx = (int)i;
+            break;
+        }
+    }
+    if (ntpTopicIdx < 0) {
+        LOG_DEBUG("MQTT: No enabled NTP_SYNC publish topic found");
+        return false;
+    }
+
+    // 记录设备发送时间（millis）
+    ntpDeviceSendTime = (unsigned long long)millis();
+
+    // 构建 NTP 请求 JSON: {"deviceSendTime": "1592361428000"}
+    JsonDocument doc;
+    doc["deviceSendTime"] = String(ntpDeviceSendTime);
+
+    String payload;
+    serializeJson(doc, payload);
+
+    const MqttPublishTopic& pt = config.publishTopics[ntpTopicIdx];
+    String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
+
+    bool ok = publishToTopic((size_t)ntpTopicIdx, payload);
+
+    char logBuf[128];
+    snprintf(logBuf, sizeof(logBuf), "MQTT: %s NTP_SYNC topic=%s",
+             ok ? "Published" : "Failed to publish", fullTopic.c_str());
+    ok ? LOG_INFO(logBuf) : LOG_WARNING(logBuf);
+    {
+        String logMsg = "MQTT: NTP payload: " + payload;
+        LOG_DEBUG(logMsg.c_str());
+    }
+
+    return ok;
+}
+
 bool MQTTClient::subscribe(const String& topic) {
     if (!isConnected) {
         return false;
     }
 
-    // 查找对应订阅主题配置的autoPrefix设置
+    // 查找对应订阅主题配置的autoPrefix和topicType设置
     bool topicAutoPrefix = false;
+    MqttTopicType topicType = MqttTopicType::DATA_COMMAND;
     for (const auto& st : config.subscribeTopics) {
         if (st.topic == topic) {
             topicAutoPrefix = st.autoPrefix;
+            topicType = st.topicType;
             break;
         }
     }
-    String fullTopic = buildFullTopic(topic, topicAutoPrefix);
+    String fullTopic = buildFullTopicWithType(topic, topicAutoPrefix, topicType);
     bool ok = mqttClient.subscribe(fullTopic.c_str());
 
     char buf[80];
@@ -280,7 +537,7 @@ bool MQTTClient::subscribeAll() {
     // 订阅所有配置的主题
     for (const auto& st : config.subscribeTopics) {
         if (!st.topic.isEmpty() && st.enabled) {
-            String fullTopic = buildFullTopic(st.topic, st.autoPrefix);
+            String fullTopic = buildFullTopicWithType(st.topic, st.autoPrefix, st.topicType);
             bool ok = mqttClient.subscribe(fullTopic.c_str(), st.qos);
             
             char buf[96];
@@ -341,6 +598,20 @@ void MQTTClient::handle() {
         }
         lastLoopTime = millis();
         mqttClient.loop();
+        
+        // 实时监测：按间隔定时发布监测数据
+        if (monitorActive && monitorRemaining > 0) {
+            unsigned long now = millis();
+            if (now - lastMonitorTime >= monitorInterval) {
+                lastMonitorTime = now;
+                publishMonitorData();
+                monitorRemaining--;
+                if (monitorRemaining <= 0) {
+                    monitorActive = false;
+                    LOG_INFO("MQTT: Monitor completed");
+                }
+            }
+        }
     }
 }
 
@@ -353,16 +624,16 @@ void MQTTClient::setMessageCallback(std::function<void(const String&, const Stri
 }
 
 MqttTopicType MQTTClient::getTopicTypeByPath(const String& topicPath) const {
-    // 去掉前缀后匹配（检查每个主题自身的autoPrefix设置）
+    // 尝试匹配每个主题（考虑autoPrefix生成的完整路径）
     // 先查订阅主题
     for (const auto& st : config.subscribeTopics) {
         if (st.topic == topicPath) {
             return st.topicType;
         }
-        // 如果该主题启用了autoPrefix，尝试去掉前缀后匹配
-        if (st.autoPrefix && !config.topicPrefix.isEmpty() && topicPath.startsWith(config.topicPrefix)) {
-            String stripped = topicPath.substring(config.topicPrefix.length());
-            if (st.topic == stripped) {
+        // 如果该主题启用了autoPrefix，构建完整路径后匹配
+        if (st.autoPrefix) {
+            String fullTopic = buildFullTopicWithType(st.topic, true, st.topicType);
+            if (fullTopic == topicPath) {
                 return st.topicType;
             }
         }
@@ -372,9 +643,9 @@ MqttTopicType MQTTClient::getTopicTypeByPath(const String& topicPath) const {
         if (pt.topic == topicPath) {
             return pt.topicType;
         }
-        if (pt.autoPrefix && !config.topicPrefix.isEmpty() && topicPath.startsWith(config.topicPrefix)) {
-            String stripped = topicPath.substring(config.topicPrefix.length());
-            if (pt.topic == stripped) {
+        if (pt.autoPrefix) {
+            String fullTopic = buildFullTopicWithType(pt.topic, true, pt.topicType);
+            if (fullTopic == topicPath) {
                 return pt.topicType;
             }
         }
@@ -383,10 +654,33 @@ MqttTopicType MQTTClient::getTopicTypeByPath(const String& topicPath) const {
 }
 
 String MQTTClient::buildFullTopic(const String& topic, bool autoPrefix) const {
-    if (autoPrefix && !config.topicPrefix.isEmpty()) {
-        return config.topicPrefix + topic;
+    return buildFullTopicWithType(topic, autoPrefix, MqttTopicType::DATA_REPORT);
+}
+
+String MQTTClient::buildFullTopicWithType(const String& topic, bool autoPrefix, MqttTopicType topicType) const {
+    if (!autoPrefix) {
+        return topic;
     }
-    return topic;
+    // autoPrefix启用时，根据topicType自动生成设备前缀
+    // OTA类型(5,6): /{deviceNum} + topic
+    // 其他类型: /{productId}/{deviceNum} + topic
+    String prefix;
+    if (topicType == MqttTopicType::OTA_UPGRADE || topicType == MqttTopicType::OTA_BINARY) {
+        if (!config.deviceNum.isEmpty()) {
+            prefix = "/" + config.deviceNum;
+        }
+    } else {
+        if (!config.productId.isEmpty() && !config.deviceNum.isEmpty()) {
+            prefix = "/" + config.productId + "/" + config.deviceNum;
+        } else if (!config.deviceNum.isEmpty()) {
+            prefix = "/" + config.deviceNum;
+        }
+    }
+    // 额外的topicPrefix（如果设置了的话，追加在设备前缀之前）
+    if (!config.topicPrefix.isEmpty()) {
+        return config.topicPrefix + prefix + topic;
+    }
+    return prefix + topic;
 }
 
 void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
@@ -402,6 +696,92 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
     snprintf(buf, sizeof(buf), "MQTT: Msg type=%d topic=%s len=%u",
              (int)tType, topic, length);
     LOG_DEBUG(buf);
+
+    // 收到设备信息查询指令时，自动发布设备信息
+    if (tType == MqttTopicType::DEVICE_INFO) {
+        publishDeviceInfo();
+    }
+
+    // 收到实时监测指令时，解析 count/interval 并启动定时发布
+    if (tType == MqttTopicType::REALTIME_MON) {
+        JsonDocument monDoc;
+        DeserializationError err = deserializeJson(monDoc, message);
+        if (!err) {
+            int count = monDoc["count"] | 0;
+            unsigned long interval = monDoc["interval"] | 1000;
+            if (count > 0 && interval >= 100) {
+                monitorRemaining = count;
+                monitorInterval = interval;
+                monitorActive = true;
+                lastMonitorTime = millis();
+                char logBuf[80];
+                snprintf(logBuf, sizeof(logBuf), "MQTT: Monitor started count=%d interval=%lums", count, interval);
+                LOG_INFO(logBuf);
+                // 立即发布第一次
+                publishMonitorData();
+                monitorRemaining--;
+            }
+        }
+    }
+
+    // 收到数据下发指令时，匹配外设执行规则并发布数据上报
+    if (tType == MqttTopicType::DATA_COMMAND) {
+        LOG_INFO("MQTT: Received DATA_COMMAND, processing...");
+        PeriphExecManager& execMgr = PeriphExecManager::getInstance();
+        String reportPayload = execMgr.handleDataCommand(message);
+        if (!reportPayload.isEmpty() && reportPayload != "[]") {
+            publishReportData(reportPayload);
+        }
+    }
+
+    // 收到 NTP 时间同步响应时，计算校准时间并设置系统时钟
+    if (tType == MqttTopicType::NTP_SYNC) {
+        JsonDocument ntpDoc;
+        DeserializationError err = deserializeJson(ntpDoc, message);
+        if (!err && ntpDoc.containsKey("serverSendTime") && ntpDoc.containsKey("serverRecvTime")) {
+            // 解析服务端时间戳（毫秒）
+            double deviceSendTime = ntpDoc["deviceSendTime"].as<String>().toDouble();
+            double serverRecvTime = ntpDoc["serverRecvTime"].as<String>().toDouble();
+            double serverSendTime = ntpDoc["serverSendTime"].as<String>().toDouble();
+            double deviceRecvTime = (double)millis();
+
+            // 使用记录的本地发送时间替代服务端回传值（更精确）
+            if (ntpDeviceSendTime > 0) {
+                deviceSendTime = (double)ntpDeviceSendTime;
+            }
+
+            // NTP 算法：当前时间 = (serverRecvTime + serverSendTime + deviceRecvTime - deviceSendTime) / 2
+            double currentTimeMs = (serverRecvTime + serverSendTime + deviceRecvTime - deviceSendTime) / 2.0;
+
+            // 转换为 timeval 并设置系统时钟
+            time_t epochSec = (time_t)(currentTimeMs / 1000.0);
+            long microSec = (long)((currentTimeMs - (double)epochSec * 1000.0) * 1000.0);
+            struct timeval tv;
+            tv.tv_sec = epochSec;
+            tv.tv_usec = microSec;
+            settimeofday(&tv, nullptr);
+
+            // 设置时区为 CST-8（中国标准时间）
+            setenv("TZ", "CST-8", 1);
+            tzset();
+
+            // 重置发送时间
+            ntpDeviceSendTime = 0;
+
+            // 打印校准结果
+            struct tm timeinfo;
+            if (getLocalTime(&timeinfo, 0)) {
+                char timeBuf[32];
+                strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+                char logBuf[80];
+                snprintf(logBuf, sizeof(logBuf), "MQTT: NTP synced, time: %s", timeBuf);
+                LOG_INFO(logBuf);
+            }
+        } else if (!err && !ntpDoc.containsKey("serverSendTime")) {
+            // 收到的是 NTP 请求而非响应（仅含 deviceSendTime），忽略
+            LOG_DEBUG("MQTT: NTP_SYNC request received (not response), ignoring");
+        }
+    }
 
     if (messageCallback) {
         messageCallback(topicStr, message, tType);
@@ -441,6 +821,10 @@ bool MQTTClient::reconnect() {
              config.authType == MqttAuthType::ENCRYPTED ? "AES" : "Simple",
              connClientId.c_str());
     LOG_INFO(logBuf);
+    snprintf(logBuf, sizeof(logBuf), "MQTT: User=%s PwdLen=%d AuthCode=%s",
+             config.username.c_str(), connPassword.length(),
+             config.authCode.isEmpty() ? "(empty)" : config.authCode.c_str());
+    LOG_INFO(logBuf);
 
     bool ok;
     if (!config.willTopic.isEmpty()) {
@@ -466,6 +850,10 @@ bool MQTTClient::reconnect() {
         LOG_INFO("MQTT: Connected");
         // 连接成功后订阅所有主题
         subscribeAll();
+        // 连接成功后发布一次设备信息
+        publishDeviceInfo();
+        // 连接成功后发起 NTP 时间同步
+        publishNtpSync();
     } else {
         lastErrorCode = mqttClient.state();
         reconnectCount++;

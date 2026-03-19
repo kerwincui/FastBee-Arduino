@@ -355,10 +355,6 @@
                                                 <input type="checkbox" id="mqtt-auto-reconnect" checked> <span data-i18n="mqtt-auto-reconnect-text">自动重连</span>
                                             </label>
                                         </div>
-                                        <div class="pure-control-group" style="margin-bottom:15px;">
-                                            <label for="mqtt-topic-prefix" data-i18n="mqtt-topic-prefix-label">主题前缀</label>
-                                            <input type="text" id="mqtt-topic-prefix" class="pure-input-1" placeholder="/prefix/">
-                                        </div>
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
@@ -377,14 +373,13 @@
                                                 </div>
 
                                                 <div class="pure-control-group">
-                                                    <label for="mqtt-alive" data-i18n="mqtt-alive-label">心跳(秒)</label>
-                                                    <input type="number" id="mqtt-alive" class="pure-input-1" value="60" min="10" max="300">
+                                                    <label for="mqtt-access-mode" data-i18n="mqtt-access-mode-label">接入模式</label>
+                                                    <select id="mqtt-access-mode" class="pure-input-1">
+                                                        <option value="0" data-i18n="mqtt-access-mode-direct">MQTT直连</option>
+                                                        <option value="1" data-i18n="mqtt-access-mode-transparent">MQTT透传</option>
+                                                    </select>
                                                 </div>
-
-                                                <div class="pure-control-group">
-                                                    <label for="mqtt-auth-code" data-i18n="mqtt-auth-code-label">授权码</label>
-                                                    <input type="text" id="mqtt-auth-code" class="pure-input-1" placeholder="可选">
-                                                </div>
+                                                
                                             </div>
 
                                             <div class="config-form-column">
@@ -407,65 +402,127 @@
                                                 </div>
 
                                                 <div class="pure-control-group">
-                                                    <label for="mqtt-conn-timeout" data-i18n="mqtt-conn-timeout-label">连接超时(毫秒)</label>
-                                                    <input type="number" id="mqtt-conn-timeout" class="pure-input-1" value="30000" min="1000" max="120000">
+                                                    <label for="mqtt-secret" data-i18n="mqtt-secret-label">产品秘钥</label>
+                                                    <input type="password" id="mqtt-secret" class="pure-input-1" placeholder="AES加密用16字节密钥">
                                                 </div>
 
-                                                <div class="pure-control-group">
-                                                    <label for="mqtt-access-mode" data-i18n="mqtt-access-mode-label">接入模式</label>
-                                                    <select id="mqtt-access-mode" class="pure-input-1">
-                                                        <option value="0" data-i18n="mqtt-access-mode-direct">MQTT直连</option>
-                                                        <option value="1" data-i18n="mqtt-access-mode-transparent">MQTT透传</option>
-                                                    </select>
+                                            </div>
+                                        </div>
+
+                                        <!-- 高级配置（可折叠） -->
+                                        <div class="mqtt-collapsible-section" style="margin-top:15px; background:#f3e5f5; border:1px solid #ce93d8; border-radius:4px;">
+                                            <div class="mqtt-collapsible-header" onclick="AppState.toggleSection('mqtt-card-body')" style="padding: 12px 15px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none;">
+                                                <h4 style="margin:0; font-size:14px; color:#333;" data-i18n="mqtt-card-section-title">高级配置</h4>
+                                                <span class="mqtt-collapse-icon" id="mqtt-card-body-icon">&#9654;</span>
+                                            </div>
+                                            <div id="mqtt-card-body" class="mqtt-collapsible-body" style="display: none; padding: 0 12px 12px 12px;">
+                                                <div class="config-form-grid">
+                                                    <div class="config-form-column">
+                                                        <div class="pure-control-group">
+                                                            <label for="mqtt-auth-code" data-i18n="mqtt-auth-code-label">授权码</label>
+                                                            <input type="text" id="mqtt-auth-code" class="pure-input-1" placeholder="可选">
+                                                        </div>
+                                                        <div class="pure-control-group">
+                                                            <label for="mqtt-longitude" data-i18n="mqtt-longitude-label">经度</label>
+                                                            <input type="number" step="any" id="mqtt-longitude" class="pure-input-1" value="0" placeholder="0">
+                                                        </div>
+                                                        <div class="pure-control-group">
+                                                            <label for="mqtt-iccid" data-i18n="mqtt-iccid-label">ICCID</label>
+                                                            <input type="text" id="mqtt-iccid" class="pure-input-1" maxlength="32" placeholder="">
+                                                        </div>
+                                                    </div>
+                                                    <div class="config-form-column">
+                                                        <div class="pure-control-group">
+                                                            <label for="mqtt-alive" data-i18n="mqtt-alive-label">心跳(秒)</label>
+                                                            <input type="number" id="mqtt-alive" class="pure-input-1" value="60" min="10" max="300">
+                                                        </div>
+                                                        <div class="pure-control-group">
+                                                            <label for="mqtt-conn-timeout" data-i18n="mqtt-conn-timeout-label">连接超时(毫秒)</label>
+                                                            <input type="number" id="mqtt-conn-timeout" class="pure-input-1" value="30000" min="1000" max="120000">
+                                                        </div>
+                                                        <div class="pure-control-group">
+                                                            <label for="mqtt-card-platform-id" data-i18n="mqtt-card-platform-id-label">卡平台编号</label>
+                                                            <input type="number" id="mqtt-card-platform-id" class="pure-input-1" value="0" placeholder="0">
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="config-form-grid" style="margin-top:4px;">
+                                                    <div class="config-form-column">
+                                                        <div class="pure-control-group">
+                                                            <label for="mqtt-latitude" data-i18n="mqtt-latitude-label">纬度</label>
+                                                            <input type="number" step="any" id="mqtt-latitude" class="pure-input-1" value="0" placeholder="0">
+                                                        </div>
+                                                    </div>
+                                                    <div class="config-form-column">
+                                                    </div>
+                                                </div>
+                                                <div class="pure-control-group" style="margin-top:8px;">
+                                                    <label for="mqtt-summary" data-i18n="mqtt-summary-label">摘要 (JSON)</label>
+                                                    <textarea id="mqtt-summary" class="pure-input-1" rows="4" placeholder='{"name":"FastBee","chip":"ESP32"}'></textarea>
                                                 </div>
                                             </div>
                                         </div>
 
-                                        <!-- 发布主题配置区域 -->
-                                        <div class="mqtt-publish-section" style="margin-top: 20px; padding: 15px; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 4px;">
-                                            <h4 style="margin: 0 0 15px 0; color: #333;" data-i18n="mqtt-publish-section-title">发布主题配置</h4>
-                                            <div id="mqtt-publish-topics">
-                                                <!-- 动态添加的发布主题组将在这里显示 -->
+                                        <!-- 发布主题配置区域（可折叠） -->
+                                        <div class="mqtt-collapsible-section" style="margin-top: 20px; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 4px;">
+                                            <div class="mqtt-collapsible-header" onclick="AppState.toggleSection('mqtt-publish-body')" style="padding: 12px 15px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none;">
+                                                <h4 style="margin: 0; color: #333;" data-i18n="mqtt-publish-section-title">发布主题配置</h4>
+                                                <span class="mqtt-collapse-icon" id="mqtt-publish-body-icon">&#9654;</span>
                                             </div>
-                                            <button type="button" id="add-mqtt-topic-btn" class="pure-button" style="margin-top: 10px;" data-i18n="mqtt-add-topic-btn">增加主题</button>
-                                        </div>
-
-                                        <!-- 订阅主题配置区域 -->
-                                        <div class="mqtt-subscribe-section" style="margin-top: 20px; padding: 15px; background: #f0f7ff; border: 1px solid #b3d4fc; border-radius: 4px;">
-                                            <h4 style="margin: 0 0 15px 0; color: #333;" data-i18n="mqtt-subscribe-section-title">订阅主题配置</h4>
-                                            <div id="mqtt-subscribe-topics">
-                                                <!-- 动态添加的订阅主题组将在这里显示 -->
-                                            </div>
-                                            <button type="button" id="add-mqtt-subscribe-btn" class="pure-button" style="margin-top: 10px;" data-i18n="mqtt-add-subscribe-btn">增加订阅</button>
-                                        </div>
-
-                                        <!-- 遗嘱消息配置 -->
-                                        <div class="mqtt-section" style="margin-top:15px; padding:12px; background:#fff8e1; border:1px solid #ffe082; border-radius:4px;">
-                                            <h4 style="margin:0 0 10px 0; font-size:14px; color:#333;" data-i18n="mqtt-will-section-title">遗嘱消息配置</h4>
-                                            <div class="config-form-grid">
-                                                <div class="config-form-column">
-                                                    <div class="pure-control-group">
-                                                        <label for="mqtt-will-topic" data-i18n="mqtt-will-topic-label">遗嘱主题</label>
-                                                        <input type="text" id="mqtt-will-topic" class="pure-input-1" maxlength="64">
-                                                    </div>
-                                                    <div class="pure-control-group">
-                                                        <label for="mqtt-will-qos" data-i18n="mqtt-will-qos-label">遗嘱QoS</label>
-                                                        <select id="mqtt-will-qos" class="pure-input-1">
-                                                            <option value="0">0</option>
-                                                            <option value="1">1</option>
-                                                            <option value="2">2</option>
-                                                        </select>
-                                                    </div>
+                                            <div id="mqtt-publish-body" class="mqtt-collapsible-body" style="display: none; padding: 0 15px 15px 15px;">
+                                                <div id="mqtt-publish-topics">
+                                                    <!-- 动态添加的发布主题组将在这里显示 -->
                                                 </div>
-                                                <div class="config-form-column">
-                                                    <div class="pure-control-group">
-                                                        <label for="mqtt-will-payload" data-i18n="mqtt-will-payload-label">遗嘱内容</label>
-                                                        <input type="text" id="mqtt-will-payload" class="pure-input-1" maxlength="128">
+                                                <button type="button" id="add-mqtt-topic-btn" class="pure-button" style="margin-top: 10px;" data-i18n="mqtt-add-topic-btn">增加主题</button>
+                                            </div>
+                                        </div>
+
+                                        <!-- 订阅主题配置区域（可折叠） -->
+                                        <div class="mqtt-collapsible-section" style="margin-top: 20px; background: #f0f7ff; border: 1px solid #b3d4fc; border-radius: 4px;">
+                                            <div class="mqtt-collapsible-header" onclick="AppState.toggleSection('mqtt-subscribe-body')" style="padding: 12px 15px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none;">
+                                                <h4 style="margin: 0; color: #333;" data-i18n="mqtt-subscribe-section-title">订阅主题配置</h4>
+                                                <span class="mqtt-collapse-icon" id="mqtt-subscribe-body-icon">&#9654;</span>
+                                            </div>
+                                            <div id="mqtt-subscribe-body" class="mqtt-collapsible-body" style="display: none; padding: 0 15px 15px 15px;">
+                                                <div id="mqtt-subscribe-topics">
+                                                    <!-- 动态添加的订阅主题组将在这里显示 -->
+                                                </div>
+                                                <button type="button" id="add-mqtt-subscribe-btn" class="pure-button" style="margin-top: 10px;" data-i18n="mqtt-add-subscribe-btn">增加订阅</button>
+                                            </div>
+                                        </div>
+
+                                        <!-- 遗嘱消息配置（可折叠） -->
+                                        <div class="mqtt-collapsible-section" style="margin-top:15px; background:#fff8e1; border:1px solid #ffe082; border-radius:4px;">
+                                            <div class="mqtt-collapsible-header" onclick="AppState.toggleSection('mqtt-will-body')" style="padding: 12px 15px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none;">
+                                                <h4 style="margin:0; font-size:14px; color:#333;" data-i18n="mqtt-will-section-title">遗嘱消息配置</h4>
+                                                <span class="mqtt-collapse-icon" id="mqtt-will-body-icon">&#9654;</span>
+                                            </div>
+                                            <div id="mqtt-will-body" class="mqtt-collapsible-body" style="display: none; padding: 0 12px 12px 12px;">
+                                                <div class="config-form-grid">
+                                                    <div class="config-form-column">
+                                                        <div class="pure-control-group">
+                                                            <label for="mqtt-will-topic" data-i18n="mqtt-will-topic-label">遗嘱主题</label>
+                                                            <input type="text" id="mqtt-will-topic" class="pure-input-1" maxlength="64">
+                                                        </div>
+                                                        <div class="pure-control-group">
+                                                            <label for="mqtt-will-qos" data-i18n="mqtt-will-qos-label">遗嘱QoS</label>
+                                                            <select id="mqtt-will-qos" class="pure-input-1">
+                                                                <option value="0">0</option>
+                                                                <option value="1">1</option>
+                                                                <option value="2">2</option>
+                                                            </select>
+                                                        </div>
                                                     </div>
-                                                    <div class="pure-control-group" style="margin-top:24px;">
-                                                        <label class="pure-checkbox">
-                                                            <input type="checkbox" id="mqtt-will-retain"> <span data-i18n="mqtt-will-retain-label">遗嘱保留</span>
-                                                        </label>
+                                                    <div class="config-form-column">
+                                                        <div class="pure-control-group">
+                                                            <label for="mqtt-will-payload" data-i18n="mqtt-will-payload-label">遗嘱内容</label>
+                                                            <input type="text" id="mqtt-will-payload" class="pure-input-1" maxlength="128">
+                                                        </div>
+                                                        <div class="pure-control-group" style="margin-top:24px;">
+                                                            <label class="pure-checkbox">
+                                                                <input type="checkbox" id="mqtt-will-retain"> <span data-i18n="mqtt-will-retain-label">遗嘱保留</span>
+                                                            </label>
+                                                        </div>
                                                     </div>
                                                 </div>
                                             </div>
@@ -479,6 +536,7 @@
                                             <button type="submit" class="pure-button pure-button-primary" data-i18n="btn-save-config">保存配置</button>
                                             <button type="button" class="mqtt-test-btn" style="margin-left:10px;" onclick="AppState.testMqttConnection()" data-i18n="mqtt-test-conn-btn">测试连接</button>
                                             <button type="button" class="mqtt-disconnect-btn" style="margin-left:10px;" onclick="AppState.disconnectMqtt()" data-i18n="mqtt-disconnect-btn">断开连接</button>
+                                            <button type="button" class="mqtt-ntp-sync-btn" style="margin-left:10px;" onclick="AppState.mqttNtpSync()" data-i18n="mqtt-ntp-sync-btn">MQTT时间同步</button>
                                             <span id="mqtt-test-result" style="margin-left:10px; font-size:13px;"></span>
                                         </div>
                                     </form>
@@ -1331,6 +1389,10 @@
                                                 <div class="pure-control-group">
                                                     <label for="dev-product-number" data-i18n="dev-product-number-label">产品编号</label>
                                                     <input type="number" id="dev-product-number" class="pure-input-1" placeholder="输入产品编号" data-i18n-placeholder="dev-product-number-label" min="0">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="dev-user-id" data-i18n="dev-user-id-label">用户ID</label>
+                                                    <input type="text" id="dev-user-id" class="pure-input-1" placeholder="输入用户ID" data-i18n-placeholder="dev-user-id-label">
                                                 </div>
                                             </div>
                                         </div>

@@ -359,6 +359,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             if (obj["deviceName"].is<String>()) doc["deviceName"] = obj["deviceName"].as<String>();
             if (obj["deviceId"].is<String>()) doc["deviceId"] = obj["deviceId"].as<String>();
             if (obj["productNumber"].is<int>() || obj["productNumber"].is<String>()) doc["productNumber"] = obj["productNumber"].as<int>();
+            if (obj["userId"].is<String>()) doc["userId"] = obj["userId"].as<String>();
             if (obj["description"].is<String>()) doc["description"] = obj["description"].as<String>();
             if (obj["ntpServer1"].is<String>()) doc["ntpServer1"] = obj["ntpServer1"].as<String>();
             if (obj["ntpServer2"].is<String>()) doc["ntpServer2"] = obj["ntpServer2"].as<String>();

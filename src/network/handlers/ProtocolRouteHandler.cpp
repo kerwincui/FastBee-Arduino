@@ -57,6 +57,12 @@ void ProtocolRouteHandler::setupRoutes(AsyncWebServer* server) {
               [this](AsyncWebServerRequest* request) {
         handleMqttDisconnect(request);
     });
+
+    // MQTT NTP Time Sync API
+    server->on("/api/mqtt/ntp-sync", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleMqttNtpSync(request);
+    });
 }
 
 void ProtocolRouteHandler::handleGetProtocolConfig(AsyncWebServerRequest* request) {
@@ -163,15 +169,22 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["mqtt"]["accessMode"] = GPI("mqtt_accessMode", "0");
     doc["mqtt"]["autoReconnect"] = GP("mqtt_autoReconnect", "true") == "true";
     doc["mqtt"]["connectionTimeout"] = GPI("mqtt_connectionTimeout", "30000");
-    doc["mqtt"]["topicPrefix"] = GP("mqtt_topicPrefix", "");
     // MQTT 认证配置
     doc["mqtt"]["authType"] = GPI("mqtt_authType", "0");
+    doc["mqtt"]["mqttSecret"] = GP("mqtt_mqttSecret", "");
     doc["mqtt"]["authCode"] = GP("mqtt_authCode", "");
     // MQTT 遗嘱消息
     doc["mqtt"]["willTopic"] = GP("mqtt_willTopic", "");
     doc["mqtt"]["willPayload"] = GP("mqtt_willPayload", "");
     doc["mqtt"]["willQos"] = GPI("mqtt_willQos", "0");
     doc["mqtt"]["willRetain"] = GP("mqtt_willRetain", "false") == "true";
+
+    // Card 高级配置
+    doc["mqtt"]["longitude"] = atof(GP("mqtt_longitude", "0").c_str());
+    doc["mqtt"]["latitude"]  = atof(GP("mqtt_latitude", "0").c_str());
+    doc["mqtt"]["iccid"]     = GP("mqtt_iccid", "");
+    doc["mqtt"]["cardPlatformId"] = GPI("mqtt_cardPlatformId", "0");
+    doc["mqtt"]["summary"]   = GP("mqtt_summary", "");
 
     // 发布主题配置
     String publishTopicsJson = GP("mqtt_publishTopics", "[]");
@@ -423,7 +436,44 @@ void ProtocolRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* reque
         return;
     }
 
-    if (clientId.isEmpty()) {
+    // 从 device.json 读取 deviceNum, productId, userId 以构建正确的 clientId
+    String deviceNum, productId, userId;
+    if (LittleFS.exists("/config/device.json")) {
+        File f = LittleFS.open("/config/device.json", "r");
+        if (f) {
+            JsonDocument devDoc;
+            if (!deserializeJson(devDoc, f)) {
+                deviceNum = devDoc["deviceId"] | "";
+                productId = String(devDoc["productNumber"] | 0);
+                userId    = devDoc["userId"] | "";
+            }
+            f.close();
+        }
+    }
+    // 也尝试从 protocol.json 读取（protocol.json 中的值优先级更高）
+    if (LittleFS.exists("/config/protocol.json")) {
+        File f = LittleFS.open("/config/protocol.json", "r");
+        if (f) {
+            JsonDocument protoDoc;
+            if (!deserializeJson(protoDoc, f)) {
+                JsonVariant mqtt = protoDoc["mqtt"];
+                if (mqtt.is<JsonObject>()) {
+                    String dn = mqtt["deviceNum"] | "";
+                    String pi = mqtt["productId"] | "";
+                    String ui = mqtt["userId"]    | "";
+                    if (!dn.isEmpty()) deviceNum = dn;
+                    if (!pi.isEmpty()) productId = pi;
+                    if (!ui.isEmpty()) userId    = ui;
+                }
+            }
+            f.close();
+        }
+    }
+
+    // 构建 FastBee 认证格式的 clientId: S&deviceNum&productId&userId
+    if (!deviceNum.isEmpty() && !productId.isEmpty()) {
+        clientId = "S&" + deviceNum + "&" + productId + "&" + (userId.isEmpty() ? "1" : userId);
+    } else if (clientId.isEmpty()) {
         char id[20];
         snprintf(id, sizeof(id), "TEST-%04X", (unsigned)esp_random() & 0xFFFF);
         clientId = id;
@@ -565,4 +615,40 @@ void ProtocolRouteHandler::handleMqttDisconnect(AsyncWebServerRequest* request) 
     String respOut;
     serializeJson(resp, respOut);
     request->send(200, "application/json", respOut);
+}
+
+void ProtocolRouteHandler::handleMqttNtpSync(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.edit")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+
+    ProtocolManager* pm = ctx->protocolManager;
+    if (!pm) {
+        ctx->sendError(request, 500, "Protocol manager not available");
+        return;
+    }
+
+    MQTTClient* mqtt = pm->getMQTTClient();
+    if (!mqtt || !mqtt->getIsConnected()) {
+        JsonDocument resp;
+        resp["success"] = false;
+        resp["error"] = "MQTT not connected";
+        String out;
+        serializeJson(resp, out);
+        request->send(200, "application/json", out);
+        return;
+    }
+
+    bool ok = mqtt->publishNtpSync();
+
+    JsonDocument resp;
+    resp["success"] = ok;
+    if (!ok) {
+        resp["error"] = "No enabled NTP_SYNC publish topic found";
+    }
+
+    String out;
+    serializeJson(resp, out);
+    request->send(200, "application/json", out);
 }

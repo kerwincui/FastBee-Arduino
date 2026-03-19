@@ -45,25 +45,124 @@
     "willPayload": "",
     "willQos": 0,
     "willRetain": false,
+    "longitude": 0,
+    "latitude": 0,
+    "iccid": "",
+    "cardPlatformId": 0,
+    "summary": "",
     "publishTopics": [
       {
-        "topic": "",
+        "topic": "/property/post",
         "qos": 0,
         "retain": false,
         "enabled": true,
-        "autoPrefix": false,
+        "autoPrefix": true,
         "content": "",
         "topicType": 0
+      },
+      {
+        "topic": "/info/post",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "content": "",
+        "topicType": 2
+      },
+      {
+        "topic": "/event/post",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "content": "",
+        "topicType": 4
+      },
+      {
+        "topic": "/monitor/post",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "content": "",
+        "topicType": 3
+      },
+      {
+        "topic": "/ntp/post",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "content": "",
+        "topicType": 7
+      },
+      {
+        "topic": "/http/upgrade/reply",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "content": "",
+        "topicType": 5
+      },
+      {
+        "topic": "/fetch/upgrade/reply",
+        "qos": 0,
+        "retain": false,
+        "enabled": true,
+        "autoPrefix": true,
+        "content": "",
+        "topicType": 6
       }
     ],
     "subscribeTopics": [
       {
-        "topic": "",
+        "topic": "/function/get",
         "qos": 0,
         "enabled": true,
-        "autoPrefix": false,
+        "autoPrefix": true,
         "action": "",
         "topicType": 1
+      },
+      {
+        "topic": "/info/get",
+        "qos": 0,
+        "enabled": true,
+        "autoPrefix": true,
+        "action": "",
+        "topicType": 2
+      },
+      {
+        "topic": "/monitor/get",
+        "qos": 0,
+        "enabled": true,
+        "autoPrefix": true,
+        "action": "",
+        "topicType": 3
+      },
+      {
+        "topic": "/ntp/get",
+        "qos": 0,
+        "enabled": true,
+        "autoPrefix": true,
+        "action": "",
+        "topicType": 7
+      },
+      {
+        "topic": "/http/upgrade/set",
+        "qos": 0,
+        "enabled": true,
+        "autoPrefix": true,
+        "action": "",
+        "topicType": 5
+      },
+      {
+        "topic": "/fetch/upgrade/set",
+        "qos": 0,
+        "enabled": true,
+        "autoPrefix": true,
+        "action": "",
+        "topicType": 6
       }
     ]
   },

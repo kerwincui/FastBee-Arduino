@@ -2416,6 +2416,7 @@ const AppState = {
                 this._setValue('dev-id', d.deviceId || '');
                 // 产品编号
                 this._setValue('dev-product-number', d.productNumber !== undefined ? String(d.productNumber) : '0');
+                this._setValue('dev-user-id', d.userId || '');
                 this._setValue('dev-name',          d.deviceName   || '');
                 const desc = document.getElementById('dev-description');
                 if (desc) desc.value = d.description || '';
@@ -2459,6 +2460,7 @@ const AppState = {
             deviceId:       deviceId,
             deviceName:     document.getElementById('dev-name')?.value || '',
             productNumber:  productNumberVal !== undefined && productNumberVal !== '' ? parseInt(productNumberVal, 10) : 0,
+            userId:         document.getElementById('dev-user-id')?.value || '',
             description:    document.getElementById('dev-description')?.value || '',
             ntpServer1:     document.getElementById('dev-ntp-server1')?.value || 'https://iot.fastbee.cn/prod-api/iot/tool/ntp',
             ntpServer2:     document.getElementById('dev-ntp-server2')?.value || 'time.nist.gov',
@@ -3052,6 +3054,20 @@ const AppState = {
     },
 
     /**
+     * 切换折叠面板显示/隐藏
+     */
+    toggleSection(bodyId) {
+        const body = document.getElementById(bodyId);
+        const icon = document.getElementById(bodyId + '-icon');
+        if (!body) return;
+        const isHidden = body.style.display === 'none';
+        body.style.display = isHidden ? 'block' : 'none';
+        if (icon) {
+            icon.classList.toggle('expanded', isHidden);
+        }
+    },
+
+    /**
      * 显示/隐藏消息
      */
     _showMessage(id, show) {
@@ -3167,17 +3183,22 @@ const AppState = {
             this._setCheckbox('mqtt-auto-reconnect', mqtt.autoReconnect ?? true);
             this._setValue('mqtt-access-mode', mqtt.accessMode ?? 0);
             
-            // 主题前缀
-            this._setValue('mqtt-topic-prefix', mqtt.topicPrefix || '');
-            
             // 遗嘱消息
             this._setValue('mqtt-will-topic', mqtt.willTopic || '');
             this._setValue('mqtt-will-payload', mqtt.willPayload || '');
             this._setValue('mqtt-will-qos', mqtt.willQos ?? 0);
             this._setCheckbox('mqtt-will-retain', mqtt.willRetain ?? false);
             
+            // Card 高级配置
+            this._setValue('mqtt-longitude', mqtt.longitude ?? 0);
+            this._setValue('mqtt-latitude', mqtt.latitude ?? 0);
+            this._setValue('mqtt-iccid', mqtt.iccid || '');
+            this._setValue('mqtt-card-platform-id', mqtt.cardPlatformId ?? 0);
+            this._setValue('mqtt-summary', mqtt.summary || '');
+            
             // 认证配置
             this._setValue('mqtt-auth-type', mqtt.authType ?? 0);
+            this._setValue('mqtt-secret', mqtt.mqttSecret || '');
             this._setValue('mqtt-auth-code', mqtt.authCode || '');
             
             // 加载发布主题配置（支持多组）
@@ -3282,11 +3303,20 @@ const AppState = {
         data.mqtt_connectionTimeout = document.getElementById('mqtt-conn-timeout')?.value || '30000';
         data.mqtt_accessMode = document.getElementById('mqtt-access-mode')?.value || '0';
         data.mqtt_autoReconnect = document.getElementById('mqtt-auto-reconnect')?.checked ?? true;
-        data.mqtt_topicPrefix = document.getElementById('mqtt-topic-prefix')?.value || '';
+        // MQTT 认证配置
+        data.mqtt_authType = document.getElementById('mqtt-auth-type')?.value || '0';
+        data.mqtt_mqttSecret = document.getElementById('mqtt-secret')?.value || '';
+        data.mqtt_authCode = document.getElementById('mqtt-auth-code')?.value || '';
         data.mqtt_willTopic = document.getElementById('mqtt-will-topic')?.value || '';
         data.mqtt_willPayload = document.getElementById('mqtt-will-payload')?.value || '';
         data.mqtt_willQos = document.getElementById('mqtt-will-qos')?.value || '0';
         data.mqtt_willRetain = document.getElementById('mqtt-will-retain')?.checked ? 'true' : 'false';
+        // Card 高级配置
+        data.mqtt_longitude = document.getElementById('mqtt-longitude')?.value || '0';
+        data.mqtt_latitude = document.getElementById('mqtt-latitude')?.value || '0';
+        data.mqtt_iccid = document.getElementById('mqtt-iccid')?.value || '';
+        data.mqtt_cardPlatformId = document.getElementById('mqtt-card-platform-id')?.value || '0';
+        data.mqtt_summary = document.getElementById('mqtt-summary')?.value || '';
         // 收集发布主题配置（多组）
         data.mqtt_publishTopics = JSON.stringify(this._collectMqttPublishTopics());
         // 收集订阅主题配置（多组）
@@ -4890,6 +4920,57 @@ const AppState = {
                     btn.textContent = i18n.t('mqtt-disconnect-btn');
                 }
                 setTimeout(() => this._loadMqttStatus(), 1000);
+            });
+    },
+
+    /**
+     * MQTT NTP 时间同步
+     */
+    mqttNtpSync() {
+        const btn = document.querySelector('#mqtt-form .mqtt-ntp-sync-btn');
+        const resultEl = document.getElementById('mqtt-test-result');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = i18n.t('mqtt-ntp-syncing');
+        }
+        if (resultEl) {
+            resultEl.textContent = '';
+        }
+
+        apiPost('/api/mqtt/ntp-sync', {})
+            .then(res => {
+                if (res && res.success) {
+                    Notification.success(i18n.t('mqtt-ntp-sync-ok'), 'MQTT');
+                    if (resultEl) {
+                        resultEl.style.color = '#67c23a';
+                        resultEl.textContent = i18n.t('mqtt-ntp-sync-ok');
+                    }
+                } else {
+                    const errMsg = (res && res.error) ? res.error : i18n.t('mqtt-ntp-sync-fail');
+                    Notification.error(errMsg, 'MQTT');
+                    if (resultEl) {
+                        resultEl.style.color = '#f56c6c';
+                        resultEl.textContent = errMsg;
+                    }
+                }
+            })
+            .catch(err => {
+                console.error('MQTT NTP sync failed:', err);
+                Notification.error(i18n.t('mqtt-ntp-sync-fail'), 'MQTT');
+                if (resultEl) {
+                    resultEl.style.color = '#f56c6c';
+                    resultEl.textContent = i18n.t('mqtt-ntp-sync-fail');
+                }
+            })
+            .finally(() => {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = i18n.t('mqtt-ntp-sync-btn');
+                }
+                // 3秒后清除结果提示
+                setTimeout(() => {
+                    if (resultEl) resultEl.textContent = '';
+                }, 3000);
             });
     },
 

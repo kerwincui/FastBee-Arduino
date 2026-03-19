@@ -247,7 +247,7 @@ const char* LoggerSystem::getLevelString(LogLevel level) {
 
 // 清理多余的日志备份文件，保留最新的MAX_LOG_FILES个
 void LoggerSystem::cleanupOldLogFiles() {
-    constexpr size_t MAX_LOG_FILES = 10;
+    constexpr size_t MAX_LOG_FILES = 20;
     
     // 收集所有 system_*.log 备份文件
     std::vector<String> logFiles;

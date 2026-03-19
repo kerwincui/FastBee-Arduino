@@ -203,6 +203,7 @@ const i18n = {
             'dev-id-placeholder': '留空则使用系统默认值(FBE+MAC)',
             'dev-id-hint': '可自定义任意格式，留空自动生成',
             'dev-product-number-label': '产品编号',
+            'dev-user-id-label': '用户ID',
             'dev-name-label': '设备名称',
             'dev-location-label': '安装位置',
             'dev-description-label': '设备描述',
@@ -996,6 +997,14 @@ const i18n = {
             'mqtt-will-qos-label': '遗嘱QoS',
             'mqtt-will-retain-label': '遗嘱保留',
             
+            // MQTT 高级配置
+            'mqtt-card-section-title': '高级配置',
+            'mqtt-longitude-label': '经度',
+            'mqtt-latitude-label': '纬度',
+            'mqtt-iccid-label': 'ICCID',
+            'mqtt-card-platform-id-label': '卡平台编号',
+            'mqtt-summary-label': '摘要 (JSON)',
+            
             // MQTT 测试连接
             'mqtt-test-btn-text': '测试连接',
             'mqtt-test-testing': '测试中...',
@@ -1020,6 +1029,10 @@ const i18n = {
             'mqtt-disconnecting': '断开中...',
             'mqtt-disconnect-ok': 'MQTT已断开连接',
             'mqtt-disconnect-fail': 'MQTT断开失败',
+            'mqtt-ntp-sync-btn': 'MQTT时间同步',
+            'mqtt-ntp-syncing': '同步中...',
+            'mqtt-ntp-sync-ok': 'MQTT时间同步请求已发送',
+            'mqtt-ntp-sync-fail': 'MQTT时间同步失败',
             
             // MQTT 主题类型
             'mqtt-topic-type-label': '主题类型',
@@ -1040,6 +1053,11 @@ const i18n = {
             'mqtt-auth-simple': '简单认证',
             'mqtt-auth-encrypted': 'AES加密认证',
             'mqtt-auth-code-label': '授权码',
+            'mqtt-device-num-label': '设备编号',
+            'mqtt-product-id-label': '产品ID',
+            'mqtt-user-id-label': '用户ID',
+            'mqtt-secret-label': '产品秘钥',
+            'mqtt-ntp-server-label': 'NTP服务器',
             
             // Modbus RTU RS485引脚
             'rtu-pins-section-title': 'RS485 引脚配置',
@@ -1512,6 +1530,7 @@ const i18n = {
             'dev-id-placeholder': 'Leave empty for default (FBE+MAC)',
             'dev-id-hint': 'Any format allowed, auto-generated if empty',
             'dev-product-number-label': 'Product Number',
+            'dev-user-id-label': 'User ID',
             'dev-name-label': 'Device Name',
             'dev-location-label': 'Location',
             'dev-description-label': 'Description',
@@ -2305,6 +2324,14 @@ const i18n = {
             'mqtt-will-qos-label': 'Will QoS',
             'mqtt-will-retain-label': 'Will Retain',
             
+            // MQTT Advanced Config
+            'mqtt-card-section-title': 'Advanced Config',
+            'mqtt-longitude-label': 'Longitude',
+            'mqtt-latitude-label': 'Latitude',
+            'mqtt-iccid-label': 'ICCID',
+            'mqtt-card-platform-id-label': 'Card Platform ID',
+            'mqtt-summary-label': 'Summary (JSON)',
+            
             // MQTT Test Connection
             'mqtt-test-btn-text': 'Test Connection',
             'mqtt-test-testing': 'Testing...',
@@ -2329,6 +2356,10 @@ const i18n = {
             'mqtt-disconnecting': 'Disconnecting...',
             'mqtt-disconnect-ok': 'MQTT disconnected',
             'mqtt-disconnect-fail': 'MQTT disconnect failed',
+            'mqtt-ntp-sync-btn': 'MQTT Time Sync',
+            'mqtt-ntp-syncing': 'Syncing...',
+            'mqtt-ntp-sync-ok': 'MQTT NTP sync request sent',
+            'mqtt-ntp-sync-fail': 'MQTT NTP sync failed',
             
             // MQTT Topic Types
             'mqtt-topic-type-label': 'Topic Type',
@@ -2349,6 +2380,11 @@ const i18n = {
             'mqtt-auth-simple': 'Simple Auth',
             'mqtt-auth-encrypted': 'AES Encrypted Auth',
             'mqtt-auth-code-label': 'Auth Code',
+            'mqtt-device-num-label': 'Device Number',
+            'mqtt-product-id-label': 'Product ID',
+            'mqtt-user-id-label': 'User ID',
+            'mqtt-secret-label': 'MQTT Secret',
+            'mqtt-ntp-server-label': 'NTP Server',
             
             // Modbus RTU RS485 Pins
             'rtu-pins-section-title': 'RS485 Pin Config',

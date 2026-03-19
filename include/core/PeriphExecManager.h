@@ -40,6 +40,9 @@ public:
     // MQTT 消息处理入口（由 ProtocolManager messageCallback 调用）
     void handleMqttMessage(const String& topic, const String& message);
 
+    // 数据下发命令处理：匹配 targetPeriphId == item["id"]，执行规则并返回上报 JSON
+    String handleDataCommand(const String& message);
+
     // 定时器检查（由 TaskManager 定时任务调用）
     void checkTimers();
 

@@ -502,6 +502,16 @@ bool FastBeeFramework::addSystemTasks() {
         LOG_WARNING("Failed to add periph exec timer task");
     }
     
+    // 协议处理任务（每100ms）— 维持MQTT心跳和消息收发
+    if (!taskManager->addTask("protocol_handle", [](void* param) {
+        FastBeeFramework* framework = static_cast<FastBeeFramework*>(param);
+        if (framework && framework->protocolManager) {
+            framework->protocolManager->handle();
+        }
+    }, this, 100)) {
+        LOG_WARNING("Failed to add protocol handle task");
+    }
+    
     LOG_INFO("System tasks added");
     return true;
 }

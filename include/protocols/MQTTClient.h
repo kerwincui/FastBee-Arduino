@@ -78,6 +78,12 @@ struct MQTTConfig {
     String willPayload;
     uint8_t willQos = 0;
     bool willRetain = false;
+    // Card 高级配置（设备信息发布用）
+    double longitude = 0;        // 经度
+    double latitude = 0;         // 纬度
+    String iccid;                // 物联网卡 ICCID
+    int cardPlatformId = 0;      // 卡平台编号
+    String summary;              // 摘要 JSON 字符串
     // 发布主题配置（支持多组）
     std::vector<MqttPublishTopic> publishTopics;
     // 订阅主题配置（支持多组）
@@ -102,6 +108,10 @@ public:
     void stop();           // 显式停止MQTT（断开并阻止自动重连）
     bool publish(const String& topic, const String& message);
     bool publishToTopic(size_t topicIndex, const String& message);
+    bool publishDeviceInfo();  // 发布设备信息到 topicType=DEVICE_INFO 的主题
+    bool publishMonitorData(); // 发布一次实时监测数据到 topicType=REALTIME_MON 的主题
+    bool publishReportData(const String& payload); // 发布数据上报到 topicType=DATA_REPORT 的主题
+    bool publishNtpSync();             // 发布 NTP 时间同步请求到 topicType=NTP_SYNC 的主题
     bool subscribe(const String& topic);
     bool subscribeAll();  // 订阅所有配置的主题
     void handle();
@@ -135,11 +145,21 @@ private:
     uint32_t reconnectInterval;       // 当前重连间隔（指数退避，毫秒）
     unsigned long lastLoopTime;       // 上次loop()调用的时间（用于检测连接健康）
     
+    // 实时监测状态
+    bool monitorActive = false;       // 是否正在执行实时监测
+    int monitorRemaining = 0;         // 剩余发布次数
+    unsigned long monitorInterval = 1000; // 发布间隔（毫秒）
+    unsigned long lastMonitorTime = 0;    // 上次发布监测数据的时间
+    
+    // NTP 时间同步状态
+    unsigned long long ntpDeviceSendTime = 0;  // 发送 NTP 请求时的设备本地时间戳（millis）
+    
     std::function<void(const String&, const String&, MqttTopicType)> messageCallback;
     
     void mqttCallback(char* topic, byte* payload, unsigned int length);
     bool reconnect();
     String buildFullTopic(const String& topic, bool autoPrefix) const; // 根据主题级autoPrefix构建完整主题
+    String buildFullTopicWithType(const String& topic, bool autoPrefix, MqttTopicType topicType) const; // 根据topicType和设备配置构建完整主题
     
     // FastBee认证相关方法
     String buildClientId();            // 构建认证clientId: 类型&设备编号&产品ID&用户ID
