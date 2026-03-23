@@ -15,6 +15,12 @@
     <!-- 登录页面 -->
     <div id="login-page" class="login-page">
         <div class="login-card">
+            <div class="login-lang-switch">
+                <select id="login-language-select" class="login-lang-select">
+                    <option value="zh-CN">中文</option>
+                    <option value="en">English</option>
+                </select>
+            </div>
             <div class="login-header">
                 <div><img src="./assets/logo.png"></div>
                 <h1 style="margin: 0; font-size: 22px;color:#0446aa;" id="login-title">设备配置管理</h1>
@@ -24,10 +30,10 @@
                 <form id="login-form" class="pure-form pure-form-stacked">
                     <fieldset>
                         <label for="username" id="username-label">用户名</label>
-                        <input type="text" id="username" class="pure-input-1" placeholder="请输入用户名" required>
+                        <input type="text" id="username" class="pure-input-1" placeholder="请输入用户名" data-i18n-placeholder="username-placeholder" required>
                         
                         <label for="password" style="margin-top: 15px;" id="password-label">密码</label>
-                        <input type="password" id="password" class="pure-input-1" placeholder="请输入密码" required>
+                        <input type="password" id="password" class="pure-input-1" placeholder="请输入密码" data-i18n-placeholder="password-placeholder" required>
                         
                         <label class="pure-checkbox" style="margin: 15px 0 20px;">
                             <input type="checkbox" id="remember" checked> 
@@ -2440,8 +2446,8 @@
                         <div class="pure-control-group">
                             <label for="rule-script-trigger-type" data-i18n="rule-script-trigger-type-label">触发类型</label>
                             <select id="rule-script-trigger-type" class="pure-input-1">
-                                <option value="3" data-i18n="rule-script-trigger-receive">数据接收</option>
-                                <option value="4" data-i18n="rule-script-trigger-report">数据上报</option>
+                                <option value="0" data-i18n="rule-script-trigger-receive">数据接收</option>
+                                <option value="1" data-i18n="rule-script-trigger-report">数据上报</option>
                             </select>
                         </div>
                         <div class="pure-control-group">

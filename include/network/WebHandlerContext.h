@@ -81,9 +81,6 @@ public:
     void sendBadRequest(AsyncWebServerRequest* request, const String& message);
 
     // ============ 内置页面 ============
-    void sendBuiltinLoginPage(AsyncWebServerRequest* request);
-    void sendBuiltinDashboard(AsyncWebServerRequest* request);
-    void sendBuiltinUsersPage(AsyncWebServerRequest* request);
     void sendBuiltinSetupPage(AsyncWebServerRequest* request);
 
     // ============ 文件服务方法 ============

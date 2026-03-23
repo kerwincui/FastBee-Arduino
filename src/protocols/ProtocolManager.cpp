@@ -225,6 +225,31 @@ bool ProtocolManager::restartMQTT() {
     return ok;
 }
 
+bool ProtocolManager::restartMQTTDeferred() {
+    LOG_INFO("Protocol Manager: Restarting MQTT (deferred connect)...");
+    
+    // 断开现有连接
+    if (mqttClient) {
+        mqttClient->disconnect();
+        mqttClient.reset();
+    }
+    
+    // 重新创建并初始化（仅加载配置，不阻塞连接）
+    mqttClient = std::unique_ptr<MQTTClient>(new MQTTClient());
+    mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
+        handleMessage(ProtocolType::MQTT, topic, message);
+    });
+    
+    if (!mqttClient->begin()) {
+        LOG_WARNING("Protocol Manager: MQTT deferred restart begin() failed");
+        return false;
+    }
+    
+    // 不调用 connect()，由 MQTTClient::handle() 的 auto-reconnect 在 loop 中异步连接
+    LOG_INFO("Protocol Manager: MQTT config reloaded, will auto-connect in loop");
+    return true;
+}
+
 void ProtocolManager::stopMQTT() {
     LOG_INFO("Protocol Manager: Stopping MQTT...");
     if (mqttClient) {

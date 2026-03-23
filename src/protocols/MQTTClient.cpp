@@ -20,6 +20,7 @@
 #include <HTTPClient.h>
 #include <mbedtls/aes.h>
 #include <core/PeriphExecManager.h>
+#include <core/RuleScriptManager.h>
 #include <mbedtls/base64.h>
 
 MQTTClient::MQTTClient()
@@ -280,7 +281,7 @@ bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
     }
     String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
     // 数据上报转换管道
-    String payload = PeriphExecManager::getInstance().applyReportTransform(0, message);
+    String payload = RuleScriptManager::getInstance().applyReportTransform(0, message);
     bool ok = mqttClient.publish(fullTopic.c_str(), payload.c_str(), pt.retain);
     
     if (!ok) {
@@ -708,7 +709,7 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
     MqttTopicType tType = getTopicTypeByPath(topicStr);
 
     // 数据接收转换管道
-    message = PeriphExecManager::getInstance().applyReceiveTransform(0, message);
+    message = RuleScriptManager::getInstance().applyReceiveTransform(0, message);
 
     char buf[96];
     snprintf(buf, sizeof(buf), "MQTT: Msg type=%d topic=%s len=%u",

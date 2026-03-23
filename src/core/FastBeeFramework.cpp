@@ -9,6 +9,7 @@
 #include "core/SystemConstants.h"
 #include "core/PeripheralManager.h"
 #include "core/PeriphExecManager.h"
+#include "core/RuleScriptManager.h"
 #include "systems/LoggerSystem.h"
 #include "network/NetworkManager.h"
 #include "network/WebConfigManager.h"
@@ -235,6 +236,14 @@ bool FastBeeFramework::initialize() {
         LOG_WARNING("[STEP11.5] Failed to initialize periph exec manager");
     } else {
         LOG_INFO("[STEP11.5] Periph exec manager OK");
+    }
+
+    // 步骤11.6: 初始化规则脚本管理器
+    LOG_INFO("[STEP11.6] Initializing RuleScriptManager...");
+    if (!RuleScriptManager::getInstance().initialize()) {
+        LOG_WARNING("[STEP11.6] Failed to initialize rule script manager");
+    } else {
+        LOG_INFO("[STEP11.6] Rule script manager OK");
     }
     
     // 注入 MQTT 消息回调：消息到达时匹配外设执行

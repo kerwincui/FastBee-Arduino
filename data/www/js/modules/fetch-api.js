@@ -49,8 +49,10 @@
     }
 
     // ── 核心请求函数 ──────────────────────────────────────────────────────────
+    // options.silent: 为 true 时跳过全局错误处理（用于后台轮询等不应影响全局状态的请求）
     function request(method, path, options, timeoutMs) {
         options = options || {};
+        var silent = options.silent || false;
         const token = localStorage.getItem('auth_token');
         const headers = Object.assign({}, options.headers);
 
@@ -83,6 +85,10 @@
                     });
             })
             .catch(function (err) {
+                if (silent) {
+                    // 静默模式：不触发全局错误处理，直接传递错误给调用方
+                    return Promise.reject(err);
+                }
                 if (err && err.status !== undefined) {
                     // HTTP 层面的错误（4xx / 5xx）
                     _handleHttpError(err.status, err.data);
@@ -162,6 +168,17 @@
      */
     window.apiGet = function (url, params) {
         return request('GET', url, { params: params || {} });
+    };
+
+    /**
+     * GET 请求（静默模式，不触发全局错误处理）
+     * 用于后台轮询等不应影响全局认证状态的请求
+     * @param {string} url
+     * @param {Object} [params] - 查询参数
+     * @returns {Promise<any>}
+     */
+    window.apiGetSilent = function (url, params) {
+        return request('GET', url, { params: params || {}, silent: true });
     };
 
     /**

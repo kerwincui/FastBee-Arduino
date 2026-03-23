@@ -8,6 +8,8 @@ const i18n = {
             'login-title': '设备配置管理',
             'username-label': '用户名',
             'password-label': '密码',
+            'username-placeholder': '请输入用户名',
+            'password-placeholder': '请输入密码',
             'remember-label': '记住密码',
             'login-button': '登录系统',
             
@@ -1393,6 +1395,8 @@ const i18n = {
             'login-title': 'Device Manage',
             'username-label': 'Username',
             'password-label': 'Password',
+            'username-placeholder': 'Enter username',
+            'password-placeholder': 'Enter password',
             'remember-label': 'Remember password',
             'login-button': 'Login',
             

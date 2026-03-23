@@ -1,4 +1,5 @@
 #include "core/PeriphExecManager.h"
+#include "core/RuleScript.h"
 #include "core/FastBeeFramework.h"
 #include "protocols/ProtocolManager.h"
 #include "systems/LoggerSystem.h"
@@ -163,8 +164,7 @@ bool PeriphExecManager::saveConfiguration() {
 
 bool PeriphExecManager::loadConfiguration() {
     if (!LittleFS.exists(PERIPH_EXEC_CONFIG_FILE)) {
-        LOGGER.info("[PeriphExec] No config file found, populating defaults");
-        populateDefaultScriptRules();
+        LOGGER.info("[PeriphExec] No config file found, starting empty");
         saveConfiguration();
         return true;
     }
@@ -707,7 +707,8 @@ bool PeriphExecManager::executeSystemAction(const PeriphExecRule& rule) {
                 "/config/device.json", "/config/network.json", "/config/protocol.json",
                 "/config/gpio.json", "/config/users.json", "/config/system.json",
                 "/config/http.json", "/config/mqtt.json", "/config/tcp.json",
-                "/config/modbus.json", "/config/coap.json", PERIPH_EXEC_CONFIG_FILE
+                "/config/modbus.json", "/config/coap.json", PERIPH_EXEC_CONFIG_FILE,
+                RULE_SCRIPT_CONFIG_FILE
             };
             for (int i = 0; i < (int)(sizeof(configFiles) / sizeof(configFiles[0])); i++) {
                 if (LittleFS.exists(configFiles[i])) {
@@ -951,102 +952,6 @@ std::vector<AsyncExecResult> PeriphExecManager::getRecentResults() {
     return executionResults;
 }
 
-// ========== 模板引擎 ==========
-
-String PeriphExecManager::applyTemplate(const String& templateStr, const String& jsonInput) {
-    if (templateStr.isEmpty() || jsonInput.isEmpty()) return jsonInput;
-
-    // 解析 JSON 输入，提取 key-value 映射
-    JsonDocument inDoc;
-    DeserializationError err = deserializeJson(inDoc, jsonInput);
-    if (err) return jsonInput;  // 解析失败，返回原样
-
-    // 收集 key-value 对（最多 32 个）
-    struct KV { String key; String value; };
-    std::vector<KV> kvPairs;
-    kvPairs.reserve(16);
-
-    if (inDoc.is<JsonArray>()) {
-        // 数组格式: [{"id":"temp","value":"27.43"}, ...]
-        for (JsonObject item : inDoc.as<JsonArray>()) {
-            if (!item.containsKey("id") || !item.containsKey("value")) continue;
-            if (kvPairs.size() >= 32) break;
-            kvPairs.push_back({item["id"].as<String>(), item["value"].as<String>()});
-        }
-    } else if (inDoc.is<JsonObject>()) {
-        // 对象格式: {"temperature": 27.43, ...}
-        for (JsonPair p : inDoc.as<JsonObject>()) {
-            if (kvPairs.size() >= 32) break;
-            kvPairs.push_back({String(p.key().c_str()), p.value().as<String>()});
-        }
-    } else {
-        return jsonInput;  // 非数组非对象
-    }
-
-    if (kvPairs.empty()) return jsonInput;
-
-    // 扫描模板中的 ${key} 占位符并替换
-    String result = templateStr;
-    for (const auto& kv : kvPairs) {
-        String placeholder = "${" + kv.key + "}";
-        result.replace(placeholder, kv.value);
-    }
-
-    LOGGER.infof("[PeriphExec] Template applied: %d vars, %d→%d bytes",
-                 (int)kvPairs.size(), (int)jsonInput.length(), (int)result.length());
-    return result;
-}
-
-// ========== 数据转换管道 ==========
-
-String PeriphExecManager::applyReceiveTransform(uint8_t protocolType, const String& rawData) {
-    String scriptCopy;
-    {
-        MutexGuard lock(_rulesMutex);
-        if (!lock.isLocked()) return rawData;
-
-        for (auto& pair : rules) {
-            PeriphExecRule& rule = pair.second;
-            if (!rule.enabled || rule.triggerType != 3) continue;
-            if (rule.protocolType != protocolType) continue;
-            if (rule.scriptContent.isEmpty()) continue;
-
-            rule.lastTriggerTime = millis();
-            rule.triggerCount++;
-            scriptCopy = rule.scriptContent;
-            break;  // 只取第一条匹配规则
-        }
-    }
-    // 锁已释放
-
-    if (scriptCopy.isEmpty()) return rawData;
-    return applyTemplate(scriptCopy, rawData);
-}
-
-String PeriphExecManager::applyReportTransform(uint8_t protocolType, const String& rawData) {
-    String scriptCopy;
-    {
-        MutexGuard lock(_rulesMutex);
-        if (!lock.isLocked()) return rawData;
-
-        for (auto& pair : rules) {
-            PeriphExecRule& rule = pair.second;
-            if (!rule.enabled || rule.triggerType != 4) continue;
-            if (rule.protocolType != protocolType) continue;
-            if (rule.scriptContent.isEmpty()) continue;
-
-            rule.lastTriggerTime = millis();
-            rule.triggerCount++;
-            scriptCopy = rule.scriptContent;
-            break;  // 只取第一条匹配规则
-        }
-    }
-    // 锁已释放
-
-    if (scriptCopy.isEmpty()) return rawData;
-    return applyTemplate(scriptCopy, rawData);
-}
-
 // ========== 工具 ==========
 
 MQTTClient* PeriphExecManager::getMqttClient() {
@@ -1060,94 +965,4 @@ MQTTClient* PeriphExecManager::getMqttClient() {
 
 String PeriphExecManager::generateUniqueId() {
     return "exec_" + String(millis());
-}
-
-// ========== 默认规则脚本示例 ==========
-
-void PeriphExecManager::populateDefaultScriptRules() {
-    // 示例1: MQTT上报 — 数组格式转对象格式
-    {
-        PeriphExecRule r;
-        r.id = "exec_script_mqtt_a2o";
-        r.name = "MQTT上报:数组转对象";
-        r.enabled = false;
-        r.triggerType = 4;  // DATA_REPORT
-        r.protocolType = 0; // MQTT
-        r.scriptContent = "{\"temperature\": ${temperature}, \"humidity\": ${humidity}}";
-        rules[r.id] = r;
-    }
-
-    // 示例2: MQTT接收 — 对象格式转数组格式
-    {
-        PeriphExecRule r;
-        r.id = "exec_script_mqtt_o2a";
-        r.name = "MQTT接收:对象转数组";
-        r.enabled = false;
-        r.triggerType = 3;  // DATA_RECEIVE
-        r.protocolType = 0; // MQTT
-        r.scriptContent = "[{\"id\":\"temperature\",\"value\":\"${temperature}\",\"remark\":\"\"},{\"id\":\"humidity\",\"value\":\"${humidity}\",\"remark\":\"\"}]";
-        rules[r.id] = r;
-    }
-
-    // 示例3: Modbus RTU接收转换
-    {
-        PeriphExecRule r;
-        r.id = "exec_script_rtu_recv";
-        r.name = "ModbusRTU接收转换";
-        r.enabled = false;
-        r.triggerType = 3;  // DATA_RECEIVE
-        r.protocolType = 1; // MODBUS_RTU
-        r.scriptContent = "[{\"id\":\"temperature\",\"value\":\"${temperature}\",\"remark\":\"\"},{\"id\":\"humidity\",\"value\":\"${humidity}\",\"remark\":\"\"}]";
-        rules[r.id] = r;
-    }
-
-    // 示例4: Modbus TCP接收转换
-    {
-        PeriphExecRule r;
-        r.id = "exec_script_tcpmod_recv";
-        r.name = "ModbusTCP接收转换";
-        r.enabled = false;
-        r.triggerType = 3;  // DATA_RECEIVE
-        r.protocolType = 2; // MODBUS_TCP
-        r.scriptContent = "[{\"id\":\"temperature\",\"value\":\"${temperature}\",\"remark\":\"\"},{\"id\":\"humidity\",\"value\":\"${humidity}\",\"remark\":\"\"}]";
-        rules[r.id] = r;
-    }
-
-    // 示例5: HTTP上报 — 自定义JSON格式
-    {
-        PeriphExecRule r;
-        r.id = "exec_script_http_report";
-        r.name = "HTTP上报:自定义格式";
-        r.enabled = false;
-        r.triggerType = 4;  // DATA_REPORT
-        r.protocolType = 3; // HTTP
-        r.scriptContent = "{\"device\":\"esp32\",\"temp\":${temperature},\"humi\":${humidity}}";
-        rules[r.id] = r;
-    }
-
-    // 示例6: CoAP接收转换
-    {
-        PeriphExecRule r;
-        r.id = "exec_script_coap_recv";
-        r.name = "CoAP接收转换";
-        r.enabled = false;
-        r.triggerType = 3;  // DATA_RECEIVE
-        r.protocolType = 4; // COAP
-        r.scriptContent = "[{\"id\":\"temperature\",\"value\":\"${temperature}\",\"remark\":\"\"},{\"id\":\"humidity\",\"value\":\"${humidity}\",\"remark\":\"\"}]";
-        rules[r.id] = r;
-    }
-
-    // 示例7: TCP上报 — 精简文本格式
-    {
-        PeriphExecRule r;
-        r.id = "exec_script_tcp_report";
-        r.name = "TCP上报:精简格式";
-        r.enabled = false;
-        r.triggerType = 4;  // DATA_REPORT
-        r.protocolType = 5; // TCP
-        r.scriptContent = "T:${temperature},H:${humidity}";
-        rules[r.id] = r;
-    }
-
-    LOGGER.infof("[PeriphExec] Populated %d default script rules", 7);
 }

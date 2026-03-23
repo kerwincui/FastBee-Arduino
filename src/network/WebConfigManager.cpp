@@ -9,6 +9,7 @@
 #include "./network/handlers/OTARouteHandler.h"
 #include "./network/handlers/PeripheralRouteHandler.h"
 #include "./network/handlers/PeriphExecRouteHandler.h"
+#include "./network/handlers/RuleScriptRouteHandler.h"
 #include "./network/handlers/ProtocolRouteHandler.h"
 #include "systems/LoggerSystem.h"
 
@@ -32,7 +33,7 @@ bool WebConfigManager::initialize() {
         return false;
     }
 
-    // 创建 10 个专职 Handler
+    // 创建 11 个专职 Handler
     staticHandler      = std::unique_ptr<StaticRouteHandler>(new StaticRouteHandler(ctx.get()));
     authHandler        = std::unique_ptr<AuthRouteHandler>(new AuthRouteHandler(ctx.get()));
     userHandler        = std::unique_ptr<UserRouteHandler>(new UserRouteHandler(ctx.get()));
@@ -42,11 +43,12 @@ bool WebConfigManager::initialize() {
     otaHandler         = std::unique_ptr<OTARouteHandler>(new OTARouteHandler(ctx.get()));
     peripheralHandler  = std::unique_ptr<PeripheralRouteHandler>(new PeripheralRouteHandler(ctx.get()));
     periphExecHandler  = std::unique_ptr<PeriphExecRouteHandler>(new PeriphExecRouteHandler(ctx.get()));
+    ruleScriptHandler  = std::unique_ptr<RuleScriptRouteHandler>(new RuleScriptRouteHandler(ctx.get()));
     protocolHandler    = std::unique_ptr<ProtocolRouteHandler>(new ProtocolRouteHandler(ctx.get()));
 
     setupAllRoutes();
 
-    LOG_INFO("[WebConfig] Initialized with 10 route handlers");
+    LOG_INFO("[WebConfig] Initialized with 11 route handlers");
     return true;
 }
 
@@ -139,10 +141,13 @@ void WebConfigManager::setupAllRoutes() {
     // 8. 外设执行路由（/api/periph-exec/*）
     periphExecHandler->setupRoutes(server);
 
-    // 9. 协议路由（/api/protocol/*）
+    // 9. 规则脚本路由（/api/rule-script/*）
+    ruleScriptHandler->setupRoutes(server);
+
+    // 10. 协议路由（/api/protocol/*）
     protocolHandler->setupRoutes(server);
 
-    // 10. 静态文件与页面路由（/, /login, /dashboard, /users, 404 fallback）
+    // 11. 静态文件与页面路由（/, /login, /dashboard, /users, 404 fallback）
     // 必须最后注册，因为 onNotFound 是全局 fallback
     staticHandler->setupRoutes(server);
 }

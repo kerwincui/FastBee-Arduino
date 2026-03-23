@@ -54,14 +54,6 @@ public:
     // Modbus 一次性读取回调（由 ProtocolManager 注册）
     void setModbusReadCallback(std::function<String(const String&)> callback);
 
-    // ========== 数据转换管道 ==========
-
-    // 数据接收转换（由各协议接收回调调用）
-    String applyReceiveTransform(uint8_t protocolType, const String& rawData);
-
-    // 数据上报转换（由各协议发送方法调用）
-    String applyReportTransform(uint8_t protocolType, const String& rawData);
-
     // ========== 异步执行 ==========
 
     // 记录异步执行结果（由异步任务完成时调用）
@@ -97,12 +89,6 @@ private:
     bool executePeripheralAction(const PeriphExecRule& rule);
     bool executeSystemAction(const PeriphExecRule& rule);
     bool executeScriptAction(const PeriphExecRule& rule);
-
-    // ========== 模板引擎 ==========
-    static String applyTemplate(const String& templateStr, const String& jsonInput);
-
-    // ========== 默认示例数据 ==========
-    void populateDefaultScriptRules();
 
     // ========== 异步调度 ==========
 

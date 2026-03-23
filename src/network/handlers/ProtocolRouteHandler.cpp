@@ -305,10 +305,11 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     if (doc["mqtt"]["enabled"].as<bool>()) {
         ProtocolManager* pm = ctx->protocolManager;
         if (pm) {
-            mqttReconnected = pm->restartMQTT();
+            // 使用非阻塞重启：仅重载配置，由 loop 自动重连
+            // 避免 PubSubClient::connect() 阻塞 Web 服务器
+            mqttReconnected = pm->restartMQTTDeferred();
             if (!mqttReconnected) {
-                MQTTClient* mqtt = pm->getMQTTClient();
-                mqttError = mqtt ? mqtt->getLastErrorCode() : -99;
+                mqttError = -1;  // begin() 失败
             }
         }
     } else {
@@ -338,6 +339,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     resp["success"] = true;
     resp["message"] = "Protocol configuration saved";
     resp["data"]["mqttReconnected"] = mqttReconnected;
+    resp["data"]["mqttDeferred"] = mqttReconnected;  // 标识为延迟连接模式
     resp["data"]["mqttDisconnected"] = mqttDisconnected;
     resp["data"]["modbusRestarted"] = modbusRestarted;
     if (!mqttReconnected && doc["mqtt"]["enabled"].as<bool>()) {

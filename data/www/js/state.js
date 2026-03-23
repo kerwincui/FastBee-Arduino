@@ -176,11 +176,29 @@ const AppState = {
 
     // ============ 语言 ============
     setupLanguage() {
+        // 初始化时立即应用 i18n 到登录页（在登录前就需要正确显示）
+        i18n.updatePageText();
+
+        // 登录页语言切换
+        const loginLangSelect = document.getElementById('login-language-select');
+        if (loginLangSelect) {
+            loginLangSelect.value = i18n.currentLang;
+            loginLangSelect.addEventListener('change', e => {
+                i18n.setLanguage(e.target.value);
+                // 同步主应用的语言选择器
+                const mainSelect = document.getElementById('language-select');
+                if (mainSelect) mainSelect.value = e.target.value;
+            });
+        }
+
+        // 主应用语言切换
         const langSelect = document.getElementById('language-select');
         if (langSelect) {
             langSelect.value = i18n.currentLang;
             langSelect.addEventListener('change', e => {
                 i18n.setLanguage(e.target.value);
+                // 同步登录页的语言选择器
+                if (loginLangSelect) loginLangSelect.value = e.target.value;
                 this.renderDashboard();
                 this.loadSystemMonitor();  // 刷新网络状态区域的动态 i18n 内容
                 this.loadUsers();
@@ -3432,7 +3450,10 @@ const AppState = {
                     
                     // 检查MQTT重连结果
                     if (res.data && typeof res.data.mqttReconnected !== 'undefined') {
-                        if (res.data.mqttReconnected) {
+                        if (res.data.mqttReconnected && res.data.mqttDeferred) {
+                            // 延迟连接模式：配置已加载，MQTT将自动连接
+                            Notification.success(i18n.t('mqtt-reconnect-ok'), i18n.t('protocol-config-title'));
+                        } else if (res.data.mqttReconnected) {
                             Notification.success(i18n.t('mqtt-reconnect-ok'), i18n.t('protocol-config-title'));
                         } else if (res.data.mqttDisconnected) {
                             Notification.success(i18n.t('mqtt-disconnect-ok'), i18n.t('protocol-config-title'));
@@ -3456,8 +3477,8 @@ const AppState = {
                         setTimeout(() => { ok.style.display = 'none'; }, 3000);
                     }
 
-                    // 刷新MQTT状态
-                    setTimeout(() => this._loadMqttStatus(), 1000);
+                    // 刷新MQTT状态（确保轮询已启动，可能之前因错误被停止）
+                    this._startMqttStatusPolling();
                 } else {
                     Notification.error(res?.message || i18n.t('protocol-save-fail'), i18n.t('protocol-title'));
                 }
@@ -4480,17 +4501,17 @@ const AppState = {
     loadRuleScriptPage() {
         const tbody = document.getElementById('rule-script-table-body');
         if (!tbody) return;
-        apiGet('/api/periph-exec').then(res => {
+        apiGet('/api/rule-script').then(res => {
             if (!res || !res.success || !res.data) {
                 tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">' + i18n.t('rule-script-no-data') + '</td></tr>';
                 return;
             }
-            const rules = res.data.filter(r => r.triggerType === 3 || r.triggerType === 4);
+            const rules = res.data;
             if (rules.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">' + i18n.t('rule-script-no-data') + '</td></tr>';
                 return;
             }
-            const triggerLabels = { 3: i18n.t('rule-script-trigger-receive'), 4: i18n.t('rule-script-trigger-report') };
+            const triggerLabels = { 0: i18n.t('rule-script-trigger-receive'), 1: i18n.t('rule-script-trigger-report') };
             const protocolLabels = { 0: 'MQTT', 1: 'Modbus RTU', 2: 'Modbus TCP', 3: 'HTTP', 4: 'CoAP', 5: 'TCP' };
             let html = '';
             rules.forEach(r => {
@@ -4555,17 +4576,7 @@ const AppState = {
             enabled: document.getElementById('rule-script-enabled').checked ? '1' : '0',
             triggerType: document.getElementById('rule-script-trigger-type').value,
             protocolType: document.getElementById('rule-script-protocol-type').value,
-            scriptContent: document.getElementById('rule-script-content').value,
-            execMode: '0',
-            operatorType: '0',
-            compareValue: '',
-            sourcePeriphId: '',
-            timerMode: '0',
-            intervalSec: '60',
-            timePoint: '',
-            actionType: '0',
-            targetPeriphId: '',
-            actionValue: ''
+            scriptContent: document.getElementById('rule-script-content').value
         };
         if (!ruleData.name) {
             errEl.textContent = i18n.t('periph-exec-validate-name');
@@ -4573,7 +4584,7 @@ const AppState = {
             return;
         }
         if (isEdit) ruleData.id = originalId;
-        const url = isEdit ? '/api/periph-exec/update' : '/api/periph-exec';
+        const url = isEdit ? '/api/rule-script/update' : '/api/rule-script';
         apiPost(url, ruleData).then(res => {
             if (res && res.success) {
                 Notification.success(i18n.t(isEdit ? 'rule-script-update-ok' : 'rule-script-add-ok'), i18n.t('rule-script-title'));
@@ -4591,7 +4602,7 @@ const AppState = {
 
     editRuleScript(id) {
         this.openRuleScriptModal(id);
-        apiGet('/api/periph-exec').then(res => {
+        apiGet('/api/rule-script').then(res => {
             if (!res || !res.success || !res.data) return;
             const rule = res.data.find(r => r.id === id);
             if (!rule) return;
@@ -4604,7 +4615,7 @@ const AppState = {
     },
 
     toggleRuleScript(id, enable) {
-        const url = enable ? '/api/periph-exec/enable' : '/api/periph-exec/disable';
+        const url = enable ? '/api/rule-script/enable' : '/api/rule-script/disable';
         apiPost(url, { id: id }).then(res => {
             if (res && res.success) {
                 if (this.currentPage === 'rule-script') this.loadRuleScriptPage();
@@ -4614,7 +4625,7 @@ const AppState = {
 
     deleteRuleScript(id) {
         if (!confirm(i18n.t('periph-exec-confirm-delete'))) return;
-        apiDelete('/api/periph-exec/', { id: id }).then(res => {
+        apiDelete('/api/rule-script/', { id: id }).then(res => {
             if (res && res.success) {
                 Notification.success(i18n.t('rule-script-delete-ok'), i18n.t('rule-script-title'));
                 if (this.currentPage === 'rule-script') this.loadRuleScriptPage();
@@ -5402,7 +5413,7 @@ const AppState = {
      * 加载MQTT实时状态
      */
     _loadMqttStatus() {
-        apiGet('/api/mqtt/status')
+        apiGetSilent('/api/mqtt/status')
             .then(res => {
                 if (!res || !res.success) return;
                 const d = res.data || {};
@@ -5427,7 +5438,12 @@ const AppState = {
                 if (clientEl) clientEl.textContent = d.clientId || '--';
                 if (reconnEl) reconnEl.textContent = d.reconnectCount ?? 0;
             })
-            .catch(() => {});
+            .catch(err => {
+                // 401 表示会话失效，停止轮询防止级联错误
+                if (err && err.status === 401) {
+                    this._stopMqttStatusPolling();
+                }
+            });
     },
 
     /**

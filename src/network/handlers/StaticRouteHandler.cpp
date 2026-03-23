@@ -7,39 +7,16 @@ StaticRouteHandler::StaticRouteHandler(WebHandlerContext* ctx)
 }
 
 void StaticRouteHandler::setupRoutes(AsyncWebServer* server) {
-    server->on("/login", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleLoginPage(request); });
-
-    server->on("/dashboard", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleDashboardPage(request); });
-
-    server->on("/users", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleUsersPage(request); });
-
     // SPA 路由 - 都返回 index.html 让前端路由处理
-    server->on("/device", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleSPAPage(request); });
-
-    server->on("/network", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleSPAPage(request); });
-
-    server->on("/data", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleSPAPage(request); });
-
-    server->on("/logs", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleSPAPage(request); });
-
-    server->on("/roles", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleSPAPage(request); });
-
-    server->on("/protocol", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleSPAPage(request); });
-
-    server->on("/peripheral", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleSPAPage(request); });
-
-    server->on("/gpio", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleSPAPage(request); });
+    const char* spaRoutes[] = {
+        "/login", "/dashboard", "/users",
+        "/device", "/network", "/data", "/logs",
+        "/roles", "/protocol", "/peripheral", "/gpio"
+    };
+    for (const char* route : spaRoutes) {
+        server->on(route, HTTP_GET,
+                  [this](AsyncWebServerRequest* request) { handleSPAPage(request); });
+    }
 
     server->on("/", HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleRootPage(request); });
@@ -49,36 +26,13 @@ void StaticRouteHandler::setupRoutes(AsyncWebServer* server) {
         [this](AsyncWebServerRequest* request) { handleNotFound(request); });
 }
 
-void StaticRouteHandler::handleLoginPage(AsyncWebServerRequest* request) {
-    // 尝试文件系统
-    String path = ctx->webRootPath + "/login.html";
-    if (ctx->serveStaticFile(request, path)) return;
-
-    // 内置页面
-    ctx->sendBuiltinLoginPage(request);
-}
-
-void StaticRouteHandler::handleDashboardPage(AsyncWebServerRequest* request) {
-    String path = ctx->webRootPath + "/dashboard.html";
-    if (ctx->serveStaticFile(request, path)) return;
-
-    ctx->sendBuiltinDashboard(request);
-}
-
-void StaticRouteHandler::handleUsersPage(AsyncWebServerRequest* request) {
-    String path = ctx->webRootPath + "/users.html";
-    if (ctx->serveStaticFile(request, path)) return;
-
-    ctx->sendBuiltinUsersPage(request);
-}
-
 void StaticRouteHandler::handleRootPage(AsyncWebServerRequest* request) {
     // 尝试 index.html
     String path = ctx->webRootPath + "/index.html";
     if (ctx->serveStaticFile(request, path)) return;
 
-    // 回退到登录页
-    request->redirect("/login");
+    // 回退到内置 WiFi 配置页（index.html 不存在时说明文件系统未上传）
+    ctx->sendBuiltinSetupPage(request);
 }
 
 void StaticRouteHandler::handleSPAPage(AsyncWebServerRequest* request) {
@@ -86,8 +40,8 @@ void StaticRouteHandler::handleSPAPage(AsyncWebServerRequest* request) {
     String path = ctx->webRootPath + "/index.html";
     if (ctx->serveStaticFile(request, path)) return;
 
-    // 如果 index.html 不存在，返回 404
-    ctx->sendNotFound(request);
+    // 如果 index.html 不存在，重定向到根目录（会显示内置配置页）
+    request->redirect("/");
 }
 
 void StaticRouteHandler::handleNotFound(AsyncWebServerRequest* request) {
