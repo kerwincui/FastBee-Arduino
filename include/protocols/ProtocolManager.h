@@ -80,6 +80,16 @@ public:
     void stopMQTT();
 
     /**
+     * @brief 重启Modbus（从protocol.json加载配置并初始化）
+     */
+    bool restartModbus();
+
+    /**
+     * @brief 停止Modbus
+     */
+    void stopModbus();
+
+    /**
      * @brief 完全关闭协议管理器，释放所有资源
      */
     void shutdown();

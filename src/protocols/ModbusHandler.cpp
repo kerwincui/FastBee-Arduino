@@ -95,7 +95,7 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
         return false;
     }
     
-    DynamicJsonDocument doc(2048);
+    DynamicJsonDocument doc(8192);
     DeserializationError error = deserializeJson(doc, jsonContent);
     if (error) {
         LOG_ERRORF("Modbus: JSON parse error: %s", error.c_str());
@@ -123,6 +123,11 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
     if (doc.containsKey("mode")) {
         String modeStr = doc["mode"].as<String>();
         config.mode = (modeStr == "master") ? MODBUS_MASTER : MODBUS_SLAVE;
+    }
+    
+    // 解析传输类型
+    if (doc.containsKey("transferType")) {
+        config.transferType = doc["transferType"].as<uint8_t>();
     }
     
     // 解析Master模式配置
@@ -153,6 +158,26 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                 const char* lbl   = t["label"] | "";
                 strncpy(task.label, lbl, sizeof(task.label) - 1);
                 task.label[sizeof(task.label) - 1] = '\0';
+                
+                // 解析寄存器映射
+                task.mappingCount = 0;
+                if (t.containsKey("mappings")) {
+                    JsonArray mappingsArr = t["mappings"];
+                    for (JsonVariant mv : mappingsArr) {
+                        if (task.mappingCount >= Protocols::MODBUS_MAX_MAPPINGS_PER_TASK) break;
+                        JsonObject m = mv.as<JsonObject>();
+                        RegisterMapping& mapping = task.mappings[task.mappingCount];
+                        mapping.regOffset = m["regOffset"] | (uint8_t)0;
+                        mapping.dataType = m["dataType"] | (uint8_t)0;
+                        mapping.scaleFactor = m["scaleFactor"] | 1.0f;
+                        mapping.decimalPlaces = m["decimalPlaces"] | (uint8_t)1;
+                        const char* sid = m["sensorId"] | "";
+                        strncpy(mapping.sensorId, sid, sizeof(mapping.sensorId) - 1);
+                        mapping.sensorId[sizeof(mapping.sensorId) - 1] = '\0';
+                        task.mappingCount++;
+                    }
+                }
+                
                 config.master.taskCount++;
             }
         }
@@ -165,7 +190,7 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
 bool ModbusHandler::saveConfigToFile(const String& configPath) {
     String actualPath = configPath.isEmpty() ? config.configFile : configPath;
     
-    DynamicJsonDocument doc(2048);
+    DynamicJsonDocument doc(8192);
     doc["slaveAddress"] = config.slaveAddress;
     doc["baudRate"] = config.baudRate;
     doc["txPin"] = config.txPin;
@@ -175,6 +200,7 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
     doc["interFrameDelay"] = config.interFrameDelay;
     doc["configFile"] = config.configFile;
     doc["mode"] = (config.mode == MODBUS_MASTER) ? "master" : "slave";
+    doc["transferType"] = config.transferType;
     
     // 序列化Master配置
     JsonObject masterObj = doc.createNestedObject("master");
@@ -194,6 +220,20 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
         t["pollInterval"] = task.pollInterval;
         t["enabled"] = task.enabled;
         t["label"] = task.label;
+        
+        // 序列化寄存器映射
+        if (task.mappingCount > 0) {
+            JsonArray mappingsArr = t.createNestedArray("mappings");
+            for (uint8_t j = 0; j < task.mappingCount; j++) {
+                const RegisterMapping& mapping = task.mappings[j];
+                JsonObject mo = mappingsArr.createNestedObject();
+                mo["regOffset"] = mapping.regOffset;
+                mo["dataType"] = mapping.dataType;
+                mo["scaleFactor"] = mapping.scaleFactor;
+                mo["decimalPlaces"] = mapping.decimalPlaces;
+                mo["sensorId"] = mapping.sensorId;
+            }
+        }
     }
     
     String jsonContent;
@@ -1051,7 +1091,13 @@ bool ModbusHandler::parseMasterResponse(const uint8_t* buffer, uint8_t length, c
         return false;
     }
     
-    // 解析寄存器读响应数据
+    // 透传模式: 直接上报原始十六进制帧
+    if (config.transferType == 1) {
+        reportRawData(task, buffer, length);
+        return true;
+    }
+    
+    // JSON模式: 解析寄存器读响应数据
     uint8_t byteCount = buffer[2];
     
     if (task.functionCode == 0x03 || task.functionCode == 0x04) {
@@ -1086,7 +1132,77 @@ bool ModbusHandler::parseMasterResponse(const uint8_t* buffer, uint8_t length, c
 void ModbusHandler::reportPollData(const PollTask& task, const uint16_t* data, uint16_t count) {
     if (!dataCallback) return;
     
-    // 格式: "MASTER:slave=<addr>,fc=<fc>,start=<start>,count=<cnt>,data=[v1,v2,...],label=<lbl>"
+    // JSON模式且有映射配置: 生成 [{id,value}] 格式
+    if (config.transferType == 0 && task.mappingCount > 0) {
+        String json = "[";
+        bool first = true;
+        
+        for (uint8_t i = 0; i < task.mappingCount; i++) {
+            const RegisterMapping& m = task.mappings[i];
+            if (m.sensorId[0] == '\0') continue;
+            
+            float rawValue = 0.0f;
+            
+            switch (m.dataType) {
+                case 0: // uint16
+                    if (m.regOffset < count) {
+                        rawValue = (float)data[m.regOffset];
+                    }
+                    break;
+                case 1: // int16
+                    if (m.regOffset < count) {
+                        rawValue = (float)(int16_t)data[m.regOffset];
+                    }
+                    break;
+                case 2: // uint32 (两个寄存器)
+                    if (m.regOffset + 1 < count) {
+                        uint32_t u32 = ((uint32_t)data[m.regOffset] << 16) | data[m.regOffset + 1];
+                        rawValue = (float)u32;
+                    }
+                    break;
+                case 3: // int32 (两个寄存器)
+                    if (m.regOffset + 1 < count) {
+                        uint32_t u32 = ((uint32_t)data[m.regOffset] << 16) | data[m.regOffset + 1];
+                        rawValue = (float)(int32_t)u32;
+                    }
+                    break;
+                case 4: // float32 (两个寄存器, IEEE 754)
+                    if (m.regOffset + 1 < count) {
+                        uint32_t u32 = ((uint32_t)data[m.regOffset] << 16) | data[m.regOffset + 1];
+                        memcpy(&rawValue, &u32, sizeof(float));
+                    }
+                    break;
+                default:
+                    if (m.regOffset < count) {
+                        rawValue = (float)data[m.regOffset];
+                    }
+                    break;
+            }
+            
+            float scaledValue = rawValue * m.scaleFactor;
+            
+            // 格式化数值
+            char valBuf[16];
+            dtostrf(scaledValue, 1, m.decimalPlaces, valBuf);
+            
+            if (!first) json += ",";
+            json += "{\"id\":\"";
+            json += m.sensorId;
+            json += "\",\"value\":\"";
+            json += valBuf;
+            json += "\"}";
+            first = false;
+        }
+        
+        json += "]";
+        
+        if (!first) { // 至少有一个映射输出
+            dataCallback(task.slaveAddress, json);
+            return;
+        }
+    }
+    
+    // 默认: 旧文本格式（向后兼容，mappingCount==0 时使用）
     String report = "MASTER:slave=" + String(task.slaveAddress) +
                     ",fc=" + String(task.functionCode) +
                     ",start=" + String(task.startAddress) +
@@ -1104,6 +1220,21 @@ void ModbusHandler::reportPollData(const PollTask& task, const uint16_t* data, u
     }
     
     dataCallback(task.slaveAddress, report);
+}
+
+void ModbusHandler::reportRawData(const PollTask& task, const uint8_t* frame, uint8_t frameLen) {
+    if (!dataCallback) return;
+    
+    // 将原始响应帧转为十六进制字符串
+    String hexStr;
+    hexStr.reserve(frameLen * 2 + 1);
+    for (uint8_t i = 0; i < frameLen; i++) {
+        char buf[3];
+        snprintf(buf, sizeof(buf), "%02X", frame[i]);
+        hexStr += buf;
+    }
+    
+    dataCallback(task.slaveAddress, hexStr);
 }
 
 // ============ 轮询调度 ============

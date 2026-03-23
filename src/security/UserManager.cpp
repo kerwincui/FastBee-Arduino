@@ -714,7 +714,8 @@ String UserManager::getAllUsers() {
         const User& user = pair.second;
         JsonObject userObj = usersArray.add<JsonObject>();
         userObj["username"]   = user.username;
-        userObj["role"]       = roleToString(user.role);   // 兼容旧字段
+        // 优先使用 roles 数组的首个角色（权威来源），避免旧枚举 role 字段数值不匹配
+        userObj["role"]       = user.roles.empty() ? roleToString(user.role) : user.roles[0];
         userObj["enabled"]    = user.enabled;
         userObj["createTime"] = user.createTime;
         userObj["lastLogin"]  = user.lastLogin;

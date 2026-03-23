@@ -7,6 +7,9 @@
 
 #include "protocols/ProtocolManager.h"
 #include "systems/LoggerSystem.h"
+#include "core/PeriphExecManager.h"
+#include <ArduinoJson.h>
+#include <LittleFS.h>
 #include <memory>
 
 ProtocolManager::ProtocolManager() 
@@ -229,6 +232,139 @@ void ProtocolManager::stopMQTT() {
     }
 }
 
+bool ProtocolManager::restartModbus() {
+    LOG_INFO("Protocol Manager: Restarting Modbus...");
+    
+    // 停止现有实例
+    if (modbusHandler) {
+        modbusHandler->end();
+        modbusHandler.reset();
+    }
+    
+    // 读取 protocol.json 配置
+    if (!LittleFS.exists("/config/protocol.json")) {
+        LOG_WARNING("Protocol Manager: No protocol config found for Modbus");
+        return false;
+    }
+    
+    File f = LittleFS.open("/config/protocol.json", "r");
+    if (!f) {
+        LOG_ERROR("Protocol Manager: Failed to open protocol config");
+        return false;
+    }
+    
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, f);
+    f.close();
+    
+    if (err) {
+        LOG_ERRORF("Protocol Manager: JSON parse error: %s", err.c_str());
+        return false;
+    }
+    
+    JsonVariant rtu = doc["modbusRtu"];
+    if (!rtu.is<JsonObject>()) {
+        LOG_WARNING("Protocol Manager: No modbusRtu config found");
+        return false;
+    }
+    
+    // 从嵌套的 modbusRtu 配置构建 ModbusConfig
+    ModbusConfig modbusConfig;
+    modbusConfig.baudRate = rtu["baudRate"] | (uint32_t)9600;
+    modbusConfig.txPin = 17;  // ESP32 Serial2 固定引脚
+    modbusConfig.rxPin = 16;  // ESP32 Serial2 固定引脚
+    int dePin = rtu["dePin"] | -1;
+    modbusConfig.dePin = (dePin < 0) ? 255 : (uint8_t)dePin;
+    modbusConfig.slaveAddress = rtu["slaveAddress"] | (uint8_t)1;
+    modbusConfig.responseTimeout = rtu["timeout"] | (uint16_t)1000;
+    modbusConfig.transferType = rtu["transferType"] | (uint8_t)0;
+    
+    String modeStr = rtu["mode"] | "slave";
+    modbusConfig.mode = (modeStr == "master") ? MODBUS_MASTER : MODBUS_SLAVE;
+    
+    // 解析 Master 配置
+    if (rtu.containsKey("master")) {
+        JsonObject masterObj = rtu["master"];
+        modbusConfig.master.defaultPollInterval = masterObj["defaultPollInterval"] | (uint16_t)30;
+        modbusConfig.master.responseTimeout = masterObj["responseTimeout"] | (uint16_t)1000;
+        modbusConfig.master.maxRetries = masterObj["maxRetries"] | (uint8_t)2;
+        modbusConfig.master.interPollDelay = masterObj["interPollDelay"] | (uint16_t)100;
+        
+        if (masterObj.containsKey("tasks")) {
+            JsonArray tasksArr = masterObj["tasks"];
+            modbusConfig.master.taskCount = 0;
+            for (JsonVariant taskVar : tasksArr) {
+                if (modbusConfig.master.taskCount >= Protocols::MODBUS_MAX_POLL_TASKS) break;
+                JsonObject t = taskVar.as<JsonObject>();
+                PollTask& task = modbusConfig.master.tasks[modbusConfig.master.taskCount];
+                task.slaveAddress = t["slaveAddress"] | (uint8_t)1;
+                task.functionCode = t["functionCode"] | (uint8_t)0x03;
+                task.startAddress = t["startAddress"] | (uint16_t)0;
+                task.quantity     = t["quantity"] | (uint16_t)10;
+                task.pollInterval = t["pollInterval"] | modbusConfig.master.defaultPollInterval;
+                task.enabled      = t["enabled"] | true;
+                const char* lbl   = t["label"] | "";
+                strncpy(task.label, lbl, sizeof(task.label) - 1);
+                task.label[sizeof(task.label) - 1] = '\0';
+                
+                // 解析寄存器映射
+                task.mappingCount = 0;
+                if (t.containsKey("mappings")) {
+                    JsonArray mappingsArr = t["mappings"];
+                    for (JsonVariant mv : mappingsArr) {
+                        if (task.mappingCount >= Protocols::MODBUS_MAX_MAPPINGS_PER_TASK) break;
+                        JsonObject m = mv.as<JsonObject>();
+                        RegisterMapping& mapping = task.mappings[task.mappingCount];
+                        mapping.regOffset = m["regOffset"] | (uint8_t)0;
+                        mapping.dataType = m["dataType"] | (uint8_t)0;
+                        mapping.scaleFactor = m["scaleFactor"] | 1.0f;
+                        mapping.decimalPlaces = m["decimalPlaces"] | (uint8_t)1;
+                        const char* sid = m["sensorId"] | "";
+                        strncpy(mapping.sensorId, sid, sizeof(mapping.sensorId) - 1);
+                        mapping.sensorId[sizeof(mapping.sensorId) - 1] = '\0';
+                        task.mappingCount++;
+                    }
+                }
+                
+                modbusConfig.master.taskCount++;
+            }
+        }
+    }
+    
+    // 创建新实例并设置回调
+    modbusHandler = std::unique_ptr<ModbusHandler>(new ModbusHandler());
+    
+    modbusHandler->setDataCallback([this](uint8_t address, const String& data) {
+        // 1. MQTT 上报
+        if (mqttClient && mqttClient->getIsConnected()) {
+            mqttClient->publishReportData(data);
+        }
+        // 2. JSON 格式数据注入 PeriphExec 进行条件匹配
+        if (data.length() > 0 && data[0] == '[') {
+            PeriphExecManager::getInstance().handleMqttMessage("modbus/data", data);
+        }
+        // 3. 全局消息路由
+        handleMessage(ProtocolType::MODBUS, String(address), data);
+    });
+    
+    bool ok = modbusHandler->begin(modbusConfig);
+    if (ok) {
+        LOG_INFOF("Protocol Manager: Modbus restarted in %s mode, %d tasks",
+                  (modbusConfig.mode == MODBUS_MASTER) ? "Master" : "Slave",
+                  modbusConfig.master.taskCount);
+    } else {
+        LOG_WARNING("Protocol Manager: Modbus restart failed");
+    }
+    return ok;
+}
+
+void ProtocolManager::stopModbus() {
+    LOG_INFO("Protocol Manager: Stopping Modbus...");
+    if (modbusHandler) {
+        modbusHandler->end();
+    }
+}
+
 // 具体协议初始化实现
 bool ProtocolManager::initMQTT(void* config) {
     if (!config) return false;
@@ -254,6 +390,15 @@ bool ProtocolManager::initModbus(void* config) {
     
     // 设置回调
     modbusHandler->setDataCallback([this](uint8_t address, const String& data) {
+        // 1. MQTT 上报（JSON 和透传都上报）
+        if (mqttClient && mqttClient->getIsConnected()) {
+            mqttClient->publishReportData(data);
+        }
+        // 2. JSON 格式数据注入 PeriphExec 进行条件匹配
+        if (data.length() > 0 && data[0] == '[') {
+            PeriphExecManager::getInstance().handleMqttMessage("modbus/data", data);
+        }
+        // 3. 保持全局消息路由
         handleMessage(ProtocolType::MODBUS, String(address), data);
     });
     

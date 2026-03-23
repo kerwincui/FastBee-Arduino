@@ -31,6 +31,20 @@ enum MasterPollState : uint8_t {
     POLL_ERROR    = 4    // 通信错误
 };
 
+// 寄存器映射定义（将原始寄存器值转换为传感器数据）
+struct RegisterMapping {
+    uint8_t  regOffset;      // 寄存器偏移量（相对于PollTask.startAddress）
+    uint8_t  dataType;       // 数据类型: 0=uint16, 1=int16, 2=uint32, 3=int32, 4=float32
+    float    scaleFactor;    // 缩放因子（原始值 * scaleFactor = 最终值）
+    uint8_t  decimalPlaces;  // 小数位数（JSON格式化用）
+    char     sensorId[Protocols::MODBUS_SENSOR_ID_MAX_LEN]; // 传感器标识符
+
+    RegisterMapping()
+        : regOffset(0), dataType(0), scaleFactor(1.0f), decimalPlaces(1) {
+        memset(sensorId, 0, sizeof(sensorId));
+    }
+};
+
 // 轮询任务定义
 struct PollTask {
     uint8_t  slaveAddress;   // 目标从站地址 (1-247)
@@ -40,11 +54,15 @@ struct PollTask {
     uint16_t pollInterval;   // 此任务轮询间隔（秒）
     bool     enabled;        // 是否启用
     char     label[Protocols::MODBUS_POLL_LABEL_MAX_LEN]; // 可读标签
+    
+    // 寄存器映射配置（JSON模式使用）
+    RegisterMapping mappings[Protocols::MODBUS_MAX_MAPPINGS_PER_TASK];
+    uint8_t mappingCount;    // 实际映射数量
 
     PollTask()
         : slaveAddress(1), functionCode(0x03), startAddress(0),
           quantity(10), pollInterval(Protocols::MODBUS_DEFAULT_POLL_INTERVAL),
-          enabled(true) {
+          enabled(true), mappingCount(0) {
         memset(label, 0, sizeof(label));
     }
 };
@@ -95,6 +113,7 @@ struct ModbusConfig {
     uint16_t responseTimeout;
     uint16_t interFrameDelay;
     String configFile;
+    uint8_t transferType;     // 传输类型: 0=JSON, 1=透传(RAW HEX)
     MasterConfig master;      // Master模式配置
     
     // 默认构造函数
@@ -106,7 +125,8 @@ struct ModbusConfig {
           rxPin(16), 
           dePin(255),  // 255表示不使用方向控制
           responseTimeout(1000),
-          interFrameDelay(5) {}
+          interFrameDelay(5),
+          transferType(0) {}
 };
 
 class ModbusHandler {
@@ -202,6 +222,7 @@ private:
     bool parseMasterResponse(const uint8_t* buffer, uint8_t length, const PollTask& task);
     int8_t findNextPollTask();
     void reportPollData(const PollTask& task, const uint16_t* data, uint16_t count);
+    void reportRawData(const PollTask& task, const uint8_t* frame, uint8_t frameLen);
     bool processWriteQueue();
     uint8_t buildWriteRequest(const WriteRequest& req, uint8_t* buffer);
     

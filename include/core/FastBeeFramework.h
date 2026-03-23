@@ -126,6 +126,7 @@ private:
     bool ntpSyncStarted = false;       // NTP同步已启动标志
     int ntpRetryCount = 0;             // NTP同步重试计数
     bool mqttAutoStarted = false;      // MQTT自动启动标志
+    bool modbusAutoStarted = false;    // Modbus自动启动标志
     
     // HTTP服务器
     std::unique_ptr<AsyncWebServer> server;

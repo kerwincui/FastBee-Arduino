@@ -3189,23 +3189,16 @@ const AppState = {
         if (tabId === 'modbus-rtu' && config.modbusRtu) {
             const rtu = config.modbusRtu;
             this._setCheckbox('modbus-rtu-enabled', rtu.enabled ?? false);
-            this._setValue('rtu-port', rtu.port || '/dev/ttyS0');
-            this._setValue('rtu-baudrate', rtu.baudRate || 19200);
-            this._setValue('rtu-databits', rtu.dataBits || 8);
-            this._setValue('rtu-stopbits', rtu.stopBits || 1);
-            this._setValue('rtu-parity', rtu.parity || 'none');
+            this._setValue('rtu-baudrate', rtu.baudRate || 9600);
             this._setValue('rtu-timeout', rtu.timeout || 1000);
             
-            // RS485 引脚配置
-            this._setValue('rtu-tx-pin', rtu.txPin ?? 17);
-            this._setValue('rtu-rx-pin', rtu.rxPin ?? 16);
-            this._setValue('rtu-de-pin', rtu.dePin ?? -1);
+            // RS485 配置
+            this._setValue('rtu-de-pin', rtu.dePin ?? 14);
             this._setValue('rtu-slave-addr', rtu.slaveAddress ?? 1);
+            this._setValue('rtu-transfer-type', rtu.transferType ?? 0);
             
-            // Master 模式字段
-            const mode = rtu.mode || 'slave';
-            this._setValue('rtu-mode', mode);
-            this.onModbusModeChange(mode);
+            // Master 模式（固定）
+            this.onModbusModeChange('master');
             
             if (rtu.master) {
                 this._setValue('master-poll-interval', rtu.master.defaultPollInterval || 30);
@@ -3218,9 +3211,7 @@ const AppState = {
             }
             this._renderMasterTasks();
             
-            if (mode === 'master') {
-                this.refreshMasterStatus();
-            }
+            this.refreshMasterStatus();
         }
         
         if (tabId === 'modbus-tcp' && config.modbusTcp) {
@@ -3328,17 +3319,12 @@ const AppState = {
         
         // Modbus RTU
         data.modbusRtu_enabled = document.getElementById('modbus-rtu-enabled')?.checked ? 'true' : 'false';
-        data.modbusRtu_port = document.getElementById('rtu-port')?.value || '/dev/ttyS0';
-        data.modbusRtu_baudRate = document.getElementById('rtu-baudrate')?.value || '19200';
-        data.modbusRtu_dataBits = document.getElementById('rtu-databits')?.value || '8';
-        data.modbusRtu_stopBits = document.getElementById('rtu-stopbits')?.value || '1';
-        data.modbusRtu_parity = document.getElementById('rtu-parity')?.value || 'none';
+        data.modbusRtu_baudRate = document.getElementById('rtu-baudrate')?.value || '9600';
         data.modbusRtu_timeout = document.getElementById('rtu-timeout')?.value || '1000';
-        data.modbusRtu_mode = document.getElementById('rtu-mode')?.value || 'slave';
-        data.modbusRtu_txPin = document.getElementById('rtu-tx-pin')?.value || '17';
-        data.modbusRtu_rxPin = document.getElementById('rtu-rx-pin')?.value || '16';
-        data.modbusRtu_dePin = document.getElementById('rtu-de-pin')?.value || '-1';
+        data.modbusRtu_mode = 'master';
+        data.modbusRtu_dePin = document.getElementById('rtu-de-pin')?.value || '14';
         data.modbusRtu_slaveAddress = document.getElementById('rtu-slave-addr')?.value || '1';
+        data.modbusRtu_transferType = document.getElementById('rtu-transfer-type')?.value || '0';
         
         // Modbus RTU Master 配置
         data.modbusRtu_master_defaultPollInterval = document.getElementById('master-poll-interval')?.value || '30';
@@ -3475,10 +3461,7 @@ const AppState = {
      * 切换 Master/Slave 模式显示
      */
     onModbusModeChange(mode) {
-        const section = document.getElementById('master-config-section');
-        if (section) {
-            section.style.display = (mode === 'master') ? 'block' : 'none';
-        }
+        // 固定为主站模式，Master配置区始终显示
     },
     
     /**
@@ -3489,12 +3472,13 @@ const AppState = {
         if (!tbody) return;
         
         if (!this._masterTasks || this._masterTasks.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;">' + i18n.t('modbus-master-no-tasks') + '</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#999;">' + i18n.t('modbus-master-no-tasks') + '</td></tr>';
             return;
         }
         
         const fcNames = {1: 'FC01', 2: 'FC02', 3: 'FC03', 4: 'FC04'};
         tbody.innerHTML = this._masterTasks.map((task, idx) => {
+            const mappingCount = (task.mappings && task.mappings.length) || 0;
             return '<tr>' +
                 '<td><input type="number" value="' + (task.slaveAddress || 1) + '" min="1" max="247" style="width:55px;" onchange="AppState._updateTask(' + idx + ',\'slaveAddress\',+this.value)"></td>' +
                 '<td><select onchange="AppState._updateTask(' + idx + ',\'functionCode\',+this.value)" style="width:70px;">' +
@@ -3504,6 +3488,7 @@ const AppState = {
                 '<td><input type="number" value="' + (task.quantity || 10) + '" min="1" max="125" style="width:55px;" onchange="AppState._updateTask(' + idx + ',\'quantity\',+this.value)"></td>' +
                 '<td><input type="number" value="' + (task.pollInterval || 30) + '" min="1" max="3600" style="width:55px;" onchange="AppState._updateTask(' + idx + ',\'pollInterval\',+this.value)"></td>' +
                 '<td><input type="text" value="' + (task.label || '') + '" maxlength="15" style="width:80px;" onchange="AppState._updateTask(' + idx + ',\'label\',this.value)"></td>' +
+                '<td><button type="button" class="pure-button" style="background:#667eea;color:white;font-size:11px;padding:2px 8px;" onclick="AppState.openMappingModal(' + idx + ')">' + i18n.t('modbus-mapping-btn') + ' (' + mappingCount + ')</button></td>' +
                 '<td><input type="checkbox"' + (task.enabled !== false ? ' checked' : '') + ' onchange="AppState._updateTask(' + idx + ',\'enabled\',this.checked)"></td>' +
                 '<td><button type="button" class="pure-button" style="background:#f44336;color:white;font-size:11px;padding:2px 8px;" onclick="AppState.removeMasterPollTask(' + idx + ')">' + i18n.t('modbus-master-delete-task') + '</button></td>' +
             '</tr>';
@@ -3529,7 +3514,8 @@ const AppState = {
             quantity: 10,
             pollInterval: parseInt(document.getElementById('master-poll-interval')?.value) || 30,
             enabled: true,
-            label: ''
+            label: '',
+            mappings: []
         });
         this._renderMasterTasks();
     },
@@ -3539,6 +3525,98 @@ const AppState = {
             this._masterTasks.splice(idx, 1);
             this._renderMasterTasks();
         }
+    },
+    
+    // ============ 寄存器映射管理 ============
+    
+    _currentMappingTaskIdx: -1,
+    _currentMappings: [],
+    
+    openMappingModal(taskIdx) {
+        if (!this._masterTasks || !this._masterTasks[taskIdx]) return;
+        this._currentMappingTaskIdx = taskIdx;
+        this._currentMappings = JSON.parse(JSON.stringify(this._masterTasks[taskIdx].mappings || []));
+        this._renderMappingTable();
+        document.getElementById('mapping-modal').style.display = 'flex';
+    },
+    
+    closeMappingModal() {
+        document.getElementById('mapping-modal').style.display = 'none';
+        this._currentMappingTaskIdx = -1;
+        this._currentMappings = [];
+    },
+    
+    saveMappingModal() {
+        if (this._currentMappingTaskIdx < 0) return;
+        // 从表格收集当前值
+        this._collectMappingValues();
+        this._masterTasks[this._currentMappingTaskIdx].mappings = this._currentMappings;
+        this._renderMasterTasks();
+        this.closeMappingModal();
+    },
+    
+    addMapping() {
+        if (this._currentMappings.length >= 8) {
+            Notification.warning(i18n.t('modbus-mapping-max'));
+            return;
+        }
+        this._collectMappingValues();
+        this._currentMappings.push({
+            regOffset: 0, dataType: 0, scaleFactor: 0.1, decimalPlaces: 1, sensorId: ''
+        });
+        this._renderMappingTable();
+    },
+    
+    removeMapping(idx) {
+        this._collectMappingValues();
+        this._currentMappings.splice(idx, 1);
+        this._renderMappingTable();
+    },
+    
+    _collectMappingValues() {
+        const tbody = document.getElementById('mapping-table-body');
+        if (!tbody) return;
+        const rows = tbody.querySelectorAll('tr');
+        rows.forEach((row, idx) => {
+            if (idx >= this._currentMappings.length) return;
+            const inputs = row.querySelectorAll('input, select');
+            if (inputs.length >= 5) {
+                this._currentMappings[idx].regOffset = parseInt(inputs[0].value) || 0;
+                this._currentMappings[idx].dataType = parseInt(inputs[1].value) || 0;
+                this._currentMappings[idx].scaleFactor = parseFloat(inputs[2].value) || 1.0;
+                this._currentMappings[idx].decimalPlaces = parseInt(inputs[3].value) || 1;
+                this._currentMappings[idx].sensorId = inputs[4].value || '';
+            }
+        });
+    },
+    
+    _renderMappingTable() {
+        const tbody = document.getElementById('mapping-table-body');
+        if (!tbody) return;
+        
+        const dtOpts = [
+            {v: 0, t: 'uint16'}, {v: 1, t: 'int16'},
+            {v: 2, t: 'uint32'}, {v: 3, t: 'int32'}, {v: 4, t: 'float32'}
+        ];
+        
+        if (this._currentMappings.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">' + i18n.t('modbus-master-no-tasks') + '</td></tr>';
+            return;
+        }
+        
+        tbody.innerHTML = this._currentMappings.map((m, idx) => {
+            const dtSelect = dtOpts.map(o =>
+                '<option value="' + o.v + '"' + (m.dataType === o.v ? ' selected' : '') + '>' + o.t + '</option>'
+            ).join('');
+            return '<tr>' +
+                '<td><input type="number" value="' + (m.regOffset || 0) + '" min="0" max="124" style="width:50px;"></td>' +
+                '<td><select style="width:80px;">' + dtSelect + '</select></td>' +
+                '<td><input type="number" value="' + (m.scaleFactor ?? 0.1) + '" step="0.001" style="width:70px;"></td>' +
+                '<td><input type="number" value="' + (m.decimalPlaces ?? 1) + '" min="0" max="6" style="width:45px;"></td>' +
+                '<td><input type="text" value="' + (m.sensorId || '') + '" maxlength="15" style="width:100px;" placeholder="temperature"></td>' +
+                '<td><button type="button" class="pure-button" style="background:#f44336;color:white;font-size:11px;padding:2px 6px;" onclick="AppState.removeMapping(' + idx + ')">X</button></td>' +
+            '</tr>';
+        }).join('');
     },
     
     /**

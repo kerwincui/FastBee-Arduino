@@ -398,6 +398,33 @@ bool FastBeeFramework::addSystemTasks() {
                     }
                 }
             }
+            
+            // WiFi连接后自动启动Modbus（仅执行一次，比MQTT晚1秒）
+            if (!framework->modbusAutoStarted && WiFi.status() == WL_CONNECTED && framework->protocolManager) {
+                static unsigned long modbusWaitStart = 0;
+                if (modbusWaitStart == 0) {
+                    modbusWaitStart = millis();
+                } else if (millis() - modbusWaitStart > 6000) {
+                    // WiFi稳定6秒后加载并启动Modbus
+                    framework->modbusAutoStarted = true;
+                    LOG_INFO("[Modbus] WiFi stable, checking Modbus config...");
+                    
+                    if (LittleFS.exists("/config/protocol.json")) {
+                        File f = LittleFS.open("/config/protocol.json", "r");
+                        if (f) {
+                            JsonDocument doc;
+                            DeserializationError err = deserializeJson(doc, f);
+                            f.close();
+                            if (!err && doc["modbusRtu"]["enabled"].as<bool>()) {
+                                LOG_INFO("[Modbus] Modbus enabled, auto-starting...");
+                                framework->protocolManager->restartModbus();
+                            } else {
+                                LOG_INFO("[Modbus] Modbus not enabled in config, skipping auto-start");
+                            }
+                        }
+                    }
+                }
+            }
         }
     }, this, 5000)) {
         LOG_WARNING("Failed to add network update task");

@@ -111,18 +111,12 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
 
     // Modbus RTU
     doc["modbusRtu"]["enabled"] = GP("modbusRtu_enabled", "false") == "true";
-    doc["modbusRtu"]["port"] = GP("modbusRtu_port", "/dev/ttyS0");
-    doc["modbusRtu"]["baudRate"] = GPI("modbusRtu_baudRate", "19200");
-    doc["modbusRtu"]["dataBits"] = GPI("modbusRtu_dataBits", "8");
-    doc["modbusRtu"]["stopBits"] = GPI("modbusRtu_stopBits", "1");
-    doc["modbusRtu"]["parity"] = GP("modbusRtu_parity", "none");
+    doc["modbusRtu"]["baudRate"] = GPI("modbusRtu_baudRate", "9600");
     doc["modbusRtu"]["timeout"] = GPI("modbusRtu_timeout", "1000");
-    doc["modbusRtu"]["mode"] = GP("modbusRtu_mode", "slave");
-    // Modbus RTU 引脚配置
-    doc["modbusRtu"]["txPin"] = GPI("modbusRtu_txPin", "17");
-    doc["modbusRtu"]["rxPin"] = GPI("modbusRtu_rxPin", "16");
+    doc["modbusRtu"]["mode"] = GP("modbusRtu_mode", "master");
     doc["modbusRtu"]["dePin"] = GPI("modbusRtu_dePin", "-1");
     doc["modbusRtu"]["slaveAddress"] = GPI("modbusRtu_slaveAddress", "1");
+    doc["modbusRtu"]["transferType"] = GPI("modbusRtu_transferType", "0");
 
     // Modbus RTU Master 配置
     doc["modbusRtu"]["master"]["defaultPollInterval"] = GPI("modbusRtu_master_defaultPollInterval", "30");
@@ -147,6 +141,19 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                 taskObj["pollInterval"] = v["pollInterval"] | 30;
                 taskObj["enabled"] = v["enabled"] | true;
                 taskObj["label"] = v["label"] | "";
+                
+                // 寄存器映射
+                if (v.containsKey("mappings") && v["mappings"].is<JsonArray>()) {
+                    JsonArray mappingsArr = taskObj["mappings"].to<JsonArray>();
+                    for (JsonVariant mv : v["mappings"].as<JsonArray>()) {
+                        JsonObject mo = mappingsArr.add<JsonObject>();
+                        mo["regOffset"] = mv["regOffset"] | 0;
+                        mo["dataType"] = mv["dataType"] | 0;
+                        mo["scaleFactor"] = mv["scaleFactor"] | 1.0;
+                        mo["decimalPlaces"] = mv["decimalPlaces"] | 1;
+                        mo["sensorId"] = mv["sensorId"] | "";
+                    }
+                }
             }
         }
     }
@@ -314,11 +321,26 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         }
     }
 
+    // 保存成功后，根据Modbus启用状态处理
+    bool modbusRestarted = false;
+    if (doc["modbusRtu"]["enabled"].as<bool>()) {
+        ProtocolManager* pm = ctx->protocolManager;
+        if (pm) {
+            modbusRestarted = pm->restartModbus();
+        }
+    } else {
+        ProtocolManager* pm = ctx->protocolManager;
+        if (pm) {
+            pm->stopModbus();
+        }
+    }
+
     JsonDocument resp;
     resp["success"] = true;
     resp["message"] = "Protocol configuration saved";
     resp["data"]["mqttReconnected"] = mqttReconnected;
     resp["data"]["mqttDisconnected"] = mqttDisconnected;
+    resp["data"]["modbusRestarted"] = modbusRestarted;
     if (!mqttReconnected && doc["mqtt"]["enabled"].as<bool>()) {
         resp["data"]["mqttError"] = mqttError;
     }

@@ -140,15 +140,20 @@ void WebHandlerContext::sendJsonResponse(AsyncWebServerRequest* request, int cod
 }
 
 void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const JsonDocument& data) {
-    // 直接构建完整 JSON，避免双重 String 分配
-    size_t dataSize = measureJson(data);
+    // 注意：ArduinoJson v7 的 serializeJson(doc, String) 会先清空目标字符串，
+    // 因此必须先序列化到独立字符串，再拼接到响应中。
+    String dataStr;
+    if (!data.isNull()) {
+        serializeJson(data, dataStr);
+    }
+
     String out;
-    out.reserve(dataSize + 48);
+    out.reserve(dataStr.length() + 48);
     out = "{\"success\":true,\"timestamp\":";
     out += String(millis());
-    if (!data.isNull()) {
+    if (dataStr.length() > 0) {
         out += ",\"data\":";
-        serializeJson(data, out);  // 直接追加到 out，避免中间 dataStr
+        out += dataStr;
     }
     out += "}";
 

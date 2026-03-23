@@ -550,95 +550,49 @@
                                                 <input type="checkbox" id="modbus-rtu-enabled"> <span data-i18n="modbus-rtu-enabled-label">启用Modbus RTU</span>
                                             </label>
                                         </div>
-                                        <!-- 工作模式选择 -->
-                                        <div class="pure-control-group" style="margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #eee;">
-                                            <label for="rtu-mode" data-i18n="modbus-mode-label">工作模式</label>
-                                            <select id="rtu-mode" class="pure-input-1" onchange="AppState.onModbusModeChange(this.value)">
-                                                <option value="slave" data-i18n="modbus-mode-slave">从站模式 (Slave)</option>
-                                                <option value="master" data-i18n="modbus-mode-master">主站模式 (Master)</option>
-                                            </select>
-                                        </div>
                                         
-                                        <!-- 串口基本配置 -->
+                                        <!-- 基本配置 - 两列布局 -->
                                         <div class="config-form-grid">
-                                            <div class="config-form-column">
-                                                <div class="pure-control-group">
-                                                    <label for="rtu-port" data-i18n="rtu-port-label">串口端口</label>
-                                                    <input type="text" id="rtu-port" class="pure-input-1" value="/dev/ttyS0">
-                                                </div>
-                                                
-                                                <div class="pure-control-group">
-                                                    <label for="rtu-databits" data-i18n="rtu-databits-label">数据位</label>
-                                                    <select id="rtu-databits" class="pure-input-1">
-                                                        <option value="7">7</option>
-                                                        <option value="8" selected>8</option>
-                                                    </select>
-                                                </div>
-                                                
-                                                <div class="pure-control-group">
-                                                    <label for="rtu-stopbits" data-i18n="rtu-stopbits-label">停止位</label>
-                                                    <select id="rtu-stopbits" class="pure-input-1">
-                                                        <option value="1" selected>1</option>
-                                                        <option value="2">2</option>
-                                                    </select>
-                                                </div>
-                                            </div>
-                                            
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
                                                     <label for="rtu-baudrate" data-i18n="rtu-baudrate-label">波特率</label>
                                                     <select id="rtu-baudrate" class="pure-input-1">
-                                                        <option value="9600">9600</option>
-                                                        <option value="19200" selected>19200</option>
+                                                        <option value="4800">4800</option>
+                                                        <option value="9600" selected>9600</option>
+                                                        <option value="19200">19200</option>
                                                         <option value="38400">38400</option>
                                                         <option value="57600">57600</option>
                                                         <option value="115200">115200</option>
                                                     </select>
                                                 </div>
-                                                
                                                 <div class="pure-control-group">
-                                                    <label for="rtu-parity" data-i18n="rtu-parity-label">校验位</label>
-                                                    <select id="rtu-parity" class="pure-input-1">
-                                                        <option value="none" selected data-i18n="rtu-parity-none">无</option>
-                                                        <option value="even" data-i18n="rtu-parity-even">偶校验</option>
-                                                        <option value="odd" data-i18n="rtu-parity-odd">奇校验</option>
-                                                    </select>
+                                                    <label for="rtu-de-pin" data-i18n="rtu-de-pin-label">DE引脚 (RS485)</label>
+                                                    <input type="number" id="rtu-de-pin" class="pure-input-1" value="14" min="-1" max="39">
+                                                    <small class="field-hint" data-i18n="rtu-de-pin-hint">RS485方向控制引脚，-1表示不使用</small>
                                                 </div>
-                                                
                                                 <div class="pure-control-group">
                                                     <label for="rtu-timeout" data-i18n="rtu-timeout-label">超时时间(ms)</label>
                                                     <input type="number" id="rtu-timeout" class="pure-input-1" value="1000" min="100" max="10000">
                                                 </div>
                                             </div>
-                                        </div>
-
-                                        <!-- RS485 引脚配置 -->
-                                        <div class="config-form-grid" style="margin-top:15px; padding-top:15px; border-top:1px solid #eee;">
                                             <div class="config-form-column">
-                                                <div class="pure-control-group">
-                                                    <label for="rtu-tx-pin" data-i18n="rtu-tx-pin-label">TX引脚</label>
-                                                    <input type="number" id="rtu-tx-pin" class="pure-input-1" value="17" min="0" max="39">
-                                                </div>
-                                                <div class="pure-control-group">
-                                                    <label for="rtu-de-pin" data-i18n="rtu-de-pin-label">DE引脚 (RS485)</label>
-                                                    <input type="number" id="rtu-de-pin" class="pure-input-1" value="-1" min="-1" max="39">
-                                                    <small class="field-hint" data-i18n="rtu-de-pin-hint">RS485方向控制引脚，-1表示不使用</small>
-                                                </div>
-                                            </div>
-                                            <div class="config-form-column">
-                                                <div class="pure-control-group">
-                                                    <label for="rtu-rx-pin" data-i18n="rtu-rx-pin-label">RX引脚</label>
-                                                    <input type="number" id="rtu-rx-pin" class="pure-input-1" value="16" min="0" max="39">
-                                                </div>
                                                 <div class="pure-control-group">
                                                     <label for="rtu-slave-addr" data-i18n="rtu-slave-addr-label">从站地址</label>
                                                     <input type="number" id="rtu-slave-addr" class="pure-input-1" value="1" min="1" max="247">
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="rtu-transfer-type" data-i18n="rtu-transfer-type-label">传输类型</label>
+                                                    <select id="rtu-transfer-type" class="pure-input-1">
+                                                        <option value="0" data-i18n="rtu-transfer-type-json">JSON (结构化数据)</option>
+                                                        <option value="1" data-i18n="rtu-transfer-type-raw">透传 (原始HEX帧)</option>
+                                                    </select>
+                                                    <small class="field-hint" data-i18n="rtu-transfer-type-hint">JSON模式需配置寄存器映射，透传模式直接上报原始帧</small>
                                                 </div>
                                             </div>
                                         </div>
                                         
                                         <!-- Master 模式配置区 -->
-                                        <div id="master-config-section" style="display: none; margin-top: 20px; padding-top: 15px; border-top: 2px solid #667eea;">
+                                        <div id="master-config-section" style="margin-top: 20px; padding-top: 15px; border-top: 2px solid #667eea;">
                                             <h4 style="color: #667eea; margin-bottom: 15px;" data-i18n="modbus-master-title">主站轮询配置</h4>
                                             <div class="config-form-grid">
                                                 <div class="config-form-column">
@@ -679,12 +633,13 @@
                                                                 <th data-i18n="modbus-master-quantity">数量</th>
                                                                 <th data-i18n="modbus-master-interval">间隔(秒)</th>
                                                                 <th data-i18n="modbus-master-label">标签</th>
+                                                                <th data-i18n="modbus-master-mappings">映射</th>
                                                                 <th data-i18n="modbus-master-enabled">启用</th>
                                                                 <th data-i18n="modbus-master-actions">操作</th>
                                                             </tr>
                                                         </thead>
                                                         <tbody id="master-tasks-body">
-                                                            <tr><td colspan="8" style="text-align: center; color: #999;" data-i18n="modbus-master-no-tasks">暂无轮询任务</td></tr>
+                                                            <tr><td colspan="9" style="text-align: center; color: #999;" data-i18n="modbus-master-no-tasks">暂无轮询任务</td></tr>
                                                         </tbody>
                                                     </table>
                                                 </div>
@@ -715,6 +670,41 @@
                                             <button type="submit" class="pure-button pure-button-primary" data-i18n="btn-save-config">保存配置</button>
                                         </div>
                                     </form>
+                                    
+                                    <!-- 寄存器映射配置模态框 -->
+                                    <div id="mapping-modal" class="modal-overlay" style="display:none;">
+                                        <div class="modal-content" style="max-width:700px;">
+                                            <div class="modal-header">
+                                                <h3 data-i18n="modbus-mapping-title">寄存器映射配置</h3>
+                                                <button type="button" class="modal-close" onclick="app.closeMappingModal()">&times;</button>
+                                            </div>
+                                            <div class="modal-body" style="max-height:400px;overflow-y:auto;">
+                                                <div style="overflow-x:auto;">
+                                                    <table class="pure-table pure-table-bordered" style="width:100%;font-size:12px;">
+                                                        <thead>
+                                                            <tr>
+                                                                <th data-i18n="modbus-mapping-offset">偏移</th>
+                                                                <th data-i18n="modbus-mapping-datatype">数据类型</th>
+                                                                <th data-i18n="modbus-mapping-scale">缩放因子</th>
+                                                                <th data-i18n="modbus-mapping-decimals">小数位</th>
+                                                                <th data-i18n="modbus-mapping-sensor-id">传感器ID</th>
+                                                                <th data-i18n="modbus-master-actions">操作</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody id="mapping-table-body"></tbody>
+                                                    </table>
+                                                </div>
+                                                <div style="margin-top:10px;">
+                                                    <button type="button" class="pure-button" style="background:#4CAF50;color:white;font-size:12px;padding:4px 12px;" onclick="app.addMapping()" data-i18n="modbus-mapping-add">添加映射</button>
+                                                    <small style="margin-left:10px;color:#999;" data-i18n="modbus-mapping-max">每任务最多8个映射</small>
+                                                </div>
+                                            </div>
+                                            <div class="modal-footer" style="text-align:right;padding-top:15px;border-top:1px solid #eee;">
+                                                <button type="button" class="pure-button" onclick="app.closeMappingModal()" data-i18n="modbus-mapping-cancel">取消</button>
+                                                <button type="button" class="pure-button pure-button-primary" style="margin-left:8px;" onclick="app.saveMappingModal()" data-i18n="modbus-mapping-save">确定</button>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
 
                                 <!-- Modbus TCP 配置 - 两列布局 -->
@@ -1814,7 +1804,7 @@
                     <!-- 设备日志页面 -->
                     <div id="logs-page" class="page">
                         <!-- 日志内容显示区域（全宽） -->
-                        <div style="height: 900px; border: 1px solid #333; border-radius: 4px; display: flex; flex-direction: column; background: #1a1a1a;">
+                        <div style="height: 750px; border: 1px solid #333; border-radius: 4px; display: flex; flex-direction: column; background: #1a1a1a;">
                             <div style="padding: 10px; background: #2d2d2d; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center;">
                                 <span id="current-log-file" style="font-family: monospace; font-size: 13px; color: #aaa;">system.log</span>
                                 <div style="display: flex; gap: 10px; align-items: center;">

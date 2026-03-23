@@ -4,7 +4,7 @@
   "userId": "1",
   "deviceName": "FastBee-Device",
   "location": "",
-  "description": "",
+  "description": "FastBee-Arduino",
   "enableNTP": true,
   "ntpServer1": "https://iot.fastbee.cn/prod-api/iot/tool/ntp",
   "ntpServer2": "time.windows.com",
