@@ -93,6 +93,7 @@ bool PeriphExecManager::disableRule(const String& id) {
 
 bool PeriphExecManager::saveConfiguration() {
     JsonDocument doc;
+    doc["version"] = 1;
     JsonArray arr = doc["rules"].to<JsonArray>();
 
     for (const auto& pair : rules) {
