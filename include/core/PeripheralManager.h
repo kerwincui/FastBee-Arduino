@@ -8,6 +8,7 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <Ticker.h>
+#include <freertos/semphr.h>
 #include "PeripheralTypes.h"
 #include "PeripheralConfig.h"
 
@@ -167,9 +168,15 @@ public:
     void startActionTicker(const String& id, uint8_t actionMode, uint16_t paramValue);
     void stopActionTicker(const String& id);
 
+    // 线程安全：获取互斥量句柄（供 Ticker 回调非阻塞尝试加锁）
+    SemaphoreHandle_t getMutex() const { return _mutex; }
+
 private:
     PeripheralManager() = default;
     
+    // 线程安全互斥量（递归，支持嵌套调用）
+    SemaphoreHandle_t _mutex = nullptr;
+
     // 外设存储
     std::map<String, PeripheralConfig> peripherals;
     std::map<String, PeripheralRuntimeState> runtimeStates;

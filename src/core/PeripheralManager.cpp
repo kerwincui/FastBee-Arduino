@@ -6,6 +6,7 @@
  */
 
 #include "core/PeripheralManager.h"
+#include "core/AsyncExecTypes.h"
 #include "systems/LoggerSystem.h"
 #include <Wire.h>
 #include <SPI.h>
@@ -19,6 +20,9 @@ PeripheralManager& PeripheralManager::getInstance() {
 // 初始化
 bool PeripheralManager::initialize() {
     LOG_INFO("Peripheral Manager: Initializing...");
+    
+    // 创建递归互斥量（支持同一任务嵌套加锁，如 togglePin → readPin → writePin）
+    _mutex = xSemaphoreCreateRecursiveMutex();
     
     // 尝试从旧版配置迁移
     if (LittleFS.exists("/config/gpio.json") && !LittleFS.exists(PERIPHERAL_CONFIG_FILE)) {
@@ -338,6 +342,7 @@ GPIOState PeripheralManager::readPin(uint8_t pin) {
 }
 
 GPIOState PeripheralManager::readPin(const String& peripheralId) {
+    RecursiveMutexGuard lock(_mutex);
     auto config = getPeripheral(peripheralId);
     if (!config || !config->isGPIOPeripheral()) {
         return GPIOState::STATE_UNDEFINED;
@@ -380,6 +385,7 @@ bool PeripheralManager::writePin(uint8_t pin, GPIOState state) {
 }
 
 bool PeripheralManager::writePin(const String& peripheralId, GPIOState state) {
+    RecursiveMutexGuard lock(_mutex);
     auto config = getPeripheral(peripheralId);
     if (!config || !config->isGPIOPeripheral()) {
         return false;
@@ -432,6 +438,7 @@ bool PeripheralManager::togglePin(uint8_t pin) {
 }
 
 bool PeripheralManager::togglePin(const String& peripheralId) {
+    RecursiveMutexGuard lock(_mutex);
     GPIOState current = readPin(peripheralId);
     if (current == GPIOState::STATE_UNDEFINED) return false;
     return writePin(peripheralId, current == GPIOState::STATE_HIGH 
@@ -445,6 +452,7 @@ bool PeripheralManager::writePWM(uint8_t pin, uint32_t dutyCycle) {
 }
 
 bool PeripheralManager::writePWM(const String& peripheralId, uint32_t dutyCycle) {
+    RecursiveMutexGuard lock(_mutex);
     auto config = getPeripheral(peripheralId);
     if (!config) return false;
     
@@ -976,6 +984,7 @@ bool PeripheralManager::setupPWMPin(const PeripheralConfig& config) {
 // ========== 动作定时器管理 ==========
 
 void PeripheralManager::stopActionTicker(const String& id) {
+    RecursiveMutexGuard lock(_mutex);
     auto it = actionTickers.find(id);
     if (it != actionTickers.end()) {
         it->second->ticker.detach();
@@ -984,15 +993,20 @@ void PeripheralManager::stopActionTicker(const String& id) {
     }
 }
 
+// Ticker 回调：非阻塞尝试加锁，获取失败则跳过本次（下次重试）
 static void blinkTickerCallback(PeripheralManager::ActionTickerData* data) {
-    if (data && data->mgr) {
-        data->mgr->togglePin(data->id);
-    }
+    if (!data || !data->mgr) return;
+    SemaphoreHandle_t mtx = data->mgr->getMutex();
+    if (!mtx || xSemaphoreTakeRecursive(mtx, 0) != pdTRUE) return;
+    data->mgr->togglePin(data->id);
+    xSemaphoreGiveRecursive(mtx);
 }
 
 static void breatheTickerCallback(PeripheralManager::ActionTickerData* data) {
-    if (!data) return;
-    
+    if (!data || !data->mgr) return;
+    SemaphoreHandle_t mtx = data->mgr->getMutex();
+    if (!mtx || xSemaphoreTakeRecursive(mtx, 0) != pdTRUE) return;
+
     int16_t current = data->breatheState;
     bool increasing = (current >= 0);
     uint16_t duty = increasing ? current : (-current);
@@ -1006,9 +1020,11 @@ static void breatheTickerCallback(PeripheralManager::ActionTickerData* data) {
         else { duty -= data->stepSize; data->breatheState = -duty; }
     }
     ledcWrite(data->channel, duty);
+    xSemaphoreGiveRecursive(mtx);
 }
 
 void PeripheralManager::startActionTicker(const String& id, uint8_t actionMode, uint16_t paramValue) {
+    RecursiveMutexGuard lock(_mutex);
     stopActionTicker(id);  // 先清理已有的
     
     auto config = getPeripheral(id);

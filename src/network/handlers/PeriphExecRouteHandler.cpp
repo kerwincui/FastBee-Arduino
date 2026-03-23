@@ -50,10 +50,12 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         obj["name"] = rule.name;
         obj["enabled"] = rule.enabled;
         obj["triggerType"] = rule.triggerType;
+        obj["execMode"] = rule.execMode;
 
         // 设备触发
         obj["operatorType"] = rule.operatorType;
         obj["compareValue"] = rule.compareValue;
+        obj["sourcePeriphId"] = rule.sourcePeriphId;
 
         // 定时触发
         obj["timerMode"] = rule.timerMode;
@@ -80,6 +82,12 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
                 obj["targetPeriphType"] = 0;
             }
         }
+        if (!rule.sourcePeriphId.isEmpty()) {
+            const PeripheralConfig* srcPeriph = pm.getPeripheral(rule.sourcePeriphId);
+            if (srcPeriph) {
+                obj["sourcePeriphName"] = srcPeriph->name;
+            }
+        }
     }
 
     String output;
@@ -100,9 +108,11 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     rule.name = ctx->getParamValue(request, "name", "");
     rule.enabled = ctx->getParamBool(request, "enabled", true);
     rule.triggerType = ctx->getParamInt(request, "triggerType", 0);
+    rule.execMode = ctx->getParamInt(request, "execMode", 0);
 
     rule.operatorType = ctx->getParamInt(request, "operatorType", 0);
     rule.compareValue = ctx->getParamValue(request, "compareValue", "");
+    rule.sourcePeriphId = ctx->getParamValue(request, "sourcePeriphId", "");
 
     rule.timerMode = ctx->getParamInt(request, "timerMode", 0);
     rule.intervalSec = ctx->getParamInt(request, "intervalSec", 60);
@@ -111,7 +121,7 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     rule.targetPeriphId = ctx->getParamValue(request, "targetPeriphId", "");
     rule.actionType = ctx->getParamInt(request, "actionType", 0);
     rule.actionValue = ctx->getParamValue(request, "actionValue", "");
-    rule.inverted = false;  // 不再使用独立字段，由 actionType 决定
+    rule.inverted = false;
 
     if (rule.name.isEmpty()) {
         return;
@@ -152,9 +162,11 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     rule.name = ctx->getParamValue(request, "name", existing->name);
     rule.enabled = ctx->getParamBool(request, "enabled", existing->enabled);
     rule.triggerType = ctx->getParamInt(request, "triggerType", existing->triggerType);
+    rule.execMode = ctx->getParamInt(request, "execMode", existing->execMode);
 
     rule.operatorType = ctx->getParamInt(request, "operatorType", existing->operatorType);
     rule.compareValue = ctx->getParamValue(request, "compareValue", existing->compareValue);
+    rule.sourcePeriphId = ctx->getParamValue(request, "sourcePeriphId", existing->sourcePeriphId);
 
     rule.timerMode = ctx->getParamInt(request, "timerMode", existing->timerMode);
     rule.intervalSec = ctx->getParamInt(request, "intervalSec", existing->intervalSec);

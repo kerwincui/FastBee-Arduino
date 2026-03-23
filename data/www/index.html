@@ -2238,13 +2238,14 @@
                                 <div class="pure-control-group">
                                     <label for="periph-exec-trigger-type" data-i18n="periph-exec-trigger-type-label">触发类型</label>
                                     <select id="periph-exec-trigger-type" class="pure-input-1" onchange="app.onPeriphExecTriggerTypeChange(this.value)">
-                                        <option value="0" data-i18n="periph-exec-trigger-device">设备触发 (MQTT)</option>
+                                        <option value="0" data-i18n="periph-exec-trigger-platform">平台触发 (MQTT)</option>
                                         <option value="1" data-i18n="periph-exec-trigger-timer">定时触发</option>
+                                        <option value="2" data-i18n="periph-exec-trigger-device">设备触发</option>
                                     </select>
                                 </div>
                                 
-                                <!-- 设备触发 - 左列: 比较运算符 -->
-                                <div id="periph-exec-device-trigger-left">
+                                <!-- 平台触发/设备触发 - 左列: 比较运算符 -->
+                                <div id="periph-exec-condition-left">
                                     <div class="pure-control-group">
                                         <label for="periph-exec-operator" data-i18n="periph-exec-operator-label">比较运算符</label>
                                         <select id="periph-exec-operator" class="pure-input-1">
@@ -2259,6 +2260,17 @@
                                             <option value="8">CONTAIN (包含)</option>
                                             <option value="9">NOT CONTAIN (不包含)</option>
                                         </select>
+                                    </div>
+                                </div>
+                                
+                                <!-- 设备触发 - 左列: 触发源外设选择 -->
+                                <div id="periph-exec-source-periph-group" style="display: none;">
+                                    <div class="pure-control-group">
+                                        <label for="periph-exec-source-periph" data-i18n="periph-exec-source-periph-label">触发源外设</label>
+                                        <select id="periph-exec-source-periph" class="pure-input-1">
+                                            <option value="" data-i18n="periph-exec-select-source-periph">-- 选择输入外设 --</option>
+                                        </select>
+                                        <small style="color: #999;" data-i18n="periph-exec-source-periph-help">监听此输入外设的状态变化</small>
                                     </div>
                                 </div>
                                 
@@ -2301,6 +2313,14 @@
                                         </optgroup>
                                     </select>
                                 </div>
+
+                                <div class="pure-control-group">
+                                    <label data-i18n="periph-exec-enabled-label">启用</label>
+                                    <label class="toggle-switch">
+                                        <input type="checkbox" id="periph-exec-enabled" checked>
+                                        <span class="toggle-slider"></span>
+                                    </label>
+                                </div>
                             </div>
                             
                             <!-- 右列：目标外设、启用开关、条件值、动作参数 -->
@@ -2311,16 +2331,18 @@
                                         <option value="" data-i18n="periph-exec-select-periph">-- 选择外设 --</option>
                                     </select>
                                 </div>
+                                
                                 <div class="pure-control-group">
-                                    <label data-i18n="periph-exec-enabled-label">启用</label>
-                                    <label class="toggle-switch">
-                                        <input type="checkbox" id="periph-exec-enabled" checked>
-                                        <span class="toggle-slider"></span>
-                                    </label>
+                                    <label for="periph-exec-exec-mode" data-i18n="periph-exec-exec-mode-label">执行模式</label>
+                                    <select id="periph-exec-exec-mode" class="pure-input-1">
+                                        <option value="0" data-i18n="periph-exec-exec-mode-async">异步执行</option>
+                                        <option value="1" data-i18n="periph-exec-exec-mode-sync">同步执行</option>
+                                    </select>
+                                    <small style="color: #999;" data-i18n="periph-exec-exec-mode-help">异步: 独立任务不阻塞, 同步: 阻塞主循环</small>
                                 </div>
                                 
-                                <!-- 设备触发 - 右列: 比较值 -->
-                                <div id="periph-exec-device-trigger-right">
+                                <!-- 平台触发/设备触发 - 右列: 比较值 -->
+                                <div id="periph-exec-condition-right">
                                     <div class="pure-control-group">
                                         <label for="periph-exec-compare-value" data-i18n="periph-exec-compare-label">比较值</label>
                                         <input type="text" id="periph-exec-compare-value" class="pure-input-1" placeholder="如: 30 或区间: 20,30" data-i18n-placeholder="periph-exec-compare-hint">

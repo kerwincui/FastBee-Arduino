@@ -178,9 +178,9 @@
       "id": "gpio_dout",
       "name": "数字输出",
       "type": 12,
-      "enabled": false,
+      "enabled": true,
       "pins": [
-        2
+        22
       ],
       "params": {
         "initialState": 0,

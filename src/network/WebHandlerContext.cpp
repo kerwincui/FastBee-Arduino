@@ -120,38 +120,35 @@ void WebHandlerContext::sendJsonResponse(AsyncWebServerRequest* request, int cod
     if (!request) return;
 
     size_t docSize = measureJson(doc);
+    AsyncWebServerResponse* response;
+
     if (docSize < 512) {
         char jsonBuffer[512];
         serializeJson(doc, jsonBuffer, sizeof(jsonBuffer));
-
-        AsyncWebServerResponse* response = request->beginResponse(code, "application/json", jsonBuffer);
-        response->addHeader("Access-Control-Allow-Origin", "*");
-        response->addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-        response->addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-        request->send(response);
+        response = request->beginResponse(code, "application/json", jsonBuffer);
     } else {
         String jsonStr;
+        jsonStr.reserve(docSize + 1);
         serializeJson(doc, jsonStr);
-
-        AsyncWebServerResponse* response = request->beginResponse(code, "application/json", jsonStr);
-        response->addHeader("Access-Control-Allow-Origin", "*");
-        response->addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-        response->addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-        request->send(response);
+        response = request->beginResponse(code, "application/json", jsonStr);
     }
+
+    response->addHeader("Access-Control-Allow-Origin", "*");
+    response->addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    response->addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    request->send(response);
 }
 
 void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const JsonDocument& data) {
-    String dataStr;
-    serializeJson(data, dataStr);
-
+    // 直接构建完整 JSON，避免双重 String 分配
+    size_t dataSize = measureJson(data);
     String out;
-    out.reserve(dataStr.length() + 64);
+    out.reserve(dataSize + 48);
     out = "{\"success\":true,\"timestamp\":";
     out += String(millis());
     if (!data.isNull()) {
         out += ",\"data\":";
-        out += dataStr;
+        serializeJson(data, out);  // 直接追加到 out，避免中间 dataStr
     }
     out += "}";
 
@@ -776,24 +773,74 @@ void WebHandlerContext::sendBuiltinSetupPage(AsyncWebServerRequest* request) {
 // ============ 文件服务方法 ============
 
 bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const String& path) {
-    // 检查文件是否存在（原始文件或 .gz 版本）
     String ext = path.substring(path.lastIndexOf('.'));
-    if (ext == ".html" || ext == ".js" || ext == ".css") {
+    String contentType = getContentType(path);
+    bool isCompressible = (ext == ".html" || ext == ".js" || ext == ".css");
+
+    // 优先尝试 .gz 压缩版本（直接 open 代替 exists + open 双次IO）
+    if (isCompressible) {
         String gzPath = path + ".gz";
-        // 如果 .gz 文件存在，优先发送压缩版本
-        if (LittleFS.exists(gzPath)) {
-            String contentType = getContentType(path);
+        File gzFile = LittleFS.open(gzPath, "r");
+        if (gzFile) {
+            size_t fileSize = gzFile.size();
+            gzFile.close();
+
             AsyncWebServerResponse *response = request->beginResponse(LittleFS, gzPath, contentType);
             response->addHeader("Content-Encoding", "gzip");
+
+            // ETag 基于文件大小（flash 上文件稳定后大小不变）
+            String etag = "\"" + String(fileSize, HEX) + "\"";
+            response->addHeader("ETag", etag);
+
+            // 检查客户端缓存是否命中
+            if (request->hasHeader("If-None-Match")) {
+                String clientEtag = request->header("If-None-Match");
+                if (clientEtag == etag) {
+                    request->send(304);
+                    return true;
+                }
+            }
+
+            // 静态资源长缓存：JS/CSS 缓存1天，HTML 需重验证
+            if (ext == ".html") {
+                response->addHeader("Cache-Control", "no-cache");
+            } else {
+                response->addHeader("Cache-Control", "public, max-age=86400, immutable");
+            }
+
             request->send(response);
             return true;
         }
     }
 
-    // 尝试原始文件
-    if (LittleFS.exists(path)) {
-        String contentType = getContentType(path);
-        request->send(LittleFS, path, contentType);
+    // 尝试原始文件（直接 open，一次 IO）
+    File file = LittleFS.open(path, "r");
+    if (file) {
+        size_t fileSize = file.size();
+        file.close();
+
+        AsyncWebServerResponse *response = request->beginResponse(LittleFS, path, contentType);
+
+        String etag = "\"" + String(fileSize, HEX) + "\"";
+        response->addHeader("ETag", etag);
+
+        if (request->hasHeader("If-None-Match")) {
+            String clientEtag = request->header("If-None-Match");
+            if (clientEtag == etag) {
+                request->send(304);
+                return true;
+            }
+        }
+
+        // 图片等不可压缩资源缓存7天
+        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" ||
+            ext == ".ico" || ext == ".svg" || ext == ".woff" || ext == ".woff2") {
+            response->addHeader("Cache-Control", "public, max-age=604800, immutable");
+        } else {
+            response->addHeader("Cache-Control", "no-cache");
+        }
+
+        request->send(response);
         return true;
     }
 
@@ -801,24 +848,8 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
 }
 
 void WebHandlerContext::serveGzippedFile(AsyncWebServerRequest* request, const String& path) {
-    String gzPath = path + ".gz";
-
-    // 优先发送 .gz 文件
-    if (LittleFS.exists(gzPath)) {
-        String contentType = getContentType(path);
-        AsyncWebServerResponse *response = request->beginResponse(LittleFS, gzPath, contentType);
-        response->addHeader("Content-Encoding", "gzip");
-        request->send(response);
-        return;
-    }
-
-    // 回退：尝试原始文件
-    if (LittleFS.exists(path)) {
-        String contentType = getContentType(path);
-        request->send(LittleFS, path, contentType);
-        return;
-    }
-
+    // 统一使用 serveStaticFile，已包含 gzip 和缓存逻辑
+    if (serveStaticFile(request, path)) return;
     sendNotFound(request);
 }
 

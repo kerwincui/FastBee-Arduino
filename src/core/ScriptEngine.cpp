@@ -252,12 +252,13 @@ bool ScriptEngine::execute(const std::vector<ScriptCommand>& cmds, MQTTClient* m
             }
 
             case ScriptCmdType::CMD_PWM: {
-                // 使用通道15(脚本专用, 避免与 PeripheralManager 管理的通道冲突)
-                static const uint8_t SCRIPT_PWM_CHANNEL = 15;
-                ledcSetup(SCRIPT_PWM_CHANNEL, 5000, 8);
-                ledcAttachPin(cmd.pin, SCRIPT_PWM_CHANNEL);
-                ledcWrite(SCRIPT_PWM_CHANNEL, (uint32_t)cmd.intParam);
-                LOGGER.infof("[Script] PWM pin %d = %d", cmd.pin, cmd.intParam);
+                // 按引脚分配通道 (8-15), 避免与 PeripheralManager 管理的通道 0-7 冲突
+                // 同引脚在不同脚本中映射到相同通道，不同引脚映射到不同通道
+                uint8_t scriptChannel = 8 + (cmd.pin % 8);
+                ledcSetup(scriptChannel, 5000, 8);
+                ledcAttachPin(cmd.pin, scriptChannel);
+                ledcWrite(scriptChannel, (uint32_t)cmd.intParam);
+                LOGGER.infof("[Script] PWM pin %d = %d (ch%d)", cmd.pin, cmd.intParam, scriptChannel);
                 break;
             }
 

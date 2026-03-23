@@ -502,6 +502,13 @@ bool FastBeeFramework::addSystemTasks() {
         LOG_WARNING("Failed to add periph exec timer task");
     }
     
+    // 设备触发轮询检查任务（每200ms）
+    if (!taskManager->addTask("periph_device_trigger", [](void* param) {
+        PeriphExecManager::getInstance().checkDeviceTriggers();
+    }, nullptr, 200)) {
+        LOG_WARNING("Failed to add periph device trigger task");
+    }
+    
     // 协议处理任务（每100ms）— 维持MQTT心跳和消息收发
     if (!taskManager->addTask("protocol_handle", [](void* param) {
         FastBeeFramework* framework = static_cast<FastBeeFramework*>(param);

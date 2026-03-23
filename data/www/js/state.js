@@ -4009,14 +4009,21 @@ const AppState = {
     },
 
     onPeriphExecTriggerTypeChange(val) {
-        const dl = document.getElementById('periph-exec-device-trigger-left');
-        const dr = document.getElementById('periph-exec-device-trigger-right');
+        const cl = document.getElementById('periph-exec-condition-left');
+        const cr = document.getElementById('periph-exec-condition-right');
         const tl = document.getElementById('periph-exec-timer-trigger-left');
         const tr = document.getElementById('periph-exec-timer-trigger-right');
-        if (dl) dl.style.display = (val === '0') ? 'block' : 'none';
-        if (dr) dr.style.display = (val === '0') ? 'block' : 'none';
+        const sg = document.getElementById('periph-exec-source-periph-group');
+        // 平台触发(0)和设备触发(2)共享条件字段
+        const showCondition = (val === '0' || val === '2');
+        if (cl) cl.style.display = showCondition ? 'block' : 'none';
+        if (cr) cr.style.display = showCondition ? 'block' : 'none';
         if (tl) tl.style.display = (val === '1') ? 'block' : 'none';
         if (tr) tr.style.display = (val === '1') ? 'block' : 'none';
+        // 触发源外设仅设备触发(2)显示
+        if (sg) sg.style.display = (val === '2') ? 'block' : 'none';
+        // 设备触发时填充输入外设下拉
+        if (val === '2') this._populateSourcePeriphSelect();
     },
 
     onPeriphExecTimerModeChange(val) {
@@ -4049,8 +4056,10 @@ const AppState = {
             name: document.getElementById('periph-exec-name').value.trim(),
             enabled: document.getElementById('periph-exec-enabled').checked ? '1' : '0',
             triggerType: document.getElementById('periph-exec-trigger-type').value,
+            execMode: document.getElementById('periph-exec-exec-mode').value,
             operatorType: document.getElementById('periph-exec-operator').value,
             compareValue: document.getElementById('periph-exec-compare-value').value.trim(),
+            sourcePeriphId: document.getElementById('periph-exec-source-periph').value,
             timerMode: document.getElementById('periph-exec-timer-mode').value,
             intervalSec: document.getElementById('periph-exec-interval').value,
             timePoint: document.getElementById('periph-exec-timepoint').value,
@@ -4107,10 +4116,17 @@ const AppState = {
                 if (!rule) return;
                 document.getElementById('periph-exec-name').value = rule.name || '';
                 document.getElementById('periph-exec-enabled').checked = !!rule.enabled;
+                document.getElementById('periph-exec-exec-mode').value = String(rule.execMode || 0);
                 document.getElementById('periph-exec-trigger-type').value = String(rule.triggerType);
                 this.onPeriphExecTriggerTypeChange(String(rule.triggerType));
                 document.getElementById('periph-exec-operator').value = String(rule.operatorType);
                 document.getElementById('periph-exec-compare-value').value = rule.compareValue || '';
+                // 设备触发: 回显触发源外设（需等待下拉填充后再设值）
+                if (String(rule.triggerType) === '2' && rule.sourcePeriphId) {
+                    setTimeout(() => {
+                        document.getElementById('periph-exec-source-periph').value = rule.sourcePeriphId || '';
+                    }, 300);
+                }
                 document.getElementById('periph-exec-timer-mode').value = String(rule.timerMode);
                 this.onPeriphExecTimerModeChange(String(rule.timerMode));
                 document.getElementById('periph-exec-interval').value = rule.intervalSec || 60;
@@ -4184,11 +4200,20 @@ const AppState = {
                 if (filterPeriphId) {
                     rules = rules.filter(r => r.targetPeriphId === filterPeriphId);
                 }
+                // 排序：启用的规则优先，同状态按名称字母序
+                rules.sort((a, b) => {
+                    if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+                    return (a.name || '').localeCompare(b.name || '', 'zh');
+                });
                 if (rules.length === 0) {
                     tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">' + i18n.t('periph-exec-no-data') + '</td></tr>';
                     return;
                 }
-                const triggerLabels = [i18n.t('periph-exec-trigger-device'), i18n.t('periph-exec-trigger-timer')];
+                const triggerLabels = {
+                    0: i18n.t('periph-exec-trigger-platform'),
+                    1: i18n.t('periph-exec-trigger-timer'),
+                    2: i18n.t('periph-exec-trigger-device')
+                };
                 const actionLabels = {
                     0: i18n.t('periph-exec-action-high'), 1: i18n.t('periph-exec-action-low'),
                     2: i18n.t('periph-exec-action-blink'), 3: i18n.t('periph-exec-action-breathe'),
@@ -4206,11 +4231,17 @@ const AppState = {
                     const statusBadge = r.enabled
                         ? '<span class="badge badge-success">' + i18n.t('periph-exec-status-on') + '</span>'
                         : '<span class="badge badge-info">' + i18n.t('periph-exec-status-off') + '</span>';
+                    const modeBadge = r.execMode === 1
+                        ? ' <span class="badge badge-info" style="font-size:10px;">sync</span>'
+                        : ' <span class="badge badge-success" style="font-size:10px;">async</span>';
                     let triggerText = triggerLabels[r.triggerType] || '?';
                     if (r.triggerType === 0) {
                         triggerText += ': ' + (opLabels[r.operatorType] || '') + ' ' + (r.compareValue || '');
                     } else if (r.triggerType === 1) {
                         triggerText += ': ' + (r.timerMode === 0 ? i18n.t('periph-exec-every') + ' ' + r.intervalSec + 's' : i18n.t('periph-exec-daily') + ' ' + (r.timePoint || ''));
+                    } else if (r.triggerType === 2) {
+                        const srcName = r.sourcePeriphId ? (periphMap[r.sourcePeriphId] || r.sourcePeriphId) : '?';
+                        triggerText += ': ' + srcName + ' ' + (opLabels[r.operatorType] || '') + ' ' + (r.compareValue || '');
                     }
                     const periphName = r.targetPeriphId ? (periphMap[r.targetPeriphId] || r.targetPeriphId) : '-';
                     const actionText = actionLabels[r.actionType] || '?';
@@ -4224,7 +4255,7 @@ const AppState = {
                     const statsText = i18n.t('periph-exec-stats-count') + ': ' + (r.triggerCount || 0);
                     html += '<tr>';
                     html += '<td>' + (r.name || r.id) + '</td>';
-                    html += '<td>' + statusBadge + '</td>';
+                    html += '<td>' + statusBadge + modeBadge + '</td>';
                     html += '<td style="font-size:12px;">' + triggerText + '</td>';
                     html += '<td>' + periphName + '</td>';
                     html += '<td style="font-size:12px;">' + actionDisplay + '</td>';
@@ -4256,6 +4287,23 @@ const AppState = {
             sel.innerHTML = opts;
             if (currentVal) sel.value = currentVal;
             sel._populated = true;
+        });
+    },
+
+    _populateSourcePeriphSelect() {
+        const sel = document.getElementById('periph-exec-source-periph');
+        if (!sel) return;
+        const currentVal = sel.value;
+        apiGet('/api/peripherals').then(res => {
+            if (!res || !res.success || !res.data) return;
+            // 仅显示输入类型外设 (11=DI, 13=DI_PU, 14=DI_PD, 15=AI, 21=Touch, 26=ADC)
+            const inputTypes = [11, 13, 14, 15, 21, 26];
+            let opts = '<option value="">' + i18n.t('periph-exec-select-source-periph') + '</option>';
+            res.data.filter(p => p.enabled && inputTypes.includes(p.type)).forEach(p => {
+                opts += '<option value="' + p.id + '">' + p.name + ' (' + p.id + ')' + '</option>';
+            });
+            sel.innerHTML = opts;
+            if (currentVal) sel.value = currentVal;
         });
     },
 

@@ -6,6 +6,7 @@
 #include <PubSubClient.h>
 #include <esp_random.h>
 #include <vector>
+#include <freertos/semphr.h>
 #include <core/SystemConstants.h>
 
 // 主题类型枚举
@@ -156,6 +157,9 @@ private:
     
     std::function<void(const String&, const String&, MqttTopicType)> messageCallback;
     
+    // 线程安全：递归互斥量保护 publish 操作（PubSubClient 非线程安全）
+    SemaphoreHandle_t _publishMutex = nullptr;
+
     void mqttCallback(char* topic, byte* payload, unsigned int length);
     bool reconnect();
     String buildFullTopic(const String& topic, bool autoPrefix) const; // 根据主题级autoPrefix构建完整主题

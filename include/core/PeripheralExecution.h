@@ -39,8 +39,9 @@ enum class ExecActionType : uint8_t {
 
 // 触发类型
 enum class ExecTriggerType : uint8_t {
-    DEVICE_TRIGGER = 0,  // 设备触发（MQTT消息匹配）
-    TIMER_TRIGGER = 1    // 定时触发
+    PLATFORM_TRIGGER = 0,  // 平台触发（IoT平台MQTT指令下发）
+    TIMER_TRIGGER = 1,     // 定时触发
+    DEVICE_TRIGGER = 2     // 设备触发（按键/触摸屏/光电开关等本地输入）
 };
 
 // 定时模式
@@ -49,16 +50,26 @@ enum class ExecTimerMode : uint8_t {
     DAILY_TIME = 1   // 每日时间点
 };
 
+// 执行模式
+enum class ExecMode : uint8_t {
+    EXEC_ASYNC = 0,  // 异步执行（FreeRTOS 任务，不阻塞主循环，默认）
+    EXEC_SYNC  = 1   // 同步执行（阻塞主循环，适用于需要立即完成的简单动作）
+};
+
 // 外设执行结构体
 struct PeriphExecRule {
     String id;                  // 唯一标识 (exec_<millis>)
     String name;                // 显示名称
     bool enabled = true;        // 启用状态
-    uint8_t triggerType = 0;    // 0=设备触发(MQTT), 1=定时触发
+    uint8_t triggerType = 0;    // 0=平台触发(MQTT), 1=定时触发, 2=设备触发(本地输入)
+    uint8_t execMode = 0;       // 0=异步执行(默认), 1=同步执行
 
-    // 设备触发字段
+    // 平台触发/设备触发 共用字段
     uint8_t operatorType = 0;   // ExecOperator 枚举值
     String compareValue;        // 比较值 (between 时用逗号分隔: "20,30")
+
+    // 设备触发专用字段
+    String sourcePeriphId;      // 触发源外设 ID (监听哪个输入外设的状态变化)
 
     // 定时触发字段
     uint8_t timerMode = 0;      // 0=间隔, 1=每日时间点

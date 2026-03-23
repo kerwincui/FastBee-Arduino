@@ -12,6 +12,7 @@
  */
 
 #include "protocols/MQTTClient.h"
+#include "core/AsyncExecTypes.h"
 #include "systems/LoggerSystem.h"
 #include <ArduinoJson.h>
 #include <core/ConfigDefines.h>
@@ -25,10 +26,15 @@ MQTTClient::MQTTClient()
     : isConnected(false), stopped(false), lastReconnectAttempt(0),
       lastConnectedTime(0), lastErrorCode(0), reconnectCount(0),
       reconnectInterval(5000), lastLoopTime(0) {
+    _publishMutex = xSemaphoreCreateRecursiveMutex();
 }
 
 MQTTClient::~MQTTClient() {
     disconnect();
+    if (_publishMutex) {
+        vSemaphoreDelete(_publishMutex);
+        _publishMutex = nullptr;
+    }
 }
 
 bool MQTTClient::loadMqttConfig(const String& filename) {
@@ -228,6 +234,7 @@ void MQTTClient::stop() {
 }
 
 bool MQTTClient::publish(const String& topic, const String& message) {
+    RecursiveMutexGuard lock(_publishMutex);
     if (!isConnected) {
         return false;
     }
@@ -260,6 +267,7 @@ bool MQTTClient::publish(const String& topic, const String& message) {
 }
 
 bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
+    RecursiveMutexGuard lock(_publishMutex);
     if (!isConnected || topicIndex >= config.publishTopics.size()) {
         return false;
     }
@@ -783,7 +791,9 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
         }
     }
 
-    if (messageCallback) {
+    // DATA_COMMAND 已由 handleDataCommand 完整处理（含条件匹配+执行+响应），
+    // 不再传递给 messageCallback 避免 handleMqttMessage 重复触发
+    if (messageCallback && tType != MqttTopicType::DATA_COMMAND) {
         messageCallback(topicStr, message, tType);
     }
 }
