@@ -71,6 +71,9 @@
                     <a href="#" class="menu-item" data-page="protocol">
                         <span class="menu-icon">🔌</span> <span id="menu-protocol">通信协议</span>
                     </a>
+                    <a href="#" class="menu-item" data-page="rule-script">
+                        <span class="menu-icon">📜</span> <span id="menu-rule-script" data-i18n="menu-rule-script">规则脚本</span>
+                    </a>
                     <a href="#" class="menu-item" data-page="data">
                         <span class="menu-icon">📁</span> <span id="menu-data">文件管理</span>
                     </a>
@@ -373,11 +376,8 @@
                                                 </div>
 
                                                 <div class="pure-control-group">
-                                                    <label for="mqtt-access-mode" data-i18n="mqtt-access-mode-label">接入模式</label>
-                                                    <select id="mqtt-access-mode" class="pure-input-1">
-                                                        <option value="0" data-i18n="mqtt-access-mode-direct">MQTT直连</option>
-                                                        <option value="1" data-i18n="mqtt-access-mode-transparent">MQTT透传</option>
-                                                    </select>
+                                                    <label for="mqtt-secret" data-i18n="mqtt-secret-label">产品秘钥</label>
+                                                    <input type="password" id="mqtt-secret" class="pure-input-1" value="K451265A72244J79" placeholder="AES加密用16字节密钥">
                                                 </div>
                                                 
                                             </div>
@@ -399,11 +399,6 @@
                                                 <div class="pure-control-group">
                                                     <label for="mqtt-password" data-i18n="mqtt-password-label">密码</label>
                                                     <input type="password" id="mqtt-password" class="pure-input-1" value="P47T6OD5IPFWHUM6">
-                                                </div>
-
-                                                <div class="pure-control-group">
-                                                    <label for="mqtt-secret" data-i18n="mqtt-secret-label">产品秘钥</label>
-                                                    <input type="password" id="mqtt-secret" class="pure-input-1" placeholder="AES加密用16字节密钥">
                                                 </div>
 
                                             </div>
@@ -577,16 +572,20 @@
                                             </div>
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="rtu-slave-addr" data-i18n="rtu-slave-addr-label">从站地址</label>
-                                                    <input type="number" id="rtu-slave-addr" class="pure-input-1" value="1" min="1" max="247">
-                                                </div>
-                                                <div class="pure-control-group">
                                                     <label for="rtu-transfer-type" data-i18n="rtu-transfer-type-label">传输类型</label>
                                                     <select id="rtu-transfer-type" class="pure-input-1">
                                                         <option value="0" data-i18n="rtu-transfer-type-json">JSON (结构化数据)</option>
                                                         <option value="1" data-i18n="rtu-transfer-type-raw">透传 (原始HEX帧)</option>
                                                     </select>
                                                     <small class="field-hint" data-i18n="rtu-transfer-type-hint">JSON模式需配置寄存器映射，透传模式直接上报原始帧</small>
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label for="rtu-work-mode" data-i18n="rtu-work-mode-label">工作模式</label>
+                                                    <select id="rtu-work-mode" class="pure-input-1" onchange="AppState.onWorkModeChange(this.value)">
+                                                        <option value="0" data-i18n="rtu-work-mode-mqtt">MQTT指令模式</option>
+                                                        <option value="1" data-i18n="rtu-work-mode-polling" selected>主动轮询模式</option>
+                                                    </select>
+                                                    <small class="field-hint" data-i18n="rtu-work-mode-hint">MQTT模式由平台下发指令采集，轮询模式按预设间隔主动采集</small>
                                                 </div>
                                             </div>
                                         </div>
@@ -1911,6 +1910,42 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- 规则脚本页面 -->
+                    <div id="rule-script-page" class="page">
+                        <div class="card">
+                            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                                <h2 class="card-title" data-i18n="rule-script-page-title">规则脚本</h2>
+                                <div style="display: flex; gap: 10px; align-items: center;">
+                                    <button class="pure-button pure-button-primary" onclick="app.openRuleScriptModal()">
+                                        <i class="fas fa-plus"></i> <span data-i18n="rule-script-add-btn">新增规则</span>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div style="overflow-x: auto;">
+                                    <table class="pure-table pure-table-bordered" style="width: 100%;">
+                                        <thead>
+                                            <tr>
+                                                <th data-i18n="rule-script-col-name">名称</th>
+                                                <th data-i18n="rule-script-col-status">状态</th>
+                                                <th data-i18n="rule-script-col-trigger">触发方式</th>
+                                                <th data-i18n="rule-script-col-transform">格式转换</th>
+                                                <th data-i18n="rule-script-col-topic">主题</th>
+                                                <th data-i18n="rule-script-col-stats">统计</th>
+                                                <th data-i18n="rule-script-col-ops">操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="rule-script-table-body">
+                                            <tr>
+                                                <td colspan="7" style="text-align: center; color: #999;" data-i18n="rule-script-loading">加载中...</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 
                 <!-- 主应用页脚 -->
@@ -2231,6 +2266,8 @@
                                         <option value="0" data-i18n="periph-exec-trigger-platform">平台触发 (MQTT)</option>
                                         <option value="1" data-i18n="periph-exec-trigger-timer">定时触发</option>
                                         <option value="2" data-i18n="periph-exec-trigger-device">设备触发</option>
+                                        <option value="3" data-i18n="periph-exec-trigger-sub-topic">订阅主题触发</option>
+                                        <option value="4" data-i18n="periph-exec-trigger-pub-topic">发布主题拦截</option>
                                     </select>
                                 </div>
                                 
@@ -2275,6 +2312,40 @@
                                     </div>
                                 </div>
                                 
+                                <!-- 主题触发(3/4) - 配置区域 -->
+                                <div id="periph-exec-topic-trigger-group" style="display: none;">
+                                    <div class="pure-control-group">
+                                        <label for="periph-exec-source-topic" data-i18n="periph-exec-source-topic-label">源主题</label>
+                                        <select id="periph-exec-source-topic" class="pure-input-1">
+                                            <option value="-1">-- 选择主题 --</option>
+                                        </select>
+                                        <small style="color: #999;" data-i18n="periph-exec-source-topic-help">触发规则的输入主题</small>
+                                    </div>
+                                    <div class="pure-control-group">
+                                        <label for="periph-exec-target-topic" data-i18n="periph-exec-target-topic-label">目标主题</label>
+                                        <select id="periph-exec-target-topic" class="pure-input-1">
+                                            <option value="-1">-- 选择主题 --</option>
+                                        </select>
+                                        <small style="color: #999;" data-i18n="periph-exec-target-topic-help">转换后发布到的目标主题</small>
+                                    </div>
+                                    <div class="pure-control-group">
+                                        <label for="periph-exec-transform-type" data-i18n="periph-exec-transform-type-label">格式转换</label>
+                                        <select id="periph-exec-transform-type" class="pure-input-1">
+                                            <option value="0" data-i18n="periph-exec-transform-none">不转换</option>
+                                            <option value="1" data-i18n="periph-exec-transform-a2o">数组→对象</option>
+                                            <option value="2" data-i18n="periph-exec-transform-o2a">对象→数组</option>
+                                        </select>
+                                        <small style="color: #999;" data-i18n="periph-exec-transform-help">数组→对象: [{id,value}]→{id:value}; 对象→数组: 反向</small>
+                                    </div>
+                                    <div class="pure-control-group">
+                                        <label data-i18n="periph-exec-transform-preview-label">转换预览</label>
+                                        <button type="button" class="pure-button" onclick="app.previewTransform()" style="margin-bottom: 5px;">
+                                            <i class="fas fa-eye"></i> <span data-i18n="periph-exec-preview-btn">预览转换</span>
+                                        </button>
+                                        <pre id="periph-exec-transform-preview" style="background: #f5f5f5; padding: 8px; border-radius: 4px; font-size: 12px; max-height: 120px; overflow: auto; display: none;"></pre>
+                                    </div>
+                                </div>
+
                                 <div class="pure-control-group">
                                     <label for="periph-exec-action-type" data-i18n="periph-exec-action-type-label">动作类型</label>
                                     <select id="periph-exec-action-type" class="pure-input-1" onchange="app.onPeriphExecActionTypeChange(this.value)">
@@ -2379,6 +2450,74 @@
             <div class="modal-footer">
                 <button class="pure-button" id="cancel-periph-exec-btn" type="button" data-i18n="cancel">取消</button>
                 <button class="pure-button pure-button-primary" id="save-periph-exec-btn" type="button" data-i18n="save">保存</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 规则脚本模态窗 -->
+    <div id="rule-script-modal" class="modal">
+        <div class="modal-content" style="max-width: 700px;">
+            <div class="modal-header">
+                <h2 style="margin: 0; font-size: 18px;" id="rule-script-modal-title" data-i18n="rule-script-add-title">新增规则脚本</h2>
+                <button id="close-rule-script-modal" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer;">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="rule-script-form" class="pure-form pure-form-stacked">
+                    <fieldset>
+                        <input type="hidden" id="rule-script-original-id" value="">
+                        <div class="pure-control-group">
+                            <label for="rule-script-name" data-i18n="rule-script-name-label">规则名称</label>
+                            <input type="text" id="rule-script-name" class="pure-input-1" placeholder="例如: 数据格式转换" required>
+                        </div>
+                        <div class="pure-control-group">
+                            <label class="pure-checkbox">
+                                <input type="checkbox" id="rule-script-enabled" checked> <span data-i18n="rule-script-enabled-label">启用</span>
+                            </label>
+                        </div>
+                        <div class="pure-control-group">
+                            <label for="rule-script-trigger-type" data-i18n="rule-script-trigger-type-label">触发类型</label>
+                            <select id="rule-script-trigger-type" class="pure-input-1" onchange="app.onRuleScriptTriggerTypeChange(this.value)">
+                                <option value="3" data-i18n="rule-script-trigger-sub">订阅主题触发</option>
+                                <option value="4" data-i18n="rule-script-trigger-pub">发布主题拦截</option>
+                            </select>
+                        </div>
+                        <div class="pure-control-group">
+                            <label for="rule-script-source-topic" data-i18n="rule-script-source-topic-label">源主题</label>
+                            <select id="rule-script-source-topic" class="pure-input-1">
+                                <option value="-1">-- 选择主题 --</option>
+                            </select>
+                            <small style="color: #999;" data-i18n="rule-script-source-topic-help">触发规则的输入主题</small>
+                        </div>
+                        <div class="pure-control-group">
+                            <label for="rule-script-target-topic" data-i18n="rule-script-target-topic-label">目标主题</label>
+                            <select id="rule-script-target-topic" class="pure-input-1">
+                                <option value="-1">-- 选择主题 --</option>
+                            </select>
+                            <small style="color: #999;" data-i18n="rule-script-target-topic-help">转换后发布到的目标主题</small>
+                        </div>
+                        <div class="pure-control-group">
+                            <label for="rule-script-transform-type" data-i18n="rule-script-transform-type-label">格式转换</label>
+                            <select id="rule-script-transform-type" class="pure-input-1">
+                                <option value="0" data-i18n="rule-script-transform-none">不转换</option>
+                                <option value="1" data-i18n="rule-script-transform-a2o">数组 → 对象</option>
+                                <option value="2" data-i18n="rule-script-transform-o2a">对象 → 数组</option>
+                            </select>
+                            <small style="color: #999;" data-i18n="rule-script-transform-help">数组→对象: [{id,value}]→{id:value}; 对象→数组: 反向</small>
+                        </div>
+                        <div class="pure-control-group">
+                            <label data-i18n="rule-script-preview-label">转换预览</label>
+                            <button type="button" class="pure-button" onclick="app.previewRuleScriptTransform()" style="margin-bottom: 5px;">
+                                <i class="fas fa-eye"></i> <span data-i18n="rule-script-preview-btn">预览</span>
+                            </button>
+                            <pre id="rule-script-preview" style="background: #f5f5f5; padding: 8px; border-radius: 4px; font-size: 12px; max-height: 120px; overflow: auto; display: none;"></pre>
+                        </div>
+                        <div id="rule-script-error" class="message message-error" style="display: none;"></div>
+                    </fieldset>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="pure-button" id="cancel-rule-script-btn" type="button" data-i18n="cancel">取消</button>
+                <button class="pure-button pure-button-primary" id="save-rule-script-btn" type="button" data-i18n="save">保存</button>
             </div>
         </div>
     </div>

@@ -278,6 +278,7 @@ bool ProtocolManager::restartModbus() {
     modbusConfig.slaveAddress = rtu["slaveAddress"] | (uint8_t)1;
     modbusConfig.responseTimeout = rtu["timeout"] | (uint16_t)1000;
     modbusConfig.transferType = rtu["transferType"] | (uint8_t)0;
+    modbusConfig.workMode = rtu["workMode"] | (uint8_t)1;  // 默认主动轮询模式
     
     String modeStr = rtu["mode"] | "slave";
     modbusConfig.mode = (modeStr == "master") ? MODBUS_MASTER : MODBUS_SLAVE;
@@ -347,6 +348,13 @@ bool ProtocolManager::restartModbus() {
         handleMessage(ProtocolType::MODBUS, String(address), data);
     });
     
+    // 注册 Modbus 一次性读取回调到 PeriphExec
+    PeriphExecManager::getInstance().setModbusReadCallback(
+        [this](const String& params) -> String {
+            return this->executeModbusRead(params);
+        }
+    );
+    
     bool ok = modbusHandler->begin(modbusConfig);
     if (ok) {
         LOG_INFOF("Protocol Manager: Modbus restarted in %s mode, %d tasks",
@@ -360,9 +368,199 @@ bool ProtocolManager::restartModbus() {
 
 void ProtocolManager::stopModbus() {
     LOG_INFO("Protocol Manager: Stopping Modbus...");
+    PeriphExecManager::getInstance().setModbusReadCallback(nullptr);
     if (modbusHandler) {
         modbusHandler->end();
     }
+}
+
+// ========== MQTT触发的Modbus一次性读取 ==========
+
+String ProtocolManager::executeModbusRead(const String& paramsJson) {
+    JsonDocument resultDoc;
+    JsonArray resultArr = resultDoc.to<JsonArray>();
+
+    // 检查 Modbus 是否可用
+    if (!modbusHandler) {
+        JsonObject err = resultArr.add<JsonObject>();
+        err["id"] = "modbus_read";
+        err["value"] = "0";
+        err["remark"] = "error:not_initialized";
+        String out;
+        serializeJson(resultDoc, out);
+        return out;
+    }
+
+    if (modbusHandler->getMode() != MODBUS_MASTER) {
+        JsonObject err = resultArr.add<JsonObject>();
+        err["id"] = "modbus_read";
+        err["value"] = "0";
+        err["remark"] = "error:not_master_mode";
+        String out;
+        serializeJson(resultDoc, out);
+        return out;
+    }
+
+    // 解析参数 JSON
+    JsonDocument paramsDoc;
+    DeserializationError parseErr = deserializeJson(paramsDoc, paramsJson);
+    if (parseErr) {
+        LOG_WARNINGF("[Modbus] OneShot: JSON parse error: %s", parseErr.c_str());
+        JsonObject err = resultArr.add<JsonObject>();
+        err["id"] = "modbus_read";
+        err["value"] = "0";
+        err["remark"] = "error:invalid_params";
+        String out;
+        serializeJson(resultDoc, out);
+        return out;
+    }
+
+    // 获取 tasks 数组（支持三种格式：{tasks:[...]}, [...], {slaveAddress:...}）
+    JsonDocument tasksDoc;
+    JsonArray tasks;
+    if (paramsDoc.is<JsonObject>() && paramsDoc["tasks"].is<JsonArray>()) {
+        tasks = paramsDoc["tasks"].as<JsonArray>();
+    } else if (paramsDoc.is<JsonArray>()) {
+        tasks = paramsDoc.as<JsonArray>();
+    } else if (paramsDoc.is<JsonObject>() && paramsDoc.containsKey("slaveAddress")) {
+        // 单个任务对象，包装为数组
+        JsonArray arr = tasksDoc.to<JsonArray>();
+        arr.add(paramsDoc);
+        tasks = arr;
+    }
+
+    if (tasks.isNull() || tasks.size() == 0) {
+        JsonObject err = resultArr.add<JsonObject>();
+        err["id"] = "modbus_read";
+        err["value"] = "0";
+        err["remark"] = "error:invalid_params";
+        String out;
+        serializeJson(resultDoc, out);
+        return out;
+    }
+
+    LOG_INFOF("[Modbus] OneShot: executing %d task(s) from MQTT command", tasks.size());
+
+    // 逐任务执行
+    for (JsonVariant tv : tasks) {
+        JsonObject t = tv.as<JsonObject>();
+        uint8_t  slaveAddr = t["slaveAddress"] | (uint8_t)1;
+        uint8_t  fc        = t["functionCode"] | (uint8_t)0x03;
+        uint16_t startAddr = t["startAddress"] | (uint16_t)0;
+        uint16_t qty       = t["quantity"] | (uint16_t)1;
+
+        // 执行一次性读取
+        OneShotResult readResult = modbusHandler->readRegistersOnce(slaveAddr, fc, startAddr, qty);
+
+        if (readResult.error != ONESHOT_SUCCESS) {
+            // 生成错误响应
+            JsonObject err = resultArr.add<JsonObject>();
+            err["id"] = "modbus_read";
+            err["value"] = "0";
+            switch (readResult.error) {
+                case ONESHOT_TIMEOUT:
+                    err["remark"] = "error:timeout";
+                    break;
+                case ONESHOT_CRC_ERROR:
+                    err["remark"] = "error:crc_error";
+                    break;
+                case ONESHOT_EXCEPTION: {
+                    char buf[24];
+                    snprintf(buf, sizeof(buf), "error:exception:0x%02X", readResult.exceptionCode);
+                    err["remark"] = buf;
+                    break;
+                }
+                case ONESHOT_BUSY:
+                    err["remark"] = "error:busy";
+                    break;
+                default:
+                    err["remark"] = "error:unknown";
+                    break;
+            }
+            continue;
+        }
+
+        // 读取成功，根据传输类型决定上报格式
+        uint8_t transferType = modbusHandler->getConfig().transferType;
+        
+        if (transferType == 1) {
+            // 透传模式(RAW HEX)：重构响应帧为十六进制字符串
+            String hexStr = modbusHandler->formatRawHex(slaveAddr, fc, readResult.data, readResult.count);
+            JsonObject item = resultArr.add<JsonObject>();
+            item["id"] = "modbus_raw";
+            item["value"] = hexStr;
+            item["remark"] = "";
+        } else if (t.containsKey("mappings") && t["mappings"].is<JsonArray>()) {
+            // JSON模式 + 有映射：应用映射转换
+            JsonArray mappings = t["mappings"].as<JsonArray>();
+            for (JsonVariant mv : mappings) {
+                JsonObject m = mv.as<JsonObject>();
+                uint8_t regOffset    = m["regOffset"] | (uint8_t)0;
+                uint8_t dataType     = m["dataType"] | (uint8_t)0;
+                float   scaleFactor  = m["scaleFactor"] | 1.0f;
+                uint8_t decimalPlaces = m["decimalPlaces"] | (uint8_t)1;
+                const char* sensorId = m["sensorId"] | "unknown";
+
+                if (regOffset >= readResult.count) continue;
+
+                // 数据类型转换（与 reportPollData 逻辑一致）
+                float rawValue = 0;
+                switch (dataType) {
+                    case 0: // uint16
+                        rawValue = (float)readResult.data[regOffset];
+                        break;
+                    case 1: // int16
+                        rawValue = (float)(int16_t)readResult.data[regOffset];
+                        break;
+                    case 2: // uint32 (高字在前)
+                        if (regOffset + 1 < readResult.count) {
+                            uint32_t u32 = ((uint32_t)readResult.data[regOffset] << 16) | readResult.data[regOffset + 1];
+                            rawValue = (float)u32;
+                        }
+                        break;
+                    case 3: // int32 (高字在前)
+                        if (regOffset + 1 < readResult.count) {
+                            uint32_t u32 = ((uint32_t)readResult.data[regOffset] << 16) | readResult.data[regOffset + 1];
+                            rawValue = (float)(int32_t)u32;
+                        }
+                        break;
+                    case 4: // float32 (IEEE 754)
+                        if (regOffset + 1 < readResult.count) {
+                            uint32_t u32 = ((uint32_t)readResult.data[regOffset] << 16) | readResult.data[regOffset + 1];
+                            memcpy(&rawValue, &u32, sizeof(float));
+                        }
+                        break;
+                    default:
+                        rawValue = (float)readResult.data[regOffset];
+                        break;
+                }
+
+                float scaledValue = rawValue * scaleFactor;
+                char valBuf[16];
+                dtostrf(scaledValue, 1, decimalPlaces, valBuf);
+
+                JsonObject item = resultArr.add<JsonObject>();
+                item["id"] = sensorId;
+                item["value"] = valBuf;
+                item["remark"] = "";
+            }
+        } else {
+            // 无映射：返回原始寄存器值
+            for (uint16_t i = 0; i < readResult.count; i++) {
+                JsonObject item = resultArr.add<JsonObject>();
+                char idBuf[24];
+                snprintf(idBuf, sizeof(idBuf), "reg_%d", startAddr + i);
+                item["id"] = idBuf;
+                item["value"] = String(readResult.data[i]);
+                item["remark"] = "";
+            }
+        }
+    }
+
+    String out;
+    serializeJson(resultDoc, out);
+    LOG_INFOF("[Modbus] OneShot: result: %s", out.c_str());
+    return out;
 }
 
 // 具体协议初始化实现

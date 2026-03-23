@@ -62,8 +62,6 @@ struct MQTTConfig {
     String topicPrefix;
     String subscribeTopic;      // 兼容旧配置的单一订阅主题
     uint16_t keepAlive;
-    // 新增字段
-    int accessMode;            // 接入模式: 0=MQTT直连, 1=MQTT透传
     bool autoReconnect;        // 自动重连
     uint32_t connectionTimeout;// 连接超时（毫秒）
     // 认证配置
@@ -92,7 +90,7 @@ struct MQTTConfig {
 
     // 默认构造函数
     MQTTConfig() : port(1883), keepAlive(60),
-                   accessMode(0), autoReconnect(true), 
+                   autoReconnect(true), 
                    connectionTimeout(30000), authType(MqttAuthType::SIMPLE),
                    willQos(0), willRetain(false) {}
 };
@@ -130,8 +128,8 @@ public:
     // 设置消息回调（topic, message, topicType）
     void setMessageCallback(std::function<void(const String&, const String&, MqttTopicType)> callback);
 
-    // 根据主题路径查找对应的主题类型
-    MqttTopicType getTopicTypeByPath(const String& topicPath) const;
+    // 根据主题路径查找对应的主题类型（可选输出订阅主题索引）
+    MqttTopicType getTopicTypeByPath(const String& topicPath, int8_t* outSubIndex = nullptr) const;
 
 private:
     WiFiClient wifiClient;

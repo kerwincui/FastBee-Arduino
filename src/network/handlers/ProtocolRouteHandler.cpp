@@ -115,8 +115,8 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["modbusRtu"]["timeout"] = GPI("modbusRtu_timeout", "1000");
     doc["modbusRtu"]["mode"] = GP("modbusRtu_mode", "master");
     doc["modbusRtu"]["dePin"] = GPI("modbusRtu_dePin", "-1");
-    doc["modbusRtu"]["slaveAddress"] = GPI("modbusRtu_slaveAddress", "1");
     doc["modbusRtu"]["transferType"] = GPI("modbusRtu_transferType", "0");
+    doc["modbusRtu"]["workMode"] = GPI("modbusRtu_workMode", "1");
 
     // Modbus RTU Master 配置
     doc["modbusRtu"]["master"]["defaultPollInterval"] = GPI("modbusRtu_master_defaultPollInterval", "30");
@@ -173,7 +173,6 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["mqtt"]["username"] = GP("mqtt_username", "");
     doc["mqtt"]["password"] = GP("mqtt_password", "");
     doc["mqtt"]["keepAlive"] = GPI("mqtt_keepAlive", "60");
-    doc["mqtt"]["accessMode"] = GPI("mqtt_accessMode", "0");
     doc["mqtt"]["autoReconnect"] = GP("mqtt_autoReconnect", "true") == "true";
     doc["mqtt"]["connectionTimeout"] = GPI("mqtt_connectionTimeout", "30000");
     // MQTT 认证配置
@@ -362,37 +361,48 @@ void ProtocolRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request)
     }
 
     ModbusHandler* modbus = pm->getModbusHandler();
-    if (!modbus) {
-        ctx->sendError(request, 404, "Modbus handler not initialized");
-        return;
-    }
 
     JsonDocument doc;
     doc["success"] = true;
 
     JsonObject data = doc["data"].to<JsonObject>();
-    data["mode"] = (modbus->getMode() == MODBUS_MASTER) ? "master" : "slave";
-    data["status"] = modbus->getStatus();
 
-    if (modbus->getMode() == MODBUS_MASTER) {
-        MasterStats stats = modbus->getMasterStats();
-        data["totalPolls"] = stats.totalPolls;
-        data["successPolls"] = stats.successPolls;
-        data["failedPolls"] = stats.failedPolls;
-        data["timeoutPolls"] = stats.timeoutPolls;
-        data["taskCount"] = modbus->getPollTaskCount();
+    if (!modbus) {
+        // Modbus 未初始化时返回空状态而非 404
+        data["mode"] = "master";
+        data["workMode"] = 1;
+        data["status"] = "stopped";
+        data["totalPolls"] = 0;
+        data["successPolls"] = 0;
+        data["failedPolls"] = 0;
+        data["timeoutPolls"] = 0;
+        data["taskCount"] = 0;
+        data["tasks"].to<JsonArray>();
+    } else {
+        data["mode"] = (modbus->getMode() == MODBUS_MASTER) ? "master" : "slave";
+        data["workMode"] = modbus->getWorkMode();
+        data["status"] = modbus->getStatus();
 
-        JsonArray tasks = data["tasks"].to<JsonArray>();
-        for (uint8_t i = 0; i < modbus->getPollTaskCount(); i++) {
-            PollTask task = modbus->getPollTask(i);
-            JsonObject t = tasks.add<JsonObject>();
-            t["slaveAddress"] = task.slaveAddress;
-            t["functionCode"] = task.functionCode;
-            t["startAddress"] = task.startAddress;
-            t["quantity"] = task.quantity;
-            t["pollInterval"] = task.pollInterval;
-            t["enabled"] = task.enabled;
-            t["label"] = task.label;
+        if (modbus->getMode() == MODBUS_MASTER) {
+            MasterStats stats = modbus->getMasterStats();
+            data["totalPolls"] = stats.totalPolls;
+            data["successPolls"] = stats.successPolls;
+            data["failedPolls"] = stats.failedPolls;
+            data["timeoutPolls"] = stats.timeoutPolls;
+            data["taskCount"] = modbus->getPollTaskCount();
+
+            JsonArray tasks = data["tasks"].to<JsonArray>();
+            for (uint8_t i = 0; i < modbus->getPollTaskCount(); i++) {
+                PollTask task = modbus->getPollTask(i);
+                JsonObject t = tasks.add<JsonObject>();
+                t["slaveAddress"] = task.slaveAddress;
+                t["functionCode"] = task.functionCode;
+                t["startAddress"] = task.startAddress;
+                t["quantity"] = task.quantity;
+                t["pollInterval"] = task.pollInterval;
+                t["enabled"] = task.enabled;
+                t["label"] = task.label;
+            }
         }
     }
 
@@ -415,7 +425,7 @@ void ProtocolRouteHandler::handleModbusWrite(AsyncWebServerRequest* request) {
 
     ModbusHandler* modbus = pm->getModbusHandler();
     if (!modbus) {
-        ctx->sendError(request, 404, "Modbus handler not initialized");
+        ctx->sendError(request, 503, "Modbus not started");
         return;
     }
 
@@ -460,6 +470,7 @@ void ProtocolRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* reque
 
     // 从 device.json 读取 deviceNum, productId, userId 以构建正确的 clientId
     String deviceNum, productId, userId;
+    int authType = 0;
     if (LittleFS.exists("/config/device.json")) {
         File f = LittleFS.open("/config/device.json", "r");
         if (f) {
@@ -486,13 +497,40 @@ void ProtocolRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* reque
                     if (!dn.isEmpty()) deviceNum = dn;
                     if (!pi.isEmpty()) productId = pi;
                     if (!ui.isEmpty()) userId    = ui;
+                    authType = mqtt["authType"] | 0;
                 }
             }
             f.close();
         }
     }
 
-    // 构建 FastBee 认证格式的 clientId: S&deviceNum&productId&userId
+    // 加密认证模式：跳过简单测试连接，直接使用实际MQTT客户端重连
+    // 因为加密认证需要 NTP 时间同步 + AES 加密，无法在测试 handler 中复现
+    if (authType == 1) {
+        JsonDocument doc;
+        doc["success"] = true;
+        ProtocolManager* pm = ctx->protocolManager;
+        if (pm) {
+            bool realConnected = pm->restartMQTT();
+            doc["data"]["connected"] = realConnected;
+            doc["data"]["realConnected"] = realConnected;
+            if (!realConnected) {
+                MQTTClient* mqtt = pm->getMQTTClient();
+                int errCode = mqtt ? mqtt->getLastErrorCode() : -99;
+                doc["data"]["error"] = errCode;
+                doc["data"]["realError"] = errCode;
+            }
+        } else {
+            doc["data"]["connected"] = false;
+            doc["data"]["error"] = -99;
+        }
+        String out;
+        serializeJson(doc, out);
+        request->send(200, "application/json", out);
+        return;
+    }
+
+    // 简单认证模式：构建 FastBee 认证格式的 clientId: S&deviceNum&productId&userId
     if (!deviceNum.isEmpty() && !productId.isEmpty()) {
         clientId = "S&" + deviceNum + "&" + productId + "&" + (userId.isEmpty() ? "1" : userId);
     } else if (clientId.isEmpty()) {

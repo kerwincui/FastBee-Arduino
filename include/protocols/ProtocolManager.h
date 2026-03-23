@@ -122,6 +122,9 @@ private:
     
     // 内部消息处理
     void handleMessage(ProtocolType type, const String& topic, const String& message);
+
+    // MQTT触发的Modbus一次性读取
+    String executeModbusRead(const String& paramsJson);
 };
 
 #endif

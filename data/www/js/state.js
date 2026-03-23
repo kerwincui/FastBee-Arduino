@@ -220,6 +220,16 @@ const AppState = {
             addMqttSubscribeBtn.addEventListener('click', () => this.addMqttSubscribeTopic());
         }
 
+        // MQTT客户端ID或认证方式修改时，清除测试结果提示
+        const mqttTestResultEl = document.getElementById('mqtt-test-result');
+        if (mqttTestResultEl) {
+            const clearTestResult = () => { mqttTestResultEl.textContent = ''; };
+            const cidEl = document.getElementById('mqtt-client-id');
+            const atEl = document.getElementById('mqtt-auth-type');
+            if (cidEl) cidEl.addEventListener('input', clearTestResult);
+            if (atEl) atEl.addEventListener('change', clearTestResult);
+        }
+
         // 网络配置表单已在 setupNetworkFormHandlers() 中专门处理，无需通用监听
     },
 
@@ -502,6 +512,14 @@ const AppState = {
         const periphExecActionType = document.getElementById('periph-exec-action-type');
         if (periphExecActionType) periphExecActionType.addEventListener('change', (e) => this.onPeriphExecActionTypeChange(e.target.value));
         
+        // ============ 规则脚本事件绑定 ============
+        const closeRuleScriptModal = document.getElementById('close-rule-script-modal');
+        if (closeRuleScriptModal) closeRuleScriptModal.addEventListener('click', () => this.closeRuleScriptModal());
+        const cancelRuleScriptBtn = document.getElementById('cancel-rule-script-btn');
+        if (cancelRuleScriptBtn) cancelRuleScriptBtn.addEventListener('click', () => this.closeRuleScriptModal());
+        const saveRuleScriptBtn = document.getElementById('save-rule-script-btn');
+        if (saveRuleScriptBtn) saveRuleScriptBtn.addEventListener('click', () => this.saveRuleScript());
+        
         // ============ 网络状态事件绑定 ============
         
         // 仪表盘网络状态刷新按钮
@@ -658,6 +676,7 @@ const AppState = {
         if (page === 'roles') this.loadRoles();
         if (page === 'peripheral') { this.loadPeripherals(); }
         if (page === 'periph-exec') { this.loadPeriphExecPage(); }
+        if (page === 'rule-script') { this.loadRuleScriptPage(); }
         if (page === 'monitor') this.loadSystemInfo();
         if (page === 'logs') {
             this._currentLogFile = 'system.log';  // 默认加载 system.log
@@ -3194,7 +3213,6 @@ const AppState = {
             
             // RS485 配置
             this._setValue('rtu-de-pin', rtu.dePin ?? 14);
-            this._setValue('rtu-slave-addr', rtu.slaveAddress ?? 1);
             this._setValue('rtu-transfer-type', rtu.transferType ?? 0);
             
             // Master 模式（固定）
@@ -3234,7 +3252,6 @@ const AppState = {
             this._setValue('mqtt-alive', mqtt.keepAlive || 60);
             this._setValue('mqtt-conn-timeout', mqtt.connectionTimeout ?? 30000);
             this._setCheckbox('mqtt-auto-reconnect', mqtt.autoReconnect ?? true);
-            this._setValue('mqtt-access-mode', mqtt.accessMode ?? 0);
             
             // 遗嘱消息
             this._setValue('mqtt-will-topic', mqtt.willTopic || '');
@@ -3251,7 +3268,7 @@ const AppState = {
             
             // 认证配置
             this._setValue('mqtt-auth-type', mqtt.authType ?? 0);
-            this._setValue('mqtt-secret', mqtt.mqttSecret || '');
+            this._setValue('mqtt-secret', mqtt.mqttSecret || 'K451265A72244J79');
             this._setValue('mqtt-auth-code', mqtt.authCode || '');
             
             // 加载发布主题配置（支持多组）
@@ -3323,7 +3340,6 @@ const AppState = {
         data.modbusRtu_timeout = document.getElementById('rtu-timeout')?.value || '1000';
         data.modbusRtu_mode = 'master';
         data.modbusRtu_dePin = document.getElementById('rtu-de-pin')?.value || '14';
-        data.modbusRtu_slaveAddress = document.getElementById('rtu-slave-addr')?.value || '1';
         data.modbusRtu_transferType = document.getElementById('rtu-transfer-type')?.value || '0';
         
         // Modbus RTU Master 配置
@@ -3349,7 +3365,6 @@ const AppState = {
         data.mqtt_password = document.getElementById('mqtt-password')?.value || '';
         data.mqtt_keepAlive = document.getElementById('mqtt-alive')?.value || '60';
         data.mqtt_connectionTimeout = document.getElementById('mqtt-conn-timeout')?.value || '30000';
-        data.mqtt_accessMode = document.getElementById('mqtt-access-mode')?.value || '0';
         data.mqtt_autoReconnect = document.getElementById('mqtt-auto-reconnect')?.checked ?? true;
         // MQTT 认证配置
         data.mqtt_authType = document.getElementById('mqtt-auth-type')?.value || '0';
@@ -3462,6 +3477,13 @@ const AppState = {
      */
     onModbusModeChange(mode) {
         // 固定为主站模式，Master配置区始终显示
+    },
+
+    onWorkModeChange(mode) {
+        const pollingSection = document.getElementById('master-config-section');
+        if (pollingSection) {
+            pollingSection.style.display = (mode === '1') ? '' : 'none';
+        }
     },
     
     /**
@@ -4154,6 +4176,7 @@ const AppState = {
         const tl = document.getElementById('periph-exec-timer-trigger-left');
         const tr = document.getElementById('periph-exec-timer-trigger-right');
         const sg = document.getElementById('periph-exec-source-periph-group');
+        const tg = document.getElementById('periph-exec-topic-trigger-group');
         // 平台触发(0)和设备触发(2)共享条件字段
         const showCondition = (val === '0' || val === '2');
         if (cl) cl.style.display = showCondition ? 'block' : 'none';
@@ -4162,8 +4185,13 @@ const AppState = {
         if (tr) tr.style.display = (val === '1') ? 'block' : 'none';
         // 触发源外设仅设备触发(2)显示
         if (sg) sg.style.display = (val === '2') ? 'block' : 'none';
+        // 主题触发(3/4)显示主题配置
+        const showTopic = (val === '3' || val === '4');
+        if (tg) tg.style.display = showTopic ? 'block' : 'none';
         // 设备触发时填充输入外设下拉
         if (val === '2') this._populateSourcePeriphSelect();
+        // 主题触发时填充主题下拉
+        if (showTopic) this._populateMqttTopicSelects(val);
     },
 
     onPeriphExecTimerModeChange(val) {
@@ -4205,7 +4233,10 @@ const AppState = {
             timePoint: document.getElementById('periph-exec-timepoint').value,
             actionType: document.getElementById('periph-exec-action-type').value,
             targetPeriphId: document.getElementById('periph-exec-target-periph').value,
-            actionValue: document.getElementById('periph-exec-action-value').value.trim()
+            actionValue: document.getElementById('periph-exec-action-value').value.trim(),
+            sourceTopicIndex: document.getElementById('periph-exec-source-topic').value,
+            targetTopicIndex: document.getElementById('periph-exec-target-topic').value,
+            transformType: document.getElementById('periph-exec-transform-type').value
         };
         if (!ruleData.name) {
             errEl.textContent = i18n.t('periph-exec-validate-name');
@@ -4280,6 +4311,17 @@ const AppState = {
                     const scriptEl = document.getElementById('periph-exec-script');
                     if (scriptEl) scriptEl.value = rule.actionValue || '';
                 }
+                // 主题触发: 回显主题索引和转换类型（需等待下拉填充后再设值）
+                const tt = String(rule.triggerType);
+                if (tt === '3' || tt === '4') {
+                    document.getElementById('periph-exec-transform-type').value = String(rule.transformType || 0);
+                    setTimeout(() => {
+                        const srcSel = document.getElementById('periph-exec-source-topic');
+                        const tgtSel = document.getElementById('periph-exec-target-topic');
+                        if (srcSel) srcSel.value = String(rule.sourceTopicIndex ?? -1);
+                        if (tgtSel) tgtSel.value = String(rule.targetTopicIndex ?? -1);
+                    }, 400);
+                }
             });
     },
 
@@ -4352,7 +4394,9 @@ const AppState = {
                 const triggerLabels = {
                     0: i18n.t('periph-exec-trigger-platform'),
                     1: i18n.t('periph-exec-trigger-timer'),
-                    2: i18n.t('periph-exec-trigger-device')
+                    2: i18n.t('periph-exec-trigger-device'),
+                    3: i18n.t('periph-exec-trigger-sub-topic'),
+                    4: i18n.t('periph-exec-trigger-pub-topic')
                 };
                 const actionLabels = {
                     0: i18n.t('periph-exec-action-high'), 1: i18n.t('periph-exec-action-low'),
@@ -4382,6 +4426,10 @@ const AppState = {
                     } else if (r.triggerType === 2) {
                         const srcName = r.sourcePeriphId ? (periphMap[r.sourcePeriphId] || r.sourcePeriphId) : '?';
                         triggerText += ': ' + srcName + ' ' + (opLabels[r.operatorType] || '') + ' ' + (r.compareValue || '');
+                    } else if (r.triggerType === 3 || r.triggerType === 4) {
+                        const transformNames = ['', 'Arr→Obj', 'Obj→Arr'];
+                        triggerText += ': [' + (r.sourceTopicIndex ?? -1) + ']→[' + (r.targetTopicIndex ?? -1) + ']';
+                        if (r.transformType > 0) triggerText += ' ' + (transformNames[r.transformType] || '');
                     }
                     const periphName = r.targetPeriphId ? (periphMap[r.targetPeriphId] || r.targetPeriphId) : '-';
                     const actionText = actionLabels[r.actionType] || '?';
@@ -4444,6 +4492,276 @@ const AppState = {
             });
             sel.innerHTML = opts;
             if (currentVal) sel.value = currentVal;
+        });
+    },
+
+    _populateMqttTopicSelects(triggerVal) {
+        const srcSel = document.getElementById('periph-exec-source-topic');
+        const tgtSel = document.getElementById('periph-exec-target-topic');
+        if (!srcSel || !tgtSel) return;
+        const srcCur = srcSel.value;
+        const tgtCur = tgtSel.value;
+        apiGet('/api/protocol/config').then(res => {
+            if (!res || !res.success || !res.data || !res.data.mqtt) return;
+            const mqtt = res.data.mqtt;
+            const pubTopics = mqtt.publishTopics || [];
+            const subTopics = mqtt.subscribeTopics || [];
+            let srcOpts = '<option value="-1">-- ' + i18n.t('periph-exec-select-topic') + ' --</option>';
+            let tgtOpts = '<option value="-1">-- ' + i18n.t('periph-exec-select-topic') + ' --</option>';
+            if (triggerVal === '3') {
+                // 订阅主题触发: 源=订阅主题, 目标=发布主题
+                subTopics.forEach((t, i) => {
+                    if (t.enabled !== false) srcOpts += '<option value="' + i + '">[' + i + '] ' + (t.topic || '(空)') + '</option>';
+                });
+                pubTopics.forEach((t, i) => {
+                    if (t.enabled !== false) tgtOpts += '<option value="' + i + '">[' + i + '] ' + (t.topic || '(空)') + '</option>';
+                });
+            } else if (triggerVal === '4') {
+                // 发布主题拦截: 源=发布主题, 目标=发布主题(可选,通常不用)
+                pubTopics.forEach((t, i) => {
+                    if (t.enabled !== false) {
+                        srcOpts += '<option value="' + i + '">[' + i + '] ' + (t.topic || '(空)') + '</option>';
+                        tgtOpts += '<option value="' + i + '">[' + i + '] ' + (t.topic || '(空)') + '</option>';
+                    }
+                });
+            }
+            srcSel.innerHTML = srcOpts;
+            tgtSel.innerHTML = tgtOpts;
+            if (srcCur && srcCur !== '-1') srcSel.value = srcCur;
+            if (tgtCur && tgtCur !== '-1') tgtSel.value = tgtCur;
+        });
+    },
+
+    previewTransform() {
+        const transformType = document.getElementById('periph-exec-transform-type').value;
+        const previewEl = document.getElementById('periph-exec-transform-preview');
+        if (!previewEl) return;
+        let input, output;
+        if (transformType === '1') {
+            input = '[{"id":"temperature","value":"27.43"},{"id":"humidity","value":"65.2"}]';
+            output = '{"temperature":27.43,"humidity":65.2}';
+        } else if (transformType === '2') {
+            input = '{"temperature":27.43,"humidity":65.2}';
+            output = '[{"id":"temperature","value":"27.43","remark":""},{"id":"humidity","value":"65.2","remark":""}]';
+        } else {
+            previewEl.style.display = 'none';
+            return;
+        }
+        previewEl.textContent = i18n.t('periph-exec-preview-input') + ':\n' + input + '\n\n' + i18n.t('periph-exec-preview-output') + ':\n' + output;
+        previewEl.style.display = 'block';
+    },
+
+    // ============ 规则脚本页面 ============
+
+    loadRuleScriptPage() {
+        const tbody = document.getElementById('rule-script-table-body');
+        if (!tbody) return;
+        apiGet('/api/periph-exec').then(res => {
+            if (!res || !res.success || !res.data) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">' + i18n.t('rule-script-no-data') + '</td></tr>';
+                return;
+            }
+            // 仅显示主题触发规则 (triggerType 3 或 4)
+            const rules = res.data.filter(r => r.triggerType === 3 || r.triggerType === 4);
+            if (rules.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">' + i18n.t('rule-script-no-data') + '</td></tr>';
+                return;
+            }
+            const triggerLabels = { 3: i18n.t('rule-script-trigger-sub'), 4: i18n.t('rule-script-trigger-pub') };
+            const transformLabels = { 0: i18n.t('rule-script-transform-none'), 1: i18n.t('rule-script-transform-a2o'), 2: i18n.t('rule-script-transform-o2a') };
+            let html = '';
+            rules.forEach(r => {
+                const statusBadge = r.enabled
+                    ? '<span class="badge badge-success">' + i18n.t('periph-exec-status-on') + '</span>'
+                    : '<span class="badge badge-info">' + i18n.t('periph-exec-status-off') + '</span>';
+                const triggerText = triggerLabels[r.triggerType] || '?';
+                const transformText = transformLabels[r.transformType] || '-';
+                const topicText = '[' + (r.sourceTopicIndex ?? -1) + '] → [' + (r.targetTopicIndex ?? -1) + ']';
+                const statsText = i18n.t('periph-exec-stats-count') + ': ' + (r.triggerCount || 0);
+                html += '<tr>';
+                html += '<td>' + (r.name || '') + '</td>';
+                html += '<td>' + statusBadge + '</td>';
+                html += '<td>' + triggerText + '</td>';
+                html += '<td>' + transformText + '</td>';
+                html += '<td style="font-family:monospace;font-size:12px;">' + topicText + '</td>';
+                html += '<td style="font-size:12px;">' + statsText + '</td>';
+                html += '<td>';
+                html += '<button class="pure-button pure-button-small" onclick="app.editRuleScript(\'' + r.id + '\')" style="margin-right:4px;">' + i18n.t('edit') + '</button>';
+                if (r.enabled) {
+                    html += '<button class="pure-button pure-button-small" onclick="app.toggleRuleScript(\'' + r.id + '\',false)" style="margin-right:4px;">' + i18n.t('periph-exec-disable-btn') + '</button>';
+                } else {
+                    html += '<button class="pure-button pure-button-small" onclick="app.toggleRuleScript(\'' + r.id + '\',true)" style="margin-right:4px;">' + i18n.t('periph-exec-enable-btn') + '</button>';
+                }
+                html += '<button class="pure-button pure-button-small button-error" onclick="app.deleteRuleScript(\'' + r.id + '\')">' + i18n.t('delete') + '</button>';
+                html += '</td>';
+                html += '</tr>';
+            });
+            tbody.innerHTML = html;
+        }).catch(() => {
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">' + i18n.t('rule-script-no-data') + '</td></tr>';
+        });
+    },
+
+    openRuleScriptModal(editId) {
+        const modal = document.getElementById('rule-script-modal');
+        if (!modal) return;
+        const titleEl = document.getElementById('rule-script-modal-title');
+        document.getElementById('rule-script-original-id').value = editId || '';
+        document.getElementById('rule-script-error').style.display = 'none';
+        if (editId) {
+            if (titleEl) titleEl.textContent = i18n.t('rule-script-edit-title');
+        } else {
+            if (titleEl) titleEl.textContent = i18n.t('rule-script-add-title');
+            document.getElementById('rule-script-form').reset();
+        }
+        this._populateRuleScriptTopicSelects(document.getElementById('rule-script-trigger-type').value);
+        modal.style.display = 'flex';
+    },
+
+    closeRuleScriptModal() {
+        const modal = document.getElementById('rule-script-modal');
+        if (modal) modal.style.display = 'none';
+    },
+
+    onRuleScriptTriggerTypeChange(val) {
+        this._populateRuleScriptTopicSelects(val);
+    },
+
+    _populateRuleScriptTopicSelects(triggerVal) {
+        const srcSel = document.getElementById('rule-script-source-topic');
+        const tgtSel = document.getElementById('rule-script-target-topic');
+        if (!srcSel || !tgtSel) return;
+        const srcCur = srcSel.value;
+        const tgtCur = tgtSel.value;
+        apiGet('/api/protocol/config').then(res => {
+            if (!res || !res.success || !res.data || !res.data.mqtt) return;
+            const mqtt = res.data.mqtt;
+            const pubTopics = mqtt.publishTopics || [];
+            const subTopics = mqtt.subscribeTopics || [];
+            let srcOpts = '<option value="-1">-- ' + i18n.t('rule-script-select-topic') + ' --</option>';
+            let tgtOpts = '<option value="-1">-- ' + i18n.t('rule-script-select-topic') + ' --</option>';
+            if (triggerVal === '3') {
+                subTopics.forEach((t, i) => {
+                    if (t.enabled !== false) srcOpts += '<option value="' + i + '">[' + i + '] ' + (t.topic || '(空)') + '</option>';
+                });
+                pubTopics.forEach((t, i) => {
+                    if (t.enabled !== false) tgtOpts += '<option value="' + i + '">[' + i + '] ' + (t.topic || '(空)') + '</option>';
+                });
+            } else if (triggerVal === '4') {
+                pubTopics.forEach((t, i) => {
+                    if (t.enabled !== false) {
+                        srcOpts += '<option value="' + i + '">[' + i + '] ' + (t.topic || '(空)') + '</option>';
+                        tgtOpts += '<option value="' + i + '">[' + i + '] ' + (t.topic || '(空)') + '</option>';
+                    }
+                });
+            }
+            srcSel.innerHTML = srcOpts;
+            tgtSel.innerHTML = tgtOpts;
+            if (srcCur && srcCur !== '-1') srcSel.value = srcCur;
+            if (tgtCur && tgtCur !== '-1') tgtSel.value = tgtCur;
+        });
+    },
+
+    previewRuleScriptTransform() {
+        const transformType = document.getElementById('rule-script-transform-type').value;
+        const previewEl = document.getElementById('rule-script-preview');
+        if (!previewEl) return;
+        let input, output;
+        if (transformType === '1') {
+            input = '[{"id":"temperature","value":"27.43"},{"id":"humidity","value":"65.2"}]';
+            output = '{"temperature":27.43,"humidity":65.2}';
+        } else if (transformType === '2') {
+            input = '{"temperature":27.43,"humidity":65.2}';
+            output = '[{"id":"temperature","value":"27.43","remark":""},{"id":"humidity","value":"65.2","remark":""}]';
+        } else {
+            previewEl.style.display = 'none';
+            return;
+        }
+        previewEl.textContent = 'Input:\n' + input + '\n\nOutput:\n' + output;
+        previewEl.style.display = 'block';
+    },
+
+    saveRuleScript() {
+        const errEl = document.getElementById('rule-script-error');
+        errEl.style.display = 'none';
+        const originalId = document.getElementById('rule-script-original-id').value;
+        const isEdit = originalId !== '';
+        const ruleData = {
+            name: document.getElementById('rule-script-name').value.trim(),
+            enabled: document.getElementById('rule-script-enabled').checked ? '1' : '0',
+            triggerType: document.getElementById('rule-script-trigger-type').value,
+            sourceTopicIndex: document.getElementById('rule-script-source-topic').value,
+            targetTopicIndex: document.getElementById('rule-script-target-topic').value,
+            transformType: document.getElementById('rule-script-transform-type').value,
+            execMode: '0',
+            operatorType: '0',
+            compareValue: '',
+            sourcePeriphId: '',
+            timerMode: '0',
+            intervalSec: '60',
+            timePoint: '',
+            actionType: '0',
+            targetPeriphId: '',
+            actionValue: ''
+        };
+        if (!ruleData.name) {
+            errEl.textContent = i18n.t('periph-exec-validate-name');
+            errEl.style.display = 'block';
+            return;
+        }
+        if (isEdit) ruleData.id = originalId;
+        const url = isEdit ? '/api/periph-exec/update' : '/api/periph-exec';
+        apiPost(url, ruleData).then(res => {
+            if (res && res.success) {
+                Notification.success(i18n.t(isEdit ? 'rule-script-update-ok' : 'rule-script-add-ok'), i18n.t('rule-script-title'));
+                this.closeRuleScriptModal();
+                if (this.currentPage === 'rule-script') this.loadRuleScriptPage();
+            } else {
+                errEl.textContent = res?.error || i18n.t('rule-script-save-fail');
+                errEl.style.display = 'block';
+            }
+        }).catch(() => {
+            errEl.textContent = i18n.t('rule-script-save-fail');
+            errEl.style.display = 'block';
+        });
+    },
+
+    editRuleScript(id) {
+        this.openRuleScriptModal(id);
+        apiGet('/api/periph-exec').then(res => {
+            if (!res || !res.success || !res.data) return;
+            const rule = res.data.find(r => r.id === id);
+            if (!rule) return;
+            document.getElementById('rule-script-name').value = rule.name || '';
+            document.getElementById('rule-script-enabled').checked = !!rule.enabled;
+            document.getElementById('rule-script-trigger-type').value = String(rule.triggerType);
+            this.onRuleScriptTriggerTypeChange(String(rule.triggerType));
+            document.getElementById('rule-script-transform-type').value = String(rule.transformType || 0);
+            setTimeout(() => {
+                const srcSel = document.getElementById('rule-script-source-topic');
+                const tgtSel = document.getElementById('rule-script-target-topic');
+                if (srcSel) srcSel.value = String(rule.sourceTopicIndex ?? -1);
+                if (tgtSel) tgtSel.value = String(rule.targetTopicIndex ?? -1);
+            }, 400);
+        });
+    },
+
+    toggleRuleScript(id, enable) {
+        const url = enable ? '/api/periph-exec/enable' : '/api/periph-exec/disable';
+        apiPost(url, { id: id }).then(res => {
+            if (res && res.success) {
+                if (this.currentPage === 'rule-script') this.loadRuleScriptPage();
+            }
+        });
+    },
+
+    deleteRuleScript(id) {
+        if (!confirm(i18n.t('periph-exec-confirm-delete'))) return;
+        apiDelete('/api/periph-exec/', { id: id }).then(res => {
+            if (res && res.success) {
+                Notification.success(i18n.t('rule-script-delete-ok'), i18n.t('rule-script-title'));
+                if (this.currentPage === 'rule-script') this.loadRuleScriptPage();
+            }
         });
     },
 
@@ -5002,6 +5320,25 @@ const AppState = {
                 resultEl.style.color = '#f56c6c';
             }
             return;
+        }
+
+        // 验证客户端ID前缀与认证方式是否匹配
+        const authType = document.getElementById('mqtt-auth-type')?.value || '0';
+        if (clientId) {
+            if (authType === '0' && !clientId.startsWith('S&')) {
+                if (resultEl) {
+                    resultEl.textContent = i18n.t('mqtt-test-clientid-simple-prefix');
+                    resultEl.style.color = '#f56c6c';
+                }
+                return;
+            }
+            if (authType === '1' && !clientId.startsWith('E&')) {
+                if (resultEl) {
+                    resultEl.textContent = i18n.t('mqtt-test-clientid-encrypted-prefix');
+                    resultEl.style.color = '#f56c6c';
+                }
+                return;
+            }
         }
         
         if (btn) {

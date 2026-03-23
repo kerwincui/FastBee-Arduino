@@ -39,9 +39,18 @@ enum class ExecActionType : uint8_t {
 
 // 触发类型
 enum class ExecTriggerType : uint8_t {
-    PLATFORM_TRIGGER = 0,  // 平台触发（IoT平台MQTT指令下发）
-    TIMER_TRIGGER = 1,     // 定时触发
-    DEVICE_TRIGGER = 2     // 设备触发（按键/触摸屏/光电开关等本地输入）
+    PLATFORM_TRIGGER = 0,          // 平台触发（IoT平台MQTT指令下发）
+    TIMER_TRIGGER = 1,             // 定时触发
+    DEVICE_TRIGGER = 2,            // 设备触发（按键/触摸屏/光电开关等本地输入）
+    SUBSCRIBE_TOPIC_TRIGGER = 3,   // 订阅主题触发（消息到达指定订阅主题→格式转换→转发）
+    PUBLISH_TOPIC_TRIGGER = 4      // 发布主题触发（发布前拦截→格式转换→输出）
+};
+
+// 格式转换类型
+enum class ExecTransformType : uint8_t {
+    TRANSFORM_NONE = 0,             // 不转换（原样转发）
+    TRANSFORM_ARRAY_TO_OBJECT = 1,  // [{id,value}] → {id:value}
+    TRANSFORM_OBJECT_TO_ARRAY = 2   // {id:value} → [{id,value,remark}]
 };
 
 // 定时模式
@@ -75,6 +84,11 @@ struct PeriphExecRule {
     uint8_t timerMode = 0;      // 0=间隔, 1=每日时间点
     uint32_t intervalSec = 60;  // 间隔秒数
     String timePoint;           // HH:MM 格式
+
+    // MQTT 主题触发专用字段 (triggerType 3/4)
+    int8_t sourceTopicIndex = -1;  // 订阅主题索引 (triggerType=3: 监听哪个订阅主题)
+    int8_t targetTopicIndex = -1;  // 发布主题索引 (转发目标 / triggerType=4 拦截目标)
+    uint8_t transformType = 0;     // ExecTransformType 枚举值
 
     // 动作字段
     String targetPeriphId;      // 目标外设 ID (系统功能时可为空)

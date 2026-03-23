@@ -16,6 +16,28 @@ enum ModbusException : uint8_t {
     MODBUS_EX_SLAVE_DEVICE_FAILURE  = 0x04
 };
 
+// 一次性读取错误码
+enum OneShotError : uint8_t {
+    ONESHOT_SUCCESS          = 0,   // 读取成功
+    ONESHOT_TIMEOUT          = 1,   // 从站无响应（超时）
+    ONESHOT_CRC_ERROR        = 2,   // CRC校验失败
+    ONESHOT_EXCEPTION        = 3,   // 从站返回异常响应
+    ONESHOT_NOT_INITIALIZED  = 4,   // Modbus未初始化
+    ONESHOT_BUSY             = 5    // 正在执行另一次读取
+};
+
+// 一次性读取结果
+struct OneShotResult {
+    OneShotError error;
+    uint16_t data[Protocols::MODBUS_MAX_REGISTERS_PER_READ]; // 原始寄存器数据
+    uint16_t count;          // 实际读取的寄存器数量
+    uint8_t exceptionCode;   // error==ONESHOT_EXCEPTION时有效
+
+    OneShotResult() : error(ONESHOT_NOT_INITIALIZED), count(0), exceptionCode(0) {
+        memset(data, 0, sizeof(data));
+    }
+};
+
 // Modbus工作模式
 enum ModbusMode : uint8_t {
     MODBUS_SLAVE  = 0,   // 从站模式（被动响应）
@@ -114,6 +136,7 @@ struct ModbusConfig {
     uint16_t interFrameDelay;
     String configFile;
     uint8_t transferType;     // 传输类型: 0=JSON, 1=透传(RAW HEX)
+    uint8_t workMode;         // 工作模式: 0=MQTT指令模式, 1=主动轮询模式
     MasterConfig master;      // Master模式配置
     
     // 默认构造函数
@@ -126,7 +149,8 @@ struct ModbusConfig {
           dePin(255),  // 255表示不使用方向控制
           responseTimeout(1000),
           interFrameDelay(5),
-          transferType(0) {}
+          transferType(0),
+          workMode(1) {}  // 默认主动轮询模式
 };
 
 class ModbusHandler {
@@ -170,6 +194,7 @@ public:
     // === Master模式公有接口 ===
     void setMode(ModbusMode mode);
     ModbusMode getMode() const { return config.mode; }
+    uint8_t getWorkMode() const { return config.workMode; }
     
     // 轮询任务管理
     bool addPollTask(const PollTask& task);
@@ -181,9 +206,16 @@ public:
     // Master写操作（排队异步执行）
     bool masterWriteSingleRegister(uint8_t slaveAddr, uint16_t regAddr, uint16_t value);
     
+    // Master一次性读取（阻塞，用于MQTT指令触发的即时采集）
+    OneShotResult readRegistersOnce(uint8_t slaveAddress, uint8_t functionCode,
+                                    uint16_t startAddress, uint16_t quantity);
+    
     // Master运行状态
     String getMasterStatus() const;
     MasterStats getMasterStats() const { return masterStats; }
+    
+    // RAW模式辅助：将寄存器数据重构为Modbus响应帧的十六进制字符串
+    String formatRawHex(uint8_t slaveAddr, uint8_t fc, const uint16_t* data, uint16_t count);
 
 private:
     bool isInitialized;
@@ -236,6 +268,7 @@ private:
     uint8_t  responseIndex;
     unsigned long lastByteTime;
     bool     currentIsWrite;   // 当前正在处理的是写请求还是轮询
+    volatile bool isOneShotReading; // 一次性读取进行中，暂停轮询状态机
     
     // 写请求队列
     WriteRequest writeQueue[Protocols::MODBUS_MAX_WRITE_QUEUE];

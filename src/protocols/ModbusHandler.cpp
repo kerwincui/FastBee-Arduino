@@ -16,7 +16,8 @@ ModbusHandler::ModbusHandler()
     : isInitialized(false), modbusSerial(&Serial2),
       pollState(POLL_IDLE), currentTaskIndex(0),
       pollStateTimestamp(0), currentRetryCount(0),
-      responseIndex(0), lastByteTime(0), currentIsWrite(false) {
+      responseIndex(0), lastByteTime(0), currentIsWrite(false),
+      isOneShotReading(false) {
     memset(holdingRegisters, 0, sizeof(holdingRegisters));
     memset(inputRegisters, 0, sizeof(inputRegisters));
     memset(coils, 0, sizeof(coils));
@@ -130,6 +131,11 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
         config.transferType = doc["transferType"].as<uint8_t>();
     }
     
+    // 解析工作模式
+    if (doc.containsKey("workMode")) {
+        config.workMode = doc["workMode"].as<uint8_t>();
+    }
+    
     // 解析Master模式配置
     if (doc.containsKey("master")) {
         JsonObject masterObj = doc["master"];
@@ -201,6 +207,7 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
     doc["configFile"] = config.configFile;
     doc["mode"] = (config.mode == MODBUS_MASTER) ? "master" : "slave";
     doc["transferType"] = config.transferType;
+    doc["workMode"] = config.workMode;
     
     // 序列化Master配置
     JsonObject masterObj = doc.createNestedObject("master");
@@ -1274,6 +1281,9 @@ bool ModbusHandler::processWriteQueue() {
 // ============ Master状态机主循环 ============
 
 void ModbusHandler::handleMaster() {
+    // 一次性读取进行中，暂停轮询状态机
+    if (isOneShotReading) return;
+    
     unsigned long now = millis();
     
     switch (pollState) {
@@ -1303,6 +1313,9 @@ void ModbusHandler::handleMaster() {
                     return;
                 }
             }
+            
+            // MQTT指令模式：不执行主动轮询，只处理写请求队列和一次性读取
+            if (config.workMode == 0) return;
             
             // 查找到期的轮询任务
             int8_t nextTask = findNextPollTask();
@@ -1427,4 +1440,226 @@ void ModbusHandler::handleMaster() {
             break;
         }
     }
+}
+
+// ========== 一次性寄存器读取（阻塞式，用于MQTT指令触发） ==========
+
+OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t functionCode,
+                                                uint16_t startAddress, uint16_t quantity) {
+    OneShotResult result;
+
+    // 前置检查
+    if (!isInitialized || !modbusSerial) {
+        result.error = ONESHOT_NOT_INITIALIZED;
+        LOG_WARNING("[Modbus] OneShot: not initialized");
+        return result;
+    }
+    if (isOneShotReading) {
+        result.error = ONESHOT_BUSY;
+        LOG_WARNING("[Modbus] OneShot: busy (another one-shot in progress)");
+        return result;
+    }
+    if (slaveAddress < 1 || slaveAddress > 247) {
+        result.error = ONESHOT_EXCEPTION;
+        result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_ADDRESS;
+        LOG_WARNINGF("[Modbus] OneShot: invalid slave address %d", slaveAddress);
+        return result;
+    }
+    if (functionCode < 0x01 || functionCode > 0x04) {
+        result.error = ONESHOT_EXCEPTION;
+        result.exceptionCode = MODBUS_EX_ILLEGAL_FUNCTION;
+        LOG_WARNINGF("[Modbus] OneShot: invalid function code 0x%02X", functionCode);
+        return result;
+    }
+    if (quantity == 0 || quantity > Protocols::MODBUS_MAX_REGISTERS_PER_READ) {
+        result.error = ONESHOT_EXCEPTION;
+        result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
+        LOG_WARNINGF("[Modbus] OneShot: invalid quantity %d", quantity);
+        return result;
+    }
+
+    // 设置守卫标志，暂停轮询状态机
+    isOneShotReading = true;
+
+    // 等待状态机回到 POLL_IDLE（如果当前正在轮询中）
+    unsigned long waitStart = millis();
+    unsigned long maxWait = (unsigned long)config.master.responseTimeout * 2;
+    while (pollState != POLL_IDLE && (millis() - waitStart) < maxWait) {
+        yield();
+        delay(1);
+    }
+    if (pollState != POLL_IDLE) {
+        isOneShotReading = false;
+        result.error = ONESHOT_BUSY;
+        LOG_WARNING("[Modbus] OneShot: state machine not idle, giving up");
+        return result;
+    }
+
+    LOG_INFOF("[Modbus] OneShot: slave=%d fc=0x%02X addr=%d qty=%d",
+              slaveAddress, functionCode, startAddress, quantity);
+
+    // 构建临时 PollTask 用于 buildMasterRequest
+    PollTask tempTask;
+    tempTask.slaveAddress = slaveAddress;
+    tempTask.functionCode = functionCode;
+    tempTask.startAddress = startAddress;
+    tempTask.quantity = quantity;
+
+    uint8_t requestBuffer[8];
+    uint8_t reqLen = buildMasterRequest(tempTask, requestBuffer);
+
+    // 超时参数
+    uint16_t timeout = config.master.responseTimeout;
+    if (timeout == 0) timeout = 1000;
+    unsigned long charTimeout = 35000000UL / config.baudRate;
+    if (charTimeout < 2) charTimeout = 2;
+
+    uint8_t maxRetries = config.master.maxRetries;
+
+    // 重试循环
+    for (uint8_t attempt = 0; attempt <= maxRetries; attempt++) {
+        if (attempt > 0) {
+            LOG_INFOF("[Modbus] OneShot: retry %d/%d", attempt, maxRetries);
+            delay(50);
+            yield();
+        }
+
+        // 清空串口接收缓冲区
+        while (modbusSerial->available()) modbusSerial->read();
+
+        // 发送请求帧
+        setTransmitMode(true);
+        modbusSerial->write(requestBuffer, reqLen);
+        modbusSerial->flush();
+        setTransmitMode(false);
+
+        // 阻塞等待响应
+        uint8_t respBuf[Protocols::MODBUS_BUFFER_SIZE];
+        uint8_t respIdx = 0;
+        unsigned long sendTime = millis();
+        unsigned long lastRxTime = sendTime;
+        bool frameComplete = false;
+        bool timedOut = false;
+
+        while (true) {
+            // 读取可用字节
+            while (modbusSerial->available() && respIdx < Protocols::MODBUS_BUFFER_SIZE) {
+                respBuf[respIdx++] = modbusSerial->read();
+                lastRxTime = millis();
+            }
+
+            // 帧完成检测：收到数据后，超过3.5字符时间无新数据
+            if (respIdx > 0 && (millis() - lastRxTime) > charTimeout) {
+                frameComplete = true;
+                break;
+            }
+
+            // 绝对超时
+            if ((millis() - sendTime) > timeout) {
+                timedOut = true;
+                break;
+            }
+
+            yield();
+        }
+
+        // 超时且无数据
+        if (timedOut && respIdx == 0) {
+            LOG_WARNINGF("[Modbus] OneShot: timeout (attempt %d, no response)", attempt + 1);
+            result.error = ONESHOT_TIMEOUT;
+            continue; // 重试
+        }
+
+        // 帧过短
+        if (respIdx < 5) {
+            LOG_WARNINGF("[Modbus] OneShot: frame too short (%d bytes)", respIdx);
+            result.error = ONESHOT_CRC_ERROR;
+            continue; // 重试
+        }
+
+        // CRC 校验
+        if (!validateFrame(respBuf, respIdx)) {
+            LOG_WARNING("[Modbus] OneShot: CRC validation failed");
+            result.error = ONESHOT_CRC_ERROR;
+            continue; // 重试
+        }
+
+        // 地址匹配
+        if (respBuf[0] != slaveAddress) {
+            LOG_WARNINGF("[Modbus] OneShot: address mismatch (expected %d, got %d)", slaveAddress, respBuf[0]);
+            result.error = ONESHOT_CRC_ERROR;
+            continue; // 重试
+        }
+
+        // 异常响应检测（功能码最高位为1）
+        if (respBuf[1] & 0x80) {
+            result.error = ONESHOT_EXCEPTION;
+            result.exceptionCode = respBuf[2];
+            LOG_WARNINGF("[Modbus] OneShot: exception response 0x%02X", respBuf[2]);
+            break; // 异常是确定性错误，不重试
+        }
+
+        // 功能码匹配
+        if (respBuf[1] != functionCode) {
+            LOG_WARNINGF("[Modbus] OneShot: FC mismatch (expected 0x%02X, got 0x%02X)", functionCode, respBuf[1]);
+            result.error = ONESHOT_CRC_ERROR;
+            continue;
+        }
+
+        // 提取寄存器数据
+        if (functionCode == 0x03 || functionCode == 0x04) {
+            // 读保持/输入寄存器：响应格式 [addr, fc, byteCount, data...]
+            uint8_t byteCount = respBuf[2];
+            if (byteCount != quantity * 2) {
+                LOG_WARNINGF("[Modbus] OneShot: byte count mismatch (expected %d, got %d)", quantity * 2, byteCount);
+                result.error = ONESHOT_CRC_ERROR;
+                continue;
+            }
+            for (uint16_t i = 0; i < quantity; i++) {
+                result.data[i] = ((uint16_t)respBuf[3 + i * 2] << 8) | respBuf[4 + i * 2];
+            }
+        } else if (functionCode == 0x01 || functionCode == 0x02) {
+            // 读线圈/离散输入：响应格式 [addr, fc, byteCount, data...]
+            uint8_t byteCount = respBuf[2];
+            for (uint16_t i = 0; i < quantity && i < Protocols::MODBUS_MAX_REGISTERS_PER_READ; i++) {
+                uint8_t byteIdx = i / 8;
+                uint8_t bitIdx = i % 8;
+                result.data[i] = (byteIdx < byteCount && (respBuf[3 + byteIdx] & (1 << bitIdx))) ? 1 : 0;
+            }
+        }
+
+        result.count = quantity;
+        result.error = ONESHOT_SUCCESS;
+        LOG_INFOF("[Modbus] OneShot: success, read %d registers from slave %d", quantity, slaveAddress);
+        break; // 成功，退出重试循环
+    }
+
+    isOneShotReading = false;
+    return result;
+}
+
+String ModbusHandler::formatRawHex(uint8_t slaveAddr, uint8_t fc, const uint16_t* data, uint16_t count) {
+    // 重构Modbus响应帧: [slaveAddr][fc][byteCount][data_hi data_lo ...][crc_lo crc_hi]
+    uint8_t byteCount = count * 2;
+    uint8_t frameLen = 3 + byteCount + 2; // addr + fc + byteCount + data + CRC
+    uint8_t frame[frameLen];
+    frame[0] = slaveAddr;
+    frame[1] = fc;
+    frame[2] = byteCount;
+    for (uint16_t i = 0; i < count; i++) {
+        frame[3 + i * 2]     = (data[i] >> 8) & 0xFF;
+        frame[3 + i * 2 + 1] = data[i] & 0xFF;
+    }
+    uint16_t crc = calculateCRC(frame, 3 + byteCount);
+    frame[3 + byteCount]     = crc & 0xFF;        // CRC低字节
+    frame[3 + byteCount + 1] = (crc >> 8) & 0xFF;  // CRC高字节
+
+    String hexStr;
+    hexStr.reserve(frameLen * 2);
+    for (uint8_t i = 0; i < frameLen; i++) {
+        char buf[3];
+        snprintf(buf, sizeof(buf), "%02X", frame[i]);
+        hexStr += buf;
+    }
+    return hexStr;
 }

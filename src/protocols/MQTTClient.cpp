@@ -78,8 +78,6 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     config.topicPrefix = cfg["topicPrefix"] | "";
     config.subscribeTopic = cfg["subscribeTopic"] | "";
     config.keepAlive   = cfg["keepAlive"]   | 60;
-    // 新增字段（兼容旧配置，使用默认值）
-    config.accessMode        = cfg["accessMode"]        | 0;
     config.autoReconnect     = cfg["autoReconnect"]     | true;
     config.connectionTimeout = cfg["connectionTimeout"] | 30000;
     // 遗嘱消息配置
@@ -103,8 +101,9 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     config.cardPlatformId = cfg["cardPlatformId"] | 0;
     config.summary        = cfg["summary"]        | "";
 
-    // 如果deviceNum/productId/userId为空，尝试从device.json中读取
-    if (config.deviceNum.isEmpty() || config.productId.isEmpty() || config.userId.isEmpty()) {
+    // 如果deviceNum/productId/userId/ntpServer为空，尝试从device.json中读取
+    if (config.deviceNum.isEmpty() || config.productId.isEmpty() || config.userId.isEmpty()
+        || config.ntpServer.isEmpty()) {
         if (LittleFS.exists("/config/device.json")) {
             File devFile = LittleFS.open("/config/device.json", "r");
             if (devFile) {
@@ -119,6 +118,9 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
                     }
                     if (config.userId.isEmpty()) {
                         config.userId = devDoc["userId"] | "";
+                    }
+                    if (config.ntpServer.isEmpty()) {
+                        config.ntpServer = devDoc["ntpServer1"] | "";
                     }
                 }
                 devFile.close();
@@ -277,7 +279,9 @@ bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
         return false;
     }
     String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
-    bool ok = mqttClient.publish(fullTopic.c_str(), message.c_str(), pt.retain);
+    // 发布前格式转换拦截（triggerType=4 规则）
+    String payload = PeriphExecManager::getInstance().applyOutputTransform(topicIndex, message);
+    bool ok = mqttClient.publish(fullTopic.c_str(), payload.c_str(), pt.retain);
     
     if (!ok) {
         char buf[80];
@@ -631,17 +635,20 @@ void MQTTClient::setMessageCallback(std::function<void(const String&, const Stri
     messageCallback = callback;
 }
 
-MqttTopicType MQTTClient::getTopicTypeByPath(const String& topicPath) const {
+MqttTopicType MQTTClient::getTopicTypeByPath(const String& topicPath, int8_t* outSubIndex) const {
     // 尝试匹配每个主题（考虑autoPrefix生成的完整路径）
     // 先查订阅主题
-    for (const auto& st : config.subscribeTopics) {
+    for (size_t i = 0; i < config.subscribeTopics.size(); i++) {
+        const auto& st = config.subscribeTopics[i];
         if (st.topic == topicPath) {
+            if (outSubIndex) *outSubIndex = (int8_t)i;
             return st.topicType;
         }
         // 如果该主题启用了autoPrefix，构建完整路径后匹配
         if (st.autoPrefix) {
             String fullTopic = buildFullTopicWithType(st.topic, true, st.topicType);
             if (fullTopic == topicPath) {
+                if (outSubIndex) *outSubIndex = (int8_t)i;
                 return st.topicType;
             }
         }
@@ -697,8 +704,9 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
     String message((const char*)payload, length);
     String topicStr(topic);
 
-    // 根据主题路径查找对应的主题类型
-    MqttTopicType tType = getTopicTypeByPath(topicStr);
+    // 根据主题路径查找对应的主题类型和订阅主题索引
+    int8_t subTopicIdx = -1;
+    MqttTopicType tType = getTopicTypeByPath(topicStr, &subTopicIdx);
 
     char buf[96];
     snprintf(buf, sizeof(buf), "MQTT: Msg type=%d topic=%s len=%u",
@@ -791,6 +799,11 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
         }
     }
 
+    // 订阅主题触发规则匹配（所有主题类型都可能触发 triggerType=3 规则）
+    if (subTopicIdx >= 0) {
+        PeriphExecManager::getInstance().handleTopicTrigger(subTopicIdx, message);
+    }
+
     // DATA_COMMAND 已由 handleDataCommand 完整处理（含条件匹配+执行+响应），
     // 不再传递给 messageCallback 避免 handleMqttMessage 重复触发
     if (messageCallback && tType != MqttTopicType::DATA_COMMAND) {
@@ -812,6 +825,7 @@ bool MQTTClient::reconnect() {
         connPassword = buildEncryptedPassword();
         if (connPassword.isEmpty()) {
             LOG_WARNING("MQTT: AES password generation failed, falling back to simple auth");
+            connClientId = "S&" + config.deviceNum + "&" + config.productId + "&" + config.userId;
             connPassword = buildSimplePassword();
         }
     } else {

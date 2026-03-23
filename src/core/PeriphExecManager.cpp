@@ -138,6 +138,11 @@ bool PeriphExecManager::saveConfiguration() {
         obj["intervalSec"] = r.intervalSec;
         obj["timePoint"] = r.timePoint;
 
+        // MQTT 主题触发
+        obj["sourceTopicIndex"] = r.sourceTopicIndex;
+        obj["targetTopicIndex"] = r.targetTopicIndex;
+        obj["transformType"] = r.transformType;
+
         // 动作
         obj["targetPeriphId"] = r.targetPeriphId;
         obj["actionType"] = r.actionType;
@@ -195,6 +200,11 @@ bool PeriphExecManager::loadConfiguration() {
         r.timerMode = obj["timerMode"] | 0;
         r.intervalSec = obj["intervalSec"] | 60;
         r.timePoint = obj["timePoint"].as<String>();
+
+        // MQTT 主题触发字段（向后兼容：旧配置无此字段时使用默认值）
+        r.sourceTopicIndex = obj["sourceTopicIndex"] | (int8_t)-1;
+        r.targetTopicIndex = obj["targetTopicIndex"] | (int8_t)-1;
+        r.transformType = obj["transformType"] | 0;
 
         r.targetPeriphId = obj["targetPeriphId"].as<String>();
         r.actionType = obj["actionType"] | 0;
@@ -295,6 +305,38 @@ String PeriphExecManager::handleDataCommand(const String& message) {
 
     JsonArray cmdArr = cmdDoc.as<JsonArray>();
 
+    // 预处理阶段：处理 modbus_read 指令（阻塞操作，必须在持锁之前完成）
+    JsonDocument modbusReportDoc;
+    JsonArray modbusReportArr = modbusReportDoc.to<JsonArray>();
+    std::vector<int> processedIndices;
+
+    {
+        int idx = 0;
+        for (JsonObject item : cmdArr) {
+            String itemId = item["id"].as<String>();
+            if (itemId == "modbus_read") {
+                String itemValue = item["value"].as<String>();
+                LOGGER.infof("[PeriphExec] DataCommand: modbus_read command detected");
+                if (_modbusReadCallback) {
+                    String modbusResult = _modbusReadCallback(itemValue);
+                    JsonDocument tmpDoc;
+                    if (!deserializeJson(tmpDoc, modbusResult) && tmpDoc.is<JsonArray>()) {
+                        for (JsonVariant v : tmpDoc.as<JsonArray>()) {
+                            modbusReportArr.add(v);
+                        }
+                    }
+                } else {
+                    JsonObject errItem = modbusReportArr.add<JsonObject>();
+                    errItem["id"] = "modbus_read";
+                    errItem["value"] = "0";
+                    errItem["remark"] = "error:not_initialized";
+                }
+                processedIndices.push_back(idx);
+            }
+            idx++;
+        }
+    }
+
     // 阶段1: 持锁匹配，收集规则副本
     struct MatchedItem {
         PeriphExecRule rule;
@@ -308,7 +350,14 @@ String PeriphExecManager::handleDataCommand(const String& message) {
     {
         MutexGuard lock(_rulesMutex);
 
+        int itemIdx = 0;
         for (JsonObject item : cmdArr) {
+            // 跳过已在预处理阶段处理的 modbus_read 项
+            bool skip = false;
+            for (int pi : processedIndices) { if (pi == itemIdx) { skip = true; break; } }
+            itemIdx++;
+            if (skip) continue;
+
             if (!item.containsKey("id") || !item.containsKey("value")) continue;
 
             String itemId = item["id"].as<String>();
@@ -342,6 +391,11 @@ String PeriphExecManager::handleDataCommand(const String& message) {
     JsonDocument reportDoc;
     JsonArray reportArr = reportDoc.to<JsonArray>();
 
+    // 先添加 Modbus 读取结果
+    for (JsonVariant v : modbusReportArr) {
+        reportArr.add(v);
+    }
+
     for (auto& mi : matchedItems) {
         LOGGER.infof("[PeriphExec] DataCommand matched rule '%s' for id='%s' value='%s'",
             mi.rule.name.c_str(), mi.itemId.c_str(), mi.itemValue.c_str());
@@ -364,6 +418,12 @@ String PeriphExecManager::handleDataCommand(const String& message) {
     String result;
     serializeJson(reportDoc, result);
     return result;
+}
+
+// ========== Modbus 读取回调注册 ==========
+
+void PeriphExecManager::setModbusReadCallback(std::function<String(const String&)> callback) {
+    _modbusReadCallback = callback;
 }
 
 // ========== 条件评估 ==========
@@ -889,6 +949,139 @@ void PeriphExecManager::recordResult(const AsyncExecResult& result) {
 std::vector<AsyncExecResult> PeriphExecManager::getRecentResults() {
     MutexGuard lock(_resultsMutex);
     return executionResults;
+}
+
+// ========== JSON 格式转换 ==========
+
+String PeriphExecManager::convertFormat(const String& input, uint8_t transformType) {
+    if (transformType == 0 || input.isEmpty()) return input;
+
+    JsonDocument inDoc;
+    DeserializationError err = deserializeJson(inDoc, input);
+    if (err) return input;  // 解析失败，返回原样
+
+    if (transformType == 1) {
+        // Array → Object: [{"id":"temp","value":"27.43"}] → {"temp":27.43}
+        if (!inDoc.is<JsonArray>()) return input;
+        JsonDocument outDoc;
+        for (JsonObject item : inDoc.as<JsonArray>()) {
+            if (!item.containsKey("id") || !item.containsKey("value")) continue;
+            String id = item["id"].as<String>();
+            String value = item["value"].as<String>();
+            // 尝试转为数字
+            char* endPtr;
+            double numVal = strtod(value.c_str(), &endPtr);
+            if (*endPtr == '\0' && value.length() > 0) {
+                outDoc[id] = numVal;
+            } else {
+                outDoc[id] = value;
+            }
+        }
+        String result;
+        serializeJson(outDoc, result);
+        LOGGER.infof("[PeriphExec] Transform array→object: %d bytes → %d bytes",
+                     input.length(), result.length());
+        return result;
+    }
+
+    if (transformType == 2) {
+        // Object → Array: {"temp":27.43} → [{"id":"temp","value":"27.43","remark":""}]
+        if (!inDoc.is<JsonObject>()) return input;
+        JsonDocument outDoc;
+        JsonArray arr = outDoc.to<JsonArray>();
+        for (JsonPair p : inDoc.as<JsonObject>()) {
+            JsonObject item = arr.add<JsonObject>();
+            item["id"] = p.key().c_str();
+            item["value"] = p.value().as<String>();
+            item["remark"] = "";
+        }
+        String result;
+        serializeJson(outDoc, result);
+        LOGGER.infof("[PeriphExec] Transform object→array: %d bytes → %d bytes",
+                     input.length(), result.length());
+        return result;
+    }
+
+    return input;  // 未知转换类型
+}
+
+// ========== 订阅主题触发处理 ==========
+
+void PeriphExecManager::handleTopicTrigger(int8_t subTopicIndex, const String& message) {
+    if (subTopicIndex < 0) return;
+
+    // 阶段1: 持锁匹配，收集规则副本
+    struct TopicMatch {
+        PeriphExecRule rule;
+        String convertedPayload;
+    };
+    std::vector<TopicMatch> matched;
+
+    {
+        MutexGuard lock(_rulesMutex);
+        if (rules.empty()) return;
+
+        unsigned long now = millis();
+        for (auto& pair : rules) {
+            PeriphExecRule& rule = pair.second;
+            if (!rule.enabled || rule.triggerType != 3) continue;
+            if (rule.sourceTopicIndex != subTopicIndex) continue;
+
+            // 防重复触发：同一规则最小间隔 1 秒
+            if (rule.lastTriggerTime > 0 && (now - rule.lastTriggerTime) < 1000) continue;
+
+            rule.lastTriggerTime = now;
+            rule.triggerCount++;
+
+            // 格式转换
+            String payload = convertFormat(message, rule.transformType);
+
+            LOGGER.infof("[PeriphExec] Topic trigger '%s': sub[%d] transform=%d",
+                         rule.name.c_str(), subTopicIndex, rule.transformType);
+
+            matched.push_back({rule, payload});
+        }
+    }
+    // 锁已释放
+
+    // 阶段2: 无锁转发到目标发布主题
+    if (matched.empty()) return;
+
+    MQTTClient* mqtt = getMqttClient();
+    if (!mqtt) return;
+
+    for (auto& m : matched) {
+        if (m.rule.targetTopicIndex >= 0) {
+            bool ok = mqtt->publishToTopic((size_t)m.rule.targetTopicIndex, m.convertedPayload);
+            LOGGER.infof("[PeriphExec] Topic forward '%s' → pub[%d]: %s",
+                         m.rule.name.c_str(), m.rule.targetTopicIndex, ok ? "OK" : "FAIL");
+        }
+    }
+}
+
+// ========== 发布前格式转换拦截 ==========
+
+String PeriphExecManager::applyOutputTransform(size_t pubTopicIndex, const String& payload) {
+    MutexGuard lock(_rulesMutex);
+    if (!lock.isLocked()) return payload;
+
+    for (auto& pair : rules) {
+        PeriphExecRule& rule = pair.second;
+        if (!rule.enabled || rule.triggerType != 4) continue;
+        if (rule.targetTopicIndex < 0 || (size_t)rule.targetTopicIndex != pubTopicIndex) continue;
+
+        // 匹配成功：更新运行时字段
+        rule.lastTriggerTime = millis();
+        rule.triggerCount++;
+
+        LOGGER.infof("[PeriphExec] Output transform '%s': pub[%d] type=%d",
+                     rule.name.c_str(), (int)pubTopicIndex, rule.transformType);
+
+        // 只取第一条匹配的规则（避免链式转换的复杂性）
+        return convertFormat(payload, rule.transformType);
+    }
+
+    return payload;  // 无匹配规则
 }
 
 // ========== 工具 ==========

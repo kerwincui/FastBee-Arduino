@@ -51,6 +51,17 @@ public:
     // 设备触发检测（轮询输入外设状态，由 TaskManager 定时任务调用）
     void checkDeviceTriggers();
 
+    // Modbus 一次性读取回调（由 ProtocolManager 注册）
+    void setModbusReadCallback(std::function<String(const String&)> callback);
+
+    // ========== MQTT 主题触发 ==========
+
+    // 订阅主题触发处理（由 MQTTClient::mqttCallback 调用）
+    void handleTopicTrigger(int8_t subTopicIndex, const String& message);
+
+    // 发布前格式转换拦截（由 MQTTClient::publishToTopic 调用）
+    String applyOutputTransform(size_t pubTopicIndex, const String& payload);
+
     // ========== 异步执行 ==========
 
     // 记录异步执行结果（由异步任务完成时调用）
@@ -75,6 +86,9 @@ private:
     // ========== 异步执行结果 ==========
     std::vector<AsyncExecResult> executionResults;
 
+    // ========== Modbus 读取回调 ==========
+    std::function<String(const String&)> _modbusReadCallback;
+
     // ========== 条件评估 ==========
     bool evaluateCondition(const String& value, uint8_t op, const String& compareValue);
 
@@ -83,6 +97,9 @@ private:
     bool executePeripheralAction(const PeriphExecRule& rule);
     bool executeSystemAction(const PeriphExecRule& rule);
     bool executeScriptAction(const PeriphExecRule& rule);
+
+    // ========== JSON 格式转换 ==========
+    static String convertFormat(const String& input, uint8_t transformType);
 
     // ========== 异步调度 ==========
 
