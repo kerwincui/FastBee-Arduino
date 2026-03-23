@@ -114,14 +114,15 @@
             case 401:
                 localStorage.removeItem('auth_token');
                 localStorage.removeItem('sessionId');
-                localStorage.removeItem('password');
+                // 注意：不再删除 password 和 remember，以支持页面刷新后自动重新登录
                 if (!document.getElementById('login-page') ||
                     document.getElementById('login-page').style.display === 'none') {
                     Notification.warning('登录已过期，请重新登录', '会话超时');
                     setTimeout(function () {
                         var lp = document.getElementById('login-page');
                         var ac = document.getElementById('app-container');
-                        if (lp && ac) {
+                        // 仅当应用界面未显示时才跳转（避免覆盖自动重新登录的结果）
+                        if (lp && ac && ac.style.display !== 'block') {
                             ac.style.display = 'none';
                             lp.style.display = 'flex';
                         }
@@ -192,10 +193,11 @@
     /**
      * DELETE 请求
      * @param {string} url
+     * @param {Object} [params] - 查询参数
      * @returns {Promise<any>}
      */
-    window.apiDelete = function (url) {
-        return request('DELETE', url, {});
+    window.apiDelete = function (url, params) {
+        return request('DELETE', url, { params: params || {} });
     };
 
     /**

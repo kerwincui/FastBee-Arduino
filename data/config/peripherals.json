@@ -332,7 +332,7 @@
       "id": "modbus_rtu",
       "name": "Modbus RTU-工业设备",
       "type": 1,
-      "enabled": false,
+      "enabled": true,
       "pins": [
         16,
         17

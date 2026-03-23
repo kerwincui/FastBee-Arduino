@@ -18,8 +18,16 @@ const AppState = {
     // ============ 会话验证 ============
     refreshPage() {
         const token = localStorage.getItem('auth_token');
+
+        // 在 API 调用前保存"记住密码"凭据到局部变量
+        // （防止 401 处理器清除 localStorage 中的凭据）
+        const savedRemember = localStorage.getItem('remember');
+        const savedUsername = localStorage.getItem('username');
+        const savedPassword = localStorage.getItem('password');
+
         if (!token) {
-            this._showLoginPage();
+            // 没有 token，尝试使用保存的凭据自动登录
+            this._tryAutoLogin(savedRemember, savedUsername, savedPassword);
             return;
         }
         apiGet('/api/auth/session')
@@ -33,17 +41,71 @@ const AppState = {
                     this.loadSystemMonitor();  // 加载监控仪表盘数据
                     this.loadUsers();
                 } else {
-                    this._showLoginPage();
+                    // 会话无效，尝试使用保存的凭据重新登录
+                    this._tryAutoLogin(savedRemember, savedUsername, savedPassword);
                 }
             })
             .catch(() => {
-                this._showLoginPage();
+                // 会话验证失败（如 401），尝试自动重新登录
+                this._tryAutoLogin(savedRemember, savedUsername, savedPassword);
             });
+    },
+
+    // 尝试使用保存的凭据自动登录
+    _tryAutoLogin(remember, username, password) {
+        if (remember === 'true' && username && password) {
+            apiPost('/api/auth/login', { username, password })
+                .then(res => {
+                    if (res && res.success) {
+                        const sid = res.sessionId;
+                        localStorage.setItem('auth_token', sid);
+                        localStorage.setItem('sessionId', sid);
+                        // 恢复"记住密码"凭据（可能已被 401 处理器清除）
+                        localStorage.setItem('remember', 'true');
+                        localStorage.setItem('username', username);
+                        localStorage.setItem('password', password);
+
+                        this.currentUser.name = res.username || username;
+                        sessionStorage.setItem('currentUsername', this.currentUser.name);
+
+                        // 获取角色和权限信息
+                        apiGet('/api/auth/session').then(sr => {
+                            if (sr && sr.success && sr.data) {
+                                this.currentUser.role = sr.data.role || 'VIEWER';
+                                this.currentUser.canManageFs = sr.data.canManageFs === true;
+                            }
+                        }).catch(() => {});
+
+                        this._showAppPage();
+                        this.renderDashboard();
+                        this.loadSystemMonitor();
+                        this.loadUsers();
+                    } else {
+                        // 自动登录失败（如密码已更改），清除无效凭据并显示登录页
+                        localStorage.removeItem('password');
+                        localStorage.removeItem('remember');
+                        this._showLoginPage();
+                    }
+                })
+                .catch(() => {
+                    this._showLoginPage();
+                });
+        } else {
+            this._showLoginPage();
+        }
     },
 
     _showLoginPage() {
         document.getElementById('login-page').style.display = 'flex';
         document.getElementById('app-container').style.display = 'none';
+
+        // 预填充已保存的用户名和"记住密码"状态
+        const savedUsername = localStorage.getItem('username');
+        const savedRemember = localStorage.getItem('remember');
+        const usernameInput = document.getElementById('username');
+        const rememberCheckbox = document.getElementById('remember');
+        if (usernameInput && savedUsername) usernameInput.value = savedUsername;
+        if (rememberCheckbox && savedRemember === 'true') rememberCheckbox.checked = true;
     },
 
     _showAppPage() {

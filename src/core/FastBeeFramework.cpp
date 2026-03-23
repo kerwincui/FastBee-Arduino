@@ -208,25 +208,6 @@ bool FastBeeFramework::initialize() {
         LOG_INFO("[STEP10.5] Peripheral manager OK");
     }
     
-    // 注册网络连接成功回调：将 gpio_led 设置为低电平
-    if (network) {
-        network->setConnectionCallback([](NetworkStatus status, const String& message) {
-            PeripheralManager& pm = PeripheralManager::getInstance();
-            if (pm.hasPeripheral("gpio_led") && pm.isPeripheralEnabled("gpio_led")) {
-                pm.writePin("gpio_led", GPIOState::STATE_LOW);
-                LOG_INFO("Network connected: gpio_led set to LOW");
-            }
-        });
-        // 如果WiFi已连接，立即设置
-        if (WiFi.status() == WL_CONNECTED) {
-            PeripheralManager& pm = PeripheralManager::getInstance();
-            if (pm.hasPeripheral("gpio_led") && pm.isPeripheralEnabled("gpio_led")) {
-                pm.writePin("gpio_led", GPIOState::STATE_LOW);
-                LOG_INFO("WiFi already connected: gpio_led set to LOW");
-            }
-        }
-    }
-    
     // 步骤11: 初始化协议管理器
     LOG_INFO("[STEP11] Initializing ProtocolManager...");
     protocolManager.reset(new ProtocolManager());
