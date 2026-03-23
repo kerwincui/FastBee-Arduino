@@ -96,6 +96,15 @@ bool FastBeeFramework::initialize() {
     LOGGER.info("[STEP2] Logger System: OK");
     LOG_INFO("Logger system initialized and file logging enabled");
     
+    // 步骤2.5: 初始化外设管理器（尽早初始化，确保GPIO输出引脚在WiFi连接前就位）
+    // 依赖：LittleFS（STEP1）、Logger（STEP2），无需网络
+    LOG_INFO("[STEP2.5] Initializing PeripheralManager...");
+    if (!PeripheralManager::getInstance().initialize()) {
+        LOG_WARNING("[STEP2.5] Failed to initialize peripheral manager");
+    } else {
+        LOG_INFO("[STEP2.5] Peripheral manager OK");
+    }
+    
     // 步骤3: 创建HTTP服务器
     LOG_INFO("[STEP3] Creating HTTP server...");
     server.reset(new AsyncWebServer(80));
@@ -198,15 +207,6 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     LOG_INFO("[STEP10] Health monitor OK");
-    
-    // 步骤10.5: 初始化外设管理器（替代旧版GPIO管理器）
-    LOG_INFO("[STEP10.5] Initializing PeripheralManager...");
-    if (!PeripheralManager::getInstance().initialize()) {
-        LOG_WARNING("[STEP10.5] Failed to initialize peripheral manager");
-        // 外设管理器初始化失败不是致命错误，继续运行
-    } else {
-        LOG_INFO("[STEP10.5] Peripheral manager OK");
-    }
     
     // 步骤11: 初始化协议管理器
     LOG_INFO("[STEP11] Initializing ProtocolManager...");

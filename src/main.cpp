@@ -6,6 +6,14 @@
 FastBeeFramework* framework;
 
 void setup() {
+    // 关键输出引脚早期初始化：在任何外设初始化之前将隔离型IO拉低，
+    // 防止启动阶段因引脚浮空导致误触发。
+    // 先设置输出寄存器再切换模式，避免 pinMode(OUTPUT) 瞬间的电平毛刺。
+    digitalWrite(21, LOW);   // IO/L 隔离型数字输出低端
+    digitalWrite(22, LOW);   // IO/H 隔离型数字输出高端
+    pinMode(21, OUTPUT);
+    pinMode(22, OUTPUT);
+
     Serial.begin(115200);
     delay(500);
 

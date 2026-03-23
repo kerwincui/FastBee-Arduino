@@ -4185,13 +4185,8 @@ const AppState = {
         if (tr) tr.style.display = (val === '1') ? 'block' : 'none';
         // 触发源外设仅设备触发(2)显示
         if (sg) sg.style.display = (val === '2') ? 'block' : 'none';
-        // 主题触发(3/4)显示主题配置
-        const showTopic = (val === '3' || val === '4');
-        if (tg) tg.style.display = showTopic ? 'block' : 'none';
         // 设备触发时填充输入外设下拉
         if (val === '2') this._populateSourcePeriphSelect();
-        // 主题触发时填充主题下拉
-        if (showTopic) this._populateMqttTopicSelects(val);
     },
 
     onPeriphExecTimerModeChange(val) {
@@ -4233,10 +4228,7 @@ const AppState = {
             timePoint: document.getElementById('periph-exec-timepoint').value,
             actionType: document.getElementById('periph-exec-action-type').value,
             targetPeriphId: document.getElementById('periph-exec-target-periph').value,
-            actionValue: document.getElementById('periph-exec-action-value').value.trim(),
-            sourceTopicIndex: document.getElementById('periph-exec-source-topic').value,
-            targetTopicIndex: document.getElementById('periph-exec-target-topic').value,
-            transformType: document.getElementById('periph-exec-transform-type').value
+            actionValue: document.getElementById('periph-exec-action-value').value.trim()
         };
         if (!ruleData.name) {
             errEl.textContent = i18n.t('periph-exec-validate-name');
@@ -4311,17 +4303,6 @@ const AppState = {
                     const scriptEl = document.getElementById('periph-exec-script');
                     if (scriptEl) scriptEl.value = rule.actionValue || '';
                 }
-                // 主题触发: 回显主题索引和转换类型（需等待下拉填充后再设值）
-                const tt = String(rule.triggerType);
-                if (tt === '3' || tt === '4') {
-                    document.getElementById('periph-exec-transform-type').value = String(rule.transformType || 0);
-                    setTimeout(() => {
-                        const srcSel = document.getElementById('periph-exec-source-topic');
-                        const tgtSel = document.getElementById('periph-exec-target-topic');
-                        if (srcSel) srcSel.value = String(rule.sourceTopicIndex ?? -1);
-                        if (tgtSel) tgtSel.value = String(rule.targetTopicIndex ?? -1);
-                    }, 400);
-                }
             });
     },
 
@@ -4395,8 +4376,8 @@ const AppState = {
                     0: i18n.t('periph-exec-trigger-platform'),
                     1: i18n.t('periph-exec-trigger-timer'),
                     2: i18n.t('periph-exec-trigger-device'),
-                    3: i18n.t('periph-exec-trigger-sub-topic'),
-                    4: i18n.t('periph-exec-trigger-pub-topic')
+                    3: i18n.t('rule-script-trigger-receive'),
+                    4: i18n.t('rule-script-trigger-report')
                 };
                 const actionLabels = {
                     0: i18n.t('periph-exec-action-high'), 1: i18n.t('periph-exec-action-low'),
@@ -4427,9 +4408,8 @@ const AppState = {
                         const srcName = r.sourcePeriphId ? (periphMap[r.sourcePeriphId] || r.sourcePeriphId) : '?';
                         triggerText += ': ' + srcName + ' ' + (opLabels[r.operatorType] || '') + ' ' + (r.compareValue || '');
                     } else if (r.triggerType === 3 || r.triggerType === 4) {
-                        const transformNames = ['', 'Arr→Obj', 'Obj→Arr'];
-                        triggerText += ': [' + (r.sourceTopicIndex ?? -1) + ']→[' + (r.targetTopicIndex ?? -1) + ']';
-                        if (r.transformType > 0) triggerText += ' ' + (transformNames[r.transformType] || '');
+                        const protocolNames = ['MQTT', 'Modbus RTU', 'Modbus TCP', 'HTTP', 'CoAP', 'TCP'];
+                        triggerText += ': ' + (protocolNames[r.protocolType] || 'MQTT');
                     }
                     const periphName = r.targetPeriphId ? (periphMap[r.targetPeriphId] || r.targetPeriphId) : '-';
                     const actionText = actionLabels[r.actionType] || '?';
@@ -4495,62 +4475,6 @@ const AppState = {
         });
     },
 
-    _populateMqttTopicSelects(triggerVal) {
-        const srcSel = document.getElementById('periph-exec-source-topic');
-        const tgtSel = document.getElementById('periph-exec-target-topic');
-        if (!srcSel || !tgtSel) return;
-        const srcCur = srcSel.value;
-        const tgtCur = tgtSel.value;
-        apiGet('/api/protocol/config').then(res => {
-            if (!res || !res.success || !res.data || !res.data.mqtt) return;
-            const mqtt = res.data.mqtt;
-            const pubTopics = mqtt.publishTopics || [];
-            const subTopics = mqtt.subscribeTopics || [];
-            let srcOpts = '<option value="-1">-- ' + i18n.t('periph-exec-select-topic') + ' --</option>';
-            let tgtOpts = '<option value="-1">-- ' + i18n.t('periph-exec-select-topic') + ' --</option>';
-            if (triggerVal === '3') {
-                // 订阅主题触发: 源=订阅主题, 目标=发布主题
-                subTopics.forEach((t, i) => {
-                    if (t.enabled !== false) srcOpts += '<option value="' + i + '">[' + i + '] ' + (t.topic || '(空)') + '</option>';
-                });
-                pubTopics.forEach((t, i) => {
-                    if (t.enabled !== false) tgtOpts += '<option value="' + i + '">[' + i + '] ' + (t.topic || '(空)') + '</option>';
-                });
-            } else if (triggerVal === '4') {
-                // 发布主题拦截: 源=发布主题, 目标=发布主题(可选,通常不用)
-                pubTopics.forEach((t, i) => {
-                    if (t.enabled !== false) {
-                        srcOpts += '<option value="' + i + '">[' + i + '] ' + (t.topic || '(空)') + '</option>';
-                        tgtOpts += '<option value="' + i + '">[' + i + '] ' + (t.topic || '(空)') + '</option>';
-                    }
-                });
-            }
-            srcSel.innerHTML = srcOpts;
-            tgtSel.innerHTML = tgtOpts;
-            if (srcCur && srcCur !== '-1') srcSel.value = srcCur;
-            if (tgtCur && tgtCur !== '-1') tgtSel.value = tgtCur;
-        });
-    },
-
-    previewTransform() {
-        const transformType = document.getElementById('periph-exec-transform-type').value;
-        const previewEl = document.getElementById('periph-exec-transform-preview');
-        if (!previewEl) return;
-        let input, output;
-        if (transformType === '1') {
-            input = '[{"id":"temperature","value":"27.43"},{"id":"humidity","value":"65.2"}]';
-            output = '{"temperature":27.43,"humidity":65.2}';
-        } else if (transformType === '2') {
-            input = '{"temperature":27.43,"humidity":65.2}';
-            output = '[{"id":"temperature","value":"27.43","remark":""},{"id":"humidity","value":"65.2","remark":""}]';
-        } else {
-            previewEl.style.display = 'none';
-            return;
-        }
-        previewEl.textContent = i18n.t('periph-exec-preview-input') + ':\n' + input + '\n\n' + i18n.t('periph-exec-preview-output') + ':\n' + output;
-        previewEl.style.display = 'block';
-    },
-
     // ============ 规则脚本页面 ============
 
     loadRuleScriptPage() {
@@ -4558,32 +4482,29 @@ const AppState = {
         if (!tbody) return;
         apiGet('/api/periph-exec').then(res => {
             if (!res || !res.success || !res.data) {
-                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">' + i18n.t('rule-script-no-data') + '</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">' + i18n.t('rule-script-no-data') + '</td></tr>';
                 return;
             }
-            // 仅显示主题触发规则 (triggerType 3 或 4)
             const rules = res.data.filter(r => r.triggerType === 3 || r.triggerType === 4);
             if (rules.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">' + i18n.t('rule-script-no-data') + '</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">' + i18n.t('rule-script-no-data') + '</td></tr>';
                 return;
             }
-            const triggerLabels = { 3: i18n.t('rule-script-trigger-sub'), 4: i18n.t('rule-script-trigger-pub') };
-            const transformLabels = { 0: i18n.t('rule-script-transform-none'), 1: i18n.t('rule-script-transform-a2o'), 2: i18n.t('rule-script-transform-o2a') };
+            const triggerLabels = { 3: i18n.t('rule-script-trigger-receive'), 4: i18n.t('rule-script-trigger-report') };
+            const protocolLabels = { 0: 'MQTT', 1: 'Modbus RTU', 2: 'Modbus TCP', 3: 'HTTP', 4: 'CoAP', 5: 'TCP' };
             let html = '';
             rules.forEach(r => {
                 const statusBadge = r.enabled
                     ? '<span class="badge badge-success">' + i18n.t('periph-exec-status-on') + '</span>'
                     : '<span class="badge badge-info">' + i18n.t('periph-exec-status-off') + '</span>';
                 const triggerText = triggerLabels[r.triggerType] || '?';
-                const transformText = transformLabels[r.transformType] || '-';
-                const topicText = '[' + (r.sourceTopicIndex ?? -1) + '] → [' + (r.targetTopicIndex ?? -1) + ']';
+                const protocolText = protocolLabels[r.protocolType] || '-';
                 const statsText = i18n.t('periph-exec-stats-count') + ': ' + (r.triggerCount || 0);
                 html += '<tr>';
                 html += '<td>' + (r.name || '') + '</td>';
                 html += '<td>' + statusBadge + '</td>';
                 html += '<td>' + triggerText + '</td>';
-                html += '<td>' + transformText + '</td>';
-                html += '<td style="font-family:monospace;font-size:12px;">' + topicText + '</td>';
+                html += '<td>' + protocolText + '</td>';
                 html += '<td style="font-size:12px;">' + statsText + '</td>';
                 html += '<td>';
                 html += '<button class="pure-button pure-button-small" onclick="app.editRuleScript(\'' + r.id + '\')" style="margin-right:4px;">' + i18n.t('edit') + '</button>';
@@ -4598,7 +4519,7 @@ const AppState = {
             });
             tbody.innerHTML = html;
         }).catch(() => {
-            tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">' + i18n.t('rule-script-no-data') + '</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">' + i18n.t('rule-script-no-data') + '</td></tr>';
         });
     },
 
@@ -4613,72 +4534,15 @@ const AppState = {
         } else {
             if (titleEl) titleEl.textContent = i18n.t('rule-script-add-title');
             document.getElementById('rule-script-form').reset();
+            document.getElementById('rule-script-protocol-type').value = '0';
+            document.getElementById('rule-script-content').value = '';
         }
-        this._populateRuleScriptTopicSelects(document.getElementById('rule-script-trigger-type').value);
         modal.style.display = 'flex';
     },
 
     closeRuleScriptModal() {
         const modal = document.getElementById('rule-script-modal');
         if (modal) modal.style.display = 'none';
-    },
-
-    onRuleScriptTriggerTypeChange(val) {
-        this._populateRuleScriptTopicSelects(val);
-    },
-
-    _populateRuleScriptTopicSelects(triggerVal) {
-        const srcSel = document.getElementById('rule-script-source-topic');
-        const tgtSel = document.getElementById('rule-script-target-topic');
-        if (!srcSel || !tgtSel) return;
-        const srcCur = srcSel.value;
-        const tgtCur = tgtSel.value;
-        apiGet('/api/protocol/config').then(res => {
-            if (!res || !res.success || !res.data || !res.data.mqtt) return;
-            const mqtt = res.data.mqtt;
-            const pubTopics = mqtt.publishTopics || [];
-            const subTopics = mqtt.subscribeTopics || [];
-            let srcOpts = '<option value="-1">-- ' + i18n.t('rule-script-select-topic') + ' --</option>';
-            let tgtOpts = '<option value="-1">-- ' + i18n.t('rule-script-select-topic') + ' --</option>';
-            if (triggerVal === '3') {
-                subTopics.forEach((t, i) => {
-                    if (t.enabled !== false) srcOpts += '<option value="' + i + '">[' + i + '] ' + (t.topic || '(空)') + '</option>';
-                });
-                pubTopics.forEach((t, i) => {
-                    if (t.enabled !== false) tgtOpts += '<option value="' + i + '">[' + i + '] ' + (t.topic || '(空)') + '</option>';
-                });
-            } else if (triggerVal === '4') {
-                pubTopics.forEach((t, i) => {
-                    if (t.enabled !== false) {
-                        srcOpts += '<option value="' + i + '">[' + i + '] ' + (t.topic || '(空)') + '</option>';
-                        tgtOpts += '<option value="' + i + '">[' + i + '] ' + (t.topic || '(空)') + '</option>';
-                    }
-                });
-            }
-            srcSel.innerHTML = srcOpts;
-            tgtSel.innerHTML = tgtOpts;
-            if (srcCur && srcCur !== '-1') srcSel.value = srcCur;
-            if (tgtCur && tgtCur !== '-1') tgtSel.value = tgtCur;
-        });
-    },
-
-    previewRuleScriptTransform() {
-        const transformType = document.getElementById('rule-script-transform-type').value;
-        const previewEl = document.getElementById('rule-script-preview');
-        if (!previewEl) return;
-        let input, output;
-        if (transformType === '1') {
-            input = '[{"id":"temperature","value":"27.43"},{"id":"humidity","value":"65.2"}]';
-            output = '{"temperature":27.43,"humidity":65.2}';
-        } else if (transformType === '2') {
-            input = '{"temperature":27.43,"humidity":65.2}';
-            output = '[{"id":"temperature","value":"27.43","remark":""},{"id":"humidity","value":"65.2","remark":""}]';
-        } else {
-            previewEl.style.display = 'none';
-            return;
-        }
-        previewEl.textContent = 'Input:\n' + input + '\n\nOutput:\n' + output;
-        previewEl.style.display = 'block';
     },
 
     saveRuleScript() {
@@ -4690,9 +4554,8 @@ const AppState = {
             name: document.getElementById('rule-script-name').value.trim(),
             enabled: document.getElementById('rule-script-enabled').checked ? '1' : '0',
             triggerType: document.getElementById('rule-script-trigger-type').value,
-            sourceTopicIndex: document.getElementById('rule-script-source-topic').value,
-            targetTopicIndex: document.getElementById('rule-script-target-topic').value,
-            transformType: document.getElementById('rule-script-transform-type').value,
+            protocolType: document.getElementById('rule-script-protocol-type').value,
+            scriptContent: document.getElementById('rule-script-content').value,
             execMode: '0',
             operatorType: '0',
             compareValue: '',
@@ -4735,14 +4598,8 @@ const AppState = {
             document.getElementById('rule-script-name').value = rule.name || '';
             document.getElementById('rule-script-enabled').checked = !!rule.enabled;
             document.getElementById('rule-script-trigger-type').value = String(rule.triggerType);
-            this.onRuleScriptTriggerTypeChange(String(rule.triggerType));
-            document.getElementById('rule-script-transform-type').value = String(rule.transformType || 0);
-            setTimeout(() => {
-                const srcSel = document.getElementById('rule-script-source-topic');
-                const tgtSel = document.getElementById('rule-script-target-topic');
-                if (srcSel) srcSel.value = String(rule.sourceTopicIndex ?? -1);
-                if (tgtSel) tgtSel.value = String(rule.targetTopicIndex ?? -1);
-            }, 400);
+            document.getElementById('rule-script-protocol-type').value = String(rule.protocolType || 0);
+            document.getElementById('rule-script-content').value = rule.scriptContent || '';
         });
     },
 

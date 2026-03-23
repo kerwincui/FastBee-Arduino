@@ -62,10 +62,9 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         obj["intervalSec"] = rule.intervalSec;
         obj["timePoint"] = rule.timePoint;
 
-        // 主题触发
-        obj["sourceTopicIndex"] = rule.sourceTopicIndex;
-        obj["targetTopicIndex"] = rule.targetTopicIndex;
-        obj["transformType"] = rule.transformType;
+        // 数据转换管道
+        obj["protocolType"] = rule.protocolType;
+        obj["scriptContent"] = rule.scriptContent;
 
         // 动作
         obj["targetPeriphId"] = rule.targetPeriphId;
@@ -128,9 +127,8 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     rule.actionValue = ctx->getParamValue(request, "actionValue", "");
     rule.inverted = false;
 
-    rule.sourceTopicIndex = ctx->getParamInt(request, "sourceTopicIndex", -1);
-    rule.targetTopicIndex = ctx->getParamInt(request, "targetTopicIndex", -1);
-    rule.transformType = ctx->getParamInt(request, "transformType", 0);
+    rule.protocolType = ctx->getParamInt(request, "protocolType", 0);
+    rule.scriptContent = ctx->getParamValue(request, "scriptContent", "");
 
     if (rule.name.isEmpty()) {
         return;
@@ -186,9 +184,8 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     rule.actionValue = ctx->getParamValue(request, "actionValue", existing->actionValue);
     rule.inverted = false;  // 不再使用独立字段，由 actionType 决定
 
-    rule.sourceTopicIndex = ctx->getParamInt(request, "sourceTopicIndex", existing->sourceTopicIndex);
-    rule.targetTopicIndex = ctx->getParamInt(request, "targetTopicIndex", existing->targetTopicIndex);
-    rule.transformType = ctx->getParamInt(request, "transformType", existing->transformType);
+    rule.protocolType = ctx->getParamInt(request, "protocolType", existing->protocolType);
+    rule.scriptContent = ctx->getParamValue(request, "scriptContent", existing->scriptContent);
 
     if (mgr.updateRule(id, rule)) {
         mgr.saveConfiguration();

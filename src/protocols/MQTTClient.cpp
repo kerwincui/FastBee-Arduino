@@ -279,8 +279,8 @@ bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
         return false;
     }
     String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
-    // 发布前格式转换拦截（triggerType=4 规则）
-    String payload = PeriphExecManager::getInstance().applyOutputTransform(topicIndex, message);
+    // 数据上报转换管道
+    String payload = PeriphExecManager::getInstance().applyReportTransform(0, message);
     bool ok = mqttClient.publish(fullTopic.c_str(), payload.c_str(), pt.retain);
     
     if (!ok) {
@@ -704,9 +704,11 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
     String message((const char*)payload, length);
     String topicStr(topic);
 
-    // 根据主题路径查找对应的主题类型和订阅主题索引
-    int8_t subTopicIdx = -1;
-    MqttTopicType tType = getTopicTypeByPath(topicStr, &subTopicIdx);
+    // 根据主题路径查找对应的主题类型
+    MqttTopicType tType = getTopicTypeByPath(topicStr);
+
+    // 数据接收转换管道
+    message = PeriphExecManager::getInstance().applyReceiveTransform(0, message);
 
     char buf[96];
     snprintf(buf, sizeof(buf), "MQTT: Msg type=%d topic=%s len=%u",
@@ -797,11 +799,6 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
             // 收到的是 NTP 请求而非响应（仅含 deviceSendTime），忽略
             LOG_DEBUG("MQTT: NTP_SYNC request received (not response), ignoring");
         }
-    }
-
-    // 订阅主题触发规则匹配（所有主题类型都可能触发 triggerType=3 规则）
-    if (subTopicIdx >= 0) {
-        PeriphExecManager::getInstance().handleTopicTrigger(subTopicIdx, message);
     }
 
     // DATA_COMMAND 已由 handleDataCommand 完整处理（含条件匹配+执行+响应），

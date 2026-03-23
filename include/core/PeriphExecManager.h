@@ -54,13 +54,13 @@ public:
     // Modbus 一次性读取回调（由 ProtocolManager 注册）
     void setModbusReadCallback(std::function<String(const String&)> callback);
 
-    // ========== MQTT 主题触发 ==========
+    // ========== 数据转换管道 ==========
 
-    // 订阅主题触发处理（由 MQTTClient::mqttCallback 调用）
-    void handleTopicTrigger(int8_t subTopicIndex, const String& message);
+    // 数据接收转换（由各协议接收回调调用）
+    String applyReceiveTransform(uint8_t protocolType, const String& rawData);
 
-    // 发布前格式转换拦截（由 MQTTClient::publishToTopic 调用）
-    String applyOutputTransform(size_t pubTopicIndex, const String& payload);
+    // 数据上报转换（由各协议发送方法调用）
+    String applyReportTransform(uint8_t protocolType, const String& rawData);
 
     // ========== 异步执行 ==========
 
@@ -98,8 +98,11 @@ private:
     bool executeSystemAction(const PeriphExecRule& rule);
     bool executeScriptAction(const PeriphExecRule& rule);
 
-    // ========== JSON 格式转换 ==========
-    static String convertFormat(const String& input, uint8_t transformType);
+    // ========== 模板引擎 ==========
+    static String applyTemplate(const String& templateStr, const String& jsonInput);
+
+    // ========== 默认示例数据 ==========
+    void populateDefaultScriptRules();
 
     // ========== 异步调度 ==========
 
