@@ -1078,12 +1078,12 @@ const AppState = {
             
             // 操作
             const tdAction = document.createElement('td');
+            tdAction.className = 'u-toolbar-sm';
             
             // 查看权限按钮
             const viewBtn = document.createElement('button');
             viewBtn.className = 'btn btn-sm btn-secondary';
             viewBtn.textContent = i18n.t('role-view-perms');
-            viewBtn.style.marginRight = '5px';
             viewBtn.addEventListener('click', () => this.showRolePermissions(role));
             tdAction.appendChild(viewBtn);
             

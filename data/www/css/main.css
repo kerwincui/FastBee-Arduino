@@ -93,17 +93,17 @@
   --bg-body: linear-gradient(135deg, #f5f5f5 0%, #fafafa 50%, #f0f0f0 100%);
   --bg-body-fallback: #f5f5f5;
   --bg-card: rgba(255, 255, 255, 0.92);
-  --bg-sidebar: #cfe6ff;
+  --bg-sidebar: #0a66e7;
   --bg-input: #ffffff;
 
   /* Sidebar semantic colors (light default) */
-  --sidebar-text: rgba(0, 0, 0, 0.88);
-  --sidebar-text-muted: rgba(0, 0, 0, 0.65);
-  --sidebar-hover-bg: rgba(22, 119, 255, 0.10);
-  --sidebar-active-bg: rgba(22, 119, 255, 0.16);
-  --sidebar-active-border: #1677ff;
-  --sidebar-grad-top: color-mix(in srgb, var(--bg-sidebar) 80%, var(--primary-light) 20%);
-  --sidebar-grad-bottom: color-mix(in srgb, var(--bg-sidebar) 88%, var(--primary-bg) 12%);
+  --sidebar-text: rgba(255, 255, 255, 0.96);
+  --sidebar-text-muted: rgba(255, 255, 255, 0.85);
+  --sidebar-hover-bg: rgba(255, 255, 255, 0.12);
+  --sidebar-active-bg: rgba(255, 255, 255, 0.22);
+  --sidebar-active-border: #ffffff;
+  --sidebar-grad-top: color-mix(in srgb, var(--bg-sidebar) 86%, var(--primary-hover) 14%);
+  --sidebar-grad-bottom: color-mix(in srgb, var(--bg-sidebar) 90%, var(--primary-active) 10%);
   
   /* Glassmorphism Colors */
   --glass-bg: rgba(255, 255, 255, 0.78);
@@ -904,7 +904,6 @@ a:hover { text-decoration: underline; }
   font-weight: 600; 
   color: var(--text-primary); 
   margin-bottom: var(--space-4); 
-  padding-top: 40px;
   padding-bottom: var(--space-2); 
   border-bottom: 1px solid var(--border); 
 }
@@ -1011,6 +1010,27 @@ select:hover, .form-select:hover {
 .pure-form .pure-input-1 { height: 40px; padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--rounded-md); background: var(--bg-input); color: var(--text-primary); }
 .pure-form .pure-control-group { margin-bottom: var(--space-4); }
 .pure-form label { margin-bottom: var(--space-2); display: block; font-weight: 500; color: var(--text-secondary); }
+
+.pure-checkbox {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 6px;
+  line-height: 1.2;
+}
+
+.pure-checkbox input[type="checkbox"] {
+  margin: 0;
+  width: 16px;
+  height: 16px;
+  vertical-align: middle;
+  flex: 0 0 auto;
+}
+
+.pure-checkbox span,
+.pure-checkbox label,
+.pure-checkbox {
+  vertical-align: middle;
+}
 
 /* Divider */
 .divider { height: 1px; background: var(--border); margin: var(--space-6) 0; }
@@ -1526,7 +1546,6 @@ select:hover, .form-select:hover {
 .logs-page-container {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 140px);
   border: 1px solid var(--glass-border);
   border-radius: var(--rounded-lg);
   background: var(--glass-bg);
@@ -1820,9 +1839,15 @@ body {
 #master-status-section,
 #mqtt-status-panel {
   background: var(--glass-bg) !important;
-  border: none !important;
+  border: 1px solid var(--glass-border) !important;
   border-radius: var(--rounded-xl) !important;
   box-shadow: none !important;
+}
+
+/* 用户要求：card 保留边框和阴影 */
+.card {
+  border: 1px solid var(--glass-border) !important;
+  box-shadow: var(--glass-shadow) !important;
 }
 
 /* 统一标题层级 */
@@ -1923,6 +1948,7 @@ textarea,
   border: 1px solid var(--border) !important;
   color: var(--text-primary) !important;
   min-height: 38px;
+  line-height: 30px;
 }
 
 input:focus,
@@ -1960,11 +1986,11 @@ textarea:focus,
 .stat-card::after {
   content: "";
   position: absolute;
-  inset: auto -40% -60% auto;
-  width: 180px;
-  height: 180px;
+  inset: auto -35% -70% auto;
+  width: 260px;
+  height: 260px;
   border-radius: 50%;
-  background: radial-gradient(circle, color-mix(in srgb, var(--primary) 22%, transparent), transparent 68%);
+  background: radial-gradient(circle, color-mix(in srgb, var(--primary) 10%, transparent), transparent 60%);
   pointer-events: none;
 }
 
@@ -2138,6 +2164,27 @@ textarea:focus-visible,
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent);
 }
 
+/* 语言切换下拉：统一显示向下箭头，颜色跟随文字 */
+.login-lang-select,
+.language-select-header {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) calc(50% - 2px),
+    calc(100% - 10px) calc(50% - 2px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
+.login-lang-select::-ms-expand,
+.language-select-header::-ms-expand {
+  display: none;
+}
+
 /* 用户下拉层级抬高，避免被页面组件遮挡 */
 .user-dropdown-menu {
   z-index: 99999;
@@ -2173,7 +2220,7 @@ textarea:focus-visible,
 
 
 .dashboard-merged-section .section-title {
-  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-4);
 }
 
 /* Dashboard 底部当前网络状态 3 列尽量一行 */
@@ -2587,6 +2634,8 @@ small[style] {
 .modal-header button,
 .modal-header button[style] {
   color: var(--text-primary) !important;
+  padding: 3px 10px;
+  border: 1px solid #ccc;
 }
 
 .modal-footer .pure-button,
@@ -2639,7 +2688,7 @@ a:focus-visible {
   .card-body { padding: var(--space-4); }
   .config-form-grid { grid-template-columns: 1fr; gap: var(--space-3); }
   .resource-grid { grid-template-columns: 1fr; }
-  .logs-page-container { height: calc(100vh - 132px); }
+  .logs-page-container { }
 }
 
 /* Mobile-first control optimization */
@@ -2762,6 +2811,23 @@ a:focus-visible {
     padding-left: var(--space-3) !important;
     padding-right: var(--space-3) !important;
   }
+}
+
+/* 语言切换下拉：统一显示向下箭头，颜色跟随文字 */
+.login-lang-select,
+.language-select-header {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 30px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) calc(50% - 2px),
+    calc(100% - 8px) calc(50% - 2px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
 }
 
 /* ============================================
