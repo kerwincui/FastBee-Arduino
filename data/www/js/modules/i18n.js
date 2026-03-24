@@ -47,8 +47,8 @@ const i18n = {
             'change-password-btn': '修改密码',
             'logout-btn': '退出登录',
             'theme-toggle': '切换主题',
-            'theme-light': '浅色模式',
-            'theme-dark': '深色模式',
+            'theme-light': '☀ 浅色模式',
+            'theme-dark': '🌙 深色模式',
             
             // 仪表盘
             'cpu-label': 'CPU使用率',
@@ -983,6 +983,9 @@ const i18n = {
             'periph-exec-status-on': '已启用',
             'periph-exec-status-off': '已禁用',
             'periph-exec-stats-count': '触发次数',
+            'periph-exec-run-once': '执行一次',
+            'periph-exec-run-ok': '规则执行成功',
+            'periph-exec-run-fail': '规则执行失败',
             
             // 规则脚本页面
             'page-title-rule-script': '规则脚本',
@@ -1443,8 +1446,8 @@ const i18n = {
             'change-password-btn': 'Change Password',
             'logout-btn': 'Logout',
             'theme-toggle': 'Toggle Theme',
-            'theme-light': 'Light Mode',
-            'theme-dark': 'Dark Mode',
+            'theme-light': '☀ Light Mode',
+            'theme-dark': '🌙 Dark Mode',
             
             // Dashboard
             'cpu-label': 'CPU Usage',

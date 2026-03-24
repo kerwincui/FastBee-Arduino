@@ -52,9 +52,20 @@ const AppState = {
     setupTheme() {
         // 检测系统主题偏好
         const savedTheme = localStorage.getItem('theme');
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        const theme = savedTheme || (prefersDark ? 'dark' : 'light');
-        this.setTheme(theme);
+        const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        
+        // 优先级: 用户手动设置 > 系统偏好
+        let theme;
+        if (savedTheme) {
+            theme = savedTheme;
+        } else {
+            theme = systemPrefersDark ? 'dark' : 'light';
+            // 标记为自动模式（未手动设置）
+            localStorage.setItem('theme-auto', 'true');
+        }
+        
+        this.setTheme(theme, false);
+        this.updateThemeToggleIcon(theme);
         
         // 绑定主题切换按钮 (下拉菜单中的)
         const themeToggleItem = document.getElementById('theme-toggle-item');
@@ -62,22 +73,51 @@ const AppState = {
             themeToggleItem.addEventListener('click', () => this.toggleTheme());
         }
         
-        // 监听系统主题变化
+        // 监听系统主题变化（仅在自动模式下）
         window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-            if (!localStorage.getItem('theme')) {
-                this.setTheme(e.matches ? 'dark' : 'light');
+            const isAutoMode = localStorage.getItem('theme-auto') === 'true';
+            if (isAutoMode) {
+                const newTheme = e.matches ? 'dark' : 'light';
+                this.setTheme(newTheme, false);
+                this.updateThemeToggleIcon(newTheme);
             }
         });
     },
     
-    setTheme(theme) {
+    setTheme(theme, isManual = true) {
         document.documentElement.setAttribute('data-theme', theme);
         localStorage.setItem('theme', theme);
+        
+        // 如果是手动设置，清除自动模式标记
+        if (isManual) {
+            localStorage.removeItem('theme-auto');
+        }
+        
+        this.updateThemeToggleIcon(theme);
     },
     
     toggleTheme() {
         const current = document.documentElement.getAttribute('data-theme');
-        this.setTheme(current === 'dark' ? 'light' : 'dark');
+        const newTheme = current === 'dark' ? 'light' : 'dark';
+        this.setTheme(newTheme, true);
+    },
+    
+    updateThemeToggleIcon(theme) {
+        const themeToggleItem = document.getElementById('theme-toggle-item');
+        if (themeToggleItem) {
+            const iconSpan = themeToggleItem.querySelector('.item-icon');
+            const textSpan = themeToggleItem.querySelector('span:not(.item-icon)');
+            
+            if (iconSpan) {
+                iconSpan.textContent = theme === 'dark' ? '☀' : '🌙';
+            }
+            if (textSpan) {
+                // 获取当前语言的翻译
+                const key = theme === 'dark' ? 'theme-light' : 'theme-dark';
+                const translated = window.i18n ? window.i18n.translate(key) : (theme === 'dark' ? '浅色模式' : '深色模式');
+                textSpan.textContent = translated;
+            }
+        }
     },
 
     // ============ 会话验证 ============
@@ -740,63 +780,80 @@ const AppState = {
 
     // ============ 页面切换 ============
     changePage(page) {
+        // 兼容别名（历史上 monitor 对应 dashboard）
+        const pageAlias = {
+            monitor: 'dashboard'
+        };
+        const normalizedPage = pageAlias[page] || page;
+        const target = document.getElementById(`${normalizedPage}-page`);
+
+        // 若目标页面不存在，避免菜单与页面状态错位
+        if (!target) {
+            console.warn('[changePage] target page not found:', page, '=>', normalizedPage);
+            return;
+        }
+
+        // 菜单激活态与实际展示页面保持一致
         document.querySelectorAll('.menu-item').forEach(item => {
-            item.classList.toggle('active', item.dataset.page === page);
+            item.classList.toggle('active', item.dataset.page === normalizedPage);
         });
-        const titleKey = `page-title-${page}`;
+
+        const titleKey = `page-title-${normalizedPage}`;
         const titleEl = document.getElementById('page-title');
         if (titleEl) titleEl.textContent = i18n.t(titleKey);
 
         document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-        const target = document.getElementById(`${page}-page`);
-        if (target) target.classList.add('active');
+        target.classList.add('active');
 
-        this.currentPage = page;
+        this.currentPage = normalizedPage;
 
-        // 按需加载数据
-        if (page === 'dashboard') this.renderDashboard();
-        if (page === 'users') this.loadUsers();
-        if (page === 'roles') this.loadRoles();
-        if (page === 'peripheral') { this.loadPeripherals(); }
-        if (page === 'periph-exec') { this.loadPeriphExecPage(); }
-        if (page === 'rule-script') { this.loadRuleScriptPage(); }
-        if (page === 'monitor') this.loadSystemInfo();
-        if (page === 'logs') {
-            this._currentLogFile = 'system.log';  // 默认加载 system.log
-            this.loadLogs();
-            // 如果自动刷新复选框已选中，启动定时刷新
-            const autoRefresh = document.getElementById('log-auto-refresh');
-            if (autoRefresh && autoRefresh.checked) {
-                this.startLogAutoRefresh();
+        // 按需加载数据（集中映射，避免菜单与页面逻辑漂移）
+        const pageLoaders = {
+            dashboard: () => {
+                this.renderDashboard();
+                this.loadSystemMonitor();
+            },
+            users: () => this.loadUsers(),
+            roles: () => this.loadRoles(),
+            peripheral: () => this.loadPeripherals(),
+            'periph-exec': () => this.loadPeriphExecPage(),
+            'rule-script': () => this.loadRuleScriptPage(),
+            data: () => {
+                this.loadFileTree('/');
+                this.loadFileSystemInfo();
+            },
+            network: () => this.loadNetworkConfig(),
+            device: () => this.loadDeviceConfig(),
+            protocol: () => {
+                // 切换到协议配置页面时自动加载第一个tab配置(MQTT)
+                this.loadProtocolConfig('mqtt');
+                this._startMqttStatusPolling();
+            },
+            logs: () => {
+                this._currentLogFile = 'system.log';  // 默认加载 system.log
+                this.loadLogs();
+                const autoRefresh = document.getElementById('log-auto-refresh');
+                if (autoRefresh && autoRefresh.checked) {
+                    this.startLogAutoRefresh();
+                }
             }
-        } else {
-            // 离开日志页面时停止自动刷新
+        };
+
+        // 非日志页确保关闭日志自动刷新
+        if (normalizedPage !== 'logs') {
             this.stopLogAutoRefresh();
         }
-        
-        if (page === 'data') {
-            this.loadFileTree('/');
-            this.loadFileSystemInfo();
-        }
-        
-        if (page === 'dashboard') {
-            this.loadSystemMonitor();
-        }
-        
-        if (page === 'network') {
-            this.loadNetworkConfig();
-        }
-        
-        if (page === 'device') {
-            this.loadDeviceConfig();
-        }
-        
-        // 切换到协议配置页面时自动加载第一个tab的配置(MQTT)
-        if (page === 'protocol') {
-            this.loadProtocolConfig('mqtt');
-            this._startMqttStatusPolling();
-        } else {
+
+        // 非协议页确保停止 MQTT 状态轮询
+        if (normalizedPage !== 'protocol') {
             this._stopMqttStatusPolling();
+        }
+
+        if (pageLoaders[normalizedPage]) {
+            pageLoaders[normalizedPage]();
+        } else {
+            // 开发期提示：存在页面但没有绑定加载器时提醒，避免菜单和数据加载脱节
+            console.warn('[changePage] no page loader mapped for:', normalizedPage);
         }
     },
 
@@ -832,7 +889,8 @@ const AppState = {
             });
     },
 
-    // ============ 系统信息（monitor 页面）============
+    // ============ 系统信息（兼容保留）============
+    // @deprecated monitor 独立页面已移除；请使用 dashboard + loadSystemMonitor()
     loadSystemInfo() {
         apiGet('/api/system/info')
             .then(res => {
@@ -4441,6 +4499,22 @@ const AppState = {
             });
     },
 
+    runPeriphExecOnce(id) {
+        apiPost('/api/periph-exec/run', { id: id })
+            .then(res => {
+                if (res && res.success) {
+                    Notification.success(i18n.t('periph-exec-run-ok'), i18n.t('periph-exec-title'));
+                    if (this.currentPage === 'periph-exec') this.loadPeriphExecPage();
+                } else {
+                    Notification.error(res?.error || i18n.t('periph-exec-run-fail'), i18n.t('periph-exec-title'));
+                }
+            })
+            .catch(err => {
+                console.error('Run periph exec rule failed:', err);
+                Notification.error(i18n.t('periph-exec-run-fail'), i18n.t('periph-exec-title'));
+            });
+    },
+
     // ============ 外设执行独立页面 ============
 
     loadPeriphExecPage() {
@@ -4531,6 +4605,7 @@ const AppState = {
                     html += '<td style="font-size:12px;">' + actionDisplay + '</td>';
                     html += '<td style="font-size:12px;">' + statsText + '</td>';
                     html += '<td style="white-space:nowrap;">';
+                    html += '<button class="pure-button btn-small btn-run" onclick="app.runPeriphExecOnce(\'' + r.id + '\')" title="' + i18n.t('periph-exec-run-once') + '">&#9654;</button> ';
                     html += '<button class="pure-button btn-small" onclick="app.editPeriphExecRule(\'' + r.id + '\')" title="' + i18n.t('edit') + '">&#9998;</button> ';
                     html += '<button class="pure-button btn-small" onclick="app.togglePeriphExecRule(\'' + r.id + '\', ' + (r.enabled ? 'false' : 'true') + ')" title="' + (r.enabled ? i18n.t('periph-exec-disable') : i18n.t('periph-exec-enable')) + '">' + (r.enabled ? '&#9208;' : '&#9654;') + '</button> ';
                     html += '<button class="pure-button btn-small btn-danger" onclick="app.deletePeriphExecRule(\'' + r.id + '\')" title="' + i18n.t('delete') + '">&#128465;</button>';
