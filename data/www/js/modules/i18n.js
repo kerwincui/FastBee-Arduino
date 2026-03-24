@@ -408,6 +408,7 @@ const i18n = {
             'log-truncated': ' (部分显示)',
             'log-clear-confirm': '确定要清空所有设备日志吗？此操作不可恢复。',
             'log-clear-ok': '日志已清空',
+            'log-current-file-prefix': '当前日志：',
             
             // GPIO配置
             'gpio-title': 'GPIO配置',
@@ -1806,6 +1807,7 @@ const i18n = {
             'log-truncated': ' (truncated)',
             'log-clear-confirm': 'Are you sure you want to clear all logs? This cannot be undone.',
             'log-clear-ok': 'Logs cleared',
+            'log-current-file-prefix': 'Current log: ',
             
             // GPIO
             'gpio-title': 'GPIO Config',

@@ -831,6 +831,8 @@ const AppState = {
             },
             logs: () => {
                 this._currentLogFile = 'system.log';  // 默认加载 system.log
+                const currentSpan = document.getElementById('current-log-file');
+                if (currentSpan) currentSpan.textContent = i18n.t('log-current-file-prefix') + this._currentLogFile;
                 this.loadLogs();
                 const autoRefresh = document.getElementById('log-auto-refresh');
                 if (autoRefresh && autoRefresh.checked) {
@@ -964,21 +966,21 @@ const AppState = {
 
             // 操作按钮区域
             const actionCell = document.createElement('td');
+            actionCell.className = 'u-toolbar-sm';
 
             const editBtn = document.createElement('button');
-            editBtn.className = 'pure-button pure-button-small pure-button-primary';
+            editBtn.className = 'btn btn-sm btn-edit';
             editBtn.textContent = i18n.t('edit-user');
             editBtn.addEventListener('click', () => this.showEditUserModal(user));
             actionCell.appendChild(editBtn);
 
             const toggleBtn = document.createElement('button');
-            toggleBtn.className = 'pure-button pure-button-small';
             if (user.enabled && !user.isLocked) {
-                toggleBtn.classList.add('pure-button-warning');
+                toggleBtn.className = 'btn btn-sm btn-disable';
                 toggleBtn.textContent = i18n.t('disable-user');
                 toggleBtn.addEventListener('click', () => this.toggleUserStatus(user.username, false));
             } else {
-                toggleBtn.classList.add('pure-button-success');
+                toggleBtn.className = 'btn btn-sm btn-enable';
                 toggleBtn.textContent = i18n.t('enable-user');
                 toggleBtn.addEventListener('click', () => this.toggleUserStatus(user.username, true));
             }
@@ -987,7 +989,7 @@ const AppState = {
             // 解锁按钮
             if (user.isLocked) {
                 const unlockBtn = document.createElement('button');
-                unlockBtn.className = 'pure-button pure-button-small pure-button-primary';
+                unlockBtn.className = 'btn btn-sm btn-enable';
                 unlockBtn.textContent = i18n.t('unlock-user');
                 unlockBtn.addEventListener('click', () => this.unlockUser(user.username));
                 actionCell.appendChild(unlockBtn);
@@ -996,7 +998,7 @@ const AppState = {
             // 删除按钮（不能删除 admin）
             if (user.username !== 'admin') {
                 const delBtn = document.createElement('button');
-                delBtn.className = 'pure-button pure-button-small pure-button-error';
+                delBtn.className = 'btn btn-sm btn-delete';
                 delBtn.textContent = i18n.t('delete-user');
                 delBtn.addEventListener('click', () => {
                     if (confirm(`${i18n.t('confirm-delete-user-msg')} ${user.username} ${i18n.t('confirm-suffix')}`)) {
@@ -1045,7 +1047,7 @@ const AppState = {
             const tdName = document.createElement('td');
             const _rnm = {'管理员': 'role-admin', '操作员': 'role-operator', '查看者': 'role-viewer'};
             const dName = _rnm[role.name] ? i18n.t(_rnm[role.name]) : role.name;
-            tdName.innerHTML = `<strong>${dName}</strong>`;
+            tdName.textContent = dName;
             row.appendChild(tdName);
             
             // 描述
@@ -1079,7 +1081,7 @@ const AppState = {
             
             // 查看权限按钮
             const viewBtn = document.createElement('button');
-            viewBtn.className = 'pure-button pure-button-small';
+            viewBtn.className = 'btn btn-sm btn-secondary';
             viewBtn.textContent = i18n.t('role-view-perms');
             viewBtn.style.marginRight = '5px';
             viewBtn.addEventListener('click', () => this.showRolePermissions(role));
@@ -1089,7 +1091,7 @@ const AppState = {
             if (role.id !== 'admin') {
                 // 编辑按钮
                 const editBtn = document.createElement('button');
-                editBtn.className = 'pure-button pure-button-small pure-button-primary';
+                editBtn.className = 'btn btn-sm btn-edit';
                 editBtn.textContent = i18n.t('role-edit');
                 editBtn.style.marginRight = '5px';
                 editBtn.addEventListener('click', () => this.showEditRoleModal(role.id));
@@ -1097,7 +1099,7 @@ const AppState = {
                 
                 // 删除按钮
                 const delBtn = document.createElement('button');
-                delBtn.className = 'pure-button pure-button-small pure-button-error';
+                delBtn.className = 'btn btn-sm btn-delete';
                 delBtn.textContent = i18n.t('role-delete');
                 delBtn.addEventListener('click', () => {
                     const _rnm2 = {'管理员': 'role-admin', '操作员': 'role-operator', '查看者': 'role-viewer'};
@@ -1733,7 +1735,7 @@ const AppState = {
                         this._currentLogFile = fileName;
                         // 更新当前文件显示
                         const currentSpan = document.getElementById('current-log-file');
-                        if (currentSpan) currentSpan.textContent = fileName;
+                        if (currentSpan) currentSpan.textContent = i18n.t('log-current-file-prefix') + fileName;
                         // 更新选中状态
                         listContainer.querySelectorAll('.log-file-item').forEach(i => {
                             i.style.background = '';
@@ -1846,28 +1848,8 @@ const AppState = {
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;');
             
-            return `<div class="${className}" style="${this._getLogLineStyle(className)}">${escaped}</div>`;
+            return `<div class="${className}">${escaped}</div>`;
         }).filter(line => line).join('');
-    },
-    
-    /**
-     * 获取日志行样式
-     * @param {string} className 日志级别类名
-     * @returns {string} CSS样式字符串
-     */
-    _getLogLineStyle(className) {
-        switch (className) {
-            case 'log-error':
-                return 'color: #f56c6c;';  // 红色
-            case 'log-warn':
-                return 'color: #e6a23c;';  // 橙色
-            case 'log-info':
-                return 'color: #67c23a;';  // 绿色
-            case 'log-debug':
-                return 'color: #909399;';  // 灰色
-            default:
-                return 'color: #d4d4d4;';  // 默认浅灰色
-        }
     },
     
     /**
@@ -3879,9 +3861,9 @@ const AppState = {
                             <td>${pinsStr}</td>
                             <td style="color: ${statusColor};">${statusName}</td>
                             <td>
-                                <button class="pure-button pure-button-small" onclick="app.editPeripheral('${periph.id}')">${i18n.t('peripheral-edit')}</button>
-                                <button class="pure-button pure-button-small" onclick="app.togglePeripheral('${periph.id}')">${periph.enabled ? i18n.t('peripheral-disable') : i18n.t('peripheral-enable')}</button>
-                                <button class="pure-button pure-button-small" style="background: #ff4d4f; color: white;" onclick="app.deletePeripheral('${periph.id}')">${i18n.t('peripheral-delete')}</button>
+                                <button class="btn btn-sm btn-edit" onclick="app.editPeripheral('${periph.id}')">${i18n.t('peripheral-edit')}</button>
+                                <button class="btn btn-sm ${periph.enabled ? 'btn-disable' : 'btn-enable'}" onclick="app.togglePeripheral('${periph.id}')">${periph.enabled ? i18n.t('peripheral-disable') : i18n.t('peripheral-enable')}</button>
+                                <button class="btn btn-sm btn-delete" onclick="app.deletePeripheral('${periph.id}')">${i18n.t('peripheral-delete')}</button>
                             </td>
                         </tr>
                     `;
@@ -4605,10 +4587,10 @@ const AppState = {
                     html += '<td style="font-size:12px;">' + actionDisplay + '</td>';
                     html += '<td style="font-size:12px;">' + statsText + '</td>';
                     html += '<td style="white-space:nowrap;">';
-                    html += '<button class="pure-button btn-small btn-run" onclick="app.runPeriphExecOnce(\'' + r.id + '\')" title="' + i18n.t('periph-exec-run-once') + '">&#9654;</button> ';
-                    html += '<button class="pure-button btn-small" onclick="app.editPeriphExecRule(\'' + r.id + '\')" title="' + i18n.t('edit') + '">&#9998;</button> ';
-                    html += '<button class="pure-button btn-small" onclick="app.togglePeriphExecRule(\'' + r.id + '\', ' + (r.enabled ? 'false' : 'true') + ')" title="' + (r.enabled ? i18n.t('periph-exec-disable') : i18n.t('periph-exec-enable')) + '">' + (r.enabled ? '&#9208;' : '&#9654;') + '</button> ';
-                    html += '<button class="pure-button btn-small btn-danger" onclick="app.deletePeriphExecRule(\'' + r.id + '\')" title="' + i18n.t('delete') + '">&#128465;</button>';
+                    html += '<button class="btn btn-sm btn-run" onclick="app.runPeriphExecOnce(\'' + r.id + '\')">' + i18n.t('periph-exec-run-once') + '</button> ';
+                    html += '<button class="btn btn-sm btn-edit" onclick="app.editPeriphExecRule(\'' + r.id + '\')">' + i18n.t('peripheral-edit') + '</button> ';
+                    html += '<button class="btn btn-sm ' + (r.enabled ? 'btn-disable' : 'btn-enable') + '" onclick="app.togglePeriphExecRule(\'' + r.id + '\', ' + (r.enabled ? 'false' : 'true') + ')">' + (r.enabled ? i18n.t('peripheral-disable') : i18n.t('peripheral-enable')) + '</button> ';
+                    html += '<button class="btn btn-sm btn-delete" onclick="app.deletePeriphExecRule(\'' + r.id + '\')">' + i18n.t('peripheral-delete') + '</button>';
                     html += '</td>';
                     html += '</tr>';
                 });
@@ -4683,14 +4665,14 @@ const AppState = {
                 html += '<td>' + triggerText + '</td>';
                 html += '<td>' + protocolText + '</td>';
                 html += '<td style="font-size:12px;">' + statsText + '</td>';
-                html += '<td>';
-                html += '<button class="pure-button pure-button-small" onclick="app.editRuleScript(\'' + r.id + '\')" style="margin-right:4px;">' + i18n.t('edit') + '</button>';
+                html += '<td class="u-toolbar-sm">';
+                html += '<button class="btn btn-sm btn-edit" onclick="app.editRuleScript(\'' + r.id + '\')">' + i18n.t('peripheral-edit') + '</button>';
                 if (r.enabled) {
-                    html += '<button class="pure-button pure-button-small" onclick="app.toggleRuleScript(\'' + r.id + '\',false)" style="margin-right:4px;">' + i18n.t('periph-exec-disable-btn') + '</button>';
+                    html += '<button class="btn btn-sm btn-disable" onclick="app.toggleRuleScript(\'' + r.id + '\',false)">' + i18n.t('peripheral-disable') + '</button>';
                 } else {
-                    html += '<button class="pure-button pure-button-small" onclick="app.toggleRuleScript(\'' + r.id + '\',true)" style="margin-right:4px;">' + i18n.t('periph-exec-enable-btn') + '</button>';
+                    html += '<button class="btn btn-sm btn-enable" onclick="app.toggleRuleScript(\'' + r.id + '\',true)">' + i18n.t('peripheral-enable') + '</button>';
                 }
-                html += '<button class="pure-button pure-button-small button-error" onclick="app.deleteRuleScript(\'' + r.id + '\')">' + i18n.t('delete') + '</button>';
+                html += '<button class="btn btn-sm btn-delete" onclick="app.deleteRuleScript(\'' + r.id + '\')">' + i18n.t('peripheral-delete') + '</button>';
                 html += '</td>';
                 html += '</tr>';
             });
@@ -4960,16 +4942,20 @@ const AppState = {
                 if (d.active) {
                     if (badge) { badge.className = 'status-badge status-online'; badge.textContent = i18n.t('ble-active'); }
                     if (deviceName) deviceName.textContent = d.deviceName || '--';
-                    if (remainingWrap) remainingWrap.style.display = 'flex';
+                    if (remainingWrap) {
+                        remainingWrap.classList.remove('is-hidden');
+                    }
                     if (remaining) remaining.textContent = (d.remainingTime || 0) + i18n.t('ble-remaining-unit');
-                    if (startBtn) startBtn.style.display = 'none';
-                    if (stopBtn) { stopBtn.style.display = 'inline-block'; stopBtn.disabled = false; }
+                    if (startBtn) startBtn.classList.add('is-hidden');
+                    if (stopBtn) { stopBtn.classList.remove('is-hidden'); stopBtn.disabled = false; }
                 } else {
                     if (badge) { badge.className = 'status-badge status-offline'; badge.textContent = i18n.t('ble-inactive'); }
                     if (deviceName) deviceName.textContent = '--';
-                    if (remainingWrap) remainingWrap.style.display = 'none';
-                    if (startBtn) { startBtn.style.display = 'inline-block'; startBtn.disabled = false; }
-                    if (stopBtn) stopBtn.style.display = 'none';
+                    if (remainingWrap) {
+                        remainingWrap.classList.add('is-hidden');
+                    }
+                    if (startBtn) { startBtn.classList.remove('is-hidden'); startBtn.disabled = false; }
+                    if (stopBtn) stopBtn.classList.add('is-hidden');
                 }
             })
             .catch(err => {
@@ -5107,10 +5093,10 @@ const AppState = {
                     
                     if (otaRes.status === 'OTA ready') {
                         if (badge) { badge.className = 'status-badge status-online'; badge.textContent = i18n.t('ota-ready'); }
-                        if (progressWrap) progressWrap.style.display = 'none';
+                        if (progressWrap) progressWrap.classList.add('is-hidden');
                     } else if (otaRes.progress > 0 && otaRes.progress < 100) {
                         if (badge) { badge.className = 'status-badge status-warning'; badge.textContent = i18n.t('ota-in-progress'); }
-                        if (progressWrap) progressWrap.style.display = 'block';
+                        if (progressWrap) progressWrap.classList.remove('is-hidden');
                         if (progressBar) progressBar.style.width = otaRes.progress + '%';
                         if (progressText) progressText.textContent = otaRes.progress + '%';
                     }
@@ -5125,13 +5111,13 @@ const AppState = {
                         urlBtn.disabled = false;
                         urlBtn.title = '';
                         if (urlInput) urlInput.disabled = false;
-                        if (urlHint) urlHint.style.display = 'none';
+                        if (urlHint) urlHint.classList.add('is-hidden');
                     } else {
                         urlBtn.disabled = true;
                         urlBtn.title = i18n.t('ota-no-network-tip');
                         if (urlInput) urlInput.disabled = true;
                         if (urlHint) {
-                            urlHint.style.display = 'block';
+                            urlHint.classList.remove('is-hidden');
                             urlHint.innerHTML = `<span class="badge badge-danger">${i18n.t('ota-no-network-msg')}</span>`;
                         }
                     }
@@ -5182,7 +5168,7 @@ const AppState = {
         
         // 显示进度条
         const progressWrap = document.getElementById('ota-progress-wrap');
-        if (progressWrap) progressWrap.style.display = 'block';
+        if (progressWrap) progressWrap.classList.remove('is-hidden');
         
         apiPost('/api/ota/url', { url })
             .then(res => {
@@ -5192,12 +5178,12 @@ const AppState = {
                     this._pollOtaProgress();
                 } else {
                     Notification.error(res?.message || i18n.t('ota-start-fail'), i18n.t('ota-title'));
-                    if (progressWrap) progressWrap.style.display = 'none';
+                    if (progressWrap) progressWrap.classList.add('is-hidden');
                 }
             })
             .catch(err => {
                 Notification.error(i18n.t('ota-start-fail') + ': ' + (err.message || err), i18n.t('ota-title'));
-                if (progressWrap) progressWrap.style.display = 'none';
+                if (progressWrap) progressWrap.classList.add('is-hidden');
             })
             .finally(() => {
                 if (btn) {
@@ -5234,7 +5220,7 @@ const AppState = {
         const progressWrap = document.getElementById('ota-progress-wrap');
         const progressBar = document.getElementById('ota-progress-bar');
         const progressText = document.getElementById('ota-progress-text');
-        if (progressWrap) progressWrap.style.display = 'block';
+        if (progressWrap) progressWrap.classList.remove('is-hidden');
         
         const formData = new FormData();
         formData.append('firmware', file);
@@ -5281,7 +5267,7 @@ const AppState = {
                 btn.disabled = false;
                 btn.innerHTML = i18n.t('ota-upload-btn-html');
             }
-            if (progressWrap) progressWrap.style.display = 'none';
+            if (progressWrap) progressWrap.classList.add('is-hidden');
         });
         
         xhr.open('POST', '/api/ota/upload');

@@ -141,7 +141,7 @@
                     <!-- 设备监控页面 -->
                     <div id="dashboard-page" class="page page-layout-flat active">
                         <!-- 设备信息卡片 - 全宽布局 -->
-                        <div class="stats-grid" style="margin-bottom: var(--space-6);">
+                        <div class="stats-grid dashboard-top-stats u-mb-0">
                             <!-- 设备基本信息 -->
                             <div class="stat-card stat-card-primary">
                                 <div class="stat-label" data-i18n="dashboard-device-info">设备信息</div>
@@ -167,157 +167,154 @@
                             </div>
                         </div>
 
-                        <!-- 资源使用仪表盘 - 全宽布局 -->
-                        <div class="form-section">
-                            <div class="section-title section-title-actions">
-                                <span data-i18n="dashboard-resource-usage">资源使用情况</span>
-                                <button class="btn btn-sm btn-secondary" id="monitor-refresh-btn">
-                                    <span class="icon-refresh"></span> <span data-i18n="dashboard-refresh">刷新</span>
-                                </button>
-                            </div>
-                            <div class="resource-grid">
-                                <!-- Flash 存储 -->
-                                <div class="resource-card">
-                                    <div class="resource-header">
-                                        <span class="resource-title"><span class="icon-settings"></span> <span data-i18n="dashboard-flash">Flash 存储</span></span>
-                                        <span class="resource-percent" id="monitor-flash-percent">--%</span>
-                                    </div>
-                                    <div class="progress-bar">
-                                        <div class="progress-fill progress-fill-danger" id="monitor-flash-bar" style="width: 0%;"></div>
-                                    </div>
-                                    <div class="resource-stats">
-                                        <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-flash-used">--</span></span>
-                                        <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-flash-free">--</span></span>
-                                    </div>
-                                    <div class="resource-footer">
-                                        <span data-i18n="dashboard-total">总计</span>: <span id="monitor-flash-total">--</span> | <span data-i18n="dashboard-firmware">固件</span>: <span id="monitor-flash-sketch">--</span>
-                                    </div>
+                        <!-- 设备监控汇总：资源使用 + 用户统计 + 当前网络状态（合并单卡） -->
+                        <div class="form-section dashboard-merged-card">
+                            <div class="dashboard-merged-section">
+                                <div class="section-title section-title-actions">
+                                    <span data-i18n="dashboard-resource-usage">资源使用情况</span>
+                                    <button class="btn btn-sm btn-secondary" id="monitor-refresh-btn">
+                                        <span class="icon-refresh"></span> <span data-i18n="dashboard-refresh">刷新</span>
+                                    </button>
                                 </div>
-                                
-                                <!-- 内存使用 -->
-                                <div class="resource-card">
-                                    <div class="resource-header">
-                                        <span class="resource-title"><span class="icon-settings"></span> <span data-i18n="dashboard-heap">内存 (Heap)</span></span>
-                                        <span class="resource-percent" id="monitor-heap-percent">--%</span>
+                                <div class="resource-grid">
+                                    <div class="resource-card">
+                                        <div class="resource-header">
+                                            <span class="resource-title"><span class="icon-settings"></span> <span data-i18n="dashboard-flash">Flash 存储</span></span>
+                                            <span class="resource-percent" id="monitor-flash-percent">--%</span>
+                                        </div>
+                                        <div class="progress-bar">
+                                            <div class="progress-fill progress-fill-danger" id="monitor-flash-bar" style="width: 0%;"></div>
+                                        </div>
+                                        <div class="resource-stats">
+                                            <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-flash-used">--</span></span>
+                                            <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-flash-free">--</span></span>
+                                        </div>
+                                        <div class="resource-footer">
+                                            <span data-i18n="dashboard-total">总计</span>: <span id="monitor-flash-total">--</span> | <span data-i18n="dashboard-firmware">固件</span>: <span id="monitor-flash-sketch">--</span>
+                                        </div>
                                     </div>
-                                    <div class="progress-bar">
-                                        <div class="progress-fill progress-fill-success" id="monitor-heap-bar" style="width: 0%;"></div>
-                                    </div>
-                                    <div class="resource-stats">
-                                        <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-heap-used">--</span></span>
-                                        <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-heap-free">--</span></span>
-                                    </div>
-                                    <div class="resource-footer">
-                                        <span data-i18n="dashboard-total">总计</span>: <span id="monitor-heap-total">--</span> | <span data-i18n="dashboard-min-free">最小可用</span>: <span id="monitor-heap-min">--</span>
-                                    </div>
-                                </div>
-                                    
-                                <!-- 文件系统 -->
-                                <div class="resource-card">
-                                    <div class="resource-header">
-                                        <span class="resource-title"><span class="icon-file"></span> <span data-i18n="dashboard-fs">文件系统 (LittleFS)</span></span>
-                                        <span class="resource-percent" id="monitor-fs-percent">--%</span>
-                                    </div>
-                                    <div class="progress-bar">
-                                        <div class="progress-fill progress-fill-info" id="monitor-fs-bar" style="width: 0%;"></div>
-                                    </div>
-                                    <div class="resource-stats">
-                                        <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-fs-used">--</span></span>
-                                        <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-fs-free">--</span></span>
-                                    </div>
-                                    <div class="resource-footer">
-                                        <span data-i18n="dashboard-total">总计</span>: <span id="monitor-fs-total">--</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
 
-                        <!-- 用户统计 - 扁平化设计 -->
-                        <div class="form-section">
-                            <div class="section-title" data-i18n="dashboard-user-stats">用户统计</div>
-                            <div class="stats-grid u-mb-0">
-                                <div class="stat-card stat-card-primary">
-                                    <div class="stat-value" id="monitor-user-total">--</div>
-                                    <div class="stat-label" data-i18n="dashboard-total-users">总用户数</div>
-                                </div>
-                                <div class="stat-card stat-card-success">
-                                    <div class="stat-value" id="monitor-user-online">--</div>
-                                    <div class="stat-label" data-i18n="dashboard-online-users">在线用户</div>
-                                </div>
-                                <div class="stat-card stat-card-warning">
-                                    <div class="stat-value" id="monitor-user-sessions">--</div>
-                                    <div class="stat-label" data-i18n="dashboard-active-sessions">活跃会话</div>
+                                    <div class="resource-card">
+                                        <div class="resource-header">
+                                            <span class="resource-title"><span class="icon-settings"></span> <span data-i18n="dashboard-heap">内存 (Heap)</span></span>
+                                            <span class="resource-percent" id="monitor-heap-percent">--%</span>
+                                        </div>
+                                        <div class="progress-bar">
+                                            <div class="progress-fill progress-fill-success" id="monitor-heap-bar" style="width: 0%;"></div>
+                                        </div>
+                                        <div class="resource-stats">
+                                            <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-heap-used">--</span></span>
+                                            <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-heap-free">--</span></span>
+                                        </div>
+                                        <div class="resource-footer">
+                                            <span data-i18n="dashboard-total">总计</span>: <span id="monitor-heap-total">--</span> | <span data-i18n="dashboard-min-free">最小可用</span>: <span id="monitor-heap-min">--</span>
+                                        </div>
+                                    </div>
+
+                                    <div class="resource-card">
+                                        <div class="resource-header">
+                                            <span class="resource-title"><span class="icon-file"></span> <span data-i18n="dashboard-fs">文件系统 (LittleFS)</span></span>
+                                            <span class="resource-percent" id="monitor-fs-percent">--%</span>
+                                        </div>
+                                        <div class="progress-bar">
+                                            <div class="progress-fill progress-fill-info" id="monitor-fs-bar" style="width: 0%;"></div>
+                                        </div>
+                                        <div class="resource-stats">
+                                            <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-fs-used">--</span></span>
+                                            <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-fs-free">--</span></span>
+                                        </div>
+                                        <div class="resource-footer">
+                                            <span data-i18n="dashboard-total">总计</span>: <span id="monitor-fs-total">--</span>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
 
-                        <!-- 网络状态详情 - 扁平化设计 -->
-                        <div class="form-section">
-                            <div class="section-title section-title-actions">
-                                <span data-i18n="net-status-title">当前网络状态</span>
-                                <button class="btn btn-sm btn-secondary" id="dashboard-net-refresh-btn">
-                                    <span class="icon-refresh"></span> <span data-i18n="net-status-refresh">刷新</span>
-                                </button>
+
+                            <div class="dashboard-merged-section">
+                                <div class="section-title" data-i18n="dashboard-user-stats">用户统计</div>
+                                <div class="stats-grid u-mb-0">
+                                    <div class="stat-card stat-card-primary">
+                                        <div class="stat-value" id="monitor-user-total">--</div>
+                                        <div class="stat-label" data-i18n="dashboard-total-users">总用户数</div>
+                                    </div>
+                                    <div class="stat-card stat-card-success">
+                                        <div class="stat-value" id="monitor-user-online">--</div>
+                                        <div class="stat-label" data-i18n="dashboard-online-users">在线用户</div>
+                                    </div>
+                                    <div class="stat-card stat-card-warning">
+                                        <div class="stat-value" id="monitor-user-sessions">--</div>
+                                        <div class="stat-label" data-i18n="dashboard-active-sessions">活跃会话</div>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="form-grid">
-                                <!-- STA 连接信息 -->
-                                <div class="info-card">
-                                    <div class="info-card-header info-card-header-primary">
-                                        <span class="icon-network"></span> <span data-i18n="net-sta-info">STA 连接信息</span>
-                                    </div>
-                                    <div class="info-card-body">
-                                        <table class="info-table">
-                                            <tbody>
-                                                <tr><td data-i18n="net-sta-status-label">状态</td><td id="ns-status"><span class="badge badge-info">待加载...</span></td></tr>
-                                                <tr><td>SSID</td><td id="ns-ssid">--</td></tr>
-                                                <tr><td data-i18n="static-ip-label">IP 地址</td><td id="ns-ip">--</td></tr>
-                                                <tr><td data-i18n="gateway-label">网关</td><td id="ns-gateway">--</td></tr>
-                                                <tr><td data-i18n="subnet-label">子网掩码</td><td id="ns-subnet">--</td></tr>
-                                                <tr><td data-i18n="dns1-label">首选 DNS</td><td id="ns-dns">--</td></tr>
-                                                <tr><td data-i18n="dns2-label">备用 DNS</td><td id="ns-dns2">--</td></tr>
-                                                <tr><td>RSSI</td><td id="ns-rssi">--</td></tr>
-                                                <tr><td>MAC</td><td id="ns-mac">--</td></tr>
-                                                <tr><td data-i18n="ns-conn-time-label">连接时长</td><td id="ns-conn-time">--</td></tr>
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
 
-                                <!-- AP 热点信息 -->
-                                <div class="info-card">
-                                    <div class="info-card-header info-card-header-danger">
-                                        <span class="icon-network"></span> <span data-i18n="net-ap-info">AP 热点信息</span>
-                                    </div>
-                                    <div class="info-card-body">
-                                        <table class="info-table">
-                                            <tbody>
-                                                <tr><td data-i18n="ap-ssid-label">AP 名称</td><td id="ns-ap-ssid">--</td></tr>
-                                                <tr><td>AP IP</td><td id="ns-ap-ip">--</td></tr>
-                                                <tr><td data-i18n="ap-channel-label">信道</td><td id="ns-ap-channel">--</td></tr>
-                                                <tr><td data-i18n="dev-provision-clients-label">连接客户数</td><td id="ns-ap-clients">--</td></tr>
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
+                            <hr class="dashboard-merged-divider">
 
-                                <!-- 连接统计 -->
-                                <div class="info-card">
-                                    <div class="info-card-header info-card-header-success">
-                                        <span class="icon-dashboard"></span> <span data-i18n="net-stats">连接统计</span>
+                            <div class="dashboard-merged-section">
+                                <div class="section-title section-title-actions">
+                                    <span data-i18n="net-status-title">当前网络状态</span>
+                                    <button class="btn btn-sm btn-secondary" id="dashboard-net-refresh-btn">
+                                        <span class="icon-refresh"></span> <span data-i18n="net-status-refresh">刷新</span>
+                                    </button>
+                                </div>
+                                <div class="form-grid dashboard-network-grid">
+                                    <div class="info-card">
+                                        <div class="info-card-header info-card-header-primary">
+                                            <span class="icon-network"></span> <span data-i18n="net-sta-info">STA 连接信息</span>
+                                        </div>
+                                        <div class="info-card-body">
+                                            <table class="info-table">
+                                                <tbody>
+                                                    <tr><td data-i18n="net-sta-status-label">状态</td><td id="ns-status"><span class="badge badge-info">待加载...</span></td></tr>
+                                                    <tr><td>SSID</td><td id="ns-ssid">--</td></tr>
+                                                    <tr><td data-i18n="static-ip-label">IP 地址</td><td id="ns-ip">--</td></tr>
+                                                    <tr><td data-i18n="gateway-label">网关</td><td id="ns-gateway">--</td></tr>
+                                                    <tr><td data-i18n="subnet-label">子网掩码</td><td id="ns-subnet">--</td></tr>
+                                                    <tr><td data-i18n="dns1-label">首选 DNS</td><td id="ns-dns">--</td></tr>
+                                                    <tr><td data-i18n="dns2-label">备用 DNS</td><td id="ns-dns2">--</td></tr>
+                                                    <tr><td>RSSI</td><td id="ns-rssi">--</td></tr>
+                                                    <tr><td>MAC</td><td id="ns-mac">--</td></tr>
+                                                    <tr><td data-i18n="ns-conn-time-label">连接时长</td><td id="ns-conn-time">--</td></tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
                                     </div>
-                                    <div class="info-card-body">
-                                        <table class="info-table">
-                                            <tbody>
-                                                <tr><td data-i18n="wifi-mode-label">网络模式</td><td id="ns-mode">--</td></tr>
-                                                <tr><td data-i18n="wifi-mdns-label">mDNS</td><td id="ns-mdns">--</td></tr>
-                                                <tr><td data-i18n="ns-reconnect-label">重连次数</td><td id="ns-reconnect">--</td></tr>
-                                                <tr><td data-i18n="ns-tx-count-label">发送计数</td><td id="ns-tx-count">--</td></tr>
-                                                <tr><td data-i18n="ns-rx-count-label">接收计数</td><td id="ns-rx-count">--</td></tr>
-                                                <tr><td data-i18n="ns-internet-label">互联网</td><td id="ns-internet">--</td></tr>
-                                                <tr><td data-i18n="ns-conflict-label">IP 冲突</td><td id="ns-conflict">--</td></tr>
-                                                <tr><td data-i18n="ns-uptime-label">运行时间</td><td id="ns-uptime">--</td></tr>
-                                            </tbody>
-                                        </table>
+
+                                    <div class="info-card">
+                                        <div class="info-card-header info-card-header-danger">
+                                            <span class="icon-network"></span> <span data-i18n="net-ap-info">AP 热点信息</span>
+                                        </div>
+                                        <div class="info-card-body">
+                                            <table class="info-table">
+                                                <tbody>
+                                                    <tr><td data-i18n="ap-ssid-label">AP 名称</td><td id="ns-ap-ssid">--</td></tr>
+                                                    <tr><td>AP IP</td><td id="ns-ap-ip">--</td></tr>
+                                                    <tr><td data-i18n="ap-channel-label">信道</td><td id="ns-ap-channel">--</td></tr>
+                                                    <tr><td data-i18n="dev-provision-clients-label">连接客户数</td><td id="ns-ap-clients">--</td></tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                    <div class="info-card">
+                                        <div class="info-card-header info-card-header-success">
+                                            <span class="icon-dashboard"></span> <span data-i18n="net-stats">连接统计</span>
+                                        </div>
+                                        <div class="info-card-body">
+                                            <table class="info-table">
+                                                <tbody>
+                                                    <tr><td data-i18n="wifi-mode-label">网络模式</td><td id="ns-mode">--</td></tr>
+                                                    <tr><td data-i18n="wifi-mdns-label">mDNS</td><td id="ns-mdns">--</td></tr>
+                                                    <tr><td data-i18n="ns-reconnect-label">重连次数</td><td id="ns-reconnect">--</td></tr>
+                                                    <tr><td data-i18n="ns-tx-count-label">发送计数</td><td id="ns-tx-count">--</td></tr>
+                                                    <tr><td data-i18n="ns-rx-count-label">接收计数</td><td id="ns-rx-count">--</td></tr>
+                                                    <tr><td data-i18n="ns-internet-label">互联网</td><td id="ns-internet">--</td></tr>
+                                                    <tr><td data-i18n="ns-conflict-label">IP 冲突</td><td id="ns-conflict">--</td></tr>
+                                                    <tr><td data-i18n="ns-uptime-label">运行时间</td><td id="ns-uptime">--</td></tr>
+                                                </tbody>
+                                            </table>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -484,7 +481,7 @@
                                                 <div id="mqtt-publish-topics">
                                                     <!-- 动态添加的发布主题组将在这里显示 -->
                                                 </div>
-                                                <button type="button" id="add-mqtt-topic-btn" class="pure-button" style="margin-top: 10px;" data-i18n="mqtt-add-topic-btn">增加主题</button>
+                                                <button type="button" id="add-mqtt-topic-btn" class="pure-button u-mt-10" data-i18n="mqtt-add-topic-btn">增加主题</button>
                                             </div>
                                         </div>
 
@@ -498,7 +495,7 @@
                                                 <div id="mqtt-subscribe-topics">
                                                     <!-- 动态添加的订阅主题组将在这里显示 -->
                                                 </div>
-                                                <button type="button" id="add-mqtt-subscribe-btn" class="pure-button" style="margin-top: 10px;" data-i18n="mqtt-add-subscribe-btn">增加订阅</button>
+                                                <button type="button" id="add-mqtt-subscribe-btn" class="pure-button u-mt-10" data-i18n="mqtt-add-subscribe-btn">增加订阅</button>
                                             </div>
                                         </div>
 
@@ -634,12 +631,12 @@
 
                                             <!-- 轮询任务表 -->
                                             <div class="u-mt-15">
-                                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                                <div class="u-flex-between u-items-center u-mb-10">
                                                     <h4 style="color: #333; margin: 0;" data-i18n="modbus-master-tasks-title">轮询任务列表</h4>
-                                                    <button type="button" class="pure-button" style="background: #4CAF50; color: white; font-size: 12px; padding: 4px 12px;" onclick="AppState.addMasterPollTask()" data-i18n="modbus-master-add-task">添加任务</button>
+                                                    <button type="button" class="btn btn-sm btn-enable" onclick="AppState.addMasterPollTask()" data-i18n="modbus-master-add-task">添加任务</button>
                                                 </div>
                                                 <div class="u-table-wrap">
-                                                    <table class="pure-table pure-table-bordered" style="width: 100%; font-size: 13px;">
+                                                    <table class="pure-table pure-table-bordered u-table-compact">
                                                         <thead>
                                                             <tr>
                                                                 <th data-i18n="modbus-master-slave-addr">从站地址</th>
@@ -670,7 +667,7 @@
                                                     <div><small data-i18n="modbus-master-timeout-polls">超时</small><br><strong id="master-stat-timeout" style="color:#FF9800;">0</strong></div>
                                                 </div>
                                                 <div style="text-align: right; margin-top: 8px;">
-                                                    <button type="button" class="pure-button" style="font-size: 11px; padding: 3px 10px;" onclick="AppState.refreshMasterStatus()">
+                                                    <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshMasterStatus()">
                                                         <i class="fas fa-sync-alt"></i>
                                                     </button>
                                                 </div>
@@ -687,7 +684,7 @@
                                     </form>
                                     
                                     <!-- 寄存器映射配置模态框 -->
-                                    <div id="mapping-modal" class="modal-overlay is-hidden">
+                                    <div id="mapping-modal" class="modal">
                                         <div class="modal-content u-modal-content-700">
                                             <div class="modal-header">
                                                 <h3 data-i18n="modbus-mapping-title">寄存器映射配置</h3>
@@ -716,7 +713,7 @@
                                             </div>
                                             <div class="modal-footer u-footer-topline">
                                                 <button type="button" class="pure-button" onclick="app.closeMappingModal()" data-i18n="modbus-mapping-cancel">取消</button>
-                                                <button type="button" class="pure-button pure-button-primary" style="margin-left:8px;" onclick="app.saveMappingModal()" data-i18n="modbus-mapping-save">确定</button>
+                                                <button type="button" class="pure-button pure-button-primary u-ml-8" onclick="app.saveMappingModal()" data-i18n="modbus-mapping-save">确定</button>
                                             </div>
                                         </div>
                                     </div>
@@ -1115,10 +1112,10 @@
                                                 </tbody>
                                             </table>
                                             <div style="margin-top: 15px; display: flex; gap: 10px;">
-                                                <button id="ap-provision-start-btn" type="button" class="pure-button" style="background:#27ae60; color:#fff;">
+                                                <button id="ap-provision-start-btn" type="button" class="btn btn-enable">
                                                     <i class="fas fa-play"></i> <span data-i18n="ap-provision-start-btn">启动配网</span>
                                                 </button>
-                                                <button id="ap-provision-stop-btn" type="button" class="pure-button" style="background:#e74c3c; color:#fff;">
+                                                <button id="ap-provision-stop-btn" type="button" class="btn btn-delete">
                                                     <i class="fas fa-stop"></i> <span data-i18n="ap-provision-stop-btn">停止配网</span>
                                                 </button>
                                             </div>
@@ -1395,10 +1392,12 @@
                                                     <label for="dev-product-number" data-i18n="dev-product-number-label">产品编号</label>
                                                     <input type="number" id="dev-product-number" class="pure-input-1" placeholder="输入产品编号" data-i18n-placeholder="dev-product-number-label" min="0">
                                                 </div>
-                                                <div class="pure-control-group">
-                                                    <label for="dev-user-id" data-i18n="dev-user-id-label">用户ID</label>
-                                                    <input type="text" id="dev-user-id" class="pure-input-1" placeholder="输入用户ID" data-i18n-placeholder="dev-user-id-label">
-                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="dev-basic-footer-row">
+                                            <div class="pure-control-group dev-user-id-bottom-left">
+                                                <label for="dev-user-id" data-i18n="dev-user-id-label">用户ID</label>
+                                                <input type="text" id="dev-user-id" class="pure-input-1" placeholder="输入用户ID" data-i18n-placeholder="dev-user-id-label">
                                             </div>
                                         </div>
                                         <div class="message message-success" id="dev-basic-success" style="display:none; margin-top:15px;" data-i18n="dev-basic-save-ok">设备信息保存成功！</div>
@@ -1425,7 +1424,7 @@
                                                             <option value="5">5</option>
                                                             <option value="10">10</option>
                                                         </select>
-                                                        <button id="dev-restart-btn" type="button" class="pure-button" style="background:#e67e22; color:#fff;">
+                                                        <button id="dev-restart-btn" type="button" class="btn btn-disable">
                                                             <i class="fas fa-power-off"></i> <span data-i18n="dev-sys-restart-btn">立即重启</span>
                                                         </button>
                                                     </div>
@@ -1443,7 +1442,7 @@
                                                     <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
                                                         <label style="font-size: 13px;" data-i18n="dev-sys-factory-confirm-label">输入"RESET"确认：</label>
                                                         <input type="text" id="dev-factory-confirm" class="pure-input" style="width: 100px;" placeholder="RESET">
-                                                        <button id="dev-factory-btn" type="button" class="pure-button" style="background:#dc3545; color:#fff;">
+                                                        <button id="dev-factory-btn" type="button" class="btn btn-delete">
                                                             <i class="fas fa-undo"></i> <span data-i18n="dev-sys-factory-btn">恢复出厂设置</span>
                                                         </button>
                                                     </div>
@@ -1550,7 +1549,7 @@
                                                     <span style="color: #666;" data-i18n="dev-ble-device-name-prefix">设备名：</span>
                                                     <span id="ble-provision-device-name" style="font-family: monospace;">--</span>
                                                 </div>
-                                                <div id="ble-provision-remaining-wrap" style="display: none; align-items: center; gap: 8px;">
+                                                <div id="ble-provision-remaining-wrap" class="is-hidden" style="align-items: center; gap: 8px;">
                                                     <span style="color: #666;" data-i18n="dev-ble-remaining-prefix">剩余时间：</span>
                                                     <span id="ble-provision-remaining" style="font-weight: bold; color: #f0ad4e;">--</span>
                                                 </div>
@@ -1559,7 +1558,7 @@
                                                 <button id="ble-provision-start-btn" class="pure-button pure-button-primary">
                                                     <i class="fas fa-play"></i> <span data-i18n="dev-ble-start-btn">启动蓝牙配网</span>
                                                 </button>
-                                                <button id="ble-provision-stop-btn" class="pure-button button-error" style="display: none;">
+                                                <button id="ble-provision-stop-btn" class="btn btn-delete is-hidden">
                                                     <i class="fas fa-stop"></i> <span data-i18n="dev-ble-stop-btn">停止蓝牙配网</span>
                                                 </button>
                                             </div>
@@ -1568,34 +1567,36 @@
 
                                     <!-- 蓝牙配网参数配置 -->
                                     <form id="device-ble-provision-form" class="pure-form pure-form-stacked">
-                                        <div class="config-form-grid">
+                                        <div class="config-form-grid ble-config-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
                                                     <label for="ble-device-name" data-i18n="dev-ble-name-label">蓝牙设备名称</label>
                                                     <input type="text" id="ble-device-name" class="pure-input-1" data-i18n-placeholder="dev-ble-name-hint" placeholder="蓝牙广播名称" value="FBDevice">
                                                 </div>
                                                 <div class="pure-control-group">
-                                                    <label for="ble-timeout" data-i18n="dev-ble-timeout-label">配网超时(秒)</label>
-                                                    <input type="number" id="ble-timeout" class="pure-input-1" value="300" min="60" max="1800">
+                                                    <label for="ble-service-uuid" data-i18n="dev-ble-service-uuid-label">服务UUID</label>
+                                                    <input type="text" id="ble-service-uuid" class="pure-input-1" value="6E400001-B5A3-F393-E0A9-E50E24DCCA9F">
                                                 </div>
                                                 <div class="pure-control-group">
-                                                    <label class="pure-checkbox">
-                                                        <input type="checkbox" id="ble-auto-start"> <span data-i18n="dev-ble-autostart-label">启动时自动开启蓝牙配网</span>
-                                                    </label>
+                                                    <label for="ble-tx-uuid" data-i18n="dev-ble-tx-uuid-label">发送UUID</label>
+                                                    <input type="text" id="ble-tx-uuid" class="pure-input-1" value="6E400003-B5A3-F393-E0A9-E50E24DCCA9F">
                                                 </div>
                                             </div>
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="ble-service-uuid" data-i18n="dev-ble-service-uuid-label">服务UUID</label>
-                                                    <input type="text" id="ble-service-uuid" class="pure-input-1" value="6E400001-B5A3-F393-E0A9-E50E24DCCA9F">
+                                                    <label for="ble-timeout" data-i18n="dev-ble-timeout-label">配网超时(秒)</label>
+                                                    <input type="number" id="ble-timeout" class="pure-input-1" value="300" min="60" max="1800">
                                                 </div>
                                                 <div class="pure-control-group">
                                                     <label for="ble-rx-uuid" data-i18n="dev-ble-rx-uuid-label">接收UUID</label>
                                                     <input type="text" id="ble-rx-uuid" class="pure-input-1" value="6E400002-B5A3-F393-E0A9-E50E24DCCA9F">
                                                 </div>
-                                                <div class="pure-control-group">
-                                                    <label for="ble-tx-uuid" data-i18n="dev-ble-tx-uuid-label">发送UUID</label>
-                                                    <input type="text" id="ble-tx-uuid" class="pure-input-1" value="6E400003-B5A3-F393-E0A9-E50E24DCCA9F">
+                                                <div class="pure-control-group ble-autostart-switch-row">
+                                                    <label for="ble-auto-start" data-i18n="dev-ble-autostart-label">启动时自动开启蓝牙配网</label>
+                                                    <label class="toggle-switch">
+                                                        <input type="checkbox" id="ble-auto-start">
+                                                        <span class="toggle-slider"></span>
+                                                    </label>
                                                 </div>
                                             </div>
                                         </div>
@@ -1652,7 +1653,7 @@
                                                 </div>
                                             </div>
                                             <!-- 进度条 -->
-                                            <div id="ota-progress-wrap" style="display: none; margin-top: 15px;">
+                                            <div id="ota-progress-wrap" class="is-hidden u-mt-15">
                                                 <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
                                                     <span style="color: #666;" data-i18n="dev-ota-progress-label">升级进度</span>
                                                     <span id="ota-progress-text">0%</span>
@@ -1671,33 +1672,37 @@
                                         </div>
                                         <div class="card-body" style="padding: 15px;">
                                             <form id="ota-url-form" class="pure-form">
-                                                <div class="pure-control-group" style="margin-bottom: 15px;">
-                                                    <label for="ota-url" data-i18n="dev-ota-url-label">固件下载地址</label>
-                                                    <input type="url" id="ota-url" class="pure-input-1" placeholder="http://example.com/firmware.bin">
-                                                    <div id="ota-url-hint" style="display: none; margin-top: 5px;"></div>
+                                                <div class="pure-control-group ota-inline-action-row" style="margin-bottom: 15px;">
+                                                    <div class="ota-inline-input-wrap">
+                                                        <label for="ota-url" data-i18n="dev-ota-url-label">固件下载地址</label>
+                                                        <input type="url" id="ota-url" class="pure-input-1" placeholder="http://example.com/firmware.bin">
+                                                        <div id="ota-url-hint" class="is-hidden u-mt-10"></div>
+                                                    </div>
+                                                    <button type="submit" class="pure-button pure-button-primary" id="ota-url-btn">
+                                                        <i class="fas fa-download"></i> <span data-i18n="dev-ota-url-btn">开始在线升级</span>
+                                                    </button>
                                                 </div>
-                                                <button type="submit" class="pure-button pure-button-primary" id="ota-url-btn">
-                                                    <i class="fas fa-download"></i> <span data-i18n="dev-ota-url-btn">开始在线升级</span>
-                                                </button>
                                             </form>
                                         </div>
                                     </div>
 
                                     <!-- 本地上传升级 -->
-                                    <div class="card" style="margin-bottom: 20px; border: 1px solid #e0e0e0;">
+                                    <div class="flat-panel" style="margin-bottom: 20px; border: 1px solid #e0e0e0;">
                                         <div class="card-header" style="padding: 10px 15px; background: #fff3e0;">
                                             <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-upload"></i> <span data-i18n="dev-ota-upload-title">本地上传升级</span></h4>
                                         </div>
                                         <div class="card-body" style="padding: 15px;">
                                             <form id="ota-upload-form" class="pure-form" enctype="multipart/form-data">
-                                                <div class="pure-control-group" style="margin-bottom: 15px;">
-                                                    <label for="ota-file" data-i18n="dev-ota-file-label">选择固件文件 (.bin)</label>
-                                                    <input type="file" id="ota-file" accept=".bin" style="display: block; margin-top: 8px;">
-                                                    <small style="color: #888;" data-i18n="dev-ota-file-hint">仅支持 .bin 格式的固件文件</small>
+                                                <div class="pure-control-group ota-inline-action-row" style="margin-bottom: 15px;">
+                                                    <div class="ota-inline-input-wrap">
+                                                        <label for="ota-file" data-i18n="dev-ota-file-label">选择固件文件 (.bin)</label>
+                                                        <input type="file" id="ota-file" accept=".bin" style="display: block; margin-top: 8px;">
+                                                        <small style="color: #888;" data-i18n="dev-ota-file-hint">仅支持 .bin 格式的固件文件</small>
+                                                    </div>
+                                                    <button type="submit" class="pure-button pure-button-primary" id="ota-upload-btn">
+                                                        <i class="fas fa-upload"></i> <span data-i18n="dev-ota-upload-btn">上传并升级</span>
+                                                    </button>
                                                 </div>
-                                                <button type="submit" class="pure-button pure-button-primary" id="ota-upload-btn">
-                                                    <i class="fas fa-upload"></i> <span data-i18n="dev-ota-upload-btn">上传并升级</span>
-                                                </button>
                                             </form>
                                         </div>
                                     </div>
@@ -1728,9 +1733,9 @@
                                 <div style="display: flex; height: 600px; gap: 10px;">
                                     <!-- 文件树 -->
                                     <div style="width: 300px; min-width: 250px; border: 1px solid #ddd; border-radius: 4px; overflow-y: auto; background: #f5f5f5;">
-                                        <div style="padding: 10px; background: #e9e9e9; border-bottom: 1px solid #ddd; font-weight: bold;">
-                                            <button class="pure-button fs-btn-sm" id="fs-refresh-btn" style="float: right;" data-i18n="fs-refresh-btn">刷新</button>
-                                            <button class="pure-button fs-btn-sm" id="fs-up-btn" style="float: right; margin-right: 4px;" data-i18n="fs-up-btn">返回上级</button>
+                                        <div style="padding: 15px; background: #e9e9e9; border-bottom: 1px solid #ddd; font-weight: bold;">
+                                            <button class="pure-button pure-button-small" id="fs-refresh-btn" style="float:right;" data-i18n="fs-refresh-btn">刷新</button>
+                                            <button class="pure-button pure-button-small u-ml-8" id="fs-up-btn" style="float: right;" data-i18n="fs-up-btn">返回上级</button>
                                             <span id="current-dir-path" style="font-size: 12px; color: #666; display: block; margin-top: 5px;">/</span>
                                         </div>
                                         <div id="file-tree" style="padding: 10px; font-family: 'Consolas', monospace; font-size: 13px;">
@@ -2260,7 +2265,7 @@
         <div class="modal-content" style="max-width: 800px;">
             <div class="modal-header">
                 <h2 style="margin: 0; font-size: 18px;" id="periph-exec-modal-title" data-i18n="periph-exec-add-modal-title">新增外设执行</h2>
-                <button id="close-periph-exec-modal" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer;">&times;</button>
+                <button id="close-periph-exec-modal" class="modal-close-btn">&times;</button>
             </div>
             <div class="modal-body">
                 <form id="periph-exec-form" class="pure-form pure-form-stacked">
@@ -2437,7 +2442,7 @@
         <div class="modal-content" style="max-width: 700px;">
             <div class="modal-header">
                 <h2 style="margin: 0; font-size: 18px;" id="rule-script-modal-title" data-i18n="rule-script-add-title">新增规则脚本</h2>
-                <button id="close-rule-script-modal" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer;">&times;</button>
+                <button id="close-rule-script-modal" class="modal-close-btn">&times;</button>
             </div>
             <div class="modal-body">
                 <form id="rule-script-form" class="pure-form pure-form-stacked">
@@ -2491,7 +2496,7 @@
         <div class="modal-content" style="max-width: 500px;">
             <div class="modal-header">
                 <h2 style="margin: 0; font-size: 18px;" id="gpio-modal-title" data-i18n="gpio-add-modal-title">新增GPIO</h2>
-                <button id="close-gpio-modal" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer;">×</button>
+                <button id="close-gpio-modal" class="modal-close-btn">×</button>
             </div>
             <div class="modal-body">
                 <form id="gpio-form" class="pure-form pure-form-stacked">
@@ -2545,7 +2550,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h2 style="margin: 0; font-size: 18px;" id="add-user-title">添加用户</h2>
-                <button id="close-add-user-modal" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer;">×</button>
+                <button id="close-add-user-modal" class="modal-close-btn">×</button>
             </div>
             <div class="modal-body">
                 <form id="add-user-form" class="pure-form pure-form-stacked">
@@ -2590,7 +2595,7 @@
         <div class="modal-content" style="max-width: 700px;">
             <div class="modal-header">
                 <h2 style="margin: 0; font-size: 18px;" id="role-modal-title" data-i18n="role-add-modal-title">新增角色</h2>
-                <button id="close-role-modal" style="background: none; border: none; color: white; font-size: 24px; cursor: pointer;">×</button>
+                <button id="close-role-modal" class="modal-close-btn">×</button>
             </div>
             <div class="modal-body">
                 <form id="role-form" class="pure-form pure-form-stacked">

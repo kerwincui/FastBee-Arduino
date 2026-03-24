@@ -93,7 +93,7 @@
   --bg-body: linear-gradient(135deg, #f5f5f5 0%, #fafafa 50%, #f0f0f0 100%);
   --bg-body-fallback: #f5f5f5;
   --bg-card: rgba(255, 255, 255, 0.92);
-  --bg-sidebar: #e6f4ff;
+  --bg-sidebar: #cfe6ff;
   --bg-input: #ffffff;
 
   /* Sidebar semantic colors (light default) */
@@ -461,6 +461,8 @@ a:hover { text-decoration: underline; }
   align-items: center;
   justify-content: space-between;
   flex-shrink: 0;
+  position: relative;
+  z-index: 3000;
 }
 .header-left { display: flex; align-items: center; gap: var(--space-4); }
 .sidebar-toggle {
@@ -479,7 +481,7 @@ a:hover { text-decoration: underline; }
 .user-info { display: flex; align-items: center; gap: var(--space-2); }
 
 /* User Dropdown Menu */
-.user-dropdown { position: relative; }
+.user-dropdown { position: relative; z-index: 3100; }
 .user-dropdown-toggle {
   display: flex;
   align-items: center;
@@ -560,6 +562,8 @@ a:hover { text-decoration: underline; }
   overflow-y: auto;
   background: var(--bg-body);
   width: 100%;
+  position: relative;
+  z-index: 1;
 }
 
 /* Page Container */
@@ -581,20 +585,31 @@ a:hover { text-decoration: underline; }
 }
 
 /* Flattened inner panel: replaces nested card-in-card blocks */
-.flat-panel {
-  background: color-mix(in srgb, var(--glass-bg) 90%, var(--primary-light) 10%);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--rounded-lg);
+.flat-panel,
+.u-panel-default {
+  background: color-mix(in srgb, var(--bg-card) 96%, var(--primary-light) 4%);
+  border: none;
+  border-radius: var(--rounded-md);
   margin-bottom: var(--space-5);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+  box-shadow: none;
   overflow: hidden;
 }
 
-.flat-panel .card-header {
-  background: color-mix(in srgb, var(--glass-bg) 82%, var(--primary-light) 18%) !important;
-  border-bottom: 1px solid var(--glass-border);
+.flat-panel .card-header,
+.u-panel-default .card-header {
+  background: color-mix(in srgb, var(--bg-card) 97%, var(--primary-light) 3%) !important;
+  border-bottom: none;
   padding: var(--space-3) var(--space-4) !important;
   border-radius: 0;
+}
+
+.flat-panel .card-header h4 {
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.flat-panel .card-header [class*="fa-"] {
+  opacity: 0.85;
 }
 
 .flat-panel .card-body {
@@ -602,17 +617,18 @@ a:hover { text-decoration: underline; }
 }
 
 .flat-panel-info {
-  border-color: color-mix(in srgb, var(--primary) 45%, #17a2b8 55%) !important;
+  border: none !important;
 }
 
-[data-theme="dark"] .flat-panel {
-  background: color-mix(in srgb, var(--glass-bg) 88%, #0f172a 12%);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+[data-theme="dark"] .flat-panel,
+[data-theme="dark"] .u-panel-default {
+  background: color-mix(in srgb, var(--bg-card) 96%, #0f172a 4%);
+  box-shadow: none;
 }
 
 [data-theme="light"] .sidebar {
-  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--primary) 18%, transparent),
-              4px 0 18px rgba(22, 119, 255, 0.06);
+  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--primary) 24%, transparent),
+              4px 0 18px rgba(22, 119, 255, 0.10);
 }
 
 .card:hover {
@@ -888,6 +904,7 @@ a:hover { text-decoration: underline; }
   font-weight: 600; 
   color: var(--text-primary); 
   margin-bottom: var(--space-4); 
+  padding-top: 40px;
   padding-bottom: var(--space-2); 
   border-bottom: 1px solid var(--border); 
 }
@@ -1198,14 +1215,14 @@ select:hover, .form-select:hover {
    11a. Resource Cards (Dashboard)
    ============================================ */
 .resource-card {
-  background: var(--glass-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--glass-border);
+  background: color-mix(in srgb, var(--bg-card) 92%, var(--primary-light) 8%);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid color-mix(in srgb, var(--glass-border) 86%, var(--primary) 14%);
   border-radius: var(--rounded-lg);
   padding: var(--space-5);
   transition: var(--transition-transform), var(--transition-shadow);
-  box-shadow: var(--glass-shadow);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
 }
 
 .resource-card:hover {
@@ -1233,7 +1250,7 @@ select:hover, .form-select:hover {
 .progress-bar {
   background: var(--slate-200);
   height: 8px;
-  border-radius: var(--rounded-full);
+  border-radius: var(--rounded-md);
   overflow: hidden;
   margin-bottom: var(--space-3);
 }
@@ -1538,12 +1555,13 @@ select:hover, .form-select:hover {
   padding: var(--space-4);
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
   font-size: 13px;
-  background: rgba(255, 255, 255, 0.3);
-  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.95);
+  color: #111;
   line-height: 1.6;
 }
 [data-theme="dark"] .logs-page-content {
-  background: rgba(26, 26, 26, 0.4);
+  background: rgba(255, 255, 255, 0.95);
+  color: #111;
 }
 .logs-file-name {
   font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
@@ -1642,6 +1660,7 @@ select:hover, .form-select:hover {
 .log-entry-message {
   flex: 1;
   word-break: break-word;
+  color: #111;
 }
 
 /* ============================================
@@ -1801,10 +1820,9 @@ body {
 #master-status-section,
 #mqtt-status-panel {
   background: var(--glass-bg) !important;
-  border: 1px solid var(--glass-border) !important;
+  border: none !important;
   border-radius: var(--rounded-xl) !important;
-  box-shadow: var(--glass-shadow);
-  backdrop-filter: blur(8px);
+  box-shadow: none !important;
 }
 
 /* 统一标题层级 */
@@ -1865,7 +1883,14 @@ textarea {
 .btn {
   border: 1px solid transparent;
   transition: var(--transition-colors), var(--transition-transform), var(--transition-shadow);
-  min-height: 36px;
+  min-height: 38px;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.pure-button-small,
+.btn.btn-sm {
+  min-height: 32px;
 }
 
 .pure-button:hover,
@@ -1966,17 +1991,39 @@ textarea:focus,
   backdrop-filter: blur(2px);
 }
 
-.modal-header {
-  background: linear-gradient(90deg, color-mix(in srgb, var(--primary) 92%, #1f3f82), color-mix(in srgb, var(--primary-hover) 88%, #315dbf)) !important;
+/* 弹窗统一白色背景（含头部/主体/底部） */
+.modal-content {
+  background: #fff !important;
 }
 
-/* ---- Accessibility ---- */
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation: none !important;
-    transition: none !important;
-    scroll-behavior: auto !important;
-  }
+.modal-header {
+  background: #fff !important;
+}
+
+.modal-body,
+.modal-footer {
+  background: #fff !important;
+}
+
+/* ---- Accessibility / Motion disabled globally ---- */
+*, *::before, *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+
+/* 禁用常见 hover 位移动效与缩放 */
+.glass-card:hover,
+.hover-lift:hover,
+.hover-scale:hover,
+.card:hover,
+.stat-card:hover,
+.resource-card:hover,
+.info-item:hover,
+.btn:hover,
+.notification.hiding,
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: none !important;
 }
 
 /* keyboard focus visible */
@@ -2039,6 +2086,198 @@ textarea:focus-visible,
     padding: var(--space-2) var(--space-2);
     white-space: nowrap;
   }
+}
+
+/* ============================================
+   28. UI Polishing (language switcher / dropdown / flat dashboard)
+   ============================================ */
+
+/* 侧边菜单 hover 不显示下划线 */
+.sidebar-menu .menu-item:hover {
+  text-decoration: none !important;
+}
+
+/* 登录页语言选择器 */
+.login-lang-switch {
+  top: var(--space-4);
+  right: var(--space-4);
+}
+
+.login-lang-select {
+  min-height: 34px;
+  padding: 0 32px 0 12px;
+  border-radius: var(--rounded-md);
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, var(--border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--bg-card) 95%, white 5%), color-mix(in srgb, var(--primary-light) 35%, var(--bg-card)));
+  color: var(--text-primary);
+  font-weight: 500;
+  box-shadow: var(--shadow-sm);
+}
+
+.login-lang-select:hover,
+.login-lang-select:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+/* 顶部语言切换器 */
+.language-select-header {
+  min-height: 34px;
+  padding: 0 34px 0 12px;
+  border-radius: var(--rounded-md);
+  border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--bg-card) 96%, white 4%), color-mix(in srgb, var(--primary-light) 28%, var(--bg-card)));
+  color: var(--text-primary);
+  font-weight: 500;
+  box-shadow: var(--shadow-sm);
+}
+
+.language-select-header:hover,
+.language-select-header:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+/* 用户下拉层级抬高，避免被页面组件遮挡 */
+.user-dropdown-menu {
+  z-index: 99999;
+}
+
+/* Dashboard 顶部三卡片：左对齐 + 浅色背景 + 去掉顶部色条 */
+.dashboard-top-stats > .stat-card {
+  text-align: left;
+  padding: var(--space-5);
+  border: 1px solid color-mix(in srgb, var(--glass-border) 86%, var(--primary) 14%);
+  border-radius: var(--rounded-lg);
+  background: color-mix(in srgb, var(--bg-card) 92%, var(--primary-light) 8%);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+}
+
+.dashboard-top-stats > .stat-card::before {
+  display: none;
+}
+
+.dashboard-top-stats > .stat-card .stat-value {
+  font-size: 24px;
+  margin: 4px 0;
+}
+
+.dashboard-top-stats > .stat-card .stat-label,
+.dashboard-top-stats > .stat-card .stat-desc {
+  text-align: left;
+}
+
+.dashboard-merged-card {
+  padding: var(--space-5);
+}
+
+
+.dashboard-merged-section .section-title {
+  margin-bottom: var(--space-4);
+}
+
+/* Dashboard 底部当前网络状态 3 列尽量一行 */
+.dashboard-network-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(260px, 1fr));
+  gap: var(--space-4);
+}
+
+.dashboard-network-grid .info-card {
+  border-radius: var(--rounded-lg);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+}
+
+.dashboard-network-grid .info-card-header {
+  background: color-mix(in srgb, var(--bg-card) 94%, var(--primary-light) 6%);
+  border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 86%, var(--primary) 14%);
+}
+
+@media (max-width: 1200px) {
+  .dashboard-network-grid {
+    grid-template-columns: repeat(2, minmax(240px, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .dashboard-network-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 设备基本信息：用户ID左下角 */
+.dev-basic-footer-row {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: var(--space-2);
+}
+
+.dev-user-id-bottom-left {
+  width: min(360px, 100%);
+  margin-bottom: 0;
+}
+
+/* BLE 参数布局 + 自动启动 switch 行 */
+.ble-config-grid {
+  align-items: start;
+}
+
+.ble-autostart-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 6px 0;
+}
+
+.ble-autostart-switch-row > label:first-child {
+  margin-bottom: 0;
+  flex: 1;
+}
+
+/* OTA 在线升级 / 本地上传按钮同行 */
+.ota-inline-action-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+.ota-inline-input-wrap {
+  flex: 1;
+  min-width: 240px;
+}
+
+.ota-inline-action-row .pure-button {
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .ota-inline-action-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* 统一扁平化：card 内嵌 card -> 普通容器视觉 */
+.card .card,
+.form-section .card {
+  background: color-mix(in srgb, var(--bg-card) 92%, var(--primary-light) 8%) !important;
+  border: 1px solid var(--glass-border) !important;
+  box-shadow: none !important;
+  border-radius: var(--rounded-lg) !important;
+}
+
+.flat-panel .card {
+  background: color-mix(in srgb, var(--bg-card) 92%, var(--primary-light) 8%) !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: var(--rounded-lg) !important;
+}
+
+.card .card:hover,
+.form-section .card:hover,
+.flat-panel .card:hover {
+  transform: none !important;
 }
 
 /* ============================================
@@ -2162,9 +2401,12 @@ textarea:focus-visible,
 .u-mt-10 { margin-top: 10px !important; }
 .u-mt-24 { margin-top: 24px !important; }
 .u-mb-10 { margin-bottom: 10px !important; }
+.u-mb-5 { margin-bottom: 5px !important; }
 .u-text-center { text-align: center !important; }
 .u-text-right { text-align: right !important; }
 .u-overflow-x-auto { overflow-x: auto !important; }
+.u-flex-between { display: flex !important; justify-content: space-between !important; }
+.u-items-center { align-items: center !important; }
 .u-table-full { width: 100% !important; }
 .u-title-indigo { color: #667eea !important; }
 .u-bg-muted { background: color-mix(in srgb, var(--bg-card) 90%, var(--primary-light) 10%) !important; }
@@ -2200,6 +2442,28 @@ textarea:focus-visible,
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: var(--space-3);
+}
+
+.section-title {
+  margin-bottom: var(--space-5);
+}
+
+.config-content > .flat-panel,
+.config-content > .form-section,
+.config-content > form + .flat-panel,
+.config-content > form + div[style*="padding: 15px"] {
+  margin-top: var(--space-5);
+}
+
+.pure-table th {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.pure-table td {
+  padding-top: 9px;
+  padding-bottom: 9px;
 }
 
 .card-header-toolbar {
@@ -2214,6 +2478,10 @@ textarea:focus-visible,
   font-size: 24px;
   cursor: pointer;
   line-height: 1;
+}
+
+.modal-close-btn:hover {
+  color: var(--danger);
 }
 
 /* ============================================
