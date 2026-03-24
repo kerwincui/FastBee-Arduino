@@ -110,10 +110,28 @@
                             <option value="zh-CN">中文</option>
                             <option value="en">English</option>
                         </select>
-                        <div class="user-info">
-                            <span id="user-name">管理员</span>
-                            <button class="pure-button pure-button-small" id="change-password-btn">修改密码</button>
-                            <button class="pure-button pure-button-small" id="logout-btn">退出登录</button>
+                        <!-- 用户下拉菜单 -->
+                        <div class="user-dropdown">
+                            <button class="user-dropdown-toggle" id="user-dropdown-btn">
+                                <span class="user-avatar">👤</span>
+                                <span class="user-name-text" id="user-name">管理员</span>
+                                <span class="dropdown-arrow">▼</span>
+                            </button>
+                            <div class="user-dropdown-menu" id="user-dropdown-menu">
+                                <button class="dropdown-item" id="theme-toggle-item">
+                                    <span class="item-icon">🌙</span>
+                                    <span data-i18n="theme-toggle">切换主题</span>
+                                </button>
+                                <button class="dropdown-item" id="change-password-btn">
+                                    <span class="item-icon">🔑</span>
+                                    <span data-i18n="change-password-btn">修改密码</span>
+                                </button>
+                                <div class="dropdown-divider"></div>
+                                <button class="dropdown-item dropdown-item-danger" id="logout-btn">
+                                    <span class="item-icon">🚪</span>
+                                    <span data-i18n="logout-btn">退出登录</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -122,192 +140,184 @@
                 <div class="content">
                     <!-- 设备监控页面 -->
                     <div id="dashboard-page" class="page active">
-                        <!-- 设备信息卡片 -->
-                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                        <!-- 设备信息卡片 - 简化风格 -->
+                        <div class="stats-grid" style="margin-bottom: var(--space-6);">
                             <!-- 设备基本信息 -->
-                            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px;">
-                                <h3 style="margin: 0 0 10px; font-size: 14px; opacity: 0.9;" data-i18n="dashboard-device-info">设备信息</h3>
-                                <div style="font-size: 24px; font-weight: bold; margin-bottom: 5px;" id="monitor-chip-model">--</div>
-                                <div style="font-size: 12px; opacity: 0.8;">
+                            <div class="stat-card stat-card-primary">
+                                <div class="stat-label" data-i18n="dashboard-device-info">设备信息</div>
+                                <div class="stat-value" id="monitor-chip-model">--</div>
+                                <div class="stat-desc">
                                     CPU: <span id="monitor-cpu-freq">--</span> MHz | 
                                     SDK: <span id="monitor-sdk">--</span>
                                 </div>
                             </div>
                             
                             <!-- 运行时间 -->
-                            <div style="background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); color: white; padding: 20px; border-radius: 8px;">
-                                <h3 style="margin: 0 0 10px; font-size: 14px; opacity: 0.9;" data-i18n="dashboard-uptime">运行时间</h3>
-                                <div style="font-size: 28px; font-weight: bold; margin-bottom: 5px;" id="monitor-uptime">--</div>
-                                <div style="font-size: 12px; opacity: 0.8;" data-i18n="dashboard-uptime-desc">系统启动至今</div>
+                            <div class="stat-card stat-card-success">
+                                <div class="stat-label" data-i18n="dashboard-uptime">运行时间</div>
+                                <div class="stat-value" id="monitor-uptime">--</div>
+                                <div class="stat-desc" data-i18n="dashboard-uptime-desc">系统启动至今</div>
                             </div>
                             
                             <!-- 网络状态 -->
-                            <div style="background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; padding: 20px; border-radius: 8px;">
-                                <h3 style="margin: 0 0 10px; font-size: 14px; opacity: 0.9;" data-i18n="dashboard-network">网络状态</h3>
-                                <div style="font-size: 14px; margin-bottom: 5px;" id="monitor-network-status">--</div>
-                                <div style="font-size: 12px; opacity: 0.8;" id="monitor-ip">--</div>
+                            <div class="stat-card stat-card-info">
+                                <div class="stat-label" data-i18n="dashboard-network">网络状态</div>
+                                <div class="stat-value" id="monitor-network-status" style="font-size: 18px;">--</div>
+                                <div class="stat-desc" id="monitor-ip">--</div>
                             </div>
                         </div>
 
-                        <!-- 资源使用仪表盘 -->
-                        <div class="card" style="margin-bottom: 20px;">
-                            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-                                <h2 class="card-title" data-i18n="dashboard-resource-usage">资源使用情况</h2>
-                                <button class="pure-button pure-button-small" id="monitor-refresh-btn">
-                                    <i class="fas fa-sync-alt"></i> <span data-i18n="dashboard-refresh">刷新</span>
+                        <!-- 资源使用仪表盘 - 扁平化设计 -->
+                        <div class="form-section">
+                            <div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
+                                <span data-i18n="dashboard-resource-usage">资源使用情况</span>
+                                <button class="btn btn-sm btn-secondary" id="monitor-refresh-btn">
+                                    <span class="icon-refresh"></span> <span data-i18n="dashboard-refresh">刷新</span>
                                 </button>
                             </div>
-                            <div class="card-body">
-                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;">
-                                    <!-- Flash 存储 -->
-                                    <div style="border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; background: #fafafa;">
-                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                                            <span style="font-weight: bold; color: #333;"><i class="fas fa-microchip" style="color: #ff6b6b;"></i> <span data-i18n="dashboard-flash">Flash 存储</span></span>
-                                            <span style="font-size: 12px; color: #666;" id="monitor-flash-percent">--%</span>
-                                        </div>
-                                        <div style="background: #e0e0e0; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 10px;">
-                                            <div id="monitor-flash-bar" style="background: linear-gradient(90deg, #ff6b6b, #ee5a5a); height: 100%; width: 0%; transition: width 0.5s;"></div>
-                                        </div>
-                                        <div style="display: flex; justify-content: space-between; font-size: 12px; color: #666;">
-                                            <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-flash-used">--</span></span>
-                                            <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-flash-free">--</span></span>
-                                        </div>
-                                        <div style="margin-top: 10px; font-size: 11px; color: #999;">
-                                            <span data-i18n="dashboard-total">总计</span>: <span id="monitor-flash-total">--</span> | <span data-i18n="dashboard-firmware">固件</span>: <span id="monitor-flash-sketch">--</span>
-                                        </div>
+                            <div class="form-grid">
+                                <!-- Flash 存储 -->
+                                <div class="resource-card">
+                                    <div class="resource-header">
+                                        <span class="resource-title"><span class="icon-settings"></span> <span data-i18n="dashboard-flash">Flash 存储</span></span>
+                                        <span class="resource-percent" id="monitor-flash-percent">--%</span>
                                     </div>
-                                    
-                                    <!-- 内存使用 -->
-                                    <div style="border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; background: #fafafa;">
-                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                                            <span style="font-weight: bold; color: #333;"><i class="fas fa-memory" style="color: #4ecdc4;"></i> <span data-i18n="dashboard-heap">内存 (Heap)</span></span>
-                                            <span style="font-size: 12px; color: #666;" id="monitor-heap-percent">--%</span>
-                                        </div>
-                                        <div style="background: #e0e0e0; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 10px;">
-                                            <div id="monitor-heap-bar" style="background: linear-gradient(90deg, #4ecdc4, #44a08d); height: 100%; width: 0%; transition: width 0.5s;"></div>
-                                        </div>
-                                        <div style="display: flex; justify-content: space-between; font-size: 12px; color: #666;">
-                                            <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-heap-used">--</span></span>
-                                            <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-heap-free">--</span></span>
-                                        </div>
-                                        <div style="margin-top: 10px; font-size: 11px; color: #999;">
-                                            <span data-i18n="dashboard-total">总计</span>: <span id="monitor-heap-total">--</span> | <span data-i18n="dashboard-min-free">最小可用</span>: <span id="monitor-heap-min">--</span>
-                                        </div>
+                                    <div class="progress-bar">
+                                        <div class="progress-fill progress-fill-danger" id="monitor-flash-bar" style="width: 0%;"></div>
                                     </div>
+                                    <div class="resource-stats">
+                                        <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-flash-used">--</span></span>
+                                        <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-flash-free">--</span></span>
+                                    </div>
+                                    <div class="resource-footer">
+                                        <span data-i18n="dashboard-total">总计</span>: <span id="monitor-flash-total">--</span> | <span data-i18n="dashboard-firmware">固件</span>: <span id="monitor-flash-sketch">--</span>
+                                    </div>
+                                </div>
+                                
+                                <!-- 内存使用 -->
+                                <div class="resource-card">
+                                    <div class="resource-header">
+                                        <span class="resource-title"><span class="icon-settings"></span> <span data-i18n="dashboard-heap">内存 (Heap)</span></span>
+                                        <span class="resource-percent" id="monitor-heap-percent">--%</span>
+                                    </div>
+                                    <div class="progress-bar">
+                                        <div class="progress-fill progress-fill-success" id="monitor-heap-bar" style="width: 0%;"></div>
+                                    </div>
+                                    <div class="resource-stats">
+                                        <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-heap-used">--</span></span>
+                                        <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-heap-free">--</span></span>
+                                    </div>
+                                    <div class="resource-footer">
+                                        <span data-i18n="dashboard-total">总计</span>: <span id="monitor-heap-total">--</span> | <span data-i18n="dashboard-min-free">最小可用</span>: <span id="monitor-heap-min">--</span>
+                                    </div>
+                                </div>
                                     
-                                    <!-- 文件系统 -->
-                                    <div style="border: 1px solid #e0e0e0; border-radius: 8px; padding: 20px; background: #fafafa;">
-                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                                            <span style="font-weight: bold; color: #333;"><i class="fas fa-hdd" style="color: #45b7d1;"></i> <span data-i18n="dashboard-fs">文件系统 (LittleFS)</span></span>
-                                            <span style="font-size: 12px; color: #666;" id="monitor-fs-percent">--%</span>
-                                        </div>
-                                        <div style="background: #e0e0e0; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 10px;">
-                                            <div id="monitor-fs-bar" style="background: linear-gradient(90deg, #45b7d1, #96c93d); height: 100%; width: 0%; transition: width 0.5s;"></div>
-                                        </div>
-                                        <div style="display: flex; justify-content: space-between; font-size: 12px; color: #666;">
-                                            <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-fs-used">--</span></span>
-                                            <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-fs-free">--</span></span>
-                                        </div>
-                                        <div style="margin-top: 10px; font-size: 11px; color: #999;">
-                                            <span data-i18n="dashboard-total">总计</span>: <span id="monitor-fs-total">--</span>
-                                        </div>
+                                <!-- 文件系统 -->
+                                <div class="resource-card">
+                                    <div class="resource-header">
+                                        <span class="resource-title"><span class="icon-file"></span> <span data-i18n="dashboard-fs">文件系统 (LittleFS)</span></span>
+                                        <span class="resource-percent" id="monitor-fs-percent">--%</span>
+                                    </div>
+                                    <div class="progress-bar">
+                                        <div class="progress-fill progress-fill-info" id="monitor-fs-bar" style="width: 0%;"></div>
+                                    </div>
+                                    <div class="resource-stats">
+                                        <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-fs-used">--</span></span>
+                                        <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-fs-free">--</span></span>
+                                    </div>
+                                    <div class="resource-footer">
+                                        <span data-i18n="dashboard-total">总计</span>: <span id="monitor-fs-total">--</span>
                                     </div>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- 用户统计 -->
-                        <div class="card">
-                            <div class="card-header">
-                                <h2 class="card-title" data-i18n="dashboard-user-stats">用户统计</h2>
-                            </div>
-                            <div class="card-body">
-                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px;">
-                                    <div style="text-align: center; padding: 20px; background: #f0f7ff; border-radius: 8px;">
-                                        <div style="font-size: 32px; font-weight: bold; color: #1890ff;" id="monitor-user-total">--</div>
-                                        <div style="font-size: 12px; color: #666; margin-top: 5px;" data-i18n="dashboard-total-users">总用户数</div>
-                                    </div>
-                                    <div style="text-align: center; padding: 20px; background: #f6ffed; border-radius: 8px;">
-                                        <div style="font-size: 32px; font-weight: bold; color: #52c41a;" id="monitor-user-online">--</div>
-                                        <div style="font-size: 12px; color: #666; margin-top: 5px;" data-i18n="dashboard-online-users">在线用户</div>
-                                    </div>
-                                    <div style="text-align: center; padding: 20px; background: #fff7e6; border-radius: 8px;">
-                                        <div style="font-size: 32px; font-weight: bold; color: #fa8c16;" id="monitor-user-sessions">--</div>
-                                        <div style="font-size: 12px; color: #666; margin-top: 5px;" data-i18n="dashboard-active-sessions">活跃会话</div>
-                                    </div>
+                        <!-- 用户统计 - 扁平化设计 -->
+                        <div class="form-section">
+                            <div class="section-title" data-i18n="dashboard-user-stats">用户统计</div>
+                            <div class="stats-grid" style="margin-bottom: 0;">
+                                <div class="stat-card stat-card-primary">
+                                    <div class="stat-value" id="monitor-user-total">--</div>
+                                    <div class="stat-label" data-i18n="dashboard-total-users">总用户数</div>
+                                </div>
+                                <div class="stat-card stat-card-success">
+                                    <div class="stat-value" id="monitor-user-online">--</div>
+                                    <div class="stat-label" data-i18n="dashboard-online-users">在线用户</div>
+                                </div>
+                                <div class="stat-card stat-card-warning">
+                                    <div class="stat-value" id="monitor-user-sessions">--</div>
+                                    <div class="stat-label" data-i18n="dashboard-active-sessions">活跃会话</div>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- 网络状态详情 -->
-                        <div class="card">
-                            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-                                <h2 class="card-title" data-i18n="net-status-title">当前网络状态</h2>
-                                <button class="pure-button pure-button-small" id="dashboard-net-refresh-btn">
-                                    <i class="fas fa-sync-alt"></i> <span data-i18n="net-status-refresh">刷新</span>
+                        <!-- 网络状态详情 - 扁平化设计 -->
+                        <div class="form-section">
+                            <div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
+                                <span data-i18n="net-status-title">当前网络状态</span>
+                                <button class="btn btn-sm btn-secondary" id="dashboard-net-refresh-btn">
+                                    <span class="icon-refresh"></span> <span data-i18n="net-status-refresh">刷新</span>
                                 </button>
                             </div>
-                            <div class="card-body">
-                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px;">
-                                    <!-- STA 连接信息 -->
-                                    <div style="border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
-                                        <div style="padding: 10px 15px; background: #f5f5f5; border-bottom: 1px solid #e0e0e0;">
-                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-wifi" style="color: #4facfe;"></i> <span data-i18n="net-sta-info">STA 连接信息</span></h4>
-                                        </div>
-                                        <div style="padding: 12px 15px;">
-                                            <table style="width: 100%; font-size: 13px; border-collapse: collapse;">
-                                                <tbody>
-                                                    <tr><td style="color: #666; padding: 4px 0; width: 100px;" data-i18n="net-sta-status-label">状态</td><td id="ns-status" style="padding: 4px 0;"><span class="badge badge-info">待加载...</span></td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;">SSID</td><td id="ns-ssid" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="static-ip-label">IP 地址</td><td id="ns-ip" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="gateway-label">网关</td><td id="ns-gateway" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="subnet-label">子网掩码</td><td id="ns-subnet" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="dns1-label">首选 DNS</td><td id="ns-dns" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="dns2-label">备用 DNS</td><td id="ns-dns2" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;">RSSI</td><td id="ns-rssi" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;">MAC</td><td id="ns-mac" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="ns-conn-time-label">连接时长</td><td id="ns-conn-time" style="padding: 4px 0;">--</td></tr>
-                                                </tbody>
-                                            </table>
-                                        </div>
+                            <div class="form-grid">
+                                <!-- STA 连接信息 -->
+                                <div class="info-card">
+                                    <div class="info-card-header info-card-header-primary">
+                                        <span class="icon-network"></span> <span data-i18n="net-sta-info">STA 连接信息</span>
                                     </div>
-
-                                    <!-- AP 热点信息 -->
-                                    <div style="border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
-                                        <div style="padding: 10px 15px; background: #f5f5f5; border-bottom: 1px solid #e0e0e0;">
-                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-broadcast-tower" style="color: #ff6b6b;"></i> <span data-i18n="net-ap-info">AP 热点信息</span></h4>
-                                        </div>
-                                        <div style="padding: 12px 15px;">
-                                            <table style="width: 100%; font-size: 13px; border-collapse: collapse;">
-                                                <tbody>
-                                                    <tr><td style="color: #666; padding: 4px 0; width: 100px;" data-i18n="ap-ssid-label">AP 名称</td><td id="ns-ap-ssid" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;">AP IP</td><td id="ns-ap-ip" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="ap-channel-label">信道</td><td id="ns-ap-channel" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="dev-provision-clients-label">连接客户数</td><td id="ns-ap-clients" style="padding: 4px 0;">--</td></tr>
-                                                </tbody>
-                                            </table>
-                                        </div>
+                                    <div class="info-card-body">
+                                        <table class="info-table">
+                                            <tbody>
+                                                <tr><td data-i18n="net-sta-status-label">状态</td><td id="ns-status"><span class="badge badge-info">待加载...</span></td></tr>
+                                                <tr><td>SSID</td><td id="ns-ssid">--</td></tr>
+                                                <tr><td data-i18n="static-ip-label">IP 地址</td><td id="ns-ip">--</td></tr>
+                                                <tr><td data-i18n="gateway-label">网关</td><td id="ns-gateway">--</td></tr>
+                                                <tr><td data-i18n="subnet-label">子网掩码</td><td id="ns-subnet">--</td></tr>
+                                                <tr><td data-i18n="dns1-label">首选 DNS</td><td id="ns-dns">--</td></tr>
+                                                <tr><td data-i18n="dns2-label">备用 DNS</td><td id="ns-dns2">--</td></tr>
+                                                <tr><td>RSSI</td><td id="ns-rssi">--</td></tr>
+                                                <tr><td>MAC</td><td id="ns-mac">--</td></tr>
+                                                <tr><td data-i18n="ns-conn-time-label">连接时长</td><td id="ns-conn-time">--</td></tr>
+                                            </tbody>
+                                        </table>
                                     </div>
+                                </div>
 
-                                    <!-- 连接统计 -->
-                                    <div style="border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
-                                        <div style="padding: 10px 15px; background: #f5f5f5; border-bottom: 1px solid #e0e0e0;">
-                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-chart-bar" style="color: #4ecdc4;"></i> <span data-i18n="net-stats">连接统计</span></h4>
-                                        </div>
-                                        <div style="padding: 12px 15px;">
-                                            <table style="width: 100%; font-size: 13px; border-collapse: collapse;">
-                                                <tbody>
-                                                    <tr><td style="color: #666; padding: 4px 0; width: 100px;" data-i18n="wifi-mode-label">网络模式</td><td id="ns-mode" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="wifi-mdns-label">mDNS</td><td id="ns-mdns" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="ns-reconnect-label">重连次数</td><td id="ns-reconnect" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="ns-tx-count-label">发送计数</td><td id="ns-tx-count" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="ns-rx-count-label">接收计数</td><td id="ns-rx-count" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="ns-internet-label">互联网</td><td id="ns-internet" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="ns-conflict-label">IP 冲突</td><td id="ns-conflict" style="padding: 4px 0;">--</td></tr>
-                                                    <tr><td style="color: #666; padding: 4px 0;" data-i18n="ns-uptime-label">运行时间</td><td id="ns-uptime" style="padding: 4px 0;">--</td></tr>
-                                                </tbody>
-                                            </table>
-                                        </div>
+                                <!-- AP 热点信息 -->
+                                <div class="info-card">
+                                    <div class="info-card-header info-card-header-danger">
+                                        <span class="icon-network"></span> <span data-i18n="net-ap-info">AP 热点信息</span>
+                                    </div>
+                                    <div class="info-card-body">
+                                        <table class="info-table">
+                                            <tbody>
+                                                <tr><td data-i18n="ap-ssid-label">AP 名称</td><td id="ns-ap-ssid">--</td></tr>
+                                                <tr><td>AP IP</td><td id="ns-ap-ip">--</td></tr>
+                                                <tr><td data-i18n="ap-channel-label">信道</td><td id="ns-ap-channel">--</td></tr>
+                                                <tr><td data-i18n="dev-provision-clients-label">连接客户数</td><td id="ns-ap-clients">--</td></tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                <!-- 连接统计 -->
+                                <div class="info-card">
+                                    <div class="info-card-header info-card-header-success">
+                                        <span class="icon-dashboard"></span> <span data-i18n="net-stats">连接统计</span>
+                                    </div>
+                                    <div class="info-card-body">
+                                        <table class="info-table">
+                                            <tbody>
+                                                <tr><td data-i18n="wifi-mode-label">网络模式</td><td id="ns-mode">--</td></tr>
+                                                <tr><td data-i18n="wifi-mdns-label">mDNS</td><td id="ns-mdns">--</td></tr>
+                                                <tr><td data-i18n="ns-reconnect-label">重连次数</td><td id="ns-reconnect">--</td></tr>
+                                                <tr><td data-i18n="ns-tx-count-label">发送计数</td><td id="ns-tx-count">--</td></tr>
+                                                <tr><td data-i18n="ns-rx-count-label">接收计数</td><td id="ns-rx-count">--</td></tr>
+                                                <tr><td data-i18n="ns-internet-label">互联网</td><td id="ns-internet">--</td></tr>
+                                                <tr><td data-i18n="ns-conflict-label">IP 冲突</td><td id="ns-conflict">--</td></tr>
+                                                <tr><td data-i18n="ns-uptime-label">运行时间</td><td id="ns-uptime">--</td></tr>
+                                            </tbody>
+                                        </table>
                                     </div>
                                 </div>
                             </div>
@@ -1066,8 +1076,8 @@
                                             </div>
                                         </div>
 
-                                        <div class="message message-success" id="wifi-success" style="display: none; margin-top: 15px;" data-i18n="wifi-save-ok">WiFi配置保存成功！</div>
-                                        <div class="message message-error" id="wifi-error" style="display: none; margin-top: 15px;" data-i18n="wifi-save-fail">WiFi配置保存失败！</div>
+                                        <div class="message message-success" id="wifi-success" style="display: none; margin-top: 15px;" data-i18n="wifi-save-ok">Wifi配置保存成功！</div>
+                                        <div class="message message-error" id="wifi-error" style="display: none; margin-top: 15px;" data-i18n="wifi-save-fail">Wifi配置保存失败！</div>
 
                                         <div style="margin-top: 20px;">
                                             <button type="submit" class="pure-button pure-button-primary">
@@ -1736,7 +1746,7 @@
                                                 <button class="pure-button pure-button-small" id="fs-close-btn" disabled data-i18n="fs-close-btn">关闭</button>
                                             </div>
                                         </div>
-                                        <textarea id="file-editor" style="flex: 1; border: none; padding: 10px; font-family: 'Consolas', monospace; font-size: 13px; resize: none;" placeholder="选择文件后在此编辑..." disabled></textarea>
+                                        <textarea id="file-editor" style="flex: 1; border: none; padding: 10px; font-family: 'Consolas', monospace; font-size: 13px; resize: none;" data-i18n-placeholder="fs-editor-placeholder" disabled></textarea>
                                         <div id="file-status" style="padding: 5px 10px; background: #f0f0f0; border-top: 1px solid #ddd; font-size: 12px; color: #666;"></div>
                                     </div>
                                 </div>
@@ -1808,26 +1818,26 @@
 
                     <!-- 设备日志页面 -->
                     <div id="logs-page" class="page">
-                        <!-- 日志内容显示区域（全宽） -->
-                        <div style="height: 750px; border: 1px solid #333; border-radius: 4px; display: flex; flex-direction: column; background: #1a1a1a;">
-                            <div style="padding: 10px; background: #2d2d2d; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center;">
-                                <span id="current-log-file" style="font-family: monospace; font-size: 13px; color: #aaa;">system.log</span>
-                                <div style="display: flex; gap: 10px; align-items: center;">
-                                    <span id="log-info" style="font-size: 12px; color: #888;"></span>
-                                    <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; color: #ccc;">
-                                        <input type="checkbox" id="log-auto-refresh" checked style="vertical-align: middle;">
+                        <!-- 日志内容显示区域（全宽） - 统一风格 -->
+                        <div class="logs-page-container">
+                            <div class="logs-page-header">
+                                <span id="current-log-file" class="logs-file-name">system.log</span>
+                                <div class="logs-actions">
+                                    <span id="log-info" class="logs-info"></span>
+                                    <label class="logs-auto-refresh">
+                                        <input type="checkbox" id="log-auto-refresh" checked>
                                         <span data-i18n="log-auto-refresh-label">自动刷新</span>
                                     </label>
-                                    <button class="pure-button pure-button-small" id="refresh-logs-btn" style="background: #3a3a3a; color: #fff; border: 1px solid #555;">
-                                        <i class="fas fa-sync-alt"></i> <span data-i18n="log-refresh-btn">刷新日志</span>
+                                    <button class="btn btn-sm btn-secondary" id="refresh-logs-btn">
+                                        <span class="icon-refresh"></span> <span data-i18n="log-refresh-btn">刷新日志</span>
                                     </button>
-                                    <button class="pure-button pure-button-small pure-button-error" id="clear-logs-btn">
-                                        <i class="fas fa-trash"></i> <span data-i18n="log-clear-btn">清空日志</span>
+                                    <button class="btn btn-sm btn-delete" id="clear-logs-btn">
+                                        <span class="icon-delete"></span> <span data-i18n="log-clear-btn">清空日志</span>
                                     </button>
                                 </div>
                             </div>
-                            <div id="device-log-container" style="flex: 1; overflow-y: auto; background: #1e1e1e; color: #d4d4d4; padding: 10px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 12px; white-space: pre-wrap; word-wrap: break-word;">
-                                <div style="color: #666; text-align: center; padding: 20px;" data-i18n="log-loading">正在加载日志...</div>
+                            <div id="device-log-container" class="logs-page-content">
+                                <div class="logs-loading" data-i18n="log-loading">正在加载日志...</div>
                             </div>
                         </div>
                     </div>

@@ -167,7 +167,7 @@ private:
     String buildClientId();            // 构建认证clientId: 类型&设备编号&产品ID&用户ID
     String buildSimplePassword();      // 简单认证密码: password 或 password&authCode
     String buildEncryptedPassword();   // 加密认证密码: AES-CBC-128加密
-    String getNtpTime();               // 通过HTTP获取NTP时间
+    String getNtpTime(unsigned long& outDeviceSendTime);  // 通过HTTP获取NTP时间
     String aesEncrypt(const String& plainData, const String& key, const String& iv); // AES-CBC-128加密
 };
 

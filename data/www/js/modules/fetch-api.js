@@ -127,8 +127,8 @@
                     setTimeout(function () {
                         var lp = document.getElementById('login-page');
                         var ac = document.getElementById('app-container');
-                        // 仅当应用界面未显示时才跳转（避免覆盖自动重新登录的结果）
-                        if (lp && ac && ac.style.display !== 'block') {
+                        // 跳转到登录页面
+                        if (lp && ac) {
                             ac.style.display = 'none';
                             lp.style.display = 'flex';
                         }

@@ -128,9 +128,6 @@ public:
     // 从文件加载配置
     bool loadConfiguration();
     
-    // 从旧版gpio.json迁移配置
-    bool migrateFromGPIOConfig();
-    
     // ========== 系统状态 ==========
     
     // 打印所有外设状态（调试用）

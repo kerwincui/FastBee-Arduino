@@ -8,11 +8,76 @@ const AppState = {
 
     // ============ 初始化 ============
     init() {
+        this.setupTheme();  // 主题初始化
+        this.setupUserDropdown(); // 用户下拉菜单
         this.setupSidebarToggle();
         this.setupLanguage();
         this.setupConfigTabs();
         this.setupEventListeners();
         this.refreshPage();
+    },
+
+    // ============ 用户下拉菜单 ============
+    setupUserDropdown() {
+        const dropdownBtn = document.getElementById('user-dropdown-btn');
+        const dropdownMenu = document.getElementById('user-dropdown-menu');
+        
+        if (!dropdownBtn || !dropdownMenu) return;
+        
+        // 切换下拉菜单显示
+        dropdownBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const dropdown = dropdownBtn.closest('.user-dropdown');
+            dropdown.classList.toggle('open');
+        });
+        
+        // 点击外部关闭下拉菜单
+        document.addEventListener('click', (e) => {
+            if (!dropdownBtn.contains(e.target) && !dropdownMenu.contains(e.target)) {
+                const dropdown = dropdownBtn.closest('.user-dropdown');
+                if (dropdown) dropdown.classList.remove('open');
+            }
+        });
+        
+        // 点击菜单项后关闭下拉菜单
+        dropdownMenu.querySelectorAll('.dropdown-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const dropdown = dropdownBtn.closest('.user-dropdown');
+                if (dropdown) dropdown.classList.remove('open');
+            });
+        });
+    },
+
+    // ============ 主题管理 ============
+    setupTheme() {
+        // 检测系统主题偏好
+        const savedTheme = localStorage.getItem('theme');
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const theme = savedTheme || (prefersDark ? 'dark' : 'light');
+        this.setTheme(theme);
+        
+        // 绑定主题切换按钮 (下拉菜单中的)
+        const themeToggleItem = document.getElementById('theme-toggle-item');
+        if (themeToggleItem) {
+            themeToggleItem.addEventListener('click', () => this.toggleTheme());
+        }
+        
+        // 监听系统主题变化
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+            if (!localStorage.getItem('theme')) {
+                this.setTheme(e.matches ? 'dark' : 'light');
+            }
+        });
+    },
+    
+    setTheme(theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem('theme', theme);
+    },
+    
+    toggleTheme() {
+        const current = document.documentElement.getAttribute('data-theme');
+        this.setTheme(current === 'dark' ? 'light' : 'dark');
     },
 
     // ============ 会话验证 ============
@@ -994,8 +1059,18 @@ const AppState = {
         const permDefs = this._permDefs || [];
         const rolePerms = new Set(role.permissions || []);
         
-        // 权限组名中文→英文映射key
-        const _gpk = {'设备':'device','网络':'network','系统':'system','用户':'user','文件':'file','协议':'protocol','审计':'audit','GPIO':'gpio','外设':'peripheral'};
+        // 权限组名中文→英文映射key（同时支持中英文）
+        const _gpk = {
+            '设备':'device', 'Device':'device',
+            '网络':'network', 'Network':'network',
+            '系统':'system', 'System':'system',
+            '用户':'user', 'Users':'user',
+            '文件':'file', 'Files':'file',
+            '协议':'protocol', 'Protocol':'protocol',
+            '审计':'audit', 'Audit':'audit',
+            'GPIO':'gpio',
+            '外设':'peripheral', 'Peripheral':'peripheral'
+        };
         
         // 按分组整理
         const permGroups = {};
@@ -1132,8 +1207,18 @@ const AppState = {
         const permDefs = this._permDefs || [];
         const selectedSet = new Set(selectedPerms);
         
-        // 权限组名中文→英文映射key
-        const _gpk = {'设备':'device','网络':'network','系统':'system','用户':'user','文件':'file','协议':'protocol','审计':'audit','GPIO':'gpio','外设':'peripheral'};
+        // 权限组名中文→英文映射key（同时支持中英文）
+        const _gpk = {
+            '设备':'device', 'Device':'device',
+            '网络':'network', 'Network':'network',
+            '系统':'system', 'System':'system',
+            '用户':'user', 'Users':'user',
+            '文件':'file', 'Files':'file',
+            '协议':'protocol', 'Protocol':'protocol',
+            '审计':'audit', 'Audit':'audit',
+            'GPIO':'gpio',
+            '外设':'peripheral', 'Peripheral':'peripheral'
+        };
         
         // 按分组整理
         const permGroups = {};
@@ -1369,17 +1454,13 @@ const AppState = {
 
         if (!username) return showErr(i18n.t('validate-username-empty'));
         
-        // 添加模式时验证
-        if (!isEditMode) {
-            if (username.length < 3 || username.length > 32) return showErr(i18n.t('validate-username-len'));
-            if (!password || !confirmPwd) return showErr(i18n.t('validate-pwd-empty'));
-        }
+        // 用户名长度验证
+        if (username.length < 3 || username.length > 32) return showErr(i18n.t('validate-username-len'));
         
-        // 密码验证（编辑模式密码可选，但如果填写了就要验证）
-        if (password || confirmPwd) {
-            if (password !== confirmPwd) return showErr(i18n.t('validate-pwd-mismatch'));
-            if (password.length < 6) return showErr(i18n.t('validate-pwd-len'));
-        }
+        // 密码验证（添加和编辑模式都要求密码必填）
+        if (!password || !confirmPwd) return showErr(i18n.t('validate-pwd-empty'));
+        if (password !== confirmPwd) return showErr(i18n.t('validate-pwd-mismatch'));
+        if (password.length < 6) return showErr(i18n.t('validate-pwd-len'));
 
         if (errDiv) errDiv.style.display = 'none';
 
@@ -5181,6 +5262,8 @@ const AppState = {
         const username = document.getElementById('mqtt-username')?.value || '';
         const password = document.getElementById('mqtt-password')?.value || '';
         const authCode = document.getElementById('mqtt-auth-code')?.value || '';
+        const mqttSecret = document.getElementById('mqtt-secret')?.value || '';
+        const authType = document.getElementById('mqtt-auth-type')?.value || '0';
         
         if (!server) {
             if (resultEl) {
@@ -5191,18 +5274,11 @@ const AppState = {
         }
 
         // 验证客户端ID前缀与认证方式是否匹配
-        const authType = document.getElementById('mqtt-auth-type')?.value || '0';
-        if (clientId) {
-            if (authType === '0' && !clientId.startsWith('S&')) {
+        // 加密认证(authType=1)时后端自动生成 clientId，无需校验前缀
+        if (clientId && authType === '0') {
+            if (!clientId.startsWith('S&')) {
                 if (resultEl) {
                     resultEl.textContent = i18n.t('mqtt-test-clientid-simple-prefix');
-                    resultEl.style.color = '#f56c6c';
-                }
-                return;
-            }
-            if (authType === '1' && !clientId.startsWith('E&')) {
-                if (resultEl) {
-                    resultEl.textContent = i18n.t('mqtt-test-clientid-encrypted-prefix');
                     resultEl.style.color = '#f56c6c';
                 }
                 return;
@@ -5219,9 +5295,45 @@ const AppState = {
             resultEl.style.color = '#909399';
         }
         
-        apiPost('/api/mqtt/test', { server, port, clientId, username, password, authCode })
+        // 传递 authType 让后端知道当前 UI 选择的认证方式
+        apiPost('/api/mqtt/test', { server, port, clientId, username, password, authCode, authType, mqttSecret })
             .then(res => {
                 if (res && res.success && res.data) {
+                    // 加密认证：后端使用非阻塞延迟连接，需轮询状态
+                    if (res.data.deferred) {
+                        if (resultEl) {
+                            resultEl.textContent = i18n.t('mqtt-test-deferred') || 'MQTT connecting asynchronously, check status...';
+                            resultEl.style.color = '#e6a23c';
+                        }
+                        if (btn) btn.classList.add('mqtt-test-success');
+                        // 延迟轮询实际状态
+                        let pollCount = 0;
+                        const pollInterval = setInterval(() => {
+                            pollCount++;
+                            this._loadMqttStatus();
+                            const badge = document.getElementById('mqtt-status-badge');
+                            if (badge && badge.classList.contains('mqtt-status-online')) {
+                                clearInterval(pollInterval);
+                                if (resultEl) {
+                                    resultEl.textContent = i18n.t('mqtt-test-success');
+                                    resultEl.style.color = '#67c23a';
+                                }
+                            }
+                            if (pollCount >= 15) {
+                                clearInterval(pollInterval);
+                                if (resultEl && !resultEl.textContent.includes(i18n.t('mqtt-test-success'))) {
+                                    resultEl.textContent = i18n.t('mqtt-test-deferred-timeout') || 'Connection timeout, check logs';
+                                    resultEl.style.color = '#f56c6c';
+                                    if (btn) {
+                                        btn.classList.remove('mqtt-test-success');
+                                        btn.classList.add('mqtt-test-fail');
+                                    }
+                                }
+                            }
+                        }, 2000);
+                        return;
+                    }
+
                     if (res.data.connected) {
                         // 测试通过，检查实际连接结果
                         if (res.data.realConnected) {
@@ -5242,7 +5354,13 @@ const AppState = {
                         }
                     } else {
                         const errCode = res.data.error || 'Unknown';
-                        const errMsg = this._mqttErrorCodeToText(errCode);
+                        let errMsg = this._mqttErrorCodeToText(errCode);
+                        // AES 认证下，Bad credentials 通常是密钥/授权码/账号信息不匹配
+                        if (authType === '1' && String(errCode) === '4') {
+                            const hint = i18n.t('mqtt-test-aes-bad-credentials-hint') ||
+                                'AES认证失败，请检查用户名、密码、产品密钥(mqttSecret)和授权码(authCode)是否与平台一致';
+                            errMsg = errMsg + ' - ' + hint;
+                        }
                         if (resultEl) {
                             resultEl.textContent = i18n.t('mqtt-test-fail-prefix') + errMsg;
                             resultEl.style.color = '#f56c6c';
@@ -5439,9 +5557,14 @@ const AppState = {
                 if (reconnEl) reconnEl.textContent = d.reconnectCount ?? 0;
             })
             .catch(err => {
-                // 401 表示会话失效，停止轮询防止级联错误
+                // 401 表示会话失效或权限不足，停止轮询并给出可见提示，避免“无响应”感知
                 if (err && err.status === 401) {
                     this._stopMqttStatusPolling();
+                    const badge = document.getElementById('mqtt-status-badge');
+                    if (badge) {
+                        badge.className = 'mqtt-status-badge mqtt-status-offline';
+                        badge.textContent = i18n.t('mqtt-status-auth-fail') || 'Unauthorized';
+                    }
                 }
             });
     },

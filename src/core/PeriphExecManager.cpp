@@ -705,10 +705,10 @@ bool PeriphExecManager::executeSystemAction(const PeriphExecRule& rule) {
             LOGGER.info("[PeriphExec] Executing factory reset...");
             const char* configFiles[] = {
                 "/config/device.json", "/config/network.json", "/config/protocol.json",
-                "/config/gpio.json", "/config/users.json", "/config/system.json",
+                "/config/users.json", "/config/system.json",
                 "/config/http.json", "/config/mqtt.json", "/config/tcp.json",
                 "/config/modbus.json", "/config/coap.json", PERIPH_EXEC_CONFIG_FILE,
-                RULE_SCRIPT_CONFIG_FILE
+                RULE_SCRIPT_CONFIG_FILE, "/config/peripherals.json", "/config/roles.json"
             };
             for (int i = 0; i < (int)(sizeof(configFiles) / sizeof(configFiles[0])); i++) {
                 if (LittleFS.exists(configFiles[i])) {

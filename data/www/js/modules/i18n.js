@@ -46,6 +46,9 @@ const i18n = {
             'user-name': '管理员',
             'change-password-btn': '修改密码',
             'logout-btn': '退出登录',
+            'theme-toggle': '切换主题',
+            'theme-light': '浅色模式',
+            'theme-dark': '深色模式',
             
             // 仪表盘
             'cpu-label': 'CPU使用率',
@@ -322,6 +325,7 @@ const i18n = {
             'fs-close-btn': '关闭',
             'fs-empty-dir': '空目录',
             'fs-load-fail': '加载失败',
+            'fs-editor-placeholder': '选择文件后在此编辑...',
             
             // 页脚
             'sidebar-copyright': 'FastBee物联网平台',
@@ -918,6 +922,10 @@ const i18n = {
             'periph-exec-interval-label': '间隔 (秒)',
             'periph-exec-timepoint-label': '执行时间 (HH:MM)',
             'periph-exec-action-type-label': '动作类型',
+            'periph-exec-exec-mode-label': '执行模式',
+            'periph-exec-exec-mode-async': '异步执行',
+            'periph-exec-exec-mode-sync': '同步执行',
+            'periph-exec-exec-mode-help': '异步: 独立任务不阻塞, 同步: 阻塞主循环',
             'periph-exec-action-cat-gpio': 'GPIO操作',
             'periph-exec-action-cat-analog': '模拟输出',
             'periph-exec-action-cat-system': '系统功能',
@@ -1053,9 +1061,10 @@ const i18n = {
             'mqtt-test-ok-real-fail': '凭证验证通过，但实际连接失败',
             'mqtt-test-fail-prefix': '连接失败: ',
             'mqtt-test-error': '测试请求失败',
+            'mqtt-test-deferred': 'MQTT 正在异步连接中，请关注状态变化...',
+            'mqtt-test-deferred-timeout': '异步连接超时，请检查配置或查看日志',
             'mqtt-test-no-server': '请先填写Broker地址',
             'mqtt-test-clientid-simple-prefix': "简单认证模式下，客户端ID必须以'S&'开头，请修改客户端ID字段的内容",
-            'mqtt-test-clientid-encrypted-prefix': "AES加密认证模式下，客户端ID必须以'E&'开头，请修改客户端ID字段的内容",
             
             // MQTT 状态面板
             'mqtt-status-label': '连接状态',
@@ -1433,6 +1442,9 @@ const i18n = {
             'user-name': 'Administrator',
             'change-password-btn': 'Change Password',
             'logout-btn': 'Logout',
+            'theme-toggle': 'Toggle Theme',
+            'theme-light': 'Light Mode',
+            'theme-dark': 'Dark Mode',
             
             // Dashboard
             'cpu-label': 'CPU Usage',
@@ -1708,6 +1720,7 @@ const i18n = {
             'fs-close-btn': 'Close',
             'fs-empty-dir': 'Empty directory',
             'fs-load-fail': 'Load failed',
+            'fs-editor-placeholder': 'Edit file content here after selecting...',
             
             // Footer
             'sidebar-copyright': 'FastBee IoT Platform',
@@ -2304,6 +2317,10 @@ const i18n = {
             'periph-exec-interval-label': 'Interval (sec)',
             'periph-exec-timepoint-label': 'Time (HH:MM)',
             'periph-exec-action-type-label': 'Action Type',
+            'periph-exec-exec-mode-label': 'Execution Mode',
+            'periph-exec-exec-mode-async': 'Async Execution',
+            'periph-exec-exec-mode-sync': 'Sync Execution',
+            'periph-exec-exec-mode-help': 'Async: Independent task non-blocking, Sync: Blocks main loop',
             'periph-exec-action-cat-gpio': 'GPIO Operations',
             'periph-exec-action-cat-analog': 'Analog Output',
             'periph-exec-action-cat-system': 'System Functions',
@@ -2439,9 +2456,10 @@ const i18n = {
             'mqtt-test-ok-real-fail': 'Credentials verified, but actual connection failed',
             'mqtt-test-fail-prefix': 'Connection failed: ',
             'mqtt-test-error': 'Test request failed',
+            'mqtt-test-deferred': 'MQTT connecting asynchronously, check status...',
+            'mqtt-test-deferred-timeout': 'Async connection timeout, check config or logs',
             'mqtt-test-no-server': 'Please enter broker address first',
             'mqtt-test-clientid-simple-prefix': "In simple auth mode, client ID must start with 'S&'. Please modify the client ID field",
-            'mqtt-test-clientid-encrypted-prefix': "In AES encrypted auth mode, client ID must start with 'E&'. Please modify the client ID field",
             
             // MQTT Status Panel
             'mqtt-status-label': 'Status',

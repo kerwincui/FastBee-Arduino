@@ -38,12 +38,15 @@ bool WiFiManager::connectToWiFi() {
         return false;
     }
 
-    // 如果当前处于连接或连接中状态，先断开以清除可能的错误状态
-    wl_status_t currentStatus = WiFi.status();
-    if (currentStatus == WL_CONNECTED || currentStatus == WL_IDLE_STATUS) {
-        LOG_DEBUG("WiFiManager: Disconnecting before new connection attempt");
-        WiFi.disconnect(false);
-        delay(50);  // 短暂延迟确保断开完成
+    // 在 AP+STA 模式下，不要断开已有连接，因为 AP 模式可能已经在运行
+    // 只有在纯 STA 模式下才断开已有连接
+    if (wifiConfig.mode == NetworkMode::NETWORK_STA) {
+        wl_status_t currentStatus = WiFi.status();
+        if (currentStatus == WL_CONNECTED || currentStatus == WL_IDLE_STATUS) {
+            LOG_DEBUG("WiFiManager: Disconnecting before new connection attempt");
+            WiFi.disconnect(false);
+            delay(50);  // 短暂延迟确保断开完成
+        }
     }
 
     // 确保 WiFi 模式正确
@@ -117,6 +120,16 @@ bool WiFiManager::startAPMode() {
         return false;
     }
     
+    // 配置 AP 网络参数（必须在 softAP 之前调用）
+    IPAddress apIP(192, 168, 4, 1);
+    IPAddress apGateway(192, 168, 4, 1);
+    IPAddress apSubnet(255, 255, 255, 0);
+    
+    if (!WiFi.softAPConfig(apIP, apGateway, apSubnet)) {
+        LOG_WARNING("WiFiManager: Failed to configure AP network");
+        // 继续尝试启动 AP，可能使用默认配置
+    }
+    
     // 配置 AP 参数
     String apSSID;
     if (wifiConfig.apSSID.isEmpty()) {
@@ -132,15 +145,6 @@ bool WiFiManager::startAPMode() {
                      wifiConfig.apMaxConnections)) {
         LOG_ERROR("WiFiManager: Failed to start AP mode");
         return false;
-    }
-    
-    // 配置 AP 网络
-    IPAddress apIP(192, 168, 4, 1);
-    IPAddress apGateway(192, 168, 4, 1);
-    IPAddress apSubnet(255, 255, 255, 0);
-    
-    if (!WiFi.softAPConfig(apIP, apGateway, apSubnet)) {
-        LOG_WARNING("WiFiManager: Failed to configure AP network");
     }
     
     statusInfo.status = NetworkStatus::AP_MODE;

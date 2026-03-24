@@ -24,12 +24,6 @@ bool PeripheralManager::initialize() {
     // 创建递归互斥量（支持同一任务嵌套加锁，如 togglePin → readPin → writePin）
     _mutex = xSemaphoreCreateRecursiveMutex();
     
-    // 尝试从旧版配置迁移
-    if (LittleFS.exists("/config/gpio.json") && !LittleFS.exists(PERIPHERAL_CONFIG_FILE)) {
-        LOG_INFO("Peripheral Manager: Migrating from gpio.json");
-        migrateFromGPIOConfig();
-    }
-    
     // 加载配置
     if (loadConfiguration()) {
         LOG_INFO("Peripheral Manager: Configuration loaded successfully");
@@ -671,86 +665,6 @@ bool PeripheralManager::loadConfiguration() {
     }
     
     LOG_INFOF("Peripheral Manager: Loaded %d peripheral configurations", loadedCount);
-    return true;
-}
-
-bool PeripheralManager::migrateFromGPIOConfig() {
-    if (!LittleFS.exists("/config/gpio.json")) {
-        return false;
-    }
-    
-    LOG_INFO("Peripheral Manager: Migrating from gpio.json...");
-    
-    File file = LittleFS.open("/config/gpio.json", "r");
-    if (!file) {
-        LOG_ERROR("Peripheral Manager: Failed to open gpio.json");
-        return false;
-    }
-    
-    String jsonStr = file.readString();
-    file.close();
-    
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, jsonStr);
-    
-    if (error) {
-        LOG_ERRORF("Peripheral Manager: Failed to parse gpio.json - %s", error.c_str());
-        return false;
-    }
-    
-    JsonArray pins = doc["pins"].as<JsonArray>();
-    if (pins.isNull()) {
-        LOG_WARNING("Peripheral Manager: No pins found in gpio.json");
-        return false;
-    }
-    
-    int migratedCount = 0;
-    for (JsonObject pinObj : pins) {
-        PeripheralConfig config;
-        
-        uint8_t pin = pinObj["pin"] | 255;
-        String name = pinObj["name"] | "";
-        int mode = pinObj["mode"] | 0;
-        
-        if (pin == 255 || name.isEmpty()) continue;
-        
-        // 将旧模式转换为新类型
-        switch (mode) {
-            case 1: config.type = PeripheralType::GPIO_DIGITAL_INPUT; break;
-            case 2: config.type = PeripheralType::GPIO_DIGITAL_OUTPUT; break;
-            case 3: config.type = PeripheralType::GPIO_DIGITAL_INPUT_PULLUP; break;
-            case 4: config.type = PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN; break;
-            case 5: config.type = PeripheralType::GPIO_ANALOG_INPUT; break;
-            case 6: config.type = PeripheralType::GPIO_ANALOG_OUTPUT; break;
-            case 7: config.type = PeripheralType::GPIO_PWM_OUTPUT; break;
-            default: config.type = PeripheralType::GPIO_DIGITAL_OUTPUT; break;
-        }
-        
-        config.id = "gpio_" + String(pin);
-        config.name = name;
-        config.enabled = true;
-        config.pinCount = 1;
-        config.pins[0] = pin;
-        
-        config.params.gpio.initialState = static_cast<GPIOState>(pinObj["initialState"] | 0);
-        config.params.gpio.pwmChannel = pin % 16;
-        config.params.gpio.pwmFrequency = pinObj["pwmFrequency"] | 1000;
-        config.params.gpio.pwmResolution = pinObj["pwmResolution"] | 8;
-        
-        if (addPeripheral(config)) {
-            migratedCount++;
-        }
-    }
-    
-    LOG_INFOF("Peripheral Manager: Migrated %d GPIO configurations", migratedCount);
-    
-    // 备份旧文件
-    LittleFS.rename("/config/gpio.json", PERIPHERAL_CONFIG_BACKUP);
-    LOG_INFO("Peripheral Manager: Backed up gpio.json to gpio.json.bak");
-    
-    // 保存新配置
-    saveConfiguration();
-    
     return true;
 }
 

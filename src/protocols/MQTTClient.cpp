@@ -23,6 +23,24 @@
 #include <core/RuleScriptManager.h>
 #include <mbedtls/base64.h>
 
+static double jsonVariantToDoubleSafe(JsonVariantConst v) {
+    if (v.isNull()) return 0.0;
+    if (v.is<double>()) return v.as<double>();
+    if (v.is<float>()) return static_cast<double>(v.as<float>());
+    if (v.is<long long>()) return static_cast<double>(v.as<long long>());
+    if (v.is<unsigned long long>()) return static_cast<double>(v.as<unsigned long long>());
+    if (v.is<long>()) return static_cast<double>(v.as<long>());
+    if (v.is<unsigned long>()) return static_cast<double>(v.as<unsigned long>());
+    if (v.is<int>()) return static_cast<double>(v.as<int>());
+    if (v.is<unsigned int>()) return static_cast<double>(v.as<unsigned int>());
+    if (v.is<const char*>()) {
+        const char* s = v.as<const char*>();
+        return (s && s[0] != '\0') ? String(s).toDouble() : 0.0;
+    }
+    if (v.is<String>()) return v.as<String>().toDouble();
+    return 0.0;
+}
+
 MQTTClient::MQTTClient()
     : isConnected(false), stopped(false), lastReconnectAttempt(0),
       lastConnectedTime(0), lastErrorCode(0), reconnectCount(0),
@@ -914,7 +932,8 @@ String MQTTClient::buildEncryptedPassword() {
         return "";
     }
 
-    String ntpJson = getNtpTime();
+    unsigned long deviceSendTime = 0;
+    String ntpJson = getNtpTime(deviceSendTime);
     if (ntpJson.isEmpty()) {
         LOG_WARNING("MQTT: Failed to get NTP time");
         return "";
@@ -927,18 +946,44 @@ String MQTTClient::buildEncryptedPassword() {
         return "";
     }
 
-    double deviceSendTime = doc["deviceSendTime"] | 0.0;
-    double serverSendTime = doc["serverSendTime"] | 0.0;
-    double serverRecvTime = doc["serverRecvTime"] | 0.0;
+    double serverSendTime = jsonVariantToDoubleSafe(doc["serverSendTime"]);
+    double serverRecvTime = jsonVariantToDoubleSafe(doc["serverRecvTime"]);
+    
+    // 兼容 FastBee 平台返回格式: {"data": {"serverTime": xxx}} 或 {"code":200,"data":{"serverTime":xxx}}
+    if (serverSendTime <= 0.0 || serverRecvTime <= 0.0) {
+        if (doc["data"].is<JsonObject>()) {
+            double serverTime = jsonVariantToDoubleSafe(doc["data"]["serverTime"]);
+            if (serverTime > 0.0) {
+                // 如果是秒级时间戳（小于10000000000），转换为毫秒
+                if (serverTime < 10000000000.0) {
+                    serverTime *= 1000.0;
+                }
+                serverSendTime = serverTime;
+                serverRecvTime = serverTime;
+            }
+        }
+    }
+    
+    // 验证时间戳有效性（毫秒级时间戳应大于 1000000000000，即 2001年以后）
+    if (serverSendTime < 1000000000000.0 || serverRecvTime < 1000000000000.0) {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "MQTT: Invalid NTP timestamps: sendTime=%.0f, recvTime=%.0f", serverSendTime, serverRecvTime);
+        LOG_WARNING(buf);
+        return "";
+    }
     double deviceRecvTime = (double)millis();
-    double now = (serverSendTime + serverRecvTime + deviceRecvTime - deviceSendTime) / 2.0;
+    double now = (serverSendTime + serverRecvTime + deviceRecvTime - (double)deviceSendTime) / 2.0;
     double expireTime = now + 3600000.0;
+    // expireTime 为毫秒级时间戳（通常 > 2^32），必须使用 64 位整型避免溢出导致鉴权失败
+    unsigned long long expireTimeMs = (unsigned long long)expireTime;
+    char expireBuf[24];
+    snprintf(expireBuf, sizeof(expireBuf), "%llu", expireTimeMs);
 
     String plainPassword;
     if (config.authCode.isEmpty()) {
-        plainPassword = config.password + "&" + String((unsigned long)expireTime);
+        plainPassword = config.password + "&" + String(expireBuf);
     } else {
-        plainPassword = config.password + "&" + String((unsigned long)expireTime) + "&" + config.authCode;
+        plainPassword = config.password + "&" + String(expireBuf) + "&" + config.authCode;
     }
 
     LOG_INFO("MQTT: Generating AES encrypted password");
@@ -954,14 +999,24 @@ String MQTTClient::buildEncryptedPassword() {
     return encrypted;
 }
 
-String MQTTClient::getNtpTime() {
+String MQTTClient::getNtpTime(unsigned long& outDeviceSendTime) {
     if (config.ntpServer.isEmpty()) {
         LOG_WARNING("MQTT: NTP server not configured");
         return "";
     }
 
     HTTPClient http;
-    String url = config.ntpServer + String(millis());
+    String url = config.ntpServer;
+    
+    // FastBee平台需要 deviceSendTime 参数
+    outDeviceSendTime = millis();
+    
+    if (url.indexOf('?') >= 0) {
+        if (!url.endsWith("?") && !url.endsWith("&")) url += "&";
+    } else {
+        url += "?";
+    }
+    url += "deviceSendTime=" + String(outDeviceSendTime);
 
     char buf[128];
     snprintf(buf, sizeof(buf), "MQTT: Fetching NTP time from %s", url.c_str());
