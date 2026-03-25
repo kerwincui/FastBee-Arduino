@@ -544,17 +544,6 @@ a:hover { text-decoration: underline; }
 .dropdown-item-danger:hover { background: var(--danger-light); }
 .dropdown-divider { height: 1px; background: var(--border); margin: var(--space-1) 0; }
 
-.language-select-header {
-  background: var(--slate-100);
-  color: var(--text-primary);
-  border: 1px solid var(--border);
-  border-radius: var(--rounded);
-  padding: var(--space-2) var(--space-3);
-  font-size: 13px;
-  cursor: pointer;
-  height: 32px;
-}
-
 /* Content Area */
 .content {
   flex: 1;
@@ -579,7 +568,6 @@ a:hover { text-decoration: underline; }
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--glass-border);
   border-radius: var(--rounded-lg);
-  box-shadow: var(--glass-shadow);
   margin-bottom: var(--space-6);
   transition: var(--transition-transform), var(--transition-shadow);
 }
@@ -960,13 +948,26 @@ a:hover { text-decoration: underline; }
 .form-label { font-size: 14px; font-weight: 500; color: var(--text-secondary); }
 .form-label.required::after { content: " *"; color: var(--danger); }
 
-/* Form Input & Select - Unified Style */
-.form-input, .form-select, select, input[type="text"], input[type="password"], input[type="number"], input[type="email"] {
+/* Form Input - Unified Style (select handled separately to preserve arrow) */
+.form-input, input[type="text"], input[type="password"], input[type="number"], input[type="email"] {
   height: 40px;
   padding: 0 var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--rounded-md);
   background: var(--bg-input);
+  color: var(--text-primary);
+  transition: all var(--transition);
+  width: 100%;
+  font-size: 14px;
+}
+
+/* Form Select - use background-color to preserve arrow icon */
+.form-select, select {
+  height: 40px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--rounded-md);
+  background-color: var(--bg-input);
   color: var(--text-primary);
   transition: all var(--transition);
   width: 100%;
@@ -1016,7 +1017,7 @@ select:hover, .form-select:hover {
 .form-actions { display: flex; justify-content: flex-end; gap: var(--space-3); padding-top: var(--space-6); margin-top: var(--space-4); border-top: 1px solid var(--border); }
 
 /* Pure Form Override */
-.pure-form .pure-input-1 { height: 40px; padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--rounded-md); background: var(--bg-input); color: var(--text-primary); }
+.pure-form .pure-input-1 { height: 40px; padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--rounded-md); color: var(--text-primary); }
 .pure-form .pure-control-group { margin-bottom: var(--space-4); }
 .pure-form label { margin-bottom: var(--space-2); display: block; font-weight: 500; color: var(--text-secondary); }
 
@@ -1424,21 +1425,6 @@ select:hover, .form-select:hover {
 }
 
 .login-lang-switch { position: absolute; top: var(--space-3); right: var(--space-3); z-index: 1; }
-.login-lang-select { 
-  padding: var(--space-1) var(--space-2); 
-  border: 1px solid var(--glass-border); 
-  border-radius: var(--rounded); 
-  font-size: 13px; 
-  color: var(--text-secondary); 
-  background: var(--glass-bg);
-  backdrop-filter: blur(8px);
-  cursor: pointer;
-  transition: all var(--transition);
-}
-.login-lang-select:hover {
-  border-color: var(--primary);
-  background: rgba(255, 255, 255, 0.9);
-}
 .login-header { padding: var(--space-8) var(--space-5) 0; text-align: center; }
 .login-header img { width: 50px; }
 .login-body { padding: var(--space-8); }
@@ -1504,6 +1490,54 @@ select:hover, .form-select:hover {
 .wifi-signal.medium { color: var(--warning); }
 .wifi-signal.weak { color: var(--danger); }
 
+/* WiFi Grid - Two Column Layout */
+.wifi-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-2);
+  padding: var(--space-2);
+}
+.wifi-grid-item {
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--rounded);
+  background: var(--bg-card);
+  cursor: pointer;
+  transition: all var(--transition);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.wifi-grid-item:hover {
+  border-color: var(--primary);
+  background: var(--primary-light);
+  box-shadow: var(--shadow-sm);
+}
+.wifi-grid-item .wifi-info { flex: 1; min-width: 0; }
+.wifi-grid-item .wifi-ssid { 
+  font-weight: 500; 
+  white-space: nowrap; 
+  overflow: hidden; 
+  text-overflow: ellipsis;
+  font-size: 13px;
+}
+.wifi-grid-item .wifi-meta { 
+  font-size: 11px; 
+  color: var(--text-muted); 
+  margin-top: 2px; 
+}
+.wifi-grid-item .wifi-signal { 
+  font-size: 11px; 
+  flex-shrink: 0;
+  margin-left: var(--space-2);
+}
+
+@media (max-width: 480px) {
+  .wifi-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ============================================
    18. MQTT Styles
    ============================================ */
@@ -1559,7 +1593,6 @@ select:hover, .form-select:hover {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   overflow: hidden;
-  box-shadow: var(--glass-shadow);
 }
 .logs-page-header {
   padding: var(--space-4) var(--space-5);
@@ -1621,7 +1654,7 @@ select:hover, .form-select:hover {
   font-size: 13px;
   cursor: pointer;
   color: var(--text-secondary);
-  padding: var(--space-2) var(--space-3);
+  padding: 0 var(--space-3);
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
   border-radius: var(--rounded-md);
@@ -1698,9 +1731,7 @@ select:hover, .form-select:hover {
 /* ============================================
    21. Footer
    ============================================ */
-.app-footer { border-top: 1px solid var(--border); padding: var(--space-2); text-align: center; color: var(--text-muted); font-size: 12px; flex-shrink: 0; }
-.app-footer a { color: var(--primary); }
-.app-footer a:hover { text-decoration: underline; }
+.app-footer {  padding-top: var(--space-5); text-align: center; color: var(--text-muted); font-size: 12px; flex-shrink: 0; }
 
 /* ============================================
    22. CSS-Only Icons & SVG Icons
@@ -2135,69 +2166,6 @@ textarea:focus-visible,
 /* 侧边菜单 hover 不显示下划线 */
 .sidebar-menu .menu-item:hover {
   text-decoration: none !important;
-}
-
-/* 登录页语言选择器 */
-.login-lang-switch {
-  top: var(--space-4);
-  right: var(--space-4);
-}
-
-.login-lang-select {
-  min-height: 34px;
-  padding: 0 32px 0 12px;
-  border-radius: var(--rounded-md);
-  border: 1px solid color-mix(in srgb, var(--primary) 30%, var(--border));
-  background-color: var(--bg-card);
-  color: var(--text-primary);
-  font-weight: 500;
-  box-shadow: var(--shadow-sm);
-}
-
-.login-lang-select:hover,
-.login-lang-select:focus {
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent);
-}
-
-/* 顶部语言切换器 */
-.language-select-header {
-  min-height: 34px;
-  padding: 0 34px 0 12px;
-  border-radius: var(--rounded-md);
-  border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--border));
-  background-color: var(--bg-card);
-  color: var(--text-primary);
-  font-weight: 500;
-  box-shadow: var(--shadow-sm);
-}
-
-.language-select-header:hover,
-.language-select-header:focus {
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent);
-}
-
-/* 语言切换下拉：箭头样式继承通用select */
-.login-lang-select,
-.language-select-header {
-  appearance: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
-  background-size: 10px;
-}
-
-[data-theme="dark"] .login-lang-select,
-[data-theme="dark"] .language-select-header {
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-}
-
-.login-lang-select::-ms-expand,
-.language-select-header::-ms-expand {
-  display: none;
 }
 
 /* 用户下拉层级抬高，避免被页面组件遮挡 */

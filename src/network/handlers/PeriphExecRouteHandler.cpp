@@ -2,6 +2,8 @@
 #include "./network/WebHandlerContext.h"
 #include "core/PeriphExecManager.h"
 #include "core/PeripheralManager.h"
+#include "protocols/MQTTClient.h"
+#include "protocols/ProtocolManager.h"
 #include <ArduinoJson.h>
 
 PeriphExecRouteHandler::PeriphExecRouteHandler(WebHandlerContext* ctx)
@@ -17,6 +19,9 @@ void PeriphExecRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/periph-exec/disable", HTTP_POST,
               [this](AsyncWebServerRequest* request) { handleDisableRule(request); });
+
+    server->on("/api/periph-exec/run", HTTP_POST,
+              [this](AsyncWebServerRequest* request) { handleRunOnce(request); });
 
     server->on("/api/periph-exec/", HTTP_DELETE,
               [this](AsyncWebServerRequest* request) { handleDeleteRule(request); });
@@ -262,4 +267,40 @@ void PeriphExecRouteHandler::handleDisableRule(AsyncWebServerRequest* request) {
     } else {
         ctx->sendError(request, 404, "Rule not found");
     }
+}
+
+// ========== 执行一次规则 ==========
+
+void PeriphExecRouteHandler::handleRunOnce(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.edit")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+
+    String id = ctx->getParamValue(request, "id", "");
+    if (id.isEmpty()) {
+        ctx->sendError(request, 400, "Rule ID is required");
+        return;
+    }
+
+    PeriphExecManager& mgr = PeriphExecManager::getInstance();
+    
+    // 执行规则动作
+    bool ok = mgr.runOnce(id);
+
+    // 触发设备状态上报（如果MQTT已连接）
+    if (ctx->protocolManager) {
+        MQTTClient* mqtt = ctx->protocolManager->getMQTTClient();
+        if (mqtt && mqtt->getIsConnected()) {
+            // 发布设备信息作为状态上报
+            mqtt->publishDeviceInfo();
+        }
+    }
+
+    JsonDocument doc;
+    doc["success"] = ok;
+    doc["message"] = ok ? "Rule executed successfully" : "Rule execution failed";
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
 }

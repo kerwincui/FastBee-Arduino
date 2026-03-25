@@ -11,20 +11,22 @@ FastBee-Arduino aims to be the most comprehensive and user-friendly embedded IoT
 
 ### Development Progress
 
-Under active development...
+MQTT and Modbus RTU fully supported, HTTP, CoAP, Modbus TCP, TCP protocol infrastructure ready
 
-████████████████████████████████████████████████░░░░░░░░░░░░░░  **80%**
+██████████████████████████████████████████████████████████████████████████  **95%**
 
 ---
 
 ### Features
-* **Web Configuration:** Complete user management, role-based access control (RBAC), session management, responsive SPA design, native web technologies, multi-language support (Chinese/English)
-* **Network Communication:** WiFi STA/AP/AP+STA modes, automatic fallback mechanism, mDNS local domain access, network status monitoring, WiFi scanning
+* **Web Configuration:** Complete user management, role-based access control (RBAC), session management, responsive SPA design, native web technologies, multi-language support (Chinese/English), dark/light theme toggle
+* **Network Communication:** WiFi STA/AP/AP+STA modes, automatic fallback mechanism, mDNS local domain access, network status monitoring, WiFi scanning (two-column grid layout)
 * **Provisioning:** AP hotspot provisioning, Bluetooth BLE provisioning (NimBLE), auto-timeout
-* **Protocol Support:** MQTT, Modbus RTU/TCP, TCP server/client, HTTP client
-* **Remote Maintenance:** Firmware OTA update, filesystem OTA update, online log viewer, remote restart, factory reset
-* **Data Storage:** LittleFS filesystem, NVS Preferences dual storage, JSON configuration management, Gzip compression
+* **Protocol Support:** MQTT (publish/subscribe topic configuration), Modbus RTU/TCP, TCP server/client, HTTP client, CoAP
+* **Remote Maintenance:** Firmware OTA update, filesystem OTA update, online log viewer, remote restart, factory reset, real-time device status reporting
+* **Data Storage:** LittleFS filesystem, NVS Preferences dual storage, JSON configuration management, Gzip compression (83% compression rate)
 * **Peripheral Management:** RS485 serial port, digital I/O, analog input, PWM output, I2C/SPI interfaces, visual GPIO pin configuration
+* **Peripheral Execution:** Rule engine supporting platform/device/timer triggers, GPIO operations, system functions, command scripts
+* **Rule Scripts:** Custom data processing scripts supporting MQTT/Modbus/HTTP protocol data format conversion
 * **Health Monitoring:** Real-time CPU/memory/storage monitoring, network connection status, task status, anomaly alerts
 * **Logging System:** Multi-level logging (DEBUG/INFO/WARN/ERROR), file storage, web viewer, log rotation
 * **Task Scheduling:** Scheduled tasks, async event handling, priority scheduling
@@ -86,15 +88,16 @@ Under active development...
 1. **Setup Environment:** Install VSCode and PlatformIO extension
 2. **Clone Repository:** `git clone https://gitee.com/beecue/fastbee-arduino.git`
 3. **Compress Frontend:** `node scripts/gzip-www.js`
-4. **Upload Filesystem:** PlatformIO → Upload Filesystem Image
-5. **Upload Firmware:** PlatformIO → Upload
+4. **Upload Filesystem:** `pio run --target uploadfs`
+5. **Upload Firmware:** `pio run --target upload`
 6. **Access Device:**
    - First boot enters AP provisioning mode, connect to `fastbee-ap`
    - Or access via mDNS: http://fastbee.local
    - Default credentials: `admin` / `admin123`
-7. **Network Setup:** Configure WiFi connection in web interface
-8. **Peripheral Setup:** Configure RS485, GPIO and other hardware interfaces
-9. **Protocol Setup:** Configure MQTT/Modbus to connect IoT platform
+7. **Network Setup:** Configure WiFi connection in web interface (WiFi scanning supported)
+8. **Peripheral Setup:** Configure RS485, GPIO and other hardware interfaces (visual forms)
+9. **Peripheral Execution:** Configure trigger rules and execution actions
+10. **Protocol Setup:** Configure MQTT/Modbus to connect IoT platform
 
 ---
 
@@ -131,18 +134,70 @@ Under active development...
 FastBee-Arduino/
 ├── include/                       # Header files
 │   ├── core/                      # Core framework
+│   │   ├── FastBeeFramework.h     # Main framework
+│   │   ├── ConfigDefines.h        # Config constants
+│   │   ├── SystemConstants.h      # System constants
+│   │   ├── PeripheralManager.h    # Peripheral management
+│   │   ├── PeriphExecManager.h    # Peripheral execution
+│   │   ├── RuleScriptManager.h    # Rule script management
+│   │   └── FeatureFlags.h         # Feature flags
 │   ├── network/                   # Network modules
+│   │   ├── NetworkManager.h       # Network manager
+│   │   ├── WiFiManager.h          # WiFi manager
+│   │   ├── WebConfigManager.h     # Web config service
+│   │   ├── OTAManager.h           # OTA update
+│   │   └── DNSServer.h            # DNS service
 │   ├── protocols/                 # Protocol handlers
+│   │   ├── ProtocolManager.h      # Protocol manager
+│   │   ├── MQTTClient.h           # MQTT client
+│   │   ├── ModbusHandler.h        # Modbus handler
+│   │   ├── TCPHandler.h           # TCP handler
+│   │   └── HTTPClientWrapper.h    # HTTP client
 │   ├── security/                  # Security modules
+│   │   ├── UserManager.h          # User manager
+│   │   ├── RoleManager.h          # Role manager
+│   │   ├── AuthManager.h          # Auth manager
+│   │   └── CryptoUtils.h          # Crypto utils
 │   ├── systems/                   # System services
+│   │   ├── LoggerSystem.h         # Logger system
+│   │   ├── TaskManager.h          # Task scheduler
+│   │   ├── HealthMonitor.h        # Health monitor
+│   │   └── ConfigStorage.h        # Config storage
 │   └── utils/                     # Utilities
+│       ├── StringUtils.h
+│       ├── TimeUtils.h
+│       ├── FileUtils.h
+│       └── JsonConverters.h
 ├── src/                           # Source files
+│   ├── core/                      # Core implementation
+│   ├── network/                   # Network implementation
+│   ├── protocols/                 # Protocol implementation
+│   ├── security/                  # Security implementation
+│   ├── systems/                   # System implementation
+│   ├── utils/                     # Utils implementation
+│   └── main.cpp                   # Main entry
 ├── data/                          # Filesystem
 │   ├── www/                       # Web frontend
+│   │   ├── index.html             # Single page app
+│   │   ├── css/                   # Stylesheets
+│   │   ├── js/                    # JavaScript
+│   │   └── assets/                # Static assets
 │   ├── config/                    # Configuration files
-│   └── logs/                      # Log files
+│   │   ├── device.json            # Device config
+│   │   ├── network.json           # Network config
+│   │   ├── protocol.json          # Protocol config
+│   │   ├── peripherals.json       # Peripheral config
+│   │   ├── periph_exec.json       # Peripheral execution config
+│   │   ├── rule_scripts.json      # Rule script config
+│   │   ├── roles.json             # Role config
+│   │   └── users.json             # User config
+│   └── logs/                      # Log directory
+│       └── system.log
 ├── lib/                           # Local libraries
+│   └── ESPAsyncWebServer/         # Async web server
 ├── scripts/                       # Build scripts
+│   ├── gzip-www.js                # Frontend compression
+│   └── filter_littlefs.py         # File filtering
 ├── platformio.ini                 # PlatformIO config
 ├── fastbee.csv                    # Partition table
 └── README.md                      # Documentation

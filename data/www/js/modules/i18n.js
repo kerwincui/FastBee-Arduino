@@ -625,6 +625,7 @@ const i18n = {
             'wifi-scan-btn-html': '<i class="fas fa-wifi"></i> 选择Wifi网络',
             'wifi-scanning-result': '<div style="padding: 30px; text-align: center; color: #999;"><i class="fas fa-spinner fa-spin" style="font-size:24px;"></i><div style="margin-top:10px;">正在扫描...</div></div>',
             'wifi-scan-fail': '<div style="padding: 30px; text-align: center; color: #f56c6c;"><i class="fas fa-exclamation-circle" style="font-size:24px;"></i><div style="margin-top:10px;">扫描失败</div></div>',
+                        'wifi-scan-fail-msg': '扫描失败，请稍后重试',
             'wifi-scan-busy': '<div style="padding: 30px; text-align: center; color: #e6a23c;"><i class="fas fa-spinner fa-spin" style="font-size:24px;"></i><div style="margin-top:10px;">扫描正在进行中，请稍后再试</div></div>',
             'wifi-no-network': '<div style="padding: 30px; text-align: center; color: #999;"><i class="fas fa-wifi" style="font-size:24px;"></i><div style="margin-top:10px;">未找到WiFi网络</div></div>',
             'wifi-selected-prefix': '已选择: ',
@@ -1107,7 +1108,7 @@ const i18n = {
             // MQTT 认证
             'mqtt-auth-type-label': '认证方式',
             'mqtt-auth-simple': '简单认证',
-            'mqtt-auth-encrypted': 'AES加密认证',
+            'mqtt-auth-encrypted': '加密认证',
             'mqtt-auth-code-label': '授权码',
             'mqtt-device-num-label': '设备编号',
             'mqtt-product-id-label': '产品ID',
@@ -2024,6 +2025,7 @@ const i18n = {
             'wifi-scan-btn-html': '<i class="fas fa-wifi"></i> Choose WiFi Network',
             'wifi-scanning-result': '<div style="padding: 30px; text-align: center; color: #999;"><i class="fas fa-spinner fa-spin" style="font-size:24px;"></i><div style="margin-top:10px;">Scanning...</div></div>',
             'wifi-scan-fail': '<div style="padding: 30px; text-align: center; color: #f56c6c;"><i class="fas fa-exclamation-circle" style="font-size:24px;"></i><div style="margin-top:10px;">Scan failed</div></div>',
+                        'wifi-scan-fail-msg': 'Scan failed, please try again later',
             'wifi-scan-busy': '<div style="padding: 30px; text-align: center; color: #e6a23c;"><i class="fas fa-spinner fa-spin" style="font-size:24px;"></i><div style="margin-top:10px;">Scan in progress, please wait</div></div>',
             'wifi-no-network': '<div style="padding: 30px; text-align: center; color: #999;"><i class="fas fa-wifi" style="font-size:24px;"></i><div style="margin-top:10px;">No WiFi networks found</div></div>',
             'wifi-selected-prefix': 'Selected: ',
@@ -2503,7 +2505,7 @@ const i18n = {
             // MQTT Auth
             'mqtt-auth-type-label': 'Auth Method',
             'mqtt-auth-simple': 'Simple Auth',
-            'mqtt-auth-encrypted': 'AES Encrypted Auth',
+            'mqtt-auth-encrypted': 'Encrypted Auth',
             'mqtt-auth-code-label': 'Auth Code',
             'mqtt-device-num-label': 'Device Number',
             'mqtt-product-id-label': 'Product ID',

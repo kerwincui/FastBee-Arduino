@@ -2941,7 +2941,12 @@ const AppState = {
                     if (res && res.error === 'scan_busy') {
                         modalBody.innerHTML = i18n.t('wifi-scan-busy');
                     } else {
-                        modalBody.innerHTML = i18n.t('wifi-scan-fail');
+                        // 更友好的错误提示
+                        modalBody.innerHTML = `<div style="padding: 30px; text-align: center; color: #f56c6c;">
+                            <i class="fas fa-exclamation-circle" style="font-size:24px;"></i>
+                            <div style="margin-top:10px;">${i18n.t('wifi-scan-fail-msg')}</div>
+                            <div style="margin-top:8px; font-size:12px; color:#999;">${res?.error || 'Unknown error'}</div>
+                        </div>`;
                     }
                     return;
                 }
@@ -2956,7 +2961,8 @@ const AppState = {
                 // 按信号强度排序
                 networks.sort((a, b) => b.rssi - a.rssi);
                 
-                let html = '<div class="wifi-list-container">';
+                // 两列布局显示WiFi网络
+                let html = '<div class="wifi-grid">';
                 networks.forEach((net) => {
                     const signalClass = net.rssi > -50 ? 'strong' : net.rssi > -70 ? 'medium' : 'weak';
                     const encryptIcon = net.encryption > 0
@@ -2965,11 +2971,11 @@ const AppState = {
                     const securityType = net.encryption > 0 ? 'wpa' : 'none';
                     
                     html += `
-                        <div class="wifi-item" data-ssid="${net.ssid}" data-encryption="${securityType}">
+                        <div class="wifi-grid-item" data-ssid="${net.ssid}" data-encryption="${securityType}">
                             <div class="wifi-info">
                                 <div class="wifi-ssid">${net.ssid}</div>
                                 <div class="wifi-meta">
-                                    ${encryptIcon} ${net.encryption > 0 ? i18n.t('wifi-encrypted') : i18n.t('wifi-open')} | ${i18n.t('wifi-channel-prefix')}${net.channel}
+                                    ${encryptIcon} ${net.encryption > 0 ? i18n.t('wifi-encrypted') : i18n.t('wifi-open')}
                                 </div>
                             </div>
                             <div class="wifi-signal ${signalClass}">
@@ -2983,7 +2989,7 @@ const AppState = {
                 modalBody.innerHTML = html;
                 
                 // 绑定点击选择事件
-                modalBody.querySelectorAll('.wifi-item').forEach(item => {
+                modalBody.querySelectorAll('.wifi-grid-item').forEach(item => {
                     item.addEventListener('click', (e) => {
                         const ssid = e.currentTarget.dataset.ssid;
                         const encryption = e.currentTarget.dataset.encryption;
@@ -3010,7 +3016,10 @@ const AppState = {
             })
             .catch(err => {
                 console.error('WiFi scan failed:', err);
-                modalBody.innerHTML = i18n.t('wifi-scan-fail');
+                modalBody.innerHTML = `<div style="padding: 30px; text-align: center; color: #f56c6c;">
+                    <i class="fas fa-exclamation-circle" style="font-size:24px;"></i>
+                    <div style="margin-top:10px;">${i18n.t('wifi-scan-fail-msg')}</div>
+                </div>`;
             })
             .finally(() => {
                 if (scanBtn) {
@@ -3993,7 +4002,7 @@ const AppState = {
                     document.getElementById('peripheral-id-input').disabled = true;
                     document.getElementById('peripheral-name-input').value = safeValue(data.name);
                     document.getElementById('peripheral-type-input').value = safeValue(data.type, '11');
-                    document.getElementById('peripheral-enabled-input').value = data.enabled ? '1' : '0';
+                    document.getElementById('peripheral-enabled-input').checked = data.enabled ? true : false;
                     
                     // 引脚配置：过滤掉 255（未配置的引脚）
                     if (data.pins && Array.isArray(data.pins)) {
@@ -4091,7 +4100,7 @@ const AppState = {
         const id = document.getElementById('peripheral-id-input').value.trim();
         const name = document.getElementById('peripheral-name-input').value.trim();
         const type = document.getElementById('peripheral-type-input').value;
-        const enabled = document.getElementById('peripheral-enabled-input').value;
+        const enabled = document.getElementById('peripheral-enabled-input').checked ? 1 : 0;
         const pinsStr = document.getElementById('peripheral-pins-input').value.trim();
         const errEl = document.getElementById('peripheral-error');
         
@@ -4545,7 +4554,6 @@ const AppState = {
                     8: i18n.t('periph-exec-action-ntp'), 9: i18n.t('periph-exec-action-ota'),
                     10: i18n.t('periph-exec-action-ap'), 11: i18n.t('periph-exec-action-ble'),
                     12: i18n.t('periph-exec-action-call-periph'),
-                    13: i18n.t('periph-exec-action-high-inverted'), 14: i18n.t('periph-exec-action-low-inverted'),
                     15: i18n.t('periph-exec-action-script')
                 };
                 const opLabels = ['=','!=','>','<','>=','<=','BETWEEN','NOT BETWEEN','CONTAIN','NOT CONTAIN'];

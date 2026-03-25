@@ -10,21 +10,23 @@ FastBee-Arduino致力于成为ESP32平台上最全面、最易用的嵌入式物
 
 ### 开发进度
 
-持续开发中...
+支持MQTT、Modbus RTU完整功能，HTTP、CoAP、Modbus TCP、TCP协议基础框架已就绪
 
-████████████████████████████████████████████████░░░░░░░░░░░░░░  **70%**
+██████████████████████████████████████████████████████████████████████████  **95%**
 
 
 ---
 
 ### 功能模块
-* **Web配置管理：** 完整的用户管理、角色权限管理、会话管理，响应式单页面应用设计，原生Web技术实现，支持中英文切换
-* **网络通信：** WiFi STA/AP/AP+STA三种模式、自动回退机制、mDNS本地域名访问、网络状态监测、WiFi扫描与连接
+* **Web配置管理：** 完整的用户管理、角色权限管理、会话管理，响应式单页面应用设计，原生Web技术实现，支持中英文切换、深色/浅色主题切换
+* **网络通信：** WiFi STA/AP/AP+STA三种模式、自动回退机制、mDNS本地域名访问、网络状态监测、WiFi扫描与连接（两列网格布局）
 * **配网功能：** AP热点配网、蓝牙BLE配网（NimBLE）、配网超时自动关闭
-* **协议支持：** MQTT协议接入、Modbus RTU/TCP、TCP服务器/客户端、HTTP客户端
-* **远程维护：** 固件OTA升级、文件系统OTA升级、在线日志查看、远程重启、恢复出厂设置
-* **数据存储：** LittleFS文件系统、NVS Preferences双存储、JSON配置文件管理、Gzip压缩优化
+* **协议支持：** MQTT协议接入（发布/订阅主题配置）、Modbus RTU/TCP、TCP服务器/客户端、HTTP客户端、CoAP
+* **远程维护：** 固件OTA升级、文件系统OTA升级、在线日志查看、远程重启、恢复出厂设置、设备状态实时上报
+* **数据存储：** LittleFS文件系统、NVS Preferences双存储、JSON配置文件管理、Gzip压缩优化（83%压缩率）
 * **外设管理：** RS485串口配置、数字输入/输出、模拟输入、PWM输出、I2C/SPI接口、可视化GPIO引脚配置
+* **外设执行：** 规则引擎支持平台触发/设备触发/定时触发，可执行GPIO操作、系统功能、命令脚本
+* **规则脚本：** 自定义数据处理脚本，支持MQTT/Modbus/HTTP等多种协议的数据格式转换
 * **健康监测：** CPU/内存/存储实时监测、网络连接状态、任务运行状态、异常告警
 * **日志系统：** 分级日志（DEBUG/INFO/WARN/ERROR）、文件存储、Web在线查看、日志轮转
 * **任务调度：** 定时任务管理、异步事件处理、优先级调度
@@ -87,15 +89,16 @@ FastBee-Arduino致力于成为ESP32平台上最全面、最易用的嵌入式物
 1. **环境准备**：安装VSCode和PlatformIO插件
 2. **克隆项目**：`git clone https://gitee.com/beecue/fastbee-arduino.git`
 3. **压缩前端资源**：`node scripts/gzip-www.js`
-4. **上传文件系统**：PlatformIO → Upload Filesystem Image
-5. **编译上传固件**：PlatformIO → Upload
+4. **上传文件系统**：`pio run --target uploadfs`
+5. **编译上传固件**：`pio run --target upload`
 6. **访问设备**：
    - 首次启动自动进入AP配网模式，连接热点 `fastbee-ap`
    - 或通过mDNS访问：http://fastbee.local
    - 默认账号：`admin` / `admin123`
-7. **网络配置**：在Web界面配置WiFi连接信息
-8. **外设配置**：配置RS485、GPIO等硬件接口
-9. **协议对接**：配置MQTT/Modbus等协议连接物联网平台
+7. **网络配置**：在Web界面配置WiFi连接信息（支持WiFi扫描选择）
+8. **外设配置**：配置RS485、GPIO等硬件接口（可视化表单）
+9. **外设执行**：配置触发规则和执行动作
+10. **协议对接**：配置MQTT/Modbus等协议连接物联网平台
 
 ---
 
@@ -136,6 +139,8 @@ FastBee-Arduino/
 │   │   ├── ConfigDefines.h        # 配置常量
 │   │   ├── SystemConstants.h      # 系统常量
 │   │   ├── PeripheralManager.h    # 外设管理
+│   │   ├── PeriphExecManager.h    # 外设执行管理
+│   │   ├── RuleScriptManager.h    # 规则脚本管理
 │   │   └── FeatureFlags.h         # 功能开关
 │   ├── network/                   # 网络模块
 │   │   ├── NetworkManager.h       # 网络连接管理
@@ -183,6 +188,9 @@ FastBee-Arduino/
 │   │   ├── network.json           # 网络配置
 │   │   ├── protocol.json          # 协议配置
 │   │   ├── peripherals.json       # 外设配置
+│   │   ├── periph_exec.json       # 外设执行配置
+│   │   ├── rule_scripts.json      # 规则脚本配置
+│   │   ├── roles.json             # 角色配置
 │   │   └── users.json             # 用户配置
 │   └── logs/                      # 日志目录
 │       └── system.log

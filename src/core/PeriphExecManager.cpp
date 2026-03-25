@@ -966,3 +966,16 @@ MQTTClient* PeriphExecManager::getMqttClient() {
 String PeriphExecManager::generateUniqueId() {
     return "exec_" + String(millis());
 }
+
+// ========== 手动执行 ==========
+
+bool PeriphExecManager::runOnce(const String& id) {
+    PeriphExecRule* rule = getRule(id);
+    if (!rule) {
+        return false;
+    }
+    
+    // 创建副本执行（executeAction需要非const引用）
+    PeriphExecRule ruleCopy = *rule;
+    return executeAction(ruleCopy);
+}

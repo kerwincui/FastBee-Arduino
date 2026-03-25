@@ -62,6 +62,11 @@ public:
     // 获取最近的执行结果（最多保留 MAX_ASYNC_TASKS * 2 条）
     std::vector<AsyncExecResult> getRecentResults();
 
+    // ========== 手动执行 ==========
+
+    // 手动执行规则（用于"执行一次"按钮）
+    bool runOnce(const String& id);
+
 private:
     PeriphExecManager() = default;
 

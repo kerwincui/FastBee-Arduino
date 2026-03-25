@@ -25,6 +25,7 @@ private:
     void handleDeleteRule(AsyncWebServerRequest* request);
     void handleEnableRule(AsyncWebServerRequest* request);
     void handleDisableRule(AsyncWebServerRequest* request);
+    void handleRunOnce(AsyncWebServerRequest* request);
 };
 
 #endif // PERIPH_EXEC_ROUTE_HANDLER_H
