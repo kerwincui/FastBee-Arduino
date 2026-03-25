@@ -74,16 +74,6 @@ MQTT and Modbus RTU fully supported, HTTP, CoAP, Modbus TCP, TCP protocol infras
 
 ---
 
-### Flash Partition Layout
-| Partition | Type | Offset | Size | Description |
-|-----------|------|--------|------|-------------|
-| nvs | data | 0x9000 | 20KB | NVS key-value storage |
-| otadata | data | 0xe000 | 8KB | OTA data |
-| app0 | app | 0x10000 | 2.25MB | Application |
-| spiffs | data | 0x260000 | 1.625MB | LittleFS filesystem |
-
----
-
 ### Getting Started
 1. **Setup Environment:** Install VSCode and PlatformIO extension
 2. **Clone Repository:** `git clone https://gitee.com/beecue/fastbee-arduino.git`

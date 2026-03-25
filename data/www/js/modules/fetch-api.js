@@ -237,4 +237,20 @@
         return request('POST', '/api/system/factory-reset', {}, RESTART_TIMEOUT);
     };
 
+    /**
+     * MQTT 连接测试请求（使用更长超时）
+     * MQTT连接测试可能需要较长时间，特别是加密认证需要NTP同步
+     * 注意：此请求使用静默模式，不触发全局401错误处理
+     * @param {Object} [data] - MQTT配置参数
+     * @returns {Promise<any>}
+     */
+    const MQTT_TEST_TIMEOUT = 30000; // 30秒超时
+    window.apiMqttTest = function (data) {
+        return request('POST', '/api/mqtt/test', {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: toUrlEncoded(data || {}),
+            silent: true  // 静默模式，不触发全局错误处理（包括401自动跳转登录）
+        }, MQTT_TEST_TIMEOUT);
+    };
+
 })();

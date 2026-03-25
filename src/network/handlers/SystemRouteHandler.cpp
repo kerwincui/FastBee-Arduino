@@ -140,7 +140,42 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             if (obj["conflictDetection"].is<String>() || obj["conflictDetection"].is<int>()) cfg.conflictDetection = static_cast<IPConflictMode>(obj["conflictDetection"].as<int>());
             if (netMgr->updateConfig(cfg, true)) {
                 LOGGER.info("Network configuration updated via web");
-                ctx->sendSuccess(request, "Network configuration saved successfully");
+                
+                // 构建详细响应，包含网络模式和访问信息
+                JsonDocument respDoc;
+                respDoc["success"] = true;
+                respDoc["message"] = "Network configuration saved successfully";
+                
+                // 网络模式信息
+                respDoc["data"]["mode"] = static_cast<uint8_t>(cfg.mode);
+                const char* modeText = "unknown";
+                switch (cfg.mode) {
+                    case NetworkMode::NETWORK_STA:    modeText = "STA"; break;
+                    case NetworkMode::NETWORK_AP:     modeText = "AP"; break;
+                    case NetworkMode::NETWORK_AP_STA: modeText = "AP+STA"; break;
+                    default: break;
+                }
+                respDoc["data"]["modeText"] = modeText;
+                
+                // AP信息（AP或AP+STA模式需要）
+                if (cfg.mode == NetworkMode::NETWORK_AP || cfg.mode == NetworkMode::NETWORK_AP_STA) {
+                    respDoc["data"]["apSSID"] = cfg.apSSID;
+                    respDoc["data"]["apPassword"] = cfg.apPassword;
+                    respDoc["data"]["apIP"] = "192.168.4.1";  // 默认AP IP
+                }
+                
+                // mDNS信息（STA或AP+STA模式需要）
+                if ((cfg.mode == NetworkMode::NETWORK_STA || cfg.mode == NetworkMode::NETWORK_AP_STA) && cfg.enableMDNS) {
+                    String domain = cfg.customDomain.length() > 0 ? cfg.customDomain : "fastbee";
+                    respDoc["data"]["mdnsDomain"] = domain + ".local";
+                }
+                
+                // 提示网络重启需要时间
+                respDoc["data"]["restartRequired"] = true;
+                
+                String output;
+                serializeJson(respDoc, output);
+                request->send(200, "application/json", output);
             } else {
                 ctx->sendError(request, 500, "Failed to save network configuration");
             }
@@ -386,11 +421,26 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         if (!ctx->checkPermission(request, "system.view")) { ctx->sendUnauthorized(request); return; }
         JsonDocument doc;
         time_t now = TimeUtils::getTimestamp();
-        bool synced = (now > 1000000000);
+            
+        // 检查网络状态
+        bool internetAvailable = false;
+        if (ctx->networkManager) {
+            NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+            NetworkStatusInfo netInfo = netMgr->getStatusInfo();
+            internetAvailable = netInfo.internetAvailable;
+        }
+            
+        // 时间有效：时间戳大于 2020-01-01 (1577836800)
+        bool timeValid = (now > 1577836800);
+        // 同步状态：时间有效且网络可用（表示可以从网络同步）
+        bool synced = timeValid && internetAvailable;
+            
         doc["success"] = true;
         doc["data"]["datetime"] = TimeUtils::formatTime(now, TimeUtils::HUMAN_READABLE);
         doc["data"]["timestamp"] = (long)now;
         doc["data"]["synced"] = synced;
+        doc["data"]["timeValid"] = timeValid;  // 新增：时间是否有效
+        doc["data"]["internetAvailable"] = internetAvailable;  // 新增：网络是否可用
         doc["data"]["uptime"] = millis();
         doc["data"]["timezone"] = "CST-8";
         if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
@@ -410,6 +460,31 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/device/time/sync", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
         if (!ctx->checkPermission(request, "config.edit")) { ctx->sendUnauthorized(request); return; }
+            
+        // 检查网络状态
+        bool internetAvailable = false;
+        if (ctx->networkManager) {
+            NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+            NetworkStatusInfo netInfo = netMgr->getStatusInfo();
+            internetAvailable = netInfo.internetAvailable;
+        }
+            
+        // 如果网络不可用，直接返回失败
+        if (!internetAvailable) {
+            JsonDocument doc;
+            time_t now = TimeUtils::getTimestamp();
+            doc["success"] = false;
+            doc["error"] = "No internet connection";
+            doc["data"]["datetime"] = TimeUtils::formatTime(now, TimeUtils::HUMAN_READABLE);
+            doc["data"]["timestamp"] = (long)now;
+            doc["data"]["synced"] = false;
+            doc["data"]["internetAvailable"] = false;
+            doc["data"]["uptime"] = millis();
+            String output; serializeJson(doc, output);
+            request->send(200, "application/json", output);
+            return;
+        }
+            
         String ntpServer1 = "cn.pool.ntp.org";
         String tz = "CST-8";
         if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
@@ -440,6 +515,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         doc["data"]["datetime"] = TimeUtils::formatTime(now, TimeUtils::HUMAN_READABLE);
         doc["data"]["timestamp"] = (long)now;
         doc["data"]["synced"] = synced;
+        doc["data"]["internetAvailable"] = internetAvailable;
         doc["data"]["uptime"] = millis();
         if (synced) { LOGGER.info("NTP sync triggered via web"); }
         String output; serializeJson(doc, output);

@@ -1396,10 +1396,15 @@
                                         <div class="message message-error" id="wifi-error"
                                             style="display: none; margin-top: 15px;" data-i18n="wifi-save-fail">
                                             Wifi配置保存失败！</div>
+                                        <!-- 网络模式切换提醒区域 -->
+                                        <div class="message message-info" id="wifi-mode-notice"
+                                            style="display: none; margin-top: 15px;">
+                                            <i class="fas fa-info-circle"></i> <span id="wifi-mode-notice-text"></span>
+                                        </div>
 
                                         <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary">
-                                                <i class="fas fa-save"></i> <span
+                                            <button type="submit" id="wifi-save-btn" class="pure-button pure-button-primary">
+                                                <i class="fas fa-save"></i> <span id="wifi-save-btn-text"
                                                     data-i18n="save-config-btn">保存配置</span>
                                             </button>
                                         </div>

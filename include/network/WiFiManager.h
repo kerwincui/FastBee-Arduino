@@ -241,6 +241,12 @@ public:
     void setAutoReconnect(bool enabled);
     
     /**
+     * @brief 设置模式切换状态
+     * @param transitioning 是否正在切换模式
+     */
+    void setModeTransitioning(bool transitioning);
+    
+    /**
      * @brief 获取配置
      * @return WiFi 配置
      */
@@ -314,6 +320,7 @@ private:
     unsigned long connectingStartTime = 0;
     unsigned long lastReconnectAttempt = 0;
     bool autoReconnectEnabled = true;
+    bool modeTransitioning = false;  // 模式切换中标志，避免记录不必要的断开警告
     
     /**
      * @brief 触发网络事件

@@ -112,8 +112,10 @@ bool NetworkManager::initialize() {
                 if (success) {
                     LOG_INFO("NetworkManager: STA connected successfully");
                     LOGGER.infof(">>> STA IP: %s <<<", WiFi.localIP().toString().c_str());
+                    // 连接成功，WiFiManager会在获取IP时清除modeTransitioning
                 } else {
                     LOG_WARNING("NetworkManager: STA connection failed, falling back to AP mode");
+                    wifiManager->setModeTransitioning(false);  // 连接失败，清除标志
                     success = startAPMode();
                     if (success) {
                         LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:[%s] <<<",
@@ -124,6 +126,7 @@ bool NetworkManager::initialize() {
                 }
             } else {
                 LOG_WARNING("NetworkManager: No staSSID configured, starting AP mode");
+                wifiManager->setModeTransitioning(false);  // 没有配置SSID，清除标志
                 success = startAPMode();
             }
             break;
@@ -891,8 +894,79 @@ void NetworkManager::disconnectNetwork() {
 }
 
 bool NetworkManager::restartNetwork() {
+    char modeBuf[64];
+    snprintf(modeBuf, sizeof(modeBuf), "NetworkManager: Restarting network (mode: %d)...", (int)wifiConfig.mode);
+    LOG_INFO(modeBuf);
+    
+    // 设置模式切换标志，避免记录不必要的断开警告
+    wifiManager->setModeTransitioning(true);
+    
+    // 保存当前模式以便比较
+    NetworkMode newMode = wifiConfig.mode;
+    bool needAp = (newMode == NetworkMode::NETWORK_AP || newMode == NetworkMode::NETWORK_AP_STA);
+    
+    // 如果新模式需要AP，先启动AP以确保Web服务可用
+    // 这样在切换过程中用户可以通过AP访问Web服务
+    if (needAp) {
+        LOG_INFO("NetworkManager: Starting AP first for seamless transition...");
+        
+        // 对于纯AP模式，必须确保WiFi模式正确
+        // 先停止现有AP，再重新启动以确保配置正确
+        if (newMode == NetworkMode::NETWORK_AP) {
+            // 纯AP模式：断开STA连接，停止现有AP
+            if (WiFi.status() == WL_CONNECTED) {
+                WiFi.disconnect(false);
+            }
+            // 强制重新启动AP以确保WiFi模式正确
+            wifiManager->stopAPMode();
+            delay(100);
+            wifiManager->setNetworkConfig(wifiConfig);
+            if (!wifiManager->startAPMode()) {
+                LOG_ERROR("NetworkManager: Failed to start AP mode");
+                wifiManager->setModeTransitioning(false);
+                return false;
+            }
+            statusInfo.status = NetworkStatus::AP_MODE;
+            statusInfo.internetAvailable = false;
+            isInitialized = true;
+            wifiManager->setModeTransitioning(false);
+            LOG_INFO("NetworkManager: AP-only mode restarted successfully");
+            return true;
+        } else {
+            // AP+STA模式：可以先启动AP，然后连接STA
+            if (WiFi.status() == WL_CONNECTED) {
+                WiFi.disconnect(false);  // 断开但保持WiFi Radio
+            }
+            wifiManager->setNetworkConfig(wifiConfig);
+            if (!wifiManager->startAPMode()) {
+                LOG_ERROR("NetworkManager: Failed to start AP mode");
+                wifiManager->setModeTransitioning(false);
+                return false;
+            }
+            LOG_INFO("NetworkManager: AP started for seamless transition");
+        }
+        
+        // 短暂延迟让AP稳定
+        delay(100);
+        
+        // AP+STA模式：现在AP已运行，尝试连接STA
+        if (newMode == NetworkMode::NETWORK_AP_STA && !wifiConfig.staSSID.isEmpty()) {
+            LOG_INFO("NetworkManager: Connecting STA in AP+STA mode...");
+            wifiManager->setNetworkConfig(wifiConfig);
+            wifiManager->connectToWiFi();
+            // 不等待连接完成，让它在后台连接
+        }
+        
+        statusInfo.status = NetworkStatus::AP_MODE;  // 初始状态，STA可能还在连接中
+        isInitialized = true;
+        LOG_INFO("NetworkManager: AP+STA mode restarted, AP available, STA connecting...");
+        return true;
+    }
+    
+    // 对于纯STA模式，需要完全重启
+    LOG_INFO("NetworkManager: Full network restart for STA mode...");
     disconnect();
-    delay(1000);
+    delay(500);
     return initialize();
 }
 

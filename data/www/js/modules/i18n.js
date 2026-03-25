@@ -148,6 +148,23 @@ const i18n = {
             'wifi-save-ok': 'WiFi配置保存成功！',
             'wifi-save-fail': 'WiFi配置保存失败！',
             
+            // 网络模式访问提示
+            'wifi-mode-changed-title': '网络配置已保存',
+            'wifi-mode-sta-hint': '可通过域名 http://{domain} 访问Web服务',
+            'wifi-mode-ap-hint': '请先连接热点 [{ssid}]，然后访问 http://{ip}',
+            'wifi-mode-apsta-hint': '可连接热点 [{ssid}] 访问 http://{ip}，或通过域名 http://{domain} 访问',
+            'wifi-restart-hint': '网络配置变更需要重启网络服务才能生效，请等待约10秒...',
+            'wifi-reconnect-hint': '如无法访问，请刷新页面或重新连接网络。',
+            
+            // 网络模式切换按钮和提醒
+            'wifi-saving-mode': '网络模式切换中...',
+            'wifi-save-ready': '保存配置',
+            'wifi-mode-notice-title': '网络模式切换提醒：',
+            'wifi-mode-notice-ap': '切换到AP模式后，请连接热点 [{ssid}] 访问 http://{ip}',
+            'wifi-mode-notice-sta': '切换到STA模式后，可通过 http://{domain} 访问',
+            'wifi-mode-notice-apsta': 'AP+STA模式下，可连接热点或通过域名访问',
+            'wifi-mode-notice-countdown': '按钮将在 {seconds} 秒后恢复可用。',
+            
             // 热点配置
             'ap-config-title': '热点配置',
             'ap-ssid-label': '热点名称',
@@ -639,10 +656,10 @@ const i18n = {
             
             // 设备配置动态文本
             'dev-time-synced-html': '<span class="badge badge-success">已同步</span>',
-            'dev-time-not-synced-html': '<span class="badge badge-warning">未同步 (等待连网)</span>',
-            'dev-time-no-network-html': '<span class="badge badge-danger">网络不可用</span>',
-            'dev-refresh-disabled-html': '<i class="fas fa-ban"></i> 无网络',
-            'dev-time-no-network-tip': '当前网络不可用，无法进行NTP同步',
+            'dev-time-not-synced-html': '<span class="badge badge-warning">未同步</span>',
+            'dev-time-no-network-html': '<span class="badge badge-warning">未同步</span>',
+            'dev-refresh-disabled-html': '<i class="fas fa-ban"></i> 没有网络',
+            'dev-time-no-network-tip': '没有网络连接，无法进行NTP同步',
             'dev-time-uptime-unit': '时 ',
             'dev-time-uptime-min': '分 ',
             'dev-time-uptime-sec': '秒',
@@ -1065,13 +1082,16 @@ const i18n = {
             'mqtt-test-btn-text': '测试连接',
             'mqtt-test-testing': '测试中...',
             'mqtt-test-success': '连接成功！',
-            'mqtt-test-ok-real-fail': '凭证验证通过，但实际连接失败',
+            'mqtt-test-ok-real-fail': '凭证验证通过，但实际连接失败，请先点击保存配置后再测试',
             'mqtt-test-fail-prefix': '连接失败: ',
             'mqtt-test-error': '测试请求失败',
+            'mqtt-test-timeout': '测试超时，请检查Broker地址是否正确',
+            'mqtt-test-unauthorized': '会话已过期，请刷新页面后重试',
             'mqtt-test-deferred': 'MQTT 正在异步连接中，请关注状态变化...',
             'mqtt-test-deferred-timeout': '异步连接超时，请检查配置或查看日志',
             'mqtt-test-no-server': '请先填写Broker地址',
             'mqtt-test-clientid-simple-prefix': "简单认证模式下，客户端ID必须以'S&'开头，请修改客户端ID字段的内容",
+            'mqtt-test-clientid-encrypted-prefix': "加密认证模式下，客户端ID必须以'E&'开头，请修改客户端ID字段的内容",
             
             // MQTT 状态面板
             'mqtt-status-label': '连接状态',
@@ -1552,6 +1572,23 @@ const i18n = {
             'wifi-password-label': 'Password',
             'wifi-save-ok': 'WiFi config saved!',
             'wifi-save-fail': 'WiFi config save failed!',
+            
+            // Network mode access hints
+            'wifi-mode-changed-title': 'Network Config Saved',
+            'wifi-mode-sta-hint': 'Access via http://{domain}',
+            'wifi-mode-ap-hint': 'Connect to [{ssid}] first, then visit http://{ip}',
+            'wifi-mode-apsta-hint': 'Connect to [{ssid}] for http://{ip}, or access via http://{domain}',
+            'wifi-restart-hint': 'Network restart required. Please wait about 10 seconds...',
+            'wifi-reconnect-hint': 'If inaccessible, please refresh or reconnect.',
+            
+            // Network mode switch button and notice
+            'wifi-saving-mode': 'Switching network mode...',
+            'wifi-save-ready': 'Save Config',
+            'wifi-mode-notice-title': 'Network Mode Switch Notice: ',
+            'wifi-mode-notice-ap': 'After switching to AP mode, connect to [{ssid}] and visit http://{ip}',
+            'wifi-mode-notice-sta': 'After switching to STA mode, access via http://{domain}',
+            'wifi-mode-notice-apsta': 'In AP+STA mode, connect to hotspot or access via domain',
+            'wifi-mode-notice-countdown': 'Button will be available in {seconds} seconds.',
             
             // AP Config
             'ap-config-title': 'AP Configuration',
@@ -2044,10 +2081,10 @@ const i18n = {
             
             // Device config dynamic text
             'dev-time-synced-html': '<span class="badge badge-success">Synced</span>',
-            'dev-time-not-synced-html': '<span class="badge badge-warning">Not Synced (waiting for network)</span>',
-            'dev-time-no-network-html': '<span class="badge badge-danger">Network Unavailable</span>',
+            'dev-time-not-synced-html': '<span class="badge badge-warning">Not Synced</span>',
+            'dev-time-no-network-html': '<span class="badge badge-warning">Not Synced</span>',
             'dev-refresh-disabled-html': '<i class="fas fa-ban"></i> No Network',
-            'dev-time-no-network-tip': 'Network unavailable, NTP sync not possible',
+            'dev-time-no-network-tip': 'No network connection, NTP sync not possible',
             'dev-time-uptime-unit': 'h ',
             'dev-time-uptime-min': 'm ',
             'dev-time-uptime-sec': 's',
@@ -2467,13 +2504,16 @@ const i18n = {
             'mqtt-test-btn-text': 'Test Connection',
             'mqtt-test-testing': 'Testing...',
             'mqtt-test-success': 'Connected!',
-            'mqtt-test-ok-real-fail': 'Credentials verified, but actual connection failed',
+            'mqtt-test-ok-real-fail': 'Credentials verified, but actual connection failed. Please save config first, then test',
             'mqtt-test-fail-prefix': 'Connection failed: ',
             'mqtt-test-error': 'Test request failed',
+            'mqtt-test-timeout': 'Test timeout, please check if broker address is correct',
+            'mqtt-test-unauthorized': 'Session expired, please refresh page and retry',
             'mqtt-test-deferred': 'MQTT connecting asynchronously, check status...',
             'mqtt-test-deferred-timeout': 'Async connection timeout, check config or logs',
             'mqtt-test-no-server': 'Please enter broker address first',
             'mqtt-test-clientid-simple-prefix': "In simple auth mode, client ID must start with 'S&'. Please modify the client ID field",
+            'mqtt-test-clientid-encrypted-prefix': "In encrypted auth mode, client ID must start with 'E&'. Please modify the client ID field",
             
             // MQTT Status Panel
             'mqtt-status-label': 'Status',

@@ -1,5 +1,6 @@
 #include "./network/handlers/ProtocolRouteHandler.h"
 #include "./network/WebHandlerContext.h"
+#include "./network/NetworkManager.h"
 #include "./protocols/ProtocolManager.h"
 #include "./protocols/ModbusHandler.h"
 #include <ArduinoJson.h>
@@ -758,6 +759,19 @@ void ProtocolRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* reque
             if (testClient.connected()) {
                 testClient.disconnect();
             }
+            
+            // 测试成功后，触发实际MQTT客户端重新连接（使用已保存的配置）
+            if (connected) {
+                ProtocolManager* pm = ctx->protocolManager;
+                if (pm) {
+                    bool realConnected = pm->restartMQTT();
+                    doc["data"]["realConnected"] = realConnected;
+                    if (!realConnected) {
+                        MQTTClient* mqtt = pm->getMQTTClient();
+                        doc["data"]["realError"] = mqtt ? mqtt->getLastErrorCode() : -99;
+                    }
+                }
+            }
         }
         String out;
         serializeJson(doc, out);
@@ -835,6 +849,14 @@ void ProtocolRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
         return;
     }
 
+    // 检查网络状态
+    bool internetAvailable = false;
+    if (ctx->networkManager) {
+        NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+        NetworkStatusInfo netInfo = netMgr->getStatusInfo();
+        internetAvailable = netInfo.internetAvailable;
+    }
+
     MQTTClient* mqtt = pm->getMQTTClient();
     
     JsonDocument doc;
@@ -844,7 +866,14 @@ void ProtocolRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
     if (mqtt) {
         const MQTTConfig& cfg = mqtt->getConfig();
         data["initialized"] = true;
-        data["connected"] = mqtt->getIsConnected();
+        
+        // 如果网络不可用，MQTT 实际上无法通信，返回断开状态
+        bool mqttConnected = mqtt->getIsConnected();
+        if (!internetAvailable) {
+            mqttConnected = false;
+        }
+        data["connected"] = mqttConnected;
+        data["internetAvailable"] = internetAvailable;
         data["server"] = cfg.server;
         data["port"] = cfg.port;
         data["clientId"] = cfg.clientId;
@@ -856,6 +885,7 @@ void ProtocolRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
     } else {
         data["initialized"] = false;
         data["connected"] = false;
+        data["internetAvailable"] = internetAvailable;
     }
 
     String out;

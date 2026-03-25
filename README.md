@@ -4,15 +4,7 @@
 ---
 
 ### 项目介绍
-FastBee-Arduino致力于成为ESP32平台上最全面、最易用的嵌入式物联网开发框架，通过模块化设计和企业级功能，帮助企业快速制作产品原型，降低开发成本；同时也是个人开发者快速学习和使用的工具；为开发者提供了一站式的解决方案，涵盖了从设备管理、网络通信到远程维护等物联网设备开发的全链路需求。
-
----
-
-### 开发进度
-
-支持MQTT、Modbus RTU完整功能，HTTP、CoAP、Modbus TCP、TCP协议基础框架已就绪
-
-██████████████████████████████████████████████████████████████████████████  **95%**
+FastBee-Arduino 是ESP32平台上功能全面的嵌入式物联网开发框架，通过模块化设计和企业级功能，帮助企业快速制作产品原型，降低开发成本；同时也是个人开发者快速学习和使用的工具；
 
 
 ---
@@ -74,59 +66,21 @@ FastBee-Arduino致力于成为ESP32平台上最全面、最易用的嵌入式物
 
 ---
 
-### Flash分区布局
-开发测试使用的设备Flash空间大小为4MB，空间有限，未设置OTA升级分区，根据设备空间大小可增加OTA分区实现OTA升级功能
-| 分区名 | 类型 | 偏移地址 | 大小 | 说明 |
-|--------|------|----------|------|------|
-| nvs | data | 0x9000 | 20KB | NVS键值存储 |
-| otadata | data | 0xe000 | 8KB | OTA数据 |
-| app0 | app | 0x10000 | 2.25MB | 应用程序 |
-| spiffs | data | 0x260000 | 1.625MB | LittleFS文件系统 |
-
----
-
 ### 使用流程
 1. **环境准备**：安装VSCode和PlatformIO插件
 2. **克隆项目**：`git clone https://gitee.com/beecue/fastbee-arduino.git`
-3. **压缩前端资源**：`node scripts/gzip-www.js`
+3. **压缩前端资源（可选）**：`node scripts/gzip-www.js`
 4. **上传文件系统**：`pio run --target uploadfs`
-5. **编译上传固件**：`pio run --target upload`
+5. **上传固件**：`pio run --target upload`
 6. **访问设备**：
-   - 首次启动自动进入AP配网模式，连接热点 `fastbee-ap`
-   - 或通过mDNS访问：http://fastbee.local
+   - 首次启动自动进入AP配网模式，连接热点 `fastbee-ap`，通过地址 192.168.4.1 访问web页面配置wifi和其他信息
+   - 后续根据配置的网络模式（AP、STA、AP+STA）采用mDNS访问：http://fastbee.local 或者 192.168.4.1 访问web页面
    - 默认账号：`admin` / `admin123`
 7. **网络配置**：在Web界面配置WiFi连接信息（支持WiFi扫描选择）
 8. **外设配置**：配置RS485、GPIO等硬件接口（可视化表单）
 9. **外设执行**：配置触发规则和执行动作
 10. **协议对接**：配置MQTT/Modbus等协议连接物联网平台
 
----
-
-### 系统架构
-```
-┌─────────────────────────────────────────────────┐
-│              应用层 (Application)                │
-├─────────────────────────────────────────────────┤
-│  Web管理界面 │ 设备监控 │ 定时任务 │ 配置管理    │
-├─────────────────────────────────────────────────┤
-│              服务层 (Services)                   │
-│  OTA升级 │ 网络管理 │ 日志服务 │ 健康监测 │任务调度│
-├─────────────────────────────────────────────────┤
-│              协议层 (Protocols)                  │
-│    MQTT    │  Modbus  │   TCP   │    HTTP       │
-├─────────────────────────────────────────────────┤
-│              安全层 (Security)                   │
-│  用户管理  │  角色权限  │  会话管理  │  加密工具  │
-├─────────────────────────────────────────────────┤
-│              存储层 (Storage)                    │
-│    NVS Preferences    │    LittleFS (JSON)      │
-├─────────────────────────────────────────────────┤
-│              硬件层 (Hardware)                   │
-│  GPIO │ RS485 │ I2C │ SPI │ PWM │ ADC │ WiFi/BLE│
-├─────────────────────────────────────────────────┤
-│              ESP32 微控制器 (240MHz双核)         │
-└─────────────────────────────────────────────────┘
-```
 
 ---
 
@@ -165,10 +119,6 @@ FastBee-Arduino/
 │   │   ├── HealthMonitor.h        # 健康监测
 │   │   └── ConfigStorage.h        # 配置存储
 │   └── utils/                     # 工具类
-│       ├── StringUtils.h
-│       ├── TimeUtils.h
-│       ├── FileUtils.h
-│       └── JsonConverters.h
 ├── src/                           # 源代码目录
 │   ├── core/                      # 核心实现
 │   ├── network/                   # 网络实现
@@ -184,16 +134,7 @@ FastBee-Arduino/
 │   │   ├── js/                    # JavaScript
 │   │   └── assets/                # 静态资源
 │   ├── config/                    # 配置文件
-│   │   ├── device.json            # 设备配置
-│   │   ├── network.json           # 网络配置
-│   │   ├── protocol.json          # 协议配置
-│   │   ├── peripherals.json       # 外设配置
-│   │   ├── periph_exec.json       # 外设执行配置
-│   │   ├── rule_scripts.json      # 规则脚本配置
-│   │   ├── roles.json             # 角色配置
-│   │   └── users.json             # 用户配置
 │   └── logs/                      # 日志目录
-│       └── system.log
 ├── lib/                           # 本地库
 │   └── ESPAsyncWebServer/         # 异步Web服务器
 ├── scripts/                       # 构建脚本

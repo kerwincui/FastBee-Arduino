@@ -2411,35 +2411,165 @@ const AppState = {
         };
         
         // 显示加载状态
-        const submitBtn = document.querySelector('#wifi-form button[type="submit"]');
-        const originalText = submitBtn?.innerHTML;
-        if (submitBtn) {
+        const submitBtn = document.getElementById('wifi-save-btn');
+        const submitBtnText = document.getElementById('wifi-save-btn-text');
+        const originalText = submitBtnText?.innerHTML;
+        
+        // 设置按钮为切换中状态
+        if (submitBtn && submitBtnText) {
             submitBtn.disabled = true;
-            submitBtn.innerHTML = i18n.t('net-saving-html');
+            submitBtnText.innerHTML = i18n.t('wifi-saving-mode');
         }
+        
+        // 隐藏之前的消息
+        this._showMessage('wifi-success', false);
+        this._showMessage('wifi-error', false);
+        
+        // 隐藏页面内提醒区域
+        const noticeEl = document.getElementById('wifi-mode-notice');
+        const noticeTextEl = document.getElementById('wifi-mode-notice-text');
+        if (noticeEl) noticeEl.style.display = 'none';
         
         apiPut('/api/network/config', config)
             .then(res => {
                 if (res && res.success) {
                     this._showMessage('wifi-success', true);
-                    this._showMessage('wifi-error', false);
-                    Notification.success(i18n.t('wifi-save-ok'), i18n.t('net-settings-title'));
+                    
+                    // 构建详细的访问提示
+                    const data = res.data || {};
+                    let message = i18n.t('wifi-save-ok');
+                    
+                    // 构建页面内提醒信息
+                    let noticeMessage = i18n.t('wifi-mode-notice-title');
+                    
+                    // 根据网络模式添加访问提示
+                    if (data.restartRequired) {
+                        message += '<br><small style="color:#888;">' + i18n.t('wifi-restart-hint') + '</small>';
+                    }
+                    
+                    const mode = data.mode;
+                    const modeText = data.modeText || '';
+                    
+                    if (mode === 0 || modeText === 'STA') {
+                        // STA 模式
+                        if (data.mdnsDomain) {
+                            const hint = i18n.t('wifi-mode-sta-hint').replace('{domain}', data.mdnsDomain);
+                            message += '<br><small>' + hint + '</small>';
+                            noticeMessage += i18n.t('wifi-mode-notice-sta').replace('{domain}', data.mdnsDomain);
+                        }
+                    } else if (mode === 1 || modeText === 'AP') {
+                        // AP 模式
+                        const hint = i18n.t('wifi-mode-ap-hint')
+                            .replace('{ssid}', data.apSSID || 'fastbee-ap')
+                            .replace('{ip}', data.apIP || '192.168.4.1');
+                        message += '<br><small>' + hint + '</small>';
+                        noticeMessage += i18n.t('wifi-mode-notice-ap')
+                            .replace('{ssid}', data.apSSID || 'fastbee-ap')
+                            .replace('{ip}', data.apIP || '192.168.4.1');
+                    } else if (mode === 2 || modeText === 'AP+STA') {
+                        // AP+STA 模式
+                        if (data.mdnsDomain && data.apSSID) {
+                            const hint = i18n.t('wifi-mode-apsta-hint')
+                                .replace('{ssid}', data.apSSID)
+                                .replace('{ip}', data.apIP || '192.168.4.1')
+                                .replace('{domain}', data.mdnsDomain);
+                            message += '<br><small>' + hint + '</small>';
+                            noticeMessage += i18n.t('wifi-mode-notice-apsta');
+                        } else if (data.apSSID) {
+                            const hint = i18n.t('wifi-mode-ap-hint')
+                                .replace('{ssid}', data.apSSID)
+                                .replace('{ip}', data.apIP || '192.168.4.1');
+                            message += '<br><small>' + hint + '</small>';
+                            noticeMessage += i18n.t('wifi-mode-notice-ap')
+                                .replace('{ssid}', data.apSSID)
+                                .replace('{ip}', data.apIP || '192.168.4.1');
+                        }
+                    }
+                    
+                    message += '<br><small style="color:#888;">' + i18n.t('wifi-reconnect-hint') + '</small>';
+                    
+                    // 显示页面内提醒
+                    if (noticeEl && noticeTextEl) {
+                        noticeTextEl.innerHTML = noticeMessage;
+                        noticeEl.style.display = 'block';
+                    }
+                    
+                    Notification.show({
+                        type: 'success',
+                        title: i18n.t('wifi-mode-changed-title'),
+                        message: message,
+                        duration: 8000
+                    });
+                    
+                    // 15秒倒计时后恢复按钮
+                    let countdown = 15;
+                    const countdownInterval = setInterval(() => {
+                        countdown--;
+                        if (countdown <= 0) {
+                            clearInterval(countdownInterval);
+                            if (submitBtn && submitBtnText) {
+                                submitBtn.disabled = false;
+                                submitBtnText.innerHTML = originalText || i18n.t('wifi-save-ready');
+                            }
+                            // 更新页面内提醒，移除倒计时信息
+                            if (noticeTextEl && noticeMessage) {
+                                noticeTextEl.innerHTML = noticeMessage;
+                            }
+                        } else {
+                            // 更新按钮文本显示倒计时
+                            if (submitBtnText) {
+                                const countdownText = i18n.t('wifi-mode-notice-countdown').replace('{seconds}', countdown);
+                                submitBtnText.innerHTML = i18n.t('wifi-saving-mode') + ' (' + countdown + 's)';
+                            }
+                            // 更新页面内提醒添加倒计时
+                            if (noticeTextEl) {
+                                const countdownText = i18n.t('wifi-mode-notice-countdown').replace('{seconds}', countdown);
+                                noticeTextEl.innerHTML = noticeMessage + ' ' + countdownText;
+                            }
+                        }
+                    }, 1000);
+                    
                 } else {
-                    this._showMessage('wifi-success', false);
                     this._showMessage('wifi-error', true);
                     Notification.error(res?.error || i18n.t('net-save-fail'), i18n.t('net-settings-title'));
+                    // 错误时恢复按钮
+                    if (submitBtn && submitBtnText) {
+                        submitBtn.disabled = false;
+                        submitBtnText.innerHTML = originalText || i18n.t('wifi-save-ready');
+                    }
                 }
             })
             .catch(err => {
                 console.error('Save network config failed:', err);
-                this._showMessage('wifi-success', false);
-                this._showMessage('wifi-error', true);
-                Notification.error(i18n.t('net-save-fail'), i18n.t('net-settings-title'));
-            })
-            .finally(() => {
-                if (submitBtn) {
-                    submitBtn.disabled = false;
-                    submitBtn.innerHTML = originalText;
+                // 网络模式切换时，连接可能会中断，这是正常现象
+                // 检查是否是网络切换导致的连接错误
+                const isNetworkTransitionError = err && (
+                    err.name === 'AbortError' ||
+                    err.name === 'TypeError' ||
+                    (err.message && (
+                        err.message.includes('fetch') ||
+                        err.message.includes('network') ||
+                        err.message.includes('Failed to fetch')
+                    ))
+                );
+                
+                if (isNetworkTransitionError) {
+                    // 网络切换导致的错误，显示成功提示（配置已保存，网络正在重启）
+                    this._showMessage('wifi-success', true);
+                    Notification.show({
+                        type: 'success',
+                        title: i18n.t('wifi-mode-changed-title'),
+                        message: i18n.t('wifi-save-ok') + '<br><small style="color:#888;">' + i18n.t('wifi-restart-hint') + '</small>',
+                        duration: 8000
+                    });
+                } else {
+                    this._showMessage('wifi-error', true);
+                    Notification.error(i18n.t('net-save-fail'), i18n.t('net-settings-title'));
+                    // 错误时恢复按钮
+                    if (submitBtn && submitBtnText) {
+                        submitBtn.disabled = false;
+                        submitBtnText.innerHTML = originalText || i18n.t('wifi-save-ready');
+                    }
                 }
             });
     },
@@ -5355,11 +5485,19 @@ const AppState = {
         }
 
         // 验证客户端ID前缀与认证方式是否匹配
-        // 加密认证(authType=1)时后端自动生成 clientId，无需校验前缀
-        if (clientId && authType === '0') {
-            if (!clientId.startsWith('S&')) {
+        // 简单认证(authType=0)时clientId必须以S&开头
+        // 加密认证(authType=1)时clientId必须以E&开头（如果填写了clientId）
+        if (clientId) {
+            if (authType === '0' && !clientId.startsWith('S&')) {
                 if (resultEl) {
                     resultEl.textContent = i18n.t('mqtt-test-clientid-simple-prefix');
+                    resultEl.style.color = '#f56c6c';
+                }
+                return;
+            }
+            if (authType === '1' && !clientId.startsWith('E&')) {
+                if (resultEl) {
+                    resultEl.textContent = i18n.t('mqtt-test-clientid-encrypted-prefix');
                     resultEl.style.color = '#f56c6c';
                 }
                 return;
@@ -5377,7 +5515,7 @@ const AppState = {
         }
         
         // 传递 authType 让后端知道当前 UI 选择的认证方式
-        apiPost('/api/mqtt/test', { server, port, clientId, username, password, authCode, authType, mqttSecret })
+        apiMqttTest({ server, port, clientId, username, password, authCode, authType, mqttSecret })
             .then(res => {
                 if (res && res.success && res.data) {
                     // 加密认证：后端使用非阻塞延迟连接，需轮询状态
@@ -5459,7 +5597,23 @@ const AppState = {
             .catch(err => {
                 console.error('MQTT test failed:', err);
                 if (resultEl) {
-                    resultEl.textContent = i18n.t('mqtt-test-error');
+                    // 区分超时、401和其他错误
+                    const isTimeout = err && (err.name === 'AbortError' ||
+                        (err.message && err.message.includes('abort')));
+                    const isUnauthorized = err && err.status === 401;
+                                
+                    if (isUnauthorized) {
+                        // 401错误：会话过期，提示用户重新登录
+                        resultEl.textContent = i18n.t('mqtt-test-unauthorized') || '会话已过期，请刷新页面后重试';
+                        // 不再跳转登录页，由用户手动刷新
+                    } else if (isTimeout) {
+                        resultEl.textContent = i18n.t('mqtt-test-timeout') || '测试超时，请检查Broker地址是否正确';
+                    } else {
+                        // 优先显示后端返回的错误信息
+                        const errData = err && err.data;
+                        const errMsg = (errData && errData.error) ? errData.error : i18n.t('mqtt-test-error');
+                        resultEl.textContent = errMsg;
+                    }
                     resultEl.style.color = '#f56c6c';
                 }
                 if (btn) btn.classList.add('mqtt-test-fail');
@@ -5488,6 +5642,9 @@ const AppState = {
             btn.textContent = i18n.t('mqtt-disconnecting');
         }
 
+        // 先停止状态轮询，避免断开过程中状态不一致
+        this._stopMqttStatusPolling();
+
         apiPost('/api/mqtt/disconnect', {})
             .then(res => {
                 if (res && res.success) {
@@ -5498,20 +5655,31 @@ const AppState = {
                         badge.className = 'mqtt-status-badge mqtt-status-offline';
                         badge.textContent = i18n.t('mqtt-status-disconnected');
                     }
+                    // 更新测试结果显示区域
+                    const resultEl = document.getElementById('mqtt-test-result');
+                    if (resultEl) {
+                        resultEl.textContent = i18n.t('mqtt-disconnect-ok');
+                        resultEl.style.color = '#909399';
+                    }
                 } else {
                     Notification.error(i18n.t('mqtt-disconnect-fail'), 'MQTT');
+                    // 断开失败，恢复状态轮询
+                    this._startMqttStatusPolling();
                 }
             })
             .catch(err => {
                 console.error('MQTT disconnect failed:', err);
                 Notification.error(i18n.t('mqtt-disconnect-fail'), 'MQTT');
+                // 断开失败，恢复状态轮询
+                this._startMqttStatusPolling();
             })
             .finally(() => {
                 if (btn) {
                     btn.disabled = false;
                     btn.textContent = i18n.t('mqtt-disconnect-btn');
                 }
-                setTimeout(() => this._loadMqttStatus(), 1000);
+                // 断开成功后延迟刷新状态
+                setTimeout(() => this._loadMqttStatus(), 500);
             });
     },
 
