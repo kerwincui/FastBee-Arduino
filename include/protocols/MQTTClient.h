@@ -121,6 +121,7 @@ public:
     
     // 详细状态信息
     bool getIsConnected() const { return isConnected; }
+    bool isStopped() const { return stopped; }  // 是否被显式停止
     int  getLastErrorCode() const { return lastErrorCode; }
     uint32_t getReconnectCount() const { return reconnectCount; }
     unsigned long getLastConnectedTime() const { return lastConnectedTime; }

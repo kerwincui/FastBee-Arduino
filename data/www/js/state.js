@@ -5603,9 +5603,8 @@ const AppState = {
                     const isUnauthorized = err && err.status === 401;
                                 
                     if (isUnauthorized) {
-                        // 401错误：会话过期，提示用户重新登录
-                        resultEl.textContent = i18n.t('mqtt-test-unauthorized') || '会话已过期，请刷新页面后重试';
-                        // 不再跳转登录页，由用户手动刷新
+                        // 401错误：可能是认证问题，但不提示"会话过期"避免误导用户
+                        resultEl.textContent = i18n.t('mqtt-test-error') || '测试请求失败，请稍后重试';
                     } else if (isTimeout) {
                         resultEl.textContent = i18n.t('mqtt-test-timeout') || '测试超时，请检查Broker地址是否正确';
                     } else {
@@ -5645,7 +5644,8 @@ const AppState = {
         // 先停止状态轮询，避免断开过程中状态不一致
         this._stopMqttStatusPolling();
 
-        apiPost('/api/mqtt/disconnect', {})
+        // 使用静默模式，避免触发全局401错误处理
+        apiPostSilent('/api/mqtt/disconnect', {})
             .then(res => {
                 if (res && res.success) {
                     Notification.success(i18n.t('mqtt-disconnect-ok'), 'MQTT');

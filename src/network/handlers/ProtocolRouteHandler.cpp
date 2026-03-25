@@ -867,8 +867,9 @@ void ProtocolRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
         const MQTTConfig& cfg = mqtt->getConfig();
         data["initialized"] = true;
         
+        // 如果MQTT被显式停止，返回断开状态
         // 如果网络不可用，MQTT 实际上无法通信，返回断开状态
-        bool mqttConnected = mqtt->getIsConnected();
+        bool mqttConnected = mqtt->getIsConnected() && !mqtt->isStopped();
         if (!internetAvailable) {
             mqttConnected = false;
         }

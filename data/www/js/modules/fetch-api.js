@@ -195,6 +195,21 @@
     };
 
     /**
+     * POST 请求（静默模式，不触发全局错误处理）
+     * 用于MQTT操作等不应影响全局认证状态的请求
+     * @param {string} url
+     * @param {Object} [data] - 表单数据
+     * @returns {Promise<any>}
+     */
+    window.apiPostSilent = function (url, data) {
+        return request('POST', url, {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: toUrlEncoded(data || {}),
+            silent: true
+        });
+    };
+
+    /**
      * PUT 请求（application/json）
      * @param {string} url
      * @param {Object} [data] - JSON 数据
