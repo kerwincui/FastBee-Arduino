@@ -207,6 +207,10 @@ FastBee-Arduino/
 
 ### Screenshots
 
+<img src="./images/device_10.png"/>
+
+<img src="./images/device_11.png"/>
+
 <img src="./images/device_01.png"/>
 
 <img src="./images/device_02.png"/>
@@ -214,6 +218,16 @@ FastBee-Arduino/
 <img src="./images/device_03.png"/>
 
 <img src="./images/device_04.png"/>
+
+<img src="./images/device_05.png"/>
+
+<img src="./images/device_06.png"/>
+
+<img src="./images/device_07.png"/>
+
+<img src="./images/device_08.png"/>
+
+<img src="./images/device_09.png"/>
 
 ---
 

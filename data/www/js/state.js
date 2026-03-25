@@ -114,7 +114,7 @@ const AppState = {
             if (textSpan) {
                 // 获取当前语言的翻译
                 const key = theme === 'dark' ? 'theme-light' : 'theme-dark';
-                const translated = window.i18n ? window.i18n.translate(key) : (theme === 'dark' ? '浅色模式' : '深色模式');
+                const translated = window.i18n ? window.i18n.t(key) : (theme === 'dark' ? '浅色模式' : '深色模式');
                 textSpan.textContent = translated;
             }
         }
@@ -713,6 +713,18 @@ const AppState = {
         
         const otaRefreshBtn = document.getElementById('ota-refresh-btn');
         if (otaRefreshBtn) otaRefreshBtn.addEventListener('click', () => this.loadOtaStatus());
+        
+        // OTA文件选择更新文件名显示
+        const otaFileInput = document.getElementById('ota-file');
+        if (otaFileInput) {
+            otaFileInput.addEventListener('change', (e) => {
+                const fileNameEl = document.getElementById('ota-file-name');
+                if (fileNameEl) {
+                    const file = e.target.files?.[0];
+                    fileNameEl.textContent = file ? file.name : i18n.t('no-file-selected');
+                }
+            });
+        }
     },
 
     // ============ 登录 ============

@@ -709,15 +709,15 @@
                                         </div>
 
                                         <div class="u-mt-20">
-                                            <button type="submit" class="pure-button pure-button-primary"
+                                            <button type="submit" class="btn btn-primary"
                                                 data-i18n="btn-save-config">保存配置</button>
-                                            <button type="button" class="mqtt-test-btn u-ml-10"
+                                            <button type="button" class="btn btn-warning u-ml-10"
                                                 onclick="AppState.testMqttConnection()"
                                                 data-i18n="mqtt-test-conn-btn">测试连接</button>
-                                            <button type="button" class="mqtt-disconnect-btn u-ml-10"
+                                            <button type="button" class="btn btn-danger u-ml-10"
                                                 onclick="AppState.disconnectMqtt()"
                                                 data-i18n="mqtt-disconnect-btn">断开连接</button>
-                                            <button type="button" class="pure-button u-ml-10"
+                                            <button type="button" class="btn btn-secondary u-ml-10"
                                                 onclick="AppState.mqttNtpSync()"
                                                 data-i18n="mqtt-ntp-sync-btn">MQTT时间同步</button>
                                             <span id="mqtt-test-result" class="u-ml-10 u-fs-13"></span>
@@ -2207,15 +2207,21 @@
                                                     <div class="ota-inline-input-wrap">
                                                         <label for="ota-file" data-i18n="dev-ota-file-label">选择固件文件
                                                             (.bin)</label>
-                                                        <input type="file" id="ota-file" accept=".bin"
-                                                            style="display: block; margin-top: 8px;">
-                                                        <small style="color: #888;" data-i18n="dev-ota-file-hint">仅支持
+                                                        <div class="file-input-wrapper" style="margin-top: 8px;">
+                                                            <input type="file" id="ota-file" accept=".bin"
+                                                                style="display: none;">
+                                                            <button type="button" class="btn btn-secondary btn-sm"
+                                                                onclick="document.getElementById('ota-file').click()"
+                                                                data-i18n="choose-file-btn">选择文件</button>
+                                                            <span id="ota-file-name" class="file-name-display"
+                                                                data-i18n="no-file-selected">未选择任何文件</span>
+                                                        </div>
+                                                        <small style="color: #888; margin-top: 4px; display: block;" data-i18n="dev-ota-file-hint">仅支持
                                                             .bin 格式的固件文件</small>
                                                     </div>
-                                                    <button type="submit" class="pure-button pure-button-primary"
+                                                    <button type="submit" class="btn btn-primary"
                                                         id="ota-upload-btn">
-                                                        <i class="fas fa-upload"></i> <span
-                                                            data-i18n="dev-ota-upload-btn">上传并升级</span>
+                                                        <span data-i18n="dev-ota-upload-btn">上传并升级</span>
                                                     </button>
                                                 </div>
                                             </form>
@@ -2359,12 +2365,13 @@
                         </div>
                     </div>
 
-                    <!-- 设备日志页面 - Glassmorphism Style -->
+                    <!-- 设备日志页面 -->
                     <div id="logs-page" class="page page-layout-flat">
-                        <div class="logs-page-container">
-                            <div class="logs-page-header">
-                                <span id="current-log-file" class="logs-file-name">system.log</span>
-                                <div class="logs-actions">
+                        <div class="card">
+                            <div class="card-header card-header-toolbar">
+                                <h2 class="card-title" data-i18n="page-title-logs">设备日志</h2>
+                                <div class="card-header-actions">
+                                    <span id="current-log-file" class="logs-file-name">system.log</span>
                                     <span id="log-info" class="logs-info"></span>
                                     <label class="logs-auto-refresh">
                                         <input type="checkbox" id="log-auto-refresh" checked>
@@ -2378,8 +2385,10 @@
                                     </button>
                                 </div>
                             </div>
-                            <div id="device-log-container" class="logs-page-content">
-                                <div class="logs-loading" data-i18n="log-loading">正在加载日志...</div>
+                            <div class="card-body" style="padding: 0;">
+                                <div id="device-log-container" class="logs-page-content">
+                                    <div class="logs-loading" data-i18n="log-loading">正在加载日志...</div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -2665,8 +2674,6 @@
                                     <input type="text" id="peripheral-pins-input" class="pure-input-1"
                                         placeholder="例如: 2,4,5 (逗号分隔)" required
                                         data-i18n-placeholder="peripheral-pins-hint">
-                                    <small style="color: #999;" data-i18n="peripheral-pins-help">多个引脚用逗号分隔，如: 21,22 (I2C
-                                        SDA,SCL)</small>
                                 </div>
 
                                 <!-- 动态参数区域 -->

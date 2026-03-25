@@ -290,7 +290,9 @@ const i18n = {
             'dev-ota-file-hint': '仅支持 .bin 格式的固件文件',
             'dev-ota-upload-btn': '上传并升级',
             'dev-ota-ready': '就绪',
-            
+            'choose-file-btn': '选择文件',
+            'no-file-selected': '未选择任何文件',
+                        
             // 系统操作
             'dev-sys-restart-title': '重启设备',
             'dev-sys-restart-hint': '重启设备将会断开所有连接，配置数据将保留。',
@@ -1192,6 +1194,10 @@ const i18n = {
             'rtu-transfer-type-json': 'JSON (结构化数据)',
             'rtu-transfer-type-raw': '透传 (原始HEX帧)',
             'rtu-transfer-type-hint': 'JSON模式需配置寄存器映射，透传模式直接上报原始帧',
+            'rtu-work-mode-label': '工作模式',
+            'rtu-work-mode-mqtt': 'MQTT指令模式',
+            'rtu-work-mode-polling': '主动轮询模式',
+            'rtu-work-mode-hint': 'MQTT模式由平台下发指令采集，轮询模式按预设间隔主动采集',
             'modbus-mapping-title': '寄存器映射配置',
             'modbus-mapping-offset': '寄存器偏移',
             'modbus-mapping-datatype': '数据类型',
@@ -1314,7 +1320,6 @@ const i18n = {
             'peripheral-cat-special': '专用外设',
             'peripheral-pins-label': '引脚配置',
             'peripheral-pins-hint': '例如: 2,4,5 (逗号分隔)',
-            'peripheral-pins-help': '多个引脚用逗号分隔，如: 21,22 (I2C SDA,SCL)',
             'gpio-params-title': 'GPIO参数',
             'uart-params-title': 'UART参数',
             'uart-parity-param-none': '无',
@@ -1690,7 +1695,9 @@ const i18n = {
             'dev-ota-file-hint': 'Only .bin firmware files supported',
             'dev-ota-upload-btn': 'Upload & Update',
             'dev-ota-ready': 'Ready',
-            
+            'choose-file-btn': 'Choose File',
+            'no-file-selected': 'No file selected',
+                        
             // System operations
             'dev-sys-restart-title': 'Restart Device',
             'dev-sys-restart-hint': 'Restart will disconnect all connections. Config will be preserved.',
@@ -2588,6 +2595,10 @@ const i18n = {
             'rtu-transfer-type-json': 'JSON (Structured Data)',
             'rtu-transfer-type-raw': 'Passthrough (Raw HEX)',
             'rtu-transfer-type-hint': 'JSON mode requires register mappings, passthrough sends raw frames',
+            'rtu-work-mode-label': 'Work Mode',
+            'rtu-work-mode-mqtt': 'MQTT Command Mode',
+            'rtu-work-mode-polling': 'Active Polling Mode',
+            'rtu-work-mode-hint': 'MQTT mode receives commands from platform, polling mode collects data at preset intervals',
             'modbus-mapping-title': 'Register Mapping Config',
             'modbus-mapping-offset': 'Reg Offset',
             'modbus-mapping-datatype': 'Data Type',
