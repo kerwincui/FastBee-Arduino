@@ -51,8 +51,8 @@ bool ModbusHandler::begin(const ModbusConfig& cfg) {
     LOG_INFOF("  TX Pin: %d, RX Pin: %d, DE Pin: %d", config.txPin, config.rxPin, config.dePin);
     
     if (config.mode == MODBUS_MASTER) {
-        LOG_INFOF("  Poll tasks: %d, Interval: %ds, Timeout: %dms",
-                  config.master.taskCount, config.master.defaultPollInterval,
+        LOG_INFOF("  Poll tasks: %d, Timeout: %dms",
+                  config.master.taskCount,
                   config.master.responseTimeout);
         memset(taskLastPollTime, 0, sizeof(taskLastPollTime));
         pollState = POLL_IDLE;
@@ -139,8 +139,6 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
     // 解析Master模式配置
     if (doc.containsKey("master")) {
         JsonObject masterObj = doc["master"];
-        if (masterObj.containsKey("defaultPollInterval"))
-            config.master.defaultPollInterval = masterObj["defaultPollInterval"].as<uint16_t>();
         if (masterObj.containsKey("responseTimeout"))
             config.master.responseTimeout = masterObj["responseTimeout"].as<uint16_t>();
         if (masterObj.containsKey("maxRetries"))
@@ -159,7 +157,7 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                 task.functionCode = t["functionCode"] | (uint8_t)0x03;
                 task.startAddress = t["startAddress"] | (uint16_t)0;
                 task.quantity     = t["quantity"] | (uint16_t)10;
-                task.pollInterval = t["pollInterval"] | config.master.defaultPollInterval;
+                task.pollInterval = t["pollInterval"] | (uint16_t)Protocols::MODBUS_DEFAULT_POLL_INTERVAL;
                 task.enabled      = t["enabled"] | true;
                 const char* lbl   = t["label"] | "";
                 strncpy(task.label, lbl, sizeof(task.label) - 1);
@@ -211,7 +209,6 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
     
     // 序列化Master配置
     JsonObject masterObj = doc.createNestedObject("master");
-    masterObj["defaultPollInterval"] = config.master.defaultPollInterval;
     masterObj["responseTimeout"] = config.master.responseTimeout;
     masterObj["maxRetries"] = config.master.maxRetries;
     masterObj["interPollDelay"] = config.master.interPollDelay;
@@ -1288,6 +1285,18 @@ void ModbusHandler::handleMaster() {
     
     switch (pollState) {
         case POLL_IDLE: {
+            // 周期性诊断日志（每60秒）
+            static unsigned long lastDiagLog = 0;
+            if (now - lastDiagLog > 60000) {
+                lastDiagLog = now;
+                LOG_INFOF("Modbus Master stats: total=%lu ok=%lu fail=%lu timeout=%lu tasks=%d wm=%d",
+                           (unsigned long)masterStats.totalPolls,
+                           (unsigned long)masterStats.successPolls,
+                           (unsigned long)masterStats.failedPolls,
+                           (unsigned long)masterStats.timeoutPolls,
+                           config.master.taskCount, config.workMode);
+            }
+            
             // 优先处理写请求队列
             for (uint8_t i = 0; i < Protocols::MODBUS_MAX_WRITE_QUEUE; i++) {
                 if (writeQueue[i].pending) {
@@ -1371,7 +1380,9 @@ void ModbusHandler::handleMaster() {
             }
             
             // 检查帧超时（收到数据后3.5字符时间无新数据 = 一帧结束）
-            unsigned long charTimeout = 35000000UL / config.baudRate;
+            // 3.5字符时间(ms) = 35000 / baudRate（每字符10位：start+8data+stop）
+            // 低波特率(<=19200)按标准计算，高波特率固定1.75ms，最小保底2ms
+            unsigned long charTimeout = (config.baudRate <= 19200) ? (35000UL / config.baudRate + 1) : 2;
             if (charTimeout < 2) charTimeout = 2;
             
             if (responseIndex > 0 && (now - lastByteTime) > charTimeout) {

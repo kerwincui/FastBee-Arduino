@@ -22,7 +22,7 @@
     {
       "id": "exec_1551589",
       "name": "上报随机温湿度",
-      "enabled": true,
+      "enabled": false,
       "triggerType": 1,
       "execMode": 0,
       "operatorType": 0,
@@ -54,24 +54,6 @@
       "targetPeriphId": "gpio_button",
       "actionType": 6,
       "actionValue": ""
-    },
-    {
-      "id": "exec_219287",
-      "name": "Modbus采集温湿度",
-      "enabled": true,
-      "triggerType": 1,
-      "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "",
-      "sourcePeriphId": "",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "08:00",
-      "protocolType": 0,
-      "scriptContent": "null",
-      "targetPeriphId": "",
-      "actionType": 15,
-      "actionValue": "LOG 采集Modbus温湿度"
     },
     {
       "id": "exec_2451103",

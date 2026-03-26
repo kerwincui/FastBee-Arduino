@@ -220,7 +220,7 @@ void LoggerSystem::log(LogLevel level, const char* message, const char* module) 
 }
 
 void LoggerSystem::logFormatted(LogLevel level, const char* format, va_list args) {
-    if (level > currentLevel || !format) {
+    if (level < currentLevel || !format) {
         return;
     }
 

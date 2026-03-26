@@ -740,17 +740,16 @@
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
-                                                    <label for="rtu-baudrate" data-i18n="rtu-baudrate-label">波特率</label>
-                                                    <select id="rtu-baudrate" class="pure-input-1">
-                                                        <option value="4800">4800</option>
-                                                        <option value="9600" selected>9600</option>
-                                                        <option value="19200">19200</option>
-                                                        <option value="38400">38400</option>
-                                                        <option value="57600">57600</option>
-                                                        <option value="115200">115200</option>
+                                                    <label for="rtu-peripheral-id"
+                                                        data-i18n="rtu-peripheral-label">外设配置选择</label>
+                                                    <select id="rtu-peripheral-id" class="pure-input-1"
+                                                        onchange="AppState.onRtuPeripheralChange(this.value)">
+                                                        <option value="" disabled selected
+                                                            data-i18n="rtu-peripheral-placeholder">-- 请选择UART外设 --
+                                                        </option>
                                                     </select>
-                                                    <small class="field-hint"
-                                                        data-i18n="rtu-de-pin-hint">9600最通用，抗干扰和传输距离平衡最好</small>
+                                                    <div id="rtu-peripheral-info" class="field-hint"
+                                                        style="display:none;"></div>
                                                 </div>
                                                 <div class="pure-control-group">
                                                     <label for="rtu-de-pin" data-i18n="rtu-de-pin-label">DE引脚
@@ -758,7 +757,7 @@
                                                     <input type="number" id="rtu-de-pin" class="pure-input-1" value="14"
                                                         min="-1" max="39">
                                                     <small class="field-hint"
-                                                        data-i18n="rtu-de-pin-hint">RS485方向控制引脚，-1表示不使用</small>
+                                                        data-i18n="rtu-de-pin-hint">RS485方向控制引脚，-1表示禁用DE引脚（自动收发模块无需配置）</small>
                                                 </div>
                                                 <div class="pure-control-group">
                                                     <label for="rtu-timeout"
@@ -804,16 +803,16 @@
                                             <div class="config-form-grid">
                                                 <div class="config-form-column">
                                                     <div class="pure-control-group">
-                                                        <label for="master-poll-interval"
-                                                            data-i18n="modbus-master-poll-interval">默认轮询间隔(秒)</label>
-                                                        <input type="number" id="master-poll-interval"
-                                                            class="pure-input-1" value="30" min="1" max="3600">
-                                                    </div>
-                                                    <div class="pure-control-group">
                                                         <label for="master-max-retries"
                                                             data-i18n="modbus-master-max-retries">最大重试次数</label>
                                                         <input type="number" id="master-max-retries"
                                                             class="pure-input-1" value="2" min="0" max="10">
+                                                    </div>
+                                                    <div class="pure-control-group">
+                                                        <label for="master-inter-poll-delay"
+                                                            data-i18n="modbus-master-inter-poll-delay">轮询间隔延迟(ms)</label>
+                                                        <input type="number" id="master-inter-poll-delay"
+                                                            class="pure-input-1" value="100" min="10" max="5000">
                                                     </div>
                                                 </div>
                                                 <div class="config-form-column">
@@ -822,12 +821,6 @@
                                                             data-i18n="modbus-master-response-timeout">响应超时(ms)</label>
                                                         <input type="number" id="master-response-timeout"
                                                             class="pure-input-1" value="1000" min="100" max="30000">
-                                                    </div>
-                                                    <div class="pure-control-group">
-                                                        <label for="master-inter-poll-delay"
-                                                            data-i18n="modbus-master-inter-poll-delay">轮询间隔延迟(ms)</label>
-                                                        <input type="number" id="master-inter-poll-delay"
-                                                            class="pure-input-1" value="100" min="10" max="5000">
                                                     </div>
                                                 </div>
                                             </div>
@@ -870,6 +863,10 @@
                                             <div id="master-status-section" class="u-mt-15 u-card-soft u-bg-muted">
                                                 <h4 style="color: #333; margin-bottom: 10px;"
                                                     data-i18n="modbus-master-status-title">主站运行状态</h4>
+                                                <div style="margin-bottom: 8px; padding: 6px 10px; background: #f5f7fa; border-radius: 4px;">
+                                                    <small data-i18n="modbus-master-running-status-label">运行状态</small>:
+                                                    <span id="master-running-status" style="font-weight: bold; color: #606266;">--</span>
+                                                </div>
                                                 <div
                                                     style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; text-align: center;">
                                                     <div><small
@@ -891,7 +888,7 @@
                                                 <div style="text-align: right; margin-top: 8px;">
                                                     <button type="button" class="btn btn-sm btn-secondary"
                                                         onclick="AppState.refreshMasterStatus()">
-                                                        <i class="fas fa-sync-alt"></i>
+                                                        <span class="icon-refresh"></span> <span data-i18n="refresh-btn">刷新</span>
                                                     </button>
                                                 </div>
                                             </div>
@@ -2679,6 +2676,8 @@
                                     <input type="text" id="peripheral-pins-input" class="pure-input-1"
                                         placeholder="例如: 2,4,5 (逗号分隔)" required
                                         data-i18n-placeholder="peripheral-pins-hint">
+                                    <small id="uart-pin-direction-hint" class="field-hint" style="display:none;"
+                                        data-i18n="peripheral-uart-pin-hint">引脚顺序: 引脚1=RX(接收/输入), 引脚2=TX(发送/输出)</small>
                                 </div>
 
                                 <!-- 动态参数区域 -->

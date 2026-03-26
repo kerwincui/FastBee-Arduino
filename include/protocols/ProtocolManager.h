@@ -9,6 +9,7 @@
 #include "TCPHandler.h"
 #include "CoAPHandler.h"
 #include "HTTPClientWrapper.h"
+#include "core/PeripheralManager.h"
 
 // 协议类型枚举
 enum class ProtocolType {

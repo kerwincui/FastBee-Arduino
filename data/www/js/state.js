@@ -3473,6 +3473,11 @@ const AppState = {
      * 加载协议配置
      */
     loadProtocolConfig(tabId) {
+        // 非 modbus-rtu Tab 时停止自动刷新
+        if (tabId !== 'modbus-rtu') {
+            this._stopMasterStatusRefresh();
+        }
+        
         // 如果已有缓存，直接填充表单
         if (this._protocolConfig) {
             this._fillProtocolForm(tabId, this._protocolConfig);
@@ -3498,7 +3503,8 @@ const AppState = {
         if (tabId === 'modbus-rtu' && config.modbusRtu) {
             const rtu = config.modbusRtu;
             this._setCheckbox('modbus-rtu-enabled', rtu.enabled ?? false);
-            this._setValue('rtu-baudrate', rtu.baudRate || 9600);
+            // 加载 UART 外设列表并选中当前配置的 peripheralId
+            this._loadUartPeripherals(rtu.peripheralId || '');
             this._setValue('rtu-timeout', rtu.timeout || 1000);
             
             // RS485 配置
@@ -3509,7 +3515,6 @@ const AppState = {
             this.onModbusModeChange('master');
             
             if (rtu.master) {
-                this._setValue('master-poll-interval', rtu.master.defaultPollInterval || 30);
                 this._setValue('master-response-timeout', rtu.master.responseTimeout || 1000);
                 this._setValue('master-max-retries', rtu.master.maxRetries || 2);
                 this._setValue('master-inter-poll-delay', rtu.master.interPollDelay || 100);
@@ -3520,6 +3525,7 @@ const AppState = {
             this._renderMasterTasks();
             
             this.refreshMasterStatus();
+            this._startMasterStatusRefresh();
         }
         
         if (tabId === 'modbus-tcp' && config.modbusTcp) {
@@ -3626,14 +3632,20 @@ const AppState = {
         
         // Modbus RTU
         data.modbusRtu_enabled = document.getElementById('modbus-rtu-enabled')?.checked ? 'true' : 'false';
-        data.modbusRtu_baudRate = document.getElementById('rtu-baudrate')?.value || '9600';
+        data.modbusRtu_peripheralId = document.getElementById('rtu-peripheral-id')?.value || '';
         data.modbusRtu_timeout = document.getElementById('rtu-timeout')?.value || '1000';
         data.modbusRtu_mode = 'master';
         data.modbusRtu_dePin = document.getElementById('rtu-de-pin')?.value || '14';
         data.modbusRtu_transferType = document.getElementById('rtu-transfer-type')?.value || '0';
+        data.modbusRtu_workMode = document.getElementById('rtu-work-mode')?.value || '1';
+        
+        // 验证：启用 Modbus RTU 时必须选择外设
+        if (data.modbusRtu_enabled === 'true' && !data.modbusRtu_peripheralId) {
+            Notification.warning(i18n.t('rtu-no-uart-peripherals'));
+            return;
+        }
         
         // Modbus RTU Master 配置
-        data.modbusRtu_master_defaultPollInterval = document.getElementById('master-poll-interval')?.value || '30';
         data.modbusRtu_master_responseTimeout = document.getElementById('master-response-timeout')?.value || '1000';
         data.modbusRtu_master_maxRetries = document.getElementById('master-max-retries')?.value || '2';
         data.modbusRtu_master_interPollDelay = document.getElementById('master-inter-poll-delay')?.value || '100';
@@ -3827,7 +3839,7 @@ const AppState = {
             functionCode: 3,
             startAddress: 0,
             quantity: 10,
-            pollInterval: parseInt(document.getElementById('master-poll-interval')?.value) || 30,
+            pollInterval: 30,
             enabled: true,
             label: '',
             mappings: []
@@ -3927,29 +3939,137 @@ const AppState = {
                 '<td><input type="number" value="' + (m.regOffset || 0) + '" min="0" max="124" style="width:50px;"></td>' +
                 '<td><select style="width:80px;">' + dtSelect + '</select></td>' +
                 '<td><input type="number" value="' + (m.scaleFactor ?? 0.1) + '" step="0.001" style="width:70px;"></td>' +
-                '<td><input type="number" value="' + (m.decimalPlaces ?? 1) + '" min="0" max="6" style="width:45px;"></td>' +
+                '<td><input type="number" value="' + (m.decimalPlaces ?? 1) + '" min="0" max="6" style="width:50px;"></td>' +
                 '<td><input type="text" value="' + (m.sensorId || '') + '" maxlength="15" style="width:100px;" placeholder="temperature"></td>' +
-                '<td><button type="button" class="pure-button" style="background:#f44336;color:white;font-size:11px;padding:2px 6px;" onclick="AppState.removeMapping(' + idx + ')">X</button></td>' +
+                '<td><button type="button" class="pure-button" style="background:#f44336;color:white;font-size:11px;" onclick="AppState.removeMapping(' + idx + ')">X</button></td>' +
             '</tr>';
         }).join('');
     },
     
+    /**
+     * Master 状态自动刷新定时器
+     */
+    _masterStatusTimer: null,
+
     /**
      * 刷新 Master 运行状态
      */
     refreshMasterStatus() {
         apiGet('/api/modbus/status')
             .then(res => {
-                if (!res || !res.success || !res.data) return;
+                if (!res || !res.success || !res.data) {
+                    this._setText('master-running-status', i18n.t('modbus-master-status-unavailable'));
+                    return;
+                }
                 const d = res.data;
-                this._setText('master-stat-total', d.totalPolls || 0);
-                this._setText('master-stat-success', d.successPolls || 0);
-                this._setText('master-stat-failed', d.failedPolls || 0);
-                this._setText('master-stat-timeout', d.timeoutPolls || 0);
+                this._setText('master-stat-total', d.totalPolls ?? 0);
+                this._setText('master-stat-success', d.successPolls ?? 0);
+                this._setText('master-stat-failed', d.failedPolls ?? 0);
+                this._setText('master-stat-timeout', d.timeoutPolls ?? 0);
+                // 显示运行状态文本
+                const statusText = d.status || i18n.t('modbus-master-status-stopped');
+                this._setText('master-running-status', statusText);
             })
-            .catch(() => {});
+            .catch(() => {
+                this._setText('master-running-status', i18n.t('modbus-master-status-fetch-error'));
+            });
+    },
+
+    /**
+     * 启动 Master 状态自动刷新（每5秒）
+     */
+    _startMasterStatusRefresh() {
+        this._stopMasterStatusRefresh();
+        this._masterStatusTimer = setInterval(() => {
+            this.refreshMasterStatus();
+        }, 5000);
+    },
+
+    /**
+     * 停止 Master 状态自动刷新
+     */
+    _stopMasterStatusRefresh() {
+        if (this._masterStatusTimer) {
+            clearInterval(this._masterStatusTimer);
+            this._masterStatusTimer = null;
+        }
     },
     
+    /**
+     * 加载已启用的 UART 外设列表（用于 Modbus RTU 外设选择下拉框）
+     */
+    async _loadUartPeripherals(selectedId) {
+        const select = document.getElementById('rtu-peripheral-id');
+        if (!select) return;
+
+        try {
+            const res = await apiGet('/api/peripherals');
+            if (!res || !res.success) return;
+
+            // 筛选已启用的 UART 外设 (type === 1)
+            this._uartPeripherals = (res.data || []).filter(p => p.type === 1 && p.enabled);
+
+            // 清空并重建选项
+            select.innerHTML = '<option value="" disabled>' + i18n.t('rtu-peripheral-placeholder') + '</option>';
+
+            if (this._uartPeripherals.length === 0) {
+                select.innerHTML += '<option value="" disabled>' + i18n.t('rtu-no-uart-peripherals') + '</option>';
+                return;
+            }
+
+            this._uartPeripherals.forEach(p => {
+                const pinsText = p.pins && p.pins.length >= 2
+                    ? ' (RX:' + p.pins[0] + ', TX:' + p.pins[1] + ')'
+                    : '';
+                const opt = document.createElement('option');
+                opt.value = p.id;
+                opt.textContent = p.name + pinsText;
+                select.appendChild(opt);
+            });
+
+            // 设置选中值
+            if (selectedId) {
+                select.value = selectedId;
+                this.onRtuPeripheralChange(selectedId);
+            }
+        } catch (e) {
+            console.error('Failed to load UART peripherals:', e);
+        }
+    },
+
+    /**
+     * UART 外设选择变更回调 — 显示引脚和波特率信息
+     */
+    onRtuPeripheralChange(peripheralId) {
+        const infoDiv = document.getElementById('rtu-peripheral-info');
+        if (!infoDiv || !peripheralId) {
+            if (infoDiv) infoDiv.style.display = 'none';
+            return;
+        }
+
+        // 从缓存列表获取基本信息
+        const periph = (this._uartPeripherals || []).find(p => p.id === peripheralId);
+        if (!periph) {
+            infoDiv.style.display = 'none';
+            return;
+        }
+
+        // 请求完整外设信息（含 baudRate）
+        apiGet('/api/peripherals/?id=' + peripheralId).then(res => {
+            if (!res || !res.success) return;
+            const data = res.data;
+            const baudRate = data.params?.baudRate || i18n.t('unknown') || '未知';
+            const pins = data.pins || [];
+            infoDiv.textContent = 'RX: GPIO' + pins[0] + ', TX: GPIO' + pins[1] + ', ' + i18n.t('uart-baudrate-label') + ': ' + baudRate;
+            infoDiv.style.display = 'block';
+        }).catch(() => {
+            // 仅显示引脚信息
+            const pins = periph.pins || [];
+            infoDiv.textContent = 'RX: GPIO' + pins[0] + ', TX: GPIO' + pins[1];
+            infoDiv.style.display = 'block';
+        });
+    },
+
     // ============ 外设接口管理（新版） ============
     
     /**
@@ -4082,6 +4202,9 @@ const AppState = {
         
         // 隐藏所有参数组
         document.querySelectorAll('.peripheral-params-group').forEach(el => el.style.display = 'none');
+        // 隐藏 UART 引脚方向提示
+        const pinHint = document.getElementById('uart-pin-direction-hint');
+        if (pinHint) pinHint.style.display = 'none';
         
         // 根据类型显示对应参数组
         if (type >= 11 && type <= 21) {
@@ -4104,6 +4227,8 @@ const AppState = {
             // UART
             const uartParams = document.getElementById('uart-params');
             if (uartParams) uartParams.style.display = 'block';
+            // 显示 UART 引脚方向提示
+            if (pinHint) pinHint.style.display = 'block';
         } else if (type === 2) {
             // I2C
             const i2cParams = document.getElementById('i2c-params');
@@ -5484,23 +5609,20 @@ const AppState = {
             return;
         }
 
-        // 验证客户端ID前缀与认证方式是否匹配
-        // 简单认证(authType=0)时clientId必须以S&开头
-        // 加密认证(authType=1)时clientId必须以E&开头（如果填写了clientId）
+        // 客户端ID前缀与认证方式匹配提示（不阻止操作）
+        // FastBee平台约定: 简单认证(authType=0)客户端ID以S&开头，加密认证(authType=1)以E&开头
         if (clientId) {
             if (authType === '0' && !clientId.startsWith('S&')) {
                 if (resultEl) {
                     resultEl.textContent = i18n.t('mqtt-test-clientid-simple-prefix');
-                    resultEl.style.color = '#f56c6c';
+                    resultEl.style.color = '#e6a23c';
                 }
-                return;
             }
             if (authType === '1' && !clientId.startsWith('E&')) {
                 if (resultEl) {
                     resultEl.textContent = i18n.t('mqtt-test-clientid-encrypted-prefix');
-                    resultEl.style.color = '#f56c6c';
+                    resultEl.style.color = '#e6a23c';
                 }
-                return;
             }
         }
         

@@ -295,9 +295,34 @@ bool ProtocolManager::restartModbus() {
     
     // 从嵌套的 modbusRtu 配置构建 ModbusConfig
     ModbusConfig modbusConfig;
-    modbusConfig.baudRate = rtu["baudRate"] | (uint32_t)9600;
-    modbusConfig.txPin = 17;  // ESP32 Serial2 固定引脚
-    modbusConfig.rxPin = 16;  // ESP32 Serial2 固定引脚
+    
+    // 从外设管理器获取串口配置（引脚 + 波特率）
+    String peripheralId = rtu["peripheralId"] | "";
+    if (peripheralId.isEmpty()) {
+        LOG_ERROR("Modbus RTU: No peripheralId configured, cannot start");
+        return false;
+    }
+
+    PeripheralConfig* periph = PeripheralManager::getInstance().getPeripheral(peripheralId);
+    if (!periph) {
+        LOG_ERRORF("Modbus RTU: Peripheral '%s' not found", peripheralId.c_str());
+        return false;
+    }
+
+    if (periph->type != PeripheralType::UART) {
+        LOG_ERRORF("Modbus RTU: Peripheral '%s' is not UART type", peripheralId.c_str());
+        return false;
+    }
+
+    // 引脚约定: pins[0]=RX, pins[1]=TX
+    modbusConfig.rxPin = periph->pins[0];
+    modbusConfig.txPin = periph->pins[1];
+    modbusConfig.baudRate = periph->params.uart.baudRate > 0 ? periph->params.uart.baudRate : 9600;
+
+    LOG_INFOF("Modbus RTU: Using peripheral '%s' - RX:%d, TX:%d, Baud:%d",
+              peripheralId.c_str(), modbusConfig.rxPin, modbusConfig.txPin, modbusConfig.baudRate);
+
+    // dePin 保留从 protocol.json 读取（RS485 方向控制是 Modbus 特有配置）
     int dePin = rtu["dePin"] | -1;
     modbusConfig.dePin = (dePin < 0) ? 255 : (uint8_t)dePin;
     modbusConfig.slaveAddress = rtu["slaveAddress"] | (uint8_t)1;
@@ -311,7 +336,6 @@ bool ProtocolManager::restartModbus() {
     // 解析 Master 配置
     if (rtu.containsKey("master")) {
         JsonObject masterObj = rtu["master"];
-        modbusConfig.master.defaultPollInterval = masterObj["defaultPollInterval"] | (uint16_t)30;
         modbusConfig.master.responseTimeout = masterObj["responseTimeout"] | (uint16_t)1000;
         modbusConfig.master.maxRetries = masterObj["maxRetries"] | (uint8_t)2;
         modbusConfig.master.interPollDelay = masterObj["interPollDelay"] | (uint16_t)100;
@@ -327,7 +351,7 @@ bool ProtocolManager::restartModbus() {
                 task.functionCode = t["functionCode"] | (uint8_t)0x03;
                 task.startAddress = t["startAddress"] | (uint16_t)0;
                 task.quantity     = t["quantity"] | (uint16_t)10;
-                task.pollInterval = t["pollInterval"] | modbusConfig.master.defaultPollInterval;
+                task.pollInterval = t["pollInterval"] | (uint16_t)Protocols::MODBUS_DEFAULT_POLL_INTERVAL;
                 task.enabled      = t["enabled"] | true;
                 const char* lbl   = t["label"] | "";
                 strncpy(task.label, lbl, sizeof(task.label) - 1);

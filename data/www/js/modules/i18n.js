@@ -1090,8 +1090,8 @@ const i18n = {
             'mqtt-test-deferred': 'MQTT 正在异步连接中，请关注状态变化...',
             'mqtt-test-deferred-timeout': '异步连接超时，请检查配置或查看日志',
             'mqtt-test-no-server': '请先填写Broker地址',
-            'mqtt-test-clientid-simple-prefix': "简单认证模式下，客户端ID必须以'S&'开头，请修改客户端ID字段的内容",
-            'mqtt-test-clientid-encrypted-prefix': "加密认证模式下，客户端ID必须以'E&'开头，请修改客户端ID字段的内容",
+            'mqtt-test-clientid-simple-prefix': "提示: FastBee平台简单认证模式下，客户端ID通常以'S&'开头（格式: S&设备编号&产品ID&用户ID）",
+            'mqtt-test-clientid-encrypted-prefix': "提示: FastBee平台加密认证模式下，客户端ID通常以'E&'开头（格式: E&设备编号&产品ID&用户ID）",
             
             // MQTT 状态面板
             'mqtt-status-label': '连接状态',
@@ -1143,8 +1143,17 @@ const i18n = {
             'rtu-tx-pin-label': 'TX引脚',
             'rtu-rx-pin-label': 'RX引脚',
             'rtu-de-pin-label': 'DE引脚',
-            'rtu-de-pin-hint': 'RS485方向控制引脚，-1表示不使用',
+            'rtu-de-pin-hint': 'RS485方向控制引脚，-1表示禁用DE引脚（自动收发模块无需配置）',
             'rtu-slave-addr-label': '从站地址',
+            
+            // Modbus RTU 外设配置选择
+            'rtu-peripheral-label': '外设配置选择',
+            'rtu-peripheral-hint': '关联已配置的外设，Modbus通信将使用该外设的串口参数（引脚、波特率等）',
+            'rtu-peripheral-placeholder': '-- 请选择UART外设 --',
+            'rtu-no-uart-peripherals': '未找到已启用的UART外设，请先在外设管理中配置',
+            
+            // UART 外设引脚方向提示
+            'peripheral-uart-pin-hint': '引脚顺序: 引脚1=RX(接收/输入), 引脚2=TX(发送/输出)',
             
             // HTTP 认证
             'http-auth-section-title': 'HTTP 认证',
@@ -1230,6 +1239,10 @@ const i18n = {
             'modbus-mapping-max': '每任务最多8个映射',
             'modbus-mapping-btn': '映射',
             'modbus-master-status-title': '主站运行状态',
+            'modbus-master-running-status-label': '运行状态',
+            'modbus-master-status-stopped': '已停止',
+            'modbus-master-status-unavailable': '无法获取状态',
+            'modbus-master-status-fetch-error': '获取失败，请检查连接',
             'modbus-master-total-polls': '总轮询次数',
             'modbus-master-success-polls': '成功次数',
             'modbus-master-failed-polls': '失败次数',
@@ -2512,8 +2525,8 @@ const i18n = {
             'mqtt-test-deferred': 'MQTT connecting asynchronously, check status...',
             'mqtt-test-deferred-timeout': 'Async connection timeout, check config or logs',
             'mqtt-test-no-server': 'Please enter broker address first',
-            'mqtt-test-clientid-simple-prefix': "In simple auth mode, client ID must start with 'S&'. Please modify the client ID field",
-            'mqtt-test-clientid-encrypted-prefix': "In encrypted auth mode, client ID must start with 'E&'. Please modify the client ID field",
+            'mqtt-test-clientid-simple-prefix': "Note: For FastBee platform simple auth, client ID typically starts with 'S&' (format: S&deviceNum&productId&userId)",
+            'mqtt-test-clientid-encrypted-prefix': "Note: For FastBee platform encrypted auth, client ID typically starts with 'E&' (format: E&deviceNum&productId&userId)",
             
             // MQTT Status Panel
             'mqtt-status-label': 'Status',
@@ -2564,8 +2577,17 @@ const i18n = {
             'rtu-tx-pin-label': 'TX Pin',
             'rtu-rx-pin-label': 'RX Pin',
             'rtu-de-pin-label': 'DE Pin',
-            'rtu-de-pin-hint': 'RS485 direction control pin, -1 to disable',
+            'rtu-de-pin-hint': 'RS485 direction control pin, -1 to disable DE pin (not needed for auto-direction modules)',
             'rtu-slave-addr-label': 'Slave Address',
+            
+            // Modbus RTU Peripheral Config Selection
+            'rtu-peripheral-label': 'Peripheral Config',
+            'rtu-peripheral-hint': 'Link to a configured peripheral. Modbus will use its UART settings (pins, baud rate, etc.)',
+            'rtu-peripheral-placeholder': '-- Select UART Peripheral --',
+            'rtu-no-uart-peripherals': 'No enabled UART peripherals found. Configure one in Peripheral Management first.',
+            
+            // UART Peripheral Pin Direction Hint
+            'peripheral-uart-pin-hint': 'Pin order: Pin1=RX(Receive/Input), Pin2=TX(Transmit/Output)',
             
             // HTTP Auth
             'http-auth-section-title': 'HTTP Authentication',
@@ -2651,6 +2673,10 @@ const i18n = {
             'modbus-mapping-max': 'Max 8 mappings per task',
             'modbus-mapping-btn': 'Map',
             'modbus-master-status-title': 'Master Status',
+            'modbus-master-running-status-label': 'Running Status',
+            'modbus-master-status-stopped': 'Stopped',
+            'modbus-master-status-unavailable': 'Status unavailable',
+            'modbus-master-status-fetch-error': 'Fetch failed, check connection',
             'modbus-master-total-polls': 'Total Polls',
             'modbus-master-success-polls': 'Success',
             'modbus-master-failed-polls': 'Failed',

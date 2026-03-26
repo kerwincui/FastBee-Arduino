@@ -290,7 +290,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
 
     // Modbus RTU
     doc["modbusRtu"]["enabled"] = GP("modbusRtu_enabled", "false") == "true";
-    doc["modbusRtu"]["baudRate"] = GPI("modbusRtu_baudRate", "9600");
+    doc["modbusRtu"]["peripheralId"] = GP("modbusRtu_peripheralId", "");
     doc["modbusRtu"]["timeout"] = GPI("modbusRtu_timeout", "1000");
     doc["modbusRtu"]["mode"] = GP("modbusRtu_mode", "master");
     doc["modbusRtu"]["dePin"] = GPI("modbusRtu_dePin", "-1");
@@ -298,7 +298,6 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["modbusRtu"]["workMode"] = GPI("modbusRtu_workMode", "1");
 
     // Modbus RTU Master 配置
-    doc["modbusRtu"]["master"]["defaultPollInterval"] = GPI("modbusRtu_master_defaultPollInterval", "30");
     doc["modbusRtu"]["master"]["responseTimeout"] = GPI("modbusRtu_master_responseTimeout", "1000");
     doc["modbusRtu"]["master"]["maxRetries"] = GPI("modbusRtu_master_maxRetries", "2");
     doc["modbusRtu"]["master"]["interPollDelay"] = GPI("modbusRtu_master_interPollDelay", "100");

@@ -101,7 +101,6 @@ struct WriteRequest {
 
 // Master模式专属配置
 struct MasterConfig {
-    uint16_t defaultPollInterval; // 默认轮询间隔（秒）
     uint16_t responseTimeout;     // 响应超时（毫秒）
     uint8_t  maxRetries;          // 最大重试次数
     uint16_t interPollDelay;      // 两次请求间最小间隔（毫秒）
@@ -109,8 +108,7 @@ struct MasterConfig {
     uint8_t  taskCount;
 
     MasterConfig()
-        : defaultPollInterval(Protocols::MODBUS_DEFAULT_POLL_INTERVAL),
-          responseTimeout(1000), maxRetries(2),
+        : responseTimeout(1000), maxRetries(2),
           interPollDelay(100), taskCount(0) {}
 };
 
