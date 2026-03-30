@@ -1,5 +1,7 @@
 #include "./network/handlers/ProvisionRouteHandler.h"
 #include "./network/WebHandlerContext.h"
+#include "./network/NetworkManager.h"
+#include "./systems/LoggerSystem.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <WiFi.h>
@@ -354,9 +356,44 @@ void ProvisionRouteHandler::handleWiFiConnect(AsyncWebServerRequest* request) {
         return;
     }
 
+    LOG_INFOF("[Provision] WiFi connect request: SSID=%s", ssid.c_str());
+
+    // 通过 NetworkManager 保存配置并连接
+    if (ctx->networkManager) {
+        NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+        WiFiConfig cfg = netMgr->getConfig();
+        
+        // 更新 STA 配置
+        cfg.staSSID = ssid;
+        cfg.staPassword = password;
+        
+        // 如果之前是纯 AP 模式，切换到 AP+STA 或 STA 模式
+        if (cfg.mode == NetworkMode::NETWORK_AP) {
+            cfg.mode = NetworkMode::NETWORK_AP_STA;  // 保持 AP 可用以确保 Web 服务可用
+            LOG_INFO("[Provision] Switching from AP to AP+STA mode for WiFi connection");
+        }
+        
+        // 保存配置并触发网络重启
+        if (netMgr->updateConfig(cfg, true)) {
+            LOG_INFO("[Provision] WiFi configuration saved, network will restart");
+            JsonDocument doc;
+            doc["success"] = true;
+            doc["message"] = "WiFi configuration saved, connecting...";
+            doc["data"]["ssid"] = ssid;
+            doc["data"]["mode"] = static_cast<uint8_t>(cfg.mode);
+            String output;
+            serializeJson(doc, output);
+            request->send(200, "application/json", output);
+            return;
+        } else {
+            LOG_ERROR("[Provision] Failed to save WiFi configuration");
+            ctx->sendError(request, 500, "Failed to save WiFi configuration");
+            return;
+        }
+    }
+
+    // 回退：直接连接（不保存配置）
     ctx->sendSuccess(request, "Connecting to WiFi...");
-
     delay(100);
-
     WiFi.begin(ssid.c_str(), password.c_str());
 }

@@ -153,7 +153,7 @@
       "execMode": 0,
       "operatorType": 0,
       "compareValue": "1",
-      "sourcePeriphId": "null",
+      "sourcePeriphId": "",
       "timerMode": 0,
       "intervalSec": 60,
       "timePoint": "08:00",
@@ -161,7 +161,7 @@
       "scriptContent": "null",
       "targetPeriphId": "gpio_pwm",
       "actionType": 4,
-      "actionValue": "4005"
+      "actionValue": "4012"
     },
     {
       "id": "exec_396881",

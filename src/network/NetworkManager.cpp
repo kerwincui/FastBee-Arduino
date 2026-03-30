@@ -76,6 +76,22 @@ bool NetworkManager::initialize() {
               wifiConfig.enableMDNS ? "true" : "false", 
               wifiConfig.customDomain.c_str());
 
+    // 智能模式修正：首次启动或配置不完整时自动调整
+    // 1. 如果 mode 是 NETWORK_STA 但没有配置 staSSID，改为 NETWORK_AP
+    // 2. 如果 mode 是 NETWORK_AP_STA 但没有配置 staSSID，改为 NETWORK_AP
+    // 3. 这样可以确保首次启动时用户能通过 AP 模式配网
+    if (wifiConfig.staSSID.isEmpty()) {
+        if (wifiConfig.mode == NetworkMode::NETWORK_STA) {
+            LOG_WARNING("NetworkManager: No staSSID configured, switching from STA to AP mode");
+            wifiConfig.mode = NetworkMode::NETWORK_AP;
+        } else if (wifiConfig.mode == NetworkMode::NETWORK_AP_STA) {
+            LOG_WARNING("NetworkManager: No staSSID configured, switching from AP+STA to AP-only mode");
+            wifiConfig.mode = NetworkMode::NETWORK_AP;
+        }
+        // 保存修正后的配置
+        saveNetworkConfig();
+    }
+
     // 初始化子模块
     if (!wifiManager->initialize()) {
         LOG_ERROR("NetworkManager: Failed to initialize WiFi manager");
@@ -224,11 +240,11 @@ void NetworkManager::update() {
     static bool wasConnected = false;
     static unsigned long lastMdnsUpdate = 0;
 
-    // 处理延迟重启（配置保存后延迟500ms执行，确保HTTP响应已返回）
+    // 处理延迟重启（配置保存后延迟1500ms执行，确保HTTP响应已返回）
     if (pendingRestart) {
         if (pendingRestartTime == 0) {
             pendingRestartTime = currentTime;
-        } else if (currentTime - pendingRestartTime >= 500) {
+        } else if (currentTime - pendingRestartTime >= 1500) {
             LOG_INFO("NetworkManager: Executing delayed network restart...");
             pendingRestart = false;
             pendingRestartTime = 0;
