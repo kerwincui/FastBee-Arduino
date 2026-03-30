@@ -4595,6 +4595,8 @@ const AppState = {
         const tr = document.getElementById('periph-exec-timer-trigger-right');
         const sg = document.getElementById('periph-exec-source-periph-group');
         const tg = document.getElementById('periph-exec-topic-trigger-group');
+        const sysg = document.getElementById('periph-exec-system-event-group');
+        const btng = document.getElementById('periph-exec-button-event-group');
         // 平台触发(0)和设备触发(2)共享条件字段
         const showCondition = (val === '0' || val === '2');
         if (cl) cl.style.display = showCondition ? 'block' : 'none';
@@ -4603,8 +4605,19 @@ const AppState = {
         if (tr) tr.style.display = (val === '1') ? 'block' : 'none';
         // 触发源外设仅设备触发(2)显示
         if (sg) sg.style.display = (val === '2') ? 'block' : 'none';
+        // 系统事件选择仅系统事件触发(5)显示
+        if (sysg) sysg.style.display = (val === '5') ? 'block' : 'none';
+        // 按键事件选择仅按键事件触发(6)显示
+        if (btng) btng.style.display = (val === '6') ? 'block' : 'none';
         // 设备触发时填充输入外设下拉
         if (val === '2') this._populateSourcePeriphSelect();
+        // 系统事件触发时填充系统事件下拉
+        if (val === '5') this._populateSystemEventSelect();
+        // 按键事件触发时填充按键外设和按键事件下拉
+        if (val === '6') {
+            this._populateButtonPeriphSelect();
+            this._populateButtonEventSelect();
+        }
     },
 
     onPeriphExecTimerModeChange(val) {
@@ -4641,6 +4654,7 @@ const AppState = {
             operatorType: document.getElementById('periph-exec-operator').value,
             compareValue: document.getElementById('periph-exec-compare-value').value.trim(),
             sourcePeriphId: document.getElementById('periph-exec-source-periph').value,
+            systemEventId: document.getElementById('periph-exec-system-event').value,
             timerMode: document.getElementById('periph-exec-timer-mode').value,
             intervalSec: document.getElementById('periph-exec-interval').value,
             timePoint: document.getElementById('periph-exec-timepoint').value,
@@ -4648,6 +4662,11 @@ const AppState = {
             targetPeriphId: document.getElementById('periph-exec-target-periph').value,
             actionValue: document.getElementById('periph-exec-action-value').value.trim()
         };
+        // 按键事件触发(triggerType=6): 使用按键外设和按键事件字段
+        if (ruleData.triggerType === '6') {
+            ruleData.sourcePeriphId = document.getElementById('periph-exec-button-periph').value;
+            ruleData.systemEventId = document.getElementById('periph-exec-button-event').value;
+        }
         if (!ruleData.name) {
             errEl.textContent = i18n.t('periph-exec-validate-name');
             errEl.style.display = 'block';
@@ -4706,6 +4725,23 @@ const AppState = {
                 if (String(rule.triggerType) === '2' && rule.sourcePeriphId) {
                     setTimeout(() => {
                         document.getElementById('periph-exec-source-periph').value = rule.sourcePeriphId || '';
+                    }, 300);
+                }
+                // 系统事件触发: 回显系统事件（需等待下拉填充后再设值）
+                if (String(rule.triggerType) === '5' && rule.systemEventId) {
+                    setTimeout(() => {
+                        document.getElementById('periph-exec-system-event').value = rule.systemEventId || '';
+                    }, 300);
+                }
+                // 按键事件触发: 回显按键外设和按键事件（需等待下拉填充后再设值）
+                if (String(rule.triggerType) === '6') {
+                    setTimeout(() => {
+                        if (rule.sourcePeriphId) {
+                            document.getElementById('periph-exec-button-periph').value = rule.sourcePeriphId;
+                        }
+                        if (rule.systemEventId) {
+                            document.getElementById('periph-exec-button-event').value = rule.systemEventId;
+                        }
                     }, 300);
                 }
                 document.getElementById('periph-exec-timer-mode').value = String(rule.timerMode);
@@ -4811,7 +4847,9 @@ const AppState = {
                     1: i18n.t('periph-exec-trigger-timer'),
                     2: i18n.t('periph-exec-trigger-device'),
                     3: i18n.t('rule-script-trigger-receive'),
-                    4: i18n.t('rule-script-trigger-report')
+                    4: i18n.t('rule-script-trigger-report'),
+                    5: i18n.t('periph-exec-trigger-system'),
+                    6: i18n.t('periph-exec-trigger-button')
                 };
                 const actionLabels = {
                     0: i18n.t('periph-exec-action-high'), 1: i18n.t('periph-exec-action-low'),
@@ -4843,6 +4881,13 @@ const AppState = {
                     } else if (r.triggerType === 3 || r.triggerType === 4) {
                         const protocolNames = ['MQTT', 'Modbus RTU', 'Modbus TCP', 'HTTP', 'CoAP', 'TCP'];
                         triggerText += ': ' + (protocolNames[r.protocolType] || 'MQTT');
+                    } else if (r.triggerType === 5) {
+                        // 系统事件触发：显示事件ID
+                        triggerText += ': ' + (r.systemEventId || '?');
+                    } else if (r.triggerType === 6) {
+                        // 按键事件触发：显示按键外设和事件类型
+                        const btnPeriphName = r.sourcePeriphId ? (periphMap[r.sourcePeriphId] || r.sourcePeriphId) : '?';
+                        triggerText += ': ' + btnPeriphName + ' - ' + (r.systemEventId || '?');
                     }
                     const periphName = r.targetPeriphId ? (periphMap[r.targetPeriphId] || r.targetPeriphId) : '-';
                     const actionText = actionLabels[r.actionType] || '?';
@@ -4903,6 +4948,72 @@ const AppState = {
             let opts = '<option value="">' + i18n.t('periph-exec-select-source-periph') + '</option>';
             res.data.filter(p => p.enabled && inputTypes.includes(p.type)).forEach(p => {
                 opts += '<option value="' + p.id + '">' + p.name + ' (' + p.id + ')' + '</option>';
+            });
+            sel.innerHTML = opts;
+            if (currentVal) sel.value = currentVal;
+        });
+    },
+
+    _populateSystemEventSelect() {
+        const sel = document.getElementById('periph-exec-system-event');
+        if (!sel) return;
+        const currentVal = sel.value;
+        apiGet('/api/periph-exec/system-events').then(res => {
+            if (!res || !res.success || !res.data) return;
+            // 按分类分组
+            const categories = {};
+            res.data.forEach(e => {
+                if (!categories[e.category]) categories[e.category] = [];
+                categories[e.category].push(e);
+            });
+            let opts = '<option value="">' + i18n.t('periph-exec-select-system-event') + '</option>';
+            for (const cat in categories) {
+                opts += '<optgroup label="' + cat + '">';
+                categories[cat].forEach(e => {
+                    opts += '<option value="' + e.id + '">' + e.name + '</option>';
+                });
+                opts += '</optgroup>';
+            }
+            sel.innerHTML = opts;
+            if (currentVal) sel.value = currentVal;
+        });
+    },
+
+    _populateButtonPeriphSelect() {
+        const sel = document.getElementById('periph-exec-button-periph');
+        if (!sel) return;
+        const currentVal = sel.value;
+        apiGet('/api/peripherals').then(res => {
+            if (!res || !res.success || !res.data) return;
+            // 仅显示上拉/下拉输入类型外设 (13=DI_PU, 14=DI_PD)
+            const buttonTypes = [13, 14];
+            let opts = '<option value="">' + i18n.t('periph-exec-select-button-periph') + '</option>';
+            res.data.filter(p => p.enabled && buttonTypes.includes(p.type)).forEach(p => {
+                opts += '<option value="' + p.id + '">' + p.name + ' (' + p.id + ')' + '</option>';
+            });
+            sel.innerHTML = opts;
+            if (currentVal) sel.value = currentVal;
+        });
+    },
+
+    _populateButtonEventSelect() {
+        const sel = document.getElementById('periph-exec-button-event');
+        if (!sel) return;
+        const currentVal = sel.value;
+        apiGet('/api/periph-exec/system-events').then(res => {
+            console.log('[ButtonEvent] API response:', res);
+            if (!res || !res.success || !res.data) {
+                console.log('[ButtonEvent] Invalid response');
+                return;
+            }
+            console.log('[ButtonEvent] Data array:', res.data);
+            console.log('[ButtonEvent] Data length:', res.data.length);
+            // 仅显示按键事件 (category === '按键')
+            const buttonEvents = res.data.filter(e => e.category === '按键');
+            console.log('[ButtonEvent] Filtered button events:', buttonEvents);
+            let opts = '<option value="">' + i18n.t('periph-exec-select-button-event') + '</option>';
+            buttonEvents.forEach(e => {
+                opts += '<option value="' + e.id + '">' + e.name + '</option>';
             });
             sel.innerHTML = opts;
             if (currentVal) sel.value = currentVal;

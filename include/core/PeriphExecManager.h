@@ -11,6 +11,31 @@
 #include "ScriptEngine.h"
 #include "AsyncExecTypes.h"
 
+// ========== 按键状态跟踪结构体 ==========
+
+// 按键事件检测参数
+struct ButtonEventConfig {
+    uint16_t debounceMs = 50;       // 消抖时间(ms)
+    uint16_t clickIntervalMs = 300; // 双击间隔时间(ms)
+    uint16_t longPress2sMs = 2000;  // 长按2秒阈值
+    uint16_t longPress5sMs = 5000;  // 长按5秒阈值
+    uint16_t longPress10sMs = 10000;// 长按10秒阈值
+};
+
+// 单个按键的运行时状态
+struct ButtonRuntimeState {
+    String periphId;                // 外设ID
+    bool lastState = true;          // 上一次状态（上拉默认高电平，按下为低）
+    bool currentState = true;       // 当前状态
+    unsigned long lastChangeTime = 0;  // 最后状态变化时间
+    unsigned long pressStartTime = 0;  // 按下开始时间
+    uint8_t clickCount = 0;         // 点击计数（用于双击检测）
+    unsigned long lastClickTime = 0;   // 最后一次点击时间
+    bool longPress2sTriggered = false; // 长按2秒已触发
+    bool longPress5sTriggered = false; // 长按5秒已触发
+    bool longPress10sTriggered = false;// 长按10秒已触发
+};
+
 class PeriphExecManager {
 public:
     static PeriphExecManager& getInstance();
@@ -51,6 +76,17 @@ public:
     // 设备触发检测（轮询输入外设状态，由 TaskManager 定时任务调用）
     void checkDeviceTriggers();
 
+    // ========== 系统事件触发 ==========
+
+    // 触发系统事件（由各系统模块调用）
+    void triggerSystemEvent(SystemEventType eventType, const String& eventData = "");
+
+    // 触发系统事件（通过事件ID）
+    void triggerSystemEventById(const String& eventId, const String& eventData = "");
+
+    // 获取系统事件列表（用于前端配置）
+    static String getSystemEventsJson();
+
     // Modbus 一次性读取回调（由 ProtocolManager 注册）
     void setModbusReadCallback(std::function<String(const String&)> callback);
 
@@ -67,6 +103,30 @@ public:
     // 手动执行规则（用于"执行一次"按钮）
     bool runOnce(const String& id);
 
+    // ========== 动作执行后数据上报 ==========
+
+    // 尝试上报设备数据（检查网络和协议连接状态后上报）
+    // 返回：true=上报成功或无需上报，false=上报失败
+    bool tryReportDeviceData();
+
+    // ========== 按键事件检测 ==========
+
+    // 按键事件检测（由 TaskManager 定时任务调用，比设备触发更频繁）
+    void checkButtonEvents();
+
+    // 触发按键事件（内部使用）
+    void triggerButtonEvent(const String& periphId, SystemEventType eventType);
+
+    // ========== 配置辅助方法 ==========
+
+    // 获取外设支持的有效触发类型列表（JSON数组格式）
+    // periphId: 外设ID，为空则返回所有触发类型
+    static String getValidTriggerTypes(const String& periphId = "");
+
+    // 获取外设支持的有效动作类型列表（JSON数组格式）
+    // periphId: 外设ID，为空则返回所有动作类型
+    static String getValidActionTypes(const String& periphId = "");
+
 private:
     PeriphExecManager() = default;
 
@@ -74,6 +134,7 @@ private:
     std::map<String, PeriphExecRule> rules;
     unsigned long lastTimerCheck = 0;
     unsigned long _lastDeviceCheck = 0;
+    unsigned long _lastButtonCheck = 0;
 
     // ========== FreeRTOS 同步原语 ==========
     SemaphoreHandle_t _rulesMutex = nullptr;       // 保护 rules map 的互斥量
@@ -85,6 +146,10 @@ private:
 
     // ========== Modbus 读取回调 ==========
     std::function<String(const String&)> _modbusReadCallback;
+
+    // ========== 按键状态跟踪 ==========
+    std::map<String, ButtonRuntimeState> buttonStates;
+    ButtonEventConfig buttonConfig;
 
     // ========== 条件评估 ==========
     bool evaluateCondition(const String& value, uint8_t op, const String& compareValue);
@@ -108,6 +173,16 @@ private:
 
     // 获取 MQTTClient 指针
     MQTTClient* getMqttClient();
+
+    // ========== 动作执行后数据上报辅助方法 ==========
+
+    // 收集所有外设状态数据（JSON数组格式）
+    String collectPeripheralData();
+
+    // 检查网络和协议连接状态
+    // connectedProtocols: 输出已连接的协议类型列表
+    // 返回：是否有至少一个可用连接
+    bool checkNetworkAndProtocolStatus(uint8_t& connectedProtocols);
 
     // ID 生成
     String generateUniqueId();

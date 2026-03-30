@@ -26,24 +26,51 @@ bool DNSManager::initialize() {
 }
 
 bool DNSManager::startMDNS(const String& hostname) {
+    // 如果已经启动，先检查是否仍然有效
     if (mdnsStarted) {
+        // 在AP+STA模式下，只要任一接口可用就保持服务
         return true;
     }
 
-    // 检查网络状态
-    if (WiFi.getMode() != WIFI_MODE_STA && WiFi.getMode() != WIFI_MODE_APSTA) {
-        LOG_WARNING("DNSManager: Cannot start mDNS - not in STA mode");
+    WiFiMode_t currentMode = WiFi.getMode();
+    
+    // 检查网络模式：AP、STA或AP+STA都可以启动mDNS
+    if (currentMode != WIFI_MODE_STA && 
+        currentMode != WIFI_MODE_AP && 
+        currentMode != WIFI_MODE_APSTA) {
+        LOG_WARNING("DNSManager: Cannot start mDNS - invalid WiFi mode");
         return false;
     }
     
-    if (WiFi.status() != WL_CONNECTED) {
-        LOG_WARNING("DNSManager: Cannot start mDNS - WiFi not connected");
-        return false;
+    // 确定使用哪个IP地址
+    // 在AP+STA模式下，优先使用STA IP，如果不可用则使用AP IP
+    IPAddress bindIP;
+    bool hasValidIP = false;
+    
+    if (currentMode == WIFI_MODE_APSTA || currentMode == WIFI_MODE_STA) {
+        // 尝试使用STA IP
+        if (WiFi.status() == WL_CONNECTED) {
+            IPAddress staIP = WiFi.localIP();
+            if (staIP != INADDR_NONE && staIP != IPAddress(0,0,0,0)) {
+                bindIP = staIP;
+                hasValidIP = true;
+                LOG_DEBUGF("DNSManager: Using STA IP for mDNS: %s", staIP.toString().c_str());
+            }
+        }
     }
     
-    IPAddress staIP = WiFi.localIP();
-    if (staIP == INADDR_NONE || staIP == IPAddress(0,0,0,0)) {
-        LOG_WARNING("DNSManager: Cannot start mDNS - no valid IP address");
+    // 如果没有有效的STA IP，检查AP IP（AP+STA和纯AP模式）
+    if (!hasValidIP && (currentMode == WIFI_MODE_AP || currentMode == WIFI_MODE_APSTA)) {
+        IPAddress apIP = WiFi.softAPIP();
+        if (apIP != INADDR_NONE && apIP != IPAddress(0,0,0,0)) {
+            bindIP = apIP;
+            hasValidIP = true;
+            LOG_DEBUGF("DNSManager: Using AP IP for mDNS: %s", apIP.toString().c_str());
+        }
+    }
+    
+    if (!hasValidIP) {
+        LOG_WARNING("DNSManager: Cannot start mDNS - no valid IP address on any interface");
         return false;
     }
 
@@ -138,4 +165,84 @@ void DNSManager::setDNSEnabled(bool enabled) {
     if (!enabled && dnsServerStarted) {
         stopDNSServer();
     }
+}
+
+bool DNSManager::checkMDNSHealth() {
+    // 检查mDNS服务是否仍然有效
+    if (!mdnsStarted) {
+        // mDNS未启动，检查是否应该启动
+        WiFiMode_t currentMode = WiFi.getMode();
+        
+        // 在AP、STA或AP+STA模式下，如果有有效IP就应该启动mDNS
+        if (currentMode == WIFI_MODE_AP || 
+            currentMode == WIFI_MODE_STA || 
+            currentMode == WIFI_MODE_APSTA) {
+            
+            bool hasValidIP = false;
+            
+            // 检查STA IP
+            if ((currentMode == WIFI_MODE_STA || currentMode == WIFI_MODE_APSTA) &&
+                WiFi.status() == WL_CONNECTED) {
+                IPAddress staIP = WiFi.localIP();
+                if (staIP != INADDR_NONE && staIP != IPAddress(0,0,0,0)) {
+                    hasValidIP = true;
+                }
+            }
+            
+            // 检查AP IP
+            if (!hasValidIP && 
+                (currentMode == WIFI_MODE_AP || currentMode == WIFI_MODE_APSTA)) {
+                IPAddress apIP = WiFi.softAPIP();
+                if (apIP != INADDR_NONE && apIP != IPAddress(0,0,0,0)) {
+                    hasValidIP = true;
+                }
+            }
+            
+            if (hasValidIP && mdnsEnabled) {
+                LOG_INFO("DNSManager: Health check - mDNS not running, attempting restart");
+                return startMDNS(customDomain);
+            }
+        }
+        return false;
+    }
+    
+    // mDNS已启动，检查网络状态是否仍然有效
+    WiFiMode_t currentMode = WiFi.getMode();
+    
+    // 检查是否有任一有效IP
+    bool hasValidIP = false;
+    
+    // 检查STA IP
+    if ((currentMode == WIFI_MODE_STA || currentMode == WIFI_MODE_APSTA) &&
+        WiFi.status() == WL_CONNECTED) {
+        IPAddress staIP = WiFi.localIP();
+        if (staIP != INADDR_NONE && staIP != IPAddress(0,0,0,0)) {
+            hasValidIP = true;
+        }
+    }
+    
+    // 检查AP IP
+    if (!hasValidIP &&
+        (currentMode == WIFI_MODE_AP || currentMode == WIFI_MODE_APSTA)) {
+        IPAddress apIP = WiFi.softAPIP();
+        if (apIP != INADDR_NONE && apIP != IPAddress(0,0,0,0)) {
+            hasValidIP = true;
+        }
+    }
+    
+    // 如果没有任何有效IP，mDNS服务可能已失效
+    if (!hasValidIP) {
+        LOG_WARNING("DNSManager: Health check - no valid IP, mDNS may be unstable");
+        // 不立即停止，等待网络恢复
+        return false;
+    }
+    
+    return true;  // mDNS服务正常
+}
+
+void DNSManager::restartMDNS(const String& hostname) {
+    LOG_INFO("DNSManager: Restarting mDNS service...");
+    stopMDNS();
+    delay(100);  // 短暂延迟确保资源释放
+    startMDNS(hostname.isEmpty() ? customDomain : hostname);
 }

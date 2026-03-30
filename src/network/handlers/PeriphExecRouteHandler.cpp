@@ -11,6 +11,10 @@ PeriphExecRouteHandler::PeriphExecRouteHandler(WebHandlerContext* ctx)
 }
 
 void PeriphExecRouteHandler::setupRoutes(AsyncWebServer* server) {
+    // 注意：更具体的路由必须先注册，否则会被 /api/periph-exec 拦截
+    server->on("/api/periph-exec/system-events", HTTP_GET,
+              [this](AsyncWebServerRequest* request) { handleGetSystemEvents(request); });
+
     server->on("/api/periph-exec/update", HTTP_POST,
               [this](AsyncWebServerRequest* request) { handleUpdateRule(request); });
 
@@ -76,6 +80,9 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         obj["actionType"] = rule.actionType;
         obj["actionValue"] = rule.actionValue;
 
+        // 系统事件触发
+        obj["systemEventId"] = rule.systemEventId;
+
         // 运行时状态
         obj["lastTriggerTime"] = rule.lastTriggerTime;
         obj["triggerCount"] = rule.triggerCount;
@@ -135,6 +142,9 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     rule.protocolType = ctx->getParamInt(request, "protocolType", 0);
     rule.scriptContent = ctx->getParamValue(request, "scriptContent", "");
 
+    // 系统事件触发
+    rule.systemEventId = ctx->getParamValue(request, "systemEventId", "");
+
     if (rule.name.isEmpty()) {
         return;
     }
@@ -191,6 +201,9 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
 
     rule.protocolType = ctx->getParamInt(request, "protocolType", existing->protocolType);
     rule.scriptContent = ctx->getParamValue(request, "scriptContent", existing->scriptContent);
+
+    // 系统事件触发
+    rule.systemEventId = ctx->getParamValue(request, "systemEventId", existing->systemEventId);
 
     if (mgr.updateRule(id, rule)) {
         mgr.saveConfiguration();
@@ -302,5 +315,20 @@ void PeriphExecRouteHandler::handleRunOnce(AsyncWebServerRequest* request) {
     doc["message"] = ok ? "Rule executed successfully" : "Rule execution failed";
     String output;
     serializeJson(doc, output);
+    request->send(200, "application/json", output);
+}
+
+// ========== 获取系统事件列表 ==========
+
+void PeriphExecRouteHandler::handleGetSystemEvents(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "system.view")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+
+    String eventsJson = PeriphExecManager::getSystemEventsJson();
+    
+    // 直接构建完整响应，避免嵌套反序列化问题
+    String output = "{\"success\":true,\"data\":" + eventsJson + "}";
     request->send(200, "application/json", output);
 }

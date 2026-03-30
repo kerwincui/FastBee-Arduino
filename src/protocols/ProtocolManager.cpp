@@ -79,11 +79,26 @@ bool ProtocolManager::startAll() {
 
         bool started = false;
         switch (protocol.type) {
-            case ProtocolType::MQTT:   started = mqttClient        && mqttClient->begin();             break;
-            case ProtocolType::MODBUS: started = modbusHandler     && modbusHandler->begin();          break;
-            case ProtocolType::TCP:    started = tcpHandler         && tcpHandler->beginFromConfig();   break;
-            case ProtocolType::HTTP:   started = httpClientWrapper  && httpClientWrapper->beginFromConfig(); break;
-            case ProtocolType::COAP:   started = coapHandler        && coapHandler->beginFromConfig();  break;
+            case ProtocolType::MQTT:   
+                started = mqttClient && mqttClient->begin();
+                if (started) PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_MQTT_ENABLED, "");
+                break;
+            case ProtocolType::MODBUS: 
+                started = modbusHandler && modbusHandler->begin();
+                if (started) PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_MODBUS_RTU_ENABLED, "");
+                break;
+            case ProtocolType::TCP:    
+                started = tcpHandler && tcpHandler->beginFromConfig();
+                if (started) PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_TCP_ENABLED, "");
+                break;
+            case ProtocolType::HTTP:   
+                started = httpClientWrapper && httpClientWrapper->beginFromConfig();
+                if (started) PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_HTTP_ENABLED, "");
+                break;
+            case ProtocolType::COAP:   
+                started = coapHandler && coapHandler->beginFromConfig();
+                if (started) PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_COAP_ENABLED, "");
+                break;
         }
 
         if (!started) {

@@ -13,7 +13,7 @@
       "interPollDelay": 100,
       "tasks": [
         {
-          "slaveAddress": 1,
+          "slaveAddress": 2,
           "functionCode": 4,
           "startAddress": 0,
           "quantity": 2,
@@ -34,6 +34,31 @@
               "scaleFactor": 0.1,
               "decimalPlaces": 1,
               "sensorId": "humidity"
+            }
+          ]
+        },
+        {
+          "slaveAddress": 1,
+          "functionCode": 3,
+          "startAddress": 0,
+          "quantity": 2,
+          "pollInterval": 5,
+          "enabled": true,
+          "label": "PM25-10",
+          "mappings": [
+            {
+              "regOffset": 0,
+              "dataType": 0,
+              "scaleFactor": 1,
+              "decimalPlaces": 1,
+              "sensorId": "pm25"
+            },
+            {
+              "regOffset": 1,
+              "dataType": 0,
+              "scaleFactor": 1,
+              "decimalPlaces": 1,
+              "sensorId": "pm10"
             }
           ]
         }

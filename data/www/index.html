@@ -2869,7 +2869,47 @@
                                         <option value="0" data-i18n="periph-exec-trigger-platform">平台触发 (MQTT)</option>
                                         <option value="1" data-i18n="periph-exec-trigger-timer">定时触发</option>
                                         <option value="2" data-i18n="periph-exec-trigger-device">设备触发</option>
+                                        <option value="5" data-i18n="periph-exec-trigger-system">系统事件触发</option>
+                                        <option value="6" data-i18n="periph-exec-trigger-button">按键事件触发</option>
                                     </select>
+                                </div>
+
+                                <!-- 系统事件触发 - 左列: 系统事件选择 -->
+                                <div id="periph-exec-system-event-group" style="display: none;">
+                                    <div class="pure-control-group">
+                                        <label for="periph-exec-system-event"
+                                            data-i18n="periph-exec-system-event-label">系统事件</label>
+                                        <select id="periph-exec-system-event" class="pure-input-1">
+                                            <option value="" data-i18n="periph-exec-select-system-event">-- 选择系统事件 --
+                                            </option>
+                                        </select>
+                                        <small style="color: #999;"
+                                            data-i18n="periph-exec-system-event-help">当此系统事件发生时触发规则执行</small>
+                                    </div>
+                                </div>
+
+                                <!-- 按键事件触发 - 左列: 按键外设和事件选择 -->
+                                <div id="periph-exec-button-event-group" style="display: none;">
+                                    <div class="pure-control-group">
+                                        <label for="periph-exec-button-periph"
+                                            data-i18n="periph-exec-button-periph-label">按键外设</label>
+                                        <select id="periph-exec-button-periph" class="pure-input-1">
+                                            <option value="" data-i18n="periph-exec-select-button-periph">-- 选择按键外设 --
+                                            </option>
+                                        </select>
+                                        <small style="color: #999;"
+                                            data-i18n="periph-exec-button-periph-help">仅支持上拉/下拉输入类型的外设</small>
+                                    </div>
+                                    <div class="pure-control-group">
+                                        <label for="periph-exec-button-event"
+                                            data-i18n="periph-exec-button-event-label">按键事件</label>
+                                        <select id="periph-exec-button-event" class="pure-input-1">
+                                            <option value="" data-i18n="periph-exec-select-button-event">-- 选择按键事件 --
+                                            </option>
+                                        </select>
+                                        <small style="color: #999;"
+                                            data-i18n="periph-exec-button-event-help">当此按键事件发生时触发规则执行</small>
+                                    </div>
                                 </div>
 
                                 <!-- 平台触发/设备触发 - 左列: 比较运算符 -->

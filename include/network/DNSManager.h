@@ -84,6 +84,18 @@ public:
      */
     void setDNSEnabled(bool enabled);
     
+    /**
+     * @brief 检查 mDNS 健康状态
+     * @return true=服务正常，false=服务异常或未启动
+     */
+    bool checkMDNSHealth();
+    
+    /**
+     * @brief 重启 mDNS 服务
+     * @param hostname 主机名（可选，默认使用customDomain）
+     */
+    void restartMDNS(const String& hostname = "");
+    
 private:
     DNSServer dnsServer;
     bool mdnsStarted = false;

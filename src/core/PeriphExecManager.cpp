@@ -2,7 +2,9 @@
 #include "core/RuleScript.h"
 #include "core/FastBeeFramework.h"
 #include "protocols/ProtocolManager.h"
+#include "protocols/MQTTClient.h"
 #include "systems/LoggerSystem.h"
+#include <WiFi.h>
 
 PeriphExecManager& PeriphExecManager::getInstance() {
     static PeriphExecManager instance;
@@ -147,6 +149,9 @@ bool PeriphExecManager::saveConfiguration() {
         obj["targetPeriphId"] = r.targetPeriphId;
         obj["actionType"] = r.actionType;
         obj["actionValue"] = r.actionValue;
+
+        // 系统事件触发字段
+        obj["systemEventId"] = r.systemEventId;
     }
 
     File file = LittleFS.open(PERIPH_EXEC_CONFIG_FILE, "w");
@@ -209,6 +214,16 @@ bool PeriphExecManager::loadConfiguration() {
         r.targetPeriphId = obj["targetPeriphId"].as<String>();
         r.actionType = obj["actionType"] | 0;
         r.actionValue = obj["actionValue"].as<String>();
+
+        // 系统事件触发字段
+        r.systemEventId = obj["systemEventId"].as<String>();
+        // 根据 systemEventId 解析 systemEventType
+        if (!r.systemEventId.isEmpty()) {
+            const SystemEventDef* def = findSystemEvent(r.systemEventId.c_str());
+            if (def) {
+                r.systemEventType = static_cast<uint8_t>(def->type);
+            }
+        }
 
         // 向后兼容：旧版 inverted 字段迁移到新的 actionType
         bool oldInverted = obj["inverted"] | false;
@@ -601,18 +616,27 @@ void PeriphExecManager::checkDeviceTriggers() {
 bool PeriphExecManager::executeAction(PeriphExecRule& rule) {
     ExecActionType action = static_cast<ExecActionType>(rule.actionType);
 
+    bool success = false;
+    
     // 系统功能 (actionType 6-11)
     if (rule.actionType >= 6 && rule.actionType <= 11) {
-        return executeSystemAction(rule);
+        success = executeSystemAction(rule);
     }
-
     // 命令脚本 (actionType 15)
-    if (rule.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT)) {
-        return executeScriptAction(rule);
+    else if (rule.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT)) {
+        success = executeScriptAction(rule);
     }
-
     // 外设动作
-    return executePeripheralAction(rule);
+    else {
+        success = executePeripheralAction(rule);
+    }
+    
+    // 动作执行成功后尝试上报设备数据
+    if (success) {
+        tryReportDeviceData();
+    }
+    
+    return success;
 }
 
 bool PeriphExecManager::executePeripheralAction(const PeriphExecRule& rule) {
@@ -978,4 +1002,607 @@ bool PeriphExecManager::runOnce(const String& id) {
     // 创建副本执行（executeAction需要非const引用）
     PeriphExecRule ruleCopy = *rule;
     return executeAction(ruleCopy);
+}
+
+// ========== 系统事件触发 ==========
+
+void PeriphExecManager::triggerSystemEvent(SystemEventType eventType, const String& eventData) {
+    // 查找匹配的事件ID
+    const char* eventId = nullptr;
+    for (size_t i = 0; SYSTEM_EVENTS[i].id != nullptr; i++) {
+        if (SYSTEM_EVENTS[i].type == eventType) {
+            eventId = SYSTEM_EVENTS[i].id;
+            break;
+        }
+    }
+    
+    if (!eventId) {
+        LOGGER.warningf("[PeriphExec] Unknown system event type: %d", (int)eventType);
+        return;
+    }
+    
+    LOGGER.infof("[PeriphExec] System event triggered: %s (data=%s)", eventId, eventData.c_str());
+    
+    // 阶段1: 持锁匹配，收集规则副本
+    std::vector<PeriphExecRule> triggeredRules;
+    
+    {
+        MutexGuard lock(_rulesMutex);
+        
+        for (auto& pair : rules) {
+            PeriphExecRule& rule = pair.second;
+            if (!rule.enabled) continue;
+            if (rule.triggerType != static_cast<uint8_t>(ExecTriggerType::SYSTEM_EVENT_TRIGGER)) continue;
+            if (rule.systemEventId.isEmpty()) continue;
+            
+            // 匹配系统事件ID
+            if (rule.systemEventId != eventId) continue;
+            
+            // 防重复触发：同一规则最小间隔 1 秒
+            unsigned long now = millis();
+            if (rule.lastTriggerTime > 0 && (now - rule.lastTriggerTime) < 1000) continue;
+            
+            LOGGER.infof("[PeriphExec] System event rule matched: '%s' (event=%s)",
+                rule.name.c_str(), eventId);
+            
+            rule.lastTriggerTime = now;
+            rule.triggerCount++;
+            triggeredRules.push_back(rule);
+        }
+    }
+    // 锁已释放
+    
+    // 阶段2: 无锁异步分发
+    for (const auto& ruleCopy : triggeredRules) {
+        dispatchAsync(ruleCopy);
+    }
+}
+
+void PeriphExecManager::triggerSystemEventById(const String& eventId, const String& eventData) {
+    const SystemEventDef* def = findSystemEvent(eventId.c_str());
+    if (def) {
+        triggerSystemEvent(def->type, eventData);
+    } else {
+        LOGGER.warningf("[PeriphExec] Unknown system event ID: %s", eventId.c_str());
+    }
+}
+
+String PeriphExecManager::getSystemEventsJson() {
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    
+    for (size_t i = 0; SYSTEM_EVENTS[i].id != nullptr; i++) {
+        JsonObject obj = arr.add<JsonObject>();
+        obj["id"] = SYSTEM_EVENTS[i].id;
+        obj["name"] = SYSTEM_EVENTS[i].name;
+        obj["category"] = SYSTEM_EVENTS[i].category;
+        obj["type"] = static_cast<uint8_t>(SYSTEM_EVENTS[i].type);
+    }
+    
+    String result;
+    serializeJson(doc, result);
+    return result;
+}
+
+// ========== 动作执行后数据上报 ==========
+
+// 协议连接状态标志位
+#define PROTOCOL_MQTT_CONNECTED    (1 << 0)
+#define PROTOCOL_MODBUS_CONNECTED  (1 << 1)
+#define PROTOCOL_TCP_CONNECTED     (1 << 2)
+#define PROTOCOL_HTTP_CONNECTED    (1 << 3)
+#define PROTOCOL_COAP_CONNECTED    (1 << 4)
+
+String PeriphExecManager::collectPeripheralData() {
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    std::vector<PeripheralConfig> allPeriphs = pm.getAllPeripherals();
+    
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    
+    for (const auto& config : allPeriphs) {
+        // 只收集已启用的外设
+        if (!config.enabled) continue;
+        
+        // 只收集 GPIO 类型的外设状态
+        int typeVal = static_cast<int>(config.type);
+        if (typeVal < 11 || typeVal > 26) continue;  // 跳过非GPIO/ADC/DAC类型
+        
+        JsonObject obj = arr.add<JsonObject>();
+        obj["id"] = config.id;
+        obj["name"] = config.name;
+        obj["type"] = typeVal;
+        
+        // 获取运行时状态
+        auto* runtimeState = pm.getRuntimeState(config.id);
+        if (runtimeState) {
+            obj["status"] = static_cast<int>(runtimeState->status);
+        } else {
+            obj["status"] = 0;
+        }
+        
+        // 读取当前值
+        if (typeVal >= 11 && typeVal <= 14) {
+            // 数字输入/输出类型
+            GPIOState state = pm.readPin(config.id);
+            if (state != GPIOState::STATE_UNDEFINED) {
+                obj["value"] = (state == GPIOState::STATE_HIGH) ? "1" : "0";
+            }
+        } else if (typeVal == 15 || typeVal == 26) {
+            // 模拟输入或 ADC
+            uint16_t analog = pm.readAnalog(config.id);
+            obj["value"] = String(analog);
+        }
+    }
+    
+    String result;
+    serializeJson(doc, result);
+    return result;
+}
+
+bool PeriphExecManager::checkNetworkAndProtocolStatus(uint8_t& connectedProtocols) {
+    connectedProtocols = 0;
+    
+    // 检查 WiFi 连接状态
+    if (WiFi.status() != WL_CONNECTED) {
+        LOGGER.debug("[PeriphExec] WiFi not connected, skip report");
+        return false;
+    }
+    
+    bool hasConnectedProtocol = false;
+    
+    // 获取 ProtocolManager
+    auto* fw = FastBeeFramework::getInstance();
+    if (!fw) {
+        return false;
+    }
+    auto* protocolMgr = fw->getProtocolManager();
+    if (!protocolMgr) {
+        return false;
+    }
+    
+    // 检查 MQTT 连接状态
+    MQTTClient* mqtt = protocolMgr->getMQTTClient();
+    if (mqtt && mqtt->getIsConnected()) {
+        connectedProtocols |= PROTOCOL_MQTT_CONNECTED;
+        hasConnectedProtocol = true;
+    }
+    
+    // 检查 TCP 连接状态（通过状态字符串判断）
+    String tcpStatus = protocolMgr->getProtocolStatus(ProtocolType::TCP);
+    if (tcpStatus.indexOf("connected") >= 0 || tcpStatus.indexOf("listening") >= 0) {
+        connectedProtocols |= PROTOCOL_TCP_CONNECTED;
+        hasConnectedProtocol = true;
+    }
+    
+    // 检查 Modbus 状态
+    ModbusHandler* modbus = protocolMgr->getModbusHandler();
+    if (modbus) {
+        String modbusStatus = modbus->getStatus();
+        if (modbusStatus.indexOf("running") >= 0 || modbusStatus.indexOf("initialized") >= 0) {
+            connectedProtocols |= PROTOCOL_MODBUS_CONNECTED;
+            hasConnectedProtocol = true;
+        }
+    }
+    
+    // 检查 HTTP 状态（通过状态字符串判断）
+    String httpStatus = protocolMgr->getProtocolStatus(ProtocolType::HTTP);
+    if (httpStatus.indexOf("initialized") >= 0 || httpStatus.indexOf("ready") >= 0) {
+        connectedProtocols |= PROTOCOL_HTTP_CONNECTED;
+        hasConnectedProtocol = true;
+    }
+    
+    // 检查 CoAP 状态
+    String coapStatus = protocolMgr->getProtocolStatus(ProtocolType::COAP);
+    if (coapStatus.indexOf("initialized") >= 0 || coapStatus.indexOf("ready") >= 0) {
+        connectedProtocols |= PROTOCOL_COAP_CONNECTED;
+        hasConnectedProtocol = true;
+    }
+    
+    return hasConnectedProtocol;
+}
+
+bool PeriphExecManager::tryReportDeviceData() {
+    uint8_t connectedProtocols = 0;
+    
+    // 检查网络和协议连接状态
+    if (!checkNetworkAndProtocolStatus(connectedProtocols)) {
+        LOGGER.debug("[PeriphExec] No connected protocol, skip data report");
+        return true;  // 无连接不算失败，只是跳过
+    }
+    
+    // 收集外设数据
+    String periphData = collectPeripheralData();
+    if (periphData.isEmpty() || periphData == "[]") {
+        LOGGER.debug("[PeriphExec] No peripheral data to report");
+        return true;  // 无数据不算失败
+    }
+    
+    // 优先通过 MQTT 上报
+    if (connectedProtocols & PROTOCOL_MQTT_CONNECTED) {
+        auto* fw = FastBeeFramework::getInstance();
+        if (fw) {
+            auto* protocolMgr = fw->getProtocolManager();
+            if (protocolMgr) {
+                MQTTClient* mqtt = protocolMgr->getMQTTClient();
+                if (mqtt && mqtt->getIsConnected()) {
+                    bool ok = mqtt->publishReportData(periphData);
+                    if (ok) {
+                        LOGGER.infof("[PeriphExec] Data reported via MQTT, size=%d", periphData.length());
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    
+    // 备选：通过 TCP 上报
+    if (connectedProtocols & PROTOCOL_TCP_CONNECTED) {
+        auto* fw = FastBeeFramework::getInstance();
+        if (fw) {
+            auto* protocolMgr = fw->getProtocolManager();
+            if (protocolMgr) {
+                bool ok = protocolMgr->sendData(ProtocolType::TCP, "", periphData);
+                if (ok) {
+                    LOGGER.infof("[PeriphExec] Data reported via TCP, size=%d", periphData.length());
+                    return true;
+                }
+            }
+        }
+    }
+    
+    // 备选：通过 HTTP POST 上报
+    if (connectedProtocols & PROTOCOL_HTTP_CONNECTED) {
+        auto* fw = FastBeeFramework::getInstance();
+        if (fw) {
+            auto* protocolMgr = fw->getProtocolManager();
+            if (protocolMgr) {
+                bool ok = protocolMgr->sendData(ProtocolType::HTTP, "", periphData);
+                if (ok) {
+                    LOGGER.infof("[PeriphExec] Data reported via HTTP, size=%d", periphData.length());
+                    return true;
+                }
+            }
+        }
+    }
+    
+    // 备选：通过 CoAP 上报
+    if (connectedProtocols & PROTOCOL_COAP_CONNECTED) {
+        auto* fw = FastBeeFramework::getInstance();
+        if (fw) {
+            auto* protocolMgr = fw->getProtocolManager();
+            if (protocolMgr) {
+                bool ok = protocolMgr->sendData(ProtocolType::COAP, "", periphData);
+                if (ok) {
+                    LOGGER.infof("[PeriphExec] Data reported via CoAP, size=%d", periphData.length());
+                    return true;
+                }
+            }
+        }
+    }
+    
+    LOGGER.warning("[PeriphExec] Data report failed, no available protocol");
+    return false;
+}
+
+// ========== 按键事件检测 ==========
+
+void PeriphExecManager::checkButtonEvents() {
+    unsigned long now = millis();
+    
+    // 每 20ms 检测一次按键状态（比设备触发更频繁）
+    if (now - _lastButtonCheck < 20) return;
+    _lastButtonCheck = now;
+    
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    std::vector<PeripheralConfig> allPeriphs = pm.getAllPeripherals();
+    
+    for (const auto& config : allPeriphs) {
+        // 只处理支持按键事件的外设类型（上拉/下拉输入）
+        if (!config.enabled) continue;
+        if (!supportsButtonEvent(config.type)) continue;
+        
+        // 获取或创建按键状态
+        if (buttonStates.find(config.id) == buttonStates.end()) {
+            ButtonRuntimeState state;
+            state.periphId = config.id;
+            state.lastState = true;  // 上拉默认高电平
+            state.currentState = true;
+            buttonStates[config.id] = state;
+        }
+        
+        ButtonRuntimeState& btnState = buttonStates[config.id];
+        
+        // 读取当前按键状态
+        GPIOState gpioState = pm.readPin(config.id);
+        if (gpioState == GPIOState::STATE_UNDEFINED) continue;
+        
+        bool currentLevel = (gpioState == GPIOState::STATE_HIGH);
+        btnState.currentState = currentLevel;
+        
+        // 检测状态变化（消抖处理）
+        if (currentLevel != btnState.lastState) {
+            // 检查消抖时间
+            if (now - btnState.lastChangeTime >= buttonConfig.debounceMs) {
+                btnState.lastState = currentLevel;
+                btnState.lastChangeTime = now;
+                
+                if (!currentLevel) {
+                    // 按键按下（低电平）
+                    btnState.pressStartTime = now;
+                    
+                    // 触发按键按下事件
+                    triggerButtonEvent(config.id, SystemEventType::SYS_BUTTON_PRESS);
+                    
+                    LOGGER.debugf("[PeriphExec] Button PRESS: %s", config.id.c_str());
+                } else {
+                    // 按键释放（高电平）
+                    unsigned long pressDuration = now - btnState.pressStartTime;
+                    
+                    // 触发按键释放事件
+                    triggerButtonEvent(config.id, SystemEventType::SYS_BUTTON_RELEASE);
+                    
+                    // 判断是点击还是长按释放
+                    if (pressDuration < buttonConfig.longPress2sMs) {
+                        // 短按释放，计入点击计数
+                        btnState.clickCount++;
+                        btnState.lastClickTime = now;
+                        
+                        LOGGER.debugf("[PeriphExec] Button CLICK (%d): %s, duration=%lums", 
+                            btnState.clickCount, config.id.c_str(), pressDuration);
+                    }
+                    
+                    // 重置长按触发标记
+                    btnState.longPress2sTriggered = false;
+                    btnState.longPress5sTriggered = false;
+                    btnState.longPress10sTriggered = false;
+                }
+            }
+        } else {
+            // 状态未变化，检查长按和双击
+            if (!currentLevel) {
+                // 按键持续按下，检查长按
+                unsigned long pressDuration = now - btnState.pressStartTime;
+                
+                // 长按2秒
+                if (!btnState.longPress2sTriggered && pressDuration >= buttonConfig.longPress2sMs) {
+                    btnState.longPress2sTriggered = true;
+                    triggerButtonEvent(config.id, SystemEventType::SYS_BUTTON_LONG_PRESS_2S);
+                    LOGGER.infof("[PeriphExec] Button LONG_PRESS_2S: %s", config.id.c_str());
+                }
+                
+                // 长按5秒
+                if (!btnState.longPress5sTriggered && pressDuration >= buttonConfig.longPress5sMs) {
+                    btnState.longPress5sTriggered = true;
+                    triggerButtonEvent(config.id, SystemEventType::SYS_BUTTON_LONG_PRESS_5S);
+                    LOGGER.infof("[PeriphExec] Button LONG_PRESS_5S: %s", config.id.c_str());
+                }
+                
+                // 长按10秒
+                if (!btnState.longPress10sTriggered && pressDuration >= buttonConfig.longPress10sMs) {
+                    btnState.longPress10sTriggered = true;
+                    triggerButtonEvent(config.id, SystemEventType::SYS_BUTTON_LONG_PRESS_10S);
+                    LOGGER.infof("[PeriphExec] Button LONG_PRESS_10S: %s", config.id.c_str());
+                }
+            } else {
+                // 按键释放状态，检查双击
+                if (btnState.clickCount > 0) {
+                    // 检查双击超时
+                    if (now - btnState.lastClickTime >= buttonConfig.clickIntervalMs) {
+                        // 双击超时，处理点击结果
+                        if (btnState.clickCount == 2) {
+                            // 双击
+                            triggerButtonEvent(config.id, SystemEventType::SYS_BUTTON_DOUBLE_CLICK);
+                            LOGGER.infof("[PeriphExec] Button DOUBLE_CLICK: %s", config.id.c_str());
+                        } else if (btnState.clickCount == 1) {
+                            // 单击
+                            triggerButtonEvent(config.id, SystemEventType::SYS_BUTTON_CLICK);
+                            LOGGER.infof("[PeriphExec] Button CLICK: %s", config.id.c_str());
+                        }
+                        // 重置点击计数
+                        btnState.clickCount = 0;
+                    }
+                }
+            }
+        }
+    }
+}
+
+void PeriphExecManager::triggerButtonEvent(const String& periphId, SystemEventType eventType) {
+    // 查找事件ID
+    const char* eventId = nullptr;
+    for (size_t i = 0; SYSTEM_EVENTS[i].id != nullptr; i++) {
+        if (SYSTEM_EVENTS[i].type == eventType) {
+            eventId = SYSTEM_EVENTS[i].id;
+            break;
+        }
+    }
+    
+    if (!eventId) return;
+    
+    // 阶段1: 持锁匹配，收集规则副本
+    std::vector<PeriphExecRule> triggeredRules;
+    
+    {
+        MutexGuard lock(_rulesMutex);
+        
+        for (auto& pair : rules) {
+            PeriphExecRule& rule = pair.second;
+            if (!rule.enabled) continue;
+            
+            // 只匹配按键事件触发类型
+            if (rule.triggerType != static_cast<uint8_t>(ExecTriggerType::BUTTON_EVENT_TRIGGER)) continue;
+            
+            // 匹配按键外设ID
+            if (rule.sourcePeriphId != periphId) continue;
+            
+            // 匹配按键事件类型
+            if (rule.systemEventId != eventId) continue;
+            
+            // 防重复触发：同一规则最小间隔 100ms
+            unsigned long now = millis();
+            if (rule.lastTriggerTime > 0 && (now - rule.lastTriggerTime) < 100) continue;
+            
+            LOGGER.infof("[PeriphExec] Button event rule matched: '%s' (event=%s, periph=%s)",
+                rule.name.c_str(), eventId, periphId.c_str());
+            
+            rule.lastTriggerTime = now;
+            rule.triggerCount++;
+            triggeredRules.push_back(rule);
+        }
+    }
+    // 锁已释放
+    
+    // 阶段2: 无锁异步分发
+    for (const auto& ruleCopy : triggeredRules) {
+        dispatchAsync(ruleCopy);
+    }
+}
+
+// ========== 配置辅助方法 ==========
+
+String PeriphExecManager::getValidTriggerTypes(const String& periphId) {
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    PeripheralConfig* config = nullptr;
+    
+    if (!periphId.isEmpty()) {
+        config = pm.getPeripheral(periphId);
+    }
+    
+    // 所有外设都支持的触发类型
+    auto addTrigger = [&arr](uint8_t type, const char* name) {
+        JsonObject obj = arr.add<JsonObject>();
+        obj["type"] = type;
+        obj["name"] = name;
+    };
+    
+    // 平台触发 - 所有输出类型外设支持
+    addTrigger(static_cast<uint8_t>(ExecTriggerType::PLATFORM_TRIGGER), "平台触发");
+    
+    // 定时触发 - 所有外设支持
+    addTrigger(static_cast<uint8_t>(ExecTriggerType::TIMER_TRIGGER), "定时触发");
+    
+    if (config) {
+        // 根据外设类型确定支持的触发类型
+        PeripheralType pType = config->type;
+        
+        if (isInputType(pType)) {
+            // 输入类型外设：支持设备触发
+            addTrigger(static_cast<uint8_t>(ExecTriggerType::DEVICE_TRIGGER), "设备触发");
+            
+            // 模拟输入：支持定时触发采集
+            if (isAnalogInputType(pType)) {
+                // 模拟输入已包含定时触发
+            }
+            
+            // 按键类型：支持按键事件触发
+            if (supportsButtonEvent(pType)) {
+                addTrigger(static_cast<uint8_t>(ExecTriggerType::BUTTON_EVENT_TRIGGER), "按键事件触发");
+            }
+        }
+        
+        // 输出类型外设支持平台触发和定时触发（已添加）
+    } else {
+        // 未指定外设，返回所有触发类型
+        addTrigger(static_cast<uint8_t>(ExecTriggerType::DEVICE_TRIGGER), "设备触发");
+        addTrigger(static_cast<uint8_t>(ExecTriggerType::DATA_RECEIVE), "数据接收触发");
+        addTrigger(static_cast<uint8_t>(ExecTriggerType::DATA_REPORT), "数据上报触发");
+        addTrigger(static_cast<uint8_t>(ExecTriggerType::SYSTEM_EVENT_TRIGGER), "系统事件触发");
+        addTrigger(static_cast<uint8_t>(ExecTriggerType::BUTTON_EVENT_TRIGGER), "按键事件触发");
+    }
+    
+    String result;
+    serializeJson(doc, result);
+    return result;
+}
+
+String PeriphExecManager::getValidActionTypes(const String& periphId) {
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    PeripheralConfig* config = nullptr;
+    
+    if (!periphId.isEmpty()) {
+        config = pm.getPeripheral(periphId);
+    }
+    
+    auto addAction = [&arr](uint8_t type, const char* name, const char* category = "") {
+        JsonObject obj = arr.add<JsonObject>();
+        obj["type"] = type;
+        obj["name"] = name;
+        if (strlen(category) > 0) {
+            obj["category"] = category;
+        }
+    };
+    
+    if (config) {
+        PeripheralType pType = config->type;
+        
+        if (isInputType(pType)) {
+            // 输入类型外设：不支持GPIO输出动作，只支持系统功能和脚本
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+        } else if (isOutputType(pType)) {
+            // 输出类型外设：支持所有GPIO输出动作
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH), "设置高电平", "GPIO");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW), "设置低电平", "GPIO");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH_INVERTED), "设置高电平(反转)", "GPIO");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW_INVERTED), "设置低电平(反转)", "GPIO");
+            
+            // PWM输出
+            if (pType == PeripheralType::GPIO_PWM_OUTPUT) {
+                addAction(static_cast<uint8_t>(ExecActionType::ACTION_SET_PWM), "设置PWM占空比", "PWM");
+                addAction(static_cast<uint8_t>(ExecActionType::ACTION_BLINK), "闪烁", "PWM");
+                addAction(static_cast<uint8_t>(ExecActionType::ACTION_BREATHE), "呼吸灯", "PWM");
+            }
+            
+            // DAC输出
+            if (pType == PeripheralType::DAC || pType == PeripheralType::GPIO_ANALOG_OUTPUT) {
+                addAction(static_cast<uint8_t>(ExecActionType::ACTION_SET_DAC), "设置DAC值", "DAC");
+            }
+            
+            // 系统功能和脚本
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+        } else {
+            // 其他类型外设：只支持系统功能和脚本
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+        }
+    } else {
+        // 未指定外设，返回所有动作类型
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH), "设置高电平", "GPIO");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW), "设置低电平", "GPIO");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_BLINK), "闪烁", "GPIO");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_BREATHE), "呼吸灯", "GPIO");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SET_PWM), "设置PWM占空比", "PWM");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SET_DAC), "设置DAC值", "DAC");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_OTA), "OTA升级", "系统");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_AP_PROVISION), "AP配网", "系统");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_BLE_PROVISION), "BLE配网", "系统");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH_INVERTED), "设置高电平(反转)", "GPIO");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW_INVERTED), "设置低电平(反转)", "GPIO");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+    }
+    
+    String result;
+    serializeJson(doc, result);
+    return result;
 }

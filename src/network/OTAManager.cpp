@@ -7,6 +7,7 @@
 
 #include "Network/OTAManager.h"
 #include "systems/LoggerSystem.h"
+#include "core/PeriphExecManager.h"
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
 #include <Update.h>
@@ -125,6 +126,8 @@ void OTAManager::handleOTAStart(AsyncWebServerRequest *request) {
     
     LOG_INFO("OTAManager: OTA update started successfully");
     request->send(200, "application/json", "{\"status\": \"OTA started\", \"max_size\": " + String(maxSketchSpace) + "}");
+    // 触发OTA升级开始系统事件
+    PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_OTA_START, "");
 }
 
 // 处理OTA上传
@@ -169,6 +172,8 @@ void OTAManager::handleOTAUpload(AsyncWebServerRequest *request, const String& f
             // 验证固件
             if (Update.isFinished()) {
                 LOG_INFO("OTAManager: Firmware verification passed");
+                // 触发OTA升级成功系统事件
+                PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_OTA_SUCCESS, "");
                 request->send(200, "application/json", 
                     "{\"status\": \"OTA completed\", \"size\": " + String(currentSize) + 
                     ", \"md5\": \"" + md5 + "\", \"message\": \"Restarting in 3 seconds...\"}");
@@ -185,6 +190,8 @@ void OTAManager::handleOTAUpload(AsyncWebServerRequest *request, const String& f
         } else {
             String errorMsg = "OTA failed: " + String(Update.errorString());
             LOG_ERROR("OTAManager: " + errorMsg);
+            // 触发OTA升级失败系统事件
+            PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_OTA_FAILED, errorMsg);
             request->send(500, "application/json", "{\"error\": \"" + errorMsg + "\"}");
             otaInProgress = false;
         }

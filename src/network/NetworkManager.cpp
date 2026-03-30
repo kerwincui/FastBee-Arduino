@@ -8,6 +8,7 @@
 #include "network/NetworkManager.h"
 #include "systems/LoggerSystem.h"
 #include "utils/NetworkUtils.h"
+#include "core/PeriphExecManager.h"
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <LittleFS.h>
@@ -262,29 +263,30 @@ void NetworkManager::update() {
         statusInfo.reconnectAttempts = 0;  // 重置重连计数器
         statusInfo.status = NetworkStatus::CONNECTED;
         
-        // 重新启动 mDNS（使用配置中的 customDomain）
-        LOG_INFOF("NetworkManager: Checking mDNS - enableMDNS=%s, customDomain=%s", 
-                  wifiConfig.enableMDNS ? "true" : "false", 
-                  wifiConfig.customDomain.c_str());
+        // 在AP+STA模式下，重新启动mDNS以更新IP绑定
+        // 优先使用STA IP进行mDNS响应
         if (wifiConfig.enableMDNS) {
-            MDNS.end();
-            String hostname = wifiConfig.customDomain.length() > 0 ? wifiConfig.customDomain : "fastbee";
-            LOG_INFOF("NetworkManager: Starting mDNS with hostname: %s", hostname.c_str());
-            if (MDNS.begin(hostname.c_str())) {
-                MDNS.addService("http", "tcp", 80);
-                LOGGER.infof("NetworkManager: mDNS started as %s.local", hostname.c_str());
-            } else {
-                LOG_ERROR("NetworkManager: Failed to start mDNS");
-            }
-        } else {
-            LOG_INFO("NetworkManager: mDNS is disabled");
+            LOG_INFOF("NetworkManager: WiFi connected, restarting mDNS for STA IP");
+            // 使用dnsManager重启mDNS，让它检测并使用正确的IP
+            dnsManager->restartMDNS(wifiConfig.customDomain);
         }
     }
     
     // WiFi 断开（从连接变为断开）
     if (!isConnected && wasConnected) {
         LOG_WARNING("NetworkManager: WiFi disconnected");
-        statusInfo.status = NetworkStatus::DISCONNECTED;
+        
+        // 在AP+STA模式下，AP接口仍然可用
+        if (wifiConfig.mode == NetworkMode::NETWORK_AP_STA) {
+            statusInfo.status = NetworkStatus::AP_MODE;
+            // 确保mDNS仍然可用（使用AP IP）
+            if (wifiConfig.enableMDNS) {
+                LOG_INFO("NetworkManager: STA disconnected in AP+STA mode, restarting mDNS for AP interface");
+                dnsManager->restartMDNS(wifiConfig.customDomain);
+            }
+        } else {
+            statusInfo.status = NetworkStatus::DISCONNECTED;
+        }
     }
     
     wasConnected = isConnected;
@@ -332,9 +334,12 @@ void NetworkManager::update() {
         attemptReconnect();
     }
     
-    // mDNS 维护（每 30 秒）
-    if (isConnected && currentTime - lastMdnsUpdate >= 30000) {
-        // ESP32 的 mDNS 不需要手动 update，但可以定期检查
+    // mDNS 健康检查（每 30 秒）
+    // 在AP+STA模式下，确保mDNS服务持续可用
+    if (currentTime - lastMdnsUpdate >= 30000) {
+        if (wifiConfig.enableMDNS) {
+            dnsManager->checkMDNSHealth();
+        }
         lastMdnsUpdate = currentTime;
     }
     
@@ -764,8 +769,21 @@ bool NetworkManager::connectToWiFiBlocking() {
 void NetworkManager::disconnectWiFi() {
     wifiManager->disconnectWiFi();
     connecting = false;
-    statusInfo.status = NetworkStatus::DISCONNECTED;
-    dnsManager->stopMDNS();
+    
+    // 在AP+STA模式下，不断开mDNS，因为AP接口仍然可用
+    // 只有在纯STA模式下才停止mDNS
+    if (wifiConfig.mode != NetworkMode::NETWORK_AP_STA) {
+        dnsManager->stopMDNS();
+        statusInfo.status = NetworkStatus::DISCONNECTED;
+    } else {
+        // AP+STA模式：STA断开，但AP仍然运行
+        statusInfo.status = NetworkStatus::AP_MODE;
+        // 确保mDNS仍然可用（使用AP IP）
+        if (wifiConfig.enableMDNS) {
+            LOG_INFO("NetworkManager: STA disconnected in AP+STA mode, ensuring mDNS on AP interface");
+            dnsManager->restartMDNS(wifiConfig.customDomain);
+        }
+    }
     
     LOG_INFO("NetworkManager: WiFi disconnected");
     triggerEvent(NetworkStatus::DISCONNECTED, "WiFi disconnected");
@@ -947,6 +965,8 @@ bool NetworkManager::restartNetwork() {
             isInitialized = true;
             wifiManager->setModeTransitioning(false);
             LOG_INFO("NetworkManager: AP-only mode restarted successfully");
+            // 触发网络模式切换为AP系统事件
+            PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_NET_MODE_AP, "");
             return true;
         } else {
             // AP+STA模式：可以先启动AP，然后连接STA
@@ -976,11 +996,15 @@ bool NetworkManager::restartNetwork() {
         statusInfo.status = NetworkStatus::AP_MODE;  // 初始状态，STA可能还在连接中
         isInitialized = true;
         LOG_INFO("NetworkManager: AP+STA mode restarted, AP available, STA connecting...");
+        // 触发网络模式切换为AP+STA系统事件
+        PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_NET_MODE_AP_STA, "");
         return true;
     }
     
     // 对于纯STA模式，需要完全重启
     LOG_INFO("NetworkManager: Full network restart for STA mode...");
+    // 触发网络模式切换为STA系统事件
+    PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_NET_MODE_STA, "");
     disconnect();
     delay(500);
     return initialize();

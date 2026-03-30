@@ -245,4 +245,49 @@ inline PeripheralType peripheralTypeFromInt(int value) {
     return PeripheralType::UNCONFIGURED;
 }
 
+// ========== 外设类型分类辅助方法 ==========
+
+// 检查是否为数字输入类型（包括带上拉/下拉）
+inline bool isDigitalInputType(PeripheralType type) {
+    return type == PeripheralType::GPIO_DIGITAL_INPUT ||
+           type == PeripheralType::GPIO_DIGITAL_INPUT_PULLUP ||
+           type == PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN;
+}
+
+// 检查是否为模拟输入类型
+inline bool isAnalogInputType(PeripheralType type) {
+    return type == PeripheralType::GPIO_ANALOG_INPUT ||
+           type == PeripheralType::ADC;
+}
+
+// 检查是否为输入类型（数字或模拟输入）
+inline bool isInputType(PeripheralType type) {
+    return isDigitalInputType(type) || isAnalogInputType(type);
+}
+
+// 检查是否为输出类型（数字输出、PWM、DAC等）
+inline bool isOutputType(PeripheralType type) {
+    int typeVal = static_cast<int>(type);
+    // GPIO_DIGITAL_OUTPUT = 12, GPIO_ANALOG_OUTPUT = 16, GPIO_PWM_OUTPUT = 17
+    // DAC = 27
+    return typeVal == 12 || typeVal == 16 || typeVal == 17 || typeVal == 27;
+}
+
+// 检查是否支持按键事件检测（仅上拉/下拉输入类型）
+inline bool supportsButtonEvent(PeripheralType type) {
+    return type == PeripheralType::GPIO_DIGITAL_INPUT_PULLUP ||
+           type == PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN;
+}
+
+// 检查是否为纯输入类型（无内部上拉/下拉，用于编码器、UART RX等）
+inline bool isPureInputType(PeripheralType type) {
+    return type == PeripheralType::GPIO_DIGITAL_INPUT;
+}
+
+// 检查是否为GPIO类型外设
+inline bool isGPIOType(PeripheralType type) {
+    int typeVal = static_cast<int>(type);
+    return typeVal >= 11 && typeVal <= 25;
+}
+
 #endif // PERIPHERAL_TYPES_H

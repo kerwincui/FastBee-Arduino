@@ -605,6 +605,8 @@ void MQTTClient::handle() {
             isConnected = false;
             reconnectInterval = 5000;  // 刚断开时重置重连间隔
             LOG_WARNING("MQTT: Connection lost");
+            // 触发MQTT断开连接系统事件
+            PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_MQTT_DISCONNECTED, "");
         }
 
         if (!config.autoReconnect) return;
@@ -813,6 +815,8 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
                 char logBuf[80];
                 snprintf(logBuf, sizeof(logBuf), "MQTT: NTP synced, time: %s", timeBuf);
                 LOG_INFO(logBuf);
+                // 触发NTP同步完成系统事件
+                PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_NTP_SYNCED, timeBuf);
             }
         } else if (!err && !ntpDoc.containsKey("serverSendTime")) {
             // 收到的是 NTP 请求而非响应（仅含 deviceSendTime），忽略
@@ -888,6 +892,8 @@ bool MQTTClient::reconnect() {
         lastConnectedTime = millis();
         lastErrorCode = 0;
         LOG_INFO("MQTT: Connected");
+        // 触发MQTT连接成功系统事件
+        PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_MQTT_CONNECTED, "");
         // 连接成功后订阅所有主题
         subscribeAll();
         // 连接成功后发布一次设备信息
@@ -900,6 +906,8 @@ bool MQTTClient::reconnect() {
         char buf2[48];
         snprintf(buf2, sizeof(buf2), "MQTT: Connect failed rc=%d", lastErrorCode);
         LOG_WARNING(buf2);
+        // 触发MQTT连接失败系统事件
+        PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_MQTT_CONN_FAILED, String(lastErrorCode));
     }
     return ok;
 }

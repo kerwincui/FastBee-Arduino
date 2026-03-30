@@ -525,6 +525,13 @@ bool FastBeeFramework::addSystemTasks() {
     }, nullptr, 200)) {
         LOG_WARNING("Failed to add periph device trigger task");
     }
+        
+    // 按键事件检测任务（每20ms）- 比设备触发更频繁，保证按键响应灵敏
+    if (!taskManager->addTask("button_event_check", [](void* param) {
+        PeriphExecManager::getInstance().checkButtonEvents();
+    }, nullptr, 20)) {
+        LOG_WARNING("Failed to add button event check task");
+    }
     
     // 协议处理任务（每100ms）— 维持MQTT心跳和消息收发
     if (!taskManager->addTask("protocol_handle", [](void* param) {
