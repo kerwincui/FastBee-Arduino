@@ -12,8 +12,23 @@ PeriphExecRouteHandler::PeriphExecRouteHandler(WebHandlerContext* ctx)
 
 void PeriphExecRouteHandler::setupRoutes(AsyncWebServer* server) {
     // 注意：更具体的路由必须先注册，否则会被 /api/periph-exec 拦截
+    
+    // 触发事件相关API
+    server->on("/api/periph-exec/events/static", HTTP_GET,
+              [this](AsyncWebServerRequest* request) { handleGetStaticEvents(request); });
+    
+    server->on("/api/periph-exec/events/dynamic", HTTP_GET,
+              [this](AsyncWebServerRequest* request) { handleGetDynamicEvents(request); });
+    
+    server->on("/api/periph-exec/events/categories", HTTP_GET,
+              [this](AsyncWebServerRequest* request) { handleGetEventCategories(request); });
+    
+    server->on("/api/periph-exec/trigger-types", HTTP_GET,
+              [this](AsyncWebServerRequest* request) { handleGetTriggerTypes(request); });
+
+    // 向后兼容：旧版系统事件API重定向到静态事件
     server->on("/api/periph-exec/system-events", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleGetSystemEvents(request); });
+              [this](AsyncWebServerRequest* request) { handleGetStaticEvents(request); });
 
     server->on("/api/periph-exec/update", HTTP_POST,
               [this](AsyncWebServerRequest* request) { handleUpdateRule(request); });
@@ -64,7 +79,9 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         // 设备触发
         obj["operatorType"] = rule.operatorType;
         obj["compareValue"] = rule.compareValue;
-        obj["sourcePeriphId"] = rule.sourcePeriphId;
+
+        // 触发事件
+        obj["eventId"] = rule.eventId;
 
         // 定时触发
         obj["timerMode"] = rule.timerMode;
@@ -80,8 +97,8 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         obj["actionType"] = rule.actionType;
         obj["actionValue"] = rule.actionValue;
 
-        // 系统事件触发
-        obj["systemEventId"] = rule.systemEventId;
+        // 数据上报控制
+        obj["reportAfterExec"] = rule.reportAfterExec;
 
         // 运行时状态
         obj["lastTriggerTime"] = rule.lastTriggerTime;
@@ -96,12 +113,6 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
             } else {
                 obj["targetPeriphName"] = "";
                 obj["targetPeriphType"] = 0;
-            }
-        }
-        if (!rule.sourcePeriphId.isEmpty()) {
-            const PeripheralConfig* srcPeriph = pm.getPeripheral(rule.sourcePeriphId);
-            if (srcPeriph) {
-                obj["sourcePeriphName"] = srcPeriph->name;
             }
         }
     }
@@ -128,7 +139,16 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
 
     rule.operatorType = ctx->getParamInt(request, "operatorType", 0);
     rule.compareValue = ctx->getParamValue(request, "compareValue", "");
-    rule.sourcePeriphId = ctx->getParamValue(request, "sourcePeriphId", "");
+
+    // 触发事件
+    rule.eventId = ctx->getParamValue(request, "eventId", "");
+    // 根据 eventId 解析 eventType
+    if (!rule.eventId.isEmpty()) {
+        const EventDef* def = findStaticEvent(rule.eventId.c_str());
+        if (def) {
+            rule.eventType = static_cast<uint8_t>(def->type);
+        }
+    }
 
     rule.timerMode = ctx->getParamInt(request, "timerMode", 0);
     rule.intervalSec = ctx->getParamInt(request, "intervalSec", 60);
@@ -137,13 +157,12 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     rule.targetPeriphId = ctx->getParamValue(request, "targetPeriphId", "");
     rule.actionType = ctx->getParamInt(request, "actionType", 0);
     rule.actionValue = ctx->getParamValue(request, "actionValue", "");
-    rule.inverted = false;
 
     rule.protocolType = ctx->getParamInt(request, "protocolType", 0);
     rule.scriptContent = ctx->getParamValue(request, "scriptContent", "");
 
-    // 系统事件触发
-    rule.systemEventId = ctx->getParamValue(request, "systemEventId", "");
+    // 数据上报控制
+    rule.reportAfterExec = ctx->getParamBool(request, "reportAfterExec", true);
 
     if (rule.name.isEmpty()) {
         return;
@@ -188,7 +207,16 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
 
     rule.operatorType = ctx->getParamInt(request, "operatorType", existing->operatorType);
     rule.compareValue = ctx->getParamValue(request, "compareValue", existing->compareValue);
-    rule.sourcePeriphId = ctx->getParamValue(request, "sourcePeriphId", existing->sourcePeriphId);
+
+    // 触发事件
+    rule.eventId = ctx->getParamValue(request, "eventId", existing->eventId);
+    // 根据 eventId 解析 eventType
+    if (!rule.eventId.isEmpty()) {
+        const EventDef* def = findStaticEvent(rule.eventId.c_str());
+        if (def) {
+            rule.eventType = static_cast<uint8_t>(def->type);
+        }
+    }
 
     rule.timerMode = ctx->getParamInt(request, "timerMode", existing->timerMode);
     rule.intervalSec = ctx->getParamInt(request, "intervalSec", existing->intervalSec);
@@ -197,13 +225,12 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     rule.targetPeriphId = ctx->getParamValue(request, "targetPeriphId", existing->targetPeriphId);
     rule.actionType = ctx->getParamInt(request, "actionType", existing->actionType);
     rule.actionValue = ctx->getParamValue(request, "actionValue", existing->actionValue);
-    rule.inverted = false;  // 不再使用独立字段，由 actionType 决定
 
     rule.protocolType = ctx->getParamInt(request, "protocolType", existing->protocolType);
     rule.scriptContent = ctx->getParamValue(request, "scriptContent", existing->scriptContent);
 
-    // 系统事件触发
-    rule.systemEventId = ctx->getParamValue(request, "systemEventId", existing->systemEventId);
+    // 数据上报控制
+    rule.reportAfterExec = ctx->getParamBool(request, "reportAfterExec", existing->reportAfterExec);
 
     if (mgr.updateRule(id, rule)) {
         mgr.saveConfiguration();
@@ -318,17 +345,63 @@ void PeriphExecRouteHandler::handleRunOnce(AsyncWebServerRequest* request) {
     request->send(200, "application/json", output);
 }
 
-// ========== 获取系统事件列表 ==========
+// ========== 获取静态事件列表 ==========
 
-void PeriphExecRouteHandler::handleGetSystemEvents(AsyncWebServerRequest* request) {
+void PeriphExecRouteHandler::handleGetStaticEvents(AsyncWebServerRequest* request) {
     if (!ctx->checkPermission(request, "system.view")) {
         ctx->sendUnauthorized(request);
         return;
     }
 
-    String eventsJson = PeriphExecManager::getSystemEventsJson();
+    String eventsJson = PeriphExecManager::getStaticEventsJson();
     
     // 直接构建完整响应，避免嵌套反序列化问题
     String output = "{\"success\":true,\"data\":" + eventsJson + "}";
+    request->send(200, "application/json", output);
+}
+
+// ========== 获取动态事件列表（包含外设执行规则事件） ==========
+
+void PeriphExecRouteHandler::handleGetDynamicEvents(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "system.view")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+
+    PeriphExecManager& mgr = PeriphExecManager::getInstance();
+    String eventsJson = mgr.getDynamicEventsJson();
+    
+    // 直接构建完整响应，避免嵌套反序列化问题
+    String output = "{\"success\":true,\"data\":" + eventsJson + "}";
+    request->send(200, "application/json", output);
+}
+
+// ========== 获取事件分类列表 ==========
+
+void PeriphExecRouteHandler::handleGetEventCategories(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "system.view")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+
+    String categoriesJson = PeriphExecManager::getEventCategoriesJson();
+    
+    // 直接构建完整响应，避免嵌套反序列化问题
+    String output = "{\"success\":true,\"data\":" + categoriesJson + "}";
+    request->send(200, "application/json", output);
+}
+
+// ========== 获取触发类型列表 ==========
+
+void PeriphExecRouteHandler::handleGetTriggerTypes(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "system.view")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+
+    String triggerTypesJson = PeriphExecManager::getValidTriggerTypes();
+    
+    // 直接构建完整响应，避免嵌套反序列化问题
+    String output = "{\"success\":true,\"data\":" + triggerTypesJson + "}";
     request->send(200, "application/json", output);
 }

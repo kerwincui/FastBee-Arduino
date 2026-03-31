@@ -7,6 +7,7 @@
 
 #include "utils/TimeUtils.h"
 #include "utils/StringUtils.h"
+#include "core/FeatureFlags.h"
 #include <Ticker.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
@@ -83,7 +84,7 @@ bool TimeUtils::syncNTPFromHTTPWithTimestamp(const String& url, long long& outTi
         
         float serverRecvTime = 0, serverSendTime = 0;
         
-        DynamicJsonDocument doc(512);
+        FastBeeJsonDoc doc;
         DeserializationError parseErr = deserializeJson(doc, payload);
         if (!parseErr) {
             serverRecvTime = doc["serverRecvTime"] | 0.0f;

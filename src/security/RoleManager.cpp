@@ -1,5 +1,6 @@
 #include "security/RoleManager.h"
 #include "systems/LoggerSystem.h"
+#include "core/FeatureFlags.h"
 #include <LittleFS.h>
 
 static const char* ROLES_FILE = "/config/roles.json";
@@ -356,7 +357,7 @@ void RoleManager::roleToJsonObj(const Role& role, JsonObject& obj) {
 }
 
 String RoleManager::toJson() const {
-    JsonDocument doc;
+    FastBeeJsonDocLarge doc;
     JsonArray arr = doc["roles"].to<JsonArray>();
     for (const auto& kv : roles) {
         JsonObject obj = arr.add<JsonObject>();
@@ -370,7 +371,7 @@ String RoleManager::toJson() const {
 String RoleManager::roleToJson(const String& id) const {
     auto it = roles.find(id);
     if (it == roles.end()) return "{}";
-    JsonDocument doc;
+    FastBeeJsonDoc doc;
     JsonObject obj = doc.to<JsonObject>();
     roleToJsonObj(it->second, obj);
     String out;
@@ -383,7 +384,7 @@ String RoleManager::roleToJson(const String& id) const {
 bool RoleManager::saveToStorage() {
     Serial.printf("[RoleManager] saveToStorage called, roles count: %d\n", (int)roles.size());
     
-    JsonDocument doc;
+    FastBeeJsonDocLarge doc;
     JsonArray arr = doc["roles"].to<JsonArray>();
     for (const auto& kv : roles) {
         JsonObject obj = arr.add<JsonObject>();
@@ -434,7 +435,7 @@ bool RoleManager::loadFromStorage() {
         return false;
     }
     
-    JsonDocument doc;
+    FastBeeJsonDocLarge doc;
     DeserializationError err = deserializeJson(doc, file);
     file.close();
     

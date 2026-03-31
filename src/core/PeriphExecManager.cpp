@@ -119,7 +119,7 @@ bool PeriphExecManager::saveConfiguration() {
     MutexGuard lock(_rulesMutex);
 
     JsonDocument doc;
-    doc["version"] = 1;
+    doc["version"] = 2;  // 版本升级，新配置格式
     JsonArray arr = doc["rules"].to<JsonArray>();
 
     for (const auto& pair : rules) {
@@ -131,10 +131,12 @@ bool PeriphExecManager::saveConfiguration() {
         obj["triggerType"] = r.triggerType;
         obj["execMode"] = r.execMode;
 
-        // 设备触发
+        // 平台触发字段
         obj["operatorType"] = r.operatorType;
         obj["compareValue"] = r.compareValue;
-        obj["sourcePeriphId"] = r.sourcePeriphId;
+
+        // 触发事件字段
+        obj["eventId"] = r.eventId;
 
         // 定时触发
         obj["timerMode"] = r.timerMode;
@@ -150,8 +152,8 @@ bool PeriphExecManager::saveConfiguration() {
         obj["actionType"] = r.actionType;
         obj["actionValue"] = r.actionValue;
 
-        // 系统事件触发字段
-        obj["systemEventId"] = r.systemEventId;
+        // 数据上报控制
+        obj["reportAfterExec"] = r.reportAfterExec;
     }
 
     File file = LittleFS.open(PERIPH_EXEC_CONFIG_FILE, "w");
@@ -189,6 +191,7 @@ bool PeriphExecManager::loadConfiguration() {
         return false;
     }
 
+    int configVersion = doc["version"] | 1;
     rules.clear();
     JsonArray arr = doc["rules"].as<JsonArray>();
     for (JsonObject obj : arr) {
@@ -201,11 +204,6 @@ bool PeriphExecManager::loadConfiguration() {
 
         r.operatorType = obj["operatorType"] | 0;
         r.compareValue = obj["compareValue"].as<String>();
-        r.sourcePeriphId = obj["sourcePeriphId"].as<String>();
-
-        r.timerMode = obj["timerMode"] | 0;
-        r.intervalSec = obj["intervalSec"] | 60;
-        r.timePoint = obj["timePoint"].as<String>();
 
         // 数据转换管道字段（向后兼容：旧配置无此字段时使用默认值）
         r.protocolType = obj["protocolType"] | 0;
@@ -215,13 +213,48 @@ bool PeriphExecManager::loadConfiguration() {
         r.actionType = obj["actionType"] | 0;
         r.actionValue = obj["actionValue"].as<String>();
 
-        // 系统事件触发字段
-        r.systemEventId = obj["systemEventId"].as<String>();
-        // 根据 systemEventId 解析 systemEventType
-        if (!r.systemEventId.isEmpty()) {
-            const SystemEventDef* def = findSystemEvent(r.systemEventId.c_str());
+        // 定时触发字段
+        r.timerMode = obj["timerMode"] | 0;
+        r.intervalSec = obj["intervalSec"] | 60;
+        r.timePoint = obj["timePoint"].as<String>();
+
+        // 数据上报控制（向后兼容：旧配置无此字段时默认为 true）
+        r.reportAfterExec = obj["reportAfterExec"] | true;
+
+        // 触发事件字段（配置版本迁移）
+        if (configVersion >= 2) {
+            // 新配置格式
+            r.eventId = obj["eventId"].as<String>();
+        } else {
+            // 旧配置格式迁移
+            // 旧版设备触发(triggerType=2)和系统事件触发(triggerType=5)和按键事件触发(triggerType=6)
+            // 统一合并到新的触发事件(triggerType=4)
+            uint8_t oldTriggerType = obj["triggerType"] | 0;
+            String oldSystemEventId = obj["systemEventId"].as<String>();
+            
+            if (oldTriggerType == 5 || oldTriggerType == 6) {
+                // 系统事件触发或按键事件触发 -> 新的触发事件
+                r.triggerType = static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER);
+                // 转换旧的事件ID格式
+                if (!oldSystemEventId.isEmpty()) {
+                    r.eventId = oldSystemEventId;
+                    // 移除旧的 sys_ 前缀
+                    if (r.eventId.startsWith("sys_")) {
+                        r.eventId = r.eventId.substring(4);
+                    }
+                }
+            } else if (oldTriggerType == 2) {
+                // 设备触发已移除，需要转换为触发事件或平台触发
+                // 默认转换为平台触发
+                r.triggerType = static_cast<uint8_t>(ExecTriggerType::PLATFORM_TRIGGER);
+            }
+        }
+
+        // 根据 eventId 解析 eventType
+        if (!r.eventId.isEmpty()) {
+            const EventDef* def = findStaticEvent(r.eventId.c_str());
             if (def) {
-                r.systemEventType = static_cast<uint8_t>(def->type);
+                r.eventType = static_cast<uint8_t>(def->type);
             }
         }
 
@@ -234,7 +267,6 @@ bool PeriphExecManager::loadConfiguration() {
                 r.actionType = static_cast<uint8_t>(ExecActionType::ACTION_LOW_INVERTED);
             }
         }
-        r.inverted = false;  // 不再使用独立的 inverted 字段
 
         r.lastTriggerTime = 0;
         r.triggerCount = 0;
@@ -539,78 +571,6 @@ void PeriphExecManager::checkTimers() {
     }
 }
 
-// ========== 设备触发检测（轮询输入外设状态） ==========
-
-void PeriphExecManager::checkDeviceTriggers() {
-    unsigned long now = millis();
-
-    // 每 200ms 检查一次（比定时器更频繁，保证按键响应灵敏）
-    if (now - _lastDeviceCheck < 200) return;
-    _lastDeviceCheck = now;
-
-    PeripheralManager& pm = PeripheralManager::getInstance();
-
-    // 阶段1: 持锁匹配，收集规则副本
-    std::vector<PeriphExecRule> triggeredRules;
-
-    {
-        MutexGuard lock(_rulesMutex);
-
-        for (auto& pair : rules) {
-            PeriphExecRule& rule = pair.second;
-            if (!rule.enabled || rule.triggerType != 2) continue;  // 2=设备触发
-
-            // 必须指定触发源外设
-            if (rule.sourcePeriphId.isEmpty()) continue;
-
-            // 防重复触发：同一规则最小间隔 500ms
-            if (rule.lastTriggerTime > 0 && (now - rule.lastTriggerTime) < 500) continue;
-
-            // 读取触发源外设当前值
-            String currentValue;
-            PeripheralConfig* periph = pm.getPeripheral(rule.sourcePeriphId);
-            if (!periph) continue;
-
-            PeripheralType pType = periph->type;
-            int typeVal = static_cast<int>(pType);
-
-            if (typeVal >= 11 && typeVal <= 14) {
-                // 数字输入类型 (GPIO_DIGITAL_INPUT, OUTPUT, PULLUP, PULLDOWN)
-                GPIOState state = pm.readPin(rule.sourcePeriphId);
-                if (state == GPIOState::STATE_UNDEFINED) continue;
-                currentValue = (state == GPIOState::STATE_HIGH) ? "1" : "0";
-            } else if (typeVal == 15 || typeVal == 26) {
-                // 模拟输入 (GPIO_ANALOG_INPUT=15) 或 ADC(26)
-                uint16_t analog = pm.readAnalog(rule.sourcePeriphId);
-                currentValue = String(analog);
-            } else if (typeVal == 21) {
-                // GPIO_TOUCH
-                GPIOState state = pm.readPin(rule.sourcePeriphId);
-                if (state == GPIOState::STATE_UNDEFINED) continue;
-                currentValue = (state == GPIOState::STATE_HIGH) ? "1" : "0";
-            } else {
-                // 不支持的外设类型
-                continue;
-            }
-
-            // 评估条件
-            if (evaluateCondition(currentValue, rule.operatorType, rule.compareValue)) {
-                LOGGER.infof("[PeriphExec] Device triggered: '%s' (source=%s, value=%s)",
-                    rule.name.c_str(), rule.sourcePeriphId.c_str(), currentValue.c_str());
-                rule.lastTriggerTime = now;
-                rule.triggerCount++;
-                triggeredRules.push_back(rule);
-            }
-        }
-    }
-    // 锁已释放
-
-    // 阶段2: 无锁异步分发
-    for (const auto& ruleCopy : triggeredRules) {
-        dispatchAsync(ruleCopy);
-    }
-}
-
 // ========== 动作执行（可在主循环或异步任务中调用） ==========
 
 bool PeriphExecManager::executeAction(PeriphExecRule& rule) {
@@ -631,8 +591,8 @@ bool PeriphExecManager::executeAction(PeriphExecRule& rule) {
         success = executePeripheralAction(rule);
     }
     
-    // 动作执行成功后尝试上报设备数据
-    if (success) {
+    // 动作执行成功后，根据配置决定是否上报设备数据
+    if (success && rule.reportAfterExec) {
         tryReportDeviceData();
     }
     
@@ -1004,24 +964,24 @@ bool PeriphExecManager::runOnce(const String& id) {
     return executeAction(ruleCopy);
 }
 
-// ========== 系统事件触发 ==========
+// ========== 触发事件 ==========
 
-void PeriphExecManager::triggerSystemEvent(SystemEventType eventType, const String& eventData) {
+void PeriphExecManager::triggerEvent(EventType eventType, const String& eventData) {
     // 查找匹配的事件ID
     const char* eventId = nullptr;
-    for (size_t i = 0; SYSTEM_EVENTS[i].id != nullptr; i++) {
-        if (SYSTEM_EVENTS[i].type == eventType) {
-            eventId = SYSTEM_EVENTS[i].id;
+    for (size_t i = 0; STATIC_EVENTS[i].id != nullptr; i++) {
+        if (STATIC_EVENTS[i].type == eventType) {
+            eventId = STATIC_EVENTS[i].id;
             break;
         }
     }
     
     if (!eventId) {
-        LOGGER.warningf("[PeriphExec] Unknown system event type: %d", (int)eventType);
+        LOGGER.warningf("[PeriphExec] Unknown event type: %d", (int)eventType);
         return;
     }
     
-    LOGGER.infof("[PeriphExec] System event triggered: %s (data=%s)", eventId, eventData.c_str());
+    LOGGER.infof("[PeriphExec] Event triggered: %s (data=%s)", eventId, eventData.c_str());
     
     // 阶段1: 持锁匹配，收集规则副本
     std::vector<PeriphExecRule> triggeredRules;
@@ -1032,18 +992,76 @@ void PeriphExecManager::triggerSystemEvent(SystemEventType eventType, const Stri
         for (auto& pair : rules) {
             PeriphExecRule& rule = pair.second;
             if (!rule.enabled) continue;
-            if (rule.triggerType != static_cast<uint8_t>(ExecTriggerType::SYSTEM_EVENT_TRIGGER)) continue;
-            if (rule.systemEventId.isEmpty()) continue;
+            if (rule.triggerType != static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER)) continue;
+            if (rule.eventId.isEmpty()) continue;
             
-            // 匹配系统事件ID
-            if (rule.systemEventId != eventId) continue;
+            // 匹配事件ID
+            if (rule.eventId != eventId) continue;
             
             // 防重复触发：同一规则最小间隔 1 秒
             unsigned long now = millis();
             if (rule.lastTriggerTime > 0 && (now - rule.lastTriggerTime) < 1000) continue;
             
-            LOGGER.infof("[PeriphExec] System event rule matched: '%s' (event=%s)",
+            LOGGER.infof("[PeriphExec] Event rule matched: '%s' (event=%s)",
                 rule.name.c_str(), eventId);
+            
+            rule.lastTriggerTime = now;
+            rule.triggerCount++;
+            triggeredRules.push_back(rule);
+        }
+    }
+    // 锁已释放
+    
+    // 阶段2: 无锁异步分发
+    for (const auto& ruleCopy : triggeredRules) {
+        dispatchAsync(ruleCopy);
+    }
+    
+    // 触发外设执行完成事件（当其他规则执行完成时）
+    if (eventType != EventType::EVENT_PERIPH_EXEC_COMPLETED) {
+        // 延迟触发，避免递归
+        // 实际触发在动作执行完成后调用
+    }
+}
+
+void PeriphExecManager::triggerEventById(const String& eventId, const String& eventData) {
+    const EventDef* def = findStaticEvent(eventId.c_str());
+    if (def) {
+        triggerEvent(def->type, eventData);
+    } else {
+        // 检查是否是外设执行规则事件
+        if (eventId.startsWith("exec_")) {
+            triggerPeriphExecEvent(eventId, eventData);
+        } else {
+            LOGGER.warningf("[PeriphExec] Unknown event ID: %s", eventId.c_str());
+        }
+    }
+}
+
+void PeriphExecManager::triggerPeriphExecEvent(const String& ruleId, const String& eventData) {
+    LOGGER.infof("[PeriphExec] Periph exec event triggered: %s", ruleId.c_str());
+    
+    // 阶段1: 持锁匹配，收集规则副本
+    std::vector<PeriphExecRule> triggeredRules;
+    
+    {
+        MutexGuard lock(_rulesMutex);
+        
+        for (auto& pair : rules) {
+            PeriphExecRule& rule = pair.second;
+            if (!rule.enabled) continue;
+            if (rule.triggerType != static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER)) continue;
+            if (rule.eventId.isEmpty()) continue;
+            
+            // 匹配外设执行规则事件ID
+            if (rule.eventId != ruleId) continue;
+            
+            // 防重复触发：同一规则最小间隔 500ms
+            unsigned long now = millis();
+            if (rule.lastTriggerTime > 0 && (now - rule.lastTriggerTime) < 500) continue;
+            
+            LOGGER.infof("[PeriphExec] Periph exec event rule matched: '%s' (triggerRule=%s)",
+                rule.name.c_str(), ruleId.c_str());
             
             rule.lastTriggerTime = now;
             rule.triggerCount++;
@@ -1058,25 +1076,40 @@ void PeriphExecManager::triggerSystemEvent(SystemEventType eventType, const Stri
     }
 }
 
-void PeriphExecManager::triggerSystemEventById(const String& eventId, const String& eventData) {
-    const SystemEventDef* def = findSystemEvent(eventId.c_str());
-    if (def) {
-        triggerSystemEvent(def->type, eventData);
-    } else {
-        LOGGER.warningf("[PeriphExec] Unknown system event ID: %s", eventId.c_str());
-    }
-}
-
-String PeriphExecManager::getSystemEventsJson() {
+String PeriphExecManager::getStaticEventsJson() {
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
     
-    for (size_t i = 0; SYSTEM_EVENTS[i].id != nullptr; i++) {
+    for (size_t i = 0; STATIC_EVENTS[i].id != nullptr; i++) {
         JsonObject obj = arr.add<JsonObject>();
-        obj["id"] = SYSTEM_EVENTS[i].id;
-        obj["name"] = SYSTEM_EVENTS[i].name;
-        obj["category"] = SYSTEM_EVENTS[i].category;
-        obj["type"] = static_cast<uint8_t>(SYSTEM_EVENTS[i].type);
+        obj["id"] = STATIC_EVENTS[i].id;
+        obj["name"] = STATIC_EVENTS[i].name;
+        obj["category"] = STATIC_EVENTS[i].category;
+        obj["type"] = static_cast<uint8_t>(STATIC_EVENTS[i].type);
+    }
+    
+    String result;
+    serializeJson(doc, result);
+    return result;
+}
+
+String PeriphExecManager::getDynamicEventsJson() {
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    
+    // 添加外设执行规则作为动态事件
+    MutexGuard lock(_rulesMutex);
+    
+    for (const auto& pair : rules) {
+        const PeriphExecRule& rule = pair.second;
+        if (!rule.enabled) continue;
+        
+        JsonObject obj = arr.add<JsonObject>();
+        obj["id"] = rule.id;
+        obj["name"] = rule.name;
+        obj["category"] = "外设执行";
+        obj["type"] = static_cast<uint8_t>(EventType::EVENT_PERIPH_EXEC_COMPLETED);
+        obj["isDynamic"] = true;
     }
     
     String result;
@@ -1332,7 +1365,7 @@ void PeriphExecManager::checkButtonEvents() {
                     btnState.pressStartTime = now;
                     
                     // 触发按键按下事件
-                    triggerButtonEvent(config.id, SystemEventType::SYS_BUTTON_PRESS);
+                    triggerButtonEvent(config.id, EventType::EVENT_BUTTON_PRESS);
                     
                     LOGGER.debugf("[PeriphExec] Button PRESS: %s", config.id.c_str());
                 } else {
@@ -1340,7 +1373,7 @@ void PeriphExecManager::checkButtonEvents() {
                     unsigned long pressDuration = now - btnState.pressStartTime;
                     
                     // 触发按键释放事件
-                    triggerButtonEvent(config.id, SystemEventType::SYS_BUTTON_RELEASE);
+                    triggerButtonEvent(config.id, EventType::EVENT_BUTTON_RELEASE);
                     
                     // 判断是点击还是长按释放
                     if (pressDuration < buttonConfig.longPress2sMs) {
@@ -1367,21 +1400,21 @@ void PeriphExecManager::checkButtonEvents() {
                 // 长按2秒
                 if (!btnState.longPress2sTriggered && pressDuration >= buttonConfig.longPress2sMs) {
                     btnState.longPress2sTriggered = true;
-                    triggerButtonEvent(config.id, SystemEventType::SYS_BUTTON_LONG_PRESS_2S);
+                    triggerButtonEvent(config.id, EventType::EVENT_BUTTON_LONG_PRESS_2S);
                     LOGGER.infof("[PeriphExec] Button LONG_PRESS_2S: %s", config.id.c_str());
                 }
                 
                 // 长按5秒
                 if (!btnState.longPress5sTriggered && pressDuration >= buttonConfig.longPress5sMs) {
                     btnState.longPress5sTriggered = true;
-                    triggerButtonEvent(config.id, SystemEventType::SYS_BUTTON_LONG_PRESS_5S);
+                    triggerButtonEvent(config.id, EventType::EVENT_BUTTON_LONG_PRESS_5S);
                     LOGGER.infof("[PeriphExec] Button LONG_PRESS_5S: %s", config.id.c_str());
                 }
                 
                 // 长按10秒
                 if (!btnState.longPress10sTriggered && pressDuration >= buttonConfig.longPress10sMs) {
                     btnState.longPress10sTriggered = true;
-                    triggerButtonEvent(config.id, SystemEventType::SYS_BUTTON_LONG_PRESS_10S);
+                    triggerButtonEvent(config.id, EventType::EVENT_BUTTON_LONG_PRESS_10S);
                     LOGGER.infof("[PeriphExec] Button LONG_PRESS_10S: %s", config.id.c_str());
                 }
             } else {
@@ -1392,11 +1425,11 @@ void PeriphExecManager::checkButtonEvents() {
                         // 双击超时，处理点击结果
                         if (btnState.clickCount == 2) {
                             // 双击
-                            triggerButtonEvent(config.id, SystemEventType::SYS_BUTTON_DOUBLE_CLICK);
+                            triggerButtonEvent(config.id, EventType::EVENT_BUTTON_DOUBLE_CLICK);
                             LOGGER.infof("[PeriphExec] Button DOUBLE_CLICK: %s", config.id.c_str());
                         } else if (btnState.clickCount == 1) {
                             // 单击
-                            triggerButtonEvent(config.id, SystemEventType::SYS_BUTTON_CLICK);
+                            triggerButtonEvent(config.id, EventType::EVENT_BUTTON_CLICK);
                             LOGGER.infof("[PeriphExec] Button CLICK: %s", config.id.c_str());
                         }
                         // 重置点击计数
@@ -1408,12 +1441,12 @@ void PeriphExecManager::checkButtonEvents() {
     }
 }
 
-void PeriphExecManager::triggerButtonEvent(const String& periphId, SystemEventType eventType) {
+void PeriphExecManager::triggerButtonEvent(const String& periphId, EventType eventType) {
     // 查找事件ID
     const char* eventId = nullptr;
-    for (size_t i = 0; SYSTEM_EVENTS[i].id != nullptr; i++) {
-        if (SYSTEM_EVENTS[i].type == eventType) {
-            eventId = SYSTEM_EVENTS[i].id;
+    for (size_t i = 0; STATIC_EVENTS[i].id != nullptr; i++) {
+        if (STATIC_EVENTS[i].type == eventType) {
+            eventId = STATIC_EVENTS[i].id;
             break;
         }
     }
@@ -1430,14 +1463,11 @@ void PeriphExecManager::triggerButtonEvent(const String& periphId, SystemEventTy
             PeriphExecRule& rule = pair.second;
             if (!rule.enabled) continue;
             
-            // 只匹配按键事件触发类型
-            if (rule.triggerType != static_cast<uint8_t>(ExecTriggerType::BUTTON_EVENT_TRIGGER)) continue;
-            
-            // 匹配按键外设ID
-            if (rule.sourcePeriphId != periphId) continue;
+            // 只匹配触发事件类型
+            if (rule.triggerType != static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER)) continue;
             
             // 匹配按键事件类型
-            if (rule.systemEventId != eventId) continue;
+            if (rule.eventId != eventId) continue;
             
             // 防重复触发：同一规则最小间隔 100ms
             unsigned long now = millis();
@@ -1461,57 +1491,64 @@ void PeriphExecManager::triggerButtonEvent(const String& periphId, SystemEventTy
 
 // ========== 配置辅助方法 ==========
 
-String PeriphExecManager::getValidTriggerTypes(const String& periphId) {
+String PeriphExecManager::getValidTriggerTypes() {
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
     
-    PeripheralManager& pm = PeripheralManager::getInstance();
-    PeripheralConfig* config = nullptr;
-    
-    if (!periphId.isEmpty()) {
-        config = pm.getPeripheral(periphId);
-    }
-    
-    // 所有外设都支持的触发类型
-    auto addTrigger = [&arr](uint8_t type, const char* name) {
+    auto addTrigger = [&arr](uint8_t type, const char* name, const char* desc) {
         JsonObject obj = arr.add<JsonObject>();
         obj["type"] = type;
         obj["name"] = name;
+        obj["description"] = desc;
     };
     
-    // 平台触发 - 所有输出类型外设支持
-    addTrigger(static_cast<uint8_t>(ExecTriggerType::PLATFORM_TRIGGER), "平台触发");
+    // 平台触发 - MQTT指令下发
+    addTrigger(static_cast<uint8_t>(ExecTriggerType::PLATFORM_TRIGGER), 
+               "平台触发", "IoT平台通过MQTT下发指令时触发");
     
-    // 定时触发 - 所有外设支持
-    addTrigger(static_cast<uint8_t>(ExecTriggerType::TIMER_TRIGGER), "定时触发");
+    // 定时触发
+    addTrigger(static_cast<uint8_t>(ExecTriggerType::TIMER_TRIGGER), 
+               "定时触发", "按指定时间间隔或每日时间点触发");
     
-    if (config) {
-        // 根据外设类型确定支持的触发类型
-        PeripheralType pType = config->type;
-        
-        if (isInputType(pType)) {
-            // 输入类型外设：支持设备触发
-            addTrigger(static_cast<uint8_t>(ExecTriggerType::DEVICE_TRIGGER), "设备触发");
-            
-            // 模拟输入：支持定时触发采集
-            if (isAnalogInputType(pType)) {
-                // 模拟输入已包含定时触发
-            }
-            
-            // 按键类型：支持按键事件触发
-            if (supportsButtonEvent(pType)) {
-                addTrigger(static_cast<uint8_t>(ExecTriggerType::BUTTON_EVENT_TRIGGER), "按键事件触发");
-            }
-        }
-        
-        // 输出类型外设支持平台触发和定时触发（已添加）
-    } else {
-        // 未指定外设，返回所有触发类型
-        addTrigger(static_cast<uint8_t>(ExecTriggerType::DEVICE_TRIGGER), "设备触发");
-        addTrigger(static_cast<uint8_t>(ExecTriggerType::DATA_RECEIVE), "数据接收触发");
-        addTrigger(static_cast<uint8_t>(ExecTriggerType::DATA_REPORT), "数据上报触发");
-        addTrigger(static_cast<uint8_t>(ExecTriggerType::SYSTEM_EVENT_TRIGGER), "系统事件触发");
-        addTrigger(static_cast<uint8_t>(ExecTriggerType::BUTTON_EVENT_TRIGGER), "按键事件触发");
+    // 数据接收触发
+    addTrigger(static_cast<uint8_t>(ExecTriggerType::DATA_RECEIVE), 
+               "数据接收触发", "协议数据到达时应用模板转换");
+    
+    // 数据上报触发
+    addTrigger(static_cast<uint8_t>(ExecTriggerType::DATA_REPORT), 
+               "数据上报触发", "协议数据发送前应用模板转换");
+    
+    // 触发事件（合并了原系统事件、按键事件、设备触发、外设执行事件）
+    addTrigger(static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER),
+               "事件触发", "WiFi/MQTT/按键/外设执行等事件触发");
+    
+    String result;
+    serializeJson(doc, result);
+    return result;
+}
+
+String PeriphExecManager::getEventCategoriesJson() {
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    
+    // 定义事件分类
+    const char* categories[] = {"WiFi", "MQTT", "网络", "协议", "系统", "配网", "规则", "按键", "外设执行"};
+    const char* descriptions[] = {
+        "WiFi连接状态变化事件",
+        "MQTT连接状态变化事件", 
+        "网络模式切换事件",
+        "协议启用事件",
+        "系统服务事件",
+        "配网过程事件",
+        "规则引擎事件",
+        "按键输入事件",
+        "外设执行规则事件"
+    };
+    
+    for (size_t i = 0; i < sizeof(categories) / sizeof(categories[0]); i++) {
+        JsonObject obj = arr.add<JsonObject>();
+        obj["name"] = categories[i];
+        obj["description"] = descriptions[i];
     }
     
     String result;

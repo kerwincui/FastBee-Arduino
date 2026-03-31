@@ -7,6 +7,7 @@
 
 #include "core/PeripheralManager.h"
 #include "core/AsyncExecTypes.h"
+#include "core/FeatureFlags.h"
 #include "systems/LoggerSystem.h"
 #include <Wire.h>
 #include <SPI.h>
@@ -486,7 +487,7 @@ uint16_t PeripheralManager::readAnalog(const String& peripheralId) {
 // ========== 持久化 ==========
 
 bool PeripheralManager::saveConfiguration() {
-    JsonDocument doc;
+    FastBeeJsonDocLarge doc;
     JsonArray periphs = doc["peripherals"].to<JsonArray>();
     
     for (const auto& pair : peripherals) {
@@ -569,17 +570,29 @@ bool PeripheralManager::loadConfiguration() {
         return true;
     }
     
+    // 检查文件大小，避免一次性读取过大文件
     File file = LittleFS.open(PERIPHERAL_CONFIG_FILE, "r");
     if (!file) {
         LOG_ERROR("Peripheral Manager: Failed to open config file for reading");
         return false;
     }
     
-    String jsonStr = file.readString();
-    file.close();
+    size_t fileSize = file.size();
+    LOG_DEBUGF("Peripheral Manager: Config file size: %d bytes", fileSize);
     
-    JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, jsonStr);
+    // 检查可用内存
+    size_t freeHeap = ESP.getFreeHeap();
+    if (freeHeap < fileSize + 4096) {
+        LOG_ERRORF("Peripheral Manager: Insufficient memory (free: %d, needed: %d)", 
+                   freeHeap, fileSize + 4096);
+        file.close();
+        return false;
+    }
+    
+    // 使用流式解析，避免一次性读取整个文件
+    FastBeeJsonDocLarge doc;
+    DeserializationError error = deserializeJson(doc, file);
+    file.close();
     
     if (error) {
         LOG_ERRORF("Peripheral Manager: Failed to parse config - %s", error.c_str());

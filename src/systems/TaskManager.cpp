@@ -7,6 +7,7 @@
 
 #include "systems/TaskManager.h"
 #include <core/SystemConstants.h>
+#include <core/FeatureFlags.h>
 #include "systems/LoggerSystem.h"
 
 TaskManager::TaskManager() {
@@ -308,9 +309,9 @@ TaskStatistics TaskManager::getTaskStatistics(const String& name) {
 }
 
 // 获取任务列表的JSON表示
-// ArduinoJson 7.x 使用 JsonDocument（替代废弃的 DynamicJsonDocument�?
+// ArduinoJson 7.x 使用 JsonDocument（替代废弃的 DynamicJsonDocument）
 String TaskManager::getTasksJSON() {
-    JsonDocument doc;
+    FastBeeJsonDocLarge doc;
     JsonArray taskArray = doc.to<JsonArray>();
 
 

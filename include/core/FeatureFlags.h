@@ -263,9 +263,28 @@
  * @brief JSON 文档最大大小（字节）
  * 默认：4096
  * 说明：根据实际需求调整
+ * 注意：此大小用于 StaticJsonDocument，在栈上分配，避免堆内存碎片
  */
 #ifndef FASTBEE_JSON_DOC_SIZE
 #define FASTBEE_JSON_DOC_SIZE 4096
 #endif
+
+/**
+ * @brief 大型 JSON 文档大小（用于配置文件加载等）
+ * 默认：8192
+ * 说明：用于加载较大的配置文件如 peripherals.json
+ */
+#ifndef FASTBEE_JSON_DOC_SIZE_LARGE
+#define FASTBEE_JSON_DOC_SIZE_LARGE 8192
+#endif
+
+/**
+ * @brief 安全的 JSON 文档类型
+ * 使用 StaticJsonDocument 避免堆内存分配失败导致崩溃
+ * ArduinoJson v7 中推荐使用此类型替代 JsonDocument
+ */
+#include <ArduinoJson.h>
+using FastBeeJsonDoc = StaticJsonDocument<FASTBEE_JSON_DOC_SIZE>;
+using FastBeeJsonDocLarge = StaticJsonDocument<FASTBEE_JSON_DOC_SIZE_LARGE>;
 
 #endif // FEATURE_FLAGS_H

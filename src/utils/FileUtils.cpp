@@ -7,6 +7,7 @@
 
 #include "utils/FileUtils.h"
 #include "systems/LoggerSystem.h"
+#include "core/FeatureFlags.h"
 #include <ArduinoJson.h>
 #include <vector>
 #include <map>
@@ -725,7 +726,7 @@ String FileUtils::getFileSystemInfoJSON() {
         return "{\"error\": \"File system not initialized\"}";
     }
 
-    JsonDocument doc;
+    FastBeeJsonDocLarge doc;
 
     // 文件系统空间信息
     size_t total = getTotalSpace();

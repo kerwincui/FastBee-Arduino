@@ -152,7 +152,7 @@ void ProvisionRouteHandler::setupRoutes(AsyncWebServer* server) {
         if (!ctx->checkPermission(request, "network.edit")) { ctx->sendUnauthorized(request); return; }
         _apProvisionActive = true;
         // 触发AP配网开始系统事件
-        PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_AP_PROVISION_START, "");
+        PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_AP_PROVISION_START, "");
         // 从 device.json 读取 AP SSID
         String apSSID = "FastBee_Setup";
         if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
@@ -180,7 +180,7 @@ void ProvisionRouteHandler::setupRoutes(AsyncWebServer* server) {
         if (!ctx->checkPermission(request, "network.edit")) { ctx->sendUnauthorized(request); return; }
         _apProvisionActive = false;
         // 触发AP配网完成系统事件
-        PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_AP_PROVISION_DONE, "");
+        PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_AP_PROVISION_DONE, "");
         ctx->sendSuccess(request, "Provision stopped");
     });
 
@@ -289,7 +289,7 @@ void ProvisionRouteHandler::setupRoutes(AsyncWebServer* server) {
         _bleProvisionActive = true;
         _bleProvisionStartTime = millis();
         // 触发蓝牙配网开始系统事件
-        PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_BLE_PROVISION_START, "");
+        PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_BLE_PROVISION_START, "");
         JsonDocument doc;
         doc["success"] = true;
         doc["data"]["active"] = true;
@@ -304,7 +304,7 @@ void ProvisionRouteHandler::setupRoutes(AsyncWebServer* server) {
         _bleProvisionActive = false;
         _bleProvisionStartTime = 0;
         // 触发蓝牙配网完成系统事件
-        PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_BLE_PROVISION_DONE, "");
+        PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_BLE_PROVISION_DONE, "");
         ctx->sendSuccess(request, "BLE provision stopped");
     });
 }

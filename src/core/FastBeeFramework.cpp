@@ -7,6 +7,7 @@
 
 #include "core/FastBeeFramework.h"
 #include "core/SystemConstants.h"
+#include "core/FeatureFlags.h"
 #include "core/PeripheralManager.h"
 #include "core/PeriphExecManager.h"
 #include "core/RuleScriptManager.h"
@@ -393,7 +394,7 @@ bool FastBeeFramework::addSystemTasks() {
                     if (LittleFS.exists("/config/protocol.json")) {
                         File f = LittleFS.open("/config/protocol.json", "r");
                         if (f) {
-                            JsonDocument doc;
+                            FastBeeJsonDocLarge doc;
                             DeserializationError err = deserializeJson(doc, f);
                             f.close();
                             if (!err && doc["mqtt"]["enabled"].as<bool>()) {
@@ -421,7 +422,7 @@ bool FastBeeFramework::addSystemTasks() {
                     if (LittleFS.exists("/config/protocol.json")) {
                         File f = LittleFS.open("/config/protocol.json", "r");
                         if (f) {
-                            JsonDocument doc;
+                            FastBeeJsonDocLarge doc;
                             DeserializationError err = deserializeJson(doc, f);
                             f.close();
                             if (!err && doc["modbusRtu"]["enabled"].as<bool>()) {
@@ -521,7 +522,7 @@ bool FastBeeFramework::addSystemTasks() {
     
     // 设备触发轮询检查任务（每200ms）
     if (!taskManager->addTask("periph_device_trigger", [](void* param) {
-        PeriphExecManager::getInstance().checkDeviceTriggers();
+        // 设备触发检测已移除，统一使用触发事件
     }, nullptr, 200)) {
         LOG_WARNING("Failed to add periph device trigger task");
     }
@@ -667,7 +668,7 @@ void FastBeeFramework::syncTimeFromConfig() {
         return;
     }
 
-    JsonDocument cfg;
+    FastBeeJsonDoc cfg;
     if (deserializeJson(cfg, cfgFile) != DeserializationError::Ok) {
         cfgFile.close();
         LOG_WARNING("[NTP] Failed to parse device.json");

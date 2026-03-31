@@ -1,6 +1,7 @@
 #include "./security/UserManager.h"
 #include "security/RoleManager.h"
 #include "systems/LoggerSystem.h"
+#include "core/FeatureFlags.h"
 #include <mbedtls/md5.h>
 #include <mbedtls/sha256.h>
 #include <esp_random.h>
@@ -360,7 +361,7 @@ void UserManager::updateLastLogin(const String& username) {
 // ============ 持久化方法 ============
 
 bool UserManager::saveUsersToStorage() {
-    JsonDocument doc;
+    FastBeeJsonDocLarge doc;
     doc["version"] = "2.0";
     
     // 保存用户数据
@@ -443,7 +444,7 @@ bool UserManager::loadUsersFromStorage() {
         return false;
     }
 
-    JsonDocument doc;
+    FastBeeJsonDocLarge doc;
     DeserializationError error = deserializeJson(doc, file);
     file.close();
     
@@ -707,7 +708,7 @@ String UserManager::getUserRole(const String& username) {
 }
 
 String UserManager::getAllUsers() {
-    JsonDocument doc;
+    FastBeeJsonDocLarge doc;
     JsonArray usersArray = doc["users"].to<JsonArray>();
 
     for (const auto& pair : users) {

@@ -966,7 +966,7 @@ bool NetworkManager::restartNetwork() {
             wifiManager->setModeTransitioning(false);
             LOG_INFO("NetworkManager: AP-only mode restarted successfully");
             // 触发网络模式切换为AP系统事件
-            PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_NET_MODE_AP, "");
+            PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_NET_MODE_AP, "");
             return true;
         } else {
             // AP+STA模式：可以先启动AP，然后连接STA
@@ -997,14 +997,14 @@ bool NetworkManager::restartNetwork() {
         isInitialized = true;
         LOG_INFO("NetworkManager: AP+STA mode restarted, AP available, STA connecting...");
         // 触发网络模式切换为AP+STA系统事件
-        PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_NET_MODE_AP_STA, "");
+        PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_NET_MODE_AP_STA, "");
         return true;
     }
     
     // 对于纯STA模式，需要完全重启
     LOG_INFO("NetworkManager: Full network restart for STA mode...");
     // 触发网络模式切换为STA系统事件
-    PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_NET_MODE_STA, "");
+    PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_NET_MODE_STA, "");
     disconnect();
     delay(500);
     return initialize();

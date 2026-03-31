@@ -4589,35 +4589,28 @@ const AppState = {
     },
 
     onPeriphExecTriggerTypeChange(val) {
-        const cl = document.getElementById('periph-exec-condition-left');
-        const cr = document.getElementById('periph-exec-condition-right');
-        const tl = document.getElementById('periph-exec-timer-trigger-left');
-        const tr = document.getElementById('periph-exec-timer-trigger-right');
-        const sg = document.getElementById('periph-exec-source-periph-group');
-        const tg = document.getElementById('periph-exec-topic-trigger-group');
-        const sysg = document.getElementById('periph-exec-system-event-group');
-        const btng = document.getElementById('periph-exec-button-event-group');
-        // 平台触发(0)和设备触发(2)共享条件字段
-        const showCondition = (val === '0' || val === '2');
-        if (cl) cl.style.display = showCondition ? 'block' : 'none';
-        if (cr) cr.style.display = showCondition ? 'block' : 'none';
-        if (tl) tl.style.display = (val === '1') ? 'block' : 'none';
-        if (tr) tr.style.display = (val === '1') ? 'block' : 'none';
-        // 触发源外设仅设备触发(2)显示
-        if (sg) sg.style.display = (val === '2') ? 'block' : 'none';
-        // 系统事件选择仅系统事件触发(5)显示
-        if (sysg) sysg.style.display = (val === '5') ? 'block' : 'none';
-        // 按键事件选择仅按键事件触发(6)显示
-        if (btng) btng.style.display = (val === '6') ? 'block' : 'none';
-        // 设备触发时填充输入外设下拉
-        if (val === '2') this._populateSourcePeriphSelect();
-        // 系统事件触发时填充系统事件下拉
-        if (val === '5') this._populateSystemEventSelect();
-        // 按键事件触发时填充按键外设和按键事件下拉
-        if (val === '6') {
-            this._populateButtonPeriphSelect();
-            this._populateButtonEventSelect();
+        const platformCondition = document.getElementById('periph-exec-platform-condition');
+        const timerConfig = document.getElementById('periph-exec-timer-config');
+        const eventGroup = document.getElementById('periph-exec-event-group');
+        
+        // 平台触发(0): 显示比较运算符和比较值
+        if (platformCondition) platformCondition.style.display = (val === '0') ? 'block' : 'none';
+        
+        // 定时触发(1): 显示定时配置
+        if (timerConfig) timerConfig.style.display = (val === '1') ? 'block' : 'none';
+        
+        // 触发事件(4): 显示事件选择
+        if (eventGroup) {
+            eventGroup.style.display = (val === '4') ? 'block' : 'none';
+            if (val === '4') {
+                this._populateEventCategories();
+                this._populateEventSelect();
+            }
         }
+    },
+
+    onPeriphExecEventCategoryChange(category) {
+        this._populateEventSelect(category);
     },
 
     onPeriphExecTimerModeChange(val) {
@@ -4646,32 +4639,35 @@ const AppState = {
         errEl.style.display = 'none';
         const originalId = document.getElementById('periph-exec-original-id').value;
         const isEdit = originalId !== '';
+        const triggerType = document.getElementById('periph-exec-trigger-type').value;
+        
         const ruleData = {
             name: document.getElementById('periph-exec-name').value.trim(),
             enabled: document.getElementById('periph-exec-enabled').checked ? '1' : '0',
-            triggerType: document.getElementById('periph-exec-trigger-type').value,
+            triggerType: triggerType,
             execMode: document.getElementById('periph-exec-exec-mode').value,
-            operatorType: document.getElementById('periph-exec-operator').value,
-            compareValue: document.getElementById('periph-exec-compare-value').value.trim(),
-            sourcePeriphId: document.getElementById('periph-exec-source-periph').value,
-            systemEventId: document.getElementById('periph-exec-system-event').value,
-            timerMode: document.getElementById('periph-exec-timer-mode').value,
-            intervalSec: document.getElementById('periph-exec-interval').value,
-            timePoint: document.getElementById('periph-exec-timepoint').value,
-            actionType: document.getElementById('periph-exec-action-type').value,
-            targetPeriphId: document.getElementById('periph-exec-target-periph').value,
-            actionValue: document.getElementById('periph-exec-action-value').value.trim()
+            reportAfterExec: document.getElementById('periph-exec-report').value === 'true'
         };
-        // 按键事件触发(triggerType=6): 使用按键外设和按键事件字段
-        if (ruleData.triggerType === '6') {
-            ruleData.sourcePeriphId = document.getElementById('periph-exec-button-periph').value;
-            ruleData.systemEventId = document.getElementById('periph-exec-button-event').value;
+        
+        // 根据触发类型添加相应字段
+        if (triggerType === '0') {
+            // 平台触发
+            ruleData.operatorType = document.getElementById('periph-exec-operator').value;
+            ruleData.compareValue = document.getElementById('periph-exec-compare-value').value.trim();
+        } else if (triggerType === '1') {
+            // 定时触发
+            ruleData.timerMode = document.getElementById('periph-exec-timer-mode').value;
+            ruleData.intervalSec = document.getElementById('periph-exec-interval').value;
+            ruleData.timePoint = document.getElementById('periph-exec-timepoint').value;
+        } else if (triggerType === '4') {
+            // 触发事件
+            ruleData.eventId = document.getElementById('periph-exec-event').value;
         }
-        if (!ruleData.name) {
-            errEl.textContent = i18n.t('periph-exec-validate-name');
-            errEl.style.display = 'block';
-            return;
-        }
+        
+        // 动作配置
+        ruleData.actionType = document.getElementById('periph-exec-action-type').value;
+        ruleData.targetPeriphId = document.getElementById('periph-exec-target-periph').value;
+        
         // 脚本类型: 从 textarea 获取脚本内容
         if (ruleData.actionType === '15') {
             const script = document.getElementById('periph-exec-script').value;
@@ -4686,7 +4682,16 @@ const AppState = {
                 return;
             }
             ruleData.actionValue = script;
+        } else {
+            ruleData.actionValue = document.getElementById('periph-exec-action-value').value.trim();
         }
+        
+        if (!ruleData.name) {
+            errEl.textContent = i18n.t('periph-exec-validate-name');
+            errEl.style.display = 'block';
+            return;
+        }
+        
         if (isEdit) ruleData.id = originalId;
         const url = isEdit ? '/api/periph-exec/update' : '/api/periph-exec';
         apiPost(url, ruleData)
@@ -4714,48 +4719,49 @@ const AppState = {
                 if (!res || !res.success || !res.data) return;
                 const rule = res.data.find(r => r.id === id);
                 if (!rule) return;
+                
+                // 基础配置
                 document.getElementById('periph-exec-name').value = rule.name || '';
                 document.getElementById('periph-exec-enabled').checked = !!rule.enabled;
                 document.getElementById('periph-exec-exec-mode').value = String(rule.execMode || 0);
+                document.getElementById('periph-exec-report').value = rule.reportAfterExec !== false ? 'true' : 'false';
+                
+                // 触发配置
                 document.getElementById('periph-exec-trigger-type').value = String(rule.triggerType);
                 this.onPeriphExecTriggerTypeChange(String(rule.triggerType));
-                document.getElementById('periph-exec-operator').value = String(rule.operatorType);
-                document.getElementById('periph-exec-compare-value').value = rule.compareValue || '';
-                // 设备触发: 回显触发源外设（需等待下拉填充后再设值）
-                if (String(rule.triggerType) === '2' && rule.sourcePeriphId) {
+                
+                // 平台触发配置
+                if (String(rule.triggerType) === '0') {
+                    document.getElementById('periph-exec-operator').value = String(rule.operatorType || 0);
+                    document.getElementById('periph-exec-compare-value').value = rule.compareValue || '';
+                }
+                
+                // 定时触发配置
+                if (String(rule.triggerType) === '1') {
+                    document.getElementById('periph-exec-timer-mode').value = String(rule.timerMode || 0);
+                    this.onPeriphExecTimerModeChange(String(rule.timerMode));
+                    document.getElementById('periph-exec-interval').value = rule.intervalSec || 60;
+                    document.getElementById('periph-exec-timepoint').value = rule.timePoint || '08:00';
+                }
+                
+                // 触发事件配置
+                if (String(rule.triggerType) === '4' && rule.eventId) {
                     setTimeout(() => {
-                        document.getElementById('periph-exec-source-periph').value = rule.sourcePeriphId || '';
+                        document.getElementById('periph-exec-event').value = rule.eventId || '';
                     }, 300);
                 }
-                // 系统事件触发: 回显系统事件（需等待下拉填充后再设值）
-                if (String(rule.triggerType) === '5' && rule.systemEventId) {
-                    setTimeout(() => {
-                        document.getElementById('periph-exec-system-event').value = rule.systemEventId || '';
-                    }, 300);
-                }
-                // 按键事件触发: 回显按键外设和按键事件（需等待下拉填充后再设值）
-                if (String(rule.triggerType) === '6') {
-                    setTimeout(() => {
-                        if (rule.sourcePeriphId) {
-                            document.getElementById('periph-exec-button-periph').value = rule.sourcePeriphId;
-                        }
-                        if (rule.systemEventId) {
-                            document.getElementById('periph-exec-button-event').value = rule.systemEventId;
-                        }
-                    }, 300);
-                }
-                document.getElementById('periph-exec-timer-mode').value = String(rule.timerMode);
-                this.onPeriphExecTimerModeChange(String(rule.timerMode));
-                document.getElementById('periph-exec-interval').value = rule.intervalSec || 60;
-                document.getElementById('periph-exec-timepoint').value = rule.timePoint || '08:00';
+                
+                // 动作配置
                 document.getElementById('periph-exec-action-type').value = String(rule.actionType);
                 this.onPeriphExecActionTypeChange(String(rule.actionType));
                 document.getElementById('periph-exec-target-periph').value = rule.targetPeriphId || '';
-                document.getElementById('periph-exec-action-value').value = rule.actionValue || '';
+                
                 // 脚本类型: 回显脚本内容到 textarea
                 if (String(rule.actionType) === '15') {
                     const scriptEl = document.getElementById('periph-exec-script');
                     if (scriptEl) scriptEl.value = rule.actionValue || '';
+                } else {
+                    document.getElementById('periph-exec-action-value').value = rule.actionValue || '';
                 }
             });
     },
@@ -4845,11 +4851,9 @@ const AppState = {
                 const triggerLabels = {
                     0: i18n.t('periph-exec-trigger-platform'),
                     1: i18n.t('periph-exec-trigger-timer'),
-                    2: i18n.t('periph-exec-trigger-device'),
-                    3: i18n.t('rule-script-trigger-receive'),
-                    4: i18n.t('rule-script-trigger-report'),
-                    5: i18n.t('periph-exec-trigger-system'),
-                    6: i18n.t('periph-exec-trigger-button')
+                    2: i18n.t('periph-exec-trigger-receive'),
+                    3: i18n.t('periph-exec-trigger-report'),
+                    4: i18n.t('periph-exec-trigger-event')
                 };
                 const actionLabels = {
                     0: i18n.t('periph-exec-action-high'), 1: i18n.t('periph-exec-action-low'),
@@ -4875,19 +4879,12 @@ const AppState = {
                         triggerText += ': ' + (opLabels[r.operatorType] || '') + ' ' + (r.compareValue || '');
                     } else if (r.triggerType === 1) {
                         triggerText += ': ' + (r.timerMode === 0 ? i18n.t('periph-exec-every') + ' ' + r.intervalSec + 's' : i18n.t('periph-exec-daily') + ' ' + (r.timePoint || ''));
-                    } else if (r.triggerType === 2) {
-                        const srcName = r.sourcePeriphId ? (periphMap[r.sourcePeriphId] || r.sourcePeriphId) : '?';
-                        triggerText += ': ' + srcName + ' ' + (opLabels[r.operatorType] || '') + ' ' + (r.compareValue || '');
-                    } else if (r.triggerType === 3 || r.triggerType === 4) {
+                    } else if (r.triggerType === 2 || r.triggerType === 3) {
                         const protocolNames = ['MQTT', 'Modbus RTU', 'Modbus TCP', 'HTTP', 'CoAP', 'TCP'];
                         triggerText += ': ' + (protocolNames[r.protocolType] || 'MQTT');
-                    } else if (r.triggerType === 5) {
-                        // 系统事件触发：显示事件ID
-                        triggerText += ': ' + (r.systemEventId || '?');
-                    } else if (r.triggerType === 6) {
-                        // 按键事件触发：显示按键外设和事件类型
-                        const btnPeriphName = r.sourcePeriphId ? (periphMap[r.sourcePeriphId] || r.sourcePeriphId) : '?';
-                        triggerText += ': ' + btnPeriphName + ' - ' + (r.systemEventId || '?');
+                    } else if (r.triggerType === 4) {
+                        // 触发事件：显示事件ID
+                        triggerText += ': ' + (r.eventId || '?');
                     }
                     const periphName = r.targetPeriphId ? (periphMap[r.targetPeriphId] || r.targetPeriphId) : '-';
                     const actionText = actionLabels[r.actionType] || '?';
@@ -4954,67 +4951,69 @@ const AppState = {
         });
     },
 
-    _populateSystemEventSelect() {
-        const sel = document.getElementById('periph-exec-system-event');
+    _populateEventCategories() {
+        const sel = document.getElementById('periph-exec-event-category');
         if (!sel) return;
         const currentVal = sel.value;
-        apiGet('/api/periph-exec/system-events').then(res => {
+        
+        apiGet('/api/periph-exec/events/categories').then(res => {
             if (!res || !res.success || !res.data) return;
+            let opts = '<option value="">' + i18n.t('periph-exec-select-category') + '</option>';
+            res.data.forEach(cat => {
+                // 使用翻译后的分类名称
+                const translatedCat = i18n.t('event-cat-' + cat.name) || cat.name;
+                opts += '<option value="' + cat.name + '">' + translatedCat + '</option>';
+            });
+            sel.innerHTML = opts;
+            if (currentVal) sel.value = currentVal;
+        });
+    },
+
+    _populateEventSelect(categoryFilter) {
+        const sel = document.getElementById('periph-exec-event');
+        if (!sel) return;
+        const currentVal = sel.value;
+        
+        Promise.all([
+            apiGet('/api/periph-exec/events/static'),
+            apiGet('/api/periph-exec/events/dynamic')
+        ]).then(([staticRes, dynamicRes]) => {
+            let allEvents = [];
+            
+            // 添加静态事件
+            if (staticRes && staticRes.success && staticRes.data) {
+                allEvents = allEvents.concat(staticRes.data);
+            }
+            
+            // 添加动态事件（外设执行规则事件）
+            if (dynamicRes && dynamicRes.success && dynamicRes.data) {
+                allEvents = allEvents.concat(dynamicRes.data);
+            }
+            
+            // 按分类过滤
+            if (categoryFilter) {
+                allEvents = allEvents.filter(e => e.category === categoryFilter);
+            }
+            
             // 按分类分组
             const categories = {};
-            res.data.forEach(e => {
+            allEvents.forEach(e => {
                 if (!categories[e.category]) categories[e.category] = [];
                 categories[e.category].push(e);
             });
-            let opts = '<option value="">' + i18n.t('periph-exec-select-system-event') + '</option>';
+            
+            let opts = '<option value="">' + i18n.t('periph-exec-select-event') + '</option>';
             for (const cat in categories) {
-                opts += '<optgroup label="' + cat + '">';
+                // 使用翻译后的分类名称
+                const translatedCat = i18n.t('event-cat-' + cat) || cat;
+                opts += '<optgroup label="' + translatedCat + '">';
                 categories[cat].forEach(e => {
-                    opts += '<option value="' + e.id + '">' + e.name + '</option>';
+                    // 使用翻译后的事件名称
+                    const translatedName = i18n.t('event-' + e.id) || e.name;
+                    opts += '<option value="' + e.id + '">' + translatedName + '</option>';
                 });
                 opts += '</optgroup>';
             }
-            sel.innerHTML = opts;
-            if (currentVal) sel.value = currentVal;
-        });
-    },
-
-    _populateButtonPeriphSelect() {
-        const sel = document.getElementById('periph-exec-button-periph');
-        if (!sel) return;
-        const currentVal = sel.value;
-        apiGet('/api/peripherals').then(res => {
-            if (!res || !res.success || !res.data) return;
-            // 仅显示上拉/下拉输入类型外设 (13=DI_PU, 14=DI_PD)
-            const buttonTypes = [13, 14];
-            let opts = '<option value="">' + i18n.t('periph-exec-select-button-periph') + '</option>';
-            res.data.filter(p => p.enabled && buttonTypes.includes(p.type)).forEach(p => {
-                opts += '<option value="' + p.id + '">' + p.name + ' (' + p.id + ')' + '</option>';
-            });
-            sel.innerHTML = opts;
-            if (currentVal) sel.value = currentVal;
-        });
-    },
-
-    _populateButtonEventSelect() {
-        const sel = document.getElementById('periph-exec-button-event');
-        if (!sel) return;
-        const currentVal = sel.value;
-        apiGet('/api/periph-exec/system-events').then(res => {
-            console.log('[ButtonEvent] API response:', res);
-            if (!res || !res.success || !res.data) {
-                console.log('[ButtonEvent] Invalid response');
-                return;
-            }
-            console.log('[ButtonEvent] Data array:', res.data);
-            console.log('[ButtonEvent] Data length:', res.data.length);
-            // 仅显示按键事件 (category === '按键')
-            const buttonEvents = res.data.filter(e => e.category === '按键');
-            console.log('[ButtonEvent] Filtered button events:', buttonEvents);
-            let opts = '<option value="">' + i18n.t('periph-exec-select-button-event') + '</option>';
-            buttonEvents.forEach(e => {
-                opts += '<option value="' + e.id + '">' + e.name + '</option>';
-            });
             sel.innerHTML = opts;
             if (currentVal) sel.value = currentVal;
         });

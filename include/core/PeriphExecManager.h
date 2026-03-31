@@ -11,9 +11,9 @@
 #include "ScriptEngine.h"
 #include "AsyncExecTypes.h"
 
-// ========== 按键状态跟踪结构体 ==========
+// ========== 触发事件配置结构体 ==========
 
-// 按键事件检测参数
+// 按键事件检测参数（用于触发事件中的按键类型事件）
 struct ButtonEventConfig {
     uint16_t debounceMs = 50;       // 消抖时间(ms)
     uint16_t clickIntervalMs = 300; // 双击间隔时间(ms)
@@ -22,7 +22,7 @@ struct ButtonEventConfig {
     uint16_t longPress10sMs = 10000;// 长按10秒阈值
 };
 
-// 单个按键的运行时状态
+// 单个按键的运行时状态（用于触发事件中的按键类型事件）
 struct ButtonRuntimeState {
     String periphId;                // 外设ID
     bool lastState = true;          // 上一次状态（上拉默认高电平，按下为低）
@@ -73,19 +73,19 @@ public:
     // 定时器检查（由 TaskManager 定时任务调用）
     void checkTimers();
 
-    // 设备触发检测（轮询输入外设状态，由 TaskManager 定时任务调用）
-    void checkDeviceTriggers();
+    // ========== 触发事件 ==========
 
-    // ========== 系统事件触发 ==========
+    // 触发事件（由各系统模块调用）
+    void triggerEvent(EventType eventType, const String& eventData = "");
 
-    // 触发系统事件（由各系统模块调用）
-    void triggerSystemEvent(SystemEventType eventType, const String& eventData = "");
+    // 触发事件（通过事件ID）
+    void triggerEventById(const String& eventId, const String& eventData = "");
 
-    // 触发系统事件（通过事件ID）
-    void triggerSystemEventById(const String& eventId, const String& eventData = "");
+    // 获取静态事件列表（用于前端配置）
+    static String getStaticEventsJson();
 
-    // 获取系统事件列表（用于前端配置）
-    static String getSystemEventsJson();
+    // 获取动态事件列表（包含外设执行规则事件）
+    String getDynamicEventsJson();
 
     // Modbus 一次性读取回调（由 ProtocolManager 注册）
     void setModbusReadCallback(std::function<String(const String&)> callback);
@@ -109,19 +109,24 @@ public:
     // 返回：true=上报成功或无需上报，false=上报失败
     bool tryReportDeviceData();
 
-    // ========== 按键事件检测 ==========
+    // ========== 触发事件检测 ==========
 
-    // 按键事件检测（由 TaskManager 定时任务调用，比设备触发更频繁）
+    // 按键事件检测（由 TaskManager 定时任务调用，用于检测按键类型事件）
     void checkButtonEvents();
 
     // 触发按键事件（内部使用）
-    void triggerButtonEvent(const String& periphId, SystemEventType eventType);
+    void triggerButtonEvent(const String& periphId, EventType eventType);
+
+    // 触发外设执行事件（内部使用）
+    void triggerPeriphExecEvent(const String& ruleId, const String& eventData = "");
 
     // ========== 配置辅助方法 ==========
 
-    // 获取外设支持的有效触发类型列表（JSON数组格式）
-    // periphId: 外设ID，为空则返回所有触发类型
-    static String getValidTriggerTypes(const String& periphId = "");
+    // 获取有效触发类型列表（JSON数组格式）
+    static String getValidTriggerTypes();
+
+    // 获取触发事件分类列表（JSON数组格式，用于前端下拉选择）
+    static String getEventCategoriesJson();
 
     // 获取外设支持的有效动作类型列表（JSON数组格式）
     // periphId: 外设ID，为空则返回所有动作类型
@@ -133,7 +138,6 @@ private:
     // ========== 规则存储 ==========
     std::map<String, PeriphExecRule> rules;
     unsigned long lastTimerCheck = 0;
-    unsigned long _lastDeviceCheck = 0;
     unsigned long _lastButtonCheck = 0;
 
     // ========== FreeRTOS 同步原语 ==========

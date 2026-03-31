@@ -1,5 +1,6 @@
 #include "./security/AuthManager.h"
 #include "systems/LoggerSystem.h"
+#include "core/FeatureFlags.h"
 #include <esp_random.h>
 
 AuthManager::AuthManager(IUserManager* userMgr, RoleManager* roleMgr, LoggerSystem* loggerPtr)
@@ -548,7 +549,7 @@ std::vector<AuditEntry> AuthManager::getAuditLog() const {
 }
 
 String AuthManager::getAuditLogJson(size_t limit) const {
-    JsonDocument doc;
+    FastBeeJsonDocLarge doc;
     JsonArray arr = doc["logs"].to<JsonArray>();
 
     size_t count = 0;
@@ -726,7 +727,7 @@ bool AuthManager::saveSessionsToStorage() {
         return true;
     }
     
-    JsonDocument doc;
+    FastBeeJsonDocLarge doc;
     JsonArray sessionsArray = doc["sessions"].to<JsonArray>();
     
     for (const auto& pair : activeSessions) {
@@ -764,7 +765,7 @@ bool AuthManager::loadSessionsFromStorage() {
         return true; // 没有会话数据是正常的
     }
     
-    JsonDocument doc;
+    FastBeeJsonDocLarge doc;
     DeserializationError error = deserializeJson(doc, jsonStr);
     if (error) {
         char buf[72];

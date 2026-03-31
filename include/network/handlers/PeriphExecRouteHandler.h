@@ -26,7 +26,10 @@ private:
     void handleEnableRule(AsyncWebServerRequest* request);
     void handleDisableRule(AsyncWebServerRequest* request);
     void handleRunOnce(AsyncWebServerRequest* request);
-    void handleGetSystemEvents(AsyncWebServerRequest* request);
+    void handleGetStaticEvents(AsyncWebServerRequest* request);
+    void handleGetDynamicEvents(AsyncWebServerRequest* request);
+    void handleGetEventCategories(AsyncWebServerRequest* request);
+    void handleGetTriggerTypes(AsyncWebServerRequest* request);
 };
 
 #endif // PERIPH_EXEC_ROUTE_HANDLER_H

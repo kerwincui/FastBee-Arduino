@@ -8,6 +8,7 @@
 #include "protocols/ProtocolManager.h"
 #include "systems/LoggerSystem.h"
 #include "core/PeriphExecManager.h"
+#include "core/FeatureFlags.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <memory>
@@ -81,23 +82,23 @@ bool ProtocolManager::startAll() {
         switch (protocol.type) {
             case ProtocolType::MQTT:   
                 started = mqttClient && mqttClient->begin();
-                if (started) PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_MQTT_ENABLED, "");
+                if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_ENABLED, "");
                 break;
             case ProtocolType::MODBUS: 
                 started = modbusHandler && modbusHandler->begin();
-                if (started) PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_MODBUS_RTU_ENABLED, "");
+                if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MODBUS_RTU_ENABLED, "");
                 break;
             case ProtocolType::TCP:    
                 started = tcpHandler && tcpHandler->beginFromConfig();
-                if (started) PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_TCP_ENABLED, "");
+                if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_TCP_ENABLED, "");
                 break;
             case ProtocolType::HTTP:   
                 started = httpClientWrapper && httpClientWrapper->beginFromConfig();
-                if (started) PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_HTTP_ENABLED, "");
+                if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_HTTP_ENABLED, "");
                 break;
             case ProtocolType::COAP:   
                 started = coapHandler && coapHandler->beginFromConfig();
-                if (started) PeriphExecManager::getInstance().triggerSystemEvent(SystemEventType::SYS_COAP_ENABLED, "");
+                if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_COAP_ENABLED, "");
                 break;
         }
 
@@ -293,7 +294,7 @@ bool ProtocolManager::restartModbus() {
         return false;
     }
     
-    JsonDocument doc;
+    FastBeeJsonDocLarge doc;
     DeserializationError err = deserializeJson(doc, f);
     f.close();
     
@@ -441,7 +442,7 @@ void ProtocolManager::stopModbus() {
 // ========== MQTT触发的Modbus一次性读取 ==========
 
 String ProtocolManager::executeModbusRead(const String& paramsJson) {
-    JsonDocument resultDoc;
+    FastBeeJsonDoc resultDoc;
     JsonArray resultArr = resultDoc.to<JsonArray>();
 
     // 检查 Modbus 是否可用
