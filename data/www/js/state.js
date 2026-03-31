@@ -5003,8 +5003,9 @@ const AppState = {
                 const translatedCat = i18n.t('event-cat-' + cat) || cat;
                 opts += '<optgroup label="' + translatedCat + '">';
                 categories[cat].forEach(e => {
-                    // 使用翻译后的事件名称
-                    const translatedName = i18n.t('event-' + e.id) || e.name;
+                    // 对于动态事件（isDynamic=true），直接使用后端返回的 name
+                    // 对于静态事件，使用国际化翻译
+                    const translatedName = e.isDynamic ? e.name : (i18n.t('event-' + e.id) || e.name);
                     opts += '<option value="' + e.id + '">' + translatedName + '</option>';
                 });
                 opts += '</optgroup>';

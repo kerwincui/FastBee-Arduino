@@ -989,7 +989,7 @@ const i18n = {
             'periph-exec-script-empty': '脚本内容不能为空',
             'periph-exec-script-too-long': '脚本超过最大长度限制(1024字节)',
             'periph-exec-script-lines': '行',
-            'periph-exec-report-label': '上报数据',
+            'periph-exec-report-label': '执行后上报',
             'periph-exec-report-help': '动作执行成功后自动上报设备数据',
             'periph-exec-report-yes': '上报数据',
             'periph-exec-report-no': '不上报数据',
@@ -1062,10 +1062,12 @@ const i18n = {
             'event-button_double_click': '按键双击',
             'event-button_long_press_2s': '按键长按2秒',
             'event-button_long_press_5s': '按键长按5秒',
-            'event-button_long_press_10s': '按键长按10秒',
+            'event-button_long_press_10s': '按键长按 10 秒',
             'event-button_press': '按键按下',
             'event-button_release': '按键释放',
             'event-periph_exec_completed': '外设执行完成',
+            'event-data_receive': '数据接收',
+            'event-data_report': '数据上报',
             // 事件分类翻译
             'event-cat-WiFi': 'WiFi',
             'event-cat-MQTT': 'MQTT',
@@ -1076,6 +1078,7 @@ const i18n = {
             'event-cat-规则': '规则',
             'event-cat-按键': '按键',
             'event-cat-外设执行': '外设执行',
+            'event-cat-数据': '数据',
             
             // 规则脚本页面
             'page-title-rule-script': '规则脚本',
@@ -2496,7 +2499,7 @@ const i18n = {
             'periph-exec-script-empty': 'Script content is required',
             'periph-exec-script-too-long': 'Script exceeds max size (1024 bytes)',
             'periph-exec-script-lines': ' lines',
-            'periph-exec-report-label': 'Report Data',
+            'periph-exec-report-label': 'Report After Execution',
             'periph-exec-report-help': 'Automatically report device data after action succeeds',
             'periph-exec-report-yes': 'Report Data',
             'periph-exec-report-no': 'Do Not Report Data',
@@ -2570,6 +2573,8 @@ const i18n = {
             'event-button_press': 'Button Press',
             'event-button_release': 'Button Release',
             'event-periph_exec_completed': 'Peripheral Execution Completed',
+            'event-data_receive': 'Data Receive',
+            'event-data_report': 'Data Report',
             // Event category translations
             'event-cat-WiFi': 'WiFi',
             'event-cat-MQTT': 'MQTT',
@@ -2580,6 +2585,7 @@ const i18n = {
             'event-cat-规则': 'Rule',
             'event-cat-按键': 'Button',
             'event-cat-外设执行': 'Peripheral Exec',
+            'event-cat-数据': 'Data',
             
             // Rule Script page
             'page-title-rule-script': 'Rule Script',
