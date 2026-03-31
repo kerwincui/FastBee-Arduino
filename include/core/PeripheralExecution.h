@@ -41,9 +41,8 @@ enum class ExecActionType : uint8_t {
 enum class ExecTriggerType : uint8_t {
     PLATFORM_TRIGGER = 0,          // 平台触发（IoT平台MQTT指令下发）
     TIMER_TRIGGER = 1,             // 定时触发
-    DATA_RECEIVE = 2,              // 数据接收触发（协议数据到达时应用模板转换）
-    DATA_REPORT = 3,               // 数据上报触发（协议数据发送前应用模板转换）
-    EVENT_TRIGGER = 4              // 触发事件（WiFi/MQTT/NTP/按键/外设执行等事件）
+    // DATA_RECEIVE = 2 和 DATA_REPORT = 3 已弃用，统一使用 EVENT_TRIGGER
+    EVENT_TRIGGER = 4              // 触发事件（WiFi/MQTT/NTP/按键/数据/外设执行等事件）
 };
 
 // 触发事件类型枚举
@@ -97,7 +96,11 @@ enum class EventType : uint8_t {
     EVENT_BUTTON_RELEASE = 86,           // 按键释放
     
     // 外设执行事件 (90-99) - 当外设执行规则被执行时触发
-    EVENT_PERIPH_EXEC_COMPLETED = 90     // 外设执行完成
+    EVENT_PERIPH_EXEC_COMPLETED = 90,    // 外设执行完成
+    
+    // 数据事件 (100-109) - 协议数据收发事件
+    EVENT_DATA_RECEIVE = 100,            // 数据接收（协议数据到达）
+    EVENT_DATA_REPORT = 101              // 数据上报（协议数据发送）
 };
 
 // 触发事件定义结构体
@@ -157,6 +160,9 @@ static const EventDef STATIC_EVENTS[] = {
     {EventType::EVENT_BUTTON_RELEASE, "button_release", "按键释放", "按键"},
     // 外设执行事件
     {EventType::EVENT_PERIPH_EXEC_COMPLETED, "periph_exec_completed", "外设执行完成", "外设执行"},
+    // 数据事件
+    {EventType::EVENT_DATA_RECEIVE, "data_receive", "数据接收", "数据"},
+    {EventType::EVENT_DATA_REPORT, "data_report", "数据上报", "数据"},
     // 终止标记
     {EventType::NONE, nullptr, nullptr, nullptr}
 };

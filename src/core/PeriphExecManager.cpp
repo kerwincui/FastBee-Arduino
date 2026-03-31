@@ -244,9 +244,13 @@ bool PeriphExecManager::loadConfiguration() {
                     }
                 }
             } else if (oldTriggerType == 2) {
-                // 设备触发已移除，需要转换为触发事件或平台触发
-                // 默认转换为平台触发
-                r.triggerType = static_cast<uint8_t>(ExecTriggerType::PLATFORM_TRIGGER);
+                // 旧版 DATA_RECEIVE -> 转换为数据接收事件触发
+                r.triggerType = static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER);
+                r.eventId = "data_receive";
+            } else if (oldTriggerType == 3) {
+                // 旧版 DATA_REPORT -> 转换为数据上报事件触发
+                r.triggerType = static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER);
+                r.eventId = "data_report";
             }
         }
 
@@ -1510,17 +1514,9 @@ String PeriphExecManager::getValidTriggerTypes() {
     addTrigger(static_cast<uint8_t>(ExecTriggerType::TIMER_TRIGGER), 
                "定时触发", "按指定时间间隔或每日时间点触发");
     
-    // 数据接收触发
-    addTrigger(static_cast<uint8_t>(ExecTriggerType::DATA_RECEIVE), 
-               "数据接收触发", "协议数据到达时应用模板转换");
-    
-    // 数据上报触发
-    addTrigger(static_cast<uint8_t>(ExecTriggerType::DATA_REPORT), 
-               "数据上报触发", "协议数据发送前应用模板转换");
-    
-    // 触发事件（合并了原系统事件、按键事件、设备触发、外设执行事件）
+    // 触发事件（合并了原系统事件、按键事件、设备触发、外设执行事件、数据事件）
     addTrigger(static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER),
-               "事件触发", "WiFi/MQTT/按键/外设执行等事件触发");
+               "事件触发", "WiFi/MQTT/按键/数据/外设执行等事件触发");
     
     String result;
     serializeJson(doc, result);
@@ -1532,7 +1528,7 @@ String PeriphExecManager::getEventCategoriesJson() {
     JsonArray arr = doc.to<JsonArray>();
     
     // 定义事件分类
-    const char* categories[] = {"WiFi", "MQTT", "网络", "协议", "系统", "配网", "规则", "按键", "外设执行"};
+    const char* categories[] = {"WiFi", "MQTT", "网络", "协议", "系统", "配网", "规则", "按键", "外设执行", "数据"};
     const char* descriptions[] = {
         "WiFi连接状态变化事件",
         "MQTT连接状态变化事件", 
@@ -1542,7 +1538,8 @@ String PeriphExecManager::getEventCategoriesJson() {
         "配网过程事件",
         "规则引擎事件",
         "按键输入事件",
-        "外设执行规则事件"
+        "外设执行规则事件",
+        "协议数据收发事件"
     };
     
     for (size_t i = 0; i < sizeof(categories) / sizeof(categories[0]); i++) {

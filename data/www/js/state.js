@@ -4851,8 +4851,6 @@ const AppState = {
                 const triggerLabels = {
                     0: i18n.t('periph-exec-trigger-platform'),
                     1: i18n.t('periph-exec-trigger-timer'),
-                    2: i18n.t('periph-exec-trigger-receive'),
-                    3: i18n.t('periph-exec-trigger-report'),
                     4: i18n.t('periph-exec-trigger-event')
                 };
                 const actionLabels = {
@@ -4879,9 +4877,6 @@ const AppState = {
                         triggerText += ': ' + (opLabels[r.operatorType] || '') + ' ' + (r.compareValue || '');
                     } else if (r.triggerType === 1) {
                         triggerText += ': ' + (r.timerMode === 0 ? i18n.t('periph-exec-every') + ' ' + r.intervalSec + 's' : i18n.t('periph-exec-daily') + ' ' + (r.timePoint || ''));
-                    } else if (r.triggerType === 2 || r.triggerType === 3) {
-                        const protocolNames = ['MQTT', 'Modbus RTU', 'Modbus TCP', 'HTTP', 'CoAP', 'TCP'];
-                        triggerText += ': ' + (protocolNames[r.protocolType] || 'MQTT');
                     } else if (r.triggerType === 4) {
                         // 触发事件：显示事件ID
                         triggerText += ': ' + (r.eventId || '?');
