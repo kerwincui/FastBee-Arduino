@@ -799,7 +799,7 @@
 
                                         <!-- Master 模式配置区 -->
                                         <div id="master-config-section" class="u-mt-20">
-                                            <h4 class="u-title-indigo" data-i18n="modbus-master-title">主站轮询配置</h4>
+                                            <h4 class="u-title-indigo" data-i18n="modbus-master-title">Modbus 采集</h4>
                                             <div class="config-form-grid">
                                                 <div class="config-form-column">
                                                     <div class="pure-control-group">
@@ -891,7 +891,248 @@
                                                         <span class="icon-refresh"></span> <span data-i18n="refresh-btn">刷新</span>
                                                     </button>
                                                 </div>
+                                                <div id="master-data-grid"></div>
                                             </div>
+                                        </div>
+
+                                        <!-- Modbus 调试与控制面板 -->
+                                        <div id="modbus-control-section" class="u-mt-20">
+                                            <h4 class="u-title-indigo" data-i18n="modbus-control-title">Modbus 控制</h4>
+                                            <!-- 设备选择栏（始终可见） -->
+                                            <div class="modbus-device-bar">
+                                                <select id="modbus-device-select" onchange="AppState.onModbusDeviceChange()"></select>
+                                                <button type="button" class="btn btn-sm btn-enable" onclick="AppState.addModbusDevice()" data-i18n="modbus-ctrl-device-add">添加设备</button>
+                                                <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.saveModbusDevice()" data-i18n="modbus-ctrl-device-save">保存设备</button>
+                                                <button type="button" class="btn btn-sm btn-danger" onclick="AppState.deleteModbusDevice()" data-i18n="modbus-ctrl-device-delete">删除设备</button>
+                                            </div>
+
+                                            <!-- 设备配置内容（无设备时隐藏） -->
+                                            <div id="modbus-device-content" style="display:none;">
+                                            <div class="modbus-layout">
+                                              <div class="modbus-panel-left">
+
+                                            <!-- 连接参数 -->
+                                            <div class="config-form-grid">
+                                                <div class="config-form-column">
+                                                    <div class="pure-control-group">
+                                                        <label for="modbus-ctrl-device-name" data-i18n="modbus-ctrl-device-name">设备名称</label>
+                                                        <input type="text" id="modbus-ctrl-device-name" class="pure-input-1" placeholder="如：继电器板1">
+                                                    </div>
+                                                    <div class="pure-control-group">
+                                                        <label for="modbus-ctrl-device-type" data-i18n="modbus-ctrl-type-label">设备类型</label>
+                                                        <select id="modbus-ctrl-device-type" class="pure-input-1" onchange="AppState.onDeviceTypeChange()">
+                                                            <option value="relay" data-i18n="modbus-ctrl-type-relay">继电器</option>
+                                                            <option value="pwm" data-i18n="modbus-ctrl-type-pwm">PWM 驱动</option>
+                                                            <option value="pid" data-i18n="modbus-ctrl-type-pid">PID 控制器</option>
+                                                        </select>
+                                                    </div>
+                                                    <div class="pure-control-group">
+                                                        <label for="modbus-ctrl-slave-addr" data-i18n="modbus-ctrl-slave-addr">从站地址</label>
+                                                        <input type="number" id="modbus-ctrl-slave-addr" class="pure-input-1" value="1" min="1" max="247">
+                                                    </div>
+                                                    <div class="pure-control-group" id="modbus-ch-count-group">
+                                                        <label for="modbus-ctrl-ch-count" data-i18n="modbus-ctrl-channel-count">通道数</label>
+                                                        <select id="modbus-ctrl-ch-count" class="pure-input-1" onchange="AppState.onCoilChannelCountChange()">
+                                                            <option value="1">1</option>
+                                                            <option value="2">2</option>
+                                                            <option value="4">4</option>
+                                                            <option value="8" selected>8</option>
+                                                            <option value="16">16</option>
+                                                            <option value="32">32</option>
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                                <div class="config-form-column">
+                                                    <!-- 继电器专属配置 -->
+                                                    <div id="modbus-relay-config">
+                                                        <div class="pure-control-group">
+                                                            <label for="modbus-ctrl-coil-base" data-i18n="modbus-ctrl-coil-base">线圈基地址</label>
+                                                            <input type="number" id="modbus-ctrl-coil-base" class="pure-input-1" value="0" min="0" max="65535">
+                                                            <small class="field-hint" data-i18n="modbus-ctrl-coil-base-hint">线圈起始地址，默认0</small>
+                                                        </div>
+                                                        <div class="pure-control-group" style="display:flex;gap:16px;align-items:center;">
+                                                            <label class="pure-checkbox">
+                                                                <input type="checkbox" id="modbus-ctrl-auto-refresh" onchange="AppState.toggleCoilAutoRefresh()">
+                                                                <span data-i18n="modbus-ctrl-auto-refresh">自动刷新</span>
+                                                            </label>
+                                                            <label class="pure-checkbox">
+                                                                <input type="checkbox" id="modbus-ctrl-nc-mode" onchange="AppState.refreshCoilStatus()">
+                                                                <span data-i18n="modbus-ctrl-nc-mode">NC常闭模式</span>
+                                                            </label>
+                                                        </div>
+                                                    </div>
+                                                    <!-- PWM 专属配置 -->
+                                                    <div id="modbus-pwm-config" style="display:none;">
+                                                        <div class="pure-control-group">
+                                                            <label for="modbus-ctrl-pwm-reg-base" data-i18n="modbus-ctrl-pwm-reg-base">寄存器基地址</label>
+                                                            <input type="number" id="modbus-ctrl-pwm-reg-base" class="pure-input-1" value="0" min="0" max="65535">
+                                                            <small class="field-hint" data-i18n="modbus-ctrl-pwm-reg-base-hint">PWM保持寄存器起始地址</small>
+                                                        </div>
+                                                        <div class="pure-control-group">
+                                                            <label for="modbus-ctrl-pwm-resolution" data-i18n="modbus-ctrl-pwm-resolution">分辨率</label>
+                                                            <select id="modbus-ctrl-pwm-resolution" class="pure-input-1">
+                                                                <option value="8">8位 (0-255)</option>
+                                                                <option value="10">10位 (0-1023)</option>
+                                                                <option value="16">16位 (0-65535)</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                    <!-- PID 专属配置 -->
+                                                    <div id="modbus-pid-config" style="display:none;">
+                                                        <div class="pure-control-group">
+                                                            <label for="modbus-ctrl-pid-pv-addr" data-i18n="modbus-ctrl-pid-pv-addr">PV寄存器地址</label>
+                                                            <input type="number" id="modbus-ctrl-pid-pv-addr" class="pure-input-1" value="0" min="0" max="65535">
+                                                        </div>
+                                                        <div class="pure-control-group">
+                                                            <label for="modbus-ctrl-pid-sv-addr" data-i18n="modbus-ctrl-pid-sv-addr">SV寄存器地址</label>
+                                                            <input type="number" id="modbus-ctrl-pid-sv-addr" class="pure-input-1" value="1" min="0" max="65535">
+                                                        </div>
+                                                        <div class="pure-control-group">
+                                                            <label for="modbus-ctrl-pid-out-addr" data-i18n="modbus-ctrl-pid-out-addr">输出寄存器地址</label>
+                                                            <input type="number" id="modbus-ctrl-pid-out-addr" class="pure-input-1" value="2" min="0" max="65535">
+                                                        </div>
+                                                        <div class="pure-control-group">
+                                                            <label for="modbus-ctrl-pid-p-addr" data-i18n="modbus-ctrl-pid-p-addr">P参数地址</label>
+                                                            <input type="number" id="modbus-ctrl-pid-p-addr" class="pure-input-1" value="3" min="0" max="65535">
+                                                        </div>
+                                                        <div class="pure-control-group">
+                                                            <label for="modbus-ctrl-pid-i-addr" data-i18n="modbus-ctrl-pid-i-addr">I参数地址</label>
+                                                            <input type="number" id="modbus-ctrl-pid-i-addr" class="pure-input-1" value="4" min="0" max="65535">
+                                                        </div>
+                                                        <div class="pure-control-group">
+                                                            <label for="modbus-ctrl-pid-d-addr" data-i18n="modbus-ctrl-pid-d-addr">D参数地址</label>
+                                                            <input type="number" id="modbus-ctrl-pid-d-addr" class="pure-input-1" value="5" min="0" max="65535">
+                                                        </div>
+                                                        <div class="pure-control-group">
+                                                            <label for="modbus-ctrl-pid-decimals" data-i18n="modbus-ctrl-pid-decimals">小数位数</label>
+                                                            <select id="modbus-ctrl-pid-decimals" class="pure-input-1">
+                                                                <option value="0">0位</option>
+                                                                <option value="1" selected>1位</option>
+                                                                <option value="2">2位</option>
+                                                                <option value="3">3位</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <!-- 继电器控制面板 -->
+                                            <div id="modbus-relay-panel">
+                                            <!-- 线圈状态网格 -->
+                                            <div id="coil-status-grid" class="coil-grid u-mt-10"></div>
+
+                                            <!-- 批量控制按钮 -->
+                                            <div class="u-flex-between u-items-center u-mt-10">
+                                                <div>
+                                                    <button type="button" class="btn btn-sm btn-enable" onclick="AppState.batchCoil('allOn')" data-i18n="modbus-ctrl-all-on">全部开启</button>
+                                                    <button type="button" class="btn btn-sm btn-danger" onclick="AppState.batchCoil('allOff')" data-i18n="modbus-ctrl-all-off">全部关闭</button>
+                                                    <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.batchCoil('allToggle')" data-i18n="modbus-ctrl-all-toggle">全部翻转</button>
+                                                </div>
+                                                <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshCoilStatus()" data-i18n="modbus-ctrl-refresh">刷新状态</button>
+                                            </div>
+
+                                            <!-- 延时断开（先开后关） -->
+                                            <div class="config-form-grid u-mt-15">
+                                                <div class="config-form-column">
+                                                    <div class="pure-control-group">
+                                                        <label data-i18n="modbus-ctrl-delay-title">延时断开</label>
+                                                        <div style="display:flex;gap:8px;align-items:center;">
+                                                            <select id="modbus-ctrl-delay-ch" class="pure-input-1" style="max-width:100px;"></select>
+                                                            <input type="number" id="modbus-ctrl-delay-units" class="pure-input-1" value="50" min="1" max="255" style="max-width:100px;">
+                                                            <span style="white-space:nowrap;font-size:12px;color:#909399;" data-i18n="modbus-ctrl-delay-unit">x100ms</span>
+                                                            <button type="button" class="btn btn-sm btn-enable" onclick="AppState.startCoilDelay()" data-i18n="modbus-ctrl-delay-start">启动延时</button>
+                                                        </div>
+                                                        <small class="field-hint" data-i18n="modbus-ctrl-delay-hint">先打开继电器，延时后自动关闭 (1=100ms, 255=25.5s)</small>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            </div><!-- #modbus-relay-panel -->
+
+                                            <!-- PWM 控制面板 -->
+                                            <div id="modbus-pwm-panel" style="display:none;">
+                                                <div id="pwm-channel-grid" class="pwm-grid u-mt-10"></div>
+                                                <div class="u-flex-between u-items-center u-mt-10">
+                                                    <div>
+                                                        <button type="button" class="btn btn-sm btn-enable" onclick="AppState.batchPwm('max')" data-i18n="modbus-ctrl-pwm-set-all-max">全部最大</button>
+                                                        <button type="button" class="btn btn-sm btn-danger" onclick="AppState.batchPwm('off')" data-i18n="modbus-ctrl-pwm-set-all-off">全部关闭</button>
+                                                    </div>
+                                                    <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshPwmStatus()" data-i18n="modbus-ctrl-pwm-refresh">刷新状态</button>
+                                                </div>
+                                            </div><!-- #modbus-pwm-panel -->
+
+                                            <!-- PID 控制面板 -->
+                                            <div id="modbus-pid-panel" style="display:none;">
+                                                <div id="pid-data-grid" class="pid-grid u-mt-10"></div>
+                                                <div class="u-flex-between u-items-center u-mt-10">
+                                                    <label class="pure-checkbox">
+                                                        <input type="checkbox" id="modbus-ctrl-pid-auto-refresh" onchange="AppState.togglePidAutoRefresh()">
+                                                        <span data-i18n="modbus-ctrl-pid-auto-refresh">自动刷新</span>
+                                                    </label>
+                                                    <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshPidStatus()" data-i18n="modbus-ctrl-pid-refresh">刷新数据</button>
+                                                </div>
+                                            </div><!-- #modbus-pid-panel -->
+
+                                            <!-- 设备参数配置（独立面板） -->
+                                            <div id="modbus-params-panel" class="u-mt-15">
+                                                <h4 class="u-title-indigo" data-i18n="modbus-ctrl-device-params">设备参数配置</h4>
+                                                <div class="config-form-grid u-mt-10">
+                                                    <div class="config-form-column">
+                                                        <div class="pure-control-group">
+                                                            <label data-i18n="modbus-ctrl-addr-reg">地址寄存器</label>
+                                                            <div style="display:flex;gap:8px;">
+                                                                <input type="number" id="modbus-ctrl-addr-reg" class="pure-input-1" value="0" min="0" max="65535" style="max-width:120px;">
+                                                                <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.readDeviceAddress()" data-i18n="modbus-ctrl-read-addr">读取</button>
+                                                            </div>
+                                                            <div id="modbus-ctrl-current-addr" class="field-hint"></div>
+                                                        </div>
+                                                        <div class="pure-control-group">
+                                                            <label data-i18n="modbus-ctrl-new-addr">新地址</label>
+                                                            <div style="display:flex;gap:8px;">
+                                                                <input type="number" id="modbus-ctrl-new-addr" class="pure-input-1" value="" min="1" max="255" style="max-width:120px;">
+                                                                <button type="button" class="btn btn-sm btn-enable" onclick="AppState.setDeviceAddress()" data-i18n="modbus-ctrl-set-addr">设置</button>
+                                                            </div>
+                                                            <small class="field-hint" data-i18n="modbus-ctrl-addr-hint">广播写入(FC 0x10)，1-255</small>
+                                                        </div>
+                                                    </div>
+                                                    <div class="config-form-column">
+                                                        <div class="pure-control-group">
+                                                            <label data-i18n="modbus-ctrl-baudrate">波特率</label>
+                                                            <div style="display:flex;gap:8px;">
+                                                                <select id="modbus-ctrl-baudrate" class="pure-input-1" style="max-width:150px;">
+                                                                    <option value="1200">1200</option>
+                                                                    <option value="2400">2400</option>
+                                                                    <option value="4800">4800</option>
+                                                                    <option value="9600" selected>9600</option>
+                                                                    <option value="19200">19200</option>
+                                                                    <option value="115200">115200</option>
+                                                                </select>
+                                                                <button type="button" class="btn btn-sm btn-enable" onclick="AppState.setDeviceBaudrate()" data-i18n="modbus-ctrl-set-baud">设置</button>
+                                                            </div>
+                                                            <small class="field-hint" data-i18n="modbus-ctrl-baud-hint">FC 0xB0 专有指令</small>
+                                                        </div>
+                                                        <div class="pure-control-group">
+                                                            <label data-i18n="modbus-ctrl-inputs">离散输入</label>
+                                                            <div style="display:flex;gap:8px;align-items:center;">
+                                                                <input type="number" id="modbus-ctrl-input-count" class="pure-input-1" value="4" min="1" max="32" style="max-width:80px;">
+                                                                <input type="number" id="modbus-ctrl-input-base" class="pure-input-1" value="0" min="0" max="65535" style="max-width:100px;" title="input base address">
+                                                                <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.readDiscreteInputs()" data-i18n="modbus-ctrl-read-inputs">读取</button>
+                                                            </div>
+                                                            <div id="modbus-ctrl-inputs-display" class="field-hint u-mt-5"></div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                              </div><!-- .modbus-panel-left -->
+                                              <div class="modbus-panel-right">
+                                                <div class="modbus-debug-header">
+                                                    <span data-i18n="modbus-debug-title">调试日志</span>
+                                                    <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.clearModbusDebugLog()" data-i18n="modbus-debug-clear">清除</button>
+                                                </div>
+                                                <div id="modbus-debug-log" class="modbus-debug-log"></div>
+                                              </div><!-- .modbus-panel-right -->
+                                            </div><!-- .modbus-layout -->
+                                            </div><!-- #modbus-device-content -->
                                         </div>
 
                                         <div class="message message-success" id="modbus-rtu-success"
@@ -1707,6 +1948,7 @@
                                     <div class="config-tab" data-tab="dev-ntp" data-i18n="dev-tab-ntp">NTP时间</div>
                                     <div class="config-tab" data-tab="dev-ble" data-i18n="dev-tab-ble">蓝牙配网</div>
                                     <div class="config-tab" data-tab="dev-ota" data-i18n="dev-tab-ota">OTA升级</div>
+                                    <div class="config-tab" data-tab="dev-advanced" data-i18n="dev-tab-advanced">高级配置</div>
                                 </div>
 
                                 <!-- 基本信息 tab -->
@@ -1816,69 +2058,6 @@
                                             </button>
                                         </div>
 
-                                        <!-- 系统操作区域 - 左右并列布局 -->
-                                        <div style="display: flex; gap: 20px; flex-wrap: wrap;">
-                                            <!-- 设备重启卡片 -->
-                                            <div class="flat-panel"
-                                                style="border: 1px solid #e0e0e0; flex: 1; min-width: 300px;">
-                                                <div class="card-header"
-                                                    style="padding: 10px 15px; background: #fff3cd;">
-                                                    <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-redo"></i>
-                                                        <span data-i18n="dev-sys-restart-title">重启设备</span>
-                                                    </h4>
-                                                </div>
-                                                <div class="card-body" style="padding: 15px;">
-                                                    <p style="margin: 0 0 15px; font-size: 13px; color: #666;"
-                                                        data-i18n="dev-sys-restart-hint">重启设备将会断开所有连接，配置数据将保留。</p>
-                                                    <div style="display: flex; align-items: center; gap: 10px;">
-                                                        <label style="font-size: 13px;"
-                                                            data-i18n="dev-sys-restart-delay">延迟（秒）：</label>
-                                                        <select id="dev-restart-delay" class="pure-input"
-                                                            style="width: 80px;">
-                                                            <option value="1">1</option>
-                                                            <option value="3" selected>3</option>
-                                                            <option value="5">5</option>
-                                                            <option value="10">10</option>
-                                                        </select>
-                                                        <button id="dev-restart-btn" type="button"
-                                                            class="btn btn-disable">
-                                                            <i class="fas fa-power-off"></i> <span
-                                                                data-i18n="dev-sys-restart-btn">立即重启</span>
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            </div>
-
-                                            <!-- 恢复出厂设置卡片 -->
-                                            <div class="flat-panel"
-                                                style="border: 1px solid #e0e0e0; flex: 1; min-width: 300px;">
-                                                <div class="card-header"
-                                                    style="padding: 10px 15px; background: #fff3cd;">
-                                                    <h4 style="margin: 0; font-size: 14px; color: #856404;"><i
-                                                            class="fas fa-exclamation-triangle"></i> <span
-                                                            data-i18n="dev-sys-factory-title">恢复出厂设置</span></h4>
-                                                </div>
-                                                <div class="card-body" style="padding: 15px;">
-                                                    <p style="margin: 0 0 10px; font-size: 13px; color: #dc3545; font-weight: bold;"
-                                                        data-i18n="dev-sys-factory-warning">
-                                                        警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！</p>
-                                                    <p style="margin: 0 0 15px; font-size: 13px; color: #666;"
-                                                        data-i18n="dev-sys-factory-hint">设备将自动重启，所有配置将丢失，请谨慎操作。</p>
-                                                    <div
-                                                        style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                                                        <label style="font-size: 13px;"
-                                                            data-i18n="dev-sys-factory-confirm-label">输入"RESET"确认：</label>
-                                                        <input type="text" id="dev-factory-confirm" class="pure-input"
-                                                            style="width: 100px;" placeholder="RESET">
-                                                        <button id="dev-factory-btn" type="button"
-                                                            class="btn btn-delete">
-                                                            <i class="fas fa-undo"></i> <span
-                                                                data-i18n="dev-sys-factory-btn">恢复出厂设置</span>
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
                                     </form>
                                 </div>
 
@@ -2242,6 +2421,111 @@
                                             <li data-i18n="dev-ota-notice-3">升级成功后设备将自动重启</li>
                                             <li data-i18n="dev-ota-notice-4">建议在升级前备份重要配置</li>
                                         </ul>
+                                    </div>
+                                </div>
+
+                                <!-- 高级配置 tab -->
+                                <div id="dev-advanced" class="config-content">
+                                    <!-- 系统操作区域 - 左右并列布局 -->
+                                    <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+                                        <!-- 设备重启卡片 -->
+                                        <div class="flat-panel"
+                                            style="border: 1px solid #e0e0e0; flex: 1; min-width: 300px;">
+                                            <div class="card-header"
+                                                style="padding: 10px 15px; background: #fff3cd;">
+                                                <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-redo"></i>
+                                                    <span data-i18n="dev-sys-restart-title">重启设备</span>
+                                                </h4>
+                                            </div>
+                                            <div class="card-body" style="padding: 15px;">
+                                                <p style="margin: 0 0 15px; font-size: 13px; color: #666;"
+                                                    data-i18n="dev-sys-restart-hint">重启设备将会断开所有连接，配置数据将保留。</p>
+                                                <div style="display: flex; align-items: center; gap: 10px;">
+                                                    <label style="font-size: 13px;"
+                                                        data-i18n="dev-sys-restart-delay">延迟（秒）：</label>
+                                                    <select id="dev-restart-delay" class="pure-input"
+                                                        style="width: 80px;">
+                                                        <option value="1">1</option>
+                                                        <option value="3" selected>3</option>
+                                                        <option value="5">5</option>
+                                                        <option value="10">10</option>
+                                                    </select>
+                                                    <button id="dev-restart-btn" type="button"
+                                                        class="btn btn-disable">
+                                                        <i class="fas fa-power-off"></i> <span
+                                                            data-i18n="dev-sys-restart-btn">立即重启</span>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <!-- 恢复出厂设置卡片 -->
+                                        <div class="flat-panel"
+                                            style="border: 1px solid #e0e0e0; flex: 1; min-width: 300px;">
+                                            <div class="card-header"
+                                                style="padding: 10px 15px; background: #fff3cd;">
+                                                <h4 style="margin: 0; font-size: 14px; color: #856404;"><i
+                                                        class="fas fa-exclamation-triangle"></i> <span
+                                                        data-i18n="dev-sys-factory-title">恢复出厂设置</span></h4>
+                                            </div>
+                                            <div class="card-body" style="padding: 15px;">
+                                                <p style="margin: 0 0 10px; font-size: 13px; color: #dc3545; font-weight: bold;"
+                                                    data-i18n="dev-sys-factory-warning">
+                                                    警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！</p>
+                                                <p style="margin: 0 0 15px; font-size: 13px; color: #666;"
+                                                    data-i18n="dev-sys-factory-hint">设备将自动重启，所有配置将丢失，请谨慎操作。</p>
+                                                <div
+                                                    style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                                                    <label style="font-size: 13px;"
+                                                        data-i18n="dev-sys-factory-confirm-label">输入"RESET"确认：</label>
+                                                    <input type="text" id="dev-factory-confirm" class="pure-input"
+                                                        style="width: 100px;" placeholder="RESET">
+                                                    <button id="dev-factory-btn" type="button"
+                                                        class="btn btn-delete">
+                                                        <i class="fas fa-undo"></i> <span
+                                                            data-i18n="dev-sys-factory-btn">恢复出厂设置</span>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- 缓存管理卡片 -->
+                                    <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-top: 20px;">
+                                        <div class="flat-panel"
+                                            style="border: 1px solid #e0e0e0; flex: 1; min-width: 300px;">
+                                            <div class="card-header"
+                                                style="padding: 10px 15px; background: #e8f4fd;">
+                                                <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-database"></i>
+                                                    <span data-i18n="dev-cache-title">缓存管理</span>
+                                                </h4>
+                                            </div>
+                                            <div class="card-body" style="padding: 15px;">
+                                                <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px;">
+                                                    <label style="font-size: 13px; white-space: nowrap;"
+                                                        data-i18n="dev-cache-duration-label">缓存时间设置：</label>
+                                                    <select id="dev-cache-duration" class="pure-input" style="width: 120px;">
+                                                        <option value="3600" data-i18n="dev-cache-1h">1小时</option>
+                                                        <option value="21600" data-i18n="dev-cache-6h">6小时</option>
+                                                        <option value="43200" data-i18n="dev-cache-12h">12小时</option>
+                                                        <option value="86400" selected data-i18n="dev-cache-24h">24小时</option>
+                                                        <option value="172800" data-i18n="dev-cache-48h">48小时</option>
+                                                        <option value="259200" data-i18n="dev-cache-72h">72小时</option>
+                                                    </select>
+                                                    <button type="button" class="pure-button pure-button-primary" style="font-size: 12px;"
+                                                        onclick="AppState.saveCacheDuration()">
+                                                        <i class="fas fa-save"></i> <span data-i18n="dev-cache-save-btn">保存</span>
+                                                    </button>
+                                                </div>
+                                                <p style="margin: 0 0 12px; font-size: 13px; color: #666;"
+                                                    data-i18n="dev-cache-hint">设置浏览器缓存JS/CSS资源的有效期，修改后新请求生效。</p>
+                                                <button type="button" class="btn btn-delete"
+                                                    onclick="AppState.clearBrowserCache()">
+                                                    <i class="fas fa-trash-alt"></i> <span
+                                                        data-i18n="dev-cache-clear-btn">清除浏览器缓存</span>
+                                                </button>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -2854,7 +3138,7 @@
                         <input type="hidden" id="periph-exec-original-id" value="">
 
                         <!-- 第一部分：基础配置 -->
-                        <div class="config-form-grid three-columns">
+                        <div class="config-form-grid">
                             <div class="pure-control-group">
                                 <label for="periph-exec-name" data-i18n="periph-exec-name-label">规则名称</label>
                                 <input type="text" id="periph-exec-name" class="pure-input-1"
@@ -2868,13 +3152,6 @@
                                 </label>
                             </div>
                             <div class="pure-control-group">
-                                <label for="periph-exec-exec-mode" data-i18n="periph-exec-exec-mode-label">执行模式</label>
-                                <select id="periph-exec-exec-mode" class="pure-input-1">
-                                    <option value="0" data-i18n="periph-exec-exec-mode-async">异步执行</option>
-                                    <option value="1" data-i18n="periph-exec-exec-mode-sync">同步执行</option>
-                                </select>
-                            </div>
-                            <div class="pure-control-group">
                                 <label for="periph-exec-report" data-i18n="periph-exec-report-label">执行后上报</label>
                                 <select id="periph-exec-report" class="pure-input-1">
                                     <option value="true" data-i18n="periph-exec-report-yes">上报数据</option>
@@ -2883,148 +3160,27 @@
                             </div>
                         </div>
 
-                        <!-- 第二部分：触发/触发器配置 -->
-                        <div class="section-title" data-i18n="periph-exec-section-trigger">触发配置</div>
-                        <!-- 触发类型单独一行，右侧留空 -->
-                        <div class="config-form-grid">
-                            <div class="pure-control-group">
-                                <label for="periph-exec-trigger-type" data-i18n="periph-exec-trigger-type-label">触发类型</label>
-                                <select id="periph-exec-trigger-type" class="pure-input-1"
-                                    onchange="app.onPeriphExecTriggerTypeChange(this.value)">
-                                    <option value="0" data-i18n="periph-exec-trigger-platform">平台触发 (MQTT)</option>
-                                    <option value="1" data-i18n="periph-exec-trigger-timer">定时触发</option>
-                                    <option value="4" data-i18n="periph-exec-trigger-event">事件触发</option>
-                                </select>
-                            </div>
-                            <div class="pure-control-group">
-                                <!-- 右侧留空 -->
-                            </div>
+                        <!-- 第二部分：触发配置 (动态多组) -->
+                        <div class="section-title section-title-actions">
+                            <span data-i18n="periph-exec-section-trigger">触发配置</span>
+                            <button type="button" class="pure-button pe-add-btn" onclick="app.addPeriphExecTrigger()">
+                                <i class="fas fa-plus"></i> <span data-i18n="periph-exec-add-trigger">添加触发</span>
+                            </button>
                         </div>
-                        <!-- 平台触发条件：比较运算符和比较值左右两列布局 -->
-                        <div id="periph-exec-platform-condition" style="display: block;">
-                            <div class="config-form-grid">
-                                <div class="pure-control-group">
-                                    <label for="periph-exec-operator" data-i18n="periph-exec-operator-label">比较运算符</label>
-                                    <select id="periph-exec-operator" class="pure-input-1">
-                                        <option value="0">= (等于)</option>
-                                        <option value="1">!= (不等于)</option>
-                                        <option value="2">&gt; (大于)</option>
-                                        <option value="3">&lt; (小于)</option>
-                                        <option value="4">&gt;= (大于等于)</option>
-                                        <option value="5">&lt;= (小于等于)</option>
-                                        <option value="6">BETWEEN (区间内)</option>
-                                        <option value="7">NOT BETWEEN (区间外)</option>
-                                        <option value="8">CONTAIN (包含)</option>
-                                        <option value="9">NOT CONTAIN (不包含)</option>
-                                    </select>
-                                </div>
-                                <div class="pure-control-group">
-                                    <label for="periph-exec-compare-value" data-i18n="periph-exec-compare-label">比较值</label>
-                                    <input type="text" id="periph-exec-compare-value" class="pure-input-1"
-                                        placeholder="如: 30 或区间: 20,30" data-i18n-placeholder="periph-exec-compare-hint">
-                                </div>
-                            </div>
-                        </div>
-                        <!-- 定时触发配置 -->
-                        <div id="periph-exec-timer-config" style="display: none;">
-                            <!-- 定时模式 + 间隔/时间点在同一行 -->
-                            <div class="config-form-grid">
-                                <div class="pure-control-group">
-                                    <label for="periph-exec-timer-mode" data-i18n="periph-exec-timer-mode-label">定时模式</label>
-                                    <select id="periph-exec-timer-mode" class="pure-input-1"
-                                        onchange="app.onPeriphExecTimerModeChange(this.value)">
-                                        <option value="0" data-i18n="periph-exec-timer-interval">间隔触发</option>
-                                        <option value="1" data-i18n="periph-exec-timer-daily">每日时间点</option>
-                                    </select>
-                                </div>
-                                <!-- 间隔字段 -->
-                                <div class="pure-control-group" id="periph-exec-interval-fields">
-                                    <label for="periph-exec-interval" data-i18n="periph-exec-interval-label">间隔 (秒)</label>
-                                    <input type="number" id="periph-exec-interval" class="pure-input-1" value="60" min="1" max="86400">
-                                </div>
-                                <!-- 每日时间点字段 -->
-                                <div class="pure-control-group" id="periph-exec-daily-fields" style="display: none;">
-                                    <label for="periph-exec-timepoint" data-i18n="periph-exec-timepoint-label">执行时间 (HH:MM)</label>
-                                    <input type="time" id="periph-exec-timepoint" class="pure-input-1" value="08:00">
-                                </div>
-                            </div>
-                        </div>
-                        <!-- 触发事件选择 -->
-                        <div id="periph-exec-event-group" style="display: none;">
-                            <div class="config-form-grid">
-                                <div class="pure-control-group">
-                                    <label for="periph-exec-event-category" data-i18n="periph-exec-event-category-label">事件分类</label>
-                                    <select id="periph-exec-event-category" class="pure-input-1"
-                                        onchange="app.onPeriphExecEventCategoryChange(this.value)">
-                                        <option value="" data-i18n="periph-exec-select-category">-- 选择分类 --</option>
-                                    </select>
-                                </div>
-                                <div class="pure-control-group">
-                                    <label for="periph-exec-event" data-i18n="periph-exec-event-label">触发事件</label>
-                                    <select id="periph-exec-event" class="pure-input-1">
-                                        <option value="" data-i18n="periph-exec-select-event">-- 选择事件 --</option>
-                                    </select>
-                                </div>
-                            </div>
+                        <div id="periph-exec-triggers">
+                            <!-- 动态触发配置块将在此渲染 -->
                         </div>
 
-                        <!-- 第三部分：执行动作配置 -->
-                        <div class="section-title" data-i18n="periph-exec-section-action">执行动作配置</div>
-                        <div class="config-form-grid">
-                            <div class="config-form-column">
-                                <div class="pure-control-group" id="periph-exec-target-group">
-                                    <label for="periph-exec-target-periph" data-i18n="periph-exec-target-periph-label">执行外设</label>
-                                    <select id="periph-exec-target-periph" class="pure-input-1">
-                                        <option value="" data-i18n="periph-exec-select-periph">-- 选择外设 --</option>
-                                    </select>
-                                </div>
-                            </div>
-                            <div class="config-form-column">
-                                <div class="pure-control-group">
-                                    <label for="periph-exec-action-type" data-i18n="periph-exec-action-type-label">执行动作</label>
-                                    <select id="periph-exec-action-type" class="pure-input-1"
-                                        onchange="app.onPeriphExecActionTypeChange(this.value)">
-                                        <optgroup label="GPIO操作" data-i18n-label="periph-exec-action-cat-gpio">
-                                            <option value="0" data-i18n="periph-exec-action-high">设置高电平</option>
-                                            <option value="1" data-i18n="periph-exec-action-low">设置低电平</option>
-                                            <option value="2" data-i18n="periph-exec-action-blink">闪烁</option>
-                                            <option value="3" data-i18n="periph-exec-action-breathe">呼吸灯</option>
-                                        </optgroup>
-                                        <optgroup label="模拟输出" data-i18n-label="periph-exec-action-cat-analog">
-                                            <option value="4" data-i18n="periph-exec-action-pwm">设置PWM</option>
-                                            <option value="5" data-i18n="periph-exec-action-dac">设置DAC</option>
-                                        </optgroup>
-                                        <optgroup label="系统功能" data-i18n-label="periph-exec-action-cat-system">
-                                            <option value="6" data-i18n="periph-exec-action-restart">系统重启</option>
-                                            <option value="7" data-i18n="periph-exec-action-factory">恢复出厂</option>
-                                            <option value="8" data-i18n="periph-exec-action-ntp">NTP同步</option>
-                                            <option value="9" data-i18n="periph-exec-action-ota">OTA升级</option>
-                                            <option value="10" data-i18n="periph-exec-action-ap">AP配网</option>
-                                            <option value="11" data-i18n="periph-exec-action-ble">BLE配网</option>
-                                        </optgroup>
-                                        <optgroup label="高级功能" data-i18n-label="periph-exec-action-cat-advanced">
-                                            <option value="15" data-i18n="periph-exec-action-script">命令脚本</option>
-                                        </optgroup>
-                                    </select>
-                                </div>
-                            </div>
+                        <!-- 第三部分：执行动作配置 (动态多组) -->
+                        <div class="section-title section-title-actions">
+                            <span data-i18n="periph-exec-section-action">执行动作配置</span>
+                            <button type="button" class="pure-button pe-add-btn" onclick="app.addPeriphExecAction()">
+                                <i class="fas fa-plus"></i> <span data-i18n="periph-exec-add-action">添加动作</span>
+                            </button>
                         </div>
-                        <div class="config-form-grid">
-                            <div class="config-form-column">
-                                <div class="pure-control-group" id="periph-exec-action-value-group">
-                                    <label for="periph-exec-action-value" data-i18n="periph-exec-action-value-label">动作参数</label>
-                                    <input type="text" id="periph-exec-action-value" class="pure-input-1"
-                                        placeholder="如: PWM值、闪烁间隔ms" data-i18n-placeholder="periph-exec-action-value-hint">
-                                    <small style="color: #999;" data-i18n="periph-exec-action-value-help">闪烁/呼吸灯填间隔ms, PWM填占空比, DAC填0-255</small>
-                                </div>
-                                <div class="pure-control-group" id="periph-exec-script-group" style="display: none;">
-                                    <label for="periph-exec-script" data-i18n="periph-exec-script-label">脚本内容</label>
-                                    <textarea id="periph-exec-script" class="pure-input-1" rows="6"
-                                        style="font-family: monospace; font-size: 13px; resize: vertical;"
-                                        maxlength="1024" placeholder="每行一条命令..." data-i18n-placeholder="periph-exec-script-placeholder"></textarea>
-                                    <small style="color: #999;" data-i18n="periph-exec-script-help">可用命令: GPIO, DELAY, PWM, DAC, LOG, PERIPH</small>
-                                </div>
-                            </div>
+                        <input type="hidden" id="periph-exec-exec-mode" value="0">
+                        <div id="periph-exec-actions">
+                            <!-- 动态执行动作配置块将在此渲染 -->
                         </div>
 
                         <div id="periph-exec-error" class="message message-error" style="display: none;"></div>

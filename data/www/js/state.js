@@ -626,15 +626,6 @@ const AppState = {
         const savePeriphExecBtn = document.getElementById('save-periph-exec-btn');
         if (savePeriphExecBtn) savePeriphExecBtn.addEventListener('click', () => this.savePeriphExecRule());
         
-        const periphExecTriggerType = document.getElementById('periph-exec-trigger-type');
-        if (periphExecTriggerType) periphExecTriggerType.addEventListener('change', (e) => this.onPeriphExecTriggerTypeChange(e.target.value));
-        
-        const periphExecTimerMode = document.getElementById('periph-exec-timer-mode');
-        if (periphExecTimerMode) periphExecTimerMode.addEventListener('change', (e) => this.onPeriphExecTimerModeChange(e.target.value));
-        
-        const periphExecActionType = document.getElementById('periph-exec-action-type');
-        if (periphExecActionType) periphExecActionType.addEventListener('change', (e) => this.onPeriphExecActionTypeChange(e.target.value));
-        
         // ============ 规则脚本事件绑定 ============
         const closeRuleScriptModal = document.getElementById('close-rule-script-modal');
         if (closeRuleScriptModal) closeRuleScriptModal.addEventListener('click', () => this.closeRuleScriptModal());
@@ -1688,6 +1679,35 @@ const AppState = {
                 sessionStorage.removeItem('currentUsername');
                 Notification.success(i18n.t('logout-success'), i18n.t('logout-title'));
             });
+    },
+
+    // ============ 关闭所有浮层（token 过期时调用）============
+    closeAllOverlays() {
+        // 1. 关闭所有 .modal 弹窗
+        document.querySelectorAll('.modal').forEach(function (m) {
+            m.style.display = 'none';
+        });
+
+        // 2. 关闭动态创建的全屏浮层（如角色权限详情弹窗）
+        document.querySelectorAll('div[style*="position: fixed"][style*="z-index"]').forEach(function (el) {
+            // 排除 Notification 容器等非弹窗元素
+            if (el.querySelector('.modal-content, [onclick*="remove"]')) {
+                el.remove();
+            }
+        });
+
+        // 3. 关闭用户下拉菜单
+        document.querySelectorAll('.user-dropdown.open').forEach(function (d) {
+            d.classList.remove('open');
+        });
+
+        // 4. 停止日志自动刷新定时器
+        this.stopLogAutoRefresh();
+
+        // 5. 停止 MQTT 状态轮询（如有）
+        if (typeof this._stopMqttStatusPolling === 'function') {
+            this._stopMqttStatusPolling();
+        }
     },
 
     // ============ 工具方法 ============
@@ -2787,6 +2807,7 @@ const AppState = {
                 this._setValue('dev-ntp-server2',   d.ntpServer2   || 'time.nist.gov');
                 this._setValue('dev-timezone',      d.timezone     || 'CST-8');
                 this._setValue('dev-sync-interval', d.syncInterval !== undefined ? String(d.syncInterval) : '3600');
+                this._setValue('dev-cache-duration', d.cacheDuration !== undefined ? String(d.cacheDuration) : '86400');
             })
             .catch(err => console.error('Load device config failed:', err));
         // 同时加载硬件信息
@@ -2829,6 +2850,7 @@ const AppState = {
             timezone:       document.getElementById('dev-timezone')?.value || 'CST-8',
             enableNTP:      document.getElementById('dev-ntp-enable')?.value || '1',
             syncInterval:   document.getElementById('dev-sync-interval')?.value || '3600',
+            cacheDuration:  parseInt(document.getElementById('dev-cache-duration')?.value || '86400'),
         };
         apiPut('/api/device/config', config)
             .then(res => {
@@ -2840,6 +2862,32 @@ const AppState = {
                 }
             })
             .catch(() => Notification.error(i18n.t('dev-save-fail'), i18n.t('dev-config-title')));
+    },
+
+    saveCacheDuration() {
+        const duration = parseInt(document.getElementById('dev-cache-duration')?.value || '86400');
+        apiPut('/api/device/config', { cacheDuration: duration })
+            .then(res => {
+                if (res && res.success) {
+                    Notification.success(i18n.t('dev-cache-save-ok'), i18n.t('dev-cache-title'));
+                } else {
+                    Notification.error(res?.error || i18n.t('dev-save-fail'), i18n.t('dev-cache-title'));
+                }
+            })
+            .catch(() => Notification.error(i18n.t('dev-save-fail'), i18n.t('dev-cache-title')));
+    },
+
+    clearBrowserCache() {
+        if ('caches' in window) {
+            caches.keys().then(names => {
+                names.forEach(name => caches.delete(name));
+            });
+        }
+        // 带时间戳强制刷新，绕过浏览器缓存
+        Notification.success(i18n.t('dev-cache-clear-ok'), i18n.t('dev-cache-title'));
+        setTimeout(() => {
+            window.location.href = window.location.pathname + '?_t=' + Date.now();
+        }, 800);
     },
 
     saveDeviceNTP() {
@@ -3476,6 +3524,15 @@ const AppState = {
         // 非 modbus-rtu Tab 时停止自动刷新
         if (tabId !== 'modbus-rtu') {
             this._stopMasterStatusRefresh();
+            if (this._coilAutoRefreshTimer) {
+                clearInterval(this._coilAutoRefreshTimer);
+                this._coilAutoRefreshTimer = null;
+            }
+        }
+        
+        // modbus-rtu Tab 总是初始化延时下拉菜单（即使配置缓存存在）
+        if (tabId === 'modbus-rtu') {
+            this._updateDelayChannelSelect();
         }
         
         // 如果已有缓存，直接填充表单
@@ -3526,6 +3583,11 @@ const AppState = {
             
             this.refreshMasterStatus();
             this._startMasterStatusRefresh();
+            
+            // 初始化线圈控制面板
+            this._updateDelayChannelSelect();
+            // 加载多设备管理
+            this._loadModbusDevices();
         }
         
         if (tabId === 'modbus-tcp' && config.modbusTcp) {
@@ -3969,6 +4031,8 @@ const AppState = {
                 // 显示运行状态文本
                 const statusText = d.status || i18n.t('modbus-master-status-stopped');
                 this._setText('master-running-status', statusText);
+                // 渲染采集数据卡片
+                if (d.tasks) this._renderMasterDataGrid(d.tasks);
             })
             .catch(() => {
                 this._setText('master-running-status', i18n.t('modbus-master-status-fetch-error'));
@@ -3992,6 +4056,959 @@ const AppState = {
         if (this._masterStatusTimer) {
             clearInterval(this._masterStatusTimer);
             this._masterStatusTimer = null;
+        }
+    },
+
+    // ============================================================================
+    // 采集数据展示 — 基于轮询任务缓存数据渲染仪表盘卡片
+    // ============================================================================
+
+    _renderMasterDataGrid(tasks) {
+        var grid = document.getElementById('master-data-grid');
+        if (!grid) return;
+
+        var html = '';
+        for (var i = 0; i < (tasks || []).length; i++) {
+            var t = tasks[i];
+            if (!t.enabled || !t.cachedData || !t.cachedData.values) continue;
+
+            if (t.mappings && t.mappings.length > 0) {
+                for (var j = 0; j < t.mappings.length; j++) {
+                    var m = t.mappings[j];
+                    var rawVal = null;
+                    if (m.regOffset < t.cachedData.values.length) {
+                        switch (m.dataType) {
+                            case 0: rawVal = t.cachedData.values[m.regOffset]; break;
+                            case 1: rawVal = t.cachedData.values[m.regOffset]; if (rawVal > 32767) rawVal -= 65536; break;
+                            case 2: if (m.regOffset + 1 < t.cachedData.values.length) rawVal = (t.cachedData.values[m.regOffset] << 16) | t.cachedData.values[m.regOffset + 1]; break;
+                            case 3: if (m.regOffset + 1 < t.cachedData.values.length) { rawVal = (t.cachedData.values[m.regOffset] << 16) | t.cachedData.values[m.regOffset + 1]; if (rawVal > 2147483647) rawVal -= 4294967296; } break;
+                            default: rawVal = t.cachedData.values[m.regOffset]; break;
+                        }
+                    }
+                    var displayVal = '--';
+                    if (rawVal !== null) {
+                        var scaled = rawVal * (m.scaleFactor || 1);
+                        displayVal = scaled.toFixed(m.decimalPlaces || 0);
+                    }
+                    html += '<div class="master-data-item">'
+                        + '<span class="master-data-name">' + (m.sensorId || ('R' + (t.startAddress + m.regOffset))) + '</span>'
+                        + '<span class="master-data-val">' + displayVal + '</span>'
+                        + '</div>';
+                }
+            } else {
+                for (var k = 0; k < t.cachedData.values.length; k++) {
+                    html += '<div class="master-data-item">'
+                        + '<span class="master-data-name">R' + (t.startAddress + k) + '</span>'
+                        + '<span class="master-data-val">' + t.cachedData.values[k] + '</span>'
+                        + '</div>';
+                }
+            }
+        }
+        grid.innerHTML = html;
+        grid.style.display = html ? '' : 'none';
+    },
+
+    // ============================================================================
+    // Modbus 通用线圈控制
+    // ============================================================================
+
+    /** 内部线圈状态 */
+    _coilStates: [],
+    _coilAutoRefreshTimer: null,
+
+    /** 多设备管理 */
+    _modbusDevices: [],
+    _activeDeviceId: null,
+    _deviceCoilCache: {},
+    _devicePwmCache: {},
+    _pwmStates: [],
+    _pidValues: {},
+    _pidAutoRefreshTimer: null,
+    _devicePidCache: {},
+
+    /** 根据设备列表是否为空控制配置区域显隐 */
+    _toggleDeviceContent() {
+        var el = document.getElementById('modbus-device-content');
+        if (el) el.style.display = this._modbusDevices.length > 0 ? '' : 'none';
+    },
+
+    /** 从 localStorage 加载设备列表 */
+    _loadModbusDevices() {
+        try {
+            var raw = localStorage.getItem('modbus_devices');
+            this._modbusDevices = raw ? JSON.parse(raw) : [];
+        } catch (e) {
+            this._modbusDevices = [];
+        }
+        this._activeDeviceId = localStorage.getItem('modbus_active_device') || null;
+
+        // 向后兼容：旧设备无 type 字段 → 默认 relay
+        var needSave = false;
+        for (var i = 0; i < this._modbusDevices.length; i++) {
+            if (!this._modbusDevices[i].type) {
+                this._modbusDevices[i].type = 'relay';
+                needSave = true;
+            }
+        }
+        if (needSave) this._saveDevicesToStorage();
+
+        // 首次访问：自动创建预设继电器设备
+        if (this._modbusDevices.length === 0) {
+            var dev = {
+                id: 'dev_default',
+                name: i18n.t('modbus-ctrl-default-preset-name') || '继电器板',
+                type: 'relay',
+                slaveAddress: 3,
+                channelCount: 2,
+                coilBase: 0,
+                ncMode: true
+            };
+            this._modbusDevices.push(dev);
+            this._activeDeviceId = dev.id;
+            this._saveDevicesToStorage();
+        }
+
+        // 验证 activeId 有效
+        if (!this._modbusDevices.find(function(d) { return d.id === this._activeDeviceId; }.bind(this))) {
+            this._activeDeviceId = this._modbusDevices[0].id;
+            this._saveDevicesToStorage();
+        }
+
+        this._renderDeviceSelect();
+        this._applyDeviceToForm();
+        this._toggleDeviceContent();
+    },
+
+    /** 渲染设备下拉选择器 */
+    _renderDeviceSelect() {
+        var sel = document.getElementById('modbus-device-select');
+        if (!sel) return;
+        var html = '';
+        if (this._modbusDevices.length === 0) {
+            html = '<option value="" disabled selected>' + (i18n.t('modbus-ctrl-device-add') || '添加设备') + '...</option>';
+        } else {
+            for (var i = 0; i < this._modbusDevices.length; i++) {
+                var d = this._modbusDevices[i];
+                var selected = d.id === this._activeDeviceId ? ' selected' : '';
+                html += '<option value="' + d.id + '"' + selected + '>'
+                      + d.name + ' (addr:' + d.slaveAddress + ')'
+                      + '</option>';
+            }
+        }
+        sel.innerHTML = html;
+    },
+
+    /** 将当前设备参数应用到表单 */
+    _applyDeviceToForm() {
+        var dev = this._modbusDevices.find(function(d) { return d.id === this._activeDeviceId; }.bind(this));
+        if (!dev) return;
+
+        var nameEl = document.getElementById('modbus-ctrl-device-name');
+        var addrEl = document.getElementById('modbus-ctrl-slave-addr');
+        var countEl = document.getElementById('modbus-ctrl-ch-count');
+        var baseEl = document.getElementById('modbus-ctrl-coil-base');
+        var ncEl = document.getElementById('modbus-ctrl-nc-mode');
+
+        if (nameEl) nameEl.value = dev.name || '';
+        if (addrEl) addrEl.value = dev.slaveAddress || 1;
+        if (countEl) countEl.value = dev.channelCount || 8;
+        if (baseEl) baseEl.value = dev.coilBase || 0;
+        if (ncEl) ncEl.checked = !!dev.ncMode;
+
+        // 设备类型
+        var typeEl = document.getElementById('modbus-ctrl-device-type');
+        if (typeEl) typeEl.value = dev.type || 'relay';
+
+        // PWM 专属字段
+        if (dev.type === 'pwm') {
+            var regBaseEl = document.getElementById('modbus-ctrl-pwm-reg-base');
+            var resEl = document.getElementById('modbus-ctrl-pwm-resolution');
+            if (regBaseEl) regBaseEl.value = dev.pwmRegBase || 0;
+            if (resEl) resEl.value = dev.pwmResolution || 8;
+        } else if (dev.type === 'pid') {
+            var fields = ['pv','sv','out','p','i','d'];
+            var keys = ['pidPvAddr','pidSvAddr','pidOutAddr','pidPAddr','pidIAddr','pidDAddr'];
+            for (var fi = 0; fi < fields.length; fi++) {
+                var el = document.getElementById('modbus-ctrl-pid-' + fields[fi] + '-addr');
+                if (el) el.value = dev[keys[fi]] || fi;
+            }
+            var decEl = document.getElementById('modbus-ctrl-pid-decimals');
+            if (decEl) decEl.value = dev.pidDecimals || 1;
+        }
+
+        // 切换面板显隐
+        this.onDeviceTypeChange();
+
+        // 更新延时通道下拉
+        this._updateDelayChannelSelect();
+
+        // 根据类型恢复缓存状态或刷新
+        if (dev.type === 'pwm') {
+            if (this._devicePwmCache[dev.id]) {
+                this._pwmStates = this._devicePwmCache[dev.id].slice();
+                this._renderPwmGrid();
+            } else {
+                this._pwmStates = [];
+                this._renderPwmGrid();
+                this.refreshPwmStatus();
+            }
+        } else if (dev.type === 'pid') {
+            if (this._devicePidCache[dev.id]) {
+                this._pidValues = JSON.parse(JSON.stringify(this._devicePidCache[dev.id]));
+                this._renderPidGrid();
+            } else {
+                this._pidValues = {};
+                this._renderPidGrid();
+                this.refreshPidStatus();
+            }
+        } else {
+            if (this._deviceCoilCache[dev.id]) {
+                this._coilStates = this._deviceCoilCache[dev.id].slice();
+                this._renderCoilGrid();
+            } else {
+                this._coilStates = [];
+                this._renderCoilGrid();
+                this.refreshCoilStatus();
+            }
+        }
+    },
+
+    /** 保存设备列表到 localStorage */
+    _saveDevicesToStorage() {
+        try {
+            localStorage.setItem('modbus_devices', JSON.stringify(this._modbusDevices));
+            localStorage.setItem('modbus_active_device', this._activeDeviceId || '');
+        } catch (e) { /* localStorage 不可用时静默失败 */ }
+    },
+
+    /** 切换设备 */
+    onModbusDeviceChange() {
+        var sel = document.getElementById('modbus-device-select');
+        if (!sel) return;
+
+        // 缓存当前设备的线圈状态
+        if (this._activeDeviceId && this._coilStates.length > 0) {
+            this._deviceCoilCache[this._activeDeviceId] = this._coilStates.slice();
+        }
+        // 缓存当前设备的 PWM 状态
+        if (this._activeDeviceId && this._pwmStates.length > 0) {
+            this._devicePwmCache[this._activeDeviceId] = this._pwmStates.slice();
+        }
+        // 缓存当前设备的 PID 状态
+        if (this._activeDeviceId && this._pidValues && Object.keys(this._pidValues).length > 0) {
+            this._devicePidCache[this._activeDeviceId] = JSON.parse(JSON.stringify(this._pidValues));
+        }
+
+        this._activeDeviceId = sel.value;
+        this._saveDevicesToStorage();
+        this._applyDeviceToForm();
+    },
+
+    /** 添加新设备 */
+    addModbusDevice() {
+        var idx = this._modbusDevices.length + 1;
+        var dev = {
+            id: 'dev_' + Date.now(),
+            name: (i18n.t('modbus-ctrl-device-default-name') || '设备') + idx,
+            type: 'relay',
+            slaveAddress: 3,
+            channelCount: 2,
+            coilBase: 0,
+            ncMode: true
+        };
+        this._modbusDevices.push(dev);
+        this._activeDeviceId = dev.id;
+        this._saveDevicesToStorage();
+        this._renderDeviceSelect();
+        this._applyDeviceToForm();
+        this._toggleDeviceContent();
+        Notification.success(i18n.t('modbus-ctrl-device-saved') || '设备配置已保存');
+    },
+
+    /** 保存当前设备配置 */
+    saveModbusDevice() {
+        var dev = this._modbusDevices.find(function(d) { return d.id === this._activeDeviceId; }.bind(this));
+        if (!dev) return;
+
+        var nameEl = document.getElementById('modbus-ctrl-device-name');
+        dev.name = (nameEl && nameEl.value) || dev.name;
+        dev.slaveAddress = parseInt(document.getElementById('modbus-ctrl-slave-addr')?.value || '1');
+        dev.channelCount = parseInt(document.getElementById('modbus-ctrl-ch-count')?.value || '8');
+        dev.coilBase = parseInt(document.getElementById('modbus-ctrl-coil-base')?.value || '0');
+        dev.ncMode = document.getElementById('modbus-ctrl-nc-mode')?.checked || false;
+        dev.type = document.getElementById('modbus-ctrl-device-type')?.value || 'relay';
+        if (dev.type === 'pwm') {
+            dev.pwmRegBase = parseInt(document.getElementById('modbus-ctrl-pwm-reg-base')?.value || '0');
+            dev.pwmResolution = parseInt(document.getElementById('modbus-ctrl-pwm-resolution')?.value || '8');
+        } else if (dev.type === 'pid') {
+            dev.pidPvAddr = parseInt(document.getElementById('modbus-ctrl-pid-pv-addr')?.value || '0');
+            dev.pidSvAddr = parseInt(document.getElementById('modbus-ctrl-pid-sv-addr')?.value || '1');
+            dev.pidOutAddr = parseInt(document.getElementById('modbus-ctrl-pid-out-addr')?.value || '2');
+            dev.pidPAddr = parseInt(document.getElementById('modbus-ctrl-pid-p-addr')?.value || '3');
+            dev.pidIAddr = parseInt(document.getElementById('modbus-ctrl-pid-i-addr')?.value || '4');
+            dev.pidDAddr = parseInt(document.getElementById('modbus-ctrl-pid-d-addr')?.value || '5');
+            dev.pidDecimals = parseInt(document.getElementById('modbus-ctrl-pid-decimals')?.value || '1');
+        }
+
+        this._saveDevicesToStorage();
+        this._renderDeviceSelect();
+        Notification.success(i18n.t('modbus-ctrl-device-saved') || '设备配置已保存');
+    },
+
+    /** 删除当前设备 */
+    deleteModbusDevice() {
+        if (this._modbusDevices.length === 0) return;
+        var msg = i18n.t('modbus-ctrl-device-delete-confirm') || '确定要删除该设备配置吗？';
+        if (!confirm(msg)) return;
+
+        var idx = this._modbusDevices.findIndex(function(d) { return d.id === this._activeDeviceId; }.bind(this));
+        if (idx >= 0) {
+            // 清除缓存
+            delete this._deviceCoilCache[this._activeDeviceId];
+            delete this._devicePwmCache[this._activeDeviceId];
+            delete this._devicePidCache[this._activeDeviceId];
+            this._modbusDevices.splice(idx, 1);
+            if (this._modbusDevices.length > 0) {
+                this._activeDeviceId = this._modbusDevices[0].id;
+                this._saveDevicesToStorage();
+                this._renderDeviceSelect();
+                this._applyDeviceToForm();
+            } else {
+                this._activeDeviceId = null;
+                this._coilStates = [];
+                this._saveDevicesToStorage();
+                this._renderDeviceSelect();
+            }
+            this._toggleDeviceContent();
+            Notification.success(i18n.t('modbus-ctrl-device-deleted') || '设备已删除');
+        }
+    },
+
+    // ============================================================================
+    // 设备类型切换与 PWM 控制
+    // ============================================================================
+
+    /** 切换设备类型面板显隐 */
+    onDeviceTypeChange() {
+        var type = document.getElementById('modbus-ctrl-device-type')?.value || 'relay';
+        var types = ['relay', 'pwm', 'pid'];
+        types.forEach(function(t) {
+            var panel = document.getElementById('modbus-' + t + '-panel');
+            var config = document.getElementById('modbus-' + t + '-config');
+            if (panel) panel.style.display = (t === type) ? '' : 'none';
+            if (config) config.style.display = (t === type) ? '' : 'none';
+        });
+        // PID 类型隐藏通道数行
+        var chGroup = document.getElementById('modbus-ch-count-group');
+        if (chGroup) chGroup.style.display = (type === 'pid') ? 'none' : '';
+    },
+
+    /** 获取 PWM 参数 */
+    _getPwmParams() {
+        var res = parseInt(document.getElementById('modbus-ctrl-pwm-resolution')?.value || '8');
+        return {
+            slaveAddress: parseInt(document.getElementById('modbus-ctrl-slave-addr')?.value || '1'),
+            channelCount: parseInt(document.getElementById('modbus-ctrl-ch-count')?.value || '4'),
+            regBase: parseInt(document.getElementById('modbus-ctrl-pwm-reg-base')?.value || '0'),
+            resolution: res,
+            maxValue: (1 << res) - 1
+        };
+    },
+
+    /** 渲染 PWM 通道卡片 */
+    _renderPwmGrid() {
+        var grid = document.getElementById('pwm-channel-grid');
+        if (!grid) return;
+        var p = this._getPwmParams();
+        var html = '';
+        for (var i = 0; i < p.channelCount; i++) {
+            var val = i < this._pwmStates.length ? this._pwmStates[i] : 0;
+            var pct = p.maxValue > 0 ? Math.round(val / p.maxValue * 100) : 0;
+            html += '<div class="pwm-card">'
+                + '<div class="pwm-ch">CH' + i + '</div>'
+                + '<input type="range" class="pwm-slider" min="0" max="' + p.maxValue + '" value="' + val + '" '
+                + 'oninput="AppState._onPwmSliderInput(' + i + ',this.value)" '
+                + 'onchange="AppState._onPwmSliderChange(' + i + ',this.value)" data-ch="' + i + '">'
+                + '<div class="pwm-value-row">'
+                + '<input type="number" class="pwm-num-input" min="0" max="' + p.maxValue + '" value="' + val + '" '
+                + 'onchange="AppState._onPwmNumChange(' + i + ',this.value)" data-ch="' + i + '">'
+                + '<span class="pwm-pct">' + pct + '%</span>'
+                + '</div></div>';
+        }
+        grid.innerHTML = html;
+    },
+
+    /** 读取 PWM 寄存器状态 (FC 0x03) */
+    async refreshPwmStatus() {
+        var p = this._getPwmParams();
+        try {
+            var res = await apiGetSilent('/api/modbus/register/read', {
+                slaveAddress: p.slaveAddress,
+                startAddress: p.regBase,
+                quantity: p.channelCount,
+                functionCode: 3
+            });
+            if (res && res.success && res.data && res.data.values) {
+                this._pwmStates = res.data.values;
+                if (this._activeDeviceId) {
+                    this._devicePwmCache[this._activeDeviceId] = this._pwmStates.slice();
+                }
+                this._renderPwmGrid();
+                this._appendDebugLog(res.debug, 'ReadRegs FC03');
+            }
+        } catch (e) { /* 静默 */ }
+    },
+
+    /** 写单个 PWM 寄存器 (FC 0x06) */
+    async setPwmChannel(ch, value) {
+        var p = this._getPwmParams();
+        try {
+            var res = await apiPost('/api/modbus/register/write', {
+                slaveAddress: p.slaveAddress,
+                registerAddress: p.regBase + ch,
+                value: value
+            });
+            if (res && res.success) {
+                if (ch < this._pwmStates.length) this._pwmStates[ch] = value;
+                this._appendDebugLog(res.debug, 'WriteReg CH' + ch + '=' + value);
+            }
+        } catch (e) {
+            Notification.error(i18n.t('modbus-ctrl-fail'));
+        }
+    },
+
+    /** 批量 PWM 设置 (FC 0x10) */
+    async batchPwm(action) {
+        var p = this._getPwmParams();
+        var values = [];
+        var fillVal = action === 'max' ? p.maxValue : 0;
+        for (var i = 0; i < p.channelCount; i++) values.push(fillVal);
+        try {
+            var res = await apiPost('/api/modbus/register/batch-write', {
+                slaveAddress: p.slaveAddress,
+                startAddress: p.regBase,
+                values: JSON.stringify(values)
+            });
+            if (res && res.success) {
+                this._pwmStates = values;
+                this._renderPwmGrid();
+                Notification.success(i18n.t('modbus-ctrl-success'));
+            }
+        } catch (e) {
+            Notification.error(i18n.t('modbus-ctrl-fail'));
+        }
+    },
+
+    /** 滑块拖动时仅更新显示 */
+    _onPwmSliderInput(ch, val) {
+        var numInput = document.querySelector('.pwm-num-input[data-ch="' + ch + '"]');
+        var card = numInput ? numInput.closest('.pwm-card') : null;
+        var pctSpan = card ? card.querySelector('.pwm-pct') : null;
+        var p = this._getPwmParams();
+        if (numInput) numInput.value = val;
+        if (pctSpan) pctSpan.textContent = (p.maxValue > 0 ? Math.round(val / p.maxValue * 100) : 0) + '%';
+    },
+
+    /** 滑块释放时发送写入 */
+    _onPwmSliderChange(ch, val) {
+        this.setPwmChannel(ch, parseInt(val));
+    },
+
+    /** 数值输入变更 */
+    _onPwmNumChange(ch, val) {
+        var p = this._getPwmParams();
+        val = Math.max(0, Math.min(parseInt(val) || 0, p.maxValue));
+        var slider = document.querySelector('.pwm-slider[data-ch="' + ch + '"]');
+        if (slider) slider.value = val;
+        var card = slider ? slider.closest('.pwm-card') : null;
+        var pctSpan = card ? card.querySelector('.pwm-pct') : null;
+        if (pctSpan) pctSpan.textContent = (p.maxValue > 0 ? Math.round(val / p.maxValue * 100) : 0) + '%';
+        this.setPwmChannel(ch, val);
+    },
+
+    // ============================================================================
+    // PID 控制器
+    // ============================================================================
+
+    _getPidParams() {
+        var decimals = parseInt(document.getElementById('modbus-ctrl-pid-decimals')?.value || '1');
+        return {
+            slaveAddress: parseInt(document.getElementById('modbus-ctrl-slave-addr')?.value || '1'),
+            pvAddr: parseInt(document.getElementById('modbus-ctrl-pid-pv-addr')?.value || '0'),
+            svAddr: parseInt(document.getElementById('modbus-ctrl-pid-sv-addr')?.value || '1'),
+            outAddr: parseInt(document.getElementById('modbus-ctrl-pid-out-addr')?.value || '2'),
+            pAddr: parseInt(document.getElementById('modbus-ctrl-pid-p-addr')?.value || '3'),
+            iAddr: parseInt(document.getElementById('modbus-ctrl-pid-i-addr')?.value || '4'),
+            dAddr: parseInt(document.getElementById('modbus-ctrl-pid-d-addr')?.value || '5'),
+            decimals: decimals,
+            scaleFactor: Math.pow(10, decimals)
+        };
+    },
+
+    _renderPidGrid() {
+        var container = document.getElementById('pid-data-grid');
+        if (!container) return;
+        var p = this._getPidParams();
+        var v = this._pidValues || {};
+        var sf = p.scaleFactor;
+
+        var fmtVal = function(raw, dec) {
+            if (raw === undefined || raw === null) return '--';
+            return (raw / sf).toFixed(dec);
+        };
+        var fmtPct = function(raw) {
+            if (raw === undefined || raw === null) return '--';
+            return (raw / sf).toFixed(p.decimals) + '%';
+        };
+
+        var cards = [
+            { key: 'pv', label: i18n.t('modbus-ctrl-pid-pv-label') || '过程值 PV', value: fmtVal(v.pv, p.decimals), editable: false, big: true },
+            { key: 'sv', label: i18n.t('modbus-ctrl-pid-sv-label') || '设定值 SV', value: fmtVal(v.sv, p.decimals), editable: true },
+            { key: 'out', label: i18n.t('modbus-ctrl-pid-out-label') || '输出 %', value: fmtPct(v.out), editable: false },
+            { key: 'p', label: i18n.t('modbus-ctrl-pid-p-label') || 'P 比例', value: fmtVal(v.p, p.decimals), editable: true },
+            { key: 'i', label: i18n.t('modbus-ctrl-pid-i-label') || 'I 积分', value: fmtVal(v.i, p.decimals), editable: true },
+            { key: 'd', label: i18n.t('modbus-ctrl-pid-d-label') || 'D 微分', value: fmtVal(v.d, p.decimals), editable: true }
+        ];
+
+        var html = '';
+        for (var ci = 0; ci < cards.length; ci++) {
+            var c = cards[ci];
+            var cls = 'pid-card' + (c.big ? ' pid-pv-card' : '') + (c.editable ? ' pid-editable' : '');
+            html += '<div class="' + cls + '">';
+            html += '<div class="pid-card-label">' + c.label + '</div>';
+
+            if (c.editable) {
+                var rawVal = (v[c.key] !== undefined && v[c.key] !== null) ? (v[c.key] / sf).toFixed(p.decimals) : '';
+                html += '<div class="pid-card-value">' + c.value + '</div>';
+                html += '<div class="pid-edit-row">';
+                html += '<input type="number" class="pid-input" step="' + (1 / sf) + '" value="' + rawVal + '" data-param="' + c.key + '">';
+                html += '<button type="button" class="btn btn-sm btn-enable pid-set-btn" onclick="AppState._onPidInputChange(\'' + c.key + '\', this.parentNode.querySelector(\'.pid-input\').value)">'
+                      + (i18n.t('modbus-ctrl-pid-set') || '设置') + '</button>';
+                html += '</div>';
+            } else {
+                html += '<div class="pid-card-value">' + c.value + '</div>';
+            }
+
+            html += '</div>';
+        }
+        container.innerHTML = html;
+    },
+
+    refreshPidStatus() {
+        var p = this._getPidParams();
+        if (!p.slaveAddress) return;
+
+        var addrs = [p.pvAddr, p.svAddr, p.outAddr, p.pAddr, p.iAddr, p.dAddr];
+        var minAddr = Math.min.apply(null, addrs);
+        var maxAddr = Math.max.apply(null, addrs);
+        var quantity = maxAddr - minAddr + 1;
+
+        if (quantity > 125) {
+            Notification.warning('PID 寄存器地址跨度过大 (>' + 125 + ')');
+            return;
+        }
+
+        var self = this;
+        apiGetSilent('/api/modbus/register/read', {
+            slaveAddress: p.slaveAddress,
+            startAddress: minAddr,
+            quantity: quantity,
+            functionCode: 3
+        }).then(function(res) {
+            if (res && res.success && res.data && res.data.values) {
+                var vals = res.data.values;
+                self._pidValues = {
+                    pv: vals[p.pvAddr - minAddr],
+                    sv: vals[p.svAddr - minAddr],
+                    out: vals[p.outAddr - minAddr],
+                    p: vals[p.pAddr - minAddr],
+                    i: vals[p.iAddr - minAddr],
+                    d: vals[p.dAddr - minAddr]
+                };
+                self._devicePidCache[self._activeDeviceId] = JSON.parse(JSON.stringify(self._pidValues));
+                self._renderPidGrid();
+            }
+            if (res && res.debug) {
+                self._appendDebugLog(res.debug.tx ? { tx: res.debug.tx, rx: res.debug.rx } : null, 'PID Read');
+            }
+        }).catch(function() {});
+    },
+
+    setPidRegister(paramName, rawValue) {
+        var p = this._getPidParams();
+        var addrMap = { sv: p.svAddr, p: p.pAddr, i: p.iAddr, d: p.dAddr };
+        var addr = addrMap[paramName];
+        if (addr === undefined) return;
+
+        var self = this;
+        apiPost('/api/modbus/register/write', {
+            slaveAddress: p.slaveAddress,
+            registerAddress: addr,
+            value: rawValue
+        }).then(function(res) {
+            if (res && res.success) {
+                self._pidValues[paramName] = rawValue;
+                self._devicePidCache[self._activeDeviceId] = JSON.parse(JSON.stringify(self._pidValues));
+                self._renderPidGrid();
+            }
+            if (res && res.debug) {
+                self._appendDebugLog(res.debug.tx ? { tx: res.debug.tx, rx: res.debug.rx } : null, 'PID Write ' + paramName);
+            }
+        }).catch(function() {});
+    },
+
+    _onPidInputChange(paramName, displayValue) {
+        var p = this._getPidParams();
+        var val = parseFloat(displayValue);
+        if (isNaN(val)) return;
+        var rawValue = Math.round(val * p.scaleFactor);
+        this.setPidRegister(paramName, rawValue);
+    },
+
+    _stopPidAutoRefresh() {
+        if (this._pidAutoRefreshTimer) {
+            clearInterval(this._pidAutoRefreshTimer);
+            this._pidAutoRefreshTimer = null;
+        }
+    },
+
+    togglePidAutoRefresh() {
+        var checked = document.getElementById('modbus-ctrl-pid-auto-refresh')?.checked;
+        if (checked) {
+            this.refreshPidStatus();
+            var self = this;
+            this._pidAutoRefreshTimer = setInterval(function() { self.refreshPidStatus(); }, 3000);
+        } else {
+            this._stopPidAutoRefresh();
+        }
+    },
+
+    /** 追加 Modbus 调试日志 */
+    _appendDebugLog(debug, label) {
+        var log = document.getElementById('modbus-debug-log');
+        if (!log) return;
+        if (!debug && !label) return;
+        var time = new Date().toLocaleTimeString();
+        var entry = document.createElement('div');
+        entry.className = 'modbus-debug-entry';
+        var html = '<div class="modbus-debug-time">[' + time + '] ' + (label || '') + '</div>';
+        if (debug && debug.tx) html += '<div class="modbus-debug-tx">TX: ' + debug.tx + '</div>';
+        if (debug && debug.rx) html += '<div class="modbus-debug-rx">RX: ' + debug.rx + '</div>';
+        entry.innerHTML = html;
+        log.appendChild(entry);
+        log.scrollTop = log.scrollHeight;
+        // 限制最多保留100条
+        while (log.children.length > 100) log.removeChild(log.firstChild);
+    },
+
+    /** 追加错误调试日志 */
+    _appendDebugError(msg, debug) {
+        var log = document.getElementById('modbus-debug-log');
+        if (!log) return;
+        var time = new Date().toLocaleTimeString();
+        var entry = document.createElement('div');
+        entry.className = 'modbus-debug-entry';
+        var html = '<div class="modbus-debug-time">[' + time + ']</div>';
+        html += '<div class="modbus-debug-err">' + msg + '</div>';
+        if (debug && debug.tx) html += '<div class="modbus-debug-tx">TX: ' + debug.tx + '</div>';
+        if (debug && debug.rx) html += '<div class="modbus-debug-rx">RX: ' + debug.rx + '</div>';
+        entry.innerHTML = html;
+        log.appendChild(entry);
+        log.scrollTop = log.scrollHeight;
+        while (log.children.length > 100) log.removeChild(log.firstChild);
+    },
+
+    /** 清除调试日志 */
+    clearModbusDebugLog() {
+        var log = document.getElementById('modbus-debug-log');
+        if (log) log.innerHTML = '';
+    },
+
+    /** 从 UI 读取控制参数 */
+    _getCoilParams() {
+        return {
+            slaveAddress: parseInt(document.getElementById('modbus-ctrl-slave-addr')?.value || '1'),
+            channelCount: parseInt(document.getElementById('modbus-ctrl-ch-count')?.value || '8'),
+            coilBase: parseInt(document.getElementById('modbus-ctrl-coil-base')?.value || '0'),
+            ncMode: document.getElementById('modbus-ctrl-nc-mode')?.checked || false
+        };
+    },
+
+    /** 刷新线圈状态（从从站读取） */
+    async refreshCoilStatus() {
+        const p = this._getCoilParams();
+        try {
+            const res = await apiGetSilent('/api/modbus/coil/status', {
+                slaveAddress: p.slaveAddress,
+                channelCount: p.channelCount,
+                coilBase: p.coilBase
+            });
+            if (res && res.success && res.data && res.data.states) {
+                this._coilStates = res.data.states;
+                // 缓存到当前设备
+                if (this._activeDeviceId) {
+                    this._deviceCoilCache[this._activeDeviceId] = this._coilStates.slice();
+                }
+                this._renderCoilGrid();
+                this._appendDebugLog(res.debug, 'ReadCoils FC01');
+            } else if (res && !res.success) {
+                Notification.error(res.error || i18n.t('modbus-ctrl-fail'));
+                this._appendDebugError(res.error || 'ReadCoils failed', res.debug);
+            }
+        } catch (e) {
+            // 静默失败（自动刷新时不弹错误）
+        }
+    },
+
+    /** 渲染线圈网格 */
+    _renderCoilGrid() {
+        const grid = document.getElementById('coil-status-grid');
+        if (!grid) return;
+
+        const p = this._getCoilParams();
+        const onText = i18n.t('modbus-ctrl-status-on') || 'ON';
+        const offText = i18n.t('modbus-ctrl-status-off') || 'OFF';
+
+        let html = '';
+        for (let i = 0; i < p.channelCount; i++) {
+            const coilState = i < this._coilStates.length ? this._coilStates[i] : false;
+            // NC 模式：线圈断电(false)=NC闭合=设备通电(ON)，需反转显示
+            const isOn = p.ncMode ? !coilState : coilState;
+            const cls = isOn ? 'coil-on' : 'coil-off';
+            html += '<div class="coil-card ' + cls + '" onclick="AppState.toggleCoil(' + i + ')" data-ch="' + i + '">'
+                  + '<div class="coil-ch">CH' + i + '</div>'
+                  + '<div class="coil-st">' + (isOn ? onText : offText) + '</div>'
+                  + '</div>';
+        }
+        grid.innerHTML = html;
+    },
+
+    /** 切换单个线圈 */
+    async toggleCoil(ch) {
+        const card = document.querySelector('.coil-card[data-ch="' + ch + '"]');
+        if (card) card.classList.add('coil-loading');
+
+        const p = this._getCoilParams();
+        try {
+            const res = await apiPost('/api/modbus/coil/control', {
+                slaveAddress: p.slaveAddress,
+                channel: ch,
+                coilBase: p.coilBase,
+                action: 'toggle'
+            });
+            if (res && res.success && res.data) {
+                // 更新单个状态
+                if (ch < this._coilStates.length) {
+                    this._coilStates[ch] = res.data.state;
+                }
+                this._renderCoilGrid();
+                Notification.success(i18n.t('modbus-ctrl-success'));
+                this._appendDebugLog(res.debug, 'Toggle CH' + ch);
+            } else {
+                Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
+                this._appendDebugError('Toggle CH' + ch + ' failed', res && res.debug);
+            }
+        } catch (e) {
+            Notification.error(i18n.t('modbus-ctrl-fail'));
+        }
+        if (card) card.classList.remove('coil-loading');
+    },
+
+    /** 批量线圈操作 */
+    async batchCoil(action) {
+        const p = this._getCoilParams();
+        // NC 模式：allOn/allOff 命令反转（NC 接线下，线圈断电=设备通电）
+        let modbusAction = action;
+        if (p.ncMode) {
+            if (action === 'allOn') modbusAction = 'allOff';
+            else if (action === 'allOff') modbusAction = 'allOn';
+        }
+        try {
+            const res = await apiPost('/api/modbus/coil/batch', {
+                slaveAddress: p.slaveAddress,
+                channelCount: p.channelCount,
+                coilBase: p.coilBase,
+                action: modbusAction
+            });
+            if (res && res.success && res.data && res.data.states) {
+                this._coilStates = res.data.states;
+                this._renderCoilGrid();
+                Notification.success(i18n.t('modbus-ctrl-success'));
+                this._appendDebugLog(res.debug, 'Batch: ' + action);
+            } else {
+                Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
+                this._appendDebugError('Batch ' + action + ' failed', res && res.debug);
+            }
+        } catch (e) {
+            Notification.error(i18n.t('modbus-ctrl-fail'));
+        }
+    },
+
+    /** 延时控制（闪开：设备硬件定时） */
+    async startCoilDelay() {
+        const p = this._getCoilParams();
+        const ch = parseInt(document.getElementById('modbus-ctrl-delay-ch')?.value || '0');
+        const units = parseInt(document.getElementById('modbus-ctrl-delay-units')?.value || '50');
+
+        if (units < 1 || units > 255) {
+            Notification.warning(i18n.t('modbus-ctrl-fail') + ': 1-255 (x100ms)');
+            return;
+        }
+
+        try {
+            const res = await apiPost('/api/modbus/coil/delay', {
+                slaveAddress: p.slaveAddress,
+                channel: ch,
+                delayBase: 0x0200,
+                delayUnits: units
+            });
+            if (res && res.success) {
+                Notification.success(i18n.t('modbus-ctrl-delay-ok'));
+                this._appendDebugLog(res.debug, 'Delay CH' + ch + ' ' + units + 'x100ms');
+                setTimeout(() => this.refreshCoilStatus(), 500);
+            } else {
+                Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
+                this._appendDebugError('Delay CH' + ch + ' failed', res && res.debug);
+            }
+        } catch (e) {
+            Notification.error(i18n.t('modbus-ctrl-fail'));
+        }
+    },
+
+    /** 通道数变化时更新延时通道下拉 */
+    onCoilChannelCountChange() {
+        this._updateDelayChannelSelect();
+        this._renderCoilGrid();
+    },
+
+    _updateDelayChannelSelect() {
+        const sel = document.getElementById('modbus-ctrl-delay-ch');
+        if (!sel) return;
+        const count = parseInt(document.getElementById('modbus-ctrl-ch-count')?.value || '8');
+        let html = '';
+        for (let i = 0; i < count; i++) {
+            html += '<option value="' + i + '">CH' + i + '</option>';
+        }
+        sel.innerHTML = html;
+    },
+
+    /** 自动刷新开关 */
+    toggleCoilAutoRefresh() {
+        const checked = document.getElementById('modbus-ctrl-auto-refresh')?.checked;
+        if (checked) {
+            this.refreshCoilStatus();
+            this._coilAutoRefreshTimer = setInterval(() => this.refreshCoilStatus(), 3000);
+        } else {
+            if (this._coilAutoRefreshTimer) {
+                clearInterval(this._coilAutoRefreshTimer);
+                this._coilAutoRefreshTimer = null;
+            }
+        }
+    },
+
+    /** 读取设备地址 */
+    async readDeviceAddress() {
+        const p = this._getCoilParams();
+        const addrReg = parseInt(document.getElementById('modbus-ctrl-addr-reg')?.value || '0');
+        try {
+            const res = await apiPost('/api/modbus/device/address', {
+                slaveAddress: p.slaveAddress,
+                addressRegister: addrReg
+            });
+            const display = document.getElementById('modbus-ctrl-current-addr');
+            if (res && res.success && res.data) {
+                if (display) display.textContent = 'Current: ' + res.data.currentAddress;
+                Notification.success(i18n.t('modbus-ctrl-success'));
+                this._appendDebugLog(res.debug, 'ReadAddr reg=' + addrReg);
+            } else {
+                if (display) display.textContent = '';
+                Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
+                this._appendDebugError('ReadAddr failed', res && res.debug);
+            }
+        } catch (e) {
+            Notification.error(i18n.t('modbus-ctrl-fail'));
+        }
+    },
+
+    /** 设置设备地址（广播 FC 0x10） */
+    async setDeviceAddress() {
+        const p = this._getCoilParams();
+        const addrReg = parseInt(document.getElementById('modbus-ctrl-addr-reg')?.value || '0');
+        const newAddr = parseInt(document.getElementById('modbus-ctrl-new-addr')?.value || '0');
+        if (newAddr < 1 || newAddr > 255) {
+            Notification.warning('Invalid address (1-255)');
+            return;
+        }
+        try {
+            const res = await apiPost('/api/modbus/device/address', {
+                slaveAddress: p.slaveAddress,
+                addressRegister: addrReg,
+                newAddress: newAddr
+            });
+            if (res && res.success) {
+                Notification.success(i18n.t('modbus-ctrl-success'));
+                this._appendDebugLog(res.debug, 'SetAddr -> ' + newAddr);
+            } else {
+                Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
+                this._appendDebugError('SetAddr failed', res && res.debug);
+            }
+        } catch (e) {
+            Notification.error(i18n.t('modbus-ctrl-fail'));
+        }
+    },
+
+    /** 设置波特率（FC 0xB0 专有指令） */
+    async setDeviceBaudrate() {
+        const p = this._getCoilParams();
+        const baud = parseInt(document.getElementById('modbus-ctrl-baudrate')?.value || '9600');
+        try {
+            const res = await apiPost('/api/modbus/device/baudrate', {
+                slaveAddress: p.slaveAddress,
+                baudRate: baud
+            });
+            if (res && res.success) {
+                Notification.success(i18n.t('modbus-ctrl-success'));
+                this._appendDebugLog(res.debug, 'SetBaud -> ' + baud);
+            } else {
+                Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
+                this._appendDebugError('SetBaud failed', res && res.debug);
+            }
+        } catch (e) {
+            Notification.error(i18n.t('modbus-ctrl-fail'));
+        }
+    },
+
+    /** 读取离散输入 */
+    async readDiscreteInputs() {
+        const p = this._getCoilParams();
+        const inputCount = parseInt(document.getElementById('modbus-ctrl-input-count')?.value || '4');
+        const inputBase = parseInt(document.getElementById('modbus-ctrl-input-base')?.value || '0');
+        try {
+            const res = await apiGet('/api/modbus/device/inputs', {
+                slaveAddress: p.slaveAddress,
+                inputCount: inputCount,
+                inputBase: inputBase
+            });
+            const display = document.getElementById('modbus-ctrl-inputs-display');
+            if (res && res.success && res.data && res.data.states) {
+                const states = res.data.states;
+                let html = '';
+                for (let i = 0; i < states.length; i++) {
+                    const color = states[i] ? '#4CAF50' : '#909399';
+                    html += '<span style="display:inline-block;margin:2px 4px;padding:2px 8px;border-radius:3px;'
+                          + 'background:' + (states[i] ? '#e6f7e6' : '#f5f5f5') + ';color:' + color + ';font-size:12px;">'
+                          + 'IN' + i + ':' + (states[i] ? 'ON' : 'OFF') + '</span>';
+                }
+                if (display) display.innerHTML = html;
+                Notification.success(i18n.t('modbus-ctrl-success'));
+                this._appendDebugLog(res.debug, 'ReadInputs FC02');
+            } else {
+                if (display) display.innerHTML = '';
+                Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
+                this._appendDebugError('ReadInputs failed', res && res.debug);
+            }
+        } catch (e) {
+            Notification.error(i18n.t('modbus-ctrl-fail'));
         }
     },
     
@@ -4550,11 +5567,31 @@ const AppState = {
         } else {
             if (titleEl) titleEl.textContent = i18n.t('periph-exec-add-modal-title');
             document.getElementById('periph-exec-form').reset();
-            this.onPeriphExecTriggerTypeChange('0');
-            this.onPeriphExecTimerModeChange('0');
-            this.onPeriphExecActionTypeChange('0');
         }
-        this.loadPeriphSelectOptions();
+        // Clear dynamic containers
+        const triggersContainer = document.getElementById('periph-exec-triggers');
+        const actionsContainer = document.getElementById('periph-exec-actions');
+        if (triggersContainer) triggersContainer.innerHTML = '';
+        if (actionsContainer) actionsContainer.innerHTML = '';
+        // For edit mode, editPeriphExecRule handles peripheral loading and block creation
+        if (editId) {
+            modal.style.display = 'flex';
+            return;
+        }
+        // Load peripherals and protocol data sources
+        this._pePeripherals = [];
+        this._peDataSources = [];
+        Promise.all([apiGet('/api/peripherals'), apiGet('/api/protocol/config')]).then(([res, protoRes]) => {
+            if (res && res.success && res.data) {
+                this._pePeripherals = res.data.filter(p => p.enabled);
+            }
+            if (protoRes && protoRes.success !== false) {
+                this._peDataSources = this._extractDataSources(protoRes);
+            }
+            // New rule: add one default trigger and one default action
+            this._createPeriphExecTriggerElement({}, 0);
+            this._createPeriphExecActionElement({}, 0);
+        });
         modal.style.display = 'flex';
     },
 
@@ -4565,73 +5602,562 @@ const AppState = {
     closePeriphExecModal() {
         const modal = document.getElementById('periph-exec-modal');
         if (modal) modal.style.display = 'none';
-        const targetSel = document.getElementById('periph-exec-target-periph');
-        if (targetSel) targetSel.disabled = false;
+        this._pePeripherals = [];
+        this._peDataSources = [];
     },
 
-    loadPeriphSelectOptions() {
-        return apiGet('/api/peripherals')
-            .then(res => {
-                const sel = document.getElementById('periph-exec-target-periph');
-                if (!sel) return;
-                const currentVal = sel.value;
-                sel.innerHTML = '<option value="">' + i18n.t('periph-exec-select-periph') + '</option>';
-                if (res && res.success && res.data) {
-                    res.data.filter(p => p.enabled).forEach(p => {
-                        const opt = document.createElement('option');
-                        opt.value = p.id;
-                        opt.textContent = p.name + ' (' + p.id + ')';
-                        sel.appendChild(opt);
-                    });
-                }
-                if (currentVal) sel.value = currentVal;
+    // ============ 外设执行 - 动态触发/动作配置块 ============
+
+    _pePeripherals: [],
+    _peDataSources: [],
+
+    _populatePeriphSelect(selectEl, selectedValue) {
+        if (!selectEl) return;
+        selectEl.innerHTML = '<option value="">' + i18n.t('periph-exec-select-periph') + '</option>';
+        (this._pePeripherals || []).forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.id;
+            opt.textContent = p.name + ' (' + p.id + ')';
+            selectEl.appendChild(opt);
+        });
+        if (selectedValue) selectEl.value = selectedValue;
+    },
+
+    _populateTriggerPeriphSelect(selectEl, selectedValue) {
+        if (!selectEl) return;
+        selectEl.innerHTML = '<option value="">' + i18n.t('periph-exec-select-periph') + '</option>';
+        // 数据源分组 (Modbus sensorId 等)
+        if (this._peDataSources && this._peDataSources.length > 0) {
+            const grp = document.createElement('optgroup');
+            grp.label = i18n.t('periph-exec-datasource-group') || '数据源';
+            this._peDataSources.forEach(ds => {
+                const opt = document.createElement('option');
+                opt.value = ds.id;
+                opt.textContent = ds.label + ' (' + ds.id + ')';
+                grp.appendChild(opt);
             });
+            selectEl.appendChild(grp);
+        }
+        // 硬件外设分组
+        if (this._pePeripherals && this._pePeripherals.length > 0) {
+            const grp = document.createElement('optgroup');
+            grp.label = i18n.t('periph-exec-periph-group') || '硬件外设';
+            this._pePeripherals.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.id;
+                opt.textContent = p.name + ' (' + p.id + ')';
+                grp.appendChild(opt);
+            });
+            selectEl.appendChild(grp);
+        }
+        if (selectedValue) selectEl.value = selectedValue;
     },
 
-    onPeriphExecTriggerTypeChange(val) {
-        const platformCondition = document.getElementById('periph-exec-platform-condition');
-        const timerConfig = document.getElementById('periph-exec-timer-config');
-        const eventGroup = document.getElementById('periph-exec-event-group');
-        
-        // 平台触发(0): 显示比较运算符和比较值
+    _extractDataSources(protocolConfig) {
+        const sources = [];
+        if (!protocolConfig) return sources;
+        // Modbus RTU
+        const rtu = protocolConfig.modbusRtu;
+        if (rtu && rtu.enabled && rtu.master && rtu.master.tasks) {
+            rtu.master.tasks.forEach(task => {
+                if (!task.enabled || !task.mappings) return;
+                task.mappings.forEach(m => {
+                    if (m.sensorId) {
+                        sources.push({ id: m.sensorId, label: (task.label || 'Modbus') + '/' + m.sensorId });
+                    }
+                });
+            });
+        }
+        // Modbus TCP
+        const tcp = protocolConfig.modbusTcp;
+        if (tcp && tcp.enabled && tcp.master && tcp.master.tasks) {
+            tcp.master.tasks.forEach(task => {
+                if (!task.enabled || !task.mappings) return;
+                task.mappings.forEach(m => {
+                    if (m.sensorId) {
+                        sources.push({ id: m.sensorId, label: 'TCP/' + m.sensorId });
+                    }
+                });
+            });
+        }
+        return sources;
+    },
+
+    _createPeriphExecTriggerElement(data, index) {
+        const container = document.getElementById('periph-exec-triggers');
+        if (!container) return;
+        const div = document.createElement('div');
+        div.className = 'periph-exec-config-item';
+        div.dataset.index = index;
+        const triggerType = String(data.triggerType ?? 0);
+        const showPlatform = triggerType === '0';
+        const showTimer = triggerType === '1';
+        const showEvent = triggerType === '4';
+        const timerMode = String(data.timerMode ?? 0);
+        const showInterval = timerMode === '0';
+        const showDaily = timerMode === '1';
+        const opVal = String(data.operatorType ?? 0);
+        // 向后兼容：旧数据 operatorType >= 2 映射为 "匹配"(0)
+        const mappedOp = (opVal === '0' || opVal === '1') ? opVal : '0';
+        const showCompareValue = showPlatform && mappedOp !== '1';
+
+        div.innerHTML = `
+            <span class="mqtt-topic-index">${index + 1}</span>
+            <button type="button" class="mqtt-topic-delete" onclick="app.deletePeriphExecTrigger(${index})">${i18n.t('peripheral-delete')}</button>
+            <div class="config-form-grid">
+                <div class="pure-control-group">
+                    <label>${i18n.t('periph-exec-trigger-type-label')}</label>
+                    <select class="pure-input-1 pe-trigger-type" onchange="app.onPeriphExecTriggerTypeChangeInBlock(this.value, ${index})">
+                        <option value="0" ${triggerType === '0' ? 'selected' : ''}>${i18n.t('periph-exec-trigger-platform')}</option>
+                        <option value="1" ${triggerType === '1' ? 'selected' : ''}>${i18n.t('periph-exec-trigger-timer')}</option>
+                        <option value="4" ${triggerType === '4' ? 'selected' : ''}>${i18n.t('periph-exec-trigger-event')}</option>
+                    </select>
+                </div>
+                <div class="pure-control-group pe-trigger-periph-group" style="display:${showPlatform ? 'block' : 'none'}">
+                    <label>${i18n.t('periph-exec-trigger-periph-label')}</label>
+                    <select class="pure-input-1 pe-trigger-periph">
+                        <option value="">${i18n.t('periph-exec-select-periph')}</option>
+                    </select>
+                </div>
+            </div>
+            <div class="pe-platform-condition" style="display:${showPlatform ? 'block' : 'none'}">
+                <div class="config-form-grid">
+                    <div class="pure-control-group">
+                        <label>${i18n.t('periph-exec-operator-label')}</label>
+                        <select class="pure-input-1 pe-operator" onchange="app.onPeriphExecOperatorChangeInBlock(this.value, ${index})">
+                            <option value="0" ${mappedOp === '0' ? 'selected' : ''}>${i18n.t('periph-exec-handle-match')}</option>
+                            <option value="1" ${mappedOp === '1' ? 'selected' : ''}>${i18n.t('periph-exec-handle-set')}</option>
+                        </select>
+                    </div>
+                    <div class="pure-control-group pe-compare-value-group" style="display:${showCompareValue ? 'block' : 'none'}">
+                        <label>${i18n.t('periph-exec-compare-label')}</label>
+                        <input type="text" class="pure-input-1 pe-compare-value" value="${escapeHtml(data.compareValue)}" placeholder="${escapeHtml(i18n.t('periph-exec-compare-hint'))}">
+                    </div>
+                </div>
+            </div>
+            <div class="pe-timer-config" style="display:${showTimer ? 'block' : 'none'}">
+                <div class="config-form-grid">
+                    <div class="pure-control-group">
+                        <label>${i18n.t('periph-exec-timer-mode-label')}</label>
+                        <select class="pure-input-1 pe-timer-mode" onchange="app.onPeriphExecTimerModeChangeInBlock(this.value, ${index})">
+                            <option value="0" ${timerMode === '0' ? 'selected' : ''}>${i18n.t('periph-exec-timer-interval')}</option>
+                            <option value="1" ${timerMode === '1' ? 'selected' : ''}>${i18n.t('periph-exec-timer-daily')}</option>
+                        </select>
+                    </div>
+                    <div class="pure-control-group pe-interval-fields" style="display:${showInterval ? 'block' : 'none'}">
+                        <label>${i18n.t('periph-exec-interval-label')}</label>
+                        <input type="number" class="pure-input-1 pe-interval" value="${data.intervalSec || 60}" min="1" max="86400">
+                    </div>
+                    <div class="pure-control-group pe-daily-fields" style="display:${showDaily ? 'block' : 'none'}">
+                        <label>${i18n.t('periph-exec-timepoint-label')}</label>
+                        <input type="time" class="pure-input-1 pe-timepoint" value="${data.timePoint || '08:00'}">
+                    </div>
+                </div>
+            </div>
+            <div class="pe-event-group" style="display:${showEvent ? 'block' : 'none'}">
+                <div class="config-form-grid">
+                    <div class="pure-control-group">
+                        <label>${i18n.t('periph-exec-event-category-label')}</label>
+                        <select class="pure-input-1 pe-event-category" onchange="app.onPeriphExecEventCategoryChangeInBlock(this.value, ${index})">
+                            <option value="">${i18n.t('periph-exec-select-category')}</option>
+                        </select>
+                    </div>
+                    <div class="pure-control-group">
+                        <label>${i18n.t('periph-exec-event-label')}</label>
+                        <select class="pure-input-1 pe-event">
+                            <option value="">${i18n.t('periph-exec-select-event')}</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        container.appendChild(div);
+        // Populate trigger peripheral select with optgroups
+        this._populateTriggerPeriphSelect(div.querySelector('.pe-trigger-periph'), data.triggerPeriphId || data.sourcePeriphId || '');
+        // If event trigger, populate event categories
+        if (showEvent) {
+            this._populateEventCategoriesInBlock(div, data.eventId);
+        }
+    },
+
+    _createPeriphExecActionElement(data, index) {
+        const container = document.getElementById('periph-exec-actions');
+        if (!container) return;
+        const div = document.createElement('div');
+        div.className = 'periph-exec-config-item';
+        div.dataset.index = index;
+        const actionType = String(data.actionType ?? 0);
+        const actionTypeInt = parseInt(actionType);
+        const showPeriphGroup = !((actionTypeInt >= 6 && actionTypeInt <= 11) || actionTypeInt === 15);
+        const needsValue = (actionTypeInt >= 2 && actionTypeInt <= 5);
+        const isScript = actionTypeInt === 15;
+        const sel = (v) => actionType === String(v) ? 'selected' : '';
+
+        const curExecMode = document.getElementById('periph-exec-exec-mode')?.value || '0';
+        const selMode = (v) => curExecMode === String(v) ? 'selected' : '';
+
+        div.innerHTML = `
+            <span class="mqtt-topic-index">${index + 1}</span>
+            <button type="button" class="mqtt-topic-delete" onclick="app.deletePeriphExecAction(${index})">${i18n.t('peripheral-delete')}</button>
+            <div class="pure-control-group pe-action-type-row">
+                <label>${i18n.t('periph-exec-action-type-label')}</label>
+                <select class="pure-input-1 pe-action-type" onchange="app.onPeriphExecActionTypeChangeInBlock(this.value, ${index})">
+                    <optgroup label="${i18n.t('periph-exec-action-cat-gpio')}">
+                        <option value="0" ${sel(0)}>${i18n.t('periph-exec-action-high')}</option>
+                        <option value="1" ${sel(1)}>${i18n.t('periph-exec-action-low')}</option>
+                        <option value="2" ${sel(2)}>${i18n.t('periph-exec-action-blink')}</option>
+                        <option value="3" ${sel(3)}>${i18n.t('periph-exec-action-breathe')}</option>
+                    </optgroup>
+                    <optgroup label="${i18n.t('periph-exec-action-cat-analog')}">
+                        <option value="4" ${sel(4)}>${i18n.t('periph-exec-action-pwm')}</option>
+                        <option value="5" ${sel(5)}>${i18n.t('periph-exec-action-dac')}</option>
+                    </optgroup>
+                    <optgroup label="${i18n.t('periph-exec-action-cat-system')}">
+                        <option value="6" ${sel(6)}>${i18n.t('periph-exec-action-restart')}</option>
+                        <option value="7" ${sel(7)}>${i18n.t('periph-exec-action-factory')}</option>
+                        <option value="8" ${sel(8)}>${i18n.t('periph-exec-action-ntp')}</option>
+                        <option value="9" ${sel(9)}>${i18n.t('periph-exec-action-ota')}</option>
+                        <option value="10" ${sel(10)}>${i18n.t('periph-exec-action-ap')}</option>
+                        <option value="11" ${sel(11)}>${i18n.t('periph-exec-action-ble')}</option>
+                    </optgroup>
+                    <optgroup label="${i18n.t('periph-exec-action-cat-advanced')}">
+                        <option value="15" ${sel(15)}>${i18n.t('periph-exec-action-script')}</option>
+                    </optgroup>
+                </select>
+            </div>
+            <div class="pe-action-grid">
+                <div class="pure-control-group pe-exec-mode-group">
+                    <label>${i18n.t('periph-exec-exec-mode-label')}</label>
+                    <select class="pure-input-1 pe-exec-mode" onchange="app.onPeriphExecModeChangeInBlock(this.value)">
+                        <option value="0" ${selMode(0)}>${i18n.t('periph-exec-exec-mode-async')}</option>
+                        <option value="1" ${selMode(1)}>${i18n.t('periph-exec-exec-mode-sync')}</option>
+                    </select>
+                </div>
+                <div class="pure-control-group pe-target-group" style="display:${showPeriphGroup ? 'block' : 'none'}">
+                    <label>${i18n.t('periph-exec-target-periph-label')}</label>
+                    <select class="pure-input-1 pe-target-periph">
+                        <option value="">${i18n.t('periph-exec-select-periph')}</option>
+                    </select>
+                </div>
+                <div class="pure-control-group pe-action-value-group" style="display:${needsValue ? 'block' : 'none'}; grid-column: 1 / -1;">
+                    <label>${i18n.t('periph-exec-action-value-label')}</label>
+                    <input type="text" class="pure-input-1 pe-action-value" value="${isScript ? '' : escapeHtml(data.actionValue)}" placeholder="${escapeHtml(i18n.t('periph-exec-action-value-hint'))}" ${data.useReceivedValue ? 'readonly' : ''}>
+                    <small style="color: #999;">${i18n.t('periph-exec-action-value-help')}</small>
+                </div>
+                <div class="pure-control-group pe-use-received-value-group">
+                    <label class="pe-checkbox-label">
+                        <input type="checkbox" class="pe-use-received-value" ${data.useReceivedValue ? 'checked' : ''} onchange="app.onPeriphExecUseRecvChangeInBlock(this, ${index})">
+                        <span>${i18n.t('periph-exec-use-received-value')}</span>
+                    </label>
+                    <small style="color: #999;">${i18n.t('periph-exec-use-received-value-help')}</small>
+                </div>
+                <div class="pure-control-group pe-sync-delay-group">
+                    <label>${i18n.t('periph-exec-sync-delay-label')}</label>
+                    <input type="number" class="pure-input-1 pe-sync-delay" min="0" max="10000" step="100" value="${data.syncDelayMs || 0}" placeholder="0">
+                    <small style="color: #999;">${i18n.t('periph-exec-sync-delay-help')}</small>
+                </div>
+                <div class="pure-control-group pe-script-group" style="display:${isScript ? 'block' : 'none'}; grid-column: 1 / -1;">
+                    <label>${i18n.t('periph-exec-script-label')}</label>
+                    <textarea class="pure-input-1 pe-script" rows="6" style="font-family: monospace; font-size: 13px; resize: vertical;" maxlength="1024" placeholder="${escapeHtml(i18n.t('periph-exec-script-placeholder'))}">${isScript ? escapeHtml(data.actionValue) : ''}</textarea>
+                    <small style="color: #999;">${i18n.t('periph-exec-script-help')}</small>
+                </div>
+            </div>
+        `;
+
+        container.appendChild(div);
+        // Populate target peripheral select
+        this._populatePeriphSelect(div.querySelector('.pe-target-periph'), data.targetPeriphId || '');
+    },
+
+    addPeriphExecTrigger() {
+        const container = document.getElementById('periph-exec-triggers');
+        if (!container) return;
+        const index = container.children.length;
+        this._createPeriphExecTriggerElement({}, index);
+    },
+
+    deletePeriphExecTrigger(index) {
+        const container = document.getElementById('periph-exec-triggers');
+        if (!container) return;
+        const items = container.querySelectorAll('.periph-exec-config-item');
+        if (items.length <= 1) return; // Keep at least one trigger
+        if (items[index]) items[index].remove();
+        this._reindexPeriphExecBlocks(container, 'Trigger');
+    },
+
+    addPeriphExecAction() {
+        const container = document.getElementById('periph-exec-actions');
+        if (!container) return;
+        const index = container.children.length;
+        // 如果当前有"设置"模式触发，新动作块自动继承该状态
+        const hasSet = this._hasSetModeTrigger();
+        this._createPeriphExecActionElement(hasSet ? { useReceivedValue: true } : {}, index);
+    },
+
+    deletePeriphExecAction(index) {
+        const container = document.getElementById('periph-exec-actions');
+        if (!container) return;
+        const items = container.querySelectorAll('.periph-exec-config-item');
+        if (items.length <= 1) return; // Keep at least one action
+        if (items[index]) items[index].remove();
+        this._reindexPeriphExecBlocks(container, 'Action');
+    },
+
+    _reindexPeriphExecBlocks(container, type) {
+        const items = container.querySelectorAll('.periph-exec-config-item');
+        const fnPrefix = type === 'Trigger' ? 'deletePeriphExecTrigger' : 'deletePeriphExecAction';
+        items.forEach((item, idx) => {
+            item.dataset.index = idx;
+            const indexSpan = item.querySelector('.mqtt-topic-index');
+            if (indexSpan) indexSpan.textContent = idx + 1;
+            const deleteBtn = item.querySelector('.mqtt-topic-delete');
+            if (deleteBtn) deleteBtn.setAttribute('onclick', `app.${fnPrefix}(${idx})`);
+            // Update onchange handlers with new index
+            if (type === 'Trigger') {
+                const triggerTypeSel = item.querySelector('.pe-trigger-type');
+                if (triggerTypeSel) triggerTypeSel.setAttribute('onchange', `app.onPeriphExecTriggerTypeChangeInBlock(this.value, ${idx})`);
+                const timerModeSel = item.querySelector('.pe-timer-mode');
+                if (timerModeSel) timerModeSel.setAttribute('onchange', `app.onPeriphExecTimerModeChangeInBlock(this.value, ${idx})`);
+                const eventCatSel = item.querySelector('.pe-event-category');
+                if (eventCatSel) eventCatSel.setAttribute('onchange', `app.onPeriphExecEventCategoryChangeInBlock(this.value, ${idx})`);
+                const operatorSel = item.querySelector('.pe-operator');
+                if (operatorSel) operatorSel.setAttribute('onchange', `app.onPeriphExecOperatorChangeInBlock(this.value, ${idx})`);
+            } else {
+                const actionTypeSel = item.querySelector('.pe-action-type');
+                if (actionTypeSel) actionTypeSel.setAttribute('onchange', `app.onPeriphExecActionTypeChangeInBlock(this.value, ${idx})`);
+                const useRecvCb = item.querySelector('.pe-use-received-value');
+                if (useRecvCb) useRecvCb.setAttribute('onchange', `app.onPeriphExecUseRecvChangeInBlock(this, ${idx})`);
+            }
+        });
+    },
+
+    onPeriphExecTriggerTypeChangeInBlock(val, index) {
+        const container = document.getElementById('periph-exec-triggers');
+        if (!container) return;
+        const block = container.querySelectorAll('.periph-exec-config-item')[index];
+        if (!block) return;
+        const triggerPeriphGroup = block.querySelector('.pe-trigger-periph-group');
+        const platformCondition = block.querySelector('.pe-platform-condition');
+        const timerConfig = block.querySelector('.pe-timer-config');
+        const eventGroup = block.querySelector('.pe-event-group');
+        if (triggerPeriphGroup) triggerPeriphGroup.style.display = (val === '0') ? 'block' : 'none';
         if (platformCondition) platformCondition.style.display = (val === '0') ? 'block' : 'none';
-        
-        // 定时触发(1): 显示定时配置
         if (timerConfig) timerConfig.style.display = (val === '1') ? 'block' : 'none';
-        
-        // 触发事件(4): 显示事件选择
         if (eventGroup) {
             eventGroup.style.display = (val === '4') ? 'block' : 'none';
             if (val === '4') {
-                this._populateEventCategories();
-                this._populateEventSelect();
+                this._populateEventCategoriesInBlock(block);
+                this._populateEventSelectInBlock(block);
+            }
+        }
+        // 切换离开平台触发时，检查是否还有其他平台触发处于"设置"模式
+        if (val !== '0') {
+            this._checkAndSyncSetMode();
+        }
+    },
+
+    // 处理方式（匹配/设置）切换
+    onPeriphExecOperatorChangeInBlock(val, index) {
+        const container = document.getElementById('periph-exec-triggers');
+        if (!container) return;
+        const block = container.querySelectorAll('.periph-exec-config-item')[index];
+        if (!block) return;
+        // 显示/隐藏匹配值字段
+        const compareGroup = block.querySelector('.pe-compare-value-group');
+        if (compareGroup) compareGroup.style.display = (val === '1') ? 'none' : 'block';
+        // 同步设置模式到所有动作块
+        this._syncSetModeToActions(val === '1');
+    },
+
+    // "使用接收值"复选框手动切换
+    onPeriphExecUseRecvChangeInBlock(checkbox, index) {
+        const block = checkbox.closest('.periph-exec-config-item');
+        if (!block) return;
+        const valueInput = block.querySelector('.pe-action-value');
+        if (valueInput) {
+            if (checkbox.checked) {
+                valueInput.setAttribute('readonly', '');
+            } else {
+                valueInput.removeAttribute('readonly');
             }
         }
     },
 
-    onPeriphExecEventCategoryChange(category) {
-        this._populateEventSelect(category);
+    // 检查所有触发块中是否有"设置"模式的平台触发，并同步到动作块
+    _checkAndSyncSetMode() {
+        const hasSetMode = this._hasSetModeTrigger();
+        this._syncSetModeToActions(hasSetMode);
     },
 
-    onPeriphExecTimerModeChange(val) {
-        const intervalFields = document.getElementById('periph-exec-interval-fields');
-        const dailyFields = document.getElementById('periph-exec-daily-fields');
+    // 检测是否有任意平台触发处于"设置"模式
+    _hasSetModeTrigger() {
+        const container = document.getElementById('periph-exec-triggers');
+        if (!container) return false;
+        const items = container.querySelectorAll('.periph-exec-config-item');
+        for (let i = 0; i < items.length; i++) {
+            const triggerType = items[i].querySelector('.pe-trigger-type');
+            const operator = items[i].querySelector('.pe-operator');
+            if (triggerType && triggerType.value === '0' && operator && operator.value === '1') {
+                return true;
+            }
+        }
+        return false;
+    },
+
+    // 同步"设置"模式状态到所有动作块
+    _syncSetModeToActions(isSetMode) {
+        const container = document.getElementById('periph-exec-actions');
+        if (!container) return;
+        container.querySelectorAll('.periph-exec-config-item').forEach(function (item) {
+            const checkbox = item.querySelector('.pe-use-received-value');
+            const valueInput = item.querySelector('.pe-action-value');
+            if (checkbox) checkbox.checked = isSetMode;
+            if (valueInput) {
+                if (isSetMode) {
+                    valueInput.setAttribute('readonly', '');
+                } else {
+                    valueInput.removeAttribute('readonly');
+                }
+            }
+        });
+    },
+
+    onPeriphExecTimerModeChangeInBlock(val, index) {
+        const container = document.getElementById('periph-exec-triggers');
+        if (!container) return;
+        const block = container.querySelectorAll('.periph-exec-config-item')[index];
+        if (!block) return;
+        const intervalFields = block.querySelector('.pe-interval-fields');
+        const dailyFields = block.querySelector('.pe-daily-fields');
         if (intervalFields) intervalFields.style.display = (val === '0') ? 'block' : 'none';
         if (dailyFields) dailyFields.style.display = (val === '1') ? 'block' : 'none';
     },
 
-    onPeriphExecActionTypeChange(val) {
+    onPeriphExecEventCategoryChangeInBlock(val, index) {
+        const container = document.getElementById('periph-exec-triggers');
+        if (!container) return;
+        const block = container.querySelectorAll('.periph-exec-config-item')[index];
+        if (!block) return;
+        this._populateEventSelectInBlock(block, val);
+    },
+
+    onPeriphExecActionTypeChangeInBlock(val, index) {
+        const container = document.getElementById('periph-exec-actions');
+        if (!container) return;
+        const block = container.querySelectorAll('.periph-exec-config-item')[index];
+        if (!block) return;
         const actionType = parseInt(val);
-        const periphGroup = document.getElementById('periph-exec-target-group');
-        const valueGroup = document.getElementById('periph-exec-action-value-group');
-        const scriptGroup = document.getElementById('periph-exec-script-group');
-        // 系统功能(6-11)和脚本(15)不需要目标外设
-        if (periphGroup) periphGroup.style.display = (actionType >= 6 && actionType <= 11) || actionType === 15 ? 'none' : 'block';
-        // 闪烁(2)/呼吸灯(3)/PWM(4)/DAC(5) 需要动作参数
+        const targetGroup = block.querySelector('.pe-target-group');
+        const valueGroup = block.querySelector('.pe-action-value-group');
+        const scriptGroup = block.querySelector('.pe-script-group');
+        if (targetGroup) targetGroup.style.display = ((actionType >= 6 && actionType <= 11) || actionType === 15) ? 'none' : 'block';
         const needsValue = (actionType >= 2 && actionType <= 5);
         if (valueGroup) valueGroup.style.display = needsValue ? 'block' : 'none';
-        // 脚本(15) 显示脚本编辑器
         if (scriptGroup) scriptGroup.style.display = actionType === 15 ? 'block' : 'none';
+    },
+
+    onPeriphExecModeChangeInBlock(val) {
+        // Sync hidden input
+        const hidden = document.getElementById('periph-exec-exec-mode');
+        if (hidden) hidden.value = val;
+        // Sync all blocks
+        const container = document.getElementById('periph-exec-actions');
+        if (!container) return;
+        container.querySelectorAll('.pe-exec-mode').forEach(s => { s.value = val; });
+    },
+
+    _populateEventCategoriesInBlock(blockEl, eventIdToSet) {
+        const sel = blockEl.querySelector('.pe-event-category');
+        if (!sel) return;
+        apiGet('/api/periph-exec/events/categories').then(res => {
+            if (!res || !res.success || !res.data) return;
+            let opts = '<option value="">' + i18n.t('periph-exec-select-category') + '</option>';
+            res.data.forEach(cat => {
+                const translatedCat = i18n.t('event-cat-' + cat.name) || cat.name;
+                opts += '<option value="' + cat.name + '">' + translatedCat + '</option>';
+            });
+            sel.innerHTML = opts;
+            if (eventIdToSet) {
+                this._populateEventSelectInBlock(blockEl, '', eventIdToSet);
+            }
+        });
+    },
+
+    _populateEventSelectInBlock(blockEl, categoryFilter, eventIdToSet) {
+        const sel = blockEl.querySelector('.pe-event');
+        if (!sel) return;
+        Promise.all([
+            apiGet('/api/periph-exec/events/static'),
+            apiGet('/api/periph-exec/events/dynamic')
+        ]).then(([staticRes, dynamicRes]) => {
+            let allEvents = [];
+            if (staticRes && staticRes.success && staticRes.data) allEvents = allEvents.concat(staticRes.data);
+            if (dynamicRes && dynamicRes.success && dynamicRes.data) allEvents = allEvents.concat(dynamicRes.data);
+            if (categoryFilter) allEvents = allEvents.filter(e => e.category === categoryFilter);
+            const categories = {};
+            allEvents.forEach(e => {
+                if (!categories[e.category]) categories[e.category] = [];
+                categories[e.category].push(e);
+            });
+            let opts = '<option value="">' + i18n.t('periph-exec-select-event') + '</option>';
+            for (const cat in categories) {
+                const translatedCat = i18n.t('event-cat-' + cat) || cat;
+                opts += '<optgroup label="' + translatedCat + '">';
+                categories[cat].forEach(e => {
+                    const translatedName = e.isDynamic ? e.name : (i18n.t('event-' + e.id) || e.name);
+                    opts += '<option value="' + e.id + '">' + translatedName + '</option>';
+                });
+                opts += '</optgroup>';
+            }
+            sel.innerHTML = opts;
+            if (eventIdToSet) sel.value = eventIdToSet;
+        });
+    },
+
+    _collectPeriphExecTriggers() {
+        const container = document.getElementById('periph-exec-triggers');
+        if (!container) return [];
+        const triggers = [];
+        container.querySelectorAll('.periph-exec-config-item').forEach(item => {
+            const triggerType = item.querySelector('.pe-trigger-type')?.value || '0';
+            const trigger = { triggerType: triggerType };
+            if (triggerType === '0') {
+                trigger.triggerPeriphId = item.querySelector('.pe-trigger-periph')?.value || '';
+                trigger.operatorType = item.querySelector('.pe-operator')?.value || '0';
+                trigger.compareValue = item.querySelector('.pe-compare-value')?.value?.trim() || '';
+            } else if (triggerType === '1') {
+                trigger.timerMode = item.querySelector('.pe-timer-mode')?.value || '0';
+                trigger.intervalSec = item.querySelector('.pe-interval')?.value || '60';
+                trigger.timePoint = item.querySelector('.pe-timepoint')?.value || '08:00';
+            } else if (triggerType === '4') {
+                trigger.eventId = item.querySelector('.pe-event')?.value || '';
+            }
+            triggers.push(trigger);
+        });
+        return triggers;
+    },
+
+    _collectPeriphExecActions() {
+        const container = document.getElementById('periph-exec-actions');
+        if (!container) return [];
+        const actions = [];
+        container.querySelectorAll('.periph-exec-config-item').forEach(item => {
+            const actionType = item.querySelector('.pe-action-type')?.value || '0';
+            const action = {
+                targetPeriphId: item.querySelector('.pe-target-periph')?.value || '',
+                actionType: actionType
+            };
+            if (actionType === '15') {
+                action.actionValue = item.querySelector('.pe-script')?.value || '';
+            } else {
+                action.actionValue = item.querySelector('.pe-action-value')?.value?.trim() || '';
+            }
+            action.useReceivedValue = item.querySelector('.pe-use-received-value')?.checked || false;
+            action.syncDelayMs = parseInt(item.querySelector('.pe-sync-delay')?.value || '0', 10) || 0;
+            actions.push(action);
+        });
+        return actions;
     },
 
     savePeriphExecRule() {
@@ -4639,62 +6165,46 @@ const AppState = {
         errEl.style.display = 'none';
         const originalId = document.getElementById('periph-exec-original-id').value;
         const isEdit = originalId !== '';
-        const triggerType = document.getElementById('periph-exec-trigger-type').value;
-        
+
         const ruleData = {
             name: document.getElementById('periph-exec-name').value.trim(),
             enabled: document.getElementById('periph-exec-enabled').checked ? '1' : '0',
-            triggerType: triggerType,
             execMode: document.getElementById('periph-exec-exec-mode').value,
             reportAfterExec: document.getElementById('periph-exec-report').value === 'true'
         };
-        
-        // 根据触发类型添加相应字段
-        if (triggerType === '0') {
-            // 平台触发
-            ruleData.operatorType = document.getElementById('periph-exec-operator').value;
-            ruleData.compareValue = document.getElementById('periph-exec-compare-value').value.trim();
-        } else if (triggerType === '1') {
-            // 定时触发
-            ruleData.timerMode = document.getElementById('periph-exec-timer-mode').value;
-            ruleData.intervalSec = document.getElementById('periph-exec-interval').value;
-            ruleData.timePoint = document.getElementById('periph-exec-timepoint').value;
-        } else if (triggerType === '4') {
-            // 触发事件
-            ruleData.eventId = document.getElementById('periph-exec-event').value;
-        }
-        
-        // 动作配置
-        ruleData.actionType = document.getElementById('periph-exec-action-type').value;
-        ruleData.targetPeriphId = document.getElementById('periph-exec-target-periph').value;
-        
-        // 脚本类型: 从 textarea 获取脚本内容
-        if (ruleData.actionType === '15') {
-            const script = document.getElementById('periph-exec-script').value;
-            if (!script.trim()) {
-                errEl.textContent = i18n.t('periph-exec-script-empty');
-                errEl.style.display = 'block';
-                return;
-            }
-            if (script.length > 1024) {
-                errEl.textContent = i18n.t('periph-exec-script-too-long');
-                errEl.style.display = 'block';
-                return;
-            }
-            ruleData.actionValue = script;
-        } else {
-            ruleData.actionValue = document.getElementById('periph-exec-action-value').value.trim();
-        }
-        
+
         if (!ruleData.name) {
             errEl.textContent = i18n.t('periph-exec-validate-name');
             errEl.style.display = 'block';
             return;
         }
-        
+
+        // Collect triggers
+        const triggers = this._collectPeriphExecTriggers();
+        ruleData.triggers = triggers;
+
+        // Collect actions
+        const actions = this._collectPeriphExecActions();
+        ruleData.actions = actions;
+        // Validate script actions
+        for (let i = 0; i < actions.length; i++) {
+            if (actions[i].actionType === '15') {
+                if (!actions[i].actionValue.trim()) {
+                    errEl.textContent = i18n.t('periph-exec-script-empty');
+                    errEl.style.display = 'block';
+                    return;
+                }
+                if (actions[i].actionValue.length > 1024) {
+                    errEl.textContent = i18n.t('periph-exec-script-too-long');
+                    errEl.style.display = 'block';
+                    return;
+                }
+            }
+        }
+
         if (isEdit) ruleData.id = originalId;
         const url = isEdit ? '/api/periph-exec/update' : '/api/periph-exec';
-        apiPost(url, ruleData)
+        apiPostJson(url, ruleData)
             .then(res => {
                 if (res && res.success) {
                     Notification.success(i18n.t(isEdit ? 'periph-exec-update-ok' : 'periph-exec-add-ok'), i18n.t('periph-exec-title'));
@@ -4714,54 +6224,63 @@ const AppState = {
 
     editPeriphExecRule(id) {
         this.openPeriphExecModal(id);
-        apiGet('/api/periph-exec')
-            .then(res => {
-                if (!res || !res.success || !res.data) return;
-                const rule = res.data.find(r => r.id === id);
+        Promise.all([apiGet('/api/periph-exec'), apiGet('/api/peripherals'), apiGet('/api/protocol/config')])
+            .then(([execRes, periphRes, protoRes]) => {
+                if (periphRes && periphRes.success && periphRes.data) {
+                    this._pePeripherals = periphRes.data.filter(p => p.enabled);
+                }
+                this._peDataSources = [];
+                if (protoRes && protoRes.success !== false) {
+                    this._peDataSources = this._extractDataSources(protoRes);
+                }
+                if (!execRes || !execRes.success || !execRes.data) return;
+                const rule = execRes.data.find(r => r.id === id);
                 if (!rule) return;
-                
-                // 基础配置
+
+                // Basic config
                 document.getElementById('periph-exec-name').value = rule.name || '';
                 document.getElementById('periph-exec-enabled').checked = !!rule.enabled;
                 document.getElementById('periph-exec-exec-mode').value = String(rule.execMode || 0);
                 document.getElementById('periph-exec-report').value = rule.reportAfterExec !== false ? 'true' : 'false';
-                
-                // 触发配置
-                document.getElementById('periph-exec-trigger-type').value = String(rule.triggerType);
-                this.onPeriphExecTriggerTypeChange(String(rule.triggerType));
-                
-                // 平台触发配置
-                if (String(rule.triggerType) === '0') {
-                    document.getElementById('periph-exec-operator').value = String(rule.operatorType || 0);
-                    document.getElementById('periph-exec-compare-value').value = rule.compareValue || '';
+
+                // Build triggers array from rule data (backward compat)
+                let triggers = rule.triggers || [];
+                if (triggers.length === 0) {
+                    triggers = [{
+                        triggerType: String(rule.triggerType ?? 0),
+                        triggerPeriphId: rule.triggerPeriphId || rule.sourcePeriphId || '',
+                        operatorType: String(rule.operatorType ?? 0),
+                        compareValue: rule.compareValue || '',
+                        timerMode: String(rule.timerMode ?? 0),
+                        intervalSec: rule.intervalSec || 60,
+                        timePoint: rule.timePoint || '08:00',
+                        eventId: rule.eventId || ''
+                    }];
                 }
-                
-                // 定时触发配置
-                if (String(rule.triggerType) === '1') {
-                    document.getElementById('periph-exec-timer-mode').value = String(rule.timerMode || 0);
-                    this.onPeriphExecTimerModeChange(String(rule.timerMode));
-                    document.getElementById('periph-exec-interval').value = rule.intervalSec || 60;
-                    document.getElementById('periph-exec-timepoint').value = rule.timePoint || '08:00';
+
+                // Build actions array from rule data (backward compat)
+                let actions = rule.actions || [];
+                if (actions.length === 0) {
+                    actions = [{
+                        targetPeriphId: rule.targetPeriphId || '',
+                        actionType: String(rule.actionType ?? 0),
+                        actionValue: rule.actionValue || ''
+                    }];
                 }
-                
-                // 触发事件配置
-                if (String(rule.triggerType) === '4' && rule.eventId) {
-                    setTimeout(() => {
-                        document.getElementById('periph-exec-event').value = rule.eventId || '';
-                    }, 300);
-                }
-                
-                // 动作配置
-                document.getElementById('periph-exec-action-type').value = String(rule.actionType);
-                this.onPeriphExecActionTypeChange(String(rule.actionType));
-                document.getElementById('periph-exec-target-periph').value = rule.targetPeriphId || '';
-                
-                // 脚本类型: 回显脚本内容到 textarea
-                if (String(rule.actionType) === '15') {
-                    const scriptEl = document.getElementById('periph-exec-script');
-                    if (scriptEl) scriptEl.value = rule.actionValue || '';
-                } else {
-                    document.getElementById('periph-exec-action-value').value = rule.actionValue || '';
+
+                // Render trigger blocks
+                const triggersContainer = document.getElementById('periph-exec-triggers');
+                if (triggersContainer) triggersContainer.innerHTML = '';
+                triggers.forEach((t, i) => this._createPeriphExecTriggerElement(t, i));
+
+                // Render action blocks
+                const actionsContainer = document.getElementById('periph-exec-actions');
+                if (actionsContainer) actionsContainer.innerHTML = '';
+                actions.forEach((a, i) => this._createPeriphExecActionElement(a, i));
+
+                // 编辑模式加载完成后，检查是否有"设置"模式触发并同步到动作块
+                if (this._hasSetModeTrigger()) {
+                    this._syncSetModeToActions(true);
                 }
             });
     },
@@ -4863,7 +6382,7 @@ const AppState = {
                     12: i18n.t('periph-exec-action-call-periph'),
                     15: i18n.t('periph-exec-action-script')
                 };
-                const opLabels = ['=','!=','>','<','>=','<=','BETWEEN','NOT BETWEEN','CONTAIN','NOT CONTAIN'];
+                const opLabels = [i18n.t('periph-exec-handle-match'), i18n.t('periph-exec-handle-set')];
                 let html = '';
                 rules.forEach(r => {
                     const statusBadge = r.enabled
@@ -4872,24 +6391,44 @@ const AppState = {
                     const modeBadge = r.execMode === 1
                         ? ' <span class="badge badge-info" style="font-size:10px;">sync</span>'
                         : ' <span class="badge badge-success" style="font-size:10px;">async</span>';
-                    let triggerText = triggerLabels[r.triggerType] || '?';
-                    if (r.triggerType === 0) {
-                        triggerText += ': ' + (opLabels[r.operatorType] || '') + ' ' + (r.compareValue || '');
-                    } else if (r.triggerType === 1) {
-                        triggerText += ': ' + (r.timerMode === 0 ? i18n.t('periph-exec-every') + ' ' + r.intervalSec + 's' : i18n.t('periph-exec-daily') + ' ' + (r.timePoint || ''));
-                    } else if (r.triggerType === 4) {
-                        // 触发事件：显示事件ID
-                        triggerText += ': ' + (r.eventId || '?');
-                    }
-                    const periphName = r.targetPeriphId ? (periphMap[r.targetPeriphId] || r.targetPeriphId) : '-';
-                    const actionText = actionLabels[r.actionType] || '?';
-                    let actionDisplay = actionText;
-                    if (r.actionType === 15 && r.actionValue) {
-                        const lineCount = r.actionValue.split('\n').filter(l => l.trim() && !l.trim().startsWith('#')).length;
-                        actionDisplay += ' (' + lineCount + i18n.t('periph-exec-script-lines') + ')';
-                    } else if (r.actionValue) {
-                        actionDisplay += ' (' + r.actionValue + ')';
-                    }
+                    // Build trigger display: use triggers array or root-level fields
+                    let triggerText = '';
+                    const triggers = r.triggers && r.triggers.length > 0 ? r.triggers : [r];
+                    triggers.forEach((t, ti) => {
+                        const tt = Number(t.triggerType);
+                        let line = triggerLabels[tt] || '?';
+                        if (tt === 0) {
+                            const opIdx = Number(t.operatorType);
+                            const opText = (opIdx === 0 || opIdx === 1) ? (opLabels[opIdx] || '') : opLabels[0];
+                            line += ': ' + opText;
+                            if (opIdx !== 1 && t.compareValue) line += ' ' + t.compareValue;
+                        } else if (tt === 1) {
+                            line += ': ' + (Number(t.timerMode) === 0 ? i18n.t('periph-exec-every') + ' ' + t.intervalSec + 's' : i18n.t('periph-exec-daily') + ' ' + (t.timePoint || ''));
+                        } else if (tt === 4) {
+                            line += ': ' + (t.eventId || '?');
+                        }
+                        if (ti > 0) triggerText += '<br>';
+                        triggerText += line;
+                    });
+                    // Build action display: use actions array or root-level fields
+                    const actions = r.actions && r.actions.length > 0 ? r.actions : [r];
+                    let actionDisplay = '';
+                    let periphNames = [];
+                    actions.forEach((a, ai) => {
+                        const at = Number(a.actionType);
+                        let line = actionLabels[at] || '?';
+                        if (at === 15 && a.actionValue) {
+                            const lineCount = a.actionValue.split('\n').filter(l => l.trim() && !l.trim().startsWith('#')).length;
+                            line += ' (' + lineCount + i18n.t('periph-exec-script-lines') + ')';
+                        } else if (a.actionValue) {
+                            line += ' (' + a.actionValue + ')';
+                        }
+                        if (ai > 0) actionDisplay += '<br>';
+                        actionDisplay += line;
+                        const pid = a.targetPeriphId;
+                        if (pid) periphNames.push(periphMap[pid] || pid);
+                    });
+                    const periphName = periphNames.length > 0 ? periphNames.join(', ') : '-';
                     const statsText = i18n.t('periph-exec-stats-count') + ': ' + (r.triggerCount || 0);
                     html += '<tr>';
                     html += '<td>' + (r.name || r.id) + '</td>';
@@ -4926,92 +6465,6 @@ const AppState = {
             sel.innerHTML = opts;
             if (currentVal) sel.value = currentVal;
             sel._populated = true;
-        });
-    },
-
-    _populateSourcePeriphSelect() {
-        const sel = document.getElementById('periph-exec-source-periph');
-        if (!sel) return;
-        const currentVal = sel.value;
-        apiGet('/api/peripherals').then(res => {
-            if (!res || !res.success || !res.data) return;
-            // 仅显示输入类型外设 (11=DI, 13=DI_PU, 14=DI_PD, 15=AI, 21=Touch, 26=ADC)
-            const inputTypes = [11, 13, 14, 15, 21, 26];
-            let opts = '<option value="">' + i18n.t('periph-exec-select-source-periph') + '</option>';
-            res.data.filter(p => p.enabled && inputTypes.includes(p.type)).forEach(p => {
-                opts += '<option value="' + p.id + '">' + p.name + ' (' + p.id + ')' + '</option>';
-            });
-            sel.innerHTML = opts;
-            if (currentVal) sel.value = currentVal;
-        });
-    },
-
-    _populateEventCategories() {
-        const sel = document.getElementById('periph-exec-event-category');
-        if (!sel) return;
-        const currentVal = sel.value;
-        
-        apiGet('/api/periph-exec/events/categories').then(res => {
-            if (!res || !res.success || !res.data) return;
-            let opts = '<option value="">' + i18n.t('periph-exec-select-category') + '</option>';
-            res.data.forEach(cat => {
-                // 使用翻译后的分类名称
-                const translatedCat = i18n.t('event-cat-' + cat.name) || cat.name;
-                opts += '<option value="' + cat.name + '">' + translatedCat + '</option>';
-            });
-            sel.innerHTML = opts;
-            if (currentVal) sel.value = currentVal;
-        });
-    },
-
-    _populateEventSelect(categoryFilter) {
-        const sel = document.getElementById('periph-exec-event');
-        if (!sel) return;
-        const currentVal = sel.value;
-        
-        Promise.all([
-            apiGet('/api/periph-exec/events/static'),
-            apiGet('/api/periph-exec/events/dynamic')
-        ]).then(([staticRes, dynamicRes]) => {
-            let allEvents = [];
-            
-            // 添加静态事件
-            if (staticRes && staticRes.success && staticRes.data) {
-                allEvents = allEvents.concat(staticRes.data);
-            }
-            
-            // 添加动态事件（外设执行规则事件）
-            if (dynamicRes && dynamicRes.success && dynamicRes.data) {
-                allEvents = allEvents.concat(dynamicRes.data);
-            }
-            
-            // 按分类过滤
-            if (categoryFilter) {
-                allEvents = allEvents.filter(e => e.category === categoryFilter);
-            }
-            
-            // 按分类分组
-            const categories = {};
-            allEvents.forEach(e => {
-                if (!categories[e.category]) categories[e.category] = [];
-                categories[e.category].push(e);
-            });
-            
-            let opts = '<option value="">' + i18n.t('periph-exec-select-event') + '</option>';
-            for (const cat in categories) {
-                // 使用翻译后的分类名称
-                const translatedCat = i18n.t('event-cat-' + cat) || cat;
-                opts += '<optgroup label="' + translatedCat + '">';
-                categories[cat].forEach(e => {
-                    // 对于动态事件（isDynamic=true），直接使用后端返回的 name
-                    // 对于静态事件，使用国际化翻译
-                    const translatedName = e.isDynamic ? e.name : (i18n.t('event-' + e.id) || e.name);
-                    opts += '<option value="' + e.id + '">' + translatedName + '</option>';
-                });
-                opts += '</optgroup>';
-            }
-            sel.innerHTML = opts;
-            if (currentVal) sel.value = currentVal;
         });
     },
 

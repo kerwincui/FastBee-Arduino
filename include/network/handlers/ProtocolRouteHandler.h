@@ -25,6 +25,21 @@ private:
     void handleSaveProtocolConfig(AsyncWebServerRequest* request);
     void handleGetModbusStatus(AsyncWebServerRequest* request);
     void handleModbusWrite(AsyncWebServerRequest* request);
+    
+    // Modbus 通用控制 API
+    void handleModbusCoilControl(AsyncWebServerRequest* request);
+    void handleModbusCoilBatch(AsyncWebServerRequest* request);
+    void handleModbusCoilDelay(AsyncWebServerRequest* request);
+    void handleModbusCoilStatus(AsyncWebServerRequest* request);
+    void handleModbusDeviceAddress(AsyncWebServerRequest* request);
+    void handleModbusDeviceBaudrate(AsyncWebServerRequest* request);
+    void handleModbusDiscreteInputs(AsyncWebServerRequest* request);
+    
+    // Modbus 通用寄存器读写 API
+    void handleModbusRegisterRead(AsyncWebServerRequest* request);
+    void handleModbusRegisterWrite(AsyncWebServerRequest* request);
+    void handleModbusRegisterBatchWrite(AsyncWebServerRequest* request);
+
     void handleTestMqttConnection(AsyncWebServerRequest* request);
     void handleGetMqttStatus(AsyncWebServerRequest* request);
     void handleMqttReconnect(AsyncWebServerRequest* request);

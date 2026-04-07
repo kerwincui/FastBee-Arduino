@@ -17,7 +17,7 @@
           "functionCode": 4,
           "startAddress": 0,
           "quantity": 2,
-          "pollInterval": 5,
+          "pollInterval": 300,
           "enabled": true,
           "label": "温湿度",
           "mappings": [
@@ -42,7 +42,7 @@
           "functionCode": 3,
           "startAddress": 0,
           "quantity": 2,
-          "pollInterval": 5,
+          "pollInterval": 300,
           "enabled": true,
           "label": "PM25-10",
           "mappings": [

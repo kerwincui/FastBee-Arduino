@@ -404,6 +404,11 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 doc["enableNTP"] = (v == "1" || v == "true" || obj["enableNTP"].as<bool>());
             }
             if (obj["syncInterval"].is<String>() || obj["syncInterval"].is<int>()) doc["syncInterval"] = obj["syncInterval"].as<int>();
+            if (obj["cacheDuration"].is<int>() || obj["cacheDuration"].is<String>()) {
+                int cd = obj["cacheDuration"].as<int>();
+                doc["cacheDuration"] = cd;
+                ctx->cacheDuration = (uint32_t)cd;
+            }
 
             File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
             if (!f) { ctx->sendError(request, 500, "Failed to save device config"); return; }

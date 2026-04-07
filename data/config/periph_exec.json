@@ -40,7 +40,7 @@
     {
       "id": "exec_2147281",
       "name": "设备重启",
-      "enabled": true,
+      "enabled": false,
       "triggerType": 0,
       "execMode": 0,
       "operatorType": 0,
@@ -58,7 +58,7 @@
     {
       "id": "exec_2451103",
       "name": "设备恢复出厂设置",
-      "enabled": true,
+      "enabled": false,
       "triggerType": 0,
       "execMode": 0,
       "operatorType": 0,
@@ -396,6 +396,24 @@
       "targetPeriphId": "",
       "actionType": 15,
       "actionValue": "# MQTT\nLOG MQTT\nMQTT 0 [{\"id\":\"temperature\",\"value\":\"RANDOMF(-10,45,1)\"},{\"id\":\"humidity\",\"value\":\"RANDOMF(20,95,1)\"}]\nLOG MQTT"
+    },
+    {
+      "id": "exec_temp_fan",
+      "name": "温度>40开风扇",
+      "enabled": false,
+      "triggerType": 0,
+      "execMode": 0,
+      "operatorType": 2,
+      "compareValue": "40",
+      "sourcePeriphId": "temperature",
+      "timerMode": 0,
+      "intervalSec": 60,
+      "timePoint": "08:00",
+      "protocolType": 0,
+      "scriptContent": "",
+      "targetPeriphId": "gpio_dout",
+      "actionType": 0,
+      "actionValue": ""
     }
   ]
 }

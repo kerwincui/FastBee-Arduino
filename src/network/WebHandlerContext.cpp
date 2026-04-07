@@ -6,7 +6,8 @@ WebHandlerContext::WebHandlerContext(AsyncWebServer* srv, IAuthManager* authMgr,
     : server(srv), authManager(authMgr), userManager(userMgr),
       roleManager(nullptr), networkManager(nullptr), otaManager(nullptr),
       protocolManager(nullptr), webRootPath("/www"),
-      scheduleRestart(false), scheduledRestartTime(0) {
+      scheduleRestart(false), scheduledRestartTime(0), cacheDuration(86400) {
+    loadCacheDuration();
 }
 
 // ============ 参数处理辅助方法 ============
@@ -404,11 +405,13 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
                 }
             }
 
-            // 静态资源长缓存：JS/CSS 缓存1天，HTML 需重验证
-            if (ext == ".html") {
-                response->addHeader("Cache-Control", "no-cache");
+            // 缓存策略：
+            // JS/CSS: 使用配置的缓存时间(cacheDuration秒) + ETag
+            // HTML: 始终 no-cache(每次ETag验证入口页)
+            if (cacheDuration > 0 && ext != ".html") {
+                response->addHeader("Cache-Control", "public, max-age=" + String(cacheDuration));
             } else {
-                response->addHeader("Cache-Control", "public, max-age=86400, immutable");
+                response->addHeader("Cache-Control", "no-cache");
             }
 
             request->send(response);
@@ -508,4 +511,18 @@ String WebHandlerContext::formatUptime(unsigned long ms) {
         snprintf(buf, sizeof(buf), "%02lu:%02lu:%02lu", hours, minutes % 60, seconds % 60);
     }
     return String(buf);
+}
+
+void WebHandlerContext::loadCacheDuration() {
+    cacheDuration = 86400; // 默认24小时
+    File f = LittleFS.open("/config/device.json", "r");
+    if (f) {
+        JsonDocument doc;
+        if (!deserializeJson(doc, f)) {
+            if (doc["cacheDuration"].is<int>()) {
+                cacheDuration = (uint32_t)doc["cacheDuration"].as<int>();
+            }
+        }
+        f.close();
+    }
 }

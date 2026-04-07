@@ -243,6 +243,8 @@ namespace Protocols {
     constexpr uint16_t MODBUS_DEFAULT_POLL_INTERVAL = 30;   // 默认轮询间隔（秒）
     constexpr uint16_t MODBUS_MAX_REGISTERS_PER_READ = 125; // 单次最大寄存器数
     constexpr uint8_t  MODBUS_MAX_WRITE_QUEUE       = 4;    // 写请求队列深度
+    constexpr uint8_t  MODBUS_MAX_COIL_DELAY_TASKS  = 8;    // 最大线圈延时任务数
+    constexpr uint8_t  MODBUS_MAX_WRITE_COILS        = 32;   // 单次最大写线圈数
     constexpr uint8_t  MODBUS_POLL_LABEL_MAX_LEN    = 16;   // 轮询标签最大长度
     constexpr uint8_t  MODBUS_MAX_MAPPINGS_PER_TASK = 8;    // 每任务最大寄存器映射数
     constexpr uint8_t  MODBUS_SENSOR_ID_MAX_LEN     = 16;   // 传感器ID最大长度

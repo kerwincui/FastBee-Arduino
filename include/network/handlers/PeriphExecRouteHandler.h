@@ -2,8 +2,10 @@
 #define PERIPH_EXEC_ROUTE_HANDLER_H
 
 #include <ESPAsyncWebServer.h>
+#include <ArduinoJson.h>
 
 class WebHandlerContext;
+struct PeriphExecRule;
 
 /**
  * @brief 外设执行路由处理器
@@ -30,6 +32,13 @@ private:
     void handleGetDynamicEvents(AsyncWebServerRequest* request);
     void handleGetEventCategories(AsyncWebServerRequest* request);
     void handleGetTriggerTypes(AsyncWebServerRequest* request);
+
+    // JSON body handlers（支持 triggers[]/actions[] 数组）
+    void handleAddRuleJson(AsyncWebServerRequest* request, JsonVariant& json);
+    void handleUpdateRuleJson(AsyncWebServerRequest* request, JsonVariant& json);
+
+    // JSON → PeriphExecRule 解析辅助
+    void parseRuleFromJson(JsonObject& obj, PeriphExecRule& rule);
 };
 
 #endif // PERIPH_EXEC_ROUTE_HANDLER_H

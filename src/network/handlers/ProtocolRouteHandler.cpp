@@ -213,6 +213,58 @@ void ProtocolRouteHandler::setupRoutes(AsyncWebServer* server) {
         handleModbusWrite(request);
     });
 
+    // Modbus 通用控制 API（线圈、寄存器读写，设备参数）
+    server->on("/api/modbus/coil/control", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleModbusCoilControl(request);
+    });
+
+    server->on("/api/modbus/coil/batch", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleModbusCoilBatch(request);
+    });
+
+    server->on("/api/modbus/coil/delay", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleModbusCoilDelay(request);
+    });
+
+    server->on("/api/modbus/coil/status", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleModbusCoilStatus(request);
+    });
+
+    server->on("/api/modbus/device/address", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleModbusDeviceAddress(request);
+    });
+
+    server->on("/api/modbus/device/baudrate", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleModbusDeviceBaudrate(request);
+    });
+
+    server->on("/api/modbus/device/inputs", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleModbusDiscreteInputs(request);
+    });
+
+    // Modbus 通用寄存器读写 API
+    server->on("/api/modbus/register/read", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        handleModbusRegisterRead(request);
+    });
+
+    server->on("/api/modbus/register/write", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleModbusRegisterWrite(request);
+    });
+
+    server->on("/api/modbus/register/batch-write", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleModbusRegisterBatchWrite(request);
+    });
+
     // MQTT Connection Test API
     server->on("/api/mqtt/test", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
@@ -582,6 +634,32 @@ void ProtocolRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request)
                 t["pollInterval"] = task.pollInterval;
                 t["enabled"] = task.enabled;
                 t["label"] = task.label;
+
+                // 寄存器映射配置
+                if (task.mappingCount > 0) {
+                    JsonArray mappings = t["mappings"].to<JsonArray>();
+                    for (uint8_t j = 0; j < task.mappingCount; j++) {
+                        const RegisterMapping& m = task.mappings[j];
+                        if (m.sensorId[0] == '\0') continue;
+                        JsonObject mo = mappings.add<JsonObject>();
+                        mo["regOffset"] = m.regOffset;
+                        mo["dataType"] = m.dataType;
+                        mo["scaleFactor"] = m.scaleFactor;
+                        mo["decimalPlaces"] = m.decimalPlaces;
+                        mo["sensorId"] = m.sensorId;
+                    }
+                }
+
+                // 最新采集数据缓存
+                TaskDataCache cache = modbus->getTaskDataCache(i);
+                if (cache.valid) {
+                    JsonObject cd = t["cachedData"].to<JsonObject>();
+                    cd["timestamp"] = cache.timestamp;
+                    JsonArray vals = cd["values"].to<JsonArray>();
+                    for (uint16_t v = 0; v < cache.count; v++) {
+                        vals.add(cache.values[v]);
+                    }
+                }
             }
         }
     }
@@ -628,6 +706,670 @@ void ProtocolRouteHandler::handleModbusWrite(AsyncWebServerRequest* request) {
     } else {
         ctx->sendError(request, 503, "Write queue full");
     }
+}
+
+// ============================================================================
+// Modbus 通用控制 API 辅助函数
+// ============================================================================
+
+// 将 OneShotError 转换为 HTTP 错误响应
+static void sendOneShotError(WebHandlerContext* ctx, AsyncWebServerRequest* request,
+                              const OneShotResult& result) {
+    JsonDocument doc;
+    doc["success"] = false;
+    
+    const char* errorCode = "UNKNOWN";
+    const char* errorMsg = "Unknown error";
+    int httpCode = 500;
+    
+    switch (result.error) {
+        case ONESHOT_TIMEOUT:
+            errorCode = "TIMEOUT";
+            errorMsg = "Slave not responding (timeout)";
+            httpCode = 504;
+            break;
+        case ONESHOT_CRC_ERROR:
+            errorCode = "CRC_ERROR";
+            errorMsg = "CRC validation failed";
+            httpCode = 502;
+            break;
+        case ONESHOT_EXCEPTION: {
+            errorCode = "MODBUS_EXCEPTION";
+            httpCode = 422;
+            char msgBuf[64];
+            switch (result.exceptionCode) {
+                case 0x01: snprintf(msgBuf, sizeof(msgBuf), "Illegal function (0x01)"); break;
+                case 0x02: snprintf(msgBuf, sizeof(msgBuf), "Illegal data address (0x02)"); break;
+                case 0x03: snprintf(msgBuf, sizeof(msgBuf), "Illegal data value (0x03)"); break;
+                case 0x04: snprintf(msgBuf, sizeof(msgBuf), "Slave device failure (0x04)"); break;
+                default:   snprintf(msgBuf, sizeof(msgBuf), "Exception code 0x%02X", result.exceptionCode); break;
+            }
+            doc["error"] = msgBuf;
+            doc["errorCode"] = errorCode;
+            doc["exceptionCode"] = result.exceptionCode;
+            String out;
+            serializeJson(doc, out);
+            request->send(httpCode, "application/json", out);
+            return;
+        }
+        case ONESHOT_NOT_INITIALIZED:
+            errorCode = "NOT_INITIALIZED";
+            errorMsg = "Modbus not initialized";
+            httpCode = 503;
+            break;
+        case ONESHOT_BUSY:
+            errorCode = "BUSY";
+            errorMsg = "Modbus busy, try again";
+            httpCode = 503;
+            break;
+        default:
+            break;
+    }
+    
+    doc["error"] = errorMsg;
+    doc["errorCode"] = errorCode;
+    String out;
+    serializeJson(doc, out);
+    request->send(httpCode, "application/json", out);
+}
+
+// 获取 ModbusHandler 指针并校验 Master 模式，失败时发送错误响应
+static ModbusHandler* getModbusMaster(WebHandlerContext* ctx, AsyncWebServerRequest* request) {
+    ProtocolManager* pm = ctx->protocolManager;
+    if (!pm) {
+        ctx->sendError(request, 500, "Protocol manager not available");
+        return nullptr;
+    }
+    ModbusHandler* modbus = pm->getModbusHandler();
+    if (!modbus) {
+        ctx->sendError(request, 503, "Modbus not started");
+        return nullptr;
+    }
+    if (modbus->getMode() != MODBUS_MASTER) {
+        ctx->sendError(request, 400, "Modbus is not in Master mode");
+        return nullptr;
+    }
+    return modbus;
+}
+
+// 辅助：将 Modbus TX/RX 调试帧添加到 JSON 响应
+static void addModbusDebug(JsonDocument& doc, ModbusHandler* modbus) {
+    JsonObject debug = doc["debug"].to<JsonObject>();
+    debug["tx"] = modbus->getLastTxHex();
+    debug["rx"] = modbus->getLastRxHex();
+}
+
+// ============================================================================
+// POST /api/modbus/coil/control — 单个线圈控制（on/off/toggle）
+// ============================================================================
+void ProtocolRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.edit")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+    
+    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    if (!modbus) return;
+    
+    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
+    uint16_t channel = (uint16_t)ctx->getParamInt(request, "channel", 0);
+    uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
+    String action = ctx->getParamValue(request, "action", "toggle");
+    
+    if (slaveAddr < 1 || slaveAddr > 247) {
+        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
+        return;
+    }
+    
+    uint16_t coilAddr = coilBase + channel;
+    OneShotResult result;
+    
+    if (action == "on") {
+        result = modbus->writeCoilOnce(slaveAddr, coilAddr, true);
+    } else if (action == "off") {
+        result = modbus->writeCoilOnce(slaveAddr, coilAddr, false);
+    } else if (action == "toggle") {
+        // 使用设备原生 toggle 指令 (FC 0x05 value=0x5500)
+        result = modbus->writeCoilOnce(slaveAddr, coilAddr, (uint16_t)0x5500);
+    } else {
+        ctx->sendBadRequest(request, "Invalid action (on/off/toggle)");
+        return;
+    }
+    
+    if (result.error != ONESHOT_SUCCESS) {
+        sendOneShotError(ctx, request, result);
+        return;
+    }
+    
+    // toggle/off 后读取实际状态，使用 qty=8 确保设备返回标准格式响应
+    bool newState = (action == "on");
+    if (action == "toggle" || action == "off") {
+        OneShotResult readResult = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, 8);
+        if (readResult.error == ONESHOT_SUCCESS) {
+            newState = (readResult.data[channel] != 0);
+        }
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    data["channel"] = channel;
+    data["coilAddress"] = coilAddr;
+    data["state"] = newState;
+    data["action"] = action;
+    addModbusDebug(doc, modbus);
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+// ============================================================================
+// POST /api/modbus/coil/batch — 批量线圈控制（allOn/allOff/allToggle）
+// ============================================================================
+void ProtocolRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.edit")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+    
+    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    if (!modbus) return;
+    
+    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
+    uint16_t channelCount = (uint16_t)ctx->getParamInt(request, "channelCount", 8);
+    uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
+    String action = ctx->getParamValue(request, "action", "allOff");
+    
+    if (slaveAddr < 1 || slaveAddr > 247) {
+        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
+        return;
+    }
+    if (channelCount == 0 || channelCount > Protocols::MODBUS_MAX_WRITE_COILS) {
+        ctx->sendBadRequest(request, "Invalid channel count (1-32)");
+        return;
+    }
+    
+    OneShotResult result;
+    
+    if (action == "allOn" || action == "allOff") {
+        // 直接使用 FC 0x05 标准开/关指令（0xFF00=开, 0x0000=关）
+        // 无需先读取状态，避免竞态风险
+        bool targetOn = (action == "allOn");
+        for (uint16_t i = 0; i < channelCount; i++) {
+            OneShotResult writeResult = modbus->writeCoilOnce(slaveAddr, coilBase + i, targetOn);
+            if (writeResult.error != ONESHOT_SUCCESS) {
+                sendOneShotError(ctx, request, writeResult);
+                return;
+            }
+        }
+        result.error = ONESHOT_SUCCESS;
+    } else if (action == "allToggle") {
+        // 使用设备原生全部翻转指令 (FC 0x05 addr=coilBase value=0x5A00)
+        result = modbus->writeCoilOnce(slaveAddr, coilBase, (uint16_t)0x5A00);
+    } else {
+        ctx->sendBadRequest(request, "Invalid action (allOn/allOff/allToggle)");
+        return;
+    }
+    
+    if (result.error != ONESHOT_SUCCESS) {
+        sendOneShotError(ctx, request, result);
+        return;
+    }
+    
+    // 操作后读取实际状态，使用 qty 向上取整到 8 的倍数确保标准格式
+    uint16_t readQty = ((channelCount + 7) / 8) * 8;
+    if (readQty < 8) readQty = 8;
+    OneShotResult readResult = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, readQty);
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    data["channelCount"] = channelCount;
+    data["action"] = action;
+    JsonArray states = data["states"].to<JsonArray>();
+    if (readResult.error == ONESHOT_SUCCESS) {
+        for (uint16_t i = 0; i < channelCount; i++) {
+            states.add(readResult.data[i] != 0);
+        }
+    } else {
+        // 读取失败时根据 action 推断状态
+        for (uint16_t i = 0; i < channelCount; i++) {
+            states.add(action == "allOn");
+        }
+    }
+    addModbusDebug(doc, modbus);
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+// ============================================================================
+// POST /api/modbus/coil/delay — 线圈延时控制（闪开：开启后设备硬件自动关闭）
+// ============================================================================
+void ProtocolRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.edit")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+    
+    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    if (!modbus) return;
+    
+    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
+    uint16_t channel = (uint16_t)ctx->getParamInt(request, "channel", 0);
+    uint16_t delayBase = (uint16_t)ctx->getParamInt(request, "delayBase", 0x0200);
+    uint16_t delayUnits = (uint16_t)ctx->getParamInt(request, "delayUnits", 50);
+    
+    if (slaveAddr < 1 || slaveAddr > 247) {
+        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
+        return;
+    }
+    if (delayUnits == 0 || delayUnits > 255) {
+        ctx->sendBadRequest(request, "Invalid delay (1-255 x100ms, max 25.5s)");
+        return;
+    }
+    
+    // 闪开指令：FC 0x05 地址=(delayBase + channel) 值=延时单位在高字节
+    // 延时地址 = delayBase(0x0200) + 通道号(0-based)，与线圈地址映射一致
+    // curl 实测: addr 0x0200→CH0, addr 0x0201→CH1
+    uint16_t delayAddr = delayBase + channel;
+    uint16_t rawValue = ((uint16_t)delayUnits) << 8;
+    
+    OneShotResult result = modbus->writeCoilOnce(slaveAddr, delayAddr, rawValue);
+    if (result.error != ONESHOT_SUCCESS) {
+        sendOneShotError(ctx, request, result);
+        return;
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    data["channel"] = channel;
+    data["delayAddress"] = delayAddr;
+    data["delayUnits"] = delayUnits;
+    data["delayMs"] = (uint32_t)delayUnits * 100;
+    addModbusDebug(doc, modbus);
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+// ============================================================================
+// GET /api/modbus/coil/status — 读取线圈状态（FC 0x01）
+// ============================================================================
+void ProtocolRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.view") &&
+        !ctx->checkPermission(request, "config.edit")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+    
+    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    if (!modbus) return;
+    
+    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
+    uint16_t channelCount = (uint16_t)ctx->getParamInt(request, "channelCount", 8);
+    uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
+    
+    if (slaveAddr < 1 || slaveAddr > 247) {
+        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
+        return;
+    }
+    if (channelCount == 0 || channelCount > Protocols::MODBUS_MAX_WRITE_COILS) {
+        ctx->sendBadRequest(request, "Invalid channel count (1-32)");
+        return;
+    }
+    
+    // 部分继电器板在 qty < 8 时返回非标准/错误响应，向上取整到 8 的倍数确保标准格式
+    uint16_t readQty = ((channelCount + 7) / 8) * 8;
+    if (readQty < 8) readQty = 8;
+    OneShotResult result = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, readQty);
+    if (result.error != ONESHOT_SUCCESS) {
+        sendOneShotError(ctx, request, result);
+        return;
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    data["channelCount"] = channelCount;
+    data["coilBase"] = coilBase;
+    JsonArray states = data["states"].to<JsonArray>();
+    for (uint16_t i = 0; i < channelCount; i++) {
+        states.add(result.data[i] != 0);
+    }
+    addModbusDebug(doc, modbus);
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+// ============================================================================
+// POST /api/modbus/device/address — 读取/设置从站地址（FC 0x03 / FC 0x06）
+// ============================================================================
+void ProtocolRouteHandler::handleModbusDeviceAddress(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.edit")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+    
+    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    if (!modbus) return;
+    
+    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
+    uint16_t addrRegister = (uint16_t)ctx->getParamInt(request, "addressRegister", 0x0000);
+    String newAddrStr = ctx->getParamValue(request, "newAddress", "");
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    
+    if (newAddrStr.isEmpty()) {
+        // 读取当前地址：使用广播地址 0x00（文档确认：00 03 00 00 00 01 85 DB）
+        // 设备会以实际地址响应（如 03 03 02 00 03 ...）
+        // sendOneShotRequest 中 expectedSlaveAddr==0 时已跳过地址匹配
+        OneShotResult result = modbus->readRegistersOnce(0x00, 0x03, addrRegister, 1);
+        if (result.error != ONESHOT_SUCCESS) {
+            sendOneShotError(ctx, request, result);
+            return;
+        }
+        data["currentAddress"] = result.data[0];
+        data["register"] = addrRegister;
+    } else {
+        // 设置新地址：使用广播地址 0x00，FC 0x10 写多个寄存器
+        uint16_t newAddr = (uint16_t)newAddrStr.toInt();
+        if (newAddr < 1 || newAddr > 255) {
+            ctx->sendBadRequest(request, "Invalid new address (1-255)");
+            return;
+        }
+        uint16_t regValues[1] = { newAddr };
+        OneShotResult result = modbus->writeMultipleRegistersOnce(0x00, addrRegister, 1, regValues);
+        if (result.error != ONESHOT_SUCCESS) {
+            sendOneShotError(ctx, request, result);
+            return;
+        }
+        data["previousAddress"] = slaveAddr;
+        data["newAddress"] = newAddr;
+        data["register"] = addrRegister;
+    }
+    addModbusDebug(doc, modbus);
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+// ============================================================================
+// POST /api/modbus/device/baudrate — 设置波特率（FC 0x06）
+// ============================================================================
+void ProtocolRouteHandler::handleModbusDeviceBaudrate(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.edit")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+    
+    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    if (!modbus) return;
+    
+    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
+    uint32_t baudRate = (uint32_t)ctx->getParamInt(request, "baudRate", 9600);
+    
+    if (slaveAddr < 1 || slaveAddr > 247) {
+        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
+        return;
+    }
+    
+    // 波特率映射（继电器板 FC 0xB0 标准编码）
+    uint8_t baudCode;
+    switch (baudRate) {
+        case 1200:   baudCode = 0; break;
+        case 2400:   baudCode = 1; break;
+        case 4800:   baudCode = 2; break;
+        case 9600:   baudCode = 3; break;
+        case 19200:  baudCode = 4; break;
+        case 115200: baudCode = 5; break;
+        default:     baudCode = 3; break; // 默认 9600
+    }
+    
+    // 允许用户通过 baudCode 参数直接指定编码值
+    String baudCodeStr = ctx->getParamValue(request, "baudCode", "");
+    if (!baudCodeStr.isEmpty()) {
+        baudCode = (uint8_t)baudCodeStr.toInt();
+    }
+    
+    // 发送专有 FC 0xB0 波特率设置帧：[slaveAddr, 0xB0, 0x00, 0x00, baudCode, 0x00]
+    uint8_t frame[6];
+    frame[0] = slaveAddr;
+    frame[1] = 0xB0;
+    frame[2] = 0x00;
+    frame[3] = 0x00;
+    frame[4] = baudCode;
+    frame[5] = 0x00;
+    
+    OneShotResult result = modbus->sendRawFrameOnce(slaveAddr, frame, 6);
+    if (result.error != ONESHOT_SUCCESS) {
+        sendOneShotError(ctx, request, result);
+        return;
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    data["baudRate"] = baudRate;
+    data["baudCode"] = baudCode;
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+// ============================================================================
+// GET /api/modbus/device/inputs — 读取离散输入（FC 0x02）
+// ============================================================================
+void ProtocolRouteHandler::handleModbusDiscreteInputs(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.view") &&
+        !ctx->checkPermission(request, "config.edit")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+    
+    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    if (!modbus) return;
+    
+    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
+    uint16_t inputCount = (uint16_t)ctx->getParamInt(request, "inputCount", 4);
+    uint16_t inputBase = (uint16_t)ctx->getParamInt(request, "inputBase", 0);
+    
+    if (slaveAddr < 1 || slaveAddr > 247) {
+        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
+        return;
+    }
+    if (inputCount == 0 || inputCount > Protocols::MODBUS_MAX_WRITE_COILS) {
+        ctx->sendBadRequest(request, "Invalid input count (1-32)");
+        return;
+    }
+    
+    // 同 FC 0x01，使用 qty 向上取整到 8 的倍数确保标准格式
+    uint16_t readQty = ((inputCount + 7) / 8) * 8;
+    if (readQty < 8) readQty = 8;
+    OneShotResult result = modbus->readRegistersOnce(slaveAddr, 0x02, inputBase, readQty);
+    if (result.error != ONESHOT_SUCCESS) {
+        sendOneShotError(ctx, request, result);
+        return;
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    data["inputCount"] = inputCount;
+    data["inputBase"] = inputBase;
+    JsonArray states = data["states"].to<JsonArray>();
+    for (uint16_t i = 0; i < inputCount; i++) {
+        states.add(result.data[i] != 0);
+    }
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+// ============================================================================
+// GET /api/modbus/register/read — 读取保持/输入寄存器（FC 0x03 / FC 0x04）
+// ============================================================================
+void ProtocolRouteHandler::handleModbusRegisterRead(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.view") &&
+        !ctx->checkPermission(request, "config.edit")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+    
+    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    if (!modbus) return;
+    
+    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
+    uint16_t startAddr = (uint16_t)ctx->getParamInt(request, "startAddress", 0);
+    uint16_t quantity = (uint16_t)ctx->getParamInt(request, "quantity", 1);
+    uint8_t fc = (uint8_t)ctx->getParamInt(request, "functionCode", 3);
+    
+    if (slaveAddr < 1 || slaveAddr > 247) {
+        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
+        return;
+    }
+    if (quantity == 0 || quantity > Protocols::MODBUS_MAX_REGISTERS_PER_READ) {
+        ctx->sendBadRequest(request, "Invalid quantity (1-125)");
+        return;
+    }
+    if (fc != 0x03 && fc != 0x04) {
+        ctx->sendBadRequest(request, "Invalid function code (3 or 4)");
+        return;
+    }
+    
+    OneShotResult result = modbus->readRegistersOnce(slaveAddr, fc, startAddr, quantity);
+    if (result.error != ONESHOT_SUCCESS) {
+        sendOneShotError(ctx, request, result);
+        return;
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    data["count"] = quantity;
+    data["startAddress"] = startAddr;
+    JsonArray values = data["values"].to<JsonArray>();
+    for (uint16_t i = 0; i < quantity; i++) {
+        values.add(result.data[i]);
+    }
+    addModbusDebug(doc, modbus);
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+// ============================================================================
+// POST /api/modbus/register/write — 写单个保持寄存器（FC 0x06）
+// ============================================================================
+void ProtocolRouteHandler::handleModbusRegisterWrite(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.edit")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+    
+    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    if (!modbus) return;
+    
+    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
+    uint16_t regAddr = (uint16_t)ctx->getParamInt(request, "registerAddress", 0);
+    uint16_t value = (uint16_t)ctx->getParamInt(request, "value", 0);
+    
+    if (slaveAddr < 1 || slaveAddr > 247) {
+        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
+        return;
+    }
+    
+    OneShotResult result = modbus->writeRegisterOnce(slaveAddr, regAddr, value);
+    if (result.error != ONESHOT_SUCCESS) {
+        sendOneShotError(ctx, request, result);
+        return;
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    data["register"] = regAddr;
+    data["value"] = value;
+    addModbusDebug(doc, modbus);
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+// ============================================================================
+// POST /api/modbus/register/batch-write — 批量写保持寄存器（FC 0x10）
+// ============================================================================
+void ProtocolRouteHandler::handleModbusRegisterBatchWrite(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.edit")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+    
+    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    if (!modbus) return;
+    
+    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
+    uint16_t startAddr = (uint16_t)ctx->getParamInt(request, "startAddress", 0);
+    String valuesStr = ctx->getParamValue(request, "values", "[]");
+    
+    if (slaveAddr < 1 || slaveAddr > 247) {
+        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
+        return;
+    }
+    
+    // 解析 JSON 数组
+    JsonDocument valDoc;
+    DeserializationError err = deserializeJson(valDoc, valuesStr);
+    if (err || !valDoc.is<JsonArray>()) {
+        ctx->sendBadRequest(request, "Invalid values (JSON array expected)");
+        return;
+    }
+    
+    JsonArray arr = valDoc.as<JsonArray>();
+    uint16_t quantity = arr.size();
+    if (quantity == 0 || quantity > Protocols::MODBUS_MAX_REGISTERS_PER_READ) {
+        ctx->sendBadRequest(request, "Invalid quantity (1-125)");
+        return;
+    }
+    
+    uint16_t regValues[125];
+    for (uint16_t i = 0; i < quantity; i++) {
+        regValues[i] = (uint16_t)arr[i].as<int>();
+    }
+    
+    OneShotResult result = modbus->writeMultipleRegistersOnce(slaveAddr, startAddr, quantity, regValues);
+    if (result.error != ONESHOT_SUCCESS) {
+        sendOneShotError(ctx, request, result);
+        return;
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    data["startAddress"] = startAddr;
+    data["quantity"] = quantity;
+    JsonArray respValues = data["values"].to<JsonArray>();
+    for (uint16_t i = 0; i < quantity; i++) {
+        respValues.add(regValues[i]);
+    }
+    addModbusDebug(doc, modbus);
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
 }
 
 void ProtocolRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) {

@@ -64,6 +64,7 @@
             method: method,
             headers: headers,
             credentials: 'include',
+            cache: 'no-store',
         };
 
         if (options.body) {
@@ -123,6 +124,10 @@
                 // 注意：不再删除 password 和 remember，以支持页面刷新后自动重新登录
                 if (!document.getElementById('login-page') ||
                     document.getElementById('login-page').style.display === 'none') {
+                    // 先关闭所有弹窗、下拉菜单等浮层，确保页面状态干净
+                    if (typeof AppState !== 'undefined' && AppState.closeAllOverlays) {
+                        AppState.closeAllOverlays();
+                    }
                     Notification.warning('登录已过期，请重新登录', '会话超时');
                     setTimeout(function () {
                         var lp = document.getElementById('login-page');
@@ -217,6 +222,20 @@
      */
     window.apiPut = function (url, data) {
         return request('PUT', url, {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data || {})
+        });
+    };
+
+    /**
+     * POST 请求（application/json）
+     * 用于需要提交嵌套 JSON 结构的接口（如 triggers[]/actions[] 数组）
+     * @param {string} url
+     * @param {Object} [data] - JSON 数据
+     * @returns {Promise<any>}
+     */
+    window.apiPostJson = function (url, data) {
+        return request('POST', url, {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data || {})
         });

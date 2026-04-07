@@ -2,6 +2,7 @@
 #define PERIPHERAL_EXECUTION_H
 
 #include <Arduino.h>
+#include <vector>
 
 // 条件操作符枚举
 enum class ExecOperator : uint8_t {
@@ -206,42 +207,60 @@ enum class ExecMode : uint8_t {
     EXEC_SYNC  = 1   // 同步执行（阻塞主循环，适用于需要立即完成的简单动作）
 };
 
-// 外设执行结构体
+// 每条规则的最大触发器和动作数量
+#define MAX_TRIGGERS_PER_RULE 3
+#define MAX_ACTIONS_PER_RULE  4
+
+// 触发器结构体（一条规则可包含多个触发器，OR 关系）
+struct ExecTrigger {
+    uint8_t triggerType = 0;        // ExecTriggerType 枚举值: 0=平台触发, 1=定时触发, 4=事件触发
+    String triggerPeriphId;         // 数据源外设 ID（平台触发时匹配 MQTT/Modbus 消息的 item.id）
+    uint8_t operatorType = 0;       // ExecOperator 枚举值（平台触发时的条件运算符）
+    String compareValue;            // 比较值（平台触发时的条件值）
+    uint8_t timerMode = 0;          // 定时模式: 0=间隔触发, 1=每日时间点
+    uint32_t intervalSec = 60;      // 间隔秒数（定时触发用）
+    String timePoint;               // HH:MM 格式时间点（定时触发用）
+    String eventId;                 // 事件 ID（事件触发时使用，如 "wifi_connected"）
+    // 运行时字段（不持久化）
+    unsigned long lastTriggerTime = 0;
+    uint32_t triggerCount = 0;
+};
+
+// 动作结构体（一条规则可包含多个动作，顺序执行）
+struct ExecAction {
+    String targetPeriphId;          // 执行目标外设 ID（系统动作时可为空）
+    uint8_t actionType = 0;         // ExecActionType 枚举值
+    String actionValue;             // 动作参数（PWM值/DAC值/闪烁间隔ms/脚本内容等）
+    bool useReceivedValue = false;  // 启用时：用触发接收到的值替代 actionValue
+    uint16_t syncDelayMs = 0;       // 执行前延时（毫秒，用于多动作顺序编排，最大 10000）
+};
+
+// 动作执行结果（用于精准上报）
+struct ActionExecResult {
+    String targetPeriphId;          // 目标外设 ID
+    String actualValue;             // 执行后的实际值
+    bool success = false;           // 是否成功
+};
+
+// 外设执行规则结构体
 struct PeriphExecRule {
     String id;                  // 唯一标识 (exec_<millis>)
     String name;                // 显示名称
     bool enabled = true;        // 启用状态
-    uint8_t triggerType = 0;    // 触发类型: 0=平台触发, 1=定时触发, 2=数据接收, 3=数据上报, 4=触发事件
     uint8_t execMode = 0;       // 0=异步执行(默认), 1=同步执行
 
-    // 平台触发字段
-    uint8_t operatorType = 0;   // ExecOperator 枚举值
-    String compareValue;        // 比较值
+    // 触发器列表（多个触发器之间为 OR 关系：任一匹配即触发）
+    std::vector<ExecTrigger> triggers;
 
-    // 触发事件字段 (triggerType=4)
-    String eventId;             // 事件ID (如 "wifi_connected", "button_click", "periph_exec_completed")
-    uint8_t eventType = 0;      // EventType 枚举值（运行时缓存）
+    // 动作列表（按顺序执行）
+    std::vector<ExecAction> actions;
 
-    // 定时触发字段
-    uint8_t timerMode = 0;      // 0=间隔, 1=每日时间点
-    uint32_t intervalSec = 60;  // 间隔秒数
-    String timePoint;           // HH:MM 格式
-
-    // 数据转换管道字段 (triggerType 2/3)
+    // 数据转换管道字段
     uint8_t protocolType = 0;   // ExecProtocolType 枚举值
     String scriptContent;       // 纯文本模板 (${key} 占位符)
 
-    // 动作字段
-    String targetPeriphId;      // 目标外设 ID (系统功能时可为空)
-    uint8_t actionType = 0;     // ExecActionType 枚举值
-    String actionValue;         // 动作参数 (PWM值/DAC值/闪烁间隔ms等)
-
     // 数据上报控制
     bool reportAfterExec = true; // 执行完成后是否上报设备数据（默认启用）
-
-    // 运行时字段 (不持久化)
-    unsigned long lastTriggerTime = 0;
-    uint32_t triggerCount = 0;
 };
 
 // 配置文件路径

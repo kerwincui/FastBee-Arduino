@@ -1138,7 +1138,7 @@ select:hover, .form-select:hover {
   box-shadow: var(--shadow-lg);
   width: 90%;
   max-width: 500px;
-  max-height: 90vh;
+  max-height: 85vh;
   overflow-y: auto;
   margin: auto;
 }
@@ -1571,6 +1571,20 @@ select:hover, .form-select:hover {
 .mqtt-status-online { background: var(--success-light); color: var(--success); }
 .mqtt-status-offline { background: var(--danger-light); color: var(--danger); }
 .mqtt-status-connecting { background: var(--warning-light); color: var(--warning); }
+
+/* Periph Exec Dynamic Config Items */
+.periph-exec-config-item { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--rounded); padding: var(--space-4) var(--space-3) var(--space-3); margin-bottom: var(--space-2); position: relative; }
+.periph-exec-config-item:hover { border-color: var(--primary); box-shadow: var(--shadow-sm); }
+.pe-add-btn { font-size: 12px; padding: 4px 10px; }
+#periph-exec-triggers, #periph-exec-actions { margin-bottom: var(--space-4); }
+.pe-action-extra-row { margin-top: var(--space-2); }
+.pe-checkbox-label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal; }
+.pe-checkbox-label input[type="checkbox"] { margin: 0; width: 16px; height: 16px; accent-color: var(--primary); }
+.pe-sync-delay-group input { max-width: 140px; }
+.pe-action-type-row { margin-bottom: var(--space-2); }
+.pe-action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); align-items: start; margin-top: var(--space-2); }
+.pe-action-value[readonly] { background: var(--bg-tertiary, #f5f5f5); cursor: not-allowed; opacity: 0.7; }
+.pe-compare-value-group { transition: opacity 0.2s; }
 
 .protocol-section { border: 1px solid var(--border); border-radius: var(--rounded); padding: var(--space-4); margin: var(--space-4) 0; background: var(--slate-50); }
 .protocol-section h4 { margin: 0 0 var(--space-3) 0; color: var(--text-primary); font-size: 14px; font-weight: 600; padding-bottom: var(--space-2); border-bottom: 1px solid var(--border); }
@@ -2681,6 +2695,8 @@ a:focus-visible {
   .content { padding: var(--space-4); }
   .card-body { padding: var(--space-4); }
   .config-form-grid { grid-template-columns: 1fr; gap: var(--space-3); }
+  .pe-action-grid { grid-template-columns: 1fr; }
+  .pe-action-grid > [style*="grid-column"] { grid-column: auto; }
   .resource-grid { grid-template-columns: 1fr; }
   .logs-page-container { }
 }
@@ -2941,3 +2957,288 @@ a:focus-visible {
 .progress-fill[style*="width:"] {
   transition: width 0.5s ease;
 }
+
+/* ============================================================================
+   Modbus Coil Control Grid
+   ============================================================================ */
+.modbus-layout {
+  display: flex;
+  gap: 50px;
+}
+.modbus-device-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: var(--bg-base, #f5f7fa);
+  border: 1px solid var(--border-color, #e4e7ed);
+  border-radius: 6px;
+}
+.modbus-device-bar select {
+  flex: 1;
+  min-width: 120px;
+}
+.modbus-panel-left {
+  flex: 1;
+  min-width: 0;
+}
+.modbus-panel-right {
+  width: 33%;
+  flex-shrink: 0;
+  min-width: 250px;
+}
+.modbus-debug-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary, #333);
+}
+.modbus-debug-log {
+  height: 480px;
+  overflow-y: auto;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  background: #000;
+  border: 1px solid var(--border-color, #e4e7ed);
+  border-radius: 6px;
+  padding: 8px;
+}
+.modbus-debug-entry {
+  margin-bottom: 6px;
+  border-bottom: 1px dashed var(--border-color, #e0e0e0);
+  padding-bottom: 4px;
+}
+.modbus-debug-time {
+  color: #909399;
+  font-size: 11px;
+}
+.modbus-debug-tx {
+  color: #e6a23c;
+}
+.modbus-debug-rx {
+  color: #409eff;
+}
+.modbus-debug-err {
+  color: #f56c6c;
+}
+@media (max-width: 768px) {
+  .modbus-layout { flex-direction: column; }
+  .modbus-panel-right { width: 100%; }
+  .modbus-debug-log { height: 200px; }
+}
+/* Dark theme adjustments */
+[data-theme="dark"] .modbus-debug-log {
+  background: var(--bg-elevated, #1a1a2e);
+}
+[data-theme="dark"] .modbus-debug-entry {
+  border-bottom-color: var(--border-color, #333);
+}
+
+.coil-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+  gap: 8px;
+}
+.coil-card {
+  text-align: center;
+  padding: 10px 6px;
+  border: 1px solid var(--border-color, #e4e7ed);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  user-select: none;
+}
+.coil-card:hover {
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  transform: translateY(-1px);
+}
+.coil-card.coil-on {
+  background: #e6f7e6;
+  border-color: #4CAF50;
+}
+.coil-card.coil-off {
+  background: var(--bg-base, #fff);
+  border-color: var(--border-color, #dcdfe6);
+}
+.coil-card .coil-ch {
+  font-size: 11px;
+  color: #909399;
+}
+.coil-card .coil-st {
+  font-size: 15px;
+  font-weight: bold;
+  margin: 3px 0;
+}
+.coil-card.coil-on .coil-st {
+  color: #4CAF50;
+}
+.coil-card.coil-off .coil-st {
+  color: #909399;
+}
+.coil-card.coil-loading {
+  opacity: 0.5;
+  pointer-events: none;
+}
+/* Dark theme */
+[data-theme="dark"] .coil-card.coil-on {
+  background: #1a3a1a;
+  border-color: #4CAF50;
+}
+[data-theme="dark"] .coil-card.coil-off {
+  background: var(--bg-elevated);
+}
+
+/* PWM 通道网格 */
+.pwm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+.pwm-card {
+  background: #f8f9fa;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 12px;
+  text-align: center;
+  transition: border-color 0.2s;
+}
+.pwm-card:hover {
+  border-color: #409eff;
+}
+.pwm-ch {
+  font-weight: 600;
+  font-size: 13px;
+  color: #606266;
+  margin-bottom: 8px;
+}
+.pwm-slider {
+  width: 100%;
+  margin: 4px 0;
+  accent-color: #409eff;
+}
+.pwm-value-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.pwm-num-input {
+  width: 70px;
+  text-align: center;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: 13px;
+}
+.pwm-pct {
+  font-size: 12px;
+  color: #909399;
+  min-width: 36px;
+}
+/* PWM Dark theme */
+[data-theme="dark"] .pwm-card {
+  background: var(--bg-elevated);
+  border-color: var(--border-color);
+}
+[data-theme="dark"] .pwm-ch {
+  color: var(--text-secondary);
+}
+[data-theme="dark"] .pwm-num-input {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  border-color: var(--border-color);
+}
+
+/* ===== Sensor (模拟量传感器) ===== */
+.sensor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+.sensor-card { background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; text-align: center; transition: border-color 0.2s; }
+.sensor-card:hover { border-color: #409eff; }
+.sensor-card-name { font-size: 12px; color: #909399; margin-bottom: 6px; }
+.sensor-card-value { font-size: 28px; font-weight: 700; color: #303133; }
+.sensor-card-unit { font-size: 13px; color: #909399; margin-left: 4px; font-weight: 400; }
+[data-theme="dark"] .sensor-card { background: var(--bg-elevated); border-color: var(--border-color); }
+[data-theme="dark"] .sensor-card-name { color: var(--text-secondary); }
+[data-theme="dark"] .sensor-card-value { color: var(--text-primary); }
+
+/* 采集数据展示（主站状态区内嵌水平条） */
+#master-data-grid {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 10px 0 4px;
+    margin-top: 10px;
+    border-top: 1px solid #e4e7ed;
+}
+.master-data-item {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 6px 14px;
+    background: #f0f7ff;
+    border: 1px solid #d0e3f7;
+    border-radius: 6px;
+    min-width: 72px;
+}
+.master-data-name { font-size: 11px; color: #909399; white-space: nowrap; }
+.master-data-val { font-size: 15px; font-weight: 600; color: #303133; font-family: 'Consolas', monospace; white-space: nowrap; }
+[data-theme="dark"] #master-data-grid { border-top-color: var(--border-color); }
+[data-theme="dark"] .master-data-item { background: var(--bg-elevated); border-color: var(--border-color); }
+[data-theme="dark"] .master-data-name { color: var(--text-secondary); }
+[data-theme="dark"] .master-data-val { color: var(--text-primary); }
+
+/* Sensor 通道配置行 */
+.sensor-ch-header { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; padding-bottom: 4px; border-bottom: 1px solid #e4e7ed; }
+.sensor-ch-header span { font-size: 11px; color: #909399; font-weight: 600; text-align: center; }
+.sensor-ch-header .sensor-ch-h-label { min-width: 36px; }
+.sensor-ch-header .sensor-ch-h-name { flex: 2; min-width: 60px; }
+.sensor-ch-header .sensor-ch-h-unit { width: 60px; }
+.sensor-ch-header .sensor-ch-h-dec { width: 70px; }
+.sensor-ch-header .sensor-ch-h-scale { width: 80px; }
+.sensor-ch-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.sensor-ch-row input, .sensor-ch-row select { font-size: 13px; padding: 6px 8px; border: 1px solid #dcdfe6; border-radius: 4px; height: 32px; box-sizing: border-box; }
+.sensor-ch-row input:focus, .sensor-ch-row select:focus { border-color: #409eff; outline: none; }
+.sensor-ch-row .sensor-ch-name { flex: 2; min-width: 60px; }
+.sensor-ch-row .sensor-ch-unit { width: 60px; }
+.sensor-ch-row .sensor-ch-decimals { width: 70px; }
+.sensor-ch-row .sensor-ch-scale { width: 80px; }
+.sensor-ch-label { min-width: 36px; font-size: 12px; color: #909399; font-weight: 600; }
+[data-theme="dark"] .sensor-ch-header { border-bottom-color: var(--border-color); }
+[data-theme="dark"] .sensor-ch-row input, [data-theme="dark"] .sensor-ch-row select { background: var(--bg-base); color: var(--text-primary); border-color: var(--border-color); }
+[data-theme="dark"] .sensor-ch-row input:focus, [data-theme="dark"] .sensor-ch-row select:focus { border-color: #409eff; }
+
+/* ===== DI (数字量输入) ===== */
+.di-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 8px; }
+.di-card { text-align: center; padding: 10px 6px; border: 1px solid var(--border-color, #e4e7ed); border-radius: 6px; cursor: default; transition: all 0.2s; user-select: none; }
+.di-card.di-on { background: #e6f7e6; border-color: #4CAF50; }
+.di-card.di-off { background: var(--bg-base, #fff); border-color: var(--border-color, #dcdfe6); }
+.di-card .di-ch { font-size: 11px; color: #909399; }
+.di-card .di-st { font-size: 15px; font-weight: bold; margin: 3px 0; }
+.di-indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 3px; vertical-align: middle; }
+.di-card.di-on .di-indicator { background: #4CAF50; }
+.di-card.di-off .di-indicator { background: #c0c4cc; }
+[data-theme="dark"] .di-card.di-on { background: #1a3a1a; border-color: #4CAF50; }
+[data-theme="dark"] .di-card.di-off { background: var(--bg-elevated); }
+
+/* ===== PID 控制器 ===== */
+.pid-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.pid-card { background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 8px; padding: 14px; text-align: center; transition: border-color 0.2s; }
+.pid-card:hover { border-color: #409eff; }
+.pid-card-label { font-size: 11px; color: #909399; text-transform: uppercase; margin-bottom: 4px; letter-spacing: 0.5px; }
+.pid-card-value { font-size: 24px; font-weight: 700; color: #303133; margin-bottom: 4px; }
+.pid-card.pid-pv-card { grid-column: span 2; }
+.pid-card.pid-pv-card .pid-card-value { font-size: 32px; color: #409eff; }
+.pid-edit-row { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 6px; }
+.pid-input { width: 80px; text-align: center; border: 1px solid #dcdfe6; border-radius: 4px; padding: 3px 6px; font-size: 13px; }
+.pid-set-btn { font-size: 11px !important; padding: 3px 10px !important; }
+[data-theme="dark"] .pid-card { background: var(--bg-elevated); border-color: var(--border-color); }
+[data-theme="dark"] .pid-card-label { color: var(--text-secondary); }
+[data-theme="dark"] .pid-card-value { color: var(--text-primary); }
+[data-theme="dark"] .pid-card.pid-pv-card .pid-card-value { color: #409eff; }
+[data-theme="dark"] .pid-input { background: var(--bg-base); color: var(--text-primary); border-color: var(--border-color); }

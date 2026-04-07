@@ -66,7 +66,7 @@ public:
     // MQTT 消息处理入口（由 ProtocolManager messageCallback 调用）
     void handleMqttMessage(const String& topic, const String& message);
 
-    // 数据下发命令处理：匹配 targetPeriphId == item["id"]，执行规则并返回上报 JSON
+    // 数据下发命令处理：匹配 trigger.triggerPeriphId == item["id"]，执行规则并返回上报 JSON
     // 注意：此方法始终同步执行，立即返回结果
     String handleDataCommand(const String& message);
 
@@ -159,15 +159,19 @@ private:
     bool evaluateCondition(const String& value, uint8_t op, const String& compareValue);
 
     // ========== 动作执行（同步） ==========
-    bool executeAction(PeriphExecRule& rule);
-    bool executePeripheralAction(const PeriphExecRule& rule);
-    bool executeSystemAction(const PeriphExecRule& rule);
-    bool executeScriptAction(const PeriphExecRule& rule);
+    bool executeActionItem(const ExecAction& action, const String& effectiveValue);
+    std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue);
+    bool executePeripheralAction(const ExecAction& action, const String& effectiveValue);
+    bool executeSystemAction(const ExecAction& action);
+    bool executeScriptAction(const ExecAction& action);
+
+    // ========== 动作执行后上报 ==========
+    void reportActionResults(const std::vector<ActionExecResult>& results);
 
     // ========== 异步调度 ==========
 
     // 异步分发：创建 FreeRTOS 任务执行规则，失败则回退同步
-    void dispatchAsync(const PeriphExecRule& rule);
+    void dispatchAsync(const PeriphExecRule& rule, const String& receivedValue);
 
     // FreeRTOS 任务入口函数（静态）
     static void asyncExecTaskFunc(void* pvParameters);

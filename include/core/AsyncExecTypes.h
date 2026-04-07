@@ -41,6 +41,7 @@ class MQTTClient;          // 前向声明
 
 struct AsyncExecContext {
     PeriphExecRule   ruleCopy;       // 规则的深拷贝（任务独立副本）
+    String           receivedValue;  // 触发时捕获的值（用于 useReceivedValue 传递）
     PeriphExecManager* manager;      // 回指管理器（用于记录结果）
     MQTTClient*      mqtt;           // MQTT 客户端指针
     SemaphoreHandle_t taskSlot;      // 完成后归还的计数信号量

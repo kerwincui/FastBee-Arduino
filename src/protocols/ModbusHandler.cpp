@@ -1030,6 +1030,13 @@ String ModbusHandler::getMasterStatus() const {
     return result;
 }
 
+TaskDataCache ModbusHandler::getTaskDataCache(uint8_t index) const {
+    if (index < Protocols::MODBUS_MAX_POLL_TASKS) {
+        return taskDataCache[index];
+    }
+    return TaskDataCache();
+}
+
 // ============ Master请求帧构建 ============
 
 uint8_t ModbusHandler::buildMasterRequest(const PollTask& task, uint8_t* buffer) {
@@ -1134,6 +1141,16 @@ bool ModbusHandler::parseMasterResponse(const uint8_t* buffer, uint8_t length, c
 // ============ 数据上报 ============
 
 void ModbusHandler::reportPollData(const PollTask& task, const uint16_t* data, uint16_t count) {
+    // 缓存最新轮询数据（无论是否有 dataCallback）
+    if (currentTaskIndex < Protocols::MODBUS_MAX_POLL_TASKS) {
+        TaskDataCache& cache = taskDataCache[currentTaskIndex];
+        uint16_t copyCount = min(count, (uint16_t)Protocols::MODBUS_MAX_REGISTERS_PER_READ);
+        memcpy(cache.values, data, copyCount * sizeof(uint16_t));
+        cache.count = copyCount;
+        cache.timestamp = millis();
+        cache.valid = true;
+    }
+
     if (!dataCallback) return;
     
     // JSON模式且有映射配置: 生成 [{id,value}] 格式
@@ -1324,7 +1341,13 @@ void ModbusHandler::handleMaster() {
             }
             
             // MQTT指令模式：不执行主动轮询，只处理写请求队列和一次性读取
-            if (config.workMode == 0) return;
+            if (config.workMode == 0) {
+                processCoilDelayTasks();
+                return;
+            }
+            
+            // 处理线圈延时任务
+            processCoilDelayTasks();
             
             // 查找到期的轮询任务
             int8_t nextTask = findNextPollTask();
@@ -1459,6 +1482,123 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
                                                 uint16_t startAddress, uint16_t quantity) {
     OneShotResult result;
 
+    // 参数校验（读操作特有）
+    if (functionCode < 0x01 || functionCode > 0x04) {
+        result.error = ONESHOT_EXCEPTION;
+        result.exceptionCode = MODBUS_EX_ILLEGAL_FUNCTION;
+        LOG_WARNINGF("[Modbus] OneShot read: invalid function code 0x%02X", functionCode);
+        return result;
+    }
+    if (quantity == 0 || quantity > Protocols::MODBUS_MAX_REGISTERS_PER_READ) {
+        result.error = ONESHOT_EXCEPTION;
+        result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
+        LOG_WARNINGF("[Modbus] OneShot read: invalid quantity %d", quantity);
+        return result;
+    }
+
+    LOG_INFOF("[Modbus] OneShot read: slave=%d fc=0x%02X addr=%d qty=%d",
+              slaveAddress, functionCode, startAddress, quantity);
+
+    // 构建读请求帧（FC 0x01-0x04 均为 8 字节固定格式）
+    uint8_t requestBuffer[8];
+    requestBuffer[0] = slaveAddress;
+    requestBuffer[1] = functionCode;
+    requestBuffer[2] = (startAddress >> 8) & 0xFF;
+    requestBuffer[3] = startAddress & 0xFF;
+    requestBuffer[4] = (quantity >> 8) & 0xFF;
+    requestBuffer[5] = quantity & 0xFF;
+    uint16_t crc = calculateCRC(requestBuffer, 6);
+    requestBuffer[6] = crc & 0xFF;
+    requestBuffer[7] = (crc >> 8) & 0xFF;
+
+    // 使用通用发送/接收
+    OneShotResult rawResult = sendOneShotRequest(requestBuffer, 8, slaveAddress);
+
+    if (rawResult.error != ONESHOT_SUCCESS) {
+        return rawResult;
+    }
+
+    // 从原始响应中提取数据
+    // rawResult.data[] 中存储了原始响应字节（每个uint16存一个字节）
+    // rawResult.count 是原始响应字节数
+    uint8_t respLen = rawResult.count;
+
+    // 功能码匹配
+    uint8_t respFC = (uint8_t)rawResult.data[1];
+    if (respFC != functionCode) {
+        LOG_WARNINGF("[Modbus] OneShot read: FC mismatch (expected 0x%02X, got 0x%02X)", functionCode, respFC);
+        result.error = ONESHOT_CRC_ERROR;
+        return result;
+    }
+
+    // 提取寄存器/线圈数据
+    if (functionCode == 0x03 || functionCode == 0x04) {
+        uint8_t byteCount = (uint8_t)rawResult.data[2];
+        if (byteCount != quantity * 2) {
+            LOG_WARNINGF("[Modbus] OneShot read: byte count mismatch (expected %d, got %d)", quantity * 2, byteCount);
+            result.error = ONESHOT_CRC_ERROR;
+            return result;
+        }
+        for (uint16_t i = 0; i < quantity; i++) {
+            result.data[i] = ((uint16_t)(uint8_t)rawResult.data[3 + i * 2] << 8) | (uint8_t)rawResult.data[4 + i * 2];
+        }
+    } else if (functionCode == 0x01 || functionCode == 0x02) {
+        // 标准 FC 0x01/0x02 响应: [addr, FC, byteCount, data..., CRC_L, CRC_H]
+        // 非标准响应(部分继电器板): [addr, FC, data..., CRC_L, CRC_H] (无byteCount)
+        uint8_t expectedDataBytes = (quantity + 7) / 8;
+        uint8_t standardLen = 3 + expectedDataBytes + 2;  // addr+FC+byteCount+data+CRC
+        uint8_t nonStdLen   = 2 + expectedDataBytes + 2;  // addr+FC+data+CRC (无byteCount)
+
+        uint8_t dataOffset;
+        uint8_t actualByteCount;
+        if (respLen == standardLen) {
+            dataOffset = 3;
+            actualByteCount = (uint8_t)rawResult.data[2];
+        } else if (respLen == nonStdLen) {
+            dataOffset = 2;
+            actualByteCount = expectedDataBytes;
+            LOG_INFOF("[Modbus] OneShot read: non-standard FC 0x%02X response (no byteCount field, %d bytes)", functionCode, respLen);
+        } else {
+            dataOffset = 3;
+            actualByteCount = (uint8_t)rawResult.data[2];
+            LOG_WARNINGF("[Modbus] OneShot read: unexpected FC 0x%02X response length %d (expected %d or %d)", functionCode, respLen, standardLen, nonStdLen);
+        }
+
+        // 调试：打印原始响应帧 hex
+        {
+            String rxHex = "";
+            for (uint8_t i = 0; i < respLen && i < 16; i++) {
+                if (i > 0) rxHex += ' ';
+                char h[4]; snprintf(h, sizeof(h), "%02X", (uint8_t)rawResult.data[i]);
+                rxHex += h;
+            }
+            LOG_INFOF("[Modbus] FC 0x%02X raw resp: [%s] len=%d dataOffset=%d byteCount=%d",
+                      functionCode, rxHex.c_str(), respLen, dataOffset, actualByteCount);
+        }
+
+        for (uint16_t i = 0; i < quantity && i < Protocols::MODBUS_MAX_REGISTERS_PER_READ; i++) {
+            uint8_t byteIdx = i / 8;
+            uint8_t bitIdx = i % 8;
+            uint8_t dataByte = (byteIdx < actualByteCount) ? (uint8_t)rawResult.data[dataOffset + byteIdx] : 0;
+            result.data[i] = (dataByte & (1 << bitIdx)) ? 1 : 0;
+            LOG_DEBUGF("[Modbus] FC 0x%02X CH%d: dataByte=0x%02X bitIdx=%d → value=%d",
+                       functionCode, i, dataByte, bitIdx, result.data[i]);
+        }
+    }
+
+    result.count = quantity;
+    result.error = ONESHOT_SUCCESS;
+    LOG_INFOF("[Modbus] OneShot read: success, read %d values from slave %d", quantity, slaveAddress);
+    return result;
+}
+
+// ============================================================================
+// 通用一次性发送/接收辅助方法
+// ============================================================================
+OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t reqLen,
+                                                 uint8_t expectedSlaveAddr) {
+    OneShotResult result;
+
     // 前置检查
     if (!isInitialized || !modbusSerial) {
         result.error = ONESHOT_NOT_INITIALIZED;
@@ -1470,29 +1610,17 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
         LOG_WARNING("[Modbus] OneShot: busy (another one-shot in progress)");
         return result;
     }
-    if (slaveAddress < 1 || slaveAddress > 247) {
+    if (expectedSlaveAddr > 247) {
         result.error = ONESHOT_EXCEPTION;
         result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_ADDRESS;
-        LOG_WARNINGF("[Modbus] OneShot: invalid slave address %d", slaveAddress);
-        return result;
-    }
-    if (functionCode < 0x01 || functionCode > 0x04) {
-        result.error = ONESHOT_EXCEPTION;
-        result.exceptionCode = MODBUS_EX_ILLEGAL_FUNCTION;
-        LOG_WARNINGF("[Modbus] OneShot: invalid function code 0x%02X", functionCode);
-        return result;
-    }
-    if (quantity == 0 || quantity > Protocols::MODBUS_MAX_REGISTERS_PER_READ) {
-        result.error = ONESHOT_EXCEPTION;
-        result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
-        LOG_WARNINGF("[Modbus] OneShot: invalid quantity %d", quantity);
+        LOG_WARNINGF("[Modbus] OneShot: invalid slave address %d", expectedSlaveAddr);
         return result;
     }
 
-    // 设置守卫标志，暂停轮询状态机
+    // 设置守卫标志
     isOneShotReading = true;
 
-    // 等待状态机回到 POLL_IDLE（如果当前正在轮询中）
+    // 等待状态机回到 POLL_IDLE
     unsigned long waitStart = millis();
     unsigned long maxWait = (unsigned long)config.master.responseTimeout * 2;
     while (pollState != POLL_IDLE && (millis() - waitStart) < maxWait) {
@@ -1506,26 +1634,22 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
         return result;
     }
 
-    LOG_INFOF("[Modbus] OneShot: slave=%d fc=0x%02X addr=%d qty=%d",
-              slaveAddress, functionCode, startAddress, quantity);
-
-    // 构建临时 PollTask 用于 buildMasterRequest
-    PollTask tempTask;
-    tempTask.slaveAddress = slaveAddress;
-    tempTask.functionCode = functionCode;
-    tempTask.startAddress = startAddress;
-    tempTask.quantity = quantity;
-
-    uint8_t requestBuffer[8];
-    uint8_t reqLen = buildMasterRequest(tempTask, requestBuffer);
-
     // 超时参数
     uint16_t timeout = config.master.responseTimeout;
     if (timeout == 0) timeout = 1000;
     unsigned long charTimeout = 35000000UL / config.baudRate;
     if (charTimeout < 2) charTimeout = 2;
-
     uint8_t maxRetries = config.master.maxRetries;
+
+    // 捕获 TX 帧 hex（用于调试面板显示）
+    _lastTxHex = "";
+    _lastRxHex = "";
+    for (uint8_t i = 0; i < reqLen; i++) {
+        if (i > 0) _lastTxHex += ' ';
+        char hex[4];
+        snprintf(hex, sizeof(hex), "%02X", request[i]);
+        _lastTxHex += hex;
+    }
 
     // 重试循环
     for (uint8_t attempt = 0; attempt <= maxRetries; attempt++) {
@@ -1535,12 +1659,12 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
             yield();
         }
 
-        // 清空串口接收缓冲区
+        // 清空接收缓冲区
         while (modbusSerial->available()) modbusSerial->read();
 
         // 发送请求帧
         setTransmitMode(true);
-        modbusSerial->write(requestBuffer, reqLen);
+        modbusSerial->write(request, reqLen);
         modbusSerial->flush();
         setTransmitMode(false);
 
@@ -1553,24 +1677,18 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
         bool timedOut = false;
 
         while (true) {
-            // 读取可用字节
             while (modbusSerial->available() && respIdx < Protocols::MODBUS_BUFFER_SIZE) {
                 respBuf[respIdx++] = modbusSerial->read();
                 lastRxTime = millis();
             }
-
-            // 帧完成检测：收到数据后，超过3.5字符时间无新数据
             if (respIdx > 0 && (millis() - lastRxTime) > charTimeout) {
                 frameComplete = true;
                 break;
             }
-
-            // 绝对超时
             if ((millis() - sendTime) > timeout) {
                 timedOut = true;
                 break;
             }
-
             yield();
         }
 
@@ -1578,31 +1696,40 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
         if (timedOut && respIdx == 0) {
             LOG_WARNINGF("[Modbus] OneShot: timeout (attempt %d, no response)", attempt + 1);
             result.error = ONESHOT_TIMEOUT;
-            continue; // 重试
+            continue;
         }
 
         // 帧过短
-        if (respIdx < 5) {
+        if (respIdx < 4) {
             LOG_WARNINGF("[Modbus] OneShot: frame too short (%d bytes)", respIdx);
             result.error = ONESHOT_CRC_ERROR;
-            continue; // 重试
+            continue;
         }
 
         // CRC 校验
         if (!validateFrame(respBuf, respIdx)) {
             LOG_WARNING("[Modbus] OneShot: CRC validation failed");
             result.error = ONESHOT_CRC_ERROR;
-            continue; // 重试
+            continue;
         }
 
-        // 地址匹配
-        if (respBuf[0] != slaveAddress) {
-            LOG_WARNINGF("[Modbus] OneShot: address mismatch (expected %d, got %d)", slaveAddress, respBuf[0]);
+        // 捕获 RX 帧 hex（CRC 校验通过后）
+        _lastRxHex = "";
+        for (uint8_t i = 0; i < respIdx; i++) {
+            if (i > 0) _lastRxHex += ' ';
+            char hex[4];
+            snprintf(hex, sizeof(hex), "%02X", respBuf[i]);
+            _lastRxHex += hex;
+        }
+
+        // 地址匹配（广播地址 0x00 时跳过，允许任意从站响应）
+        if (expectedSlaveAddr != 0 && respBuf[0] != expectedSlaveAddr) {
+            LOG_WARNINGF("[Modbus] OneShot: address mismatch (expected %d, got %d)", expectedSlaveAddr, respBuf[0]);
             result.error = ONESHOT_CRC_ERROR;
-            continue; // 重试
+            continue;
         }
 
-        // 异常响应检测（功能码最高位为1）
+        // 异常响应检测
         if (respBuf[1] & 0x80) {
             result.error = ONESHOT_EXCEPTION;
             result.exceptionCode = respBuf[2];
@@ -1610,43 +1737,290 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
             break; // 异常是确定性错误，不重试
         }
 
-        // 功能码匹配
-        if (respBuf[1] != functionCode) {
-            LOG_WARNINGF("[Modbus] OneShot: FC mismatch (expected 0x%02X, got 0x%02X)", functionCode, respBuf[1]);
-            result.error = ONESHOT_CRC_ERROR;
-            continue;
-        }
-
-        // 提取寄存器数据
-        if (functionCode == 0x03 || functionCode == 0x04) {
-            // 读保持/输入寄存器：响应格式 [addr, fc, byteCount, data...]
-            uint8_t byteCount = respBuf[2];
-            if (byteCount != quantity * 2) {
-                LOG_WARNINGF("[Modbus] OneShot: byte count mismatch (expected %d, got %d)", quantity * 2, byteCount);
-                result.error = ONESHOT_CRC_ERROR;
-                continue;
-            }
-            for (uint16_t i = 0; i < quantity; i++) {
-                result.data[i] = ((uint16_t)respBuf[3 + i * 2] << 8) | respBuf[4 + i * 2];
-            }
-        } else if (functionCode == 0x01 || functionCode == 0x02) {
-            // 读线圈/离散输入：响应格式 [addr, fc, byteCount, data...]
-            uint8_t byteCount = respBuf[2];
-            for (uint16_t i = 0; i < quantity && i < Protocols::MODBUS_MAX_REGISTERS_PER_READ; i++) {
-                uint8_t byteIdx = i / 8;
-                uint8_t bitIdx = i % 8;
-                result.data[i] = (byteIdx < byteCount && (respBuf[3 + byteIdx] & (1 << bitIdx))) ? 1 : 0;
-            }
-        }
-
-        result.count = quantity;
+        // 成功 — 将原始响应帧存入 result.data（按uint16打包，便于调用者解析）
         result.error = ONESHOT_SUCCESS;
-        LOG_INFOF("[Modbus] OneShot: success, read %d registers from slave %d", quantity, slaveAddress);
-        break; // 成功，退出重试循环
+        result.count = respIdx;  // 存储原始响应字节数
+        // 将响应字节逐一存入data数组（每个uint16存一个字节）
+        for (uint8_t i = 0; i < respIdx && i < Protocols::MODBUS_MAX_REGISTERS_PER_READ; i++) {
+            result.data[i] = respBuf[i];
+        }
+        LOG_INFOF("[Modbus] OneShot: success, %d bytes response from slave %d", respIdx, expectedSlaveAddr);
+        break;
     }
 
     isOneShotReading = false;
     return result;
+}
+
+// ============================================================================
+// FC 0x05 写单个线圈（阻塞）
+// ============================================================================
+OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, bool value) {
+    LOG_INFOF("[Modbus] writeCoilOnce: slave=%d coil=%d value=%d", slaveAddr, coilAddr, value ? 1 : 0);
+
+    uint8_t request[8];
+    request[0] = slaveAddr;
+    request[1] = 0x05;
+    request[2] = (coilAddr >> 8) & 0xFF;
+    request[3] = coilAddr & 0xFF;
+    request[4] = value ? 0xFF : 0x00;
+    request[5] = 0x00;
+    uint16_t crc = calculateCRC(request, 6);
+    request[6] = crc & 0xFF;
+    request[7] = (crc >> 8) & 0xFF;
+
+    OneShotResult result = sendOneShotRequest(request, 8, slaveAddr);
+
+    // 验证回显帧：FC 0x05 的正常响应是原请求的回显
+    if (result.error == ONESHOT_SUCCESS && result.count >= 6) {
+        uint8_t respFC = (uint8_t)result.data[1];
+        if (respFC != 0x05) {
+            result.error = ONESHOT_EXCEPTION;
+            result.exceptionCode = MODBUS_EX_ILLEGAL_FUNCTION;
+        }
+    }
+    return result;
+}
+
+// ============================================================================
+// FC 0x05 写单个线圈 — 原始值版本（支持设备专有值如 0x5500 toggle）
+// ============================================================================
+OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, uint16_t rawValue) {
+    LOG_INFOF("[Modbus] writeCoilOnce(raw): slave=%d coil=%d rawValue=0x%04X", slaveAddr, coilAddr, rawValue);
+
+    uint8_t request[8];
+    request[0] = slaveAddr;
+    request[1] = 0x05;
+    request[2] = (coilAddr >> 8) & 0xFF;
+    request[3] = coilAddr & 0xFF;
+    request[4] = (rawValue >> 8) & 0xFF;
+    request[5] = rawValue & 0xFF;
+    uint16_t crc = calculateCRC(request, 6);
+    request[6] = crc & 0xFF;
+    request[7] = (crc >> 8) & 0xFF;
+
+    OneShotResult result = sendOneShotRequest(request, 8, slaveAddr);
+
+    if (result.error == ONESHOT_SUCCESS && result.count >= 6) {
+        uint8_t respFC = (uint8_t)result.data[1];
+        if (respFC != 0x05) {
+            result.error = ONESHOT_EXCEPTION;
+            result.exceptionCode = MODBUS_EX_ILLEGAL_FUNCTION;
+        }
+    }
+    return result;
+}
+
+// ============================================================================
+// 发送原始 Modbus 帧（自动追加 CRC，用于设备专有功能码如 0xB0）
+// ============================================================================
+OneShotResult ModbusHandler::sendRawFrameOnce(uint8_t expectedSlaveAddr,
+                                               const uint8_t* dataWithoutCRC, uint8_t dataLen) {
+    LOG_INFOF("[Modbus] sendRawFrameOnce: slave=%d dataLen=%d", expectedSlaveAddr, dataLen);
+
+    if (dataLen < 2 || dataLen > (Protocols::MODBUS_BUFFER_SIZE - 2)) {
+        OneShotResult result;
+        result.error = ONESHOT_EXCEPTION;
+        result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
+        return result;
+    }
+
+    uint8_t frame[Protocols::MODBUS_BUFFER_SIZE];
+    memcpy(frame, dataWithoutCRC, dataLen);
+    uint16_t crc = calculateCRC(frame, dataLen);
+    frame[dataLen] = crc & 0xFF;
+    frame[dataLen + 1] = (crc >> 8) & 0xFF;
+
+    return sendOneShotRequest(frame, dataLen + 2, expectedSlaveAddr);
+}
+
+// ============================================================================
+// FC 0x0F 写多个线圈（阻塞）
+// ============================================================================
+OneShotResult ModbusHandler::writeMultipleCoilsOnce(uint8_t slaveAddr, uint16_t startAddr,
+                                                     uint16_t quantity, const bool* values) {
+    OneShotResult result;
+
+    if (quantity == 0 || quantity > Protocols::MODBUS_MAX_WRITE_COILS) {
+        result.error = ONESHOT_EXCEPTION;
+        result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
+        LOG_WARNINGF("[Modbus] writeMultipleCoilsOnce: invalid quantity %d", quantity);
+        return result;
+    }
+
+    LOG_INFOF("[Modbus] writeMultipleCoilsOnce: slave=%d start=%d qty=%d", slaveAddr, startAddr, quantity);
+
+    uint8_t byteCount = (quantity + 7) / 8;
+    uint8_t reqLen = 7 + byteCount + 2; // addr+fc+startH+startL+qtyH+qtyL+byteCount+data+CRC
+
+    // 使用栈缓冲（最大 7+4+2=13 字节，32线圈=4字节数据）
+    uint8_t request[16];
+    if (reqLen > sizeof(request)) {
+        result.error = ONESHOT_EXCEPTION;
+        result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
+        return result;
+    }
+
+    request[0] = slaveAddr;
+    request[1] = 0x0F;
+    request[2] = (startAddr >> 8) & 0xFF;
+    request[3] = startAddr & 0xFF;
+    request[4] = (quantity >> 8) & 0xFF;
+    request[5] = quantity & 0xFF;
+    request[6] = byteCount;
+
+    // 将bool数组打包为字节
+    memset(&request[7], 0, byteCount);
+    for (uint16_t i = 0; i < quantity; i++) {
+        if (values[i]) {
+            request[7 + i / 8] |= (1 << (i % 8));
+        }
+    }
+
+    uint16_t crc = calculateCRC(request, 7 + byteCount);
+    request[7 + byteCount] = crc & 0xFF;
+    request[7 + byteCount + 1] = (crc >> 8) & 0xFF;
+
+    result = sendOneShotRequest(request, reqLen, slaveAddr);
+
+    // 验证响应：FC 0x0F 响应为 [addr, 0x0F, startH, startL, qtyH, qtyL, CRC]
+    if (result.error == ONESHOT_SUCCESS && result.count >= 6) {
+        uint8_t respFC = (uint8_t)result.data[1];
+        if (respFC != 0x0F) {
+            result.error = ONESHOT_EXCEPTION;
+            result.exceptionCode = MODBUS_EX_ILLEGAL_FUNCTION;
+        }
+    }
+    return result;
+}
+
+// ============================================================================
+// FC 0x06 写单个寄存器（阻塞）
+// ============================================================================
+OneShotResult ModbusHandler::writeRegisterOnce(uint8_t slaveAddr, uint16_t regAddr, uint16_t value) {
+    LOG_INFOF("[Modbus] writeRegisterOnce: slave=%d reg=%d value=%d", slaveAddr, regAddr, value);
+
+    uint8_t request[8];
+    request[0] = slaveAddr;
+    request[1] = 0x06;
+    request[2] = (regAddr >> 8) & 0xFF;
+    request[3] = regAddr & 0xFF;
+    request[4] = (value >> 8) & 0xFF;
+    request[5] = value & 0xFF;
+    uint16_t crc = calculateCRC(request, 6);
+    request[6] = crc & 0xFF;
+    request[7] = (crc >> 8) & 0xFF;
+
+    OneShotResult result = sendOneShotRequest(request, 8, slaveAddr);
+
+    if (result.error == ONESHOT_SUCCESS && result.count >= 6) {
+        uint8_t respFC = (uint8_t)result.data[1];
+        if (respFC != 0x06) {
+            result.error = ONESHOT_EXCEPTION;
+            result.exceptionCode = MODBUS_EX_ILLEGAL_FUNCTION;
+        }
+    }
+    return result;
+}
+
+// ============================================================================
+// FC 0x10 写多个寄存器（阻塞）
+// ============================================================================
+OneShotResult ModbusHandler::writeMultipleRegistersOnce(uint8_t slaveAddr, uint16_t startAddr,
+                                                         uint16_t quantity, const uint16_t* values) {
+    OneShotResult result;
+
+    if (quantity == 0 || quantity > 123) {
+        result.error = ONESHOT_EXCEPTION;
+        result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
+        LOG_WARNINGF("[Modbus] writeMultipleRegistersOnce: invalid quantity %d", quantity);
+        return result;
+    }
+
+    LOG_INFOF("[Modbus] writeMultipleRegistersOnce: slave=%d start=%d qty=%d", slaveAddr, startAddr, quantity);
+
+    uint8_t byteCount = quantity * 2;
+    uint8_t reqLen = 7 + byteCount + 2; // addr+fc+startH+startL+qtyH+qtyL+byteCount+data+CRC
+
+    // 动态分配缓冲区（最大 7+246+2=255 字节）
+    if (reqLen > Protocols::MODBUS_BUFFER_SIZE) {
+        result.error = ONESHOT_EXCEPTION;
+        result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
+        return result;
+    }
+
+    uint8_t request[Protocols::MODBUS_BUFFER_SIZE];
+    request[0] = slaveAddr;
+    request[1] = 0x10;
+    request[2] = (startAddr >> 8) & 0xFF;
+    request[3] = startAddr & 0xFF;
+    request[4] = (quantity >> 8) & 0xFF;
+    request[5] = quantity & 0xFF;
+    request[6] = byteCount;
+
+    for (uint16_t i = 0; i < quantity; i++) {
+        request[7 + i * 2] = (values[i] >> 8) & 0xFF;
+        request[7 + i * 2 + 1] = values[i] & 0xFF;
+    }
+
+    uint16_t crc = calculateCRC(request, 7 + byteCount);
+    request[7 + byteCount] = crc & 0xFF;
+    request[7 + byteCount + 1] = (crc >> 8) & 0xFF;
+
+    result = sendOneShotRequest(request, reqLen, slaveAddr);
+
+    // 验证响应：FC 0x10 响应为 [addr, 0x10, startH, startL, qtyH, qtyL, CRC]
+    if (result.error == ONESHOT_SUCCESS && result.count >= 6) {
+        uint8_t respFC = (uint8_t)result.data[1];
+        if (respFC != 0x10) {
+            result.error = ONESHOT_EXCEPTION;
+            result.exceptionCode = MODBUS_EX_ILLEGAL_FUNCTION;
+        }
+    }
+    return result;
+}
+
+// ============================================================================
+// 线圈延时任务管理
+// ============================================================================
+bool ModbusHandler::addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsigned long delayMs) {
+    // 优先复用同一线圈地址的已有任务
+    for (uint8_t i = 0; i < Protocols::MODBUS_MAX_COIL_DELAY_TASKS; i++) {
+        if (coilDelayTasks[i].active &&
+            coilDelayTasks[i].slaveAddress == slaveAddr &&
+            coilDelayTasks[i].coilAddress == coilAddr) {
+            coilDelayTasks[i].triggerTime = millis() + delayMs;
+            LOG_INFOF("[Modbus] DelayTask: updated slot %d, slave=%d coil=%d delay=%lums",
+                      i, slaveAddr, coilAddr, delayMs);
+            return true;
+        }
+    }
+    // 查找空闲槽位
+    for (uint8_t i = 0; i < Protocols::MODBUS_MAX_COIL_DELAY_TASKS; i++) {
+        if (!coilDelayTasks[i].active) {
+            coilDelayTasks[i].slaveAddress = slaveAddr;
+            coilDelayTasks[i].coilAddress = coilAddr;
+            coilDelayTasks[i].triggerTime = millis() + delayMs;
+            coilDelayTasks[i].active = true;
+            LOG_INFOF("[Modbus] DelayTask: added slot %d, slave=%d coil=%d delay=%lums",
+                      i, slaveAddr, coilAddr, delayMs);
+            return true;
+        }
+    }
+    LOG_WARNING("[Modbus] DelayTask: queue full");
+    return false;
+}
+
+void ModbusHandler::processCoilDelayTasks() {
+    unsigned long now = millis();
+    for (uint8_t i = 0; i < Protocols::MODBUS_MAX_COIL_DELAY_TASKS; i++) {
+        if (coilDelayTasks[i].active && now >= coilDelayTasks[i].triggerTime) {
+            LOG_INFOF("[Modbus] DelayTask: executing slot %d, turning OFF slave=%d coil=%d",
+                      i, coilDelayTasks[i].slaveAddress, coilDelayTasks[i].coilAddress);
+            writeCoilOnce(coilDelayTasks[i].slaveAddress, coilDelayTasks[i].coilAddress, false);
+            coilDelayTasks[i].active = false;
+        }
+    }
 }
 
 String ModbusHandler::formatRawHex(uint8_t slaveAddr, uint8_t fc, const uint16_t* data, uint16_t count) {

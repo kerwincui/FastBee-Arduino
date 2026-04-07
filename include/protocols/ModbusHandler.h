@@ -99,6 +99,16 @@ struct WriteRequest {
     WriteRequest() : slaveAddress(0), regAddress(0), value(0), pending(false) {}
 };
 
+// 线圈延时任务（通用：到期后将指定线圈写OFF）
+struct CoilDelayTask {
+    uint8_t  slaveAddress;
+    uint16_t coilAddress;
+    unsigned long triggerTime;  // millis() 到期时间
+    bool active;
+
+    CoilDelayTask() : slaveAddress(0), coilAddress(0), triggerTime(0), active(false) {}
+};
+
 // Master模式专属配置
 struct MasterConfig {
     uint16_t responseTimeout;     // 响应超时（毫秒）
@@ -120,6 +130,18 @@ struct MasterStats {
     uint32_t timeoutPolls;
 
     MasterStats() : totalPolls(0), successPolls(0), failedPolls(0), timeoutPolls(0) {}
+};
+
+// 单个轮询任务的最新数据缓存
+struct TaskDataCache {
+    uint16_t values[Protocols::MODBUS_MAX_REGISTERS_PER_READ];
+    uint16_t count;          // 实际缓存的寄存器数量
+    unsigned long timestamp; // millis() 采集时间
+    bool valid;              // 是否有有效数据
+
+    TaskDataCache() : count(0), timestamp(0), valid(false) {
+        memset(values, 0, sizeof(values));
+    }
 };
 
 // Modbus配置结构体
@@ -208,9 +230,30 @@ public:
     OneShotResult readRegistersOnce(uint8_t slaveAddress, uint8_t functionCode,
                                     uint16_t startAddress, uint16_t quantity);
     
+    // Master一次性阻塞写操作（与 readRegistersOnce 对称，通用Modbus写能力）
+    OneShotResult writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, bool value);
+    OneShotResult writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, uint16_t rawValue);
+    OneShotResult writeMultipleCoilsOnce(uint8_t slaveAddr, uint16_t startAddr,
+                                          uint16_t quantity, const bool* values);
+    OneShotResult writeRegisterOnce(uint8_t slaveAddr, uint16_t regAddr, uint16_t value);
+    OneShotResult writeMultipleRegistersOnce(uint8_t slaveAddr, uint16_t startAddr,
+                                              uint16_t quantity, const uint16_t* values);
+
+    // 发送原始 Modbus 帧（自动追加 CRC，用于设备专有功能码如 0xB0）
+    OneShotResult sendRawFrameOnce(uint8_t expectedSlaveAddr,
+                                    const uint8_t* dataWithoutCRC, uint8_t dataLen);
+
+    // 调试帧信息（最近一次 OneShot 操作的 TX/RX hex 字符串）
+    const String& getLastTxHex() const { return _lastTxHex; }
+    const String& getLastRxHex() const { return _lastRxHex; }
+
+    // 线圈延时任务管理（到期后自动将线圈写OFF，通用定时操作）
+    bool addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsigned long delayMs);
+    
     // Master运行状态
     String getMasterStatus() const;
     MasterStats getMasterStats() const { return masterStats; }
+    TaskDataCache getTaskDataCache(uint8_t index) const;
     
     // RAW模式辅助：将寄存器数据重构为Modbus响应帧的十六进制字符串
     String formatRawHex(uint8_t slaveAddr, uint8_t fc, const uint16_t* data, uint16_t count);
@@ -256,6 +299,13 @@ private:
     bool processWriteQueue();
     uint8_t buildWriteRequest(const WriteRequest& req, uint8_t* buffer);
     
+    // 一次性操作通用发送/接收辅助（提取自readRegistersOnce的通用逻辑）
+    OneShotResult sendOneShotRequest(const uint8_t* request, uint8_t reqLen,
+                                      uint8_t expectedSlaveAddr);
+    
+    // 线圈延时任务处理
+    void processCoilDelayTasks();
+    
     // Master状态机变量
     MasterPollState pollState;
     uint8_t  currentTaskIndex;
@@ -271,8 +321,18 @@ private:
     // 写请求队列
     WriteRequest writeQueue[Protocols::MODBUS_MAX_WRITE_QUEUE];
     
+    // 线圈延时任务队列
+    CoilDelayTask coilDelayTasks[Protocols::MODBUS_MAX_COIL_DELAY_TASKS];
+    
     // 运行统计
     MasterStats masterStats;
+
+    // 每个轮询任务的最新数据缓存
+    TaskDataCache taskDataCache[Protocols::MODBUS_MAX_POLL_TASKS];
+
+    // 调试帧缓冲区（最近一次 OneShot TX/RX）
+    String _lastTxHex;
+    String _lastRxHex;
     
     // 寄存器模拟存储（从站模式使用）
     uint16_t holdingRegisters[100];
