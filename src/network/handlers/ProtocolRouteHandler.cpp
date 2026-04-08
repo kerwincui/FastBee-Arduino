@@ -801,6 +801,7 @@ static void addModbusDebug(JsonDocument& doc, ModbusHandler* modbus) {
 
 // ============================================================================
 // POST /api/modbus/coil/control — 单个线圈控制（on/off/toggle）
+// mode=coil: FC05 写线圈  mode=register: FC06 写保持寄存器（0x0001/0x0000）
 // ============================================================================
 void ProtocolRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request) {
     if (!ctx->checkPermission(request, "config.edit")) {
@@ -815,6 +816,7 @@ void ProtocolRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* reques
     uint16_t channel = (uint16_t)ctx->getParamInt(request, "channel", 0);
     uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
     String action = ctx->getParamValue(request, "action", "toggle");
+    String mode = ctx->getParamValue(request, "mode", "coil");
     
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
@@ -824,16 +826,37 @@ void ProtocolRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* reques
     uint16_t coilAddr = coilBase + channel;
     OneShotResult result;
     
-    if (action == "on") {
-        result = modbus->writeCoilOnce(slaveAddr, coilAddr, true);
-    } else if (action == "off") {
-        result = modbus->writeCoilOnce(slaveAddr, coilAddr, false);
-    } else if (action == "toggle") {
-        // 使用设备原生 toggle 指令 (FC 0x05 value=0x5500)
-        result = modbus->writeCoilOnce(slaveAddr, coilAddr, (uint16_t)0x5500);
+    if (mode == "register") {
+        // 寄存器模式：FC06 写保持寄存器
+        if (action == "on") {
+            result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 1);
+        } else if (action == "off") {
+            result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 0);
+        } else if (action == "toggle") {
+            // 先读当前值再反转
+            OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x03, coilAddr, 1);
+            if (readR.error != ONESHOT_SUCCESS) {
+                sendOneShotError(ctx, request, readR);
+                return;
+            }
+            uint16_t newVal = (readR.data[0] != 0) ? 0 : 1;
+            result = modbus->writeRegisterOnce(slaveAddr, coilAddr, newVal);
+        } else {
+            ctx->sendBadRequest(request, "Invalid action (on/off/toggle)");
+            return;
+        }
     } else {
-        ctx->sendBadRequest(request, "Invalid action (on/off/toggle)");
-        return;
+        // 线圈模式：FC05 写线圈
+        if (action == "on") {
+            result = modbus->writeCoilOnce(slaveAddr, coilAddr, true);
+        } else if (action == "off") {
+            result = modbus->writeCoilOnce(slaveAddr, coilAddr, false);
+        } else if (action == "toggle") {
+            result = modbus->writeCoilOnce(slaveAddr, coilAddr, (uint16_t)0x5500);
+        } else {
+            ctx->sendBadRequest(request, "Invalid action (on/off/toggle)");
+            return;
+        }
     }
     
     if (result.error != ONESHOT_SUCCESS) {
@@ -841,12 +864,19 @@ void ProtocolRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* reques
         return;
     }
     
-    // toggle/off 后读取实际状态，使用 qty=8 确保设备返回标准格式响应
+    // 操作后读取实际状态
     bool newState = (action == "on");
     if (action == "toggle" || action == "off") {
-        OneShotResult readResult = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, 8);
-        if (readResult.error == ONESHOT_SUCCESS) {
-            newState = (readResult.data[channel] != 0);
+        if (mode == "register") {
+            OneShotResult readResult = modbus->readRegistersOnce(slaveAddr, 0x03, coilAddr, 1);
+            if (readResult.error == ONESHOT_SUCCESS) {
+                newState = (readResult.data[0] != 0);
+            }
+        } else {
+            OneShotResult readResult = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, 8);
+            if (readResult.error == ONESHOT_SUCCESS) {
+                newState = (readResult.data[channel] != 0);
+            }
         }
     }
     
@@ -857,6 +887,7 @@ void ProtocolRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* reques
     data["coilAddress"] = coilAddr;
     data["state"] = newState;
     data["action"] = action;
+    data["mode"] = mode;
     addModbusDebug(doc, modbus);
     
     String out;
@@ -866,6 +897,7 @@ void ProtocolRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* reques
 
 // ============================================================================
 // POST /api/modbus/coil/batch — 批量线圈控制（allOn/allOff/allToggle）
+// mode=coil: FC05 写线圈  mode=register: FC06 写保持寄存器
 // ============================================================================
 void ProtocolRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
     if (!ctx->checkPermission(request, "config.edit")) {
@@ -880,6 +912,7 @@ void ProtocolRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request)
     uint16_t channelCount = (uint16_t)ctx->getParamInt(request, "channelCount", 8);
     uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
     String action = ctx->getParamValue(request, "action", "allOff");
+    String mode = ctx->getParamValue(request, "mode", "coil");
     
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
@@ -892,24 +925,56 @@ void ProtocolRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request)
     
     OneShotResult result;
     
-    if (action == "allOn" || action == "allOff") {
-        // 直接使用 FC 0x05 标准开/关指令（0xFF00=开, 0x0000=关）
-        // 无需先读取状态，避免竞态风险
-        bool targetOn = (action == "allOn");
-        for (uint16_t i = 0; i < channelCount; i++) {
-            OneShotResult writeResult = modbus->writeCoilOnce(slaveAddr, coilBase + i, targetOn);
-            if (writeResult.error != ONESHOT_SUCCESS) {
-                sendOneShotError(ctx, request, writeResult);
+    if (mode == "register") {
+        // 寄存器模式：FC06 逐通道写
+        if (action == "allOn" || action == "allOff") {
+            uint16_t targetVal = (action == "allOn") ? 1 : 0;
+            for (uint16_t i = 0; i < channelCount; i++) {
+                OneShotResult wr = modbus->writeRegisterOnce(slaveAddr, coilBase + i, targetVal);
+                if (wr.error != ONESHOT_SUCCESS) {
+                    sendOneShotError(ctx, request, wr);
+                    return;
+                }
+            }
+            result.error = ONESHOT_SUCCESS;
+        } else if (action == "allToggle") {
+            // 先读取所有状态再逐个反转
+            OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x03, coilBase, channelCount);
+            if (readR.error != ONESHOT_SUCCESS) {
+                sendOneShotError(ctx, request, readR);
                 return;
             }
+            for (uint16_t i = 0; i < channelCount; i++) {
+                uint16_t newVal = (readR.data[i] != 0) ? 0 : 1;
+                OneShotResult wr = modbus->writeRegisterOnce(slaveAddr, coilBase + i, newVal);
+                if (wr.error != ONESHOT_SUCCESS) {
+                    sendOneShotError(ctx, request, wr);
+                    return;
+                }
+            }
+            result.error = ONESHOT_SUCCESS;
+        } else {
+            ctx->sendBadRequest(request, "Invalid action (allOn/allOff/allToggle)");
+            return;
         }
-        result.error = ONESHOT_SUCCESS;
-    } else if (action == "allToggle") {
-        // 使用设备原生全部翻转指令 (FC 0x05 addr=coilBase value=0x5A00)
-        result = modbus->writeCoilOnce(slaveAddr, coilBase, (uint16_t)0x5A00);
     } else {
-        ctx->sendBadRequest(request, "Invalid action (allOn/allOff/allToggle)");
-        return;
+        // 线圈模式：FC05
+        if (action == "allOn" || action == "allOff") {
+            bool targetOn = (action == "allOn");
+            for (uint16_t i = 0; i < channelCount; i++) {
+                OneShotResult writeResult = modbus->writeCoilOnce(slaveAddr, coilBase + i, targetOn);
+                if (writeResult.error != ONESHOT_SUCCESS) {
+                    sendOneShotError(ctx, request, writeResult);
+                    return;
+                }
+            }
+            result.error = ONESHOT_SUCCESS;
+        } else if (action == "allToggle") {
+            result = modbus->writeCoilOnce(slaveAddr, coilBase, (uint16_t)0x5A00);
+        } else {
+            ctx->sendBadRequest(request, "Invalid action (allOn/allOff/allToggle)");
+            return;
+        }
     }
     
     if (result.error != ONESHOT_SUCCESS) {
@@ -917,23 +982,28 @@ void ProtocolRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request)
         return;
     }
     
-    // 操作后读取实际状态，使用 qty 向上取整到 8 的倍数确保标准格式
-    uint16_t readQty = ((channelCount + 7) / 8) * 8;
-    if (readQty < 8) readQty = 8;
-    OneShotResult readResult = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, readQty);
+    // 操作后读取实际状态
+    OneShotResult readResult;
+    if (mode == "register") {
+        readResult = modbus->readRegistersOnce(slaveAddr, 0x03, coilBase, channelCount);
+    } else {
+        uint16_t readQty = ((channelCount + 7) / 8) * 8;
+        if (readQty < 8) readQty = 8;
+        readResult = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, readQty);
+    }
     
     JsonDocument doc;
     doc["success"] = true;
     JsonObject data = doc["data"].to<JsonObject>();
     data["channelCount"] = channelCount;
     data["action"] = action;
+    data["mode"] = mode;
     JsonArray states = data["states"].to<JsonArray>();
     if (readResult.error == ONESHOT_SUCCESS) {
         for (uint16_t i = 0; i < channelCount; i++) {
             states.add(readResult.data[i] != 0);
         }
     } else {
-        // 读取失败时根据 action 推断状态
         for (uint16_t i = 0; i < channelCount; i++) {
             states.add(action == "allOn");
         }
@@ -998,7 +1068,8 @@ void ProtocolRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request)
 }
 
 // ============================================================================
-// GET /api/modbus/coil/status — 读取线圈状态（FC 0x01）
+// GET /api/modbus/coil/status — 读取线圈状态
+// mode=coil: FC01 读线圈  mode=register: FC03 读保持寄存器（每通道一个寄存器）
 // ============================================================================
 void ProtocolRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request) {
     if (!ctx->checkPermission(request, "config.view") &&
@@ -1013,6 +1084,7 @@ void ProtocolRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
     uint16_t channelCount = (uint16_t)ctx->getParamInt(request, "channelCount", 8);
     uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
+    String mode = ctx->getParamValue(request, "mode", "coil");
     
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
@@ -1023,10 +1095,16 @@ void ProtocolRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request
         return;
     }
     
-    // 部分继电器板在 qty < 8 时返回非标准/错误响应，向上取整到 8 的倍数确保标准格式
-    uint16_t readQty = ((channelCount + 7) / 8) * 8;
-    if (readQty < 8) readQty = 8;
-    OneShotResult result = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, readQty);
+    OneShotResult result;
+    if (mode == "register") {
+        // 寄存器模式：FC03 读保持寄存器，每通道一个寄存器，值 !=0 为 ON
+        result = modbus->readRegistersOnce(slaveAddr, 0x03, coilBase, channelCount);
+    } else {
+        // 线圈模式：FC01 读线圈，向上取整到 8 的倍数
+        uint16_t readQty = ((channelCount + 7) / 8) * 8;
+        if (readQty < 8) readQty = 8;
+        result = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, readQty);
+    }
     if (result.error != ONESHOT_SUCCESS) {
         sendOneShotError(ctx, request, result);
         return;
@@ -1037,6 +1115,7 @@ void ProtocolRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request
     JsonObject data = doc["data"].to<JsonObject>();
     data["channelCount"] = channelCount;
     data["coilBase"] = coilBase;
+    data["mode"] = mode;
     JsonArray states = data["states"].to<JsonArray>();
     for (uint16_t i = 0; i < channelCount; i++) {
         states.add(result.data[i] != 0);

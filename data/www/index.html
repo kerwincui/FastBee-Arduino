@@ -946,6 +946,14 @@
                                                     <!-- 继电器专属配置 -->
                                                     <div id="modbus-relay-config">
                                                         <div class="pure-control-group">
+                                                            <label for="modbus-ctrl-relay-mode" data-i18n="modbus-ctrl-relay-mode">控制协议</label>
+                                                            <select id="modbus-ctrl-relay-mode" class="pure-input-1" onchange="AppState.onRelayModeChange()">
+                                                                <option value="coil" data-i18n="modbus-ctrl-relay-mode-coil">线圈模式 (FC01/FC05)</option>
+                                                                <option value="register" data-i18n="modbus-ctrl-relay-mode-register">寄存器模式 (FC03/FC06)</option>
+                                                            </select>
+                                                            <small class="field-hint" data-i18n="modbus-ctrl-relay-mode-hint">线圈模式适用于标准继电器板，寄存器模式适用于M88等工控模块</small>
+                                                        </div>
+                                                        <div class="pure-control-group">
                                                             <label for="modbus-ctrl-coil-base" data-i18n="modbus-ctrl-coil-base">线圈基地址</label>
                                                             <input type="number" id="modbus-ctrl-coil-base" class="pure-input-1" value="0" min="0" max="65535">
                                                             <small class="field-hint" data-i18n="modbus-ctrl-coil-base-hint">线圈起始地址，默认0</small>

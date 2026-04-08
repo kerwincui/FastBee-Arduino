@@ -4215,6 +4215,10 @@ const AppState = {
         if (baseEl) baseEl.value = dev.coilBase || 0;
         if (ncEl) ncEl.checked = !!dev.ncMode;
 
+        // 继电器协议模式
+        var relayModeEl = document.getElementById('modbus-ctrl-relay-mode');
+        if (relayModeEl) relayModeEl.value = dev.relayMode || 'coil';
+
         // 设备类型
         var typeEl = document.getElementById('modbus-ctrl-device-type');
         if (typeEl) typeEl.value = dev.type || 'relay';
@@ -4314,7 +4318,8 @@ const AppState = {
             slaveAddress: 3,
             channelCount: 2,
             coilBase: 0,
-            ncMode: true
+            ncMode: true,
+            relayMode: 'coil'
         };
         this._modbusDevices.push(dev);
         this._activeDeviceId = dev.id;
@@ -4336,6 +4341,7 @@ const AppState = {
         dev.channelCount = parseInt(document.getElementById('modbus-ctrl-ch-count')?.value || '8');
         dev.coilBase = parseInt(document.getElementById('modbus-ctrl-coil-base')?.value || '0');
         dev.ncMode = document.getElementById('modbus-ctrl-nc-mode')?.checked || false;
+        dev.relayMode = document.getElementById('modbus-ctrl-relay-mode')?.value || 'coil';
         dev.type = document.getElementById('modbus-ctrl-device-type')?.value || 'relay';
         if (dev.type === 'pwm') {
             dev.pwmRegBase = parseInt(document.getElementById('modbus-ctrl-pwm-reg-base')?.value || '0');
@@ -4401,6 +4407,17 @@ const AppState = {
         // PID 类型隐藏通道数行
         var chGroup = document.getElementById('modbus-ch-count-group');
         if (chGroup) chGroup.style.display = (type === 'pid') ? 'none' : '';
+    },
+
+    /** 继电器协议模式切换 — 更新基地址标签提示 */
+    onRelayModeChange() {
+        var mode = document.getElementById('modbus-ctrl-relay-mode')?.value || 'coil';
+        var hintEl = document.querySelector('#modbus-relay-config .field-hint');
+        if (hintEl) {
+            hintEl.textContent = (mode === 'register')
+                ? (i18n.t('modbus-ctrl-reg-base-hint') || '寄存器起始地址，如M88继电器从0x0008开始')
+                : (i18n.t('modbus-ctrl-coil-base-hint') || '线圈起始地址，默认0');
+        }
     },
 
     /** 获取 PWM 参数 */
@@ -4730,7 +4747,8 @@ const AppState = {
             slaveAddress: parseInt(document.getElementById('modbus-ctrl-slave-addr')?.value || '1'),
             channelCount: parseInt(document.getElementById('modbus-ctrl-ch-count')?.value || '8'),
             coilBase: parseInt(document.getElementById('modbus-ctrl-coil-base')?.value || '0'),
-            ncMode: document.getElementById('modbus-ctrl-nc-mode')?.checked || false
+            ncMode: document.getElementById('modbus-ctrl-nc-mode')?.checked || false,
+            relayMode: document.getElementById('modbus-ctrl-relay-mode')?.value || 'coil'
         };
     },
 
@@ -4741,7 +4759,8 @@ const AppState = {
             const res = await apiGetSilent('/api/modbus/coil/status', {
                 slaveAddress: p.slaveAddress,
                 channelCount: p.channelCount,
-                coilBase: p.coilBase
+                coilBase: p.coilBase,
+                mode: p.relayMode
             });
             if (res && res.success && res.data && res.data.states) {
                 this._coilStates = res.data.states;
@@ -4794,7 +4813,8 @@ const AppState = {
                 slaveAddress: p.slaveAddress,
                 channel: ch,
                 coilBase: p.coilBase,
-                action: 'toggle'
+                action: 'toggle',
+                mode: p.relayMode
             });
             if (res && res.success && res.data) {
                 // 更新单个状态
@@ -4828,7 +4848,8 @@ const AppState = {
                 slaveAddress: p.slaveAddress,
                 channelCount: p.channelCount,
                 coilBase: p.coilBase,
-                action: modbusAction
+                action: modbusAction,
+                mode: p.relayMode
             });
             if (res && res.success && res.data && res.data.states) {
                 this._coilStates = res.data.states;
