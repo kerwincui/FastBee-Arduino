@@ -395,6 +395,37 @@ bool ProtocolManager::restartModbus() {
                 modbusConfig.master.taskCount++;
             }
         }
+        
+        // 解析子设备
+        if (masterObj.containsKey("devices")) {
+            JsonArray devicesArr = masterObj["devices"];
+            modbusConfig.master.deviceCount = 0;
+            for (JsonVariant dv : devicesArr) {
+                if (modbusConfig.master.deviceCount >= Protocols::MODBUS_MAX_SUB_DEVICES) break;
+                JsonObject d = dv.as<JsonObject>();
+                ModbusSubDevice& dev = modbusConfig.master.devices[modbusConfig.master.deviceCount];
+                const char* dName = d["name"] | "Device";
+                strncpy(dev.name, dName, sizeof(dev.name) - 1);
+                dev.name[sizeof(dev.name) - 1] = '\0';
+                const char* dType = d["deviceType"] | "relay";
+                strncpy(dev.deviceType, dType, sizeof(dev.deviceType) - 1);
+                dev.deviceType[sizeof(dev.deviceType) - 1] = '\0';
+                dev.slaveAddress    = d["slaveAddress"] | (uint8_t)1;
+                dev.channelCount    = d["channelCount"] | (uint8_t)2;
+                dev.coilBase        = d["coilBase"] | (uint16_t)0;
+                dev.ncMode          = d["ncMode"] | false;
+                dev.controlProtocol = d["controlProtocol"] | (uint8_t)0;
+                dev.pwmRegBase      = d["pwmRegBase"] | (uint16_t)0;
+                dev.pwmResolution   = d["pwmResolution"] | (uint8_t)8;
+                dev.pidDecimals     = d["pidDecimals"] | (uint8_t)1;
+                if (d.containsKey("pidAddrs") && d["pidAddrs"].is<JsonArray>()) {
+                    JsonArray pa = d["pidAddrs"].as<JsonArray>();
+                    for (int i = 0; i < 6 && i < (int)pa.size(); i++)
+                        dev.pidAddrs[i] = pa[i] | (uint16_t)0;
+                }
+                modbusConfig.master.deviceCount++;
+            }
+        }
     }
     
     // 创建新实例并设置回调
@@ -408,8 +439,10 @@ bool ProtocolManager::restartModbus() {
         // 2. JSON 格式数据注入 PeriphExec 进行条件匹配
         if (data.length() > 0 && data[0] == '[') {
             PeriphExecManager::getInstance().handleMqttMessage("modbus/data", data);
+            // 3. 轮询触发：本地数据源条件评估（POLL_TRIGGER 规则）
+            PeriphExecManager::getInstance().handlePollData("modbus", data);
         }
-        // 3. 全局消息路由
+        // 4. 全局消息路由
         handleMessage(ProtocolType::MODBUS, String(address), data);
     });
     
@@ -422,9 +455,10 @@ bool ProtocolManager::restartModbus() {
     
     bool ok = modbusHandler->begin(modbusConfig);
     if (ok) {
-        LOG_INFOF("Protocol Manager: Modbus restarted in %s mode, %d tasks",
+        LOG_INFOF("Protocol Manager: Modbus restarted in %s mode, %d tasks, %d devices",
                   (modbusConfig.mode == MODBUS_MASTER) ? "Master" : "Slave",
-                  modbusConfig.master.taskCount);
+                  modbusConfig.master.taskCount,
+                  modbusConfig.master.deviceCount);
     } else {
         LOG_WARNING("Protocol Manager: Modbus restart failed");
     }
@@ -660,8 +694,10 @@ bool ProtocolManager::initModbus(void* config) {
         // 2. JSON 格式数据注入 PeriphExec 进行条件匹配
         if (data.length() > 0 && data[0] == '[') {
             PeriphExecManager::getInstance().handleMqttMessage("modbus/data", data);
+            // 3. 轮询触发：本地数据源条件评估（POLL_TRIGGER 规则）
+            PeriphExecManager::getInstance().handlePollData("modbus", data);
         }
-        // 3. 保持全局消息路由
+        // 4. 保持全局消息路由
         handleMessage(ProtocolType::MODBUS, String(address), data);
     });
     

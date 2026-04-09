@@ -729,6 +729,36 @@
                                 <!-- Modbus RTU 配置 - 两列布局 -->
                                 <div id="modbus-rtu" class="config-content">
                                     <form id="modbus-rtu-form" class="pure-form pure-form-stacked">
+                                        <!-- ========== 主站运行状态（紧凑） ========== -->
+                                        <div id="master-status-section" class="modbus-master-status-bar">
+                                            <div class="modbus-status-item">
+                                                <span class="modbus-status-label" data-i18n="modbus-master-running-status-label">运行状态</span>
+                                                <span id="master-running-status" class="modbus-status-value">--</span>
+                                            </div>
+                                            <div class="modbus-status-item">
+                                                <span class="modbus-status-label" data-i18n="modbus-master-total-polls">总轮询</span>
+                                                <strong id="master-stat-total" class="modbus-status-value">0</strong>
+                                            </div>
+                                            <div class="modbus-status-item">
+                                                <span class="modbus-status-label" data-i18n="modbus-master-success-polls">成功</span>
+                                                <strong id="master-stat-success" class="modbus-status-value" style="color:#4CAF50;">0</strong>
+                                            </div>
+                                            <div class="modbus-status-item">
+                                                <span class="modbus-status-label" data-i18n="modbus-master-failed-polls">失败</span>
+                                                <strong id="master-stat-failed" class="modbus-status-value" style="color:#f44336;">0</strong>
+                                            </div>
+                                            <div class="modbus-status-item">
+                                                <span class="modbus-status-label" data-i18n="modbus-master-timeout-polls">超时</span>
+                                                <strong id="master-stat-timeout" class="modbus-status-value" style="color:#FF9800;">0</strong>
+                                            </div>
+                                            <div class="modbus-status-item modbus-status-actions">
+                                                <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshMasterStatus()">
+                                                    <span class="icon-refresh"></span> <span data-i18n="refresh-btn">刷新</span>
+                                                </button>
+                                            </div>
+                                            <div id="master-data-grid" style="width:100%;"></div>
+                                        </div>
+
                                         <div class="pure-control-group u-separator-row">
                                             <label class="pure-checkbox">
                                                 <input type="checkbox" id="modbus-rtu-enabled"> <span
@@ -758,12 +788,6 @@
                                                         min="-1" max="39">
                                                     <small class="field-hint"
                                                         data-i18n="rtu-de-pin-hint">RS485方向控制引脚，-1表示禁用DE引脚（自动收发模块无需配置）</small>
-                                                </div>
-                                                <div class="pure-control-group">
-                                                    <label for="rtu-timeout"
-                                                        data-i18n="rtu-timeout-label">超时时间(ms)</label>
-                                                    <input type="number" id="rtu-timeout" class="pure-input-1"
-                                                        value="1000" min="100" max="10000">
                                                 </div>
                                             </div>
                                             <div class="config-form-column">
@@ -797,350 +821,209 @@
                                             </div>
                                         </div>
 
-                                        <!-- Master 模式配置区 -->
+                                        <!-- Master 模式配置区：统一子设备列表 -->
                                         <div id="master-config-section" class="u-mt-20">
-                                            <h4 class="u-title-indigo" data-i18n="modbus-master-title">Modbus 采集</h4>
-                                            <div class="config-form-grid">
-                                                <div class="config-form-column">
-                                                    <div class="pure-control-group">
-                                                        <label for="master-max-retries"
-                                                            data-i18n="modbus-master-max-retries">最大重试次数</label>
-                                                        <input type="number" id="master-max-retries"
-                                                            class="pure-input-1" value="2" min="0" max="10">
-                                                    </div>
-                                                    <div class="pure-control-group">
-                                                        <label for="master-inter-poll-delay"
-                                                            data-i18n="modbus-master-inter-poll-delay">轮询间隔延迟(ms)</label>
-                                                        <input type="number" id="master-inter-poll-delay"
-                                                            class="pure-input-1" value="100" min="10" max="5000">
-                                                    </div>
-                                                </div>
-                                                <div class="config-form-column">
-                                                    <div class="pure-control-group">
-                                                        <label for="master-response-timeout"
-                                                            data-i18n="modbus-master-response-timeout">响应超时(ms)</label>
-                                                        <input type="number" id="master-response-timeout"
-                                                            class="pure-input-1" value="1000" min="100" max="30000">
-                                                    </div>
+                                            <h4 class="u-title-indigo" data-i18n="modbus-all-devices-title">Modbus 子设备</h4>
+                                            <div class="u-flex u-gap-5 u-mb-10" style="margin-top:12px;position:relative;">
+                                                <button type="button" class="btn btn-sm btn-enable"
+                                                    onclick="AppState._showAddDeviceMenu(event)"
+                                                    data-i18n="modbus-add-device">+ 添加设备</button>
+                                                <div id="add-device-menu" class="add-device-menu" style="display:none;">
+                                                    <div class="add-device-menu-item" onclick="AppState._addSensorDevice()" data-i18n="modbus-add-sensor">采集设备</div>
+                                                    <div class="add-device-menu-item" onclick="AppState._addControlDevice()" data-i18n="modbus-add-control">控制设备</div>
                                                 </div>
                                             </div>
-
-                                            <!-- 轮询任务表 -->
-                                            <div class="u-mt-15">
-                                                <div class="u-flex-between u-items-center u-mb-10">
-                                                    <h4 style="color: #333; margin: 0;"
-                                                        data-i18n="modbus-master-tasks-title">轮询任务列表</h4>
-                                                    <button type="button" class="btn btn-sm btn-enable"
-                                                        onclick="AppState.addMasterPollTask()"
-                                                        data-i18n="modbus-master-add-task">添加任务</button>
-                                                </div>
-                                                <div class="u-table-wrap">
-                                                    <table class="pure-table pure-table-bordered u-table-compact">
-                                                        <thead>
-                                                            <tr>
-                                                                <th data-i18n="modbus-master-slave-addr">从站地址</th>
-                                                                <th data-i18n="modbus-master-fc">功能码</th>
-                                                                <th data-i18n="modbus-master-start-addr">起始地址</th>
-                                                                <th data-i18n="modbus-master-quantity">数量</th>
-                                                                <th data-i18n="modbus-master-interval">间隔(秒)</th>
-                                                                <th data-i18n="modbus-master-label">标签</th>
-                                                                <th data-i18n="modbus-master-mappings">映射</th>
-                                                                <th data-i18n="modbus-master-enabled">启用</th>
-                                                                <th data-i18n="modbus-master-actions">操作</th>
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody id="master-tasks-body">
-                                                            <tr>
-                                                                <td colspan="9" style="text-align: center; color: #999;"
-                                                                    data-i18n="modbus-master-no-tasks">暂无轮询任务</td>
-                                                            </tr>
-                                                        </tbody>
-                                                    </table>
-                                                </div>
+                                            <div class="u-overflow-x">
+                                                <table class="pure-table pure-table-bordered u-table-compact" style="width:100%;">
+                                                    <thead><tr>
+                                                        <th data-i18n="modbus-dev-name">名称</th>
+                                                        <th data-i18n="modbus-dev-type">类型</th>
+                                                        <th data-i18n="modbus-dev-addr">从站地址</th>
+                                                        <th data-i18n="modbus-dev-info">设备信息</th>
+                                                        <th data-i18n="modbus-dev-enabled">启用</th>
+                                                        <th data-i18n="modbus-dev-actions">操作</th>
+                                                    </tr></thead>
+                                                    <tbody id="all-devices-body"></tbody>
+                                                </table>
                                             </div>
 
-                                            <!-- Master 状态显示 -->
-                                            <div id="master-status-section" class="u-mt-15 u-card-soft u-bg-muted">
-                                                <h4 style="color: #333; margin-bottom: 10px;"
-                                                    data-i18n="modbus-master-status-title">主站运行状态</h4>
-                                                <div style="margin-bottom: 8px; padding: 6px 10px; background: #f5f7fa; border-radius: 4px;">
-                                                    <small data-i18n="modbus-master-running-status-label">运行状态</small>:
-                                                    <span id="master-running-status" style="font-weight: bold; color: #606266;">--</span>
+                                        <!-- ========== 设备编辑弹窗 ========== -->
+                                        <div id="modbus-device-edit-modal" class="modal">
+                                            <div class="modal-content" style="max-width:520px;">
+                                                <div class="modal-header">
+                                                    <h3 id="modbus-edit-modal-title" data-i18n="modbus-device-edit-title">编辑子设备</h3>
+                                                    <button type="button" class="modal-close" onclick="AppState._closeEditModal()">&times;</button>
                                                 </div>
-                                                <div
-                                                    style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; text-align: center;">
-                                                    <div><small
-                                                            data-i18n="modbus-master-total-polls">总轮询</small><br><strong
-                                                            id="master-stat-total">0</strong></div>
-                                                    <div><small
-                                                            data-i18n="modbus-master-success-polls">成功</small><br><strong
-                                                            id="master-stat-success" style="color:#4CAF50;">0</strong>
-                                                    </div>
-                                                    <div><small
-                                                            data-i18n="modbus-master-failed-polls">失败</small><br><strong
-                                                            id="master-stat-failed" style="color:#f44336;">0</strong>
-                                                    </div>
-                                                    <div><small
-                                                            data-i18n="modbus-master-timeout-polls">超时</small><br><strong
-                                                            id="master-stat-timeout" style="color:#FF9800;">0</strong>
+                                                <div class="modal-body">
+                                                    <div class="pure-form pure-form-stacked">
+                                                        <div class="pure-control-group">
+                                                            <label data-i18n="modbus-device-col-name">名称</label>
+                                                            <input type="text" id="mdev-edit-name" class="pure-input-1" maxlength="31">
+                                                        </div>
+                                                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                                                            <div class="pure-control-group">
+                                                                <label data-i18n="modbus-device-col-type">类型</label>
+                                                                <select id="mdev-edit-type" class="pure-input-1" onchange="AppState._onEditTypeChange()">
+                                                                    <option value="relay">继电器</option>
+                                                                    <option value="pwm">PWM</option>
+                                                                    <option value="pid">PID</option>
+                                                                </select>
+                                                            </div>
+                                                            <div class="pure-control-group">
+                                                                <label data-i18n="modbus-device-col-addr">从站地址</label>
+                                                                <input type="number" id="mdev-edit-addr" class="pure-input-1" min="1" max="247">
+                                                            </div>
+                                                        </div>
+                                                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                                                            <div class="pure-control-group">
+                                                                <label data-i18n="modbus-device-col-ch">通道数</label>
+                                                                <select id="mdev-edit-ch" class="pure-input-1">
+                                                                    <option value="1">1</option><option value="2">2</option>
+                                                                    <option value="4">4</option><option value="8">8</option>
+                                                                    <option value="16">16</option><option value="32">32</option>
+                                                                </select>
+                                                            </div>
+                                                            <div class="pure-control-group">
+                                                                <label data-i18n="modbus-device-col-base">基地址</label>
+                                                                <input type="number" id="mdev-edit-base" class="pure-input-1" min="0" max="65535">
+                                                            </div>
+                                                        </div>
+                                                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                                                            <div class="pure-control-group">
+                                                                <label data-i18n="modbus-device-col-protocol">控制协议</label>
+                                                                <select id="mdev-edit-protocol" class="pure-input-1">
+                                                                    <option value="0" data-i18n="modbus-ctrl-protocol-coil">线圈模式</option>
+                                                                    <option value="1" data-i18n="modbus-ctrl-protocol-register">寄存器模式</option>
+                                                                </select>
+                                                            </div>
+                                                            <div class="pure-control-group">
+                                                                <label data-i18n="modbus-device-col-nc">NC模式</label>
+                                                                <select id="mdev-edit-nc" class="pure-input-1">
+                                                                    <option value="true" data-i18n="modbus-device-nc-closed">NC常闭模式</option>
+                                                                    <option value="false" data-i18n="modbus-device-nc-open">NC常开模式</option>
+                                                                </select>
+                                                            </div>
+                                                        </div>
+                                                        <div style="margin-top:8px;">
+                                                            <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+                                                                <input type="checkbox" id="mdev-edit-enabled" checked>
+                                                                <span data-i18n="modbus-device-enabled-label">启用</span>
+                                                            </label>
+                                                        </div>
+                                                        <!-- PWM 扩展 -->
+                                                        <div id="mdev-edit-pwm-section" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+                                                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                                                                <div class="pure-control-group">
+                                                                    <label data-i18n="modbus-ctrl-pwm-reg-base">PWM 寄存器基地址</label>
+                                                                    <input type="number" id="mdev-edit-pwm-reg-base" class="pure-input-1" min="0" max="65535">
+                                                                </div>
+                                                                <div class="pure-control-group">
+                                                                    <label data-i18n="modbus-ctrl-pwm-resolution">分辨率</label>
+                                                                    <select id="mdev-edit-pwm-resolution" class="pure-input-1">
+                                                                        <option value="8">8位 (0-255)</option>
+                                                                        <option value="10">10位 (0-1023)</option>
+                                                                        <option value="16">16位 (0-65535)</option>
+                                                                    </select>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                        <!-- PID 扩展 -->
+                                                        <div id="mdev-edit-pid-section" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+                                                            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+                                                                <div class="pure-control-group"><label>PV Addr</label><input type="number" id="mdev-edit-pid-pv" class="pure-input-1" min="0" max="65535"></div>
+                                                                <div class="pure-control-group"><label>SV Addr</label><input type="number" id="mdev-edit-pid-sv" class="pure-input-1" min="0" max="65535"></div>
+                                                                <div class="pure-control-group"><label>OUT Addr</label><input type="number" id="mdev-edit-pid-out" class="pure-input-1" min="0" max="65535"></div>
+                                                                <div class="pure-control-group"><label>P Addr</label><input type="number" id="mdev-edit-pid-p" class="pure-input-1" min="0" max="65535"></div>
+                                                                <div class="pure-control-group"><label>I Addr</label><input type="number" id="mdev-edit-pid-i" class="pure-input-1" min="0" max="65535"></div>
+                                                                <div class="pure-control-group"><label>D Addr</label><input type="number" id="mdev-edit-pid-d" class="pure-input-1" min="0" max="65535"></div>
+                                                            </div>
+                                                            <div class="pure-control-group" style="margin-top:8px;">
+                                                                <label data-i18n="modbus-ctrl-pid-decimals">小数位数</label>
+                                                                <select id="mdev-edit-pid-decimals" class="pure-input-1" style="max-width:120px;">
+                                                                    <option value="0">0位</option><option value="1" selected>1位</option>
+                                                                    <option value="2">2位</option><option value="3">3位</option>
+                                                                </select>
+                                                            </div>
+                                                        </div>
                                                     </div>
                                                 </div>
-                                                <div style="text-align: right; margin-top: 8px;">
-                                                    <button type="button" class="btn btn-sm btn-secondary"
-                                                        onclick="AppState.refreshMasterStatus()">
-                                                        <span class="icon-refresh"></span> <span data-i18n="refresh-btn">刷新</span>
-                                                    </button>
+                                                <div class="modal-footer u-footer-topline">
+                                                    <button type="button" class="pure-button" onclick="AppState._closeEditModal()" data-i18n="modbus-mapping-cancel">取消</button>
+                                                    <button type="button" class="pure-button pure-button-primary u-ml-8" onclick="AppState._saveEditModal()" data-i18n="modbus-mapping-save">确定</button>
                                                 </div>
-                                                <div id="master-data-grid"></div>
                                             </div>
                                         </div>
 
-                                        <!-- Modbus 调试与控制面板 -->
-                                        <div id="modbus-control-section" class="u-mt-20">
-                                            <h4 class="u-title-indigo" data-i18n="modbus-control-title">Modbus 控制</h4>
-                                            <!-- 设备选择栏（始终可见） -->
-                                            <div class="modbus-device-bar">
-                                                <select id="modbus-device-select" onchange="AppState.onModbusDeviceChange()"></select>
-                                                <button type="button" class="btn btn-sm btn-enable" onclick="AppState.addModbusDevice()" data-i18n="modbus-ctrl-device-add">添加设备</button>
-                                                <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.saveModbusDevice()" data-i18n="modbus-ctrl-device-save">保存设备</button>
-                                                <button type="button" class="btn btn-sm btn-danger" onclick="AppState.deleteModbusDevice()" data-i18n="modbus-ctrl-device-delete">删除设备</button>
-                                            </div>
-
-                                            <!-- 设备配置内容（无设备时隐藏） -->
-                                            <div id="modbus-device-content" style="display:none;">
-                                            <div class="modbus-layout">
-                                              <div class="modbus-panel-left">
-
-                                            <!-- 连接参数 -->
-                                            <div class="config-form-grid">
-                                                <div class="config-form-column">
-                                                    <div class="pure-control-group">
-                                                        <label for="modbus-ctrl-device-name" data-i18n="modbus-ctrl-device-name">设备名称</label>
-                                                        <input type="text" id="modbus-ctrl-device-name" class="pure-input-1" placeholder="如：继电器板1">
-                                                    </div>
-                                                    <div class="pure-control-group">
-                                                        <label for="modbus-ctrl-device-type" data-i18n="modbus-ctrl-type-label">设备类型</label>
-                                                        <select id="modbus-ctrl-device-type" class="pure-input-1" onchange="AppState.onDeviceTypeChange()">
-                                                            <option value="relay" data-i18n="modbus-ctrl-type-relay">继电器</option>
-                                                            <option value="pwm" data-i18n="modbus-ctrl-type-pwm">PWM 驱动</option>
-                                                            <option value="pid" data-i18n="modbus-ctrl-type-pid">PID 控制器</option>
-                                                        </select>
-                                                    </div>
-                                                    <div class="pure-control-group">
-                                                        <label for="modbus-ctrl-slave-addr" data-i18n="modbus-ctrl-slave-addr">从站地址</label>
-                                                        <input type="number" id="modbus-ctrl-slave-addr" class="pure-input-1" value="1" min="1" max="247">
-                                                    </div>
-                                                    <div class="pure-control-group" id="modbus-ch-count-group">
-                                                        <label for="modbus-ctrl-ch-count" data-i18n="modbus-ctrl-channel-count">通道数</label>
-                                                        <select id="modbus-ctrl-ch-count" class="pure-input-1" onchange="AppState.onCoilChannelCountChange()">
-                                                            <option value="1">1</option>
-                                                            <option value="2">2</option>
-                                                            <option value="4">4</option>
-                                                            <option value="8" selected>8</option>
-                                                            <option value="16">16</option>
-                                                            <option value="32">32</option>
-                                                        </select>
-                                                    </div>
+                                        <!-- ========== 设备控制弹窗 ========== -->
+                                        <div id="modbus-device-ctrl-modal" class="modal">
+                                            <div class="modal-content u-modal-content-700" style="max-width:1100px;">
+                                                <div class="modal-header">
+                                                    <h3 id="modbus-ctrl-modal-title" data-i18n="modbus-device-ctrl-title">设备控制</h3>
+                                                    <button type="button" class="modal-close" onclick="AppState._closeCtrlModal()">&times;</button>
                                                 </div>
-                                                <div class="config-form-column">
-                                                    <!-- 继电器专属配置 -->
-                                                    <div id="modbus-relay-config">
-                                                        <div class="pure-control-group">
-                                                            <label for="modbus-ctrl-relay-mode" data-i18n="modbus-ctrl-relay-mode">控制协议</label>
-                                                            <select id="modbus-ctrl-relay-mode" class="pure-input-1" onchange="AppState.onRelayModeChange()">
-                                                                <option value="coil" data-i18n="modbus-ctrl-relay-mode-coil">线圈模式 (FC01/FC05)</option>
-                                                                <option value="register" data-i18n="modbus-ctrl-relay-mode-register">寄存器模式 (FC03/FC06)</option>
-                                                            </select>
-                                                            <small class="field-hint" data-i18n="modbus-ctrl-relay-mode-hint">线圈模式适用于标准继电器板，寄存器模式适用于M88等工控模块</small>
-                                                        </div>
-                                                        <div class="pure-control-group">
-                                                            <label for="modbus-ctrl-coil-base" data-i18n="modbus-ctrl-coil-base">线圈基地址</label>
-                                                            <input type="number" id="modbus-ctrl-coil-base" class="pure-input-1" value="0" min="0" max="65535">
-                                                            <small class="field-hint" data-i18n="modbus-ctrl-coil-base-hint">线圈起始地址，默认0</small>
-                                                        </div>
-                                                        <div class="pure-control-group" style="display:flex;gap:16px;align-items:center;">
-                                                            <label class="pure-checkbox">
+                                                <div class="modal-body" style="display:flex;gap:16px;">
+                                                    <div style="flex:1;min-width:0;">
+                                                    <!-- 继电器运行时控制 -->
+                                                    <div id="modbus-relay-config"></div>
+                                                    <!-- 继电器控制面板 -->
+                                                    <div id="modbus-relay-panel">
+                                                        <div id="coil-status-grid" class="coil-grid u-mt-10"></div>
+                                                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;" class="u-mt-10">
+                                                            <label class="pure-checkbox" style="margin-right:4px;">
                                                                 <input type="checkbox" id="modbus-ctrl-auto-refresh" onchange="AppState.toggleCoilAutoRefresh()">
                                                                 <span data-i18n="modbus-ctrl-auto-refresh">自动刷新</span>
                                                             </label>
+                                                            <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshCoilStatus()" data-i18n="modbus-ctrl-refresh">刷新状态</button><br />
+                                                            <button type="button" class="btn btn-sm btn-enable" onclick="AppState.batchCoil('allOn')" data-i18n="modbus-ctrl-all-on">全部开启</button>
+                                                            <button type="button" class="btn btn-sm btn-danger" onclick="AppState.batchCoil('allOff')" data-i18n="modbus-ctrl-all-off">全部关闭</button>
+                                                            <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.batchCoil('allToggle')" data-i18n="modbus-ctrl-all-toggle">全部翻转</button>
+                                                        </div>
+                                                        <div class="pure-control-group u-mt-15">
+                                                            <label data-i18n="modbus-ctrl-delay-title">延时断开</label>
+                                                            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                                                                <select id="modbus-ctrl-delay-ch" class="pure-input-1" style="max-width:100px;"></select>
+                                                                <input type="number" id="modbus-ctrl-delay-units" class="pure-input-1" value="50" min="1" max="255" style="max-width:100px;">
+                                                                <span style="white-space:nowrap;font-size:12px;color:#909399;" data-i18n="modbus-ctrl-delay-unit">x100ms</span>
+                                                                <button type="button" class="btn btn-sm btn-enable" onclick="AppState.startCoilDelay()" data-i18n="modbus-ctrl-delay-start">启动延时</button>
+                                                            </div>
+                                                            <small class="field-hint" data-i18n="modbus-ctrl-delay-hint">先打开继电器，延时后自动关闭 (1=100ms, 255=25.5s)</small>
+                                                        </div>
+                                                    </div>
+                                                    <!-- PWM 控制面板 -->
+                                                    <div id="modbus-pwm-panel" style="display:none;">
+                                                        <div id="pwm-channel-grid" class="pwm-grid u-mt-10"></div>
+                                                        <div class="u-flex-between u-items-center u-mt-10">
+                                                            <div>
+                                                                <button type="button" class="btn btn-sm btn-enable" onclick="AppState.batchPwm('max')" data-i18n="modbus-ctrl-pwm-set-all-max">全部最大</button>
+                                                                <button type="button" class="btn btn-sm btn-danger" onclick="AppState.batchPwm('off')" data-i18n="modbus-ctrl-pwm-set-all-off">全部关闭</button>
+                                                            </div>
+                                                            <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshPwmStatus()" data-i18n="modbus-ctrl-pwm-refresh">刷新状态</button>
+                                                        </div>
+                                                    </div>
+                                                    <!-- PID 控制面板 -->
+                                                    <div id="modbus-pid-panel" style="display:none;">
+                                                        <div id="pid-data-grid" class="pid-grid u-mt-10"></div>
+                                                        <div class="u-flex-between u-items-center u-mt-10">
                                                             <label class="pure-checkbox">
-                                                                <input type="checkbox" id="modbus-ctrl-nc-mode" onchange="AppState.refreshCoilStatus()">
-                                                                <span data-i18n="modbus-ctrl-nc-mode">NC常闭模式</span>
+                                                                <input type="checkbox" id="modbus-ctrl-pid-auto-refresh" onchange="AppState.togglePidAutoRefresh()">
+                                                                <span data-i18n="modbus-ctrl-pid-auto-refresh">自动刷新</span>
                                                             </label>
+                                                            <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshPidStatus()" data-i18n="modbus-ctrl-pid-refresh">刷新数据</button>
                                                         </div>
                                                     </div>
-                                                    <!-- PWM 专属配置 -->
-                                                    <div id="modbus-pwm-config" style="display:none;">
-                                                        <div class="pure-control-group">
-                                                            <label for="modbus-ctrl-pwm-reg-base" data-i18n="modbus-ctrl-pwm-reg-base">寄存器基地址</label>
-                                                            <input type="number" id="modbus-ctrl-pwm-reg-base" class="pure-input-1" value="0" min="0" max="65535">
-                                                            <small class="field-hint" data-i18n="modbus-ctrl-pwm-reg-base-hint">PWM保持寄存器起始地址</small>
-                                                        </div>
-                                                        <div class="pure-control-group">
-                                                            <label for="modbus-ctrl-pwm-resolution" data-i18n="modbus-ctrl-pwm-resolution">分辨率</label>
-                                                            <select id="modbus-ctrl-pwm-resolution" class="pure-input-1">
-                                                                <option value="8">8位 (0-255)</option>
-                                                                <option value="10">10位 (0-1023)</option>
-                                                                <option value="16">16位 (0-65535)</option>
-                                                            </select>
-                                                        </div>
+
                                                     </div>
-                                                    <!-- PID 专属配置 -->
-                                                    <div id="modbus-pid-config" style="display:none;">
-                                                        <div class="pure-control-group">
-                                                            <label for="modbus-ctrl-pid-pv-addr" data-i18n="modbus-ctrl-pid-pv-addr">PV寄存器地址</label>
-                                                            <input type="number" id="modbus-ctrl-pid-pv-addr" class="pure-input-1" value="0" min="0" max="65535">
+                                                    <!-- 右侧：调试日志 -->
+                                                    <div style="width:300px;flex-shrink:0;display:flex;flex-direction:column;">
+                                                        <div class="modbus-debug-header">
+                                                            <span data-i18n="modbus-debug-title">调试日志</span>
+                                                            <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.clearModbusDebugLog()" data-i18n="modbus-debug-clear">清除</button>
                                                         </div>
-                                                        <div class="pure-control-group">
-                                                            <label for="modbus-ctrl-pid-sv-addr" data-i18n="modbus-ctrl-pid-sv-addr">SV寄存器地址</label>
-                                                            <input type="number" id="modbus-ctrl-pid-sv-addr" class="pure-input-1" value="1" min="0" max="65535">
-                                                        </div>
-                                                        <div class="pure-control-group">
-                                                            <label for="modbus-ctrl-pid-out-addr" data-i18n="modbus-ctrl-pid-out-addr">输出寄存器地址</label>
-                                                            <input type="number" id="modbus-ctrl-pid-out-addr" class="pure-input-1" value="2" min="0" max="65535">
-                                                        </div>
-                                                        <div class="pure-control-group">
-                                                            <label for="modbus-ctrl-pid-p-addr" data-i18n="modbus-ctrl-pid-p-addr">P参数地址</label>
-                                                            <input type="number" id="modbus-ctrl-pid-p-addr" class="pure-input-1" value="3" min="0" max="65535">
-                                                        </div>
-                                                        <div class="pure-control-group">
-                                                            <label for="modbus-ctrl-pid-i-addr" data-i18n="modbus-ctrl-pid-i-addr">I参数地址</label>
-                                                            <input type="number" id="modbus-ctrl-pid-i-addr" class="pure-input-1" value="4" min="0" max="65535">
-                                                        </div>
-                                                        <div class="pure-control-group">
-                                                            <label for="modbus-ctrl-pid-d-addr" data-i18n="modbus-ctrl-pid-d-addr">D参数地址</label>
-                                                            <input type="number" id="modbus-ctrl-pid-d-addr" class="pure-input-1" value="5" min="0" max="65535">
-                                                        </div>
-                                                        <div class="pure-control-group">
-                                                            <label for="modbus-ctrl-pid-decimals" data-i18n="modbus-ctrl-pid-decimals">小数位数</label>
-                                                            <select id="modbus-ctrl-pid-decimals" class="pure-input-1">
-                                                                <option value="0">0位</option>
-                                                                <option value="1" selected>1位</option>
-                                                                <option value="2">2位</option>
-                                                                <option value="3">3位</option>
-                                                            </select>
-                                                        </div>
+                                                        <div id="modbus-debug-log" class="modbus-debug-log" style="flex:1;min-height:200px;max-height:450px;"></div>
                                                     </div>
                                                 </div>
                                             </div>
-
-                                            <!-- 继电器控制面板 -->
-                                            <div id="modbus-relay-panel">
-                                            <!-- 线圈状态网格 -->
-                                            <div id="coil-status-grid" class="coil-grid u-mt-10"></div>
-
-                                            <!-- 批量控制按钮 -->
-                                            <div class="u-flex-between u-items-center u-mt-10">
-                                                <div>
-                                                    <button type="button" class="btn btn-sm btn-enable" onclick="AppState.batchCoil('allOn')" data-i18n="modbus-ctrl-all-on">全部开启</button>
-                                                    <button type="button" class="btn btn-sm btn-danger" onclick="AppState.batchCoil('allOff')" data-i18n="modbus-ctrl-all-off">全部关闭</button>
-                                                    <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.batchCoil('allToggle')" data-i18n="modbus-ctrl-all-toggle">全部翻转</button>
-                                                </div>
-                                                <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshCoilStatus()" data-i18n="modbus-ctrl-refresh">刷新状态</button>
-                                            </div>
-
-                                            <!-- 延时断开（先开后关） -->
-                                            <div class="config-form-grid u-mt-15">
-                                                <div class="config-form-column">
-                                                    <div class="pure-control-group">
-                                                        <label data-i18n="modbus-ctrl-delay-title">延时断开</label>
-                                                        <div style="display:flex;gap:8px;align-items:center;">
-                                                            <select id="modbus-ctrl-delay-ch" class="pure-input-1" style="max-width:100px;"></select>
-                                                            <input type="number" id="modbus-ctrl-delay-units" class="pure-input-1" value="50" min="1" max="255" style="max-width:100px;">
-                                                            <span style="white-space:nowrap;font-size:12px;color:#909399;" data-i18n="modbus-ctrl-delay-unit">x100ms</span>
-                                                            <button type="button" class="btn btn-sm btn-enable" onclick="AppState.startCoilDelay()" data-i18n="modbus-ctrl-delay-start">启动延时</button>
-                                                        </div>
-                                                        <small class="field-hint" data-i18n="modbus-ctrl-delay-hint">先打开继电器，延时后自动关闭 (1=100ms, 255=25.5s)</small>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            </div><!-- #modbus-relay-panel -->
-
-                                            <!-- PWM 控制面板 -->
-                                            <div id="modbus-pwm-panel" style="display:none;">
-                                                <div id="pwm-channel-grid" class="pwm-grid u-mt-10"></div>
-                                                <div class="u-flex-between u-items-center u-mt-10">
-                                                    <div>
-                                                        <button type="button" class="btn btn-sm btn-enable" onclick="AppState.batchPwm('max')" data-i18n="modbus-ctrl-pwm-set-all-max">全部最大</button>
-                                                        <button type="button" class="btn btn-sm btn-danger" onclick="AppState.batchPwm('off')" data-i18n="modbus-ctrl-pwm-set-all-off">全部关闭</button>
-                                                    </div>
-                                                    <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshPwmStatus()" data-i18n="modbus-ctrl-pwm-refresh">刷新状态</button>
-                                                </div>
-                                            </div><!-- #modbus-pwm-panel -->
-
-                                            <!-- PID 控制面板 -->
-                                            <div id="modbus-pid-panel" style="display:none;">
-                                                <div id="pid-data-grid" class="pid-grid u-mt-10"></div>
-                                                <div class="u-flex-between u-items-center u-mt-10">
-                                                    <label class="pure-checkbox">
-                                                        <input type="checkbox" id="modbus-ctrl-pid-auto-refresh" onchange="AppState.togglePidAutoRefresh()">
-                                                        <span data-i18n="modbus-ctrl-pid-auto-refresh">自动刷新</span>
-                                                    </label>
-                                                    <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshPidStatus()" data-i18n="modbus-ctrl-pid-refresh">刷新数据</button>
-                                                </div>
-                                            </div><!-- #modbus-pid-panel -->
-
-                                            <!-- 设备参数配置（独立面板） -->
-                                            <div id="modbus-params-panel" class="u-mt-15">
-                                                <h4 class="u-title-indigo" data-i18n="modbus-ctrl-device-params">设备参数配置</h4>
-                                                <div class="config-form-grid u-mt-10">
-                                                    <div class="config-form-column">
-                                                        <div class="pure-control-group">
-                                                            <label data-i18n="modbus-ctrl-addr-reg">地址寄存器</label>
-                                                            <div style="display:flex;gap:8px;">
-                                                                <input type="number" id="modbus-ctrl-addr-reg" class="pure-input-1" value="0" min="0" max="65535" style="max-width:120px;">
-                                                                <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.readDeviceAddress()" data-i18n="modbus-ctrl-read-addr">读取</button>
-                                                            </div>
-                                                            <div id="modbus-ctrl-current-addr" class="field-hint"></div>
-                                                        </div>
-                                                        <div class="pure-control-group">
-                                                            <label data-i18n="modbus-ctrl-new-addr">新地址</label>
-                                                            <div style="display:flex;gap:8px;">
-                                                                <input type="number" id="modbus-ctrl-new-addr" class="pure-input-1" value="" min="1" max="255" style="max-width:120px;">
-                                                                <button type="button" class="btn btn-sm btn-enable" onclick="AppState.setDeviceAddress()" data-i18n="modbus-ctrl-set-addr">设置</button>
-                                                            </div>
-                                                            <small class="field-hint" data-i18n="modbus-ctrl-addr-hint">广播写入(FC 0x10)，1-255</small>
-                                                        </div>
-                                                    </div>
-                                                    <div class="config-form-column">
-                                                        <div class="pure-control-group">
-                                                            <label data-i18n="modbus-ctrl-baudrate">波特率</label>
-                                                            <div style="display:flex;gap:8px;">
-                                                                <select id="modbus-ctrl-baudrate" class="pure-input-1" style="max-width:150px;">
-                                                                    <option value="1200">1200</option>
-                                                                    <option value="2400">2400</option>
-                                                                    <option value="4800">4800</option>
-                                                                    <option value="9600" selected>9600</option>
-                                                                    <option value="19200">19200</option>
-                                                                    <option value="115200">115200</option>
-                                                                </select>
-                                                                <button type="button" class="btn btn-sm btn-enable" onclick="AppState.setDeviceBaudrate()" data-i18n="modbus-ctrl-set-baud">设置</button>
-                                                            </div>
-                                                            <small class="field-hint" data-i18n="modbus-ctrl-baud-hint">FC 0xB0 专有指令</small>
-                                                        </div>
-                                                        <div class="pure-control-group">
-                                                            <label data-i18n="modbus-ctrl-inputs">离散输入</label>
-                                                            <div style="display:flex;gap:8px;align-items:center;">
-                                                                <input type="number" id="modbus-ctrl-input-count" class="pure-input-1" value="4" min="1" max="32" style="max-width:80px;">
-                                                                <input type="number" id="modbus-ctrl-input-base" class="pure-input-1" value="0" min="0" max="65535" style="max-width:100px;" title="input base address">
-                                                                <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.readDiscreteInputs()" data-i18n="modbus-ctrl-read-inputs">读取</button>
-                                                            </div>
-                                                            <div id="modbus-ctrl-inputs-display" class="field-hint u-mt-5"></div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-
-                                              </div><!-- .modbus-panel-left -->
-                                              <div class="modbus-panel-right">
-                                                <div class="modbus-debug-header">
-                                                    <span data-i18n="modbus-debug-title">调试日志</span>
-                                                    <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.clearModbusDebugLog()" data-i18n="modbus-debug-clear">清除</button>
-                                                </div>
-                                                <div id="modbus-debug-log" class="modbus-debug-log"></div>
-                                              </div><!-- .modbus-panel-right -->
-                                            </div><!-- .modbus-layout -->
-                                            </div><!-- #modbus-device-content -->
+                                        </div>
                                         </div>
 
                                         <div class="message message-success" id="modbus-rtu-success"
@@ -1153,6 +1036,69 @@
                                                 data-i18n="btn-save-config">保存配置</button>
                                         </div>
                                     </form>
+
+                                    <!-- 轮询任务编辑模态框 -->
+                                    <div id="task-edit-modal" class="modal">
+                                        <div class="modal-content" style="max-width:480px;">
+                                            <div class="modal-header">
+                                                <h3 data-i18n="modbus-task-edit-title">编辑轮询任务</h3>
+                                                <button type="button" class="modal-close"
+                                                    onclick="AppState._closeTaskEditModal()">&times;</button>
+                                            </div>
+                                            <div class="modal-body">
+                                                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                                                    <div>
+                                                        <label data-i18n="modbus-master-label">名称</label>
+                                                        <input id="task-edit-label" type="text" maxlength="15" class="pure-input-1" placeholder="">
+                                                    </div>
+                                                    <div>
+                                                        <label data-i18n="modbus-task-type">类型</label>
+                                                        <select id="task-edit-type" class="pure-input-1" onchange="AppState._onTaskTypeChange(this.value)">
+                                                            <option value="holding">保持寄存器</option>
+                                                            <option value="input">输入寄存器</option>
+                                                            <option value="coil">线圈状态</option>
+                                                            <option value="discrete">离散输入</option>
+                                                        </select>
+                                                    </div>
+                                                    <div>
+                                                        <label data-i18n="modbus-master-slave-addr">从站地址</label>
+                                                        <input id="task-edit-slave-addr" type="number" min="1" max="247" value="1" class="pure-input-1">
+                                                    </div>
+                                                    <div>
+                                                        <label data-i18n="modbus-master-fc">功能码</label>
+                                                        <select id="task-edit-fc" class="pure-input-1">
+                                                            <option value="1">FC01 读线圈</option>
+                                                            <option value="2">FC02 读离散输入</option>
+                                                            <option value="3" selected>FC03 读保持寄存器</option>
+                                                            <option value="4">FC04 读输入寄存器</option>
+                                                        </select>
+                                                    </div>
+                                                    <div>
+                                                        <label data-i18n="modbus-master-start-addr">起始地址</label>
+                                                        <input id="task-edit-start-addr" type="number" min="0" max="65535" value="0" class="pure-input-1">
+                                                    </div>
+                                                    <div>
+                                                        <label data-i18n="modbus-master-quantity">数量</label>
+                                                        <input id="task-edit-quantity" type="number" min="1" max="125" value="10" class="pure-input-1">
+                                                    </div>
+                                                </div>
+                                                <div style="margin-top:12px;">
+                                                    <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+                                                        <input id="task-edit-enabled" type="checkbox" checked>
+                                                        <span data-i18n="modbus-master-enabled">启用</span>
+                                                    </label>
+                                                </div>
+                                            </div>
+                                            <div class="modal-footer u-footer-topline">
+                                                <button type="button" class="pure-button"
+                                                    onclick="AppState._closeTaskEditModal()"
+                                                    data-i18n="modbus-mapping-cancel">取消</button>
+                                                <button type="button" class="pure-button pure-button-primary u-ml-8"
+                                                    onclick="AppState._saveTaskEditModal()"
+                                                    data-i18n="modbus-mapping-save">确定</button>
+                                            </div>
+                                        </div>
+                                    </div>
 
                                     <!-- 寄存器映射配置模态框 -->
                                     <div id="mapping-modal" class="modal">
@@ -1194,6 +1140,67 @@
                                                     onclick="app.saveMappingModal()"
                                                     data-i18n="modbus-mapping-save">确定</button>
                                             </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- ========== 高级配置（可折叠） ========== -->
+                                    <div class="mqtt-collapsible-section" style="margin-top:20px;">
+                                        <div class="mqtt-collapsible-header"
+                                            onclick="AppState.toggleSection('modbus-advanced-body')"
+                                            style="padding:12px 15px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;user-select:none;">
+                                            <h4 style="margin:0;color:#333;" data-i18n="modbus-advanced-config-title">高级配置</h4>
+                                            <span class="mqtt-collapse-icon" id="modbus-advanced-body-icon">&#9654;</span>
+                                        </div>
+                                        <div id="modbus-advanced-body" class="mqtt-collapsible-body" style="display:none;padding:0 15px 15px 15px;">
+                                        <div class="config-form-grid">
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label data-i18n="modbus-debug-slave-addr">从站地址</label>
+                                                    <input type="number" id="modbus-debug-slave-addr" class="pure-input-1" value="0" min="0" max="255">
+                                                    <small class="field-hint" data-i18n="modbus-debug-slave-addr-hint">0 = 广播地址</small>
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label data-i18n="modbus-ctrl-addr-reg">地址寄存器</label>
+                                                    <div style="display:flex;gap:8px;">
+                                                        <input type="number" id="modbus-ctrl-addr-reg" class="pure-input-1" value="0" min="0" max="65535" >
+                                                        <button type="button" class="btn btn-sm btn-secondary" style="width:60px;" onclick="AppState.readDeviceAddress()" data-i18n="modbus-ctrl-read-addr">读取</button>
+                                                    </div>
+                                                    <div id="modbus-ctrl-current-addr" class="field-hint"></div>
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label data-i18n="modbus-ctrl-new-addr">新地址</label>
+                                                    <div style="display:flex;gap:8px;">
+                                                        <input type="number" id="modbus-ctrl-new-addr" class="pure-input-1" value="" min="1" max="255" >
+                                                        <button type="button" class="btn btn-sm btn-enable" style="width:60px;" onclick="AppState.setDeviceAddress()" data-i18n="modbus-ctrl-set-addr">设置</button>
+                                                    </div>
+                                                    <small class="field-hint" data-i18n="modbus-ctrl-addr-hint">广播写入(FC 0x10)，1-255</small>
+                                                </div>
+                                            </div>
+                                            <div class="config-form-column">
+                                                <div class="pure-control-group">
+                                                    <label data-i18n="modbus-ctrl-baudrate">波特率</label>
+                                                    <div style="display:flex;gap:8px;">
+                                                        <select id="modbus-ctrl-baudrate" class="pure-input-1">
+                                                            <option value="1200">1200</option><option value="2400">2400</option>
+                                                            <option value="4800">4800</option><option value="9600" selected>9600</option>
+                                                            <option value="19200">19200</option><option value="115200">115200</option>
+                                                        </select>
+                                                        <button type="button" class="btn btn-sm btn-enable" style="width:100px;" onclick="AppState.setDeviceBaudrate()" data-i18n="modbus-ctrl-set-baud">设置</button>
+                                                    </div>
+                                                    <small class="field-hint" data-i18n="modbus-ctrl-baud-hint">FC 0xB0 专有指令</small>
+                                                </div>
+                                                <div class="pure-control-group">
+                                                    <label data-i18n="modbus-ctrl-inputs">离散输入</label>
+                                                    <div style="display:flex;gap:8px;align-items:center;">
+                                                        <input type="number" id="modbus-ctrl-input-count" class="pure-input-1" value="4" min="1" max="32"  placeholder="数量">
+                                                        <input type="number" id="modbus-ctrl-input-base" class="pure-input-1" value="0" min="0" max="65535"  placeholder="起始地址">
+                                                        <button type="button" class="btn btn-sm btn-secondary" style="width:100px;" onclick="AppState.readDiscreteInputs()" data-i18n="modbus-ctrl-read-inputs">读取</button>
+                                                    </div>
+                                                    <small class="field-hint" data-i18n="modbus-debug-input-count-hint">读取数量 + 起始地址</small>
+                                                    <div id="modbus-ctrl-inputs-display" class="field-hint u-mt-5"></div>
+                                                </div>
+                                            </div>
+                                        </div>
                                         </div>
                                     </div>
                                 </div>
@@ -2821,7 +2828,6 @@
                 </div>
             </div>
         </div>
-    </div>
     </div>
 
     <!-- WiFi选择弹窗 -->

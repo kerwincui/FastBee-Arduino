@@ -62,6 +62,68 @@
             }
           ]
         }
+      ],
+      "devices": [
+        {
+          "name": "继电器板",
+          "deviceType": "relay",
+          "slaveAddress": 3,
+          "channelCount": 2,
+          "coilBase": 0,
+          "ncMode": true,
+          "controlProtocol": 0,
+          "pwmRegBase": 0,
+          "pwmResolution": 8,
+          "pidDecimals": 1,
+          "pidAddrs": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "name": "调速",
+          "deviceType": "pwm",
+          "slaveAddress": 4,
+          "channelCount": 2,
+          "coilBase": 0,
+          "ncMode": true,
+          "controlProtocol": 0,
+          "pwmRegBase": 0,
+          "pwmResolution": 8,
+          "pidDecimals": 1,
+          "pidAddrs": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "name": "电机运转",
+          "deviceType": "pid",
+          "slaveAddress": 5,
+          "channelCount": 2,
+          "coilBase": 0,
+          "ncMode": true,
+          "controlProtocol": 0,
+          "pwmRegBase": 0,
+          "pwmResolution": 8,
+          "pidDecimals": 1,
+          "pidAddrs": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        }
       ]
     }
   },

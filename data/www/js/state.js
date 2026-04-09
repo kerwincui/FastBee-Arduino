@@ -3562,7 +3562,6 @@ const AppState = {
             this._setCheckbox('modbus-rtu-enabled', rtu.enabled ?? false);
             // 加载 UART 外设列表并选中当前配置的 peripheralId
             this._loadUartPeripherals(rtu.peripheralId || '');
-            this._setValue('rtu-timeout', rtu.timeout || 1000);
             
             // RS485 配置
             this._setValue('rtu-de-pin', rtu.dePin ?? 14);
@@ -3572,14 +3571,11 @@ const AppState = {
             this.onModbusModeChange('master');
             
             if (rtu.master) {
-                this._setValue('master-response-timeout', rtu.master.responseTimeout || 1000);
-                this._setValue('master-max-retries', rtu.master.maxRetries || 2);
-                this._setValue('master-inter-poll-delay', rtu.master.interPollDelay || 100);
                 this._masterTasks = rtu.master.tasks || [];
             } else {
                 this._masterTasks = [];
             }
-            this._renderMasterTasks();
+            this._renderAllDevices();
             
             this.refreshMasterStatus();
             this._startMasterStatusRefresh();
@@ -3695,7 +3691,6 @@ const AppState = {
         // Modbus RTU
         data.modbusRtu_enabled = document.getElementById('modbus-rtu-enabled')?.checked ? 'true' : 'false';
         data.modbusRtu_peripheralId = document.getElementById('rtu-peripheral-id')?.value || '';
-        data.modbusRtu_timeout = document.getElementById('rtu-timeout')?.value || '1000';
         data.modbusRtu_mode = 'master';
         data.modbusRtu_dePin = document.getElementById('rtu-de-pin')?.value || '14';
         data.modbusRtu_transferType = document.getElementById('rtu-transfer-type')?.value || '0';
@@ -3707,11 +3702,9 @@ const AppState = {
             return;
         }
         
-        // Modbus RTU Master 配置
-        data.modbusRtu_master_responseTimeout = document.getElementById('master-response-timeout')?.value || '1000';
-        data.modbusRtu_master_maxRetries = document.getElementById('master-max-retries')?.value || '2';
-        data.modbusRtu_master_interPollDelay = document.getElementById('master-inter-poll-delay')?.value || '100';
+        // Modbus RTU Master 配置（通信参数已迁移至 PeriphExec，此处只提交任务和子设备）
         data.modbusRtu_master_tasks = JSON.stringify(this._masterTasks || []);
+        data.modbusRtu_master_devices = JSON.stringify(this._modbusDevices || []);
         
         // Modbus TCP
         data.modbusTcp_enabled = document.getElementById('modbus-tcp-enabled')?.checked ? 'true' : 'false';
@@ -3847,47 +3840,237 @@ const AppState = {
     },
 
     onWorkModeChange(mode) {
-        const pollingSection = document.getElementById('master-config-section');
-        if (pollingSection) {
-            pollingSection.style.display = (mode === '1') ? '' : 'none';
+        var show = (mode === '1') ? '' : 'none';
+        var sec = document.getElementById('master-config-section');
+        if (sec) sec.style.display = show;
+        var st = document.getElementById('master-status-section');
+        if (st) st.style.display = show;
+    },
+    
+    /**
+     * 渲染统一设备表格（sensor + control）
+     */
+    _renderAllDevices() {
+        var tbody = document.getElementById('all-devices-body');
+        if (!tbody) return;
+        
+        var tasks = this._masterTasks || [];
+        var devices = this._modbusDevices || [];
+        
+        if (tasks.length === 0 && devices.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">' +
+                (i18n.t('modbus-no-devices') || '暂无子设备') + '</td></tr>';
+            return;
+        }
+        
+        var fcNames = {1: 'FC01', 2: 'FC02', 3: 'FC03', 4: 'FC04'};
+        var typeColors = {sensor: '#409EFF', relay: '#67C23A', pwm: '#E6A23C', pid: '#F56C6C'};
+        var typeLabels = {
+            sensor: i18n.t('modbus-type-sensor') || '采集',
+            relay: i18n.t('modbus-type-relay') || '继电器',
+            pwm: i18n.t('modbus-type-pwm') || 'PWM',
+            pid: i18n.t('modbus-type-pid') || 'PID'
+        };
+        
+        var rows = '';
+        
+        // Sensor 设备 (来自 _masterTasks)
+        for (var i = 0; i < tasks.length; i++) {
+            var t = tasks[i];
+            var label = t.label || ('Slave ' + (t.slaveAddress || 1));
+            var fc = fcNames[t.functionCode] || 'FC03';
+            var info = fc + ' @' + (t.startAddress || 0) + ' x' + (t.quantity || 10);
+            var mappingCount = (t.mappings && t.mappings.length) || 0;
+            if (mappingCount > 0) info += ' [' + mappingCount + (i18n.t('modbus-dev-mappings-suffix') || '映射') + ']';
+            var enabledHtml = t.enabled !== false ?
+                '<span style="color:#4CAF50;">ON</span>' : '<span style="color:#999;">OFF</span>';
+            rows += '<tr>' +
+                '<td>' + escapeHtml(label) + '</td>' +
+                '<td><span style="background:' + typeColors.sensor + ';color:#fff;padding:1px 6px;border-radius:3px;font-size:11px;">' + typeLabels.sensor + '</span></td>' +
+                '<td>' + (t.slaveAddress || 1) + '</td>' +
+                '<td><small>' + info + '</small></td>' +
+                '<td>' + enabledHtml + '</td>' +
+                '<td style="white-space:nowrap;">' +
+                    '<button type="button" class="pure-button" style="background:#667eea;color:white;font-size:11px;padding:2px 8px;margin-right:3px;" onclick="AppState._editDevice(\'sensor\',' + i + ')">' + (i18n.t('modbus-task-edit-btn') || '编辑') + '</button>' +
+                    '<button type="button" class="pure-button" style="background:#e6a23c;color:white;font-size:11px;padding:2px 8px;margin-right:3px;" onclick="AppState.openMappingModal(' + i + ')">' + (i18n.t('modbus-mapping-btn') || '映射') + '</button>' +
+                    '<button type="button" class="pure-button" style="background:#f44336;color:white;font-size:11px;padding:2px 8px;" onclick="AppState._deleteDevice(\'sensor\',' + i + ')">' + (i18n.t('modbus-master-delete-task') || '删除') + '</button>' +
+                '</td></tr>';
+        }
+        
+        // Control 设备 (来自 _modbusDevices)
+        for (var j = 0; j < devices.length; j++) {
+            var d = devices[j];
+            var dt = d.deviceType || 'relay';
+            var color = typeColors[dt] || '#999';
+            var tLabel = typeLabels[dt] || dt;
+            var devInfo = (d.channelCount || 2) + 'ch';
+            if (dt === 'relay') {
+                devInfo += ' ' + (d.controlProtocol === 1 ? 'Reg' : 'Coil') + '@' + (d.coilBase || 0);
+            } else if (dt === 'pwm') {
+                devInfo += ' Reg@' + (d.pwmRegBase || 0) + ' ' + (d.pwmResolution || 8) + 'bit';
+            } else if (dt === 'pid') {
+                devInfo += ' PV@' + ((d.pidAddrs && d.pidAddrs[0]) || 0);
+            }
+            var ctrlEnabled = d.enabled !== false ?
+                '<span style="color:#4CAF50;">ON</span>' : '<span style="color:#999;">OFF</span>';
+            rows += '<tr>' +
+                '<td>' + escapeHtml(d.name || '-') + '</td>' +
+                '<td><span style="background:' + color + ';color:#fff;padding:1px 6px;border-radius:3px;font-size:11px;">' + tLabel + '</span></td>' +
+                '<td>' + (d.slaveAddress || 1) + '</td>' +
+                '<td><small>' + devInfo + '</small></td>' +
+                '<td>' + ctrlEnabled + '</td>' +
+                '<td style="white-space:nowrap;">' +
+                    '<button type="button" class="pure-button" style="background:#667eea;color:white;font-size:11px;padding:2px 8px;margin-right:3px;" onclick="AppState._editDevice(\'control\',' + j + ')">' +
+                            (i18n.t('modbus-device-edit-btn') || '编辑') + '</button>' +
+                    '<button type="button" class="pure-button" style="background:#e6a23c;color:white;font-size:11px;padding:2px 8px;margin-right:3px;" onclick="AppState._openCtrlModal(' + j + ')">' +
+                        (i18n.t('modbus-device-select-btn') || '控制') + '</button>' +
+                    '<button type="button" class="pure-button" style="background:#f44336;color:white;font-size:11px;padding:2px 8px;" onclick="AppState._deleteDevice(\'control\',' + j + ')">' +
+                        (i18n.t('modbus-master-delete-task') || '删除') + '</button>' +
+                '</td></tr>';
+        }
+        
+        tbody.innerHTML = rows;
+    },
+    
+    /**
+     * 编辑设备（sensor 打开任务弹窗，control 打开设备弹窗）
+     */
+    _editDevice(source, idx) {
+        if (source === 'sensor') {
+            this._openTaskEditModal(idx);
+        } else {
+            this._openEditModal(idx);
         }
     },
     
     /**
-     * 渲染轮询任务表格
+     * 删除设备
      */
-    _renderMasterTasks() {
-        const tbody = document.getElementById('master-tasks-body');
-        if (!tbody) return;
-        
-        if (!this._masterTasks || this._masterTasks.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#999;">' + i18n.t('modbus-master-no-tasks') + '</td></tr>';
-            return;
+    _deleteDevice(source, idx) {
+        if (source === 'sensor') {
+            if (this._masterTasks) {
+                this._masterTasks.splice(idx, 1);
+            }
+        } else {
+            if (this._modbusDevices) {
+                this._modbusDevices.splice(idx, 1);
+            }
         }
-        
-        const fcNames = {1: 'FC01', 2: 'FC02', 3: 'FC03', 4: 'FC04'};
-        tbody.innerHTML = this._masterTasks.map((task, idx) => {
-            const mappingCount = (task.mappings && task.mappings.length) || 0;
-            return '<tr>' +
-                '<td><input type="number" value="' + (task.slaveAddress || 1) + '" min="1" max="247" style="width:55px;" onchange="AppState._updateTask(' + idx + ',\'slaveAddress\',+this.value)"></td>' +
-                '<td><select onchange="AppState._updateTask(' + idx + ',\'functionCode\',+this.value)" style="width:70px;">' +
-                    [1,2,3,4].map(fc => '<option value="' + fc + '"' + (task.functionCode === fc ? ' selected' : '') + '>' + fcNames[fc] + '</option>').join('') +
-                '</select></td>' +
-                '<td><input type="number" value="' + (task.startAddress || 0) + '" min="0" max="65535" style="width:65px;" onchange="AppState._updateTask(' + idx + ',\'startAddress\',+this.value)"></td>' +
-                '<td><input type="number" value="' + (task.quantity || 10) + '" min="1" max="125" style="width:55px;" onchange="AppState._updateTask(' + idx + ',\'quantity\',+this.value)"></td>' +
-                '<td><input type="number" value="' + (task.pollInterval || 30) + '" min="1" max="3600" style="width:55px;" onchange="AppState._updateTask(' + idx + ',\'pollInterval\',+this.value)"></td>' +
-                '<td><input type="text" value="' + (task.label || '') + '" maxlength="15" style="width:80px;" onchange="AppState._updateTask(' + idx + ',\'label\',this.value)"></td>' +
-                '<td><button type="button" class="pure-button" style="background:#667eea;color:white;font-size:11px;padding:2px 8px;" onclick="AppState.openMappingModal(' + idx + ')">' + i18n.t('modbus-mapping-btn') + ' (' + mappingCount + ')</button></td>' +
-                '<td><input type="checkbox"' + (task.enabled !== false ? ' checked' : '') + ' onchange="AppState._updateTask(' + idx + ',\'enabled\',this.checked)"></td>' +
-                '<td><button type="button" class="pure-button" style="background:#f44336;color:white;font-size:11px;padding:2px 8px;" onclick="AppState.removeMasterPollTask(' + idx + ')">' + i18n.t('modbus-master-delete-task') + '</button></td>' +
-            '</tr>';
-        }).join('');
+        this._renderAllDevices();
     },
     
-    _updateTask(idx, field, value) {
-        if (this._masterTasks && this._masterTasks[idx]) {
-            this._masterTasks[idx][field] = value;
+    /**
+     * 显示/隐藏设备类型下拉菜单
+     */
+    _showAddDeviceMenu(event) {
+        event.stopPropagation();
+        var menu = document.getElementById('add-device-menu');
+        if (!menu) return;
+        var isVisible = menu.style.display !== 'none';
+        menu.style.display = isVisible ? 'none' : 'block';
+        if (!isVisible) {
+            var closeMenu = function(e) {
+                if (!menu.contains(e.target)) {
+                    menu.style.display = 'none';
+                    document.removeEventListener('click', closeMenu);
+                }
+            };
+            setTimeout(function() { document.addEventListener('click', closeMenu); }, 0);
         }
+    },
+
+    /**
+     * 添加采集(sensor)设备
+     */
+    _addSensorDevice() {
+        document.getElementById('add-device-menu').style.display = 'none';
+        if (!this._masterTasks) this._masterTasks = [];
+        if (this._masterTasks.length >= 8) {
+            Notification.warning('Max 8 sensor devices', i18n.t('modbus-all-devices-title'));
+            return;
+        }
+        this._openTaskEditModal(-1);
+    },
+    
+    /**
+     * 添加控制设备
+     */
+    _addControlDevice() {
+        document.getElementById('add-device-menu').style.display = 'none';
+        if (!this._modbusDevices) this._modbusDevices = [];
+        if (this._modbusDevices.length >= 8) {
+            Notification.warning('Max 8 control devices', i18n.t('modbus-all-devices-title'));
+            return;
+        }
+        this._openEditModal(-1);
+    },
+    
+    // ============ 轮询任务编辑弹窗 ============
+    _editingTaskIdx: -1,
+    
+    _openTaskEditModal(idx) {
+        var modal = document.getElementById('task-edit-modal');
+        if (!modal) return;
+        
+        this._editingTaskIdx = idx;
+        var task;
+        if (idx >= 0 && this._masterTasks && this._masterTasks[idx]) {
+            task = this._masterTasks[idx];
+        } else {
+            task = { slaveAddress: 1, functionCode: 3, startAddress: 0, quantity: 10, enabled: true, label: '', mappings: [] };
+        }
+        
+        var f = function(id) { return document.getElementById(id); };
+        f('task-edit-slave-addr').value = task.slaveAddress || 1;
+        f('task-edit-fc').value = task.functionCode || 3;
+        f('task-edit-start-addr').value = task.startAddress || 0;
+        f('task-edit-quantity').value = task.quantity || 10;
+        f('task-edit-label').value = task.label || '';
+        f('task-edit-type').value = task.deviceType || 'holding';
+        f('task-edit-enabled').checked = task.enabled !== false;
+        
+        var titleEl = modal.querySelector('.modal-header h3');
+        if (titleEl) titleEl.textContent = idx < 0 ? i18n.t('modbus-task-add-title') : i18n.t('modbus-task-edit-title');
+        
+        modal.style.display = 'flex';
+    },
+    
+    _closeTaskEditModal() {
+        var modal = document.getElementById('task-edit-modal');
+        if (modal) modal.style.display = 'none';
+        this._editingTaskIdx = -1;
+    },
+
+    _onTaskTypeChange(val) {
+        var fcMap = { holding: '3', input: '4', coil: '1', discrete: '2' };
+        var fcEl = document.getElementById('task-edit-fc');
+        if (fcEl && fcMap[val]) fcEl.value = fcMap[val];
+    },
+    
+    _saveTaskEditModal() {
+        var f = function(id) { return document.getElementById(id); };
+        var task = {
+            slaveAddress: parseInt(f('task-edit-slave-addr').value) || 1,
+            functionCode: parseInt(f('task-edit-fc').value) || 3,
+            startAddress: parseInt(f('task-edit-start-addr').value) || 0,
+            quantity: parseInt(f('task-edit-quantity').value) || 10,
+            label: f('task-edit-label').value || '',
+            deviceType: f('task-edit-type').value || 'holding',
+            enabled: f('task-edit-enabled').checked
+        };
+        
+        if (!this._masterTasks) this._masterTasks = [];
+        
+        if (this._editingTaskIdx >= 0 && this._masterTasks[this._editingTaskIdx]) {
+            task.mappings = this._masterTasks[this._editingTaskIdx].mappings || [];
+            this._masterTasks[this._editingTaskIdx] = task;
+        } else {
+            task.mappings = [];
+            this._masterTasks.push(task);
+        }
+        
+        this._renderAllDevices();
+        this._closeTaskEditModal();
     },
     
     addMasterPollTask() {
@@ -3896,23 +4079,13 @@ const AppState = {
             Notification.warning('Max 8 tasks', i18n.t('modbus-master-title'));
             return;
         }
-        this._masterTasks.push({
-            slaveAddress: 1,
-            functionCode: 3,
-            startAddress: 0,
-            quantity: 10,
-            pollInterval: 30,
-            enabled: true,
-            label: '',
-            mappings: []
-        });
-        this._renderMasterTasks();
+        this._openTaskEditModal(-1);
     },
     
     removeMasterPollTask(idx) {
         if (this._masterTasks) {
             this._masterTasks.splice(idx, 1);
-            this._renderMasterTasks();
+            this._renderAllDevices();
         }
     },
     
@@ -3940,7 +4113,7 @@ const AppState = {
         // 从表格收集当前值
         this._collectMappingValues();
         this._masterTasks[this._currentMappingTaskIdx].mappings = this._currentMappings;
-        this._renderMasterTasks();
+        this._renderAllDevices();
         this.closeMappingModal();
     },
     
@@ -4028,8 +4201,10 @@ const AppState = {
                 this._setText('master-stat-success', d.successPolls ?? 0);
                 this._setText('master-stat-failed', d.failedPolls ?? 0);
                 this._setText('master-stat-timeout', d.timeoutPolls ?? 0);
-                // 显示运行状态文本
-                const statusText = d.status || i18n.t('modbus-master-status-stopped');
+                // 显示运行状态文本（只保留 Master - Addr:X）
+                var statusRaw = d.status || i18n.t('modbus-master-status-stopped');
+                var commaIdx = statusRaw.indexOf(',');
+                var statusText = commaIdx > 0 ? statusRaw.substring(0, commaIdx).trim() : statusRaw;
                 this._setText('master-running-status', statusText);
                 // 渲染采集数据卡片
                 if (d.tasks) this._renderMasterDataGrid(d.tasks);
@@ -4126,139 +4301,311 @@ const AppState = {
     _pidAutoRefreshTimer: null,
     _devicePidCache: {},
 
-    /** 根据设备列表是否为空控制配置区域显隐 */
-    _toggleDeviceContent() {
-        var el = document.getElementById('modbus-device-content');
-        if (el) el.style.display = this._modbusDevices.length > 0 ? '' : 'none';
-    },
+    /** 当前激活设备索引 */
+    _activeDeviceIdx: -1,
+    /** 当前编辑弹窗正在编辑的设备索引 (-1 表示新增) */
+    _editingDeviceIdx: -1,
 
-    /** 从 localStorage 加载设备列表 */
+    /** 从后端协议配置加载设备列表（含 localStorage 迁移） */
     _loadModbusDevices() {
+        var serverDevices = [];
         try {
-            var raw = localStorage.getItem('modbus_devices');
-            this._modbusDevices = raw ? JSON.parse(raw) : [];
-        } catch (e) {
-            this._modbusDevices = [];
-        }
-        this._activeDeviceId = localStorage.getItem('modbus_active_device') || null;
+            var rtu = this._protocolConfig && this._protocolConfig.modbusRtu;
+            if (rtu && rtu.master && rtu.master.devices && rtu.master.devices.length > 0) {
+                serverDevices = rtu.master.devices;
+            }
+        } catch(e) {}
 
-        // 向后兼容：旧设备无 type 字段 → 默认 relay
-        var needSave = false;
+        // localStorage 迁移：后端无数据但 localStorage 有旧数据
+        if (serverDevices.length === 0) {
+            try {
+                var raw = localStorage.getItem('modbus_devices');
+                if (raw) {
+                    var localDevices = JSON.parse(raw);
+                    if (localDevices && localDevices.length > 0) {
+                        // 转换旧字段名
+                        serverDevices = localDevices.map(function(d) {
+                            return {
+                                name: d.name || 'Device',
+                                deviceType: d.deviceType || d.type || 'relay',
+                                slaveAddress: d.slaveAddress || 1,
+                                channelCount: d.channelCount || 2,
+                                coilBase: d.coilBase || 0,
+                                ncMode: !!d.ncMode,
+                                controlProtocol: d.relayMode === 'register' ? 1 : 0,
+                                pwmRegBase: d.pwmRegBase || 0,
+                                pwmResolution: d.pwmResolution || 8,
+                                pidAddrs: [
+                                    d.pidPvAddr || 0, d.pidSvAddr || 1, d.pidOutAddr || 2,
+                                    d.pidPAddr || 3, d.pidIAddr || 4, d.pidDAddr || 5
+                                ],
+                                pidDecimals: d.pidDecimals || 1
+                            };
+                        });
+                    }
+                }
+            } catch(e) {}
+        }
+
+        this._modbusDevices = serverDevices;
+
+        // 向后兼容
         for (var i = 0; i < this._modbusDevices.length; i++) {
-            if (!this._modbusDevices[i].type) {
-                this._modbusDevices[i].type = 'relay';
-                needSave = true;
+            if (!this._modbusDevices[i].deviceType) {
+                this._modbusDevices[i].deviceType = this._modbusDevices[i].type || 'relay';
             }
         }
-        if (needSave) this._saveDevicesToStorage();
 
-        // 首次访问：自动创建预设继电器设备
-        if (this._modbusDevices.length === 0) {
-            var dev = {
-                id: 'dev_default',
-                name: i18n.t('modbus-ctrl-default-preset-name') || '继电器板',
-                type: 'relay',
-                slaveAddress: 3,
-                channelCount: 2,
-                coilBase: 0,
-                ncMode: true
-            };
-            this._modbusDevices.push(dev);
-            this._activeDeviceId = dev.id;
-            this._saveDevicesToStorage();
-        }
-
-        // 验证 activeId 有效
-        if (!this._modbusDevices.find(function(d) { return d.id === this._activeDeviceId; }.bind(this))) {
-            this._activeDeviceId = this._modbusDevices[0].id;
-            this._saveDevicesToStorage();
-        }
-
-        this._renderDeviceSelect();
-        this._applyDeviceToForm();
-        this._toggleDeviceContent();
+        this._activeDeviceIdx = -1;
+        this._renderAllDevices();
     },
 
-    /** 渲染设备下拉选择器 */
-    _renderDeviceSelect() {
-        var sel = document.getElementById('modbus-device-select');
-        if (!sel) return;
-        var html = '';
-        if (this._modbusDevices.length === 0) {
-            html = '<option value="" disabled selected>' + (i18n.t('modbus-ctrl-device-add') || '添加设备') + '...</option>';
-        } else {
-            for (var i = 0; i < this._modbusDevices.length; i++) {
-                var d = this._modbusDevices[i];
-                var selected = d.id === this._activeDeviceId ? ' selected' : '';
-                html += '<option value="' + d.id + '"' + selected + '>'
-                      + d.name + ' (addr:' + d.slaveAddress + ')'
-                      + '</option>';
+    /** 渲染子设备表格（纯展示模式，操作列含编辑/控制/删除） */
+    _renderDeviceTable() {
+        var tbody = document.getElementById('modbus-devices-body');
+        if (!tbody) return;
+
+        if (!this._modbusDevices || this._modbusDevices.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;">' +
+                (i18n.t('modbus-device-no-devices') || '暂无子设备') + '</td></tr>';
+            return;
+        }
+
+        var typeLabels = { relay: i18n.t('modbus-ctrl-type-relay') || '继电器', pwm: 'PWM', pid: 'PID' };
+        var protLabels = ['Coil', 'Register'];
+
+        tbody.innerHTML = this._modbusDevices.map(function(dev, idx) {
+            var dt = dev.deviceType || 'relay';
+            var cp = dev.controlProtocol || 0;
+            return '<tr>' +
+                '<td>' + (dev.name || '-') + '</td>' +
+                '<td>' + (typeLabels[dt] || dt) + '</td>' +
+                '<td>' + (dev.slaveAddress || 1) + '</td>' +
+                '<td>' + (dev.channelCount || 2) + '</td>' +
+                '<td>' + (dev.coilBase || 0) + '</td>' +
+                '<td>' + (protLabels[cp] || 'Coil') + '</td>' +
+                '<td>' + (dev.ncMode ? 'ON' : '-') + '</td>' +
+                '<td style="white-space:nowrap;">' +
+                    '<button type="button" class="pure-button" style="background:#667eea;color:white;font-size:11px;padding:2px 8px;margin-right:3px;" onclick="AppState._openEditModal(' + idx + ')">' +
+                            (i18n.t('modbus-device-edit-btn') || '编辑') + '</button>' +
+                    '<button type="button" class="pure-button" style="background:#e6a23c;color:white;font-size:11px;padding:2px 8px;margin-right:3px;" onclick="AppState._openCtrlModal(' + idx + ')">' +
+                        (i18n.t('modbus-device-select-btn') || '控制') + '</button>' +
+                    '<button type="button" class="pure-button" style="background:#f44336;color:white;font-size:11px;padding:2px 8px;" onclick="AppState._removeDevice(' + idx + ')">' +
+                        (i18n.t('modbus-master-delete-task') || '删除') + '</button>' +
+                '</td>' +
+            '</tr>';
+        }).join('');
+    },
+
+    /** 更新设备字段 */
+    _updateDevice(idx, field, value) {
+        if (this._modbusDevices && this._modbusDevices[idx]) {
+            this._modbusDevices[idx][field] = value;
+            if (field === 'deviceType') {
+                // 类型变更：若是当前激活设备，刷新面板；否则仅重绘表格
+                if (idx === this._activeDeviceIdx) {
+                    this._activateDevice(idx);
+                } else {
+                    this._renderAllDevices();
+                }
             }
         }
-        sel.innerHTML = html;
     },
 
-    /** 将当前设备参数应用到表单 */
-    _applyDeviceToForm() {
-        var dev = this._modbusDevices.find(function(d) { return d.id === this._activeDeviceId; }.bind(this));
+    /** 更新当前激活设备的扩展字段 (PWM/PID DOM 表单同步回设备数据) */
+    _updateActiveDeviceExt(field, value) {
+        if (this._activeDeviceIdx < 0 || !this._modbusDevices) return;
+        var dev = this._modbusDevices[this._activeDeviceIdx];
         if (!dev) return;
+        if (field.indexOf('pidAddrs.') === 0) {
+            var arrIdx = parseInt(field.split('.')[1]);
+            if (!dev.pidAddrs) dev.pidAddrs = [0, 1, 2, 3, 4, 5];
+            dev.pidAddrs[arrIdx] = value;
+        } else {
+            dev[field] = value;
+        }
+    },
 
-        var nameEl = document.getElementById('modbus-ctrl-device-name');
-        var addrEl = document.getElementById('modbus-ctrl-slave-addr');
-        var countEl = document.getElementById('modbus-ctrl-ch-count');
-        var baseEl = document.getElementById('modbus-ctrl-coil-base');
-        var ncEl = document.getElementById('modbus-ctrl-nc-mode');
+    /** 添加新设备 */
+    addModbusDevice() {
+        if (!this._modbusDevices) this._modbusDevices = [];
+        if (this._modbusDevices.length >= 8) {
+            Notification.warning(i18n.t('modbus-device-max-reached') || '最多8个子设备');
+            return;
+        }
+        this._openEditModal(-1); // -1 = 新增模式
+    },
 
-        if (nameEl) nameEl.value = dev.name || '';
-        if (addrEl) addrEl.value = dev.slaveAddress || 1;
-        if (countEl) countEl.value = dev.channelCount || 8;
-        if (baseEl) baseEl.value = dev.coilBase || 0;
-        if (ncEl) ncEl.checked = !!dev.ncMode;
+    /** 删除设备 */
+    _removeDevice(idx) {
+        if (!this._modbusDevices) return;
+        var msg = i18n.t('modbus-device-delete-confirm') || '确定要删除此设备？';
+        if (!confirm(msg)) return;
+        // 清除缓存
+        var devKey = 'dev_' + idx;
+        delete this._deviceCoilCache[devKey];
+        delete this._devicePwmCache[devKey];
+        delete this._devicePidCache[devKey];
+        this._modbusDevices.splice(idx, 1);
+        if (this._activeDeviceIdx === idx) {
+            this._activeDeviceIdx = -1;
+        } else if (this._activeDeviceIdx > idx) {
+            this._activeDeviceIdx--;
+        }
+        this._renderAllDevices();
+    },
 
-        // 继电器协议模式
-        var relayModeEl = document.getElementById('modbus-ctrl-relay-mode');
-        if (relayModeEl) relayModeEl.value = dev.relayMode || 'coil';
+    /** 激活设备（显示控制面板） */
+    // ========== 编辑弹窗 ==========
 
-        // 设备类型
-        var typeEl = document.getElementById('modbus-ctrl-device-type');
-        if (typeEl) typeEl.value = dev.type || 'relay';
+    /** 打开编辑弹窗 */
+    _openEditModal(idx) {
+        this._editingDeviceIdx = idx;
+        var dev = (idx >= 0 && this._modbusDevices && this._modbusDevices[idx])
+            ? this._modbusDevices[idx] : null;
+        var modal = document.getElementById('modbus-device-edit-modal');
+        if (!modal) return;
 
-        // PWM 专属字段
-        if (dev.type === 'pwm') {
-            var regBaseEl = document.getElementById('modbus-ctrl-pwm-reg-base');
-            var resEl = document.getElementById('modbus-ctrl-pwm-resolution');
-            if (regBaseEl) regBaseEl.value = dev.pwmRegBase || 0;
-            if (resEl) resEl.value = dev.pwmResolution || 8;
-        } else if (dev.type === 'pid') {
-            var fields = ['pv','sv','out','p','i','d'];
-            var keys = ['pidPvAddr','pidSvAddr','pidOutAddr','pidPAddr','pidIAddr','pidDAddr'];
-            for (var fi = 0; fi < fields.length; fi++) {
-                var el = document.getElementById('modbus-ctrl-pid-' + fields[fi] + '-addr');
-                if (el) el.value = dev[keys[fi]] || fi;
+        // 填充表单
+        document.getElementById('mdev-edit-name').value = dev ? (dev.name || '') : ((i18n.t('modbus-ctrl-device-default-name') || '设备') + ((this._modbusDevices ? this._modbusDevices.length : 0) + 1));
+        document.getElementById('mdev-edit-type').value = dev ? (dev.deviceType || 'relay') : 'relay';
+        document.getElementById('mdev-edit-addr').value = dev ? (dev.slaveAddress || 1) : 1;
+        document.getElementById('mdev-edit-ch').value = String(dev ? (dev.channelCount || 2) : 2);
+        document.getElementById('mdev-edit-base').value = dev ? (dev.coilBase || 0) : 0;
+        document.getElementById('mdev-edit-protocol').value = String(dev ? (dev.controlProtocol || 0) : 0);
+        document.getElementById('mdev-edit-nc').value = dev ? (dev.ncMode ? 'true' : 'false') : 'true';
+        document.getElementById('mdev-edit-enabled').checked = dev ? (dev.enabled !== false) : true;
+        // PWM
+        document.getElementById('mdev-edit-pwm-reg-base').value = dev ? (dev.pwmRegBase || 0) : 0;
+        document.getElementById('mdev-edit-pwm-resolution').value = String(dev ? (dev.pwmResolution || 8) : 8);
+        // PID
+        var pidA = dev ? (dev.pidAddrs || [0,1,2,3,4,5]) : [0,1,2,3,4,5];
+        var pidFields = ['pv','sv','out','p','i','d'];
+        for (var pi = 0; pi < pidFields.length; pi++) {
+            var pe = document.getElementById('mdev-edit-pid-' + pidFields[pi]);
+            if (pe) pe.value = pidA[pi] || pi;
+        }
+        document.getElementById('mdev-edit-pid-decimals').value = String(dev ? (dev.pidDecimals || 1) : 1);
+
+        this._onEditTypeChange();
+
+        // 更新标题
+        var title = document.getElementById('modbus-edit-modal-title');
+        if (title) title.textContent = (idx >= 0)
+            ? (i18n.t('modbus-device-edit-title') || '编辑子设备')
+            : (i18n.t('modbus-device-add') || '添加设备');
+
+        modal.style.display = 'flex';
+    },
+
+    /** 编辑弹窗内类型变更 — 显隐 PWM/PID 扩展区 */
+    _onEditTypeChange() {
+        var type = document.getElementById('mdev-edit-type').value;
+        var pwmSec = document.getElementById('mdev-edit-pwm-section');
+        var pidSec = document.getElementById('mdev-edit-pid-section');
+        if (pwmSec) pwmSec.style.display = (type === 'pwm') ? '' : 'none';
+        if (pidSec) pidSec.style.display = (type === 'pid') ? '' : 'none';
+    },
+
+    /** 关闭编辑弹窗 */
+    _closeEditModal() {
+        var modal = document.getElementById('modbus-device-edit-modal');
+        if (modal) modal.style.display = 'none';
+        this._editingDeviceIdx = -1;
+    },
+
+    /** 保存编辑弹窗 */
+    _saveEditModal() {
+        var idx = this._editingDeviceIdx;
+        var isNew = (idx < 0);
+
+        if (isNew) {
+            if (!this._modbusDevices) this._modbusDevices = [];
+            if (this._modbusDevices.length >= 8) {
+                Notification.warning(i18n.t('modbus-device-max-reached') || '最多8个子设备');
+                return;
             }
-            var decEl = document.getElementById('modbus-ctrl-pid-decimals');
-            if (decEl) decEl.value = dev.pidDecimals || 1;
+            this._modbusDevices.push({});
+            idx = this._modbusDevices.length - 1;
         }
 
-        // 切换面板显隐
-        this.onDeviceTypeChange();
+        var dev = this._modbusDevices[idx];
+        dev.name = document.getElementById('mdev-edit-name').value || 'Device';
+        dev.deviceType = document.getElementById('mdev-edit-type').value || 'relay';
+        dev.slaveAddress = parseInt(document.getElementById('mdev-edit-addr').value) || 1;
+        dev.channelCount = parseInt(document.getElementById('mdev-edit-ch').value) || 2;
+        dev.coilBase = parseInt(document.getElementById('mdev-edit-base').value) || 0;
+        dev.controlProtocol = parseInt(document.getElementById('mdev-edit-protocol').value) || 0;
+        dev.ncMode = (document.getElementById('mdev-edit-nc').value === 'true');
+        dev.enabled = document.getElementById('mdev-edit-enabled').checked;
+        dev.pwmRegBase = parseInt(document.getElementById('mdev-edit-pwm-reg-base').value) || 0;
+        dev.pwmResolution = parseInt(document.getElementById('mdev-edit-pwm-resolution').value) || 8;
+        var pidFields = ['pv','sv','out','p','i','d'];
+        dev.pidAddrs = [];
+        for (var pi = 0; pi < pidFields.length; pi++) {
+            dev.pidAddrs.push(parseInt(document.getElementById('mdev-edit-pid-' + pidFields[pi]).value) || pi);
+        }
+        dev.pidDecimals = parseInt(document.getElementById('mdev-edit-pid-decimals').value) || 1;
+
+        this._renderAllDevices();
+        this._closeEditModal();
+    },
+
+    // ========== 控制弹窗 ==========
+
+    /** 打开控制弹窗 */
+    _openCtrlModal(idx) {
+        if (!this._modbusDevices || !this._modbusDevices[idx]) return;
+
+        // 缓存当前设备状态
+        if (this._activeDeviceIdx >= 0) {
+            var cacheKey = 'dev_' + this._activeDeviceIdx;
+            if (this._coilStates.length > 0) this._deviceCoilCache[cacheKey] = this._coilStates.slice();
+            if (this._pwmStates.length > 0) this._devicePwmCache[cacheKey] = this._pwmStates.slice();
+            if (this._pidValues && Object.keys(this._pidValues).length > 0) {
+                this._devicePidCache[cacheKey] = JSON.parse(JSON.stringify(this._pidValues));
+            }
+        }
+
+        this._activeDeviceIdx = idx;
+        localStorage.setItem('modbus_active_device', String(idx));
+
+        var dev = this._modbusDevices[idx];
+        var type = dev.deviceType || 'relay';
+
+        // 更新弹窗标题
+        var title = document.getElementById('modbus-ctrl-modal-title');
+        if (title) title.textContent = (dev.name || 'Device') + ' - ' + (i18n.t('modbus-device-ctrl-title') || '设备控制');
+
+        // 显隐类型专属配置面板
+        var relayConfig = document.getElementById('modbus-relay-config');
+        if (relayConfig) relayConfig.style.display = (type === 'relay') ? '' : 'none';
+
+        // 显隐控制面板
+        var relayPanel = document.getElementById('modbus-relay-panel');
+        var pwmPanel = document.getElementById('modbus-pwm-panel');
+        var pidPanel = document.getElementById('modbus-pid-panel');
+        if (relayPanel) relayPanel.style.display = (type === 'relay') ? '' : 'none';
+        if (pwmPanel) pwmPanel.style.display = (type === 'pwm') ? '' : 'none';
+        if (pidPanel) pidPanel.style.display = (type === 'pid') ? '' : 'none';
 
         // 更新延时通道下拉
         this._updateDelayChannelSelect();
 
-        // 根据类型恢复缓存状态或刷新
-        if (dev.type === 'pwm') {
-            if (this._devicePwmCache[dev.id]) {
-                this._pwmStates = this._devicePwmCache[dev.id].slice();
+        // 恢复缓存或刷新
+        var newCacheKey = 'dev_' + idx;
+        if (type === 'pwm') {
+            if (this._devicePwmCache[newCacheKey]) {
+                this._pwmStates = this._devicePwmCache[newCacheKey].slice();
                 this._renderPwmGrid();
             } else {
                 this._pwmStates = [];
                 this._renderPwmGrid();
                 this.refreshPwmStatus();
             }
-        } else if (dev.type === 'pid') {
-            if (this._devicePidCache[dev.id]) {
-                this._pidValues = JSON.parse(JSON.stringify(this._devicePidCache[dev.id]));
+        } else if (type === 'pid') {
+            if (this._devicePidCache[newCacheKey]) {
+                this._pidValues = JSON.parse(JSON.stringify(this._devicePidCache[newCacheKey]));
                 this._renderPidGrid();
             } else {
                 this._pidValues = {};
@@ -4266,8 +4613,8 @@ const AppState = {
                 this.refreshPidStatus();
             }
         } else {
-            if (this._deviceCoilCache[dev.id]) {
-                this._coilStates = this._deviceCoilCache[dev.id].slice();
+            if (this._deviceCoilCache[newCacheKey]) {
+                this._coilStates = this._deviceCoilCache[newCacheKey].slice();
                 this._renderCoilGrid();
             } else {
                 this._coilStates = [];
@@ -4275,128 +4622,43 @@ const AppState = {
                 this.refreshCoilStatus();
             }
         }
+
+        // 显示弹窗
+        var modal = document.getElementById('modbus-device-ctrl-modal');
+        if (modal) modal.style.display = 'flex';
     },
 
-    /** 保存设备列表到 localStorage */
-    _saveDevicesToStorage() {
-        try {
-            localStorage.setItem('modbus_devices', JSON.stringify(this._modbusDevices));
-            localStorage.setItem('modbus_active_device', this._activeDeviceId || '');
-        } catch (e) { /* localStorage 不可用时静默失败 */ }
+    /** 关闭控制弹窗 */
+    _closeCtrlModal() {
+        // 停止自动刷新
+        if (this._coilAutoRefreshTimer) {
+            clearInterval(this._coilAutoRefreshTimer);
+            this._coilAutoRefreshTimer = null;
+        }
+        var autoEl = document.getElementById('modbus-ctrl-auto-refresh');
+        if (autoEl) autoEl.checked = false;
+        var pidAutoEl = document.getElementById('modbus-ctrl-pid-auto-refresh');
+        if (pidAutoEl) pidAutoEl.checked = false;
+
+        var modal = document.getElementById('modbus-device-ctrl-modal');
+        if (modal) modal.style.display = 'none';
     },
 
-    /** 切换设备 */
-    onModbusDeviceChange() {
-        var sel = document.getElementById('modbus-device-select');
-        if (!sel) return;
-
-        // 缓存当前设备的线圈状态
-        if (this._activeDeviceId && this._coilStates.length > 0) {
-            this._deviceCoilCache[this._activeDeviceId] = this._coilStates.slice();
-        }
-        // 缓存当前设备的 PWM 状态
-        if (this._activeDeviceId && this._pwmStates.length > 0) {
-            this._devicePwmCache[this._activeDeviceId] = this._pwmStates.slice();
-        }
-        // 缓存当前设备的 PID 状态
-        if (this._activeDeviceId && this._pidValues && Object.keys(this._pidValues).length > 0) {
-            this._devicePidCache[this._activeDeviceId] = JSON.parse(JSON.stringify(this._pidValues));
-        }
-
-        this._activeDeviceId = sel.value;
-        this._saveDevicesToStorage();
-        this._applyDeviceToForm();
-    },
-
-    /** 添加新设备 */
-    addModbusDevice() {
-        var idx = this._modbusDevices.length + 1;
-        var dev = {
-            id: 'dev_' + Date.now(),
-            name: (i18n.t('modbus-ctrl-device-default-name') || '设备') + idx,
-            type: 'relay',
-            slaveAddress: 3,
-            channelCount: 2,
-            coilBase: 0,
-            ncMode: true,
-            relayMode: 'coil'
-        };
-        this._modbusDevices.push(dev);
-        this._activeDeviceId = dev.id;
-        this._saveDevicesToStorage();
-        this._renderDeviceSelect();
-        this._applyDeviceToForm();
-        this._toggleDeviceContent();
-        Notification.success(i18n.t('modbus-ctrl-device-saved') || '设备配置已保存');
-    },
-
-    /** 保存当前设备配置 */
-    saveModbusDevice() {
-        var dev = this._modbusDevices.find(function(d) { return d.id === this._activeDeviceId; }.bind(this));
-        if (!dev) return;
-
-        var nameEl = document.getElementById('modbus-ctrl-device-name');
-        dev.name = (nameEl && nameEl.value) || dev.name;
-        dev.slaveAddress = parseInt(document.getElementById('modbus-ctrl-slave-addr')?.value || '1');
-        dev.channelCount = parseInt(document.getElementById('modbus-ctrl-ch-count')?.value || '8');
-        dev.coilBase = parseInt(document.getElementById('modbus-ctrl-coil-base')?.value || '0');
-        dev.ncMode = document.getElementById('modbus-ctrl-nc-mode')?.checked || false;
-        dev.relayMode = document.getElementById('modbus-ctrl-relay-mode')?.value || 'coil';
-        dev.type = document.getElementById('modbus-ctrl-device-type')?.value || 'relay';
-        if (dev.type === 'pwm') {
-            dev.pwmRegBase = parseInt(document.getElementById('modbus-ctrl-pwm-reg-base')?.value || '0');
-            dev.pwmResolution = parseInt(document.getElementById('modbus-ctrl-pwm-resolution')?.value || '8');
-        } else if (dev.type === 'pid') {
-            dev.pidPvAddr = parseInt(document.getElementById('modbus-ctrl-pid-pv-addr')?.value || '0');
-            dev.pidSvAddr = parseInt(document.getElementById('modbus-ctrl-pid-sv-addr')?.value || '1');
-            dev.pidOutAddr = parseInt(document.getElementById('modbus-ctrl-pid-out-addr')?.value || '2');
-            dev.pidPAddr = parseInt(document.getElementById('modbus-ctrl-pid-p-addr')?.value || '3');
-            dev.pidIAddr = parseInt(document.getElementById('modbus-ctrl-pid-i-addr')?.value || '4');
-            dev.pidDAddr = parseInt(document.getElementById('modbus-ctrl-pid-d-addr')?.value || '5');
-            dev.pidDecimals = parseInt(document.getElementById('modbus-ctrl-pid-decimals')?.value || '1');
-        }
-
-        this._saveDevicesToStorage();
-        this._renderDeviceSelect();
-        Notification.success(i18n.t('modbus-ctrl-device-saved') || '设备配置已保存');
-    },
-
-    /** 删除当前设备 */
-    deleteModbusDevice() {
-        if (this._modbusDevices.length === 0) return;
-        var msg = i18n.t('modbus-ctrl-device-delete-confirm') || '确定要删除该设备配置吗？';
-        if (!confirm(msg)) return;
-
-        var idx = this._modbusDevices.findIndex(function(d) { return d.id === this._activeDeviceId; }.bind(this));
-        if (idx >= 0) {
-            // 清除缓存
-            delete this._deviceCoilCache[this._activeDeviceId];
-            delete this._devicePwmCache[this._activeDeviceId];
-            delete this._devicePidCache[this._activeDeviceId];
-            this._modbusDevices.splice(idx, 1);
-            if (this._modbusDevices.length > 0) {
-                this._activeDeviceId = this._modbusDevices[0].id;
-                this._saveDevicesToStorage();
-                this._renderDeviceSelect();
-                this._applyDeviceToForm();
-            } else {
-                this._activeDeviceId = null;
-                this._coilStates = [];
-                this._saveDevicesToStorage();
-                this._renderDeviceSelect();
-            }
-            this._toggleDeviceContent();
-            Notification.success(i18n.t('modbus-ctrl-device-deleted') || '设备已删除');
-        }
+    /** 旧方法保留兼容: _activateDevice 改为调用 _openCtrlModal */
+    _activateDevice(idx) {
+        this._openCtrlModal(idx);
     },
 
     // ============================================================================
     // 设备类型切换与 PWM 控制
     // ============================================================================
 
-    /** 切换设备类型面板显隐 */
+    /** 切换设备类型面板显隐 (从当前激活设备读取类型) */
     onDeviceTypeChange() {
-        var type = document.getElementById('modbus-ctrl-device-type')?.value || 'relay';
+        if (this._activeDeviceIdx < 0 || !this._modbusDevices) return;
+        var dev = this._modbusDevices[this._activeDeviceIdx];
+        if (!dev) return;
+        var type = dev.deviceType || 'relay';
         var types = ['relay', 'pwm', 'pid'];
         types.forEach(function(t) {
             var panel = document.getElementById('modbus-' + t + '-panel');
@@ -4404,14 +4666,14 @@ const AppState = {
             if (panel) panel.style.display = (t === type) ? '' : 'none';
             if (config) config.style.display = (t === type) ? '' : 'none';
         });
-        // PID 类型隐藏通道数行
-        var chGroup = document.getElementById('modbus-ch-count-group');
-        if (chGroup) chGroup.style.display = (type === 'pid') ? 'none' : '';
     },
 
     /** 继电器协议模式切换 — 更新基地址标签提示 */
     onRelayModeChange() {
-        var mode = document.getElementById('modbus-ctrl-relay-mode')?.value || 'coil';
+        if (this._activeDeviceIdx < 0 || !this._modbusDevices) return;
+        var dev = this._modbusDevices[this._activeDeviceIdx];
+        if (!dev) return;
+        var mode = (dev.controlProtocol === 1) ? 'register' : 'coil';
         var hintEl = document.querySelector('#modbus-relay-config .field-hint');
         if (hintEl) {
             hintEl.textContent = (mode === 'register')
@@ -4422,11 +4684,13 @@ const AppState = {
 
     /** 获取 PWM 参数 */
     _getPwmParams() {
-        var res = parseInt(document.getElementById('modbus-ctrl-pwm-resolution')?.value || '8');
+        var dev = (this._activeDeviceIdx >= 0 && this._modbusDevices)
+            ? this._modbusDevices[this._activeDeviceIdx] : null;
+        var res = dev ? (dev.pwmResolution || 8) : 8;
         return {
-            slaveAddress: parseInt(document.getElementById('modbus-ctrl-slave-addr')?.value || '1'),
-            channelCount: parseInt(document.getElementById('modbus-ctrl-ch-count')?.value || '4'),
-            regBase: parseInt(document.getElementById('modbus-ctrl-pwm-reg-base')?.value || '0'),
+            slaveAddress: dev ? (dev.slaveAddress || 1) : 1,
+            channelCount: dev ? (dev.channelCount || 4) : 4,
+            regBase: dev ? (dev.pwmRegBase || 0) : 0,
             resolution: res,
             maxValue: (1 << res) - 1
         };
@@ -4548,15 +4812,18 @@ const AppState = {
     // ============================================================================
 
     _getPidParams() {
-        var decimals = parseInt(document.getElementById('modbus-ctrl-pid-decimals')?.value || '1');
+        var dev = (this._activeDeviceIdx >= 0 && this._modbusDevices)
+            ? this._modbusDevices[this._activeDeviceIdx] : null;
+        var pidA = dev ? (dev.pidAddrs || [0,1,2,3,4,5]) : [0,1,2,3,4,5];
+        var decimals = dev ? (dev.pidDecimals || 1) : 1;
         return {
-            slaveAddress: parseInt(document.getElementById('modbus-ctrl-slave-addr')?.value || '1'),
-            pvAddr: parseInt(document.getElementById('modbus-ctrl-pid-pv-addr')?.value || '0'),
-            svAddr: parseInt(document.getElementById('modbus-ctrl-pid-sv-addr')?.value || '1'),
-            outAddr: parseInt(document.getElementById('modbus-ctrl-pid-out-addr')?.value || '2'),
-            pAddr: parseInt(document.getElementById('modbus-ctrl-pid-p-addr')?.value || '3'),
-            iAddr: parseInt(document.getElementById('modbus-ctrl-pid-i-addr')?.value || '4'),
-            dAddr: parseInt(document.getElementById('modbus-ctrl-pid-d-addr')?.value || '5'),
+            slaveAddress: dev ? (dev.slaveAddress || 1) : 1,
+            pvAddr: pidA[0] || 0,
+            svAddr: pidA[1] || 1,
+            outAddr: pidA[2] || 2,
+            pAddr: pidA[3] || 3,
+            iAddr: pidA[4] || 4,
+            dAddr: pidA[5] || 5,
             decimals: decimals,
             scaleFactor: Math.pow(10, decimals)
         };
@@ -4599,7 +4866,7 @@ const AppState = {
                 html += '<div class="pid-card-value">' + c.value + '</div>';
                 html += '<div class="pid-edit-row">';
                 html += '<input type="number" class="pid-input" step="' + (1 / sf) + '" value="' + rawVal + '" data-param="' + c.key + '">';
-                html += '<button type="button" class="btn btn-sm btn-enable pid-set-btn" onclick="AppState._onPidInputChange(\'' + c.key + '\', this.parentNode.querySelector(\'.pid-input\').value)">'
+                html += '<button type="button" class="btn btn-sm btn-enable pid-set-btn" style="width:64px;" onclick="AppState._onPidInputChange(\'' + c.key + '\', this.parentNode.querySelector(\'.pid-input\').value)">'
                       + (i18n.t('modbus-ctrl-pid-set') || '设置') + '</button>';
                 html += '</div>';
             } else {
@@ -4743,12 +5010,14 @@ const AppState = {
 
     /** 从 UI 读取控制参数 */
     _getCoilParams() {
+        var dev = (this._activeDeviceIdx >= 0 && this._modbusDevices[this._activeDeviceIdx])
+            ? this._modbusDevices[this._activeDeviceIdx] : {};
         return {
-            slaveAddress: parseInt(document.getElementById('modbus-ctrl-slave-addr')?.value || '1'),
-            channelCount: parseInt(document.getElementById('modbus-ctrl-ch-count')?.value || '8'),
-            coilBase: parseInt(document.getElementById('modbus-ctrl-coil-base')?.value || '0'),
-            ncMode: document.getElementById('modbus-ctrl-nc-mode')?.checked || false,
-            relayMode: document.getElementById('modbus-ctrl-relay-mode')?.value || 'coil'
+            slaveAddress: dev.slaveAddress || 1,
+            channelCount: dev.channelCount || 8,
+            coilBase: dev.coilBase || 0,
+            ncMode: !!dev.ncMode,
+            relayMode: (dev.controlProtocol === 1) ? 'register' : 'coil'
         };
     },
 
@@ -4905,7 +5174,9 @@ const AppState = {
     _updateDelayChannelSelect() {
         const sel = document.getElementById('modbus-ctrl-delay-ch');
         if (!sel) return;
-        const count = parseInt(document.getElementById('modbus-ctrl-ch-count')?.value || '8');
+        var dev = (this._activeDeviceIdx >= 0 && this._modbusDevices)
+            ? this._modbusDevices[this._activeDeviceIdx] : null;
+        const count = dev ? (dev.channelCount || 8) : 8;
         let html = '';
         for (let i = 0; i < count; i++) {
             html += '<option value="' + i + '">CH' + i + '</option>';
@@ -4929,11 +5200,11 @@ const AppState = {
 
     /** 读取设备地址 */
     async readDeviceAddress() {
-        const p = this._getCoilParams();
+        const slaveAddr = parseInt(document.getElementById('modbus-debug-slave-addr')?.value || '0');
         const addrReg = parseInt(document.getElementById('modbus-ctrl-addr-reg')?.value || '0');
         try {
             const res = await apiPost('/api/modbus/device/address', {
-                slaveAddress: p.slaveAddress,
+                slaveAddress: slaveAddr,
                 addressRegister: addrReg
             });
             const display = document.getElementById('modbus-ctrl-current-addr');
@@ -4953,7 +5224,7 @@ const AppState = {
 
     /** 设置设备地址（广播 FC 0x10） */
     async setDeviceAddress() {
-        const p = this._getCoilParams();
+        const slaveAddr = parseInt(document.getElementById('modbus-debug-slave-addr')?.value || '0');
         const addrReg = parseInt(document.getElementById('modbus-ctrl-addr-reg')?.value || '0');
         const newAddr = parseInt(document.getElementById('modbus-ctrl-new-addr')?.value || '0');
         if (newAddr < 1 || newAddr > 255) {
@@ -4962,7 +5233,7 @@ const AppState = {
         }
         try {
             const res = await apiPost('/api/modbus/device/address', {
-                slaveAddress: p.slaveAddress,
+                slaveAddress: slaveAddr,
                 addressRegister: addrReg,
                 newAddress: newAddr
             });
@@ -4980,11 +5251,11 @@ const AppState = {
 
     /** 设置波特率（FC 0xB0 专有指令） */
     async setDeviceBaudrate() {
-        const p = this._getCoilParams();
+        const slaveAddr = parseInt(document.getElementById('modbus-debug-slave-addr')?.value || '0');
         const baud = parseInt(document.getElementById('modbus-ctrl-baudrate')?.value || '9600');
         try {
             const res = await apiPost('/api/modbus/device/baudrate', {
-                slaveAddress: p.slaveAddress,
+                slaveAddress: slaveAddr,
                 baudRate: baud
             });
             if (res && res.success) {
@@ -5001,12 +5272,12 @@ const AppState = {
 
     /** 读取离散输入 */
     async readDiscreteInputs() {
-        const p = this._getCoilParams();
+        const slaveAddr = parseInt(document.getElementById('modbus-debug-slave-addr')?.value || '0');
         const inputCount = parseInt(document.getElementById('modbus-ctrl-input-count')?.value || '4');
         const inputBase = parseInt(document.getElementById('modbus-ctrl-input-base')?.value || '0');
         try {
             const res = await apiGet('/api/modbus/device/inputs', {
-                slaveAddress: p.slaveAddress,
+                slaveAddress: slaveAddr,
                 inputCount: inputCount,
                 inputBase: inputBase
             });
@@ -5581,9 +5852,10 @@ const AppState = {
         const modal = document.getElementById('periph-exec-modal');
         if (!modal) return;
         const titleEl = document.getElementById('periph-exec-modal-title');
-        document.getElementById('periph-exec-original-id').value = editId || '';
+        var safeId = (editId && editId !== 'null' && editId !== 'undefined') ? editId : '';
+        document.getElementById('periph-exec-original-id').value = safeId;
         document.getElementById('periph-exec-error').style.display = 'none';
-        if (editId) {
+        if (safeId) {
             if (titleEl) titleEl.textContent = i18n.t('periph-exec-edit-modal-title');
         } else {
             if (titleEl) titleEl.textContent = i18n.t('periph-exec-add-modal-title');
@@ -5595,19 +5867,27 @@ const AppState = {
         if (triggersContainer) triggersContainer.innerHTML = '';
         if (actionsContainer) actionsContainer.innerHTML = '';
         // For edit mode, editPeriphExecRule handles peripheral loading and block creation
-        if (editId) {
+        if (safeId) {
             modal.style.display = 'flex';
             return;
         }
         // Load peripherals and protocol data sources
         this._pePeripherals = [];
         this._peDataSources = [];
-        Promise.all([apiGet('/api/peripherals'), apiGet('/api/protocol/config')]).then(([res, protoRes]) => {
+        Promise.all([apiGet('/api/peripherals'), apiGet('/api/protocol/config'), apiGet('/api/periph-exec')]).then(([res, protoRes, execRes]) => {
             if (res && res.success && res.data) {
                 this._pePeripherals = res.data.filter(p => p.enabled);
             }
             if (protoRes && protoRes.success !== false) {
                 this._peDataSources = this._extractDataSources(protoRes);
+                // 加载 Modbus 子设备数据（供 type=6 触发器使用）
+                if (protoRes.modbusRtu && protoRes.modbusRtu.master) {
+                    this._masterTasks = protoRes.modbusRtu.master.tasks || [];
+                    this._modbusDevices = protoRes.modbusRtu.master.devices || [];
+                }
+            }
+            if (execRes && execRes.success && execRes.data) {
+                this._peAllRules = execRes.data;
             }
             // New rule: add one default trigger and one default action
             this._createPeriphExecTriggerElement({}, 0);
@@ -5714,6 +5994,7 @@ const AppState = {
         const showPlatform = triggerType === '0';
         const showTimer = triggerType === '1';
         const showEvent = triggerType === '4';
+        const showPoll = triggerType === '5';
         const timerMode = String(data.timerMode ?? 0);
         const showInterval = timerMode === '0';
         const showDaily = timerMode === '1';
@@ -5732,9 +6013,10 @@ const AppState = {
                         <option value="0" ${triggerType === '0' ? 'selected' : ''}>${i18n.t('periph-exec-trigger-platform')}</option>
                         <option value="1" ${triggerType === '1' ? 'selected' : ''}>${i18n.t('periph-exec-trigger-timer')}</option>
                         <option value="4" ${triggerType === '4' ? 'selected' : ''}>${i18n.t('periph-exec-trigger-event')}</option>
+                        <option value="5" ${triggerType === '5' ? 'selected' : ''}>${i18n.t('periph-exec-trigger-poll')}</option>
                     </select>
                 </div>
-                <div class="pure-control-group pe-trigger-periph-group" style="display:${showPlatform ? 'block' : 'none'}">
+                <div class="pure-control-group pe-trigger-periph-group" style="display:${(showPlatform || showPoll) ? 'block' : 'none'}">
                     <label>${i18n.t('periph-exec-trigger-periph-label')}</label>
                     <select class="pure-input-1 pe-trigger-periph">
                         <option value="">${i18n.t('periph-exec-select-periph')}</option>
@@ -5753,6 +6035,26 @@ const AppState = {
                     <div class="pure-control-group pe-compare-value-group" style="display:${showCompareValue ? 'block' : 'none'}">
                         <label>${i18n.t('periph-exec-compare-label')}</label>
                         <input type="text" class="pure-input-1 pe-compare-value" value="${escapeHtml(data.compareValue)}" placeholder="${escapeHtml(i18n.t('periph-exec-compare-hint'))}">
+                    </div>
+                </div>
+            </div>
+            <div class="pe-poll-params" style="display:${showPoll ? 'block' : 'none'}">
+                <div class="config-form-grid">
+                    <div class="pure-control-group">
+                        <label>${i18n.t('periph-exec-poll-interval-label')}</label>
+                        <input type="number" class="pure-input-1 pe-poll-interval" value="${data.intervalSec || 60}" min="5" max="86400">
+                    </div>
+                    <div class="pure-control-group">
+                        <label>${i18n.t('periph-exec-poll-timeout-label')}</label>
+                        <input type="number" class="pure-input-1 pe-poll-timeout" value="${data.pollResponseTimeout || 1000}" min="100" max="30000">
+                    </div>
+                    <div class="pure-control-group">
+                        <label>${i18n.t('periph-exec-poll-retries-label')}</label>
+                        <input type="number" class="pure-input-1 pe-poll-retries" value="${data.pollMaxRetries ?? 2}" min="0" max="10">
+                    </div>
+                    <div class="pure-control-group">
+                        <label>${i18n.t('periph-exec-poll-delay-label')}</label>
+                        <input type="number" class="pure-input-1 pe-poll-inter-delay" value="${data.pollInterPollDelay || 100}" min="10" max="5000">
                     </div>
                 </div>
             </div>
@@ -5810,10 +6112,19 @@ const AppState = {
         div.dataset.index = index;
         const actionType = String(data.actionType ?? 0);
         const actionTypeInt = parseInt(actionType);
-        const showPeriphGroup = !((actionTypeInt >= 6 && actionTypeInt <= 11) || actionTypeInt === 15);
+        const isModbusPoll = actionTypeInt === 18;
+        const isSensorRead = actionTypeInt === 19;
+        const showPeriphGroup = !((actionTypeInt >= 6 && actionTypeInt <= 11) || actionTypeInt === 15 || isModbusPoll);
         const needsValue = (actionTypeInt >= 2 && actionTypeInt <= 5);
         const isScript = actionTypeInt === 15;
         const sel = (v) => actionType === String(v) ? 'selected' : '';
+
+        // Parse sensor read config from actionValue for edit mode
+        var sensorCfg = {sensorCategory:'analog',periphId:'',scaleFactor:1,offset:0,decimalPlaces:2,sensorLabel:'',unit:''};
+        if (isSensorRead && data.actionValue) {
+            try { Object.assign(sensorCfg, JSON.parse(data.actionValue)); } catch(e) {}
+        }
+        const selCat = (v) => sensorCfg.sensorCategory === v ? 'selected' : '';
 
         const curExecMode = document.getElementById('periph-exec-exec-mode')?.value || '0';
         const selMode = (v) => curExecMode === String(v) ? 'selected' : '';
@@ -5821,38 +6132,33 @@ const AppState = {
         div.innerHTML = `
             <span class="mqtt-topic-index">${index + 1}</span>
             <button type="button" class="mqtt-topic-delete" onclick="app.deletePeriphExecAction(${index})">${i18n.t('peripheral-delete')}</button>
-            <div class="pure-control-group pe-action-type-row">
-                <label>${i18n.t('periph-exec-action-type-label')}</label>
-                <select class="pure-input-1 pe-action-type" onchange="app.onPeriphExecActionTypeChangeInBlock(this.value, ${index})">
-                    <optgroup label="${i18n.t('periph-exec-action-cat-gpio')}">
-                        <option value="0" ${sel(0)}>${i18n.t('periph-exec-action-high')}</option>
-                        <option value="1" ${sel(1)}>${i18n.t('periph-exec-action-low')}</option>
-                        <option value="2" ${sel(2)}>${i18n.t('periph-exec-action-blink')}</option>
-                        <option value="3" ${sel(3)}>${i18n.t('periph-exec-action-breathe')}</option>
-                    </optgroup>
-                    <optgroup label="${i18n.t('periph-exec-action-cat-analog')}">
-                        <option value="4" ${sel(4)}>${i18n.t('periph-exec-action-pwm')}</option>
-                        <option value="5" ${sel(5)}>${i18n.t('periph-exec-action-dac')}</option>
-                    </optgroup>
-                    <optgroup label="${i18n.t('periph-exec-action-cat-system')}">
-                        <option value="6" ${sel(6)}>${i18n.t('periph-exec-action-restart')}</option>
-                        <option value="7" ${sel(7)}>${i18n.t('periph-exec-action-factory')}</option>
-                        <option value="8" ${sel(8)}>${i18n.t('periph-exec-action-ntp')}</option>
-                        <option value="9" ${sel(9)}>${i18n.t('periph-exec-action-ota')}</option>
-                        <option value="10" ${sel(10)}>${i18n.t('periph-exec-action-ap')}</option>
-                        <option value="11" ${sel(11)}>${i18n.t('periph-exec-action-ble')}</option>
-                    </optgroup>
-                    <optgroup label="${i18n.t('periph-exec-action-cat-advanced')}">
-                        <option value="15" ${sel(15)}>${i18n.t('periph-exec-action-script')}</option>
-                    </optgroup>
-                </select>
-            </div>
             <div class="pe-action-grid">
-                <div class="pure-control-group pe-exec-mode-group">
-                    <label>${i18n.t('periph-exec-exec-mode-label')}</label>
-                    <select class="pure-input-1 pe-exec-mode" onchange="app.onPeriphExecModeChangeInBlock(this.value)">
-                        <option value="0" ${selMode(0)}>${i18n.t('periph-exec-exec-mode-async')}</option>
-                        <option value="1" ${selMode(1)}>${i18n.t('periph-exec-exec-mode-sync')}</option>
+                <div class="pure-control-group pe-action-type-group">
+                    <label>${i18n.t('periph-exec-action-type-label')}</label>
+                    <select class="pure-input-1 pe-action-type" onchange="app.onPeriphExecActionTypeChangeInBlock(this.value, ${index})">
+                        <optgroup label="${i18n.t('periph-exec-action-cat-gpio')}">
+                            <option value="0" ${sel(0)}>${i18n.t('periph-exec-action-high')}</option>
+                            <option value="1" ${sel(1)}>${i18n.t('periph-exec-action-low')}</option>
+                            <option value="2" ${sel(2)}>${i18n.t('periph-exec-action-blink')}</option>
+                            <option value="3" ${sel(3)}>${i18n.t('periph-exec-action-breathe')}</option>
+                        </optgroup>
+                        <optgroup label="${i18n.t('periph-exec-action-cat-analog')}">
+                            <option value="4" ${sel(4)}>${i18n.t('periph-exec-action-pwm')}</option>
+                            <option value="5" ${sel(5)}>${i18n.t('periph-exec-action-dac')}</option>
+                        </optgroup>
+                        <optgroup label="${i18n.t('periph-exec-action-cat-system')}">
+                            <option value="6" ${sel(6)}>${i18n.t('periph-exec-action-restart')}</option>
+                            <option value="7" ${sel(7)}>${i18n.t('periph-exec-action-factory')}</option>
+                            <option value="8" ${sel(8)}>${i18n.t('periph-exec-action-ntp')}</option>
+                            <option value="9" ${sel(9)}>${i18n.t('periph-exec-action-ota')}</option>
+                            <option value="10" ${sel(10)}>${i18n.t('periph-exec-action-ap')}</option>
+                            <option value="11" ${sel(11)}>${i18n.t('periph-exec-action-ble')}</option>
+                        </optgroup>
+                        <optgroup label="${i18n.t('periph-exec-action-cat-advanced')}">
+                            <option value="15" ${sel(15)}>${i18n.t('periph-exec-action-script')}</option>
+                            <option value="18" ${sel(18)}>${i18n.t('periph-exec-action-modbus-poll')}</option>
+                            <option value="19" ${sel(19)}>${i18n.t('periph-exec-action-sensor-read')}</option>
+                        </optgroup>
                     </select>
                 </div>
                 <div class="pure-control-group pe-target-group" style="display:${showPeriphGroup ? 'block' : 'none'}">
@@ -5883,12 +6189,277 @@ const AppState = {
                     <textarea class="pure-input-1 pe-script" rows="6" style="font-family: monospace; font-size: 13px; resize: vertical;" maxlength="1024" placeholder="${escapeHtml(i18n.t('periph-exec-script-placeholder'))}">${isScript ? escapeHtml(data.actionValue) : ''}</textarea>
                     <small style="color: #999;">${i18n.t('periph-exec-script-help')}</small>
                 </div>
+                <div class="pure-control-group pe-poll-tasks-group" style="display:${isModbusPoll ? 'block' : 'none'}; grid-column: 1 / -1;">
+                    <label>${i18n.t('periph-exec-poll-tasks-label')}</label>
+                    <div class="pe-poll-tasks-list" style="border:1px solid #ddd;border-radius:4px;padding:8px;max-height:200px;overflow-y:auto;background:#fafafa;">
+                    </div>
+                    <small style="color: #999;">${i18n.t('periph-exec-poll-tasks-help')}</small>
+                </div>
+                <div class="pure-control-group pe-sensor-group" style="display:${isSensorRead ? 'block' : 'none'}; grid-column: 1 / -1;">
+                    <div class="pe-sensor-config-grid">
+                        <div class="pure-control-group">
+                            <label>${i18n.t('periph-exec-sensor-category')}</label>
+                            <select class="pure-input-1 pe-sensor-category" onchange="app.onSensorCategoryChange(this, ${index})">
+                                <option value="analog" ${selCat('analog')}>${i18n.t('periph-exec-sensor-cat-analog')}</option>
+                                <option value="digital" ${selCat('digital')}>${i18n.t('periph-exec-sensor-cat-digital')}</option>
+                                <option value="pulse" ${selCat('pulse')}>${i18n.t('periph-exec-sensor-cat-pulse')}</option>
+                            </select>
+                        </div>
+                        <div class="pure-control-group">
+                            <label>${i18n.t('periph-exec-sensor-scale')}</label>
+                            <input type="number" class="pure-input-1 pe-sensor-scale" step="any" value="${sensorCfg.scaleFactor}">
+                        </div>
+                        <div class="pure-control-group">
+                            <label>${i18n.t('periph-exec-sensor-offset')}</label>
+                            <input type="number" class="pure-input-1 pe-sensor-offset" step="any" value="${sensorCfg.offset}">
+                        </div>
+                        <div class="pure-control-group">
+                            <label>${i18n.t('periph-exec-sensor-decimals')}</label>
+                            <input type="number" class="pure-input-1 pe-sensor-decimals" min="0" max="6" value="${sensorCfg.decimalPlaces}">
+                        </div>
+                        <div class="pure-control-group">
+                            <label>${i18n.t('periph-exec-sensor-label')}</label>
+                            <input type="text" class="pure-input-1 pe-sensor-label" value="${escapeHtml(sensorCfg.sensorLabel)}" placeholder="${i18n.t('periph-exec-sensor-label')}">
+                        </div>
+                        <div class="pure-control-group">
+                            <label>${i18n.t('periph-exec-sensor-unit')}</label>
+                            <input type="text" class="pure-input-1 pe-sensor-unit" value="${escapeHtml(sensorCfg.unit)}" maxlength="8" placeholder="°C, %, V...">
+                        </div>
+                    </div>
+                </div>
             </div>
         `;
 
         container.appendChild(div);
         // Populate target peripheral select
-        this._populatePeriphSelect(div.querySelector('.pe-target-periph'), data.targetPeriphId || '');
+        // Populate target peripheral select
+        if (isSensorRead) {
+            // For sensor read, filter peripherals by category
+            this._populateSensorPeriphSelect(div, sensorCfg.sensorCategory || 'analog', sensorCfg.periphId || data.targetPeriphId || '');
+        } else {
+            this._populatePeriphSelect(div.querySelector('.pe-target-periph'), data.targetPeriphId || '');
+        }
+        if (isModbusPoll) {
+            this._populateModbusDevicePanel(div.querySelector('.pe-poll-tasks-list'), data.actionValue || '');
+        }
+    },
+
+    _populateSensorPeriphSelect(blockEl, category, selectedValue) {
+        var sel = blockEl.querySelector('.pe-target-periph');
+        if (!sel) return;
+        var periphs = this._pePeripherals || [];
+        var analogTypes = [15, 26];
+        var digitalTypes = [11, 13, 14];
+        var pulseTypes = [46];
+        var allowedTypes;
+        if (category === 'digital') allowedTypes = digitalTypes;
+        else if (category === 'pulse') allowedTypes = pulseTypes;
+        else allowedTypes = analogTypes;
+        var prev = selectedValue || sel.value;
+        sel.innerHTML = '<option value="">--</option>';
+        periphs.filter(function(p) { return allowedTypes.indexOf(p.type) >= 0; }).forEach(function(p) {
+            var opt = document.createElement('option');
+            opt.value = p.id;
+            var pinInfo = (p.pins && p.pins.length > 0) ? (' (Pin ' + p.pins[0] + ')') : '';
+            opt.textContent = p.name + pinInfo;
+            sel.appendChild(opt);
+        });
+        if (prev) sel.value = prev;
+    },
+
+    onSensorCategoryChange(selectEl, index) {
+        var container = document.getElementById('periph-exec-actions');
+        if (!container) return;
+        var block = container.querySelectorAll('.periph-exec-config-item')[index];
+        if (!block) return;
+        this._populateSensorPeriphSelect(block, selectEl.value);
+    },
+
+    _populateModbusDevicePanel(container, actionValue) {
+        if (!container) return;
+        var tasks = this._masterTasks || [];
+        var devices = this._modbusDevices || [];
+        
+        if (tasks.length === 0 && devices.length === 0) {
+            container.innerHTML = '<span style="color:#999;font-size:12px;">' + (i18n.t('modbus-no-devices') || '暂无子设备') + '</span>';
+            return;
+        }
+        
+        // 解析 actionValue: JSON 格式或旧逗号分隔格式
+        var selDevice = '';
+        var selChannel = '';
+        var selAction = '';
+        var selValue = '';
+        var selParam = '';
+        if (actionValue) {
+            if (actionValue.charAt(0) === '{') {
+                try {
+                    var parsed = JSON.parse(actionValue);
+                    if (parsed.poll && parsed.poll.length > 0) {
+                        selDevice = 'sensor-' + parsed.poll[0];
+                    } else if (parsed.ctrl && parsed.ctrl.length > 0) {
+                        var c = parsed.ctrl[0];
+                        selDevice = 'control-' + c.d;
+                        selChannel = String(c.c || 0);
+                        selAction = c.a || '';
+                        selValue = String(c.v || 0);
+                        selParam = c.p || '';
+                    }
+                } catch(e) {}
+            } else {
+                // 旧格式: 逗号分隔任务索引，取第一个
+                var parts = actionValue.split(',');
+                if (parts.length > 0 && parts[0].trim()) selDevice = 'sensor-' + parts[0].trim();
+            }
+        }
+        
+        var fcNames = {1: 'FC01', 2: 'FC02', 3: 'FC03', 4: 'FC04'};
+        var typeLabels = {relay: i18n.t('modbus-type-relay') || '继电器', pwm: i18n.t('modbus-type-pwm') || 'PWM', pid: i18n.t('modbus-type-pid') || 'PID'};
+        
+        // 设备选择下拉框
+        var html = '<div class="pe-modbus-select-flow">';
+        html += '<div class="pure-control-group" style="margin-bottom:8px;">';
+        html += '<label style="font-size:12px;font-weight:bold;">' + (i18n.t('periph-exec-select-device') || '选择子设备') + '</label>';
+        html += '<select class="pure-input-1 pe-modbus-device-select" onchange="AppState._onPeriphDeviceSelect(this)" style="font-size:13px;">';
+        html += '<option value="">--</option>';
+        
+        // 采集设备组
+        if (tasks.length > 0) {
+            html += '<optgroup label="' + (i18n.t('modbus-type-sensor') || '采集设备') + '">';
+            for (var i = 0; i < tasks.length; i++) {
+                var t = tasks[i];
+                var label = t.label || ('Slave ' + (t.slaveAddress || 1));
+                var desc = (fcNames[t.functionCode] || 'FC03') + ' @' + (t.startAddress || 0) + ' x' + (t.quantity || 10);
+                var val = 'sensor-' + i;
+                html += '<option value="' + val + '"' + (val === selDevice ? ' selected' : '') + '>' + escapeHtml(label) + ' (' + desc + ')</option>';
+            }
+            html += '</optgroup>';
+        }
+        
+        // 控制设备组
+        if (devices.length > 0) {
+            html += '<optgroup label="' + (i18n.t('modbus-type-control') || '控制设备') + '">';
+            for (var j = 0; j < devices.length; j++) {
+                var d = devices[j];
+                var dt = d.deviceType || 'relay';
+                var devName = d.name || ('Device ' + (j + 1));
+                var tl = typeLabels[dt] || dt;
+                var val2 = 'control-' + j;
+                html += '<option value="' + val2 + '"' + (val2 === selDevice ? ' selected' : '') + '>' + escapeHtml(devName) + ' (' + tl + ', Addr ' + (d.slaveAddress || 1) + ')</option>';
+            }
+            html += '</optgroup>';
+        }
+        html += '</select></div>';
+        
+        // 通道选择（仅控制设备时显示）
+        var isCtrl = selDevice.indexOf('control-') === 0;
+        var chDisplay = isCtrl ? 'block' : 'none';
+        html += '<div class="pure-control-group pe-modbus-channel-group" style="display:' + chDisplay + ';margin-bottom:8px;">';
+        html += '<label style="font-size:12px;font-weight:bold;">' + (i18n.t('periph-exec-select-channel') || '选择通道') + '</label>';
+        html += '<select class="pure-input-1 pe-modbus-channel-select" onchange="AppState._onPeriphChannelSelect(this)" style="font-size:13px;">';
+        if (isCtrl) {
+            var cidx = parseInt(selDevice.split('-')[1]);
+            var cdev = devices[cidx];
+            if (cdev) {
+                for (var ch = 0; ch < (cdev.channelCount || 2); ch++) {
+                    html += '<option value="' + ch + '"' + (String(ch) === selChannel ? ' selected' : '') + '>CH' + ch + '</option>';
+                }
+            }
+        }
+        html += '</select></div>';
+        
+        // 动作选择（仅控制设备+已选通道时显示）
+        var actDisplay = isCtrl ? 'block' : 'none';
+        html += '<div class="pure-control-group pe-modbus-action-group" style="display:' + actDisplay + ';margin-bottom:4px;">';
+        html += '<label style="font-size:12px;font-weight:bold;">' + (i18n.t('periph-exec-select-action') || '子设备动作') + '</label>';
+        html += '<div class="pe-modbus-action-content">';
+        if (isCtrl) {
+            var aidx = parseInt(selDevice.split('-')[1]);
+            var adev = devices[aidx];
+            if (adev) html += this._buildPeriphActionUI(adev, selAction, selChannel, selValue, selParam);
+        }
+        html += '</div></div>';
+        
+        html += '</div>';
+        container.innerHTML = html;
+    },
+    
+    /** 构建动作选择 UI（根据设备类型） */
+    _buildPeriphActionUI(dev, action, channel, value, param) {
+        var dt = dev.deviceType || 'relay';
+        var html = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">';
+        if (dt === 'relay') {
+            html += '<select class="pure-input-1 pe-modbus-action-select" style="max-width:120px;font-size:13px;">' +
+                '<option value="on"' + (action === 'off' ? '' : ' selected') + '>' + (i18n.t('periph-exec-ctrl-on') || '打开') + '</option>' +
+                '<option value="off"' + (action === 'off' ? ' selected' : '') + '>' + (i18n.t('periph-exec-ctrl-off') || '关闭') + '</option>' +
+            '</select>';
+        } else if (dt === 'pwm') {
+            var maxPwm = dev.pwmResolution === 10 ? 1023 : (dev.pwmResolution === 16 ? 65535 : 255);
+            html += '<label style="font-size:12px;">' + (i18n.t('periph-exec-ctrl-duty') || '占空比') + ': ';
+            html += '<input type="number" class="pe-modbus-action-value" min="0" max="' + maxPwm + '" value="' + (value || 0) + '" style="width:80px;font-size:12px;padding:2px 4px;">';
+            html += '</label>';
+        } else if (dt === 'pid') {
+            html += '<label style="font-size:12px;">' + (i18n.t('periph-exec-ctrl-pid-param') || '参数') + ': ';
+            html += '<select class="pe-modbus-action-param" style="font-size:12px;padding:2px 4px;">' +
+                '<option value="P"' + (param === 'I' || param === 'D' ? '' : ' selected') + '>P</option>' +
+                '<option value="I"' + (param === 'I' ? ' selected' : '') + '>I</option>' +
+                '<option value="D"' + (param === 'D' ? ' selected' : '') + '>D</option>' +
+            '</select></label>';
+            html += '<label style="font-size:12px;">' + (i18n.t('periph-exec-ctrl-value') || '值') + ': ';
+            html += '<input type="number" class="pe-modbus-action-value" value="' + (value || 0) + '" style="width:80px;font-size:12px;padding:2px 4px;">';
+            html += '</label>';
+        }
+        html += '</div>';
+        return html;
+    },
+    
+    /** 设备下拉框变化 */
+    _onPeriphDeviceSelect(selectEl) {
+        var flow = selectEl.closest('.pe-modbus-select-flow');
+        if (!flow) return;
+        var val = selectEl.value;
+        var chGroup = flow.querySelector('.pe-modbus-channel-group');
+        var actGroup = flow.querySelector('.pe-modbus-action-group');
+        
+        if (!val || val.indexOf('sensor-') === 0) {
+            // sensor 或空选择：隐藏通道和动作
+            if (chGroup) chGroup.style.display = 'none';
+            if (actGroup) actGroup.style.display = 'none';
+            return;
+        }
+        
+        // 控制设备：填充通道下拉框
+        var idx = parseInt(val.split('-')[1]);
+        var devices = this._modbusDevices || [];
+        var dev = devices[idx];
+        if (!dev) return;
+        
+        var chSelect = flow.querySelector('.pe-modbus-channel-select');
+        if (chSelect) {
+            var chHtml = '';
+            for (var ch = 0; ch < (dev.channelCount || 2); ch++) {
+                chHtml += '<option value="' + ch + '">CH' + ch + '</option>';
+            }
+            chSelect.innerHTML = chHtml;
+        }
+        if (chGroup) chGroup.style.display = 'block';
+        
+        // 填充动作
+        var actContent = flow.querySelector('.pe-modbus-action-content');
+        if (actContent) actContent.innerHTML = this._buildPeriphActionUI(dev, '', '', '', '');
+        if (actGroup) actGroup.style.display = 'block';
+    },
+    
+    /** 通道下拉框变化 */
+    _onPeriphChannelSelect(selectEl) {
+        // 通道变化时无需额外操作，动作UI已显示
+    },
+
+
+    
+    _onCtrlDeviceToggle(checkbox) {
+        var panel = checkbox.closest('.pe-ctrl-device-item').querySelector('.pe-ctrl-options');
+        if (panel) panel.style.display = checkbox.checked ? 'block' : 'none';
     },
 
     addPeriphExecTrigger() {
@@ -5960,10 +6531,12 @@ const AppState = {
         if (!block) return;
         const triggerPeriphGroup = block.querySelector('.pe-trigger-periph-group');
         const platformCondition = block.querySelector('.pe-platform-condition');
+        const pollParams = block.querySelector('.pe-poll-params');
         const timerConfig = block.querySelector('.pe-timer-config');
         const eventGroup = block.querySelector('.pe-event-group');
-        if (triggerPeriphGroup) triggerPeriphGroup.style.display = (val === '0') ? 'block' : 'none';
+        if (triggerPeriphGroup) triggerPeriphGroup.style.display = (val === '0' || val === '5') ? 'block' : 'none';
         if (platformCondition) platformCondition.style.display = (val === '0') ? 'block' : 'none';
+        if (pollParams) pollParams.style.display = (val === '5') ? 'block' : 'none';
         if (timerConfig) timerConfig.style.display = (val === '1') ? 'block' : 'none';
         if (eventGroup) {
             eventGroup.style.display = (val === '4') ? 'block' : 'none';
@@ -5971,6 +6544,9 @@ const AppState = {
                 this._populateEventCategoriesInBlock(block);
                 this._populateEventSelectInBlock(block);
             }
+        }
+        if (val === '5') {
+            this._populateTriggerPeriphSelect(block.querySelector('.pe-trigger-periph'), '');
         }
         // 切换离开平台触发时，检查是否还有其他平台触发处于"设置"模式
         if (val !== '0') {
@@ -6072,10 +6648,30 @@ const AppState = {
         const targetGroup = block.querySelector('.pe-target-group');
         const valueGroup = block.querySelector('.pe-action-value-group');
         const scriptGroup = block.querySelector('.pe-script-group');
-        if (targetGroup) targetGroup.style.display = ((actionType >= 6 && actionType <= 11) || actionType === 15) ? 'none' : 'block';
+        const pollTasksGroup = block.querySelector('.pe-poll-tasks-group');
+        const isModbusPoll = actionType === 18;
+        const isSensorRead = actionType === 19;
+        if (targetGroup) targetGroup.style.display = ((actionType >= 6 && actionType <= 11) || actionType === 15 || isModbusPoll) ? 'none' : 'block';
         const needsValue = (actionType >= 2 && actionType <= 5);
         if (valueGroup) valueGroup.style.display = needsValue ? 'block' : 'none';
         if (scriptGroup) scriptGroup.style.display = actionType === 15 ? 'block' : 'none';
+        if (pollTasksGroup) {
+            pollTasksGroup.style.display = isModbusPoll ? 'block' : 'none';
+            if (isModbusPoll) {
+                this._populateModbusDevicePanel(block.querySelector('.pe-poll-tasks-list'), '');
+            }
+        }
+        const sensorGroup = block.querySelector('.pe-sensor-group');
+        if (sensorGroup) {
+            sensorGroup.style.display = isSensorRead ? 'block' : 'none';
+        }
+        // For sensor read: filter peripherals by category; for others: restore full list
+        if (isSensorRead) {
+            var cat = block.querySelector('.pe-sensor-category')?.value || 'analog';
+            this._populateSensorPeriphSelect(block, cat);
+        } else if (targetGroup && targetGroup.style.display !== 'none') {
+            this._populatePeriphSelect(block.querySelector('.pe-target-periph'), '');
+        }
     },
 
     onPeriphExecModeChangeInBlock(val) {
@@ -6153,6 +6749,12 @@ const AppState = {
                 trigger.timePoint = item.querySelector('.pe-timepoint')?.value || '08:00';
             } else if (triggerType === '4') {
                 trigger.eventId = item.querySelector('.pe-event')?.value || '';
+            } else if (triggerType === '5') {
+                trigger.triggerPeriphId = item.querySelector('.pe-trigger-periph')?.value || '';
+                trigger.intervalSec = item.querySelector('.pe-poll-interval')?.value || '60';
+                trigger.pollResponseTimeout = item.querySelector('.pe-poll-timeout')?.value || '1000';
+                trigger.pollMaxRetries = item.querySelector('.pe-poll-retries')?.value || '2';
+                trigger.pollInterPollDelay = item.querySelector('.pe-poll-inter-delay')?.value || '100';
             }
             triggers.push(trigger);
         });
@@ -6171,6 +6773,56 @@ const AppState = {
             };
             if (actionType === '15') {
                 action.actionValue = item.querySelector('.pe-script')?.value || '';
+            } else if (actionType === '18') {
+                // Modbus: 从级联下拉框收集 JSON actionValue
+                var devSel = item.querySelector('.pe-modbus-device-select');
+                var devVal = devSel ? devSel.value : '';
+                var jsonObj = {};
+                if (devVal.indexOf('sensor-') === 0) {
+                    jsonObj.poll = [parseInt(devVal.split('-')[1])];
+                } else if (devVal.indexOf('control-') === 0) {
+                    var dIdx = parseInt(devVal.split('-')[1]);
+                    var ctrl = {d: dIdx};
+                    var chSel = item.querySelector('.pe-modbus-channel-select');
+                    if (chSel) ctrl.c = parseInt(chSel.value || '0');
+                    var actSel = item.querySelector('.pe-modbus-action-select');
+                    if (actSel) {
+                        ctrl.a = actSel.value || 'on';
+                    } else {
+                        var paramSel = item.querySelector('.pe-modbus-action-param');
+                        if (paramSel) {
+                            ctrl.a = 'pid';
+                            ctrl.p = paramSel.value || 'P';
+                        } else {
+                            ctrl.a = 'pwm';
+                        }
+                    }
+                    var valInput = item.querySelector('.pe-modbus-action-value');
+                    if (valInput) ctrl.v = parseInt(valInput.value || '0');
+                    jsonObj.ctrl = [ctrl];
+                }
+                action.actionValue = JSON.stringify(jsonObj);
+            } else if (actionType === '19') {
+                // Sensor read: collect JSON actionValue
+                var sensorCat = item.querySelector('.pe-sensor-category')?.value || 'analog';
+                var sensorPeriphId = item.querySelector('.pe-target-periph')?.value || '';
+                var scaleFactor = parseFloat(item.querySelector('.pe-sensor-scale')?.value);
+                if (isNaN(scaleFactor)) scaleFactor = 1;
+                var sOffset = parseFloat(item.querySelector('.pe-sensor-offset')?.value);
+                if (isNaN(sOffset)) sOffset = 0;
+                var decimals = parseInt(item.querySelector('.pe-sensor-decimals')?.value);
+                if (isNaN(decimals)) decimals = 2;
+                var sensorLabel = item.querySelector('.pe-sensor-label')?.value?.trim() || '';
+                var sUnit = item.querySelector('.pe-sensor-unit')?.value?.trim() || '';
+                action.actionValue = JSON.stringify({
+                    periphId: sensorPeriphId,
+                    sensorCategory: sensorCat,
+                    scaleFactor: scaleFactor,
+                    offset: sOffset,
+                    decimalPlaces: decimals,
+                    sensorLabel: sensorLabel,
+                    unit: sUnit
+                });
             } else {
                 action.actionValue = item.querySelector('.pe-action-value')?.value?.trim() || '';
             }
@@ -6185,7 +6837,7 @@ const AppState = {
         const errEl = document.getElementById('periph-exec-error');
         errEl.style.display = 'none';
         const originalId = document.getElementById('periph-exec-original-id').value;
-        const isEdit = originalId !== '';
+        const isEdit = originalId !== '' && originalId !== 'null' && originalId !== 'undefined';
 
         const ruleData = {
             name: document.getElementById('periph-exec-name').value.trim(),
@@ -6217,6 +6869,16 @@ const AppState = {
                 }
                 if (actions[i].actionValue.length > 1024) {
                     errEl.textContent = i18n.t('periph-exec-script-too-long');
+                    errEl.style.display = 'block';
+                    return;
+                }
+            }
+            // Validate sensor read actions
+            if (actions[i].actionType === '19') {
+                var sv = {};
+                try { sv = JSON.parse(actions[i].actionValue); } catch(e) {}
+                if (!sv.periphId) {
+                    errEl.textContent = i18n.t('periph-exec-sensor-no-periph');
                     errEl.style.display = 'block';
                     return;
                 }
@@ -6253,8 +6915,14 @@ const AppState = {
                 this._peDataSources = [];
                 if (protoRes && protoRes.success !== false) {
                     this._peDataSources = this._extractDataSources(protoRes);
+                    // 加载 Modbus 子设备数据（供 type=6 触发器使用）
+                    if (protoRes.modbusRtu && protoRes.modbusRtu.master) {
+                        this._masterTasks = protoRes.modbusRtu.master.tasks || [];
+                        this._modbusDevices = protoRes.modbusRtu.master.devices || [];
+                    }
                 }
                 if (!execRes || !execRes.success || !execRes.data) return;
+                this._peAllRules = execRes.data;
                 const rule = execRes.data.find(r => r.id === id);
                 if (!rule) return;
 
@@ -6293,6 +6961,42 @@ const AppState = {
                 const triggersContainer = document.getElementById('periph-exec-triggers');
                 if (triggersContainer) triggersContainer.innerHTML = '';
                 triggers.forEach((t, i) => this._createPeriphExecTriggerElement(t, i));
+
+                // 初始化 type=6 外设执行触发的级联下拉框
+                triggers.forEach((t, i) => {
+                    if (String(t.triggerType) === '6') {
+                        var blocks = triggersContainer.querySelectorAll('.periph-exec-config-item');
+                        var block = blocks[i];
+                        if (!block) return;
+                        var ruleSel = block.querySelector('.pe-trigger-rule-select');
+                        this._populateTriggerRuleSelect(ruleSel, t.sourceRuleId || '');
+                        if (t.sourceRuleId) {
+                            this.onPeriphExecTriggerRuleChange(ruleSel, i);
+                            var subdevSel = block.querySelector('.pe-trigger-subdev-select');
+                            if (subdevSel && t.subdevType) {
+                                subdevSel.value = t.subdevType + '-' + (t.subdevIndex || 0);
+                                this.onPeriphExecTriggerSubdevChange(subdevSel, i);
+                                // 恢复保存的值
+                                if (t.subdevType === 'sensor') {
+                                    var opSel = block.querySelector('.pe-trigger-sensor-operator');
+                                    if (opSel) opSel.value = String(t.operatorType || '0');
+                                    var cmpInput = block.querySelector('.pe-trigger-sensor-compare');
+                                    if (cmpInput) cmpInput.value = t.compareValue || '';
+                                } else if (t.subdevType === 'control') {
+                                    var chSel = block.querySelector('.pe-trigger-ctrl-channel');
+                                    if (chSel) chSel.value = String(t.triggerChannel || '0');
+                                    // 恢复动作 UI 值
+                                    var actSel = block.querySelector('.pe-trigger-ctrl-action-content .pe-modbus-action-select');
+                                    if (actSel && t.triggerAction) actSel.value = t.triggerAction;
+                                    var actVal = block.querySelector('.pe-trigger-ctrl-action-content .pe-modbus-action-value');
+                                    if (actVal && t.triggerValue !== undefined) actVal.value = t.triggerValue;
+                                    var actParam = block.querySelector('.pe-trigger-ctrl-action-content .pe-modbus-action-param');
+                                    if (actParam && t.triggerParam) actParam.value = t.triggerParam;
+                                }
+                            }
+                        }
+                    }
+                });
 
                 // Render action blocks
                 const actionsContainer = document.getElementById('periph-exec-actions');
@@ -6391,7 +7095,9 @@ const AppState = {
                 const triggerLabels = {
                     0: i18n.t('periph-exec-trigger-platform'),
                     1: i18n.t('periph-exec-trigger-timer'),
-                    4: i18n.t('periph-exec-trigger-event')
+                    4: i18n.t('periph-exec-trigger-event'),
+                    5: i18n.t('periph-exec-trigger-poll'),
+                    6: i18n.t('periph-exec-trigger-periph-exec')
                 };
                 const actionLabels = {
                     0: i18n.t('periph-exec-action-high'), 1: i18n.t('periph-exec-action-low'),
@@ -6427,6 +7133,8 @@ const AppState = {
                             line += ': ' + (Number(t.timerMode) === 0 ? i18n.t('periph-exec-every') + ' ' + t.intervalSec + 's' : i18n.t('periph-exec-daily') + ' ' + (t.timePoint || ''));
                         } else if (tt === 4) {
                             line += ': ' + (t.eventId || '?');
+                        } else if (tt === 5) {
+                            if (t.pollInterval) line += ': ' + t.pollInterval + 'ms';
                         }
                         if (ti > 0) triggerText += '<br>';
                         triggerText += line;

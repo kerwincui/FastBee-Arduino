@@ -32,19 +32,20 @@ void PeriphExecRouteHandler::setupRoutes(AsyncWebServer* server) {
               [this](AsyncWebServerRequest* request) { handleGetStaticEvents(request); });
 
     // JSON body handlers for add/update（支持 triggers[]/actions[] 数组）
-    auto* addJsonHandler = new AsyncCallbackJsonWebHandler("/api/periph-exec",
-        [this](AsyncWebServerRequest* request, JsonVariant& json) {
-            handleAddRuleJson(request, json);
-        });
-    addJsonHandler->setMethod(HTTP_POST);
-    server->addHandler(addJsonHandler);
-
+    // 注意: update 必须先于 add 注册，因为 AsyncCallbackJsonWebHandler 使用前缀匹配
     auto* updateJsonHandler = new AsyncCallbackJsonWebHandler("/api/periph-exec/update",
         [this](AsyncWebServerRequest* request, JsonVariant& json) {
             handleUpdateRuleJson(request, json);
         });
     updateJsonHandler->setMethod(HTTP_POST);
     server->addHandler(updateJsonHandler);
+
+    auto* addJsonHandler = new AsyncCallbackJsonWebHandler("/api/periph-exec",
+        [this](AsyncWebServerRequest* request, JsonVariant& json) {
+            handleAddRuleJson(request, json);
+        });
+    addJsonHandler->setMethod(HTTP_POST);
+    server->addHandler(addJsonHandler);
 
     // 旧版 form-encoded fallback（向后兼容）
     server->on("/api/periph-exec/update", HTTP_POST,

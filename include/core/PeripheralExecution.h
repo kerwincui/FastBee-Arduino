@@ -35,7 +35,18 @@ enum class ExecActionType : uint8_t {
     ACTION_CALL_PERIPHERAL = 12,  // 调用其他外设
     ACTION_HIGH_INVERTED = 13,    // 设置高电平(反转) - 物理输出低电平
     ACTION_LOW_INVERTED = 14,     // 设置低电平(反转) - 物理输出高电平
-    ACTION_SCRIPT = 15            // 命令序列脚本
+    ACTION_SCRIPT = 15,           // 命令序列脚本
+    ACTION_MODBUS_COIL_WRITE = 16,  // Modbus 线圈写入 (FC05)
+    ACTION_MODBUS_REG_WRITE = 17,   // Modbus 寄存器写入 (FC06)
+    ACTION_MODBUS_POLL = 18,        // Modbus 轮询子设备采集 (由 PeriphExec 调度)
+    ACTION_SENSOR_READ = 19         // 传感器数据读取 (模拟/数字/脉冲)
+};
+
+// 传感器类别枚举
+enum class SensorCategory : uint8_t {
+    SENSOR_ANALOG = 0,    // 模拟输入 (ADC, GPIO_ANALOG_INPUT)
+    SENSOR_DIGITAL = 1,   // 数字输入 (GPIO_DIGITAL_INPUT, PULLUP, PULLDOWN)
+    SENSOR_PULSE = 2      // 脉冲/频率 (ENCODER, 预留)
 };
 
 // 触发类型
@@ -43,7 +54,8 @@ enum class ExecTriggerType : uint8_t {
     PLATFORM_TRIGGER = 0,          // 平台触发（IoT平台MQTT指令下发）
     TIMER_TRIGGER = 1,             // 定时触发
     // DATA_RECEIVE = 2 和 DATA_REPORT = 3 已弃用，统一使用 EVENT_TRIGGER
-    EVENT_TRIGGER = 4              // 触发事件（WiFi/MQTT/NTP/按键/数据/外设执行等事件）
+    EVENT_TRIGGER = 4,             // 触发事件（WiFi/MQTT/NTP/按键/数据/外设执行等事件）
+    POLL_TRIGGER = 5               // 轮询触发（本地数据源条件评估，如Modbus传感器周期数据）
 };
 
 // 触发事件类型枚举
@@ -221,6 +233,10 @@ struct ExecTrigger {
     uint32_t intervalSec = 60;      // 间隔秒数（定时触发用）
     String timePoint;               // HH:MM 格式时间点（定时触发用）
     String eventId;                 // 事件 ID（事件触发时使用，如 "wifi_connected"）
+    // 轮询触发通信参数（仅 POLL_TRIGGER 使用）
+    uint16_t pollResponseTimeout = 1000;  // Modbus 响应超时(ms)
+    uint8_t  pollMaxRetries = 2;          // 最大重试次数
+    uint16_t pollInterPollDelay = 100;    // 两次请求间最小间隔(ms)
     // 运行时字段（不持久化）
     unsigned long lastTriggerTime = 0;
     uint32_t triggerCount = 0;

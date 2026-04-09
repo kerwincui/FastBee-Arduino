@@ -1581,8 +1581,14 @@ select:hover, .form-select:hover {
 .pe-checkbox-label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal; }
 .pe-checkbox-label input[type="checkbox"] { margin: 0; width: 16px; height: 16px; accent-color: var(--primary); }
 .pe-sync-delay-group input { max-width: 140px; }
-.pe-action-type-row { margin-bottom: var(--space-2); }
 .pe-action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); align-items: start; margin-top: var(--space-2); }
+.add-device-menu { position: absolute; top: 100%; left: 0; background: #fff; border: 1px solid var(--border); border-radius: var(--rounded); box-shadow: 0 2px 8px rgba(0,0,0,.12); z-index: 50; min-width: 130px; }
+.add-device-menu-item { padding: 8px 14px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+.add-device-menu-item:hover { background: var(--slate-100, #f1f5f9); }
+.pe-sensor-config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; border: 1px solid #ddd; border-radius: 4px; padding: 8px; background: #fafafa; }
+.pe-sensor-config-grid .pure-control-group { margin-bottom: 0; }
+.pe-sensor-config-grid label { font-size: 12px; font-weight: bold; display: block; margin-bottom: 2px; }
+.pe-sensor-config-grid input, .pe-sensor-config-grid select { font-size: 13px; }
 .pe-action-value[readonly] { background: var(--bg-tertiary, #f5f5f5); cursor: not-allowed; opacity: 0.7; }
 .pe-compare-value-group { transition: opacity 0.2s; }
 
@@ -1874,7 +1880,6 @@ body {
 .login-card,
 .modal-content,
 .mqtt-collapsible-section,
-#master-status-section,
 #mqtt-status-panel {
   background: var(--glass-bg) !important;
   border: 2px solid var(--glass-border) !important;
@@ -2667,7 +2672,6 @@ small[style] {
 
 #master-config-section {
   padding-top: 15px;
-  border-top: 2px solid color-mix(in srgb, var(--primary) 70%, #667eea 30%);
 }
 
 /* Accessibility */
@@ -2697,6 +2701,7 @@ a:focus-visible {
   .config-form-grid { grid-template-columns: 1fr; gap: var(--space-3); }
   .pe-action-grid { grid-template-columns: 1fr; }
   .pe-action-grid > [style*="grid-column"] { grid-column: auto; }
+  .pe-sensor-config-grid { grid-template-columns: 1fr; }
   .resource-grid { grid-template-columns: 1fr; }
   .logs-page-container { }
 }
@@ -2987,6 +2992,33 @@ a:focus-visible {
   width: 33%;
   flex-shrink: 0;
   min-width: 250px;
+}
+/* Modbus 主站状态紧凑栏 */
+.modbus-master-status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  background: var(--primary-light);
+  border: 1px solid var(--primary);
+  border-radius: var(--rounded-md);
+  font-size: 13px;
+}
+.modbus-status-item {
+  flex: 1;
+  min-width: 70px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.modbus-status-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.modbus-status-actions {
+  justify-content: center;
 }
 .modbus-debug-header {
   display: flex;

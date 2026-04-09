@@ -343,16 +343,16 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     // Modbus RTU
     doc["modbusRtu"]["enabled"] = GP("modbusRtu_enabled", "false") == "true";
     doc["modbusRtu"]["peripheralId"] = GP("modbusRtu_peripheralId", "");
-    doc["modbusRtu"]["timeout"] = GPI("modbusRtu_timeout", "1000");
+    doc["modbusRtu"]["timeout"] = 1000; // 硬编码默认值，前端已移除此字段
     doc["modbusRtu"]["mode"] = GP("modbusRtu_mode", "master");
     doc["modbusRtu"]["dePin"] = GPI("modbusRtu_dePin", "-1");
     doc["modbusRtu"]["transferType"] = GPI("modbusRtu_transferType", "0");
     doc["modbusRtu"]["workMode"] = GPI("modbusRtu_workMode", "1");
 
-    // Modbus RTU Master 配置
-    doc["modbusRtu"]["master"]["responseTimeout"] = GPI("modbusRtu_master_responseTimeout", "1000");
-    doc["modbusRtu"]["master"]["maxRetries"] = GPI("modbusRtu_master_maxRetries", "2");
-    doc["modbusRtu"]["master"]["interPollDelay"] = GPI("modbusRtu_master_interPollDelay", "100");
+    // Modbus RTU Master 配置（通信参数已迁移至 PeriphExec POLL_TRIGGER，此处保留硬编码默认值）
+    doc["modbusRtu"]["master"]["responseTimeout"] = 1000;
+    doc["modbusRtu"]["master"]["maxRetries"] = 2;
+    doc["modbusRtu"]["master"]["interPollDelay"] = 100;
 
     // Modbus RTU Master 轮询任务
     String masterTasksJson = GP("modbusRtu_master_tasks", "[]");
@@ -383,6 +383,35 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                         mo["decimalPlaces"] = mv["decimalPlaces"] | 1;
                         mo["sensorId"] = mv["sensorId"] | "";
                     }
+                }
+            }
+        }
+    }
+
+    // Modbus RTU Master 子设备
+    String masterDevicesJson = GP("modbusRtu_master_devices", "[]");
+    JsonArray masterDevices = doc["modbusRtu"]["master"]["devices"].to<JsonArray>();
+    if (masterDevicesJson.length() > 2) {
+        JsonDocument devicesDoc;
+        DeserializationError devErr = deserializeJson(devicesDoc, masterDevicesJson);
+        if (!devErr && devicesDoc.is<JsonArray>()) {
+            JsonArray arr = devicesDoc.as<JsonArray>();
+            for (JsonVariant dv : arr) {
+                JsonObject devObj = masterDevices.add<JsonObject>();
+                devObj["name"]            = dv["name"] | "Device";
+                devObj["deviceType"]      = dv["deviceType"] | "relay";
+                devObj["slaveAddress"]    = dv["slaveAddress"] | 1;
+                devObj["channelCount"]    = dv["channelCount"] | 2;
+                devObj["coilBase"]        = dv["coilBase"] | 0;
+                devObj["ncMode"]          = dv["ncMode"] | false;
+                devObj["controlProtocol"] = dv["controlProtocol"] | 0;
+                devObj["pwmRegBase"]      = dv["pwmRegBase"] | 0;
+                devObj["pwmResolution"]   = dv["pwmResolution"] | 8;
+                devObj["pidDecimals"]     = dv["pidDecimals"] | 1;
+                if (dv.containsKey("pidAddrs") && dv["pidAddrs"].is<JsonArray>()) {
+                    JsonArray pa = devObj["pidAddrs"].to<JsonArray>();
+                    for (JsonVariant pv : dv["pidAddrs"].as<JsonArray>())
+                        pa.add(pv.as<int>());
                 }
             }
         }

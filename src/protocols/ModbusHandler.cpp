@@ -185,6 +185,37 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                 config.master.taskCount++;
             }
         }
+        
+        // 解析子设备
+        if (masterObj.containsKey("devices")) {
+            JsonArray devicesArr = masterObj["devices"];
+            config.master.deviceCount = 0;
+            for (JsonVariant dv : devicesArr) {
+                if (config.master.deviceCount >= Protocols::MODBUS_MAX_SUB_DEVICES) break;
+                JsonObject d = dv.as<JsonObject>();
+                ModbusSubDevice& dev = config.master.devices[config.master.deviceCount];
+                const char* dName = d["name"] | "Device";
+                strncpy(dev.name, dName, sizeof(dev.name) - 1);
+                dev.name[sizeof(dev.name) - 1] = '\0';
+                const char* dType = d["deviceType"] | "relay";
+                strncpy(dev.deviceType, dType, sizeof(dev.deviceType) - 1);
+                dev.deviceType[sizeof(dev.deviceType) - 1] = '\0';
+                dev.slaveAddress    = d["slaveAddress"] | (uint8_t)1;
+                dev.channelCount    = d["channelCount"] | (uint8_t)2;
+                dev.coilBase        = d["coilBase"] | (uint16_t)0;
+                dev.ncMode          = d["ncMode"] | false;
+                dev.controlProtocol = d["controlProtocol"] | (uint8_t)0;
+                dev.pwmRegBase      = d["pwmRegBase"] | (uint16_t)0;
+                dev.pwmResolution   = d["pwmResolution"] | (uint8_t)8;
+                dev.pidDecimals     = d["pidDecimals"] | (uint8_t)1;
+                if (d.containsKey("pidAddrs") && d["pidAddrs"].is<JsonArray>()) {
+                    JsonArray pa = d["pidAddrs"].as<JsonArray>();
+                    for (int i = 0; i < 6 && i < (int)pa.size(); i++)
+                        dev.pidAddrs[i] = pa[i] | (uint16_t)0;
+                }
+                config.master.deviceCount++;
+            }
+        }
     }
     
     LOG_INFO("Modbus: Config loaded successfully");
@@ -238,6 +269,25 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
                 mo["sensorId"] = mapping.sensorId;
             }
         }
+    }
+    
+    // 序列化子设备
+    JsonArray devicesArr = masterObj.createNestedArray("devices");
+    for (uint8_t i = 0; i < config.master.deviceCount; i++) {
+        const ModbusSubDevice& dev = config.master.devices[i];
+        JsonObject d = devicesArr.createNestedObject();
+        d["name"]            = dev.name;
+        d["deviceType"]      = dev.deviceType;
+        d["slaveAddress"]    = dev.slaveAddress;
+        d["channelCount"]    = dev.channelCount;
+        d["coilBase"]        = dev.coilBase;
+        d["ncMode"]          = dev.ncMode;
+        d["controlProtocol"] = dev.controlProtocol;
+        d["pwmRegBase"]      = dev.pwmRegBase;
+        d["pwmResolution"]   = dev.pwmResolution;
+        d["pidDecimals"]     = dev.pidDecimals;
+        JsonArray pa = d.createNestedArray("pidAddrs");
+        for (int j = 0; j < 6; j++) pa.add(dev.pidAddrs[j]);
     }
     
     String jsonContent;
@@ -998,6 +1048,12 @@ bool ModbusHandler::updatePollTask(uint8_t index, const PollTask& task) {
 PollTask ModbusHandler::getPollTask(uint8_t index) const {
     if (index >= config.master.taskCount) return PollTask();
     return config.master.tasks[index];
+}
+
+const ModbusSubDevice& ModbusHandler::getSubDevice(uint8_t index) const {
+    static const ModbusSubDevice emptyDevice;
+    if (index >= config.master.deviceCount) return emptyDevice;
+    return config.master.devices[index];
 }
 
 bool ModbusHandler::masterWriteSingleRegister(uint8_t slaveAddr, uint16_t regAddr, uint16_t value) {
@@ -2047,4 +2103,124 @@ String ModbusHandler::formatRawHex(uint8_t slaveAddr, uint8_t fc, const uint16_t
         hexStr += buf;
     }
     return hexStr;
+}
+
+// PeriphExec 调度的轮询任务执行
+String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, uint8_t retries) {
+    if (taskIdx >= config.master.taskCount) {
+        LOG_WARNINGF("[Modbus] executePollTaskByIndex: invalid idx %d (count=%d)", taskIdx, config.master.taskCount);
+        return "[]";
+    }
+
+    const PollTask& task = config.master.tasks[taskIdx];
+    if (!task.enabled) return "[]";
+
+    // 保存原始通信参数
+    uint16_t origTimeout = config.master.responseTimeout;
+    uint8_t origRetries = config.master.maxRetries;
+
+    // 临时设置 PeriphExec 传入的参数
+    config.master.responseTimeout = timeout;
+    config.master.maxRetries = retries;
+
+    LOG_INFOF("[Modbus] PollTask[%d]: slave=%d FC=%d start=%d qty=%d (timeout=%d retries=%d)",
+              taskIdx, task.slaveAddress, task.functionCode, task.startAddress, task.quantity,
+              timeout, retries);
+
+    OneShotResult result = readRegistersOnce(task.slaveAddress, task.functionCode,
+                                              task.startAddress, task.quantity);
+
+    // 恢复原始参数
+    config.master.responseTimeout = origTimeout;
+    config.master.maxRetries = origRetries;
+
+    if (result.error != ONESHOT_SUCCESS) {
+        LOG_WARNINGF("[Modbus] PollTask[%d] failed: error=%d", taskIdx, result.error);
+        return "[]";
+    }
+
+    // 更新数据缓存
+    if (taskIdx < Protocols::MODBUS_MAX_POLL_TASKS) {
+        TaskDataCache& cache = taskDataCache[taskIdx];
+        uint16_t copyCount = min(result.count, (uint16_t)Protocols::MODBUS_MAX_REGISTERS_PER_READ);
+        memcpy(cache.values, result.data, copyCount * sizeof(uint16_t));
+        cache.count = copyCount;
+        cache.timestamp = millis();
+        cache.valid = true;
+    }
+
+    // 应用寄存器映射生成 JSON
+    if (task.mappingCount > 0) {
+        String json = "[";
+        bool first = true;
+
+        for (uint8_t i = 0; i < task.mappingCount; i++) {
+            const RegisterMapping& m = task.mappings[i];
+            if (m.sensorId[0] == '\0') continue;
+
+            float rawValue = 0.0f;
+            switch (m.dataType) {
+                case 0: // uint16
+                    if (m.regOffset < result.count) rawValue = (float)result.data[m.regOffset];
+                    break;
+                case 1: // int16
+                    if (m.regOffset < result.count) rawValue = (float)(int16_t)result.data[m.regOffset];
+                    break;
+                case 2: // uint32
+                    if (m.regOffset + 1 < result.count) {
+                        uint32_t u32 = ((uint32_t)result.data[m.regOffset] << 16) | result.data[m.regOffset + 1];
+                        rawValue = (float)u32;
+                    }
+                    break;
+                case 3: // int32
+                    if (m.regOffset + 1 < result.count) {
+                        uint32_t u32 = ((uint32_t)result.data[m.regOffset] << 16) | result.data[m.regOffset + 1];
+                        rawValue = (float)(int32_t)u32;
+                    }
+                    break;
+                case 4: // float32
+                    if (m.regOffset + 1 < result.count) {
+                        uint32_t u32 = ((uint32_t)result.data[m.regOffset] << 16) | result.data[m.regOffset + 1];
+                        memcpy(&rawValue, &u32, sizeof(float));
+                    }
+                    break;
+                default:
+                    if (m.regOffset < result.count) rawValue = (float)result.data[m.regOffset];
+                    break;
+            }
+
+            float scaledValue = rawValue * m.scaleFactor;
+            char valBuf[16];
+            dtostrf(scaledValue, 1, m.decimalPlaces, valBuf);
+
+            if (!first) json += ",";
+            json += "{\"id\":\"";
+            json += m.sensorId;
+            json += "\",\"value\":\"";
+            json += valBuf;
+            json += "\"}";
+            first = false;
+        }
+        json += "]";
+
+        // 同时通过 dataCallback 上报（如 MQTT）
+        if (!first && dataCallback) {
+            dataCallback(task.slaveAddress, json);
+        }
+        return first ? "[]" : json;
+    }
+
+    // 无映射配置: 返回原始寄存器数据 JSON
+    String json = "[{\"id\":\"slave_" + String(task.slaveAddress) +
+                  "_raw\",\"value\":\"";
+    for (uint16_t i = 0; i < result.count; i++) {
+        if (i > 0) json += ",";
+        json += String(result.data[i]);
+    }
+    json += "\"}]";
+
+    if (dataCallback) {
+        dataCallback(task.slaveAddress, json);
+    }
+    return json;
 }

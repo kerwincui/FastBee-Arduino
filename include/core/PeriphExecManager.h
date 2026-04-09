@@ -66,6 +66,9 @@ public:
     // MQTT 消息处理入口（由 ProtocolManager messageCallback 调用）
     void handleMqttMessage(const String& topic, const String& message);
 
+    // 轮询数据处理入口（由 Modbus/其他本地数据源回调调用）
+    void handlePollData(const String& source, const String& data);
+
     // 数据下发命令处理：匹配 trigger.triggerPeriphId == item["id"]，执行规则并返回上报 JSON
     // 注意：此方法始终同步执行，立即返回结果
     String handleDataCommand(const String& message);
@@ -164,6 +167,9 @@ private:
     bool executePeripheralAction(const ExecAction& action, const String& effectiveValue);
     bool executeSystemAction(const ExecAction& action);
     bool executeScriptAction(const ExecAction& action);
+    bool executeModbusAction(const ExecAction& action, const String& effectiveValue);
+    bool executeModbusPollAction(const ExecAction& action, const PeriphExecRule& rule);
+    bool executeSensorReadAction(const ExecAction& action, ActionExecResult& result);
 
     // ========== 动作执行后上报 ==========
     void reportActionResults(const std::vector<ActionExecResult>& results);

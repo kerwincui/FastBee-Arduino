@@ -109,6 +109,34 @@ struct CoilDelayTask {
     CoilDelayTask() : slaveAddress(0), coilAddress(0), triggerTime(0), active(false) {}
 };
 
+// Modbus 子设备（控制类设备：继电器/PWM/PID）
+struct ModbusSubDevice {
+    char     name[Protocols::MODBUS_DEVICE_NAME_MAX_LEN];
+    char     deviceType[Protocols::MODBUS_DEVICE_TYPE_MAX_LEN]; // "relay","pwm","pid"
+    uint8_t  slaveAddress;      // 从站地址 1-247
+    uint8_t  channelCount;      // 通道数
+    uint16_t coilBase;          // 线圈/寄存器基地址
+    bool     ncMode;            // NC 常闭模式
+    uint8_t  controlProtocol;   // 0=线圈(FC01/FC05), 1=寄存器(FC03/FC06)
+    // PWM 扩展
+    uint16_t pwmRegBase;        // PWM 寄存器基地址
+    uint8_t  pwmResolution;     // PWM 分辨率(bits)
+    // PID 扩展
+    uint16_t pidAddrs[6];       // PID 寄存器地址 [PV,SV,OUT,P,I,D]
+    uint8_t  pidDecimals;       // PID 小数位
+
+    ModbusSubDevice()
+        : slaveAddress(1), channelCount(2), coilBase(0),
+          ncMode(false), controlProtocol(0),
+          pwmRegBase(0), pwmResolution(8), pidDecimals(1) {
+        memset(name, 0, sizeof(name));
+        strncpy(name, "Device", sizeof(name) - 1);
+        memset(deviceType, 0, sizeof(deviceType));
+        strncpy(deviceType, "relay", sizeof(deviceType) - 1);
+        memset(pidAddrs, 0, sizeof(pidAddrs));
+    }
+};
+
 // Master模式专属配置
 struct MasterConfig {
     uint16_t responseTimeout;     // 响应超时（毫秒）
@@ -116,10 +144,12 @@ struct MasterConfig {
     uint16_t interPollDelay;      // 两次请求间最小间隔（毫秒）
     PollTask tasks[Protocols::MODBUS_MAX_POLL_TASKS];
     uint8_t  taskCount;
+    ModbusSubDevice devices[Protocols::MODBUS_MAX_SUB_DEVICES];
+    uint8_t  deviceCount;
 
     MasterConfig()
         : responseTimeout(1000), maxRetries(2),
-          interPollDelay(100), taskCount(0) {}
+          interPollDelay(100), taskCount(0), deviceCount(0) {}
 };
 
 // Master运行统计
@@ -223,12 +253,19 @@ public:
     uint8_t getPollTaskCount() const { return config.master.taskCount; }
     PollTask getPollTask(uint8_t index) const;
     
+    // 子设备管理
+    uint8_t getSubDeviceCount() const { return config.master.deviceCount; }
+    const ModbusSubDevice& getSubDevice(uint8_t index) const;
+
     // Master写操作（排队异步执行）
     bool masterWriteSingleRegister(uint8_t slaveAddr, uint16_t regAddr, uint16_t value);
     
     // Master一次性读取（阻塞，用于MQTT指令触发的即时采集）
     OneShotResult readRegistersOnce(uint8_t slaveAddress, uint8_t functionCode,
                                     uint16_t startAddress, uint16_t quantity);
+    
+    // PeriphExec 调度的轮询任务执行（按索引读取并返回映射后的 JSON）
+    String executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, uint8_t retries);
     
     // Master一次性阻塞写操作（与 readRegistersOnce 对称，通用Modbus写能力）
     OneShotResult writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, bool value);
