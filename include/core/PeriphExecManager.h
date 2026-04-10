@@ -5,37 +5,17 @@
 #include <map>
 #include <set>
 #include <vector>
+#include <memory>
+#include <functional>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include "PeripheralExecution.h"
-#include "PeripheralManager.h"
-#include "ScriptEngine.h"
 #include "AsyncExecTypes.h"
 
-// ========== 触发事件配置结构体 ==========
-
-// 按键事件检测参数（用于触发事件中的按键类型事件）
-struct ButtonEventConfig {
-    uint16_t debounceMs = 50;       // 消抖时间(ms)
-    uint16_t clickIntervalMs = 300; // 双击间隔时间(ms)
-    uint16_t longPress2sMs = 2000;  // 长按2秒阈值
-    uint16_t longPress5sMs = 5000;  // 长按5秒阈值
-    uint16_t longPress10sMs = 10000;// 长按10秒阈值
-};
-
-// 单个按键的运行时状态（用于触发事件中的按键类型事件）
-struct ButtonRuntimeState {
-    String periphId;                // 外设ID
-    bool lastState = true;          // 上一次状态（上拉默认高电平，按下为低）
-    bool currentState = true;       // 当前状态
-    unsigned long lastChangeTime = 0;  // 最后状态变化时间
-    unsigned long pressStartTime = 0;  // 按下开始时间
-    uint8_t clickCount = 0;         // 点击计数（用于双击检测）
-    unsigned long lastClickTime = 0;   // 最后一次点击时间
-    bool longPress2sTriggered = false; // 长按2秒已触发
-    bool longPress5sTriggered = false; // 长按5秒已触发
-    bool longPress10sTriggered = false;// 长按10秒已触发
-};
+// 前向声明
+class PeriphExecExecutor;
+class PeriphExecScheduler;
+class MQTTClient;
 
 class PeriphExecManager {
 public:
@@ -62,7 +42,15 @@ public:
     bool saveConfiguration();
     bool loadConfiguration();
 
-    // ========== 执行引擎 ==========
+    // ========== 执行引擎（委托给 Executor） ==========
+
+    // 获取执行引擎
+    PeriphExecExecutor* getExecutor() { return _executor.get(); }
+
+    // ========== 调度器（委托给 Scheduler） ==========
+
+    // 获取调度器
+    PeriphExecScheduler* getScheduler() { return _scheduler.get(); }
 
     // MQTT 消息处理入口（由 ProtocolManager messageCallback 调用）
     void handleMqttMessage(const String& topic, const String& message);
@@ -77,7 +65,7 @@ public:
     // 定时器检查（由 TaskManager 定时任务调用）
     void checkTimers();
 
-    // ========== 触发事件 ==========
+    // ========== 触发事件（委托给 Scheduler） ==========
 
     // 触发事件（由各系统模块调用）
     void triggerEvent(EventType eventType, const String& eventData = "");
@@ -107,24 +95,18 @@ public:
     // 手动执行规则（用于"执行一次"按钮）
     bool runOnce(const String& id);
 
-    // ========== 动作执行后数据上报 ==========
+    // ========== 动作执行后数据上报（委托给 Scheduler） ==========
 
     // 尝试上报设备数据（检查网络和协议连接状态后上报）
     // 返回：true=上报成功或无需上报，false=上报失败
     bool tryReportDeviceData();
 
-    // ========== 触发事件检测 ==========
+    // ========== 触发事件检测（委托给 Scheduler） ==========
 
     // 按键事件检测（由 TaskManager 定时任务调用，用于检测按键类型事件）
     void checkButtonEvents();
 
-    // 触发按键事件（内部使用）
-    void triggerButtonEvent(const String& periphId, EventType eventType);
-
-    // 触发外设执行事件（内部使用）
-    void triggerPeriphExecEvent(const String& ruleId, const String& eventData = "");
-
-    // ========== 配置辅助方法 ==========
+    // ========== 配置辅助方法（委托给 Scheduler） ==========
 
     // 获取有效触发类型列表（JSON数组格式）
     static String getValidTriggerTypes();
@@ -136,13 +118,77 @@ public:
     // periphId: 外设ID，为空则返回所有动作类型
     static String getValidActionTypes(const String& periphId = "");
 
+    // ========== 内部接口（供 Executor 和 Scheduler 使用） ==========
+
+    // 检查是否已初始化
+    bool isInitialized() const { return _rulesMutex != nullptr; }
+
+    // 获取规则互斥量
+    SemaphoreHandle_t getRulesMutex() const { return _rulesMutex; }
+
+    // 获取运行中规则互斥量
+    SemaphoreHandle_t getRunningRulesMutex() const { return _runningRulesMutex; }
+
+    // 获取规则列表（需在持有 rulesMutex 时访问）
+    std::map<String, PeriphExecRule>& getRules() { return rules; }
+
+    // 获取运行中规则ID集合
+    std::set<String>& getRunningRuleIds() { return _runningRuleIds; }
+
+    // 获取失败退避记录
+    std::map<String, unsigned long>& getFailureBackoff() { return _failureBackoff; }
+
+    // 获取任务槽信号量
+    SemaphoreHandle_t getTaskSlotSemaphore() const { return _taskSlotSemaphore; }
+
+    // 获取执行结果互斥量
+    SemaphoreHandle_t getResultsMutex() const { return _resultsMutex; }
+
+    // 获取执行结果列表
+    std::vector<AsyncExecResult>& getExecutionResults() { return executionResults; }
+
+    // 检查是否应该异步执行
+    bool shouldRunAsync() const;
+
+    // 异步分发规则执行
+    void dispatchAsync(const PeriphExecRule& rule, const String& receivedValue);
+
+    // 执行规则的所有动作（供异步任务调用）
+    std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue);
+
+    // 定时触发检查（内部使用）
+    void checkTimerTriggers(unsigned long now, bool modbusAvailable);
+
+    // 事件匹配分发（内部使用）
+    void dispatchEventMatchedRules(const String& eventId, const String& eventData);
+
+    // 外设执行事件分发（内部使用）
+    void dispatchPeriphExecEvent(const String& ruleId, const String& eventData);
+
+    // 按键事件分发（内部使用）
+    void dispatchButtonEventRules(const String& eventId, const String& periphId);
+
+    // MQTT消息匹配处理（内部使用）
+    void processMqttMessageMatch(JsonArray& arr);
+
+    // 轮询数据匹配处理（内部使用）
+    void processPollDataMatch(JsonArray& arr, const String& source);
+
+    // 数据命令匹配处理（内部使用）
+    String processDataCommandMatch(JsonArray& cmdArr, const std::vector<int>& processedIndices);
+
+    // 获取动态事件列表（内部实现）
+    String getDynamicEventsJsonInternal();
+
 private:
     PeriphExecManager() = default;
 
+    // ========== 子模块 ==========
+    std::unique_ptr<PeriphExecExecutor> _executor;
+    std::unique_ptr<PeriphExecScheduler> _scheduler;
+
     // ========== 规则存储 ==========
     std::map<String, PeriphExecRule> rules;
-    unsigned long lastTimerCheck = 0;
-    unsigned long _lastButtonCheck = 0;
 
     // ========== FreeRTOS 同步原语 ==========
     SemaphoreHandle_t _rulesMutex = nullptr;       // 保护 rules map 的互斥量
@@ -155,57 +201,23 @@ private:
     // ========== Modbus 读取回调 ==========
     std::function<String(const String&)> _modbusReadCallback;
 
-    // ========== 按键状态跟踪 ==========
-    std::map<String, ButtonRuntimeState> buttonStates;
-    ButtonEventConfig buttonConfig;
-
     // ========== 任务运行状态跟踪 ==========
     std::set<String> _runningRuleIds;           // 正在运行的规则ID集合
     std::map<String, unsigned long> _failureBackoff;  // 规则失败后的退避时间戳
     SemaphoreHandle_t _runningRulesMutex = nullptr;   // 保护 _runningRuleIds 的互斥量
 
-    // ========== 条件评估 ==========
-    bool evaluateCondition(const String& value, uint8_t op, const String& compareValue);
-
-    // ========== 动作执行（同步） ==========
-    bool executeActionItem(const ExecAction& action, const String& effectiveValue);
-    std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue);
-    bool executePeripheralAction(const ExecAction& action, const String& effectiveValue);
-    bool executeSystemAction(const ExecAction& action);
-    bool executeScriptAction(const ExecAction& action);
-    bool executeModbusAction(const ExecAction& action, const String& effectiveValue);
-    bool executeModbusPollAction(const ExecAction& action, const PeriphExecRule& rule);
-    bool executeSensorReadAction(const ExecAction& action, ActionExecResult& result);
-
-    // ========== 动作执行后上报 ==========
-    void reportActionResults(const std::vector<ActionExecResult>& results);
-
-    // ========== 异步调度 ==========
-
-    // 异步分发：创建 FreeRTOS 任务执行规则，失败则回退同步
-    void dispatchAsync(const PeriphExecRule& rule, const String& receivedValue);
+    // ========== 异步执行上下文对象池 ==========
+    AsyncExecContextPool _contextPool;          // 固定大小的上下文对象池
 
     // FreeRTOS 任务入口函数（静态）
     static void asyncExecTaskFunc(void* pvParameters);
 
-    // 判断是否应使用异步执行（堆内存 >= MIN_HEAP_FOR_ASYNC 且有空闲任务槽）
-    bool shouldRunAsync() const;
-
-    // 获取 MQTTClient 指针
-    MQTTClient* getMqttClient();
-
-    // ========== 动作执行后数据上报辅助方法 ==========
-
-    // 收集所有外设状态数据（JSON数组格式）
-    String collectPeripheralData();
-
-    // 检查网络和协议连接状态
-    // connectedProtocols: 输出已连接的协议类型列表
-    // 返回：是否有至少一个可用连接
-    bool checkNetworkAndProtocolStatus(uint8_t& connectedProtocols);
-
     // ID 生成
     String generateUniqueId();
+
+    // 友元声明，允许 Executor 和 Scheduler 访问私有成员
+    friend class PeriphExecExecutor;
+    friend class PeriphExecScheduler;
 };
 
 #endif // PERIPH_EXEC_MANAGER_H

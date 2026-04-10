@@ -1,4 +1,5 @@
 #include "./network/handlers/SystemRouteHandler.h"
+#include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
 #include "systems/LoggerSystem.h"
@@ -537,6 +538,9 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
         ctx->sendUnauthorized(request);
         return;
     }
+
+    // 内存检查：SystemInfo 响应包含大量设备/内存/文件系统/网络信息
+    if (HandlerUtils::checkLowMemory(request)) return;
 
     JsonDocument doc;
 

@@ -605,7 +605,10 @@ String FileUtils::joinPath(const String& base, const String& part) {
     if (base.isEmpty()) return part;
     if (part.isEmpty()) return base;
     
-    String result = base;
+    // 预分配足够空间: base + "/" + part
+    String result;
+    result.reserve(base.length() + part.length() + 2);
+    result = base;
     
     // 确保 base 以 / 结尾
     if (!result.endsWith("/")) {

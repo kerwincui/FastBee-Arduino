@@ -116,4 +116,82 @@ private:
     bool _locked;
 };
 
+// ========== 固定大小的 AsyncExecContext 对象池 ==========
+// 消除频繁 new/delete 导致的内存碎片化
+
+class AsyncExecContextPool {
+public:
+    static constexpr size_t POOL_SIZE = 4;  // 最多4个并发异步任务
+
+    AsyncExecContextPool() : _mutex(nullptr) {
+        for (size_t i = 0; i < POOL_SIZE; i++) {
+            _inUse[i] = false;
+        }
+        // 创建互斥锁用于线程安全
+        _mutex = xSemaphoreCreateMutex();
+    }
+
+    ~AsyncExecContextPool() {
+        if (_mutex) {
+            vSemaphoreDelete(_mutex);
+            _mutex = nullptr;
+        }
+    }
+
+    // 禁止拷贝
+    AsyncExecContextPool(const AsyncExecContextPool&) = delete;
+    AsyncExecContextPool& operator=(const AsyncExecContextPool&) = delete;
+
+    // 获取一个空闲的上下文（返回 nullptr 如果池满）
+    AsyncExecContext* acquire() {
+        MutexGuard lock(_mutex, pdMS_TO_TICKS(100));
+        if (!lock.isLocked()) {
+            return nullptr;  // 无法获取锁
+        }
+
+        for (size_t i = 0; i < POOL_SIZE; i++) {
+            if (!_inUse[i]) {
+                _inUse[i] = true;
+                _pool[i] = AsyncExecContext();  // 重置为默认状态
+                return &_pool[i];
+            }
+        }
+        return nullptr;  // 池满
+    }
+
+    // 归还上下文
+    void release(AsyncExecContext* ctx) {
+        if (!ctx) return;
+
+        MutexGuard lock(_mutex, pdMS_TO_TICKS(100));
+        if (!lock.isLocked()) {
+            return;  // 无法获取锁，但继续执行释放逻辑（避免内存泄漏）
+        }
+
+        for (size_t i = 0; i < POOL_SIZE; i++) {
+            if (&_pool[i] == ctx) {
+                _inUse[i] = false;
+                return;
+            }
+        }
+    }
+
+    // 获取当前使用数
+    size_t usedCount() const {
+        size_t count = 0;
+        for (size_t i = 0; i < POOL_SIZE; i++) {
+            if (_inUse[i]) count++;
+        }
+        return count;
+    }
+
+    // 获取池大小
+    static constexpr size_t poolSize() { return POOL_SIZE; }
+
+private:
+    AsyncExecContext _pool[POOL_SIZE];
+    bool _inUse[POOL_SIZE];
+    SemaphoreHandle_t _mutex;
+};
+
 #endif // ASYNC_EXEC_TYPES_H

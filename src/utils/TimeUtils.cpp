@@ -317,7 +317,9 @@ String TimeUtils::formatDuration(unsigned long milliseconds, bool showMillisecon
     minutes %= 60;
     hours %= 24;
     
+    // 最大格式如 "999d 23h 59m 59.999s"，32 字节足够
     String result;
+    result.reserve(32);
     
     if (days > 0) {
         result += String(days) + "d ";

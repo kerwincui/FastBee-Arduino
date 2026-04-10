@@ -1,4 +1,5 @@
 #include "./network/handlers/PeriphExecRouteHandler.h"
+#include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "core/PeriphExecManager.h"
 #include "core/PeripheralManager.h"
@@ -6,6 +7,7 @@
 #include "protocols/ProtocolManager.h"
 #include <ArduinoJson.h>
 #include <AsyncJson.h>
+#include <algorithm>
 
 PeriphExecRouteHandler::PeriphExecRouteHandler(WebHandlerContext* ctx)
     : ctx(ctx) {
@@ -14,6 +16,10 @@ PeriphExecRouteHandler::PeriphExecRouteHandler(WebHandlerContext* ctx)
 void PeriphExecRouteHandler::setupRoutes(AsyncWebServer* server) {
     // 注意：更具体的路由必须先注册，否则会被 /api/periph-exec 拦截
     
+    // 设备控制API（按动作类型分组）
+    server->on("/api/periph-exec/controls", HTTP_GET,
+              [this](AsyncWebServerRequest* request) { handleGetControls(request); });
+
     // 触发事件相关API
     server->on("/api/periph-exec/events/static", HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetStaticEvents(request); });
@@ -88,71 +94,8 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         auto rules = mgr.getAllRules();
         for (const auto& rule : rules) {
             if (rule.id == ruleId) {
-                // 找到规则，序列化返回
-                JsonDocument ruleDoc;
-                ruleDoc["id"] = rule.id;
-                ruleDoc["name"] = rule.name;
-                ruleDoc["enabled"] = rule.enabled;
-                ruleDoc["execMode"] = rule.execMode;
-
-                // 触发器数组
-                JsonArray trigArr = ruleDoc["triggers"].to<JsonArray>();
-                for (const auto& t : rule.triggers) {
-                    JsonObject tObj = trigArr.add<JsonObject>();
-                    tObj["triggerType"] = t.triggerType;
-                    tObj["triggerPeriphId"] = t.triggerPeriphId;
-                    tObj["operatorType"] = t.operatorType;
-                    tObj["compareValue"] = t.compareValue;
-                    tObj["timerMode"] = t.timerMode;
-                    tObj["intervalSec"] = t.intervalSec;
-                    tObj["timePoint"] = t.timePoint;
-                    tObj["eventId"] = t.eventId;
-                    // 轮询触发通信参数
-                    tObj["pollResponseTimeout"] = t.pollResponseTimeout;
-                    tObj["pollMaxRetries"] = t.pollMaxRetries;
-                    tObj["pollInterPollDelay"] = t.pollInterPollDelay;
-                    // 运行时状态
-                    tObj["lastTriggerTime"] = t.lastTriggerTime;
-                    tObj["triggerCount"] = t.triggerCount;
-
-                    // 关联触发外设名称
-                    if (!t.triggerPeriphId.isEmpty()) {
-                        const PeripheralConfig* periph = pm.getPeripheral(t.triggerPeriphId);
-                        if (periph) {
-                            tObj["triggerPeriphName"] = periph->name;
-                        }
-                    }
-                }
-
-                // 动作数组
-                JsonArray actArr = ruleDoc["actions"].to<JsonArray>();
-                for (const auto& a : rule.actions) {
-                    JsonObject aObj = actArr.add<JsonObject>();
-                    aObj["targetPeriphId"] = a.targetPeriphId;
-                    aObj["actionType"] = a.actionType;
-                    aObj["actionValue"] = a.actionValue;
-                    aObj["useReceivedValue"] = a.useReceivedValue;
-                    aObj["syncDelayMs"] = a.syncDelayMs;
-
-                    // 关联目标外设名称
-                    if (!a.targetPeriphId.isEmpty()) {
-                        const PeripheralConfig* periph = pm.getPeripheral(a.targetPeriphId);
-                        if (periph) {
-                            aObj["targetPeriphName"] = periph->name;
-                            aObj["targetPeriphType"] = static_cast<int>(periph->type);
-                        }
-                    }
-                }
-
-                // 数据转换管道
-                ruleDoc["protocolType"] = rule.protocolType;
-                ruleDoc["scriptContent"] = rule.scriptContent;
-
-                // 数据上报控制
-                ruleDoc["reportAfterExec"] = rule.reportAfterExec;
-
-                String response;
-                serializeJson(ruleDoc, response);
+                // 找到规则，使用辅助方法完整序列化
+                String response = serializeRuleFull(rule);
                 request->send(200, "application/json", "{\"success\":true,\"data\":" + response + "}");
                 return;
             }
@@ -162,6 +105,13 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     }
 
     auto rules = mgr.getAllRules();
+
+    // 排序：启用的排前面，然后按名称排序
+    std::sort(rules.begin(), rules.end(), [](const PeriphExecRule& a, const PeriphExecRule& b) {
+        if (a.enabled != b.enabled) return a.enabled > b.enabled;
+        return strcmp(a.name.c_str(), b.name.c_str()) < 0;
+    });
+
     int total = rules.size();
 
     // 解析分页参数
@@ -182,10 +132,7 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     int endIdx = (startIdx < total) ? min(startIdx + pageSize, total) : startIdx;
 
     // 检查堆内存是否充足（预留20KB给系统其他部分）
-    if (ESP.getFreeHeap() < 20480) {
-        request->send(503, "application/json", "{\"success\":false,\"message\":\"内存不足\"}");
-        return;
-    }
+    if (HandlerUtils::checkLowMemory(request)) return;
 
     // 使用流式响应避免大内存分配
     AsyncResponseStream* response = request->beginResponseStream("application/json");
@@ -206,71 +153,38 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         firstRule = false;
 
         const auto& rule = rules[i];
-        // 构建单个规则的JSON
-        JsonDocument ruleDoc;
-        ruleDoc["id"] = rule.id;
-        ruleDoc["name"] = rule.name;
-        ruleDoc["enabled"] = rule.enabled;
-        ruleDoc["execMode"] = rule.execMode;
 
-        // 触发器数组
-        JsonArray trigArr = ruleDoc["triggers"].to<JsonArray>();
-        for (const auto& t : rule.triggers) {
-            JsonObject tObj = trigArr.add<JsonObject>();
-            tObj["triggerType"] = t.triggerType;
-            tObj["triggerPeriphId"] = t.triggerPeriphId;
-            tObj["operatorType"] = t.operatorType;
-            tObj["compareValue"] = t.compareValue;
-            tObj["timerMode"] = t.timerMode;
-            tObj["intervalSec"] = t.intervalSec;
-            tObj["timePoint"] = t.timePoint;
-            tObj["eventId"] = t.eventId;
-            // 轮询触发通信参数
-            tObj["pollResponseTimeout"] = t.pollResponseTimeout;
-            tObj["pollMaxRetries"] = t.pollMaxRetries;
-            tObj["pollInterPollDelay"] = t.pollInterPollDelay;
-            // 运行时状态
-            tObj["lastTriggerTime"] = t.lastTriggerTime;
-            tObj["triggerCount"] = t.triggerCount;
+        // 列表视图只返回摘要字段，避免完整序列化 triggers/actions 导致内存不足
+        int triggerCount = rule.triggers.size();
+        int actionCount = rule.actions.size();
+        int triggerSummary = triggerCount > 0 ? rule.triggers[0].triggerType : -1;
+        int actionSummary = actionCount > 0 ? rule.actions[0].actionType : -1;
 
-            // 关联触发外设名称
-            if (!t.triggerPeriphId.isEmpty()) {
-                const PeripheralConfig* periph = pm.getPeripheral(t.triggerPeriphId);
-                if (periph) {
-                    tObj["triggerPeriphName"] = periph->name;
-                }
+        // 查找第一个动作的目标外设名称
+        String targetPeriphName;
+        if (actionCount > 0 && !rule.actions[0].targetPeriphId.isEmpty()) {
+            const PeripheralConfig* periph = pm.getPeripheral(rule.actions[0].targetPeriphId);
+            if (periph) {
+                targetPeriphName = periph->name;
             }
         }
 
-        // 动作数组
-        JsonArray actArr = ruleDoc["actions"].to<JsonArray>();
-        for (const auto& a : rule.actions) {
-            JsonObject aObj = actArr.add<JsonObject>();
-            aObj["targetPeriphId"] = a.targetPeriphId;
-            aObj["actionType"] = a.actionType;
-            aObj["actionValue"] = a.actionValue;
-            aObj["useReceivedValue"] = a.useReceivedValue;
-            aObj["syncDelayMs"] = a.syncDelayMs;
-
-            // 关联目标外设名称
-            if (!a.targetPeriphId.isEmpty()) {
-                const PeripheralConfig* periph = pm.getPeripheral(a.targetPeriphId);
-                if (periph) {
-                    aObj["targetPeriphName"] = periph->name;
-                    aObj["targetPeriphType"] = static_cast<int>(periph->type);
-                }
-            }
-        }
-
-        // 数据转换管道
-        ruleDoc["protocolType"] = rule.protocolType;
-        ruleDoc["scriptContent"] = rule.scriptContent;
-
-        // 数据上报控制
-        ruleDoc["reportAfterExec"] = rule.reportAfterExec;
-
-        // 序列化单个规则到响应流
-        serializeJson(ruleDoc, *response);
+        // 使用 printf 手动构建 JSON，不创建 JsonDocument
+        response->printf(
+            "{\"id\":\"%s\",\"name\":\"%s\",\"enabled\":%s,"
+            "\"execMode\":%d,\"reportAfterExec\":%s,"
+            "\"triggerCount\":%d,\"actionCount\":%d,"
+            "\"triggerSummary\":%d,\"actionSummary\":%d,"
+            "\"targetPeriphName\":\"%s\"}",
+            rule.id.c_str(),
+            rule.name.c_str(),
+            rule.enabled ? "true" : "false",
+            rule.execMode,
+            rule.reportAfterExec ? "true" : "false",
+            triggerCount, actionCount,
+            triggerSummary, actionSummary,
+            targetPeriphName.c_str()
+        );
     }
 
     response->print("]}");
@@ -644,6 +558,119 @@ void PeriphExecRouteHandler::handleAddRuleJson(AsyncWebServerRequest* request, J
     }
 }
 
+// ========== 获取设备控制列表（按动作类型分组） ==========
+
+void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "system.view")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+
+    PeriphExecManager& mgr = PeriphExecManager::getInstance();
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    auto rules = mgr.getAllRules();
+
+    // 使用流式响应，手动 printf 构建 JSON
+    AsyncResponseStream* response = request->beginResponseStream("application/json");
+    if (!response) {
+        request->send(500, "application/json", "{\"success\":false,\"message\":\"Unable to create response stream\"}");
+        return;
+    }
+
+    // 分组缓冲：记录每个分组是否已写入第一条
+    bool firstGpio = true, firstModbus = true, firstSystem = true;
+    bool firstScript = true, firstSensor = true, firstOther = true;
+
+    // 临时缓冲各分组的内容
+    String gpioItems, modbusItems, systemItems, scriptItems, sensorItems, otherItems;
+
+    for (const auto& rule : rules) {
+        if (!rule.enabled) continue;
+        if (rule.actions.empty()) continue;
+
+        const ExecAction& firstAction = rule.actions[0];
+        int at = firstAction.actionType;
+
+        // 确定分组
+        String* targetBuf = nullptr;
+        bool* firstFlag = nullptr;
+        if ((at >= 0 && at <= 5) || at == 13 || at == 14) {
+            targetBuf = &gpioItems; firstFlag = &firstGpio;
+        } else if (at >= 16 && at <= 18) {
+            targetBuf = &modbusItems; firstFlag = &firstModbus;
+        } else if (at >= 6 && at <= 12) {
+            targetBuf = &systemItems; firstFlag = &firstSystem;
+        } else if (at == 15) {
+            targetBuf = &scriptItems; firstFlag = &firstScript;
+        } else if (at == 19) {
+            targetBuf = &sensorItems; firstFlag = &firstSensor;
+        } else {
+            targetBuf = &otherItems; firstFlag = &firstOther;
+        }
+
+        if (!*firstFlag) {
+            *targetBuf += ",";
+        }
+        *firstFlag = false;
+
+        // 获取目标外设名称
+        String periphName;
+        if (!firstAction.targetPeriphId.isEmpty()) {
+            const PeripheralConfig* periph = pm.getPeripheral(firstAction.targetPeriphId);
+            if (periph) periphName = periph->name;
+        }
+
+        // 构建单条记录
+        // 转义 name 和 periphName 中的双引号
+        String safeName = rule.name;
+        safeName.replace("\"", "\\\"");
+        String safePeriphName = periphName;
+        safePeriphName.replace("\"", "\\\"");
+
+        String item = "{\"id\":\"" + rule.id + "\",\"name\":\"" + safeName + "\",\"actionType\":" + String(at);
+
+        // 附加目标外设信息（gpio/modbus/sensor 有目标外设）
+        if (!firstAction.targetPeriphId.isEmpty()) {
+            item += ",\"targetPeriphId\":\"" + firstAction.targetPeriphId + "\"";
+            if (periphName.length() > 0) {
+                item += ",\"targetPeriphName\":\"" + safePeriphName + "\"";
+            }
+        }
+
+        // Modbus 轮询：尝试解析 pollTaskIndex
+        if (at == 18 && firstAction.actionValue.length() > 0) {
+            // 解析 actionValue JSON 中的 "poll" 字段
+            JsonDocument pollDoc;
+            DeserializationError err = deserializeJson(pollDoc, firstAction.actionValue);
+            if (!err && pollDoc["poll"].is<JsonArray>()) {
+                JsonArray pollArr = pollDoc["poll"].as<JsonArray>();
+                item += ",\"pollTaskIndex\":[";
+                bool firstPoll = true;
+                for (JsonVariant v : pollArr) {
+                    if (!firstPoll) item += ",";
+                    firstPoll = false;
+                    item += String(v.as<int>());
+                }
+                item += "]";
+            }
+        }
+
+        item += "}";
+        *targetBuf += item;
+    }
+
+    // 输出完整 JSON
+    response->print("{\"success\":true,\"data\":{");
+    response->print("\"gpio\":["); response->print(gpioItems); response->print("],");
+    response->print("\"modbus\":["); response->print(modbusItems); response->print("],");
+    response->print("\"system\":["); response->print(systemItems); response->print("],");
+    response->print("\"script\":["); response->print(scriptItems); response->print("],");
+    response->print("\"sensor\":["); response->print(sensorItems); response->print("],");
+    response->print("\"other\":["); response->print(otherItems); response->print("]");
+    response->print("}}");
+    request->send(response);
+}
+
 // ========== JSON body: 更新规则 ==========
 
 void PeriphExecRouteHandler::handleUpdateRuleJson(AsyncWebServerRequest* request, JsonVariant& json) {
@@ -679,4 +706,76 @@ void PeriphExecRouteHandler::handleUpdateRuleJson(AsyncWebServerRequest* request
     } else {
         ctx->sendError(request, 500, "Failed to update rule");
     }
+}
+
+// ========== 完整序列化单条规则 ==========
+
+String PeriphExecRouteHandler::serializeRuleFull(const PeriphExecRule& rule) {
+    PeripheralManager& pm = PeripheralManager::getInstance();
+
+    JsonDocument ruleDoc;
+    ruleDoc["id"] = rule.id;
+    ruleDoc["name"] = rule.name;
+    ruleDoc["enabled"] = rule.enabled;
+    ruleDoc["execMode"] = rule.execMode;
+
+    // 触发器数组
+    JsonArray trigArr = ruleDoc["triggers"].to<JsonArray>();
+    for (const auto& t : rule.triggers) {
+        JsonObject tObj = trigArr.add<JsonObject>();
+        tObj["triggerType"] = t.triggerType;
+        tObj["triggerPeriphId"] = t.triggerPeriphId;
+        tObj["operatorType"] = t.operatorType;
+        tObj["compareValue"] = t.compareValue;
+        tObj["timerMode"] = t.timerMode;
+        tObj["intervalSec"] = t.intervalSec;
+        tObj["timePoint"] = t.timePoint;
+        tObj["eventId"] = t.eventId;
+        // 轮询触发通信参数
+        tObj["pollResponseTimeout"] = t.pollResponseTimeout;
+        tObj["pollMaxRetries"] = t.pollMaxRetries;
+        tObj["pollInterPollDelay"] = t.pollInterPollDelay;
+        // 运行时状态
+        tObj["lastTriggerTime"] = t.lastTriggerTime;
+        tObj["triggerCount"] = t.triggerCount;
+
+        // 关联触发外设名称
+        if (!t.triggerPeriphId.isEmpty()) {
+            const PeripheralConfig* periph = pm.getPeripheral(t.triggerPeriphId);
+            if (periph) {
+                tObj["triggerPeriphName"] = periph->name;
+            }
+        }
+    }
+
+    // 动作数组
+    JsonArray actArr = ruleDoc["actions"].to<JsonArray>();
+    for (const auto& a : rule.actions) {
+        JsonObject aObj = actArr.add<JsonObject>();
+        aObj["targetPeriphId"] = a.targetPeriphId;
+        aObj["actionType"] = a.actionType;
+        aObj["actionValue"] = a.actionValue;
+        aObj["useReceivedValue"] = a.useReceivedValue;
+        aObj["syncDelayMs"] = a.syncDelayMs;
+
+        // 关联目标外设名称
+        if (!a.targetPeriphId.isEmpty()) {
+            const PeripheralConfig* periph = pm.getPeripheral(a.targetPeriphId);
+            if (periph) {
+                aObj["targetPeriphName"] = periph->name;
+                aObj["targetPeriphType"] = static_cast<int>(periph->type);
+            }
+        }
+    }
+
+    // 数据转换管道
+    ruleDoc["protocolType"] = rule.protocolType;
+    ruleDoc["scriptContent"] = rule.scriptContent;
+
+    // 数据上报控制
+    ruleDoc["reportAfterExec"] = rule.reportAfterExec;
+
+    String output;
+    serializeJson(ruleDoc, output);
+    return output;
 }

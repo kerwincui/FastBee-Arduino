@@ -1,11 +1,12 @@
 #include "core/PeriphExecManager.h"
+#include "core/PeriphExecExecutor.h"
+#include "core/PeriphExecScheduler.h"
 #include "core/RuleScript.h"
 #include "core/FastBeeFramework.h"
 #include "protocols/ProtocolManager.h"
-#include "protocols/ModbusHandler.h"
 #include "protocols/MQTTClient.h"
 #include "systems/LoggerSystem.h"
-#include <WiFi.h>
+#include "core/PeripheralManager.h"
 
 PeriphExecManager& PeriphExecManager::getInstance() {
     static PeriphExecManager instance;
@@ -18,6 +19,13 @@ bool PeriphExecManager::initialize() {
     _resultsMutex = xSemaphoreCreateMutex();
     _taskSlotSemaphore = xSemaphoreCreateCounting(MAX_ASYNC_TASKS, MAX_ASYNC_TASKS);
     _runningRulesMutex = xSemaphoreCreateMutex();
+
+    // 创建子模块
+    _executor.reset(new PeriphExecExecutor());
+    _executor->initialize(this);
+
+    _scheduler.reset(new PeriphExecScheduler());
+    _scheduler->initialize(this, _executor.get());
 
     bool loaded = loadConfiguration();
     LOGGER.infof("[PeriphExec] Initialized, loaded %d rules (async: max %d tasks)",
@@ -349,360 +357,392 @@ bool PeriphExecManager::loadConfiguration() {
     return true;
 }
 
-// ========== MQTT 匹配引擎（异步分发） ==========
+// ========== 委托给 Scheduler 的方法 ==========
 
 void PeriphExecManager::handleMqttMessage(const String& topic, const String& message) {
-    // 解析 JSON 数组: [{"id":"temperature","value":"27.43","remark":""}, ...]
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, message);
-    if (err) return;
-
-    JsonArray arr;
-    if (doc.is<JsonArray>()) {
-        arr = doc.as<JsonArray>();
-    } else {
-        return;
-    }
-
-    // 阶段1: 持锁匹配，收集需要执行的规则副本及其匹配的接收值
-    struct MatchedRule {
-        PeriphExecRule rule;
-        String receivedValue;
-    };
-    std::vector<MatchedRule> matchedRules;
-
-    {
-        MutexGuard lock(_rulesMutex);
-        if (rules.empty()) return;
-
-        for (JsonObject item : arr) {
-            if (!item.containsKey("id") || !item.containsKey("value")) continue;
-
-            String itemId = item["id"].as<String>();
-            String itemValue = item["value"].as<String>();
-
-            for (auto& pair : rules) {
-                PeriphExecRule& rule = pair.second;
-                if (!rule.enabled) continue;
-
-                // 遍历所有触发器（OR 关系）
-                bool triggerMatched = false;
-                for (auto& trigger : rule.triggers) {
-                    if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::PLATFORM_TRIGGER)) continue;
-
-                    // 匹配数据源外设 ID（必须配置且匹配，空/null 不匹配任何数据）
-                    if (trigger.triggerPeriphId.isEmpty() || trigger.triggerPeriphId == "null") continue;
-                    if (trigger.triggerPeriphId != itemId) continue;
-
-                    // 防重复触发：同一触发器最小间隔 1 秒
-                    if (trigger.lastTriggerTime > 0 && (millis() - trigger.lastTriggerTime) < 1000) continue;
-
-                    if (evaluateCondition(itemValue, trigger.operatorType, trigger.compareValue)) {
-                        LOGGER.infof("[PeriphExec] Rule '%s' triggered by %s=%s (cmp=%s)",
-                            rule.name.c_str(), itemId.c_str(), itemValue.c_str(), trigger.compareValue.c_str());
-
-                        trigger.lastTriggerTime = millis();
-                        trigger.triggerCount++;
-                        triggerMatched = true;
-                        break;  // 一个触发器匹配即可
-                    }
-                }
-
-                if (triggerMatched) {
-                    matchedRules.push_back({rule, itemValue});
-                }
-            }
-        }
-    }
-    // 锁已释放
-
-    // 阶段2: 无锁异步分发
-    for (const auto& matched : matchedRules) {
-        dispatchAsync(matched.rule, matched.receivedValue);
-    }
+    if (_scheduler) _scheduler->handleMqttMessage(topic, message);
 }
-
-// ========== 轮询数据处理（本地数据源条件评估） ==========
 
 void PeriphExecManager::handlePollData(const String& source, const String& data) {
-    // 解析 JSON 数组: [{"id":"temperature","value":"27.43"}, ...]
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, data);
-    if (err) return;
-
-    JsonArray arr;
-    if (doc.is<JsonArray>()) {
-        arr = doc.as<JsonArray>();
-    } else {
-        return;
-    }
-
-    // 阶段1: 持锁匹配，收集需要执行的规则副本及其匹配的接收值
-    struct MatchedRule {
-        PeriphExecRule rule;
-        String receivedValue;
-    };
-    std::vector<MatchedRule> matchedRules;
-
-    {
-        MutexGuard lock(_rulesMutex);
-        if (rules.empty()) return;
-
-        for (JsonObject item : arr) {
-            if (!item.containsKey("id") || !item.containsKey("value")) continue;
-
-            String itemId = item["id"].as<String>();
-            String itemValue = item["value"].as<String>();
-
-            for (auto& pair : rules) {
-                PeriphExecRule& rule = pair.second;
-                if (!rule.enabled) continue;
-
-                // 遍历所有触发器（OR 关系）
-                bool triggerMatched = false;
-                for (auto& trigger : rule.triggers) {
-                    if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER)) continue;
-
-                    // 匹配数据源外设 ID（必须配置且匹配，空/null 不匹配任何数据）
-                    if (trigger.triggerPeriphId.isEmpty() || trigger.triggerPeriphId == "null") continue;
-                    if (trigger.triggerPeriphId != itemId) continue;
-
-                    // 防重复触发：同一触发器最小间隔 1 秒
-                    if (trigger.lastTriggerTime > 0 && (millis() - trigger.lastTriggerTime) < 1000) continue;
-
-                    if (evaluateCondition(itemValue, trigger.operatorType, trigger.compareValue)) {
-                        LOGGER.infof("[PeriphExec] Poll rule '%s' triggered by %s: %s=%s (op=%d, cmp=%s)",
-                            rule.name.c_str(), source.c_str(), itemId.c_str(), itemValue.c_str(),
-                            trigger.operatorType, trigger.compareValue.c_str());
-
-                        trigger.lastTriggerTime = millis();
-                        trigger.triggerCount++;
-                        triggerMatched = true;
-                        break;  // 一个触发器匹配即可
-                    }
-                }
-
-                if (triggerMatched) {
-                    matchedRules.push_back({rule, itemValue});
-                }
-            }
-        }
-    }
-    // 锁已释放
-
-    // 阶段2: 无锁异步分发
-    for (const auto& matched : matchedRules) {
-        dispatchAsync(matched.rule, matched.receivedValue);
-    }
+    if (_scheduler) _scheduler->handlePollData(source, data);
 }
-
-// ========== 数据下发命令处理（始终同步） ==========
 
 String PeriphExecManager::handleDataCommand(const String& message) {
-    JsonDocument cmdDoc;
-    DeserializationError err = deserializeJson(cmdDoc, message);
-    if (err || !cmdDoc.is<JsonArray>()) {
-        LOGGER.warning("[PeriphExec] DataCommand: invalid JSON array");
-        return "";
-    }
-
-    JsonArray cmdArr = cmdDoc.as<JsonArray>();
-
-    // 预处理阶段：处理 modbus_read 指令（阻塞操作，必须在持锁之前完成）
-    JsonDocument modbusReportDoc;
-    JsonArray modbusReportArr = modbusReportDoc.to<JsonArray>();
-    std::vector<int> processedIndices;
-
-    {
-        int idx = 0;
-        for (JsonObject item : cmdArr) {
-            String itemId = item["id"].as<String>();
-            if (itemId == "modbus_read") {
-                String itemValue = item["value"].as<String>();
-                LOGGER.infof("[PeriphExec] DataCommand: modbus_read command detected");
-                if (_modbusReadCallback) {
-                    String modbusResult = _modbusReadCallback(itemValue);
-                    JsonDocument tmpDoc;
-                    if (!deserializeJson(tmpDoc, modbusResult) && tmpDoc.is<JsonArray>()) {
-                        for (JsonVariant v : tmpDoc.as<JsonArray>()) {
-                            modbusReportArr.add(v);
-                        }
-                    }
-                } else {
-                    JsonObject errItem = modbusReportArr.add<JsonObject>();
-                    errItem["id"] = "modbus_read";
-                    errItem["value"] = "0";
-                    errItem["remark"] = "error:not_initialized";
-                }
-                processedIndices.push_back(idx);
-            }
-            idx++;
-        }
-    }
-
-    // 阶段1: 持锁匹配，收集规则副本
-    struct MatchedItem {
-        PeriphExecRule rule;
-        String itemId;
-        String itemValue;
-    };
-    std::vector<MatchedItem> matchedItems;
-    std::vector<String> unmatchedIds;    // 未匹配的 item id
-    std::vector<String> unmatchedValues; // 未匹配的 item value
-
-    {
-        MutexGuard lock(_rulesMutex);
-
-        int itemIdx = 0;
-        for (JsonObject item : cmdArr) {
-            // 跳过已在预处理阶段处理的 modbus_read 项
-            bool skip = false;
-            for (int pi : processedIndices) { if (pi == itemIdx) { skip = true; break; } }
-            itemIdx++;
-            if (skip) continue;
-
-            if (!item.containsKey("id") || !item.containsKey("value")) continue;
-
-            String itemId = item["id"].as<String>();
-            String itemValue = item["value"].as<String>();
-            bool matched = false;
-
-            for (auto& pair : rules) {
-                PeriphExecRule& rule = pair.second;
-                if (!rule.enabled) continue;
-
-                // 遍历触发器匹配数据源
-                for (auto& trigger : rule.triggers) {
-                    if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::PLATFORM_TRIGGER)) continue;
-                    if (trigger.triggerPeriphId.isEmpty() || trigger.triggerPeriphId == "null") continue;
-                    if (trigger.triggerPeriphId != itemId) continue;
-
-                    if (!evaluateCondition(itemValue, trigger.operatorType, trigger.compareValue)) continue;
-
-                    matched = true;
-                    trigger.lastTriggerTime = millis();
-                    trigger.triggerCount++;
-                    matchedItems.push_back({rule, itemId, itemValue});
-                    break;  // 一个触发器匹配即可
-                }
-            }
-
-            if (!matched) {
-                unmatchedIds.push_back(itemId);
-                unmatchedValues.push_back(itemValue);
-            }
-        }
-    }
-    // 锁已释放
-
-    // 阶段2: 无锁同步执行并构建响应
-    JsonDocument reportDoc;
-    JsonArray reportArr = reportDoc.to<JsonArray>();
-
-    // 先添加 Modbus 读取结果
-    for (JsonVariant v : modbusReportArr) {
-        reportArr.add(v);
-    }
-
-    for (auto& mi : matchedItems) {
-        LOGGER.infof("[PeriphExec] DataCommand matched rule '%s' for id='%s' value='%s'",
-            mi.rule.name.c_str(), mi.itemId.c_str(), mi.itemValue.c_str());
-
-        auto results = executeAllActions(mi.rule, mi.itemValue);
-
-        // 构建响应：每个动作的结果
-        for (const auto& ar : results) {
-            JsonObject reportItem = reportArr.add<JsonObject>();
-            reportItem["id"] = ar.targetPeriphId.isEmpty() ? mi.itemId : ar.targetPeriphId;
-            reportItem["value"] = ar.actualValue.isEmpty() ? mi.itemValue : ar.actualValue;
-            reportItem["remark"] = ar.success ? "success" : "execute failed";
-        }
-        if (results.empty()) {
-            JsonObject reportItem = reportArr.add<JsonObject>();
-            reportItem["id"] = mi.itemId;
-            reportItem["value"] = mi.itemValue;
-            reportItem["remark"] = "no actions";
-        }
-    }
-
-    for (size_t i = 0; i < unmatchedIds.size(); i++) {
-        LOGGER.infof("[PeriphExec] DataCommand no matching rule for id='%s'", unmatchedIds[i].c_str());
-        JsonObject reportItem = reportArr.add<JsonObject>();
-        reportItem["id"] = unmatchedIds[i];
-        reportItem["value"] = unmatchedValues[i];
-        reportItem["remark"] = "no matching rule";
-    }
-
-    String result;
-    serializeJson(reportDoc, result);
-    return result;
+    if (_scheduler) return _scheduler->handleDataCommand(message);
+    return "";
 }
 
-// ========== Modbus 读取回调注册 ==========
+void PeriphExecManager::checkTimers() {
+    if (_scheduler) _scheduler->checkTimers();
+}
+
+void PeriphExecManager::triggerEvent(EventType eventType, const String& eventData) {
+    if (_scheduler) _scheduler->triggerEvent(eventType, eventData);
+}
+
+void PeriphExecManager::triggerEventById(const String& eventId, const String& eventData) {
+    if (_scheduler) _scheduler->triggerEventById(eventId, eventData);
+}
+
+String PeriphExecManager::getStaticEventsJson() {
+    return PeriphExecScheduler::getStaticEventsJson();
+}
+
+String PeriphExecManager::getDynamicEventsJson() {
+    if (_scheduler) return _scheduler->getDynamicEventsJson();
+    return "[]";
+}
 
 void PeriphExecManager::setModbusReadCallback(std::function<String(const String&)> callback) {
     _modbusReadCallback = callback;
+    if (_executor) _executor->setModbusReadCallback(callback);
 }
 
-// ========== 条件评估 ==========
+void PeriphExecManager::checkButtonEvents() {
+    if (_scheduler) _scheduler->checkButtonEvents();
+}
 
-bool PeriphExecManager::evaluateCondition(const String& value, uint8_t op, const String& compareValue) {
-    ExecOperator oper = static_cast<ExecOperator>(op);
+bool PeriphExecManager::tryReportDeviceData() {
+    if (_scheduler) return _scheduler->tryReportDeviceData();
+    return false;
+}
 
-    // 字符串操作符
-    if (oper == ExecOperator::CONTAIN) {
-        return value.indexOf(compareValue) >= 0;
+String PeriphExecManager::getValidTriggerTypes() {
+    return PeriphExecScheduler::getValidTriggerTypes();
+}
+
+String PeriphExecManager::getEventCategoriesJson() {
+    return PeriphExecScheduler::getEventCategoriesJson();
+}
+
+String PeriphExecManager::getValidActionTypes(const String& periphId) {
+    // 此静态方法需要访问 PeripheralManager，保留在 Manager 中
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    PeripheralConfig* config = nullptr;
+
+    if (!periphId.isEmpty()) {
+        config = pm.getPeripheral(periphId);
     }
-    if (oper == ExecOperator::NOT_CONTAIN) {
-        return value.indexOf(compareValue) < 0;
-    }
 
-    // 数值操作符
-    float val = value.toFloat();
-    float cmp = compareValue.toFloat();
-
-    switch (oper) {
-        case ExecOperator::EQ:  return val == cmp;
-        case ExecOperator::NEQ: return val != cmp;
-        case ExecOperator::GT:  return val > cmp;
-        case ExecOperator::LT:  return val < cmp;
-        case ExecOperator::GTE: return val >= cmp;
-        case ExecOperator::LTE: return val <= cmp;
-        case ExecOperator::BETWEEN:
-        case ExecOperator::NOT_BETWEEN: {
-            int commaIdx = compareValue.indexOf(',');
-            if (commaIdx < 0) return false;
-            float minVal = compareValue.substring(0, commaIdx).toFloat();
-            float maxVal = compareValue.substring(commaIdx + 1).toFloat();
-            bool inRange = (val >= minVal && val <= maxVal);
-            return (oper == ExecOperator::BETWEEN) ? inRange : !inRange;
+    auto addAction = [&arr](uint8_t type, const char* name, const char* category = "") {
+        JsonObject obj = arr.add<JsonObject>();
+        obj["type"] = type;
+        obj["name"] = name;
+        if (strlen(category) > 0) {
+            obj["category"] = category;
         }
-        default: return false;
+    };
+
+    if (config) {
+        PeripheralType pType = config->type;
+
+        if (isInputType(pType)) {
+            // 输入类型外设：不支持GPIO输出动作，只支持系统功能和脚本
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+        } else if (isOutputType(pType)) {
+            // 输出类型外设：支持所有GPIO输出动作
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH), "设置高电平", "GPIO");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW), "设置低电平", "GPIO");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH_INVERTED), "设置高电平(反转)", "GPIO");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW_INVERTED), "设置低电平(反转)", "GPIO");
+
+            // PWM输出
+            if (pType == PeripheralType::GPIO_PWM_OUTPUT) {
+                addAction(static_cast<uint8_t>(ExecActionType::ACTION_SET_PWM), "设置PWM占空比", "PWM");
+                addAction(static_cast<uint8_t>(ExecActionType::ACTION_BLINK), "闪烁", "PWM");
+                addAction(static_cast<uint8_t>(ExecActionType::ACTION_BREATHE), "呼吸灯", "PWM");
+            }
+
+            // DAC输出
+            if (pType == PeripheralType::DAC || pType == PeripheralType::GPIO_ANALOG_OUTPUT) {
+                addAction(static_cast<uint8_t>(ExecActionType::ACTION_SET_DAC), "设置DAC值", "DAC");
+            }
+
+            // 系统功能和脚本
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+        } else {
+            // 其他类型外设：只支持系统功能和脚本
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+        }
+    } else {
+        // 未指定外设，返回所有动作类型
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH), "设置高电平", "GPIO");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW), "设置低电平", "GPIO");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_BLINK), "闪烁", "GPIO");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_BREATHE), "呼吸灯", "GPIO");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SET_PWM), "设置PWM占空比", "PWM");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SET_DAC), "设置DAC值", "DAC");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_OTA), "OTA升级", "系统");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_AP_PROVISION), "AP配网", "系统");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_BLE_PROVISION), "BLE配网", "系统");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH_INVERTED), "设置高电平(反转)", "GPIO");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW_INVERTED), "设置低电平(反转)", "GPIO");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+    }
+
+    String result;
+    serializeJson(doc, result);
+    return result;
+}
+
+// ========== 异步执行结果管理 ==========
+
+void PeriphExecManager::recordResult(const AsyncExecResult& result) {
+    MutexGuard lock(_resultsMutex);
+    if (!lock.isLocked()) return;
+
+    executionResults.push_back(result);
+
+    // 保留最近 MAX_ASYNC_TASKS * 2 条记录
+    while (executionResults.size() > MAX_ASYNC_TASKS * 2) {
+        executionResults.erase(executionResults.begin());
     }
 }
 
-// ========== 定时器引擎（异步分发） ==========
+std::vector<AsyncExecResult> PeriphExecManager::getRecentResults() {
+    MutexGuard lock(_resultsMutex);
+    return executionResults;
+}
 
-void PeriphExecManager::checkTimers() {
-    unsigned long now = millis();
+// ========== 手动执行 ==========
 
-    // 每秒检查一次
-    if (now - lastTimerCheck < 1000) return;
-    lastTimerCheck = now;
+bool PeriphExecManager::runOnce(const String& id) {
+    PeriphExecRule* rule = getRule(id);
+    if (!rule) {
+        LOGGER.warning("[PeriphExec] Rule not found for runOnce: " + id);
+        return false;
+    }
 
-    // 预先获取 ModbusHandler 状态（避免在锁内调用）
-    ModbusHandler* modbus = nullptr;
-    bool modbusAvailable = false;
-    auto* fw = FastBeeFramework::getInstance();
-    if (fw) {
-        auto* protMgr = fw->getProtocolManager();
-        if (protMgr) {
-            modbus = protMgr->getModbusHandler();
-            modbusAvailable = (modbus != nullptr && modbus->getMode() == MODBUS_MASTER);
+    // 创建副本并异步分发，避免阻塞 Web 请求线程
+    PeriphExecRule ruleCopy = *rule;
+    LOGGER.infof("[PeriphExec] runOnce async dispatch: '%s' (id=%s)",
+                 ruleCopy.name.c_str(), id.c_str());
+    dispatchAsync(ruleCopy, "");
+    return true;  // 返回 true 表示已提交
+}
+
+// ========== 异步调度 ==========
+
+bool PeriphExecManager::shouldRunAsync() const {
+    // 检查可用堆内存
+    size_t freeHeap = ESP.getFreeHeap();
+    if (freeHeap < MIN_HEAP_FOR_ASYNC) {
+        return false;
+    }
+    // 检查是否有空闲任务槽（非阻塞 peek）
+    if (uxSemaphoreGetCount(_taskSlotSemaphore) == 0) {
+        return false;
+    }
+    return true;
+}
+
+void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& receivedValue) {
+    // 检查是否有系统重启/恢复出厂动作 —— 必须同步执行
+    for (const auto& a : rule.actions) {
+        if (a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART) ||
+            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET)) {
+            LOGGER.infof("[PeriphExec] Sync execute (system action): '%s'", rule.name.c_str());
+            executeAllActions(rule, receivedValue);
+            return;
         }
     }
 
-    // 阶段1: 持锁匹配，收集规则副本
+    // 用户指定同步执行
+    if (rule.execMode == static_cast<uint8_t>(ExecMode::EXEC_SYNC)) {
+        LOGGER.infof("[PeriphExec] Sync execute (user config): '%s'", rule.name.c_str());
+        executeAllActions(rule, receivedValue);
+        return;
+    }
+
+    // 检查任务是否已在运行中（防止重复分发）
+    {
+        MutexGuard runLock(_runningRulesMutex);
+        if (_runningRuleIds.count(rule.id) > 0) {
+            LOGGER.warningf("[PeriphExec] Skip dispatch: task '%s' already running", rule.name.c_str());
+            return;
+        }
+    }
+
+    // 异步模式：判断资源是否充足
+    if (!shouldRunAsync()) {
+        LOGGER.infof("[PeriphExec] Fallback sync (heap=%d, slots=%d): '%s'",
+                     (int)ESP.getFreeHeap(),
+                     (int)uxSemaphoreGetCount(_taskSlotSemaphore),
+                     rule.name.c_str());
+        executeAllActions(rule, receivedValue);
+        return;
+    }
+
+    // 获取一个任务槽（非阻塞）
+    if (xSemaphoreTake(_taskSlotSemaphore, 0) != pdTRUE) {
+        LOGGER.warningf("[PeriphExec] No async slot, fallback sync: '%s'", rule.name.c_str());
+        executeAllActions(rule, receivedValue);
+        return;
+    }
+
+    // 从对象池获取异步上下文（避免频繁堆分配）
+    AsyncExecContext* ctx = _contextPool.acquire();
+    if (!ctx) {
+        LOGGER.warning("[PeriphExec] Context pool exhausted, fallback to sync execution");
+        xSemaphoreGive(_taskSlotSemaphore);
+        executeAllActions(rule, receivedValue);
+        return;
+    }
+
+    ctx->ruleCopy = rule;
+    ctx->receivedValue = receivedValue;
+    ctx->manager = this;
+    ctx->mqtt = nullptr;  // Will be set by executor if needed
+    ctx->taskSlot = _taskSlotSemaphore;
+
+    // 确定栈大小：有脚本/Modbus动作用大栈，其他用小栈
+    bool needLargeStack = false;
+    for (const auto& a : rule.actions) {
+        if (a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT) ||
+            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL) ||
+            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_COIL_WRITE) ||
+            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_REG_WRITE) ||
+            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
+            needLargeStack = true;
+            break;
+        }
+    }
+    uint32_t stackSize = needLargeStack ? SCRIPT_TASK_STACK : SIMPLE_TASK_STACK;
+
+    // 创建 FreeRTOS 任务
+    char taskName[24];
+    snprintf(taskName, sizeof(taskName), "exec_%.16s", rule.id.c_str());
+
+    // 在创建任务前先将规则ID加入运行中集合
+    {
+        MutexGuard runLock(_runningRulesMutex);
+        _runningRuleIds.insert(rule.id);
+    }
+
+    BaseType_t created = xTaskCreatePinnedToCore(
+        asyncExecTaskFunc,      // 任务函数
+        taskName,               // 任务名称
+        stackSize,              // 栈大小
+        ctx,                    // 参数
+        ASYNC_TASK_PRIORITY,    // 优先级 0（低于主循环）
+        nullptr,                // 不需要任务句柄
+        1                       // 运行在 Core 1（与主循环相同）
+    );
+
+    if (created != pdPASS) {
+        LOGGER.errorf("[PeriphExec] Failed to create async task, insufficient memory: '%s'", rule.name.c_str());
+        // 任务创建失败，从运行中集合移除
+        {
+            MutexGuard runLock(_runningRulesMutex);
+            _runningRuleIds.erase(rule.id);
+        }
+        _contextPool.release(ctx);  // 归还对象池
+        xSemaphoreGive(_taskSlotSemaphore);
+        executeAllActions(rule, receivedValue);
+        return;
+    }
+
+    LOGGER.infof("[PeriphExec] Async dispatched: '%s' (stack=%d, heap=%d)",
+                 rule.name.c_str(), (int)stackSize, (int)ESP.getFreeHeap());
+}
+
+// FreeRTOS 任务入口函数
+void PeriphExecManager::asyncExecTaskFunc(void* pvParameters) {
+    AsyncExecContext* ctx = static_cast<AsyncExecContext*>(pvParameters);
+    if (!ctx) {
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    AsyncExecResult result;
+    result.ruleId = ctx->ruleCopy.id;
+    result.ruleName = ctx->ruleCopy.name;
+    result.startTime = millis();
+    result.status = AsyncExecStatus::RUNNING;
+
+    LOGGER.infof("[PeriphExec] Async task started: '%s'", result.ruleName.c_str());
+
+    // 执行所有动作
+    auto actionResults = ctx->manager->executeAllActions(ctx->ruleCopy, ctx->receivedValue);
+
+    // 统计结果
+    bool allOk = true;
+    for (const auto& ar : actionResults) {
+        if (!ar.success) { allOk = false; break; }
+    }
+
+    result.endTime = millis();
+    result.status = allOk ? AsyncExecStatus::COMPLETED : AsyncExecStatus::FAILED;
+
+    LOGGER.infof("[PeriphExec] Async task finished: '%s' %s (%lums)",
+                 result.ruleName.c_str(),
+                 allOk ? "OK" : "FAILED",
+                 result.endTime - result.startTime);
+
+    // 记录执行结果
+    ctx->manager->recordResult(result);
+
+    // 从运行中集合移除规则ID
+    {
+        MutexGuard runLock(ctx->manager->_runningRulesMutex);
+        ctx->manager->_runningRuleIds.erase(ctx->ruleCopy.id);
+    }
+
+    // 如果执行失败，设置退避时间（30秒后才能再次触发）
+    if (!allOk) {
+        MutexGuard runLock(ctx->manager->_runningRulesMutex);
+        ctx->manager->_failureBackoff[ctx->ruleCopy.id] = millis() + 30000;
+        LOGGER.infof("[PeriphExec] Rule '%s' failed, backoff for 30s", result.ruleName.c_str());
+    } else {
+        // 成功时清除退避记录
+        MutexGuard runLock(ctx->manager->_runningRulesMutex);
+        ctx->manager->_failureBackoff.erase(ctx->ruleCopy.id);
+    }
+
+    // 触发外设执行完成事件
+    ctx->manager->dispatchPeriphExecEvent(ctx->ruleCopy.id, allOk ? "success" : "failed");
+
+    // 释放任务槽
+    xSemaphoreGive(ctx->taskSlot);
+
+    // 归还上下文到对象池
+    ctx->manager->_contextPool.release(ctx);
+
+    // 删除自身任务
+    vTaskDelete(nullptr);
+}
+
+// 执行规则的所有动作（供异步任务调用）
+std::vector<ActionExecResult> PeriphExecManager::executeAllActions(
+    const PeriphExecRule& rule, const String& receivedValue) {
+    if (_executor) {
+        return _executor->executeAllActions(rule, receivedValue);
+    }
+    return {};
+}
+
+// ========== 内部调度接口实现 ==========
+
+void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailable) {
     std::vector<PeriphExecRule> triggeredRules;
 
     {
@@ -801,823 +841,27 @@ void PeriphExecManager::checkTimers() {
     }
 }
 
-// ========== 动作执行（可在主循环或异步任务中调用） ==========
-
-bool PeriphExecManager::executeActionItem(const ExecAction& action, const String& effectiveValue) {
-    // 系统功能 (actionType 6-11)
-    if (action.actionType >= 6 && action.actionType <= 11) {
-        return executeSystemAction(action);
-    }
-    // 命令脚本 (actionType 15)
-    if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT)) {
-        return executeScriptAction(action);
-    }
-    // Modbus 子设备动作 (targetPeriphId 以 "modbus:" 开头)
-    if (action.targetPeriphId.startsWith("modbus:")) {
-        return executeModbusAction(action, effectiveValue);
-    }
-    // 外设动作
-    return executePeripheralAction(action, effectiveValue);
-}
-
-std::vector<ActionExecResult> PeriphExecManager::executeAllActions(
-    const PeriphExecRule& rule, const String& receivedValue) {
-
-    std::vector<ActionExecResult> results;
-    results.reserve(rule.actions.size());
-
-    for (const auto& action : rule.actions) {
-        // 执行前延时
-        if (action.syncDelayMs > 0) {
-            delay(action.syncDelayMs > 10000 ? 10000 : action.syncDelayMs);
-        }
-
-        // 确定有效值：useReceivedValue 时用接收值，否则用 actionValue
-        String effectiveValue = (action.useReceivedValue && !receivedValue.isEmpty())
-                                ? receivedValue : action.actionValue;
-
-        LOGGER.infof("[PeriphExec] Exec action: target=%s type=%d val=%s (useRecv=%d)",
-            action.targetPeriphId.c_str(), action.actionType,
-            effectiveValue.c_str(), action.useReceivedValue);
-
-        bool ok;
-        ActionExecResult ar;
-        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
-            ok = executeSensorReadAction(action, ar);
-            // ar is fully populated by executeSensorReadAction
-        } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL)) {
-            ok = executeModbusPollAction(action, rule);
-            ar.targetPeriphId = action.targetPeriphId;
-            ar.actualValue = effectiveValue;
-        } else {
-            ok = executeActionItem(action, effectiveValue);
-            ar.targetPeriphId = action.targetPeriphId;
-            ar.actualValue = effectiveValue;
-        }
-        ar.success = ok;
-        results.push_back(ar);
-    }
-
-    // 精准上报执行结果
-    if (rule.reportAfterExec && !results.empty()) {
-        reportActionResults(results);
-    }
-
-    return results;
-}
-
-bool PeriphExecManager::executePeripheralAction(const ExecAction& action, const String& effectiveValue) {
-    PeripheralManager& pm = PeripheralManager::getInstance();
-
-    if (action.targetPeriphId.isEmpty()) {
-        LOGGER.warning("[PeriphExec] No target peripheral specified");
-        return false;
-    }
-
-    if (!pm.hasPeripheral(action.targetPeriphId)) {
-        LOGGER.warningf("[PeriphExec] Target peripheral not found: %s", action.targetPeriphId.c_str());
-        return false;
-    }
-
-    ExecActionType actType = static_cast<ExecActionType>(action.actionType);
-
-    switch (actType) {
-        case ExecActionType::ACTION_HIGH: {
-            LOGGER.infof("[PeriphExec] Execute HIGH on %s", action.targetPeriphId.c_str());
-            pm.stopActionTicker(action.targetPeriphId);
-            return pm.writePin(action.targetPeriphId, GPIOState::STATE_HIGH);
-        }
-
-        case ExecActionType::ACTION_LOW: {
-            LOGGER.infof("[PeriphExec] Execute LOW on %s", action.targetPeriphId.c_str());
-            pm.stopActionTicker(action.targetPeriphId);
-            return pm.writePin(action.targetPeriphId, GPIOState::STATE_LOW);
-        }
-
-        case ExecActionType::ACTION_BLINK: {
-            LOGGER.infof("[PeriphExec] Execute BLINK on %s", action.targetPeriphId.c_str());
-            uint16_t interval = effectiveValue.isEmpty() ? 500 : effectiveValue.toInt();
-            pm.startActionTicker(action.targetPeriphId, 1, interval);
-            return true;
-        }
-
-        case ExecActionType::ACTION_BREATHE: {
-            LOGGER.infof("[PeriphExec] Execute BREATHE on %s", action.targetPeriphId.c_str());
-            uint16_t speed = effectiveValue.isEmpty() ? 2000 : effectiveValue.toInt();
-            pm.startActionTicker(action.targetPeriphId, 2, speed);
-            return true;
-        }
-
-        case ExecActionType::ACTION_SET_PWM: {
-            uint32_t duty = effectiveValue.isEmpty() ? 0 : effectiveValue.toInt();
-            LOGGER.infof("[PeriphExec] Execute SetPWM(%d) on %s", (int)duty, action.targetPeriphId.c_str());
-            return pm.writePWM(action.targetPeriphId, duty);
-        }
-
-        case ExecActionType::ACTION_SET_DAC: {
-            uint8_t dacVal = effectiveValue.isEmpty() ? 0 : effectiveValue.toInt();
-            LOGGER.infof("[PeriphExec] Execute SetDAC(%d) on %s", (int)dacVal, action.targetPeriphId.c_str());
-            PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
-            if (!cfg) return false;
-            uint8_t pin = cfg->getPrimaryPin();
-            dacWrite(pin, dacVal);
-            return true;
-        }
-
-        case ExecActionType::ACTION_HIGH_INVERTED: {
-            LOGGER.infof("[PeriphExec] Execute HIGH(inverted) on %s", action.targetPeriphId.c_str());
-            pm.stopActionTicker(action.targetPeriphId);
-            return pm.writePin(action.targetPeriphId, GPIOState::STATE_LOW);
-        }
-
-        case ExecActionType::ACTION_LOW_INVERTED: {
-            LOGGER.infof("[PeriphExec] Execute LOW(inverted) on %s", action.targetPeriphId.c_str());
-            pm.stopActionTicker(action.targetPeriphId);
-            return pm.writePin(action.targetPeriphId, GPIOState::STATE_HIGH);
-        }
-
-        default:
-            LOGGER.warningf("[PeriphExec] Unknown peripheral action: %d", action.actionType);
-            return false;
-    }
-}
-
-bool PeriphExecManager::executeModbusAction(const ExecAction& action, const String& effectiveValue) {
-    // 解析 "modbus:<deviceIndex>" 格式
-    int deviceIdx = action.targetPeriphId.substring(7).toInt();
-
-    auto* fw = FastBeeFramework::getInstance();
-    if (!fw) { LOGGER.warning("[PeriphExec] Framework not available"); return false; }
-    auto* protMgr = fw->getProtocolManager();
-    if (!protMgr) { LOGGER.warning("[PeriphExec] ProtocolManager not available"); return false; }
-    ModbusHandler* modbus = protMgr->getModbusHandler();
-    if (!modbus) {
-        LOGGER.warning("[PeriphExec] ModbusHandler not available");
-        return false;
-    }
-    if (deviceIdx < 0 || deviceIdx >= modbus->getSubDeviceCount()) {
-        LOGGER.warningf("[PeriphExec] Modbus device index out of range: %d", deviceIdx);
-        return false;
-    }
-
-    const ModbusSubDevice& dev = modbus->getSubDevice(deviceIdx);
-    ExecActionType actType = static_cast<ExecActionType>(action.actionType);
-
-    switch (actType) {
-        case ExecActionType::ACTION_MODBUS_COIL_WRITE: {
-            // 值格式: "channel:state" 如 "0:1" 表示通道0打开, 或单独 "1"/"0" 表示通道0的开关
-            uint16_t channel = 0;
-            bool coilState = false;
-            int sepIdx = effectiveValue.indexOf(':');
-            if (sepIdx > 0) {
-                channel = effectiveValue.substring(0, sepIdx).toInt();
-                coilState = effectiveValue.substring(sepIdx + 1).toInt() != 0;
-            } else {
-                coilState = effectiveValue.toInt() != 0;
-            }
-            uint16_t coilAddr = dev.coilBase + channel;
-            LOGGER.infof("[PeriphExec] Modbus FC05: slave=%d coil=%d state=%d",
-                dev.slaveAddress, coilAddr, coilState);
-            OneShotResult result = modbus->writeCoilOnce(dev.slaveAddress, coilAddr, coilState);
-            return result.error == ONESHOT_SUCCESS;
-        }
-        case ExecActionType::ACTION_MODBUS_REG_WRITE: {
-            // 值格式: "addr:value" 指定寄存器地址和值, 或单独 "value" 使用 coilBase 作为地址
-            uint16_t regAddr = dev.coilBase;
-            uint16_t regVal = 0;
-            int sepIdx = effectiveValue.indexOf(':');
-            if (sepIdx > 0) {
-                regAddr = effectiveValue.substring(0, sepIdx).toInt();
-                regVal = effectiveValue.substring(sepIdx + 1).toInt();
-            } else {
-                regVal = effectiveValue.toInt();
-            }
-            LOGGER.infof("[PeriphExec] Modbus FC06: slave=%d reg=%d val=%d",
-                dev.slaveAddress, regAddr, regVal);
-            OneShotResult result = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, regVal);
-            return result.error == ONESHOT_SUCCESS;
-        }
-        default:
-            LOGGER.warningf("[PeriphExec] Unknown Modbus action type: %d", action.actionType);
-            return false;
-    }
-}
-
-bool PeriphExecManager::executeModbusPollAction(const ExecAction& action, const PeriphExecRule& rule) {
-    auto* fw = FastBeeFramework::getInstance();
-    if (!fw) { LOGGER.warning("[PeriphExec] Framework not available"); return false; }
-    auto* protMgr = fw->getProtocolManager();
-    if (!protMgr) { LOGGER.warning("[PeriphExec] ProtocolManager not available"); return false; }
-    ModbusHandler* modbus = protMgr->getModbusHandler();
-    if (!modbus) {
-        LOGGER.warning("[PeriphExec] ModbusHandler not available for poll action");
-        return false;
-    }
-
-    // 检查 Modbus 是否在 Master 模式
-    if (modbus->getMode() != MODBUS_MASTER) {
-        LOGGER.warning("[PeriphExec] Modbus not in Master mode, skip poll action");
-        return false;
-    }
-
-    // 检查是否有配置的轮询任务
-    uint8_t pollTaskCount = modbus->getPollTaskCount();
-    if (pollTaskCount == 0) {
-        LOGGER.warning("[PeriphExec] No Modbus poll tasks configured");
-        return false;
-    }
-
-    // 检查堆内存是否充足
-    if (ESP.getFreeHeap() < 50000) {
-        LOGGER.warningf("[PeriphExec] Insufficient heap for Modbus poll: %d bytes free", ESP.getFreeHeap());
-        return false;
-    }
-
-    // 从规则的 POLL_TRIGGER 触发器中提取通信参数
-    uint16_t timeout = 1000;
-    uint8_t retries = 2;
-    uint16_t interDelay = 100;
-    for (const auto& trigger : rule.triggers) {
-        if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER)) {
-            timeout = trigger.pollResponseTimeout;
-            retries = trigger.pollMaxRetries;
-            interDelay = trigger.pollInterPollDelay;
-            break;
-        }
-    }
-
-    String actionVal = action.actionValue;
-    if (actionVal.isEmpty()) {
-        LOGGER.warning("[PeriphExec] Poll action has empty actionValue");
-        return false;
-    }
-
-    // 检测 JSON 格式 vs 旧逗号分隔格式
-    if (actionVal.charAt(0) == '{') {
-        // === 新 JSON 格式: {"poll":[0,1],"ctrl":[{"d":0,"a":"on","c":0}]} ===
-        JsonDocument doc;
-        DeserializationError err = deserializeJson(doc, actionVal);
-        if (err) {
-            LOGGER.warningf("[PeriphExec] Failed to parse JSON actionValue: %s", err.c_str());
-            return false;
-        }
-
-        bool anySuccess = false;
-
-        // 处理 poll 数组: 执行采集任务
-        JsonArray pollArr = doc["poll"].as<JsonArray>();
-        if (pollArr) {
-            // 根据轮询任务数量动态计算缓冲区
-            uint16_t estimatedSize = 128;  // 基础开销
-            for (JsonVariant v : pollArr) {
-                estimatedSize += 512;  // 每个轮询预留512字节
-            }
-            if (estimatedSize > 8192) estimatedSize = 8192;  // 上限8KB
-
-            String mergedJson;
-            mergedJson.reserve(estimatedSize);
-            mergedJson = "[";
-            bool first = true;
-            for (JsonVariant v : pollArr) {
-                uint8_t taskIdx = v.as<uint8_t>();
-                if (!first && interDelay > 0) delay(interDelay);
-                String result = modbus->executePollTaskByIndex(taskIdx, timeout, retries);
-                if (result != "[]") {
-                    anySuccess = true;
-                    String inner = result.substring(1, result.length() - 1);
-                    if (!first) mergedJson += ",";
-                    mergedJson += inner;
-                    first = false;
-                }
-            }
-            mergedJson += "]";
-            if (anySuccess) {
-                LOGGER.infof("[PeriphExec] Poll completed, injecting %d bytes", mergedJson.length());
-                handlePollData("modbus_poll", mergedJson);
-            }
-        }
-
-        // 处理 ctrl 数组: 执行控制命令
-        JsonArray ctrlArr = doc["ctrl"].as<JsonArray>();
-        if (ctrlArr) {
-            ModbusConfig cfg = modbus->getConfig();
-            for (JsonVariant cv : ctrlArr) {
-                uint8_t devIdx = cv["d"].as<uint8_t>();
-                if (devIdx >= cfg.master.deviceCount) {
-                    LOGGER.warningf("[PeriphExec] ctrl device index %d out of range", devIdx);
-                    continue;
-                }
-                const ModbusSubDevice& dev = cfg.master.devices[devIdx];
-                const char* act = cv["a"] | "on";
-                uint8_t ch = cv["c"] | 0;
-                uint16_t val = cv["v"] | 0;
-
-                if (interDelay > 0) delay(interDelay);
-
-                String devType(dev.deviceType);
-                if (devType == "relay") {
-                    bool coilVal = (strcmp(act, "on") == 0);
-                    if (dev.ncMode) coilVal = !coilVal;
-                    uint16_t addr = dev.coilBase + ch;
-                    if (dev.controlProtocol == 0) {
-                        auto res = modbus->writeCoilOnce(dev.slaveAddress, addr, coilVal);
-                        bool ok = (res.error == ONESHOT_SUCCESS);
-                        anySuccess = anySuccess || ok;
-                        LOGGER.infof("[PeriphExec] Relay ctrl: slave=%d coil=%d val=%d ok=%d",
-                            dev.slaveAddress, addr, coilVal, ok);
-                    } else {
-                        uint16_t regVal = coilVal ? 0xFF00 : 0x0000;
-                        auto res = modbus->writeRegisterOnce(dev.slaveAddress, addr, regVal);
-                        bool ok = (res.error == ONESHOT_SUCCESS);
-                        anySuccess = anySuccess || ok;
-                        LOGGER.infof("[PeriphExec] Relay reg ctrl: slave=%d reg=%d val=0x%04X ok=%d",
-                            dev.slaveAddress, addr, regVal, ok);
-                    }
-                } else if (devType == "pwm") {
-                    uint16_t regAddr = dev.pwmRegBase + ch;
-                    auto res = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, val);
-                    bool ok = (res.error == ONESHOT_SUCCESS);
-                    anySuccess = anySuccess || ok;
-                    LOGGER.infof("[PeriphExec] PWM ctrl: slave=%d reg=%d val=%d ok=%d",
-                        dev.slaveAddress, regAddr, val, ok);
-                } else if (devType == "pid") {
-                    const char* param = cv["p"] | "P";
-                    uint8_t pidIdx = 3;
-                    if (strcmp(param, "I") == 0) pidIdx = 4;
-                    else if (strcmp(param, "D") == 0) pidIdx = 5;
-                    uint16_t regAddr = dev.pidAddrs[pidIdx];
-                    auto res = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, val);
-                    bool ok = (res.error == ONESHOT_SUCCESS);
-                    anySuccess = anySuccess || ok;
-                    LOGGER.infof("[PeriphExec] PID ctrl: slave=%d param=%s reg=%d val=%d ok=%d",
-                        dev.slaveAddress, param, regAddr, val, ok);
-                }
-            }
-        }
-
-        return anySuccess;
-    }
-
-    // === 旧格式兼容: 逗号分隔的任务索引，如 "0,1,3" ===
-    String mergedJson = "[";
-    bool first = true;
-    bool anySuccess = false;
-
-    int start = 0;
-    while (start <= (int)actionVal.length()) {
-        int comma = actionVal.indexOf(',', start);
-        if (comma < 0) comma = actionVal.length();
-        String token = actionVal.substring(start, comma);
-        token.trim();
-        if (token.length() > 0) {
-            uint8_t taskIdx = (uint8_t)token.toInt();
-
-            if (!first && interDelay > 0) {
-                delay(interDelay);
-            }
-
-            String result = modbus->executePollTaskByIndex(taskIdx, timeout, retries);
-            if (result != "[]") {
-                anySuccess = true;
-                String inner = result.substring(1, result.length() - 1);
-                if (!first) mergedJson += ",";
-                mergedJson += inner;
-                first = false;
-            }
-        }
-        start = comma + 1;
-    }
-
-    mergedJson += "]";
-
-    if (anySuccess) {
-        LOGGER.infof("[PeriphExec] Poll action completed, injecting %d bytes", mergedJson.length());
-        handlePollData("modbus_poll", mergedJson);
-    }
-
-    return anySuccess;
-}
-
-bool PeriphExecManager::executeSensorReadAction(const ExecAction& action, ActionExecResult& result) {
-    String actionVal = action.actionValue;
-    if (actionVal.isEmpty() || actionVal.charAt(0) != '{') {
-        LOGGER.warning("[PeriphExec] Sensor read: empty or invalid actionValue");
-        return false;
-    }
-
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, actionVal);
-    if (err) {
-        LOGGER.warningf("[PeriphExec] Sensor read: JSON parse failed: %s", err.c_str());
-        return false;
-    }
-
-    const char* periphId = doc["periphId"] | "";
-    const char* category = doc["sensorCategory"] | "analog";
-    float scaleFactor = doc["scaleFactor"] | 1.0f;
-    float offset = doc["offset"] | 0.0f;
-    uint8_t decimals = doc["decimalPlaces"] | 2;
-    const char* label = doc["sensorLabel"] | "";
-    const char* unit = doc["unit"] | "";
-
-    if (strlen(periphId) == 0) {
-        LOGGER.warning("[PeriphExec] Sensor read: no periphId specified");
-        return false;
-    }
-
-    PeripheralManager& pm = PeripheralManager::getInstance();
-    float rawValue = 0;
-
-    if (strcmp(category, "analog") == 0) {
-        rawValue = (float)pm.readAnalog(String(periphId));
-    } else if (strcmp(category, "digital") == 0) {
-        GPIOState state = pm.readPin(String(periphId));
-        rawValue = (state == GPIOState::STATE_HIGH) ? 1.0f : 0.0f;
-    } else if (strcmp(category, "pulse") == 0) {
-        LOGGER.warning("[PeriphExec] Sensor read: pulse/frequency not yet implemented");
-        rawValue = 0;
-    } else {
-        LOGGER.warningf("[PeriphExec] Sensor read: unknown category '%s'", category);
-        return false;
-    }
-
-    float processed = rawValue * scaleFactor + offset;
-    if (decimals > 6) decimals = 6;
-
-    result.targetPeriphId = String(periphId);
-    result.actualValue = String(processed, (unsigned int)decimals);
-
-    LOGGER.infof("[PeriphExec] Sensor read: periph=%s cat=%s raw=%.1f processed=%s%s label=%s",
-        periphId, category, rawValue, result.actualValue.c_str(), unit, label);
-
-    return true;
-}
-
-bool PeriphExecManager::executeSystemAction(const ExecAction& action) {
-    ExecActionType actType = static_cast<ExecActionType>(action.actionType);
-
-    switch (actType) {
-        case ExecActionType::ACTION_SYS_RESTART:
-            LOGGER.info("[PeriphExec] Executing system restart...");
-            delay(500);
-            ESP.restart();
-            return true;
-
-        case ExecActionType::ACTION_SYS_FACTORY_RESET: {
-            LOGGER.info("[PeriphExec] Executing factory reset...");
-            const char* configFiles[] = {
-                "/config/device.json", "/config/network.json", "/config/protocol.json",
-                "/config/users.json", "/config/system.json",
-                "/config/http.json", "/config/mqtt.json", "/config/tcp.json",
-                "/config/modbus.json", "/config/coap.json", PERIPH_EXEC_CONFIG_FILE,
-                RULE_SCRIPT_CONFIG_FILE, "/config/peripherals.json", "/config/roles.json"
-            };
-            for (int i = 0; i < (int)(sizeof(configFiles) / sizeof(configFiles[0])); i++) {
-                if (LittleFS.exists(configFiles[i])) {
-                    LittleFS.remove(configFiles[i]);
-                }
-            }
-            delay(500);
-            ESP.restart();
-            return true;
-        }
-
-        case ExecActionType::ACTION_SYS_NTP_SYNC: {
-            LOGGER.info("[PeriphExec] Executing NTP sync...");
-            configTzTime("CST-8", "cn.pool.ntp.org", "time.nist.gov");
-            return true;
-        }
-
-        case ExecActionType::ACTION_SYS_OTA:
-            LOGGER.info("[PeriphExec] OTA action - reserved for future implementation");
-            return true;
-
-        case ExecActionType::ACTION_SYS_AP_PROVISION:
-            LOGGER.info("[PeriphExec] AP provision action - reserved for future implementation");
-            return true;
-
-        case ExecActionType::ACTION_SYS_BLE_PROVISION:
-            LOGGER.info("[PeriphExec] BLE provision action - reserved for future implementation");
-            return true;
-
-        default:
-            LOGGER.warningf("[PeriphExec] Unknown system action: %d", action.actionType);
-            return false;
-    }
-}
-
-// ========== 脚本执行 ==========
-
-bool PeriphExecManager::executeScriptAction(const ExecAction& action) {
-    if (action.actionValue.isEmpty()) {
-        LOGGER.warning("[PeriphExec] Script is empty");
-        return false;
-    }
-
-    auto cmds = ScriptEngine::parse(action.actionValue);
-    if (cmds.empty()) {
-        LOGGER.warning("[PeriphExec] Script parse failed");
-        return false;
-    }
-
-    String errMsg;
-    if (!ScriptEngine::validate(cmds, errMsg)) {
-        LOGGER.warningf("[PeriphExec] Script validation failed: %s", errMsg.c_str());
-        return false;
-    }
-
-    LOGGER.infof("[PeriphExec] Executing script (%d commands)", cmds.size());
-
-    MQTTClient* mqtt = getMqttClient();
-    return ScriptEngine::execute(cmds, mqtt);
-}
-
-// ========== 异步调度引擎 ==========
-
-bool PeriphExecManager::shouldRunAsync() const {
-    // 检查可用堆内存
-    size_t freeHeap = ESP.getFreeHeap();
-    if (freeHeap < MIN_HEAP_FOR_ASYNC) {
-        return false;
-    }
-    // 检查是否有空闲任务槽（非阻塞 peek）
-    if (uxSemaphoreGetCount(_taskSlotSemaphore) == 0) {
-        return false;
-    }
-    return true;
-}
-
-void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& receivedValue) {
-    // 检查是否有系统重启/恢复出厂动作 —— 必须同步执行
-    for (const auto& a : rule.actions) {
-        if (a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART) ||
-            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET)) {
-            LOGGER.infof("[PeriphExec] Sync execute (system action): '%s'", rule.name.c_str());
-            executeAllActions(rule, receivedValue);
-            return;
-        }
-    }
-
-    // 用户指定同步执行
-    if (rule.execMode == static_cast<uint8_t>(ExecMode::EXEC_SYNC)) {
-        LOGGER.infof("[PeriphExec] Sync execute (user config): '%s'", rule.name.c_str());
-        executeAllActions(rule, receivedValue);
-        return;
-    }
-
-    // 检查任务是否已在运行中（防止重复分发）
-    {
-        MutexGuard runLock(_runningRulesMutex);
-        if (_runningRuleIds.count(rule.id) > 0) {
-            LOGGER.warningf("[PeriphExec] Skip dispatch: task '%s' already running", rule.name.c_str());
-            return;
-        }
-    }
-
-    // 异步模式：判断资源是否充足
-    if (!shouldRunAsync()) {
-        LOGGER.infof("[PeriphExec] Fallback sync (heap=%d, slots=%d): '%s'",
-                     (int)ESP.getFreeHeap(),
-                     (int)uxSemaphoreGetCount(_taskSlotSemaphore),
-                     rule.name.c_str());
-        executeAllActions(rule, receivedValue);
-        return;
-    }
-
-    // 获取一个任务槽（非阻塞）
-    if (xSemaphoreTake(_taskSlotSemaphore, 0) != pdTRUE) {
-        LOGGER.warningf("[PeriphExec] No async slot, fallback sync: '%s'", rule.name.c_str());
-        executeAllActions(rule, receivedValue);
-        return;
-    }
-
-    // 分配异步上下文（堆内存，任务结束后释放）
-    AsyncExecContext* ctx = new (std::nothrow) AsyncExecContext();
-    if (!ctx) {
-        LOGGER.error("[PeriphExec] Failed to allocate async context");
-        xSemaphoreGive(_taskSlotSemaphore);
-        executeAllActions(rule, receivedValue);
-        return;
-    }
-
-    ctx->ruleCopy = rule;
-    ctx->receivedValue = receivedValue;
-    ctx->manager = this;
-    ctx->mqtt = getMqttClient();
-    ctx->taskSlot = _taskSlotSemaphore;
-
-    // 确定栈大小：有脚本/Modbus动作用 8KB，其他 4KB
-    bool needLargeStack = false;
-    for (const auto& a : rule.actions) {
-        if (a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT) ||
-            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL) ||
-            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_COIL_WRITE) ||
-            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_REG_WRITE) ||
-            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
-            needLargeStack = true;
-            break;
-        }
-    }
-    uint32_t stackSize = needLargeStack ? SCRIPT_TASK_STACK : SIMPLE_TASK_STACK;
-
-    // 创建 FreeRTOS 任务
-    char taskName[24];
-    snprintf(taskName, sizeof(taskName), "exec_%.16s", rule.id.c_str());
-
-    // 在创建任务前先将规则ID加入运行中集合
-    {
-        MutexGuard runLock(_runningRulesMutex);
-        _runningRuleIds.insert(rule.id);
-    }
-
-    BaseType_t created = xTaskCreatePinnedToCore(
-        asyncExecTaskFunc,      // 任务函数
-        taskName,               // 任务名称
-        stackSize,              // 栈大小
-        ctx,                    // 参数
-        ASYNC_TASK_PRIORITY,    // 优先级 0（低于主循环）
-        nullptr,                // 不需要任务句柄
-        1                       // 运行在 Core 1（与主循环相同）
-    );
-
-    if (created != pdPASS) {
-        LOGGER.errorf("[PeriphExec] Failed to create async task, insufficient memory: '%s'", rule.name.c_str());
-        // 任务创建失败，从运行中集合移除
-        {
-            MutexGuard runLock(_runningRulesMutex);
-            _runningRuleIds.erase(rule.id);
-        }
-        delete ctx;
-        xSemaphoreGive(_taskSlotSemaphore);
-        executeAllActions(rule, receivedValue);
-        return;
-    }
-
-    LOGGER.infof("[PeriphExec] Async dispatched: '%s' (stack=%d, heap=%d)",
-                 rule.name.c_str(), (int)stackSize, (int)ESP.getFreeHeap());
-}
-
-// FreeRTOS 任务入口函数
-void PeriphExecManager::asyncExecTaskFunc(void* pvParameters) {
-    AsyncExecContext* ctx = static_cast<AsyncExecContext*>(pvParameters);
-    if (!ctx) {
-        vTaskDelete(nullptr);
-        return;
-    }
-
-    AsyncExecResult result;
-    result.ruleId = ctx->ruleCopy.id;
-    result.ruleName = ctx->ruleCopy.name;
-    result.startTime = millis();
-    result.status = AsyncExecStatus::RUNNING;
-
-    LOGGER.infof("[PeriphExec] Async task started: '%s'", result.ruleName.c_str());
-
-    // 执行所有动作
-    auto actionResults = ctx->manager->executeAllActions(ctx->ruleCopy, ctx->receivedValue);
-
-    // 统计结果
-    bool allOk = true;
-    for (const auto& ar : actionResults) {
-        if (!ar.success) { allOk = false; break; }
-    }
-
-    result.endTime = millis();
-    result.status = allOk ? AsyncExecStatus::COMPLETED : AsyncExecStatus::FAILED;
-
-    LOGGER.infof("[PeriphExec] Async task finished: '%s' %s (%lums)",
-                 result.ruleName.c_str(),
-                 allOk ? "OK" : "FAILED",
-                 result.endTime - result.startTime);
-
-    // 记录执行结果
-    ctx->manager->recordResult(result);
-
-    // 从运行中集合移除规则ID
-    {
-        MutexGuard runLock(ctx->manager->_runningRulesMutex);
-        ctx->manager->_runningRuleIds.erase(ctx->ruleCopy.id);
-    }
-
-    // 如果执行失败，设置退避时间（30秒后才能再次触发）
-    if (!allOk) {
-        MutexGuard runLock(ctx->manager->_runningRulesMutex);
-        ctx->manager->_failureBackoff[ctx->ruleCopy.id] = millis() + 30000;
-        LOGGER.infof("[PeriphExec] Rule '%s' failed, backoff for 30s", result.ruleName.c_str());
-    } else {
-        // 成功时清除退避记录
-        MutexGuard runLock(ctx->manager->_runningRulesMutex);
-        ctx->manager->_failureBackoff.erase(ctx->ruleCopy.id);
-    }
-
-    // 触发外设执行完成事件
-    ctx->manager->triggerPeriphExecEvent(ctx->ruleCopy.id, allOk ? "success" : "failed");
-
-    // 释放任务槽
-    xSemaphoreGive(ctx->taskSlot);
-
-    // 释放上下文
-    delete ctx;
-
-    // 删除自身任务
-    vTaskDelete(nullptr);
-}
-
-// ========== 异步执行结果管理 ==========
-
-void PeriphExecManager::recordResult(const AsyncExecResult& result) {
-    MutexGuard lock(_resultsMutex);
-    if (!lock.isLocked()) return;
-
-    executionResults.push_back(result);
-
-    // 保留最近 MAX_ASYNC_TASKS * 2 条记录
-    while (executionResults.size() > MAX_ASYNC_TASKS * 2) {
-        executionResults.erase(executionResults.begin());
-    }
-}
-
-std::vector<AsyncExecResult> PeriphExecManager::getRecentResults() {
-    MutexGuard lock(_resultsMutex);
-    return executionResults;
-}
-
-// ========== 工具 ==========
-
-MQTTClient* PeriphExecManager::getMqttClient() {
-    auto* fw = FastBeeFramework::getInstance();
-    if (fw) {
-        auto* pm = fw->getProtocolManager();
-        if (pm) return pm->getMQTTClient();
-    }
-    return nullptr;
-}
-
-String PeriphExecManager::generateUniqueId() {
-    return "exec_" + String(millis());
-}
-
-// ========== 手动执行 ==========
-
-bool PeriphExecManager::runOnce(const String& id) {
-    PeriphExecRule* rule = getRule(id);
-    if (!rule) {
-        LOGGER.warning("[PeriphExec] Rule not found for runOnce: " + id);
-        return false;
-    }
-    
-    // 创建副本并异步分发，避免阻塞 Web 请求线程
-    PeriphExecRule ruleCopy = *rule;
-    LOGGER.infof("[PeriphExec] runOnce async dispatch: '%s' (id=%s)", 
-                 ruleCopy.name.c_str(), id.c_str());
-    dispatchAsync(ruleCopy, "");
-    return true;  // 返回 true 表示已提交
-}
-
-// ========== 触发事件 ==========
-
-void PeriphExecManager::triggerEvent(EventType eventType, const String& eventData) {
-    // 启动保护：PeriphExecManager 未初始化时（mutex 未创建），跳过事件处理
-    if (!_rulesMutex) return;
-
-    // 查找匹配的事件ID
-    const char* targetEventId = nullptr;
-    for (size_t i = 0; STATIC_EVENTS[i].id != nullptr; i++) {
-        if (STATIC_EVENTS[i].type == eventType) {
-            targetEventId = STATIC_EVENTS[i].id;
-            break;
-        }
-    }
-    
-    if (!targetEventId) {
-        LOGGER.warningf("[PeriphExec] Unknown event type: %d", (int)eventType);
-        return;
-    }
-    
-    LOGGER.infof("[PeriphExec] Event triggered: %s (data=%s)", targetEventId, eventData.c_str());
-    
-    // 阶段1: 持锁匹配，收集规则副本
+void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const String& eventData) {
     std::vector<PeriphExecRule> triggeredRules;
-    
+
     {
         MutexGuard lock(_rulesMutex);
-        
+
         for (auto& pair : rules) {
             PeriphExecRule& rule = pair.second;
             if (!rule.enabled) continue;
 
-            // 遍历触发器匹配事件
             for (auto& trigger : rule.triggers) {
                 if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER)) continue;
                 if (trigger.eventId.isEmpty()) continue;
-                if (trigger.eventId != targetEventId) continue;
+                if (trigger.eventId != eventId) continue;
 
                 // 防重复触发：同一触发器最小间隔 1 秒
                 unsigned long now = millis();
                 if (trigger.lastTriggerTime > 0 && (now - trigger.lastTriggerTime) < 1000) continue;
 
                 LOGGER.infof("[PeriphExec] Event rule matched: '%s' (event=%s)",
-                    rule.name.c_str(), targetEventId);
+                    rule.name.c_str(), eventId.c_str());
 
                 trigger.lastTriggerTime = now;
                 trigger.triggerCount++;
@@ -1627,37 +871,19 @@ void PeriphExecManager::triggerEvent(EventType eventType, const String& eventDat
         }
     }
     // 锁已释放
-    
+
     // 阶段2: 无锁异步分发
     for (const auto& ruleCopy : triggeredRules) {
         dispatchAsync(ruleCopy, eventData);
     }
 }
 
-void PeriphExecManager::triggerEventById(const String& eventId, const String& eventData) {
-    const EventDef* def = findStaticEvent(eventId.c_str());
-    if (def) {
-        triggerEvent(def->type, eventData);
-    } else {
-        // 检查是否是外设执行规则事件
-        if (eventId.startsWith("exec_")) {
-            triggerPeriphExecEvent(eventId, eventData);
-        } else {
-            LOGGER.warningf("[PeriphExec] Unknown event ID: %s", eventId.c_str());
-        }
-    }
-}
-
-void PeriphExecManager::triggerPeriphExecEvent(const String& ruleId, const String& eventData) {
-    if (!_rulesMutex) return;
-    LOGGER.infof("[PeriphExec] Periph exec event triggered: %s", ruleId.c_str());
-    
-    // 阶段1: 持锁匹配，收集规则副本
+void PeriphExecManager::dispatchPeriphExecEvent(const String& ruleId, const String& eventData) {
     std::vector<PeriphExecRule> triggeredRules;
-    
+
     {
         MutexGuard lock(_rulesMutex);
-        
+
         for (auto& pair : rules) {
             PeriphExecRule& rule = pair.second;
             if (!rule.enabled) continue;
@@ -1681,442 +907,32 @@ void PeriphExecManager::triggerPeriphExecEvent(const String& ruleId, const Strin
         }
     }
     // 锁已释放
-    
+
     // 阶段2: 无锁异步分发
     for (const auto& ruleCopy : triggeredRules) {
         dispatchAsync(ruleCopy, eventData);
     }
 }
 
-String PeriphExecManager::getStaticEventsJson() {
-    JsonDocument doc;
-    JsonArray arr = doc.to<JsonArray>();
-    
-    for (size_t i = 0; STATIC_EVENTS[i].id != nullptr; i++) {
-        JsonObject obj = arr.add<JsonObject>();
-        obj["id"] = STATIC_EVENTS[i].id;
-        obj["name"] = STATIC_EVENTS[i].name;
-        obj["category"] = STATIC_EVENTS[i].category;
-        obj["type"] = static_cast<uint8_t>(STATIC_EVENTS[i].type);
-    }
-    
-    String result;
-    serializeJson(doc, result);
-    return result;
-}
-
-String PeriphExecManager::getDynamicEventsJson() {
-    JsonDocument doc;
-    JsonArray arr = doc.to<JsonArray>();
-    
-    // 添加外设执行规则作为动态事件
-    MutexGuard lock(_rulesMutex);
-    
-    for (const auto& pair : rules) {
-        const PeriphExecRule& rule = pair.second;
-        if (!rule.enabled) continue;
-        
-        JsonObject obj = arr.add<JsonObject>();
-        obj["id"] = rule.id;
-        obj["name"] = rule.name;
-        obj["category"] = "外设执行";
-        obj["type"] = static_cast<uint8_t>(EventType::EVENT_PERIPH_EXEC_COMPLETED);
-        obj["isDynamic"] = true;
-    }
-    
-    String result;
-    serializeJson(doc, result);
-    return result;
-}
-
-// ========== 精准执行结果上报 ==========
-
-void PeriphExecManager::reportActionResults(const std::vector<ActionExecResult>& results) {
-    if (results.empty()) return;
-
-    // 构建上报数据：[{"id":"led1","value":"1","remark":"success"}, ...]
-    JsonDocument doc;
-    JsonArray arr = doc.to<JsonArray>();
-
-    for (const auto& ar : results) {
-        if (ar.targetPeriphId.isEmpty()) continue;
-        JsonObject obj = arr.add<JsonObject>();
-        obj["id"] = ar.targetPeriphId;
-        obj["value"] = ar.actualValue;
-        obj["remark"] = ar.success ? "success" : "failed";
-    }
-
-    if (arr.size() == 0) return;
-
-    String reportData;
-    serializeJson(doc, reportData);
-
-    // 通过 MQTT 上报
-    MQTTClient* mqtt = getMqttClient();
-    if (mqtt && mqtt->getIsConnected()) {
-        bool ok = mqtt->publishReportData(reportData);
-        LOGGER.infof("[PeriphExec] Report action results via MQTT: %s (%s)",
-                     reportData.c_str(), ok ? "ok" : "failed");
-    } else {
-        LOGGER.debug("[PeriphExec] MQTT not connected, skip action results report");
-    }
-}
-
-// ========== 动作执行后数据上报 ==========
-
-// 协议连接状态标志位
-#define PROTOCOL_MQTT_CONNECTED    (1 << 0)
-#define PROTOCOL_MODBUS_CONNECTED  (1 << 1)
-#define PROTOCOL_TCP_CONNECTED     (1 << 2)
-#define PROTOCOL_HTTP_CONNECTED    (1 << 3)
-#define PROTOCOL_COAP_CONNECTED    (1 << 4)
-
-String PeriphExecManager::collectPeripheralData() {
-    PeripheralManager& pm = PeripheralManager::getInstance();
-    std::vector<PeripheralConfig> allPeriphs = pm.getAllPeripherals();
-    
-    JsonDocument doc;
-    JsonArray arr = doc.to<JsonArray>();
-    
-    for (const auto& config : allPeriphs) {
-        // 只收集已启用的外设
-        if (!config.enabled) continue;
-        
-        // 只收集 GPIO 类型的外设状态
-        int typeVal = static_cast<int>(config.type);
-        if (typeVal < 11 || typeVal > 26) continue;  // 跳过非GPIO/ADC/DAC类型
-        
-        JsonObject obj = arr.add<JsonObject>();
-        obj["id"] = config.id;
-        obj["name"] = config.name;
-        obj["type"] = typeVal;
-        
-        // 获取运行时状态
-        auto* runtimeState = pm.getRuntimeState(config.id);
-        if (runtimeState) {
-            obj["status"] = static_cast<int>(runtimeState->status);
-        } else {
-            obj["status"] = 0;
-        }
-        
-        // 读取当前值
-        if (typeVal >= 11 && typeVal <= 14) {
-            // 数字输入/输出类型
-            GPIOState state = pm.readPin(config.id);
-            if (state != GPIOState::STATE_UNDEFINED) {
-                obj["value"] = (state == GPIOState::STATE_HIGH) ? "1" : "0";
-            }
-        } else if (typeVal == 15 || typeVal == 26) {
-            // 模拟输入或 ADC
-            uint16_t analog = pm.readAnalog(config.id);
-            obj["value"] = String(analog);
-        }
-    }
-    
-    String result;
-    serializeJson(doc, result);
-    return result;
-}
-
-bool PeriphExecManager::checkNetworkAndProtocolStatus(uint8_t& connectedProtocols) {
-    connectedProtocols = 0;
-    
-    // 检查 WiFi 连接状态
-    if (WiFi.status() != WL_CONNECTED) {
-        LOGGER.debug("[PeriphExec] WiFi not connected, skip report");
-        return false;
-    }
-    
-    bool hasConnectedProtocol = false;
-    
-    // 获取 ProtocolManager
-    auto* fw = FastBeeFramework::getInstance();
-    if (!fw) {
-        return false;
-    }
-    auto* protocolMgr = fw->getProtocolManager();
-    if (!protocolMgr) {
-        return false;
-    }
-    
-    // 检查 MQTT 连接状态
-    MQTTClient* mqtt = protocolMgr->getMQTTClient();
-    if (mqtt && mqtt->getIsConnected()) {
-        connectedProtocols |= PROTOCOL_MQTT_CONNECTED;
-        hasConnectedProtocol = true;
-    }
-    
-    // 检查 TCP 连接状态（通过状态字符串判断）
-    String tcpStatus = protocolMgr->getProtocolStatus(ProtocolType::TCP);
-    if (tcpStatus.indexOf("connected") >= 0 || tcpStatus.indexOf("listening") >= 0) {
-        connectedProtocols |= PROTOCOL_TCP_CONNECTED;
-        hasConnectedProtocol = true;
-    }
-    
-    // 检查 Modbus 状态
-    ModbusHandler* modbus = protocolMgr->getModbusHandler();
-    if (modbus) {
-        String modbusStatus = modbus->getStatus();
-        if (modbusStatus.indexOf("running") >= 0 || modbusStatus.indexOf("initialized") >= 0) {
-            connectedProtocols |= PROTOCOL_MODBUS_CONNECTED;
-            hasConnectedProtocol = true;
-        }
-    }
-    
-    // 检查 HTTP 状态（通过状态字符串判断）
-    String httpStatus = protocolMgr->getProtocolStatus(ProtocolType::HTTP);
-    if (httpStatus.indexOf("initialized") >= 0 || httpStatus.indexOf("ready") >= 0) {
-        connectedProtocols |= PROTOCOL_HTTP_CONNECTED;
-        hasConnectedProtocol = true;
-    }
-    
-    // 检查 CoAP 状态
-    String coapStatus = protocolMgr->getProtocolStatus(ProtocolType::COAP);
-    if (coapStatus.indexOf("initialized") >= 0 || coapStatus.indexOf("ready") >= 0) {
-        connectedProtocols |= PROTOCOL_COAP_CONNECTED;
-        hasConnectedProtocol = true;
-    }
-    
-    return hasConnectedProtocol;
-}
-
-bool PeriphExecManager::tryReportDeviceData() {
-    uint8_t connectedProtocols = 0;
-    
-    // 检查网络和协议连接状态
-    if (!checkNetworkAndProtocolStatus(connectedProtocols)) {
-        LOGGER.debug("[PeriphExec] No connected protocol, skip data report");
-        return true;  // 无连接不算失败，只是跳过
-    }
-    
-    // 收集外设数据
-    String periphData = collectPeripheralData();
-    if (periphData.isEmpty() || periphData == "[]") {
-        LOGGER.debug("[PeriphExec] No peripheral data to report");
-        return true;  // 无数据不算失败
-    }
-    
-    // 优先通过 MQTT 上报
-    if (connectedProtocols & PROTOCOL_MQTT_CONNECTED) {
-        auto* fw = FastBeeFramework::getInstance();
-        if (fw) {
-            auto* protocolMgr = fw->getProtocolManager();
-            if (protocolMgr) {
-                MQTTClient* mqtt = protocolMgr->getMQTTClient();
-                if (mqtt && mqtt->getIsConnected()) {
-                    bool ok = mqtt->publishReportData(periphData);
-                    if (ok) {
-                        LOGGER.infof("[PeriphExec] Data reported via MQTT, size=%d", periphData.length());
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    
-    // 备选：通过 TCP 上报
-    if (connectedProtocols & PROTOCOL_TCP_CONNECTED) {
-        auto* fw = FastBeeFramework::getInstance();
-        if (fw) {
-            auto* protocolMgr = fw->getProtocolManager();
-            if (protocolMgr) {
-                bool ok = protocolMgr->sendData(ProtocolType::TCP, "", periphData);
-                if (ok) {
-                    LOGGER.infof("[PeriphExec] Data reported via TCP, size=%d", periphData.length());
-                    return true;
-                }
-            }
-        }
-    }
-    
-    // 备选：通过 HTTP POST 上报
-    if (connectedProtocols & PROTOCOL_HTTP_CONNECTED) {
-        auto* fw = FastBeeFramework::getInstance();
-        if (fw) {
-            auto* protocolMgr = fw->getProtocolManager();
-            if (protocolMgr) {
-                bool ok = protocolMgr->sendData(ProtocolType::HTTP, "", periphData);
-                if (ok) {
-                    LOGGER.infof("[PeriphExec] Data reported via HTTP, size=%d", periphData.length());
-                    return true;
-                }
-            }
-        }
-    }
-    
-    // 备选：通过 CoAP 上报
-    if (connectedProtocols & PROTOCOL_COAP_CONNECTED) {
-        auto* fw = FastBeeFramework::getInstance();
-        if (fw) {
-            auto* protocolMgr = fw->getProtocolManager();
-            if (protocolMgr) {
-                bool ok = protocolMgr->sendData(ProtocolType::COAP, "", periphData);
-                if (ok) {
-                    LOGGER.infof("[PeriphExec] Data reported via CoAP, size=%d", periphData.length());
-                    return true;
-                }
-            }
-        }
-    }
-    
-    LOGGER.warning("[PeriphExec] Data report failed, no available protocol");
-    return false;
-}
-
-// ========== 按键事件检测 ==========
-
-void PeriphExecManager::checkButtonEvents() {
-    unsigned long now = millis();
-    
-    // 每 20ms 检测一次按键状态（比设备触发更频繁）
-    if (now - _lastButtonCheck < 20) return;
-    _lastButtonCheck = now;
-    
-    PeripheralManager& pm = PeripheralManager::getInstance();
-    std::vector<PeripheralConfig> allPeriphs = pm.getAllPeripherals();
-    
-    for (const auto& config : allPeriphs) {
-        // 只处理支持按键事件的外设类型（上拉/下拉输入）
-        if (!config.enabled) continue;
-        if (!supportsButtonEvent(config.type)) continue;
-        
-        // 获取或创建按键状态
-        if (buttonStates.find(config.id) == buttonStates.end()) {
-            ButtonRuntimeState state;
-            state.periphId = config.id;
-            state.lastState = true;  // 上拉默认高电平
-            state.currentState = true;
-            buttonStates[config.id] = state;
-        }
-        
-        ButtonRuntimeState& btnState = buttonStates[config.id];
-        
-        // 读取当前按键状态
-        GPIOState gpioState = pm.readPin(config.id);
-        if (gpioState == GPIOState::STATE_UNDEFINED) continue;
-        
-        bool currentLevel = (gpioState == GPIOState::STATE_HIGH);
-        btnState.currentState = currentLevel;
-        
-        // 检测状态变化（消抖处理）
-        if (currentLevel != btnState.lastState) {
-            // 检查消抖时间
-            if (now - btnState.lastChangeTime >= buttonConfig.debounceMs) {
-                btnState.lastState = currentLevel;
-                btnState.lastChangeTime = now;
-                
-                if (!currentLevel) {
-                    // 按键按下（低电平）
-                    btnState.pressStartTime = now;
-                    
-                    // 触发按键按下事件
-                    triggerButtonEvent(config.id, EventType::EVENT_BUTTON_PRESS);
-                    
-                    LOGGER.debugf("[PeriphExec] Button PRESS: %s", config.id.c_str());
-                } else {
-                    // 按键释放（高电平）
-                    unsigned long pressDuration = now - btnState.pressStartTime;
-                    
-                    // 触发按键释放事件
-                    triggerButtonEvent(config.id, EventType::EVENT_BUTTON_RELEASE);
-                    
-                    // 判断是点击还是长按释放
-                    if (pressDuration < buttonConfig.longPress2sMs) {
-                        // 短按释放，计入点击计数
-                        btnState.clickCount++;
-                        btnState.lastClickTime = now;
-                        
-                        LOGGER.debugf("[PeriphExec] Button CLICK (%d): %s, duration=%lums", 
-                            btnState.clickCount, config.id.c_str(), pressDuration);
-                    }
-                    
-                    // 重置长按触发标记
-                    btnState.longPress2sTriggered = false;
-                    btnState.longPress5sTriggered = false;
-                    btnState.longPress10sTriggered = false;
-                }
-            }
-        } else {
-            // 状态未变化，检查长按和双击
-            if (!currentLevel) {
-                // 按键持续按下，检查长按
-                unsigned long pressDuration = now - btnState.pressStartTime;
-                
-                // 长按2秒
-                if (!btnState.longPress2sTriggered && pressDuration >= buttonConfig.longPress2sMs) {
-                    btnState.longPress2sTriggered = true;
-                    triggerButtonEvent(config.id, EventType::EVENT_BUTTON_LONG_PRESS_2S);
-                    LOGGER.infof("[PeriphExec] Button LONG_PRESS_2S: %s", config.id.c_str());
-                }
-                
-                // 长按5秒
-                if (!btnState.longPress5sTriggered && pressDuration >= buttonConfig.longPress5sMs) {
-                    btnState.longPress5sTriggered = true;
-                    triggerButtonEvent(config.id, EventType::EVENT_BUTTON_LONG_PRESS_5S);
-                    LOGGER.infof("[PeriphExec] Button LONG_PRESS_5S: %s", config.id.c_str());
-                }
-                
-                // 长按10秒
-                if (!btnState.longPress10sTriggered && pressDuration >= buttonConfig.longPress10sMs) {
-                    btnState.longPress10sTriggered = true;
-                    triggerButtonEvent(config.id, EventType::EVENT_BUTTON_LONG_PRESS_10S);
-                    LOGGER.infof("[PeriphExec] Button LONG_PRESS_10S: %s", config.id.c_str());
-                }
-            } else {
-                // 按键释放状态，检查双击
-                if (btnState.clickCount > 0) {
-                    // 检查双击超时
-                    if (now - btnState.lastClickTime >= buttonConfig.clickIntervalMs) {
-                        // 双击超时，处理点击结果
-                        if (btnState.clickCount == 2) {
-                            // 双击
-                            triggerButtonEvent(config.id, EventType::EVENT_BUTTON_DOUBLE_CLICK);
-                            LOGGER.infof("[PeriphExec] Button DOUBLE_CLICK: %s", config.id.c_str());
-                        } else if (btnState.clickCount == 1) {
-                            // 单击
-                            triggerButtonEvent(config.id, EventType::EVENT_BUTTON_CLICK);
-                            LOGGER.infof("[PeriphExec] Button CLICK: %s", config.id.c_str());
-                        }
-                        // 重置点击计数
-                        btnState.clickCount = 0;
-                    }
-                }
-            }
-        }
-    }
-}
-
-void PeriphExecManager::triggerButtonEvent(const String& periphId, EventType eventType) {
-    // 查找事件ID
-    const char* targetEventId = nullptr;
-    for (size_t i = 0; STATIC_EVENTS[i].id != nullptr; i++) {
-        if (STATIC_EVENTS[i].type == eventType) {
-            targetEventId = STATIC_EVENTS[i].id;
-            break;
-        }
-    }
-    
-    if (!targetEventId) return;
-    
-    // 阶段1: 持锁匹配，收集规则副本
+void PeriphExecManager::dispatchButtonEventRules(const String& eventId, const String& periphId) {
     std::vector<PeriphExecRule> triggeredRules;
-    
+
     {
         MutexGuard lock(_rulesMutex);
-        
+
         for (auto& pair : rules) {
             PeriphExecRule& rule = pair.second;
             if (!rule.enabled) continue;
 
             for (auto& trigger : rule.triggers) {
                 if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER)) continue;
-                if (trigger.eventId != targetEventId) continue;
+                if (trigger.eventId != eventId) continue;
 
                 unsigned long now = millis();
                 if (trigger.lastTriggerTime > 0 && (now - trigger.lastTriggerTime) < 100) continue;
 
                 LOGGER.infof("[PeriphExec] Button event rule matched: '%s' (event=%s, periph=%s)",
-                    rule.name.c_str(), targetEventId, periphId.c_str());
+                    rule.name.c_str(), eventId.c_str(), periphId.c_str());
 
                 trigger.lastTriggerTime = now;
                 trigger.triggerCount++;
@@ -2126,161 +942,332 @@ void PeriphExecManager::triggerButtonEvent(const String& periphId, EventType eve
         }
     }
     // 锁已释放
-    
+
     // 阶段2: 无锁异步分发
     for (const auto& ruleCopy : triggeredRules) {
         dispatchAsync(ruleCopy, "");
     }
 }
 
-// ========== 配置辅助方法 ==========
+void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
+    // 阶段1: 持锁匹配，收集需要执行的规则副本及其匹配的接收值
+    struct MatchedRule {
+        PeriphExecRule rule;
+        String receivedValue;
+    };
+    std::vector<MatchedRule> matchedRules;
 
-String PeriphExecManager::getValidTriggerTypes() {
+    {
+        MutexGuard lock(_rulesMutex);
+        if (rules.empty()) return;
+
+        for (JsonObject item : arr) {
+            if (!item.containsKey("id") || !item.containsKey("value")) continue;
+
+            String itemId = item["id"].as<String>();
+            String itemValue = item["value"].as<String>();
+
+            for (auto& pair : rules) {
+                PeriphExecRule& rule = pair.second;
+                if (!rule.enabled) continue;
+
+                // 遍历所有触发器（OR 关系）
+                bool triggerMatched = false;
+                for (auto& trigger : rule.triggers) {
+                    if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::PLATFORM_TRIGGER)) continue;
+
+                    // 匹配数据源外设 ID（必须配置且匹配，空/null 不匹配任何数据）
+                    if (trigger.triggerPeriphId.isEmpty() || trigger.triggerPeriphId == "null") continue;
+                    if (trigger.triggerPeriphId != itemId) continue;
+
+                    // 防重复触发：同一触发器最小间隔 1 秒
+                    if (trigger.lastTriggerTime > 0 && (millis() - trigger.lastTriggerTime) < 1000) continue;
+
+                    // 条件评估 - 需要比较数值
+                    float val = itemValue.toFloat();
+                    float cmp = trigger.compareValue.toFloat();
+                    bool conditionMet = false;
+
+                    ExecOperator oper = static_cast<ExecOperator>(trigger.operatorType);
+                    switch (oper) {
+                        case ExecOperator::EQ:  conditionMet = (val == cmp); break;
+                        case ExecOperator::NEQ: conditionMet = (val != cmp); break;
+                        case ExecOperator::GT:  conditionMet = (val > cmp); break;
+                        case ExecOperator::LT:  conditionMet = (val < cmp); break;
+                        case ExecOperator::GTE: conditionMet = (val >= cmp); break;
+                        case ExecOperator::LTE: conditionMet = (val <= cmp); break;
+                        case ExecOperator::CONTAIN: conditionMet = itemValue.indexOf(trigger.compareValue) >= 0; break;
+                        case ExecOperator::NOT_CONTAIN: conditionMet = itemValue.indexOf(trigger.compareValue) < 0; break;
+                        default: break;
+                    }
+
+                    if (conditionMet) {
+                        LOGGER.infof("[PeriphExec] Rule '%s' triggered by %s=%s (cmp=%s)",
+                            rule.name.c_str(), itemId.c_str(), itemValue.c_str(), trigger.compareValue.c_str());
+
+                        trigger.lastTriggerTime = millis();
+                        trigger.triggerCount++;
+                        triggerMatched = true;
+                        break;  // 一个触发器匹配即可
+                    }
+                }
+
+                if (triggerMatched) {
+                    matchedRules.push_back({rule, itemValue});
+                }
+            }
+        }
+    }
+    // 锁已释放
+
+    // 阶段2: 无锁异步分发
+    for (const auto& matched : matchedRules) {
+        dispatchAsync(matched.rule, matched.receivedValue);
+    }
+}
+
+void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& source) {
+    // 阶段1: 持锁匹配，收集需要执行的规则副本及其匹配的接收值
+    struct MatchedRule {
+        PeriphExecRule rule;
+        String receivedValue;
+    };
+    std::vector<MatchedRule> matchedRules;
+
+    {
+        MutexGuard lock(_rulesMutex);
+        if (rules.empty()) return;
+
+        for (JsonObject item : arr) {
+            if (!item.containsKey("id") || !item.containsKey("value")) continue;
+
+            String itemId = item["id"].as<String>();
+            String itemValue = item["value"].as<String>();
+
+            for (auto& pair : rules) {
+                PeriphExecRule& rule = pair.second;
+                if (!rule.enabled) continue;
+
+                // 遍历所有触发器（OR 关系）
+                bool triggerMatched = false;
+                for (auto& trigger : rule.triggers) {
+                    if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER)) continue;
+
+                    // 匹配数据源外设 ID（必须配置且匹配，空/null 不匹配任何数据）
+                    if (trigger.triggerPeriphId.isEmpty() || trigger.triggerPeriphId == "null") continue;
+                    if (trigger.triggerPeriphId != itemId) continue;
+
+                    // 防重复触发：同一触发器最小间隔 1 秒
+                    if (trigger.lastTriggerTime > 0 && (millis() - trigger.lastTriggerTime) < 1000) continue;
+
+                    // 条件评估
+                    float val = itemValue.toFloat();
+                    float cmp = trigger.compareValue.toFloat();
+                    bool conditionMet = false;
+
+                    ExecOperator oper = static_cast<ExecOperator>(trigger.operatorType);
+                    switch (oper) {
+                        case ExecOperator::EQ:  conditionMet = (val == cmp); break;
+                        case ExecOperator::NEQ: conditionMet = (val != cmp); break;
+                        case ExecOperator::GT:  conditionMet = (val > cmp); break;
+                        case ExecOperator::LT:  conditionMet = (val < cmp); break;
+                        case ExecOperator::GTE: conditionMet = (val >= cmp); break;
+                        case ExecOperator::LTE: conditionMet = (val <= cmp); break;
+                        case ExecOperator::CONTAIN: conditionMet = itemValue.indexOf(trigger.compareValue) >= 0; break;
+                        case ExecOperator::NOT_CONTAIN: conditionMet = itemValue.indexOf(trigger.compareValue) < 0; break;
+                        default: break;
+                    }
+
+                    if (conditionMet) {
+                        LOGGER.infof("[PeriphExec] Poll rule '%s' triggered by %s: %s=%s (op=%d, cmp=%s)",
+                            rule.name.c_str(), source.c_str(), itemId.c_str(), itemValue.c_str(),
+                            trigger.operatorType, trigger.compareValue.c_str());
+
+                        trigger.lastTriggerTime = millis();
+                        trigger.triggerCount++;
+                        triggerMatched = true;
+                        break;  // 一个触发器匹配即可
+                    }
+                }
+
+                if (triggerMatched) {
+                    matchedRules.push_back({rule, itemValue});
+                }
+            }
+        }
+    }
+    // 锁已释放
+
+    // 阶段2: 无锁异步分发
+    for (const auto& matched : matchedRules) {
+        dispatchAsync(matched.rule, matched.receivedValue);
+    }
+}
+
+String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::vector<int>& processedIndices) {
+    // 预处理阶段：处理 modbus_read 指令
+    JsonDocument modbusReportDoc;
+    JsonArray modbusReportArr = modbusReportDoc.to<JsonArray>();
+
+    if (_modbusReadCallback) {
+        int idx = 0;
+        for (JsonObject item : cmdArr) {
+            String itemId = item["id"].as<String>();
+            if (itemId == "modbus_read") {
+                String itemValue = item["value"].as<String>();
+                LOGGER.infof("[PeriphExec] DataCommand: modbus_read command detected");
+                String modbusResult = _modbusReadCallback(itemValue);
+                JsonDocument tmpDoc;
+                if (!deserializeJson(tmpDoc, modbusResult) && tmpDoc.is<JsonArray>()) {
+                    for (JsonVariant v : tmpDoc.as<JsonArray>()) {
+                        modbusReportArr.add(v);
+                    }
+                }
+            }
+            idx++;
+        }
+    }
+
+    // 阶段1: 持锁匹配，收集规则副本
+    struct MatchedItem {
+        PeriphExecRule rule;
+        String itemId;
+        String itemValue;
+    };
+    std::vector<MatchedItem> matchedItems;
+    std::vector<String> unmatchedIds;    // 未匹配的 item id
+    std::vector<String> unmatchedValues; // 未匹配的 item value
+
+    {
+        MutexGuard lock(_rulesMutex);
+
+        int itemIdx = 0;
+        for (JsonObject item : cmdArr) {
+            // 跳过已在预处理阶段处理的 modbus_read 项
+            bool skip = false;
+            for (int pi : processedIndices) { if (pi == itemIdx) { skip = true; break; } }
+            itemIdx++;
+            if (skip) continue;
+
+            if (!item.containsKey("id") || !item.containsKey("value")) continue;
+
+            String itemId = item["id"].as<String>();
+            String itemValue = item["value"].as<String>();
+            bool matched = false;
+
+            for (auto& pair : rules) {
+                PeriphExecRule& rule = pair.second;
+                if (!rule.enabled) continue;
+
+                // 遍历触发器匹配数据源
+                for (auto& trigger : rule.triggers) {
+                    if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::PLATFORM_TRIGGER)) continue;
+                    if (trigger.triggerPeriphId.isEmpty() || trigger.triggerPeriphId == "null") continue;
+                    if (trigger.triggerPeriphId != itemId) continue;
+
+                    // 条件评估
+                    float val = itemValue.toFloat();
+                    float cmp = trigger.compareValue.toFloat();
+                    bool conditionMet = false;
+
+                    ExecOperator oper = static_cast<ExecOperator>(trigger.operatorType);
+                    switch (oper) {
+                        case ExecOperator::EQ:  conditionMet = (val == cmp); break;
+                        case ExecOperator::NEQ: conditionMet = (val != cmp); break;
+                        case ExecOperator::GT:  conditionMet = (val > cmp); break;
+                        case ExecOperator::LT:  conditionMet = (val < cmp); break;
+                        case ExecOperator::GTE: conditionMet = (val >= cmp); break;
+                        case ExecOperator::LTE: conditionMet = (val <= cmp); break;
+                        default: break;
+                    }
+
+                    if (!conditionMet) continue;
+
+                    matched = true;
+                    trigger.lastTriggerTime = millis();
+                    trigger.triggerCount++;
+                    matchedItems.push_back({rule, itemId, itemValue});
+                    break;  // 一个触发器匹配即可
+                }
+            }
+
+            if (!matched) {
+                unmatchedIds.push_back(itemId);
+                unmatchedValues.push_back(itemValue);
+            }
+        }
+    }
+    // 锁已释放
+
+    // 阶段2: 无锁同步执行并构建响应
+    JsonDocument reportDoc;
+    JsonArray reportArr = reportDoc.to<JsonArray>();
+
+    // 先添加 Modbus 读取结果
+    for (JsonVariant v : modbusReportArr) {
+        reportArr.add(v);
+    }
+
+    for (auto& mi : matchedItems) {
+        LOGGER.infof("[PeriphExec] DataCommand matched rule '%s' for id='%s' value='%s'",
+            mi.rule.name.c_str(), mi.itemId.c_str(), mi.itemValue.c_str());
+
+        auto results = executeAllActions(mi.rule, mi.itemValue);
+
+        // 构建响应：每个动作的结果
+        for (const auto& ar : results) {
+            JsonObject reportItem = reportArr.add<JsonObject>();
+            reportItem["id"] = ar.targetPeriphId.isEmpty() ? mi.itemId : ar.targetPeriphId;
+            reportItem["value"] = ar.actualValue.isEmpty() ? mi.itemValue : ar.actualValue;
+            reportItem["remark"] = ar.success ? "success" : "execute failed";
+        }
+        if (results.empty()) {
+            JsonObject reportItem = reportArr.add<JsonObject>();
+            reportItem["id"] = mi.itemId;
+            reportItem["value"] = mi.itemValue;
+            reportItem["remark"] = "no actions";
+        }
+    }
+
+    for (size_t i = 0; i < unmatchedIds.size(); i++) {
+        LOGGER.infof("[PeriphExec] DataCommand no matching rule for id='%s'", unmatchedIds[i].c_str());
+        JsonObject reportItem = reportArr.add<JsonObject>();
+        reportItem["id"] = unmatchedIds[i];
+        reportItem["value"] = unmatchedValues[i];
+        reportItem["remark"] = "no matching rule";
+    }
+
+    String result;
+    serializeJson(reportDoc, result);
+    return result;
+}
+
+String PeriphExecManager::getDynamicEventsJsonInternal() {
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
-    
-    auto addTrigger = [&arr](uint8_t type, const char* name, const char* desc) {
+
+    // 添加外设执行规则作为动态事件
+    MutexGuard lock(_rulesMutex);
+
+    for (const auto& pair : rules) {
+        const PeriphExecRule& rule = pair.second;
+        if (!rule.enabled) continue;
+
         JsonObject obj = arr.add<JsonObject>();
-        obj["type"] = type;
-        obj["name"] = name;
-        obj["description"] = desc;
-    };
-    
-    // 平台触发 - MQTT指令下发
-    addTrigger(static_cast<uint8_t>(ExecTriggerType::PLATFORM_TRIGGER), 
-               "平台触发", "IoT平台通过MQTT下发指令时触发");
-    
-    // 定时触发
-    addTrigger(static_cast<uint8_t>(ExecTriggerType::TIMER_TRIGGER), 
-               "定时触发", "按指定时间间隔或每日时间点触发");
-    
-    // 触发事件（合并了原系统事件、按键事件、设备触发、外设执行事件、数据事件）
-    addTrigger(static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER),
-               "事件触发", "WiFi/MQTT/按键/数据/外设执行等事件触发");
-    
-    // 轮询触发（本地数据源条件评估）
-    addTrigger(static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER),
-               "轮询触发", "本地数据源（如Modbus传感器）周期轮询条件评估触发");
-    
+        obj["id"] = rule.id;
+        obj["name"] = rule.name;
+        obj["category"] = "外设执行";
+        obj["type"] = static_cast<uint8_t>(EventType::EVENT_PERIPH_EXEC_COMPLETED);
+        obj["isDynamic"] = true;
+    }
+
     String result;
     serializeJson(doc, result);
     return result;
 }
 
-String PeriphExecManager::getEventCategoriesJson() {
-    JsonDocument doc;
-    JsonArray arr = doc.to<JsonArray>();
-    
-    // 定义事件分类
-    const char* categories[] = {"WiFi", "MQTT", "网络", "协议", "系统", "配网", "规则", "按键", "外设执行", "数据"};
-    const char* descriptions[] = {
-        "WiFi连接状态变化事件",
-        "MQTT连接状态变化事件", 
-        "网络模式切换事件",
-        "协议启用事件",
-        "系统服务事件",
-        "配网过程事件",
-        "规则引擎事件",
-        "按键输入事件",
-        "外设执行规则事件",
-        "协议数据收发事件"
-    };
-    
-    for (size_t i = 0; i < sizeof(categories) / sizeof(categories[0]); i++) {
-        JsonObject obj = arr.add<JsonObject>();
-        obj["name"] = categories[i];
-        obj["description"] = descriptions[i];
-    }
-    
-    String result;
-    serializeJson(doc, result);
-    return result;
-}
+// ========== 工具 ==========
 
-String PeriphExecManager::getValidActionTypes(const String& periphId) {
-    JsonDocument doc;
-    JsonArray arr = doc.to<JsonArray>();
-    
-    PeripheralManager& pm = PeripheralManager::getInstance();
-    PeripheralConfig* config = nullptr;
-    
-    if (!periphId.isEmpty()) {
-        config = pm.getPeripheral(periphId);
-    }
-    
-    auto addAction = [&arr](uint8_t type, const char* name, const char* category = "") {
-        JsonObject obj = arr.add<JsonObject>();
-        obj["type"] = type;
-        obj["name"] = name;
-        if (strlen(category) > 0) {
-            obj["category"] = category;
-        }
-    };
-    
-    if (config) {
-        PeripheralType pType = config->type;
-        
-        if (isInputType(pType)) {
-            // 输入类型外设：不支持GPIO输出动作，只支持系统功能和脚本
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
-        } else if (isOutputType(pType)) {
-            // 输出类型外设：支持所有GPIO输出动作
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH), "设置高电平", "GPIO");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW), "设置低电平", "GPIO");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH_INVERTED), "设置高电平(反转)", "GPIO");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW_INVERTED), "设置低电平(反转)", "GPIO");
-            
-            // PWM输出
-            if (pType == PeripheralType::GPIO_PWM_OUTPUT) {
-                addAction(static_cast<uint8_t>(ExecActionType::ACTION_SET_PWM), "设置PWM占空比", "PWM");
-                addAction(static_cast<uint8_t>(ExecActionType::ACTION_BLINK), "闪烁", "PWM");
-                addAction(static_cast<uint8_t>(ExecActionType::ACTION_BREATHE), "呼吸灯", "PWM");
-            }
-            
-            // DAC输出
-            if (pType == PeripheralType::DAC || pType == PeripheralType::GPIO_ANALOG_OUTPUT) {
-                addAction(static_cast<uint8_t>(ExecActionType::ACTION_SET_DAC), "设置DAC值", "DAC");
-            }
-            
-            // 系统功能和脚本
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
-        } else {
-            // 其他类型外设：只支持系统功能和脚本
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
-            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
-        }
-    } else {
-        // 未指定外设，返回所有动作类型
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH), "设置高电平", "GPIO");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW), "设置低电平", "GPIO");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_BLINK), "闪烁", "GPIO");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_BREATHE), "呼吸灯", "GPIO");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SET_PWM), "设置PWM占空比", "PWM");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SET_DAC), "设置DAC值", "DAC");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_OTA), "OTA升级", "系统");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_AP_PROVISION), "AP配网", "系统");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_BLE_PROVISION), "BLE配网", "系统");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH_INVERTED), "设置高电平(反转)", "GPIO");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW_INVERTED), "设置低电平(反转)", "GPIO");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
-    }
-    
-    String result;
-    serializeJson(doc, result);
-    return result;
+String PeriphExecManager::generateUniqueId() {
+    return "exec_" + String(millis());
 }

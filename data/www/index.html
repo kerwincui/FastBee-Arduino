@@ -25,7 +25,7 @@
             </div>
             <div class="login-header">
                 <div><img src="./assets/logo.png"></div>
-                <h1 style="margin: 0; font-size: 22px;color:#328cff;" id="login-title">设备配置管理</h1>
+                <h1 class="fb-m-0 fb-text-xl fb-text-primary" id="login-title">设备配置管理</h1>
             </div>
 
             <div class="login-body">
@@ -35,16 +35,16 @@
                         <input type="text" id="username" class="pure-input-1" placeholder="请输入用户名"
                             data-i18n-placeholder="username-placeholder" required>
 
-                        <label for="password" style="margin-top: 15px;" id="password-label">密码</label>
+                        <label for="password" class="fb-mt-3" id="password-label">密码</label>
                         <input type="password" id="password" class="pure-input-1" placeholder="请输入密码"
                             data-i18n-placeholder="password-placeholder" required>
 
-                        <label class="pure-checkbox" style="margin: 15px 0 20px;">
+                        <label class="pure-checkbox fb-my-3">
                             <input type="checkbox" id="remember" checked>
                             <span id="remember-label">记住密码</span>
                         </label>
 
-                        <button type="submit" class="pure-button pure-button-primary pure-u-1" id="login-button">
+                        <button type="submit" class="fb-btn fb-btn-primary pure-u-1" id="login-button">
                             登录系统
                         </button>
                     </fieldset>
@@ -80,6 +80,9 @@
                         <span class="menu-icon">⚡</span> <span id="menu-periph-exec"
                             data-i18n="menu-periph-exec">外设执行</span>
                     </a>
+                    <a href="#" class="menu-item" data-page="device-control">
+                        <span class="menu-icon">🎮</span> <span id="menu-device-control" data-i18n="menu-device-control">设备控制</span>
+                    </a>
                     <a href="#" class="menu-item" data-page="protocol">
                         <span class="menu-icon">🔌</span> <span id="menu-protocol">通信协议</span>
                     </a>
@@ -113,7 +116,7 @@
                     </div>
                     <div class="header-actions">
                         <!-- 语言切换 -->
-                        <select id="language-select" class="pure-input-1" style="width:auto;">
+                        <select id="language-select" class="pure-input-1 fb-w-auto">
                             <option value="zh-CN">中文</option>
                             <option value="en">English</option>
                         </select>
@@ -169,7 +172,7 @@
                             <!-- 网络状态 -->
                             <div class="stat-card stat-card-info">
                                 <div class="stat-label" data-i18n="dashboard-network">网络状态</div>
-                                <div class="stat-value" id="monitor-network-status" style="font-size: 18px;">--</div>
+                                <div class="stat-value fb-text-lg" id="monitor-network-status">--</div>
                                 <div class="stat-desc" id="monitor-ip">--</div>
                             </div>
                         </div>
@@ -418,11 +421,11 @@
                             <div class="card-header u-flex-between-center">
                                 <h2 class="card-title" id="protocol-title">通信协议配置</h2>
                                 <div>
-                                    <button type="button" class="pure-button u-btn-compact"
-                                        onclick="AppState.exportProtocolConfig()"
+                                    <button type="button" class="fb-btn fb-btn-sm"
+                                        data-action="exportProtocolConfig"
                                         data-i18n="protocol-export-btn">导出配置</button>
-                                    <button type="button" class="pure-button u-btn-compact"
-                                        onclick="AppState.importProtocolConfig()"
+                                    <button type="button" class="fb-btn fb-btn-sm"
+                                        data-action="importProtocolConfig"
                                         data-i18n="protocol-import-btn">导入配置</button>
                                 </div>
                             </div>
@@ -464,19 +467,18 @@
                                                 <span id="mqtt-status-reconnects" class="mqtt-status-value">0</span>
                                             </div>
                                         </div>
-                                        <div class="config-form-grid"
-                                            style="margin-bottom:15px; padding-bottom:15px; border-bottom:1px solid #eee;">
+                                        <div class="config-form-grid fb-mb-3 fb-pb-3 fb-border-bottom">
                                             <div class="config-form-column">
-                                                <div class="pure-control-group" style="margin-bottom:0;">
-                                                    <label class="pure-checkbox" style="margin:0; font-weight:500;">
+                                                <div class="pure-control-group fb-mb-0">
+                                                    <label class="pure-checkbox fb-m-0 fb-font-medium">
                                                         <input type="checkbox" id="mqtt-enabled" checked> <span
                                                             data-i18n="mqtt-enabled-label">启用MQTT</span>
                                                     </label>
                                                 </div>
                                             </div>
                                             <div class="config-form-column">
-                                                <div class="pure-control-group" style="margin-bottom:0;">
-                                                    <label class="pure-checkbox" style="margin:0; font-weight:500;">
+                                                <div class="pure-control-group fb-mb-0">
+                                                    <label class="pure-checkbox fb-m-0 fb-font-medium">
                                                         <input type="checkbox" id="mqtt-auto-reconnect" checked> <span
                                                             data-i18n="mqtt-auto-reconnect-text">自动重连</span>
                                                     </label>
@@ -545,17 +547,15 @@
                                         </div>
 
                                         <!-- 高级配置（可折叠） -->
-                                        <div class="mqtt-collapsible-section"
-                                            style="margin-top:15px; background:#f3e5f5; border:1px solid #ce93d8; border-radius:4px;">
-                                            <div class="mqtt-collapsible-header"
-                                                onclick="AppState.toggleSection('mqtt-card-body')"
-                                                style="padding: 12px 15px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none;">
-                                                <h4 style="margin:0; font-size:14px; color:#333;"
+                                        <div class="mqtt-collapsible-section fb-mt-3 fb-bg-purple-light fb-border-purple fb-rounded">
+                                            <div class="mqtt-collapsible-header fb-p-3 fb-cursor-pointer fb-flex-between fb-user-select-none"
+                                                data-action="toggleSection" data-args="mqtt-card-body">
+                                                <h4 class="fb-m-0 fb-text-sm fb-text-dark"
                                                     data-i18n="mqtt-card-section-title">高级配置</h4>
                                                 <span class="mqtt-collapse-icon" id="mqtt-card-body-icon">&#9654;</span>
                                             </div>
-                                            <div id="mqtt-card-body" class="mqtt-collapsible-body"
-                                                style="display: none; padding: 0 12px 12px 12px;">
+                                            <div id="mqtt-card-body" class="mqtt-collapsible-body fb-hidden"
+                                                style="padding: 0 12px 12px 12px;">
                                                 <div class="config-form-grid">
                                                     <div class="config-form-column">
                                                         <div class="pure-control-group">
@@ -600,7 +600,7 @@
                                                         </div>
                                                     </div>
                                                 </div>
-                                                <div class="pure-control-group" style="margin-top:8px;">
+                                                <div class="pure-control-group fb-mt-2">
                                                     <label for="mqtt-summary" data-i18n="mqtt-summary-label">摘要
                                                         (JSON)</label>
                                                     <textarea id="mqtt-summary" class="pure-input-1" rows="4"
@@ -610,63 +610,57 @@
                                         </div>
 
                                         <!-- 发布主题配置区域（可折叠） -->
-                                        <div class="mqtt-collapsible-section"
-                                            style="margin-top: 20px; background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 4px;">
-                                            <div class="mqtt-collapsible-header"
-                                                onclick="AppState.toggleSection('mqtt-publish-body')"
-                                                style="padding: 12px 15px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none;">
-                                                <h4 style="margin: 0; color: #333;"
+                                        <div class="mqtt-collapsible-section fb-mt-4 fb-bg-gray-light fb-border-gray fb-rounded">
+                                            <div class="mqtt-collapsible-header fb-p-3 fb-cursor-pointer fb-flex-between fb-user-select-none"
+                                                data-action="toggleSection" data-args="mqtt-publish-body">
+                                                <h4 class="fb-m-0 fb-text-dark"
                                                     data-i18n="mqtt-publish-section-title">
                                                     发布主题配置</h4>
                                                 <span class="mqtt-collapse-icon"
                                                     id="mqtt-publish-body-icon">&#9654;</span>
                                             </div>
-                                            <div id="mqtt-publish-body" class="mqtt-collapsible-body"
-                                                style="display: none; padding: 0 15px 15px 15px;">
+                                            <div id="mqtt-publish-body" class="mqtt-collapsible-body fb-hidden"
+                                                style="padding: 0 15px 15px 15px;">
                                                 <div id="mqtt-publish-topics">
                                                     <!-- 动态添加的发布主题组将在这里显示 -->
                                                 </div>
                                                 <button type="button" id="add-mqtt-topic-btn"
-                                                    class="pure-button u-mt-10"
+                                                    class="fb-btn fb-btn-sm"
                                                     data-i18n="mqtt-add-topic-btn">增加主题</button>
                                             </div>
                                         </div>
 
                                         <!-- 订阅主题配置区域（可折叠） -->
-                                        <div class="mqtt-collapsible-section"
-                                            style="margin-top: 20px; background: #f0f7ff; border: 1px solid #b3d4fc; border-radius: 4px;">
-                                            <div class="mqtt-collapsible-header"
-                                                onclick="AppState.toggleSection('mqtt-subscribe-body')"
-                                                style="padding: 12px 15px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none;">
-                                                <h4 style="margin: 0; color: #333;"
+                                        <div class="mqtt-collapsible-section fb-mt-4 fb-bg-blue-light fb-border-blue fb-rounded">
+                                            <div class="mqtt-collapsible-header fb-p-3 fb-cursor-pointer fb-flex-between fb-user-select-none"
+                                                data-action="toggleSection" data-args="mqtt-subscribe-body">
+                                                <h4 class="fb-m-0 fb-text-dark"
                                                     data-i18n="mqtt-subscribe-section-title">
                                                     订阅主题配置</h4>
                                                 <span class="mqtt-collapse-icon"
                                                     id="mqtt-subscribe-body-icon">&#9654;</span>
                                             </div>
-                                            <div id="mqtt-subscribe-body" class="mqtt-collapsible-body"
-                                                style="display: none; padding: 0 15px 15px 15px;">
+                                            <div id="mqtt-subscribe-body" class="mqtt-collapsible-body fb-hidden"
+                                                style="padding: 0 15px 15px 15px;">
                                                 <div id="mqtt-subscribe-topics">
                                                     <!-- 动态添加的订阅主题组将在这里显示 -->
                                                 </div>
                                                 <button type="button" id="add-mqtt-subscribe-btn"
-                                                    class="pure-button u-mt-10"
+                                                    class="fb-btn fb-btn-sm"
                                                     data-i18n="mqtt-add-subscribe-btn">增加订阅</button>
                                             </div>
                                         </div>
 
                                         <!-- 遗嘱消息配置（可折叠） -->
-                                        <div class="mqtt-collapsible-section"
-                                            style="margin-top:15px; background:#fff8e1; border:1px solid #ffe082; border-radius:4px;">
-                                            <div class="mqtt-collapsible-header"
-                                                onclick="AppState.toggleSection('mqtt-will-body')"
-                                                style="padding: 12px 15px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none;">
-                                                <h4 style="margin:0; font-size:14px; color:#333;"
+                                        <div class="mqtt-collapsible-section fb-mt-3 fb-bg-yellow-light fb-border-yellow fb-rounded">
+                                            <div class="mqtt-collapsible-header fb-p-3 fb-cursor-pointer fb-flex-between fb-user-select-none"
+                                                data-action="toggleSection" data-args="mqtt-will-body">
+                                                <h4 class="fb-m-0 fb-text-sm fb-text-dark"
                                                     data-i18n="mqtt-will-section-title">遗嘱消息配置</h4>
                                                 <span class="mqtt-collapse-icon" id="mqtt-will-body-icon">&#9654;</span>
                                             </div>
-                                            <div id="mqtt-will-body" class="mqtt-collapsible-body"
-                                                style="display: none; padding: 0 12px 12px 12px;">
+                                            <div id="mqtt-will-body" class="mqtt-collapsible-body fb-hidden"
+                                                style="padding: 0 12px 12px 12px;">
                                                 <div class="config-form-grid">
                                                     <div class="config-form-column">
                                                         <div class="pure-control-group">
@@ -712,13 +706,13 @@
                                             <button type="submit" class="btn btn-primary"
                                                 data-i18n="btn-save-config">保存配置</button>
                                             <button type="button" class="btn btn-warning u-ml-10"
-                                                onclick="AppState.testMqttConnection()"
+                                                data-action="testMqttConnection"
                                                 data-i18n="mqtt-test-conn-btn">测试连接</button>
                                             <button type="button" class="btn btn-danger u-ml-10"
-                                                onclick="AppState.disconnectMqtt()"
+                                                data-action="disconnectMqtt"
                                                 data-i18n="mqtt-disconnect-btn">断开连接</button>
                                             <button type="button" class="btn btn-secondary u-ml-10"
-                                                onclick="AppState.mqttNtpSync()"
+                                                data-action="mqttNtpSync"
                                                 data-i18n="mqtt-ntp-sync-btn">MQTT时间同步</button>
                                             <span id="mqtt-test-result" class="u-ml-10 u-fs-13"></span>
                                         </div>
@@ -741,22 +735,22 @@
                                             </div>
                                             <div class="modbus-status-item">
                                                 <span class="modbus-status-label" data-i18n="modbus-master-success-polls">成功</span>
-                                                <strong id="master-stat-success" class="modbus-status-value" style="color:#4CAF50;">0</strong>
+                                                <strong id="master-stat-success" class="modbus-status-value fb-text-green">0</strong>
                                             </div>
                                             <div class="modbus-status-item">
                                                 <span class="modbus-status-label" data-i18n="modbus-master-failed-polls">失败</span>
-                                                <strong id="master-stat-failed" class="modbus-status-value" style="color:#f44336;">0</strong>
+                                                <strong id="master-stat-failed" class="modbus-status-value fb-text-red">0</strong>
                                             </div>
                                             <div class="modbus-status-item">
                                                 <span class="modbus-status-label" data-i18n="modbus-master-timeout-polls">超时</span>
-                                                <strong id="master-stat-timeout" class="modbus-status-value" style="color:#FF9800;">0</strong>
+                                                <strong id="master-stat-timeout" class="modbus-status-value fb-text-orange">0</strong>
                                             </div>
                                             <div class="modbus-status-item modbus-status-actions">
-                                                <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshMasterStatus()">
+                                                <button type="button" class="btn btn-sm btn-secondary" data-action="refreshMasterStatus">
                                                     <span class="icon-refresh"></span> <span data-i18n="refresh-btn">刷新</span>
                                                 </button>
                                             </div>
-                                            <div id="master-data-grid" style="width:100%;"></div>
+                                            <div id="master-data-grid" class="fb-w-full"></div>
                                         </div>
 
                                         <div class="pure-control-group u-separator-row">
@@ -773,13 +767,12 @@
                                                     <label for="rtu-peripheral-id"
                                                         data-i18n="rtu-peripheral-label">外设配置选择</label>
                                                     <select id="rtu-peripheral-id" class="pure-input-1"
-                                                        onchange="AppState.onRtuPeripheralChange(this.value)">
+                                                        data-change-action="onRtuPeripheralChange">
                                                         <option value="" disabled selected
                                                             data-i18n="rtu-peripheral-placeholder">-- 请选择UART外设 --
                                                         </option>
                                                     </select>
-                                                    <div id="rtu-peripheral-info" class="field-hint"
-                                                        style="display:none;"></div>
+                                                    <div id="rtu-peripheral-info" class="field-hint fb-hidden"></div>
                                                 </div>
                                                 <div class="pure-control-group">
                                                     <label for="rtu-de-pin" data-i18n="rtu-de-pin-label">DE引脚
@@ -808,7 +801,7 @@
                                                     <label for="rtu-work-mode"
                                                         data-i18n="rtu-work-mode-label">工作模式</label>
                                                     <select id="rtu-work-mode" class="pure-input-1"
-                                                        onchange="AppState.onWorkModeChange(this.value)">
+                                                        data-change-action="onWorkModeChange">
                                                         <option value="0" data-i18n="rtu-work-mode-mqtt">MQTT指令模式
                                                         </option>
                                                         <option value="1" data-i18n="rtu-work-mode-polling" selected>
@@ -824,17 +817,17 @@
                                         <!-- Master 模式配置区：统一子设备列表 -->
                                         <div id="master-config-section" class="u-mt-20">
                                             <h4 class="u-title-indigo" data-i18n="modbus-all-devices-title">Modbus 子设备</h4>
-                                            <div class="u-flex u-gap-5 u-mb-10" style="margin-top:12px;position:relative;">
+                                            <div class="u-flex u-gap-5 u-mb-10 fb-mt-1 fb-relative">
                                                 <button type="button" class="btn btn-sm btn-enable"
-                                                    onclick="AppState._showAddDeviceMenu(event)"
+                                                    data-action="_showAddDeviceMenu"
                                                     data-i18n="modbus-add-device">+ 添加设备</button>
-                                                <div id="add-device-menu" class="add-device-menu" style="display:none;">
-                                                    <div class="add-device-menu-item" onclick="AppState._addSensorDevice()" data-i18n="modbus-add-sensor">采集设备</div>
-                                                    <div class="add-device-menu-item" onclick="AppState._addControlDevice()" data-i18n="modbus-add-control">控制设备</div>
+                                                <div id="add-device-menu" class="add-device-menu fb-hidden">
+                                                    <div class="add-device-menu-item" data-action="_addSensorDevice" data-i18n="modbus-add-sensor">采集设备</div>
+                                                    <div class="add-device-menu-item" data-action="_addControlDevice" data-i18n="modbus-add-control">控制设备</div>
                                                 </div>
                                             </div>
                                             <div class="u-overflow-x">
-                                                <table class="pure-table pure-table-bordered u-table-compact" style="width:100%;">
+                                                <table class="pure-table pure-table-bordered u-table-compact fb-w-full">
                                                     <thead><tr>
                                                         <th data-i18n="modbus-dev-name">名称</th>
                                                         <th data-i18n="modbus-dev-type">类型</th>
@@ -849,10 +842,10 @@
 
                                         <!-- ========== 设备编辑弹窗 ========== -->
                                         <div id="modbus-device-edit-modal" class="modal">
-                                            <div class="modal-content" style="max-width:520px;">
+                                            <div class="modal-content fb-max-w-modal">
                                                 <div class="modal-header">
                                                     <h3 id="modbus-edit-modal-title" data-i18n="modbus-device-edit-title">编辑子设备</h3>
-                                                    <button type="button" class="modal-close" onclick="AppState._closeEditModal()">&times;</button>
+                                                    <button type="button" class="modal-close" data-action="_closeEditModal">&times;</button>
                                                 </div>
                                                 <div class="modal-body">
                                                     <div class="pure-form pure-form-stacked">
@@ -860,10 +853,10 @@
                                                             <label data-i18n="modbus-device-col-name">名称</label>
                                                             <input type="text" id="mdev-edit-name" class="pure-input-1" maxlength="31">
                                                         </div>
-                                                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                                                        <div class="fb-grid-2">
                                                             <div class="pure-control-group">
                                                                 <label data-i18n="modbus-device-col-type">类型</label>
-                                                                <select id="mdev-edit-type" class="pure-input-1" onchange="AppState._onEditTypeChange()">
+                                                                <select id="mdev-edit-type" class="pure-input-1" data-change-action="_onEditTypeChange">
                                                                     <option value="relay">继电器</option>
                                                                     <option value="pwm">PWM</option>
                                                                     <option value="pid">PID</option>
@@ -874,7 +867,7 @@
                                                                 <input type="number" id="mdev-edit-addr" class="pure-input-1" min="1" max="247">
                                                             </div>
                                                         </div>
-                                                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                                                        <div class="fb-grid-2">
                                                             <div class="pure-control-group">
                                                                 <label data-i18n="modbus-device-col-ch">通道数</label>
                                                                 <select id="mdev-edit-ch" class="pure-input-1">
@@ -888,7 +881,7 @@
                                                                 <input type="number" id="mdev-edit-base" class="pure-input-1" min="0" max="65535">
                                                             </div>
                                                         </div>
-                                                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                                                        <div class="fb-grid-2">
                                                             <div class="pure-control-group">
                                                                 <label data-i18n="modbus-device-col-protocol">控制协议</label>
                                                                 <select id="mdev-edit-protocol" class="pure-input-1">
@@ -904,15 +897,15 @@
                                                                 </select>
                                                             </div>
                                                         </div>
-                                                        <div style="margin-top:8px;">
-                                                            <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+                                                        <div class="fb-mt-2">
+                                                            <label class="fb-flex-inline fb-cursor-pointer">
                                                                 <input type="checkbox" id="mdev-edit-enabled" checked>
                                                                 <span data-i18n="modbus-device-enabled-label">启用</span>
                                                             </label>
                                                         </div>
                                                         <!-- PWM 扩展 -->
-                                                        <div id="mdev-edit-pwm-section" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
-                                                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                                                        <div id="mdev-edit-pwm-section" class="fb-hidden fb-mt-1 fb-pt-2 fb-border-top">
+                                                            <div class="fb-grid-2">
                                                                 <div class="pure-control-group">
                                                                     <label data-i18n="modbus-ctrl-pwm-reg-base">PWM 寄存器基地址</label>
                                                                     <input type="number" id="mdev-edit-pwm-reg-base" class="pure-input-1" min="0" max="65535">
@@ -928,8 +921,8 @@
                                                             </div>
                                                         </div>
                                                         <!-- PID 扩展 -->
-                                                        <div id="mdev-edit-pid-section" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
-                                                            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+                                                        <div id="mdev-edit-pid-section" class="fb-hidden fb-mt-1 fb-pt-2 fb-border-top">
+                                                            <div class="fb-grid-3">
                                                                 <div class="pure-control-group"><label>PV Addr</label><input type="number" id="mdev-edit-pid-pv" class="pure-input-1" min="0" max="65535"></div>
                                                                 <div class="pure-control-group"><label>SV Addr</label><input type="number" id="mdev-edit-pid-sv" class="pure-input-1" min="0" max="65535"></div>
                                                                 <div class="pure-control-group"><label>OUT Addr</label><input type="number" id="mdev-edit-pid-out" class="pure-input-1" min="0" max="65535"></div>
@@ -937,9 +930,9 @@
                                                                 <div class="pure-control-group"><label>I Addr</label><input type="number" id="mdev-edit-pid-i" class="pure-input-1" min="0" max="65535"></div>
                                                                 <div class="pure-control-group"><label>D Addr</label><input type="number" id="mdev-edit-pid-d" class="pure-input-1" min="0" max="65535"></div>
                                                             </div>
-                                                            <div class="pure-control-group" style="margin-top:8px;">
+                                                            <div class="pure-control-group fb-mt-2">
                                                                 <label data-i18n="modbus-ctrl-pid-decimals">小数位数</label>
-                                                                <select id="mdev-edit-pid-decimals" class="pure-input-1" style="max-width:120px;">
+                                                                <select id="mdev-edit-pid-decimals" class="pure-input-1 fb-max-w-select">
                                                                     <option value="0">0位</option><option value="1" selected>1位</option>
                                                                     <option value="2">2位</option><option value="3">3位</option>
                                                                 </select>
@@ -948,114 +941,113 @@
                                                     </div>
                                                 </div>
                                                 <div class="modal-footer u-footer-topline">
-                                                    <button type="button" class="pure-button" onclick="AppState._closeEditModal()" data-i18n="modbus-mapping-cancel">取消</button>
-                                                    <button type="button" class="pure-button pure-button-primary u-ml-8" onclick="AppState._saveEditModal()" data-i18n="modbus-mapping-save">确定</button>
+                                                    <button type="button" class="fb-btn" data-action="_closeEditModal" data-i18n="modbus-mapping-cancel">取消</button>
+                                                    <button type="button" class="fb-btn fb-btn-primary u-ml-8" data-action="_saveEditModal" data-i18n="modbus-mapping-save">确定</button>
                                                 </div>
                                             </div>
                                         </div>
 
                                         <!-- ========== 设备控制弹窗 ========== -->
                                         <div id="modbus-device-ctrl-modal" class="modal">
-                                            <div class="modal-content u-modal-content-700" style="max-width:1100px;">
+                                            <div class="modal-content u-modal-content-700 fb-max-w-modal-lg">
                                                 <div class="modal-header">
                                                     <h3 id="modbus-ctrl-modal-title" data-i18n="modbus-device-ctrl-title">设备控制</h3>
-                                                    <button type="button" class="modal-close" onclick="AppState._closeCtrlModal()">&times;</button>
+                                                    <button type="button" class="modal-close" data-action="_closeCtrlModal">&times;</button>
                                                 </div>
-                                                <div class="modal-body" style="display:flex;gap:16px;">
-                                                    <div style="flex:1;min-width:0;">
+                                                <div class="modal-body fb-flex fb-flex-gap-3">
+                                                    <div class="fb-flex-1 fb-min-w-0">
                                                     <!-- 继电器运行时控制 -->
                                                     <div id="modbus-relay-config"></div>
                                                     <!-- 继电器控制面板 -->
                                                     <div id="modbus-relay-panel">
                                                         <div id="coil-status-grid" class="coil-grid u-mt-10"></div>
-                                                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;" class="u-mt-10">
-                                                            <label class="pure-checkbox" style="margin-right:4px;">
-                                                                <input type="checkbox" id="modbus-ctrl-auto-refresh" onchange="AppState.toggleCoilAutoRefresh()">
+                                                        <div class="fb-flex fb-items-center fb-flex-gap-2 fb-flex-wrap u-mt-10">
+                                                            <label class="pure-checkbox fb-mr-1">
+                                                                <input type="checkbox" id="modbus-ctrl-auto-refresh" data-change-action="toggleCoilAutoRefresh">
                                                                 <span data-i18n="modbus-ctrl-auto-refresh">自动刷新</span>
                                                             </label>
-                                                            <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshCoilStatus()" data-i18n="modbus-ctrl-refresh">刷新状态</button>
+                                                            <button type="button" class="btn btn-sm btn-secondary" data-action="refreshCoilStatus" data-i18n="modbus-ctrl-refresh">刷新状态</button>
                                                         </div>
-                                                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;">
-                                                            <button type="button" class="btn btn-sm btn-enable" onclick="AppState.batchCoil('allOn')" data-i18n="modbus-ctrl-all-on">全部开启</button>
-                                                            <button type="button" class="btn btn-sm btn-danger" onclick="AppState.batchCoil('allOff')" data-i18n="modbus-ctrl-all-off">全部关闭</button>
-                                                            <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.batchCoil('allToggle')" data-i18n="modbus-ctrl-all-toggle">全部翻转</button>
+                                                        <div class="fb-flex fb-items-center fb-flex-gap-2 fb-flex-wrap fb-mt-2">
+                                                            <button type="button" class="btn btn-sm btn-enable" data-action="batchCoil" data-args="allOn" data-i18n="modbus-ctrl-all-on">全部开启</button>
+                                                            <button type="button" class="btn btn-sm btn-danger" data-action="batchCoil" data-args="allOff" data-i18n="modbus-ctrl-all-off">全部关闭</button>
+                                                            <button type="button" class="btn btn-sm btn-secondary" data-action="batchCoil" data-args="allToggle" data-i18n="modbus-ctrl-all-toggle">全部翻转</button>
                                                         </div>
                                                         <div class="pure-control-group u-mt-15">
                                                             <label data-i18n="modbus-ctrl-delay-title">延时断开</label>
-                                                            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                                                                <select id="modbus-ctrl-delay-ch" class="pure-input-1" style="max-width:100px;"></select>
-                                                                <input type="number" id="modbus-ctrl-delay-units" class="pure-input-1" value="50" min="1" max="255" style="max-width:100px;">
-                                                                <span style="white-space:nowrap;font-size:12px;color:#909399;" data-i18n="modbus-ctrl-delay-unit">x100ms</span>
-                                                                <button type="button" class="btn btn-sm btn-enable" onclick="AppState.startCoilDelay()" data-i18n="modbus-ctrl-delay-start">启动延时</button>
+                                                            <div class="fb-flex fb-flex-gap-2 fb-items-center fb-flex-wrap">
+                                                                <select id="modbus-ctrl-delay-ch" class="pure-input-1 fb-max-w-select-sm"></select>
+                                                                <input type="number" id="modbus-ctrl-delay-units" class="pure-input-1 fb-max-w-select-sm" value="50" min="1" max="255">
+                                                                <span class="fb-white-space-nowrap fb-text-sm fb-text-muted" data-i18n="modbus-ctrl-delay-unit">x100ms</span>
+                                                                <button type="button" class="btn btn-sm btn-enable" data-action="startCoilDelay" data-i18n="modbus-ctrl-delay-start">启动延时</button>
                                                             </div>
                                                             <small class="field-hint" data-i18n="modbus-ctrl-delay-hint">先打开继电器，延时后自动关闭 (1=100ms, 255=25.5s)</small>
                                                         </div>
                                                     </div>
                                                     <!-- PWM 控制面板 -->
-                                                    <div id="modbus-pwm-panel" style="display:none;">
+                                                    <div id="modbus-pwm-panel" class="fb-hidden">
                                                         <div id="pwm-channel-grid" class="pwm-grid u-mt-10"></div>
                                                         <div class="u-flex-between u-items-center u-mt-10">
                                                             <div>
-                                                                <button type="button" class="btn btn-sm btn-enable" onclick="AppState.batchPwm('max')" data-i18n="modbus-ctrl-pwm-set-all-max">全部最大</button>
-                                                                <button type="button" class="btn btn-sm btn-danger" onclick="AppState.batchPwm('off')" data-i18n="modbus-ctrl-pwm-set-all-off">全部关闭</button>
+                                                                <button type="button" class="btn btn-sm btn-enable" data-action="batchPwm" data-args="max" data-i18n="modbus-ctrl-pwm-set-all-max">全部最大</button>
+                                                                <button type="button" class="btn btn-sm btn-danger" data-action="batchPwm" data-args="off" data-i18n="modbus-ctrl-pwm-set-all-off">全部关闭</button>
                                                             </div>
-                                                            <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshPwmStatus()" data-i18n="modbus-ctrl-pwm-refresh">刷新状态</button>
+                                                            <button type="button" class="btn btn-sm btn-secondary" data-action="refreshPwmStatus" data-i18n="modbus-ctrl-pwm-refresh">刷新状态</button>
                                                         </div>
                                                     </div>
                                                     <!-- PID 控制面板 -->
-                                                    <div id="modbus-pid-panel" style="display:none;">
+                                                    <div id="modbus-pid-panel" class="fb-hidden">
                                                         <div id="pid-data-grid" class="pid-grid u-mt-10"></div>
                                                         <div class="u-flex-between u-items-center u-mt-10">
                                                             <label class="pure-checkbox">
-                                                                <input type="checkbox" id="modbus-ctrl-pid-auto-refresh" onchange="AppState.togglePidAutoRefresh()">
+                                                                <input type="checkbox" id="modbus-ctrl-pid-auto-refresh" data-change-action="togglePidAutoRefresh">
                                                                 <span data-i18n="modbus-ctrl-pid-auto-refresh">自动刷新</span>
                                                             </label>
-                                                            <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshPidStatus()" data-i18n="modbus-ctrl-pid-refresh">刷新数据</button>
+                                                            <button type="button" class="btn btn-sm btn-secondary" data-action="refreshPidStatus" data-i18n="modbus-ctrl-pid-refresh">刷新数据</button>
                                                         </div>
                                                     </div>
 
                                                     </div>
                                                     <!-- 右侧：调试日志 -->
-                                                    <div style="width:300px;flex-shrink:0;display:flex;flex-direction:column;">
+                                                    <div class="fb-w-fixed fb-flex-shrink-0 fb-flex fb-flex-col">
                                                         <div class="modbus-debug-header">
                                                             <span data-i18n="modbus-debug-title">调试日志</span>
-                                                            <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.clearModbusDebugLog()" data-i18n="modbus-debug-clear">清除</button>
+                                                            <button type="button" class="btn btn-sm btn-secondary" data-action="clearModbusDebugLog" data-i18n="modbus-debug-clear">清除</button>
                                                         </div>
-                                                        <div id="modbus-debug-log" class="modbus-debug-log" style="flex:1;min-height:200px;max-height:450px;"></div>
+                                                        <div id="modbus-debug-log" class="modbus-debug-log fb-flex-1 fb-min-h-200 fb-max-h-450"></div>
                                                     </div>
                                                 </div>
                                             </div>
                                         </div>
                                         </div>
 
-                                        <div class="message message-success" id="modbus-rtu-success"
-                                            style="display: none;">
+                                        <div class="message message-success fb-hidden" id="modbus-rtu-success">
                                             Modbus RTU配置保存成功！
                                         </div>
 
-                                        <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary"
+                                        <div class="fb-mt-4">
+                                            <button type="submit" class="fb-btn fb-btn-primary"
                                                 data-i18n="btn-save-config">保存配置</button>
                                         </div>
                                     </form>
 
                                     <!-- 轮询任务编辑模态框 -->
                                     <div id="task-edit-modal" class="modal">
-                                        <div class="modal-content" style="max-width:480px;">
+                                        <div class="modal-content fb-max-w-modal-sm">
                                             <div class="modal-header">
                                                 <h3 data-i18n="modbus-task-edit-title">编辑轮询任务</h3>
                                                 <button type="button" class="modal-close"
-                                                    onclick="AppState._closeTaskEditModal()">&times;</button>
+                                                    data-action="_closeTaskEditModal">&times;</button>
                                             </div>
                                             <div class="modal-body">
-                                                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                                                <div class="fb-grid-2">
                                                     <div>
                                                         <label data-i18n="modbus-master-label">名称</label>
                                                         <input id="task-edit-label" type="text" maxlength="15" class="pure-input-1" placeholder="">
                                                     </div>
                                                     <div>
                                                         <label data-i18n="modbus-task-type">类型</label>
-                                                        <select id="task-edit-type" class="pure-input-1" onchange="AppState._onTaskTypeChange(this.value)">
+                                                        <select id="task-edit-type" class="pure-input-1" data-change-action="_onTaskTypeChange">
                                                             <option value="holding">保持寄存器</option>
                                                             <option value="input">输入寄存器</option>
                                                             <option value="coil">线圈状态</option>
@@ -1084,19 +1076,19 @@
                                                         <input id="task-edit-quantity" type="number" min="1" max="125" value="10" class="pure-input-1">
                                                     </div>
                                                 </div>
-                                                <div style="margin-top:12px;">
-                                                    <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+                                                <div class="fb-mt-1">
+                                                    <label class="fb-flex-inline fb-cursor-pointer">
                                                         <input id="task-edit-enabled" type="checkbox" checked>
                                                         <span data-i18n="modbus-master-enabled">启用</span>
                                                     </label>
                                                 </div>
                                             </div>
                                             <div class="modal-footer u-footer-topline">
-                                                <button type="button" class="pure-button"
-                                                    onclick="AppState._closeTaskEditModal()"
+                                                <button type="button" class="fb-btn"
+                                                    data-action="_closeTaskEditModal"
                                                     data-i18n="modbus-mapping-cancel">取消</button>
-                                                <button type="button" class="pure-button pure-button-primary u-ml-8"
-                                                    onclick="AppState._saveTaskEditModal()"
+                                                <button type="button" class="fb-btn fb-btn-primary u-ml-8"
+                                                    data-action="_saveTaskEditModal"
                                                     data-i18n="modbus-mapping-save">确定</button>
                                             </div>
                                         </div>
@@ -1108,7 +1100,7 @@
                                             <div class="modal-header">
                                                 <h3 data-i18n="modbus-mapping-title">寄存器映射配置</h3>
                                                 <button type="button" class="modal-close"
-                                                    onclick="app.closeMappingModal()">&times;</button>
+                                                    data-action="closeMappingModal">&times;</button>
                                             </div>
                                             <div class="modal-body u-modal-body-scroll-400">
                                                 <div class="u-overflow-x-auto">
@@ -1126,34 +1118,33 @@
                                                         <tbody id="mapping-table-body"></tbody>
                                                     </table>
                                                 </div>
-                                                <div style="margin-top:10px;">
-                                                    <button type="button" class="pure-button u-btn-mini-green"
-                                                        onclick="app.addMapping()"
+                                                <div class="fb-mt-2">
+                                                    <button type="button" class="fb-btn fb-btn-sm fb-btn-success"
+                                                        data-action="addMapping"
                                                         data-i18n="modbus-mapping-add">添加映射</button>
-                                                    <small style="margin-left:10px;color:#999;"
+                                                    <small class="fb-ml-2 fb-text-muted"
                                                         data-i18n="modbus-mapping-max">每任务最多8个映射</small>
                                                 </div>
                                             </div>
                                             <div class="modal-footer u-footer-topline">
-                                                <button type="button" class="pure-button"
-                                                    onclick="app.closeMappingModal()"
+                                                <button type="button" class="fb-btn"
+                                                    data-action="closeMappingModal"
                                                     data-i18n="modbus-mapping-cancel">取消</button>
-                                                <button type="button" class="pure-button pure-button-primary u-ml-8"
-                                                    onclick="app.saveMappingModal()"
+                                                <button type="button" class="fb-btn fb-btn-primary u-ml-8"
+                                                    data-action="saveMappingModal"
                                                     data-i18n="modbus-mapping-save">确定</button>
                                             </div>
                                         </div>
                                     </div>
 
                                     <!-- ========== 高级配置（可折叠） ========== -->
-                                    <div class="mqtt-collapsible-section" style="margin-top:20px;">
-                                        <div class="mqtt-collapsible-header"
-                                            onclick="AppState.toggleSection('modbus-advanced-body')"
-                                            style="padding:12px 15px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;user-select:none;">
-                                            <h4 style="margin:0;color:#333;" data-i18n="modbus-advanced-config-title">高级配置</h4>
+                                    <div class="mqtt-collapsible-section fb-mt-4">
+                                        <div class="mqtt-collapsible-header fb-p-3 fb-cursor-pointer fb-flex-between fb-user-select-none"
+                                            data-action="toggleSection" data-args="modbus-advanced-body">
+                                            <h4 class="fb-m-0 fb-text-dark" data-i18n="modbus-advanced-config-title">高级配置</h4>
                                             <span class="mqtt-collapse-icon" id="modbus-advanced-body-icon">&#9654;</span>
                                         </div>
-                                        <div id="modbus-advanced-body" class="mqtt-collapsible-body" style="display:none;padding:0 15px 15px 15px;">
+                                        <div id="modbus-advanced-body" class="mqtt-collapsible-body fb-hidden" style="padding:0 15px 15px 15px;">
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
@@ -1163,17 +1154,17 @@
                                                 </div>
                                                 <div class="pure-control-group">
                                                     <label data-i18n="modbus-ctrl-addr-reg">地址寄存器</label>
-                                                    <div style="display:flex;gap:8px;">
+                                                    <div class="fb-flex fb-flex-gap-2">
                                                         <input type="number" id="modbus-ctrl-addr-reg" class="pure-input-1" value="0" min="0" max="65535" >
-                                                        <button type="button" class="btn btn-sm btn-secondary" style="width:60px;" onclick="AppState.readDeviceAddress()" data-i18n="modbus-ctrl-read-addr">读取</button>
+                                                        <button type="button" class="btn btn-sm btn-secondary fb-w-60" data-action="readDeviceAddress" data-i18n="modbus-ctrl-read-addr">读取</button>
                                                     </div>
                                                     <div id="modbus-ctrl-current-addr" class="field-hint"></div>
                                                 </div>
                                                 <div class="pure-control-group">
                                                     <label data-i18n="modbus-ctrl-new-addr">新地址</label>
-                                                    <div style="display:flex;gap:8px;">
+                                                    <div class="fb-flex fb-flex-gap-2">
                                                         <input type="number" id="modbus-ctrl-new-addr" class="pure-input-1" value="" min="1" max="255" >
-                                                        <button type="button" class="btn btn-sm btn-enable" style="width:60px;" onclick="AppState.setDeviceAddress()" data-i18n="modbus-ctrl-set-addr">设置</button>
+                                                        <button type="button" class="btn btn-sm btn-enable fb-w-60" data-action="setDeviceAddress" data-i18n="modbus-ctrl-set-addr">设置</button>
                                                     </div>
                                                     <small class="field-hint" data-i18n="modbus-ctrl-addr-hint">广播写入(FC 0x10)，1-255</small>
                                                 </div>
@@ -1181,22 +1172,22 @@
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
                                                     <label data-i18n="modbus-ctrl-baudrate">波特率</label>
-                                                    <div style="display:flex;gap:8px;">
+                                                    <div class="fb-flex fb-flex-gap-2">
                                                         <select id="modbus-ctrl-baudrate" class="pure-input-1">
                                                             <option value="1200">1200</option><option value="2400">2400</option>
                                                             <option value="4800">4800</option><option value="9600" selected>9600</option>
                                                             <option value="19200">19200</option><option value="115200">115200</option>
                                                         </select>
-                                                        <button type="button" class="btn btn-sm btn-enable" style="width:100px;" onclick="AppState.setDeviceBaudrate()" data-i18n="modbus-ctrl-set-baud">设置</button>
+                                                        <button type="button" class="btn btn-sm btn-enable fb-w-100" data-action="setDeviceBaudrate" data-i18n="modbus-ctrl-set-baud">设置</button>
                                                     </div>
                                                     <small class="field-hint" data-i18n="modbus-ctrl-baud-hint">FC 0xB0 专有指令</small>
                                                 </div>
                                                 <div class="pure-control-group">
                                                     <label data-i18n="modbus-ctrl-inputs">离散输入</label>
-                                                    <div style="display:flex;gap:8px;align-items:center;">
+                                                    <div class="fb-flex fb-flex-gap-2 fb-items-center">
                                                         <input type="number" id="modbus-ctrl-input-count" class="pure-input-1" value="4" min="1" max="32"  placeholder="数量">
                                                         <input type="number" id="modbus-ctrl-input-base" class="pure-input-1" value="0" min="0" max="65535"  placeholder="起始地址">
-                                                        <button type="button" class="btn btn-sm btn-secondary" style="width:100px;" onclick="AppState.readDiscreteInputs()" data-i18n="modbus-ctrl-read-inputs">读取</button>
+                                                        <button type="button" class="btn btn-sm btn-secondary fb-w-100" data-action="readDiscreteInputs" data-i18n="modbus-ctrl-read-inputs">读取</button>
                                                     </div>
                                                     <small class="field-hint" data-i18n="modbus-debug-input-count-hint">读取数量 + 起始地址</small>
                                                     <div id="modbus-ctrl-inputs-display" class="field-hint u-mt-5"></div>
@@ -1210,8 +1201,7 @@
                                 <!-- Modbus TCP 配置 - 两列布局 -->
                                 <div id="modbus-tcp" class="config-content">
                                     <form id="modbus-tcp-form" class="pure-form pure-form-stacked">
-                                        <div class="pure-control-group"
-                                            style="margin-bottom:15px; padding-bottom:15px; border-bottom:1px solid #eee;">
+                                        <div class="pure-control-group fb-mb-3 fb-pb-3 fb-border-bottom">
                                             <label class="pure-checkbox">
                                                 <input type="checkbox" id="modbus-tcp-enabled"> <span
                                                     data-i18n="modbus-tcp-enabled-label">启用Modbus TCP</span>
@@ -1249,13 +1239,13 @@
                                             </div>
                                         </div>
 
-                                        <div class="message message-success" id="modbus-tcp-success"
-                                            style="display: none;" data-i18n="modbus-tcp-save-ok">
+                                        <div class="message message-success fb-hidden" id="modbus-tcp-success"
+                                            data-i18n="modbus-tcp-save-ok">
                                             Modbus TCP配置保存成功！
                                         </div>
 
-                                        <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary"
+                                        <div class="fb-mt-4">
+                                            <button type="submit" class="fb-btn fb-btn-primary"
                                                 data-i18n="btn-save-config">保存配置</button>
                                         </div>
                                     </form>
@@ -1264,8 +1254,7 @@
                                 <!-- HTTP 配置 - 两列布局 -->
                                 <div id="http" class="config-content">
                                     <form id="http-form" class="pure-form pure-form-stacked">
-                                        <div class="pure-control-group"
-                                            style="margin-bottom:15px; padding-bottom:15px; border-bottom:1px solid #eee;">
+                                        <div class="pure-control-group fb-mb-3 fb-pb-3 fb-border-bottom">
                                             <label class="pure-checkbox">
                                                 <input type="checkbox" id="http-enabled"> <span
                                                     data-i18n="http-enabled-label">启用HTTP</span>
@@ -1320,14 +1309,13 @@
                                         </div>
 
                                         <!-- HTTP 认证配置 -->
-                                        <div class="config-form-grid"
-                                            style="margin-top:15px; padding-top:15px; border-top:1px solid #eee;">
+                                        <div class="config-form-grid fb-mt-3 fb-pt-3 fb-border-top">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
                                                     <label for="http-auth-type"
                                                         data-i18n="http-auth-type-label">认证方式</label>
                                                     <select id="http-auth-type" class="pure-input-1"
-                                                        onchange="AppState.onHttpAuthTypeChange(this.value)">
+                                                        data-change-action="onHttpAuthTypeChange">
                                                         <option value="none" data-i18n="http-auth-none">无认证</option>
                                                         <option value="basic" data-i18n="http-auth-basic">Basic认证
                                                         </option>
@@ -1335,8 +1323,7 @@
                                                         </option>
                                                     </select>
                                                 </div>
-                                                <div class="pure-control-group" id="http-auth-user-group"
-                                                    style="display:none;">
+                                                <div class="pure-control-group fb-hidden" id="http-auth-user-group">
                                                     <label for="http-auth-user"
                                                         data-i18n="http-auth-user-label">认证用户名</label>
                                                     <input type="text" id="http-auth-user" class="pure-input-1">
@@ -1353,8 +1340,7 @@
                                                             x-www-form-urlencoded</option>
                                                     </select>
                                                 </div>
-                                                <div class="pure-control-group" id="http-auth-token-group"
-                                                    style="display:none;">
+                                                <div class="pure-control-group fb-hidden" id="http-auth-token-group">
                                                     <label for="http-auth-token"
                                                         data-i18n="http-auth-token-label">认证密码/Token</label>
                                                     <input type="password" id="http-auth-token" class="pure-input-1">
@@ -1362,13 +1348,13 @@
                                             </div>
                                         </div>
 
-                                        <div class="message message-success" id="http-success" style="display: none;"
+                                        <div class="message message-success fb-hidden" id="http-success"
                                             data-i18n="http-save-ok">
                                             HTTP配置保存成功！
                                         </div>
 
-                                        <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary"
+                                        <div class="fb-mt-4">
+                                            <button type="submit" class="fb-btn fb-btn-primary"
                                                 data-i18n="btn-save-config">保存配置</button>
                                         </div>
                                     </form>
@@ -1377,8 +1363,7 @@
                                 <!-- CoAP 配置 - 两列布局 -->
                                 <div id="coap" class="config-content">
                                     <form id="coap-form" class="pure-form pure-form-stacked">
-                                        <div class="pure-control-group"
-                                            style="margin-bottom:15px; padding-bottom:15px; border-bottom:1px solid #eee;">
+                                        <div class="pure-control-group fb-mb-3 fb-pb-3 fb-border-bottom">
                                             <label class="pure-checkbox">
                                                 <input type="checkbox" id="coap-enabled"> <span
                                                     data-i18n="coap-enabled-label">启用CoAP</span>
@@ -1443,13 +1428,13 @@
                                             </div>
                                         </div>
 
-                                        <div class="message message-success" id="coap-success" style="display: none;"
+                                        <div class="message message-success fb-hidden" id="coap-success"
                                             data-i18n="coap-save-ok">
                                             CoAP配置保存成功！
                                         </div>
 
-                                        <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary"
+                                        <div class="fb-mt-4">
+                                            <button type="submit" class="fb-btn fb-btn-primary"
                                                 data-i18n="btn-save-config">保存配置</button>
                                         </div>
                                     </form>
@@ -1458,19 +1443,17 @@
                                 <!-- TCP 配置 - 两列布局 -->
                                 <div id="tcp" class="config-content">
                                     <form id="tcp-form" class="pure-form pure-form-stacked">
-                                        <div class="pure-control-group"
-                                            style="margin-bottom:15px; padding-bottom:15px; border-bottom:1px solid #eee;">
+                                        <div class="pure-control-group fb-mb-3 fb-pb-3 fb-border-bottom">
                                             <label class="pure-checkbox">
                                                 <input type="checkbox" id="tcp-enabled"> <span
                                                     data-i18n="tcp-enabled-label">启用TCP</span>
                                             </label>
                                         </div>
                                         <!-- 工作模式选择 -->
-                                        <div class="pure-control-group"
-                                            style="margin-bottom:15px; padding-bottom:15px; border-bottom:1px solid #eee;">
+                                        <div class="pure-control-group fb-mb-3 fb-pb-3 fb-border-bottom">
                                             <label for="tcp-mode" data-i18n="tcp-mode-label">工作模式</label>
                                             <select id="tcp-mode" class="pure-input-1"
-                                                onchange="AppState.onTcpModeChange(this.value)">
+                                                data-change-action="onTcpModeChange">
                                                 <option value="client" data-i18n="tcp-mode-client">客户端模式</option>
                                                 <option value="server" data-i18n="tcp-mode-server">服务端模式</option>
                                             </select>
@@ -1521,7 +1504,7 @@
                                             </div>
                                         </div>
                                         <!-- 服务端配置（默认隐藏） -->
-                                        <div id="tcp-server-config" style="display:none;">
+                                        <div id="tcp-server-config" class="fb-hidden">
                                             <div class="config-form-grid">
                                                 <div class="config-form-column">
                                                     <div class="pure-control-group">
@@ -1542,7 +1525,7 @@
                                             </div>
                                         </div>
                                         <!-- 通用配置 -->
-                                        <div class="config-form-grid" style="margin-top:10px;">
+                                        <div class="config-form-grid fb-mt-2">
                                             <div class="config-form-column">
                                                 <div class="pure-control-group">
                                                     <label for="tcp-heartbeat-msg"
@@ -1561,13 +1544,13 @@
                                             </div>
                                         </div>
 
-                                        <div class="message message-success" id="tcp-success" style="display: none;"
+                                        <div class="message message-success fb-hidden" id="tcp-success"
                                             data-i18n="tcp-save-ok">
                                             TCP配置保存成功！
                                         </div>
 
-                                        <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary"
+                                        <div class="fb-mt-4">
+                                            <button type="submit" class="fb-btn fb-btn-primary"
                                                 data-i18n="btn-save-config">保存配置</button>
                                         </div>
                                     </form>
@@ -1594,8 +1577,8 @@
                                 <!-- 基本配置 -->
                                 <div id="base" class="config-content active">
                                     <!-- WiFi选择按钮 -->
-                                    <div class="wifi-config" style="margin-bottom: 20px;">
-                                        <button id="wifi-scan-btn" class="pure-button pure-button-primary"
+                                    <div class="wifi-config fb-mb-3">
+                                        <button id="wifi-scan-btn" class="fb-btn fb-btn-primary"
                                             data-i18n="wifi-scan-btn">
                                             <i class="fas fa-wifi"></i> 选择Wifi网络
                                         </button>
@@ -1645,20 +1628,19 @@
                                             </div>
                                         </div>
 
-                                        <div class="message message-success" id="wifi-success"
-                                            style="display: none; margin-top: 15px;" data-i18n="wifi-save-ok">
+                                        <div class="message message-success fb-hidden fb-mt-3" id="wifi-success"
+                                            data-i18n="wifi-save-ok">
                                             Wifi配置保存成功！</div>
-                                        <div class="message message-error" id="wifi-error"
-                                            style="display: none; margin-top: 15px;" data-i18n="wifi-save-fail">
+                                        <div class="message message-error fb-hidden fb-mt-3" id="wifi-error"
+                                            data-i18n="wifi-save-fail">
                                             Wifi配置保存失败！</div>
                                         <!-- 网络模式切换提醒区域 -->
-                                        <div class="message message-info" id="wifi-mode-notice"
-                                            style="display: none; margin-top: 15px;">
+                                        <div class="message message-info fb-hidden fb-mt-3" id="wifi-mode-notice">
                                             <i class="fas fa-info-circle"></i> <span id="wifi-mode-notice-text"></span>
                                         </div>
 
-                                        <div style="margin-top: 20px;">
-                                            <button type="submit" id="wifi-save-btn" class="pure-button pure-button-primary">
+                                        <div class="fb-mt-4">
+                                            <button type="submit" id="wifi-save-btn" class="fb-btn fb-btn-primary">
                                                 <i class="fas fa-save"></i> <span id="wifi-save-btn-text"
                                                     data-i18n="save-config-btn">保存配置</span>
                                             </button>
@@ -1671,35 +1653,35 @@
                                     <!-- AP配网状态卡片 -->
                                     <div class="flat-panel u-panel-default">
                                         <div class="card-header u-panel-header u-header-between">
-                                            <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-wifi"></i> <span
+                                            <h4 class="fb-m-0 fb-text-sm"><i class="fas fa-wifi"></i> <span
                                                     data-i18n="ap-provision-status-title">AP配网状态</span></h4>
                                             <button id="ap-provision-refresh-btn" type="button"
-                                                class="pure-button pure-button-small">
+                                                class="fb-btn fb-btn-sm">
                                                 <i class="fas fa-sync-alt"></i> <span data-i18n="refresh-btn">刷新</span>
                                             </button>
                                         </div>
                                         <div class="card-body u-panel-body">
-                                            <table class="pure-table" style="width: 100%; font-size: 13px;">
+                                            <table class="pure-table fb-w-full fb-fs-13">
                                                 <tbody>
                                                     <tr>
-                                                        <td style="color: #666; width: 120px;"
+                                                        <td class="fb-text-gray fb-w-120"
                                                             data-i18n="ap-provision-status-label">配网状态</td>
                                                         <td><span id="ap-provision-status" class="badge badge-info"
                                                                 data-i18n="ap-provision-not-started">未启动</span></td>
                                                     </tr>
                                                     <tr>
-                                                        <td style="color: #666;" data-i18n="ap-provision-ap-name-label">
+                                                        <td class="fb-text-gray" data-i18n="ap-provision-ap-name-label">
                                                             热点名称</td>
                                                         <td id="ap-provision-ap-name">--</td>
                                                     </tr>
                                                     <tr>
-                                                        <td style="color: #666;" data-i18n="ap-provision-clients-label">
+                                                        <td class="fb-text-gray" data-i18n="ap-provision-clients-label">
                                                             已连接设备</td>
                                                         <td id="ap-provision-clients">0</td>
                                                     </tr>
                                                 </tbody>
                                             </table>
-                                            <div style="margin-top: 15px; display: flex; gap: 10px;">
+                                            <div class="fb-mt-3 fb-flex fb-gap-2">
                                                 <button id="ap-provision-start-btn" type="button"
                                                     class="btn btn-enable">
                                                     <i class="fas fa-play"></i> <span
@@ -1782,12 +1764,12 @@
                                             </div>
                                         </div>
 
-                                        <div class="message message-success" id="ap-success"
-                                            style="display: none; margin-top: 15px;" data-i18n="ap-save-ok">热点配置保存成功！
+                                        <div class="message message-success fb-hidden fb-mt-3" id="ap-success"
+                                            data-i18n="ap-save-ok">热点配置保存成功！
                                         </div>
 
-                                        <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary">
+                                        <div class="fb-mt-4">
+                                            <button type="submit" class="fb-btn fb-btn-primary">
                                                 <i class="fas fa-save"></i> <span
                                                     data-i18n="save-config-btn">保存配置</span>
                                             </button>
@@ -1795,16 +1777,14 @@
                                     </form>
 
                                     <!-- 配网说明 -->
-                                    <div class="flat-panel flat-panel-info"
-                                        style="margin-top: 20px; border: 1px solid #17a2b8;">
-                                        <div class="card-header" style="padding: 10px 15px; background: #d1ecf1;">
-                                            <h4 style="margin: 0; font-size: 14px; color: #0c5460;"><i
+                                    <div class="flat-panel flat-panel-info fb-mt-4 fb-border-info">
+                                        <div class="card-header fb-p-2 fb-bg-info-light">
+                                            <h4 class="fb-m-0 fb-text-sm fb-text-info-dark"><i
                                                     class="fas fa-info-circle"></i> <span
                                                     data-i18n="ap-provision-guide-title">配网说明</span></h4>
                                         </div>
-                                        <div class="card-body"
-                                            style="padding: 12px 15px; font-size: 13px; color: #0c5460;">
-                                            <ol style="margin: 0; padding-left: 20px;">
+                                        <div class="card-body fb-p-3 fb-fs-13 fb-text-info-dark">
+                                            <ol class="fb-m-0 fb-pl-4">
                                                 <li data-i18n="ap-provision-guide-1">点击"启动配网"开启AP热点模式</li>
                                                 <li data-i18n="ap-provision-guide-2">手机连接设备热点</li>
                                                 <li data-i18n="ap-provision-guide-3">打开配网APP或访问 http://192.168.4.1</li>
@@ -1819,7 +1799,7 @@
                                 <div id="advance" class="config-content">
                                     <form id="advanced-form" class="pure-form pure-form-stacked">
                                         <!-- IP配置 -->
-                                        <h4 style="margin-bottom: 15px; border-bottom: 1px solid #e0e0e0; padding-bottom: 8px;"
+                                        <h4 class="fb-section-title"
                                             data-i18n="static-ip-title">静态IP配置</h4>
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
@@ -1868,7 +1848,7 @@
                                         </div>
 
                                         <!-- 域名配置 -->
-                                        <h4 style="margin: 20px 0 15px; border-bottom: 1px solid #e0e0e0; padding-bottom: 8px;"
+                                        <h4 class="fb-section-title-mt"
                                             data-i18n="domain-config-title">域名配置</h4>
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
@@ -1887,13 +1867,13 @@
                                                         data-i18n="custom-domain-label">自定义域名</label>
                                                     <input type="text" id="custom-domain" class="pure-input-1"
                                                         placeholder="fastbee">
-                                                    <small style="color: #999;">访问地址：fastbee.local</small>
+                                                    <small class="fb-text-muted">访问地址：fastbee.local</small>
                                                 </div>
                                             </div>
                                         </div>
 
                                         <!-- 连接设置 -->
-                                        <h4 style="margin: 20px 0 15px; border-bottom: 1px solid #e0e0e0; padding-bottom: 8px;"
+                                        <h4 class="fb-section-title-mt"
                                             data-i18n="connection-settings-title">连接设置</h4>
                                         <div class="config-form-grid">
                                             <div class="config-form-column">
@@ -1935,12 +1915,12 @@
                                             </div>
                                         </div>
 
-                                        <div class="message message-success" id="advanced-success"
-                                            style="display: none; margin-top: 15px;" data-i18n="advanced-save-ok">
+                                        <div class="message message-success fb-hidden fb-mt-3" id="advanced-success"
+                                            data-i18n="advanced-save-ok">
                                             高级配置保存成功！</div>
 
-                                        <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary">
+                                        <div class="fb-mt-4">
+                                            <button type="submit" class="fb-btn fb-btn-primary">
                                                 <i class="fas fa-save"></i> <span
                                                     data-i18n="save-config-btn">保存配置</span>
                                             </button>
@@ -1972,16 +1952,16 @@
                                 <div id="dev-basic" class="config-content active">
                                     <form id="device-basic-form" class="pure-form pure-form-stacked">
                                         <!-- 硬件信息卡片 - 页面顶部整行展示（两列布局） -->
-                                        <div class="flat-panel" style="border: 1px solid #e0e0e0; margin-bottom: 20px;">
-                                            <div class="card-header" style="padding: 10px 15px; background: #f5f5f5;">
-                                                <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-microchip"></i>
+                                        <div class="flat-panel fb-border-default fb-mb-3">
+                                            <div class="card-header fb-p-2 fb-bg-gray">
+                                                <h4 class="fb-m-0 fb-text-sm"><i class="fas fa-microchip"></i>
                                                     <span data-i18n="dev-sys-hw-title">硬件信息</span>
                                                 </h4>
                                             </div>
                                             <div class="card-body" style="padding: 12px 15px;">
-                                                <div style="display: flex; flex-wrap: wrap; gap: 0;">
+                                                <div class="fb-flex-wrap-off">
                                                     <div style="flex: 1; min-width: 280px;">
-                                                        <table class="pure-table" style="width: 100%; font-size: 13px;">
+                                                        <table class="pure-table fb-w-full fb-fs-13">
                                                             <tbody>
                                                                 <tr>
                                                                     <td style="color:#666; width:100px;"
@@ -2002,7 +1982,7 @@
                                                         </table>
                                                     </div>
                                                     <div style="flex: 1; min-width: 280px;">
-                                                        <table class="pure-table" style="width: 100%; font-size: 13px;">
+                                                        <table class="pure-table fb-w-full fb-fs-13">
                                                             <tbody>
                                                                 <tr>
                                                                     <td style="color:#666; width:100px;"
@@ -2069,7 +2049,7 @@
                                             style="display:none; margin-top:15px;" data-i18n="dev-basic-save-ok">
                                             设备信息保存成功！</div>
                                         <div style="margin-top: 20px; margin-bottom: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary">
+                                            <button type="submit" class="fb-btn fb-btn-primary">
                                                 <i class="fas fa-save"></i> <span
                                                     data-i18n="dev-basic-save-btn">保存信息</span>
                                             </button>
@@ -2086,16 +2066,16 @@
                                             style="padding: 10px 15px; background: #f5f5f5; display: flex; justify-content: space-between; align-items: center;">
                                             <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-clock"></i> <span
                                                     data-i18n="dev-time-title">当前时间</span></h4>
-                                            <button id="dev-time-refresh-btn" class="pure-button pure-button-small">
+                                            <button id="dev-time-refresh-btn" class="fb-btn fb-btn-sm">
                                                 <i class="fas fa-sync-alt"></i> <span
                                                     data-i18n="dev-time-refresh">刷新</span>
                                             </button>
                                         </div>
                                         <div class="card-body" style="padding: 12px 15px;">
-                                            <table class="pure-table" style="width: 100%; font-size: 13px;">
+                                            <table class="pure-table fb-w-full fb-fs-13">
                                                 <tbody>
                                                     <tr>
-                                                        <td style="color: #666; width: 120px;"
+                                                        <td class="fb-text-gray fb-w-120"
                                                             data-i18n="dev-time-datetime-label">日期时间</td>
                                                         <td><strong id="dev-time-datetime"
                                                                 style="font-size: 16px;">--</strong></td>
@@ -2169,7 +2149,7 @@
                                             style="display:none; margin-top:15px;" data-i18n="dev-ntp-save-ok">
                                             NTP配置保存成功！</div>
                                         <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary">
+                                            <button type="submit" class="fb-btn fb-btn-primary">
                                                 <i class="fas fa-save"></i> <span
                                                     data-i18n="dev-ntp-save-btn">保存NTP配置</span>
                                             </button>
@@ -2187,7 +2167,7 @@
                                                 <span data-i18n="dev-ble-status-title">蓝牙配网状态</span>
                                             </h4>
                                             <button id="ble-provision-refresh-btn"
-                                                class="pure-button pure-button-small">
+                                                class="fb-btn fb-btn-sm">
                                                 <i class="fas fa-sync-alt"></i> <span
                                                     data-i18n="dev-time-refresh">刷新</span>
                                             </button>
@@ -2216,9 +2196,9 @@
                                                         style="font-weight: bold; color: #f0ad4e;">--</span>
                                                 </div>
                                             </div>
-                                            <div style="margin-top: 15px; display: flex; gap: 10px;">
+                                            <div class="fb-mt-3 fb-flex fb-gap-2">
                                                 <button id="ble-provision-start-btn"
-                                                    class="pure-button pure-button-primary">
+                                                    class="fb-btn fb-btn-primary">
                                                     <i class="fas fa-play"></i> <span
                                                         data-i18n="dev-ble-start-btn">启动蓝牙配网</span>
                                                 </button>
@@ -2281,7 +2261,7 @@
                                             style="display:none; margin-top:15px;" data-i18n="dev-ble-save-ok">
                                             蓝牙配网配置保存成功！</div>
                                         <div style="margin-top: 20px;">
-                                            <button type="submit" class="pure-button pure-button-primary">
+                                            <button type="submit" class="fb-btn fb-btn-primary">
                                                 <i class="fas fa-save"></i> <span
                                                     data-i18n="dev-ble-save-btn">保存蓝牙配网配置</span>
                                             </button>
@@ -2316,7 +2296,7 @@
                                             <h4 style="margin: 0; font-size: 14px;"><i class="fas fa-microchip"></i>
                                                 <span data-i18n="dev-ota-info-title">固件信息</span>
                                             </h4>
-                                            <button id="ota-refresh-btn" class="pure-button pure-button-small">
+                                            <button id="ota-refresh-btn" class="fb-btn fb-btn-sm">
                                                 <i class="fas fa-sync-alt"></i> <span
                                                     data-i18n="dev-ota-refresh">刷新</span>
                                             </button>
@@ -2382,7 +2362,7 @@
                                                             placeholder="http://example.com/firmware.bin">
                                                         <div id="ota-url-hint" class="is-hidden u-mt-10"></div>
                                                     </div>
-                                                    <button type="submit" class="pure-button pure-button-primary"
+                                                    <button type="submit" class="fb-btn fb-btn-primary"
                                                         id="ota-url-btn">
                                                         <i class="fas fa-download"></i> <span
                                                             data-i18n="dev-ota-url-btn">开始在线升级</span>
@@ -2409,7 +2389,7 @@
                                                             <input type="file" id="ota-file" accept=".bin"
                                                                 style="display: none;">
                                                             <button type="button" class="btn btn-secondary btn-sm"
-                                                                onclick="document.getElementById('ota-file').click()"
+                                                                data-action="triggerOtaFileSelect"
                                                                 data-i18n="choose-file-btn">选择文件</button>
                                                             <span id="ota-file-name" class="file-name-display"
                                                                 data-i18n="no-file-selected">未选择任何文件</span>
@@ -2529,15 +2509,15 @@
                                                         <option value="172800" data-i18n="dev-cache-48h">48小时</option>
                                                         <option value="259200" data-i18n="dev-cache-72h">72小时</option>
                                                     </select>
-                                                    <button type="button" class="pure-button pure-button-primary" style="font-size: 12px;"
-                                                        onclick="AppState.saveCacheDuration()">
+                                                    <button type="button" class="fb-btn fb-btn-sm fb-btn-primary" style="font-size: 12px;"
+                                                        data-action="saveCacheDuration">
                                                         <i class="fas fa-save"></i> <span data-i18n="dev-cache-save-btn">保存</span>
                                                     </button>
                                                 </div>
                                                 <p style="margin: 0 0 12px; font-size: 13px; color: #666;"
                                                     data-i18n="dev-cache-hint">设置浏览器缓存JS/CSS资源的有效期，修改后新请求生效。</p>
                                                 <button type="button" class="btn btn-delete"
-                                                    onclick="AppState.clearBrowserCache()">
+                                                    data-action="clearBrowserCache">
                                                     <i class="fas fa-trash-alt"></i> <span
                                                         data-i18n="dev-cache-clear-btn">清除浏览器缓存</span>
                                                 </button>
@@ -2584,9 +2564,9 @@
                                                 style="font-family: monospace; font-size: 13px; color: #666;"
                                                 data-i18n="fs-select-file">请选择文件</span>
                                             <div>
-                                                <button class="pure-button pure-button-small pure-button-primary"
+                                                <button class="fb-btn fb-btn-sm fb-btn-primary"
                                                     id="fs-save-btn" disabled data-i18n="fs-save-btn">保存</button>
-                                                <button class="pure-button pure-button-small" id="fs-close-btn" disabled
+                                                <button class="fb-btn fb-btn-sm" id="fs-close-btn" disabled
                                                     data-i18n="fs-close-btn">关闭</button>
                                             </div>
                                         </div>
@@ -2607,7 +2587,7 @@
                         <div class="card">
                             <div class="card-header u-header-between">
                                 <h2 class="card-title" id="users-title">用户管理</h2>
-                                <button class="pure-button pure-button-primary" id="add-user-btn"
+                                <button class="fb-btn fb-btn-primary" id="add-user-btn"
                                     data-i18n="add-user-btn-text">
                                     添加用户
                                 </button>
@@ -2639,7 +2619,7 @@
                             <div class="card-header"
                                 style="display: flex; justify-content: space-between; align-items: center;">
                                 <h2 class="card-title" id="roles-title">角色管理</h2>
-                                <button class="pure-button pure-button-primary" id="add-role-btn"
+                                <button class="fb-btn fb-btn-primary" id="add-role-btn"
                                     data-i18n="add-role-btn-text">
                                     新增角色
                                 </button>
@@ -2710,7 +2690,7 @@
                                         <option value="debug" data-i18n="peripheral-filter-debug">调试接口</option>
                                         <option value="special" data-i18n="peripheral-filter-special">专用外设</option>
                                     </select>
-                                    <button class="pure-button pure-button-primary" id="add-peripheral-btn"
+                                    <button class="fb-btn fb-btn-primary" id="add-peripheral-btn"
                                         data-i18n="add-peripheral-btn-text">
                                         <i class="fas fa-plus"></i> <span data-i18n="add-peripheral-btn">新增外设</span>
                                     </button>
@@ -2752,11 +2732,11 @@
                                 <h2 class="card-title" data-i18n="periph-exec-page-title">外设执行管理</h2>
                                 <div style="display: flex; gap: 10px; align-items: center;">
                                     <select id="periph-exec-filter-periph" class="pure-input-1" style="width: auto;"
-                                        onchange="app.loadPeriphExecPage()">
+                                        data-change-action="loadPeriphExecPage">
                                         <option value="" data-i18n="periph-exec-filter-all">全部规则</option>
                                     </select>
-                                    <button class="pure-button pure-button-primary" id="periph-exec-page-add-btn"
-                                        onclick="app.openPeriphExecModalStandalone()">
+                                    <button class="fb-btn fb-btn-primary" id="periph-exec-page-add-btn"
+                                        data-action="openPeriphExecModalStandalone">
                                         <i class="fas fa-plus"></i> <span data-i18n="periph-exec-add-btn">新增规则</span>
                                     </button>
                                 </div>
@@ -2788,6 +2768,25 @@
                         </div>
                     </div>
 
+                    <!-- 设备控制页面 -->
+                    <div id="device-control-page" class="page page-layout-flat">
+                        <div class="card">
+                            <div class="card-header u-header-between-wrap">
+                                <h2 class="card-title" data-i18n="device-control-title">设备控制</h2>
+                                <div style="display: flex; gap: 10px; align-items: center;">
+                                    <button class="fb-btn" id="control-refresh-btn">
+                                        <span data-i18n="btn-refresh">刷新</span>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div id="device-control-panel">
+                                    <!-- 动态渲染控制卡片 -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- 规则脚本页面 -->
                     <div id="rule-script-page" class="page page-layout-flat">
                         <div class="card">
@@ -2795,7 +2794,7 @@
                                 style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
                                 <h2 class="card-title" data-i18n="rule-script-page-title">规则脚本</h2>
                                 <div style="display: flex; gap: 10px; align-items: center;">
-                                    <button class="pure-button pure-button-primary" onclick="app.openRuleScriptModal()">
+                                    <button class="fb-btn fb-btn-primary" data-action="openRuleScriptModal">
                                         <i class="fas fa-plus"></i> <span data-i18n="rule-script-add-btn">新增规则</span>
                                     </button>
                                 </div>
@@ -2882,8 +2881,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-password-btn" type="button" data-i18n="cancel">取消</button>
-                <button class="pure-button pure-button-primary" id="confirm-password-btn" type="button"
+                <button class="fb-btn" id="cancel-password-btn" type="button" data-i18n="cancel">取消</button>
+                <button class="fb-btn fb-btn-primary" id="confirm-password-btn" type="button"
                     data-i18n="confirm-change">确认修改</button>
             </div>
         </div>
@@ -3135,8 +3134,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-peripheral-btn" type="button" data-i18n="cancel">取消</button>
-                <button class="pure-button pure-button-primary" id="save-peripheral-btn" type="button"
+                <button class="fb-btn" id="cancel-peripheral-btn" type="button" data-i18n="cancel">取消</button>
+                <button class="fb-btn fb-btn-primary" id="save-peripheral-btn" type="button"
                     data-i18n="save">保存</button>
             </div>
         </div>
@@ -3181,7 +3180,7 @@
                         <!-- 第二部分：触发配置 (动态多组) -->
                         <div class="section-title section-title-actions">
                             <span data-i18n="periph-exec-section-trigger">触发配置</span>
-                            <button type="button" class="pure-button pe-add-btn" onclick="app.addPeriphExecTrigger()">
+                            <button type="button" class="fb-btn fb-btn-sm" data-action="addPeriphExecTrigger">
                                 <i class="fas fa-plus"></i> <span data-i18n="periph-exec-add-trigger">添加触发</span>
                             </button>
                         </div>
@@ -3192,7 +3191,7 @@
                         <!-- 第三部分：执行动作配置 (动态多组) -->
                         <div class="section-title section-title-actions">
                             <span data-i18n="periph-exec-section-action">执行动作配置</span>
-                            <button type="button" class="pure-button pe-add-btn" onclick="app.addPeriphExecAction()">
+                            <button type="button" class="fb-btn fb-btn-sm" data-action="addPeriphExecAction">
                                 <i class="fas fa-plus"></i> <span data-i18n="periph-exec-add-action">添加动作</span>
                             </button>
                         </div>
@@ -3206,8 +3205,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-periph-exec-btn" type="button" data-i18n="cancel">取消</button>
-                <button class="pure-button pure-button-primary" id="save-periph-exec-btn" type="button" data-i18n="save">保存</button>
+                <button class="fb-btn" id="cancel-periph-exec-btn" type="button" data-i18n="cancel">取消</button>
+                <button class="fb-btn fb-btn-primary" id="save-periph-exec-btn" type="button" data-i18n="save">保存</button>
             </div>
         </div>
     </div>
@@ -3269,8 +3268,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-rule-script-btn" type="button" data-i18n="cancel">取消</button>
-                <button class="pure-button pure-button-primary" id="save-rule-script-btn" type="button"
+                <button class="fb-btn" id="cancel-rule-script-btn" type="button" data-i18n="cancel">取消</button>
+                <button class="fb-btn fb-btn-primary" id="save-rule-script-btn" type="button"
                     data-i18n="save">保存</button>
             </div>
         </div>
@@ -3327,8 +3326,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-gpio-btn" type="button" data-i18n="cancel">取消</button>
-                <button class="pure-button pure-button-primary" id="save-gpio-btn" type="button"
+                <button class="fb-btn" id="cancel-gpio-btn" type="button" data-i18n="cancel">取消</button>
+                <button class="fb-btn fb-btn-primary" id="save-gpio-btn" type="button"
                     data-i18n="role-save-btn">保存</button>
             </div>
         </div>
@@ -3376,8 +3375,8 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-add-user-btn" type="button" data-i18n="cancel">取消</button>
-                <button class="pure-button pure-button-primary" id="confirm-add-user-btn" type="button"
+                <button class="fb-btn" id="cancel-add-user-btn" type="button" data-i18n="cancel">取消</button>
+                <button class="fb-btn fb-btn-primary" id="confirm-add-user-btn" type="button"
                     data-i18n="add-user-confirm">添加</button>
             </div>
         </div>
@@ -3423,20 +3422,16 @@
                 </form>
             </div>
             <div class="modal-footer">
-                <button class="pure-button" id="cancel-role-btn" type="button" data-i18n="cancel">取消</button>
-                <button class="pure-button pure-button-primary" id="confirm-role-btn" type="button"
+                <button class="fb-btn" id="cancel-role-btn" type="button" data-i18n="cancel">取消</button>
+                <button class="fb-btn fb-btn-primary" id="confirm-role-btn" type="button"
                     data-i18n="role-save-btn">保存</button>
             </div>
         </div>
     </div>
 
-    <!-- 便于开发，顺序引入 JS 文件；fetch-api.js 替代原 axios.min.js（节省 ~54KB） -->
+    <!-- 仅保留关键路径 JS（减少初始并发请求，ESP32 最多 8 连接） -->
     <script defer src="./js/modules/fetch-api.js"></script>
     <script defer src="./js/modules/notification.js"></script>
-    <script defer src="./js/modules/config.js"></script>
-    <script defer src="./js/modules/i18n.js"></script>
-    <script defer src="./js/modules/utils.js"></script>
-
     <script defer src="./js/state.js"></script>
     <script defer src="./js/main.js"></script>
 </body>

@@ -1,4 +1,5 @@
 #include "./network/handlers/OTARouteHandler.h"
+#include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "./network/OTAManager.h"
 #include "systems/LoggerSystem.h"

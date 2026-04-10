@@ -197,9 +197,7 @@ void LoggerSystem::log(LogLevel level, const char* message, const char* module) 
         static bool fileOpenFailedOnce = false;
         // 检查日志文件大小，如果超过限制则旋转
         if (getLogFileSize() >= logFileSizeLimit) {
-            if (rotateLogFile()) {
-                info("Log file rotated due to size limit", "Logger");
-            }
+            rotateLogFile();
         }
 
         File logFile = LittleFS.open(LOG_FILE_PATH, FILE_APPEND);
@@ -293,6 +291,11 @@ bool LoggerSystem::rotateLogFile(const char* newName) {
         return false;
     }
 
+    // 临时禁用文件日志，确保 espLogCallback / writeRawLog 等并发路径
+    // 不会在 rename 期间持有文件句柄（修复 "Cannot rename; src is open" 错误）
+    fileLoggingEnabled = false;
+    delay(5);  // 等待正在进行的文件写入完成
+
     bool renamed = false;
     if (newName && newName[0] != '\0') {
         renamed = LittleFS.rename(LOG_FILE_PATH, newName);
@@ -311,7 +314,20 @@ bool LoggerSystem::rotateLogFile(const char* newName) {
         }
         // 清理多余的旧日志文件，保留最新的10个
         cleanupOldLogFiles();
+    } else {
+        // rename 失败（文件可能仍被系统内部引用），回退为截断清空
+        File logFile = LittleFS.open(LOG_FILE_PATH, FILE_WRITE);
+        if (logFile) {
+            logFile.close();
+        }
+        if (serialEnabled && outputStream) {
+            outputStream->println("[Logger] WARN: rename failed, log file truncated instead");
+        }
+        renamed = true;  // 截断视为成功
     }
+
+    // 恢复文件日志
+    fileLoggingEnabled = true;
     return renamed;
 }
 

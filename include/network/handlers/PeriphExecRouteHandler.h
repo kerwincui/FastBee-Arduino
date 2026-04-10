@@ -32,6 +32,7 @@ private:
     void handleGetDynamicEvents(AsyncWebServerRequest* request);
     void handleGetEventCategories(AsyncWebServerRequest* request);
     void handleGetTriggerTypes(AsyncWebServerRequest* request);
+    void handleGetControls(AsyncWebServerRequest* request);
 
     // JSON body handlers（支持 triggers[]/actions[] 数组）
     void handleAddRuleJson(AsyncWebServerRequest* request, JsonVariant& json);
@@ -39,6 +40,9 @@ private:
 
     // JSON → PeriphExecRule 解析辅助
     void parseRuleFromJson(JsonObject& obj, PeriphExecRule& rule);
+
+    // 完整序列化单条规则（含 triggers/actions 数组）到 JSON 字符串
+    String serializeRuleFull(const PeriphExecRule& rule);
 };
 
 #endif // PERIPH_EXEC_ROUTE_HANDLER_H

@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <HardwareSerial.h>
 #include <functional>
+#include <freertos/semphr.h>
 #include "utils/FileUtils.h"
 #include <core/SystemConstants.h>
 #include "systems/LoggerSystem.h"
@@ -310,8 +311,9 @@ private:
     // 线圈延时任务处理
     void processCoilDelayTasks();
     
-    // 一次性操作互斥标志
+    // 一次性操作互斥标志和信号量
     volatile bool isOneShotReading;
+    SemaphoreHandle_t _oneShotSemaphore;
     
     // 线圈延时任务队列
     CoilDelayTask coilDelayTasks[Protocols::MODBUS_MAX_COIL_DELAY_TASKS];

@@ -1,4 +1,5 @@
 #include "./network/handlers/PeripheralRouteHandler.h"
+#include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "core/PeripheralManager.h"
 #include <ArduinoJson.h>
@@ -140,10 +141,7 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
     int endIdx = (startIdx < total) ? std::min(startIdx + pageSize, total) : startIdx;
 
     // 检查堆内存是否充足（预留20KB给系统其他部分）
-    if (ESP.getFreeHeap() < 20480) {
-        request->send(503, "application/json", "{\"success\":false,\"message\":\"内存不足\"}");
-        return;
-    }
+    if (HandlerUtils::checkLowMemory(request)) return;
 
     // 使用流式响应避免大内存分配
     AsyncResponseStream* response = request->beginResponseStream("application/json");

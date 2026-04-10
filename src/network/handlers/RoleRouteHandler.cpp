@@ -1,4 +1,5 @@
 #include "./network/handlers/RoleRouteHandler.h"
+#include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "./security/AuthManager.h"
 #include "./security/RoleManager.h"

@@ -2,49 +2,32 @@
 #define PROTOCOL_ROUTE_HANDLER_H
 
 #include <ESPAsyncWebServer.h>
+#include <memory>
 
 class WebHandlerContext;
+class ModbusRouteHandler;
+class MqttRouteHandler;
 
 /**
  * @brief 协议配置路由处理器
  * 
  * 处理 /api/protocol/config 的 GET 和 POST 请求
- * 处理 /api/modbus/status 和 /api/modbus/write 的 Modbus Master 接口
- * 处理 /api/mqtt/test 的 MQTT 连接测试接口
+ * 组合 ModbusRouteHandler 和 MqttRouteHandler 处理各自的 API
  */
 class ProtocolRouteHandler {
 public:
     explicit ProtocolRouteHandler(WebHandlerContext* ctx);
+    ~ProtocolRouteHandler();
 
     void setupRoutes(AsyncWebServer* server);
 
 private:
     WebHandlerContext* ctx;
+    std::unique_ptr<ModbusRouteHandler> modbusHandler;
+    std::unique_ptr<MqttRouteHandler> mqttHandler;
 
     void handleGetProtocolConfig(AsyncWebServerRequest* request);
     void handleSaveProtocolConfig(AsyncWebServerRequest* request);
-    void handleGetModbusStatus(AsyncWebServerRequest* request);
-    void handleModbusWrite(AsyncWebServerRequest* request);
-    
-    // Modbus 通用控制 API
-    void handleModbusCoilControl(AsyncWebServerRequest* request);
-    void handleModbusCoilBatch(AsyncWebServerRequest* request);
-    void handleModbusCoilDelay(AsyncWebServerRequest* request);
-    void handleModbusCoilStatus(AsyncWebServerRequest* request);
-    void handleModbusDeviceAddress(AsyncWebServerRequest* request);
-    void handleModbusDeviceBaudrate(AsyncWebServerRequest* request);
-    void handleModbusDiscreteInputs(AsyncWebServerRequest* request);
-    
-    // Modbus 通用寄存器读写 API
-    void handleModbusRegisterRead(AsyncWebServerRequest* request);
-    void handleModbusRegisterWrite(AsyncWebServerRequest* request);
-    void handleModbusRegisterBatchWrite(AsyncWebServerRequest* request);
-
-    void handleTestMqttConnection(AsyncWebServerRequest* request);
-    void handleGetMqttStatus(AsyncWebServerRequest* request);
-    void handleMqttReconnect(AsyncWebServerRequest* request);
-    void handleMqttDisconnect(AsyncWebServerRequest* request);
-    void handleMqttNtpSync(AsyncWebServerRequest* request);
 };
 
 #endif // PROTOCOL_ROUTE_HANDLER_H

@@ -1,7 +1,7 @@
 // 应用主入口和初始化
 
-// 页面加载完成后初始化
-document.addEventListener('DOMContentLoaded', () => {
+// 动态加载 i18n.js（从 index.html 移除以减少初始并发请求）
+function _bootApp() {
     // 初始化消息通知系统
     Notification.init();
     
@@ -9,9 +9,9 @@ document.addEventListener('DOMContentLoaded', () => {
     i18n.updatePageText();
     
     // 加载保存的登录信息
-    const savedUsername = localStorage.getItem('username');
-    const savedPassword = localStorage.getItem('password');
-    const remember = localStorage.getItem('remember') === 'true';
+    var savedUsername = localStorage.getItem('username');
+    var savedPassword = localStorage.getItem('password');
+    var remember = localStorage.getItem('remember') === 'true';
     
     if (savedUsername && savedPassword && remember) {
         document.getElementById('username').value = savedUsername;
@@ -20,7 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     // 设置语言选择器
-    const langSelect = document.getElementById('language-select');
+    var langSelect = document.getElementById('language-select');
     if (langSelect) {
         langSelect.value = i18n.currentLang;
     }
@@ -28,49 +28,31 @@ document.addEventListener('DOMContentLoaded', () => {
     // 初始化应用
     AppState.init();
     
-    // 暂露全局 app 引用，供表格内 onclick 使用（如 gpio 操作按钮）
+    // 暴露全局 app 引用，供表格内 onclick 使用
     window.app = AppState;
-    
-    // 模拟实时数据更新
-    // setInterval(() => {
-    //     // 更新仪表盘数据
-    //     AppState.dashboard.cpu = Math.min(100, Math.max(10, AppState.dashboard.cpu + (Math.random() * 6 - 3)));
-    //     AppState.dashboard.cpu = Math.round(AppState.dashboard.cpu);
-        
-    //     AppState.dashboard.memory = Math.min(100, Math.max(20, AppState.dashboard.memory + (Math.random() * 4 - 2)));
-    //     AppState.dashboard.memory = Math.round(AppState.dashboard.memory);
-        
-    //     AppState.dashboard.temperature = Math.min(60, Math.max(30, AppState.dashboard.temperature + (Math.random() * 2 - 1)));
-    //     AppState.dashboard.temperature = Math.round(AppState.dashboard.temperature);
-        
-    //     // 随机更新一个设备状态
-    //     if (Math.random() > 0.7 && AppState.dashboard.devices.length > 0) {
-    //         const randomIndex = Math.floor(Math.random() * AppState.dashboard.devices.length);
-    //         const device = AppState.dashboard.devices[randomIndex];
-    //         const oldStatus = device.status;
-    //         const statuses = ['online', 'warning', 'offline'];
-    //         const newStatus = statuses[Math.floor(Math.random() * statuses.length)];
-            
-    //         if (oldStatus !== newStatus) {
-    //             device.status = newStatus;
-    //             device.lastUpdate = new Date().toLocaleString();
-                
-    //             // 显示状态变更通知
-    //             const deviceName = i18n.currentLang === 'zh-CN' ? device.name_zh : device.name;
-    //             const statusText = newStatus === 'online' ? '在线' : 
-    //                                 newStatus === 'warning' ? '警告' : '离线';
-                
-    //             if (newStatus === 'online') {
-    //                 Notification.success(`${deviceName} 状态恢复正常`, '设备状态更新');
-    //             } else if (newStatus === 'warning') {
-    //                 Notification.warning(`${deviceName} 出现警告`, '设备状态更新');
-    //             } else {
-    //                 Notification.error(`${deviceName} 已离线`, '设备状态更新');
-    //             }
-    //         }
-    //     }
-        
-    //     // 更新显示
-    //     AppState.renderDashboard();
-    // }, 5000);
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    // 动态加载 i18n.js，避免初始页面加载时并发连接过多
+    var script = document.createElement('script');
+    script.src = './js/modules/i18n.js';
+    script.onload = function() { _bootApp(); };
+    script.onerror = function() {
+        // i18n 加载失败时重试一次
+        setTimeout(function() {
+            var retry = document.createElement('script');
+            retry.src = './js/modules/i18n.js';
+            retry.onload = function() { _bootApp(); };
+            retry.onerror = function() {
+                console.error('Failed to load i18n.js after retry');
+                // 即使没有 i18n 也尝试启动（使用降级翻译）
+                if (typeof i18n === 'undefined') {
+                    window.i18n = { currentLang: 'zh-CN', t: function(k) { return k; }, updatePageText: function() {} };
+                }
+                _bootApp();
+            };
+            document.head.appendChild(retry);
+        }, 1500);
+    };
+    document.head.appendChild(script);
 });

@@ -14,16 +14,28 @@
 
 ModbusHandler::ModbusHandler() 
     : isInitialized(false), modbusSerial(&Serial2),
-      isOneShotReading(false),
+      isOneShotReading(false), _oneShotSemaphore(nullptr),
       _totalPollCount(0), _successPollCount(0), _failedPollCount(0), _timeoutPollCount(0), _lastPollTime(0) {
     memset(holdingRegisters, 0, sizeof(holdingRegisters));
     memset(inputRegisters, 0, sizeof(inputRegisters));
     memset(coils, 0, sizeof(coils));
     memset(discreteInputs, 0, sizeof(discreteInputs));
+    
+    // 创建二值信号量（用于 OneShot 操作同步）
+    _oneShotSemaphore = xSemaphoreCreateBinary();
+    if (_oneShotSemaphore) {
+        // 初始状态：信号量可用（OneShot 未进行中）
+        xSemaphoreGive(_oneShotSemaphore);
+    }
 }
 
 ModbusHandler::~ModbusHandler() {
     end();
+    // 释放信号量
+    if (_oneShotSemaphore) {
+        vSemaphoreDelete(_oneShotSemaphore);
+        _oneShotSemaphore = nullptr;
+    }
 }
 
 bool ModbusHandler::begin(const ModbusConfig& cfg) {
@@ -1158,19 +1170,39 @@ OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t 
         return result;
     }
     if (isOneShotReading) {
-        // 等待总线空闲（等待其他 Modbus 操作完成），最多等 2 秒
-        const unsigned long maxWaitMs = 2000;
-        unsigned long startWait = millis();
-        while (isOneShotReading) {
-            if (millis() - startWait >= maxWaitMs) {
+        // 使用信号量等待总线空闲（FreeRTOS 友好）
+        if (_oneShotSemaphore) {
+            // 等待获取信号量，最多 2 秒
+            if (xSemaphoreTake(_oneShotSemaphore, pdMS_TO_TICKS(2000)) == pdFALSE) {
                 result.error = ONESHOT_BUSY;
-                LOG_WARNING("[Modbus] OneShot: busy (timeout waiting for bus)");
+                LOG_WARNING("[Modbus] OneShot: busy (timeout waiting for semaphore)");
                 return result;
             }
-            delay(5);
-            yield();
+            LOG_INFO("[Modbus] OneShot: bus was busy, now free after wait");
+        } else {
+            // 信号量未创建，使用旧的轮询方式（降级兼容）
+            const unsigned long maxWaitMs = 2000;
+            unsigned long startWait = millis();
+            while (isOneShotReading) {
+                if (millis() - startWait >= maxWaitMs) {
+                    result.error = ONESHOT_BUSY;
+                    LOG_WARNING("[Modbus] OneShot: busy (timeout waiting for bus)");
+                    return result;
+                }
+                vTaskDelay(pdMS_TO_TICKS(5));
+            }
+            LOG_INFO("[Modbus] OneShot: bus was busy, now free after wait");
         }
-        LOG_INFO("[Modbus] OneShot: bus was busy, now free after wait");
+    } else {
+        // 总线空闲，立即获取信号量
+        if (_oneShotSemaphore) {
+            // 非阻塞获取，确保独占访问
+            if (xSemaphoreTake(_oneShotSemaphore, 0) == pdFALSE) {
+                result.error = ONESHOT_BUSY;
+                LOG_WARNING("[Modbus] OneShot: failed to acquire semaphore");
+                return result;
+            }
+        }
     }
     if (expectedSlaveAddr > 247) {
         result.error = ONESHOT_EXCEPTION;
@@ -1297,6 +1329,10 @@ OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t 
     }
 
     isOneShotReading = false;
+    // 释放信号量
+    if (_oneShotSemaphore) {
+        xSemaphoreGive(_oneShotSemaphore);
+    }
     return result;
 }
 

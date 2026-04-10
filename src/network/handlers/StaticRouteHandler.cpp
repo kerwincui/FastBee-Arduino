@@ -1,4 +1,5 @@
 #include "./network/handlers/StaticRouteHandler.h"
+#include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include <LittleFS.h>
 

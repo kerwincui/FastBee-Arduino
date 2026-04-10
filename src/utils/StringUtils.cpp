@@ -48,7 +48,15 @@ std::vector<String> StringUtils::split(const String& str, const String& delimite
 }
 
 String StringUtils::join(const std::vector<String>& strings, const String& delimiter) {
+    // 预计算总长度以减少内存重分配
+    size_t totalLen = 0;
+    for (size_t i = 0; i < strings.size(); i++) {
+        totalLen += strings[i].length();
+        if (i > 0) totalLen += delimiter.length();
+    }
     String result;
+    if (totalLen > 0) result.reserve(totalLen);
+    
     for (size_t i = 0; i < strings.size(); i++) {
         if (i > 0) {
             result += delimiter;
@@ -161,6 +169,8 @@ String StringUtils::format(const char* format, ...) {
 
 String StringUtils::urlEncode(const String& str) {
     String encoded;
+    // 最坏情况: 每个字符变成 3 个字符 (%XX)
+    encoded.reserve(str.length() * 3);
     const char* hex = "0123456789ABCDEF";
     
     for (size_t i = 0; i < str.length(); i++) {
@@ -179,6 +189,7 @@ String StringUtils::urlEncode(const String& str) {
 
 String StringUtils::urlDecode(const String& str) {
     String decoded;
+    decoded.reserve(str.length());  // 解码后长度不超过原长度
     
     for (size_t i = 0; i < str.length(); i++) {
         char c = str[i];
@@ -198,6 +209,8 @@ String StringUtils::urlDecode(const String& str) {
 
 String StringUtils::htmlEncode(const String& str) {
     String encoded;
+    // 最坏情况: 每个字符变成 6 个字符 (&quot;)
+    encoded.reserve(str.length() * 6);
     
     for (size_t i = 0; i < str.length(); i++) {
         char c = str[i];
@@ -226,6 +239,8 @@ String StringUtils::htmlDecode(const String& str) {
 
 String StringUtils::jsonEscape(const String& str) {
     String escaped;
+    // 最坏情况: 每个字符变成 6 个字符 (\uXXXX)
+    escaped.reserve(str.length() * 6);
     
     for (size_t i = 0; i < str.length(); i++) {
         char c = str[i];
@@ -345,6 +360,8 @@ String StringUtils::pad(const String& str, size_t length, char padChar, bool lef
 
 String StringUtils::repeat(const String& str, size_t times) {
     String result;
+    size_t totalLen = str.length() * times;
+    if (totalLen > 0) result.reserve(totalLen);
     for (size_t i = 0; i < times; i++) {
         result += str;
     }
@@ -391,10 +408,12 @@ String StringUtils::sha256(const String& str) {
 String StringUtils::base64Encode(const String& str) {
     // 简化实现
     const char* base64_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t len = str.length();
+    // Base64 输出长度 = (inputLen + 2) / 3 * 4
     String result;
+    result.reserve((len + 2) / 3 * 4 + 1);
     
     size_t i = 0;
-    size_t len = str.length();
     
     while (i < len) {
         uint32_t octet_a = i < len ? (unsigned char)str[i++] : 0;
@@ -425,6 +444,7 @@ String StringUtils::base64Decode(const String& str) {
 
 String StringUtils::randomString(size_t length, const String& charset) {
     String result;
+    result.reserve(length);
     size_t charsetLen = charset.length();
     
     for (size_t i = 0; i < length; i++) {
@@ -440,6 +460,7 @@ int StringUtils::compareIgnoreCase(const String& str1, const String& str2) {
 
 String StringUtils::removeWhitespace(const String& str) {
     String result;
+    result.reserve(str.length());  // 最多等于原长度
     for (size_t i = 0; i < str.length(); i++) {
         if (!isspace(str[i])) {
             result += str[i];
@@ -460,6 +481,7 @@ size_t StringUtils::byteCount(const String& str) {
 String StringUtils::toCamelCase(const String& str, bool capitalizeFirst) {
     std::vector<String> parts = split(str, " _");
     String result;
+    result.reserve(str.length());  // 结果不会超过原长度
     
     for (size_t i = 0; i < parts.size(); i++) {
         String part = trim(parts[i]);
@@ -480,6 +502,8 @@ String StringUtils::toCamelCase(const String& str, bool capitalizeFirst) {
 
 String StringUtils::toSnakeCase(const String& str) {
     String result;
+    // 最坏情况: 每个大写字母前加下划线，结果长度翻倍
+    result.reserve(str.length() * 2);
     
     for (size_t i = 0; i < str.length(); i++) {
         char c = str[i];
