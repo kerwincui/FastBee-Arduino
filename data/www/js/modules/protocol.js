@@ -608,16 +608,17 @@
             this._renderAllDevices();
         },
 
-        _showAddDeviceMenu(event) {
-            event.stopPropagation();
+        _showAddDeviceMenu() {
             var menu = document.getElementById('add-device-menu');
             if (!menu) return;
-            var isVisible = menu.style.display !== 'none';
-            menu.style.display = isVisible ? 'none' : 'block';
-            if (!isVisible) {
+            var isVisible = !menu.classList.contains('fb-hidden');
+            if (isVisible) {
+                menu.classList.add('fb-hidden');
+            } else {
+                menu.classList.remove('fb-hidden');
                 var closeMenu = function(e) {
                     if (!menu.contains(e.target)) {
-                        menu.style.display = 'none';
+                        menu.classList.add('fb-hidden');
                         document.removeEventListener('click', closeMenu);
                     }
                 };
@@ -626,7 +627,8 @@
         },
 
         _addSensorDevice() {
-            document.getElementById('add-device-menu').style.display = 'none';
+            var menu = document.getElementById('add-device-menu');
+            if (menu) menu.classList.add('fb-hidden');
             if (!this._masterTasks) this._masterTasks = [];
             if (this._masterTasks.length >= 8) {
                 Notification.warning('Max 8 sensor devices', i18n.t('modbus-all-devices-title'));
@@ -636,7 +638,8 @@
         },
 
         _addControlDevice() {
-            document.getElementById('add-device-menu').style.display = 'none';
+            var menu = document.getElementById('add-device-menu');
+            if (menu) menu.classList.add('fb-hidden');
             if (!this._modbusDevices) this._modbusDevices = [];
             if (this._modbusDevices.length >= 8) {
                 Notification.warning('Max 8 control devices', i18n.t('modbus-all-devices-title'));
@@ -849,8 +852,12 @@
                 var t = tasks[i];
                 if (!t.enabled || !t.cachedData || !t.cachedData.values) continue;
                 if (t.mappings && t.mappings.length > 0) {
-                    for (var j = 0; j < t.mappings.length; j++) {
-                        var m = t.mappings[j];
+                    // 按 regOffset 排序 mappings，确保显示顺序正确
+                    var sortedMappings = t.mappings.slice().sort(function(a, b) {
+                        return (a.regOffset || 0) - (b.regOffset || 0);
+                    });
+                    for (var j = 0; j < sortedMappings.length; j++) {
+                        var m = sortedMappings[j];
                         var rawVal = null;
                         if (m.regOffset < t.cachedData.values.length) {
                             switch (m.dataType) {

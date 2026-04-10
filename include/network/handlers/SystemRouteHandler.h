@@ -32,6 +32,7 @@ private:
     void handleGetDeviceConfig(AsyncWebServerRequest* request);
     void handleSaveDeviceConfig(AsyncWebServerRequest* request);
     void handleGetHealth(AsyncWebServerRequest* request);
+    void handleGetDeviceInfo(AsyncWebServerRequest* request);
 };
 
 #endif // SYSTEM_ROUTE_HANDLER_H

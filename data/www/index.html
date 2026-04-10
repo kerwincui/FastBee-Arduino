@@ -2770,22 +2770,22 @@
 
                     <!-- 设备控制页面 -->
                     <div id="device-control-page" class="page page-layout-flat">
-                        <div class="card">
-                            <div class="card-header u-header-between-wrap">
-                                <h2 class="card-title" data-i18n="device-control-title">设备控制</h2>
-                                <div style="display: flex; gap: 10px; align-items: center;">
-                                    <button class="fb-btn" id="control-refresh-btn">
-                                        <span data-i18n="btn-refresh">刷新</span>
-                                    </button>
-                                </div>
-                            </div>
-                            <div class="card-body">
-                                <div id="device-control-panel">
-                                    <!-- 动态渲染控制卡片 -->
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+    <div class="card">
+        <div class="card-header u-header-between-wrap">
+            <h2 class="card-title" data-i18n="device-control-title">设备控制</h2>
+            <div class="fb-flex-center" style="gap: 8px;">
+                <button class="fb-btn fb-btn-sm" id="dc-refresh-btn" data-action="loadDeviceControlPage">
+                    <span data-i18n="btn-refresh">刷新</span>
+                </button>
+            </div>
+        </div>
+        <div class="card-body" style="padding: 12px;">
+            <div id="dc-content">
+                <!-- JS 动态渲染 -->
+            </div>
+        </div>
+    </div>
+</div>
 
                     <!-- 规则脚本页面 -->
                     <div id="rule-script-page" class="page page-layout-flat">
@@ -3429,10 +3429,7 @@
         </div>
     </div>
 
-    <!-- 仅保留关键路径 JS（减少初始并发请求，ESP32 最多 8 连接） -->
-    <script defer src="./js/modules/fetch-api.js"></script>
-    <script defer src="./js/modules/notification.js"></script>
-    <script defer src="./js/state.js"></script>
+    <!-- 仅加载入口脚本，其余依赖由 main.js 链式动态加载（避免 ESP32 并发连接过多） -->
     <script defer src="./js/main.js"></script>
 </body>
 

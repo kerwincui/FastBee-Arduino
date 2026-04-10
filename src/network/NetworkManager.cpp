@@ -486,7 +486,7 @@ bool NetworkManager::loadNetworkConfig() {
         // 域名配置
         wifiConfig.customDomain = preferences.getString("custom_domain", Network::DEFAULT_MDNS_HOSTNAME);
         wifiConfig.enableMDNS = preferences.getBool("enable_mdns", true);
-        wifiConfig.enableDNS = preferences.getBool("enable_dns", false);
+        wifiConfig.enableDNS = preferences.getBool("enable_dns", true);
 
         LOG_INFO("NetworkManager: Configuration loaded successfully");
         return true;

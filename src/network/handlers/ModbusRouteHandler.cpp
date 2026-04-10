@@ -238,11 +238,26 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
                 t["enabled"] = task.enabled;
                 t["label"] = task.label;
 
-                // 寄存器映射配置
+                // 寄存器映射配置 - 按 regOffset 排序后输出，确保显示顺序正确
                 if (task.mappingCount > 0) {
+                    // 创建索引数组用于排序
+                    uint8_t sortedIdx[Protocols::MODBUS_MAX_MAPPINGS_PER_TASK];
+                    for (uint8_t j = 0; j < task.mappingCount; j++) {
+                        sortedIdx[j] = j;
+                    }
+                    // 简单冒泡排序按 regOffset 升序排列
+                    for (uint8_t j = 0; j < task.mappingCount - 1; j++) {
+                        for (uint8_t k = 0; k < task.mappingCount - j - 1; k++) {
+                            if (task.mappings[sortedIdx[k]].regOffset > task.mappings[sortedIdx[k + 1]].regOffset) {
+                                uint8_t tmp = sortedIdx[k];
+                                sortedIdx[k] = sortedIdx[k + 1];
+                                sortedIdx[k + 1] = tmp;
+                            }
+                        }
+                    }
                     JsonArray mappings = t["mappings"].to<JsonArray>();
                     for (uint8_t j = 0; j < task.mappingCount; j++) {
-                        const RegisterMapping& m = task.mappings[j];
+                        const RegisterMapping& m = task.mappings[sortedIdx[j]];
                         if (m.sensorId[0] == '\0') continue;
                         JsonObject mo = mappings.add<JsonObject>();
                         mo["regOffset"] = m.regOffset;

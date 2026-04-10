@@ -159,16 +159,38 @@
                 .catch(() => Notification.error(i18n.t('dev-save-fail'), i18n.t('dev-cache-title')));
         },
 
-        clearBrowserCache() {
-            if ('caches' in window) {
-                caches.keys().then(names => {
-                    names.forEach(name => caches.delete(name));
-                });
+        clearBrowserCache: function() {
+            var self = this;
+            try {
+                // 清除 localStorage
+                if (window.localStorage) {
+                    window.localStorage.clear();
+                }
+                // 清除 sessionStorage
+                if (window.sessionStorage) {
+                    window.sessionStorage.clear();
+                }
+                // 尝试清除 Service Worker caches
+                if (window.caches) {
+                    caches.keys().then(function(names) {
+                        names.forEach(function(name) {
+                            caches.delete(name);
+                        });
+                    }).catch(function(e) {
+                        console.error('清除 caches 失败:', e);
+                    });
+                }
+                // 显示成功提示
+                Notification.success(i18n.t('dev-cache-clear-ok'), i18n.t('dev-cache-title'));
+                // 延迟刷新页面
+                setTimeout(function() {
+                    window.location.href = window.location.pathname;
+                }, 1000);
+            } catch (e) {
+                console.error('清除缓存失败:', e);
+                // 降级方案：强制刷新页面
+                window.location.reload(true);
             }
-            Notification.success(i18n.t('dev-cache-clear-ok'), i18n.t('dev-cache-title'));
-            setTimeout(() => {
-                window.location.href = window.location.pathname + '?_t=' + Date.now();
-            }, 800);
         },
 
         saveDeviceNTP() {

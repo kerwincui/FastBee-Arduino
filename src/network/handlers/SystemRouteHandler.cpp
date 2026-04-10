@@ -531,6 +531,10 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     // Health check
     server->on("/api/health", HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetHealth(request); });
+
+    // Device info
+    server->on("/api/device/info", HTTP_GET,
+              [this](AsyncWebServerRequest* request) { handleGetDeviceInfo(request); });
 }
 
 void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
@@ -980,4 +984,50 @@ void SystemRouteHandler::handleGetHealth(AsyncWebServerRequest* request) {
     doc["freeHeap"] = ESP.getFreeHeap();
 
     ctx->sendSuccess(request, doc);
+}
+
+void SystemRouteHandler::handleGetDeviceInfo(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "system.view")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+
+    JsonDocument doc;
+
+    // ESP32 芯片信息
+    doc["data"]["chip"]["model"] = ESP.getChipModel();
+    doc["data"]["chip"]["revision"] = ESP.getChipRevision();
+    doc["data"]["chip"]["cpuFreqMHz"] = ESP.getCpuFreqMHz();
+    doc["data"]["chip"]["sdkVersion"] = ESP.getSdkVersion();
+    doc["data"]["chip"]["macAddress"] = WiFi.macAddress();
+
+    // 从 device.json 读取设备配置
+    if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
+        File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+        if (f) {
+            JsonDocument cfg;
+            if (deserializeJson(cfg, f) == DeserializationError::Ok) {
+                if (cfg["deviceName"].is<String>()) doc["data"]["deviceName"] = cfg["deviceName"].as<String>();
+                if (cfg["deviceId"].is<String>()) doc["data"]["deviceId"] = cfg["deviceId"].as<String>();
+                if (cfg["description"].is<String>()) doc["data"]["description"] = cfg["description"].as<String>();
+                if (cfg["productNumber"].is<int>()) doc["data"]["productNumber"] = cfg["productNumber"].as<int>();
+                if (cfg["userId"].is<String>()) doc["data"]["userId"] = cfg["userId"].as<String>();
+                if (cfg["location"].is<String>()) doc["data"]["location"] = cfg["location"].as<String>();
+            }
+            f.close();
+        }
+    }
+
+    // 设置默认值（如果配置文件中不存在）
+    if (!doc["data"]["deviceName"].is<String>()) {
+        doc["data"]["deviceName"] = "FastBee-ESP32";
+    }
+    if (!doc["data"]["deviceId"].is<String>()) {
+        doc["data"]["deviceId"] = String((uint32_t)ESP.getEfuseMac(), HEX);
+    }
+
+    doc["success"] = true;
+    String output;
+    serializeJson(doc, output);
+    request->send(200, "application/json", output);
 }

@@ -77,28 +77,28 @@ void DNSServer::_handleRequest() {
     }
     
     // 移动到问题部分
-    // WiFiUDP udpCopy = _udp;
-    // udpCopy.seek(sizeof(DNSHeader));
+    WiFiUDP udpCopy = _udp;
+    udpCopy.seek(sizeof(DNSHeader));
     
     // 读取查询的域名
-    // String questionDomain = _readNameFromBuffer(udpCopy);
-    // if (questionDomain.isEmpty()) {
-    //     return;
-    // }
+    String questionDomain = _readNameFromBuffer(udpCopy);
+    if (questionDomain.isEmpty()) {
+        return;
+    }
     
     // 读取查询类型和类
-    // uint16_t questionType, questionClass;
-    // if (udpCopy.available() < 4) {
-    //     return;
-    // }
-    // questionType = udpCopy.read() << 8 | udpCopy.read();
-    // questionClass = udpCopy.read() << 8 | udpCopy.read();
+    uint16_t questionType, questionClass;
+    if (udpCopy.available() < 4) {
+        return;
+    }
+    questionType = udpCopy.read() << 8 | udpCopy.read();
+    questionClass = udpCopy.read() << 8 | udpCopy.read();
     
     // 判断是否匹配域名或通配符
-    // bool domainMatches = (_domainName == "*" || questionDomain.equalsIgnoreCase(_domainName));
+    bool domainMatches = (_domainName == "*" || questionDomain.equalsIgnoreCase(_domainName));
     
     // 构建响应
-    // _buildResponse(&dnsHeader, questionDomain, questionType, questionClass);
+    _buildResponse(&dnsHeader, questionDomain, questionType, questionClass);
 }
 
 void DNSServer::_buildResponse(const DNSHeader *dnsHeader, const String &questionDomain, const uint16_t &questionType, const uint16_t &questionClass) {

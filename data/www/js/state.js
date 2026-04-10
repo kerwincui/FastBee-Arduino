@@ -34,6 +34,7 @@ const AppState = {
 
     // ============ 全局事件委托 ============
     setupGlobalEventDelegation() {
+        const self = this;
         // 全局事件委托 - 替代内联 onclick
         document.addEventListener('click', (e) => {
             const el = e.target.closest('[data-action]');
@@ -49,6 +50,16 @@ const AppState = {
             } else if (typeof window.app !== 'undefined' && typeof window.app[action] === 'function') {
                 e.preventDefault();
                 window.app[action](...args);
+            } else {
+                // 方法尚未注册（模块可能还在加载中），延迟重试一次
+                e.preventDefault();
+                setTimeout(function() {
+                    if (typeof self[action] === 'function') {
+                        self[action](...args);
+                    } else if (typeof window.app !== 'undefined' && typeof window.app[action] === 'function') {
+                        window.app[action](...args);
+                    }
+                }, 800);
             }
         });
 
@@ -765,19 +776,21 @@ const AppState = {
                     this.loadDeviceControlPage();
                 } else {
                     console.warn('[changePage] loadDeviceControlPage not available, module may not be loaded');
-                    // 显示加载提示
-                    var panel = document.getElementById('device-control-panel');
-                    if (panel) {
-                        panel.innerHTML = '<div class="dc-empty">⏳ ' + i18n.t('loading') + '</div>';
+                    // 显示加载提示（使用正确的元素 ID：dc-content）
+                    var content = document.getElementById('dc-content');
+                    if (content) {
+                        content.innerHTML = '<div class="dc-empty">⏳ ' + i18n.t('loading') + '</div>';
                         // 延迟重试一次
                         var self = this;
                         setTimeout(function() {
                             if (typeof self.loadDeviceControlPage === 'function') {
                                 self.loadDeviceControlPage();
                             } else {
-                                panel.innerHTML = '<div class="dc-empty" style="color:var(--danger);">❌ 模块加载失败，请刷新页面重试</div>';
+                                content.innerHTML = '<div class="dc-empty" style="color:var(--danger);">❌ 模块加载失败，请刷新页面重试</div>';
                             }
                         }, 1000);
+                    } else {
+                        console.error('[changePage] dc-content element not found!');
                     }
                 }
             }

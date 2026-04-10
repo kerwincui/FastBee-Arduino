@@ -46,6 +46,12 @@ bool WebConfigManager::initialize() {
     ruleScriptHandler  = std::unique_ptr<RuleScriptRouteHandler>(new RuleScriptRouteHandler(ctx.get()));
     protocolHandler    = std::unique_ptr<ProtocolRouteHandler>(new ProtocolRouteHandler(ctx.get()));
 
+    // 全局 CORS 头 —— 自动注入到所有 HTTP 响应（含静态文件）
+    // 解决 fastbee.local 与 IP 地址混用时的跨域问题
+    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
+    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
     setupAllRoutes();
 
     LOG_INFO("[WebConfig] Initialized with 11 route handlers");

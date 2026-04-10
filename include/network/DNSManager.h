@@ -102,7 +102,7 @@ private:
     bool dnsServerStarted = false;
     String customDomain = "fastbee";
     bool mdnsEnabled = true;
-    bool dnsEnabled = false;
+    bool dnsEnabled = true;
 };
 
 #endif // DNS_MANAGER_H

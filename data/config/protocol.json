@@ -26,14 +26,14 @@
               "dataType": 1,
               "scaleFactor": 0.1,
               "decimalPlaces": 1,
-              "sensorId": "temperature"
+              "sensorId": "humidity"
             },
             {
               "regOffset": 1,
               "dataType": 1,
               "scaleFactor": 0.1,
               "decimalPlaces": 1,
-              "sensorId": "humidity"
+              "sensorId": "temperature"
             }
           ]
         },

@@ -389,21 +389,20 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
             size_t fileSize = gzFile.size();
             gzFile.close();
 
-            AsyncWebServerResponse *response = request->beginResponse(LittleFS, gzPath, contentType);
-            response->addHeader("Content-Encoding", "gzip");
-
             // ETag 基于文件大小（flash 上文件稳定后大小不变）
             String etag = "\"" + String(fileSize, HEX) + "\"";
-            response->addHeader("ETag", etag);
 
-            // 检查客户端缓存是否命中
+            // 在创建 response 之前检查缓存命中（避免 beginResponse 打开文件后又丢弃）
             if (request->hasHeader("If-None-Match")) {
-                String clientEtag = request->header("If-None-Match");
-                if (clientEtag == etag) {
+                if (request->header("If-None-Match") == etag) {
                     request->send(304);
                     return true;
                 }
             }
+
+            AsyncWebServerResponse *response = request->beginResponse(LittleFS, gzPath, contentType);
+            response->addHeader("Content-Encoding", "gzip");
+            response->addHeader("ETag", etag);
 
             // 缓存策略：
             // JS/CSS: 使用配置的缓存时间(cacheDuration秒) + ETag
@@ -425,18 +424,18 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
         size_t fileSize = file.size();
         file.close();
 
-        AsyncWebServerResponse *response = request->beginResponse(LittleFS, path, contentType);
-
         String etag = "\"" + String(fileSize, HEX) + "\"";
-        response->addHeader("ETag", etag);
 
+        // 在创建 response 之前检查缓存命中
         if (request->hasHeader("If-None-Match")) {
-            String clientEtag = request->header("If-None-Match");
-            if (clientEtag == etag) {
+            if (request->header("If-None-Match") == etag) {
                 request->send(304);
                 return true;
             }
         }
+
+        AsyncWebServerResponse *response = request->beginResponse(LittleFS, path, contentType);
+        response->addHeader("ETag", etag);
 
         // 图片等不可压缩资源缓存7天
         if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" ||

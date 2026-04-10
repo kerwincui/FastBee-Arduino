@@ -78,6 +78,7 @@ struct PollTask {
           quantity(10), pollInterval(Protocols::MODBUS_DEFAULT_POLL_INTERVAL),
           enabled(true), mappingCount(0) {
         memset(label, 0, sizeof(label));
+        memset(mappings, 0, sizeof(mappings));
     }
 };
 
@@ -132,7 +133,10 @@ struct MasterConfig {
 
     MasterConfig()
         : responseTimeout(1000), maxRetries(2),
-          interPollDelay(100), taskCount(0), deviceCount(0) {}
+          interPollDelay(100), taskCount(0), deviceCount(0) {
+        memset(tasks, 0, sizeof(tasks));
+        memset(devices, 0, sizeof(devices));
+    }
 };
 
 // Modbus配置结构体
