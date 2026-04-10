@@ -44,15 +44,6 @@ enum ModbusMode : uint8_t {
     MODBUS_MASTER = 1    // 主站模式（主动轮询）
 };
 
-// Master轮询状态机
-enum MasterPollState : uint8_t {
-    POLL_IDLE     = 0,   // 空闲，等待下一轮询时机
-    POLL_SENDING  = 1,   // 正在发送请求帧
-    POLL_WAITING  = 2,   // 等待从站响应
-    POLL_COMPLETE = 3,   // 响应接收完成
-    POLL_ERROR    = 4    // 通信错误
-};
-
 // 寄存器映射定义（将原始寄存器值转换为传感器数据）
 struct RegisterMapping {
     uint8_t  regOffset;      // 寄存器偏移量（相对于PollTask.startAddress）
@@ -67,7 +58,7 @@ struct RegisterMapping {
     }
 };
 
-// 轮询任务定义
+// 轮询任务定义（由 PeriphExec POLL_TRIGGER 调度执行）
 struct PollTask {
     uint8_t  slaveAddress;   // 目标从站地址 (1-247)
     uint8_t  functionCode;   // 功能码 (0x01-0x04)
@@ -89,24 +80,15 @@ struct PollTask {
     }
 };
 
-// Master写请求
-struct WriteRequest {
-    uint8_t  slaveAddress;
-    uint16_t regAddress;
-    uint16_t value;
-    bool     pending;
-
-    WriteRequest() : slaveAddress(0), regAddress(0), value(0), pending(false) {}
-};
-
-// 线圈延时任务（通用：到期后将指定线圈写OFF）
+// 线圈延时任务（通用：到期后将指定线圈写为目标值）
 struct CoilDelayTask {
     uint8_t  slaveAddress;
     uint16_t coilAddress;
     unsigned long triggerTime;  // millis() 到期时间
     bool active;
+    bool coilValue;             // 到期后写入的值（NO模式=false断开, NC模式=true断开）
 
-    CoilDelayTask() : slaveAddress(0), coilAddress(0), triggerTime(0), active(false) {}
+    CoilDelayTask() : slaveAddress(0), coilAddress(0), triggerTime(0), active(false), coilValue(false) {}
 };
 
 // Modbus 子设备（控制类设备：继电器/PWM/PID）
@@ -150,28 +132,6 @@ struct MasterConfig {
     MasterConfig()
         : responseTimeout(1000), maxRetries(2),
           interPollDelay(100), taskCount(0), deviceCount(0) {}
-};
-
-// Master运行统计
-struct MasterStats {
-    uint32_t totalPolls;
-    uint32_t successPolls;
-    uint32_t failedPolls;
-    uint32_t timeoutPolls;
-
-    MasterStats() : totalPolls(0), successPolls(0), failedPolls(0), timeoutPolls(0) {}
-};
-
-// 单个轮询任务的最新数据缓存
-struct TaskDataCache {
-    uint16_t values[Protocols::MODBUS_MAX_REGISTERS_PER_READ];
-    uint16_t count;          // 实际缓存的寄存器数量
-    unsigned long timestamp; // millis() 采集时间
-    bool valid;              // 是否有有效数据
-
-    TaskDataCache() : count(0), timestamp(0), valid(false) {
-        memset(values, 0, sizeof(values));
-    }
 };
 
 // Modbus配置结构体
@@ -246,10 +206,7 @@ public:
     ModbusMode getMode() const { return config.mode; }
     uint8_t getWorkMode() const { return config.workMode; }
     
-    // 轮询任务管理
-    bool addPollTask(const PollTask& task);
-    bool removePollTask(uint8_t index);
-    bool updatePollTask(uint8_t index, const PollTask& task);
+    // 轮询任务只读访问（任务由配置文件定义，由 PeriphExec 调度执行）
     uint8_t getPollTaskCount() const { return config.master.taskCount; }
     PollTask getPollTask(uint8_t index) const;
     
@@ -257,7 +214,7 @@ public:
     uint8_t getSubDeviceCount() const { return config.master.deviceCount; }
     const ModbusSubDevice& getSubDevice(uint8_t index) const;
 
-    // Master写操作（排队异步执行）
+    // Master写操作（阻塞式）
     bool masterWriteSingleRegister(uint8_t slaveAddr, uint16_t regAddr, uint16_t value);
     
     // Master一次性读取（阻塞，用于MQTT指令触发的即时采集）
@@ -266,6 +223,31 @@ public:
     
     // PeriphExec 调度的轮询任务执行（按索引读取并返回映射后的 JSON）
     String executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, uint8_t retries);
+    
+    // ========== 轮询统计接口（用于运行状态显示）==========
+    // 单个轮询任务的缓存数据
+    struct PollTaskCache {
+        uint16_t values[Protocols::MODBUS_MAX_REGISTERS_PER_READ]; // 原始寄存器值
+        uint8_t count;               // 有效数据数量
+        unsigned long timestamp;     // 采集时间戳
+        bool valid;                  // 数据是否有效
+        uint8_t lastError;           // 最后一次错误码（0=成功）
+        
+        PollTaskCache() : count(0), timestamp(0), valid(false), lastError(0) {
+            memset(values, 0, sizeof(values));
+        }
+    };
+    // 获取统计数据的JSON字符串
+    String getPollStatistics() const;
+    // 获取指定任务的缓存数据（用于API返回）
+    const PollTaskCache* getTaskCache(uint8_t taskIdx) const;
+    // 重置统计数据
+    void resetPollStatistics();
+    // 统计数据 getter（用于API直接访问）
+    uint32_t getTotalPollCount() const { return _totalPollCount; }
+    uint32_t getSuccessPollCount() const { return _successPollCount; }
+    uint32_t getFailedPollCount() const { return _failedPollCount; }
+    uint32_t getTimeoutPollCount() const { return _timeoutPollCount; }
     
     // Master一次性阻塞写操作（与 readRegistersOnce 对称，通用Modbus写能力）
     OneShotResult writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, bool value);
@@ -284,13 +266,8 @@ public:
     const String& getLastTxHex() const { return _lastTxHex; }
     const String& getLastRxHex() const { return _lastRxHex; }
 
-    // 线圈延时任务管理（到期后自动将线圈写OFF，通用定时操作）
-    bool addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsigned long delayMs);
-    
-    // Master运行状态
-    String getMasterStatus() const;
-    MasterStats getMasterStats() const { return masterStats; }
-    TaskDataCache getTaskDataCache(uint8_t index) const;
+    // 线圈延时任务管理（到期后自动将线圈写为目标值，支持 NC 模式反转）
+    bool addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsigned long delayMs, bool coilValue = false);
     
     // RAW模式辅助：将寄存器数据重构为Modbus响应帧的十六进制字符串
     String formatRawHex(uint8_t slaveAddr, uint8_t fc, const uint16_t* data, uint16_t count);
@@ -326,16 +303,6 @@ private:
     void handleWriteMultipleRegisters(const uint8_t* frame, uint8_t length);
     void sendExceptionResponse(uint8_t slaveAddr, uint8_t functionCode, uint8_t exceptionCode);
     
-    // === Master模式私有方法 ===
-    void handleMaster();
-    uint8_t buildMasterRequest(const PollTask& task, uint8_t* buffer);
-    bool parseMasterResponse(const uint8_t* buffer, uint8_t length, const PollTask& task);
-    int8_t findNextPollTask();
-    void reportPollData(const PollTask& task, const uint16_t* data, uint16_t count);
-    void reportRawData(const PollTask& task, const uint8_t* frame, uint8_t frameLen);
-    bool processWriteQueue();
-    uint8_t buildWriteRequest(const WriteRequest& req, uint8_t* buffer);
-    
     // 一次性操作通用发送/接收辅助（提取自readRegistersOnce的通用逻辑）
     OneShotResult sendOneShotRequest(const uint8_t* request, uint8_t reqLen,
                                       uint8_t expectedSlaveAddr);
@@ -343,33 +310,23 @@ private:
     // 线圈延时任务处理
     void processCoilDelayTasks();
     
-    // Master状态机变量
-    MasterPollState pollState;
-    uint8_t  currentTaskIndex;
-    unsigned long pollStateTimestamp;
-    unsigned long taskLastPollTime[Protocols::MODBUS_MAX_POLL_TASKS];
-    uint8_t  currentRetryCount;
-    uint8_t  responseBuffer[Protocols::MODBUS_BUFFER_SIZE];
-    uint8_t  responseIndex;
-    unsigned long lastByteTime;
-    bool     currentIsWrite;   // 当前正在处理的是写请求还是轮询
-    volatile bool isOneShotReading; // 一次性读取进行中，暂停轮询状态机
-    
-    // 写请求队列
-    WriteRequest writeQueue[Protocols::MODBUS_MAX_WRITE_QUEUE];
+    // 一次性操作互斥标志
+    volatile bool isOneShotReading;
     
     // 线圈延时任务队列
     CoilDelayTask coilDelayTasks[Protocols::MODBUS_MAX_COIL_DELAY_TASKS];
-    
-    // 运行统计
-    MasterStats masterStats;
-
-    // 每个轮询任务的最新数据缓存
-    TaskDataCache taskDataCache[Protocols::MODBUS_MAX_POLL_TASKS];
 
     // 调试帧缓冲区（最近一次 OneShot TX/RX）
     String _lastTxHex;
     String _lastRxHex;
+    
+    uint32_t _totalPollCount;      // 总轮询次数
+    uint32_t _successPollCount;    // 成功次数
+    uint32_t _failedPollCount;     // 失败次数（含异常）
+    uint32_t _timeoutPollCount;    // 超时次数
+    unsigned long _lastPollTime;   // 最后轮询时间（millis）
+    
+    PollTaskCache _taskCache[Protocols::MODBUS_MAX_POLL_TASKS];
     
     // 寄存器模拟存储（从站模式使用）
     uint16_t holdingRegisters[100];

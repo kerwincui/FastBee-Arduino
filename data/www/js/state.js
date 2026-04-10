@@ -5134,7 +5134,7 @@ const AppState = {
         }
     },
 
-    /** 延时控制（闪开：设备硬件定时） */
+    /** 延时控制（NO模式：硬件闪开；NC模式：软件延时断开） */
     async startCoilDelay() {
         const p = this._getCoilParams();
         const ch = parseInt(document.getElementById('modbus-ctrl-delay-ch')?.value || '0');
@@ -5146,16 +5146,21 @@ const AppState = {
         }
 
         try {
-            const res = await apiPost('/api/modbus/coil/delay', {
+            const params = {
                 slaveAddress: p.slaveAddress,
                 channel: ch,
                 delayBase: 0x0200,
-                delayUnits: units
-            });
+                delayUnits: units,
+                ncMode: p.ncMode,
+                coilBase: p.coilBase
+            };
+            const res = await apiPost('/api/modbus/coil/delay', params);
             if (res && res.success) {
                 Notification.success(i18n.t('modbus-ctrl-delay-ok'));
-                this._appendDebugLog(res.debug, 'Delay CH' + ch + ' ' + units + 'x100ms');
-                setTimeout(() => this.refreshCoilStatus(), 500);
+                this._appendDebugLog(res.debug, 'Delay CH' + ch + ' ' + units + 'x100ms' + (p.ncMode ? ' (NC)' : ''));
+                // NC 软件延时需要等更长时间再刷新状态
+                const refreshDelay = p.ncMode ? (units * 100 + 500) : 500;
+                setTimeout(() => this.refreshCoilStatus(), refreshDelay);
             } else {
                 Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
                 this._appendDebugError('Delay CH' + ch + ' failed', res && res.debug);
@@ -5312,7 +5317,7 @@ const AppState = {
         if (!select) return;
 
         try {
-            const res = await apiGet('/api/peripherals');
+            const res = await apiGet('/api/peripherals?pageSize=50');
             if (!res || !res.success) return;
 
             // 筛选已启用的 UART 外设 (type === 1)
@@ -5381,6 +5386,11 @@ const AppState = {
 
     // ============ 外设接口管理（新版） ============
     
+    // 外设列表分页状态
+    _periphCurrentPage: 1,
+    _periphPageSize: 10,
+    _periphTotalCount: 0,
+    
     /**
      * 加载外设列表
      */
@@ -5390,28 +5400,35 @@ const AppState = {
         
         tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #999;">' + i18n.t('peripheral-loading') + '</td></tr>';
         
-        let url = '/api/peripherals';
+        // 构造分页 URL
+        let url = '/api/peripherals?page=' + this._periphCurrentPage + '&pageSize=' + this._periphPageSize;
         if (filterType) {
-            url += '?category=' + filterType;
+            url += '&category=' + filterType;
         }
         
         apiGet(url)
             .then(res => {
                 if (!res || !res.success) {
                     tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #f56c6c;">' + i18n.t('peripheral-load-fail') + '</td></tr>';
+                    this._renderPeriphPagination(0, 1, 10);
                     return;
                 }
+                
+                // 获取分页信息
+                const total = res.total || 0;
+                const page = res.page || 1;
+                const pageSize = res.pageSize || 10;
+                this._periphTotalCount = total;
                 
                 const peripherals = res.data || [];
                 
                 if (peripherals.length === 0) {
                     tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #999;">' + i18n.t('peripheral-empty') + '</td></tr>';
+                    this._renderPeriphPagination(total, page, pageSize);
                     return;
                 }
                 
-                // 按启用状态排序，启用的排前面
-                peripherals.sort((a, b) => (b.enabled ? 1 : 0) - (a.enabled ? 1 : 0));
-                
+                // 后端已排序，前端无需再排序
                 let html = '';
                 peripherals.forEach(periph => {
                     const statusColors = {
@@ -5450,11 +5467,66 @@ const AppState = {
                 });
                 
                 tbody.innerHTML = html;
+                // 渲染分页导航
+                this._renderPeriphPagination(total, page, pageSize);
             })
             .catch(err => {
                 console.error('Load peripherals failed:', err);
                 tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #f56c6c;">' + i18n.t('peripheral-load-fail') + '</td></tr>';
+                this._renderPeriphPagination(0, 1, 10);
             });
+    },
+        
+    /**
+     * 渲染外设列表分页导航
+     */
+    _renderPeriphPagination(total, page, pageSize) {
+        const container = document.getElementById('periph-pagination');
+        if (!container) return;
+        const totalPages = Math.ceil(total / pageSize);
+        if (totalPages <= 1) {
+            container.innerHTML = '<span style="color:#999;font-size:12px;">' + i18n.t('periph-exec-total') + ': ' + total + '</span>';
+            return;
+        }
+    
+        let html = '<div class="pagination" style="display:flex;justify-content:center;align-items:center;gap:5px;flex-wrap:wrap;">';
+        // 上一页
+        if (page > 1) {
+            html += '<button class="btn btn-sm" onclick="app._periphCurrentPage=' + (page-1) + ';app.loadPeripherals(document.getElementById(\'peripheral-filter-type\')?.value || \'\')">&laquo;</button>';
+        } else {
+            html += '<button class="btn btn-sm" disabled>&laquo;</button>';
+        }
+        // 页码（最多显示5个）
+        const maxVisiblePages = 5;
+        let startPage = Math.max(1, page - Math.floor(maxVisiblePages / 2));
+        let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+        if (endPage - startPage + 1 < maxVisiblePages) {
+            startPage = Math.max(1, endPage - maxVisiblePages + 1);
+        }
+        if (startPage > 1) {
+            html += '<button class="btn btn-sm" onclick="app._periphCurrentPage=1;app.loadPeripherals(document.getElementById(\'peripheral-filter-type\')?.value || \'\')">1</button>';
+            if (startPage > 2) html += '<span style="padding:0 5px;">...</span>';
+        }
+        for (let i = startPage; i <= endPage; i++) {
+            if (i === page) {
+                html += '<button class="btn btn-sm btn-primary" disabled>' + i + '</button>';
+            } else {
+                html += '<button class="btn btn-sm" onclick="app._periphCurrentPage=' + i + ';app.loadPeripherals(document.getElementById(\'peripheral-filter-type\')?.value || \'\')">' + i + '</button>';
+            }
+        }
+        if (endPage < totalPages) {
+            if (endPage < totalPages - 1) html += '<span style="padding:0 5px;">...</span>';
+            html += '<button class="btn btn-sm" onclick="app._periphCurrentPage=' + totalPages + ';app.loadPeripherals(document.getElementById(\'peripheral-filter-type\')?.value || \'\')">' + totalPages + '</button>';
+        }
+        // 下一页
+        if (page < totalPages) {
+            html += '<button class="btn btn-sm" onclick="app._periphCurrentPage=' + (page+1) + ';app.loadPeripherals(document.getElementById(\'peripheral-filter-type\')?.value || \'\')">&raquo;</button>';
+        } else {
+            html += '<button class="btn btn-sm" disabled>&raquo;</button>';
+        }
+        html += ' <span style="color:#999;font-size:12px;margin-left:10px;">' + i18n.t('periph-exec-total') + ': ' + total + '</span>';
+        html += '</div>';
+        container.innerHTML = html;
     },
     
     /**
@@ -5874,22 +5946,28 @@ const AppState = {
         // Load peripherals and protocol data sources
         this._pePeripherals = [];
         this._peDataSources = [];
-        Promise.all([apiGet('/api/peripherals'), apiGet('/api/protocol/config'), apiGet('/api/periph-exec')]).then(([res, protoRes, execRes]) => {
+        // 改为串行请求，避免并发导致 ESP32 内存不足
+        apiGet('/api/peripherals?pageSize=50').then(res => {
             if (res && res.success && res.data) {
                 this._pePeripherals = res.data.filter(p => p.enabled);
             }
-            if (protoRes && protoRes.success !== false) {
-                this._peDataSources = this._extractDataSources(protoRes);
+            return apiGet('/api/protocol/config');
+        }).then(protoRes => {
+            if (protoRes && protoRes.success && protoRes.data) {
+                const protoData = protoRes.data;
+                this._peDataSources = this._extractDataSources(protoData);
                 // 加载 Modbus 子设备数据（供 type=6 触发器使用）
-                if (protoRes.modbusRtu && protoRes.modbusRtu.master) {
-                    this._masterTasks = protoRes.modbusRtu.master.tasks || [];
-                    this._modbusDevices = protoRes.modbusRtu.master.devices || [];
+                if (protoData.modbusRtu && protoData.modbusRtu.master) {
+                    this._masterTasks = protoData.modbusRtu.master.tasks || [];
+                    this._modbusDevices = protoData.modbusRtu.master.devices || [];
                 }
             }
-            if (execRes && execRes.success && execRes.data) {
-                this._peAllRules = execRes.data;
-            }
-            // New rule: add one default trigger and one default action
+            // 新建模式不需要加载规则列表，只需要创建默认触发器和动作
+            this._createPeriphExecTriggerElement({}, 0);
+            this._createPeriphExecActionElement({}, 0);
+        }).catch(err => {
+            console.error('Failed to load periph exec data:', err);
+            // 即使失败也创建默认元素
             this._createPeriphExecTriggerElement({}, 0);
             this._createPeriphExecActionElement({}, 0);
         });
@@ -5911,6 +5989,9 @@ const AppState = {
 
     _pePeripherals: [],
     _peDataSources: [],
+    _peCurrentPage: 1,
+    _pePageSize: 10,
+    _peTotalRules: 0,
 
     _populatePeriphSelect(selectEl, selectedValue) {
         if (!selectEl) return;
@@ -6738,23 +6819,23 @@ const AppState = {
         const triggers = [];
         container.querySelectorAll('.periph-exec-config-item').forEach(item => {
             const triggerType = item.querySelector('.pe-trigger-type')?.value || '0';
-            const trigger = { triggerType: triggerType };
+            const trigger = { triggerType: parseInt(triggerType, 10) || 0 };
             if (triggerType === '0') {
                 trigger.triggerPeriphId = item.querySelector('.pe-trigger-periph')?.value || '';
-                trigger.operatorType = item.querySelector('.pe-operator')?.value || '0';
+                trigger.operatorType = parseInt(item.querySelector('.pe-operator')?.value || '0', 10);
                 trigger.compareValue = item.querySelector('.pe-compare-value')?.value?.trim() || '';
             } else if (triggerType === '1') {
-                trigger.timerMode = item.querySelector('.pe-timer-mode')?.value || '0';
-                trigger.intervalSec = item.querySelector('.pe-interval')?.value || '60';
+                trigger.timerMode = parseInt(item.querySelector('.pe-timer-mode')?.value || '0', 10);
+                trigger.intervalSec = parseInt(item.querySelector('.pe-interval')?.value || '60', 10);
                 trigger.timePoint = item.querySelector('.pe-timepoint')?.value || '08:00';
             } else if (triggerType === '4') {
                 trigger.eventId = item.querySelector('.pe-event')?.value || '';
             } else if (triggerType === '5') {
                 trigger.triggerPeriphId = item.querySelector('.pe-trigger-periph')?.value || '';
-                trigger.intervalSec = item.querySelector('.pe-poll-interval')?.value || '60';
-                trigger.pollResponseTimeout = item.querySelector('.pe-poll-timeout')?.value || '1000';
-                trigger.pollMaxRetries = item.querySelector('.pe-poll-retries')?.value || '2';
-                trigger.pollInterPollDelay = item.querySelector('.pe-poll-inter-delay')?.value || '100';
+                trigger.intervalSec = parseInt(item.querySelector('.pe-poll-interval')?.value || '60', 10);
+                trigger.pollResponseTimeout = parseInt(item.querySelector('.pe-poll-timeout')?.value || '1000', 10);
+                trigger.pollMaxRetries = parseInt(item.querySelector('.pe-poll-retries')?.value || '2', 10);
+                trigger.pollInterPollDelay = parseInt(item.querySelector('.pe-poll-inter-delay')?.value || '100', 10);
             }
             triggers.push(trigger);
         });
@@ -6769,7 +6850,7 @@ const AppState = {
             const actionType = item.querySelector('.pe-action-type')?.value || '0';
             const action = {
                 targetPeriphId: item.querySelector('.pe-target-periph')?.value || '',
-                actionType: actionType
+                actionType: parseInt(actionType, 10) || 0
             };
             if (actionType === '15') {
                 action.actionValue = item.querySelector('.pe-script')?.value || '';
@@ -6841,8 +6922,8 @@ const AppState = {
 
         const ruleData = {
             name: document.getElementById('periph-exec-name').value.trim(),
-            enabled: document.getElementById('periph-exec-enabled').checked ? '1' : '0',
-            execMode: document.getElementById('periph-exec-exec-mode').value,
+            enabled: document.getElementById('periph-exec-enabled').checked,
+            execMode: parseInt(document.getElementById('periph-exec-exec-mode').value, 10) || 0,
             reportAfterExec: document.getElementById('periph-exec-report').value === 'true'
         };
 
@@ -6861,7 +6942,7 @@ const AppState = {
         ruleData.actions = actions;
         // Validate script actions
         for (let i = 0; i < actions.length; i++) {
-            if (actions[i].actionType === '15') {
+            if (actions[i].actionType === 15) {
                 if (!actions[i].actionValue.trim()) {
                     errEl.textContent = i18n.t('periph-exec-script-empty');
                     errEl.style.display = 'block';
@@ -6874,7 +6955,7 @@ const AppState = {
                 }
             }
             // Validate sensor read actions
-            if (actions[i].actionType === '19') {
+            if (actions[i].actionType === 19) {
                 var sv = {};
                 try { sv = JSON.parse(actions[i].actionValue); } catch(e) {}
                 if (!sv.periphId) {
@@ -6900,30 +6981,45 @@ const AppState = {
             })
             .catch(err => {
                 console.error('Save periph exec rule failed:', err);
-                errEl.textContent = i18n.t('periph-exec-save-fail');
+                // 检测网络错误
+                const isNetworkError = err && (
+                    err.name === 'TypeError' ||
+                    (err.message && (
+                        err.message.includes('Failed to fetch') ||
+                        err.message.includes('fetch') ||
+                        err.message.includes('network')
+                    ))
+                );
+                if (isNetworkError) {
+                    errEl.textContent = i18n.t('device-offline-error');
+                } else {
+                    errEl.textContent = i18n.t('periph-exec-save-fail');
+                }
                 errEl.style.display = 'block';
             });
     },
 
     editPeriphExecRule(id) {
         this.openPeriphExecModal(id);
-        Promise.all([apiGet('/api/periph-exec'), apiGet('/api/peripherals'), apiGet('/api/protocol/config')])
+        // 使用按ID查询获取单条规则，避免加载全部规则导致内存不足
+        Promise.all([apiGet('/api/periph-exec?id=' + id), apiGet('/api/peripherals?pageSize=50'), apiGet('/api/protocol/config')])
             .then(([execRes, periphRes, protoRes]) => {
                 if (periphRes && periphRes.success && periphRes.data) {
                     this._pePeripherals = periphRes.data.filter(p => p.enabled);
                 }
                 this._peDataSources = [];
-                if (protoRes && protoRes.success !== false) {
-                    this._peDataSources = this._extractDataSources(protoRes);
+                if (protoRes && protoRes.success && protoRes.data) {
+                    const protoData = protoRes.data;
+                    this._peDataSources = this._extractDataSources(protoData);
                     // 加载 Modbus 子设备数据（供 type=6 触发器使用）
-                    if (protoRes.modbusRtu && protoRes.modbusRtu.master) {
-                        this._masterTasks = protoRes.modbusRtu.master.tasks || [];
-                        this._modbusDevices = protoRes.modbusRtu.master.devices || [];
+                    if (protoData.modbusRtu && protoData.modbusRtu.master) {
+                        this._masterTasks = protoData.modbusRtu.master.tasks || [];
+                        this._modbusDevices = protoData.modbusRtu.master.devices || [];
                     }
                 }
                 if (!execRes || !execRes.success || !execRes.data) return;
-                this._peAllRules = execRes.data;
-                const rule = execRes.data.find(r => r.id === id);
+                // 按ID查询返回的是单条规则对象，不再是数组
+                const rule = execRes.data;
                 if (!rule) return;
 
                 // Basic config
@@ -6962,42 +7058,6 @@ const AppState = {
                 if (triggersContainer) triggersContainer.innerHTML = '';
                 triggers.forEach((t, i) => this._createPeriphExecTriggerElement(t, i));
 
-                // 初始化 type=6 外设执行触发的级联下拉框
-                triggers.forEach((t, i) => {
-                    if (String(t.triggerType) === '6') {
-                        var blocks = triggersContainer.querySelectorAll('.periph-exec-config-item');
-                        var block = blocks[i];
-                        if (!block) return;
-                        var ruleSel = block.querySelector('.pe-trigger-rule-select');
-                        this._populateTriggerRuleSelect(ruleSel, t.sourceRuleId || '');
-                        if (t.sourceRuleId) {
-                            this.onPeriphExecTriggerRuleChange(ruleSel, i);
-                            var subdevSel = block.querySelector('.pe-trigger-subdev-select');
-                            if (subdevSel && t.subdevType) {
-                                subdevSel.value = t.subdevType + '-' + (t.subdevIndex || 0);
-                                this.onPeriphExecTriggerSubdevChange(subdevSel, i);
-                                // 恢复保存的值
-                                if (t.subdevType === 'sensor') {
-                                    var opSel = block.querySelector('.pe-trigger-sensor-operator');
-                                    if (opSel) opSel.value = String(t.operatorType || '0');
-                                    var cmpInput = block.querySelector('.pe-trigger-sensor-compare');
-                                    if (cmpInput) cmpInput.value = t.compareValue || '';
-                                } else if (t.subdevType === 'control') {
-                                    var chSel = block.querySelector('.pe-trigger-ctrl-channel');
-                                    if (chSel) chSel.value = String(t.triggerChannel || '0');
-                                    // 恢复动作 UI 值
-                                    var actSel = block.querySelector('.pe-trigger-ctrl-action-content .pe-modbus-action-select');
-                                    if (actSel && t.triggerAction) actSel.value = t.triggerAction;
-                                    var actVal = block.querySelector('.pe-trigger-ctrl-action-content .pe-modbus-action-value');
-                                    if (actVal && t.triggerValue !== undefined) actVal.value = t.triggerValue;
-                                    var actParam = block.querySelector('.pe-trigger-ctrl-action-content .pe-modbus-action-param');
-                                    if (actParam && t.triggerParam) actParam.value = t.triggerParam;
-                                }
-                            }
-                        }
-                    }
-                });
-
                 // Render action blocks
                 const actionsContainer = document.getElementById('periph-exec-actions');
                 if (actionsContainer) actionsContainer.innerHTML = '';
@@ -7023,7 +7083,20 @@ const AppState = {
             })
             .catch(err => {
                 console.error('Delete periph exec rule failed:', err);
-                Notification.error(i18n.t('periph-exec-delete-fail'), i18n.t('periph-exec-title'));
+                // 检测网络错误
+                const isNetworkError = err && (
+                    err.name === 'TypeError' ||
+                    (err.message && (
+                        err.message.includes('Failed to fetch') ||
+                        err.message.includes('fetch') ||
+                        err.message.includes('network')
+                    ))
+                );
+                if (isNetworkError) {
+                    Notification.error(i18n.t('device-offline-error'), i18n.t('periph-exec-title'));
+                } else {
+                    Notification.error(i18n.t('periph-exec-delete-fail'), i18n.t('periph-exec-title'));
+                }
             });
     },
 
@@ -7039,7 +7112,20 @@ const AppState = {
             })
             .catch(err => {
                 console.error('Toggle periph exec rule failed:', err);
-                Notification.error(i18n.t('periph-exec-toggle-fail'), i18n.t('periph-exec-title'));
+                // 检测网络错误
+                const isNetworkError = err && (
+                    err.name === 'TypeError' ||
+                    (err.message && (
+                        err.message.includes('Failed to fetch') ||
+                        err.message.includes('fetch') ||
+                        err.message.includes('network')
+                    ))
+                );
+                if (isNetworkError) {
+                    Notification.error(i18n.t('device-offline-error'), i18n.t('periph-exec-title'));
+                } else {
+                    Notification.error(i18n.t('periph-exec-toggle-fail'), i18n.t('periph-exec-title'));
+                }
             });
     },
 
@@ -7047,7 +7133,7 @@ const AppState = {
         apiPost('/api/periph-exec/run', { id: id })
             .then(res => {
                 if (res && res.success) {
-                    Notification.success(i18n.t('periph-exec-run-ok'), i18n.t('periph-exec-title'));
+                    Notification.success(i18n.t('periph-exec-run-submitted'), i18n.t('periph-exec-title'));
                     if (this.currentPage === 'periph-exec') this.loadPeriphExecPage();
                 } else {
                     Notification.error(res?.error || i18n.t('periph-exec-run-fail'), i18n.t('periph-exec-title'));
@@ -7055,7 +7141,20 @@ const AppState = {
             })
             .catch(err => {
                 console.error('Run periph exec rule failed:', err);
-                Notification.error(i18n.t('periph-exec-run-fail'), i18n.t('periph-exec-title'));
+                // 检测网络错误
+                const isNetworkError = err && (
+                    err.name === 'TypeError' ||
+                    (err.message && (
+                        err.message.includes('Failed to fetch') ||
+                        err.message.includes('fetch') ||
+                        err.message.includes('network')
+                    ))
+                );
+                if (isNetworkError) {
+                    Notification.error(i18n.t('device-offline-error'), i18n.t('periph-exec-title'));
+                } else {
+                    Notification.error(i18n.t('periph-exec-run-fail'), i18n.t('periph-exec-title'));
+                }
             });
     },
 
@@ -7069,14 +7168,22 @@ const AppState = {
 
         this._populatePeriphExecFilter();
 
-        Promise.all([apiGet('/api/periph-exec'), apiGet('/api/peripherals')])
+        // 使用分页参数调用 API
+        const apiUrl = '/api/periph-exec?page=' + this._peCurrentPage + '&pageSize=' + this._pePageSize;
+        Promise.all([apiGet(apiUrl), apiGet('/api/peripherals?pageSize=50')])
             .then(([execRes, periphRes]) => {
                 const periphMap = {};
                 if (periphRes && periphRes.success && periphRes.data) {
                     periphRes.data.forEach(p => { periphMap[p.id] = p.name; });
                 }
+                // 保存分页信息
+                this._peTotalRules = execRes && execRes.total ? execRes.total : 0;
+                const currentPage = execRes && execRes.page ? execRes.page : 1;
+                const currentPageSize = execRes && execRes.pageSize ? execRes.pageSize : 10;
+                
                 if (!execRes || !execRes.success || !execRes.data || execRes.data.length === 0) {
                     tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">' + i18n.t('periph-exec-no-data') + '</td></tr>';
+                    this._renderPeriphExecPagination(this._peTotalRules, currentPage, currentPageSize);
                     return;
                 }
                 let rules = execRes.data;
@@ -7090,6 +7197,7 @@ const AppState = {
                 });
                 if (rules.length === 0) {
                     tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">' + i18n.t('periph-exec-no-data') + '</td></tr>';
+                    this._renderPeriphExecPagination(this._peTotalRules, currentPage, currentPageSize);
                     return;
                 }
                 const triggerLabels = {
@@ -7115,9 +7223,6 @@ const AppState = {
                     const statusBadge = r.enabled
                         ? '<span class="badge badge-success">' + i18n.t('periph-exec-status-on') + '</span>'
                         : '<span class="badge badge-info">' + i18n.t('periph-exec-status-off') + '</span>';
-                    const modeBadge = r.execMode === 1
-                        ? ' <span class="badge badge-info" style="font-size:10px;">sync</span>'
-                        : ' <span class="badge badge-success" style="font-size:10px;">async</span>';
                     // Build trigger display: use triggers array or root-level fields
                     let triggerText = '';
                     const triggers = r.triggers && r.triggers.length > 0 ? r.triggers : [r];
@@ -7161,7 +7266,7 @@ const AppState = {
                     const statsText = i18n.t('periph-exec-stats-count') + ': ' + (r.triggerCount || 0);
                     html += '<tr>';
                     html += '<td>' + (r.name || r.id) + '</td>';
-                    html += '<td>' + statusBadge + modeBadge + '</td>';
+                    html += '<td>' + statusBadge + '</td>';
                     html += '<td style="font-size:12px;">' + triggerText + '</td>';
                     html += '<td>' + periphName + '</td>';
                     html += '<td style="font-size:12px;">' + actionDisplay + '</td>';
@@ -7175,16 +7280,67 @@ const AppState = {
                     html += '</tr>';
                 });
                 tbody.innerHTML = html;
+                // 渲染分页导航
+                this._renderPeriphExecPagination(this._peTotalRules, currentPage, currentPageSize);
             })
             .catch(() => {
                 tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#999;">' + i18n.t('periph-exec-no-data') + '</td></tr>';
             });
     },
 
+    _renderPeriphExecPagination(total, page, pageSize) {
+        const container = document.getElementById('periph-exec-pagination');
+        if (!container) return;
+        const totalPages = Math.ceil(total / pageSize);
+        if (totalPages <= 1) {
+            container.innerHTML = '<span style="color:#999;font-size:12px;">' + i18n.t('periph-exec-total') + ': ' + total + '</span>';
+            return;
+        }
+
+        let html = '<div class="pagination" style="display:flex;justify-content:center;align-items:center;gap:5px;flex-wrap:wrap;">';
+        // 上一页
+        if (page > 1) {
+            html += '<button class="btn btn-sm" onclick="app._peCurrentPage=' + (page-1) + ';app.loadPeriphExecPage()">«</button>';
+        } else {
+            html += '<button class="btn btn-sm" disabled>«</button>';
+        }
+        // 页码（最多显示5个）
+        const maxVisiblePages = 5;
+        let startPage = Math.max(1, page - Math.floor(maxVisiblePages / 2));
+        let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+        if (endPage - startPage + 1 < maxVisiblePages) {
+            startPage = Math.max(1, endPage - maxVisiblePages + 1);
+        }
+        if (startPage > 1) {
+            html += '<button class="btn btn-sm" onclick="app._peCurrentPage=1;app.loadPeriphExecPage()">1</button>';
+            if (startPage > 2) html += '<span style="padding:0 5px;">...</span>';
+        }
+        for (let i = startPage; i <= endPage; i++) {
+            if (i === page) {
+                html += '<button class="btn btn-sm btn-primary" disabled>' + i + '</button>';
+            } else {
+                html += '<button class="btn btn-sm" onclick="app._peCurrentPage=' + i + ';app.loadPeriphExecPage()">' + i + '</button>';
+            }
+        }
+        if (endPage < totalPages) {
+            if (endPage < totalPages - 1) html += '<span style="padding:0 5px;">...</span>';
+            html += '<button class="btn btn-sm" onclick="app._peCurrentPage=' + totalPages + ';app.loadPeriphExecPage()">' + totalPages + '</button>';
+        }
+        // 下一页
+        if (page < totalPages) {
+            html += '<button class="btn btn-sm" onclick="app._peCurrentPage=' + (page+1) + ';app.loadPeriphExecPage()">»</button>';
+        } else {
+            html += '<button class="btn btn-sm" disabled>»</button>';
+        }
+        html += ' <span style="color:#999;font-size:12px;margin-left:10px;">' + i18n.t('periph-exec-total') + ': ' + total + '</span>';
+        html += '</div>';
+        container.innerHTML = html;
+    },
+
     _populatePeriphExecFilter() {
         const sel = document.getElementById('periph-exec-filter-periph');
         if (!sel || sel._populated) return;
-        apiGet('/api/peripherals').then(res => {
+        apiGet('/api/peripherals?pageSize=50').then(res => {
             if (!res || !res.success || !res.data) return;
             const currentVal = sel.value;
             let opts = '<option value="">' + i18n.t('periph-exec-filter-all') + '</option>';

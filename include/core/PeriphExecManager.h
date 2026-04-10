@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <map>
+#include <set>
 #include <vector>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
@@ -157,6 +158,11 @@ private:
     // ========== 按键状态跟踪 ==========
     std::map<String, ButtonRuntimeState> buttonStates;
     ButtonEventConfig buttonConfig;
+
+    // ========== 任务运行状态跟踪 ==========
+    std::set<String> _runningRuleIds;           // 正在运行的规则ID集合
+    std::map<String, unsigned long> _failureBackoff;  // 规则失败后的退避时间戳
+    SemaphoreHandle_t _runningRulesMutex = nullptr;   // 保护 _runningRuleIds 的互斥量
 
     // ========== 条件评估 ==========
     bool evaluateCondition(const String& value, uint8_t op, const String& compareValue);

@@ -2,6 +2,7 @@
 #include "./network/WebHandlerContext.h"
 #include "core/PeripheralManager.h"
 #include <ArduinoJson.h>
+#include <algorithm>
 #include <vector>
 
 PeripheralRouteHandler::PeripheralRouteHandler(WebHandlerContext* ctx)
@@ -54,10 +55,48 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         return;
     }
 
+    PeripheralManager& pm = PeripheralManager::getInstance();
+
+    // 如果传了 id 参数，只返回单条外设（避免编辑时加载全部导致内存不足）
+    if (request->hasParam("id")) {
+        String periphId = request->getParam("id")->value();
+        const PeripheralConfig* config = pm.getPeripheral(periphId);
+        if (!config) {
+            request->send(404, "application/json", "{\"success\":false,\"message\":\"Peripheral not found\"}");
+            return;
+        }
+
+        JsonDocument doc;
+        doc["id"] = config->id;
+        doc["name"] = config->name;
+        doc["type"] = static_cast<int>(config->type);
+        doc["typeName"] = getPeripheralTypeName(config->type);
+        doc["category"] = getCategoryName(getPeripheralCategory(config->type));
+        doc["enabled"] = config->enabled;
+
+        JsonArray pins = doc["pins"].to<JsonArray>();
+        for (int i = 0; i < config->pinCount && i < 8; i++) {
+            if (config->pins[i] != 255) {
+                pins.add(config->pins[i]);
+            }
+        }
+
+        auto runtimeState = pm.getRuntimeState(periphId);
+        if (runtimeState) {
+            doc["status"] = static_cast<int>(runtimeState->status);
+        } else {
+            doc["status"] = 0;
+        }
+
+        String response;
+        serializeJson(doc, response);
+        request->send(200, "application/json", "{\"success\":true,\"data\":" + response + "}");
+        return;
+    }
+
     String typeFilter = ctx->getParamValue(request, "type", "");
     String categoryFilter = ctx->getParamValue(request, "category", "");
 
-    PeripheralManager& pm = PeripheralManager::getInstance();
     std::vector<PeripheralConfig> peripherals;
 
     if (!typeFilter.isEmpty()) {
@@ -75,37 +114,85 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         peripherals = pm.getAllPeripherals();
     }
 
-    JsonDocument doc;
-    doc["success"] = true;
-    JsonArray data = doc["data"].to<JsonArray>();
+    // 排序：启用的排前面，然后按名称排序
+    std::sort(peripherals.begin(), peripherals.end(), [](const PeripheralConfig& a, const PeripheralConfig& b) {
+        if (a.enabled != b.enabled) return a.enabled > b.enabled;
+        return strcmp(a.name.c_str(), b.name.c_str()) < 0;
+    });
 
-    for (const auto& config : peripherals) {
-        JsonObject obj = data.add<JsonObject>();
-        obj["id"] = config.id;
-        obj["name"] = config.name;
-        obj["type"] = static_cast<int>(config.type);
-        obj["typeName"] = getPeripheralTypeName(config.type);
-        obj["category"] = getCategoryName(getPeripheralCategory(config.type));
-        obj["enabled"] = config.enabled;
+    int total = peripherals.size();
 
-        JsonArray pins = obj["pins"].to<JsonArray>();
-        for (int i = 0; i < config.pinCount && i < 8; i++) {
-            if (config.pins[i] != 255) {
-                pins.add(config.pins[i]);
+    // 解析分页参数
+    int page = 1;
+    int pageSize = 10;
+    if (request->hasParam("page")) {
+        page = request->getParam("page")->value().toInt();
+        if (page < 1) page = 1;
+    }
+    if (request->hasParam("pageSize")) {
+        pageSize = request->getParam("pageSize")->value().toInt();
+        if (pageSize < 1) pageSize = 1;
+        if (pageSize > 50) pageSize = 50;
+    }
+
+    // 计算分页范围
+    int startIdx = (page - 1) * pageSize;
+    int endIdx = (startIdx < total) ? std::min(startIdx + pageSize, total) : startIdx;
+
+    // 检查堆内存是否充足（预留20KB给系统其他部分）
+    if (ESP.getFreeHeap() < 20480) {
+        request->send(503, "application/json", "{\"success\":false,\"message\":\"内存不足\"}");
+        return;
+    }
+
+    // 使用流式响应避免大内存分配
+    AsyncResponseStream* response = request->beginResponseStream("application/json");
+    if (!response) {
+        request->send(500, "application/json", "{\"success\":false,\"message\":\"无法创建响应流\"}");
+        return;
+    }
+
+    // 手动构建JSON响应，避免使用JsonDocument缓存大量数据
+    response->printf("{\"success\":true,\"total\":%d,\"page\":%d,\"pageSize\":%d,\"data\":[",
+                     total, page, pageSize);
+
+    bool first = true;
+    for (int i = startIdx; i < endIdx; i++) {
+        if (!first) {
+            response->print(",");
+        }
+        first = false;
+
+        const auto& config = peripherals[i];
+        // 构建单个外设的JSON
+        JsonDocument itemDoc;
+        itemDoc["id"] = config.id;
+        itemDoc["name"] = config.name;
+        itemDoc["type"] = static_cast<int>(config.type);
+        itemDoc["typeName"] = getPeripheralTypeName(config.type);
+        itemDoc["category"] = getCategoryName(getPeripheralCategory(config.type));
+        itemDoc["enabled"] = config.enabled;
+
+        JsonArray pins = itemDoc["pins"].to<JsonArray>();
+        for (int j = 0; j < config.pinCount && j < 8; j++) {
+            if (config.pins[j] != 255) {
+                pins.add(config.pins[j]);
             }
         }
 
         auto runtimeState = pm.getRuntimeState(config.id);
         if (runtimeState) {
-            obj["status"] = static_cast<int>(runtimeState->status);
+            itemDoc["status"] = static_cast<int>(runtimeState->status);
         } else {
-            obj["status"] = 0;
+            itemDoc["status"] = 0;
         }
+
+        // 序列化单个外设到响应流
+        serializeJson(itemDoc, *response);
     }
 
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    response->print("]}");
+    request->send(response);
 }
 
 void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* request) {

@@ -1,419 +1,771 @@
 {
-  "version": 1,
+  "version": 3,
   "rules": [
     {
       "id": "exec_1097667",
       "name": "风机脚本运行",
       "enabled": false,
-      "triggerType": 1,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "",
-      "sourcePeriphId": "null",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 1,
+          "triggerPeriphId": "",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "",
+          "actionType": 15,
+          "actionValue": "PERIPH gpio_pwm PWM 4005\nDELAY 5000\nPERIPH gpio_pwm PWM 4095\nDELAY 5000\nPERIPH gpio_pwm PWM 0\nLOG 风扇高低档位运行一次\n",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "",
-      "actionType": 15,
-      "actionValue": "PERIPH gpio_pwm PWM 4005\nDELAY 5000\nPERIPH gpio_pwm PWM 4095\nDELAY 5000\nPERIPH gpio_pwm PWM 0\nLOG 风扇高低档位运行一次\n"
+      "reportAfterExec": true
     },
     {
       "id": "exec_1551589",
       "name": "上报随机温湿度",
       "enabled": false,
-      "triggerType": 1,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "",
-      "sourcePeriphId": "",
-      "timerMode": 0,
-      "intervalSec": 3600,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 1,
+          "triggerPeriphId": "",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 3600,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "",
+          "actionType": 15,
+          "actionValue": "MQTT 0 [{\"id\":\"temperature\",\"value\":\"RANDOMF(15,35,1)\"},{\"id\":\"humidity\",\"value\":\"RANDOMF(30,90,1)\"}]",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "",
-      "actionType": 15,
-      "actionValue": "MQTT 0 [{\"id\":\"temperature\",\"value\":\"RANDOMF(15,35,1)\"},{\"id\":\"humidity\",\"value\":\"RANDOMF(30,90,1)\"}]"
+      "reportAfterExec": true
     },
     {
       "id": "exec_2147281",
       "name": "设备重启",
       "enabled": false,
-      "triggerType": 0,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "0",
-      "sourcePeriphId": "null",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "gpio_button",
+          "operatorType": 0,
+          "compareValue": "0",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_button",
+          "actionType": 6,
+          "actionValue": "",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_button",
-      "actionType": 6,
-      "actionValue": ""
+      "reportAfterExec": true
     },
     {
       "id": "exec_2451103",
       "name": "设备恢复出厂设置",
       "enabled": false,
-      "triggerType": 0,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "1",
-      "sourcePeriphId": "null",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "gpio_button",
+          "operatorType": 0,
+          "compareValue": "1",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_button",
+          "actionType": 7,
+          "actionValue": "",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_button",
-      "actionType": 7,
-      "actionValue": ""
+      "reportAfterExec": true
     },
     {
       "id": "exec_2498615",
       "name": "NTP时间同步",
       "enabled": true,
-      "triggerType": 0,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "2",
-      "sourcePeriphId": "null",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "gpio_button",
+          "operatorType": 0,
+          "compareValue": "2",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_button",
+          "actionType": 8,
+          "actionValue": "",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_button",
-      "actionType": 8,
-      "actionValue": ""
+      "reportAfterExec": true
     },
     {
       "id": "exec_2728614",
       "name": "AP配网测试",
       "enabled": true,
-      "triggerType": 0,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "3",
-      "sourcePeriphId": "null",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "gpio_button",
+          "operatorType": 0,
+          "compareValue": "3",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_button",
+          "actionType": 10,
+          "actionValue": "",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_button",
-      "actionType": 10,
-      "actionValue": ""
+      "reportAfterExec": true
     },
     {
       "id": "exec_2942016",
       "name": "蓝牙配网",
       "enabled": true,
-      "triggerType": 0,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "4",
-      "sourcePeriphId": "null",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "gpio_button",
+          "operatorType": 0,
+          "compareValue": "4",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_button",
+          "actionType": 11,
+          "actionValue": "",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_button",
-      "actionType": 11,
-      "actionValue": ""
+      "reportAfterExec": true
     },
     {
       "id": "exec_2984818",
       "name": "OTA升级",
       "enabled": true,
-      "triggerType": 0,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "5",
-      "sourcePeriphId": "null",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "gpio_button",
+          "operatorType": 0,
+          "compareValue": "5",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_button",
+          "actionType": 9,
+          "actionValue": "",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_button",
-      "actionType": 9,
-      "actionValue": ""
+      "reportAfterExec": true
     },
     {
       "id": "exec_313227",
       "name": "风机订阅低档位",
       "enabled": true,
-      "triggerType": 0,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "1",
-      "sourcePeriphId": "",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "gpio_pwm",
+          "operatorType": 0,
+          "compareValue": "1",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_pwm",
+          "actionType": 4,
+          "actionValue": "4012",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_pwm",
-      "actionType": 4,
-      "actionValue": "4012"
+      "reportAfterExec": true
     },
     {
       "id": "exec_396881",
       "name": "风机订阅关闭",
       "enabled": true,
-      "triggerType": 0,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "0",
-      "sourcePeriphId": "null",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "gpio_pwm",
+          "operatorType": 0,
+          "compareValue": "0",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_pwm",
+          "actionType": 4,
+          "actionValue": "0",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_pwm",
-      "actionType": 4,
-      "actionValue": "0"
+      "reportAfterExec": true
     },
     {
       "id": "exec_502689",
       "name": "加湿器订阅打开",
       "enabled": true,
-      "triggerType": 0,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "1",
-      "sourcePeriphId": "null",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "gpio_dout",
+          "operatorType": 0,
+          "compareValue": "1",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_dout",
+          "actionType": 0,
+          "actionValue": "",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_dout",
-      "actionType": 0,
-      "actionValue": ""
+      "reportAfterExec": true
     },
     {
       "id": "exec_521094",
       "name": "加湿器订阅关闭",
       "enabled": true,
-      "triggerType": 0,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "0",
-      "sourcePeriphId": "",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "gpio_dout",
+          "operatorType": 0,
+          "compareValue": "0",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_dout",
+          "actionType": 1,
+          "actionValue": "",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_dout",
-      "actionType": 1,
-      "actionValue": ""
+      "reportAfterExec": true
+    },
+    {
+      "id": "exec_59156",
+      "name": "采集温湿度和空气质量",
+      "enabled": true,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 5,
+          "triggerPeriphId": "",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 3,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "",
+          "actionType": 18,
+          "actionValue": "{\"poll\":[0]}",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        },
+        {
+          "targetPeriphId": "",
+          "actionType": 18,
+          "actionValue": "{\"poll\":[1]}",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": true
     },
     {
       "id": "exec_71484",
       "name": "状态灯订阅打开",
       "enabled": true,
-      "triggerType": 0,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "1",
-      "sourcePeriphId": "",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "gpio_led",
+          "operatorType": 0,
+          "compareValue": "1",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_led",
+          "actionType": 1,
+          "actionValue": "",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_led",
-      "actionType": 1,
-      "actionValue": ""
+      "reportAfterExec": true
     },
     {
       "id": "exec_826653",
       "name": "状态灯脚本运行",
       "enabled": false,
-      "triggerType": 1,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "",
-      "sourcePeriphId": "null",
-      "timerMode": 0,
-      "intervalSec": 1,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 1,
+          "triggerPeriphId": "gpio_led",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 1,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_led",
+          "actionType": 15,
+          "actionValue": "GPIO 5 LOW\ndelay 500\nGPIO 5 High\nLOG 灯闪烁",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_led",
-      "actionType": 15,
-      "actionValue": "GPIO 5 LOW\ndelay 500\nGPIO 5 High\nLOG 灯闪烁"
+      "reportAfterExec": true
     },
     {
       "id": "exec_924328",
       "name": "风机订阅高档位",
       "enabled": true,
-      "triggerType": 0,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "2",
-      "sourcePeriphId": "null",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "gpio_pwm",
+          "operatorType": 0,
+          "compareValue": "2",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_pwm",
+          "actionType": 4,
+          "actionValue": "4090",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_pwm",
-      "actionType": 4,
-      "actionValue": "4090"
+      "reportAfterExec": true
     },
     {
       "id": "exec_93773",
       "name": "状态灯订阅关闭",
       "enabled": true,
-      "triggerType": 0,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "0",
-      "sourcePeriphId": "",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "gpio_led",
+          "operatorType": 0,
+          "compareValue": "0",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_led",
+          "actionType": 0,
+          "actionValue": "",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_led",
-      "actionType": 0,
-      "actionValue": ""
+      "reportAfterExec": true
     },
     {
       "id": "exec_demo_blink",
       "name": "LED-500ms",
       "enabled": false,
-      "triggerType": 0,
       "execMode": 0,
-      "operatorType": 2,
-      "compareValue": "30",
-      "sourcePeriphId": "null",
-      "timerMode": 0,
-      "intervalSec": 30,
-      "timePoint": "",
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "gpio_led",
+          "operatorType": 2,
+          "compareValue": "30",
+          "timerMode": 0,
+          "intervalSec": 30,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_led",
+          "actionType": 2,
+          "actionValue": "500",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_led",
-      "actionType": 2,
-      "actionValue": "500"
+      "reportAfterExec": true
     },
     {
       "id": "exec_demo_dac",
       "name": "DAC-1.65V",
       "enabled": false,
-      "triggerType": 1,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "",
-      "sourcePeriphId": "null",
-      "timerMode": 1,
-      "intervalSec": 30,
-      "timePoint": "08:00",
+      "triggers": [
+        {
+          "triggerType": 1,
+          "triggerPeriphId": "gpio_aout",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 1,
+          "intervalSec": 30,
+          "timePoint": "08:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_aout",
+          "actionType": 5,
+          "actionValue": "128",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_aout",
-      "actionType": 5,
-      "actionValue": "128"
+      "reportAfterExec": true
     },
     {
       "id": "exec_demo_gpio",
       "name": "GPIO-LED",
       "enabled": false,
-      "triggerType": 0,
       "execMode": 1,
-      "operatorType": 0,
-      "compareValue": "1",
-      "sourcePeriphId": "null",
-      "timerMode": 0,
-      "intervalSec": 30,
-      "timePoint": "",
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "gpio_led",
+          "operatorType": 0,
+          "compareValue": "1",
+          "timerMode": 0,
+          "intervalSec": 30,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_led",
+          "actionType": 0,
+          "actionValue": "",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_led",
-      "actionType": 0,
-      "actionValue": ""
+      "reportAfterExec": true
     },
     {
       "id": "exec_demo_pwm",
       "name": "PWM-50%",
       "enabled": false,
-      "triggerType": 1,
       "execMode": 1,
-      "operatorType": 0,
-      "compareValue": "",
-      "sourcePeriphId": "null",
-      "timerMode": 0,
-      "intervalSec": 30,
-      "timePoint": "",
+      "triggers": [
+        {
+          "triggerType": 1,
+          "triggerPeriphId": "gpio_pwm",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 30,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "gpio_pwm",
+          "actionType": 4,
+          "actionValue": "128",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "gpio_pwm",
-      "actionType": 4,
-      "actionValue": "128"
+      "reportAfterExec": true
     },
     {
       "id": "exec_demo_restart",
       "name": "NTP",
       "enabled": false,
-      "triggerType": 1,
       "execMode": 1,
-      "operatorType": 0,
-      "compareValue": "",
-      "sourcePeriphId": "null",
-      "timerMode": 1,
-      "intervalSec": 30,
-      "timePoint": "03:00",
+      "triggers": [
+        {
+          "triggerType": 1,
+          "triggerPeriphId": "",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 1,
+          "intervalSec": 30,
+          "timePoint": "03:00",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "",
+          "actionType": 8,
+          "actionValue": "",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "null",
-      "targetPeriphId": "",
-      "actionType": 8,
-      "actionValue": ""
+      "reportAfterExec": true
     },
     {
       "id": "exec_demo_script",
       "name": "MQTT",
       "enabled": false,
-      "triggerType": 1,
       "execMode": 0,
-      "operatorType": 0,
-      "compareValue": "",
-      "sourcePeriphId": "null",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "",
+      "triggers": [
+        {
+          "triggerType": 1,
+          "triggerPeriphId": "",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "",
+          "actionType": 15,
+          "actionValue": "# MQTT\nLOG MQTT\nMQTT 0 [{\"id\":\"temperature\",\"value\":\"RANDOMF(-10,45,1)\"},{\"id\":\"humidity\",\"value\":\"RANDOMF(20,95,1)\"}]\nLOG MQTT",
+          "useReceivedValue": false,
+          "syncDelayMs": 0
+        }
+      ],
       "protocolType": 0,
       "scriptContent": "",
-      "targetPeriphId": "",
-      "actionType": 15,
-      "actionValue": "# MQTT\nLOG MQTT\nMQTT 0 [{\"id\":\"temperature\",\"value\":\"RANDOMF(-10,45,1)\"},{\"id\":\"humidity\",\"value\":\"RANDOMF(20,95,1)\"}]\nLOG MQTT"
-    },
-    {
-      "id": "exec_temp_fan",
-      "name": "温度>40开风扇",
-      "enabled": false,
-      "triggerType": 0,
-      "execMode": 0,
-      "operatorType": 2,
-      "compareValue": "40",
-      "sourcePeriphId": "temperature",
-      "timerMode": 0,
-      "intervalSec": 60,
-      "timePoint": "08:00",
-      "protocolType": 0,
-      "scriptContent": "",
-      "targetPeriphId": "gpio_dout",
-      "actionType": 0,
-      "actionValue": ""
+      "reportAfterExec": true
     }
   ]
 }

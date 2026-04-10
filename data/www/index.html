@@ -973,7 +973,9 @@
                                                                 <input type="checkbox" id="modbus-ctrl-auto-refresh" onchange="AppState.toggleCoilAutoRefresh()">
                                                                 <span data-i18n="modbus-ctrl-auto-refresh">自动刷新</span>
                                                             </label>
-                                                            <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshCoilStatus()" data-i18n="modbus-ctrl-refresh">刷新状态</button><br />
+                                                            <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.refreshCoilStatus()" data-i18n="modbus-ctrl-refresh">刷新状态</button>
+                                                        </div>
+                                                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;">
                                                             <button type="button" class="btn btn-sm btn-enable" onclick="AppState.batchCoil('allOn')" data-i18n="modbus-ctrl-all-on">全部开启</button>
                                                             <button type="button" class="btn btn-sm btn-danger" onclick="AppState.batchCoil('allOff')" data-i18n="modbus-ctrl-all-off">全部关闭</button>
                                                             <button type="button" class="btn btn-sm btn-secondary" onclick="AppState.batchCoil('allToggle')" data-i18n="modbus-ctrl-all-toggle">全部翻转</button>
@@ -2735,6 +2737,7 @@
                                             </tr>
                                         </tbody>
                                     </table>
+                                    <div id="periph-pagination" style="margin-top:10px;text-align:center;"></div>
                                 </div>
                             </div>
                         </div>
@@ -2779,6 +2782,7 @@
                                             </tr>
                                         </tbody>
                                     </table>
+                                    <div id="periph-exec-pagination" style="margin-top:10px;text-align:center;"></div>
                                 </div>
                             </div>
                         </div>

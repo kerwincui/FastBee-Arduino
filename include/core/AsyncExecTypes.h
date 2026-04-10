@@ -13,10 +13,10 @@
 #define MAX_ASYNC_TASKS       3
 
 // 脚本类任务栈大小（含 MQTT / JSON 解析）
-#define SCRIPT_TASK_STACK     8192
+#define SCRIPT_TASK_STACK     16384
 
 // 简单外设动作任务栈大小
-#define SIMPLE_TASK_STACK     4096
+#define SIMPLE_TASK_STACK     8192
 
 // 异步任务优先级（低于主循环 loopTask=1）
 #define ASYNC_TASK_PRIORITY   0

@@ -633,11 +633,12 @@ void ProtocolRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request)
         data["mode"] = "master";
         data["workMode"] = 1;
         data["status"] = "stopped";
+        data["taskCount"] = 0;
+        // 初始化统计字段为0
         data["totalPolls"] = 0;
         data["successPolls"] = 0;
         data["failedPolls"] = 0;
         data["timeoutPolls"] = 0;
-        data["taskCount"] = 0;
         data["tasks"].to<JsonArray>();
     } else {
         data["mode"] = (modbus->getMode() == MODBUS_MASTER) ? "master" : "slave";
@@ -645,12 +646,13 @@ void ProtocolRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request)
         data["status"] = modbus->getStatus();
 
         if (modbus->getMode() == MODBUS_MASTER) {
-            MasterStats stats = modbus->getMasterStats();
-            data["totalPolls"] = stats.totalPolls;
-            data["successPolls"] = stats.successPolls;
-            data["failedPolls"] = stats.failedPolls;
-            data["timeoutPolls"] = stats.timeoutPolls;
             data["taskCount"] = modbus->getPollTaskCount();
+
+            // 添加轮询统计数据
+            data["totalPolls"] = modbus->getTotalPollCount();
+            data["successPolls"] = modbus->getSuccessPollCount();
+            data["failedPolls"] = modbus->getFailedPollCount();
+            data["timeoutPolls"] = modbus->getTimeoutPollCount();
 
             JsonArray tasks = data["tasks"].to<JsonArray>();
             for (uint8_t i = 0; i < modbus->getPollTaskCount(); i++) {
@@ -679,14 +681,15 @@ void ProtocolRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request)
                     }
                 }
 
-                // 最新采集数据缓存
-                TaskDataCache cache = modbus->getTaskDataCache(i);
-                if (cache.valid) {
-                    JsonObject cd = t["cachedData"].to<JsonObject>();
-                    cd["timestamp"] = cache.timestamp;
-                    JsonArray vals = cd["values"].to<JsonArray>();
-                    for (uint16_t v = 0; v < cache.count; v++) {
-                        vals.add(cache.values[v]);
+                // 添加缓存数据（最新采集的值）
+                const ModbusHandler::PollTaskCache* cache = modbus->getTaskCache(i);
+                if (cache && cache->valid) {
+                    JsonObject cachedData = t["cachedData"].to<JsonObject>();
+                    cachedData["timestamp"] = cache->timestamp;
+                    cachedData["lastError"] = cache->lastError;
+                    JsonArray values = cachedData["values"].to<JsonArray>();
+                    for (uint8_t j = 0; j < cache->count; j++) {
+                        values.add(cache->values[j]);
                     }
                 }
             }
@@ -1045,7 +1048,8 @@ void ProtocolRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request)
 }
 
 // ============================================================================
-// POST /api/modbus/coil/delay — 线圈延时控制（闪开：开启后设备硬件自动关闭）
+// POST /api/modbus/coil/delay — 线圈延时控制
+// NO模式：硬件闪开（设备硬件定时）；NC模式：软件延时任务（反转逻辑）
 // ============================================================================
 void ProtocolRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
     if (!ctx->checkPermission(request, "config.edit")) {
@@ -1060,6 +1064,8 @@ void ProtocolRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request)
     uint16_t channel = (uint16_t)ctx->getParamInt(request, "channel", 0);
     uint16_t delayBase = (uint16_t)ctx->getParamInt(request, "delayBase", 0x0200);
     uint16_t delayUnits = (uint16_t)ctx->getParamInt(request, "delayUnits", 50);
+    bool ncMode = ctx->getParamBool(request, "ncMode", false);
+    uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
     
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
@@ -1070,25 +1076,52 @@ void ProtocolRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request)
         return;
     }
     
-    // 闪开指令：FC 0x05 地址=(delayBase + channel) 值=延时单位在高字节
-    // 延时地址 = delayBase(0x0200) + 通道号(0-based)，与线圈地址映射一致
-    // curl 实测: addr 0x0200→CH0, addr 0x0201→CH1
-    uint16_t delayAddr = delayBase + channel;
-    uint16_t rawValue = ((uint16_t)delayUnits) << 8;
-    
-    OneShotResult result = modbus->writeCoilOnce(slaveAddr, delayAddr, rawValue);
+    unsigned long delayMs = (unsigned long)delayUnits * 100;
+    uint16_t coilAddr = coilBase + channel;
+
+    // 步骤1：立即打开继电器（写线圈 ON）
+    // NO模式: 线圈ON=设备通电; NC模式: 线圈ON=NC断开=设备断电（但我们要先打开，所以NC这里写OFF）
+    // 修正：延时断开 = 先打开设备，延时后关闭
+    // NO模式: 先写ON(设备通) → 延时后自动OFF(设备断)
+    // NC模式: 先写OFF(NC闭合=设备通) → 延时后写ON(NC断开=设备断)
+    bool initialValue = ncMode ? false : true;  // NO写ON, NC写OFF
+    OneShotResult result = modbus->writeCoilOnce(slaveAddr, coilAddr, initialValue);
     if (result.error != ONESHOT_SUCCESS) {
         sendOneShotError(ctx, request, result);
         return;
+    }
+
+    // 步骤2：启动延时机制，延时后自动关闭
+    if (ncMode) {
+        // NC 常闭模式：使用软件延时任务
+        // 延时后写线圈ON (NC断开=设备断电)
+        bool ok = modbus->addCoilDelayTask(slaveAddr, coilAddr, delayMs, true);
+        if (!ok) {
+            ctx->sendError(request, 500, "Delay task queue full");
+            return;
+        }
+    } else {
+        // NO 常开模式：使用硬件闪开指令
+        // 闪开指令：FC 0x05 地址=(delayBase + channel) 值=延时单位在高字节
+        // 硬件会自动：延时后关闭继电器
+        uint16_t delayAddr = delayBase + channel;
+        uint16_t rawValue = ((uint16_t)delayUnits) << 8;
+
+        result = modbus->writeCoilOnce(slaveAddr, delayAddr, rawValue);
+        if (result.error != ONESHOT_SUCCESS) {
+            sendOneShotError(ctx, request, result);
+            return;
+        }
     }
     
     JsonDocument doc;
     doc["success"] = true;
     JsonObject data = doc["data"].to<JsonObject>();
     data["channel"] = channel;
-    data["delayAddress"] = delayAddr;
     data["delayUnits"] = delayUnits;
-    data["delayMs"] = (uint32_t)delayUnits * 100;
+    data["delayMs"] = (uint32_t)delayMs;
+    data["ncMode"] = ncMode;
+    data["mode"] = ncMode ? "software" : "hardware";
     addModbusDebug(doc, modbus);
     
     String out;
@@ -1716,12 +1749,8 @@ void ProtocolRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
         const MQTTConfig& cfg = mqtt->getConfig();
         data["initialized"] = true;
         
-        // 如果MQTT被显式停止，返回断开状态
-        // 如果网络不可用，MQTT 实际上无法通信，返回断开状态
+        // MQTT连接状态：返回实际连接状态，internetAvailable 作为参考信息
         bool mqttConnected = mqtt->getIsConnected() && !mqtt->isStopped();
-        if (!internetAvailable) {
-            mqttConnected = false;
-        }
         data["connected"] = mqttConnected;
         data["internetAvailable"] = internetAvailable;
         data["server"] = cfg.server;

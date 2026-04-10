@@ -339,7 +339,12 @@ bool WiFiManager::restartNetwork() {
 }
 
 bool WiFiManager::checkInternetConnection() {
-    // 首先检查 WiFi STA 是否已连接且有有效 IP
+    // 检查STA模式是否已启用
+    wifi_mode_t mode = WiFi.getMode();
+    if (!(mode & WIFI_STA)) {
+        return false;  // 纯AP模式，无互联网
+    }
+    
     if (WiFi.status() != WL_CONNECTED) {
         return false;
     }
@@ -349,10 +354,12 @@ bool WiFiManager::checkInternetConnection() {
         return false;
     }
     
-    // 检查是否为 AP 模式的 IP（192.168.4.x）
-    // AP 模式下无法访问互联网
-    if (localIP[0] == 192 && localIP[1] == 168 && localIP[2] == 4) {
-        return false;
+    // 仅在纯AP模式下才认为 192.168.4.x 无互联网
+    // AP+STA模式下，WiFi.localIP() 返回的是STA IP，不需要此检查
+    if (mode == WIFI_AP) {
+        if (localIP[0] == 192 && localIP[1] == 168 && localIP[2] == 4) {
+            return false;
+        }
     }
     
     return true;

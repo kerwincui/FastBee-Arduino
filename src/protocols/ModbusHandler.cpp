@@ -5,7 +5,7 @@
  * @date: 2025-12-02 17:31:03
  *
  * Slave模式: 被动响应，支持功能码 0x01-0x06, 0x0F, 0x10
- * Master模式: 主动轮询，非阻塞状态机驱动，支持FC 0x01-0x04读取和FC 0x06写入
+ * Master模式: 阻塞式一次性读写操作，由 PeriphExec POLL_TRIGGER 调度执行
  * 支持异常响应: ILLEGAL_FUNCTION, ILLEGAL_DATA_ADDRESS, ILLEGAL_DATA_VALUE
  */
 
@@ -14,16 +14,12 @@
 
 ModbusHandler::ModbusHandler() 
     : isInitialized(false), modbusSerial(&Serial2),
-      pollState(POLL_IDLE), currentTaskIndex(0),
-      pollStateTimestamp(0), currentRetryCount(0),
-      responseIndex(0), lastByteTime(0), currentIsWrite(false),
-      isOneShotReading(false) {
+      isOneShotReading(false),
+      _totalPollCount(0), _successPollCount(0), _failedPollCount(0), _timeoutPollCount(0), _lastPollTime(0) {
     memset(holdingRegisters, 0, sizeof(holdingRegisters));
     memset(inputRegisters, 0, sizeof(inputRegisters));
     memset(coils, 0, sizeof(coils));
     memset(discreteInputs, 0, sizeof(discreteInputs));
-    memset(taskLastPollTime, 0, sizeof(taskLastPollTime));
-    memset(responseBuffer, 0, sizeof(responseBuffer));
 }
 
 ModbusHandler::~ModbusHandler() {
@@ -54,9 +50,6 @@ bool ModbusHandler::begin(const ModbusConfig& cfg) {
         LOG_INFOF("  Poll tasks: %d, Timeout: %dms",
                   config.master.taskCount,
                   config.master.responseTimeout);
-        memset(taskLastPollTime, 0, sizeof(taskLastPollTime));
-        pollState = POLL_IDLE;
-        masterStats = MasterStats();
     }
     
     return true;
@@ -341,7 +334,7 @@ void ModbusHandler::handle() {
     if (!isInitialized) return;
     
     if (config.mode == MODBUS_MASTER) {
-        handleMaster();
+        processCoilDelayTasks();
     } else {
         handleSlave();
     }
@@ -398,8 +391,7 @@ String ModbusHandler::getStatus() const {
     
     if (config.mode == MODBUS_MASTER) {
         status += ", Tasks:" + String(config.master.taskCount) +
-                  ", OK:" + String(masterStats.successPolls) +
-                  ", Fail:" + String(masterStats.failedPolls);
+                  ", Devices:" + String(config.master.deviceCount);
     }
     
     return status;
@@ -1016,34 +1008,7 @@ void ModbusHandler::setMode(ModbusMode newMode) {
     LOG_INFOF("Modbus: Mode changed to %s", (newMode == MODBUS_MASTER) ? "Master" : "Slave");
 }
 
-// ============ 轮询任务管理 ============
-
-bool ModbusHandler::addPollTask(const PollTask& task) {
-    if (config.master.taskCount >= Protocols::MODBUS_MAX_POLL_TASKS) {
-        LOG_WARNING("Modbus Master: Max poll tasks reached");
-        return false;
-    }
-    config.master.tasks[config.master.taskCount] = task;
-    config.master.taskCount++;
-    return true;
-}
-
-bool ModbusHandler::removePollTask(uint8_t index) {
-    if (index >= config.master.taskCount) return false;
-    
-    for (uint8_t i = index; i < config.master.taskCount - 1; i++) {
-        config.master.tasks[i] = config.master.tasks[i + 1];
-        taskLastPollTime[i] = taskLastPollTime[i + 1];
-    }
-    config.master.taskCount--;
-    return true;
-}
-
-bool ModbusHandler::updatePollTask(uint8_t index, const PollTask& task) {
-    if (index >= config.master.taskCount) return false;
-    config.master.tasks[index] = task;
-    return true;
-}
+// ============ 轮询任务只读访问 ============
 
 PollTask ModbusHandler::getPollTask(uint8_t index) const {
     if (index >= config.master.taskCount) return PollTask();
@@ -1056,480 +1021,11 @@ const ModbusSubDevice& ModbusHandler::getSubDevice(uint8_t index) const {
     return config.master.devices[index];
 }
 
+// Master写操作（阻塞式，通过 writeRegisterOnce 直接执行）
 bool ModbusHandler::masterWriteSingleRegister(uint8_t slaveAddr, uint16_t regAddr, uint16_t value) {
-    for (uint8_t i = 0; i < Protocols::MODBUS_MAX_WRITE_QUEUE; i++) {
-        if (!writeQueue[i].pending) {
-            writeQueue[i].slaveAddress = slaveAddr;
-            writeQueue[i].regAddress = regAddr;
-            writeQueue[i].value = value;
-            writeQueue[i].pending = true;
-            LOG_INFOF("Modbus Master: Write queued - slave=%d, reg=%d, val=%d", slaveAddr, regAddr, value);
-            return true;
-        }
-    }
-    LOG_WARNING("Modbus Master: Write queue full");
-    return false;
-}
-
-String ModbusHandler::getMasterStatus() const {
-    DynamicJsonDocument doc(256);
-    doc["mode"] = (config.mode == MODBUS_MASTER) ? "master" : "slave";
-    doc["state"] = (uint8_t)pollState;
-    doc["taskCount"] = config.master.taskCount;
-    doc["totalPolls"] = masterStats.totalPolls;
-    doc["successPolls"] = masterStats.successPolls;
-    doc["failedPolls"] = masterStats.failedPolls;
-    doc["timeoutPolls"] = masterStats.timeoutPolls;
-    
-    String result;
-    serializeJson(doc, result);
-    return result;
-}
-
-TaskDataCache ModbusHandler::getTaskDataCache(uint8_t index) const {
-    if (index < Protocols::MODBUS_MAX_POLL_TASKS) {
-        return taskDataCache[index];
-    }
-    return TaskDataCache();
-}
-
-// ============ Master请求帧构建 ============
-
-uint8_t ModbusHandler::buildMasterRequest(const PollTask& task, uint8_t* buffer) {
-    // 读请求帧: [slaveAddr, FC, startAddrHi, startAddrLo, qtyHi, qtyLo, CRClo, CRChi]
-    buffer[0] = task.slaveAddress;
-    buffer[1] = task.functionCode;
-    buffer[2] = (task.startAddress >> 8) & 0xFF;
-    buffer[3] = task.startAddress & 0xFF;
-    buffer[4] = (task.quantity >> 8) & 0xFF;
-    buffer[5] = task.quantity & 0xFF;
-    
-    uint16_t crc = calculateCRC(buffer, 6);
-    buffer[6] = crc & 0xFF;
-    buffer[7] = (crc >> 8) & 0xFF;
-    
-    return 8;
-}
-
-uint8_t ModbusHandler::buildWriteRequest(const WriteRequest& req, uint8_t* buffer) {
-    // FC 0x06: 写单寄存器 [slaveAddr, 0x06, regHi, regLo, valHi, valLo, CRClo, CRChi]
-    buffer[0] = req.slaveAddress;
-    buffer[1] = 0x06;
-    buffer[2] = (req.regAddress >> 8) & 0xFF;
-    buffer[3] = req.regAddress & 0xFF;
-    buffer[4] = (req.value >> 8) & 0xFF;
-    buffer[5] = req.value & 0xFF;
-    
-    uint16_t crc = calculateCRC(buffer, 6);
-    buffer[6] = crc & 0xFF;
-    buffer[7] = (crc >> 8) & 0xFF;
-    
-    return 8;
-}
-
-// ============ Master响应解析 ============
-
-bool ModbusHandler::parseMasterResponse(const uint8_t* buffer, uint8_t length, const PollTask& task) {
-    if (length < 5) return false;
-    
-    // 检查从站地址
-    if (buffer[0] != task.slaveAddress) {
-        LOG_WARNINGF("Modbus Master: Address mismatch: expected %d, got %d", task.slaveAddress, buffer[0]);
-        return false;
-    }
-    
-    // 检查异常响应
-    if (buffer[1] & 0x80) {
-        uint8_t exCode = buffer[2];
-        LOG_WARNINGF("Modbus Master: Exception from slave %d, FC=0x%02X, Ex=0x%02X",
-                     task.slaveAddress, task.functionCode, exCode);
-        return false;
-    }
-    
-    // 检查功能码匹配
-    if (buffer[1] != task.functionCode) {
-        LOG_WARNINGF("Modbus Master: FC mismatch: expected 0x%02X, got 0x%02X", task.functionCode, buffer[1]);
-        return false;
-    }
-    
-    // CRC校验
-    if (!validateFrame(buffer, length)) {
-        LOG_WARNING("Modbus Master: CRC error in response");
-        return false;
-    }
-    
-    // 透传模式: 直接上报原始十六进制帧
-    if (config.transferType == 1) {
-        reportRawData(task, buffer, length);
-        return true;
-    }
-    
-    // JSON模式: 解析寄存器读响应数据
-    uint8_t byteCount = buffer[2];
-    
-    if (task.functionCode == 0x03 || task.functionCode == 0x04) {
-        // 寄存器读响应: [addr, FC, byteCount, data..., CRC]
-        if (byteCount != task.quantity * 2) {
-            LOG_WARNING("Modbus Master: Byte count mismatch in response");
-            return false;
-        }
-        
-        uint16_t regData[Protocols::MODBUS_MAX_REGISTERS_PER_READ];
-        for (uint16_t i = 0; i < task.quantity && i < Protocols::MODBUS_MAX_REGISTERS_PER_READ; i++) {
-            regData[i] = (buffer[3 + i * 2] << 8) | buffer[3 + i * 2 + 1];
-        }
-        
-        reportPollData(task, regData, task.quantity);
-    } else if (task.functionCode == 0x01 || task.functionCode == 0x02) {
-        // 线圈/离散输入读响应: [addr, FC, byteCount, data..., CRC]
-        // 将位数据转为寄存器格式上报
-        uint16_t regData[Protocols::MODBUS_MAX_REGISTERS_PER_READ];
-        uint16_t count = min((uint16_t)byteCount, (uint16_t)Protocols::MODBUS_MAX_REGISTERS_PER_READ);
-        for (uint16_t i = 0; i < count; i++) {
-            regData[i] = buffer[3 + i];
-        }
-        reportPollData(task, regData, count);
-    }
-    
-    return true;
-}
-
-// ============ 数据上报 ============
-
-void ModbusHandler::reportPollData(const PollTask& task, const uint16_t* data, uint16_t count) {
-    // 缓存最新轮询数据（无论是否有 dataCallback）
-    if (currentTaskIndex < Protocols::MODBUS_MAX_POLL_TASKS) {
-        TaskDataCache& cache = taskDataCache[currentTaskIndex];
-        uint16_t copyCount = min(count, (uint16_t)Protocols::MODBUS_MAX_REGISTERS_PER_READ);
-        memcpy(cache.values, data, copyCount * sizeof(uint16_t));
-        cache.count = copyCount;
-        cache.timestamp = millis();
-        cache.valid = true;
-    }
-
-    if (!dataCallback) return;
-    
-    // JSON模式且有映射配置: 生成 [{id,value}] 格式
-    if (config.transferType == 0 && task.mappingCount > 0) {
-        String json = "[";
-        bool first = true;
-        
-        for (uint8_t i = 0; i < task.mappingCount; i++) {
-            const RegisterMapping& m = task.mappings[i];
-            if (m.sensorId[0] == '\0') continue;
-            
-            float rawValue = 0.0f;
-            
-            switch (m.dataType) {
-                case 0: // uint16
-                    if (m.regOffset < count) {
-                        rawValue = (float)data[m.regOffset];
-                    }
-                    break;
-                case 1: // int16
-                    if (m.regOffset < count) {
-                        rawValue = (float)(int16_t)data[m.regOffset];
-                    }
-                    break;
-                case 2: // uint32 (两个寄存器)
-                    if (m.regOffset + 1 < count) {
-                        uint32_t u32 = ((uint32_t)data[m.regOffset] << 16) | data[m.regOffset + 1];
-                        rawValue = (float)u32;
-                    }
-                    break;
-                case 3: // int32 (两个寄存器)
-                    if (m.regOffset + 1 < count) {
-                        uint32_t u32 = ((uint32_t)data[m.regOffset] << 16) | data[m.regOffset + 1];
-                        rawValue = (float)(int32_t)u32;
-                    }
-                    break;
-                case 4: // float32 (两个寄存器, IEEE 754)
-                    if (m.regOffset + 1 < count) {
-                        uint32_t u32 = ((uint32_t)data[m.regOffset] << 16) | data[m.regOffset + 1];
-                        memcpy(&rawValue, &u32, sizeof(float));
-                    }
-                    break;
-                default:
-                    if (m.regOffset < count) {
-                        rawValue = (float)data[m.regOffset];
-                    }
-                    break;
-            }
-            
-            float scaledValue = rawValue * m.scaleFactor;
-            
-            // 格式化数值
-            char valBuf[16];
-            dtostrf(scaledValue, 1, m.decimalPlaces, valBuf);
-            
-            if (!first) json += ",";
-            json += "{\"id\":\"";
-            json += m.sensorId;
-            json += "\",\"value\":\"";
-            json += valBuf;
-            json += "\"}";
-            first = false;
-        }
-        
-        json += "]";
-        
-        if (!first) { // 至少有一个映射输出
-            dataCallback(task.slaveAddress, json);
-            return;
-        }
-    }
-    
-    // 默认: 旧文本格式（向后兼容，mappingCount==0 时使用）
-    String report = "MASTER:slave=" + String(task.slaveAddress) +
-                    ",fc=" + String(task.functionCode) +
-                    ",start=" + String(task.startAddress) +
-                    ",count=" + String(count) +
-                    ",data=[";
-    
-    for (uint16_t i = 0; i < count; i++) {
-        if (i > 0) report += ",";
-        report += String(data[i]);
-    }
-    report += "]";
-    
-    if (task.label[0] != '\0') {
-        report += ",label=" + String(task.label);
-    }
-    
-    dataCallback(task.slaveAddress, report);
-}
-
-void ModbusHandler::reportRawData(const PollTask& task, const uint8_t* frame, uint8_t frameLen) {
-    if (!dataCallback) return;
-    
-    // 将原始响应帧转为十六进制字符串
-    String hexStr;
-    hexStr.reserve(frameLen * 2 + 1);
-    for (uint8_t i = 0; i < frameLen; i++) {
-        char buf[3];
-        snprintf(buf, sizeof(buf), "%02X", frame[i]);
-        hexStr += buf;
-    }
-    
-    dataCallback(task.slaveAddress, hexStr);
-}
-
-// ============ 轮询调度 ============
-
-int8_t ModbusHandler::findNextPollTask() {
-    unsigned long now = millis();
-    int8_t bestTask = -1;
-    unsigned long maxOverdue = 0;
-    
-    for (uint8_t i = 0; i < config.master.taskCount; i++) {
-        if (!config.master.tasks[i].enabled) continue;
-        
-        unsigned long interval = (unsigned long)config.master.tasks[i].pollInterval * 1000UL;
-        unsigned long elapsed = now - taskLastPollTime[i];
-        
-        if (elapsed >= interval) {
-            unsigned long overdue = elapsed - interval;
-            if (bestTask < 0 || overdue > maxOverdue) {
-                bestTask = i;
-                maxOverdue = overdue;
-            }
-        }
-    }
-    
-    return bestTask;
-}
-
-bool ModbusHandler::processWriteQueue() {
-    for (uint8_t i = 0; i < Protocols::MODBUS_MAX_WRITE_QUEUE; i++) {
-        if (writeQueue[i].pending) {
-            return true; // 有待处理的写请求
-        }
-    }
-    return false;
-}
-
-// ============ Master状态机主循环 ============
-
-void ModbusHandler::handleMaster() {
-    // 一次性读取进行中，暂停轮询状态机
-    if (isOneShotReading) return;
-    
-    unsigned long now = millis();
-    
-    switch (pollState) {
-        case POLL_IDLE: {
-            // 周期性诊断日志（每60秒）
-            static unsigned long lastDiagLog = 0;
-            if (now - lastDiagLog > 60000) {
-                lastDiagLog = now;
-                LOG_INFOF("Modbus Master stats: total=%lu ok=%lu fail=%lu timeout=%lu tasks=%d wm=%d",
-                           (unsigned long)masterStats.totalPolls,
-                           (unsigned long)masterStats.successPolls,
-                           (unsigned long)masterStats.failedPolls,
-                           (unsigned long)masterStats.timeoutPolls,
-                           config.master.taskCount, config.workMode);
-            }
-            
-            // 优先处理写请求队列
-            for (uint8_t i = 0; i < Protocols::MODBUS_MAX_WRITE_QUEUE; i++) {
-                if (writeQueue[i].pending) {
-                    // 清空接收缓冲区
-                    while (modbusSerial->available()) modbusSerial->read();
-                    
-                    uint8_t requestBuffer[8];
-                    uint8_t reqLen = buildWriteRequest(writeQueue[i], requestBuffer);
-                    
-                    setTransmitMode(true);
-                    modbusSerial->write(requestBuffer, reqLen);
-                    modbusSerial->flush();
-                    setTransmitMode(false);
-                    
-                    writeQueue[i].pending = false;
-                    currentIsWrite = true;
-                    responseIndex = 0;
-                    pollStateTimestamp = now;
-                    pollState = POLL_WAITING;
-                    
-                    LOG_DEBUGF("Modbus Master: Write sent to slave %d, reg %d",
-                              writeQueue[i].slaveAddress, writeQueue[i].regAddress);
-                    return;
-                }
-            }
-            
-            // MQTT指令模式：不执行主动轮询，只处理写请求队列和一次性读取
-            if (config.workMode == 0) {
-                processCoilDelayTasks();
-                return;
-            }
-            
-            // 处理线圈延时任务
-            processCoilDelayTasks();
-            
-            // 查找到期的轮询任务
-            int8_t nextTask = findNextPollTask();
-            if (nextTask < 0) return; // 没有到期任务
-            
-            currentTaskIndex = nextTask;
-            currentIsWrite = false;
-            currentRetryCount = 0;
-            
-            // 确保满足interPollDelay
-            if (now - pollStateTimestamp < config.master.interPollDelay) return;
-            
-            pollState = POLL_SENDING;
-            break;
-        }
-        
-        case POLL_SENDING: {
-            const PollTask& task = config.master.tasks[currentTaskIndex];
-            
-            // 清空接收缓冲区
-            while (modbusSerial->available()) modbusSerial->read();
-            
-            // 构建并发送请求
-            uint8_t requestBuffer[8];
-            uint8_t reqLen = buildMasterRequest(task, requestBuffer);
-            
-            setTransmitMode(true);
-            modbusSerial->write(requestBuffer, reqLen);
-            modbusSerial->flush();
-            setTransmitMode(false);
-            
-            // 进入等待状态
-            responseIndex = 0;
-            lastByteTime = now;
-            pollStateTimestamp = now;
-            pollState = POLL_WAITING;
-            masterStats.totalPolls++;
-            
-            LOG_DEBUGF("Modbus Master: Poll sent to slave %d, FC=0x%02X, start=%d, qty=%d",
-                      task.slaveAddress, task.functionCode, task.startAddress, task.quantity);
-            break;
-        }
-        
-        case POLL_WAITING: {
-            // 读取可用的串口数据
-            while (modbusSerial->available()) {
-                if (responseIndex < Protocols::MODBUS_BUFFER_SIZE) {
-                    responseBuffer[responseIndex++] = modbusSerial->read();
-                    lastByteTime = now;
-                } else {
-                    modbusSerial->read(); // 丢弃溢出数据
-                }
-            }
-            
-            // 检查帧超时（收到数据后3.5字符时间无新数据 = 一帧结束）
-            // 3.5字符时间(ms) = 35000 / baudRate（每字符10位：start+8data+stop）
-            // 低波特率(<=19200)按标准计算，高波特率固定1.75ms，最小保底2ms
-            unsigned long charTimeout = (config.baudRate <= 19200) ? (35000UL / config.baudRate + 1) : 2;
-            if (charTimeout < 2) charTimeout = 2;
-            
-            if (responseIndex > 0 && (now - lastByteTime) > charTimeout) {
-                // 帧接收完成，验证
-                if (responseIndex >= 5 && validateFrame(responseBuffer, responseIndex)) {
-                    if (currentIsWrite) {
-                        // 写请求响应 - 仅确认成功
-                        LOG_DEBUG("Modbus Master: Write acknowledged");
-                        pollState = POLL_COMPLETE;
-                    } else {
-                        const PollTask& task = config.master.tasks[currentTaskIndex];
-                        if (parseMasterResponse(responseBuffer, responseIndex, task)) {
-                            pollState = POLL_COMPLETE;
-                        } else {
-                            pollState = POLL_ERROR;
-                        }
-                    }
-                } else {
-                    LOG_WARNINGF("Modbus Master: Invalid frame, len=%d", responseIndex);
-                    pollState = POLL_ERROR;
-                }
-                return;
-            }
-            
-            // 检查响应超时
-            uint16_t timeout = currentIsWrite ? config.responseTimeout : config.master.responseTimeout;
-            if ((now - pollStateTimestamp) > timeout) {
-                if (responseIndex == 0) {
-                    LOG_WARNINGF("Modbus Master: Timeout - no response (attempt %d/%d)",
-                                currentRetryCount + 1, config.master.maxRetries + 1);
-                } else {
-                    LOG_WARNINGF("Modbus Master: Timeout - incomplete frame (%d bytes)", responseIndex);
-                }
-                masterStats.timeoutPolls++;
-                pollState = POLL_ERROR;
-            }
-            break;
-        }
-        
-        case POLL_COMPLETE: {
-            if (!currentIsWrite) {
-                masterStats.successPolls++;
-                taskLastPollTime[currentTaskIndex] = now;
-            }
-            
-            pollStateTimestamp = now;
-            pollState = POLL_IDLE;
-            break;
-        }
-        
-        case POLL_ERROR: {
-            if (!currentIsWrite && currentRetryCount < config.master.maxRetries) {
-                currentRetryCount++;
-                LOG_INFOF("Modbus Master: Retrying task %d (attempt %d)", currentTaskIndex, currentRetryCount + 1);
-                pollState = POLL_SENDING;
-                return;
-            }
-            
-            if (!currentIsWrite) {
-                masterStats.failedPolls++;
-                taskLastPollTime[currentTaskIndex] = now; // 避免立即重试
-            }
-            
-            pollStateTimestamp = now;
-            pollState = POLL_IDLE;
-            break;
-        }
-    }
+    LOG_INFOF("Modbus Master: Write slave=%d, reg=%d, val=%d", slaveAddr, regAddr, value);
+    OneShotResult result = writeRegisterOnce(slaveAddr, regAddr, value);
+    return (result.error == ONESHOT_SUCCESS);
 }
 
 // ========== 一次性寄存器读取（阻塞式，用于MQTT指令触发） ==========
@@ -1662,9 +1158,19 @@ OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t 
         return result;
     }
     if (isOneShotReading) {
-        result.error = ONESHOT_BUSY;
-        LOG_WARNING("[Modbus] OneShot: busy (another one-shot in progress)");
-        return result;
+        // 等待总线空闲（等待其他 Modbus 操作完成），最多等 2 秒
+        const unsigned long maxWaitMs = 2000;
+        unsigned long startWait = millis();
+        while (isOneShotReading) {
+            if (millis() - startWait >= maxWaitMs) {
+                result.error = ONESHOT_BUSY;
+                LOG_WARNING("[Modbus] OneShot: busy (timeout waiting for bus)");
+                return result;
+            }
+            delay(5);
+            yield();
+        }
+        LOG_INFO("[Modbus] OneShot: bus was busy, now free after wait");
     }
     if (expectedSlaveAddr > 247) {
         result.error = ONESHOT_EXCEPTION;
@@ -1675,20 +1181,6 @@ OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t 
 
     // 设置守卫标志
     isOneShotReading = true;
-
-    // 等待状态机回到 POLL_IDLE
-    unsigned long waitStart = millis();
-    unsigned long maxWait = (unsigned long)config.master.responseTimeout * 2;
-    while (pollState != POLL_IDLE && (millis() - waitStart) < maxWait) {
-        yield();
-        delay(1);
-    }
-    if (pollState != POLL_IDLE) {
-        isOneShotReading = false;
-        result.error = ONESHOT_BUSY;
-        LOG_WARNING("[Modbus] OneShot: state machine not idle, giving up");
-        return result;
-    }
 
     // 超时参数
     uint16_t timeout = config.master.responseTimeout;
@@ -2039,15 +1531,16 @@ OneShotResult ModbusHandler::writeMultipleRegistersOnce(uint8_t slaveAddr, uint1
 // ============================================================================
 // 线圈延时任务管理
 // ============================================================================
-bool ModbusHandler::addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsigned long delayMs) {
+bool ModbusHandler::addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsigned long delayMs, bool coilValue) {
     // 优先复用同一线圈地址的已有任务
     for (uint8_t i = 0; i < Protocols::MODBUS_MAX_COIL_DELAY_TASKS; i++) {
         if (coilDelayTasks[i].active &&
             coilDelayTasks[i].slaveAddress == slaveAddr &&
             coilDelayTasks[i].coilAddress == coilAddr) {
             coilDelayTasks[i].triggerTime = millis() + delayMs;
-            LOG_INFOF("[Modbus] DelayTask: updated slot %d, slave=%d coil=%d delay=%lums",
-                      i, slaveAddr, coilAddr, delayMs);
+            coilDelayTasks[i].coilValue = coilValue;
+            LOG_INFOF("[Modbus] DelayTask: updated slot %d, slave=%d coil=%d delay=%lums val=%d",
+                      i, slaveAddr, coilAddr, delayMs, coilValue);
             return true;
         }
     }
@@ -2057,9 +1550,10 @@ bool ModbusHandler::addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsig
             coilDelayTasks[i].slaveAddress = slaveAddr;
             coilDelayTasks[i].coilAddress = coilAddr;
             coilDelayTasks[i].triggerTime = millis() + delayMs;
+            coilDelayTasks[i].coilValue = coilValue;
             coilDelayTasks[i].active = true;
-            LOG_INFOF("[Modbus] DelayTask: added slot %d, slave=%d coil=%d delay=%lums",
-                      i, slaveAddr, coilAddr, delayMs);
+            LOG_INFOF("[Modbus] DelayTask: added slot %d, slave=%d coil=%d delay=%lums val=%d",
+                      i, slaveAddr, coilAddr, delayMs, coilValue);
             return true;
         }
     }
@@ -2071,9 +1565,10 @@ void ModbusHandler::processCoilDelayTasks() {
     unsigned long now = millis();
     for (uint8_t i = 0; i < Protocols::MODBUS_MAX_COIL_DELAY_TASKS; i++) {
         if (coilDelayTasks[i].active && now >= coilDelayTasks[i].triggerTime) {
-            LOG_INFOF("[Modbus] DelayTask: executing slot %d, turning OFF slave=%d coil=%d",
-                      i, coilDelayTasks[i].slaveAddress, coilDelayTasks[i].coilAddress);
-            writeCoilOnce(coilDelayTasks[i].slaveAddress, coilDelayTasks[i].coilAddress, false);
+            LOG_INFOF("[Modbus] DelayTask: executing slot %d, slave=%d coil=%d -> %s",
+                      i, coilDelayTasks[i].slaveAddress, coilDelayTasks[i].coilAddress,
+                      coilDelayTasks[i].coilValue ? "ON" : "OFF");
+            writeCoilOnce(coilDelayTasks[i].slaveAddress, coilDelayTasks[i].coilAddress, coilDelayTasks[i].coilValue);
             coilDelayTasks[i].active = false;
         }
     }
@@ -2115,6 +1610,16 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
     const PollTask& task = config.master.tasks[taskIdx];
     if (!task.enabled) return "[]";
 
+    // 检查堆内存是否充足
+    if (ESP.getFreeHeap() < 10000) {
+        LOG_WARNINGF("[Modbus] Insufficient heap for JSON: %d bytes", ESP.getFreeHeap());
+        return "[]";
+    }
+
+    // 更新统计计数
+    _totalPollCount++;
+    _lastPollTime = millis();
+
     // 保存原始通信参数
     uint16_t origTimeout = config.master.responseTimeout;
     uint8_t origRetries = config.master.maxRetries;
@@ -2134,24 +1639,39 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
     config.master.responseTimeout = origTimeout;
     config.master.maxRetries = origRetries;
 
+    // 更新任务缓存和统计计数
+    PollTaskCache& cache = _taskCache[taskIdx];
+    cache.timestamp = millis();
+    cache.lastError = (uint8_t)result.error;
+    
     if (result.error != ONESHOT_SUCCESS) {
         LOG_WARNINGF("[Modbus] PollTask[%d] failed: error=%d", taskIdx, result.error);
+        
+        // 分类统计失败原因
+        if (result.error == ONESHOT_TIMEOUT) {
+            _timeoutPollCount++;
+        } else {
+            _failedPollCount++;
+        }
+        
+        // 标记缓存无效
+        cache.valid = false;
+        cache.count = 0;
         return "[]";
     }
 
-    // 更新数据缓存
-    if (taskIdx < Protocols::MODBUS_MAX_POLL_TASKS) {
-        TaskDataCache& cache = taskDataCache[taskIdx];
-        uint16_t copyCount = min(result.count, (uint16_t)Protocols::MODBUS_MAX_REGISTERS_PER_READ);
-        memcpy(cache.values, result.data, copyCount * sizeof(uint16_t));
-        cache.count = copyCount;
-        cache.timestamp = millis();
-        cache.valid = true;
-    }
+    // 成功：更新成功计数和缓存数据
+    _successPollCount++;
+    cache.valid = true;
+    cache.count = result.count;
+    memcpy(cache.values, result.data, result.count * sizeof(uint16_t));
 
     // 应用寄存器映射生成 JSON
     if (task.mappingCount > 0) {
-        String json = "[";
+        // 预分配缓冲区
+        String json;
+        json.reserve(512);
+        json = "[";
         bool first = true;
 
         for (uint8_t i = 0; i < task.mappingCount; i++) {
@@ -2211,7 +1731,10 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
     }
 
     // 无映射配置: 返回原始寄存器数据 JSON
-    String json = "[{\"id\":\"slave_" + String(task.slaveAddress) +
+    // 预分配缓冲区
+    String json;
+    json.reserve(512);
+    json = "[{\"id\":\"slave_" + String(task.slaveAddress) +
                   "_raw\",\"value\":\"";
     for (uint16_t i = 0; i < result.count; i++) {
         if (i > 0) json += ",";
@@ -2223,4 +1746,36 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
         dataCallback(task.slaveAddress, json);
     }
     return json;
+}
+
+// ============================================================================
+// 轮询统计接口
+// ============================================================================
+
+String ModbusHandler::getPollStatistics() const {
+    JsonDocument doc;
+    doc["totalPolls"] = _totalPollCount;
+    doc["successPolls"] = _successPollCount;
+    doc["failedPolls"] = _failedPollCount;
+    doc["timeoutPolls"] = _timeoutPollCount;
+    doc["lastPollMs"] = _lastPollTime > 0 ? (millis() - _lastPollTime) / 1000 : 0;
+    
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+const ModbusHandler::PollTaskCache* ModbusHandler::getTaskCache(uint8_t taskIdx) const {
+    if (taskIdx >= Protocols::MODBUS_MAX_POLL_TASKS) return nullptr;
+    return &_taskCache[taskIdx];
+}
+
+void ModbusHandler::resetPollStatistics() {
+    _totalPollCount = 0;
+    _successPollCount = 0;
+    _failedPollCount = 0;
+    _timeoutPollCount = 0;
+    _lastPollTime = 0;
+    memset(_taskCache, 0, sizeof(_taskCache));
+    LOG_INFO("[Modbus] Poll statistics reset");
 }

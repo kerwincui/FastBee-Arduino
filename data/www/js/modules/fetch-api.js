@@ -130,6 +130,8 @@
                     }
                     Notification.warning('登录已过期，请重新登录', '会话超时');
                     setTimeout(function () {
+                        // 如果在此期间已通过自动登录获取新 token，则不跳转
+                        if (localStorage.getItem('auth_token')) return;
                         var lp = document.getElementById('login-page');
                         var ac = document.getElementById('app-container');
                         // 跳转到登录页面

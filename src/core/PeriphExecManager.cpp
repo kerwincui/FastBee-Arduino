@@ -17,6 +17,7 @@ bool PeriphExecManager::initialize() {
     _rulesMutex = xSemaphoreCreateMutex();
     _resultsMutex = xSemaphoreCreateMutex();
     _taskSlotSemaphore = xSemaphoreCreateCounting(MAX_ASYNC_TASKS, MAX_ASYNC_TASKS);
+    _runningRulesMutex = xSemaphoreCreateMutex();
 
     bool loaded = loadConfiguration();
     LOGGER.infof("[PeriphExec] Initialized, loaded %d rules (async: max %d tasks)",
@@ -283,7 +284,7 @@ bool PeriphExecManager::loadConfiguration() {
             t.timerMode = obj["timerMode"] | 0;
             t.intervalSec = obj["intervalSec"] | 60;
             t.timePoint = obj["timePoint"].as<String>();
-            t.lastTriggerTime = 0;
+            t.lastTriggerTime = millis();  // 初始化为当前时间，避免启动时立即触发
             t.triggerCount = 0;
 
             // 事件 ID 迁移（v1→v2 逻辑）
@@ -689,6 +690,18 @@ void PeriphExecManager::checkTimers() {
     if (now - lastTimerCheck < 1000) return;
     lastTimerCheck = now;
 
+    // 预先获取 ModbusHandler 状态（避免在锁内调用）
+    ModbusHandler* modbus = nullptr;
+    bool modbusAvailable = false;
+    auto* fw = FastBeeFramework::getInstance();
+    if (fw) {
+        auto* protMgr = fw->getProtocolManager();
+        if (protMgr) {
+            modbus = protMgr->getModbusHandler();
+            modbusAvailable = (modbus != nullptr && modbus->getMode() == MODBUS_MASTER);
+        }
+    }
+
     // 阶段1: 持锁匹配，收集规则副本
     std::vector<PeriphExecRule> triggeredRules;
 
@@ -698,6 +711,15 @@ void PeriphExecManager::checkTimers() {
         for (auto& pair : rules) {
             PeriphExecRule& rule = pair.second;
             if (!rule.enabled) continue;
+
+            // 检查失败退避：如果上次执行失败且未过退避期，跳过
+            {
+                MutexGuard runLock(_runningRulesMutex);
+                auto it = _failureBackoff.find(rule.id);
+                if (it != _failureBackoff.end() && now < it->second) {
+                    continue;  // 仍在退避期内
+                }
+            }
 
             // 遍历触发器，寻找定时触发或轮询触发类型
             for (auto& trigger : rule.triggers) {
@@ -732,6 +754,36 @@ void PeriphExecManager::checkTimers() {
                 }
 
                 if (shouldTrigger) {
+                    // 检查规则是否需要 Modbus，以及 Modbus 是否可用
+                    bool needsModbus = false;
+                    for (const auto& action : rule.actions) {
+                        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL) ||
+                            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_COIL_WRITE) ||
+                            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_REG_WRITE) ||
+                            action.targetPeriphId.startsWith("modbus:")) {
+                            needsModbus = true;
+                            break;
+                        }
+                    }
+
+                    // 如果需要 Modbus 但不可用，跳过本次触发并记录警告
+                    if (needsModbus && !modbusAvailable) {
+                        LOGGER.warningf("[PeriphExec] Skip timer '%s': Modbus not available", rule.name.c_str());
+                        continue;
+                    }
+
+                    // 检查任务是否已在运行中
+                    bool alreadyRunning = false;
+                    {
+                        MutexGuard runLock(_runningRulesMutex);
+                        alreadyRunning = (_runningRuleIds.count(rule.id) > 0);
+                    }
+
+                    if (alreadyRunning) {
+                        LOGGER.warningf("[PeriphExec] Skip timer '%s': task already running", rule.name.c_str());
+                        continue;
+                    }
+
                     LOGGER.infof("[PeriphExec] Timer triggered: '%s'", rule.name.c_str());
                     trigger.lastTriggerTime = now;
                     trigger.triggerCount++;
@@ -962,6 +1014,25 @@ bool PeriphExecManager::executeModbusPollAction(const ExecAction& action, const 
         return false;
     }
 
+    // 检查 Modbus 是否在 Master 模式
+    if (modbus->getMode() != MODBUS_MASTER) {
+        LOGGER.warning("[PeriphExec] Modbus not in Master mode, skip poll action");
+        return false;
+    }
+
+    // 检查是否有配置的轮询任务
+    uint8_t pollTaskCount = modbus->getPollTaskCount();
+    if (pollTaskCount == 0) {
+        LOGGER.warning("[PeriphExec] No Modbus poll tasks configured");
+        return false;
+    }
+
+    // 检查堆内存是否充足
+    if (ESP.getFreeHeap() < 50000) {
+        LOGGER.warningf("[PeriphExec] Insufficient heap for Modbus poll: %d bytes free", ESP.getFreeHeap());
+        return false;
+    }
+
     // 从规则的 POLL_TRIGGER 触发器中提取通信参数
     uint16_t timeout = 1000;
     uint8_t retries = 2;
@@ -996,7 +1067,16 @@ bool PeriphExecManager::executeModbusPollAction(const ExecAction& action, const 
         // 处理 poll 数组: 执行采集任务
         JsonArray pollArr = doc["poll"].as<JsonArray>();
         if (pollArr) {
-            String mergedJson = "[";
+            // 根据轮询任务数量动态计算缓冲区
+            uint16_t estimatedSize = 128;  // 基础开销
+            for (JsonVariant v : pollArr) {
+                estimatedSize += 512;  // 每个轮询预留512字节
+            }
+            if (estimatedSize > 8192) estimatedSize = 8192;  // 上限8KB
+
+            String mergedJson;
+            mergedJson.reserve(estimatedSize);
+            mergedJson = "[";
             bool first = true;
             for (JsonVariant v : pollArr) {
                 uint8_t taskIdx = v.as<uint8_t>();
@@ -1285,6 +1365,15 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
         return;
     }
 
+    // 检查任务是否已在运行中（防止重复分发）
+    {
+        MutexGuard runLock(_runningRulesMutex);
+        if (_runningRuleIds.count(rule.id) > 0) {
+            LOGGER.warningf("[PeriphExec] Skip dispatch: task '%s' already running", rule.name.c_str());
+            return;
+        }
+    }
+
     // 异步模式：判断资源是否充足
     if (!shouldRunAsync()) {
         LOGGER.infof("[PeriphExec] Fallback sync (heap=%d, slots=%d): '%s'",
@@ -1317,19 +1406,29 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
     ctx->mqtt = getMqttClient();
     ctx->taskSlot = _taskSlotSemaphore;
 
-    // 确定栈大小：有脚本动作用 8KB，其他 4KB
-    bool hasScript = false;
+    // 确定栈大小：有脚本/Modbus动作用 8KB，其他 4KB
+    bool needLargeStack = false;
     for (const auto& a : rule.actions) {
-        if (a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT)) {
-            hasScript = true;
+        if (a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT) ||
+            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL) ||
+            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_COIL_WRITE) ||
+            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_REG_WRITE) ||
+            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
+            needLargeStack = true;
             break;
         }
     }
-    uint32_t stackSize = hasScript ? SCRIPT_TASK_STACK : SIMPLE_TASK_STACK;
+    uint32_t stackSize = needLargeStack ? SCRIPT_TASK_STACK : SIMPLE_TASK_STACK;
 
     // 创建 FreeRTOS 任务
     char taskName[24];
     snprintf(taskName, sizeof(taskName), "exec_%.16s", rule.id.c_str());
+
+    // 在创建任务前先将规则ID加入运行中集合
+    {
+        MutexGuard runLock(_runningRulesMutex);
+        _runningRuleIds.insert(rule.id);
+    }
 
     BaseType_t created = xTaskCreatePinnedToCore(
         asyncExecTaskFunc,      // 任务函数
@@ -1342,7 +1441,12 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
     );
 
     if (created != pdPASS) {
-        LOGGER.errorf("[PeriphExec] xTaskCreate failed, fallback sync: '%s'", rule.name.c_str());
+        LOGGER.errorf("[PeriphExec] Failed to create async task, insufficient memory: '%s'", rule.name.c_str());
+        // 任务创建失败，从运行中集合移除
+        {
+            MutexGuard runLock(_runningRulesMutex);
+            _runningRuleIds.erase(rule.id);
+        }
         delete ctx;
         xSemaphoreGive(_taskSlotSemaphore);
         executeAllActions(rule, receivedValue);
@@ -1388,6 +1492,23 @@ void PeriphExecManager::asyncExecTaskFunc(void* pvParameters) {
 
     // 记录执行结果
     ctx->manager->recordResult(result);
+
+    // 从运行中集合移除规则ID
+    {
+        MutexGuard runLock(ctx->manager->_runningRulesMutex);
+        ctx->manager->_runningRuleIds.erase(ctx->ruleCopy.id);
+    }
+
+    // 如果执行失败，设置退避时间（30秒后才能再次触发）
+    if (!allOk) {
+        MutexGuard runLock(ctx->manager->_runningRulesMutex);
+        ctx->manager->_failureBackoff[ctx->ruleCopy.id] = millis() + 30000;
+        LOGGER.infof("[PeriphExec] Rule '%s' failed, backoff for 30s", result.ruleName.c_str());
+    } else {
+        // 成功时清除退避记录
+        MutexGuard runLock(ctx->manager->_runningRulesMutex);
+        ctx->manager->_failureBackoff.erase(ctx->ruleCopy.id);
+    }
 
     // 触发外设执行完成事件
     ctx->manager->triggerPeriphExecEvent(ctx->ruleCopy.id, allOk ? "success" : "failed");
@@ -1441,21 +1562,24 @@ String PeriphExecManager::generateUniqueId() {
 bool PeriphExecManager::runOnce(const String& id) {
     PeriphExecRule* rule = getRule(id);
     if (!rule) {
+        LOGGER.warning("[PeriphExec] Rule not found for runOnce: " + id);
         return false;
     }
     
-    // 创建副本执行
+    // 创建副本并异步分发，避免阻塞 Web 请求线程
     PeriphExecRule ruleCopy = *rule;
-    auto results = executeAllActions(ruleCopy, "");
-    for (const auto& ar : results) {
-        if (ar.success) return true;
-    }
-    return false;
+    LOGGER.infof("[PeriphExec] runOnce async dispatch: '%s' (id=%s)", 
+                 ruleCopy.name.c_str(), id.c_str());
+    dispatchAsync(ruleCopy, "");
+    return true;  // 返回 true 表示已提交
 }
 
 // ========== 触发事件 ==========
 
 void PeriphExecManager::triggerEvent(EventType eventType, const String& eventData) {
+    // 启动保护：PeriphExecManager 未初始化时（mutex 未创建），跳过事件处理
+    if (!_rulesMutex) return;
+
     // 查找匹配的事件ID
     const char* targetEventId = nullptr;
     for (size_t i = 0; STATIC_EVENTS[i].id != nullptr; i++) {
@@ -1525,6 +1649,7 @@ void PeriphExecManager::triggerEventById(const String& eventId, const String& ev
 }
 
 void PeriphExecManager::triggerPeriphExecEvent(const String& ruleId, const String& eventData) {
+    if (!_rulesMutex) return;
     LOGGER.infof("[PeriphExec] Periph exec event triggered: %s", ruleId.c_str());
     
     // 阶段1: 持锁匹配，收集规则副本

@@ -614,13 +614,16 @@ void MQTTClient::handle() {
         unsigned long now = millis();
         if (now - lastReconnectAttempt >= reconnectInterval) {
             lastReconnectAttempt = now;
+            LOGGER.infof("[MQTT] Attempting reconnect... WiFi:%d, stopped:%d", 
+                         WiFi.status() == WL_CONNECTED, stopped);
             if (reconnect()) {
                 reconnectInterval = 5000;  // 连接成功，重置间隔
+                LOG_INFO("MQTT: Reconnect successful");
             } else {
                 // 指数退避：5s -> 10s -> 20s -> 30s（上限）
                 reconnectInterval = min(reconnectInterval * 2, (uint32_t)30000);
                 char buf[64];
-                snprintf(buf, sizeof(buf), "MQTT: Next retry in %lus", reconnectInterval / 1000);
+                snprintf(buf, sizeof(buf), "MQTT: Reconnect failed, next retry in %lus", reconnectInterval / 1000);
                 LOG_INFO(buf);
             }
         }

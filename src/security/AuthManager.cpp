@@ -345,6 +345,11 @@ AuthResult AuthManager::login(const String& username, const String& password,
     // 保存会话
     activeSessions[session.sessionId] = session;
     
+    // 持久化会话到 NVS（保证重启后会话恢复）
+    if (securityConfig.enableSessionPersistence) {
+        saveSessionsToStorage();
+    }
+    
     // 准备返回结果
     result.success = true;
     result.sessionId = session.sessionId;

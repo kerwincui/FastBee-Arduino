@@ -745,6 +745,7 @@ const i18n = {
             'ota-uploading-html': '<i class="fas fa-spinner fa-spin"></i> 上传中...',
             'ota-upload-btn-html': '<i class="fas fa-upload"></i> 上传并升级',
             'ota-upload-network-fail': '上传失败: 网络错误',
+            'device-offline-error': '设备离线或不可达，请检查网络连接',
             'ota-complete-msg': '固件升级完成，设备即将重启',
             'ota-progress-fail': '获取OTA进度失败:',
             'ota-upload-fail': '上传失败',
@@ -1116,8 +1117,10 @@ const i18n = {
             'periph-exec-status-on': '已启用',
             'periph-exec-status-off': '已禁用',
             'periph-exec-stats-count': '触发次数',
+            'periph-exec-total': '共',
             'periph-exec-run-once': '执行一次',
             'periph-exec-run-ok': '规则执行成功',
+            'periph-exec-run-submitted': '执行已提交',
             'periph-exec-run-fail': '规则执行失败',
             
             // 事件名称翻译
@@ -2451,6 +2454,7 @@ const i18n = {
             'ota-uploading-html': '<i class="fas fa-spinner fa-spin"></i> Uploading...',
             'ota-upload-btn-html': '<i class="fas fa-upload"></i> Upload & Update',
             'ota-upload-network-fail': 'Upload failed: Network error',
+            'device-offline-error': 'Device is offline or unreachable, please check network connection',
             'ota-complete-msg': 'Firmware update complete, device will restart',
             'ota-progress-fail': 'Get OTA progress failed:',
             'ota-upload-fail': 'Upload failed',
@@ -2822,6 +2826,11 @@ const i18n = {
             'periph-exec-status-on': 'Enabled',
             'periph-exec-status-off': 'Disabled',
             'periph-exec-stats-count': 'Triggers',
+            'periph-exec-total': 'Total',
+            'periph-exec-run-once': 'Run Once',
+            'periph-exec-run-ok': 'Execution successful',
+            'periph-exec-run-submitted': 'Execution submitted',
+            'periph-exec-run-fail': 'Execution failed',
             
             // Event name translations
             'event-wifi_connected': 'WiFi Connected',
