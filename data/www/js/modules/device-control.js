@@ -42,6 +42,7 @@
 
     AppState.registerModule('device-control', {
         _controlData: null,
+        _modbusStatus: null,
         _deviceName: 'FastBee Device',
         _eventsBound: false,
 
@@ -104,10 +105,24 @@
 
             // 先获取设备信息
             this._fetchDeviceInfo().then(function() {
-                // 再获取控制数据
-                console.log('[device-control] Fetching controls data...');
-                return apiGet('/api/periph-exec/controls');
-            }).then(function(res) {
+                // 并行获取控制数据和 Modbus 状态
+                console.log('[device-control] Fetching controls and modbus status...');
+                var controlsPromise = apiGet('/api/periph-exec/controls');
+                var modbusPromise = apiGetSilent('/api/modbus/status').catch(function() { return null; });
+                
+                return Promise.all([controlsPromise, modbusPromise]);
+            }).then(function(results) {
+                var res = results[0];
+                var modbusRes = results[1];
+                
+                // 保存 Modbus 状态
+                if (modbusRes && modbusRes.success && modbusRes.data) {
+                    self._modbusStatus = modbusRes.data;
+                    console.log('[device-control] Modbus status:', JSON.stringify(self._modbusStatus));
+                } else {
+                    self._modbusStatus = null;
+                }
+                
                 console.log('[device-control] API response:', JSON.stringify(res));
 
                 if (!res) {
@@ -194,35 +209,109 @@
 
         // ============ 渲染监测数据区 ============
         _renderMonitorSection: function(data) {
-            // 采集数据项：modbus(actionType=18) + sensor(actionType=19)
-            var modbusItems = this._filterByActionType(data.modbus, [18]);
-            var sensorItems = this._filterByActionType(data.sensor, [19]);
-            var monitorItems = modbusItems.concat(sensorItems);
-
             var html = '<div class="dc-section">';
             html += '<div class="dc-section-title">📊 ' + this._t('device-control-monitor-section') + '</div>';
 
-            if (monitorItems.length > 0) {
+            // 优先从 Modbus 状态获取实时监测数据
+            var monitorGroups = this._buildMonitorGroupsFromModbus();
+            
+            // 如果有监测数据组，将所有卡片放在同一个流式容器中
+            if (monitorGroups.length > 0) {
                 html += '<div class="dc-monitor-grid">';
-                for (var i = 0; i < monitorItems.length; i++) {
-                    html += this._renderMonitorCard(monitorItems[i]);
+                for (var i = 0; i < monitorGroups.length; i++) {
+                    var group = monitorGroups[i];
+                    for (var j = 0; j < group.items.length; j++) {
+                        // 将子设备名称作为标签传递给卡片
+                        html += this._renderMonitorCard(group.items[j], group.label);
+                    }
                 }
                 html += '</div>';
             } else {
-                html += '<div class="dc-empty">' + this._t('device-control-no-monitor') + '</div>';
+                // 回退：从 periph-exec 数据获取
+                var modbusItems = this._filterByActionType(data.modbus, [18]);
+                var sensorItems = this._filterByActionType(data.sensor, [19]);
+                var monitorItems = modbusItems.concat(sensorItems);
+
+                if (monitorItems.length > 0) {
+                    html += '<div class="dc-monitor-grid">';
+                    for (var i = 0; i < monitorItems.length; i++) {
+                        html += this._renderMonitorCard(monitorItems[i]);
+                    }
+                    html += '</div>';
+                } else {
+                    html += '<div class="dc-empty">' + this._t('device-control-no-monitor') + '</div>';
+                }
             }
 
             html += '</div>';
             return html;
         },
 
+        // ============ 从 Modbus 状态构建监测数据组 ============
+        _buildMonitorGroupsFromModbus: function() {
+            var groups = [];
+            if (!this._modbusStatus || !this._modbusStatus.tasks) {
+                return groups;
+            }
+
+            var tasks = this._modbusStatus.tasks;
+            for (var i = 0; i < tasks.length; i++) {
+                var task = tasks[i];
+                if (!task.enabled) continue;
+                if (!task.mappings || task.mappings.length === 0) continue;
+
+                var group = {
+                    label: task.label || ('设备 ' + task.slaveAddress),
+                    items: []
+                };
+
+                // 获取缓存数据
+                var cachedData = task.cachedData;
+                var hasCache = cachedData && cachedData.values;
+
+                for (var j = 0; j < task.mappings.length; j++) {
+                    var mapping = task.mappings[j];
+                    if (!mapping.sensorId) continue;
+
+                    var item = {
+                        id: mapping.sensorId,
+                        name: mapping.sensorId,
+                        value: '--',
+                        unit: ''
+                    };
+
+                    // 从缓存数据中获取值
+                    if (hasCache && mapping.regOffset < cachedData.values.length) {
+                        var rawValue = cachedData.values[mapping.regOffset];
+                        // 应用缩放因子和小数位
+                        var scaleFactor = mapping.scaleFactor || 1;
+                        var decimalPlaces = mapping.decimalPlaces || 0;
+                        var scaledValue = rawValue * scaleFactor;
+                        item.value = scaledValue.toFixed(decimalPlaces);
+                    }
+
+                    group.items.push(item);
+                }
+
+                if (group.items.length > 0) {
+                    groups.push(group);
+                }
+            }
+
+            return groups;
+        },
+
         // ============ 渲染监测数据卡片 ============
-        _renderMonitorCard: function(item) {
+        _renderMonitorCard: function(item, deviceLabel) {
             var name = this._esc(item.name || 'Unknown');
             var value = this._esc(item.value || item.lastValue || '--');
             var unit = this._esc(item.unit || '');
 
+            // 子设备标签（如果有）
+            var deviceTagHtml = deviceLabel ? '<div class="dc-monitor-device">' + this._esc(deviceLabel) + '</div>' : '';
+
             return '<div class="dc-monitor-card" data-id="' + this._esc(item.id) + '">' +
+                deviceTagHtml +
                 '<div class="dc-monitor-name">' + name + '</div>' +
                 '<div class="dc-monitor-value">' + value + '</div>' +
                 (unit ? '<div class="dc-monitor-unit">' + unit + '</div>' : '') +

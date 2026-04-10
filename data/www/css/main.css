@@ -2032,12 +2032,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-section { margin-bottom: var(--space-3); }
 .dc-section-title { font-size: 14px; font-weight: 600; color: var(--text-primary); margin: var(--space-3) 0 var(--space-2); display: flex; align-items: center; gap: var(--space-2); }
 
-/* 监测数据网格 */
-.dc-monitor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--space-2); }
+/* 监测数据网格 - 流式布局 */
+.dc-monitor-grid { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: flex-start; }
+
+/* 监测数据分组 - 保留样式供其他场景使用 */
+.dc-monitor-group { margin-bottom: var(--space-3); }
+.dc-monitor-group:last-child { margin-bottom: 0; }
+.dc-monitor-group-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: var(--space-2); padding-left: var(--space-1); border-left: 2px solid var(--primary); }
 
 /* 监测数据卡片 */
-.dc-monitor-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--rounded-md); padding: var(--space-2) var(--space-3); text-align: center; transition: all 0.2s; }
+.dc-monitor-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--rounded-md); padding: var(--space-2) var(--space-3); text-align: center; transition: all 0.2s; flex: 0 0 auto; min-width: 110px; max-width: 160px; }
 .dc-monitor-card:hover { border-color: var(--primary); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06); }
+.dc-monitor-device { font-size: 10px; color: var(--primary); font-weight: 600; margin-bottom: 2px; padding: 1px 6px; background: rgba(59, 130, 246, 0.1); border-radius: var(--rounded-sm); display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dc-monitor-name { font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dc-monitor-value { font-size: 22px; font-weight: 700; color: var(--text-primary); font-family: 'Consolas', 'Monaco', 'Courier New', monospace; line-height: 1.2; }
 .dc-monitor-unit { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
@@ -2113,7 +2119,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* 响应式 */
 @media (max-width: 640px) {
-  .dc-monitor-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); }
+  .dc-monitor-grid { gap: var(--space-1); }
+  .dc-monitor-card { min-width: 90px; max-width: 140px; padding: var(--space-1) var(--space-2); }
+  .dc-monitor-value { font-size: 18px; }
   .dc-ctrl-btn { padding: var(--space-2); font-size: 12px; min-width: 70px; }
   .dc-device-icon svg { width: 60px; height: 60px; }
   .dc-device-name { font-size: 14px; }

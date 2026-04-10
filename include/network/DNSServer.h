@@ -71,8 +71,10 @@ private:
     void _forwardRequest(const char *buffer, size_t length);
     // 将域名转换为DNS格式
     void _writeNameToBuffer(WiFiUDP &udp, const String &name);
-    // 从DNS格式中读取域名
+    // 从DNS格式中读取域名（从UDP对象）
     String _readNameFromBuffer(WiFiUDP &udp);
+    // 从DNS格式中读取域名（从buffer指针）
+    String _readNameFromBuffer(const char *buffer, int bufferLen, size_t &pos);
 };
 
 #endif

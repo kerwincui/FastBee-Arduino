@@ -76,23 +76,24 @@ void DNSServer::_handleRequest() {
         return;
     }
     
-    // 移动到问题部分
-    WiFiUDP udpCopy = _udp;
-    udpCopy.seek(sizeof(DNSHeader));
+    // 从buffer中解析问题部分（跳过DNS头部）
+    size_t pos = sizeof(DNSHeader);
     
     // 读取查询的域名
-    String questionDomain = _readNameFromBuffer(udpCopy);
+    String questionDomain = _readNameFromBuffer(buffer, len, pos);
     if (questionDomain.isEmpty()) {
         return;
     }
     
-    // 读取查询类型和类
-    uint16_t questionType, questionClass;
-    if (udpCopy.available() < 4) {
+    // 检查剩余空间是否足够读取类型和类（4字节）
+    if (pos + 4 > (size_t)len) {
         return;
     }
-    questionType = udpCopy.read() << 8 | udpCopy.read();
-    questionClass = udpCopy.read() << 8 | udpCopy.read();
+    
+    // 读取查询类型和类
+    uint16_t questionType = ((uint8_t)buffer[pos] << 8) | (uint8_t)buffer[pos + 1];
+    pos += 2;
+    uint16_t questionClass = ((uint8_t)buffer[pos] << 8) | (uint8_t)buffer[pos + 1];
     
     // 判断是否匹配域名或通配符
     bool domainMatches = (_domainName == "*" || questionDomain.equalsIgnoreCase(_domainName));
@@ -169,6 +170,32 @@ void DNSServer::_writeNameToBuffer(WiFiUDP &udp, const String &name) {
     // 写入最后一个标签
     udp.write((uint8_t)(name.length() - start));
     udp.write((const uint8_t*)name.c_str() + start, name.length() - start);
+}
+
+String DNSServer::_readNameFromBuffer(const char *buffer, int bufferLen, size_t &pos) {
+    String name;
+    while (pos < (size_t)bufferLen) {
+        uint8_t labelLength = (uint8_t)buffer[pos++];
+        if (labelLength == 0) {
+            break; // 域名结束
+        }
+        if (labelLength >= 0xC0) {
+            // 指针，这里简化处理，跳过下一个字节
+            pos++;
+            break;
+        }
+        // 检查标签长度是否超出缓冲区
+        if (pos + labelLength > (size_t)bufferLen) {
+            break;
+        }
+        if (name.length() > 0) {
+            name += ".";
+        }
+        for (int i = 0; i < labelLength && pos < (size_t)bufferLen; i++) {
+            name += buffer[pos++];
+        }
+    }
+    return name;
 }
 
 String DNSServer::_readNameFromBuffer(WiFiUDP &udp) {
