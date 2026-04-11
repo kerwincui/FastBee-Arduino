@@ -236,7 +236,7 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
                 t["quantity"] = task.quantity;
                 t["pollInterval"] = task.pollInterval;
                 t["enabled"] = task.enabled;
-                t["label"] = task.label;
+                t["label"] = String(task.label);
 
                 // 寄存器映射配置 - 按 regOffset 排序后输出，确保显示顺序正确
                 if (task.mappingCount > 0) {
@@ -264,7 +264,7 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
                         mo["dataType"] = m.dataType;
                         mo["scaleFactor"] = m.scaleFactor;
                         mo["decimalPlaces"] = m.decimalPlaces;
-                        mo["sensorId"] = m.sensorId;
+                        mo["sensorId"] = String(m.sensorId);
                     }
                 }
 
