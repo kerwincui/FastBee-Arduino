@@ -43,6 +43,11 @@
     AppState.registerModule('device-control', {
         _controlData: null,
         _modbusStatus: null,
+        _modbusDevices: [],
+        _dcCoilStates: {},
+        _dcPwmStates: {},
+        _dcPidValues: {},
+        _dcAutoRefreshTimers: {},
         _deviceName: 'FastBee Device',
         _eventsBound: false,
 
@@ -78,6 +83,90 @@
                         self._executeRule(ruleId, btn);
                     }
                 });
+
+                // Modbus子设备控制事件委托
+                content.addEventListener('click', function(e) {
+                    // 继电器通道点击
+                    var coilCard = e.target.closest('.dc-coil-card');
+                    if (coilCard) {
+                        var devIdx = parseInt(coilCard.getAttribute('data-dev'));
+                        var ch = parseInt(coilCard.getAttribute('data-ch'));
+                        self._dcToggleCoil(devIdx, ch, coilCard);
+                        return;
+                    }
+                    // 继电器批量操作
+                    var batchBtn = e.target.closest('.dc-coil-batch');
+                    if (batchBtn) {
+                        var action = batchBtn.getAttribute('data-action');
+                        var dIdx = parseInt(batchBtn.getAttribute('data-dev'));
+                        self._dcBatchCoil(dIdx, action);
+                        return;
+                    }
+                    // 刷新继电器状态
+                    var refreshCoilBtn = e.target.closest('.dc-coil-refresh');
+                    if (refreshCoilBtn) {
+                        var di = parseInt(refreshCoilBtn.getAttribute('data-dev'));
+                        self._dcRefreshCoilStatus(di);
+                        return;
+                    }
+                    // PWM批量操作
+                    var pwmBatchBtn = e.target.closest('.dc-pwm-batch');
+                    if (pwmBatchBtn) {
+                        var pAction = pwmBatchBtn.getAttribute('data-action');
+                        var pIdx = parseInt(pwmBatchBtn.getAttribute('data-dev'));
+                        self._dcBatchPwm(pIdx, pAction);
+                        return;
+                    }
+                    // 刷新PWM状态
+                    var refreshPwmBtn = e.target.closest('.dc-pwm-refresh');
+                    if (refreshPwmBtn) {
+                        var pi = parseInt(refreshPwmBtn.getAttribute('data-dev'));
+                        self._dcRefreshPwmStatus(pi);
+                        return;
+                    }
+                    // PID设置按钮
+                    var pidSetBtn = e.target.closest('.dc-pid-set');
+                    if (pidSetBtn) {
+                        var pidDevIdx = parseInt(pidSetBtn.getAttribute('data-dev'));
+                        var pidParam = pidSetBtn.getAttribute('data-param');
+                        var pidInput = pidSetBtn.parentNode.querySelector('.dc-pid-input');
+                        if (pidInput) {
+                            self._dcSetPidParam(pidDevIdx, pidParam, pidInput.value);
+                        }
+                        return;
+                    }
+                    // 刷新PID状态
+                    var refreshPidBtn = e.target.closest('.dc-pid-refresh');
+                    if (refreshPidBtn) {
+                        var pidDi = parseInt(refreshPidBtn.getAttribute('data-dev'));
+                        self._dcRefreshPidStatus(pidDi);
+                        return;
+                    }
+                });
+
+                // PWM slider事件委托
+                content.addEventListener('input', function(e) {
+                    if (e.target.classList.contains('dc-pwm-slider')) {
+                        var devIdx = parseInt(e.target.getAttribute('data-dev'));
+                        var ch = parseInt(e.target.getAttribute('data-ch'));
+                        var val = parseInt(e.target.value);
+                        self._dcOnPwmSliderInput(devIdx, ch, val);
+                    }
+                });
+                content.addEventListener('change', function(e) {
+                    if (e.target.classList.contains('dc-pwm-slider')) {
+                        var devIdx = parseInt(e.target.getAttribute('data-dev'));
+                        var ch = parseInt(e.target.getAttribute('data-ch'));
+                        var val = parseInt(e.target.value);
+                        self._dcSetPwmChannel(devIdx, ch, val);
+                    }
+                    if (e.target.classList.contains('dc-pwm-num')) {
+                        var devIdx = parseInt(e.target.getAttribute('data-dev'));
+                        var ch = parseInt(e.target.getAttribute('data-ch'));
+                        var val = parseInt(e.target.value) || 0;
+                        self._dcSetPwmChannel(devIdx, ch, val);
+                    }
+                });
             }
 
             this._eventsBound = true;
@@ -103,25 +192,41 @@
 
             var self = this;
 
+            // 停止所有自动刷新定时器
+            this._dcStopAllAutoRefresh();
+
             // 先获取设备信息
             this._fetchDeviceInfo().then(function() {
-                // 并行获取控制数据和 Modbus 状态
-                console.log('[device-control] Fetching controls and modbus status...');
+                // 并行获取控制数据、Modbus 状态和协议配置
+                console.log('[device-control] Fetching controls, modbus status, and protocol config...');
                 var controlsPromise = apiGet('/api/periph-exec/controls');
                 var modbusPromise = apiGetSilent('/api/modbus/status').catch(function() { return null; });
+                var protocolPromise = apiGetSilent('/api/protocol/config').catch(function() { return null; });
                 
-                return Promise.all([controlsPromise, modbusPromise]);
+                return Promise.all([controlsPromise, modbusPromise, protocolPromise]);
             }).then(function(results) {
                 var res = results[0];
                 var modbusRes = results[1];
+                var protoRes = results[2];
                 
                 // 保存 Modbus 状态
                 if (modbusRes && modbusRes.success && modbusRes.data) {
                     self._modbusStatus = modbusRes.data;
-                    console.log('[device-control] Modbus status:', JSON.stringify(self._modbusStatus));
                 } else {
                     self._modbusStatus = null;
                 }
+
+                // 保存 Modbus 子设备列表
+                self._modbusDevices = [];
+                if (protoRes && protoRes.success && protoRes.data) {
+                    var rtu = protoRes.data.modbusRtu;
+                    if (rtu && rtu.enabled && rtu.master && rtu.master.devices) {
+                        self._modbusDevices = rtu.master.devices.filter(function(d) {
+                            return d.enabled !== false;
+                        });
+                    }
+                }
+                console.log('[device-control] Modbus devices count:', self._modbusDevices.length);
                 
                 console.log('[device-control] API response:', JSON.stringify(res));
 
@@ -154,6 +259,8 @@
                     var html = self._renderControlPanel(data);
                     console.log('[device-control] Rendered HTML length:', html.length);
                     content.innerHTML = html;
+                    // 渲染完成后，自动获取Modbus子设备初始状态
+                    self._dcInitModbusDeviceStates();
                 } catch (renderErr) {
                     console.error('[device-control] Render error:', renderErr);
                     content.innerHTML = '<div class="dc-empty" style="color:var(--danger);">❌ 渲染错误: ' + self._esc(renderErr.message || renderErr) + '</div>';
@@ -348,18 +455,23 @@
             sensorReadItems.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
             otherItems.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
 
+            var hasModbusDevices = this._modbusDevices && this._modbusDevices.length > 0;
             var hasAnyControls = gpioItems.length > 0 || modbusCtrlItems.length > 0 ||
                 systemItems.length > 0 || scriptItems.length > 0 ||
-                sensorReadItems.length > 0 || otherItems.length > 0;
+                sensorReadItems.length > 0 || otherItems.length > 0 || hasModbusDevices;
 
             if (hasAnyControls) {
                 // GPIO 控制
                 if (gpioItems.length > 0) {
                     html += this._renderControlGroup('GPIO', gpioItems, 'gpio', false);
                 }
-                // Modbus 控制
+                // Modbus 规则控制
                 if (modbusCtrlItems.length > 0) {
                     html += this._renderControlGroup('Modbus', modbusCtrlItems, 'modbus', false);
+                }
+                // Modbus 子设备直接控制面板
+                if (hasModbusDevices) {
+                    html += this._renderModbusDevicePanels();
                 }
                 // 系统操作
                 if (systemItems.length > 0) {
@@ -381,6 +493,156 @@
                 html += '<div class="dc-empty">' + this._t('device-control-no-action') + '</div>';
             }
 
+            html += '</div>';
+            return html;
+        },
+
+        // ============ 渲染Modbus子设备控制面板 ============
+        _renderModbusDevicePanels: function() {
+            var devices = this._modbusDevices || [];
+            if (devices.length === 0) return '';
+
+            var html = '<div class="dc-control-group">';
+            html += '<div class="dc-control-group-title">' + this._t('dc-modbus-devices-title') + '</div>';
+
+            for (var i = 0; i < devices.length; i++) {
+                var dev = devices[i];
+                var dt = dev.deviceType || 'relay';
+                var typeLabel = this._t('modbus-type-' + dt) || dt;
+                var typeColors = {relay: '#67C23A', pwm: '#E6A23C', pid: '#F56C6C'};
+                var color = typeColors[dt] || '#999';
+
+                html += '<div class="dc-modbus-device-panel" data-dev-idx="' + i + '">';
+                html += '<div class="dc-modbus-device-header">';
+                html += '<span class="dc-modbus-device-name">' + this._esc(dev.name || 'Device') + '</span>';
+                html += '<span class="dc-modbus-device-badge" style="background:' + color + ';">' + typeLabel + '</span>';
+                html += '<span class="dc-modbus-device-addr">Addr: ' + (dev.slaveAddress || 1) + '</span>';
+                html += '</div>';
+
+                if (dt === 'relay') {
+                    html += this._renderDcRelayPanel(i, dev);
+                } else if (dt === 'pwm') {
+                    html += this._renderDcPwmPanel(i, dev);
+                } else if (dt === 'pid') {
+                    html += this._renderDcPidPanel(i, dev);
+                }
+
+                html += '</div>';
+            }
+
+            html += '</div>';
+            return html;
+        },
+
+        // ============ 继电器控制面板 ============
+        _renderDcRelayPanel: function(devIdx, dev) {
+            var channelCount = dev.channelCount || 2;
+            var states = this._dcCoilStates[devIdx] || [];
+            var ncMode = !!dev.ncMode;
+            var onText = this._t('modbus-ctrl-status-on') || 'ON';
+            var offText = this._t('modbus-ctrl-status-off') || 'OFF';
+
+            var html = '<div class="dc-modbus-device-body">';
+            html += '<div class="dc-coil-grid" id="dc-coil-grid-' + devIdx + '">';
+            for (var ch = 0; ch < channelCount; ch++) {
+                var coilState = ch < states.length ? states[ch] : false;
+                var isOn = ncMode ? !coilState : coilState;
+                var cls = isOn ? 'dc-coil-on' : 'dc-coil-off';
+                html += '<div class="dc-coil-card ' + cls + '" data-dev="' + devIdx + '" data-ch="' + ch + '">';
+                html += '<div class="dc-coil-ch">CH' + ch + '</div>';
+                html += '<div class="dc-coil-st">' + (isOn ? onText : offText) + '</div>';
+                html += '</div>';
+            }
+            html += '</div>';
+
+            html += '<div class="dc-modbus-actions">';
+            html += '<button class="dc-coil-batch dc-btn-sm dc-btn-on" data-dev="' + devIdx + '" data-action="allOn">' + this._t('modbus-ctrl-all-on') + '</button>';
+            html += '<button class="dc-coil-batch dc-btn-sm dc-btn-off" data-dev="' + devIdx + '" data-action="allOff">' + this._t('modbus-ctrl-all-off') + '</button>';
+            html += '<button class="dc-coil-batch dc-btn-sm dc-btn-toggle" data-dev="' + devIdx + '" data-action="allToggle">' + this._t('modbus-ctrl-all-toggle') + '</button>';
+            html += '<button class="dc-coil-refresh dc-btn-sm dc-btn-refresh" data-dev="' + devIdx + '">' + this._t('modbus-ctrl-refresh') + '</button>';
+            html += '</div>';
+            html += '</div>';
+            return html;
+        },
+
+        // ============ PWM控制面板 ============
+        _renderDcPwmPanel: function(devIdx, dev) {
+            var channelCount = dev.channelCount || 4;
+            var resolution = dev.pwmResolution || 8;
+            var maxValue = (1 << resolution) - 1;
+            var states = this._dcPwmStates[devIdx] || [];
+
+            var html = '<div class="dc-modbus-device-body">';
+            html += '<div class="dc-pwm-grid" id="dc-pwm-grid-' + devIdx + '">';
+            for (var ch = 0; ch < channelCount; ch++) {
+                var val = ch < states.length ? states[ch] : 0;
+                var pct = maxValue > 0 ? Math.round(val / maxValue * 100) : 0;
+                html += '<div class="dc-pwm-card">';
+                html += '<div class="dc-pwm-ch">CH' + ch + '</div>';
+                html += '<input type="range" class="dc-pwm-slider" min="0" max="' + maxValue + '" value="' + val + '" data-dev="' + devIdx + '" data-ch="' + ch + '">';
+                html += '<div class="dc-pwm-value-row">';
+                html += '<input type="number" class="dc-pwm-num" min="0" max="' + maxValue + '" value="' + val + '" data-dev="' + devIdx + '" data-ch="' + ch + '">';
+                html += '<span class="dc-pwm-pct" data-dev="' + devIdx + '" data-ch="' + ch + '">' + pct + '%</span>';
+                html += '</div></div>';
+            }
+            html += '</div>';
+
+            html += '<div class="dc-modbus-actions">';
+            html += '<button class="dc-pwm-batch dc-btn-sm dc-btn-on" data-dev="' + devIdx + '" data-action="max">' + this._t('modbus-ctrl-pwm-set-all-max') + '</button>';
+            html += '<button class="dc-pwm-batch dc-btn-sm dc-btn-off" data-dev="' + devIdx + '" data-action="off">' + this._t('modbus-ctrl-pwm-set-all-off') + '</button>';
+            html += '<button class="dc-pwm-refresh dc-btn-sm dc-btn-refresh" data-dev="' + devIdx + '">' + this._t('modbus-ctrl-pwm-refresh') + '</button>';
+            html += '</div>';
+            html += '</div>';
+            return html;
+        },
+
+        // ============ PID控制面板 ============
+        _renderDcPidPanel: function(devIdx, dev) {
+            var pidA = dev.pidAddrs || [0,1,2,3,4,5];
+            var decimals = dev.pidDecimals || 1;
+            var sf = Math.pow(10, decimals);
+            var v = this._dcPidValues[devIdx] || {};
+
+            var fmtVal = function(raw) {
+                if (raw === undefined || raw === null) return '--';
+                return (raw / sf).toFixed(decimals);
+            };
+            var fmtPct = function(raw) {
+                if (raw === undefined || raw === null) return '--';
+                return (raw / sf).toFixed(decimals) + '%';
+            };
+
+            var cards = [
+                { key: 'pv', label: this._t('modbus-ctrl-pid-pv-label'), value: fmtVal(v.pv), editable: false, big: true },
+                { key: 'sv', label: this._t('modbus-ctrl-pid-sv-label'), value: fmtVal(v.sv), editable: true },
+                { key: 'out', label: this._t('modbus-ctrl-pid-out-label'), value: fmtPct(v.out), editable: false },
+                { key: 'p', label: this._t('modbus-ctrl-pid-p-label'), value: fmtVal(v.p), editable: true },
+                { key: 'i', label: this._t('modbus-ctrl-pid-i-label'), value: fmtVal(v.i), editable: true },
+                { key: 'd', label: this._t('modbus-ctrl-pid-d-label'), value: fmtVal(v.d), editable: true }
+            ];
+
+            var html = '<div class="dc-modbus-device-body">';
+            html += '<div class="dc-pid-grid" id="dc-pid-grid-' + devIdx + '">';
+            for (var ci = 0; ci < cards.length; ci++) {
+                var c = cards[ci];
+                var cls = 'dc-pid-card' + (c.big ? ' dc-pid-pv' : '') + (c.editable ? ' dc-pid-editable' : '');
+                html += '<div class="' + cls + '">';
+                html += '<div class="dc-pid-label">' + c.label + '</div>';
+                html += '<div class="dc-pid-value">' + c.value + '</div>';
+                if (c.editable) {
+                    var rawVal = (v[c.key] !== undefined && v[c.key] !== null) ? (v[c.key] / sf).toFixed(decimals) : '';
+                    html += '<div class="dc-pid-edit">';
+                    html += '<input type="number" class="dc-pid-input" step="' + (1/sf) + '" value="' + rawVal + '" data-dev="' + devIdx + '" data-param="' + c.key + '">';
+                    html += '<button class="dc-pid-set dc-btn-sm dc-btn-on" data-dev="' + devIdx + '" data-param="' + c.key + '">' + this._t('modbus-ctrl-pid-set') + '</button>';
+                    html += '</div>';
+                }
+                html += '</div>';
+            }
+            html += '</div>';
+
+            html += '<div class="dc-modbus-actions">';
+            html += '<button class="dc-pid-refresh dc-btn-sm dc-btn-refresh" data-dev="' + devIdx + '">' + this._t('modbus-ctrl-pid-refresh') + '</button>';
+            html += '</div>';
             html += '</div>';
             return html;
         },
@@ -451,6 +713,341 @@
                 btn.textContent = originalText;
                 btn.disabled = false;
                 btn.classList.remove('dc-loading');
+            });
+        },
+
+        // ============ Modbus子设备控制方法 ============
+
+        _dcInitModbusDeviceStates: function() {
+            var devices = this._modbusDevices || [];
+            for (var i = 0; i < devices.length; i++) {
+                var dt = devices[i].deviceType || 'relay';
+                if (dt === 'relay') {
+                    this._dcRefreshCoilStatus(i);
+                } else if (dt === 'pwm') {
+                    this._dcRefreshPwmStatus(i);
+                } else if (dt === 'pid') {
+                    this._dcRefreshPidStatus(i);
+                }
+            }
+        },
+
+        _dcStopAllAutoRefresh: function() {
+            var timers = this._dcAutoRefreshTimers || {};
+            for (var key in timers) {
+                if (timers.hasOwnProperty(key) && timers[key]) {
+                    clearInterval(timers[key]);
+                }
+            }
+            this._dcAutoRefreshTimers = {};
+        },
+
+        // --- 继电器 Coil ---
+
+        _dcGetCoilParams: function(devIdx) {
+            var dev = this._modbusDevices[devIdx] || {};
+            return {
+                slaveAddress: dev.slaveAddress || 1,
+                channelCount: dev.channelCount || 2,
+                coilBase: dev.coilBase || 0,
+                ncMode: !!dev.ncMode,
+                relayMode: (dev.controlProtocol === 1) ? 'register' : 'coil'
+            };
+        },
+
+        _dcRefreshCoilStatus: function(devIdx) {
+            var self = this;
+            var p = this._dcGetCoilParams(devIdx);
+            apiGetSilent('/api/modbus/coil/status', {
+                slaveAddress: p.slaveAddress, channelCount: p.channelCount,
+                coilBase: p.coilBase, mode: p.relayMode
+            }).then(function(res) {
+                if (res && res.success && res.data && res.data.states) {
+                    self._dcCoilStates[devIdx] = res.data.states;
+                    self._dcRerenderCoilGrid(devIdx);
+                }
+            }).catch(function() {});
+        },
+
+        _dcRerenderCoilGrid: function(devIdx) {
+            var grid = document.getElementById('dc-coil-grid-' + devIdx);
+            if (!grid) return;
+            var dev = this._modbusDevices[devIdx] || {};
+            var p = this._dcGetCoilParams(devIdx);
+            var states = this._dcCoilStates[devIdx] || [];
+            var onText = this._t('modbus-ctrl-status-on') || 'ON';
+            var offText = this._t('modbus-ctrl-status-off') || 'OFF';
+            var html = '';
+            for (var ch = 0; ch < p.channelCount; ch++) {
+                var coilState = ch < states.length ? states[ch] : false;
+                var isOn = p.ncMode ? !coilState : coilState;
+                var cls = isOn ? 'dc-coil-on' : 'dc-coil-off';
+                html += '<div class="dc-coil-card ' + cls + '" data-dev="' + devIdx + '" data-ch="' + ch + '">';
+                html += '<div class="dc-coil-ch">CH' + ch + '</div>';
+                html += '<div class="dc-coil-st">' + (isOn ? onText : offText) + '</div>';
+                html += '</div>';
+            }
+            grid.innerHTML = html;
+        },
+
+        _dcToggleCoil: function(devIdx, ch, cardEl) {
+            var self = this;
+            var p = this._dcGetCoilParams(devIdx);
+            if (cardEl) cardEl.classList.add('dc-loading');
+            apiPost('/api/modbus/coil/control', {
+                slaveAddress: p.slaveAddress, channel: ch, coilBase: p.coilBase,
+                action: 'toggle', mode: p.relayMode
+            }).then(function(res) {
+                if (res && res.success && res.data) {
+                    var states = self._dcCoilStates[devIdx] || [];
+                    if (ch < states.length) states[ch] = res.data.state;
+                    self._dcCoilStates[devIdx] = states;
+                    self._dcRerenderCoilGrid(devIdx);
+                    Notification.success(self._t('modbus-ctrl-success'));
+                } else {
+                    Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
+                }
+            }).catch(function() {
+                Notification.error(self._t('modbus-ctrl-fail'));
+            }).then(function() {
+                if (cardEl) cardEl.classList.remove('dc-loading');
+            });
+        },
+
+        _dcBatchCoil: function(devIdx, action) {
+            var self = this;
+            var p = this._dcGetCoilParams(devIdx);
+            var modbusAction = action;
+            if (p.ncMode) {
+                if (action === 'allOn') modbusAction = 'allOff';
+                else if (action === 'allOff') modbusAction = 'allOn';
+            }
+            apiPost('/api/modbus/coil/batch', {
+                slaveAddress: p.slaveAddress, channelCount: p.channelCount,
+                coilBase: p.coilBase, action: modbusAction, mode: p.relayMode
+            }).then(function(res) {
+                if (res && res.success && res.data && res.data.states) {
+                    self._dcCoilStates[devIdx] = res.data.states;
+                    self._dcRerenderCoilGrid(devIdx);
+                    Notification.success(self._t('modbus-ctrl-success'));
+                } else {
+                    Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
+                }
+            }).catch(function() {
+                Notification.error(self._t('modbus-ctrl-fail'));
+            });
+        },
+
+        // --- PWM ---
+
+        _dcGetPwmParams: function(devIdx) {
+            var dev = this._modbusDevices[devIdx] || {};
+            var res = dev.pwmResolution || 8;
+            return {
+                slaveAddress: dev.slaveAddress || 1,
+                channelCount: dev.channelCount || 4,
+                regBase: dev.pwmRegBase || 0,
+                resolution: res,
+                maxValue: (1 << res) - 1
+            };
+        },
+
+        _dcRefreshPwmStatus: function(devIdx) {
+            var self = this;
+            var p = this._dcGetPwmParams(devIdx);
+            apiGetSilent('/api/modbus/register/read', {
+                slaveAddress: p.slaveAddress,
+                startAddress: p.regBase,
+                quantity: p.channelCount,
+                functionCode: 3
+            }).then(function(res) {
+                if (res && res.success && res.data && res.data.values) {
+                    self._dcPwmStates[devIdx] = res.data.values;
+                    self._dcRerenderPwmGrid(devIdx);
+                }
+            }).catch(function() {});
+        },
+
+        _dcRerenderPwmGrid: function(devIdx) {
+            var grid = document.getElementById('dc-pwm-grid-' + devIdx);
+            if (!grid) return;
+            var p = this._dcGetPwmParams(devIdx);
+            var states = this._dcPwmStates[devIdx] || [];
+            var html = '';
+            for (var ch = 0; ch < p.channelCount; ch++) {
+                var val = ch < states.length ? states[ch] : 0;
+                var pct = p.maxValue > 0 ? Math.round(val / p.maxValue * 100) : 0;
+                html += '<div class="dc-pwm-card">';
+                html += '<div class="dc-pwm-ch">CH' + ch + '</div>';
+                html += '<input type="range" class="dc-pwm-slider" min="0" max="' + p.maxValue + '" value="' + val + '" data-dev="' + devIdx + '" data-ch="' + ch + '">';
+                html += '<div class="dc-pwm-value-row">';
+                html += '<input type="number" class="dc-pwm-num" min="0" max="' + p.maxValue + '" value="' + val + '" data-dev="' + devIdx + '" data-ch="' + ch + '">';
+                html += '<span class="dc-pwm-pct" data-dev="' + devIdx + '" data-ch="' + ch + '">' + pct + '%</span>';
+                html += '</div></div>';
+            }
+            grid.innerHTML = html;
+        },
+
+        _dcOnPwmSliderInput: function(devIdx, ch, val) {
+            var grid = document.getElementById('dc-pwm-grid-' + devIdx);
+            if (!grid) return;
+            var numInput = grid.querySelector('.dc-pwm-num[data-ch="' + ch + '"]');
+            var pctSpan = grid.querySelector('.dc-pwm-pct[data-ch="' + ch + '"]');
+            var p = this._dcGetPwmParams(devIdx);
+            if (numInput) numInput.value = val;
+            if (pctSpan) pctSpan.textContent = (p.maxValue > 0 ? Math.round(val / p.maxValue * 100) : 0) + '%';
+        },
+
+        _dcSetPwmChannel: function(devIdx, ch, value) {
+            var self = this;
+            var p = this._dcGetPwmParams(devIdx);
+            value = Math.max(0, Math.min(value, p.maxValue));
+            apiPost('/api/modbus/register/write', {
+                slaveAddress: p.slaveAddress,
+                registerAddress: p.regBase + ch,
+                value: value
+            }).then(function(res) {
+                if (res && res.success) {
+                    var states = self._dcPwmStates[devIdx] || [];
+                    if (ch < states.length) states[ch] = value;
+                    self._dcPwmStates[devIdx] = states;
+                    Notification.success(self._t('modbus-ctrl-success'));
+                } else {
+                    Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
+                }
+            }).catch(function() {
+                Notification.error(self._t('modbus-ctrl-fail'));
+            });
+        },
+
+        _dcBatchPwm: function(devIdx, action) {
+            var self = this;
+            var p = this._dcGetPwmParams(devIdx);
+            var values = [];
+            var fillVal = action === 'max' ? p.maxValue : 0;
+            for (var i = 0; i < p.channelCount; i++) values.push(fillVal);
+            apiPost('/api/modbus/register/batch-write', {
+                slaveAddress: p.slaveAddress,
+                startAddress: p.regBase,
+                values: JSON.stringify(values)
+            }).then(function(res) {
+                if (res && res.success) {
+                    self._dcPwmStates[devIdx] = values;
+                    self._dcRerenderPwmGrid(devIdx);
+                    Notification.success(self._t('modbus-ctrl-success'));
+                } else {
+                    Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
+                }
+            }).catch(function() {
+                Notification.error(self._t('modbus-ctrl-fail'));
+            });
+        },
+
+        // --- PID ---
+
+        _dcGetPidParams: function(devIdx) {
+            var dev = this._modbusDevices[devIdx] || {};
+            var pidA = dev.pidAddrs || [0,1,2,3,4,5];
+            var decimals = dev.pidDecimals || 1;
+            return {
+                slaveAddress: dev.slaveAddress || 1,
+                pvAddr: pidA[0] || 0, svAddr: pidA[1] || 1, outAddr: pidA[2] || 2,
+                pAddr: pidA[3] || 3, iAddr: pidA[4] || 4, dAddr: pidA[5] || 5,
+                decimals: decimals,
+                scaleFactor: Math.pow(10, decimals)
+            };
+        },
+
+        _dcRefreshPidStatus: function(devIdx) {
+            var self = this;
+            var p = this._dcGetPidParams(devIdx);
+            if (!p.slaveAddress) return;
+            var addrs = [p.pvAddr, p.svAddr, p.outAddr, p.pAddr, p.iAddr, p.dAddr];
+            var minAddr = Math.min.apply(null, addrs);
+            var maxAddr = Math.max.apply(null, addrs);
+            var quantity = maxAddr - minAddr + 1;
+            if (quantity > 125) return;
+            apiGetSilent('/api/modbus/register/read', {
+                slaveAddress: p.slaveAddress, startAddress: minAddr,
+                quantity: quantity, functionCode: 3
+            }).then(function(res) {
+                if (res && res.success && res.data && res.data.values) {
+                    var vals = res.data.values;
+                    self._dcPidValues[devIdx] = {
+                        pv: vals[p.pvAddr - minAddr], sv: vals[p.svAddr - minAddr],
+                        out: vals[p.outAddr - minAddr], p: vals[p.pAddr - minAddr],
+                        i: vals[p.iAddr - minAddr], d: vals[p.dAddr - minAddr]
+                    };
+                    self._dcRerenderPidGrid(devIdx);
+                }
+            }).catch(function() {});
+        },
+
+        _dcRerenderPidGrid: function(devIdx) {
+            var grid = document.getElementById('dc-pid-grid-' + devIdx);
+            if (!grid) return;
+            var p = this._dcGetPidParams(devIdx);
+            var v = this._dcPidValues[devIdx] || {};
+            var sf = p.scaleFactor;
+            var dec = p.decimals;
+            var fmtVal = function(raw) {
+                if (raw === undefined || raw === null) return '--';
+                return (raw / sf).toFixed(dec);
+            };
+            var fmtPct = function(raw) {
+                if (raw === undefined || raw === null) return '--';
+                return (raw / sf).toFixed(dec) + '%';
+            };
+            var self = this;
+            var cards = [
+                { key: 'pv', label: self._t('modbus-ctrl-pid-pv-label'), value: fmtVal(v.pv), editable: false, big: true },
+                { key: 'sv', label: self._t('modbus-ctrl-pid-sv-label'), value: fmtVal(v.sv), editable: true },
+                { key: 'out', label: self._t('modbus-ctrl-pid-out-label'), value: fmtPct(v.out), editable: false },
+                { key: 'p', label: self._t('modbus-ctrl-pid-p-label'), value: fmtVal(v.p), editable: true },
+                { key: 'i', label: self._t('modbus-ctrl-pid-i-label'), value: fmtVal(v.i), editable: true },
+                { key: 'd', label: self._t('modbus-ctrl-pid-d-label'), value: fmtVal(v.d), editable: true }
+            ];
+            var html = '';
+            for (var ci = 0; ci < cards.length; ci++) {
+                var c = cards[ci];
+                var cls = 'dc-pid-card' + (c.big ? ' dc-pid-pv' : '') + (c.editable ? ' dc-pid-editable' : '');
+                html += '<div class="' + cls + '">';
+                html += '<div class="dc-pid-label">' + c.label + '</div>';
+                html += '<div class="dc-pid-value">' + c.value + '</div>';
+                if (c.editable) {
+                    var rawVal = (v[c.key] !== undefined && v[c.key] !== null) ? (v[c.key] / sf).toFixed(dec) : '';
+                    html += '<div class="dc-pid-edit">';
+                    html += '<input type="number" class="dc-pid-input" step="' + (1/sf) + '" value="' + rawVal + '" data-dev="' + devIdx + '" data-param="' + c.key + '">';
+                    html += '<button class="dc-pid-set dc-btn-sm dc-btn-on" data-dev="' + devIdx + '" data-param="' + c.key + '">' + self._t('modbus-ctrl-pid-set') + '</button>';
+                    html += '</div>';
+                }
+                html += '</div>';
+            }
+            grid.innerHTML = html;
+        },
+
+        _dcSetPidParam: function(devIdx, paramName, displayValue) {
+            var self = this;
+            var p = this._dcGetPidParams(devIdx);
+            var addrMap = { sv: p.svAddr, p: p.pAddr, i: p.iAddr, d: p.dAddr };
+            var addr = addrMap[paramName];
+            if (addr === undefined) return;
+            var rawValue = Math.round(parseFloat(displayValue) * p.scaleFactor);
+            if (isNaN(rawValue)) return;
+            apiPost('/api/modbus/register/write', {
+                slaveAddress: p.slaveAddress, registerAddress: addr, value: rawValue
+            }).then(function(res) {
+                if (res && res.success) {
+                    var v = self._dcPidValues[devIdx] || {};
+                    v[paramName] = rawValue;
+                    self._dcPidValues[devIdx] = v;
+                    self._dcRerenderPidGrid(devIdx);
+                    Notification.success(self._t('modbus-ctrl-success'));
+                } else {
+                    Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
+                }
+            }).catch(function() {
+                Notification.error(self._t('modbus-ctrl-fail'));
             });
         },
 

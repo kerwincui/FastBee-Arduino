@@ -325,10 +325,8 @@ AuthResult AuthManager::login(const String& username, const String& password,
     }
     
     // 检查是否允许多会话
-    if (!securityConfig.enableSessionPersistence) {
-        // 如果不允许多会话，登出该用户的其他会话
-        forceLogout(username);
-    }
+    // 嵌入式设备场景下，同一用户登录时清理旧会话，避免会话无限累积
+    forceLogout(username);
     
     // 创建新会话
     UserSession session;
@@ -782,6 +780,10 @@ bool AuthManager::loadSessionsFromStorage() {
     activeSessions.clear();
     
     JsonArray sessionsArray = doc["sessions"];
+    unsigned long now = millis();
+    
+    // 第一遍：收集每个用户最新的会话（按 loginTime 最大值）
+    std::map<String, UserSession> latestByUser;
     for (JsonObject sessionObj : sessionsArray) {
         UserSession session;
         session.sessionId = sessionObj["sessionId"].as<String>();
@@ -794,10 +796,22 @@ bool AuthManager::loadSessionsFromStorage() {
         session.userAgent = sessionObj["userAgent"].as<String>();
         session.isActive = sessionObj["isActive"];
         
-        // 只加载未过期的会话
-        if (session.isActive && millis() < session.expireTime) {
-            activeSessions[session.sessionId] = session;
+        if (!session.isActive) continue;
+        
+        auto it = latestByUser.find(session.username);
+        if (it == latestByUser.end() || session.loginTime > it->second.loginTime) {
+            latestByUser[session.username] = session;
         }
+    }
+    
+    // 第二遍：只保留每个用户最新的一个会话，并重置超时时间
+    for (auto& pair : latestByUser) {
+        UserSession& session = pair.second;
+        // millis() 在重启后归零，存储的 expireTime 基于旧的 millis()，
+        // 无法直接比较。重启后给会话一个新的超时窗口。
+        session.expireTime = now + securityConfig.sessionTimeout;
+        session.lastAccessTime = now;
+        activeSessions[session.sessionId] = session;
     }
     
     char buf[64];

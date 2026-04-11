@@ -58,6 +58,7 @@
         'device-control-group-script': 'Script Execution',
         'device-control-group-sensor': 'Sensor Read',
         'device-control-group-other': 'Other',
+        'dc-modbus-devices-title': 'Modbus Device Control',
         'device-control-gpio': 'Switch Control',
         'device-control-modbus': 'Data Collection',
         'device-control-system': 'System Control',

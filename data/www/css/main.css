@@ -2126,3 +2126,76 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .dc-device-icon svg { width: 60px; height: 60px; }
   .dc-device-name { font-size: 14px; }
 }
+
+/* ====== Modbus 子设备控制面板 (device-control) ====== */
+.dc-modbus-device-panel { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--rounded-lg); margin-bottom: var(--space-3); overflow: hidden; }
+.dc-modbus-device-header { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); background: var(--gray-1); border-bottom: 1px solid var(--border); }
+.dc-modbus-device-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.dc-modbus-device-badge { font-size: 10px; color: #fff; padding: 1px 8px; border-radius: 10px; font-weight: 600; }
+.dc-modbus-device-addr { font-size: 11px; color: var(--text-muted); margin-left: auto; }
+.dc-modbus-device-body { padding: var(--space-3); }
+.dc-modbus-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: 0 var(--space-3) var(--space-3); }
+
+/* 继电器 coil grid */
+.dc-coil-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(70px, 1fr)); gap: var(--space-2); }
+.dc-coil-card { text-align: center; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--rounded-md); cursor: pointer; transition: all 0.2s; user-select: none; }
+.dc-coil-card:hover { box-shadow: var(--shadow-sm); transform: translateY(-1px); }
+.dc-coil-card.dc-coil-on { background: var(--success-light); border-color: var(--success); }
+.dc-coil-card.dc-coil-off { background: var(--gray-1); border-color: var(--border); }
+.dc-coil-ch { font-size: 10px; color: var(--text-muted); }
+.dc-coil-st { font-size: 14px; font-weight: bold; margin: 2px 0; }
+.dc-coil-card.dc-coil-on .dc-coil-st { color: var(--success); }
+.dc-coil-card.dc-coil-off .dc-coil-st { color: var(--text-muted); }
+.dc-coil-card.dc-loading { opacity: 0.5; pointer-events: none; }
+
+/* PWM grid */
+.dc-pwm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: var(--space-2); }
+.dc-pwm-card { background: var(--gray-2); border: 1px solid var(--border); border-radius: var(--rounded-md); padding: var(--space-2); text-align: center; transition: border-color 0.2s; }
+.dc-pwm-card:hover { border-color: var(--primary); }
+.dc-pwm-ch { font-size: 11px; color: var(--text-muted); margin-bottom: 2px; font-weight: 600; }
+.dc-pwm-slider { width: 100%; margin: 4px 0; accent-color: var(--primary); }
+.dc-pwm-value-row { display: flex; align-items: center; gap: var(--space-1); justify-content: center; }
+.dc-pwm-num { width: 60px; text-align: center; font-size: 12px; padding: 2px 4px; border: 1px solid var(--border); border-radius: var(--rounded-sm); background: var(--bg-card); color: var(--text-primary); }
+.dc-pwm-pct { font-size: 12px; color: var(--text-muted); min-width: 36px; }
+
+/* PID grid */
+.dc-pid-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); }
+.dc-pid-card { background: var(--gray-2); border: 1px solid var(--border); border-radius: var(--rounded-md); padding: var(--space-2) var(--space-3); text-align: center; transition: border-color 0.2s; }
+.dc-pid-card:hover { border-color: var(--primary); }
+.dc-pid-card.dc-pid-pv { grid-column: span 3; }
+.dc-pid-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 2px; letter-spacing: 0.5px; }
+.dc-pid-value { font-size: 20px; font-weight: 700; color: var(--text-primary); margin-bottom: var(--space-1); }
+.dc-pid-card.dc-pid-pv .dc-pid-value { font-size: 28px; color: var(--primary); }
+.dc-pid-edit { display: flex; gap: 4px; align-items: center; justify-content: center; }
+.dc-pid-input { width: 70px; text-align: center; font-size: 12px; padding: 2px 4px; border: 1px solid var(--border); border-radius: var(--rounded-sm); background: var(--bg-card); color: var(--text-primary); }
+
+/* 小按钮 */
+.dc-btn-sm { padding: 4px 10px; font-size: 11px; font-weight: 500; border: 1px solid var(--border); border-radius: var(--rounded-sm); cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+.dc-btn-on { background: var(--success); color: #fff; border-color: var(--success); }
+.dc-btn-on:hover { opacity: 0.85; }
+.dc-btn-off { background: var(--gray-5); color: #fff; border-color: var(--gray-5); }
+.dc-btn-off:hover { opacity: 0.85; }
+.dc-btn-toggle { background: var(--primary); color: #fff; border-color: var(--primary); }
+.dc-btn-toggle:hover { opacity: 0.85; }
+.dc-btn-refresh { background: var(--bg-card); color: var(--text-secondary); border-color: var(--border); }
+.dc-btn-refresh:hover { background: var(--gray-2); border-color: var(--primary); color: var(--primary); }
+
+/* Dark mode */
+[data-theme="dark"] .dc-modbus-device-panel { background: var(--gray-11); border-color: var(--border); }
+[data-theme="dark"] .dc-modbus-device-header { background: var(--gray-12); }
+[data-theme="dark"] .dc-coil-card.dc-coil-on { background: #1a3a1a; border-color: var(--success); }
+[data-theme="dark"] .dc-coil-card.dc-coil-off { background: var(--gray-11); }
+[data-theme="dark"] .dc-pwm-card { background: var(--gray-11); border-color: var(--border); }
+[data-theme="dark"] .dc-pwm-num { background: var(--gray-12); border-color: var(--border); }
+[data-theme="dark"] .dc-pid-card { background: var(--gray-11); border-color: var(--border); }
+[data-theme="dark"] .dc-pid-input { background: var(--gray-12); border-color: var(--border); }
+[data-theme="dark"] .dc-btn-refresh { background: var(--gray-11); }
+
+@media (max-width: 640px) {
+  .dc-coil-grid { grid-template-columns: repeat(auto-fill, minmax(60px, 1fr)); }
+  .dc-pwm-grid { grid-template-columns: 1fr; }
+  .dc-pid-grid { grid-template-columns: 1fr 1fr; }
+  .dc-pid-card.dc-pid-pv { grid-column: span 2; }
+  .dc-modbus-actions { gap: var(--space-1); }
+  .dc-btn-sm { padding: 3px 8px; font-size: 10px; }
+}

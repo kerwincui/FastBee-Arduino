@@ -66,6 +66,7 @@ const i18n = {
             'device-control-group-script': '脚本执行',
             'device-control-group-sensor': '传感器读取',
             'device-control-group-other': '其他',
+            'dc-modbus-devices-title': 'Modbus 子设备控制',
             'device-control-gpio': '开关控制',
             'device-control-modbus': '数据采集',
             'device-control-system': '系统控制',

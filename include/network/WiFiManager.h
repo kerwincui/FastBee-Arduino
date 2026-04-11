@@ -247,6 +247,12 @@ public:
     void setModeTransitioning(bool transitioning);
     
     /**
+     * @brief 重置 STA 初始化标志
+     * @details 允许在重新启用 STA 时使用 WiFi.begin() 而不是 reconnect()
+     */
+    void resetStaInitialized() { staInitialized = false; }
+    
+    /**
      * @brief 获取配置
      * @return WiFi 配置
      */
@@ -321,6 +327,7 @@ private:
     unsigned long lastReconnectAttempt = 0;
     bool autoReconnectEnabled = true;
     bool modeTransitioning = false;  // 模式切换中标志，避免记录不必要的断开警告
+    bool staInitialized = false;     // STA 已初始化标志（用于区分首次连接和重连）
     
     /**
      * @brief 触发网络事件
