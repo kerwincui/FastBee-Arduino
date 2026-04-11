@@ -50,6 +50,7 @@
         'device-control-data-section': 'Collected Data',
         'device-control-action-section': 'Controls',
         'device-control-monitor-section': 'Monitor Data',
+        'device-control-online': 'Online',
         'device-control-no-monitor': 'No monitor data',
         'device-control-no-action': 'No control actions',
         'device-control-group-gpio': 'GPIO Control',

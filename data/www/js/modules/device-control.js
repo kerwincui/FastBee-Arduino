@@ -40,6 +40,9 @@
         '<line x1="52" y1="65" x2="52" y2="70" stroke="currentColor" stroke-width="2"/>' +
         '</svg>';
 
+    // 电源图标 SVG
+    var POWER_ICON_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v8"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>';
+
     AppState.registerModule('device-control', {
         _controlData: null,
         _modbusStatus: null,
@@ -188,7 +191,7 @@
                 return;
             }
 
-            content.innerHTML = '<div class="dc-empty">⏳ ' + (typeof i18n !== 'undefined' ? i18n.t('loading') : '加载中...') + '</div>';
+            content.innerHTML = '<div class="dc-empty">' + (typeof i18n !== 'undefined' ? i18n.t('loading') : '加载中...') + '</div>';
 
             var self = this;
 
@@ -238,7 +241,7 @@
 
                 if (res.success === false) {
                     console.log('[device-control] API returned failure:', res.error || res.message);
-                    content.innerHTML = '<div class="dc-empty" style="color:var(--danger);">❌ ' + self._esc(res.error || res.message || '请求失败') + '</div>';
+                    content.innerHTML = '<div class="dc-empty" style="color:var(--danger);">' + self._esc(res.error || res.message || '请求失败') + '</div>';
                     return;
                 }
 
@@ -263,7 +266,7 @@
                     self._dcInitModbusDeviceStates();
                 } catch (renderErr) {
                     console.error('[device-control] Render error:', renderErr);
-                    content.innerHTML = '<div class="dc-empty" style="color:var(--danger);">❌ 渲染错误: ' + self._esc(renderErr.message || renderErr) + '</div>';
+                    content.innerHTML = '<div class="dc-empty" style="color:var(--danger);">' + self._esc(renderErr.message || renderErr) + '</div>';
                 }
             }).catch(function(err) {
                 console.error('[device-control] API error:', err);
@@ -273,7 +276,7 @@
                 } else if (err && err.message) {
                     errMsg = err.message;
                 }
-                content.innerHTML = '<div class="dc-empty" style="color:var(--danger);">❌ ' + self._esc(errMsg) + '</div>';
+                content.innerHTML = '<div class="dc-empty" style="color:var(--danger);">' + self._esc(errMsg) + '</div>';
             });
         },
 
@@ -290,7 +293,7 @@
             });
         },
 
-        // ============ 渲染控制面板（三区布局） ============
+        // ============ 渲染控制面板（紧凑布局） ============
         _renderControlPanel: function(data) {
             console.log('[device-control] _renderControlPanel called with data:', data);
 
@@ -298,17 +301,14 @@
             var html = '';
 
             try {
-                // === 区域一：监测数据展示区 ===
+                // === 监测数据展示区 ===
                 html += this._renderMonitorSection(data);
 
-                // === 区域二：设备图标区 ===
-                html += this._renderDeviceIconSection();
-
-                // === 区域三：控制操作区 ===
+                // === 控制操作区 ===
                 html += this._renderControlSection(data);
             } catch (e) {
                 console.error('[device-control] Error in _renderControlPanel:', e);
-                html = '<div class="dc-empty" style="color:var(--danger);">❌ 渲染错误: ' + this._esc(e.message || e) + '</div>';
+                html = '<div class="dc-empty" style="color:var(--danger);">渲染错误: ' + this._esc(e.message || e) + '</div>';
             }
 
             return html;
@@ -317,7 +317,6 @@
         // ============ 渲染监测数据区 ============
         _renderMonitorSection: function(data) {
             var html = '<div class="dc-section">';
-            html += '<div class="dc-section-title">📊 ' + this._t('device-control-monitor-section') + '</div>';
 
             // 优先从 Modbus 状态获取实时监测数据
             var monitorGroups = this._buildMonitorGroupsFromModbus();
@@ -408,36 +407,58 @@
             return groups;
         },
 
-        // ============ 渲染监测数据卡片 ============
+        // ============ 渲染监测数据卡片（带颜色标识） ============
         _renderMonitorCard: function(item, deviceLabel) {
             var name = this._esc(item.name || 'Unknown');
             var value = this._esc(item.value || item.lastValue || '--');
             var unit = this._esc(item.unit || '');
+            var color = this._getMonitorColor(item.name || '');
 
-            // 子设备标签（如果有）
-            var deviceTagHtml = deviceLabel ? '<div class="dc-monitor-device">' + this._esc(deviceLabel) + '</div>' : '';
-
-            return '<div class="dc-monitor-card" data-id="' + this._esc(item.id) + '">' +
-                deviceTagHtml +
-                '<div class="dc-monitor-name">' + name + '</div>' +
-                '<div class="dc-monitor-value">' + value + '</div>' +
-                (unit ? '<div class="dc-monitor-unit">' + unit + '</div>' : '') +
-                '</div>';
+            var html = '<div class="dc-monitor-card" data-id="' + this._esc(item.id) + '">';
+            html += '<div class="dc-monitor-accent" style="background:' + color + ';"></div>';
+            html += '<div class="dc-monitor-body">';
+            if (deviceLabel) {
+                html += '<div class="dc-monitor-device">' + this._esc(deviceLabel) + '</div>';
+            }
+            html += '<div class="dc-monitor-name">' + name + '</div>';
+            html += '<div class="dc-monitor-val-row">';
+            html += '<span class="dc-monitor-value">' + value + '</span>';
+            if (unit) html += '<span class="dc-monitor-unit">' + unit + '</span>';
+            html += '</div>';
+            html += '</div></div>';
+            return html;
         },
 
-        // ============ 渲染设备图标区 ============
+        // ============ 监测数据颜色映射 ============
+        _getMonitorColor: function(name) {
+            var n = name.toLowerCase();
+            if (n.indexOf('temp') !== -1 || n.indexOf('温度') !== -1) return '#ff6b6b';
+            if (n.indexOf('hum') !== -1 || n.indexOf('湿度') !== -1) return '#339af0';
+            if (n.indexOf('pm') !== -1 || n.indexOf('颗粒') !== -1 || n.indexOf('粉尘') !== -1) return '#cc5de8';
+            if (n.indexOf('co2') !== -1 || n.indexOf('二氧化碳') !== -1) return '#20c997';
+            if (n.indexOf('press') !== -1 || n.indexOf('气压') !== -1) return '#fcc419';
+            if (n.indexOf('light') !== -1 || n.indexOf('光照') !== -1 || n.indexOf('lux') !== -1) return '#fab005';
+            if (n.indexOf('wind') !== -1 || n.indexOf('风') !== -1) return '#74c0fc';
+            if (n.indexOf('rain') !== -1 || n.indexOf('雨') !== -1) return '#91d5ff';
+            return '#1677ff';
+        },
+
+        // ============ 渲染设备横幅（紧凑水平布局） ============
         _renderDeviceIconSection: function() {
-            var html = '<div class="dc-device-icon">';
+            var html = '<div class="dc-device-banner">';
             html += DEVICE_ICON_SVG;
+            html += '<div class="dc-device-banner-info">';
             html += '<div class="dc-device-name">' + this._esc(this._deviceName) + '</div>';
+            html += '<div class="dc-device-status">' + this._t('device-control-online') + '</div>';
+            html += '</div>';
             html += '</div>';
             return html;
         },
 
-        // ============ 渲染控制操作区 ============
+        // ============ 渲染控制操作区（左右明确分栏） ============
         _renderControlSection: function(data) {
             var html = '<div class="dc-section">';
-            html += '<div class="dc-section-title">🎮 ' + this._t('device-control-action-section') + '</div>';
+            html += '<div class="dc-section-title">' + this._t('device-control-action-section') + '</div>';
 
             // 分类获取控制项
             var gpioItems = this._filterByActionType(data.gpio, [0, 1, 2, 3, 4, 5, 13, 14]);
@@ -447,7 +468,7 @@
             var sensorReadItems = this._filterByActionType(data.sensor, [19]);
             var otherItems = data.other || [];
 
-            // 按 name 属性排序
+            // 排序
             gpioItems.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
             modbusCtrlItems.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
             systemItems.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
@@ -456,39 +477,66 @@
             otherItems.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
 
             var hasModbusDevices = this._modbusDevices && this._modbusDevices.length > 0;
-            var hasAnyControls = gpioItems.length > 0 || modbusCtrlItems.length > 0 ||
+
+            // 将 PWM 类型设备拆到左列显示
+            var leftModbusDevices = [];
+            var rightModbusDevices = [];
+            if (hasModbusDevices) {
+                for (var mi = 0; mi < this._modbusDevices.length; mi++) {
+                    var mdev = this._modbusDevices[mi];
+                    if ((mdev.deviceType || 'relay') === 'pwm') {
+                        leftModbusDevices.push({ idx: mi, dev: mdev });
+                    } else {
+                        rightModbusDevices.push({ idx: mi, dev: mdev });
+                    }
+                }
+            }
+
+            var hasLeftContent = gpioItems.length > 0 || modbusCtrlItems.length > 0 ||
                 systemItems.length > 0 || scriptItems.length > 0 ||
-                sensorReadItems.length > 0 || otherItems.length > 0 || hasModbusDevices;
+                sensorReadItems.length > 0 || otherItems.length > 0 || leftModbusDevices.length > 0;
+            var hasAnyControls = hasLeftContent || rightModbusDevices.length > 0;
 
             if (hasAnyControls) {
-                // GPIO 控制
+                html += '<div class="dc-2col">';
+
+                // === 左列：按钮控制组 ===
+                html += '<div class="dc-col-left">';
                 if (gpioItems.length > 0) {
-                    html += this._renderControlGroup('GPIO', gpioItems, 'gpio', false);
+                    html += this._renderGpioGroup(gpioItems);
                 }
-                // Modbus 规则控制
                 if (modbusCtrlItems.length > 0) {
                     html += this._renderControlGroup('Modbus', modbusCtrlItems, 'modbus', false);
                 }
-                // Modbus 子设备直接控制面板
-                if (hasModbusDevices) {
-                    html += this._renderModbusDevicePanels();
-                }
-                // 系统操作
                 if (systemItems.length > 0) {
-                    html += this._renderControlGroup('System', systemItems, 'system', true);
+                    html += this._renderSystemGroup(systemItems);
                 }
-                // 脚本执行
+                // PWM 设备渲染在系统操作之后
+                for (var li = 0; li < leftModbusDevices.length; li++) {
+                    html += this._renderSingleModbusPanel(leftModbusDevices[li].idx, leftModbusDevices[li].dev);
+                }
                 if (scriptItems.length > 0) {
                     html += this._renderControlGroup('Script', scriptItems, 'script', false);
                 }
-                // 传感器读取
                 if (sensorReadItems.length > 0) {
                     html += this._renderControlGroup('Sensor', sensorReadItems, 'sensor', false);
                 }
-                // 其他
                 if (otherItems.length > 0) {
                     html += this._renderControlGroup('Other', otherItems, 'other', false);
                 }
+                if (!hasLeftContent) {
+                    html += '<div class="dc-empty">' + this._t('device-control-no-action') + '</div>';
+                }
+                html += '</div>';
+
+                // === 右列：Modbus子设备面板（非PWM） ===
+                html += '<div class="dc-col-right">';
+                if (rightModbusDevices.length > 0) {
+                    html += this._renderModbusDevicePanels(rightModbusDevices);
+                }
+                html += '</div>';
+
+                html += '</div>'; // end dc-2col
             } else {
                 html += '<div class="dc-empty">' + this._t('device-control-no-action') + '</div>';
             }
@@ -497,37 +545,74 @@
             return html;
         },
 
+        // ============ 渲染系统操作组（2x2图标网格） ============
+        _renderSystemGroup: function(items) {
+            var title = this._t('device-control-group-system') || 'System';
+            var html = '<div class="dc-control-group dc-group-card">';
+            html += '<div class="dc-control-group-title">' + title + '</div>';
+            html += '<div class="dc-sys-grid">';
+            for (var i = 0; i < items.length; i++) {
+                var item = items[i];
+                html += '<button class="dc-ctrl-btn dc-sys-card" data-id="' + this._esc(item.id) + '" data-system="true" data-name="' + this._esc(item.name) + '">';
+                html += '<div class="dc-sys-card-name">' + this._esc(item.name) + '</div>';
+                html += '</button>';
+            }
+            html += '</div></div>';
+            return html;
+        },
+
+        // ============ 渲染GPIO控制组（列表行样式） ============
+        _renderGpioGroup: function(items) {
+            var title = this._t('device-control-group-gpio') || 'GPIO';
+            var html = '<div class="dc-control-group dc-group-card">';
+            html += '<div class="dc-control-group-title">' + title + '</div>';
+            html += '<div class="dc-gpio-list">';
+            for (var i = 0; i < items.length; i++) {
+                var item = items[i];
+                html += '<div class="dc-gpio-row">';
+                html += '<span class="dc-gpio-name">' + this._esc(item.name) + '</span>';
+                html += '<button class="dc-ctrl-btn dc-gpio" data-id="' + this._esc(item.id) + '">' + this._t('device-control-execute') + '</button>';
+                html += '</div>';
+            }
+            html += '</div></div>';
+            return html;
+        },
+
         // ============ 渲染Modbus子设备控制面板 ============
-        _renderModbusDevicePanels: function() {
-            var devices = this._modbusDevices || [];
-            if (devices.length === 0) return '';
+        _renderModbusDevicePanels: function(deviceList) {
+            var list = deviceList || [];
+            if (list.length === 0) return '';
 
             var html = '<div class="dc-control-group">';
             html += '<div class="dc-control-group-title">' + this._t('dc-modbus-devices-title') + '</div>';
 
-            for (var i = 0; i < devices.length; i++) {
-                var dev = devices[i];
-                var dt = dev.deviceType || 'relay';
-                var typeLabel = this._t('modbus-type-' + dt) || dt;
-                var typeColors = {relay: '#67C23A', pwm: '#E6A23C', pid: '#F56C6C'};
-                var color = typeColors[dt] || '#999';
+            for (var i = 0; i < list.length; i++) {
+                html += this._renderSingleModbusPanel(list[i].idx, list[i].dev);
+            }
 
-                html += '<div class="dc-modbus-device-panel" data-dev-idx="' + i + '">';
-                html += '<div class="dc-modbus-device-header">';
-                html += '<span class="dc-modbus-device-name">' + this._esc(dev.name || 'Device') + '</span>';
-                html += '<span class="dc-modbus-device-badge" style="background:' + color + ';">' + typeLabel + '</span>';
-                html += '<span class="dc-modbus-device-addr">Addr: ' + (dev.slaveAddress || 1) + '</span>';
-                html += '</div>';
+            html += '</div>';
+            return html;
+        },
 
-                if (dt === 'relay') {
-                    html += this._renderDcRelayPanel(i, dev);
-                } else if (dt === 'pwm') {
-                    html += this._renderDcPwmPanel(i, dev);
-                } else if (dt === 'pid') {
-                    html += this._renderDcPidPanel(i, dev);
-                }
+        // ============ 渲染单个Modbus设备面板 ============
+        _renderSingleModbusPanel: function(devIdx, dev) {
+            var dt = dev.deviceType || 'relay';
+            var typeLabel = this._t('modbus-type-' + dt) || dt;
+            var typeColors = {relay: '#67C23A', pwm: '#E6A23C', pid: '#F56C6C'};
+            var color = typeColors[dt] || '#999';
 
-                html += '</div>';
+            var html = '<div class="dc-modbus-device-panel" data-dev-idx="' + devIdx + '">';
+            html += '<div class="dc-modbus-device-header">';
+            html += '<span class="dc-modbus-device-badge" style="background:' + color + ';">' + typeLabel + '</span>';
+            html += '<span class="dc-modbus-device-addr">Addr: ' + (dev.slaveAddress || 1) + '</span>';
+            html += '</div>';
+
+            if (dt === 'relay') {
+                html += this._renderDcRelayPanel(devIdx, dev);
+            } else if (dt === 'pwm') {
+                html += this._renderDcPwmPanel(devIdx, dev);
+            } else if (dt === 'pid') {
+                html += this._renderDcPidPanel(devIdx, dev);
             }
 
             html += '</div>';
@@ -549,6 +634,7 @@
                 var isOn = ncMode ? !coilState : coilState;
                 var cls = isOn ? 'dc-coil-on' : 'dc-coil-off';
                 html += '<div class="dc-coil-card ' + cls + '" data-dev="' + devIdx + '" data-ch="' + ch + '">';
+                html += '<div class="dc-coil-icon">' + POWER_ICON_SVG + '</div>';
                 html += '<div class="dc-coil-ch">CH' + ch + '</div>';
                 html += '<div class="dc-coil-st">' + (isOn ? onText : offText) + '</div>';
                 html += '</div>';
@@ -573,17 +659,16 @@
             var states = this._dcPwmStates[devIdx] || [];
 
             var html = '<div class="dc-modbus-device-body">';
-            html += '<div class="dc-pwm-grid" id="dc-pwm-grid-' + devIdx + '">';
+            html += '<div class="dc-pwm-list" id="dc-pwm-grid-' + devIdx + '">';
             for (var ch = 0; ch < channelCount; ch++) {
                 var val = ch < states.length ? states[ch] : 0;
                 var pct = maxValue > 0 ? Math.round(val / maxValue * 100) : 0;
-                html += '<div class="dc-pwm-card">';
-                html += '<div class="dc-pwm-ch">CH' + ch + '</div>';
+                html += '<div class="dc-pwm-row">';
+                html += '<span class="dc-pwm-ch">CH' + ch + '</span>';
                 html += '<input type="range" class="dc-pwm-slider" min="0" max="' + maxValue + '" value="' + val + '" data-dev="' + devIdx + '" data-ch="' + ch + '">';
-                html += '<div class="dc-pwm-value-row">';
-                html += '<input type="number" class="dc-pwm-num" min="0" max="' + maxValue + '" value="' + val + '" data-dev="' + devIdx + '" data-ch="' + ch + '">';
                 html += '<span class="dc-pwm-pct" data-dev="' + devIdx + '" data-ch="' + ch + '">' + pct + '%</span>';
-                html += '</div></div>';
+                html += '<input type="number" class="dc-pwm-num" min="0" max="' + maxValue + '" value="' + val + '" data-dev="' + devIdx + '" data-ch="' + ch + '">';
+                html += '</div>';
             }
             html += '</div>';
 
@@ -783,6 +868,7 @@
                 var isOn = p.ncMode ? !coilState : coilState;
                 var cls = isOn ? 'dc-coil-on' : 'dc-coil-off';
                 html += '<div class="dc-coil-card ' + cls + '" data-dev="' + devIdx + '" data-ch="' + ch + '">';
+                html += '<div class="dc-coil-icon">' + POWER_ICON_SVG + '</div>';
                 html += '<div class="dc-coil-ch">CH' + ch + '</div>';
                 html += '<div class="dc-coil-st">' + (isOn ? onText : offText) + '</div>';
                 html += '</div>';
@@ -877,13 +963,12 @@
             for (var ch = 0; ch < p.channelCount; ch++) {
                 var val = ch < states.length ? states[ch] : 0;
                 var pct = p.maxValue > 0 ? Math.round(val / p.maxValue * 100) : 0;
-                html += '<div class="dc-pwm-card">';
-                html += '<div class="dc-pwm-ch">CH' + ch + '</div>';
+                html += '<div class="dc-pwm-row">';
+                html += '<span class="dc-pwm-ch">CH' + ch + '</span>';
                 html += '<input type="range" class="dc-pwm-slider" min="0" max="' + p.maxValue + '" value="' + val + '" data-dev="' + devIdx + '" data-ch="' + ch + '">';
-                html += '<div class="dc-pwm-value-row">';
-                html += '<input type="number" class="dc-pwm-num" min="0" max="' + p.maxValue + '" value="' + val + '" data-dev="' + devIdx + '" data-ch="' + ch + '">';
                 html += '<span class="dc-pwm-pct" data-dev="' + devIdx + '" data-ch="' + ch + '">' + pct + '%</span>';
-                html += '</div></div>';
+                html += '<input type="number" class="dc-pwm-num" min="0" max="' + p.maxValue + '" value="' + val + '" data-dev="' + devIdx + '" data-ch="' + ch + '">';
+                html += '</div>';
             }
             grid.innerHTML = html;
         },
@@ -1053,15 +1138,17 @@
 
         // ============ 空状态 ============
         _renderEmptyState: function() {
-            return '<div class="dc-section">' +
-                '<div class="dc-section-title">📊 ' + this._t('device-control-monitor-section') + '</div>' +
+            return '<div class="dc-device-banner">' + DEVICE_ICON_SVG +
+                '<div class="dc-device-banner-info">' +
+                '<div class="dc-device-name">' + this._esc(this._deviceName) + '</div>' +
+                '<div class="dc-device-status">' + this._t('device-control-online') + '</div>' +
+                '</div></div>' +
+                '<div class="dc-section">' +
+                '<div class="dc-section-title">' + this._t('device-control-monitor-section') + '</div>' +
                 '<div class="dc-empty">' + this._t('device-control-no-monitor') + '</div>' +
                 '</div>' +
-                '<div class="dc-device-icon">' + DEVICE_ICON_SVG +
-                '<div class="dc-device-name">' + this._esc(this._deviceName) + '</div>' +
-                '</div>' +
                 '<div class="dc-section">' +
-                '<div class="dc-section-title">🎮 ' + this._t('device-control-action-section') + '</div>' +
+                '<div class="dc-section-title">' + this._t('device-control-action-section') + '</div>' +
                 '<div class="dc-empty">' + this._t('device-control-no-action') + '</div>' +
                 '</div>';
         },

@@ -58,6 +58,7 @@ const i18n = {
             'device-control-data-section': '采集数据',
             'device-control-action-section': '控制操作',
             'device-control-monitor-section': '监测数据',
+            'device-control-online': '在线',
             'device-control-no-monitor': '暂无监测数据',
             'device-control-no-action': '暂无控制操作',
             'device-control-group-gpio': 'GPIO 控制',

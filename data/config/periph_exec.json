@@ -400,7 +400,7 @@
     {
       "id": "exec_59156",
       "name": "采集温湿度和空气质量",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
