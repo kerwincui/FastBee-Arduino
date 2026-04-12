@@ -160,35 +160,58 @@
         },
 
         clearBrowserCache: function() {
-            var self = this;
             try {
-                // 清除 localStorage
-                if (window.localStorage) {
-                    window.localStorage.clear();
-                }
-                // 清除 sessionStorage
-                if (window.sessionStorage) {
-                    window.sessionStorage.clear();
-                }
-                // 尝试清除 Service Worker caches
+                // 1. 清除 Service Worker 缓存
                 if (window.caches) {
                     caches.keys().then(function(names) {
-                        names.forEach(function(name) {
-                            caches.delete(name);
-                        });
-                    }).catch(function(e) {
-                        console.error('清除 caches 失败:', e);
-                    });
+                        names.forEach(function(name) { caches.delete(name); });
+                    }).catch(function() {});
                 }
-                // 显示成功提示
-                Notification.success(i18n.t('dev-cache-clear-ok'), i18n.t('dev-cache-title'));
-                // 延迟刷新页面
-                setTimeout(function() {
-                    window.location.href = window.location.pathname;
-                }, 1000);
+                // 注销 Service Worker
+                if (navigator.serviceWorker) {
+                    navigator.serviceWorker.getRegistrations().then(function(regs) {
+                        regs.forEach(function(reg) { reg.unregister(); });
+                    }).catch(function() {});
+                }
+
+                // 2. 收集页面上所有已加载的 JS/CSS 资源 URL（去重）
+                var urlMap = {};
+                document.querySelectorAll('script[src]').forEach(function(el) {
+                    if (el.src) urlMap[el.src] = true;
+                });
+                document.querySelectorAll('link[rel="stylesheet"]').forEach(function(el) {
+                    if (el.href) urlMap[el.href] = true;
+                });
+                // 补充可能已被浏览器缓存的按需加载模块
+                var origin = window.location.origin;
+                var modules = ['dashboard', 'device-config', 'device-control', 'network',
+                    'peripherals', 'periph-exec', 'protocol', 'i18n', 'i18n-en', 'admin-bundle'];
+                modules.forEach(function(m) { urlMap[origin + '/js/modules/' + m + '.js'] = true; });
+                var urls = Object.keys(urlMap);
+
+                // 3. 使用 fetch cache:'reload' 强制浏览器重新从服务器获取并更新 HTTP 缓存
+                //    分批执行（每次2个并发），避免 ESP32 连接过多
+                var idx = 0;
+                Notification.success(
+                    (typeof i18n !== 'undefined' ? i18n.t('dev-cache-clear-ok') : '正在清除缓存并刷新资源...'),
+                    (typeof i18n !== 'undefined' ? i18n.t('dev-cache-title') : '缓存管理')
+                );
+
+                function fetchBatch() {
+                    if (idx >= urls.length) {
+                        // 所有 JS/CSS 缓存已更新，最后刷新 HTML 页面本身
+                        window.location.reload();
+                        return;
+                    }
+                    var batch = urls.slice(idx, idx + 2);
+                    idx += 2;
+                    Promise.all(batch.map(function(url) {
+                        return fetch(url, { cache: 'reload' }).catch(function() {});
+                    })).then(fetchBatch);
+                }
+                fetchBatch();
             } catch (e) {
                 console.error('清除缓存失败:', e);
-                // 降级方案：强制刷新页面
                 window.location.reload(true);
             }
         },

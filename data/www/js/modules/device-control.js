@@ -59,18 +59,16 @@
             console.log('[device-control] Setting up events...');
             var self = this;
 
-            // 刷新按钮事件
-            var refreshBtn = document.getElementById('dc-refresh-btn');
-            if (refreshBtn && !this._eventsBound) {
-                refreshBtn.addEventListener('click', function() {
-                    self.loadDeviceControlPage();
-                });
-            }
-
             // 使用事件委托绑定控制按钮点击
             var content = document.getElementById('dc-content');
             if (content && !this._eventsBound) {
                 content.addEventListener('click', function(e) {
+                    // 刷新按钮（动态渲染在监测区内）
+                    if (e.target.closest('#dc-refresh-btn')) {
+                        self.loadDeviceControlPage();
+                        return;
+                    }
+
                     var btn = e.target.closest('.dc-ctrl-btn');
                     if (!btn) return;
 
@@ -301,6 +299,12 @@
             var html = '';
 
             try {
+                // === 页面顶部标题栏（含刷新按钮） ===
+                html += '<div class="dc-page-header">';
+                html += '<span class="dc-page-title">' + this._t('device-control-title') + '</span>';
+                html += '<button class="dc-btn-sm dc-btn-refresh" id="dc-refresh-btn">' + this._t('dashboard-refresh') + '</button>';
+                html += '</div>';
+
                 // === 监测数据展示区 ===
                 html += this._renderMonitorSection(data);
 
@@ -316,39 +320,33 @@
 
         // ============ 渲染监测数据区 ============
         _renderMonitorSection: function(data) {
-            var html = '<div class="dc-section">';
-
             // 优先从 Modbus 状态获取实时监测数据
             var monitorGroups = this._buildMonitorGroupsFromModbus();
-            
-            // 如果有监测数据组，将所有卡片放在同一个流式容器中
+            var hasMonitor = monitorGroups.length > 0;
+            var monitorItems = [];
+
+            if (!hasMonitor) {
+                var modbusItems = this._filterByActionType(data.modbus, [18]);
+                var sensorItems = this._filterByActionType(data.sensor, [19]);
+                monitorItems = modbusItems.concat(sensorItems);
+                hasMonitor = monitorItems.length > 0;
+            }
+
+            if (!hasMonitor) return '';
+
+            var html = '<div class="dc-monitor-grid">';
             if (monitorGroups.length > 0) {
-                html += '<div class="dc-monitor-grid">';
                 for (var i = 0; i < monitorGroups.length; i++) {
                     var group = monitorGroups[i];
                     for (var j = 0; j < group.items.length; j++) {
-                        // 将子设备名称作为标签传递给卡片
                         html += this._renderMonitorCard(group.items[j], group.label);
                     }
                 }
-                html += '</div>';
             } else {
-                // 回退：从 periph-exec 数据获取
-                var modbusItems = this._filterByActionType(data.modbus, [18]);
-                var sensorItems = this._filterByActionType(data.sensor, [19]);
-                var monitorItems = modbusItems.concat(sensorItems);
-
-                if (monitorItems.length > 0) {
-                    html += '<div class="dc-monitor-grid">';
-                    for (var i = 0; i < monitorItems.length; i++) {
-                        html += this._renderMonitorCard(monitorItems[i]);
-                    }
-                    html += '</div>';
-                } else {
-                    html += '<div class="dc-empty">' + this._t('device-control-no-monitor') + '</div>';
+                for (var i = 0; i < monitorItems.length; i++) {
+                    html += this._renderMonitorCard(monitorItems[i]);
                 }
             }
-
             html += '</div>';
             return html;
         },
@@ -407,26 +405,37 @@
             return groups;
         },
 
-        // ============ 渲染监测数据卡片（带颜色标识） ============
+        // ============ 渲染监测数据卡片（独立卡片式） ============
         _renderMonitorCard: function(item, deviceLabel) {
             var name = this._esc(item.name || 'Unknown');
             var value = this._esc(item.value || item.lastValue || '--');
             var unit = this._esc(item.unit || '');
             var color = this._getMonitorColor(item.name || '');
+            var icon = this._getMonitorIcon(item.name || '');
 
             var html = '<div class="dc-monitor-card" data-id="' + this._esc(item.id) + '">';
-            html += '<div class="dc-monitor-accent" style="background:' + color + ';"></div>';
-            html += '<div class="dc-monitor-body">';
+            html += '<div class="dc-monitor-top">';
+            html += '<span class="dc-monitor-label">' + name + '</span>';
+            html += '<span class="dc-monitor-icon" style="color:' + color + ';">' + icon + '</span>';
+            html += '</div>';
             if (deviceLabel) {
                 html += '<div class="dc-monitor-device">' + this._esc(deviceLabel) + '</div>';
             }
-            html += '<div class="dc-monitor-name">' + name + '</div>';
             html += '<div class="dc-monitor-val-row">';
             html += '<span class="dc-monitor-value">' + value + '</span>';
             if (unit) html += '<span class="dc-monitor-unit">' + unit + '</span>';
             html += '</div>';
-            html += '</div></div>';
+            html += '</div>';
             return html;
+        },
+
+        // ============ 监测数据图标映射 ============
+        _getMonitorIcon: function(name) {
+            var n = name.toLowerCase();
+            if (n.indexOf('hum') !== -1 || n.indexOf('湿度') !== -1) return '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 2c-5.33 8-8 12.67-8 16a8 8 0 0016 0c0-3.33-2.67-8-8-16z"/></svg>';
+            if (n.indexOf('temp') !== -1 || n.indexOf('温度') !== -1) return '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M15 13V5a3 3 0 00-6 0v8a5 5 0 106 0zm-3-9a1 1 0 011 1v9.17a3 3 0 11-2 0V5a1 1 0 011-1z"/></svg>';
+            if (n.indexOf('pm') !== -1 || n.indexOf('颗粒') !== -1) return '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M17.5 18.25a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5zm-5-3a1.75 1.75 0 110-3.5 1.75 1.75 0 010 3.5zm-5-4a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm10-3a1 1 0 110-2 1 1 0 010 2zm-3 10a1 1 0 110-2 1 1 0 010 2zm-7 2a.75.75 0 110-1.5.75.75 0 010 1.5z"/></svg>';
+            return '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>';
         },
 
         // ============ 监测数据颜色映射 ============
@@ -457,8 +466,7 @@
 
         // ============ 渲染控制操作区（左右明确分栏） ============
         _renderControlSection: function(data) {
-            var html = '<div class="dc-section">';
-            html += '<div class="dc-section-title">' + this._t('device-control-action-section') + '</div>';
+            var html = '';
 
             // 分类获取控制项
             var gpioItems = this._filterByActionType(data.gpio, [0, 1, 2, 3, 4, 5, 13, 14]);
@@ -541,7 +549,6 @@
                 html += '<div class="dc-empty">' + this._t('device-control-no-action') + '</div>';
             }
 
-            html += '</div>';
             return html;
         },
 
@@ -549,7 +556,7 @@
         _renderSystemGroup: function(items) {
             var title = this._t('device-control-group-system') || 'System';
             var html = '<div class="dc-control-group dc-group-card">';
-            html += '<div class="dc-control-group-title">' + title + '</div>';
+            html += '<div class="dc-card-header"><span class="dc-card-badge" style="background:var(--warning);">SYS</span><span class="dc-card-title">' + title + '</span></div>';
             html += '<div class="dc-sys-grid">';
             for (var i = 0; i < items.length; i++) {
                 var item = items[i];
@@ -565,7 +572,7 @@
         _renderGpioGroup: function(items) {
             var title = this._t('device-control-group-gpio') || 'GPIO';
             var html = '<div class="dc-control-group dc-group-card">';
-            html += '<div class="dc-control-group-title">' + title + '</div>';
+            html += '<div class="dc-card-header"><span class="dc-card-badge" style="background:var(--primary);">GPIO</span><span class="dc-card-title">' + title + '</span></div>';
             html += '<div class="dc-gpio-list">';
             for (var i = 0; i < items.length; i++) {
                 var item = items[i];
@@ -583,14 +590,11 @@
             var list = deviceList || [];
             if (list.length === 0) return '';
 
-            var html = '<div class="dc-control-group">';
-            html += '<div class="dc-control-group-title">' + this._t('dc-modbus-devices-title') + '</div>';
-
+            var html = '';
             for (var i = 0; i < list.length; i++) {
                 html += this._renderSingleModbusPanel(list[i].idx, list[i].dev);
             }
 
-            html += '</div>';
             return html;
         },
 
@@ -598,12 +602,14 @@
         _renderSingleModbusPanel: function(devIdx, dev) {
             var dt = dev.deviceType || 'relay';
             var typeLabel = this._t('modbus-type-' + dt) || dt;
+            var ctrlLabel = this._t('dc-modbus-ctrl-' + dt) || (typeLabel + ' ' + this._t('device-control-action-section'));
             var typeColors = {relay: '#67C23A', pwm: '#E6A23C', pid: '#F56C6C'};
             var color = typeColors[dt] || '#999';
 
             var html = '<div class="dc-modbus-device-panel" data-dev-idx="' + devIdx + '">';
-            html += '<div class="dc-modbus-device-header">';
-            html += '<span class="dc-modbus-device-badge" style="background:' + color + ';">' + typeLabel + '</span>';
+            html += '<div class="dc-card-header">';
+            html += '<span class="dc-card-badge" style="background:' + color + ';">' + typeLabel + '</span>';
+            html += '<span class="dc-card-title">' + ctrlLabel + '</span>';
             html += '<span class="dc-modbus-device-addr">Addr: ' + (dev.slaveAddress || 1) + '</span>';
             html += '</div>';
 
@@ -698,7 +704,7 @@
             };
 
             var cards = [
-                { key: 'pv', label: this._t('modbus-ctrl-pid-pv-label'), value: fmtVal(v.pv), editable: false, big: true },
+                { key: 'pv', label: this._t('modbus-ctrl-pid-pv-label'), value: fmtVal(v.pv), editable: false },
                 { key: 'sv', label: this._t('modbus-ctrl-pid-sv-label'), value: fmtVal(v.sv), editable: true },
                 { key: 'out', label: this._t('modbus-ctrl-pid-out-label'), value: fmtPct(v.out), editable: false },
                 { key: 'p', label: this._t('modbus-ctrl-pid-p-label'), value: fmtVal(v.p), editable: true },
@@ -1085,7 +1091,7 @@
             };
             var self = this;
             var cards = [
-                { key: 'pv', label: self._t('modbus-ctrl-pid-pv-label'), value: fmtVal(v.pv), editable: false, big: true },
+                { key: 'pv', label: self._t('modbus-ctrl-pid-pv-label'), value: fmtVal(v.pv), editable: false },
                 { key: 'sv', label: self._t('modbus-ctrl-pid-sv-label'), value: fmtVal(v.sv), editable: true },
                 { key: 'out', label: self._t('modbus-ctrl-pid-out-label'), value: fmtPct(v.out), editable: false },
                 { key: 'p', label: self._t('modbus-ctrl-pid-p-label'), value: fmtVal(v.p), editable: true },

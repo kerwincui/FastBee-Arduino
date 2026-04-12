@@ -1,3 +1,130 @@
+// ============================================================
+// Core Bundle: fetch-api + notification + state
+// 合并核心依赖，减少 ESP32 HTTP 请求数
+// ============================================================
+
+// ── fetch-api ───────────────────────────────────────────────
+(function () {
+    'use strict';
+    const BASE_URL = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+        ? 'http://fastbee.local'
+        : (location.origin || 'http://fastbee.local');
+    const DEFAULT_TIMEOUT = 15000;
+    const RESTART_TIMEOUT = 15000;
+    function toUrlEncoded(data) {
+        if (!data) return '';
+        return Object.keys(data).map(k => encodeURIComponent(k) + '=' + encodeURIComponent(data[k] == null ? '' : data[k])).join('&');
+    }
+    function fetchWithTimeout(url, options, timeoutMs) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        return fetch(url, Object.assign({ signal: controller.signal }, options)).finally(() => clearTimeout(timer));
+    }
+    function buildUrl(path, params) {
+        const url = new URL(path, BASE_URL);
+        if (params) { Object.keys(params).forEach(k => { if (params[k] != null) url.searchParams.append(k, params[k]); }); }
+        return url.toString();
+    }
+    function request(method, path, options, timeoutMs) {
+        options = options || {};
+        var silent = options.silent || false;
+        const token = localStorage.getItem('auth_token');
+        const headers = Object.assign({}, options.headers);
+        if (token) { headers['Authorization'] = 'Bearer ' + token; }
+        const fetchOptions = { method: method, headers: headers, credentials: 'include', cache: 'no-store' };
+        if (options.body) { fetchOptions.body = options.body; }
+        const url = buildUrl(path, options.params);
+        const timeout = timeoutMs || DEFAULT_TIMEOUT;
+        return fetchWithTimeout(url, fetchOptions, timeout)
+            .then(function (response) {
+                return response.json().catch(function () { return {}; }).then(function (data) {
+                    if (response.ok) return data;
+                    return Promise.reject({ status: response.status, data: data, response: response });
+                });
+            })
+            .catch(function (err) {
+                if (silent) return Promise.reject(err);
+                if (err && err.status !== undefined) { _handleHttpError(err.status, err.data); }
+                else if (err && err.name === 'AbortError') { err._handled = false; }
+                else if (err && err.message && err.message.includes('fetch')) { err._handled = false; }
+                else { if (typeof Notification !== 'undefined') { Notification.error('无法连接到设备，请检查网络连接', '网络错误'); } }
+                return Promise.reject(err);
+            });
+    }
+    function _handleHttpError(status, data) {
+        if (typeof Notification === 'undefined') return;
+        const errMsg = (data && data.error) ? data.error : '请求失败';
+        switch (status) {
+            case 400: Notification.warning(errMsg || '请求参数错误', '参数错误'); break;
+            case 401:
+                localStorage.removeItem('auth_token'); localStorage.removeItem('sessionId');
+                if (!document.getElementById('login-page') || document.getElementById('login-page').style.display === 'none') {
+                    if (typeof AppState !== 'undefined' && AppState.closeAllOverlays) { AppState.closeAllOverlays(); }
+                    Notification.warning('登录已过期，请重新登录', '会话超时');
+                    setTimeout(function () {
+                        if (localStorage.getItem('auth_token')) return;
+                        var lp = document.getElementById('login-page'); var ac = document.getElementById('app-container');
+                        if (lp && ac) { ac.style.display = 'none'; lp.style.display = 'flex'; }
+                    }, 1500);
+                } break;
+            case 403: Notification.warning('权限不足，无法执行此操作', '权限拒绝'); break;
+            case 404: Notification.warning('请求的资源不存在', '未找到'); break;
+            case 409: Notification.warning(errMsg || '资源冲突（可能已存在）', '冲突'); break;
+            case 429: Notification.warning('操作过于频繁，请稍后再试', '请求限流'); break;
+            case 500: Notification.error('服务器内部错误，请检查设备状态', '服务器错误'); break;
+            case 503: Notification.error('服务暂时不可用', '服务不可用'); break;
+            default: Notification.warning(errMsg, '请求失败(' + status + ')');
+        }
+    }
+    window.apiGet = function (url, params) { return request('GET', url, { params: params || {} }); };
+    window.apiGetSilent = function (url, params) { return request('GET', url, { params: params || {}, silent: true }); };
+    window.apiPost = function (url, data) { return request('POST', url, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: toUrlEncoded(data || {}) }); };
+    window.apiPostSilent = function (url, data) { return request('POST', url, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: toUrlEncoded(data || {}), silent: true }); };
+    window.apiPut = function (url, data) { return request('PUT', url, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data || {}) }); };
+    window.apiPostJson = function (url, data) { return request('POST', url, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data || {}) }); };
+    window.apiDelete = function (url, params) { return request('DELETE', url, { params: params || {} }); };
+    window.apiRestart = function (data) { return request('POST', '/api/system/restart', { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: toUrlEncoded(data || {}) }, RESTART_TIMEOUT); };
+    window.apiFactoryReset = function () { return request('POST', '/api/system/factory-reset', {}, RESTART_TIMEOUT); };
+    const MQTT_TEST_TIMEOUT = 30000;
+    window.apiMqttTest = function (data) { return request('POST', '/api/mqtt/test', { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: toUrlEncoded(data || {}), silent: true }, MQTT_TEST_TIMEOUT); };
+})();
+
+// ── notification ────────────────────────────────────────────
+const Notification = {
+    container: null, notifications: [],
+    init() {
+        this.container = document.getElementById('notification-container');
+        if (!this.container) { this.container = document.createElement('div'); this.container.id = 'notification-container'; this.container.className = 'notification-container'; document.body.appendChild(this.container); }
+    },
+    show(options) {
+        const id = 'notification-' + Date.now(); const duration = options.duration || 3000;
+        const notification = document.createElement('div'); notification.id = id;
+        notification.className = 'notification notification-' + (options.type || 'info');
+        const icons = { primary: '✅', success: '✅', warning: '⚠️', error: '❌', info: 'ℹ️' };
+        notification.innerHTML = '<div class="notification-header"><div class="notification-title"><i>' + (icons[options.type] || icons.info) + '</i><span>' + (options.title || this.getDefaultTitle(options.type)) + '</span></div><button class="notification-close" onclick="Notification.close(\'' + id + '\')">×</button></div><div class="notification-body">' + (options.message || '') + '</div><div class="notification-progress"><div class="notification-progress-bar" style="animation-duration: ' + duration + 'ms;"></div></div>';
+        this.container.appendChild(notification);
+        const notificationObj = { id: id, element: notification, timeout: null }; this.notifications.push(notificationObj);
+        if (options.autoClose !== false) { notificationObj.timeout = setTimeout(() => { this.close(id); }, duration); }
+        return id;
+    },
+    close(id) {
+        const notification = document.getElementById(id);
+        if (notification) { notification.classList.add('hiding');
+            const notificationObj = this.notifications.find(n => n.id === id);
+            if (notificationObj && notificationObj.timeout) { clearTimeout(notificationObj.timeout); }
+            setTimeout(() => { if (notification.parentNode) { notification.parentNode.removeChild(notification); } this.notifications = this.notifications.filter(n => n.id !== id); }, 300);
+        }
+    },
+    closeAll() { this.notifications.forEach(n => { this.close(n.id); }); },
+    getDefaultTitle(type) { const t = { primary: '提示', success: '成功', warning: '警告', error: '错误', info: '信息' }; return t[type] || '通知'; },
+    primary(message, title) { return this.show({ type: 'primary', title: title || '提示', message: message }); },
+    success(message, title) { return this.show({ type: 'success', title: title || '成功', message: message }); },
+    warning(message, title) { return this.show({ type: 'warning', title: title || '警告', message: message }); },
+    error(message, title) { return this.show({ type: 'error', title: title || '错误', message: message }); },
+    info(message, title) { return this.show({ type: 'info', title: title || '信息', message: message }); }
+};
+
+// ── state (AppState) ────────────────────────────────────────
 // 全局工具函数（从 utils.js 迁移，确保始终可用）
 function escapeHtml(str) {
     if (str == null) return '';
@@ -15,6 +142,9 @@ const AppState = {
     // 已加载的模块记录
     _loadedModules: {},
     _moduleCallbacks: {},
+    // 模块 → 打包文件映射（多个模块合并为一个文件）
+    _bundleMap: { 'users': 'admin-bundle', 'roles': 'admin-bundle', 'files': 'admin-bundle', 'logs': 'admin-bundle', 'rule-script': 'admin-bundle' },
+    _loadedFiles: {},
     // 模块加载队列（有限并发加载，最多2个并发）
     _moduleLoadQueue: [],
     _moduleLoadingCount: 0,
@@ -145,37 +275,53 @@ const AppState = {
             return;
         }
 
+        // 解析实际文件名（bundle 映射）
+        const fileName = self._bundleMap[item.name] || item.name;
+
+        // 如果该文件（或 bundle）已在加载中或已加载完成，跳过重复请求
+        // 模块会在 bundle 加载完成后通过 registerModule 自动注册
+        if (self._loadedFiles[fileName]) {
+            item.loading = true;
+            self._moduleLoadQueue = self._moduleLoadQueue.filter(q => q.name !== item.name);
+            self._processModuleQueue();
+            return;
+        }
+
         item.loading = true;
         this._moduleLoadingCount++;
+        self._loadedFiles[fileName] = true;
 
         // 移除可能存在的旧 script 标签（失败后清理）
-        const oldScript = document.querySelector('script[data-module="' + item.name + '"]');
+        const oldScript = document.querySelector('script[data-module="' + fileName + '"]');
         if (oldScript) oldScript.remove();
 
         const script = document.createElement('script');
-        script.src = '/js/modules/' + item.name + '.js';
-        script.dataset.module = item.name;
+        script.src = '/js/modules/' + fileName + '.js';
+        script.dataset.module = fileName;
 
         script.onload = function() {
             self._moduleLoadingCount--;
-            // 从队列中移除
-            self._moduleLoadQueue = self._moduleLoadQueue.filter(q => q.name !== item.name);
+            // 从队列中移除当前模块以及同 bundle 中已注册的模块
+            self._moduleLoadQueue = self._moduleLoadQueue.filter(function(q) {
+                return !self._loadedModules[q.name];
+            });
             // 立即尝试加载下一个（减少延迟）
             setTimeout(function() { self._processModuleQueue(); }, 10);
         };
 
         script.onerror = function() {
-            console.warn('[Module] Failed to load: ' + item.name + ' (attempt ' + (item.retries + 1) + '/3)');
+            console.warn('[Module] Failed to load: ' + fileName + ' (attempt ' + (item.retries + 1) + '/3)');
             script.remove();
             self._moduleLoadingCount--;
             item.loading = false;
+            delete self._loadedFiles[fileName]; // 允许重试
 
             if (item.retries < 2) {
                 item.retries++;
                 // 延迟重试，给 ESP32 喘息时间
                 setTimeout(function() { self._processModuleQueue(); }, 1000);
             } else {
-                console.error('[Module] Giving up loading: ' + item.name);
+                console.error('[Module] Giving up loading: ' + fileName);
                 self._moduleLoadQueue = self._moduleLoadQueue.filter(q => q.name !== item.name);
                 // 继续加载队列中的下一个
                 setTimeout(function() { self._processModuleQueue(); }, 200);

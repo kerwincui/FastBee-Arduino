@@ -64,20 +64,16 @@ function _bootApp() {
 
 document.addEventListener('DOMContentLoaded', function() {
     // 链式加载核心依赖（每次只发一个请求，ESP32 友好）
-    // 加载顺序: fetch-api → notification → state → i18n → 启动应用
-    _loadScript('./js/modules/fetch-api.js', function() {
-        _loadScript('./js/modules/notification.js', function() {
-            _loadScript('./js/state.js', function() {
-                _loadScript('./js/modules/i18n.js', function() {
-                    _bootApp();
-                }, function() {
-                    // i18n 加载失败，使用降级翻译
-                    if (typeof i18n === 'undefined') {
-                        window.i18n = { currentLang: 'zh-CN', t: function(k) { return k; }, updatePageText: function() {} };
-                    }
-                    _bootApp();
-                });
-            });
+    // state.js 已包含 fetch-api + notification，只需: state → i18n → 启动
+    _loadScript('./js/state.js', function() {
+        _loadScript('./js/modules/i18n.js', function() {
+            _bootApp();
+        }, function() {
+            // i18n 加载失败，使用降级翻译
+            if (typeof i18n === 'undefined') {
+                window.i18n = { currentLang: 'zh-CN', t: function(k) { return k; }, updatePageText: function() {} };
+            }
+            _bootApp();
         });
     });
 });

@@ -1739,6 +1739,11 @@
         'perm-peripheral.view': 'View Peripherals',
         'perm-peripheral.config': 'Configure Peripherals',
         'perm-ota.update': 'OTA Update',
+
+        // Device Control - Modbus card titles
+        'dc-modbus-ctrl-relay': 'Relay Control',
+        'dc-modbus-ctrl-pwm': 'PWM Control',
+        'dc-modbus-ctrl-pid': 'PID Speed Control',
     };
     
     // 自注册到 i18n 对象

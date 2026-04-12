@@ -95,6 +95,7 @@
   --bg-card: rgba(255, 255, 255, 0.92);
   --bg-sidebar: #0a66e7;
   --bg-input: #ffffff;
+  --bg-content: #f2f5f9;
 
   /* Sidebar semantic colors (light default) */
   --sidebar-text: rgba(255, 255, 255, 0.96);
@@ -190,6 +191,7 @@
   --bg-card: rgba(26, 26, 26, 0.95);
   --bg-sidebar: #000000;
   --bg-input: #1f1f1f;
+  --bg-content: #1a1a1a;
 
   /* Sidebar semantic colors (dark) */
   --sidebar-text: rgba(255, 255, 255, 0.92);
@@ -392,7 +394,7 @@ a:hover { text-decoration: underline; }
   flex: 1;
   padding: var(--space-6);
   overflow-y: auto;
-  background: var(--bg-body);
+  background: var(--bg-content);
   width: 100%;
   position: relative;
   z-index: 1;
@@ -1706,19 +1708,82 @@ input:focus, select:focus, textarea:focus, .pure-input-1:focus { border-color: v
 /* === 28. UI Polishing === */
 .sidebar-menu .menu-item:hover { text-decoration: none !important; }
 .user-dropdown-menu { z-index: 99999; }
-.dashboard-top-stats > .stat-card { text-align: left; padding: var(--space-5); border: 1px solid color-mix(in srgb, var(--glass-border) 86%, var(--primary) 14%); border-radius: var(--rounded-lg); background: color-mix(in srgb, var(--bg-card) 92%, var(--primary-light) 8%); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05); }
-.dashboard-top-stats > .stat-card::before { display: none; }
-.dashboard-top-stats > .stat-card .stat-value { font-size: 24px; margin: 4px 0; }
-.dashboard-top-stats > .stat-card .stat-label, .dashboard-top-stats > .stat-card .stat-desc { text-align: left; }
-.dashboard-merged-card { padding: var(--space-5); }
-.dashboard-merged-section { margin-bottom: var(--space-10); }
-.dashboard-merged-section .section-title { padding-bottom: var(--space-4); }
-.dashboard-network-grid { display: grid; grid-template-columns: repeat(3, minmax(260px, 1fr)); gap: var(--space-4); }
-.dashboard-network-grid .info-card { border-radius: var(--rounded-lg); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05); }
-.dashboard-network-grid .info-card-header { background: color-mix(in srgb, var(--bg-card) 94%, var(--primary-light) 6%); border-bottom: 1px solid color-mix(in srgb, var(--glass-border) 86%, var(--primary) 14%); }
-@media (max-width: 1200px) { .dashboard-network-grid { grid-template-columns: repeat(2, minmax(240px, 1fr)); } }
+/* === Dashboard page card-based overrides === */
+#dashboard-page .stats-grid { gap: 14px; margin-bottom: 14px; }
+#dashboard-page .stat-card { background: var(--bg-card); border: 1px solid var(--border-secondary); border-top: none; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); backdrop-filter: none; -webkit-backdrop-filter: none; }
+#dashboard-page .stat-card::before { display: none; }
+#dashboard-page .stat-card::after { display: none; }
+#dashboard-page .stat-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+#dashboard-page .stat-card-primary, #dashboard-page .stat-card-success, #dashboard-page .stat-card-warning, #dashboard-page .stat-card-info { border-top: none; }
+/* Top info row - left aligned device/uptime/network */
+.dashboard-top-stats > .stat-card { text-align: left; padding: 16px 20px; border-top: none; }
+.dashboard-top-stats > .stat-card::before { display: block; height: 4px; border-radius: 10px 10px 0 0; }
+.dashboard-top-stats > .stat-card-primary::before { background: var(--primary); }
+.dashboard-top-stats > .stat-card-success::before { background: var(--success); }
+.dashboard-top-stats > .stat-card-warning::before { background: var(--warning); }
+.dashboard-top-stats > .stat-card-info::before { background: var(--info); }
+.dashboard-top-stats > .stat-card .stat-label { font-size: 12px; font-weight: 500; margin-bottom: 2px; }
+.dashboard-top-stats > .stat-card .stat-value { font-size: 22px; font-weight: 700; margin: 4px 0; line-height: 1.3; }
+.dashboard-top-stats > .stat-card .stat-desc { font-size: 11px; text-align: left; }
+/* Device info card - blue theme */
+.dashboard-top-stats > .stat-card-primary { background: var(--primary-light); border-color: rgba(22, 119, 255, 0.18); }
+.dashboard-top-stats > .stat-card-primary .stat-label { color: var(--primary); }
+.dashboard-top-stats > .stat-card-primary .stat-value { color: var(--primary); }
+.dashboard-top-stats > .stat-card-primary .stat-desc { color: rgba(22, 119, 255, 0.65); }
+/* Uptime card - green theme */
+.dashboard-top-stats > .stat-card-success { background: var(--success-light); border-color: rgba(82, 196, 26, 0.18); }
+.dashboard-top-stats > .stat-card-success .stat-label { color: #389e0d; }
+.dashboard-top-stats > .stat-card-success .stat-value { color: #389e0d; }
+.dashboard-top-stats > .stat-card-success .stat-desc { color: rgba(56, 158, 13, 0.6); }
+/* Network status card - orange theme */
+.dashboard-top-stats > .stat-card-warning { background: var(--warning-light); border-color: rgba(250, 173, 20, 0.18); }
+.dashboard-top-stats > .stat-card-warning .stat-label { color: #d48806; }
+.dashboard-top-stats > .stat-card-warning .stat-value { color: var(--text-primary); }
+.dashboard-top-stats > .stat-card-warning .stat-desc { color: #d48806; }
+/* User stats row - centered big numbers */
+#dashboard-page > .stats-grid:not(.dashboard-top-stats) .stat-card { text-align: center; padding: 18px 16px; }
+#dashboard-page > .stats-grid:not(.dashboard-top-stats) .stat-value { font-size: 36px; font-weight: 700; margin-bottom: 4px; }
+#dashboard-page > .stats-grid:not(.dashboard-top-stats) .stat-label { font-size: 13px; color: var(--text-muted); }
+/* Independent dashboard cards */
+.dashboard-card { background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); padding: 20px; }
+.dashboard-card .section-title { padding-bottom: 12px; font-size: 14px; font-weight: 600; }
+/* Resource grid - 3 columns */
+#dashboard-page .resource-grid { grid-template-columns: repeat(3, 1fr); gap: 14px; }
+#dashboard-page .resource-card { background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); padding: 16px; backdrop-filter: none; -webkit-backdrop-filter: none; }
+#dashboard-page .resource-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+/* Network grid - 3 columns with dot-style headers */
+.dashboard-network-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.dashboard-network-grid .info-card { border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); border: 1px solid var(--border-secondary); }
+.dashboard-network-grid .info-card-header { background: transparent !important; color: var(--text-primary) !important; border-bottom: 1px solid var(--border-secondary); padding: 12px 16px; font-size: 14px; }
+.dashboard-network-grid .info-card-header .icon-network, .dashboard-network-grid .info-card-header .icon-dashboard { font-size: 0; width: 8px; height: 8px; display: inline-block; border-radius: 50%; vertical-align: middle; margin-right: 6px; }
+.dashboard-network-grid .info-card-header .icon-network::before, .dashboard-network-grid .info-card-header .icon-dashboard::before { display: none; }
+.dashboard-network-grid .info-card-header-primary .icon-network { background: var(--primary); }
+.dashboard-network-grid .info-card-header-danger .icon-network { background: var(--danger); }
+.dashboard-network-grid .info-card-header-success .icon-dashboard { background: var(--success); }
+/* Dark theme dashboard */
+[data-theme="dark"] #dashboard-page .stat-card { background: var(--gray-11); border-color: var(--gray-9); box-shadow: 0 1px 4px rgba(0,0,0,0.2); }
+/* Dark theme - top stats tinted backgrounds */
+[data-theme="dark"] .dashboard-top-stats > .stat-card-primary { background: rgba(22, 119, 255, 0.08); border-color: rgba(22, 119, 255, 0.2); }
+[data-theme="dark"] .dashboard-top-stats > .stat-card-primary .stat-label { color: #4096ff; }
+[data-theme="dark"] .dashboard-top-stats > .stat-card-primary .stat-value { color: #4096ff; }
+[data-theme="dark"] .dashboard-top-stats > .stat-card-primary .stat-desc { color: rgba(64, 150, 255, 0.65); }
+[data-theme="dark"] .dashboard-top-stats > .stat-card-success { background: rgba(82, 196, 26, 0.08); border-color: rgba(82, 196, 26, 0.2); }
+[data-theme="dark"] .dashboard-top-stats > .stat-card-success .stat-label { color: #73d13d; }
+[data-theme="dark"] .dashboard-top-stats > .stat-card-success .stat-value { color: #73d13d; }
+[data-theme="dark"] .dashboard-top-stats > .stat-card-success .stat-desc { color: rgba(115, 209, 61, 0.65); }
+[data-theme="dark"] .dashboard-top-stats > .stat-card-warning { background: rgba(250, 173, 20, 0.08); border-color: rgba(250, 173, 20, 0.2); }
+[data-theme="dark"] .dashboard-top-stats > .stat-card-warning .stat-label { color: #ffc53d; }
+[data-theme="dark"] .dashboard-top-stats > .stat-card-warning .stat-desc { color: rgba(255, 197, 61, 0.65); }
+[data-theme="dark"] .dashboard-card { background: var(--gray-11); border-color: var(--gray-9); box-shadow: 0 1px 4px rgba(0,0,0,0.2); }
+[data-theme="dark"] #dashboard-page .resource-card { background: var(--gray-11); border-color: var(--gray-9); box-shadow: 0 1px 4px rgba(0,0,0,0.2); }
+[data-theme="dark"] .dashboard-network-grid .info-card { background: var(--gray-11); border-color: var(--gray-9); }
+[data-theme="dark"] .dashboard-network-grid .info-card-header { border-bottom-color: var(--gray-9); }
+/* Dashboard responsive */
+@media (max-width: 1200px) { .dashboard-network-grid { grid-template-columns: repeat(2, 1fr); } #dashboard-page .resource-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 768px) {
   .dashboard-network-grid { grid-template-columns: 1fr; }
+  #dashboard-page .resource-grid { grid-template-columns: 1fr; }
+  #dashboard-page .stats-grid { grid-template-columns: 1fr; }
   .ota-inline-action-row { flex-direction: column; align-items: stretch; }
 }
 
@@ -2026,72 +2091,62 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 [data-theme="dark"] .pid-card.pid-pv-card .pid-card-value { color: var(--primary); }
 [data-theme="dark"] .pid-input { background: var(--gray-12); color: var(--text-primary); border-color: var(--border); }
 
-/* === Device Control Page - Modern Dashboard Design === */
+/* === Device Control Page - Card-based Dashboard Design === */
 
-/* Device banner - horizontal header */
-.dc-device-banner { display: flex; align-items: center; gap: 12px; padding: 12px 16px; margin-bottom: 16px; background: linear-gradient(135deg, var(--primary-light) 0%, transparent 60%); border: 1px solid rgba(22,119,255,0.12); border-radius: var(--rounded-lg); }
-.dc-device-banner svg { width: 36px; height: 36px; color: var(--primary); opacity: 0.9; flex-shrink: 0; }
-.dc-device-banner-info { flex: 1; min-width: 0; }
-.dc-device-banner .dc-device-name { font-size: 15px; font-weight: 700; color: var(--text-primary); margin: 0; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dc-device-status { font-size: 11px; color: var(--success); font-weight: 500; display: flex; align-items: center; gap: 4px; margin-top: 2px; }
-.dc-device-status::before { content: ''; width: 7px; height: 7px; background: var(--success); border-radius: 50%; display: inline-block; animation: dc-pulse 2s ease-in-out infinite; }
-@keyframes dc-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-
-/* Section containers */
-.dc-section { margin-bottom: 18px; }
-.dc-section:last-child { margin-bottom: 0; }
-.dc-section-title { font-size: 12px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.8px; margin: 0 0 12px; padding: 7px 12px; background: linear-gradient(90deg, rgba(22,119,255,0.06) 0%, transparent 100%); border-left: 3px solid var(--primary); border-radius: 0 var(--rounded-sm) var(--rounded-sm) 0; display: flex; align-items: center; gap: 6px; }
+/* Page header with title + refresh */
+.dc-page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.dc-page-title { font-size: 16px; font-weight: 700; color: var(--text-primary); }
 
 /* Two-column layout */
-.dc-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
-.dc-col-left, .dc-col-right { min-width: 0; }
+.dc-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+.dc-col-left, .dc-col-right { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 
-/* Monitor data grid - larger cards */
-.dc-monitor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+/* Monitor data grid */
+.dc-monitor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin-bottom: 14px; }
 
-/* Monitor card with accent bar */
-.dc-monitor-card { display: flex; align-items: stretch; background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: var(--rounded-lg); overflow: hidden; transition: all 0.2s; position: relative; }
-.dc-monitor-card:hover { border-color: var(--primary); box-shadow: 0 2px 10px rgba(22,119,255,0.1); transform: translateY(-1px); }
-.dc-monitor-accent { width: 4px; flex-shrink: 0; border-radius: 4px 0 0 4px; }
-.dc-monitor-body { flex: 1; padding: 10px 12px; min-width: 0; }
-.dc-monitor-device { font-size: 9px; color: var(--primary); font-weight: 600; margin-bottom: 2px; padding: 1px 5px; background: rgba(22,119,255,0.08); border-radius: 3px; display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dc-monitor-name { font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Monitor card - standalone white card */
+.dc-monitor-card { background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: 10px; padding: 12px 14px; transition: all 0.2s; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+.dc-monitor-card:hover { border-color: var(--primary); box-shadow: 0 3px 12px rgba(22,119,255,0.1); transform: translateY(-1px); }
+.dc-monitor-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.dc-monitor-label { font-size: 11px; color: var(--text-muted); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; margin-right: 6px; }
+.dc-monitor-icon { flex-shrink: 0; line-height: 0; }
+.dc-monitor-icon svg { width: 18px; height: 18px; }
+.dc-monitor-device { font-size: 9px; color: var(--primary); font-weight: 600; margin-bottom: 4px; padding: 1px 5px; background: rgba(22,119,255,0.08); border-radius: 3px; display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dc-monitor-val-row { display: flex; align-items: baseline; gap: 3px; }
 .dc-monitor-value { font-size: 22px; font-weight: 700; color: var(--text-primary); font-family: 'Consolas','Monaco','Courier New',monospace; line-height: 1.2; }
 .dc-monitor-unit { font-size: 11px; color: var(--text-muted); }
 
-/* Legacy device icon (hidden) */
-.dc-device-icon { display: none; }
+/* Card header with colored badge */
+.dc-card-header { display: flex; align-items: center; gap: 8px; padding: 0 0 10px; }
+.dc-card-badge { font-size: 10px; color: #fff; padding: 2px 10px; border-radius: 10px; font-weight: 700; line-height: 1.5; letter-spacing: 0.3px; white-space: nowrap; }
+.dc-card-title { font-size: 13px; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* Control group */
-.dc-control-group { margin-bottom: 12px; }
-.dc-control-group:last-child { margin-bottom: 0; }
-.dc-group-card { background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: var(--rounded-lg); padding: 12px; }
+/* Control group card */
+.dc-control-group { background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: 10px; padding: 14px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); transition: border-color 0.2s; }
+.dc-control-group:hover { border-color: rgba(22,119,255,0.2); }
 .dc-control-group-title { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; padding-left: 2px; }
+.dc-control-grid { display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* GPIO list rows */
 .dc-gpio-list { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.dc-gpio-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--gray-2); border: 1px solid var(--border-secondary); border-radius: var(--rounded-md); transition: all 0.15s; }
+.dc-gpio-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--gray-2); border: 1px solid var(--border-secondary); border-radius: 8px; transition: all 0.15s; }
 .dc-gpio-row:hover { border-color: var(--success); background: var(--success-light); }
 .dc-gpio-name { font-size: 13px; color: var(--text-primary); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; margin-right: 10px; }
 
 /* System operations 2x2 grid */
 .dc-sys-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.dc-sys-card { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px 8px; border: 1px solid var(--border-secondary); border-radius: var(--rounded-lg); cursor: pointer; transition: all 0.15s; background: var(--gray-2); }
-.dc-sys-card:hover { border-color: var(--warning); background: var(--warning-light); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.dc-sys-card { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 14px 8px; border: 1px solid var(--border-secondary); border-radius: 8px; cursor: pointer; transition: all 0.15s; background: var(--gray-2); }
+.dc-sys-card:hover { border-color: var(--warning); background: var(--warning-light); transform: translateY(-1px); box-shadow: 0 2px 8px rgba(250,173,20,0.12); }
 .dc-sys-card-name { font-size: 11px; color: var(--text-primary); font-weight: 500; text-align: center; line-height: 1.3; }
 
-/* Control button grid */
-.dc-control-grid { display: flex; flex-wrap: wrap; gap: 6px; }
-
 /* Control buttons */
-.dc-ctrl-btn { padding: 20px 14px; height:24px;font-size: 12px; font-weight: 500; border: 1px solid var(--border); border-radius: var(--rounded-md); background: var(--bg-card); color: var(--text-primary); cursor: pointer; transition: all 0.15s; white-space: nowrap; min-width: 72px; text-align: center; }
-.dc-ctrl-btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.dc-ctrl-btn { padding: 8px 16px; font-size: 13px; font-weight: 500; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-primary); cursor: pointer; transition: all 0.15s; white-space: nowrap; min-width: 64px; text-align: center; }
+.dc-ctrl-btn:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
 .dc-ctrl-btn:active { transform: scale(0.97); }
 .dc-ctrl-btn:disabled, .dc-ctrl-btn.dc-loading { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
 
 /* Button variants */
-.dc-ctrl-btn.dc-gpio { border-color: var(--success); color: var(--success); background: transparent; padding: 4px 14px; font-size: 11px; min-width: 56px; }
+.dc-ctrl-btn.dc-gpio { border-color: var(--success); color: var(--success); background: transparent; }
 .dc-ctrl-btn.dc-gpio:hover { background: var(--success); color: #fff; }
 .dc-ctrl-btn.dc-modbus { border-color: var(--primary); color: var(--primary); background: transparent; }
 .dc-ctrl-btn.dc-modbus:hover { background: var(--primary); color: #fff; }
@@ -2107,21 +2162,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* Empty state */
 .dc-empty { text-align: center; padding: 16px 8px; color: var(--text-muted); font-size: 12px; }
 
-/* ====== Modbus sub-device panels ====== */
-.dc-modbus-device-panel { background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: var(--rounded-lg); margin-bottom: 10px; overflow: hidden; transition: border-color 0.2s; }
-.dc-modbus-device-panel:last-child { margin-bottom: 0; }
-.dc-modbus-device-panel:hover { border-color: rgba(22,119,255,0.3); }
-.dc-modbus-device-header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--gray-2); border-bottom: 1px solid var(--border-secondary); }
-.dc-modbus-device-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.dc-modbus-device-badge { font-size: 9px; color: #fff; padding: 2px 8px; border-radius: 10px; font-weight: 600; line-height: 1.4; }
+/* ====== Modbus sub-device panels (card style) ====== */
+.dc-modbus-device-panel { background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: 10px; padding: 14px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); transition: border-color 0.2s; }
+.dc-modbus-device-panel:hover { border-color: rgba(22,119,255,0.25); }
+.dc-modbus-device-panel .dc-card-header { padding-bottom: 10px; border-bottom: 1px solid var(--border-secondary); margin-bottom: 10px; }
 .dc-modbus-device-addr { font-size: 10px; color: var(--text-muted); margin-left: auto; font-family: 'Consolas',monospace; }
-.dc-modbus-device-body { padding: 10px 12px; }
-.dc-modbus-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 12px 10px; }
+.dc-modbus-device-body { padding: 0; }
+.dc-modbus-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 10px; }
 
-/* Coil grid - larger cards with power icon */
-.dc-coil-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px; }
-.dc-coil-card { text-align: center; padding: 10px 6px 8px; border: 1px solid var(--border); border-radius: var(--rounded-lg); cursor: pointer; transition: all 0.2s; user-select: none; }
-.dc-coil-card:hover { box-shadow: var(--shadow-sm); transform: translateY(-2px); }
+/* Coil grid */
+.dc-coil-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 8px; }
+.dc-coil-card { text-align: center; padding: 10px 6px 8px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; transition: all 0.2s; user-select: none; }
+.dc-coil-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); transform: translateY(-2px); }
 .dc-coil-card.dc-coil-on { background: var(--success-light); border-color: var(--success); }
 .dc-coil-card.dc-coil-off { background: var(--gray-2); border-color: var(--border); }
 .dc-coil-icon { margin-bottom: 4px; line-height: 0; }
@@ -2136,27 +2188,24 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* PWM horizontal rows */
 .dc-pwm-list { display: flex; flex-direction: column; gap: 8px; }
-.dc-pwm-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--gray-2); border: 1px solid var(--border-secondary); border-radius: var(--rounded-md); transition: border-color 0.15s; }
+.dc-pwm-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--gray-2); border: 1px solid var(--border-secondary); border-radius: 8px; transition: border-color 0.15s; }
 .dc-pwm-row:hover { border-color: var(--primary); }
 .dc-pwm-ch { font-size: 12px; color: var(--text-secondary); font-weight: 600; min-width: 34px; flex-shrink: 0; }
-.dc-pwm-slider { flex: 1; min-width: 60px; accent-color: var(--primary); height: 6px; cursor: pointer; }
+.dc-pwm-slider { flex: 1; min-width: 50px; accent-color: var(--primary); height: 6px; cursor: pointer; }
 .dc-pwm-pct { font-size: 12px; color: var(--text-primary); font-weight: 600; min-width: 36px; text-align: right; flex-shrink: 0; }
-.dc-pwm-num { width: 56px!important; text-align: center; font-size: 11px; padding: 3px 4px; border: 1px solid var(--border); border-radius: var(--rounded-sm); background: var(--bg-card); color: var(--text-primary); flex-shrink: 0; }
+.dc-pwm-num { width: 52px!important; text-align: center; font-size: 11px; padding: 3px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-card); color: var(--text-primary); flex-shrink: 0; }
 
-/* PID grid - enhanced with dark PV card */
+/* PID grid */
 .dc-pid-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.dc-pid-card { background: var(--gray-2); border: 1px solid var(--border-secondary); border-radius: var(--rounded-lg); padding: 8px 10px; text-align: center; transition: border-color 0.15s; }
+.dc-pid-card { background: var(--gray-2); border: 1px solid var(--border-secondary); border-radius: 8px; padding: 8px 10px; text-align: center; transition: border-color 0.15s; }
 .dc-pid-card:hover { border-color: var(--primary); }
-.dc-pid-card.dc-pid-pv { grid-column: span 3; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-color: rgba(22,119,255,0.3); padding: 14px 10px; }
 .dc-pid-label { font-size: 9px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
-.dc-pid-card.dc-pid-pv .dc-pid-label { color: rgba(255,255,255,0.5); }
 .dc-pid-value { font-size: 17px; font-weight: 700; color: var(--text-primary); margin: 3px 0; font-family: 'Consolas',monospace; }
-.dc-pid-card.dc-pid-pv .dc-pid-value { font-size: 26px; color: #4dabf7; }
 .dc-pid-edit { display: flex; gap: 4px; align-items: center; justify-content: center; margin-top: 2px; }
-.dc-pid-input { width: 58px; text-align: center; font-size: 11px; padding: 3px 4px; border: 1px solid var(--border); border-radius: var(--rounded-sm); background: var(--bg-card); color: var(--text-primary); }
+.dc-pid-input { width: 58px; text-align: center; font-size: 11px; padding: 3px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-card); color: var(--text-primary); }
 
-/* Small action buttons */
-.dc-btn-sm { padding: 4px 10px; font-size: 10px; font-weight: 500; border: 1px solid var(--border); border-radius: var(--rounded); cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+/* Action buttons */
+.dc-btn-sm { padding: 6px 14px; font-size: 12px; font-weight: 500; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
 .dc-btn-on { background: var(--success); color: #fff; border-color: var(--success); }
 .dc-btn-on:hover { opacity: 0.85; }
 .dc-btn-off { background: var(--gray-5); color: #fff; border-color: var(--gray-5); }
@@ -2167,79 +2216,70 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-btn-refresh:hover { background: var(--gray-2); border-color: var(--primary); color: var(--primary); }
 
 /* === Dark theme === */
-[data-theme="dark"] .dc-device-banner { background: linear-gradient(135deg, rgba(22,119,255,0.08) 0%, transparent 60%); border-color: rgba(22,119,255,0.15); }
-[data-theme="dark"] .dc-section-title { background: linear-gradient(90deg, rgba(22,119,255,0.08) 0%, transparent 100%); }
-[data-theme="dark"] .dc-monitor-card { background: var(--gray-11); border-color: var(--gray-9); }
-[data-theme="dark"] .dc-monitor-card:hover { border-color: var(--primary); box-shadow: 0 2px 10px rgba(22,119,255,0.12); }
+[data-theme="dark"] .dc-monitor-card { background: var(--gray-11); border-color: var(--gray-9); box-shadow: 0 1px 4px rgba(0,0,0,0.2); }
+[data-theme="dark"] .dc-monitor-card:hover { border-color: var(--primary); box-shadow: 0 3px 12px rgba(22,119,255,0.12); }
 [data-theme="dark"] .dc-monitor-device { background: rgba(22,119,255,0.15); }
-[data-theme="dark"] .dc-group-card { background: var(--gray-11); border-color: var(--gray-9); }
+[data-theme="dark"] .dc-control-group { background: var(--gray-11); border-color: var(--gray-9); box-shadow: 0 1px 4px rgba(0,0,0,0.2); }
 [data-theme="dark"] .dc-gpio-row { background: var(--gray-12); border-color: var(--gray-9); }
 [data-theme="dark"] .dc-gpio-row:hover { border-color: var(--success); background: rgba(82,196,26,0.08); }
 [data-theme="dark"] .dc-sys-card { background: var(--gray-12); border-color: var(--gray-9); }
 [data-theme="dark"] .dc-sys-card:hover { border-color: var(--warning); background: rgba(250,173,20,0.08); }
 [data-theme="dark"] .dc-ctrl-btn { background: var(--gray-11); }
-[data-theme="dark"] .dc-ctrl-btn.dc-gpio { border-color: var(--success); color: var(--success); background: transparent; }
+[data-theme="dark"] .dc-ctrl-btn.dc-gpio { background: transparent; }
 [data-theme="dark"] .dc-ctrl-btn.dc-gpio:hover { background: var(--success); color: #fff; }
-[data-theme="dark"] .dc-ctrl-btn.dc-modbus { border-color: var(--primary); color: var(--primary); }
+[data-theme="dark"] .dc-ctrl-btn.dc-modbus { background: transparent; }
 [data-theme="dark"] .dc-ctrl-btn.dc-modbus:hover { background: var(--primary); color: #fff; }
-[data-theme="dark"] .dc-ctrl-btn.dc-system { border-color: var(--warning); color: var(--warning); }
+[data-theme="dark"] .dc-ctrl-btn.dc-system { background: transparent; }
 [data-theme="dark"] .dc-ctrl-btn.dc-system:hover { background: var(--warning); color: #fff; }
-[data-theme="dark"] .dc-ctrl-btn.dc-script { border-color: #9254de; color: #9254de; }
+[data-theme="dark"] .dc-ctrl-btn.dc-script { border-color: #9254de; color: #9254de; background: transparent; }
 [data-theme="dark"] .dc-ctrl-btn.dc-script:hover { background: #9254de; color: #fff; }
-[data-theme="dark"] .dc-ctrl-btn.dc-sensor { border-color: #36cfc9; color: #36cfc9; }
+[data-theme="dark"] .dc-ctrl-btn.dc-sensor { border-color: #36cfc9; color: #36cfc9; background: transparent; }
 [data-theme="dark"] .dc-ctrl-btn.dc-sensor:hover { background: #36cfc9; color: #fff; }
-[data-theme="dark"] .dc-ctrl-btn.dc-other { border-color: var(--gray-7); color: var(--text-secondary); }
+[data-theme="dark"] .dc-ctrl-btn.dc-other { border-color: var(--gray-7); color: var(--text-secondary); background: transparent; }
 [data-theme="dark"] .dc-ctrl-btn.dc-other:hover { background: var(--gray-7); color: #fff; }
-[data-theme="dark"] .dc-modbus-device-panel { background: var(--gray-11); border-color: var(--gray-9); }
+[data-theme="dark"] .dc-modbus-device-panel { background: var(--gray-11); border-color: var(--gray-9); box-shadow: 0 1px 4px rgba(0,0,0,0.2); }
 [data-theme="dark"] .dc-modbus-device-panel:hover { border-color: rgba(22,119,255,0.3); }
-[data-theme="dark"] .dc-modbus-device-header { background: var(--gray-12); border-color: var(--gray-9); }
+[data-theme="dark"] .dc-modbus-device-panel .dc-card-header { border-bottom-color: var(--gray-9); }
 [data-theme="dark"] .dc-coil-card.dc-coil-on { background: rgba(82,196,26,0.1); border-color: var(--success); }
 [data-theme="dark"] .dc-coil-card.dc-coil-off { background: var(--gray-11); border-color: var(--gray-9); }
 [data-theme="dark"] .dc-pwm-row { background: var(--gray-12); border-color: var(--gray-9); }
 [data-theme="dark"] .dc-pwm-row:hover { border-color: var(--primary); }
 [data-theme="dark"] .dc-pwm-num { background: var(--gray-11); border-color: var(--gray-9); }
 [data-theme="dark"] .dc-pid-card { background: var(--gray-11); border-color: var(--gray-9); }
-[data-theme="dark"] .dc-pid-card.dc-pid-pv { background: linear-gradient(135deg, #0d1117 0%, #161b22 100%); border-color: rgba(22,119,255,0.25); }
 [data-theme="dark"] .dc-pid-input { background: var(--gray-12); border-color: var(--gray-9); }
 [data-theme="dark"] .dc-btn-refresh { background: var(--gray-11); }
 
 /* === Responsive breakpoints === */
 @media (max-width: 1024px) {
-  .dc-monitor-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  .dc-monitor-grid { grid-template-columns: repeat(auto-fill, minmax(115px, 1fr)); }
 }
 @media (max-width: 768px) {
   .dc-2col { grid-template-columns: 1fr; gap: 12px; }
-  .dc-device-banner { padding: 8px 12px; gap: 10px; }
-  .dc-device-banner svg { width: 30px; height: 30px; }
-  .dc-device-banner .dc-device-name { font-size: 14px; }
   .dc-monitor-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; }
+  .dc-monitor-card { padding: 10px 12px; }
   .dc-monitor-value { font-size: 20px; }
-  .dc-ctrl-btn { padding: 5px 10px; font-size: 11px; min-width: 64px; }
+  .dc-ctrl-btn { padding: 6px 14px; font-size: 12px; min-width: 56px; }
   .dc-pid-grid { grid-template-columns: repeat(3, 1fr); gap: 6px; }
   .dc-coil-grid { grid-template-columns: repeat(auto-fill, minmax(66px, 1fr)); gap: 6px; }
 }
 @media (max-width: 640px) {
   .dc-2col { grid-template-columns: 1fr; gap: 10px; }
-  .dc-device-banner { padding: 6px 10px; gap: 8px; margin-bottom: 10px; }
-  .dc-device-banner svg { width: 26px; height: 26px; }
-  .dc-device-banner .dc-device-name { font-size: 13px; }
-  .dc-section { margin-bottom: 12px; }
-  .dc-section-title { font-size: 11px; padding: 5px 10px; }
   .dc-monitor-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 6px; }
-  .dc-monitor-body { padding: 8px 10px; }
+  .dc-monitor-card { padding: 8px 10px; }
   .dc-monitor-value { font-size: 18px; }
-  .dc-monitor-name { font-size: 10px; }
-  .dc-ctrl-btn { padding: 4px 8px; font-size: 11px; min-width: 56px; }
+  .dc-monitor-label { font-size: 10px; }
+  .dc-control-group { padding: 10px; }
+  .dc-ctrl-btn { padding: 5px 12px; font-size: 12px; min-width: 50px; }
   .dc-control-grid { gap: 5px; }
   .dc-gpio-list { grid-template-columns: 1fr; }
   .dc-gpio-row { padding: 6px 10px; }
   .dc-gpio-name { font-size: 12px; }
-  .dc-sys-card { padding: 12px 6px; }
+  .dc-sys-card { padding: 10px 6px; }
   .dc-coil-grid { grid-template-columns: repeat(auto-fill, minmax(60px, 1fr)); gap: 5px; }
   .dc-coil-card { padding: 8px 4px 6px; }
   .dc-pwm-row { padding: 6px 10px; gap: 8px; }
   .dc-pid-grid { grid-template-columns: 1fr 1fr; gap: 6px; }
-  .dc-pid-card.dc-pid-pv { grid-column: span 2; }
+  .dc-modbus-device-panel { padding: 10px; }
   .dc-modbus-actions { gap: 5px; }
-  .dc-btn-sm { padding: 3px 7px; font-size: 9px; }
+  .dc-btn-sm { padding: 4px 10px; font-size: 11px; }
 }
