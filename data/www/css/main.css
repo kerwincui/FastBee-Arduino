@@ -1725,6 +1725,13 @@ input:focus, select:focus, textarea:focus, .pure-input-1:focus { border-color: v
 .dashboard-top-stats > .stat-card .stat-label { font-size: 12px; font-weight: 500; margin-bottom: 2px; }
 .dashboard-top-stats > .stat-card .stat-value { font-size: 22px; font-weight: 700; margin: 4px 0; line-height: 1.3; }
 .dashboard-top-stats > .stat-card .stat-desc { font-size: 11px; text-align: left; }
+/* Stat card top layout: text left, icon right */
+.stat-card-top { display: flex; align-items: flex-start; justify-content: space-between; }
+.stat-card-text { flex: 1; min-width: 0; }
+.stat-card-icon { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-left: 12px; }
+.stat-icon-primary { background: rgba(22, 119, 255, 0.12); color: var(--primary); }
+.stat-icon-success { background: rgba(82, 196, 26, 0.12); color: #389e0d; }
+.stat-icon-warning { background: rgba(250, 173, 20, 0.12); color: #d48806; }
 /* Device info card - blue theme */
 .dashboard-top-stats > .stat-card-primary { background: var(--primary-light); border-color: rgba(22, 119, 255, 0.18); }
 .dashboard-top-stats > .stat-card-primary .stat-label { color: var(--primary); }
@@ -1774,6 +1781,9 @@ input:focus, select:focus, textarea:focus, .pure-input-1:focus { border-color: v
 [data-theme="dark"] .dashboard-top-stats > .stat-card-warning { background: rgba(250, 173, 20, 0.08); border-color: rgba(250, 173, 20, 0.2); }
 [data-theme="dark"] .dashboard-top-stats > .stat-card-warning .stat-label { color: #ffc53d; }
 [data-theme="dark"] .dashboard-top-stats > .stat-card-warning .stat-desc { color: rgba(255, 197, 61, 0.65); }
+[data-theme="dark"] .stat-icon-primary { background: rgba(22, 119, 255, 0.15); color: #4096ff; }
+[data-theme="dark"] .stat-icon-success { background: rgba(82, 196, 26, 0.15); color: #73d13d; }
+[data-theme="dark"] .stat-icon-warning { background: rgba(250, 173, 20, 0.15); color: #ffc53d; }
 [data-theme="dark"] .dashboard-card { background: var(--gray-11); border-color: var(--gray-9); box-shadow: 0 1px 4px rgba(0,0,0,0.2); }
 [data-theme="dark"] #dashboard-page .resource-card { background: var(--gray-11); border-color: var(--gray-9); box-shadow: 0 1px 4px rgba(0,0,0,0.2); }
 [data-theme="dark"] .dashboard-network-grid .info-card { background: var(--gray-11); border-color: var(--gray-9); }
@@ -2101,8 +2111,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
 .dc-col-left, .dc-col-right { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 
+/* Monitor section wrapper */
+.dc-monitor-section { margin-bottom: 14px; }
+.dc-monitor-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.dc-monitor-header .dc-card-title { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.dc-monitor-header .dc-btn-refresh { flex-shrink: 0; }
+
 /* Monitor data grid */
-.dc-monitor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.dc-monitor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; }
 
 /* Monitor card - standalone white card */
 .dc-monitor-card { background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: 10px; padding: 12px 14px; transition: all 0.2s; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
@@ -2140,7 +2156,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-sys-card-name { font-size: 11px; color: var(--text-primary); font-weight: 500; text-align: center; line-height: 1.3; }
 
 /* Control buttons */
-.dc-ctrl-btn { padding: 8px 16px; font-size: 13px; font-weight: 500; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-primary); cursor: pointer; transition: all 0.15s; white-space: nowrap; min-width: 64px; text-align: center; }
+.dc-ctrl-btn { padding: 10px 16px; font-size: 13px; font-weight: 500; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text-primary); cursor: pointer; transition: all 0.15s; white-space: nowrap; min-width: 64px; text-align: center; }
 .dc-ctrl-btn:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
 .dc-ctrl-btn:active { transform: scale(0.97); }
 .dc-ctrl-btn:disabled, .dc-ctrl-btn.dc-loading { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
@@ -2205,7 +2221,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-pid-input { width: 58px; text-align: center; font-size: 11px; padding: 3px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-card); color: var(--text-primary); }
 
 /* Action buttons */
-.dc-btn-sm { padding: 6px 14px; font-size: 12px; font-weight: 500; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+.dc-btn-sm { padding: 10px 14px; font-size: 12px; font-weight: 500; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
 .dc-btn-on { background: var(--success); color: #fff; border-color: var(--success); }
 .dc-btn-on:hover { opacity: 0.85; }
 .dc-btn-off { background: var(--gray-5); color: #fff; border-color: var(--gray-5); }

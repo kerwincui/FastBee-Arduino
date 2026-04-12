@@ -35,6 +35,41 @@ bool PeriphExecManager::initialize() {
 
 // ========== CRUD（带互斥量保护） ==========
 
+bool PeriphExecManager::ruleNeedsModbus(const PeriphExecRule& rule) const {
+    for (const auto& action : rule.actions) {
+        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL) ||
+            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_COIL_WRITE) ||
+            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_REG_WRITE) ||
+            action.targetPeriphId.startsWith("modbus:")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool PeriphExecManager::ruleHasPollCollectionAction(const PeriphExecRule& rule) const {
+    for (const auto& action : rule.actions) {
+        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool PeriphExecManager::shouldAvoidSyncFallback(const PeriphExecRule& rule) const {
+    for (const auto& action : rule.actions) {
+        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT) ||
+            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL) ||
+            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_COIL_WRITE) ||
+            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_REG_WRITE) ||
+            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ) ||
+            action.targetPeriphId.startsWith("modbus:")) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool PeriphExecManager::addRule(const PeriphExecRule& rule) {
     MutexGuard lock(_rulesMutex);
     if (!lock.isLocked()) return false;
@@ -584,6 +619,17 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
 
     // 异步模式：判断资源是否充足
     if (!shouldRunAsync()) {
+        if (shouldAvoidSyncFallback(rule)) {
+            LOGGER.warningf("[PeriphExec] Skip heavy rule sync fallback (heap=%d, slots=%d): '%s'",
+                            (int)ESP.getFreeHeap(),
+                            (int)uxSemaphoreGetCount(_taskSlotSemaphore),
+                            rule.name.c_str());
+            {
+                MutexGuard runLock(_runningRulesMutex);
+                _failureBackoff[rule.id] = millis() + 5000;
+            }
+            return;
+        }
         LOGGER.infof("[PeriphExec] Fallback sync (heap=%d, slots=%d): '%s'",
                      (int)ESP.getFreeHeap(),
                      (int)uxSemaphoreGetCount(_taskSlotSemaphore),
@@ -594,6 +640,14 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
 
     // 获取一个任务槽（非阻塞）
     if (xSemaphoreTake(_taskSlotSemaphore, 0) != pdTRUE) {
+        if (shouldAvoidSyncFallback(rule)) {
+            LOGGER.warningf("[PeriphExec] Skip heavy rule without async slot: '%s'", rule.name.c_str());
+            {
+                MutexGuard runLock(_runningRulesMutex);
+                _failureBackoff[rule.id] = millis() + 5000;
+            }
+            return;
+        }
         LOGGER.warningf("[PeriphExec] No async slot, fallback sync: '%s'", rule.name.c_str());
         executeAllActions(rule, receivedValue);
         return;
@@ -602,6 +656,15 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
     // 从对象池获取异步上下文（避免频繁堆分配）
     AsyncExecContext* ctx = _contextPool.acquire();
     if (!ctx) {
+        if (shouldAvoidSyncFallback(rule)) {
+            LOGGER.warningf("[PeriphExec] Context pool exhausted, skip heavy rule: '%s'", rule.name.c_str());
+            xSemaphoreGive(_taskSlotSemaphore);
+            {
+                MutexGuard runLock(_runningRulesMutex);
+                _failureBackoff[rule.id] = millis() + 5000;
+            }
+            return;
+        }
         LOGGER.warning("[PeriphExec] Context pool exhausted, fallback to sync execution");
         xSemaphoreGive(_taskSlotSemaphore);
         executeAllActions(rule, receivedValue);
@@ -615,17 +678,7 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
     ctx->taskSlot = _taskSlotSemaphore;
 
     // 确定栈大小：有脚本/Modbus动作用大栈，其他用小栈
-    bool needLargeStack = false;
-    for (const auto& a : rule.actions) {
-        if (a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT) ||
-            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL) ||
-            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_COIL_WRITE) ||
-            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_REG_WRITE) ||
-            a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
-            needLargeStack = true;
-            break;
-        }
-    }
+    bool needLargeStack = shouldAvoidSyncFallback(rule);
     uint32_t stackSize = needLargeStack ? SCRIPT_TASK_STACK : SIMPLE_TASK_STACK;
 
     // 创建 FreeRTOS 任务
@@ -795,16 +848,7 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
 
                 if (shouldTrigger) {
                     // 检查规则是否需要 Modbus，以及 Modbus 是否可用
-                    bool needsModbus = false;
-                    for (const auto& action : rule.actions) {
-                        if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL) ||
-                            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_COIL_WRITE) ||
-                            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_REG_WRITE) ||
-                            action.targetPeriphId.startsWith("modbus:")) {
-                            needsModbus = true;
-                            break;
-                        }
-                    }
+                    bool needsModbus = ruleNeedsModbus(rule);
 
                     // 如果需要 Modbus 但不可用，跳过本次触发并记录警告
                     if (needsModbus && !modbusAvailable) {
@@ -1052,6 +1096,7 @@ void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& sourc
                 bool triggerMatched = false;
                 for (auto& trigger : rule.triggers) {
                     if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER)) continue;
+                    if (source == "modbus_poll" && ruleHasPollCollectionAction(rule)) continue;
 
                     // 匹配数据源外设 ID（必须配置且匹配，空/null 不匹配任何数据）
                     if (trigger.triggerPeriphId.isEmpty() || trigger.triggerPeriphId == "null") continue;

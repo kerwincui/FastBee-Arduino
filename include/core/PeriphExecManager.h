@@ -184,6 +184,10 @@ private:
     PeriphExecManager() = default;
 
     // ========== 子模块 ==========
+    bool ruleNeedsModbus(const PeriphExecRule& rule) const;
+    bool ruleHasPollCollectionAction(const PeriphExecRule& rule) const;
+    bool shouldAvoidSyncFallback(const PeriphExecRule& rule) const;
+
     std::unique_ptr<PeriphExecExecutor> _executor;
     std::unique_ptr<PeriphExecScheduler> _scheduler;
 

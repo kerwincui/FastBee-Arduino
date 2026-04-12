@@ -299,13 +299,7 @@
             var html = '';
 
             try {
-                // === 页面顶部标题栏（含刷新按钮） ===
-                html += '<div class="dc-page-header">';
-                html += '<span class="dc-page-title">' + this._t('device-control-title') + '</span>';
-                html += '<button class="dc-btn-sm dc-btn-refresh" id="dc-refresh-btn">' + this._t('dashboard-refresh') + '</button>';
-                html += '</div>';
-
-                // === 监测数据展示区 ===
+                // === 监测数据展示区（含刷新按钮） ===
                 html += this._renderMonitorSection(data);
 
                 // === 控制操作区 ===
@@ -332,9 +326,12 @@
                 hasMonitor = monitorItems.length > 0;
             }
 
-            if (!hasMonitor) return '';
+            if (!hasMonitor) return '<div style="text-align:right;margin-bottom:8px;"><button class="dc-btn-sm dc-btn-refresh" id="dc-refresh-btn">' + this._t('dashboard-refresh') + '</button></div>';
 
-            var html = '<div class="dc-monitor-grid">';
+            var html = '<div class="dc-monitor-section">';
+            html += '<div class="dc-monitor-header"><span class="dc-card-title">' + this._t('device-control-monitor-section') + '</span>';
+            html += '<button class="dc-btn-sm dc-btn-refresh" id="dc-refresh-btn">' + this._t('dashboard-refresh') + '</button></div>';
+            html += '<div class="dc-monitor-grid">';
             if (monitorGroups.length > 0) {
                 for (var i = 0; i < monitorGroups.length; i++) {
                     var group = monitorGroups[i];
@@ -347,7 +344,8 @@
                     html += this._renderMonitorCard(monitorItems[i]);
                 }
             }
-            html += '</div>';
+            html += '</div>'; // end dc-monitor-grid
+            html += '</div>'; // end dc-monitor-section
             return html;
         },
 
@@ -486,24 +484,24 @@
 
             var hasModbusDevices = this._modbusDevices && this._modbusDevices.length > 0;
 
-            // 将 PWM 类型设备拆到左列显示
-            var leftModbusDevices = [];
-            var rightModbusDevices = [];
+            // 所有 Modbus 设备按 relay → pid → pwm 顺序放右列
+            var modbusDeviceList = [];
             if (hasModbusDevices) {
+                var typeOrder = { relay: 0, pid: 1, pwm: 2 };
                 for (var mi = 0; mi < this._modbusDevices.length; mi++) {
-                    var mdev = this._modbusDevices[mi];
-                    if ((mdev.deviceType || 'relay') === 'pwm') {
-                        leftModbusDevices.push({ idx: mi, dev: mdev });
-                    } else {
-                        rightModbusDevices.push({ idx: mi, dev: mdev });
-                    }
+                    modbusDeviceList.push({ idx: mi, dev: this._modbusDevices[mi] });
                 }
+                modbusDeviceList.sort(function(a, b) {
+                    var ta = typeOrder[a.dev.deviceType || 'relay'] || 0;
+                    var tb = typeOrder[b.dev.deviceType || 'relay'] || 0;
+                    return ta - tb;
+                });
             }
 
             var hasLeftContent = gpioItems.length > 0 || modbusCtrlItems.length > 0 ||
                 systemItems.length > 0 || scriptItems.length > 0 ||
-                sensorReadItems.length > 0 || otherItems.length > 0 || leftModbusDevices.length > 0;
-            var hasAnyControls = hasLeftContent || rightModbusDevices.length > 0;
+                sensorReadItems.length > 0 || otherItems.length > 0;
+            var hasAnyControls = hasLeftContent || modbusDeviceList.length > 0;
 
             if (hasAnyControls) {
                 html += '<div class="dc-2col">';
@@ -516,13 +514,6 @@
                 if (modbusCtrlItems.length > 0) {
                     html += this._renderControlGroup('Modbus', modbusCtrlItems, 'modbus', false);
                 }
-                if (systemItems.length > 0) {
-                    html += this._renderSystemGroup(systemItems);
-                }
-                // PWM 设备渲染在系统操作之后
-                for (var li = 0; li < leftModbusDevices.length; li++) {
-                    html += this._renderSingleModbusPanel(leftModbusDevices[li].idx, leftModbusDevices[li].dev);
-                }
                 if (scriptItems.length > 0) {
                     html += this._renderControlGroup('Script', scriptItems, 'script', false);
                 }
@@ -532,15 +523,18 @@
                 if (otherItems.length > 0) {
                     html += this._renderControlGroup('Other', otherItems, 'other', false);
                 }
+                if (systemItems.length > 0) {
+                    html += this._renderSystemGroup(systemItems);
+                }
                 if (!hasLeftContent) {
                     html += '<div class="dc-empty">' + this._t('device-control-no-action') + '</div>';
                 }
                 html += '</div>';
 
-                // === 右列：Modbus子设备面板（非PWM） ===
+                // === 右列：Modbus子设备面板（继电器、PID、PWM） ===
                 html += '<div class="dc-col-right">';
-                if (rightModbusDevices.length > 0) {
-                    html += this._renderModbusDevicePanels(rightModbusDevices);
+                if (modbusDeviceList.length > 0) {
+                    html += this._renderModbusDevicePanels(modbusDeviceList);
                 }
                 html += '</div>';
 

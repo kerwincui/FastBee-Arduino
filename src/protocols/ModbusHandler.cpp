@@ -1208,6 +1208,9 @@ OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t 
         result.error = ONESHOT_EXCEPTION;
         result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_ADDRESS;
         LOG_WARNINGF("[Modbus] OneShot: invalid slave address %d", expectedSlaveAddr);
+        if (_oneShotSemaphore) {
+            xSemaphoreGive(_oneShotSemaphore);
+        }
         return result;
     }
 
