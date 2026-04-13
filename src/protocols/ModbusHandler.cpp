@@ -1238,8 +1238,17 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
             result.error = ONESHOT_CRC_ERROR;
             return result;
         }
+        // 防御性检查：确保响应数据不越界
+        uint16_t maxIdx = 3 + (quantity - 1) * 2 + 1;  // 最后需要访问的索引
+        if (maxIdx >= rawResult.count) {
+            LOG_WARNINGF("[Modbus] OneShot read: response too short (need idx %d, have %d bytes)", maxIdx, rawResult.count);
+            result.error = ONESHOT_CRC_ERROR;
+            return result;
+        }
         for (uint16_t i = 0; i < quantity; i++) {
-            result.data[i] = ((uint16_t)(uint8_t)rawResult.data[3 + i * 2] << 8) | (uint8_t)rawResult.data[4 + i * 2];
+            uint16_t idx1 = 3 + i * 2;
+            uint16_t idx2 = 4 + i * 2;
+            result.data[i] = ((uint16_t)(uint8_t)rawResult.data[idx1] << 8) | (uint8_t)rawResult.data[idx2];
         }
     } else if (functionCode == 0x01 || functionCode == 0x02) {
         // 标准 FC 0x01/0x02 响应: [addr, FC, byteCount, data..., CRC_L, CRC_H]
@@ -1278,7 +1287,12 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
         for (uint16_t i = 0; i < quantity && i < Protocols::MODBUS_MAX_REGISTERS_PER_READ; i++) {
             uint8_t byteIdx = i / 8;
             uint8_t bitIdx = i % 8;
-            uint8_t dataByte = (byteIdx < actualByteCount) ? (uint8_t)rawResult.data[dataOffset + byteIdx] : 0;
+            // 防御性检查：确保访问索引不越界
+            uint16_t accessIdx = (uint16_t)dataOffset + byteIdx;
+            uint8_t dataByte = 0;
+            if (byteIdx < actualByteCount && accessIdx < rawResult.count) {
+                dataByte = (uint8_t)rawResult.data[accessIdx];
+            }
             result.data[i] = (dataByte & (1 << bitIdx)) ? 1 : 0;
             LOG_DEBUGF("[Modbus] FC 0x%02X CH%d: dataByte=0x%02X bitIdx=%d → value=%d",
                        functionCode, i, dataByte, bitIdx, result.data[i]);

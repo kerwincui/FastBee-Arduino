@@ -476,21 +476,33 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
     JsonObject data = doc["data"].to<JsonObject>();
 
     if (mqtt) {
-        const MQTTConfig& cfg = mqtt->getConfig();
-        data["initialized"] = true;
+        // 防御性检查：确保 MQTT 对象已完全初始化
+        // 通过检查 server 和 port 是否有效来判断配置是否已加载
+        MQTTConfig cfg = mqtt->getConfig();
+        bool hasValidConfig = (cfg.server != nullptr && cfg.server[0] != '\0' && cfg.port > 0);
         
-        // MQTT连接状态：返回实际连接状态，internetAvailable 作为参考信息
-        bool mqttConnected = mqtt->getIsConnected() && !mqtt->isStopped();
-        data["connected"] = mqttConnected;
-        data["internetAvailable"] = internetAvailable;
-        data["server"] = cfg.server;
-        data["port"] = cfg.port;
-        data["clientId"] = cfg.clientId;
-        data["lastError"] = mqtt->getLastErrorCode();
-        data["reconnectCount"] = mqtt->getReconnectCount();
-        data["autoReconnect"] = cfg.autoReconnect;
-        unsigned long connTime = mqtt->getLastConnectedTime();
-        data["lastConnectedMs"] = connTime > 0 ? (millis() - connTime) / 1000 : 0;
+        if (hasValidConfig) {
+            data["initialized"] = true;
+            
+            // MQTT连接状态：返回实际连接状态，internetAvailable 作为参考信息
+            bool mqttConnected = mqtt->getIsConnected() && !mqtt->isStopped();
+            data["connected"] = mqttConnected;
+            data["internetAvailable"] = internetAvailable;
+            data["server"] = cfg.server;
+            data["port"] = cfg.port;
+            data["clientId"] = cfg.clientId;
+            data["lastError"] = mqtt->getLastErrorCode();
+            data["reconnectCount"] = mqtt->getReconnectCount();
+            data["autoReconnect"] = cfg.autoReconnect;
+            unsigned long connTime = mqtt->getLastConnectedTime();
+            data["lastConnectedMs"] = connTime > 0 ? (millis() - connTime) / 1000 : 0;
+        } else {
+            // MQTT 对象存在但配置未加载
+            data["initialized"] = false;
+            data["connected"] = false;
+            data["internetAvailable"] = internetAvailable;
+            data["error"] = "MQTT config not loaded";
+        }
     } else {
         data["initialized"] = false;
         data["connected"] = false;

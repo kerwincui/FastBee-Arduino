@@ -181,10 +181,10 @@ const AppState = {
     // 模块 → 打包文件映射（多个模块合并为一个文件）
     _bundleMap: { 'users': 'admin-bundle', 'roles': 'admin-bundle', 'files': 'admin-bundle', 'logs': 'admin-bundle', 'rule-script': 'admin-bundle' },
     _loadedFiles: {},
-    // 模块加载队列（有限并发加载，最多2个并发）
+    // 模块加载队列（有限并发加载，最多4个并发）
     _moduleLoadQueue: [],
     _moduleLoadingCount: 0,
-    _MAX_CONCURRENT_LOADS: 2,
+    _MAX_CONCURRENT_LOADS: 4,
 
     // ============ 初始化 ============
     init() {

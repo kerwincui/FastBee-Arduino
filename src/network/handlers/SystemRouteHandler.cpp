@@ -398,7 +398,17 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             }
             // Update fields from JSON body
             if (obj["deviceName"].is<String>()) doc["deviceName"] = obj["deviceName"].as<String>();
-            if (obj["deviceId"].is<String>()) doc["deviceId"] = obj["deviceId"].as<String>();
+            if (obj["deviceId"].is<String>()) {
+                String devId = obj["deviceId"].as<String>();
+                devId.trim();
+                if (devId.isEmpty()) {
+                    // 自动生成：FBE + MAC地址（去掉冒号）
+                    String mac = WiFi.macAddress(); // 格式 AA:BB:CC:DD:EE:FF
+                    mac.replace(":", "");
+                    devId = "FBE" + mac;
+                }
+                doc["deviceId"] = devId;
+            }
             if (obj["productNumber"].is<int>() || obj["productNumber"].is<String>()) doc["productNumber"] = obj["productNumber"].as<int>();
             if (obj["userId"].is<String>()) doc["userId"] = obj["userId"].as<String>();
             if (obj["description"].is<String>()) doc["description"] = obj["description"].as<String>();
@@ -421,7 +431,15 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             serializeJsonPretty(doc, f);
             f.close();
             LOGGER.info("Device configuration updated via web");
-            ctx->sendSuccess(request, "Device configuration saved");
+            
+            // 构建响应，包含生成的 deviceId
+            JsonDocument resp;
+            resp["success"] = true;
+            resp["message"] = "Device configuration saved";
+            resp["data"]["deviceId"] = doc["deviceId"];
+            String output;
+            serializeJson(resp, output);
+            request->send(200, "application/json", output);
         });
     deviceJsonHandler->setMethod(HTTP_POST | HTTP_PUT);
     server->addHandler(deviceJsonHandler);
@@ -967,7 +985,16 @@ void SystemRouteHandler::handleSaveDeviceConfig(AsyncWebServerRequest* request) 
 
     JsonDocument doc;
     doc["deviceName"] = ctx->getParamValue(request, "deviceName", "FastBee-ESP32");
-    doc["deviceId"] = ctx->getParamValue(request, "deviceId", String((uint32_t)ESP.getEfuseMac(), HEX));
+    
+    String devId = ctx->getParamValue(request, "deviceId", "");
+    devId.trim();
+    if (devId.isEmpty()) {
+        // 自动生成：FBE + MAC地址（去掉冒号）
+        String mac = WiFi.macAddress();
+        mac.replace(":", "");
+        devId = "FBE" + mac;
+    }
+    doc["deviceId"] = devId;
 
     File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
     if (!f) {

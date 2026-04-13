@@ -194,14 +194,58 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["mqtt"]["enabled"] = GP("mqtt_enabled", "true") == "true";
     doc["mqtt"]["server"] = GP("mqtt_server", "iot.fastbee.cn");
     doc["mqtt"]["port"] = GPI("mqtt_port", "1883");
-    doc["mqtt"]["clientId"] = GP("mqtt_clientId", "");
+
+    // 读取 clientId 和 authType，如果 clientId 为空则自动生成
+    String clientId = GP("mqtt_clientId", "");
+    clientId.trim();
+    int authType = GPI("mqtt_authType", "0");
+    bool clientIdGenerated = false;  // 标记是否为自动生成
+
+    if (clientId.isEmpty()) {
+        clientIdGenerated = true;  // 标记为自动生成
+        // 1. 获取 deviceId、productNumber、userId：优先从 device.json 读取
+        String deviceId = "";
+        String productId = "";
+        String userId = "1";
+
+        // 尝试从 device.json 读取
+        if (LittleFS.exists("/config/device.json")) {
+            File devFile = LittleFS.open("/config/device.json", "r");
+            if (devFile) {
+                JsonDocument devDoc;
+                if (!deserializeJson(devDoc, devFile)) {
+                    deviceId = devDoc["deviceId"] | "";
+                    int pn = devDoc["productNumber"] | 0;
+                    if (pn > 0) productId = String(pn);
+                    userId = devDoc["userId"] | "1";
+                }
+                devFile.close();
+            }
+        }
+
+        // 如果 deviceId 仍为空，生成 FBE+MAC
+        if (deviceId.isEmpty()) {
+            String mac = WiFi.macAddress();
+            mac.replace(":", "");
+            deviceId = "FBE" + mac;
+        }
+
+        // 如果 productId 仍为空，使用默认值 "0"
+        if (productId.isEmpty()) productId = "0";
+
+        // 2. 根据认证类型构建 clientId
+        String prefix = (authType == 1) ? "E" : "S";
+        clientId = prefix + "&" + deviceId + "&" + productId + "&" + userId;
+    }
+
+    doc["mqtt"]["clientId"] = clientId;
     doc["mqtt"]["username"] = GP("mqtt_username", "");
     doc["mqtt"]["password"] = GP("mqtt_password", "");
     doc["mqtt"]["keepAlive"] = GPI("mqtt_keepAlive", "60");
     doc["mqtt"]["autoReconnect"] = GP("mqtt_autoReconnect", "true") == "true";
     doc["mqtt"]["connectionTimeout"] = GPI("mqtt_connectionTimeout", "30000");
     // MQTT 认证配置
-    doc["mqtt"]["authType"] = GPI("mqtt_authType", "0");
+    doc["mqtt"]["authType"] = authType;
     doc["mqtt"]["mqttSecret"] = GP("mqtt_mqttSecret", "");
     doc["mqtt"]["authCode"] = GP("mqtt_authCode", "");
     // MQTT 遗嘱消息
@@ -367,6 +411,10 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     resp["data"]["mqttDeferred"] = mqttReconnected;  // 标识为延迟连接模式
     resp["data"]["mqttDisconnected"] = mqttDisconnected;
     resp["data"]["modbusRestarted"] = modbusRestarted;
+    // 如果 clientId 是自动生成的，返回给前端
+    if (clientIdGenerated) {
+        resp["data"]["mqttClientId"] = clientId;
+    }
     if (!mqttReconnected && doc["mqtt"]["enabled"].as<bool>()) {
         resp["data"]["mqttError"] = mqttError;
     }

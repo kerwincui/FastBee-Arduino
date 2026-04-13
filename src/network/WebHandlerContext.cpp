@@ -404,14 +404,16 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
             response->addHeader("Content-Encoding", "gzip");
             response->addHeader("ETag", etag);
 
-            // 缓存策略：
-            // JS/CSS: 使用配置的缓存时间(cacheDuration秒) + ETag
-            // HTML: 始终 no-cache(每次ETag验证入口页)
-            if (cacheDuration > 0 && ext != ".html") {
-                response->addHeader("Cache-Control", "public, max-age=" + String(cacheDuration));
+            // 缓存策略优化（第一阶段：提升页面加载速度）
+            // JS/CSS: 1天缓存 + ETag + must-revalidate
+            // HTML: 1小时缓存 + ETag + must-revalidate（入口页允许短时缓存）
+            if (ext == ".html") {
+                response->addHeader("Cache-Control", "public, max-age=3600, must-revalidate");
             } else {
-                response->addHeader("Cache-Control", "no-cache");
+                // JS/CSS 静态资源：1天缓存
+                response->addHeader("Cache-Control", "public, max-age=86400, must-revalidate");
             }
+            response->addHeader("Vary", "Accept-Encoding");
 
             request->send(response);
             return true;

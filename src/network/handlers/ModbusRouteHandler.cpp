@@ -429,7 +429,12 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
                     cachedData["ageSec"] = cacheAgeSec;
                     cachedData["lastError"] = cache->lastError;
                     JsonArray values = cachedData["values"].to<JsonArray>();
-                    for (uint8_t j = 0; j < cache->count; j++) {
+                    // 防御性检查：确保 count 不超过数组边界
+                    uint8_t safeCount = cache->count;
+                    if (safeCount > Protocols::MODBUS_MAX_REGISTERS_PER_READ) {
+                        safeCount = Protocols::MODBUS_MAX_REGISTERS_PER_READ;
+                    }
+                    for (uint8_t j = 0; j < safeCount; j++) {
                         values.add(cache->values[j]);
                     }
                 }
@@ -866,6 +871,12 @@ void ModbusRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request) 
     uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
     String mode = ctx->getParamValue(request, "mode", "coil");
     
+    // 验证 mode 参数
+    if (mode != "coil" && mode != "register") {
+        ctx->sendBadRequest(request, "Invalid mode (must be 'coil' or 'register')");
+        return;
+    }
+    
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
         return;
@@ -897,8 +908,13 @@ void ModbusRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request) 
     data["coilBase"] = coilBase;
     data["mode"] = mode;
     JsonArray states = data["states"].to<JsonArray>();
+    // 防御性检查：确保不超出 result.count 边界
     for (uint16_t i = 0; i < channelCount; i++) {
-        states.add(result.data[i] != 0);
+        if (i < result.count) {
+            states.add(result.data[i] != 0);
+        } else {
+            states.add(false);  // 超出范围的通道默认为 off
+        }
     }
     addModbusDebug(doc, modbus);
     

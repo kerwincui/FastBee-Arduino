@@ -703,6 +703,13 @@
                             }
                         }
                         Notification.success(`${protocolName} ${i18n.t('protocol-save-ok-suffix')}`, i18n.t('protocol-config-title'));
+                        // 如果后端自动生成了 clientId，更新输入框显示
+                        if (res.data && res.data.mqttClientId) {
+                            const clientIdInput = document.getElementById('mqtt-client-id');
+                            if (clientIdInput) {
+                                clientIdInput.value = res.data.mqttClientId;
+                            }
+                        }
                         const form = document.getElementById(formId);
                         const ok = form?.querySelector('.message-success');
                         if (ok) {
