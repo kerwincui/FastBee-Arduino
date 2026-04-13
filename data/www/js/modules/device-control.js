@@ -63,6 +63,11 @@
             var content = document.getElementById('dc-content');
             if (content && !this._eventsBound) {
                 content.addEventListener('click', function(e) {
+                    // 重置布局按钮
+                    if (e.target.closest('.dc-layout-reset')) {
+                        self._dcResetLayout();
+                        return;
+                    }
                     // 刷新按钮（动态渲染在监测区内）
                     if (e.target.closest('#dc-refresh-btn')) {
                         self.loadDeviceControlPage();
@@ -110,6 +115,22 @@
                         self._dcRefreshCoilStatus(di);
                         return;
                     }
+                    // 延时启动按钮
+                    var delayStartBtn = e.target.closest('.dc-delay-start');
+                    if (delayStartBtn) {
+                        var dIdx = parseInt(delayStartBtn.getAttribute('data-dev'));
+                        var section = delayStartBtn.closest('.dc-relay-delay-section');
+                        var channelSelect = section.querySelector('.dc-delay-channel');
+                        var delayInput = section.querySelector('.dc-delay-input');
+                        if (channelSelect && delayInput) {
+                            var channel = parseInt(channelSelect.value);
+                            var delayUnits = parseInt(delayInput.value);
+                            if (delayUnits >= 1 && delayUnits <= 255) {
+                                self._dcStartCoilDelay(dIdx, channel, delayUnits);
+                            }
+                        }
+                        return;
+                    }
                     // PWM批量操作
                     var pwmBatchBtn = e.target.closest('.dc-pwm-batch');
                     if (pwmBatchBtn) {
@@ -153,6 +174,7 @@
                         var val = parseInt(e.target.value);
                         self._dcOnPwmSliderInput(devIdx, ch, val);
                     }
+
                 });
                 content.addEventListener('change', function(e) {
                     if (e.target.classList.contains('dc-pwm-slider')) {
@@ -198,17 +220,22 @@
 
             // 先获取设备信息
             this._fetchDeviceInfo().then(function() {
-                // 并行获取控制数据、Modbus 状态和协议配置
-                console.log('[device-control] Fetching controls, modbus status, and protocol config...');
-                var controlsPromise = apiGet('/api/periph-exec/controls');
-                var modbusPromise = apiGetSilent('/api/modbus/status').catch(function() { return null; });
-                var protocolPromise = apiGetSilent('/api/protocol/config').catch(function() { return null; });
-                
-                return Promise.all([controlsPromise, modbusPromise, protocolPromise]);
-            }).then(function(results) {
-                var res = results[0];
-                var modbusRes = results[1];
-                var protoRes = results[2];
+                // 串行获取：先控制数据
+                console.log('[device-control] Fetching controls...');
+                return apiGet('/api/periph-exec/controls');
+            }).then(function(controlsRes) {
+                self._tempControlsRes = controlsRes;
+                // 再获取 Modbus 状态
+                return apiGetSilent('/api/modbus/status').catch(function() { return null; });
+            }).then(function(modbusRes) {
+                self._tempModbusRes = modbusRes;
+                // 最后获取协议配置
+                return apiGetSilent('/api/protocol/config').catch(function() { return null; });
+            }).then(function(protoRes) {
+                var res = self._tempControlsRes;
+                var modbusRes = self._tempModbusRes;
+                delete self._tempControlsRes;
+                delete self._tempModbusRes;
                 
                 // 保存 Modbus 状态
                 if (modbusRes && modbusRes.success && modbusRes.data) {
@@ -260,6 +287,8 @@
                     var html = self._renderControlPanel(data);
                     console.log('[device-control] Rendered HTML length:', html.length);
                     content.innerHTML = html;
+                    self._dcApplyLayout();
+                    self._dcInitFreeLayout();
                     // 渲染完成后，自动获取Modbus子设备初始状态
                     self._dcInitModbusDeviceStates();
                 } catch (renderErr) {
@@ -299,10 +328,7 @@
             var html = '';
 
             try {
-                // === 监测数据展示区（含刷新按钮） ===
-                html += this._renderMonitorSection(data);
-
-                // === 控制操作区 ===
+                // === 控制操作区（含监测数据展示区） ===
                 html += this._renderControlSection(data);
             } catch (e) {
                 console.error('[device-control] Error in _renderControlPanel:', e);
@@ -350,7 +376,7 @@
 
             var riskMeta = this._getDcRiskMeta(health.riskLevel);
             var warnings = Array.isArray(health.warnings) ? health.warnings.slice(0, 3) : [];
-            var html = '<div class="dc-risk-banner">' +
+            var html = '<div class="dc-risk-banner" data-dc-sort-key="health">' +
                 '<div class="dc-risk-title">' + this._t('device-control-modbus-health-title') + '</div>' +
                 '<div class="dc-risk-main">' +
                 '<span class="dc-risk-label">' + this._t('modbus-master-risk-level') + '</span>' +
@@ -373,13 +399,24 @@
             return html;
         },
 
-        // ============ 渲染监测数据区 ============
+        // 渲染监测区：返回健康卡片 + 数据卡片的组合HTML
         _renderMonitorSection: function(data) {
-            // 优先从 Modbus 状态获取实时监测数据
+            var html = '';
+            html += this._renderHealthCard();
+            html += this._renderMonitorDataCard(data);
+            return html;
+        },
+
+        // 独立可拖拽的Modbus健康状态卡片
+        _renderHealthCard: function() {
+            return this._renderModbusHealthBanner();
+        },
+
+        // 独立可拖拽的采集数据卡片
+        _renderMonitorDataCard: function(data) {
             var monitorGroups = this._buildMonitorGroupsFromModbus();
             var hasMonitor = monitorGroups.length > 0;
             var monitorItems = [];
-            var riskBanner = this._renderModbusHealthBanner();
 
             if (!hasMonitor) {
                 var modbusItems = this._filterByActionType(data.modbus, [18]);
@@ -389,20 +426,10 @@
             }
 
             if (!hasMonitor) {
-                var emptyHtml = '<div class="dc-monitor-section">';
-                emptyHtml += '<div class="dc-monitor-header"><span class="dc-card-title">' + this._t('device-control-monitor-section') + '</span>';
-                emptyHtml += '<button class="dc-btn-sm dc-btn-refresh" id="dc-refresh-btn">' + this._t('dashboard-refresh') + '</button></div>';
-                if (riskBanner) emptyHtml += riskBanner;
-                emptyHtml += '<div class="dc-empty">' + this._t('device-control-no-monitor') + '</div>';
-                emptyHtml += '</div>';
-                return emptyHtml;
+                return '';
             }
 
-            var html = '<div class="dc-monitor-section">';
-            html += '<div class="dc-monitor-header"><span class="dc-card-title">' + this._t('device-control-monitor-section') + '</span>';
-            html += '<button class="dc-btn-sm dc-btn-refresh" id="dc-refresh-btn">' + this._t('dashboard-refresh') + '</button></div>';
-            if (riskBanner) html += riskBanner;
-            html += '<div class="dc-monitor-grid">';
+            var html = '<div class="dc-monitor-grid" data-dc-sort-key="monitor-data">';
             if (monitorGroups.length > 0) {
                 for (var i = 0; i < monitorGroups.length; i++) {
                     var group = monitorGroups[i];
@@ -415,8 +442,7 @@
                     html += this._renderMonitorCard(monitorItems[i]);
                 }
             }
-            html += '</div>'; // end dc-monitor-grid
-            html += '</div>'; // end dc-monitor-section
+            html += '</div>';
             return html;
         },
 
@@ -576,7 +602,17 @@
 
             if (hasAnyControls) {
                 // 使用流式布局（flex-wrap），所有控制组作为独立卡片自然排列
+                html += '<div class="dc-layout-toolbar">';
+                html += '<span class="dc-layout-title">' + this._t('device-control-dashboard') + '</span>';
+                html += '<div class="dc-toolbar-actions">';
+                html += '<button class="dc-btn-sm dc-btn-refresh" id="dc-refresh-btn">' + this._t('dashboard-refresh') + '</button>';
+                html += '<button class="dc-btn-sm dc-btn-reset dc-layout-reset">' + this._t('device-control-reset-layout') + '</button>';
+                html += '</div>';
+                html += '</div>';
                 html += '<div class="dc-control-flow">';
+
+                // 监测数据展示区
+                html += this._renderMonitorSection(data);
 
                 // GPIO控制组
                 if (gpioItems.length > 0) {
@@ -617,14 +653,13 @@
             } else {
                 html += '<div class="dc-empty">' + this._t('device-control-no-action') + '</div>';
             }
-
             return html;
         },
 
         // ============ 渲染系统操作组（2x2图标网格） ============
         _renderSystemGroup: function(items) {
             var title = this._t('device-control-group-system') || 'System';
-            var html = '<div class="dc-control-group dc-group-card">';
+            var html = '<div class="dc-control-group dc-group-card" data-dc-sort-key="system">';
             html += this._renderDcCardHeader('dc-card-badge--system', 'SYS', title);
             html += '<div class="dc-sys-grid">';
             for (var i = 0; i < items.length; i++) {
@@ -640,7 +675,7 @@
         // ============ 渲染GPIO控制组（列表行样式） ============
         _renderGpioGroup: function(items) {
             var title = this._t('device-control-group-gpio') || 'GPIO';
-            var html = '<div class="dc-control-group dc-group-card">';
+            var html = '<div class="dc-control-group dc-group-card" data-dc-sort-key="gpio">';
             html += this._renderDcCardHeader('dc-card-badge--gpio', 'GPIO', title);
             html += '<div class="dc-gpio-list">';
             for (var i = 0; i < items.length; i++) {
@@ -675,7 +710,7 @@
             var typeClassMap = {relay: 'dc-card-badge--relay', pwm: 'dc-card-badge--pwm', pid: 'dc-card-badge--pid'};
             var badgeClass = typeClassMap[dt] || 'dc-card-badge--system';
 
-            var html = '<div class="dc-modbus-device-panel" data-dev-idx="' + devIdx + '">';
+            var html = '<div class="dc-modbus-device-panel" data-dev-idx="' + devIdx + '" data-dc-sort-key="modbus-' + dt + '-' + devIdx + '">';
             html += this._renderDcCardHeader(badgeClass, typeLabel, ctrlLabel, 'dc-modbus-device-addr', 'Addr: ' + (dev.slaveAddress || 1));
 
             if (dt === 'relay') {
@@ -697,6 +732,7 @@
             var ncMode = !!dev.ncMode;
             var html = '<div class="dc-modbus-device-body">';
             html += this._renderDcCoilGrid(devIdx, channelCount, states, ncMode);
+            html += this._renderDcRelayDelaySection(devIdx, dev);
             html += this._renderDcActionBar([
                 { className: 'dc-coil-batch dc-btn-sm dc-btn-on', devIdx: devIdx, action: 'allOn', label: this._t('modbus-ctrl-all-on') },
                 { className: 'dc-coil-batch dc-btn-sm dc-btn-off', devIdx: devIdx, action: 'allOff', label: this._t('modbus-ctrl-all-off') },
@@ -704,6 +740,32 @@
                 { className: 'dc-coil-refresh dc-btn-sm dc-btn-refresh', devIdx: devIdx, label: this._t('modbus-ctrl-refresh') }
             ]);
             html += '</div>';
+            return html;
+        },
+
+        // ============ 继电器延时控制区块 ============
+        _renderDcRelayDelaySection: function(devIdx, dev) {
+            var channelCount = dev.channelCount || 2;
+            var html = '<div class="dc-relay-delay-section">';
+            html += '<div class="dc-delay-controls">';
+            
+            // 标签
+            html += '<span class="dc-delay-label">' + this._t('modbus-delay-title') + '</span>';
+            
+            // 通道选择下拉
+            html += '<select class="dc-delay-channel" data-dev="' + devIdx + '">';
+            for (var ch = 0; ch < channelCount; ch++) {
+                html += '<option value="' + ch + '">CH' + ch + '</option>';
+            }
+            html += '</select>';
+            
+            // 延时值输入 (1-255, x100ms)
+            html += '<input type="number" class="dc-delay-input" min="1" max="255" value="50" data-dev="' + devIdx + '">';
+            
+            // 启动延时按钮
+            html += '<button class="dc-delay-start dc-btn-sm" data-dev="' + devIdx + '">' + this._t('modbus-delay-start') + '</button>';
+            
+            html += '</div></div>';
             return html;
         },
 
@@ -822,9 +884,9 @@
         _getDcPidCards: function(devIdx, scaleFactor, decimals) {
             var values = this._dcPidValues[devIdx] || {};
             return [
+                { key: 'out', label: this._t('modbus-ctrl-pid-out-label'), value: this._formatDcScaledValue(values.out, scaleFactor, decimals, '%'), editable: false },
                 { key: 'pv', label: this._t('modbus-ctrl-pid-pv-label'), value: this._formatDcScaledValue(values.pv, scaleFactor, decimals), editable: false },
                 { key: 'sv', label: this._t('modbus-ctrl-pid-sv-label'), value: this._formatDcScaledValue(values.sv, scaleFactor, decimals), editable: true },
-                { key: 'out', label: this._t('modbus-ctrl-pid-out-label'), value: this._formatDcScaledValue(values.out, scaleFactor, decimals, '%'), editable: false },
                 { key: 'p', label: this._t('modbus-ctrl-pid-p-label'), value: this._formatDcScaledValue(values.p, scaleFactor, decimals), editable: true },
                 { key: 'i', label: this._t('modbus-ctrl-pid-i-label'), value: this._formatDcScaledValue(values.i, scaleFactor, decimals), editable: true },
                 { key: 'd', label: this._t('modbus-ctrl-pid-d-label'), value: this._formatDcScaledValue(values.d, scaleFactor, decimals), editable: true }
@@ -868,7 +930,7 @@
         // ============ 渲染控制分组 ============
         _renderControlGroup: function(titleKey, items, typeClass, isSystem) {
             var title = this._t('device-control-group-' + titleKey.toLowerCase()) || titleKey;
-            var html = '<div class="dc-control-group">';
+            var html = '<div class="dc-control-group" data-dc-sort-key="' + typeClass + '">';
             html += '<div class="dc-control-group-title">' + title + '</div>';
             html += '<div class="dc-control-grid">';
 
@@ -1043,6 +1105,35 @@
             });
         },
 
+        _dcStartCoilDelay: function(devIdx, channel, delayUnits) {
+            var self = this;
+            var p = this._dcGetCoilParams(devIdx);
+            var dev = this._modbusDevices[devIdx] || {};
+            
+            apiPost('/api/modbus/coil/delay', {
+                slaveAddress: p.slaveAddress,
+                channel: channel,
+                delayBase: 0x0200,
+                delayUnits: delayUnits,
+                ncMode: !!dev.ncMode,
+                coilBase: p.coilBase
+            }).then(function(res) {
+                if (res && res.success) {
+                    window.Notification && Notification.success(
+                        self._t('modbus-delay-success') + ' CH' + channel + ' ' + (delayUnits * 0.1).toFixed(1) + 's'
+                    );
+                    // 延时启动后刷新线圈状态
+                    setTimeout(function() { self._dcRefreshCoilStatus(devIdx); }, 500);
+                } else {
+                    window.Notification && Notification.error(
+                        (res && res.error) || self._t('modbus-delay-fail')
+                    );
+                }
+            }).catch(function() {
+                window.Notification && Notification.error(self._t('modbus-delay-fail'));
+            });
+        },
+
         // --- PWM ---
 
         _dcGetPwmParams: function(devIdx) {
@@ -1208,6 +1299,142 @@
             });
         },
 
+        // ============ 自由拖拽布局相关属性和方法 ============
+        _DC_LAYOUT_KEY: 'dc-card-layout',
+        _dcDragEl: null,
+        _dcDragOffset: null,
+
+        _dcInitFreeLayout: function() {
+            var flow = document.querySelector('.dc-control-flow');
+            if (!flow || flow._dcLayoutBound) return;
+            var self = this;
+
+            flow.addEventListener('mousedown', function(e) {
+                var card = e.target.closest('[data-dc-sort-key]');
+                if (!card || e.target.closest('button,input,select,textarea,.dc-pwm-slider')) return;
+                e.preventDefault();
+                self._dcDragEl = card;
+                var rect = card.getBoundingClientRect();
+                self._dcDragOffset = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+                card.classList.add('dc-dragging');
+                card.style.zIndex = '100';
+            });
+
+            document.addEventListener('mousemove', function(e) {
+                if (!self._dcDragEl) return;
+                var flow = document.querySelector('.dc-control-flow');
+                if (!flow) return;
+                var flowRect = flow.getBoundingClientRect();
+                var x = e.clientX - flowRect.left - self._dcDragOffset.x;
+                var y = e.clientY - flowRect.top - self._dcDragOffset.y;
+                x = Math.max(0, Math.min(x, flow.clientWidth - self._dcDragEl.offsetWidth));
+                y = Math.max(0, y);
+                self._dcDragEl.style.left = x + 'px';
+                self._dcDragEl.style.top = y + 'px';
+            });
+
+            document.addEventListener('mouseup', function() {
+                if (!self._dcDragEl) return;
+                self._dcDragEl.classList.remove('dc-dragging');
+                self._dcDragEl.style.zIndex = '';
+                self._dcDragEl = null;
+                self._dcSaveLayout();
+            });
+
+            flow._dcLayoutBound = true;
+        },
+
+        _dcApplyLayout: function() {
+            var flow = document.querySelector('.dc-control-flow');
+            if (!flow) return;
+            var cards = flow.querySelectorAll('[data-dc-sort-key]');
+            if (cards.length === 0) return;
+
+            var saved = null;
+            try { saved = JSON.parse(localStorage.getItem(this._DC_LAYOUT_KEY)); } catch(e) {}
+
+            var maxBottom = 0;
+            if (saved && typeof saved === 'object') {
+                for (var i = 0; i < cards.length; i++) {
+                    var key = cards[i].getAttribute('data-dc-sort-key');
+                    var pos = saved[key];
+                    if (pos) {
+                        cards[i].style.left = pos.x + 'px';
+                        cards[i].style.top = pos.y + 'px';
+                    } else {
+                        cards[i].style.left = '0px';
+                        cards[i].style.top = maxBottom + 'px';
+                    }
+                    var bottom = parseInt(cards[i].style.top) + cards[i].offsetHeight;
+                    if (bottom > maxBottom) maxBottom = bottom;
+                }
+            } else {
+                this._dcAutoGridLayout(flow, cards);
+                for (var i = 0; i < cards.length; i++) {
+                    var bottom = parseInt(cards[i].style.top || 0) + cards[i].offsetHeight;
+                    if (bottom > maxBottom) maxBottom = bottom;
+                }
+            }
+            flow.style.minHeight = (maxBottom + 20) + 'px';
+        },
+
+        _dcAutoGridLayout: function(flow, cards) {
+            var gap = 15;
+            var colWidth = 340 + gap;
+            var cols = Math.max(1, Math.floor(flow.clientWidth / colWidth));
+            var colTops = [];
+            for (var c = 0; c < cols; c++) colTops.push(0);
+
+            for (var i = 0; i < cards.length; i++) {
+                var key = cards[i].getAttribute('data-dc-sort-key');
+                var isWide = (key === 'health' || key === 'monitor-data');
+                var span = (isWide && cols >= 2) ? 2 : 1;
+
+                var bestCol = 0;
+                var bestTop = Infinity;
+                for (var c = 0; c <= cols - span; c++) {
+                    var maxTop = 0;
+                    for (var s = 0; s < span; s++) {
+                        if (colTops[c + s] > maxTop) maxTop = colTops[c + s];
+                    }
+                    if (maxTop < bestTop) { bestTop = maxTop; bestCol = c; }
+                }
+
+                cards[i].style.left = (bestCol * colWidth) + 'px';
+                cards[i].style.top = bestTop + 'px';
+
+                var cardHeight = cards[i].offsetHeight + gap;
+                for (var s = 0; s < span; s++) {
+                    colTops[bestCol + s] = bestTop + cardHeight;
+                }
+            }
+        },
+
+        _dcSaveLayout: function() {
+            var flow = document.querySelector('.dc-control-flow');
+            if (!flow) return;
+            var cards = flow.querySelectorAll('[data-dc-sort-key]');
+            var layout = {};
+            var maxBottom = 0;
+            for (var i = 0; i < cards.length; i++) {
+                var key = cards[i].getAttribute('data-dc-sort-key');
+                layout[key] = { x: parseInt(cards[i].style.left) || 0, y: parseInt(cards[i].style.top) || 0 };
+                var bottom = layout[key].y + cards[i].offsetHeight;
+                if (bottom > maxBottom) maxBottom = bottom;
+            }
+            flow.style.minHeight = (maxBottom + 20) + 'px';
+            try { localStorage.setItem(this._DC_LAYOUT_KEY, JSON.stringify(layout)); } catch(e) {}
+        },
+
+        _dcResetLayout: function() {
+            try { localStorage.removeItem(this._DC_LAYOUT_KEY); } catch(e) {}
+            var flow = document.querySelector('.dc-control-flow');
+            if (!flow) return;
+            var cards = flow.querySelectorAll('[data-dc-sort-key]');
+            this._dcAutoGridLayout(flow, cards);
+            this._dcSaveLayout();
+        },
+
         // ============ 内容状态渲染辅助方法 ============
         _setContentState: function(container, type, message) {
             // 统一处理 loading/empty/error 三种状态的 HTML 渲染
@@ -1230,7 +1457,7 @@
                 '<div class="dc-device-status">' + this._t('device-control-online') + '</div>' +
                 '</div></div>' +
                 '<div class="dc-section">' +
-                '<div class="dc-section-title">' + this._t('device-control-monitor-section') + '</div>' +
+                '<div class="dc-section-title">' + this._t('device-control-dashboard') + '</div>' +
                 '<div class="dc-empty">' + this._t('device-control-no-monitor') + '</div>' +
                 '</div>' +
                 '<div class="dc-section">' +

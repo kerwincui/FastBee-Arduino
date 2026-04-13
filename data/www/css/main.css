@@ -2243,7 +2243,7 @@ input:focus, select:focus, textarea:focus, .pure-input-1:focus { border-color: v
 .role-perm-dialog-title { margin: 0; font-size: 18px; }
 .role-perm-dialog-body { padding: 20px; }
 .role-perm-dialog-close { background: none; border: none; color: inherit; font-size: 20px; line-height: 1; cursor: pointer; }
-.role-desc-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.role-desc-cell { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
 .role-pill { display: inline-flex; align-items: center; padding: 2px 8px; font-size: 12px; }
 .role-pill--count { border-radius: 10px; background: #e6f7ff; color: #1890ff; }
 .role-pill--super { border-radius: 4px; background: #fff1f0; color: #f5222d; }
@@ -2504,7 +2504,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-monitor-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .dc-monitor-header .dc-card-title { font-size: 15px; font-weight: 600; color: var(--text-primary); }
 .dc-monitor-header .dc-btn-refresh { flex-shrink: 0; }
-.dc-risk-banner { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; padding: 12px 14px; background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+.dc-risk-banner { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; padding: 12px 14px; background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); width: 680px; max-width: 100%; }
 .dc-risk-title { width: 100%; font-size: 13px; font-weight: 700; color: var(--text-primary); }
 .dc-risk-main { display: flex; align-items: center; gap: 10px; min-width: 144px; }
 .dc-risk-label { font-size: 12px; color: var(--text-muted); font-weight: 600; }
@@ -2516,7 +2516,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-risk-warning i { color: var(--warning-dark); margin-top: 2px; }
 
 /* Monitor data grid */
-.dc-monitor-grid { margin-bottom:15px; display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; }
+.dc-monitor-grid { margin-bottom:15px; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
 
 /* Monitor card - standalone white card */
 .dc-monitor-card { background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: 10px; padding: 12px 14px; transition: all 0.2s; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
@@ -2556,9 +2556,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-control-grid { display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* Control flow layout (responsive fixed-width cards) */
-.dc-control-flow { display: flex; flex-wrap: wrap; gap: 15px; align-items: flex-start; }
+.dc-control-flow { position: relative; width: 100%; min-height: 200px; }
 .dc-control-flow > .dc-control-group,
-.dc-control-flow > .dc-modbus-device-panel { flex: 0 0 340px; min-width: 0; max-width: 100%; overflow: hidden; box-sizing: border-box; }
+.dc-control-flow > .dc-modbus-device-panel { position: absolute; width: 340px; max-width: 100%; overflow: hidden; box-sizing: border-box; }
+.dc-control-flow > .dc-risk-banner { position: absolute; width: 695px; max-width: 100%; overflow: hidden; box-sizing: border-box; }
+.dc-control-flow > .dc-monitor-grid[data-dc-sort-key] { position: absolute; width: 695px; max-width: 100%; overflow: hidden; box-sizing: border-box; }
+.dc-control-flow > .dc-risk-banner[data-dc-sort-key] { background: var(--bg-card); border-radius: 10px; padding: 12px; }
+.dc-control-flow > .dc-monitor-grid[data-dc-sort-key] { background: var(--bg-card); border-radius: 10px; padding: 12px; }
+
+/* Free drag positioning */
+.dc-control-flow > [data-dc-sort-key] { cursor: grab; user-select: none; transition: box-shadow 0.2s; }
+.dc-control-flow > .dc-dragging { cursor: grabbing; opacity: 0.85; box-shadow: 0 8px 24px rgba(0,0,0,0.15); z-index: 100; }
+.dc-layout-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.dc-layout-title { font-size: 16px; font-weight: 600; color: var(--text-primary); }
+.dc-toolbar-actions { display: flex; gap: 8px; align-items: center; }
 
 /* GPIO list rows */
 .dc-gpio-list { display: grid; grid-template-columns: 1fr; gap: 6px; overflow: hidden; }
@@ -2619,6 +2630,20 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-coil-card.dc-coil-off .dc-coil-st { color: var(--text-muted); }
 .dc-coil-card.dc-loading { opacity: 0.5; pointer-events: none; }
 
+/* 继电器延时控制 */
+.dc-relay-delay-section { padding: 10px 12px; border-top: 1px solid var(--border-color, #e0e0e0); margin-top: 10px; }
+.dc-delay-label { font-weight: 600; font-size: 12px; color: var(--text-secondary, #666); white-space: nowrap; }
+.dc-delay-controls { display: flex; gap: 8px; align-items: center; flex-wrap: nowrap; }
+.dc-delay-channel { padding: 5px 8px; border: 1px solid var(--border-color, #ccc); border-radius: 4px; font-size: 12px; background: var(--bg-input, #fff); color: var(--text-primary, #333); min-width: 70px; }
+.dc-delay-input { padding: 5px 8px; border: 1px solid var(--border-color, #ccc); border-radius: 4px; font-size: 12px; background: var(--bg-input, #fff); color: var(--text-primary, #333); width: 80px; }
+
+.dc-delay-start { background-color: #ff9500; color: #fff; border: none; padding: 5px 14px; border-radius: 4px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.dc-delay-start:hover { background-color: #e68600; }
+.dc-delay-start:active { background-color: #cc7700; }
+
+/* Footer */
+.dc-footer { padding: 20px 0 10px; text-align: center; color: var(--text-muted, #999); font-size: 12px; }
+
 /* PWM horizontal rows */
 .dc-pwm-list { display: flex; flex-direction: column; gap: 8px; }
 .dc-pwm-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--gray-2); border: 1px solid var(--border-secondary); border-radius: 8px; transition: border-color 0.15s; }
@@ -2647,6 +2672,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-btn-toggle:hover { opacity: 0.85; }
 .dc-btn-refresh { background: var(--bg-card); color: var(--text-secondary); border-color: var(--border); }
 .dc-btn-refresh:hover { background: var(--gray-2); border-color: var(--primary); color: var(--primary); }
+.dc-btn-reset { background: var(--warning, #ff9500); color: #fff; border-color: var(--warning, #ff9500); }
+.dc-btn-reset:hover { opacity: 0.85; background: var(--warning, #e68600); border-color: var(--warning, #e68600); }
 
 /* === Dark theme === */
 [data-theme="dark"] .dc-risk-banner { background: var(--gray-11); border-color: var(--gray-9); box-shadow: 0 1px 4px rgba(0,0,0,0.2); }
