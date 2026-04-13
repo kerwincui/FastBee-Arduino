@@ -89,8 +89,9 @@ struct CoilDelayTask {
     unsigned long triggerTime;  // millis() 到期时间
     bool active;
     bool coilValue;             // 到期后写入的值（NO模式=false断开, NC模式=true断开）
+    bool isRegisterMode;        // true=使用writeRegisterOnce, false=使用writeCoilOnce
 
-    CoilDelayTask() : slaveAddress(0), coilAddress(0), triggerTime(0), active(false), coilValue(false) {}
+    CoilDelayTask() : slaveAddress(0), coilAddress(0), triggerTime(0), active(false), coilValue(false), isRegisterMode(false) {}
 };
 
 // Modbus 子设备（控制类设备：继电器/PWM/PID）
@@ -132,7 +133,7 @@ struct MasterConfig {
     uint8_t  deviceCount;
 
     MasterConfig()
-        : responseTimeout(1000), maxRetries(2),
+        : responseTimeout(500), maxRetries(1),
           interPollDelay(100), taskCount(0), deviceCount(0) {
         memset(tasks, 0, sizeof(tasks));
         memset(devices, 0, sizeof(devices));
@@ -275,6 +276,7 @@ public:
 
     // 线圈延时任务管理（到期后自动将线圈写为目标值，支持 NC 模式反转）
     bool addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsigned long delayMs, bool coilValue = false);
+    bool addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsigned long delayMs, bool coilValue, bool isRegisterMode);
     
     // RAW模式辅助：将寄存器数据重构为Modbus响应帧的十六进制字符串
     String formatRawHex(uint8_t slaveAddr, uint8_t fc, const uint16_t* data, uint16_t count);

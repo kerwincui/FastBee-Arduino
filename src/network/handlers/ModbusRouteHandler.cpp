@@ -526,13 +526,17 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
     
     uint16_t coilAddr = coilBase + channel;
     OneShotResult result;
+    bool newState = false;  // 用于记录操作后的状态
     
     if (mode == "register") {
         // 寄存器模式：FC06 写保持寄存器
+        // 写入成功后状态直接确定，无需再读取确认
         if (action == "on") {
             result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 1);
+            newState = true;
         } else if (action == "off") {
             result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 0);
+            newState = false;
         } else if (action == "toggle") {
             // 先读当前值再反转
             OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x03, coilAddr, 1);
@@ -542,18 +546,30 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
             }
             uint16_t newVal = (readR.data[0] != 0) ? 0 : 1;
             result = modbus->writeRegisterOnce(slaveAddr, coilAddr, newVal);
+            newState = (newVal != 0);  // 写入值即为新状态
         } else {
             ctx->sendBadRequest(request, "Invalid action (on/off/toggle)");
             return;
         }
     } else {
         // 线圈模式：FC05 写线圈
+        // 写入成功后直接推导状态，无需额外读取确认
         if (action == "on") {
             result = modbus->writeCoilOnce(slaveAddr, coilAddr, true);
+            if (result.error == ONESHOT_SUCCESS) newState = true;
         } else if (action == "off") {
             result = modbus->writeCoilOnce(slaveAddr, coilAddr, false);
+            if (result.error == ONESHOT_SUCCESS) newState = false;
         } else if (action == "toggle") {
-            result = modbus->writeCoilOnce(slaveAddr, coilAddr, (uint16_t)0x5500);
+            // toggle 无法从写入值推导结果，需要先读取当前状态
+            OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, 8);
+            if (readR.error != ONESHOT_SUCCESS) {
+                sendOneShotError(ctx, request, readR);
+                return;
+            }
+            bool currentState = (readR.data[channel] != 0);
+            result = modbus->writeCoilOnce(slaveAddr, coilAddr, !currentState);
+            if (result.error == ONESHOT_SUCCESS) newState = !currentState;
         } else {
             ctx->sendBadRequest(request, "Invalid action (on/off/toggle)");
             return;
@@ -565,21 +581,6 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
         return;
     }
     
-    // 操作后读取实际状态
-    bool newState = (action == "on");
-    if (action == "toggle" || action == "off") {
-        if (mode == "register") {
-            OneShotResult readResult = modbus->readRegistersOnce(slaveAddr, 0x03, coilAddr, 1);
-            if (readResult.error == ONESHOT_SUCCESS) {
-                newState = (readResult.data[0] != 0);
-            }
-        } else {
-            OneShotResult readResult = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, 8);
-            if (readResult.error == ONESHOT_SUCCESS) {
-                newState = (readResult.data[channel] != 0);
-            }
-        }
-    }
     
     JsonDocument doc;
     doc["success"] = true;
@@ -737,6 +738,7 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
     uint16_t delayUnits = (uint16_t)ctx->getParamInt(request, "delayUnits", 50);
     bool ncMode = ctx->getParamBool(request, "ncMode", false);
     uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
+    String mode = ctx->getParamValue(request, "mode", "coil");
     
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
@@ -750,54 +752,98 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
     unsigned long delayMs = (unsigned long)delayUnits * 100;
     uint16_t coilAddr = coilBase + channel;
 
-    // 步骤1：立即打开继电器（写线圈 ON）
-    // NO模式: 线圈ON=设备通电; NC模式: 线圈ON=NC断开=设备断电（但我们要先打开，所以NC这里写OFF）
-    // 修正：延时断开 = 先打开设备，延时后关闭
-    // NO模式: 先写ON(设备通) → 延时后自动OFF(设备断)
-    // NC模式: 先写OFF(NC闭合=设备通) → 延时后写ON(NC断开=设备断)
-    bool initialValue = ncMode ? false : true;  // NO写ON, NC写OFF
-    OneShotResult result = modbus->writeCoilOnce(slaveAddr, coilAddr, initialValue);
-    if (result.error != ONESHOT_SUCCESS) {
-        sendOneShotError(ctx, request, result);
-        return;
-    }
-
-    // 步骤2：启动延时机制，延时后自动关闭
-    if (ncMode) {
-        // NC 常闭模式：使用软件延时任务
-        // 延时后写线圈ON (NC断开=设备断电)
-        bool ok = modbus->addCoilDelayTask(slaveAddr, coilAddr, delayMs, true);
-        if (!ok) {
-            ctx->sendError(request, 500, "Delay task queue full");
-            return;
+    if (mode == "register") {
+        // 寄存器模式：使用 FC 0x06 写寄存器
+        if (ncMode) {
+            // NC 常闭模式：先写 0（断开），延时后写 1（恢复）
+            OneShotResult result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 0);
+            if (result.error != ONESHOT_SUCCESS) {
+                sendOneShotError(ctx, request, result);
+                return;
+            }
+            bool ok = modbus->addCoilDelayTask(slaveAddr, coilAddr, delayMs, true, true);
+            if (!ok) {
+                ctx->sendError(request, 500, "Delay task queue full");
+                return;
+            }
+        } else {
+            // NO 常开模式：先写 1（吸合），延时后写 0（断开）
+            OneShotResult result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 1);
+            if (result.error != ONESHOT_SUCCESS) {
+                sendOneShotError(ctx, request, result);
+                return;
+            }
+            bool ok = modbus->addCoilDelayTask(slaveAddr, coilAddr, delayMs, false, true);
+            if (!ok) {
+                ctx->sendError(request, 500, "Delay task queue full");
+                return;
+            }
         }
+        
+        JsonDocument doc;
+        doc["success"] = true;
+        JsonObject data = doc["data"].to<JsonObject>();
+        data["channel"] = channel;
+        data["delayUnits"] = delayUnits;
+        data["delayMs"] = (uint32_t)delayMs;
+        data["ncMode"] = ncMode;
+        data["mode"] = "software";
+        addModbusDebug(doc, modbus);
+        
+        String out;
+        serializeJson(doc, out);
+        request->send(200, "application/json", out);
     } else {
-        // NO 常开模式：使用硬件闪开指令
-        // 闪开指令：FC 0x05 地址=(delayBase + channel) 值=延时单位在高字节
-        // 硬件会自动：延时后关闭继电器
-        uint16_t delayAddr = delayBase + channel;
-        uint16_t rawValue = ((uint16_t)delayUnits) << 8;
-
-        result = modbus->writeCoilOnce(slaveAddr, delayAddr, rawValue);
+        // 线圈模式：使用 FC 0x05 写线圈
+        // 步骤1：立即打开继电器（写线圈 ON）
+        // NO模式: 线圈ON=设备通电; NC模式: 线圈ON=NC断开=设备断电（但我们要先打开，所以NC这里写OFF）
+        // 修正：延时断开 = 先打开设备，延时后关闭
+        // NO模式: 先写ON(设备通) → 延时后自动OFF(设备断)
+        // NC模式: 先写OFF(NC闭合=设备通) → 延时后写ON(NC断开=设备断)
+        bool initialValue = ncMode ? false : true;  // NO写ON, NC写OFF
+        OneShotResult result = modbus->writeCoilOnce(slaveAddr, coilAddr, initialValue);
         if (result.error != ONESHOT_SUCCESS) {
             sendOneShotError(ctx, request, result);
             return;
         }
+
+        // 步骤2：启动延时机制，延时后自动关闭
+        if (ncMode) {
+            // NC 常闭模式：使用软件延时任务
+            // 延时后写线圈ON (NC断开=设备断电)
+            bool ok = modbus->addCoilDelayTask(slaveAddr, coilAddr, delayMs, true);
+            if (!ok) {
+                ctx->sendError(request, 500, "Delay task queue full");
+                return;
+            }
+        } else {
+            // NO 常开模式：使用硬件闪开指令
+            // 闪开指令：FC 0x05 地址=(delayBase + channel) 值=延时单位在高字节
+            // 硬件会自动：延时后关闭继电器
+            uint16_t delayAddr = delayBase + channel;
+            uint16_t rawValue = ((uint16_t)delayUnits) << 8;
+
+            result = modbus->writeCoilOnce(slaveAddr, delayAddr, rawValue);
+            if (result.error != ONESHOT_SUCCESS) {
+                sendOneShotError(ctx, request, result);
+                return;
+            }
+        }
+        
+        JsonDocument doc;
+        doc["success"] = true;
+        JsonObject data = doc["data"].to<JsonObject>();
+        data["channel"] = channel;
+        data["delayUnits"] = delayUnits;
+        data["delayMs"] = (uint32_t)delayMs;
+        data["ncMode"] = ncMode;
+        data["mode"] = ncMode ? "software" : "hardware";
+        addModbusDebug(doc, modbus);
+        
+        String out;
+        serializeJson(doc, out);
+        request->send(200, "application/json", out);
     }
-    
-    JsonDocument doc;
-    doc["success"] = true;
-    JsonObject data = doc["data"].to<JsonObject>();
-    data["channel"] = channel;
-    data["delayUnits"] = delayUnits;
-    data["delayMs"] = (uint32_t)delayMs;
-    data["ncMode"] = ncMode;
-    data["mode"] = ncMode ? "software" : "hardware";
-    addModbusDebug(doc, modbus);
-    
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
 }
 
 // ============================================================================

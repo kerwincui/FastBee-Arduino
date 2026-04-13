@@ -1706,6 +1706,11 @@ OneShotResult ModbusHandler::writeMultipleRegistersOnce(uint8_t slaveAddr, uint1
 // 线圈延时任务管理
 // ============================================================================
 bool ModbusHandler::addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsigned long delayMs, bool coilValue) {
+    return addCoilDelayTask(slaveAddr, coilAddr, delayMs, coilValue, false);
+}
+
+bool ModbusHandler::addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, 
+                                      unsigned long delayMs, bool coilValue, bool isRegisterMode) {
     // 优先复用同一线圈地址的已有任务
     for (uint8_t i = 0; i < Protocols::MODBUS_MAX_COIL_DELAY_TASKS; i++) {
         if (coilDelayTasks[i].active &&
@@ -1713,8 +1718,11 @@ bool ModbusHandler::addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsig
             coilDelayTasks[i].coilAddress == coilAddr) {
             coilDelayTasks[i].triggerTime = millis() + delayMs;
             coilDelayTasks[i].coilValue = coilValue;
-            LOG_INFOF("[Modbus] DelayTask: updated slot %d, slave=%d coil=%d delay=%lums val=%d",
-                      i, slaveAddr, coilAddr, delayMs, coilValue);
+            coilDelayTasks[i].isRegisterMode = isRegisterMode;
+            LOG_INFOF("[Modbus] DelayTask: updated slot %d, slave=%d addr=%d delay=%lums val=%s mode=%s",
+                      i, slaveAddr, coilAddr, delayMs, 
+                      coilValue ? "ON" : "OFF",
+                      isRegisterMode ? "register" : "coil");
             return true;
         }
     }
@@ -1725,13 +1733,16 @@ bool ModbusHandler::addCoilDelayTask(uint8_t slaveAddr, uint16_t coilAddr, unsig
             coilDelayTasks[i].coilAddress = coilAddr;
             coilDelayTasks[i].triggerTime = millis() + delayMs;
             coilDelayTasks[i].coilValue = coilValue;
+            coilDelayTasks[i].isRegisterMode = isRegisterMode;
             coilDelayTasks[i].active = true;
-            LOG_INFOF("[Modbus] DelayTask: added slot %d, slave=%d coil=%d delay=%lums val=%d",
-                      i, slaveAddr, coilAddr, delayMs, coilValue);
+            LOG_INFOF("[Modbus] DelayTask: added slot %d, slave=%d addr=%d delay=%lums val=%s mode=%s",
+                      i, slaveAddr, coilAddr, delayMs, 
+                      coilValue ? "ON" : "OFF",
+                      isRegisterMode ? "register" : "coil");
             return true;
         }
     }
-    LOG_WARNING("[Modbus] DelayTask: queue full");
+    LOG_WARNING("[Modbus] DelayTask: queue full, cannot add task");
     return false;
 }
 
@@ -1739,10 +1750,17 @@ void ModbusHandler::processCoilDelayTasks() {
     unsigned long now = millis();
     for (uint8_t i = 0; i < Protocols::MODBUS_MAX_COIL_DELAY_TASKS; i++) {
         if (coilDelayTasks[i].active && now >= coilDelayTasks[i].triggerTime) {
-            LOG_INFOF("[Modbus] DelayTask: executing slot %d, slave=%d coil=%d -> %s",
+            LOG_INFOF("[Modbus] DelayTask: executing slot %d, slave=%d addr=%d -> %s",
                       i, coilDelayTasks[i].slaveAddress, coilDelayTasks[i].coilAddress,
                       coilDelayTasks[i].coilValue ? "ON" : "OFF");
-            writeCoilOnce(coilDelayTasks[i].slaveAddress, coilDelayTasks[i].coilAddress, coilDelayTasks[i].coilValue);
+            if (coilDelayTasks[i].isRegisterMode) {
+                uint16_t regValue = coilDelayTasks[i].coilValue ? 1 : 0;
+                writeRegisterOnce(coilDelayTasks[i].slaveAddress, 
+                                  coilDelayTasks[i].coilAddress, regValue);
+            } else {
+                writeCoilOnce(coilDelayTasks[i].slaveAddress, 
+                              coilDelayTasks[i].coilAddress, coilDelayTasks[i].coilValue);
+            }
             coilDelayTasks[i].active = false;
         }
     }

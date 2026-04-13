@@ -123,6 +123,26 @@
             4,
             5
           ]
+        },
+        {
+          "name": "8路寄存器继电器",
+          "deviceType": "relay",
+          "slaveAddress": 11,
+          "channelCount": 8,
+          "coilBase": 8,
+          "ncMode": false,
+          "controlProtocol": 1,
+          "pwmRegBase": 0,
+          "pwmResolution": 8,
+          "pidDecimals": 1,
+          "pidAddrs": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
         }
       ]
     }

@@ -218,7 +218,8 @@
                         'AP+STA': i18n.t('net-mode-apsta')
                     };
                     setText('ns-mode', modeLabel[d.mode] || d.mode || '--');
-                    setText('ns-mdns', d.enableMDNS ? (d.customDomain ? d.customDomain + '.local' : i18n.t('net-mdns-enabled')) : i18n.t('net-mdns-disabled'));
+                    var actualDomain = d.mdnsDomain || d.customDomain;
+                    setText('ns-mdns', d.enableMDNS ? (actualDomain ? actualDomain + '.local' : i18n.t('net-mdns-enabled')) : i18n.t('net-mdns-disabled'));
                     setText('ns-reconnect', d.reconnectAttempts !== undefined ? d.reconnectAttempts + i18n.t('net-reconnect-unit') : '--');
                     setText('ns-tx-count', d.txCount !== undefined ? d.txCount + i18n.t('net-count-unit') : '--');
                     setText('ns-rx-count', d.rxCount !== undefined ? d.rxCount + i18n.t('net-count-unit') : '--');

@@ -96,6 +96,12 @@ public:
      */
     void restartMDNS(const String& hostname = "");
     
+    /**
+     * @brief 获取实际注册的 mDNS hostname
+     * @return 实际注册的 hostname（可能与 customDomain 不同）
+     */
+    String getActualHostname() const;
+    
 private:
     DNSServer dnsServer;
     bool mdnsStarted = false;
@@ -103,6 +109,7 @@ private:
     String customDomain = "fastbee";
     bool mdnsEnabled = true;
     bool dnsEnabled = true;
+    String actualHostname = "";  // 实际注册成功的 mDNS hostname（可能带 -2/-3 后缀）
 };
 
 #endif // DNS_MANAGER_H

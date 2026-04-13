@@ -48,6 +48,8 @@
         _modbusStatus: null,
         _modbusDevices: [],
         _dcCoilStates: {},
+        _dcCoilPending: {},
+        _dcBatchPending: false,
         _dcPwmStates: {},
         _dcPidValues: {},
         _dcAutoRefreshTimers: {},
@@ -97,6 +99,9 @@
                     if (coilCard) {
                         var devIdx = parseInt(coilCard.getAttribute('data-dev'));
                         var ch = parseInt(coilCard.getAttribute('data-ch'));
+                        var key = devIdx + '_' + ch;
+                        if (self._dcCoilPending[key]) return;
+                        self._dcCoilPending[key] = true;
                         self._dcToggleCoil(devIdx, ch, coilCard);
                         return;
                     }
@@ -105,7 +110,10 @@
                     if (batchBtn) {
                         var action = batchBtn.getAttribute('data-action');
                         var dIdx = parseInt(batchBtn.getAttribute('data-dev'));
-                        self._dcBatchCoil(dIdx, action);
+                        if (self._dcBatchPending) return;
+                        self._dcBatchPending = true;
+                        batchBtn.disabled = true;
+                        self._dcBatchCoil(dIdx, action, batchBtn);
                         return;
                     }
                     // 刷新继电器状态
@@ -200,6 +208,9 @@
         loadDeviceControlPage: function() {
             console.log('[device-control] loadDeviceControlPage called');
 
+            // 每次进入页面时清空旧缓存，确保从 API 获取最新配置
+            this._modbusDevices = [];
+
             // 确保事件绑定
             if (!this._eventsBound) {
                 this.setupDeviceControlEvents();
@@ -291,6 +302,7 @@
                     self._dcInitFreeLayout();
                     // 渲染完成后，自动获取Modbus子设备初始状态
                     self._dcInitModbusDeviceStates();
+
                 } catch (renderErr) {
                     console.error('[device-control] Render error:', renderErr);
                     self._setContentState(content, 'error', renderErr.message || renderErr);
@@ -390,12 +402,14 @@
                 '</div>';
 
             if (warnings.length > 0) {
-                html += '<div class="dc-risk-warnings">' + warnings.map((msg) =>
-                    '<div class="dc-risk-warning"><i class="fas fa-exclamation-triangle"></i><span>' + this._esc(msg || '') + '</span></div>'
-                ).join('') + '</div>';
+                var warnHtml = '<div class="dc-risk-warnings">';
+                for (var wi = 0; wi < warnings.length; wi++) {
+                    warnHtml += '<div class="dc-risk-warning"><i class="fas fa-exclamation-triangle"></i><span>' + this._esc(warnings[wi] || '') + '</span></div>';
+                }
+                html += warnHtml + '</div>';
             }
 
-            html += '</div>';
+            html += '<div class="dc-resize-handle" title="拖拽调整大小"></div></div>';
             return html;
         },
 
@@ -442,7 +456,7 @@
                     html += this._renderMonitorCard(monitorItems[i]);
                 }
             }
-            html += '</div>';
+            html += '<div class="dc-resize-handle" title="拖拽调整大小"></div></div>';
             return html;
         },
 
@@ -668,7 +682,7 @@
                 html += '<div class="dc-sys-card-name">' + this._esc(item.name) + '</div>';
                 html += '</button>';
             }
-            html += '</div></div>';
+            html += '</div><div class="dc-resize-handle" title="拖拽调整大小"></div></div>';
             return html;
         },
 
@@ -685,7 +699,7 @@
                 html += '<button class="dc-ctrl-btn dc-gpio" data-id="' + this._esc(item.id) + '">' + this._t('device-control-execute') + '</button>';
                 html += '</div>';
             }
-            html += '</div></div>';
+            html += '</div><div class="dc-resize-handle" title="拖拽调整大小"></div></div>';
             return html;
         },
 
@@ -721,7 +735,7 @@
                 html += this._renderDcPidPanel(devIdx, dev);
             }
 
-            html += '</div>';
+            html += '<div class="dc-resize-handle" title="拖拽调整大小"></div></div>';
             return html;
         },
 
@@ -938,7 +952,7 @@
                 html += this._renderControlButton(items[i], typeClass, isSystem);
             }
 
-            html += '</div></div>';
+            html += '</div><div class="dc-resize-handle" title="拖拽调整大小"></div></div>';
             return html;
         },
 
@@ -1060,28 +1074,53 @@
         _dcToggleCoil: function(devIdx, ch, cardEl) {
             var self = this;
             var p = this._dcGetCoilParams(devIdx);
-            if (cardEl) cardEl.classList.add('dc-loading');
+            
+            // 乐观更新：立即反转本地状态并更新 UI
+            var states = this._dcCoilStates[devIdx] || [];
+            var prevState = (ch < states.length) ? states[ch] : false;
+            if (ch < states.length) states[ch] = !prevState;
+            this._dcCoilStates[devIdx] = states;
+            this._dcRerenderCoilGrid(devIdx);
+            
+            if (cardEl) {
+                cardEl.style.pointerEvents = 'none';
+            }
+            
             apiPost('/api/modbus/coil/control', {
                 slaveAddress: p.slaveAddress, channel: ch, coilBase: p.coilBase,
                 action: 'toggle', mode: p.relayMode
             }).then(function(res) {
                 if (res && res.success && res.data) {
-                    var states = self._dcCoilStates[devIdx] || [];
-                    if (ch < states.length) states[ch] = res.data.state;
-                    self._dcCoilStates[devIdx] = states;
-                    self._dcRerenderCoilGrid(devIdx);
-                    Notification.success(self._t('modbus-ctrl-success'));
+                    // 用服务器确认的状态校正（可能与乐观更新一致）
+                    var st = self._dcCoilStates[devIdx] || [];
+                    if (ch < st.length && st[ch] !== res.data.state) {
+                        st[ch] = res.data.state;
+                        self._dcCoilStates[devIdx] = st;
+                        self._dcRerenderCoilGrid(devIdx);
+                    }
                 } else {
+                    // 失败：回滚状态
+                    var st = self._dcCoilStates[devIdx] || [];
+                    if (ch < st.length) st[ch] = prevState;
+                    self._dcCoilStates[devIdx] = st;
+                    self._dcRerenderCoilGrid(devIdx);
                     Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
                 }
-            }).catch(function() {
+                if (cardEl) cardEl.style.pointerEvents = '';
+                self._dcCoilPending[devIdx + '_' + ch] = false;
+            }, function() {
+                // 网络错误：回滚状态
+                var st = self._dcCoilStates[devIdx] || [];
+                if (ch < st.length) st[ch] = prevState;
+                self._dcCoilStates[devIdx] = st;
+                self._dcRerenderCoilGrid(devIdx);
                 Notification.error(self._t('modbus-ctrl-fail'));
-            }).then(function() {
-                if (cardEl) cardEl.classList.remove('dc-loading');
+                if (cardEl) cardEl.style.pointerEvents = '';
+                self._dcCoilPending[devIdx + '_' + ch] = false;
             });
         },
 
-        _dcBatchCoil: function(devIdx, action) {
+        _dcBatchCoil: function(devIdx, action, btnEl) {
             var self = this;
             var p = this._dcGetCoilParams(devIdx);
             var modbusAction = action;
@@ -1100,8 +1139,12 @@
                 } else {
                     Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
                 }
-            }).catch(function() {
+                if (btnEl) btnEl.disabled = false;
+                self._dcBatchPending = false;
+            }, function() {
                 Notification.error(self._t('modbus-ctrl-fail'));
+                if (btnEl) btnEl.disabled = false;
+                self._dcBatchPending = false;
             });
         },
 
@@ -1116,14 +1159,13 @@
                 delayBase: 0x0200,
                 delayUnits: delayUnits,
                 ncMode: !!dev.ncMode,
-                coilBase: p.coilBase
+                coilBase: p.coilBase,
+                mode: p.relayMode
             }).then(function(res) {
                 if (res && res.success) {
                     window.Notification && Notification.success(
                         self._t('modbus-delay-success') + ' CH' + channel + ' ' + (delayUnits * 0.1).toFixed(1) + 's'
                     );
-                    // 延时启动后刷新线圈状态
-                    setTimeout(function() { self._dcRefreshCoilStatus(devIdx); }, 500);
                 } else {
                     window.Notification && Notification.error(
                         (res && res.error) || self._t('modbus-delay-fail')
@@ -1303,6 +1345,8 @@
         _DC_LAYOUT_KEY: 'dc-card-layout',
         _dcDragEl: null,
         _dcDragOffset: null,
+        _dcResizeEl: null,
+        _dcResizeStart: null,
 
         _dcInitFreeLayout: function() {
             var flow = document.querySelector('.dc-control-flow');
@@ -1311,7 +1355,26 @@
 
             flow.addEventListener('mousedown', function(e) {
                 var card = e.target.closest('[data-dc-sort-key]');
-                if (!card || e.target.closest('button,input,select,textarea,.dc-pwm-slider')) return;
+                if (!card) return;
+
+                // 检测 resize handle
+                var resizeHandle = e.target.closest('.dc-resize-handle');
+                if (resizeHandle) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    self._dcResizeEl = card;
+                    self._dcResizeStart = {
+                        x: e.clientX,
+                        y: e.clientY,
+                        w: card.offsetWidth,
+                        h: card.offsetHeight
+                    };
+                    card.classList.add('dc-resizing');
+                    return;
+                }
+
+                // 排除控件点击
+                if (e.target.closest('button,input,select,textarea,.dc-pwm-slider')) return;
                 e.preventDefault();
                 self._dcDragEl = card;
                 var rect = card.getBoundingClientRect();
@@ -1321,10 +1384,21 @@
             });
 
             document.addEventListener('mousemove', function(e) {
+                // 处理 resize
+                if (self._dcResizeEl) {
+                    var dx = e.clientX - self._dcResizeStart.x;
+                    var dy = e.clientY - self._dcResizeStart.y;
+                    var newW = Math.max(200, Math.min(self._dcResizeStart.w + dx, flow.clientWidth));
+                    var newH = Math.max(100, self._dcResizeStart.h + dy);
+                    self._dcResizeEl.style.width = newW + 'px';
+                    self._dcResizeEl.style.height = newH + 'px';
+                    return;
+                }
+
+                // 处理 drag
                 if (!self._dcDragEl) return;
-                var flow = document.querySelector('.dc-control-flow');
-                if (!flow) return;
                 var flowRect = flow.getBoundingClientRect();
+                if (!flowRect) return;
                 var x = e.clientX - flowRect.left - self._dcDragOffset.x;
                 var y = e.clientY - flowRect.top - self._dcDragOffset.y;
                 x = Math.max(0, Math.min(x, flow.clientWidth - self._dcDragEl.offsetWidth));
@@ -1334,6 +1408,16 @@
             });
 
             document.addEventListener('mouseup', function() {
+                // 处理 resize 完成
+                if (self._dcResizeEl) {
+                    self._dcResizeEl.classList.remove('dc-resizing');
+                    self._dcSaveLayout();
+                    self._dcResizeEl = null;
+                    self._dcResizeStart = null;
+                    return;
+                }
+
+                // 处理 drag 完成
                 if (!self._dcDragEl) return;
                 self._dcDragEl.classList.remove('dc-dragging');
                 self._dcDragEl.style.zIndex = '';
@@ -1361,6 +1445,13 @@
                     if (pos) {
                         cards[i].style.left = pos.x + 'px';
                         cards[i].style.top = pos.y + 'px';
+                        // 恢复尺寸
+                        if (pos.w) {
+                            cards[i].style.width = pos.w + 'px';
+                        }
+                        if (pos.h) {
+                            cards[i].style.height = pos.h + 'px';
+                        }
                     } else {
                         cards[i].style.left = '0px';
                         cards[i].style.top = maxBottom + 'px';
@@ -1418,8 +1509,16 @@
             var maxBottom = 0;
             for (var i = 0; i < cards.length; i++) {
                 var key = cards[i].getAttribute('data-dc-sort-key');
-                layout[key] = { x: parseInt(cards[i].style.left) || 0, y: parseInt(cards[i].style.top) || 0 };
-                var bottom = layout[key].y + cards[i].offsetHeight;
+                var layoutData = { x: parseInt(cards[i].style.left) || 0, y: parseInt(cards[i].style.top) || 0 };
+                // 如果用户自定义了尺寸，保存宽高
+                if (cards[i].style.width) {
+                    layoutData.w = parseInt(cards[i].style.width, 10);
+                }
+                if (cards[i].style.height) {
+                    layoutData.h = parseInt(cards[i].style.height, 10);
+                }
+                layout[key] = layoutData;
+                var bottom = layoutData.y + cards[i].offsetHeight;
                 if (bottom > maxBottom) maxBottom = bottom;
             }
             flow.style.minHeight = (maxBottom + 20) + 'px';
@@ -1431,6 +1530,11 @@
             var flow = document.querySelector('.dc-control-flow');
             if (!flow) return;
             var cards = flow.querySelectorAll('[data-dc-sort-key]');
+            // 重置尺寸
+            for (var i = 0; i < cards.length; i++) {
+                cards[i].style.width = '';
+                cards[i].style.height = '';
+            }
             this._dcAutoGridLayout(flow, cards);
             this._dcSaveLayout();
         },

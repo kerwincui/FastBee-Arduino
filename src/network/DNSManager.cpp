@@ -8,6 +8,116 @@
 #include "network/DNSManager.h"
 #include "systems/LoggerSystem.h"
 #include <WiFi.h>
+#include <WiFiUdp.h>
+
+/**
+ * @brief 探测网络上是否已有指定 hostname 的 mDNS 设备
+ * @param hostname 要探测的 hostname（不含 .local 后缀）
+ * @param timeoutMs 等待响应的超时时间
+ * @return true=已被占用，false=未被占用
+ */
+static bool probeMDNSHostname(const String& hostname, unsigned long timeoutMs = 500) {
+    WiFiUDP udp;
+    IPAddress mdnsMulticast(224, 0, 0, 251);
+    const uint16_t mdnsPort = 5353;
+    
+    // 构建 mDNS query 包
+    // DNS header: ID=0, Flags=0 (standard query), QDCOUNT=1, ANCOUNT=0, NSCOUNT=0, ARCOUNT=0
+    // Question: <hostname>.local, Type=A (1), Class=IN (1)
+    
+    String fqdn = hostname + ".local";
+    
+    // 计算包大小
+    // Header(12) + name(variable) + type(2) + class(2)
+    uint8_t packet[256];
+    memset(packet, 0, sizeof(packet));
+    
+    // DNS Header
+    // Transaction ID: 0x0000
+    packet[0] = 0x00; packet[1] = 0x00;
+    // Flags: 0x0000 (standard query)
+    packet[2] = 0x00; packet[3] = 0x00;
+    // Questions: 1
+    packet[4] = 0x00; packet[5] = 0x01;
+    // Answer/Authority/Additional: 0
+    packet[6] = 0x00; packet[7] = 0x00;
+    packet[8] = 0x00; packet[9] = 0x00;
+    packet[10] = 0x00; packet[11] = 0x00;
+    
+    // Question section: encode hostname.local as DNS name
+    size_t pos = 12;
+    
+    // Encode hostname part
+    const char* hn = hostname.c_str();
+    size_t hnLen = strlen(hn);
+    if (hnLen > 63) hnLen = 63;
+    packet[pos++] = (uint8_t)hnLen;
+    memcpy(packet + pos, hn, hnLen);
+    pos += hnLen;
+    
+    // Encode "local" part
+    packet[pos++] = 5; // length of "local"
+    memcpy(packet + pos, "local", 5);
+    pos += 5;
+    
+    // Terminator
+    packet[pos++] = 0x00;
+    
+    // Type: A (1)
+    packet[pos++] = 0x00; packet[pos++] = 0x01;
+    // Class: IN (1) with QU bit set for unicast response
+    packet[pos++] = 0x80; packet[pos++] = 0x01;
+    
+    // Send multicast query
+    if (!udp.beginMulticast(mdnsMulticast, mdnsPort)) {
+        return false; // 无法发送，假设未占用
+    }
+    
+    udp.beginPacket(mdnsMulticast, mdnsPort);
+    udp.write(packet, pos);
+    udp.endPacket();
+    
+    // 等待响应
+    unsigned long startTime = millis();
+    bool found = false;
+    
+    while (millis() - startTime < timeoutMs) {
+        int packetSize = udp.parsePacket();
+        if (packetSize > 0) {
+            uint8_t respBuf[512];
+            int len = udp.read(respBuf, sizeof(respBuf));
+            
+            // 检查是否是 mDNS 响应（Flags 的 QR bit = 1，即 bit15）
+            if (len >= 12) {
+                uint8_t flags1 = respBuf[2];
+                uint16_t anCount = (respBuf[6] << 8) | respBuf[7];
+                
+                // QR=1 表示响应，且有 answer
+                if ((flags1 & 0x80) && anCount > 0) {
+                    // 简单检查：响应包中是否包含我们查询的 hostname
+                    // 通过字符串搜索（不够严谨但对 ESP32 足够实用）
+                    String respStr;
+                    for (int i = 12; i < len && i < 256; i++) {
+                        if (respBuf[i] >= 32 && respBuf[i] < 127) {
+                            respStr += (char)respBuf[i];
+                        }
+                    }
+                    respStr.toLowerCase();
+                    String lowerHostname = hostname;
+                    lowerHostname.toLowerCase();
+                    if (respStr.indexOf(lowerHostname) >= 0) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+        delay(10);
+    }
+    
+    udp.stop();
+    return found;
+}
 
 DNSManager::DNSManager() {
 }
@@ -80,23 +190,49 @@ bool DNSManager::startMDNS(const String& hostname) {
     mdnsHostname.replace(" ", "-");
     mdnsHostname.toLowerCase();
     
-    if (!MDNS.begin(mdnsHostname.c_str())) {
-        LOG_ERROR("DNSManager: Failed to start mDNS");
-        return false;
+    // 冲突探测 + 自动重命名（最多尝试 hostname, hostname-2, hostname-3）
+    const int maxAttempts = 3;
+    String tryHostname;
+    
+    for (int attempt = 0; attempt < maxAttempts; attempt++) {
+        tryHostname = mdnsHostname;
+        if (attempt > 0) {
+            tryHostname += "-" + String(attempt + 1);
+        }
+        
+        // 探测网络上是否已有此 hostname
+        LOG_INFOF("DNSManager: Probing mDNS hostname '%s.local'...", tryHostname.c_str());
+        bool occupied = probeMDNSHostname(tryHostname, 500);
+        
+        if (occupied) {
+            LOG_WARNINGF("DNSManager: '%s.local' is already in use, trying next...", tryHostname.c_str());
+            continue;
+        }
+        
+        // 未被占用，尝试注册
+        if (MDNS.begin(tryHostname.c_str())) {
+            actualHostname = tryHostname;
+            MDNS.setInstanceName(tryHostname.c_str());
+            
+            // 添加服务
+            MDNS.addService("http", "tcp", 80);
+            MDNS.addService("fastbee", "tcp", 80);
+            MDNS.addService("ws", "tcp", 81);
+            LOG_INFO("DNSManager: Added HTTP service to mDNS");
+            
+            mdnsStarted = true;
+            if (attempt > 0) {
+                LOG_WARNINGF("DNSManager: mDNS conflict detected, renamed to: %s.local", tryHostname.c_str());
+            }
+            LOG_INFO("DNSManager: mDNS started: " + tryHostname + ".local");
+            return true;
+        }
+        
+        LOG_WARNINGF("DNSManager: MDNS.begin('%s') failed, trying next...", tryHostname.c_str());
     }
     
-    MDNS.setInstanceName(mdnsHostname.c_str());
-    
-    // 添加服务
-    MDNS.addService("http", "tcp", 80);
-    // FastBee设备提供一个独特的服务标识
-    MDNS.addService("fastbee", "tcp", 80);
-    MDNS.addService("ws", "tcp", 81); 
-    LOG_INFO("DNSManager: Added HTTP service to mDNS");
-    
-    mdnsStarted = true;
-    LOG_INFO("DNSManager: mDNS started: " + mdnsHostname + ".local");
-    return true;
+    LOG_ERROR("DNSManager: All mDNS hostname attempts failed");
+    return false;
 }
 
 void DNSManager::stopMDNS() {
@@ -200,7 +336,7 @@ bool DNSManager::checkMDNSHealth() {
             
             if (hasValidIP && mdnsEnabled) {
                 LOG_INFO("DNSManager: Health check - mDNS not running, attempting restart");
-                return startMDNS(customDomain);
+                return startMDNS(actualHostname.isEmpty() ? customDomain : actualHostname);
             }
         }
         return false;
@@ -245,4 +381,8 @@ void DNSManager::restartMDNS(const String& hostname) {
     stopMDNS();
     delay(100);  // 短暂延迟确保资源释放
     startMDNS(hostname.isEmpty() ? customDomain : hostname);
+}
+
+String DNSManager::getActualHostname() const {
+    return actualHostname;
 }

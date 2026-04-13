@@ -87,6 +87,11 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             doc["data"]["modeCode"]   = static_cast<uint8_t>(cfg.mode);
             doc["data"]["enableMDNS"] = cfg.enableMDNS;
             doc["data"]["customDomain"] = cfg.customDomain;
+            // 返回实际注册的 mDNS hostname（可能带 -2/-3 后缀）
+            DNSManager* dns = netMgr->getDNSManager();
+            if (dns) {
+                doc["data"]["mdnsDomain"] = dns->getActualHostname();
+            }
             unsigned long uptimeSec = millis() / 1000;
             char uptimeBuf[32];
             snprintf(uptimeBuf, sizeof(uptimeBuf), "%lud %02lu:%02lu:%02lu",

@@ -81,7 +81,7 @@
                             data-i18n="menu-periph-exec">外设执行</span>
                     </a>
                     <a href="#" class="menu-item" data-page="device-control">
-                        <span class="menu-icon">🎮</span> <span id="menu-device-control" data-i18n="menu-device-control">设备控制</span>
+                        <span class="menu-icon">📺</span> <span id="menu-device-control" data-i18n="menu-device-control">设备控制</span>
                     </a>
                     <a href="#" class="menu-item" data-page="protocol">
                         <span class="menu-icon">🔌</span> <span id="menu-protocol">通信协议</span>
@@ -1171,65 +1171,7 @@
                                         </div>
                                     </div>
 
-                                    <!-- ========== 高级配置（可折叠） ========== -->
-                                    <div class="mqtt-collapsible-section fb-mt-4">
-                                        <div class="mqtt-collapsible-header fb-p-3 fb-cursor-pointer fb-flex-between fb-user-select-none"
-                                            data-action="toggleSection" data-args="modbus-advanced-body">
-                                            <h4 class="fb-m-0 fb-text-dark" data-i18n="modbus-advanced-config-title">高级配置</h4>
-                                            <span class="mqtt-collapse-icon" id="modbus-advanced-body-icon">&#9654;</span>
-                                        </div>
-                                        <div id="modbus-advanced-body" class="mqtt-collapsible-body fb-hidden">
-                                        <div class="config-form-grid">
-                                            <div class="config-form-column">
-                                                <div class="pure-control-group">
-                                                    <label data-i18n="modbus-debug-slave-addr">从站地址</label>
-                                                    <input type="number" id="modbus-debug-slave-addr" class="pure-input-1" value="0" min="0" max="255">
-                                                    <small class="field-hint" data-i18n="modbus-debug-slave-addr-hint">0 = 广播地址</small>
-                                                </div>
-                                                <div class="pure-control-group">
-                                                    <label data-i18n="modbus-ctrl-addr-reg">地址寄存器</label>
-                                                    <div class="fb-flex fb-flex-gap-2">
-                                                        <input type="number" id="modbus-ctrl-addr-reg" class="pure-input-1" value="0" min="0" max="65535" >
-                                                        <button type="button" class="btn btn-sm btn-secondary fb-w-60" data-action="readDeviceAddress" data-i18n="modbus-ctrl-read-addr">读取</button>
-                                                    </div>
-                                                    <div id="modbus-ctrl-current-addr" class="field-hint"></div>
-                                                </div>
-                                                <div class="pure-control-group">
-                                                    <label data-i18n="modbus-ctrl-new-addr">新地址</label>
-                                                    <div class="fb-flex fb-flex-gap-2">
-                                                        <input type="number" id="modbus-ctrl-new-addr" class="pure-input-1" value="" min="1" max="255" >
-                                                        <button type="button" class="btn btn-sm btn-enable fb-w-60" data-action="setDeviceAddress" data-i18n="modbus-ctrl-set-addr">设置</button>
-                                                    </div>
-                                                    <small class="field-hint" data-i18n="modbus-ctrl-addr-hint">广播写入(FC 0x10)，1-255</small>
-                                                </div>
-                                            </div>
-                                            <div class="config-form-column">
-                                                <div class="pure-control-group">
-                                                    <label data-i18n="modbus-ctrl-baudrate">波特率</label>
-                                                    <div class="fb-flex fb-flex-gap-2">
-                                                        <select id="modbus-ctrl-baudrate" class="pure-input-1">
-                                                            <option value="1200">1200</option><option value="2400">2400</option>
-                                                            <option value="4800">4800</option><option value="9600" selected>9600</option>
-                                                            <option value="19200">19200</option><option value="115200">115200</option>
-                                                        </select>
-                                                        <button type="button" class="btn btn-sm btn-enable fb-w-100" data-action="setDeviceBaudrate" data-i18n="modbus-ctrl-set-baud">设置</button>
-                                                    </div>
-                                                    <small class="field-hint" data-i18n="modbus-ctrl-baud-hint">FC 0xB0 专有指令</small>
-                                                </div>
-                                                <div class="pure-control-group">
-                                                    <label data-i18n="modbus-ctrl-inputs">离散输入</label>
-                                                    <div class="fb-flex fb-flex-gap-2 fb-items-center">
-                                                        <input type="number" id="modbus-ctrl-input-count" class="pure-input-1" value="4" min="1" max="32"  placeholder="数量">
-                                                        <input type="number" id="modbus-ctrl-input-base" class="pure-input-1" value="0" min="0" max="65535"  placeholder="起始地址">
-                                                        <button type="button" class="btn btn-sm btn-secondary fb-w-100" data-action="readDiscreteInputs" data-i18n="modbus-ctrl-read-inputs">读取</button>
-                                                    </div>
-                                                    <small class="field-hint" data-i18n="modbus-debug-input-count-hint">读取数量 + 起始地址</small>
-                                                    <div id="modbus-ctrl-inputs-display" class="field-hint u-mt-5"></div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                        </div>
-                                    </div>
+
                                 </div>
 
                                 <!-- Modbus TCP 配置 - 两列布局 -->

@@ -682,6 +682,10 @@
                 .then(res => {
                     if (res && res.success) {
                         this._protocolConfig = null;
+                        // 清除 device-control 模块的设备缓存，确保切换页面时重新加载
+                        if (typeof AppState !== 'undefined' && AppState._modbusDevices) {
+                            AppState._modbusDevices = [];
+                        }
                         if (res.data && typeof res.data.mqttReconnected !== 'undefined') {
                             if (res.data.mqttReconnected && res.data.mqttDeferred) {
                                 Notification.success(i18n.t('mqtt-reconnect-ok'), i18n.t('protocol-config-title'));

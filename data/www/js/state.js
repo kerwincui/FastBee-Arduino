@@ -278,11 +278,46 @@ const AppState = {
     },
 
     showModal(ref) {
-        return this.showElement(ref, 'flex');
+        const el = this.showElement(ref, 'flex');
+        if (el) {
+            const self = this;
+            // 点击遮罩层关闭
+            el._modalOverlayHandler = function(e) {
+                if (e.target === el) {
+                    self.hideModal(ref);
+                }
+            };
+            el.addEventListener('click', el._modalOverlayHandler);
+                
+            // 绑定关闭按钮
+            const closeBtn = el.querySelector('.modal-close, .modal-close-btn');
+            if (closeBtn) {
+                closeBtn._modalCloseHandler = function() {
+                    self.hideModal(ref);
+                };
+                closeBtn.addEventListener('click', closeBtn._modalCloseHandler);
+            }
+        }
+        return el;
     },
-
+    
     hideModal(ref) {
-        return this.hideElement(ref);
+        const el = this.getEl(ref);
+        if (!el) return null;
+        // 清理遮罩点击事件
+        if (el._modalOverlayHandler) {
+            el.removeEventListener('click', el._modalOverlayHandler);
+            el._modalOverlayHandler = null;
+        }
+        // 清理关闭按钮事件
+        const closeBtn = el.querySelector('.modal-close, .modal-close-btn');
+        if (closeBtn && closeBtn._modalCloseHandler) {
+            closeBtn.removeEventListener('click', closeBtn._modalCloseHandler);
+            closeBtn._modalCloseHandler = null;
+        }
+        el.classList.add('is-hidden');
+        el.style.display = 'none';
+        return el;
     },
 
     showInlineError(ref, message) {
@@ -1281,8 +1316,19 @@ const AppState = {
 
     // ============ 关闭所有浮层（token 过期时调用）============
     closeAllOverlays() {
-        // 1. 关闭所有 .modal 弹窗
+        // 1. 关闭所有 .modal 弹窗并清理事件
         document.querySelectorAll('.modal').forEach(function (m) {
+            // 清理遮罩点击事件
+            if (m._modalOverlayHandler) {
+                m.removeEventListener('click', m._modalOverlayHandler);
+                m._modalOverlayHandler = null;
+            }
+            // 清理关闭按钮事件
+            const closeBtn = m.querySelector('.modal-close, .modal-close-btn');
+            if (closeBtn && closeBtn._modalCloseHandler) {
+                closeBtn.removeEventListener('click', closeBtn._modalCloseHandler);
+                closeBtn._modalCloseHandler = null;
+            }
             m.style.display = 'none';
         });
 
