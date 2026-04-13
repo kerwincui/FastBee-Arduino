@@ -1,3 +1,5 @@
+[简体中文](./README.md) | [English](./README.en.md)
+
 # FastBee-Arduino
 
 **FastBee-Arduino is a feature-complete embedded IoT device development framework built on the ESP32-Arduino platform.**
