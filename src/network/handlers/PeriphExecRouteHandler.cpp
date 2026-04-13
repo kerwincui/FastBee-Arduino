@@ -218,6 +218,9 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     t.intervalSec = ctx->getParamInt(request, "intervalSec", 60);
     t.timePoint = ctx->getParamValue(request, "timePoint", "");
     t.eventId = ctx->getParamValue(request, "eventId", "");
+    t.pollResponseTimeout = ctx->getParamInt(request, "pollResponseTimeout", 1000);
+    t.pollMaxRetries = ctx->getParamInt(request, "pollMaxRetries", 2);
+    t.pollInterPollDelay = ctx->getParamInt(request, "pollInterPollDelay", 100);
     rule.triggers.push_back(t);
 
     ExecAction a;
@@ -284,6 +287,9 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     t.intervalSec = ctx->getParamInt(request, "intervalSec", t.intervalSec);
     t.timePoint = ctx->getParamValue(request, "timePoint", t.timePoint);
     t.eventId = ctx->getParamValue(request, "eventId", t.eventId);
+    t.pollResponseTimeout = ctx->getParamInt(request, "pollResponseTimeout", t.pollResponseTimeout);
+    t.pollMaxRetries = ctx->getParamInt(request, "pollMaxRetries", t.pollMaxRetries);
+    t.pollInterPollDelay = ctx->getParamInt(request, "pollInterPollDelay", t.pollInterPollDelay);
     rule.triggers.push_back(t);
 
     ExecAction a;

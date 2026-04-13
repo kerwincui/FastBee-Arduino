@@ -57,6 +57,51 @@
             if (apProvisionStopBtn) apProvisionStopBtn.addEventListener('click', () => this.stopProvision());
         },
 
+        _renderWifiNote(text) {
+            return '<small class="wifi-note-inline">' + text + '</small>';
+        },
+
+        _setWifiModeNotice(message) {
+            const noticeEl = document.getElementById('wifi-mode-notice');
+            const noticeTextEl = document.getElementById('wifi-mode-notice-text');
+            if (!noticeEl || !noticeTextEl) return;
+            noticeTextEl.innerHTML = message || '';
+            if (message) {
+                this.showElement(noticeEl, 'block');
+            } else {
+                this.hideElement(noticeEl);
+            }
+        },
+
+        _renderWifiScanState(message, detail) {
+            let html = '<div class="wifi-scan-state is-error">' +
+                '<i class="fas fa-exclamation-circle wifi-scan-state-icon"></i>' +
+                '<div class="wifi-scan-state-text">' + message + '</div>';
+            if (detail) {
+                html += '<div class="wifi-scan-state-detail">' + detail + '</div>';
+            }
+            html += '</div>';
+            return html;
+        },
+
+        _getWifiLockIcon(isEncrypted) {
+            return isEncrypted
+                ? '<i class="fas fa-lock wifi-lock-icon-secure"></i>'
+                : '<i class="fas fa-lock-open wifi-lock-icon-open"></i>';
+        },
+
+        _ensureWifiModalEvents(modal) {
+            if (!modal || modal.dataset.bound === 'true') return;
+            const closeBtn = document.getElementById('close-wifi-modal');
+            if (closeBtn) {
+                closeBtn.addEventListener('click', () => this.hideModal(modal));
+            }
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) this.hideModal(modal);
+            });
+            modal.dataset.bound = 'true';
+        },
+
         // ============ 网络配置 ============
 
         /**
@@ -130,7 +175,11 @@
                 if (el) {
                     const group = el.closest('.pure-control-group');
                     if (group) {
-                        group.style.display = show ? 'block' : 'none';
+                        if (show) {
+                            this.showElement(group, 'block');
+                        } else {
+                            this.hideElement(group);
+                        }
                     }
                 }
             });
@@ -159,9 +208,8 @@
             this._showMessage('wifi-success', false);
             this._showMessage('wifi-error', false);
 
-            const noticeEl = document.getElementById('wifi-mode-notice');
             const noticeTextEl = document.getElementById('wifi-mode-notice-text');
-            if (noticeEl) noticeEl.style.display = 'none';
+            this._setWifiModeNotice('');
 
             apiPut('/api/network/config', config)
                 .then(res => {
@@ -173,7 +221,7 @@
                         let noticeMessage = i18n.t('wifi-mode-notice-title');
 
                         if (data.restartRequired) {
-                            message += '<br><small style="color:#888;">' + i18n.t('wifi-restart-hint') + '</small>';
+                            message += '<br>' + this._renderWifiNote(i18n.t('wifi-restart-hint'));
                         }
 
                         const mode = data.mode;
@@ -182,14 +230,14 @@
                         if (mode === 0 || modeText === 'STA') {
                             if (data.mdnsDomain) {
                                 const hint = i18n.t('wifi-mode-sta-hint').replace('{domain}', data.mdnsDomain);
-                                message += '<br><small>' + hint + '</small>';
+                                message += '<br>' + this._renderWifiNote(hint);
                                 noticeMessage += i18n.t('wifi-mode-notice-sta').replace('{domain}', data.mdnsDomain);
                             }
                         } else if (mode === 1 || modeText === 'AP') {
                             const hint = i18n.t('wifi-mode-ap-hint')
                                 .replace('{ssid}', data.apSSID || 'fastbee-ap')
                                 .replace('{ip}', data.apIP || '192.168.4.1');
-                            message += '<br><small>' + hint + '</small>';
+                            message += '<br>' + this._renderWifiNote(hint);
                             noticeMessage += i18n.t('wifi-mode-notice-ap')
                                 .replace('{ssid}', data.apSSID || 'fastbee-ap')
                                 .replace('{ip}', data.apIP || '192.168.4.1');
@@ -199,25 +247,21 @@
                                     .replace('{ssid}', data.apSSID)
                                     .replace('{ip}', data.apIP || '192.168.4.1')
                                     .replace('{domain}', data.mdnsDomain);
-                                message += '<br><small>' + hint + '</small>';
+                                message += '<br>' + this._renderWifiNote(hint);
                                 noticeMessage += i18n.t('wifi-mode-notice-apsta');
                             } else if (data.apSSID) {
                                 const hint = i18n.t('wifi-mode-ap-hint')
                                     .replace('{ssid}', data.apSSID)
                                     .replace('{ip}', data.apIP || '192.168.4.1');
-                                message += '<br><small>' + hint + '</small>';
+                                message += '<br>' + this._renderWifiNote(hint);
                                 noticeMessage += i18n.t('wifi-mode-notice-ap')
                                     .replace('{ssid}', data.apSSID)
                                     .replace('{ip}', data.apIP || '192.168.4.1');
                             }
                         }
 
-                        message += '<br><small style="color:#888;">' + i18n.t('wifi-reconnect-hint') + '</small>';
-
-                        if (noticeEl && noticeTextEl) {
-                            noticeTextEl.innerHTML = noticeMessage;
-                            noticeEl.style.display = 'block';
-                        }
+                        message += '<br>' + this._renderWifiNote(i18n.t('wifi-reconnect-hint'));
+                        this._setWifiModeNotice(noticeMessage);
 
                         Notification.show({
                             type: 'success',
@@ -276,7 +320,7 @@
                         Notification.show({
                             type: 'success',
                             title: i18n.t('wifi-mode-changed-title'),
-                            message: i18n.t('wifi-save-ok') + '<br><small style="color:#888;">' + i18n.t('wifi-restart-hint') + '</small>',
+                            message: i18n.t('wifi-save-ok') + '<br>' + this._renderWifiNote(i18n.t('wifi-restart-hint')),
                             duration: 8000
                         });
                     } else {
@@ -387,7 +431,8 @@
 
             if (!modal || !modalBody) return;
 
-            modal.style.display = 'flex';
+            this.showModal(modal);
+            this._ensureWifiModalEvents(modal);
             modalBody.innerHTML = i18n.t('wifi-scanning-result');
 
             if (scanBtn) {
@@ -395,25 +440,16 @@
                 scanBtn.innerHTML = i18n.t('wifi-scanning-html');
             }
 
-            const closeBtn = document.getElementById('close-wifi-modal');
-            if (closeBtn) {
-                closeBtn.onclick = () => { modal.style.display = 'none'; };
-            }
-            modal.onclick = (e) => {
-                if (e.target === modal) modal.style.display = 'none';
-            };
-
             apiGet('/api/wifi/scan')
                 .then(res => {
                     if (!res || !res.success) {
                         if (res && res.error === 'scan_busy') {
                             modalBody.innerHTML = i18n.t('wifi-scan-busy');
                         } else {
-                            modalBody.innerHTML = `<div style="padding: 30px; text-align: center; color: #f56c6c;">
-                                <i class="fas fa-exclamation-circle" style="font-size:24px;"></i>
-                                <div style="margin-top:10px;">${i18n.t('wifi-scan-fail-msg')}</div>
-                                <div style="margin-top:8px; font-size:12px; color:#999;">${res?.error || 'Unknown error'}</div>
-                            </div>`;
+                            modalBody.innerHTML = this._renderWifiScanState(
+                                i18n.t('wifi-scan-fail-msg'),
+                                res?.error || 'Unknown error'
+                            );
                         }
                         return;
                     }
@@ -430,9 +466,7 @@
                     let html = '<div class="wifi-grid">';
                     networks.forEach((net) => {
                         const signalClass = net.rssi > -50 ? 'strong' : net.rssi > -70 ? 'medium' : 'weak';
-                        const encryptIcon = net.encryption > 0
-                            ? '<i class="fas fa-lock" style="color: #52c41a;"></i>'
-                            : '<i class="fas fa-lock-open" style="color: #bbb;"></i>';
+                        const encryptIcon = this._getWifiLockIcon(net.encryption > 0);
                         const securityType = net.encryption > 0 ? 'wpa' : 'none';
 
                         html += `
@@ -469,17 +503,14 @@
                             const passwordInput = document.getElementById('wifi-password');
                             if (passwordInput) passwordInput.value = '';
 
-                            modal.style.display = 'none';
+                            this.hideModal(modal);
                             Notification.success(`${i18n.t('wifi-selected-prefix')}${ssid}`, i18n.t('wifi-scan-title'));
                         });
                     });
                 })
                 .catch(err => {
                     console.error('WiFi scan failed:', err);
-                    modalBody.innerHTML = `<div style="padding: 30px; text-align: center; color: #f56c6c;">
-                        <i class="fas fa-exclamation-circle" style="font-size:24px;"></i>
-                        <div style="margin-top:10px;">${i18n.t('wifi-scan-fail-msg')}</div>
-                    </div>`;
+                    modalBody.innerHTML = this._renderWifiScanState(i18n.t('wifi-scan-fail-msg'));
                 })
                 .finally(() => {
                     if (scanBtn) {

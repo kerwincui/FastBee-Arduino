@@ -1,126 +1,140 @@
 /**
- * ESP32 Web 静态资源 Gzip 压缩脚本
- * 
- * 功能：
- * 1. 删除 data/www 目录下所有旧的 .gz 文件
- * 2. 压缩所有 HTML/JS/CSS 文件生成新的 .gz 文件
- * 
- * 使用方法：
+ * Gzip static web assets under data/www.
+ *
+ * Steps:
+ * 1. Remove old .gz files.
+ * 2. Compress all .html/.js/.css files into fresh .gz files.
+ *
+ * Usage:
  *   node scripts/gzip-www.js
  */
 
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const { buildWebModules } = require('./build-web-modules');
 
 const WWW_DIR = path.join(__dirname, '..', 'data', 'www');
+const COMPRESS_EXTENSIONS = new Set(['.html', '.js', '.css']);
 
-// 需要压缩的文件扩展名
-const COMPRESS_EXTENSIONS = ['.html', '.js', '.css'];
-
-// 统计信息
-let stats = {
+const stats = {
     deleted: 0,
+    skippedDeletes: 0,
     compressed: 0,
+    failedCompress: 0,
     totalOriginalSize: 0,
     totalCompressedSize: 0
 };
 
-/**
- * 递归遍历目录
- */
 function walkDir(dir, callback) {
     if (!fs.existsSync(dir)) {
-        console.error(`目录不存在: ${dir}`);
+        console.error(`Directory not found: ${dir}`);
         return;
     }
-    
+
     const files = fs.readdirSync(dir);
-    files.forEach(file => {
+    files.forEach((file) => {
         const filePath = path.join(dir, file);
         const stat = fs.statSync(filePath);
-        
+
         if (stat.isDirectory()) {
             walkDir(filePath, callback);
-        } else {
-            callback(filePath);
+            return;
         }
+
+        callback(filePath);
     });
 }
 
-/**
- * 删除所有旧的 .gz 文件
- */
 function deleteOldGzFiles() {
-    console.log('\n[Step 1] 删除旧的 .gz 文件...');
-    
+    console.log('\n[Step 1] Removing old .gz files...');
+
     walkDir(WWW_DIR, (filePath) => {
-        if (filePath.endsWith('.gz')) {
+        if (!filePath.endsWith('.gz')) return;
+        try {
             fs.unlinkSync(filePath);
-            stats.deleted++;
-            console.log(`  删除: ${path.relative(WWW_DIR, filePath)}`);
+            stats.deleted += 1;
+            console.log(`  Deleted: ${path.relative(WWW_DIR, filePath)}`);
+        } catch (error) {
+            stats.skippedDeletes += 1;
+            console.warn(`  Skip delete: ${path.relative(WWW_DIR, filePath)} (${error.code || error.message})`);
         }
     });
-    
-    console.log(`  共删除 ${stats.deleted} 个 .gz 文件`);
+
+    console.log(`  Removed ${stats.deleted} old .gz files`);
+    if (stats.skippedDeletes > 0) {
+        console.log(`  Skipped ${stats.skippedDeletes} locked .gz files`);
+    }
 }
 
-/**
- * 压缩文件
- */
 function compressFile(filePath) {
     const ext = path.extname(filePath).toLowerCase();
-    
-    if (!COMPRESS_EXTENSIONS.includes(ext)) {
-        return;
-    }
-    
+    if (!COMPRESS_EXTENSIONS.has(ext)) return;
+
     const content = fs.readFileSync(filePath);
     const compressed = zlib.gzipSync(content, { level: 9 });
-    const gzPath = filePath + '.gz';
-    
-    fs.writeFileSync(gzPath, compressed);
-    
+    const gzPath = `${filePath}.gz`;
+
+    try {
+        fs.writeFileSync(gzPath, compressed);
+    } catch (error) {
+        stats.failedCompress += 1;
+        console.warn(`  Skip compress: ${path.relative(WWW_DIR, filePath)} (${error.code || error.message})`);
+        return;
+    }
+
     const originalSize = content.length;
     const compressedSize = compressed.length;
-    const ratio = ((1 - compressedSize / originalSize) * 100).toFixed(1);
-    
-    stats.compressed++;
+    const ratio = originalSize > 0
+        ? ((1 - compressedSize / originalSize) * 100).toFixed(1)
+        : '0.0';
+
+    stats.compressed += 1;
     stats.totalOriginalSize += originalSize;
     stats.totalCompressedSize += compressedSize;
-    
-    console.log(`  压缩: ${path.relative(WWW_DIR, filePath)} (${originalSize} -> ${compressedSize}, -${ratio}%)`);
+
+    console.log(`  Compressed: ${path.relative(WWW_DIR, filePath)} (${originalSize} -> ${compressedSize}, -${ratio}%)`);
 }
 
-/**
- * 压缩所有文件
- */
 function compressAllFiles() {
-    console.log('\n[Step 2] 压缩 HTML/JS/CSS 文件...');
-    
+    console.log('\n[Step 2] Compressing HTML/JS/CSS files...');
+
     walkDir(WWW_DIR, compressFile);
-    
-    const totalRatio = ((1 - stats.totalCompressedSize / stats.totalOriginalSize) * 100).toFixed(1);
-    console.log(`\n  共压缩 ${stats.compressed} 个文件`);
-    console.log(`  总大小: ${stats.totalOriginalSize} -> ${stats.totalCompressedSize} bytes (-${totalRatio}%)`);
+
+    const totalRatio = stats.totalOriginalSize > 0
+        ? ((1 - stats.totalCompressedSize / stats.totalOriginalSize) * 100).toFixed(1)
+        : '0.0';
+
+    console.log(`\n  Total compressed files: ${stats.compressed}`);
+    if (stats.failedCompress > 0) {
+        console.log(`  Failed compressions: ${stats.failedCompress}`);
+    }
+    console.log(`  Total size: ${stats.totalOriginalSize} -> ${stats.totalCompressedSize} bytes (-${totalRatio}%)`);
 }
 
-/**
- * 主函数
- */
 function main() {
     console.log('========================================');
-    console.log('  ESP32 Web 静态资源 Gzip 压缩工具');
+    console.log('  ESP32 Web Asset Gzip Tool');
     console.log('========================================');
-    console.log(`目标目录: ${WWW_DIR}`);
-    
+    console.log(`Target directory: ${WWW_DIR}`);
+
+    console.log('\n[Step 0] Building web modules...');
+    const buildResult = buildWebModules();
+    buildResult.syncedModules.forEach((item) => {
+        console.log(`  Synced: ${path.relative(ROOT_DIR(), item.publishFile)} (${item.size} bytes)`);
+    });
+    console.log(`  Built: ${path.relative(ROOT_DIR(), buildResult.adminBundle.outputFile)} (${buildResult.adminBundle.size} bytes)`);
+
     deleteOldGzFiles();
     compressAllFiles();
-    
+
     console.log('\n========================================');
-    console.log('  压缩完成！');
+    console.log('  Compression completed');
     console.log('========================================\n');
 }
 
 main();
 
+function ROOT_DIR() {
+    return path.join(__dirname, '..');
+}

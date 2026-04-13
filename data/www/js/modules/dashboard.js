@@ -34,10 +34,12 @@
 
                     // 在线设备数（暂用模拟，等待设备API）
                     const tbody = document.getElementById('device-table-body');
-                    if (tbody) {
-                        tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:#888">
-                            ${d.networkConnected ? i18n.t('dashboard-connected-prefix') + (d.ipAddress || '') : i18n.t('dashboard-disconnected')}
-                        </td></tr>`;
+                    if (tbody && typeof this.renderEmptyTableRow === 'function') {
+                        this.renderEmptyTableRow(
+                            tbody,
+                            4,
+                            d.networkConnected ? i18n.t('dashboard-connected-prefix') + (d.ipAddress || '') : i18n.t('dashboard-disconnected')
+                        );
                     }
                 })
                 .catch(() => {
@@ -93,8 +95,8 @@
                     // 网络状态
                     const network = data.network || {};
                     const netStatus = network.connected ?
-                        `<span style="color: #52c41a;">●</span> ${i18n.t('monitor-connected')} (${network.ssid || 'N/A'})` :
-                        `<span style="color: #f5222d;">●</span> ${i18n.t('monitor-disconnected')}`;
+                        `<span class="u-text-success">●</span> ${i18n.t('monitor-connected')} (${network.ssid || 'N/A'})` :
+                        `<span class="u-text-danger">●</span> ${i18n.t('monitor-disconnected')}`;
                     this._setHtml('monitor-network-status', netStatus);
                     this._setText('monitor-ip', network.ipAddress || '--');
 
@@ -197,8 +199,8 @@
                     const rssi = d.rssi;
                     if (rssi !== undefined && rssi !== null && rssi !== '') {
                         const pct = d.signalStrength || 0;
-                        const color = pct >= 70 ? '#52c41a' : pct >= 40 ? '#faad14' : '#f5222d';
-                        setHtml('ns-rssi', `<span style="color:${color};">${rssi} dBm (${pct}%)</span>`);
+                        const toneClass = pct >= 70 ? 'u-text-success' : pct >= 40 ? 'u-text-warning' : 'u-text-danger';
+                        setHtml('ns-rssi', `<span class="${toneClass}">${rssi} dBm (${pct}%)</span>`);
                     } else {
                         setText('ns-rssi', '--');
                     }

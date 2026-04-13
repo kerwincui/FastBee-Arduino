@@ -205,6 +205,7 @@ public:
     bool loadConfigFromFile(const String& configPath = "");
     bool saveConfigToFile(const String& configPath = "");
     ModbusConfig getConfig() const { return config; }
+    static void sanitizeConfig(ModbusConfig& config);
 
     // === Master模式公有接口 ===
     void setMode(ModbusMode mode);
@@ -253,6 +254,7 @@ public:
     uint32_t getSuccessPollCount() const { return _successPollCount; }
     uint32_t getFailedPollCount() const { return _failedPollCount; }
     uint32_t getTimeoutPollCount() const { return _timeoutPollCount; }
+    uint32_t getLastPollAgeSec() const { return _lastPollTime > 0 ? (millis() - _lastPollTime) / 1000UL : 0; }
     
     // Master一次性阻塞写操作（与 readRegistersOnce 对称，通用Modbus写能力）
     OneShotResult writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, bool value);

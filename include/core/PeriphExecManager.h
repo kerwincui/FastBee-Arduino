@@ -187,6 +187,10 @@ private:
     bool ruleNeedsModbus(const PeriphExecRule& rule) const;
     bool ruleHasPollCollectionAction(const PeriphExecRule& rule) const;
     bool shouldAvoidSyncFallback(const PeriphExecRule& rule) const;
+    void sanitizeTriggerForSafety(ExecTrigger& trigger, bool hasPollCollectionAction, const String& ruleName) const;
+    void sanitizeRuleForSafety(PeriphExecRule& rule) const;
+    unsigned long getPollTriggerCooldownMs(const PeriphExecRule& rule, const String& source) const;
+    bool shouldThrottlePollIngress(const String& source, unsigned long now);
 
     std::unique_ptr<PeriphExecExecutor> _executor;
     std::unique_ptr<PeriphExecScheduler> _scheduler;
@@ -209,6 +213,9 @@ private:
     std::set<String> _runningRuleIds;           // 正在运行的规则ID集合
     std::map<String, unsigned long> _failureBackoff;  // 规则失败后的退避时间戳
     SemaphoreHandle_t _runningRulesMutex = nullptr;   // 保护 _runningRuleIds 的互斥量
+    SemaphoreHandle_t _pollIngressMutex = nullptr;    // 保护轮询注入节流状态
+    std::map<String, unsigned long> _pollSourceLastAccepted;   // 最近一次接受的轮询数据时间
+    std::map<String, unsigned long> _pollSourceLastThrottleLog; // 最近一次节流日志时间
 
     // ========== 异步执行上下文对象池 ==========
     AsyncExecContextPool _contextPool;          // 固定大小的上下文对象池

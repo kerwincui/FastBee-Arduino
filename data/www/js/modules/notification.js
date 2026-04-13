@@ -26,12 +26,10 @@ const Notification = {
         const id = 'notification-' + Date.now();
         const duration = options.duration || 3000;
         
-        // 创建通知元素
         const notification = document.createElement('div');
         notification.id = id;
         notification.className = `notification notification-${options.type || 'info'}`;
         
-        // 图标映射
         const icons = {
             primary: '✅',
             success: '✅',
@@ -39,22 +37,42 @@ const Notification = {
             error: '❌',
             info: 'ℹ️'
         };
-        
-        notification.innerHTML = `
-            <div class="notification-header">
-                <div class="notification-title">
-                    <i>${icons[options.type] || icons.info}</i>
-                    <span>${options.title || this.getDefaultTitle(options.type)}</span>
-                </div>
-                <button class="notification-close" onclick="Notification.close('${id}')">×</button>
-            </div>
-            <div class="notification-body">
-                ${options.message || ''}
-            </div>
-            <div class="notification-progress">
-                <div class="notification-progress-bar" style="animation-duration: ${duration}ms;"></div>
-            </div>
-        `;
+
+        const header = document.createElement('div');
+        header.className = 'notification-header';
+
+        const title = document.createElement('div');
+        title.className = 'notification-title';
+        const icon = document.createElement('i');
+        icon.textContent = icons[options.type] || icons.info;
+        const titleText = document.createElement('span');
+        titleText.textContent = options.title || this.getDefaultTitle(options.type);
+        title.appendChild(icon);
+        title.appendChild(titleText);
+
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'notification-close';
+        closeBtn.textContent = '×';
+        closeBtn.addEventListener('click', () => this.close(id));
+
+        header.appendChild(title);
+        header.appendChild(closeBtn);
+
+        const body = document.createElement('div');
+        body.className = 'notification-body';
+        body.innerHTML = options.message || '';
+
+        const progress = document.createElement('div');
+        progress.className = 'notification-progress';
+        const progressBar = document.createElement('div');
+        progressBar.className = 'notification-progress-bar';
+        progressBar.style.setProperty('--notification-duration', duration + 'ms');
+        progress.appendChild(progressBar);
+
+        notification.appendChild(header);
+        notification.appendChild(body);
+        notification.appendChild(progress);
         
         this.container.appendChild(notification);
         

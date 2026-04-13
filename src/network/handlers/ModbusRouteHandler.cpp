@@ -97,6 +97,87 @@ static void addModbusDebug(JsonDocument& doc, ModbusHandler* modbus) {
     debug["rx"] = modbus->getLastRxHex();
 }
 
+static uint8_t countEnabledPollTasks(const ModbusConfig& config) {
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < config.master.taskCount; i++) {
+        if (config.master.tasks[i].enabled) count++;
+    }
+    return count;
+}
+
+static uint16_t getMinEnabledPollInterval(const ModbusConfig& config) {
+    uint16_t minInterval = 0;
+    for (uint8_t i = 0; i < config.master.taskCount; i++) {
+        const PollTask& task = config.master.tasks[i];
+        if (!task.enabled) continue;
+        if (minInterval == 0 || task.pollInterval < minInterval) {
+            minInterval = task.pollInterval;
+        }
+    }
+    return minInterval;
+}
+
+static uint16_t getMaxEnabledPollInterval(const ModbusConfig& config) {
+    uint16_t maxInterval = 0;
+    for (uint8_t i = 0; i < config.master.taskCount; i++) {
+        const PollTask& task = config.master.tasks[i];
+        if (!task.enabled) continue;
+        if (task.pollInterval > maxInterval) {
+            maxInterval = task.pollInterval;
+        }
+    }
+    return maxInterval;
+}
+
+static uint32_t getTaskCacheAgeSec(const ModbusHandler::PollTaskCache* cache) {
+    if (!cache || cache->timestamp == 0) return 0;
+    return (millis() - cache->timestamp) / 1000UL;
+}
+
+static uint32_t getTaskStaleThresholdSec(const PollTask& task) {
+    uint32_t threshold = static_cast<uint32_t>(task.pollInterval) * 3UL;
+    return threshold < 30UL ? 30UL : threshold;
+}
+
+static float calcRate(uint32_t numerator, uint32_t denominator) {
+    if (denominator == 0) return 0.0f;
+    return (static_cast<float>(numerator) * 100.0f) / static_cast<float>(denominator);
+}
+
+static const char* getTaskHealthStatus(const PollTask& task, const ModbusHandler::PollTaskCache* cache) {
+    if (!task.enabled) return "disabled";
+    if (!cache || cache->timestamp == 0) return "pending";
+
+    uint32_t ageSec = getTaskCacheAgeSec(cache);
+    if (!cache->valid) {
+        return cache->lastError != 0 ? "error" : "pending";
+    }
+    return ageSec > getTaskStaleThresholdSec(task) ? "stale" : "ok";
+}
+
+static const char* buildModbusRiskLevel(const ModbusConfig& config,
+                                        uint8_t enabledTaskCount,
+                                        uint16_t minPollInterval,
+                                        uint32_t totalPolls,
+                                        float timeoutRate,
+                                        float failureRate,
+                                        uint32_t lastPollAgeSec) {
+    if (enabledTaskCount >= 4 && minPollInterval > 0 && minPollInterval < 5) return "high";
+    if (timeoutRate >= 20.0f && totalPolls >= 10) return "high";
+    if (config.master.responseTimeout > 3000 && config.master.maxRetries > 2 && enabledTaskCount >= 3) return "high";
+
+    if (enabledTaskCount >= 4) return "medium";
+    if (minPollInterval > 0 && minPollInterval < 5) return "medium";
+    if (config.master.interPollDelay < 100) return "medium";
+    if (failureRate >= 10.0f && totalPolls >= 10) return "medium";
+    if (enabledTaskCount > 0 && lastPollAgeSec > 0) {
+        uint32_t staleThreshold = static_cast<uint32_t>(minPollInterval > 0 ? minPollInterval : 5) * 3UL;
+        if (staleThreshold < 30UL) staleThreshold = 30UL;
+        if (lastPollAgeSec > staleThreshold) return "medium";
+    }
+    return "low";
+}
+
 // ============================================================================
 // 构造函数
 // ============================================================================
@@ -199,6 +280,8 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
     doc["success"] = true;
 
     JsonObject data = doc["data"].to<JsonObject>();
+    JsonObject health = data["health"].to<JsonObject>();
+    JsonArray warnings = health["warnings"].to<JsonArray>();
 
     if (!modbus) {
         // Modbus 未初始化时返回空状态而非 404
@@ -212,23 +295,90 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
         data["failedPolls"] = 0;
         data["timeoutPolls"] = 0;
         data["tasks"].to<JsonArray>();
+        health["riskLevel"] = "low";
+        health["enabledTaskCount"] = 0;
+        health["minPollInterval"] = 0;
+        health["maxPollInterval"] = 0;
+        health["responseTimeout"] = 0;
+        health["maxRetries"] = 0;
+        health["interPollDelay"] = 0;
+        health["lastPollAgeSec"] = 0;
+        health["successRate"] = 0.0;
+        health["failureRate"] = 0.0;
+        health["timeoutRate"] = 0.0;
     } else {
         data["mode"] = (modbus->getMode() == MODBUS_MASTER) ? "master" : "slave";
         data["workMode"] = modbus->getWorkMode();
         data["status"] = modbus->getStatus();
 
         if (modbus->getMode() == MODBUS_MASTER) {
+            ModbusConfig config = modbus->getConfig();
+            uint8_t enabledTaskCount = countEnabledPollTasks(config);
+            uint16_t minPollInterval = getMinEnabledPollInterval(config);
+            uint16_t maxPollInterval = getMaxEnabledPollInterval(config);
+            uint32_t totalPolls = modbus->getTotalPollCount();
+            uint32_t successPolls = modbus->getSuccessPollCount();
+            uint32_t failedPolls = modbus->getFailedPollCount();
+            uint32_t timeoutPolls = modbus->getTimeoutPollCount();
+            uint32_t lastPollAgeSec = modbus->getLastPollAgeSec();
+            float successRate = calcRate(successPolls, totalPolls);
+            float failureRate = calcRate(failedPolls + timeoutPolls, totalPolls);
+            float timeoutRate = calcRate(timeoutPolls, totalPolls);
+
             data["taskCount"] = modbus->getPollTaskCount();
 
             // 添加轮询统计数据
-            data["totalPolls"] = modbus->getTotalPollCount();
-            data["successPolls"] = modbus->getSuccessPollCount();
-            data["failedPolls"] = modbus->getFailedPollCount();
-            data["timeoutPolls"] = modbus->getTimeoutPollCount();
+            data["totalPolls"] = totalPolls;
+            data["successPolls"] = successPolls;
+            data["failedPolls"] = failedPolls;
+            data["timeoutPolls"] = timeoutPolls;
+
+            health["riskLevel"] = buildModbusRiskLevel(config, enabledTaskCount, minPollInterval,
+                                                       totalPolls, timeoutRate, failureRate, lastPollAgeSec);
+            health["enabledTaskCount"] = enabledTaskCount;
+            health["minPollInterval"] = minPollInterval;
+            health["maxPollInterval"] = maxPollInterval;
+            health["responseTimeout"] = config.master.responseTimeout;
+            health["maxRetries"] = config.master.maxRetries;
+            health["interPollDelay"] = config.master.interPollDelay;
+            health["lastPollAgeSec"] = lastPollAgeSec;
+            health["successRate"] = successRate;
+            health["failureRate"] = failureRate;
+            health["timeoutRate"] = timeoutRate;
+
+            if (enabledTaskCount >= 4) {
+                warnings.add("启用中的轮询任务较多，建议关注总线负载和 Web 响应。");
+            }
+            if (minPollInterval > 0 && minPollInterval < 5) {
+                warnings.add("存在小于 5 秒的轮询任务，容易放大总线抖动和页面卡顿。");
+            }
+            if (config.master.responseTimeout > 3000) {
+                warnings.add("Modbus 主站响应超时偏大，异常从站会更长时间占用串口。");
+            }
+            if (config.master.maxRetries > 2) {
+                warnings.add("Modbus 主站重试次数偏高，失败设备会拖长单轮轮询耗时。");
+            }
+            if (config.master.interPollDelay < 100) {
+                warnings.add("轮询间隔保护过小，连续请求可能压缩 Web 服务响应时间。");
+            }
+            if (totalPolls >= 10 && timeoutRate >= 20.0f) {
+                warnings.add("近期超时比例偏高，请检查从站稳定性、波特率和轮询频率。");
+            } else if (totalPolls >= 10 && failureRate >= 10.0f) {
+                warnings.add("近期轮询失败偏多，建议检查寄存器配置和设备在线状态。");
+            }
+            if (enabledTaskCount > 0 && lastPollAgeSec > 0) {
+                uint32_t staleThreshold = static_cast<uint32_t>(minPollInterval > 0 ? minPollInterval : 5) * 3UL;
+                if (staleThreshold < 30UL) staleThreshold = 30UL;
+                if (lastPollAgeSec > staleThreshold) {
+                    warnings.add("轮询结果长时间未刷新，可能存在总线阻塞或任务停滞。");
+                }
+            }
 
             JsonArray tasks = data["tasks"].to<JsonArray>();
             for (uint8_t i = 0; i < modbus->getPollTaskCount(); i++) {
                 PollTask task = modbus->getPollTask(i);
+                const ModbusHandler::PollTaskCache* cache = modbus->getTaskCache(i);
+                uint32_t cacheAgeSec = getTaskCacheAgeSec(cache);
                 JsonObject t = tasks.add<JsonObject>();
                 t["slaveAddress"] = task.slaveAddress;
                 t["functionCode"] = task.functionCode;
@@ -237,6 +387,10 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
                 t["pollInterval"] = task.pollInterval;
                 t["enabled"] = task.enabled;
                 t["label"] = String(task.label);
+                t["status"] = getTaskHealthStatus(task, cache);
+                t["cacheAgeSec"] = cacheAgeSec;
+                t["staleAfterSec"] = getTaskStaleThresholdSec(task);
+                t["lastError"] = cache ? cache->lastError : 0;
 
                 // 寄存器映射配置 - 按 regOffset 排序后输出，确保显示顺序正确
                 if (task.mappingCount > 0) {
@@ -269,10 +423,10 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
                 }
 
                 // 添加缓存数据（最新采集的值）
-                const ModbusHandler::PollTaskCache* cache = modbus->getTaskCache(i);
                 if (cache && cache->valid) {
                     JsonObject cachedData = t["cachedData"].to<JsonObject>();
                     cachedData["timestamp"] = cache->timestamp;
+                    cachedData["ageSec"] = cacheAgeSec;
                     cachedData["lastError"] = cache->lastError;
                     JsonArray values = cachedData["values"].to<JsonArray>();
                     for (uint8_t j = 0; j < cache->count; j++) {
@@ -280,8 +434,22 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
                     }
                 }
             }
+        } else {
+            health["riskLevel"] = "low";
+            health["enabledTaskCount"] = 0;
+            health["minPollInterval"] = 0;
+            health["maxPollInterval"] = 0;
+            health["responseTimeout"] = 0;
+            health["maxRetries"] = 0;
+            health["interPollDelay"] = 0;
+            health["lastPollAgeSec"] = 0;
+            health["successRate"] = 0.0;
+            health["failureRate"] = 0.0;
+            health["timeoutRate"] = 0.0;
         }
     }
+
+    health["warningCount"] = warnings.size();
 
     String out;
     serializeJson(doc, out);

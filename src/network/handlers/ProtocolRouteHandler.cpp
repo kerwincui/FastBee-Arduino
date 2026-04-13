@@ -10,6 +10,18 @@
 
 static const char* PROTOCOL_CONFIG_PATH = "/config/protocol.json";
 
+namespace {
+constexpr uint16_t PROTOCOL_MIN_MODBUS_POLL_INTERVAL_SEC = 2;
+constexpr uint16_t PROTOCOL_MAX_MODBUS_POLL_INTERVAL_SEC = 3600;
+
+template <typename T>
+T clampProtocolValue(T value, T minVal, T maxVal) {
+    if (value < minVal) return minVal;
+    if (value > maxVal) return maxVal;
+    return value;
+}
+}
+
 ProtocolRouteHandler::ProtocolRouteHandler(WebHandlerContext* ctx)
     : ctx(ctx),
       modbusHandler(std::unique_ptr<ModbusRouteHandler>(new ModbusRouteHandler(ctx))),
@@ -107,13 +119,21 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         DeserializationError tasksErr = deserializeJson(tasksDoc, masterTasksJson);
         if (!tasksErr && tasksDoc.is<JsonArray>()) {
             JsonArray arr = tasksDoc.as<JsonArray>();
+            uint8_t taskCount = 0;
             for (JsonVariant v : arr) {
+                if (taskCount >= Protocols::MODBUS_MAX_POLL_TASKS) break;
+                int functionCode = v["functionCode"] | 3;
+                if (functionCode != 1 && functionCode != 2 && functionCode != 3 && functionCode != 4) {
+                    functionCode = 3;
+                }
                 JsonObject taskObj = masterTasks.add<JsonObject>();
-                taskObj["slaveAddress"] = v["slaveAddress"] | 1;
-                taskObj["functionCode"] = v["functionCode"] | 3;
-                taskObj["startAddress"] = v["startAddress"] | 0;
-                taskObj["quantity"] = v["quantity"] | 10;
-                taskObj["pollInterval"] = v["pollInterval"] | 30;
+                taskObj["slaveAddress"] = clampProtocolValue<int>(v["slaveAddress"] | 1, 1, 247);
+                taskObj["functionCode"] = functionCode;
+                taskObj["startAddress"] = clampProtocolValue<int>(v["startAddress"] | 0, 0, 65535);
+                taskObj["quantity"] = clampProtocolValue<int>(v["quantity"] | 10, 1, Protocols::MODBUS_MAX_REGISTERS_PER_READ);
+                taskObj["pollInterval"] = clampProtocolValue<int>(v["pollInterval"] | 30,
+                                                                  PROTOCOL_MIN_MODBUS_POLL_INTERVAL_SEC,
+                                                                  PROTOCOL_MAX_MODBUS_POLL_INTERVAL_SEC);
                 taskObj["enabled"] = v["enabled"] | true;
                 taskObj["label"] = v["label"] | "";
                 
@@ -129,6 +149,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                         mo["sensorId"] = mv["sensorId"] | "";
                     }
                 }
+                taskCount++;
             }
         }
     }

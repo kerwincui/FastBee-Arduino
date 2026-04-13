@@ -427,6 +427,8 @@ bool ProtocolManager::restartModbus() {
             }
         }
     }
+
+    ModbusHandler::sanitizeConfig(modbusConfig);
     
     // 创建新实例并设置回调
     modbusHandler = std::unique_ptr<ModbusHandler>(new ModbusHandler());

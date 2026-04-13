@@ -8,6 +8,23 @@
 #include "systems/LoggerSystem.h"
 #include "core/PeripheralManager.h"
 
+namespace {
+constexpr uint32_t PERIPH_EXEC_MIN_TIMER_INTERVAL_SEC = 1;
+constexpr uint32_t PERIPH_EXEC_MAX_TIMER_INTERVAL_SEC = 86400UL;
+constexpr uint16_t PERIPH_EXEC_MIN_POLL_TIMEOUT_MS = 100;
+constexpr uint16_t PERIPH_EXEC_MAX_POLL_TIMEOUT_MS = 5000;
+constexpr uint16_t PERIPH_EXEC_HEAVY_POLL_TIMEOUT_MS = 3000;
+constexpr uint8_t PERIPH_EXEC_MAX_POLL_RETRIES = 3;
+constexpr uint8_t PERIPH_EXEC_HEAVY_POLL_RETRIES = 2;
+constexpr uint16_t PERIPH_EXEC_MIN_POLL_INTER_DELAY_MS = 20;
+constexpr uint16_t PERIPH_EXEC_MAX_POLL_INTER_DELAY_MS = 1000;
+constexpr uint16_t PERIPH_EXEC_HEAVY_POLL_INTER_DELAY_MS = 100;
+constexpr unsigned long PERIPH_EXEC_POLL_TRIGGER_MIN_INTERVAL_MS = 1000;
+constexpr unsigned long PERIPH_EXEC_HEAVY_POLL_TRIGGER_MIN_INTERVAL_MS = 2000;
+constexpr unsigned long PERIPH_EXEC_MODBUS_POLL_INGRESS_MIN_INTERVAL_MS = 1000;
+constexpr unsigned long PERIPH_EXEC_POLL_THROTTLE_LOG_INTERVAL_MS = 5000;
+}
+
 PeriphExecManager& PeriphExecManager::getInstance() {
     static PeriphExecManager instance;
     return instance;
@@ -19,6 +36,7 @@ bool PeriphExecManager::initialize() {
     _resultsMutex = xSemaphoreCreateMutex();
     _taskSlotSemaphore = xSemaphoreCreateCounting(MAX_ASYNC_TASKS, MAX_ASYNC_TASKS);
     _runningRulesMutex = xSemaphoreCreateMutex();
+    _pollIngressMutex = xSemaphoreCreateMutex();
 
     // 创建子模块
     _executor.reset(new PeriphExecExecutor());
@@ -70,6 +88,106 @@ bool PeriphExecManager::shouldAvoidSyncFallback(const PeriphExecRule& rule) cons
     return false;
 }
 
+void PeriphExecManager::sanitizeTriggerForSafety(ExecTrigger& trigger,
+                                                 bool hasPollCollectionAction,
+                                                 const String& ruleName) const {
+    uint32_t originalIntervalSec = trigger.intervalSec;
+    uint16_t originalTimeout = trigger.pollResponseTimeout;
+    uint8_t originalRetries = trigger.pollMaxRetries;
+    uint16_t originalInterDelay = trigger.pollInterPollDelay;
+
+    if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::TIMER_TRIGGER)) {
+        if (trigger.intervalSec < PERIPH_EXEC_MIN_TIMER_INTERVAL_SEC) {
+            trigger.intervalSec = PERIPH_EXEC_MIN_TIMER_INTERVAL_SEC;
+        } else if (trigger.intervalSec > PERIPH_EXEC_MAX_TIMER_INTERVAL_SEC) {
+            trigger.intervalSec = PERIPH_EXEC_MAX_TIMER_INTERVAL_SEC;
+        }
+    }
+
+    if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER)) {
+        if (trigger.pollResponseTimeout < PERIPH_EXEC_MIN_POLL_TIMEOUT_MS) {
+            trigger.pollResponseTimeout = PERIPH_EXEC_MIN_POLL_TIMEOUT_MS;
+        } else if (trigger.pollResponseTimeout > PERIPH_EXEC_MAX_POLL_TIMEOUT_MS) {
+            trigger.pollResponseTimeout = PERIPH_EXEC_MAX_POLL_TIMEOUT_MS;
+        }
+
+        if (trigger.pollMaxRetries > PERIPH_EXEC_MAX_POLL_RETRIES) {
+            trigger.pollMaxRetries = PERIPH_EXEC_MAX_POLL_RETRIES;
+        }
+
+        if (trigger.pollInterPollDelay < PERIPH_EXEC_MIN_POLL_INTER_DELAY_MS) {
+            trigger.pollInterPollDelay = PERIPH_EXEC_MIN_POLL_INTER_DELAY_MS;
+        } else if (trigger.pollInterPollDelay > PERIPH_EXEC_MAX_POLL_INTER_DELAY_MS) {
+            trigger.pollInterPollDelay = PERIPH_EXEC_MAX_POLL_INTER_DELAY_MS;
+        }
+
+        if (hasPollCollectionAction) {
+            if (trigger.pollResponseTimeout > PERIPH_EXEC_HEAVY_POLL_TIMEOUT_MS) {
+                trigger.pollResponseTimeout = PERIPH_EXEC_HEAVY_POLL_TIMEOUT_MS;
+            }
+            if (trigger.pollMaxRetries > PERIPH_EXEC_HEAVY_POLL_RETRIES) {
+                trigger.pollMaxRetries = PERIPH_EXEC_HEAVY_POLL_RETRIES;
+            }
+            if (trigger.pollInterPollDelay < PERIPH_EXEC_HEAVY_POLL_INTER_DELAY_MS) {
+                trigger.pollInterPollDelay = PERIPH_EXEC_HEAVY_POLL_INTER_DELAY_MS;
+            }
+        }
+    }
+
+    if (originalIntervalSec != trigger.intervalSec ||
+        originalTimeout != trigger.pollResponseTimeout ||
+        originalRetries != trigger.pollMaxRetries ||
+        originalInterDelay != trigger.pollInterPollDelay) {
+        LOGGER.warningf("[PeriphExec] Sanitized trigger params for rule '%s' (type=%d, interval=%lu, timeout=%u, retries=%u, delay=%u)",
+                        ruleName.c_str(),
+                        trigger.triggerType,
+                        static_cast<unsigned long>(trigger.intervalSec),
+                        static_cast<unsigned int>(trigger.pollResponseTimeout),
+                        static_cast<unsigned int>(trigger.pollMaxRetries),
+                        static_cast<unsigned int>(trigger.pollInterPollDelay));
+    }
+}
+
+void PeriphExecManager::sanitizeRuleForSafety(PeriphExecRule& rule) const {
+    bool hasPollCollectionAction = ruleHasPollCollectionAction(rule);
+    for (auto& trigger : rule.triggers) {
+        sanitizeTriggerForSafety(trigger, hasPollCollectionAction, rule.name);
+    }
+}
+
+unsigned long PeriphExecManager::getPollTriggerCooldownMs(const PeriphExecRule& rule, const String& source) const {
+    if ((source == "modbus" || source == "modbus_poll") && ruleHasPollCollectionAction(rule)) {
+        return PERIPH_EXEC_HEAVY_POLL_TRIGGER_MIN_INTERVAL_MS;
+    }
+    return PERIPH_EXEC_POLL_TRIGGER_MIN_INTERVAL_MS;
+}
+
+bool PeriphExecManager::shouldThrottlePollIngress(const String& source, unsigned long now) {
+    if (source != "modbus_poll" || _pollIngressMutex == nullptr) {
+        return false;
+    }
+
+    MutexGuard lock(_pollIngressMutex);
+    if (!lock.isLocked()) {
+        return false;
+    }
+
+    unsigned long& lastAccepted = _pollSourceLastAccepted[source];
+    if (lastAccepted > 0 && (now - lastAccepted) < PERIPH_EXEC_MODBUS_POLL_INGRESS_MIN_INTERVAL_MS) {
+        unsigned long& lastLog = _pollSourceLastThrottleLog[source];
+        if (lastLog == 0 || (now - lastLog) >= PERIPH_EXEC_POLL_THROTTLE_LOG_INTERVAL_MS) {
+            LOGGER.warningf("[PeriphExec] Throttle poll ingress from %s (%lums since last accept)",
+                            source.c_str(),
+                            now - lastAccepted);
+            lastLog = now;
+        }
+        return true;
+    }
+
+    lastAccepted = now;
+    return false;
+}
+
 bool PeriphExecManager::addRule(const PeriphExecRule& rule) {
     MutexGuard lock(_rulesMutex);
     if (!lock.isLocked()) return false;
@@ -91,6 +209,7 @@ bool PeriphExecManager::addRule(const PeriphExecRule& rule) {
         LOGGER.warningf("[PeriphExec] Too many actions: %d", (int)newRule.actions.size());
         return false;
     }
+    sanitizeRuleForSafety(newRule);
     // 重置运行时字段
     for (auto& t : newRule.triggers) {
         t.lastTriggerTime = 0;
@@ -118,6 +237,7 @@ bool PeriphExecManager::updateRule(const String& id, const PeriphExecRule& rule)
     const auto& oldTriggers = it->second.triggers;
     PeriphExecRule updated = rule;
     updated.id = id;
+    sanitizeRuleForSafety(updated);
     for (size_t i = 0; i < updated.triggers.size(); i++) {
         if (i < oldTriggers.size()) {
             updated.triggers[i].lastTriggerTime = oldTriggers[i].lastTriggerTime;
@@ -305,7 +425,6 @@ bool PeriphExecManager::loadConfiguration() {
                 t.triggerCount = 0;
                 r.triggers.push_back(t);
             }
-
             JsonArray actArr = obj["actions"].as<JsonArray>();
             for (JsonObject aObj : actArr) {
                 ExecAction a;
@@ -316,6 +435,7 @@ bool PeriphExecManager::loadConfiguration() {
                 a.syncDelayMs = aObj["syncDelayMs"] | 0;
                 r.actions.push_back(a);
             }
+            sanitizeRuleForSafety(r);
         } else {
             // ===== v1/v2 旧格式迁移：平铺字段 → 单元素 triggers[]/actions[] =====
             ExecTrigger t;
@@ -374,6 +494,7 @@ bool PeriphExecManager::loadConfiguration() {
             }
 
             r.actions.push_back(a);
+            sanitizeRuleForSafety(r);
         }
 
         if (!r.id.isEmpty()) {
@@ -399,6 +520,10 @@ void PeriphExecManager::handleMqttMessage(const String& topic, const String& mes
 }
 
 void PeriphExecManager::handlePollData(const String& source, const String& data) {
+    unsigned long now = millis();
+    if (shouldThrottlePollIngress(source, now)) {
+        return;
+    }
     if (_scheduler) _scheduler->handlePollData(source, data);
 }
 
@@ -1024,8 +1149,8 @@ void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
                     if (trigger.triggerPeriphId.isEmpty() || trigger.triggerPeriphId == "null") continue;
                     if (trigger.triggerPeriphId != itemId) continue;
 
-                    // 防重复触发：同一触发器最小间隔 1 秒
-                    if (trigger.lastTriggerTime > 0 && (millis() - trigger.lastTriggerTime) < 1000) continue;
+                    if (trigger.lastTriggerTime > 0 &&
+                        (millis() - trigger.lastTriggerTime) < PERIPH_EXEC_POLL_TRIGGER_MIN_INTERVAL_MS) continue;
 
                     // 条件评估 - 需要比较数值
                     float val = itemValue.toFloat();
@@ -1091,19 +1216,21 @@ void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& sourc
             for (auto& pair : rules) {
                 PeriphExecRule& rule = pair.second;
                 if (!rule.enabled) continue;
+                bool hasPollCollectionAction = ruleHasPollCollectionAction(rule);
 
                 // 遍历所有触发器（OR 关系）
                 bool triggerMatched = false;
                 for (auto& trigger : rule.triggers) {
                     if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER)) continue;
-                    if (source == "modbus_poll" && ruleHasPollCollectionAction(rule)) continue;
+                    if (source == "modbus_poll" && hasPollCollectionAction) continue;
 
                     // 匹配数据源外设 ID（必须配置且匹配，空/null 不匹配任何数据）
                     if (trigger.triggerPeriphId.isEmpty() || trigger.triggerPeriphId == "null") continue;
                     if (trigger.triggerPeriphId != itemId) continue;
 
-                    // 防重复触发：同一触发器最小间隔 1 秒
-                    if (trigger.lastTriggerTime > 0 && (millis() - trigger.lastTriggerTime) < 1000) continue;
+                    unsigned long minTriggerIntervalMs = getPollTriggerCooldownMs(rule, source);
+                    if (trigger.lastTriggerTime > 0 &&
+                        (millis() - trigger.lastTriggerTime) < minTriggerIntervalMs) continue;
 
                     // 条件评估
                     float val = itemValue.toFloat();

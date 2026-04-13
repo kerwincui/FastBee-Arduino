@@ -12,6 +12,30 @@
 #include "protocols/ModbusHandler.h"
 #include <ArduinoJson.h>
 
+namespace {
+constexpr uint16_t MODBUS_MIN_RESPONSE_TIMEOUT_MS = 100;
+constexpr uint16_t MODBUS_MAX_RESPONSE_TIMEOUT_MS = 5000;
+constexpr uint8_t MODBUS_MAX_MASTER_RETRIES = 3;
+constexpr uint16_t MODBUS_MIN_INTER_POLL_DELAY_MS = 20;
+constexpr uint16_t MODBUS_MAX_INTER_POLL_DELAY_MS = 1000;
+constexpr uint16_t MODBUS_MIN_POLL_INTERVAL_SEC = 2;
+constexpr uint16_t MODBUS_SAFE_POLL_INTERVAL_SEC = 5;
+constexpr uint16_t MODBUS_MAX_POLL_INTERVAL_SEC = 3600;
+constexpr uint8_t MODBUS_HEAVY_TASK_THRESHOLD = 4;
+
+template <typename T>
+T clampValue(T value, T minVal, T maxVal) {
+    if (value < minVal) return minVal;
+    if (value > maxVal) return maxVal;
+    return value;
+}
+
+bool isReadFunctionCode(uint8_t functionCode) {
+    return functionCode == 0x01 || functionCode == 0x02 ||
+           functionCode == 0x03 || functionCode == 0x04;
+}
+}
+
 ModbusHandler::ModbusHandler() 
     : isInitialized(false), modbusSerial(&Serial2),
       isOneShotReading(false), _oneShotSemaphore(nullptr),
@@ -40,6 +64,7 @@ ModbusHandler::~ModbusHandler() {
 
 bool ModbusHandler::begin(const ModbusConfig& cfg) {
     this->config = cfg;
+    sanitizeConfig(this->config);
     
     if (!initializePins()) {
         LOG_ERROR("Modbus: Pin initialization failed");
@@ -65,6 +90,113 @@ bool ModbusHandler::begin(const ModbusConfig& cfg) {
     }
     
     return true;
+}
+
+void ModbusHandler::sanitizeConfig(ModbusConfig& config) {
+    bool masterChanged = false;
+    bool heavyLoadAdjusted = false;
+
+    uint16_t originalResponseTimeout = config.responseTimeout;
+    uint16_t originalMasterTimeout = config.master.responseTimeout;
+    uint8_t originalRetries = config.master.maxRetries;
+    uint16_t originalInterPollDelay = config.master.interPollDelay;
+
+    config.responseTimeout = clampValue<uint16_t>(config.responseTimeout,
+                                                  MODBUS_MIN_RESPONSE_TIMEOUT_MS,
+                                                  MODBUS_MAX_RESPONSE_TIMEOUT_MS);
+    config.master.responseTimeout = clampValue<uint16_t>(config.master.responseTimeout,
+                                                         MODBUS_MIN_RESPONSE_TIMEOUT_MS,
+                                                         MODBUS_MAX_RESPONSE_TIMEOUT_MS);
+    config.master.maxRetries = clampValue<uint8_t>(config.master.maxRetries, 0, MODBUS_MAX_MASTER_RETRIES);
+    config.master.interPollDelay = clampValue<uint16_t>(config.master.interPollDelay,
+                                                        MODBUS_MIN_INTER_POLL_DELAY_MS,
+                                                        MODBUS_MAX_INTER_POLL_DELAY_MS);
+
+    if (originalResponseTimeout != config.responseTimeout ||
+        originalMasterTimeout != config.master.responseTimeout ||
+        originalRetries != config.master.maxRetries ||
+        originalInterPollDelay != config.master.interPollDelay) {
+        masterChanged = true;
+    }
+
+    uint8_t enabledTaskCount = 0;
+    uint8_t boundedTaskCount = clampValue<uint8_t>(config.master.taskCount, 0, Protocols::MODBUS_MAX_POLL_TASKS);
+    if (boundedTaskCount != config.master.taskCount) {
+        masterChanged = true;
+        config.master.taskCount = boundedTaskCount;
+    }
+
+    for (uint8_t i = 0; i < config.master.taskCount; i++) {
+        PollTask& task = config.master.tasks[i];
+        bool taskChanged = false;
+
+        uint8_t originalSlave = task.slaveAddress;
+        uint8_t originalFunctionCode = task.functionCode;
+        uint16_t originalQuantity = task.quantity;
+        uint16_t originalPollInterval = task.pollInterval;
+
+        task.slaveAddress = clampValue<uint8_t>(task.slaveAddress, 1, 247);
+        if (!isReadFunctionCode(task.functionCode)) {
+            task.functionCode = 0x03;
+        }
+        task.quantity = clampValue<uint16_t>(task.quantity, 1, Protocols::MODBUS_MAX_REGISTERS_PER_READ);
+        task.pollInterval = clampValue<uint16_t>(task.pollInterval,
+                                                 MODBUS_MIN_POLL_INTERVAL_SEC,
+                                                 MODBUS_MAX_POLL_INTERVAL_SEC);
+
+        if (task.enabled) {
+            enabledTaskCount++;
+        }
+
+        if (originalSlave != task.slaveAddress ||
+            originalFunctionCode != task.functionCode ||
+            originalQuantity != task.quantity ||
+            originalPollInterval != task.pollInterval) {
+            taskChanged = true;
+        }
+
+        if (task.mappingCount > Protocols::MODBUS_MAX_MAPPINGS_PER_TASK) {
+            task.mappingCount = Protocols::MODBUS_MAX_MAPPINGS_PER_TASK;
+            taskChanged = true;
+        }
+
+        if (taskChanged) {
+            LOG_WARNINGF("[Modbus] Sanitized poll task[%d] (slave=%u, fc=%u, qty=%u, interval=%us)",
+                         i,
+                         static_cast<unsigned int>(task.slaveAddress),
+                         static_cast<unsigned int>(task.functionCode),
+                         static_cast<unsigned int>(task.quantity),
+                         static_cast<unsigned int>(task.pollInterval));
+        }
+    }
+
+    if (enabledTaskCount >= MODBUS_HEAVY_TASK_THRESHOLD) {
+        for (uint8_t i = 0; i < config.master.taskCount; i++) {
+            PollTask& task = config.master.tasks[i];
+            if (!task.enabled) continue;
+            if (task.pollInterval < MODBUS_SAFE_POLL_INTERVAL_SEC) {
+                task.pollInterval = MODBUS_SAFE_POLL_INTERVAL_SEC;
+                heavyLoadAdjusted = true;
+                LOG_WARNINGF("[Modbus] Raised poll task[%d] interval to %us due to heavy master load (%u enabled tasks)",
+                             i,
+                             static_cast<unsigned int>(task.pollInterval),
+                             static_cast<unsigned int>(enabledTaskCount));
+            }
+        }
+    }
+
+    if (masterChanged) {
+        LOG_WARNINGF("[Modbus] Sanitized master config (timeout=%u, retries=%u, interDelay=%u, tasks=%u)",
+                     static_cast<unsigned int>(config.master.responseTimeout),
+                     static_cast<unsigned int>(config.master.maxRetries),
+                     static_cast<unsigned int>(config.master.interPollDelay),
+                     static_cast<unsigned int>(config.master.taskCount));
+    }
+
+    if (heavyLoadAdjusted) {
+        LOG_WARNINGF("[Modbus] Heavy master polling detected, intervals below %us were raised",
+                     static_cast<unsigned int>(MODBUS_SAFE_POLL_INTERVAL_SEC));
+    }
 }
 
 bool ModbusHandler::begin(const String& configPath) {
@@ -222,6 +354,8 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
             }
         }
     }
+
+    sanitizeConfig(config);
     
     LOG_INFO("Modbus: Config loaded successfully");
     return true;
@@ -229,6 +363,7 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
 
 bool ModbusHandler::saveConfigToFile(const String& configPath) {
     String actualPath = configPath.isEmpty() ? config.configFile : configPath;
+    sanitizeConfig(config);
     
     DynamicJsonDocument doc(8192);
     doc["slaveAddress"] = config.slaveAddress;

@@ -101,7 +101,43 @@ const Notification = {
         const notification = document.createElement('div'); notification.id = id;
         notification.className = 'notification notification-' + (options.type || 'info');
         const icons = { primary: '✅', success: '✅', warning: '⚠️', error: '❌', info: 'ℹ️' };
-        notification.innerHTML = '<div class="notification-header"><div class="notification-title"><i>' + (icons[options.type] || icons.info) + '</i><span>' + (options.title || this.getDefaultTitle(options.type)) + '</span></div><button class="notification-close" onclick="Notification.close(\'' + id + '\')">×</button></div><div class="notification-body">' + (options.message || '') + '</div><div class="notification-progress"><div class="notification-progress-bar" style="animation-duration: ' + duration + 'ms;"></div></div>';
+
+        const header = document.createElement('div');
+        header.className = 'notification-header';
+
+        const title = document.createElement('div');
+        title.className = 'notification-title';
+        const icon = document.createElement('i');
+        icon.textContent = icons[options.type] || icons.info;
+        const titleText = document.createElement('span');
+        titleText.textContent = options.title || this.getDefaultTitle(options.type);
+        title.appendChild(icon);
+        title.appendChild(titleText);
+
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'notification-close';
+        closeBtn.textContent = '×';
+        closeBtn.addEventListener('click', () => this.close(id));
+
+        header.appendChild(title);
+        header.appendChild(closeBtn);
+
+        const body = document.createElement('div');
+        body.className = 'notification-body';
+        body.innerHTML = options.message || '';
+
+        const progress = document.createElement('div');
+        progress.className = 'notification-progress';
+        const progressBar = document.createElement('div');
+        progressBar.className = 'notification-progress-bar';
+        progressBar.style.setProperty('--notification-duration', duration + 'ms');
+        progress.appendChild(progressBar);
+
+        notification.appendChild(header);
+        notification.appendChild(body);
+        notification.appendChild(progress);
+
         this.container.appendChild(notification);
         const notificationObj = { id: id, element: notification, timeout: null }; this.notifications.push(notificationObj);
         if (options.autoClose !== false) { notificationObj.timeout = setTimeout(() => { this.close(id); }, duration); }
@@ -214,6 +250,194 @@ const AppState = {
     triggerOtaFileSelect() {
         const fileInput = document.getElementById('ota-file');
         if (fileInput) fileInput.click();
+    },
+
+    getEl(ref) {
+        if (!ref) return null;
+        return typeof ref === 'string' ? document.getElementById(ref) : ref;
+    },
+
+    showElement(ref, displayValue) {
+        const el = this.getEl(ref);
+        if (!el) return null;
+        el.classList.remove('is-hidden');
+        if (displayValue) {
+            el.style.display = displayValue;
+        } else {
+            el.style.removeProperty('display');
+        }
+        return el;
+    },
+
+    hideElement(ref) {
+        const el = this.getEl(ref);
+        if (!el) return null;
+        el.classList.add('is-hidden');
+        el.style.display = 'none';
+        return el;
+    },
+
+    showModal(ref) {
+        return this.showElement(ref, 'flex');
+    },
+
+    hideModal(ref) {
+        return this.hideElement(ref);
+    },
+
+    showInlineError(ref, message) {
+        const el = this.getEl(ref);
+        if (!el) return null;
+        el.textContent = message || '';
+        return this.showElement(el, 'block');
+    },
+
+    clearInlineError(ref) {
+        const el = this.getEl(ref);
+        if (!el) return null;
+        el.textContent = '';
+        return this.hideElement(el);
+    },
+
+    renderEmptyTableRow(tbodyRef, colspan, text, className) {
+        const tbody = this.getEl(tbodyRef);
+        if (!tbody) return null;
+        tbody.innerHTML = '';
+        const row = document.createElement('tr');
+        const cell = document.createElement('td');
+        cell.colSpan = colspan;
+        cell.className = className || 'u-empty-cell';
+        cell.textContent = text || '';
+        row.appendChild(cell);
+        tbody.appendChild(row);
+        return row;
+    },
+    
+    toggleVisible(ref, show) {
+        const el = this.getEl(ref);
+        if (!el) return null;
+        if (show) {
+            return this.showElement(el);
+        } else {
+            return this.hideElement(el);
+        }
+    },
+    
+    setLoading(ref, text) {
+        const el = this.getEl(ref);
+        if (!el) return null;
+        if (!el.hasAttribute('data-original-text')) {
+            el.setAttribute('data-original-text', el.textContent);
+        }
+        el.disabled = true;
+        el.textContent = text || (typeof i18n !== 'undefined' ? i18n.t('saving') : '保存中...');
+        el.classList.add('is-loading');
+        return el;
+    },
+    
+    restoreButton(ref, text) {
+        const el = this.getEl(ref);
+        if (!el) return null;
+        el.disabled = false;
+        el.textContent = text || el.getAttribute('data-original-text') || '';
+        el.classList.remove('is-loading');
+        el.removeAttribute('data-original-text');
+        return el;
+    },
+    
+    renderBadge(type, text) {
+        const span = document.createElement('span');
+        span.className = 'badge badge-' + (type || 'info');
+        span.textContent = text || '';
+        return span;
+    },
+    
+    renderPagination(containerRef, options) {
+        const container = this.getEl(containerRef);
+        if (!container) return null;
+
+        const total = Math.max(0, Number(options?.total) || 0);
+        const pageSize = Math.max(1, Number(options?.pageSize) || 10);
+        const totalPages = Math.max(1, Math.ceil(total / pageSize));
+        const currentPage = Math.min(Math.max(1, Number(options?.page) || 1), totalPages);
+        const maxVisiblePages = Math.max(3, Number(options?.maxVisiblePages) || 5);
+        const summaryText = options?.summaryText || '';
+        const onPageChange = typeof options?.onPageChange === 'function' ? options.onPageChange : null;
+
+        container.innerHTML = '';
+
+        const wrap = document.createElement('div');
+        wrap.className = 'pagination u-pagination';
+
+        const appendButton = (label, targetPage, disabled, active) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = `btn btn-sm${active ? ' btn-primary' : ''}`;
+            button.textContent = label;
+            button.disabled = !!disabled;
+            if (!button.disabled && onPageChange) {
+                button.addEventListener('click', () => onPageChange(targetPage));
+            }
+            wrap.appendChild(button);
+        };
+
+        const appendEllipsis = () => {
+            const ellipsis = document.createElement('span');
+            ellipsis.className = 'u-pagination-ellipsis';
+            ellipsis.textContent = '...';
+            wrap.appendChild(ellipsis);
+        };
+
+        const appendSummary = () => {
+            if (!summaryText) return;
+            const summary = document.createElement('span');
+            summary.className = 'u-pagination-summary';
+            summary.textContent = summaryText;
+            wrap.appendChild(summary);
+        };
+
+        if (totalPages <= 1) {
+            appendSummary();
+            container.appendChild(wrap);
+            return wrap;
+        }
+
+        appendButton('«', currentPage - 1, currentPage <= 1, false);
+
+        let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
+        let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+        if (endPage - startPage + 1 < maxVisiblePages) {
+            startPage = Math.max(1, endPage - maxVisiblePages + 1);
+        }
+
+        if (startPage > 1) {
+            appendButton('1', 1, false, false);
+            if (startPage > 2) appendEllipsis();
+        }
+
+        for (let page = startPage; page <= endPage; page++) {
+            appendButton(String(page), page, page === currentPage, page === currentPage);
+        }
+
+        if (endPage < totalPages) {
+            if (endPage < totalPages - 1) appendEllipsis();
+            appendButton(String(totalPages), totalPages, false, false);
+        }
+
+        appendButton('»', currentPage + 1, currentPage >= totalPages, false);
+        appendSummary();
+
+        container.appendChild(wrap);
+        return wrap;
+    },
+
+    setExclusiveActive(containerRef, selector, activeEl, className) {
+        const container = this.getEl(containerRef);
+        if (!container) return;
+        const activeClass = className || 'is-active';
+        container.querySelectorAll(selector).forEach(el => {
+            el.classList.toggle(activeClass, el === activeEl);
+        });
     },
 
     // 注册模块方法 - 将方法混入 AppState
@@ -463,7 +687,6 @@ const AppState = {
                         this.renderDashboard();
                         this.loadSystemMonitor();
                     });
-                    this._loadModule('users', () => this.loadUsers());
                 } else {
                     // 会话无效，尝试使用保存的凭据重新登录
                     this._tryAutoLogin(savedRemember, savedUsername, savedPassword);
@@ -505,7 +728,6 @@ const AppState = {
                             this.renderDashboard();
                             this.loadSystemMonitor();
                         });
-                        this._loadModule('users', () => this.loadUsers());
                     } else {
                         // 自动登录失败（如密码已更改），清除无效凭据并显示登录页
                         localStorage.removeItem('password');
@@ -548,11 +770,13 @@ const AppState = {
         const body = document.getElementById(bodyId);
         const icon = document.getElementById(bodyId + '-icon');
         if (!body) return;
-        if (body.style.display === 'none' || !body.style.display) {
-            body.style.display = 'block';
+        if (body.classList.contains('fb-hidden')) {
+            body.classList.remove('fb-hidden');
+            body.style.display = '';
             if (icon) icon.innerHTML = '&#9660;';
         } else {
-            body.style.display = 'none';
+            body.classList.add('fb-hidden');
+            body.style.display = '';
             if (icon) icon.innerHTML = '&#9654;';
         }
     },
@@ -639,11 +863,82 @@ const AppState = {
                 i18n.setLanguage(e.target.value);
                 // 同步登录页的语言选择器
                 if (loginLangSelect) loginLangSelect.value = e.target.value;
-                // 刷新当前页面的动态 i18n 内容（安全调用已加载的模块方法）
-                if (typeof this.renderDashboard === 'function') this.renderDashboard();
-                if (typeof this.loadSystemMonitor === 'function') this.loadSystemMonitor();
-                if (typeof this.loadUsers === 'function') this.loadUsers();
+                // 仅刷新当前页的动态 i18n 内容，避免额外预加载其它模块
+                this._refreshCurrentPageLocalizedContent();
             });
+        }
+    },
+
+    _getPageModuleMap() {
+        return {
+            dashboard: 'dashboard',
+            network: 'network',
+            device: 'device-config',
+            users: 'users',
+            roles: 'roles',
+            peripheral: 'peripherals',
+            'periph-exec': 'periph-exec',
+            protocol: 'protocol',
+            'rule-script': 'rule-script',
+            data: 'files',
+            logs: 'logs',
+            'device-control': 'device-control'
+        };
+    },
+
+    _getPageLoaders() {
+        return {
+            dashboard: () => { this.renderDashboard(); this.loadSystemMonitor(); },
+            network: () => { this.loadNetworkConfig(); },
+            device: () => { this.loadDeviceConfig(); },
+            users: () => { this.loadUsers(); },
+            roles: () => { this.loadRoles(); },
+            peripheral: () => { this.loadPeripherals(); },
+            'periph-exec': () => { this.loadPeriphExecPage(); },
+            protocol: () => { this.loadProtocolConfig('mqtt'); if (this._startMqttStatusPolling) this._startMqttStatusPolling(); },
+            'rule-script': () => { this.loadRuleScriptPage(); },
+            data: () => { this.loadFileTree(this._currentDir || '/'); this.loadFileSystemInfo(); },
+            logs: () => {
+                if (!this._currentLogFile) {
+                    this._currentLogFile = 'system.log';
+                }
+                const currentSpan = document.getElementById('current-log-file');
+                if (currentSpan) currentSpan.textContent = i18n.t('log-current-file-prefix') + this._currentLogFile;
+                this.loadLogFileList();
+                this.loadLogs();
+                const autoRefresh = document.getElementById('log-auto-refresh');
+                if (autoRefresh && autoRefresh.checked) {
+                    this.startLogAutoRefresh();
+                }
+            },
+            'device-control': () => {
+                if (typeof this.loadDeviceControlPage === 'function') {
+                    this.loadDeviceControlPage();
+                } else {
+                    console.warn('[changePage] loadDeviceControlPage not available, module may not be loaded');
+                    var content = document.getElementById('dc-content');
+                    if (content) {
+                        content.innerHTML = '<div class="dc-empty">鈴?' + i18n.t('loading') + '</div>';
+                        var self = this;
+                        setTimeout(function() {
+                            if (typeof self.loadDeviceControlPage === 'function') {
+                                self.loadDeviceControlPage();
+                            } else {
+                                content.innerHTML = '<div class="dc-empty u-text-danger">鉂?妯″潡鍔犺浇澶辫触锛岃鍒锋柊椤甸潰閲嶈瘯</div>';
+                            }
+                        }, 1000);
+                    } else {
+                        console.error('[changePage] dc-content element not found!');
+                    }
+                }
+            }
+        };
+    },
+
+    _refreshCurrentPageLocalizedContent() {
+        const loader = this._getPageLoaders()[this.currentPage];
+        if (typeof loader === 'function') {
+            loader();
         }
     },
 
@@ -766,7 +1061,7 @@ const AppState = {
         if (logoutBtn) logoutBtn.addEventListener('click', () => this.logout());
 
         // 模态窗关闭
-        const closeId = (id) => { const el = document.getElementById(id); if (el) el.style.display = 'none'; };
+        const closeId = (id) => { this.hideModal(id); };
         ['close-password-modal', 'cancel-password-btn'].forEach(id => {
             const el = document.getElementById(id);
             if (el) el.addEventListener('click', () => closeId('change-password-modal'));
@@ -839,7 +1134,6 @@ const AppState = {
                         this.renderDashboard();
                         this.loadSystemMonitor();
                     });
-                    this._loadModule('users', () => this.loadUsers());
                     Notification.success(i18n.t('login-success-msg'), i18n.t('login-welcome-title'));
                 } else {
                     Notification.error((res && res.error) || i18n.t('login-fail-title'), i18n.t('login-fail-title'));
@@ -879,70 +1173,9 @@ const AppState = {
         this.currentPage = normalizedPage;
 
         // 模块名到页面的映射
-        const pageModuleMap = {
-            dashboard: 'dashboard',
-            network: 'network',
-            device: 'device-config',
-            users: 'users',
-            roles: 'roles',
-            peripheral: 'peripherals',
-            'periph-exec': 'periph-exec',
-            protocol: 'protocol',
-            'rule-script': 'rule-script',
-            data: 'files',
-            logs: 'logs',
-            'device-control': 'device-control'
-        };
+        const pageModuleMap = this._getPageModuleMap();
+        const pageLoaders = this._getPageLoaders();
 
-        // 按需加载模块并执行页面加载器
-        const pageLoaders = {
-            dashboard: () => { this.renderDashboard(); this.loadSystemMonitor(); },
-            network: () => { this.loadNetworkConfig(); },
-            device: () => { this.loadDeviceConfig(); },
-            users: () => { this.loadUsers(); },
-            roles: () => { this.loadRoles(); },
-            peripheral: () => { this.loadPeripherals(); },
-            'periph-exec': () => { this.loadPeriphExecPage(); },
-            protocol: () => { this.loadProtocolConfig('mqtt'); if (this._startMqttStatusPolling) this._startMqttStatusPolling(); },
-            'rule-script': () => { this.loadRuleScriptPage(); },
-            data: () => { this.loadFileTree('/'); this.loadFileSystemInfo(); },
-            logs: () => {
-                this._currentLogFile = 'system.log';
-                const currentSpan = document.getElementById('current-log-file');
-                if (currentSpan) currentSpan.textContent = i18n.t('log-current-file-prefix') + this._currentLogFile;
-                this.loadLogs();
-                const autoRefresh = document.getElementById('log-auto-refresh');
-                if (autoRefresh && autoRefresh.checked) {
-                    this.startLogAutoRefresh();
-                }
-            },
-            'device-control': () => {
-                // 模块可能已加载，检查方法是否存在
-                if (typeof this.loadDeviceControlPage === 'function') {
-                    this.loadDeviceControlPage();
-                } else {
-                    console.warn('[changePage] loadDeviceControlPage not available, module may not be loaded');
-                    // 显示加载提示（使用正确的元素 ID：dc-content）
-                    var content = document.getElementById('dc-content');
-                    if (content) {
-                        content.innerHTML = '<div class="dc-empty">⏳ ' + i18n.t('loading') + '</div>';
-                        // 延迟重试一次
-                        var self = this;
-                        setTimeout(function() {
-                            if (typeof self.loadDeviceControlPage === 'function') {
-                                self.loadDeviceControlPage();
-                            } else {
-                                content.innerHTML = '<div class="dc-empty" style="color:var(--danger);">❌ 模块加载失败，请刷新页面重试</div>';
-                            }
-                        }, 1000);
-                    } else {
-                        console.error('[changePage] dc-content element not found!');
-                    }
-                }
-            }
-        };
-
-        // 日志页面离开时停止自动刷新
         if (normalizedPage !== 'logs' && this._logAutoRefreshTimer) {
             clearInterval(this._logAutoRefreshTimer);
             this._logAutoRefreshTimer = null;
@@ -983,23 +1216,19 @@ const AppState = {
 
     // ============ 修改密码 ============
     showChangePasswordModal() {
-        const modal = document.getElementById('change-password-modal');
-        if (modal) modal.style.display = 'flex';
+        this.showModal('change-password-modal');
         ['current-password-input', 'new-password-input', 'confirm-password-input'].forEach(id => {
             const el = document.getElementById(id); if (el) el.value = '';
         });
-        const errDiv = document.getElementById('password-error');
-        if (errDiv) errDiv.style.display = 'none';
+        this.clearInlineError('password-error');
     },
 
     changePassword() {
         const oldPwd = (document.getElementById('current-password-input') || {}).value || '';
         const newPwd = (document.getElementById('new-password-input') || {}).value || '';
         const confirmPwd = (document.getElementById('confirm-password-input') || {}).value || '';
-        const errDiv = document.getElementById('password-error');
-
         const showErr = (msg) => {
-            if (errDiv) { errDiv.textContent = msg; errDiv.style.display = 'block'; }
+            this.showInlineError('password-error', msg);
             Notification.error(msg, i18n.t('change-pwd-fail'));
         };
 
@@ -1007,7 +1236,7 @@ const AppState = {
         if (newPwd !== confirmPwd) return showErr(i18n.t('password-error') || i18n.t('validate-new-pwd-mismatch'));
         if (newPwd.length < 6) return showErr(i18n.t('validate-new-pwd-len'));
 
-        if (errDiv) errDiv.style.display = 'none';
+        this.clearInlineError('password-error');
 
         const btn = document.getElementById('confirm-password-btn');
         if (btn) { btn.disabled = true; btn.textContent = i18n.t('change-pwd-submitting'); }
@@ -1016,8 +1245,7 @@ const AppState = {
             .then(res => {
                 if (res && res.success) {
                     Notification.success(i18n.t('change-pwd-success-msg'), i18n.t('change-pwd-success-title'));
-                    const modal = document.getElementById('change-password-modal');
-                    if (modal) modal.style.display = 'none';
+                    this.hideModal('change-password-modal');
                     // 修改密码后后端会踢出所有会话，需重新登录
                     setTimeout(() => {
                         localStorage.removeItem('auth_token');
@@ -1157,7 +1385,9 @@ const AppState = {
      */
     _showMessage(id, show) {
         const el = document.getElementById(id);
-        if (el) el.style.display = show ? 'block' : 'none';
+        if (!el) return;
+        el.classList.toggle('is-hidden', !show);
+        el.style.display = show ? '' : 'none';
     },
 
     /**

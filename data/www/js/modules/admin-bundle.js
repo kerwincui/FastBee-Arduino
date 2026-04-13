@@ -1,4 +1,10 @@
 /**
+ * AUTO-GENERATED FILE. DO NOT EDIT DIRECTLY.
+ * Source files: web-src/modules/admin/*.js
+ * Build command: node scripts/build-admin-bundle.js
+ */
+/* ===== users.js ===== */
+/**
  * 用户管理模块
  * 包含用户列表、添加/编辑/删除用户、启用/禁用/解锁
  */
@@ -15,7 +21,7 @@
             const closeUserModal = () => {
                 const modal = document.getElementById('add-user-modal');
                 if (modal) {
-                    modal.style.display = 'none';
+                    AppState.hideModal(modal);
                     modal.dataset.editMode = 'add';
                     modal.dataset.editUsername = '';
                 }
@@ -50,7 +56,7 @@
 
             tbody.innerHTML = '';
             if (!users || users.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#888">${i18n.t('no-users-data')}</td></tr>`;
+                this.renderEmptyTableRow(tbody, 5, i18n.t('no-users-data'));
                 return;
             }
 
@@ -146,7 +152,7 @@
                 // 先重置为添加模式，再显示弹窗
                 modal.dataset.editMode = 'add';
                 modal.dataset.editUsername = '';
-                modal.style.display = 'flex';
+                AppState.showModal(modal);
             }
 
             // 修改标题
@@ -168,8 +174,7 @@
 
             const sel = document.getElementById('add-role-select');
             if (sel) sel.value = 'operator';
-            const errDiv = document.getElementById('add-user-error');
-            if (errDiv) errDiv.style.display = 'none';
+            AppState.clearInlineError('add-user-error');
         },
 
         addUser() {
@@ -189,7 +194,7 @@
             const errDiv = document.getElementById('add-user-error');
 
             const showErr = (msg) => {
-                if (errDiv) { errDiv.textContent = msg; errDiv.style.display = 'block'; }
+                AppState.showInlineError('add-user-error', msg);
                 Notification.error(msg, isEditMode ? i18n.t('edit-user-fail') : i18n.t('add-user-fail'));
             };
 
@@ -202,8 +207,8 @@
             if (!password || !confirmPwd) return showErr(i18n.t('validate-pwd-empty'));
             if (password !== confirmPwd) return showErr(i18n.t('validate-pwd-mismatch'));
             if (password.length < 6) return showErr(i18n.t('validate-pwd-len'));
-
-            if (errDiv) errDiv.style.display = 'none';
+            
+            AppState.clearInlineError('add-user-error');
 
             const btn = document.getElementById('confirm-add-user-btn');
             if (btn) { btn.disabled = true; btn.textContent = isEditMode ? i18n.t('saving-btn') : i18n.t('adding-btn'); }
@@ -224,7 +229,7 @@
                         Notification.success(`${username} ${isEditMode ? i18n.t('role-updated') : i18n.t('role-created')}${i18n.t('role-success-suffix')}`, isEditMode ? i18n.t('edit-user-success') : i18n.t('add-user-success'));
                         // 关闭 modal 并重置状态
                         if (modal) {
-                            modal.style.display = 'none';
+                            AppState.hideModal(modal);
                             modal.dataset.editMode = 'add';
                             modal.dataset.editUsername = '';
                         }
@@ -283,11 +288,10 @@
             if (confirmBtn) confirmBtn.textContent = i18n.t('confirm-save-btn');
 
             // 显示弹窗
-            modal.style.display = 'flex';
-
+            AppState.showModal(modal);
+        
             // 清除错误提示
-            const errDiv = document.getElementById('add-user-error');
-            if (errDiv) errDiv.style.display = 'none';
+            AppState.clearInlineError('add-user-error');
         },
 
         // ============ 切换用户状态（启用/禁用）============
@@ -346,6 +350,7 @@
     }
 })();
 
+/* ===== roles.js ===== */
 /**
  * 角色管理模块
  * 包含角色列表、权限管理、角色 CRUD
@@ -355,7 +360,7 @@
 
         // ============ 事件绑定 ============
         setupRolesEvents() {
-            const closeId = (id) => { const el = document.getElementById(id); if (el) el.style.display = 'none'; };
+            const closeId = (id) => { this.hideModal(id); };
 
             // 添加角色按钮
             const addRoleBtn = document.getElementById('add-role-btn');
@@ -408,26 +413,23 @@
                 // 描述
                 const tdDesc = document.createElement('td');
                 tdDesc.textContent = role.description || '—';
-                tdDesc.style.maxWidth = '200px';
-                tdDesc.style.overflow = 'hidden';
-                tdDesc.style.textOverflow = 'ellipsis';
-                tdDesc.style.whiteSpace = 'nowrap';
+                tdDesc.className = 'role-desc-cell';
                 row.appendChild(tdDesc);
 
                 // 权限数
                 const tdPermCount = document.createElement('td');
                 const permCount = (role.permissions || []).length;
-                tdPermCount.innerHTML = `<span style="background: #e6f7ff; color: #1890ff; padding: 2px 8px; border-radius: 10px; font-size: 12px;">${permCount}</span>`;
+                tdPermCount.innerHTML = `<span class="role-pill role-pill--count">${permCount}</span>`;
                 row.appendChild(tdPermCount);
 
                 // 类型
                 const tdType = document.createElement('td');
                 if (role.id === 'admin') {
-                    tdType.innerHTML = `<span style="background: #fff1f0; color: #f5222d; padding: 2px 8px; border-radius: 4px; font-size: 12px;">${i18n.t('role-type-super')}</span>`;
+                    tdType.innerHTML = `<span class="role-pill role-pill--super">${i18n.t('role-type-super')}</span>`;
                 } else if (role.isBuiltin) {
-                    tdType.innerHTML = `<span style="background: #f6ffed; color: #52c41a; padding: 2px 8px; border-radius: 4px; font-size: 12px;">${i18n.t('role-type-builtin')}</span>`;
+                    tdType.innerHTML = `<span class="role-pill role-pill--builtin">${i18n.t('role-type-builtin')}</span>`;
                 } else {
-                    tdType.innerHTML = `<span style="background: #f0f5ff; color: #2f54eb; padding: 2px 8px; border-radius: 4px; font-size: 12px;">${i18n.t('role-type-custom')}</span>`;
+                    tdType.innerHTML = `<span class="role-pill role-pill--custom">${i18n.t('role-type-custom')}</span>`;
                 }
                 row.appendChild(tdType);
 
@@ -446,9 +448,8 @@
                 if (role.id !== 'admin') {
                     // 编辑按钮
                     const editBtn = document.createElement('button');
-                    editBtn.className = 'btn btn-sm btn-edit';
+                    editBtn.className = 'btn btn-sm btn-edit fb-mr-1';
                     editBtn.textContent = i18n.t('role-edit');
-                    editBtn.style.marginRight = '5px';
                     editBtn.addEventListener('click', () => this.showEditRoleModal(role.id));
                     tdAction.appendChild(editBtn);
 
@@ -494,18 +495,18 @@
                 permGroups[p.group].push(p);
             });
 
-            let html = `<div style="max-height: 400px; overflow-y: auto;">`;
+            let html = `<div class="role-perm-sheet">`;
             Object.keys(permGroups).sort().forEach(group => {
                 const gKey = _gpk[group] ? i18n.t('perm-group-' + _gpk[group]) : group;
-                html += `<div style="margin-bottom: 15px;">`;
-                html += `<h4 style="margin: 0 0 8px; font-size: 14px; color: #333; border-bottom: 1px solid #eee; padding-bottom: 5px;">${gKey}</h4>`;
-                html += `<div style="display: flex; flex-wrap: wrap; gap: 8px;">`;
+                html += `<div class="role-perm-group">`;
+                html += `<h4 class="role-perm-group-title">${gKey}</h4>`;
+                html += `<div class="role-perm-chip-list">`;
                 permGroups[group].forEach(perm => {
                     const hasPerm = rolePerms.has(perm.id);
                     const pName = i18n.t('perm-' + perm.id) !== ('perm-' + perm.id) ? i18n.t('perm-' + perm.id) : perm.name;
                     const pDesc = i18n.t('perm-' + perm.id) !== ('perm-' + perm.id) ? i18n.t('perm-' + perm.id) : perm.description;
-                    html += `<span style="display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 4px; font-size: 12px; ${hasPerm ? 'background: #e6f7ff; color: #1890ff; border: 1px solid #91d5ff;' : 'background: #f5f5f5; color: #999; border: 1px solid #d9d9d9;'}">`;
-                    html += `<span style="margin-right: 4px;">${hasPerm ? '✓' : '✗'}</span>`;
+                    html += `<span class="role-perm-chip${hasPerm ? ' is-enabled' : ''}">`;
+                    html += `<span class="role-perm-chip-indicator">${hasPerm ? '✓' : '✗'}</span>`;
                     html += `<span title="${pDesc}">${pName}</span></span>`;
                 });
                 html += `</div></div>`;
@@ -516,20 +517,29 @@
             const roleNameMap = {'管理员': 'role-admin', '操作员': 'role-operator', '查看者': 'role-viewer'};
             const displayRoleName = roleNameMap[role.name] ? i18n.t(roleNameMap[role.name]) : role.name;
 
-            // 使用简单的 alert 弹窗显示（或可以创建一个模态窗）
-            const div = document.createElement('div');
-            div.innerHTML = `
-                <div style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 9999; display: flex; justify-content: center; align-items: center;" onclick="this.remove()">
-                    <div style="background: white; border-radius: 8px; max-width: 600px; width: 90%; max-height: 80vh; overflow: hidden;" onclick="event.stopPropagation()">
-                        <div style="background: linear-gradient(135deg, #1890ff 0%, #096dd9 100%); color: white; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center;">
-                            <h3 style="margin: 0;">${displayRoleName}${i18n.t('role-detail-suffix')}</h3>
-                            <button onclick="this.closest('div[style*=position]').remove()" style="background: none; border: none; color: white; font-size: 20px; cursor: pointer;">×</button>
-                        </div>
-                        <div style="padding: 20px;">${html}</div>
+            const overlay = document.createElement('div');
+            overlay.className = 'role-perm-overlay';
+            overlay.innerHTML = `
+                <div class="role-perm-dialog">
+                    <div class="role-perm-dialog-header">
+                        <h3 class="role-perm-dialog-title">${displayRoleName}${i18n.t('role-detail-suffix')}</h3>
+                        <button type="button" class="role-perm-dialog-close">×</button>
                     </div>
+                    <div class="role-perm-dialog-body">${html}</div>
                 </div>
             `;
-            document.body.appendChild(div);
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) overlay.remove();
+            });
+            const closeBtn = overlay.querySelector('.role-perm-dialog-close');
+            if (closeBtn) {
+                closeBtn.addEventListener('click', () => overlay.remove());
+            }
+            const dialog = overlay.querySelector('.role-perm-dialog');
+            if (dialog) {
+                dialog.addEventListener('click', (e) => e.stopPropagation());
+            }
+            document.body.appendChild(overlay);
         },
 
         // ============ 角色管理 CRUD ============
@@ -556,14 +566,13 @@
 
             // 渲染权限复选框
             this._renderPermissionCheckboxes([]);
-
+        
             // 清除错误提示
-            const errDiv = document.getElementById('role-error');
-            if (errDiv) errDiv.style.display = 'none';
-
-            modal.style.display = 'flex';
+            AppState.clearInlineError('role-error');
+        
+            AppState.showModal(modal);
         },
-
+        
         showEditRoleModal(roleId) {
             const modal = document.getElementById('role-modal');
             if (!modal) {
@@ -604,12 +613,11 @@
 
                     // 渲染权限复选框
                     this._renderPermissionCheckboxes(role.permissions || []);
-
+                
                     // 清除错误提示
-                    const errDiv = document.getElementById('role-error');
-                    if (errDiv) errDiv.style.display = 'none';
-
-                    modal.style.display = 'flex';
+                    AppState.clearInlineError('role-error');
+                
+                    AppState.showModal(modal);
                 })
                 .catch(() => {});
         },
@@ -644,24 +652,24 @@
 
             Object.keys(permGroups).sort().forEach(group => {
                 const groupDiv = document.createElement('div');
-                groupDiv.style.cssText = 'margin-bottom: 12px;';
+                groupDiv.className = 'role-perm-group';
 
                 const gKey = _gpk[group] ? i18n.t('perm-group-' + _gpk[group]) : group;
                 const groupTitle = document.createElement('h5');
-                groupTitle.style.cssText = 'margin: 0 0 8px; font-size: 13px; color: #666; border-bottom: 1px solid #eee; padding-bottom: 5px;';
+                groupTitle.className = 'role-perm-group-title';
                 groupTitle.textContent = gKey;
                 groupDiv.appendChild(groupTitle);
 
                 const permList = document.createElement('div');
-                permList.style.cssText = 'display: flex; flex-wrap: wrap; gap: 10px;';
+                permList.className = 'role-perm-list';
 
                 permGroups[group].forEach(perm => {
                     const pName = i18n.t('perm-' + perm.id) !== ('perm-' + perm.id) ? i18n.t('perm-' + perm.id) : perm.name;
                     const pDesc = i18n.t('perm-' + perm.id) !== ('perm-' + perm.id) ? i18n.t('perm-' + perm.id) : perm.description;
                     const label = document.createElement('label');
-                    label.style.cssText = 'display: flex; align-items: center; cursor: pointer; font-size: 12px;';
+                    label.className = 'role-perm-label';
                     label.innerHTML = `
-                        <input type="checkbox" name="role-perm" value="${perm.id}" ${selectedSet.has(perm.id) ? 'checked' : ''} style="margin-right: 4px;">
+                        <input type="checkbox" name="role-perm" value="${perm.id}" ${selectedSet.has(perm.id) ? 'checked' : ''}>
                         <span title="${pDesc}">${pName}</span>
                     `;
                     permList.appendChild(label);
@@ -689,18 +697,18 @@
             const errDiv = document.getElementById('role-error');
 
             const showErr = (msg) => {
-                if (errDiv) { errDiv.textContent = msg; errDiv.style.display = 'block'; }
+                AppState.showInlineError('role-error', msg);
                 Notification.error(msg, isEditMode ? i18n.t('role-fail-edit') : i18n.t('role-fail-add'));
             };
 
             if (!id) return showErr(i18n.t('role-validate-id'));
             if (!name) return showErr(i18n.t('role-validate-name'));
-
+            
             // 获取选中的权限
             const permCheckboxes = document.querySelectorAll('input[name="role-perm"]:checked');
             const permissions = Array.from(permCheckboxes).map(cb => cb.value).join(',');
-
-            if (errDiv) errDiv.style.display = 'none';
+            
+            AppState.clearInlineError('role-error');
 
             const btn = document.getElementById('confirm-role-btn');
             if (btn) { btn.disabled = true; btn.textContent = i18n.t('role-saving-text'); }
@@ -734,7 +742,7 @@
                 .then(res => {
                     if (res && res.success) {
                         Notification.success(`${i18n.t('role-mgmt-title')}: ${name} ${isEditMode ? i18n.t('role-updated') : i18n.t('role-created')}${i18n.t('role-success-suffix')}`, i18n.t('role-mgmt-title'));
-                        if (modal) modal.style.display = 'none';
+                        if (modal) AppState.hideModal(modal);
                         this.loadRoles();
                     } else {
                         showErr((res && res.error) || i18n.t('role-op-fail'));
@@ -770,6 +778,7 @@
     }
 })();
 
+/* ===== logs.js ===== */
 /**
  * 日志管理模块
  * 包含日志文件列表、日志内容加载、自动刷新、清空
@@ -810,79 +819,58 @@
          * 加载日志文件列表
          */
         loadLogFileList() {
-            const listContainer = document.getElementById('log-file-list');
+            const listContainer = document.getElementById("log-file-list");
             if (!listContainer) return;
 
-            apiGet('/api/logs/list')
+            apiGet("/api/logs/list")
                 .then(res => {
                     if (!res || !res.success) {
-                        listContainer.innerHTML = '<div style="color: #f56c6c; padding: 10px;">' + i18n.t('log-load-fail-html') + '</div>';
+                        listContainer.innerHTML = `<div class="logs-state logs-state-error">${i18n.t("log-load-fail")}</div>`;
                         return;
                     }
 
                     const files = res.data || [];
                     if (files.length === 0) {
-                        listContainer.innerHTML = '<div style="color: #666; padding: 10px;">' + i18n.t('log-empty-html') + '</div>';
+                        listContainer.innerHTML = `<div class="logs-state">${i18n.t("log-empty")}</div>`;
                         return;
                     }
 
-                    // 按文件名排序，system.log 排最前面
                     files.sort((a, b) => {
-                        if (a.name === 'system.log') return -1;
-                        if (b.name === 'system.log') return 1;
-                        return b.name.localeCompare(a.name); // 新文件在前
+                        if (a.name === "system.log") return -1;
+                        if (b.name === "system.log") return 1;
+                        return b.name.localeCompare(a.name);
                     });
 
-                    let html = '';
+                    let html = "";
                     files.forEach(file => {
                         const sizeStr = file.size < 1024 ? `${file.size} B` : `${(file.size / 1024).toFixed(1)} KB`;
                         const isActive = file.name === this._currentLogFile;
-                        const activeStyle = isActive ? 'background: #3a3a3a; color: #fff;' : 'color: #ccc;';
-                        const icon = file.current ? '📄' : '📃';
-                        html += `<div class="log-file-item" style="padding: 8px 10px; cursor: pointer; border-bottom: 1px solid #333; ${activeStyle}" data-file="${file.name}">
-                            <span style="margin-right: 5px;">${icon}</span>
-                            <span style="font-size: 12px;">${file.name}</span>
-                            <span style="font-size: 11px; color: #888; float: right;">${sizeStr}</span>
+                        const safeName = typeof escapeHtml === "function" ? escapeHtml(file.name) : file.name;
+                        const icon = file.current ? "&#9679;" : "&#9675;";
+                        html += `<div class="logs-file-item${isActive ? " is-active" : ""}" data-file="${encodeURIComponent(file.name)}">
+                            <span class="logs-file-icon${file.current ? " is-current" : ""}">${icon}</span>
+                            <span class="logs-file-label">${safeName}</span>
+                            <span class="logs-file-size">${sizeStr}</span>
                         </div>`;
                     });
 
                     listContainer.innerHTML = html;
 
-                    // 绑定点击事件
-                    listContainer.querySelectorAll('.log-file-item').forEach(item => {
-                        item.addEventListener('click', () => {
-                            const fileName = item.dataset.file;
+                    listContainer.querySelectorAll(".logs-file-item").forEach(item => {
+                        item.addEventListener("click", () => {
+                            const fileName = decodeURIComponent(item.dataset.file || "");
+                            if (!fileName) return;
                             this._currentLogFile = fileName;
-                            // 更新当前文件显示
-                            const currentSpan = document.getElementById('current-log-file');
-                            if (currentSpan) currentSpan.textContent = i18n.t('log-current-file-prefix') + fileName;
-                            // 更新选中状态
-                            listContainer.querySelectorAll('.log-file-item').forEach(i => {
-                                i.style.background = '';
-                                i.style.color = '#ccc';
-                            });
-                            item.style.background = '#3a3a3a';
-                            item.style.color = '#fff';
-                            // 加载日志内容
+                            const currentSpan = document.getElementById("current-log-file");
+                            if (currentSpan) currentSpan.textContent = i18n.t("log-current-file-prefix") + fileName;
+                            this.setExclusiveActive(listContainer, ".logs-file-item", item);
                             this.loadLogs(500, fileName);
-                        });
-
-                        // 鼠标悬停效果
-                        item.addEventListener('mouseenter', () => {
-                            if (item.style.background !== '#3a3a3a') {
-                                item.style.background = '#2a2a2a';
-                            }
-                        });
-                        item.addEventListener('mouseleave', () => {
-                            if (item.style.background === '#2a2a2a') {
-                                item.style.background = '';
-                            }
                         });
                     });
                 })
                 .catch(err => {
-                    console.error('Load log file list failed:', err);
-                    listContainer.innerHTML = '<div style="color: #f56c6c; padding: 10px;">' + i18n.t('log-load-fail-html') + '</div>';
+                    console.error("Load log file list failed:", err);
+                    listContainer.innerHTML = `<div class="logs-state logs-state-error">${i18n.t("log-load-fail")}</div>`;
                 });
         },
 
@@ -892,50 +880,49 @@
          * @param {string} fileName 日志文件名，默认为当前选中的文件
          */
         loadLogs(maxLines = 500, fileName = null) {
-            const container = document.getElementById('device-log-container');
-            const infoSpan = document.getElementById('log-info');
+            const container = document.getElementById("device-log-container");
+            const infoSpan = document.getElementById("log-info");
 
             if (!container) return;
 
-            // 使用传入的文件名或当前选中的文件
-            const logFile = fileName || this._currentLogFile || 'system.log';
+            const logFile = fileName || this._currentLogFile || "system.log";
             this._currentLogFile = logFile;
 
-            apiGet('/api/logs', { lines: maxLines, file: logFile })
+            const currentSpan = document.getElementById("current-log-file");
+            if (currentSpan) currentSpan.textContent = i18n.t("log-current-file-prefix") + logFile;
+
+            apiGet("/api/logs", { lines: maxLines, file: logFile })
                 .then(res => {
                     if (!res || !res.success) {
-                        container.innerHTML = i18n.t('log-load-fail-html');
+                        container.innerHTML = `<div class="logs-state logs-state-error">${i18n.t("log-load-fail")}</div>`;
                         return;
                     }
 
                     const data = res.data || {};
-                    const content = data.content || '';
+                    const content = data.content || "";
                     const fileSize = data.size || 0;
                     const lineCount = data.lines || 0;
                     const truncated = data.truncated || false;
 
-                    // 更新日志信息
                     if (infoSpan) {
                         const sizeStr = fileSize < 1024 ? `${fileSize} B` :
                                        fileSize < 1024 * 1024 ? `${(fileSize / 1024).toFixed(1)} KB` :
                                        `${(fileSize / 1024 / 1024).toFixed(2)} MB`;
-                        let infoText = `${lineCount}${i18n.t('log-line-unit')}${sizeStr}`;
-                        if (truncated) infoText += i18n.t('log-truncated-suffix');
+                        let infoText = `${lineCount}${i18n.t("log-line-unit")}${sizeStr}`;
+                        if (truncated) infoText += i18n.t("log-truncated-suffix");
                         infoSpan.textContent = infoText;
                     }
 
-                    // 格式化并显示日志内容
-                    if (!content || content.trim() === '') {
-                        container.innerHTML = i18n.t('log-empty-html');
+                    if (!content || !content.trim()) {
+                        container.innerHTML = `<div class="logs-state">${i18n.t("log-empty")}</div>`;
                     } else {
                         container.innerHTML = this._formatLogContent(content);
-                        // 滚动到底部
                         container.scrollTop = container.scrollHeight;
                     }
                 })
                 .catch(err => {
-                    console.error('Load logs failed:', err);
-                    container.innerHTML = i18n.t('log-load-fail-html');
+                    console.error("Load logs failed:", err);
+                    container.innerHTML = `<div class="logs-state logs-state-error">${i18n.t("log-load-fail")}</div>`;
                 });
         },
 
@@ -1039,6 +1026,7 @@
     }
 })();
 
+/* ===== files.js ===== */
 /**
  * 文件管理模块
  * 包含文件系统信息、文件树、文件打开/保存/关闭
@@ -1117,8 +1105,8 @@
 
                     // 目录
                     dirs.forEach(dir => {
-                        html += `<div class="file-tree-item" style="padding: 3px 0; cursor: pointer;" data-path="${path}${dir.name}/" data-type="dir">
-                            <span style="color: #e6a23c;">📁</span> ${dir.name}
+                        html += `<div class="file-tree-item" data-path="${path}${dir.name}/" data-type="dir">
+                            <span class="file-tree-icon-dir">📁</span> ${dir.name}
                         </div>`;
                     });
 
@@ -1127,8 +1115,8 @@
                         const size = file.size < 1024 ? `${file.size} B` :
                                     file.size < 1024 * 1024 ? `${(file.size / 1024).toFixed(1)} KB` :
                                     `${(file.size / 1024 / 1024).toFixed(2)} MB`;
-                        html += `<div class="file-tree-item" style="padding: 3px 0; cursor: pointer;" data-path="${path}${file.name}" data-type="file">
-                            <span style="color: #409eff;">📄</span> ${file.name} <span style="color: #999; font-size: 11px;">(${size})</span>
+                        html += `<div class="file-tree-item" data-path="${path}${file.name}" data-type="file">
+                            <span class="file-tree-icon-file">📄</span> ${file.name} <span class="file-tree-size">(${size})</span>
                         </div>`;
                     });
 
@@ -1146,9 +1134,9 @@
 
                             // 移除其他选中状态
                             treeContainer.querySelectorAll('.file-tree-item').forEach(i => {
-                                i.style.background = '';
+                                i.classList.remove('is-active');
                             });
-                            e.currentTarget.style.background = '#e6f7ff';
+                            e.currentTarget.classList.add('is-active');
 
                             if (type === 'dir') {
                                 this.loadFileTree(path);
@@ -1349,21 +1337,72 @@
     }
 })();
 
+/* ===== rule-script.js ===== */
 /**
  * 规则脚本模块
  * 包含规则脚本的 CRUD 操作
  */
 (function() {
     AppState.registerModule('rule-script', {
+        _ruleScriptEventsBound: false,
 
         // ============ 事件绑定 ============
         setupRuleScriptEvents() {
+            if (this._ruleScriptEventsBound) return;
             const closeRuleScriptModal = document.getElementById('close-rule-script-modal');
             if (closeRuleScriptModal) closeRuleScriptModal.addEventListener('click', () => this.closeRuleScriptModal());
             const cancelRuleScriptBtn = document.getElementById('cancel-rule-script-btn');
             if (cancelRuleScriptBtn) cancelRuleScriptBtn.addEventListener('click', () => this.closeRuleScriptModal());
             const saveRuleScriptBtn = document.getElementById('save-rule-script-btn');
             if (saveRuleScriptBtn) saveRuleScriptBtn.addEventListener('click', () => this.saveRuleScript());
+            const tableBody = document.getElementById('rule-script-table-body');
+            if (tableBody) {
+                tableBody.addEventListener('click', (event) => this._handleRuleScriptTableClick(event));
+            }
+            this._ruleScriptEventsBound = true;
+        },
+
+        _handleRuleScriptTableClick(event) {
+            const button = event.target.closest('[data-rule-script-action]');
+            if (!button) return;
+            const action = button.getAttribute('data-rule-script-action');
+            const id = button.getAttribute('data-id');
+            if (!action || !id) return;
+            if (action === 'edit') this.editRuleScript(id);
+            else if (action === 'toggle') this.toggleRuleScript(id, button.getAttribute('data-enabled') === 'true');
+            else if (action === 'delete') this.deleteRuleScript(id);
+        },
+
+        _renderRuleScriptStatusBadge(enabled) {
+            return enabled
+                ? '<span class="badge badge-success">' + i18n.t('periph-exec-status-on') + '</span>'
+                : '<span class="badge badge-info">' + i18n.t('periph-exec-status-off') + '</span>';
+        },
+
+        _renderRuleScriptActionButton(action, id, label, className, enabledValue) {
+            let attrs = 'data-rule-script-action="' + action + '" data-id="' + escapeHtml(id) + '"';
+            if (enabledValue !== undefined) attrs += ' data-enabled="' + (enabledValue ? 'true' : 'false') + '"';
+            return '<button class="btn btn-sm ' + className + '" ' + attrs + '>' + label + '</button>';
+        },
+
+        _renderRuleScriptRow(rule, triggerLabels, protocolLabels) {
+            const triggerText = triggerLabels[rule.triggerType] || '?';
+            const protocolText = protocolLabels[rule.protocolType] || '-';
+            const statsText = i18n.t('periph-exec-stats-count') + ': ' + (rule.triggerCount || 0);
+            let html = '<tr>';
+            html += '<td>' + escapeHtml(rule.name || '') + '</td>';
+            html += '<td>' + this._renderRuleScriptStatusBadge(rule.enabled) + '</td>';
+            html += '<td>' + escapeHtml(triggerText) + '</td>';
+            html += '<td>' + escapeHtml(protocolText) + '</td>';
+            html += '<td class="rule-script-stats-cell">' + escapeHtml(statsText) + '</td>';
+            html += '<td class="u-toolbar-sm">';
+            html += this._renderRuleScriptActionButton('edit', rule.id, i18n.t('peripheral-edit'), 'btn-edit');
+            html += rule.enabled
+                ? this._renderRuleScriptActionButton('toggle', rule.id, i18n.t('peripheral-disable'), 'btn-disable', false)
+                : this._renderRuleScriptActionButton('toggle', rule.id, i18n.t('peripheral-enable'), 'btn-enable', true);
+            html += this._renderRuleScriptActionButton('delete', rule.id, i18n.t('peripheral-delete'), 'btn-delete');
+            html += '</td></tr>';
+            return html;
         },
 
         // ============ 规则脚本页面 ============
@@ -1373,44 +1412,23 @@
             if (!tbody) return;
             apiGet('/api/rule-script').then(res => {
                 if (!res || !res.success || !res.data) {
-                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">' + i18n.t('rule-script-no-data') + '</td></tr>';
+                    this.renderEmptyTableRow(tbody, 6, i18n.t('rule-script-no-data'));
                     return;
                 }
                 const rules = res.data;
                 if (rules.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">' + i18n.t('rule-script-no-data') + '</td></tr>';
+                    this.renderEmptyTableRow(tbody, 6, i18n.t('rule-script-no-data'));
                     return;
                 }
                 const triggerLabels = { 0: i18n.t('rule-script-trigger-receive'), 1: i18n.t('rule-script-trigger-report') };
                 const protocolLabels = { 0: 'MQTT', 1: 'Modbus RTU', 2: 'Modbus TCP', 3: 'HTTP', 4: 'CoAP', 5: 'TCP' };
                 let html = '';
                 rules.forEach(r => {
-                    const statusBadge = r.enabled
-                        ? '<span class="badge badge-success">' + i18n.t('periph-exec-status-on') + '</span>'
-                        : '<span class="badge badge-info">' + i18n.t('periph-exec-status-off') + '</span>';
-                    const triggerText = triggerLabels[r.triggerType] || '?';
-                    const protocolText = protocolLabels[r.protocolType] || '-';
-                    const statsText = i18n.t('periph-exec-stats-count') + ': ' + (r.triggerCount || 0);
-                    html += '<tr>';
-                    html += '<td>' + (r.name || '') + '</td>';
-                    html += '<td>' + statusBadge + '</td>';
-                    html += '<td>' + triggerText + '</td>';
-                    html += '<td>' + protocolText + '</td>';
-                    html += '<td style="font-size:12px;">' + statsText + '</td>';
-                    html += '<td class="u-toolbar-sm">';
-                    html += '<button class="btn btn-sm btn-edit" onclick="app.editRuleScript(\'' + r.id + '\')">' + i18n.t('peripheral-edit') + '</button>';
-                    if (r.enabled) {
-                        html += '<button class="btn btn-sm btn-disable" onclick="app.toggleRuleScript(\'' + r.id + '\',false)">' + i18n.t('peripheral-disable') + '</button>';
-                    } else {
-                        html += '<button class="btn btn-sm btn-enable" onclick="app.toggleRuleScript(\'' + r.id + '\',true)">' + i18n.t('peripheral-enable') + '</button>';
-                    }
-                    html += '<button class="btn btn-sm btn-delete" onclick="app.deleteRuleScript(\'' + r.id + '\')">' + i18n.t('peripheral-delete') + '</button>';
-                    html += '</td>';
-                    html += '</tr>';
+                    html += this._renderRuleScriptRow(r, triggerLabels, protocolLabels);
                 });
                 tbody.innerHTML = html;
             }).catch(() => {
-                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;">' + i18n.t('rule-script-no-data') + '</td></tr>';
+                this.renderEmptyTableRow(tbody, 6, i18n.t('rule-script-no-data'));
             });
         },
 
@@ -1419,7 +1437,7 @@
             if (!modal) return;
             const titleEl = document.getElementById('rule-script-modal-title');
             document.getElementById('rule-script-original-id').value = editId || '';
-            document.getElementById('rule-script-error').style.display = 'none';
+            this.clearInlineError('rule-script-error');
             if (editId) {
                 if (titleEl) titleEl.textContent = i18n.t('rule-script-edit-title');
             } else {
@@ -1428,17 +1446,15 @@
                 document.getElementById('rule-script-protocol-type').value = '0';
                 document.getElementById('rule-script-content').value = '';
             }
-            modal.style.display = 'flex';
+            this.showModal(modal);
         },
 
         closeRuleScriptModal() {
-            const modal = document.getElementById('rule-script-modal');
-            if (modal) modal.style.display = 'none';
+            this.hideModal('rule-script-modal');
         },
 
         saveRuleScript() {
-            const errEl = document.getElementById('rule-script-error');
-            errEl.style.display = 'none';
+            this.clearInlineError('rule-script-error');
             const originalId = document.getElementById('rule-script-original-id').value;
             const isEdit = originalId !== '';
             const ruleData = {
@@ -1449,8 +1465,7 @@
                 scriptContent: document.getElementById('rule-script-content').value
             };
             if (!ruleData.name) {
-                errEl.textContent = i18n.t('periph-exec-validate-name');
-                errEl.style.display = 'block';
+                this.showInlineError('rule-script-error', i18n.t('periph-exec-validate-name'));
                 return;
             }
             if (isEdit) ruleData.id = originalId;
@@ -1461,12 +1476,10 @@
                     this.closeRuleScriptModal();
                     if (this.currentPage === 'rule-script') this.loadRuleScriptPage();
                 } else {
-                    errEl.textContent = res?.error || i18n.t('rule-script-save-fail');
-                    errEl.style.display = 'block';
+                    this.showInlineError('rule-script-error', res?.error || i18n.t('rule-script-save-fail'));
                 }
             }).catch(() => {
-                errEl.textContent = i18n.t('rule-script-save-fail');
-                errEl.style.display = 'block';
+                this.showInlineError('rule-script-error', i18n.t('rule-script-save-fail'));
             });
         },
 
@@ -1509,4 +1522,3 @@
         AppState.setupRuleScriptEvents();
     }
 })();
-
