@@ -46,6 +46,7 @@ bool WebHandlerContext::requiresAuth(AsyncWebServerRequest* request) {
     const char* publicPaths[] = {
         "/api/auth/login",
         "/api/health",
+        "/api/events",  // SSE 推送通道，EventSource 不支持 Cookie，需跳过 session 认证
         "/login",
         "/css/",
         "/js/",

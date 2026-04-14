@@ -12,6 +12,8 @@ public:
     void setupRoutes(AsyncWebServer* server);
 
     void broadcastModbusData(const String& data);
+    void broadcastMqttStatus(const String& data);
+    void broadcastModbusStatus(const String& data);
     size_t clientCount() const;
 
 private:

@@ -30,6 +30,42 @@
                     }
                 });
             }
+        
+            // 页面可见性检测：隐藏时暂停轮询，恢复时立即刷新
+            this._setupLogVisibilityHandler();
+        },
+        
+        /**
+         * 设置页面可见性检测处理器
+         */
+        _setupLogVisibilityHandler() {
+            // 避免重复绑定
+            if (this._logVisibilityHandlerBound) return;
+            this._logVisibilityHandlerBound = true;
+        
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    // 页面不可见，暂停日志轮询
+                    if (this._logAutoRefreshTimer) {
+                        clearInterval(this._logAutoRefreshTimer);
+                        this._logAutoRefreshTimer = null;
+                        this._logPausedByVisibility = true;
+                        console.log('[Logs] Auto refresh paused by visibility');
+                    }
+                } else if (this._logPausedByVisibility) {
+                    // 页面恢复可见，立即刷新一次并恢复轮询
+                    this._logPausedByVisibility = false;
+                    if (this.currentPage === 'logs') {
+                        this.loadLogs();
+                        // 检查自动刷新复选框状态，仅当用户已开启时才恢复
+                        const autoRefreshCheckbox = document.getElementById('log-auto-refresh');
+                        if (autoRefreshCheckbox && autoRefreshCheckbox.checked) {
+                            this.startLogAutoRefresh();
+                        }
+                        console.log('[Logs] Auto refresh resumed by visibility');
+                    }
+                }
+            });
         },
 
         // ============ 日志管理 ============
@@ -212,7 +248,7 @@
         /**
          * 启动日志自动刷新
          */
-        startLogAutoRefresh(interval = 2000) {
+        startLogAutoRefresh(interval = 5000) {
             // 先停止已有的定时器
             this.stopLogAutoRefresh();
 

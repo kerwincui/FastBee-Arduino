@@ -19,6 +19,9 @@
             if (tableBody) {
                 tableBody.addEventListener('click', (event) => this._handleRuleScriptTableClick(event));
             }
+            // 刷新按钮
+            const rsRefreshBtn = document.getElementById('rule-script-refresh-btn');
+            if (rsRefreshBtn) rsRefreshBtn.addEventListener('click', () => this._refreshRuleScriptList());
             this._ruleScriptEventsBound = true;
         },
 
@@ -66,6 +69,19 @@
         },
 
         // ============ 规则脚本页面 ============
+
+        _refreshRuleScriptList() {
+            var btn = document.getElementById('rule-script-refresh-btn');
+            if (btn && btn.disabled) return;
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="fb-spin">&#x21bb;</span> 加载中...'; }
+            if (typeof window.apiInvalidateCache === 'function') {
+                window.apiInvalidateCache('/api/rule-script');
+            }
+            this.loadRuleScriptPage();
+            setTimeout(function() {
+                if (btn) { btn.disabled = false; btn.innerHTML = '&#x21bb; 刷新'; }
+            }, 2000);
+        },
 
         loadRuleScriptPage() {
             const tbody = document.getElementById('rule-script-table-body');

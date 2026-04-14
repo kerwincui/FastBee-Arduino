@@ -37,9 +37,26 @@
             // 确认添加用户
             const confirmAdd = document.getElementById('confirm-add-user-btn');
             if (confirmAdd) confirmAdd.addEventListener('click', () => this.addUser());
+            // 刷新按钮
+            const usersRefreshBtn = document.getElementById('users-refresh-btn');
+            if (usersRefreshBtn) usersRefreshBtn.addEventListener('click', () => this._refreshUsersList());
         },
 
         // ============ 用户列表（从 API 加载）============
+
+        _refreshUsersList() {
+            var btn = document.getElementById('users-refresh-btn');
+            if (btn && btn.disabled) return;
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="fb-spin">&#x21bb;</span> 加载中...'; }
+            if (typeof window.apiInvalidateCache === 'function') {
+                window.apiInvalidateCache('/api/users');
+            }
+            this.loadUsers();
+            setTimeout(function() {
+                if (btn) { btn.disabled = false; btn.innerHTML = '&#x21bb; 刷新'; }
+            }, 2000);
+        },
+
         loadUsers() {
             apiGet('/api/users', { page: 1, limit: 100 })
                 .then(res => {
@@ -375,9 +392,26 @@
             // 确认保存角色
             const confirmRole = document.getElementById('confirm-role-btn');
             if (confirmRole) confirmRole.addEventListener('click', () => this.saveRole());
+            // 刷新按钮
+            const rolesRefreshBtn = document.getElementById('roles-refresh-btn');
+            if (rolesRefreshBtn) rolesRefreshBtn.addEventListener('click', () => this._refreshRolesList());
         },
 
         // ============ 角色管理 ============
+
+        _refreshRolesList() {
+            var btn = document.getElementById('roles-refresh-btn');
+            if (btn && btn.disabled) return;
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="fb-spin">&#x21bb;</span> 加载中...'; }
+            if (typeof window.apiInvalidateCache === 'function') {
+                window.apiInvalidateCache('/api/roles');
+            }
+            this.loadRoles();
+            setTimeout(function() {
+                if (btn) { btn.disabled = false; btn.innerHTML = '&#x21bb; 刷新'; }
+            }, 2000);
+        },
+
         loadRoles() {
             apiGet('/api/roles')
                 .then(res => {
@@ -811,6 +845,42 @@
                     }
                 });
             }
+        
+            // 页面可见性检测：隐藏时暂停轮询，恢复时立即刷新
+            this._setupLogVisibilityHandler();
+        },
+        
+        /**
+         * 设置页面可见性检测处理器
+         */
+        _setupLogVisibilityHandler() {
+            // 避免重复绑定
+            if (this._logVisibilityHandlerBound) return;
+            this._logVisibilityHandlerBound = true;
+        
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    // 页面不可见，暂停日志轮询
+                    if (this._logAutoRefreshTimer) {
+                        clearInterval(this._logAutoRefreshTimer);
+                        this._logAutoRefreshTimer = null;
+                        this._logPausedByVisibility = true;
+                        console.log('[Logs] Auto refresh paused by visibility');
+                    }
+                } else if (this._logPausedByVisibility) {
+                    // 页面恢复可见，立即刷新一次并恢复轮询
+                    this._logPausedByVisibility = false;
+                    if (this.currentPage === 'logs') {
+                        this.loadLogs();
+                        // 检查自动刷新复选框状态，仅当用户已开启时才恢复
+                        const autoRefreshCheckbox = document.getElementById('log-auto-refresh');
+                        if (autoRefreshCheckbox && autoRefreshCheckbox.checked) {
+                            this.startLogAutoRefresh();
+                        }
+                        console.log('[Logs] Auto refresh resumed by visibility');
+                    }
+                }
+            });
         },
 
         // ============ 日志管理 ============
@@ -993,7 +1063,7 @@
         /**
          * 启动日志自动刷新
          */
-        startLogAutoRefresh(interval = 2000) {
+        startLogAutoRefresh(interval = 5000) {
             // 先停止已有的定时器
             this.stopLogAutoRefresh();
 
@@ -1359,6 +1429,9 @@
             if (tableBody) {
                 tableBody.addEventListener('click', (event) => this._handleRuleScriptTableClick(event));
             }
+            // 刷新按钮
+            const rsRefreshBtn = document.getElementById('rule-script-refresh-btn');
+            if (rsRefreshBtn) rsRefreshBtn.addEventListener('click', () => this._refreshRuleScriptList());
             this._ruleScriptEventsBound = true;
         },
 
@@ -1406,6 +1479,19 @@
         },
 
         // ============ 规则脚本页面 ============
+
+        _refreshRuleScriptList() {
+            var btn = document.getElementById('rule-script-refresh-btn');
+            if (btn && btn.disabled) return;
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="fb-spin">&#x21bb;</span> 加载中...'; }
+            if (typeof window.apiInvalidateCache === 'function') {
+                window.apiInvalidateCache('/api/rule-script');
+            }
+            this.loadRuleScriptPage();
+            setTimeout(function() {
+                if (btn) { btn.disabled = false; btn.innerHTML = '&#x21bb; 刷新'; }
+            }, 2000);
+        },
 
         loadRuleScriptPage() {
             const tbody = document.getElementById('rule-script-table-body');

@@ -45,6 +45,9 @@
             if (tableBody) {
                 tableBody.addEventListener('click', (event) => this._handlePeripheralTableClick(event));
             }
+            // 刷新按钮
+            var refreshBtn = document.getElementById('peripheral-refresh-btn');
+            if (refreshBtn) refreshBtn.addEventListener('click', () => this._refreshPeripheralList());
             this._periphEventsBound = true;
         },
 
@@ -64,6 +67,20 @@
         },
 
         // ============ 外设列表 ============
+
+        _refreshPeripheralList() {
+            var btn = document.getElementById('peripheral-refresh-btn');
+            if (btn && btn.disabled) return;
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="fb-spin">&#x21bb;</span> 加载中...'; }
+            if (typeof window.apiInvalidateCache === 'function') {
+                window.apiInvalidateCache('/api/peripherals');
+            }
+            var filter = document.getElementById('peripheral-filter-type');
+            this.loadPeripherals((filter && filter.value) || '');
+            setTimeout(function() {
+                if (btn) { btn.disabled = false; btn.innerHTML = '&#x21bb; 刷新'; }
+            }, 2000);
+        },
 
         loadPeripherals(filterType = '') {
             const tbody = document.getElementById('peripheral-table-body');

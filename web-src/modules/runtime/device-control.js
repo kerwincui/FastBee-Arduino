@@ -302,15 +302,11 @@
                     self._dcApplyLayout();
                     self._dcInitFreeLayout();
                     // 渲染完成后，自动获取Modbus子设备初始状态
-                    self._dcInitModbusDeviceStates().then(function() {
-                        if (self.currentPage === 'device-control') {
-                            self._setupSSE();
-                        }
-                    }).catch(function() {
-                        if (self.currentPage === 'device-control') {
-                            self._setupSSE();
-                        }
-                    });
+                    // 同时建立 SSE 连接，并行执行以加快初始状态同步
+                    self._dcInitModbusDeviceStates();
+                    if (self.currentPage === 'device-control') {
+                        self._setupSSE();
+                    }
 
                 } catch (renderErr) {
                     console.error('[device-control] Render error:', renderErr);
@@ -483,7 +479,7 @@
                 if (!task.mappings || task.mappings.length === 0) continue;
 
                 var group = {
-                    label: task.label || ('设备 ' + task.slaveAddress),
+                    label: task.name || task.label || ('设备 ' + task.slaveAddress),
                     items: []
                 };
 
@@ -729,7 +725,8 @@
         _renderSingleModbusPanel: function(devIdx, dev) {
             var dt = dev.deviceType || 'relay';
             var typeLabel = this._t('modbus-type-' + dt) || dt;
-            var ctrlLabel = this._t('dc-modbus-ctrl-' + dt) || (typeLabel + ' ' + this._t('device-control-action-section'));
+            // 卡片标题优先显示子设备名称
+            var ctrlLabel = (dev.name || '') || (this._t('dc-modbus-ctrl-' + dt) || (typeLabel + ' ' + this._t('device-control-action-section')));
             var typeClassMap = {relay: 'dc-card-badge--relay', pwm: 'dc-card-badge--pwm', pid: 'dc-card-badge--pid'};
             var badgeClass = typeClassMap[dt] || 'dc-card-badge--system';
 
@@ -751,10 +748,15 @@
         // ============ 继电器控制面板 ============
         _renderDcRelayPanel: function(devIdx, dev) {
             var channelCount = dev.channelCount || 2;
-            var states = this._dcCoilStates[devIdx] || [];
+            var states = this._dcCoilStates[devIdx];
             var ncMode = !!dev.ncMode;
             var html = '<div class="dc-modbus-device-body">';
-            html += this._renderDcCoilGrid(devIdx, channelCount, states, ncMode);
+            // 如果状态尚未加载，显示加载提示
+            if (!states) {
+                html += this._renderDcLoadingPlaceholder('正在获取继电器状态...');
+            } else {
+                html += this._renderDcCoilGrid(devIdx, channelCount, states, ncMode);
+            }
             html += this._renderDcRelayDelaySection(devIdx, dev);
             html += this._renderDcActionBar([
                 { className: 'dc-coil-batch dc-btn-sm dc-btn-on', devIdx: devIdx, action: 'allOn', label: this._t('modbus-ctrl-all-on') },
@@ -764,6 +766,14 @@
             ]);
             html += '</div>';
             return html;
+        },
+
+        // ============ 加载占位符 ============
+        _renderDcLoadingPlaceholder: function(message) {
+            return '<div class="dc-loading-placeholder" style="text-align:center;padding:30px 20px;color:#999;">'
+                + '<div style="font-size:24px;margin-bottom:10px;">⏳</div>'
+                + '<div style="font-size:13px;">' + this._esc(message || '加载中...') + '</div>'
+                + '</div>';
         },
 
         // ============ 继电器延时控制区块 ============
@@ -797,9 +807,13 @@
             var channelCount = dev.channelCount || 4;
             var resolution = dev.pwmResolution || 8;
             var maxValue = (1 << resolution) - 1;
-            var states = this._dcPwmStates[devIdx] || [];
+            var states = this._dcPwmStates[devIdx];
 
             var html = '<div class="dc-modbus-device-body">';
+            // 如果状态尚未加载，使用全0默认值渲染控制界面
+            if (!states) {
+                states = new Array(channelCount).fill(0);
+            }
             html += this._renderDcPwmGrid(devIdx, channelCount, states, maxValue);
             html += this._renderDcActionBar([
                 { className: 'dc-pwm-batch dc-btn-sm dc-btn-on', devIdx: devIdx, action: 'max', label: this._t('modbus-ctrl-pwm-set-all-max') },
@@ -814,8 +828,13 @@
         _renderDcPidPanel: function(devIdx, dev) {
             var decimals = dev.pidDecimals || 1;
             var sf = Math.pow(10, decimals);
+            var values = this._dcPidValues[devIdx];
 
             var html = '<div class="dc-modbus-device-body">';
+            // 如果数据尚未加载，使用全0默认值渲染PID界面
+            if (!values) {
+                this._dcPidValues[devIdx] = { pv: 0, sv: 0, out: 0, p: 0, i: 0, d: 0 };
+            }
             html += this._renderDcPidGrid(devIdx, sf, decimals);
             html += this._renderDcActionBar([
                 { className: 'dc-pid-refresh dc-btn-sm dc-btn-refresh', devIdx: devIdx, label: this._t('modbus-ctrl-pid-refresh') }
@@ -1021,70 +1040,244 @@
 
         // ============ Modbus子设备控制方法 ============
 
+        _dcModbusInitRunning: false,
+
         _dcInitModbusDeviceStates: async function() {
+            if (this._dcModbusInitRunning) {
+                console.log('[device-control] _dcInitModbusDeviceStates already running, skip');
+                return;
+            }
+            this._dcModbusInitRunning = true;
             var devices = this._modbusDevices || [];
-            // 串行刷新每个设备状态，避免并发请求导致 Modbus 总线超时
-            for (var i = 0; i < devices.length; i++) {
-                var dt = devices[i].deviceType || 'relay';
-                if (dt === 'relay') {
-                    await this._dcRefreshCoilStatus(i);
-                } else if (dt === 'pwm') {
-                    await this._dcRefreshPwmStatus(i);
-                } else if (dt === 'pid') {
-                    await this._dcRefreshPidStatus(i);
+            try {
+                // 串行刷新每个设备状态，避免并发请求导致 Modbus 总线超时
+                for (var i = 0; i < devices.length; i++) {
+                    if (this.currentPage !== 'device-control') break;
+                    var dt = devices[i].deviceType || 'relay';
+                    if (dt === 'relay') {
+                        await this._dcRefreshCoilStatus(i);
+                    } else if (dt === 'pwm') {
+                        await this._dcRefreshPwmStatus(i);
+                    } else if (dt === 'pid') {
+                        await this._dcRefreshPidStatus(i);
+                    }
+                    // 设备间间隔 250ms，给 ESP32 更多缓冲时间
+                    if (i < devices.length - 1) {
+                        await new Promise(function(resolve) { setTimeout(resolve, 250); });
+                    }
                 }
-                // 设备间间隔 100ms，确保 Modbus 总线稳定
-                if (i < devices.length - 1) {
-                    await new Promise(function(resolve) { setTimeout(resolve, 100); });
-                }
+            } finally {
+                this._dcModbusInitRunning = false;
             }
         },
 
         _setupSSE: function() {
+            // 使用全局 SSE 连接而非创建独立的 EventSource
+            AppState.connectSSE();  // 确保全局连接已建立
+
             var self = this;
-            this._closeSSE();
+            // 保存引用以便清理
+            this._sseModbusHandler = function(e) {
+                try {
+                    var data = JSON.parse(e.data);
+                    self._handleSSEModbusData(data);
+                } catch (err) {
+                    console.warn('[SSE] 数据解析失败:', err);
+                }
+            };
 
-            if (typeof EventSource === 'undefined') {
-                console.warn('[SSE] 当前环境不支持 EventSource');
-                return;
-            }
-
-            try {
-                var evtSource = new EventSource('/api/events');
-
-                evtSource.addEventListener('modbus-data', function(e) {
-                    try {
-                        var data = JSON.parse(e.data);
-                        self._handleSSEModbusData(data);
-                    } catch (err) {
-                        console.warn('[SSE] 数据解析失败:', err);
-                    }
-                });
-
-                evtSource.onopen = function() {
-                    console.log('[SSE] 连接已建立');
-                };
-
-                evtSource.onerror = function() {
-                    console.warn('[SSE] 连接错误，将自动重连');
-                };
-
-                this._sseConnection = evtSource;
-            } catch (err) {
-                console.error('[SSE] 创建连接失败:', err);
-            }
+            AppState.onSSEEvent('modbus-data', this._sseModbusHandler);
         },
 
         _closeSSE: function() {
-            if (this._dcAutoRefreshTimers && this._dcAutoRefreshTimers.sseDebounce) {
-                clearTimeout(this._dcAutoRefreshTimers.sseDebounce);
-                this._dcAutoRefreshTimers.sseDebounce = null;
+            if (this._sseModbusHandler) {
+                AppState.offSSEEvent('modbus-data', this._sseModbusHandler);
+                this._sseModbusHandler = null;
             }
-            if (this._sseConnection) {
-                this._sseConnection.close();
-                this._sseConnection = null;
-                console.log('[SSE] 连接已关闭');
+            AppState.disconnectSSE();
+            if (this._sseDebounceTimer) {
+                clearTimeout(this._sseDebounceTimer);
+                this._sseDebounceTimer = null;
             }
+        },
+
+        // ============ 根据 slaveAddress 查找设备索引 ============
+        _findDevIdxBySlaveAddress: function(slaveAddress) {
+            var devices = this._modbusDevices || [];
+            for (var i = 0; i < devices.length; i++) {
+                if (devices[i].slaveAddress === slaveAddress) {
+                    return i;
+                }
+            }
+            return -1;
+        },
+
+        // ============ 解析 sensorId 并提取设备信息 ============
+        // 支持格式: coil_3_ch0, relay_3_ch0, pid_pv_5, pid_sv_5, pwm_4_ch0
+        _parseSensorId: function(sensorId) {
+            if (!sensorId) return null;
+
+            // coil/relay 格式: {type}_{slaveAddr}_ch{channel}
+            var coilMatch = sensorId.match(/^(coil|relay)_(\d+)_ch(\d+)$/i);
+            if (coilMatch) {
+                return {
+                    type: 'coil',
+                    slaveAddress: parseInt(coilMatch[2], 10),
+                    channel: parseInt(coilMatch[3], 10)
+                };
+            }
+
+            // pid 格式: pid_{param}_{slaveAddr}
+            var pidMatch = sensorId.match(/^pid_(pv|sv|out|p|i|d)_(\d+)$/i);
+            if (pidMatch) {
+                return {
+                    type: 'pid',
+                    paramName: pidMatch[1].toLowerCase(),
+                    slaveAddress: parseInt(pidMatch[2], 10)
+                };
+            }
+
+            // pwm 格式: pwm_{slaveAddr}_ch{channel}
+            var pwmMatch = sensorId.match(/^pwm_(\d+)_ch(\d+)$/i);
+            if (pwmMatch) {
+                return {
+                    type: 'pwm',
+                    slaveAddress: parseInt(pwmMatch[1], 10),
+                    channel: parseInt(pwmMatch[2], 10)
+                };
+            }
+
+            return null;
+        },
+
+        // ============ 直接更新继电器 UI ============
+        _updateCoilUIFromSSE: function(devIdx, channel, value) {
+            var dev = this._modbusDevices[devIdx];
+            if (!dev) return false;
+
+            var ncMode = dev.ncMode || false;
+            var isOn = ncMode ? !value : !!value;
+            var onText = this._t('modbus-ctrl-status-on') || 'ON';
+            var offText = this._t('modbus-ctrl-status-off') || 'OFF';
+
+            // 更新本地状态缓存
+            var states = this._dcCoilStates[devIdx] || [];
+            if (channel >= 0 && channel < (dev.channelCount || 8)) {
+                states[channel] = !!value;
+                this._dcCoilStates[devIdx] = states;
+            }
+
+            // 直接更新 DOM 元素
+            var card = document.querySelector('.dc-coil-card[data-dev="' + devIdx + '"][data-ch="' + channel + '"]');
+            if (!card) return false;
+
+            // 更新样式类
+            card.classList.remove('dc-coil-on', 'dc-coil-off');
+            card.classList.add(isOn ? 'dc-coil-on' : 'dc-coil-off');
+
+            // 更新状态文本
+            var stEl = card.querySelector('.dc-coil-st');
+            if (stEl) {
+                stEl.textContent = isOn ? onText : offText;
+            }
+
+            return true;
+        },
+
+        // ============ 直接更新 PWM UI ============
+        _updatePwmUIFromSSE: function(devIdx, channel, value) {
+            var dev = this._modbusDevices[devIdx];
+            if (!dev) return false;
+
+            var resolution = dev.pwmResolution || 8;
+            var maxValue = (1 << resolution) - 1;
+            var numValue = parseInt(value, 10);
+            if (isNaN(numValue)) numValue = 0;
+            numValue = Math.max(0, Math.min(numValue, maxValue));
+
+            // 更新本地状态缓存
+            var states = this._dcPwmStates[devIdx] || [];
+            if (channel >= 0) {
+                states[channel] = numValue;
+                this._dcPwmStates[devIdx] = states;
+            }
+
+            // 直接更新 DOM 元素
+            var grid = document.getElementById('dc-pwm-grid-' + devIdx);
+            if (!grid) return false;
+
+            var slider = grid.querySelector('.dc-pwm-slider[data-ch="' + channel + '"]');
+            if (slider) slider.value = numValue;
+
+            var numInput = grid.querySelector('.dc-pwm-num[data-ch="' + channel + '"]');
+            if (numInput) numInput.value = numValue;
+
+            var pctSpan = grid.querySelector('.dc-pwm-pct[data-ch="' + channel + '"]');
+            if (pctSpan) {
+                var pct = maxValue > 0 ? Math.round(numValue / maxValue * 100) : 0;
+                pctSpan.textContent = pct + '%';
+            }
+
+            return true;
+        },
+
+        // ============ 直接更新 PID UI ============
+        _updatePidUIFromSSE: function(devIdx, paramName, value) {
+            var dev = this._modbusDevices[devIdx];
+            if (!dev) return false;
+
+            var decimals = dev.pidDecimals || 1;
+            var scaleFactor = Math.pow(10, decimals);
+            var numValue = parseFloat(value);
+            if (isNaN(numValue)) numValue = 0;
+
+            // SSE 数据已经是缩放后的值，需要转回原始值存储
+            var rawValue = Math.round(numValue * scaleFactor);
+
+            // 更新本地状态缓存
+            var values = this._dcPidValues[devIdx] || {};
+            values[paramName] = rawValue;
+            this._dcPidValues[devIdx] = values;
+
+            // 直接更新 DOM 元素
+            var grid = document.getElementById('dc-pid-grid-' + devIdx);
+            if (!grid) return false;
+
+            // 找到对应的卡片并更新显示值
+            var cards = grid.querySelectorAll('.dc-pid-card');
+            for (var i = 0; i < cards.length; i++) {
+                var card = cards[i];
+                var labelEl = card.querySelector('.dc-pid-label');
+                if (!labelEl) continue;
+
+                // 根据标签文本判断是否匹配
+                var labelText = (labelEl.textContent || '').toLowerCase();
+                var paramLabels = {
+                    'pv': this._t('modbus-ctrl-pid-pv-label') || 'pv',
+                    'sv': this._t('modbus-ctrl-pid-sv-label') || 'sv',
+                    'out': this._t('modbus-ctrl-pid-out-label') || 'out',
+                    'p': this._t('modbus-ctrl-pid-p-label') || 'p',
+                    'i': this._t('modbus-ctrl-pid-i-label') || 'i',
+                    'd': this._t('modbus-ctrl-pid-d-label') || 'd'
+                };
+
+                var expectedLabel = (paramLabels[paramName] || paramName).toLowerCase();
+                if (labelText.indexOf(expectedLabel) !== -1 || labelText.indexOf(paramName) !== -1) {
+                    // 更新显示值
+                    var valueEl = card.querySelector('.dc-pid-value');
+                    if (valueEl) {
+                        valueEl.textContent = numValue.toFixed(decimals);
+                    }
+                    // 更新输入框值（如果是可编辑参数）
+                    var inputEl = card.querySelector('.dc-pid-input');
+                    if (inputEl) {
+                        inputEl.value = numValue.toFixed(decimals);
+                    }
+                    break;
+                }
+            }
+
+            return true;
         },
 
         _handleSSEModbusData: function(data) {
@@ -1107,6 +1300,39 @@
                     continue;
                 }
 
+                // 尝试解析 sensorId 是否为 coil/pwm/pid 类型
+                var parsedInfo = this._parseSensorId(sensorId);
+                if (parsedInfo) {
+                    var devIdx = this._findDevIdxBySlaveAddress(parsedInfo.slaveAddress);
+                    if (devIdx >= 0) {
+                        if (parsedInfo.type === 'coil') {
+                            // 继电器/线圈数据
+                            if (this._updateCoilUIFromSSE(devIdx, parsedInfo.channel, value)) {
+                                matched = true;
+                                continue; // 成功匹配，跳过后续处理
+                            }
+                        } else if (parsedInfo.type === 'pwm') {
+                            // PWM 数据
+                            if (this._updatePwmUIFromSSE(devIdx, parsedInfo.channel, value)) {
+                                matched = true;
+                                continue;
+                            }
+                        } else if (parsedInfo.type === 'pid') {
+                            // PID 数据
+                            if (this._updatePidUIFromSSE(devIdx, parsedInfo.paramName, value)) {
+                                matched = true;
+                                continue;
+                            }
+                        }
+                    }
+                    // 解析成功但未找到对应设备，触发全量刷新
+                    if (!matched) {
+                        needsFullRefresh = true;
+                        continue;
+                    }
+                }
+
+                // 原有逻辑：匹配监测数据卡片
                 for (var ti = 0; ti < tasks.length; ti++) {
                     var task = tasks[ti];
                     var mappings = task && task.mappings ? task.mappings : [];
@@ -1140,7 +1366,8 @@
                     matched = true;
                 }
 
-                if (!matched || /^(relay|coil|pwm|pid)_/i.test(sensorId)) {
+                // 仅当数据既不匹配监测卡片，也不匹配 coil/pwm/pid 时才触发全量刷新
+                if (!matched) {
                     needsFullRefresh = true;
                 }
             }
@@ -1343,7 +1570,13 @@
                     self._dcPwmStates[devIdx] = res.data.values;
                     self._dcRerenderPwmGrid(devIdx);
                 }
-            }).catch(function() {});
+            }).catch(function() {
+                // 设备未连接或读取失败，显示默认值（全0）
+                if (!self._dcPwmStates[devIdx]) {
+                    self._dcPwmStates[devIdx] = new Array(p.channelCount).fill(0);
+                    self._dcRerenderPwmGrid(devIdx);
+                }
+            });
         },
 
         _dcRerenderPwmGrid: function(devIdx) {
@@ -1446,7 +1679,13 @@
                     };
                     self._dcRerenderPidGrid(devIdx);
                 }
-            }).catch(function() {});
+            }).catch(function() {
+                // 设备未连接或读取失败，显示默认值（全0）
+                if (!self._dcPidValues[devIdx]) {
+                    self._dcPidValues[devIdx] = { pv: 0, sv: 0, out: 0, p: 0, i: 0, d: 0 };
+                    self._dcRerenderPidGrid(devIdx);
+                }
+            });
         },
 
         _dcRerenderPidGrid: function(devIdx) {

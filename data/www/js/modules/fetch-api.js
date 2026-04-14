@@ -4,10 +4,18 @@
  *   - 自动注入 Authorization: Bearer <token>
  *   - 统一返回 response.data（JSON body）
  *   - 统一错误处理（HTTP 状态码 → Notification 提示）
- *   - 超时控制（默认 8 秒）
+ *   - 超时控制（默认 15 秒）
  *   - Content-Type: application/x-www-form-urlencoded（POST/PUT）
  *
- * 全局暴露：apiGet / apiPost / apiPut / apiDelete
+ * RequestGovernor — ESP32 资源保护层：
+ *   - 并发限制（最多 2 个在途请求）
+ *   - FIFO 队列 + 优先级（HIGH=用户操作 / LOW=后台轮询）
+ *   - 503/网络错误 → 全局冷却退避（1s→10s 指数递增）
+ *   - 请求去重（相同 URL+方法 合并 Promise）
+ *   - 页面切换时取消排队中的旧请求
+ *   - GET 响应缓存（可配置 TTL）
+ *
+ * 全局暴露：apiGet / apiPost / apiPut / apiDelete / apiAbortPageRequests / apiInvalidateCache
  * 兼容：state.js 和其他模块中原有的 apiGet/apiPost/apiPut/apiDelete 调用
  */
 (function () {
@@ -90,6 +98,10 @@
                     // 静默模式：不触发全局错误处理，直接传递错误给调用方
                     return Promise.reject(err);
                 }
+                if (err && err._pageAborted) {
+                    // 页面切换导致的取消，静默忽略
+                    return Promise.reject(err);
+                }
                 if (err && err.status !== undefined) {
                     // HTTP 层面的错误（4xx / 5xx）
                     _handleHttpError(err.status, err.data);
@@ -165,99 +177,242 @@
         }
     }
 
-    // ── 全局 API 函数（与原 axios 版本接口完全兼容）──────────────────────────
+    // ── RequestGovernor — ESP32 资源保护调度器 ────────────────────────────────
+    var Governor = {
+        _queue: [],              // 待发请求队列
+        _inflight: 0,            // 当前在途请求数
+        MAX_CONCURRENT: 2,       // 最大并发 HTTP 请求数（SSE/MQTT 不占此计数）
+        _cooldownUntil: 0,       // 全局冷却截止时间戳
+        _backoffMs: 1000,        // 当前退避时间（成功后重置为 1000）
+        _cooldownTimer: null,    // 冷却恢复定时器
+        _dedupMap: {},           // 去重映射 { dedupKey: Promise }
+        _pageGen: 0,             // 页面代次计数器
+        _cache: {},              // GET 响应缓存 { path: { data, ts } }
+        _cacheTTL: {             // 可缓存的 URL 路径及其 TTL(ms)
+            '/api/protocol/config': 60000,
+            '/api/system/info': 30000,
+            '/api/device/config': 120000
+        },
 
-    /**
-     * GET 请求
-     * @param {string} url
-     * @param {Object} [params] - 查询参数
-     * @returns {Promise<any>}
-     */
+        /**
+         * 将请求加入调度队列
+         * @param {string} method - HTTP 方法
+         * @param {string} path - API 路径
+         * @param {Object} options - 请求选项 { params, headers, body, silent }
+         * @param {number} [timeoutMs] - 超时时间
+         * @returns {Promise}
+         */
+        enqueue: function (method, path, options, timeoutMs) {
+            var self = this;
+            var fullUrl = buildUrl(path, options ? options.params : undefined);
+            var body = options ? (options.body || '') : '';
+            var dedupKey = method + ':' + fullUrl + (body ? '#' + body : '');
+            var isSilent = !!(options && options.silent);
+
+            // 非 GET 请求自动失效同路径缓存
+            if (method !== 'GET') {
+                delete this._cache[path];
+            }
+
+            // GET 请求检查缓存
+            if (method === 'GET' && this._cacheTTL[path]) {
+                var cached = this._cache[path];
+                if (cached && (Date.now() - cached.ts < this._cacheTTL[path])) {
+                    return Promise.resolve(JSON.parse(JSON.stringify(cached.data)));
+                }
+            }
+
+            // 请求去重 — 相同请求在途/排队时，复用同一个 Promise
+            if (this._dedupMap[dedupKey]) {
+                return this._dedupMap[dedupKey];
+            }
+
+            // 创建 Promise 和队列条目
+            var resolve, reject;
+            var promise = new Promise(function (res, rej) { resolve = res; reject = rej; });
+
+            this._queue.push({
+                method: method, path: path, options: options, timeoutMs: timeoutMs,
+                resolve: resolve, reject: reject,
+                priority: isSilent ? 0 : 1,  // 0=LOW(后台), 1=HIGH(用户操作)
+                dedupKey: dedupKey,
+                pageGen: this._pageGen
+            });
+
+            // 注册去重，完成后自动清理
+            this._dedupMap[dedupKey] = promise;
+            promise.then(
+                function () { delete self._dedupMap[dedupKey]; },
+                function () { delete self._dedupMap[dedupKey]; }
+            );
+
+            this._drain();
+            return promise;
+        },
+
+        /**
+         * 排水：从队列中取出请求执行，受并发数和冷却期约束
+         */
+        _drain: function () {
+            var self = this;
+
+            // 清理已过期的页面代次请求
+            for (var i = this._queue.length - 1; i >= 0; i--) {
+                if (this._queue[i].pageGen < this._pageGen) {
+                    var expired = this._queue.splice(i, 1)[0];
+                    delete this._dedupMap[expired.dedupKey];
+                    var err = new Error('Request cancelled by page navigation');
+                    err._pageAborted = true;
+                    expired.reject(err);
+                }
+            }
+
+            // 冷却期中：延迟排水
+            var now = Date.now();
+            if (now < this._cooldownUntil && this._queue.length > 0) {
+                if (!this._cooldownTimer) {
+                    var delay = this._cooldownUntil - now;
+                    this._cooldownTimer = setTimeout(function () {
+                        self._cooldownTimer = null;
+                        self._drain();
+                    }, delay);
+                }
+                return;
+            }
+
+            // 在并发容量内处理队列
+            while (this._inflight < this.MAX_CONCURRENT && this._queue.length > 0) {
+                // 优先执行 HIGH 优先级，同级别 FIFO
+                var bestIdx = 0;
+                for (var j = 1; j < this._queue.length; j++) {
+                    if (this._queue[j].priority > this._queue[bestIdx].priority) {
+                        bestIdx = j;
+                    }
+                }
+
+                var entry = this._queue.splice(bestIdx, 1)[0];
+                this._inflight++;
+                this._execute(entry);
+            }
+        },
+
+        /**
+         * 执行单个请求
+         */
+        _execute: function (entry) {
+            var self = this;
+            request(entry.method, entry.path, entry.options, entry.timeoutMs)
+                .then(function (data) {
+                    self._backoffMs = 1000; // 成功后重置退避
+                    // 缓存 GET 响应
+                    if (entry.method === 'GET' && self._cacheTTL[entry.path]) {
+                        self._cache[entry.path] = { data: data, ts: Date.now() };
+                    }
+                    entry.resolve(data);
+                })
+                .catch(function (err) {
+                    if (self._isCooldownError(err)) {
+                        self._cooldownUntil = Date.now() + self._backoffMs;
+                        console.warn('[Governor] Cooldown ' + self._backoffMs + 'ms after overload');
+                        self._backoffMs = Math.min(self._backoffMs * 2, 10000);
+                    }
+                    entry.reject(err);
+                })
+                .finally(function () {
+                    self._inflight--;
+                    self._drain();
+                });
+        },
+
+        /**
+         * 判断错误是否应触发全局冷却
+         */
+        _isCooldownError: function (err) {
+            if (!err) return false;
+            // HTTP 503 (服务不可用) 或 429 (请求过多)
+            if (err.status === 503 || err.status === 429) return true;
+            // TypeError: Failed to fetch — 连接被拒、重置、DNS 失败等
+            if (err instanceof TypeError) return true;
+            return false;
+        },
+
+        /**
+         * 页面切换时取消所有排队中的旧页面请求
+         */
+        abortPageRequests: function () {
+            this._pageGen++;
+            // 主动清理队列中的过期请求
+            for (var i = this._queue.length - 1; i >= 0; i--) {
+                if (this._queue[i].pageGen < this._pageGen) {
+                    var expired = this._queue.splice(i, 1)[0];
+                    delete this._dedupMap[expired.dedupKey];
+                    var err = new Error('Request cancelled by page navigation');
+                    err._pageAborted = true;
+                    expired.reject(err);
+                }
+            }
+        },
+
+        /**
+         * 失效指定路径的缓存
+         * @param {string} [urlPattern] - URL 路径模式，不传则清空全部缓存
+         */
+        invalidateCache: function (urlPattern) {
+            if (!urlPattern) { this._cache = {}; return; }
+            for (var key in this._cache) {
+                if (this._cache.hasOwnProperty(key) && key.indexOf(urlPattern) !== -1) {
+                    delete this._cache[key];
+                }
+            }
+        }
+    };
+
+    // ── 全局 API 函数（通过 Governor 调度）────────────────────────────────────
+
     window.apiGet = function (url, params) {
-        return request('GET', url, { params: params || {} });
+        return Governor.enqueue('GET', url, { params: params || {} });
     };
 
-    /**
-     * GET 请求（静默模式，不触发全局错误处理）
-     * 用于后台轮询等不应影响全局认证状态的请求
-     * @param {string} url
-     * @param {Object} [params] - 查询参数
-     * @returns {Promise<any>}
-     */
     window.apiGetSilent = function (url, params) {
-        return request('GET', url, { params: params || {}, silent: true });
+        return Governor.enqueue('GET', url, { params: params || {}, silent: true });
     };
 
-    /**
-     * POST 请求（application/x-www-form-urlencoded）
-     * @param {string} url
-     * @param {Object} [data] - 表单数据
-     * @returns {Promise<any>}
-     */
-    window.apiPost = function (url, data) {
-        return request('POST', url, {
+    window.apiPost = function (url, data, timeoutMs) {
+        return Governor.enqueue('POST', url, {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: toUrlEncoded(data || {})
-        });
+        }, timeoutMs);
     };
 
-    /**
-     * POST 请求（静默模式，不触发全局错误处理）
-     * 用于MQTT操作等不应影响全局认证状态的请求
-     * @param {string} url
-     * @param {Object} [data] - 表单数据
-     * @returns {Promise<any>}
-     */
     window.apiPostSilent = function (url, data) {
-        return request('POST', url, {
+        return Governor.enqueue('POST', url, {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: toUrlEncoded(data || {}),
             silent: true
         });
     };
 
-    /**
-     * PUT 请求（application/json）
-     * @param {string} url
-     * @param {Object} [data] - JSON 数据
-     * @returns {Promise<any>}
-     */
     window.apiPut = function (url, data) {
-        return request('PUT', url, {
+        return Governor.enqueue('PUT', url, {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data || {})
         });
     };
 
-    /**
-     * POST 请求（application/json）
-     * 用于需要提交嵌套 JSON 结构的接口（如 triggers[]/actions[] 数组）
-     * @param {string} url
-     * @param {Object} [data] - JSON 数据
-     * @returns {Promise<any>}
-     */
     window.apiPostJson = function (url, data) {
-        return request('POST', url, {
+        return Governor.enqueue('POST', url, {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data || {})
         });
     };
 
-    /**
-     * DELETE 请求
-     * @param {string} url
-     * @param {Object} [params] - 查询参数
-     * @returns {Promise<any>}
-     */
     window.apiDelete = function (url, params) {
-        return request('DELETE', url, { params: params || {} });
+        return Governor.enqueue('DELETE', url, { params: params || {} });
     };
 
-    /**
-     * 系统重启请求（使用更长超时）
-     * @param {Object} [data] - 表单数据（包含 delay 参数）
-     * @returns {Promise<any>}
-     */
+    // ── 特殊请求（绕过 Governor，直接执行）───────────────────────────────────
+    // 这些请求要么是系统关键操作，要么有超长超时，不应受调度器约束
+
     window.apiRestart = function (data) {
         return request('POST', '/api/system/restart', {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -265,28 +420,22 @@
         }, RESTART_TIMEOUT);
     };
 
-    /**
-     * 恢复出厂设置请求（使用更长超时）
-     * @returns {Promise<any>}
-     */
     window.apiFactoryReset = function () {
         return request('POST', '/api/system/factory-reset', {}, RESTART_TIMEOUT);
     };
 
-    /**
-     * MQTT 连接测试请求（使用更长超时）
-     * MQTT连接测试可能需要较长时间，特别是加密认证需要NTP同步
-     * 注意：此请求使用静默模式，不触发全局401错误处理
-     * @param {Object} [data] - MQTT配置参数
-     * @returns {Promise<any>}
-     */
-    const MQTT_TEST_TIMEOUT = 30000; // 30秒超时
+    const MQTT_TEST_TIMEOUT = 30000;
     window.apiMqttTest = function (data) {
         return request('POST', '/api/mqtt/test', {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: toUrlEncoded(data || {}),
-            silent: true  // 静默模式，不触发全局错误处理（包括401自动跳转登录）
+            silent: true
         }, MQTT_TEST_TIMEOUT);
     };
+
+    // ── Governor 控制接口 ────────────────────────────────────────────────────
+
+    window.apiAbortPageRequests = function () { Governor.abortPageRequests(); };
+    window.apiInvalidateCache = function (urlPattern) { Governor.invalidateCache(urlPattern); };
 
 })();

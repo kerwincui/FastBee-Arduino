@@ -22,9 +22,26 @@
             // 确认保存角色
             const confirmRole = document.getElementById('confirm-role-btn');
             if (confirmRole) confirmRole.addEventListener('click', () => this.saveRole());
+            // 刷新按钮
+            const rolesRefreshBtn = document.getElementById('roles-refresh-btn');
+            if (rolesRefreshBtn) rolesRefreshBtn.addEventListener('click', () => this._refreshRolesList());
         },
 
         // ============ 角色管理 ============
+
+        _refreshRolesList() {
+            var btn = document.getElementById('roles-refresh-btn');
+            if (btn && btn.disabled) return;
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="fb-spin">&#x21bb;</span> 加载中...'; }
+            if (typeof window.apiInvalidateCache === 'function') {
+                window.apiInvalidateCache('/api/roles');
+            }
+            this.loadRoles();
+            setTimeout(function() {
+                if (btn) { btn.disabled = false; btn.innerHTML = '&#x21bb; 刷新'; }
+            }, 2000);
+        },
+
         loadRoles() {
             apiGet('/api/roles')
                 .then(res => {

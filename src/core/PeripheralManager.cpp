@@ -8,6 +8,7 @@
 #include "core/PeripheralManager.h"
 #include "core/AsyncExecTypes.h"
 #include "core/FeatureFlags.h"
+#include "core/ChipConfig.h"
 #include "systems/LoggerSystem.h"
 #include <Wire.h>
 #include <SPI.h>
@@ -771,8 +772,8 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
         case PeripheralType::GPIO_ANALOG_OUTPUT:
         case PeripheralType::PWM_SERVO:
             // PWM 参数验证
-            if (config.params.gpio.pwmChannel > 15) {
-                errorMsg = "PWM 通道无效 (有效范围: 0-15)";
+            if (config.params.gpio.pwmChannel >= CHIP_MAX_PWM_CH) {
+                errorMsg = "PWM 通道无效 (有效范围: 0-" + String(CHIP_MAX_PWM_CH - 1) + ")";
                 return false;
             }
             if (config.params.gpio.pwmFrequency == 0 || config.params.gpio.pwmFrequency > 40000000) {
@@ -890,8 +891,8 @@ bool PeripheralManager::setupPWMPin(const PeripheralConfig& config) {
     if (pin == 255) return false;
     
     uint8_t channel = config.params.gpio.pwmChannel;
-    if (channel > 15) {
-        LOG_ERRORF("Peripheral Manager: Invalid PWM channel %d", channel);
+    if (channel >= CHIP_MAX_PWM_CH) {
+        LOG_ERRORF("Peripheral Manager: Invalid PWM channel %d (max: %d)", channel, CHIP_MAX_PWM_CH - 1);
         return false;
     }
     
@@ -992,6 +993,7 @@ void PeripheralManager::startActionTicker(const String& id, uint8_t actionMode, 
 // ========== DAC 硬件初始化 ==========
 
 bool PeripheralManager::setupDACPin(const PeripheralConfig& config) {
+#if CHIP_HAS_DAC
     uint8_t pin = config.getPrimaryPin();
     if (pin == 255) return false;
     if (pin != 25 && pin != 26) {
@@ -1001,6 +1003,10 @@ bool PeripheralManager::setupDACPin(const PeripheralConfig& config) {
     dacWrite(pin, config.params.dac.defaultValue);
     LOG_INFOF("Peripheral Manager: DAC pin %d set to %d", pin, config.params.dac.defaultValue);
     return true;
+#else
+    LOG_WARNING("DAC not supported on this chip");
+    return false;
+#endif
 }
 
 String PeripheralManager::generateUniqueId(PeripheralType type) {
@@ -1030,40 +1036,54 @@ void PeripheralManager::removePinMapping(const String& id) {
 
 // ========== 引脚验证与冲突检测 ==========
 
-// 系统保留引脚定义
-static const uint8_t RESERVED_PINS[] = {
-    0,    // Boot 模式选择（内部上拉），可用于输出但需谨慎
-    1,    // TX0 - 调试串口
-    3,    // RX0 - 调试串口
-    6, 7, 8, 9, 10, 11,  // 内部 Flash SPI（禁止使用）
-};
-
-// 输入专用引脚（仅支持输入）
-static const uint8_t INPUT_ONLY_PINS[] = {
-    34, 35, 36, 39  // GPIO34-39 只能作为输入
-};
-
-// 获取引脚保留原因
+// 获取引脚保留原因（使用 ChipConfig.h 中的定义）
 static String getPinReservedReason(uint8_t pin) {
-    switch (pin) {
-        case 0: return "Boot 模式选择引脚，建议保留";
-        case 1: return "TX0 调试串口";
-        case 3: return "RX0 调试串口";
-        case 6: case 7: case 8: case 9: case 10: case 11:
-            return "内部 Flash SPI，禁止使用";
-        case 34: case 35: case 36: case 39:
-            return "仅支持输入模式";
-        default: return "";
+    // 检查是否为保留引脚
+    for (uint8_t i = 0; i < CHIP_RESERVED_PIN_COUNT; i++) {
+        if (CHIP_RESERVED_PINS[i] == pin) {
+            switch (pin) {
+                case 0: return "Boot 模式选择引脚，建议保留";
+                case 1: return "TX0 调试串口";
+                case 3: return "RX0 调试串口";
+                case 6: case 7: case 8: case 9: case 10: case 11:
+                    return "内部 Flash SPI，禁止使用";
+                case 19: case 20:
+                    return "USB 接口，建议保留";
+                case 26: case 27: case 28: case 29: case 30: case 31: case 32:
+                    return "Octal Flash/PSRAM，建议保留";
+                default: return "系统保留引脚";
+            }
+        }
     }
+    // 检查是否为输入专用引脚
+    for (uint8_t i = 0; i < CHIP_INPUT_ONLY_PIN_COUNT; i++) {
+        if (CHIP_INPUT_ONLY_PINS[i] == pin) {
+            return "仅支持输入模式";
+        }
+    }
+    return "";
 }
 
 bool PeripheralManager::isValidPin(uint8_t pin) const {
-    // ESP32的有效GPIO引脚范围
-    if (pin > 39) return false;
+    // 使用 ChipConfig.h 中的最大 GPIO 编号
+    if (pin > CHIP_MAX_GPIO) return false;
     
-    // 内部Flash使用的引脚（绝对禁止）
-    if (pin >= 6 && pin <= 11) {
-        return false;
+    // 内部Flash使用的引脚（绝对禁止）- 检查是否为保留引脚
+    for (uint8_t i = 0; i < CHIP_RESERVED_PIN_COUNT; i++) {
+        if (CHIP_RESERVED_PINS[i] == pin) {
+            // GPIO 6-11 是内部 Flash SPI，绝对禁止
+            #if defined(CONFIG_IDF_TARGET_ESP32)
+            if (pin >= 6 && pin <= 11) return false;
+            #elif defined(CONFIG_IDF_TARGET_ESP32S3)
+            // ESP32-S3: GPIO 26-32 是 Octal Flash/PSRAM
+            if (pin >= 26 && pin <= 32) return false;
+            #elif defined(CONFIG_IDF_TARGET_ESP32C3)
+            // ESP32-C3: GPIO 12-17 是 Flash SPI
+            if (pin >= 12 && pin <= 17) return false;
+            #else
+            if (pin >= 6 && pin <= 11) return false;
+            #endif
+        }
     }
     
     return true;
@@ -1071,8 +1091,8 @@ bool PeripheralManager::isValidPin(uint8_t pin) const {
 
 // 检查引脚是否为系统保留引脚
 bool PeripheralManager::isReservedPin(uint8_t pin) const {
-    for (size_t i = 0; i < sizeof(RESERVED_PINS); i++) {
-        if (RESERVED_PINS[i] == pin) {
+    for (uint8_t i = 0; i < CHIP_RESERVED_PIN_COUNT; i++) {
+        if (CHIP_RESERVED_PINS[i] == pin) {
             return true;
         }
     }
@@ -1081,8 +1101,8 @@ bool PeripheralManager::isReservedPin(uint8_t pin) const {
 
 // 检查引脚是否只能用于输入
 bool PeripheralManager::isInputOnlyPin(uint8_t pin) const {
-    for (size_t i = 0; i < sizeof(INPUT_ONLY_PINS); i++) {
-        if (INPUT_ONLY_PINS[i] == pin) {
+    for (uint8_t i = 0; i < CHIP_INPUT_ONLY_PIN_COUNT; i++) {
+        if (CHIP_INPUT_ONLY_PINS[i] == pin) {
             return true;
         }
     }
@@ -1154,22 +1174,37 @@ bool PeripheralManager::validatePinForType(uint8_t pin, PeripheralType type, Str
         }
     }
     
-    // DAC 只能使用 GPIO25 或 GPIO26
+    // DAC 引脚验证
+#if CHIP_HAS_DAC
     if (type == PeripheralType::DAC && pin != 25 && pin != 26) {
         errorMsg = "DAC 只能使用 GPIO25 或 GPIO26";
         return false;
     }
+#else
+    if (type == PeripheralType::DAC) {
+        errorMsg = "此芯片不支持 DAC 功能";
+        return false;
+    }
+#endif
     
-    // 触摸引脚验证（GPIO0, 2, 4, 12-15, 27, 32, 33）
+    // 触摸引脚验证
+#if CHIP_HAS_TOUCH
     if (type == PeripheralType::GPIO_TOUCH) {
-        bool isTouchPin = (pin == 0 || pin == 2 || pin == 4 || 
-                          (pin >= 12 && pin <= 15) || 
-                          pin == 27 || pin == 32 || pin == 33);
+        bool isTouchPin = false;
+        for (uint8_t i = 0; i < CHIP_TOUCH_PIN_COUNT; i++) {
+            if (pin == CHIP_TOUCH_PINS[i]) { isTouchPin = true; break; }
+        }
         if (!isTouchPin) {
             errorMsg = String("GPIO") + String(pin) + " 不支持触摸功能";
             return false;
         }
     }
+#else
+    if (type == PeripheralType::GPIO_TOUCH) {
+        errorMsg = "此芯片不支持触摸功能";
+        return false;
+    }
+#endif
     
     return true;
 }
@@ -1279,6 +1314,7 @@ bool PeripheralManager::writeData(const String& id, const uint8_t* data, size_t 
             
         // DAC 输出
         case PeripheralType::DAC:
+#if CHIP_HAS_DAC
             if (len >= 1) {
                 uint8_t pin = config->getPrimaryPin();
                 if (pin == 25 || pin == 26) {
@@ -1286,6 +1322,9 @@ bool PeripheralManager::writeData(const String& id, const uint8_t* data, size_t 
                     success = true;
                 }
             }
+#else
+            LOG_WARNING("DAC not supported on this chip");
+#endif
             break;
             
         // UART 发送

@@ -44,6 +44,22 @@ void SSERouteHandler::broadcastModbusData(const String& data) {
     _events.send(data.c_str(), "modbus-data", _messageId++);
 }
 
+void SSERouteHandler::broadcastMqttStatus(const String& data) {
+    if (_events.count() == 0) {
+        return;
+    }
+
+    _events.send(data.c_str(), "mqtt-status", _messageId++);
+}
+
+void SSERouteHandler::broadcastModbusStatus(const String& data) {
+    if (_events.count() == 0) {
+        return;
+    }
+
+    _events.send(data.c_str(), "modbus-status", _messageId++);
+}
+
 size_t SSERouteHandler::clientCount() const {
     return _events.count();
 }

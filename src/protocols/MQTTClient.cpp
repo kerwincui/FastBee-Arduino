@@ -251,6 +251,7 @@ void MQTTClient::disconnect() {
 void MQTTClient::stop() {
     disconnect();
     stopped = true;
+    _notifyStatusChange();  // 通知状态变化：主动停止
     LOG_INFO("MQTT: Stopped (auto-reconnect disabled)");
 }
 
@@ -605,6 +606,7 @@ void MQTTClient::handle() {
             isConnected = false;
             reconnectInterval = 5000;  // 刚断开时重置重连间隔
             LOG_WARNING("MQTT: Connection lost");
+            _notifyStatusChange();  // 通知状态变化：连接断开
             // 触发MQTT断开连接系统事件
             PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_DISCONNECTED, "");
         }
@@ -657,6 +659,32 @@ String MQTTClient::getStatus() const {
 
 void MQTTClient::setMessageCallback(std::function<void(const String&, const String&, MqttTopicType)> callback) {
     messageCallback = callback;
+}
+
+void MQTTClient::setStatusChangeCallback(StatusChangeCallback cb) {
+    _statusChangeCallback = cb;
+}
+
+void MQTTClient::_notifyStatusChange() {
+    if (!_statusChangeCallback) return;
+
+    // 构建轻量级 JSON 状态字符串
+    // 参考 MqttRouteHandler::handleGetMqttStatus 的 JSON 结构
+    JsonDocument doc;
+    JsonObject data = doc.to<JsonObject>();
+
+    data["connected"] = isConnected;
+    data["stopped"] = stopped;
+    data["server"] = config.server;
+    data["port"] = config.port;
+    data["clientId"] = config.clientId;
+    data["reconnects"] = reconnectCount;
+    data["lastError"] = lastErrorCode;
+
+    String json;
+    serializeJson(doc, json);
+
+    _statusChangeCallback(json);
 }
 
 MqttTopicType MQTTClient::getTopicTypeByPath(const String& topicPath, int8_t* outSubIndex) const {
@@ -895,6 +923,7 @@ bool MQTTClient::reconnect() {
         lastConnectedTime = millis();
         lastErrorCode = 0;
         LOG_INFO("MQTT: Connected");
+        _notifyStatusChange();  // 通知状态变化：连接成功
         // 触发MQTT连接成功系统事件
         PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_CONNECTED, "");
         // 连接成功后订阅所有主题
@@ -909,6 +938,7 @@ bool MQTTClient::reconnect() {
         char buf2[48];
         snprintf(buf2, sizeof(buf2), "MQTT: Connect failed rc=%d", lastErrorCode);
         LOG_WARNING(buf2);
+        _notifyStatusChange();  // 通知状态变化：连接失败
         // 触发MQTT连接失败系统事件
         PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_CONN_FAILED, String(lastErrorCode));
     }

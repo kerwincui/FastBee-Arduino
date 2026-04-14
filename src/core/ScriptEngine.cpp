@@ -1,5 +1,6 @@
 #include "core/ScriptEngine.h"
 #include "core/PeripheralManager.h"
+#include "core/ChipConfig.h"
 #include "protocols/MQTTClient.h"
 #include "systems/LoggerSystem.h"
 #include <esp_random.h>
@@ -263,8 +264,12 @@ bool ScriptEngine::execute(const std::vector<ScriptCommand>& cmds, MQTTClient* m
             }
 
             case ScriptCmdType::CMD_DAC: {
+#if CHIP_HAS_DAC
                 dacWrite(cmd.pin, (uint8_t)cmd.intParam);
                 LOGGER.infof("[Script] DAC pin %d = %d", cmd.pin, cmd.intParam);
+#else
+                LOGGER.warning("[Script] DAC not supported on this chip");
+#endif
                 break;
             }
 

@@ -31,8 +31,8 @@
                             <span class="mqtt-status-label"
                                 data-i18n="mqtt-status-label">连接状态</span>
                             <span id="mqtt-status-badge"
-                                class="mqtt-status-badge mqtt-status-offline"
-                                data-i18n="mqtt-status-offline">未连接</span>
+                                class="mqtt-status-badge mqtt-status-detecting"
+                                data-i18n="mqtt-status-detecting">检测中...</span>
                         </div>
                         <div class="mqtt-status-row">
                             <span class="mqtt-status-label"
@@ -427,6 +427,8 @@
                             <button type="button" class="btn btn-sm btn-enable"
                                 data-action="_showAddDeviceMenu"
                                 data-i18n="modbus-add-device">+ 添加设备</button>
+                            <button type="button" class="fb-btn fb-btn-sm fb-btn-refresh" id="modbus-refresh-devices-btn"
+                                data-action="_refreshModbusDeviceList">&#x21bb; 刷新列表</button>
                             <div id="add-device-menu" class="add-device-menu fb-hidden">
                                 <div class="add-device-menu-item" data-action="_addSensorDevice" data-i18n="modbus-add-sensor">采集设备</div>
                                 <div class="add-device-menu-item" data-action="_addControlDevice" data-i18n="modbus-add-control">控制设备</div>
@@ -649,7 +651,7 @@
                             <div class="fb-grid-2">
                                 <div>
                                     <label data-i18n="modbus-master-label">名称</label>
-                                    <input id="task-edit-label" type="text" maxlength="15" class="pure-input-1" placeholder="">
+                                    <input id="task-edit-name" type="text" maxlength="15" class="pure-input-1" placeholder="">
                                 </div>
                                 <div>
                                     <label data-i18n="modbus-task-type">类型</label>

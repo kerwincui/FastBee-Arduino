@@ -212,6 +212,8 @@ void ProtocolManager::handleMessage(ProtocolType type, const String& topic, cons
 void ProtocolManager::setTxCallback(CounterCallback cb) { txCallback = cb; }
 void ProtocolManager::setRxCallback(CounterCallback cb) { rxCallback = cb; }
 void ProtocolManager::setSSECallback(SSEBroadcastCallback callback) { sseCallback = callback; }
+void ProtocolManager::setMQTTStatusSSECallback(SimpleSSECallback callback) { mqttStatusSSECallback = callback; }
+void ProtocolManager::setModbusStatusSSECallback(SimpleSSECallback callback) { modbusStatusSSECallback = callback; }
 
 bool ProtocolManager::restartMQTT() {
     LOG_INFO("Protocol Manager: Restarting MQTT...");
@@ -227,6 +229,13 @@ bool ProtocolManager::restartMQTT() {
     mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
         handleMessage(ProtocolType::MQTT, topic, message);
     });
+    
+    // 设置状态变化回调（SSE 推送用）
+    if (mqttStatusSSECallback) {
+        mqttClient->setStatusChangeCallback([this](const String& data) {
+            if (mqttStatusSSECallback) mqttStatusSSECallback(data);
+        });
+    }
     
     if (!mqttClient->begin()) {
         LOG_WARNING("Protocol Manager: MQTT restart begin() failed");
@@ -257,6 +266,13 @@ bool ProtocolManager::restartMQTTDeferred() {
     mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
         handleMessage(ProtocolType::MQTT, topic, message);
     });
+    
+    // 设置状态变化回调（SSE 推送用）
+    if (mqttStatusSSECallback) {
+        mqttClient->setStatusChangeCallback([this](const String& data) {
+            if (mqttStatusSSECallback) mqttStatusSSECallback(data);
+        });
+    }
     
     if (!mqttClient->begin()) {
         LOG_WARNING("Protocol Manager: MQTT deferred restart begin() failed");
@@ -371,9 +387,9 @@ bool ProtocolManager::restartModbus() {
                 task.quantity     = t["quantity"] | (uint16_t)10;
                 task.pollInterval = t["pollInterval"] | (uint16_t)Protocols::MODBUS_DEFAULT_POLL_INTERVAL;
                 task.enabled      = t["enabled"] | true;
-                const char* lbl   = t["label"] | "";
-                strncpy(task.label, lbl, sizeof(task.label) - 1);
-                task.label[sizeof(task.label) - 1] = '\0';
+                // 向后兼容：优先读取 name，回退到 label
+                const char* taskName = t["name"] | (t["label"] | "");
+                strlcpy(task.name, taskName, sizeof(task.name));
                 
                 // 解析寄存器映射
                 task.mappingCount = 0;
@@ -460,6 +476,13 @@ bool ProtocolManager::restartModbus() {
             return this->executeModbusRead(params);
         }
     );
+    
+    // 设置状态变化回调（SSE 推送用）
+    if (modbusStatusSSECallback) {
+        modbusHandler->setStatusChangeCallback([this](const String& data) {
+            if (modbusStatusSSECallback) modbusStatusSSECallback(data);
+        });
+    }
     
     bool ok = modbusHandler->begin(modbusConfig);
     if (ok) {
@@ -683,7 +706,14 @@ bool ProtocolManager::initMQTT(void* config) {
     mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
         handleMessage(ProtocolType::MQTT, topic, message);
     });
-    
+
+    // 设置状态变化回调（SSE 推送用）
+    if (mqttStatusSSECallback) {
+        mqttClient->setStatusChangeCallback([this](const String& data) {
+            if (mqttStatusSSECallback) mqttStatusSSECallback(data);
+        });
+    }
+
     return mqttClient->begin();
 }
 
@@ -712,7 +742,14 @@ bool ProtocolManager::initModbus(void* config) {
         // 5. 保持全局消息路由
         handleMessage(ProtocolType::MODBUS, String(address), data);
     });
-    
+
+    // 设置状态变化回调（SSE 推送用）
+    if (modbusStatusSSECallback) {
+        modbusHandler->setStatusChangeCallback([this](const String& data) {
+            if (modbusStatusSSECallback) modbusStatusSSECallback(data);
+        });
+    }
+
     return modbusHandler->begin(*modbusConfig);
 }
 

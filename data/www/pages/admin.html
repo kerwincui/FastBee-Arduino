@@ -74,10 +74,13 @@
     <div class="card">
         <div class="card-header u-header-between">
             <h2 class="card-title" id="roles-title">角色管理</h2>
-            <button class="fb-btn fb-btn-primary" id="add-role-btn"
-                data-i18n="add-role-btn-text">
-                新增角色
-            </button>
+            <div class="u-toolbar-sm">
+                <button class="fb-btn fb-btn-sm fb-btn-refresh" id="roles-refresh-btn">&#x21bb; 刷新</button>
+                <button class="fb-btn fb-btn-primary" id="add-role-btn"
+                    data-i18n="add-role-btn-text">
+                    新增角色
+                </button>
+            </div>
         </div>
         <div class="card-body">
             <p class="u-text-secondary u-mb-20" data-i18n="roles-admin-hint">
@@ -127,6 +130,9 @@
             <div id="device-log-container" class="logs-page-content">
                 <div class="logs-loading" data-i18n="log-loading">正在加载日志...</div>
             </div>
+        </div>
+    </div>
+</div>
         </div>
     </div>
 </div>

@@ -94,6 +94,15 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
 
     JsonDocument doc;
 
+    // 增量更新：先加载现有配置
+    if (LittleFS.exists(PROTOCOL_CONFIG_PATH)) {
+        File f = LittleFS.open(PROTOCOL_CONFIG_PATH, "r");
+        if (f) {
+            deserializeJson(doc, f);
+            f.close();
+        }
+    }
+
     #define GP(key, def) ctx->getParamValue(request, key, def)
     #define GPI(key, def) GP(key, def).toInt()
 
@@ -106,10 +115,13 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["modbusRtu"]["transferType"] = GPI("modbusRtu_transferType", "0");
     doc["modbusRtu"]["workMode"] = GPI("modbusRtu_workMode", "1");
 
-    // Modbus RTU Master 配置（通信参数已迁移至 PeriphExec POLL_TRIGGER，此处保留硬编码默认值）
-    doc["modbusRtu"]["master"]["responseTimeout"] = 1000;
-    doc["modbusRtu"]["master"]["maxRetries"] = 2;
-    doc["modbusRtu"]["master"]["interPollDelay"] = 100;
+    // Modbus RTU Master 配置（仅在配置中不存在时写入默认值，不覆盖已有配置）
+    if (!doc["modbusRtu"]["master"].containsKey("responseTimeout"))
+        doc["modbusRtu"]["master"]["responseTimeout"] = 1000;
+    if (!doc["modbusRtu"]["master"].containsKey("maxRetries"))
+        doc["modbusRtu"]["master"]["maxRetries"] = 2;
+    if (!doc["modbusRtu"]["master"].containsKey("interPollDelay"))
+        doc["modbusRtu"]["master"]["interPollDelay"] = 100;
 
     // Modbus RTU Master 轮询任务
     String masterTasksJson = GP("modbusRtu_master_tasks", "[]");
@@ -135,7 +147,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                                                                   PROTOCOL_MIN_MODBUS_POLL_INTERVAL_SEC,
                                                                   PROTOCOL_MAX_MODBUS_POLL_INTERVAL_SEC);
                 taskObj["enabled"] = v["enabled"] | true;
-                taskObj["label"] = v["label"] | "";
+                taskObj["name"] = v["name"] | "";
                 
                 // 寄存器映射
                 if (v.containsKey("mappings") && v["mappings"].is<JsonArray>()) {

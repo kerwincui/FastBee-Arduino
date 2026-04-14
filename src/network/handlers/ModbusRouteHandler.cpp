@@ -386,7 +386,7 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
                 t["quantity"] = task.quantity;
                 t["pollInterval"] = task.pollInterval;
                 t["enabled"] = task.enabled;
-                t["label"] = String(task.label);
+                t["name"] = String(task.name);
                 t["status"] = getTaskHealthStatus(task, cache);
                 t["cacheAgeSec"] = cacheAgeSec;
                 t["staleAfterSec"] = getTaskStaleThresholdSec(task);

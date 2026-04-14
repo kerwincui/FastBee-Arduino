@@ -106,6 +106,22 @@ void WebConfigManager::setProtocolManager(ProtocolManager* protoMgr) {
                     }
                 }
             );
+            // 注册 MQTT 状态 SSE 回调
+            protoMgr->setMQTTStatusSSECallback(
+                [ssePtr](const String& data) {
+                    if (ssePtr && ssePtr->clientCount() > 0) {
+                        ssePtr->broadcastMqttStatus(data);
+                    }
+                }
+            );
+            // 注册 Modbus 状态 SSE 回调
+            protoMgr->setModbusStatusSSECallback(
+                [ssePtr](const String& data) {
+                    if (ssePtr && ssePtr->clientCount() > 0) {
+                        ssePtr->broadcastModbusStatus(data);
+                    }
+                }
+            );
         }
     }
 }
@@ -177,6 +193,22 @@ void WebConfigManager::setupAllRoutes() {
             [ssePtr](uint8_t address, const String& data) {
                 if (ssePtr && ssePtr->clientCount() > 0) {
                     ssePtr->broadcastModbusData(data);
+                }
+            }
+        );
+        // 注册 MQTT 状态 SSE 回调
+        ctx->protocolManager->setMQTTStatusSSECallback(
+            [ssePtr](const String& data) {
+                if (ssePtr && ssePtr->clientCount() > 0) {
+                    ssePtr->broadcastMqttStatus(data);
+                }
+            }
+        );
+        // 注册 Modbus 状态 SSE 回调
+        ctx->protocolManager->setModbusStatusSSECallback(
+            [ssePtr](const String& data) {
+                if (ssePtr && ssePtr->clientCount() > 0) {
+                    ssePtr->broadcastModbusStatus(data);
                 }
             }
         );

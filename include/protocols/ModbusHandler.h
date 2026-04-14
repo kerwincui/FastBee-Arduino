@@ -67,7 +67,7 @@ struct PollTask {
     uint16_t quantity;       // 寄存器/线圈数量
     uint16_t pollInterval;   // 此任务轮询间隔（秒）
     bool     enabled;        // 是否启用
-    char     label[Protocols::MODBUS_POLL_LABEL_MAX_LEN]; // 可读标签
+    char     name[Protocols::MODBUS_POLL_LABEL_MAX_LEN]; // 可读标签
     
     // 寄存器映射配置（JSON模式使用）
     RegisterMapping mappings[Protocols::MODBUS_MAX_MAPPINGS_PER_TASK];
@@ -77,7 +77,7 @@ struct PollTask {
         : slaveAddress(1), functionCode(0x03), startAddress(0),
           quantity(10), pollInterval(Protocols::MODBUS_DEFAULT_POLL_INTERVAL),
           enabled(true), mappingCount(0) {
-        memset(label, 0, sizeof(label));
+        memset(name, 0, sizeof(name));
         memset(mappings, 0, sizeof(mappings));
     }
 };
@@ -202,6 +202,10 @@ public:
     void setDataCallback(std::function<void(uint8_t, const String&)> callback);
     void setRegisterReadCallback(std::function<uint16_t(uint16_t)> callback);
     void setRegisterWriteCallback(std::function<void(uint16_t, uint16_t)> callback);
+
+    // 状态变化回调（SSE 推送用）
+    typedef std::function<void(const String&)> StatusChangeCallback;
+    void setStatusChangeCallback(StatusChangeCallback cb);
     
     // 配置管理
     bool loadConfigFromFile(const String& configPath = "");
@@ -295,6 +299,11 @@ private:
     std::function<void(uint8_t, const String&)> dataCallback;
     std::function<uint16_t(uint16_t)> registerReadCallback;
     std::function<void(uint16_t, uint16_t)> registerWriteCallback;
+    
+    // 状态变化回调（SSE 推送用）
+    StatusChangeCallback _statusChangeCallback;
+    uint32_t _lastStatusHash;  // 用于检测状态变化
+    void _notifyStatusChange();  // 内部辅助方法
     
     // 内部方法
     bool initializeSerial();

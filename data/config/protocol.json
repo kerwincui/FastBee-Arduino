@@ -8,8 +8,8 @@
     "transferType": 0,
     "workMode": 1,
     "master": {
-      "responseTimeout": 500,
-      "maxRetries": 1,
+      "responseTimeout": 1000,
+      "maxRetries": 2,
       "interPollDelay": 100,
       "tasks": [
         {
@@ -17,23 +17,23 @@
           "functionCode": 4,
           "startAddress": 0,
           "quantity": 2,
-          "pollInterval": 300,
+          "pollInterval": 30,
           "enabled": true,
-          "label": "温湿度",
+          "name": "温湿度",
           "mappings": [
             {
               "regOffset": 0,
               "dataType": 1,
               "scaleFactor": 0.1,
               "decimalPlaces": 1,
-              "sensorId": "humidity"
+              "sensorId": "temperature"
             },
             {
               "regOffset": 1,
               "dataType": 1,
               "scaleFactor": 0.1,
               "decimalPlaces": 1,
-              "sensorId": "temperature"
+              "sensorId": "humidity"
             }
           ]
         },
@@ -44,7 +44,7 @@
           "quantity": 2,
           "pollInterval": 300,
           "enabled": true,
-          "label": "PM25-10",
+          "name": "PM25-10",
           "mappings": [
             {
               "regOffset": 0,
@@ -75,6 +75,7 @@
           "pwmRegBase": 0,
           "pwmResolution": 8,
           "pidDecimals": 1,
+          "enabled": true,
           "pidAddrs": [
             0,
             1,
@@ -95,6 +96,7 @@
           "pwmRegBase": 0,
           "pwmResolution": 8,
           "pidDecimals": 1,
+          "enabled": true,
           "pidAddrs": [
             0,
             1,
@@ -115,6 +117,7 @@
           "pwmRegBase": 0,
           "pwmResolution": 8,
           "pidDecimals": 1,
+          "enabled": true,
           "pidAddrs": [
             0,
             1,
@@ -135,6 +138,28 @@
           "pwmRegBase": 0,
           "pwmResolution": 8,
           "pidDecimals": 1,
+          "enabled": true,
+          "pidAddrs": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "name": "网络继电器",
+          "deviceType": "relay",
+          "slaveAddress": 12,
+          "channelCount": 8,
+          "coilBase": 8,
+          "ncMode": false,
+          "controlProtocol": 1,
+          "pwmRegBase": 0,
+          "pwmResolution": 8,
+          "pidDecimals": 1,
+          "enabled": true,
           "pidAddrs": [
             0,
             1,

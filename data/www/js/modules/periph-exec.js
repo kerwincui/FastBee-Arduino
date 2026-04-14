@@ -51,6 +51,9 @@
                     else if (action === 'delete') this.deletePeriphExecRule(ruleId);
                 });
             }
+            // 刷新按钮
+            var peRefreshBtn = document.getElementById('periph-exec-refresh-btn');
+            if (peRefreshBtn) peRefreshBtn.addEventListener('click', () => this._refreshPeriphExecList());
             this._peEventsBound = true;
         },
 
@@ -390,7 +393,7 @@
                 rtu.master.tasks.forEach(task => {
                     if (!task.enabled || !task.mappings) return;
                     task.mappings.forEach(m => {
-                        if (m.sensorId) sources.push({ id: m.sensorId, label: (task.label || 'Modbus') + '/' + m.sensorId });
+                        if (m.sensorId) sources.push({ id: m.sensorId, label: (task.name || task.label || 'Modbus') + '/' + m.sensorId });
                     });
                 });
             }
@@ -467,7 +470,7 @@
             if (tasks.length > 0) {
                 html += '<optgroup label="' + (i18n.t('modbus-type-sensor') || '采集设备') + '">';
                 for (var i = 0; i < tasks.length; i++) {
-                    var t = tasks[i]; var label = t.label || ('Slave ' + (t.slaveAddress || 1));
+                    var t = tasks[i]; var label = t.name || t.label || ('Slave ' + (t.slaveAddress || 1));
                     var desc = (fcNames[t.functionCode] || 'FC03') + ' @' + (t.startAddress || 0) + ' x' + (t.quantity || 10);
                     var val = 'sensor-' + i;
                     html += '<option value="' + val + '"' + (val === selDevice ? ' selected' : '') + '>' + escapeHtml(label) + ' (' + desc + ')</option>';
@@ -1332,6 +1335,19 @@
                         Notification.error(i18n.t('periph-exec-run-fail'), i18n.t('periph-exec-title'));
                     }
                 });
+        },
+
+        _refreshPeriphExecList() {
+            var btn = document.getElementById('periph-exec-refresh-btn');
+            if (btn && btn.disabled) return;
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="fb-spin">&#x21bb;</span> 加载中...'; }
+            if (typeof window.apiInvalidateCache === 'function') {
+                window.apiInvalidateCache('/api/periph-exec');
+            }
+            this.loadPeriphExecPage();
+            setTimeout(function() {
+                if (btn) { btn.disabled = false; btn.innerHTML = '&#x21bb; 刷新'; }
+            }, 2000);
         },
 
         loadPeriphExecPage() {

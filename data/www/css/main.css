@@ -464,11 +464,6 @@ a:hover { text-decoration: underline; }
               4px 0 18px rgba(22, 119, 255, 0.10);
 }
 
-.card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px 0 rgba(0, 0, 0, 0.08), 0 3px 6px -4px rgba(0, 0, 0, 0.12);
-}
-
 [data-theme="dark"] .card:hover {
   box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.4);
 }
@@ -777,6 +772,13 @@ a:hover { text-decoration: underline; }
   padding: 2px var(--space-2); 
   font-size: 11px; 
 }
+
+/* 列表刷新按钮 */
+.fb-btn-refresh { background: var(--bg-card); color: var(--text-secondary); border-color: var(--border); }
+.fb-btn-refresh:hover { background: var(--bg-hover); color: var(--primary); border-color: var(--primary); }
+.fb-btn-refresh:disabled { opacity: 0.5; cursor: not-allowed; }
+.fb-btn-refresh .fb-spin { display: inline-block; animation: fb-spin 1s linear infinite; }
+@keyframes fb-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
 /* 卡片 */
 .fb-card { 
@@ -1607,6 +1609,7 @@ select:hover, .form-select:hover {
 .mqtt-status-online { background: var(--success-light); color: var(--success); }
 .mqtt-status-offline { background: var(--danger-light); color: var(--danger); }
 .mqtt-status-connecting { background: var(--warning-light); color: var(--warning); }
+.mqtt-status-detecting { background: var(--warning-light); color: var(--warning); }
 
 /* Periph Exec Dynamic Config Items */
 .periph-exec-config-item { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--rounded); padding: var(--space-4) var(--space-3) var(--space-3); margin-bottom: var(--space-2); position: relative; }
@@ -2707,7 +2710,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-pwm-ch { font-size: 12px; color: var(--text-secondary); font-weight: 600; min-width: 34px; flex-shrink: 0; }
 .dc-pwm-slider { flex: 1; min-width: 50px; accent-color: var(--primary); height: 6px; cursor: pointer; }
 .dc-pwm-pct { font-size: 12px; color: var(--text-primary); font-weight: 600; min-width: 36px; text-align: right; flex-shrink: 0; }
-.dc-pwm-num { width: 52px!important; text-align: center; font-size: 11px; padding: 3px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-card); color: var(--text-primary); flex-shrink: 0; }
+.dc-pwm-num { width: 72px!important; text-align: center; font-size: 11px; padding: 3px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-card); color: var(--text-primary); flex-shrink: 0; }
 
 /* PID grid */
 .dc-pid-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }

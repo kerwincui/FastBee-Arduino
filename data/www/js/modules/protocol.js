@@ -12,7 +12,6 @@
         _coilStates: [],
         _coilAutoRefreshTimer: null,
         _modbusDevices: [],
-        _activeDeviceId: null,
         _deviceCoilCache: {},
         _devicePwmCache: {},
         _pwmStates: [],
@@ -32,6 +31,15 @@
         // ============ 事件绑定 ============
         setupProtocolEvents() {
             if (this._protocolEventsBound) return;
+
+            var allDevicesBody = document.getElementById('all-devices-body');
+            var modbusDevicesBody = document.getElementById('modbus-devices-body');
+
+            // 如果关键表格元素尚未加载到 DOM，延迟绑定
+            if (!allDevicesBody && !modbusDevicesBody) {
+                return; // 不设置 _protocolEventsBound，下次调用时重试
+            }
+
             var publishTopics = document.getElementById('mqtt-publish-topics');
             if (publishTopics) {
                 publishTopics.addEventListener('click', (event) => this._handlePublishTopicClick(event));
@@ -44,11 +52,9 @@
             if (mappingTableBody) {
                 mappingTableBody.addEventListener('click', (event) => this._handleMappingTableClick(event));
             }
-            var allDevicesBody = document.getElementById('all-devices-body');
             if (allDevicesBody) {
                 allDevicesBody.addEventListener('click', (event) => this._handleProtocolActionClick(event));
             }
-            var modbusDevicesBody = document.getElementById('modbus-devices-body');
             if (modbusDevicesBody) {
                 modbusDevicesBody.addEventListener('click', (event) => this._handleProtocolActionClick(event));
             }
@@ -149,7 +155,7 @@
         },
 
         _renderAllDeviceSensorRow(task, index, fcNames, typeLabels) {
-            var label = task.label || ('Slave ' + (task.slaveAddress || 1));
+            var label = task.name || task.label || ('Slave ' + (task.slaveAddress || 1));
             var info = (fcNames[task.functionCode] || 'FC03') + ' @' + (task.startAddress || 0) + ' x' + (task.quantity || 10);
             var mappingCount = (task.mappings && task.mappings.length) || 0;
             if (mappingCount > 0) info += ' [' + mappingCount + (i18n.t('modbus-dev-mappings-suffix') || '映射') + ']';
@@ -481,12 +487,19 @@
         // ============ 协议配置 ============
 
         loadProtocolConfig(tabId) {
+            // 确保页面 DOM 加载后绑定事件
+            if (!this._protocolEventsBound) {
+                this.setupProtocolEvents();
+            }
             if (tabId !== 'modbus-rtu') {
                 this._stopMasterStatusRefresh();
                 if (this._coilAutoRefreshTimer) {
                     clearInterval(this._coilAutoRefreshTimer);
                     this._coilAutoRefreshTimer = null;
                 }
+            }
+            if (tabId !== 'mqtt' && typeof this._stopMqttStatusPolling === 'function') {
+                this._stopMqttStatusPolling();
             }
             if (tabId === 'modbus-rtu') {
                 this._updateDelayChannelSelect();
@@ -519,11 +532,11 @@
                 } else {
                     this._masterTasks = [];
                 }
-                this._renderAllDevices();
+                // 先加载设备列表（内部会调用 _renderAllDevices），再启动状态刷新
+                this._loadModbusDevices();
                 this.refreshMasterStatus();
                 this._startMasterStatusRefresh();
                 this._updateDelayChannelSelect();
-                this._loadModbusDevices();
             }
             if (tabId === 'modbus-tcp' && config.modbusTcp) {
                 const tcp = config.modbusTcp;
@@ -678,14 +691,10 @@
             data.tcp_heartbeatMsg = document.getElementById('tcp-heartbeat-msg')?.value || '\\n';
             data.tcp_idleTimeout = document.getElementById('tcp-idle-timeout')?.value || '120';
             const protocolName = this._getProtocolName(formId);
-            apiPost('/api/protocol/config', data)
+            apiPost('/api/protocol/config', data, 30000)
                 .then(res => {
                     if (res && res.success) {
                         this._protocolConfig = null;
-                        // 清除 device-control 模块的设备缓存，确保切换页面时重新加载
-                        if (typeof AppState !== 'undefined' && AppState._modbusDevices) {
-                            AppState._modbusDevices = [];
-                        }
                         if (res.data && typeof res.data.mqttReconnected !== 'undefined') {
                             if (res.data.mqttReconnected && res.data.mqttDeferred) {
                                 Notification.success(i18n.t('mqtt-reconnect-ok'), i18n.t('protocol-config-title'));
@@ -716,14 +725,32 @@
                             AppState.showElement(ok);
                             setTimeout(() => { AppState.hideElement(ok); }, 3000);
                         }
-                        this._startMqttStatusPolling();
+                        if (typeof window.apiInvalidateCache === 'function') {
+                            window.apiInvalidateCache('/api/protocol/config');
+                        }
+                        if (this.currentPage === 'protocol') {
+                            var mqttTab = document.getElementById('mqtt-tab');
+                            if (mqttTab && mqttTab.classList.contains('active')) {
+                                this._startMqttStatusPolling();
+                            }
+                        }
                     } else {
                         Notification.error(res?.message || i18n.t('protocol-save-fail'), i18n.t('protocol-title'));
                     }
                 })
                 .catch(err => {
                     console.error('saveProtocolConfig error:', err);
-                    Notification.error(i18n.t('protocol-save-fail'), i18n.t('protocol-title'));
+                    if (err && err.name === 'AbortError') {
+                        Notification.error(i18n.t('protocol-save-timeout') || '保存超时，设备可能正忙，请稍后重试', i18n.t('protocol-title'));
+                    } else if (err && err._pageAborted) {
+                        // 页面切换导致取消，静默忽略
+                    } else if (err instanceof TypeError && /fetch/i.test(err.message)) {
+                        Notification.error('设备连接失败，请检查网络后重试', i18n.t('protocol-title'));
+                    } else if (err && err.status === 504) {
+                        Notification.error('设备响应超时(504)，请稍后重试', i18n.t('protocol-title'));
+                    } else {
+                        Notification.error(i18n.t('protocol-save-fail'), i18n.t('protocol-title'));
+                    }
                 });
         },
 
@@ -834,14 +861,14 @@
             if (idx >= 0 && this._masterTasks && this._masterTasks[idx]) {
                 task = this._masterTasks[idx];
             } else {
-                task = { slaveAddress: 1, functionCode: 3, startAddress: 0, quantity: 10, enabled: true, label: '', mappings: [] };
+                task = { slaveAddress: 1, functionCode: 3, startAddress: 0, quantity: 10, enabled: true, name: '', mappings: [] };
             }
             var f = function(id) { return document.getElementById(id); };
             f('task-edit-slave-addr').value = task.slaveAddress || 1;
             f('task-edit-fc').value = task.functionCode || 3;
             f('task-edit-start-addr').value = task.startAddress || 0;
             f('task-edit-quantity').value = task.quantity || 10;
-            f('task-edit-label').value = task.label || '';
+            f('task-edit-name').value = task.name || task.label || '';
             f('task-edit-type').value = task.deviceType || 'holding';
             f('task-edit-enabled').checked = task.enabled !== false;
             var titleEl = modal.querySelector('.modal-header h3');
@@ -868,7 +895,7 @@
                 functionCode: parseInt(f('task-edit-fc').value) || 3,
                 startAddress: parseInt(f('task-edit-start-addr').value) || 0,
                 quantity: parseInt(f('task-edit-quantity').value) || 10,
-                label: f('task-edit-label').value || '',
+                name: f('task-edit-name').value || '',
                 deviceType: f('task-edit-type').value || 'holding',
                 enabled: f('task-edit-enabled').checked
             };
@@ -1082,17 +1109,7 @@
                         this._renderMasterDataGrid([]);
                         return;
                     }
-                    const d = res.data;
-                    this._setText('master-stat-total', d.totalPolls ?? 0);
-                    this._setText('master-stat-success', d.successPolls ?? 0);
-                    this._setText('master-stat-failed', d.failedPolls ?? 0);
-                    this._setText('master-stat-timeout', d.timeoutPolls ?? 0);
-                    var statusRaw = d.status || i18n.t('modbus-master-status-stopped');
-                    var commaIdx = statusRaw.indexOf(',');
-                    var statusText = commaIdx > 0 ? statusRaw.substring(0, commaIdx).trim() : statusRaw;
-                    this._setText('master-running-status', statusText);
-                    this._renderMasterHealth(d.health || null);
-                    if (d.tasks) this._renderMasterDataGrid(d.tasks);
+                    this._updateModbusStatusUI(res.data);
                 })
                 .catch(() => {
                     this._setText('master-running-status', i18n.t('modbus-master-status-fetch-error'));
@@ -1101,15 +1118,48 @@
                 });
         },
 
+        _updateModbusStatusUI: function(data) {
+            const d = data || {};
+            this._setText('master-stat-total', d.totalPolls ?? 0);
+            this._setText('master-stat-success', d.successPolls ?? 0);
+            this._setText('master-stat-failed', d.failedPolls ?? 0);
+            this._setText('master-stat-timeout', d.timeoutPolls ?? 0);
+            var statusRaw = d.status || i18n.t('modbus-master-status-stopped');
+            var commaIdx = statusRaw.indexOf(',');
+            var statusText = commaIdx > 0 ? statusRaw.substring(0, commaIdx).trim() : statusRaw;
+            this._setText('master-running-status', statusText);
+            this._renderMasterHealth(d.health || null);
+            if (d.tasks) this._renderMasterDataGrid(d.tasks);
+        },
+
         _startMasterStatusRefresh() {
             this._stopMasterStatusRefresh();
-            this._masterStatusTimer = setInterval(() => { this.refreshMasterStatus(); }, 5000);
+
+            // 使用全局 SSE 监听 modbus-status 事件
+            AppState.connectSSE();
+            var self = this;
+            this._modbusStatusSSEHandler = function(e) {
+                try {
+                    var data = JSON.parse(e.data);
+                    self._updateModbusStatusUI(data);
+                } catch (err) {
+                    console.warn('[SSE] Modbus 状态解析失败:', err);
+                }
+            };
+            AppState.onSSEEvent('modbus-status', this._modbusStatusSSEHandler);
+
+            // 初始加载一次
+            this.refreshMasterStatus();
         },
 
         _stopMasterStatusRefresh() {
             if (this._masterStatusTimer) {
                 clearInterval(this._masterStatusTimer);
                 this._masterStatusTimer = null;
+            }
+            if (this._modbusStatusSSEHandler) {
+                AppState.offSSEEvent('modbus-status', this._modbusStatusSSEHandler);
+                this._modbusStatusSSEHandler = null;
             }
         },
 
@@ -1157,7 +1207,7 @@
                         );
                     }
                 } else {
-                    html += this._buildMasterDataCard(t.label || ('Task ' + (i + 1)), '--', t);
+                    html += this._buildMasterDataCard(t.name || t.label || ('Task ' + (i + 1)), '--', t);
                 }
             }
             grid.innerHTML = html;
@@ -1174,7 +1224,10 @@
             try {
                 var rtu = this._protocolConfig && this._protocolConfig.modbusRtu;
                 if (rtu && rtu.master && rtu.master.devices && rtu.master.devices.length > 0) {
-                    serverDevices = rtu.master.devices;
+                    // 使用 slice() 创建数组副本，确保是真正的数组
+                    serverDevices = Array.isArray(rtu.master.devices) 
+                        ? rtu.master.devices.slice() 
+                        : Object.keys(rtu.master.devices).map(function(k) { return rtu.master.devices[k]; });
                 }
             } catch(e) {}
 
@@ -1215,6 +1268,42 @@
             }
             this._activeDeviceIdx = -1;
             this._renderAllDevices();
+        },
+
+        /** 刷新 Modbus 子设备列表（防抖 + 加载反馈） */
+        _refreshModbusDeviceList() {
+            var btn = document.getElementById('modbus-refresh-devices-btn');
+            if (btn && btn.disabled) return;
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<span class="fb-spin">&#x21bb;</span> 加载中...';
+            }
+            this._protocolConfig = null;
+            if (typeof window.apiInvalidateCache === 'function') {
+                window.apiInvalidateCache('/api/protocol/config');
+            }
+            var self = this;
+            apiGet('/api/protocol/config')
+                .then(function(res) {
+                    if (res && res.success) {
+                        self._protocolConfig = res.data || {};
+                        self._fillProtocolForm('modbus-rtu', self._protocolConfig);
+                        Notification.success('设备列表已刷新');
+                    } else {
+                        Notification.error('获取配置失败');
+                    }
+                })
+                .catch(function(err) {
+                    if (!(err && err._pageAborted)) {
+                        Notification.error('刷新失败，请检查网络');
+                    }
+                })
+                .finally(function() {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = '&#x21bb; 刷新列表';
+                    }
+                });
         },
 
         _renderDeviceTable() {
@@ -1335,7 +1424,10 @@
             var idx = this._editingDeviceIdx;
             var isNew = (idx < 0);
             if (isNew) {
-                if (!this._modbusDevices) this._modbusDevices = [];
+                // 确保 _modbusDevices 是真正的数组
+                if (!this._modbusDevices || !Array.isArray(this._modbusDevices)) {
+                    this._modbusDevices = [];
+                }
                 if (this._modbusDevices.length >= 8) {
                     Notification.warning(i18n.t('modbus-device-max-reached') || '最多8个子设备');
                     return;
@@ -1344,6 +1436,11 @@
                 idx = this._modbusDevices.length - 1;
             }
             var dev = this._modbusDevices[idx];
+            // 防御性检查：确保 dev 对象存在
+            if (!dev) {
+                console.error('_saveEditModal: dev is undefined, idx=', idx, 'devices=', this._modbusDevices);
+                return;
+            }
             dev.name = document.getElementById('mdev-edit-name').value || 'Device';
             dev.deviceType = document.getElementById('mdev-edit-type').value || 'relay';
             dev.slaveAddress = parseInt(document.getElementById('mdev-edit-addr').value) || 1;
@@ -1362,14 +1459,17 @@
             dev.pidDecimals = parseInt(document.getElementById('mdev-edit-pid-decimals').value) || 1;
             this._renderAllDevices();
             this._closeEditModal();
-            // 自动保存整个协议配置到后端
-            this.saveProtocolConfig('modbus-rtu-form');
+            // 不再自动保存，用户需点击底部"保存配置"按钮手动保存
         },
 
         // ========== 控制弹窗 ==========
 
         _openCtrlModal(idx) {
-            if (!this._modbusDevices || !this._modbusDevices[idx]) return;
+            console.log('[protocol] _openCtrlModal called, idx:', idx);
+            if (!this._modbusDevices || !this._modbusDevices[idx]) {
+                console.warn('[protocol] Device not found at index', idx);
+                return;
+            }
             if (this._activeDeviceIdx >= 0) {
                 var cacheKey = 'dev_' + this._activeDeviceIdx;
                 if (this._coilStates.length > 0) this._deviceCoilCache[cacheKey] = this._coilStates.slice();
@@ -1400,7 +1500,7 @@
                     this._renderPwmGrid();
                 } else {
                     this._pwmStates = [];
-                    this._renderPwmGrid();
+                    this._renderPwmGrid(true); // 显示加载中
                     this.refreshPwmStatus();
                 }
             } else if (type === 'pid') {
@@ -1409,7 +1509,7 @@
                     this._renderPidGrid();
                 } else {
                     this._pidValues = {};
-                    this._renderPidGrid();
+                    this._renderPidGrid(true); // 显示加载中
                     this.refreshPidStatus();
                 }
             } else {
@@ -1423,7 +1523,12 @@
                 }
             }
             var modal = document.getElementById('modbus-device-ctrl-modal');
-            if (modal) AppState.showModal(modal);
+            if (!modal) {
+                console.error('[protocol] Modal element "modbus-device-ctrl-modal" not found in DOM');
+                return;
+            }
+            console.log('[protocol] Showing control modal for device type:', type);
+            AppState.showModal(modal);
         },
         
         _closeCtrlModal() {
@@ -1485,11 +1590,22 @@
             };
         },
 
-        _renderPwmGrid() {
+        _renderPwmGrid(loading) {
             var grid = document.getElementById('pwm-channel-grid');
             if (!grid) return;
             var p = this._getPwmParams();
             var html = '';
+            
+            // 如果处于加载状态，显示加载提示
+            if (loading) {
+                html = '<div class="pwm-loading-placeholder" style="text-align:center;padding:30px;color:#999;">'
+                    + '<div style="font-size:14px;margin-bottom:10px;">加载中...</div>'
+                    + '<div style="font-size:12px;">正在获取 PWM 通道状态</div>'
+                    + '</div>';
+                grid.innerHTML = html;
+                return;
+            }
+            
             for (var i = 0; i < p.channelCount; i++) {
                 var val = i < this._pwmStates.length ? this._pwmStates[i] : 0;
                 var pct = p.maxValue > 0 ? Math.round(val / p.maxValue * 100) : 0;
@@ -1517,13 +1633,19 @@
                 });
                 if (res && res.success && res.data && res.data.values) {
                     this._pwmStates = res.data.values;
-                    if (this._activeDeviceId) {
-                        this._devicePwmCache[this._activeDeviceId] = this._pwmStates.slice();
-                    }
+                    var cacheKey = 'dev_' + this._activeDeviceIdx;
+                    this._devicePwmCache[cacheKey] = this._pwmStates.slice();
                     this._renderPwmGrid();
                     this._appendDebugLog(res.debug, 'ReadRegs FC03');
                 }
-            } catch (e) { /* 静默 */ }
+                } catch (e) {
+                // 设备未连接或读取失败，显示默认界面（值为0）
+                if (this._pwmStates.length === 0) {
+                    var p2 = this._getPwmParams();
+                    this._pwmStates = new Array(p2.channelCount).fill(0);
+                }
+                this._renderPwmGrid();
+            }
         },
 
         async setPwmChannel(ch, value) {
@@ -1604,9 +1726,20 @@
             };
         },
 
-        _renderPidGrid() {
+        _renderPidGrid(loading) {
             var container = document.getElementById('pid-data-grid');
             if (!container) return;
+                    
+            // 如果处于加载状态，显示加载提示
+            if (loading) {
+                var loadingHtml = '<div class="pid-loading-placeholder" style="text-align:center;padding:30px;color:#999;">'
+                    + '<div style="font-size:14px;margin-bottom:10px;">加载中...</div>'
+                    + '<div style="font-size:12px;">正在获取 PID 数据</div>'
+                    + '</div>';
+                container.innerHTML = loadingHtml;
+                return;
+            }
+                    
             var p = this._getPidParams();
             var v = this._pidValues || {};
             var sf = p.scaleFactor;
@@ -1670,13 +1803,20 @@
                         out: vals[p.outAddr - minAddr], p: vals[p.pAddr - minAddr],
                         i: vals[p.iAddr - minAddr], d: vals[p.dAddr - minAddr]
                     };
-                    self._devicePidCache[self._activeDeviceId] = JSON.parse(JSON.stringify(self._pidValues));
+                    var cacheKey = 'dev_' + self._activeDeviceIdx;
+                    self._devicePidCache[cacheKey] = JSON.parse(JSON.stringify(self._pidValues));
                     self._renderPidGrid();
                 }
                 if (res && res.debug) {
                     self._appendDebugLog(res.debug.tx ? { tx: res.debug.tx, rx: res.debug.rx } : null, 'PID Read');
                 }
-            }).catch(function() {});
+            }).catch(function() {
+                // 设备未连接或读取失败，显示默认界面（值为0）
+                if (!self._pidValues || Object.keys(self._pidValues).length === 0) {
+                    self._pidValues = { pv: 0, sv: 0, out: 0, p: 0, i: 0, d: 0 };
+                }
+                self._renderPidGrid();
+            });
         },
 
         setPidRegister(paramName, rawValue) {
@@ -1690,7 +1830,8 @@
             }).then(function(res) {
                 if (res && res.success) {
                     self._pidValues[paramName] = rawValue;
-                    self._devicePidCache[self._activeDeviceId] = JSON.parse(JSON.stringify(self._pidValues));
+                    var cacheKey = 'dev_' + self._activeDeviceIdx;
+                    self._devicePidCache[cacheKey] = JSON.parse(JSON.stringify(self._pidValues));
                     self._renderPidGrid();
                 }
                 if (res && res.debug) {
@@ -1719,7 +1860,7 @@
             if (checked) {
                 this.refreshPidStatus();
                 var self = this;
-                this._pidAutoRefreshTimer = setInterval(function() { self.refreshPidStatus(); }, 3000);
+                this._pidAutoRefreshTimer = setInterval(function() { self.refreshPidStatus(); }, 8000);
             } else {
                 this._stopPidAutoRefresh();
             }
@@ -1787,16 +1928,25 @@
                 });
                 if (res && res.success && res.data && res.data.states) {
                     this._coilStates = res.data.states;
-                    if (this._activeDeviceId) {
-                        this._deviceCoilCache[this._activeDeviceId] = this._coilStates.slice();
-                    }
+                    var cacheKey = 'dev_' + this._activeDeviceIdx;
+                    this._deviceCoilCache[cacheKey] = this._coilStates.slice();
                     this._renderCoilGrid();
                     this._appendDebugLog(res.debug, 'ReadCoils FC01');
                 } else if (res && !res.success) {
                     Notification.error(res.error || i18n.t('modbus-ctrl-fail'));
                     this._appendDebugError(res.error || 'ReadCoils failed', res.debug);
+                } else {
+                    if (this._coilStates.length === 0) {
+                        for (var i = 0; i < p.channelCount; i++) this._coilStates.push(false);
+                    }
+                    this._renderCoilGrid();
                 }
-            } catch (e) { }
+            } catch (e) {
+                if (this._coilStates.length === 0) {
+                    for (var i = 0; i < p.channelCount; i++) this._coilStates.push(false);
+                }
+                this._renderCoilGrid();
+            }
         },
 
         _renderCoilGrid() {
@@ -1918,7 +2068,7 @@
             const checked = document.getElementById('modbus-ctrl-auto-refresh')?.checked;
             if (checked) {
                 this.refreshCoilStatus();
-                this._coilAutoRefreshTimer = setInterval(() => this.refreshCoilStatus(), 3000);
+                this._coilAutoRefreshTimer = setInterval(() => this.refreshCoilStatus(), 8000);
             } else {
                 if (this._coilAutoRefreshTimer) {
                     clearInterval(this._coilAutoRefreshTimer);
@@ -2222,14 +2372,35 @@
 
         _startMqttStatusPolling() {
             this._stopMqttStatusPolling();
+
+            // 使用全局 SSE 监听 mqtt-status 事件，替代 5s 轮询
+            AppState.connectSSE();
+            var self = this;
+            this._mqttSSEHandler = function(e) {
+                try {
+                    var data = JSON.parse(e.data);
+                    self._updateMqttStatusUI(data);
+                } catch (err) {
+                    console.warn('[SSE] MQTT 状态解析失败:', err);
+                }
+            };
+            AppState.onSSEEvent('mqtt-status', this._mqttSSEHandler);
+
+            // 初始加载一次
             this._loadMqttStatus();
-            this._mqttStatusTimer = setInterval(() => this._loadMqttStatus(), 5000);
         },
 
         _stopMqttStatusPolling() {
+            // 清理旧的定时器（向后兼容）
             if (this._mqttStatusTimer) {
                 clearInterval(this._mqttStatusTimer);
                 this._mqttStatusTimer = null;
+            }
+            // 清理 SSE 监听
+            if (this._mqttSSEHandler) {
+                AppState.offSSEEvent('mqtt-status', this._mqttSSEHandler);
+                this._mqttSSEHandler = null;
+                AppState.disconnectSSE();
             }
         },
 
@@ -2237,19 +2408,7 @@
             apiGetSilent('/api/mqtt/status')
                 .then(res => {
                     if (!res || !res.success) return;
-                    const d = res.data || {};
-                    const badge = document.getElementById('mqtt-status-badge');
-                    const serverEl = document.getElementById('mqtt-status-server');
-                    const clientEl = document.getElementById('mqtt-status-clientid');
-                    const reconnEl = document.getElementById('mqtt-status-reconnects');
-                    if (badge) {
-                        if (!d.initialized) { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = i18n.t('mqtt-status-uninit'); }
-                        else if (d.connected) { badge.className = 'mqtt-status-badge mqtt-status-online'; badge.textContent = i18n.t('mqtt-status-connected'); }
-                        else { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = i18n.t('mqtt-status-disconnected'); }
-                    }
-                    if (serverEl) serverEl.textContent = d.server ? (d.server + ':' + d.port) : '--';
-                    if (clientEl) clientEl.textContent = d.clientId || '--';
-                    if (reconnEl) reconnEl.textContent = d.reconnectCount ?? 0;
+                    this._updateMqttStatusUI(res.data || {});
                 })
                 .catch(err => {
                     if (err && err.status === 401) {
@@ -2257,7 +2416,24 @@
                         const badge = document.getElementById('mqtt-status-badge');
                         if (badge) { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = i18n.t('mqtt-status-auth-fail') || 'Unauthorized'; }
                     }
+                    // 其他错误（如网络超时）保持"检测中..."状态，不更新UI
                 });
+        },
+
+        _updateMqttStatusUI: function(data) {
+            const d = data || {};
+            const badge = document.getElementById('mqtt-status-badge');
+            const serverEl = document.getElementById('mqtt-status-server');
+            const clientEl = document.getElementById('mqtt-status-clientid');
+            const reconnEl = document.getElementById('mqtt-status-reconnects');
+            if (badge) {
+                if (!d.initialized) { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = i18n.t('mqtt-status-uninit'); }
+                else if (d.connected) { badge.className = 'mqtt-status-badge mqtt-status-online'; badge.textContent = i18n.t('mqtt-status-connected'); }
+                else { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = i18n.t('mqtt-status-disconnected'); }
+            }
+            if (serverEl) serverEl.textContent = d.server ? (d.server + ':' + d.port) : '--';
+            if (clientEl) clientEl.textContent = d.clientId || '--';
+            if (reconnEl) reconnEl.textContent = d.reconnectCount ?? 0;
         },
 
         _updateMqttStatusPanel(connected, server, port, clientId) {

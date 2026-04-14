@@ -2,6 +2,7 @@
 #include "core/FastBeeFramework.h"
 #include <esp_heap_caps.h>
 #include <esp_bt.h>
+#include <esp_chip_info.h>
 
 FastBeeFramework* framework;
 
@@ -13,7 +14,17 @@ void setup() {
     // 通过 device.json 的 "bleReserve":true 可保留BT内存
     esp_bt_controller_mem_release(ESP_BT_MODE_BTDM);
 
-    // 启动诊断：输出可用内存，快速判断 PSRAM / 堆是否正常
+    // 启动诊断：输出芯片信息和可用内存，快速判断 PSRAM / 堆是否正常
+    Serial.printf("[BOOT] Chip: %s Rev%d\n", ESP.getChipModel(), ESP.getChipRevision());
+    Serial.printf("[BOOT] Flash: %luKB, PSRAM: %luKB\n",
+                  (unsigned long)(ESP.getFlashChipSize() / 1024),
+                  (unsigned long)(ESP.getPsramSize() / 1024));
+    esp_chip_info_t chip_info;
+    esp_chip_info(&chip_info);
+    Serial.printf("[BOOT] Cores: %d, Features: WiFi%s%s\n",
+                  chip_info.cores,
+                  (chip_info.features & CHIP_FEATURE_BT) ? "/BT" : "",
+                  (chip_info.features & CHIP_FEATURE_BLE) ? "/BLE" : "");
     Serial.printf("[BOOT] Free heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
     Serial.printf("[BOOT] Max alloc: %lu bytes\n", (unsigned long)ESP.getMaxAllocHeap());
 #ifdef BOARD_HAS_PSRAM

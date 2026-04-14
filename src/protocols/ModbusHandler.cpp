@@ -10,6 +10,7 @@
  */
 
 #include "protocols/ModbusHandler.h"
+#include "core/ChipConfig.h"
 #include <ArduinoJson.h>
 
 namespace {
@@ -37,9 +38,14 @@ bool isReadFunctionCode(uint8_t functionCode) {
 }
 
 ModbusHandler::ModbusHandler() 
+#if CHIP_UART_COUNT >= 3
     : isInitialized(false), modbusSerial(&Serial2),
+#else
+    : isInitialized(false), modbusSerial(&Serial1),
+#endif
       isOneShotReading(false), _oneShotSemaphore(nullptr), _controlPending(false),
-      _totalPollCount(0), _successPollCount(0), _failedPollCount(0), _timeoutPollCount(0), _lastPollTime(0) {
+      _totalPollCount(0), _successPollCount(0), _failedPollCount(0), _timeoutPollCount(0), 
+      _lastPollTime(0), _lastStatusHash(0) {
     memset(holdingRegisters, 0, sizeof(holdingRegisters));
     memset(inputRegisters, 0, sizeof(inputRegisters));
     memset(coils, 0, sizeof(coils));
@@ -296,9 +302,9 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                 task.quantity     = t["quantity"] | (uint16_t)10;
                 task.pollInterval = t["pollInterval"] | (uint16_t)Protocols::MODBUS_DEFAULT_POLL_INTERVAL;
                 task.enabled      = t["enabled"] | true;
-                const char* lbl   = t["label"] | "";
-                strncpy(task.label, lbl, sizeof(task.label) - 1);
-                task.label[sizeof(task.label) - 1] = '\0';
+                // 向后兼容：优先读取 name，回退到 label
+                const char* taskName = t["name"] | (t["label"] | "");
+                strlcpy(task.name, taskName, sizeof(task.name));
                 
                 // 解析寄存器映射
                 task.mappingCount = 0;
@@ -395,7 +401,7 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
         t["quantity"] = task.quantity;
         t["pollInterval"] = task.pollInterval;
         t["enabled"] = task.enabled;
-        t["label"] = task.label;
+        t["name"] = task.name;
         
         // 序列化寄存器映射
         if (task.mappingCount > 0) {
@@ -1134,6 +1140,43 @@ void ModbusHandler::setRegisterReadCallback(std::function<uint16_t(uint16_t)> ca
 
 void ModbusHandler::setRegisterWriteCallback(std::function<void(uint16_t, uint16_t)> callback) {
     this->registerWriteCallback = callback;
+}
+
+void ModbusHandler::setStatusChangeCallback(StatusChangeCallback cb) {
+    _statusChangeCallback = cb;
+}
+
+void ModbusHandler::_notifyStatusChange() {
+    if (!_statusChangeCallback || !isInitialized) return;
+
+    // 计算状态 hash：基于统计计数判断是否有显著变化
+    // 使用简单的 XOR hash，避免完整 JSON 序列化开销
+    uint32_t newHash = _totalPollCount ^ _successPollCount ^ 
+                       (_failedPollCount << 8) ^ (_timeoutPollCount << 16) ^
+                       (isInitialized ? 0x80000000 : 0);
+
+    // 只有 hash 变化时才推送（避免每次 poll 都推送）
+    if (newHash == _lastStatusHash) return;
+    _lastStatusHash = newHash;
+
+    // 构建轻量级 JSON 状态字符串
+    // 参考 ModbusRouteHandler::handleGetModbusStatus 的 JSON 结构
+    JsonDocument doc;
+    JsonObject data = doc.to<JsonObject>();
+
+    data["mode"] = (config.mode == MODBUS_MASTER) ? "master" : "slave";
+    data["status"] = getStatus();
+    data["totalPolls"] = _totalPollCount;
+    data["successPolls"] = _successPollCount;
+    data["failedPolls"] = _failedPollCount;
+    data["timeoutPolls"] = _timeoutPollCount;
+    data["lastPollAgeSec"] = getLastPollAgeSec();
+    data["taskCount"] = config.master.taskCount;
+
+    String json;
+    serializeJson(doc, json);
+
+    _statusChangeCallback(json);
 }
 
 // ============================================================================
@@ -1942,14 +1985,16 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
         // 标记缓存无效
         cache.valid = false;
         cache.count = 0;
+        _notifyStatusChange();  // 通知状态变化：轮询失败
         return "[]";
     }
-
+    
     // 成功：更新成功计数和缓存数据
     _successPollCount++;
     cache.valid = true;
     cache.count = result.count;
     memcpy(cache.values, result.data, result.count * sizeof(uint16_t));
+    _notifyStatusChange();  // 通知状态变化：轮询成功
 
     // 应用寄存器映射生成 JSON
     if (task.mappingCount > 0) {

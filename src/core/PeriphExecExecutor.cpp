@@ -8,6 +8,7 @@
 #include "protocols/MQTTClient.h"
 #include "systems/LoggerSystem.h"
 #include "core/PeripheralManager.h"
+#include "core/ChipConfig.h"
 #include <freertos/task.h>
 
 PeriphExecExecutor::PeriphExecExecutor() = default;
@@ -137,6 +138,7 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
         }
 
         case ExecActionType::ACTION_SET_DAC: {
+#if CHIP_HAS_DAC
             uint8_t dacVal = effectiveValue.isEmpty() ? 0 : effectiveValue.toInt();
             LOGGER.infof("[PeriphExec] Execute SetDAC(%d) on %s", (int)dacVal, action.targetPeriphId.c_str());
             PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
@@ -144,6 +146,10 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
             uint8_t pin = cfg->getPrimaryPin();
             dacWrite(pin, dacVal);
             return true;
+#else
+            LOGGER.warning("[PeriphExec] DAC not supported on this chip");
+            return false;
+#endif
         }
 
         case ExecActionType::ACTION_HIGH_INVERTED: {

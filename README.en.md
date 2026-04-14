@@ -21,13 +21,16 @@ MQTT and Modbus RTU fully supported, HTTP, CoAP, Modbus TCP, TCP protocol infras
 
 ### Features
 * **Web Configuration:** Complete user management, role-based access control (RBAC), session management, responsive SPA design, native web technologies, multi-language support (Chinese/English), dark/light theme toggle
-* **Network Communication:** WiFi STA/AP/AP+STA modes, automatic fallback mechanism, mDNS local domain access, network status monitoring, WiFi scanning (two-column grid layout)
+* **Web Frontend Optimization:** HTML dynamic module splitting (skeleton + on-demand loading), i18n engine with language pack separation, Service Worker offline caching, skeleton screen loading, resource preloading, Gzip compression (81.6% compression rate)
+* **Network Communication:** WiFi STA/AP/AP+STA modes, automatic fallback to AP+STA on STA failure, mDNS local domain access, network status monitoring, WiFi scanning (two-column grid layout), TCP connection optimization (12 connections/64 queue)
 * **Provisioning:** AP hotspot provisioning, Bluetooth BLE provisioning (NimBLE), auto-timeout
 * **Protocol Support:** MQTT (publish/subscribe topic configuration), Modbus RTU/TCP, TCP server/client, HTTP client, CoAP
+* **Real-time Push:** SSE (Server-Sent Events) real-time status push, instant broadcast of device data changes to web frontend
 * **Remote Maintenance:** Firmware OTA update, filesystem OTA update, online log viewer, remote restart, factory reset, real-time device status reporting
-* **Data Storage:** LittleFS filesystem, NVS Preferences dual storage, JSON configuration management, Gzip compression (83% compression rate)
+* **Data Storage:** LittleFS filesystem, NVS Preferences dual storage, JSON configuration management, Gzip compression (81.6% compression rate)
 * **Peripheral Management:** RS485 serial port, digital I/O, analog input, PWM output, I2C/SPI interfaces, visual GPIO pin configuration
 * **Peripheral Execution:** Rule engine supporting platform/device/timer triggers, GPIO operations, system functions, command scripts
+* **Device Control:** Relay/PWM/PID device type support, free drag-and-drop layout, register mode delay control, Modbus semaphore separation optimization
 * **Rule Scripts:** Custom data processing scripts supporting MQTT/Modbus/HTTP protocol data format conversion
 * **Health Monitoring:** Real-time CPU/memory/storage monitoring, network connection status, task status, anomaly alerts
 * **Logging System:** Multi-level logging (DEBUG/INFO/WARN/ERROR), file storage, web viewer, log rotation
@@ -69,7 +72,6 @@ MQTT and Modbus RTU fully supported, HTTP, CoAP, Modbus TCP, TCP protocol infras
 * **Framework:** Arduino-ESP32 2.0.x
 * **Dependencies:**
   * ArduinoJson @ 7.4.2 - JSON parsing
-  * WebSockets @ 2.3.6 - WebSocket communication
   * PubSubClient @ 2.8 - MQTT client
   * NimBLE-Arduino @ 1.4.1 - Bluetooth BLE provisioning
   * ESPAsyncWebServer @ 3.9.2 - Async web server (in lib/)
@@ -138,6 +140,10 @@ FastBee-Arduino/
 │   │   ├── WiFiManager.h          # WiFi manager
 │   │   ├── WebConfigManager.h     # Web config service
 │   │   ├── OTAManager.h           # OTA update
+│   │   ├── handlers/              # Route handlers
+│   │   │   ├── SSERouteHandler.h  # SSE real-time push
+│   │   │   ├── ModbusRouteHandler.h
+│   │   │   └── ...                # Other API handlers
 │   │   └── DNSServer.h            # DNS service
 │   ├── protocols/                 # Protocol handlers
 │   │   ├── ProtocolManager.h      # Protocol manager
@@ -170,7 +176,9 @@ FastBee-Arduino/
 │   └── main.cpp                   # Main entry
 ├── data/                          # Filesystem
 │   ├── www/                       # Web frontend
-│   │   ├── index.html             # Single page app
+│   │   ├── index.html             # SPA skeleton page
+│   │   ├── sw.js                  # Service Worker offline cache
+│   │   ├── pages/                 # Dynamic loading page modules
 │   │   ├── css/                   # Stylesheets
 │   │   ├── js/                    # JavaScript
 │   │   └── assets/                # Static assets
@@ -185,11 +193,22 @@ FastBee-Arduino/
 │   │   └── users.json             # User config
 │   └── logs/                      # Log directory
 │       └── system.log
+├── web-src/                       # Web frontend source
+│   └── modules/                   # JS modules (admin/runtime)
 ├── lib/                           # Local libraries
 │   └── ESPAsyncWebServer/         # Async web server
 ├── scripts/                       # Build scripts
 │   ├── gzip-www.js                # Frontend compression
+│   ├── build-web-modules.js       # Module builder
 │   └── filter_littlefs.py         # File filtering
+├── docs/                          # Documentation
+│   ├── modbus_usage_guide.md      # Modbus usage guide
+│   ├── periph_exec_flow.md        # Peripheral execution flow
+│   └── script-guide.md            # Script guide
+├── test/                          # Unit tests
+│   ├── mocks/                     # Mock objects
+│   └── helpers/                   # Test helpers
+├── tests/                         # Integration tests
 ├── platformio.ini                 # PlatformIO config
 ├── fastbee.csv                    # Partition table
 └── README.md                      # Documentation

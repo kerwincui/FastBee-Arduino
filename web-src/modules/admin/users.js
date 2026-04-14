@@ -31,9 +31,26 @@
             // 确认添加用户
             const confirmAdd = document.getElementById('confirm-add-user-btn');
             if (confirmAdd) confirmAdd.addEventListener('click', () => this.addUser());
+            // 刷新按钮
+            const usersRefreshBtn = document.getElementById('users-refresh-btn');
+            if (usersRefreshBtn) usersRefreshBtn.addEventListener('click', () => this._refreshUsersList());
         },
 
         // ============ 用户列表（从 API 加载）============
+
+        _refreshUsersList() {
+            var btn = document.getElementById('users-refresh-btn');
+            if (btn && btn.disabled) return;
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="fb-spin">&#x21bb;</span> 加载中...'; }
+            if (typeof window.apiInvalidateCache === 'function') {
+                window.apiInvalidateCache('/api/users');
+            }
+            this.loadUsers();
+            setTimeout(function() {
+                if (btn) { btn.disabled = false; btn.innerHTML = '&#x21bb; 刷新'; }
+            }, 2000);
+        },
+
         loadUsers() {
             apiGet('/api/users', { page: 1, limit: 100 })
                 .then(res => {

@@ -3,7 +3,7 @@
 // 合并核心依赖，减少 ESP32 HTTP 请求数
 // ============================================================
 
-// ── fetch-api ───────────────────────────────────────────────
+// ── fetch-api + RequestGovernor ──────────────────────────────
 (function () {
     'use strict';
     const BASE_URL = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
@@ -44,6 +44,7 @@
             })
             .catch(function (err) {
                 if (silent) return Promise.reject(err);
+                if (err && err._pageAborted) return Promise.reject(err);
                 if (err && err.status !== undefined) { _handleHttpError(err.status, err.data); }
                 else if (err && err.name === 'AbortError') { err._handled = false; }
                 else if (err && err.message && err.message.includes('fetch')) { err._handled = false; }
@@ -76,17 +77,129 @@
             default: Notification.warning(errMsg, '请求失败(' + status + ')');
         }
     }
-    window.apiGet = function (url, params) { return request('GET', url, { params: params || {} }); };
-    window.apiGetSilent = function (url, params) { return request('GET', url, { params: params || {}, silent: true }); };
-    window.apiPost = function (url, data) { return request('POST', url, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: toUrlEncoded(data || {}) }); };
-    window.apiPostSilent = function (url, data) { return request('POST', url, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: toUrlEncoded(data || {}), silent: true }); };
-    window.apiPut = function (url, data) { return request('PUT', url, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data || {}) }); };
-    window.apiPostJson = function (url, data) { return request('POST', url, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data || {}) }); };
-    window.apiDelete = function (url, params) { return request('DELETE', url, { params: params || {} }); };
+    // ── RequestGovernor — ESP32 资源保护调度器 ──
+    var Governor = {
+        _queue: [], _inflight: 0, MAX_CONCURRENT: 2,
+        _cooldownUntil: 0, _backoffMs: 1000, _cooldownTimer: null,
+        _dedupMap: {}, _pageGen: 0,
+        _cache: {},
+        _cacheTTL: { '/api/protocol/config': 60000, '/api/system/info': 30000, '/api/device/config': 120000 },
+        enqueue: function (method, path, options, timeoutMs) {
+            var self = this;
+            var fullUrl = buildUrl(path, options ? options.params : undefined);
+            var body = options ? (options.body || '') : '';
+            var dedupKey = method + ':' + fullUrl + (body ? '#' + body : '');
+            var isSilent = !!(options && options.silent);
+            if (method !== 'GET') { delete this._cache[path]; }
+            if (method === 'GET' && this._cacheTTL[path]) {
+                var cached = this._cache[path];
+                if (cached && (Date.now() - cached.ts < this._cacheTTL[path])) {
+                    return Promise.resolve(JSON.parse(JSON.stringify(cached.data)));
+                }
+            }
+            if (this._dedupMap[dedupKey]) { return this._dedupMap[dedupKey]; }
+            var resolve, reject;
+            var promise = new Promise(function (res, rej) { resolve = res; reject = rej; });
+            this._queue.push({
+                method: method, path: path, options: options, timeoutMs: timeoutMs,
+                resolve: resolve, reject: reject,
+                priority: isSilent ? 0 : 1, dedupKey: dedupKey, pageGen: this._pageGen
+            });
+            this._dedupMap[dedupKey] = promise;
+            promise.then(function () { delete self._dedupMap[dedupKey]; }, function () { delete self._dedupMap[dedupKey]; });
+            this._drain();
+            return promise;
+        },
+        _drain: function () {
+            var self = this;
+            for (var i = this._queue.length - 1; i >= 0; i--) {
+                if (this._queue[i].pageGen < this._pageGen) {
+                    var expired = this._queue.splice(i, 1)[0];
+                    delete this._dedupMap[expired.dedupKey];
+                    var err = new Error('Request cancelled by page navigation');
+                    err._pageAborted = true;
+                    expired.reject(err);
+                }
+            }
+            var now = Date.now();
+            if (now < this._cooldownUntil && this._queue.length > 0) {
+                if (!this._cooldownTimer) {
+                    var delay = this._cooldownUntil - now;
+                    this._cooldownTimer = setTimeout(function () { self._cooldownTimer = null; self._drain(); }, delay);
+                }
+                return;
+            }
+            while (this._inflight < this.MAX_CONCURRENT && this._queue.length > 0) {
+                var bestIdx = 0;
+                for (var j = 1; j < this._queue.length; j++) {
+                    if (this._queue[j].priority > this._queue[bestIdx].priority) { bestIdx = j; }
+                }
+                var entry = this._queue.splice(bestIdx, 1)[0];
+                this._inflight++;
+                this._execute(entry);
+            }
+        },
+        _execute: function (entry) {
+            var self = this;
+            request(entry.method, entry.path, entry.options, entry.timeoutMs)
+                .then(function (data) {
+                    self._backoffMs = 1000;
+                    if (entry.method === 'GET' && self._cacheTTL[entry.path]) {
+                        self._cache[entry.path] = { data: data, ts: Date.now() };
+                    }
+                    entry.resolve(data);
+                })
+                .catch(function (err) {
+                    if (self._isCooldownError(err)) {
+                        self._cooldownUntil = Date.now() + self._backoffMs;
+                        console.warn('[Governor] Cooldown ' + self._backoffMs + 'ms after overload');
+                        self._backoffMs = Math.min(self._backoffMs * 2, 10000);
+                    }
+                    entry.reject(err);
+                })
+                .finally(function () { self._inflight--; self._drain(); });
+        },
+        _isCooldownError: function (err) {
+            if (!err) return false;
+            if (err.status === 503 || err.status === 429) return true;
+            if (err instanceof TypeError) return true;
+            return false;
+        },
+        abortPageRequests: function () {
+            this._pageGen++;
+            for (var i = this._queue.length - 1; i >= 0; i--) {
+                if (this._queue[i].pageGen < this._pageGen) {
+                    var expired = this._queue.splice(i, 1)[0];
+                    delete this._dedupMap[expired.dedupKey];
+                    var err = new Error('Request cancelled by page navigation');
+                    err._pageAborted = true;
+                    expired.reject(err);
+                }
+            }
+        },
+        invalidateCache: function (urlPattern) {
+            if (!urlPattern) { this._cache = {}; return; }
+            for (var key in this._cache) {
+                if (this._cache.hasOwnProperty(key) && key.indexOf(urlPattern) !== -1) { delete this._cache[key]; }
+            }
+        }
+    };
+    // ── 全局 API 函数（通过 Governor 调度）──
+    window.apiGet = function (url, params) { return Governor.enqueue('GET', url, { params: params || {} }); };
+    window.apiGetSilent = function (url, params) { return Governor.enqueue('GET', url, { params: params || {}, silent: true }); };
+    window.apiPost = function (url, data, timeoutMs) { return Governor.enqueue('POST', url, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: toUrlEncoded(data || {}) }, timeoutMs); };
+    window.apiPostSilent = function (url, data) { return Governor.enqueue('POST', url, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: toUrlEncoded(data || {}), silent: true }); };
+    window.apiPut = function (url, data) { return Governor.enqueue('PUT', url, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data || {}) }); };
+    window.apiPostJson = function (url, data) { return Governor.enqueue('POST', url, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data || {}) }); };
+    window.apiDelete = function (url, params) { return Governor.enqueue('DELETE', url, { params: params || {} }); };
+    // ── 特殊请求（绕过 Governor）──
     window.apiRestart = function (data) { return request('POST', '/api/system/restart', { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: toUrlEncoded(data || {}) }, RESTART_TIMEOUT); };
     window.apiFactoryReset = function () { return request('POST', '/api/system/factory-reset', {}, RESTART_TIMEOUT); };
     const MQTT_TEST_TIMEOUT = 30000;
     window.apiMqttTest = function (data) { return request('POST', '/api/mqtt/test', { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: toUrlEncoded(data || {}), silent: true }, MQTT_TEST_TIMEOUT); };
+    // ── Governor 控制接口 ──
+    window.apiAbortPageRequests = function () { Governor.abortPageRequests(); };
+    window.apiInvalidateCache = function (urlPattern) { Governor.invalidateCache(urlPattern); };
 })();
 
 // ── notification ────────────────────────────────────────────
@@ -178,6 +291,12 @@ const AppState = {
     // 已加载的模块记录
     _loadedModules: {},
     _moduleCallbacks: {},
+
+    // SSE 连接管理
+    _sseSource: null,
+    _sseHandlers: {},  // { eventType: [handler1, handler2, ...] }
+    _sseReconnectTimer: null,
+    _sseReconnectDelay: 1000,
 
     // 页面模块动态加载器
     _loadedPages: {},
@@ -1247,6 +1366,11 @@ const AppState = {
 
     // ============ 页面切换 ============
     async changePage(page) {
+        // 取消旧页面排队中的请求，释放 ESP32 资源
+        if (typeof window.apiAbortPageRequests === 'function') {
+            window.apiAbortPageRequests();
+        }
+
         const pageAlias = { monitor: 'dashboard' };
         const normalizedPage = pageAlias[page] || page;
 
@@ -1511,5 +1635,88 @@ const AppState = {
      */
     _setTextContent(id, text) {
         this._setText(id, text);
+    },
+
+    // ============ SSE 连接管理 ============
+    connectSSE: function() {
+        if (this._sseSource) return;  // 已连接
+
+        try {
+            this._sseSource = new EventSource('/api/events');
+            this._sseReconnectDelay = 1000;  // 重置重连延迟
+
+            this._sseSource.onopen = function() {
+                console.log('[SSE] 连接已建立');
+            };
+
+            this._sseSource.onerror = function() {
+                console.warn('[SSE] 连接错误，将自动重连');
+                this.disconnectSSE();
+                // 检查是否还有活跃的事件处理器，无监听者则不重连
+                var hasHandlers = false;
+                var handlers = this._sseHandlers || {};
+                for (var key in handlers) {
+                    if (handlers.hasOwnProperty(key) && handlers[key] && handlers[key].length > 0) {
+                        hasHandlers = true;
+                        break;
+                    }
+                }
+                if (!hasHandlers) {
+                    console.log('[SSE] 无活跃监听者，停止重连');
+                    return;
+                }
+                // 指数退避重连
+                this._sseReconnectTimer = setTimeout(function() {
+                    this.connectSSE();
+                }.bind(this), this._sseReconnectDelay);
+                this._sseReconnectDelay = Math.min(this._sseReconnectDelay * 2, 30000);
+            }.bind(this);
+
+            // 绑定已注册的事件处理器
+            this._rebindSSEHandlers();
+        } catch (e) {
+            console.error('[SSE] 创建 EventSource 失败:', e);
+        }
+    },
+
+    disconnectSSE: function() {
+        if (this._sseSource) {
+            this._sseSource.close();
+            this._sseSource = null;
+        }
+        if (this._sseReconnectTimer) {
+            clearTimeout(this._sseReconnectTimer);
+            this._sseReconnectTimer = null;
+        }
+    },
+
+    onSSEEvent: function(eventType, handler) {
+        if (!this._sseHandlers[eventType]) {
+            this._sseHandlers[eventType] = [];
+        }
+        this._sseHandlers[eventType].push(handler);
+        // 如果已连接，立即绑定
+        if (this._sseSource) {
+            this._sseSource.addEventListener(eventType, handler);
+        }
+    },
+
+    offSSEEvent: function(eventType, handler) {
+        if (this._sseHandlers[eventType]) {
+            var idx = this._sseHandlers[eventType].indexOf(handler);
+            if (idx !== -1) this._sseHandlers[eventType].splice(idx, 1);
+        }
+        if (this._sseSource) {
+            this._sseSource.removeEventListener(eventType, handler);
+        }
+    },
+
+    _rebindSSEHandlers: function() {
+        var self = this;
+        Object.keys(this._sseHandlers).forEach(function(eventType) {
+            self._sseHandlers[eventType].forEach(function(handler) {
+                self._sseSource.addEventListener(eventType, handler);
+            });
+        });
     }
 };

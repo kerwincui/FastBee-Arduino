@@ -32,6 +32,7 @@ struct ProtocolConfig {
 typedef std::function<void(ProtocolType, const String&, const String&)> MessageCallback;
 typedef std::function<void()> CounterCallback;
 typedef std::function<void(uint8_t, const String&)> SSEBroadcastCallback;
+typedef std::function<void(const String&)> SimpleSSECallback;  // 简化版 SSE 回调（无地址参数）
 
 class ProtocolManager {
 public:
@@ -109,6 +110,10 @@ public:
     // 设置 SSE 广播回调
     void setSSECallback(SSEBroadcastCallback callback);
 
+    // 设置 MQTT/Modbus 状态 SSE 回调
+    void setMQTTStatusSSECallback(SimpleSSECallback callback);
+    void setModbusStatusSSECallback(SimpleSSECallback callback);
+
 private:
     // unique_ptr 智能指针，主要用于自动管理动态内存，避免内存泄漏并确保资源安全释放
     std::unique_ptr<MQTTClient> mqttClient;
@@ -122,6 +127,8 @@ private:
     CounterCallback txCallback;
     CounterCallback rxCallback;
     SSEBroadcastCallback sseCallback;
+    SimpleSSECallback mqttStatusSSECallback;
+    SimpleSSECallback modbusStatusSSECallback;
     
     bool isInitialized;
     
