@@ -348,6 +348,7 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                 dev.coilBase        = d["coilBase"] | (uint16_t)0;
                 dev.ncMode          = d["ncMode"] | false;
                 dev.controlProtocol = d["controlProtocol"] | (uint8_t)0;
+                dev.batchRegister   = d["batchRegister"] | (uint16_t)0;
                 dev.pwmRegBase      = d["pwmRegBase"] | (uint16_t)0;
                 dev.pwmResolution   = d["pwmResolution"] | (uint8_t)8;
                 dev.pidDecimals     = d["pidDecimals"] | (uint8_t)1;
@@ -430,6 +431,7 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
         d["coilBase"]        = dev.coilBase;
         d["ncMode"]          = dev.ncMode;
         d["controlProtocol"] = dev.controlProtocol;
+        d["batchRegister"]   = dev.batchRegister;
         d["pwmRegBase"]      = dev.pwmRegBase;
         d["pwmResolution"]   = dev.pwmResolution;
         d["pidDecimals"]     = dev.pidDecimals;
@@ -1953,11 +1955,12 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
               taskIdx, task.slaveAddress, task.functionCode, task.startAddress, task.quantity,
               timeout, retries);
 
-    // 检查是否有控制操作挂起，如有则让路
+    // 检查是否有控制操作挂起，如有则跳过本次轮询，让控制操作优先获取信号量
     if (_controlPending) {
-        LOG_INFO("[Modbus] PollTask: control pending, yielding...");
-        // 短暂延时让控制操作先行
-        vTaskDelay(pdMS_TO_TICKS(50));
+        LOG_INFO("[Modbus] PollTask: control pending, skipping poll to yield bus");
+        config.master.responseTimeout = origTimeout;
+        config.master.maxRetries = origRetries;
+        return "[]";
     }
 
     OneShotResult result = readRegistersOnce(task.slaveAddress, task.functionCode,

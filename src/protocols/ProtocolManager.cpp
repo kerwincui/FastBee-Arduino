@@ -433,6 +433,7 @@ bool ProtocolManager::restartModbus() {
                 dev.coilBase        = d["coilBase"] | (uint16_t)0;
                 dev.ncMode          = d["ncMode"] | false;
                 dev.controlProtocol = d["controlProtocol"] | (uint8_t)0;
+                dev.batchRegister   = d["batchRegister"] | (uint16_t)0;
                 dev.pwmRegBase      = d["pwmRegBase"] | (uint16_t)0;
                 dev.pwmResolution   = d["pwmResolution"] | (uint8_t)8;
                 dev.pidDecimals     = d["pidDecimals"] | (uint8_t)1;

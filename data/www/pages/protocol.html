@@ -304,11 +304,27 @@
             <!-- Modbus RTU 配置 - 两列布局 -->
             <div id="modbus-rtu" class="config-content">
                 <form id="modbus-rtu-form" class="pure-form pure-form-stacked">
-                    <!-- ========== 主站运行状态（紧凑） ========== -->
+                    <!-- ========== 主站运行状态（紧凑单行） ========== -->
                     <div id="master-status-section" class="modbus-master-status-bar">
                         <div class="modbus-status-item">
-                            <span class="modbus-status-label" data-i18n="modbus-master-running-status-label">运行状态</span>
-                            <span id="master-running-status" class="modbus-status-value">--</span>
+                            <span class="modbus-status-label" data-i18n="modbus-master-risk-level">风险等级</span>
+                            <span id="master-risk-badge" class="modbus-risk-badge modbus-risk-low">LOW</span>
+                        </div>
+                        <div class="modbus-status-item">
+                            <span class="modbus-status-label" data-i18n="modbus-master-enabled-tasks">启用任务</span>
+                            <strong id="master-enabled-task-count" class="modbus-status-value">0</strong>
+                        </div>
+                        <div class="modbus-status-item">
+                            <span class="modbus-status-label" data-i18n="modbus-master-min-interval">最小间隔</span>
+                            <strong id="master-min-interval" class="modbus-status-value">--</strong>
+                        </div>
+                        <div class="modbus-status-item">
+                            <span class="modbus-status-label" data-i18n="modbus-master-last-poll-age">最近轮询</span>
+                            <strong id="master-last-poll-age" class="modbus-status-value">--</strong>
+                        </div>
+                        <div class="modbus-status-item">
+                            <span class="modbus-status-label" data-i18n="modbus-master-timeout-rate">超时率</span>
+                            <strong id="master-timeout-rate" class="modbus-status-value">0%</strong>
                         </div>
                         <div class="modbus-status-item">
                             <span class="modbus-status-label" data-i18n="modbus-master-total-polls">总轮询</span>
@@ -330,30 +346,6 @@
                             <button type="button" class="btn btn-sm btn-secondary" data-action="refreshMasterStatus">
                                 <span class="icon-refresh"></span> <span data-i18n="refresh-btn">刷新</span>
                             </button>
-                        </div>
-                        <div id="master-health-summary" class="modbus-health-summary is-hidden">
-                            <div class="modbus-health-main">
-                                <span class="modbus-status-label" data-i18n="modbus-master-risk-level">风险等级</span>
-                                <span id="master-risk-badge" class="modbus-risk-badge modbus-risk-low">LOW</span>
-                            </div>
-                            <div class="modbus-health-metrics">
-                                <span class="modbus-health-metric">
-                                    <span class="modbus-status-label" data-i18n="modbus-master-enabled-tasks">启用任务</span>
-                                    <strong id="master-enabled-task-count">0</strong>
-                                </span>
-                                <span class="modbus-health-metric">
-                                    <span class="modbus-status-label" data-i18n="modbus-master-min-interval">最小间隔</span>
-                                    <strong id="master-min-interval">--</strong>
-                                </span>
-                                <span class="modbus-health-metric">
-                                    <span class="modbus-status-label" data-i18n="modbus-master-last-poll-age">最近轮询</span>
-                                    <strong id="master-last-poll-age">--</strong>
-                                </span>
-                                <span class="modbus-health-metric">
-                                    <span class="modbus-status-label" data-i18n="modbus-master-timeout-rate">超时率</span>
-                                    <strong id="master-timeout-rate">0%</strong>
-                                </span>
-                            </div>
                         </div>
                         <div id="master-health-warnings" class="modbus-health-warnings is-hidden"></div>
                         <div id="master-data-grid" class="fb-w-full"></div>

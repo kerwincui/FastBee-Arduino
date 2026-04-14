@@ -2,15 +2,15 @@
   "modbusRtu": {
     "enabled": true,
     "peripheralId": "modbus_rtu",
-    "timeout": 1000,
+    "timeout": 500,
     "mode": "master",
     "dePin": 14,
     "transferType": 0,
     "workMode": 1,
     "master": {
-      "responseTimeout": 1000,
-      "maxRetries": 2,
-      "interPollDelay": 100,
+      "responseTimeout": 500,
+      "maxRetries": 1,
+      "interPollDelay": 50,
       "tasks": [
         {
           "slaveAddress": 2,
@@ -86,7 +86,7 @@
           ]
         },
         {
-          "name": "继电器板",
+          "name": "继电器板模块",
           "deviceType": "relay",
           "slaveAddress": 3,
           "channelCount": 2,
@@ -128,13 +128,14 @@
           ]
         },
         {
-          "name": "8路寄存器继电器",
+          "name": "M88继电器",
           "deviceType": "relay",
           "slaveAddress": 11,
           "channelCount": 8,
           "coilBase": 8,
           "ncMode": false,
           "controlProtocol": 1,
+          "batchRegister": 1,
           "pwmRegBase": 0,
           "pwmResolution": 8,
           "pidDecimals": 1,
@@ -156,6 +157,7 @@
           "coilBase": 8,
           "ncMode": false,
           "controlProtocol": 1,
+          "batchRegister": 1,
           "pwmRegBase": 0,
           "pwmResolution": 8,
           "pidDecimals": 1,

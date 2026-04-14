@@ -633,50 +633,85 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
     
     OneShotResult result;
     
+    // 查找设备配置中的 batchRegister
+    uint16_t batchReg = 0;
+    {
+        ModbusConfig cfg = modbus->getConfig();
+        for (uint8_t i = 0; i < cfg.master.deviceCount; i++) {
+            if (cfg.master.devices[i].slaveAddress == slaveAddr) {
+                batchReg = cfg.master.devices[i].batchRegister;
+                break;
+            }
+        }
+    }
+
     if (mode == "register") {
-        // 寄存器模式：FC06 逐通道写
-        if (action == "allOn" || action == "allOff") {
-            uint16_t targetVal = (action == "allOn") ? 1 : 0;
-            for (uint16_t i = 0; i < channelCount; i++) {
-                OneShotResult wr = modbus->writeRegisterOnce(slaveAddr, coilBase + i, targetVal, true);  // isControl=true
-                if (wr.error != ONESHOT_SUCCESS) {
-                    sendOneShotError(ctx, request, wr);
+        if (batchReg > 0) {
+            // 位图寄存器模式：单次 FC06 写位图寄存器
+            uint16_t bitmask = (channelCount >= 16) ? 0xFFFF : (uint16_t)((1 << channelCount) - 1);
+            if (action == "allOn") {
+                result = modbus->writeRegisterOnce(slaveAddr, batchReg, bitmask, true);
+            } else if (action == "allOff") {
+                result = modbus->writeRegisterOnce(slaveAddr, batchReg, (uint16_t)0, true);
+            } else if (action == "allToggle") {
+                OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x03, batchReg, 1, true);
+                if (readR.error != ONESHOT_SUCCESS) {
+                    sendOneShotError(ctx, request, readR);
                     return;
                 }
-            }
-            result.error = ONESHOT_SUCCESS;
-        } else if (action == "allToggle") {
-            // 先读取所有状态再逐个反转
-            OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x03, coilBase, channelCount, true);  // isControl=true
-            if (readR.error != ONESHOT_SUCCESS) {
-                sendOneShotError(ctx, request, readR);
+                uint16_t current = readR.data[0];
+                result = modbus->writeRegisterOnce(slaveAddr, batchReg, (uint16_t)(current ^ bitmask), true);
+            } else {
+                ctx->sendBadRequest(request, "Invalid action (allOn/allOff/allToggle)");
                 return;
             }
-            for (uint16_t i = 0; i < channelCount; i++) {
-                uint16_t newVal = (readR.data[i] != 0) ? 0 : 1;
-                OneShotResult wr = modbus->writeRegisterOnce(slaveAddr, coilBase + i, newVal, true);  // isControl=true
-                if (wr.error != ONESHOT_SUCCESS) {
-                    sendOneShotError(ctx, request, wr);
+            if (result.error != ONESHOT_SUCCESS) {
+                sendOneShotError(ctx, request, result);
+                return;
+            }
+        } else {
+            // 逐通道 FC06 模式
+            if (action == "allOn" || action == "allOff") {
+                uint16_t targetVal = (action == "allOn") ? 1 : 0;
+                for (uint16_t i = 0; i < channelCount; i++) {
+                    OneShotResult wr = modbus->writeRegisterOnce(slaveAddr, coilBase + i, targetVal, true);
+                    if (wr.error != ONESHOT_SUCCESS) {
+                        sendOneShotError(ctx, request, wr);
+                        return;
+                    }
+                }
+                result.error = ONESHOT_SUCCESS;
+            } else if (action == "allToggle") {
+                OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x03, coilBase, channelCount, true);
+                if (readR.error != ONESHOT_SUCCESS) {
+                    sendOneShotError(ctx, request, readR);
                     return;
                 }
+                for (uint16_t i = 0; i < channelCount; i++) {
+                    uint16_t newVal = (readR.data[i] != 0) ? 0 : 1;
+                    OneShotResult wr = modbus->writeRegisterOnce(slaveAddr, coilBase + i, newVal, true);
+                    if (wr.error != ONESHOT_SUCCESS) {
+                        sendOneShotError(ctx, request, wr);
+                        return;
+                    }
+                }
+                result.error = ONESHOT_SUCCESS;
+            } else {
+                ctx->sendBadRequest(request, "Invalid action (allOn/allOff/allToggle)");
+                return;
             }
-            result.error = ONESHOT_SUCCESS;
-        } else {
-            ctx->sendBadRequest(request, "Invalid action (allOn/allOff/allToggle)");
-            return;
         }
     } else {
-        // 线圈模式：FC05
+        // 线圈模式：FC15 批量写
         if (action == "allOn" || action == "allOff") {
             bool targetOn = (action == "allOn");
-            for (uint16_t i = 0; i < channelCount; i++) {
-                OneShotResult writeResult = modbus->writeCoilOnce(slaveAddr, coilBase + i, targetOn, true);  // isControl=true
-                if (writeResult.error != ONESHOT_SUCCESS) {
-                    sendOneShotError(ctx, request, writeResult);
-                    return;
-                }
+            bool values[Protocols::MODBUS_MAX_WRITE_COILS];
+            for (uint16_t i = 0; i < channelCount; i++) values[i] = targetOn;
+            result = modbus->writeMultipleCoilsOnce(slaveAddr, coilBase, channelCount, values, true);
+            if (result.error != ONESHOT_SUCCESS) {
+                sendOneShotError(ctx, request, result);
+                return;
             }
-            result.error = ONESHOT_SUCCESS;
         } else if (action == "allToggle") {
             result = modbus->writeCoilOnce(slaveAddr, coilBase, (uint16_t)0x5A00, true);  // isControl=true
         } else {
@@ -692,12 +727,15 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
     
     // 操作后读取实际状态
     OneShotResult readResult;
-    if (mode == "register") {
-        readResult = modbus->readRegistersOnce(slaveAddr, 0x03, coilBase, channelCount, true);  // isControl=true
+    bool useBitmapRead = (mode == "register" && batchReg > 0);
+    if (useBitmapRead) {
+        readResult = modbus->readRegistersOnce(slaveAddr, 0x03, batchReg, 1, true);
+    } else if (mode == "register") {
+        readResult = modbus->readRegistersOnce(slaveAddr, 0x03, coilBase, channelCount, true);
     } else {
         uint16_t readQty = ((channelCount + 7) / 8) * 8;
         if (readQty < 8) readQty = 8;
-        readResult = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, readQty, true);  // isControl=true
+        readResult = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, readQty, true);
     }
     
     JsonDocument doc;
@@ -708,8 +746,15 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
     data["mode"] = mode;
     JsonArray states = data["states"].to<JsonArray>();
     if (readResult.error == ONESHOT_SUCCESS) {
-        for (uint16_t i = 0; i < channelCount; i++) {
-            states.add(readResult.data[i] != 0);
+        if (useBitmapRead) {
+            uint16_t bitmap = readResult.data[0];
+            for (uint16_t i = 0; i < channelCount; i++) {
+                states.add((bitmap >> i) & 1 ? true : false);
+            }
+        } else {
+            for (uint16_t i = 0; i < channelCount; i++) {
+                states.add(readResult.data[i] != 0);
+            }
         }
     } else {
         for (uint16_t i = 0; i < channelCount; i++) {

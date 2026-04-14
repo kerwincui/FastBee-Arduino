@@ -26,7 +26,7 @@
         ? 'http://fastbee.local'
         : (location.origin || 'http://fastbee.local');
 
-    const DEFAULT_TIMEOUT = 15000; // ms，ESP32 并发连接有限，需要更长超时
+    const DEFAULT_TIMEOUT = 8000; // ms，ESP32 并发连接有限，需要更长超时
     const RESTART_TIMEOUT = 15000; // ms，重启操作需要更长超时
 
     // ── 工具：序列化为 URL 编码 ───────────────────────────────────────────────
@@ -183,7 +183,7 @@
         _inflight: 0,            // 当前在途请求数
         MAX_CONCURRENT: 2,       // 最大并发 HTTP 请求数（SSE/MQTT 不占此计数）
         _cooldownUntil: 0,       // 全局冷却截止时间戳
-        _backoffMs: 1000,        // 当前退避时间（成功后重置为 1000）
+        _backoffMs: 300,        // 当前退避时间（成功后重置为 300）
         _cooldownTimer: null,    // 冷却恢复定时器
         _dedupMap: {},           // 去重映射 { dedupKey: Promise }
         _pageGen: 0,             // 页面代次计数器
@@ -314,7 +314,7 @@
                     if (self._isCooldownError(err)) {
                         self._cooldownUntil = Date.now() + self._backoffMs;
                         console.warn('[Governor] Cooldown ' + self._backoffMs + 'ms after overload');
-                        self._backoffMs = Math.min(self._backoffMs * 2, 10000);
+                        self._backoffMs = Math.min(self._backoffMs + 500, 3000);
                     }
                     entry.reject(err);
                 })

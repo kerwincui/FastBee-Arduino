@@ -11,12 +11,14 @@
         _masterTasks: [],
         _coilStates: [],
         _coilAutoRefreshTimer: null,
+        _coilAutoRefreshErrors: 0,
         _modbusDevices: [],
         _deviceCoilCache: {},
         _devicePwmCache: {},
         _pwmStates: [],
         _pidValues: {},
         _pidAutoRefreshTimer: null,
+        _pidAutoRefreshErrors: 0,
         _devicePidCache: {},
         _activeDeviceIdx: -1,
         _editingDeviceIdx: -1,
@@ -1053,13 +1055,17 @@
         },
 
         _renderMasterHealth(health) {
-            var summary = document.getElementById('master-health-summary');
             var warningsEl = document.getElementById('master-health-warnings');
             var riskBadge = document.getElementById('master-risk-badge');
-            if (!summary || !warningsEl || !riskBadge) return;
+            if (!warningsEl || !riskBadge) return;
 
             if (!health) {
-                summary.classList.add('is-hidden');
+                riskBadge.className = 'modbus-risk-badge modbus-risk-low';
+                riskBadge.textContent = this._getMasterRiskMeta('low').text;
+                this._setText('master-enabled-task-count', 0);
+                this._setText('master-min-interval', '--');
+                this._setText('master-last-poll-age', '--');
+                this._setText('master-timeout-rate', '0%');
                 warningsEl.classList.add('is-hidden');
                 warningsEl.innerHTML = '';
                 return;
@@ -1080,7 +1086,6 @@
                     escapeHtml(msg || '') + '</span></div>';
             }).join('');
 
-            summary.classList.remove('is-hidden');
             warningsEl.classList.toggle('is-hidden', warnings.length === 0);
         },
 
@@ -1104,7 +1109,6 @@
             apiGet('/api/modbus/status')
                 .then(res => {
                     if (!res || !res.success || !res.data) {
-                        this._setText('master-running-status', i18n.t('modbus-master-status-unavailable'));
                         this._renderMasterHealth(null);
                         this._renderMasterDataGrid([]);
                         return;
@@ -1112,7 +1116,6 @@
                     this._updateModbusStatusUI(res.data);
                 })
                 .catch(() => {
-                    this._setText('master-running-status', i18n.t('modbus-master-status-fetch-error'));
                     this._renderMasterHealth(null);
                     this._renderMasterDataGrid([]);
                 });
@@ -1124,10 +1127,6 @@
             this._setText('master-stat-success', d.successPolls ?? 0);
             this._setText('master-stat-failed', d.failedPolls ?? 0);
             this._setText('master-stat-timeout', d.timeoutPolls ?? 0);
-            var statusRaw = d.status || i18n.t('modbus-master-status-stopped');
-            var commaIdx = statusRaw.indexOf(',');
-            var statusText = commaIdx > 0 ? statusRaw.substring(0, commaIdx).trim() : statusRaw;
-            this._setText('master-running-status', statusText);
             this._renderMasterHealth(d.health || null);
             if (d.tasks) this._renderMasterDataGrid(d.tasks);
         },
@@ -1473,6 +1472,21 @@
                 console.warn('[protocol] Device not found at index', idx);
                 return;
             }
+            // 切换设备前，清理旧的自动刷新定时器，防止竞争 ESP32 连接
+            if (this._coilAutoRefreshTimer) {
+                clearInterval(this._coilAutoRefreshTimer);
+                this._coilAutoRefreshTimer = null;
+            }
+            if (this._pidAutoRefreshTimer) {
+                clearInterval(this._pidAutoRefreshTimer);
+                this._pidAutoRefreshTimer = null;
+            }
+            var autoEl = document.getElementById('modbus-ctrl-auto-refresh');
+            if (autoEl) autoEl.checked = false;
+            var pidAutoEl = document.getElementById('modbus-ctrl-pid-auto-refresh');
+            if (pidAutoEl) pidAutoEl.checked = false;
+            this._coilAutoRefreshErrors = 0;
+            this._pidAutoRefreshErrors = 0;
             if (this._activeDeviceIdx >= 0) {
                 var cacheKey = 'dev_' + this._activeDeviceIdx;
                 if (this._coilStates.length > 0) this._deviceCoilCache[cacheKey] = this._coilStates.slice();
@@ -1807,6 +1821,7 @@
                 slaveAddress: p.slaveAddress, startAddress: minAddr, quantity: quantity, functionCode: 3
             }).then(function(res) {
                 if (res && res.success && res.data && res.data.values) {
+                    self._pidAutoRefreshErrors = 0;
                     var vals = res.data.values;
                     self._pidValues = {
                         pv: vals[p.pvAddr - minAddr], sv: vals[p.svAddr - minAddr],
@@ -1816,11 +1831,16 @@
                     var cacheKey = 'dev_' + self._activeDeviceIdx;
                     self._devicePidCache[cacheKey] = JSON.parse(JSON.stringify(self._pidValues));
                     self._renderPidGrid();
+                } else {
+                    self._pidAutoRefreshErrors++;
+                    self._stopPidAutoRefreshOnErrors();
                 }
                 if (res && res.debug) {
                     self._appendDebugLog(res.debug.tx ? { tx: res.debug.tx, rx: res.debug.rx } : null, 'PID Read');
                 }
             }).catch(function() {
+                self._pidAutoRefreshErrors++;
+                self._stopPidAutoRefreshOnErrors();
                 // 设备未连接或读取失败，显示默认界面（值为0）
                 if (!self._pidValues || Object.keys(self._pidValues).length === 0) {
                     self._pidValues = { pv: 0, sv: 0, out: 0, p: 0, i: 0, d: 0 };
@@ -1868,6 +1888,7 @@
         togglePidAutoRefresh() {
             var checked = document.getElementById('modbus-ctrl-pid-auto-refresh')?.checked;
             if (checked) {
+                this._pidAutoRefreshErrors = 0;
                 this.refreshPidStatus();
                 var self = this;
                 this._pidAutoRefreshTimer = setInterval(function() { self.refreshPidStatus(); }, 8000);
@@ -1937,12 +1958,15 @@
                     coilBase: p.coilBase, mode: p.relayMode
                 });
                 if (res && res.success && res.data && res.data.states) {
+                    this._coilAutoRefreshErrors = 0;
                     this._coilStates = res.data.states;
                     var cacheKey = 'dev_' + this._activeDeviceIdx;
                     this._deviceCoilCache[cacheKey] = this._coilStates.slice();
                     this._renderCoilGrid();
                     this._appendDebugLog(res.debug, 'ReadCoils FC01');
                 } else if (res && !res.success) {
+                    this._coilAutoRefreshErrors++;
+                    this._stopAutoRefreshOnErrors();
                     Notification.error(res.error || i18n.t('modbus-ctrl-fail'));
                     this._appendDebugError(res.error || 'ReadCoils failed', res.debug);
                 } else {
@@ -1952,6 +1976,8 @@
                     this._renderCoilGrid();
                 }
             } catch (e) {
+                this._coilAutoRefreshErrors++;
+                this._stopAutoRefreshOnErrors();
                 if (this._coilStates.length === 0) {
                     for (var i = 0; i < p.channelCount; i++) this._coilStates.push(false);
                 }
@@ -2077,6 +2103,7 @@
         toggleCoilAutoRefresh() {
             const checked = document.getElementById('modbus-ctrl-auto-refresh')?.checked;
             if (checked) {
+                this._coilAutoRefreshErrors = 0;
                 this.refreshCoilStatus();
                 this._coilAutoRefreshTimer = setInterval(() => this.refreshCoilStatus(), 8000);
             } else {
@@ -2084,6 +2111,28 @@
                     clearInterval(this._coilAutoRefreshTimer);
                     this._coilAutoRefreshTimer = null;
                 }
+            }
+        },
+
+        // 连续失败 3 次后自动停止 Coil 自动刷新，避免 503 连锁
+        _stopAutoRefreshOnErrors() {
+            if (this._coilAutoRefreshErrors >= 3 && this._coilAutoRefreshTimer) {
+                clearInterval(this._coilAutoRefreshTimer);
+                this._coilAutoRefreshTimer = null;
+                var el = document.getElementById('modbus-ctrl-auto-refresh');
+                if (el) el.checked = false;
+                console.warn('[protocol] Coil auto-refresh stopped after', this._coilAutoRefreshErrors, 'consecutive errors');
+            }
+        },
+
+        // 连续失败 3 次后自动停止 PID 自动刷新
+        _stopPidAutoRefreshOnErrors() {
+            if (this._pidAutoRefreshErrors >= 3 && this._pidAutoRefreshTimer) {
+                clearInterval(this._pidAutoRefreshTimer);
+                this._pidAutoRefreshTimer = null;
+                var el = document.getElementById('modbus-ctrl-pid-auto-refresh');
+                if (el) el.checked = false;
+                console.warn('[protocol] PID auto-refresh stopped after', this._pidAutoRefreshErrors, 'consecutive errors');
             }
         },
 

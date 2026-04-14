@@ -103,6 +103,7 @@ struct ModbusSubDevice {
     uint16_t coilBase;          // 线圈/寄存器基地址
     bool     ncMode;            // NC 常闭模式
     uint8_t  controlProtocol;   // 0=线圈(FC01/FC05), 1=寄存器(FC03/FC06)
+    uint16_t batchRegister;     // 位图批量寄存器地址(如0x0001)，0表示不使用
     // PWM 扩展
     uint16_t pwmRegBase;        // PWM 寄存器基地址
     uint8_t  pwmResolution;     // PWM 分辨率(bits)
@@ -113,7 +114,7 @@ struct ModbusSubDevice {
 
     ModbusSubDevice()
         : slaveAddress(1), channelCount(2), coilBase(0),
-          ncMode(false), controlProtocol(0),
+          ncMode(false), controlProtocol(0), batchRegister(0),
           pwmRegBase(0), pwmResolution(8), pidDecimals(1), enabled(true) {
         memset(name, 0, sizeof(name));
         strncpy(name, "Device", sizeof(name) - 1);

@@ -183,6 +183,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                 devObj["coilBase"]        = dv["coilBase"] | 0;
                 devObj["ncMode"]          = dv["ncMode"] | false;
                 devObj["controlProtocol"] = dv["controlProtocol"] | 0;
+                devObj["batchRegister"]   = dv["batchRegister"] | 0;
                 devObj["pwmRegBase"]      = dv["pwmRegBase"] | 0;
                 devObj["pwmResolution"]   = dv["pwmResolution"] | 8;
                 devObj["pidDecimals"]     = dv["pidDecimals"] | 1;

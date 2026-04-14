@@ -1041,6 +1041,15 @@
         // ============ Modbus子设备控制方法 ============
 
         _dcModbusInitRunning: false,
+        _dcInitCancelled: false,
+
+        // 取消正在运行的初始化刷新（用户发起控制操作时调用）
+        _dcCancelInit: function() {
+            if (this._dcModbusInitRunning) {
+                this._dcInitCancelled = true;
+                console.log('[device-control] Init refresh cancelled by user action');
+            }
+        },
 
         _dcInitModbusDeviceStates: async function() {
             if (this._dcModbusInitRunning) {
@@ -1048,11 +1057,13 @@
                 return;
             }
             this._dcModbusInitRunning = true;
+            this._dcInitCancelled = false;
             var devices = this._modbusDevices || [];
             try {
                 // 串行刷新每个设备状态，避免并发请求导致 Modbus 总线超时
                 for (var i = 0; i < devices.length; i++) {
                     if (this.currentPage !== 'device-control') break;
+                    if (this._dcInitCancelled) break;
                     var dt = devices[i].deviceType || 'relay';
                     if (dt === 'relay') {
                         await this._dcRefreshCoilStatus(i);
@@ -1063,11 +1074,12 @@
                     }
                     // 设备间间隔 250ms，给 ESP32 更多缓冲时间
                     if (i < devices.length - 1) {
-                        await new Promise(function(resolve) { setTimeout(resolve, 250); });
+                        await new Promise(function(resolve) { setTimeout(resolve, 150); });
                     }
                 }
             } finally {
                 this._dcModbusInitRunning = false;
+                this._dcInitCancelled = false;
             }
         },
 
@@ -1425,9 +1437,15 @@
             }).then(function(res) {
                 if (res && res.success && res.data && res.data.states) {
                     self._dcCoilStates[devIdx] = res.data.states;
+                    self._dcUpdateAllCoilUI(devIdx);
+                }
+            }).catch(function() {
+                // 设备未连接或读取失败，显示默认状态（全部OFF）
+                if (!self._dcCoilStates[devIdx]) {
+                    self._dcCoilStates[devIdx] = new Array(p.channelCount).fill(false);
                     self._dcRerenderCoilGrid(devIdx);
                 }
-            }).catch(function() {});
+            });
         },
 
         _dcRerenderCoilGrid: function(devIdx) {
@@ -1438,7 +1456,39 @@
             grid.outerHTML = this._renderDcCoilGrid(devIdx, p.channelCount, states, p.ncMode);
         },
 
+        // 单通道增量更新（仅修改 classList + textContent，不重建 DOM）
+        _dcUpdateSingleCoilUI: function(devIdx, ch) {
+            var dev = this._modbusDevices[devIdx];
+            if (!dev) return false;
+            var ncMode = dev.ncMode || false;
+            var states = this._dcCoilStates[devIdx] || [];
+            var coilState = ch < states.length ? states[ch] : false;
+            var isOn = ncMode ? !coilState : coilState;
+            var card = document.querySelector('.dc-coil-card[data-dev="' + devIdx + '"][data-ch="' + ch + '"]');
+            if (!card) { this._dcRerenderCoilGrid(devIdx); return false; }
+            card.classList.remove('dc-coil-on', 'dc-coil-off');
+            card.classList.add(isOn ? 'dc-coil-on' : 'dc-coil-off');
+            var stEl = card.querySelector('.dc-coil-st');
+            if (stEl) stEl.textContent = isOn
+                ? (this._t('modbus-ctrl-status-on') || 'ON')
+                : (this._t('modbus-ctrl-status-off') || 'OFF');
+            return true;
+        },
+
+        // 全通道增量更新（批量操作/状态刷新后使用）
+        _dcUpdateAllCoilUI: function(devIdx) {
+            var dev = this._modbusDevices[devIdx];
+            if (!dev) return;
+            var count = dev.channelCount || 8;
+            var grid = document.getElementById('dc-coil-grid-' + devIdx);
+            if (!grid) { this._dcRerenderCoilGrid(devIdx); return; }
+            for (var ch = 0; ch < count; ch++) {
+                this._dcUpdateSingleCoilUI(devIdx, ch);
+            }
+        },
+
         _dcToggleCoil: function(devIdx, ch, cardEl) {
+            this._dcCancelInit();
             var self = this;
             var p = this._dcGetCoilParams(devIdx);
             
@@ -1447,7 +1497,7 @@
             var prevState = (ch < states.length) ? states[ch] : false;
             if (ch < states.length) states[ch] = !prevState;
             this._dcCoilStates[devIdx] = states;
-            this._dcRerenderCoilGrid(devIdx);
+            this._dcUpdateSingleCoilUI(devIdx, ch);
             
             if (cardEl) {
                 cardEl.style.pointerEvents = 'none';
@@ -1463,14 +1513,14 @@
                     if (ch < st.length && st[ch] !== res.data.state) {
                         st[ch] = res.data.state;
                         self._dcCoilStates[devIdx] = st;
-                        self._dcRerenderCoilGrid(devIdx);
+                        self._dcUpdateSingleCoilUI(devIdx, ch);
                     }
                 } else {
                     // 失败：回滚状态
                     var st = self._dcCoilStates[devIdx] || [];
                     if (ch < st.length) st[ch] = prevState;
                     self._dcCoilStates[devIdx] = st;
-                    self._dcRerenderCoilGrid(devIdx);
+                    self._dcUpdateSingleCoilUI(devIdx, ch);
                     Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
                 }
                 if (cardEl) cardEl.style.pointerEvents = '';
@@ -1480,7 +1530,7 @@
                 var st = self._dcCoilStates[devIdx] || [];
                 if (ch < st.length) st[ch] = prevState;
                 self._dcCoilStates[devIdx] = st;
-                self._dcRerenderCoilGrid(devIdx);
+                self._dcUpdateSingleCoilUI(devIdx, ch);
                 Notification.error(self._t('modbus-ctrl-fail'));
                 if (cardEl) cardEl.style.pointerEvents = '';
                 self._dcCoilPending[devIdx + '_' + ch] = false;
@@ -1488,6 +1538,7 @@
         },
 
         _dcBatchCoil: function(devIdx, action, btnEl) {
+            this._dcCancelInit();
             var self = this;
             var p = this._dcGetCoilParams(devIdx);
             var modbusAction = action;
@@ -1501,7 +1552,7 @@
             }).then(function(res) {
                 if (res && res.success && res.data && res.data.states) {
                     self._dcCoilStates[devIdx] = res.data.states;
-                    self._dcRerenderCoilGrid(devIdx);
+                    self._dcUpdateAllCoilUI(devIdx);
                     Notification.success(self._t('modbus-ctrl-success'));
                 } else {
                     Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
@@ -1516,6 +1567,7 @@
         },
 
         _dcStartCoilDelay: function(devIdx, channel, delayUnits) {
+            this._dcCancelInit();
             var self = this;
             var p = this._dcGetCoilParams(devIdx);
             var dev = this._modbusDevices[devIdx] || {};
@@ -1598,6 +1650,7 @@
         },
 
         _dcSetPwmChannel: function(devIdx, ch, value) {
+            this._dcCancelInit();
             var self = this;
             var p = this._dcGetPwmParams(devIdx);
             value = Math.max(0, Math.min(value, p.maxValue));
@@ -1620,6 +1673,7 @@
         },
 
         _dcBatchPwm: function(devIdx, action) {
+            this._dcCancelInit();
             var self = this;
             var p = this._dcGetPwmParams(devIdx);
             var values = [];
@@ -1696,6 +1750,7 @@
         },
 
         _dcSetPidParam: function(devIdx, paramName, displayValue) {
+            this._dcCancelInit();
             var self = this;
             var p = this._dcGetPidParams(devIdx);
             var addrMap = { sv: p.svAddr, p: p.pAddr, i: p.iAddr, d: p.dAddr };
