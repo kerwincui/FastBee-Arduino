@@ -1410,6 +1410,9 @@
             var type = document.getElementById('mdev-edit-type').value;
             var pwmSec = document.getElementById('mdev-edit-pwm-section');
             var pidSec = document.getElementById('mdev-edit-pid-section');
+            // 先移除 fb-hidden（含 !important），再用 toggleVisible 统一控制显隐
+            if (pwmSec) pwmSec.classList.remove('fb-hidden');
+            if (pidSec) pidSec.classList.remove('fb-hidden');
             if (pwmSec) AppState.toggleVisible(pwmSec, type === 'pwm');
             if (pidSec) AppState.toggleVisible(pidSec, type === 'pid');
         },
@@ -1485,10 +1488,14 @@
             var title = document.getElementById('modbus-ctrl-modal-title');
             if (title) title.textContent = (dev.name || 'Device') + ' - ' + (i18n.t('modbus-device-ctrl-title') || '设备控制');
             var relayConfig = document.getElementById('modbus-relay-config');
-            if (relayConfig) AppState.toggleVisible(relayConfig, type === 'relay');
             var relayPanel = document.getElementById('modbus-relay-panel');
             var pwmPanel = document.getElementById('modbus-pwm-panel');
             var pidPanel = document.getElementById('modbus-pid-panel');
+            // 先移除 fb-hidden（含 !important），再用 toggleVisible 统一控制显隐
+            [relayConfig, relayPanel, pwmPanel, pidPanel].forEach(function(el) {
+                if (el) el.classList.remove('fb-hidden');
+            });
+            if (relayConfig) AppState.toggleVisible(relayConfig, type === 'relay');
             if (relayPanel) AppState.toggleVisible(relayPanel, type === 'relay');
             if (pwmPanel) AppState.toggleVisible(pwmPanel, type === 'pwm');
             if (pidPanel) AppState.toggleVisible(pidPanel, type === 'pid');
@@ -1557,6 +1564,9 @@
             types.forEach(function(t) {
                 var panel = document.getElementById('modbus-' + t + '-panel');
                 var config = document.getElementById('modbus-' + t + '-config');
+                // 先移除 fb-hidden（含 !important），再用 toggleVisible 统一控制显隐
+                if (panel) panel.classList.remove('fb-hidden');
+                if (config) config.classList.remove('fb-hidden');
                 if (panel) AppState.toggleVisible(panel, t === type);
                 if (config) AppState.toggleVisible(config, t === type);
             });

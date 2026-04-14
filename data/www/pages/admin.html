@@ -43,10 +43,13 @@
     <div class="card">
         <div class="card-header u-header-between">
             <h2 class="card-title" id="users-title">用户管理</h2>
-            <button class="fb-btn fb-btn-primary" id="add-user-btn"
-                data-i18n="add-user-btn-text">
-                添加用户
-            </button>
+            <div class="u-toolbar-sm">
+                <button class="fb-btn fb-btn-refresh" id="users-refresh-btn">&#x21bb; 刷新</button>
+                <button class="fb-btn fb-btn-primary" id="add-user-btn"
+                    data-i18n="add-user-btn-text">
+                    添加用户
+                </button>
+            </div>
         </div>
         <div class="card-body">
             <div class="u-table-wrap">
@@ -75,7 +78,7 @@
         <div class="card-header u-header-between">
             <h2 class="card-title" id="roles-title">角色管理</h2>
             <div class="u-toolbar-sm">
-                <button class="fb-btn fb-btn-sm fb-btn-refresh" id="roles-refresh-btn">&#x21bb; 刷新</button>
+                <button class="fb-btn fb-btn-refresh" id="roles-refresh-btn">&#x21bb; 刷新</button>
                 <button class="fb-btn fb-btn-primary" id="add-role-btn"
                     data-i18n="add-role-btn-text">
                     新增角色
