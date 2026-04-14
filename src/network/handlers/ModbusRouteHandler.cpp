@@ -537,20 +537,20 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
         // 寄存器模式：FC06 写保持寄存器
         // 写入成功后状态直接确定，无需再读取确认
         if (action == "on") {
-            result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 1);
+            result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 1, true);  // isControl=true
             newState = true;
         } else if (action == "off") {
-            result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 0);
+            result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 0, true);  // isControl=true
             newState = false;
         } else if (action == "toggle") {
             // 先读当前值再反转
-            OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x03, coilAddr, 1);
+            OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x03, coilAddr, 1, true);  // isControl=true
             if (readR.error != ONESHOT_SUCCESS) {
                 sendOneShotError(ctx, request, readR);
                 return;
             }
             uint16_t newVal = (readR.data[0] != 0) ? 0 : 1;
-            result = modbus->writeRegisterOnce(slaveAddr, coilAddr, newVal);
+            result = modbus->writeRegisterOnce(slaveAddr, coilAddr, newVal, true);  // isControl=true
             newState = (newVal != 0);  // 写入值即为新状态
         } else {
             ctx->sendBadRequest(request, "Invalid action (on/off/toggle)");
@@ -560,20 +560,20 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
         // 线圈模式：FC05 写线圈
         // 写入成功后直接推导状态，无需额外读取确认
         if (action == "on") {
-            result = modbus->writeCoilOnce(slaveAddr, coilAddr, true);
+            result = modbus->writeCoilOnce(slaveAddr, coilAddr, true, true);  // isControl=true
             if (result.error == ONESHOT_SUCCESS) newState = true;
         } else if (action == "off") {
-            result = modbus->writeCoilOnce(slaveAddr, coilAddr, false);
+            result = modbus->writeCoilOnce(slaveAddr, coilAddr, false, true);  // isControl=true
             if (result.error == ONESHOT_SUCCESS) newState = false;
         } else if (action == "toggle") {
             // toggle 无法从写入值推导结果，需要先读取当前状态
-            OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, 8);
+            OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, 8, true);  // isControl=true
             if (readR.error != ONESHOT_SUCCESS) {
                 sendOneShotError(ctx, request, readR);
                 return;
             }
             bool currentState = (readR.data[channel] != 0);
-            result = modbus->writeCoilOnce(slaveAddr, coilAddr, !currentState);
+            result = modbus->writeCoilOnce(slaveAddr, coilAddr, !currentState, true);  // isControl=true
             if (result.error == ONESHOT_SUCCESS) newState = !currentState;
         } else {
             ctx->sendBadRequest(request, "Invalid action (on/off/toggle)");
@@ -638,7 +638,7 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
         if (action == "allOn" || action == "allOff") {
             uint16_t targetVal = (action == "allOn") ? 1 : 0;
             for (uint16_t i = 0; i < channelCount; i++) {
-                OneShotResult wr = modbus->writeRegisterOnce(slaveAddr, coilBase + i, targetVal);
+                OneShotResult wr = modbus->writeRegisterOnce(slaveAddr, coilBase + i, targetVal, true);  // isControl=true
                 if (wr.error != ONESHOT_SUCCESS) {
                     sendOneShotError(ctx, request, wr);
                     return;
@@ -647,14 +647,14 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
             result.error = ONESHOT_SUCCESS;
         } else if (action == "allToggle") {
             // 先读取所有状态再逐个反转
-            OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x03, coilBase, channelCount);
+            OneShotResult readR = modbus->readRegistersOnce(slaveAddr, 0x03, coilBase, channelCount, true);  // isControl=true
             if (readR.error != ONESHOT_SUCCESS) {
                 sendOneShotError(ctx, request, readR);
                 return;
             }
             for (uint16_t i = 0; i < channelCount; i++) {
                 uint16_t newVal = (readR.data[i] != 0) ? 0 : 1;
-                OneShotResult wr = modbus->writeRegisterOnce(slaveAddr, coilBase + i, newVal);
+                OneShotResult wr = modbus->writeRegisterOnce(slaveAddr, coilBase + i, newVal, true);  // isControl=true
                 if (wr.error != ONESHOT_SUCCESS) {
                     sendOneShotError(ctx, request, wr);
                     return;
@@ -670,7 +670,7 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
         if (action == "allOn" || action == "allOff") {
             bool targetOn = (action == "allOn");
             for (uint16_t i = 0; i < channelCount; i++) {
-                OneShotResult writeResult = modbus->writeCoilOnce(slaveAddr, coilBase + i, targetOn);
+                OneShotResult writeResult = modbus->writeCoilOnce(slaveAddr, coilBase + i, targetOn, true);  // isControl=true
                 if (writeResult.error != ONESHOT_SUCCESS) {
                     sendOneShotError(ctx, request, writeResult);
                     return;
@@ -678,7 +678,7 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
             }
             result.error = ONESHOT_SUCCESS;
         } else if (action == "allToggle") {
-            result = modbus->writeCoilOnce(slaveAddr, coilBase, (uint16_t)0x5A00);
+            result = modbus->writeCoilOnce(slaveAddr, coilBase, (uint16_t)0x5A00, true);  // isControl=true
         } else {
             ctx->sendBadRequest(request, "Invalid action (allOn/allOff/allToggle)");
             return;
@@ -693,11 +693,11 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
     // 操作后读取实际状态
     OneShotResult readResult;
     if (mode == "register") {
-        readResult = modbus->readRegistersOnce(slaveAddr, 0x03, coilBase, channelCount);
+        readResult = modbus->readRegistersOnce(slaveAddr, 0x03, coilBase, channelCount, true);  // isControl=true
     } else {
         uint16_t readQty = ((channelCount + 7) / 8) * 8;
         if (readQty < 8) readQty = 8;
-        readResult = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, readQty);
+        readResult = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, readQty, true);  // isControl=true
     }
     
     JsonDocument doc;
@@ -761,7 +761,7 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
         // 寄存器模式：使用 FC 0x06 写寄存器
         if (ncMode) {
             // NC 常闭模式：先写 0（断开），延时后写 1（恢复）
-            OneShotResult result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 0);
+            OneShotResult result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 0, true);  // isControl=true
             if (result.error != ONESHOT_SUCCESS) {
                 sendOneShotError(ctx, request, result);
                 return;
@@ -773,7 +773,7 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
             }
         } else {
             // NO 常开模式：先写 1（吸合），延时后写 0（断开）
-            OneShotResult result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 1);
+            OneShotResult result = modbus->writeRegisterOnce(slaveAddr, coilAddr, 1, true);  // isControl=true
             if (result.error != ONESHOT_SUCCESS) {
                 sendOneShotError(ctx, request, result);
                 return;
@@ -806,7 +806,7 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
         // NO模式: 先写ON(设备通) → 延时后自动OFF(设备断)
         // NC模式: 先写OFF(NC闭合=设备通) → 延时后写ON(NC断开=设备断)
         bool initialValue = ncMode ? false : true;  // NO写ON, NC写OFF
-        OneShotResult result = modbus->writeCoilOnce(slaveAddr, coilAddr, initialValue);
+        OneShotResult result = modbus->writeCoilOnce(slaveAddr, coilAddr, initialValue, true);  // isControl=true
         if (result.error != ONESHOT_SUCCESS) {
             sendOneShotError(ctx, request, result);
             return;
@@ -828,7 +828,7 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
             uint16_t delayAddr = delayBase + channel;
             uint16_t rawValue = ((uint16_t)delayUnits) << 8;
 
-            result = modbus->writeCoilOnce(slaveAddr, delayAddr, rawValue);
+            result = modbus->writeCoilOnce(slaveAddr, delayAddr, rawValue, true);  // isControl=true
             if (result.error != ONESHOT_SUCCESS) {
                 sendOneShotError(ctx, request, result);
                 return;
@@ -889,12 +889,12 @@ void ModbusRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request) 
     OneShotResult result;
     if (mode == "register") {
         // 寄存器模式：FC03 读保持寄存器，每通道一个寄存器，值 !=0 为 ON
-        result = modbus->readRegistersOnce(slaveAddr, 0x03, coilBase, channelCount);
+        result = modbus->readRegistersOnce(slaveAddr, 0x03, coilBase, channelCount, true);  // isControl=true
     } else {
         // 线圈模式：FC01 读线圈，向上取整到 8 的倍数
         uint16_t readQty = ((channelCount + 7) / 8) * 8;
         if (readQty < 8) readQty = 8;
-        result = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, readQty);
+        result = modbus->readRegistersOnce(slaveAddr, 0x01, coilBase, readQty, true);  // isControl=true
     }
     if (result.error != ONESHOT_SUCCESS) {
         sendOneShotError(ctx, request, result);
@@ -948,7 +948,7 @@ void ModbusRouteHandler::handleModbusDeviceAddress(AsyncWebServerRequest* reques
         // 读取当前地址：使用广播地址 0x00（文档确认：00 03 00 00 00 01 85 DB）
         // 设备会以实际地址响应（如 03 03 02 00 03 ...）
         // sendOneShotRequest 中 expectedSlaveAddr==0 时已跳过地址匹配
-        OneShotResult result = modbus->readRegistersOnce(0x00, 0x03, addrRegister, 1);
+        OneShotResult result = modbus->readRegistersOnce(0x00, 0x03, addrRegister, 1, true);  // isControl=true
         if (result.error != ONESHOT_SUCCESS) {
             sendOneShotError(ctx, request, result);
             return;
@@ -963,7 +963,7 @@ void ModbusRouteHandler::handleModbusDeviceAddress(AsyncWebServerRequest* reques
             return;
         }
         uint16_t regValues[1] = { newAddr };
-        OneShotResult result = modbus->writeMultipleRegistersOnce(0x00, addrRegister, 1, regValues);
+        OneShotResult result = modbus->writeMultipleRegistersOnce(0x00, addrRegister, 1, regValues, true);  // isControl=true
         if (result.error != ONESHOT_SUCCESS) {
             sendOneShotError(ctx, request, result);
             return;
@@ -1027,7 +1027,7 @@ void ModbusRouteHandler::handleModbusDeviceBaudrate(AsyncWebServerRequest* reque
     frame[4] = baudCode;
     frame[5] = 0x00;
     
-    OneShotResult result = modbus->sendRawFrameOnce(slaveAddr, frame, 6);
+    OneShotResult result = modbus->sendRawFrameOnce(slaveAddr, frame, 6, true);  // isControl=true
     if (result.error != ONESHOT_SUCCESS) {
         sendOneShotError(ctx, request, result);
         return;
@@ -1074,7 +1074,7 @@ void ModbusRouteHandler::handleModbusDiscreteInputs(AsyncWebServerRequest* reque
     // 同 FC 0x01，使用 qty 向上取整到 8 的倍数确保标准格式
     uint16_t readQty = ((inputCount + 7) / 8) * 8;
     if (readQty < 8) readQty = 8;
-    OneShotResult result = modbus->readRegistersOnce(slaveAddr, 0x02, inputBase, readQty);
+    OneShotResult result = modbus->readRegistersOnce(slaveAddr, 0x02, inputBase, readQty, true);  // isControl=true
     if (result.error != ONESHOT_SUCCESS) {
         sendOneShotError(ctx, request, result);
         return;
@@ -1127,7 +1127,7 @@ void ModbusRouteHandler::handleModbusRegisterRead(AsyncWebServerRequest* request
         return;
     }
     
-    OneShotResult result = modbus->readRegistersOnce(slaveAddr, fc, startAddr, quantity);
+    OneShotResult result = modbus->readRegistersOnce(slaveAddr, fc, startAddr, quantity, true);  // isControl=true
     if (result.error != ONESHOT_SUCCESS) {
         sendOneShotError(ctx, request, result);
         return;
@@ -1171,7 +1171,7 @@ void ModbusRouteHandler::handleModbusRegisterWrite(AsyncWebServerRequest* reques
         return;
     }
     
-    OneShotResult result = modbus->writeRegisterOnce(slaveAddr, regAddr, value);
+    OneShotResult result = modbus->writeRegisterOnce(slaveAddr, regAddr, value, true);  // isControl=true
     if (result.error != ONESHOT_SUCCESS) {
         sendOneShotError(ctx, request, result);
         return;
@@ -1231,7 +1231,7 @@ void ModbusRouteHandler::handleModbusRegisterBatchWrite(AsyncWebServerRequest* r
         regValues[i] = (uint16_t)arr[i].as<int>();
     }
     
-    OneShotResult result = modbus->writeMultipleRegistersOnce(slaveAddr, startAddr, quantity, regValues);
+    OneShotResult result = modbus->writeMultipleRegistersOnce(slaveAddr, startAddr, quantity, regValues, true);  // isControl=true
     if (result.error != ONESHOT_SUCCESS) {
         sendOneShotError(ctx, request, result);
         return;

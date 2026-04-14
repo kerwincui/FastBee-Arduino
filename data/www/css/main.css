@@ -1353,8 +1353,32 @@ select:hover, .form-select:hover {
 .badge-primary { background: var(--primary-light); color: var(--primary-dark); }
 
 /* === 9. Modal System === */
-.modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgb(0 0 0 / 0.5); display: none; align-items: center; justify-content: center; z-index: 1000; }
-.modal-content { background: var(--bg-card); border-radius: var(--rounded-xl); box-shadow: var(--shadow-lg); width: 90%; max-width: 500px; max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; }
+.modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgb(0 0 0 / 0.5);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  overscroll-behavior: contain;
+}
+.modal.is-visible { display: flex; }
+.modal-content {
+  background: var(--bg-card);
+  border-radius: var(--rounded-xl);
+  box-shadow: var(--shadow-lg);
+  width: 90%;
+  max-width: 500px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  margin: auto;
+}
 .modal-header { flex-shrink: 0; padding: var(--space-4) var(--space-6); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 1; background: var(--bg-card); }
 .modal-body { flex: 1; padding: var(--space-6); overflow-y: auto; }
 .modal-footer { flex-shrink: 0; padding: var(--space-4) var(--space-6); border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: var(--space-3); background: var(--bg-card); }
@@ -1895,7 +1919,7 @@ input:focus, select:focus, textarea:focus, .pure-input-1:focus { border-color: v
   .pure-table td:first-child { min-width: 80px; }
   .pure-table td:last-child { min-width: 120px; }
   .pure-button { padding: var(--space-2) var(--space-4); font-size: 14px; }
-  .modal-content { width: 95%; max-width: none; max-height: 90vh; margin: 0; }
+  .modal-content { width: 95%; max-width: none; max-height: 90vh; }
 }
 
 /* === Utility Classes === */
@@ -2308,8 +2332,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .logs-file-name { display: none; }
   .logs-info { order: -1; }
   .logs-auto-refresh { order: 0; }
-  .modal { padding: var(--space-3) 0; }
-  .modal-content { width: calc(100% - 12px) !important; border-radius: var(--rounded-lg); }
+  .modal-content { width: calc(100% - 12px) !important; border-radius: var(--rounded-lg); max-height: 90vh; }
   .modal-header, .modal-body, .modal-footer { padding-left: var(--space-4); padding-right: var(--space-4); }
   .form-section { padding: var(--space-4); }
   .stats-grid, .info-grid, .form-grid, .config-form-grid { grid-template-columns: 1fr !important; }
@@ -2820,4 +2843,41 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .dc-modbus-device-panel { padding: 10px; }
   .dc-modbus-actions { gap: 5px; }
   .dc-btn-sm { padding: 4px 10px; font-size: 11px; }
+}
+
+/* === Skeleton Screen === */
+.skeleton {
+    padding: 20px;
+    animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+.skeleton-content {
+    max-width: 800px;
+    margin: 0 auto;
+}
+.skeleton-header {
+    height: 32px;
+    background: #e0e0e0;
+    border-radius: 4px;
+    margin-bottom: 24px;
+    width: 40%;
+}
+.skeleton-card {
+    height: 120px;
+    background: #e0e0e0;
+    border-radius: 8px;
+    margin-bottom: 16px;
+}
+.skeleton-card.short {
+    width: 60%;
+    height: 80px;
+}
+@keyframes skeleton-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+/* Dark theme for skeleton */
+[data-theme="dark"] .skeleton-header,
+[data-theme="dark"] .skeleton-card {
+    background: var(--gray-8);
 }

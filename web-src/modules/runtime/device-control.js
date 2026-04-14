@@ -1012,16 +1012,21 @@
 
         // ============ Modbus子设备控制方法 ============
 
-        _dcInitModbusDeviceStates: function() {
+        _dcInitModbusDeviceStates: async function() {
             var devices = this._modbusDevices || [];
+            // 串行刷新每个设备状态，避免并发请求导致 Modbus 总线超时
             for (var i = 0; i < devices.length; i++) {
                 var dt = devices[i].deviceType || 'relay';
                 if (dt === 'relay') {
-                    this._dcRefreshCoilStatus(i);
+                    await this._dcRefreshCoilStatus(i);
                 } else if (dt === 'pwm') {
-                    this._dcRefreshPwmStatus(i);
+                    await this._dcRefreshPwmStatus(i);
                 } else if (dt === 'pid') {
-                    this._dcRefreshPidStatus(i);
+                    await this._dcRefreshPidStatus(i);
+                }
+                // 设备间间隔 100ms，确保 Modbus 总线稳定
+                if (i < devices.length - 1) {
+                    await new Promise(function(resolve) { setTimeout(resolve, 100); });
                 }
             }
         },
@@ -1052,7 +1057,7 @@
         _dcRefreshCoilStatus: function(devIdx) {
             var self = this;
             var p = this._dcGetCoilParams(devIdx);
-            apiGetSilent('/api/modbus/coil/status', {
+            return apiGetSilent('/api/modbus/coil/status', {
                 slaveAddress: p.slaveAddress, channelCount: p.channelCount,
                 coilBase: p.coilBase, mode: p.relayMode
             }).then(function(res) {
@@ -1193,7 +1198,7 @@
         _dcRefreshPwmStatus: function(devIdx) {
             var self = this;
             var p = this._dcGetPwmParams(devIdx);
-            apiGetSilent('/api/modbus/register/read', {
+            return apiGetSilent('/api/modbus/register/read', {
                 slaveAddress: p.slaveAddress,
                 startAddress: p.regBase,
                 quantity: p.channelCount,
@@ -1287,13 +1292,13 @@
         _dcRefreshPidStatus: function(devIdx) {
             var self = this;
             var p = this._dcGetPidParams(devIdx);
-            if (!p.slaveAddress) return;
+            if (!p.slaveAddress) return Promise.resolve();
             var addrs = [p.pvAddr, p.svAddr, p.outAddr, p.pAddr, p.iAddr, p.dAddr];
             var minAddr = Math.min.apply(null, addrs);
             var maxAddr = Math.max.apply(null, addrs);
             var quantity = maxAddr - minAddr + 1;
-            if (quantity > 125) return;
-            apiGetSilent('/api/modbus/register/read', {
+            if (quantity > 125) return Promise.resolve();
+            return apiGetSilent('/api/modbus/register/read', {
                 slaveAddress: p.slaveAddress, startAddress: minAddr,
                 quantity: quantity, functionCode: 3
             }).then(function(res) {

@@ -1,0 +1,132 @@
+<!-- 文件管理页面 -->
+<div id="data-page" class="page">
+    <div class="card">
+        <div class="card-header u-flex-between-center">
+            <h2 class="card-title" data-i18n="data-page-title">文件管理</h2>
+            <span id="fs-info" class="u-fs-12 u-text-secondary"></span>
+        </div>
+        <div class="card-body">
+            <div class="fs-layout">
+                <!-- 文件树 -->
+                <div class="fs-sidebar">
+                    <div class="fs-sidebar-header">
+                        <div class="fs-sidebar-actions"><button class="btn btn-sm btn-secondary" id="fs-refresh-btn" data-i18n="fs-refresh-btn">刷新</button><button class="btn btn-sm btn-secondary" id="fs-up-btn" data-i18n="fs-up-btn">返回上级</button></div><span id="current-dir-path" class="fs-current-dir">/</span>
+                    </div>
+                    <div id="file-tree" class="fs-tree">
+                        <div class="fs-tree-empty" data-i18n="fs-loading">加载中...</div>
+                    </div>
+                </div>
+                <!-- 文件编辑器 -->
+                <div class="fs-editor">
+                    <div class="fs-editor-header">
+                        <span id="current-file-path" class="fs-editor-path"
+                            data-i18n="fs-select-file">请选择文件</span>
+                        <div class="fs-editor-actions">
+                            <button class="fb-btn fb-btn-sm fb-btn-primary"
+                                id="fs-save-btn" disabled data-i18n="fs-save-btn">保存</button>
+                            <button class="fb-btn fb-btn-sm" id="fs-close-btn" disabled
+                                data-i18n="fs-close-btn">关闭</button>
+                        </div>
+                    </div>
+                    <textarea id="file-editor" class="fs-editor-textarea"
+                        data-i18n-placeholder="fs-editor-placeholder" disabled></textarea>
+                    <div id="file-status" class="fs-status">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 用户管理页面 -->
+<div id="users-page" class="page page-layout-flat">
+    <div class="card">
+        <div class="card-header u-header-between">
+            <h2 class="card-title" id="users-title">用户管理</h2>
+            <button class="fb-btn fb-btn-primary" id="add-user-btn"
+                data-i18n="add-user-btn-text">
+                添加用户
+            </button>
+        </div>
+        <div class="card-body">
+            <div class="u-table-wrap">
+                <table class="pure-table pure-table-bordered u-table-fill">
+                    <thead>
+                        <tr>
+                            <th id="user-username-col">用户名</th>
+                            <th id="user-role-col">角色</th>
+                            <th id="user-lastlogin-col">最后登录</th>
+                            <th id="user-status-col">状态</th>
+                            <th id="user-actions-col">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="users-table-body">
+                        <!-- 用户数据将通过JS动态生成 -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 角色管理页面 -->
+<div id="roles-page" class="page page-layout-flat">
+    <div class="card">
+        <div class="card-header u-header-between">
+            <h2 class="card-title" id="roles-title">角色管理</h2>
+            <button class="fb-btn fb-btn-primary" id="add-role-btn"
+                data-i18n="add-role-btn-text">
+                新增角色
+            </button>
+        </div>
+        <div class="card-body">
+            <p class="u-text-secondary u-mb-20" data-i18n="roles-admin-hint">
+                超级管理员(admin)角色不可编辑或删除，其他角色可进行管理操作。</p>
+            <div class="u-table-wrap">
+                <table class="pure-table pure-table-bordered u-table-fill">
+                    <thead>
+                        <tr>
+                            <th data-i18n="role-id-col">角色ID</th>
+                            <th data-i18n="role-name-col">角色名称</th>
+                            <th data-i18n="role-desc-col">描述</th>
+                            <th data-i18n="role-perm-count-col">权限数</th>
+                            <th data-i18n="role-type-col">类型</th>
+                            <th data-i18n="role-actions-col">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="roles-table-body">
+                        <!-- 角色数据将通过JS动态生成 -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 设备日志页面 -->
+<div id="logs-page" class="page page-layout-flat">
+    <div class="card">
+        <div class="card-header card-header-toolbar">
+            <h2 class="card-title" data-i18n="page-title-logs">设备日志</h2>
+            <div class="card-header-actions">
+                <span id="current-log-file" class="logs-file-name">system.log</span>
+                <span id="log-info" class="logs-info"></span>
+                <label class="logs-auto-refresh">
+                    <input type="checkbox" id="log-auto-refresh" checked>
+                    <span data-i18n="log-auto-refresh-label">自动刷新</span>
+                </label>
+                <button class="btn btn-sm btn-secondary" id="refresh-logs-btn">
+                    <span class="icon-refresh"></span> <span data-i18n="log-refresh-btn">刷新日志</span>
+                </button>
+                <button class="btn btn-sm btn-delete" id="clear-logs-btn">
+                    <span class="icon-delete"></span> <span data-i18n="log-clear-btn">清空日志</span>
+                </button>
+            </div>
+        </div>
+        <div class="card-body u-p-0">
+            <div id="device-log-container" class="logs-page-content">
+                <div class="logs-loading" data-i18n="log-loading">正在加载日志...</div>
+            </div>
+        </div>
+    </div>
+</div>

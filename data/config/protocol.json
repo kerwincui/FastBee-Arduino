@@ -8,8 +8,8 @@
     "transferType": 0,
     "workMode": 1,
     "master": {
-      "responseTimeout": 1000,
-      "maxRetries": 2,
+      "responseTimeout": 500,
+      "maxRetries": 1,
       "interPollDelay": 100,
       "tasks": [
         {

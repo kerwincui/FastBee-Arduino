@@ -1362,6 +1362,8 @@
             dev.pidDecimals = parseInt(document.getElementById('mdev-edit-pid-decimals').value) || 1;
             this._renderAllDevices();
             this._closeEditModal();
+            // 自动保存整个协议配置到后端
+            this.saveProtocolConfig('modbus-rtu-form');
         },
 
         // ========== 控制弹窗 ==========

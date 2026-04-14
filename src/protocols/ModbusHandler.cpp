@@ -38,7 +38,7 @@ bool isReadFunctionCode(uint8_t functionCode) {
 
 ModbusHandler::ModbusHandler() 
     : isInitialized(false), modbusSerial(&Serial2),
-      isOneShotReading(false), _oneShotSemaphore(nullptr),
+      isOneShotReading(false), _oneShotSemaphore(nullptr), _controlPending(false),
       _totalPollCount(0), _successPollCount(0), _failedPollCount(0), _timeoutPollCount(0), _lastPollTime(0) {
     memset(holdingRegisters, 0, sizeof(holdingRegisters));
     memset(inputRegisters, 0, sizeof(inputRegisters));
@@ -345,6 +345,7 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                 dev.pwmRegBase      = d["pwmRegBase"] | (uint16_t)0;
                 dev.pwmResolution   = d["pwmResolution"] | (uint8_t)8;
                 dev.pidDecimals     = d["pidDecimals"] | (uint8_t)1;
+                dev.enabled         = d["enabled"] | true;
                 if (d.containsKey("pidAddrs") && d["pidAddrs"].is<JsonArray>()) {
                     JsonArray pa = d["pidAddrs"].as<JsonArray>();
                     for (int i = 0; i < 6 && i < (int)pa.size(); i++)
@@ -426,6 +427,7 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
         d["pwmRegBase"]      = dev.pwmRegBase;
         d["pwmResolution"]   = dev.pwmResolution;
         d["pidDecimals"]     = dev.pidDecimals;
+        d["enabled"]         = dev.enabled;
         JsonArray pa = d.createNestedArray("pidAddrs");
         for (int j = 0; j < 6; j++) pa.add(dev.pidAddrs[j]);
     }
@@ -1178,7 +1180,7 @@ bool ModbusHandler::masterWriteSingleRegister(uint8_t slaveAddr, uint16_t regAdd
 // ========== 一次性寄存器读取（阻塞式，用于MQTT指令触发） ==========
 
 OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t functionCode,
-                                                uint16_t startAddress, uint16_t quantity) {
+                                                uint16_t startAddress, uint16_t quantity, bool isControl) {
     OneShotResult result;
 
     // 参数校验（读操作特有）
@@ -1195,8 +1197,8 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
         return result;
     }
 
-    LOG_INFOF("[Modbus] OneShot read: slave=%d fc=0x%02X addr=%d qty=%d",
-              slaveAddress, functionCode, startAddress, quantity);
+    LOG_INFOF("[Modbus] OneShot read: slave=%d fc=0x%02X addr=%d qty=%d isControl=%d",
+              slaveAddress, functionCode, startAddress, quantity, isControl ? 1 : 0);
 
     // 构建读请求帧（FC 0x01-0x04 均为 8 字节固定格式）
     uint8_t requestBuffer[8];
@@ -1210,8 +1212,9 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
     requestBuffer[6] = crc & 0xFF;
     requestBuffer[7] = (crc >> 8) & 0xFF;
 
-    // 使用通用发送/接收
-    OneShotResult rawResult = sendOneShotRequest(requestBuffer, 8, slaveAddress);
+    // 使用通用发送/接收（控制操作使用快速通道）
+    OneShotResult rawResult = isControl ? sendControlRequest(requestBuffer, 8, slaveAddress)
+                                        : sendOneShotRequest(requestBuffer, 8, slaveAddress);
 
     if (rawResult.error != ONESHOT_SUCCESS) {
         return rawResult;
@@ -1306,65 +1309,13 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
 }
 
 // ============================================================================
-// 通用一次性发送/接收辅助方法
+// 内部：执行实际的 Modbus 通信（不涉及信号量，纯通信逻辑）
 // ============================================================================
-OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t reqLen,
-                                                 uint8_t expectedSlaveAddr) {
+OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, uint8_t reqLen,
+                                                        uint8_t expectedSlaveAddr) {
     OneShotResult result;
-
-    // 前置检查
-    if (!isInitialized || !modbusSerial) {
-        result.error = ONESHOT_NOT_INITIALIZED;
-        LOG_WARNING("[Modbus] OneShot: not initialized");
-        return result;
-    }
-    if (isOneShotReading) {
-        // 使用信号量等待总线空闲（FreeRTOS 友好）
-        if (_oneShotSemaphore) {
-            // 等待获取信号量，最多 2 秒
-            if (xSemaphoreTake(_oneShotSemaphore, pdMS_TO_TICKS(2000)) == pdFALSE) {
-                result.error = ONESHOT_BUSY;
-                LOG_WARNING("[Modbus] OneShot: busy (timeout waiting for semaphore)");
-                return result;
-            }
-            LOG_INFO("[Modbus] OneShot: bus was busy, now free after wait");
-        } else {
-            // 信号量未创建，使用旧的轮询方式（降级兼容）
-            const unsigned long maxWaitMs = 2000;
-            unsigned long startWait = millis();
-            while (isOneShotReading) {
-                if (millis() - startWait >= maxWaitMs) {
-                    result.error = ONESHOT_BUSY;
-                    LOG_WARNING("[Modbus] OneShot: busy (timeout waiting for bus)");
-                    return result;
-                }
-                vTaskDelay(pdMS_TO_TICKS(5));
-            }
-            LOG_INFO("[Modbus] OneShot: bus was busy, now free after wait");
-        }
-    } else {
-        // 总线空闲，立即获取信号量
-        if (_oneShotSemaphore) {
-            // 非阻塞获取，确保独占访问
-            if (xSemaphoreTake(_oneShotSemaphore, 0) == pdFALSE) {
-                result.error = ONESHOT_BUSY;
-                LOG_WARNING("[Modbus] OneShot: failed to acquire semaphore");
-                return result;
-            }
-        }
-    }
-    if (expectedSlaveAddr > 247) {
-        result.error = ONESHOT_EXCEPTION;
-        result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_ADDRESS;
-        LOG_WARNINGF("[Modbus] OneShot: invalid slave address %d", expectedSlaveAddr);
-        if (_oneShotSemaphore) {
-            xSemaphoreGive(_oneShotSemaphore);
-        }
-        return result;
-    }
-
-    // 设置守卫标志
-    isOneShotReading = true;
+    result.error = ONESHOT_TIMEOUT;
+    result.count = 0;
 
     // 超时参数
     uint16_t timeout = config.master.responseTimeout;
@@ -1480,6 +1431,73 @@ OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t 
         break;
     }
 
+    return result;
+}
+
+// ============================================================================
+// 通用一次性发送/接收辅助方法
+// ============================================================================
+OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t reqLen,
+                                                 uint8_t expectedSlaveAddr) {
+    OneShotResult result;
+
+    // 前置检查
+    if (!isInitialized || !modbusSerial) {
+        result.error = ONESHOT_NOT_INITIALIZED;
+        LOG_WARNING("[Modbus] OneShot: not initialized");
+        return result;
+    }
+    if (isOneShotReading) {
+        // 使用信号量等待总线空闲（FreeRTOS 友好）
+        if (_oneShotSemaphore) {
+            // 等待获取信号量，最多 2 秒
+            if (xSemaphoreTake(_oneShotSemaphore, pdMS_TO_TICKS(2000)) == pdFALSE) {
+                result.error = ONESHOT_BUSY;
+                LOG_WARNING("[Modbus] OneShot: busy (timeout waiting for semaphore)");
+                return result;
+            }
+            LOG_INFO("[Modbus] OneShot: bus was busy, now free after wait");
+        } else {
+            // 信号量未创建，使用旧的轮询方式（降级兼容）
+            const unsigned long maxWaitMs = 2000;
+            unsigned long startWait = millis();
+            while (isOneShotReading) {
+                if (millis() - startWait >= maxWaitMs) {
+                    result.error = ONESHOT_BUSY;
+                    LOG_WARNING("[Modbus] OneShot: busy (timeout waiting for bus)");
+                    return result;
+                }
+                vTaskDelay(pdMS_TO_TICKS(5));
+            }
+            LOG_INFO("[Modbus] OneShot: bus was busy, now free after wait");
+        }
+    } else {
+        // 总线空闲，立即获取信号量
+        if (_oneShotSemaphore) {
+            // 非阻塞获取，确保独占访问
+            if (xSemaphoreTake(_oneShotSemaphore, 0) == pdFALSE) {
+                result.error = ONESHOT_BUSY;
+                LOG_WARNING("[Modbus] OneShot: failed to acquire semaphore");
+                return result;
+            }
+        }
+    }
+    if (expectedSlaveAddr > 247) {
+        result.error = ONESHOT_EXCEPTION;
+        result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_ADDRESS;
+        LOG_WARNINGF("[Modbus] OneShot: invalid slave address %d", expectedSlaveAddr);
+        if (_oneShotSemaphore) {
+            xSemaphoreGive(_oneShotSemaphore);
+        }
+        return result;
+    }
+
+    // 设置守卫标志
+    isOneShotReading = true;
+
+    // 执行实际的 Modbus 通信
+    result = _executeModbusTransaction(request, reqLen, expectedSlaveAddr);
+
     isOneShotReading = false;
     // 释放信号量
     if (_oneShotSemaphore) {
@@ -1489,10 +1507,55 @@ OneShotResult ModbusHandler::sendOneShotRequest(const uint8_t* request, uint8_t 
 }
 
 // ============================================================================
+// 控制操作快速通道（高优先级，短超时）
+// ============================================================================
+OneShotResult ModbusHandler::sendControlRequest(uint8_t* requestBuffer, uint8_t requestLength, 
+                                                 uint8_t expectedSlaveAddress) {
+    OneShotResult result;
+    result.error = ONESHOT_TIMEOUT;
+    result.count = 0;
+    
+    if (!isInitialized || !modbusSerial) {
+        result.error = ONESHOT_NOT_INITIALIZED;
+        LOG_WARNING("[Modbus] ControlRequest: not initialized");
+        return result;
+    }
+    
+    // 设置控制挂起标志，通知轮询任务让路
+    _controlPending = true;
+    
+    // 尝试获取信号量（2000ms超时，与普通请求一致）
+    if (_oneShotSemaphore) {
+        if (xSemaphoreTake(_oneShotSemaphore, pdMS_TO_TICKS(2000)) == pdFALSE) {
+            _controlPending = false;
+            result.error = ONESHOT_BUSY;
+            LOG_WARNING("[Modbus] ControlRequest: busy (timeout waiting for semaphore)");
+            return result;
+        }
+    }
+    
+    // 设置守卫标志
+    isOneShotReading = true;
+    
+    // 执行实际的 Modbus 通信
+    result = _executeModbusTransaction(requestBuffer, requestLength, expectedSlaveAddress);
+    
+    // 释放信号量和标志
+    isOneShotReading = false;
+    if (_oneShotSemaphore) {
+        xSemaphoreGive(_oneShotSemaphore);
+    }
+    _controlPending = false;
+    
+    return result;
+}
+
+// ============================================================================
 // FC 0x05 写单个线圈（阻塞）
 // ============================================================================
-OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, bool value) {
-    LOG_INFOF("[Modbus] writeCoilOnce: slave=%d coil=%d value=%d", slaveAddr, coilAddr, value ? 1 : 0);
+OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, bool value, bool isControl) {
+    LOG_INFOF("[Modbus] writeCoilOnce: slave=%d coil=%d value=%d isControl=%d", 
+              slaveAddr, coilAddr, value ? 1 : 0, isControl ? 1 : 0);
 
     uint8_t request[8];
     request[0] = slaveAddr;
@@ -1505,7 +1568,8 @@ OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr,
     request[6] = crc & 0xFF;
     request[7] = (crc >> 8) & 0xFF;
 
-    OneShotResult result = sendOneShotRequest(request, 8, slaveAddr);
+    OneShotResult result = isControl ? sendControlRequest(request, 8, slaveAddr) 
+                                     : sendOneShotRequest(request, 8, slaveAddr);
 
     // 验证回显帧：FC 0x05 的正常响应是原请求的回显
     if (result.error == ONESHOT_SUCCESS && result.count >= 6) {
@@ -1521,8 +1585,9 @@ OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr,
 // ============================================================================
 // FC 0x05 写单个线圈 — 原始值版本（支持设备专有值如 0x5500 toggle）
 // ============================================================================
-OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, uint16_t rawValue) {
-    LOG_INFOF("[Modbus] writeCoilOnce(raw): slave=%d coil=%d rawValue=0x%04X", slaveAddr, coilAddr, rawValue);
+OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, uint16_t rawValue, bool isControl) {
+    LOG_INFOF("[Modbus] writeCoilOnce(raw): slave=%d coil=%d rawValue=0x%04X isControl=%d", 
+              slaveAddr, coilAddr, rawValue, isControl ? 1 : 0);
 
     uint8_t request[8];
     request[0] = slaveAddr;
@@ -1535,7 +1600,8 @@ OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr,
     request[6] = crc & 0xFF;
     request[7] = (crc >> 8) & 0xFF;
 
-    OneShotResult result = sendOneShotRequest(request, 8, slaveAddr);
+    OneShotResult result = isControl ? sendControlRequest(request, 8, slaveAddr) 
+                                     : sendOneShotRequest(request, 8, slaveAddr);
 
     if (result.error == ONESHOT_SUCCESS && result.count >= 6) {
         uint8_t respFC = (uint8_t)result.data[1];
@@ -1551,8 +1617,9 @@ OneShotResult ModbusHandler::writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr,
 // 发送原始 Modbus 帧（自动追加 CRC，用于设备专有功能码如 0xB0）
 // ============================================================================
 OneShotResult ModbusHandler::sendRawFrameOnce(uint8_t expectedSlaveAddr,
-                                               const uint8_t* dataWithoutCRC, uint8_t dataLen) {
-    LOG_INFOF("[Modbus] sendRawFrameOnce: slave=%d dataLen=%d", expectedSlaveAddr, dataLen);
+                                               const uint8_t* dataWithoutCRC, uint8_t dataLen, bool isControl) {
+    LOG_INFOF("[Modbus] sendRawFrameOnce: slave=%d dataLen=%d isControl=%d", 
+              expectedSlaveAddr, dataLen, isControl ? 1 : 0);
 
     if (dataLen < 2 || dataLen > (Protocols::MODBUS_BUFFER_SIZE - 2)) {
         OneShotResult result;
@@ -1567,14 +1634,15 @@ OneShotResult ModbusHandler::sendRawFrameOnce(uint8_t expectedSlaveAddr,
     frame[dataLen] = crc & 0xFF;
     frame[dataLen + 1] = (crc >> 8) & 0xFF;
 
-    return sendOneShotRequest(frame, dataLen + 2, expectedSlaveAddr);
+    return isControl ? sendControlRequest(frame, dataLen + 2, expectedSlaveAddr)
+                     : sendOneShotRequest(frame, dataLen + 2, expectedSlaveAddr);
 }
 
 // ============================================================================
 // FC 0x0F 写多个线圈（阻塞）
 // ============================================================================
 OneShotResult ModbusHandler::writeMultipleCoilsOnce(uint8_t slaveAddr, uint16_t startAddr,
-                                                     uint16_t quantity, const bool* values) {
+                                                     uint16_t quantity, const bool* values, bool isControl) {
     OneShotResult result;
 
     if (quantity == 0 || quantity > Protocols::MODBUS_MAX_WRITE_COILS) {
@@ -1617,7 +1685,8 @@ OneShotResult ModbusHandler::writeMultipleCoilsOnce(uint8_t slaveAddr, uint16_t 
     request[7 + byteCount] = crc & 0xFF;
     request[7 + byteCount + 1] = (crc >> 8) & 0xFF;
 
-    result = sendOneShotRequest(request, reqLen, slaveAddr);
+    result = isControl ? sendControlRequest(request, reqLen, slaveAddr)
+                       : sendOneShotRequest(request, reqLen, slaveAddr);
 
     // 验证响应：FC 0x0F 响应为 [addr, 0x0F, startH, startL, qtyH, qtyL, CRC]
     if (result.error == ONESHOT_SUCCESS && result.count >= 6) {
@@ -1633,8 +1702,9 @@ OneShotResult ModbusHandler::writeMultipleCoilsOnce(uint8_t slaveAddr, uint16_t 
 // ============================================================================
 // FC 0x06 写单个寄存器（阻塞）
 // ============================================================================
-OneShotResult ModbusHandler::writeRegisterOnce(uint8_t slaveAddr, uint16_t regAddr, uint16_t value) {
-    LOG_INFOF("[Modbus] writeRegisterOnce: slave=%d reg=%d value=%d", slaveAddr, regAddr, value);
+OneShotResult ModbusHandler::writeRegisterOnce(uint8_t slaveAddr, uint16_t regAddr, uint16_t value, bool isControl) {
+    LOG_INFOF("[Modbus] writeRegisterOnce: slave=%d reg=%d value=%d isControl=%d", 
+              slaveAddr, regAddr, value, isControl ? 1 : 0);
 
     uint8_t request[8];
     request[0] = slaveAddr;
@@ -1647,7 +1717,8 @@ OneShotResult ModbusHandler::writeRegisterOnce(uint8_t slaveAddr, uint16_t regAd
     request[6] = crc & 0xFF;
     request[7] = (crc >> 8) & 0xFF;
 
-    OneShotResult result = sendOneShotRequest(request, 8, slaveAddr);
+    OneShotResult result = isControl ? sendControlRequest(request, 8, slaveAddr) 
+                                     : sendOneShotRequest(request, 8, slaveAddr);
 
     if (result.error == ONESHOT_SUCCESS && result.count >= 6) {
         uint8_t respFC = (uint8_t)result.data[1];
@@ -1663,7 +1734,7 @@ OneShotResult ModbusHandler::writeRegisterOnce(uint8_t slaveAddr, uint16_t regAd
 // FC 0x10 写多个寄存器（阻塞）
 // ============================================================================
 OneShotResult ModbusHandler::writeMultipleRegistersOnce(uint8_t slaveAddr, uint16_t startAddr,
-                                                         uint16_t quantity, const uint16_t* values) {
+                                                         uint16_t quantity, const uint16_t* values, bool isControl) {
     OneShotResult result;
 
     if (quantity == 0 || quantity > 123) {
@@ -1703,7 +1774,8 @@ OneShotResult ModbusHandler::writeMultipleRegistersOnce(uint8_t slaveAddr, uint1
     request[7 + byteCount] = crc & 0xFF;
     request[7 + byteCount + 1] = (crc >> 8) & 0xFF;
 
-    result = sendOneShotRequest(request, reqLen, slaveAddr);
+    result = isControl ? sendControlRequest(request, reqLen, slaveAddr)
+                       : sendOneShotRequest(request, reqLen, slaveAddr);
 
     // 验证响应：FC 0x10 响应为 [addr, 0x10, startH, startL, qtyH, qtyL, CRC]
     if (result.error == ONESHOT_SUCCESS && result.count >= 6) {
@@ -1837,6 +1909,13 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
     LOG_INFOF("[Modbus] PollTask[%d]: slave=%d FC=%d start=%d qty=%d (timeout=%d retries=%d)",
               taskIdx, task.slaveAddress, task.functionCode, task.startAddress, task.quantity,
               timeout, retries);
+
+    // 检查是否有控制操作挂起，如有则让路
+    if (_controlPending) {
+        LOG_INFO("[Modbus] PollTask: control pending, yielding...");
+        // 短暂延时让控制操作先行
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
 
     OneShotResult result = readRegistersOnce(task.slaveAddress, task.functionCode,
                                               task.startAddress, task.quantity);

@@ -174,6 +174,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                 devObj["pwmRegBase"]      = dv["pwmRegBase"] | 0;
                 devObj["pwmResolution"]   = dv["pwmResolution"] | 8;
                 devObj["pidDecimals"]     = dv["pidDecimals"] | 1;
+                devObj["enabled"]         = dv["enabled"] | true;
                 if (dv.containsKey("pidAddrs") && dv["pidAddrs"].is<JsonArray>()) {
                     JsonArray pa = devObj["pidAddrs"].to<JsonArray>();
                     for (JsonVariant pv : dv["pidAddrs"].as<JsonArray>())

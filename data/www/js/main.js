@@ -68,26 +68,50 @@ function _bootApp() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
-    // 链式加载核心依赖：state.js 必须同步加载，i18n.js 改为异步后台加载
+    // 链式加载核心依赖：state.js 必须同步加载，i18n 改为引擎+数据分离加载
     _loadScript('./js/state.js', function() {
         // state.js 加载完成，立即启动应用（不等 i18n）
         _bootApp();
         
-        // 异步加载 i18n（后台执行，不阻塞应用启动）
+        // 异步加载 i18n 引擎（后台执行，不阻塞应用启动）
         setTimeout(function() {
-            _loadScript('./js/modules/i18n.js', function() {
-                // i18n 加载成功，更新页面文本
-                if (typeof i18n !== 'undefined' && i18n.updatePageText) {
-                    i18n.updatePageText();
-                    // 更新语言选择器
-                    var langSelect = document.getElementById('language-select');
-                    if (langSelect) {
-                        langSelect.value = i18n.currentLang;
+            _loadScript('./js/modules/i18n-engine.js', function() {
+                // i18n 引擎加载成功，并发加载翻译数据
+                var currentLang = (typeof i18n !== 'undefined' && i18n.currentLang) ? i18n.currentLang : 'zh-CN';
+                var translationsLoaded = 0;
+                var totalTranslations = (currentLang === 'en') ? 2 : 1;
+                
+                function onTranslationLoaded() {
+                    translationsLoaded++;
+                    if (translationsLoaded >= totalTranslations) {
+                        // 所有翻译数据加载完成，更新页面文本
+                        if (typeof i18n !== 'undefined' && i18n.updatePageText) {
+                            i18n.updatePageText();
+                            // 更新语言选择器
+                            var langSelect = document.getElementById('language-select');
+                            if (langSelect) {
+                                langSelect.value = i18n.currentLang;
+                            }
+                        }
                     }
                 }
+                
+                // 始终加载中文翻译（默认语言）
+                _loadScript('./js/modules/i18n-zh-CN.js', onTranslationLoaded, function() {
+                    console.warn('[FastBee] i18n-zh-CN.js load failed');
+                    onTranslationLoaded();
+                });
+                
+                // 如果当前语言是英文，也加载英文翻译
+                if (currentLang === 'en') {
+                    _loadScript('./js/modules/i18n-en.js', onTranslationLoaded, function() {
+                        console.warn('[FastBee] i18n-en.js load failed');
+                        onTranslationLoaded();
+                    });
+                }
             }, function() {
-                // i18n 加载失败，使用降级翻译（已在 _bootApp 中处理）
-                console.warn('[FastBee] i18n load failed, using fallback');
+                // i18n 引擎加载失败，使用降级翻译（已在 _bootApp 中处理）
+                console.warn('[FastBee] i18n-engine.js load failed, using fallback');
             });
         }, 0);
     });

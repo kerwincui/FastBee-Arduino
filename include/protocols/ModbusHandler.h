@@ -109,11 +109,12 @@ struct ModbusSubDevice {
     // PID 扩展
     uint16_t pidAddrs[6];       // PID 寄存器地址 [PV,SV,OUT,P,I,D]
     uint8_t  pidDecimals;       // PID 小数位
+    bool     enabled;           // 启用状态
 
     ModbusSubDevice()
         : slaveAddress(1), channelCount(2), coilBase(0),
           ncMode(false), controlProtocol(0),
-          pwmRegBase(0), pwmResolution(8), pidDecimals(1) {
+          pwmRegBase(0), pwmResolution(8), pidDecimals(1), enabled(true) {
         memset(name, 0, sizeof(name));
         strncpy(name, "Device", sizeof(name) - 1);
         memset(deviceType, 0, sizeof(deviceType));
@@ -226,7 +227,8 @@ public:
     
     // Master一次性读取（阻塞，用于MQTT指令触发的即时采集）
     OneShotResult readRegistersOnce(uint8_t slaveAddress, uint8_t functionCode,
-                                    uint16_t startAddress, uint16_t quantity);
+                                    uint16_t startAddress, uint16_t quantity,
+                                    bool isControl = false);
     
     // PeriphExec 调度的轮询任务执行（按索引读取并返回映射后的 JSON）
     String executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, uint8_t retries);
@@ -258,17 +260,20 @@ public:
     uint32_t getLastPollAgeSec() const { return _lastPollTime > 0 ? (millis() - _lastPollTime) / 1000UL : 0; }
     
     // Master一次性阻塞写操作（与 readRegistersOnce 对称，通用Modbus写能力）
-    OneShotResult writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, bool value);
-    OneShotResult writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, uint16_t rawValue);
+    OneShotResult writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, bool value, bool isControl = false);
+    OneShotResult writeCoilOnce(uint8_t slaveAddr, uint16_t coilAddr, uint16_t rawValue, bool isControl = false);
     OneShotResult writeMultipleCoilsOnce(uint8_t slaveAddr, uint16_t startAddr,
-                                          uint16_t quantity, const bool* values);
-    OneShotResult writeRegisterOnce(uint8_t slaveAddr, uint16_t regAddr, uint16_t value);
+                                          uint16_t quantity, const bool* values, bool isControl = false);
+    OneShotResult writeRegisterOnce(uint8_t slaveAddr, uint16_t regAddr, uint16_t value, bool isControl = false);
     OneShotResult writeMultipleRegistersOnce(uint8_t slaveAddr, uint16_t startAddr,
-                                              uint16_t quantity, const uint16_t* values);
+                                              uint16_t quantity, const uint16_t* values, bool isControl = false);
 
     // 发送原始 Modbus 帧（自动追加 CRC，用于设备专有功能码如 0xB0）
     OneShotResult sendRawFrameOnce(uint8_t expectedSlaveAddr,
-                                    const uint8_t* dataWithoutCRC, uint8_t dataLen);
+                                    const uint8_t* dataWithoutCRC, uint8_t dataLen, bool isControl = false);
+
+    // 控制操作快速通道（高优先级，短超时）
+    OneShotResult sendControlRequest(uint8_t* requestBuffer, uint8_t requestLength, uint8_t expectedSlaveAddress);
 
     // 调试帧信息（最近一次 OneShot 操作的 TX/RX hex 字符串）
     const String& getLastTxHex() const { return _lastTxHex; }
@@ -316,12 +321,17 @@ private:
     OneShotResult sendOneShotRequest(const uint8_t* request, uint8_t reqLen,
                                       uint8_t expectedSlaveAddr);
     
+    // 内部：执行实际的 Modbus 通信（不涉及信号量，纯通信逻辑）
+    OneShotResult _executeModbusTransaction(const uint8_t* request, uint8_t reqLen,
+                                             uint8_t expectedSlaveAddr);
+    
     // 线圈延时任务处理
     void processCoilDelayTasks();
     
     // 一次性操作互斥标志和信号量
     volatile bool isOneShotReading;
     SemaphoreHandle_t _oneShotSemaphore;
+    volatile bool _controlPending;        // 控制操作挂起标志（高优先级通道）
     
     // 线圈延时任务队列
     CoilDelayTask coilDelayTasks[Protocols::MODBUS_MAX_COIL_DELAY_TASKS];

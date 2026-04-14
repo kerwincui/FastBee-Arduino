@@ -178,6 +178,23 @@ const AppState = {
     // 已加载的模块记录
     _loadedModules: {},
     _moduleCallbacks: {},
+
+    // 页面模块动态加载器
+    _loadedPages: {},
+    _pageMapping: {
+        'dashboard-page': 'dashboard',
+        'protocol-page': 'protocol',
+        'network-page': 'network',
+        'device-page': 'device',
+        'data-page': 'admin',
+        'users-page': 'admin',
+        'roles-page': 'admin',
+        'logs-page': 'admin',
+        'peripheral-page': 'peripheral',
+        'periph-exec-page': 'peripheral',
+        'device-control-page': 'peripheral',
+        'rule-script-page': 'rule-script'
+    },
     // 模块 → 打包文件映射（多个模块合并为一个文件）
     _bundleMap: { 'users': 'admin-bundle', 'roles': 'admin-bundle', 'files': 'admin-bundle', 'logs': 'admin-bundle', 'rule-script': 'admin-bundle' },
     _loadedFiles: {},
@@ -198,17 +215,69 @@ const AppState = {
         this.refreshPage();
     },
 
+    // ============ 动态页面加载器 ============
+    async loadPage(pageId) {
+        var moduleName = this._pageMapping[pageId];
+        if (!moduleName || this._loadedPages[moduleName]) return;
+
+        try {
+            var resp = await fetch('/pages/' + moduleName + '.html');
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            var html = await resp.text();
+            var container = document.getElementById('content-area');
+            if (container) {
+                var wrapper = document.createElement('div');
+                wrapper.innerHTML = html;
+                // 将所有子元素移入 content-area
+                while (wrapper.firstChild) {
+                    container.appendChild(wrapper.firstChild);
+                }
+            }
+            this._loadedPages[moduleName] = true;
+        } catch(e) {
+            console.error('[PageLoader] Failed to load:', moduleName, e);
+        }
+    },
+
+    async _loadModals() {
+        if (this._loadedPages['modals']) return;
+        try {
+            var resp = await fetch('/pages/modals.html');
+            if (!resp.ok) return;
+            var html = await resp.text();
+            var wrapper = document.createElement('div');
+            wrapper.innerHTML = html;
+            while (wrapper.firstChild) {
+                document.body.appendChild(wrapper.firstChild);
+            }
+            this._loadedPages['modals'] = true;
+        } catch(e) {
+            console.error('[PageLoader] Failed to load modals:', e);
+        }
+    },
+
     // ============ 全局事件委托 ============
     setupGlobalEventDelegation() {
         const self = this;
         // 全局事件委托 - 替代内联 onclick
         document.addEventListener('click', (e) => {
+            // 处理 config-tab 点击（动态加载页面的 tab 切换）
+            var tab = e.target.closest('.config-tab');
+            if (tab) {
+                var pageEl = tab.closest('[id$="-page"]');
+                if (pageEl) {
+                    var tabId = tab.getAttribute('data-tab');
+                    self.showConfigTab(pageEl.id, tabId);
+                }
+                return;
+            }
+    
             const el = e.target.closest('[data-action]');
             if (!el) return;
-
+    
             const action = el.dataset.action;
             const args = el.dataset.args ? el.dataset.args.split(',') : [];
-
+    
             // 优先在 AppState 上查找方法，如果不存在则在 app 对象上查找
             if (typeof this[action] === 'function') {
                 e.preventDefault();
@@ -233,16 +302,42 @@ const AppState = {
         document.addEventListener('change', (e) => {
             const el = e.target.closest('[data-change-action]');
             if (!el) return;
-
+    
             const action = el.dataset.changeAction;
             const value = el.value;
-
+    
             // 优先在 AppState 上查找方法，如果不存在则在 app 对象上查找
             if (typeof this[action] === 'function') {
                 this[action](value);
             } else if (typeof window.app !== 'undefined' && typeof window.app[action] === 'function') {
                 window.app[action](value);
             }
+        });
+    
+        // 全局 submit 事件委托 - 处理协议页面表单提交
+        document.addEventListener('submit', (e) => {
+            const form = e.target.closest('form');
+            if (!form) return;
+    
+            // 仅处理协议页面的表单
+            const protocolForms = ['mqtt-form', 'modbus-rtu-form', 'modbus-tcp-form', 'http-form', 'coap-form', 'tcp-form'];
+            if (protocolForms.includes(form.id)) {
+                e.preventDefault();
+                if (typeof self.saveProtocolConfig === 'function') {
+                    self.saveProtocolConfig(form.id);
+                }
+            }
+        });
+    
+        // 全局 input/change 事件委托 - 清除 MQTT 测试结果提示
+        ['input', 'change'].forEach(function(eventType) {
+            document.addEventListener(eventType, function(e) {
+                const targetId = e.target.id;
+                if (targetId === 'mqtt-client-id' || targetId === 'mqtt-auth-type') {
+                    var resultEl = document.getElementById('mqtt-test-result');
+                    if (resultEl) resultEl.textContent = '';
+                }
+            });
         });
     },
 
@@ -791,13 +886,19 @@ const AppState = {
         if (rememberCheckbox && savedRemember === 'true') rememberCheckbox.checked = true;
     },
 
-    _showAppPage() {
+    async _showAppPage() {
         document.getElementById('login-page').style.display = 'none';
         document.getElementById('app-container').style.display = 'block';
         // 登录成功后将URL从 /login 等路径重定向到根路径 /
         if (location.pathname !== '/' || location.hash) {
             history.replaceState(null, '', '/');
         }
+        // 预加载模态框和仪表盘页面
+        await this._loadModals();
+        await this.loadPage('dashboard-page');
+        // 移除骨架屏
+        var skeleton = document.getElementById('skeleton-screen');
+        if (skeleton) skeleton.remove();
     },
 
     // ============ 通用折叠面板 ============
@@ -978,53 +1079,13 @@ const AppState = {
     },
 
     // ============ 配置选项卡 ============
+    // 注意：tab 切换已通过 setupGlobalEventDelegation() 中的事件委托处理
+    // 此方法保留用于其他静态页面的初始化（目前为空）
     setupConfigTabs() {
-        ['#protocol-page', '#network-page', '#device-page'].forEach(pageSelector => {
-            const page = document.querySelector(pageSelector);
-            if (!page) return;
-            page.querySelectorAll('.config-tab').forEach(tab => {
-                tab.addEventListener('click', () => {
-                    this.showConfigTab(pageSelector.replace('#', ''), tab.getAttribute('data-tab'));
-                });
-            });
-        });
-
-        // 协议配置表单提交
-        document.querySelectorAll('#protocol-page form').forEach(form => {
-            form.addEventListener('submit', e => {
-                e.preventDefault();
-                if (typeof this.saveProtocolConfig === 'function') this.saveProtocolConfig(form.id);
-            });
-        });
-        
-        // MQTT增加主题按钮
-        const addMqttTopicBtn = document.getElementById('add-mqtt-topic-btn');
-        if (addMqttTopicBtn) {
-            addMqttTopicBtn.addEventListener('click', () => {
-                if (typeof this.addMqttPublishTopic === 'function') this.addMqttPublishTopic();
-            });
-        }
-        
-        // MQTT增加订阅按钮
-        const addMqttSubscribeBtn = document.getElementById('add-mqtt-subscribe-btn');
-        if (addMqttSubscribeBtn) {
-            addMqttSubscribeBtn.addEventListener('click', () => {
-                if (typeof this.addMqttSubscribeTopic === 'function') this.addMqttSubscribeTopic();
-            });
-        }
-
-        // MQTT客户端ID或认证方式修改时，清除测试结果提示
-        const mqttTestResultEl = document.getElementById('mqtt-test-result');
-        if (mqttTestResultEl) {
-            const clearTestResult = () => { mqttTestResultEl.textContent = ''; };
-            const cidEl = document.getElementById('mqtt-client-id');
-            const atEl = document.getElementById('mqtt-auth-type');
-            if (cidEl) cidEl.addEventListener('input', clearTestResult);
-            if (atEl) atEl.addEventListener('change', clearTestResult);
-        }
-
-        // 网络配置表单已在 setupNetworkFormHandlers() 中专门处理，无需通用监听
+        // Tab 切换已移至全局事件委托 (setupGlobalEventDelegation)
+        // 协议表单提交、MQTT 按钮等已在各自的模块 JS 中处理
     },
+    
 
     _getProtocolName(formId) {
         const map = { 'modbus-rtu': 'Modbus RTU', 'modbus-tcp': 'Modbus TCP', mqtt: 'MQTT', http: 'HTTP', coap: 'CoAP' };
@@ -1185,10 +1246,13 @@ const AppState = {
     },
 
     // ============ 页面切换 ============
-    changePage(page) {
+    async changePage(page) {
         const pageAlias = { monitor: 'dashboard' };
         const normalizedPage = pageAlias[page] || page;
-        
+
+        // 先确保页面HTML已加载
+        await this.loadPage(normalizedPage + '-page');
+
         document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
         const target = document.getElementById(normalizedPage + '-page');
         if (!target) {

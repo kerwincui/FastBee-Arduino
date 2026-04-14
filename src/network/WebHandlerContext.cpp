@@ -404,10 +404,19 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
             response->addHeader("Content-Encoding", "gzip");
             response->addHeader("ETag", etag);
 
-            // 缓存策略优化（第一阶段：提升页面加载速度）
-            // JS/CSS: 1天缓存 + ETag + must-revalidate
-            // HTML: 1小时缓存 + ETag + must-revalidate（入口页允许短时缓存）
-            if (ext == ".html") {
+            // 添加 Link header 用于资源预加载（仅对 index.html）
+            if (path == "/www/index.html" || path == "/index.html") {
+                response->addHeader("Link", "</js/state.js>; rel=preload; as=script, </css/main.css>; rel=preload; as=style");
+            }
+            // Service Worker 文件特殊处理
+            if (path == "/www/sw.js" || path == "/sw.js") {
+                response->addHeader("Service-Worker-Allowed", "/");
+                response->addHeader("Cache-Control", "no-cache");  // SW 文件不缓存，确保更新
+            }
+            // pages 目录：长缓存（内容几乎不变）
+            if (path.startsWith("/www/pages/")) {
+                response->addHeader("Cache-Control", "public, max-age=86400, must-revalidate");
+            } else if (ext == ".html") {
                 response->addHeader("Cache-Control", "public, max-age=3600, must-revalidate");
             } else {
                 // JS/CSS 静态资源：1天缓存
