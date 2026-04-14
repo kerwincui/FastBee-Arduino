@@ -18,6 +18,7 @@ class RoleManager;
 class NetworkManager;
 class OTAManager;
 class ProtocolManager;
+class SSERouteHandler;
 
 // JSON 文档大小限制
 #define JSON_DOC_SMALL  512
@@ -41,6 +42,7 @@ public:
     NetworkManager* networkManager;
     OTAManager*     otaManager;
     ProtocolManager* protocolManager;
+    SSERouteHandler* sseHandler;
 
     // ============ 共享状态 ============
     String webRootPath;

@@ -137,6 +137,7 @@ void ProtocolManager::shutdown() {
     messageCallback = nullptr;
     txCallback = nullptr;
     rxCallback = nullptr;
+    sseCallback = nullptr;
     isInitialized   = false;
 
     LOG_INFO("Protocol Manager: Shutdown complete");
@@ -210,6 +211,7 @@ void ProtocolManager::handleMessage(ProtocolType type, const String& topic, cons
 
 void ProtocolManager::setTxCallback(CounterCallback cb) { txCallback = cb; }
 void ProtocolManager::setRxCallback(CounterCallback cb) { rxCallback = cb; }
+void ProtocolManager::setSSECallback(SSEBroadcastCallback callback) { sseCallback = callback; }
 
 bool ProtocolManager::restartMQTT() {
     LOG_INFO("Protocol Manager: Restarting MQTT...");
@@ -438,13 +440,17 @@ bool ProtocolManager::restartModbus() {
         if (mqttClient && mqttClient->getIsConnected()) {
             mqttClient->publishReportData(data);
         }
-        // 2. JSON 格式数据注入 PeriphExec 进行条件匹配
+        // 2. SSE 实时推送
+        if (sseCallback) {
+            sseCallback(address, data);
+        }
+        // 3. JSON 格式数据注入 PeriphExec 进行条件匹配
         if (data.length() > 0 && data[0] == '[') {
             PeriphExecManager::getInstance().handleMqttMessage("modbus/data", data);
-            // 3. 轮询触发：本地数据源条件评估（POLL_TRIGGER 规则）
+            // 4. 轮询触发：本地数据源条件评估（POLL_TRIGGER 规则）
             PeriphExecManager::getInstance().handlePollData("modbus", data);
         }
-        // 4. 全局消息路由
+        // 5. 全局消息路由
         handleMessage(ProtocolType::MODBUS, String(address), data);
     });
     
@@ -693,13 +699,17 @@ bool ProtocolManager::initModbus(void* config) {
         if (mqttClient && mqttClient->getIsConnected()) {
             mqttClient->publishReportData(data);
         }
-        // 2. JSON 格式数据注入 PeriphExec 进行条件匹配
+        // 2. SSE 实时推送
+        if (sseCallback) {
+            sseCallback(address, data);
+        }
+        // 3. JSON 格式数据注入 PeriphExec 进行条件匹配
         if (data.length() > 0 && data[0] == '[') {
             PeriphExecManager::getInstance().handleMqttMessage("modbus/data", data);
-            // 3. 轮询触发：本地数据源条件评估（POLL_TRIGGER 规则）
+            // 4. 轮询触发：本地数据源条件评估（POLL_TRIGGER 规则）
             PeriphExecManager::getInstance().handlePollData("modbus", data);
         }
-        // 4. 保持全局消息路由
+        // 5. 保持全局消息路由
         handleMessage(ProtocolType::MODBUS, String(address), data);
     });
     

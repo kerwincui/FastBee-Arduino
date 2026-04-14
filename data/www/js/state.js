@@ -1280,6 +1280,10 @@ const AppState = {
             this._logAutoRefreshTimer = null;
         }
 
+        if (normalizedPage !== 'device-control' && typeof this._dcStopAllAutoRefresh === 'function') {
+            this._dcStopAllAutoRefresh();
+        }
+
         // 停止协议页面的所有轮询（如果离开协议页面）
         if (normalizedPage !== 'protocol') {
             // 停止 MQTT 状态轮询

@@ -53,6 +53,7 @@
         _dcPwmStates: {},
         _dcPidValues: {},
         _dcAutoRefreshTimers: {},
+        _sseConnection: null,
         _deviceName: 'FastBee Device',
         _eventsBound: false,
 
@@ -301,7 +302,15 @@
                     self._dcApplyLayout();
                     self._dcInitFreeLayout();
                     // 渲染完成后，自动获取Modbus子设备初始状态
-                    self._dcInitModbusDeviceStates();
+                    self._dcInitModbusDeviceStates().then(function() {
+                        if (self.currentPage === 'device-control') {
+                            self._setupSSE();
+                        }
+                    }).catch(function() {
+                        if (self.currentPage === 'device-control') {
+                            self._setupSSE();
+                        }
+                    });
 
                 } catch (renderErr) {
                     console.error('[device-control] Render error:', renderErr);
@@ -1031,11 +1040,137 @@
             }
         },
 
+        _setupSSE: function() {
+            var self = this;
+            this._closeSSE();
+
+            if (typeof EventSource === 'undefined') {
+                console.warn('[SSE] 当前环境不支持 EventSource');
+                return;
+            }
+
+            try {
+                var evtSource = new EventSource('/api/events');
+
+                evtSource.addEventListener('modbus-data', function(e) {
+                    try {
+                        var data = JSON.parse(e.data);
+                        self._handleSSEModbusData(data);
+                    } catch (err) {
+                        console.warn('[SSE] 数据解析失败:', err);
+                    }
+                });
+
+                evtSource.onopen = function() {
+                    console.log('[SSE] 连接已建立');
+                };
+
+                evtSource.onerror = function() {
+                    console.warn('[SSE] 连接错误，将自动重连');
+                };
+
+                this._sseConnection = evtSource;
+            } catch (err) {
+                console.error('[SSE] 创建连接失败:', err);
+            }
+        },
+
+        _closeSSE: function() {
+            if (this._dcAutoRefreshTimers && this._dcAutoRefreshTimers.sseDebounce) {
+                clearTimeout(this._dcAutoRefreshTimers.sseDebounce);
+                this._dcAutoRefreshTimers.sseDebounce = null;
+            }
+            if (this._sseConnection) {
+                this._sseConnection.close();
+                this._sseConnection = null;
+                console.log('[SSE] 连接已关闭');
+            }
+        },
+
+        _handleSSEModbusData: function(data) {
+            var self = this;
+            var tasks = this._modbusStatus && this._modbusStatus.tasks ? this._modbusStatus.tasks : [];
+            var hasMonitorUpdate = false;
+            var needsFullRefresh = false;
+
+            if (!Array.isArray(data) || data.length === 0) {
+                return;
+            }
+
+            for (var i = 0; i < data.length; i++) {
+                var item = data[i] || {};
+                var sensorId = item.sensorId || item.id;
+                var value = item.value;
+                var matched = false;
+
+                if (!sensorId) {
+                    continue;
+                }
+
+                for (var ti = 0; ti < tasks.length; ti++) {
+                    var task = tasks[ti];
+                    var mappings = task && task.mappings ? task.mappings : [];
+                    for (var mi = 0; mi < mappings.length; mi++) {
+                        var mapping = mappings[mi];
+                        if (mapping && mapping.sensorId === sensorId) {
+                            matched = true;
+                            if (!task.cachedData) {
+                                task.cachedData = { values: [] };
+                            } else if (!Array.isArray(task.cachedData.values)) {
+                                task.cachedData.values = [];
+                            }
+
+                            var valueNum = Number(value);
+                            var scaleFactor = Number(mapping.scaleFactor || 1);
+                            if (isFinite(valueNum) && scaleFactor) {
+                                task.cachedData.values[mapping.regOffset] = valueNum / scaleFactor;
+                            }
+                            break;
+                        }
+                    }
+                    if (matched) {
+                        break;
+                    }
+                }
+
+                var valueEl = document.querySelector('.dc-monitor-card[data-id="' + sensorId + '"] .dc-monitor-value');
+                if (valueEl) {
+                    valueEl.textContent = value === undefined || value === null || value === '' ? '--' : String(value);
+                    hasMonitorUpdate = true;
+                    matched = true;
+                }
+
+                if (!matched || /^(relay|coil|pwm|pid)_/i.test(sensorId)) {
+                    needsFullRefresh = true;
+                }
+            }
+
+            if (needsFullRefresh) {
+                this._dcAutoRefreshTimers = this._dcAutoRefreshTimers || {};
+                if (this._dcAutoRefreshTimers.sseDebounce) {
+                    clearTimeout(this._dcAutoRefreshTimers.sseDebounce);
+                }
+                this._dcAutoRefreshTimers.sseDebounce = setTimeout(function() {
+                    self._dcAutoRefreshTimers.sseDebounce = null;
+                    if (self.currentPage !== 'device-control') {
+                        return;
+                    }
+                    self._dcInitModbusDeviceStates();
+                }, 100);
+            }
+
+            if (!needsFullRefresh && !hasMonitorUpdate) {
+                console.warn('[SSE] 未匹配到可更新的设备数据');
+            }
+        },
+
         _dcStopAllAutoRefresh: function() {
             var timers = this._dcAutoRefreshTimers || {};
+            this._closeSSE();
             for (var key in timers) {
                 if (timers.hasOwnProperty(key) && timers[key]) {
                     clearInterval(timers[key]);
+                    clearTimeout(timers[key]);
                 }
             }
             this._dcAutoRefreshTimers = {};

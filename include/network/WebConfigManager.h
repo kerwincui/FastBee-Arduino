@@ -26,6 +26,7 @@ class PeripheralRouteHandler;
 class PeriphExecRouteHandler;
 class RuleScriptRouteHandler;
 class ProtocolRouteHandler;
+class SSERouteHandler;
 
 /**
  * @brief Web配置管理器 - 瘦协调器
@@ -74,6 +75,7 @@ private:
     std::unique_ptr<PeriphExecRouteHandler> periphExecHandler;
     std::unique_ptr<RuleScriptRouteHandler> ruleScriptHandler;
     std::unique_ptr<ProtocolRouteHandler>   protocolHandler;
+    std::unique_ptr<SSERouteHandler>        sseRouteHandler;
 
     void setupAllRoutes();
 };

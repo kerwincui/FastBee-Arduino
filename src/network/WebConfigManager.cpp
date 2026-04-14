@@ -1,5 +1,6 @@
 #include "./network/WebConfigManager.h"
 #include "./network/WebHandlerContext.h"
+#include "protocols/ProtocolManager.h"
 #include "./network/handlers/StaticRouteHandler.h"
 #include "./network/handlers/AuthRouteHandler.h"
 #include "./network/handlers/UserRouteHandler.h"
@@ -11,6 +12,7 @@
 #include "./network/handlers/PeriphExecRouteHandler.h"
 #include "./network/handlers/RuleScriptRouteHandler.h"
 #include "./network/handlers/ProtocolRouteHandler.h"
+#include "./network/handlers/SSERouteHandler.h"
 #include "systems/LoggerSystem.h"
 
 // ============ 构造 / 析构 ============
@@ -33,7 +35,7 @@ bool WebConfigManager::initialize() {
         return false;
     }
 
-    // 创建 11 个专职 Handler
+    // 创建 12 个专职 Handler
     staticHandler      = std::unique_ptr<StaticRouteHandler>(new StaticRouteHandler(ctx.get()));
     authHandler        = std::unique_ptr<AuthRouteHandler>(new AuthRouteHandler(ctx.get()));
     userHandler        = std::unique_ptr<UserRouteHandler>(new UserRouteHandler(ctx.get()));
@@ -45,6 +47,7 @@ bool WebConfigManager::initialize() {
     periphExecHandler  = std::unique_ptr<PeriphExecRouteHandler>(new PeriphExecRouteHandler(ctx.get()));
     ruleScriptHandler  = std::unique_ptr<RuleScriptRouteHandler>(new RuleScriptRouteHandler(ctx.get()));
     protocolHandler    = std::unique_ptr<ProtocolRouteHandler>(new ProtocolRouteHandler(ctx.get()));
+    sseRouteHandler    = std::unique_ptr<SSERouteHandler>(new SSERouteHandler(ctx.get()));
 
     // 全局 CORS 头 —— 自动注入到所有 HTTP 响应（含静态文件）
     // 解决 fastbee.local 与 IP 地址混用时的跨域问题
@@ -54,7 +57,7 @@ bool WebConfigManager::initialize() {
 
     setupAllRoutes();
 
-    LOG_INFO("[WebConfig] Initialized with 11 route handlers");
+    LOG_INFO("[WebConfig] Initialized with 12 route handlers");
     return true;
 }
 
@@ -92,7 +95,19 @@ void WebConfigManager::setOTAManager(OTAManager* otaMgr) {
 }
 
 void WebConfigManager::setProtocolManager(ProtocolManager* protoMgr) {
-    if (ctx) ctx->protocolManager = protoMgr;
+    if (ctx) {
+        ctx->protocolManager = protoMgr;
+        if (protoMgr && sseRouteHandler) {
+            SSERouteHandler* ssePtr = sseRouteHandler.get();
+            protoMgr->setSSECallback(
+                [ssePtr](uint8_t address, const String& data) {
+                    if (ssePtr && ssePtr->clientCount() > 0) {
+                        ssePtr->broadcastModbusData(data);
+                    }
+                }
+            );
+        }
+    }
 }
 
 AsyncWebServer* WebConfigManager::getWebServer() const { return server; }
@@ -153,7 +168,21 @@ void WebConfigManager::setupAllRoutes() {
     // 10. 协议路由（/api/protocol/*）
     protocolHandler->setupRoutes(server);
 
-    // 11. 静态文件与页面路由（/, /login, /dashboard, /users, 404 fallback）
+    // 11. SSE 事件推送路由（/api/events）
+    sseRouteHandler->setupRoutes(server);
+    ctx->sseHandler = sseRouteHandler.get();
+    if (ctx->protocolManager) {
+        SSERouteHandler* ssePtr = sseRouteHandler.get();
+        ctx->protocolManager->setSSECallback(
+            [ssePtr](uint8_t address, const String& data) {
+                if (ssePtr && ssePtr->clientCount() > 0) {
+                    ssePtr->broadcastModbusData(data);
+                }
+            }
+        );
+    }
+
+    // 12. 静态文件与页面路由（/, /login, /dashboard, /users, 404 fallback）
     // 必须最后注册，因为 onNotFound 是全局 fallback
     staticHandler->setupRoutes(server);
 }

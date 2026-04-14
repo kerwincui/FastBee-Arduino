@@ -31,6 +31,7 @@ struct ProtocolConfig {
 // 回调函数类型定义
 typedef std::function<void(ProtocolType, const String&, const String&)> MessageCallback;
 typedef std::function<void()> CounterCallback;
+typedef std::function<void(uint8_t, const String&)> SSEBroadcastCallback;
 
 class ProtocolManager {
 public:
@@ -105,6 +106,9 @@ public:
     void setTxCallback(CounterCallback cb);
     void setRxCallback(CounterCallback cb);
 
+    // 设置 SSE 广播回调
+    void setSSECallback(SSEBroadcastCallback callback);
+
 private:
     // unique_ptr 智能指针，主要用于自动管理动态内存，避免内存泄漏并确保资源安全释放
     std::unique_ptr<MQTTClient> mqttClient;
@@ -117,6 +121,7 @@ private:
     MessageCallback messageCallback;
     CounterCallback txCallback;
     CounterCallback rxCallback;
+    SSEBroadcastCallback sseCallback;
     
     bool isInitialized;
     

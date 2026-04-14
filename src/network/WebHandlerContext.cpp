@@ -5,7 +5,7 @@
 WebHandlerContext::WebHandlerContext(AsyncWebServer* srv, IAuthManager* authMgr, IUserManager* userMgr)
     : server(srv), authManager(authMgr), userManager(userMgr),
       roleManager(nullptr), networkManager(nullptr), otaManager(nullptr),
-      protocolManager(nullptr), webRootPath("/www"),
+      protocolManager(nullptr), sseHandler(nullptr), webRootPath("/www"),
       scheduleRestart(false), scheduledRestartTime(0), cacheDuration(86400) {
     loadCacheDuration();
 }
