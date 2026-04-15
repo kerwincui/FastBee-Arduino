@@ -1762,7 +1762,7 @@ body { background-image: radial-gradient(1200px 500px at -10% -20%, color-mix(in
 .pure-button-primary, .btn-primary { background: linear-gradient(135deg, var(--primary), var(--primary-hover)) !important; color: #fff !important; }
 .pure-button-primary:hover, .btn-primary:hover { filter: brightness(1.03); }
 input, textarea, .pure-input-1:not(select) { background: var(--bg-input) !important; border: 1px solid var(--border) !important; color: var(--text-primary) !important; min-height: 38px; line-height: 30px; }
-select, select.pure-input-1 { background-color: var(--bg-input) !important; border: 1px solid var(--border) !important; color: var(--text-primary) !important; min-height: 38px; line-height: 30px; }
+select, select.pure-input-1 { background-color: var(--bg-input) !important; border: 1px solid var(--border) !important; color: var(--text-primary) !important; line-height: 30px; }
 input:focus, select:focus, textarea:focus, .pure-input-1:focus { border-color: var(--border-focus) !important; outline: none !important; box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent); }
 .pure-table { border-radius: var(--rounded-lg); overflow: hidden; border: 1px solid var(--border-secondary); }
 .pure-table thead th { background: color-mix(in srgb, var(--primary) 8%, var(--bg-card)); font-weight: 600; }
