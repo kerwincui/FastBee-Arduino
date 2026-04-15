@@ -110,6 +110,18 @@ private:
     // 权限定义（保留旧结构供向下兼容）
     std::map<String, Permission> permissions;
 
+    // 权限缓存（减少高频 API 的权限重复检查开销）
+    struct PermCacheEntry {
+        String username;
+        String permission;
+        bool   result;
+        unsigned long timestamp;
+    };
+    static constexpr size_t PERM_CACHE_SIZE = 4;
+    static constexpr unsigned long PERM_CACHE_TTL = 5000; // 5秒
+    PermCacheEntry _permCache[4];
+    uint8_t _permCacheIdx = 0;
+
     // 审计日志（环形缓冲，最多保留 MAX_AUDIT_ENTRIES 条）
     static constexpr size_t MAX_AUDIT_ENTRIES = 20;
     std::vector<AuditEntry> auditLog;

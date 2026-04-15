@@ -83,7 +83,13 @@
         _cooldownUntil: 0, _backoffMs: 1000, _cooldownTimer: null,
         _dedupMap: {}, _pageGen: 0,
         _cache: {},
-        _cacheTTL: { '/api/protocol/config': 60000, '/api/system/info': 30000, '/api/device/config': 120000 },
+        _cacheTTL: {
+            '/api/protocol/config': 60000, '/api/system/info': 30000, '/api/device/config': 120000,
+            '/api/network/config': 60000, '/api/device/info': 60000, '/api/config': 60000,
+            '/api/peripherals/types': 120000, '/api/periph-exec/controls': 60000,
+            '/api/periph-exec/events/static': 120000, '/api/periph-exec/events/categories': 120000,
+            '/api/periph-exec/trigger-types': 120000, '/api/permissions': 120000
+        },
         enqueue: function (method, path, options, timeoutMs) {
             var self = this;
             var fullUrl = buildUrl(path, options ? options.params : undefined);
@@ -122,7 +128,11 @@
                 }
             }
             var now = Date.now();
-            if (now < this._cooldownUntil && this._queue.length > 0) {
+            var hasPriority = false;
+            for (var k = 0; k < this._queue.length; k++) {
+                if (this._queue[k].priority >= 2) { hasPriority = true; break; }
+            }
+            if (!hasPriority && now < this._cooldownUntil && this._queue.length > 0) {
                 if (!this._cooldownTimer) {
                     var delay = this._cooldownUntil - now;
                     this._cooldownTimer = setTimeout(function () { self._cooldownTimer = null; self._drain(); }, delay);
@@ -177,6 +187,25 @@
                 }
             }
         },
+        enqueuePriority: function (method, path, options, timeoutMs) {
+            var self = this;
+            var body = options ? (options.body || '') : '';
+            var fullUrl = buildUrl(path, options ? options.params : undefined);
+            var dedupKey = method + ':' + fullUrl + (body ? '#' + body : '');
+            if (method !== 'GET') { delete this._cache[path]; }
+            if (this._dedupMap[dedupKey]) { return this._dedupMap[dedupKey]; }
+            var resolve, reject;
+            var promise = new Promise(function (res, rej) { resolve = res; reject = rej; });
+            this._queue.unshift({
+                method: method, path: path, options: options, timeoutMs: timeoutMs,
+                resolve: resolve, reject: reject,
+                priority: 2, dedupKey: dedupKey, pageGen: this._pageGen
+            });
+            this._dedupMap[dedupKey] = promise;
+            promise.then(function () { delete self._dedupMap[dedupKey]; }, function () { delete self._dedupMap[dedupKey]; });
+            this._drain();
+            return promise;
+        },
         invalidateCache: function (urlPattern) {
             if (!urlPattern) { this._cache = {}; return; }
             for (var key in this._cache) {
@@ -192,6 +221,7 @@
     window.apiPut = function (url, data) { return Governor.enqueue('PUT', url, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data || {}) }); };
     window.apiPostJson = function (url, data) { return Governor.enqueue('POST', url, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data || {}) }); };
     window.apiDelete = function (url, params) { return Governor.enqueue('DELETE', url, { params: params || {} }); };
+    window.apiPostPriority = function (url, data, timeoutMs) { return Governor.enqueuePriority('POST', url, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: toUrlEncoded(data || {}) }, timeoutMs); };
     // ── 特殊请求（绕过 Governor）──
     window.apiRestart = function (data) { return request('POST', '/api/system/restart', { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: toUrlEncoded(data || {}) }, RESTART_TIMEOUT); };
     window.apiFactoryReset = function () { return request('POST', '/api/system/factory-reset', {}, RESTART_TIMEOUT); };

@@ -10,6 +10,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { minifyJS } = require('./minify-js');
 
 const ROOT_DIR = path.join(__dirname, '..');
 const SOURCE_DIR = path.join(ROOT_DIR, 'web-src', 'modules', 'admin');
@@ -49,13 +50,15 @@ function buildAdminBundle() {
     });
 
     const output = `${header}${sections.join('\n\n')}\n`;
-    fs.writeFileSync(OUTPUT_FILE, output, 'utf8');
+    const noMinify = process.argv.includes('--no-minify');
+    const finalContent = noMinify ? output : minifyJS(output);
+    fs.writeFileSync(OUTPUT_FILE, finalContent, 'utf8');
 
     return {
         outputFile: OUTPUT_FILE,
         sourceDir: SOURCE_DIR,
         fileCount: SOURCE_FILES.length,
-        size: Buffer.byteLength(output, 'utf8')
+        size: Buffer.byteLength(finalContent, 'utf8')
     };
 }
 

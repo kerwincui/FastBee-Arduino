@@ -8,6 +8,7 @@
 #include "utils/FileUtils.h"
 #include <core/SystemConstants.h>
 #include "systems/LoggerSystem.h"
+#include "core/FeatureFlags.h"
 
 // Modbus异常码
 enum ModbusException : uint8_t {
@@ -30,7 +31,7 @@ enum OneShotError : uint8_t {
 // 一次性读取结果
 struct OneShotResult {
     OneShotError error;
-    uint16_t data[Protocols::MODBUS_MAX_REGISTERS_PER_READ]; // 原始寄存器数据
+    uint16_t data[Protocols::MODBUS_ONESHOT_BUFFER_SIZE]; // 原始寄存器数据
     uint16_t count;          // 实际读取的寄存器数量
     uint8_t exceptionCode;   // error==ONESHOT_EXCEPTION时有效
 
@@ -241,7 +242,7 @@ public:
     // ========== 轮询统计接口（用于运行状态显示）==========
     // 单个轮询任务的缓存数据
     struct PollTaskCache {
-        uint16_t values[Protocols::MODBUS_MAX_REGISTERS_PER_READ]; // 原始寄存器值
+        uint16_t values[Protocols::MODBUS_ONESHOT_BUFFER_SIZE]; // 原始寄存器值
         uint8_t count;               // 有效数据数量
         unsigned long timestamp;     // 采集时间戳
         bool valid;                  // 数据是否有效
@@ -316,7 +317,15 @@ private:
     void setTransmitMode(bool transmit);
     
     // Slave模式FC处理函数
+#if FASTBEE_MODBUS_SLAVE_ENABLE
     void handleSlave();
+    // FC handler 通用辅助
+    bool parseSlaveRequest(const uint8_t* frame, uint8_t length, uint8_t fc,
+                           uint16_t maxAddr, uint16_t maxQty,
+                           uint16_t& startAddr, uint16_t& quantity);
+    void sendSlaveReadResponse(uint8_t fc, const uint8_t* data, uint8_t byteCount);
+    void sendSlaveWriteAck(uint8_t fc, uint16_t startAddr, uint16_t quantity);
+    // FC handlers
     void handleReadCoils(const uint8_t* frame, uint8_t length);
     void handleReadDiscreteInputs(const uint8_t* frame, uint8_t length);
     void handleReadHoldingRegisters(const uint8_t* frame, uint8_t length);
@@ -326,6 +335,7 @@ private:
     void handleWriteMultipleCoils(const uint8_t* frame, uint8_t length);
     void handleWriteMultipleRegisters(const uint8_t* frame, uint8_t length);
     void sendExceptionResponse(uint8_t slaveAddr, uint8_t functionCode, uint8_t exceptionCode);
+#endif
     
     // 一次性操作通用发送/接收辅助（提取自readRegistersOnce的通用逻辑）
     OneShotResult sendOneShotRequest(const uint8_t* request, uint8_t reqLen,
@@ -356,13 +366,21 @@ private:
     uint32_t _timeoutPollCount;    // 超时次数
     unsigned long _lastPollTime;   // 最后轮询时间（millis）
     
+    // 连续超时保护：防止持续超时耗尽堆内存导致 abort()
+    uint16_t _consecutiveTimeouts;          // 连续超时计数
+    unsigned long _cooldownUntil;           // 冷却结束时间（millis）
+    static constexpr uint16_t CONSECUTIVE_TIMEOUT_THRESHOLD = 6;   // 连续超时阈值
+    static constexpr unsigned long COOLDOWN_DURATION_MS = 30000;    // 冷却时长 30 秒
+    
     PollTaskCache _taskCache[Protocols::MODBUS_MAX_POLL_TASKS];
     
+#if FASTBEE_MODBUS_SLAVE_ENABLE
     // 寄存器模拟存储（从站模式使用）
     uint16_t holdingRegisters[100];
     uint16_t inputRegisters[100];
     uint8_t coils[20];
     uint8_t discreteInputs[20];
+#endif
 };
 
 #endif

@@ -1546,6 +1546,19 @@
                 if (action === 'allOn') modbusAction = 'allOff';
                 else if (action === 'allOff') modbusAction = 'allOn';
             }
+
+            // 乐观更新：保存当前状态副本，立即设置目标状态
+            var prevStates = (this._dcCoilStates[devIdx] || []).slice();
+            var targetVal;
+            if (action === 'allOn') targetVal = true;
+            else if (action === 'allOff') targetVal = false;
+            else targetVal = null;
+            var optimistic = prevStates.map(function(s) {
+                return targetVal !== null ? targetVal : !s;
+            });
+            this._dcCoilStates[devIdx] = optimistic;
+            this._dcUpdateAllCoilUI(devIdx);
+
             apiPost('/api/modbus/coil/batch', {
                 slaveAddress: p.slaveAddress, channelCount: p.channelCount,
                 coilBase: p.coilBase, action: modbusAction, mode: p.relayMode
@@ -1553,13 +1566,18 @@
                 if (res && res.success && res.data && res.data.states) {
                     self._dcCoilStates[devIdx] = res.data.states;
                     self._dcUpdateAllCoilUI(devIdx);
-                    Notification.success(self._t('modbus-ctrl-success'));
                 } else {
+                    // 失败：回滚
+                    self._dcCoilStates[devIdx] = prevStates;
+                    self._dcUpdateAllCoilUI(devIdx);
                     Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
                 }
                 if (btnEl) btnEl.disabled = false;
                 self._dcBatchPending = false;
             }, function() {
+                // 网络错误：回滚
+                self._dcCoilStates[devIdx] = prevStates;
+                self._dcUpdateAllCoilUI(devIdx);
                 Notification.error(self._t('modbus-ctrl-fail'));
                 if (btnEl) btnEl.disabled = false;
                 self._dcBatchPending = false;
@@ -1654,20 +1672,30 @@
             var self = this;
             var p = this._dcGetPwmParams(devIdx);
             value = Math.max(0, Math.min(value, p.maxValue));
+            var states = (this._dcPwmStates[devIdx] || []).slice();
+            var prevVal = ch < states.length ? states[ch] : 0;
+            if (ch < states.length) states[ch] = value;
+            this._dcPwmStates[devIdx] = states;
+            this._dcRerenderPwmGrid(devIdx);
             apiPost('/api/modbus/register/write', {
                 slaveAddress: p.slaveAddress,
                 registerAddress: p.regBase + ch,
                 value: value
             }).then(function(res) {
                 if (res && res.success) {
-                    var states = self._dcPwmStates[devIdx] || [];
-                    if (ch < states.length) states[ch] = value;
-                    self._dcPwmStates[devIdx] = states;
                     Notification.success(self._t('modbus-ctrl-success'));
                 } else {
+                    var s = (self._dcPwmStates[devIdx] || []).slice();
+                    if (ch < s.length) s[ch] = prevVal;
+                    self._dcPwmStates[devIdx] = s;
+                    self._dcRerenderPwmGrid(devIdx);
                     Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
                 }
             }).catch(function() {
+                var s = (self._dcPwmStates[devIdx] || []).slice();
+                if (ch < s.length) s[ch] = prevVal;
+                self._dcPwmStates[devIdx] = s;
+                self._dcRerenderPwmGrid(devIdx);
                 Notification.error(self._t('modbus-ctrl-fail'));
             });
         },
@@ -1676,22 +1704,27 @@
             this._dcCancelInit();
             var self = this;
             var p = this._dcGetPwmParams(devIdx);
+            var prevStates = (this._dcPwmStates[devIdx] || []).slice();
             var values = [];
             var fillVal = action === 'max' ? p.maxValue : 0;
             for (var i = 0; i < p.channelCount; i++) values.push(fillVal);
+            this._dcPwmStates[devIdx] = values.slice();
+            this._dcRerenderPwmGrid(devIdx);
             apiPost('/api/modbus/register/batch-write', {
                 slaveAddress: p.slaveAddress,
                 startAddress: p.regBase,
                 values: JSON.stringify(values)
             }).then(function(res) {
                 if (res && res.success) {
-                    self._dcPwmStates[devIdx] = values;
-                    self._dcRerenderPwmGrid(devIdx);
                     Notification.success(self._t('modbus-ctrl-success'));
                 } else {
+                    self._dcPwmStates[devIdx] = prevStates;
+                    self._dcRerenderPwmGrid(devIdx);
                     Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
                 }
             }).catch(function() {
+                self._dcPwmStates[devIdx] = prevStates;
+                self._dcRerenderPwmGrid(devIdx);
                 Notification.error(self._t('modbus-ctrl-fail'));
             });
         },

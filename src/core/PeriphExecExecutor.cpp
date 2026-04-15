@@ -48,6 +48,13 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
     results.reserve(rule.actions.size());
 
     for (const auto& action : rule.actions) {
+        // 堆守卫：防止动作执行过程中堆耗尽导致 abort()
+        if (ESP.getFreeHeap() < 15000) {
+            LOGGER.warningf("[PeriphExec] Heap too low (%d), skipping remaining actions",
+                            (int)ESP.getFreeHeap());
+            break;
+        }
+
         // 执行前延时
         if (action.syncDelayMs > 0) {
             delay(action.syncDelayMs > 10000 ? 10000 : action.syncDelayMs);
@@ -255,8 +262,8 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action, const
         return false;
     }
 
-    // 检查堆内存是否充足
-    if (ESP.getFreeHeap() < 50000) {
+    // 检查堆内存是否充足（降低阈值，避免传感器离线时堆略低就完全跳过轮询）
+    if (ESP.getFreeHeap() < 25000) {
         LOGGER.warningf("[PeriphExec] Insufficient heap for Modbus poll: %d bytes free", ESP.getFreeHeap());
         return false;
     }
@@ -307,6 +314,12 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action, const
             mergedJson = "[";
             bool first = true;
             for (JsonVariant v : pollArr) {
+                // 动态堆检查：防止多任务迭代中堆逐渐耗尽导致 abort()
+                if (ESP.getFreeHeap() < 15000) {
+                    LOGGER.warningf("[PeriphExec] Heap dropped to %d during poll, stopping early",
+                                    (int)ESP.getFreeHeap());
+                    break;
+                }
                 uint8_t taskIdx = v.as<uint8_t>();
                 if (!first && interDelay > 0) vTaskDelay(pdMS_TO_TICKS(interDelay));
                 String result = modbus->executePollTaskByIndex(taskIdx, timeout, retries);

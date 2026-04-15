@@ -644,6 +644,13 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
 }
 
 void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
+    // 缓存命中
+    unsigned long now = millis();
+    if (_statusCache.valid && (now - _statusCache.timestamp) < STATUS_CACHE_TTL) {
+        request->send(200, "application/json", _statusCache.json);
+        return;
+    }
+
     JsonDocument doc;
 
     doc["status"]    = "running";
@@ -659,7 +666,14 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
         doc["rssi"]             = info.rssi;
     }
 
-    ctx->sendSuccess(request, doc);
+    // 缓存序列化结果
+    JsonDocument wrapper;
+    wrapper["success"] = true;
+    wrapper["data"] = doc;
+    serializeJson(wrapper, _statusCache.json);
+    _statusCache.timestamp = millis();
+    _statusCache.valid = true;
+    request->send(200, "application/json", _statusCache.json);
 }
 
 void SystemRouteHandler::handleSystemRestart(AsyncWebServerRequest* request) {

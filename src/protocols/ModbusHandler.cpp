@@ -45,11 +45,14 @@ ModbusHandler::ModbusHandler()
 #endif
       isOneShotReading(false), _oneShotSemaphore(nullptr), _controlPending(false),
       _totalPollCount(0), _successPollCount(0), _failedPollCount(0), _timeoutPollCount(0), 
-      _lastPollTime(0), _lastStatusHash(0) {
+      _lastPollTime(0), _lastStatusHash(0),
+      _consecutiveTimeouts(0), _cooldownUntil(0) {
+#if FASTBEE_MODBUS_SLAVE_ENABLE
     memset(holdingRegisters, 0, sizeof(holdingRegisters));
     memset(inputRegisters, 0, sizeof(inputRegisters));
     memset(coils, 0, sizeof(coils));
     memset(discreteInputs, 0, sizeof(discreteInputs));
+#endif
     
     // 创建二值信号量（用于 OneShot 操作同步）
     _oneShotSemaphore = xSemaphoreCreateBinary();
@@ -492,12 +495,17 @@ void ModbusHandler::handle() {
     
     if (config.mode == MODBUS_MASTER) {
         processCoilDelayTasks();
-    } else {
+    }
+#if FASTBEE_MODBUS_SLAVE_ENABLE
+    else {
         handleSlave();
     }
+#endif
 }
 
 // ============ Slave模式主循环 ============
+
+#if FASTBEE_MODBUS_SLAVE_ENABLE
 
 void ModbusHandler::handleSlave() {
     while (modbusSerial->available()) {
@@ -532,6 +540,8 @@ void ModbusHandler::handleSlave() {
     }
 }
 
+#endif // FASTBEE_MODBUS_SLAVE_ENABLE (handleSlave)
+
 String ModbusHandler::getStatus() const {
     if (!isInitialized) {
         return "Not initialized";
@@ -553,6 +563,8 @@ String ModbusHandler::getStatus() const {
     
     return status;
 }
+
+#if FASTBEE_MODBUS_SLAVE_ENABLE
 
 // ============ 数据操作 ============
 
@@ -708,6 +720,8 @@ bool ModbusHandler::writeMultipleRegisters(uint16_t startAddr, uint16_t quantity
 
 // ============ CRC 与帧验证 ============
 
+#endif // FASTBEE_MODBUS_SLAVE_ENABLE (slave register ops)
+
 uint16_t ModbusHandler::calculateCRC(const uint8_t* data, uint8_t length) {
     uint16_t crc = 0xFFFF;
     for (uint8_t pos = 0; pos < length; pos++) {
@@ -732,6 +746,8 @@ bool ModbusHandler::validateFrame(const uint8_t* frame, uint8_t length) {
     
     return calculatedCRC == receivedCRC;
 }
+
+#if FASTBEE_MODBUS_SLAVE_ENABLE
 
 // ============ 帧处理与响应 ============
 
@@ -791,176 +807,125 @@ void ModbusHandler::processModbusFrame(const uint8_t* frame, uint8_t length) {
     }
 }
 
-// ============ FC 0x01: 读线圈 ============
+// ============ FC handler 通用辅助 ============
 
-void ModbusHandler::handleReadCoils(const uint8_t* frame, uint8_t length) {
+bool ModbusHandler::parseSlaveRequest(const uint8_t* frame, uint8_t length, uint8_t fc,
+                                      uint16_t maxAddr, uint16_t maxQty,
+                                      uint16_t& startAddr, uint16_t& quantity) {
     if (length < 8) {
-        sendExceptionResponse(config.slaveAddress, 0x01, MODBUS_EX_ILLEGAL_DATA_VALUE);
-        return;
+        sendExceptionResponse(config.slaveAddress, fc, MODBUS_EX_ILLEGAL_DATA_VALUE);
+        return false;
     }
-    
-    uint16_t startAddr = (frame[2] << 8) | frame[3];
-    uint16_t quantity  = (frame[4] << 8) | frame[5];
-    
-    if (quantity == 0 || quantity > 2000) {
-        sendExceptionResponse(config.slaveAddress, 0x01, MODBUS_EX_ILLEGAL_DATA_VALUE);
-        return;
+    startAddr = (frame[2] << 8) | frame[3];
+    quantity  = (frame[4] << 8) | frame[5];
+    if (quantity == 0 || quantity > maxQty) {
+        sendExceptionResponse(config.slaveAddress, fc, MODBUS_EX_ILLEGAL_DATA_VALUE);
+        return false;
     }
-    
-    if (startAddr + quantity > sizeof(coils) * 8) {
-        sendExceptionResponse(config.slaveAddress, 0x01, MODBUS_EX_ILLEGAL_DATA_ADDRESS);
-        return;
+    if (startAddr + quantity > maxAddr) {
+        sendExceptionResponse(config.slaveAddress, fc, MODBUS_EX_ILLEGAL_DATA_ADDRESS);
+        return false;
     }
-    
-    uint8_t byteCount = (quantity + 7) / 8;
+    return true;
+}
+
+void ModbusHandler::sendSlaveReadResponse(uint8_t fc, const uint8_t* data, uint8_t byteCount) {
     uint8_t response[Protocols::MODBUS_BUFFER_SIZE];
     response[0] = config.slaveAddress;
-    response[1] = 0x01;
+    response[1] = fc;
     response[2] = byteCount;
-    
-    if (!readCoils(startAddr, quantity, &response[3])) {
-        sendExceptionResponse(config.slaveAddress, 0x01, MODBUS_EX_SLAVE_DEVICE_FAILURE);
-        return;
-    }
-    
+    memcpy(&response[3], data, byteCount);
     uint8_t respLen = 3 + byteCount;
     uint16_t crc = calculateCRC(response, respLen);
     response[respLen]     = crc & 0xFF;
     response[respLen + 1] = (crc >> 8) & 0xFF;
-    
     sendResponse(response, respLen + 2);
+}
+
+void ModbusHandler::sendSlaveWriteAck(uint8_t fc, uint16_t startAddr, uint16_t quantity) {
+    uint8_t response[8];
+    response[0] = config.slaveAddress;
+    response[1] = fc;
+    response[2] = (startAddr >> 8) & 0xFF;
+    response[3] = startAddr & 0xFF;
+    response[4] = (quantity >> 8) & 0xFF;
+    response[5] = quantity & 0xFF;
+    uint16_t crc = calculateCRC(response, 6);
+    response[6] = crc & 0xFF;
+    response[7] = (crc >> 8) & 0xFF;
+    sendResponse(response, 8);
+}
+
+// ============ FC 0x01: 读线圈 ============
+
+void ModbusHandler::handleReadCoils(const uint8_t* frame, uint8_t length) {
+    uint16_t startAddr, quantity;
+    if (!parseSlaveRequest(frame, length, 0x01, sizeof(coils) * 8, 2000, startAddr, quantity))
+        return;
+    uint8_t byteCount = (quantity + 7) / 8;
+    uint8_t data[byteCount];
+    if (!readCoils(startAddr, quantity, data)) {
+        sendExceptionResponse(config.slaveAddress, 0x01, MODBUS_EX_SLAVE_DEVICE_FAILURE);
+        return;
+    }
+    sendSlaveReadResponse(0x01, data, byteCount);
 }
 
 // ============ FC 0x02: 读离散输入 ============
 
 void ModbusHandler::handleReadDiscreteInputs(const uint8_t* frame, uint8_t length) {
-    if (length < 8) {
-        sendExceptionResponse(config.slaveAddress, 0x02, MODBUS_EX_ILLEGAL_DATA_VALUE);
+    uint16_t startAddr, quantity;
+    if (!parseSlaveRequest(frame, length, 0x02, sizeof(discreteInputs) * 8, 2000, startAddr, quantity))
         return;
-    }
-    
-    uint16_t startAddr = (frame[2] << 8) | frame[3];
-    uint16_t quantity  = (frame[4] << 8) | frame[5];
-    
-    if (quantity == 0 || quantity > 2000) {
-        sendExceptionResponse(config.slaveAddress, 0x02, MODBUS_EX_ILLEGAL_DATA_VALUE);
-        return;
-    }
-    
-    if (startAddr + quantity > sizeof(discreteInputs) * 8) {
-        sendExceptionResponse(config.slaveAddress, 0x02, MODBUS_EX_ILLEGAL_DATA_ADDRESS);
-        return;
-    }
-    
     uint8_t byteCount = (quantity + 7) / 8;
-    uint8_t response[Protocols::MODBUS_BUFFER_SIZE];
-    response[0] = config.slaveAddress;
-    response[1] = 0x02;
-    response[2] = byteCount;
-    
-    if (!readDiscreteInputs(startAddr, quantity, &response[3])) {
+    uint8_t data[byteCount];
+    if (!readDiscreteInputs(startAddr, quantity, data)) {
         sendExceptionResponse(config.slaveAddress, 0x02, MODBUS_EX_SLAVE_DEVICE_FAILURE);
         return;
     }
-    
-    uint8_t respLen = 3 + byteCount;
-    uint16_t crc = calculateCRC(response, respLen);
-    response[respLen]     = crc & 0xFF;
-    response[respLen + 1] = (crc >> 8) & 0xFF;
-    
-    sendResponse(response, respLen + 2);
+    sendSlaveReadResponse(0x02, data, byteCount);
 }
 
 // ============ FC 0x03: 读保持寄存器 ============
 
 void ModbusHandler::handleReadHoldingRegisters(const uint8_t* frame, uint8_t length) {
-    if (length < 8) {
-        sendExceptionResponse(config.slaveAddress, 0x03, MODBUS_EX_ILLEGAL_DATA_VALUE);
+    uint16_t startAddr, quantity;
+    if (!parseSlaveRequest(frame, length, 0x03,
+            sizeof(holdingRegisters) / sizeof(holdingRegisters[0]), 125, startAddr, quantity))
         return;
-    }
-    
-    uint16_t startAddr = (frame[2] << 8) | frame[3];
-    uint16_t quantity  = (frame[4] << 8) | frame[5];
-    
-    if (quantity == 0 || quantity > 125) {
-        sendExceptionResponse(config.slaveAddress, 0x03, MODBUS_EX_ILLEGAL_DATA_VALUE);
-        return;
-    }
-    
-    if (startAddr + quantity > sizeof(holdingRegisters) / sizeof(holdingRegisters[0])) {
-        sendExceptionResponse(config.slaveAddress, 0x03, MODBUS_EX_ILLEGAL_DATA_ADDRESS);
-        return;
-    }
-    
     uint16_t regData[125];
     if (!readHoldingRegisters(startAddr, quantity, regData)) {
         sendExceptionResponse(config.slaveAddress, 0x03, MODBUS_EX_SLAVE_DEVICE_FAILURE);
         return;
     }
-    
     uint8_t byteCount = quantity * 2;
-    uint8_t response[Protocols::MODBUS_BUFFER_SIZE];
-    response[0] = config.slaveAddress;
-    response[1] = 0x03;
-    response[2] = byteCount;
-    
+    uint8_t data[byteCount];
     for (uint16_t i = 0; i < quantity; i++) {
-        response[3 + i * 2]     = (regData[i] >> 8) & 0xFF;
-        response[3 + i * 2 + 1] = regData[i] & 0xFF;
+        data[i * 2]     = (regData[i] >> 8) & 0xFF;
+        data[i * 2 + 1] = regData[i] & 0xFF;
     }
-    
-    uint8_t respLen = 3 + byteCount;
-    uint16_t crc = calculateCRC(response, respLen);
-    response[respLen]     = crc & 0xFF;
-    response[respLen + 1] = (crc >> 8) & 0xFF;
-    
-    sendResponse(response, respLen + 2);
+    sendSlaveReadResponse(0x03, data, byteCount);
 }
 
 // ============ FC 0x04: 读输入寄存器 ============
 
 void ModbusHandler::handleReadInputRegisters(const uint8_t* frame, uint8_t length) {
-    if (length < 8) {
-        sendExceptionResponse(config.slaveAddress, 0x04, MODBUS_EX_ILLEGAL_DATA_VALUE);
+    uint16_t startAddr, quantity;
+    if (!parseSlaveRequest(frame, length, 0x04,
+            sizeof(inputRegisters) / sizeof(inputRegisters[0]), 125, startAddr, quantity))
         return;
-    }
-    
-    uint16_t startAddr = (frame[2] << 8) | frame[3];
-    uint16_t quantity  = (frame[4] << 8) | frame[5];
-    
-    if (quantity == 0 || quantity > 125) {
-        sendExceptionResponse(config.slaveAddress, 0x04, MODBUS_EX_ILLEGAL_DATA_VALUE);
-        return;
-    }
-    
-    if (startAddr + quantity > sizeof(inputRegisters) / sizeof(inputRegisters[0])) {
-        sendExceptionResponse(config.slaveAddress, 0x04, MODBUS_EX_ILLEGAL_DATA_ADDRESS);
-        return;
-    }
-    
     uint16_t regData[125];
     if (!readInputRegisters(startAddr, quantity, regData)) {
         sendExceptionResponse(config.slaveAddress, 0x04, MODBUS_EX_SLAVE_DEVICE_FAILURE);
         return;
     }
-    
     uint8_t byteCount = quantity * 2;
-    uint8_t response[Protocols::MODBUS_BUFFER_SIZE];
-    response[0] = config.slaveAddress;
-    response[1] = 0x04;
-    response[2] = byteCount;
-    
+    uint8_t data[byteCount];
     for (uint16_t i = 0; i < quantity; i++) {
-        response[3 + i * 2]     = (regData[i] >> 8) & 0xFF;
-        response[3 + i * 2 + 1] = regData[i] & 0xFF;
+        data[i * 2]     = (regData[i] >> 8) & 0xFF;
+        data[i * 2 + 1] = regData[i] & 0xFF;
     }
-    
-    uint8_t respLen = 3 + byteCount;
-    uint16_t crc = calculateCRC(response, respLen);
-    response[respLen]     = crc & 0xFF;
-    response[respLen + 1] = (crc >> 8) & 0xFF;
-    
-    sendResponse(response, respLen + 2);
+    sendSlaveReadResponse(0x04, data, byteCount);
 }
 
 // ============ FC 0x05: 写单个线圈 ============
@@ -970,25 +935,20 @@ void ModbusHandler::handleWriteSingleCoil(const uint8_t* frame, uint8_t length) 
         sendExceptionResponse(config.slaveAddress, 0x05, MODBUS_EX_ILLEGAL_DATA_VALUE);
         return;
     }
-    
     uint16_t addr  = (frame[2] << 8) | frame[3];
     uint16_t value = (frame[4] << 8) | frame[5];
-    
     if (value != 0xFF00 && value != 0x0000) {
         sendExceptionResponse(config.slaveAddress, 0x05, MODBUS_EX_ILLEGAL_DATA_VALUE);
         return;
     }
-    
     if (addr >= sizeof(coils) * 8) {
         sendExceptionResponse(config.slaveAddress, 0x05, MODBUS_EX_ILLEGAL_DATA_ADDRESS);
         return;
     }
-    
     if (!writeSingleCoil(addr, value == 0xFF00)) {
         sendExceptionResponse(config.slaveAddress, 0x05, MODBUS_EX_SLAVE_DEVICE_FAILURE);
         return;
     }
-    
     if (frame[0] == 0) return;
     sendResponse(frame, length);
 }
@@ -1000,20 +960,16 @@ void ModbusHandler::handleWriteSingleRegister(const uint8_t* frame, uint8_t leng
         sendExceptionResponse(config.slaveAddress, 0x06, MODBUS_EX_ILLEGAL_DATA_VALUE);
         return;
     }
-    
     uint16_t addr  = (frame[2] << 8) | frame[3];
     uint16_t value = (frame[4] << 8) | frame[5];
-    
     if (addr >= sizeof(holdingRegisters) / sizeof(holdingRegisters[0])) {
         sendExceptionResponse(config.slaveAddress, 0x06, MODBUS_EX_ILLEGAL_DATA_ADDRESS);
         return;
     }
-    
     if (!writeSingleRegister(addr, value)) {
         sendExceptionResponse(config.slaveAddress, 0x06, MODBUS_EX_SLAVE_DEVICE_FAILURE);
         return;
     }
-    
     if (frame[0] == 0) return;
     sendResponse(frame, length);
 }
@@ -1025,51 +981,25 @@ void ModbusHandler::handleWriteMultipleCoils(const uint8_t* frame, uint8_t lengt
         sendExceptionResponse(config.slaveAddress, 0x0F, MODBUS_EX_ILLEGAL_DATA_VALUE);
         return;
     }
-    
     uint16_t startAddr = (frame[2] << 8) | frame[3];
     uint16_t quantity  = (frame[4] << 8) | frame[5];
     uint8_t byteCount  = frame[6];
-    
-    if (quantity == 0 || quantity > 1968) {
+    if (quantity == 0 || quantity > 1968 ||
+        byteCount != (quantity + 7) / 8 ||
+        length < (uint8_t)(7 + byteCount + 2)) {
         sendExceptionResponse(config.slaveAddress, 0x0F, MODBUS_EX_ILLEGAL_DATA_VALUE);
         return;
     }
-    
-    uint8_t expectedByteCount = (quantity + 7) / 8;
-    if (byteCount != expectedByteCount) {
-        sendExceptionResponse(config.slaveAddress, 0x0F, MODBUS_EX_ILLEGAL_DATA_VALUE);
-        return;
-    }
-    
-    if (length < (uint8_t)(7 + byteCount + 2)) {
-        sendExceptionResponse(config.slaveAddress, 0x0F, MODBUS_EX_ILLEGAL_DATA_VALUE);
-        return;
-    }
-    
     if (startAddr + quantity > sizeof(coils) * 8) {
         sendExceptionResponse(config.slaveAddress, 0x0F, MODBUS_EX_ILLEGAL_DATA_ADDRESS);
         return;
     }
-    
     if (!writeMultipleCoils(startAddr, quantity, (uint8_t*)&frame[7])) {
         sendExceptionResponse(config.slaveAddress, 0x0F, MODBUS_EX_SLAVE_DEVICE_FAILURE);
         return;
     }
-    
     if (frame[0] == 0) return;
-    
-    uint8_t response[8];
-    response[0] = config.slaveAddress;
-    response[1] = 0x0F;
-    response[2] = (startAddr >> 8) & 0xFF;
-    response[3] = startAddr & 0xFF;
-    response[4] = (quantity >> 8) & 0xFF;
-    response[5] = quantity & 0xFF;
-    uint16_t crc = calculateCRC(response, 6);
-    response[6] = crc & 0xFF;
-    response[7] = (crc >> 8) & 0xFF;
-    
-    sendResponse(response, 8);
+    sendSlaveWriteAck(0x0F, startAddr, quantity);
 }
 
 // ============ FC 0x10: 写多个寄存器 ============
@@ -1079,56 +1009,32 @@ void ModbusHandler::handleWriteMultipleRegisters(const uint8_t* frame, uint8_t l
         sendExceptionResponse(config.slaveAddress, 0x10, MODBUS_EX_ILLEGAL_DATA_VALUE);
         return;
     }
-    
     uint16_t startAddr = (frame[2] << 8) | frame[3];
     uint16_t quantity  = (frame[4] << 8) | frame[5];
     uint8_t byteCount  = frame[6];
-    
-    if (quantity == 0 || quantity > 123) {
+    if (quantity == 0 || quantity > 123 ||
+        byteCount != quantity * 2 ||
+        length < (uint8_t)(7 + byteCount + 2)) {
         sendExceptionResponse(config.slaveAddress, 0x10, MODBUS_EX_ILLEGAL_DATA_VALUE);
         return;
     }
-    
-    if (byteCount != quantity * 2) {
-        sendExceptionResponse(config.slaveAddress, 0x10, MODBUS_EX_ILLEGAL_DATA_VALUE);
-        return;
-    }
-    
-    if (length < (uint8_t)(7 + byteCount + 2)) {
-        sendExceptionResponse(config.slaveAddress, 0x10, MODBUS_EX_ILLEGAL_DATA_VALUE);
-        return;
-    }
-    
     if (startAddr + quantity > sizeof(holdingRegisters) / sizeof(holdingRegisters[0])) {
         sendExceptionResponse(config.slaveAddress, 0x10, MODBUS_EX_ILLEGAL_DATA_ADDRESS);
         return;
     }
-    
     uint16_t regData[123];
     for (uint16_t i = 0; i < quantity; i++) {
         regData[i] = (frame[7 + i * 2] << 8) | frame[7 + i * 2 + 1];
     }
-    
     if (!writeMultipleRegisters(startAddr, quantity, regData)) {
         sendExceptionResponse(config.slaveAddress, 0x10, MODBUS_EX_SLAVE_DEVICE_FAILURE);
         return;
     }
-    
     if (frame[0] == 0) return;
-    
-    uint8_t response[8];
-    response[0] = config.slaveAddress;
-    response[1] = 0x10;
-    response[2] = (startAddr >> 8) & 0xFF;
-    response[3] = startAddr & 0xFF;
-    response[4] = (quantity >> 8) & 0xFF;
-    response[5] = quantity & 0xFF;
-    uint16_t crc = calculateCRC(response, 6);
-    response[6] = crc & 0xFF;
-    response[7] = (crc >> 8) & 0xFF;
-    
-    sendResponse(response, 8);
+    sendSlaveWriteAck(0x10, startAddr, quantity);
 }
+
+#endif // FASTBEE_MODBUS_SLAVE_ENABLE
 
 // ============ 回调设置 ============
 
@@ -1235,7 +1141,7 @@ OneShotResult ModbusHandler::readRegistersOnce(uint8_t slaveAddress, uint8_t fun
         LOG_WARNINGF("[Modbus] OneShot read: invalid function code 0x%02X", functionCode);
         return result;
     }
-    if (quantity == 0 || quantity > Protocols::MODBUS_MAX_REGISTERS_PER_READ) {
+    if (quantity == 0 || quantity > Protocols::MODBUS_ONESHOT_BUFFER_SIZE) {
         result.error = ONESHOT_EXCEPTION;
         result.exceptionCode = MODBUS_EX_ILLEGAL_DATA_VALUE;
         LOG_WARNINGF("[Modbus] OneShot read: invalid quantity %d", quantity);
@@ -1362,6 +1268,20 @@ OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, u
     result.error = ONESHOT_TIMEOUT;
     result.count = 0;
 
+    // 连续超时冷却保护：防止持续超时耗尽堆内存导致 abort()
+    if (_consecutiveTimeouts >= CONSECUTIVE_TIMEOUT_THRESHOLD) {
+        unsigned long now = millis();
+        if (now < _cooldownUntil) {
+            result.error = ONESHOT_TIMEOUT;
+            LOG_WARNINGF("[Modbus] In cooldown (%lus left), skip transaction",
+                         (_cooldownUntil - now) / 1000);
+            return result;
+        }
+        // 冷却结束，重置计数器，尝试一次
+        _consecutiveTimeouts = 0;
+        LOG_INFO("[Modbus] Cooldown ended, resuming communication");
+    }
+
     // 超时参数
     uint16_t timeout = config.master.responseTimeout;
     if (timeout == 0) timeout = 1000;
@@ -1369,14 +1289,17 @@ OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, u
     if (charTimeout < 2) charTimeout = 2;
     uint8_t maxRetries = config.master.maxRetries;
 
-    // 捕获 TX 帧 hex（用于调试面板显示）
-    _lastTxHex = "";
-    _lastRxHex = "";
-    for (uint8_t i = 0; i < reqLen; i++) {
-        if (i > 0) _lastTxHex += ' ';
-        char hex[4];
-        snprintf(hex, sizeof(hex), "%02X", request[i]);
-        _lastTxHex += hex;
+    // 捕获 TX 帧 hex（用于调试面板显示）—— 低堆时跳过以减少分配压力
+    bool heapSafe = ESP.getFreeHeap() > 15000;
+    if (heapSafe) {
+        _lastTxHex = "";
+        _lastRxHex = "";
+        for (uint8_t i = 0; i < reqLen; i++) {
+            if (i > 0) _lastTxHex += ' ';
+            char hex[4];
+            snprintf(hex, sizeof(hex), "%02X", request[i]);
+            _lastTxHex += hex;
+        }
     }
 
     // 重试循环
@@ -1441,13 +1364,15 @@ OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, u
             continue;
         }
 
-        // 捕获 RX 帧 hex（CRC 校验通过后）
-        _lastRxHex = "";
-        for (uint8_t i = 0; i < respIdx; i++) {
-            if (i > 0) _lastRxHex += ' ';
-            char hex[4];
-            snprintf(hex, sizeof(hex), "%02X", respBuf[i]);
-            _lastRxHex += hex;
+        // 捕获 RX 帧 hex（CRC 校验通过后）—— 低堆时跳过
+        if (heapSafe) {
+            _lastRxHex = "";
+            for (uint8_t i = 0; i < respIdx; i++) {
+                if (i > 0) _lastRxHex += ' ';
+                char hex[4];
+                snprintf(hex, sizeof(hex), "%02X", respBuf[i]);
+                _lastRxHex += hex;
+            }
         }
 
         // 地址匹配（广播地址 0x00 时跳过，允许任意从站响应）
@@ -1474,6 +1399,18 @@ OneShotResult ModbusHandler::_executeModbusTransaction(const uint8_t* request, u
         }
         LOG_INFOF("[Modbus] OneShot: success, %d bytes response from slave %d", respIdx, expectedSlaveAddr);
         break;
+    }
+
+    // 连续超时追踪：成功时重置，超时时累加并触发冷却
+    if (result.error == ONESHOT_SUCCESS || result.error == ONESHOT_EXCEPTION) {
+        _consecutiveTimeouts = 0;
+    } else if (result.error == ONESHOT_TIMEOUT) {
+        _consecutiveTimeouts++;
+        if (_consecutiveTimeouts >= CONSECUTIVE_TIMEOUT_THRESHOLD) {
+            _cooldownUntil = millis() + COOLDOWN_DURATION_MS;
+            LOG_WARNINGF("[Modbus] %d consecutive timeouts, entering %lus cooldown",
+                         _consecutiveTimeouts, COOLDOWN_DURATION_MS / 1000);
+        }
     }
 
     return result;
@@ -1951,7 +1888,7 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
     config.master.responseTimeout = timeout;
     config.master.maxRetries = retries;
 
-    LOG_INFOF("[Modbus] PollTask[%d]: slave=%d FC=%d start=%d qty=%d (timeout=%d retries=%d)",
+    LOG_DEBUGF("[Modbus] PollTask[%d]: slave=%d FC=%d start=%d qty=%d (timeout=%d retries=%d)",
               taskIdx, task.slaveAddress, task.functionCode, task.startAddress, task.quantity,
               timeout, retries);
 
@@ -1988,7 +1925,10 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
         // 标记缓存无效
         cache.valid = false;
         cache.count = 0;
-        _notifyStatusChange();  // 通知状态变化：轮询失败
+        // 低堆时跳过状态通知（避免 JsonDocument 分配导致 abort）
+        if (ESP.getFreeHeap() > 15000) {
+            _notifyStatusChange();
+        }
         return "[]";
     }
     

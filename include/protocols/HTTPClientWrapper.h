@@ -1,6 +1,10 @@
 #ifndef HTTP_CLIENT_H
 #define HTTP_CLIENT_H
 
+#include "core/FeatureFlags.h"
+
+#if FASTBEE_ENABLE_HTTP
+
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -50,5 +54,27 @@ private:
     
     String buildURL(const String& endpoint);
 };
+
+#else // !FASTBEE_ENABLE_HTTP
+
+#include <Arduino.h>
+
+struct HTTPConfig {
+    String baseURL;
+    uint16_t timeout = 5000;
+    String contentType = "application/json";
+    String authType = "none";
+};
+
+class HTTPClientWrapper {
+public:
+    bool initialize() { return true; }
+    void shutdown() {}
+    bool isRunning() const { return false; }
+    bool loadConfig() { return true; }
+    const HTTPConfig& getConfig() const { static HTTPConfig c; return c; }
+};
+
+#endif // FASTBEE_ENABLE_HTTP
 
 #endif

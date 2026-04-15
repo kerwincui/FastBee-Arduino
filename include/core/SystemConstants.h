@@ -241,7 +241,8 @@ namespace Protocols {
     // Modbus Master模式常量
     constexpr uint8_t  MODBUS_MAX_POLL_TASKS       = 8;    // 最大轮询任务数
     constexpr uint16_t MODBUS_DEFAULT_POLL_INTERVAL = 30;   // 默认轮询间隔（秒）
-    constexpr uint16_t MODBUS_MAX_REGISTERS_PER_READ = 125; // 单次最大寄存器数
+    constexpr uint16_t MODBUS_MAX_REGISTERS_PER_READ = 125; // 单次最大寄存器数（协议帧上限）
+    constexpr uint8_t  MODBUS_ONESHOT_BUFFER_SIZE    = 32;  // OneShotResult/PollTaskCache 实际缓冲区大小
     constexpr uint8_t  MODBUS_MAX_WRITE_QUEUE       = 4;    // 写请求队列深度
     constexpr uint8_t  MODBUS_MAX_COIL_DELAY_TASKS  = 8;    // 最大线圈延时任务数
     constexpr uint8_t  MODBUS_MAX_WRITE_COILS        = 32;   // 单次最大写线圈数

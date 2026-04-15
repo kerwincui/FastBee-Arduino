@@ -9,6 +9,9 @@
  */
 
 #include "protocols/CoAPHandler.h"
+
+#if FASTBEE_ENABLE_COAP
+
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <esp_random.h>
@@ -656,3 +659,5 @@ String CoAPHandler::getMethodString(CoAPMethod method) {
         default:                 return "UNKNOWN";
     }
 }
+
+#endif // FASTBEE_ENABLE_COAP

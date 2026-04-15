@@ -3,6 +3,7 @@
 #include "core/PeriphExecScheduler.h"
 #include "core/RuleScript.h"
 #include "core/FastBeeFramework.h"
+#include "core/ChipConfig.h"
 #include "protocols/ProtocolManager.h"
 #include "protocols/MQTTClient.h"
 #include "systems/LoggerSystem.h"
@@ -670,6 +671,9 @@ void PeriphExecManager::recordResult(const AsyncExecResult& result) {
     MutexGuard lock(_resultsMutex);
     if (!lock.isLocked()) return;
 
+    // 堆守卫：低堆时跳过记录，防止 push_back 内部 new 失败导致 abort()
+    if (ESP.getFreeHeap() < 10000) return;
+
     executionResults.push_back(result);
 
     // 保留最近 MAX_ASYNC_TASKS * 2 条记录
@@ -816,15 +820,27 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
         _runningRuleIds.insert(rule.id);
     }
 
-    BaseType_t created = xTaskCreatePinnedToCore(
-        asyncExecTaskFunc,      // 任务函数
-        taskName,               // 任务名称
-        stackSize,              // 栈大小
-        ctx,                    // 参数
-        ASYNC_TASK_PRIORITY,    // 优先级 0（低于主循环）
-        nullptr,                // 不需要任务句柄
-        1                       // 运行在 Core 1（与主循环相同）
-    );
+    BaseType_t created =
+#if CHIP_DUAL_CORE
+        xTaskCreatePinnedToCore(
+            asyncExecTaskFunc,      // 任务函数
+            taskName,               // 任务名称
+            stackSize,              // 栈大小
+            ctx,                    // 参数
+            ASYNC_TASK_PRIORITY,    // 优先级 0（低于主循环）
+            nullptr,                // 不需要任务句柄
+            1                       // 运行在 Core 1（与主循环相同）
+        );
+#else
+        xTaskCreate(
+            asyncExecTaskFunc,      // 任务函数
+            taskName,               // 任务名称
+            stackSize,              // 栈大小
+            ctx,                    // 参数
+            ASYNC_TASK_PRIORITY,    // 优先级 0（低于主循环）
+            nullptr                 // 不需要任务句柄
+        );
+#endif
 
     if (created != pdPASS) {
         LOGGER.errorf("[PeriphExec] Failed to create async task, insufficient memory: '%s'", rule.name.c_str());
@@ -839,7 +855,7 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
         return;
     }
 
-    LOGGER.infof("[PeriphExec] Async dispatched: '%s' (stack=%d, heap=%d)",
+    LOG_DEBUGF("[PeriphExec] Async dispatched: '%s' (stack=%d, heap=%d)",
                  rule.name.c_str(), (int)stackSize, (int)ESP.getFreeHeap());
 }
 
@@ -857,19 +873,27 @@ void PeriphExecManager::asyncExecTaskFunc(void* pvParameters) {
     result.startTime = millis();
     result.status = AsyncExecStatus::RUNNING;
 
-    LOGGER.infof("[PeriphExec] Async task started: '%s'", result.ruleName.c_str());
+    LOG_DEBUGF("[PeriphExec] Async task started: '%s'", result.ruleName.c_str());
 
-    // 执行所有动作
-    auto actionResults = ctx->manager->executeAllActions(ctx->ruleCopy, ctx->receivedValue);
+    // 堆守卫：任务开始时检查堆内存，过低时直接放弃执行防止 abort()
+    bool allOk = false;
+    if (ESP.getFreeHeap() < 20000) {
+        LOGGER.warningf("[PeriphExec] Heap too low (%d), skip execution: '%s'",
+                        (int)ESP.getFreeHeap(), result.ruleName.c_str());
+        result.status = AsyncExecStatus::FAILED;
+    } else {
+        // 执行所有动作
+        auto actionResults = ctx->manager->executeAllActions(ctx->ruleCopy, ctx->receivedValue);
 
-    // 统计结果
-    bool allOk = true;
-    for (const auto& ar : actionResults) {
-        if (!ar.success) { allOk = false; break; }
+        // 统计结果
+        allOk = true;
+        for (const auto& ar : actionResults) {
+            if (!ar.success) { allOk = false; break; }
+        }
+        result.status = allOk ? AsyncExecStatus::COMPLETED : AsyncExecStatus::FAILED;
     }
 
     result.endTime = millis();
-    result.status = allOk ? AsyncExecStatus::COMPLETED : AsyncExecStatus::FAILED;
 
     LOGGER.infof("[PeriphExec] Async task finished: '%s' %s (%lums)",
                  result.ruleName.c_str(),
@@ -886,21 +910,31 @@ void PeriphExecManager::asyncExecTaskFunc(void* pvParameters) {
     }
 
     // 如果执行失败，设置退避时间（30秒后才能再次触发）
-    if (!allOk) {
-        MutexGuard runLock(ctx->manager->_runningRulesMutex);
-        ctx->manager->_failureBackoff[ctx->ruleCopy.id] = millis() + 30000;
-        LOGGER.infof("[PeriphExec] Rule '%s' failed, backoff for 30s", result.ruleName.c_str());
-    } else {
-        // 成功时清除退避记录
-        MutexGuard runLock(ctx->manager->_runningRulesMutex);
-        ctx->manager->_failureBackoff.erase(ctx->ruleCopy.id);
+    // 堆守卫：低堆时跳过 map 插入，防止 abort()
+    if (ESP.getFreeHeap() > 10000) {
+        if (!allOk) {
+            MutexGuard runLock(ctx->manager->_runningRulesMutex);
+            ctx->manager->_failureBackoff[ctx->ruleCopy.id] = millis() + 30000;
+            LOGGER.infof("[PeriphExec] Rule '%s' failed, backoff for 30s", result.ruleName.c_str());
+        } else {
+            // 成功时清除退避记录
+            MutexGuard runLock(ctx->manager->_runningRulesMutex);
+            ctx->manager->_failureBackoff.erase(ctx->ruleCopy.id);
+        }
     }
 
-    // 触发外设执行完成事件
-    ctx->manager->dispatchPeriphExecEvent(ctx->ruleCopy.id, allOk ? "success" : "failed");
+    // 触发外设执行完成事件（低堆时跳过，避免内部 STL 分配导致 abort）
+    if (ESP.getFreeHeap() > 10000) {
+        ctx->manager->dispatchPeriphExecEvent(ctx->ruleCopy.id, allOk ? "success" : "failed");
+    }
 
     // 释放任务槽
     xSemaphoreGive(ctx->taskSlot);
+
+    // 栈高水位标记（用于验证栈缩减安全性）
+    UBaseType_t hwm = uxTaskGetStackHighWaterMark(nullptr);
+    LOGGER.infof("[PExec] Task '%s' stack HWM: %u bytes free",
+                 result.ruleName.c_str(), (unsigned int)(hwm * sizeof(StackType_t)));
 
     // 归还上下文到对象池
     ctx->manager->_contextPool.release(ctx);
@@ -921,7 +955,13 @@ std::vector<ActionExecResult> PeriphExecManager::executeAllActions(
 // ========== 内部调度接口实现 ==========
 
 void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailable) {
+    // 堆守卫：低堆时跳过定时触发，防止 STL 容器分配导致 abort()
+    if (ESP.getFreeHeap() < 20000) {
+        return;
+    }
+
     std::vector<PeriphExecRule> triggeredRules;
+    triggeredRules.reserve(4);  // 预分配避免 push_back 时重新分配
 
     {
         MutexGuard lock(_rulesMutex);

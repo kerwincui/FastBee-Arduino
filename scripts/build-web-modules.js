@@ -12,6 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const { buildAdminBundle } = require('./build-admin-bundle');
+const { minifyJS } = require('./minify-js');
 
 const ROOT_DIR = path.join(__dirname, '..');
 const RUNTIME_SOURCE_DIR = path.join(ROOT_DIR, 'web-src', 'modules', 'runtime');
@@ -42,7 +43,9 @@ function syncDirectRuntimeModules() {
             throw new Error(`Missing runtime module source: ${sourceFile}`);
         }
 
-        const content = readUtf8(sourceFile);
+        const raw = readUtf8(sourceFile);
+        const noMinify = process.argv.includes('--no-minify');
+        const content = noMinify ? raw : minifyJS(raw);
         writeUtf8(publishFile, content);
 
         results.push({

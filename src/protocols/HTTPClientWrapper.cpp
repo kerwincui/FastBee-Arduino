@@ -6,6 +6,9 @@
  */
 
 #include "protocols/HTTPClientWrapper.h"
+
+#if FASTBEE_ENABLE_HTTP
+
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 
@@ -255,3 +258,5 @@ String HTTPClientWrapper::getStatus() const {
 void HTTPClientWrapper::setResponseCallback(std::function<void(const String&, const String&)> callback) {
     responseCallback = callback;
 }
+
+#endif // FASTBEE_ENABLE_HTTP

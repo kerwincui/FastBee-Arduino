@@ -2,7 +2,7 @@
 // FastBee Service Worker - Offline Cache & Resource Prefetch
 // ============================================================
 
-var CACHE_NAME = 'fastbee-v1';
+var CACHE_NAME = 'fastbee-v2';
 
 var PRECACHE_URLS = [
     '/',
@@ -13,75 +13,93 @@ var PRECACHE_URLS = [
     '/js/state.js',
     '/js/modules/i18n-engine.js',
     '/assets/favicon.ico',
-    '/assets/logo.png'
+    '/assets/logo.png',
+    // JS modules
+    '/js/modules/protocol.js',
+    '/js/modules/periph-exec.js',
+    '/js/modules/device-control.js',
+    '/js/modules/peripherals.js',
+    '/js/modules/admin-bundle.js',
+    // Page HTML
+    '/pages/dashboard.html',
+    '/pages/protocol.html',
+    '/pages/device.html',
+    '/pages/peripheral.html',
+    '/pages/network.html',
+    '/pages/admin.html',
+    '/pages/rule-script.html',
+    '/pages/modals.html'
 ];
 
-// Install: precache core resources
+// Sequential precache: one file at a time to avoid overwhelming ESP32
+function sequentialCache(cache, urls) {
+    return urls.reduce(function(chain, url) {
+        return chain.then(function() {
+            return fetch(url).then(function(resp) {
+                if (resp.ok) return cache.put(url, resp);
+            }).catch(function() { /* skip failed */ });
+        }).then(function() {
+            return new Promise(function(r) { setTimeout(r, 200); });
+        });
+    }, Promise.resolve());
+}
+
+// Install: sequential precache
 self.addEventListener('install', function(event) {
     event.waitUntil(
-        caches.open(CACHE_NAME).then(function(cache) {
-            return cache.addAll(PRECACHE_URLS);
-        }).then(function() {
-            return self.skipWaiting();
-        })
+        caches.open(CACHE_NAME)
+            .then(function(cache) { return sequentialCache(cache, PRECACHE_URLS); })
+            .then(function() { return self.skipWaiting(); })
     );
 });
 
 // Activate: clean old caches
 self.addEventListener('activate', function(event) {
     event.waitUntil(
-        caches.keys().then(function(cacheNames) {
+        caches.keys().then(function(names) {
             return Promise.all(
-                cacheNames.filter(function(name) {
-                    return name !== CACHE_NAME;
-                }).map(function(name) {
-                    return caches.delete(name);
-                })
+                names.filter(function(n) { return n !== CACHE_NAME; })
+                     .map(function(n) { return caches.delete(n); })
             );
-        }).then(function() {
-            return self.clients.claim();
-        })
+        }).then(function() { return self.clients.claim(); })
     );
 });
 
-// Fetch strategy: network-first for HTML, cache-first for static assets
+// Fetch strategy
 self.addEventListener('fetch', function(event) {
     var url = new URL(event.request.url);
-    
-    // API requests: network only (no caching)
-    if (url.pathname.startsWith('/api/')) {
-        return;
-    }
-    
-    // HTML pages: network first, fallback to cache
-    if (event.request.headers.get('accept') && 
+
+    // API: pass through, no caching
+    if (url.pathname.startsWith('/api/')) return;
+
+    // HTML pages: stale-while-revalidate
+    if (event.request.headers.get('accept') &&
         event.request.headers.get('accept').includes('text/html')) {
         event.respondWith(
-            fetch(event.request).then(function(response) {
-                var clone = response.clone();
-                caches.open(CACHE_NAME).then(function(cache) {
-                    cache.put(event.request, clone);
-                });
-                return response;
-            }).catch(function() {
-                return caches.match(event.request);
+            caches.match(event.request).then(function(cached) {
+                var fetchPromise = fetch(event.request).then(function(resp) {
+                    if (resp.ok) {
+                        var clone = resp.clone();
+                        caches.open(CACHE_NAME).then(function(c) { c.put(event.request, clone); });
+                    }
+                    return resp;
+                }).catch(function() { return cached; });
+                return cached || fetchPromise;
             })
         );
         return;
     }
-    
-    // JS/CSS/images: cache first, fallback to network
+
+    // JS/CSS/images: cache-first
     event.respondWith(
         caches.match(event.request).then(function(cached) {
             if (cached) return cached;
-            return fetch(event.request).then(function(response) {
-                if (response.ok) {
-                    var clone = response.clone();
-                    caches.open(CACHE_NAME).then(function(cache) {
-                        cache.put(event.request, clone);
-                    });
+            return fetch(event.request).then(function(resp) {
+                if (resp.ok) {
+                    var clone = resp.clone();
+                    caches.open(CACHE_NAME).then(function(c) { c.put(event.request, clone); });
                 }
-                return response;
+                return resp;
             });
         })
     );

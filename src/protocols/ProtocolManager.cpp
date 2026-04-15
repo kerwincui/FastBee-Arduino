@@ -57,12 +57,18 @@ bool ProtocolManager::setProtocolConfig(ProtocolType type, void* config) {
                     return initMQTT(config);
                 case ProtocolType::MODBUS:
                     return initModbus(config);
+#if FASTBEE_ENABLE_TCP
                 case ProtocolType::TCP:
                     return initTCP(config);
+#endif
+#if FASTBEE_ENABLE_HTTP
                 case ProtocolType::HTTP:
                     return initHTTP(config);
+#endif
+#if FASTBEE_ENABLE_COAP
                 case ProtocolType::COAP:
                     return initCoAP(config);
+#endif
                 default:
                     return false;
             }
@@ -88,18 +94,24 @@ bool ProtocolManager::startAll() {
                 started = modbusHandler && modbusHandler->begin();
                 if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MODBUS_RTU_ENABLED, "");
                 break;
+#if FASTBEE_ENABLE_TCP
             case ProtocolType::TCP:    
                 started = tcpHandler && tcpHandler->beginFromConfig();
                 if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_TCP_ENABLED, "");
                 break;
+#endif
+#if FASTBEE_ENABLE_HTTP
             case ProtocolType::HTTP:   
                 started = httpClientWrapper && httpClientWrapper->beginFromConfig();
                 if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_HTTP_ENABLED, "");
                 break;
+#endif
+#if FASTBEE_ENABLE_COAP
             case ProtocolType::COAP:   
                 started = coapHandler && coapHandler->beginFromConfig();
                 if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_COAP_ENABLED, "");
                 break;
+#endif
         }
 
         if (!started) {
@@ -117,9 +129,15 @@ void ProtocolManager::stopAll() {
     LOG_INFO("Protocol Manager: Stopping all protocols...");
     if (mqttClient)       mqttClient->disconnect();
     if (modbusHandler)    modbusHandler->end();
+#if FASTBEE_ENABLE_TCP
     if (tcpHandler)       tcpHandler->disconnect();
+#endif
+#if FASTBEE_ENABLE_HTTP
     if (httpClientWrapper) httpClientWrapper->end();
+#endif
+#if FASTBEE_ENABLE_COAP
     if (coapHandler)      coapHandler->end();
+#endif
 }
 
 void ProtocolManager::shutdown() {
@@ -129,9 +147,15 @@ void ProtocolManager::shutdown() {
 
     mqttClient.reset();
     modbusHandler.reset();
+#if FASTBEE_ENABLE_TCP
     tcpHandler.reset();
+#endif
+#if FASTBEE_ENABLE_HTTP
     httpClientWrapper.reset();
+#endif
+#if FASTBEE_ENABLE_COAP
     coapHandler.reset();
+#endif
 
     protocols.clear();
     messageCallback = nullptr;
@@ -163,11 +187,23 @@ bool ProtocolManager::sendData(ProtocolType type, const String& topic, const Str
             // Slave模式: topic为寄存器地址
             return modbusHandler->writeData(topic.toInt(), data);
         case ProtocolType::TCP:
+#if FASTBEE_ENABLE_TCP
             return tcpHandler && tcpHandler->send(data);
+#else
+            return false;
+#endif
         case ProtocolType::HTTP:
+#if FASTBEE_ENABLE_HTTP
             return httpClientWrapper && httpClientWrapper->post(topic, data);
+#else
+            return false;
+#endif
         case ProtocolType::COAP:
+#if FASTBEE_ENABLE_COAP
             return coapHandler && coapHandler->send(topic, data);
+#else
+            return false;
+#endif
         default:
             return false;
     }
@@ -184,11 +220,23 @@ String ProtocolManager::getProtocolStatus(ProtocolType type) {
         case ProtocolType::MODBUS:
             return modbusHandler ? modbusHandler->getStatus() : "Not initialized";
         case ProtocolType::TCP:
+#if FASTBEE_ENABLE_TCP
             return tcpHandler ? tcpHandler->getStatus() : "Not initialized";
+#else
+            return "Disabled";
+#endif
         case ProtocolType::HTTP:
+#if FASTBEE_ENABLE_HTTP
             return httpClientWrapper ? httpClientWrapper->getStatus() : "Not initialized";
+#else
+            return "Disabled";
+#endif
         case ProtocolType::COAP:
+#if FASTBEE_ENABLE_COAP
             return coapHandler ? coapHandler->getStatus() : "Not initialized";
+#else
+            return "Disabled";
+#endif
         default:
             return "Unknown protocol";
     }
@@ -197,9 +245,15 @@ String ProtocolManager::getProtocolStatus(ProtocolType type) {
 void ProtocolManager::handle() {
     if (mqttClient) mqttClient->handle();
     if (modbusHandler) modbusHandler->handle();
+#if FASTBEE_ENABLE_TCP
     if (tcpHandler) tcpHandler->handle();
+#endif
+#if FASTBEE_ENABLE_HTTP
     if (httpClientWrapper) httpClientWrapper->handle();
+#endif
+#if FASTBEE_ENABLE_COAP
     if (coapHandler) coapHandler->handle();
+#endif
 }
 
 void ProtocolManager::handleMessage(ProtocolType type, const String& topic, const String& message) {
@@ -754,6 +808,7 @@ bool ProtocolManager::initModbus(void* config) {
     return modbusHandler->begin(*modbusConfig);
 }
 
+#if FASTBEE_ENABLE_TCP
 bool ProtocolManager::initTCP(void* config) {
     if (!config) return false;
     
@@ -767,7 +822,9 @@ bool ProtocolManager::initTCP(void* config) {
     
     return tcpHandler->begin(*tcpConfig);
 }
+#endif
 
+#if FASTBEE_ENABLE_HTTP
 bool ProtocolManager::initHTTP(void* config) {
     if (!config) return false;
     
@@ -781,7 +838,9 @@ bool ProtocolManager::initHTTP(void* config) {
     
     return httpClientWrapper->begin(*httpConfig);
 }
+#endif
 
+#if FASTBEE_ENABLE_COAP
 bool ProtocolManager::initCoAP(void* config) {
     if (!config) return false;
     
@@ -795,3 +854,4 @@ bool ProtocolManager::initCoAP(void* config) {
     
     return coapHandler->begin(*coapConfig);
 }
+#endif

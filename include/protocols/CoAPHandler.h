@@ -1,6 +1,10 @@
 #ifndef COAPHANDLER_H
 #define COAPHANDLER_H
 
+#include "core/FeatureFlags.h"
+
+#if FASTBEE_ENABLE_COAP
+
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <functional>
@@ -134,5 +138,18 @@ private:
     uint16_t recentMessageIds[16];
     uint8_t recentMsgIdIndex;
 };
+
+#else // !FASTBEE_ENABLE_COAP
+
+// 空桩类，避免编译错误
+class CoAPHandler {
+public:
+    bool initialize() { return true; }
+    void shutdown() {}
+    void handle() {}
+    bool isRunning() const { return false; }
+};
+
+#endif // FASTBEE_ENABLE_COAP
 
 #endif

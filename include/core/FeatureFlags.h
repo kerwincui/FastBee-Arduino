@@ -34,6 +34,15 @@
 #endif
 
 /**
+ * @brief Modbus 从站模式支持
+ * 默认：启用（设为0可节省 ~440B RAM + ~10KB Flash）
+ * 需要：FASTBEE_ENABLE_MODBUS=1
+ */
+#ifndef FASTBEE_MODBUS_SLAVE_ENABLE
+#define FASTBEE_MODBUS_SLAVE_ENABLE 1
+#endif
+
+/**
  * @brief TCP 协议支持
  * 默认：启用
  * 占用：约 10KB Flash

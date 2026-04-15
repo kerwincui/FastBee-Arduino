@@ -10,19 +10,29 @@
 // ========== 异步执行常量 ==========
 
 // 最大并行异步任务数
+#ifndef MAX_ASYNC_TASKS
 #define MAX_ASYNC_TASKS       3
+#endif
 
 // 脚本类任务栈大小（含 MQTT / JSON 解析）
-#define SCRIPT_TASK_STACK     16384
+#ifndef SCRIPT_TASK_STACK
+#define SCRIPT_TASK_STACK     12288
+#endif
 
 // 简单外设动作任务栈大小
-#define SIMPLE_TASK_STACK     8192
+#ifndef SIMPLE_TASK_STACK
+#define SIMPLE_TASK_STACK     6144
+#endif
 
 // 异步任务优先级（低于主循环 loopTask=1）
+#ifndef ASYNC_TASK_PRIORITY
 #define ASYNC_TASK_PRIORITY   0
+#endif
 
 // 最低可用堆内存阈值，低于此值回退同步执行（字节）
+#ifndef MIN_HEAP_FOR_ASYNC
 #define MIN_HEAP_FOR_ASYNC    30000
+#endif
 
 // ========== 异步执行状态 ==========
 

@@ -265,6 +265,13 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
         return;
     }
 
+    // 缓存命中：直接返回上次序列化的 JSON
+    unsigned long now = millis();
+    if (_statusCache.valid && (now - _statusCache.timestamp) < STATUS_CACHE_TTL) {
+        request->send(200, "application/json", _statusCache.json);
+        return;
+    }
+
     ProtocolManager* pm = ctx->protocolManager;
     if (!pm) {
         ctx->sendError(request, 500, "Protocol manager not available");
@@ -431,8 +438,8 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
                     JsonArray values = cachedData["values"].to<JsonArray>();
                     // 防御性检查：确保 count 不超过数组边界
                     uint8_t safeCount = cache->count;
-                    if (safeCount > Protocols::MODBUS_MAX_REGISTERS_PER_READ) {
-                        safeCount = Protocols::MODBUS_MAX_REGISTERS_PER_READ;
+                    if (safeCount > Protocols::MODBUS_ONESHOT_BUFFER_SIZE) {
+                        safeCount = Protocols::MODBUS_ONESHOT_BUFFER_SIZE;
                     }
                     for (uint8_t j = 0; j < safeCount; j++) {
                         values.add(cache->values[j]);
@@ -456,9 +463,10 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
 
     health["warningCount"] = warnings.size();
 
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    serializeJson(doc, _statusCache.json);
+    _statusCache.timestamp = millis();
+    _statusCache.valid = true;
+    request->send(200, "application/json", _statusCache.json);
 }
 
 // ============================================================================

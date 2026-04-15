@@ -118,9 +118,15 @@ private:
     // unique_ptr 智能指针，主要用于自动管理动态内存，避免内存泄漏并确保资源安全释放
     std::unique_ptr<MQTTClient> mqttClient;
     std::unique_ptr<ModbusHandler> modbusHandler;
+#if FASTBEE_ENABLE_TCP
     std::unique_ptr<TCPHandler> tcpHandler;
+#endif
+#if FASTBEE_ENABLE_HTTP
     std::unique_ptr<HTTPClientWrapper> httpClientWrapper;
+#endif
+#if FASTBEE_ENABLE_COAP
     std::unique_ptr<CoAPHandler> coapHandler;
+#endif
     
     std::vector<ProtocolConfig> protocols;
     MessageCallback messageCallback;
@@ -135,9 +141,15 @@ private:
     // 初始化具体协议
     bool initMQTT(void* config);
     bool initModbus(void* config);
+#if FASTBEE_ENABLE_TCP
     bool initTCP(void* config);
+#endif
+#if FASTBEE_ENABLE_HTTP
     bool initHTTP(void* config);
+#endif
+#if FASTBEE_ENABLE_COAP
     bool initCoAP(void* config);
+#endif
     
     // 内部消息处理
     void handleMessage(ProtocolType type, const String& topic, const String& message);

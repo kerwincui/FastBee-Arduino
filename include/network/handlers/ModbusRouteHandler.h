@@ -2,6 +2,7 @@
 #define MODBUS_ROUTE_HANDLER_H
 
 #include <ESPAsyncWebServer.h>
+#include <Arduino.h>
 
 class WebHandlerContext;
 
@@ -30,6 +31,17 @@ public:
 
 private:
     WebHandlerContext* ctx;
+
+    // 状态响应缓存（避免每次重建复杂 JSON）
+    struct ResponseCache {
+        String json;
+        unsigned long timestamp;
+        bool valid;
+        ResponseCache() : timestamp(0), valid(false) {}
+        void invalidate() { valid = false; }
+    };
+    ResponseCache _statusCache;
+    static constexpr unsigned long STATUS_CACHE_TTL = 2000; // 2秒
 
     void handleGetModbusStatus(AsyncWebServerRequest* request);
     void handleModbusWrite(AsyncWebServerRequest* request);

@@ -8,6 +8,8 @@
  */
 
 #include "protocols/TCPHandler.h"
+
+#if FASTBEE_ENABLE_TCP
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 
@@ -307,3 +309,5 @@ void TCPHandler::handleClient() {
 const TCPConfig& TCPHandler::getConfig() const {
     return config;
 }
+
+#endif // FASTBEE_ENABLE_TCP

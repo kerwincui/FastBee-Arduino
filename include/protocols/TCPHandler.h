@@ -1,6 +1,10 @@
 #ifndef TCPHANDLER_H
 #define TCPHANDLER_H
 
+#include "core/FeatureFlags.h"
+
+#if FASTBEE_ENABLE_TCP
+
 #include <WiFi.h>
 #include <functional>
 #include <vector>
@@ -69,5 +73,28 @@ private:
     unsigned long clientLastActivity;
     unsigned long clientLastKeepAlive;
 };
+
+#else // !FASTBEE_ENABLE_TCP
+
+#include <Arduino.h>
+
+struct TCPConfig {
+    bool isServer = false;
+    String server = "";
+    uint16_t port = 8080;
+    uint16_t localPort = 8080;
+};
+
+class TCPHandler {
+public:
+    bool initialize() { return true; }
+    void shutdown() {}
+    void handle() {}
+    bool isRunning() const { return false; }
+    bool loadConfig() { return true; }
+    const TCPConfig& getConfig() const { static TCPConfig c; return c; }
+};
+
+#endif // FASTBEE_ENABLE_TCP
 
 #endif

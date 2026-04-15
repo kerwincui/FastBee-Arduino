@@ -584,7 +584,20 @@ void AuthManager::clearAuditLog() {
 
 bool AuthManager::checkPermission(const String& username, const String& permission,
                                  const String& method) {
+    // 权限缓存查询（仅对无 method 约束的默认检查）
+    if (method.isEmpty()) {
+        unsigned long now = millis();
+        for (uint8_t i = 0; i < PERM_CACHE_SIZE; i++) {
+            if (_permCache[i].username == username &&
+                _permCache[i].permission == permission &&
+                (now - _permCache[i].timestamp) < PERM_CACHE_TTL) {
+                return _permCache[i].result;
+            }
+        }
+    }
+
     // 优先使用 RoleManager 进行多角色权限校验
+    bool result = false;
     if (roleManager && userManager) {
         std::vector<String> userRoles;
         // 尝试通过 UserManager 获取多角色列表
@@ -595,12 +608,25 @@ bool AuthManager::checkPermission(const String& username, const String& permissi
         // 任一角色拥有权限即通过
         for (const String& roleId : userRoles) {
             if (roleManager->roleHasPermission(roleId, permission)) {
-                return true;
+                result = true;
+                break;
             }
         }
-        // 若有角色列表但都未通过，直接返回 false
-        if (!userRoles.empty()) {
+        // 若有角色列表但都未通过
+        if (!result && !userRoles.empty()) {
+            // 写入缓存（result 已为 false）
+            if (method.isEmpty()) {
+                _permCache[_permCacheIdx] = { username, permission, false, millis() };
+                _permCacheIdx = (_permCacheIdx + 1) % PERM_CACHE_SIZE;
+            }
             return false;
+        }
+        if (result) {
+            if (method.isEmpty()) {
+                _permCache[_permCacheIdx] = { username, permission, true, millis() };
+                _permCacheIdx = (_permCacheIdx + 1) % PERM_CACHE_SIZE;
+            }
+            return true;
         }
     }
 
