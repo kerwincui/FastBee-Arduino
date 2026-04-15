@@ -229,6 +229,7 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     a.actionValue = ctx->getParamValue(request, "actionValue", "");
     a.useReceivedValue = ctx->getParamBool(request, "useReceivedValue", false);
     a.syncDelayMs = ctx->getParamInt(request, "syncDelayMs", 0);
+    a.execMode = rule.execMode;  // form-encoded 模式：从规则级别继承
     rule.actions.push_back(a);
 
     if (rule.name.isEmpty()) {
@@ -301,6 +302,7 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     a.actionValue = ctx->getParamValue(request, "actionValue", a.actionValue);
     a.useReceivedValue = ctx->getParamBool(request, "useReceivedValue", a.useReceivedValue);
     a.syncDelayMs = ctx->getParamInt(request, "syncDelayMs", a.syncDelayMs);
+    a.execMode = rule.execMode;  // form-encoded 模式：从规则级别继承
     rule.actions.push_back(a);
 
     if (mgr.updateRule(id, rule)) {
@@ -530,6 +532,7 @@ void PeriphExecRouteHandler::parseRuleFromJson(JsonObject& obj, PeriphExecRule& 
             a.actionValue = aObj["actionValue"] | "";
             a.useReceivedValue = aObj["useReceivedValue"] | false;
             a.syncDelayMs = jsonInt(aObj["syncDelayMs"], 0);
+            a.execMode = jsonInt(aObj["execMode"], 0);
             rule.actions.push_back(a);
         }
     }
@@ -763,8 +766,7 @@ String PeriphExecRouteHandler::serializeRuleFull(const PeriphExecRule& rule) {
         aObj["actionValue"] = a.actionValue;
         aObj["useReceivedValue"] = a.useReceivedValue;
         aObj["syncDelayMs"] = a.syncDelayMs;
-
-        // 关联目标外设名称
+        aObj["execMode"] = a.execMode;
         if (!a.targetPeriphId.isEmpty()) {
             const PeripheralConfig* periph = pm.getPeripheral(a.targetPeriphId);
             if (periph) {

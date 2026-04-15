@@ -9,8 +9,13 @@
 #include <ArduinoJson.h>
 #include <Ticker.h>
 #include <freertos/semphr.h>
+#include <functional>
 #include "PeripheralTypes.h"
 #include "PeripheralConfig.h"
+
+// Modbus 通信委托回调类型（用于解耦 PeripheralManager 和 ModbusHandler）
+using ModbusCoilWriteFunc = std::function<bool(uint8_t slaveAddr, uint16_t coilAddr, bool value)>;
+using ModbusRegWriteFunc  = std::function<bool(uint8_t slaveAddr, uint16_t regAddr, uint16_t value)>;
 
 // 外设配置文件路径
 #define PERIPHERAL_CONFIG_FILE "/config/peripherals.json"
@@ -149,6 +154,20 @@ public:
     // 定期维护（在主循环中调用）
     void performMaintenance();
 
+    // ========== Modbus 外设委托 ==========
+    
+    // 设置 Modbus 通信回调（由 ProtocolManager 注入，解耦协议层依赖）
+    void setModbusCallbacks(ModbusCoilWriteFunc coilWrite, ModbusRegWriteFunc regWrite);
+    
+    // 清除 Modbus 通信回调（Modbus 停止时调用）
+    void clearModbusCallbacks();
+    
+    // Modbus 线圈写入（指定地址，供高级控制使用）
+    bool writeModbusCoil(const String& id, uint16_t coilAddr, bool value);
+    
+    // Modbus 寄存器写入（指定地址，供高级控制使用）
+    bool writeModbusReg(const String& id, uint16_t regAddr, uint16_t value);
+
     // 动作定时器上下文（公开供静态回调函数访问）
     struct ActionTickerData {
         PeripheralManager* mgr;
@@ -182,6 +201,10 @@ private:
     // 动作定时器
     std::map<String, ActionTickerData*> actionTickers;
     
+    // Modbus 通信委托
+    ModbusCoilWriteFunc _modbusCoilWrite = nullptr;
+    ModbusRegWriteFunc  _modbusRegWrite  = nullptr;
+    
     // 内部方法
     bool validateConfig(const PeripheralConfig& config, String& errorMsg);
     bool setupHardware(const PeripheralConfig& config);
@@ -190,6 +213,10 @@ private:
     // GPIO硬件设置
     bool setupGPIOPin(const PeripheralConfig& config);
     bool setupPWMPin(const PeripheralConfig& config);
+    
+    // Modbus外设写入（内部实现）
+    bool writeModbusPin(const String& id, const PeripheralConfig& config, GPIOState state);
+    bool writeModbusPWM(const String& id, const PeripheralConfig& config, uint32_t dutyCycle);
     
     // 生成唯一ID
     String generateUniqueId(PeripheralType type);

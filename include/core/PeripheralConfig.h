@@ -97,6 +97,20 @@ struct PeripheralConfig {
             uint8_t sensorType;       // 传感器类型ID
             uint32_t sampleInterval;  // 采样间隔(ms)
         } sensor;
+        
+        // Modbus子设备参数
+        struct {
+            uint8_t  slaveAddress;     // 从站地址 1-247
+            uint8_t  channelCount;     // 通道数
+            uint16_t coilBase;         // 线圈/寄存器基地址
+            bool     ncMode;           // NC 常闭模式
+            uint8_t  controlProtocol;  // 0=线圈(FC05), 1=寄存器(FC06)
+            uint8_t  deviceType;       // 0=relay, 1=pwm, 2=pid
+            uint8_t  deviceIndex;      // ModbusHandler config 中的索引
+            uint16_t batchRegister;    // 位图批量寄存器地址，0表示不使用
+            uint16_t pwmRegBase;       // PWM 寄存器基地址
+            uint8_t  pwmResolution;    // PWM 分辨率(bits)
+        } modbus;
     } params;
     
     // 通用用户数据
@@ -123,6 +137,11 @@ struct PeripheralConfig {
     bool isGPIOPeripheral() const {
         int typeValue = static_cast<int>(type);
         return typeValue >= 11 && typeValue <= 25;
+    }
+    
+    // 检查是否为Modbus外设
+    bool isModbusPeripheral() const {
+        return type == PeripheralType::MODBUS_DEVICE;
     }
     
     // 检查是否为通信接口

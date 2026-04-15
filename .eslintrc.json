@@ -1,0 +1,38 @@
+{
+  "name": "FastBee-Arduino ESLint Config",
+  "description": "JavaScript代码规范配置，用于FastBee-Arduino项目前端开发",
+  "rules": {
+    "indent": ["error", 4, { "SwitchCase": 1 }],
+    "quotes": ["warn", "single"],
+    "semi": ["error", "always"],
+    "camelcase": ["error", { "properties": "always" }],
+    "no-var": "warn",
+    "prefer-const": "warn",
+    "no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
+    "no-console": ["warn", { "allow": ["warn", "error"] }],
+    "space-before-function-paren": ["error", {
+      "anonymous": "always",
+      "named": "never",
+      "asyncArrow": "always"
+    }],
+    "space-in-parens": ["error", "never"],
+    "space-infix-ops": "error",
+    "key-spacing": ["error", { "beforeColon": false, "afterColon": true }],
+    "comma-spacing": ["error", { "before": false, "after": true }],
+    "brace-style": ["error", "stroustrup", { "allowSingleLine": true }],
+    "curly": ["error", "all"],
+    "eqeqeq": ["error", "always"],
+    "no-trailing-spaces": "error",
+    "eol-last": "error",
+    "max-len": ["warn", { "code": 120, "ignoreUrls": true, "ignoreStrings": true }]
+  },
+  "env": {
+    "browser": true,
+    "es6": true,
+    "node": false
+  },
+  "parserOptions": {
+    "ecmaVersion": 6,
+    "sourceType": "script"
+  }
+}

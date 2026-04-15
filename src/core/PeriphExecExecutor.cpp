@@ -33,11 +33,7 @@ bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const Strin
     if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL)) {
         return executeCallPeripheralAction(action, effectiveValue);
     }
-    // Modbus 子设备动作 (targetPeriphId 以 "modbus:" 开头)
-    if (action.targetPeriphId.startsWith("modbus:")) {
-        return executeModbusAction(action, effectiveValue);
-    }
-    // 外设动作
+    // 外设动作（GPIO、Modbus子设备等统一由 PeripheralManager 管理）
     return executePeripheralAction(action, effectiveValue);
 }
 
@@ -171,36 +167,14 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
             return pm.writePin(action.targetPeriphId, GPIOState::STATE_HIGH);
         }
 
-        default:
-            LOGGER.warningf("[PeriphExec] Unknown peripheral action: %d", action.actionType);
-            return false;
-    }
-}
-
-bool PeriphExecExecutor::executeModbusAction(const ExecAction& action, const String& effectiveValue) {
-    // 解析 "modbus:<deviceIndex>" 格式
-    int deviceIdx = action.targetPeriphId.substring(7).toInt();
-
-    auto* fw = FastBeeFramework::getInstance();
-    if (!fw) { LOGGER.warning("[PeriphExec] Framework not available"); return false; }
-    auto* protMgr = fw->getProtocolManager();
-    if (!protMgr) { LOGGER.warning("[PeriphExec] ProtocolManager not available"); return false; }
-    ModbusHandler* modbus = protMgr->getModbusHandler();
-    if (!modbus) {
-        LOGGER.warning("[PeriphExec] ModbusHandler not available");
-        return false;
-    }
-    if (deviceIdx < 0 || deviceIdx >= modbus->getSubDeviceCount()) {
-        LOGGER.warningf("[PeriphExec] Modbus device index out of range: %d", deviceIdx);
-        return false;
-    }
-
-    const ModbusSubDevice& dev = modbus->getSubDevice(deviceIdx);
-    ExecActionType actType = static_cast<ExecActionType>(action.actionType);
-
-    switch (actType) {
+        // Modbus 线圈写入 (FC05) — 支持 "channel:state" 或 "state" 格式
         case ExecActionType::ACTION_MODBUS_COIL_WRITE: {
-            // 值格式: "channel:state" 如 "0:1" 表示通道0打开, 或单独 "1"/"0" 表示通道0的开关
+            PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
+            if (!cfg || !cfg->isModbusPeripheral()) {
+                LOGGER.warningf("[PeriphExec] Modbus coil write: '%s' is not a Modbus peripheral",
+                                action.targetPeriphId.c_str());
+                return false;
+            }
             uint16_t channel = 0;
             bool coilState = false;
             int sepIdx = effectiveValue.indexOf(':');
@@ -210,15 +184,32 @@ bool PeriphExecExecutor::executeModbusAction(const ExecAction& action, const Str
             } else {
                 coilState = effectiveValue.toInt() != 0;
             }
-            uint16_t coilAddr = dev.coilBase + channel;
-            LOGGER.infof("[PeriphExec] Modbus FC05: slave=%d coil=%d state=%d",
-                dev.slaveAddress, coilAddr, coilState);
-            OneShotResult result = modbus->writeCoilOnce(dev.slaveAddress, coilAddr, coilState);
-            return result.error == ONESHOT_SUCCESS;
+            // 通过 PeripheralManager 的 Modbus 写入接口
+            bool value = coilState;
+            if (cfg->params.modbus.ncMode) value = !value;
+            uint16_t coilAddr = cfg->params.modbus.coilBase + channel;
+            if (cfg->params.modbus.controlProtocol == 0) {
+                // 线圈模式 (FC05)
+                LOGGER.infof("[PeriphExec] Modbus FC05: slave=%d coil=%d state=%d",
+                    cfg->params.modbus.slaveAddress, coilAddr, value);
+                return pm.writeModbusCoil(action.targetPeriphId, coilAddr, value);
+            }
+            // 寄存器协议模式 (FC06)
+            uint16_t regVal = value ? 0xFF00 : 0x0000;
+            LOGGER.infof("[PeriphExec] Modbus FC06 (coil): slave=%d reg=%d val=0x%04X",
+                cfg->params.modbus.slaveAddress, coilAddr, regVal);
+            return pm.writeModbusReg(action.targetPeriphId, coilAddr, regVal);
         }
+
+        // Modbus 寄存器写入 (FC06) — 支持 "addr:value" 或 "value" 格式
         case ExecActionType::ACTION_MODBUS_REG_WRITE: {
-            // 值格式: "addr:value" 指定寄存器地址和值, 或单独 "value" 使用 coilBase 作为地址
-            uint16_t regAddr = dev.coilBase;
+            PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
+            if (!cfg || !cfg->isModbusPeripheral()) {
+                LOGGER.warningf("[PeriphExec] Modbus reg write: '%s' is not a Modbus peripheral",
+                                action.targetPeriphId.c_str());
+                return false;
+            }
+            uint16_t regAddr = cfg->params.modbus.coilBase;
             uint16_t regVal = 0;
             int sepIdx = effectiveValue.indexOf(':');
             if (sepIdx > 0) {
@@ -228,12 +219,12 @@ bool PeriphExecExecutor::executeModbusAction(const ExecAction& action, const Str
                 regVal = effectiveValue.toInt();
             }
             LOGGER.infof("[PeriphExec] Modbus FC06: slave=%d reg=%d val=%d",
-                dev.slaveAddress, regAddr, regVal);
-            OneShotResult result = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, regVal);
-            return result.error == ONESHOT_SUCCESS;
+                cfg->params.modbus.slaveAddress, regAddr, regVal);
+            return pm.writeModbusReg(action.targetPeriphId, regAddr, regVal);
         }
+
         default:
-            LOGGER.warningf("[PeriphExec] Unknown Modbus action type: %d", action.actionType);
+            LOGGER.warningf("[PeriphExec] Unknown peripheral action: %d", action.actionType);
             return false;
     }
 }

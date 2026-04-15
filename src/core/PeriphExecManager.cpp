@@ -55,12 +55,17 @@ bool PeriphExecManager::initialize() {
 // ========== CRUD（带互斥量保护） ==========
 
 bool PeriphExecManager::ruleNeedsModbus(const PeriphExecRule& rule) const {
+    PeripheralManager& pm = PeripheralManager::getInstance();
     for (const auto& action : rule.actions) {
         if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL) ||
             action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_COIL_WRITE) ||
-            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_REG_WRITE) ||
-            action.targetPeriphId.startsWith("modbus:")) {
+            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_REG_WRITE)) {
             return true;
+        }
+        // 检查目标外设是否为 Modbus 类型
+        if (!action.targetPeriphId.isEmpty()) {
+            const PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
+            if (cfg && cfg->isModbusPeripheral()) return true;
         }
     }
     return false;
@@ -76,14 +81,19 @@ bool PeriphExecManager::ruleHasPollCollectionAction(const PeriphExecRule& rule) 
 }
 
 bool PeriphExecManager::shouldAvoidSyncFallback(const PeriphExecRule& rule) const {
+    PeripheralManager& pm = PeripheralManager::getInstance();
     for (const auto& action : rule.actions) {
         if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT) ||
             action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL) ||
             action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_COIL_WRITE) ||
             action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_REG_WRITE) ||
-            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ) ||
-            action.targetPeriphId.startsWith("modbus:")) {
+            action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
             return true;
+        }
+        // 检查目标外设是否为 Modbus 类型（Modbus 操作需要异步执行避免阻塞）
+        if (!action.targetPeriphId.isEmpty()) {
+            const PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
+            if (cfg && cfg->isModbusPeripheral()) return true;
         }
     }
     return false;
@@ -344,6 +354,7 @@ bool PeriphExecManager::saveConfiguration() {
             aObj["actionValue"] = a.actionValue;
             aObj["useReceivedValue"] = a.useReceivedValue;
             aObj["syncDelayMs"] = a.syncDelayMs;
+            aObj["execMode"] = a.execMode;
         }
 
         // 数据转换管道
@@ -434,7 +445,20 @@ bool PeriphExecManager::loadConfiguration() {
                 a.actionValue = aObj["actionValue"].as<String>();
                 a.useReceivedValue = aObj["useReceivedValue"] | false;
                 a.syncDelayMs = aObj["syncDelayMs"] | 0;
+                a.execMode = aObj["execMode"] | 0;
                 r.actions.push_back(a);
+            }
+            // 向后兼容：旧配置中 execMode 在规则级别，迁移到每个动作
+            if (r.execMode != 0) {
+                bool anyActionHasMode = false;
+                for (const auto& a : r.actions) {
+                    if (a.execMode != 0) { anyActionHasMode = true; break; }
+                }
+                if (!anyActionHasMode) {
+                    for (auto& a : r.actions) {
+                        a.execMode = r.execMode;
+                    }
+                }
             }
             sanitizeRuleForSafety(r);
         } else {
@@ -730,8 +754,15 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
         }
     }
 
-    // 用户指定同步执行
-    if (rule.execMode == static_cast<uint8_t>(ExecMode::EXEC_SYNC)) {
+    // 用户指定同步执行（per-action 或 rule-level 向后兼容）
+    bool hasSyncAction = false;
+    for (const auto& a : rule.actions) {
+        if (a.execMode == static_cast<uint8_t>(ExecMode::EXEC_SYNC)) {
+            hasSyncAction = true;
+            break;
+        }
+    }
+    if (hasSyncAction || rule.execMode == static_cast<uint8_t>(ExecMode::EXEC_SYNC)) {
         LOGGER.infof("[PeriphExec] Sync execute (user config): '%s'", rule.name.c_str());
         executeAllActions(rule, receivedValue);
         return;
@@ -1183,11 +1214,20 @@ void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
                 // 遍历所有触发器（OR 关系）
                 bool triggerMatched = false;
                 for (auto& trigger : rule.triggers) {
-                    if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::PLATFORM_TRIGGER)) continue;
+                    // 确定要匹配的数据源ID（支持平台触发和事件触发数据源）
+                    String matchItemId;
+                    if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::PLATFORM_TRIGGER)) {
+                        matchItemId = trigger.triggerPeriphId;
+                    } else if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER) &&
+                               trigger.eventId.startsWith("ds:")) {
+                        matchItemId = trigger.eventId.substring(3);
+                    } else {
+                        continue;
+                    }
 
                     // 匹配数据源外设 ID（必须配置且匹配，空/null 不匹配任何数据）
-                    if (trigger.triggerPeriphId.isEmpty() || trigger.triggerPeriphId == "null") continue;
-                    if (trigger.triggerPeriphId != itemId) continue;
+                    if (matchItemId.isEmpty() || matchItemId == "null") continue;
+                    if (matchItemId != itemId) continue;
 
                     if (trigger.lastTriggerTime > 0 &&
                         (millis() - trigger.lastTriggerTime) < PERIPH_EXEC_POLL_TRIGGER_MIN_INTERVAL_MS) continue;
@@ -1207,12 +1247,24 @@ void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
                         case ExecOperator::LTE: conditionMet = (val <= cmp); break;
                         case ExecOperator::CONTAIN: conditionMet = itemValue.indexOf(trigger.compareValue) >= 0; break;
                         case ExecOperator::NOT_CONTAIN: conditionMet = itemValue.indexOf(trigger.compareValue) < 0; break;
+                        case ExecOperator::BETWEEN:
+                        case ExecOperator::NOT_BETWEEN: {
+                            int commaIdx = trigger.compareValue.indexOf(',');
+                            if (commaIdx >= 0) {
+                                float minVal = trigger.compareValue.substring(0, commaIdx).toFloat();
+                                float maxVal = trigger.compareValue.substring(commaIdx + 1).toFloat();
+                                bool inRange = (val >= minVal && val <= maxVal);
+                                conditionMet = (oper == ExecOperator::BETWEEN) ? inRange : !inRange;
+                            }
+                            break;
+                        }
                         default: break;
                     }
 
                     if (conditionMet) {
-                        LOGGER.infof("[PeriphExec] Rule '%s' triggered by %s=%s (cmp=%s)",
-                            rule.name.c_str(), itemId.c_str(), itemValue.c_str(), trigger.compareValue.c_str());
+                        LOGGER.infof("[PeriphExec] Rule '%s' triggered by %s=%s (op=%d, cmp=%s)",
+                            rule.name.c_str(), itemId.c_str(), itemValue.c_str(),
+                            trigger.operatorType, trigger.compareValue.c_str());
 
                         trigger.lastTriggerTime = millis();
                         trigger.triggerCount++;
@@ -1261,12 +1313,21 @@ void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& sourc
                 // 遍历所有触发器（OR 关系）
                 bool triggerMatched = false;
                 for (auto& trigger : rule.triggers) {
-                    if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER)) continue;
-                    if (source == "modbus_poll" && hasPollCollectionAction) continue;
+                    // 确定要匹配的数据源ID（支持轮询触发和事件触发数据源）
+                    String matchItemId;
+                    if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER)) {
+                        if (source == "modbus_poll" && hasPollCollectionAction) continue;
+                        matchItemId = trigger.triggerPeriphId;
+                    } else if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER) &&
+                               trigger.eventId.startsWith("ds:")) {
+                        matchItemId = trigger.eventId.substring(3);
+                    } else {
+                        continue;
+                    }
 
                     // 匹配数据源外设 ID（必须配置且匹配，空/null 不匹配任何数据）
-                    if (trigger.triggerPeriphId.isEmpty() || trigger.triggerPeriphId == "null") continue;
-                    if (trigger.triggerPeriphId != itemId) continue;
+                    if (matchItemId.isEmpty() || matchItemId == "null") continue;
+                    if (matchItemId != itemId) continue;
 
                     unsigned long minTriggerIntervalMs = getPollTriggerCooldownMs(rule, source);
                     if (trigger.lastTriggerTime > 0 &&
@@ -1287,6 +1348,17 @@ void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& sourc
                         case ExecOperator::LTE: conditionMet = (val <= cmp); break;
                         case ExecOperator::CONTAIN: conditionMet = itemValue.indexOf(trigger.compareValue) >= 0; break;
                         case ExecOperator::NOT_CONTAIN: conditionMet = itemValue.indexOf(trigger.compareValue) < 0; break;
+                        case ExecOperator::BETWEEN:
+                        case ExecOperator::NOT_BETWEEN: {
+                            int commaIdx = trigger.compareValue.indexOf(',');
+                            if (commaIdx >= 0) {
+                                float minVal = trigger.compareValue.substring(0, commaIdx).toFloat();
+                                float maxVal = trigger.compareValue.substring(commaIdx + 1).toFloat();
+                                bool inRange = (val >= minVal && val <= maxVal);
+                                conditionMet = (oper == ExecOperator::BETWEEN) ? inRange : !inRange;
+                            }
+                            break;
+                        }
                         default: break;
                     }
 

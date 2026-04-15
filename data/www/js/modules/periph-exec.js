@@ -273,6 +273,7 @@ if(target.classList.contains('pe-trigger-type'))this.onPeriphExecTriggerTypeChan
 else if(target.classList.contains('pe-operator'))this.onPeriphExecOperatorChangeInBlock(target.value,index);
 else if(target.classList.contains('pe-timer-mode'))this.onPeriphExecTimerModeChangeInBlock(target.value,index);
 else if(target.classList.contains('pe-event-category'))this.onPeriphExecEventCategoryChangeInBlock(target.value,index);
+else if(target.classList.contains('pe-event'))this.onPeriphExecEventChangeInBlock(target.value,index);
 this._refreshPeriphExecRiskNotice({allowFetch:true});
 },
 _handlePeriphExecTriggerInput(event){
@@ -296,7 +297,8 @@ var target=event.target;
 if(!target)return ;
 var index=this._getPeriphExecBlockIndex(target);
 if(index<0)return ;
-if(target.classList.contains('pe-action-type'))this.onPeriphExecActionTypeChangeInBlock(target.value,index);
+if(target.classList.contains('pe-target-periph'))this._onTargetPeriphChange(target,index);
+else if(target.classList.contains('pe-action-type'))this.onPeriphExecActionTypeChangeInBlock(target.value,index);
 else if(target.classList.contains('pe-use-received-value'))this.onPeriphExecUseRecvChangeInBlock(target,index);
 else if(target.classList.contains('pe-sensor-category'))this.onSensorCategoryChange(target,index);
 else if(target.classList.contains('pe-modbus-device-select'))this._onPeriphDeviceSelect(target);
@@ -306,37 +308,42 @@ this._refreshPeriphExecRiskNotice({allowFetch:true});
 _populatePeriphSelect(selectEl,selectedValue){
 if(!selectEl)return ;
 selectEl.innerHTML='<option value="">'+i18n.t('periph-exec-select-periph')+'</option>';
+var gpioPeriphs=[];
+var modbusPeriphs=[];
 (this._pePeripherals||[]).forEach(p=>{
-const opt=document.createElement('option');
-opt.value=p.id;
-opt.textContent=p.name+' ('+p.id+')';
-selectEl.appendChild(opt);
+if(p.type===51)modbusPeriphs.push(p);
+else gpioPeriphs.push(p);
 });
-if(selectedValue)selectEl.value=selectedValue;
-},
-_populateTriggerPeriphSelect(selectEl,selectedValue){
-if(!selectEl)return ;
-selectEl.innerHTML='<option value="">'+i18n.t('periph-exec-select-periph')+'</option>';
-if(this._peDataSources&&this._peDataSources.length>0){
-const grp=document.createElement('optgroup');
-grp.label=i18n.t('periph-exec-datasource-group')||'数据源';
-this._peDataSources.forEach(ds=>{
-const opt=document.createElement('option');
-opt.value=ds.id;opt.textContent=ds.label+' ('+ds.id+')';
-grp.appendChild(opt);
-});
-selectEl.appendChild(grp);
-}
-if(this._pePeripherals&&this._pePeripherals.length>0){
-const grp=document.createElement('optgroup');
+if(gpioPeriphs.length>0){
+var grp=document.createElement('optgroup');
 grp.label=i18n.t('periph-exec-periph-group')||'硬件外设';
-this._pePeripherals.forEach(p=>{
-const opt=document.createElement('option');
+gpioPeriphs.forEach(p=>{
+var opt=document.createElement('option');
 opt.value=p.id;opt.textContent=p.name+' ('+p.id+')';
 grp.appendChild(opt);
 });
 selectEl.appendChild(grp);
 }
+if(modbusPeriphs.length>0){
+var grp2=document.createElement('optgroup');
+grp2.label=i18n.t('periph-exec-modbus-group')||'Modbus 子设备';
+modbusPeriphs.forEach(p=>{
+var opt=document.createElement('option');
+opt.value=p.id;opt.textContent=p.name+' ('+p.id+')';
+grp2.appendChild(opt);
+});
+selectEl.appendChild(grp2);
+}
+if(selectedValue)selectEl.value=selectedValue;
+},
+_populateTriggerPeriphSelect(selectEl,selectedValue){
+if(!selectEl)return ;
+selectEl.innerHTML='<option value="">'+i18n.t('periph-exec-select-periph')+'</option>';
+(this._pePeripherals||[]).forEach(p=>{
+var opt=document.createElement('option');
+opt.value=p.id;opt.textContent=p.name+' ('+p.id+')';
+selectEl.appendChild(opt);
+});
 if(selectedValue)selectEl.value=selectedValue;
 },
 _extractDataSources(protocolConfig){
@@ -413,7 +420,7 @@ if(parts.length>0&&parts[0].trim())selDevice='sensor-'+parts[0].trim();
 }
 var fcNames={1:'FC01',2:'FC02',3:'FC03',4:'FC04'};
 var typeLabels={relay:i18n.t('modbus-type-relay')||'继电器',pwm:i18n.t('modbus-type-pwm')||'PWM',pid:i18n.t('modbus-type-pid')||'PID'};
-var html='<div class="pe-modbus-select-flow">';
+var html='<div class="pe-modbus-select-grid">';
 html+='<div class="pure-control-group pe-field-stack-compact">';
 html+='<label class="pe-field-label-compact">'+(i18n.t('periph-exec-select-device')||'选择子设备')+'</label>';
 html+='<select class="pure-input-1 pe-modbus-device-select u-fs-13">';
@@ -458,7 +465,7 @@ _buildPeriphActionUI(dev,action,channel,value,param){
 var dt=dev.deviceType||'relay';
 var html='<div class="pe-inline-wrap">';
 if(dt==='relay'){
-html+='<select class="pure-input-1 pe-modbus-action-select pe-select-compact">'+
+html+='<select class="pure-input-1 pe-modbus-action-select">'+
 '<option value="on"'+(action==='off'?'':' selected')+'>'+(i18n.t('periph-exec-ctrl-on')||'打开')+'</option>'+
 '<option value="off"'+(action==='off'?' selected':'')+'>'+(i18n.t('periph-exec-ctrl-off')||'关闭')+'</option></select>';
 }else if(dt==='pwm'){
@@ -478,7 +485,7 @@ html+='</div>';
 return html;
 },
 _onPeriphDeviceSelect(selectEl){
-var flow=selectEl.closest('.pe-modbus-select-flow');
+var flow=selectEl.closest('.pe-modbus-select-grid');
 if(!flow)return ;
 var val=selectEl.value;
 var chGroup=flow.querySelector('.pe-modbus-channel-group');
@@ -504,6 +511,98 @@ if(actContent)actContent.innerHTML=this._buildPeriphActionUI(dev,'','','','');
 this._setSectionVisible(actGroup,true);
 },
 _onPeriphChannelSelect(selectEl){},
+_onTargetPeriphChange(selectEl,index){
+var block=this._getPeriphExecBlock('periph-exec-actions',index);
+if(!block)return ;
+var periphId=selectEl.value;
+var isModbus=periphId&&periphId.indexOf('modbus:')===0;
+var actionTypeGroup=block.querySelector('.pe-action-type-group');
+var actionValueGroup=block.querySelector('.pe-action-value-group');
+var recvGroup=block.querySelector('.pe-use-received-value-group');
+var scriptGroup=block.querySelector('.pe-script-group');
+var pollTasksGroup=block.querySelector('.pe-poll-tasks-group');
+var sensorGroup=block.querySelector('.pe-sensor-group');
+var ctrlPanel=block.querySelector('.pe-modbus-ctrl-panel');
+if(isModbus){
+this._setSectionVisible(actionTypeGroup,false);
+this._setSectionVisible(actionValueGroup,false);
+this._setSectionVisible(recvGroup,false);
+this._setSectionVisible(scriptGroup,false);
+this._setSectionVisible(pollTasksGroup,false);
+this._setSectionVisible(sensorGroup,false);
+this._showModbusCtrlPanel(ctrlPanel,periphId,'');
+}else{
+this._setSectionVisible(ctrlPanel,false);
+this._setSectionVisible(actionTypeGroup,true);
+var actionType=block.querySelector('.pe-action-type');
+if(actionType)this.onPeriphExecActionTypeChangeInBlock(actionType.value,index);
+}
+},
+_getModbusDeviceByPeriphId(periphId){
+if(!periphId||periphId.indexOf('modbus:')!==0)return null;
+var idx=parseInt(periphId.substring(7));
+var devices=this._modbusDevices||[];
+return (idx>=0&&idx<devices.length)?devices[idx]:null;
+},
+_showModbusCtrlPanel(container,periphId,actionValue){
+if(!container)return ;
+var dev=this._getModbusDeviceByPeriphId(periphId);
+if(!dev){
+container.innerHTML='<span class="pe-empty-inline">'+(i18n.t('modbus-device-not-found')||'未找到对应子设备')+'</span>';
+this._setSectionVisible(container,true);
+return ;
+}
+var selChannel='';var selAction='';var selValue='';var selParam='';
+if(actionValue){
+try{
+var parsed=JSON.parse(actionValue);
+if(parsed.ctrl&&parsed.ctrl.length>0){
+var c=parsed.ctrl[0];
+selChannel=String(c.c||0);selAction=c.a||'';selValue=String(c.v||0);selParam=c.p||'';
+}
+}catch(e){}
+}
+var html='<div class="pe-modbus-select-grid">';
+html+='<div class="pure-control-group pe-field-stack-compact">';
+html+='<label class="pe-field-label-compact">'+(i18n.t('periph-exec-select-channel')||'选择通道')+'</label>';
+html+='<select class="pure-input-1 pe-modbus-channel-select u-fs-13">';
+for(var ch=0;ch<(dev.channelCount||2);ch++){
+html+='<option value="'+ch+'"'+(String(ch)===selChannel?' selected':'')+'>CH'+ch+'</option>';
+}
+html+='</select></div>';
+var dt=dev.deviceType||'relay';
+if(dt==='relay'){
+html+='<div class="pure-control-group pe-field-stack-compact">';
+html+='<label class="pe-field-label-compact">'+(i18n.t('periph-exec-select-action')||'子设备动作')+'</label>';
+html+='<select class="pure-input-1 pe-modbus-action-select u-fs-13">'+
+'<option value="on"'+(selAction==='off'?'':' selected')+'>'+(i18n.t('periph-exec-ctrl-on')||'打开')+'</option>'+
+'<option value="off"'+(selAction==='off'?' selected':'')+'>'+(i18n.t('periph-exec-ctrl-off')||'关闭')+'</option></select>';
+html+='</div>';
+}else if(dt==='pwm'){
+var maxPwm=dev.pwmResolution===10?1023:(dev.pwmResolution===16?65535:255);
+html+='<div class="pure-control-group pe-field-stack-compact">';
+html+='<label class="pe-field-label-compact">'+(i18n.t('periph-exec-ctrl-duty')||'占空比')+'</label>';
+html+='<input type="number" class="pure-input-1 pe-modbus-action-value u-fs-13" min="0" max="'+maxPwm+'" value="'+(selValue||0)+'">';
+html+='</div>';
+}else if(dt==='pid'){
+html+='<div class="pe-pid-fields">';
+html+='<div class="pure-control-group pe-field-stack-compact">';
+html+='<label class="pe-field-label-compact">'+(i18n.t('periph-exec-ctrl-pid-param')||'参数')+'</label>';
+html+='<select class="pure-input-1 pe-modbus-action-param u-fs-13">'+
+'<option value="P"'+(selParam==='I'||selParam==='D'?'':' selected')+'>P</option>'+
+'<option value="I"'+(selParam==='I'?' selected':'')+'>I</option>'+
+'<option value="D"'+(selParam==='D'?' selected':'')+'>D</option></select>';
+html+='</div>';
+html+='<div class="pure-control-group pe-field-stack-compact">';
+html+='<label class="pe-field-label-compact">'+(i18n.t('periph-exec-ctrl-value')||'值')+'</label>';
+html+='<input type="number" class="pure-input-1 pe-modbus-action-value u-fs-13" value="'+(selValue||0)+'">';
+html+='</div>';
+html+='</div>';
+}
+html+='</div>';
+container.innerHTML=html;
+this._setSectionVisible(container,true);
+},
 _onCtrlDeviceToggle(checkbox){
 var panel=checkbox.closest('.pe-ctrl-device-item').querySelector('.pe-ctrl-options');
 this._setSectionVisible(panel,checkbox.checked);
@@ -571,6 +670,7 @@ const triggerType=String(data.triggerType??0);
 const showPlatform=triggerType==='0';
 const showTimer=triggerType==='1';
 const showEvent=triggerType==='4';
+const isDataSourceEvent=showEvent&&data.eventId&&String(data.eventId).indexOf('ds:')===0;
 const showPoll=triggerType==='5';
 const timerMode=String(data.timerMode??0);
 const showInterval=timerMode==='0';
@@ -584,11 +684,11 @@ div.innerHTML='<span class="mqtt-topic-index">'+(index+1)+'</span>'+
 '<div class="pure-control-group"><label>'+i18n.t('periph-exec-trigger-type-label')+'</label>'+
 '<select class="pure-input-1 pe-trigger-type">'+
 '<option value="0"'+(triggerType==='0'?' selected':'')+'>'+i18n.t('periph-exec-trigger-platform')+'</option>'+
-'<option value="1"'+(triggerType==='1'?' selected':'')+'>'+i18n.t('periph-exec-trigger-timer')+'</option>'+
 '<option value="4"'+(triggerType==='4'?' selected':'')+'>'+i18n.t('periph-exec-trigger-event')+'</option>'+
+'<option value="1"'+(triggerType==='1'?' selected':'')+'>'+i18n.t('periph-exec-trigger-timer')+'</option>'+
 '<option value="5"'+(triggerType==='5'?' selected':'')+'>'+i18n.t('periph-exec-trigger-poll')+'</option>'+
 '</select></div>'+
-'<div class="pure-control-group pe-trigger-periph-group'+this._hiddenClass(showPlatform||showPoll)+'">'+
+'<div class="pure-control-group pe-trigger-periph-group'+this._hiddenClass(showPlatform)+'">'+
 '<label>'+i18n.t('periph-exec-trigger-periph-label')+'</label>'+
 '<select class="pure-input-1 pe-trigger-periph"><option value="">'+i18n.t('periph-exec-select-periph')+'</option></select></div>'+
 '</div>'+
@@ -627,6 +727,21 @@ div.innerHTML='<span class="mqtt-topic-index">'+(index+1)+'</span>'+
 '<option value="">'+i18n.t('periph-exec-select-category')+'</option></select></div>'+
 '<div class="pure-control-group"><label>'+i18n.t('periph-exec-event-label')+'</label>'+
 '<select class="pure-input-1 pe-event"><option value="">'+i18n.t('periph-exec-select-event')+'</option></select></div>'+
+'<div class="pure-control-group pe-event-condition-group'+this._hiddenClass(isDataSourceEvent)+'"><label>'+(i18n.t('periph-exec-event-operator-label')||'比较操作符')+'</label>'+
+'<select class="pure-input-1 pe-event-operator">'+
+'<option value="0"'+(opVal==='0'?' selected':'')+'>'+i18n.t('periph-exec-op-eq')+'</option>'+
+'<option value="1"'+(opVal==='1'?' selected':'')+'>'+i18n.t('periph-exec-op-neq')+'</option>'+
+'<option value="2"'+(opVal==='2'?' selected':'')+'>'+i18n.t('periph-exec-op-gt')+'</option>'+
+'<option value="3"'+(opVal==='3'?' selected':'')+'>'+i18n.t('periph-exec-op-lt')+'</option>'+
+'<option value="4"'+(opVal==='4'?' selected':'')+'>'+i18n.t('periph-exec-op-gte')+'</option>'+
+'<option value="5"'+(opVal==='5'?' selected':'')+'>'+i18n.t('periph-exec-op-lte')+'</option>'+
+'<option value="6"'+(opVal==='6'?' selected':'')+'>'+i18n.t('periph-exec-op-between')+'</option>'+
+'<option value="7"'+(opVal==='7'?' selected':'')+'>'+i18n.t('periph-exec-op-not-between')+'</option>'+
+'<option value="8"'+(opVal==='8'?' selected':'')+'>'+i18n.t('periph-exec-op-contain')+'</option>'+
+'<option value="9"'+(opVal==='9'?' selected':'')+'>'+i18n.t('periph-exec-op-not-contain')+'</option>'+
+'</select></div>'+
+'<div class="pure-control-group pe-event-compare-group'+this._hiddenClass(isDataSourceEvent)+'"><label>'+(i18n.t('periph-exec-event-compare-label')||'比较值')+'</label>'+
+'<input type="text" class="pure-input-1 pe-event-compare" value="'+escapeHtml(data.compareValue||'')+'" placeholder="'+escapeHtml(i18n.t('periph-exec-event-compare-hint')||'如: 25.5')+'"></div>'+
 '</div></div>';
 container.appendChild(div);
 this._populateTriggerPeriphSelect(div.querySelector('.pe-trigger-periph'),data.triggerPeriphId||data.sourcePeriphId||'');
@@ -642,9 +757,13 @@ const actionType=String(data.actionType??0);
 const actionTypeInt=parseInt(actionType);
 const isModbusPoll=actionTypeInt===18;
 const isSensorRead=actionTypeInt===19;
-const showPeriphGroup=!((actionTypeInt>=6&&actionTypeInt<=11)||actionTypeInt===15||isModbusPoll);
-const needsValue=(actionTypeInt>=2&&actionTypeInt<=5);
+const isModbusTarget=data.targetPeriphId&&data.targetPeriphId.indexOf('modbus:')===0;
+const showPeriphGroup=isModbusTarget||!((actionTypeInt>=6&&actionTypeInt<=11)||actionTypeInt===15||isModbusPoll);
+const needsValue=!isModbusTarget&&(actionTypeInt>=2&&actionTypeInt<=5);
+const showRecv=!isModbusTarget&&this._hasSetModeTrigger()&&needsValue;
 const isScript=actionTypeInt===15;
+const showActionType=!isModbusTarget;
+const execMode=parseInt(data.execMode??0);
 const sel=(v)=>actionType===String(v)?'selected':'';
 var sensorCfg={sensorCategory:'analog',periphId:'',scaleFactor:1,offset:0,decimalPlaces:2,sensorLabel:'',unit:''};
 if(isSensorRead&&data.actionValue){try{Object.assign(sensorCfg,JSON.parse(data.actionValue));}catch(e){}}
@@ -652,7 +771,20 @@ const selCat=(v)=>sensorCfg.sensorCategory===v?'selected':'';
 div.innerHTML='<span class="mqtt-topic-index">'+(index+1)+'</span>'+
 '<button type="button" class="mqtt-topic-delete">'+i18n.t('peripheral-delete')+'</button>'+
 '<div class="pe-action-grid">'+
-'<div class="pure-control-group pe-action-type-group"><label>'+i18n.t('periph-exec-action-type-label')+'</label>'+
+'<div class="pe-exec-row pe-span-all">'+
+'<div class="pure-control-group pe-exec-mode-group">'+
+'<label>'+i18n.t('periph-exec-exec-mode-label')+'</label>'+
+'<select class="pure-input-1 pe-exec-mode">'+
+'<option value="0"'+(execMode===0?' selected':'')+'>'+i18n.t('periph-exec-exec-mode-async')+'</option>'+
+'<option value="1"'+(execMode===1?' selected':'')+'>'+i18n.t('periph-exec-exec-mode-sync')+'</option>'+
+'</select></div>'+
+'<div class="pure-control-group pe-sync-delay-group">'+
+'<label>'+i18n.t('periph-exec-sync-delay-label')+'</label>'+
+'<input type="number" class="pure-input-1 pe-sync-delay" min="0" max="10000" step="100" value="'+(data.syncDelayMs||0)+'" placeholder="0"></div></div>'+
+'<div class="pure-control-group pe-target-group'+this._hiddenClass(showPeriphGroup)+'">'+
+'<label>'+i18n.t('periph-exec-target-periph-label')+'</label>'+
+'<select class="pure-input-1 pe-target-periph"><option value="">'+i18n.t('periph-exec-select-periph')+'</option></select></div>'+
+'<div class="pure-control-group pe-action-type-group'+this._hiddenClass(showActionType)+'"><label>'+i18n.t('periph-exec-action-type-label')+'</label>'+
 '<select class="pure-input-1 pe-action-type">'+
 '<optgroup label="'+i18n.t('periph-exec-action-cat-gpio')+'">'+
 '<option value="0" '+sel(0)+'>'+i18n.t('periph-exec-action-high')+'</option>'+
@@ -671,24 +803,16 @@ div.innerHTML='<span class="mqtt-topic-index">'+(index+1)+'</span>'+
 '<option value="11" '+sel(11)+'>'+i18n.t('periph-exec-action-ble')+'</option></optgroup>'+
 '<optgroup label="'+i18n.t('periph-exec-action-cat-advanced')+'">'+
 '<option value="15" '+sel(15)+'>'+i18n.t('periph-exec-action-script')+'</option>'+
-'<option value="18" '+sel(18)+'>'+i18n.t('periph-exec-action-modbus-poll')+'</option>'+
 '<option value="19" '+sel(19)+'>'+i18n.t('periph-exec-action-sensor-read')+'</option></optgroup>'+
 '</select></div>'+
-'<div class="pure-control-group pe-target-group'+this._hiddenClass(showPeriphGroup)+'">'+
-'<label>'+i18n.t('periph-exec-target-periph-label')+'</label>'+
-'<select class="pure-input-1 pe-target-periph"><option value="">'+i18n.t('periph-exec-select-periph')+'</option></select></div>'+
-'<div class="pure-control-group pe-action-value-group pe-span-all'+this._hiddenClass(needsValue)+'">'+
+'<div class="pure-control-group pe-action-value-group'+this._hiddenClass(needsValue)+'">'+
 '<label>'+i18n.t('periph-exec-action-value-label')+'</label>'+
-'<input type="text" class="pure-input-1 pe-action-value" value="'+(isScript?'':escapeHtml(data.actionValue))+'" placeholder="'+escapeHtml(i18n.t('periph-exec-action-value-hint'))+'"'+(data.useReceivedValue?' readonly':'')+'>'+
+'<input type="text" class="pure-input-1 pe-action-value" value="'+(isScript?'':escapeHtml(data.actionValue))+'" placeholder="'+escapeHtml(i18n.t('periph-exec-action-value-hint'))+'"'+(showRecv&&data.useReceivedValue!==false?' readonly':'')+'>'+
 '<small class="pe-help-text">'+i18n.t('periph-exec-action-value-help')+'</small></div>'+
-'<div class="pure-control-group pe-use-received-value-group">'+
-'<label class="pe-checkbox-label"><input type="checkbox" class="pe-use-received-value"'+(data.useReceivedValue?' checked':'')+'>'+
-'<span>'+i18n.t('periph-exec-use-received-value')+'</span></label>'+
-'<small class="pe-help-text">'+i18n.t('periph-exec-use-received-value-help')+'</small></div>'+
-'<div class="pure-control-group pe-sync-delay-group">'+
-'<label>'+i18n.t('periph-exec-sync-delay-label')+'</label>'+
-'<input type="number" class="pure-input-1 pe-sync-delay" min="0" max="10000" step="100" value="'+(data.syncDelayMs||0)+'" placeholder="0">'+
-'<small class="pe-help-text">'+i18n.t('periph-exec-sync-delay-help')+'</small></div>'+
+'<div class="pure-control-group pe-use-received-value-group'+this._hiddenClass(showRecv)+'">'+
+'<label>'+(i18n.t('periph-exec-use-received-label')||'使用接收值')+'</label>'+
+'<label class="pe-checkbox-label pe-checkbox-input-align"><input type="checkbox" class="pe-use-received-value"'+(showRecv&&data.useReceivedValue!==false?' checked':'')+'>'+
+i18n.t('periph-exec-use-received-value-help')+'</label></div>'+
 '<div class="pure-control-group pe-script-group pe-span-all'+this._hiddenClass(isScript)+'">'+
 '<label>'+i18n.t('periph-exec-script-label')+'</label>'+
 '<textarea class="pure-input-1 pe-script pe-script-textarea" rows="6" maxlength="1024" placeholder="'+escapeHtml(i18n.t('periph-exec-script-placeholder'))+'">'+(isScript?escapeHtml(data.actionValue):'')+'</textarea>'+
@@ -709,7 +833,9 @@ div.innerHTML='<span class="mqtt-topic-index">'+(index+1)+'</span>'+
 '<div class="pure-control-group"><label>'+i18n.t('periph-exec-sensor-decimals')+'</label><input type="number" class="pure-input-1 pe-sensor-decimals" min="0" max="6" value="'+sensorCfg.decimalPlaces+'"></div>'+
 '<div class="pure-control-group"><label>'+i18n.t('periph-exec-sensor-label')+'</label><input type="text" class="pure-input-1 pe-sensor-label" value="'+escapeHtml(sensorCfg.sensorLabel)+'" placeholder="'+i18n.t('periph-exec-sensor-label')+'"></div>'+
 '<div class="pure-control-group"><label>'+i18n.t('periph-exec-sensor-unit')+'</label><input type="text" class="pure-input-1 pe-sensor-unit" value="'+escapeHtml(sensorCfg.unit)+'" maxlength="8" placeholder="°C, %, V..."></div>'+
-'</div></div></div>';
+'</div></div>'+
+'<div class="pure-control-group pe-modbus-ctrl-panel pe-span-all'+this._hiddenClass(isModbusTarget)+'"></div>'+
+'</div>';
 container.appendChild(div);
 if(isSensorRead){
 this._populateSensorPeriphSelect(div,sensorCfg.sensorCategory||'analog',sensorCfg.periphId||data.targetPeriphId||'');
@@ -717,6 +843,7 @@ this._populateSensorPeriphSelect(div,sensorCfg.sensorCategory||'analog',sensorCf
 this._populatePeriphSelect(div.querySelector('.pe-target-periph'),data.targetPeriphId||'');
 }
 if(isModbusPoll)this._populateModbusDevicePanel(div.querySelector('.pe-poll-tasks-list'),data.actionValue||'');
+if(isModbusTarget)this._showModbusCtrlPanel(div.querySelector('.pe-modbus-ctrl-panel'),data.targetPeriphId,data.actionValue||'');
 },
 addPeriphExecTrigger(){
 const container=document.getElementById('periph-exec-triggers');
@@ -736,8 +863,7 @@ this._refreshPeriphExecRiskNotice({allowFetch:false});
 addPeriphExecAction(){
 const container=document.getElementById('periph-exec-actions');
 if(!container)return ;
-const hasSet=this._hasSetModeTrigger();
-this._createPeriphExecActionElement(hasSet?{useReceivedValue:true}:{},container.children.length);
+this._createPeriphExecActionElement({},container.children.length);
 this._refreshPeriphExecRiskNotice({allowFetch:true});
 },
 deletePeriphExecAction(index){
@@ -767,7 +893,7 @@ const platformCondition=block.querySelector('.pe-platform-condition');
 const pollParams=block.querySelector('.pe-poll-params');
 const timerConfig=block.querySelector('.pe-timer-config');
 const eventGroup=block.querySelector('.pe-event-group');
-this._setSectionVisible(triggerPeriphGroup,val==='0'||val==='5');
+this._setSectionVisible(triggerPeriphGroup,val==='0');
 this._setSectionVisible(platformCondition,val==='0');
 this._setSectionVisible(pollParams,val==='5');
 this._setSectionVisible(timerConfig,val==='1');
@@ -775,11 +901,7 @@ if(eventGroup){
 this._setSectionVisible(eventGroup,val==='4');
 if(val==='4'){
 this._populateEventCategoriesInBlock(block);
-this._populateEventSelectInBlock(block);
 }
-}
-if(val==='5'){
-this._populateTriggerPeriphSelect(block.querySelector('.pe-trigger-periph'),'');
 }
 if(val!=='0'){
 this._checkAndSyncSetMode();
@@ -790,7 +912,7 @@ const block=this._getPeriphExecBlock('periph-exec-triggers',index);
 if(!block)return ;
 const compareGroup=block.querySelector('.pe-compare-value-group');
 this._setSectionVisible(compareGroup,val!=='1');
-this._syncSetModeToActions(val==='1');
+this._checkAndSyncSetMode();
 },
 onPeriphExecUseRecvChangeInBlock(checkbox,index){
 const block=checkbox.closest('.periph-exec-config-item');
@@ -827,13 +949,18 @@ if(!container)return ;
 container.querySelectorAll('.periph-exec-config-item').forEach(function (item){
 const checkbox=item.querySelector('.pe-use-received-value');
 const valueInput=item.querySelector('.pe-action-value');
-if(checkbox)checkbox.checked=isSetMode;
-if(valueInput){
-if(isSetMode){
-valueInput.setAttribute('readonly','');
-}else{
-valueInput.removeAttribute('readonly');
+const recvGroup=item.querySelector('.pe-use-received-value-group');
+const actionType=parseInt(item.querySelector('.pe-action-type')?.value||'0');
+const needsValue=(actionType>=2&&actionType<=5);
+const showRecv=isSetMode&&needsValue;
+if(recvGroup){
+if(showRecv)recvGroup.classList.remove('is-hidden');
+else recvGroup.classList.add('is-hidden');
 }
+if(checkbox)checkbox.checked=showRecv;
+if(valueInput){
+if(showRecv)valueInput.setAttribute('readonly','');
+else valueInput.removeAttribute('readonly');
 }
 });
 },
@@ -849,6 +976,13 @@ onPeriphExecEventCategoryChangeInBlock(val,index){
 const block=this._getPeriphExecBlock('periph-exec-triggers',index);
 if(!block)return ;
 this._populateEventSelectInBlock(block,val);
+},
+onPeriphExecEventChangeInBlock(val,index){
+const block=this._getPeriphExecBlock('periph-exec-triggers',index);
+if(!block)return ;
+var isDataSource=val&&val.indexOf('ds:')===0;
+this._setSectionVisible(block.querySelector('.pe-event-condition-group'),isDataSource);
+this._setSectionVisible(block.querySelector('.pe-event-compare-group'),isDataSource);
 },
 onPeriphExecActionTypeChangeInBlock(val,index){
 const block=this._getPeriphExecBlock('periph-exec-actions',index);
@@ -875,21 +1009,27 @@ const sensorGroup=block.querySelector('.pe-sensor-group');
 this._setSectionVisible(sensorGroup,isSensorRead);
 if(isSensorRead){
 var cat=block.querySelector('.pe-sensor-category')?.value||'analog';
-this._populateSensorPeriphSelect(block,cat);
-}else if(targetGroup&&!targetGroup.classList.contains('is-hidden')){
-this._populatePeriphSelect(block.querySelector('.pe-target-periph'),'');
 }
-},
-onPeriphExecModeChangeInBlock(val){
-const hidden=document.getElementById('periph-exec-exec-mode');
-if(hidden)hidden.value=val;
-const container=document.getElementById('periph-exec-actions');
-if(!container)return ;
-container.querySelectorAll('.pe-exec-mode').forEach(s=>{s.value=val;});
+if(targetGroup&&!targetGroup.classList.contains('is-hidden')){
+var peSelect=block.querySelector('.pe-target-periph');
+this._populatePeriphSelect(peSelect,peSelect?peSelect.value:'');
+}
+const recvGroup=block.querySelector('.pe-use-received-value-group');
+const isSetMode=this._hasSetModeTrigger();
+const showRecv=isSetMode&&needsValue;
+this._setSectionVisible(recvGroup,showRecv);
+const checkbox=block.querySelector('.pe-use-received-value');
+if(checkbox)checkbox.checked=showRecv;
+const valueInput=block.querySelector('.pe-action-value');
+if(valueInput){
+if(showRecv)valueInput.setAttribute('readonly','');
+else valueInput.removeAttribute('readonly');
+}
 },
 _populateEventCategoriesInBlock(blockEl,eventIdToSet){
 const sel=blockEl.querySelector('.pe-event-category');
 if(!sel)return ;
+var isDs=eventIdToSet&&String(eventIdToSet).indexOf('ds:')===0;
 apiGet('/api/periph-exec/events/categories').then(res=>{
 if(!res||!res.success||!res.data)return ;
 let opts='<option value="">'+i18n.t('periph-exec-select-category')+'</option>';
@@ -898,7 +1038,10 @@ const translatedCat=i18n.t('event-cat-'+cat.name)||cat.name;
 opts+='<option value="'+cat.name+'">'+translatedCat+'</option>';
 });
 sel.innerHTML=opts;
-if(eventIdToSet){
+if(isDs){
+sel.value='数据源';
+this._populateEventSelectInBlock(blockEl,'数据源',eventIdToSet);
+}else{
 this._populateEventSelectInBlock(blockEl,'',eventIdToSet);
 }
 });
@@ -906,10 +1049,26 @@ this._populateEventSelectInBlock(blockEl,'',eventIdToSet);
 _populateEventSelectInBlock(blockEl,categoryFilter,eventIdToSet){
 const sel=blockEl.querySelector('.pe-event');
 if(!sel)return ;
-Promise.all([
-apiGet('/api/periph-exec/events/static'),
-apiGet('/api/periph-exec/events/dynamic')
-]).then(([staticRes,dynamicRes])=>{
+if(categoryFilter==='数据源'){
+var sources=this._peDataSources||[];
+var opts='<option value="">'+i18n.t('periph-exec-select-event')+'</option>';
+if(sources.length>0){
+var catLabel=i18n.t('event-cat-数据源')||'数据源';
+opts+='<optgroup label="'+catLabel+'">';
+sources.forEach(function (ds){
+opts+='<option value="ds:'+ds.id+'">'+escapeHtml(ds.label)+'</option>';
+});
+opts+='</optgroup>';
+}
+sel.innerHTML=opts;
+if(eventIdToSet)sel.value=eventIdToSet;
+var isDs=sel.value&&sel.value.indexOf('ds:')===0;
+this._setSectionVisible(blockEl.querySelector('.pe-event-condition-group'),isDs);
+this._setSectionVisible(blockEl.querySelector('.pe-event-compare-group'),isDs);
+return ;
+}
+apiGet('/api/periph-exec/events/static').then(staticRes=>{
+return apiGet('/api/periph-exec/events/dynamic').then(dynamicRes=>{
 let allEvents=[];
 if(staticRes&&staticRes.success&&staticRes.data)allEvents=allEvents.concat(staticRes.data);
 if(dynamicRes&&dynamicRes.success&&dynamicRes.data)allEvents=allEvents.concat(dynamicRes.data);
@@ -929,8 +1088,23 @@ opts+='<option value="'+e.id+'">'+translatedName+'</option>';
 });
 opts+='</optgroup>';
 }
+if(!categoryFilter){
+var sources=this._peDataSources||[];
+if(sources.length>0){
+var dsCatLabel=i18n.t('event-cat-数据源')||'数据源';
+opts+='<optgroup label="'+dsCatLabel+'">';
+sources.forEach(function (ds){
+opts+='<option value="ds:'+ds.id+'">'+escapeHtml(ds.label)+'</option>';
+});
+opts+='</optgroup>';
+}
+}
 sel.innerHTML=opts;
 if(eventIdToSet)sel.value=eventIdToSet;
+var isDs=sel.value&&sel.value.indexOf('ds:')===0;
+this._setSectionVisible(blockEl.querySelector('.pe-event-condition-group'),isDs);
+this._setSectionVisible(blockEl.querySelector('.pe-event-compare-group'),isDs);
+});
 });
 },
 _collectPeriphExecTriggers(){
@@ -950,8 +1124,11 @@ trigger.intervalSec=parseInt(item.querySelector('.pe-interval')?.value||'60',10)
 trigger.timePoint=item.querySelector('.pe-timepoint')?.value||'08:00';
 }else if(triggerType==='4'){
 trigger.eventId=item.querySelector('.pe-event')?.value||'';
+if(trigger.eventId.indexOf('ds:')===0){
+trigger.operatorType=parseInt(item.querySelector('.pe-event-operator')?.value||'0',10);
+trigger.compareValue=item.querySelector('.pe-event-compare')?.value?.trim()||'';
+}
 }else if(triggerType==='5'){
-trigger.triggerPeriphId=item.querySelector('.pe-trigger-periph')?.value||'';
 trigger.intervalSec=parseInt(item.querySelector('.pe-poll-interval')?.value||'60',10);
 trigger.pollResponseTimeout=parseInt(item.querySelector('.pe-poll-timeout')?.value||'1000',10);
 trigger.pollMaxRetries=parseInt(item.querySelector('.pe-poll-retries')?.value||'2',10);
@@ -966,12 +1143,35 @@ const container=document.getElementById('periph-exec-actions');
 if(!container)return [];
 const actions=[];
 container.querySelectorAll('.periph-exec-config-item').forEach(item=>{
+const targetPeriphId=item.querySelector('.pe-target-periph')?.value||'';
+const isModbusTarget=targetPeriphId&&targetPeriphId.indexOf('modbus:')===0;
 const actionType=item.querySelector('.pe-action-type')?.value||'0';
 const action={
-targetPeriphId:item.querySelector('.pe-target-periph')?.value||'',
+targetPeriphId:targetPeriphId,
 actionType:parseInt(actionType,10)||0
 };
-if(actionType==='15'){
+if(isModbusTarget){
+var dIdx=parseInt(targetPeriphId.substring(7));
+var ctrl={d:dIdx};
+var chSel=item.querySelector('.pe-modbus-channel-select');
+if(chSel)ctrl.c=parseInt(chSel.value||'0');
+var actSel=item.querySelector('.pe-modbus-action-select');
+if(actSel){
+ctrl.a=actSel.value||'on';
+}else{
+var paramSel=item.querySelector('.pe-modbus-action-param');
+if(paramSel){
+ctrl.a='pid';
+ctrl.p=paramSel.value||'P';
+}else{
+ctrl.a='pwm';
+}
+}
+var valInput=item.querySelector('.pe-modbus-action-value');
+if(valInput)ctrl.v=parseInt(valInput.value||'0');
+action.actionType=18;
+action.actionValue=JSON.stringify({ctrl:[ctrl]});
+}else if(actionType==='15'){
 action.actionValue=item.querySelector('.pe-script')?.value||'';
 }else if(actionType==='18'){
 var devSel=item.querySelector('.pe-modbus-device-select');
@@ -1026,6 +1226,7 @@ action.actionValue=item.querySelector('.pe-action-value')?.value?.trim()||'';
 }
 action.useReceivedValue=item.querySelector('.pe-use-received-value')?.checked||false;
 action.syncDelayMs=parseInt(item.querySelector('.pe-sync-delay')?.value||'0',10)||0;
+action.execMode=parseInt(item.querySelector('.pe-exec-mode')?.value||'0',10)||0;
 actions.push(action);
 });
 return actions;
@@ -1040,7 +1241,6 @@ const isEdit=originalId!==''&&originalId!=='null'&&originalId!=='undefined';
 const ruleData={
 name:document.getElementById('periph-exec-name').value.trim(),
 enabled:document.getElementById('periph-exec-enabled').checked,
-execMode:parseInt(document.getElementById('periph-exec-exec-mode').value,10)||0,
 reportAfterExec:document.getElementById('periph-exec-report').value==='true'
 };
 if(!ruleData.name){
@@ -1117,7 +1317,6 @@ const rule=execRes.data;
 if(!rule)return ;
 document.getElementById('periph-exec-name').value=rule.name||'';
 document.getElementById('periph-exec-enabled').checked=!!rule.enabled;
-document.getElementById('periph-exec-exec-mode').value=String(rule.execMode||0);
 document.getElementById('periph-exec-report').value=rule.reportAfterExec!==false?'true':'false';
 let triggers=rule.triggers||[];
 if(triggers.length===0){

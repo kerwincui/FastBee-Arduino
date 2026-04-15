@@ -186,6 +186,7 @@ struct ExecAction {
     String actionValue;             // 动作参数（PWM值/DAC值/闪烁间隔ms/脚本内容等）
     bool useReceivedValue = false;  // 启用时：用触发接收到的值替代 actionValue
     uint16_t syncDelayMs = 0;       // 执行前延时（毫秒，用于多动作顺序编排，最大 10000）
+    uint8_t execMode = 0;           // 0=异步执行(默认), 1=同步执行（per-action）
 };
 
 // 动作执行结果（用于精准上报）

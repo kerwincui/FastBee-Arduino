@@ -1,0 +1,75 @@
+# FastBee-Arduino C++ 代码格式化配置
+# 基于 Allman 风格，4空格缩进
+
+BasedOnStyle: LLVM
+
+# 缩进设置
+IndentWidth: 4
+UseTab: Never
+TabWidth: 4
+ContinuationIndentWidth: 4
+
+# 括号风格 - Allman风格（括号独占一行）
+BreakBeforeBraces: Allman
+
+# 空格设置
+SpaceAfterCStyleCast: false
+SpaceAfterLogicalNot: false
+SpaceAfterTemplateKeyword: true
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCpp11BracedList: false
+SpaceBeforeCtorInitializerColon: true
+SpaceBeforeInheritanceColon: true
+SpaceBeforeParens: ControlStatements
+SpaceBeforeRangeBasedForLoopColon: true
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 1
+SpacesInAngles: false
+SpacesInCStyleCastParentheses: false
+SpacesInContainerLiterals: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# 指针和引用对齐
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+# 行长度限制
+ColumnLimit: 120
+
+# 访问修饰符缩进
+AccessModifierOffset: -4
+
+# 函数参数
+AllowAllArgumentsOnNextLine: true
+AllowAllConstructorInitializersOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
+BinPackArguments: true
+BinPackParameters: true
+
+# 命名空间
+NamespaceIndentation: None
+
+# 包含排序
+SortIncludes: true
+
+# 其他设置
+IndentCaseLabels: true
+IndentPPDirectives: None
+IndentWrappedFunctionNames: false
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+ReflowComments: true
+SpaceAfterTemplateKeyword: true
+Standard: c++11
+
+# 宏和预处理器
+Define macros:
+  - LOG_INFO
+  - LOG_DEBUG
+  - LOG_WARNING
+  - LOG_ERROR
+  - LOG_INFOF
+  - LOG_DEBUGF
+  - LOG_WARNINGF
+  - LOG_ERRORF

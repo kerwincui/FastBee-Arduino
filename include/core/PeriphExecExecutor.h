@@ -37,11 +37,8 @@ public:
 
     // ========== 具体动作执行方法 ==========
 
-    // 执行外设动作（GPIO、PWM、DAC等）
+    // 执行外设动作（GPIO、PWM、DAC、Modbus子设备等）
     bool executePeripheralAction(const ExecAction& action, const String& effectiveValue);
-
-    // 执行Modbus子设备动作
-    bool executeModbusAction(const ExecAction& action, const String& effectiveValue);
 
     // 执行Modbus轮询动作
     bool executeModbusPollAction(const ExecAction& action, const PeriphExecRule& rule);

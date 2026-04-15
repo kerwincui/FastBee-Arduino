@@ -491,6 +491,7 @@ bool ProtocolManager::restartModbus() {
                 dev.pwmRegBase      = d["pwmRegBase"] | (uint16_t)0;
                 dev.pwmResolution   = d["pwmResolution"] | (uint8_t)8;
                 dev.pidDecimals     = d["pidDecimals"] | (uint8_t)1;
+                dev.enabled         = d["enabled"] | true;
                 if (d.containsKey("pidAddrs") && d["pidAddrs"].is<JsonArray>()) {
                     JsonArray pa = d["pidAddrs"].as<JsonArray>();
                     for (int i = 0; i < 6 && i < (int)pa.size(); i++)
@@ -545,6 +546,9 @@ bool ProtocolManager::restartModbus() {
                   (modbusConfig.mode == MODBUS_MASTER) ? "Master" : "Slave",
                   modbusConfig.master.taskCount,
                   modbusConfig.master.deviceCount);
+        
+        // 注册 Modbus 子设备为标准外设并设置通信回调
+        registerModbusSubDevices(modbusConfig);
     } else {
         LOG_WARNING("Protocol Manager: Modbus restart failed");
     }
@@ -554,6 +558,10 @@ bool ProtocolManager::restartModbus() {
 void ProtocolManager::stopModbus() {
     LOG_INFO("Protocol Manager: Stopping Modbus...");
     PeriphExecManager::getInstance().setModbusReadCallback(nullptr);
+    
+    // 注销 Modbus 外设和通信回调
+    unregisterModbusSubDevices();
+    
     if (modbusHandler) {
         modbusHandler->end();
     }
@@ -805,7 +813,12 @@ bool ProtocolManager::initModbus(void* config) {
         });
     }
 
-    return modbusHandler->begin(*modbusConfig);
+    bool initOk = modbusHandler->begin(*modbusConfig);
+    if (initOk) {
+        // 注册 Modbus 子设备为标准外设并设置通信回调
+        registerModbusSubDevices(*modbusConfig);
+    }
+    return initOk;
 }
 
 #if FASTBEE_ENABLE_TCP
@@ -855,3 +868,85 @@ bool ProtocolManager::initCoAP(void* config) {
     return coapHandler->begin(*coapConfig);
 }
 #endif
+
+// ========== Modbus 子设备注册到 PeripheralManager ==========
+
+void ProtocolManager::registerModbusSubDevices(const ModbusConfig& config) {
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    
+    // 先清理旧的 Modbus 外设（重启 Modbus 时需要先注销）
+    unregisterModbusSubDevices();
+    
+    if (config.mode != MODBUS_MASTER || config.master.deviceCount == 0) {
+        return;
+    }
+    
+    // 设置 Modbus 通信回调（通过闭包捕获 modbusHandler）
+    ModbusHandler* mb = modbusHandler.get();
+    if (mb) {
+        pm.setModbusCallbacks(
+            // 线圈写入回调 (FC05)
+            [mb](uint8_t slaveAddr, uint16_t coilAddr, bool value) -> bool {
+                OneShotResult result = mb->writeCoilOnce(slaveAddr, coilAddr, value);
+                return result.error == ONESHOT_SUCCESS;
+            },
+            // 寄存器写入回调 (FC06)
+            [mb](uint8_t slaveAddr, uint16_t regAddr, uint16_t value) -> bool {
+                OneShotResult result = mb->writeRegisterOnce(slaveAddr, regAddr, value);
+                return result.error == ONESHOT_SUCCESS;
+            }
+        );
+    }
+    
+    // 逐个注册子设备为标准外设
+    for (uint8_t i = 0; i < config.master.deviceCount; i++) {
+        const ModbusSubDevice& dev = config.master.devices[i];
+        if (!dev.enabled) continue;
+        
+        PeripheralConfig pCfg;
+        pCfg.id = "modbus:" + String(i);
+        pCfg.name = String(dev.name);
+        pCfg.type = PeripheralType::MODBUS_DEVICE;
+        pCfg.enabled = true;
+        pCfg.pinCount = 0;  // Modbus 外设不使用 GPIO 引脚
+        
+        // 设置 Modbus 特定参数
+        pCfg.params.modbus.slaveAddress    = dev.slaveAddress;
+        pCfg.params.modbus.channelCount    = dev.channelCount;
+        pCfg.params.modbus.coilBase        = dev.coilBase;
+        pCfg.params.modbus.ncMode          = dev.ncMode;
+        pCfg.params.modbus.controlProtocol = dev.controlProtocol;
+        pCfg.params.modbus.deviceIndex     = i;
+        pCfg.params.modbus.batchRegister   = dev.batchRegister;
+        pCfg.params.modbus.pwmRegBase      = dev.pwmRegBase;
+        pCfg.params.modbus.pwmResolution   = dev.pwmResolution;
+        
+        // 确定设备类型
+        String devType(dev.deviceType);
+        if (devType == "relay")     pCfg.params.modbus.deviceType = 0;
+        else if (devType == "pwm")  pCfg.params.modbus.deviceType = 1;
+        else if (devType == "pid")  pCfg.params.modbus.deviceType = 2;
+        else                        pCfg.params.modbus.deviceType = 0;
+        
+        if (pm.addPeripheral(pCfg)) {
+            LOG_INFOF("Protocol Manager: Registered Modbus sub-device '%s' as peripheral 'modbus:%d'",
+                      dev.name, i);
+        } else {
+            LOG_WARNINGF("Protocol Manager: Failed to register Modbus sub-device '%s'", dev.name);
+        }
+    }
+}
+
+void ProtocolManager::unregisterModbusSubDevices() {
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    
+    // 清除通信回调
+    pm.clearModbusCallbacks();
+    
+    // 移除所有 MODBUS_DEVICE 类型的外设
+    auto allPeriphs = pm.getPeripheralsByType(PeripheralType::MODBUS_DEVICE);
+    for (const auto& p : allPeriphs) {
+        pm.removePeripheral(p.id);
+        LOG_INFOF("Protocol Manager: Unregistered Modbus peripheral '%s'", p.id.c_str());
+    }
+}

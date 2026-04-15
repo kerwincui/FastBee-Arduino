@@ -57,11 +57,13 @@ bool PeripheralManager::addPeripheral(const PeripheralConfig& config) {
         return false;
     }
     
-    // 检查引脚冲突
-    for (int i = 0; i < config.pinCount && i < 8; i++) {
-        if (config.pins[i] != 255 && checkPinConflict(config.pins[i])) {
-            LOG_ERRORF("Peripheral Manager: Pin %d is already in use", config.pins[i]);
-            return false;
+    // 检查引脚冲突（Modbus 外设不使用 GPIO 引脚，跳过此检查）
+    if (!config.isModbusPeripheral()) {
+        for (int i = 0; i < config.pinCount && i < 8; i++) {
+            if (config.pins[i] != 255 && checkPinConflict(config.pins[i])) {
+                LOG_ERRORF("Peripheral Manager: Pin %d is already in use", config.pins[i]);
+                return false;
+            }
         }
     }
     
@@ -340,7 +342,17 @@ GPIOState PeripheralManager::readPin(uint8_t pin) {
 GPIOState PeripheralManager::readPin(const String& peripheralId) {
     RecursiveMutexGuard lock(_mutex);
     auto config = getPeripheral(peripheralId);
-    if (!config || !config->isGPIOPeripheral()) {
+    if (!config) return GPIOState::STATE_UNDEFINED;
+    
+    // Modbus 外设：返回缓存的状态（无法实时读取远端设备）
+    if (config->isModbusPeripheral()) {
+        if (runtimeStates.find(peripheralId) != runtimeStates.end()) {
+            return runtimeStates[peripheralId].state.gpio.currentState;
+        }
+        return GPIOState::STATE_UNDEFINED;
+    }
+    
+    if (!config->isGPIOPeripheral()) {
         return GPIOState::STATE_UNDEFINED;
     }
     
@@ -383,7 +395,14 @@ bool PeripheralManager::writePin(uint8_t pin, GPIOState state) {
 bool PeripheralManager::writePin(const String& peripheralId, GPIOState state) {
     RecursiveMutexGuard lock(_mutex);
     auto config = getPeripheral(peripheralId);
-    if (!config || !config->isGPIOPeripheral()) {
+    if (!config) return false;
+    
+    // Modbus 外设：通过委托回调写入
+    if (config->isModbusPeripheral()) {
+        return writeModbusPin(peripheralId, *config, state);
+    }
+    
+    if (!config->isGPIOPeripheral()) {
         return false;
     }
     
@@ -452,6 +471,11 @@ bool PeripheralManager::writePWM(const String& peripheralId, uint32_t dutyCycle)
     auto config = getPeripheral(peripheralId);
     if (!config) return false;
     
+    // Modbus PWM 外设：通过委托回调写入寄存器
+    if (config->isModbusPeripheral()) {
+        return writeModbusPWM(peripheralId, *config, dutyCycle);
+    }
+    
     if (config->type != PeripheralType::GPIO_PWM_OUTPUT && 
         config->type != PeripheralType::GPIO_ANALOG_OUTPUT &&
         config->type != PeripheralType::PWM_SERVO) {
@@ -493,6 +517,9 @@ bool PeripheralManager::saveConfiguration() {
     
     for (const auto& pair : peripherals) {
         const PeripheralConfig& config = pair.second;
+        
+        // Modbus 外设由 protocol.json 管理，不保存到 peripherals.json
+        if (config.isModbusPeripheral()) continue;
         
         JsonObject obj = periphs.add<JsonObject>();
         obj["id"] = config.id;
@@ -701,6 +728,15 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
         return false;
     }
     
+    // Modbus 外设不需要引脚配置
+    if (config.isModbusPeripheral()) {
+        if (config.params.modbus.slaveAddress < 1 || config.params.modbus.slaveAddress > 247) {
+            errorMsg = "Modbus 从站地址无效 (有效范围: 1-247)";
+            return false;
+        }
+        return true;
+    }
+    
     if (config.pinCount == 0) {
         errorMsg = "至少需要配置一个引脚";
         return false;
@@ -828,6 +864,13 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
 bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
     if (config.isGPIOPeripheral()) {
         return setupGPIOPin(config);
+    }
+    
+    // Modbus 外设不需要本地硬件初始化（通过 RS485 总线通信）
+    if (config.isModbusPeripheral()) {
+        LOG_INFOF("Peripheral Manager: Modbus device '%s' (slave=%d) registered, no local HW init needed",
+                  config.name.c_str(), config.params.modbus.slaveAddress);
+        return true;
     }
     
     // TODO: 实现其他类型外设的硬件初始化
@@ -1525,4 +1568,133 @@ bool PeripheralManager::detachInterrupt(const String& peripheralId) {
     }
     
     return true;
+}
+
+// ========== Modbus 外设委托 ==========
+
+void PeripheralManager::setModbusCallbacks(ModbusCoilWriteFunc coilWrite, ModbusRegWriteFunc regWrite) {
+    RecursiveMutexGuard lock(_mutex);
+    _modbusCoilWrite = coilWrite;
+    _modbusRegWrite  = regWrite;
+    LOG_INFO("Peripheral Manager: Modbus write callbacks registered");
+}
+
+void PeripheralManager::clearModbusCallbacks() {
+    RecursiveMutexGuard lock(_mutex);
+    _modbusCoilWrite = nullptr;
+    _modbusRegWrite  = nullptr;
+    LOG_INFO("Peripheral Manager: Modbus write callbacks cleared");
+}
+
+bool PeripheralManager::writeModbusPin(const String& id, const PeripheralConfig& config, GPIOState state) {
+    if (!_modbusCoilWrite && !_modbusRegWrite) {
+        LOG_WARNING("Peripheral Manager: Modbus write callbacks not set");
+        return false;
+    }
+    
+    bool value = (state == GPIOState::STATE_HIGH);
+    if (config.params.modbus.ncMode) value = !value;
+    
+    uint16_t addr = config.params.modbus.coilBase;
+    bool success = false;
+    
+    if (config.params.modbus.controlProtocol == 0) {
+        // 线圈模式 (FC05)
+        if (_modbusCoilWrite) {
+            success = _modbusCoilWrite(config.params.modbus.slaveAddress, addr, value);
+        }
+    } else {
+        // 寄存器模式 (FC06)
+        uint16_t regVal = value ? 0xFF00 : 0x0000;
+        if (_modbusRegWrite) {
+            success = _modbusRegWrite(config.params.modbus.slaveAddress, addr, regVal);
+        }
+    }
+    
+    if (success && runtimeStates.find(id) != runtimeStates.end()) {
+        runtimeStates[id].state.gpio.currentState = state;
+        runtimeStates[id].lastActivity = millis();
+    }
+    
+    LOG_INFOF("Peripheral Manager: Modbus writePin '%s' slave=%d addr=%d state=%s %s",
+              id.c_str(), config.params.modbus.slaveAddress, addr,
+              state == GPIOState::STATE_HIGH ? "HIGH" : "LOW",
+              success ? "OK" : "FAIL");
+    return success;
+}
+
+bool PeripheralManager::writeModbusPWM(const String& id, const PeripheralConfig& config, uint32_t dutyCycle) {
+    if (!_modbusRegWrite) {
+        LOG_WARNING("Peripheral Manager: Modbus register write callback not set");
+        return false;
+    }
+    
+    // PWM 类型设备：写入 pwmRegBase 寄存器
+    if (config.params.modbus.deviceType != 1) {
+        LOG_WARNINGF("Peripheral Manager: '%s' is not a PWM Modbus device", id.c_str());
+        return false;
+    }
+    
+    uint16_t regAddr = config.params.modbus.pwmRegBase;
+    uint16_t regVal = (uint16_t)dutyCycle;
+    bool success = _modbusRegWrite(config.params.modbus.slaveAddress, regAddr, regVal);
+    
+    if (success && runtimeStates.find(id) != runtimeStates.end()) {
+        runtimeStates[id].lastActivity = millis();
+    }
+    
+    LOG_INFOF("Peripheral Manager: Modbus writePWM '%s' slave=%d reg=%d duty=%d %s",
+              id.c_str(), config.params.modbus.slaveAddress, regAddr, (int)dutyCycle,
+              success ? "OK" : "FAIL");
+    return success;
+}
+
+bool PeripheralManager::writeModbusCoil(const String& id, uint16_t coilAddr, bool value) {
+    RecursiveMutexGuard lock(_mutex);
+    if (!_modbusCoilWrite) {
+        LOG_WARNING("Peripheral Manager: Modbus coil write callback not set");
+        return false;
+    }
+    
+    auto config = getPeripheral(id);
+    if (!config || !config->isModbusPeripheral()) {
+        LOG_WARNINGF("Peripheral Manager: '%s' is not a Modbus peripheral", id.c_str());
+        return false;
+    }
+    
+    bool success = _modbusCoilWrite(config->params.modbus.slaveAddress, coilAddr, value);
+    
+    if (success && runtimeStates.find(id) != runtimeStates.end()) {
+        runtimeStates[id].lastActivity = millis();
+    }
+    
+    LOG_INFOF("Peripheral Manager: Modbus writeCoil '%s' slave=%d coil=%d val=%d %s",
+              id.c_str(), config->params.modbus.slaveAddress, coilAddr, value,
+              success ? "OK" : "FAIL");
+    return success;
+}
+
+bool PeripheralManager::writeModbusReg(const String& id, uint16_t regAddr, uint16_t value) {
+    RecursiveMutexGuard lock(_mutex);
+    if (!_modbusRegWrite) {
+        LOG_WARNING("Peripheral Manager: Modbus register write callback not set");
+        return false;
+    }
+    
+    auto config = getPeripheral(id);
+    if (!config || !config->isModbusPeripheral()) {
+        LOG_WARNINGF("Peripheral Manager: '%s' is not a Modbus peripheral", id.c_str());
+        return false;
+    }
+    
+    bool success = _modbusRegWrite(config->params.modbus.slaveAddress, regAddr, value);
+    
+    if (success && runtimeStates.find(id) != runtimeStates.end()) {
+        runtimeStates[id].lastActivity = millis();
+    }
+    
+    LOG_INFOF("Peripheral Manager: Modbus writeReg '%s' slave=%d reg=%d val=%d %s",
+              id.c_str(), config->params.modbus.slaveAddress, regAddr, value,
+              success ? "OK" : "FAIL");
+    return success;
 }

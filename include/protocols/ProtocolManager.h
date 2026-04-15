@@ -156,6 +156,10 @@ private:
 
     // MQTT触发的Modbus一次性读取
     String executeModbusRead(const String& paramsJson);
+    
+    // Modbus 子设备注册/注销到 PeripheralManager
+    void registerModbusSubDevices(const ModbusConfig& config);
+    void unregisterModbusSubDevices();
 };
 
 #endif

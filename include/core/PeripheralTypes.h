@@ -45,7 +45,10 @@ enum class PeripheralType {
     STEPPER_MOTOR,      // 步进电机
     ENCODER,            // 编码器
     ONE_WIRE,           // 单总线
-    NEO_PIXEL           // WS2812等LED
+    NEO_PIXEL,          // WS2812等LED
+    
+    // Modbus外设 (51-55)
+    MODBUS_DEVICE = 51  // Modbus子设备（继电器/PWM/PID等）
 };
 
 // 外设状态枚举
@@ -86,7 +89,8 @@ inline PeripheralCategory getPeripheralCategory(PeripheralType type) {
     if (typeValue >= 11 && typeValue <= 25) return PeripheralCategory::CATEGORY_GPIO;
     if (typeValue >= 26 && typeValue <= 30) return PeripheralCategory::CATEGORY_ANALOG_SIGNAL;
     if (typeValue >= 31 && typeValue <= 35) return PeripheralCategory::CATEGORY_DEBUG;
-    if (typeValue >= 36) return PeripheralCategory::CATEGORY_SPECIAL;
+    if (typeValue >= 36 && typeValue <= 50) return PeripheralCategory::CATEGORY_SPECIAL;
+    if (typeValue >= 51 && typeValue <= 55) return PeripheralCategory::CATEGORY_SPECIAL;
     return PeripheralCategory::CATEGORY_GPIO;
 }
 
@@ -132,6 +136,9 @@ inline const char* getPeripheralTypeName(PeripheralType type) {
         case PeripheralType::ENCODER: return "Encoder";
         case PeripheralType::ONE_WIRE: return "OneWire";
         case PeripheralType::NEO_PIXEL: return "NeoPixel";
+        
+        // Modbus外设
+        case PeripheralType::MODBUS_DEVICE: return "Modbus Device";
         
         default: return "Unknown";
     }
@@ -184,6 +191,10 @@ inline uint8_t getPeripheralPinCount(PeripheralType type) {
         case PeripheralType::SENSOR:
         case PeripheralType::PWM_SERVO:
             return 8;  // 最大支持8个引脚
+        
+        // Modbus外设不使用GPIO引脚
+        case PeripheralType::MODBUS_DEVICE:
+            return 0;
             
         default:
             return 1;
@@ -234,12 +245,15 @@ inline PeripheralType parsePeripheralType(const char* typeStr) {
     if (strcasecmp(typeStr, "ONE_WIRE") == 0) return PeripheralType::ONE_WIRE;
     if (strcasecmp(typeStr, "NEO_PIXEL") == 0) return PeripheralType::NEO_PIXEL;
     
+    // Modbus外设
+    if (strcasecmp(typeStr, "MODBUS_DEVICE") == 0) return PeripheralType::MODBUS_DEVICE;
+    
     return PeripheralType::UNCONFIGURED;
 }
 
 // 从整数值解析外设类型
 inline PeripheralType peripheralTypeFromInt(int value) {
-    if (value >= 0 && value <= 50) {
+    if ((value >= 0 && value <= 50) || (value >= 51 && value <= 55)) {
         return static_cast<PeripheralType>(value);
     }
     return PeripheralType::UNCONFIGURED;
@@ -288,6 +302,11 @@ inline bool isPureInputType(PeripheralType type) {
 inline bool isGPIOType(PeripheralType type) {
     int typeVal = static_cast<int>(type);
     return typeVal >= 11 && typeVal <= 25;
+}
+
+// 检查是否为Modbus外设类型
+inline bool isModbusType(PeripheralType type) {
+    return type == PeripheralType::MODBUS_DEVICE;
 }
 
 #endif // PERIPHERAL_TYPES_H
