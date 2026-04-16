@@ -10,6 +10,7 @@
 #include "core/FeatureFlags.h"
 #include "core/ChipConfig.h"
 #include "systems/LoggerSystem.h"
+#include "peripherals/LCDManager.h"
 #include <Wire.h>
 #include <SPI.h>
 
@@ -873,6 +874,11 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
         return true;
     }
     
+    // LCD/OLED 显示屏初始化
+    if (config.type == PeripheralType::LCD) {
+        return LCDManager::getInstance().initialize(config);
+    }
+    
     // TODO: 实现其他类型外设的硬件初始化
     LOG_INFOF("Peripheral Manager: Hardware setup for type %d not yet implemented", 
               static_cast<int>(config.type));
@@ -885,6 +891,11 @@ bool PeripheralManager::teardownHardware(const PeripheralConfig& config) {
         if (pin != 255) {
             detachInterrupt(pin);
         }
+    }
+    
+    // LCD/OLED 显示屏清理
+    if (config.type == PeripheralType::LCD) {
+        LCDManager::getInstance().deinitialize();
     }
     
     // TODO: 实现其他类型外设的硬件释放

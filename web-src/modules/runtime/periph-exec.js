@@ -352,11 +352,11 @@
         _populatePeriphSelect(selectEl, selectedValue) {
             if (!selectEl) return;
             var gpioPeriphs = [];
-            var modbusPeriphs = [];
             (this._pePeripherals || []).forEach(p => {
-                if (p.type === 51) modbusPeriphs.push(p);
-                else gpioPeriphs.push(p);
+                if (p.type !== 51) gpioPeriphs.push(p);
             });
+            var modbusDevices = this._modbusDevices || [];
+            var typeLabels = {relay: i18n.t('modbus-type-relay') || '继电器', pwm: i18n.t('modbus-type-pwm') || 'PWM', pid: i18n.t('modbus-type-pid') || 'PID'};
             var html = '<option value="">' + i18n.t('periph-exec-select-periph') + '</option>';
             if (gpioPeriphs.length > 0) {
                 html += '<optgroup label="' + escapeHtml(i18n.t('periph-exec-periph-group') || '硬件外设') + '">';
@@ -365,11 +365,20 @@
                 });
                 html += '</optgroup>';
             }
-            if (modbusPeriphs.length > 0) {
+            var hasModbus = false;
+            for (var i = 0; i < modbusDevices.length; i++) {
+                if (modbusDevices[i].enabled !== false) { hasModbus = true; break; }
+            }
+            if (hasModbus) {
                 html += '<optgroup label="' + escapeHtml(i18n.t('periph-exec-modbus-group') || 'Modbus 子设备') + '">';
-                modbusPeriphs.forEach(p => {
-                    html += '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.name + ' (' + p.id + ')') + '</option>';
-                });
+                for (var j = 0; j < modbusDevices.length; j++) {
+                    var d = modbusDevices[j];
+                    if (d.enabled === false) continue;
+                    var devId = 'modbus:' + j;
+                    var dt = typeLabels[d.deviceType] || d.deviceType || '';
+                    var label = (d.name || ('Device ' + (j + 1))) + ' (' + dt + ', Addr ' + (d.slaveAddress || 1) + ')';
+                    html += '<option value="' + escapeHtml(devId) + '">' + escapeHtml(label) + '</option>';
+                }
                 html += '</optgroup>';
             }
             selectEl.innerHTML = html;
