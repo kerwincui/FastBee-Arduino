@@ -115,6 +115,12 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         peripherals = pm.getAllPeripherals();
     }
 
+    // Modbus 子设备由 protocol.json 管理，不在外设列表中展示
+    peripherals.erase(
+        std::remove_if(peripherals.begin(), peripherals.end(),
+            [](const PeripheralConfig& p) { return p.type == PeripheralType::MODBUS_DEVICE; }),
+        peripherals.end());
+
     // 排序：启用的排前面，然后按名称排序
     std::sort(peripherals.begin(), peripherals.end(), [](const PeripheralConfig& a, const PeripheralConfig& b) {
         if (a.enabled != b.enabled) return a.enabled > b.enabled;
@@ -429,6 +435,15 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
     String name = ctx->getParamValue(request, "name", "");
     if (!name.isEmpty()) config.name = name;
 
+    // 更新外设类型（类型变更时重置参数为默认值）
+    if (request->hasParam("type", true)) {
+        PeripheralType newType = static_cast<PeripheralType>(ctx->getParamInt(request, "type", static_cast<int>(config.type)));
+        if (newType != config.type) {
+            config.type = newType;
+            memset(&config.params, 0, sizeof(config.params));
+        }
+    }
+
     config.enabled = ctx->getParamBool(request, "enabled", config.enabled);
 
     String pinsStr = ctx->getParamValue(request, "pins", "");
@@ -447,17 +462,30 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
     }
 
     if (config.type == PeripheralType::UART) {
-        if (request->hasParam("baudRate", true)) config.params.uart.baudRate = ctx->getParamInt(request, "baudRate", config.params.uart.baudRate);
-        if (request->hasParam("dataBits", true)) config.params.uart.dataBits = ctx->getParamInt(request, "dataBits", config.params.uart.dataBits);
+        config.params.uart.baudRate = ctx->getParamInt(request, "baudRate", config.params.uart.baudRate);
+        config.params.uart.dataBits = ctx->getParamInt(request, "dataBits", config.params.uart.dataBits);
+        config.params.uart.stopBits = ctx->getParamInt(request, "stopBits", config.params.uart.stopBits);
+        config.params.uart.parity = ctx->getParamInt(request, "parity", config.params.uart.parity);
+    } else if (config.type == PeripheralType::I2C) {
+        config.params.i2c.frequency = ctx->getParamInt(request, "frequency", config.params.i2c.frequency);
+        config.params.i2c.address = ctx->getParamInt(request, "address", config.params.i2c.address);
+        config.params.i2c.isMaster = ctx->getParamBool(request, "isMaster", config.params.i2c.isMaster);
+    } else if (config.type == PeripheralType::SPI) {
+        config.params.spi.frequency = ctx->getParamInt(request, "frequency", config.params.spi.frequency);
+        config.params.spi.mode = ctx->getParamInt(request, "mode", config.params.spi.mode);
+        config.params.spi.msbFirst = ctx->getParamBool(request, "msbFirst", config.params.spi.msbFirst);
     } else if (config.isGPIOPeripheral()) {
-        if (request->hasParam("initialState", true)) config.params.gpio.initialState = static_cast<GPIOState>(ctx->getParamInt(request, "initialState", static_cast<int>(config.params.gpio.initialState)));
-        if (request->hasParam("pwmChannel", true)) config.params.gpio.pwmChannel = ctx->getParamInt(request, "pwmChannel", config.params.gpio.pwmChannel);
-        if (request->hasParam("pwmFrequency", true)) config.params.gpio.pwmFrequency = ctx->getParamInt(request, "pwmFrequency", config.params.gpio.pwmFrequency);
-        if (request->hasParam("pwmResolution", true)) config.params.gpio.pwmResolution = ctx->getParamInt(request, "pwmResolution", config.params.gpio.pwmResolution);
-        if (request->hasParam("defaultDuty", true)) config.params.gpio.defaultDuty = ctx->getParamInt(request, "defaultDuty", config.params.gpio.defaultDuty);
+        config.params.gpio.initialState = static_cast<GPIOState>(ctx->getParamInt(request, "initialState", static_cast<int>(config.params.gpio.initialState)));
+        config.params.gpio.pwmChannel = ctx->getParamInt(request, "pwmChannel", config.params.gpio.pwmChannel);
+        config.params.gpio.pwmFrequency = ctx->getParamInt(request, "pwmFrequency", config.params.gpio.pwmFrequency);
+        config.params.gpio.pwmResolution = ctx->getParamInt(request, "pwmResolution", config.params.gpio.pwmResolution);
+        config.params.gpio.defaultDuty = ctx->getParamInt(request, "defaultDuty", config.params.gpio.defaultDuty);
+    } else if (config.type == PeripheralType::ADC) {
+        config.params.adc.attenuation = ctx->getParamInt(request, "attenuation", config.params.adc.attenuation);
+        config.params.adc.resolution = ctx->getParamInt(request, "resolution", config.params.adc.resolution);
     } else if (config.type == PeripheralType::DAC) {
-        if (request->hasParam("channel", true)) config.params.dac.channel = ctx->getParamInt(request, "channel", config.params.dac.channel);
-        if (request->hasParam("defaultValue", true)) config.params.dac.defaultValue = ctx->getParamInt(request, "defaultValue", config.params.dac.defaultValue);
+        config.params.dac.channel = ctx->getParamInt(request, "channel", config.params.dac.channel);
+        config.params.dac.defaultValue = ctx->getParamInt(request, "defaultValue", config.params.dac.defaultValue);
     }
 
     if (pm.updatePeripheral(id, config)) {
