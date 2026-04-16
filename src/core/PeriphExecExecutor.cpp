@@ -646,16 +646,49 @@ MQTTClient* PeriphExecExecutor::getMqttClient() {
 void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>& results) {
     if (results.empty()) return;
 
-    // 构建上报数据：[{"id":"led1","value":"1","remark":"success"}, ...]
+    // 检查 Modbus 传输类型（0=JSON, 1=透传HEX）
+    uint8_t modbusTransferType = 0;
+    auto* fw = FastBeeFramework::getInstance();
+    if (fw) {
+        auto* protMgr = fw->getProtocolManager();
+        if (protMgr) {
+            ModbusHandler* modbus = protMgr->getModbusHandler();
+            if (modbus) {
+                ModbusConfig cfg = modbus->getConfig();
+                modbusTransferType = cfg.transferType;
+            }
+        }
+    }
+
+    PeripheralManager& pm = PeripheralManager::getInstance();
+
+    // 构建上报数据：[{"id":"led1","value":"1","remark":""}, ...]
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
 
     for (const auto& ar : results) {
         if (ar.targetPeriphId.isEmpty()) continue;
-        JsonObject obj = arr.add<JsonObject>();
-        obj["id"] = ar.targetPeriphId;
-        obj["value"] = ar.actualValue;
-        obj["remark"] = ar.success ? "success" : "failed";
+
+        // 检查目标外设是否为 Modbus 子设备，且传输类型为透传 HEX
+        bool isModbusTarget = false;
+        const PeripheralConfig* cfg = pm.getPeripheral(ar.targetPeriphId);
+        if (cfg && cfg->isModbusPeripheral()) {
+            isModbusTarget = true;
+        }
+
+        if (isModbusTarget && modbusTransferType == 1) {
+            // 透传模式：直接上报原始 HEX 值（actualValue 即为 HEX 帧数据）
+            JsonObject obj = arr.add<JsonObject>();
+            obj["id"] = ar.targetPeriphId;
+            obj["value"] = ar.actualValue;
+            obj["remark"] = "";
+        } else {
+            // JSON 结构化模式（默认）
+            JsonObject obj = arr.add<JsonObject>();
+            obj["id"] = ar.targetPeriphId;
+            obj["value"] = ar.actualValue;
+            obj["remark"] = "";
+        }
     }
 
     if (arr.size() == 0) return;

@@ -118,6 +118,12 @@ public:
     // periphId: 外设ID，为空则返回所有动作类型
     static String getValidActionTypes(const String& periphId = "");
 
+    // ========== 条件评估（公共静态方法，供 Manager/Scheduler/Executor 共用） ==========
+
+    // 通用条件评估：根据操作符比较 value 和 compareValue
+    // EQ/NEQ 自动检测数值/字符串类型，数值走浮点比较，非数值走字符串比较
+    static bool evaluateCondition(const String& value, uint8_t op, const String& compareValue);
+
     // ========== 内部接口（供 Executor 和 Scheduler 使用） ==========
 
     // 检查是否已初始化

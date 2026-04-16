@@ -24,6 +24,27 @@ constexpr unsigned long PERIPH_EXEC_POLL_TRIGGER_MIN_INTERVAL_MS = 1000;
 constexpr unsigned long PERIPH_EXEC_HEAVY_POLL_TRIGGER_MIN_INTERVAL_MS = 2000;
 constexpr unsigned long PERIPH_EXEC_MODBUS_POLL_INGRESS_MIN_INTERVAL_MS = 1000;
 constexpr unsigned long PERIPH_EXEC_POLL_THROTTLE_LOG_INTERVAL_MS = 5000;
+
+// 判断字符串是否为有效数值（整数或浮点数，含负数）
+static bool isNumericString(const String& s) {
+    if (s.isEmpty()) return false;
+    bool hasDecimal = false;
+    size_t start = 0;
+    if (s.charAt(0) == '-' || s.charAt(0) == '+') {
+        if (s.length() == 1) return false;
+        start = 1;
+    }
+    for (size_t i = start; i < s.length(); i++) {
+        char c = s.charAt(i);
+        if (c == '.') {
+            if (hasDecimal) return false;
+            hasDecimal = true;
+        } else if (c < '0' || c > '9') {
+            return false;
+        }
+    }
+    return true;
+}
 }
 
 PeriphExecManager& PeriphExecManager::getInstance() {
@@ -1216,7 +1237,8 @@ void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
                 for (auto& trigger : rule.triggers) {
                     // 确定要匹配的数据源ID（支持平台触发和事件触发数据源）
                     String matchItemId;
-                    if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::PLATFORM_TRIGGER)) {
+                    bool isPlatformTrigger = (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::PLATFORM_TRIGGER));
+                    if (isPlatformTrigger) {
                         matchItemId = trigger.triggerPeriphId;
                     } else if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER) &&
                                trigger.eventId.startsWith("ds:")) {
@@ -1232,33 +1254,17 @@ void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
                     if (trigger.lastTriggerTime > 0 &&
                         (millis() - trigger.lastTriggerTime) < PERIPH_EXEC_POLL_TRIGGER_MIN_INTERVAL_MS) continue;
 
-                    // 条件评估 - 需要比较数值
-                    float val = itemValue.toFloat();
-                    float cmp = trigger.compareValue.toFloat();
+                    // 条件评估
                     bool conditionMet = false;
-
-                    ExecOperator oper = static_cast<ExecOperator>(trigger.operatorType);
-                    switch (oper) {
-                        case ExecOperator::EQ:  conditionMet = (val == cmp); break;
-                        case ExecOperator::NEQ: conditionMet = (val != cmp); break;
-                        case ExecOperator::GT:  conditionMet = (val > cmp); break;
-                        case ExecOperator::LT:  conditionMet = (val < cmp); break;
-                        case ExecOperator::GTE: conditionMet = (val >= cmp); break;
-                        case ExecOperator::LTE: conditionMet = (val <= cmp); break;
-                        case ExecOperator::CONTAIN: conditionMet = itemValue.indexOf(trigger.compareValue) >= 0; break;
-                        case ExecOperator::NOT_CONTAIN: conditionMet = itemValue.indexOf(trigger.compareValue) < 0; break;
-                        case ExecOperator::BETWEEN:
-                        case ExecOperator::NOT_BETWEEN: {
-                            int commaIdx = trigger.compareValue.indexOf(',');
-                            if (commaIdx >= 0) {
-                                float minVal = trigger.compareValue.substring(0, commaIdx).toFloat();
-                                float maxVal = trigger.compareValue.substring(commaIdx + 1).toFloat();
-                                bool inRange = (val >= minVal && val <= maxVal);
-                                conditionMet = (oper == ExecOperator::BETWEEN) ? inRange : !inRange;
-                            }
-                            break;
-                        }
-                        default: break;
+                    if (isPlatformTrigger && trigger.operatorType == 1) {
+                        // 平台触发"设置模式"：仅需 ID 匹配即可执行，无需条件评估
+                        conditionMet = true;
+                    } else if (isPlatformTrigger && trigger.operatorType == 0) {
+                        // 平台触发"匹配模式"：字符串精确匹配
+                        conditionMet = (itemValue == trigger.compareValue);
+                    } else {
+                        // 事件触发数据源：使用通用条件评估（支持全部 10 种操作符）
+                        conditionMet = evaluateCondition(itemValue, trigger.operatorType, trigger.compareValue);
                     }
 
                     if (conditionMet) {
@@ -1333,34 +1339,8 @@ void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& sourc
                     if (trigger.lastTriggerTime > 0 &&
                         (millis() - trigger.lastTriggerTime) < minTriggerIntervalMs) continue;
 
-                    // 条件评估
-                    float val = itemValue.toFloat();
-                    float cmp = trigger.compareValue.toFloat();
-                    bool conditionMet = false;
-
-                    ExecOperator oper = static_cast<ExecOperator>(trigger.operatorType);
-                    switch (oper) {
-                        case ExecOperator::EQ:  conditionMet = (val == cmp); break;
-                        case ExecOperator::NEQ: conditionMet = (val != cmp); break;
-                        case ExecOperator::GT:  conditionMet = (val > cmp); break;
-                        case ExecOperator::LT:  conditionMet = (val < cmp); break;
-                        case ExecOperator::GTE: conditionMet = (val >= cmp); break;
-                        case ExecOperator::LTE: conditionMet = (val <= cmp); break;
-                        case ExecOperator::CONTAIN: conditionMet = itemValue.indexOf(trigger.compareValue) >= 0; break;
-                        case ExecOperator::NOT_CONTAIN: conditionMet = itemValue.indexOf(trigger.compareValue) < 0; break;
-                        case ExecOperator::BETWEEN:
-                        case ExecOperator::NOT_BETWEEN: {
-                            int commaIdx = trigger.compareValue.indexOf(',');
-                            if (commaIdx >= 0) {
-                                float minVal = trigger.compareValue.substring(0, commaIdx).toFloat();
-                                float maxVal = trigger.compareValue.substring(commaIdx + 1).toFloat();
-                                bool inRange = (val >= minVal && val <= maxVal);
-                                conditionMet = (oper == ExecOperator::BETWEEN) ? inRange : !inRange;
-                            }
-                            break;
-                        }
-                        default: break;
-                    }
+                    // 条件评估 - 使用通用方法（自动检测数值/字符串类型）
+                    bool conditionMet = evaluateCondition(itemValue, trigger.operatorType, trigger.compareValue);
 
                     if (conditionMet) {
                         LOGGER.infof("[PeriphExec] Poll rule '%s' triggered by %s: %s=%s (op=%d, cmp=%s)",
@@ -1449,20 +1429,17 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
                     if (trigger.triggerPeriphId.isEmpty() || trigger.triggerPeriphId == "null") continue;
                     if (trigger.triggerPeriphId != itemId) continue;
 
-                    // 条件评估
-                    float val = itemValue.toFloat();
-                    float cmp = trigger.compareValue.toFloat();
+                    // 条件评估 - 区分匹配模式和设置模式
                     bool conditionMet = false;
-
-                    ExecOperator oper = static_cast<ExecOperator>(trigger.operatorType);
-                    switch (oper) {
-                        case ExecOperator::EQ:  conditionMet = (val == cmp); break;
-                        case ExecOperator::NEQ: conditionMet = (val != cmp); break;
-                        case ExecOperator::GT:  conditionMet = (val > cmp); break;
-                        case ExecOperator::LT:  conditionMet = (val < cmp); break;
-                        case ExecOperator::GTE: conditionMet = (val >= cmp); break;
-                        case ExecOperator::LTE: conditionMet = (val <= cmp); break;
-                        default: break;
+                    if (trigger.operatorType == 1) {
+                        // 设置模式：仅需 ID 匹配即可执行
+                        conditionMet = true;
+                    } else if (trigger.operatorType == 0) {
+                        // 匹配模式：字符串精确匹配
+                        conditionMet = (itemValue == trigger.compareValue);
+                    } else {
+                        // 其他操作符：使用通用条件评估（支持全部 10 种）
+                        conditionMet = evaluateCondition(itemValue, trigger.operatorType, trigger.compareValue);
                     }
 
                     if (!conditionMet) continue;
@@ -1548,6 +1525,53 @@ String PeriphExecManager::getDynamicEventsJsonInternal() {
     String result;
     serializeJson(doc, result);
     return result;
+}
+
+// ========== 通用条件评估 ==========
+
+bool PeriphExecManager::evaluateCondition(const String& value, uint8_t op, const String& compareValue) {
+    ExecOperator oper = static_cast<ExecOperator>(op);
+
+    // 字符串操作符（不需要数值转换）
+    if (oper == ExecOperator::CONTAIN) {
+        return value.indexOf(compareValue) >= 0;
+    }
+    if (oper == ExecOperator::NOT_CONTAIN) {
+        return value.indexOf(compareValue) < 0;
+    }
+
+    // EQ / NEQ：自动检测数值/字符串类型
+    if (oper == ExecOperator::EQ || oper == ExecOperator::NEQ) {
+        bool bothNumeric = isNumericString(value) && isNumericString(compareValue);
+        if (bothNumeric) {
+            float val = value.toFloat();
+            float cmp = compareValue.toFloat();
+            return (oper == ExecOperator::EQ) ? (val == cmp) : (val != cmp);
+        }
+        // 非数值：字符串精确比较
+        return (oper == ExecOperator::EQ) ? (value == compareValue) : (value != compareValue);
+    }
+
+    // 数值操作符（GT/LT/GTE/LTE/BETWEEN/NOT_BETWEEN）
+    float val = value.toFloat();
+    float cmp = compareValue.toFloat();
+
+    switch (oper) {
+        case ExecOperator::GT:  return val > cmp;
+        case ExecOperator::LT:  return val < cmp;
+        case ExecOperator::GTE: return val >= cmp;
+        case ExecOperator::LTE: return val <= cmp;
+        case ExecOperator::BETWEEN:
+        case ExecOperator::NOT_BETWEEN: {
+            int commaIdx = compareValue.indexOf(',');
+            if (commaIdx < 0) return false;
+            float minVal = compareValue.substring(0, commaIdx).toFloat();
+            float maxVal = compareValue.substring(commaIdx + 1).toFloat();
+            bool inRange = (val >= minVal && val <= maxVal);
+            return (oper == ExecOperator::BETWEEN) ? inRange : !inRange;
+        }
+        default: return false;
+    }
 }
 
 // ========== 工具 ==========

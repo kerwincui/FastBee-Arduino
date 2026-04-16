@@ -308,6 +308,28 @@
                         self._setupSSE();
                     }
 
+                    // 如果 protocol config 加载失败导致 Modbus 子设备列表为空，
+                    // 延迟重试一次（ESP32 首次加载时连接数有限，可能导致请求失败）
+                    if (self._modbusDevices.length === 0) {
+                        setTimeout(function() {
+                            if (self.currentPage !== 'device-control') return;
+                            apiGetSilent('/api/protocol/config').then(function(retryRes) {
+                                if (!retryRes || !retryRes.success || !retryRes.data) return;
+                                var rtu = retryRes.data.modbusRtu;
+                                if (rtu && rtu.enabled && rtu.master && rtu.master.devices) {
+                                    var newDevices = rtu.master.devices.filter(function(d) {
+                                        return d.enabled !== false;
+                                    });
+                                    if (newDevices.length > 0) {
+                                        self._modbusDevices = newDevices;
+                                        console.log('[device-control] Retry: found', newDevices.length, 'Modbus devices, re-rendering');
+                                        self.loadDeviceControlPage();
+                                    }
+                                }
+                            }).catch(function() {});
+                        }, 2000);
+                    }
+
                 } catch (renderErr) {
                     console.error('[device-control] Render error:', renderErr);
                     self._setContentState(content, 'error', renderErr.message || renderErr);
@@ -751,12 +773,11 @@
             var states = this._dcCoilStates[devIdx];
             var ncMode = !!dev.ncMode;
             var html = '<div class="dc-modbus-device-body">';
-            // 如果状态尚未加载，显示加载提示
+            // 始终渲染 coil grid（未加载时使用默认全 OFF 状态），确保后续状态刷新能找到 grid 元素
             if (!states) {
-                html += this._renderDcLoadingPlaceholder('正在获取继电器状态...');
-            } else {
-                html += this._renderDcCoilGrid(devIdx, channelCount, states, ncMode);
+                states = new Array(channelCount).fill(false);
             }
+            html += this._renderDcCoilGrid(devIdx, channelCount, states, ncMode);
             html += this._renderDcRelayDelaySection(devIdx, dev);
             html += this._renderDcActionBar([
                 { className: 'dc-coil-batch dc-btn-sm dc-btn-on', devIdx: devIdx, action: 'allOn', label: this._t('modbus-ctrl-all-on') },

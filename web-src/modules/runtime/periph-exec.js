@@ -351,33 +351,28 @@
 
         _populatePeriphSelect(selectEl, selectedValue) {
             if (!selectEl) return;
-            selectEl.innerHTML = '<option value="">' + i18n.t('periph-exec-select-periph') + '</option>';
             var gpioPeriphs = [];
             var modbusPeriphs = [];
             (this._pePeripherals || []).forEach(p => {
                 if (p.type === 51) modbusPeriphs.push(p);
                 else gpioPeriphs.push(p);
             });
+            var html = '<option value="">' + i18n.t('periph-exec-select-periph') + '</option>';
             if (gpioPeriphs.length > 0) {
-                var grp = document.createElement('optgroup');
-                grp.label = i18n.t('periph-exec-periph-group') || '硬件外设';
+                html += '<optgroup label="' + escapeHtml(i18n.t('periph-exec-periph-group') || '硬件外设') + '">';
                 gpioPeriphs.forEach(p => {
-                    var opt = document.createElement('option');
-                    opt.value = p.id; opt.textContent = p.name + ' (' + p.id + ')';
-                    grp.appendChild(opt);
+                    html += '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.name + ' (' + p.id + ')') + '</option>';
                 });
-                selectEl.appendChild(grp);
+                html += '</optgroup>';
             }
             if (modbusPeriphs.length > 0) {
-                var grp2 = document.createElement('optgroup');
-                grp2.label = i18n.t('periph-exec-modbus-group') || 'Modbus 子设备';
+                html += '<optgroup label="' + escapeHtml(i18n.t('periph-exec-modbus-group') || 'Modbus 子设备') + '">';
                 modbusPeriphs.forEach(p => {
-                    var opt = document.createElement('option');
-                    opt.value = p.id; opt.textContent = p.name + ' (' + p.id + ')';
-                    grp2.appendChild(opt);
+                    html += '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.name + ' (' + p.id + ')') + '</option>';
                 });
-                selectEl.appendChild(grp2);
+                html += '</optgroup>';
             }
+            selectEl.innerHTML = html;
             if (selectedValue) selectEl.value = selectedValue;
         },
 

@@ -534,38 +534,8 @@ String PeriphExecScheduler::getEventCategoriesJson() {
 // ========== 内部方法 ==========
 
 bool PeriphExecScheduler::evaluateCondition(const String& value, uint8_t op, const String& compareValue) {
-    ExecOperator oper = static_cast<ExecOperator>(op);
-
-    // 字符串操作符
-    if (oper == ExecOperator::CONTAIN) {
-        return value.indexOf(compareValue) >= 0;
-    }
-    if (oper == ExecOperator::NOT_CONTAIN) {
-        return value.indexOf(compareValue) < 0;
-    }
-
-    // 数值操作符
-    float val = value.toFloat();
-    float cmp = compareValue.toFloat();
-
-    switch (oper) {
-        case ExecOperator::EQ:  return val == cmp;
-        case ExecOperator::NEQ: return val != cmp;
-        case ExecOperator::GT:  return val > cmp;
-        case ExecOperator::LT:  return val < cmp;
-        case ExecOperator::GTE: return val >= cmp;
-        case ExecOperator::LTE: return val <= cmp;
-        case ExecOperator::BETWEEN:
-        case ExecOperator::NOT_BETWEEN: {
-            int commaIdx = compareValue.indexOf(',');
-            if (commaIdx < 0) return false;
-            float minVal = compareValue.substring(0, commaIdx).toFloat();
-            float maxVal = compareValue.substring(commaIdx + 1).toFloat();
-            bool inRange = (val >= minVal && val <= maxVal);
-            return (oper == ExecOperator::BETWEEN) ? inRange : !inRange;
-        }
-        default: return false;
-    }
+    // 委托给 PeriphExecManager 的统一实现（支持字符串/数值自动检测）
+    return PeriphExecManager::evaluateCondition(value, op, compareValue);
 }
 
 String PeriphExecScheduler::collectPeripheralData() {

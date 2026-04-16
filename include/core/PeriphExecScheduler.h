@@ -125,8 +125,8 @@ private:
     // 数据事件统一处理方法（提取公共 JSON 解析和规则匹配逻辑）
     void handleDataEvent(const String& source, const String& data, DataSourceType sourceType);
 
-    // 条件评估
-    bool evaluateCondition(const String& value, uint8_t op, const String& compareValue);
+    // 条件评估（委托给 PeriphExecManager::evaluateCondition）
+    static bool evaluateCondition(const String& value, uint8_t op, const String& compareValue);
 
     // 收集所有外设状态数据（JSON数组格式）
     String collectPeripheralData();
