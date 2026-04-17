@@ -44,6 +44,7 @@ _dcAutoRefreshTimers:{},
 _sseConnection:null,
 _deviceName:'FastBee Device',
 _eventsBound:false,
+_periphExecRunPromptState:null,
 setupDeviceControlEvents:function (){
 console.log('[device-control] Setting up events...');
 var self=this;
@@ -168,6 +169,152 @@ self._dcSetPwmChannel(devIdx,ch,val);
 }
 this._eventsBound=true;
 console.log('[device-control] Events bound successfully');
+},
+_ensurePeriphExecRunValueModal(){
+var modal=document.getElementById('periph-exec-run-value-modal');
+if(modal)return modal;
+if(!document.body)return null;
+modal=document.createElement('div');
+modal.id='periph-exec-run-value-modal';
+modal.className='modal is-hidden';
+modal.innerHTML=''+
+'<div class="modal-content u-modal-content-700">'+
+'<div class="modal-header">'+
+'<h2 class="modal-title" id="periph-exec-run-value-modal-title"></h2>'+
+'<button type="button" id="close-periph-exec-run-value-modal" class="modal-close-btn">&times;</button>'+
+'</div>'+
+'<div class="modal-body">'+
+'<div class="pure-form pure-form-stacked">'+
+'<div class="pure-control-group">'+
+'<label for="periph-exec-run-value-input" id="periph-exec-run-value-label"></label>'+
+'<input type="text" id="periph-exec-run-value-input" class="pure-input-1" maxlength="128" autocomplete="off" spellcheck="false">'+
+'<small id="periph-exec-run-value-help" class="pe-help-text"></small>'+
+'</div>'+
+'<div id="periph-exec-run-value-error" class="message message-error is-hidden"></div>'+
+'</div>'+
+'</div>'+
+'<div class="modal-footer">'+
+'<button class="fb-btn" id="cancel-periph-exec-run-value-btn" type="button"></button>'+
+'<button class="fb-btn fb-btn-primary" id="confirm-periph-exec-run-value-btn" type="button"></button>'+
+'</div>'+
+'</div>';
+document.body.appendChild(modal);
+var self=this;
+var closePrompt=function (){
+self._resolvePeriphExecRunValuePrompt(null);
+};
+modal.addEventListener('click',function (event){
+if(event.target===modal)closePrompt();
+});
+var closeBtn=document.getElementById('close-periph-exec-run-value-modal');
+if(closeBtn){
+closeBtn.addEventListener('click',function (event){
+event.preventDefault();
+closePrompt();
+});
+}
+var cancelBtn=document.getElementById('cancel-periph-exec-run-value-btn');
+if(cancelBtn){
+cancelBtn.addEventListener('click',function (){
+closePrompt();
+});
+}
+var confirmBtn=document.getElementById('confirm-periph-exec-run-value-btn');
+if(confirmBtn){
+confirmBtn.addEventListener('click',function (){
+self._submitPeriphExecRunValuePrompt();
+});
+}
+var input=document.getElementById('periph-exec-run-value-input');
+if(input){
+input.addEventListener('keydown',function (event){
+if(event.key==='Enter'){
+event.preventDefault();
+self._submitPeriphExecRunValuePrompt();
+}
+});
+}
+return modal;
+},
+_setPeriphExecRunValuePromptError(message){
+var errorEl=document.getElementById('periph-exec-run-value-error');
+if(!errorEl)return ;
+errorEl.textContent=message||'';
+if(message)this.showElement(errorEl,'block');
+else this.hideElement(errorEl);
+},
+_resolvePeriphExecRunValuePrompt(value){
+var pending=this._periphExecRunPromptState;
+this._periphExecRunPromptState=null;
+this._setPeriphExecRunValuePromptError('');
+var input=document.getElementById('periph-exec-run-value-input');
+if(input)input.value='';
+this.hideModal('periph-exec-run-value-modal');
+if(pending&&typeof pending.resolve==='function'){
+pending.resolve(value);
+}
+},
+_submitPeriphExecRunValuePrompt(){
+var input=document.getElementById('periph-exec-run-value-input');
+if(!input){
+this._resolvePeriphExecRunValuePrompt(null);
+return ;
+}
+var value=String(input.value||'').trim();
+if(!value.length){
+this._setPeriphExecRunValuePromptError(i18n.t('periph-exec-set-value-required')||'请输入要设置的值');
+input.focus();
+return ;
+}
+this._resolvePeriphExecRunValuePrompt(value);
+},
+promptPeriphExecRunValue(options){
+var opts=options||{};
+var modal=this._ensurePeriphExecRunValueModal();
+if(!modal){
+var fallbackValue=prompt(
+i18n.t('periph-exec-set-value-prompt')||'请输入要设置的值 (如: PWM占空比、PID参数等):',
+opts.defaultValue!=null?String(opts.defaultValue):''
+);
+if(fallbackValue===null)return Promise.resolve(null);
+var normalizedValue=String(fallbackValue||'').trim();
+if(!normalizedValue.length){
+Notification.warning(i18n.t('periph-exec-set-value-required')||'请输入要设置的值',this._t('device-control-exec-fail'));
+return Promise.resolve(null);
+}
+return Promise.resolve(normalizedValue);
+}
+var titleEl=document.getElementById('periph-exec-run-value-modal-title');
+var labelEl=document.getElementById('periph-exec-run-value-label');
+var helpEl=document.getElementById('periph-exec-run-value-help');
+var input=document.getElementById('periph-exec-run-value-input');
+var cancelBtn=document.getElementById('cancel-periph-exec-run-value-btn');
+var confirmBtn=document.getElementById('confirm-periph-exec-run-value-btn');
+if(titleEl)titleEl.textContent=opts.title||i18n.t('periph-exec-set-value-title')||'输入执行值';
+if(labelEl)labelEl.textContent=opts.label||i18n.t('periph-exec-set-value-label')||'执行值';
+var helpText=opts.helpText||i18n.t('periph-exec-set-value-help')||'请输入本次执行要设置的值，例如 PWM 占空比、PID 参数或通道值。';
+if(opts.ruleName)helpText=opts.ruleName+' - '+helpText;
+if(helpEl)helpEl.textContent=helpText;
+if(cancelBtn)cancelBtn.textContent=i18n.t('cancel')||'取消';
+if(confirmBtn)confirmBtn.textContent=opts.confirmText||i18n.t('periph-exec-run-once')||'执行一次';
+if(input){
+input.value=opts.defaultValue!=null?String(opts.defaultValue):'';
+input.placeholder=opts.placeholder||i18n.t('periph-exec-set-value-placeholder')||'';
+}
+this._setPeriphExecRunValuePromptError('');
+if(this._periphExecRunPromptState&&typeof this._periphExecRunPromptState.resolve==='function'){
+this._periphExecRunPromptState.resolve(null);
+}
+return new Promise((resolve)=>{
+this._periphExecRunPromptState={resolve:resolve};
+this.showModal(modal);
+setTimeout(function (){
+if(input){
+input.focus();
+input.select();
+}
+},0);
+});
 },
 loadDeviceControlPage:function (){
 console.log('[device-control] loadDeviceControlPage called');
@@ -555,7 +702,8 @@ html+=this._renderDcCardHeader('dc-card-badge--system','SYS',title);
 html+='<div class="dc-sys-grid">';
 for(var i=0;i<items.length;i++){
 var item=items[i];
-html+='<button class="dc-ctrl-btn dc-sys-card" data-id="'+this._esc(item.id)+'" data-system="true" data-name="'+this._esc(item.name)+'">';
+var setAttr=item&&item.hasSetMode?' data-has-set-mode="true"':'';
+html+='<button class="dc-ctrl-btn dc-sys-card" data-id="'+this._esc(item.id)+'" data-system="true" data-name="'+this._esc(item.name)+'"'+setAttr+'>';
 html+='<div class="dc-sys-card-name">'+this._esc(item.name)+'</div>';
 html+='</button>';
 }
@@ -569,9 +717,10 @@ html+=this._renderDcCardHeader('dc-card-badge--gpio','GPIO',title);
 html+='<div class="dc-gpio-list">';
 for(var i=0;i<items.length;i++){
 var item=items[i];
+var setAttr=item&&item.hasSetMode?' data-has-set-mode="true"':'';
 html+='<div class="dc-gpio-row">';
 html+='<span class="dc-gpio-name">'+this._esc(item.name)+'</span>';
-html+='<button class="dc-ctrl-btn dc-gpio" data-id="'+this._esc(item.id)+'">'+this._t('device-control-execute')+'</button>';
+html+='<button class="dc-ctrl-btn dc-gpio" data-id="'+this._esc(item.id)+'" data-name="'+this._esc(item.name)+'"'+setAttr+'>'+this._t('device-control-execute')+'</button>';
 html+='</div>';
 }
 html+='</div><div class="dc-resize-handle" title="拖拽调整大小"></div></div>';
@@ -593,7 +742,11 @@ var ctrlLabel=(dev.name||'')||(this._t('dc-modbus-ctrl-'+dt)||(typeLabel+' '+thi
 var typeClassMap={relay:'dc-card-badge--relay',pwm:'dc-card-badge--pwm',pid:'dc-card-badge--pid'};
 var badgeClass=typeClassMap[dt]||'dc-card-badge--system';
 var html='<div class="dc-modbus-device-panel" data-dev-idx="'+devIdx+'" data-dc-sort-key="modbus-'+dt+'-'+devIdx+'">';
-html+=this._renderDcCardHeader(badgeClass,typeLabel,ctrlLabel,'dc-modbus-device-addr','Addr: '+(dev.slaveAddress||1));
+var metaHtml='Addr: '+(dev.slaveAddress||1);
+if(dev.sensorId){
+metaHtml+=' | ID: '+dev.sensorId;
+}
+html+=this._renderDcCardHeader(badgeClass,typeLabel,ctrlLabel,'dc-modbus-device-addr',metaHtml);
 if(dt==='relay'){
 html+=this._renderDcRelayPanel(devIdx,dev);
 }else if(dt==='pwm'){
@@ -805,7 +958,8 @@ return html;
 },
 _renderControlButton:function (item,typeClass,isSystem){
 var btnClass='dc-ctrl-btn dc-'+typeClass;
-var dataAttrs='data-id="'+this._esc(item.id)+'"';
+var dataAttrs='data-id="'+this._esc(item.id)+'" data-name="'+this._esc(item.name)+'"';
+if(item&&item.hasSetMode)dataAttrs+=' data-has-set-mode="true"';
 if(isSystem){
 dataAttrs+=' data-system="true" data-name="'+this._esc(item.name)+'"';
 }
@@ -827,16 +981,21 @@ return result;
 },
 _executeRule:function (ruleId,btn){
 if(!ruleId)return ;
+var self=this;
+var hasSetMode=btn&&btn.getAttribute('data-has-set-mode')==='true';
+var ruleName=btn?(btn.getAttribute('data-name')||btn.textContent||''):'';
+var doRun=function (value){
 var originalText=btn.textContent;
-btn.textContent=this._t('device-control-executing');
+btn.textContent=self._t('device-control-executing');
 btn.disabled=true;
 btn.classList.add('dc-loading');
-var self=this;
-apiPost('/api/periph-exec/run?id='+ruleId).then(function (res){
+var payload={id:ruleId};
+if(value!==undefined&&value!=='')payload.value=value;
+apiPost('/api/periph-exec/run',payload).then(function (res){
 if(res&&res.success){
 Notification.success(self._t('device-control-exec-success'));
 }else{
-Notification.error(self._t('device-control-exec-fail'));
+Notification.error((res&&(res.error||res.message))||self._t('device-control-exec-fail'));
 }
 }).catch(function (){
 Notification.error(self._t('device-control-exec-fail'));
@@ -845,6 +1004,15 @@ btn.textContent=originalText;
 btn.disabled=false;
 btn.classList.remove('dc-loading');
 });
+};
+if(hasSetMode){
+this.promptPeriphExecRunValue({ruleName:ruleName||''}).then(function (inputValue){
+if(inputValue===null)return ;
+doRun(inputValue);
+});
+}else{
+doRun('');
+}
 },
 _dcModbusInitRunning:false,
 _dcInitCancelled:false,
@@ -918,29 +1086,34 @@ return -1;
 },
 _parseSensorId:function (sensorId){
 if(!sensorId)return null;
-var coilMatch=sensorId.match(/^(coil|relay)_(\d+)_ch(\d+)$/i);
-if(coilMatch){
+var devices=this._modbusDevices||[];
+for(var i=0;i<devices.length;i++){
+if(!devices[i].sensorId)continue;
+var prefix=devices[i].sensorId+'_ch';
+if(sensorId.indexOf(prefix)===0&&sensorId.length>prefix.length){
+var numPart=sensorId.substring(prefix.length);
+if(numPart.length>0&&numPart.length<=3&&/^\d+$/.test(numPart)){
+var channel=parseInt(numPart,10);
+if(channel>=0){
 return {
-type:'coil',
-slaveAddress:parseInt(coilMatch[2],10),
-channel:parseInt(coilMatch[3],10)
+type:devices[i].deviceType||'relay',
+devIdx:i,
+channel:channel,
+slaveAddress:devices[i].slaveAddress
 };
 }
-var pidMatch=sensorId.match(/^pid_(pv|sv|out|p|i|d)_(\d+)$/i);
-if(pidMatch){
+}
+}
+}
+for(var j=0;j<devices.length;j++){
+if(devices[j].sensorId&&devices[j].sensorId===sensorId){
 return {
-type:'pid',
-paramName:pidMatch[1].toLowerCase(),
-slaveAddress:parseInt(pidMatch[2],10)
+type:devices[j].deviceType||'relay',
+devIdx:j,
+channel:0,
+slaveAddress:devices[j].slaveAddress
 };
 }
-var pwmMatch=sensorId.match(/^pwm_(\d+)_ch(\d+)$/i);
-if(pwmMatch){
-return {
-type:'pwm',
-slaveAddress:parseInt(pwmMatch[1],10),
-channel:parseInt(pwmMatch[2],10)
-};
 }
 return null;
 },
@@ -948,12 +1121,14 @@ _updateCoilUIFromSSE:function (devIdx,channel,value){
 var dev=this._modbusDevices[devIdx];
 if(!dev)return false;
 var ncMode=dev.ncMode||false;
-var isOn=ncMode?!value:!!value;
+var numVal=parseInt(value,10)||0;
+var boolVal=numVal!==0;
+var isOn=ncMode?!boolVal:boolVal;
 var onText=this._t('modbus-ctrl-status-on')||'ON';
 var offText=this._t('modbus-ctrl-status-off')||'OFF';
 var states=this._dcCoilStates[devIdx]||[];
 if(channel>=0&&channel<(dev.channelCount||8)){
-states[channel]=!!value;
+states[channel]=boolVal;
 this._dcCoilStates[devIdx]=states;
 }
 var card=document.querySelector('.dc-coil-card[data-dev="'+devIdx+'"][data-ch="'+channel+'"]');
@@ -1052,20 +1227,23 @@ continue;
 }
 var parsedInfo=this._parseSensorId(sensorId);
 if(parsedInfo){
-var devIdx=this._findDevIdxBySlaveAddress(parsedInfo.slaveAddress);
+var devIdx=parsedInfo.devIdx;
 if(devIdx>=0){
-if(parsedInfo.type==='coil'){
+var deviceType=parsedInfo.type;
+if(deviceType==='relay'){
 if(this._updateCoilUIFromSSE(devIdx,parsedInfo.channel,value)){
 matched=true;
 continue;
 }
-}else if(parsedInfo.type==='pwm'){
+}else if(deviceType==='pwm'){
 if(this._updatePwmUIFromSSE(devIdx,parsedInfo.channel,value)){
 matched=true;
 continue;
 }
-}else if(parsedInfo.type==='pid'){
-if(this._updatePidUIFromSSE(devIdx,parsedInfo.paramName,value)){
+}else if(deviceType==='pid'){
+var pidParams=['pv','sv','out','p','i','d'];
+var paramName=pidParams[parsedInfo.channel]||'pv';
+if(this._updatePidUIFromSSE(devIdx,paramName,value)){
 matched=true;
 continue;
 }

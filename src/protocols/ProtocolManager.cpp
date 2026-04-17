@@ -885,14 +885,14 @@ void ProtocolManager::registerModbusSubDevices(const ModbusConfig& config) {
     ModbusHandler* mb = modbusHandler.get();
     if (mb) {
         pm.setModbusCallbacks(
-            // 线圈写入回调 (FC05)
+            // 线圈写入回调 (FC05) — 使用控制优先级通道，避免与轮询竞争
             [mb](uint8_t slaveAddr, uint16_t coilAddr, bool value) -> bool {
-                OneShotResult result = mb->writeCoilOnce(slaveAddr, coilAddr, value);
+                OneShotResult result = mb->writeCoilOnce(slaveAddr, coilAddr, value, true);
                 return result.error == ONESHOT_SUCCESS;
             },
-            // 寄存器写入回调 (FC06)
+            // 寄存器写入回调 (FC06) — 使用控制优先级通道
             [mb](uint8_t slaveAddr, uint16_t regAddr, uint16_t value) -> bool {
-                OneShotResult result = mb->writeRegisterOnce(slaveAddr, regAddr, value);
+                OneShotResult result = mb->writeRegisterOnce(slaveAddr, regAddr, value, true);
                 return result.error == ONESHOT_SUCCESS;
             }
         );
@@ -920,6 +920,8 @@ void ProtocolManager::registerModbusSubDevices(const ModbusConfig& config) {
         pCfg.params.modbus.batchRegister   = dev.batchRegister;
         pCfg.params.modbus.pwmRegBase      = dev.pwmRegBase;
         pCfg.params.modbus.pwmResolution   = dev.pwmResolution;
+        strncpy(pCfg.params.modbus.sensorId, dev.sensorId, sizeof(pCfg.params.modbus.sensorId) - 1);
+        pCfg.params.modbus.sensorId[sizeof(pCfg.params.modbus.sensorId) - 1] = '\0';
         
         // 确定设备类型
         String devType(dev.deviceType);

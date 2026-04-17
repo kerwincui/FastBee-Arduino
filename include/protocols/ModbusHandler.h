@@ -98,6 +98,7 @@ struct CoilDelayTask {
 // Modbus 子设备（控制类设备：继电器/PWM/PID）
 struct ModbusSubDevice {
     char     name[Protocols::MODBUS_DEVICE_NAME_MAX_LEN];
+    char     sensorId[Protocols::MODBUS_DEVICE_SENSOR_ID_MAX]; // 传感器标识符（平台上报用，支持中文）
     char     deviceType[Protocols::MODBUS_DEVICE_TYPE_MAX_LEN]; // "relay","pwm","pid"
     uint8_t  slaveAddress;      // 从站地址 1-247
     uint8_t  channelCount;      // 通道数
@@ -119,6 +120,7 @@ struct ModbusSubDevice {
           pwmRegBase(0), pwmResolution(8), pidDecimals(1), enabled(true) {
         memset(name, 0, sizeof(name));
         strncpy(name, "Device", sizeof(name) - 1);
+        memset(sensorId, 0, sizeof(sensorId));
         memset(deviceType, 0, sizeof(deviceType));
         strncpy(deviceType, "relay", sizeof(deviceType) - 1);
         memset(pidAddrs, 0, sizeof(pidAddrs));
@@ -227,6 +229,11 @@ public:
     // 子设备管理
     uint8_t getSubDeviceCount() const { return config.master.deviceCount; }
     const ModbusSubDevice& getSubDevice(uint8_t index) const;
+
+    // sensorId 查找辅助（单通道返回 sensorId，多通道返回 sensorId_chN）
+    String buildSensorId(uint8_t deviceIndex, uint16_t channel = 0) const;
+    // 反向查找：通过 sensorId 找到设备索引和通道号
+    bool findBySensorId(const String& sensorId, uint8_t& outDeviceIndex, uint16_t& outChannel) const;
 
     // Master写操作（阻塞式）
     bool masterWriteSingleRegister(uint8_t slaveAddr, uint16_t regAddr, uint16_t value);

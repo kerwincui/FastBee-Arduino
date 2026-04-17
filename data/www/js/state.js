@@ -1189,12 +1189,16 @@ const AppState = {
                 }
                 const currentSpan = document.getElementById('current-log-file');
                 if (currentSpan) currentSpan.textContent = i18n.t('log-current-file-prefix') + this._currentLogFile;
-                this.loadLogFileList();
-                this.loadLogs();
-                const autoRefresh = document.getElementById('log-auto-refresh');
-                if (autoRefresh && autoRefresh.checked) {
-                    this.startLogAutoRefresh();
-                }
+                var self = this;
+                // 延迟初始加载，让 ESP32 完成静态文件传输
+                setTimeout(function() {
+                    self.loadLogFileList();
+                    self.loadLogs();
+                    var autoRefresh = document.getElementById('log-auto-refresh');
+                    if (autoRefresh && autoRefresh.checked) {
+                        self.startLogAutoRefresh();
+                    }
+                }, 500);
             },
             'device-control': () => {
                 if (typeof this.loadDeviceControlPage === 'function') {
@@ -1406,6 +1410,11 @@ const AppState = {
 
         // 先确保页面HTML已加载
         await this.loadPage(normalizedPage + '-page');
+
+        // 对新加载的页面应用 i18n 翻译
+        if (typeof i18n !== 'undefined' && i18n.updatePageText) {
+            i18n.updatePageText();
+        }
 
         document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
         const target = document.getElementById(normalizedPage + '-page');

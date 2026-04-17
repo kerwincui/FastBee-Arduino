@@ -343,6 +343,9 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                 const char* dName = d["name"] | "Device";
                 strncpy(dev.name, dName, sizeof(dev.name) - 1);
                 dev.name[sizeof(dev.name) - 1] = '\0';
+                const char* sid = d["sensorId"] | "";
+                strncpy(dev.sensorId, sid, sizeof(dev.sensorId) - 1);
+                dev.sensorId[sizeof(dev.sensorId) - 1] = '\0';
                 const char* dType = d["deviceType"] | "relay";
                 strncpy(dev.deviceType, dType, sizeof(dev.deviceType) - 1);
                 dev.deviceType[sizeof(dev.deviceType) - 1] = '\0';
@@ -428,6 +431,7 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
         const ModbusSubDevice& dev = config.master.devices[i];
         JsonObject d = devicesArr.createNestedObject();
         d["name"]            = dev.name;
+        d["sensorId"]        = dev.sensorId;
         d["deviceType"]      = dev.deviceType;
         d["slaveAddress"]    = dev.slaveAddress;
         d["channelCount"]    = dev.channelCount;
@@ -1119,6 +1123,58 @@ const ModbusSubDevice& ModbusHandler::getSubDevice(uint8_t index) const {
     static const ModbusSubDevice emptyDevice;
     if (index >= config.master.deviceCount) return emptyDevice;
     return config.master.devices[index];
+}
+
+String ModbusHandler::buildSensorId(uint8_t deviceIndex, uint16_t channel) const {
+    if (deviceIndex >= config.master.deviceCount) return String();
+    const ModbusSubDevice& dev = config.master.devices[deviceIndex];
+    if (dev.sensorId[0] == '\0') return String();
+    if (dev.channelCount <= 1) return String(dev.sensorId);
+    // 多通道格式: sensorId_chN (N 为通道号)
+    return String(dev.sensorId) + "_ch" + String(channel);
+}
+
+bool ModbusHandler::findBySensorId(const String& sensorId, uint8_t& outDeviceIndex, uint16_t& outChannel) const {
+    if (sensorId.isEmpty()) return false;
+    for (uint8_t i = 0; i < config.master.deviceCount; i++) {
+        const ModbusSubDevice& dev = config.master.devices[i];
+        if (dev.sensorId[0] == '\0') continue;
+        String baseSid(dev.sensorId);
+        if (dev.channelCount <= 1) {
+            if (sensorId == baseSid) {
+                outDeviceIndex = i;
+                outChannel = 0;
+                return true;
+            }
+        } else {
+            // 精确匹配基础 sensorId → channel 0
+            if (sensorId == baseSid) {
+                outDeviceIndex = i;
+                outChannel = 0;
+                return true;
+            }
+            // 匹配 sensorId_chN 模式 (N 为通道号)
+            String prefix = baseSid + "_ch";
+            if (sensorId.startsWith(prefix)) {
+                String numPart = sensorId.substring(prefix.length());
+                if (numPart.length() > 0 && numPart.length() <= 3) {
+                    bool allDigits = true;
+                    for (unsigned int k = 0; k < numPart.length(); k++) {
+                        if (numPart[k] < '0' || numPart[k] > '9') { allDigits = false; break; }
+                    }
+                    if (allDigits) {
+                        int ch = numPart.toInt();
+                        if (ch >= 0 && ch < dev.channelCount) {
+                            outDeviceIndex = i;
+                            outChannel = (uint16_t)ch;
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return false;
 }
 
 // Master写操作（阻塞式，通过 writeRegisterOnce 直接执行）

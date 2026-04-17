@@ -46,6 +46,8 @@ MQTTClient::MQTTClient()
       lastConnectedTime(0), lastErrorCode(0), reconnectCount(0),
       reconnectInterval(5000), lastLoopTime(0) {
     _publishMutex = xSemaphoreCreateRecursiveMutex();
+    _dataCommandQueue = xQueueCreate(4, sizeof(String*));
+    _reportQueue = xQueueCreate(4, sizeof(String*));
 }
 
 MQTTClient::~MQTTClient() {
@@ -53,6 +55,20 @@ MQTTClient::~MQTTClient() {
     if (_publishMutex) {
         vSemaphoreDelete(_publishMutex);
         _publishMutex = nullptr;
+    }
+    // 排空并删除 DATA_COMMAND 队列
+    if (_dataCommandQueue) {
+        String* cmd = nullptr;
+        while (xQueueReceive(_dataCommandQueue, &cmd, 0) == pdTRUE) { delete cmd; }
+        vQueueDelete(_dataCommandQueue);
+        _dataCommandQueue = nullptr;
+    }
+    // 排空并删除上报队列
+    if (_reportQueue) {
+        String* rpt = nullptr;
+        while (xQueueReceive(_reportQueue, &rpt, 0) == pdTRUE) { delete rpt; }
+        vQueueDelete(_reportQueue);
+        _reportQueue = nullptr;
     }
 }
 
@@ -636,6 +652,10 @@ void MQTTClient::handle() {
         }
         lastLoopTime = millis();
         mqttClient.loop();
+
+        // 处理延迟的 DATA_COMMAND 和异步任务上报队列
+        processQueuedCommands();
+        processQueuedReports();
         
         // 实时监测：按间隔定时发布监测数据
         if (monitorActive && monitorRemaining > 0) {
@@ -651,6 +671,48 @@ void MQTTClient::handle() {
             }
         }
     }
+}
+
+void MQTTClient::processQueuedCommands() {
+    if (!_dataCommandQueue) return;
+    String* cmd = nullptr;
+    int processed = 0;
+    while (processed < 2 && xQueueReceive(_dataCommandQueue, &cmd, 0) == pdTRUE) {
+        if (cmd) {
+            PeriphExecManager& execMgr = PeriphExecManager::getInstance();
+            String report = execMgr.handleDataCommand(*cmd);
+            if (!report.isEmpty() && report != "[]") {
+                publishReportData(report);
+            }
+            delete cmd;
+        }
+        processed++;
+    }
+}
+
+void MQTTClient::processQueuedReports() {
+    if (!_reportQueue) return;
+    String* rpt = nullptr;
+    int processed = 0;
+    while (processed < 4 && xQueueReceive(_reportQueue, &rpt, 0) == pdTRUE) {
+        if (rpt) {
+            publishReportData(*rpt);
+            delete rpt;
+        }
+        processed++;
+    }
+}
+
+bool MQTTClient::queueReportData(const String& payload) {
+    if (!_reportQueue) return false;
+    String* rpt = new (std::nothrow) String(payload);
+    if (!rpt) return false;
+    if (xQueueSend(_reportQueue, &rpt, 0) != pdTRUE) {
+        LOG_WARNING("MQTT: Report queue full, dropping");
+        delete rpt;
+        return false;
+    }
+    return true;
 }
 
 String MQTTClient::getStatus() const {
@@ -794,13 +856,17 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
         }
     }
 
-    // 收到数据下发指令时，匹配外设执行规则并发布数据上报
+    // 收到数据下发指令时，入队延迟处理（避免在回调中阻塞 MQTT 连接）
     if (tType == MqttTopicType::DATA_COMMAND) {
-        LOG_INFO("MQTT: Received DATA_COMMAND, processing...");
-        PeriphExecManager& execMgr = PeriphExecManager::getInstance();
-        String reportPayload = execMgr.handleDataCommand(message);
-        if (!reportPayload.isEmpty() && reportPayload != "[]") {
-            publishReportData(reportPayload);
+        LOG_INFO("MQTT: Received DATA_COMMAND, queuing...");
+        if (_dataCommandQueue) {
+            String* cmd = new (std::nothrow) String(message);
+            if (cmd) {
+                if (xQueueSend(_dataCommandQueue, &cmd, 0) != pdTRUE) {
+                    LOG_WARNING("MQTT: DATA_COMMAND queue full, dropping");
+                    delete cmd;
+                }
+            }
         }
     }
 

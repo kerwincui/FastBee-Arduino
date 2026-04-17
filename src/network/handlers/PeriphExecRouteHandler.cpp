@@ -160,6 +160,15 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         int triggerSummary = triggerCount > 0 ? rule.triggers[0].triggerType : -1;
         int actionSummary = actionCount > 0 ? rule.actions[0].actionType : -1;
 
+        // 检查是否有"设置模式"触发器（operatorType=1，前端执行时需要弹窗输入值）
+        bool hasSetMode = false;
+        for (const auto& trigger : rule.triggers) {
+            if (trigger.triggerType == 0 && trigger.operatorType == 1) {
+                hasSetMode = true;
+                break;
+            }
+        }
+
         // 查找第一个动作的目标外设名称
         String targetPeriphName;
         if (actionCount > 0 && !rule.actions[0].targetPeriphId.isEmpty()) {
@@ -175,6 +184,7 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
             "\"execMode\":%d,\"reportAfterExec\":%s,"
             "\"triggerCount\":%d,\"actionCount\":%d,"
             "\"triggerSummary\":%d,\"actionSummary\":%d,"
+            "\"hasSetMode\":%s,"
             "\"targetPeriphName\":\"%s\"}",
             rule.id.c_str(),
             rule.name.c_str(),
@@ -183,6 +193,7 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
             rule.reportAfterExec ? "true" : "false",
             triggerCount, actionCount,
             triggerSummary, actionSummary,
+            hasSetMode ? "true" : "false",
             targetPeriphName.c_str()
         );
     }
@@ -396,10 +407,13 @@ void PeriphExecRouteHandler::handleRunOnce(AsyncWebServerRequest* request) {
         return;
     }
 
+    // 可选的用户输入值（设置模式下从前端弹窗传入）
+    String value = ctx->getParamValue(request, "value", "");
+
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     
     // 异步提交执行（不阻塞 Web 请求线程）
-    bool submitted = mgr.runOnce(id);
+    bool submitted = mgr.runOnce(id, value);
 
     JsonDocument doc;
     if (submitted) {
@@ -635,8 +649,17 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
         safeName.replace("\"", "\\\"");
         String safePeriphName = periphName;
         safePeriphName.replace("\"", "\\\"");
+        bool hasSetMode = false;
+        for (const auto& trigger : rule.triggers) {
+            if (trigger.triggerType == 0 && trigger.operatorType == 1) {
+                hasSetMode = true;
+                break;
+            }
+        }
 
         String item = "{\"id\":\"" + rule.id + "\",\"name\":\"" + safeName + "\",\"actionType\":" + String(at);
+        item += ",\"hasSetMode\":";
+        item += hasSetMode ? "true" : "false";
 
         // 附加目标外设信息（gpio/modbus/sensor 有目标外设）
         if (!firstAction.targetPeriphId.isEmpty()) {

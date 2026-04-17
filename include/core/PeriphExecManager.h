@@ -92,8 +92,8 @@ public:
 
     // ========== 手动执行 ==========
 
-    // 手动执行规则（用于"执行一次"按钮）
-    bool runOnce(const String& id);
+    // 手动执行规则（用于"执行一次"按钮，可携带用户输入值）
+    bool runOnce(const String& id, const String& receivedValue = "");
 
     // ========== 动作执行后数据上报（委托给 Scheduler） ==========
 

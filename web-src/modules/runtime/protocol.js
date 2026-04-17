@@ -9,6 +9,7 @@
         // ============ 状态变量 ============
         _protocolConfig: null,
         _masterTasks: [],
+        _modbusRtuLoaded: false,
         _coilStates: [],
         _coilAutoRefreshTimer: null,
         _coilAutoRefreshErrors: 0,
@@ -153,6 +154,7 @@
             } else if (deviceType === 'pid') {
                 info += ' PV@' + ((device.pidAddrs && device.pidAddrs[0]) || 0);
             }
+            if (device.sensorId) info += ' id:' + device.sensorId;
             return info;
         },
 
@@ -534,6 +536,7 @@
                 } else {
                     this._masterTasks = [];
                 }
+                this._modbusRtuLoaded = true;
                 // 先加载设备列表（内部会调用 _renderAllDevices），再启动状态刷新
                 this._loadModbusDevices();
                 this.refreshMasterStatus();
@@ -631,8 +634,12 @@
                 Notification.warning(i18n.t('rtu-no-uart-peripherals'));
                 return;
             }
-            data.modbusRtu_master_tasks = JSON.stringify(this._masterTasks || []);
-            data.modbusRtu_master_devices = JSON.stringify(this._modbusDevices || []);
+            // 仅在 modbus-rtu 标签页已加载时才发送 tasks/devices 数据，
+            // 避免从其他标签页保存时发送空数据覆盖现有配置
+            if (this._modbusRtuLoaded) {
+                data.modbusRtu_master_tasks = JSON.stringify(this._masterTasks || []);
+                data.modbusRtu_master_devices = JSON.stringify(this._modbusDevices || []);
+            }
             data.modbusTcp_enabled = document.getElementById('modbus-tcp-enabled')?.checked ? 'true' : 'false';
             data.modbusTcp_server = document.getElementById('tcp-ip')?.value || '192.168.1.100';
             data.modbusTcp_port = document.getElementById('tcp-mport')?.value || '502';
@@ -903,7 +910,9 @@
             };
             if (!this._masterTasks) this._masterTasks = [];
             if (this._editingTaskIdx >= 0 && this._masterTasks[this._editingTaskIdx]) {
-                task.mappings = this._masterTasks[this._editingTaskIdx].mappings || [];
+                var oldTask = this._masterTasks[this._editingTaskIdx];
+                task.mappings = oldTask.mappings || [];
+                task.pollInterval = oldTask.pollInterval;
                 this._masterTasks[this._editingTaskIdx] = task;
             } else {
                 task.mappings = [];
@@ -1239,19 +1248,22 @@
                             serverDevices = localDevices.map(function(d) {
                                 return {
                                     name: d.name || 'Device',
+                                    sensorId: d.sensorId || '',
                                     deviceType: d.deviceType || d.type || 'relay',
                                     slaveAddress: d.slaveAddress || 1,
                                     channelCount: d.channelCount || 2,
                                     coilBase: d.coilBase || 0,
                                     ncMode: !!d.ncMode,
                                     controlProtocol: d.relayMode === 'register' ? 1 : 0,
+                                    batchRegister: d.batchRegister || 0,
                                     pwmRegBase: d.pwmRegBase || 0,
                                     pwmResolution: d.pwmResolution || 8,
                                     pidAddrs: [
                                         d.pidPvAddr || 0, d.pidSvAddr || 1, d.pidOutAddr || 2,
                                         d.pidPAddr || 3, d.pidIAddr || 4, d.pidDAddr || 5
                                     ],
-                                    pidDecimals: d.pidDecimals || 1
+                                    pidDecimals: d.pidDecimals || 1,
+                                    enabled: d.enabled !== false
                                 };
                             });
                         }
@@ -1381,6 +1393,7 @@
             var modal = document.getElementById('modbus-device-edit-modal');
             if (!modal) return;
             document.getElementById('mdev-edit-name').value = dev ? (dev.name || '') : ((i18n.t('modbus-ctrl-device-default-name') || '设备') + ((this._modbusDevices ? this._modbusDevices.length : 0) + 1));
+            document.getElementById('mdev-edit-sensorid').value = dev ? (dev.sensorId || '') : '';
             document.getElementById('mdev-edit-type').value = dev ? (dev.deviceType || 'relay') : 'relay';
             document.getElementById('mdev-edit-addr').value = dev ? (dev.slaveAddress || 1) : 1;
             document.getElementById('mdev-edit-ch').value = String(dev ? (dev.channelCount || 2) : 2);
@@ -1444,6 +1457,7 @@
                 return;
             }
             dev.name = document.getElementById('mdev-edit-name').value || 'Device';
+            dev.sensorId = (document.getElementById('mdev-edit-sensorid').value || '').trim();
             dev.deviceType = document.getElementById('mdev-edit-type').value || 'relay';
             dev.slaveAddress = parseInt(document.getElementById('mdev-edit-addr').value) || 1;
             dev.channelCount = parseInt(document.getElementById('mdev-edit-ch').value) || 2;

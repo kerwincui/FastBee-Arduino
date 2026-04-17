@@ -702,8 +702,8 @@ const logFile=fileName||this._currentLogFile||"system.log";
 this._currentLogFile=logFile;
 const currentSpan=document.getElementById("current-log-file");
 if(currentSpan)currentSpan.textContent=i18n.t("log-current-file-prefix")+logFile;
-apiGet("/api/logs",{lines:maxLines,file:logFile})
-.then(res=>{
+var self=this;
+var _renderContent=function (res){
 if(!res||!res.success){
 container.innerHTML=`<div class="logs-state logs-state-error">${i18n.t("log-load-fail")}</div>`;
 return ;
@@ -724,13 +724,23 @@ infoSpan.textContent=infoText;
 if(!content||!content.trim()){
 container.innerHTML=`<div class="logs-state">${i18n.t("log-empty")}</div>`;
 }else{
-container.innerHTML=this._formatLogContent(content);
+container.innerHTML=self._formatLogContent(content);
 container.scrollTop=container.scrollHeight;
 }
-})
+};
+apiGet("/api/logs",{lines:maxLines,file:logFile})
+.then(_renderContent)
 .catch(err=>{
-console.error("Load logs failed:",err);
+if(err&&err._pageAborted)return ;
+console.warn("Load logs failed, retrying...",err);
+setTimeout(function (){
+apiGet("/api/logs",{lines:maxLines,file:logFile})
+.then(_renderContent)
+.catch(err2=>{
+console.error("Load logs retry failed:",err2);
 container.innerHTML=`<div class="logs-state logs-state-error">${i18n.t("log-load-fail")}</div>`;
+});
+},1000);
 });
 },
 _formatLogContent(content){
@@ -809,10 +819,6 @@ const fsRefreshBtn=document.getElementById('fs-refresh-btn');
 if(fsRefreshBtn)fsRefreshBtn.addEventListener('click',()=>this.loadFileTree(this._currentDir||'/'));
 const fsUpBtn=document.getElementById('fs-up-btn');
 if(fsUpBtn)fsUpBtn.addEventListener('click',()=>this.navigateUp());
-const fsSaveBtn=document.getElementById('fs-save-btn');
-if(fsSaveBtn)fsSaveBtn.addEventListener('click',()=>this.saveCurrentFile());
-const fsCloseBtn=document.getElementById('fs-close-btn');
-if(fsCloseBtn)fsCloseBtn.addEventListener('click',()=>this.closeCurrentFile());
 },
 loadFileSystemInfo(){
 apiGet('/api/filesystem')
@@ -887,8 +893,6 @@ treeContainer.innerHTML=i18n.t('fs-load-fail-text');
 openFile(path){
 const editor=document.getElementById('file-editor');
 const pathSpan=document.getElementById('current-file-path');
-const saveBtn=document.getElementById('fs-save-btn');
-const closeBtn=document.getElementById('fs-close-btn');
 const statusDiv=document.getElementById('file-status');
 if(!editor||!pathSpan)return ;
 const editable=path.endsWith('.json')||path.endsWith('.txt')||path.endsWith('.log')||
@@ -908,27 +912,12 @@ return ;
 const data=res.data||{};
 editor.value=data.content||'';
 editor.disabled=false;
-closeBtn.disabled=false;
-if(!AppState.currentUser.canManageFs){
-saveBtn.disabled=true;
 editor.readOnly=true;
-editor.title=i18n.t('fs-no-perm-tip');
-editor.oninput=null;
-}else{
-saveBtn.disabled=true;
-editor.readOnly=false;
-editor.title='';
-editor.oninput=()=>{
-saveBtn.disabled=false;
-this._currentFileModified=true;
-};
-}
 const size=data.size<1024?`${data.size}B`:
 data.size<1024*1024?`${(data.size / 1024).toFixed(1)}KB`:
 `${(data.size / 1024 / 1024).toFixed(2)}MB`;
 statusDiv.textContent=`${i18n.t('fs-file-ready-prefix')}${size}${i18n.t('fs-file-ready-suffix')}`;
 this._currentFilePath=path;
-this._currentFileModified=false;
 })
 .catch(err=>{
 console.error('Open file failed:',err);
@@ -948,71 +937,6 @@ const parentPath=path.substring(0,lastSlashIndex+1);
 this.loadFileTree(parentPath);
 }else{
 this.loadFileTree('/');
-}
-},
-saveCurrentFile(){
-if(!this._currentFilePath)return ;
-if(!AppState.currentUser.canManageFs){
-Notification.warning(i18n.t('fs-no-perm-tip'),i18n.t('fs-mgmt-title'));
-return ;
-}
-const editor=document.getElementById('file-editor');
-const statusDiv=document.getElementById('file-status');
-const saveBtn=document.getElementById('fs-save-btn');
-if(!editor||!statusDiv)return ;
-const content=editor.value;
-statusDiv.textContent=i18n.t('fs-saving-text');
-saveBtn.disabled=true;
-apiPost('/api/files/save',{path:this._currentFilePath,content:content})
-.then(res=>{
-if(res&&res.success){
-statusDiv.textContent=i18n.t('fs-save-ok-text');
-this._currentFileModified=false;
-Notification.success(i18n.t('fs-save-ok-msg'),i18n.t('fs-mgmt-title'));
-}else{
-statusDiv.textContent=i18n.t('fs-save-fail-prefix')+(res.error||'');
-Notification.error(res.error||i18n.t('fs-save-fail-text'),i18n.t('fs-mgmt-title'));
-}
-})
-.catch(err=>{
-console.error('Save file failed:',err);
-statusDiv.textContent=i18n.t('fs-save-fail-text');
-Notification.error(i18n.t('fs-save-fail-text'),i18n.t('fs-mgmt-title'));
-})
-.finally(()=>{
-saveBtn.disabled=false;
-});
-},
-closeCurrentFile(){
-const editor=document.getElementById('file-editor');
-const pathSpan=document.getElementById('current-file-path');
-const saveBtn=document.getElementById('fs-save-btn');
-const closeBtn=document.getElementById('fs-close-btn');
-const statusDiv=document.getElementById('file-status');
-if(this._currentFileModified){
-if(!confirm(i18n.t('fs-modified-confirm'))){
-return ;
-}
-this.saveCurrentFile();
-}
-if(editor){
-editor.value='';
-editor.disabled=true;
-editor.readOnly=false;
-editor.title='';
-editor.oninput=null;
-}
-if(pathSpan)pathSpan.textContent=i18n.t('fs-select-file-text');
-if(saveBtn)saveBtn.disabled=true;
-if(closeBtn)closeBtn.disabled=true;
-if(statusDiv)statusDiv.textContent='';
-this._currentFilePath=null;
-this._currentFileModified=false;
-const treeContainer=document.getElementById('file-tree');
-if(treeContainer){
-treeContainer.querySelectorAll('.file-tree-item').forEach(i=>{
-i.style.background='';
-});
 }
 }
 });

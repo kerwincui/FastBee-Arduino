@@ -11,6 +11,164 @@
 #include "core/ChipConfig.h"
 #include <freertos/task.h>
 
+namespace {
+bool tryParseBoolLike(const String& rawValue, bool& outValue) {
+    String value = rawValue;
+    value.trim();
+    value.toLowerCase();
+    if (value.isEmpty()) return false;
+
+    if (value == "1" || value == "true" || value == "on" ||
+        value == "high" || value == "open") {
+        outValue = true;
+        return true;
+    }
+
+    if (value == "0" || value == "false" || value == "off" ||
+        value == "low" || value == "close") {
+        outValue = false;
+        return true;
+    }
+
+    if (value == "+1") {
+        outValue = true;
+        return true;
+    }
+
+    if (value == "-1") {
+        outValue = false;
+        return true;
+    }
+
+    bool isNumeric = true;
+    bool hasDigit = false;
+    for (size_t i = 0; i < value.length(); ++i) {
+        const char c = value.charAt(i);
+        if (c >= '0' && c <= '9') {
+            hasDigit = true;
+            continue;
+        }
+        if ((c == '+' || c == '-') && i == 0) {
+            continue;
+        }
+        isNumeric = false;
+        break;
+    }
+
+    if (isNumeric && hasDigit) {
+        outValue = value.toInt() != 0;
+        return true;
+    }
+
+    return false;
+}
+
+String normalizeBinaryReportValue(const String& preferredValue,
+                                  const String& fallbackValue,
+                                  bool defaultState) {
+    bool parsedState = defaultState;
+    if (tryParseBoolLike(preferredValue, parsedState) ||
+        tryParseBoolLike(fallbackValue, parsedState)) {
+        return parsedState ? "1" : "0";
+    }
+    return defaultState ? "1" : "0";
+}
+
+String normalizeScalarReportValue(const String& preferredValue,
+                                  const String& fallbackValue,
+                                  const char* defaultValue = "") {
+    String reportValue = preferredValue;
+    reportValue.trim();
+    if (!reportValue.isEmpty()) return reportValue;
+
+    reportValue = fallbackValue;
+    reportValue.trim();
+    if (!reportValue.isEmpty()) return reportValue;
+
+    return String(defaultValue);
+}
+
+String buildModbusReportValue(uint16_t channel,
+                              const String& preferredValue,
+                              const String& fallbackValue,
+                              bool defaultState) {
+    return String(channel) + ":" +
+           normalizeBinaryReportValue(preferredValue, fallbackValue, defaultState);
+}
+
+String buildActionReportValue(const ExecAction& action,
+                              const String& effectiveValue,
+                              const String& receivedValue) {
+    ExecActionType actType = static_cast<ExecActionType>(action.actionType);
+    switch (actType) {
+        case ExecActionType::ACTION_HIGH:
+        case ExecActionType::ACTION_HIGH_INVERTED:
+            return normalizeBinaryReportValue(effectiveValue, receivedValue, true);
+
+        case ExecActionType::ACTION_LOW:
+        case ExecActionType::ACTION_LOW_INVERTED:
+            return normalizeBinaryReportValue(effectiveValue, receivedValue, false);
+
+        case ExecActionType::ACTION_SET_PWM:
+        case ExecActionType::ACTION_SET_DAC:
+            return normalizeScalarReportValue(effectiveValue, receivedValue, "0");
+
+        case ExecActionType::ACTION_MODBUS_COIL_WRITE: {
+            String rawValue = normalizeScalarReportValue(effectiveValue, receivedValue, "");
+            uint16_t channel = 0;
+            String stateValue = rawValue;
+            int sepIdx = rawValue.indexOf(':');
+            if (sepIdx > 0) {
+                channel = rawValue.substring(0, sepIdx).toInt();
+                stateValue = rawValue.substring(sepIdx + 1);
+            }
+            return buildModbusReportValue(channel, stateValue, receivedValue, false);
+        }
+
+        case ExecActionType::ACTION_MODBUS_REG_WRITE: {
+            String rawValue = normalizeScalarReportValue(effectiveValue, receivedValue, "0");
+            int sepIdx = rawValue.indexOf(':');
+            if (sepIdx > 0) {
+                uint16_t channel = rawValue.substring(0, sepIdx).toInt();
+                String regValue = rawValue.substring(sepIdx + 1);
+                regValue.trim();
+                return String(channel) + ":" + regValue;
+            }
+            return rawValue;
+        }
+
+        default:
+            return normalizeScalarReportValue(effectiveValue, receivedValue, "");
+    }
+}
+
+void appendActionResult(std::vector<ActionExecResult>& results,
+                        const String& targetPeriphId,
+                        const String& actualValue,
+                        bool success) {
+    ActionExecResult result;
+    result.targetPeriphId = targetPeriphId;
+    result.actualValue = actualValue;
+    result.success = success;
+    results.push_back(result);
+}
+
+bool looksLikeHexPayload(const String& rawValue) {
+    String value = rawValue;
+    value.trim();
+    if (value.length() < 4 || (value.length() % 2) != 0) return false;
+    for (size_t i = 0; i < value.length(); ++i) {
+        char c = value.charAt(i);
+        bool isHex =
+            (c >= '0' && c <= '9') ||
+            (c >= 'a' && c <= 'f') ||
+            (c >= 'A' && c <= 'F');
+        if (!isHex) return false;
+    }
+    return true;
+}
+}
+
 PeriphExecExecutor::PeriphExecExecutor() = default;
 PeriphExecExecutor::~PeriphExecExecutor() = default;
 
@@ -64,22 +222,29 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
             action.targetPeriphId.c_str(), action.actionType,
             effectiveValue.c_str(), action.useReceivedValue);
 
-        bool ok;
-        ActionExecResult ar;
+        bool ok = false;
+        std::vector<ActionExecResult> actionResults;
         if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
+            ActionExecResult ar;
             ok = executeSensorReadAction(action, ar);
-            // ar is fully populated by executeSensorReadAction
+            ar.success = ok;
+            actionResults.push_back(ar);
         } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL)) {
-            ok = executeModbusPollAction(action, rule);
-            ar.targetPeriphId = action.targetPeriphId;
-            ar.actualValue = effectiveValue;
+            ok = executeModbusPollAction(action, rule, &actionResults);
+            if (!ok && actionResults.empty()) {
+                appendActionResult(actionResults, action.targetPeriphId, effectiveValue, false);
+            }
         } else {
             ok = executeActionItem(action, effectiveValue);
-            ar.targetPeriphId = action.targetPeriphId;
-            ar.actualValue = effectiveValue;
+            appendActionResult(
+                actionResults,
+                action.targetPeriphId,
+                buildActionReportValue(action, effectiveValue, receivedValue),
+                ok
+            );
         }
-        ar.success = ok;
-        results.push_back(ar);
+
+        results.insert(results.end(), actionResults.begin(), actionResults.end());
     }
 
     // 精准上报执行结果
@@ -229,7 +394,9 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
     }
 }
 
-bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action, const PeriphExecRule& rule) {
+bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
+                                                 const PeriphExecRule& rule,
+                                                 std::vector<ActionExecResult>* controlResults) {
     auto* fw = FastBeeFramework::getInstance();
     if (!fw) { LOGGER.warning("[PeriphExec] Framework not available"); return false; }
     auto* protMgr = fw->getProtocolManager();
@@ -351,41 +518,59 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action, const
 
                 String devType(dev.deviceType);
                 if (devType == "relay") {
-                    bool coilVal = (strcmp(act, "on") == 0);
-                    if (dev.ncMode) coilVal = !coilVal;
+                    bool desiredState = false;
+                    if (!tryParseBoolLike(String(act), desiredState)) {
+                        desiredState = (strcmp(act, "on") == 0);
+                    }
+                    bool coilVal = dev.ncMode ? !desiredState : desiredState;
                     uint16_t addr = dev.coilBase + ch;
+                    bool ok = false;
                     if (dev.controlProtocol == 0) {
-                        auto res = modbus->writeCoilOnce(dev.slaveAddress, addr, coilVal);
-                        bool ok = (res.error == ONESHOT_SUCCESS);
+                        auto res = modbus->writeCoilOnce(dev.slaveAddress, addr, coilVal, true);
+                        ok = (res.error == ONESHOT_SUCCESS);
                         anySuccess = anySuccess || ok;
                         LOGGER.infof("[PeriphExec] Relay ctrl: slave=%d coil=%d val=%d ok=%d",
                             dev.slaveAddress, addr, coilVal, ok);
                     } else {
                         uint16_t regVal = coilVal ? 0xFF00 : 0x0000;
-                        auto res = modbus->writeRegisterOnce(dev.slaveAddress, addr, regVal);
-                        bool ok = (res.error == ONESHOT_SUCCESS);
+                        auto res = modbus->writeRegisterOnce(dev.slaveAddress, addr, regVal, true);
+                        ok = (res.error == ONESHOT_SUCCESS);
                         anySuccess = anySuccess || ok;
                         LOGGER.infof("[PeriphExec] Relay reg ctrl: slave=%d reg=%d val=0x%04X ok=%d",
                             dev.slaveAddress, addr, regVal, ok);
                     }
+                    if (controlResults) {
+                        appendActionResult(*controlResults, "modbus:" + String(devIdx),
+                                           buildModbusReportValue(ch, "", String(desiredState ? 1 : 0),
+                                                                  desiredState),
+                                           ok);
+                    }
                 } else if (devType == "pwm") {
                     uint16_t regAddr = dev.pwmRegBase + ch;
-                    auto res = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, val);
+                    auto res = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, val, true);
                     bool ok = (res.error == ONESHOT_SUCCESS);
                     anySuccess = anySuccess || ok;
                     LOGGER.infof("[PeriphExec] PWM ctrl: slave=%d reg=%d val=%d ok=%d",
                         dev.slaveAddress, regAddr, val, ok);
+                    if (controlResults) {
+                        appendActionResult(*controlResults, "modbus:" + String(devIdx),
+                                           String(ch) + ":" + String(val), ok);
+                    }
                 } else if (devType == "pid") {
                     const char* param = cv["p"] | "P";
                     uint8_t pidIdx = 3;
                     if (strcmp(param, "I") == 0) pidIdx = 4;
                     else if (strcmp(param, "D") == 0) pidIdx = 5;
                     uint16_t regAddr = dev.pidAddrs[pidIdx];
-                    auto res = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, val);
+                    auto res = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, val, true);
                     bool ok = (res.error == ONESHOT_SUCCESS);
                     anySuccess = anySuccess || ok;
                     LOGGER.infof("[PeriphExec] PID ctrl: slave=%d param=%s reg=%d val=%d ok=%d",
                         dev.slaveAddress, param, regAddr, val, ok);
+                    if (controlResults) {
+                        appendActionResult(*controlResults, "modbus:" + String(devIdx),
+                                           String(ch) + ":" + String(val), ok);
+                    }
                 }
             }
         }
@@ -646,13 +831,14 @@ MQTTClient* PeriphExecExecutor::getMqttClient() {
 void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>& results) {
     if (results.empty()) return;
 
-    // 检查 Modbus 传输类型（0=JSON, 1=透传HEX）
+    // 检查 Modbus 传输类型（0=JSON, 1=透传HEX）并获取 ModbusHandler 指针
     uint8_t modbusTransferType = 0;
+    ModbusHandler* modbus = nullptr;
     auto* fw = FastBeeFramework::getInstance();
     if (fw) {
         auto* protMgr = fw->getProtocolManager();
         if (protMgr) {
-            ModbusHandler* modbus = protMgr->getModbusHandler();
+            modbus = protMgr->getModbusHandler();
             if (modbus) {
                 ModbusConfig cfg = modbus->getConfig();
                 modbusTransferType = cfg.transferType;
@@ -667,26 +853,43 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
     JsonArray arr = doc.to<JsonArray>();
 
     for (const auto& ar : results) {
-        if (ar.targetPeriphId.isEmpty()) continue;
+        if (ar.targetPeriphId.isEmpty() || !ar.success) continue;
 
         // 检查目标外设是否为 Modbus 子设备，且传输类型为透传 HEX
         bool isModbusTarget = false;
         const PeripheralConfig* cfg = pm.getPeripheral(ar.targetPeriphId);
+        if (!cfg) continue;
         if (cfg && cfg->isModbusPeripheral()) {
             isModbusTarget = true;
         }
 
-        if (isModbusTarget && modbusTransferType == 1) {
-            // 透传模式：直接上报原始 HEX 值（actualValue 即为 HEX 帧数据）
-            JsonObject obj = arr.add<JsonObject>();
-            obj["id"] = ar.targetPeriphId;
+        // 确定上报 ID 和 value
+        String reportId = ar.targetPeriphId;
+        String reportValue = ar.actualValue;
+
+        if (isModbusTarget && cfg && modbus && cfg->params.modbus.sensorId[0] != '\0') {
+            // 从 actualValue 解析 channel（格式 "channel:state" 或 "state"）
+            uint16_t channel = 0;
+            int sepIdx = ar.actualValue.indexOf(':');
+            if (sepIdx > 0) {
+                channel = ar.actualValue.substring(0, sepIdx).toInt();
+                reportValue = ar.actualValue.substring(sepIdx + 1);
+            }
+            String sid = modbus->buildSensorId(cfg->params.modbus.deviceIndex, channel);
+            if (!sid.isEmpty()) {
+                reportId = sid;
+            }
+        }
+
+        JsonObject obj = arr.add<JsonObject>();
+        if (isModbusTarget && modbusTransferType == 1 && looksLikeHexPayload(ar.actualValue)) {
+            // 透传模式：直接上报原始 HEX 值
+            obj["id"] = reportId;
             obj["value"] = ar.actualValue;
             obj["remark"] = "";
         } else {
-            // JSON 结构化模式（默认）
-            JsonObject obj = arr.add<JsonObject>();
-            obj["id"] = ar.targetPeriphId;
-            obj["value"] = ar.actualValue;
+            obj["id"] = reportId;
+            obj["value"] = reportValue;
             obj["remark"] = "";
         }
     }
@@ -696,12 +899,12 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
     String reportData;
     serializeJson(doc, reportData);
 
-    // 通过 MQTT 上报
+    // 通过 MQTT 上报（使用线程安全队列，避免从异步任务直接调用 PubSubClient）
     MQTTClient* mqtt = getMqttClient();
     if (mqtt && mqtt->getIsConnected()) {
-        bool ok = mqtt->publishReportData(reportData);
-        LOGGER.infof("[PeriphExec] Report action results via MQTT: %s (%s)",
-                     reportData.c_str(), ok ? "ok" : "failed");
+        bool ok = mqtt->queueReportData(reportData);
+        LOGGER.infof("[PeriphExec] Report action results queued: %s (%s)",
+                     reportData.c_str(), ok ? "ok" : "queue_failed");
     } else {
         LOGGER.debug("[PeriphExec] MQTT not connected, skip action results report");
     }

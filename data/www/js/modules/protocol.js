@@ -2,6 +2,7 @@
 AppState.registerModule('protocol',{
 _protocolConfig:null,
 _masterTasks:[],
+_modbusRtuLoaded:false,
 _coilStates:[],
 _coilAutoRefreshTimer:null,
 _coilAutoRefreshErrors:0,
@@ -129,6 +130,7 @@ info+=' Reg@'+(device.pwmRegBase||0)+' '+(device.pwmResolution||8)+'bit';
 }else if(deviceType==='pid'){
 info+=' PV@'+((device.pidAddrs&&device.pidAddrs[0])||0);
 }
+if(device.sensorId)info+=' id:'+device.sensorId;
 return info;
 },
 _renderAllDeviceSensorRow(task,index,fcNames,typeLabels){
@@ -474,6 +476,7 @@ this._masterTasks=rtu.master.tasks||[];
 }else{
 this._masterTasks=[];
 }
+this._modbusRtuLoaded=true;
 this._loadModbusDevices();
 this.refreshMasterStatus();
 this._startMasterStatusRefresh();
@@ -569,8 +572,10 @@ if(data.modbusRtu_enabled==='true'&&!data.modbusRtu_peripheralId){
 Notification.warning(i18n.t('rtu-no-uart-peripherals'));
 return ;
 }
+if(this._modbusRtuLoaded){
 data.modbusRtu_master_tasks=JSON.stringify(this._masterTasks||[]);
 data.modbusRtu_master_devices=JSON.stringify(this._modbusDevices||[]);
+}
 data.modbusTcp_enabled=document.getElementById('modbus-tcp-enabled')?.checked?'true':'false';
 data.modbusTcp_server=document.getElementById('tcp-ip')?.value||'192.168.1.100';
 data.modbusTcp_port=document.getElementById('tcp-mport')?.value||'502';
@@ -822,7 +827,9 @@ enabled:f('task-edit-enabled').checked
 };
 if(!this._masterTasks)this._masterTasks=[];
 if(this._editingTaskIdx>=0&&this._masterTasks[this._editingTaskIdx]){
-task.mappings=this._masterTasks[this._editingTaskIdx].mappings||[];
+var oldTask=this._masterTasks[this._editingTaskIdx];
+task.mappings=oldTask.mappings||[];
+task.pollInterval=oldTask.pollInterval;
 this._masterTasks[this._editingTaskIdx]=task;
 }else{
 task.mappings=[];
@@ -1117,19 +1124,22 @@ if(localDevices&&localDevices.length>0){
 serverDevices=localDevices.map(function (d){
 return {
 name:d.name||'Device',
+sensorId:d.sensorId||'',
 deviceType:d.deviceType||d.type||'relay',
 slaveAddress:d.slaveAddress||1,
 channelCount:d.channelCount||2,
 coilBase:d.coilBase||0,
 ncMode:!!d.ncMode,
 controlProtocol:d.relayMode==='register'?1:0,
+batchRegister:d.batchRegister||0,
 pwmRegBase:d.pwmRegBase||0,
 pwmResolution:d.pwmResolution||8,
 pidAddrs:[
 d.pidPvAddr||0,d.pidSvAddr||1,d.pidOutAddr||2,
 d.pidPAddr||3,d.pidIAddr||4,d.pidDAddr||5
 ],
-pidDecimals:d.pidDecimals||1
+pidDecimals:d.pidDecimals||1,
+enabled:d.enabled!==false
 };
 });
 }
@@ -1248,6 +1258,7 @@ var dev=(idx>=0&&this._modbusDevices&&this._modbusDevices[idx])
 var modal=document.getElementById('modbus-device-edit-modal');
 if(!modal)return ;
 document.getElementById('mdev-edit-name').value=dev?(dev.name||''):((i18n.t('modbus-ctrl-device-default-name')||'设备')+((this._modbusDevices?this._modbusDevices.length:0)+1));
+document.getElementById('mdev-edit-sensorid').value=dev?(dev.sensorId||''):'';
 document.getElementById('mdev-edit-type').value=dev?(dev.deviceType||'relay'):'relay';
 document.getElementById('mdev-edit-addr').value=dev?(dev.slaveAddress||1):1;
 document.getElementById('mdev-edit-ch').value=String(dev?(dev.channelCount||2):2);
@@ -1305,6 +1316,7 @@ console.error('_saveEditModal: dev is undefined, idx=',idx,'devices=',this._modb
 return ;
 }
 dev.name=document.getElementById('mdev-edit-name').value||'Device';
+dev.sensorId=(document.getElementById('mdev-edit-sensorid').value||'').trim();
 dev.deviceType=document.getElementById('mdev-edit-type').value||'relay';
 dev.slaveAddress=parseInt(document.getElementById('mdev-edit-addr').value)||1;
 dev.channelCount=parseInt(document.getElementById('mdev-edit-ch').value)||2;

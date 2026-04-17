@@ -124,7 +124,9 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         doc["modbusRtu"]["master"]["interPollDelay"] = 100;
 
     // Modbus RTU Master 轮询任务
-    String masterTasksJson = GP("modbusRtu_master_tasks", "[]");
+    // 仅在前端实际发送了 tasks 数据时才清空并重建数组，避免从其他标签页保存时误删现有配置
+    String masterTasksJson = GP("modbusRtu_master_tasks", "");
+    if (masterTasksJson.length() > 0) {
     JsonArray masterTasks = doc["modbusRtu"]["master"]["tasks"].to<JsonArray>();
     if (masterTasksJson.length() > 2) {
         JsonDocument tasksDoc;
@@ -165,9 +167,12 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
             }
         }
     }
+    } // end: masterTasksJson.length() > 0
 
     // Modbus RTU Master 子设备
-    String masterDevicesJson = GP("modbusRtu_master_devices", "[]");
+    // 仅在前端实际发送了 devices 数据时才清空并重建数组
+    String masterDevicesJson = GP("modbusRtu_master_devices", "");
+    if (masterDevicesJson.length() > 0) {
     JsonArray masterDevices = doc["modbusRtu"]["master"]["devices"].to<JsonArray>();
     if (masterDevicesJson.length() > 2) {
         JsonDocument devicesDoc;
@@ -177,6 +182,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
             for (JsonVariant dv : arr) {
                 JsonObject devObj = masterDevices.add<JsonObject>();
                 devObj["name"]            = dv["name"] | "Device";
+                devObj["sensorId"]        = dv["sensorId"] | "";
                 devObj["deviceType"]      = dv["deviceType"] | "relay";
                 devObj["slaveAddress"]    = dv["slaveAddress"] | 1;
                 devObj["channelCount"]    = dv["channelCount"] | 2;
@@ -196,6 +202,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
             }
         }
     }
+    } // end: masterDevicesJson.length() > 0
 
     // Modbus TCP
     doc["modbusTcp"]["enabled"] = GP("modbusTcp_enabled", "false") == "true";

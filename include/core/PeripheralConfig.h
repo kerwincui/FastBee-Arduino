@@ -110,6 +110,7 @@ struct PeripheralConfig {
             uint16_t batchRegister;    // 位图批量寄存器地址，0表示不使用
             uint16_t pwmRegBase;       // PWM 寄存器基地址
             uint8_t  pwmResolution;    // PWM 分辨率(bits)
+            char     sensorId[32];     // 传感器标识符 (同 MODBUS_DEVICE_SENSOR_ID_MAX)
         } modbus;
     } params;
     

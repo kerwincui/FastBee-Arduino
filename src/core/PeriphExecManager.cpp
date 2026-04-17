@@ -45,6 +45,62 @@ static bool isNumericString(const String& s) {
     }
     return true;
 }
+
+static bool tryParseBoolLike(const String& rawValue, bool& outValue) {
+    String value = rawValue;
+    value.trim();
+    value.toLowerCase();
+    if (value.isEmpty()) return false;
+
+    if (value == "1" || value == "true" || value == "on" ||
+        value == "high" || value == "open") {
+        outValue = true;
+        return true;
+    }
+
+    if (value == "0" || value == "false" || value == "off" ||
+        value == "low" || value == "close") {
+        outValue = false;
+        return true;
+    }
+
+    if (isNumericString(value)) {
+        outValue = value.toInt() != 0;
+        return true;
+    }
+
+    return false;
+}
+
+static bool executeDirectOutputCommand(PeripheralManager& pm,
+                                       const PeripheralConfig& config,
+                                       const String& requestedValue,
+                                       String& actualValue) {
+    if (!config.enabled) return false;
+
+    if (config.type == PeripheralType::GPIO_DIGITAL_OUTPUT) {
+        bool state = false;
+        if (!tryParseBoolLike(requestedValue, state)) return false;
+        pm.stopActionTicker(config.id);
+        actualValue = state ? "1" : "0";
+        return pm.writePin(config.id, state ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW);
+    }
+
+    if (config.type == PeripheralType::GPIO_PWM_OUTPUT ||
+        config.type == PeripheralType::GPIO_ANALOG_OUTPUT) {
+        uint32_t duty = 0;
+        bool state = false;
+        if (tryParseBoolLike(requestedValue, state)) {
+            duty = state ? ((1U << config.params.gpio.pwmResolution) - 1U) : 0U;
+        } else {
+            duty = (uint32_t)requestedValue.toInt();
+        }
+        actualValue = String(duty);
+        return pm.writePWM(config.id, duty);
+    }
+
+    return false;
+}
 }
 
 PeriphExecManager& PeriphExecManager::getInstance() {
@@ -734,7 +790,7 @@ std::vector<AsyncExecResult> PeriphExecManager::getRecentResults() {
 
 // ========== 手动执行 ==========
 
-bool PeriphExecManager::runOnce(const String& id) {
+bool PeriphExecManager::runOnce(const String& id, const String& receivedValue) {
     PeriphExecRule* rule = getRule(id);
     if (!rule) {
         LOGGER.warning("[PeriphExec] Rule not found for runOnce: " + id);
@@ -743,9 +799,19 @@ bool PeriphExecManager::runOnce(const String& id) {
 
     // 创建副本并异步分发，避免阻塞 Web 请求线程
     PeriphExecRule ruleCopy = *rule;
-    LOGGER.infof("[PeriphExec] runOnce async dispatch: '%s' (id=%s)",
-                 ruleCopy.name.c_str(), id.c_str());
-    dispatchAsync(ruleCopy, "");
+    String resolvedValue = receivedValue;
+    if (resolvedValue.isEmpty()) {
+        for (const auto& trigger : ruleCopy.triggers) {
+            if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::PLATFORM_TRIGGER)) continue;
+            if (!trigger.compareValue.isEmpty()) {
+                resolvedValue = trigger.compareValue;
+                break;
+            }
+        }
+    }
+    LOGGER.infof("[PeriphExec] runOnce async dispatch: '%s' (id=%s, value='%s')",
+                 ruleCopy.name.c_str(), id.c_str(), resolvedValue.c_str());
+    dispatchAsync(ruleCopy, resolvedValue);
     return true;  // 返回 true 表示已提交
 }
 
@@ -1369,6 +1435,20 @@ void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& sourc
 }
 
 String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::vector<int>& processedIndices) {
+    // DEBUG: 打印完整 DATA_COMMAND 内容，用于排查"设备开启后立即关闭"问题
+    {
+        static uint32_t _dcSeq = 0;
+        uint32_t seq = ++_dcSeq;
+        int n = 0;
+        for (JsonObject item : cmdArr) {
+            String iid = item["id"].as<String>();
+            String ival = item["value"].as<String>();
+            LOGGER.warningf("[DataCmd#%u] item[%d]: id='%s' value='%s'", seq, n, iid.c_str(), ival.c_str());
+            n++;
+        }
+        LOGGER.warningf("[DataCmd#%u] total %d items", seq, n);
+    }
+
     // 预处理阶段：处理 modbus_read 指令
     JsonDocument modbusReportDoc;
     JsonArray modbusReportArr = modbusReportDoc.to<JsonArray>();
@@ -1469,17 +1549,48 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
         reportArr.add(v);
     }
 
+    // 获取 ModbusHandler 用于 sensorId 映射
+    ModbusHandler* modbus = nullptr;
+    auto* _fw = FastBeeFramework::getInstance();
+    if (_fw) {
+        auto* _pm = _fw->getProtocolManager();
+        if (_pm) modbus = _pm->getModbusHandler();
+    }
+
     for (auto& mi : matchedItems) {
         LOGGER.infof("[PeriphExec] DataCommand matched rule '%s' for id='%s' value='%s'",
             mi.rule.name.c_str(), mi.itemId.c_str(), mi.itemValue.c_str());
 
-        auto results = executeAllActions(mi.rule, mi.itemValue);
+        // 抑制 executeAllActions 内部的 reportActionResults 上报，
+        // 由 processDataCommandMatch 统一构建响应并返回给调用方上报，避免双重上报
+        PeriphExecRule execRule = mi.rule;
+        execRule.reportAfterExec = false;
+        auto results = executeAllActions(execRule, mi.itemValue);
 
-        // 构建响应：每个动作的结果
+        // 构建响应：每个动作的结果（Modbus 目标映射 sensorId）
         for (const auto& ar : results) {
+            String reportId = ar.targetPeriphId.isEmpty() ? mi.itemId : ar.targetPeriphId;
+            String reportValue = ar.actualValue.isEmpty() ? mi.itemValue : ar.actualValue;
+
+            // Modbus 目标 sensorId 映射
+            if (modbus && ar.targetPeriphId.startsWith("modbus:")) {
+                PeripheralManager& periMgr = PeripheralManager::getInstance();
+                const PeripheralConfig* pcfg = periMgr.getPeripheral(ar.targetPeriphId);
+                if (pcfg && pcfg->isModbusPeripheral() && pcfg->params.modbus.sensorId[0] != '\0') {
+                    uint16_t channel = 0;
+                    int sepIdx = ar.actualValue.indexOf(':');
+                    if (sepIdx > 0) {
+                        channel = ar.actualValue.substring(0, sepIdx).toInt();
+                        reportValue = ar.actualValue.substring(sepIdx + 1);
+                    }
+                    String sid = modbus->buildSensorId(pcfg->params.modbus.deviceIndex, channel);
+                    if (!sid.isEmpty()) reportId = sid;
+                }
+            }
+
             JsonObject reportItem = reportArr.add<JsonObject>();
-            reportItem["id"] = ar.targetPeriphId.isEmpty() ? mi.itemId : ar.targetPeriphId;
-            reportItem["value"] = ar.actualValue.isEmpty() ? mi.itemValue : ar.actualValue;
+            reportItem["id"] = reportId;
+            reportItem["value"] = reportValue;
             reportItem["remark"] = ar.success ? "success" : "execute failed";
         }
         if (results.empty()) {
@@ -1490,12 +1601,68 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
         }
     }
 
+    // 未匹配项：尝试 sensorId 直接 Modbus 控制
+    PeripheralManager& periMgr = PeripheralManager::getInstance();
     for (size_t i = 0; i < unmatchedIds.size(); i++) {
-        LOGGER.infof("[PeriphExec] DataCommand no matching rule for id='%s'", unmatchedIds[i].c_str());
-        JsonObject reportItem = reportArr.add<JsonObject>();
-        reportItem["id"] = unmatchedIds[i];
-        reportItem["value"] = unmatchedValues[i];
-        reportItem["remark"] = "no matching rule";
+        uint8_t devIdx = 0;
+        uint16_t channel = 0;
+        if (modbus && modbus->findBySensorId(unmatchedIds[i], devIdx, channel)) {
+            // 找到 Modbus 设备，直接执行控制
+            const ModbusSubDevice& dev = modbus->getSubDevice(devIdx);
+            String periphId = "modbus:" + String(devIdx);
+            bool writeOk = false;
+            bool state = false;
+            String devType(dev.deviceType);
+
+            if (devType == "relay") {
+                // 继电器：解析 0/1 并应用 ncMode
+                if (!tryParseBoolLike(unmatchedValues[i], state)) {
+                    state = false;
+                }
+                bool value = dev.ncMode ? !state : state;
+                uint16_t addr = dev.coilBase + channel;
+                LOGGER.warningf("[DirectCtrl] relay id='%s' userState=%d ncMode=%d → coilVal=%d addr=%d proto=%d",
+                    unmatchedIds[i].c_str(), state, dev.ncMode, value, addr, dev.controlProtocol);
+                if (dev.controlProtocol == 0) {
+                    writeOk = periMgr.writeModbusCoil(periphId, addr, value);
+                } else {
+                    uint16_t regVal = value ? 0xFF00 : 0x0000;
+                    writeOk = periMgr.writeModbusReg(periphId, addr, regVal);
+                }
+            } else if (devType == "pwm") {
+                // PWM：解析数值写入寄存器
+                uint16_t regAddr = dev.pwmRegBase + channel;
+                uint16_t regVal = (uint16_t)unmatchedValues[i].toInt();
+                writeOk = periMgr.writeModbusReg(periphId, regAddr, regVal);
+            } else {
+                // 其他类型暂不支持直接控制
+                LOGGER.warningf("[PeriphExec] Direct sensorId control not supported for type '%s'", dev.deviceType);
+            }
+
+            LOGGER.infof("[PeriphExec] Direct sensorId control: id='%s' → modbus:%d ch=%d %s",
+                unmatchedIds[i].c_str(), devIdx, channel, writeOk ? "ok" : "failed");
+
+            JsonObject reportItem = reportArr.add<JsonObject>();
+            reportItem["id"] = unmatchedIds[i];
+            if (devType == "relay") {
+                reportItem["value"] = state ? "1" : "0";
+            } else {
+                reportItem["value"] = unmatchedValues[i];
+            }
+            reportItem["remark"] = writeOk ? "direct_modbus" : "modbus_error";
+        } else {
+            const PeripheralConfig* directCfg = periMgr.getPeripheral(unmatchedIds[i]);
+            String actualValue = unmatchedValues[i];
+            bool directOk = false;
+            if (directCfg) {
+                directOk = executeDirectOutputCommand(periMgr, *directCfg, unmatchedValues[i], actualValue);
+            }
+
+            JsonObject reportItem = reportArr.add<JsonObject>();
+            reportItem["id"] = unmatchedIds[i];
+            reportItem["value"] = actualValue;
+            reportItem["remark"] = directOk ? "direct_peripheral" : "no matching rule";
+        }
     }
 
     String result;

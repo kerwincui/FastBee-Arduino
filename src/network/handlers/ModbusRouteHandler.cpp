@@ -97,6 +97,59 @@ static void addModbusDebug(JsonDocument& doc, ModbusHandler* modbus) {
     debug["rx"] = modbus->getLastRxHex();
 }
 
+// 辅助：通过 slaveAddress 查找子设备索引
+static int findDeviceIndexBySlaveAddr(ModbusHandler* modbus, uint8_t slaveAddr) {
+    ModbusConfig cfg = modbus->getConfig();
+    for (uint8_t i = 0; i < cfg.master.deviceCount; i++) {
+        if (cfg.master.devices[i].slaveAddress == slaveAddr) return (int)i;
+    }
+    return -1;
+}
+
+// 辅助：构建并发布单条 MQTT 上报
+static void publishControlReport(WebHandlerContext* ctx, ModbusHandler* modbus,
+                                  int deviceIndex, uint16_t channel, const String& value) {
+    if (deviceIndex < 0) return;
+    String sid = modbus->buildSensorId((uint8_t)deviceIndex, channel);
+    if (sid.isEmpty()) return;
+    MQTTClient* mqtt = ctx->protocolManager ? ctx->protocolManager->getMQTTClient() : nullptr;
+    if (!mqtt || !mqtt->getIsConnected()) return;
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    JsonObject obj = arr.add<JsonObject>();
+    obj["id"] = sid;
+    obj["value"] = value;
+    obj["remark"] = "";
+    String payload;
+    serializeJson(doc, payload);
+    LOG_WARNINGF("[MqttReport] publishControlReport: id='%s' value='%s'", sid.c_str(), value.c_str());
+    mqtt->publishReportData(payload);
+}
+
+// 辅助：构建并发布批量 MQTT 上报（多通道）
+static void publishBatchControlReport(WebHandlerContext* ctx, ModbusHandler* modbus,
+                                       int deviceIndex, uint16_t channelCount, const bool* states) {
+    if (deviceIndex < 0) return;
+    MQTTClient* mqtt = ctx->protocolManager ? ctx->protocolManager->getMQTTClient() : nullptr;
+    if (!mqtt || !mqtt->getIsConnected()) return;
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    bool hasEntry = false;
+    for (uint16_t i = 0; i < channelCount; i++) {
+        String sid = modbus->buildSensorId((uint8_t)deviceIndex, i);
+        if (sid.isEmpty()) continue;
+        JsonObject obj = arr.add<JsonObject>();
+        obj["id"] = sid;
+        obj["value"] = String(states[i] ? 1 : 0);
+        obj["remark"] = "";
+        hasEntry = true;
+    }
+    if (!hasEntry) return;
+    String payload;
+    serializeJson(doc, payload);
+    mqtt->publishReportData(payload);
+}
+
 static uint8_t countEnabledPollTasks(const ModbusConfig& config) {
     uint8_t count = 0;
     for (uint8_t i = 0; i < config.master.taskCount; i++) {
@@ -518,6 +571,9 @@ void ModbusRouteHandler::handleModbusWrite(AsyncWebServerRequest* request) {
 // ============================================================================
 
 void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request) {
+    static uint32_t _coilCtrlSeq = 0;
+    uint32_t reqSeq = ++_coilCtrlSeq;
+    
     if (!ctx->checkPermission(request, "config.edit")) {
         ctx->sendUnauthorized(request);
         return;
@@ -531,6 +587,10 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
     uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
     String action = ctx->getParamValue(request, "action", "toggle");
     String mode = ctx->getParamValue(request, "mode", "coil");
+    
+    LOG_WARNINGF("[CoilCtrl#%u] HTTP entry: slave=%d ch=%d action=%s mode=%s clientIP=%s",
+                 reqSeq, slaveAddr, channel, action.c_str(), mode.c_str(),
+                 request->client() ? request->client()->remoteIP().toString().c_str() : "?");
     
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
@@ -594,6 +654,18 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
         return;
     }
     
+    // MQTT 上报控制结果（ncMode 设备报告用户意图值，非原始线圈电平）
+    // 否则平台回写该值时 processDataCommandMatch 会再次应用 ncMode 反转，
+    // 导致双重反转使设备恢复原状
+    int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
+    if (devIdx >= 0) {
+        ModbusConfig cfg = modbus->getConfig();
+        bool reportState = newState;
+        if (devIdx < (int)cfg.master.deviceCount && cfg.master.devices[devIdx].ncMode) {
+            reportState = !newState;
+        }
+        publishControlReport(ctx, modbus, devIdx, channel, String(reportState ? 1 : 0));
+    }
     
     JsonDocument doc;
     doc["success"] = true;
@@ -616,6 +688,9 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
 // ============================================================================
 
 void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
+    static uint32_t _coilBatchSeq = 0;
+    uint32_t reqSeq = ++_coilBatchSeq;
+    
     if (!ctx->checkPermission(request, "config.edit")) {
         ctx->sendUnauthorized(request);
         return;
@@ -629,6 +704,10 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
     uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
     String action = ctx->getParamValue(request, "action", "allOff");
     String mode = ctx->getParamValue(request, "mode", "coil");
+    
+    LOG_WARNINGF("[CoilBatch#%u] HTTP entry: slave=%d count=%d action=%s mode=%s clientIP=%s",
+                 reqSeq, slaveAddr, channelCount, action.c_str(), mode.c_str(),
+                 request->client() ? request->client()->remoteIP().toString().c_str() : "?");
     
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
@@ -753,22 +832,46 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
     data["action"] = action;
     data["mode"] = mode;
     JsonArray states = data["states"].to<JsonArray>();
+    bool stateValues[32]; // 用于 MQTT 上报
     if (readResult.error == ONESHOT_SUCCESS) {
         if (useBitmapRead) {
             uint16_t bitmap = readResult.data[0];
             for (uint16_t i = 0; i < channelCount; i++) {
-                states.add((bitmap >> i) & 1 ? true : false);
+                bool s = (bitmap >> i) & 1 ? true : false;
+                states.add(s);
+                if (i < 32) stateValues[i] = s;
             }
         } else {
             for (uint16_t i = 0; i < channelCount; i++) {
-                states.add(readResult.data[i] != 0);
+                bool s = readResult.data[i] != 0;
+                states.add(s);
+                if (i < 32) stateValues[i] = s;
             }
         }
     } else {
         for (uint16_t i = 0; i < channelCount; i++) {
-            states.add(action == "allOn");
+            bool s = (action == "allOn");
+            states.add(s);
+            if (i < 32) stateValues[i] = s;
         }
     }
+
+    // MQTT 上报批量控制结果（ncMode 设备需要反转为用户意图值）
+    int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
+    if (devIdx >= 0) {
+        ModbusConfig cfg = modbus->getConfig();
+        bool isNcMode = (devIdx < (int)cfg.master.deviceCount && cfg.master.devices[devIdx].ncMode);
+        if (isNcMode) {
+            bool reportValues[32];
+            for (uint16_t i = 0; i < channelCount && i < 32; i++) {
+                reportValues[i] = !stateValues[i];
+            }
+            publishBatchControlReport(ctx, modbus, devIdx, channelCount, reportValues);
+        } else {
+            publishBatchControlReport(ctx, modbus, devIdx, channelCount, stateValues);
+        }
+    }
+
     addModbusDebug(doc, modbus);
     
     String out;
@@ -1228,6 +1331,15 @@ void ModbusRouteHandler::handleModbusRegisterWrite(AsyncWebServerRequest* reques
     if (result.error != ONESHOT_SUCCESS) {
         sendOneShotError(ctx, request, result);
         return;
+    }
+    
+    // MQTT 上报寄存器写入结果
+    int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
+    if (devIdx >= 0) {
+        const ModbusSubDevice& dev = modbus->getSubDevice((uint8_t)devIdx);
+        uint16_t channel = (regAddr >= dev.coilBase && regAddr < dev.coilBase + dev.channelCount)
+                           ? (regAddr - dev.coilBase) : 0;
+        publishControlReport(ctx, modbus, devIdx, channel, String(value));
     }
     
     JsonDocument doc;

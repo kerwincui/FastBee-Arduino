@@ -110,6 +110,7 @@ public:
     bool publishDeviceInfo();  // 发布设备信息到 topicType=DEVICE_INFO 的主题
     bool publishMonitorData(); // 发布一次实时监测数据到 topicType=REALTIME_MON 的主题
     bool publishReportData(const String& payload); // 发布数据上报到 topicType=DATA_REPORT 的主题
+    bool queueReportData(const String& payload);   // 线程安全入队上报数据（异步任务调用）
     bool publishNtpSync();             // 发布 NTP 时间同步请求到 topicType=NTP_SYNC 的主题
     bool subscribe(const String& topic);
     bool subscribeAll();  // 订阅所有配置的主题
@@ -166,6 +167,14 @@ private:
 
     // 线程安全：递归互斥量保护 publish 操作（PubSubClient 非线程安全）
     SemaphoreHandle_t _publishMutex = nullptr;
+
+    // DATA_COMMAND 延迟处理队列（避免在 MQTT 回调中同步执行重操作）
+    QueueHandle_t _dataCommandQueue = nullptr;
+    void processQueuedCommands();
+
+    // 异步任务上报队列（PubSubClient 非线程安全，publish 必须在主循环执行）
+    QueueHandle_t _reportQueue = nullptr;
+    void processQueuedReports();
 
     void mqttCallback(char* topic, byte* payload, unsigned int length);
     bool reconnect();

@@ -41,7 +41,8 @@ public:
     bool executePeripheralAction(const ExecAction& action, const String& effectiveValue);
 
     // 执行Modbus轮询动作
-    bool executeModbusPollAction(const ExecAction& action, const PeriphExecRule& rule);
+    bool executeModbusPollAction(const ExecAction& action, const PeriphExecRule& rule,
+                                 std::vector<ActionExecResult>* controlResults = nullptr);
 
     // 执行传感器读取动作
     bool executeSensorReadAction(const ExecAction& action, ActionExecResult& result);

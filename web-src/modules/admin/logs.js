@@ -146,38 +146,50 @@
             const currentSpan = document.getElementById("current-log-file");
             if (currentSpan) currentSpan.textContent = i18n.t("log-current-file-prefix") + logFile;
 
-            apiGet("/api/logs", { lines: maxLines, file: logFile })
-                .then(res => {
-                    if (!res || !res.success) {
-                        container.innerHTML = `<div class="logs-state logs-state-error">${i18n.t("log-load-fail")}</div>`;
-                        return;
-                    }
-
-                    const data = res.data || {};
-                    const content = data.content || "";
-                    const fileSize = data.size || 0;
-                    const lineCount = data.lines || 0;
-                    const truncated = data.truncated || false;
-
-                    if (infoSpan) {
-                        const sizeStr = fileSize < 1024 ? `${fileSize} B` :
-                                       fileSize < 1024 * 1024 ? `${(fileSize / 1024).toFixed(1)} KB` :
-                                       `${(fileSize / 1024 / 1024).toFixed(2)} MB`;
-                        let infoText = `${lineCount}${i18n.t("log-line-unit")}${sizeStr}`;
-                        if (truncated) infoText += i18n.t("log-truncated-suffix");
-                        infoSpan.textContent = infoText;
-                    }
-
-                    if (!content || !content.trim()) {
-                        container.innerHTML = `<div class="logs-state">${i18n.t("log-empty")}</div>`;
-                    } else {
-                        container.innerHTML = this._formatLogContent(content);
-                        container.scrollTop = container.scrollHeight;
-                    }
-                })
-                .catch(err => {
-                    console.error("Load logs failed:", err);
+            var self = this;
+            var _renderContent = function(res) {
+                if (!res || !res.success) {
                     container.innerHTML = `<div class="logs-state logs-state-error">${i18n.t("log-load-fail")}</div>`;
+                    return;
+                }
+
+                const data = res.data || {};
+                const content = data.content || "";
+                const fileSize = data.size || 0;
+                const lineCount = data.lines || 0;
+                const truncated = data.truncated || false;
+
+                if (infoSpan) {
+                    const sizeStr = fileSize < 1024 ? `${fileSize} B` :
+                                   fileSize < 1024 * 1024 ? `${(fileSize / 1024).toFixed(1)} KB` :
+                                   `${(fileSize / 1024 / 1024).toFixed(2)} MB`;
+                    let infoText = `${lineCount}${i18n.t("log-line-unit")}${sizeStr}`;
+                    if (truncated) infoText += i18n.t("log-truncated-suffix");
+                    infoSpan.textContent = infoText;
+                }
+
+                if (!content || !content.trim()) {
+                    container.innerHTML = `<div class="logs-state">${i18n.t("log-empty")}</div>`;
+                } else {
+                    container.innerHTML = self._formatLogContent(content);
+                    container.scrollTop = container.scrollHeight;
+                }
+            };
+
+            apiGet("/api/logs", { lines: maxLines, file: logFile })
+                .then(_renderContent)
+                .catch(err => {
+                    if (err && err._pageAborted) return;
+                    // 首次失败时自动重试一次（ESP32 可能还在处理静态资源）
+                    console.warn("Load logs failed, retrying...", err);
+                    setTimeout(function() {
+                        apiGet("/api/logs", { lines: maxLines, file: logFile })
+                            .then(_renderContent)
+                            .catch(err2 => {
+                                console.error("Load logs retry failed:", err2);
+                                container.innerHTML = `<div class="logs-state logs-state-error">${i18n.t("log-load-fail")}</div>`;
+                            });
+                    }, 1000);
                 });
         },
 
