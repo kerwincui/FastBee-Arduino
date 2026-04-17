@@ -94,7 +94,7 @@
           "slaveAddress": 3,
           "channelCount": 2,
           "coilBase": 0,
-          "ncMode": true,
+          "ncMode": false,
           "controlProtocol": 0,
           "batchRegister": 0,
           "pwmRegBase": 0,

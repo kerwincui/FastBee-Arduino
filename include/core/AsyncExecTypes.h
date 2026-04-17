@@ -19,9 +19,9 @@
 #define SCRIPT_TASK_STACK     12288
 #endif
 
-// 简单外设动作任务栈大小
+// 简单外设动作任务栈大小（增加以避免 reportActionResults 中的 JSON/MQTT 操作导致栈溢出）
 #ifndef SIMPLE_TASK_STACK
-#define SIMPLE_TASK_STACK     6144
+#define SIMPLE_TASK_STACK     8192
 #endif
 
 // 异步任务优先级（低于主循环 loopTask=1）
