@@ -67,7 +67,7 @@
           ]
         },
         {
-          "slaveAddress": 6,
+          "slaveAddress": 4,
           "functionCode": 3,
           "startAddress": 500,
           "quantity": 8,
@@ -177,7 +177,7 @@
           "name": "调速",
           "sensorId": "speed",
           "deviceType": "pwm",
-          "slaveAddress": 4,
+          "slaveAddress": 6,
           "channelCount": 2,
           "coilBase": 0,
           "ncMode": true,
