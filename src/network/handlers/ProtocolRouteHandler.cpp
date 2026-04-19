@@ -161,6 +161,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                         mo["scaleFactor"] = mv["scaleFactor"] | 1.0;
                         mo["decimalPlaces"] = mv["decimalPlaces"] | 1;
                         mo["sensorId"] = mv["sensorId"] | "";
+                        mo["unit"] = mv["unit"] | "";
                     }
                 }
                 taskCount++;

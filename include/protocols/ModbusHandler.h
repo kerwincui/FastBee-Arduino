@@ -53,10 +53,12 @@ struct RegisterMapping {
     float    scaleFactor;    // 缩放因子（原始值 * scaleFactor = 最终值）
     uint8_t  decimalPlaces;  // 小数位数（JSON格式化用）
     char     sensorId[Protocols::MODBUS_SENSOR_ID_MAX_LEN]; // 传感器标识符
+    char     unit[8];        // 显示单位（如 °C, %RH, ppm, dB, kPa, Lux, V, A 等）
 
     RegisterMapping()
         : regOffset(0), dataType(0), scaleFactor(1.0f), decimalPlaces(1) {
         memset(sensorId, 0, sizeof(sensorId));
+        memset(unit, 0, sizeof(unit));
     }
 };
 

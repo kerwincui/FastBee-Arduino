@@ -479,6 +479,7 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
                         mo["scaleFactor"] = m.scaleFactor;
                         mo["decimalPlaces"] = m.decimalPlaces;
                         mo["sensorId"] = String(m.sensorId);
+                        if (m.unit[0] != '\0') mo["unit"] = String(m.unit);
                     }
                 }
 

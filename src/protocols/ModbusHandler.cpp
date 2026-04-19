@@ -324,6 +324,9 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                         const char* sid = m["sensorId"] | "";
                         strncpy(mapping.sensorId, sid, sizeof(mapping.sensorId) - 1);
                         mapping.sensorId[sizeof(mapping.sensorId) - 1] = '\0';
+                        const char* u = m["unit"] | "";
+                        strncpy(mapping.unit, u, sizeof(mapping.unit) - 1);
+                        mapping.unit[sizeof(mapping.unit) - 1] = '\0';
                         task.mappingCount++;
                     }
                 }
@@ -421,6 +424,7 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
                 mo["scaleFactor"] = mapping.scaleFactor;
                 mo["decimalPlaces"] = mapping.decimalPlaces;
                 mo["sensorId"] = mapping.sensorId;
+                if (mapping.unit[0] != '\0') mo["unit"] = mapping.unit;
             }
         }
     }

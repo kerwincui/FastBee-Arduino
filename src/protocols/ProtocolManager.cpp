@@ -460,6 +460,9 @@ bool ProtocolManager::restartModbus() {
                         const char* sid = m["sensorId"] | "";
                         strncpy(mapping.sensorId, sid, sizeof(mapping.sensorId) - 1);
                         mapping.sensorId[sizeof(mapping.sensorId) - 1] = '\0';
+                        const char* u = m["unit"] | "";
+                        strncpy(mapping.unit, u, sizeof(mapping.unit) - 1);
+                        mapping.unit[sizeof(mapping.unit) - 1] = '\0';
                         task.mappingCount++;
                     }
                 }

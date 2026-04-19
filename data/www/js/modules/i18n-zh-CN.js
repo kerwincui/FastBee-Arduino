@@ -1442,6 +1442,7 @@
         'modbus-mapping-scale': '缩放因子',
         'modbus-mapping-decimals': '小数位',
         'modbus-mapping-sensor-id': '传感器ID',
+        'modbus-mapping-unit': '单位',
         'modbus-mapping-add': '添加映射',
         'modbus-mapping-save': '确定',
         'modbus-mapping-cancel': '取消',

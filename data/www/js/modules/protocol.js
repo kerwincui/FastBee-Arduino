@@ -877,7 +877,7 @@ Notification.warning(i18n.t('modbus-mapping-max'));
 return ;
 }
 this._collectMappingValues();
-this._currentMappings.push({regOffset:0,dataType:0,scaleFactor:0.1,decimalPlaces:1,sensorId:''});
+this._currentMappings.push({regOffset:0,dataType:0,scaleFactor:0.1,decimalPlaces:1,sensorId:'',unit:''});
 this._renderMappingTable();
 },
 removeMapping(idx){
@@ -892,12 +892,13 @@ const rows=tbody.querySelectorAll('tr');
 rows.forEach((row,idx)=>{
 if(idx>=this._currentMappings.length)return ;
 const inputs=row.querySelectorAll('input, select');
-if(inputs.length>=5){
+if(inputs.length>=6){
 this._currentMappings[idx].regOffset=parseInt(inputs[0].value)||0;
 this._currentMappings[idx].dataType=parseInt(inputs[1].value)||0;
 this._currentMappings[idx].scaleFactor=parseFloat(inputs[2].value)||1.0;
 this._currentMappings[idx].decimalPlaces=parseInt(inputs[3].value)||1;
 this._currentMappings[idx].sensorId=inputs[4].value||'';
+this._currentMappings[idx].unit=inputs[5].value||'';
 }
 });
 },
@@ -909,7 +910,7 @@ const dtOpts=[
 {v:2,t:'uint32'},{v:3,t:'int32'},{v:4,t:'float32'}
 ];
 if(this._currentMappings.length===0){
-tbody.innerHTML=this._renderProtocolEmptyRow(6,i18n.t('modbus-master-no-tasks'));
+tbody.innerHTML=this._renderProtocolEmptyRow(7,i18n.t('modbus-master-no-tasks'));
 return ;
 }
 tbody.innerHTML=this._currentMappings.map((m,idx)=>{
@@ -922,7 +923,8 @@ return '<tr>'+
 '<td><input type="number" class="protocol-mapping-num-md" value="'+(m.scaleFactor??0.1)+'" step="0.001"></td>'+
 '<td><input type="number" class="protocol-mapping-num-sm" value="'+(m.decimalPlaces??1)+'" min="0" max="6"></td>'+
 '<td><input type="text" class="protocol-mapping-text" value="'+(m.sensorId||'')+'" maxlength="15" placeholder="temperature"></td>'+
-'<td><button type="button" class="pure-button protocol-mapping-remove" data-index="'+idx+'">X</button></td>'+
+'<td><input type="text" class="protocol-mapping-text protocol-mapping-unit" value="'+(m.unit||'')+'" maxlength="7" placeholder="°C"></td>'+
+'<td><button type="button" class="pure-button pure-button-primary protocol-mapping-remove" data-index="'+idx+'">删除</button></td>'+
 '</tr>';
 }).join ('');
 },

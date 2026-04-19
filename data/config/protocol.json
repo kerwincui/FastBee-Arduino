@@ -26,14 +26,16 @@
               "dataType": 1,
               "scaleFactor": 0.1,
               "decimalPlaces": 1,
-              "sensorId": "temperature"
+              "sensorId": "temperature",
+              "unit": "°C"
             },
             {
               "regOffset": 1,
               "dataType": 1,
               "scaleFactor": 0.1,
               "decimalPlaces": 1,
-              "sensorId": "humidity"
+              "sensorId": "humidity",
+              "unit": "%RH"
             }
           ]
         },
@@ -51,14 +53,75 @@
               "dataType": 0,
               "scaleFactor": 1,
               "decimalPlaces": 1,
-              "sensorId": "pm25"
+              "sensorId": "pm25",
+              "unit": "μg/m³"
             },
             {
               "regOffset": 1,
               "dataType": 0,
               "scaleFactor": 1,
               "decimalPlaces": 1,
-              "sensorId": "pm10"
+              "sensorId": "pm10",
+              "unit": "μg/m³"
+            }
+          ]
+        },
+        {
+          "slaveAddress": 6,
+          "functionCode": 3,
+          "startAddress": 500,
+          "quantity": 8,
+          "pollInterval": 30,
+          "enabled": true,
+          "name": "气象百叶箱",
+          "mappings": [
+            {
+              "regOffset": 0,
+              "dataType": 1,
+              "scaleFactor": 0.1,
+              "decimalPlaces": 1,
+              "sensorId": "humidity",
+              "unit": "%RH"
+            },
+            {
+              "regOffset": 1,
+              "dataType": 1,
+              "scaleFactor": 0.1,
+              "decimalPlaces": 1,
+              "sensorId": "temperature",
+              "unit": "°C"
+            },
+            {
+              "regOffset": 2,
+              "dataType": 1,
+              "scaleFactor": 0.1,
+              "decimalPlaces": 1,
+              "sensorId": "noise",
+              "unit": "dB"
+            },
+            {
+              "regOffset": 3,
+              "dataType": 0,
+              "scaleFactor": 1,
+              "decimalPlaces": 0,
+              "sensorId": "co2",
+              "unit": "ppm"
+            },
+            {
+              "regOffset": 5,
+              "dataType": 1,
+              "scaleFactor": 0.1,
+              "decimalPlaces": 1,
+              "sensorId": "pressure",
+              "unit": "kPa"
+            },
+            {
+              "regOffset": 6,
+              "dataType": 2,
+              "scaleFactor": 1,
+              "decimalPlaces": 0,
+              "sensorId": "lux",
+              "unit": "Lux"
             }
           ]
         }

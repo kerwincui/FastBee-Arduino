@@ -1454,6 +1454,7 @@
         'modbus-mapping-scale': 'Scale Factor',
         'modbus-mapping-decimals': 'Decimals',
         'modbus-mapping-sensor-id': 'Sensor ID',
+        'modbus-mapping-unit': 'Unit',
         'modbus-mapping-add': 'Add Mapping',
         'modbus-mapping-save': 'OK',
         'modbus-mapping-cancel': 'Cancel',

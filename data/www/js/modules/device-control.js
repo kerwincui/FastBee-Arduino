@@ -560,7 +560,7 @@ var item={
 id:mapping.sensorId,
 name:mapping.sensorId,
 value:'--',
-unit:''
+unit:mapping.unit||this._getMonitorUnit(mapping.sensorId)
 };
 if(hasCache&&mapping.regOffset<cachedData.values.length){
 var rawValue=cachedData.values[mapping.regOffset];
@@ -603,6 +603,10 @@ var n=name.toLowerCase();
 if(n.indexOf('hum')!==-1||n.indexOf('湿度')!==-1)return '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 2c-5.33 8-8 12.67-8 16a8 8 0 0016 0c0-3.33-2.67-8-8-16z"/></svg>';
 if(n.indexOf('temp')!==-1||n.indexOf('温度')!==-1)return '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M15 13V5a3 3 0 00-6 0v8a5 5 0 106 0zm-3-9a1 1 0 011 1v9.17a3 3 0 11-2 0V5a1 1 0 011-1z"/></svg>';
 if(n.indexOf('pm')!==-1||n.indexOf('颗粒')!==-1)return '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M17.5 18.25a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5zm-5-3a1.75 1.75 0 110-3.5 1.75 1.75 0 010 3.5zm-5-4a1.5 1.5 0 110-3 1.5 1.5 0 010 3zm10-3a1 1 0 110-2 1 1 0 010 2zm-3 10a1 1 0 110-2 1 1 0 010 2zm-7 2a.75.75 0 110-1.5.75.75 0 010 1.5z"/></svg>';
+if(n.indexOf('co2')!==-1||n.indexOf('二氧化碳')!==-1)return '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>';
+if(n.indexOf('noise')!==-1||n.indexOf('噪声')!==-1||n.indexOf('噪音')!==-1)return '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
+if(n.indexOf('press')!==-1||n.indexOf('气压')!==-1)return '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z"/></svg>';
+if(n.indexOf('lux')!==-1||n.indexOf('light')!==-1||n.indexOf('光照')!==-1)return '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zm0-5l-1.5 3h3L12 2zm0 20l1.5-3h-3L12 22zm9-10l-3-1.5v3l3-1.5zM2 12l3 1.5v-3L2 12zm15.07-7.07l-3.54.71 2.83 2.83 .71-3.54zM6.93 19.07l3.54-.71-2.83-2.83-.71 3.54zm0-14.14l.71 3.54 2.83-2.83-3.54-.71zm10.14 14.14l-.71-3.54-2.83 2.83 3.54.71z"/></svg>';
 return '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>';
 },
 _getMonitorToneClass:function (name){
@@ -611,11 +615,24 @@ if(n.indexOf('temp')!==-1||n.indexOf('温度')!==-1)return 'dc-monitor-icon-tone
 if(n.indexOf('hum')!==-1||n.indexOf('湿度')!==-1)return 'dc-monitor-icon-tone-humidity';
 if(n.indexOf('pm')!==-1||n.indexOf('颗粒')!==-1||n.indexOf('粉尘')!==-1)return 'dc-monitor-icon-tone-particle';
 if(n.indexOf('co2')!==-1||n.indexOf('二氧化碳')!==-1)return 'dc-monitor-icon-tone-co2';
+if(n.indexOf('noise')!==-1||n.indexOf('噪声')!==-1||n.indexOf('噪音')!==-1)return 'dc-monitor-icon-tone-noise';
 if(n.indexOf('press')!==-1||n.indexOf('气压')!==-1)return 'dc-monitor-icon-tone-pressure';
 if(n.indexOf('light')!==-1||n.indexOf('光照')!==-1||n.indexOf('lux')!==-1)return 'dc-monitor-icon-tone-light';
 if(n.indexOf('wind')!==-1||n.indexOf('风')!==-1)return 'dc-monitor-icon-tone-weather';
 if(n.indexOf('rain')!==-1||n.indexOf('雨')!==-1)return 'dc-monitor-icon-tone-weather';
 return 'dc-monitor-icon-tone-default';
+},
+_getMonitorUnit:function (name){
+var n=name.toLowerCase();
+if(n.indexOf('temp')!==-1||n.indexOf('温度')!==-1)return '°C';
+if(n.indexOf('hum')!==-1||n.indexOf('湿度')!==-1)return '%RH';
+if(n.indexOf('co2')!==-1||n.indexOf('二氧化碳')!==-1)return 'ppm';
+if(n.indexOf('noise')!==-1||n.indexOf('噪声')!==-1||n.indexOf('噪音')!==-1)return 'dB';
+if(n.indexOf('press')!==-1||n.indexOf('气压')!==-1)return 'kPa';
+if(n.indexOf('lux')!==-1||n.indexOf('light')!==-1||n.indexOf('光照')!==-1)return 'Lux';
+if(n.indexOf('pm')!==-1||n.indexOf('颗粒')!==-1)return 'μg/m³';
+if(n.indexOf('wind')!==-1||n.indexOf('风')!==-1)return 'm/s';
+return '';
 },
 _renderDeviceIconSection:function (){
 var html='<div class="dc-device-banner">';

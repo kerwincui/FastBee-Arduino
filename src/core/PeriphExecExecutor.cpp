@@ -249,12 +249,9 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
 
     // 精准上报执行结果
     if (rule.reportAfterExec && !results.empty()) {
-        Serial.printf("[DEBUG] Before reportActionResults, heap=%d\n", ESP.getFreeHeap());
         reportActionResults(results);
-        Serial.printf("[DEBUG] After reportActionResults, heap=%d\n", ESP.getFreeHeap());
     }
 
-    Serial.printf("[DEBUG] Before return results, heap=%d\n", ESP.getFreeHeap());
     return results;
 }
 
@@ -278,14 +275,12 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
     switch (actType) {
         case ExecActionType::ACTION_HIGH: {
             LOGGER.infof("[PeriphExec] Execute HIGH on %s", action.targetPeriphId.c_str());
-            Serial.printf("[DEBUG] Execute HIGH on %s\n", action.targetPeriphId.c_str());
             pm.stopActionTicker(action.targetPeriphId);
             return pm.writePin(action.targetPeriphId, GPIOState::STATE_HIGH);
         }
 
         case ExecActionType::ACTION_LOW: {
             LOGGER.infof("[PeriphExec] Execute LOW on %s", action.targetPeriphId.c_str());
-            Serial.printf("[DEBUG] Execute LOW on %s\n", action.targetPeriphId.c_str());
             pm.stopActionTicker(action.targetPeriphId);
             return pm.writePin(action.targetPeriphId, GPIOState::STATE_LOW);
         }

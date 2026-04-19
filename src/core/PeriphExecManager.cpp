@@ -811,7 +811,6 @@ bool PeriphExecManager::runOnce(const String& id, const String& receivedValue) {
     }
     LOGGER.infof("[PeriphExec] runOnce async dispatch: '%s' (id=%s, value='%s')",
                  ruleCopy.name.c_str(), id.c_str(), resolvedValue.c_str());
-    Serial.printf("[DEBUG] runOnce: rule=%s, value=%s\n", ruleCopy.name.c_str(), resolvedValue.c_str());
     dispatchAsync(ruleCopy, resolvedValue);
     return true;  // 返回 true 表示已提交
 }
