@@ -80,7 +80,7 @@
               "dataType": 1,
               "scaleFactor": 0.1,
               "decimalPlaces": 1,
-              "sensorId": "humidity",
+              "sensorId": "humidity1",
               "unit": "%RH"
             },
             {
@@ -88,7 +88,7 @@
               "dataType": 1,
               "scaleFactor": 0.1,
               "decimalPlaces": 1,
-              "sensorId": "temperature",
+              "sensorId": "temperature1",
               "unit": "°C"
             },
             {
@@ -103,7 +103,7 @@
               "regOffset": 3,
               "dataType": 0,
               "scaleFactor": 1,
-              "decimalPlaces": 0,
+              "decimalPlaces": 1,
               "sensorId": "co2",
               "unit": "ppm"
             },
@@ -119,7 +119,7 @@
               "regOffset": 6,
               "dataType": 2,
               "scaleFactor": 1,
-              "decimalPlaces": 0,
+              "decimalPlaces": 1,
               "sensorId": "lux",
               "unit": "Lux"
             }
