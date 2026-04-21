@@ -2466,12 +2466,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .motor-run-stopped { background: color-mix(in srgb, var(--danger) 14%, white); color: var(--danger-dark); border: 1px solid color-mix(in srgb, var(--danger) 38%, transparent); }
 .motor-status-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: var(--space-2); }
 .motor-status-item { text-align: center; padding: var(--space-2); background: color-mix(in srgb, var(--primary) 8%, var(--bg-card)); border-radius: var(--rounded-md); }
-.motor-status-label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 2px; }
+.motor-status-label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .motor-status-value { font-size: 15px; font-weight: 600; color: var(--text-primary); }
 .motor-status-unit { font-size: 11px; color: var(--text-muted); font-weight: 400; }
 .motor-params-section { margin-top: var(--space-3); }
 .motor-param-row { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-2); }
-.motor-param-row label { min-width: 48px; font-size: 13px; color: var(--text-secondary); }
+.motor-param-row label { width: 70px; flex-shrink: 0; font-size: 13px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .motor-param-input { max-width: 100px; }
 .motor-actions { display: flex; gap: var(--space-2); margin-top: var(--space-3); }
 .motor-action-btn { flex: 1; padding: var(--space-2) var(--space-3); border-radius: var(--rounded-md); font-size: 14px; font-weight: 600; border: 1px solid transparent; cursor: pointer; text-align: center; transition: all 0.2s; }
