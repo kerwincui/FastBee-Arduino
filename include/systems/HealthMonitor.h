@@ -2,6 +2,14 @@
 #define HEALTH_MONITOR_H
 
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
+// 任务栈水位信息
+struct TaskStackInfo {
+    char name[16];
+    uint32_t highWaterMark;  // 剩余栈空间（字节）
+};
 
 // 系统健康状态快照
 struct SystemHealth {
@@ -13,6 +21,7 @@ struct SystemHealth {
     int8_t       wifiStrength;       // WiFi RSSI（dBm）
     unsigned long uptime;            // 系统运行时间（毫秒）
     uint8_t      cpuUsage;           // CPU 估算占用（0-100%）
+    uint32_t     largestFreeBlock;   // 最大连续可用块（字节）
 };
 
 class HealthMonitor {
@@ -32,12 +41,19 @@ public:
 
     bool isSystemHealthy() const;
 
+    // 获取关键任务栈水位信息
+    size_t getTaskStackInfo(TaskStackInfo* outInfo, size_t maxTasks) const;
+
 private:
     void performHealthCheck();
+    void checkCriticalMemory();  // 低内存保护
+    void logTaskStackWatermarks();  // 定期输出任务栈水位
 
     SystemHealth  currentHealth;
     unsigned long lastCheckTime;
+    unsigned long lastStackLogTime;  // 上次输出栈水位日志的时间
     uint32_t      heapWatermark;
+    uint32_t      consecutiveLowMemCount;  // 连续低内存计数
     bool          running;
 };
 

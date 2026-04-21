@@ -102,6 +102,7 @@ public:
 
     bool loadMqttConfig(const String& filename = FileSystem::PROTOCOL_CONFIG_FILE); 
     bool begin();
+    void shutdown();  // 关闭后台任务（在系统关闭前调用）
     bool connect();
     void disconnect();
     void stop();           // 显式停止MQTT（断开并阻止自动重连）
@@ -165,6 +166,13 @@ private:
     StatusChangeCallback _statusChangeCallback;
     void _notifyStatusChange();  // 内部辅助方法
 
+    // 后台重连任务（避免 reconnect() 阻塞 loopTask）
+    volatile bool _reconnectPending;
+    volatile bool _reconnectRunning;
+    TaskHandle_t _reconnectTaskHandle;
+    static void reconnectTaskEntry(void* param);
+    void doReconnect();  // 实际执行重连（在后台任务中调用）
+
     // 线程安全：递归互斥量保护 publish 操作（PubSubClient 非线程安全）
     SemaphoreHandle_t _publishMutex = nullptr;
 
@@ -177,7 +185,7 @@ private:
     void processQueuedReports();
 
     void mqttCallback(char* topic, byte* payload, unsigned int length);
-    bool reconnect();
+    bool reconnect();  // 同步重连（供 doReconnect 调用）
     String buildFullTopic(const String& topic, bool autoPrefix) const; // 根据主题级autoPrefix构建完整主题
     String buildFullTopicWithType(const String& topic, bool autoPrefix, MqttTopicType topicType) const; // 根据topicType和设备配置构建完整主题
     

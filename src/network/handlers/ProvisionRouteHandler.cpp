@@ -52,8 +52,7 @@ void ProvisionRouteHandler::setupRoutes(AsyncWebServer* server) {
         doc["data"]["active"] = _apProvisionActive;
         doc["data"]["apSSID"] = WiFi.softAPSSID();
         doc["data"]["clients"] = WiFi.softAPgetStationNum();
-        String output; serializeJson(doc, output);
-        request->send(200, "application/json", output);
+        HandlerUtils::sendJsonStream(request, doc);
     });
 
     server->on("/api/provision/config", HTTP_GET,
@@ -88,8 +87,7 @@ void ProvisionRouteHandler::setupRoutes(AsyncWebServer* server) {
             doc["data"]["provisionGateway"] = "192.168.4.1";
             doc["data"]["provisionSubnet"] = "255.255.255.0";
         }
-        String output; serializeJson(doc, output);
-        request->send(200, "application/json", output);
+        HandlerUtils::sendJsonStream(request, doc);
     });
 
     server->on("/api/provision/config", HTTP_POST,
@@ -172,8 +170,7 @@ void ProvisionRouteHandler::setupRoutes(AsyncWebServer* server) {
         doc["success"] = true;
         doc["data"]["active"] = true;
         doc["data"]["apSSID"] = apSSID;
-        String output; serializeJson(doc, output);
-        request->send(200, "application/json", output);
+        HandlerUtils::sendJsonStream(request, doc);
     });
 
     server->on("/api/provision/stop", HTTP_POST,
@@ -217,8 +214,7 @@ void ProvisionRouteHandler::setupRoutes(AsyncWebServer* server) {
         } else {
             doc["data"]["remainingTime"] = 0;
         }
-        String output; serializeJson(doc, output);
-        request->send(200, "application/json", output);
+        HandlerUtils::sendJsonStream(request, doc);
     });
 
     server->on("/api/ble/provision/config", HTTP_GET,
@@ -250,8 +246,7 @@ void ProvisionRouteHandler::setupRoutes(AsyncWebServer* server) {
             doc["data"]["bleRxUUID"] = "6E400002-B5A3-F393-E0A9-E50E24DCCA9F";
             doc["data"]["bleTxUUID"] = "6E400003-B5A3-F393-E0A9-E50E24DCCA9F";
         }
-        String output; serializeJson(doc, output);
-        request->send(200, "application/json", output);
+        HandlerUtils::sendJsonStream(request, doc);
     });
 
     // JSON body handler for BLE provision config (PUT)
@@ -295,8 +290,7 @@ void ProvisionRouteHandler::setupRoutes(AsyncWebServer* server) {
         doc["success"] = true;
         doc["data"]["active"] = true;
         doc["data"]["deviceName"] = "FastBee_BLE";
-        String output; serializeJson(doc, output);
-        request->send(200, "application/json", output);
+        HandlerUtils::sendJsonStream(request, doc);
     });
 
     server->on("/api/ble/provision/stop", HTTP_POST,

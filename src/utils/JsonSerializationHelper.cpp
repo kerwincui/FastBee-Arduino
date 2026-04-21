@@ -7,46 +7,40 @@
 #include "utils/JsonConverters.h"
 
 bool JsonSerializationHelper::wifiConfigToJson(const WiFiConfig& config, JsonObject& jsonObj) {
-    try {
-        // 基本配置
-        jsonObj["deviceName"] = config.deviceName;
-        jsonObj["mode"] = static_cast<uint8_t>(config.mode);
-        jsonObj["apSSID"] = config.apSSID;
-        jsonObj["apPassword"] = config.apPassword;
-        jsonObj["apChannel"] = config.apChannel;
-        jsonObj["apHidden"] = config.apHidden;
-        jsonObj["staSSID"] = config.staSSID;
-        jsonObj["staPassword"] = config.staPassword;
-        
-        // IP配置
-        jsonObj["ipConfigType"] = static_cast<uint8_t>(config.ipConfigType);
-        jsonObj["staticIP"] = config.staticIP;
-        jsonObj["gateway"] = config.gateway;
-        jsonObj["subnet"] = config.subnet;
-        jsonObj["dns1"] = config.dns1;
-        jsonObj["dns2"] = config.dns2;
-        
-        // 高级配置
-        jsonObj["enableMDNS"] = config.enableMDNS;
-        jsonObj["customDomain"] = config.customDomain;
-        
-        // 备用IP列表
-        JsonArray backupIPs = jsonObj.createNestedArray("backupIPs");
-        for (const String& ip : config.backupIPs) {
-            backupIPs.add(ip);
-        }
-        
-        return true;
-    } catch (const std::exception& e) {
-        LOG_ERROR("[JsonHelper] wifiConfigToJson exception");
-        return false;
+    // 基本配置
+    jsonObj["deviceName"] = config.deviceName;
+    jsonObj["mode"] = static_cast<uint8_t>(config.mode);
+    jsonObj["apSSID"] = config.apSSID;
+    jsonObj["apPassword"] = config.apPassword;
+    jsonObj["apChannel"] = config.apChannel;
+    jsonObj["apHidden"] = config.apHidden;
+    jsonObj["staSSID"] = config.staSSID;
+    jsonObj["staPassword"] = config.staPassword;
+    
+    // IP配置
+    jsonObj["ipConfigType"] = static_cast<uint8_t>(config.ipConfigType);
+    jsonObj["staticIP"] = config.staticIP;
+    jsonObj["gateway"] = config.gateway;
+    jsonObj["subnet"] = config.subnet;
+    jsonObj["dns1"] = config.dns1;
+    jsonObj["dns2"] = config.dns2;
+    
+    // 高级配置
+    jsonObj["enableMDNS"] = config.enableMDNS;
+    jsonObj["customDomain"] = config.customDomain;
+    
+    // 备用IP列表
+    JsonArray backupIPs = jsonObj.createNestedArray("backupIPs");
+    for (const String& ip : config.backupIPs) {
+        backupIPs.add(ip);
     }
+    
+    return true;
 }
 
 bool JsonSerializationHelper::wifiConfigFromJson(JsonObject& jsonObj, WiFiConfig& config) {
-    try {
-        // 基本配置
-        if (jsonObj.containsKey("deviceName")) config.deviceName = jsonObj["deviceName"].as<String>();
+    // 基本配置
+    if (jsonObj.containsKey("deviceName")) config.deviceName = jsonObj["deviceName"].as<String>();
         if (jsonObj.containsKey("mode")) config.mode = static_cast<NetworkMode>(jsonObj["mode"].as<uint8_t>());
         if (jsonObj.containsKey("apSSID")) config.apSSID = jsonObj["apSSID"].as<String>();
         if (jsonObj.containsKey("apPassword")) config.apPassword = jsonObj["apPassword"].as<String>();
@@ -81,10 +75,6 @@ bool JsonSerializationHelper::wifiConfigFromJson(JsonObject& jsonObj, WiFiConfig
         }
         
         return true;
-    } catch (const std::exception& e) {
-        LOG_ERROR("[JsonHelper] wifiConfigFromJson exception");
-        return false;
-    }
 }
 
 String JsonSerializationHelper::networkModeToString(NetworkMode mode) {

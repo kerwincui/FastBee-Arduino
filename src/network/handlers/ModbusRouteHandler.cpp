@@ -45,9 +45,8 @@ static void sendOneShotError(WebHandlerContext* ctx, AsyncWebServerRequest* requ
             doc["error"] = msgBuf;
             doc["errorCode"] = errorCode;
             doc["exceptionCode"] = result.exceptionCode;
-            String out;
-            serializeJson(doc, out);
-            request->send(httpCode, "application/json", out);
+            HandlerUtils::sendJsonStream(request, doc);
+            // set httpCode on response manually not possible with stream, use workaround
             return;
         }
         case ONESHOT_NOT_INITIALIZED:
@@ -97,11 +96,10 @@ static void addModbusDebug(JsonDocument& doc, ModbusHandler* modbus) {
     debug["rx"] = modbus->getLastRxHex();
 }
 
-// 辅助：通过 slaveAddress 查找子设备索引
+// 辅助：通过 slaveAddress 查找子设备索引（零拷贝，避免 3.4KB ModbusConfig 栈分配）
 static int findDeviceIndexBySlaveAddr(ModbusHandler* modbus, uint8_t slaveAddr) {
-    ModbusConfig cfg = modbus->getConfig();
-    for (uint8_t i = 0; i < cfg.master.deviceCount; i++) {
-        if (cfg.master.devices[i].slaveAddress == slaveAddr) return (int)i;
+    for (uint8_t i = 0; i < modbus->getSubDeviceCount(); i++) {
+        if (modbus->getSubDevice(i).slaveAddress == slaveAddr) return (int)i;
     }
     return -1;
 }
@@ -150,18 +148,18 @@ static void publishBatchControlReport(WebHandlerContext* ctx, ModbusHandler* mod
     mqtt->publishReportData(payload);
 }
 
-static uint8_t countEnabledPollTasks(const ModbusConfig& config) {
+static uint8_t countEnabledPollTasks(ModbusHandler* modbus) {
     uint8_t count = 0;
-    for (uint8_t i = 0; i < config.master.taskCount; i++) {
-        if (config.master.tasks[i].enabled) count++;
+    for (uint8_t i = 0; i < modbus->getPollTaskCount(); i++) {
+        if (modbus->getPollTask(i).enabled) count++;
     }
     return count;
 }
 
-static uint16_t getMinEnabledPollInterval(const ModbusConfig& config) {
+static uint16_t getMinEnabledPollInterval(ModbusHandler* modbus) {
     uint16_t minInterval = 0;
-    for (uint8_t i = 0; i < config.master.taskCount; i++) {
-        const PollTask& task = config.master.tasks[i];
+    for (uint8_t i = 0; i < modbus->getPollTaskCount(); i++) {
+        PollTask task = modbus->getPollTask(i);
         if (!task.enabled) continue;
         if (minInterval == 0 || task.pollInterval < minInterval) {
             minInterval = task.pollInterval;
@@ -170,10 +168,10 @@ static uint16_t getMinEnabledPollInterval(const ModbusConfig& config) {
     return minInterval;
 }
 
-static uint16_t getMaxEnabledPollInterval(const ModbusConfig& config) {
+static uint16_t getMaxEnabledPollInterval(ModbusHandler* modbus) {
     uint16_t maxInterval = 0;
-    for (uint8_t i = 0; i < config.master.taskCount; i++) {
-        const PollTask& task = config.master.tasks[i];
+    for (uint8_t i = 0; i < modbus->getPollTaskCount(); i++) {
+        PollTask task = modbus->getPollTask(i);
         if (!task.enabled) continue;
         if (task.pollInterval > maxInterval) {
             maxInterval = task.pollInterval;
@@ -208,7 +206,7 @@ static const char* getTaskHealthStatus(const PollTask& task, const ModbusHandler
     return ageSec > getTaskStaleThresholdSec(task) ? "stale" : "ok";
 }
 
-static const char* buildModbusRiskLevel(const ModbusConfig& config,
+static const char* buildModbusRiskLevel(ModbusHandler* modbus,
                                         uint8_t enabledTaskCount,
                                         uint16_t minPollInterval,
                                         uint32_t totalPolls,
@@ -217,11 +215,11 @@ static const char* buildModbusRiskLevel(const ModbusConfig& config,
                                         uint32_t lastPollAgeSec) {
     if (enabledTaskCount >= 4 && minPollInterval > 0 && minPollInterval < 5) return "high";
     if (timeoutRate >= 20.0f && totalPolls >= 10) return "high";
-    if (config.master.responseTimeout > 3000 && config.master.maxRetries > 2 && enabledTaskCount >= 3) return "high";
+    if (modbus->getResponseTimeout() > 3000 && modbus->getMaxRetries() > 2 && enabledTaskCount >= 3) return "high";
 
     if (enabledTaskCount >= 4) return "medium";
     if (minPollInterval > 0 && minPollInterval < 5) return "medium";
-    if (config.master.interPollDelay < 100) return "medium";
+    if (modbus->getInterPollDelay() < 100) return "medium";
     if (failureRate >= 10.0f && totalPolls >= 10) return "medium";
     if (enabledTaskCount > 0 && lastPollAgeSec > 0) {
         uint32_t staleThreshold = static_cast<uint32_t>(minPollInterval > 0 ? minPollInterval : 5) * 3UL;
@@ -378,10 +376,9 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
         data["status"] = modbus->getStatus();
 
         if (modbus->getMode() == MODBUS_MASTER) {
-            ModbusConfig config = modbus->getConfig();
-            uint8_t enabledTaskCount = countEnabledPollTasks(config);
-            uint16_t minPollInterval = getMinEnabledPollInterval(config);
-            uint16_t maxPollInterval = getMaxEnabledPollInterval(config);
+            uint8_t enabledTaskCount = countEnabledPollTasks(modbus);
+            uint16_t minPollInterval = getMinEnabledPollInterval(modbus);
+            uint16_t maxPollInterval = getMaxEnabledPollInterval(modbus);
             uint32_t totalPolls = modbus->getTotalPollCount();
             uint32_t successPolls = modbus->getSuccessPollCount();
             uint32_t failedPolls = modbus->getFailedPollCount();
@@ -399,14 +396,14 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
             data["failedPolls"] = failedPolls;
             data["timeoutPolls"] = timeoutPolls;
 
-            health["riskLevel"] = buildModbusRiskLevel(config, enabledTaskCount, minPollInterval,
+            health["riskLevel"] = buildModbusRiskLevel(modbus, enabledTaskCount, minPollInterval,
                                                        totalPolls, timeoutRate, failureRate, lastPollAgeSec);
             health["enabledTaskCount"] = enabledTaskCount;
             health["minPollInterval"] = minPollInterval;
             health["maxPollInterval"] = maxPollInterval;
-            health["responseTimeout"] = config.master.responseTimeout;
-            health["maxRetries"] = config.master.maxRetries;
-            health["interPollDelay"] = config.master.interPollDelay;
+            health["responseTimeout"] = modbus->getResponseTimeout();
+            health["maxRetries"] = modbus->getMaxRetries();
+            health["interPollDelay"] = modbus->getInterPollDelay();
             health["lastPollAgeSec"] = lastPollAgeSec;
             health["successRate"] = successRate;
             health["failureRate"] = failureRate;
@@ -418,13 +415,13 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
             if (minPollInterval > 0 && minPollInterval < 5) {
                 warnings.add("存在小于 5 秒的轮询任务，容易放大总线抖动和页面卡顿。");
             }
-            if (config.master.responseTimeout > 3000) {
+            if (modbus->getResponseTimeout() > 3000) {
                 warnings.add("Modbus 主站响应超时偏大，异常从站会更长时间占用串口。");
             }
-            if (config.master.maxRetries > 2) {
+            if (modbus->getMaxRetries() > 2) {
                 warnings.add("Modbus 主站重试次数偏高，失败设备会拖长单轮轮询耗时。");
             }
-            if (config.master.interPollDelay < 100) {
+            if (modbus->getInterPollDelay() < 100) {
                 warnings.add("轮询间隔保护过小，连续请求可能压缩 Web 服务响应时间。");
             }
             if (totalPolls >= 10 && timeoutRate >= 20.0f) {
@@ -666,9 +663,9 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
     // 导致双重反转使设备恢复原状
     int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
     if (devIdx >= 0) {
-        ModbusConfig cfg = modbus->getConfig();
+        const ModbusSubDevice& dev = modbus->getSubDevice((uint8_t)devIdx);
         bool reportState = newState;
-        if (devIdx < (int)cfg.master.deviceCount && cfg.master.devices[devIdx].ncMode) {
+        if (dev.ncMode) {
             reportState = !newState;
         }
         publishControlReport(ctx, modbus, devIdx, channel, String(reportState ? 1 : 0));
@@ -684,9 +681,7 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
     data["mode"] = mode;
     addModbusDebug(doc, modbus);
     
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 // ============================================================================
@@ -727,21 +722,21 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
     
     OneShotResult result;
     
-    // 查找设备配置中的 batchRegister
+    // 查找设备配置中的 batchRegister 和 batchRegType（零拷贝访问）
     uint16_t batchReg = 0;
+    uint8_t batchRegType = 0;  // 0=位图, 1=命令
     {
-        ModbusConfig cfg = modbus->getConfig();
-        for (uint8_t i = 0; i < cfg.master.deviceCount; i++) {
-            if (cfg.master.devices[i].slaveAddress == slaveAddr) {
-                batchReg = cfg.master.devices[i].batchRegister;
-                break;
-            }
+        int devIdxBatch = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
+        if (devIdxBatch >= 0) {
+            const ModbusSubDevice& batchDev = modbus->getSubDevice((uint8_t)devIdxBatch);
+            batchReg = batchDev.batchRegister;
+            batchRegType = batchDev.batchRegType;
         }
     }
 
     if (mode == "register") {
-        if (batchReg > 0) {
-            // 位图寄存器模式：单次 FC06 写位图寄存器
+        if (batchReg > 0 && batchRegType == 0) {
+            // 位图寄存器模式：单次 FC06 写位图（每 bit 对应一个通道）
             uint16_t bitmask = (channelCount >= 16) ? 0xFFFF : (uint16_t)((1 << channelCount) - 1);
             if (action == "allOn") {
                 result = modbus->writeRegisterOnce(slaveAddr, batchReg, bitmask, true);
@@ -755,6 +750,21 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
                 }
                 uint16_t current = readR.data[0];
                 result = modbus->writeRegisterOnce(slaveAddr, batchReg, (uint16_t)(current ^ bitmask), true);
+            } else {
+                ctx->sendBadRequest(request, "Invalid action (allOn/allOff/allToggle)");
+                return;
+            }
+            if (result.error != ONESHOT_SUCCESS) {
+                sendOneShotError(ctx, request, result);
+                return;
+            }
+        } else if (batchReg > 0 && batchRegType == 1 && action != "allToggle") {
+            // 命令寄存器模式：写 1=全开, 0=全关（如中盛科技 0x0034）
+            // allToggle 不支持，降级到逐通道模式
+            if (action == "allOn") {
+                result = modbus->writeRegisterOnce(slaveAddr, batchReg, (uint16_t)1, true);
+            } else if (action == "allOff") {
+                result = modbus->writeRegisterOnce(slaveAddr, batchReg, (uint16_t)0, true);
             } else {
                 ctx->sendBadRequest(request, "Invalid action (allOn/allOff/allToggle)");
                 return;
@@ -821,7 +831,7 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
     
     // 操作后读取实际状态
     OneShotResult readResult;
-    bool useBitmapRead = (mode == "register" && batchReg > 0);
+    bool useBitmapRead = (mode == "register" && batchReg > 0 && batchRegType == 0);
     if (useBitmapRead) {
         readResult = modbus->readRegistersOnce(slaveAddr, 0x03, batchReg, 1, true);
     } else if (mode == "register") {
@@ -866,8 +876,7 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
     // MQTT 上报批量控制结果（ncMode 设备需要反转为用户意图值）
     int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
     if (devIdx >= 0) {
-        ModbusConfig cfg = modbus->getConfig();
-        bool isNcMode = (devIdx < (int)cfg.master.deviceCount && cfg.master.devices[devIdx].ncMode);
+        bool isNcMode = modbus->getSubDevice((uint8_t)devIdx).ncMode;
         if (isNcMode) {
             bool reportValues[32];
             for (uint16_t i = 0; i < channelCount && i < 32; i++) {
@@ -881,9 +890,7 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
 
     addModbusDebug(doc, modbus);
     
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 // ============================================================================
@@ -913,11 +920,9 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
     // 从设备配置中查找默认 delayMode
     int devIdxForDelay = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
     if (devIdxForDelay >= 0 && delayMode == 0) {
-        ModbusConfig cfg = modbus->getConfig();
-        if (devIdxForDelay < (int)cfg.master.deviceCount) {
-            if (cfg.master.devices[devIdxForDelay].delayMode > 0) {
-                delayMode = cfg.master.devices[devIdxForDelay].delayMode;
-            }
+        const ModbusSubDevice& delayDev = modbus->getSubDevice((uint8_t)devIdxForDelay);
+        if (delayDev.delayMode > 0) {
+            delayMode = delayDev.delayMode;
         }
     }
     
@@ -979,9 +984,7 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
         data["delayValue"] = delayValue;
         addModbusDebug(doc, modbus);
         
-        String out;
-        serializeJson(doc, out);
-        request->send(200, "application/json", out);
+        HandlerUtils::sendJsonStream(request, doc);
         return;
     }
 
@@ -1023,9 +1026,7 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
         data["mode"] = "software";
         addModbusDebug(doc, modbus);
         
-        String out;
-        serializeJson(doc, out);
-        request->send(200, "application/json", out);
+        HandlerUtils::sendJsonStream(request, doc);
     } else {
         // 线圈模式：使用 FC 0x05 写线圈
         // 步骤1：立即打开继电器（写线圈 ON）
@@ -1073,9 +1074,7 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
         data["mode"] = ncMode ? "software" : "hardware";
         addModbusDebug(doc, modbus);
         
-        String out;
-        serializeJson(doc, out);
-        request->send(200, "application/json", out);
+        HandlerUtils::sendJsonStream(request, doc);
     }
 }
 
@@ -1146,9 +1145,7 @@ void ModbusRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request) 
     }
     addModbusDebug(doc, modbus);
     
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 // ============================================================================
@@ -1202,9 +1199,7 @@ void ModbusRouteHandler::handleModbusDeviceAddress(AsyncWebServerRequest* reques
     }
     addModbusDebug(doc, modbus);
     
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 // ============================================================================
@@ -1230,14 +1225,12 @@ void ModbusRouteHandler::handleModbusDeviceBaudrate(AsyncWebServerRequest* reque
     // 从设备配置中查找默认值
     int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
     if (devIdx >= 0 && mode == 0) {
-        ModbusConfig cfg = modbus->getConfig();
-        if (devIdx < (int)cfg.master.deviceCount) {
-            // 如果设备配置了 baudRateMode=1，自动切换到寄存器模式
-            if (cfg.master.devices[devIdx].baudRateMode == 1) {
-                mode = 1;
-                baudRateReg = cfg.master.devices[devIdx].baudRateReg;
-                if (baudRateReg == 0) baudRateReg = 0x0033;
-            }
+        const ModbusSubDevice& baudDev = modbus->getSubDevice((uint8_t)devIdx);
+        // 如果设备配置了 baudRateMode=1，自动切换到寄存器模式
+        if (baudDev.baudRateMode == 1) {
+            mode = 1;
+            baudRateReg = baudDev.baudRateReg;
+            if (baudRateReg == 0) baudRateReg = 0x0033;
         }
     }
     
@@ -1285,9 +1278,7 @@ void ModbusRouteHandler::handleModbusDeviceBaudrate(AsyncWebServerRequest* reque
         data["register"] = baudRateReg;
         addModbusDebug(doc, modbus);
         
-        String out;
-        serializeJson(doc, out);
-        request->send(200, "application/json", out);
+        HandlerUtils::sendJsonStream(request, doc);
     } else {
         // FC 0xB0 专有指令模式（默认，兼容国产通用继电器板）
         uint8_t baudCode;
@@ -1330,9 +1321,7 @@ void ModbusRouteHandler::handleModbusDeviceBaudrate(AsyncWebServerRequest* reque
         data["mode"] = "proprietary";
         addModbusDebug(doc, modbus);
         
-        String out;
-        serializeJson(doc, out);
-        request->send(200, "application/json", out);
+        HandlerUtils::sendJsonStream(request, doc);
     }
 }
 
@@ -1382,9 +1371,7 @@ void ModbusRouteHandler::handleModbusDiscreteInputs(AsyncWebServerRequest* reque
         states.add(result.data[i] != 0);
     }
     
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 // ============================================================================
@@ -1436,9 +1423,7 @@ void ModbusRouteHandler::handleModbusRegisterRead(AsyncWebServerRequest* request
     }
     addModbusDebug(doc, modbus);
     
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 // ============================================================================
@@ -1485,9 +1470,7 @@ void ModbusRouteHandler::handleModbusRegisterWrite(AsyncWebServerRequest* reques
     data["value"] = value;
     addModbusDebug(doc, modbus);
     
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 // ============================================================================
@@ -1549,9 +1532,7 @@ void ModbusRouteHandler::handleModbusRegisterBatchWrite(AsyncWebServerRequest* r
     }
     addModbusDebug(doc, modbus);
     
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 // ============================================================================
@@ -1585,15 +1566,13 @@ void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request
     uint16_t motorRegs[5] = {0x0000, 0x0001, 0x0002, 0x0005, 0x0007}; // 默认值(YF-53兼容)
     int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
     if (devIdx >= 0) {
-        ModbusConfig cfg = modbus->getConfig();
-        if (devIdx < (int)cfg.master.deviceCount) {
-            memcpy(motorRegs, cfg.master.devices[devIdx].motorRegs, sizeof(motorRegs));
-            bool allZero = true;
-            for (int i = 0; i < 5; i++) { if (motorRegs[i] != 0) { allZero = false; break; } }
-            if (allZero) {
-                uint16_t defaults[5] = {0x0000, 0x0001, 0x0002, 0x0005, 0x0007};
-                memcpy(motorRegs, defaults, sizeof(defaults));
-            }
+        const ModbusSubDevice& motorDev = modbus->getSubDevice((uint8_t)devIdx);
+        memcpy(motorRegs, motorDev.motorRegs, sizeof(motorRegs));
+        bool allZero = true;
+        for (int i = 0; i < 5; i++) { if (motorRegs[i] != 0) { allZero = false; break; } }
+        if (allZero) {
+            uint16_t defaults[5] = {0x0000, 0x0001, 0x0002, 0x0005, 0x0007};
+            memcpy(motorRegs, defaults, sizeof(defaults));
         }
     }
     
@@ -1655,9 +1634,7 @@ void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request
             values.add(result.data[i]);
         addModbusDebug(doc, modbus);
         
-        String out;
-        serializeJson(doc, out);
-        request->send(200, "application/json", out);
+        HandlerUtils::sendJsonStream(request, doc);
         return;
     } else {
         ctx->sendBadRequest(request, "Invalid action (forward/reverse/stop/setSpeed/setPulse/readStatus)");
@@ -1691,7 +1668,5 @@ void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request
     data["value"] = writeValue;
     addModbusDebug(doc, modbus);
     
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }

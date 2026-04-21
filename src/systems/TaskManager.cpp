@@ -9,6 +9,7 @@
 #include <core/SystemConstants.h>
 #include <core/FeatureFlags.h>
 #include "systems/LoggerSystem.h"
+#include <esp_task_wdt.h>
 
 TaskManager::TaskManager() {
     tasks.reserve(TaskScheduler::MAX_TASKS);
@@ -164,6 +165,9 @@ void TaskManager::run() {
             task.lastRun = currentTime;
             task.lastExecutionTime = executionTime;
             
+            // 每个任务执行完后喂狗，防止累计执行时间触发 WDT
+            esp_task_wdt_reset();
+            
             // 更新最大执行时�?
             if (executionTime > task.maxExecutionTime) {
                 task.maxExecutionTime = executionTime;
@@ -173,7 +177,14 @@ void TaskManager::run() {
             task.executionCount++;
             
             // 检查任务执行时间是否过�?
-            if (executionTime > task.interval * 0.8) { // 执行时间超过间隔�?0%
+            if (executionTime > 3000) {
+                // 超过 3 秒的任务是危险的，可能触发 WDT
+                char buf[128];
+                snprintf(buf, sizeof(buf), 
+                         "Task Manager: Task '%s' execution time (%lu ms) DANGEROUSLY LONG!",
+                         task.name, executionTime);
+                LOG_ERROR(buf);
+            } else if (executionTime > task.interval * 0.8) { // 执行时间超过间隔�?0%
                 char buf[128];
                 snprintf(buf, sizeof(buf), 
                          "Task Manager: Task '%s' execution time (%lu ms) is close to interval (%lu ms)",

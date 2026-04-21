@@ -90,8 +90,15 @@ public:
 
     /**
      * @brief 重启Modbus（从protocol.json加载配置并初始化）
+     * 注意：此方法栈开销大（~12KB），只能在 loopTask 中调用
      */
     bool restartModbus();
+
+    /**
+     * @brief 延迟重启Modbus（设置标志，由 handle() 在 loopTask 中执行）
+     * 用于 HTTP handler 中避免在 AsyncTCP 小栈任务中执行
+     */
+    bool restartModbusDeferred();
 
     /**
      * @brief 停止Modbus
@@ -137,6 +144,7 @@ private:
     SimpleSSECallback modbusStatusSSECallback;
     
     bool isInitialized;
+    volatile bool modbusRestartPending;  // 延迟重启标志，由 handle() 在 loopTask 中检查
     
     // 初始化具体协议
     bool initMQTT(void* config);

@@ -12,6 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const { spawn } = require('child_process');
 const { buildWebModules } = require('./build-web-modules');
 
 const WWW_DIR = path.join(__dirname, '..', 'data', 'www');
@@ -112,7 +113,59 @@ function compressAllFiles() {
     console.log(`  Total size: ${stats.totalOriginalSize} -> ${stats.totalCompressedSize} bytes (-${totalRatio}%)`);
 }
 
-function main() {
+function getActiveEnvFromPlatformioIni() {
+    const iniPath = path.join(__dirname, '..', 'platformio.ini');
+    if (!fs.existsSync(iniPath)) {
+        return 'esp32dev';
+    }
+    const content = fs.readFileSync(iniPath, 'utf-8');
+    const lines = content.split(/\r?\n/);
+    let currentEnv = null;
+    let activeEnv = null;
+    for (const line of lines) {
+        const trimmed = line.trim();
+        const envMatch = trimmed.match(/^\[env:([^\]]+)\]$/);
+        if (envMatch) {
+            currentEnv = envMatch[1];
+            continue;
+        }
+        if (currentEnv && !activeEnv) {
+            if (/^upload_port\s*=/.test(trimmed)) {
+                activeEnv = currentEnv;
+                break;
+            }
+        }
+    }
+    return activeEnv || 'esp32dev';
+}
+
+function runPioCommand(args, label, allowFailure = false) {
+    return new Promise((resolve, reject) => {
+        const cmdStr = `pio ${args.join(' ')}`;
+        console.log(`[${label}] 执行: ${cmdStr}`);
+        const child = spawn('pio', args, { stdio: 'inherit', shell: true });
+        child.on('close', (code, signal) => {
+            if (code === 0 || allowFailure) {
+                resolve();
+            } else {
+                reject(new Error(`${label} 失败 (退出码: ${code})`));
+            }
+        });
+        child.on('error', (err) => {
+            if (allowFailure) {
+                resolve();
+            } else {
+                reject(err);
+            }
+        });
+    });
+}
+
+async function main() {
+    const args = process.argv.slice(2);
+    const noUpload = args.includes('--no-upload');
+    const noMonitor = args.includes('--no-monitor');
+
     console.log('========================================');
     console.log('  ESP32 Web Asset Gzip Tool');
     console.log('========================================');
@@ -130,10 +183,35 @@ function main() {
 
     console.log('\n========================================');
     console.log('  Compression completed');
-    console.log('========================================\n');
+    console.log('========================================');
+
+    if (noUpload) {
+        console.log('\n提示: 已跳过上传和监视（--no-upload）');
+        return;
+    }
+
+    const envName = getActiveEnvFromPlatformioIni();
+    console.log(`\n[Step 3] Uploading filesystem (env: ${envName})...`);
+    try {
+        await runPioCommand(['run', '--target', 'uploadfs', '--environment', envName], 'UploadFS');
+        console.log('\n[UploadFS] 文件系统上传成功');
+    } catch (err) {
+        console.error(`\n[UploadFS] 上传失败: ${err.message}`);
+        console.log('提示: 若串口被占用，请先关闭串口监视器再重试');
+        process.exit(1);
+    }
+
+    if (noMonitor) {
+        console.log('\n提示: 已跳过串口监视器（--no-monitor）');
+        return;
+    }
+
+    console.log('\n[Step 4] Opening serial monitor...');
+    console.log('提示: 按 Ctrl+C 退出串口监视器\n');
+    await runPioCommand(['device', 'monitor', '--environment', envName], 'Monitor', true);
 }
 
-main();
+main().catch(() => process.exit(1));
 
 function ROOT_DIR() {
     return path.join(__dirname, '..');

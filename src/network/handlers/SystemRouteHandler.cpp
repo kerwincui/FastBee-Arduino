@@ -102,9 +102,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             doc["success"] = false;
             doc["error"] = "Network service unavailable";
         }
-        String output;
-        serializeJson(doc, output);
-        request->send(200, "application/json", output);
+        HandlerUtils::sendJsonStream(request, doc);
     });
 
     server->on("/api/network/config", HTTP_POST,
@@ -179,9 +177,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 // 提示网络重启需要时间
                 respDoc["data"]["restartRequired"] = true;
                 
-                String output;
-                serializeJson(respDoc, output);
-                request->send(200, "application/json", output);
+                HandlerUtils::sendJsonStream(request, respDoc);
             } else {
                 ctx->sendError(request, 500, "Failed to save network configuration");
             }
@@ -216,8 +212,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         doc["data"]["maxSize"] = LOGGER.getLogFileSizeLimit();
         doc["data"]["level"] = (int)LOGGER.getLogLevel();
         doc["data"]["fileLogging"] = LOGGER.isFileLoggingEnabled();
-        String output; serializeJson(doc, output);
-        request->send(200, "application/json", output);
+        HandlerUtils::sendJsonStream(request, doc);
     });
 
     // Files
@@ -437,9 +432,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             resp["success"] = true;
             resp["message"] = "Device configuration saved";
             resp["data"]["deviceId"] = doc["deviceId"];
-            String output;
-            serializeJson(resp, output);
-            request->send(200, "application/json", output);
+            HandlerUtils::sendJsonStream(request, resp);
         });
     deviceJsonHandler->setMethod(HTTP_POST | HTTP_PUT);
     server->addHandler(deviceJsonHandler);
@@ -482,8 +475,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 f.close();
             }
         }
-        String output; serializeJson(doc, output);
-        request->send(200, "application/json", output);
+        HandlerUtils::sendJsonStream(request, doc);
     });
 
     server->on("/api/device/time/sync", HTTP_POST,
@@ -509,8 +501,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             doc["data"]["synced"] = false;
             doc["data"]["internetAvailable"] = false;
             doc["data"]["uptime"] = millis();
-            String output; serializeJson(doc, output);
-            request->send(200, "application/json", output);
+            HandlerUtils::sendJsonStream(request, doc);
             return;
         }
             
@@ -547,8 +538,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         doc["data"]["internetAvailable"] = internetAvailable;
         doc["data"]["uptime"] = millis();
         if (synced) { LOGGER.info("NTP sync triggered via web"); }
-        String output; serializeJson(doc, output);
-        request->send(200, "application/json", output);
+        HandlerUtils::sendJsonStream(request, doc);
     });
 
     // Health check
@@ -638,9 +628,7 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
     }
 
     doc["success"] = true;
-    String output;
-    serializeJson(doc, output);
-    request->send(200, "application/json", output);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
@@ -761,16 +749,12 @@ void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
     } else {
         doc["success"] = false;
         doc["error"] = "Network service unavailable";
-        String output;
-        serializeJson(doc, output);
-        request->send(200, "application/json", output);
+        HandlerUtils::sendJsonStream(request, doc);
         return;
     }
 
     doc["success"] = true;
-    String output;
-    serializeJson(doc, output);
-    request->send(200, "application/json", output);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 void SystemRouteHandler::handleSaveNetworkConfig(AsyncWebServerRequest* request) {
@@ -795,9 +779,7 @@ void SystemRouteHandler::handleGetLogsList(AsyncWebServerRequest* request) {
     File root = LittleFS.open("/logs");
     if (!root || !root.isDirectory()) {
         if (root) root.close();
-        String output;
-        serializeJson(doc, output);
-        request->send(200, "application/json", output);
+        HandlerUtils::sendJsonStream(request, doc);
         return;
     }
 
@@ -814,9 +796,7 @@ void SystemRouteHandler::handleGetLogsList(AsyncWebServerRequest* request) {
     }
     root.close();
 
-    String output;
-    serializeJson(doc, output);
-    request->send(200, "application/json", output);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 void SystemRouteHandler::handleGetLogContent(AsyncWebServerRequest* request) {
@@ -843,9 +823,7 @@ void SystemRouteHandler::handleGetLogContent(AsyncWebServerRequest* request) {
         doc["data"]["content"] = "Log file does not exist";
         doc["data"]["size"] = 0;
         doc["data"]["lines"] = 0;
-        String output;
-        serializeJson(doc, output);
-        request->send(200, "application/json", output);
+        HandlerUtils::sendJsonStream(request, doc);
         return;
     }
 
@@ -888,11 +866,7 @@ void SystemRouteHandler::handleGetLogContent(AsyncWebServerRequest* request) {
 
     result = "";
 
-    String output;
-    serializeJson(doc, output);
-    doc.clear();
-
-    request->send(200, "application/json", output);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 void SystemRouteHandler::handleDeleteLog(AsyncWebServerRequest* request) {
@@ -932,9 +906,7 @@ void SystemRouteHandler::handleGetFilesList(AsyncWebServerRequest* request) {
     if (!root || !root.isDirectory()) {
         doc["success"] = false;
         doc["error"] = "Invalid directory";
-        String output;
-        serializeJson(doc, output);
-        request->send(200, "application/json", output);
+        HandlerUtils::sendJsonStream(request, doc);
         return;
     }
 
@@ -956,9 +928,7 @@ void SystemRouteHandler::handleGetFilesList(AsyncWebServerRequest* request) {
 
     root.close();
 
-    String output;
-    serializeJson(doc, output);
-    request->send(200, "application/json", output);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 void SystemRouteHandler::handleGetDeviceConfig(AsyncWebServerRequest* request) {
@@ -1073,7 +1043,5 @@ void SystemRouteHandler::handleGetDeviceInfo(AsyncWebServerRequest* request) {
     }
 
     doc["success"] = true;
-    String output;
-    serializeJson(doc, output);
-    request->send(200, "application/json", output);
+    HandlerUtils::sendJsonStream(request, doc);
 }

@@ -696,11 +696,13 @@ systemItems.length>0||scriptItems.length>0||
 sensorReadItems.length>0||otherItems.length>0;
 var hasAnyControls=hasButtonControls||modbusDeviceList.length>0;
 if(hasAnyControls){
-html+='<div class="dc-layout-toolbar">';
-html+='<span class="dc-layout-title">'+this._t('device-control-dashboard')+'</span>';
-html+='<div class="dc-toolbar-actions">';
+html+='<div class="card dc-header-card">';
+html+='<div class="card-header card-header-toolbar dc-header-card-inner">';
+html+='<h2 class="card-title dc-header-title">'+this._t('device-control-dashboard')+'</h2>';
+html+='<div class="dc-header-actions">';
 html+='<button class="dc-btn-sm dc-btn-refresh" id="dc-refresh-btn">'+this._t('dashboard-refresh')+'</button>';
 html+='<button class="dc-btn-sm dc-btn-reset dc-layout-reset">'+this._t('device-control-reset-layout')+'</button>';
+html+='</div>';
 html+='</div>';
 html+='</div>';
 html+='<div class="dc-control-flow">';

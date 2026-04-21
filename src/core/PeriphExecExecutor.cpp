@@ -218,8 +218,8 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
         String effectiveValue = (action.useReceivedValue && !receivedValue.isEmpty())
                                 ? receivedValue : action.actionValue;
 
-        LOGGER.infof("[PeriphExec] Exec action: target=%s type=%d val=%s (useRecv=%d)",
-            action.targetPeriphId.c_str(), action.actionType,
+        LOGGER.infof("[PeriphExec] Executing action: type=%d on %s, value=%s (useRecv=%d)",
+            action.actionType, action.targetPeriphId.c_str(),
             effectiveValue.c_str(), action.useReceivedValue);
 
         bool ok = false;
@@ -245,11 +245,23 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
         }
 
         results.insert(results.end(), actionResults.begin(), actionResults.end());
+
+        // 打印每个动作的执行结果
+        for (const auto& ar : actionResults) {
+            LOGGER.infof("[PeriphExec] Action completed: target=%s, value=%s, result=%s",
+                ar.targetPeriphId.c_str(), ar.actualValue.c_str(),
+                ar.success ? "SUCCESS" : "FAILED");
+        }
     }
 
     // 精准上报执行结果
     if (rule.reportAfterExec && !results.empty()) {
+        LOGGER.infof("[PeriphExec] Rule '%s' execution done, reporting %d results",
+            rule.name.c_str(), results.size());
         reportActionResults(results);
+    } else if (!results.empty()) {
+        LOGGER.infof("[PeriphExec] Rule '%s' execution done, %d results (report suppressed)",
+            rule.name.c_str(), results.size());
     }
 
     return results;
@@ -903,10 +915,10 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
     MQTTClient* mqtt = getMqttClient();
     if (mqtt && mqtt->getIsConnected()) {
         bool ok = mqtt->queueReportData(reportData);
-        LOGGER.infof("[PeriphExec] Report action results queued: %s (%s)",
-                     reportData.c_str(), ok ? "ok" : "queue_failed");
+        LOGGER.infof("[PeriphExec] Reporting status: %s (%s)",
+                     reportData.c_str(), ok ? "queued" : "queue_failed");
     } else {
-        LOGGER.debug("[PeriphExec] MQTT not connected, skip action results report");
+        LOGGER.warning("[PeriphExec] Reporting status: MQTT not connected, skip");
     }
 }
 

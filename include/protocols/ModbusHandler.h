@@ -107,7 +107,8 @@ struct ModbusSubDevice {
     uint16_t coilBase;          // 线圈/寄存器基地址
     bool     ncMode;            // NC 常闭模式
     uint8_t  controlProtocol;   // 0=线圈(FC01/FC05), 1=寄存器(FC03/FC06)
-    uint16_t batchRegister;     // 位图批量寄存器地址(如0x0001)，0表示不使用
+    uint16_t batchRegister;     // 批量寄存器地址，0表示不使用
+    uint8_t  batchRegType;       // 批量寄存器类型: 0=位图(每bit=通道), 1=命令(0=全关,1=全开)
     uint8_t  delayMode;         // 延时模式: 0=FC05闪开(默认), 1=软件延时, 2=硬件寄存器延时
     uint8_t  baudRateMode;      // 波特率配置模式: 0=FC0xB0专有(默认), 1=FC06写寄存器
     uint16_t baudRateReg;       // 波特率寄存器地址(当baudRateMode=1时使用)
@@ -125,7 +126,7 @@ struct ModbusSubDevice {
 
     ModbusSubDevice()
         : slaveAddress(1), channelCount(2), coilBase(0),
-          ncMode(false), controlProtocol(0), batchRegister(0),
+          ncMode(false), controlProtocol(0), batchRegister(0), batchRegType(0),
           delayMode(0), baudRateMode(0), baudRateReg(0), addressReg(0),
           pwmRegBase(0), pwmResolution(8), pidDecimals(1),
           motorDecimals(0), enabled(true) {
@@ -169,7 +170,9 @@ struct ModbusConfig {
     uint16_t interFrameDelay;
     String configFile;
     uint8_t transferType;     // 传输类型: 0=JSON, 1=透传(RAW HEX)
-    uint8_t workMode;         // 工作模式: 0=MQTT指令模式, 1=主动轮询模式
+    // workMode 已移除：工作模式由外设执行模块的轮询触发器自动推导
+    //   有 POLL_TRIGGER 规则 → 主动轮询模式 (workMode=1)
+    //   无 POLL_TRIGGER 规则 → MQTT指令模式 (workMode=0)
     MasterConfig master;      // Master模式配置
     
     // 默认构造函数
@@ -182,8 +185,7 @@ struct ModbusConfig {
           dePin(255),  // 255表示不使用方向控制
           responseTimeout(1000),
           interFrameDelay(5),
-          transferType(0),
-          workMode(1) {}  // 默认主动轮询模式
+          transferType(0) {}
 };
 
 class ModbusHandler {
@@ -232,7 +234,12 @@ public:
     // === Master模式公有接口 ===
     void setMode(ModbusMode mode);
     ModbusMode getMode() const { return config.mode; }
-    uint8_t getWorkMode() const { return config.workMode; }
+    // 工作模式：由轮询任务配置自动推导，不再作为存储字段
+    // 有轮询任务(taskCount>0) → 1(主动轮询模式)，无轮询任务 → 0(MQTT指令模式)
+    uint8_t getWorkMode() const;
+    uint16_t getResponseTimeout() const { return config.master.responseTimeout; }
+    uint8_t getMaxRetries() const { return config.master.maxRetries; }
+    uint16_t getInterPollDelay() const { return config.master.interPollDelay; }
     
     // 轮询任务只读访问（任务由配置文件定义，由 PeriphExec 调度执行）
     uint8_t getPollTaskCount() const { return config.master.taskCount; }

@@ -2,6 +2,7 @@
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <Arduino.h>
+#include <LittleFS.h>
 
 namespace HandlerUtils {
 
@@ -39,6 +40,52 @@ inline bool checkLowMemory(AsyncWebServerRequest* request, size_t threshold = 20
         return true;
     }
     return false;
+}
+
+// 流式发送 JSON 文档（避免一次性 serializeJson 到 String 占用大量内存）
+inline void sendJsonStream(AsyncWebServerRequest* request, JsonDocument& doc) {
+    // 预检查堆内存（预留 20KB 给系统其他部分）
+    if (checkLowMemory(request)) return;
+    AsyncResponseStream* response = request->beginResponseStream("application/json");
+    if (!response) {
+        sendJsonError(request, 503, "Response stream allocation failed");
+        return;
+    }
+    serializeJson(doc, *response);
+    request->send(response);
+}
+
+// 发送带 success:true 包装的 JSON 文档（流式输出）
+inline void sendJsonDocSuccess(AsyncWebServerRequest* request, JsonDocument& doc) {
+    if (checkLowMemory(request)) return;
+    AsyncResponseStream* response = request->beginResponseStream("application/json");
+    if (!response) {
+        sendJsonError(request, 503, "Response stream allocation failed");
+        return;
+    }
+    response->print("{\"success\":true,\"data\":");
+    serializeJson(doc, *response);
+    response->print("}");
+    request->send(response);
+}
+
+// 统一的 "read JSON file -> deserialize -> modify -> serialize -> write" 流程
+// 返回 true 表示成功
+inline bool updateJsonConfig(const char* path, std::function<void(JsonDocument&)> modifier) {
+    JsonDocument doc;
+    if (LittleFS.exists(path)) {
+        File f = LittleFS.open(path, "r");
+        if (f) {
+            deserializeJson(doc, f);
+            f.close();
+        }
+    }
+    modifier(doc);
+    File out = LittleFS.open(path, "w");
+    if (!out) return false;
+    serializeJson(doc, out);
+    out.close();
+    return true;
 }
 
 // 安全获取 query 参数

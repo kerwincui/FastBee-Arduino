@@ -629,7 +629,6 @@
             data.modbusRtu_mode = 'master';
             data.modbusRtu_dePin = document.getElementById('rtu-de-pin')?.value || '14';
             data.modbusRtu_transferType = document.getElementById('rtu-transfer-type')?.value || '0';
-            data.modbusRtu_workMode = document.getElementById('rtu-work-mode')?.value || '1';
             if (data.modbusRtu_enabled === 'true' && !data.modbusRtu_peripheralId) {
                 Notification.warning(i18n.t('rtu-no-uart-peripherals'));
                 return;
@@ -770,11 +769,7 @@
         },
 
         onWorkModeChange(mode) {
-            var show = (mode === '1') ? '' : 'none';
-            var sec = document.getElementById('master-config-section');
-            if (sec) { if (show === 'none') AppState.hideElement(sec); else AppState.showElement(sec); }
-            var st = document.getElementById('master-status-section');
-            if (st) { if (show === 'none') AppState.hideElement(st); else AppState.showElement(st); }
+            // workMode 已移除，由后端动态推导
         },
 
         _renderAllDevices() {
@@ -1404,6 +1399,9 @@
             document.getElementById('mdev-edit-protocol').value = String(dev ? (dev.controlProtocol || 0) : 0);
             document.getElementById('mdev-edit-nc').value = dev ? (dev.ncMode ? 'true' : 'false') : 'true';
             document.getElementById('mdev-edit-enabled').checked = dev ? (dev.enabled !== false) : true;
+            // 继电器扩展
+            document.getElementById('mdev-edit-batch-reg').value = dev ? (dev.batchRegister || 0) : 0;
+            document.getElementById('mdev-edit-batch-type').value = String(dev ? (dev.batchRegType || 0) : 0);
             document.getElementById('mdev-edit-pwm-reg-base').value = dev ? (dev.pwmRegBase || 0) : 0;
             document.getElementById('mdev-edit-pwm-resolution').value = String(dev ? (dev.pwmResolution || 8) : 8);
             var pidA = dev ? (dev.pidAddrs || [0,1,2,3,4,5]) : [0,1,2,3,4,5];
@@ -1434,13 +1432,16 @@
             var pwmSec = document.getElementById('mdev-edit-pwm-section');
             var pidSec = document.getElementById('mdev-edit-pid-section');
             var motorSec = document.getElementById('mdev-edit-motor-section');
+            var relaySec = document.getElementById('mdev-edit-relay-section');
             // 先移除 fb-hidden（含 !important），再用 toggleVisible 统一控制显隐
             if (pwmSec) pwmSec.classList.remove('fb-hidden');
             if (pidSec) pidSec.classList.remove('fb-hidden');
             if (motorSec) motorSec.classList.remove('fb-hidden');
+            if (relaySec) relaySec.classList.remove('fb-hidden');
             if (pwmSec) AppState.toggleVisible(pwmSec, type === 'pwm');
             if (pidSec) AppState.toggleVisible(pidSec, type === 'pid');
             if (motorSec) AppState.toggleVisible(motorSec, type === 'motor');
+            if (relaySec) AppState.toggleVisible(relaySec, type === 'relay');
         },
         
         _closeEditModal() {
@@ -1479,6 +1480,9 @@
             dev.controlProtocol = parseInt(document.getElementById('mdev-edit-protocol').value) || 0;
             dev.ncMode = (document.getElementById('mdev-edit-nc').value === 'true');
             dev.enabled = document.getElementById('mdev-edit-enabled').checked;
+            // 继电器扩展
+            dev.batchRegister = parseInt(document.getElementById('mdev-edit-batch-reg').value) || 0;
+            dev.batchRegType = parseInt(document.getElementById('mdev-edit-batch-type').value) || 0;
             dev.pwmRegBase = parseInt(document.getElementById('mdev-edit-pwm-reg-base').value) || 0;
             dev.pwmResolution = parseInt(document.getElementById('mdev-edit-pwm-resolution').value) || 8;
             var pidFields = ['pv','sv','out','p','i','d'];

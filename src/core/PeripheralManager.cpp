@@ -200,6 +200,12 @@ std::vector<PeripheralConfig> PeripheralManager::getAllPeripherals() const {
     return result;
 }
 
+void PeripheralManager::forEachPeripheral(std::function<void(const PeripheralConfig&)> callback) const {
+    for (const auto& pair : peripherals) {
+        callback(pair.second);
+    }
+}
+
 bool PeripheralManager::hasPeripheral(const String& id) const {
     return peripherals.find(id) != peripherals.end();
 }

@@ -44,13 +44,19 @@ static double jsonVariantToDoubleSafe(JsonVariantConst v) {
 MQTTClient::MQTTClient()
     : isConnected(false), stopped(false), lastReconnectAttempt(0),
       lastConnectedTime(0), lastErrorCode(0), reconnectCount(0),
-      reconnectInterval(5000), lastLoopTime(0) {
+      reconnectInterval(5000), lastLoopTime(0),
+      _reconnectPending(false), _reconnectRunning(false), _reconnectTaskHandle(nullptr) {
     _publishMutex = xSemaphoreCreateRecursiveMutex();
     _dataCommandQueue = xQueueCreate(4, sizeof(String*));
     _reportQueue = xQueueCreate(4, sizeof(String*));
 }
 
 MQTTClient::~MQTTClient() {
+    // 先关闭后台任务，避免 disconnect 后任务仍在尝试重连
+    if (_reconnectTaskHandle) {
+        vTaskDelete(_reconnectTaskHandle);
+        _reconnectTaskHandle = nullptr;
+    }
     disconnect();
     if (_publishMutex) {
         vSemaphoreDelete(_publishMutex);
@@ -254,14 +260,41 @@ bool MQTTClient::begin() {
     mqttClient.setServer(config.server.c_str(), config.port);
     mqttClient.setBufferSize(1024);
     mqttClient.setKeepAlive(config.keepAlive);
-    // socketTimeout 需大于 keepAlive，避免 keepAlive ping 期间被超时断开
-    mqttClient.setSocketTimeout(config.keepAlive > 15 ? config.keepAlive : 15);
+    // socketTimeout 设置为 5 秒，加速 publish/connect 失败检测
+    // 过大的值（如 60s）会导致 WiFiClient::write() 对死 socket 阻塞数十秒
+    mqttClient.setSocketTimeout(5);
     mqttClient.setCallback([this](char* topic, byte* payload, unsigned int length) {
         this->mqttCallback(topic, payload, length);
     });
 
+    // 启动后台重连任务（避免 reconnect() 阻塞 loopTask）
+    if (_reconnectTaskHandle == nullptr) {
+        BaseType_t ret = xTaskCreate(
+            reconnectTaskEntry,
+            "mqtt_reconn",
+            4096,           // 栈大小：4KB 足够 reconnect 使用
+            this,           // 参数
+            1,              // 优先级：与 loopTask 同级
+            &_reconnectTaskHandle
+        );
+        if (ret != pdPASS) {
+            LOG_WARNING("[MQTT] Failed to create background reconnect task");
+            _reconnectTaskHandle = nullptr;
+        } else {
+            LOG_INFO("[MQTT] Background reconnect task created");
+        }
+    }
+
     LOG_INFO("MQTT: Client initialized");
     return true;
+}
+
+void MQTTClient::shutdown() {
+    if (_reconnectTaskHandle) {
+        vTaskDelete(_reconnectTaskHandle);
+        _reconnectTaskHandle = nullptr;
+        LOG_INFO("[MQTT] Background reconnect task stopped");
+    }
 }
 
 bool MQTTClient::connect() {
@@ -273,6 +306,8 @@ void MQTTClient::disconnect() {
     if (mqttClient.connected()) {
         mqttClient.disconnect();
     }
+    // 确保底层 TCP socket 完全关闭释放
+    wifiClient.stop();
     isConnected = false;
     reconnectInterval = 5000;
     LOG_INFO("MQTT: Disconnected");
@@ -314,6 +349,10 @@ bool MQTTClient::publish(const String& topic, const String& message) {
         char buf[80];
         snprintf(buf, sizeof(buf), "MQTT: Publish failed topic=%s", fullTopic.c_str());
         LOG_WARNING(buf);
+        // publish 失败通常意味着连接已断，立即标记以避免后续 write 对死 socket 阻塞
+        if (!mqttClient.connected()) {
+            isConnected = false;
+        }
     }
     return ok;
 }
@@ -337,6 +376,9 @@ bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
         char buf[80];
         snprintf(buf, sizeof(buf), "MQTT: Publish failed topic=%s", fullTopic.c_str());
         LOG_WARNING(buf);
+        if (!mqttClient.connected()) {
+            isConnected = false;
+        }
     }
     return ok;
 }
@@ -635,6 +677,8 @@ void MQTTClient::handle() {
         if (isConnected) {
             isConnected = false;
             reconnectInterval = 5000;  // 刚断开时重置重连间隔
+            // 立即关闭底层 socket，避免后续 write() 对死 socket 阻塞 10s+
+            wifiClient.stop();
             LOG_WARNING("MQTT: Connection lost");
             _notifyStatusChange();  // 通知状态变化：连接断开
             // 触发MQTT断开连接系统事件
@@ -646,17 +690,17 @@ void MQTTClient::handle() {
         unsigned long now = millis();
         if (now - lastReconnectAttempt >= reconnectInterval) {
             lastReconnectAttempt = now;
-            LOGGER.infof("[MQTT] Attempting reconnect... WiFi:%d, stopped:%d", 
-                         WiFi.status() == WL_CONNECTED, stopped);
-            if (reconnect()) {
-                reconnectInterval = 5000;  // 连接成功，重置间隔
-                LOG_INFO("MQTT: Reconnect successful");
-            } else {
-                // 指数退避：5s -> 10s -> 20s -> 30s（上限）
-                reconnectInterval = min(reconnectInterval * 2, (uint32_t)30000);
-                char buf[64];
-                snprintf(buf, sizeof(buf), "MQTT: Reconnect failed, next retry in %lus", reconnectInterval / 1000);
-                LOG_INFO(buf);
+            // WiFi 未连接时跳过重连，避免 WiFiClient 内部 socket 已失效导致空指针崩溃
+            if (WiFi.status() != WL_CONNECTED) {
+                LOGGER.infof("[MQTT] WiFi not connected (status=%d), skipping reconnect", WiFi.status());
+                return;
+            }
+            // 调度后台任务执行重连（避免 reconnect() 阻塞 loopTask 7秒+）
+            if (!_reconnectPending && !_reconnectRunning) {
+                _reconnectPending = true;
+                LOG_INFO("[MQTT] Reconnect scheduled in background task");
+            } else if (_reconnectRunning) {
+                LOG_INFO("[MQTT] Background reconnect still in progress, skipping");
             }
         }
     } else {
@@ -696,6 +740,7 @@ void MQTTClient::processQueuedCommands() {
             PeriphExecManager& execMgr = PeriphExecManager::getInstance();
             String report = execMgr.handleDataCommand(*cmd);
             if (!report.isEmpty() && report != "[]") {
+                LOG_INFOF("[PeriphExec] Reporting status (DataCommand response): %s", report.c_str());
                 publishReportData(report);
             }
             delete cmd;
@@ -943,6 +988,11 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
 }
 
 bool MQTTClient::reconnect() {
+    // 显式关闭旧 TCP socket，防止 PubSubClient::connect() 创建新 socket 时旧 socket 泄漏
+    // 每次失败的 connect() 都会残留 socket 描述符 + 内核缓冲区（2-4KB），
+    // 高频重连会快速耗尽堆内存（268KB → 4KB）
+    wifiClient.stop();
+
     LOG_INFO("MQTT: Connecting...");
 
     // 根据认证类型构建clientId和密码
@@ -1023,6 +1073,53 @@ bool MQTTClient::reconnect() {
         PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_CONN_FAILED, String(lastErrorCode));
     }
     return ok;
+}
+
+// ============ 后台重连任务 ============
+
+void MQTTClient::reconnectTaskEntry(void* param) {
+    MQTTClient* client = (MQTTClient*)param;
+    while (true) {
+        if (client->_reconnectPending && !client->_reconnectRunning) {
+            client->doReconnect();
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+void MQTTClient::doReconnect() {
+    _reconnectPending = false;
+    _reconnectRunning = true;
+
+    // 重连次数保护：连续失败超过 20 次后拉长间隔至 5 分钟，降低内存压力
+    constexpr uint32_t MAX_FAST_RETRIES = 20;
+    constexpr uint32_t SLOW_RETRY_INTERVAL = 300000;  // 5分钟
+    
+    if (reconnectCount > MAX_FAST_RETRIES) {
+        reconnectInterval = SLOW_RETRY_INTERVAL;
+        char buf[96];
+        snprintf(buf, sizeof(buf), "[MQTT] Reconnect count=%lu exceeds %lu, slowing to %lus interval",
+                 (unsigned long)reconnectCount, (unsigned long)MAX_FAST_RETRIES,
+                 (unsigned long)(SLOW_RETRY_INTERVAL / 1000));
+        LOG_WARNING(buf);
+    }
+
+    LOG_INFO("[MQTT] Background reconnect starting...");
+
+    bool ok = reconnect();
+
+    if (ok) {
+        reconnectInterval = 5000;  // 连接成功，重置间隔
+        LOG_INFO("[MQTT] Background reconnect successful");
+    } else {
+        // 指数退避：5s -> 10s -> 20s -> 30s（上限）
+        reconnectInterval = min(reconnectInterval * 2, (uint32_t)30000);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "[MQTT] Background reconnect failed, next retry in %lus", reconnectInterval / 1000);
+        LOG_INFO(buf);
+    }
+
+    _reconnectRunning = false;
 }
 
 // ============ FastBee认证方法 ============

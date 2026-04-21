@@ -185,11 +185,12 @@ String PeriphExecScheduler::handleDataCommand(const String& message) {
     JsonDocument cmdDoc;
     DeserializationError err = deserializeJson(cmdDoc, message);
     if (err || !cmdDoc.is<JsonArray>()) {
-        LOGGER.warning("[PeriphExec] DataCommand: invalid JSON array");
+        LOGGER.warning("[PeriphExec] Received command: INVALID JSON (parse failed)");
         return "";
     }
 
     JsonArray cmdArr = cmdDoc.as<JsonArray>();
+    LOGGER.infof("[PeriphExec] Received command: DATA_COMMAND with %d items", cmdArr.size());
 
     // 预处理阶段：处理 modbus_read 指令（阻塞操作，必须在持锁之前完成）
     JsonDocument modbusReportDoc;
@@ -310,12 +311,11 @@ void PeriphExecScheduler::checkButtonEvents() {
     _lastButtonCheck = now;
 
     PeripheralManager& pm = PeripheralManager::getInstance();
-    std::vector<PeripheralConfig> allPeriphs = pm.getAllPeripherals();
 
-    for (const auto& config : allPeriphs) {
+    pm.forEachPeripheral([this, &pm, now](const PeripheralConfig& config) {
         // 只处理支持按键事件的外设类型（上拉/下拉输入）
-        if (!config.enabled) continue;
-        if (!supportsButtonEvent(config.type)) continue;
+        if (!config.enabled) return;
+        if (!supportsButtonEvent(config.type)) return;
 
         // 获取或创建按键状态
         if (_buttonStates.find(config.id) == _buttonStates.end()) {
@@ -330,7 +330,7 @@ void PeriphExecScheduler::checkButtonEvents() {
 
         // 读取当前按键状态
         GPIOState gpioState = pm.readPin(config.id);
-        if (gpioState == GPIOState::STATE_UNDEFINED) continue;
+        if (gpioState == GPIOState::STATE_UNDEFINED) return;
 
         bool currentLevel = (gpioState == GPIOState::STATE_HIGH);
         btnState.currentState = currentLevel;
@@ -420,7 +420,7 @@ void PeriphExecScheduler::checkButtonEvents() {
                 }
             }
         }
-    }
+    });
 }
 
 void PeriphExecScheduler::triggerButtonEvent(const String& periphId, EventType eventType) {

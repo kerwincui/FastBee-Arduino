@@ -1256,16 +1256,18 @@ a:hover { text-decoration: underline; }
 .form-label.required::after { content: " *"; color: var(--danger); }
 
 /* Form Input - Unified Style (select handled separately to preserve arrow) */
-.form-input, input[type="text"], input[type="password"], input[type="number"], input[type="email"] {
-  height: 40px;
-  padding: 0 var(--space-3);
+.form-input, input[type="text"], input[type="password"], input[type="number"], input[type="email"], textarea, .form-textarea {
+  min-height: 40px;
+  padding: 6px var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--rounded-md);
   background: var(--bg-input);
   color: var(--text-primary);
   transition: all var(--transition);
   width: 100%;
-  font-size: 14px;
+  font-size: 15px;
+  line-height: 1.5;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
 }
 
 /* Form Select - use background-color to preserve arrow icon */
@@ -2457,7 +2459,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 [data-theme="dark"] .modbus-debug-entry { border-bottom-color: var(--border); }
 
 /* Motor control panel */
-.motor-status-card { background: color-mix(in srgb, var(--primary) 14%, var(--bg-card)); border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent); border-radius: var(--rounded-lg); padding: var(--space-3); margin-top: var(--space-3); }
+.motor-status-card { border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent); border-radius: var(--rounded-lg); padding: var(--space-3); }
 .motor-status-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2); font-weight: 600; color: var(--text-primary); font-size: 14px; }
 .motor-run-badge { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
 .motor-run-idle { background: var(--slate-100); color: var(--text-muted); border: 1px solid var(--border); }
@@ -2694,6 +2696,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-layout-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .dc-layout-title { font-size: 16px; font-weight: 600; color: var(--text-primary); }
 .dc-toolbar-actions { display: flex; gap: 8px; align-items: center; }
+
+/* Device control header card */
+.dc-header-card {
+  margin-bottom: 15px !important;
+  box-shadow: none !important;
+  width: 100%;
+  box-sizing: border-box;
+}
+.dc-header-card .dc-header-card-inner { padding: var(--space-3) var(--space-5); }
+.dc-header-card .dc-header-title { font-size: 16px; font-weight: 600; }
+.dc-header-actions { display: flex; gap: 8px; align-items: center; }
 
 /* Resize Handle */
 .dc-resize-handle {

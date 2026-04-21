@@ -855,11 +855,13 @@
 
             if (hasAnyControls) {
                 // 使用流式布局（flex-wrap），所有控制组作为独立卡片自然排列
-                html += '<div class="dc-layout-toolbar">';
-                html += '<span class="dc-layout-title">' + this._t('device-control-dashboard') + '</span>';
-                html += '<div class="dc-toolbar-actions">';
+                html += '<div class="card dc-header-card">';
+                html += '<div class="card-header card-header-toolbar dc-header-card-inner">';
+                html += '<h2 class="card-title dc-header-title">' + this._t('device-control-dashboard') + '</h2>';
+                html += '<div class="dc-header-actions">';
                 html += '<button class="dc-btn-sm dc-btn-refresh" id="dc-refresh-btn">' + this._t('dashboard-refresh') + '</button>';
                 html += '<button class="dc-btn-sm dc-btn-reset dc-layout-reset">' + this._t('device-control-reset-layout') + '</button>';
+                html += '</div>';
                 html += '</div>';
                 html += '</div>';
                 html += '<div class="dc-control-flow">';

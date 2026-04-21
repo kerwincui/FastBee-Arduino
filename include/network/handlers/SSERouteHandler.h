@@ -16,6 +16,11 @@ public:
     void broadcastModbusStatus(const String& data);
     size_t clientCount() const;
 
+    // 最大 SSE 客户端数，防止多客户端导致内存压力
+    static constexpr size_t MAX_SSE_CLIENTS = 3;
+    // 单次消息最大字节数，超过则截断
+    static constexpr size_t MAX_SSE_MESSAGE_SIZE = 1024;
+
 private:
     WebHandlerContext* ctx;
     AsyncEventSource _events;

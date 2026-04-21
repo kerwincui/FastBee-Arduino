@@ -7,6 +7,7 @@
 #include "./protocols/ProtocolManager.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
+#include <memory>
 
 static const char* PROTOCOL_CONFIG_PATH = "/config/protocol.json";
 
@@ -59,31 +60,59 @@ void ProtocolRouteHandler::handleGetProtocolConfig(AsyncWebServerRequest* reques
         return;
     }
 
-    JsonDocument doc;
-
     if (LittleFS.exists(PROTOCOL_CONFIG_PATH)) {
-        File f = LittleFS.open(PROTOCOL_CONFIG_PATH, "r");
-        if (f) {
-            JsonDocument fileCfg;
-            DeserializationError err = deserializeJson(fileCfg, f);
-            f.close();
-
-            if (!err) {
-                doc["success"] = true;
-                doc["data"] = fileCfg;
-                String out;
-                serializeJson(doc, out);
-                request->send(200, "application/json", out);
-                return;
-            }
+        // 使用 chunked response 避免一次性分配大缓冲区
+        // 响应格式: {"success":true,"data":<文件内容>}
+        struct ChunkState {
+            File file;
+            uint8_t phase;  // 0=prefix, 1=file, 2=suffix, 3=done
+        };
+        auto state = std::make_shared<ChunkState>();
+        state->file = LittleFS.open(PROTOCOL_CONFIG_PATH, "r");
+        if (!state->file) {
+            JsonDocument doc;
+            doc["success"] = true;
+            doc["data"].to<JsonObject>();
+            HandlerUtils::sendJsonStream(request, doc);
+            return;
         }
+        state->phase = 0;
+
+        request->sendChunked("application/json",
+            [state](uint8_t* buffer, size_t maxLen, size_t index) -> size_t {
+                if (state->phase == 0) {
+                    // 发送 prefix
+                    static const char prefix[] = "{\"success\":true,\"data\":";
+                    size_t pLen = sizeof(prefix) - 1;
+                    if (maxLen < pLen) return RESPONSE_TRY_AGAIN;
+                    memcpy(buffer, prefix, pLen);
+                    state->phase = 1;
+                    return pLen;
+                }
+                if (state->phase == 1) {
+                    // 流式读文件
+                    if (!state->file.available()) {
+                        state->file.close();
+                        state->phase = 2;
+                        // 发送 suffix
+                        buffer[0] = '}';
+                        state->phase = 3;
+                        return 1;
+                    }
+                    size_t toRead = std::min(maxLen, (size_t)256);
+                    int n = state->file.read(buffer, toRead);
+                    return (n > 0) ? (size_t)n : 0;
+                }
+                // done
+                return 0;
+            });
+        return;
     }
 
+    JsonDocument doc;
     doc["success"] = true;
     doc["data"].to<JsonObject>();
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* request) {
@@ -113,7 +142,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["modbusRtu"]["mode"] = GP("modbusRtu_mode", "master");
     doc["modbusRtu"]["dePin"] = GPI("modbusRtu_dePin", "-1");
     doc["modbusRtu"]["transferType"] = GPI("modbusRtu_transferType", "0");
-    doc["modbusRtu"]["workMode"] = GPI("modbusRtu_workMode", "1");
+    // workMode 已移除：由轮询任务配置自动推导，不再保存
 
     // Modbus RTU Master 配置（仅在配置中不存在时写入默认值，不覆盖已有配置）
     if (!doc["modbusRtu"]["master"].containsKey("responseTimeout"))
@@ -387,6 +416,9 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     #undef GP
     #undef GPI
 
+    // 让出 CPU 时间，避免文件写入阻塞 async_tcp 任务太久
+    yield();
+
     File f = LittleFS.open(PROTOCOL_CONFIG_PATH, "w");
     if (!f) {
         ctx->sendError(request, 500, "Failed to save protocol config");
@@ -395,6 +427,9 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
 
     serializeJsonPretty(doc, f);
     f.close();
+
+    // 让出 CPU 时间，避免文件 I/O + 后续协议重启累计阻塞太久
+    yield();
 
     // 保存成功后，根据MQTT启用状态处理连接
     bool mqttReconnected = false;
@@ -424,7 +459,8 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     if (doc["modbusRtu"]["enabled"].as<bool>()) {
         ProtocolManager* pm = ctx->protocolManager;
         if (pm) {
-            modbusRestarted = pm->restartModbus();
+            // 延迟重启：避免在 AsyncTCP 小栈任务中执行 restartModbus()
+            modbusRestarted = pm->restartModbusDeferred();
         }
     } else {
         ProtocolManager* pm = ctx->protocolManager;
@@ -447,7 +483,5 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     if (!mqttReconnected && doc["mqtt"]["enabled"].as<bool>()) {
         resp["data"]["mqttError"] = mqttError;
     }
-    String out;
-    serializeJson(resp, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, resp);
 }

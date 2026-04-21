@@ -1277,6 +1277,7 @@ void PeriphExecManager::dispatchButtonEventRules(const String& eventId, const St
 }
 
 void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
+    LOGGER.infof("[PeriphExec] Received MQTT message: %d items (non-DataCommand)", arr.size());
     // 阶段1: 持锁匹配，收集需要执行的规则副本及其匹配的接收值
     struct MatchedRule {
         PeriphExecRule rule;
@@ -1435,7 +1436,7 @@ void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& sourc
 }
 
 String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::vector<int>& processedIndices) {
-    // DEBUG: 打印完整 DATA_COMMAND 内容，用于排查"设备开启后立即关闭"问题
+    // 打印完整 DATA_COMMAND 内容
     {
         static uint32_t _dcSeq = 0;
         uint32_t seq = ++_dcSeq;
@@ -1443,10 +1444,9 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
         for (JsonObject item : cmdArr) {
             String iid = item["id"].as<String>();
             String ival = item["value"].as<String>();
-            LOGGER.warningf("[DataCmd#%u] item[%d]: id='%s' value='%s'", seq, n, iid.c_str(), ival.c_str());
+            LOGGER.infof("[PeriphExec] Received command #%u [%d]: id='%s', value='%s'", seq, n, iid.c_str(), ival.c_str());
             n++;
         }
-        LOGGER.warningf("[DataCmd#%u] total %d items", seq, n);
     }
 
     // 预处理阶段：处理 modbus_read 指令
@@ -1558,8 +1558,8 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
     }
 
     for (auto& mi : matchedItems) {
-        LOGGER.infof("[PeriphExec] DataCommand matched rule '%s' for id='%s' value='%s'",
-            mi.rule.name.c_str(), mi.itemId.c_str(), mi.itemValue.c_str());
+        LOGGER.infof("[PeriphExec] Matched rule '%s': trigger id='%s', value='%s', actions=%d",
+            mi.rule.name.c_str(), mi.itemId.c_str(), mi.itemValue.c_str(), mi.rule.actions.size());
 
         // 抑制 executeAllActions 内部的 reportActionResults 上报，
         // 由 processDataCommandMatch 统一构建响应并返回给调用方上报，避免双重上报
@@ -1639,8 +1639,8 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
                 LOGGER.warningf("[PeriphExec] Direct sensorId control not supported for type '%s'", dev.deviceType);
             }
 
-            LOGGER.infof("[PeriphExec] Direct sensorId control: id='%s' → modbus:%d ch=%d %s",
-                unmatchedIds[i].c_str(), devIdx, channel, writeOk ? "ok" : "failed");
+            LOGGER.infof("[PeriphExec] Action completed: direct Modbus control id='%s' → dev=%d ch=%d, result=%s",
+                unmatchedIds[i].c_str(), devIdx, channel, writeOk ? "SUCCESS" : "FAILED");
 
             JsonObject reportItem = reportArr.add<JsonObject>();
             reportItem["id"] = unmatchedIds[i];

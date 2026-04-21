@@ -14,7 +14,7 @@
 #include <memory>
 
 ProtocolManager::ProtocolManager() 
-    : isInitialized(false) {
+    : isInitialized(false), modbusRestartPending(false) {
 }
 
 ProtocolManager::~ProtocolManager() {
@@ -243,6 +243,12 @@ String ProtocolManager::getProtocolStatus(ProtocolType type) {
 }
 
 void ProtocolManager::handle() {
+    // 检查延迟重启标志（在 loopTask 16KB 栈中安全执行）
+    if (modbusRestartPending) {
+        modbusRestartPending = false;
+        LOG_INFO("[Modbus] Executing deferred restart in loopTask...");
+        restartModbus();
+    }
     if (mqttClient) mqttClient->handle();
     if (modbusHandler) modbusHandler->handle();
 #if FASTBEE_ENABLE_TCP
@@ -416,7 +422,7 @@ bool ProtocolManager::restartModbus() {
     modbusConfig.slaveAddress = rtu["slaveAddress"] | (uint8_t)1;
     modbusConfig.responseTimeout = rtu["timeout"] | (uint16_t)1000;
     modbusConfig.transferType = rtu["transferType"] | (uint8_t)0;
-    modbusConfig.workMode = rtu["workMode"] | (uint8_t)1;  // 默认主动轮询模式
+    // workMode 已移除：由 ModbusHandler::getWorkMode() 根据轮询任务配置动态推导
     
     String modeStr = rtu["mode"] | "slave";
     modbusConfig.mode = (modeStr == "master") ? MODBUS_MASTER : MODBUS_SLAVE;
@@ -482,6 +488,9 @@ bool ProtocolManager::restartModbus() {
                 const char* dName = d["name"] | "Device";
                 strncpy(dev.name, dName, sizeof(dev.name) - 1);
                 dev.name[sizeof(dev.name) - 1] = '\0';
+                const char* sid = d["sensorId"] | "";
+                strncpy(dev.sensorId, sid, sizeof(dev.sensorId) - 1);
+                dev.sensorId[sizeof(dev.sensorId) - 1] = '\0';
                 const char* dType = d["deviceType"] | "relay";
                 strncpy(dev.deviceType, dType, sizeof(dev.deviceType) - 1);
                 dev.deviceType[sizeof(dev.deviceType) - 1] = '\0';
@@ -491,6 +500,11 @@ bool ProtocolManager::restartModbus() {
                 dev.ncMode          = d["ncMode"] | false;
                 dev.controlProtocol = d["controlProtocol"] | (uint8_t)0;
                 dev.batchRegister   = d["batchRegister"] | (uint16_t)0;
+                dev.batchRegType    = d["batchRegType"] | (uint8_t)0;
+                dev.delayMode       = d["delayMode"] | (uint8_t)0;
+                dev.baudRateMode    = d["baudRateMode"] | (uint8_t)0;
+                dev.baudRateReg     = d["baudRateReg"] | (uint16_t)0;
+                dev.addressReg      = d["addressReg"] | (uint16_t)0;
                 dev.pwmRegBase      = d["pwmRegBase"] | (uint16_t)0;
                 dev.pwmResolution   = d["pwmResolution"] | (uint8_t)8;
                 dev.pidDecimals     = d["pidDecimals"] | (uint8_t)1;
@@ -566,6 +580,7 @@ bool ProtocolManager::restartModbus() {
 
 void ProtocolManager::stopModbus() {
     LOG_INFO("Protocol Manager: Stopping Modbus...");
+    modbusRestartPending = false;  // 取消待执行的延迟重启
     PeriphExecManager::getInstance().setModbusReadCallback(nullptr);
     
     // 注销 Modbus 外设和通信回调
@@ -574,6 +589,12 @@ void ProtocolManager::stopModbus() {
     if (modbusHandler) {
         modbusHandler->end();
     }
+}
+
+bool ProtocolManager::restartModbusDeferred() {
+    LOG_INFO("Protocol Manager: Modbus restart deferred to loopTask");
+    modbusRestartPending = true;
+    return true;
 }
 
 // ========== MQTT触发的Modbus一次性读取 ==========

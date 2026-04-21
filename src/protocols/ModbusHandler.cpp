@@ -277,10 +277,7 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
         config.transferType = doc["transferType"].as<uint8_t>();
     }
     
-    // 解析工作模式
-    if (doc.containsKey("workMode")) {
-        config.workMode = doc["workMode"].as<uint8_t>();
-    }
+    // workMode 已移除：由轮询任务配置自动推导，忽略旧配置文件中的值
     
     // 解析Master模式配置
     if (doc.containsKey("master")) {
@@ -358,6 +355,7 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                 dev.ncMode          = d["ncMode"] | false;
                 dev.controlProtocol = d["controlProtocol"] | (uint8_t)0;
                 dev.batchRegister   = d["batchRegister"] | (uint16_t)0;
+                dev.batchRegType    = d["batchRegType"] | (uint8_t)0;
                 dev.delayMode       = d["delayMode"] | (uint8_t)0;
                 dev.baudRateMode    = d["baudRateMode"] | (uint8_t)0;
                 dev.baudRateReg     = d["baudRateReg"] | (uint16_t)0;
@@ -412,7 +410,7 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
     doc["configFile"] = config.configFile;
     doc["mode"] = (config.mode == MODBUS_MASTER) ? "master" : "slave";
     doc["transferType"] = config.transferType;
-    doc["workMode"] = config.workMode;
+    // workMode 已移除：不再序列化，由 getWorkMode() 动态计算
     
     // 序列化Master配置
     JsonObject masterObj = doc.createNestedObject("master");
@@ -462,6 +460,7 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
         d["ncMode"]          = dev.ncMode;
         d["controlProtocol"] = dev.controlProtocol;
         d["batchRegister"]   = dev.batchRegister;
+        d["batchRegType"]    = dev.batchRegType;
         d["delayMode"]       = dev.delayMode;
         d["baudRateMode"]    = dev.baudRateMode;
         d["baudRateReg"]     = dev.baudRateReg;
@@ -1137,6 +1136,11 @@ void ModbusHandler::setMode(ModbusMode newMode) {
     }
     
     LOG_INFOF("Modbus: Mode changed to %s", (newMode == MODBUS_MASTER) ? "Master" : "Slave");
+}
+
+uint8_t ModbusHandler::getWorkMode() const {
+    // 动态推导：有轮询任务配置 → 主动轮询模式(1)，无轮询任务 → MQTT指令模式(0)
+    return (config.mode == MODBUS_MASTER && config.master.taskCount > 0) ? 1 : 0;
 }
 
 // ============ 轮询任务只读访问 ============

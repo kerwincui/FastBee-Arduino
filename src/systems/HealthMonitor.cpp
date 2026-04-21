@@ -20,7 +20,9 @@
 
 HealthMonitor::HealthMonitor()
     : lastCheckTime(0),
+      lastStackLogTime(0),
       heapWatermark(UINT32_MAX),
+      consecutiveLowMemCount(0),
       running(false) {
     memset(&currentHealth, 0, sizeof(currentHealth));
 }
@@ -41,10 +43,16 @@ void HealthMonitor::update() {
     if (!running) return;
 
     unsigned long currentTime = millis();
-    // 检查间隔：5 秒（与原逻辑一致）
+    // 健康检查间隔：5 秒
     if (currentTime - lastCheckTime >= 5000UL) {
         performHealthCheck();
+        checkCriticalMemory();
         lastCheckTime = currentTime;
+    }
+    // 任务栈水位日志：每 60 秒输出一次
+    if (currentTime - lastStackLogTime >= 60000UL) {
+        logTaskStackWatermarks();
+        lastStackLogTime = currentTime;
     }
 }
 
@@ -59,6 +67,7 @@ void HealthMonitor::performHealthCheck() {
 
     // 碎片率 = 1 - (最大连续块 / 总空闲)
     size_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    currentHealth.largestFreeBlock = largestBlock;
     currentHealth.heapFragmentation = (currentHealth.freeHeap > 0)
         ? static_cast<uint8_t>(100U - (largestBlock * 100U / currentHealth.freeHeap))
         : 0;
@@ -104,4 +113,80 @@ bool HealthMonitor::isSystemHealthy() const {
     return currentHealth.freeHeap         >= HealthCheck::MIN_FREE_HEAP
         && currentHealth.heapFragmentation <= HealthCheck::MAX_HEAP_FRAGMENTATION
         && currentHealth.fileSystemOK;
+}
+
+// 低内存保护：连续多次检测到严重低内存时重启设备
+void HealthMonitor::checkCriticalMemory() {
+    // 严重低内存阈值：8KB 以下很可能导致崩溃
+    constexpr uint32_t CRITICAL_HEAP_THRESHOLD = 8192;
+    // 危险低内存阈值：16KB 以下开始警告
+    constexpr uint32_t WARNING_HEAP_THRESHOLD = 16384;
+    // 连续严重低内存次数阈值：连续 3 次（15秒）就重启
+    constexpr uint32_t CRITICAL_COUNT_THRESHOLD = 3;
+
+    if (currentHealth.freeHeap < CRITICAL_HEAP_THRESHOLD) {
+        consecutiveLowMemCount++;
+        char buf[96];
+        snprintf(buf, sizeof(buf), "Health: CRITICAL low memory! heap=%lu maxBlock=%lu count=%lu",
+                 (unsigned long)currentHealth.freeHeap,
+                 (unsigned long)currentHealth.largestFreeBlock,
+                 (unsigned long)consecutiveLowMemCount);
+        LOG_ERROR(buf);
+
+        if (consecutiveLowMemCount >= CRITICAL_COUNT_THRESHOLD) {
+            LOG_ERROR("Health: Memory critically low for too long, rebooting!");
+            delay(100);
+            ESP.restart();
+        }
+    } else if (currentHealth.freeHeap < WARNING_HEAP_THRESHOLD) {
+        consecutiveLowMemCount = 0;
+        char buf[80];
+        snprintf(buf, sizeof(buf), "Health: Low memory warning heap=%lu maxBlock=%lu",
+                 (unsigned long)currentHealth.freeHeap,
+                 (unsigned long)currentHealth.largestFreeBlock);
+        LOG_WARNING(buf);
+    } else {
+        consecutiveLowMemCount = 0;
+    }
+}
+
+// 定期输出关键任务的栈水位
+void HealthMonitor::logTaskStackWatermarks() {
+    // 获取当前任务的栈水位
+    TaskHandle_t tasks[] = { NULL, NULL, NULL };
+    const char* names[] = { "loopTask", "async_tcp", "mqtt_reconn" };
+    
+    for (int i = 0; i < 3; i++) {
+        tasks[i] = xTaskGetHandle(names[i]);
+        if (tasks[i]) {
+            UBaseType_t watermark = uxTaskGetStackHighWaterMark(tasks[i]);
+            // 水位低于 512 字节时警告（栈溢出风险）
+            if (watermark < 128) {  // FreeRTOS 返回的是 word 数（ESP32 上 1 word = 4 bytes）
+                char buf[96];
+                snprintf(buf, sizeof(buf), "Health: Task '%s' stack watermark CRITICALLY LOW: %u words (%u bytes)",
+                         names[i], (unsigned)watermark, (unsigned)(watermark * 4));
+                LOG_ERROR(buf);
+            } else {
+                char buf[80];
+                snprintf(buf, sizeof(buf), "Health: Task '%s' stack watermark: %u words (%u bytes)",
+                         names[i], (unsigned)watermark, (unsigned)(watermark * 4));
+                LOG_DEBUG(buf);
+            }
+        }
+    }
+}
+
+size_t HealthMonitor::getTaskStackInfo(TaskStackInfo* outInfo, size_t maxTasks) const {
+    const char* taskNames[] = { "loopTask", "async_tcp", "mqtt_reconn", "IDLE0", "IDLE1" };
+    size_t count = 0;
+    for (size_t i = 0; i < 5 && count < maxTasks; i++) {
+        TaskHandle_t h = xTaskGetHandle(taskNames[i]);
+        if (h) {
+            strncpy(outInfo[count].name, taskNames[i], sizeof(outInfo[count].name) - 1);
+            outInfo[count].name[sizeof(outInfo[count].name) - 1] = '\0';
+            outInfo[count].highWaterMark = uxTaskGetStackHighWaterMark(h) * 4;  // 转换为字节
+            count++;
+        }
+    }
+    return count;
 }

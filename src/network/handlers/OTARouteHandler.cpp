@@ -103,9 +103,7 @@ void OTARouteHandler::handleOtaUrl(AsyncWebServerRequest* request) {
     doc["message"] = "Starting firmware download and upgrade";
     doc["url"] = url;
 
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 
     delay(100);
     ctx->otaManager->startOTA(url);
@@ -154,9 +152,7 @@ void OTARouteHandler::handleOtaUpload(AsyncWebServerRequest* request, const Stri
                 doc["size"] = index + len;
                 doc["md5"] = Update.md5String();
 
-                String out;
-                serializeJson(doc, out);
-                request->send(200, "application/json", out);
+                HandlerUtils::sendJsonStream(request, doc);
 
                 delay(3000);
                 ESP.restart();

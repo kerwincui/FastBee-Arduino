@@ -419,19 +419,22 @@ bool FastBeeFramework::addSystemTasks() {
                     framework->modbusAutoStarted = true;
                     LOG_INFO("[Modbus] WiFi stable, checking Modbus config...");
                     
+                    // 先检查 Modbus 是否启用（作用域隔离 JSON doc，避免与 restartModbus 的 doc 同时在栈上）
+                    bool modbusEnabled = false;
                     if (LittleFS.exists("/config/protocol.json")) {
                         File f = LittleFS.open("/config/protocol.json", "r");
                         if (f) {
                             FastBeeJsonDocLarge doc;
                             DeserializationError err = deserializeJson(doc, f);
                             f.close();
-                            if (!err && doc["modbusRtu"]["enabled"].as<bool>()) {
-                                LOG_INFO("[Modbus] Modbus enabled, auto-starting...");
-                                framework->protocolManager->restartModbus();
-                            } else {
-                                LOG_INFO("[Modbus] Modbus not enabled in config, skipping auto-start");
-                            }
+                            modbusEnabled = !err && doc["modbusRtu"]["enabled"].as<bool>();
                         }
+                    }  // doc 在此处销毁，释放 8KB 栈空间
+                    if (modbusEnabled) {
+                        LOG_INFO("[Modbus] Modbus enabled, auto-starting...");
+                        framework->protocolManager->restartModbus();
+                    } else {
+                        LOG_INFO("[Modbus] Modbus not enabled in config, skipping auto-start");
                     }
                 }
             }
@@ -527,11 +530,11 @@ bool FastBeeFramework::addSystemTasks() {
         LOG_WARNING("Failed to add periph device trigger task");
     }
         
-    // 按键事件检测任务（每50ms）- 平衡响应灵敏度和系统稳定性
-    // 注意：20ms间隔过于激进，可能导致执行超时和看门狗复位
+    // 按键事件检测任务（每100ms）- 平衡响应灵敏度和系统稳定性
+    // 注意：50ms间隔过于激进，可能导致执行超时和看门狗复位
     if (!taskManager->addTask("button_event_check", [](void* param) {
         PeriphExecManager::getInstance().checkButtonEvents();
-    }, nullptr, 50)) {
+    }, nullptr, 100)) {
         LOG_WARNING("Failed to add button event check task");
     }
     

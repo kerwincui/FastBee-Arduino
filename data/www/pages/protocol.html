@@ -395,20 +395,6 @@
                                 <small class="field-hint"
                                     data-i18n="rtu-transfer-type-hint">JSON模式需配置寄存器映射，透传模式直接上报原始帧</small>
                             </div>
-                            <div class="pure-control-group">
-                                <label for="rtu-work-mode"
-                                    data-i18n="rtu-work-mode-label">工作模式</label>
-                                <select id="rtu-work-mode" class="pure-input-1"
-                                    data-change-action="onWorkModeChange">
-                                    <option value="0" data-i18n="rtu-work-mode-mqtt">MQTT指令模式
-                                    </option>
-                                    <option value="1" data-i18n="rtu-work-mode-polling" selected>
-                                        主动轮询模式
-                                    </option>
-                                </select>
-                                <small class="field-hint"
-                                    data-i18n="rtu-work-mode-hint">MQTT模式由平台下发指令采集，轮询模式按预设间隔主动采集</small>
-                            </div>
                         </div>
                     </div>
 
@@ -513,6 +499,24 @@
                                             <input type="checkbox" id="mdev-edit-enabled" checked>
                                             <span data-i18n="modbus-device-enabled-label">启用</span>
                                         </label>
+                                    </div>
+                                    <!-- PWM 扩展 -->
+                                    <div id="mdev-edit-relay-section" class="fb-hidden fb-mt-1 fb-pt-2 fb-border-top">
+                                        <div class="fb-grid-2">
+                                            <div class="pure-control-group">
+                                                <label data-i18n="modbus-relay-batch-reg">批量寄存器地址</label>
+                                                <input type="number" id="mdev-edit-batch-reg" class="pure-input-1" min="0" max="65535" value="0">
+                                                <small class="field-hint" data-i18n="modbus-relay-batch-reg-hint">0=不使用，由前端逐通道控制</small>
+                                            </div>
+                                            <div class="pure-control-group">
+                                                <label data-i18n="modbus-relay-batch-type">批量寄存器类型</label>
+                                                <select id="mdev-edit-batch-type" class="pure-input-1">
+                                                    <option value="0" data-i18n="modbus-relay-batch-type-bitmap">位图模式 - 每bit对应一路状态</option>
+                                                    <option value="1" data-i18n="modbus-relay-batch-type-command">命令模式 - 只接收开/关指令</option>
+                                                </select>
+                                                <small class="field-hint" data-i18n="modbus-relay-batch-type-hint">位图: 每bit=通道; 命令: 0=全关, 1=全开</small>
+                                            </div>
+                                        </div>
                                     </div>
                                     <!-- PWM 扩展 -->
                                     <div id="mdev-edit-pwm-section" class="fb-hidden fb-mt-1 fb-pt-2 fb-border-top">

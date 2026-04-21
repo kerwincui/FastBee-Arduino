@@ -335,9 +335,7 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
             doc["data"]["connected"] = false;
             doc["data"]["error"] = -8;
             doc["data"]["errorMessage"] = "AES clientId requires E&deviceNum&productId&userId format";
-            String out;
-            serializeJson(doc, out);
-            request->send(200, "application/json", out);
+            HandlerUtils::sendJsonStream(request, doc);
             return;
         }
 
@@ -381,9 +379,7 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
                 }
             }
         }
-        String out;
-        serializeJson(doc, out);
-        request->send(200, "application/json", out);
+        HandlerUtils::sendJsonStream(request, doc);
         return;
     }
 
@@ -438,9 +434,7 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
         }
     }
 
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 // ============================================================================
@@ -509,9 +503,7 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
         data["internetAvailable"] = internetAvailable;
     }
 
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 // ============================================================================
@@ -540,9 +532,7 @@ void MqttRouteHandler::handleMqttReconnect(AsyncWebServerRequest* request) {
         doc["data"]["error"] = mqtt ? mqtt->getLastErrorCode() : -99;
     }
 
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 // ============================================================================

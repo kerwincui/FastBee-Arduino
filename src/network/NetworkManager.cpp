@@ -437,10 +437,9 @@ bool NetworkManager::loadNetworkConfig() {
     }
     LOG_INFO("NetworkManager: Loading config from NVS fallback...");
 
-    try {
-        // 基本配置
-        wifiConfig.mode = static_cast<NetworkMode>(preferences.getUInt("mode", 
-            static_cast<uint8_t>(NetworkMode::NETWORK_AP_STA)));
+    // 基本配置
+    wifiConfig.mode = static_cast<NetworkMode>(preferences.getUInt("mode", 
+        static_cast<uint8_t>(NetworkMode::NETWORK_AP_STA)));
         wifiConfig.deviceName = preferences.getString("device_name", "FBE10000001");
 
         // AP配置
@@ -502,11 +501,7 @@ bool NetworkManager::loadNetworkConfig() {
         wifiConfig.enableDNS = preferences.getBool("enable_dns", true);
 
         LOG_INFO("NetworkManager: Configuration loaded successfully");
-        return true;
-    } catch (...) {
-        LOG_ERROR("NetworkManager: Failed to load configuration");
-        return false;
-    }
+    return true;
 }
 
 bool NetworkManager::saveNetworkConfig() {
@@ -567,9 +562,8 @@ bool NetworkManager::saveNetworkConfig() {
     }
 
     // ===== 同步写入 NVS（备份） =====
-    try {
-        // 基本配置
-        preferences.putUInt("mode", static_cast<uint8_t>(wifiConfig.mode));
+    // 基本配置
+    preferences.putUInt("mode", static_cast<uint8_t>(wifiConfig.mode));
         preferences.putString("device_name", wifiConfig.deviceName);
 
         // AP配置
@@ -626,12 +620,8 @@ bool NetworkManager::saveNetworkConfig() {
         preferences.putBool("initialized", true);
         preferences.end();
 
-        LOG_INFO("NetworkManager: Configuration saved successfully");
-        return true;
-    } catch (...) {
-        LOG_ERROR("NetworkManager: Failed to save configuration");
-        return false;
-    }
+    LOG_INFO("NetworkManager: Configuration saved successfully");
+    return true;
 }
 
 bool NetworkManager::startAPMode() {

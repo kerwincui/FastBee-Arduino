@@ -54,6 +54,9 @@ public:
     // 获取所有外设
     std::vector<PeripheralConfig> getAllPeripherals() const;
     
+    // 遍历所有外设（无拷贝，避免频繁内存分配）
+    void forEachPeripheral(std::function<void(const PeripheralConfig&)> callback) const;
+    
     // 检查外设是否存在
     bool hasPeripheral(const String& id) const;
     

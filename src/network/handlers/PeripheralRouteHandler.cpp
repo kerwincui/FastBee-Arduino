@@ -259,9 +259,7 @@ void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* req
         typeObj["pinCount"] = getPeripheralPinCount(type);
     }
 
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request) {
@@ -339,9 +337,7 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
         status["errorCount"] = runtimeState->errorCount;
     }
 
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request) {
@@ -597,9 +593,7 @@ void PeripheralRouteHandler::handleGetPeripheralStatus(AsyncWebServerRequest* re
         }
     }
 
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 void PeripheralRouteHandler::handleReadPeripheral(AsyncWebServerRequest* request) {
@@ -689,9 +683,7 @@ void PeripheralRouteHandler::handleReadPeripheral(AsyncWebServerRequest* request
         }
     }
 
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 void PeripheralRouteHandler::handleWritePeripheral(AsyncWebServerRequest* request) {
