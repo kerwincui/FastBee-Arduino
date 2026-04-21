@@ -372,7 +372,7 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
                 return pm.writeModbusCoil(action.targetPeriphId, coilAddr, value);
             }
             // 寄存器协议模式 (FC06)
-            uint16_t regVal = value ? 0xFF00 : 0x0000;
+            uint16_t regVal = value ? 1 : 0;
             LOGGER.infof("[PeriphExec] Modbus FC06 (coil): slave=%d reg=%d val=0x%04X",
                 cfg->params.modbus.slaveAddress, coilAddr, regVal);
             return pm.writeModbusReg(action.targetPeriphId, coilAddr, regVal);
@@ -544,7 +544,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                         LOGGER.infof("[PeriphExec] Relay ctrl: slave=%d coil=%d val=%d ok=%d",
                             dev.slaveAddress, addr, coilVal, ok);
                     } else {
-                        uint16_t regVal = coilVal ? 0xFF00 : 0x0000;
+                        uint16_t regVal = coilVal ? 1 : 0;
                         auto res = modbus->writeRegisterOnce(dev.slaveAddress, addr, regVal, true);
                         ok = (res.error == ONESHOT_SUCCESS);
                         anySuccess = anySuccess || ok;

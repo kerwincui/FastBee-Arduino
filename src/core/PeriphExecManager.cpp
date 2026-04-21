@@ -1626,7 +1626,7 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
                 if (dev.controlProtocol == 0) {
                     writeOk = periMgr.writeModbusCoil(periphId, addr, value);
                 } else {
-                    uint16_t regVal = value ? 0xFF00 : 0x0000;
+                    uint16_t regVal = value ? 1 : 0;
                     writeOk = periMgr.writeModbusReg(periphId, addr, regVal);
                 }
             } else if (devType == "pwm") {
