@@ -105,11 +105,13 @@ struct PeripheralConfig {
             uint16_t coilBase;         // 线圈/寄存器基地址
             bool     ncMode;           // NC 常闭模式
             uint8_t  controlProtocol;  // 0=线圈(FC05), 1=寄存器(FC06)
-            uint8_t  deviceType;       // 0=relay, 1=pwm, 2=pid
+            uint8_t  deviceType;       // 0=relay, 1=pwm, 2=pid, 3=motor
             uint8_t  deviceIndex;      // ModbusHandler config 中的索引
             uint16_t batchRegister;    // 位图批量寄存器地址，0表示不使用
             uint16_t pwmRegBase;       // PWM 寄存器基地址
             uint8_t  pwmResolution;    // PWM 分辨率(bits)
+            uint16_t motorRegs[5];     // 电机寄存器地址 [正转,反转,停止,速度,脉冲数]
+            uint8_t  motorDecimals;    // 电机参数小数位
             char     sensorId[32];     // 传感器标识符 (同 MODBUS_DEVICE_SENSOR_ID_MAX)
         } modbus;
     } params;

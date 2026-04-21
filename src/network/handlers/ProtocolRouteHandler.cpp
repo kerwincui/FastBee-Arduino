@@ -200,6 +200,13 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                     for (JsonVariant pv : dv["pidAddrs"].as<JsonArray>())
                         pa.add(pv.as<int>());
                 }
+                // 电机参数
+                devObj["motorDecimals"] = dv["motorDecimals"] | 0;
+                if (dv.containsKey("motorRegs") && dv["motorRegs"].is<JsonArray>()) {
+                    JsonArray mr = devObj["motorRegs"].to<JsonArray>();
+                    for (JsonVariant mv : dv["motorRegs"].as<JsonArray>())
+                        mr.add(mv.as<int>());
+                }
             }
         }
     }
@@ -252,8 +259,8 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
             deviceId = "FBE" + mac;
         }
 
-        // 如果 productId 仍为空，使用默认值 "0"
-        if (productId.isEmpty()) productId = "0";
+        // 如果 productId 仍为空，使用默认值 "1"
+        if (productId.isEmpty()) productId = "1";
 
         // 2. 根据认证类型构建 clientId
         String prefix = (authType == 1) ? "E" : "S";

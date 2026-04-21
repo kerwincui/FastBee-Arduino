@@ -306,6 +306,12 @@ void ModbusRouteHandler::setupRoutes(AsyncWebServer* server) {
               [this](AsyncWebServerRequest* request) {
         handleModbusRegisterBatchWrite(request);
     });
+
+    // Modbus 电机控制 API
+    server->on("/api/modbus/motor/control", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleModbusMotorControl(request);
+    });
 }
 
 // ============================================================================
@@ -901,6 +907,19 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
     bool ncMode = ctx->getParamBool(request, "ncMode", false);
     uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
     String mode = ctx->getParamValue(request, "mode", "coil");
+    // delayMode: 0=FC05闪开(默认), 1=软件延时, 2=硬件寄存器延时
+    uint8_t delayMode = (uint8_t)ctx->getParamInt(request, "delayMode", 0);
+    
+    // 从设备配置中查找默认 delayMode
+    int devIdxForDelay = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
+    if (devIdxForDelay >= 0 && delayMode == 0) {
+        ModbusConfig cfg = modbus->getConfig();
+        if (devIdxForDelay < (int)cfg.master.deviceCount) {
+            if (cfg.master.devices[devIdxForDelay].delayMode > 0) {
+                delayMode = cfg.master.devices[devIdxForDelay].delayMode;
+            }
+        }
+    }
     
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
@@ -913,6 +932,58 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
     
     unsigned long delayMs = (unsigned long)delayUnits * 100;
     uint16_t coilAddr = coilBase + channel;
+
+    // === 硬件寄存器延时模式 (delayMode=2) ===
+    // 向通道寄存器写入值 > 1，设备自动延时 (value-1)*0.01s 后翻转
+    // 闪开流程：先写1(开启)，再写延时值(延时后翻转=关闭)
+    if (delayMode == 2) {
+        // 硬件寄存器延时：使用FC06向通道寄存器写入延时值
+        // 设备行为：写入值 N>1 时，延时 (N-1)*0.01 秒后翻转
+        // 闪开实现：先开(l)，再写延时值，设备到时后自动翻转(关闭)
+        uint16_t delayValue = (uint16_t)(delayUnits * 10 / 1) + 1;  // delayUnits*100ms → value=(N-1)*0.01s → N=delayUnits*10+1
+        if (delayValue < 2) delayValue = 2;
+        if (delayValue > 65535) delayValue = 65535;
+        
+        // 先开启继电器
+        OneShotResult onResult;
+        if (ncMode) {
+            onResult = modbus->writeRegisterOnce(slaveAddr, coilAddr, 0, true);  // NC: 写0=断开=设备通电
+        } else {
+            onResult = modbus->writeRegisterOnce(slaveAddr, coilAddr, 1, true);  // NO: 写1=开启
+        }
+        if (onResult.error != ONESHOT_SUCCESS) {
+            sendOneShotError(ctx, request, onResult);
+            return;
+        }
+        
+        // 写入延时值，设备在延时后自动翻转（关闭）
+        OneShotResult delayResult = modbus->writeRegisterOnce(slaveAddr, coilAddr, delayValue, true);
+        if (delayResult.error != ONESHOT_SUCCESS) {
+            sendOneShotError(ctx, request, delayResult);
+            return;
+        }
+        
+        // NC模式额外：添加软件延时任务在延时后恢复为ON（因为硬件翻转会使NC断电）
+        if (ncMode) {
+            modbus->addCoilDelayTask(slaveAddr, coilAddr, delayMs + 500, true, true);
+        }
+        
+        JsonDocument doc;
+        doc["success"] = true;
+        JsonObject data = doc["data"].to<JsonObject>();
+        data["channel"] = channel;
+        data["delayUnits"] = delayUnits;
+        data["delayMs"] = (uint32_t)delayMs;
+        data["ncMode"] = ncMode;
+        data["mode"] = "hardware";
+        data["delayValue"] = delayValue;
+        addModbusDebug(doc, modbus);
+        
+        String out;
+        serializeJson(doc, out);
+        request->send(200, "application/json", out);
+        return;
+    }
 
     if (mode == "register") {
         // 寄存器模式：使用 FC 0x06 写寄存器
@@ -1151,54 +1222,118 @@ void ModbusRouteHandler::handleModbusDeviceBaudrate(AsyncWebServerRequest* reque
     
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
     uint32_t baudRate = (uint32_t)ctx->getParamInt(request, "baudRate", 9600);
+    // mode: 0=FC0xB0专有指令(默认), 1=FC06写保持寄存器
+    uint8_t mode = (uint8_t)ctx->getParamInt(request, "mode", 0);
+    // baudRateReg: FC06模式下波特率寄存器地址(默认0x0033)
+    uint16_t baudRateReg = (uint16_t)ctx->getParamInt(request, "baudRateReg", 0x0033);
+    
+    // 从设备配置中查找默认值
+    int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
+    if (devIdx >= 0 && mode == 0) {
+        ModbusConfig cfg = modbus->getConfig();
+        if (devIdx < (int)cfg.master.deviceCount) {
+            // 如果设备配置了 baudRateMode=1，自动切换到寄存器模式
+            if (cfg.master.devices[devIdx].baudRateMode == 1) {
+                mode = 1;
+                baudRateReg = cfg.master.devices[devIdx].baudRateReg;
+                if (baudRateReg == 0) baudRateReg = 0x0033;
+            }
+        }
+    }
     
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
         return;
     }
     
-    // 波特率映射（继电器板 FC 0xB0 标准编码）
-    uint8_t baudCode;
-    switch (baudRate) {
-        case 1200:   baudCode = 0; break;
-        case 2400:   baudCode = 1; break;
-        case 4800:   baudCode = 2; break;
-        case 9600:   baudCode = 3; break;
-        case 19200:  baudCode = 4; break;
-        case 115200: baudCode = 5; break;
-        default:     baudCode = 3; break; // 默认 9600
+    if (mode == 1) {
+        // FC06 寄存器模式：标准 Modbus 写保持寄存器
+        // 通用波特率编码映射（兼容中盛科技等品牌）
+        // 0:4800, 1:9600, 2:14400, 3:19200, 4:38400, 5:56000, 6:57600, 7:115200
+        uint16_t baudCode;
+        switch (baudRate) {
+            case 4800:   baudCode = 0; break;
+            case 9600:   baudCode = 1; break;
+            case 14400:  baudCode = 2; break;
+            case 19200:  baudCode = 3; break;
+            case 38400:  baudCode = 4; break;
+            case 56000:  baudCode = 5; break;
+            case 57600:  baudCode = 6; break;
+            case 115200: baudCode = 7; break;
+            default:     baudCode = 1; break; // 默认 9600
+        }
+        
+        // 允许通过 baudCode 参数直接指定编码值
+        String baudCodeStr = ctx->getParamValue(request, "baudCode", "");
+        if (!baudCodeStr.isEmpty()) {
+            baudCode = (uint16_t)baudCodeStr.toInt();
+        }
+        
+        // FC 0x06 写保持寄存器
+        OneShotResult result = modbus->writeRegisterOnce(slaveAddr, baudRateReg, baudCode, true);  // isControl=true
+        if (result.error != ONESHOT_SUCCESS) {
+            sendOneShotError(ctx, request, result);
+            return;
+        }
+        
+        JsonDocument doc;
+        doc["success"] = true;
+        JsonObject data = doc["data"].to<JsonObject>();
+        data["baudRate"] = baudRate;
+        data["baudCode"] = baudCode;
+        data["mode"] = "register";
+        data["register"] = baudRateReg;
+        addModbusDebug(doc, modbus);
+        
+        String out;
+        serializeJson(doc, out);
+        request->send(200, "application/json", out);
+    } else {
+        // FC 0xB0 专有指令模式（默认，兼容国产通用继电器板）
+        uint8_t baudCode;
+        switch (baudRate) {
+            case 1200:   baudCode = 0; break;
+            case 2400:   baudCode = 1; break;
+            case 4800:   baudCode = 2; break;
+            case 9600:   baudCode = 3; break;
+            case 19200:  baudCode = 4; break;
+            case 115200: baudCode = 5; break;
+            default:     baudCode = 3; break; // 默认 9600
+        }
+        
+        // 允许用户通过 baudCode 参数直接指定编码值
+        String baudCodeStr = ctx->getParamValue(request, "baudCode", "");
+        if (!baudCodeStr.isEmpty()) {
+            baudCode = (uint8_t)baudCodeStr.toInt();
+        }
+        
+        // 发送专有 FC 0xB0 波特率设置帧：[slaveAddr, 0xB0, 0x00, 0x00, baudCode, 0x00]
+        uint8_t frame[6];
+        frame[0] = slaveAddr;
+        frame[1] = 0xB0;
+        frame[2] = 0x00;
+        frame[3] = 0x00;
+        frame[4] = baudCode;
+        frame[5] = 0x00;
+        
+        OneShotResult result = modbus->sendRawFrameOnce(slaveAddr, frame, 6, true);  // isControl=true
+        if (result.error != ONESHOT_SUCCESS) {
+            sendOneShotError(ctx, request, result);
+            return;
+        }
+        
+        JsonDocument doc;
+        doc["success"] = true;
+        JsonObject data = doc["data"].to<JsonObject>();
+        data["baudRate"] = baudRate;
+        data["baudCode"] = baudCode;
+        data["mode"] = "proprietary";
+        addModbusDebug(doc, modbus);
+        
+        String out;
+        serializeJson(doc, out);
+        request->send(200, "application/json", out);
     }
-    
-    // 允许用户通过 baudCode 参数直接指定编码值
-    String baudCodeStr = ctx->getParamValue(request, "baudCode", "");
-    if (!baudCodeStr.isEmpty()) {
-        baudCode = (uint8_t)baudCodeStr.toInt();
-    }
-    
-    // 发送专有 FC 0xB0 波特率设置帧：[slaveAddr, 0xB0, 0x00, 0x00, baudCode, 0x00]
-    uint8_t frame[6];
-    frame[0] = slaveAddr;
-    frame[1] = 0xB0;
-    frame[2] = 0x00;
-    frame[3] = 0x00;
-    frame[4] = baudCode;
-    frame[5] = 0x00;
-    
-    OneShotResult result = modbus->sendRawFrameOnce(slaveAddr, frame, 6, true);  // isControl=true
-    if (result.error != ONESHOT_SUCCESS) {
-        sendOneShotError(ctx, request, result);
-        return;
-    }
-    
-    JsonDocument doc;
-    doc["success"] = true;
-    JsonObject data = doc["data"].to<JsonObject>();
-    data["baudRate"] = baudRate;
-    data["baudCode"] = baudCode;
-    
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
 }
 
 // ============================================================================
@@ -1412,6 +1547,148 @@ void ModbusRouteHandler::handleModbusRegisterBatchWrite(AsyncWebServerRequest* r
     for (uint16_t i = 0; i < quantity; i++) {
         respValues.add(regValues[i]);
     }
+    addModbusDebug(doc, modbus);
+    
+    String out;
+    serializeJson(doc, out);
+    request->send(200, "application/json", out);
+}
+
+// ============================================================================
+// POST /api/modbus/motor/control — 电机控制(正转/反转/停止/设速度/设脉冲)
+// ============================================================================
+
+void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.edit")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+    
+    ModbusHandler* modbus = getModbusMaster(ctx, request);
+    if (!modbus) return;
+    
+    uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
+    String action = ctx->getParamValue(request, "action", "");
+    int value = ctx->getParamInt(request, "value", 0);
+    
+    if (slaveAddr < 1 || slaveAddr > 247) {
+        ctx->sendBadRequest(request, "Invalid slave address (1-247)");
+        return;
+    }
+    
+    if (action.isEmpty()) {
+        ctx->sendBadRequest(request, "Missing 'action' parameter");
+        return;
+    }
+    
+    // 从设备配置中查找电机寄存器映射
+    uint16_t motorRegs[5] = {0x0000, 0x0001, 0x0002, 0x0005, 0x0007}; // 默认值(YF-53兼容)
+    int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
+    if (devIdx >= 0) {
+        ModbusConfig cfg = modbus->getConfig();
+        if (devIdx < (int)cfg.master.deviceCount) {
+            memcpy(motorRegs, cfg.master.devices[devIdx].motorRegs, sizeof(motorRegs));
+            bool allZero = true;
+            for (int i = 0; i < 5; i++) { if (motorRegs[i] != 0) { allZero = false; break; } }
+            if (allZero) {
+                uint16_t defaults[5] = {0x0000, 0x0001, 0x0002, 0x0005, 0x0007};
+                memcpy(motorRegs, defaults, sizeof(defaults));
+            }
+        }
+    }
+    
+    // 允许前端通过 registers 参数覆盖寄存器映射
+    String regsStr = ctx->getParamValue(request, "registers", "");
+    if (!regsStr.isEmpty()) {
+        JsonDocument regsDoc;
+        DeserializationError err = deserializeJson(regsDoc, regsStr);
+        if (!err && regsDoc.is<JsonArray>()) {
+            JsonArray arr = regsDoc.as<JsonArray>();
+            for (int i = 0; i < 5 && i < (int)arr.size(); i++)
+                motorRegs[i] = (uint16_t)arr[i].as<int>();
+        }
+    }
+    
+    // motorRegs: [0]=正转, [1]=反转, [2]=停止, [3]=速度, [4]=脉冲数
+    uint16_t targetReg = 0;
+    uint16_t writeValue = (uint16_t)value;
+    
+    if (action == "forward") {
+        targetReg = motorRegs[0];
+        writeValue = 1;
+    } else if (action == "reverse") {
+        targetReg = motorRegs[1];
+        writeValue = 1;
+    } else if (action == "stop") {
+        targetReg = motorRegs[2];
+        writeValue = 1;
+    } else if (action == "setSpeed") {
+        targetReg = motorRegs[3];
+    } else if (action == "setPulse") {
+        targetReg = motorRegs[4];
+    } else if (action == "readStatus") {
+        // 读取电机状态：读取速度和脉冲数寄存器范围
+        uint16_t minAddr = motorRegs[3];
+        uint16_t maxAddr = motorRegs[4];
+        if (motorRegs[2] < minAddr && motorRegs[2] > 0) minAddr = motorRegs[2];
+        if (minAddr == 0 && maxAddr == 0) { minAddr = 0; maxAddr = 10; }
+        uint16_t quantity = maxAddr - minAddr + 1;
+        if (quantity == 0 || quantity > 125) quantity = 11;
+        
+        OneShotResult result = modbus->readRegistersOnce(slaveAddr, 0x03, minAddr, quantity, true);
+        if (result.error != ONESHOT_SUCCESS) {
+            sendOneShotError(ctx, request, result);
+            return;
+        }
+        
+        JsonDocument doc;
+        doc["success"] = true;
+        JsonObject data = doc["data"].to<JsonObject>();
+        data["action"] = "readStatus";
+        if (motorRegs[3] >= minAddr)
+            data["speed"] = result.data[motorRegs[3] - minAddr];
+        if (motorRegs[4] >= minAddr)
+            data["pulse"] = result.data[motorRegs[4] - minAddr];
+        data["startAddress"] = minAddr;
+        JsonArray values = data["values"].to<JsonArray>();
+        for (uint16_t i = 0; i < quantity; i++)
+            values.add(result.data[i]);
+        addModbusDebug(doc, modbus);
+        
+        String out;
+        serializeJson(doc, out);
+        request->send(200, "application/json", out);
+        return;
+    } else {
+        ctx->sendBadRequest(request, "Invalid action (forward/reverse/stop/setSpeed/setPulse/readStatus)");
+        return;
+    }
+    
+    // FC06 写单个寄存器
+    OneShotResult result = modbus->writeRegisterOnce(slaveAddr, targetReg, writeValue, true);
+    if (result.error != ONESHOT_SUCCESS) {
+        sendOneShotError(ctx, request, result);
+        return;
+    }
+    
+    // MQTT 上报
+    if (devIdx >= 0) {
+        String actionKey;
+        if (action == "forward") actionKey = "fwd";
+        else if (action == "reverse") actionKey = "rev";
+        else if (action == "stop") actionKey = "stop";
+        else if (action == "setSpeed") actionKey = "spd";
+        else if (action == "setPulse") actionKey = "pls";
+        else actionKey = action;
+        publishControlReport(ctx, modbus, devIdx, 0, actionKey + ":" + String(writeValue));
+    }
+    
+    JsonDocument doc;
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    data["action"] = action;
+    data["register"] = targetReg;
+    data["value"] = writeValue;
     addModbusDebug(doc, modbus);
     
     String out;

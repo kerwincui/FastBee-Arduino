@@ -358,14 +358,33 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                 dev.ncMode          = d["ncMode"] | false;
                 dev.controlProtocol = d["controlProtocol"] | (uint8_t)0;
                 dev.batchRegister   = d["batchRegister"] | (uint16_t)0;
+                dev.delayMode       = d["delayMode"] | (uint8_t)0;
+                dev.baudRateMode    = d["baudRateMode"] | (uint8_t)0;
+                dev.baudRateReg     = d["baudRateReg"] | (uint16_t)0;
+                dev.addressReg      = d["addressReg"] | (uint16_t)0;
                 dev.pwmRegBase      = d["pwmRegBase"] | (uint16_t)0;
                 dev.pwmResolution   = d["pwmResolution"] | (uint8_t)8;
                 dev.pidDecimals     = d["pidDecimals"] | (uint8_t)1;
+                dev.motorDecimals   = d["motorDecimals"] | (uint8_t)0;
                 dev.enabled         = d["enabled"] | true;
                 if (d.containsKey("pidAddrs") && d["pidAddrs"].is<JsonArray>()) {
                     JsonArray pa = d["pidAddrs"].as<JsonArray>();
                     for (int i = 0; i < 6 && i < (int)pa.size(); i++)
                         dev.pidAddrs[i] = pa[i] | (uint16_t)0;
+                }
+                if (d.containsKey("motorRegs") && d["motorRegs"].is<JsonArray>()) {
+                    JsonArray mr = d["motorRegs"].as<JsonArray>();
+                    for (int i = 0; i < 5 && i < (int)mr.size(); i++)
+                        dev.motorRegs[i] = mr[i] | (uint16_t)0;
+                } else if (strncmp(dev.deviceType, "motor", 5) == 0) {
+                    // 电机默认寄存器地址 (YF-53兼容: 正转0x00,反转0x01,停止0x02,速度0x05,脉冲数0x07)
+                    uint16_t defaultMotorRegs[5] = {0x0000, 0x0001, 0x0002, 0x0005, 0x0007};
+                    memcpy(dev.motorRegs, defaultMotorRegs, sizeof(defaultMotorRegs));
+                    // 电机默认高级参数 (YF-53: 地址寄存器0x06, 波特率寄存器0x0A, FC06寄存器模式)
+                    if (dev.addressReg == 0) dev.addressReg = 0x0006;
+                    if (dev.baudRateReg == 0) dev.baudRateReg = 0x000A;
+                    if (dev.baudRateMode == 0) dev.baudRateMode = 1;
+                    if (dev.controlProtocol == 0) dev.controlProtocol = 1;
                 }
                 config.master.deviceCount++;
             }
@@ -443,6 +462,10 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
         d["ncMode"]          = dev.ncMode;
         d["controlProtocol"] = dev.controlProtocol;
         d["batchRegister"]   = dev.batchRegister;
+        d["delayMode"]       = dev.delayMode;
+        d["baudRateMode"]    = dev.baudRateMode;
+        d["baudRateReg"]     = dev.baudRateReg;
+        d["addressReg"]      = dev.addressReg;
         d["pwmRegBase"]      = dev.pwmRegBase;
         d["pwmResolution"]   = dev.pwmResolution;
         d["pidDecimals"]     = dev.pidDecimals;

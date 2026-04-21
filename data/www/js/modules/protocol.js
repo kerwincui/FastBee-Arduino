@@ -719,7 +719,8 @@ var typeLabels={
 sensor:i18n.t('modbus-type-sensor')||'采集',
 relay:i18n.t('modbus-type-relay')||'继电器',
 pwm:i18n.t('modbus-type-pwm')||'PWM',
-pid:i18n.t('modbus-type-pid')||'PID'
+pid:i18n.t('modbus-type-pid')||'PID',
+motor:i18n.t('modbus-type-motor')||'电机'
 };
 var rows='';
 for(var i=0;i<tasks.length;i++){
@@ -1198,7 +1199,7 @@ if(!this._modbusDevices||this._modbusDevices.length===0){
 tbody.innerHTML=this._renderProtocolEmptyRow(8,i18n.t('modbus-device-no-devices')||'暂无子设备');
 return ;
 }
-var typeLabels={relay:i18n.t('modbus-ctrl-type-relay')||'继电器',pwm:'PWM',pid:'PID'};
+var typeLabels={relay:i18n.t('modbus-ctrl-type-relay')||'继电器',pwm:'PWM',pid:'PID',motor:i18n.t('modbus-type-motor')||'电机'};
 var protLabels=['Coil','Register'];
 var self=this;
 tbody.innerHTML=this._modbusDevices.map(function (dev,idx){
@@ -1277,6 +1278,13 @@ var pe=document.getElementById('mdev-edit-pid-'+pidFields[pi]);
 if(pe)pe.value=pidA[pi]||pi;
 }
 document.getElementById('mdev-edit-pid-decimals').value=String(dev?(dev.pidDecimals||1):1);
+var motorRegs=dev?(dev.motorRegs||[0,1,2,5,7]):[0,1,2,5,7];
+var motorFields=['fwd','rev','stop','speed','pulse'];
+for(var mi=0;mi<motorFields.length;mi++){
+var me=document.getElementById('mdev-edit-motor-'+motorFields[mi]);
+if(me)me.value=motorRegs[mi]!=null?motorRegs[mi]:[0,1,2,5,7][mi];
+}
+document.getElementById('mdev-edit-motor-decimals').value=String(dev?(dev.motorDecimals||0):0);
 this._onEditTypeChange();
 var title=document.getElementById('modbus-edit-modal-title');
 if(title)title.textContent=(idx>=0)
@@ -1288,10 +1296,13 @@ _onEditTypeChange(){
 var type=document.getElementById('mdev-edit-type').value;
 var pwmSec=document.getElementById('mdev-edit-pwm-section');
 var pidSec=document.getElementById('mdev-edit-pid-section');
+var motorSec=document.getElementById('mdev-edit-motor-section');
 if(pwmSec)pwmSec.classList.remove('fb-hidden');
 if(pidSec)pidSec.classList.remove('fb-hidden');
+if(motorSec)motorSec.classList.remove('fb-hidden');
 if(pwmSec)AppState.toggleVisible(pwmSec,type==='pwm');
 if(pidSec)AppState.toggleVisible(pidSec,type==='pid');
+if(motorSec)AppState.toggleVisible(motorSec,type==='motor');
 },
 _closeEditModal(){
 var modal=document.getElementById('modbus-device-edit-modal');
@@ -1334,13 +1345,27 @@ for(var pi=0;pi<pidFields.length;pi++){
 dev.pidAddrs.push(parseInt(document.getElementById('mdev-edit-pid-'+pidFields[pi]).value)||pi);
 }
 dev.pidDecimals=parseInt(document.getElementById('mdev-edit-pid-decimals').value)||1;
+dev.motorRegs=[];
+var motorFields=['fwd','rev','stop','speed','pulse'];
+for(var mi=0;mi<motorFields.length;mi++){
+dev.motorRegs.push(parseInt(document.getElementById('mdev-edit-motor-'+motorFields[mi]).value)||[0,1,2,5,7][mi]);
+}
+dev.motorDecimals=parseInt(document.getElementById('mdev-edit-motor-decimals').value)||0;
 this._renderAllDevices();
 this._closeEditModal();
 },
 _openCtrlModal(idx){
 console.log('[protocol] _openCtrlModal called, idx:',idx);
+if(idx===undefined||idx===null||isNaN(idx)){
+console.warn('[protocol] Invalid device index:',idx);
+Notification.error(i18n.t('modbus-device-not-found')||'设备未找到');
+return ;
+}
 if(!this._modbusDevices||!this._modbusDevices[idx]){
 console.warn('[protocol] Device not found at index',idx);
+Notification.error(i18n.t('modbus-device-not-found')||'设备未找到，请刷新列表');
+this._renderDeviceTable();
+this._renderAllDevices();
 return ;
 }
 if(this._coilAutoRefreshTimer){
@@ -1375,13 +1400,15 @@ var relayConfig=document.getElementById('modbus-relay-config');
 var relayPanel=document.getElementById('modbus-relay-panel');
 var pwmPanel=document.getElementById('modbus-pwm-panel');
 var pidPanel=document.getElementById('modbus-pid-panel');
-[relayConfig,relayPanel,pwmPanel,pidPanel].forEach(function (el){
+var motorPanel=document.getElementById('modbus-motor-panel');
+[relayConfig,relayPanel,pwmPanel,pidPanel,motorPanel].forEach(function (el){
 if(el)el.classList.remove('fb-hidden');
 });
 if(relayConfig)AppState.toggleVisible(relayConfig,type==='relay');
 if(relayPanel)AppState.toggleVisible(relayPanel,type==='relay');
 if(pwmPanel)AppState.toggleVisible(pwmPanel,type==='pwm');
 if(pidPanel)AppState.toggleVisible(pidPanel,type==='pid');
+if(motorPanel)AppState.toggleVisible(motorPanel,type==='motor');
 this._updateDelayChannelSelect();
 var newCacheKey='dev_'+idx;
 if(type==='pwm'){
@@ -1402,6 +1429,8 @@ this._pidValues={};
 this._renderPidGrid(true);
 this.refreshPidStatus();
 }
+}else if(type==='motor'){
+this.refreshMotorStatus();
 }else{
 if(this._deviceCoilCache[newCacheKey]){
 this._coilStates=this._deviceCoilCache[newCacheKey].slice();
@@ -1952,53 +1981,6 @@ if(el)el.checked=false;
 console.warn('[protocol] PID auto-refresh stopped after',this._pidAutoRefreshErrors,'consecutive errors');
 }
 },
-async readDeviceAddress(){
-const slaveAddr=parseInt(document.getElementById('modbus-debug-slave-addr')?.value||'0');
-const addrReg=parseInt(document.getElementById('modbus-ctrl-addr-reg')?.value||'0');
-try{
-const res=await apiPost('/api/modbus/device/address',{slaveAddress:slaveAddr,addressRegister:addrReg});
-const display=document.getElementById('modbus-ctrl-current-addr');
-if(res&&res.success&&res.data){
-if(display)display.textContent='Current: '+res.data.currentAddress;
-Notification.success(i18n.t('modbus-ctrl-success'));
-this._appendDebugLog(res.debug,'ReadAddr reg='+addrReg);
-}else{
-if(display)display.textContent='';
-Notification.error((res&&res.error)||i18n.t('modbus-ctrl-fail'));
-this._appendDebugError('ReadAddr failed',res&&res.debug);
-}
-}catch(e){Notification.error(i18n.t('modbus-ctrl-fail'));}
-},
-async setDeviceAddress(){
-const slaveAddr=parseInt(document.getElementById('modbus-debug-slave-addr')?.value||'0');
-const addrReg=parseInt(document.getElementById('modbus-ctrl-addr-reg')?.value||'0');
-const newAddr=parseInt(document.getElementById('modbus-ctrl-new-addr')?.value||'0');
-if(newAddr<1||newAddr>255){Notification.warning('Invalid address (1-255)');return ;}
-try{
-const res=await apiPost('/api/modbus/device/address',{slaveAddress:slaveAddr,addressRegister:addrReg,newAddress:newAddr});
-if(res&&res.success){
-Notification.success(i18n.t('modbus-ctrl-success'));
-this._appendDebugLog(res.debug,'SetAddr -> '+newAddr);
-}else{
-Notification.error((res&&res.error)||i18n.t('modbus-ctrl-fail'));
-this._appendDebugError('SetAddr failed',res&&res.debug);
-}
-}catch(e){Notification.error(i18n.t('modbus-ctrl-fail'));}
-},
-async setDeviceBaudrate(){
-const slaveAddr=parseInt(document.getElementById('modbus-debug-slave-addr')?.value||'0');
-const baud=parseInt(document.getElementById('modbus-ctrl-baudrate')?.value||'9600');
-try{
-const res=await apiPost('/api/modbus/device/baudrate',{slaveAddress:slaveAddr,baudRate:baud});
-if(res&&res.success){
-Notification.success(i18n.t('modbus-ctrl-success'));
-this._appendDebugLog(res.debug,'SetBaud -> '+baud);
-}else{
-Notification.error((res&&res.error)||i18n.t('modbus-ctrl-fail'));
-this._appendDebugError('SetBaud failed',res&&res.debug);
-}
-}catch(e){Notification.error(i18n.t('modbus-ctrl-fail'));}
-},
 async readDiscreteInputs(){
 const slaveAddr=parseInt(document.getElementById('modbus-debug-slave-addr')?.value||'0');
 const inputCount=parseInt(document.getElementById('modbus-ctrl-input-count')?.value||'4');
@@ -2023,6 +2005,147 @@ Notification.error((res&&res.error)||i18n.t('modbus-ctrl-fail'));
 this._appendDebugError('ReadInputs failed',res&&res.debug);
 }
 }catch(e){Notification.error(i18n.t('modbus-ctrl-fail'));}
+},
+_getMotorDevParams(){
+var idx=this._activeDeviceIdx;
+if(idx<0||!this._modbusDevices||!this._modbusDevices[idx])return null;
+var dev=this._modbusDevices[idx];
+return {
+slaveAddress:dev.slaveAddress||1,
+motorRegs:dev.motorRegs||[0,1,2,5,7],
+motorDecimals:dev.motorDecimals||0
+};
+},
+async motorForward(){
+var p=this._getMotorDevParams();
+if(!p)return ;
+try{
+var res=await apiPostSilent('/api/modbus/motor/control',{
+slaveAddress:p.slaveAddress,action:'forward'
+});
+if(res&&res.success){
+Notification.success(i18n.t('modbus-motor-ctrl-forward-ok')||'正转指令已发送');
+this._appendDebugLog(res.debug,'Motor Forward');
+document.getElementById('motor-cur-direction').innerHTML='← '+(i18n.t('modbus-motor-ctrl-forward')||'正转');
+var elRun=document.getElementById('modbus-ctrl-motor-run-status');
+if(elRun){elRun.className='motor-run-badge motor-run-forward';elRun.textContent=i18n.t('modbus-motor-dir-forward')||'正转中';}
+}else{
+Notification.error((res&&res.error)||i18n.t('modbus-ctrl-fail'));
+this._appendDebugError('Motor Forward failed',res&&res.debug);
+}
+}catch(e){Notification.error(i18n.t('modbus-ctrl-fail'));}
+},
+async motorReverse(){
+var p=this._getMotorDevParams();
+if(!p)return ;
+try{
+var res=await apiPostSilent('/api/modbus/motor/control',{
+slaveAddress:p.slaveAddress,action:'reverse'
+});
+if(res&&res.success){
+Notification.success(i18n.t('modbus-motor-ctrl-reverse-ok')||'反转指令已发送');
+this._appendDebugLog(res.debug,'Motor Reverse');
+document.getElementById('motor-cur-direction').innerHTML='→ '+(i18n.t('modbus-motor-ctrl-reverse')||'反转');
+var elRun=document.getElementById('modbus-ctrl-motor-run-status');
+if(elRun){elRun.className='motor-run-badge motor-run-reverse';elRun.textContent=i18n.t('modbus-motor-dir-reverse')||'反转中';}
+}else{
+Notification.error((res&&res.error)||i18n.t('modbus-ctrl-fail'));
+this._appendDebugError('Motor Reverse failed',res&&res.debug);
+}
+}catch(e){Notification.error(i18n.t('modbus-ctrl-fail'));}
+},
+async motorStop(){
+var p=this._getMotorDevParams();
+if(!p)return ;
+try{
+var res=await apiPostSilent('/api/modbus/motor/control',{
+slaveAddress:p.slaveAddress,action:'stop'
+});
+if(res&&res.success){
+Notification.success(i18n.t('modbus-motor-ctrl-stop-ok')||'停止指令已发送');
+this._appendDebugLog(res.debug,'Motor Stop');
+document.getElementById('motor-cur-direction').textContent=i18n.t('modbus-motor-status-stop')||'停止';
+var elRun=document.getElementById('modbus-ctrl-motor-run-status');
+if(elRun){elRun.className='motor-run-badge motor-run-stopped';elRun.textContent=i18n.t('modbus-motor-status-stop')||'停止';}
+}else{
+Notification.error((res&&res.error)||i18n.t('modbus-ctrl-fail'));
+this._appendDebugError('Motor Stop failed',res&&res.debug);
+}
+}catch(e){Notification.error(i18n.t('modbus-ctrl-fail'));}
+},
+async setMotorSpeed(){
+var p=this._getMotorDevParams();
+if(!p)return ;
+var speed=parseInt(document.getElementById('modbus-ctrl-motor-speed').value)||50;
+try{
+var res=await apiPostSilent('/api/modbus/motor/control',{
+slaveAddress:p.slaveAddress,action:'setSpeed',value:speed
+});
+if(res&&res.success){
+Notification.success(i18n.t('modbus-motor-ctrl-speed-ok')||'速度设置成功');
+this._appendDebugLog(res.debug,'Motor SetSpeed');
+}else{
+Notification.error((res&&res.error)||i18n.t('modbus-ctrl-fail'));
+this._appendDebugError('Motor SetSpeed failed',res&&res.debug);
+}
+}catch(e){Notification.error(i18n.t('modbus-ctrl-fail'));}
+},
+async setMotorPulse(){
+var p=this._getMotorDevParams();
+if(!p)return ;
+var pulse=parseInt(document.getElementById('modbus-ctrl-motor-pulse').value)||1600;
+try{
+var res=await apiPostSilent('/api/modbus/motor/control',{
+slaveAddress:p.slaveAddress,action:'setPulse',value:pulse
+});
+if(res&&res.success){
+Notification.success(i18n.t('modbus-motor-ctrl-pulse-ok')||'脉冲数设置成功');
+this._appendDebugLog(res.debug,'Motor SetPulse');
+}else{
+Notification.error((res&&res.error)||i18n.t('modbus-ctrl-fail'));
+this._appendDebugError('Motor SetPulse failed',res&&res.debug);
+}
+}catch(e){Notification.error(i18n.t('modbus-ctrl-fail'));}
+},
+async refreshMotorStatus(){
+var p=this._getMotorDevParams();
+if(!p)return ;
+try{
+var res=await apiPostSilent('/api/modbus/motor/control',{
+slaveAddress:p.slaveAddress,action:'readStatus'
+});
+if(res&&res.success&&res.data){
+var data=res.data;
+var sf=Math.pow(10,p.motorDecimals||0);
+var elSpeed=document.getElementById('motor-cur-speed');
+var elPulse=document.getElementById('motor-cur-pulse');
+var elDir=document.getElementById('motor-cur-direction');
+var elCount=document.getElementById('motor-cur-count');
+var elRun=document.getElementById('modbus-ctrl-motor-run-status');
+if(data.speed!==undefined&&elSpeed)elSpeed.textContent=(data.speed / sf).toFixed(p.motorDecimals||0);
+if(data.pulse!==undefined&&elPulse)elPulse.textContent=data.pulse;
+if(elDir){
+if(data.direction==='forward'||data.direction===1){
+elDir.innerHTML='← '+(i18n.t('modbus-motor-ctrl-forward')||'正转');
+}else if(data.direction==='reverse'||data.direction===-1){
+elDir.innerHTML='→ '+(i18n.t('modbus-motor-ctrl-reverse')||'反转');
+}else{
+elDir.textContent=i18n.t('modbus-motor-status-stop')||'停止';
+}
+}
+if(data.count!==undefined&&elCount)elCount.textContent=data.count+' '+(i18n.t('modbus-motor-count')||'次');
+if(elRun){
+var dir=data.direction||'';
+elRun.className='motor-run-badge '+(dir==='forward'||dir===1?'motor-run-forward':dir==='reverse'||dir===-1?'motor-run-reverse':'motor-run-stopped');
+elRun.textContent=(dir==='forward'||dir===1)?(i18n.t('modbus-motor-dir-forward')||'正转中'):(dir==='reverse'||dir===-1)?(i18n.t('modbus-motor-dir-reverse')||'反转中'):(i18n.t('modbus-motor-status-stop')||'停止');
+}
+this._appendDebugLog(res.debug,'Motor ReadStatus');
+}else{
+this._appendDebugError('Motor ReadStatus failed',res&&res.debug);
+}
+}catch(e){
+console.error('refreshMotorStatus failed:',e);
+}
 },
 async _loadUartPeripherals(selectedId){
 const select=document.getElementById('rtu-peripheral-id');

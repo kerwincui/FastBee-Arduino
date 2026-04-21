@@ -216,11 +216,25 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
         config.subscribeTopics.push_back(topic);
     }
 
-    // clientId 若配置文件未指定，生成随机 ID
+    // clientId 若配置文件未指定，按 FastBee 认证格式自动生成：认证类型&设备编号&产品编号&用户ID
     if (cfg["clientId"].isNull() || cfg["clientId"].as<String>().isEmpty()) {
-        char id[20];
-        snprintf(id, sizeof(id), "ESP32-%04X", (unsigned)esp_random() & 0xFFFF);
-        config.clientId = id;
+        // 如果 deviceNum 仍为空，生成 FBE+MAC
+        if (config.deviceNum.isEmpty()) {
+            String mac = WiFi.macAddress();
+            mac.replace(":", "");
+            config.deviceNum = "FBE" + mac;
+        }
+        // productId 为空时使用默认值 "1"
+        if (config.productId.isEmpty()) {
+            config.productId = "1";
+        }
+        // userId 为空时使用默认值 "1"
+        if (config.userId.isEmpty()) {
+            config.userId = "1";
+        }
+        // 根据认证类型构建 clientId
+        String prefix = (config.authType == MqttAuthType::ENCRYPTED) ? "E" : "S";
+        config.clientId = prefix + "&" + config.deviceNum + "&" + config.productId + "&" + config.userId;
     } else {
         config.clientId = cfg["clientId"].as<String>();
     }

@@ -101,31 +101,41 @@ struct CoilDelayTask {
 struct ModbusSubDevice {
     char     name[Protocols::MODBUS_DEVICE_NAME_MAX_LEN];
     char     sensorId[Protocols::MODBUS_DEVICE_SENSOR_ID_MAX]; // 传感器标识符（平台上报用，支持中文）
-    char     deviceType[Protocols::MODBUS_DEVICE_TYPE_MAX_LEN]; // "relay","pwm","pid"
+    char     deviceType[Protocols::MODBUS_DEVICE_TYPE_MAX_LEN]; // "relay","pwm","pid","motor"
     uint8_t  slaveAddress;      // 从站地址 1-247
     uint8_t  channelCount;      // 通道数
     uint16_t coilBase;          // 线圈/寄存器基地址
     bool     ncMode;            // NC 常闭模式
     uint8_t  controlProtocol;   // 0=线圈(FC01/FC05), 1=寄存器(FC03/FC06)
     uint16_t batchRegister;     // 位图批量寄存器地址(如0x0001)，0表示不使用
+    uint8_t  delayMode;         // 延时模式: 0=FC05闪开(默认), 1=软件延时, 2=硬件寄存器延时
+    uint8_t  baudRateMode;      // 波特率配置模式: 0=FC0xB0专有(默认), 1=FC06写寄存器
+    uint16_t baudRateReg;       // 波特率寄存器地址(当baudRateMode=1时使用)
+    uint16_t addressReg;        // 地址寄存器(默认0x0000, 部分设备为0x0032)
     // PWM 扩展
     uint16_t pwmRegBase;        // PWM 寄存器基地址
     uint8_t  pwmResolution;     // PWM 分辨率(bits)
     // PID 扩展
     uint16_t pidAddrs[6];       // PID 寄存器地址 [PV,SV,OUT,P,I,D]
     uint8_t  pidDecimals;       // PID 小数位
+    // Motor 扩展（电机控制器：步进/伺服通用）
+    uint16_t motorRegs[5];      // 电机寄存器地址 [正转,反转,停止,速度,脉冲数]
+    uint8_t  motorDecimals;     // 电机参数小数位(速度/脉冲缩放)
     bool     enabled;           // 启用状态
 
     ModbusSubDevice()
         : slaveAddress(1), channelCount(2), coilBase(0),
           ncMode(false), controlProtocol(0), batchRegister(0),
-          pwmRegBase(0), pwmResolution(8), pidDecimals(1), enabled(true) {
+          delayMode(0), baudRateMode(0), baudRateReg(0), addressReg(0),
+          pwmRegBase(0), pwmResolution(8), pidDecimals(1),
+          motorDecimals(0), enabled(true) {
         memset(name, 0, sizeof(name));
         strncpy(name, "Device", sizeof(name) - 1);
         memset(sensorId, 0, sizeof(sensorId));
         memset(deviceType, 0, sizeof(deviceType));
         strncpy(deviceType, "relay", sizeof(deviceType) - 1);
         memset(pidAddrs, 0, sizeof(pidAddrs));
+        memset(motorRegs, 0, sizeof(motorRegs));
     }
 };
 

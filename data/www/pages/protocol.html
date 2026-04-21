@@ -283,16 +283,16 @@
                         MQTT配置保存成功！
                     </div>
 
-                    <div class="u-mt-20">
-                        <button type="submit" class="btn btn-primary"
+                    <div class="fb-mt-4">
+                        <button type="submit" class="fb-btn fb-btn-primary"
                             data-i18n="btn-save-config">保存配置</button>
-                        <button type="button" class="btn btn-warning u-ml-10"
+                        <button type="button" class="fb-btn fb-btn-warning u-ml-8"
                             data-action="testMqttConnection"
                             data-i18n="mqtt-test-conn-btn">测试连接</button>
-                        <button type="button" class="btn btn-danger u-ml-10"
+                        <button type="button" class="fb-btn fb-btn-danger u-ml-8"
                             data-action="disconnectMqtt"
                             data-i18n="mqtt-disconnect-btn">断开连接</button>
-                        <button type="button" class="btn btn-secondary u-ml-10"
+                        <button type="button" class="fb-btn fb-btn-secondary u-ml-8"
                             data-action="mqttNtpSync"
                             data-i18n="mqtt-ntp-sync-btn">MQTT时间同步</button>
                         <span id="mqtt-test-result" class="u-ml-10 u-fs-13"></span>
@@ -376,7 +376,7 @@
                                 <label for="rtu-de-pin" data-i18n="rtu-de-pin-label">DE引脚
                                     (RS485)</label>
                                 <input type="number" id="rtu-de-pin" class="pure-input-1" value="14"
-                                    min="-1" max="39">
+                                    min="-1" max="48">
                                 <small class="field-hint"
                                     data-i18n="rtu-de-pin-hint">RS485方向控制引脚，-1表示禁用DE引脚（自动收发模块无需配置）</small>
                             </div>
@@ -440,6 +440,10 @@
                             </table>
                         </div>
 
+
+
+                    </div>
+
                     <!-- ========== 设备编辑弹窗 ========== -->
                     <div id="modbus-device-edit-modal" class="modal">
                         <div class="modal-content fb-max-w-modal">
@@ -466,6 +470,7 @@
                                                 <option value="relay">继电器</option>
                                                 <option value="pwm">PWM</option>
                                                 <option value="pid">PID</option>
+                                                <option value="motor" data-i18n="modbus-type-motor">电机</option>
                                             </select>
                                         </div>
                                         <div class="pure-control-group">
@@ -544,6 +549,18 @@
                                             </select>
                                         </div>
                                     </div>
+                                    <!-- Motor 扩展（步进电机/伺服电机） -->
+                                    <div id="mdev-edit-motor-section" class="fb-hidden fb-mt-1 fb-pt-2 fb-border-top">
+                                        <div class="fb-grid-3">
+                                            <div class="pure-control-group"><label data-i18n="modbus-motor-reg-forward">正转寄存器</label><input type="number" id="mdev-edit-motor-fwd" class="pure-input-1" min="0" max="65535" value="0"></div>
+                                            <div class="pure-control-group"><label data-i18n="modbus-motor-reg-reverse">反转寄存器</label><input type="number" id="mdev-edit-motor-rev" class="pure-input-1" min="0" max="65535" value="1"></div>
+                                            <div class="pure-control-group"><label data-i18n="modbus-motor-reg-stop">停止寄存器</label><input type="number" id="mdev-edit-motor-stop" class="pure-input-1" min="0" max="65535" value="2"></div>
+                                            <div class="pure-control-group"><label data-i18n="modbus-motor-reg-speed">速度寄存器</label><input type="number" id="mdev-edit-motor-speed" class="pure-input-1" min="0" max="65535" value="5"></div>
+                                            <div class="pure-control-group"><label data-i18n="modbus-motor-reg-pulse">脉冲数寄存器</label><input type="number" id="mdev-edit-motor-pulse" class="pure-input-1" min="0" max="65535" value="7"></div>
+                                            <div class="pure-control-group"><label data-i18n="modbus-motor-decimals">小数位</label><select id="mdev-edit-motor-decimals" class="pure-input-1"><option value="0" selected>0位</option><option value="1">1位</option><option value="2">2位</option></select></div>
+                                        </div>
+                                        <small class="field-hint" data-i18n="modbus-motor-reg-hint">寄存器地址参考设备说明书，默认值兼容YF-53步进电机控制器</small>
+                                    </div>
                                 </div>
                             </div>
                             <div class="modal-footer u-footer-topline">
@@ -555,7 +572,7 @@
 
                     <!-- ========== 设备控制弹窗 ========== -->
                     <div id="modbus-device-ctrl-modal" class="modal">
-                        <div class="modal-content u-modal-content-700 fb-max-w-modal-lg">
+                        <div class="modal-content u-modal-content-720">
                             <div class="modal-header">
                                 <h3 id="modbus-ctrl-modal-title" data-i18n="modbus-device-ctrl-title">设备控制</h3>
                                 <button type="button" class="modal-close" data-action="_closeCtrlModal">&times;</button>
@@ -612,6 +629,57 @@
                                         <button type="button" class="btn btn-sm btn-secondary" data-action="refreshPidStatus" data-i18n="modbus-ctrl-pid-refresh">刷新数据</button>
                                     </div>
                                 </div>
+                                <!-- Motor 控制面板（步进电机/伺服电机） -->
+                                <div id="modbus-motor-panel" class="fb-hidden">
+                                    <!-- 状态信息卡 -->
+                                    <div class="motor-status-card">
+                                        <div class="motor-status-header">
+                                            <span data-i18n="modbus-motor-status">状态</span>
+                                            <div class="motor-header-actions">
+                                                <span id="modbus-ctrl-motor-run-status" class="motor-run-badge motor-run-idle">--</span>
+                                                <button type="button" class="motor-refresh-btn" data-action="refreshMotorStatus" title="刷新">&#x21bb;</button>
+                                            </div>
+                                        </div>
+                                        <div class="motor-status-grid">
+                                            <div class="motor-status-item">
+                                                <span class="motor-status-label" data-i18n="modbus-motor-ctrl-speed">速度</span>
+                                                <span class="motor-status-value"><span id="motor-cur-speed">--</span> <span class="motor-status-unit" data-i18n="modbus-motor-unit-rpm">rpm</span></span>
+                                            </div>
+                                            <div class="motor-status-item">
+                                                <span class="motor-status-label" data-i18n="modbus-motor-ctrl-pulse">脉冲数</span>
+                                                <span class="motor-status-value"><span id="motor-cur-pulse">--</span> <span class="motor-status-unit" data-i18n="modbus-motor-unit-pulse">个</span></span>
+                                            </div>
+                                            <div class="motor-status-item">
+                                                <span class="motor-status-label" data-i18n="modbus-motor-direction">方向</span>
+                                                <span class="motor-status-value" id="motor-cur-direction">--</span>
+                                            </div>
+                                            <div class="motor-status-item">
+                                                <span class="motor-status-label" data-i18n="modbus-motor-count">计数</span>
+                                                <span class="motor-status-value" id="motor-cur-count">--</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <!-- 参数设置区 -->
+                                    <div class="motor-params-section">
+                                        <div class="motor-param-row">
+                                            <label data-i18n="modbus-motor-ctrl-speed">速度</label>
+                                            <input type="number" id="modbus-ctrl-motor-speed" class="pure-input-1 motor-param-input" min="0" max="65535" value="50">
+                                            <button type="button" class="fb-btn fb-btn-sm fb-btn-outline-primary" data-action="setMotorSpeed" data-i18n="modbus-motor-ctrl-set-speed">设置速度</button>
+                                        </div>
+                                        <div class="motor-param-row">
+                                            <label data-i18n="modbus-motor-ctrl-pulse">脉冲数</label>
+                                            <input type="number" id="modbus-ctrl-motor-pulse" class="pure-input-1 motor-param-input" min="0" max="65535" value="1600">
+                                            <button type="button" class="fb-btn fb-btn-sm fb-btn-outline-primary" data-action="setMotorPulse" data-i18n="modbus-motor-ctrl-set-pulse">设置脉冲</button>
+                                        </div>
+                                    </div>
+                                    <!-- 控制按钮区 -->
+                                    <div class="motor-actions">
+                                        <button type="button" class="motor-action-btn motor-action-forward" data-action="motorForward" data-i18n="modbus-motor-ctrl-forward">正转</button>
+                                        <button type="button" class="motor-action-btn motor-action-stop" data-action="motorStop" data-i18n="modbus-motor-ctrl-stop">停止</button>
+                                        <button type="button" class="motor-action-btn motor-action-reverse" data-action="motorReverse" data-i18n="modbus-motor-ctrl-reverse">反转</button>
+                                    </div>
+
+                                </div>
 
                                 </div>
                                 <!-- 右侧：调试日志 -->
@@ -624,7 +692,6 @@
                                 </div>
                             </div>
                         </div>
-                    </div>
                     </div>
 
                     <div class="message message-success fb-hidden" id="modbus-rtu-success">

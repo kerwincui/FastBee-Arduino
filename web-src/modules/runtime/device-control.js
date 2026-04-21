@@ -174,6 +174,27 @@
                         self._dcRefreshPidStatus(pidDi);
                         return;
                     }
+                    // 电机控制
+                    var motorActionBtn = e.target.closest('.dc-motor-action');
+                    if (motorActionBtn) {
+                        var mIdx = parseInt(motorActionBtn.getAttribute('data-dev'));
+                        var mAction = motorActionBtn.getAttribute('data-action');
+                        self._dcMotorAction(mIdx, mAction);
+                        return;
+                    }
+                    var motorSetBtn = e.target.closest('.dc-motor-set');
+                    if (motorSetBtn) {
+                        var mIdx = parseInt(motorSetBtn.getAttribute('data-dev'));
+                        var mParam = motorSetBtn.getAttribute('data-param');
+                        self._dcMotorSet(mIdx, mParam);
+                        return;
+                    }
+                    var refreshMotorBtn = e.target.closest('.dc-motor-refresh');
+                    if (refreshMotorBtn) {
+                        var mDi = parseInt(refreshMotorBtn.getAttribute('data-dev'));
+                        self._dcRefreshMotorStatus(mDi);
+                        return;
+                    }
                 });
 
                 // PWM slider事件委托
@@ -816,7 +837,7 @@
             // 所有 Modbus 设备按 relay → pid → pwm 顺序排列
             var modbusDeviceList = [];
             if (hasModbusDevices) {
-                var typeOrder = { relay: 0, pid: 1, pwm: 2 };
+                var typeOrder = { relay: 0, pid: 1, pwm: 2, motor: 3 };
                 for (var mi = 0; mi < this._modbusDevices.length; mi++) {
                     modbusDeviceList.push({ idx: mi, dev: this._modbusDevices[mi] });
                 }
@@ -942,7 +963,7 @@
             var typeLabel = this._t('modbus-type-' + dt) || dt;
             // 卡片标题优先显示子设备名称
             var ctrlLabel = (dev.name || '') || (this._t('dc-modbus-ctrl-' + dt) || (typeLabel + ' ' + this._t('device-control-action-section')));
-            var typeClassMap = {relay: 'dc-card-badge--relay', pwm: 'dc-card-badge--pwm', pid: 'dc-card-badge--pid'};
+            var typeClassMap = {relay: 'dc-card-badge--relay', pwm: 'dc-card-badge--pwm', pid: 'dc-card-badge--pid', motor: 'dc-card-badge--motor'};
             var badgeClass = typeClassMap[dt] || 'dc-card-badge--system';
 
             var html = '<div class="dc-modbus-device-panel" data-dev-idx="' + devIdx + '" data-dc-sort-key="modbus-' + dt + '-' + devIdx + '">';
@@ -958,6 +979,8 @@
                 html += this._renderDcPwmPanel(devIdx, dev);
             } else if (dt === 'pid') {
                 html += this._renderDcPidPanel(devIdx, dev);
+            } else if (dt === 'motor') {
+                html += this._renderDcMotorPanel(devIdx, dev);
             }
 
             html += '<div class="dc-resize-handle" title="拖拽调整大小"></div></div>';
@@ -1057,6 +1080,66 @@
             html += this._renderDcActionBar([
                 { className: 'dc-pid-refresh dc-btn-sm dc-btn-refresh', devIdx: devIdx, label: this._t('modbus-ctrl-pid-refresh') }
             ]);
+            html += '</div>';
+            return html;
+        },
+
+        // ============ 电机控制面板 ============
+        _renderDcMotorPanel: function(devIdx, dev) {
+            var html = '<div class="dc-modbus-device-body">';
+            html += this._renderDcMotorStatusCard(devIdx);
+            html += this._renderDcMotorParamsSection(devIdx);
+            html += this._renderDcActionBar([
+                { className: 'dc-motor-action motor-action-btn motor-action-forward', devIdx: devIdx, action: 'forward', label: this._t('modbus-motor-ctrl-forward') || '正转' },
+                { className: 'dc-motor-action motor-action-btn motor-action-stop', devIdx: devIdx, action: 'stop', label: this._t('modbus-motor-ctrl-stop') || '停止' },
+                { className: 'dc-motor-action motor-action-btn motor-action-reverse', devIdx: devIdx, action: 'reverse', label: this._t('modbus-motor-ctrl-reverse') || '反转' }
+            ]);
+            html += '</div>';
+            return html;
+        },
+        _renderDcMotorStatusCard: function(devIdx) {
+            var html = '<div class="motor-status-card">';
+            html += '<div class="motor-status-header">';
+            html += '<span>' + (this._t('modbus-motor-status') || '状态') + '</span>';
+            html += '<div class="motor-header-actions">';
+            html += '<span id="dc-motor-run-' + devIdx + '" class="motor-run-badge motor-run-idle">--</span>';
+            html += '<button class="dc-motor-refresh motor-refresh-btn" data-dev="' + devIdx + '" title="' + (this._t('modbus-ctrl-refresh') || '刷新') + '">&#x21bb;</button>';
+            html += '</div>';
+            html += '</div>';
+            html += '<div class="motor-status-grid">';
+            html += '<div class="motor-status-item">';
+            html += '<span class="motor-status-label">' + (this._t('modbus-motor-speed') || '速度') + '</span>';
+            html += '<span class="motor-status-value" id="dc-motor-speed-' + devIdx + '">--</span>';
+            html += '<span class="motor-status-unit">rpm</span>';
+            html += '</div>';
+            html += '<div class="motor-status-item">';
+            html += '<span class="motor-status-label">' + (this._t('modbus-motor-pulse') || '脉冲数') + '</span>';
+            html += '<span class="motor-status-value" id="dc-motor-pulse-' + devIdx + '">--</span>';
+            html += '</div>';
+            html += '<div class="motor-status-item">';
+            html += '<span class="motor-status-label">' + (this._t('modbus-motor-dir') || '方向') + '</span>';
+            html += '<span class="motor-status-value" id="dc-motor-dir-' + devIdx + '">--</span>';
+            html += '</div>';
+            html += '<div class="motor-status-item">';
+            html += '<span class="motor-status-label">' + (this._t('modbus-motor-count') || '计数') + '</span>';
+            html += '<span class="motor-status-value" id="dc-motor-count-' + devIdx + '">--</span>';
+            html += '<span class="motor-status-unit">次</span>';
+            html += '</div>';
+            html += '</div></div>';
+            return html;
+        },
+        _renderDcMotorParamsSection: function(devIdx) {
+            var html = '<div class="motor-params-section">';
+            html += '<div class="motor-param-row">';
+            html += '<label>' + (this._t('modbus-motor-speed') || '速度') + '</label>';
+            html += '<input type="number" class="motor-param-input pure-input-1" id="dc-motor-speed-in-' + devIdx + '" value="50" min="0">';
+            html += this._renderDcActionButton({ className: 'dc-motor-set dc-btn-sm dc-btn-on', devIdx: devIdx, param: 'speed', label: this._t('modbus-motor-ctrl-set-speed') || '设置速度' });
+            html += '</div>';
+            html += '<div class="motor-param-row">';
+            html += '<label>' + (this._t('modbus-motor-pulse') || '脉冲') + '</label>';
+            html += '<input type="number" class="motor-param-input pure-input-1" id="dc-motor-pulse-in-' + devIdx + '" value="1600" min="0">';
+            html += this._renderDcActionButton({ className: 'dc-motor-set dc-btn-sm dc-btn-on', devIdx: devIdx, param: 'pulse', label: this._t('modbus-motor-ctrl-set-pulse') || '设置脉冲' });
+            html += '</div>';
             html += '</div>';
             return html;
         },
@@ -1306,6 +1389,8 @@
                         await this._dcRefreshPwmStatus(i);
                     } else if (dt === 'pid') {
                         await this._dcRefreshPidStatus(i);
+                    } else if (dt === 'motor') {
+                        await this._dcRefreshMotorStatus(i);
                     }
                     // 设备间间隔 250ms，给 ESP32 更多缓冲时间
                     if (i < devices.length - 1) {
@@ -1580,6 +1665,11 @@
                                 matched = true;
                                 continue;
                             }
+                        } else if (deviceType === 'motor') {
+                            if (this._dcUpdateMotorUIFromSSE(devIdx, value)) {
+                                matched = true;
+                                continue;
+                            }
                         }
                     }
                     // 解析成功但未找到对应设备，触发全量刷新
@@ -1835,7 +1925,7 @@
             var p = this._dcGetCoilParams(devIdx);
             var dev = this._modbusDevices[devIdx] || {};
             
-            apiPost('/api/modbus/coil/delay', {
+            var params = {
                 slaveAddress: p.slaveAddress,
                 channel: channel,
                 delayBase: 0x0200,
@@ -1843,7 +1933,9 @@
                 ncMode: !!dev.ncMode,
                 coilBase: p.coilBase,
                 mode: p.relayMode
-            }).then(function(res) {
+            };
+            
+            apiPost('/api/modbus/coil/delay', params).then(function(res) {
                 if (res && res.success) {
                     window.Notification && Notification.success(
                         self._t('modbus-delay-success') + ' CH' + channel + ' ' + (delayUnits * 0.1).toFixed(1) + 's'
@@ -1989,6 +2081,15 @@
             };
         },
 
+        _dcGetMotorParams: function(devIdx) {
+            var dev = this._modbusDevices[devIdx] || {};
+            return {
+                slaveAddress: dev.slaveAddress || 1,
+                motorRegs: dev.motorRegs || [0, 1, 2, 5, 7],
+                motorDecimals: dev.motorDecimals || 0
+            };
+        },
+
         _dcRefreshPidStatus: function(devIdx) {
             var self = this;
             var p = this._dcGetPidParams(devIdx);
@@ -2051,6 +2152,125 @@
             }).catch(function() {
                 Notification.error(self._t('modbus-ctrl-fail'));
             });
+        },
+
+        // --- Motor ---
+        _dcRefreshMotorStatus: function(devIdx) {
+            var self = this;
+            var p = this._dcGetMotorParams(devIdx);
+            return apiPostSilent('/api/modbus/motor/control', {
+                slaveAddress: p.slaveAddress, action: 'readStatus'
+            }).then(function(res) {
+                if (res && res.success && res.data) {
+                    self._dcUpdateMotorRunUI(devIdx, res.data, p.motorDecimals);
+                }
+            }).catch(function() {});
+        },
+        _dcUpdateMotorRunUI: function(devIdx, data, decimals) {
+            var sf = Math.pow(10, decimals || 0);
+            var elSpeed = document.getElementById('dc-motor-speed-' + devIdx);
+            var elPulse = document.getElementById('dc-motor-pulse-' + devIdx);
+            var elDir = document.getElementById('dc-motor-dir-' + devIdx);
+            var elCount = document.getElementById('dc-motor-count-' + devIdx);
+            var elRun = document.getElementById('dc-motor-run-' + devIdx);
+            if (data.speed !== undefined && elSpeed) elSpeed.textContent = (data.speed / sf).toFixed(decimals || 0);
+            if (data.pulse !== undefined && elPulse) elPulse.textContent = data.pulse;
+            if (elDir) {
+                if (data.direction === 'forward' || data.direction === 1) {
+                    elDir.innerHTML = '← ' + (this._t('modbus-motor-ctrl-forward') || '正转');
+                } else if (data.direction === 'reverse' || data.direction === -1) {
+                    elDir.innerHTML = '→ ' + (this._t('modbus-motor-ctrl-reverse') || '反转');
+                } else {
+                    elDir.textContent = this._t('modbus-motor-status-stop') || '停止';
+                }
+            }
+            if (data.count !== undefined && elCount) elCount.textContent = data.count + ' ' + (this._t('modbus-motor-count') || '次');
+            if (elRun) {
+                var dir = data.direction || '';
+                elRun.className = 'motor-run-badge ' + (dir === 'forward' || dir === 1 ? 'motor-run-forward' : dir === 'reverse' || dir === -1 ? 'motor-run-reverse' : 'motor-run-stopped');
+                elRun.textContent = (dir === 'forward' || dir === 1) ? (this._t('modbus-motor-dir-forward') || '正转中') : (dir === 'reverse' || dir === -1) ? (this._t('modbus-motor-dir-reverse') || '反转中') : (this._t('modbus-motor-status-stop') || '停止');
+            }
+        },
+        _dcMotorAction: function(devIdx, action) {
+            this._dcCancelInit();
+            var self = this;
+            var p = this._dcGetMotorParams(devIdx);
+            apiPostSilent('/api/modbus/motor/control', {
+                slaveAddress: p.slaveAddress, action: action
+            }).then(function(res) {
+                if (res && res.success) {
+                    Notification.success(self._t('modbus-motor-ctrl-' + action + '-ok') || (action === 'forward' ? '正转指令已发送' : action === 'reverse' ? '反转指令已发送' : '停止指令已发送'));
+                    var elDir = document.getElementById('dc-motor-dir-' + devIdx);
+                    var elRun = document.getElementById('dc-motor-run-' + devIdx);
+                    if (elDir) {
+                        if (action === 'forward') {
+                            elDir.innerHTML = '← ' + (self._t('modbus-motor-ctrl-forward') || '正转');
+                        } else if (action === 'reverse') {
+                            elDir.innerHTML = '→ ' + (self._t('modbus-motor-ctrl-reverse') || '反转');
+                        } else {
+                            elDir.textContent = self._t('modbus-motor-status-stop') || '停止';
+                        }
+                    }
+                    if (elRun) {
+                        elRun.className = 'motor-run-badge ' + (action === 'forward' ? 'motor-run-forward' : action === 'reverse' ? 'motor-run-reverse' : 'motor-run-stopped');
+                        elRun.textContent = (action === 'forward' ? (self._t('modbus-motor-dir-forward') || '正转中') : action === 'reverse' ? (self._t('modbus-motor-dir-reverse') || '反转中') : (self._t('modbus-motor-status-stop') || '停止'));
+                    }
+                } else {
+                    Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
+                }
+            }).catch(function() {
+                Notification.error(self._t('modbus-ctrl-fail'));
+            });
+        },
+        _dcMotorSet: function(devIdx, param) {
+            this._dcCancelInit();
+            var self = this;
+            var p = this._dcGetMotorParams(devIdx);
+            var inputId = 'dc-motor-' + param + '-in-' + devIdx;
+            var input = document.getElementById(inputId);
+            var value = parseInt(input ? input.value : 0) || 0;
+            var action = param === 'speed' ? 'setSpeed' : 'setPulse';
+            apiPostSilent('/api/modbus/motor/control', {
+                slaveAddress: p.slaveAddress, action: action, value: value
+            }).then(function(res) {
+                if (res && res.success) {
+                    Notification.success(self._t('modbus-motor-ctrl-' + param + '-ok') || (param === 'speed' ? '速度设置成功' : '脉冲数设置成功'));
+                } else {
+                    Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
+                }
+            }).catch(function() {
+                Notification.error(self._t('modbus-ctrl-fail'));
+            });
+        },
+        _dcUpdateMotorUIFromSSE: function(devIdx, value) {
+            var dev = this._modbusDevices[devIdx];
+            if (!dev) return false;
+            var elRun = document.getElementById('dc-motor-run-' + devIdx);
+            var elDir = document.getElementById('dc-motor-dir-' + devIdx);
+            if (!elRun && !elDir) return false;
+            var v = String(value || '').toLowerCase().trim();
+            var dirText = '--';
+            var badgeClass = 'motor-run-idle';
+            var runText = '--';
+            if (v === 'forward' || v === '1' || v === '正转') {
+                dirText = '← ' + (this._t('modbus-motor-ctrl-forward') || '正转');
+                badgeClass = 'motor-run-forward';
+                runText = this._t('modbus-motor-dir-forward') || '正转中';
+            } else if (v === 'reverse' || v === '-1' || v === '反转') {
+                dirText = '→ ' + (this._t('modbus-motor-ctrl-reverse') || '反转');
+                badgeClass = 'motor-run-reverse';
+                runText = this._t('modbus-motor-dir-reverse') || '反转中';
+            } else if (v === 'stop' || v === '0' || v === '停止') {
+                dirText = this._t('modbus-motor-status-stop') || '停止';
+                badgeClass = 'motor-run-stopped';
+                runText = this._t('modbus-motor-status-stop') || '停止';
+            }
+            if (elDir) elDir.innerHTML = dirText;
+            if (elRun) {
+                elRun.className = 'motor-run-badge ' + badgeClass;
+                elRun.textContent = runText;
+            }
+            return true;
         },
 
         // ============ 自由拖拽布局相关属性和方法 ============

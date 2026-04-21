@@ -494,11 +494,17 @@ bool ProtocolManager::restartModbus() {
                 dev.pwmRegBase      = d["pwmRegBase"] | (uint16_t)0;
                 dev.pwmResolution   = d["pwmResolution"] | (uint8_t)8;
                 dev.pidDecimals     = d["pidDecimals"] | (uint8_t)1;
+                dev.motorDecimals   = d["motorDecimals"] | (uint8_t)0;
                 dev.enabled         = d["enabled"] | true;
                 if (d.containsKey("pidAddrs") && d["pidAddrs"].is<JsonArray>()) {
                     JsonArray pa = d["pidAddrs"].as<JsonArray>();
                     for (int i = 0; i < 6 && i < (int)pa.size(); i++)
                         dev.pidAddrs[i] = pa[i] | (uint16_t)0;
+                }
+                if (d.containsKey("motorRegs") && d["motorRegs"].is<JsonArray>()) {
+                    JsonArray mr = d["motorRegs"].as<JsonArray>();
+                    for (int i = 0; i < 5 && i < (int)mr.size(); i++)
+                        dev.motorRegs[i] = mr[i] | (uint16_t)0;
                 }
                 modbusConfig.master.deviceCount++;
             }
@@ -928,10 +934,15 @@ void ProtocolManager::registerModbusSubDevices(const ModbusConfig& config) {
         
         // 确定设备类型
         String devType(dev.deviceType);
-        if (devType == "relay")     pCfg.params.modbus.deviceType = 0;
-        else if (devType == "pwm")  pCfg.params.modbus.deviceType = 1;
-        else if (devType == "pid")  pCfg.params.modbus.deviceType = 2;
-        else                        pCfg.params.modbus.deviceType = 0;
+        if (devType == "relay")          pCfg.params.modbus.deviceType = 0;
+        else if (devType == "pwm")      pCfg.params.modbus.deviceType = 1;
+        else if (devType == "pid")      pCfg.params.modbus.deviceType = 2;
+        else if (devType == "motor")    pCfg.params.modbus.deviceType = 3;
+        else                            pCfg.params.modbus.deviceType = 0;
+        
+        // 电机参数
+        memcpy(pCfg.params.modbus.motorRegs, dev.motorRegs, sizeof(dev.motorRegs));
+        pCfg.params.modbus.motorDecimals = dev.motorDecimals;
         
         if (pm.addPeripheral(pCfg)) {
             LOG_INFOF("Protocol Manager: Registered Modbus sub-device '%s' as peripheral 'modbus:%d'",

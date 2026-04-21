@@ -22,6 +22,7 @@ class WebHandlerContext;
  * - /api/modbus/register/read - 读寄存器
  * - /api/modbus/register/write - 写单个寄存器
  * - /api/modbus/register/batch-write - 批量写寄存器
+ * - /api/modbus/motor/control - 电机控制(正转/反转/停止/设速度/设脉冲)
  */
 class ModbusRouteHandler {
 public:
@@ -59,6 +60,9 @@ private:
     void handleModbusRegisterRead(AsyncWebServerRequest* request);
     void handleModbusRegisterWrite(AsyncWebServerRequest* request);
     void handleModbusRegisterBatchWrite(AsyncWebServerRequest* request);
+    
+    // Modbus 电机控制 API
+    void handleModbusMotorControl(AsyncWebServerRequest* request);
 };
 
 #endif // MODBUS_ROUTE_HANDLER_H

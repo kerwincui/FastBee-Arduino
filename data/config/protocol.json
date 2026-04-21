@@ -241,6 +241,60 @@
             4,
             5
           ]
+        },
+        {
+          "name": "4路继电器",
+          "sensorId": "relay4ch",
+          "deviceType": "relay",
+          "slaveAddress": 7,
+          "channelCount": 4,
+          "coilBase": 0,
+          "ncMode": false,
+          "controlProtocol": 1,
+          "batchRegister": 52,
+          "pwmRegBase": 0,
+          "pwmResolution": 8,
+          "pidDecimals": 1,
+          "enabled": true,
+          "pidAddrs": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "name": "电机",
+          "sensorId": "motor",
+          "deviceType": "motor",
+          "slaveAddress": 8,
+          "channelCount": 1,
+          "coilBase": 0,
+          "ncMode": false,
+          "controlProtocol": 1,
+          "batchRegister": 0,
+          "pwmRegBase": 0,
+          "pwmResolution": 8,
+          "pidDecimals": 1,
+          "motorDecimals": 0,
+          "enabled": true,
+          "pidAddrs": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "motorRegs": [
+            0,
+            1,
+            2,
+            5,
+            7
+          ]
         }
       ]
     }
