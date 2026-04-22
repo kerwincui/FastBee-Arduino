@@ -1560,7 +1560,7 @@
         'modbus-device-max-reached': 'Max 8 sub-devices',
         'modbus-device-edit-btn': 'Edit',
         'modbus-device-edit-title': 'Edit Sub-Device',
-        'modbus-device-sensor-id': 'Sensor ID',
+        'modbus-device-sensor-id': 'Sub-device ID',
         'modbus-device-sensor-id-hint': 'MQTT report identifier, multi-channel auto-suffix _chN',
         'modbus-device-ctrl-title': 'Device Control',
         'modbus-device-nc-enabled': 'Enabled',

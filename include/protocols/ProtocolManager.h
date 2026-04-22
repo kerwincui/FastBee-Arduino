@@ -165,9 +165,15 @@ private:
     // MQTT触发的Modbus一次性读取
     String executeModbusRead(const String& paramsJson);
     
+    // MQTT触发的Modbus原始HEX帧透传（平台下发 → 设备转发 → 上报响应）
+    String executeModbusRawSend(const String& hexPayload);
+    
     // Modbus 子设备注册/注销到 PeripheralManager
     void registerModbusSubDevices(const ModbusConfig& config);
     void unregisterModbusSubDevices();
+
+    // 收集本地传感器类外设数据（GPIO/ADC），返回 JSON 数组字符串
+    String collectLocalSensorData() const;
 };
 
 #endif

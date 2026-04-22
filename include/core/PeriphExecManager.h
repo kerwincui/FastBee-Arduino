@@ -82,6 +82,9 @@ public:
     // Modbus 一次性读取回调（由 ProtocolManager 注册）
     void setModbusReadCallback(std::function<String(const String&)> callback);
 
+    // Modbus 原始 HEX 帧透传回调（由 ProtocolManager 注册）
+    void setModbusRawSendCallback(std::function<String(const String&)> callback);
+
     // ========== 异步执行 ==========
 
     // 记录异步执行结果（由异步任务完成时调用）
@@ -214,6 +217,9 @@ private:
 
     // ========== Modbus 读取回调 ==========
     std::function<String(const String&)> _modbusReadCallback;
+
+    // ========== Modbus 原始帧透传回调 ==========
+    std::function<String(const String&)> _modbusRawSendCallback;
 
     // ========== 任务运行状态跟踪 ==========
     std::set<String> _runningRuleIds;           // 正在运行的规则ID集合

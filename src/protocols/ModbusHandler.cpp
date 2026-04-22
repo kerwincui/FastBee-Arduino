@@ -1208,6 +1208,87 @@ bool ModbusHandler::findBySensorId(const String& sensorId, uint8_t& outDeviceInd
     return false;
 }
 
+bool ModbusHandler::findBySensorIdEx(const String& sensorId, SensorIdMatch& result) const {
+    if (sensorId.isEmpty()) return false;
+
+    // 1. 先尝试标准 findBySensorId（支持精确匹配和 _chN 模式）
+    uint8_t devIdx = 0;
+    uint16_t ch = 0;
+    if (findBySensorId(sensorId, devIdx, ch)) {
+        result.deviceIndex = devIdx;
+        result.channel = ch;
+        result.action = "";
+        result.matched = true;
+        return true;
+    }
+
+    // 2. 遍历设备匹配功能后缀
+    for (uint8_t i = 0; i < config.master.deviceCount; i++) {
+        const ModbusSubDevice& dev = config.master.devices[i];
+        if (dev.sensorId[0] == '\0') continue;
+        String baseSid(dev.sensorId);
+        // sensorId 必须以 baseSid_ 开头
+        String prefix = baseSid + "_";
+        if (!sensorId.startsWith(prefix)) continue;
+        String suffix = sensorId.substring(prefix.length());
+        if (suffix.isEmpty()) continue;
+
+        String devType(dev.deviceType);
+
+        // _all: relay/pwm 批量控制
+        if (suffix == "all" && (devType == "relay" || devType == "pwm")) {
+            result.deviceIndex = i;
+            result.channel = 0;
+            result.action = "all";
+            result.matched = true;
+            return true;
+        }
+
+        // motor 后缀: oper(枚举: 0=停止 1=正转 2=反转) spd(3) pls(4)
+        if (devType == "motor") {
+            int regIdx = -1;
+            if (suffix == "oper") regIdx = 0;        // 枚举操作，channel=0 表示 oper 类型
+            else if (suffix == "spd" || suffix == "speed") regIdx = 3;
+            else if (suffix == "pls" || suffix == "pulse") regIdx = 4;
+            if (regIdx >= 0) {
+                result.deviceIndex = i;
+                result.channel = (uint16_t)regIdx;
+                result.action = suffix;
+                result.matched = true;
+                return true;
+            }
+        }
+
+        // pid 后缀: pv(0) sv(1) out(2) p(3) i(4) d(5) → 映射到 pidAddrs 索引
+        if (devType == "pid") {
+            int regIdx = -1;
+            if (suffix == "pv") regIdx = 0;
+            else if (suffix == "sv") regIdx = 1;
+            else if (suffix == "out") regIdx = 2;
+            else if (suffix == "p") regIdx = 3;
+            else if (suffix == "i") regIdx = 4;
+            else if (suffix == "d") regIdx = 5;
+            // _all: pid 批量（写SV）
+            else if (suffix == "all") {
+                result.deviceIndex = i;
+                result.channel = 1;  // SV index
+                result.action = "all";
+                result.matched = true;
+                return true;
+            }
+            if (regIdx >= 0) {
+                result.deviceIndex = i;
+                result.channel = (uint16_t)regIdx;
+                result.action = suffix;
+                result.matched = true;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 // Master写操作（阻塞式，通过 writeRegisterOnce 直接执行）
 bool ModbusHandler::masterWriteSingleRegister(uint8_t slaveAddr, uint16_t regAddr, uint16_t value) {
     LOG_INFOF("Modbus Master: Write slave=%d, reg=%d, val=%d", slaveAddr, regAddr, value);
@@ -1922,17 +2003,34 @@ void ModbusHandler::processCoilDelayTasks() {
 }
 
 String ModbusHandler::formatRawHex(uint8_t slaveAddr, uint8_t fc, const uint16_t* data, uint16_t count) {
-    // 重构Modbus响应帧: [slaveAddr][fc][byteCount][data_hi data_lo ...][crc_lo crc_hi]
-    uint8_t byteCount = count * 2;
-    uint8_t frameLen = 3 + byteCount + 2; // addr + fc + byteCount + data + CRC
-    uint8_t frame[frameLen];
+    // 重构Modbus响应帧，根据功能码区分数据格式
+    uint8_t byteCount;
+    uint8_t frame[Protocols::MODBUS_BUFFER_SIZE];
     frame[0] = slaveAddr;
     frame[1] = fc;
-    frame[2] = byteCount;
-    for (uint16_t i = 0; i < count; i++) {
-        frame[3 + i * 2]     = (data[i] >> 8) & 0xFF;
-        frame[3 + i * 2 + 1] = data[i] & 0xFF;
+
+    if (fc == 0x01 || fc == 0x02) {
+        // FC01/02 线圈/离散输入: data[i] = 0或1（每个线圈1位），count = 线圈数量
+        // 需要将位值重新打包为字节: 每8个线圈打包为1字节
+        byteCount = (count + 7) / 8;
+        frame[2] = byteCount;
+        memset(&frame[3], 0, byteCount);
+        for (uint16_t i = 0; i < count; i++) {
+            if (data[i]) {
+                frame[3 + i / 8] |= (1 << (i % 8));
+            }
+        }
+    } else {
+        // FC03/04 保持寄存器/输入寄存器: data[i] = uint16寄存器值，count = 寄存器数量
+        byteCount = count * 2;
+        frame[2] = byteCount;
+        for (uint16_t i = 0; i < count; i++) {
+            frame[3 + i * 2]     = (data[i] >> 8) & 0xFF;
+            frame[3 + i * 2 + 1] = data[i] & 0xFF;
+        }
     }
+
+    uint8_t frameLen = 3 + byteCount + 2; // addr + fc + byteCount + data + CRC
     uint16_t crc = calculateCRC(frame, 3 + byteCount);
     frame[3 + byteCount]     = crc & 0xFF;        // CRC低字节
     frame[3 + byteCount + 1] = (crc >> 8) & 0xFF;  // CRC高字节
@@ -2025,6 +2123,17 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
     cache.count = result.count;
     memcpy(cache.values, result.data, result.count * sizeof(uint16_t));
     _notifyStatusChange();  // 通知状态变化：轮询成功
+
+    // 透传模式：将读取结果格式化为原始 HEX 帧上报
+    if (config.transferType == 1) {
+        String hexStr = formatRawHex(task.slaveAddress, task.functionCode, result.data, result.count);
+        String json = "[{\"id\":\"modbus_raw_" + String(task.slaveAddress) +
+                      "\",\"value\":\"" + hexStr + "\"}]";
+        if (dataCallback) {
+            dataCallback(task.slaveAddress, json);
+        }
+        return json;
+    }
 
     // 应用寄存器映射生成 JSON
     if (task.mappingCount > 0) {
@@ -2138,4 +2247,72 @@ void ModbusHandler::resetPollStatistics() {
     _lastPollTime = 0;
     memset(_taskCache, 0, sizeof(_taskCache));
     LOG_INFO("[Modbus] Poll statistics reset");
+}
+
+String ModbusHandler::collectCachedPollData() const {
+    String json;
+    json.reserve(512);
+    json = "[";
+    bool first = true;
+
+    for (uint8_t i = 0; i < config.master.taskCount; i++) {
+        const PollTask& task = config.master.tasks[i];
+        if (!task.enabled) continue;
+
+        const PollTaskCache& cache = _taskCache[i];
+        if (!cache.valid || cache.count == 0) continue;
+
+        // 透传模式无映射，跳过
+        if (config.transferType == 1 && task.mappingCount == 0) continue;
+
+        for (uint8_t j = 0; j < task.mappingCount; j++) {
+            const RegisterMapping& m = task.mappings[j];
+            if (m.sensorId[0] == '\0') continue;
+
+            float rawValue = 0.0f;
+            switch (m.dataType) {
+                case 0: // uint16
+                    if (m.regOffset < cache.count) rawValue = (float)cache.values[m.regOffset];
+                    break;
+                case 1: // int16
+                    if (m.regOffset < cache.count) rawValue = (float)(int16_t)cache.values[m.regOffset];
+                    break;
+                case 2: // uint32
+                    if (m.regOffset + 1 < cache.count) {
+                        uint32_t u32 = ((uint32_t)cache.values[m.regOffset] << 16) | cache.values[m.regOffset + 1];
+                        rawValue = (float)u32;
+                    }
+                    break;
+                case 3: // int32
+                    if (m.regOffset + 1 < cache.count) {
+                        uint32_t u32 = ((uint32_t)cache.values[m.regOffset] << 16) | cache.values[m.regOffset + 1];
+                        rawValue = (float)(int32_t)u32;
+                    }
+                    break;
+                case 4: // float32
+                    if (m.regOffset + 1 < cache.count) {
+                        uint32_t u32 = ((uint32_t)cache.values[m.regOffset] << 16) | cache.values[m.regOffset + 1];
+                        memcpy(&rawValue, &u32, sizeof(float));
+                    }
+                    break;
+                default:
+                    if (m.regOffset < cache.count) rawValue = (float)cache.values[m.regOffset];
+                    break;
+            }
+
+            float scaledValue = rawValue * m.scaleFactor;
+            char valBuf[16];
+            dtostrf(scaledValue, 1, m.decimalPlaces, valBuf);
+
+            if (!first) json += ",";
+            json += "{\"id\":\"";
+            json += m.sensorId;
+            json += "\",\"value\":\"";
+            json += valBuf;
+            json += "\",\"remark\":\"\",\"dataSource\":\"modbus\"}";
+            first = false;
+        }
+    }
+    json += "]";
+    return json;
 }

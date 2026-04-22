@@ -163,17 +163,22 @@
             var info = (fcNames[task.functionCode] || 'FC03') + ' @' + (task.startAddress || 0) + ' x' + (task.quantity || 10);
             var mappingCount = (task.mappings && task.mappings.length) || 0;
             if (mappingCount > 0) info += ' [' + mappingCount + (i18n.t('modbus-dev-mappings-suffix') || '映射') + ']';
+            var isTransparent = this._isTransparentMode();
+            var actions = [
+                this._renderProtocolActionButton(i18n.t('modbus-task-edit-btn') || '编辑', 'primary', 'edit-device', index, 'sensor')
+            ];
+            // 透传模式下隐藏映射按钮（透传不需要寄存器映射）
+            if (!isTransparent) {
+                actions.push(this._renderProtocolActionButton(i18n.t('modbus-mapping-btn') || '映射', 'warning', 'open-mapping', index));
+            }
+            actions.push(this._renderProtocolActionButton(i18n.t('modbus-master-delete-task') || '删除', 'danger', 'delete-device', index, 'sensor'));
             return '<tr>' +
                 '<td>' + escapeHtml(label) + '</td>' +
                 '<td>' + this._renderProtocolBadge('sensor', typeLabels.sensor) + '</td>' +
                 '<td>' + (task.slaveAddress || 1) + '</td>' +
                 '<td><small>' + escapeHtml(info) + '</small></td>' +
                 '<td>' + this._renderProtocolStatus(task.enabled) + '</td>' +
-                this._renderProtocolActionCell([
-                    this._renderProtocolActionButton(i18n.t('modbus-task-edit-btn') || '编辑', 'primary', 'edit-device', index, 'sensor'),
-                    this._renderProtocolActionButton(i18n.t('modbus-mapping-btn') || '映射', 'warning', 'open-mapping', index),
-                    this._renderProtocolActionButton(i18n.t('modbus-master-delete-task') || '删除', 'danger', 'delete-device', index, 'sensor')
-                ]) +
+                this._renderProtocolActionCell(actions) +
                 '</tr>';
         },
 
@@ -539,6 +544,7 @@
                 this._modbusRtuLoaded = true;
                 // 先加载设备列表（内部会调用 _renderAllDevices），再启动状态刷新
                 this._loadModbusDevices();
+                this._onTransferTypeChange();  // 根据传输类型联动 UI
                 this.refreshMasterStatus();
                 this._startMasterStatusRefresh();
                 this._updateDelayChannelSelect();
@@ -772,12 +778,31 @@
             // workMode 已移除，由后端动态推导
         },
 
+        // 判断当前是否为透传模式
+        _isTransparentMode() {
+            var sel = document.getElementById('rtu-transfer-type');
+            return sel && sel.value === '1';
+        },
+
+        // 传输类型切换联动：透传模式隐藏控制设备和映射按钮
+        _onTransferTypeChange() {
+            var isTransparent = this._isTransparentMode();
+            // 隐藏/显示"添加控制设备"菜单项
+            var addControlItem = document.querySelector('[data-action="_addControlDevice"]');
+            if (addControlItem) addControlItem.style.display = isTransparent ? 'none' : '';
+            // 重新渲染设备列表（会根据 _isTransparentMode 过滤控制设备行和映射按钮）
+            this._renderAllDevices();
+        },
+
         _renderAllDevices() {
             var tbody = document.getElementById('all-devices-body');
             if (!tbody) return;
             var tasks = this._masterTasks || [];
             var devices = this._modbusDevices || [];
-            if (tasks.length === 0 && devices.length === 0) {
+            var isTransparent = this._isTransparentMode();
+            // 透传模式下不显示控制设备
+            var visibleDevices = isTransparent ? [] : devices;
+            if (tasks.length === 0 && visibleDevices.length === 0) {
                 tbody.innerHTML = this._renderProtocolEmptyRow(6, i18n.t('modbus-no-devices') || '暂无子设备');
                 return;
             }
@@ -793,8 +818,8 @@
             for (var i = 0; i < tasks.length; i++) {
                 rows += this._renderAllDeviceSensorRow(tasks[i], i, fcNames, typeLabels);
             }
-            for (var j = 0; j < devices.length; j++) {
-                rows += this._renderAllDeviceControlRow(devices[j], j, typeLabels);
+            for (var j = 0; j < visibleDevices.length; j++) {
+                rows += this._renderAllDeviceControlRow(visibleDevices[j], j, typeLabels);
             }
             tbody.innerHTML = rows;
         },

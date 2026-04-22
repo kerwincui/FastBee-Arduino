@@ -194,6 +194,7 @@ struct ActionExecResult {
     String targetPeriphId;          // 目标外设 ID
     String actualValue;             // 执行后的实际值
     bool success = false;           // 是否成功
+    String remark;                  // 执行备注（成功/失败原因）
 };
 
 // 外设执行规则结构体

@@ -486,39 +486,49 @@ bool MQTTClient::publishMonitorData() {
         return false;
     }
 
-    // 构建监测数据 JSON 数组
-    // 模拟温湿度数据（实际项目可替换为真实传感器读数）
-    float temperature = 20.0 + (float)(esp_random() % 1500) / 100.0;  // 20.00~35.00
-    float humidity    = 30.0 + (float)(esp_random() % 5000) / 100.0;  // 30.00~80.00
-
-    // 获取当前时间作为 remark
-    String remark = "";
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo, 0) && timeinfo.tm_year >= 100) {
-        char timeBuf[24];
-        strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &timeinfo);
-        remark = timeBuf;
-    }
-
-    JsonDocument doc;
-    JsonArray arr = doc.to<JsonArray>();
-
-    JsonObject tempObj = arr.add<JsonObject>();
-    tempObj["id"] = "temperature";
-    char tempVal[8];
-    snprintf(tempVal, sizeof(tempVal), "%.2f", temperature);
-    tempObj["value"] = tempVal;
-    tempObj["remark"] = remark;
-
-    JsonObject humiObj = arr.add<JsonObject>();
-    humiObj["id"] = "humidity";
-    char humiVal[8];
-    snprintf(humiVal, sizeof(humiVal), "%.2f", humidity);
-    humiObj["value"] = humiVal;
-    humiObj["remark"] = remark;
-
     String payload;
-    serializeJson(doc, payload);
+
+    // 优先使用数据提供者回调获取真实传感器数据
+    if (_monitorDataProvider) {
+        payload = _monitorDataProvider();
+        if (payload.length() <= 2) {
+            // 返回空或 "[]"，无可用数据
+            LOG_DEBUG("MQTT: Monitor data provider returned empty data");
+            return false;
+        }
+    } else {
+        // 降级兜底：未注册数据提供者时使用模拟数据
+        LOG_DEBUG("MQTT: Monitor using fallback random data");
+        float temperature = 20.0 + (float)(esp_random() % 1500) / 100.0;
+        float humidity    = 30.0 + (float)(esp_random() % 5000) / 100.0;
+
+        String remark = "";
+        struct tm timeinfo;
+        if (getLocalTime(&timeinfo, 0) && timeinfo.tm_year >= 100) {
+            char timeBuf[24];
+            strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &timeinfo);
+            remark = timeBuf;
+        }
+
+        JsonDocument doc;
+        JsonArray arr = doc.to<JsonArray>();
+
+        JsonObject tempObj = arr.add<JsonObject>();
+        tempObj["id"] = "temperature";
+        char tempVal[8];
+        snprintf(tempVal, sizeof(tempVal), "%.2f", temperature);
+        tempObj["value"] = tempVal;
+        tempObj["remark"] = remark;
+
+        JsonObject humiObj = arr.add<JsonObject>();
+        humiObj["id"] = "humidity";
+        char humiVal[8];
+        snprintf(humiVal, sizeof(humiVal), "%.2f", humidity);
+        humiObj["value"] = humiVal;
+        humiObj["remark"] = remark;
+
+        serializeJson(doc, payload);
+    }
 
     bool ok = publishToTopic((size_t)monTopicIdx, payload);
     return ok;
@@ -784,6 +794,10 @@ void MQTTClient::setMessageCallback(std::function<void(const String&, const Stri
 
 void MQTTClient::setStatusChangeCallback(StatusChangeCallback cb) {
     _statusChangeCallback = cb;
+}
+
+void MQTTClient::setMonitorDataProvider(std::function<String()> provider) {
+    _monitorDataProvider = provider;
 }
 
 void MQTTClient::_notifyStatusChange() {

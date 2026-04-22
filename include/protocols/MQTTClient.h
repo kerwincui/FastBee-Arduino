@@ -135,6 +135,9 @@ public:
     typedef std::function<void(const String&)> StatusChangeCallback;
     void setStatusChangeCallback(StatusChangeCallback cb);
 
+    // 设置实时监测数据提供者回调（返回 JSON 数组字符串）
+    void setMonitorDataProvider(std::function<String()> provider);
+
     // 根据主题路径查找对应的主题类型（可选输出订阅主题索引）
     MqttTopicType getTopicTypeByPath(const String& topicPath, int8_t* outSubIndex = nullptr) const;
 
@@ -161,6 +164,7 @@ private:
     unsigned long long ntpDeviceSendTime = 0;  // 发送 NTP 请求时的设备本地时间戳（millis）
     
     std::function<void(const String&, const String&, MqttTopicType)> messageCallback;
+    std::function<String()> _monitorDataProvider;  // 实时监测数据提供者
 
     // 状态变化回调（SSE 推送用）
     StatusChangeCallback _statusChangeCallback;

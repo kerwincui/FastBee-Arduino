@@ -138,17 +138,21 @@ var label=task.name||task.label||('Slave '+(task.slaveAddress||1));
 var info=(fcNames[task.functionCode]||'FC03')+' @'+(task.startAddress||0)+' x'+(task.quantity||10);
 var mappingCount=(task.mappings&&task.mappings.length)||0;
 if(mappingCount>0)info+=' ['+mappingCount+(i18n.t('modbus-dev-mappings-suffix')||'映射')+']';
+var isTransparent=this._isTransparentMode();
+var actions=[
+this._renderProtocolActionButton(i18n.t('modbus-task-edit-btn')||'编辑','primary','edit-device',index,'sensor')
+];
+if(!isTransparent){
+actions.push(this._renderProtocolActionButton(i18n.t('modbus-mapping-btn')||'映射','warning','open-mapping',index));
+}
+actions.push(this._renderProtocolActionButton(i18n.t('modbus-master-delete-task')||'删除','danger','delete-device',index,'sensor'));
 return '<tr>'+
 '<td>'+escapeHtml(label)+'</td>'+
 '<td>'+this._renderProtocolBadge('sensor',typeLabels.sensor)+'</td>'+
 '<td>'+(task.slaveAddress||1)+'</td>'+
 '<td><small>'+escapeHtml(info)+'</small></td>'+
 '<td>'+this._renderProtocolStatus(task.enabled)+'</td>'+
-this._renderProtocolActionCell([
-this._renderProtocolActionButton(i18n.t('modbus-task-edit-btn')||'编辑','primary','edit-device',index,'sensor'),
-this._renderProtocolActionButton(i18n.t('modbus-mapping-btn')||'映射','warning','open-mapping',index),
-this._renderProtocolActionButton(i18n.t('modbus-master-delete-task')||'删除','danger','delete-device',index,'sensor')
-])+
+this._renderProtocolActionCell(actions)+
 '</tr>';
 },
 _renderAllDeviceControlRow(device,index,typeLabels){
@@ -478,6 +482,7 @@ this._masterTasks=[];
 }
 this._modbusRtuLoaded=true;
 this._loadModbusDevices();
+this._onTransferTypeChange();
 this.refreshMasterStatus();
 this._startMasterStatusRefresh();
 this._updateDelayChannelSelect();
@@ -699,12 +704,24 @@ onModbusModeChange(mode){
 },
 onWorkModeChange(mode){
 },
+_isTransparentMode(){
+var sel=document.getElementById('rtu-transfer-type');
+return sel&&sel.value==='1';
+},
+_onTransferTypeChange(){
+var isTransparent=this._isTransparentMode();
+var addControlItem=document.querySelector('[data-action="_addControlDevice"]');
+if(addControlItem)addControlItem.style.display=isTransparent?'none':'';
+this._renderAllDevices();
+},
 _renderAllDevices(){
 var tbody=document.getElementById('all-devices-body');
 if(!tbody)return ;
 var tasks=this._masterTasks||[];
 var devices=this._modbusDevices||[];
-if(tasks.length===0&&devices.length===0){
+var isTransparent=this._isTransparentMode();
+var visibleDevices=isTransparent?[]:devices;
+if(tasks.length===0&&visibleDevices.length===0){
 tbody.innerHTML=this._renderProtocolEmptyRow(6,i18n.t('modbus-no-devices')||'暂无子设备');
 return ;
 }
@@ -720,8 +737,8 @@ var rows='';
 for(var i=0;i<tasks.length;i++){
 rows+=this._renderAllDeviceSensorRow(tasks[i],i,fcNames,typeLabels);
 }
-for(var j=0;j<devices.length;j++){
-rows+=this._renderAllDeviceControlRow(devices[j],j,typeLabels);
+for(var j=0;j<visibleDevices.length;j++){
+rows+=this._renderAllDeviceControlRow(visibleDevices[j],j,typeLabels);
 }
 tbody.innerHTML=rows;
 },

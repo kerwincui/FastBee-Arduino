@@ -254,6 +254,16 @@ public:
     // 反向查找：通过 sensorId 找到设备索引和通道号
     bool findBySensorId(const String& sensorId, uint8_t& outDeviceIndex, uint16_t& outChannel) const;
 
+    // 扩展匹配结果（支持功能后缀：_all / _fwd / _rev / _stop / _spd / _pls / _sv / _p / _i / _d 等）
+    struct SensorIdMatch {
+        uint8_t deviceIndex;
+        uint16_t channel;     // 通道号，或功能寄存器索引（motor/pid）
+        String action;        // ""=标准通道, "all"=批量, motor/pid功能后缀
+        bool matched;
+        SensorIdMatch() : deviceIndex(0), channel(0), matched(false) {}
+    };
+    bool findBySensorIdEx(const String& sensorId, SensorIdMatch& result) const;
+
     // Master写操作（阻塞式）
     bool masterWriteSingleRegister(uint8_t slaveAddr, uint16_t regAddr, uint16_t value);
     
@@ -282,6 +292,9 @@ public:
     String getPollStatistics() const;
     // 获取指定任务的缓存数据（用于API返回）
     const PollTaskCache* getTaskCache(uint8_t taskIdx) const;
+    // 从轮询缓存收集所有有效任务的映射数据，返回 JSON 数组字符串
+    // 仅读取 _taskCache 缓存，不发起任何 Modbus 通信
+    String collectCachedPollData() const;
     // 重置统计数据
     void resetPollStatistics();
     // 统计数据 getter（用于API直接访问）

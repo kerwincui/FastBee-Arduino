@@ -185,6 +185,14 @@ var ch=parseInt(e.target.getAttribute('data-ch'));
 var val=parseInt(e.target.value)||0;
 self._dcSetPwmChannel(devIdx,ch,val);
 }
+if(e.target.id==='dc-sid-toggle'){
+var show=e.target.checked;
+localStorage.setItem('dc_show_sid',show?'1':'0');
+var tags=document.querySelectorAll('.dc-sid-tag');
+for(var t=0;t<tags.length;t++){
+tags[t].style.display=show?'':'none';
+}
+}
 });
 }
 this._eventsBound=true;
@@ -700,6 +708,8 @@ html+='<div class="card dc-header-card">';
 html+='<div class="card-header card-header-toolbar dc-header-card-inner">';
 html+='<h2 class="card-title dc-header-title">'+this._t('device-control-dashboard')+'</h2>';
 html+='<div class="dc-header-actions">';
+var _sidChecked=localStorage.getItem('dc_show_sid')==='1';
+html+='<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:#666;margin-right:8px;cursor:pointer;user-select:none;"><input type="checkbox" id="dc-sid-toggle"'+(_sidChecked?' checked':'')+' style="margin:0;">\u663E\u793A\u7269\u6A21\u578B\u6807\u8BC6</label>';
 html+='<button class="dc-btn-sm dc-btn-refresh" id="dc-refresh-btn">'+this._t('dashboard-refresh')+'</button>';
 html+='<button class="dc-btn-sm dc-btn-reset dc-layout-reset">'+this._t('device-control-reset-layout')+'</button>';
 html+='</div>';
@@ -774,6 +784,30 @@ html+=this._renderSingleModbusPanel(list[i].idx,list[i].dev);
 }
 return html;
 },
+_buildPlatformIds:function (dev){
+var sid=dev.sensorId;
+if(!sid)return [];
+var dt=dev.deviceType||'relay';
+var ids=[];
+if(dt==='relay'||dt==='pwm'){
+var cc=dev.channelCount||1;
+if(cc<=1){
+ids.push(sid);
+}else{
+for(var ch=0;ch<cc;ch++)ids.push(sid+'_ch'+ch);
+}
+ids.push(sid+'_all');
+}else if(dt==='motor'){
+var suffixes=['fwd','rev','stop','spd','pls'];
+for(var m=0;m<suffixes.length;m++)ids.push(sid+'_'+suffixes[m]);
+}else if(dt==='pid'){
+var pidSuf=['sv','p','i','d'];
+for(var p=0;p<pidSuf.length;p++)ids.push(sid+'_'+pidSuf[p]);
+ids.push(sid+'_pv (R/O)');
+ids.push(sid+'_out (R/O)');
+}
+return ids;
+},
 _renderSingleModbusPanel:function (devIdx,dev){
 var dt=dev.deviceType||'relay';
 var typeLabel=this._t('modbus-type-'+dt)||dt;
@@ -808,12 +842,20 @@ states=new Array(channelCount).fill(false);
 }
 html+=this._renderDcCoilGrid(devIdx,channelCount,states,ncMode);
 html+=this._renderDcRelayDelaySection(devIdx,dev);
-html+=this._renderDcActionBar([
+html+='<div class="dc-modbus-actions">';
+var relayBtns=[
 {className:'dc-coil-batch dc-btn-sm dc-btn-on',devIdx:devIdx,action:'allOn',label:this._t('modbus-ctrl-all-on')},
 {className:'dc-coil-batch dc-btn-sm dc-btn-off',devIdx:devIdx,action:'allOff',label:this._t('modbus-ctrl-all-off')},
-{className:'dc-coil-batch dc-btn-sm dc-btn-toggle',devIdx:devIdx,action:'allToggle',label:this._t('modbus-ctrl-all-toggle')},
-{className:'dc-coil-refresh dc-btn-sm dc-btn-refresh',devIdx:devIdx,label:this._t('modbus-ctrl-refresh')}
-]);
+{className:'dc-coil-batch dc-btn-sm dc-btn-toggle',devIdx:devIdx,action:'allToggle',label:this._t('modbus-ctrl-all-toggle')}
+];
+for(var ri=0;ri<relayBtns.length;ri++){
+html+='<span style="display:inline-flex;flex-direction:column;align-items:center;">';
+html+=this._renderDcActionButton(relayBtns[ri]);
+if(ri===0)html+=this._renderSidTag(devIdx,'_all','1=\u5168\u5f00, 0=\u5168\u5173');
+html+='</span>';
+}
+html+=this._renderDcActionButton({className:'dc-coil-refresh dc-btn-sm dc-btn-refresh',devIdx:devIdx,label:this._t('modbus-ctrl-refresh')});
+html+='</div>';
 html+='</div>';
 return html;
 },
@@ -848,11 +890,19 @@ if(!states){
 states=new Array(channelCount).fill(0);
 }
 html+=this._renderDcPwmGrid(devIdx,channelCount,states,maxValue);
-html+=this._renderDcActionBar([
+html+='<div class="dc-modbus-actions">';
+var pwmBtns=[
 {className:'dc-pwm-batch dc-btn-sm dc-btn-on',devIdx:devIdx,action:'max',label:this._t('modbus-ctrl-pwm-set-all-max')},
-{className:'dc-pwm-batch dc-btn-sm dc-btn-off',devIdx:devIdx,action:'off',label:this._t('modbus-ctrl-pwm-set-all-off')},
-{className:'dc-pwm-refresh dc-btn-sm dc-btn-refresh',devIdx:devIdx,label:this._t('modbus-ctrl-pwm-refresh')}
-]);
+{className:'dc-pwm-batch dc-btn-sm dc-btn-off',devIdx:devIdx,action:'off',label:this._t('modbus-ctrl-pwm-set-all-off')}
+];
+for(var pi=0;pi<pwmBtns.length;pi++){
+html+='<span style="display:inline-flex;flex-direction:column;align-items:center;">';
+html+=this._renderDcActionButton(pwmBtns[pi]);
+if(pi===0)html+=this._renderSidTag(devIdx,'_all','\u503c=\u5168\u90e8\u8bbe\u4e3a\u6b64\u503c');
+html+='</span>';
+}
+html+=this._renderDcActionButton({className:'dc-pwm-refresh dc-btn-sm dc-btn-refresh',devIdx:devIdx,label:this._t('modbus-ctrl-pwm-refresh')});
+html+='</div>';
 html+='</div>';
 return html;
 },
@@ -874,12 +924,18 @@ return html;
 _renderDcMotorPanel:function (devIdx,dev){
 var html='<div class="dc-modbus-device-body">';
 html+=this._renderDcMotorStatusCard(devIdx);
-html+=this._renderDcMotorParamsSection(devIdx);
-html+=this._renderDcActionBar([
+html+=this._renderDcMotorParamsSection(devIdx,dev);
+html+='<div class="dc-modbus-actions">';
+var motorBtns=[
 {className:'dc-motor-action motor-action-btn motor-action-forward',devIdx:devIdx,action:'forward',label:this._t('modbus-motor-ctrl-forward')||'正转'},
 {className:'dc-motor-action motor-action-btn motor-action-stop',devIdx:devIdx,action:'stop',label:this._t('modbus-motor-ctrl-stop')||'停止'},
 {className:'dc-motor-action motor-action-btn motor-action-reverse',devIdx:devIdx,action:'reverse',label:this._t('modbus-motor-ctrl-reverse')||'反转'}
-]);
+];
+for(var mi=0;mi<motorBtns.length;mi++){
+html+=this._renderDcActionButton(motorBtns[mi]);
+}
+html+='</div>';
+html+=this._renderSidTag(devIdx,'_oper','0=\u505c\u6b62, 1=\u6b63\u8f6c, 2=\u53cd\u8f6c');
 html+='</div>';
 return html;
 },
@@ -914,17 +970,19 @@ html+='</div>';
 html+='</div></div>';
 return html;
 },
-_renderDcMotorParamsSection:function (devIdx){
+_renderDcMotorParamsSection:function (devIdx,dev){
 var html='<div class="motor-params-section">';
 html+='<div class="motor-param-row">';
 html+='<label>'+(this._t('modbus-motor-speed')||'速度')+'</label>';
 html+='<input type="number" class="motor-param-input pure-input-1" id="dc-motor-speed-in-'+devIdx+'" value="50" min="0">';
 html+=this._renderDcActionButton({className:'dc-motor-set dc-btn-sm dc-btn-on',devIdx:devIdx,param:'speed',label:this._t('modbus-motor-ctrl-set-speed')||'设置速度'});
+html+=this._renderSidTag(devIdx,'_spd','0~65535');
 html+='</div>';
 html+='<div class="motor-param-row">';
 html+='<label>'+(this._t('modbus-motor-pulse')||'脉冲')+'</label>';
 html+='<input type="number" class="motor-param-input pure-input-1" id="dc-motor-pulse-in-'+devIdx+'" value="1600" min="0">';
 html+=this._renderDcActionButton({className:'dc-motor-set dc-btn-sm dc-btn-on',devIdx:devIdx,param:'pulse',label:this._t('modbus-motor-ctrl-set-pulse')||'设置脉冲'});
+html+=this._renderSidTag(devIdx,'_pls','0~65535');
 html+='</div>';
 html+='</div>';
 return html;
@@ -957,6 +1015,15 @@ attrs+=' data-param="'+this._esc(config.param)+'"';
 }
 return '<button class="'+config.className+'" '+attrs+'>'+this._esc(config.label||'')+'</button>';
 },
+_renderSidTag:function (devIdx,suffix,valueDesc){
+var dev=(this._modbusDevices||[])[devIdx];
+if(!dev||!dev.sensorId)return '';
+var sid=dev.sensorId+suffix;
+var vis=localStorage.getItem('dc_show_sid')==='1'?'':'display:none;';
+var text=this._esc(sid);
+if(valueDesc)text+='<br><span style="color:#b0b8c8;">'+this._esc(valueDesc)+'</span>';
+return '<span class="dc-sid-tag" style="'+vis+'font-size:10px;color:#8a9bb5;text-align:center;line-height:1.2;margin-top:2px;">'+text+'</span>';
+},
 _renderDcCoilGrid:function (devIdx,channelCount,states,ncMode){
 var html='<div class="dc-coil-grid" id="dc-coil-grid-'+devIdx+'">';
 var onText=this._t('modbus-ctrl-status-on')||'ON';
@@ -975,6 +1042,7 @@ var html='<div class="dc-coil-card '+cls+'" data-dev="'+devIdx+'" data-ch="'+ch+
 html+='<div class="dc-coil-icon">'+POWER_ICON_SVG+'</div>';
 html+='<div class="dc-coil-ch">CH'+ch+'</div>';
 html+='<div class="dc-coil-st">'+this._esc(isOn?onText:offText)+'</div>';
+html+=this._renderSidTag(devIdx,'_ch'+ch,'1=\u6253\u5f00, 0=\u5173\u95ed');
 html+='</div>';
 return html;
 },
@@ -994,6 +1062,7 @@ html+='<span class="dc-pwm-ch">CH'+ch+'</span>';
 html+='<input type="range" class="dc-pwm-slider" min="0" max="'+maxValue+'" value="'+val+'" data-dev="'+devIdx+'" data-ch="'+ch+'">';
 html+='<span class="dc-pwm-pct" data-dev="'+devIdx+'" data-ch="'+ch+'">'+pct+'%</span>';
 html+='<input type="number" class="dc-pwm-num" min="0" max="'+maxValue+'" value="'+val+'" data-dev="'+devIdx+'" data-ch="'+ch+'">';
+html+=this._renderSidTag(devIdx,'_ch'+ch,'0~'+maxValue);
 html+='</div>';
 return html;
 },
@@ -1041,6 +1110,7 @@ label:this._t('modbus-ctrl-pid-set')
 });
 html+='</div>';
 }
+html+=this._renderSidTag(devIdx,'_'+card.key,card.editable?'\u6574\u578b(int)':'\u53ea\u8bfb');
 html+='</div>';
 return html;
 },

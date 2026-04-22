@@ -385,7 +385,7 @@
                             <div class="pure-control-group">
                                 <label for="rtu-transfer-type"
                                     data-i18n="rtu-transfer-type-label">传输类型</label>
-                                <select id="rtu-transfer-type" class="pure-input-1">
+                                <select id="rtu-transfer-type" class="pure-input-1" data-change-action="_onTransferTypeChange">
                                     <option value="0" data-i18n="rtu-transfer-type-json">JSON
                                         (结构化数据)
                                     </option>
@@ -445,7 +445,7 @@
                                             <input type="text" id="mdev-edit-name" class="pure-input-1" maxlength="31">
                                         </div>
                                         <div class="pure-control-group">
-                                            <label data-i18n="modbus-device-sensor-id">Sensor ID</label>
+                                            <label data-i18n="modbus-device-sensor-id">Sub-device ID</label>
                                             <input type="text" id="mdev-edit-sensorid" class="pure-input-1" maxlength="31" placeholder="relay1, switch1">
                                         </div>
                                     </div>

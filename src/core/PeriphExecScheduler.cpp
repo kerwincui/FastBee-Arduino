@@ -201,10 +201,9 @@ String PeriphExecScheduler::handleDataCommand(const String& message) {
         int idx = 0;
         for (JsonObject item : cmdArr) {
             String itemId = item["id"].as<String>();
-            if (itemId == "modbus_read") {
+            if (itemId == "modbus_read" || itemId == "modbus_raw_send") {
                 String itemValue = item["value"].as<String>();
-                LOGGER.infof("[PeriphExec] DataCommand: modbus_read command detected");
-                // 通过 executor 获取 Modbus 读取回调
+                LOGGER.infof("[PeriphExec] DataCommand: %s command detected", itemId.c_str());
                 // Note: This is handled by the manager now
                 processedIndices.push_back(idx);
             }

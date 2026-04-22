@@ -1514,7 +1514,7 @@ const isEdit=originalId!==''&&originalId!=='null'&&originalId!=='undefined';
 const ruleData={
 name:document.getElementById('periph-exec-name').value.trim(),
 enabled:document.getElementById('periph-exec-enabled').checked,
-reportAfterExec:document.getElementById('periph-exec-report').value==='true'
+reportAfterExec:document.getElementById('periph-exec-report').checked
 };
 if(!ruleData.name){
 this.showInlineError(errEl,i18n.t('periph-exec-validate-name'));
@@ -1590,7 +1590,7 @@ const rule=execRes.data;
 if(!rule)return ;
 document.getElementById('periph-exec-name').value=rule.name||'';
 document.getElementById('periph-exec-enabled').checked=!!rule.enabled;
-document.getElementById('periph-exec-report').value=rule.reportAfterExec!==false?'true':'false';
+document.getElementById('periph-exec-report').checked=rule.reportAfterExec!==false;
 let triggers=rule.triggers||[];
 if(triggers.length===0){
 triggers=[{

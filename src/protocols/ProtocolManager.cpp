@@ -296,6 +296,23 @@ bool ProtocolManager::restartMQTT() {
             if (mqttStatusSSECallback) mqttStatusSSECallback(data);
         });
     }
+
+    // 注册实时监测数据提供者（组合 Modbus 缓存数据 + 本地外设数据）
+    mqttClient->setMonitorDataProvider([this]() -> String {
+        String modbusData = modbusHandler ? modbusHandler->collectCachedPollData() : "[]";
+        String localData = collectLocalSensorData();
+        bool hasMb = modbusData.length() > 2;
+        bool hasLc = localData.length() > 2;
+        if (!hasMb && !hasLc) return "[]";
+        if (!hasMb) return localData;
+        if (!hasLc) return modbusData;
+        String result = "[";
+        result += modbusData.substring(1, modbusData.length() - 1);
+        result += ",";
+        result += localData.substring(1, localData.length() - 1);
+        result += "]";
+        return result;
+    });
     
     if (!mqttClient->begin()) {
         LOG_WARNING("Protocol Manager: MQTT restart begin() failed");
@@ -333,6 +350,23 @@ bool ProtocolManager::restartMQTTDeferred() {
             if (mqttStatusSSECallback) mqttStatusSSECallback(data);
         });
     }
+
+    // 注册实时监测数据提供者（组合 Modbus 缓存数据 + 本地外设数据）
+    mqttClient->setMonitorDataProvider([this]() -> String {
+        String modbusData = modbusHandler ? modbusHandler->collectCachedPollData() : "[]";
+        String localData = collectLocalSensorData();
+        bool hasMb = modbusData.length() > 2;
+        bool hasLc = localData.length() > 2;
+        if (!hasMb && !hasLc) return "[]";
+        if (!hasMb) return localData;
+        if (!hasLc) return modbusData;
+        String result = "[";
+        result += modbusData.substring(1, modbusData.length() - 1);
+        result += ",";
+        result += localData.substring(1, localData.length() - 1);
+        result += "]";
+        return result;
+    });
     
     if (!mqttClient->begin()) {
         LOG_WARNING("Protocol Manager: MQTT deferred restart begin() failed");
@@ -556,6 +590,13 @@ bool ProtocolManager::restartModbus() {
         }
     );
     
+    // 注册 Modbus 原始 HEX 帧透传回调到 PeriphExec
+    PeriphExecManager::getInstance().setModbusRawSendCallback(
+        [this](const String& hexPayload) -> String {
+            return this->executeModbusRawSend(hexPayload);
+        }
+    );
+    
     // 设置状态变化回调（SSE 推送用）
     if (modbusStatusSSECallback) {
         modbusHandler->setStatusChangeCallback([this](const String& data) {
@@ -582,6 +623,7 @@ void ProtocolManager::stopModbus() {
     LOG_INFO("Protocol Manager: Stopping Modbus...");
     modbusRestartPending = false;  // 取消待执行的延迟重启
     PeriphExecManager::getInstance().setModbusReadCallback(nullptr);
+    PeriphExecManager::getInstance().setModbusRawSendCallback(nullptr);
     
     // 注销 Modbus 外设和通信回调
     unregisterModbusSubDevices();
@@ -710,7 +752,9 @@ String ProtocolManager::executeModbusRead(const String& paramsJson) {
             // 透传模式(RAW HEX)：重构响应帧为十六进制字符串
             String hexStr = modbusHandler->formatRawHex(slaveAddr, fc, readResult.data, readResult.count);
             JsonObject item = resultArr.add<JsonObject>();
-            item["id"] = "modbus_raw";
+            char idBuf[20];
+            snprintf(idBuf, sizeof(idBuf), "modbus_raw_%d", slaveAddr);
+            item["id"] = idBuf;
             item["value"] = hexStr;
             item["remark"] = "";
         } else if (t.containsKey("mappings") && t["mappings"].is<JsonArray>()) {
@@ -786,6 +830,123 @@ String ProtocolManager::executeModbusRead(const String& paramsJson) {
     return out;
 }
 
+// ========== MQTT触发的Modbus原始HEX帧透传 ==========
+
+String ProtocolManager::executeModbusRawSend(const String& hexPayload) {
+    FastBeeJsonDoc resultDoc;
+    JsonArray resultArr = resultDoc.to<JsonArray>();
+
+    // 检查 Modbus 是否可用
+    if (!modbusHandler) {
+        JsonObject err = resultArr.add<JsonObject>();
+        err["id"] = "modbus_raw_send";
+        err["value"] = "0";
+        err["remark"] = "error:not_initialized";
+        String out;
+        serializeJson(resultDoc, out);
+        return out;
+    }
+
+    if (modbusHandler->getMode() != MODBUS_MASTER) {
+        JsonObject err = resultArr.add<JsonObject>();
+        err["id"] = "modbus_raw_send";
+        err["value"] = "0";
+        err["remark"] = "error:not_master_mode";
+        String out;
+        serializeJson(resultDoc, out);
+        return out;
+    }
+
+    // 校验 HEX 字符串格式
+    String hex = hexPayload;
+    hex.trim();
+    if (hex.length() < 4 || (hex.length() % 2) != 0 || hex.length() > (Protocols::MODBUS_BUFFER_SIZE - 2) * 2) {
+        JsonObject err = resultArr.add<JsonObject>();
+        err["id"] = "modbus_raw_send";
+        err["value"] = "0";
+        err["remark"] = "error:invalid_hex_length";
+        String out;
+        serializeJson(resultDoc, out);
+        return out;
+    }
+
+    // HEX 字符串解码为字节数组
+    uint8_t byteLen = hex.length() / 2;
+    uint8_t byteArray[Protocols::MODBUS_BUFFER_SIZE];
+    for (uint8_t i = 0; i < byteLen; i++) {
+        char hi = hex.charAt(i * 2);
+        char lo = hex.charAt(i * 2 + 1);
+        auto hexVal = [](char c) -> int8_t {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        };
+        int8_t hv = hexVal(hi), lv = hexVal(lo);
+        if (hv < 0 || lv < 0) {
+            JsonObject err = resultArr.add<JsonObject>();
+            err["id"] = "modbus_raw_send";
+            err["value"] = "0";
+            err["remark"] = "error:invalid_hex_char";
+            String out;
+            serializeJson(resultDoc, out);
+            return out;
+        }
+        byteArray[i] = (uint8_t)((hv << 4) | lv);
+    }
+
+    uint8_t slaveAddr = byteArray[0];
+    LOG_INFOF("[Modbus] RawSend: slave=%d, %d bytes (without CRC)", slaveAddr, byteLen);
+
+    // 发送原始帧（sendRawFrameOnce 自动追加 CRC）
+    OneShotResult rawResult = modbusHandler->sendRawFrameOnce(slaveAddr, byteArray, byteLen, false);
+
+    if (rawResult.error != ONESHOT_SUCCESS) {
+        JsonObject err = resultArr.add<JsonObject>();
+        char idBuf[20];
+        snprintf(idBuf, sizeof(idBuf), "modbus_raw_%d", slaveAddr);
+        err["id"] = idBuf;
+        err["value"] = "0";
+        switch (rawResult.error) {
+            case ONESHOT_TIMEOUT:    err["remark"] = "error:timeout"; break;
+            case ONESHOT_CRC_ERROR:  err["remark"] = "error:crc_error"; break;
+            case ONESHOT_EXCEPTION: {
+                char buf[24];
+                snprintf(buf, sizeof(buf), "error:exception:0x%02X", rawResult.exceptionCode);
+                err["remark"] = buf;
+                break;
+            }
+            case ONESHOT_BUSY:       err["remark"] = "error:busy"; break;
+            default:                 err["remark"] = "error:unknown"; break;
+        }
+        String out;
+        serializeJson(resultDoc, out);
+        return out;
+    }
+
+    // 成功：将原始响应字节格式化为 HEX 字符串
+    // rawResult.data[0..count-1] 存储原始响应帧字节（每个 uint16 槽存 1 字节）
+    String respHex;
+    respHex.reserve(rawResult.count * 2);
+    for (uint16_t i = 0; i < rawResult.count; i++) {
+        char buf[3];
+        snprintf(buf, sizeof(buf), "%02X", (uint8_t)rawResult.data[i]);
+        respHex += buf;
+    }
+
+    JsonObject item = resultArr.add<JsonObject>();
+    char idBuf[20];
+    snprintf(idBuf, sizeof(idBuf), "modbus_raw_%d", slaveAddr);
+    item["id"] = idBuf;
+    item["value"] = respHex;
+    item["remark"] = "";
+
+    String out;
+    serializeJson(resultDoc, out);
+    LOG_INFOF("[Modbus] RawSend: result: %s", out.c_str());
+    return out;
+}
+
 // 具体协议初始化实现
 bool ProtocolManager::initMQTT(void* config) {
     if (!config) return false;
@@ -806,6 +967,23 @@ bool ProtocolManager::initMQTT(void* config) {
             if (mqttStatusSSECallback) mqttStatusSSECallback(data);
         });
     }
+
+    // 注册实时监测数据提供者（组合 Modbus 缓存数据 + 本地外设数据）
+    mqttClient->setMonitorDataProvider([this]() -> String {
+        String modbusData = modbusHandler ? modbusHandler->collectCachedPollData() : "[]";
+        String localData = collectLocalSensorData();
+        bool hasMb = modbusData.length() > 2;
+        bool hasLc = localData.length() > 2;
+        if (!hasMb && !hasLc) return "[]";
+        if (!hasMb) return localData;
+        if (!hasLc) return modbusData;
+        String result = "[";
+        result += modbusData.substring(1, modbusData.length() - 1);
+        result += ",";
+        result += localData.substring(1, localData.length() - 1);
+        result += "]";
+        return result;
+    });
 
     return mqttClient->begin();
 }
@@ -911,6 +1089,12 @@ void ProtocolManager::registerModbusSubDevices(const ModbusConfig& config) {
         return;
     }
     
+    // 透传模式下不注册子设备（纯转发，不需要控制类子设备）
+    if (config.transferType == 1) {
+        LOG_INFO("Protocol Manager: Transparent mode, skip sub-device registration");
+        return;
+    }
+    
     // 设置 Modbus 通信回调（通过闭包捕获 modbusHandler）
     ModbusHandler* mb = modbusHandler.get();
     if (mb) {
@@ -986,4 +1170,45 @@ void ProtocolManager::unregisterModbusSubDevices() {
         pm.removePeripheral(p.id);
         LOG_INFOF("Protocol Manager: Unregistered Modbus peripheral '%s'", p.id.c_str());
     }
+}
+
+String ProtocolManager::collectLocalSensorData() const {
+    PeripheralManager& pm = PeripheralManager::getInstance();
+    std::vector<PeripheralConfig> allPeriphs = pm.getAllPeripherals();
+
+    String json;
+    json.reserve(256);
+    json = "[";
+    bool first = true;
+
+    for (const auto& config : allPeriphs) {
+        if (!config.enabled) continue;
+
+        int typeVal = static_cast<int>(config.type);
+        if (typeVal < 11 || typeVal > 26) continue;  // 仅 GPIO/ADC/DAC 类型
+
+        String value;
+        if (typeVal >= 11 && typeVal <= 14) {
+            // 数字输入/输出类型
+            GPIOState state = pm.readPin(config.id);
+            if (state == GPIOState::STATE_UNDEFINED) continue;
+            value = (state == GPIOState::STATE_HIGH) ? "1" : "0";
+        } else if (typeVal == 15 || typeVal == 26) {
+            // 模拟输入或 ADC
+            uint16_t analog = pm.readAnalog(config.id);
+            value = String(analog);
+        } else {
+            continue;
+        }
+
+        if (!first) json += ",";
+        json += "{\"id\":\"";
+        json += config.id;
+        json += "\",\"value\":\"";
+        json += value;
+        json += "\",\"remark\":\"\",\"dataSource\":\"local\"}";
+        first = false;
+    }
+    json += "]";
+    return json;
 }

@@ -1647,7 +1647,7 @@
             const ruleData = {
                 name: document.getElementById('periph-exec-name').value.trim(),
                 enabled: document.getElementById('periph-exec-enabled').checked,
-                reportAfterExec: document.getElementById('periph-exec-report').value === 'true'
+                reportAfterExec: document.getElementById('periph-exec-report').checked
             };
 
             if (!ruleData.name) {
@@ -1729,7 +1729,7 @@
 
                     document.getElementById('periph-exec-name').value = rule.name || '';
                     document.getElementById('periph-exec-enabled').checked = !!rule.enabled;
-                    document.getElementById('periph-exec-report').value = rule.reportAfterExec !== false ? 'true' : 'false';
+                    document.getElementById('periph-exec-report').checked = rule.reportAfterExec !== false;
 
                     let triggers = rule.triggers || [];
                     if (triggers.length === 0) {

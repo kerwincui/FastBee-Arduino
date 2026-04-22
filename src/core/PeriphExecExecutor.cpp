@@ -145,11 +145,13 @@ String buildActionReportValue(const ExecAction& action,
 void appendActionResult(std::vector<ActionExecResult>& results,
                         const String& targetPeriphId,
                         const String& actualValue,
-                        bool success) {
+                        bool success,
+                        const String& remark = "") {
     ActionExecResult result;
     result.targetPeriphId = targetPeriphId;
     result.actualValue = actualValue;
     result.success = success;
+    result.remark = remark;
     results.push_back(result);
 }
 
@@ -228,11 +230,12 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
             ActionExecResult ar;
             ok = executeSensorReadAction(action, ar);
             ar.success = ok;
+            ar.remark = ok ? "success" : "sensor_read_failed";
             actionResults.push_back(ar);
         } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL)) {
             ok = executeModbusPollAction(action, rule, &actionResults);
             if (!ok && actionResults.empty()) {
-                appendActionResult(actionResults, action.targetPeriphId, effectiveValue, false);
+                appendActionResult(actionResults, action.targetPeriphId, effectiveValue, false, "modbus_poll_failed");
             }
         } else {
             ok = executeActionItem(action, effectiveValue);
@@ -240,7 +243,8 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
                 actionResults,
                 action.targetPeriphId,
                 buildActionReportValue(action, effectiveValue, receivedValue),
-                ok
+                ok,
+                ok ? "success" : "execute_failed"
             );
         }
 
@@ -555,7 +559,8 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                         appendActionResult(*controlResults, "modbus:" + String(devIdx),
                                            buildModbusReportValue(ch, "", String(desiredState ? 1 : 0),
                                                                   desiredState),
-                                           ok);
+                                           ok,
+                                           ok ? "success" : "modbus_write_failed");
                     }
                 } else if (devType == "pwm") {
                     uint16_t regAddr = dev.pwmRegBase + ch;
@@ -566,7 +571,8 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                         dev.slaveAddress, regAddr, val, ok);
                     if (controlResults) {
                         appendActionResult(*controlResults, "modbus:" + String(devIdx),
-                                           String(ch) + ":" + String(val), ok);
+                                           String(ch) + ":" + String(val), ok,
+                                           ok ? "success" : "modbus_write_failed");
                     }
                 } else if (devType == "pid") {
                     const char* param = cv["p"] | "P";
@@ -581,7 +587,8 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                         dev.slaveAddress, param, regAddr, val, ok);
                     if (controlResults) {
                         appendActionResult(*controlResults, "modbus:" + String(devIdx),
-                                           String(ch) + ":" + String(val), ok);
+                                           String(ch) + ":" + String(val), ok,
+                                           ok ? "success" : "modbus_write_failed");
                     }
                 }
             }
@@ -860,18 +867,18 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
 
     PeripheralManager& pm = PeripheralManager::getInstance();
 
-    // 构建上报数据：[{"id":"led1","value":"1","remark":""}, ...]
+    // 构建上报数据：[{"id":"led1","value":"1","remark":"success"}, ...]
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
 
     for (const auto& ar : results) {
-        if (ar.targetPeriphId.isEmpty() || !ar.success) continue;
+        if (ar.targetPeriphId.isEmpty()) continue;
 
         // 检查目标外设是否为 Modbus 子设备，且传输类型为透传 HEX
         bool isModbusTarget = false;
         const PeripheralConfig* cfg = pm.getPeripheral(ar.targetPeriphId);
         if (!cfg) continue;
-        if (cfg && cfg->isModbusPeripheral()) {
+        if (cfg->isModbusPeripheral()) {
             isModbusTarget = true;
         }
 
@@ -879,7 +886,7 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
         String reportId = ar.targetPeriphId;
         String reportValue = ar.actualValue;
 
-        if (isModbusTarget && cfg && modbus && cfg->params.modbus.sensorId[0] != '\0') {
+        if (isModbusTarget && modbus && cfg->params.modbus.sensorId[0] != '\0') {
             // 从 actualValue 解析 channel（格式 "channel:state" 或 "state"）
             uint16_t channel = 0;
             int sepIdx = ar.actualValue.indexOf(':');
@@ -893,16 +900,22 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
             }
         }
 
+        // 确定上报 remark：优先使用动作执行时设置的 remark，否则根据 success 生成
+        String reportRemark = ar.remark;
+        if (reportRemark.isEmpty()) {
+            reportRemark = ar.success ? "success" : "failed";
+        }
+
         JsonObject obj = arr.add<JsonObject>();
         if (isModbusTarget && modbusTransferType == 1 && looksLikeHexPayload(ar.actualValue)) {
             // 透传模式：直接上报原始 HEX 值
             obj["id"] = reportId;
             obj["value"] = ar.actualValue;
-            obj["remark"] = "";
+            obj["remark"] = reportRemark;
         } else {
             obj["id"] = reportId;
             obj["value"] = reportValue;
-            obj["remark"] = "";
+            obj["remark"] = reportRemark;
         }
     }
 

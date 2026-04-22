@@ -330,17 +330,15 @@
                                 placeholder="例如: 温度过高报警" required data-i18n-placeholder="periph-exec-name-hint">
                         </div>
                         <div class="pure-control-group">
-                            <label for="periph-exec-report" data-i18n="periph-exec-report-label">执行后上报</label>
-                            <select id="periph-exec-report" class="pure-input-1">
-                                <option value="true" data-i18n="periph-exec-report-yes">上报数据</option>
-                                <option value="false" data-i18n="periph-exec-report-no">不上报数据</option>
-                            </select>
+                            <label>
+                                <input type="checkbox" id="periph-exec-report" checked>
+                                <span data-i18n="periph-exec-report-label">是否上报数据</span>
+                            </label>
                         </div>
                         <div class="pure-control-group">
-                            <label data-i18n="periph-exec-enabled-label">启用</label>
-                            <label class="toggle-switch">
+                            <label>
                                 <input type="checkbox" id="periph-exec-enabled" checked>
-                                <span class="toggle-slider"></span>
+                                <span data-i18n="periph-exec-enabled-label">启用</span>
                             </label>
                         </div>
                     </div>
