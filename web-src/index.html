@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FastBee设备配置管理</title>
+    <link rel="icon" href="./assets/favicon.ico" type="image/x-icon">
+    <!-- Critical CSS: 登录页骨架 + 基础变量（避免 FOUC） -->
+    <style>
+    :root{--primary:#1677ff;--primary-hover:#4096ff;--primary-active:#0958d9;--primary-light:#e6f4ff;--bg-body-fallback:#f5f5f5;--bg-body:linear-gradient(135deg,#f5f5f5 0%,#fafafa 50%,#f0f0f0 100%);--bg-card:rgba(255,255,255,0.92);--glass-bg:rgba(255,255,255,0.78);--glass-border:rgba(22,119,255,0.12);--glass-shadow:0 6px 16px 0 rgba(0,0,0,0.08),0 3px 6px -4px rgba(0,0,0,0.12),0 9px 28px 8px rgba(0,0,0,0.05);--text-primary:rgba(0,0,0,0.88);--text-secondary:rgba(0,0,0,0.65);--border:#d9d9d9;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:20px;--space-6:24px;--space-8:32px;--rounded-md:6px;--rounded-2xl:16px;--shadow-md:0 4px 6px -1px rgb(0 0 0/0.1),0 2px 4px -2px rgb(0 0 0/0.1)}
+    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg-body-fallback);background-image:var(--bg-body);background-attachment:fixed;color:var(--text-primary);line-height:1.6;min-height:100vh;margin:0}
+    .login-page{background:linear-gradient(135deg,#f5f5f5 0%,#fafafa 30%,#f0f0f0 70%,#e6f4ff 100%);height:100vh;display:flex;align-items:center;justify-content:center;padding:var(--space-5);position:relative}
+    .app-container.fb-hidden{display:none}
+    .login-card{background:rgba(255,255,255,0.75);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:var(--rounded-2xl);box-shadow:var(--glass-shadow),0 0 0 1px rgba(255,255,255,0.6) inset;width:100%;max-width:400px;position:relative;border:1px solid rgba(255,255,255,0.4)}
+    .login-header{padding:var(--space-8) var(--space-5) 0;text-align:center}
+    .login-header img{width:50px}
+    .login-body{padding:var(--space-8)}
+    .fb-btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);padding:var(--space-2) var(--space-4);font-size:13px;font-weight:500;border:1px solid var(--border);border-radius:var(--rounded-md);background:var(--bg-card);color:var(--text-primary);cursor:pointer;transition:all 0.2s;white-space:nowrap}
+    .fb-btn-primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+    .fb-btn-primary:hover{background:var(--primary-hover);border-color:var(--primary-hover);color:#fff}
+    .notification-container{position:fixed;top:var(--space-5);right:var(--space-5);z-index:9999;max-width:350px;width:100%}
+    .fb-m-0{margin:0}.fb-text-xl{font-size:1.25rem}.fb-text-primary{color:var(--primary)}
+    .pure-form input[type="text"],.pure-form input[type="password"]{width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--rounded-md);font-size:14px;box-sizing:border-box}
+    .pure-input-1{width:100%}
+    .pure-u-1{width:100%}
+    .fb-mt-3{margin-top:12px}.fb-my-3{margin-top:12px;margin-bottom:12px}
+    </style>
+    <!-- 异步加载完整 CSS -->
+    <link rel="stylesheet" href="./css/pure-min.css" media="print" onload="this.media='all'">
+    <link rel="stylesheet" href="./css/main.css" media="print" onload="this.media='all'">
+    <noscript>
+        <link rel="stylesheet" href="./css/pure-min.css">
+        <link rel="stylesheet" href="./css/main.css">
+    </noscript>
+</head>
+
+<body>
+    <!-- 消息通知容器 -->
+    <div id="notification-container" class="notification-container"></div>
+
+    <!-- 登录页面 -->
+    <div id="login-page" class="login-page">
+        <div class="login-card">
+            <div class="login-lang-switch">
+                <select id="login-language-select" class="pure-input-1">
+                    <option value="zh-CN">中文</option>
+                    <option value="en">English</option>
+                </select>
+            </div>
+            <div class="login-header">
+                <div><img src="/assets/logo.png" alt="FastBee Logo"></div>
+                <h1 class="fb-m-0 fb-text-xl fb-text-primary" id="login-title">设备配置管理</h1>
+            </div>
+
+            <div class="login-body">
+                <form id="login-form" class="pure-form pure-form-stacked">
+                    <fieldset>
+                        <label for="username" id="username-label">用户名</label>
+                        <input type="text" id="username" class="pure-input-1" placeholder="请输入用户名"
+                            data-i18n-placeholder="username-placeholder" required>
+
+                        <label for="password" class="fb-mt-3" id="password-label">密码</label>
+                        <input type="password" id="password" class="pure-input-1" placeholder="请输入密码"
+                            data-i18n-placeholder="password-placeholder" required>
+
+                        <label class="pure-checkbox fb-my-3">
+                            <input type="checkbox" id="remember" checked>
+                            <span id="remember-label">记住密码</span>
+                        </label>
+
+                        <button type="submit" class="fb-btn fb-btn-primary pure-u-1" id="login-button">
+                            登录系统
+                        </button>
+                    </fieldset>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 主应用 -->
+    <div id="app-container" class="app-container fb-hidden">
+        <div class="app-wrapper">
+            <!-- 侧边栏 -->
+            <div class="sidebar" id="sidebar">
+                <div class="sidebar-header">
+                    <img src="/assets/logo.png" alt="FastBee Logo">
+                    <h3 id="app-title">设备管理系统</h3>
+                </div>
+                <div class="sidebar-menu">
+                    <a href="#" class="menu-item active" data-page="dashboard">
+                        <span class="menu-icon">📊</span> <span id="menu-dashboard">设备监控</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="device">
+                        <span class="menu-icon">🛠️</span> <span id="menu-device" data-i18n="menu-device">设备配置</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="network">
+                        <span class="menu-icon">🌐</span> <span id="menu-network">网络设置</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="peripheral">
+                        <span class="menu-icon">🔧</span> <span id="menu-peripheral"
+                            data-i18n="menu-peripheral">外设配置</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="periph-exec">
+                        <span class="menu-icon">⚡</span> <span id="menu-periph-exec"
+                            data-i18n="menu-periph-exec">外设执行</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="device-control">
+                        <span class="menu-icon">📺</span> <span id="menu-device-control" data-i18n="menu-device-control">设备控制</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="protocol">
+                        <span class="menu-icon">🔌</span> <span id="menu-protocol">通信协议</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="rule-script">
+                        <span class="menu-icon">📜</span> <span id="menu-rule-script"
+                            data-i18n="menu-rule-script">规则脚本</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="data">
+                        <span class="menu-icon">📁</span> <span id="menu-data">文件管理</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="logs">
+                        <span class="menu-icon">📊</span> <span id="menu-logs">设备日志</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="users">
+                        <span class="menu-icon">👥</span> <span id="menu-users">用户管理</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="roles">
+                        <span class="menu-icon">🛡️</span> <span id="menu-roles" data-i18n="menu-roles">角色管理</span>
+                    </a>
+                </div>
+
+            </div>
+
+            <!-- 主内容区 -->
+            <div class="main-content">
+                <!-- 头部 -->
+                <div class="header">
+                    <div class="header-left">
+                        <button id="sidebar-toggle" class="sidebar-toggle">☰</button>
+                        <h1 class="page-title" id="page-title">设备监控仪表盘</h1>
+                    </div>
+                    <div class="header-actions">
+                        <!-- 语言切换 -->
+                        <select id="language-select" class="pure-input-1 fb-w-auto">
+                            <option value="zh-CN">中文</option>
+                            <option value="en">English</option>
+                        </select>
+                        <!-- 用户下拉菜单 -->
+                        <div class="user-dropdown">
+                            <button class="user-dropdown-toggle" id="user-dropdown-btn">
+                                <span class="user-avatar">👤</span>
+                                <span class="user-name-text" id="user-name">管理员</span>
+                                <span class="dropdown-arrow">▼</span>
+                            </button>
+                            <div class="user-dropdown-menu" id="user-dropdown-menu">
+                                <button class="dropdown-item" id="theme-toggle-item">
+                                    <span class="item-icon">🌙</span>
+                                    <span data-i18n="theme-toggle">切换主题</span>
+                                </button>
+                                <button class="dropdown-item" id="change-password-btn">
+                                    <span class="item-icon">🔑</span>
+                                    <span data-i18n="change-password-btn">修改密码</span>
+                                </button>
+                                <div class="dropdown-divider"></div>
+                                <button class="dropdown-item dropdown-item-danger" id="logout-btn">
+                                    <span class="item-icon">🚪</span>
+                                    <span data-i18n="logout-btn">退出登录</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 内容区域 - 动态加载页面模块 -->
+                <div class="content" id="content-area">
+                    <!-- 骨架屏加载提示 -->
+                    <div id="skeleton-screen" class="skeleton">
+                        <div class="skeleton-content">
+                            <div class="skeleton-header"></div>
+                            <div class="skeleton-card"></div>
+                            <div class="skeleton-card"></div>
+                            <div class="skeleton-card short"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 主应用页脚 -->
+                <div class="app-footer">
+                    <div id="footer-copyright">© 2026 FastBee物联网平台 官网: www.fastbee.cn</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 静态 defer 脚本：浏览器并行下载、按序执行，消除动态加载链延迟 -->
+    <script defer src="./js/state.js"></script>
+    <script defer src="./js/modules/i18n-engine.js"></script>
+    <script defer src="./js/modules/i18n-zh-CN.js"></script>
+    <script defer src="./js/main.js"></script>
+    <!-- Service Worker 注册 -->
+    <script>
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function() {
+            navigator.serviceWorker.register('/sw.js').catch(function(e) {
+                console.log('SW registration failed:', e);
+            });
+        });
+    }
+    </script>
+</body>
+
+</html>

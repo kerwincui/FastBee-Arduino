@@ -9,3 +9,14 @@
 .cursor
 test/
 nul
+
+# Web build artifacts (source lives in web-src/, these are generated)
+data/www/pages/
+data/www/css/
+data/www/js/state.js
+data/www/js/main.js
+data/www/index.html
+data/www/setup.html
+data/www/404.html
+data/www/sw.js
+data/www/**/*.gz

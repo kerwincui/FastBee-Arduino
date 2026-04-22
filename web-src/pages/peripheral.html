@@ -1,0 +1,99 @@
+<!-- 外设配置页面 -->
+<div id="peripheral-page" class="page page-layout-flat">
+    <div class="card">
+        <div class="card-header card-header-toolbar">
+            <h2 class="card-title" data-i18n="peripheral-title">外设配置</h2>
+            <div class="u-toolbar-sm">
+                <select id="peripheral-filter-type" class="pure-input-1 u-select-auto">
+                    <option value="" data-i18n="peripheral-filter-all">全部外设</option>
+                    <option value="communication" data-i18n="peripheral-filter-comm">通信接口</option>
+                    <option value="gpio" data-i18n="peripheral-filter-gpio">GPIO接口</option>
+                    <option value="analog" data-i18n="peripheral-filter-analog">模拟信号</option>
+                    <option value="debug" data-i18n="peripheral-filter-debug">调试接口</option>
+                    <option value="special" data-i18n="peripheral-filter-special">专用外设</option>
+                </select>
+                <button class="fb-btn fb-btn-refresh" id="peripheral-refresh-btn">&#x21bb; 刷新</button>
+                <button class="fb-btn fb-btn-primary" id="add-peripheral-btn"
+                    data-i18n="add-peripheral-btn-text">
+                    <i class="fas fa-plus"></i> <span data-i18n="add-peripheral-btn">新增外设</span>
+                </button>
+            </div>
+        </div>
+        <div class="card-body">
+            <!-- 外设列表表格 -->
+            <div class="u-table-wrap">
+                <table class="pure-table pure-table-bordered u-table-fill">
+                    <thead>
+                        <tr>
+                            <th data-i18n="peripheral-id-col">ID</th>
+                            <th data-i18n="peripheral-name-col">名称</th>
+                            <th data-i18n="peripheral-type-col">类型</th>
+                            <th data-i18n="peripheral-pins-col">引脚</th>
+                            <th data-i18n="peripheral-status-col">状态</th>
+                            <th data-i18n="peripheral-actions-col">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="peripheral-table-body">
+                        <tr>
+                            <td colspan="6" class="u-empty-cell"
+                                data-i18n="peripheral-loading">加载中...</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div id="periph-pagination" class="u-pagination-host"></div>
+            </div>
+        </div>
+    </div>
+
+
+</div>
+
+<!-- 外设执行独立页面 -->
+<div id="periph-exec-page" class="page page-layout-flat">
+    <div class="card">
+        <div class="card-header u-header-between-wrap">
+            <h2 class="card-title" data-i18n="periph-exec-page-title">外设执行管理</h2>
+            <div class="u-toolbar-sm">
+                <select id="periph-exec-filter-periph" class="pure-input-1 u-select-auto"
+                    data-change-action="loadPeriphExecPage">
+                    <option value="" data-i18n="periph-exec-filter-all">全部规则</option>
+                </select>
+                <button class="fb-btn fb-btn-refresh" id="periph-exec-refresh-btn">&#x21bb; 刷新</button>
+                <button class="fb-btn fb-btn-primary" id="periph-exec-page-add-btn"
+                    data-action="openPeriphExecModalStandalone">
+                    <i class="fas fa-plus"></i> <span data-i18n="periph-exec-add-btn">新增规则</span>
+                </button>
+            </div>
+        </div>
+        <div class="card-body">
+            <div class="u-table-wrap">
+                <table class="pure-table pure-table-bordered u-table-fill">
+                    <thead>
+                        <tr>
+                            <th data-i18n="periph-exec-col-name">名称</th>
+                            <th data-i18n="periph-exec-col-status">状态</th>
+                            <th data-i18n="periph-exec-col-trigger">触发方式</th>
+                            <th data-i18n="periph-exec-col-target">目标外设</th>
+                            <th data-i18n="periph-exec-col-action">动作</th>
+                            <th data-i18n="periph-exec-col-stats">统计</th>
+                            <th data-i18n="periph-exec-col-ops">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="periph-exec-table-body">
+                        <tr>
+                            <td colspan="7" class="u-empty-cell"
+                                data-i18n="periph-exec-loading">加载中...</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div id="periph-exec-pagination" class="u-pagination-host"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 设备控制页面 -->
+<div id="device-control-page" class="page page-layout-flat">
+    <div id="dc-content"></div>
+</div>
+</div>

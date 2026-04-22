@@ -1,0 +1,573 @@
+<!-- 设备配置页面 -->
+<div id="device-page" class="page page-layout-flat">
+    <div class="card">
+        <div class="card-header">
+            <h2 class="card-title" data-i18n="device-config-title">设备配置</h2>
+        </div>
+        <div class="card-body">
+            <div class="config-tabs">
+                <div class="config-tab active" data-tab="dev-basic" data-i18n="dev-tab-basic">基本信息
+                </div>
+                <div class="config-tab" data-tab="dev-ntp" data-i18n="dev-tab-ntp">NTP时间</div>
+                <div class="config-tab" data-tab="dev-ble" data-i18n="dev-tab-ble">蓝牙配网</div>
+                <div class="config-tab" data-tab="dev-ota" data-i18n="dev-tab-ota">OTA升级</div>
+                <div class="config-tab" data-tab="dev-advanced" data-i18n="dev-tab-advanced">高级配置</div>
+            </div>
+
+            <!-- 基本信息 tab -->
+            <div id="dev-basic" class="config-content active">
+                <form id="device-basic-form" class="pure-form pure-form-stacked">
+                    <!-- 硬件信息卡片 - 页面顶部整行展示（两列布局） -->
+                    <div class="flat-panel fb-border-default fb-mb-3">
+                        <div class="card-header fb-p-2 fb-bg-gray">
+                            <h4 class="fb-m-0 fb-text-sm"><i class="fas fa-microchip"></i>
+                                <span data-i18n="dev-sys-hw-title">硬件信息</span>
+                            </h4>
+                        </div>
+                        <div class="card-body u-panel-body">
+                            <div class="fb-flex-wrap-off">
+                                <div class="u-flex-1-min-280">
+                                    <table class="pure-table fb-w-full fb-fs-13">
+                                        <tbody>
+                                            <tr>
+                                                <td class="u-table-label-cell"
+                                                    data-i18n="dev-sys-chip-label">芯片型号</td>
+                                                <td id="dev-sys-chip">--</td>
+                                            </tr>
+                                            <tr>
+                                                <td class="u-text-secondary"
+                                                    data-i18n="dev-sys-cpu-label">CPU频率</td>
+                                                <td id="dev-sys-cpu">--</td>
+                                            </tr>
+                                            <tr>
+                                                <td class="u-text-secondary"
+                                                    data-i18n="dev-sys-heap-label">空闲堆栈</td>
+                                                <td id="dev-sys-heap">--</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div class="u-flex-1-min-280">
+                                    <table class="pure-table fb-w-full fb-fs-13">
+                                        <tbody>
+                                            <tr>
+                                                <td class="u-table-label-cell"
+                                                    data-i18n="dev-sys-flash-label">Flash大小</td>
+                                                <td id="dev-sys-flash">--</td>
+                                            </tr>
+                                            <tr>
+                                                <td class="u-text-secondary"
+                                                    data-i18n="dev-sys-sdk-label">SDK版本</td>
+                                                <td id="dev-sys-sdk">--</td>
+                                            </tr>
+                                            <tr>
+                                                <td class="u-text-secondary"
+                                                    data-i18n="dev-sys-fw-label">固件版本</td>
+                                                <td id="dev-sys-fw">--</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="config-form-grid">
+                        <div class="config-form-column">
+                            <div class="pure-control-group">
+                                <label for="dev-name" data-i18n="dev-name-label">设备名称</label>
+                                <input type="text" id="dev-name" class="pure-input-1"
+                                    placeholder="输入设备名称" data-i18n-placeholder="dev-name-label">
+                            </div>
+                            <div class="pure-control-group">
+                                <label for="dev-description"
+                                    data-i18n="dev-description-label">设备描述</label>
+                                <textarea id="dev-description" class="pure-input-1" rows="3"
+                                    placeholder="输入设备描述"
+                                    data-i18n-placeholder="dev-description-label"></textarea>
+                            </div>
+                        </div>
+
+                        <div class="config-form-column">
+                            <div class="pure-control-group">
+                                <label for="dev-id" data-i18n="dev-id-label">设备编号</label>
+                                <input type="text" id="dev-id" class="pure-input-1"
+                                    placeholder="留空则使用系统默认值(FBE+MAC)"
+                                    data-i18n-placeholder="dev-id-placeholder" maxlength="32">
+                            </div>
+                            <div class="pure-control-group">
+                                <label for="dev-product-number"
+                                    data-i18n="dev-product-number-label">产品编号</label>
+                                <input type="number" id="dev-product-number" class="pure-input-1"
+                                    placeholder="输入产品编号"
+                                    data-i18n-placeholder="dev-product-number-label" min="0">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="dev-basic-footer-row">
+                        <div class="pure-control-group dev-user-id-bottom-left">
+                            <label for="dev-user-id" data-i18n="dev-user-id-label">用户ID</label>
+                            <input type="text" id="dev-user-id" class="pure-input-1"
+                                placeholder="输入用户ID" data-i18n-placeholder="dev-user-id-label">
+                        </div>
+                    </div>
+                    <div class="message message-success is-hidden u-mt-15" id="dev-basic-success"
+                        data-i18n="dev-basic-save-ok">
+                        设备信息保存成功！</div>
+                    <div class="u-mt-20 u-mb-20">
+                        <button type="submit" class="fb-btn fb-btn-primary">
+                            <i class="fas fa-save"></i> <span
+                                data-i18n="dev-basic-save-btn">保存信息</span>
+                        </button>
+                    </div>
+
+                </form>
+            </div>
+
+            <!-- NTP时间 tab -->
+            <div id="dev-ntp" class="config-content">
+                <!-- 当前时间显示 -->
+                <div class="flat-panel u-panel-default">
+                    <div class="card-header u-panel-header u-header-between-wrap">
+                        <h4 class="u-panel-title-sm"><i class="fas fa-clock"></i> <span
+                                data-i18n="dev-time-title">当前时间</span></h4>
+                        <button id="dev-time-refresh-btn" class="fb-btn fb-btn-sm">
+                            <i class="fas fa-sync-alt"></i> <span
+                                data-i18n="dev-time-refresh">刷新</span>
+                        </button>
+                    </div>
+                    <div class="card-body u-panel-body">
+                        <table class="pure-table fb-w-full fb-fs-13">
+                            <tbody>
+                                <tr>
+                                    <td class="fb-text-gray fb-w-120"
+                                        data-i18n="dev-time-datetime-label">日期时间</td>
+                                    <td><strong id="dev-time-datetime" class="u-value-lg">--</strong></td>
+                                </tr>
+                                <tr>
+                                    <td class="u-text-secondary" data-i18n="dev-time-synced-label">
+                                        NTP同步状态</td>
+                                    <td id="dev-time-synced">--</td>
+                                </tr>
+                                <tr>
+                                    <td class="u-text-secondary" data-i18n="dev-time-uptime-label">
+                                        设备运行时间</td>
+                                    <td id="dev-time-uptime">--</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- NTP配置表单 -->
+                <form id="device-ntp-form" class="pure-form pure-form-stacked">
+                    <div class="config-form-grid">
+                        <div class="config-form-column">
+                            <div class="pure-control-group">
+                                <label for="dev-ntp-enable"
+                                    data-i18n="dev-ntp-enable-label">NTP同步</label>
+                                <select id="dev-ntp-enable" class="pure-input-1">
+                                    <option value="1" selected data-i18n="wifi-enable">启用</option>
+                                    <option value="0" data-i18n="wifi-disable">禁用</option>
+                                </select>
+                            </div>
+                            <div class="pure-control-group">
+                                <label for="dev-ntp-server1"
+                                    data-i18n="dev-ntp-server1-label">NTP服务器1</label>
+                                <input type="text" id="dev-ntp-server1" class="pure-input-1"
+                                    placeholder="pool.ntp.org">
+                            </div>
+                            <div class="pure-control-group">
+                                <label for="dev-ntp-server2"
+                                    data-i18n="dev-ntp-server2-label">NTP服务器2</label>
+                                <input type="text" id="dev-ntp-server2" class="pure-input-1"
+                                    placeholder="time.nist.gov">
+                            </div>
+                        </div>
+                        <div class="config-form-column">
+                            <div class="pure-control-group">
+                                <label for="dev-timezone" data-i18n="dev-timezone-label">时区</label>
+                                <select id="dev-timezone" class="pure-input-1">
+                                    <option value="CST-8" selected data-i18n="tz-china">中国标准时间
+                                        (UTC+8)</option>
+                                    <option value="UTC0" data-i18n="tz-utc">UTC (UTC+0)</option>
+                                    <option value="JST-9" data-i18n="tz-japan">日本标准时间 (UTC+9)
+                                    </option>
+                                    <option value="EST5EDT" data-i18n="tz-us-east">美国东部时间 (UTC-5)
+                                    </option>
+                                    <option value="PST8PDT" data-i18n="tz-us-west">美国西部时间 (UTC-8)
+                                    </option>
+                                    <option value="CET-1CEST" data-i18n="tz-europe">中欧时间 (UTC+1)
+                                    </option>
+                                </select>
+                            </div>
+                            <div class="pure-control-group">
+                                <label for="dev-sync-interval"
+                                    data-i18n="dev-sync-interval-label">同步间隔 (秒)</label>
+                                <input type="number" id="dev-sync-interval" class="pure-input-1"
+                                    value="3600" min="60" max="86400">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="message message-success is-hidden u-mt-15" id="dev-ntp-success"
+                        data-i18n="dev-ntp-save-ok">
+                        NTP配置保存成功！</div>
+                    <div class="u-mt-20">
+                        <button type="submit" class="fb-btn fb-btn-primary">
+                            <i class="fas fa-save"></i> <span
+                                data-i18n="dev-ntp-save-btn">保存NTP配置</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- 蓝牙配网 tab -->
+            <div id="dev-ble" class="config-content">
+                <!-- 蓝牙配网状态卡片 -->
+                <div class="flat-panel u-panel-default">
+                    <div class="card-header u-panel-header u-header-between-wrap">
+                        <h4 class="u-panel-title-sm"><i class="fab fa-bluetooth-b"></i>
+                            <span data-i18n="dev-ble-status-title">蓝牙配网状态</span>
+                        </h4>
+                        <button id="ble-provision-refresh-btn"
+                            class="fb-btn fb-btn-sm">
+                            <i class="fas fa-sync-alt"></i> <span
+                                data-i18n="dev-time-refresh">刷新</span>
+                        </button>
+                    </div>
+                    <div class="card-body u-panel-body">
+                        <div class="u-meta-wrap">
+                            <div class="u-meta-item">
+                                <span class="u-text-secondary"
+                                    data-i18n="dev-ble-status-label">状态：</span>
+                                <span id="ble-provision-status-badge"
+                                    class="status-badge status-offline"
+                                    data-i18n="dev-ble-not-started">未启动</span>
+                            </div>
+                            <div class="u-meta-item">
+                                <span class="u-text-secondary"
+                                    data-i18n="dev-ble-device-name-prefix">设备名：</span>
+                                <span id="ble-provision-device-name" class="u-text-mono">--</span>
+                            </div>
+                            <div id="ble-provision-remaining-wrap" class="u-meta-item is-hidden">
+                                <span class="u-text-secondary"
+                                    data-i18n="dev-ble-remaining-prefix">剩余时间：</span>
+                                <span id="ble-provision-remaining" class="u-value-lg u-text-warning">--</span>
+                            </div>
+                        </div>
+                        <div class="fb-mt-3 fb-flex fb-gap-2">
+                            <button id="ble-provision-start-btn"
+                                class="fb-btn fb-btn-primary">
+                                <i class="fas fa-play"></i> <span
+                                    data-i18n="dev-ble-start-btn">启动蓝牙配网</span>
+                            </button>
+                            <button id="ble-provision-stop-btn" class="btn btn-delete is-hidden">
+                                <i class="fas fa-stop"></i> <span
+                                    data-i18n="dev-ble-stop-btn">停止蓝牙配网</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 蓝牙配网参数配置 -->
+                <form id="device-ble-provision-form" class="pure-form pure-form-stacked">
+                    <div class="config-form-grid ble-config-grid">
+                        <div class="config-form-column">
+                            <div class="pure-control-group">
+                                <label for="ble-device-name"
+                                    data-i18n="dev-ble-name-label">蓝牙设备名称</label>
+                                <input type="text" id="ble-device-name" class="pure-input-1"
+                                    data-i18n-placeholder="dev-ble-name-hint" placeholder="蓝牙广播名称"
+                                    value="FBDevice">
+                            </div>
+                            <div class="pure-control-group">
+                                <label for="ble-service-uuid"
+                                    data-i18n="dev-ble-service-uuid-label">服务UUID</label>
+                                <input type="text" id="ble-service-uuid" class="pure-input-1"
+                                    value="6E400001-B5A3-F393-E0A9-E50E24DCCA9F">
+                            </div>
+                            <div class="pure-control-group">
+                                <label for="ble-tx-uuid"
+                                    data-i18n="dev-ble-tx-uuid-label">发送UUID</label>
+                                <input type="text" id="ble-tx-uuid" class="pure-input-1"
+                                    value="6E400003-B5A3-F393-E0A9-E50E24DCCA9F">
+                            </div>
+                        </div>
+                        <div class="config-form-column">
+                            <div class="pure-control-group">
+                                <label for="ble-timeout"
+                                    data-i18n="dev-ble-timeout-label">配网超时(秒)</label>
+                                <input type="number" id="ble-timeout" class="pure-input-1"
+                                    value="300" min="60" max="1800">
+                            </div>
+                            <div class="pure-control-group">
+                                <label for="ble-rx-uuid"
+                                    data-i18n="dev-ble-rx-uuid-label">接收UUID</label>
+                                <input type="text" id="ble-rx-uuid" class="pure-input-1"
+                                    value="6E400002-B5A3-F393-E0A9-E50E24DCCA9F">
+                            </div>
+                            <div class="pure-control-group ble-autostart-switch-row">
+                                <label for="ble-auto-start"
+                                    data-i18n="dev-ble-autostart-label">启动时自动开启蓝牙配网</label>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="ble-auto-start">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="message message-success is-hidden u-mt-15"
+                        id="ble-provision-success" data-i18n="dev-ble-save-ok">
+                        蓝牙配网配置保存成功！</div>
+                    <div class="u-mt-20">
+                        <button type="submit" class="fb-btn fb-btn-primary">
+                            <i class="fas fa-save"></i> <span
+                                data-i18n="dev-ble-save-btn">保存蓝牙配网配置</span>
+                        </button>
+                    </div>
+                </form>
+
+                <!-- 蓝牙配网说明 -->
+                <div class="u-note-card u-mt-20">
+                    <h4 class="u-note-title u-note-title-info"><i
+                            class="fas fa-info-circle"></i> <span
+                            data-i18n="dev-ble-guide-title">蓝牙配网说明</span></h4>
+                    <ol class="u-note-list">
+                        <li data-i18n="dev-ble-guide-1">点击"启动蓝牙配网"按钮，设备将开始蓝牙广播</li>
+                        <li data-i18n="dev-ble-guide-2">使用手机APP搜索并连接到蓝牙设备</li>
+                        <li data-i18n="dev-ble-guide-3">在APP中输入要连接的WiFi名称和密码</li>
+                        <li data-i18n="dev-ble-guide-4">设备收到配置后自动连接WiFi，配网成功后蓝牙连接断开</li>
+                    </ol>
+                    <p class="u-note-tip">
+                        <i class="fas fa-lightbulb"></i> <span
+                            data-i18n="dev-ble-guide-tip">提示：蓝牙配网适用于无法使用AP配网的场景，需要配合支持蓝牙的手机APP使用。</span>
+                    </p>
+                </div>
+            </div>
+
+            <!-- OTA升级 tab -->
+            <div id="dev-ota" class="config-content">
+                <!-- OTA状态卡片 -->
+                <div class="flat-panel u-panel-default">
+                    <div class="card-header u-panel-header u-header-between-wrap">
+                        <h4 class="u-panel-title-sm"><i class="fas fa-microchip"></i>
+                            <span data-i18n="dev-ota-info-title">固件信息</span>
+                        </h4>
+                        <button id="ota-refresh-btn" class="fb-btn fb-btn-sm">
+                            <i class="fas fa-sync-alt"></i> <span
+                                data-i18n="dev-ota-refresh">刷新</span>
+                        </button>
+                    </div>
+                    <div class="card-body u-panel-body-15">
+                        <div class="u-meta-grid">
+                            <div class="u-meta-item">
+                                <span class="u-text-secondary"
+                                    data-i18n="dev-ota-version-label">当前版本：</span>
+                                <span id="ota-current-version" class="u-fw-700">--</span>
+                            </div>
+                            <div class="u-meta-item">
+                                <span class="u-text-secondary"
+                                    data-i18n="dev-ota-status-label">状态：</span>
+                                <span id="ota-status-badge" class="status-badge status-online"
+                                    data-i18n="dev-ota-ready">就绪</span>
+                            </div>
+                            <div class="u-meta-item">
+                                <span class="u-text-secondary"
+                                    data-i18n="dev-ota-flash-label">Flash空间：</span>
+                                <span id="ota-flash-size">--</span>
+                            </div>
+                            <div class="u-meta-item">
+                                <span class="u-text-secondary"
+                                    data-i18n="dev-ota-free-label">可用空间：</span>
+                                <span id="ota-free-space">--</span>
+                            </div>
+                        </div>
+                        <!-- 进度条 -->
+                        <div id="ota-progress-wrap" class="is-hidden u-mt-15">
+                            <div class="u-progress-meta">
+                                <span class="u-text-secondary"
+                                    data-i18n="dev-ota-progress-label">升级进度</span>
+                                <span id="ota-progress-text">0%</span>
+                            </div>
+                            <div class="u-progress-track-lg">
+                                <div id="ota-progress-bar" class="u-progress-fill-success">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 在线升级 -->
+                <div class="flat-panel u-panel-default">
+                    <div class="card-header u-panel-header-info">
+                        <h4 class="u-panel-title-sm"><i
+                                class="fas fa-cloud-download-alt"></i> <span
+                                data-i18n="dev-ota-online-title">在线升级</span></h4>
+                    </div>
+                    <div class="card-body u-panel-body-15">
+                        <form id="ota-url-form" class="pure-form">
+                            <div class="pure-control-group ota-inline-action-row u-mb-15">
+                                <div class="ota-inline-input-wrap">
+                                    <label for="ota-url"
+                                        data-i18n="dev-ota-url-label">固件下载地址</label>
+                                    <input type="url" id="ota-url" class="pure-input-1"
+                                        placeholder="http://example.com/firmware.bin">
+                                    <div id="ota-url-hint" class="is-hidden u-mt-10"></div>
+                                </div>
+                                <button type="submit" class="fb-btn fb-btn-primary"
+                                    id="ota-url-btn">
+                                    <i class="fas fa-download"></i> <span
+                                        data-i18n="dev-ota-url-btn">开始在线升级</span>
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- 本地上传升级 -->
+                <div class="flat-panel u-panel-default">
+                    <div class="card-header u-panel-header-warning">
+                        <h4 class="u-panel-title-sm"><i class="fas fa-upload"></i> <span
+                                data-i18n="dev-ota-upload-title">本地上传升级</span></h4>
+                    </div>
+                    <div class="card-body u-panel-body-15">
+                        <form id="ota-upload-form" class="pure-form" enctype="multipart/form-data">
+                            <div class="pure-control-group ota-inline-action-row u-mb-15">
+                                <div class="ota-inline-input-wrap">
+                                    <label for="ota-file" data-i18n="dev-ota-file-label">选择固件文件
+                                        (.bin)</label>
+                                    <div class="file-input-wrapper file-input-wrapper-top">
+                                        <input type="file" id="ota-file" accept=".bin"
+                                            class="is-hidden">
+                                        <button type="button" class="btn btn-secondary btn-sm"
+                                            data-action="triggerOtaFileSelect"
+                                            data-i18n="choose-file-btn">选择文件</button>
+                                        <span id="ota-file-name" class="file-name-display"
+                                            data-i18n="no-file-selected">未选择任何文件</span>
+                                    </div>
+                                    <small class="help-text-block" data-i18n="dev-ota-file-hint">仅支持
+                                        .bin 格式的固件文件</small>
+                                </div>
+                                <button type="submit" class="btn btn-primary"
+                                    id="ota-upload-btn">
+                                    <span data-i18n="dev-ota-upload-btn">上传并升级</span>
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- OTA升级说明 -->
+                <div class="u-note-card u-note-card-warning">
+                    <h4 class="u-note-title u-note-title-warning"><i
+                            class="fas fa-exclamation-triangle"></i> <span
+                            data-i18n="dev-ota-notice-title">升级注意事项</span></h4>
+                    <ul class="u-note-list">
+                        <li data-i18n="dev-ota-notice-1">升级过程中请勿断开电源或关闭浏览器</li>
+                        <li data-i18n="dev-ota-notice-2">确保固件版本与当前硬件兼容</li>
+                        <li data-i18n="dev-ota-notice-3">升级成功后设备将自动重启</li>
+                        <li data-i18n="dev-ota-notice-4">建议在升级前备份重要配置</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- 高级配置 tab -->
+            <div id="dev-advanced" class="config-content">
+                <!-- 系统操作区域 - 左右并列布局 -->
+                <div class="u-flex-wrap-gap-20">
+                    <!-- 设备重启卡片 -->
+                    <div class="flat-panel u-panel-default u-flex-1-min-300">
+                        <div class="card-header u-panel-header-warning">
+                            <h4 class="u-panel-title-sm"><i class="fas fa-redo"></i>
+                                <span data-i18n="dev-sys-restart-title">重启设备</span>
+                            </h4>
+                        </div>
+                        <div class="card-body u-panel-body-15">
+                            <p class="u-mb-15 u-fs-13 u-text-secondary"
+                                data-i18n="dev-sys-restart-hint">重启设备将会断开所有连接，配置数据将保留。</p>
+                            <div class="u-form-inline-wrap">
+                                <label class="u-fs-13"
+                                    data-i18n="dev-sys-restart-delay">延迟（秒）：</label>
+                                <select id="dev-restart-delay" class="pure-input u-select-w-80">
+                                    <option value="1">1</option>
+                                    <option value="3" selected>3</option>
+                                    <option value="5">5</option>
+                                    <option value="10">10</option>
+                                </select>
+                                <button id="dev-restart-btn" type="button"
+                                    class="btn btn-disable">
+                                    <i class="fas fa-power-off"></i> <span
+                                        data-i18n="dev-sys-restart-btn">立即重启</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 恢复出厂设置卡片 -->
+                    <div class="flat-panel u-panel-default u-flex-1-min-300">
+                        <div class="card-header u-panel-header-warning">
+                            <h4 class="u-panel-title-sm"><i
+                                    class="fas fa-exclamation-triangle"></i> <span
+                                    data-i18n="dev-sys-factory-title">恢复出厂设置</span></h4>
+                        </div>
+                        <div class="card-body u-panel-body-15">
+                            <p class="u-mb-10 u-fs-13 u-text-danger u-fw-700"
+                                data-i18n="dev-sys-factory-warning">
+                                警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！</p>
+                            <p class="u-mb-15 u-fs-13 u-text-secondary"
+                                data-i18n="dev-sys-factory-hint">设备将自动重启，所有配置将丢失，请谨慎操作。</p>
+                            <div class="u-form-inline-wrap">
+                                <label class="u-fs-13"
+                                    data-i18n="dev-sys-factory-confirm-label">输入"RESET"确认：</label>
+                                <input type="text" id="dev-factory-confirm"
+                                    class="pure-input u-input-w-100" placeholder="RESET">
+                                <button id="dev-factory-btn" type="button"
+                                    class="btn btn-delete">
+                                    <i class="fas fa-undo"></i> <span
+                                        data-i18n="dev-sys-factory-btn">恢复出厂设置</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 缓存管理卡片 -->
+                <div class="u-flex-wrap-gap-20 u-mt-20">
+                    <div class="flat-panel u-panel-default u-flex-1-min-300">
+                        <div class="card-header u-panel-header-info">
+                            <h4 class="u-panel-title-sm"><i class="fas fa-database"></i>
+                                <span data-i18n="dev-cache-title">缓存管理</span>
+                            </h4>
+                        </div>
+                        <div class="card-body u-panel-body-15">
+                            <div class="u-form-inline-wrap u-mb-15">
+                                <label class="u-fs-13 u-label-nowrap"
+                                    data-i18n="dev-cache-duration-label">缓存时间设置：</label>
+                                <select id="dev-cache-duration" class="pure-input u-select-w-120">
+                                    <option value="3600" data-i18n="dev-cache-1h">1小时</option>
+                                    <option value="21600" data-i18n="dev-cache-6h">6小时</option>
+                                    <option value="43200" data-i18n="dev-cache-12h">12小时</option>
+                                    <option value="86400" selected data-i18n="dev-cache-24h">24小时</option>
+                                    <option value="172800" data-i18n="dev-cache-48h">48小时</option>
+                                    <option value="259200" data-i18n="dev-cache-72h">72小时</option>
+                                </select>
+                                <button type="button"
+                                    class="fb-btn fb-btn-sm fb-btn-primary u-btn-font-12"
+                                    data-action="saveCacheDuration">
+                                    <i class="fas fa-save"></i> <span data-i18n="dev-cache-save-btn">保存</span>
+                                </button>
+                            </div>
+                            <p class="u-mb-15 u-fs-13 u-text-secondary"
+                                data-i18n="dev-cache-hint">设置浏览器缓存JS/CSS资源的有效期，修改后新请求生效。</p>
+                            <button type="button" class="btn btn-delete"
+                                data-action="clearBrowserCache">
+                                <i class="fas fa-trash-alt"></i> <span
+                                    data-i18n="dev-cache-clear-btn">清除浏览器缓存</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

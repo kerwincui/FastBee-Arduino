@@ -1,0 +1,595 @@
+<!-- WiFi选择弹窗 -->
+<div id="wifi-modal" class="modal">
+    <div class="modal-content u-modal-content-560">
+        <div class="modal-header">
+            <h2 class="modal-title" data-i18n="wifi-modal-title">选择WiFi网络</h2>
+            <button id="close-wifi-modal" class="modal-close-btn">×</button>
+        </div>
+        <div class="modal-body modal-body-compact">
+            <div id="wifi-modal-body" class="u-min-h-120">
+                <!-- 扫描结果动态加载 -->
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 修改密码模态窗 -->
+<div id="change-password-modal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2 class="modal-title" id="change-password-title">修改密码</h2>
+            <button id="close-password-modal" class="modal-close-btn">×</button>
+        </div>
+        <div class="modal-body">
+            <form id="change-password-form" class="pure-form pure-form-stacked">
+                <fieldset>
+                    <div class="pure-control-group">
+                        <label for="current-password-input" id="current-password-label">当前密码</label>
+                        <input type="password" id="current-password-input" class="pure-input-1"
+                            placeholder="请输入当前密码" required>
+                    </div>
+
+                    <div class="pure-control-group">
+                        <label for="new-password-input" id="new-password-label">新密码</label>
+                        <input type="password" id="new-password-input" class="pure-input-1" placeholder="请输入新密码"
+                            required>
+                    </div>
+
+                    <div class="pure-control-group">
+                        <label for="confirm-password-input" id="confirm-password-label">确认新密码</label>
+                        <input type="password" id="confirm-password-input" class="pure-input-1"
+                            placeholder="请再次输入新密码" required>
+                    </div>
+
+                    <div id="password-error" class="message message-error is-hidden"></div>
+                </fieldset>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button class="fb-btn" id="cancel-password-btn" type="button" data-i18n="cancel">取消</button>
+            <button class="fb-btn fb-btn-primary" id="confirm-password-btn" type="button"
+                data-i18n="confirm-change">确认修改</button>
+        </div>
+    </div>
+</div>
+
+<!-- 外设配置模态窗 -->
+<div id="peripheral-modal" class="modal">
+    <div class="modal-content modal-content-wide">
+        <div class="modal-header">
+            <h2 class="modal-title" id="peripheral-modal-title"
+                data-i18n="peripheral-add-modal-title">新增外设</h2>
+            <button id="close-peripheral-modal" class="modal-close-btn">×</button>
+        </div>
+        <div class="modal-body">
+            <form id="peripheral-form" class="pure-form pure-form-stacked">
+                <fieldset>
+                    <input type="hidden" id="peripheral-original-id" value="">
+
+                    <div class="config-form-grid">
+                        <!-- 左列：基本配置 -->
+                        <div class="config-form-column">
+                            <div class="pure-control-group">
+                                <label for="peripheral-id-input" data-i18n="peripheral-id-label">外设ID</label>
+                                <input type="text" id="peripheral-id-input" class="pure-input-1"
+                                    placeholder="留空自动生成" data-i18n-placeholder="peripheral-id-hint">
+                            </div>
+                            <div class="pure-control-group">
+                                <label for="peripheral-name-input" data-i18n="peripheral-name-label">名称</label>
+                                <input type="text" id="peripheral-name-input" class="pure-input-1"
+                                    placeholder="例如: LED、UART1" required
+                                    data-i18n-placeholder="peripheral-name-hint">
+                            </div>
+                            <div class="pure-control-group">
+                                <label for="peripheral-type-input" data-i18n="peripheral-type-label">外设类型</label>
+                                <select id="peripheral-type-input" class="pure-input-1" required>
+                                    <optgroup label="通信接口" data-i18n-label="peripheral-cat-comm">
+                                        <option value="1">UART</option>
+                                        <option value="2">I2C</option>
+                                        <option value="3">SPI</option>
+                                        <option value="4">CAN</option>
+                                        <option value="5">USB</option>
+                                    </optgroup>
+                                    <optgroup label="GPIO接口" data-i18n-label="peripheral-cat-gpio">
+                                        <option value="11">数字输入</option>
+                                        <option value="12">数字输出</option>
+                                        <option value="13">数字输入(上拉)</option>
+                                        <option value="14">数字输入(下拉)</option>
+                                        <option value="15">模拟输入</option>
+                                        <option value="16">模拟输出</option>
+                                        <option value="17">PWM输出</option>
+                                        <option value="18">中断(上升沿)</option>
+                                        <option value="19">中断(下降沿)</option>
+                                        <option value="20">中断(变化)</option>
+                                        <option value="21">触摸</option>
+                                    </optgroup>
+                                    <optgroup label="模拟信号" data-i18n-label="peripheral-cat-analog">
+                                        <option value="26">ADC</option>
+                                        <option value="27">DAC</option>
+                                    </optgroup>
+                                    <optgroup label="调试接口" data-i18n-label="peripheral-cat-debug">
+                                        <option value="31">JTAG</option>
+                                        <option value="32">SWD</option>
+                                    </optgroup>
+                                    <optgroup label="专用外设" data-i18n-label="peripheral-cat-special">
+                                        <option value="36">LCD</option>
+                                        <option value="37">SDIO</option>
+                                        <option value="38">传感器</option>
+                                        <option value="39">摄像头</option>
+                                        <option value="40">以太网</option>
+                                        <option value="41">舵机</option>
+                                        <option value="42">步进电机</option>
+                                        <option value="43">编码器</option>
+                                        <option value="44">单总线</option>
+                                        <option value="45">NeoPixel</option>
+                                    </optgroup>
+                                </select>
+                            </div>
+                            <div class="pure-control-group">
+                                <label for="peripheral-enabled-input"
+                                    data-i18n="peripheral-enabled-label">启用</label>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="peripheral-enabled-input" checked>
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- 右列：引脚和参数 -->
+                        <div class="config-form-column">
+                            <div class="pure-control-group">
+                                <label for="peripheral-pins-input" data-i18n="peripheral-pins-label">引脚配置</label>
+                                <input type="text" id="peripheral-pins-input" class="pure-input-1"
+                                    placeholder="例如: 2,4,5 (逗号分隔)" required
+                                    data-i18n-placeholder="peripheral-pins-hint">
+                                <small id="uart-pin-direction-hint" class="field-hint is-hidden"
+                                    data-i18n="peripheral-uart-pin-hint">引脚顺序: 引脚1=RX(接收/输入), 引脚2=TX(发送/输出)</small>
+                            </div>
+
+                            <!-- 动态参数区域 -->
+                            <div id="peripheral-params-container">
+                                <!-- GPIO参数 -->
+                                <div id="gpio-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10" data-i18n="gpio-params-title">GPIO参数</h4>
+                                    <div class="pure-control-group">
+                                        <label for="gpio-initial-state" data-i18n="gpio-initial-label">初始状态</label>
+                                        <select id="gpio-initial-state" class="pure-input-1">
+                                            <option value="0" selected data-i18n="gpio-state-low">低电平</option>
+                                            <option value="1" data-i18n="gpio-state-high">高电平</option>
+                                        </select>
+                                    </div>
+                                    <div class="pure-control-group pwm-only is-hidden">
+                                        <label for="gpio-pwm-freq" data-i18n="gpio-pwm-freq-label">PWM频率
+                                            (Hz)</label>
+                                        <input type="number" id="gpio-pwm-freq" class="pure-input-1" value="1000"
+                                            min="1" max="40000000">
+                                    </div>
+                                    <div class="pure-control-group pwm-only is-hidden">
+                                        <label for="gpio-pwm-resolution" data-i18n="gpio-pwm-res-label">PWM分辨率
+                                            (位)</label>
+                                        <input type="number" id="gpio-pwm-resolution" class="pure-input-1" value="8"
+                                            min="1" max="16">
+                                    </div>
+                                    <div class="pure-control-group pwm-only is-hidden">
+                                        <label for="gpio-default-duty" data-i18n="gpio-duty-label">默认占空比</label>
+                                        <input type="number" id="gpio-default-duty" class="pure-input-1" value="0"
+                                            min="0" max="65535">
+                                        <small
+                                            data-i18n="gpio-duty-help">根据分辨率计算，8位=0~255</small>
+                                    </div>
+                                </div>
+
+                                <!-- UART参数 -->
+                                <div id="uart-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10" data-i18n="uart-params-title">UART参数</h4>
+                                    <div class="pure-control-group">
+                                        <label for="uart-baudrate" data-i18n="uart-baudrate-label">波特率</label>
+                                        <select id="uart-baudrate" class="pure-input-1">
+                                            <option value="1200">1200</option>
+                                            <option value="2400">2400</option>
+                                            <option value="4800">4800</option>
+                                            <option value="9600">9600</option>
+                                            <option value="19200">19200</option>
+                                            <option value="38400">38400</option>
+                                            <option value="57600">57600</option>
+                                            <option value="115200" selected>115200</option>
+                                            <option value="230400">230400</option>
+                                            <option value="460800">460800</option>
+                                            <option value="921600">921600</option>
+                                        </select>
+                                    </div>
+                                    <div class="pure-control-group">
+                                        <label for="uart-databits" data-i18n="uart-databits-label">数据位</label>
+                                        <select id="uart-databits" class="pure-input-1">
+                                            <option value="5">5</option>
+                                            <option value="6">6</option>
+                                            <option value="7">7</option>
+                                            <option value="8" selected>8</option>
+                                        </select>
+                                    </div>
+                                    <div class="pure-control-group">
+                                        <label for="uart-stopbits" data-i18n="uart-stopbits-label">停止位</label>
+                                        <select id="uart-stopbits" class="pure-input-1">
+                                            <option value="1" selected>1</option>
+                                            <option value="2">2</option>
+                                        </select>
+                                    </div>
+                                    <div class="pure-control-group">
+                                        <label for="uart-parity" data-i18n="uart-parity-label">校验位</label>
+                                        <select id="uart-parity" class="pure-input-1">
+                                            <option value="0" selected>无</option>
+                                            <option value="1">奇校验</option>
+                                            <option value="2">偶校验</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <!-- I2C参数 -->
+                                <div id="i2c-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10" data-i18n="i2c-params-title">I2C参数</h4>
+                                    <div class="pure-control-group">
+                                        <label for="i2c-frequency" data-i18n="i2c-freq-label">频率 (Hz)</label>
+                                        <select id="i2c-frequency" class="pure-input-1">
+                                            <option value="100000" selected>100kHz (标准模式)</option>
+                                            <option value="400000">400kHz (快速模式)</option>
+                                        </select>
+                                    </div>
+                                    <div class="pure-control-group">
+                                        <label for="i2c-address" data-i18n="i2c-addr-label">从机地址 (0=主机模式)</label>
+                                        <input type="number" id="i2c-address" class="pure-input-1" value="0" min="0"
+                                            max="127">
+                                    </div>
+                                </div>
+
+                                <!-- SPI参数 -->
+                                <div id="spi-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10" data-i18n="spi-params-title">SPI参数</h4>
+                                    <div class="pure-control-group">
+                                        <label for="spi-frequency" data-i18n="spi-freq-label">频率 (Hz)</label>
+                                        <input type="number" id="spi-frequency" class="pure-input-1" value="1000000"
+                                            min="1000" max="80000000">
+                                    </div>
+                                    <div class="pure-control-group">
+                                        <label for="spi-mode" data-i18n="spi-mode-label">模式</label>
+                                        <select id="spi-mode" class="pure-input-1">
+                                            <option value="0" selected>模式0 (CPOL=0, CPHA=0)</option>
+                                            <option value="1">模式1 (CPOL=0, CPHA=1)</option>
+                                            <option value="2">模式2 (CPOL=1, CPHA=0)</option>
+                                            <option value="3">模式3 (CPOL=1, CPHA=1)</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <!-- ADC参数 -->
+                                <div id="adc-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10" data-i18n="adc-params-title">ADC参数</h4>
+                                    <div class="pure-control-group">
+                                        <label for="adc-resolution" data-i18n="adc-res-label">分辨率 (位)</label>
+                                        <select id="adc-resolution" class="pure-input-1">
+                                            <option value="9">9位 (0-511)</option>
+                                            <option value="10">10位 (0-1023)</option>
+                                            <option value="11">11位 (0-2047)</option>
+                                            <option value="12" selected>12位 (0-4095)</option>
+                                        </select>
+                                    </div>
+                                    <div class="pure-control-group">
+                                        <label for="adc-attenuation" data-i18n="adc-att-label">衰减系数</label>
+                                        <select id="adc-attenuation" class="pure-input-1">
+                                            <option value="0">0dB (0-1.1V)</option>
+                                            <option value="1">2.5dB (0-1.5V)</option>
+                                            <option value="2">6dB (0-2.2V)</option>
+                                            <option value="3" selected>11dB (0-3.3V)</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <!-- DAC参数 -->
+                                <div id="dac-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10" data-i18n="dac-params-title">DAC参数</h4>
+                                    <div class="pure-control-group">
+                                        <label for="dac-default-value" data-i18n="dac-value-label">默认输出值
+                                            (0-255)</label>
+                                        <input type="number" id="dac-default-value" class="pure-input-1" value="0"
+                                            min="0" max="255">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="peripheral-error" class="message message-error is-hidden"></div>
+                </fieldset>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button class="fb-btn" id="cancel-peripheral-btn" type="button" data-i18n="cancel">取消</button>
+            <button class="fb-btn fb-btn-primary" id="save-peripheral-btn" type="button"
+                data-i18n="save">保存</button>
+        </div>
+    </div>
+</div>
+
+<!-- 外设执行模态窗 -->
+<div id="periph-exec-modal" class="modal">
+    <div class="modal-content u-modal-content-900">
+        <div class="modal-header">
+            <h2 class="modal-title" id="periph-exec-modal-title"
+                data-i18n="periph-exec-add-modal-title">新增外设执行</h2>
+            <button id="close-periph-exec-modal" class="modal-close-btn">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form id="periph-exec-form" class="pure-form pure-form-stacked">
+                <fieldset>
+                    <input type="hidden" id="periph-exec-original-id" value="">
+
+                    <!-- 第一部分：基础配置 -->
+                    <div class="config-form-grid">
+                        <div class="pure-control-group">
+                            <label for="periph-exec-name" data-i18n="periph-exec-name-label">规则名称</label>
+                            <input type="text" id="periph-exec-name" class="pure-input-1"
+                                placeholder="例如: 温度过高报警" required data-i18n-placeholder="periph-exec-name-hint">
+                        </div>
+                        <div class="pure-control-group">
+                            <label>
+                                <input type="checkbox" id="periph-exec-report" checked>
+                                <span data-i18n="periph-exec-report-label">是否上报数据</span>
+                            </label>
+                        </div>
+                        <div class="pure-control-group">
+                            <label>
+                                <input type="checkbox" id="periph-exec-enabled" checked>
+                                <span data-i18n="periph-exec-enabled-label">启用</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- 第二部分：触发配置 (动态多组) -->
+                    <div id="periph-exec-risk-note" class="u-note-card u-note-card-warning u-mb-15 is-hidden"></div>
+                    <div class="section-title section-title-actions">
+                        <span data-i18n="periph-exec-section-trigger">触发配置</span>
+                        <button type="button" class="fb-btn fb-btn-sm" data-action="addPeriphExecTrigger">
+                            <i class="fas fa-plus"></i> <span data-i18n="periph-exec-add-trigger">添加触发</span>
+                        </button>
+                    </div>
+                    <div id="periph-exec-triggers">
+                        <!-- 动态触发配置块将在此渲染 -->
+                    </div>
+
+                    <!-- 第三部分：执行动作配置 (动态多组) -->
+                    <div class="section-title section-title-actions">
+                        <span data-i18n="periph-exec-section-action">执行动作配置</span>
+                        <button type="button" class="fb-btn fb-btn-sm" data-action="addPeriphExecAction">
+                            <i class="fas fa-plus"></i> <span data-i18n="periph-exec-add-action">添加动作</span>
+                        </button>
+                    </div>
+                    <div id="periph-exec-actions">
+                        <!-- 动态执行动作配置块将在此渲染 -->
+                    </div>
+
+                    <div id="periph-exec-error" class="message message-error is-hidden"></div>
+                </fieldset>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button class="fb-btn" id="cancel-periph-exec-btn" type="button" data-i18n="cancel">取消</button>
+            <button class="fb-btn fb-btn-primary" id="save-periph-exec-btn" type="button" data-i18n="save">保存</button>
+        </div>
+    </div>
+</div>
+
+<!-- 规则脚本模态窗 -->
+<div id="rule-script-modal" class="modal">
+    <div class="modal-content u-modal-content-700">
+        <div class="modal-header">
+            <h2 class="modal-title" id="rule-script-modal-title" data-i18n="rule-script-add-title">
+                新增规则脚本</h2>
+            <button id="close-rule-script-modal" class="modal-close-btn">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form id="rule-script-form" class="pure-form pure-form-stacked">
+                <fieldset>
+                    <input type="hidden" id="rule-script-original-id" value="">
+                    <div class="pure-control-group">
+                        <label for="rule-script-name" data-i18n="rule-script-name-label">规则名称</label>
+                        <input type="text" id="rule-script-name" class="pure-input-1" placeholder="例如: 数据格式转换"
+                            required>
+                    </div>
+                    <div class="pure-control-group">
+                        <label data-i18n="rule-script-enabled-label">启用</label>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="rule-script-enabled" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="pure-control-group">
+                        <label for="rule-script-trigger-type"
+                            data-i18n="rule-script-trigger-type-label">触发类型</label>
+                        <select id="rule-script-trigger-type" class="pure-input-1">
+                            <option value="0" data-i18n="rule-script-trigger-receive">数据接收</option>
+                            <option value="1" data-i18n="rule-script-trigger-report">数据上报</option>
+                        </select>
+                    </div>
+                    <div class="pure-control-group">
+                        <label for="rule-script-protocol-type"
+                            data-i18n="rule-script-protocol-type-label">协议类型</label>
+                        <select id="rule-script-protocol-type" class="pure-input-1">
+                            <option value="0" data-i18n="rule-script-protocol-mqtt">MQTT</option>
+                            <option value="1" data-i18n="rule-script-protocol-modbus-rtu">Modbus RTU</option>
+                            <option value="2" data-i18n="rule-script-protocol-modbus-tcp">Modbus TCP</option>
+                            <option value="3" data-i18n="rule-script-protocol-http">HTTP</option>
+                            <option value="4" data-i18n="rule-script-protocol-coap">CoAP</option>
+                            <option value="5" data-i18n="rule-script-protocol-tcp">TCP</option>
+                        </select>
+                    </div>
+                    <div class="pure-control-group">
+                        <label for="rule-script-content" data-i18n="rule-script-content-label">脚本内容</label>
+                        <textarea id="rule-script-content" class="pure-input-1 textarea-code"
+                            maxlength="2048"
+                            placeholder='{"temp": ${temperature}, "humi": ${humidity}}'></textarea>
+                        <small data-i18n="rule-script-content-help">使用 ${key} 引用输入数据中的值，例如
+                            ${temperature}</small>
+                    </div>
+                    <div id="rule-script-error" class="message message-error is-hidden"></div>
+                </fieldset>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button class="fb-btn" id="cancel-rule-script-btn" type="button" data-i18n="cancel">取消</button>
+            <button class="fb-btn fb-btn-primary" id="save-rule-script-btn" type="button"
+                data-i18n="save">保存</button>
+        </div>
+    </div>
+</div>
+
+<!-- 兼容旧版：GPIO配置模态窗 -->
+<div id="gpio-modal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2 class="modal-title" id="gpio-modal-title" data-i18n="gpio-add-modal-title">新增GPIO
+            </h2>
+            <button id="close-gpio-modal" class="modal-close-btn">×</button>
+        </div>
+        <div class="modal-body">
+            <form id="gpio-form" class="pure-form pure-form-stacked">
+                <fieldset>
+                    <input type="hidden" id="gpio-original-pin" value="">
+
+                    <div class="pure-control-group">
+                        <label for="gpio-pin-input" data-i18n="gpio-pin-label">引脚号 (0-39)</label>
+                        <input type="number" id="gpio-pin-input" class="pure-input-1" min="0" max="39"
+                            placeholder="请输入GPIO引脚号" required>
+                    </div>
+
+                    <div class="pure-control-group">
+                        <label for="gpio-name-input" data-i18n="gpio-name-label">名称</label>
+                        <input type="text" id="gpio-name-input" class="pure-input-1" placeholder="例如: LED、Relay"
+                            required>
+                    </div>
+
+                    <div class="pure-control-group">
+                        <label for="gpio-mode-input" data-i18n="gpio-mode-label">模式</label>
+                        <select id="gpio-mode-input" class="pure-input-1">
+                            <option value="1" data-i18n="gpio-mode-1">数字输入</option>
+                            <option value="2" data-i18n="gpio-mode-2">数字输出</option>
+                            <option value="3" data-i18n="gpio-mode-3">数字输入(上拉)</option>
+                            <option value="4" data-i18n="gpio-mode-4">数字输入(下拉)</option>
+                            <option value="5" data-i18n="gpio-mode-5">模拟输入</option>
+                            <option value="6" data-i18n="gpio-mode-6">模拟输出</option>
+                            <option value="7" data-i18n="gpio-mode-7">PWM输出</option>
+                        </select>
+                    </div>
+
+                    <div class="pure-control-group">
+                        <label for="gpio-default-input" data-i18n="gpio-default-label">初始值</label>
+                        <select id="gpio-default-input" class="pure-input-1">
+                            <option value="0" data-i18n="gpio-default-low">低电平 (LOW)</option>
+                            <option value="1" data-i18n="gpio-default-high">高电平 (HIGH)</option>
+                        </select>
+                    </div>
+
+                    <div id="gpio-error" class="message message-error is-hidden"></div>
+                </fieldset>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button class="fb-btn" id="cancel-gpio-btn" type="button" data-i18n="cancel">取消</button>
+            <button class="fb-btn fb-btn-primary" id="save-gpio-btn" type="button"
+                data-i18n="role-save-btn">保存</button>
+        </div>
+    </div>
+</div>
+
+<!-- 添加用户模态窗 -->
+<div id="add-user-modal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2 class="modal-title" id="add-user-title">添加用户</h2>
+            <button id="close-add-user-modal" class="modal-close-btn">×</button>
+        </div>
+        <div class="modal-body">
+            <form id="add-user-form" class="pure-form pure-form-stacked">
+                <fieldset>
+                    <div class="pure-control-group">
+                        <label for="add-username-input" id="add-username-label">用户名</label>
+                        <input type="text" id="add-username-input" class="pure-input-1" placeholder="请输入用户名"
+                            required>
+                    </div>
+
+                    <div class="pure-control-group">
+                        <label for="add-password-input" id="add-password-label">密码</label>
+                        <input type="password" id="add-password-input" class="pure-input-1" placeholder="请输入密码"
+                            required>
+                    </div>
+
+                    <div class="pure-control-group">
+                        <label for="add-confirm-password-input" id="add-confirm-password-label">确认密码</label>
+                        <input type="password" id="add-confirm-password-input" class="pure-input-1"
+                            placeholder="请再次输入密码" required>
+                    </div>
+
+                    <div class="pure-control-group">
+                        <label for="add-role-select" id="add-role-label">角色</label>
+                        <select id="add-role-select" class="pure-input-1">
+                            <option value="admin" data-i18n="role-admin">管理员</option>
+                            <option value="operator" selected data-i18n="role-operator">操作员</option>
+                            <option value="viewer" data-i18n="role-viewer">查看者</option>
+                        </select>
+                    </div>
+
+                    <div id="add-user-error" class="message message-error is-hidden"></div>
+                </fieldset>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button class="fb-btn" id="cancel-add-user-btn" type="button" data-i18n="cancel">取消</button>
+            <button class="fb-btn fb-btn-primary" id="confirm-add-user-btn" type="button"
+                data-i18n="add-user-confirm">添加</button>
+        </div>
+    </div>
+</div>
+
+<!-- 角色管理模态窗 -->
+<div id="role-modal" class="modal">
+    <div class="modal-content u-modal-content-700">
+        <div class="modal-header">
+            <h2 class="modal-title" id="role-modal-title" data-i18n="role-add-modal-title">新增角色</h2>
+            <button id="close-role-modal" class="modal-close-btn">×</button>
+        </div>
+        <div class="modal-body">
+            <form id="role-form" class="pure-form pure-form-stacked">
+                <fieldset>
+                    <div class="pure-control-group">
+                        <label for="role-id-input" data-i18n="role-id-label">角色ID</label>
+                        <input type="text" id="role-id-input" class="pure-input-1" placeholder="请输入角色ID（英文）"
+                            required>
+                        <small data-i18n="role-id-hint">角色ID为唯一标识，创建后不可修改</small>
+                    </div>
+
+                    <div class="pure-control-group">
+                        <label for="role-name-input" data-i18n="role-name-label">角色名称</label>
+                        <input type="text" id="role-name-input" class="pure-input-1" placeholder="请输入角色名称" required>
+                    </div>
+
+                    <div class="pure-control-group">
+                        <label for="role-desc-input" data-i18n="role-desc-label">角色描述</label>
+                        <input type="text" id="role-desc-input" class="pure-input-1" placeholder="请输入角色描述">
+                    </div>
+
+                    <div class="pure-control-group">
+                        <label data-i18n="role-perms-label">权限配置</label>
+                        <div id="role-permissions-container" class="role-permissions-panel">
+                            <!-- 权限列表将通过JS动态生成 -->
+                        </div>
+                    </div>
+
+                    <div id="role-error" class="message message-error is-hidden"></div>
+                </fieldset>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button class="fb-btn" id="cancel-role-btn" type="button" data-i18n="cancel">取消</button>
+            <button class="fb-btn fb-btn-primary" id="confirm-role-btn" type="button"
+                data-i18n="role-save-btn">保存</button>
+        </div>
+    </div>
+</div>
