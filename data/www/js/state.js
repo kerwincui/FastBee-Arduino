@@ -65,7 +65,7 @@
                     setTimeout(function () {
                         if (localStorage.getItem('auth_token')) return;
                         var lp = document.getElementById('login-page'); var ac = document.getElementById('app-container');
-                        if (lp && ac) { ac.style.display = 'none'; lp.style.display = 'flex'; }
+                        if (lp && ac) { ac.classList.add('fb-hidden'); lp.style.display = 'flex'; }
                     }, 1500);
                 } break;
             case 403: Notification.warning('权限不足，无法执行此操作', '权限拒绝'); break;
@@ -1024,7 +1024,7 @@ const AppState = {
 
     _showLoginPage() {
         document.getElementById('login-page').style.display = 'flex';
-        document.getElementById('app-container').style.display = 'none';
+        document.getElementById('app-container').classList.add('fb-hidden');
 
         // 预填充已保存的用户名和"记住密码"状态
         const savedUsername = localStorage.getItem('username');
@@ -1037,14 +1037,16 @@ const AppState = {
 
     async _showAppPage() {
         document.getElementById('login-page').style.display = 'none';
-        document.getElementById('app-container').style.display = 'block';
+        document.getElementById('app-container').classList.remove('fb-hidden');
         // 登录成功后将URL从 /login 等路径重定向到根路径 /
         if (location.pathname !== '/' || location.hash) {
             history.replaceState(null, '', '/');
         }
-        // 预加载模态框和仪表盘页面
-        await this._loadModals();
-        await this.loadPage('dashboard-page');
+        // 并行加载模态框和仪表盘页面（消除串行 await 延迟）
+        await Promise.all([
+            this._loadModals(),
+            this.loadPage('dashboard-page')
+        ]);
         // 移除骨架屏
         var skeleton = document.getElementById('skeleton-screen');
         if (skeleton) skeleton.remove();

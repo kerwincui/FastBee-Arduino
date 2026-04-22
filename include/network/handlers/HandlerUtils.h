@@ -67,31 +67,25 @@ inline void writeJsonEscapedString(AsyncResponseStream* response, const String& 
     response->print('"');
 }
 
-// 流式发送 JSON 文档（避免一次性 serializeJson 到 String 占用大量内存）
+// 发送 JSON 文档（序列化到 String 后一次性发送，避免 AsyncResponseStream cbuf 扩容 OOM）
 inline void sendJsonStream(AsyncWebServerRequest* request, JsonDocument& doc) {
-    // 预检查堆内存（预留 20KB 给系统其他部分）
     if (checkLowMemory(request)) return;
-    AsyncResponseStream* response = request->beginResponseStream("application/json");
-    if (!response) {
-        sendJsonError(request, 503, "Response stream allocation failed");
-        return;
-    }
-    serializeJson(doc, *response);
-    request->send(response);
+    String json;
+    serializeJson(doc, json);
+    request->send(200, "application/json", json);
 }
 
-// 发送带 success:true 包装的 JSON 文档（流式输出）
+// 发送带 success:true 包装的 JSON 文档
 inline void sendJsonDocSuccess(AsyncWebServerRequest* request, JsonDocument& doc) {
     if (checkLowMemory(request)) return;
-    AsyncResponseStream* response = request->beginResponseStream("application/json");
-    if (!response) {
-        sendJsonError(request, 503, "Response stream allocation failed");
-        return;
-    }
-    response->print("{\"success\":true,\"data\":");
-    serializeJson(doc, *response);
-    response->print("}");
-    request->send(response);
+    String json;
+    json.reserve(measureJson(doc) + 32);
+    json += F("{\"success\":true,\"data\":");
+    String inner;
+    serializeJson(doc, inner);
+    json += inner;
+    json += '}';
+    request->send(200, "application/json", json);
 }
 
 // 统一的 "read JSON file -> deserialize -> modify -> serialize -> write" 流程

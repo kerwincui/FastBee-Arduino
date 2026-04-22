@@ -2,7 +2,7 @@
 // FastBee Service Worker - Offline Cache & Resource Prefetch
 // ============================================================
 
-var CACHE_NAME = 'fastbee-v2';
+var CACHE_NAME = 'fastbee-v3';
 
 var PRECACHE_URLS = [
     '/',
@@ -12,6 +12,7 @@ var PRECACHE_URLS = [
     '/js/main.js',
     '/js/state.js',
     '/js/modules/i18n-engine.js',
+    '/js/modules/i18n-zh-CN.js',
     '/assets/favicon.ico',
     '/assets/logo.png',
     // JS modules
@@ -39,29 +40,38 @@ function sequentialCache(cache, urls) {
                 if (resp.ok) return cache.put(url, resp);
             }).catch(function() { /* skip failed */ });
         }).then(function() {
-            return new Promise(function(r) { setTimeout(r, 200); });
+            return new Promise(function(r) { setTimeout(r, 150); });
         });
     }, Promise.resolve());
 }
 
-// Install: sequential precache
+// Install: skip waiting immediately, defer precache to avoid blocking first render
 self.addEventListener('install', function(event) {
-    event.waitUntil(
-        caches.open(CACHE_NAME)
-            .then(function(cache) { return sequentialCache(cache, PRECACHE_URLS); })
-            .then(function() { return self.skipWaiting(); })
-    );
+    self.skipWaiting();
 });
 
-// Activate: clean old caches
+// After activation, start background precache with delay
+// (avoid competing with initial page load for ESP32 connections)
+function startBackgroundPrecache() {
+    setTimeout(function() {
+        caches.open(CACHE_NAME).then(function(cache) {
+            sequentialCache(cache, PRECACHE_URLS).then(function() {
+                // Precache done, now safe to clean old caches
+                caches.keys().then(function(names) {
+                    names.filter(function(n) { return n !== CACHE_NAME; })
+                         .forEach(function(n) { caches.delete(n); });
+                });
+            });
+        });
+    }, 5000);
+}
+
+// Activate: claim clients first, then precache, finally clean old caches
+// (keep old cache alive until new cache is populated to avoid "empty cache" gap)
 self.addEventListener('activate', function(event) {
     event.waitUntil(
-        caches.keys().then(function(names) {
-            return Promise.all(
-                names.filter(function(n) { return n !== CACHE_NAME; })
-                     .map(function(n) { return caches.delete(n); })
-            );
-        }).then(function() { return self.clients.claim(); })
+        self.clients.claim()
+            .then(function() { startBackgroundPrecache(); })
     );
 });
 
@@ -90,7 +100,7 @@ self.addEventListener('fetch', function(event) {
         return;
     }
 
-    // JS/CSS/images: cache-first
+    // JS/CSS/images: cache-first (try current cache, then old caches, then network)
     event.respondWith(
         caches.match(event.request).then(function(cached) {
             if (cached) return cached;

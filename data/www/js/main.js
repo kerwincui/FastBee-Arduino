@@ -1,8 +1,9 @@
 // 应用主入口和初始化
-// 所有核心依赖由此文件链式动态加载，避免 ESP32 并发连接过多导致传输失败
+// 核心依赖（state.js, i18n-engine.js, i18n-zh-CN.js）已由 index.html 中的
+// <script defer> 标签按序加载，浏览器并行下载、按序执行，无需动态加载链
 
 /**
- * 动态加载JS脚本，失败时自动重试一次
+ * 动态加载JS脚本，失败时自动重试一次（供模块加载等场景使用）
  * @param {string} src 脚本路径
  * @param {function} onSuccess 成功回调
  * @param {function} [onFail] 最终失败回调（不提供则跳过继续）
@@ -65,54 +66,33 @@ function _bootApp() {
 
     // 暴露全局 app 引用，供表格内 onclick 使用
     window.app = AppState;
+
+    // 如果英文语言需要额外加载英文翻译包（中文已由 defer 脚本加载）
+    if (typeof i18n !== 'undefined' && i18n.currentLang === 'en') {
+        _loadScript('./js/modules/i18n-en.js', function() {
+            if (typeof i18n !== 'undefined' && i18n.updatePageText) {
+                i18n.updatePageText();
+            }
+        });
+    }
 }
 
+// defer 脚本正常时：state.js → i18n-engine.js → i18n-zh-CN.js → main.js 按序执行
+// 但 mDNS 解析失败时 defer 脚本会静默跳过，需检测并回退到动态重试加载
 document.addEventListener('DOMContentLoaded', function() {
-    // 链式加载核心依赖：state.js 必须同步加载，i18n 改为引擎+数据分离加载
-    _loadScript('./js/state.js', function() {
-        // state.js 加载完成，立即启动应用（不等 i18n）
+    if (typeof AppState !== 'undefined') {
+        // defer 脚本全部成功，直接启动
         _bootApp();
-        
-        // 异步加载 i18n 引擎（后台执行，不阻塞应用启动）
-        setTimeout(function() {
+    } else {
+        // 核心依赖未加载（网络间歇失败），回退到动态加载 + 自动重试
+        console.warn('[FastBee] Core scripts not loaded, retrying dynamically...');
+        _loadScript('./js/state.js', function() {
+            // state.js 成功，继续加载 i18n（容错：失败也启动）
             _loadScript('./js/modules/i18n-engine.js', function() {
-                // i18n 引擎加载成功，并发加载翻译数据
-                var currentLang = (typeof i18n !== 'undefined' && i18n.currentLang) ? i18n.currentLang : 'zh-CN';
-                var translationsLoaded = 0;
-                var totalTranslations = (currentLang === 'en') ? 2 : 1;
-                
-                function onTranslationLoaded() {
-                    translationsLoaded++;
-                    if (translationsLoaded >= totalTranslations) {
-                        // 所有翻译数据加载完成，更新页面文本
-                        if (typeof i18n !== 'undefined' && i18n.updatePageText) {
-                            i18n.updatePageText();
-                            // 更新语言选择器
-                            var langSelect = document.getElementById('language-select');
-                            if (langSelect) {
-                                langSelect.value = i18n.currentLang;
-                            }
-                        }
-                    }
-                }
-                
-                // 始终加载中文翻译（默认语言）
-                _loadScript('./js/modules/i18n-zh-CN.js', onTranslationLoaded, function() {
-                    console.warn('[FastBee] i18n-zh-CN.js load failed');
-                    onTranslationLoaded();
-                });
-                
-                // 如果当前语言是英文，也加载英文翻译
-                if (currentLang === 'en') {
-                    _loadScript('./js/modules/i18n-en.js', onTranslationLoaded, function() {
-                        console.warn('[FastBee] i18n-en.js load failed');
-                        onTranslationLoaded();
-                    });
-                }
-            }, function() {
-                // i18n 引擎加载失败，使用降级翻译（已在 _bootApp 中处理）
-                console.warn('[FastBee] i18n-engine.js load failed, using fallback');
-            });
-        }, 0);
-    });
+                _loadScript('./js/modules/i18n-zh-CN.js', function() {
+                    _bootApp();
+                }, function() { _bootApp(); });
+            }, function() { _bootApp(); });
+        });
+    }
 });

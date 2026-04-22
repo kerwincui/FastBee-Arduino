@@ -140,7 +140,10 @@
             apiGet('/api/files/content', { path: path })
                 .then(res => {
                     if (!res || !res.success) {
-                        statusDiv.textContent = i18n.t('fs-file-load-fail-prefix') + (res.error || i18n.t('fs-file-unknown-error'));
+                        var detail = (res && res.message) ? ' (' + res.message + ')'
+                                   : (res && res.error) ? ' (' + res.error + ')'
+                                   : '';
+                        statusDiv.textContent = i18n.t('fs-file-load-fail-prefix') + (detail || i18n.t('fs-file-unknown-error'));
                         return;
                     }
 
@@ -158,7 +161,10 @@
                 })
                 .catch(err => {
                     console.error('Open file failed:', err);
-                    statusDiv.textContent = i18n.t('fs-file-load-fail');
+                    var msg = i18n.t('fs-file-load-fail');
+                    if (err && err.status) msg += ' (HTTP ' + err.status + ')';
+                    else if (err && err.message) msg += ' (' + err.message + ')';
+                    statusDiv.textContent = msg;
                 });
         },
 

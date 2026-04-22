@@ -10,7 +10,8 @@
     <style>
     :root{--primary:#1677ff;--primary-hover:#4096ff;--primary-active:#0958d9;--primary-light:#e6f4ff;--bg-body-fallback:#f5f5f5;--bg-body:linear-gradient(135deg,#f5f5f5 0%,#fafafa 50%,#f0f0f0 100%);--bg-card:rgba(255,255,255,0.92);--glass-bg:rgba(255,255,255,0.78);--glass-border:rgba(22,119,255,0.12);--glass-shadow:0 6px 16px 0 rgba(0,0,0,0.08),0 3px 6px -4px rgba(0,0,0,0.12),0 9px 28px 8px rgba(0,0,0,0.05);--text-primary:rgba(0,0,0,0.88);--text-secondary:rgba(0,0,0,0.65);--border:#d9d9d9;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:20px;--space-6:24px;--space-8:32px;--rounded-md:6px;--rounded-2xl:16px;--shadow-md:0 4px 6px -1px rgb(0 0 0/0.1),0 2px 4px -2px rgb(0 0 0/0.1)}
     body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg-body-fallback);background-image:var(--bg-body);background-attachment:fixed;color:var(--text-primary);line-height:1.6;min-height:100vh;margin:0}
-    .login-page{background:linear-gradient(135deg,#f5f5f5 0%,#fafafa 30%,#f0f0f0 70%,#e6f4ff 100%);height:100vh;display:none;align-items:center;justify-content:center;padding:var(--space-5);position:relative}
+    .login-page{background:linear-gradient(135deg,#f5f5f5 0%,#fafafa 30%,#f0f0f0 70%,#e6f4ff 100%);height:100vh;display:flex;align-items:center;justify-content:center;padding:var(--space-5);position:relative}
+    .app-container.fb-hidden{display:none}
     .login-card{background:rgba(255,255,255,0.75);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:var(--rounded-2xl);box-shadow:var(--glass-shadow),0 0 0 1px rgba(255,255,255,0.6) inset;width:100%;max-width:400px;position:relative;border:1px solid rgba(255,255,255,0.4)}
     .login-header{padding:var(--space-8) var(--space-5) 0;text-align:center}
     .login-header img{width:50px}
@@ -32,9 +33,6 @@
         <link rel="stylesheet" href="./css/pure-min.css">
         <link rel="stylesheet" href="./css/main.css">
     </noscript>
-    <!-- Preload critical resources -->
-    <link rel="preload" href="/js/state.js" as="script">
-    <link rel="preload" href="/js/modules/i18n-engine.js" as="script">
 </head>
 
 <body>
@@ -81,7 +79,7 @@
     </div>
 
     <!-- 主应用 -->
-    <div id="app-container" class="app-container">
+    <div id="app-container" class="app-container fb-hidden">
         <div class="app-wrapper">
             <!-- 侧边栏 -->
             <div class="sidebar" id="sidebar">
@@ -194,7 +192,10 @@
         </div>
     </div>
 
-    <!-- 仅加载入口脚本，其余依赖由 main.js 链式动态加载（避免 ESP32 并发连接过多） -->
+    <!-- 静态 defer 脚本：浏览器并行下载、按序执行，消除动态加载链延迟 -->
+    <script defer src="./js/state.js"></script>
+    <script defer src="./js/modules/i18n-engine.js"></script>
+    <script defer src="./js/modules/i18n-zh-CN.js"></script>
     <script defer src="./js/main.js"></script>
     <!-- Service Worker 注册 -->
     <script>

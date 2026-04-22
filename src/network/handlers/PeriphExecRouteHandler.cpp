@@ -131,36 +131,34 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     int startIdx = (page - 1) * pageSize;
     int endIdx = (startIdx < total) ? min(startIdx + pageSize, total) : startIdx;
 
-    // 检查堆内存是否充足（预留20KB给系统其他部分）
+    // 检查堆内存是否充足（预留 20KB 给系统其他部分）
     if (HandlerUtils::checkLowMemory(request)) return;
-
-    // 使用流式响应避免大内存分配
-    AsyncResponseStream* response = request->beginResponseStream("application/json");
-    if (!response) {
-        request->send(500, "application/json", "{\"success\":false,\"message\":\"无法创建响应流\"}");
-        return;
-    }
-
-    // 手动构建JSON响应，避免使用JsonDocument缓存大量数据
-    response->printf("{\"success\":true,\"total\":%d,\"page\":%d,\"pageSize\":%d,\"data\":[", 
-                     total, page, pageSize);
-
+    
+    // 构建 JSON String 响应，避免 AsyncResponseStream cbuf 扩容 OOM
+    String json;
+    json.reserve(256 + (endIdx - startIdx) * 300);
+    char itemBuf[512];
+    json += F("{\"success\":true,\"total\":");
+    json += String(total);
+    json += F(",\"page\":");
+    json += String(page);
+    json += F(",\"pageSize\":");
+    json += String(pageSize);
+    json += F(",\"data\":[");
+    
     bool firstRule = true;
     for (int i = startIdx; i < endIdx; i++) {
-        if (!firstRule) {
-            response->print(",");
-        }
+        if (!firstRule) json += ',';
         firstRule = false;
-
+    
         const auto& rule = rules[i];
-
-        // 列表视图只返回摘要字段，避免完整序列化 triggers/actions 导致内存不足
+    
+        // 列表视图只返回摘要字段
         int triggerCount = rule.triggers.size();
         int actionCount = rule.actions.size();
         int triggerSummary = triggerCount > 0 ? rule.triggers[0].triggerType : -1;
         int actionSummary = actionCount > 0 ? rule.actions[0].actionType : -1;
-
-        // 检查是否有"设置模式"触发器（operatorType=1，前端执行时需要弹窗输入值）
+    
         bool hasSetMode = false;
         for (const auto& trigger : rule.triggers) {
             if (trigger.triggerType == 0 && trigger.operatorType == 1) {
@@ -168,18 +166,14 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
                 break;
             }
         }
-
-        // 查找第一个动作的目标外设名称
+    
         String targetPeriphName;
         if (actionCount > 0 && !rule.actions[0].targetPeriphId.isEmpty()) {
             const PeripheralConfig* periph = pm.getPeripheral(rule.actions[0].targetPeriphId);
-            if (periph) {
-                targetPeriphName = periph->name;
-            }
+            if (periph) targetPeriphName = periph->name;
         }
-
-        // 使用 printf 手动构建 JSON，不创建 JsonDocument
-        response->printf(
+    
+        snprintf(itemBuf, sizeof(itemBuf),
             "{\"id\":\"%s\",\"name\":\"%s\",\"enabled\":%s,"
             "\"execMode\":%d,\"reportAfterExec\":%s,"
             "\"triggerCount\":%d,\"actionCount\":%d,"
@@ -196,10 +190,11 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
             hasSetMode ? "true" : "false",
             targetPeriphName.c_str()
         );
+        json += itemBuf;
     }
-
-    response->print("]}");
-    request->send(response);
+    
+    json += F("]}");
+    request->send(200, "application/json", json);
 }
 
 // ========== 新增规则（form-encoded 向后兼容） ==========
@@ -593,12 +588,7 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
     PeripheralManager& pm = PeripheralManager::getInstance();
     auto rules = mgr.getAllRules();
 
-    // 使用流式响应，手动 printf 构建 JSON
-    AsyncResponseStream* response = request->beginResponseStream("application/json");
-    if (!response) {
-        request->send(500, "application/json", "{\"success\":false,\"message\":\"Unable to create response stream\"}");
-        return;
-    }
+    // 构建 JSON String 响应，避免 AsyncResponseStream cbuf 扩容 OOM
 
     // 分组缓冲：记录每个分组是否已写入第一条
     bool firstGpio = true, firstModbus = true, firstSystem = true;
@@ -691,16 +681,19 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
         *targetBuf += item;
     }
 
-    // 输出完整 JSON
-    response->print("{\"success\":true,\"data\":{");
-    response->print("\"gpio\":["); response->print(gpioItems); response->print("],");
-    response->print("\"modbus\":["); response->print(modbusItems); response->print("],");
-    response->print("\"system\":["); response->print(systemItems); response->print("],");
-    response->print("\"script\":["); response->print(scriptItems); response->print("],");
-    response->print("\"sensor\":["); response->print(sensorItems); response->print("],");
-    response->print("\"other\":["); response->print(otherItems); response->print("]");
-    response->print("}}");
-    request->send(response);
+    // 输出完整 JSON（直接拼接 String，避免 AsyncResponseStream）
+    String json;
+    json.reserve(128 + gpioItems.length() + modbusItems.length() + systemItems.length()
+                + scriptItems.length() + sensorItems.length() + otherItems.length());
+    json += F("{\"success\":true,\"data\":{");
+    json += F("\"gpio\":["); json += gpioItems; json += F("],");
+    json += F("\"modbus\":["); json += modbusItems; json += F("],");
+    json += F("\"system\":["); json += systemItems; json += F("],");
+    json += F("\"script\":["); json += scriptItems; json += F("],");
+    json += F("\"sensor\":["); json += sensorItems; json += F("],");
+    json += F("\"other\":["); json += otherItems; json += ']';
+    json += F("}}");
+    request->send(200, "application/json", json);
 }
 
 // ========== JSON body: 更新规则 ==========

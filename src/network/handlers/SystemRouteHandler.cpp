@@ -231,29 +231,100 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         if (!file) { ctx->sendError(request, 500, "Failed to open file"); return; }
         size_t fileSize = file.size();
         if (fileSize > 128 * 1024) { file.close(); ctx->sendError(request, 413, "File too large (max 128KB)"); return; }
-        AsyncResponseStream *response = request->beginResponseStream("application/json");
-        response->addHeader("Access-Control-Allow-Origin", "*");
-        response->printf("{\"success\":true,\"data\":{\"path\":\"%s\",\"size\":%u,\"content\":\"", path.c_str(), (unsigned int)fileSize);
-        uint8_t readBuf[256]; char outBuf[1024]; int outIdx = 0;
-        while (file.available()) {
-            int bytesRead = file.read(readBuf, sizeof(readBuf));
-            for (int i = 0; i < bytesRead; i++) {
-                if (outIdx >= 1020) { response->write((uint8_t*)outBuf, outIdx); outIdx = 0; }
-                char c = (char)readBuf[i];
-                switch (c) {
-                    case '"':  outBuf[outIdx++] = '\\'; outBuf[outIdx++] = '"'; break;
-                    case '\\': outBuf[outIdx++] = '\\'; outBuf[outIdx++] = '\\'; break;
-                    case '\n': outBuf[outIdx++] = '\\'; outBuf[outIdx++] = 'n'; break;
-                    case '\r': outBuf[outIdx++] = '\\'; outBuf[outIdx++] = 'r'; break;
-                    case '\t': outBuf[outIdx++] = '\\'; outBuf[outIdx++] = 't'; break;
-                    default: if (c >= 0x20) outBuf[outIdx++] = c; break;
+    
+        // 堆内存检查
+        size_t freeHeap = ESP.getFreeHeap();
+        if (freeHeap < 30000) {
+            file.close();
+            HandlerUtils::sendJsonError(request, 503, "Low memory");
+            return;
+        }
+    
+        // 第一遍扫描：精确计算 JSON 转义后的大小，避免 String 重分配失败
+        size_t escapedSize = 0;
+        size_t rawSize = 0;
+        {
+            uint8_t scanBuf[256];
+            while (file.available() && rawSize < fileSize) {
+                int toRead = std::min((size_t)sizeof(scanBuf), fileSize - rawSize);
+                int bytesRead = file.read(scanBuf, toRead);
+                if (bytesRead <= 0) break;
+                rawSize += bytesRead;
+                for (int i = 0; i < bytesRead; i++) {
+                    char c = (char)scanBuf[i];
+                    if (c == '"' || c == '\\') escapedSize += 2;
+                    else if (c == '\n' || c == '\r' || c == '\t') escapedSize += 2;
+                    else if (c >= 0x20) escapedSize += 1;
+                    // 控制字符 < 0x20 被跳过
                 }
             }
         }
-        if (outIdx > 0) response->write((uint8_t*)outBuf, outIdx);
+    
+        // JSON 包装开销：{"success":true,"data":{"path":"...","size":...,"content":"..."}}  约 100 字节
+        size_t totalJsonSize = escapedSize + path.length() + 128;
+    
+        // 检查是否有足够内存容纳完整响应
+        size_t availableForJson = freeHeap - 20000;  // 预留 20KB 给系统
+        if (totalJsonSize > availableForJson) {
+            // 内存不足以装载整个文件，计算可安全读取的字节数
+            // 用转义比率估算：escapedSize / rawSize ≈ 转义后/原始 的膨胀比
+            size_t maxEscaped = availableForJson - 128 - path.length();
+            size_t maxRaw = (rawSize > 0 && escapedSize > 0)
+                ? (size_t)((double)maxEscaped * rawSize / escapedSize)
+                : maxEscaped;
+            if (maxRaw > rawSize) maxRaw = rawSize;
+            rawSize = maxRaw;
+            // 重新计算 escapedSize（按比例缩减）
+            escapedSize = maxEscaped;
+            totalJsonSize = availableForJson;
+        }
+        if (totalJsonSize > 65536) {
+            file.close();
+            HandlerUtils::sendJsonError(request, 413, "Escaped content too large");
+            return;
+        }
+    
+        // 回到文件开头，第二遍读取并构建 JSON
+        file.seek(0);
+    
+        String json;
+        json.reserve(totalJsonSize + 64);  // 精确预留 + 小余量
+        json += F("{\"success\":true,\"data\":{\"path\":\"");
+        json += path;
+        json += F("\",\"size\":");
+        json += String((unsigned int)fileSize);
+        json += F(",\"content\":\"");
+    
+        uint8_t readBuf[256]; size_t totalRead = 0;
+        while (file.available() && totalRead < rawSize) {
+            int toRead = std::min((size_t)sizeof(readBuf), rawSize - totalRead);
+            int bytesRead = file.read(readBuf, toRead);
+            if (bytesRead <= 0) break;
+            totalRead += bytesRead;
+            for (int i = 0; i < bytesRead; i++) {
+                char c = (char)readBuf[i];
+                switch (c) {
+                    case '"':  json += F("\\\""); break;
+                    case '\\': json += F("\\\\"); break;
+                    case '\n': json += F("\\n"); break;
+                    case '\r': json += F("\\r"); break;
+                    case '\t': json += F("\\t"); break;
+                    default: if (c >= 0x20) json += c; break;
+                }
+            }
+        }
         file.close();
-        response->print("\"}}");
-        request->send(response);
+        json += F("\"}}");
+
+        // 校验 JSON 完整性
+        if (json.length() < 20 || !json.endsWith("}}")) {
+            HandlerUtils::sendJsonError(request, 503, "Response truncated, low memory");
+            return;
+        }
+    
+        AsyncWebServerResponse* resp = request->beginResponse(200, "application/json", json);
+        resp->addHeader("Access-Control-Allow-Origin", "*");
+        request->send(resp);
     });
 
     server->on("/api/files/save", HTTP_POST,

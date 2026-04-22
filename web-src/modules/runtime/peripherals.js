@@ -91,7 +91,8 @@
             apiGet(url)
                 .then(res => {
                     if (!res || !res.success) {
-                        this.renderEmptyTableRow(tbody, 6, i18n.t('peripheral-load-fail'), 'u-empty-cell u-text-danger');
+                        var detail = (res && res.message) ? ' (' + res.message + ')' : '';
+                        this.renderEmptyTableRow(tbody, 6, i18n.t('peripheral-load-fail') + detail, 'u-empty-cell u-text-danger');
                         this._renderPeriphPagination(0, 1, 10);
                         return;
                     }
@@ -135,8 +136,11 @@
                     this._renderPeriphPagination(total, page, pageSize);
                 })
                 .catch(err => {
+                    var msg = i18n.t('peripheral-load-fail');
+                    if (err && err.status) msg += ' (HTTP ' + err.status + ')';
+                    else if (err && err.message) msg += ' (' + err.message + ')';
                     console.error('Load peripherals failed:', err);
-                    this.renderEmptyTableRow(tbody, 6, i18n.t('peripheral-load-fail'), 'u-empty-cell u-text-danger');
+                    this.renderEmptyTableRow(tbody, 6, msg, 'u-empty-cell u-text-danger');
                     this._renderPeriphPagination(0, 1, 10);
                 });
         },

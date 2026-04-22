@@ -5,6 +5,7 @@
 #include <ArduinoJson.h>
 #include <algorithm>
 #include <vector>
+#include "systems/LoggerSystem.h"
 
 PeripheralRouteHandler::PeripheralRouteHandler(WebHandlerContext* ctx)
     : ctx(ctx) {
@@ -98,11 +99,17 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
     String typeFilter = ctx->getParamValue(request, "type", "");
     String categoryFilter = ctx->getParamValue(request, "category", "");
 
-    std::vector<PeripheralConfig> peripherals;
+    // 使用指针向量代替深拷贝，大幅减少内存占用（38个外设：指针~152B vs 拷贝~6KB）
+    std::vector<const PeripheralConfig*> ptrs;
+    ptrs.reserve(40);  // 预估外设数量
 
     if (!typeFilter.isEmpty()) {
         PeripheralType type = parsePeripheralType(typeFilter.c_str());
-        peripherals = pm.getPeripheralsByType(type);
+        pm.forEachPeripheral([&ptrs, type](const PeripheralConfig& p) {
+            if (p.type == type && p.type != PeripheralType::MODBUS_DEVICE) {
+                ptrs.push_back(&p);
+            }
+        });
     } else if (!categoryFilter.isEmpty()) {
         PeripheralCategory category = PeripheralCategory::CATEGORY_GPIO;
         if (categoryFilter == "communication") category = PeripheralCategory::CATEGORY_COMMUNICATION;
@@ -110,24 +117,26 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         else if (categoryFilter == "analog") category = PeripheralCategory::CATEGORY_ANALOG_SIGNAL;
         else if (categoryFilter == "debug") category = PeripheralCategory::CATEGORY_DEBUG;
         else if (categoryFilter == "special") category = PeripheralCategory::CATEGORY_SPECIAL;
-        peripherals = pm.getPeripheralsByCategory(category);
+        pm.forEachPeripheral([&ptrs, category](const PeripheralConfig& p) {
+            if (getPeripheralCategory(p.type) == category && p.type != PeripheralType::MODBUS_DEVICE) {
+                ptrs.push_back(&p);
+            }
+        });
     } else {
-        peripherals = pm.getAllPeripherals();
+        pm.forEachPeripheral([&ptrs](const PeripheralConfig& p) {
+            if (p.type != PeripheralType::MODBUS_DEVICE) {
+                ptrs.push_back(&p);
+            }
+        });
     }
 
-    // Modbus 子设备由 protocol.json 管理，不在外设列表中展示
-    peripherals.erase(
-        std::remove_if(peripherals.begin(), peripherals.end(),
-            [](const PeripheralConfig& p) { return p.type == PeripheralType::MODBUS_DEVICE; }),
-        peripherals.end());
-
     // 排序：启用的排前面，然后按名称排序
-    std::sort(peripherals.begin(), peripherals.end(), [](const PeripheralConfig& a, const PeripheralConfig& b) {
-        if (a.enabled != b.enabled) return a.enabled > b.enabled;
-        return strcmp(a.name.c_str(), b.name.c_str()) < 0;
+    std::sort(ptrs.begin(), ptrs.end(), [](const PeripheralConfig* a, const PeripheralConfig* b) {
+        if (a->enabled != b->enabled) return a->enabled > b->enabled;
+        return strcmp(a->name.c_str(), b->name.c_str()) < 0;
     });
 
-    int total = peripherals.size();
+    int total = ptrs.size();
 
     // 解析分页参数
     int page = 1;
@@ -146,29 +155,19 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
     int startIdx = (page - 1) * pageSize;
     int endIdx = (startIdx < total) ? std::min(startIdx + pageSize, total) : startIdx;
 
-    // 检查堆内存是否充足（预留20KB给系统其他部分）
-    if (HandlerUtils::checkLowMemory(request)) return;
-
-    // 使用流式响应避免大内存分配
-    AsyncResponseStream* response = request->beginResponseStream("application/json");
-    if (!response) {
-        request->send(500, "application/json", "{\"success\":false,\"message\":\"无法创建响应流\"}");
-        return;
-    }
-
-    // 手动构建JSON响应，避免使用JsonDocument缓存大量数据
-    response->printf("{\"success\":true,\"total\":%d,\"page\":%d,\"pageSize\":%d,\"data\":[",
-                     total, page, pageSize);
-
-    bool first = true;
+    // 检查堆内存是否充足
+    if (HandlerUtils::checkLowMemory(request, 12288)) return;
+    
+    // 两遍法：先序列化每个项计算精确大小，再用精确 reserve 构建响应
+    int itemCount = endIdx - startIdx;
+    
+    // 第一遍：序列化所有项到临时 String，累计精确大小
+    std::vector<String> serializedItems;
+    serializedItems.reserve(itemCount);
+    size_t totalItemsSize = 0;
+    
     for (int i = startIdx; i < endIdx; i++) {
-        if (!first) {
-            response->print(",");
-        }
-        first = false;
-
-        const auto& config = peripherals[i];
-        // 构建单个外设的JSON
+        const auto& config = *ptrs[i];
         JsonDocument itemDoc;
         itemDoc["id"] = config.id;
         itemDoc["name"] = config.name;
@@ -176,27 +175,75 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         itemDoc["typeName"] = getPeripheralTypeName(config.type);
         itemDoc["category"] = getCategoryName(getPeripheralCategory(config.type));
         itemDoc["enabled"] = config.enabled;
-
+    
         JsonArray pins = itemDoc["pins"].to<JsonArray>();
         for (int j = 0; j < config.pinCount && j < 8; j++) {
             if (config.pins[j] != 255) {
                 pins.add(config.pins[j]);
             }
         }
-
+    
         auto runtimeState = pm.getRuntimeState(config.id);
         if (runtimeState) {
             itemDoc["status"] = static_cast<int>(runtimeState->status);
         } else {
             itemDoc["status"] = 0;
         }
+    
+        String itemStr;
+        serializeJson(itemDoc, itemStr);
+        totalItemsSize += itemStr.length();
+        serializedItems.push_back(std::move(itemStr));
+    }
+    
+    // 精确计算总 JSON 大小（header + commas + items + footer）
+    size_t headerSize = 80;  // {"success":true,"total":NN,"page":N,"pageSize":NN,"data":[
+    size_t commaSize = (serializedItems.size() > 0) ? serializedItems.size() - 1 : 0;
+    size_t totalJsonSize = headerSize + totalItemsSize + commaSize + 4;  // +4 for ]}
+    
+    // 检查可用内存是否足够（保留 6KB 安全余量）
+    size_t freeHeap = ESP.getFreeHeap();
+    if (totalJsonSize + 6144 > freeHeap) {
+        LOG_ERRORF("[Periph] Not enough memory: need=%d free=%d", totalJsonSize, freeHeap);
+        HandlerUtils::sendJsonError(request, 503, "Not enough memory for response");
+        return;
+    }
+    
+    // 第二遍：用精确 reserve 构建最终 JSON
+    String json;
+    if (!json.reserve(totalJsonSize + 64)) {
+        LOG_ERRORF("[Periph] Reserve failed: %d bytes, heap=%d", totalJsonSize + 64, freeHeap);
+        HandlerUtils::sendJsonError(request, 503, "Memory allocation failed");
+        return;
+    }
+    
+    json += F("{\"success\":true,\"total\":");
+    json += String(total);
+    json += F(",\"page\":");
+    json += String(page);
+    json += F(",\"pageSize\":");
+    json += String(pageSize);
+    json += F(",\"data\":[");
+    
+    for (size_t i = 0; i < serializedItems.size(); i++) {
+        if (i > 0) json += ',';
+        json += serializedItems[i];
+    }
+    
+    json += F("]}");
+    
+    // 释放临时序列化数据
+    serializedItems.clear();
+    serializedItems.shrink_to_fit();
 
-        // 序列化单个外设到响应流
-        serializeJson(itemDoc, *response);
+    // 校验 JSON 完整性
+    if (json.length() < 20 || !json.endsWith("]}")) {
+        LOG_ERRORF("[Periph] JSON truncated! len=%d heap=%d", json.length(), ESP.getFreeHeap());
+        HandlerUtils::sendJsonError(request, 503, "Response truncated, low memory");
+        return;
     }
 
-    response->print("]}");
-    request->send(response);
+    request->send(200, "application/json", json);
 }
 
 void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* request) {

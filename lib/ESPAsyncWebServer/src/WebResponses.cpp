@@ -925,10 +925,11 @@ size_t AsyncResponseStream::write(const uint8_t *data, size_t len) {
     size_t needed = len - _content->room();
 #ifdef ESP32
     // Guard: cbuf::resize does new[] without null check; if allocation fails
-    // it memcpy's to nullptr and crashes. Only attempt resize if heap can
-    // satisfy the request with headroom.
+    // it memcpy's to nullptr and crashes. Check against FULL new buffer size
+    // (old + needed) with generous headroom.
     size_t maxBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-    if (maxBlock > needed + 1024) {
+    size_t totalNewSize = _content->size() + needed;
+    if (maxBlock > totalNewSize + 4096) {
       _content->resizeAdd(needed);
     }
 #else
