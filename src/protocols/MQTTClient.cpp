@@ -48,7 +48,7 @@ MQTTClient::MQTTClient()
       _reconnectPending(false), _reconnectRunning(false), _reconnectTaskHandle(nullptr) {
     _publishMutex = xSemaphoreCreateRecursiveMutex();
     _dataCommandQueue = xQueueCreate(4, sizeof(String*));
-    _reportQueue = xQueueCreate(4, sizeof(String*));
+    _reportQueue = xQueueCreate(8, sizeof(String*));
 }
 
 MQTTClient::~MQTTClient() {

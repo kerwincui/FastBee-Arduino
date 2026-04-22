@@ -562,6 +562,12 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                                            ok,
                                            ok ? "success" : "modbus_write_failed");
                     }
+                    // 控制成功后触发 mc: 事件，供其他规则监听
+                    if (ok && _manager) {
+                        String mcEventId = "mc:" + String(devIdx);
+                        String mcEventData = "{\"d\":" + String(devIdx) + ",\"c\":" + String(ch) + ",\"a\":\"" + String(act) + "\"}";
+                        _manager->triggerEventById(mcEventId, mcEventData);
+                    }
                 } else if (devType == "pwm") {
                     uint16_t regAddr = dev.pwmRegBase + ch;
                     auto res = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, val, true);
@@ -573,6 +579,12 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                         appendActionResult(*controlResults, "modbus:" + String(devIdx),
                                            String(ch) + ":" + String(val), ok,
                                            ok ? "success" : "modbus_write_failed");
+                    }
+                    // 控制成功后触发 mc: 事件
+                    if (ok && _manager) {
+                        String mcEventId = "mc:" + String(devIdx);
+                        String mcEventData = "{\"d\":" + String(devIdx) + ",\"c\":" + String(ch) + ",\"a\":\"pwm\",\"v\":" + String(val) + "}";
+                        _manager->triggerEventById(mcEventId, mcEventData);
                     }
                 } else if (devType == "pid") {
                     const char* param = cv["p"] | "P";
@@ -589,6 +601,40 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                         appendActionResult(*controlResults, "modbus:" + String(devIdx),
                                            String(ch) + ":" + String(val), ok,
                                            ok ? "success" : "modbus_write_failed");
+                    }
+                    // 控制成功后触发 mc: 事件
+                    if (ok && _manager) {
+                        String mcEventId = "mc:" + String(devIdx);
+                        String mcEventData = "{\"d\":" + String(devIdx) + ",\"a\":\"pid\",\"p\":\"" + String(param) + "\",\"v\":" + String(val) + "}";
+                        _manager->triggerEventById(mcEventId, mcEventData);
+                    }
+                } else if (devType == "motor") {
+                    // 电机控制：forward/reverse/stop
+                    const char* act = cv["a"] | "stop";
+                    uint8_t motorRegIdx = 2; // 默认停止寄存器
+                    if (strcmp(act, "forward") == 0) motorRegIdx = 0;
+                    else if (strcmp(act, "reverse") == 0) motorRegIdx = 1;
+                    else motorRegIdx = 2; // stop
+                    uint16_t regAddr = dev.motorRegs[motorRegIdx];
+                    uint16_t motorVal = cv["v"] | 1;
+                    bool ok = false;
+                    if (regAddr > 0) {
+                        auto res = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, motorVal, true);
+                        ok = (res.error == ONESHOT_SUCCESS);
+                    }
+                    anySuccess = anySuccess || ok;
+                    LOGGER.infof("[PeriphExec] Motor ctrl: slave=%d act=%s reg=%d val=%d ok=%d",
+                        dev.slaveAddress, act, regAddr, motorVal, ok);
+                    if (controlResults) {
+                        appendActionResult(*controlResults, "modbus:" + String(devIdx),
+                                           String(act), ok,
+                                           ok ? "success" : "modbus_write_failed");
+                    }
+                    // 控制成功后触发 mc: 事件
+                    if (ok && _manager) {
+                        String mcEventId = "mc:" + String(devIdx);
+                        String mcEventData = "{\"d\":" + String(devIdx) + ",\"a\":\"" + String(act) + "\"}";
+                        _manager->triggerEventById(mcEventId, mcEventData);
                     }
                 }
             }
@@ -850,6 +896,8 @@ MQTTClient* PeriphExecExecutor::getMqttClient() {
 void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>& results) {
     if (results.empty()) return;
 
+    LOGGER.infof("[PeriphExec] reportActionResults: %d action results to process", results.size());
+
     // 检查 Modbus 传输类型（0=JSON, 1=透传HEX）并获取 ModbusHandler 指针
     uint8_t modbusTransferType = 0;
     ModbusHandler* modbus = nullptr;
@@ -859,8 +907,8 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
         if (protMgr) {
             modbus = protMgr->getModbusHandler();
             if (modbus) {
-                ModbusConfig cfg = modbus->getConfig();
-                modbusTransferType = cfg.transferType;
+                ModbusConfig mcfg = modbus->getConfig();
+                modbusTransferType = mcfg.transferType;
             }
         }
     }
@@ -874,12 +922,15 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
     for (const auto& ar : results) {
         if (ar.targetPeriphId.isEmpty()) continue;
 
-        // 检查目标外设是否为 Modbus 子设备，且传输类型为透传 HEX
+        // 检查目标外设是否为 Modbus 子设备
         bool isModbusTarget = false;
         const PeripheralConfig* cfg = pm.getPeripheral(ar.targetPeriphId);
-        if (!cfg) continue;
-        if (cfg->isModbusPeripheral()) {
+        if (cfg && cfg->isModbusPeripheral()) {
             isModbusTarget = true;
+        } else if (!cfg) {
+            // 外设未在 PeripheralManager 中注册，仍使用原始 ID 上报，跳过 Modbus 映射
+            LOGGER.warningf("[PeriphExec] Report: peripheral '%s' not found in config, using raw ID",
+                            ar.targetPeriphId.c_str());
         }
 
         // 确定上报 ID 和 value
@@ -919,7 +970,10 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
         }
     }
 
-    if (arr.size() == 0) return;
+    if (arr.size() == 0) {
+        LOGGER.warning("[PeriphExec] Report: no valid results to report after filtering");
+        return;
+    }
 
     String reportData;
     serializeJson(doc, reportData);
@@ -931,7 +985,14 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
         LOGGER.infof("[PeriphExec] Reporting status: %s (%s)",
                      reportData.c_str(), ok ? "queued" : "queue_failed");
     } else {
-        LOGGER.warning("[PeriphExec] Reporting status: MQTT not connected, skip");
+        // MQTT 未连接，缓存上报数据等待重试
+        if (_manager) {
+            _manager->queuePendingReport(reportData);
+            LOGGER.warningf("[PeriphExec] Reporting status: MQTT not connected, queued for retry (pending=%d)",
+                             _manager->getPendingReportCount());
+        } else {
+            LOGGER.warning("[PeriphExec] Reporting status: MQTT not connected, report dropped (no manager)");
+        }
     }
 }
 

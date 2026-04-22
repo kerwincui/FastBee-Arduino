@@ -104,6 +104,12 @@ void PeriphExecScheduler::triggerEventById(const String& eventId, const String& 
         // 检查是否是外设执行规则事件
         if (eventId.startsWith("exec_")) {
             triggerPeriphExecEvent(eventId, eventData);
+        } else if (eventId.startsWith("mc:")) {
+            // Modbus 控制类子设备事件
+            if (!_manager) return;
+            if (!_manager->isInitialized()) return;
+            LOGGER.infof("[PeriphExec] Modbus control event triggered: %s (data=%s)", eventId.c_str(), eventData.c_str());
+            _manager->dispatchEventMatchedRules(eventId, eventData);
         } else {
             LOGGER.warningf("[PeriphExec] Unknown event ID: %s", eventId.c_str());
         }
@@ -504,7 +510,7 @@ String PeriphExecScheduler::getEventCategoriesJson() {
     JsonArray arr = doc.to<JsonArray>();
 
     // 定义事件分类
-    const char* categories[] = {"WiFi", "MQTT", "网络", "协议", "系统", "配网", "规则", "按键", "数据", "数据源", "外设执行"};
+    const char* categories[] = {"WiFi", "MQTT", "网络", "协议", "系统", "配网", "规则", "按键", "数据", "Modbus子设备", "外设执行"};
     const char* descriptions[] = {
         "WiFi连接状态变化事件",
         "MQTT连接状态变化事件",
@@ -515,7 +521,7 @@ String PeriphExecScheduler::getEventCategoriesJson() {
         "规则引擎事件",
         "按键输入事件",
         "协议数据收发事件",
-        "数据源条件触发事件",
+        "Modbus采集与控制子设备触发事件",
         "外设执行规则事件"
     };
 

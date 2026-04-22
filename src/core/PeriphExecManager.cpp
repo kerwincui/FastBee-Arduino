@@ -637,6 +637,8 @@ String PeriphExecManager::handleDataCommand(const String& message) {
 
 void PeriphExecManager::checkTimers() {
     if (_scheduler) _scheduler->checkTimers();
+    // 重试待上报数据（MQTT 恢复后自动发送缓存的报告）
+    retryPendingReports();
 }
 
 void PeriphExecManager::triggerEvent(EventType eventType, const String& eventData) {
@@ -667,6 +669,51 @@ void PeriphExecManager::setModbusRawSendCallback(std::function<String(const Stri
 
 void PeriphExecManager::checkButtonEvents() {
     if (_scheduler) _scheduler->checkButtonEvents();
+}
+
+// ========== 待上报数据缓存与重试 ==========
+
+void PeriphExecManager::queuePendingReport(const String& reportData) {
+    // 堆守卫：低堆时跳过缓存，避免 STL 分配导致 abort
+    if (ESP.getFreeHeap() < 10000) return;
+
+    if (_pendingReports.size() >= MAX_PENDING_REPORTS) {
+        _pendingReports.erase(_pendingReports.begin());  // 移除最旧的
+        LOGGER.warning("[PeriphExec] Pending report queue full, dropped oldest");
+    }
+    _pendingReports.push_back(reportData);
+}
+
+void PeriphExecManager::retryPendingReports() {
+    if (_pendingReports.empty()) return;
+
+    // 检查重试间隔
+    unsigned long now = millis();
+    if (_lastPendingReportRetry > 0 && (now - _lastPendingReportRetry) < PENDING_REPORT_RETRY_MS) return;
+
+    // 检查 MQTT 连接状态
+    MQTTClient* mqtt = nullptr;
+    auto* fw = FastBeeFramework::getInstance();
+    if (fw) {
+        auto* pm = fw->getProtocolManager();
+        if (pm) mqtt = pm->getMQTTClient();
+    }
+    if (!mqtt || !mqtt->getIsConnected()) return;
+
+    _lastPendingReportRetry = now;
+
+    // 取出所有待重试数据
+    std::vector<String> toRetry;
+    toRetry.swap(_pendingReports);
+
+    for (const auto& report : toRetry) {
+        bool ok = mqtt->queueReportData(report);
+        LOGGER.infof("[PeriphExec] Retry pending report: %s", ok ? "queued" : "failed");
+    }
+}
+
+size_t PeriphExecManager::getPendingReportCount() const {
+    return _pendingReports.size();
 }
 
 bool PeriphExecManager::tryReportDeviceData() {
@@ -1187,6 +1234,36 @@ void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const S
                 if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER)) continue;
                 if (trigger.eventId.isEmpty()) continue;
                 if (trigger.eventId != eventId) continue;
+
+                // Modbus 控制事件(mc:): 检查 compareValue 中的通道/动作是否匹配
+                if (eventId.startsWith("mc:") && !trigger.compareValue.isEmpty()) {
+                    bool ctrlMatched = false;
+                    JsonDocument trigDoc;
+                    if (!deserializeJson(trigDoc, trigger.compareValue) && trigDoc.is<JsonObject>()) {
+                        JsonArray trigCtrlArr = trigDoc["ctrl"].as<JsonArray>();
+                        if (trigCtrlArr && trigCtrlArr.size() > 0) {
+                            JsonObject trigCtrl = trigCtrlArr[0].as<JsonObject>();
+                            // 解析事件数据
+                            JsonDocument evDoc;
+                            if (!deserializeJson(evDoc, eventData) && evDoc.is<JsonObject>()) {
+                                JsonObject evObj = evDoc.as<JsonObject>();
+                                // 匹配通道和动作
+                                uint8_t trigCh = trigCtrl["c"] | 255;  // 255 表示不限制
+                                const char* trigAct = trigCtrl["a"] | "";
+                                uint8_t evCh = evObj["c"] | 0;
+                                const char* evAct = evObj["a"] | "";
+                                if ((trigCh == 255 || trigCh == evCh) &&
+                                    (strlen(trigAct) == 0 || strcmp(trigAct, evAct) == 0)) {
+                                    ctrlMatched = true;
+                                }
+                            }
+                        }
+                    } else {
+                        // compareValue 无法解析，仅匹配 eventId
+                        ctrlMatched = true;
+                    }
+                    if (!ctrlMatched) continue;
+                }
 
                 // 防重复触发：同一触发器最小间隔 1 秒
                 unsigned long now = millis();
@@ -1813,6 +1890,33 @@ String PeriphExecManager::getDynamicEventsJsonInternal() {
         obj["category"] = "外设执行";
         obj["type"] = static_cast<uint8_t>(EventType::EVENT_PERIPH_EXEC_COMPLETED);
         obj["isDynamic"] = true;
+    }
+
+    // 添加 Modbus 控制类子设备作为动态事件（mc:deviceIndex 格式）
+    auto* fw = FastBeeFramework::getInstance();
+    if (fw) {
+        auto* protMgr = fw->getProtocolManager();
+        if (protMgr) {
+            ModbusHandler* modbus = protMgr->getModbusHandler();
+            if (modbus && modbus->getMode() == MODBUS_MASTER) {
+                uint8_t devCount = modbus->getSubDeviceCount();
+                for (uint8_t i = 0; i < devCount; i++) {
+                    const ModbusSubDevice& dev = modbus->getSubDevice(i);
+                    if (!dev.enabled) continue;
+                    String devType = String(dev.deviceType);
+                    // 只添加控制类设备（非采集类）
+                    if (devType == "relay" || devType == "pwm" || devType == "pid" || devType == "motor") {
+                        JsonObject obj = arr.add<JsonObject>();
+                        obj["id"] = "mc:" + String(i);
+                        obj["name"] = String(dev.name);
+                        obj["category"] = "Modbus子设备";
+                        obj["deviceType"] = devType;
+                        obj["channelCount"] = dev.channelCount;
+                        obj["isDynamic"] = true;
+                    }
+                }
+            }
+        }
     }
 
     String result;

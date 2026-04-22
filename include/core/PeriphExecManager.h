@@ -132,6 +132,15 @@ public:
     // 检查是否已初始化
     bool isInitialized() const { return _rulesMutex != nullptr; }
 
+    // 缓存待上报数据（MQTT 未连接时由 Executor 调用）
+    void queuePendingReport(const String& reportData);
+
+    // 重试待上报数据（在 checkTimers 中调用，MQTT 恢复后自动重试）
+    void retryPendingReports();
+
+    // 获取待上报缓存数量
+    size_t getPendingReportCount() const;
+
     // 获取规则互斥量
     SemaphoreHandle_t getRulesMutex() const { return _rulesMutex; }
 
@@ -231,6 +240,12 @@ private:
 
     // ========== 异步执行上下文对象池 ==========
     AsyncExecContextPool _contextPool;          // 固定大小的上下文对象池
+
+    // ========== 待上报数据缓存（MQTT 未连接时缓存，恢复后重试） ==========
+    static const size_t MAX_PENDING_REPORTS = 5;           // 最大缓存条数
+    static const unsigned long PENDING_REPORT_RETRY_MS = 5000;  // 重试间隔 5秒
+    std::vector<String> _pendingReports;                    // 待上报数据缓存
+    unsigned long _lastPendingReportRetry = 0;              // 上次重试时间
 
     // FreeRTOS 任务入口函数（静态）
     static void asyncExecTaskFunc(void* pvParameters);
