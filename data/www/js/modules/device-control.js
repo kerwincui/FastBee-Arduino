@@ -40,6 +40,7 @@ _dcCoilPending:{},
 _dcBatchPending:false,
 _dcPwmStates:{},
 _dcPidValues:{},
+_dcDeviceOnline:{},
 _dcAutoRefreshTimers:{},
 _sseConnection:null,
 _deviceName:'FastBee Device',
@@ -347,6 +348,7 @@ input.select();
 loadDeviceControlPage:function (){
 console.log('[device-control] loadDeviceControlPage called');
 this._modbusDevices=[];
+this._dcDeviceOnline={};
 if(!this._eventsBound){
 this.setupDeviceControlEvents();
 }
@@ -1400,6 +1402,9 @@ var parsedInfo=this._parseSensorId(sensorId);
 if(parsedInfo){
 var devIdx=parsedInfo.devIdx;
 if(devIdx>=0){
+if(self._dcDeviceOnline&&self._dcDeviceOnline[devIdx]===false){
+self._dcUpdatePanelOnlineState(devIdx,true);
+}
 var deviceType=parsedInfo.type;
 if(deviceType==='relay'){
 if(this._updateCoilUIFromSSE(devIdx,parsedInfo.channel,value)){
@@ -1512,12 +1517,16 @@ coilBase:p.coilBase,mode:p.relayMode
 if(res&&res.success&&res.data&&res.data.states){
 self._dcCoilStates[devIdx]=res.data.states;
 self._dcUpdateAllCoilUI(devIdx);
+self._dcUpdatePanelOnlineState(devIdx,true);
+}else{
+self._dcUpdatePanelOnlineState(devIdx,false);
 }
 }).catch(function (){
 if(!self._dcCoilStates[devIdx]){
 self._dcCoilStates[devIdx]=new Array(p.channelCount).fill(false);
 self._dcRerenderCoilGrid(devIdx);
 }
+self._dcUpdatePanelOnlineState(devIdx,false);
 });
 },
 _dcRerenderCoilGrid:function (devIdx){
@@ -1526,6 +1535,25 @@ if(!grid)return ;
 var p=this._dcGetCoilParams(devIdx);
 var states=this._dcCoilStates[devIdx]||[];
 grid.outerHTML=this._renderDcCoilGrid(devIdx,p.channelCount,states,p.ncMode);
+},
+_dcUpdatePanelOnlineState:function (devIdx,online){
+this._dcDeviceOnline[devIdx]=online;
+var panel=document.querySelector('.dc-modbus-device-panel[data-dev-idx="'+devIdx+'"]');
+if(!panel)return ;
+if(online){
+panel.classList.remove('dc-offline');
+var badge=panel.querySelector('.dc-offline-badge');
+if(badge)badge.remove();
+}else{
+panel.classList.add('dc-offline');
+var header=panel.querySelector('.dc-card-header');
+if(header&&!header.querySelector('.dc-offline-badge')){
+var span=document.createElement('span');
+span.className='dc-offline-badge';
+span.textContent=this._t('device-control-offline')||'\u79bb\u7ebf';
+header.appendChild(span);
+}
+}
 },
 _dcUpdateSingleCoilUI:function (devIdx,ch){
 var dev=this._modbusDevices[devIdx];
@@ -1688,12 +1716,16 @@ functionCode:3
 if(res&&res.success&&res.data&&res.data.values){
 self._dcPwmStates[devIdx]=res.data.values;
 self._dcRerenderPwmGrid(devIdx);
+self._dcUpdatePanelOnlineState(devIdx,true);
+}else{
+self._dcUpdatePanelOnlineState(devIdx,false);
 }
 }).catch(function (){
 if(!self._dcPwmStates[devIdx]){
 self._dcPwmStates[devIdx]=new Array(p.channelCount).fill(0);
 self._dcRerenderPwmGrid(devIdx);
 }
+self._dcUpdatePanelOnlineState(devIdx,false);
 });
 },
 _dcRerenderPwmGrid:function (devIdx){
@@ -1813,12 +1845,16 @@ out:vals[p.outAddr-minAddr],p:vals[p.pAddr-minAddr],
 i:vals[p.iAddr-minAddr],d:vals[p.dAddr-minAddr]
 };
 self._dcRerenderPidGrid(devIdx);
+self._dcUpdatePanelOnlineState(devIdx,true);
+}else{
+self._dcUpdatePanelOnlineState(devIdx,false);
 }
 }).catch(function (){
 if(!self._dcPidValues[devIdx]){
 self._dcPidValues[devIdx]={pv:0,sv:0,out:0,p:0,i:0,d:0};
 self._dcRerenderPidGrid(devIdx);
 }
+self._dcUpdatePanelOnlineState(devIdx,false);
 });
 },
 _dcRerenderPidGrid:function (devIdx){
@@ -1860,8 +1896,13 @@ slaveAddress:p.slaveAddress,action:'readStatus'
 }).then(function (res){
 if(res&&res.success&&res.data){
 self._dcUpdateMotorRunUI(devIdx,res.data,p.motorDecimals);
+self._dcUpdatePanelOnlineState(devIdx,true);
+}else{
+self._dcUpdatePanelOnlineState(devIdx,false);
 }
-}).catch(function (){});
+}).catch(function (){
+self._dcUpdatePanelOnlineState(devIdx,false);
+});
 },
 _dcUpdateMotorRunUI:function (devIdx,data,decimals){
 var sf=Math.pow(10,decimals||0);

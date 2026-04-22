@@ -44,7 +44,7 @@ static double jsonVariantToDoubleSafe(JsonVariantConst v) {
 MQTTClient::MQTTClient()
     : isConnected(false), stopped(false), lastReconnectAttempt(0),
       lastConnectedTime(0), lastErrorCode(0), reconnectCount(0),
-      reconnectInterval(5000), lastLoopTime(0),
+      reconnectInterval(5000), consecutiveTimeouts(0), lastLoopTime(0),
       _reconnectPending(false), _reconnectRunning(false), _reconnectTaskHandle(nullptr) {
     _publishMutex = xSemaphoreCreateRecursiveMutex();
     _dataCommandQueue = xQueueCreate(4, sizeof(String*));
@@ -310,6 +310,7 @@ void MQTTClient::disconnect() {
     wifiClient.stop();
     isConnected = false;
     reconnectInterval = 5000;
+    consecutiveTimeouts = 0;
     LOG_INFO("MQTT: Disconnected");
 }
 
@@ -687,6 +688,7 @@ void MQTTClient::handle() {
         if (isConnected) {
             isConnected = false;
             reconnectInterval = 5000;  // 刚断开时重置重连间隔
+            consecutiveTimeouts = 0;
             // 立即关闭底层 socket，避免后续 write() 对死 socket 阻塞 10s+
             wifiClient.stop();
             LOG_WARNING("MQTT: Connection lost");
@@ -1077,6 +1079,8 @@ bool MQTTClient::reconnect() {
         // 连接成功后发起 NTP 时间同步
         publishNtpSync();
     } else {
+        // 连接失败时立即关闭 socket，避免残留 TCP 连接占用 lwip 缓冲区（2-4KB）
+        wifiClient.stop();
         lastErrorCode = mqttClient.state();
         reconnectCount++;
         char buf2[48];
@@ -1108,14 +1112,27 @@ void MQTTClient::doReconnect() {
     // 重连次数保护：连续失败超过 20 次后拉长间隔至 5 分钟，降低内存压力
     constexpr uint32_t MAX_FAST_RETRIES = 20;
     constexpr uint32_t SLOW_RETRY_INTERVAL = 300000;  // 5分钟
+    // 连续 3 次 TCP/DNS 超时即视为网络不可用，立即切换慢模式
+    constexpr uint8_t  DNS_FAIL_THRESHOLD = 3;
     
-    if (reconnectCount > MAX_FAST_RETRIES) {
+    bool slowMode = (reconnectCount > MAX_FAST_RETRIES) ||
+                    (consecutiveTimeouts >= DNS_FAIL_THRESHOLD);
+    if (slowMode) {
         reconnectInterval = SLOW_RETRY_INTERVAL;
-        char buf[96];
-        snprintf(buf, sizeof(buf), "[MQTT] Reconnect count=%lu exceeds %lu, slowing to %lus interval",
-                 (unsigned long)reconnectCount, (unsigned long)MAX_FAST_RETRIES,
-                 (unsigned long)(SLOW_RETRY_INTERVAL / 1000));
-        LOG_WARNING(buf);
+        if (reconnectCount > MAX_FAST_RETRIES) {
+            char buf[96];
+            snprintf(buf, sizeof(buf), "[MQTT] Reconnect count=%lu exceeds %lu, slow mode (%lus)",
+                     (unsigned long)reconnectCount, (unsigned long)MAX_FAST_RETRIES,
+                     (unsigned long)(SLOW_RETRY_INTERVAL / 1000));
+            LOG_WARNING(buf);
+        }
+    }
+
+    // 内存保护：堆内存严重不足时跳过重连，避免加剧内存压力
+    if (ESP.getFreeHeap() < 30720) {
+        LOG_WARNING("[MQTT] Heap too low for reconnect, skipping");
+        _reconnectRunning = false;
+        return;
     }
 
     LOG_INFO("[MQTT] Background reconnect starting...");
@@ -1124,12 +1141,30 @@ void MQTTClient::doReconnect() {
 
     if (ok) {
         reconnectInterval = 5000;  // 连接成功，重置间隔
+        consecutiveTimeouts = 0;
         LOG_INFO("[MQTT] Background reconnect successful");
     } else {
-        // 指数退避：5s -> 10s -> 20s -> 30s（上限）
-        reconnectInterval = min(reconnectInterval * 2, (uint32_t)30000);
-        char buf[64];
-        snprintf(buf, sizeof(buf), "[MQTT] Background reconnect failed, next retry in %lus", reconnectInterval / 1000);
+        // 检测连续 TCP/DNS 连接失败（rc=-2: MQTT_CONNECT_FAILED）
+        // DNS 解析失败时 WiFiClient::connect() 返回 0，PubSubClient 报告 rc=-2
+        // 连续 3 次说明网络层不通（如 WiFi 僵尸状态），立即进入慢模式
+        if (lastErrorCode == -2) {
+            consecutiveTimeouts++;
+            if (consecutiveTimeouts == DNS_FAIL_THRESHOLD) {
+                reconnectInterval = SLOW_RETRY_INTERVAL;
+                LOG_WARNING("[MQTT] 3 consecutive connect failures (DNS/network down), slow mode activated");
+            }
+        } else {
+            consecutiveTimeouts = 0;
+        }
+
+        if (!slowMode && consecutiveTimeouts < DNS_FAIL_THRESHOLD) {
+            // 快速重试阶段：指数退避 5s -> 10s -> 20s -> 30s（上限）
+            reconnectInterval = min(reconnectInterval * 2, (uint32_t)30000);
+        }
+        // slowMode 时保持 SLOW_RETRY_INTERVAL，不再被覆盖
+        char buf[80];
+        snprintf(buf, sizeof(buf), "[MQTT] Background reconnect failed, next retry in %lus",
+                 reconnectInterval / 1000);
         LOG_INFO(buf);
     }
 

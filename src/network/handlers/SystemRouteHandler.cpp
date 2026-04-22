@@ -805,6 +805,9 @@ void SystemRouteHandler::handleGetLogContent(AsyncWebServerRequest* request) {
         return;
     }
 
+    // 早期内存检查 — 此接口峰值消耗较大，预留 30KB
+    if (HandlerUtils::checkLowMemory(request, 30720)) return;
+
     String linesParam = ctx->getParamValue(request, "lines", "100");
     int maxLines = linesParam.toInt();
     if (maxLines <= 0) maxLines = 100;
@@ -834,7 +837,26 @@ void SystemRouteHandler::handleGetLogContent(AsyncWebServerRequest* request) {
     }
 
     size_t fileSize = file.size();
-    size_t maxSize = 8 * 1024;
+
+    // 根据可用堆内存动态调整读取量，防止内存不足
+    // JSON 转义后体积约为原文 1.2~1.5 倍，加上 json String 和 content 同时存在
+    // 所以需要预留约 3 倍 maxSize 的堆空间
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t maxBlock = ESP.getMaxAllocHeap();
+    size_t maxSize;
+    if (freeHeap < 40960 || maxBlock < 8192) {  // <40KB 或最大连续块<8KB: 返回精简响应
+        file.close();
+        request->send(200, "application/json",
+            F("{\"success\":true,\"data\":{\"content\":\"[Low memory - log temporarily unavailable]\",\"size\":0,\"lines\":0,\"truncated\":true}}"));
+        return;
+    } else if (freeHeap < 61440) {  // <60KB: 最小化读取
+        maxSize = 1536;
+    } else if (freeHeap < 81920) {  // <80KB: 减量读取
+        maxSize = 3 * 1024;
+    } else {
+        maxSize = 6 * 1024;  // 最大 6KB（转义后约 8~9KB）
+    }
+
     size_t startPos = (fileSize > maxSize) ? (fileSize - maxSize) : 0;
 
     file.seek(startPos);
@@ -854,19 +876,47 @@ void SystemRouteHandler::handleGetLogContent(AsyncWebServerRequest* request) {
     }
     int totalLines = lineCount;
 
-    String result = content.substring(cutPos);
-    content = "";
+    // 原地裁剪，避免创建额外 String 副本
+    if (cutPos > 0) {
+        content = content.substring(cutPos);
+    }
 
-    JsonDocument doc;
-    doc["success"] = true;
-    doc["data"]["content"] = result;
-    doc["data"]["size"] = fileSize;
-    doc["data"]["lines"] = totalLines;
-    doc["data"]["truncated"] = (startPos > 0);
+    // 直接构建 JSON String 响应，避免 AsyncResponseStream/cbuf 动态扩容导致 OOM 崩溃
+    // （cbuf::resize 在 new[] 失败时会 memcpy 到 nullptr → StoreProhibited）
+    String json;
+    json.reserve(content.length() + 128);  // 预分配，减少碎片
+    json += F("{\"success\":true,\"data\":{\"content\":\"");
 
-    result = "";
+    // 内联 JSON 转义，直接追加到 json String（避免逐字符写 stream）
+    for (size_t i = 0; i < content.length(); i++) {
+        char c = content[i];
+        switch (c) {
+            case '"':  json += F("\\\""); break;
+            case '\\': json += F("\\\\"); break;
+            case '\n': json += F("\\n"); break;
+            case '\r': json += F("\\r"); break;
+            case '\t': json += F("\\t"); break;
+            default:
+                if ((uint8_t)c < 0x20) {
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", (uint8_t)c);
+                    json += buf;
+                } else {
+                    json += c;
+                }
+        }
+    }
+    content = "";  // 尽早释放原始内容
 
-    HandlerUtils::sendJsonStream(request, doc);
+    json += F("\",\"size\":");
+    json += String((unsigned)fileSize);
+    json += F(",\"lines\":");
+    json += String(totalLines);
+    json += F(",\"truncated\":");
+    json += (startPos > 0) ? F("true") : F("false");
+    json += F("}}");
+
+    request->send(200, "application/json", json);
 }
 
 void SystemRouteHandler::handleDeleteLog(AsyncWebServerRequest* request) {

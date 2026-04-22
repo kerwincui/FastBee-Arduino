@@ -152,6 +152,7 @@ private:
     int  lastErrorCode;               // 上次错误码
     uint32_t reconnectCount;          // 重连次数
     uint32_t reconnectInterval;       // 当前重连间隔（指数退避，毫秒）
+    uint8_t  consecutiveTimeouts;     // 连续超时次数（用于检测 DNS 故障）
     unsigned long lastLoopTime;       // 上次loop()调用的时间（用于检测连接健康）
     
     // 实时监测状态

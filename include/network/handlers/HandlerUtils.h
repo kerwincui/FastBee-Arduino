@@ -34,12 +34,37 @@ inline void sendJsonError(AsyncWebServerRequest* request, int code, const char* 
 }
 
 // 内存检查 - 返回 true 表示内存不足（已发送 503 响应）
+// 同时检查总空闲堆和最大连续块（检测碎片化）
 inline bool checkLowMemory(AsyncWebServerRequest* request, size_t threshold = 20480) {
-    if (ESP.getFreeHeap() < threshold) {
+    if (ESP.getFreeHeap() < threshold || ESP.getMaxAllocHeap() < 8192) {
         sendJsonError(request, 503, "Low memory");
         return true;
     }
     return false;
+}
+
+// 将字符串以 JSON 转义格式写入流（含引号），避免中间 String/JsonDocument 拷贝
+inline void writeJsonEscapedString(AsyncResponseStream* response, const String& str) {
+    response->print('"');
+    for (size_t i = 0; i < str.length(); i++) {
+        char c = str[i];
+        switch (c) {
+            case '"':  response->print("\\\""); break;
+            case '\\': response->print("\\\\"); break;
+            case '\n': response->print("\\n"); break;
+            case '\r': response->print("\\r"); break;
+            case '\t': response->print("\\t"); break;
+            default:
+                if ((uint8_t)c < 0x20) {
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", (uint8_t)c);
+                    response->print(buf);
+                } else {
+                    response->write((uint8_t)c);
+                }
+        }
+    }
+    response->print('"');
 }
 
 // 流式发送 JSON 文档（避免一次性 serializeJson 到 String 占用大量内存）

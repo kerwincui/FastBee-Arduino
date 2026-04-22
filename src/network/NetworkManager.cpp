@@ -10,6 +10,7 @@
 #include "utils/NetworkUtils.h"
 #include "core/PeriphExecManager.h"
 #include <WiFi.h>
+#include <WiFiUdp.h>
 #include <ESPmDNS.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
@@ -354,6 +355,53 @@ void NetworkManager::update() {
             dnsManager->checkMDNSHealth();
         }
         lastMdnsUpdate = currentTime;
+    }
+
+    // WiFi 僵尸连接检测（每 60 秒）
+    // 当 WiFi.status() 报告 WL_CONNECTED 但 lwIP 网络栈实际已中断时
+    // （如 ARP 不可达、UDP 发送失败），强制重连 WiFi
+    static unsigned long lastZombieCheck = 0;
+    static uint8_t zombieFailCount = 0;
+
+    if (isConnected && currentTime - lastZombieCheck >= 60000) {
+        lastZombieCheck = currentTime;
+
+        IPAddress gw = WiFi.gatewayIP();
+        if (gw != IPAddress(0, 0, 0, 0)) {
+            // 向网关发送一个 UDP 包测试网络栈是否正常
+            // endPacket() 内部调用 lwip_sendto()，若网络栈异常会立即返回 0
+            WiFiUDP testUdp;
+            bool sendOk = false;
+            if (testUdp.beginPacket(gw, 53) == 1) {
+                testUdp.write((uint8_t)0);
+                sendOk = (testUdp.endPacket() == 1);
+            }
+            testUdp.stop();
+
+            if (sendOk) {
+                if (zombieFailCount > 0) {
+                    LOG_INFO("NetworkManager: Gateway reachable, zombie check cleared");
+                }
+                zombieFailCount = 0;
+            } else {
+                zombieFailCount++;
+                char buf[80];
+                snprintf(buf, sizeof(buf),
+                         "NetworkManager: UDP to gateway failed (%d/3)", zombieFailCount);
+                LOG_WARNING(buf);
+            }
+        } else {
+            zombieFailCount++;
+        }
+
+        if (zombieFailCount >= 3) {
+            LOG_WARNING("NetworkManager: WiFi zombie detected! Forcing reconnect...");
+            zombieFailCount = 0;
+            wasConnected = false;          // 让下次 update() 走"重新连接"分支
+            WiFi.disconnect(false);        // 断开 STA（保留 AP）
+            delay(200);
+            wifiManager->connectToWiFi();  // 重新连接 WiFi
+        }
     }
     
     // 清理冲突缓存（每小时一次）

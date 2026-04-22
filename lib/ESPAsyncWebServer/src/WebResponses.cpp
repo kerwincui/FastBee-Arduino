@@ -8,6 +8,9 @@
 #include <algorithm>
 #include <memory>
 #include <utility>
+#ifdef ESP32
+#include <esp_heap_caps.h>
+#endif
 
 #ifndef CONFIG_LWIP_TCP_WND_DEFAULT
 #ifdef TCP_WND  // ESP8266
@@ -920,7 +923,17 @@ size_t AsyncResponseStream::write(const uint8_t *data, size_t len) {
   }
   if (len > _content->room()) {
     size_t needed = len - _content->room();
+#ifdef ESP32
+    // Guard: cbuf::resize does new[] without null check; if allocation fails
+    // it memcpy's to nullptr and crashes. Only attempt resize if heap can
+    // satisfy the request with headroom.
+    size_t maxBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    if (maxBlock > needed + 1024) {
+      _content->resizeAdd(needed);
+    }
+#else
     _content->resizeAdd(needed);
+#endif
     // log a warning if allocation failed, but do not return: keep writing the bytes we can
     // with _content->write: if len is more than the available size in the buffer, only
     // the available size will be written

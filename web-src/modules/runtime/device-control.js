@@ -52,6 +52,7 @@
         _dcBatchPending: false,
         _dcPwmStates: {},
         _dcPidValues: {},
+        _dcDeviceOnline: {},
         _dcAutoRefreshTimers: {},
         _sseConnection: null,
         _deviceName: 'FastBee Device',
@@ -413,6 +414,7 @@
 
             // 每次进入页面时清空旧缓存，确保从 API 获取最新配置
             this._modbusDevices = [];
+            this._dcDeviceOnline = {};
 
             // 确保事件绑定
             if (!this._eventsBound) {
@@ -1724,6 +1726,10 @@
                 if (parsedInfo) {
                     var devIdx = parsedInfo.devIdx;
                     if (devIdx >= 0) {
+                        // SSE 收到数据说明设备在线，自动恢复离线状态
+                        if (self._dcDeviceOnline && self._dcDeviceOnline[devIdx] === false) {
+                            self._dcUpdatePanelOnlineState(devIdx, true);
+                        }
                         var deviceType = parsedInfo.type;
                         if (deviceType === 'relay') {
                             // 继电器/线圈数据
@@ -1853,6 +1859,9 @@
                 if (res && res.success && res.data && res.data.states) {
                     self._dcCoilStates[devIdx] = res.data.states;
                     self._dcUpdateAllCoilUI(devIdx);
+                    self._dcUpdatePanelOnlineState(devIdx, true);
+                } else {
+                    self._dcUpdatePanelOnlineState(devIdx, false);
                 }
             }).catch(function() {
                 // 设备未连接或读取失败，显示默认状态（全部OFF）
@@ -1860,6 +1869,7 @@
                     self._dcCoilStates[devIdx] = new Array(p.channelCount).fill(false);
                     self._dcRerenderCoilGrid(devIdx);
                 }
+                self._dcUpdatePanelOnlineState(devIdx, false);
             });
         },
 
@@ -1869,6 +1879,31 @@
             var p = this._dcGetCoilParams(devIdx);
             var states = this._dcCoilStates[devIdx] || [];
             grid.outerHTML = this._renderDcCoilGrid(devIdx, p.channelCount, states, p.ncMode);
+        },
+
+        /**
+         * 更新 Modbus 设备面板的在线/离线状态
+         * @param {number} devIdx - 设备索引
+         * @param {boolean} online - 是否在线
+         */
+        _dcUpdatePanelOnlineState: function(devIdx, online) {
+            this._dcDeviceOnline[devIdx] = online;
+            var panel = document.querySelector('.dc-modbus-device-panel[data-dev-idx="' + devIdx + '"]');
+            if (!panel) return;
+            if (online) {
+                panel.classList.remove('dc-offline');
+                var badge = panel.querySelector('.dc-offline-badge');
+                if (badge) badge.remove();
+            } else {
+                panel.classList.add('dc-offline');
+                var header = panel.querySelector('.dc-card-header');
+                if (header && !header.querySelector('.dc-offline-badge')) {
+                    var span = document.createElement('span');
+                    span.className = 'dc-offline-badge';
+                    span.textContent = this._t('device-control-offline') || '\u79bb\u7ebf';
+                    header.appendChild(span);
+                }
+            }
         },
 
         // 单通道增量更新（仅修改 classList + textContent，不重建 DOM）
@@ -2056,6 +2091,9 @@
                 if (res && res.success && res.data && res.data.values) {
                     self._dcPwmStates[devIdx] = res.data.values;
                     self._dcRerenderPwmGrid(devIdx);
+                    self._dcUpdatePanelOnlineState(devIdx, true);
+                } else {
+                    self._dcUpdatePanelOnlineState(devIdx, false);
                 }
             }).catch(function() {
                 // 设备未连接或读取失败，显示默认值（全0）
@@ -2063,6 +2101,7 @@
                     self._dcPwmStates[devIdx] = new Array(p.channelCount).fill(0);
                     self._dcRerenderPwmGrid(devIdx);
                 }
+                self._dcUpdatePanelOnlineState(devIdx, false);
             });
         },
 
@@ -2191,6 +2230,9 @@
                         i: vals[p.iAddr - minAddr], d: vals[p.dAddr - minAddr]
                     };
                     self._dcRerenderPidGrid(devIdx);
+                    self._dcUpdatePanelOnlineState(devIdx, true);
+                } else {
+                    self._dcUpdatePanelOnlineState(devIdx, false);
                 }
             }).catch(function() {
                 // 设备未连接或读取失败，显示默认值（全0）
@@ -2198,6 +2240,7 @@
                     self._dcPidValues[devIdx] = { pv: 0, sv: 0, out: 0, p: 0, i: 0, d: 0 };
                     self._dcRerenderPidGrid(devIdx);
                 }
+                self._dcUpdatePanelOnlineState(devIdx, false);
             });
         },
 
@@ -2243,8 +2286,13 @@
             }).then(function(res) {
                 if (res && res.success && res.data) {
                     self._dcUpdateMotorRunUI(devIdx, res.data, p.motorDecimals);
+                    self._dcUpdatePanelOnlineState(devIdx, true);
+                } else {
+                    self._dcUpdatePanelOnlineState(devIdx, false);
                 }
-            }).catch(function() {});
+            }).catch(function() {
+                self._dcUpdatePanelOnlineState(devIdx, false);
+            });
         },
         _dcUpdateMotorRunUI: function(devIdx, data, decimals) {
             var sf = Math.pow(10, decimals || 0);
