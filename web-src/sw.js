@@ -20,6 +20,9 @@ var PRECACHE_URLS = [
     '/js/modules/periph-exec.js',
     '/js/modules/device-control.js',
     '/js/modules/peripherals.js',
+    '/js/modules/dashboard.js',
+    '/js/modules/device-config.js',
+    '/js/modules/network.js',
     '/js/modules/admin-bundle.js',
     // Page HTML
     '/pages/dashboard.html',

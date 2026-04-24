@@ -98,7 +98,6 @@ struct WiFiConfig {
     // 域名配置
     String customDomain = "fastbee";
     bool enableMDNS = true;
-    bool enableDNS = true;    // AP 模式下需要 DNS 提供 captive portal
 };
 
 /**

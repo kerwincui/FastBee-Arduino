@@ -221,8 +221,6 @@ public:
     bool configureDHCP();
     bool startMDNS();
     void stopMDNS();
-    bool startDNSServer();
-    void stopDNSServer();
     void updateStatusInfo();
 
 private:

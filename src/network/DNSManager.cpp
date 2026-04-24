@@ -9,6 +9,7 @@
 #include "systems/LoggerSystem.h"
 #include <WiFi.h>
 #include <WiFiUdp.h>
+// DNS服务器已移除，仅保留mDNS功能
 
 /**
  * @brief 探测网络上是否已有指定 hostname 的 mDNS 设备
@@ -124,13 +125,11 @@ DNSManager::DNSManager() {
 
 DNSManager::~DNSManager() {
     stopMDNS();
-    stopDNSServer();
 }
 
 bool DNSManager::initialize() {
     LOG_INFO("DNSManager: Initializing...");
     mdnsStarted = false;
-    dnsServerStarted = false;
     LOG_INFO("DNSManager: Initialized successfully");
     return true;
 }
@@ -243,42 +242,10 @@ void DNSManager::stopMDNS() {
     }
 }
 
-bool DNSManager::startDNSServer(const IPAddress& apIP) {
-    if (dnsServerStarted) {
-        return true;
-    }
 
-    dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
-    if (!dnsServer.start(53, "*", apIP)) {
-        LOG_ERROR("DNSManager: Failed to start DNS server");
-        return false;
-    }
-
-    dnsServerStarted = true;
-    LOG_INFO("DNSManager: DNS server started");
-    return true;
-}
-
-void DNSManager::stopDNSServer() {
-    if (dnsServerStarted) {
-        dnsServer.stop();
-        dnsServerStarted = false;
-        LOG_INFO("DNSManager: DNS server stopped");
-    }
-}
-
-void DNSManager::processDNSRequests() {
-    if (dnsServerStarted) {
-        dnsServer.processNextRequest();
-    }
-}
 
 bool DNSManager::isMDNSStarted() const {
     return mdnsStarted;
-}
-
-bool DNSManager::isDNSServerStarted() const {
-    return dnsServerStarted;
 }
 
 void DNSManager::setCustomDomain(const String& domain) {
@@ -293,13 +260,6 @@ void DNSManager::setMDNSEnabled(bool enabled) {
     mdnsEnabled = enabled;
     if (!enabled && mdnsStarted) {
         stopMDNS();
-    }
-}
-
-void DNSManager::setDNSEnabled(bool enabled) {
-    dnsEnabled = enabled;
-    if (!enabled && dnsServerStarted) {
-        stopDNSServer();
     }
 }
 

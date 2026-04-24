@@ -9,22 +9,9 @@
 #include "core/PeripheralManager.h"
 #include <WiFi.h>
 
-// 静态 JsonDocument 用于高频 JSON 解析，避免频繁堆内存分配
-// 注意：这两个方法可能被不同任务调用（MQTT 回调任务和主循环任务），需要互斥锁保护
-static JsonDocument g_mqttDoc;
-static JsonDocument g_pollDoc;
-static SemaphoreHandle_t g_mqttDocMutex = nullptr;
-static SemaphoreHandle_t g_pollDocMutex = nullptr;
-
-// 互斥锁初始化辅助函数
-static void initDocMutexes() {
-    if (g_mqttDocMutex == nullptr) {
-        g_mqttDocMutex = xSemaphoreCreateMutex();
-    }
-    if (g_pollDocMutex == nullptr) {
-        g_pollDocMutex = xSemaphoreCreateMutex();
-    }
-}
+// 注意：不再使用静态 JsonDocument，因为 ArduinoJson v7 的 JsonDocument
+// 内存池只增不减（clear() 不释放内存），长时间运行会导致堆碎片化。
+// 改为每次使用局部 JsonDocument，用完即销毁释放内存。
 
 // 协议连接状态标志位
 #define PROTOCOL_MQTT_CONNECTED    (1 << 0)
@@ -131,48 +118,18 @@ void PeriphExecScheduler::triggerPeriphExecEvent(const String& ruleId, const Str
 void PeriphExecScheduler::handleDataEvent(const String& source, const String& data, DataSourceType sourceType) {
     if (!_manager) return;
 
-    // 初始化互斥锁（首次调用时）
-    initDocMutexes();
+    // 使用局部 JsonDocument 解析 JSON 数组: [{"id":"temperature","value":"27.43"}, ...]
+    // 局部变量用完即销毁，避免静态 JsonDocument 内存池只增不减导致堆碎片化
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, data);
+    if (err || !doc.is<JsonArray>()) return;
 
-    // 根据数据源类型选择静态资源和互斥锁（保持原有的并发安全性）
-    JsonDocument* doc;
-    SemaphoreHandle_t mutex;
-
-    if (sourceType == DataSourceType::MQTT) {
-        doc = &g_mqttDoc;
-        mutex = g_mqttDocMutex;
-    } else {
-        doc = &g_pollDoc;
-        mutex = g_pollDocMutex;
-    }
-
-    // 解析 JSON 数组: [{"id":"temperature","value":"27.43"}, ...]
-    // 使用静态 JsonDocument 避免频繁堆内存分配
-    JsonArray arr;
-    if (xSemaphoreTake(mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        doc->clear();  // 清除上次数据，复用内存
-        DeserializationError err = deserializeJson(*doc, data);
-        if (!err && doc->is<JsonArray>()) {
-            arr = doc->as<JsonArray>();
-        }
-        xSemaphoreGive(mutex);
-    } else {
-        // 获取锁超时，使用临时 JsonDocument 作为降级方案
-        JsonDocument tempDoc;
-        DeserializationError err = deserializeJson(tempDoc, data);
-        if (!err && tempDoc.is<JsonArray>()) {
-            arr = tempDoc.as<JsonArray>();
-        }
-    }
-
-    if (arr.isNull()) return;
+    JsonArray arr = doc.as<JsonArray>();
 
     // 根据数据源类型调用对应的处理方法
     if (sourceType == DataSourceType::MQTT) {
-        // 通过 manager 处理 MQTT 消息匹配
         _manager->processMqttMessageMatch(arr);
     } else {
-        // 通过 manager 处理轮询数据匹配
         _manager->processPollDataMatch(arr, source);
     }
 }
@@ -545,18 +502,17 @@ bool PeriphExecScheduler::evaluateCondition(const String& value, uint8_t op, con
 
 String PeriphExecScheduler::collectPeripheralData() {
     PeripheralManager& pm = PeripheralManager::getInstance();
-    std::vector<PeripheralConfig> allPeriphs = pm.getAllPeripherals();
 
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
 
-    for (const auto& config : allPeriphs) {
+    pm.forEachPeripheral([&](const PeripheralConfig& config) {
         // 只收集已启用的外设
-        if (!config.enabled) continue;
+        if (!config.enabled) return;
 
         // 只收集 GPIO 类型的外设状态
         int typeVal = static_cast<int>(config.type);
-        if (typeVal < 11 || typeVal > 26) continue;  // 跳过非GPIO/ADC/DAC类型
+        if (typeVal < 11 || typeVal > 26) return;  // 跳过非GPIO/ADC/DAC类型
 
         JsonObject obj = arr.add<JsonObject>();
         obj["id"] = config.id;
@@ -583,7 +539,7 @@ String PeriphExecScheduler::collectPeripheralData() {
             uint16_t analog = pm.readAnalog(config.id);
             obj["value"] = String(analog);
         }
-    }
+    });
 
     String result;
     serializeJson(doc, result);
@@ -625,14 +581,11 @@ bool PeriphExecScheduler::checkNetworkAndProtocolStatus(uint8_t& connectedProtoc
         hasConnectedProtocol = true;
     }
 
-    // 检查 Modbus 状态
+    // 检查 Modbus 状态（使用 bool 方法替代字符串分配）
     ModbusHandler* modbus = protocolMgr->getModbusHandler();
-    if (modbus) {
-        String modbusStatus = modbus->getStatus();
-        if (modbusStatus.indexOf("running") >= 0 || modbusStatus.indexOf("initialized") >= 0) {
-            connectedProtocols |= PROTOCOL_MODBUS_CONNECTED;
-            hasConnectedProtocol = true;
-        }
+    if (modbus && modbus->isRunning()) {
+        connectedProtocols |= PROTOCOL_MODBUS_CONNECTED;
+        hasConnectedProtocol = true;
     }
 
     // 检查 HTTP 状态（通过状态字符串判断）

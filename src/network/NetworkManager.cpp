@@ -230,8 +230,7 @@ bool NetworkManager::initialize() {
 void NetworkManager::disconnect() {
     LOG_INFO("NetworkManager: Disconnecting all network connections...");
     
-    // 停止DNS服务器和mDNS
-    dnsManager->stopDNSServer();
+    // 停止mDNS
     dnsManager->stopMDNS();
     
     // 停止AP模式和WiFi连接
@@ -311,8 +310,8 @@ void NetworkManager::update() {
         lastStatusUpdate = currentTime;
     }
 
-    // 处理DNS请求（如果DNS服务器已启动）
-    dnsManager->processDNSRequests();
+    // 处理DNS请求（DNS服务器已移除）
+    // dnsManager->processDNSRequests();  // removed
 
     // IP冲突检测（按配置间隔）
     if (currentTime - lastConflictCheck >= wifiConfig.conflictCheckInterval) {
@@ -453,7 +452,6 @@ bool NetworkManager::loadNetworkConfig() {
         if (doc.containsKey("maxReconnectAttempts")) wifiConfig.maxReconnectAttempts = doc["maxReconnectAttempts"].as<uint8_t>();
         if (doc.containsKey("customDomain"))         wifiConfig.customDomain = doc["customDomain"].as<String>();
         if (doc.containsKey("enableMDNS"))           wifiConfig.enableMDNS = doc["enableMDNS"].as<bool>();
-        if (doc.containsKey("enableDNS"))            wifiConfig.enableDNS = doc["enableDNS"].as<bool>();
         if (doc.containsKey("conflictDetection"))    wifiConfig.conflictDetection = static_cast<IPConflictMode>(doc["conflictDetection"].as<uint8_t>());
         if (doc.containsKey("failoverStrategy"))     wifiConfig.failoverStrategy = static_cast<IPFailoverStrategy>(doc["failoverStrategy"].as<uint8_t>());
         if (doc.containsKey("autoFailover"))         wifiConfig.autoFailover = doc["autoFailover"].as<bool>();
@@ -546,7 +544,6 @@ bool NetworkManager::loadNetworkConfig() {
         // 域名配置
         wifiConfig.customDomain = preferences.getString("custom_domain", Network::DEFAULT_MDNS_HOSTNAME);
         wifiConfig.enableMDNS = preferences.getBool("enable_mdns", true);
-        wifiConfig.enableDNS = preferences.getBool("enable_dns", true);
 
         LOG_INFO("NetworkManager: Configuration loaded successfully");
     return true;
@@ -575,7 +572,6 @@ bool NetworkManager::saveNetworkConfig() {
     doc["maxReconnectAttempts"] = wifiConfig.maxReconnectAttempts;
     doc["customDomain"] = wifiConfig.customDomain;
     doc["enableMDNS"] = wifiConfig.enableMDNS;
-    doc["enableDNS"] = wifiConfig.enableDNS;
     doc["conflictDetection"] = static_cast<uint8_t>(wifiConfig.conflictDetection);
     doc["failoverStrategy"] = static_cast<uint8_t>(wifiConfig.failoverStrategy);
     doc["autoFailover"] = wifiConfig.autoFailover;
@@ -663,7 +659,6 @@ bool NetworkManager::saveNetworkConfig() {
         // 域名配置
         preferences.putString("custom_domain", wifiConfig.customDomain);
         preferences.putBool("enable_mdns", wifiConfig.enableMDNS);
-        preferences.putBool("enable_dns", wifiConfig.enableDNS);
 
         preferences.putBool("initialized", true);
         preferences.end();
@@ -675,11 +670,6 @@ bool NetworkManager::saveNetworkConfig() {
 bool NetworkManager::startAPMode() {
     if (!wifiManager->startAPMode()) {
         return false;
-    }
-
-    // 启动DNS服务器
-    if (wifiConfig.enableDNS) {
-        dnsManager->startDNSServer(WiFi.softAPIP());
     }
 
     // 启动mDNS服务（使用customDomain作为hostname）
@@ -697,7 +687,6 @@ bool NetworkManager::startAPMode() {
 void NetworkManager::stopAPMode() {
     if (WiFi.getMode() & WIFI_AP) {
         WiFi.softAPdisconnect(true);
-        stopDNSServer();
         LOG_INFO("NetworkManager: AP mode stopped");
     }
 }
@@ -865,13 +854,7 @@ void NetworkManager::stopMDNS() {
     dnsManager->stopMDNS();
 }
 
-bool NetworkManager::startDNSServer() {
-    return dnsManager->startDNSServer(WiFi.softAPIP());
-}
 
-void NetworkManager::stopDNSServer() {
-    dnsManager->stopDNSServer();
-}
 
 // handleWiFiEvent 方法已移至 WiFiManager 类
 
@@ -1059,11 +1042,7 @@ bool NetworkManager::restartNetwork() {
                 wifiManager->setModeTransitioning(false);
                 return false;
             }
-            // 启动DNS和mDNS服务
-            if (wifiConfig.enableDNS) {
-                dnsManager->startDNSServer(WiFi.softAPIP());
-                LOG_INFO("NetworkManager: DNS server restarted after network restart");
-            }
+            // 启动mDNS服务
             if (wifiConfig.enableMDNS) {
                 dnsManager->startMDNS(wifiConfig.customDomain);
                 LOG_INFO("NetworkManager: mDNS service restarted after network restart");
@@ -1087,11 +1066,7 @@ bool NetworkManager::restartNetwork() {
                 wifiManager->setModeTransitioning(false);
                 return false;
             }
-            // 启动DNS和mDNS服务
-            if (wifiConfig.enableDNS) {
-                dnsManager->startDNSServer(WiFi.softAPIP());
-                LOG_INFO("NetworkManager: DNS server restarted after network restart");
-            }
+            // 启动mDNS服务
             if (wifiConfig.enableMDNS) {
                 dnsManager->startMDNS(wifiConfig.customDomain);
                 LOG_INFO("NetworkManager: mDNS service restarted after network restart");
@@ -1202,7 +1177,6 @@ String NetworkManager::getConfigJSON() {
     // 域名配置
     doc["customDomain"] = wifiConfig.customDomain;
     doc["enableMDNS"] = wifiConfig.enableMDNS;
-    doc["enableDNS"] = wifiConfig.enableDNS;
     
     String result;
     serializeJson(doc, result);
@@ -1329,8 +1303,6 @@ bool NetworkManager::updateConfigFromJSON(const String& jsonConfig) {
         newConfig.customDomain = doc["customDomain"].as<String>();
     if (doc.containsKey("enableMDNS")) 
         newConfig.enableMDNS = doc["enableMDNS"].as<bool>();
-    if (doc.containsKey("enableDNS")) 
-        newConfig.enableDNS = doc["enableDNS"].as<bool>();
     
     return updateConfig(newConfig, true);
 }

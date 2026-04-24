@@ -201,6 +201,7 @@ public:
     // 运行时处理
     void handle();
     String getStatus() const;
+    bool isRunning() const { return isInitialized; }
     
     // 数据操作
     bool writeData(uint16_t address, const String& data);
@@ -229,6 +230,8 @@ public:
     bool loadConfigFromFile(const String& configPath = "");
     bool saveConfigToFile(const String& configPath = "");
     ModbusConfig getConfig() const { return config; }
+    const ModbusConfig& getConfigRef() const { return config; }
+    uint8_t getTransferType() const { return config.transferType; }
     static void sanitizeConfig(ModbusConfig& config);
 
     // === Master模式公有接口 ===

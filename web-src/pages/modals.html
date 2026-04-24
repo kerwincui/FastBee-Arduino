@@ -323,20 +323,18 @@
                     <input type="hidden" id="periph-exec-original-id" value="">
 
                     <!-- 第一部分：基础配置 -->
-                    <div class="config-form-grid">
-                        <div class="pure-control-group">
+                    <div class="pe-base-grid">
+                        <div class="pure-control-group pe-base-name">
                             <label for="periph-exec-name" data-i18n="periph-exec-name-label">规则名称</label>
                             <input type="text" id="periph-exec-name" class="pure-input-1"
                                 placeholder="例如: 温度过高报警" required data-i18n-placeholder="periph-exec-name-hint">
                         </div>
-                        <div class="pure-control-group">
-                            <label>
+                        <div class="pe-base-checks">
+                            <label class="pe-checkbox-label">
                                 <input type="checkbox" id="periph-exec-report" checked>
                                 <span data-i18n="periph-exec-report-label">是否上报数据</span>
                             </label>
-                        </div>
-                        <div class="pure-control-group">
-                            <label>
+                            <label class="pe-checkbox-label">
                                 <input type="checkbox" id="periph-exec-enabled" checked>
                                 <span data-i18n="periph-exec-enabled-label">启用</span>
                             </label>

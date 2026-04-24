@@ -317,8 +317,22 @@ bool WiFiManager::configureStaticIP() {
 }
 
 bool WiFiManager::configureDHCP() {
-    WiFi.config(IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0));
-    LOG_INFO("WiFiManager: DHCP configured");
+    // DHCP 模式：IP 使用 0.0.0.0 启用 DHCP，但仍可显式指定 DNS 服务器
+    // ESP32 WiFi.config(0,0,0,0, dns1, dns2) 会启用 DHCP 同时设置 DNS
+    IPAddress dns1, dns2;
+    bool hasDns1 = !wifiConfig.dns1.isEmpty() && dns1.fromString(wifiConfig.dns1);
+    bool hasDns2 = hasDns1 && !wifiConfig.dns2.isEmpty() && dns2.fromString(wifiConfig.dns2);
+    
+    if (hasDns2) {
+        WiFi.config(IPAddress(0,0,0,0), IPAddress(0,0,0,0), IPAddress(0,0,0,0), dns1, dns2);
+        LOGGER.infof("WiFiManager: DHCP configured with DNS %s, %s", wifiConfig.dns1.c_str(), wifiConfig.dns2.c_str());
+    } else if (hasDns1) {
+        WiFi.config(IPAddress(0,0,0,0), IPAddress(0,0,0,0), IPAddress(0,0,0,0), dns1);
+        LOGGER.infof("WiFiManager: DHCP configured with DNS %s", wifiConfig.dns1.c_str());
+    } else {
+        WiFi.config(IPAddress(0,0,0,0), IPAddress(0,0,0,0), IPAddress(0,0,0,0));
+        LOG_INFO("WiFiManager: DHCP configured (using DHCP-provided DNS)");
+    }
     statusInfo.activeIPType = "DHCP";
     return true;
 }

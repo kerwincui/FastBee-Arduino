@@ -4,6 +4,7 @@
  * Steps:
  * 1. Remove old .gz files.
  * 2. Compress all .html/.js/.css files into fresh .gz files.
+ * 3. Delete uncompressed originals (only .gz + assets/ remain).
  *
  * Usage:
  *   node scripts/gzip-www.js
@@ -113,6 +114,28 @@ function compressAllFiles() {
     console.log(`  Total size: ${stats.totalOriginalSize} -> ${stats.totalCompressedSize} bytes (-${totalRatio}%)`);
 }
 
+function deleteOriginals() {
+    const ASSETS_DIR = path.join(WWW_DIR, 'assets');
+    console.log('\n[Step 3] Cleaning up uncompressed originals...');
+
+    let deleted = 0;
+    walkDir(WWW_DIR, (filePath) => {
+        if (filePath.startsWith(ASSETS_DIR + path.sep) || filePath.startsWith(ASSETS_DIR)) return;
+        const ext = path.extname(filePath).toLowerCase();
+        if (!COMPRESS_EXTENSIONS.has(ext)) return;
+        if (fs.existsSync(filePath + '.gz')) {
+            try {
+                fs.unlinkSync(filePath);
+                deleted++;
+            } catch (error) {
+                console.warn(`  Skip cleanup: ${path.relative(WWW_DIR, filePath)} (${error.code || error.message})`);
+            }
+        }
+    });
+
+    console.log(`  Deleted ${deleted} uncompressed originals`);
+}
+
 function getActiveEnvFromPlatformioIni() {
     const iniPath = path.join(__dirname, '..', 'platformio.ini');
     if (!fs.existsSync(iniPath)) {
@@ -176,10 +199,17 @@ async function main() {
     buildResult.syncedModules.forEach((item) => {
         console.log(`  Synced: ${path.relative(ROOT_DIR(), item.publishFile)} (${item.size} bytes)`);
     });
+    buildResult.i18nModules.forEach((item) => {
+        console.log(`  Synced: ${path.relative(ROOT_DIR(), item.publishFile)} (${item.size} bytes${item.minified ? ', minified' : ''})`);
+    });
     console.log(`  Built: ${path.relative(ROOT_DIR(), buildResult.adminBundle.outputFile)} (${buildResult.adminBundle.size} bytes)`);
+    if (buildResult.adminBundle.stubs) {
+        console.log(`  Generated ${buildResult.adminBundle.stubs.length} admin stubs`);
+    }
 
     deleteOldGzFiles();
     compressAllFiles();
+    deleteOriginals();
 
     console.log('\n========================================');
     console.log('  Compression completed');
@@ -191,7 +221,7 @@ async function main() {
     }
 
     const envName = getActiveEnvFromPlatformioIni();
-    console.log(`\n[Step 3] Uploading filesystem (env: ${envName})...`);
+    console.log(`\n[Step 4] Uploading filesystem (env: ${envName})...`);
     try {
         await runPioCommand(['run', '--target', 'uploadfs', '--environment', envName], 'UploadFS');
         console.log('\n[UploadFS] 文件系统上传成功');
@@ -206,7 +236,7 @@ async function main() {
         return;
     }
 
-    console.log('\n[Step 4] Opening serial monitor...');
+    console.log('\n[Step 5] Opening serial monitor...');
     console.log('提示: 按 Ctrl+C 退出串口监视器\n');
     await runPioCommand(['device', 'monitor', '--environment', envName], 'Monitor', true);
 }

@@ -33,7 +33,7 @@ public:
     bool executeActionItem(const ExecAction& action, const String& effectiveValue);
 
     // 执行规则的所有动作（同步）
-    std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue);
+    std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue, bool suppressReport = false);
 
     // ========== 具体动作执行方法 ==========
 

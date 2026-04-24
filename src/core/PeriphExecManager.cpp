@@ -883,7 +883,7 @@ bool PeriphExecManager::shouldRunAsync() const {
 }
 
 void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& receivedValue) {
-    // 检查是否有系统重启/恢复出厂动作 —— 必须同步执行
+    // 检查是否有系统重启/恢复出厂动作 —— 必须同步执行（重启后无需触发完成事件）
     for (const auto& a : rule.actions) {
         if (a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART) ||
             a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET)) {
@@ -903,7 +903,7 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
     }
     if (hasSyncAction || rule.execMode == static_cast<uint8_t>(ExecMode::EXEC_SYNC)) {
         LOGGER.infof("[PeriphExec] Sync execute (user config): '%s'", rule.name.c_str());
-        executeAllActions(rule, receivedValue);
+        executeSyncWithCompletion(rule, receivedValue);
         return;
     }
 
@@ -933,7 +933,7 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
                      (int)ESP.getFreeHeap(),
                      (int)uxSemaphoreGetCount(_taskSlotSemaphore),
                      rule.name.c_str());
-        executeAllActions(rule, receivedValue);
+        executeSyncWithCompletion(rule, receivedValue);
         return;
     }
 
@@ -948,7 +948,7 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
             return;
         }
         LOGGER.warningf("[PeriphExec] No async slot, fallback sync: '%s'", rule.name.c_str());
-        executeAllActions(rule, receivedValue);
+        executeSyncWithCompletion(rule, receivedValue);
         return;
     }
 
@@ -966,7 +966,7 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
         }
         LOGGER.warning("[PeriphExec] Context pool exhausted, fallback to sync execution");
         xSemaphoreGive(_taskSlotSemaphore);
-        executeAllActions(rule, receivedValue);
+        executeSyncWithCompletion(rule, receivedValue);
         return;
     }
 
@@ -1021,7 +1021,7 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
         }
         _contextPool.release(ctx);  // 归还对象池
         xSemaphoreGive(_taskSlotSemaphore);
-        executeAllActions(rule, receivedValue);
+        executeSyncWithCompletion(rule, receivedValue);
         return;
     }
 
@@ -1115,11 +1115,62 @@ void PeriphExecManager::asyncExecTaskFunc(void* pvParameters) {
 
 // 执行规则的所有动作（供异步任务调用）
 std::vector<ActionExecResult> PeriphExecManager::executeAllActions(
-    const PeriphExecRule& rule, const String& receivedValue) {
+    const PeriphExecRule& rule, const String& receivedValue, bool suppressReport) {
     if (_executor) {
-        return _executor->executeAllActions(rule, receivedValue);
+        return _executor->executeAllActions(rule, receivedValue, suppressReport);
     }
     return {};
+}
+
+// 同步执行并触发完成事件（用于同步降级路径，确保链式执行正常工作）
+void PeriphExecManager::executeSyncWithCompletion(const PeriphExecRule& rule, const String& receivedValue) {
+    // 1. 加入运行中集合防重入
+    {
+        MutexGuard runLock(_runningRulesMutex);
+        _runningRuleIds.insert(rule.id);
+    }
+
+    // 2. 执行所有动作
+    auto actionResults = executeAllActions(rule, receivedValue);
+
+    // 3. 统计结果
+    bool allOk = true;
+    for (const auto& ar : actionResults) {
+        if (!ar.success) { allOk = false; break; }
+    }
+
+    LOGGER.infof("[PeriphExec] Sync+completion: '%s' %s", rule.name.c_str(), allOk ? "OK" : "FAILED");
+
+    // 4. 从运行中集合移除
+    {
+        MutexGuard runLock(_runningRulesMutex);
+        _runningRuleIds.erase(rule.id);
+    }
+
+    // 5. 设置或清除退避记录
+    if (ESP.getFreeHeap() > 10000) {
+        if (!allOk) {
+            MutexGuard runLock(_runningRulesMutex);
+            _failureBackoff[rule.id] = millis() + 30000;
+        } else {
+            MutexGuard runLock(_runningRulesMutex);
+            _failureBackoff.erase(rule.id);
+        }
+    }
+
+    // 6. 触发外设执行完成事件（链式执行关键）
+    if (ESP.getFreeHeap() > 10000) {
+        dispatchPeriphExecEvent(rule.id, allOk ? "success" : "failed");
+    }
+
+    // 7. 记录执行结果
+    AsyncExecResult result;
+    result.ruleId = rule.id;
+    result.ruleName = rule.name;
+    result.startTime = millis();
+    result.endTime = millis();
+    result.status = allOk ? AsyncExecStatus::COMPLETED : AsyncExecStatus::FAILED;
+    recordResult(result);
 }
 
 // ========== 内部调度接口实现 ==========
@@ -1130,8 +1181,8 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
         return;
     }
 
-    std::vector<PeriphExecRule> triggeredRules;
-    triggeredRules.reserve(4);  // 预分配避免 push_back 时重新分配
+    std::vector<String> triggeredRuleIds;
+    triggeredRuleIds.reserve(4);  // 预分配避免 push_back 时重新分配
 
     {
         MutexGuard lock(_rulesMutex);
@@ -1206,7 +1257,7 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
                     LOGGER.infof("[PeriphExec] Timer triggered: '%s'", rule.name.c_str());
                     trigger.lastTriggerTime = now;
                     trigger.triggerCount++;
-                    triggeredRules.push_back(rule);
+                    triggeredRuleIds.push_back(rule.id);
                     break;  // 一个触发器匹配即可触发该规则
                 }
             }
@@ -1215,13 +1266,13 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
     // 锁已释放
 
     // 阶段2: 无锁异步分发（定时触发无接收值）
-    for (const auto& ruleCopy : triggeredRules) {
-        dispatchAsync(ruleCopy, "");
+    for (const auto& ruleId : triggeredRuleIds) {
+        dispatchByRuleId(ruleId, "");
     }
 }
 
 void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const String& eventData) {
-    std::vector<PeriphExecRule> triggeredRules;
+    std::vector<String> triggeredRuleIds;
 
     {
         MutexGuard lock(_rulesMutex);
@@ -1274,7 +1325,7 @@ void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const S
 
                 trigger.lastTriggerTime = now;
                 trigger.triggerCount++;
-                triggeredRules.push_back(rule);
+                triggeredRuleIds.push_back(rule.id);
                 break;  // 一个触发器匹配即可
             }
         }
@@ -1282,13 +1333,13 @@ void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const S
     // 锁已释放
 
     // 阶段2: 无锁异步分发
-    for (const auto& ruleCopy : triggeredRules) {
-        dispatchAsync(ruleCopy, eventData);
+    for (const auto& id : triggeredRuleIds) {
+        dispatchByRuleId(id, eventData);
     }
 }
 
 void PeriphExecManager::dispatchPeriphExecEvent(const String& ruleId, const String& eventData) {
-    std::vector<PeriphExecRule> triggeredRules;
+    std::vector<String> triggeredRuleIds;
 
     {
         MutexGuard lock(_rulesMutex);
@@ -1310,7 +1361,7 @@ void PeriphExecManager::dispatchPeriphExecEvent(const String& ruleId, const Stri
 
                 trigger.lastTriggerTime = now;
                 trigger.triggerCount++;
-                triggeredRules.push_back(rule);
+                triggeredRuleIds.push_back(rule.id);
                 break;
             }
         }
@@ -1318,13 +1369,13 @@ void PeriphExecManager::dispatchPeriphExecEvent(const String& ruleId, const Stri
     // 锁已释放
 
     // 阶段2: 无锁异步分发
-    for (const auto& ruleCopy : triggeredRules) {
-        dispatchAsync(ruleCopy, eventData);
+    for (const auto& id : triggeredRuleIds) {
+        dispatchByRuleId(id, eventData);
     }
 }
 
 void PeriphExecManager::dispatchButtonEventRules(const String& eventId, const String& periphId) {
-    std::vector<PeriphExecRule> triggeredRules;
+    std::vector<String> triggeredRuleIds;
 
     {
         MutexGuard lock(_rulesMutex);
@@ -1345,7 +1396,7 @@ void PeriphExecManager::dispatchButtonEventRules(const String& eventId, const St
 
                 trigger.lastTriggerTime = now;
                 trigger.triggerCount++;
-                triggeredRules.push_back(rule);
+                triggeredRuleIds.push_back(rule.id);
                 break;
             }
         }
@@ -1353,16 +1404,16 @@ void PeriphExecManager::dispatchButtonEventRules(const String& eventId, const St
     // 锁已释放
 
     // 阶段2: 无锁异步分发
-    for (const auto& ruleCopy : triggeredRules) {
-        dispatchAsync(ruleCopy, "");
+    for (const auto& id : triggeredRuleIds) {
+        dispatchByRuleId(id, "");
     }
 }
 
 void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
     LOGGER.infof("[PeriphExec] Received MQTT message: %d items (non-DataCommand)", arr.size());
-    // 阶段1: 持锁匹配，收集需要执行的规则副本及其匹配的接收值
+    // 阶段1: 持锁匹配，收集规则ID及其匹配的接收值
     struct MatchedRule {
-        PeriphExecRule rule;
+        String ruleId;
         String receivedValue;
     };
     std::vector<MatchedRule> matchedRules;
@@ -1429,7 +1480,7 @@ void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
                 }
 
                 if (triggerMatched) {
-                    matchedRules.push_back({rule, itemValue});
+                    matchedRules.push_back({rule.id, itemValue});
                 }
             }
         }
@@ -1438,14 +1489,14 @@ void PeriphExecManager::processMqttMessageMatch(JsonArray& arr) {
 
     // 阶段2: 无锁异步分发
     for (const auto& matched : matchedRules) {
-        dispatchAsync(matched.rule, matched.receivedValue);
+        dispatchByRuleId(matched.ruleId, matched.receivedValue);
     }
 }
 
 void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& source) {
-    // 阶段1: 持锁匹配，收集需要执行的规则副本及其匹配的接收值
+    // 阶段1: 持锁匹配，收集规则ID及其匹配的接收值
     struct MatchedRule {
-        PeriphExecRule rule;
+        String ruleId;
         String receivedValue;
     };
     std::vector<MatchedRule> matchedRules;
@@ -1504,7 +1555,7 @@ void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& sourc
                 }
 
                 if (triggerMatched) {
-                    matchedRules.push_back({rule, itemValue});
+                    matchedRules.push_back({rule.id, itemValue});
                 }
             }
         }
@@ -1513,7 +1564,7 @@ void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& sourc
 
     // 阶段2: 无锁异步分发
     for (const auto& matched : matchedRules) {
-        dispatchAsync(matched.rule, matched.receivedValue);
+        dispatchByRuleId(matched.ruleId, matched.receivedValue);
     }
 }
 
@@ -1574,9 +1625,9 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
         }
     }
 
-    // 阶段1: 持锁匹配，收集规则副本
+    // 阶段1: 持锁匹配，收集规则ID（避免深拷贝整个 PeriphExecRule）
     struct MatchedItem {
-        PeriphExecRule rule;
+        String ruleId;
         String itemId;
         String itemValue;
     };
@@ -1629,7 +1680,7 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
                     matched = true;
                     trigger.lastTriggerTime = millis();
                     trigger.triggerCount++;
-                    matchedItems.push_back({rule, itemId, itemValue});
+                    matchedItems.push_back({rule.id, itemId, itemValue});
                     break;  // 一个触发器匹配即可
                 }
             }
@@ -1660,14 +1711,22 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
     }
 
     for (auto& mi : matchedItems) {
-        LOGGER.infof("[PeriphExec] Matched rule '%s': trigger id='%s', value='%s', actions=%d",
-            mi.rule.name.c_str(), mi.itemId.c_str(), mi.itemValue.c_str(), mi.rule.actions.size());
+        // 锁外逐个获取规则副本并同步执行（每次只持有一份拷贝）
+        PeriphExecRule ruleCopy;
+        {
+            MutexGuard lock(_rulesMutex, pdMS_TO_TICKS(50));
+            if (!lock.isLocked()) continue;
+            auto it = rules.find(mi.ruleId);
+            if (it == rules.end()) continue;
+            ruleCopy = it->second;
+        }
 
-        // 抑制 executeAllActions 内部的 reportActionResults 上报，
+        LOGGER.infof("[PeriphExec] Matched rule '%s': trigger id='%s', value='%s', actions=%d",
+            ruleCopy.name.c_str(), mi.itemId.c_str(), mi.itemValue.c_str(), ruleCopy.actions.size());
+
+        // 使用 suppressReport 抑制 executeAllActions 内部的 reportActionResults 上报，
         // 由 processDataCommandMatch 统一构建响应并返回给调用方上报，避免双重上报
-        PeriphExecRule execRule = mi.rule;
-        execRule.reportAfterExec = false;
-        auto results = executeAllActions(execRule, mi.itemValue);
+        auto results = executeAllActions(ruleCopy, mi.itemValue, true);
 
         // 构建响应：每个动作的结果（Modbus 目标映射 sensorId）
         for (const auto& ar : results) {
@@ -1709,7 +1768,9 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
         ModbusHandler::SensorIdMatch match;
         if (modbus && modbus->findBySensorIdEx(unmatchedIds[i], match)) {
             const ModbusSubDevice& dev = modbus->getSubDevice(match.deviceIndex);
-            String periphId = "modbus:" + String(match.deviceIndex);
+            char periphIdBuf[16];
+            snprintf(periphIdBuf, sizeof(periphIdBuf), "modbus:%d", match.deviceIndex);
+            String periphId(periphIdBuf);
             bool writeOk = false;
             bool state = false;
             String devType(dev.deviceType);
@@ -1784,7 +1845,14 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
                         String stateStr = state ? "1" : "0";
                         String remarkText = state ? "\xE5\xB7\xB2\xE6\x89\x93\xE5\xBC\x80" : "\xE5\xB7\xB2\xE5\x85\xB3\xE9\x97\xAD";  // 已打开 / 已关闭
                         for (uint8_t ch = 0; ch < dev.channelCount; ch++) {
-                            String chSid = modbus ? modbus->buildSensorId(match.deviceIndex, ch) : (unmatchedIds[i] + "_ch" + String(ch));
+                            String chSid;
+                            if (modbus) {
+                                chSid = modbus->buildSensorId(match.deviceIndex, ch);
+                            } else {
+                                char chBuf[32];
+                                snprintf(chBuf, sizeof(chBuf), "%s_ch%d", unmatchedIds[i].c_str(), ch);
+                                chSid = chBuf;
+                            }
                             JsonObject chReport = reportArr.add<JsonObject>();
                             chReport["id"] = chSid;
                             chReport["value"] = stateStr;
@@ -1849,6 +1917,16 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
             LOGGER.infof("[PeriphExec] Action completed: direct Modbus id='%s' type=%s action='%s' → result=%s",
                 unmatchedIds[i].c_str(), devType.c_str(), match.action.c_str(), writeOk ? "SUCCESS" : "FAILED");
 
+            // 控制成功后触发 mc: 事件（支持事件触发型规则链式执行）
+            if (writeOk) {
+                char mcIdBuf[16];
+                snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", match.deviceIndex);
+                char mcDataBuf[160];
+                snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"id\":\"%s\",\"v\":\"%s\"}",
+                    match.deviceIndex, unmatchedIds[i].c_str(), reportValue.c_str());
+                triggerEventById(String(mcIdBuf), String(mcDataBuf));
+            }
+
             JsonObject reportItem = reportArr.add<JsonObject>();
             reportItem["id"] = unmatchedIds[i];
             reportItem["value"] = reportValue;
@@ -1871,6 +1949,20 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
     String result;
     serializeJson(reportDoc, result);
     return result;
+}
+
+// 按规则ID安全分发（锁内拷贝规则，锁外调用dispatchAsync，避免死锁）
+void PeriphExecManager::dispatchByRuleId(const String& ruleId, const String& receivedValue) {
+    PeriphExecRule ruleCopy;
+    {
+        MutexGuard lock(_rulesMutex, pdMS_TO_TICKS(50));
+        if (!lock.isLocked()) return;
+        auto it = rules.find(ruleId);
+        if (it == rules.end() || !it->second.enabled) return;
+        ruleCopy = it->second;  // 锁内做一次深拷贝
+    }
+    // 锁已释放，安全调用 dispatchAsync
+    dispatchAsync(ruleCopy, receivedValue);
 }
 
 String PeriphExecManager::getDynamicEventsJsonInternal() {

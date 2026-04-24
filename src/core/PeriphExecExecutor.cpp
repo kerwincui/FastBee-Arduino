@@ -92,8 +92,10 @@ String buildModbusReportValue(uint16_t channel,
                               const String& preferredValue,
                               const String& fallbackValue,
                               bool defaultState) {
-    return String(channel) + ":" +
-           normalizeBinaryReportValue(preferredValue, fallbackValue, defaultState);
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%u:%s", channel,
+             normalizeBinaryReportValue(preferredValue, fallbackValue, defaultState).c_str());
+    return String(buf);
 }
 
 String buildActionReportValue(const ExecAction& action,
@@ -132,7 +134,9 @@ String buildActionReportValue(const ExecAction& action,
                 uint16_t channel = rawValue.substring(0, sepIdx).toInt();
                 String regValue = rawValue.substring(sepIdx + 1);
                 regValue.trim();
-                return String(channel) + ":" + regValue;
+                char buf[24];
+                snprintf(buf, sizeof(buf), "%u:%s", channel, regValue.c_str());
+                return String(buf);
             }
             return rawValue;
         }
@@ -198,7 +202,7 @@ bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const Strin
 }
 
 std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
-    const PeriphExecRule& rule, const String& receivedValue) {
+    const PeriphExecRule& rule, const String& receivedValue, bool suppressReport) {
 
     std::vector<ActionExecResult> results;
     results.reserve(rule.actions.size());
@@ -259,7 +263,7 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
     }
 
     // 精准上报执行结果
-    if (rule.reportAfterExec && !results.empty()) {
+    if (rule.reportAfterExec && !suppressReport && !results.empty()) {
         LOGGER.infof("[PeriphExec] Rule '%s' execution done, reporting %d results",
             rule.name.c_str(), results.size());
         reportActionResults(results);
@@ -518,7 +522,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
         // 处理 ctrl 数组: 执行控制命令
         JsonArray ctrlArr = doc["ctrl"].as<JsonArray>();
         if (ctrlArr) {
-            ModbusConfig cfg = modbus->getConfig();
+            const ModbusConfig& cfg = modbus->getConfigRef();
             for (JsonVariant cv : ctrlArr) {
                 uint8_t devIdx = cv["d"].as<uint8_t>();
                 if (devIdx >= cfg.master.deviceCount) {
@@ -564,9 +568,11 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     }
                     // 控制成功后触发 mc: 事件，供其他规则监听
                     if (ok && _manager) {
-                        String mcEventId = "mc:" + String(devIdx);
-                        String mcEventData = "{\"d\":" + String(devIdx) + ",\"c\":" + String(ch) + ",\"a\":\"" + String(act) + "\"}";
-                        _manager->triggerEventById(mcEventId, mcEventData);
+                        char mcIdBuf[16];
+                        snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", devIdx);
+                        char mcDataBuf[96];
+                        snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"c\":%d,\"a\":\"%s\"}", devIdx, ch, act);
+                        _manager->triggerEventById(String(mcIdBuf), String(mcDataBuf));
                     }
                 } else if (devType == "pwm") {
                     uint16_t regAddr = dev.pwmRegBase + ch;
@@ -576,15 +582,19 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     LOGGER.infof("[PeriphExec] PWM ctrl: slave=%d reg=%d val=%d ok=%d",
                         dev.slaveAddress, regAddr, val, ok);
                     if (controlResults) {
-                        appendActionResult(*controlResults, "modbus:" + String(devIdx),
-                                           String(ch) + ":" + String(val), ok,
+                        char idBuf[16], valBuf[16];
+                        snprintf(idBuf, sizeof(idBuf), "modbus:%d", devIdx);
+                        snprintf(valBuf, sizeof(valBuf), "%d:%d", ch, val);
+                        appendActionResult(*controlResults, idBuf, valBuf, ok,
                                            ok ? "success" : "modbus_write_failed");
                     }
                     // 控制成功后触发 mc: 事件
                     if (ok && _manager) {
-                        String mcEventId = "mc:" + String(devIdx);
-                        String mcEventData = "{\"d\":" + String(devIdx) + ",\"c\":" + String(ch) + ",\"a\":\"pwm\",\"v\":" + String(val) + "}";
-                        _manager->triggerEventById(mcEventId, mcEventData);
+                        char mcIdBuf[16];
+                        snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", devIdx);
+                        char mcDataBuf[96];
+                        snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"c\":%d,\"a\":\"pwm\",\"v\":%d}", devIdx, ch, val);
+                        _manager->triggerEventById(String(mcIdBuf), String(mcDataBuf));
                     }
                 } else if (devType == "pid") {
                     const char* param = cv["p"] | "P";
@@ -598,15 +608,19 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     LOGGER.infof("[PeriphExec] PID ctrl: slave=%d param=%s reg=%d val=%d ok=%d",
                         dev.slaveAddress, param, regAddr, val, ok);
                     if (controlResults) {
-                        appendActionResult(*controlResults, "modbus:" + String(devIdx),
-                                           String(ch) + ":" + String(val), ok,
+                        char idBuf[16], valBuf[16];
+                        snprintf(idBuf, sizeof(idBuf), "modbus:%d", devIdx);
+                        snprintf(valBuf, sizeof(valBuf), "%d:%d", ch, val);
+                        appendActionResult(*controlResults, idBuf, valBuf, ok,
                                            ok ? "success" : "modbus_write_failed");
                     }
                     // 控制成功后触发 mc: 事件
                     if (ok && _manager) {
-                        String mcEventId = "mc:" + String(devIdx);
-                        String mcEventData = "{\"d\":" + String(devIdx) + ",\"a\":\"pid\",\"p\":\"" + String(param) + "\",\"v\":" + String(val) + "}";
-                        _manager->triggerEventById(mcEventId, mcEventData);
+                        char mcIdBuf[16];
+                        snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", devIdx);
+                        char mcDataBuf[96];
+                        snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"a\":\"pid\",\"p\":\"%s\",\"v\":%d}", devIdx, param, val);
+                        _manager->triggerEventById(String(mcIdBuf), String(mcDataBuf));
                     }
                 } else if (devType == "motor") {
                     // 电机控制：forward/reverse/stop
@@ -617,24 +631,29 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     else motorRegIdx = 2; // stop
                     uint16_t regAddr = dev.motorRegs[motorRegIdx];
                     uint16_t motorVal = cv["v"] | 1;
-                    bool ok = false;
-                    if (regAddr > 0) {
-                        auto res = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, motorVal, true);
-                        ok = (res.error == ONESHOT_SUCCESS);
-                    }
+                    auto res = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, motorVal, true);
+                    bool ok = (res.error == ONESHOT_SUCCESS);
                     anySuccess = anySuccess || ok;
                     LOGGER.infof("[PeriphExec] Motor ctrl: slave=%d act=%s reg=%d val=%d ok=%d",
                         dev.slaveAddress, act, regAddr, motorVal, ok);
                     if (controlResults) {
-                        appendActionResult(*controlResults, "modbus:" + String(devIdx),
-                                           String(act), ok,
+                        // 电机操作上报数值格式: 1=正转 2=反转 0=停止
+                        int motorNumVal = 0;
+                        if (strcmp(act, "forward") == 0) motorNumVal = 1;
+                        else if (strcmp(act, "reverse") == 0) motorNumVal = 2;
+                        char idBuf[16], valBuf[8];
+                        snprintf(idBuf, sizeof(idBuf), "modbus:%d", devIdx);
+                        snprintf(valBuf, sizeof(valBuf), "%d", motorNumVal);
+                        appendActionResult(*controlResults, idBuf, valBuf, ok,
                                            ok ? "success" : "modbus_write_failed");
                     }
                     // 控制成功后触发 mc: 事件
                     if (ok && _manager) {
-                        String mcEventId = "mc:" + String(devIdx);
-                        String mcEventData = "{\"d\":" + String(devIdx) + ",\"a\":\"" + String(act) + "\"}";
-                        _manager->triggerEventById(mcEventId, mcEventData);
+                        char mcIdBuf[16];
+                        snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", devIdx);
+                        char mcDataBuf[96];
+                        snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"a\":\"%s\"}", devIdx, act);
+                        _manager->triggerEventById(String(mcIdBuf), String(mcDataBuf));
                     }
                 }
             }
@@ -907,8 +926,7 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
         if (protMgr) {
             modbus = protMgr->getModbusHandler();
             if (modbus) {
-                ModbusConfig mcfg = modbus->getConfig();
-                modbusTransferType = mcfg.transferType;
+                modbusTransferType = modbus->getTransferType();
             }
         }
     }
@@ -916,7 +934,8 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
     PeripheralManager& pm = PeripheralManager::getInstance();
 
     // 构建上报数据：[{"id":"led1","value":"1","remark":"success"}, ...]
-    JsonDocument doc;
+    // 每个结果约 80 字节 JSON，限制最多 8 个结果 ≈ 768 字节，加数组开销
+    StaticJsonDocument<1024> doc;
     JsonArray arr = doc.to<JsonArray>();
 
     for (const auto& ar : results) {

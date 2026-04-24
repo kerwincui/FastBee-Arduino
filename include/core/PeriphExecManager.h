@@ -172,7 +172,10 @@ public:
     void dispatchAsync(const PeriphExecRule& rule, const String& receivedValue);
 
     // 执行规则的所有动作（供异步任务调用）
-    std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue);
+    std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue, bool suppressReport = false);
+
+    // 同步执行并触发完成事件（用于同步降级路径，确保链式执行正常工作）
+    void executeSyncWithCompletion(const PeriphExecRule& rule, const String& receivedValue);
 
     // 定时触发检查（内部使用）
     void checkTimerTriggers(unsigned long now, bool modbusAvailable);
@@ -209,6 +212,9 @@ private:
     void sanitizeRuleForSafety(PeriphExecRule& rule) const;
     unsigned long getPollTriggerCooldownMs(const PeriphExecRule& rule, const String& source) const;
     bool shouldThrottlePollIngress(const String& source, unsigned long now);
+
+    // 按规则ID安全分发（锁内拷贝规则，锁外调用dispatchAsync，避免死锁）
+    void dispatchByRuleId(const String& ruleId, const String& receivedValue);
 
     std::unique_ptr<PeriphExecExecutor> _executor;
     std::unique_ptr<PeriphExecScheduler> _scheduler;

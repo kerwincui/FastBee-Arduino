@@ -897,7 +897,7 @@
             var dt = dev.deviceType || 'relay';
             if (dt !== 'motor') {
                 html += '<div class="pure-control-group pe-field-stack-compact">';
-                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-select-channel') || '选择通道') + '</label>';
+                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-match-channel') || '匹配通道') + '</label>';
                 html += '<select class="pure-input-1 pe-modbus-channel-select u-fs-13">';
                 for (var ch = 0; ch < (dev.channelCount || 2); ch++) {
                     html += '<option value="' + ch + '"' + (String(ch) === selChannel ? ' selected' : '') + '>CH' + ch + '</option>';
@@ -906,14 +906,14 @@
             }
             if (dt === 'relay') {
                 html += '<div class="pure-control-group pe-field-stack-compact">';
-                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-select-action') || '子设备动作') + '</label>';
+                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-match-action') || '匹配动作') + '</label>';
                 html += '<select class="pure-input-1 pe-modbus-action-select u-fs-13">' +
                     '<option value="on"' + (selAction === 'off' ? '' : ' selected') + '>' + (i18n.t('periph-exec-ctrl-on') || '打开') + '</option>' +
                     '<option value="off"' + (selAction === 'off' ? ' selected' : '') + '>' + (i18n.t('periph-exec-ctrl-off') || '关闭') + '</option></select>';
                 html += '</div>';
             } else if (dt === 'motor') {
                 html += '<div class="pure-control-group pe-field-stack-compact">';
-                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-select-action') || '子设备动作') + '</label>';
+                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-match-action') || '匹配动作') + '</label>';
                 html += '<select class="pure-input-1 pe-modbus-action-select u-fs-13">' +
                     '<option value="forward"' + (selAction === 'forward' ? ' selected' : '') + '>' + (i18n.t('periph-exec-ctrl-forward') || '正转') + '</option>' +
                     '<option value="reverse"' + (selAction === 'reverse' ? ' selected' : '') + '>' + (i18n.t('periph-exec-ctrl-reverse') || '反转') + '</option>' +
@@ -1143,13 +1143,16 @@
                     '<div class="pure-control-group pe-target-group' + this._hiddenClass(showPeriphGroup) + '">' +
                     '<label>' + i18n.t('periph-exec-target-periph-label') + '</label>' +
                     '<select class="pure-input-1 pe-target-periph"><option value="">' + i18n.t('periph-exec-select-periph') + '</option></select></div>' +
+                    '<div class="pure-control-group pe-modbus-ctrl-panel' + this._hiddenClass(isModbusTarget) + '"></div>' +
                     '<div class="pure-control-group pe-action-type-group' + this._hiddenClass(showActionType) + '"><label>' + i18n.t('periph-exec-action-type-label') + '</label>' +
                     '<select class="pure-input-1 pe-action-type">' +
                         '<optgroup label="' + i18n.t('periph-exec-action-cat-gpio') + '">' +
                         '<option value="0" ' + sel(0) + '>' + i18n.t('periph-exec-action-high') + '</option>' +
                         '<option value="1" ' + sel(1) + '>' + i18n.t('periph-exec-action-low') + '</option>' +
                         '<option value="2" ' + sel(2) + '>' + i18n.t('periph-exec-action-blink') + '</option>' +
-                        '<option value="3" ' + sel(3) + '>' + i18n.t('periph-exec-action-breathe') + '</option></optgroup>' +
+                        '<option value="3" ' + sel(3) + '>' + i18n.t('periph-exec-action-breathe') + '</option>' +
+                        '<option value="13" ' + sel(13) + '>' + i18n.t('periph-exec-action-high-inverted') + '</option>' +
+                        '<option value="14" ' + sel(14) + '>' + i18n.t('periph-exec-action-low-inverted') + '</option></optgroup>' +
                         '<optgroup label="' + i18n.t('periph-exec-action-cat-analog') + '">' +
                         '<option value="4" ' + sel(4) + '>' + i18n.t('periph-exec-action-pwm') + '</option>' +
                         '<option value="5" ' + sel(5) + '>' + i18n.t('periph-exec-action-dac') + '</option></optgroup>' +
@@ -1169,8 +1172,7 @@
                     '<input type="text" class="pure-input-1 pe-action-value" value="' + (isScript ? '' : escapeHtml(data.actionValue)) + '" placeholder="' + escapeHtml(i18n.t('periph-exec-action-value-hint')) + '"' + (showRecv && data.useReceivedValue !== false ? ' readonly' : '') + '>' +
                     '<small class="pe-help-text">' + i18n.t('periph-exec-action-value-help') + '</small></div>' +
                     '<div class="pure-control-group pe-use-received-value-group' + this._hiddenClass(showRecv) + '">' +
-                    '<label>' + (i18n.t('periph-exec-use-received-label') || '使用接收值') + '</label>' +
-                    '<label class="pe-checkbox-label pe-checkbox-input-align"><input type="checkbox" class="pe-use-received-value"' + (showRecv && data.useReceivedValue !== false ? ' checked' : '') + '>' +
+                    '<label class="pe-checkbox-label pe-check-align"><input type="checkbox" class="pe-use-received-value"' + (showRecv && data.useReceivedValue !== false ? ' checked' : '') + '>' +
                     i18n.t('periph-exec-use-received-value-help') + '</label></div>' +
                     '<div class="pure-control-group pe-script-group pe-span-all' + this._hiddenClass(isScript) + '">' +
                     '<label>' + i18n.t('periph-exec-script-label') + '</label>' +
@@ -1193,7 +1195,6 @@
                     '<div class="pure-control-group"><label>' + i18n.t('periph-exec-sensor-label') + '</label><input type="text" class="pure-input-1 pe-sensor-label" value="' + escapeHtml(sensorCfg.sensorLabel) + '" placeholder="' + i18n.t('periph-exec-sensor-label') + '"></div>' +
                     '<div class="pure-control-group"><label>' + i18n.t('periph-exec-sensor-unit') + '</label><input type="text" class="pure-input-1 pe-sensor-unit" value="' + escapeHtml(sensorCfg.unit) + '" maxlength="8" placeholder="°C, %, V..."></div>' +
                     '</div></div>' +
-                    '<div class="pure-control-group pe-modbus-ctrl-panel pe-span-all' + this._hiddenClass(isModbusTarget) + '"></div>' +
                     '</div>';
             container.appendChild(div);
             if (!isPollMode && isSensorRead) {

@@ -1151,9 +1151,9 @@
             // 电机操作按钮带 sensorId 标签
             html += '<div class="dc-modbus-actions">';
             var motorBtns = [
-                { className: 'dc-motor-action motor-action-btn motor-action-forward', devIdx: devIdx, action: 'forward', label: this._t('modbus-motor-ctrl-forward') || '正转' },
-                { className: 'dc-motor-action motor-action-btn motor-action-stop', devIdx: devIdx, action: 'stop', label: this._t('modbus-motor-ctrl-stop') || '停止' },
-                { className: 'dc-motor-action motor-action-btn motor-action-reverse', devIdx: devIdx, action: 'reverse', label: this._t('modbus-motor-ctrl-reverse') || '反转' }
+                { className: 'dc-motor-action dc-btn-sm dc-btn-on', devIdx: devIdx, action: 'forward', label: this._t('modbus-motor-ctrl-forward') || '正转' },
+                { className: 'dc-motor-action dc-btn-sm dc-btn-off', devIdx: devIdx, action: 'stop', label: this._t('modbus-motor-ctrl-stop') || '停止' },
+                { className: 'dc-motor-action dc-btn-sm dc-btn-toggle', devIdx: devIdx, action: 'reverse', label: this._t('modbus-motor-ctrl-reverse') || '反转' }
             ];
             for (var mi = 0; mi < motorBtns.length; mi++) {
                 html += this._renderDcActionButton(motorBtns[mi]);

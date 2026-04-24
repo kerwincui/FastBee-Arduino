@@ -2,11 +2,10 @@
 #define DNS_MANAGER_H
 
 #include <ESPmDNS.h>
-#include <DNSServer.h>
 
 /**
  * @brief DNS 管理器类
- * @details 负责 DNS 服务器和 mDNS 服务的管理
+ * @details 负责 mDNS 服务的管理（DNS服务器已移除以简化系统）
  */
 class DNSManager {
 public:
@@ -32,33 +31,10 @@ public:
     void stopMDNS();
     
     /**
-     * @brief 启动 DNS 服务器
-     * @param apIP AP IP 地址
-     * @return 是否启动成功
-     */
-    bool startDNSServer(const IPAddress& apIP);
-    
-    /**
-     * @brief 停止 DNS 服务器
-     */
-    void stopDNSServer();
-    
-    /**
-     * @brief 处理 DNS 请求
-     */
-    void processDNSRequests();
-    
-    /**
      * @brief 检查 mDNS 是否启动
      * @return 是否启动
      */
     bool isMDNSStarted() const;
-    
-    /**
-     * @brief 检查 DNS 服务器是否启动
-     * @return 是否启动
-     */
-    bool isDNSServerStarted() const;
     
     /**
      * @brief 设置自定义域名
@@ -79,12 +55,6 @@ public:
     void setMDNSEnabled(bool enabled);
     
     /**
-     * @brief 启用或禁用 DNS 服务器
-     * @param enabled 是否启用
-     */
-    void setDNSEnabled(bool enabled);
-    
-    /**
      * @brief 检查 mDNS 健康状态
      * @return true=服务正常，false=服务异常或未启动
      */
@@ -103,12 +73,9 @@ public:
     String getActualHostname() const;
     
 private:
-    DNSServer dnsServer;
     bool mdnsStarted = false;
-    bool dnsServerStarted = false;
     String customDomain = "fastbee";
     bool mdnsEnabled = true;
-    bool dnsEnabled = true;
     String actualHostname = "";  // 实际注册成功的 mDNS hostname（可能带 -2/-3 后缀）
 };
 
