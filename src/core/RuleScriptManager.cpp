@@ -1,3 +1,6 @@
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_RULE_SCRIPT
+
 #include "core/RuleScriptManager.h"
 #include "core/AsyncExecTypes.h"
 #include "systems/LoggerSystem.h"
@@ -361,3 +364,4 @@ void RuleScriptManager::populateDefaults() {
 
     LOGGER.infof("[RuleScript] Populated %d default rules", 7);
 }
+#endif // FASTBEE_ENABLE_RULE_SCRIPT

@@ -45,7 +45,7 @@
         _renderRuleScriptActionButton(action, id, label, className, enabledValue) {
             let attrs = 'data-rule-script-action="' + action + '" data-id="' + escapeHtml(id) + '"';
             if (enabledValue !== undefined) attrs += ' data-enabled="' + (enabledValue ? 'true' : 'false') + '"';
-            return '<button class="btn btn-sm ' + className + '" ' + attrs + '>' + label + '</button>';
+            return '<button class="fb-btn fb-btn-sm ' + className + '" ' + attrs + '>' + label + '</button>';
         },
 
         _renderRuleScriptRow(rule, triggerLabels, protocolLabels) {
@@ -59,11 +59,11 @@
             html += '<td>' + escapeHtml(protocolText) + '</td>';
             html += '<td class="rule-script-stats-cell">' + escapeHtml(statsText) + '</td>';
             html += '<td class="u-toolbar-sm">';
-            html += this._renderRuleScriptActionButton('edit', rule.id, i18n.t('peripheral-edit'), 'btn-edit');
+            html += this._renderRuleScriptActionButton('edit', rule.id, i18n.t('peripheral-edit'), 'fb-btn-primary');
             html += rule.enabled
-                ? this._renderRuleScriptActionButton('toggle', rule.id, i18n.t('peripheral-disable'), 'btn-disable', false)
-                : this._renderRuleScriptActionButton('toggle', rule.id, i18n.t('peripheral-enable'), 'btn-enable', true);
-            html += this._renderRuleScriptActionButton('delete', rule.id, i18n.t('peripheral-delete'), 'btn-delete');
+                ? this._renderRuleScriptActionButton('toggle', rule.id, i18n.t('peripheral-disable'), 'fb-btn-warning', false)
+                : this._renderRuleScriptActionButton('toggle', rule.id, i18n.t('peripheral-enable'), 'fb-btn-success', true);
+            html += this._renderRuleScriptActionButton('delete', rule.id, i18n.t('peripheral-delete'), 'fb-btn-danger');
             html += '</td></tr>';
             return html;
         },

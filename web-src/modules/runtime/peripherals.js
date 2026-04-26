@@ -63,7 +63,7 @@
         },
 
         _renderPeripheralActionButton(action, id, label, className) {
-            return '<button class="btn btn-sm ' + className + '" data-peripheral-action="' + action + '" data-id="' + escapeHtml(id) + '">' + label + '</button>';
+            return '<button class="fb-btn fb-btn-sm ' + className + '" data-peripheral-action="' + action + '" data-id="' + escapeHtml(id) + '">' + label + '</button>';
         },
 
         // ============ 外设列表 ============
@@ -127,9 +127,9 @@
                             '<td>' + pinsStr + '</td>' +
                             '<td><span class="badge ' + statusBadgeClass + '">' + escapeHtml(statusName) + '</span></td>' +
                             '<td class="u-cell-nowrap">' +
-                                this._renderPeripheralActionButton('edit', periph.id, i18n.t('peripheral-edit'), 'btn-edit') +
-                                this._renderPeripheralActionButton('toggle', periph.id, periph.enabled ? i18n.t('peripheral-disable') : i18n.t('peripheral-enable'), periph.enabled ? 'btn-disable' : 'btn-enable') +
-                                this._renderPeripheralActionButton('delete', periph.id, i18n.t('peripheral-delete'), 'btn-delete') +
+                                this._renderPeripheralActionButton('edit', periph.id, i18n.t('peripheral-edit'), 'fb-btn-primary') +
+                                this._renderPeripheralActionButton('toggle', periph.id, periph.enabled ? i18n.t('peripheral-disable') : i18n.t('peripheral-enable'), periph.enabled ? 'fb-btn-warning' : 'fb-btn-success') +
+                                this._renderPeripheralActionButton('delete', periph.id, i18n.t('peripheral-delete'), 'fb-btn-danger') +
                             '</td></tr>';
                     });
                     tbody.innerHTML = html;

@@ -23,7 +23,6 @@ private:
     void handleAddUser(AsyncWebServerRequest* request);
     void handleUpdateUser(AsyncWebServerRequest* request);
     void handleDeleteUser(AsyncWebServerRequest* request);
-    void handleDeleteUserByPost(AsyncWebServerRequest* request);
     void handleGetOnlineUsers(AsyncWebServerRequest* request);
     void handleResetPassword(AsyncWebServerRequest* request);
 };

@@ -9,8 +9,8 @@ class WebHandlerContext;
 /**
  * @brief 系统管理路由处理器
  * 
- * 处理 /api/system/*, /api/network/*, /api/logs/*, /api/files/*,
- * /api/device/config 等系统管理路由
+ * 处理 /api/system/*, /api/network/*, /api/files/*, /api/config,
+ * /api/health, /api/filesystem 等系统核心路由
  */
 class SystemRouteHandler {
 public:
@@ -36,14 +36,10 @@ private:
     void handleSystemRestart(AsyncWebServerRequest* request);
     void handleNetworkConfig(AsyncWebServerRequest* request);
     void handleSaveNetworkConfig(AsyncWebServerRequest* request);
-    void handleGetLogsList(AsyncWebServerRequest* request);
-    void handleGetLogContent(AsyncWebServerRequest* request);
-    void handleDeleteLog(AsyncWebServerRequest* request);
     void handleGetFilesList(AsyncWebServerRequest* request);
-    void handleGetDeviceConfig(AsyncWebServerRequest* request);
-    void handleSaveDeviceConfig(AsyncWebServerRequest* request);
     void handleGetHealth(AsyncWebServerRequest* request);
-    void handleGetDeviceInfo(AsyncWebServerRequest* request);
+    void handleSystemMetrics(AsyncWebServerRequest* request);
+    void handleGetCapabilities(AsyncWebServerRequest* request);
 };
 
 #endif // SYSTEM_ROUTE_HANDLER_H

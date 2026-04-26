@@ -1,6 +1,9 @@
 #ifndef SCRIPT_ENGINE_H
 #define SCRIPT_ENGINE_H
 
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_RULE_SCRIPT
+
 #include <Arduino.h>
 #include <vector>
 
@@ -75,5 +78,7 @@ private:
     // 安全延时(内部喂 WDT + 超时检测)
     static bool scriptDelay(uint32_t ms, unsigned long scriptStartTime);
 };
+
+#endif // FASTBEE_ENABLE_RULE_SCRIPT
 
 #endif // SCRIPT_ENGINE_H

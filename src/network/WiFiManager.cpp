@@ -8,7 +8,10 @@
 #include "network/WiFiManager.h"
 #include "systems/LoggerSystem.h"
 #include "utils/NetworkUtils.h"
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_PERIPH_EXEC
 #include "core/PeriphExecManager.h"
+#endif
 #include <ArduinoJson.h>
 
 WiFiManager::WiFiManager() {
@@ -534,7 +537,9 @@ void WiFiManager::handleWiFiEvent(arduino_event_id_t event) {
             statusInfo.dnsServer = WiFi.dnsIP(0).toString();
             
             // 触发WiFi连接成功系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
             PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_WIFI_CONNECTED, statusInfo.ipAddress);
+#endif
             
             char buffer[100];
             snprintf(buffer, sizeof(buffer), "WiFi connected: %s", statusInfo.ipAddress.c_str());
@@ -545,7 +550,9 @@ void WiFiManager::handleWiFiEvent(arduino_event_id_t event) {
             statusInfo.status = NetworkStatus::DISCONNECTED;
             connecting = false;
             // 触发WiFi断开连接系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
             PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_WIFI_DISCONNECTED, "");
+#endif
             // 模式切换时的断开是预期行为，不记录警告
             if (modeTransitioning) {
                 LOG_DEBUG("WiFiManager: WiFi STA disconnected (mode transition)");
@@ -554,7 +561,9 @@ void WiFiManager::handleWiFiEvent(arduino_event_id_t event) {
                 // 非模式切换的断开，可能是连接失败
                 if (connectingStartTime > 0) {
                     // 曾尝试连接但失败了
+#if FASTBEE_ENABLE_PERIPH_EXEC
                     PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_WIFI_CONN_FAILED, "");
+#endif
                 }
             }
             triggerEvent(NetworkStatus::DISCONNECTED, "WiFi disconnected");

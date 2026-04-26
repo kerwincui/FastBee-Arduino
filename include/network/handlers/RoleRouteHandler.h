@@ -26,9 +26,6 @@ private:
     void handleDeleteRole(AsyncWebServerRequest* request);
     void handleGetRolePermissions(AsyncWebServerRequest* request);
     void handleSetRolePermissions(AsyncWebServerRequest* request);
-    void handleUpdateRoleByPost(AsyncWebServerRequest* request);
-    void handleDeleteRoleByPost(AsyncWebServerRequest* request);
-    void handleSetRolePermissionsByPost(AsyncWebServerRequest* request);
     void handleGetPermissions(AsyncWebServerRequest* request);
     void handleGetAuditLog(AsyncWebServerRequest* request);
     void handleClearAuditLog(AsyncWebServerRequest* request);

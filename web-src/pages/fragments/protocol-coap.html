@@ -1,0 +1,76 @@
+<form id="coap-form" class="fb-form">
+    <div class="fb-form-group fb-mb-3 fb-pb-3 fb-border-bottom">
+        <label class="fb-checkbox">
+            <input type="checkbox" id="coap-enabled"> <span
+                data-i18n="coap-enabled-label">启用CoAP</span>
+        </label>
+    </div>
+    <div class="config-form-grid">
+        <div class="config-form-column">
+            <div class="fb-form-group">
+                <label for="coap-server" data-i18n="coap-server-label">服务器地址</label>
+                <input type="text" id="coap-server" class=""
+                    value="coap://example.com">
+            </div>
+
+            <div class="fb-form-group">
+                <label for="coap-method" data-i18n="coap-method-label">方法</label>
+                <select id="coap-method" class="">
+                    <option value="GET">GET</option>
+                    <option value="POST" selected>POST</option>
+                    <option value="PUT">PUT</option>
+                    <option value="DELETE">DELETE</option>
+                </select>
+            </div>
+
+            <div class="fb-form-group">
+                <label for="coap-msg-type"
+                    data-i18n="coap-msg-type-label">消息类型</label>
+                <select id="coap-msg-type" class="">
+                    <option value="CON" data-i18n="coap-msg-type-con">需确认 (CON)
+                    </option>
+                    <option value="NON" data-i18n="coap-msg-type-non">无需确认 (NON)
+                    </option>
+                </select>
+            </div>
+        </div>
+
+        <div class="config-form-column">
+            <div class="fb-form-group">
+                <label for="coap-port" data-i18n="coap-port-label">端口</label>
+                <input type="number" id="coap-port" class=""
+                    value="5683" min="1" max="65535">
+            </div>
+
+            <div class="fb-form-group">
+                <label for="coap-path" data-i18n="coap-path-label">路径</label>
+                <input type="text" id="coap-path" class=""
+                    value="sensors/temperature">
+            </div>
+
+            <div class="fb-form-group">
+                <label for="coap-retransmit"
+                    data-i18n="coap-retransmit-label">重传次数</label>
+                <input type="number" id="coap-retransmit" class=""
+                    value="3" min="0" max="4">
+            </div>
+
+            <div class="fb-form-group">
+                <label for="coap-timeout"
+                    data-i18n="coap-timeout-label">超时时间(ms)</label>
+                <input type="number" id="coap-timeout" class=""
+                    value="5000" min="1000" max="30000">
+            </div>
+        </div>
+    </div>
+
+    <div class="message message-success fb-hidden" id="coap-success"
+        data-i18n="coap-save-ok">
+        CoAP配置保存成功！
+    </div>
+
+    <div class="fb-mt-4">
+        <button type="submit" class="fb-btn fb-btn-primary"
+            data-i18n="btn-save-config">保存配置</button>
+    </div>
+</form>

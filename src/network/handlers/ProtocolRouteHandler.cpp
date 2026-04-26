@@ -1,7 +1,12 @@
 #include "./network/handlers/ProtocolRouteHandler.h"
 #include "./network/handlers/HandlerUtils.h"
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_MODBUS
 #include "./network/handlers/ModbusRouteHandler.h"
+#endif
+#if FASTBEE_ENABLE_MQTT
 #include "./network/handlers/MqttRouteHandler.h"
+#endif
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
 #include "./protocols/ProtocolManager.h"
@@ -24,9 +29,14 @@ T clampProtocolValue(T value, T minVal, T maxVal) {
 }
 
 ProtocolRouteHandler::ProtocolRouteHandler(WebHandlerContext* ctx)
-    : ctx(ctx),
-      modbusHandler(std::unique_ptr<ModbusRouteHandler>(new ModbusRouteHandler(ctx))),
-      mqttHandler(std::unique_ptr<MqttRouteHandler>(new MqttRouteHandler(ctx))) {
+    : ctx(ctx)
+#if FASTBEE_ENABLE_MODBUS
+      , modbusHandler(std::unique_ptr<ModbusRouteHandler>(new ModbusRouteHandler(ctx)))
+#endif
+#if FASTBEE_ENABLE_MQTT
+      , mqttHandler(std::unique_ptr<MqttRouteHandler>(new MqttRouteHandler(ctx)))
+#endif
+{
 }
 
 ProtocolRouteHandler::~ProtocolRouteHandler() = default;
@@ -44,14 +54,18 @@ void ProtocolRouteHandler::setupRoutes(AsyncWebServer* server) {
     });
 
     // 委托给 ModbusRouteHandler 注册所有 /api/modbus/* 路由
+#if FASTBEE_ENABLE_MODBUS
     if (modbusHandler) {
         modbusHandler->setupRoutes(server);
     }
+#endif
 
     // 委托给 MqttRouteHandler 注册所有 /api/mqtt/* 路由
+#if FASTBEE_ENABLE_MQTT
     if (mqttHandler) {
         mqttHandler->setupRoutes(server);
     }
+#endif
 }
 
 void ProtocolRouteHandler::handleGetProtocolConfig(AsyncWebServerRequest* request) {
@@ -435,6 +449,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     bool mqttReconnected = false;
     bool mqttDisconnected = false;
     int mqttError = 0;
+#if FASTBEE_ENABLE_MQTT
     if (doc["mqtt"]["enabled"].as<bool>()) {
         ProtocolManager* pm = ctx->protocolManager;
         if (pm) {
@@ -453,9 +468,11 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
             mqttDisconnected = true;
         }
     }
+#endif
 
     // 保存成功后，根据Modbus启用状态处理
     bool modbusRestarted = false;
+#if FASTBEE_ENABLE_MODBUS
     if (doc["modbusRtu"]["enabled"].as<bool>()) {
         ProtocolManager* pm = ctx->protocolManager;
         if (pm) {
@@ -468,6 +485,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
             pm->stopModbus();
         }
     }
+#endif
 
     JsonDocument resp;
     resp["success"] = true;

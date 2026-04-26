@@ -1,9 +1,14 @@
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_PERIPH_EXEC
+
 #include "./network/handlers/PeriphExecRouteHandler.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "core/PeriphExecManager.h"
 #include "core/PeripheralManager.h"
+#if FASTBEE_ENABLE_MQTT
 #include "protocols/MQTTClient.h"
+#endif
 #include "protocols/ProtocolManager.h"
 #include <ArduinoJson.h>
 #include <AsyncJson.h>
@@ -96,7 +101,7 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
             if (rule.id == ruleId) {
                 // 找到规则，使用辅助方法完整序列化
                 String response = serializeRuleFull(rule);
-                request->send(200, "application/json", "{\"success\":true,\"data\":" + response + "}");
+                HandlerUtils::sendJsonSuccess(request, response);
                 return;
             }
         }
@@ -418,9 +423,7 @@ void PeriphExecRouteHandler::handleRunOnce(AsyncWebServerRequest* request) {
         doc["success"] = false;
         doc["message"] = "Rule not found";
     }
-    String output;
-    serializeJson(doc, output);
-    request->send(200, "application/json", output);
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 // ========== 获取静态事件列表 ==========
@@ -432,10 +435,7 @@ void PeriphExecRouteHandler::handleGetStaticEvents(AsyncWebServerRequest* reques
     }
 
     String eventsJson = PeriphExecManager::getStaticEventsJson();
-    
-    // 直接构建完整响应，避免嵌套反序列化问题
-    String output = "{\"success\":true,\"data\":" + eventsJson + "}";
-    request->send(200, "application/json", output);
+    HandlerUtils::sendJsonSuccess(request, eventsJson);
 }
 
 // ========== 获取动态事件列表（包含外设执行规则事件） ==========
@@ -448,10 +448,7 @@ void PeriphExecRouteHandler::handleGetDynamicEvents(AsyncWebServerRequest* reque
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     String eventsJson = mgr.getDynamicEventsJson();
-    
-    // 直接构建完整响应，避免嵌套反序列化问题
-    String output = "{\"success\":true,\"data\":" + eventsJson + "}";
-    request->send(200, "application/json", output);
+    HandlerUtils::sendJsonSuccess(request, eventsJson);
 }
 
 // ========== 获取事件分类列表 ==========
@@ -463,10 +460,7 @@ void PeriphExecRouteHandler::handleGetEventCategories(AsyncWebServerRequest* req
     }
 
     String categoriesJson = PeriphExecManager::getEventCategoriesJson();
-    
-    // 直接构建完整响应，避免嵌套反序列化问题
-    String output = "{\"success\":true,\"data\":" + categoriesJson + "}";
-    request->send(200, "application/json", output);
+    HandlerUtils::sendJsonSuccess(request, categoriesJson);
 }
 
 // ========== 获取触发类型列表 ==========
@@ -478,10 +472,7 @@ void PeriphExecRouteHandler::handleGetTriggerTypes(AsyncWebServerRequest* reques
     }
 
     String triggerTypesJson = PeriphExecManager::getValidTriggerTypes();
-    
-    // 直接构建完整响应，避免嵌套反序列化问题
-    String output = "{\"success\":true,\"data\":" + triggerTypesJson + "}";
-    request->send(200, "application/json", output);
+    HandlerUtils::sendJsonSuccess(request, triggerTypesJson);
 }
 
 // ========== JSON → PeriphExecRule 解析辅助 ==========
@@ -803,3 +794,5 @@ String PeriphExecRouteHandler::serializeRuleFull(const PeriphExecRule& rule) {
     serializeJson(ruleDoc, output);
     return output;
 }
+
+#endif // FASTBEE_ENABLE_PERIPH_EXEC

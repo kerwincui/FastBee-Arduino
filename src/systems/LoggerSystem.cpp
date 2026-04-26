@@ -14,11 +14,16 @@
  */
 
 #include "systems/LoggerSystem.h"
+#include "systems/HealthMonitor.h"
+#include "core/FastBeeFramework.h"
+#include "core/FeatureFlags.h"
 #include <Arduino.h>
 #include <vector>
 #include <string.h>
 #include <time.h>
 #include <core/SystemConstants.h>
+
+#if FASTBEE_ENABLE_LOGGER
 
 // 日志文件固定路径（与 SystemConstants::FileSystem 对应）
 static constexpr const char* LOG_FILE_PATH = "/logs/system.log";
@@ -39,6 +44,16 @@ LoggerSystem::LoggerSystem()
       initialized(false),
       espLogCaptureEnabled(false),   // 默认禁用 ESP 日志捕获（降低 LittleFS/堆碎片压力）
       logFileSizeLimit(8192) {      // 限制日志文件大小为 8KB
+    memset(_ringBuffer.data, 0, LOG_RING_BUFFER_SIZE);
+}
+
+LoggerSystem::~LoggerSystem() {
+    // 关机前 flush 缓冲数据
+    flushBuffer();
+    if (_logMutex) {
+        vSemaphoreDelete(_logMutex);
+        _logMutex = nullptr;
+    }
 }
 
 bool LoggerSystem::initialize() {
@@ -55,6 +70,15 @@ bool LoggerSystem::initialize() {
         while (!Serial) { delay(10); }
 #endif
     }
+
+    // 创建日志互斥量
+    if (!_logMutex) {
+        _logMutex = xSemaphoreCreateMutex();
+    }
+    memset(_ringBuffer.data, 0, LOG_RING_BUFFER_SIZE);
+    _ringBuffer.writePos = 0;
+    _ringBuffer.readPos = 0;
+    _ringBuffer.lastFlushMs = millis();
 
     initialized = true;
     
@@ -192,28 +216,31 @@ void LoggerSystem::log(LogLevel level, const char* message, const char* module) 
         outputStream->println(entry);
     }
 
-    // 追加写入日志文件（不频繁 begin/end，LittleFS 挂载后直接 open）
-    if (fileLoggingEnabled && initialized) {
-        static bool fileOpenFailedOnce = false;
-        // 检查日志文件大小，如果超过限制则旋转
-        if (getLogFileSize() >= logFileSizeLimit) {
-            rotateLogFile();
+    // 写入环形缓冲而非直接写文件
+    if (fileLoggingEnabled && initialized && _logMutex) {
+        // MemGuard: 低内存时限制文件日志写入
+        auto* fw = FastBeeFramework::getInstance();
+        HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+        if (monitor) {
+            if (monitor->isMemoryCritical()) {
+                return;
+            }
+            if (monitor->isMemorySevere() && level < LOG_ERROR) {
+                return;
+            }
         }
 
-        File logFile = LittleFS.open(LOG_FILE_PATH, FILE_APPEND);
-        if (!logFile) {
-            // LittleFS 可能因堆碎片/内存不足无法分配内部结构，持续重试会进一步恶化
-            fileLoggingEnabled = false;
-            if (!fileOpenFailedOnce) {
-                fileOpenFailedOnce = true;
-                if (serialEnabled && outputStream) {
-                    outputStream->println("[Logger] ERROR: Failed to open log file, file logging disabled");
-                }
+        size_t len = strlen(entry);
+        if (xSemaphoreTake(_logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            logToBuffer(entry, len);
+            logToBuffer("\n", 1);
+            
+            // 缓冲满 80% 时立即 flush
+            if (bufferedDataSize() >= LOG_FLUSH_THRESHOLD) {
+                flushBufferInternal();
             }
-            return;
+            xSemaphoreGive(_logMutex);
         }
-        logFile.println(entry);
-        logFile.close();
     }
 }
 
@@ -238,6 +265,71 @@ const char* LoggerSystem::getLevelString(LogLevel level) {
         case LOG_DEBUG:   return "DEBUG";
         case LOG_VERBOSE: return "VERB ";
         default:          return "?????";
+    }
+}
+
+// ── 环形缓冲实现 ─────────────────────────────────────────────────────────
+
+void LoggerSystem::logToBuffer(const char* entry, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        _ringBuffer.data[_ringBuffer.writePos] = entry[i];
+        _ringBuffer.writePos = (_ringBuffer.writePos + 1) % LOG_RING_BUFFER_SIZE;
+        // 写指针追上读指针，丢弃最旧数据
+        if (_ringBuffer.writePos == _ringBuffer.readPos) {
+            _ringBuffer.readPos = (_ringBuffer.readPos + 1) % LOG_RING_BUFFER_SIZE;
+        }
+    }
+}
+
+size_t LoggerSystem::bufferedDataSize() const {
+    if (_ringBuffer.writePos >= _ringBuffer.readPos) {
+        return _ringBuffer.writePos - _ringBuffer.readPos;
+    }
+    return LOG_RING_BUFFER_SIZE - _ringBuffer.readPos + _ringBuffer.writePos;
+}
+
+void LoggerSystem::checkLogFileSize() {
+    if (getLogFileSize() >= logFileSizeLimit) {
+        rotateLogFile();
+    }
+}
+
+void LoggerSystem::flushBufferInternal() {
+    size_t dataSize = bufferedDataSize();
+    if (dataSize == 0) return;
+    
+    File logFile = LittleFS.open(LOG_FILE_PATH, FILE_APPEND);
+    if (!logFile) {
+        fileLoggingEnabled = false;
+        if (serialEnabled && outputStream) {
+            outputStream->println("[Logger] ERROR: Failed to open log file during flush, file logging disabled");
+        }
+        return;
+    }
+    
+    // 批量写入
+    if (_ringBuffer.readPos < _ringBuffer.writePos) {
+        logFile.write((const uint8_t*)&_ringBuffer.data[_ringBuffer.readPos], dataSize);
+    } else {
+        // 环绕情况
+        size_t tailSize = LOG_RING_BUFFER_SIZE - _ringBuffer.readPos;
+        logFile.write((const uint8_t*)&_ringBuffer.data[_ringBuffer.readPos], tailSize);
+        logFile.write((const uint8_t*)&_ringBuffer.data[0], _ringBuffer.writePos);
+    }
+    
+    _ringBuffer.readPos = _ringBuffer.writePos;
+    _ringBuffer.lastFlushMs = millis();
+    logFile.close();
+    
+    // 检查文件大小（现有的 rotate 逻辑）
+    checkLogFileSize();
+}
+
+void LoggerSystem::flushBuffer() {
+    if (!_logMutex) return;
+    if (xSemaphoreTake(_logMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        flushBufferInternal();
+        xSemaphoreGive(_logMutex);
     }
 }
 
@@ -423,26 +515,16 @@ int LoggerSystem::espLogCallback(const char* format, va_list args) {
         buffer[len-1] = '\0';
     }
     
-    // 写入到日志文件
-    if (logger.fileLoggingEnabled && logger.initialized) {
-        static bool espFileOpenFailedOnce = false;
-        // 检查日志文件大小
-        if (logger.getLogFileSize() >= logger.logFileSizeLimit) {
-            logger.rotateLogFile();
-        }
-        
-        File logFile = LittleFS.open(LOG_FILE_PATH, FILE_APPEND);
-        if (!logFile) {
-            logger.fileLoggingEnabled = false;
-            if (!espFileOpenFailedOnce) {
-                espFileOpenFailedOnce = true;
-                if (logger.serialEnabled && logger.outputStream) {
-                    logger.outputStream->println("[Logger] ERROR: Failed to open log file from ESP log capture, file logging disabled");
-                }
+    // 写入到日志文件（通过环形缓冲）
+    if (logger.fileLoggingEnabled && logger.initialized && logger._logMutex) {
+        size_t bufLen = strlen(buffer);
+        if (xSemaphoreTake(logger._logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            logger.logToBuffer(buffer, bufLen);
+            logger.logToBuffer("\n", 1);
+            if (logger.bufferedDataSize() >= LOG_FLUSH_THRESHOLD) {
+                logger.flushBufferInternal();
             }
-        } else {
-            logFile.println(buffer);
-            logFile.close();
+            xSemaphoreGive(logger._logMutex);
         }
     }
     
@@ -486,14 +568,16 @@ void LoggerSystem::writeRawLog(const char* message) {
         return;
     }
     
-    // 检查日志文件大小
-    if (getLogFileSize() >= logFileSizeLimit) {
-        rotateLogFile();
-    }
-    
-    File logFile = LittleFS.open(LOG_FILE_PATH, FILE_APPEND);
-    if (logFile) {
-        logFile.println(message);
-        logFile.close();
+    // 通过环形缓冲写入
+    if (_logMutex && xSemaphoreTake(_logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        size_t len = strlen(message);
+        logToBuffer(message, len);
+        logToBuffer("\n", 1);
+        if (bufferedDataSize() >= LOG_FLUSH_THRESHOLD) {
+            flushBufferInternal();
+        }
+        xSemaphoreGive(_logMutex);
     }
 }
+
+#endif // FASTBEE_ENABLE_LOGGER

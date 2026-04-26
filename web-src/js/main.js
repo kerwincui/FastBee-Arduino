@@ -1,6 +1,5 @@
 // 应用主入口和初始化
-// 核心依赖（state.js, i18n-engine.js, i18n-zh-CN.js）已由 index.html 中的
-// <script defer> 标签按序加载，浏览器并行下载、按序执行，无需动态加载链
+// 核心依赖已合并为 app-bundle.js（单文件），index.html 中有 bundle 失败时的降级回退
 
 /**
  * 动态加载JS脚本，失败时自动重试一次（供模块加载等场景使用）
@@ -67,7 +66,7 @@ function _bootApp() {
     // 暴露全局 app 引用，供表格内 onclick 使用
     window.app = AppState;
 
-    // 如果英文语言需要额外加载英文翻译包（中文已由 defer 脚本加载）
+    // 如果英文语言需要额外加载英文翻译包（中文已由 bundle 包含）
     if (typeof i18n !== 'undefined' && i18n.currentLang === 'en') {
         _loadScript('./js/modules/i18n-en.js', function() {
             if (typeof i18n !== 'undefined' && i18n.updatePageText) {
@@ -77,22 +76,12 @@ function _bootApp() {
     }
 }
 
-// defer 脚本正常时：state.js → i18n-engine.js → i18n-zh-CN.js → main.js 按序执行
-// 但 mDNS 解析失败时 defer 脚本会静默跳过，需检测并回退到动态重试加载
+// 所有核心脚本已合并为 app-bundle.js，bundle 内按序执行无需额外动态加载
+// 若 bundle 加载成功，AppState 必然已定义，直接启动
 document.addEventListener('DOMContentLoaded', function() {
     if (typeof AppState !== 'undefined') {
-        // defer 脚本全部成功，直接启动
         _bootApp();
-    } else {
-        // 核心依赖未加载（网络间歇失败），回退到动态加载 + 自动重试
-        console.warn('[FastBee] Core scripts not loaded, retrying dynamically...');
-        _loadScript('./js/state.js', function() {
-            // state.js 成功，继续加载 i18n（容错：失败也启动）
-            _loadScript('./js/modules/i18n-engine.js', function() {
-                _loadScript('./js/modules/i18n-zh-CN.js', function() {
-                    _bootApp();
-                }, function() { _bootApp(); });
-            }, function() { _bootApp(); });
-        });
     }
+    // 若 AppState 未定义，说明 bundle 加载失败
+    // index.html 中的内联回退脚本会处理逐个加载，加载完成后 main.js 会再次执行
 });

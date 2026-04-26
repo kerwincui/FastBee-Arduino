@@ -1,13 +1,14 @@
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_PERIPH_EXEC
+
 #include "core/PeriphExecManager.h"
 #include "core/PeriphExecExecutor.h"
 #include "core/PeriphExecScheduler.h"
 #include "core/RuleScript.h"
 #include "core/FastBeeFramework.h"
 #include "core/ChipConfig.h"
-#include "protocols/ProtocolManager.h"
-#include "protocols/ModbusHandler.h"
-#include "protocols/MQTTClient.h"
 #include "systems/LoggerSystem.h"
+#include "systems/HealthMonitor.h"
 #include "core/PeripheralManager.h"
 
 namespace {
@@ -125,6 +126,12 @@ bool PeriphExecManager::initialize() {
     _scheduler->initialize(this, _executor.get());
 
     bool loaded = loadConfiguration();
+
+    // 配置加载后安全校验：检测并修正危险的任务数/轮询间隔组合
+    if (loaded && _scheduler) {
+        _scheduler->validateLoadedConfig();
+    }
+
     LOGGER.infof("[PeriphExec] Initialized, loaded %d rules (async: max %d tasks)",
                  (int)rules.size(), MAX_ASYNC_TASKS);
     return loaded;
@@ -667,6 +674,26 @@ void PeriphExecManager::setModbusRawSendCallback(std::function<String(const Stri
     _modbusRawSendCallback = callback;
 }
 
+void PeriphExecManager::setMqttIsConnectedCallback(MqttIsConnectedCallback cb) {
+    _mqttIsConnectedCb = cb;
+}
+
+void PeriphExecManager::setMqttQueueReportCallback(MqttQueueReportCallback cb) {
+    _mqttQueueReportCb = cb;
+}
+
+void PeriphExecManager::setModbusBuildSensorIdCallback(ModbusBuildSensorIdCallback cb) {
+    _modbusBuildSensorIdCb = cb;
+}
+
+void PeriphExecManager::setModbusDirectControlCallback(ModbusDirectControlCallback cb) {
+    _modbusDirectControlCb = cb;
+}
+
+void PeriphExecManager::setModbusDynamicEventsCallback(ModbusDynamicEventsCallback cb) {
+    _modbusDynamicEventsCb = cb;
+}
+
 void PeriphExecManager::checkButtonEvents() {
     if (_scheduler) _scheduler->checkButtonEvents();
 }
@@ -691,14 +718,9 @@ void PeriphExecManager::retryPendingReports() {
     unsigned long now = millis();
     if (_lastPendingReportRetry > 0 && (now - _lastPendingReportRetry) < PENDING_REPORT_RETRY_MS) return;
 
-    // 检查 MQTT 连接状态
-    MQTTClient* mqtt = nullptr;
-    auto* fw = FastBeeFramework::getInstance();
-    if (fw) {
-        auto* pm = fw->getProtocolManager();
-        if (pm) mqtt = pm->getMQTTClient();
-    }
-    if (!mqtt || !mqtt->getIsConnected()) return;
+    // 通过回调检查 MQTT 连接状态
+    if (!_mqttIsConnectedCb || !_mqttIsConnectedCb()) return;
+    if (!_mqttQueueReportCb) return;
 
     _lastPendingReportRetry = now;
 
@@ -707,7 +729,7 @@ void PeriphExecManager::retryPendingReports() {
     toRetry.swap(_pendingReports);
 
     for (const auto& report : toRetry) {
-        bool ok = mqtt->queueReportData(report);
+        bool ok = _mqttQueueReportCb(report);
         LOGGER.infof("[PeriphExec] Retry pending report: %s", ok ? "queued" : "failed");
     }
 }
@@ -1176,9 +1198,18 @@ void PeriphExecManager::executeSyncWithCompletion(const PeriphExecRule& rule, co
 // ========== 内部调度接口实现 ==========
 
 void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailable) {
-    // 堆守卫：低堆时跳过定时触发，防止 STL 容器分配导致 abort()
-    if (ESP.getFreeHeap() < 20000) {
-        return;
+    // MemGuard CRITICAL 安全底线：Scheduler 已做动态降频，此处仅保留 CRITICAL 防护
+    // 防止被其他路径直接调用时跳过内存保护
+    {
+        auto* fw = FastBeeFramework::getInstance();
+        HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+        if (monitor && monitor->isMemoryCritical()) {
+            return;  // CRITICAL: 完全跳过轮询
+        }
+        if (!monitor && ESP.getFreeHeap() < 15000) {
+            // 守卫回退：HealthMonitor 不可用时的硬编码阈值
+            return;
+        }
     }
 
     std::vector<String> triggeredRuleIds;
@@ -1702,13 +1733,7 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
         reportArr.add(v);
     }
 
-    // 获取 ModbusHandler 用于 sensorId 映射
-    ModbusHandler* modbus = nullptr;
-    auto* _fw = FastBeeFramework::getInstance();
-    if (_fw) {
-        auto* _pm = _fw->getProtocolManager();
-        if (_pm) modbus = _pm->getModbusHandler();
-    }
+    // 获取 Modbus sensorId 构建回调（用于动作结果中的 sensorId 映射）
 
     for (auto& mi : matchedItems) {
         // 锁外逐个获取规则副本并同步执行（每次只持有一份拷贝）
@@ -1733,8 +1758,8 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
             String reportId = ar.targetPeriphId.isEmpty() ? mi.itemId : ar.targetPeriphId;
             String reportValue = ar.actualValue.isEmpty() ? mi.itemValue : ar.actualValue;
 
-            // Modbus 目标 sensorId 映射
-            if (modbus && ar.targetPeriphId.startsWith("modbus:")) {
+            // Modbus 目标 sensorId 映射（通过回调）
+            if (_modbusBuildSensorIdCb && ar.targetPeriphId.startsWith("modbus:")) {
                 PeripheralManager& periMgr = PeripheralManager::getInstance();
                 const PeripheralConfig* pcfg = periMgr.getPeripheral(ar.targetPeriphId);
                 if (pcfg && pcfg->isModbusPeripheral() && pcfg->params.modbus.sensorId[0] != '\0') {
@@ -1744,7 +1769,7 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
                         channel = ar.actualValue.substring(0, sepIdx).toInt();
                         reportValue = ar.actualValue.substring(sepIdx + 1);
                     }
-                    String sid = modbus->buildSensorId(pcfg->params.modbus.deviceIndex, channel);
+                    String sid = _modbusBuildSensorIdCb(pcfg->params.modbus.deviceIndex, channel);
                     if (!sid.isEmpty()) reportId = sid;
                 }
             }
@@ -1762,188 +1787,26 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
         }
     }
 
-    // 未匹配项：尝试 sensorId 直接 Modbus 控制（支持所有设备类型及功能后缀）
+    // 未匹配项：尝试通过 Modbus 直接控制回调处理，或回退到直接外设控制
     PeripheralManager& periMgr = PeripheralManager::getInstance();
     for (size_t i = 0; i < unmatchedIds.size(); i++) {
-        ModbusHandler::SensorIdMatch match;
-        if (modbus && modbus->findBySensorIdEx(unmatchedIds[i], match)) {
-            const ModbusSubDevice& dev = modbus->getSubDevice(match.deviceIndex);
-            char periphIdBuf[16];
-            snprintf(periphIdBuf, sizeof(periphIdBuf), "modbus:%d", match.deviceIndex);
-            String periphId(periphIdBuf);
-            bool writeOk = false;
-            bool state = false;
-            String devType(dev.deviceType);
-            String reportValue = unmatchedValues[i];
-
-            if (match.action.isEmpty()) {
-                // ===== 标准通道匹配（_chN 或单通道精确匹配）=====
-                if (devType == "relay") {
-                    if (!tryParseBoolLike(unmatchedValues[i], state)) state = false;
-                    bool value = dev.ncMode ? !state : state;
-                    uint16_t addr = dev.coilBase + match.channel;
-                    LOGGER.infof("[PeriphExec] DirectCtrl relay id='%s' ch=%d userState=%d ncMode=%d addr=%d proto=%d",
-                        unmatchedIds[i].c_str(), match.channel, state, dev.ncMode, addr, dev.controlProtocol);
-                    if (dev.controlProtocol == 0) {
-                        writeOk = periMgr.writeModbusCoil(periphId, addr, value);
-                    } else {
-                        writeOk = periMgr.writeModbusReg(periphId, addr, value ? 1 : 0);
-                    }
-                    reportValue = state ? "1" : "0";
-                } else if (devType == "pwm") {
-                    uint16_t regAddr = dev.pwmRegBase + match.channel;
-                    uint16_t regVal = (uint16_t)unmatchedValues[i].toInt();
-                    LOGGER.infof("[PeriphExec] DirectCtrl pwm id='%s' ch=%d regAddr=%d val=%d",
-                        unmatchedIds[i].c_str(), match.channel, regAddr, regVal);
-                    writeOk = periMgr.writeModbusReg(periphId, regAddr, regVal);
-                } else if (devType == "pid") {
-                    // 单通道 PID：默认写 SV（pidAddrs[1]）
-                    uint16_t regAddr = dev.pidAddrs[1];
-                    uint16_t regVal = (uint16_t)unmatchedValues[i].toInt();
-                    LOGGER.infof("[PeriphExec] DirectCtrl pid id='%s' → SV regAddr=%d val=%d",
-                        unmatchedIds[i].c_str(), regAddr, regVal);
-                    writeOk = periMgr.writeModbusReg(periphId, regAddr, regVal);
-                } else if (devType == "motor") {
-                    // 单通道 motor：默认写正转寄存器
-                    uint16_t regAddr = dev.motorRegs[0];
-                    uint16_t regVal = (uint16_t)unmatchedValues[i].toInt();
-                    LOGGER.infof("[PeriphExec] DirectCtrl motor id='%s' → default regAddr=%d val=%d",
-                        unmatchedIds[i].c_str(), regAddr, regVal);
-                    writeOk = periMgr.writeModbusReg(periphId, regAddr, regVal);
-                }
-            } else if (match.action == "all") {
-                // ===== 批量控制：_all =====
-                if (devType == "relay") {
-                    if (!tryParseBoolLike(unmatchedValues[i], state)) state = false;
-                    bool value = dev.ncMode ? !state : state;
-                    LOGGER.infof("[PeriphExec] DirectCtrl relay batch id='%s' state=%d ncMode=%d",
-                        unmatchedIds[i].c_str(), state, dev.ncMode);
-                    // 优先使用 batchRegister
-                    if (dev.batchRegister > 0) {
-                        if (dev.batchRegType == 1) {
-                            // 命令模式：1=全开 0=全关
-                            writeOk = periMgr.writeModbusReg(periphId, dev.batchRegister, value ? 1 : 0);
-                        } else {
-                            // 位图模式：全1=全开 0=全关
-                            uint16_t bitmask = (dev.channelCount >= 16) ? 0xFFFF : (uint16_t)((1 << dev.channelCount) - 1);
-                            writeOk = periMgr.writeModbusReg(periphId, dev.batchRegister, value ? bitmask : 0);
-                        }
-                    } else {
-                        // 逐通道降级
-                        writeOk = true;
-                        for (uint8_t ch = 0; ch < dev.channelCount; ch++) {
-                            uint16_t addr = dev.coilBase + ch;
-                            bool ok = (dev.controlProtocol == 0)
-                                ? periMgr.writeModbusCoil(periphId, addr, value)
-                                : periMgr.writeModbusReg(periphId, addr, value ? 1 : 0);
-                            if (!ok) writeOk = false;
-                        }
-                    }
-                    reportValue = state ? "1" : "0";
-                    // 批量操作：上报每个通道独立状态
-                    {
-                        String stateStr = state ? "1" : "0";
-                        String remarkText = state ? "\xE5\xB7\xB2\xE6\x89\x93\xE5\xBC\x80" : "\xE5\xB7\xB2\xE5\x85\xB3\xE9\x97\xAD";  // 已打开 / 已关闭
-                        for (uint8_t ch = 0; ch < dev.channelCount; ch++) {
-                            String chSid;
-                            if (modbus) {
-                                chSid = modbus->buildSensorId(match.deviceIndex, ch);
-                            } else {
-                                char chBuf[32];
-                                snprintf(chBuf, sizeof(chBuf), "%s_ch%d", unmatchedIds[i].c_str(), ch);
-                                chSid = chBuf;
-                            }
-                            JsonObject chReport = reportArr.add<JsonObject>();
-                            chReport["id"] = chSid;
-                            chReport["value"] = stateStr;
-                            chReport["remark"] = remarkText;
-                        }
-                        LOGGER.infof("[PeriphExec] Relay batch reported %d channels", dev.channelCount);
-                        continue;  // 跳过下方通用 reportItem 构建
-                    }
-                } else if (devType == "pwm") {
-                    // PWM 批量：所有通道设为相同值
-                    uint16_t regVal = (uint16_t)unmatchedValues[i].toInt();
-                    LOGGER.infof("[PeriphExec] DirectCtrl pwm batch id='%s' val=%d channels=%d",
-                        unmatchedIds[i].c_str(), regVal, dev.channelCount);
-                    writeOk = true;
-                    for (uint8_t ch = 0; ch < dev.channelCount; ch++) {
-                        uint16_t regAddr = dev.pwmRegBase + ch;
-                        bool ok = periMgr.writeModbusReg(periphId, regAddr, regVal);
-                        if (!ok) writeOk = false;
-                    }
-                } else if (devType == "pid") {
-                    // PID 批量：写 SV
-                    uint16_t regAddr = dev.pidAddrs[1];
-                    uint16_t regVal = (uint16_t)unmatchedValues[i].toInt();
-                    LOGGER.infof("[PeriphExec] DirectCtrl pid batch id='%s' → SV regAddr=%d val=%d",
-                        unmatchedIds[i].c_str(), regAddr, regVal);
-                    writeOk = periMgr.writeModbusReg(periphId, regAddr, regVal);
-                }
-            } else if (devType == "motor") {
-                // ===== 电机功能后缀 =====
-                if (match.action == "oper") {
-                    // _oper 枚举: 0=停止 1=正转 2=反转
-                    int operVal = unmatchedValues[i].toInt();
-                    int regIdx = 2;  // 默认停止
-                    if (operVal == 1) regIdx = 0;       // 正转
-                    else if (operVal == 2) regIdx = 1;  // 反转
-                    uint16_t regAddr = dev.motorRegs[regIdx];
-                    LOGGER.infof("[PeriphExec] DirectCtrl motor id='%s' oper=%d → regIdx=%d regAddr=%d",
-                        unmatchedIds[i].c_str(), operVal, regIdx, regAddr);
-                    writeOk = periMgr.writeModbusReg(periphId, regAddr, 1);
-                } else {
-                    // _spd / _pls: channel 已是 motorRegs 索引
-                    uint16_t regAddr = dev.motorRegs[match.channel];
-                    uint16_t regVal = (uint16_t)unmatchedValues[i].toInt();
-                    LOGGER.infof("[PeriphExec] DirectCtrl motor id='%s' action='%s' regAddr=%d val=%d",
-                        unmatchedIds[i].c_str(), match.action.c_str(), regAddr, regVal);
-                    writeOk = periMgr.writeModbusReg(periphId, regAddr, regVal);
-                }
-            } else if (devType == "pid") {
-                // ===== PID 功能后缀：_sv/_p/_i/_d（可写）, _pv/_out（只读跳过）=====
-                if (match.action == "pv" || match.action == "out") {
-                    LOGGER.warningf("[PeriphExec] PID '%s' is read-only, skip write", unmatchedIds[i].c_str());
-                    writeOk = false;
-                } else {
-                    uint16_t regAddr = dev.pidAddrs[match.channel];  // channel = pidAddrs 索引
-                    uint16_t regVal = (uint16_t)unmatchedValues[i].toInt();
-                    LOGGER.infof("[PeriphExec] DirectCtrl pid id='%s' action='%s' regAddr=%d val=%d",
-                        unmatchedIds[i].c_str(), match.action.c_str(), regAddr, regVal);
-                    writeOk = periMgr.writeModbusReg(periphId, regAddr, regVal);
-                }
-            }
-
-            LOGGER.infof("[PeriphExec] Action completed: direct Modbus id='%s' type=%s action='%s' → result=%s",
-                unmatchedIds[i].c_str(), devType.c_str(), match.action.c_str(), writeOk ? "SUCCESS" : "FAILED");
-
-            // 控制成功后触发 mc: 事件（支持事件触发型规则链式执行）
-            if (writeOk) {
-                char mcIdBuf[16];
-                snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", match.deviceIndex);
-                char mcDataBuf[160];
-                snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"id\":\"%s\",\"v\":\"%s\"}",
-                    match.deviceIndex, unmatchedIds[i].c_str(), reportValue.c_str());
-                triggerEventById(String(mcIdBuf), String(mcDataBuf));
-            }
-
-            JsonObject reportItem = reportArr.add<JsonObject>();
-            reportItem["id"] = unmatchedIds[i];
-            reportItem["value"] = reportValue;
-            reportItem["remark"] = writeOk ? "direct_modbus" : "modbus_error";
-        } else {
-            const PeripheralConfig* directCfg = periMgr.getPeripheral(unmatchedIds[i]);
-            String actualValue = unmatchedValues[i];
-            bool directOk = false;
-            if (directCfg) {
-                directOk = executeDirectOutputCommand(periMgr, *directCfg, unmatchedValues[i], actualValue);
-            }
-
-            JsonObject reportItem = reportArr.add<JsonObject>();
-            reportItem["id"] = unmatchedIds[i];
-            reportItem["value"] = actualValue;
-            reportItem["remark"] = directOk ? "direct_peripheral" : "no matching rule";
+        // 优先尝试 Modbus 直接控制回调（协议层注入）
+        if (_modbusDirectControlCb && _modbusDirectControlCb(unmatchedIds[i], unmatchedValues[i], reportArr)) {
+            continue;  // Modbus 回调已处理
         }
+
+        // 回退：尝试直接外设控制
+        const PeripheralConfig* directCfg = periMgr.getPeripheral(unmatchedIds[i]);
+        String actualValue = unmatchedValues[i];
+        bool directOk = false;
+        if (directCfg) {
+            directOk = executeDirectOutputCommand(periMgr, *directCfg, unmatchedValues[i], actualValue);
+        }
+
+        JsonObject reportItem = reportArr.add<JsonObject>();
+        reportItem["id"] = unmatchedIds[i];
+        reportItem["value"] = actualValue;
+        reportItem["remark"] = directOk ? "direct_peripheral" : "no matching rule";
     }
 
     String result;
@@ -1984,31 +1847,9 @@ String PeriphExecManager::getDynamicEventsJsonInternal() {
         obj["isDynamic"] = true;
     }
 
-    // 添加 Modbus 控制类子设备作为动态事件（mc:deviceIndex 格式）
-    auto* fw = FastBeeFramework::getInstance();
-    if (fw) {
-        auto* protMgr = fw->getProtocolManager();
-        if (protMgr) {
-            ModbusHandler* modbus = protMgr->getModbusHandler();
-            if (modbus && modbus->getMode() == MODBUS_MASTER) {
-                uint8_t devCount = modbus->getSubDeviceCount();
-                for (uint8_t i = 0; i < devCount; i++) {
-                    const ModbusSubDevice& dev = modbus->getSubDevice(i);
-                    if (!dev.enabled) continue;
-                    String devType = String(dev.deviceType);
-                    // 只添加控制类设备（非采集类）
-                    if (devType == "relay" || devType == "pwm" || devType == "pid" || devType == "motor") {
-                        JsonObject obj = arr.add<JsonObject>();
-                        obj["id"] = "mc:" + String(i);
-                        obj["name"] = String(dev.name);
-                        obj["category"] = "Modbus子设备";
-                        obj["deviceType"] = devType;
-                        obj["channelCount"] = dev.channelCount;
-                        obj["isDynamic"] = true;
-                    }
-                }
-            }
-        }
+    // 通过回调添加 Modbus 控制类子设备作为动态事件（mc:deviceIndex 格式）
+    if (_modbusDynamicEventsCb) {
+        _modbusDynamicEventsCb(arr);
     }
 
     String result;
@@ -2068,3 +1909,5 @@ bool PeriphExecManager::evaluateCondition(const String& value, uint8_t op, const
 String PeriphExecManager::generateUniqueId() {
     return "exec_" + String(millis());
 }
+
+#endif // FASTBEE_ENABLE_PERIPH_EXEC

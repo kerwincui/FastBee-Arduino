@@ -31,16 +31,6 @@ std::vector<String> RoleRouteHandler::parsePermissionList(const String& permsPar
 }
 
 void RoleRouteHandler::setupRoutes(AsyncWebServer* server) {
-    // POST 子路由（必须在 /api/roles 之前注册）
-    server->on("/api/roles/update", HTTP_POST,
-              [this](AsyncWebServerRequest* request) { handleUpdateRoleByPost(request); });
-
-    server->on("/api/roles/delete", HTTP_POST,
-              [this](AsyncWebServerRequest* request) { handleDeleteRoleByPost(request); });
-
-    server->on("/api/roles/permissions", HTTP_POST,
-              [this](AsyncWebServerRequest* request) { handleSetRolePermissionsByPost(request); });
-
     server->on("/api/permissions", HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetPermissions(request); });
 
@@ -132,7 +122,6 @@ void RoleRouteHandler::handleGetRole(AsyncWebServerRequest* request) {
 
     String json = ctx->roleManager->roleToJson(roleId);
     AsyncWebServerResponse* resp = request->beginResponse(200, "application/json", json);
-    resp->addHeader("Access-Control-Allow-Origin", "*");
     request->send(resp);
 }
 
@@ -290,127 +279,6 @@ void RoleRouteHandler::handleSetRolePermissions(AsyncWebServerRequest* request) 
     ctx->sendSuccess(request, "Permissions updated");
 }
 
-void RoleRouteHandler::handleUpdateRoleByPost(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "role.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
-
-    String roleId = ctx->getParamValue(request, "id", "");
-    if (roleId.isEmpty()) {
-        ctx->sendBadRequest(request, "Role id is required");
-        return;
-    }
-
-    if (!ctx->roleManager || !ctx->roleManager->roleExists(roleId)) {
-        ctx->sendNotFound(request);
-        return;
-    }
-
-    if (roleId == "admin") {
-        ctx->sendError(request, 400, "Cannot modify admin role");
-        return;
-    }
-
-    String name = ctx->getParamValue(request, "name", "");
-    String desc = ctx->getParamValue(request, "description", "");
-
-    if (!ctx->roleManager->updateRole(roleId, name, desc)) {
-        ctx->sendError(request, 400, "Failed to save role (storage error)");
-        return;
-    }
-
-    AuthResult ar = ctx->authenticateRequest(request);
-    if (ctx->authManager) {
-        static_cast<AuthManager*>(ctx->authManager)->recordAudit(
-            ar.username, "role.edit", roleId, "Updated role info",
-            true, ctx->getClientIP(request));
-    }
-    ctx->sendSuccess(request, "Role updated");
-}
-
-void RoleRouteHandler::handleDeleteRoleByPost(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "role.delete")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
-
-    String roleId = ctx->getParamValue(request, "id", "");
-    if (roleId.isEmpty()) {
-        ctx->sendBadRequest(request, "Role id is required");
-        return;
-    }
-
-    if (!ctx->roleManager) {
-        ctx->sendError(request, 500, "Role service unavailable");
-        return;
-    }
-
-    if (roleId == "admin") {
-        ctx->sendError(request, 400, "Cannot delete admin role");
-        return;
-    }
-
-    if (!ctx->roleManager->roleExists(roleId)) {
-        ctx->sendNotFound(request);
-        return;
-    }
-
-    if (!ctx->roleManager->deleteRole(roleId)) {
-        ctx->sendError(request, 400, "Failed to delete role");
-        return;
-    }
-
-    AuthResult ar = ctx->authenticateRequest(request);
-    if (ctx->authManager) {
-        static_cast<AuthManager*>(ctx->authManager)->recordAudit(
-            ar.username, "role.delete", roleId, "Deleted role",
-            true, ctx->getClientIP(request));
-    }
-    ctx->sendSuccess(request, "Role deleted");
-}
-
-void RoleRouteHandler::handleSetRolePermissionsByPost(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "role.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
-
-    String roleId = ctx->getParamValue(request, "id", "");
-    if (roleId.isEmpty()) {
-        ctx->sendBadRequest(request, "Role id is required");
-        return;
-    }
-
-    if (!ctx->roleManager || !ctx->roleManager->roleExists(roleId)) {
-        ctx->sendNotFound(request);
-        return;
-    }
-
-    if (roleId == "admin") {
-        ctx->sendError(request, 400, "Cannot modify admin role permissions");
-        return;
-    }
-
-    String permsParam = ctx->getParamValue(request, "permissions", "");
-    std::vector<String> permList = parsePermissionList(permsParam);
-
-    if (!ctx->roleManager->setRolePermissions(roleId, permList)) {
-        ctx->sendError(request, 400, "Failed to set permissions");
-        return;
-    }
-
-    AuthResult ar = ctx->authenticateRequest(request);
-    if (ctx->authManager) {
-        char buf[80];
-        snprintf(buf, sizeof(buf), "Set %u permissions", (unsigned)permList.size());
-        static_cast<AuthManager*>(ctx->authManager)->recordAudit(
-            ar.username, "role.set_permissions", roleId, buf,
-            true, ctx->getClientIP(request));
-    }
-    ctx->sendSuccess(request, "Permissions updated");
-}
-
 void RoleRouteHandler::handleGetPermissions(AsyncWebServerRequest* request) {
     if (!ctx->checkPermission(request, "role.view")) {
         ctx->sendUnauthorized(request);
@@ -453,7 +321,6 @@ void RoleRouteHandler::handleGetAuditLog(AsyncWebServerRequest* request) {
 
     String json = static_cast<AuthManager*>(ctx->authManager)->getAuditLogJson((size_t)limit);
     AsyncWebServerResponse* resp = request->beginResponse(200, "application/json", json);
-    resp->addHeader("Access-Control-Allow-Origin", "*");
     request->send(resp);
 }
 

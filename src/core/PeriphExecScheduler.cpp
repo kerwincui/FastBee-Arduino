@@ -1,10 +1,17 @@
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_PERIPH_EXEC
+
 #include "core/PeriphExecScheduler.h"
 #include "core/PeriphExecManager.h"
 #include "core/PeriphExecExecutor.h"
 #include "core/FastBeeFramework.h"
 #include "protocols/ProtocolManager.h"
+#if FASTBEE_ENABLE_MODBUS
 #include "protocols/ModbusHandler.h"
+#endif
+#if FASTBEE_ENABLE_MQTT
 #include "protocols/MQTTClient.h"
+#endif
 #include "systems/LoggerSystem.h"
 #include "core/PeripheralManager.h"
 #include <WiFi.h>
@@ -28,21 +35,147 @@ void PeriphExecScheduler::initialize(PeriphExecManager* manager, PeriphExecExecu
     _executor = executor;
 }
 
+// ========== 配置安全校验 ==========
+
+void PeriphExecScheduler::validateLoadedConfig() {
+    if (!_manager) return;
+
+    auto& rulesMap = _manager->getRules();
+
+    // 统计活跃定时/轮询任务数（enabled 且触发类型为 TIMER 或 POLL）
+    uint8_t activeTimerTaskCount = 0;
+    for (auto& kv : rulesMap) {
+        if (!kv.second.enabled) continue;
+        for (const auto& trigger : kv.second.triggers) {
+            if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::TIMER_TRIGGER) ||
+                trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER)) {
+                activeTimerTaskCount++;
+                break;  // 每个规则只计数一次
+            }
+        }
+    }
+
+    // 校验活跃任务数上限
+    if (activeTimerTaskCount > MAX_ACTIVE_TASKS) {
+        LOGGER.warningf("[WARN] Active timer/poll tasks (%d) exceeds max (%d), "
+                        "excess rules may cause resource pressure",
+                        activeTimerTaskCount, MAX_ACTIVE_TASKS);
+    } else if (activeTimerTaskCount > WARN_TASK_THRESHOLD) {
+        LOGGER.warningf("[WARN] High number of active timer/poll tasks: %d (threshold=%d)",
+                        activeTimerTaskCount, WARN_TASK_THRESHOLD);
+    }
+
+    // 遍历所有规则，校验并修正危险的轮询间隔
+    bool configModified = false;
+    for (auto& kv : rulesMap) {
+        if (!kv.second.enabled) continue;
+
+        for (auto& trigger : kv.second.triggers) {
+            if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::TIMER_TRIGGER) &&
+                trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER)) {
+                continue;
+            }
+
+            uint32_t intervalMs = static_cast<uint32_t>(trigger.intervalSec) * 1000UL;
+
+            // 绝对下限：轮询间隔 < 5s 强制修正为 5s
+            if (intervalMs < MIN_POLL_INTERVAL_MS) {
+                LOGGER.warningf("[WARN] Poll interval too low (%lus) for rule '%s', "
+                                "forced to %lus (absolute minimum)",
+                                (unsigned long)trigger.intervalSec,
+                                kv.second.name.c_str(),
+                                (unsigned long)(MIN_POLL_INTERVAL_MS / 1000));
+                trigger.intervalSec = MIN_POLL_INTERVAL_MS / 1000;
+                configModified = true;
+            }
+            // 危险组合：活跃任务 > 8 且轮询间隔 < 10s
+            else if (activeTimerTaskCount > WARN_TASK_THRESHOLD &&
+                     intervalMs < 10000) {
+                LOGGER.warningf("[WARN] Poll interval too aggressive (%lus with %d tasks) "
+                                "for rule '%s', adjusted to 30s",
+                                (unsigned long)trigger.intervalSec,
+                                activeTimerTaskCount,
+                                kv.second.name.c_str());
+                trigger.intervalSec = SAFE_POLL_INTERVAL_MS / 1000;
+                configModified = true;
+            }
+        }
+    }
+
+    if (configModified) {
+        LOGGER.info("[PeriphExec] Config auto-corrected for safety, "
+                    "changes apply to runtime only (file unchanged)");
+    }
+
+    LOGGER.infof("[PeriphExec] Config validation complete: %d active timer/poll tasks",
+                 activeTimerTaskCount);
+}
+
 // ========== 定时触发 ==========
+
+uint32_t PeriphExecScheduler::getDynamicCheckPeriod(MemoryGuardLevel level) {
+    switch (level) {
+        case MemoryGuardLevel::WARN:    return CHECK_PERIOD_WARN_MS;
+        case MemoryGuardLevel::SEVERE:  return CHECK_PERIOD_SEVERE_MS;
+        case MemoryGuardLevel::CRITICAL: return CHECK_PERIOD_SEVERE_MS;  // CRITICAL 由 checkTimers 单独处理
+        default:                        return CHECK_PERIOD_NORMAL_MS;
+    }
+}
 
 void PeriphExecScheduler::checkTimers() {
     unsigned long now = millis();
 
-    // 每秒检查一次
-    if (now - _lastTimerCheck < 1000) return;
-    _lastTimerCheck = now;
-
     if (!_manager) return;
+
+    // ========== 动态降频：根据 MemGuard 级别调整检查周期 ==========
+    MemoryGuardLevel currentLevel = MemoryGuardLevel::NORMAL;
+    auto* fw = FastBeeFramework::getInstance();
+    if (fw) {
+        HealthMonitor* monitor = fw->getHealthMonitor();
+        if (monitor) {
+            currentLevel = monitor->getMemoryGuardLevel();
+        }
+    }
+
+    // CRITICAL: 暂停非关键轮询，直接返回
+    if (currentLevel == MemoryGuardLevel::CRITICAL) {
+        // 仅在等级变化时输出日志，避免周期性刷屏
+        if (_lastMemGuardLevel != MemoryGuardLevel::CRITICAL) {
+            LOGGER.warning("[PeriphExec] MemGuard CRITICAL — non-critical polling suspended");
+        }
+        _lastMemGuardLevel = currentLevel;
+        _currentCheckPeriodMs = CHECK_PERIOD_SEVERE_MS;
+        return;
+    }
+
+    // 等级变化时更新检查周期并输出日志
+    if (currentLevel != _lastMemGuardLevel) {
+        _currentCheckPeriodMs = getDynamicCheckPeriod(currentLevel);
+        const char* prevName = "NORMAL";
+        const char* curName = "NORMAL";
+        switch (_lastMemGuardLevel) {
+            case MemoryGuardLevel::WARN:    prevName = "WARN"; break;
+            case MemoryGuardLevel::SEVERE:  prevName = "SEVERE"; break;
+            case MemoryGuardLevel::CRITICAL: prevName = "CRITICAL"; break;
+            default: break;
+        }
+        switch (currentLevel) {
+            case MemoryGuardLevel::WARN:    curName = "WARN"; break;
+            case MemoryGuardLevel::SEVERE:  curName = "SEVERE"; break;
+            default: break;
+        }
+        LOGGER.infof("[PeriphExec] MemGuard level changed: %s -> %s, check period=%lums",
+                     prevName, curName, (unsigned long)_currentCheckPeriodMs);
+        _lastMemGuardLevel = currentLevel;
+    }
+
+    // 按动态周期检查
+    if (now - _lastTimerCheck < _currentCheckPeriodMs) return;
+    _lastTimerCheck = now;
 
     // 预先获取 ModbusHandler 状态（避免在锁内调用）
     ModbusHandler* modbus = nullptr;
     bool modbusAvailable = false;
-    auto* fw = FastBeeFramework::getInstance();
     if (fw) {
         auto* protMgr = fw->getProtocolManager();
         if (protMgr) {
@@ -613,3 +746,5 @@ MQTTClient* PeriphExecScheduler::getMqttClient() {
     }
     return nullptr;
 }
+
+#endif // FASTBEE_ENABLE_PERIPH_EXEC

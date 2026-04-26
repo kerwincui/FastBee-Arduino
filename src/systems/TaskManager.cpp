@@ -9,6 +9,10 @@
 #include <core/SystemConstants.h>
 #include <core/FeatureFlags.h>
 #include "systems/LoggerSystem.h"
+#if FASTBEE_ENABLE_HEALTH_MONITOR
+#include "systems/HealthMonitor.h"
+#include "core/FastBeeFramework.h"
+#endif
 #include <esp_task_wdt.h>
 
 TaskManager::TaskManager() {
@@ -69,8 +73,14 @@ bool TaskManager::addTask(const String& name, TaskFunction func, void* param,
     newTask.executionCount = 0;
     newTask.lastExecutionTime = 0;
     newTask.maxExecutionTime = 0;
+    newTask.totalExecutionTime = 0;
     
-    tasks.push_back(newTask);
+    // 有序插入：高优先级排在前面（CRITICAL=3 > HIGH=2 > NORMAL=1 > LOW=0）
+    auto it = tasks.begin();
+    while (it != tasks.end() && it->priority >= newTask.priority) {
+        ++it;
+    }
+    tasks.insert(it, newTask);
 
     char buf[80];
     snprintf(buf, sizeof(buf), "Task Manager: Added '%s' interval=%lums priority=%d", 
@@ -131,66 +141,56 @@ void TaskManager::run() {
         return;
     }
     
-    unsigned long currentTime = millis();
+    unsigned long now = millis();
     
-    // 按优先级排序任务（从高到低）
-    std::sort(tasks.begin(), tasks.end(), [](const ScheduledTask& a, const ScheduledTask& b) {
-        return a.priority > b.priority;
-    });
+#if FASTBEE_ENABLE_HEALTH_MONITOR
+    // 获取内存保护等级，用于低内存时跳过低优先级任务
+    MemoryGuardLevel guardLevel = MemoryGuardLevel::NORMAL;
+    HealthMonitor* hm = FastBeeFramework::getInstance()->getHealthMonitor();
+    if (hm) {
+        guardLevel = hm->getMemoryGuardLevel();
+    }
+#endif
     
+    // 顺序遍历（已按优先级从高到低有序插入，无需分级遍历）
+    // PRIORITY_CRITICAL(3) > HIGH(2) > NORMAL(1) > LOW(0)
     for (auto& task : tasks) {
-        if (!task.enabled) {
+        if (!task.enabled) continue;
+#if FASTBEE_ENABLE_HEALTH_MONITOR
+        // SEVERE/CRITICAL 时跳过 LOW 和 NORMAL 优先级任务
+        if (guardLevel >= MemoryGuardLevel::SEVERE && 
+            task.priority <= TaskPriority::PRIORITY_NORMAL) {
             continue;
         }
+#endif
+        if (now - task.lastRun < task.interval) continue;
         
-        // 处理时间溢出（大�?0天后millis()会重置）
-        unsigned long timeSinceLastRun;
-        if (currentTime < task.lastRun) {
-            // 时间溢出处理
-            timeSinceLastRun = (0xFFFFFFFF - task.lastRun) + currentTime;
-        } else {
-            timeSinceLastRun = currentTime - task.lastRun;
-        }
+        unsigned long taskStart = millis();
+        task.function(task.parameter);
+        unsigned long duration = millis() - taskStart;
         
-        // 检查是否到了执行时�?
-        if (timeSinceLastRun >= task.interval) {
-            // 记录任务开始执行时�?
-            unsigned long startTime = millis();
-            
-            // 执行任务
-            task.function(task.parameter);
-            
-            // 计算执行时间
-            unsigned long executionTime = millis() - startTime;
-            task.lastRun = currentTime;
-            task.lastExecutionTime = executionTime;
-            
-            // 每个任务执行完后喂狗，防止累计执行时间触发 WDT
-            esp_task_wdt_reset();
-            
-            // 更新最大执行时�?
-            if (executionTime > task.maxExecutionTime) {
-                task.maxExecutionTime = executionTime;
-            }
-            
-            // 记录任务执行统计
-            task.executionCount++;
-            
-            // 检查任务执行时间是否过�?
-            if (executionTime > 3000) {
-                // 超过 3 秒的任务是危险的，可能触发 WDT
-                char buf[128];
-                snprintf(buf, sizeof(buf), 
-                         "Task Manager: Task '%s' execution time (%lu ms) DANGEROUSLY LONG!",
-                         task.name, executionTime);
-                LOG_ERROR(buf);
-            } else if (executionTime > task.interval * 0.8) { // 执行时间超过间隔�?0%
-                char buf[128];
-                snprintf(buf, sizeof(buf), 
-                         "Task Manager: Task '%s' execution time (%lu ms) is close to interval (%lu ms)",
-                         task.name, executionTime, task.interval);
-                LOG_WARNING(buf);
-            }
+        task.lastExecutionTime = duration;
+        task.maxExecutionTime = max(task.maxExecutionTime, duration);
+        task.executionCount++;
+        task.totalExecutionTime += duration;
+        task.lastRun = now;
+        
+        // 每个任务执行完后喂狗，防止累计执行时间触发 WDT
+        esp_task_wdt_reset();
+        
+        // 检查任务执行时间是否过长
+        if (duration > 3000) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), 
+                     "Task Manager: Task '%s' execution time (%lu ms) DANGEROUSLY LONG!",
+                     task.name, duration);
+            LOG_ERROR(buf);
+        } else if (duration > task.interval * 0.8) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), 
+                     "Task Manager: Task '%s' execution time (%lu ms) is close to interval (%lu ms)",
+                     task.name, duration, task.interval);
+            LOG_WARNING(buf);
         }
     }
 }
@@ -322,39 +322,32 @@ TaskStatistics TaskManager::getTaskStatistics(const String& name) {
 // 获取任务列表的JSON表示
 // ArduinoJson 7.x 使用 JsonDocument（替代废弃的 DynamicJsonDocument）
 String TaskManager::getTasksJSON() {
-    FastBeeJsonDocLarge doc;
+    JsonDocument doc;
     JsonArray taskArray = doc.to<JsonArray>();
-
 
     unsigned long currentTime = millis();
 
+    // 顺序输出（已按优先级从高到低有序插入，无需分级遍历）
     for (const auto& task : tasks) {
-        JsonObject taskObj = taskArray.add<JsonObject>();
-        taskObj["name"]    = task.name;
-        taskObj["enabled"] = task.enabled;
-        taskObj["priority"] = static_cast<int>(task.priority);
-        taskObj["interval"]= task.interval;
-        taskObj["lastExecutionTime"] = task.lastExecutionTime;
-        taskObj["maxExecutionTime"] = task.maxExecutionTime;
-
-        // 计算下次执行时间（处�?millis() 溢出�?
-        unsigned long elapsed = (currentTime >= task.lastRun)
-            ? (currentTime - task.lastRun)
-            : (0xFFFFFFFFUL - task.lastRun + currentTime);
-
-        unsigned long nextRun = (task.enabled && elapsed < task.interval)
-            ? (task.interval - elapsed)
-            : 0;
-
-        taskObj["next_run_in"]      = nextRun;
-        taskObj["execution_count"]  = task.executionCount;
-        taskObj["created_time"]     = task.createdTime;
-        taskObj["last_execution"]   = task.lastExecutionTime;
+        JsonObject obj = taskArray.add<JsonObject>();
+        obj["name"] = task.name;
+        obj["enabled"] = task.enabled;
+        obj["priority"] = static_cast<int>(task.priority);
+        obj["interval"] = task.interval;
+        obj["lastExecTime"] = task.lastExecutionTime;
+        obj["maxExecTime"] = task.maxExecutionTime;
+        obj["avgExecTime"] = task.executionCount > 0 
+            ? task.totalExecutionTime / task.executionCount : 0;
+        obj["execCount"] = task.executionCount;
+        
+        long nextRunIn = static_cast<long>(task.interval) - 
+                        static_cast<long>(currentTime - task.lastRun);
+        obj["nextRunIn"] = nextRunIn > 0 ? nextRunIn : 0;
     }
 
-    String jsonString;
-    serializeJson(doc, jsonString);
-    return jsonString;
+    String result;
+    serializeJson(doc, result);
+    return result;
 }
 
 // 修改任务间隔

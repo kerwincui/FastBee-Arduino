@@ -65,7 +65,7 @@
             const noticeEl = document.getElementById('wifi-mode-notice');
             const noticeTextEl = document.getElementById('wifi-mode-notice-text');
             if (!noticeEl || !noticeTextEl) return;
-            noticeTextEl.innerHTML = message || '';
+            noticeTextEl.textContent = message || '';
             if (message) {
                 this.showElement(noticeEl, 'block');
             } else {
@@ -173,7 +173,7 @@
             fields.forEach(id => {
                 const el = document.getElementById(id);
                 if (el) {
-                    const group = el.closest('.pure-control-group');
+                    const group = el.closest('.fb-form-group');
                     if (group) {
                         if (show) {
                             this.showElement(group, 'block');
@@ -278,18 +278,18 @@
                                 clearInterval(countdownInterval);
                                 if (submitBtn && submitBtnText) {
                                     submitBtn.disabled = false;
-                                    submitBtnText.innerHTML = originalText || i18n.t('wifi-save-ready');
+                                    submitBtnText.textContent = originalText || i18n.t('wifi-save-ready');
                                 }
                                 if (noticeTextEl && noticeMessage) {
-                                    noticeTextEl.innerHTML = noticeMessage;
+                                    noticeTextEl.textContent = noticeMessage;
                                 }
                             } else {
                                 if (submitBtnText) {
-                                    submitBtnText.innerHTML = i18n.t('wifi-saving-mode') + ' (' + countdown + 's)';
+                                    submitBtnText.textContent = i18n.t('wifi-saving-mode') + ' (' + countdown + 's)';
                                 }
                                 if (noticeTextEl) {
                                     const countdownText = i18n.t('wifi-mode-notice-countdown').replace('{seconds}', countdown);
-                                    noticeTextEl.innerHTML = noticeMessage + ' ' + countdownText;
+                                    noticeTextEl.textContent = noticeMessage + ' ' + countdownText;
                                 }
                             }
                         }, 1000);

@@ -15,7 +15,18 @@
 const fs = require('fs');
 const path = require('path');
 const { buildAdminBundle, SOURCE_FILES: ADMIN_SOURCE_FILES } = require('./build-admin-bundle');
+const { buildAppBundle, BUNDLE_SOURCES: APP_BUNDLE_SOURCES } = require('./build-app-bundle');
 const { minifyJS } = require('./minify-js');
+
+function minifyCSS(css) {
+    return css
+        .replace(/\/\*[\s\S]*?\*\//g, '')    // 删除注释
+        .replace(/\s+/g, ' ')                 // 多空白合并
+        .replace(/\s*([{}:;,>~+])\s*/g, '$1') // 符号周围空白
+        .replace(/;}/g, '}')                  // 末尾分号
+        .replace(/^\s+|\s+$/gm, '')           // 行首尾空白
+        .trim();
+}
 
 const ROOT_DIR = path.join(__dirname, '..');
 const WEB_SRC_DIR = path.join(ROOT_DIR, 'web-src');
@@ -26,6 +37,8 @@ const PUBLISH_MODULE_DIR = path.join(WWW_DIR, 'js', 'modules');
 const DIRECT_RUNTIME_MODULES = [
     'protocol.js',
     'periph-exec.js',
+    'periph-exec-form.js',
+    'periph-exec-modbus.js',
     'device-control.js',
     'peripherals.js',
     'dashboard.js',
@@ -46,9 +59,14 @@ function writeUtf8(filePath, content) {
     fs.writeFileSync(filePath, content, 'utf8');
 }
 
+// Sub-directories under runtime/ that contain split sub-modules
+const RUNTIME_SUB_DIRS = ['protocol', 'device-control'];
+
 function syncDirectRuntimeModules() {
     const results = [];
+    const noMinify = process.argv.includes('--no-minify');
 
+    // 1. Sync top-level entry files
     DIRECT_RUNTIME_MODULES.forEach((fileName) => {
         const sourceFile = path.join(RUNTIME_SOURCE_DIR, fileName);
         const publishFile = path.join(PUBLISH_MODULE_DIR, fileName);
@@ -58,7 +76,6 @@ function syncDirectRuntimeModules() {
         }
 
         const raw = readUtf8(sourceFile);
-        const noMinify = process.argv.includes('--no-minify');
         const content = noMinify ? raw : minifyJS(raw);
         writeUtf8(publishFile, content);
 
@@ -67,6 +84,36 @@ function syncDirectRuntimeModules() {
             sourceFile,
             publishFile,
             size: Buffer.byteLength(content, 'utf8')
+        });
+    });
+
+    // 2. Sync sub-directory modules (protocol/, device-control/)
+    RUNTIME_SUB_DIRS.forEach((subDir) => {
+        const srcDir = path.join(RUNTIME_SOURCE_DIR, subDir);
+        if (!fs.existsSync(srcDir)) return;
+
+        const destDir = path.join(PUBLISH_MODULE_DIR, subDir);
+        if (!fs.existsSync(destDir)) {
+            fs.mkdirSync(destDir, { recursive: true });
+        }
+
+        fs.readdirSync(srcDir).forEach((file) => {
+            if (!file.endsWith('.js')) return;
+            const sourceFile = path.join(srcDir, file);
+            if (!fs.statSync(sourceFile).isFile()) return;
+
+            const publishFile = path.join(destDir, file);
+            const raw = readUtf8(sourceFile);
+            const content = noMinify ? raw : minifyJS(raw);
+            writeUtf8(publishFile, content);
+
+            const relName = subDir + '/' + file;
+            results.push({
+                fileName: relName,
+                sourceFile,
+                publishFile,
+                size: Buffer.byteLength(content, 'utf8')
+            });
         });
     });
 
@@ -154,15 +201,35 @@ function syncStaticAssets() {
             fs.mkdirSync(destDir, { recursive: true });
         }
 
-        fs.readdirSync(srcDir).forEach((file) => {
-            const srcFile = path.join(srcDir, file);
-            const dstFile = path.join(destDir, file);
-            if (fs.statSync(srcFile).isFile()) {
-                fs.copyFileSync(srcFile, dstFile);
-                const size = fs.statSync(dstFile).size;
-                results.push({ src: `${dirName}/${file}`, dest: `${dirName}/${file}`, size });
-            }
-        });
+        // Recursive sync helper for pages/ subdirectories (e.g. fragments/)
+        const syncDirRecursive = (src, dest, relPrefix) => {
+            fs.readdirSync(src).forEach((entry) => {
+                const srcFile = path.join(src, entry);
+                const dstFile = path.join(dest, entry);
+                const relPath = `${relPrefix}/${entry}`;
+                if (fs.statSync(srcFile).isDirectory()) {
+                    if (!fs.existsSync(dstFile)) {
+                        fs.mkdirSync(dstFile, { recursive: true });
+                    }
+                    syncDirRecursive(srcFile, dstFile, relPath);
+                } else {
+                    // Apply CSS minify for non-.min.css files
+                    const noMinify = process.argv.includes('--no-minify');
+                    if (!noMinify && entry.endsWith('.css') && !entry.endsWith('.min.css')) {
+                        const raw = readUtf8(srcFile);
+                        const minified = minifyCSS(raw);
+                        writeUtf8(dstFile, minified);
+                        const size = Buffer.byteLength(minified, 'utf8');
+                        results.push({ src: relPath, dest: relPath, size, cssMinified: true });
+                    } else {
+                        fs.copyFileSync(srcFile, dstFile);
+                        const size = fs.statSync(dstFile).size;
+                        results.push({ src: relPath, dest: relPath, size });
+                    }
+                }
+            });
+        };
+        syncDirRecursive(srcDir, destDir, dirName);
     });
 
     // Sync root-level JS files (state.js, main.js) from web-src/js/ to data/www/js/
@@ -198,8 +265,27 @@ function validateSourceCoverage() {
     expectedFiles.add('admin-bundle.js');
     ADMIN_SOURCE_FILES.forEach((f) => expectedFiles.add(f)); // admin stubs
 
+    // Add sub-directory files to expected set
+    RUNTIME_SUB_DIRS.forEach((subDir) => {
+        const srcDir = path.join(RUNTIME_SOURCE_DIR, subDir);
+        if (!fs.existsSync(srcDir)) return;
+        fs.readdirSync(srcDir).forEach((file) => {
+            if (file.endsWith('.js')) expectedFiles.add(subDir + '/' + file);
+        });
+    });
+
     const actualFiles = fs.readdirSync(PUBLISH_MODULE_DIR)
         .filter((f) => f.endsWith('.js') && !f.endsWith('.gz'));
+
+    // Also check sub-directories
+    RUNTIME_SUB_DIRS.forEach((subDir) => {
+        const pubSubDir = path.join(PUBLISH_MODULE_DIR, subDir);
+        if (fs.existsSync(pubSubDir)) {
+            fs.readdirSync(pubSubDir)
+                .filter((f) => f.endsWith('.js') && !f.endsWith('.gz'))
+                .forEach((f) => actualFiles.push(subDir + '/' + f));
+        }
+    });
 
     const orphaned = actualFiles.filter((f) => !expectedFiles.has(f));
     if (orphaned.length > 0) {
@@ -216,6 +302,7 @@ function buildWebModules() {
     const syncedModules = syncDirectRuntimeModules();
     const i18nModules = syncI18nModules();
     const adminBundle = buildAdminBundle();
+    const appBundle = buildAppBundle();
 
     validateSourceCoverage();
 
@@ -223,7 +310,8 @@ function buildWebModules() {
         staticAssets,
         syncedModules,
         i18nModules,
-        adminBundle
+        adminBundle,
+        appBundle
     };
 }
 
@@ -242,6 +330,7 @@ if (require.main === module) {
         console.log(`  Synced: ${path.relative(ROOT_DIR, item.publishFile)} (${item.size} bytes${item.minified ? ', minified' : ''})`);
     });
     console.log(`Built admin bundle: ${path.relative(ROOT_DIR, result.adminBundle.outputFile)} (${result.adminBundle.size} bytes)`);
+    console.log(`Built app bundle: ${path.relative(ROOT_DIR, result.appBundle.outputFile)} (${result.appBundle.size} bytes${result.appBundle.minified ? ', minified' : ''})`);
 }
 
 module.exports = {
@@ -250,7 +339,9 @@ module.exports = {
     syncDirectRuntimeModules,
     syncI18nModules,
     validateSourceCoverage,
+    minifyCSS,
     DIRECT_RUNTIME_MODULES,
+    RUNTIME_SUB_DIRS,
     I18N_MODULES,
     RUNTIME_SOURCE_DIR,
     I18N_SOURCE_DIR,

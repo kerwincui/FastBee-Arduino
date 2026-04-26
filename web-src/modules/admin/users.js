@@ -108,18 +108,18 @@
                 actionCell.className = 'u-toolbar-sm';
 
                 const editBtn = document.createElement('button');
-                editBtn.className = 'btn btn-sm btn-edit';
+                editBtn.className = 'fb-btn fb-btn-sm fb-btn-primary';
                 editBtn.textContent = i18n.t('edit-user');
                 editBtn.addEventListener('click', () => this.showEditUserModal(user));
                 actionCell.appendChild(editBtn);
 
                 const toggleBtn = document.createElement('button');
                 if (user.enabled && !user.isLocked) {
-                    toggleBtn.className = 'btn btn-sm btn-disable';
+                    toggleBtn.className = 'fb-btn fb-btn-sm fb-btn-warning';
                     toggleBtn.textContent = i18n.t('disable-user');
                     toggleBtn.addEventListener('click', () => this.toggleUserStatus(user.username, false));
                 } else {
-                    toggleBtn.className = 'btn btn-sm btn-enable';
+                    toggleBtn.className = 'fb-btn fb-btn-sm fb-btn-success';
                     toggleBtn.textContent = i18n.t('enable-user');
                     toggleBtn.addEventListener('click', () => this.toggleUserStatus(user.username, true));
                 }
@@ -128,7 +128,7 @@
                 // 解锁按钮
                 if (user.isLocked) {
                     const unlockBtn = document.createElement('button');
-                    unlockBtn.className = 'btn btn-sm btn-enable';
+                    unlockBtn.className = 'fb-btn fb-btn-sm fb-btn-success';
                     unlockBtn.textContent = i18n.t('unlock-user');
                     unlockBtn.addEventListener('click', () => this.unlockUser(user.username));
                     actionCell.appendChild(unlockBtn);
@@ -137,7 +137,7 @@
                 // 删除按钮（不能删除 admin）
                 if (user.username !== 'admin') {
                     const delBtn = document.createElement('button');
-                    delBtn.className = 'btn btn-sm btn-delete';
+                    delBtn.className = 'fb-btn fb-btn-sm fb-btn-danger';
                     delBtn.textContent = i18n.t('delete-user');
                     delBtn.addEventListener('click', () => {
                         if (confirm(`${i18n.t('confirm-delete-user-msg')} ${user.username} ${i18n.t('confirm-suffix')}`)) {
@@ -193,10 +193,6 @@
             const isEditMode = modal && modal.dataset.editMode === 'edit';
             const editUsername = modal ? modal.dataset.editUsername : '';
 
-            // 调试日志
-            console.log('[addUser] modal:', modal);
-            console.log('[addUser] modal.dataset:', modal ? JSON.stringify(modal.dataset) : 'null');
-            console.log('[addUser] isEditMode:', isEditMode, 'editUsername:', editUsername);
 
             const username = isEditMode ? editUsername : ((document.getElementById('add-username-input') || {}).value || '').trim();
             const password = (document.getElementById('add-password-input') || {}).value || '';
@@ -258,7 +254,6 @@
 
         // ============ 编辑用户（复用添加用户弹窗）============
         showEditUserModal(user) {
-            console.log('[showEditUserModal] Called with user:', user);
 
             // 复用添加用户的 modal
             const modal = document.getElementById('add-user-modal');
@@ -271,7 +266,6 @@
             // 先标记为编辑模式，防止状态丢失
             modal.dataset.editMode = 'edit';
             modal.dataset.editUsername = user.username;
-            console.log('[showEditUserModal] Set editMode:', modal.dataset.editMode, 'editUsername:', modal.dataset.editUsername);
 
             // 修改标题
             const title = document.getElementById('add-user-title');
@@ -342,7 +336,7 @@
         deleteUser(username) {
             if (!confirm(`${i18n.t('confirm-delete-user-msg')} ${username} ${i18n.t('confirm-suffix')}`)) return;
 
-            apiPost('/api/users/delete', { username })
+            apiDelete('/api/users/' + encodeURIComponent(username))
                 .then(res => {
                     if (res && res.success) {
                         Notification.success(`${username} ${i18n.t('user-deleted-msg')}`, i18n.t('delete-success'));

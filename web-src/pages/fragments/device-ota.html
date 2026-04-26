@@ -1,0 +1,122 @@
+<!-- OTA状态卡片 -->
+<div class="fb-panel">
+    <div class="fb-card-header fb-panel-header u-header-between-wrap">
+        <h4 class="fb-panel-title"><i class="fas fa-microchip"></i>
+            <span data-i18n="dev-ota-info-title">固件信息</span>
+        </h4>
+        <button id="ota-refresh-btn" class="fb-btn fb-btn-sm">
+            <i class="fas fa-sync-alt"></i> <span
+                data-i18n="dev-ota-refresh">刷新</span>
+        </button>
+    </div>
+    <div class="fb-card-body fb-panel-body-lg">
+        <div class="u-meta-grid">
+            <div class="u-meta-item">
+                <span class="u-text-secondary"
+                    data-i18n="dev-ota-version-label">当前版本：</span>
+                <span id="ota-current-version" class="u-fw-700">--</span>
+            </div>
+            <div class="u-meta-item">
+                <span class="u-text-secondary"
+                    data-i18n="dev-ota-status-label">状态：</span>
+                <span id="ota-status-badge" class="status-badge status-online"
+                    data-i18n="dev-ota-ready">就绪</span>
+            </div>
+            <div class="u-meta-item">
+                <span class="u-text-secondary"
+                    data-i18n="dev-ota-flash-label">Flash空间：</span>
+                <span id="ota-flash-size">--</span>
+            </div>
+            <div class="u-meta-item">
+                <span class="u-text-secondary"
+                    data-i18n="dev-ota-free-label">可用空间：</span>
+                <span id="ota-free-space">--</span>
+            </div>
+        </div>
+        <!-- 进度条 -->
+        <div id="ota-progress-wrap" class="is-hidden u-mt-15">
+            <div class="u-progress-meta">
+                <span class="u-text-secondary"
+                    data-i18n="dev-ota-progress-label">升级进度</span>
+                <span id="ota-progress-text">0%</span>
+            </div>
+            <div class="u-progress-track-lg">
+                <div id="ota-progress-bar" class="u-progress-fill-success">
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 在线升级 -->
+<div class="fb-panel">
+    <div class="fb-card-header fb-panel-header-info">
+        <h4 class="fb-panel-title"><i
+                class="fas fa-cloud-download-alt"></i> <span
+                data-i18n="dev-ota-online-title">在线升级</span></h4>
+    </div>
+    <div class="fb-card-body fb-panel-body-lg">
+        <form id="ota-url-form" class="fb-form">
+            <div class="fb-form-group ota-inline-action-row u-mb-15">
+                <div class="ota-inline-input-wrap">
+                    <label for="ota-url"
+                        data-i18n="dev-ota-url-label">固件下载地址</label>
+                    <input type="url" id="ota-url" class=""
+                        placeholder="http://example.com/firmware.bin">
+                    <div id="ota-url-hint" class="is-hidden u-mt-10"></div>
+                </div>
+                <button type="submit" class="fb-btn fb-btn-primary"
+                    id="ota-url-btn">
+                    <i class="fas fa-download"></i> <span
+                        data-i18n="dev-ota-url-btn">开始在线升级</span>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- 本地上传升级 -->
+<div class="fb-panel">
+    <div class="fb-card-header fb-panel-header-warning">
+        <h4 class="fb-panel-title"><i class="fas fa-upload"></i> <span
+                data-i18n="dev-ota-upload-title">本地上传升级</span></h4>
+    </div>
+    <div class="fb-card-body fb-panel-body-lg">
+        <form id="ota-upload-form" class="fb-form" enctype="multipart/form-data">
+            <div class="fb-form-group ota-inline-action-row u-mb-15">
+                <div class="ota-inline-input-wrap">
+                    <label for="ota-file" data-i18n="dev-ota-file-label">选择固件文件
+                        (.bin)</label>
+                    <div class="file-input-wrapper file-input-wrapper-top">
+                        <input type="file" id="ota-file" accept=".bin"
+                            class="is-hidden">
+                        <button type="button" class="fb-btn fb-btn-sm fb-btn-secondary"
+                            data-action="triggerOtaFileSelect"
+                            data-i18n="choose-file-btn">选择文件</button>
+                        <span id="ota-file-name" class="file-name-display"
+                            data-i18n="no-file-selected">未选择任何文件</span>
+                    </div>
+                    <small class="help-text-block" data-i18n="dev-ota-file-hint">仅支持
+                        .bin 格式的固件文件</small>
+                </div>
+                <button type="submit" class="fb-btn fb-btn-primary"
+                    id="ota-upload-btn">
+                    <span data-i18n="dev-ota-upload-btn">上传并升级</span>
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- OTA升级说明 -->
+<div class="u-note-card u-note-card-warning">
+    <h4 class="u-note-title u-note-title-warning"><i
+            class="fas fa-exclamation-triangle"></i> <span
+            data-i18n="dev-ota-notice-title">升级注意事项</span></h4>
+    <ul class="u-note-list">
+        <li data-i18n="dev-ota-notice-1">升级过程中请勿断开电源或关闭浏览器</li>
+        <li data-i18n="dev-ota-notice-2">确保固件版本与当前硬件兼容</li>
+        <li data-i18n="dev-ota-notice-3">升级成功后设备将自动重启</li>
+        <li data-i18n="dev-ota-notice-4">建议在升级前备份重要配置</li>
+    </ul>
+</div>

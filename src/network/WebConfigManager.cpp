@@ -6,11 +6,18 @@
 #include "./network/handlers/UserRouteHandler.h"
 #include "./network/handlers/RoleRouteHandler.h"
 #include "./network/handlers/SystemRouteHandler.h"
+#include "./network/handlers/LogRouteHandler.h"
+#include "./network/handlers/DeviceRouteHandler.h"
+#include "./network/handlers/BatchRouteHandler.h"
 #include "./network/handlers/ProvisionRouteHandler.h"
 #include "./network/handlers/OTARouteHandler.h"
 #include "./network/handlers/PeripheralRouteHandler.h"
+#if FASTBEE_ENABLE_PERIPH_EXEC
 #include "./network/handlers/PeriphExecRouteHandler.h"
+#endif
+#if FASTBEE_ENABLE_RULE_SCRIPT
 #include "./network/handlers/RuleScriptRouteHandler.h"
+#endif
 #include "./network/handlers/ProtocolRouteHandler.h"
 #include "./network/handlers/SSERouteHandler.h"
 #include "systems/LoggerSystem.h"
@@ -35,17 +42,24 @@ bool WebConfigManager::initialize() {
         return false;
     }
 
-    // 创建 12 个专职 Handler
+    // 创建 15 个专职 Handler
     staticHandler      = std::unique_ptr<StaticRouteHandler>(new StaticRouteHandler(ctx.get()));
     authHandler        = std::unique_ptr<AuthRouteHandler>(new AuthRouteHandler(ctx.get()));
     userHandler        = std::unique_ptr<UserRouteHandler>(new UserRouteHandler(ctx.get()));
     roleHandler        = std::unique_ptr<RoleRouteHandler>(new RoleRouteHandler(ctx.get()));
     systemHandler      = std::unique_ptr<SystemRouteHandler>(new SystemRouteHandler(ctx.get()));
+    logHandler         = std::unique_ptr<LogRouteHandler>(new LogRouteHandler(ctx.get()));
+    deviceHandler      = std::unique_ptr<DeviceRouteHandler>(new DeviceRouteHandler(ctx.get()));
+    batchHandler       = std::unique_ptr<BatchRouteHandler>(new BatchRouteHandler(ctx.get()));
     provisionHandler   = std::unique_ptr<ProvisionRouteHandler>(new ProvisionRouteHandler(ctx.get()));
     otaHandler         = std::unique_ptr<OTARouteHandler>(new OTARouteHandler(ctx.get()));
     peripheralHandler  = std::unique_ptr<PeripheralRouteHandler>(new PeripheralRouteHandler(ctx.get()));
+#if FASTBEE_ENABLE_PERIPH_EXEC
     periphExecHandler  = std::unique_ptr<PeriphExecRouteHandler>(new PeriphExecRouteHandler(ctx.get()));
+#endif
+#if FASTBEE_ENABLE_RULE_SCRIPT
     ruleScriptHandler  = std::unique_ptr<RuleScriptRouteHandler>(new RuleScriptRouteHandler(ctx.get()));
+#endif
     protocolHandler    = std::unique_ptr<ProtocolRouteHandler>(new ProtocolRouteHandler(ctx.get()));
     sseRouteHandler    = std::unique_ptr<SSERouteHandler>(new SSERouteHandler(ctx.get()));
 
@@ -55,9 +69,13 @@ bool WebConfigManager::initialize() {
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
     DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
+    // 全局安全头 —— 防止 MIME 嗅探和点击劫持
+    DefaultHeaders::Instance().addHeader("X-Content-Type-Options", "nosniff");
+    DefaultHeaders::Instance().addHeader("X-Frame-Options", "SAMEORIGIN");
+
     setupAllRoutes();
 
-    LOG_INFO("[WebConfig] Initialized with 12 route handlers");
+    LOG_INFO("[WebConfig] Initialized with 15 route handlers");
     return true;
 }
 
@@ -136,6 +154,11 @@ void WebConfigManager::performMaintenance() {
         delay(100);
         ESP.restart();
     }
+
+    // SSE 维护：心跳、僵尸连接清理、客户端数上报
+    if (sseRouteHandler) {
+        sseRouteHandler->performMaintenance();
+    }
 }
 
 // ============ 路由注册（严格顺序）============
@@ -144,12 +167,9 @@ void WebConfigManager::setupAllRoutes() {
     // 注册顺序严格遵循 ESPAsyncWebServer 前缀匹配规则：
     // 子路径必须在父路径之前注册
 
-    // CORS 预检
+    // CORS 预检（CORS/安全头已由 DefaultHeaders 全局注入，此处仅补充 Max-Age）
     server->on("/api/*", HTTP_OPTIONS, [this](AsyncWebServerRequest* request) {
         AsyncWebServerResponse* response = request->beginResponse(204);
-        response->addHeader("Access-Control-Allow-Origin", "*");
-        response->addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-        response->addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
         response->addHeader("Access-Control-Max-Age", "86400");
         request->send(response);
     });
@@ -163,8 +183,17 @@ void WebConfigManager::setupAllRoutes() {
     // 3. 角色路由（/api/roles/*, /api/permissions, /api/audit/*）
     roleHandler->setupRoutes(server);
 
-    // 4. 系统路由（/api/system/*, /api/network/*, /api/logs/*, /api/files/*, /api/config, /api/device/*, /api/health）
+    // 4. 系统路由（/api/system/*, /api/network/*, /api/files/*, /api/config, /api/health）
     systemHandler->setupRoutes(server);
+
+    // 4a. 日志路由（/api/logs/*, /api/system/logs/*）
+    logHandler->setupRoutes(server);
+
+    // 4b. 设备路由（/api/device/*）
+    deviceHandler->setupRoutes(server);
+
+    // 4c. 批量请求路由（/api/batch）
+    batchHandler->setupRoutes(server);
 
     // 5. 配网路由（/setup, /api/wifi/*）
     provisionHandler->setupRoutes(server);
@@ -176,10 +205,14 @@ void WebConfigManager::setupAllRoutes() {
     peripheralHandler->setupRoutes(server);
 
     // 8. 外设执行路由（/api/periph-exec/*）
+#if FASTBEE_ENABLE_PERIPH_EXEC
     periphExecHandler->setupRoutes(server);
+#endif
 
     // 9. 规则脚本路由（/api/rule-script/*）
+#if FASTBEE_ENABLE_RULE_SCRIPT
     ruleScriptHandler->setupRoutes(server);
+#endif
 
     // 10. 协议路由（/api/protocol/*）
     protocolHandler->setupRoutes(server);

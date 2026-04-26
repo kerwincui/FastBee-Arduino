@@ -1,12 +1,20 @@
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_PERIPH_EXEC
+
 #include "core/PeriphExecExecutor.h"
 #include "core/PeriphExecManager.h"
 #include "core/RuleScript.h"
 #include "core/ScriptEngine.h"
 #include "core/FastBeeFramework.h"
 #include "protocols/ProtocolManager.h"
+#if FASTBEE_ENABLE_MODBUS
 #include "protocols/ModbusHandler.h"
+#endif
+#if FASTBEE_ENABLE_MQTT
 #include "protocols/MQTTClient.h"
+#endif
 #include "systems/LoggerSystem.h"
+#include "systems/HealthMonitor.h"
 #include "core/PeripheralManager.h"
 #include "core/ChipConfig.h"
 #include <freertos/task.h>
@@ -178,6 +186,26 @@ bool looksLikeHexPayload(const String& rawValue) {
 PeriphExecExecutor::PeriphExecExecutor() = default;
 PeriphExecExecutor::~PeriphExecExecutor() = default;
 
+// ========== Modbus 缓冲池管理 ==========
+
+ModbusBuffer* PeriphExecExecutor::acquireBuffer() {
+    for (uint8_t i = 0; i < MODBUS_BUFFER_POOL_SIZE; i++) {
+        if (!_bufferPool[i].inUse) {
+            _bufferPool[i].inUse = true;
+            memset(_bufferPool[i].data, 0, sizeof(_bufferPool[i].data));
+            return &_bufferPool[i];
+        }
+    }
+    LOGGER.warning("[EXEC] Modbus buffer pool exhausted! All 4 buffers in use");
+    return nullptr;
+}
+
+void PeriphExecExecutor::releaseBuffer(ModbusBuffer* buf) {
+    if (buf) {
+        buf->release();
+    }
+}
+
 void PeriphExecExecutor::initialize(PeriphExecManager* manager) {
     _manager = manager;
 }
@@ -208,8 +236,20 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
     results.reserve(rule.actions.size());
 
     for (const auto& action : rule.actions) {
-        // 堆守卫：防止动作执行过程中堆耗尽导致 abort()
-        if (ESP.getFreeHeap() < 15000) {
+        // MemGuard 堆守卫：基于等级决定是否继续执行
+        auto* fw = FastBeeFramework::getInstance();
+        HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+        if (monitor) {
+            if (monitor->isMemoryCritical()) {
+                LOGGER.warning("[PeriphExec] Heap CRITICAL, skipping remaining actions");
+                break;
+            }
+            if (monitor->isMemorySevere() && ESP.getFreeHeap() < MEM_THRESHOLD_SEVERE) {
+                LOGGER.warningf("[PeriphExec] Heap SEVERE (%d), skipping remaining actions",
+                                (int)ESP.getFreeHeap());
+                break;
+            }
+        } else if (ESP.getFreeHeap() < 15000) {
             LOGGER.warningf("[PeriphExec] Heap too low (%d), skipping remaining actions",
                             (int)ESP.getFreeHeap());
             break;
@@ -440,10 +480,24 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
         return false;
     }
 
-    // 检查堆内存是否充足（降低阈值，避免传感器离线时堆略低就完全跳过轮询）
-    if (ESP.getFreeHeap() < 25000) {
-        LOGGER.warningf("[PeriphExec] Insufficient heap for Modbus poll: %d bytes free", ESP.getFreeHeap());
-        return false;
+    // MemGuard 等级检查：替代原来的 25KB 硬编码阈值
+    {
+        auto* fw = FastBeeFramework::getInstance();
+        HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+        if (monitor) {
+            if (monitor->isMemoryCritical()) {
+                LOGGER.warning("[PeriphExec] Modbus poll skipped - memory CRITICAL");
+                return false;
+            }
+            if (monitor->isMemorySevere()) {
+                LOGGER.warningf("[PeriphExec] Modbus poll skipped - memory SEVERE (heap=%d)",
+                                (int)ESP.getFreeHeap());
+                return false;
+            }
+        } else if (ESP.getFreeHeap() < 25000) {
+            LOGGER.warningf("[PeriphExec] Insufficient heap for Modbus poll: %d bytes free", ESP.getFreeHeap());
+            return false;
+        }
     }
 
     // 从规则的 POLL_TRIGGER 触发器中提取通信参数
@@ -480,41 +534,45 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
         // 处理 poll 数组: 执行采集任务
         JsonArray pollArr = doc["poll"].as<JsonArray>();
         if (pollArr) {
-            // 根据轮询任务数量动态计算缓冲区
-            uint16_t estimatedSize = 128;  // 基础开销
-            for (JsonVariant v : pollArr) {
-                estimatedSize += 512;  // 每个轮询预留512字节
-            }
-            if (estimatedSize > 8192) estimatedSize = 8192;  // 上限8KB
+            // 使用 JsonDocument 结构化数组代替 String 拼接
+            JsonDocument resultDoc;
+            JsonArray resultsArr = resultDoc.to<JsonArray>();
 
-            String mergedJson;
-            mergedJson.reserve(estimatedSize);
-            mergedJson = "[";
-            bool first = true;
             for (JsonVariant v : pollArr) {
-                // 动态堆检查：防止多任务迭代中堆逐渐耗尽导致 abort()
-                if (ESP.getFreeHeap() < 15000) {
-                    LOGGER.warningf("[PeriphExec] Heap dropped to %d during poll, stopping early",
-                                    (int)ESP.getFreeHeap());
-                    break;
+                // MemGuard 动态堆检查：防止多任务迭代中堆逐渐耗尽
+                {
+                    auto* fwInner = FastBeeFramework::getInstance();
+                    HealthMonitor* monInner = fwInner ? fwInner->getHealthMonitor() : nullptr;
+                    if ((monInner && monInner->isMemoryCritical()) || ESP.getFreeHeap() < 15000) {
+                        LOGGER.warningf("[PeriphExec] Heap dropped to %d during poll, stopping early",
+                                        (int)ESP.getFreeHeap());
+                        break;
+                    }
                 }
                 uint8_t taskIdx = v.as<uint8_t>();
-                if (!first && interDelay > 0) vTaskDelay(pdMS_TO_TICKS(interDelay));
-                String result = modbus->executePollTaskByIndex(taskIdx, timeout, retries);
+                if (resultsArr.size() > 0 && interDelay > 0) vTaskDelay(pdMS_TO_TICKS(interDelay));
+                // emitCallback=false: PeriphExec 有自己的数据处理流程，不需要通过 dataCallback 重复分发
+                String result = modbus->executePollTaskByIndex(taskIdx, timeout, retries, false);
                 if (result != "[]") {
                     anySuccess = true;
-                    String inner = result.substring(1, result.length() - 1);
-                    if (!first) mergedJson += ",";
-                    mergedJson += inner;
-                    first = false;
+                    // 解析任务结果并追加到结构化数组（避免字符串拼接）
+                    JsonDocument taskDoc;
+                    if (!deserializeJson(taskDoc, result)) {
+                        JsonArray taskArr = taskDoc.as<JsonArray>();
+                        for (JsonVariant item : taskArr) {
+                            resultsArr.add(item);
+                        }
+                    }
                 }
             }
-            mergedJson += "]";
-            if (anySuccess) {
-                LOGGER.infof("[PeriphExec] Poll completed, injecting %d bytes", mergedJson.length());
-                // 通过 manager 调用 handlePollData
-                if (_manager) {
-                    _manager->handlePollData("modbus_poll", mergedJson);
+            if (anySuccess && resultsArr.size() > 0) {
+                // 只在最终出口做一次 serializeJson
+                String mergedJson;
+                serializeJson(resultDoc, mergedJson);
+                LOGGER.infof("[PeriphExec] Poll completed, dispatching %d bytes via unified outlet", mergedJson.length());
+                // 统一通过 dispatchModbusData 分发（PeriphExecPoll: 仅 MQTT+SSE，不重复规则匹配）
+                if (protMgr) {
+                    protMgr->dispatchModbusData(0, mergedJson, ModbusDataSource::PeriphExecPoll);
                 }
             }
         }
@@ -663,8 +721,9 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
     }
 
     // === 旧格式兼容: 逗号分隔的任务索引，如 "0,1,3" ===
-    String mergedJson = "[";
-    bool first = true;
+    // 使用 JsonDocument 结构化数组代替 String 拼接
+    JsonDocument resultDoc;
+    JsonArray resultsArr = resultDoc.to<JsonArray>();
     bool anySuccess = false;
 
     int start = 0;
@@ -676,28 +735,35 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
         if (token.length() > 0) {
             uint8_t taskIdx = (uint8_t)token.toInt();
 
-            if (!first && interDelay > 0) {
+            if (resultsArr.size() > 0 && interDelay > 0) {
                 vTaskDelay(pdMS_TO_TICKS(interDelay));
             }
 
-            String result = modbus->executePollTaskByIndex(taskIdx, timeout, retries);
+            // emitCallback=false: PeriphExec 有自己的数据处理流程，不需要通过 dataCallback 重复分发
+            String result = modbus->executePollTaskByIndex(taskIdx, timeout, retries, false);
             if (result != "[]") {
                 anySuccess = true;
-                String inner = result.substring(1, result.length() - 1);
-                if (!first) mergedJson += ",";
-                mergedJson += inner;
-                first = false;
+                // 解析任务结果并追加到结构化数组（避免字符串拼接）
+                JsonDocument taskDoc;
+                if (!deserializeJson(taskDoc, result)) {
+                    JsonArray taskArr = taskDoc.as<JsonArray>();
+                    for (JsonVariant item : taskArr) {
+                        resultsArr.add(item);
+                    }
+                }
             }
         }
         start = comma + 1;
     }
 
-    mergedJson += "]";
-
-    if (anySuccess) {
-        LOGGER.infof("[PeriphExec] Poll action completed, injecting %d bytes", mergedJson.length());
-        if (_manager) {
-            _manager->handlePollData("modbus_poll", mergedJson);
+    if (anySuccess && resultsArr.size() > 0) {
+        // 只在最终出口做一次 serializeJson
+        String mergedJson;
+        serializeJson(resultDoc, mergedJson);
+        LOGGER.infof("[PeriphExec] Poll action completed, dispatching %d bytes via unified outlet", mergedJson.length());
+        // 统一通过 dispatchModbusData 分发（PeriphExecPoll: 仅 MQTT+SSE，不重复规则匹配）
+        if (protMgr) {
+            protMgr->dispatchModbusData(0, mergedJson, ModbusDataSource::PeriphExecPoll);
         }
     }
 
@@ -999,20 +1065,73 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
 
     // 通过 MQTT 上报（使用线程安全队列，避免从异步任务直接调用 PubSubClient）
     MQTTClient* mqtt = getMqttClient();
-    if (mqtt && mqtt->getIsConnected()) {
-        bool ok = mqtt->queueReportData(reportData);
-        LOGGER.infof("[PeriphExec] Reporting status: %s (%s)",
-                     reportData.c_str(), ok ? "queued" : "queue_failed");
-    } else {
-        // MQTT 未连接，缓存上报数据等待重试
-        if (_manager) {
-            _manager->queuePendingReport(reportData);
+
+    // 预算驱动分片：单个 MqttSlot 最大 512 字节
+    static constexpr uint16_t MQTT_MAX_PAYLOAD = 512;
+
+    auto enqueueOrCache = [&](const String& payload) {
+        if (mqtt && mqtt->getIsConnected()) {
+            bool ok = mqtt->queueReportData(payload);
+            LOGGER.infof("[PeriphExec] Reporting status: %s (%s)",
+                         payload.c_str(), ok ? "queued" : "queue_failed");
+        } else if (_manager) {
+            _manager->queuePendingReport(payload);
             LOGGER.warningf("[PeriphExec] Reporting status: MQTT not connected, queued for retry (pending=%d)",
                              _manager->getPendingReportCount());
         } else {
             LOGGER.warning("[PeriphExec] Reporting status: MQTT not connected, report dropped (no manager)");
         }
+    };
+
+    if (reportData.length() <= MQTT_MAX_PAYLOAD) {
+        // 单条发送，无需分片
+        enqueueOrCache(reportData);
+    } else {
+        // 按 results 数组元素分片，确保每片 <= MQTT_MAX_PAYLOAD
+        // 先计算需要多少片
+        std::vector<std::vector<size_t>> chunks;  // 每片包含的元素索引
+        std::vector<size_t> currentChunk;
+        // JSON 数组开销: [] + 逗号分隔 ≈ 16 字节元数据 ("part":N,"total":N) + 包裹
+        // 每片格式: {"part":N,"total":N,"data":[...]}
+        static constexpr uint16_t CHUNK_OVERHEAD = 40;  // {"part":NN,"total":NN,"data":[]}
+        uint16_t currentSize = CHUNK_OVERHEAD;
+
+        for (size_t i = 0; i < arr.size(); i++) {
+            // 估算单个元素的序列化大小
+            String elemJson;
+            serializeJson(arr[i], elemJson);
+            uint16_t elemSize = elemJson.length() + 1;  // +1 for comma
+
+            if (currentSize + elemSize > MQTT_MAX_PAYLOAD && !currentChunk.empty()) {
+                // 当前片已满，开始新片
+                chunks.push_back(currentChunk);
+                currentChunk.clear();
+                currentSize = CHUNK_OVERHEAD;
+            }
+            currentChunk.push_back(i);
+            currentSize += elemSize;
+        }
+        if (!currentChunk.empty()) {
+            chunks.push_back(currentChunk);
+        }
+
+        uint8_t totalParts = chunks.size();
+        LOGGER.infof("[PeriphExec] Payload %d bytes exceeds %d, splitting into %d chunks",
+                     reportData.length(), MQTT_MAX_PAYLOAD, totalParts);
+
+        for (uint8_t partIdx = 0; partIdx < totalParts; partIdx++) {
+            JsonDocument chunkDoc;
+            chunkDoc["part"] = partIdx + 1;
+            chunkDoc["total"] = totalParts;
+            JsonArray chunkArr = chunkDoc["data"].to<JsonArray>();
+            for (size_t elemIdx : chunks[partIdx]) {
+                chunkArr.add(arr[elemIdx]);
+            }
+            String chunkPayload;
+            serializeJson(chunkDoc, chunkPayload);
+            enqueueOrCache(chunkPayload);
+        }
     }
 }
 
-
+#endif // FASTBEE_ENABLE_PERIPH_EXEC

@@ -3,14 +3,15 @@
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
 #include "systems/LoggerSystem.h"
+#include "systems/HealthMonitor.h"
+#include "core/FastBeeFramework.h"
 #include "core/SystemConstants.h"
 #include "utils/NetworkUtils.h"
 #include "utils/TimeUtils.h"
+#include "core/FeatureFlags.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <WiFi.h>
-
-static const char* DEVICE_CONFIG_FILE = "/config/device.json";
 
 SystemRouteHandler::SystemRouteHandler(WebHandlerContext* ctx)
     : ctx(ctx) {
@@ -185,36 +186,6 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     networkJsonHandler->setMethod(HTTP_POST | HTTP_PUT);
     server->addHandler(networkJsonHandler);
 
-    // Logs
-    server->on("/api/logs/list", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleGetLogsList(request); });
-
-    server->on("/api/logs", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleGetLogContent(request); });
-
-    server->on("/api/logs", HTTP_DELETE,
-              [this](AsyncWebServerRequest* request) { handleDeleteLog(request); });
-
-    server->on("/api/logs/clear", HTTP_POST,
-              [this](AsyncWebServerRequest* request) { handleDeleteLog(request); });
-
-    server->on("/api/logs/info", HTTP_GET,
-              [this](AsyncWebServerRequest* request) {
-        if (!ctx->checkPermission(request, "system.view")) { ctx->sendUnauthorized(request); return; }
-        static const char* LOG_FILE = "/logs/system.log";
-        JsonDocument doc;
-        doc["success"] = true;
-        if (LittleFS.exists(LOG_FILE)) {
-            File file = LittleFS.open(LOG_FILE, "r");
-            if (file) { doc["data"]["size"] = file.size(); doc["data"]["exists"] = true; file.close(); }
-            else { doc["data"]["size"] = 0; doc["data"]["exists"] = false; }
-        } else { doc["data"]["size"] = 0; doc["data"]["exists"] = false; }
-        doc["data"]["maxSize"] = LOGGER.getLogFileSizeLimit();
-        doc["data"]["level"] = (int)LOGGER.getLogLevel();
-        doc["data"]["fileLogging"] = LOGGER.isFileLoggingEnabled();
-        HandlerUtils::sendJsonStream(request, doc);
-    });
-
     // Files
     server->on(AsyncURIMatcher::exact("/api/files"), HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetFilesList(request); });
@@ -240,7 +211,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             return;
         }
     
-        // 第一遍扫描：精确计算 JSON 转义后的大小，避免 String 重分配失败
+        // 第一遍扫描：精确计算 JSON 转义后的大小
         size_t escapedSize = 0;
         size_t rawSize = 0;
         {
@@ -255,26 +226,20 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                     if (c == '"' || c == '\\') escapedSize += 2;
                     else if (c == '\n' || c == '\r' || c == '\t') escapedSize += 2;
                     else if (c >= 0x20) escapedSize += 1;
-                    // 控制字符 < 0x20 被跳过
                 }
             }
         }
     
-        // JSON 包装开销：{"success":true,"data":{"path":"...","size":...,"content":"..."}}  约 100 字节
         size_t totalJsonSize = escapedSize + path.length() + 128;
     
-        // 检查是否有足够内存容纳完整响应
-        size_t availableForJson = freeHeap - 20000;  // 预留 20KB 给系统
+        size_t availableForJson = freeHeap - 20000;
         if (totalJsonSize > availableForJson) {
-            // 内存不足以装载整个文件，计算可安全读取的字节数
-            // 用转义比率估算：escapedSize / rawSize ≈ 转义后/原始 的膨胀比
             size_t maxEscaped = availableForJson - 128 - path.length();
             size_t maxRaw = (rawSize > 0 && escapedSize > 0)
                 ? (size_t)((double)maxEscaped * rawSize / escapedSize)
                 : maxEscaped;
             if (maxRaw > rawSize) maxRaw = rawSize;
             rawSize = maxRaw;
-            // 重新计算 escapedSize（按比例缩减）
             escapedSize = maxEscaped;
             totalJsonSize = availableForJson;
         }
@@ -284,11 +249,10 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             return;
         }
     
-        // 回到文件开头，第二遍读取并构建 JSON
         file.seek(0);
     
         String json;
-        json.reserve(totalJsonSize + 64);  // 精确预留 + 小余量
+        json.reserve(totalJsonSize + 64);
         json += F("{\"success\":true,\"data\":{\"path\":\"");
         json += path;
         json += F("\",\"size\":");
@@ -316,14 +280,12 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         file.close();
         json += F("\"}}");
 
-        // 校验 JSON 完整性
         if (json.length() < 20 || !json.endsWith("}}")) {
             HandlerUtils::sendJsonError(request, 503, "Response truncated, low memory");
             return;
         }
     
         AsyncWebServerResponse* resp = request->beginResponse(200, "application/json", json);
-        resp->addHeader("Access-Control-Allow-Origin", "*");
         request->send(resp);
     });
 
@@ -441,184 +403,17 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         else ctx->sendError(request, 400, "No valid configuration parameters provided");
     });
 
-    // Device config
-    server->on("/api/device/config", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleGetDeviceConfig(request); });
-
-    server->on("/api/device/config", HTTP_POST,
-              [this](AsyncWebServerRequest* request) { handleSaveDeviceConfig(request); });
-
-    // JSON body handler for device config update (PUT/POST with JSON)
-    auto* deviceJsonHandler = new AsyncCallbackJsonWebHandler("/api/device/config",
-        [this](AsyncWebServerRequest* request, JsonVariant& json) {
-            if (!ctx->checkPermission(request, "config.edit")) {
-                ctx->sendUnauthorized(request);
-                return;
-            }
-            JsonObject obj = json.as<JsonObject>();
-            JsonDocument doc;
-            // Read existing config first
-            if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
-                File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
-                if (f) { deserializeJson(doc, f); f.close(); }
-            }
-            // Update fields from JSON body
-            if (obj["deviceName"].is<String>()) doc["deviceName"] = obj["deviceName"].as<String>();
-            if (obj["deviceId"].is<String>()) {
-                String devId = obj["deviceId"].as<String>();
-                devId.trim();
-                if (devId.isEmpty()) {
-                    // 自动生成：FBE + MAC地址（去掉冒号）
-                    String mac = WiFi.macAddress(); // 格式 AA:BB:CC:DD:EE:FF
-                    mac.replace(":", "");
-                    devId = "FBE" + mac;
-                }
-                doc["deviceId"] = devId;
-            }
-            if (obj["productNumber"].is<int>() || obj["productNumber"].is<String>()) doc["productNumber"] = obj["productNumber"].as<int>();
-            if (obj["userId"].is<String>()) doc["userId"] = obj["userId"].as<String>();
-            if (obj["description"].is<String>()) doc["description"] = obj["description"].as<String>();
-            if (obj["ntpServer1"].is<String>()) doc["ntpServer1"] = obj["ntpServer1"].as<String>();
-            if (obj["ntpServer2"].is<String>()) doc["ntpServer2"] = obj["ntpServer2"].as<String>();
-            if (obj["timezone"].is<String>()) doc["timezone"] = obj["timezone"].as<String>();
-            if (obj["enableNTP"].is<String>() || obj["enableNTP"].is<bool>()) {
-                String v = obj["enableNTP"].as<String>();
-                doc["enableNTP"] = (v == "1" || v == "true" || obj["enableNTP"].as<bool>());
-            }
-            if (obj["syncInterval"].is<String>() || obj["syncInterval"].is<int>()) doc["syncInterval"] = obj["syncInterval"].as<int>();
-            if (obj["cacheDuration"].is<int>() || obj["cacheDuration"].is<String>()) {
-                int cd = obj["cacheDuration"].as<int>();
-                doc["cacheDuration"] = cd;
-                ctx->cacheDuration = (uint32_t)cd;
-            }
-
-            File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
-            if (!f) { ctx->sendError(request, 500, "Failed to save device config"); return; }
-            serializeJsonPretty(doc, f);
-            f.close();
-            LOGGER.info("Device configuration updated via web");
-            
-            // 构建响应，包含生成的 deviceId
-            JsonDocument resp;
-            resp["success"] = true;
-            resp["message"] = "Device configuration saved";
-            resp["data"]["deviceId"] = doc["deviceId"];
-            HandlerUtils::sendJsonStream(request, resp);
-        });
-    deviceJsonHandler->setMethod(HTTP_POST | HTTP_PUT);
-    server->addHandler(deviceJsonHandler);
-
-    // Device time
-    server->on("/api/device/time", HTTP_GET,
-              [this](AsyncWebServerRequest* request) {
-        if (!ctx->checkPermission(request, "system.view")) { ctx->sendUnauthorized(request); return; }
-        JsonDocument doc;
-        time_t now = TimeUtils::getTimestamp();
-            
-        // 检查网络状态
-        bool internetAvailable = false;
-        if (ctx->networkManager) {
-            NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
-            NetworkStatusInfo netInfo = netMgr->getStatusInfo();
-            internetAvailable = netInfo.internetAvailable;
-        }
-            
-        // 时间有效：时间戳大于 2020-01-01 (1577836800)
-        bool timeValid = (now > 1577836800);
-        // 同步状态：时间有效且网络可用（表示可以从网络同步）
-        bool synced = timeValid && internetAvailable;
-            
-        doc["success"] = true;
-        doc["data"]["datetime"] = TimeUtils::formatTime(now, TimeUtils::HUMAN_READABLE);
-        doc["data"]["timestamp"] = (long)now;
-        doc["data"]["synced"] = synced;
-        doc["data"]["timeValid"] = timeValid;  // 新增：时间是否有效
-        doc["data"]["internetAvailable"] = internetAvailable;  // 新增：网络是否可用
-        doc["data"]["uptime"] = millis();
-        doc["data"]["timezone"] = "CST-8";
-        if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
-            File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
-            if (f) {
-                JsonDocument cfg;
-                if (deserializeJson(cfg, f) == DeserializationError::Ok) {
-                    if (cfg["timezone"].is<String>()) doc["data"]["timezone"] = cfg["timezone"].as<String>();
-                }
-                f.close();
-            }
-        }
-        HandlerUtils::sendJsonStream(request, doc);
-    });
-
-    server->on("/api/device/time/sync", HTTP_POST,
-              [this](AsyncWebServerRequest* request) {
-        if (!ctx->checkPermission(request, "config.edit")) { ctx->sendUnauthorized(request); return; }
-            
-        // 检查网络状态
-        bool internetAvailable = false;
-        if (ctx->networkManager) {
-            NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
-            NetworkStatusInfo netInfo = netMgr->getStatusInfo();
-            internetAvailable = netInfo.internetAvailable;
-        }
-            
-        // 如果网络不可用，直接返回失败
-        if (!internetAvailable) {
-            JsonDocument doc;
-            time_t now = TimeUtils::getTimestamp();
-            doc["success"] = false;
-            doc["error"] = "No internet connection";
-            doc["data"]["datetime"] = TimeUtils::formatTime(now, TimeUtils::HUMAN_READABLE);
-            doc["data"]["timestamp"] = (long)now;
-            doc["data"]["synced"] = false;
-            doc["data"]["internetAvailable"] = false;
-            doc["data"]["uptime"] = millis();
-            HandlerUtils::sendJsonStream(request, doc);
-            return;
-        }
-            
-        String ntpServer1 = "cn.pool.ntp.org";
-        String tz = "CST-8";
-        if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
-            File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
-            if (f) {
-                JsonDocument cfg;
-                if (deserializeJson(cfg, f) == DeserializationError::Ok) {
-                    if (cfg["ntpServer1"].is<String>()) ntpServer1 = cfg["ntpServer1"].as<String>();
-                    if (cfg["timezone"].is<String>()) tz = cfg["timezone"].as<String>();
-                }
-                f.close();
-            }
-        }
-        setenv("TZ", tz.c_str(), 1);
-        tzset();
-        bool synced = false;
-        if (ntpServer1.startsWith("http://") || ntpServer1.startsWith("https://")) {
-            long long ts = 0;
-            synced = TimeUtils::syncNTPFromHTTPWithTimestamp(ntpServer1, ts, 5000);
-            if (synced) tzset();
-        } else {
-            configTzTime(tz.c_str(), ntpServer1.c_str(), "time.nist.gov");
-            synced = TimeUtils::syncNTP(5000);
-        }
-        JsonDocument doc;
-        time_t now = TimeUtils::getTimestamp();
-        doc["success"] = true;
-        doc["data"]["datetime"] = TimeUtils::formatTime(now, TimeUtils::HUMAN_READABLE);
-        doc["data"]["timestamp"] = (long)now;
-        doc["data"]["synced"] = synced;
-        doc["data"]["internetAvailable"] = internetAvailable;
-        doc["data"]["uptime"] = millis();
-        if (synced) { LOGGER.info("NTP sync triggered via web"); }
-        HandlerUtils::sendJsonStream(request, doc);
-    });
-
     // Health check
     server->on("/api/health", HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetHealth(request); });
 
-    // Device info
-    server->on("/api/device/info", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleGetDeviceInfo(request); });
+    // System metrics
+    server->on("/api/system/metrics", HTTP_GET,
+              [this](AsyncWebServerRequest* request) { handleSystemMetrics(request); });
+
+    // System capabilities (no auth required - public endpoint)
+    server->on("/api/system/capabilities", HTTP_GET,
+              [this](AsyncWebServerRequest* request) { handleGetCapabilities(request); });
 }
 
 void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
@@ -627,10 +422,48 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
         return;
     }
 
-    // 内存检查：SystemInfo 响应包含大量设备/内存/文件系统/网络信息
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    bool forceBrief = false;
+    if (fw && fw->getHealthMonitor()) {
+        MemoryGuardLevel level = fw->getHealthMonitor()->getMemoryGuardLevel();
+        if (level >= MemoryGuardLevel::CRITICAL) {
+            HandlerUtils::sendJsonError(request, 503, "Critical memory - system info unavailable");
+            return;
+        }
+        if (level >= MemoryGuardLevel::SEVERE) {
+            forceBrief = true;
+        }
+    }
+
+    bool brief = forceBrief || request->hasParam("brief");
     if (HandlerUtils::checkLowMemory(request)) return;
 
     JsonDocument doc;
+
+    if (brief) {
+        doc["data"]["device"]["chipModel"] = ESP.getChipModel();
+        doc["data"]["device"]["freeHeap"] = ESP.getFreeHeap();
+        doc["data"]["device"]["firmwareVersion"] = SystemInfo::VERSION;
+
+        size_t freeHeap = ESP.getFreeHeap();
+        size_t heapSize = ESP.getHeapSize();
+        doc["data"]["memory"]["heapFree"] = freeHeap;
+        doc["data"]["memory"]["heapUsagePercent"] = (int)(((heapSize - freeHeap) * 100) / heapSize);
+
+        unsigned long uptime = millis();
+        doc["data"]["uptime"]["seconds"] = uptime / 1000;
+
+        if (ctx->networkManager) {
+            NetworkStatusInfo info = ctx->networkManager->getStatusInfo();
+            doc["data"]["network"]["connected"] = (info.status == NetworkStatus::CONNECTED);
+            doc["data"]["network"]["ipAddress"] = info.ipAddress;
+        }
+
+        doc["data"]["brief"] = true;
+        doc["success"] = true;
+        HandlerUtils::sendJsonStream(request, doc);
+        return;
+    }
 
     doc["data"]["device"]["id"] = String((uint32_t)ESP.getEfuseMac(), HEX);
     doc["data"]["device"]["chipModel"] = ESP.getChipModel();
@@ -703,7 +536,6 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
 }
 
 void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
-    // 缓存命中
     unsigned long now = millis();
     if (_statusCache.valid && (now - _statusCache.timestamp) < STATUS_CACHE_TTL) {
         request->send(200, "application/json", _statusCache.json);
@@ -711,7 +543,6 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
     }
 
     JsonDocument doc;
-
     doc["status"]    = "running";
     doc["timestamp"] = millis();
     doc["freeHeap"]  = ESP.getFreeHeap();
@@ -725,7 +556,6 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
         doc["rssi"]             = info.rssi;
     }
 
-    // 缓存序列化结果
     JsonDocument wrapper;
     wrapper["success"] = true;
     wrapper["data"] = doc;
@@ -829,179 +659,11 @@ void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
 }
 
 void SystemRouteHandler::handleSaveNetworkConfig(AsyncWebServerRequest* request) {
-    // Simple POST form handler - JSON body handled via addHandler above
     if (!ctx->checkPermission(request, "network.edit")) {
         ctx->sendUnauthorized(request);
         return;
     }
     ctx->sendSuccess(request, "Use JSON body for network config update");
-}
-
-void SystemRouteHandler::handleGetLogsList(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "system.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
-
-    JsonDocument doc;
-    doc["success"] = true;
-    JsonArray files = doc["data"].to<JsonArray>();
-
-    File root = LittleFS.open("/logs");
-    if (!root || !root.isDirectory()) {
-        if (root) root.close();
-        HandlerUtils::sendJsonStream(request, doc);
-        return;
-    }
-
-    File file = root.openNextFile();
-    while (file) {
-        const char* name = file.name();
-        if (strstr(name, ".log") != nullptr) {
-            JsonObject f = files.add<JsonObject>();
-            f["name"] = name;
-            f["size"] = file.size();
-            f["current"] = (strcmp(name, "system.log") == 0);
-        }
-        file = root.openNextFile();
-    }
-    root.close();
-
-    HandlerUtils::sendJsonStream(request, doc);
-}
-
-void SystemRouteHandler::handleGetLogContent(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "system.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
-
-    // 早期内存检查 — 此接口峰值消耗较大，预留 30KB
-    if (HandlerUtils::checkLowMemory(request, 30720)) return;
-
-    String linesParam = ctx->getParamValue(request, "lines", "100");
-    int maxLines = linesParam.toInt();
-    if (maxLines <= 0) maxLines = 100;
-    if (maxLines > 500) maxLines = 500;
-
-    String fileParam = ctx->getParamValue(request, "file", "system.log");
-    if (fileParam.indexOf("/") != -1 || fileParam.indexOf("\\") != -1) {
-        ctx->sendError(request, 400, "Invalid file name");
-        return;
-    }
-    String logFile = "/logs/" + fileParam;
-
-    if (!LittleFS.exists(logFile)) {
-        JsonDocument doc;
-        doc["success"] = true;
-        doc["data"]["content"] = "Log file does not exist";
-        doc["data"]["size"] = 0;
-        doc["data"]["lines"] = 0;
-        HandlerUtils::sendJsonStream(request, doc);
-        return;
-    }
-
-    File file = LittleFS.open(logFile, "r");
-    if (!file) {
-        ctx->sendError(request, 500, "Failed to open log file");
-        return;
-    }
-
-    size_t fileSize = file.size();
-
-    // 根据可用堆内存动态调整读取量，防止内存不足
-    // JSON 转义后体积约为原文 1.2~1.5 倍，加上 json String 和 content 同时存在
-    // 所以需要预留约 3 倍 maxSize 的堆空间
-    size_t freeHeap = ESP.getFreeHeap();
-    size_t maxBlock = ESP.getMaxAllocHeap();
-    size_t maxSize;
-    if (freeHeap < 40960 || maxBlock < 8192) {  // <40KB 或最大连续块<8KB: 返回精简响应
-        file.close();
-        request->send(200, "application/json",
-            F("{\"success\":true,\"data\":{\"content\":\"[Low memory - log temporarily unavailable]\",\"size\":0,\"lines\":0,\"truncated\":true}}"));
-        return;
-    } else if (freeHeap < 61440) {  // <60KB: 最小化读取
-        maxSize = 1536;
-    } else if (freeHeap < 81920) {  // <80KB: 减量读取
-        maxSize = 3 * 1024;
-    } else {
-        maxSize = 6 * 1024;  // 最大 6KB（转义后约 8~9KB）
-    }
-
-    size_t startPos = (fileSize > maxSize) ? (fileSize - maxSize) : 0;
-
-    file.seek(startPos);
-    String content = file.readString();
-    file.close();
-
-    int lineCount = 0;
-    int cutPos = 0;
-    for (int i = content.length() - 1; i >= 0; i--) {
-        if (content[i] == '\n') {
-            lineCount++;
-            if (lineCount >= maxLines) {
-                cutPos = i + 1;
-                break;
-            }
-        }
-    }
-    int totalLines = lineCount;
-
-    // 原地裁剪，避免创建额外 String 副本
-    if (cutPos > 0) {
-        content = content.substring(cutPos);
-    }
-
-    // 直接构建 JSON String 响应，避免 AsyncResponseStream/cbuf 动态扩容导致 OOM 崩溃
-    // （cbuf::resize 在 new[] 失败时会 memcpy 到 nullptr → StoreProhibited）
-    String json;
-    json.reserve(content.length() + 128);  // 预分配，减少碎片
-    json += F("{\"success\":true,\"data\":{\"content\":\"");
-
-    // 内联 JSON 转义，直接追加到 json String（避免逐字符写 stream）
-    for (size_t i = 0; i < content.length(); i++) {
-        char c = content[i];
-        switch (c) {
-            case '"':  json += F("\\\""); break;
-            case '\\': json += F("\\\\"); break;
-            case '\n': json += F("\\n"); break;
-            case '\r': json += F("\\r"); break;
-            case '\t': json += F("\\t"); break;
-            default:
-                if ((uint8_t)c < 0x20) {
-                    char buf[8];
-                    snprintf(buf, sizeof(buf), "\\u%04x", (uint8_t)c);
-                    json += buf;
-                } else {
-                    json += c;
-                }
-        }
-    }
-    content = "";  // 尽早释放原始内容
-
-    json += F("\",\"size\":");
-    json += String((unsigned)fileSize);
-    json += F(",\"lines\":");
-    json += String(totalLines);
-    json += F(",\"truncated\":");
-    json += (startPos > 0) ? F("true") : F("false");
-    json += F("}}");
-
-    request->send(200, "application/json", json);
-}
-
-void SystemRouteHandler::handleDeleteLog(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
-
-    if (LOGGER.deleteLogFile()) {
-        LOG_INFO("Log file cleared by user");
-        ctx->sendSuccess(request, "Log file cleared");
-    } else {
-        ctx->sendError(request, 500, "Failed to clear log file");
-    }
 }
 
 void SystemRouteHandler::handleGetFilesList(AsyncWebServerRequest* request) {
@@ -1014,7 +676,6 @@ void SystemRouteHandler::handleGetFilesList(AsyncWebServerRequest* request) {
     if (request->hasParam("path")) {
         path = request->getParam("path")->value();
     }
-
     if (!path.startsWith("/")) {
         path = "/" + path;
     }
@@ -1046,122 +707,55 @@ void SystemRouteHandler::handleGetFilesList(AsyncWebServerRequest* request) {
         item["name"] = String(file.name());
         file = root.openNextFile();
     }
-
     root.close();
 
     HandlerUtils::sendJsonStream(request, doc);
 }
 
-void SystemRouteHandler::handleGetDeviceConfig(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "system.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
-
-    static char jsonBuffer[1024];
-    if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
-        File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
-        if (f) {
-            JsonDocument fileCfg;
-            DeserializationError err = deserializeJson(fileCfg, f);
-            f.close();
-            if (!err) {
-                JsonDocument doc;
-                doc["success"] = true;
-                doc["data"] = fileCfg;
-                serializeJson(doc, jsonBuffer, sizeof(jsonBuffer));
-                request->send(200, "application/json", jsonBuffer);
-                return;
-            }
-        }
-    }
-
-    snprintf(jsonBuffer, sizeof(jsonBuffer),
-        "{\"success\":true,\"data\":{\"deviceName\":\"FastBee-ESP32\",\"deviceId\":\"%s\"}}",
-        String((uint32_t)ESP.getEfuseMac(), HEX).c_str());
-    request->send(200, "application/json", jsonBuffer);
-}
-
-void SystemRouteHandler::handleSaveDeviceConfig(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
-
-    JsonDocument doc;
-    doc["deviceName"] = ctx->getParamValue(request, "deviceName", "FastBee-ESP32");
-    
-    String devId = ctx->getParamValue(request, "deviceId", "");
-    devId.trim();
-    if (devId.isEmpty()) {
-        // 自动生成：FBE + MAC地址（去掉冒号）
-        String mac = WiFi.macAddress();
-        mac.replace(":", "");
-        devId = "FBE" + mac;
-    }
-    doc["deviceId"] = devId;
-
-    File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
-    if (!f) {
-        ctx->sendError(request, 500, "Failed to save device config");
-        return;
-    }
-
-    serializeJsonPretty(doc, f);
-    f.close();
-
-    ctx->sendSuccess(request, "Device configuration saved");
-}
-
 void SystemRouteHandler::handleGetHealth(AsyncWebServerRequest* request) {
     JsonDocument doc;
-
     doc["status"] = "healthy";
     doc["timestamp"] = millis();
     doc["freeHeap"] = ESP.getFreeHeap();
-
     ctx->sendSuccess(request, doc);
 }
 
-void SystemRouteHandler::handleGetDeviceInfo(AsyncWebServerRequest* request) {
+void SystemRouteHandler::handleSystemMetrics(AsyncWebServerRequest* request) {
     if (!ctx->checkPermission(request, "system.view")) {
         ctx->sendUnauthorized(request);
         return;
     }
 
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    if (!fw || !fw->getHealthMonitor()) {
+        ctx->sendError(request, 503, "Health monitor unavailable");
+        return;
+    }
+
+    String json = fw->getHealthMonitor()->getMetricsJson();
+    request->send(200, "application/json", json);
+}
+
+void SystemRouteHandler::handleGetCapabilities(AsyncWebServerRequest* request) {
     JsonDocument doc;
 
-    // ESP32 芯片信息
-    doc["data"]["chip"]["model"] = ESP.getChipModel();
-    doc["data"]["chip"]["revision"] = ESP.getChipRevision();
-    doc["data"]["chip"]["cpuFreqMHz"] = ESP.getCpuFreqMHz();
-    doc["data"]["chip"]["sdkVersion"] = ESP.getSdkVersion();
-    doc["data"]["chip"]["macAddress"] = WiFi.macAddress();
+    doc["data"]["mqtt"]   = (bool)FASTBEE_ENABLE_MQTT;
+    doc["data"]["modbus"] = (bool)FASTBEE_ENABLE_MODBUS;
+    doc["data"]["tcp"]    = (bool)FASTBEE_ENABLE_TCP;
+    doc["data"]["http"]   = (bool)FASTBEE_ENABLE_HTTP;
+    doc["data"]["coap"]   = (bool)FASTBEE_ENABLE_COAP;
 
-    // 从 device.json 读取设备配置
-    if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
-        File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
-        if (f) {
-            JsonDocument cfg;
-            if (deserializeJson(cfg, f) == DeserializationError::Ok) {
-                if (cfg["deviceName"].is<String>()) doc["data"]["deviceName"] = cfg["deviceName"].as<String>();
-                if (cfg["deviceId"].is<String>()) doc["data"]["deviceId"] = cfg["deviceId"].as<String>();
-                if (cfg["description"].is<String>()) doc["data"]["description"] = cfg["description"].as<String>();
-                if (cfg["productNumber"].is<int>()) doc["data"]["productNumber"] = cfg["productNumber"].as<int>();
-                if (cfg["userId"].is<String>()) doc["data"]["userId"] = cfg["userId"].as<String>();
-                if (cfg["location"].is<String>()) doc["data"]["location"] = cfg["location"].as<String>();
-            }
-            f.close();
-        }
-    }
+    doc["data"]["periphExec"]  = (bool)FASTBEE_ENABLE_PERIPH_EXEC;
+    doc["data"]["ruleScript"]  = (bool)FASTBEE_ENABLE_RULE_SCRIPT;
+    doc["data"]["lcd"]        = (bool)FASTBEE_ENABLE_LCD;
+    doc["data"]["ledScreen"]  = (bool)FASTBEE_ENABLE_LED_SCREEN;
 
-    // 设置默认值（如果配置文件中不存在）
-    if (!doc["data"]["deviceName"].is<String>()) {
-        doc["data"]["deviceName"] = "FastBee-ESP32";
-    }
-    if (!doc["data"]["deviceId"].is<String>()) {
-        doc["data"]["deviceId"] = String((uint32_t)ESP.getEfuseMac(), HEX);
-    }
+    doc["data"]["ota"]           = (bool)FASTBEE_ENABLE_OTA;
+    doc["data"]["auth"]         = (bool)FASTBEE_ENABLE_AUTH;
+    doc["data"]["webServer"]    = (bool)FASTBEE_ENABLE_WEB_SERVER;
+    doc["data"]["healthMonitor"]= (bool)FASTBEE_ENABLE_HEALTH_MONITOR;
+    doc["data"]["logger"]       = (bool)FASTBEE_ENABLE_LOGGER;
+    doc["data"]["taskManager"]  = (bool)FASTBEE_ENABLE_TASK_MANAGER;
 
     doc["success"] = true;
     HandlerUtils::sendJsonStream(request, doc);

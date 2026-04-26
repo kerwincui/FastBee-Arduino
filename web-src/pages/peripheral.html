@@ -1,10 +1,10 @@
 <!-- 外设配置页面 -->
 <div id="peripheral-page" class="page page-layout-flat">
-    <div class="card">
-        <div class="card-header card-header-toolbar">
-            <h2 class="card-title" data-i18n="peripheral-title">外设配置</h2>
+    <div class="fb-card">
+        <div class="fb-card-header fb-card-header-toolbar">
+            <h2 class="fb-card-title" data-i18n="peripheral-title">外设配置</h2>
             <div class="u-toolbar-sm">
-                <select id="peripheral-filter-type" class="pure-input-1 u-select-auto">
+                <select id="peripheral-filter-type" class="u-select-auto">
                     <option value="" data-i18n="peripheral-filter-all">全部外设</option>
                     <option value="communication" data-i18n="peripheral-filter-comm">通信接口</option>
                     <option value="gpio" data-i18n="peripheral-filter-gpio">GPIO接口</option>
@@ -19,10 +19,10 @@
                 </button>
             </div>
         </div>
-        <div class="card-body">
+        <div class="fb-card-body">
             <!-- 外设列表表格 -->
             <div class="u-table-wrap">
-                <table class="pure-table pure-table-bordered u-table-fill">
+                <table class="fb-table fb-table-bordered u-table-fill">
                     <thead>
                         <tr>
                             <th data-i18n="peripheral-id-col">ID</th>
@@ -50,11 +50,11 @@
 
 <!-- 外设执行独立页面 -->
 <div id="periph-exec-page" class="page page-layout-flat">
-    <div class="card">
-        <div class="card-header u-header-between-wrap">
-            <h2 class="card-title" data-i18n="periph-exec-page-title">外设执行管理</h2>
+    <div class="fb-card">
+        <div class="fb-card-header u-header-between-wrap">
+            <h2 class="fb-card-title" data-i18n="periph-exec-page-title">外设执行管理</h2>
             <div class="u-toolbar-sm">
-                <select id="periph-exec-filter-periph" class="pure-input-1 u-select-auto"
+                <select id="periph-exec-filter-periph" class="u-select-auto"
                     data-change-action="loadPeriphExecPage">
                     <option value="" data-i18n="periph-exec-filter-all">全部规则</option>
                 </select>
@@ -65,9 +65,9 @@
                 </button>
             </div>
         </div>
-        <div class="card-body">
+        <div class="fb-card-body">
             <div class="u-table-wrap">
-                <table class="pure-table pure-table-bordered u-table-fill">
+                <table class="fb-table fb-table-bordered u-table-fill">
                     <thead>
                         <tr>
                             <th data-i18n="periph-exec-col-name">名称</th>

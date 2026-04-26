@@ -1,0 +1,112 @@
+<form id="tcp-form" class="fb-form">
+    <div class="fb-form-group fb-mb-3 fb-pb-3 fb-border-bottom">
+        <label class="fb-checkbox">
+            <input type="checkbox" id="tcp-enabled"> <span
+                data-i18n="tcp-enabled-label">启用TCP</span>
+        </label>
+    </div>
+    <!-- 工作模式选择 -->
+    <div class="fb-form-group fb-mb-3 fb-pb-3 fb-border-bottom">
+        <label for="tcp-mode" data-i18n="tcp-mode-label">工作模式</label>
+        <select id="tcp-mode" class=""
+            data-change-action="onTcpModeChange">
+            <option value="client" data-i18n="tcp-mode-client">客户端模式</option>
+            <option value="server" data-i18n="tcp-mode-server">服务端模式</option>
+        </select>
+    </div>
+    <!-- 客户端配置 -->
+    <div id="tcp-client-config">
+        <div class="config-form-grid">
+            <div class="config-form-column">
+                <div class="fb-form-group">
+                    <label for="tcp-server"
+                        data-i18n="tcp-server-label">服务器地址</label>
+                    <input type="text" id="tcp-server" class=""
+                        value="192.168.1.200">
+                </div>
+                <div class="fb-form-group">
+                    <label for="tcp-timeout"
+                        data-i18n="tcp-client-timeout-label">连接超时(ms)</label>
+                    <input type="number" id="tcp-timeout" class=""
+                        value="5000" min="1000" max="30000">
+                </div>
+                <div class="fb-form-group">
+                    <label for="tcp-retry"
+                        data-i18n="tcp-retry-label">最大重试次数</label>
+                    <input type="number" id="tcp-retry" class=""
+                        value="5" min="0" max="20">
+                </div>
+            </div>
+            <div class="config-form-column">
+                <div class="fb-form-group">
+                    <label for="tcp-port"
+                        data-i18n="tcp-client-port-label">端口</label>
+                    <input type="number" id="tcp-port" class=""
+                        value="5000" min="1" max="65535">
+                </div>
+                <div class="fb-form-group">
+                    <label for="tcp-keepalive"
+                        data-i18n="tcp-keepalive-label">保活间隔(秒)</label>
+                    <input type="number" id="tcp-keepalive" class=""
+                        value="60" min="0" max="3600">
+                </div>
+                <div class="fb-form-group">
+                    <label for="tcp-reconnect"
+                        data-i18n="tcp-reconnect-label">重连间隔(秒)</label>
+                    <input type="number" id="tcp-reconnect" class=""
+                        value="10" min="1" max="300">
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- 服务端配置（默认隐藏） -->
+    <div id="tcp-server-config" class="fb-hidden">
+        <div class="config-form-grid">
+            <div class="config-form-column">
+                <div class="fb-form-group">
+                    <label for="tcp-local-port"
+                        data-i18n="tcp-local-port-label">本地端口</label>
+                    <input type="number" id="tcp-local-port" class=""
+                        value="8080" min="1" max="65535">
+                </div>
+            </div>
+            <div class="config-form-column">
+                <div class="fb-form-group">
+                    <label for="tcp-max-clients"
+                        data-i18n="tcp-max-clients-label">最大客户端数</label>
+                    <input type="number" id="tcp-max-clients" class=""
+                        value="5" min="1" max="10">
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- 通用配置 -->
+    <div class="config-form-grid fb-mt-2">
+        <div class="config-form-column">
+            <div class="fb-form-group">
+                <label for="tcp-heartbeat-msg"
+                    data-i18n="tcp-heartbeat-msg-label">心跳消息</label>
+                <input type="text" id="tcp-heartbeat-msg" class=""
+                    value="\n" maxlength="32">
+            </div>
+        </div>
+        <div class="config-form-column">
+            <div class="fb-form-group">
+                <label for="tcp-idle-timeout"
+                    data-i18n="tcp-idle-timeout-label">空闲超时(秒)</label>
+                <input type="number" id="tcp-idle-timeout" class=""
+                    value="120" min="0" max="3600">
+            </div>
+        </div>
+    </div>
+
+    <div class="message message-success fb-hidden" id="tcp-success"
+        data-i18n="tcp-save-ok">
+        TCP配置保存成功！
+    </div>
+
+    <div class="fb-mt-4">
+        <button type="submit" class="fb-btn fb-btn-primary"
+            data-i18n="btn-save-config">保存配置</button>
+    </div>
+</form>

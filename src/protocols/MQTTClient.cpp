@@ -14,14 +14,27 @@
 #include "protocols/MQTTClient.h"
 #include "core/AsyncExecTypes.h"
 #include "systems/LoggerSystem.h"
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_HEALTH_MONITOR
+#include "systems/HealthMonitor.h"
+#include "core/FastBeeFramework.h"
+#endif
 #include <ArduinoJson.h>
 #include <core/ConfigDefines.h>
 #include <LittleFS.h>
 #include <HTTPClient.h>
 #include <mbedtls/aes.h>
+#include <core/FeatureFlags.h>
+#if FASTBEE_ENABLE_PERIPH_EXEC
 #include <core/PeriphExecManager.h>
+#endif
+#if FASTBEE_ENABLE_RULE_SCRIPT
 #include <core/RuleScriptManager.h>
+#endif
 #include <mbedtls/base64.h>
+#include <new>
+
+#if FASTBEE_ENABLE_MQTT
 
 static double jsonVariantToDoubleSafe(JsonVariantConst v) {
     if (v.isNull()) return 0.0;
@@ -45,10 +58,10 @@ MQTTClient::MQTTClient()
     : isConnected(false), stopped(false), lastReconnectAttempt(0),
       lastConnectedTime(0), lastErrorCode(0), reconnectCount(0),
       reconnectInterval(5000), consecutiveTimeouts(0), lastLoopTime(0),
-      _reconnectPending(false), _reconnectRunning(false), _reconnectTaskHandle(nullptr) {
+      _reconnectPending(false), _reconnectRunning(false), _reconnectTaskHandle(nullptr),
+      _slotWriteIndex(0), _slotReadIndex(0), _slotCount(0) {
     _publishMutex = xSemaphoreCreateRecursiveMutex();
     _dataCommandQueue = xQueueCreate(4, sizeof(String*));
-    _reportQueue = xQueueCreate(8, sizeof(String*));
 }
 
 MQTTClient::~MQTTClient() {
@@ -69,13 +82,13 @@ MQTTClient::~MQTTClient() {
         vQueueDelete(_dataCommandQueue);
         _dataCommandQueue = nullptr;
     }
-    // 排空并删除上报队列
-    if (_reportQueue) {
-        String* rpt = nullptr;
-        while (xQueueReceive(_reportQueue, &rpt, 0) == pdTRUE) { delete rpt; }
-        vQueueDelete(_reportQueue);
-        _reportQueue = nullptr;
+    // 清空上报环形缓冲区
+    for (uint8_t i = 0; i < MQTT_REPORT_SLOTS; i++) {
+        _reportSlots[i].clear();
     }
+    _slotWriteIndex = 0;
+    _slotReadIndex = 0;
+    _slotCount = 0;
 }
 
 bool MQTTClient::loadMqttConfig(const String& filename) {
@@ -370,7 +383,11 @@ bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
     }
     String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
     // 数据上报转换管道
+#if FASTBEE_ENABLE_RULE_SCRIPT
     String payload = RuleScriptManager::getInstance().applyReportTransform(0, message);
+#else
+    String payload = message;
+#endif
     bool ok = mqttClient.publish(fullTopic.c_str(), payload.c_str(), pt.retain);
     
     if (!ok) {
@@ -694,7 +711,9 @@ void MQTTClient::handle() {
             LOG_WARNING("MQTT: Connection lost");
             _notifyStatusChange();  // 通知状态变化：连接断开
             // 触发MQTT断开连接系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
             PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_DISCONNECTED, "");
+#endif
         }
 
         if (!config.autoReconnect) return;
@@ -749,12 +768,14 @@ void MQTTClient::processQueuedCommands() {
     int processed = 0;
     while (processed < 2 && xQueueReceive(_dataCommandQueue, &cmd, 0) == pdTRUE) {
         if (cmd) {
+#if FASTBEE_ENABLE_PERIPH_EXEC
             PeriphExecManager& execMgr = PeriphExecManager::getInstance();
             String report = execMgr.handleDataCommand(*cmd);
             if (!report.isEmpty() && report != "[]") {
                 LOG_INFOF("[PeriphExec] Reporting status (DataCommand response): %s", report.c_str());
                 publishReportData(report);
             }
+#endif
             delete cmd;
         }
         processed++;
@@ -762,27 +783,82 @@ void MQTTClient::processQueuedCommands() {
 }
 
 void MQTTClient::processQueuedReports() {
-    if (!_reportQueue) return;
-    String* rpt = nullptr;
     int processed = 0;
-    while (processed < 4 && xQueueReceive(_reportQueue, &rpt, 0) == pdTRUE) {
-        if (rpt) {
-            publishReportData(*rpt);
-            delete rpt;
+    while (processed < 4 && _slotCount > 0) {
+        MqttSlot& slot = _reportSlots[_slotReadIndex];
+        if (slot.occupied) {
+            publishReportData(String(slot.payload, slot.length));
+            slot.clear();
+            _slotReadIndex = (_slotReadIndex + 1) % MQTT_REPORT_SLOTS;
+            _slotCount--;
+        } else {
+            // 异常：slot 标记未占用但 count > 0，跳过
+            _slotReadIndex = (_slotReadIndex + 1) % MQTT_REPORT_SLOTS;
+            _slotCount--;
         }
         processed++;
+    }
+
+#if FASTBEE_ENABLE_HEALTH_MONITOR
+    if (processed > 0) {
+        HealthMonitor* hm = FastBeeFramework::getInstance()->getHealthMonitor();
+        if (hm) hm->setMqttQueueDepth(_slotCount);
+    }
+#endif
+}
+
+void MQTTClient::setMinReportInterval(uint32_t ms) {
+    _minReportInterval = ms;
+    if (ms > 0) {
+        LOGGER.infof("[MQTT] Report interval limited to %lu ms", (unsigned long)ms);
+    } else {
+        LOGGER.info("[MQTT] Report interval limit removed");
     }
 }
 
 bool MQTTClient::queueReportData(const String& payload) {
-    if (!_reportQueue) return false;
-    String* rpt = new (std::nothrow) String(payload);
-    if (!rpt) return false;
-    if (xQueueSend(_reportQueue, &rpt, 0) != pdTRUE) {
-        LOG_WARNING("MQTT: Report queue full, dropping");
-        delete rpt;
-        return false;
+    return queueReportData(payload.c_str(), (uint16_t)payload.length());
+}
+
+bool MQTTClient::queueReportData(const char* payload, uint16_t length) {
+    // 降采样检查：如果距上次上报不足 _minReportInterval 则跳过
+    if (_minReportInterval > 0) {
+        unsigned long now = millis();
+        if (now - _lastReportQueueTime < _minReportInterval) {
+            return false;  // 降采样丢弃
+        }
+        _lastReportQueueTime = now;
     }
+
+    // 超过最大长度时截断
+    if (length > MQTT_SLOT_MAX_PAYLOAD - 1) {
+        LOGGER.warningf("[MQTT] Payload truncated: %u -> %u bytes", length, MQTT_SLOT_MAX_PAYLOAD - 1);
+        length = MQTT_SLOT_MAX_PAYLOAD - 1;
+    }
+    
+    // 缓冲区满时丢弃最旧的
+    if (_slotCount >= MQTT_REPORT_SLOTS) {
+        LOGGER.warning("[MQTT] Report queue full, dropping oldest");
+        _reportSlots[_slotReadIndex].clear();
+        _slotReadIndex = (_slotReadIndex + 1) % MQTT_REPORT_SLOTS;
+        _slotCount--;
+    }
+    
+    // 拷贝到下一个空闲 slot
+    MqttSlot& slot = _reportSlots[_slotWriteIndex];
+    memcpy(slot.payload, payload, length);
+    slot.payload[length] = '\0';
+    slot.length = length;
+    slot.occupied = true;
+    
+    _slotWriteIndex = (_slotWriteIndex + 1) % MQTT_REPORT_SLOTS;
+    _slotCount++;
+
+#if FASTBEE_ENABLE_HEALTH_MONITOR
+    HealthMonitor* hm = FastBeeFramework::getInstance()->getHealthMonitor();
+    if (hm) hm->setMqttQueueDepth(_slotCount);
+#endif
+    
     return true;
 }
 
@@ -897,7 +973,9 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
     MqttTopicType tType = getTopicTypeByPath(topicStr);
 
     // 数据接收转换管道
+#if FASTBEE_ENABLE_RULE_SCRIPT
     message = RuleScriptManager::getInstance().applyReceiveTransform(0, message);
+#endif
 
     char buf[96];
     snprintf(buf, sizeof(buf), "MQTT: Msg type=%d topic=%s len=%u",
@@ -988,7 +1066,9 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
                 snprintf(logBuf, sizeof(logBuf), "MQTT: NTP synced, time: %s", timeBuf);
                 LOG_INFO(logBuf);
                 // 触发NTP同步完成系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
                 PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_NTP_SYNCED, timeBuf);
+#endif
             }
         } else if (!err && !ntpDoc.containsKey("serverSendTime")) {
             // 收到的是 NTP 请求而非响应（仅含 deviceSendTime），忽略
@@ -1071,7 +1151,9 @@ bool MQTTClient::reconnect() {
         LOG_INFO("MQTT: Connected");
         _notifyStatusChange();  // 通知状态变化：连接成功
         // 触发MQTT连接成功系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
         PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_CONNECTED, "");
+#endif
         // 连接成功后订阅所有主题
         subscribeAll();
         // 连接成功后发布一次设备信息
@@ -1088,7 +1170,9 @@ bool MQTTClient::reconnect() {
         LOG_WARNING(buf2);
         _notifyStatusChange();  // 通知状态变化：连接失败
         // 触发MQTT连接失败系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
         PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_CONN_FAILED, String(lastErrorCode));
+#endif
     }
     return ok;
 }
@@ -1316,7 +1400,11 @@ String MQTTClient::aesEncrypt(const String& plainData, const String& key, const 
     uint8_t nPadding = nBlocks * 16 - len;
     size_t paddedLen = nBlocks * 16;
 
-    uint8_t* data = new uint8_t[paddedLen];
+    uint8_t* data = new(std::nothrow) uint8_t[paddedLen];
+    if (!data) {
+        LOG_ERROR("AES: Failed to allocate data buffer");
+        return "";
+    }
     memcpy(data, plainData.c_str(), len);
     for (size_t i = len; i < paddedLen; i++) {
         data[i] = nPadding;
@@ -1348,7 +1436,12 @@ String MQTTClient::aesEncrypt(const String& plainData, const String& key, const 
 
     size_t b64Len = 0;
     mbedtls_base64_encode(nullptr, 0, &b64Len, data, paddedLen);
-    uint8_t* b64Buf = new uint8_t[b64Len + 1];
+    uint8_t* b64Buf = new(std::nothrow) uint8_t[b64Len + 1];
+    if (!b64Buf) {
+        delete[] data;
+        LOG_ERROR("AES: Failed to allocate base64 buffer");
+        return "";
+    }
     ret = mbedtls_base64_encode(b64Buf, b64Len + 1, &b64Len, data, paddedLen);
     delete[] data;
 
@@ -1362,3 +1455,5 @@ String MQTTClient::aesEncrypt(const String& plainData, const String& key, const 
     delete[] b64Buf;
     return result;
 }
+
+#endif // FASTBEE_ENABLE_MQTT

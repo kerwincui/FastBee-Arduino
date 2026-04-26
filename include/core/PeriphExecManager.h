@@ -15,7 +15,19 @@
 // 前向声明
 class PeriphExecExecutor;
 class PeriphExecScheduler;
-class MQTTClient;
+
+// ===== 协议层回调类型定义（解耦 core → protocols 依赖） =====
+
+// MQTT 连接状态检查
+using MqttIsConnectedCallback = std::function<bool()>;
+// MQTT 队列上报数据
+using MqttQueueReportCallback = std::function<bool(const String& reportData)>;
+// Modbus sensorId 构建 (deviceIndex, channel) → sensorId string
+using ModbusBuildSensorIdCallback = std::function<String(uint8_t deviceIndex, uint16_t channel)>;
+// Modbus 未匹配 sensorId 直接控制 (sensorId, value, reportArr) → true=已处理
+using ModbusDirectControlCallback = std::function<bool(const String& sensorId, const String& value, JsonArray& reportArr)>;
+// Modbus 动态事件列表填充
+using ModbusDynamicEventsCallback = std::function<void(JsonArray& arr)>;
 
 class PeriphExecManager {
 public:
@@ -84,6 +96,13 @@ public:
 
     // Modbus 原始 HEX 帧透传回调（由 ProtocolManager 注册）
     void setModbusRawSendCallback(std::function<String(const String&)> callback);
+
+    // ========== 协议层回调注入（解耦 core → protocols） ==========
+    void setMqttIsConnectedCallback(MqttIsConnectedCallback cb);
+    void setMqttQueueReportCallback(MqttQueueReportCallback cb);
+    void setModbusBuildSensorIdCallback(ModbusBuildSensorIdCallback cb);
+    void setModbusDirectControlCallback(ModbusDirectControlCallback cb);
+    void setModbusDynamicEventsCallback(ModbusDynamicEventsCallback cb);
 
     // ========== 异步执行 ==========
 
@@ -235,6 +254,13 @@ private:
 
     // ========== Modbus 原始帧透传回调 ==========
     std::function<String(const String&)> _modbusRawSendCallback;
+
+    // ========== 协议层回调（解耦注入） ==========
+    MqttIsConnectedCallback _mqttIsConnectedCb;
+    MqttQueueReportCallback _mqttQueueReportCb;
+    ModbusBuildSensorIdCallback _modbusBuildSensorIdCb;
+    ModbusDirectControlCallback _modbusDirectControlCb;
+    ModbusDynamicEventsCallback _modbusDynamicEventsCb;
 
     // ========== 任务运行状态跟踪 ==========
     std::set<String> _runningRuleIds;           // 正在运行的规则ID集合

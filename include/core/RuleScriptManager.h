@@ -1,6 +1,9 @@
 #ifndef RULE_SCRIPT_MANAGER_H
 #define RULE_SCRIPT_MANAGER_H
 
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_RULE_SCRIPT
+
 #include <Arduino.h>
 #include <map>
 #include <vector>
@@ -60,5 +63,7 @@ private:
     // ID 生成
     String generateUniqueId();
 };
+
+#endif // FASTBEE_ENABLE_RULE_SCRIPT
 
 #endif // RULE_SCRIPT_MANAGER_H

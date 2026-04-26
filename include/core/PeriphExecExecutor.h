@@ -10,6 +10,34 @@
 class PeriphExecManager;
 class MQTTClient;
 
+// ========== Modbus 寄存器缓冲池 — 消除轮询路径动态分配 ==========
+static constexpr uint8_t MODBUS_BUFFER_POOL_SIZE = 4;   // 4 个缓冲区（与最大并发轮询任务数一致）
+static constexpr uint8_t MODBUS_MAX_REGISTERS = 64;     // 每个缓冲区最大寄存器数
+
+struct ModbusBuffer {
+    uint16_t data[MODBUS_MAX_REGISTERS];  // 最大 64 个寄存器（128 字节）
+    bool inUse;                            // 是否正在使用
+
+    ModbusBuffer() : inUse(false) {
+        memset(data, 0, sizeof(data));
+    }
+
+    void release() { inUse = false; }
+};
+
+// RAII 缓冲区守卫 — 确保异常路径也能释放缓冲区
+class ModbusBufferGuard {
+public:
+    ModbusBufferGuard(ModbusBuffer* buf) : _buf(buf) {}
+    ~ModbusBufferGuard() { if (_buf) _buf->release(); }
+    ModbusBufferGuard(const ModbusBufferGuard&) = delete;
+    ModbusBufferGuard& operator=(const ModbusBufferGuard&) = delete;
+    uint16_t* data() { return _buf ? _buf->data : nullptr; }
+    bool valid() const { return _buf != nullptr; }
+private:
+    ModbusBuffer* _buf;
+};
+
 // ========== 动作执行结果回调 ==========
 typedef std::function<void(const std::vector<ActionExecResult>&)> ActionResultsCallback;
 
@@ -72,10 +100,17 @@ public:
     // 上报动作执行结果
     void reportActionResults(const std::vector<ActionExecResult>& results);
 
+    // ========== Modbus 缓冲池管理 ==========
+    ModbusBuffer* acquireBuffer();
+    void releaseBuffer(ModbusBuffer* buf);
+
 private:
     PeriphExecManager* _manager = nullptr;
     ActionResultsCallback _reportCallback = nullptr;
     std::function<String(const String&)> _modbusReadCallback = nullptr;
+
+    // Modbus 寄存器缓冲池（4 x 128B = 512B 静态内存）
+    ModbusBuffer _bufferPool[MODBUS_BUFFER_POOL_SIZE];
 };
 
 #endif // PERIPH_EXEC_EXECUTOR_H

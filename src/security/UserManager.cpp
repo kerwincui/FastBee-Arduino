@@ -6,6 +6,8 @@
 #include <mbedtls/sha256.h>
 #include <esp_random.h>
 
+#if FASTBEE_ENABLE_AUTH
+
 // Base64编码函数
 static String base64Encode(const uint8_t* data, size_t length) {
     const char* base64_chars = 
@@ -734,3 +736,5 @@ String UserManager::getAllUsers() {
     serializeJson(doc, jsonStr);
     return jsonStr;
 }
+
+#endif // FASTBEE_ENABLE_AUTH

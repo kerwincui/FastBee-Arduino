@@ -7,12 +7,17 @@
 
 #include "Network/OTAManager.h"
 #include "systems/LoggerSystem.h"
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_PERIPH_EXEC
 #include "core/PeriphExecManager.h"
+#endif
 #include <ArduinoJson.h>
 #include <ESPAsyncWebServer.h>
 #include <Update.h>
 #include <HTTPClient.h>
 #include <WiFi.h>
+
+#if FASTBEE_ENABLE_OTA
 
 // OTA状态枚举
 enum OTAStatus {
@@ -127,7 +132,9 @@ void OTAManager::handleOTAStart(AsyncWebServerRequest *request) {
     LOG_INFO("OTAManager: OTA update started successfully");
     request->send(200, "application/json", "{\"status\": \"OTA started\", \"max_size\": " + String(maxSketchSpace) + "}");
     // 触发OTA升级开始系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
     PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_OTA_START, "");
+#endif
 }
 
 // 处理OTA上传
@@ -173,7 +180,9 @@ void OTAManager::handleOTAUpload(AsyncWebServerRequest *request, const String& f
             if (Update.isFinished()) {
                 LOG_INFO("OTAManager: Firmware verification passed");
                 // 触发OTA升级成功系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
                 PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_OTA_SUCCESS, "");
+#endif
                 request->send(200, "application/json", 
                     "{\"status\": \"OTA completed\", \"size\": " + String(currentSize) + 
                     ", \"md5\": \"" + md5 + "\", \"message\": \"Restarting in 3 seconds...\"}");
@@ -191,7 +200,9 @@ void OTAManager::handleOTAUpload(AsyncWebServerRequest *request, const String& f
             String errorMsg = "OTA failed: " + String(Update.errorString());
             LOG_ERROR("OTAManager: " + errorMsg);
             // 触发OTA升级失败系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
             PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_OTA_FAILED, errorMsg);
+#endif
             request->send(500, "application/json", "{\"error\": \"" + errorMsg + "\"}");
             otaInProgress = false;
         }
@@ -394,3 +405,5 @@ unsigned long OTAManager::getElapsedTime() const {
 String OTAManager::getErrorMessage() const {
     return otaErrorMessage;
 }
+
+#endif // FASTBEE_ENABLE_OTA

@@ -17,13 +17,24 @@
 #include <LittleFS.h>
 #include <WiFi.h>
 #include <core/SystemConstants.h>
+#include <core/FeatureFlags.h>
+#if FASTBEE_ENABLE_MQTT
+#include "core/FastBeeFramework.h"
+#include "protocols/ProtocolManager.h"
+#include "protocols/MQTTClient.h"
+#endif
 
 HealthMonitor::HealthMonitor()
     : lastCheckTime(0),
       lastStackLogTime(0),
+      lastMetricsLogTime(0),
       heapWatermark(UINT32_MAX),
       consecutiveLowMemCount(0),
-      running(false) {
+      running(false),
+      _compactionTriggered(false),
+      mqttQueueDepth(0),
+      sseClientCount(0),
+      pollDurationMs(0) {
     memset(&currentHealth, 0, sizeof(currentHealth));
 }
 
@@ -46,6 +57,7 @@ void HealthMonitor::update() {
     // 健康检查间隔：5 秒
     if (currentTime - lastCheckTime >= 5000UL) {
         performHealthCheck();
+        updateMemoryGuardLevel();
         checkCriticalMemory();
         lastCheckTime = currentTime;
     }
@@ -53,6 +65,11 @@ void HealthMonitor::update() {
     if (currentTime - lastStackLogTime >= 60000UL) {
         logTaskStackWatermarks();
         lastStackLogTime = currentTime;
+    }
+    // 关键指标摘要：每 60 秒串口输出一次
+    if (currentTime - lastMetricsLogTime >= 60000UL) {
+        logMetricsSummary();
+        lastMetricsLogTime = currentTime;
     }
 }
 
@@ -174,6 +191,222 @@ void HealthMonitor::logTaskStackWatermarks() {
             }
         }
     }
+}
+
+// ── MemGuard 等级判断 ────────────────────────────────────────────────
+
+void HealthMonitor::updateMemoryGuardLevel() {
+    uint32_t freeHeap = currentHealth.freeHeap;  // 使用已采集的值，避免重复调用
+    MemoryGuardLevel newLevel;
+
+    if (freeHeap >= MEM_THRESHOLD_NORMAL) {
+        newLevel = MemoryGuardLevel::NORMAL;
+    } else if (freeHeap >= MEM_THRESHOLD_WARN) {
+        newLevel = MemoryGuardLevel::WARN;
+    } else if (freeHeap >= MEM_THRESHOLD_SEVERE) {
+        newLevel = MemoryGuardLevel::SEVERE;
+    } else {
+        newLevel = MemoryGuardLevel::CRITICAL;
+    }
+
+    // 碎片率过高时至少提升到 WARN
+    if (isFragmentationHigh() && newLevel == MemoryGuardLevel::NORMAL) {
+        newLevel = MemoryGuardLevel::WARN;
+        Serial.printf("[MEMGUARD] High fragmentation (%d%%), elevating to WARN\n",
+                      (int)currentHealth.heapFragmentation);
+    }
+
+    // 等级变化时执行降级/恢复措施
+    if (newLevel != _currentLevel) {
+        Serial.printf("[MEMGUARD] Level changed: %d -> %d (heap=%u frag=%d%%)\n",
+                      (int)_currentLevel, (int)newLevel, freeHeap,
+                      (int)currentHealth.heapFragmentation);
+        MemoryGuardLevel oldLevel = _currentLevel;
+        _currentLevel = newLevel;
+        applyDegradation(oldLevel, newLevel);
+    }
+
+    // 碎片率检查：超过阈值时触发紧凑化策略
+    if (currentHealth.heapFragmentation > FRAG_THRESHOLD_COMPACT) {
+        if (!_compactionTriggered) {
+            _compactionTriggered = true;
+            compactMemory();
+        }
+    } else {
+        _compactionTriggered = false;  // 碎片率恢复正常，重置标志
+    }
+}
+
+// ── MemGuard 降级/恢复措施 ─────────────────────────────────────────
+void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel newLevel) {
+    auto& logger = LoggerSystem::getInstance();
+
+    // ── 恢复到 NORMAL：还原所有设置 ─────────────────────────────────────
+    if (newLevel == MemoryGuardLevel::NORMAL) {
+        if (_degradationActive) {
+            logger.setLogLevel(_savedLogLevel);
+            logger.enableFileLogging(_savedFileLogging);
+            _degradationActive = false;
+            Serial.println("[MEMGUARD] Restored: logLevel & fileLogging");
+            // 恢复 MQTT 上报频率
+#if FASTBEE_ENABLE_MQTT
+            {
+                FastBeeFramework* fw = FastBeeFramework::getInstance();
+                ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
+                MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
+                if (mqtt) {
+                    mqtt->setMinReportInterval(0);
+                    Serial.println("[MEMGUARD] MQTT report interval restored");
+                }
+            }
+#endif
+        }
+        return;
+    }
+
+    // ── 首次进入降级：保存当前日志设置 ──────────────────────────────────
+    if (!_degradationActive) {
+        _savedLogLevel = logger.getLogLevel();
+        _savedFileLogging = logger.isFileLoggingEnabled();
+        _degradationActive = true;
+    }
+
+    // ── WARN 级及以上：降低日志级别到 WARNING ──────────────────────────
+    if (newLevel >= MemoryGuardLevel::WARN) {
+        if (logger.getLogLevel() < LOG_WARNING) {  // 仅在当前级别更低（更详细）时调整
+            logger.setLogLevel(LOG_WARNING);
+            Serial.println("[MEMGUARD] WARN: log level -> WARNING");
+        }
+    }
+
+    // ── SEVERE 级及以上：禁用文件日志 + MQTT 降采样 ────────────────────
+    if (newLevel >= MemoryGuardLevel::SEVERE) {
+        if (logger.isFileLoggingEnabled()) {
+            logger.enableFileLogging(false);
+            Serial.println("[MEMGUARD] SEVERE: file logging disabled");
+        }
+        // MQTT 降采样：降低上报频率以减少内存压力
+#if FASTBEE_ENABLE_MQTT
+        {
+            FastBeeFramework* fw = FastBeeFramework::getInstance();
+            ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
+            MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
+            if (mqtt) {
+                uint32_t interval = (newLevel == MemoryGuardLevel::CRITICAL) ? 30000 : 10000;
+                mqtt->setMinReportInterval(interval);
+                Serial.printf("[MEMGUARD] MQTT report interval -> %lu ms\n", (unsigned long)interval);
+            }
+        }
+#endif
+    }
+
+    // ── CRITICAL 级：提升日志级别到 ERROR，确保文件日志已禁用 ──────────
+    if (newLevel == MemoryGuardLevel::CRITICAL) {
+        if (logger.getLogLevel() < LOG_ERROR) {
+            logger.setLogLevel(LOG_ERROR);
+            Serial.println("[MEMGUARD] CRITICAL: log level -> ERROR");
+        }
+    }
+}
+
+void HealthMonitor::compactMemory() {
+    char logBuf[96];
+    snprintf(logBuf, sizeof(logBuf),
+             "[HealthMonitor] High fragmentation (%d%%), triggering compaction",
+             (int)currentHealth.heapFragmentation);
+    LOG_WARNING(logBuf);
+
+    // 策略1: 释放日志缓冲区（如果 LoggerSystem 提供了相关接口）
+    // LoggerSystem 的文件写入缓冲在低内存时已由 MemGuard SEVERE 级别停止
+
+    // 策略2: 记录碎片化事件用于诊断
+    Serial.printf("[MEMGUARD] Compaction triggered: frag=%d%% freeHeap=%lu largestBlock=%lu\n",
+                  (int)currentHealth.heapFragmentation,
+                  (unsigned long)currentHealth.freeHeap,
+                  (unsigned long)currentHealth.largestFreeBlock);
+
+    // 策略3: 尝试通过分配+释放一个较大块来促使堆合并相邻空闲块
+    // 注意：ESP32 没有直接的内存紧凑化 API，这只是一个尽力而为的尝试
+    size_t trySize = currentHealth.largestFreeBlock / 2;
+    if (trySize > 1024) {
+        void* tmp = malloc(trySize);
+        if (tmp) {
+            free(tmp);
+        }
+    }
+}
+
+MemoryGuardLevel HealthMonitor::getMemoryGuardLevel() const {
+    return _currentLevel;
+}
+
+bool HealthMonitor::isMemoryNormal() const {
+    return _currentLevel == MemoryGuardLevel::NORMAL;
+}
+
+bool HealthMonitor::isMemoryWarning() const {
+    return _currentLevel == MemoryGuardLevel::WARN;
+}
+
+bool HealthMonitor::isMemorySevere() const {
+    return _currentLevel == MemoryGuardLevel::SEVERE;
+}
+
+bool HealthMonitor::isMemoryCritical() const {
+    return _currentLevel == MemoryGuardLevel::CRITICAL;
+}
+
+bool HealthMonitor::isFragmentationHigh() const {
+    if (currentHealth.freeHeap == 0) return false;
+    uint8_t frag = 100 - (currentHealth.largestFreeBlock * 100 / currentHealth.freeHeap);
+    return frag > FRAG_THRESHOLD_COMPACT;
+}
+
+// ── 外部模块上报指标 setter ──────────────────────────────────────────
+void HealthMonitor::setMqttQueueDepth(uint8_t depth) { mqttQueueDepth = depth; }
+void HealthMonitor::setSseClientCount(uint8_t count) { sseClientCount = count; }
+void HealthMonitor::setPollDurationMs(uint32_t ms)   { pollDurationMs = ms; }
+
+void HealthMonitor::setBootTime(unsigned long bootMs) {
+    currentHealth.bootTimeMs = bootMs;
+}
+
+// ── 返回完整指标 JSON ────────────────────────────────────────────────
+String HealthMonitor::getMetricsJson() {
+    JsonDocument doc;
+    doc["heap"]["free"]          = currentHealth.freeHeap;
+    doc["heap"]["min"]           = currentHealth.minFreeHeap;
+    doc["heap"]["largest_block"] = currentHealth.largestFreeBlock;
+    doc["heap"]["fragmentation"] = currentHealth.heapFragmentation;
+    doc["mqtt"]["queue_depth"]   = mqttQueueDepth;
+    doc["sse"]["client_count"]   = sseClientCount;
+    doc["poll"]["duration_ms"]   = pollDurationMs;
+    doc["uptime"]                = currentHealth.uptime / 1000UL;
+    doc["boot_time_ms"]           = currentHealth.bootTimeMs;
+
+    // MemGuard 等级信息
+    static const char* levelNames[] = { "NORMAL", "WARN", "SEVERE", "CRITICAL" };
+    uint8_t lvl = static_cast<uint8_t>(_currentLevel);
+    doc["memguard"]["level"]              = lvl;
+    doc["memguard"]["level_name"]         = levelNames[lvl < 4 ? lvl : 0];
+    doc["memguard"]["fragmentation_high"] = isFragmentationHigh();
+
+    String json;
+    serializeJson(doc, json);
+    return json;
+}
+
+// ── 定期串口输出关键指标摘要 ─────────────────────────────────────────
+void HealthMonitor::logMetricsSummary() {
+    Serial.printf("[METRICS] heap=%lu min=%lu largest=%lu frag=%d%% mqtt_q=%d sse=%d poll=%lums up=%lus\n",
+        (unsigned long)currentHealth.freeHeap,
+        (unsigned long)currentHealth.minFreeHeap,
+        (unsigned long)currentHealth.largestFreeBlock,
+        (int)currentHealth.heapFragmentation,
+        (int)mqttQueueDepth,
+        (int)sseClientCount,
+        (unsigned long)pollDurationMs,
+        (unsigned long)(currentHealth.uptime / 1000UL));
 }
 
 size_t HealthMonitor::getTaskStackInfo(TaskStackInfo* outInfo, size_t maxTasks) const {

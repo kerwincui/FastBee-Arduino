@@ -99,6 +99,7 @@
             if (rssi >= -80) return '\u2582\u2584';
             return '\u2582';
         }
+        function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
         async function scanNetworks() {
             var btn = document.getElementById('scanBtn');
             var list = document.getElementById('networkList');
@@ -108,13 +109,17 @@
                 var resp = await fetch('/api/wifi/scan');
                 var data = await resp.json();
                 if (data.networks && data.networks.length > 0) {
-                    list.innerHTML = data.networks.map(function(n){ return '<div class="network-item" onclick="selectNetwork(\'' + n.ssid + '\')"><span class="network-name">' + n.ssid + (n.encrypted ? '<span class="lock-icon">\uD83D\uDD12</span>' : '') + '</span><span class="network-signal ' + getSignalClass(n.rssi) + '">' + getSignalBars(n.rssi) + ' ' + n.rssi + 'dBm</span></div>'; }).join('');
+                    list.innerHTML = data.networks.map(function(n){ return '<div class="network-item" data-ssid="' + esc(n.ssid) + '"><span class="network-name">' + esc(n.ssid) + (n.encrypted ? '<span class="lock-icon">\uD83D\uDD12</span>' : '') + '</span><span class="network-signal ' + getSignalClass(n.rssi) + '">' + getSignalBars(n.rssi) + ' ' + n.rssi + 'dBm</span></div>'; }).join('');
                     list.style.display = 'block';
                 } else { showMessage(T[lang].noNet, 'info'); }
             } catch (e) { showMessage(T[lang].scanFail + e.message, 'error'); }
             btn.disabled = false;
             btn.textContent = T[lang].scanBtn;
         }
+        document.getElementById('networkList').addEventListener('click', function(e) {
+            var item = e.target.closest('.network-item');
+            if (item && item.dataset.ssid) { selectNetwork(item.dataset.ssid); }
+        });
         function selectNetwork(ssid) {
             document.getElementById('ssid').value = ssid;
             document.getElementById('password').focus();

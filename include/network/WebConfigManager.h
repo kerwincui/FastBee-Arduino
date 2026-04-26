@@ -5,6 +5,8 @@
 #include <ESPAsyncWebServer.h>
 #include <memory>
 
+#include "core/FeatureFlags.h"
+
 // 接口包含
 #include "core/interfaces/IAuthManager.h"
 #include "core/interfaces/IUserManager.h"
@@ -20,11 +22,18 @@ class AuthRouteHandler;
 class UserRouteHandler;
 class RoleRouteHandler;
 class SystemRouteHandler;
+class LogRouteHandler;
+class DeviceRouteHandler;
+class BatchRouteHandler;
 class ProvisionRouteHandler;
 class OTARouteHandler;
 class PeripheralRouteHandler;
+#if FASTBEE_ENABLE_PERIPH_EXEC
 class PeriphExecRouteHandler;
+#endif
+#if FASTBEE_ENABLE_RULE_SCRIPT
 class RuleScriptRouteHandler;
+#endif
 class ProtocolRouteHandler;
 class SSERouteHandler;
 
@@ -63,17 +72,24 @@ private:
     // 共享上下文（所有 Handler 通过指针引用）
     std::unique_ptr<WebHandlerContext> ctx;
 
-    // 11 个专职路由处理器
+    // 14 个专职路由处理器
     std::unique_ptr<StaticRouteHandler>     staticHandler;
     std::unique_ptr<AuthRouteHandler>       authHandler;
     std::unique_ptr<UserRouteHandler>       userHandler;
     std::unique_ptr<RoleRouteHandler>       roleHandler;
     std::unique_ptr<SystemRouteHandler>     systemHandler;
+    std::unique_ptr<LogRouteHandler>        logHandler;
+    std::unique_ptr<DeviceRouteHandler>     deviceHandler;
+    std::unique_ptr<BatchRouteHandler>      batchHandler;
     std::unique_ptr<ProvisionRouteHandler>  provisionHandler;
     std::unique_ptr<OTARouteHandler>        otaHandler;
     std::unique_ptr<PeripheralRouteHandler> peripheralHandler;
+#if FASTBEE_ENABLE_PERIPH_EXEC
     std::unique_ptr<PeriphExecRouteHandler> periphExecHandler;
+#endif
+#if FASTBEE_ENABLE_RULE_SCRIPT
     std::unique_ptr<RuleScriptRouteHandler> ruleScriptHandler;
+#endif
     std::unique_ptr<ProtocolRouteHandler>   protocolHandler;
     std::unique_ptr<SSERouteHandler>        sseRouteHandler;
 

@@ -1,6 +1,9 @@
 #ifndef RULE_SCRIPT_H
 #define RULE_SCRIPT_H
 
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_RULE_SCRIPT
+
 #include <Arduino.h>
 
 // 规则脚本触发类型
@@ -35,5 +38,7 @@ struct RuleScript {
 
 // 配置文件路径
 #define RULE_SCRIPT_CONFIG_FILE "/config/rule_scripts.json"
+
+#endif // FASTBEE_ENABLE_RULE_SCRIPT
 
 #endif // RULE_SCRIPT_H

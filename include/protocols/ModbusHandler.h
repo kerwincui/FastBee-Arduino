@@ -76,12 +76,35 @@ struct PollTask {
     RegisterMapping mappings[Protocols::MODBUS_MAX_MAPPINGS_PER_TASK];
     uint8_t mappingCount;    // 实际映射数量
 
+    // 数据变化检测
+    uint32_t lastDataHash = 0;       // 上次数据的 hash 值
+    bool firstPoll = true;            // 首次轮询标记（首次必定上报）
+    
+    // 自适应间隔
+    uint8_t consecutiveErrors = 0;    // 连续错误计数
+    uint8_t consecutiveNoChange = 0;  // 连续无变化计数
+    uint16_t originalInterval = 0;    // 原始轮询间隔（用于恢复）
+
+    // 数值变化死区（百分比，如 0.5 表示 0.5%，0=禁用）
+    float deadband = 0.0f;
+    // 上次上报的寄存器值（用于死区比较）
+    uint16_t lastValues[Protocols::MODBUS_ONESHOT_BUFFER_SIZE];
+    bool lastValuesValid = false;
+
+    // 强制心跳上报
+    unsigned long lastReportTime = 0;  // 上次实际上报的时间（millis）
+    static constexpr unsigned long HEARTBEAT_INTERVAL = 60000;  // 60 秒
+
     PollTask()
         : slaveAddress(1), functionCode(0x03), startAddress(0),
           quantity(10), pollInterval(Protocols::MODBUS_DEFAULT_POLL_INTERVAL),
-          enabled(true), mappingCount(0) {
+          enabled(true), mappingCount(0),
+          lastDataHash(0), firstPoll(true),
+          consecutiveErrors(0), consecutiveNoChange(0), originalInterval(0),
+          deadband(0.0f), lastValuesValid(false), lastReportTime(0) {
         memset(name, 0, sizeof(name));
         memset(mappings, 0, sizeof(mappings));
+        memset(lastValues, 0, sizeof(lastValues));
     }
 };
 
@@ -276,7 +299,9 @@ public:
                                     bool isControl = false);
     
     // PeriphExec 调度的轮询任务执行（按索引读取并返回映射后的 JSON）
-    String executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, uint8_t retries);
+    // emitCallback: 是否触发 dataCallback 回调（默认 true 保持向后兼容）
+    //   PeriphExec 轮询时传 false 避免重复分发，直接轮询时保持 true
+    String executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, uint8_t retries, bool emitCallback = true);
     
     // ========== 轮询统计接口（用于运行状态显示）==========
     // 单个轮询任务的缓存数据

@@ -1,3 +1,6 @@
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_MQTT
+
 #include "./network/handlers/MqttRouteHandler.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
@@ -604,3 +607,5 @@ void MqttRouteHandler::handleMqttNtpSync(AsyncWebServerRequest* request) {
     serializeJson(resp, out);
     request->send(200, "application/json", out);
 }
+
+#endif // FASTBEE_ENABLE_MQTT

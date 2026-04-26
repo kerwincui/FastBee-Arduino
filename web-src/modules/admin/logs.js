@@ -50,7 +50,6 @@
                         clearInterval(this._logAutoRefreshTimer);
                         this._logAutoRefreshTimer = null;
                         this._logPausedByVisibility = true;
-                        console.log('[Logs] Auto refresh paused by visibility');
                     }
                 } else if (this._logPausedByVisibility) {
                     // 页面恢复可见，立即刷新一次并恢复轮询
@@ -62,7 +61,6 @@
                         if (autoRefreshCheckbox && autoRefreshCheckbox.checked) {
                             this.startLogAutoRefresh();
                         }
-                        console.log('[Logs] Auto refresh resumed by visibility');
                     }
                 }
             });
@@ -80,13 +78,13 @@
             apiGet("/api/logs/list")
                 .then(res => {
                     if (!res || !res.success) {
-                        listContainer.innerHTML = `<div class="logs-state logs-state-error">${i18n.t("log-load-fail")}</div>`;
+                        listContainer.innerHTML = '<div class="logs-state logs-state-error">' + escapeHtml(i18n.t("log-load-fail")) + '</div>';
                         return;
                     }
 
                     const files = res.data || [];
                     if (files.length === 0) {
-                        listContainer.innerHTML = `<div class="logs-state">${i18n.t("log-empty")}</div>`;
+                        listContainer.innerHTML = '<div class="logs-state">' + escapeHtml(i18n.t("log-empty")) + '</div>';
                         return;
                     }
 
@@ -125,7 +123,7 @@
                 })
                 .catch(err => {
                     console.error("Load log file list failed:", err);
-                    listContainer.innerHTML = `<div class="logs-state logs-state-error">${i18n.t("log-load-fail")}</div>`;
+                    listContainer.innerHTML = '<div class="logs-state logs-state-error">' + escapeHtml(i18n.t("log-load-fail")) + '</div>';
                 });
         },
 
@@ -149,7 +147,7 @@
             var self = this;
             var _renderContent = function(res) {
                 if (!res || !res.success) {
-                    container.innerHTML = `<div class="logs-state logs-state-error">${i18n.t("log-load-fail")}</div>`;
+                    container.innerHTML = '<div class="logs-state logs-state-error">' + escapeHtml(i18n.t("log-load-fail")) + '</div>';
                     return;
                 }
 
@@ -169,7 +167,7 @@
                 }
 
                 if (!content || !content.trim()) {
-                    container.innerHTML = `<div class="logs-state">${i18n.t("log-empty")}</div>`;
+                    container.innerHTML = '<div class="logs-state">' + escapeHtml(i18n.t("log-empty")) + '</div>';
                 } else {
                     container.innerHTML = self._formatLogContent(content);
                     container.scrollTop = container.scrollHeight;
@@ -187,7 +185,7 @@
                             .then(_renderContent)
                             .catch(err2 => {
                                 console.error("Load logs retry failed:", err2);
-                                container.innerHTML = `<div class="logs-state logs-state-error">${i18n.t("log-load-fail")}</div>`;
+                                container.innerHTML = '<div class="logs-state logs-state-error">' + escapeHtml(i18n.t("log-load-fail")) + '</div>';
                             });
                     }, 1000);
                 });
@@ -215,10 +213,7 @@
                 }
 
                 // HTML 转义
-                const escaped = line
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;');
+                const escaped = escapeHtml(line);
 
                 return `<div class="${className}">${escaped}</div>`;
             }).filter(line => line).join('');
@@ -272,7 +267,6 @@
                 }
             }, interval);
 
-            console.log('[Logs] Auto refresh started with interval:', interval);
         },
 
         /**
@@ -282,7 +276,6 @@
             if (this._logAutoRefreshTimer) {
                 clearInterval(this._logAutoRefreshTimer);
                 this._logAutoRefreshTimer = null;
-                console.log('[Logs] Auto refresh stopped');
             }
         }
     });

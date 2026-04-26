@@ -12,15 +12,6 @@
   "syncInterval": 3600,
   "logLevel": "INFO",
   "autoStart": true,
-  "timers": [
-    {
-      "id": 1,
-      "name": "每日重启",
-      "enable": false,
-      "time": "03:00",
-      "action": "restart"
-    }
-  ],
   "provisionSSID": "fastbee-ap",
   "provisionPassword": "",
   "provisionTimeout": 300,
@@ -30,7 +21,6 @@
   "provisionIP": "192.168.4.1",
   "provisionGateway": "192.168.4.1",
   "provisionSubnet": "255.255.255.0",
-  "bleEnabled": false,
   "bleName": "FBDevice",
   "bleTimeout": 300,
   "bleAutoStart": false,

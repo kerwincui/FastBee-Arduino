@@ -13,6 +13,13 @@
 #include "core/ChipConfig.h"
 #include <ArduinoJson.h>
 
+#if FASTBEE_ENABLE_MODBUS
+
+#if FASTBEE_ENABLE_HEALTH_MONITOR
+#include "systems/HealthMonitor.h"
+#include "core/FastBeeFramework.h"
+#endif
+
 namespace {
 constexpr uint16_t MODBUS_MIN_RESPONSE_TIMEOUT_MS = 100;
 constexpr uint16_t MODBUS_MAX_RESPONSE_TIMEOUT_MS = 5000;
@@ -23,6 +30,29 @@ constexpr uint16_t MODBUS_MIN_POLL_INTERVAL_SEC = 2;
 constexpr uint16_t MODBUS_SAFE_POLL_INTERVAL_SEC = 5;
 constexpr uint16_t MODBUS_MAX_POLL_INTERVAL_SEC = 3600;
 constexpr uint8_t MODBUS_HEAVY_TASK_THRESHOLD = 4;
+
+// 轮询数据 hash 去重（DJB2 算法）
+static uint32_t computeDataHash(const uint16_t* data, size_t count) {
+    uint32_t hash = 5381;
+    for (size_t i = 0; i < count; i++) {
+        hash = ((hash << 5) + hash) ^ (data[i] & 0xFF);
+        hash = ((hash << 5) + hash) ^ ((data[i] >> 8) & 0xFF);
+    }
+    return hash;
+}
+
+// 死区判断：所有寄存器值变化均在百分比阈值内则返回 true
+static bool isWithinDeadband(const uint16_t* newValues, const uint16_t* oldValues,
+                             uint16_t count, float deadband) {
+    if (!oldValues || deadband <= 0.0f) return false;
+    for (uint16_t i = 0; i < count; i++) {
+        float change = fabs((float)newValues[i] - (float)oldValues[i]);
+        float threshold = fabs((float)oldValues[i]) * deadband / 100.0f;
+        if (threshold < 1.0f) threshold = 1.0f;  // 最小变化 1 个原始单位
+        if (change > threshold) return false;
+    }
+    return true;  // 所有值都在死区内
+}
 
 template <typename T>
 T clampValue(T value, T minVal, T maxVal) {
@@ -152,6 +182,10 @@ void ModbusHandler::sanitizeConfig(ModbusConfig& config) {
         task.pollInterval = clampValue<uint16_t>(task.pollInterval,
                                                  MODBUS_MIN_POLL_INTERVAL_SEC,
                                                  MODBUS_MAX_POLL_INTERVAL_SEC);
+        // 确保 originalInterval 已初始化（防御性）
+        if (task.originalInterval == 0) {
+            task.originalInterval = task.pollInterval;
+        }
 
         if (task.enabled) {
             enabledTaskCount++;
@@ -301,7 +335,9 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                 task.startAddress = t["startAddress"] | (uint16_t)0;
                 task.quantity     = t["quantity"] | (uint16_t)10;
                 task.pollInterval = t["pollInterval"] | (uint16_t)Protocols::MODBUS_DEFAULT_POLL_INTERVAL;
+                task.originalInterval = task.pollInterval;  // 保存原始间隔用于自适应恢复
                 task.enabled      = t["enabled"] | true;
+                task.deadband     = t["deadband"] | 0.0f;
                 // 向后兼容：优先读取 name，回退到 label
                 const char* taskName = t["name"] | (t["label"] | "");
                 strlcpy(task.name, taskName, sizeof(task.name));
@@ -390,6 +426,27 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
     }
 
     sanitizeConfig(config);
+
+    // 寄存器合并提示：检测同 slave + 同功能码且地址相近的任务
+    for (uint8_t i = 0; i < config.master.taskCount; i++) {
+        if (!config.master.tasks[i].enabled) continue;
+        for (uint8_t j = i + 1; j < config.master.taskCount; j++) {
+            if (!config.master.tasks[j].enabled) continue;
+            const PollTask& a = config.master.tasks[i];
+            const PollTask& b = config.master.tasks[j];
+            if (a.slaveAddress == b.slaveAddress && a.functionCode == b.functionCode) {
+                uint16_t endA = a.startAddress + a.quantity;
+                uint16_t endB = b.startAddress + b.quantity;
+                uint16_t gap = (a.startAddress < b.startAddress)
+                    ? (b.startAddress > endA ? b.startAddress - endA : 0)
+                    : (a.startAddress > endB ? a.startAddress - endB : 0);
+                if (gap < 10) {
+                    LOG_INFOF("[Modbus] Merge hint: tasks[%d]+[%d] slave=%d FC=%d gap=%d — consider merging",
+                              i, j, a.slaveAddress, a.functionCode, gap);
+                }
+            }
+        }
+    }
     
     LOG_INFO("Modbus: Config loaded successfully");
     return true;
@@ -428,6 +485,7 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
         t["quantity"] = task.quantity;
         t["pollInterval"] = task.pollInterval;
         t["enabled"] = task.enabled;
+        if (task.deadband > 0.0f) t["deadband"] = task.deadband;
         t["name"] = task.name;
         
         // 序列化寄存器映射
@@ -2046,13 +2104,13 @@ String ModbusHandler::formatRawHex(uint8_t slaveAddr, uint8_t fc, const uint16_t
 }
 
 // PeriphExec 调度的轮询任务执行
-String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, uint8_t retries) {
+String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, uint8_t retries, bool emitCallback) {
     if (taskIdx >= config.master.taskCount) {
         LOG_WARNINGF("[Modbus] executePollTaskByIndex: invalid idx %d (count=%d)", taskIdx, config.master.taskCount);
         return "[]";
     }
 
-    const PollTask& task = config.master.tasks[taskIdx];
+    PollTask& task = config.master.tasks[taskIdx];
     if (!task.enabled) return "[]";
 
     // 检查堆内存是否充足
@@ -2064,6 +2122,9 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
     // 更新统计计数
     _totalPollCount++;
     _lastPollTime = millis();
+
+    // 记录轮询开始时间
+    unsigned long _pollStartMs = millis();
 
     // 保存原始通信参数
     uint16_t origTimeout = config.master.responseTimeout;
@@ -2092,6 +2153,15 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
     config.master.responseTimeout = origTimeout;
     config.master.maxRetries = origRetries;
 
+    // 上报轮询耗时到 HealthMonitor
+#if FASTBEE_ENABLE_HEALTH_MONITOR
+    {
+        uint32_t pollDuration = millis() - _pollStartMs;
+        HealthMonitor* hm = FastBeeFramework::getInstance()->getHealthMonitor();
+        if (hm) hm->setPollDurationMs(pollDuration);
+    }
+#endif
+
     // 更新任务缓存和统计计数
     PollTaskCache& cache = _taskCache[taskIdx];
     cache.timestamp = millis();
@@ -2105,6 +2175,19 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
             _timeoutPollCount++;
         } else {
             _failedPollCount++;
+        }
+        
+        // 自适应：连续错误时逐步增大轮询间隔
+        task.consecutiveErrors++;
+        if (task.consecutiveErrors >= 3 && task.originalInterval > 0) {
+            uint16_t newInterval = min((uint16_t)(task.pollInterval * 2),
+                                       (uint16_t)(task.originalInterval * 4));
+            newInterval = min(newInterval, MODBUS_MAX_POLL_INTERVAL_SEC);
+            if (newInterval != task.pollInterval) {
+                task.pollInterval = newInterval;
+                LOG_WARNINGF("[Modbus] Task[%d] high error rate, interval raised to %us",
+                             taskIdx, task.pollInterval);
+            }
         }
         
         // 标记缓存无效
@@ -2124,12 +2207,67 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
     memcpy(cache.values, result.data, result.count * sizeof(uint16_t));
     _notifyStatusChange();  // 通知状态变化：轮询成功
 
+    // 自适应：通信成功时重置错误计数，逐步恢复间隔
+    task.consecutiveErrors = 0;
+    if (task.originalInterval > 0 && task.pollInterval > task.originalInterval) {
+        task.pollInterval = max((uint16_t)(task.pollInterval - 1), task.originalInterval);
+    }
+
+    // ========== 上报决策：Hash 去重 + 死区 + 心跳 ==========
+    uint32_t newHash = computeDataHash(result.data, result.count);
+    bool shouldReport = false;
+
+    if (task.firstPoll) {
+        // 首次轮询必定上报
+        shouldReport = true;
+    } else if (newHash != task.lastDataHash) {
+        // Hash 变了 —— 数据确实变化，再检查死区
+        if (task.deadband > 0.0f && task.lastValuesValid &&
+            isWithinDeadband(result.data, task.lastValues, result.count, task.deadband)) {
+            // 变化在死区内，不上报（但更新 hash 以免累积漂移）
+            task.lastDataHash = newHash;
+        } else {
+            shouldReport = true;
+        }
+    }
+
+    // 强制心跳：超过 HEARTBEAT_INTERVAL 未上报则强制上报
+    if (!shouldReport && task.lastReportTime > 0 &&
+        (millis() - task.lastReportTime > PollTask::HEARTBEAT_INTERVAL)) {
+        shouldReport = true;
+        LOG_DEBUGF("[Modbus] Heartbeat report for slave %d task[%d]", task.slaveAddress, taskIdx);
+    }
+
+    if (!shouldReport) {
+        // 数据无变化或在死区内，跳过上报
+        task.consecutiveNoChange++;
+        if (task.consecutiveNoChange >= 10 && task.originalInterval > 0 &&
+            task.pollInterval < (uint16_t)(task.originalInterval * 2)) {
+            task.pollInterval = min((uint16_t)(task.pollInterval + 1),
+                                    (uint16_t)(task.originalInterval * 2));
+        }
+        return "[]";  // 轮询成功，但跳过上报
+    }
+
+    // 数据需要上报，更新状态
+    task.lastDataHash = newHash;
+    task.firstPoll = false;
+    task.consecutiveNoChange = 0;
+    task.lastReportTime = millis();
+    // 保存本次值用于下次死区比较
+    memcpy(task.lastValues, result.data, min((uint16_t)result.count, (uint16_t)Protocols::MODBUS_ONESHOT_BUFFER_SIZE) * sizeof(uint16_t));
+    task.lastValuesValid = true;
+    // 数据有变化时恢复原始间隔
+    if (task.originalInterval > 0 && task.pollInterval > task.originalInterval) {
+        task.pollInterval = task.originalInterval;
+    }
+
     // 透传模式：将读取结果格式化为原始 HEX 帧上报
     if (config.transferType == 1) {
         String hexStr = formatRawHex(task.slaveAddress, task.functionCode, result.data, result.count);
         String json = "[{\"id\":\"modbus_raw_" + String(task.slaveAddress) +
                       "\",\"value\":\"" + hexStr + "\"}]";
-        if (dataCallback) {
+        if (emitCallback && dataCallback) {
             dataCallback(task.slaveAddress, json);
         }
         return json;
@@ -2192,8 +2330,8 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
         }
         json += "]";
 
-        // 同时通过 dataCallback 上报（如 MQTT）
-        if (!first && dataCallback) {
+        // 同时通过 dataCallback 上报（如 MQTT）—— 仅 emitCallback=true 时触发
+        if (emitCallback && !first && dataCallback) {
             dataCallback(task.slaveAddress, json);
         }
         return first ? "[]" : json;
@@ -2211,7 +2349,7 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
     }
     json += "\"}]";
 
-    if (dataCallback) {
+    if (emitCallback && dataCallback) {
         dataCallback(task.slaveAddress, json);
     }
     return json;
@@ -2316,3 +2454,5 @@ String ModbusHandler::collectCachedPollData() const {
     json += "]";
     return json;
 }
+
+#endif // FASTBEE_ENABLE_MODBUS

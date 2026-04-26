@@ -51,12 +51,12 @@
             const pathEl = document.getElementById('current-dir-path');
             if (pathEl) pathEl.textContent = path;
 
-            treeContainer.innerHTML = i18n.t('fs-loading-text');
+            treeContainer.textContent = i18n.t('fs-loading-text');
 
             apiGet('/api/files', { path: path })
                 .then(res => {
                     if (!res || !res.success) {
-                        treeContainer.innerHTML = i18n.t('fs-load-fail-text');
+                        treeContainer.textContent = i18n.t('fs-load-fail-text');
                         return;
                     }
 
@@ -64,13 +64,20 @@
                     const dirs = data.dirs || [];
                     const files = data.files || [];
 
-                    let html = '';
+                    var fragment = document.createDocumentFragment();
 
                     // 目录
                     dirs.forEach(dir => {
-                        html += `<div class="file-tree-item" data-path="${path}${dir.name}/" data-type="dir">
-                            <span class="file-tree-icon-dir">📁</span> ${dir.name}
-                        </div>`;
+                        var item = document.createElement('div');
+                        item.className = 'file-tree-item';
+                        item.dataset.path = path + dir.name + '/';
+                        item.dataset.type = 'dir';
+                        var icon = document.createElement('span');
+                        icon.className = 'file-tree-icon-dir';
+                        icon.textContent = '📁';
+                        item.appendChild(icon);
+                        item.appendChild(document.createTextNode(' ' + dir.name));
+                        fragment.appendChild(item);
                     });
 
                     // 文件
@@ -78,16 +85,28 @@
                         const size = file.size < 1024 ? `${file.size} B` :
                                     file.size < 1024 * 1024 ? `${(file.size / 1024).toFixed(1)} KB` :
                                     `${(file.size / 1024 / 1024).toFixed(2)} MB`;
-                        html += `<div class="file-tree-item" data-path="${path}${file.name}" data-type="file">
-                            <span class="file-tree-icon-file">📄</span> ${file.name} <span class="file-tree-size">(${size})</span>
-                        </div>`;
+                        var item = document.createElement('div');
+                        item.className = 'file-tree-item';
+                        item.dataset.path = path + file.name;
+                        item.dataset.type = 'file';
+                        var icon = document.createElement('span');
+                        icon.className = 'file-tree-icon-file';
+                        icon.textContent = '📄';
+                        item.appendChild(icon);
+                        item.appendChild(document.createTextNode(' ' + file.name + ' '));
+                        var sizeSpan = document.createElement('span');
+                        sizeSpan.className = 'file-tree-size';
+                        sizeSpan.textContent = '(' + size + ')';
+                        item.appendChild(sizeSpan);
+                        fragment.appendChild(item);
                     });
 
+                    treeContainer.innerHTML = '';
                     if (dirs.length === 0 && files.length === 0) {
-                        html = i18n.t('fs-empty-dir-html');
+                        treeContainer.textContent = i18n.t('fs-empty-dir-html');
+                    } else {
+                        treeContainer.appendChild(fragment);
                     }
-
-                    treeContainer.innerHTML = html;
 
                     // 绑定点击事件
                     treeContainer.querySelectorAll('.file-tree-item').forEach(item => {
@@ -111,7 +130,7 @@
                 })
                 .catch(err => {
                     console.error('Load file tree failed:', err);
-                    treeContainer.innerHTML = i18n.t('fs-load-fail-text');
+                    treeContainer.textContent = i18n.t('fs-load-fail-text');
                 });
         },
 

@@ -126,6 +126,7 @@
         
         // 配置页面
         'config-title': '通信协议配置',
+        'protocol-title': '通信协议配置',
         
         // 协议配置 - 表单标签
         'rtu-port-label': '串口端口',
@@ -156,6 +157,8 @@
         'mqtt-publish-section-title': '发布主题配置',
         'mqtt-add-topic-btn': '增加主题',
         'mqtt-delete-topic-btn': '删除',
+        'mqtt-direct-connect-label': 'MQTT直连',
+        'mqtt-publish-content-label': '发布内容',
         'save-config-btn': '保存配置',
         
         // 协议成功消息
@@ -903,10 +906,8 @@
         'usb-pid-label': 'Product ID',
         
         // GPIO参数
-        'gpio-pin-label': 'GPIO引脚',
         'gpio-initial-label': '初始状态',
         'gpio-pwm-channel-label': 'PWM通道',
-        'gpio-pwm-freq-label': 'PWM频率(Hz)',
         'gpio-pwm-resolution-label': 'PWM分辨率(位)',
         'gpio-initial-low': '低电平',
         'gpio-initial-high': '高电平',
@@ -1510,6 +1511,14 @@
         'modbus-ctrl-delay-sec': '延时(秒)',
         'modbus-ctrl-delay-start': '启动延时',
         'modbus-ctrl-device-params': '设备参数配置',
+        'modbus-ctrl-device-name': '设备名称',
+        'modbus-ctrl-device-add': '添加设备',
+        'modbus-ctrl-device-save': '保存设备',
+        'modbus-ctrl-device-delete': '删除',
+        'modbus-ctrl-device-delete-confirm': '确定要删除该设备配置吗？',
+        'modbus-ctrl-device-saved': '设备配置已保存',
+        'modbus-ctrl-device-deleted': '设备已删除',
+        'modbus-ctrl-device-default-name': '设备',
         'modbus-ctrl-success': '操作成功',
         'modbus-ctrl-fail': '操作失败',
         'modbus-ctrl-delay-ok': '延时断开指令已发送',
@@ -1594,12 +1603,6 @@
         'refresh-btn': '刷新',
         
         // 协议表单补充标签
-        'mqtt-client-id-label': '客户端ID',
-        'mqtt-username-label': '用户名',
-        'mqtt-password-label': '密码',
-        'mqtt-port-label': '端口',
-        'mqtt-alive-label': '心跳(秒)',
-        'mqtt-conn-timeout-label': '连接超时(毫秒)',
         'mqtt-direct-connect-text': '是否直连',
         'mqtt-auto-reconnect-text': '自动重连',
         'mqtt-subscribe-section-title': '订阅主题配置',
@@ -1664,6 +1667,7 @@
         'peripheral-cat-special': '专用外设',
         'peripheral-pins-label': '引脚配置',
         'peripheral-pins-hint': '例如: 2,4,5 (逗号分隔)',
+        'peripheral-pins-help': '多个引脚用逗号分隔，例如 21,22 (I2C SDA,SCL)',
         'gpio-params-title': 'GPIO参数',
         'uart-params-title': 'UART参数',
         'uart-parity-param-none': '无',
@@ -1681,7 +1685,6 @@
         'adc-res-11': '11位 (0-2047)',
         'adc-res-12': '12位 (0-4095)',
         'adc-att-label': '衰减系数',
-        'gpio-pwm-freq-label': 'PWM频率 (Hz)',
         'gpio-pwm-res-label': 'PWM分辨率 (位)',
         'save': '保存',
         'periph-opt-digital-in': '数字输入',
@@ -1775,5 +1778,6 @@
         'modbus-motor-ctrl-speed-ok': '速度设置成功',
         'modbus-motor-ctrl-pulse-ok': '脉冲数设置成功'
     };
-    i18n.mergeTranslations('zh-CN', zhTranslations);
+    i18n.addTranslations('zh-CN', zhTranslations);
+    i18n._zhLoaded = true;
 })();

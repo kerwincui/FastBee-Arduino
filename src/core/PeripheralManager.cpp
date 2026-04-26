@@ -881,9 +881,11 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
     }
     
     // LCD/OLED 显示屏初始化
+#if FASTBEE_ENABLE_LCD
     if (config.type == PeripheralType::LCD) {
         return LCDManager::getInstance().initialize(config);
     }
+#endif
     
     // TODO: 实现其他类型外设的硬件初始化
     LOG_INFOF("Peripheral Manager: Hardware setup for type %d not yet implemented", 
@@ -900,9 +902,11 @@ bool PeripheralManager::teardownHardware(const PeripheralConfig& config) {
     }
     
     // LCD/OLED 显示屏清理
+#if FASTBEE_ENABLE_LCD
     if (config.type == PeripheralType::LCD) {
         LCDManager::getInstance().deinitialize();
     }
+#endif
     
     // TODO: 实现其他类型外设的硬件释放
     return true;
@@ -970,6 +974,11 @@ bool PeripheralManager::setupPWMPin(const PeripheralConfig& config) {
 }
 
 // ========== 动作定时器管理 ==========
+// ActionTickerData 生命周期：
+//   - 创建：startActionTicker() 中 new，指针存储在 actionTickers map 中
+//   - 释放：stopActionTicker() 中先 ticker.detach() 再 delete，然后从 map 移除
+//   - Ticker 回调（blinkTickerCallback / breatheTickerCallback）仅引用 data 指针，不负责释放
+//   - startActionTicker 开头调用 stopActionTicker 确保不会重复创建
 
 void PeripheralManager::stopActionTicker(const String& id) {
     RecursiveMutexGuard lock(_mutex);

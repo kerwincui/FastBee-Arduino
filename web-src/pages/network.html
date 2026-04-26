@@ -1,10 +1,10 @@
 <!-- 网络设置页面 -->
 <div id="network-page" class="page page-layout-flat">
-    <div class="card">
-        <div class="card-header">
-            <h2 class="card-title" id="network-title" data-i18n="network-title">网络设置</h2>
+    <div class="fb-card">
+        <div class="fb-card-header">
+            <h2 class="fb-card-title" id="network-title" data-i18n="network-title">网络设置</h2>
         </div>
-        <div class="card-body">
+        <div class="fb-card-body">
             <div class="config-tabs">
                 <div class="config-tab active" data-tab="base" data-i18n="net-tab-basic">基本配置</div>
                 <div class="config-tab" data-tab="ap-config" data-i18n="net-tab-ap">热点配置</div>
@@ -21,12 +21,12 @@
                     </button>
                 </div>
 
-                <form id="wifi-form" class="pure-form pure-form-stacked">
+                <form id="wifi-form" class="fb-form">
                     <div class="config-form-grid">
                         <div class="config-form-column">
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="wifi-mode" data-i18n="wifi-mode-label">网络模式</label>
-                                <select id="wifi-mode" class="pure-input-1">
+                                <select id="wifi-mode" class="">
                                     <option value="0" data-i18n="wifi-mode-sta">仅客户端模式 (STA)
                                     </option>
                                     <option value="1" data-i18n="wifi-mode-ap">仅热点模式 (AP)</option>
@@ -35,18 +35,18 @@
                                 </select>
                             </div>
 
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="wifi-ssid" data-i18n="wifi-ssid-label">WiFi名称</label>
-                                <input type="text" id="wifi-ssid" class="pure-input-1"
+                                <input type="text" id="wifi-ssid" class=""
                                     placeholder="输入WiFi名称" data-i18n-placeholder="wifi-ssid-label">
                             </div>
                         </div>
 
                         <div class="config-form-column">
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="wifi-security"
                                     data-i18n="wifi-security-label">安全类型</label>
-                                <select id="wifi-security" class="pure-input-1">
+                                <select id="wifi-security" class="">
                                     <option value="none" data-i18n="wifi-security-none">无</option>
                                     <option value="wpa" selected data-i18n="wifi-security-wpa">
                                         WPA/WPA2</option>
@@ -55,10 +55,10 @@
                                 </select>
                             </div>
 
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="wifi-password"
                                     data-i18n="wifi-password-label">密码</label>
-                                <input type="password" id="wifi-password" class="pure-input-1"
+                                <input type="password" id="wifi-password" class=""
                                     placeholder="输入WiFi密码"
                                     data-i18n-placeholder="wifi-password-label">
                             </div>
@@ -88,8 +88,8 @@
             <!-- 热点配置 -->
             <div id="ap-config" class="config-content">
                 <!-- AP配网状态卡片 -->
-                <div class="flat-panel u-panel-default">
-                    <div class="card-header u-panel-header u-header-between">
+                <div class="fb-panel">
+                    <div class="fb-card-header fb-panel-header u-header-between">
                         <h4 class="fb-m-0 fb-text-sm"><i class="fas fa-wifi"></i> <span
                                 data-i18n="ap-provision-status-title">AP配网状态</span></h4>
                         <button id="ap-provision-refresh-btn" type="button"
@@ -97,8 +97,8 @@
                             <i class="fas fa-sync-alt"></i> <span data-i18n="refresh-btn">刷新</span>
                         </button>
                     </div>
-                    <div class="card-body u-panel-body">
-                        <table class="pure-table fb-w-full fb-fs-13">
+                    <div class="fb-card-body fb-panel-body">
+                        <table class="fb-table fb-w-full fb-fs-13">
                             <tbody>
                                 <tr>
                                     <td class="fb-text-gray fb-w-120"
@@ -120,11 +120,11 @@
                         </table>
                         <div class="fb-mt-3 fb-flex fb-gap-2">
                             <button id="ap-provision-start-btn" type="button"
-                                class="btn btn-enable">
+                                class="fb-btn fb-btn-success">
                                 <i class="fas fa-play"></i> <span
                                     data-i18n="ap-provision-start-btn">启动配网</span>
                             </button>
-                            <button id="ap-provision-stop-btn" type="button" class="btn btn-delete">
+                            <button id="ap-provision-stop-btn" type="button" class="fb-btn fb-btn-danger">
                                 <i class="fas fa-stop"></i> <span
                                     data-i18n="ap-provision-stop-btn">停止配网</span>
                             </button>
@@ -133,24 +133,24 @@
                 </div>
 
                 <!-- 热点参数配置表单 -->
-                <form id="ap-form" class="pure-form pure-form-stacked">
+                <form id="ap-form" class="fb-form">
                     <div class="config-form-grid">
                         <div class="config-form-column">
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="ap-ssid" data-i18n="ap-ssid-label">热点名称</label>
-                                <input type="text" id="ap-ssid" class="pure-input-1"
+                                <input type="text" id="ap-ssid" class=""
                                     placeholder="输入热点名称" data-i18n-placeholder="ap-ssid-label">
                             </div>
 
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="ap-password" data-i18n="ap-password-label">热点密码</label>
-                                <input type="password" id="ap-password" class="pure-input-1"
+                                <input type="password" id="ap-password" class=""
                                     placeholder="输入热点密码（至少8位）">
                             </div>
 
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="ap-channel" data-i18n="ap-channel-label">信道</label>
-                                <select id="ap-channel" class="pure-input-1">
+                                <select id="ap-channel" class="">
                                     <option value="1" selected>1</option>
                                     <option value="2">2</option>
                                     <option value="3">3</option>
@@ -169,18 +169,18 @@
                         </div>
 
                         <div class="config-form-column">
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="ap-hidden" data-i18n="ap-hidden-label">隐藏热点</label>
-                                <select id="ap-hidden" class="pure-input-1">
+                                <select id="ap-hidden" class="">
                                     <option value="0" selected data-i18n="ap-hidden-no">否</option>
                                     <option value="1" data-i18n="ap-hidden-yes">是</option>
                                 </select>
                             </div>
 
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="ap-max-connections"
                                     data-i18n="ap-max-connections-label">最大连接数</label>
-                                <select id="ap-max-connections" class="pure-input-1">
+                                <select id="ap-max-connections" class="">
                                     <option value="1">1</option>
                                     <option value="2">2</option>
                                     <option value="3">3</option>
@@ -192,10 +192,10 @@
                                 </select>
                             </div>
 
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="ap-provision-timeout"
                                     data-i18n="ap-provision-timeout-label">配网超时 (秒)</label>
-                                <input type="number" id="ap-provision-timeout" class="pure-input-1"
+                                <input type="number" id="ap-provision-timeout" class=""
                                     value="300" min="60" max="3600">
                             </div>
                         </div>
@@ -214,13 +214,13 @@
                 </form>
 
                 <!-- 配网说明 -->
-                <div class="flat-panel flat-panel-info fb-mt-4 fb-border-info">
-                    <div class="card-header fb-p-2 fb-bg-info-light">
+                <div class="fb-panel fb-panel-info fb-mt-4 fb-border-info">
+                    <div class="fb-card-header fb-p-2 fb-bg-info-light">
                         <h4 class="fb-m-0 fb-text-sm fb-text-info-dark"><i
                                 class="fas fa-info-circle"></i> <span
                                 data-i18n="ap-provision-guide-title">配网说明</span></h4>
                     </div>
-                    <div class="card-body fb-p-3 fb-fs-13 fb-text-info-dark">
+                    <div class="fb-card-body fb-p-3 fb-fs-13 fb-text-info-dark">
                         <ol class="fb-m-0 fb-pl-4">
                             <li data-i18n="ap-provision-guide-1">点击"启动配网"开启AP热点模式</li>
                             <li data-i18n="ap-provision-guide-2">手机连接设备热点</li>
@@ -234,15 +234,15 @@
 
             <!-- 高级配置 -->
             <div id="advance" class="config-content">
-                <form id="advanced-form" class="pure-form pure-form-stacked">
+                <form id="advanced-form" class="fb-form">
                     <!-- IP配置 -->
                     <h4 class="fb-section-title"
                         data-i18n="static-ip-title">静态IP配置</h4>
                     <div class="config-form-grid">
                         <div class="config-form-column">
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="wifi-dhcp" data-i18n="wifi-dhcp-label">IP获取方式</label>
-                                <select id="wifi-dhcp" class="pure-input-1">
+                                <select id="wifi-dhcp" class="">
                                     <option value="0" selected data-i18n="wifi-dhcp-auto">DHCP
                                         (自动获取)</option>
                                     <option value="1" data-i18n="wifi-dhcp-static">静态IP (手动配置)
@@ -250,35 +250,35 @@
                                 </select>
                             </div>
 
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="static-ip" data-i18n="static-ip-label">IP地址</label>
-                                <input type="text" id="static-ip" class="pure-input-1"
+                                <input type="text" id="static-ip" class=""
                                     placeholder="192.168.1.100">
                             </div>
 
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="subnet" data-i18n="subnet-label">子网掩码</label>
-                                <input type="text" id="subnet" class="pure-input-1"
+                                <input type="text" id="subnet" class=""
                                     placeholder="255.255.255.0">
                             </div>
                         </div>
 
                         <div class="config-form-column">
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="gateway" data-i18n="gateway-label">网关</label>
-                                <input type="text" id="gateway" class="pure-input-1"
+                                <input type="text" id="gateway" class=""
                                     placeholder="192.168.1.1">
                             </div>
 
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="dns1" data-i18n="dns1-label">首选DNS</label>
-                                <input type="text" id="dns1" class="pure-input-1"
+                                <input type="text" id="dns1" class=""
                                     placeholder="8.8.8.8">
                             </div>
 
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="dns2" data-i18n="dns2-label">备用DNS</label>
-                                <input type="text" id="dns2" class="pure-input-1"
+                                <input type="text" id="dns2" class=""
                                     placeholder="8.8.4.4">
                             </div>
                         </div>
@@ -289,9 +289,9 @@
                         data-i18n="domain-config-title">域名配置</h4>
                     <div class="config-form-grid">
                         <div class="config-form-column">
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="enable-mdns" data-i18n="wifi-mdns-label">mDNS</label>
-                                <select id="enable-mdns" class="pure-input-1">
+                                <select id="enable-mdns" class="">
                                     <option value="1" selected data-i18n="wifi-enable">启用</option>
                                     <option value="0" data-i18n="wifi-disable">禁用</option>
                                 </select>
@@ -299,10 +299,10 @@
                         </div>
 
                         <div class="config-form-column">
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="custom-domain"
                                     data-i18n="custom-domain-label">自定义域名</label>
-                                <input type="text" id="custom-domain" class="pure-input-1"
+                                <input type="text" id="custom-domain" class=""
                                     placeholder="fastbee">
                                 <small class="fb-text-muted">访问地址：fastbee.local</small>
                             </div>
@@ -314,33 +314,33 @@
                         data-i18n="connection-settings-title">连接设置</h4>
                     <div class="config-form-grid">
                         <div class="config-form-column">
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="connect-timeout" data-i18n="connect-timeout-label">连接超时
                                     (毫秒)</label>
-                                <input type="number" id="connect-timeout" class="pure-input-1"
+                                <input type="number" id="connect-timeout" class=""
                                     value="10000" min="1000" max="60000">
                             </div>
 
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="reconnect-interval"
                                     data-i18n="reconnect-interval-label">重连间隔 (毫秒)</label>
-                                <input type="number" id="reconnect-interval" class="pure-input-1"
+                                <input type="number" id="reconnect-interval" class=""
                                     value="5000" min="1000" max="60000">
                             </div>
                         </div>
 
                         <div class="config-form-column">
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="max-reconnect-attempts"
                                     data-i18n="max-reconnect-label">最大重连次数</label>
                                 <input type="number" id="max-reconnect-attempts"
-                                    class="pure-input-1" value="5" min="0" max="20">
+                                    class="" value="5" min="0" max="20">
                             </div>
 
-                            <div class="pure-control-group">
+                            <div class="fb-form-group">
                                 <label for="conflict-detection"
                                     data-i18n="conflict-detection-label">IP冲突检测</label>
-                                <select id="conflict-detection" class="pure-input-1">
+                                <select id="conflict-detection" class="">
                                     <option value="0" data-i18n="conflict-detect-none">不检测</option>
                                     <option value="1" data-i18n="conflict-detect-ping">Ping检测
                                     </option>

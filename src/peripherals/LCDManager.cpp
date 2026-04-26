@@ -8,7 +8,10 @@
 #include "peripherals/LCDManager.h"
 #include "systems/LoggerSystem.h"
 #include "core/ChipConfig.h"
+#include "core/FeatureFlags.h"
 #include <WiFi.h>
+
+#if FASTBEE_ENABLE_LCD
 
 // 单例实现
 LCDManager& LCDManager::getInstance()
@@ -430,3 +433,5 @@ bool LCDManager::shouldUpdate()
     unsigned long now = millis();
     return (now - _lastUpdate >= _minUpdateInterval) || _contentChanged;
 }
+
+#endif // FASTBEE_ENABLE_LCD

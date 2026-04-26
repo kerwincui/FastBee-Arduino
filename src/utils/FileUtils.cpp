@@ -687,6 +687,27 @@ String FileUtils::ensureAbsolutePath(const String& path, const String& baseDir) 
     return base + "/" + path;
 }
 
+// ==================== 流式JSON解析 ====================
+
+bool FileUtils::readJsonFile(const String& path, JsonDocument& doc) {
+    if (!LittleFS.exists(path)) {
+        LOG_WARNINGF("File not found: %s", path.c_str());
+        return false;
+    }
+    File file = LittleFS.open(path, FILE_READ);
+    if (!file) {
+        LOG_ERRORF("Failed to open file: %s", path.c_str());
+        return false;
+    }
+    DeserializationError err = deserializeJson(doc, file);
+    file.close();
+    if (err) {
+        LOG_ERRORF("JSON parse error in %s: %s", path.c_str(), err.c_str());
+        return false;
+    }
+    return true;
+}
+
 // ==================== 文件系统信息输出 ====================
 void FileUtils::listAllFiles(const String& path, int depth) {
     if (!fsInitialized) {
@@ -789,6 +810,8 @@ String FileUtils::getFileSystemInfoJSON() {
 }
 
 // ==================== 暂未实现的方法（占位符） ====================
+// @todo NOT IMPLEMENTED - 以下方法为预留接口占位符，返回空值或默认值
+// 调用前请确认实现状态，避免依赖未实现的返回值
 
 String FileUtils::calculateFileHash(const String& path) {
     return "";

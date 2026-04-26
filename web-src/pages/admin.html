@@ -1,16 +1,16 @@
 <!-- 文件管理页面 -->
 <div id="data-page" class="page">
-    <div class="card">
-        <div class="card-header u-flex-between-center">
-            <h2 class="card-title" data-i18n="data-page-title">文件管理</h2>
+    <div class="fb-card">
+        <div class="fb-card-header u-flex-between-center">
+            <h2 class="fb-card-title" data-i18n="data-page-title">文件管理</h2>
             <span id="fs-info" class="u-fs-12 u-text-secondary"></span>
         </div>
-        <div class="card-body">
+        <div class="fb-card-body">
             <div class="fs-layout">
                 <!-- 文件树 -->
                 <div class="fs-sidebar">
                     <div class="fs-sidebar-header">
-                        <div class="fs-sidebar-actions"><button class="btn btn-sm btn-secondary" id="fs-refresh-btn" data-i18n="fs-refresh-btn">刷新</button><button class="btn btn-sm btn-secondary" id="fs-up-btn" data-i18n="fs-up-btn">返回上级</button></div><span id="current-dir-path" class="fs-current-dir">/</span>
+                        <div class="fs-sidebar-actions"><button class="fb-btn fb-btn-sm fb-btn-secondary" id="fs-refresh-btn" data-i18n="fs-refresh-btn">刷新</button><button class="fb-btn fb-btn-sm fb-btn-secondary" id="fs-up-btn" data-i18n="fs-up-btn">返回上级</button></div><span id="current-dir-path" class="fs-current-dir">/</span>
                     </div>
                     <div id="file-tree" class="fs-tree">
                         <div class="fs-tree-empty" data-i18n="fs-loading">加载中...</div>
@@ -36,9 +36,9 @@
 
 <!-- 用户管理页面 -->
 <div id="users-page" class="page page-layout-flat">
-    <div class="card">
-        <div class="card-header u-header-between">
-            <h2 class="card-title" id="users-title">用户管理</h2>
+    <div class="fb-card">
+        <div class="fb-card-header u-header-between">
+            <h2 class="fb-card-title" id="users-title" data-i18n="users-title">用户管理</h2>
             <div class="u-toolbar-sm">
                 <button class="fb-btn fb-btn-refresh" id="users-refresh-btn">&#x21bb; 刷新</button>
                 <button class="fb-btn fb-btn-primary" id="add-user-btn"
@@ -47,16 +47,16 @@
                 </button>
             </div>
         </div>
-        <div class="card-body">
+        <div class="fb-card-body">
             <div class="u-table-wrap">
-                <table class="pure-table pure-table-bordered u-table-fill">
+                <table class="fb-table fb-table-bordered u-table-fill">
                     <thead>
                         <tr>
-                            <th id="user-username-col">用户名</th>
-                            <th id="user-role-col">角色</th>
-                            <th id="user-lastlogin-col">最后登录</th>
-                            <th id="user-status-col">状态</th>
-                            <th id="user-actions-col">操作</th>
+                            <th id="user-username-col" data-i18n="user-username-col">用户名</th>
+                            <th id="user-role-col" data-i18n="user-role-col">角色</th>
+                            <th id="user-lastlogin-col" data-i18n="user-lastlogin-col">最后登录</th>
+                            <th id="user-status-col" data-i18n="user-status-col">状态</th>
+                            <th id="user-actions-col" data-i18n="user-actions-col">操作</th>
                         </tr>
                     </thead>
                     <tbody id="users-table-body">
@@ -70,9 +70,9 @@
 
 <!-- 角色管理页面 -->
 <div id="roles-page" class="page page-layout-flat">
-    <div class="card">
-        <div class="card-header u-header-between">
-            <h2 class="card-title" id="roles-title">角色管理</h2>
+    <div class="fb-card">
+        <div class="fb-card-header u-header-between">
+            <h2 class="fb-card-title" id="roles-title" data-i18n="roles-title">角色管理</h2>
             <div class="u-toolbar-sm">
                 <button class="fb-btn fb-btn-refresh" id="roles-refresh-btn">&#x21bb; 刷新</button>
                 <button class="fb-btn fb-btn-primary" id="add-role-btn"
@@ -81,11 +81,11 @@
                 </button>
             </div>
         </div>
-        <div class="card-body">
+        <div class="fb-card-body">
             <p class="u-text-secondary u-mb-20" data-i18n="roles-admin-hint">
                 超级管理员(admin)角色不可编辑或删除，其他角色可进行管理操作。</p>
             <div class="u-table-wrap">
-                <table class="pure-table pure-table-bordered u-table-fill">
+                <table class="fb-table fb-table-bordered u-table-fill">
                     <thead>
                         <tr>
                             <th data-i18n="role-id-col">角色ID</th>
@@ -107,25 +107,25 @@
 
 <!-- 设备日志页面 -->
 <div id="logs-page" class="page page-layout-flat">
-    <div class="card">
-        <div class="card-header card-header-toolbar">
-            <h2 class="card-title" data-i18n="page-title-logs">设备日志</h2>
-            <div class="card-header-actions">
+    <div class="fb-card">
+        <div class="fb-card-header fb-card-header-toolbar">
+            <h2 class="fb-card-title" data-i18n="page-title-logs">设备日志</h2>
+            <div class="fb-card-header-actions">
                 <span id="current-log-file" class="logs-file-name">system.log</span>
                 <span id="log-info" class="logs-info"></span>
                 <label class="logs-auto-refresh">
                     <input type="checkbox" id="log-auto-refresh" checked>
                     <span data-i18n="log-auto-refresh-label">自动刷新</span>
                 </label>
-                <button class="btn btn-sm btn-secondary" id="refresh-logs-btn">
+                <button class="fb-btn fb-btn-sm fb-btn-secondary" id="refresh-logs-btn">
                     <span class="icon-refresh"></span> <span data-i18n="log-refresh-btn">刷新日志</span>
                 </button>
-                <button class="btn btn-sm btn-delete" id="clear-logs-btn">
+                <button class="fb-btn fb-btn-sm fb-btn-danger" id="clear-logs-btn">
                     <span class="icon-delete"></span> <span data-i18n="log-clear-btn">清空日志</span>
                 </button>
             </div>
         </div>
-        <div class="card-body u-p-0">
+        <div class="fb-card-body u-p-0">
             <div id="device-log-container" class="logs-page-content">
                 <div class="logs-loading" data-i18n="log-loading">正在加载日志...</div>
             </div>

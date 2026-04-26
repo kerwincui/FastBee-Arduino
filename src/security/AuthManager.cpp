@@ -3,6 +3,8 @@
 #include "core/FeatureFlags.h"
 #include <esp_random.h>
 
+#if FASTBEE_ENABLE_AUTH
+
 AuthManager::AuthManager(IUserManager* userMgr, RoleManager* roleMgr, LoggerSystem* loggerPtr)
     : userManager(userMgr), roleManager(roleMgr), logger(loggerPtr), lastSessionCleanup(0) {
     sessionPrefs.begin("auth_sessions", false);  // 仅用于会话持久化
@@ -1055,3 +1057,5 @@ bool AuthManager::checkPermission(const String& username, const String& permissi
 bool AuthManager::checkSessionPermission(const String& sessionId, const String& permission) {
     return checkSessionPermission(sessionId, permission, "");
 }
+
+#endif // FASTBEE_ENABLE_AUTH

@@ -1,3 +1,6 @@
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_MODBUS
+
 #include "./network/handlers/ModbusRouteHandler.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
@@ -1670,3 +1673,5 @@ void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request
     
     HandlerUtils::sendJsonStream(request, doc);
 }
+
+#endif // FASTBEE_ENABLE_MODBUS

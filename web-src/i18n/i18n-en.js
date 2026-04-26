@@ -124,6 +124,7 @@
         'dashboard-active-sessions': 'Active Sessions',
         
         // Configuration page
+        'config-title': 'Protocol Configuration',
         'protocol-title': 'Protocol Configuration',
         
         // Protocol config - form labels
@@ -147,6 +148,9 @@
         'mqtt-subscribe-label': 'Subscribe Topic',
         'mqtt-publish-qos-label': 'Publish QoS',
         'mqtt-conn-timeout-label': 'Conn Timeout (ms)',
+        'mqtt-access-mode-label': 'Access Mode',
+        'mqtt-access-mode-direct': 'MQTT Direct',
+        'mqtt-access-mode-transparent': 'MQTT Transparent',
         'mqtt-direct-connect-label': 'Direct Connect',
         'mqtt-auto-reconnect-label': 'Auto Reconnect',
         'mqtt-publish-retain-label': 'Retain Message',
@@ -903,10 +907,8 @@
         'usb-pid-label': 'Product ID',
         
         // GPIO parameters
-        'gpio-pin-label': 'GPIO Pin',
         'gpio-initial-label': 'Initial State',
         'gpio-pwm-channel-label': 'PWM Channel',
-        'gpio-pwm-freq-label': 'PWM Frequency (Hz)',
         'gpio-pwm-resolution-label': 'PWM Resolution (bits)',
         'gpio-initial-low': 'Low',
         'gpio-initial-high': 'High',
@@ -1038,6 +1040,9 @@
         'periph-exec-ctrl-duty': 'Duty',
         'periph-exec-ctrl-value': 'Value',
         'periph-exec-ctrl-pid-param': 'Param',
+        'periph-exec-ctrl-forward': 'Forward',
+        'periph-exec-ctrl-reverse': 'Reverse',
+        'periph-exec-ctrl-stop': 'Stop',
         'periph-exec-op-eq': 'Equal (=)',
         'periph-exec-op-neq': 'Not Equal (!=)',
         'periph-exec-op-gt': 'Greater Than (>)',
@@ -1226,6 +1231,9 @@
         'event-cat-外设执行': 'Peripheral Exec',
         'event-cat-数据': 'Data',
         'event-cat-数据源': 'Data Source',
+        'event-cat-Modbus子设备': 'Modbus Sub-device',
+        'event-cat-modbus-acquisition': 'Acquisition Device',
+        'event-cat-modbus-control': 'Control Device',
         'periph-exec-event-operator-label': 'Compare Operator',
         'periph-exec-event-compare-label': 'Compare Value',
         'periph-exec-event-compare-hint': 'e.g. 25.5 or ON',
@@ -1358,6 +1366,7 @@
         'mqtt-product-id-label': 'Product ID',
         'mqtt-user-id-label': 'User ID',
         'mqtt-secret-label': 'MQTT Secret',
+        'mqtt-ntp-server-label': 'NTP Server',
         
         // Modbus RTU RS485 Pins
         'rtu-pins-section-title': 'RS485 Pin Config',
@@ -1705,7 +1714,6 @@
         'adc-res-11': '11-bit (0-2047)',
         'adc-res-12': '12-bit (0-4095)',
         'adc-att-label': 'Attenuation',
-        'gpio-pwm-freq-label': 'PWM Frequency (Hz)',
         'gpio-pwm-res-label': 'PWM Resolution (bits)',
         'save': 'Save',
         

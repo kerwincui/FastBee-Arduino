@@ -4,12 +4,25 @@
 #include <Arduino.h>
 #include <memory>
 #include <vector>
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_MQTT
 #include "MQTTClient.h"
+#endif
+#if FASTBEE_ENABLE_MODBUS
 #include "ModbusHandler.h"
+#endif
 #include "TCPHandler.h"
 #include "CoAPHandler.h"
 #include "HTTPClientWrapper.h"
 #include "core/PeripheralManager.h"
+
+// 前向声明 — 用于条件编译禁用时的 stub getter 返回类型
+#if !FASTBEE_ENABLE_MODBUS
+class ModbusHandler;
+#endif
+#if !FASTBEE_ENABLE_MQTT
+class MQTTClient;
+#endif
 
 // 协议类型枚举
 enum class ProtocolType {
@@ -33,6 +46,12 @@ typedef std::function<void(ProtocolType, const String&, const String&)> MessageC
 typedef std::function<void()> CounterCallback;
 typedef std::function<void(uint8_t, const String&)> SSEBroadcastCallback;
 typedef std::function<void(const String&)> SimpleSSECallback;  // 简化版 SSE 回调（无地址参数）
+
+// Modbus 数据来源枚举（用于统一分发出口）
+enum class ModbusDataSource {
+    LiveCallback,    // 实时回调（MQTT直报 + SSE + 规则匹配）
+    PeriphExecPoll   // PeriphExec轮询（仅MQTT上报，不分发到规则匹配）
+};
 
 class ProtocolManager {
 public:
@@ -67,11 +86,20 @@ public:
     void handle();
 
     // 获取 ModbusHandler 指针（供路由处理器访问Master模式接口）
+#if FASTBEE_ENABLE_MODBUS
     ModbusHandler* getModbusHandler() const { return modbusHandler.get(); }
+#else
+    ModbusHandler* getModbusHandler() const { return nullptr; }
+#endif
 
     // 获取 MQTTClient 指针（供路由处理器访问MQTT状态接口）
+#if FASTBEE_ENABLE_MQTT
     MQTTClient* getMQTTClient() const { return mqttClient.get(); }
+#else
+    MQTTClient* getMQTTClient() const { return nullptr; }
+#endif
 
+#if FASTBEE_ENABLE_MQTT
     /**
      * @brief 重启MQTT连接（重新加载配置并连接）
      */
@@ -87,7 +115,9 @@ public:
      * @brief 停止MQTT连接
      */
     void stopMQTT();
+#endif
 
+#if FASTBEE_ENABLE_MODBUS
     /**
      * @brief 重启Modbus（从protocol.json加载配置并初始化）
      * 注意：此方法栈开销大（~12KB），只能在 loopTask 中调用
@@ -104,6 +134,7 @@ public:
      * @brief 停止Modbus
      */
     void stopModbus();
+#endif
 
     /**
      * @brief 完全关闭协议管理器，释放所有资源
@@ -121,10 +152,19 @@ public:
     void setMQTTStatusSSECallback(SimpleSSECallback callback);
     void setModbusStatusSSECallback(SimpleSSECallback callback);
 
+    // Modbus 数据统一分发出口
+    // LiveCallback: MQTT上报 + SSE广播 + 规则匹配
+    // PeriphExecPoll: 仅MQTT上报（PeriphExec有自己的规则匹配流程）
+    void dispatchModbusData(uint8_t slaveAddress, const String& data, ModbusDataSource source);
+
 private:
     // unique_ptr 智能指针，主要用于自动管理动态内存，避免内存泄漏并确保资源安全释放
+#if FASTBEE_ENABLE_MQTT
     std::unique_ptr<MQTTClient> mqttClient;
+#endif
+#if FASTBEE_ENABLE_MODBUS
     std::unique_ptr<ModbusHandler> modbusHandler;
+#endif
 #if FASTBEE_ENABLE_TCP
     std::unique_ptr<TCPHandler> tcpHandler;
 #endif
@@ -144,11 +184,17 @@ private:
     SimpleSSECallback modbusStatusSSECallback;
     
     bool isInitialized;
+#if FASTBEE_ENABLE_MODBUS
     volatile bool modbusRestartPending;  // 延迟重启标志，由 handle() 在 loopTask 中检查
+#endif
     
     // 初始化具体协议
+#if FASTBEE_ENABLE_MQTT
     bool initMQTT(void* config);
+#endif
+#if FASTBEE_ENABLE_MODBUS
     bool initModbus(void* config);
+#endif
 #if FASTBEE_ENABLE_TCP
     bool initTCP(void* config);
 #endif
@@ -162,6 +208,7 @@ private:
     // 内部消息处理
     void handleMessage(ProtocolType type, const String& topic, const String& message);
 
+#if FASTBEE_ENABLE_MODBUS
     // MQTT触发的Modbus一次性读取
     String executeModbusRead(const String& paramsJson);
     
@@ -171,6 +218,7 @@ private:
     // Modbus 子设备注册/注销到 PeripheralManager
     void registerModbusSubDevices(const ModbusConfig& config);
     void unregisterModbusSubDevices();
+#endif
 
     // 收集本地传感器类外设数据（GPIO/ADC），返回 JSON 数组字符串
     String collectLocalSensorData() const;

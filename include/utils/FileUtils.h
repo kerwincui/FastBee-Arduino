@@ -87,6 +87,9 @@ public:
     static size_t calculateFolderSize(const String& folderPath);
     static size_t calculateFolderSizeOptimized(const String& folderPath); // 使用栈的优化版本
     
+    // 流式JSON解析：直接从文件读取并反序列化到 JsonDocument
+    static bool readJsonFile(const String& path, JsonDocument& doc);
+
     // 文件系统监控
     static String getFileSystemInfoJSON();
     static void listAllFiles(const String& path = "/", int depth = 0);

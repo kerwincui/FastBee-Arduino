@@ -8,7 +8,10 @@
 #include "network/NetworkManager.h"
 #include "systems/LoggerSystem.h"
 #include "utils/NetworkUtils.h"
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_PERIPH_EXEC
 #include "core/PeriphExecManager.h"
+#endif
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <ESPmDNS.h>
@@ -1053,7 +1056,9 @@ bool NetworkManager::restartNetwork() {
             wifiManager->setModeTransitioning(false);
             LOG_INFO("NetworkManager: AP-only mode restarted successfully");
             // 触发网络模式切换为AP系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
             PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_NET_MODE_AP, "");
+#endif
             return true;
         } else {
             // AP+STA模式：可以先启动AP，然后连接STA
@@ -1092,14 +1097,18 @@ bool NetworkManager::restartNetwork() {
         isInitialized = true;
         LOG_INFO("NetworkManager: AP+STA mode restarted, AP available, STA connecting...");
         // 触发网络模式切换为AP+STA系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
         PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_NET_MODE_AP_STA, "");
+#endif
         return true;
     }
     
     // 对于纯STA模式，需要完全重启
     LOG_INFO("NetworkManager: Full network restart for STA mode...");
     // 触发网络模式切换为STA系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
     PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_NET_MODE_STA, "");
+#endif
     disconnect();
     delay(500);
     return initialize();

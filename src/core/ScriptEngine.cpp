@@ -1,7 +1,12 @@
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_RULE_SCRIPT
+
 #include "core/ScriptEngine.h"
 #include "core/PeripheralManager.h"
 #include "core/ChipConfig.h"
+#if FASTBEE_ENABLE_MQTT
 #include "protocols/MQTTClient.h"
+#endif
 #include "systems/LoggerSystem.h"
 #include <esp_random.h>
 
@@ -308,6 +313,7 @@ bool ScriptEngine::execute(const std::vector<ScriptCommand>& cmds, MQTTClient* m
             }
 
             case ScriptCmdType::CMD_MQTT: {
+#if FASTBEE_ENABLE_MQTT
                 if (!mqtt) {
                     LOGGER.warning("[Script] MQTT not available, skipping MQTT command");
                     break;
@@ -316,6 +322,9 @@ bool ScriptEngine::execute(const std::vector<ScriptCommand>& cmds, MQTTClient* m
                 bool ok = mqtt->publishToTopic((size_t)cmd.intParam, message);
                 LOGGER.infof("[Script] MQTT publish topic[%d] %s: %s",
                     cmd.intParam, ok ? "OK" : "FAIL", message.c_str());
+#else
+                LOGGER.warning("[Script] MQTT disabled, skipping MQTT command");
+#endif
                 break;
             }
         }
@@ -415,3 +424,4 @@ String ScriptEngine::processRandomExpressions(const String& input) {
 
     return result;
 }
+#endif // FASTBEE_ENABLE_RULE_SCRIPT

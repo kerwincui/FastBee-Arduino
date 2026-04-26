@@ -5,7 +5,10 @@
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
+#include <memory>
+#include <freertos/semphr.h>
 #include "core/SystemConstants.h"
+#include "core/FeatureFlags.h"
 #include "core/interfaces/IConfigStorage.h"
 #include "core/ErrorHandler.h"
 
@@ -71,6 +74,61 @@ private:
 
     Preferences prefs;
     bool _initialized = false;  // 真实初始化标志，不再造假
+
+#if FASTBEE_ENABLE_STORAGE_CACHE
+    // RAII 缓存锁辅助类
+    class CacheLock {
+    public:
+        CacheLock(SemaphoreHandle_t mutex) : _mutex(mutex), _locked(false) {
+            if (_mutex) {
+                _locked = (xSemaphoreTake(_mutex, pdMS_TO_TICKS(100)) == pdTRUE);
+            }
+        }
+        ~CacheLock() {
+            if (_locked && _mutex) {
+                xSemaphoreGive(_mutex);
+            }
+        }
+        bool isLocked() const { return _locked; }
+        operator bool() const { return _locked; }
+        CacheLock(const CacheLock&) = delete;
+        CacheLock& operator=(const CacheLock&) = delete;
+    private:
+        SemaphoreHandle_t _mutex;
+        bool _locked;
+    };
+
+    SemaphoreHandle_t _cacheMutex = nullptr;
+
+    // 缓存条目结构
+    static const size_t MAX_CONFIG_CACHE_ENTRIES = 2;
+
+    struct ConfigCacheEntry {
+        String filename;
+        std::unique_ptr<JsonDocument> cachedDoc;
+        unsigned long lastLoadTime = 0;      // millis()
+        time_t fileModifyTime = 0;           // 文件最后修改时间
+        bool dirty = false;                  // 有未保存的修改
+        unsigned long debounceUntil = 0;     // debounce 截止时间
+        uint8_t accessCount = 0;             // LRU 访问计数
+    };
+
+    ConfigCacheEntry _cache[MAX_CONFIG_CACHE_ENTRIES];
+    size_t _cacheSize = 0;
+
+    // 缓存操作方法
+    ConfigCacheEntry* findInCache(const String& filename);
+    bool evictLRUEntry();
+    void updateCacheEntry(const String& filename, const JsonDocument& doc, time_t modTime);
+    bool flushToDisk(const String& filename, const JsonDocument& config);
+#endif // FASTBEE_ENABLE_STORAGE_CACHE
+
+public:
+#if FASTBEE_ENABLE_STORAGE_CACHE
+    void flushDirtyEntries();   // 供定时任务调用
+    void clearCache();          // 供 OTA 完成后调用
+    void clearCache(const String& filename);  // 清除指定文件的缓存
+#endif
 };
 
 #endif

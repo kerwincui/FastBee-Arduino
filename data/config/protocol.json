@@ -16,7 +16,7 @@
           "functionCode": 4,
           "startAddress": 0,
           "quantity": 2,
-          "pollInterval": 30,
+          "pollInterval": 60,
           "enabled": true,
           "name": "温湿度",
           "mappings": [
@@ -70,7 +70,7 @@
           "functionCode": 3,
           "startAddress": 500,
           "quantity": 8,
-          "pollInterval": 30,
+          "pollInterval": 60,
           "enabled": true,
           "name": "气象百叶箱",
           "mappings": [

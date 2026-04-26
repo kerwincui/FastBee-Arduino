@@ -1,6 +1,9 @@
 #ifndef RULE_SCRIPT_ROUTE_HANDLER_H
 #define RULE_SCRIPT_ROUTE_HANDLER_H
 
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_RULE_SCRIPT
+
 #include <ESPAsyncWebServer.h>
 
 class WebHandlerContext;
@@ -26,5 +29,7 @@ private:
     void handleEnableRule(AsyncWebServerRequest* request);
     void handleDisableRule(AsyncWebServerRequest* request);
 };
+
+#endif // FASTBEE_ENABLE_RULE_SCRIPT
 
 #endif // RULE_SCRIPT_ROUTE_HANDLER_H

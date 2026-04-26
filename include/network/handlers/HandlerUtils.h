@@ -8,12 +8,14 @@ namespace HandlerUtils {
 
 // 发送 JSON 成功响应
 inline void sendJsonSuccess(AsyncWebServerRequest* request, const String& data = "") {
-    String json = "{\"success\":true";
+    String json;
+    json.reserve(20 + data.length());
+    json += F("{\"success\":true");
     if (data.length() > 0) {
-        json += ",\"data\":";
+        json += F(",\"data\":");
         json += data;
     }
-    json += "}";
+    json += '}';
     request->send(200, "application/json", json);
 }
 

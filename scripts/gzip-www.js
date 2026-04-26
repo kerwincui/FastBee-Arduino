@@ -15,6 +15,7 @@ const path = require('path');
 const zlib = require('zlib');
 const { spawn } = require('child_process');
 const { buildWebModules } = require('./build-web-modules');
+const { generateManifest } = require('./generate-sw-manifest');
 
 const WWW_DIR = path.join(__dirname, '..', 'data', 'www');
 const COMPRESS_EXTENSIONS = new Set(['.html', '.js', '.css']);
@@ -206,6 +207,9 @@ async function main() {
     if (buildResult.adminBundle.stubs) {
         console.log(`  Generated ${buildResult.adminBundle.stubs.length} admin stubs`);
     }
+
+    console.log('\n[Step 1] Generating SW manifest...');
+    generateManifest();
 
     deleteOldGzFiles();
     compressAllFiles();

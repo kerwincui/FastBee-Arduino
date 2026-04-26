@@ -14,7 +14,11 @@
 #include <memory>
 
 ProtocolManager::ProtocolManager() 
-    : isInitialized(false), modbusRestartPending(false) {
+    : isInitialized(false)
+#if FASTBEE_ENABLE_MODBUS
+    , modbusRestartPending(false)
+#endif
+{
 }
 
 ProtocolManager::~ProtocolManager() {
@@ -53,10 +57,14 @@ bool ProtocolManager::setProtocolConfig(ProtocolType type, void* config) {
             
             // 根据协议类型初始化
             switch (type) {
+#if FASTBEE_ENABLE_MQTT
                 case ProtocolType::MQTT:
                     return initMQTT(config);
+#endif
+#if FASTBEE_ENABLE_MODBUS
                 case ProtocolType::MODBUS:
                     return initModbus(config);
+#endif
 #if FASTBEE_ENABLE_TCP
                 case ProtocolType::TCP:
                     return initTCP(config);
@@ -86,14 +94,18 @@ bool ProtocolManager::startAll() {
 
         bool started = false;
         switch (protocol.type) {
+#if FASTBEE_ENABLE_MQTT
             case ProtocolType::MQTT:   
                 started = mqttClient && mqttClient->begin();
                 if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_ENABLED, "");
                 break;
+#endif
+#if FASTBEE_ENABLE_MODBUS
             case ProtocolType::MODBUS: 
                 started = modbusHandler && modbusHandler->begin();
                 if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MODBUS_RTU_ENABLED, "");
                 break;
+#endif
 #if FASTBEE_ENABLE_TCP
             case ProtocolType::TCP:    
                 started = tcpHandler && tcpHandler->beginFromConfig();
@@ -127,8 +139,12 @@ bool ProtocolManager::startAll() {
 
 void ProtocolManager::stopAll() {
     LOG_INFO("Protocol Manager: Stopping all protocols...");
+#if FASTBEE_ENABLE_MQTT
     if (mqttClient)       mqttClient->disconnect();
+#endif
+#if FASTBEE_ENABLE_MODBUS
     if (modbusHandler)    modbusHandler->end();
+#endif
 #if FASTBEE_ENABLE_TCP
     if (tcpHandler)       tcpHandler->disconnect();
 #endif
@@ -145,8 +161,12 @@ void ProtocolManager::shutdown() {
 
     stopAll();
 
+#if FASTBEE_ENABLE_MQTT
     mqttClient.reset();
+#endif
+#if FASTBEE_ENABLE_MODBUS
     modbusHandler.reset();
+#endif
 #if FASTBEE_ENABLE_TCP
     tcpHandler.reset();
 #endif
@@ -170,8 +190,13 @@ void ProtocolManager::shutdown() {
 bool ProtocolManager::sendData(ProtocolType type, const String& topic, const String& data) {
     switch (type) {
         case ProtocolType::MQTT:
+#if FASTBEE_ENABLE_MQTT
             return mqttClient && mqttClient->publish(topic, data);
+#else
+            return false;
+#endif
         case ProtocolType::MODBUS:
+#if FASTBEE_ENABLE_MODBUS
             if (!modbusHandler) return false;
             if (modbusHandler->getMode() == MODBUS_MASTER) {
                 // Master模式: topic格式 "slaveAddr:regAddr", data为写入值
@@ -185,7 +210,14 @@ bool ProtocolManager::sendData(ProtocolType type, const String& topic, const Str
                 return false;
             }
             // Slave模式: topic为寄存器地址
+#if FASTBEE_MODBUS_SLAVE_ENABLE
             return modbusHandler->writeData(topic.toInt(), data);
+#else
+            return false;
+#endif
+#else
+            return false;
+#endif
         case ProtocolType::TCP:
 #if FASTBEE_ENABLE_TCP
             return tcpHandler && tcpHandler->send(data);
@@ -216,9 +248,17 @@ void ProtocolManager::setMessageCallback(MessageCallback callback) {
 String ProtocolManager::getProtocolStatus(ProtocolType type) {
     switch (type) {
         case ProtocolType::MQTT:
+#if FASTBEE_ENABLE_MQTT
             return mqttClient ? mqttClient->getStatus() : "Not initialized";
+#else
+            return "Disabled";
+#endif
         case ProtocolType::MODBUS:
+#if FASTBEE_ENABLE_MODBUS
             return modbusHandler ? modbusHandler->getStatus() : "Not initialized";
+#else
+            return "Disabled";
+#endif
         case ProtocolType::TCP:
 #if FASTBEE_ENABLE_TCP
             return tcpHandler ? tcpHandler->getStatus() : "Not initialized";
@@ -244,13 +284,19 @@ String ProtocolManager::getProtocolStatus(ProtocolType type) {
 
 void ProtocolManager::handle() {
     // 检查延迟重启标志（在 loopTask 16KB 栈中安全执行）
+#if FASTBEE_ENABLE_MODBUS
     if (modbusRestartPending) {
         modbusRestartPending = false;
         LOG_INFO("[Modbus] Executing deferred restart in loopTask...");
         restartModbus();
     }
+#endif
+#if FASTBEE_ENABLE_MQTT
     if (mqttClient) mqttClient->handle();
+#endif
+#if FASTBEE_ENABLE_MODBUS
     if (modbusHandler) modbusHandler->handle();
+#endif
 #if FASTBEE_ENABLE_TCP
     if (tcpHandler) tcpHandler->handle();
 #endif
@@ -275,6 +321,36 @@ void ProtocolManager::setSSECallback(SSEBroadcastCallback callback) { sseCallbac
 void ProtocolManager::setMQTTStatusSSECallback(SimpleSSECallback callback) { mqttStatusSSECallback = callback; }
 void ProtocolManager::setModbusStatusSSECallback(SimpleSSECallback callback) { modbusStatusSSECallback = callback; }
 
+// ========== Modbus 数据统一分发出口 ==========
+
+void ProtocolManager::dispatchModbusData(uint8_t slaveAddress, const String& data, ModbusDataSource source) {
+#if FASTBEE_ENABLE_MODBUS
+    // 1. MQTT 上报（所有来源都上报）
+#if FASTBEE_ENABLE_MQTT
+    if (mqttClient && mqttClient->getIsConnected()) {
+        mqttClient->publishReportData(data);
+    }
+#endif
+    // 2. SSE 实时推送（所有来源都推送）
+    if (sseCallback) {
+        sseCallback(slaveAddress, data);
+    }
+    // 3. 规则匹配和轮询数据分发（仅 LiveCallback 来源）
+    //    PeriphExecPoll 不分发，因为 PeriphExec 有自己的数据处理流程
+    if (source == ModbusDataSource::LiveCallback) {
+        if (data.length() > 0 && data[0] == '[') {
+            PeriphExecManager::getInstance().handleMqttMessage("modbus/data", data);
+            PeriphExecManager::getInstance().handlePollData("modbus", data);
+        }
+    }
+    // 4. 全局消息路由
+    handleMessage(ProtocolType::MODBUS, String(slaveAddress), data);
+#else
+    (void)slaveAddress; (void)data; (void)source;
+#endif
+}
+
+#if FASTBEE_ENABLE_MQTT
 bool ProtocolManager::restartMQTT() {
     LOG_INFO("Protocol Manager: Restarting MQTT...");
     
@@ -299,18 +375,26 @@ bool ProtocolManager::restartMQTT() {
 
     // 注册实时监测数据提供者（组合 Modbus 缓存数据 + 本地外设数据）
     mqttClient->setMonitorDataProvider([this]() -> String {
+#if FASTBEE_ENABLE_MODBUS
         String modbusData = modbusHandler ? modbusHandler->collectCachedPollData() : "[]";
+#else
+        String modbusData = "[]";
+#endif
         String localData = collectLocalSensorData();
         bool hasMb = modbusData.length() > 2;
         bool hasLc = localData.length() > 2;
         if (!hasMb && !hasLc) return "[]";
         if (!hasMb) return localData;
         if (!hasLc) return modbusData;
-        String result = "[";
-        result += modbusData.substring(1, modbusData.length() - 1);
-        result += ",";
-        result += localData.substring(1, localData.length() - 1);
-        result += "]";
+        // 预分配足够容量，避免多次重新分配
+        String result;
+        result.reserve(modbusData.length() + localData.length());
+        result.concat('[');
+        // 直接引用内部 c_str 指针+偏移，避免 substring() 创建临时 String
+        result.concat(modbusData.c_str() + 1, modbusData.length() - 2);
+        result.concat(',');
+        result.concat(localData.c_str() + 1, localData.length() - 2);
+        result.concat(']');
         return result;
     });
     
@@ -353,18 +437,26 @@ bool ProtocolManager::restartMQTTDeferred() {
 
     // 注册实时监测数据提供者（组合 Modbus 缓存数据 + 本地外设数据）
     mqttClient->setMonitorDataProvider([this]() -> String {
+#if FASTBEE_ENABLE_MODBUS
         String modbusData = modbusHandler ? modbusHandler->collectCachedPollData() : "[]";
+#else
+        String modbusData = "[]";
+#endif
         String localData = collectLocalSensorData();
         bool hasMb = modbusData.length() > 2;
         bool hasLc = localData.length() > 2;
         if (!hasMb && !hasLc) return "[]";
         if (!hasMb) return localData;
         if (!hasLc) return modbusData;
-        String result = "[";
-        result += modbusData.substring(1, modbusData.length() - 1);
-        result += ",";
-        result += localData.substring(1, localData.length() - 1);
-        result += "]";
+        // 预分配足够容量，避免多次重新分配
+        String result;
+        result.reserve(modbusData.length() + localData.length());
+        result.concat('[');
+        // 直接引用内部 c_str 指针+偏移，避免 substring() 创建临时 String
+        result.concat(modbusData.c_str() + 1, modbusData.length() - 2);
+        result.concat(',');
+        result.concat(localData.c_str() + 1, localData.length() - 2);
+        result.concat(']');
         return result;
     });
     
@@ -384,7 +476,9 @@ void ProtocolManager::stopMQTT() {
         mqttClient->stop();
     }
 }
+#endif // FASTBEE_ENABLE_MQTT (restartMQTT + restartMQTTDeferred + stopMQTT)
 
+#if FASTBEE_ENABLE_MODBUS
 bool ProtocolManager::restartModbus() {
     LOG_INFO("Protocol Manager: Restarting Modbus...");
     
@@ -565,22 +659,8 @@ bool ProtocolManager::restartModbus() {
     modbusHandler = std::unique_ptr<ModbusHandler>(new ModbusHandler());
     
     modbusHandler->setDataCallback([this](uint8_t address, const String& data) {
-        // 1. MQTT 上报
-        if (mqttClient && mqttClient->getIsConnected()) {
-            mqttClient->publishReportData(data);
-        }
-        // 2. SSE 实时推送
-        if (sseCallback) {
-            sseCallback(address, data);
-        }
-        // 3. JSON 格式数据注入 PeriphExec 进行条件匹配
-        if (data.length() > 0 && data[0] == '[') {
-            PeriphExecManager::getInstance().handleMqttMessage("modbus/data", data);
-            // 4. 轮询触发：本地数据源条件评估（POLL_TRIGGER 规则）
-            PeriphExecManager::getInstance().handlePollData("modbus", data);
-        }
-        // 5. 全局消息路由
-        handleMessage(ProtocolType::MODBUS, String(address), data);
+        // 统一通过 dispatchModbusData 分发（LiveCallback 路径：MQTT + SSE + 规则匹配）
+        dispatchModbusData(address, data, ModbusDataSource::LiveCallback);
     });
     
     // 注册 Modbus 一次性读取回调到 PeriphExec
@@ -946,8 +1026,10 @@ String ProtocolManager::executeModbusRawSend(const String& hexPayload) {
     LOG_INFOF("[Modbus] RawSend: result: %s", out.c_str());
     return out;
 }
+#endif // FASTBEE_ENABLE_MODBUS (restartModbus + stopModbus + restartModbusDeferred + executeModbusRead + executeModbusRawSend)
 
 // 具体协议初始化实现
+#if FASTBEE_ENABLE_MQTT
 bool ProtocolManager::initMQTT(void* config) {
     if (!config) return false;
     
@@ -970,24 +1052,34 @@ bool ProtocolManager::initMQTT(void* config) {
 
     // 注册实时监测数据提供者（组合 Modbus 缓存数据 + 本地外设数据）
     mqttClient->setMonitorDataProvider([this]() -> String {
+#if FASTBEE_ENABLE_MODBUS
         String modbusData = modbusHandler ? modbusHandler->collectCachedPollData() : "[]";
+#else
+        String modbusData = "[]";
+#endif
         String localData = collectLocalSensorData();
         bool hasMb = modbusData.length() > 2;
         bool hasLc = localData.length() > 2;
         if (!hasMb && !hasLc) return "[]";
         if (!hasMb) return localData;
         if (!hasLc) return modbusData;
-        String result = "[";
-        result += modbusData.substring(1, modbusData.length() - 1);
-        result += ",";
-        result += localData.substring(1, localData.length() - 1);
-        result += "]";
+        // 预分配足够容量，避免多次重新分配
+        String result;
+        result.reserve(modbusData.length() + localData.length());
+        result.concat('[');
+        // 直接引用内部 c_str 指针+偏移，避免 substring() 创建临时 String
+        result.concat(modbusData.c_str() + 1, modbusData.length() - 2);
+        result.concat(',');
+        result.concat(localData.c_str() + 1, localData.length() - 2);
+        result.concat(']');
         return result;
     });
 
     return mqttClient->begin();
 }
+#endif
 
+#if FASTBEE_ENABLE_MODBUS
 bool ProtocolManager::initModbus(void* config) {
     if (!config) return false;
     
@@ -996,22 +1088,8 @@ bool ProtocolManager::initModbus(void* config) {
     
     // 设置回调
     modbusHandler->setDataCallback([this](uint8_t address, const String& data) {
-        // 1. MQTT 上报（JSON 和透传都上报）
-        if (mqttClient && mqttClient->getIsConnected()) {
-            mqttClient->publishReportData(data);
-        }
-        // 2. SSE 实时推送
-        if (sseCallback) {
-            sseCallback(address, data);
-        }
-        // 3. JSON 格式数据注入 PeriphExec 进行条件匹配
-        if (data.length() > 0 && data[0] == '[') {
-            PeriphExecManager::getInstance().handleMqttMessage("modbus/data", data);
-            // 4. 轮询触发：本地数据源条件评估（POLL_TRIGGER 规则）
-            PeriphExecManager::getInstance().handlePollData("modbus", data);
-        }
-        // 5. 保持全局消息路由
-        handleMessage(ProtocolType::MODBUS, String(address), data);
+        // 统一通过 dispatchModbusData 分发（LiveCallback 路径：MQTT + SSE + 规则匹配）
+        dispatchModbusData(address, data, ModbusDataSource::LiveCallback);
     });
 
     // 设置状态变化回调（SSE 推送用）
@@ -1028,6 +1106,7 @@ bool ProtocolManager::initModbus(void* config) {
     }
     return initOk;
 }
+#endif
 
 #if FASTBEE_ENABLE_TCP
 bool ProtocolManager::initTCP(void* config) {
@@ -1079,6 +1158,7 @@ bool ProtocolManager::initCoAP(void* config) {
 
 // ========== Modbus 子设备注册到 PeripheralManager ==========
 
+#if FASTBEE_ENABLE_MODBUS
 void ProtocolManager::registerModbusSubDevices(const ModbusConfig& config) {
     PeripheralManager& pm = PeripheralManager::getInstance();
     
@@ -1171,6 +1251,7 @@ void ProtocolManager::unregisterModbusSubDevices() {
         LOG_INFOF("Protocol Manager: Unregistered Modbus peripheral '%s'", p.id.c_str());
     }
 }
+#endif // FASTBEE_ENABLE_MODBUS (registerModbusSubDevices + unregisterModbusSubDevices)
 
 String ProtocolManager::collectLocalSensorData() const {
     PeripheralManager& pm = PeripheralManager::getInstance();
@@ -1194,9 +1275,11 @@ String ProtocolManager::collectLocalSensorData() const {
             if (state == GPIOState::STATE_UNDEFINED) continue;
             value = (state == GPIOState::STATE_HIGH) ? "1" : "0";
         } else if (typeVal == 15 || typeVal == 26) {
-            // 模拟输入或 ADC
+            // 模拟输入或 ADC — 用 snprintf 避免 String(int) 临时对象
             uint16_t analog = pm.readAnalog(config.id);
-            value = String(analog);
+            char analogBuf[8];
+            snprintf(analogBuf, sizeof(analogBuf), "%u", analog);
+            value = analogBuf;
         } else {
             continue;
         }

@@ -3,6 +3,8 @@
 #include "core/FeatureFlags.h"
 #include <LittleFS.h>
 
+#if FASTBEE_ENABLE_AUTH
+
 static const char* ROLES_FILE = "/config/roles.json";
 
 // ─── 构造 / 析构 ─────────────────────────────────────────────────────────────
@@ -481,3 +483,5 @@ bool RoleManager::loadFromStorage() {
     
     return true;
 }
+
+#endif // FASTBEE_ENABLE_AUTH

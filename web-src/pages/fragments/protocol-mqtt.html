@@ -1,0 +1,274 @@
+<form id="mqtt-form" class="fb-form">
+    <!-- MQTT 连接状态面板 -->
+    <div id="mqtt-status-panel" class="mqtt-status-panel">
+        <div class="mqtt-status-row">
+            <span class="mqtt-status-label"
+                data-i18n="mqtt-status-label">连接状态</span>
+            <span id="mqtt-status-badge"
+                class="mqtt-status-badge mqtt-status-detecting"
+                data-i18n="mqtt-status-detecting">检测中...</span>
+        </div>
+        <div class="mqtt-status-row">
+            <span class="mqtt-status-label"
+                data-i18n="mqtt-status-server-label">服务器</span>
+            <span id="mqtt-status-server" class="mqtt-status-value">--</span>
+        </div>
+        <div class="mqtt-status-row">
+            <span class="mqtt-status-label"
+                data-i18n="mqtt-status-client-label">客户端ID</span>
+            <span id="mqtt-status-clientid" class="mqtt-status-value">--</span>
+        </div>
+        <div class="mqtt-status-row">
+            <span class="mqtt-status-label"
+                data-i18n="mqtt-status-reconnect-label">重连次数</span>
+            <span id="mqtt-status-reconnects" class="mqtt-status-value">0</span>
+        </div>
+    </div>
+    <div class="config-form-grid fb-mb-3 fb-pb-3 fb-border-bottom">
+        <div class="config-form-column">
+            <div class="fb-form-group fb-mb-0">
+                <label class="fb-checkbox fb-m-0 fb-font-medium">
+                    <input type="checkbox" id="mqtt-enabled" checked> <span
+                        data-i18n="mqtt-enabled-label">启用MQTT</span>
+                </label>
+            </div>
+        </div>
+        <div class="config-form-column">
+            <div class="fb-form-group fb-mb-0">
+                <label class="fb-checkbox fb-m-0 fb-font-medium">
+                    <input type="checkbox" id="mqtt-auto-reconnect" checked> <span
+                        data-i18n="mqtt-auto-reconnect-text">自动重连</span>
+                </label>
+            </div>
+        </div>
+    </div>
+    <div class="config-form-grid">
+        <div class="config-form-column">
+            <div class="fb-form-group">
+                <label for="mqtt-broker">MQTT Broker</label>
+                <input type="text" id="mqtt-broker" class=""
+                    value="iot.fastbee.cn">
+            </div>
+
+            <div class="fb-form-group">
+                <label for="mqtt-client-id"
+                    data-i18n="mqtt-client-id-label">客户端ID</label>
+                <input type="text" id="mqtt-client-id" class=""
+                    value="S&FB100900001&1&1">
+            </div>
+
+            <div class="fb-form-group">
+                <label for="mqtt-username"
+                    data-i18n="mqtt-username-label">用户名</label>
+                <input type="text" id="mqtt-username" class=""
+                    value="FastBee">
+            </div>
+
+            <div class="fb-form-group">
+                <label for="mqtt-secret" data-i18n="mqtt-secret-label">产品秘钥</label>
+                <input type="password" id="mqtt-secret" class=""
+                    value="K451265A72244J79" placeholder="AES加密用16字节密钥">
+            </div>
+
+        </div>
+
+        <div class="config-form-column">
+            <div class="fb-form-group">
+                <label for="mqtt-port" data-i18n="mqtt-port-label">端口</label>
+                <input type="number" id="mqtt-port" class=""
+                    value="1883" min="1" max="65535">
+            </div>
+
+            <div class="fb-form-group">
+                <label for="mqtt-auth-type"
+                    data-i18n="mqtt-auth-type-label">认证方式</label>
+                <select id="mqtt-auth-type" class="">
+                    <option value="0" data-i18n="mqtt-auth-simple">简单认证</option>
+                    <option value="1" data-i18n="mqtt-auth-encrypted">加密认证</option>
+                </select>
+            </div>
+
+            <div class="fb-form-group">
+                <label for="mqtt-password" data-i18n="mqtt-password-label">密码</label>
+                <input type="password" id="mqtt-password" class=""
+                    value="P47T6OD5IPFWHUM6">
+            </div>
+
+            <div class="fb-form-group">
+                <label for="mqtt-auth-code" data-i18n="mqtt-auth-code-label">授权码</label>
+                <input type="text" id="mqtt-auth-code" class=""
+                    placeholder="可选">
+            </div>
+        </div>
+
+    </div>
+
+    <!-- 高级配置（可折叠） -->
+    <div class="mqtt-collapsible-section fb-mt-3 fb-bg-purple-light fb-border-purple fb-rounded">
+        <div class="mqtt-collapsible-header fb-p-3 fb-cursor-pointer fb-flex-between fb-user-select-none"
+            data-action="toggleSection" data-args="mqtt-card-body">
+            <h4 class="fb-m-0 fb-text-sm fb-text-dark"
+                data-i18n="mqtt-card-section-title">高级配置</h4>
+            <span class="mqtt-collapse-icon" id="mqtt-card-body-icon">&#9654;</span>
+        </div>
+        <div id="mqtt-card-body" class="mqtt-collapsible-body fb-hidden u-collapse-pad-sm">
+            <div class="config-form-grid">
+                <div class="config-form-column">
+                    <div class="fb-form-group">
+                        <label for="mqtt-alive"
+                            data-i18n="mqtt-alive-label">心跳(秒)</label>
+                        <input type="number" id="mqtt-alive" class=""
+                            value="60" min="10" max="300">
+                    </div>
+                    <div class="fb-form-group">
+                        <label for="mqtt-longitude"
+                            data-i18n="mqtt-longitude-label">经度</label>
+                        <input type="number" step="any" id="mqtt-longitude"
+                            class="" value="0" placeholder="0">
+                    </div>
+                    <div class="fb-form-group">
+                        <label for="mqtt-iccid"
+                            data-i18n="mqtt-iccid-label">ICCID</label>
+                        <input type="text" id="mqtt-iccid" class=""
+                            maxlength="32" placeholder="">
+                    </div>
+                </div>
+                <div class="config-form-column">
+
+                    <div class="fb-form-group">
+                        <label for="mqtt-conn-timeout"
+                            data-i18n="mqtt-conn-timeout-label">连接超时(毫秒)</label>
+                        <input type="number" id="mqtt-conn-timeout"
+                            class="" value="30000" min="1000"
+                            max="120000">
+                    </div>
+                    <div class="fb-form-group">
+                        <label for="mqtt-latitude"
+                            data-i18n="mqtt-latitude-label">纬度</label>
+                        <input type="number" step="any" id="mqtt-latitude"
+                            class="" value="0" placeholder="0">
+                    </div>
+                    <div class="fb-form-group">
+                        <label for="mqtt-card-platform-id"
+                            data-i18n="mqtt-card-platform-id-label">卡平台编号</label>
+                        <input type="number" id="mqtt-card-platform-id"
+                            class="" value="0" placeholder="0">
+                    </div>
+                </div>
+            </div>
+            <div class="fb-form-group fb-mt-2">
+                <label for="mqtt-summary" data-i18n="mqtt-summary-label">摘要
+                    (JSON)</label>
+                <textarea id="mqtt-summary" class="" rows="4"
+                    placeholder='{"name":"FastBee","chip":"ESP32"}'></textarea>
+            </div>
+        </div>
+    </div>
+
+    <!-- 发布主题配置区域（可折叠） -->
+    <div class="mqtt-collapsible-section fb-mt-4 fb-bg-gray-light fb-border-gray fb-rounded">
+        <div class="mqtt-collapsible-header fb-p-3 fb-cursor-pointer fb-flex-between fb-user-select-none"
+            data-action="toggleSection" data-args="mqtt-publish-body">
+            <h4 class="fb-m-0 fb-text-sm fb-text-dark"
+                data-i18n="mqtt-publish-section-title">
+                发布主题配置</h4>
+            <span class="mqtt-collapse-icon"
+                id="mqtt-publish-body-icon">&#9654;</span>
+        </div>
+        <div id="mqtt-publish-body" class="mqtt-collapsible-body fb-hidden u-collapse-pad-md">
+            <div id="mqtt-publish-topics">
+                <!-- 动态添加的发布主题组将在这里显示 -->
+            </div>
+            <button type="button" id="add-mqtt-topic-btn"
+                class="fb-btn fb-btn-sm"
+                data-action="addMqttPublishTopic"
+                data-i18n="mqtt-add-topic-btn">增加主题</button>
+        </div>
+    </div>
+
+    <!-- 订阅主题配置区域（可折叠） -->
+    <div class="mqtt-collapsible-section fb-mt-4 fb-bg-blue-light fb-border-blue fb-rounded">
+        <div class="mqtt-collapsible-header fb-p-3 fb-cursor-pointer fb-flex-between fb-user-select-none"
+            data-action="toggleSection" data-args="mqtt-subscribe-body">
+            <h4 class="fb-m-0 fb-text-sm fb-text-dark"
+                data-i18n="mqtt-subscribe-section-title">
+                订阅主题配置</h4>
+            <span class="mqtt-collapse-icon"
+                id="mqtt-subscribe-body-icon">&#9654;</span>
+        </div>
+        <div id="mqtt-subscribe-body" class="mqtt-collapsible-body fb-hidden u-collapse-pad-md">
+            <div id="mqtt-subscribe-topics">
+                <!-- 动态添加的订阅主题组将在这里显示 -->
+            </div>
+            <button type="button" id="add-mqtt-subscribe-btn"
+                class="fb-btn fb-btn-sm"
+                data-action="addMqttSubscribeTopic"
+                data-i18n="mqtt-add-subscribe-btn">增加订阅</button>
+        </div>
+    </div>
+
+    <!-- 遗嘱消息配置（可折叠） -->
+    <div class="mqtt-collapsible-section fb-mt-3 fb-bg-yellow-light fb-border-yellow fb-rounded">
+        <div class="mqtt-collapsible-header fb-p-3 fb-cursor-pointer fb-flex-between fb-user-select-none"
+            data-action="toggleSection" data-args="mqtt-will-body">
+            <h4 class="fb-m-0 fb-text-sm fb-text-dark"
+                data-i18n="mqtt-will-section-title">遗嘱消息配置</h4>
+            <span class="mqtt-collapse-icon" id="mqtt-will-body-icon">&#9654;</span>
+        </div>
+        <div id="mqtt-will-body" class="mqtt-collapsible-body fb-hidden u-collapse-pad-sm">
+            <div class="config-form-grid">
+                <div class="config-form-column">
+                    <div class="fb-form-group">
+                        <label for="mqtt-will-topic"
+                            data-i18n="mqtt-will-topic-label">遗嘱主题</label>
+                        <input type="text" id="mqtt-will-topic" class=""
+                            maxlength="64">
+                    </div>
+                    <div class="fb-form-group">
+                        <label for="mqtt-will-qos"
+                            data-i18n="mqtt-will-qos-label">遗嘱QoS</label>
+                        <select id="mqtt-will-qos" class="">
+                            <option value="0">0</option>
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="config-form-column">
+                    <div class="fb-form-group">
+                        <label for="mqtt-will-payload"
+                            data-i18n="mqtt-will-payload-label">遗嘱内容</label>
+                        <input type="text" id="mqtt-will-payload"
+                            class="" maxlength="128">
+                    </div>
+                    <div class="fb-form-group u-mt-24">
+                        <label class="fb-checkbox">
+                            <input type="checkbox" id="mqtt-will-retain"> <span
+                                data-i18n="mqtt-will-retain-label">遗嘱保留</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="message message-success is-hidden" id="mqtt-success"
+        data-i18n="mqtt-save-success">
+        MQTT配置保存成功！
+    </div>
+
+    <div class="fb-mt-4">
+        <button type="submit" class="fb-btn fb-btn-primary"
+            data-i18n="btn-save-config">保存配置</button>
+        <button type="button" class="fb-btn fb-btn-warning u-ml-8"
+            data-action="testMqttConnection"
+            data-i18n="mqtt-test-conn-btn">测试连接</button>
+        <button type="button" class="fb-btn fb-btn-danger u-ml-8"
+            data-action="disconnectMqtt"
+            data-i18n="mqtt-disconnect-btn">断开连接</button>
+        <button type="button" class="fb-btn fb-btn-secondary u-ml-8"
+            data-action="mqttNtpSync"
+            data-i18n="mqtt-ntp-sync-btn">MQTT时间同步</button>
+        <span id="mqtt-test-result" class="u-ml-10 u-fs-13"></span>
+    </div>
+</form>

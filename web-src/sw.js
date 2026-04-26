@@ -1,119 +1,148 @@
 // ============================================================
-// FastBee Service Worker - Offline Cache & Resource Prefetch
+// FastBee Service Worker - Development Version
+// Production: auto-generated from sw.js.template by generate-sw-manifest.js
 // ============================================================
-
-var CACHE_NAME = 'fastbee-v3';
+var CACHE_VERSION = 'v-dev';
+var CACHE_NAME = 'fastbee-' + CACHE_VERSION;
+var MAX_IMG_ENTRIES = 30;
 
 var PRECACHE_URLS = [
     '/',
     '/index.html',
     '/css/main.css',
-    '/css/pure-min.css',
     '/js/main.js',
     '/js/state.js',
     '/js/modules/i18n-engine.js',
     '/js/modules/i18n-zh-CN.js',
     '/assets/favicon.ico',
-    '/assets/logo.png',
-    // JS modules
-    '/js/modules/protocol.js',
-    '/js/modules/periph-exec.js',
-    '/js/modules/device-control.js',
-    '/js/modules/peripherals.js',
-    '/js/modules/dashboard.js',
-    '/js/modules/device-config.js',
-    '/js/modules/network.js',
-    '/js/modules/admin-bundle.js',
-    // Page HTML
-    '/pages/dashboard.html',
-    '/pages/protocol.html',
-    '/pages/device.html',
-    '/pages/peripheral.html',
-    '/pages/network.html',
-    '/pages/admin.html',
-    '/pages/rule-script.html',
-    '/pages/modals.html'
+    '/assets/logo.png'
 ];
 
-// Sequential precache: one file at a time to avoid overwhelming ESP32
 function sequentialCache(cache, urls) {
-    return urls.reduce(function(chain, url) {
-        return chain.then(function() {
-            return fetch(url).then(function(resp) {
-                if (resp.ok) return cache.put(url, resp);
-            }).catch(function() { /* skip failed */ });
-        }).then(function() {
-            return new Promise(function(r) { setTimeout(r, 150); });
-        });
-    }, Promise.resolve());
+    var i = 0;
+    function next() {
+        if (i >= urls.length) return Promise.resolve();
+        var url = urls[i++];
+        return fetch(url).then(function(r) {
+            if (r.ok) return cache.put(url, r);
+        }).catch(function() {}).then(function() {
+            return new Promise(function(r) { setTimeout(r, 100); });
+        }).then(next);
+    }
+    return next();
 }
 
-// Install: skip waiting immediately, defer precache to avoid blocking first render
-self.addEventListener('install', function(event) {
-    self.skipWaiting();
-});
+function trimCache(cache) {
+    return cache.keys().then(function(k) {
+        if (k.length <= MAX_IMG_ENTRIES) return;
+        return Promise.all(k.slice(0, k.length - MAX_IMG_ENTRIES).map(function(r) {
+            return cache.delete(r);
+        }));
+    });
+}
 
-// After activation, start background precache with delay
-// (avoid competing with initial page load for ESP32 connections)
-function startBackgroundPrecache() {
-    setTimeout(function() {
-        caches.open(CACHE_NAME).then(function(cache) {
-            sequentialCache(cache, PRECACHE_URLS).then(function() {
-                // Precache done, now safe to clean old caches
-                caches.keys().then(function(names) {
-                    names.filter(function(n) { return n !== CACHE_NAME; })
-                         .forEach(function(n) { caches.delete(n); });
+function offline() {
+    return caches.match('/404.html.gz').then(function(r) {
+        return r || new Response('Offline', { status: 503 });
+    });
+}
+
+// 缓存过期检测 - 基于缓存响应的Date头或自定义时间戳
+function isStaleCache(response, maxAgeMs) {
+    if (!response) return true;
+    var dateHeader = response.headers.get('date') || response.headers.get('sw-cached-at');
+    if (!dateHeader) return true;
+    var cacheTime = new Date(dateHeader).getTime();
+    return (Date.now() - cacheTime) > (maxAgeMs || 86400000); // 默认24小时
+}
+
+function staleWhileRevalidate(event, trim) {
+    return caches.match(event.request).then(function(cached) {
+        var fetchPromise = fetch(event.request).then(function(resp) {
+            if (resp.ok) {
+                var clone = resp.clone();
+                caches.open(CACHE_NAME).then(function(c) {
+                    c.put(event.request, clone);
+                    if (trim) trimCache(c);
                 });
-            });
+            }
+            return resp;
         });
-    }, 5000);
+        // 有缓存且未过期：立即返回缓存，后台更新
+        // 无缓存或已过期：等待网络
+        if (cached && !isStaleCache(cached, 86400000)) {
+            fetchPromise.catch(function(){}); // 后台静默更新
+            return cached;
+        }
+        return fetchPromise.catch(function() { return cached || offline(); });
+    });
 }
 
-// Activate: claim clients first, then precache, finally clean old caches
-// (keep old cache alive until new cache is populated to avoid "empty cache" gap)
-self.addEventListener('activate', function(event) {
-    event.waitUntil(
-        self.clients.claim()
-            .then(function() { startBackgroundPrecache(); })
+self.addEventListener('install', function() { self.skipWaiting(); });
+
+self.addEventListener('activate', function(e) {
+    e.waitUntil(
+        self.clients.claim().then(function() {
+            return caches.keys().then(function(names) {
+                return Promise.all(
+                    names.filter(function(n) {
+                        return n.startsWith('fastbee-') && n !== CACHE_NAME;
+                    }).map(function(n) { return caches.delete(n); })
+                );
+            });
+        }).then(function() {
+            setTimeout(function() {
+                caches.open(CACHE_NAME).then(function(c) {
+                    sequentialCache(c, PRECACHE_URLS);
+                });
+            }, 5000);
+        })
     );
 });
 
-// Fetch strategy
-self.addEventListener('fetch', function(event) {
-    var url = new URL(event.request.url);
+self.addEventListener('fetch', function(e) {
+    var url = new URL(e.request.url);
+    if (url.origin !== self.location.origin) return;
 
-    // API: pass through, no caching
-    if (url.pathname.startsWith('/api/')) return;
+    // SSE: pass through, never cache
+    if (url.pathname === '/api/events') return;
+    var accept = e.request.headers.get('Accept') || '';
+    if (accept.indexOf('text/event-stream') !== -1) return;
 
-    // HTML pages: stale-while-revalidate
-    if (event.request.headers.get('accept') &&
-        event.request.headers.get('accept').includes('text/html')) {
-        event.respondWith(
-            caches.match(event.request).then(function(cached) {
-                var fetchPromise = fetch(event.request).then(function(resp) {
-                    if (resp.ok) {
-                        var clone = resp.clone();
-                        caches.open(CACHE_NAME).then(function(c) { c.put(event.request, clone); });
-                    }
-                    return resp;
-                }).catch(function() { return cached; });
-                return cached || fetchPromise;
+    // API: Network First
+    if (url.pathname.startsWith('/api/')) {
+        e.respondWith(
+            fetch(e.request).then(function(resp) {
+                if (resp.ok) {
+                    var clone = resp.clone();
+                    caches.open(CACHE_NAME).then(function(c) { c.put(e.request, clone); });
+                }
+                return resp;
+            }).catch(function() {
+                return caches.match(e.request).then(function(c) { return c || offline(); });
             })
         );
         return;
     }
 
-    // JS/CSS/images: cache-first (try current cache, then old caches, then network)
-    event.respondWith(
-        caches.match(event.request).then(function(cached) {
-            if (cached) return cached;
-            return fetch(event.request).then(function(resp) {
-                if (resp.ok) {
-                    var clone = resp.clone();
-                    caches.open(CACHE_NAME).then(function(c) { c.put(event.request, clone); });
-                }
-                return resp;
-            });
-        })
-    );
+    // Static: Stale-While-Revalidate
+    var ext = url.pathname.split('.').pop().split('?')[0].toLowerCase();
+    var isStatic = ext === 'css' || ext === 'js' || ext === 'html';
+    var isMedia = ext === 'png' || ext === 'jpg' || ext === 'jpeg' ||
+        ext === 'gif' || ext === 'ico' || ext === 'svg' ||
+        ext === 'woff' || ext === 'woff2' || ext === 'ttf';
+
+    if (isStatic || isMedia) {
+        e.respondWith(staleWhileRevalidate(e, isMedia));
+        return;
+    }
+
+    // Navigation: Stale-While-Revalidate
+    if (e.request.mode === 'navigate' || accept.indexOf('text/html') !== -1) {
+        e.respondWith(staleWhileRevalidate(e, false));
+        return;
+    }
+
+    // Default: Stale-While-Revalidate
+    e.respondWith(staleWhileRevalidate(e, false));
 });

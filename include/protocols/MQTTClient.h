@@ -9,6 +9,26 @@
 #include <freertos/semphr.h>
 #include <core/SystemConstants.h>
 
+// 固定大小的 MQTT 上报槽（零堆分配）
+struct MqttSlot {
+    char payload[512];    // 固定 512 字节 payload 缓冲
+    uint16_t length;      // 实际 payload 长度
+    bool occupied;        // 槽位是否被占用
+    
+    MqttSlot() : length(0), occupied(false) {
+        payload[0] = '\0';
+    }
+    
+    void clear() {
+        length = 0;
+        occupied = false;
+        payload[0] = '\0';
+    }
+};
+
+static constexpr uint8_t MQTT_REPORT_SLOTS = 8;         // 8 个槽位
+static constexpr uint16_t MQTT_SLOT_MAX_PAYLOAD = 512;   // 单个槽位最大 payload
+
 // 主题类型枚举
 enum class MqttTopicType : uint8_t {
     DATA_REPORT   = 0,  // 数据上报
@@ -112,6 +132,8 @@ public:
     bool publishMonitorData(); // 发布一次实时监测数据到 topicType=REALTIME_MON 的主题
     bool publishReportData(const String& payload); // 发布数据上报到 topicType=DATA_REPORT 的主题
     bool queueReportData(const String& payload);   // 线程安全入队上报数据（异步任务调用）
+    bool queueReportData(const char* payload, uint16_t length); // 零拷贝版本
+    uint8_t getQueueDepth() const { return _slotCount; } // 获取上报队列深度
     bool publishNtpSync();             // 发布 NTP 时间同步请求到 topicType=NTP_SYNC 的主题
     bool subscribe(const String& topic);
     bool subscribeAll();  // 订阅所有配置的主题
@@ -128,6 +150,9 @@ public:
     uint32_t getReconnectCount() const { return reconnectCount; }
     unsigned long getLastConnectedTime() const { return lastConnectedTime; }
     
+    // MQTT 上报降采样：设置最小上报间隔（毫秒），0 表示无限制
+    void setMinReportInterval(uint32_t ms);
+
     // 设置消息回调（topic, message, topicType）
     void setMessageCallback(std::function<void(const String&, const String&, MqttTopicType)> callback);
 
@@ -185,8 +210,13 @@ private:
     QueueHandle_t _dataCommandQueue = nullptr;
     void processQueuedCommands();
 
-    // 异步任务上报队列（PubSubClient 非线程安全，publish 必须在主循环执行）
-    QueueHandle_t _reportQueue = nullptr;
+    // 异步任务上报环形缓冲区（PubSubClient 非线程安全，publish 必须在主循环执行）
+    MqttSlot _reportSlots[MQTT_REPORT_SLOTS];  // 环形缓冲区 (~4KB)
+    uint8_t _slotWriteIndex = 0;                // 写入位置
+    uint8_t _slotReadIndex = 0;                 // 读取位置
+    uint8_t _slotCount = 0;                     // 当前已占用的槽位数
+    uint32_t _minReportInterval = 0;            // 最小上报间隔（ms），0=无限制
+    unsigned long _lastReportQueueTime = 0;     // 上次入队上报数据的时间
     void processQueuedReports();
 
     void mqttCallback(char* topic, byte* payload, unsigned int length);

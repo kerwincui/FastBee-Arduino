@@ -3,7 +3,10 @@
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
 #include "./systems/LoggerSystem.h"
+#include "./core/FeatureFlags.h"
+#if FASTBEE_ENABLE_PERIPH_EXEC
 #include "./core/PeriphExecManager.h"
+#endif
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <WiFi.h>
@@ -151,7 +154,9 @@ void ProvisionRouteHandler::setupRoutes(AsyncWebServer* server) {
         if (!ctx->checkPermission(request, "network.edit")) { ctx->sendUnauthorized(request); return; }
         _apProvisionActive = true;
         // 触发AP配网开始系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
         PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_AP_PROVISION_START, "");
+#endif
         // 从 device.json 读取 AP SSID
         String apSSID = "FastBee_Setup";
         if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
@@ -178,7 +183,9 @@ void ProvisionRouteHandler::setupRoutes(AsyncWebServer* server) {
         if (!ctx->checkPermission(request, "network.edit")) { ctx->sendUnauthorized(request); return; }
         _apProvisionActive = false;
         // 触发AP配网完成系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
         PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_AP_PROVISION_DONE, "");
+#endif
         ctx->sendSuccess(request, "Provision stopped");
     });
 
@@ -285,7 +292,9 @@ void ProvisionRouteHandler::setupRoutes(AsyncWebServer* server) {
         _bleProvisionActive = true;
         _bleProvisionStartTime = millis();
         // 触发蓝牙配网开始系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
         PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_BLE_PROVISION_START, "");
+#endif
         JsonDocument doc;
         doc["success"] = true;
         doc["data"]["active"] = true;
@@ -299,7 +308,9 @@ void ProvisionRouteHandler::setupRoutes(AsyncWebServer* server) {
         _bleProvisionActive = false;
         _bleProvisionStartTime = 0;
         // 触发蓝牙配网完成系统事件
+#if FASTBEE_ENABLE_PERIPH_EXEC
         PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_BLE_PROVISION_DONE, "");
+#endif
         ctx->sendSuccess(request, "BLE provision stopped");
     });
 }

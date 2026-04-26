@@ -1,3 +1,6 @@
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_RULE_SCRIPT
+
 #include "./network/handlers/RuleScriptRouteHandler.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
@@ -195,3 +198,4 @@ void RuleScriptRouteHandler::handleDisableRule(AsyncWebServerRequest* request) {
         ctx->sendError(request, 404, "Rule not found");
     }
 }
+#endif // FASTBEE_ENABLE_RULE_SCRIPT

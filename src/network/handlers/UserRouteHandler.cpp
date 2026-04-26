@@ -14,9 +14,6 @@ void UserRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/users/update", HTTP_POST,
               [this](AsyncWebServerRequest* request) { handleUpdateUser(request); });
 
-    server->on("/api/users/delete", HTTP_POST,
-              [this](AsyncWebServerRequest* request) { handleDeleteUserByPost(request); });
-
     server->on("/api/users/online", HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetOnlineUsers(request); });
 
@@ -283,45 +280,6 @@ void UserRouteHandler::handleDeleteUser(AsyncWebServerRequest* request) {
     }
 }
 
-void UserRouteHandler::handleDeleteUserByPost(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "user.delete")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
-
-    String username = ctx->getParamValue(request, "username", "");
-    if (username.isEmpty()) {
-        ctx->sendError(request, 400, "Username required");
-        return;
-    }
-
-    AuthResult authResult = ctx->authenticateRequest(request);
-    if (!authResult.success) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
-
-    if (username == authResult.username) {
-        ctx->sendError(request, 400, "Cannot delete your own account");
-        return;
-    }
-
-    if (username == "admin") {
-        ctx->sendError(request, 400, "Cannot delete admin account");
-        return;
-    }
-
-    if (!ctx->userManager) {
-        ctx->sendError(request, 500, "User service unavailable");
-        return;
-    }
-
-    if (ctx->userManager->deleteUser(username)) {
-        ctx->sendSuccess(request, "User deleted successfully");
-    } else {
-        ctx->sendError(request, 400, "Failed to delete user");
-    }
-}
 
 void UserRouteHandler::handleGetOnlineUsers(AsyncWebServerRequest* request) {
     if (!ctx->checkPermission(request, "user.view")) {

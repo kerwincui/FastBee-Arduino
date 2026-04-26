@@ -74,7 +74,6 @@ void AuthRouteHandler::handleLogin(AsyncWebServerRequest* request) {
                            String(3600);
 
         response->addHeader("Set-Cookie", cookieValue);
-        response->addHeader("Access-Control-Allow-Origin", "*");
         request->send(response);
     } else {
         ctx->sendError(request, 401, result.errorMessage);

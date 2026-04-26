@@ -1,0 +1,105 @@
+<form id="http-form" class="fb-form">
+    <div class="fb-form-group fb-mb-3 fb-pb-3 fb-border-bottom">
+        <label class="fb-checkbox">
+            <input type="checkbox" id="http-enabled"> <span
+                data-i18n="http-enabled-label">启用HTTP</span>
+        </label>
+    </div>
+    <div class="config-form-grid">
+        <div class="config-form-column">
+            <div class="fb-form-group">
+                <label for="http-url" data-i18n="http-url-label">服务地址</label>
+                <input type="text" id="http-url" class=""
+                    value="https://api.example.com">
+            </div>
+
+            <div class="fb-form-group">
+                <label for="http-method" data-i18n="http-method-label">请求方法</label>
+                <select id="http-method" class="">
+                    <option value="GET">GET</option>
+                    <option value="POST" selected>POST</option>
+                    <option value="PUT">PUT</option>
+                    <option value="DELETE">DELETE</option>
+                </select>
+            </div>
+
+            <div class="fb-form-group">
+                <label for="http-timeout"
+                    data-i18n="http-timeout-label">超时时间(秒)</label>
+                <input type="number" id="http-timeout" class=""
+                    value="30" min="1" max="120">
+            </div>
+        </div>
+
+        <div class="config-form-column">
+            <div class="fb-form-group">
+                <label for="http-port" data-i18n="http-port-label">端口</label>
+                <input type="number" id="http-port" class="" value="80"
+                    min="1" max="65535">
+            </div>
+
+            <div class="fb-form-group">
+                <label for="http-interval"
+                    data-i18n="http-interval-label">上报间隔(秒)</label>
+                <input type="number" id="http-interval" class=""
+                    value="60" min="5" max="3600">
+            </div>
+
+            <div class="fb-form-group">
+                <label for="http-retry" data-i18n="http-retry-label">重试次数</label>
+                <input type="number" id="http-retry" class="" value="3"
+                    min="0" max="10">
+            </div>
+        </div>
+    </div>
+
+    <!-- HTTP 认证配置 -->
+    <div class="config-form-grid fb-mt-3 fb-pt-3 fb-border-top">
+        <div class="config-form-column">
+            <div class="fb-form-group">
+                <label for="http-auth-type"
+                    data-i18n="http-auth-type-label">认证方式</label>
+                <select id="http-auth-type" class=""
+                    data-change-action="onHttpAuthTypeChange">
+                    <option value="none" data-i18n="http-auth-none">无认证</option>
+                    <option value="basic" data-i18n="http-auth-basic">Basic认证
+                    </option>
+                    <option value="bearer" data-i18n="http-auth-bearer">Bearer Token
+                    </option>
+                </select>
+            </div>
+            <div class="fb-form-group fb-hidden" id="http-auth-user-group">
+                <label for="http-auth-user"
+                    data-i18n="http-auth-user-label">认证用户名</label>
+                <input type="text" id="http-auth-user" class="">
+            </div>
+        </div>
+        <div class="config-form-column">
+            <div class="fb-form-group">
+                <label for="http-content-type"
+                    data-i18n="http-content-type-label">内容类型</label>
+                <select id="http-content-type" class="">
+                    <option value="application/json">application/json</option>
+                    <option value="text/plain">text/plain</option>
+                    <option value="application/x-www-form-urlencoded">
+                        x-www-form-urlencoded</option>
+                </select>
+            </div>
+            <div class="fb-form-group fb-hidden" id="http-auth-token-group">
+                <label for="http-auth-token"
+                    data-i18n="http-auth-token-label">认证密码/Token</label>
+                <input type="password" id="http-auth-token" class="">
+            </div>
+        </div>
+    </div>
+
+    <div class="message message-success fb-hidden" id="http-success"
+        data-i18n="http-save-ok">
+        HTTP配置保存成功！
+    </div>
+
+    <div class="fb-mt-4">
+        <button type="submit" class="fb-btn fb-btn-primary"
+            data-i18n="btn-save-config">保存配置</button>
+    </div>
+</form>

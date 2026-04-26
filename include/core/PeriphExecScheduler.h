@@ -6,6 +6,7 @@
 #include <map>
 #include <set>
 #include "PeripheralExecution.h"
+#include "systems/HealthMonitor.h"
 
 // 前向声明
 class PeriphExecManager;
@@ -39,6 +40,17 @@ struct ButtonRuntimeState {
 // 负责定时触发、事件触发、MQTT消息处理、Modbus轮询数据处理、数据上报
 class PeriphExecScheduler {
 public:
+    // ========== 配置安全常量 ==========
+    static constexpr uint32_t MIN_POLL_INTERVAL_MS = 5000;       // 绝对最小轮询间隔 5s
+    static constexpr uint32_t SAFE_POLL_INTERVAL_MS = 30000;     // 安全轮询间隔 30s
+    static constexpr uint8_t MAX_ACTIVE_TASKS = 12;              // 最大活跃任务数
+    static constexpr uint8_t WARN_TASK_THRESHOLD = 8;            // 多任务告警阈值
+
+    // ========== 动态降频常量 ==========
+    static constexpr uint32_t CHECK_PERIOD_NORMAL_MS  = 1000;    // NORMAL: 每 1s 检查一次 (1x)
+    static constexpr uint32_t CHECK_PERIOD_WARN_MS    = 2000;    // WARN:   每 2s 检查一次 (2x)
+    static constexpr uint32_t CHECK_PERIOD_SEVERE_MS  = 4000;    // SEVERE: 每 4s 检查一次 (4x)
+
     PeriphExecScheduler();
     ~PeriphExecScheduler();
 
@@ -91,6 +103,11 @@ public:
     // 触发按键事件（内部使用）
     void triggerButtonEvent(const String& periphId, EventType eventType);
 
+    // ========== 配置安全校验 ==========
+
+    // 配置加载后安全校验：检测并修正危险的任务数/轮询间隔组合
+    void validateLoadedConfig();
+
     // ========== 配置辅助方法 ==========
 
     // 获取静态事件列表（用于前端配置）
@@ -111,6 +128,8 @@ private:
 
     // 定时器状态
     unsigned long _lastTimerCheck = 0;
+    uint32_t _currentCheckPeriodMs = CHECK_PERIOD_NORMAL_MS;   // 当前检查周期（动态调整）
+    MemoryGuardLevel _lastMemGuardLevel = MemoryGuardLevel::NORMAL;  // 上次 MemGuard 级别（用于变化检测）
 
     // 按键状态
     unsigned long _lastButtonCheck = 0;
@@ -136,6 +155,9 @@ private:
 
     // 获取MQTTClient指针
     MQTTClient* getMqttClient();
+
+    // 根据 MemGuard 级别计算动态检查周期
+    uint32_t getDynamicCheckPeriod(MemoryGuardLevel level);
 };
 
 #endif // PERIPH_EXEC_SCHEDULER_H

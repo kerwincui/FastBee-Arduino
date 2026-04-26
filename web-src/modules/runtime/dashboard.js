@@ -18,7 +18,7 @@
 
         // ============ 仪表板（从 /api/system/status 加载实时数据）============
         renderDashboard() {
-            apiGet('/api/system/status')
+            apiBatchGet('/api/system/status')
                 .then(res => {
                     if (!res || !res.success) return;
                     const d = res.data || {};
@@ -76,7 +76,13 @@
          * 加载系统监控数据
          */
         loadSystemMonitor() {
-            apiGet('/api/system/info')
+            var self = this;
+            // 使用 apiBatchGet 同时发起 system/info 和 network/status
+            // 它们会在 50ms 窗口内被合并为单个 /api/batch 请求
+            var infoPromise = apiBatchGet('/api/system/info');
+            var netPromise = apiBatchGet('/api/network/status');
+
+            infoPromise
                 .then(res => {
                     if (!res || !res.success) return;
 
@@ -132,8 +138,14 @@
                     this._setText('monitor-user-online', users.online || 0);
                     this._setText('monitor-user-sessions', users.activeSessions || 0);
 
-                    // 加载详细网络状态
-                    this.loadNetworkStatus();
+                    // 网络状态通过独立的 promise 加载（已被批量合并）
+                    netPromise.then(netRes => {
+                        if (netRes && netRes.success) {
+                            self._applyNetworkStatus(netRes);
+                        }
+                    }).catch(err => {
+                        console.error('Load network status failed:', err);
+                    });
                 })
                 .catch(err => {
                     console.error('Load system monitor failed:', err);
@@ -144,20 +156,12 @@
          * 加载并显示网络状态
          */
         loadNetworkStatus() {
+            var self = this;
             const refreshBtn = document.getElementById('dashboard-net-refresh-btn');
             if (refreshBtn) {
                 refreshBtn.disabled = true;
                 refreshBtn.innerHTML = i18n.t('net-refreshing-html');
             }
-
-            const setText = (id, val) => {
-                const el = document.getElementById(id);
-                if (el) el.textContent = (val !== undefined && val !== null && val !== '') ? val : '--';
-            };
-            const setHtml = (id, html) => {
-                const el = document.getElementById(id);
-                if (el) el.innerHTML = html;
-            };
 
             apiGet('/api/network/status')
                 .then(res => {
@@ -165,71 +169,7 @@
                         Notification.error(i18n.t('net-status-load-fail'), i18n.t('net-status-title-msg'));
                         return;
                     }
-                    const d = res.data || {};
-
-                    // 状态徽章
-                    const statusMap = {
-                        connected:    `<span class="badge badge-success">${i18n.t('net-status-connected')}</span>`,
-                        disconnected: `<span class="badge badge-danger">${i18n.t('net-status-disconnected')}</span>`,
-                        connecting:   `<span class="badge badge-warning">${i18n.t('net-status-connecting')}</span>`,
-                        ap_mode:      `<span class="badge badge-primary">${i18n.t('net-status-ap')}</span>`,
-                        failed:       `<span class="badge badge-danger">${i18n.t('net-status-failed')}</span>`,
-                    };
-                    setHtml('ns-status', statusMap[d.status] || `<span class="badge badge-info">${d.status || '--'}</span>`);
-
-                    // STA 信息
-                    setText('ns-ssid', d.ssid);
-                    setText('ns-ip', d.ipAddress);
-                    setText('ns-gateway', d.gateway);
-                    setText('ns-subnet', d.subnet);
-                    setText('ns-dns', d.dnsServer);
-                    setText('ns-dns2', d.dnsServer2);
-                    setText('ns-mac', d.macAddress);
-                    // 连接时长
-                    if (d.connectedTime !== undefined && d.connectedTime > 0) {
-                        const sec = d.connectedTime;
-                        const h = Math.floor(sec / 3600);
-                        const m = Math.floor((sec % 3600) / 60);
-                        const s = sec % 60;
-                        setText('ns-conn-time', `${h}h ${m}m ${s}s`);
-                    } else {
-                        setText('ns-conn-time', '--');
-                    }
-                    // RSSI
-                    const rssi = d.rssi;
-                    if (rssi !== undefined && rssi !== null && rssi !== '') {
-                        const pct = d.signalStrength || 0;
-                        const toneClass = pct >= 70 ? 'u-text-success' : pct >= 40 ? 'u-text-warning' : 'u-text-danger';
-                        setHtml('ns-rssi', `<span class="${toneClass}">${rssi} dBm (${pct}%)</span>`);
-                    } else {
-                        setText('ns-rssi', '--');
-                    }
-
-                    // AP 信息
-                    setText('ns-ap-ssid', d.apSSID);
-                    setText('ns-ap-ip', d.apIPAddress);
-                    setText('ns-ap-channel', d.apChannel !== undefined ? `CH ${d.apChannel}` : '--');
-                    setText('ns-ap-clients', d.apClientCount !== undefined ? d.apClientCount + i18n.t('net-ap-clients-unit') : '--');
-
-                    // 连接统计
-                    const modeLabel = {
-                        STA: i18n.t('net-mode-sta'),
-                        AP: i18n.t('net-mode-ap'),
-                        'AP+STA': i18n.t('net-mode-apsta')
-                    };
-                    setText('ns-mode', modeLabel[d.mode] || d.mode || '--');
-                    var actualDomain = d.mdnsDomain || d.customDomain;
-                    setText('ns-mdns', d.enableMDNS ? (actualDomain ? actualDomain + '.local' : i18n.t('net-mdns-enabled')) : i18n.t('net-mdns-disabled'));
-                    setText('ns-reconnect', d.reconnectAttempts !== undefined ? d.reconnectAttempts + i18n.t('net-reconnect-unit') : '--');
-                    setText('ns-tx-count', d.txCount !== undefined ? d.txCount + i18n.t('net-count-unit') : '--');
-                    setText('ns-rx-count', d.rxCount !== undefined ? d.rxCount + i18n.t('net-count-unit') : '--');
-                    setHtml('ns-internet', d.internetAvailable
-                        ? `<span class="badge badge-success">${i18n.t('net-accessible')}</span>`
-                        : `<span class="badge badge-danger">${i18n.t('net-inaccessible')}</span>`);
-                    setHtml('ns-conflict', d.conflictDetected
-                        ? `<span class="badge badge-danger">${i18n.t('net-conflict-yes')}</span>`
-                        : `<span class="badge badge-success">${i18n.t('net-no-conflict')}</span>`);
-                    setText('ns-uptime', d.uptimeFormatted || '--');
+                    self._applyNetworkStatus(res);
                 })
                 .catch(err => {
                     console.error('Load network status failed:', err);
@@ -241,6 +181,86 @@
                         refreshBtn.innerHTML = i18n.t('net-refresh-html');
                     }
                 });
+        },
+
+        /**
+         * 应用网络状态数据到 DOM（供批量和单独请求共用）
+         */
+        _applyNetworkStatus(res) {
+            const d = res.data || {};
+
+            const setText = (id, val) => {
+                const el = document.getElementById(id);
+                if (el) el.textContent = (val !== undefined && val !== null && val !== '') ? val : '--';
+            };
+            const setHtml = (id, html) => {
+                const el = document.getElementById(id);
+                if (el) el.innerHTML = html;
+            };
+
+            // 状态徽章
+            const statusMap = {
+                connected:    `<span class="badge badge-success">${i18n.t('net-status-connected')}</span>`,
+                disconnected: `<span class="badge badge-danger">${i18n.t('net-status-disconnected')}</span>`,
+                connecting:   `<span class="badge badge-warning">${i18n.t('net-status-connecting')}</span>`,
+                ap_mode:      `<span class="badge badge-primary">${i18n.t('net-status-ap')}</span>`,
+                failed:       `<span class="badge badge-danger">${i18n.t('net-status-failed')}</span>`,
+            };
+            setHtml('ns-status', statusMap[d.status] || `<span class="badge badge-info">${d.status || '--'}</span>`);
+
+            // STA 信息
+            setText('ns-ssid', d.ssid);
+            setText('ns-ip', d.ipAddress);
+            setText('ns-gateway', d.gateway);
+            setText('ns-subnet', d.subnet);
+            setText('ns-dns', d.dnsServer);
+            setText('ns-dns2', d.dnsServer2);
+            setText('ns-mac', d.macAddress);
+            // 连接时长
+            if (d.connectedTime !== undefined && d.connectedTime > 0) {
+                const sec = d.connectedTime;
+                const h = Math.floor(sec / 3600);
+                const m = Math.floor((sec % 3600) / 60);
+                const s = sec % 60;
+                setText('ns-conn-time', `${h}h ${m}m ${s}s`);
+            } else {
+                setText('ns-conn-time', '--');
+            }
+            // RSSI
+            const rssi = d.rssi;
+            if (rssi !== undefined && rssi !== null && rssi !== '') {
+                const pct = d.signalStrength || 0;
+                const toneClass = pct >= 70 ? 'u-text-success' : pct >= 40 ? 'u-text-warning' : 'u-text-danger';
+                setHtml('ns-rssi', `<span class="${toneClass}">${rssi} dBm (${pct}%)</span>`);
+            } else {
+                setText('ns-rssi', '--');
+            }
+
+            // AP 信息
+            setText('ns-ap-ssid', d.apSSID);
+            setText('ns-ap-ip', d.apIPAddress);
+            setText('ns-ap-channel', d.apChannel !== undefined ? `CH ${d.apChannel}` : '--');
+            setText('ns-ap-clients', d.apClientCount !== undefined ? d.apClientCount + i18n.t('net-ap-clients-unit') : '--');
+
+            // 连接统计
+            const modeLabel = {
+                STA: i18n.t('net-mode-sta'),
+                AP: i18n.t('net-mode-ap'),
+                'AP+STA': i18n.t('net-mode-apsta')
+            };
+            setText('ns-mode', modeLabel[d.mode] || d.mode || '--');
+            var actualDomain = d.mdnsDomain || d.customDomain;
+            setText('ns-mdns', d.enableMDNS ? (actualDomain ? actualDomain + '.local' : i18n.t('net-mdns-enabled')) : i18n.t('net-mdns-disabled'));
+            setText('ns-reconnect', d.reconnectAttempts !== undefined ? d.reconnectAttempts + i18n.t('net-reconnect-unit') : '--');
+            setText('ns-tx-count', d.txCount !== undefined ? d.txCount + i18n.t('net-count-unit') : '--');
+            setText('ns-rx-count', d.rxCount !== undefined ? d.rxCount + i18n.t('net-count-unit') : '--');
+            setHtml('ns-internet', d.internetAvailable
+                ? `<span class="badge badge-success">${i18n.t('net-accessible')}</span>`
+                : `<span class="badge badge-danger">${i18n.t('net-inaccessible')}</span>`);
+            setHtml('ns-conflict', d.conflictDetected
+                ? `<span class="badge badge-danger">${i18n.t('net-conflict-yes')}</span>`
+                : `<span class="badge badge-success">${i18n.t('net-no-conflict')}</span>`);
+            setText('ns-uptime', d.uptimeFormatted || '--');
         }
     });
 

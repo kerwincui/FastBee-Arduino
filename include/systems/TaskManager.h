@@ -48,6 +48,7 @@ struct ScheduledTask {
     unsigned long executionCount;  // 执行次数
     unsigned long lastExecutionTime; // 上次执行耗时（毫秒）
     unsigned long maxExecutionTime; // 最大执行耗时（毫秒）
+    unsigned long totalExecutionTime; // 累计执行时间，用于计算平均值
 };
 
 class TaskManager : public ITaskManager {

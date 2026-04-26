@@ -101,6 +101,16 @@
 #define FASTBEE_ENABLE_AP_MODE 1
 #endif
 
+/**
+ * @brief BLE 蓝牙配网支持
+ * 默认：禁用（功能尚未完全实现）
+ * 占用：约 80KB Flash（NimBLE 库）
+ * 需要：NimBLE-Arduino 库
+ */
+#ifndef FASTBEE_ENABLE_BLE
+    #define FASTBEE_ENABLE_BLE 0
+#endif
+
 // ============================================================================
 // Web 服务开关
 // ============================================================================
@@ -130,6 +140,17 @@
  */
 #ifndef FASTBEE_ENABLE_WEB_API
 #define FASTBEE_ENABLE_WEB_API 1
+#endif
+
+/**
+ * @brief Web 服务提前启动
+ * 默认：启用
+ * 说明：为1时，Web服务器在WiFi连接完成前就启动（AP模式下直接可用）；
+ *       为0时，保持原有行为（等WiFi连接后再启动Web服务器）
+ * 需要：FASTBEE_ENABLE_WEB_SERVER=1
+ */
+#ifndef FASTBEE_WEB_START_EARLY
+#define FASTBEE_WEB_START_EARLY 0
 #endif
 
 // ============================================================================
@@ -208,12 +229,56 @@
 #endif
 
 /**
+ * @brief 外设执行规则系统
+ * 默认：启用
+ * 占用：约 8KB Flash
+ * 说明：包含外设执行定时器、设备触发轮询、按键事件检测等
+ */
+#ifndef FASTBEE_ENABLE_PERIPH_EXEC
+    #define FASTBEE_ENABLE_PERIPH_EXEC 1
+#endif
+
+/**
+ * @brief 规则脚本系统（RuleScript + ScriptEngine）
+ * 默认：启用
+ * 占用：约 8KB Flash
+ * 说明：包含规则管理、模板引擎、命令序列脚本执行
+ */
+#ifndef FASTBEE_ENABLE_RULE_SCRIPT
+  #define FASTBEE_ENABLE_RULE_SCRIPT 1
+#endif
+
+/**
  * @brief GPIO 管理
  * 默认：启用
  * 占用：约 3KB Flash
  */
 #ifndef FASTBEE_ENABLE_GPIO
 #define FASTBEE_ENABLE_GPIO 1
+#endif
+
+/**
+ * @brief LED 屏幕支持（WS2812B/APA102 等 NeoPixel）
+ * 默认：禁用
+ * 占用：约 15KB Flash（驱动库~10KB + 管理器~5KB）
+ * RAM：3 bytes × 像素数（帧缓冲区）+ ~200B 管理器开销
+ * 需要：Adafruit NeoPixel 库
+ * 说明：使用 ESP32 RMT 硬件外设发送时序，不占用 CPU
+ */
+#ifndef FASTBEE_ENABLE_LED_SCREEN
+#define FASTBEE_ENABLE_LED_SCREEN 0
+#endif
+
+/**
+ * @brief LCD/OLED 显示屏支持（SSD1306/SH1106 等）
+ * 默认：禁用（需硬件支持）
+ * 占用：约 20KB Flash（U8g2 库 ~15KB + 管理器 ~5KB）
+ * RAM：1KB 帧缓冲区 + ~200B 管理器开销
+ * 需要：U8g2 库
+ * 说明：独立于 LED_SCREEN（NeoPixel），用于 I2C/SPI 接口的字符/图形显示屏
+ */
+#ifndef FASTBEE_ENABLE_LCD
+    #define FASTBEE_ENABLE_LCD 0
 #endif
 
 // ============================================================================
@@ -231,6 +296,16 @@
 #else
 #define FASTBEE_DEBUG_LOG 0
 #endif
+#endif
+
+/**
+ * @brief 剥离 INFO 级别日志字符串
+ * 默认：禁用（保留 INFO 日志）
+ * 建议：minimal 配置启用以节省 Flash
+ * 节省：约 2-5KB Flash（取决于 INFO 日志数量）
+ */
+#ifndef FASTBEE_STRIP_INFO_LOGS
+#define FASTBEE_STRIP_INFO_LOGS 0
 #endif
 
 /**
@@ -289,11 +364,24 @@
 
 /**
  * @brief 安全的 JSON 文档类型
- * 使用 StaticJsonDocument 避免堆内存分配失败导致崩溃
- * ArduinoJson v7 中推荐使用此类型替代 JsonDocument
+ * ArduinoJson v7 中 JsonDocument 自动管理内存，无需模板参数
+ * FASTBEE_JSON_DOC_SIZE 宏仅保留供业务层手动分配缓冲区时参考
  */
 #include <ArduinoJson.h>
-using FastBeeJsonDoc = StaticJsonDocument<FASTBEE_JSON_DOC_SIZE>;
-using FastBeeJsonDocLarge = StaticJsonDocument<FASTBEE_JSON_DOC_SIZE_LARGE>;
+using FastBeeJsonDoc = JsonDocument;
+using FastBeeJsonDocLarge = JsonDocument;
+
+// ============================================================================
+// 配置缓存
+// ============================================================================
+
+/**
+ * @brief ConfigStorage 内存缓存层
+ * 默认：启用
+ * 说明：避免重复文件 I/O 和 JSON 反序列化，含 LRU 淘汰和 debounce 写入
+ */
+#ifndef FASTBEE_ENABLE_STORAGE_CACHE
+    #define FASTBEE_ENABLE_STORAGE_CACHE 1
+#endif
 
 #endif // FEATURE_FLAGS_H

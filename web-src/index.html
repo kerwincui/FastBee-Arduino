@@ -12,7 +12,7 @@
     body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg-body-fallback);background-image:var(--bg-body);background-attachment:fixed;color:var(--text-primary);line-height:1.6;min-height:100vh;margin:0}
     .login-page{background:linear-gradient(135deg,#f5f5f5 0%,#fafafa 30%,#f0f0f0 70%,#e6f4ff 100%);height:100vh;display:flex;align-items:center;justify-content:center;padding:var(--space-5);position:relative}
     .app-container.fb-hidden{display:none}
-    .login-card{background:rgba(255,255,255,0.75);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:var(--rounded-2xl);box-shadow:var(--glass-shadow),0 0 0 1px rgba(255,255,255,0.6) inset;width:100%;max-width:400px;position:relative;border:1px solid rgba(255,255,255,0.4)}
+    .login-card{background:rgba(255,255,255,0.75);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:var(--rounded-2xl);box-shadow:var(--glass-shadow);width:100%;max-width:400px;position:relative;border:none}
     .login-header{padding:var(--space-8) var(--space-5) 0;text-align:center}
     .login-header img{width:50px}
     .login-body{padding:var(--space-8)}
@@ -21,16 +21,14 @@
     .fb-btn-primary:hover{background:var(--primary-hover);border-color:var(--primary-hover);color:#fff}
     .notification-container{position:fixed;top:var(--space-5);right:var(--space-5);z-index:9999;max-width:350px;width:100%}
     .fb-m-0{margin:0}.fb-text-xl{font-size:1.25rem}.fb-text-primary{color:var(--primary)}
-    .pure-form input[type="text"],.pure-form input[type="password"]{width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--rounded-md);font-size:14px;box-sizing:border-box}
-    .pure-input-1{width:100%}
-    .pure-u-1{width:100%}
+    .fb-form input[type="text"],.fb-form input[type="password"]{width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--rounded-md);font-size:14px;box-sizing:border-box}
+    .fb-input-full{width:100%}
+    .fb-u-1{width:100%}
     .fb-mt-3{margin-top:12px}.fb-my-3{margin-top:12px;margin-bottom:12px}
     </style>
     <!-- 异步加载完整 CSS -->
-    <link rel="stylesheet" href="./css/pure-min.css" media="print" onload="this.media='all'">
     <link rel="stylesheet" href="./css/main.css" media="print" onload="this.media='all'">
     <noscript>
-        <link rel="stylesheet" href="./css/pure-min.css">
         <link rel="stylesheet" href="./css/main.css">
     </noscript>
 </head>
@@ -43,33 +41,33 @@
     <div id="login-page" class="login-page">
         <div class="login-card">
             <div class="login-lang-switch">
-                <select id="login-language-select" class="pure-input-1">
+                <select id="login-language-select" class="">
                     <option value="zh-CN">中文</option>
                     <option value="en">English</option>
                 </select>
             </div>
             <div class="login-header">
                 <div><img src="/assets/logo.png" alt="FastBee Logo"></div>
-                <h1 class="fb-m-0 fb-text-xl fb-text-primary" id="login-title">设备配置管理</h1>
+                <h1 class="fb-m-0 fb-text-xl fb-text-primary" id="login-title" data-i18n="login-title">设备配置管理</h1>
             </div>
 
             <div class="login-body">
-                <form id="login-form" class="pure-form pure-form-stacked">
+                <form id="login-form" class="fb-form">
                     <fieldset>
-                        <label for="username" id="username-label">用户名</label>
-                        <input type="text" id="username" class="pure-input-1" placeholder="请输入用户名"
+                        <label for="username" id="username-label" data-i18n="username-label">用户名</label>
+                        <input type="text" id="username" class="" placeholder="请输入用户名"
                             data-i18n-placeholder="username-placeholder" required>
 
-                        <label for="password" class="fb-mt-3" id="password-label">密码</label>
-                        <input type="password" id="password" class="pure-input-1" placeholder="请输入密码"
+                        <label for="password" class="fb-mt-3" id="password-label" data-i18n="password-label">密码</label>
+                        <input type="password" id="password" class="" placeholder="请输入密码"
                             data-i18n-placeholder="password-placeholder" required>
 
-                        <label class="pure-checkbox fb-my-3">
+                        <label class="fb-checkbox fb-my-3">
                             <input type="checkbox" id="remember" checked>
-                            <span id="remember-label">记住密码</span>
+                            <span id="remember-label" data-i18n="remember-label">记住密码</span>
                         </label>
 
-                        <button type="submit" class="fb-btn fb-btn-primary pure-u-1" id="login-button">
+                        <button type="submit" class="fb-btn fb-btn-primary fb-u-1" id="login-button" data-i18n="login-button">
                             登录系统
                         </button>
                     </fieldset>
@@ -85,17 +83,17 @@
             <div class="sidebar" id="sidebar">
                 <div class="sidebar-header">
                     <img src="/assets/logo.png" alt="FastBee Logo">
-                    <h3 id="app-title">设备管理系统</h3>
+                    <h3 id="app-title" data-i18n="app-title">设备管理系统</h3>
                 </div>
                 <div class="sidebar-menu">
                     <a href="#" class="menu-item active" data-page="dashboard">
-                        <span class="menu-icon">📊</span> <span id="menu-dashboard">设备监控</span>
+                        <span class="menu-icon">📊</span> <span id="menu-dashboard" data-i18n="menu-dashboard">设备监控</span>
                     </a>
                     <a href="#" class="menu-item" data-page="device">
                         <span class="menu-icon">🛠️</span> <span id="menu-device" data-i18n="menu-device">设备配置</span>
                     </a>
                     <a href="#" class="menu-item" data-page="network">
-                        <span class="menu-icon">🌐</span> <span id="menu-network">网络设置</span>
+                        <span class="menu-icon">🌐</span> <span id="menu-network" data-i18n="menu-network">网络设置</span>
                     </a>
                     <a href="#" class="menu-item" data-page="peripheral">
                         <span class="menu-icon">🔧</span> <span id="menu-peripheral"
@@ -109,20 +107,20 @@
                         <span class="menu-icon">📺</span> <span id="menu-device-control" data-i18n="menu-device-control">设备控制</span>
                     </a>
                     <a href="#" class="menu-item" data-page="protocol">
-                        <span class="menu-icon">🔌</span> <span id="menu-protocol">通信协议</span>
+                        <span class="menu-icon">🔌</span> <span id="menu-protocol" data-i18n="menu-protocol">通信协议</span>
                     </a>
                     <a href="#" class="menu-item" data-page="rule-script">
                         <span class="menu-icon">📜</span> <span id="menu-rule-script"
                             data-i18n="menu-rule-script">规则脚本</span>
                     </a>
                     <a href="#" class="menu-item" data-page="data">
-                        <span class="menu-icon">📁</span> <span id="menu-data">文件管理</span>
+                        <span class="menu-icon">📁</span> <span id="menu-data" data-i18n="menu-data">文件管理</span>
                     </a>
                     <a href="#" class="menu-item" data-page="logs">
-                        <span class="menu-icon">📊</span> <span id="menu-logs">设备日志</span>
+                        <span class="menu-icon">📊</span> <span id="menu-logs" data-i18n="menu-logs">设备日志</span>
                     </a>
                     <a href="#" class="menu-item" data-page="users">
-                        <span class="menu-icon">👥</span> <span id="menu-users">用户管理</span>
+                        <span class="menu-icon">👥</span> <span id="menu-users" data-i18n="menu-users">用户管理</span>
                     </a>
                     <a href="#" class="menu-item" data-page="roles">
                         <span class="menu-icon">🛡️</span> <span id="menu-roles" data-i18n="menu-roles">角色管理</span>
@@ -141,7 +139,7 @@
                     </div>
                     <div class="header-actions">
                         <!-- 语言切换 -->
-                        <select id="language-select" class="pure-input-1 fb-w-auto">
+                        <select id="language-select" class="fb-w-auto">
                             <option value="zh-CN">中文</option>
                             <option value="en">English</option>
                         </select>
@@ -149,7 +147,7 @@
                         <div class="user-dropdown">
                             <button class="user-dropdown-toggle" id="user-dropdown-btn">
                                 <span class="user-avatar">👤</span>
-                                <span class="user-name-text" id="user-name">管理员</span>
+                                <span class="user-name-text" id="user-name" data-i18n="user-name">管理员</span>
                                 <span class="dropdown-arrow">▼</span>
                             </button>
                             <div class="user-dropdown-menu" id="user-dropdown-menu">
@@ -186,17 +184,43 @@
 
                 <!-- 主应用页脚 -->
                 <div class="app-footer">
-                    <div id="footer-copyright">© 2026 FastBee物联网平台 官网: www.fastbee.cn</div>
+                    <div id="footer-copyright" data-i18n="footer-copyright">© 2026 FastBee物联网平台 官网: www.fastbee.cn</div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- 静态 defer 脚本：浏览器并行下载、按序执行，消除动态加载链延迟 -->
-    <script defer src="./js/state.js"></script>
-    <script defer src="./js/modules/i18n-engine.js"></script>
-    <script defer src="./js/modules/i18n-zh-CN.js"></script>
-    <script defer src="./js/main.js"></script>
+    <!-- 核心 JS 合并为单文件，将 14 个并发请求降至 1 个，避免 ESP32 连接重置 -->
+    <script defer src="./js/app-bundle.js"></script>
+    <!-- 降级：若 bundle 加载失败（如网络中断），回退到逐个加载 -->
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+        if (typeof AppState !== 'undefined') return; // bundle 正常加载
+        console.warn('[FastBee] app-bundle failed, loading individual files...');
+        var files = [
+            './js/utils.js', './js/ui-components.js',
+            './js/request-governor.js', './js/notification.js',
+            './js/page-loader.js', './js/module-loader.js',
+            './js/modules/i18n-engine.js', './js/modules/i18n-zh-CN.js',
+            './js/state.js', './js/state-theme.js',
+            './js/state-session.js', './js/state-sse.js',
+            './js/state-ui.js', './js/main.js'
+        ];
+        var i = 0;
+        function loadNext() {
+            if (i >= files.length) return;
+            var s = document.createElement('script');
+            s.src = files[i++];
+            s.onload = loadNext;
+            s.onerror = function() {
+                console.warn('[FastBee] Failed:', this.src);
+                loadNext();
+            };
+            document.head.appendChild(s);
+        }
+        loadNext();
+    });
+    </script>
     <!-- Service Worker 注册 -->
     <script>
     if ('serviceWorker' in navigator) {

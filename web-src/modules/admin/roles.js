@@ -83,18 +83,26 @@
                 // 权限数
                 const tdPermCount = document.createElement('td');
                 const permCount = (role.permissions || []).length;
-                tdPermCount.innerHTML = `<span class="role-pill role-pill--count">${permCount}</span>`;
+                var pillSpan = document.createElement('span');
+                pillSpan.className = 'role-pill role-pill--count';
+                pillSpan.textContent = permCount;
+                tdPermCount.appendChild(pillSpan);
                 row.appendChild(tdPermCount);
 
                 // 类型
                 const tdType = document.createElement('td');
+                var typeSpan = document.createElement('span');
                 if (role.id === 'admin') {
-                    tdType.innerHTML = `<span class="role-pill role-pill--super">${i18n.t('role-type-super')}</span>`;
+                    typeSpan.className = 'role-pill role-pill--super';
+                    typeSpan.textContent = i18n.t('role-type-super');
                 } else if (role.isBuiltin) {
-                    tdType.innerHTML = `<span class="role-pill role-pill--builtin">${i18n.t('role-type-builtin')}</span>`;
+                    typeSpan.className = 'role-pill role-pill--builtin';
+                    typeSpan.textContent = i18n.t('role-type-builtin');
                 } else {
-                    tdType.innerHTML = `<span class="role-pill role-pill--custom">${i18n.t('role-type-custom')}</span>`;
+                    typeSpan.className = 'role-pill role-pill--custom';
+                    typeSpan.textContent = i18n.t('role-type-custom');
                 }
+                tdType.appendChild(typeSpan);
                 row.appendChild(tdType);
 
                 // 操作
@@ -103,7 +111,7 @@
 
                 // 查看权限按钮
                 const viewBtn = document.createElement('button');
-                viewBtn.className = 'btn btn-sm btn-secondary';
+                viewBtn.className = 'fb-btn fb-btn-sm fb-btn-secondary';
                 viewBtn.textContent = i18n.t('role-view-perms');
                 viewBtn.addEventListener('click', () => this.showRolePermissions(role));
                 tdAction.appendChild(viewBtn);
@@ -112,14 +120,14 @@
                 if (role.id !== 'admin') {
                     // 编辑按钮
                     const editBtn = document.createElement('button');
-                    editBtn.className = 'btn btn-sm btn-edit fb-mr-1';
+                    editBtn.className = 'fb-btn fb-btn-sm fb-btn-primary fb-mr-1';
                     editBtn.textContent = i18n.t('role-edit');
                     editBtn.addEventListener('click', () => this.showEditRoleModal(role.id));
                     tdAction.appendChild(editBtn);
 
                     // 删除按钮
                     const delBtn = document.createElement('button');
-                    delBtn.className = 'btn btn-sm btn-delete';
+                    delBtn.className = 'fb-btn fb-btn-sm fb-btn-danger';
                     delBtn.textContent = i18n.t('role-delete');
                     delBtn.addEventListener('click', () => {
                         const _rnm2 = {'管理员': 'role-admin', '操作员': 'role-operator', '查看者': 'role-viewer'};
@@ -171,7 +179,7 @@
                     const pDesc = i18n.t('perm-' + perm.id) !== ('perm-' + perm.id) ? i18n.t('perm-' + perm.id) : perm.description;
                     html += `<span class="role-perm-chip${hasPerm ? ' is-enabled' : ''}">`;
                     html += `<span class="role-perm-chip-indicator">${hasPerm ? '✓' : '✗'}</span>`;
-                    html += `<span title="${pDesc}">${pName}</span></span>`;
+                    html += `<span title="${escapeHtml(pDesc)}">${escapeHtml(pName)}</span></span>`;
                 });
                 html += `</div></div>`;
             });
@@ -186,7 +194,7 @@
             overlay.innerHTML = `
                 <div class="role-perm-dialog">
                     <div class="role-perm-dialog-header">
-                        <h3 class="role-perm-dialog-title">${displayRoleName}${i18n.t('role-detail-suffix')}</h3>
+                        <h3 class="role-perm-dialog-title">${escapeHtml(displayRoleName)}${escapeHtml(i18n.t('role-detail-suffix'))}</h3>
                         <button type="button" class="role-perm-dialog-close">×</button>
                     </div>
                     <div class="role-perm-dialog-body">${html}</div>
@@ -244,7 +252,6 @@
                 return;
             }
 
-            console.log('[showEditRoleModal] Opening edit modal for roleId:', roleId);
 
             // 先设置编辑模式，防止API回调前用户点击保存导致调用错误的API
             modal.dataset.editMode = 'edit';
@@ -273,7 +280,6 @@
                     if (nameInput) nameInput.value = role.name;
                     if (descInput) descInput.value = role.description || '';
 
-                    console.log('[showEditRoleModal] Set editMode:', modal.dataset.editMode, 'editRoleId:', modal.dataset.editRoleId);
 
                     // 渲染权限复选框
                     this._renderPermissionCheckboxes(role.permissions || []);
@@ -332,10 +338,16 @@
                     const pDesc = i18n.t('perm-' + perm.id) !== ('perm-' + perm.id) ? i18n.t('perm-' + perm.id) : perm.description;
                     const label = document.createElement('label');
                     label.className = 'role-perm-label';
-                    label.innerHTML = `
-                        <input type="checkbox" name="role-perm" value="${perm.id}" ${selectedSet.has(perm.id) ? 'checked' : ''}>
-                        <span title="${pDesc}">${pName}</span>
-                    `;
+                    var checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.name = 'role-perm';
+                    checkbox.value = perm.id;
+                    if (selectedSet.has(perm.id)) checkbox.checked = true;
+                    label.appendChild(checkbox);
+                    var labelText = document.createElement('span');
+                    labelText.title = pDesc;
+                    labelText.textContent = pName;
+                    label.appendChild(labelText);
                     permList.appendChild(label);
                 });
 
@@ -377,17 +389,14 @@
             const btn = document.getElementById('confirm-role-btn');
             if (btn) { btn.disabled = true; btn.textContent = i18n.t('role-saving-text'); }
 
-            console.log('[saveRole] modal.dataset:', JSON.stringify(modal.dataset));
-            console.log('[saveRole] isEditMode:', isEditMode, 'id:', id, 'editRoleId:', editRoleId);
-            console.log('[saveRole] Will call API:', isEditMode ? '/api/roles/update' : '/api/roles');
 
             let apiCall;
             if (isEditMode) {
                 // 编辑模式：先更新角色信息，再更新权限
-                apiCall = apiPost('/api/roles/update', { id, name, description })
+                apiCall = apiPutForm('/api/roles/' + encodeURIComponent(id), { name, description })
                     .then(res => {
                         if (res && res.success) {
-                            return apiPost('/api/roles/permissions', { id, permissions });
+                            return apiPutForm('/api/roles/' + encodeURIComponent(id) + '/permissions', { permissions });
                         }
                         throw new Error(res.error || i18n.t('role-fail-update-msg'));
                     });
@@ -396,7 +405,7 @@
                 apiCall = apiPost('/api/roles', { id, name, description })
                     .then(res => {
                         if (res && res.success) {
-                            return apiPost('/api/roles/permissions', { id, permissions });
+                            return apiPutForm('/api/roles/' + encodeURIComponent(id) + '/permissions', { permissions });
                         }
                         throw new Error(res.error || i18n.t('role-fail-create-msg'));
                     });
@@ -423,7 +432,7 @@
         deleteRole(roleId, roleName) {
             if (!confirm(`${i18n.t('confirm-delete-role-msg')} "${roleName || roleId}" ${i18n.t('confirm-delete-role-suffix')}`)) return;
 
-            apiPost('/api/roles/delete', { id: roleId })
+            apiDelete('/api/roles/' + encodeURIComponent(roleId))
                 .then(res => {
                     if (res && res.success) {
                         Notification.success(`${roleName || roleId} ${i18n.t('role-deleted-msg')}`, i18n.t('delete-success'));

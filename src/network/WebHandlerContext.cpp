@@ -1,6 +1,8 @@
 #include "./network/WebHandlerContext.h"
 #include "./security/AuthManager.h"
 #include "systems/LoggerSystem.h"
+#include "systems/HealthMonitor.h"
+#include "core/FastBeeFramework.h"
 
 WebHandlerContext::WebHandlerContext(AsyncWebServer* srv, IAuthManager* authMgr, IUserManager* userMgr)
     : server(srv), authManager(authMgr), userManager(userMgr),
@@ -122,6 +124,14 @@ void WebHandlerContext::sendJsonResponse(AsyncWebServerRequest* request, int cod
                                          const JsonDocument& doc) {
     if (!request) return;
 
+    // MemGuard: CRITICAL 时拒绝大响应，返回 503
+    auto* fw = FastBeeFramework::getInstance();
+    HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+    if (monitor && monitor->isMemoryCritical()) {
+        request->send(503, "text/plain", "Service Unavailable - Low Memory");
+        return;
+    }
+
     size_t docSize = measureJson(doc);
     AsyncWebServerResponse* response;
 
@@ -136,13 +146,19 @@ void WebHandlerContext::sendJsonResponse(AsyncWebServerRequest* request, int cod
         response = request->beginResponse(code, "application/json", jsonStr);
     }
 
-    response->addHeader("Access-Control-Allow-Origin", "*");
-    response->addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    response->addHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    // CORS 头已由 DefaultHeaders 全局注入，无需重复设置
     request->send(response);
 }
 
 void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const JsonDocument& data) {
+    // MemGuard: CRITICAL 时返回精简响应
+    auto* fw = FastBeeFramework::getInstance();
+    HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+    if (monitor && monitor->isMemoryCritical()) {
+        request->send(503, "text/plain", "Service Unavailable - Low Memory");
+        return;
+    }
+
     // 注意：ArduinoJson v7 的 serializeJson(doc, String) 会先清空目标字符串，
     // 因此必须先序列化到独立字符串，再拼接到响应中。
     String dataStr;
@@ -161,7 +177,6 @@ void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const JsonDo
     out += "}";
 
     AsyncWebServerResponse* response = request->beginResponse(200, "application/json", out);
-    response->addHeader("Access-Control-Allow-Origin", "*");
     request->send(response);
 }
 
@@ -175,7 +190,6 @@ void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const String
     }
 
     AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonBuffer);
-    response->addHeader("Access-Control-Allow-Origin", "*");
     request->send(response);
 }
 
@@ -186,7 +200,6 @@ void WebHandlerContext::sendError(AsyncWebServerRequest* request, int code, cons
              message.c_str(), code, millis());
 
     AsyncWebServerResponse* response = request->beginResponse(code, "application/json", jsonBuffer);
-    response->addHeader("Access-Control-Allow-Origin", "*");
     request->send(response);
 }
 
