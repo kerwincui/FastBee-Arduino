@@ -10,7 +10,9 @@
 #include "core/FeatureFlags.h"
 #include "core/ChipConfig.h"
 #include "systems/LoggerSystem.h"
+#if FASTBEE_ENABLE_LCD
 #include "peripherals/LCDManager.h"
+#endif
 #include <Wire.h>
 #include <SPI.h>
 

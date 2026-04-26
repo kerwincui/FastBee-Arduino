@@ -1,9 +1,9 @@
 <!-- 通信协议页面 -->
-<div id="protocol-page" class="page">
-    <div class="card">
-        <div class="card-header u-flex-between-center">
-            <h2 class="card-title" id="protocol-title" data-i18n="protocol-title">通信协议配置</h2>
-            <div>
+<div id="protocol-page" class="page page-layout-flat">
+    <div class="fb-card">
+        <div class="fb-card-header fb-card-header-toolbar">
+            <h2 class="fb-card-title" id="protocol-title" data-i18n="protocol-title">通信协议配置</h2>
+            <div class="u-toolbar-sm">
                 <button type="button" class="fb-btn fb-btn-sm"
                     data-action="exportProtocolConfig"
                     data-i18n="protocol-export-btn">导出配置</button>
@@ -12,7 +12,7 @@
                     data-i18n="protocol-import-btn">导入配置</button>
             </div>
         </div>
-        <div class="card-body">
+        <div class="fb-card-body">
             <div class="config-tabs">
                 <div class="config-tab active" data-tab="mqtt">MQTT</div>
                 <div class="config-tab" data-tab="modbus-rtu">Modbus RTU</div>
@@ -78,7 +78,7 @@
                         </div>
                     </div>
 
-                    <div class="message message-success fb-hidden" id="modbus-tcp-success"
+                    <div class="message message-success is-hidden" id="modbus-tcp-success"
                         data-i18n="modbus-tcp-save-ok">
                         Modbus TCP配置保存成功！
                     </div>

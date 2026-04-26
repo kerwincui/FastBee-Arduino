@@ -5,6 +5,9 @@
  * @date: 2025-04-15
  */
 
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_LCD
+
 #include "network/handlers/LcdRouteHandler.h"
 #include "network/handlers/HandlerUtils.h"
 #include "network/WebHandlerContext.h"
@@ -207,3 +210,5 @@ void LcdRouteHandler::handleGetStatus(AsyncWebServerRequest* request)
     serializeJson(doc, response);
     request->send(200, "application/json", response);
 }
+
+#endif // FASTBEE_ENABLE_LCD

@@ -5,13 +5,13 @@
  * @date: 2025-04-15
  */
 
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_LCD
+
 #include "peripherals/LCDManager.h"
 #include "systems/LoggerSystem.h"
 #include "core/ChipConfig.h"
-#include "core/FeatureFlags.h"
 #include <WiFi.h>
-
-#if FASTBEE_ENABLE_LCD
 
 // 单例实现
 LCDManager& LCDManager::getInstance()
