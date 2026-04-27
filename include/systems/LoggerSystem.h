@@ -141,8 +141,8 @@ private:
     std::vector<const char*> moduleFilters;
 
     // ── 环形缓冲区 ──────────────────────────────────────────────────────────
-    static constexpr size_t LOG_RING_BUFFER_SIZE = 4096;   // 4KB
-    static constexpr size_t LOG_FLUSH_THRESHOLD  = 3276;   // 80% 触发 flush
+    static constexpr size_t LOG_RING_BUFFER_SIZE = 2048;   // 2KB
+    static constexpr size_t LOG_FLUSH_THRESHOLD  = 1638;   // 80% 触发 flush
     static constexpr unsigned long LOG_FLUSH_INTERVAL_MS = 5000; // 5秒定时 flush
 
     struct LogRingBuffer {

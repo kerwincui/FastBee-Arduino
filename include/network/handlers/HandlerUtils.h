@@ -37,7 +37,7 @@ inline void sendJsonError(AsyncWebServerRequest* request, int code, const char* 
 
 // 内存检查 - 返回 true 表示内存不足（已发送 503 响应）
 // 同时检查总空闲堆和最大连续块（检测碎片化）
-inline bool checkLowMemory(AsyncWebServerRequest* request, size_t threshold = 20480) {
+inline bool checkLowMemory(AsyncWebServerRequest* request, size_t threshold = 25600) {
     uint32_t freeHeap = ESP.getFreeHeap();
     uint32_t maxAlloc = ESP.getMaxAllocHeap();
     if (freeHeap < threshold || maxAlloc < 8192) {

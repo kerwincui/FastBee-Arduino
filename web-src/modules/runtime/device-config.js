@@ -1,6 +1,6 @@
 /**
  * 设备配置模块
- * 包含设备基本信息、NTP配置、重启/恢复出厂、蓝牙配网、OTA升级
+ * 包含设备基本信息、NTP配置、重启/恢复出厂、OTA升级
  */
 (function() {
     AppState.registerModule('device-config', {
@@ -36,19 +36,6 @@
             // 恢复出厂设置按钮
             const devFactoryBtn = document.getElementById('dev-factory-btn');
             if (devFactoryBtn) devFactoryBtn.addEventListener('click', () => this.factoryReset());
-
-            // 蓝牙配网事件绑定
-            const bleProvisionForm = document.getElementById('device-ble-provision-form');
-            if (bleProvisionForm) bleProvisionForm.addEventListener('submit', (e) => { e.preventDefault(); this.saveBLEProvisionConfig(); });
-
-            const bleProvisionRefreshBtn = document.getElementById('ble-provision-refresh-btn');
-            if (bleProvisionRefreshBtn) bleProvisionRefreshBtn.addEventListener('click', () => this.loadBLEProvisionStatus());
-
-            const bleProvisionStartBtn = document.getElementById('ble-provision-start-btn');
-            if (bleProvisionStartBtn) bleProvisionStartBtn.addEventListener('click', () => this.startBLEProvision());
-
-            const bleProvisionStopBtn = document.getElementById('ble-provision-stop-btn');
-            if (bleProvisionStopBtn) bleProvisionStopBtn.addEventListener('click', () => this.stopBLEProvision());
 
             // OTA升级事件绑定
             const otaUrlForm = document.getElementById('ota-url-form');
@@ -381,131 +368,6 @@
                         if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-sys-factory-btn-html'); }
                         Notification.error(i18n.t('dev-sys-factory-fail'), i18n.t('dev-sys-factory-title-msg'));
                     }
-                });
-        },
-
-        // ============ 蓝牙配网 ============
-
-        loadBLEProvisionStatus() {
-            apiGet('/api/ble/provision/status')
-                .then(res => {
-                    if (!res || !res.success) return;
-                    const d = res.data || {};
-
-                    const badge = document.getElementById('ble-provision-status-badge');
-                    const deviceName = document.getElementById('ble-provision-device-name');
-                    const remainingWrap = document.getElementById('ble-provision-remaining-wrap');
-                    const remaining = document.getElementById('ble-provision-remaining');
-                    const startBtn = document.getElementById('ble-provision-start-btn');
-                    const stopBtn = document.getElementById('ble-provision-stop-btn');
-
-                    if (d.active) {
-                        if (badge) { badge.className = 'status-badge status-online'; badge.textContent = i18n.t('ble-active'); }
-                        if (deviceName) deviceName.textContent = d.deviceName || '--';
-                        if (remainingWrap) remainingWrap.classList.remove('is-hidden');
-                        if (remaining) remaining.textContent = (d.remainingTime || 0) + i18n.t('ble-remaining-unit');
-                        if (startBtn) startBtn.classList.add('is-hidden');
-                        if (stopBtn) { stopBtn.classList.remove('is-hidden'); stopBtn.disabled = false; }
-                    } else {
-                        if (badge) { badge.className = 'status-badge status-offline'; badge.textContent = i18n.t('ble-inactive'); }
-                        if (deviceName) deviceName.textContent = '--';
-                        if (remainingWrap) remainingWrap.classList.add('is-hidden');
-                        if (startBtn) { startBtn.classList.remove('is-hidden'); startBtn.disabled = false; }
-                        if (stopBtn) stopBtn.classList.add('is-hidden');
-                    }
-                })
-                .catch(err => {
-                    console.error('加载蓝牙配网状态失败:', err);
-                });
-        },
-
-        loadBLEProvisionConfig() {
-            apiGet('/api/ble/provision/config')
-                .then(res => {
-                    if (!res || !res.success) return;
-                    const d = res.data || {};
-
-                    this._setValue('ble-device-name', d.bleName || 'FBDevice');
-                    this._setValue('ble-timeout', d.bleTimeout || 300);
-                    this._setChecked('ble-auto-start', d.bleAutoStart || false);
-                    this._setValue('ble-service-uuid', d.bleServiceUUID || '6E400001-B5A3-F393-E0A9-E50E24DCCA9F');
-                    this._setValue('ble-rx-uuid', d.bleRxUUID || '6E400002-B5A3-F393-E0A9-E50E24DCCA9F');
-                    this._setValue('ble-tx-uuid', d.bleTxUUID || '6E400003-B5A3-F393-E0A9-E50E24DCCA9F');
-                })
-                .catch(err => {
-                    console.error('加载蓝牙配网配置失败:', err);
-                });
-        },
-
-        saveBLEProvisionConfig() {
-            const data = {
-                bleName: document.getElementById('ble-device-name')?.value || 'FBDevice',
-                bleTimeout: document.getElementById('ble-timeout')?.value || '300',
-                bleAutoStart: document.getElementById('ble-auto-start')?.checked ? 'true' : 'false',
-                bleServiceUUID: document.getElementById('ble-service-uuid')?.value || '6E400001-B5A3-F393-E0A9-E50E24DCCA9F',
-                bleRxUUID: document.getElementById('ble-rx-uuid')?.value || '6E400002-B5A3-F393-E0A9-E50E24DCCA9F',
-                bleTxUUID: document.getElementById('ble-tx-uuid')?.value || '6E400003-B5A3-F393-E0A9-E50E24DCCA9F'
-            };
-
-            apiPut('/api/ble/provision/config', data)
-                .then(res => {
-                    if (res && res.success) {
-                        this._showMessage('ble-provision-success', true);
-                        Notification.success(i18n.t('ble-save-ok'), i18n.t('ble-title'));
-                    } else {
-                        Notification.error(res?.message || i18n.t('dev-save-fail'), i18n.t('ble-title'));
-                    }
-                })
-                .catch(err => {
-                    Notification.error(i18n.t('ble-start-fail') + ': ' + (err.message || err), i18n.t('ble-title'));
-                });
-        },
-
-        startBLEProvision() {
-            const startBtn = document.getElementById('ble-provision-start-btn');
-            if (startBtn) {
-                startBtn.disabled = true;
-                startBtn.innerHTML = i18n.t('ble-starting-html');
-            }
-
-            apiPost('/api/ble/provision/start', {})
-                .then(res => {
-                    if (res && res.success) {
-                        Notification.success(i18n.t('ble-start-ok-prefix') + (res.data?.deviceName || ''), i18n.t('ble-title'));
-                        this.loadBLEProvisionStatus();
-                    } else {
-                        Notification.error(res?.message || i18n.t('ble-start-fail'), i18n.t('ble-title'));
-                    }
-                })
-                .catch(err => {
-                    Notification.error(i18n.t('ble-start-fail') + ': ' + (err.message || err), i18n.t('ble-title'));
-                })
-                .finally(() => {
-                    if (startBtn) startBtn.innerHTML = i18n.t('ble-start-html');
-                });
-        },
-
-        stopBLEProvision() {
-            const stopBtn = document.getElementById('ble-provision-stop-btn');
-            if (stopBtn) {
-                stopBtn.disabled = true;
-                stopBtn.innerHTML = i18n.t('ble-stopping-html');
-            }
-
-            apiPost('/api/ble/provision/stop', {})
-                .then(res => {
-                    if (res && res.success) {
-                        Notification.success(i18n.t('ble-stop-ok'), i18n.t('ble-title'));
-                        this.loadBLEProvisionStatus();
-                    } else {
-                        Notification.error(res?.message || i18n.t('ble-stop-fail'), i18n.t('ble-title'));
-                    }
-                })
-                .catch(err => {
-                    Notification.error(i18n.t('ble-stop-fail') + ': ' + (err.message || err), i18n.t('ble-title'));
-                })
-                .finally(() => {
-                    if (stopBtn) stopBtn.innerHTML = i18n.t('ble-stop-html');
                 });
         },
 

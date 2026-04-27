@@ -827,8 +827,6 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_OTA), "OTA升级", "系统");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_AP_PROVISION), "AP配网", "系统");
-        addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_BLE_PROVISION), "BLE配网", "系统");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH_INVERTED), "设置高电平(反转)", "GPIO");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW_INVERTED), "设置低电平(反转)", "GPIO");

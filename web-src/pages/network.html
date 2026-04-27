@@ -27,11 +27,9 @@
                             <div class="fb-form-group">
                                 <label for="wifi-mode" data-i18n="wifi-mode-label">网络模式</label>
                                 <select id="wifi-mode" class="">
-                                    <option value="0" data-i18n="wifi-mode-sta">仅客户端模式 (STA)
+                                    <option value="0" selected data-i18n="wifi-mode-sta">仅客户端模式 (STA)
                                     </option>
                                     <option value="1" data-i18n="wifi-mode-ap">仅热点模式 (AP)</option>
-                                    <option value="2" selected data-i18n="wifi-mode-apsta">客户端+热点模式
-                                        (AP+STA)</option>
                                 </select>
                             </div>
 
@@ -87,51 +85,6 @@
 
             <!-- 热点配置 -->
             <div id="ap-config" class="config-content">
-                <!-- AP配网状态卡片 -->
-                <div class="fb-panel">
-                    <div class="fb-card-header fb-panel-header u-header-between">
-                        <h4 class="fb-m-0 fb-text-sm"><i class="fas fa-wifi"></i> <span
-                                data-i18n="ap-provision-status-title">AP配网状态</span></h4>
-                        <button id="ap-provision-refresh-btn" type="button"
-                            class="fb-btn fb-btn-sm fb-btn-refresh">
-                            <span data-i18n="refresh-btn">刷新</span>
-                        </button>
-                    </div>
-                    <div class="fb-card-body fb-panel-body">
-                        <table class="fb-table fb-w-full fb-fs-13">
-                            <tbody>
-                                <tr>
-                                    <td class="fb-text-gray fb-w-120"
-                                        data-i18n="ap-provision-status-label">配网状态</td>
-                                    <td><span id="ap-provision-status" class="badge badge-info"
-                                            data-i18n="ap-provision-not-started">未启动</span></td>
-                                </tr>
-                                <tr>
-                                    <td class="fb-text-gray" data-i18n="ap-provision-ap-name-label">
-                                        热点名称</td>
-                                    <td id="ap-provision-ap-name">--</td>
-                                </tr>
-                                <tr>
-                                    <td class="fb-text-gray" data-i18n="ap-provision-clients-label">
-                                        已连接设备</td>
-                                    <td id="ap-provision-clients">0</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                        <div class="fb-mt-3 fb-flex fb-gap-2">
-                            <button id="ap-provision-start-btn" type="button"
-                                class="fb-btn fb-btn-success">
-                                <i class="fas fa-play"></i> <span
-                                    data-i18n="ap-provision-start-btn">启动配网</span>
-                            </button>
-                            <button id="ap-provision-stop-btn" type="button" class="fb-btn fb-btn-danger">
-                                <i class="fas fa-stop"></i> <span
-                                    data-i18n="ap-provision-stop-btn">停止配网</span>
-                            </button>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- 热点参数配置表单 -->
                 <form id="ap-form" class="fb-form">
                     <div class="config-form-grid">
@@ -192,12 +145,6 @@
                                 </select>
                             </div>
 
-                            <div class="fb-form-group">
-                                <label for="ap-provision-timeout"
-                                    data-i18n="ap-provision-timeout-label">配网超时 (秒)</label>
-                                <input type="number" id="ap-provision-timeout" class=""
-                                    value="300" min="60" max="3600">
-                            </div>
                         </div>
                     </div>
 
@@ -213,23 +160,6 @@
                     </div>
                 </form>
 
-                <!-- 配网说明 -->
-                <div class="fb-panel fb-panel-info fb-mt-4 fb-border-info">
-                    <div class="fb-card-header fb-p-2 fb-bg-info-light">
-                        <h4 class="fb-m-0 fb-text-sm fb-text-info-dark"><i
-                                class="fas fa-info-circle"></i> <span
-                                data-i18n="ap-provision-guide-title">配网说明</span></h4>
-                    </div>
-                    <div class="fb-card-body fb-p-3 fb-fs-13 fb-text-info-dark">
-                        <ol class="fb-m-0 fb-pl-4">
-                            <li data-i18n="ap-provision-guide-1">点击"启动配网"开启AP热点模式</li>
-                            <li data-i18n="ap-provision-guide-2">手机连接设备热点</li>
-                            <li data-i18n="ap-provision-guide-3">打开配网APP或访问 http://192.168.4.1</li>
-                            <li data-i18n="ap-provision-guide-4">输入WiFi名称和密码完成配网</li>
-                            <li data-i18n="ap-provision-guide-5">配网成功后设备自动连接目标WiFi</li>
-                        </ol>
-                    </div>
-                </div>
             </div>
 
             <!-- 高级配置 -->

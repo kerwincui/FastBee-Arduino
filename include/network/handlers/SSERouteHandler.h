@@ -22,15 +22,15 @@ public:
     void performMaintenance();
 
     // 最大 SSE 客户端数，防止多客户端导致内存压力
-    static constexpr size_t MAX_SSE_CLIENTS = 3;
+    static constexpr size_t MAX_SSE_CLIENTS = 2;
     // 单次消息最大字节数，超过则截断
-    static constexpr size_t MAX_SSE_MESSAGE_SIZE = 1024;
+    static constexpr size_t MAX_SSE_MESSAGE_SIZE = 512;
     // 心跳间隔（毫秒）
     static constexpr unsigned long HEARTBEAT_INTERVAL_MS = 60000;
     // 超时阈值：2 个心跳周期无响应则清理
     static constexpr unsigned long CLIENT_TIMEOUT_MS = 120000;
     // 低内存保护阈值（字节）
-    static constexpr size_t LOW_MEMORY_THRESHOLD = 20000;
+    static constexpr size_t LOW_MEMORY_THRESHOLD = 15360;
 
 private:
     /// 轻量级客户端活动追踪（与 MAX_SSE_CLIENTS 对齐）

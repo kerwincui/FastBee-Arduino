@@ -79,9 +79,8 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             doc["data"]["rxCount"]           = info.rxCount;
             const char* modeText = "unknown";
             switch (cfg.mode) {
-                case NetworkMode::NETWORK_STA:    modeText = "STA";    break;
-                case NetworkMode::NETWORK_AP:     modeText = "AP";     break;
-                case NetworkMode::NETWORK_AP_STA: modeText = "AP+STA"; break;
+                case NetworkMode::NETWORK_STA:    modeText = "STA"; break;
+                case NetworkMode::NETWORK_AP:     modeText = "AP";  break;
                 default: break;
             }
             doc["data"]["mode"]       = modeText;
@@ -156,21 +155,20 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 const char* modeText = "unknown";
                 switch (cfg.mode) {
                     case NetworkMode::NETWORK_STA:    modeText = "STA"; break;
-                    case NetworkMode::NETWORK_AP:     modeText = "AP"; break;
-                    case NetworkMode::NETWORK_AP_STA: modeText = "AP+STA"; break;
+                    case NetworkMode::NETWORK_AP:     modeText = "AP";  break;
                     default: break;
                 }
                 respDoc["data"]["modeText"] = modeText;
                 
-                // AP信息（AP或AP+STA模式需要）
-                if (cfg.mode == NetworkMode::NETWORK_AP || cfg.mode == NetworkMode::NETWORK_AP_STA) {
+                // AP信息（AP模式需要）
+                if (cfg.mode == NetworkMode::NETWORK_AP) {
                     respDoc["data"]["apSSID"] = cfg.apSSID;
                     respDoc["data"]["apPassword"] = cfg.apPassword;
                     respDoc["data"]["apIP"] = "192.168.4.1";  // 默认AP IP
                 }
                 
-                // mDNS信息（STA或AP+STA模式需要）
-                if ((cfg.mode == NetworkMode::NETWORK_STA || cfg.mode == NetworkMode::NETWORK_AP_STA) && cfg.enableMDNS) {
+                // mDNS信息（STA模式需要）
+                if (cfg.mode == NetworkMode::NETWORK_STA && cfg.enableMDNS) {
                     String domain = cfg.customDomain.length() > 0 ? cfg.customDomain : "fastbee";
                     respDoc["data"]["mdnsDomain"] = domain + ".local";
                 }

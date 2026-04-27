@@ -186,8 +186,7 @@
             // 连接统计
             var modeLabel = {
                 STA: self._t('net-mode-sta'),
-                AP: self._t('net-mode-ap'),
-                'AP+STA': self._t('net-mode-apsta')
+                AP: self._t('net-mode-ap')
             };
             setText('ns-mode', modeLabel[d.mode] || d.mode || '--');
             var actualDomain = d.mdnsDomain || d.customDomain;

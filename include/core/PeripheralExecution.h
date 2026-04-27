@@ -30,9 +30,7 @@ enum class ExecActionType : uint8_t {
     ACTION_SYS_FACTORY_RESET = 7, // 恢复出厂设置
     ACTION_SYS_NTP_SYNC = 8,     // NTP时间同步
     ACTION_SYS_OTA = 9,          // OTA升级
-    ACTION_SYS_AP_PROVISION = 10, // AP配网
-    ACTION_SYS_BLE_PROVISION = 11,// BLE配网
-    ACTION_CALL_PERIPHERAL = 12,  // 调用其他外设
+    ACTION_CALL_PERIPHERAL = 10,  // 调用其他外设
     ACTION_HIGH_INVERTED = 13,    // 设置高电平(反转) - 物理输出低电平
     ACTION_LOW_INVERTED = 14,     // 设置低电平(反转) - 物理输出高电平
     ACTION_SCRIPT = 15,           // 命令序列脚本
@@ -73,7 +71,6 @@ enum class EventType : uint8_t {
     // 网络模式事件 (20-29)
     EVENT_NET_MODE_AP = 20,              // 网络模式切换为AP
     EVENT_NET_MODE_STA = 21,             // 网络模式切换为STA
-    EVENT_NET_MODE_AP_STA = 22,          // 网络模式切换为AP+STA
     // 协议事件 (30-39)
     EVENT_MODBUS_RTU_ENABLED = 30,       // Modbus RTU启用
     EVENT_MODBUS_TCP_ENABLED = 31,       // Modbus TCP启用
@@ -85,11 +82,6 @@ enum class EventType : uint8_t {
     EVENT_OTA_START = 41,                // OTA升级开始
     EVENT_OTA_SUCCESS = 42,              // OTA升级成功
     EVENT_OTA_FAILED = 43,               // OTA升级失败
-    // 配网事件 (50-59)
-    EVENT_AP_PROVISION_START = 50,       // AP配网开始
-    EVENT_AP_PROVISION_DONE = 51,        // AP配网完成
-    EVENT_BLE_PROVISION_START = 52,      // 蓝牙配网开始
-    EVENT_BLE_PROVISION_DONE = 53,       // 蓝牙配网完成
     // 规则引擎事件 (60-69)
     EVENT_RULE_EXEC_TIME = 60,           // 规则脚本执行时间（用于监控）
     EVENT_RULE_EXEC_ERROR = 61,          // 规则脚本执行错误

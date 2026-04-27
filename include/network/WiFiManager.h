@@ -10,8 +10,7 @@
  */
 enum class NetworkMode {
     NETWORK_STA = 0,    // 仅 STA 模式
-    NETWORK_AP = 1,     // 仅 AP 模式
-    NETWORK_AP_STA = 2  // AP+STA 双模式
+    NETWORK_AP = 1      // 仅 AP 模式
 };
 
 /**
@@ -58,7 +57,7 @@ enum class IPFailoverStrategy {
  */
 struct WiFiConfig {
     // 基本配置
-    NetworkMode mode = NetworkMode::NETWORK_AP_STA;   // 默认 AP+STA：无 SSID 时仍能进入 AP 配网
+    NetworkMode mode = NetworkMode::NETWORK_STA;      // 默认 STA 模式
     String deviceName = "FastBee";
     
     // AP 配置（首次启动或 STA 失败时的配网热点）

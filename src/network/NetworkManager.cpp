@@ -82,18 +82,11 @@ bool NetworkManager::initialize() {
               wifiConfig.customDomain.c_str());
 
     // 智能模式修正：首次启动或配置不完整时自动调整
-    // 1. 如果 mode 是 NETWORK_STA 但没有配置 staSSID，改为 NETWORK_AP
-    // 2. 如果 mode 是 NETWORK_AP_STA 但没有配置 staSSID，改为 NETWORK_AP
-    // 3. 这样可以确保首次启动时用户能通过 AP 模式配网
-    if (wifiConfig.staSSID.isEmpty()) {
-        if (wifiConfig.mode == NetworkMode::NETWORK_STA) {
-            LOG_WARNING("NetworkManager: No staSSID configured, switching from STA to AP mode");
-            wifiConfig.mode = NetworkMode::NETWORK_AP;
-        } else if (wifiConfig.mode == NetworkMode::NETWORK_AP_STA) {
-            LOG_WARNING("NetworkManager: No staSSID configured, switching from AP+STA to AP-only mode");
-            wifiConfig.mode = NetworkMode::NETWORK_AP;
-        }
-        // 保存修正后的配置
+    // 如果 mode 是 NETWORK_STA 但没有配置 staSSID，改为 NETWORK_AP
+    // 这样可以确保首次启动时用户能通过 AP 模式配网
+    if (wifiConfig.staSSID.isEmpty() && wifiConfig.mode == NetworkMode::NETWORK_STA) {
+        LOG_WARNING("NetworkManager: No staSSID configured, switching from STA to AP mode");
+        wifiConfig.mode = NetworkMode::NETWORK_AP;
         saveNetworkConfig();
     }
 
@@ -118,104 +111,54 @@ bool NetworkManager::initialize() {
         wifiManager->handleWiFiEvent(event);
     });
 
-    // 网络启动策略：
-    // 1. NETWORK_STA (0): 仅STA模式，尝试连接WiFi，失败则回退AP模式
-    // 2. NETWORK_AP (1): 仅AP模式，直接启动热点
-    // 3. NETWORK_AP_STA (2): AP+STA双模式，同时启动热点和连接WiFi
+    // 网络启动策略（仅支持 STA 和 AP 两种模式）：
+    // 1. NETWORK_STA (0): 尝试连接WiFi，失败则自动切换到AP模式
+    // 2. NETWORK_AP (1): 直接启动热点
     bool success = false;
     
     switch (wifiConfig.mode) {
         case NetworkMode::NETWORK_STA:
-            // 仅STA模式
-            LOG_INFO("NetworkManager: Starting in STA-only mode");
+            LOG_INFO("NetworkManager: Starting in STA mode");
             if (!wifiConfig.staSSID.isEmpty()) {
                 success = connectToWiFiBlocking();
                 if (success) {
                     LOG_INFO("NetworkManager: STA connected successfully");
                     LOGGER.infof(">>> STA IP: %s <<<", WiFi.localIP().toString().c_str());
-                    // 连接成功，WiFiManager会在获取IP时清除modeTransitioning
                 } else {
-                    LOG_WARNING("NetworkManager: STA connection failed, falling back to AP+STA mode");
-                    wifiManager->setModeTransitioning(false);  // 连接失败，清除标志
-                    // 切换到AP+STA模式，启动AP热点并继续后台尝试连接WiFi
-                    wifiConfig.mode = NetworkMode::NETWORK_AP_STA;
+                    LOG_WARNING("NetworkManager: STA connection failed, falling back to AP mode");
+                    wifiManager->setModeTransitioning(false);
+                    // 连接失败，切换到AP模式提供配置界面
+                    wifiConfig.mode = NetworkMode::NETWORK_AP;
                     success = startAPMode();
                     if (success) {
                         LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:[%s] <<<",
                             WiFi.softAPIP().toString().c_str(),
                             wifiConfig.apSSID.c_str(),
                             wifiConfig.apPassword.c_str());
-                        LOGGER.info("NetworkManager: AP+STA mode started, AP is available, STA will reconnect in background");
-                        // 继续在后台尝试连接WiFi
-                        if (!wifiConfig.staSSID.isEmpty()) {
-                            LOG_INFO("NetworkManager: Attempting to connect to WiFi in background...");
-                            wifiManager->setNetworkConfig(wifiConfig);
-                            wifiManager->connectToWiFi();
-                        }
                     }
                 }
             } else {
                 LOG_WARNING("NetworkManager: No staSSID configured, starting AP mode");
-                wifiManager->setModeTransitioning(false);  // 没有配置SSID，清除标志
+                wifiManager->setModeTransitioning(false);
+                wifiConfig.mode = NetworkMode::NETWORK_AP;
                 success = startAPMode();
             }
             break;
             
         case NetworkMode::NETWORK_AP:
-            // 仅AP模式
-            LOG_INFO("NetworkManager: Starting in AP-only mode");
+            LOG_INFO("NetworkManager: Starting in AP mode");
             success = startAPMode();
             if (success) {
                 LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:[%s] <<<",
                     WiFi.softAPIP().toString().c_str(),
                     wifiConfig.apSSID.c_str(),
                     wifiConfig.apPassword.c_str());
-            }
-            break;
-            
-        case NetworkMode::NETWORK_AP_STA:
-            // AP+STA双模式：先启动AP，再尝试连接WiFi
-            LOG_INFO("NetworkManager: Starting in AP+STA dual mode");
-            
-            // 启动AP热点（startAPMode会自动设置正确的WiFi模式）
-            success = startAPMode();
-            if (success) {
-                LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:[%s] <<<",
-                    WiFi.softAPIP().toString().c_str(),
-                    wifiConfig.apSSID.c_str(),
-                    wifiConfig.apPassword.c_str());
-            } else {
-                LOG_ERROR("NetworkManager: Failed to start AP mode in AP+STA");
-                break;
-            }
-            
-            // 尝试连接WiFi（不阻塞，让它在后台连接）
-            if (!wifiConfig.staSSID.isEmpty()) {
-                // AP+STA模式：先让AP信号稳定，再尝试STA连接
-                LOG_INFO("NetworkManager: Waiting for AP signal to stabilize...");
-                delay(500);  // 给AP时间稳定信号
-                
-                LOG_INFO("NetworkManager: Attempting to connect to WiFi in background...");
-                wifiManager->setNetworkConfig(wifiConfig);
-                if (wifiManager->connectToWiFi()) {
-                    // 等待一小段时间看能否快速连接
-                    unsigned long startTime = millis();
-                    while (WiFi.status() != WL_CONNECTED && millis() - startTime < 5000) {
-                        delay(100);
-                    }
-                    if (WiFi.status() == WL_CONNECTED) {
-                        LOGGER.infof(">>> STA IP: %s <<<", WiFi.localIP().toString().c_str());
-                    } else {
-                        LOG_INFO("NetworkManager: WiFi connecting in background, AP is available");
-                    }
-                }
-            } else {
-                LOG_INFO("NetworkManager: No staSSID configured, AP mode only");
             }
             break;
             
         default:
             LOG_ERROR("NetworkManager: Unknown network mode, defaulting to AP");
+            wifiConfig.mode = NetworkMode::NETWORK_AP;
             success = startAPMode();
             break;
     }
@@ -279,8 +222,7 @@ void NetworkManager::update() {
         statusInfo.reconnectAttempts = 0;  // 重置重连计数器
         statusInfo.status = NetworkStatus::CONNECTED;
         
-        // 在AP+STA模式下，重新启动mDNS以更新IP绑定
-        // 优先使用STA IP进行mDNS响应
+        // 重新启动mDNS以更新IP绑定
         if (wifiConfig.enableMDNS) {
             LOG_INFOF("NetworkManager: WiFi connected, restarting mDNS for STA IP");
             // 使用dnsManager重启mDNS，让它检测并使用正确的IP
@@ -291,18 +233,7 @@ void NetworkManager::update() {
     // WiFi 断开（从连接变为断开）
     if (!isConnected && wasConnected) {
         LOG_WARNING("NetworkManager: WiFi disconnected");
-        
-        // 在AP+STA模式下，AP接口仍然可用
-        if (wifiConfig.mode == NetworkMode::NETWORK_AP_STA) {
-            statusInfo.status = NetworkStatus::AP_MODE;
-            // 确保mDNS仍然可用（使用AP IP）
-            if (wifiConfig.enableMDNS) {
-                LOG_INFO("NetworkManager: STA disconnected in AP+STA mode, restarting mDNS for AP interface");
-                dnsManager->restartMDNS(wifiConfig.customDomain);
-            }
-        } else {
-            statusInfo.status = NetworkStatus::DISCONNECTED;
-        }
+        statusInfo.status = NetworkStatus::DISCONNECTED;
     }
     
     wasConnected = isConnected;
@@ -340,18 +271,18 @@ void NetworkManager::update() {
         }
     }
 
-    // 自动重连逻辑
+    // 自动重连逻辑（仅在STA模式下）
     if (autoReconnectEnabled && 
-        (wifiConfig.mode == NetworkMode::NETWORK_STA || wifiConfig.mode == NetworkMode::NETWORK_AP_STA) &&
         !connecting &&
         !isConnected &&
         currentTime - lastReconnectAttempt >= wifiConfig.reconnectInterval) {
         
-        attemptReconnect();
+        if (wifiConfig.mode == NetworkMode::NETWORK_STA) {
+            attemptReconnect();
+        }
     }
     
     // mDNS 健康检查（每 30 秒）
-    // 在AP+STA模式下，确保mDNS服务持续可用
     if (currentTime - lastMdnsUpdate >= 30000) {
         if (wifiConfig.enableMDNS) {
             dnsManager->checkMDNSHealth();
@@ -400,7 +331,7 @@ void NetworkManager::update() {
             LOG_WARNING("NetworkManager: WiFi zombie detected! Forcing reconnect...");
             zombieFailCount = 0;
             wasConnected = false;          // 让下次 update() 走"重新连接"分支
-            WiFi.disconnect(false);        // 断开 STA（保留 AP）
+            WiFi.disconnect(false);        // 断开 STA
             delay(200);
             wifiManager->connectToWiFi();  // 重新连接 WiFi
         }
@@ -488,7 +419,7 @@ bool NetworkManager::loadNetworkConfig() {
 
     // 基本配置
     wifiConfig.mode = static_cast<NetworkMode>(preferences.getUInt("mode", 
-        static_cast<uint8_t>(NetworkMode::NETWORK_AP_STA)));
+        static_cast<uint8_t>(NetworkMode::NETWORK_STA)));
         wifiConfig.deviceName = preferences.getString("device_name", "FBE10000001");
 
         // AP配置
@@ -750,17 +681,9 @@ bool NetworkManager::connectToWiFiBlocking() {
         wifiManager->configureDHCP();
     }
 
-    // 设置 WiFi 模式
-    // 关键修复：AP+STA 模式下，必须确保 WiFi 模式包含 AP，否则 AP 热点会消失
+    // 设置 WiFi 模式为 STA
     WiFiMode_t currentMode = WiFi.getMode();
-    if (wifiConfig.mode == NetworkMode::NETWORK_AP_STA) {
-        // AP+STA 模式：确保当前模式同时包含 AP 和 STA
-        if (!(currentMode & WIFI_AP) || !(currentMode & WIFI_STA)) {
-            LOG_INFOF("NetworkManager: Setting WiFi mode to AP_STA for blocking connect (current: %d)", currentMode);
-            WiFi.mode(WIFI_MODE_APSTA);
-        }
-    } else if (!(currentMode & WIFI_STA)) {
-        // 纯 STA 模式：只在当前模式不包含 STA 时才设置
+    if (!(currentMode & WIFI_STA)) {
         WiFi.mode(WIFI_MODE_STA);
     }
 
@@ -817,20 +740,8 @@ void NetworkManager::disconnectWiFi() {
     wifiManager->disconnectWiFi();
     connecting = false;
     
-    // 在AP+STA模式下，不断开mDNS，因为AP接口仍然可用
-    // 只有在纯STA模式下才停止mDNS
-    if (wifiConfig.mode != NetworkMode::NETWORK_AP_STA) {
-        dnsManager->stopMDNS();
-        statusInfo.status = NetworkStatus::DISCONNECTED;
-    } else {
-        // AP+STA模式：STA断开，但AP仍然运行
-        statusInfo.status = NetworkStatus::AP_MODE;
-        // 确保mDNS仍然可用（使用AP IP）
-        if (wifiConfig.enableMDNS) {
-            LOG_INFO("NetworkManager: STA disconnected in AP+STA mode, ensuring mDNS on AP interface");
-            dnsManager->restartMDNS(wifiConfig.customDomain);
-        }
-    }
+    dnsManager->stopMDNS();
+    statusInfo.status = NetworkStatus::DISCONNECTED;
     
     LOG_INFO("NetworkManager: WiFi disconnected");
     triggerEvent(NetworkStatus::DISCONNECTED, "WiFi disconnected");
@@ -874,57 +785,34 @@ void NetworkManager::updateStatusInfo() {
 // IP 冲突检测和故障转移方法已移至 IPManager 类
 
 void NetworkManager::attemptReconnect() {
-    // 重连次数限制：达到最大次数后切换到AP+STA模式（如果是纯STA模式）
+    // 重连次数限制：达到最大次数后切换到AP模式
     if (statusInfo.reconnectAttempts >= wifiConfig.maxReconnectAttempts) {
-        // 纯STA模式下，切换到AP+STA模式以提供Web管理界面
-        if (wifiConfig.mode == NetworkMode::NETWORK_STA) {
-            LOG_WARNING("NetworkManager: Max reconnect attempts reached in STA mode, switching to AP+STA mode");
+        LOG_WARNING("NetworkManager: Max reconnect attempts reached in STA mode, switching to AP mode");
+        
+        // 切换到AP模式，提供Web配置界面
+        wifiConfig.mode = NetworkMode::NETWORK_AP;
+        
+        // 断开当前STA连接
+        wifiManager->disconnectWiFi();
+        
+        // 启动AP模式
+        if (startAPMode()) {
+            LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:[%s] <<<",
+                WiFi.softAPIP().toString().c_str(),
+                wifiConfig.apSSID.c_str(),
+                wifiConfig.apPassword.c_str());
+            LOG_INFO("NetworkManager: Switched to AP mode, Web config available");
             
-            // 切换到AP+STA模式
-            wifiConfig.mode = NetworkMode::NETWORK_AP_STA;
-            
-            // 启动AP模式（这会自动设置WiFi模式为APSTA）
-            if (startAPMode()) {
-                LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:[%s] <<<",
-                    WiFi.softAPIP().toString().c_str(),
-                    wifiConfig.apSSID.c_str(),
-                    wifiConfig.apPassword.c_str());
-                LOG_INFO("NetworkManager: Switched to AP+STA mode, AP is available, STA will continue reconnecting in background");
-                
-                // 重置重连计数器，继续在后台尝试STA连接
-                statusInfo.reconnectAttempts = 0;
-                autoReconnectEnabled = true;
-                
-                // 继续在后台尝试连接WiFi
-                if (!wifiConfig.staSSID.isEmpty()) {
-                    LOG_INFO("NetworkManager: Continuing WiFi connection attempts in background...");
-                    wifiManager->setNetworkConfig(wifiConfig);
-                    wifiManager->connectToWiFi();
-                }
-            } else {
-                LOG_ERROR("NetworkManager: Failed to start AP mode when switching to AP+STA");
-                // 如果AP启动失败，重置计数器，等待更长时间后再试
-                statusInfo.reconnectAttempts = 0;
-                lastReconnectAttempt = millis() + 55000;  // 等待 60 秒
-            }
-            return;
-        } else {
-            // AP+STA模式下，彻底关闭STA射频以保持AP稳定
-            LOG_WARNING("NetworkManager: Max reconnect attempts reached in AP+STA mode, stopping STA to keep AP stable");
-            WiFi.enableSTA(false);  // 完全关闭STA射频，AP不受影响
-            autoReconnectEnabled = false;  // 停止自动重连
+            // 重置重连计数器
             statusInfo.reconnectAttempts = 0;
-            LOG_INFO("NetworkManager: STA disabled, AP hotspot is now stable. Use Web UI to reconnect WiFi.");
-            return;
+            autoReconnectEnabled = false;
+        } else {
+            LOG_ERROR("NetworkManager: Failed to start AP mode after STA failure");
+            // 如果AP启动失败，重置计数器，等待更长时间后再试
+            statusInfo.reconnectAttempts = 0;
+            lastReconnectAttempt = millis() + 55000;  // 等待 60 秒
         }
-    }
-
-    // AP+STA模式下使用更长的重连间隔（至少15秒），减少对AP的干扰
-    if (wifiConfig.mode == NetworkMode::NETWORK_AP_STA) {
-        uint32_t effectiveInterval = wifiConfig.reconnectInterval > 15000 ? wifiConfig.reconnectInterval : 15000;
-        if (millis() - lastReconnectAttempt < effectiveInterval) {
-            return;  // 间隔不够，跳过此次重连
-        }
+        return;
     }
 
     lastReconnectAttempt = millis();
@@ -1022,88 +910,41 @@ bool NetworkManager::restartNetwork() {
     
     // 保存当前模式以便比较
     NetworkMode newMode = wifiConfig.mode;
-    bool needAp = (newMode == NetworkMode::NETWORK_AP || newMode == NetworkMode::NETWORK_AP_STA);
     
-    // 如果新模式需要AP，先启动AP以确保Web服务可用
-    // 这样在切换过程中用户可以通过AP访问Web服务
-    if (needAp) {
-        LOG_INFO("NetworkManager: Starting AP first for seamless transition...");
+    if (newMode == NetworkMode::NETWORK_AP) {
+        LOG_INFO("NetworkManager: Restarting in AP mode...");
         
-        // 对于纯AP模式，必须确保WiFi模式正确
-        // 先停止现有AP，再重新启动以确保配置正确
-        if (newMode == NetworkMode::NETWORK_AP) {
-            // 纯AP模式：断开STA连接，停止现有AP
-            if (WiFi.status() == WL_CONNECTED) {
-                WiFi.disconnect(false);
-            }
-            // 强制重新启动AP以确保WiFi模式正确
-            wifiManager->stopAPMode();
-            delay(100);
-            wifiManager->setNetworkConfig(wifiConfig);
-            if (!wifiManager->startAPMode()) {
-                LOG_ERROR("NetworkManager: Failed to start AP mode");
-                wifiManager->setModeTransitioning(false);
-                return false;
-            }
-            // 启动mDNS服务
-            if (wifiConfig.enableMDNS) {
-                dnsManager->startMDNS(wifiConfig.customDomain);
-                LOG_INFO("NetworkManager: mDNS service restarted after network restart");
-            }
-            statusInfo.status = NetworkStatus::AP_MODE;
-            statusInfo.internetAvailable = false;
-            isInitialized = true;
-            wifiManager->setModeTransitioning(false);
-            LOG_INFO("NetworkManager: AP-only mode restarted successfully");
-            // 触发网络模式切换为AP系统事件
-#if FASTBEE_ENABLE_PERIPH_EXEC
-            PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_NET_MODE_AP, "");
-#endif
-            return true;
-        } else {
-            // AP+STA模式：可以先启动AP，然后连接STA
-            if (WiFi.status() == WL_CONNECTED) {
-                WiFi.disconnect(false);  // 断开但保持WiFi Radio
-            }
-            wifiManager->setNetworkConfig(wifiConfig);
-            if (!wifiManager->startAPMode()) {
-                LOG_ERROR("NetworkManager: Failed to start AP mode");
-                wifiManager->setModeTransitioning(false);
-                return false;
-            }
-            // 启动mDNS服务
-            if (wifiConfig.enableMDNS) {
-                dnsManager->startMDNS(wifiConfig.customDomain);
-                LOG_INFO("NetworkManager: mDNS service restarted after network restart");
-            }
-            LOG_INFO("NetworkManager: AP started for seamless transition");
+        // 断开STA连接
+        if (WiFi.status() == WL_CONNECTED) {
+            WiFi.disconnect(false);
         }
-        
-        // 短暂延迟让AP稳定
+        // 停止现有AP，再重新启动以确保配置正确
+        wifiManager->stopAPMode();
         delay(100);
-        
-        // AP+STA模式：现在AP已运行，尝试连接STA
-        if (newMode == NetworkMode::NETWORK_AP_STA && !wifiConfig.staSSID.isEmpty()) {
-            LOG_INFO("NetworkManager: Connecting STA in AP+STA mode...");
-            WiFi.enableSTA(true);  // 重新启用STA
-            autoReconnectEnabled = true;
-            wifiManager->resetStaInitialized();  // 重置STA初始化标志，允许使用WiFi.begin()
-            wifiManager->setNetworkConfig(wifiConfig);
-            wifiManager->connectToWiFi();
-            // 不等待连接完成，让它在后台连接
+        wifiManager->setNetworkConfig(wifiConfig);
+        if (!wifiManager->startAPMode()) {
+            LOG_ERROR("NetworkManager: Failed to start AP mode");
+            wifiManager->setModeTransitioning(false);
+            return false;
         }
-        
-        statusInfo.status = NetworkStatus::AP_MODE;  // 初始状态，STA可能还在连接中
+        // 启动mDNS服务
+        if (wifiConfig.enableMDNS) {
+            dnsManager->startMDNS(wifiConfig.customDomain);
+            LOG_INFO("NetworkManager: mDNS service restarted after network restart");
+        }
+        statusInfo.status = NetworkStatus::AP_MODE;
+        statusInfo.internetAvailable = false;
         isInitialized = true;
-        LOG_INFO("NetworkManager: AP+STA mode restarted, AP available, STA connecting...");
-        // 触发网络模式切换为AP+STA系统事件
+        wifiManager->setModeTransitioning(false);
+        LOG_INFO("NetworkManager: AP mode restarted successfully");
+        // 触发网络模式切换为AP系统事件
 #if FASTBEE_ENABLE_PERIPH_EXEC
-        PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_NET_MODE_AP_STA, "");
+        PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_NET_MODE_AP, "");
 #endif
         return true;
     }
     
-    // 对于纯STA模式，需要完全重启
+    // 对于STA模式，需要完全重启
     LOG_INFO("NetworkManager: Full network restart for STA mode...");
     // 触发网络模式切换为STA系统事件
 #if FASTBEE_ENABLE_PERIPH_EXEC

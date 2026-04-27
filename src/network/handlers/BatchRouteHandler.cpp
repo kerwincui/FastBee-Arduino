@@ -201,9 +201,8 @@ bool BatchRouteHandler::buildSubResponse(const String& url, JsonObject out) {
         data["rxCount"] = info.rxCount;
         const char* modeText = "unknown";
         switch (cfg.mode) {
-            case NetworkMode::NETWORK_STA:    modeText = "STA";    break;
-            case NetworkMode::NETWORK_AP:     modeText = "AP";     break;
-            case NetworkMode::NETWORK_AP_STA: modeText = "AP+STA"; break;
+            case NetworkMode::NETWORK_STA:    modeText = "STA"; break;
+            case NetworkMode::NETWORK_AP:     modeText = "AP";  break;
             default: break;
         }
         data["mode"] = modeText;

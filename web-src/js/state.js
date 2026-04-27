@@ -360,18 +360,6 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         if (pageId === 'device-page' && tabId === 'dev-basic') {
             if (typeof this._loadDeviceHardwareInfo === 'function') this._loadDeviceHardwareInfo();
         }
-        // 切换到热点配置tab时自动加载配网状态
-        if (pageId === 'network-page' && tabId === 'ap-config') {
-            if (typeof this.loadProvisionStatus === 'function') this.loadProvisionStatus();
-        }
-        // 切换到蓝牙配网tab时自动加载蓝牙配网状态和配置
-        if (pageId === 'device-page' && tabId === 'dev-ble') {
-            var self = this;
-            PageLoader.loadFragment('dev-ble-fragment-container', 'device-ble', function() {
-                if (typeof self.loadBLEProvisionStatus === 'function') self.loadBLEProvisionStatus();
-                if (typeof self.loadBLEProvisionConfig === 'function') self.loadBLEProvisionConfig();
-            });
-        }
         // 切换到OTA升级tab时自动加载OTA状态
         if (pageId === 'device-page' && tabId === 'dev-ota') {
             var selfOta = this;

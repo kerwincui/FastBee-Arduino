@@ -12,7 +12,7 @@ namespace ArduinoJson {
     }
     inline void convertFromJson(JsonVariantConst src, NetworkMode& dst) {
         int v = src.as<int>();
-        dst = (v >= 0 && v <= 2) ? static_cast<NetworkMode>(v) : NetworkMode::NETWORK_STA;
+        dst = (v >= 0 && v <= 1) ? static_cast<NetworkMode>(v) : NetworkMode::NETWORK_STA;
     }
     
     // IPConfigType

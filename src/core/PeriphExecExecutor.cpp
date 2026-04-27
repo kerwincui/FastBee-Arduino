@@ -864,14 +864,6 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
             LOGGER.info("[PeriphExec] OTA action - reserved for future implementation");
             return true;
 
-        case ExecActionType::ACTION_SYS_AP_PROVISION:
-            LOGGER.info("[PeriphExec] AP provision action - reserved for future implementation");
-            return true;
-
-        case ExecActionType::ACTION_SYS_BLE_PROVISION:
-            LOGGER.info("[PeriphExec] BLE provision action - reserved for future implementation");
-            return true;
-
         default:
             LOGGER.warningf("[PeriphExec] Unknown system action: %d", action.actionType);
             return false;

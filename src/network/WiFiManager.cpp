@@ -42,63 +42,18 @@ bool WiFiManager::connectToWiFi() {
         return false;
     }
 
-    // AP+STA模式下的重连：使用WiFi.reconnect()避免干扰AP
-    // WiFi.begin()会重新初始化STA接口，在ESP32上会短暂重置WiFi射频，导致AP信号中断
-    // WiFi.reconnect()只是调用底层esp_wifi_connect()而不重新初始化射频，不会干扰AP
-    if (staInitialized && wifiConfig.mode == NetworkMode::NETWORK_AP_STA) {
-        // 检查STA是否被禁用（如果之前达到最大重连次数被关闭了）
-        WiFiMode_t currentMode = WiFi.getMode();
-        if (currentMode == WIFI_MODE_AP) {
-            // STA被禁用了，需要重新启用
-            LOG_INFO("WiFiManager: STA was disabled, re-enabling...");
-            WiFi.enableSTA(true);
-            delay(100);
-            staInitialized = false;  // 需要重新WiFi.begin()
-            // 继续执行下面的WiFi.begin()逻辑
-        } else {
-            // 确保当前模式仍然是APSTA
-            if (!(currentMode & WIFI_AP) || !(currentMode & WIFI_STA)) {
-                WiFi.mode(WIFI_MODE_APSTA);
-                delay(100);
-            }
-            
-            statusInfo.status = NetworkStatus::CONNECTING;
-            connecting = true;
-            connectingStartTime = millis();
-            
-            WiFi.reconnect();  // 不重置射频，不影响AP
-            LOG_INFO("WiFiManager: Reconnecting to " + wifiConfig.staSSID + " (AP-safe reconnect)");
-            triggerEvent(NetworkStatus::CONNECTING, "Reconnecting to WiFi");
-            return true;
-        }
-    }
-
-    // 在 AP+STA 模式下，不要断开已有连接，因为 AP 模式可能已经在运行
-    // 只有在纯 STA 模式下才断开已有连接
-    if (wifiConfig.mode == NetworkMode::NETWORK_STA) {
-        wl_status_t currentStatus = WiFi.status();
-        if (currentStatus == WL_CONNECTED || currentStatus == WL_IDLE_STATUS) {
-            LOG_DEBUG("WiFiManager: Disconnecting before new connection attempt");
-            WiFi.disconnect(false);
-            delay(50);  // 短暂延迟确保断开完成
-        }
+    // 在纯 STA 模式下，断开已有连接再重新连接
+    wl_status_t currentStatus = WiFi.status();
+    if (currentStatus == WL_CONNECTED || currentStatus == WL_IDLE_STATUS) {
+        LOG_DEBUG("WiFiManager: Disconnecting before new connection attempt");
+        WiFi.disconnect(false);
+        delay(50);  // 短暂延迟确保断开完成
     }
 
     // 确保 WiFi 模式正确
-    // 关键修复：AP+STA 模式下，必须确保 WiFi 模式包含 AP，否则 AP 热点会消失
     WiFiMode_t currentMode = WiFi.getMode();
     
-    if (wifiConfig.mode == NetworkMode::NETWORK_AP_STA) {
-        // AP+STA 模式：确保当前模式同时包含 AP 和 STA
-        // 使用位运算检查，而不是相等比较，这样可以处理各种边界情况
-        if (!(currentMode & WIFI_AP) || !(currentMode & WIFI_STA)) {
-            LOG_INFOF("WiFiManager: Setting WiFi mode to AP_STA (current: %d)", currentMode);
-            if (!WiFi.mode(WIFI_MODE_APSTA)) {
-                LOG_ERROR("WiFiManager: Failed to set WiFi mode to AP_STA");
-                return false;
-            }
-        }
-    } else if (wifiConfig.mode == NetworkMode::NETWORK_STA) {
+    if (wifiConfig.mode == NetworkMode::NETWORK_STA) {
         // 纯 STA 模式：只在当前模式不包含 STA 时才设置
         if (!(currentMode & WIFI_STA)) {
             WiFi.mode(WIFI_STA);
@@ -146,11 +101,11 @@ void WiFiManager::disconnectWiFi() {
 bool WiFiManager::startAPMode() {
     // 检查AP是否已经正确启动且模式匹配
     // 注意：必须同时满足以下条件才能跳过重新启动：
-    // 1. WiFi模式正确（纯AP模式必须是WIFI_MODE_AP，AP+STA模式必须是WIFI_MODE_APSTA）
+    // 1. WiFi模式正确（纯AP模式必须是WIFI_MODE_AP）
     // 2. softAPIP有效
     // 3. AP热点确实在运行（可以通过检查连接数或SSID来验证）
     WiFiMode_t currentMode = WiFi.getMode();
-    WiFiMode_t targetMode = (wifiConfig.mode == NetworkMode::NETWORK_AP) ? WIFI_MODE_AP : WIFI_MODE_APSTA;
+    WiFiMode_t targetMode = WIFI_MODE_AP;
     
     if (currentMode == targetMode && WiFi.softAPIP() != IPAddress(0, 0, 0, 0)) {
         // 模式正确且IP有效，检查热点是否真正在广播
@@ -166,69 +121,7 @@ bool WiFiManager::startAPMode() {
         LOG_INFO("WiFiManager: AP running but SSID mismatch, restarting...");
     }
     
-    // 记录当前STA状态
-    bool wasStaConnected = (WiFi.status() == WL_CONNECTED);
-    IPAddress staIP = WiFi.localIP();
-    
-    // targetMode 和 currentMode 已在前面声明，直接使用
-    LOG_INFO("WiFiManager: Setting WiFi mode to " + 
-             String(targetMode == WIFI_MODE_AP ? "AP-only" : "AP+STA"));
-    
-    // 如果要从 STA 切换到 AP+STA，需要小心处理
-    // 先配置AP网络参数，再切换模式，可以减少中断时间
-    if ((currentMode == WIFI_MODE_STA || currentMode == WIFI_MODE_APSTA) && targetMode == WIFI_MODE_APSTA) {
-        // 已经是STA模式，要添加AP功能
-        // 先配置AP参数，再启用AP
-        
-        // 配置 AP 网络参数
-        IPAddress apIP(192, 168, 4, 1);
-        IPAddress apGateway(192, 168, 4, 1);
-        IPAddress apSubnet(255, 255, 255, 0);
-        
-        // 配置softAP（但不广播）
-        if (!WiFi.softAPConfig(apIP, apGateway, apSubnet)) {
-            LOG_WARNING("WiFiManager: Failed to configure AP network");
-        }
-        
-        // 配置 AP 参数
-        String apSSID;
-        if (wifiConfig.apSSID.isEmpty()) {
-            apSSID = wifiConfig.deviceName;
-            apSSID += "_";
-            apSSID += getChipID().substring(0, 6);
-        } else {
-            apSSID = wifiConfig.apSSID;
-        }
-        
-        // 设置模式为APSTA（如果还没设置）
-        if (currentMode != WIFI_MODE_APSTA) {
-            if (!WiFi.mode(WIFI_MODE_APSTA)) {
-                LOG_ERROR("WiFiManager: Failed to set WiFi mode to APSTA");
-                return false;
-            }
-            // 短暂延迟让模式切换生效
-            delay(100);
-        }
-        
-        // 启动AP
-        if (!WiFi.softAP(apSSID.c_str(), wifiConfig.apPassword.c_str(), 
-                         wifiConfig.apChannel, wifiConfig.apHidden, 
-                         wifiConfig.apMaxConnections)) {
-            LOG_ERROR("WiFiManager: Failed to start AP mode");
-            return false;
-        }
-        
-        statusInfo.status = NetworkStatus::AP_MODE;
-        statusInfo.apIPAddress = WiFi.softAPIP().toString();
-        
-        LOG_INFO("WiFiManager: AP mode added to STA: " + apSSID);
-        LOG_INFO("WiFiManager: AP IP: " + statusInfo.apIPAddress);
-        
-        triggerEvent(NetworkStatus::AP_MODE, "AP mode started successfully");
-        return true;
-    }
-    
-    // 其他情况：正常切换模式
+    LOG_INFO("WiFiManager: Setting WiFi mode to AP-only");
     if (!WiFi.mode(targetMode)) {
         LOG_ERROR("WiFiManager: Failed to set WiFi mode");
         return false;
@@ -392,9 +285,6 @@ bool WiFiManager::restartNetwork() {
         case NetworkMode::NETWORK_AP:
             success = startAPMode();
             break;
-        case NetworkMode::NETWORK_AP_STA:
-            success = startAPMode() && connectToWiFi();
-            break;
     }
     
     return success;
@@ -417,7 +307,6 @@ bool WiFiManager::checkInternetConnection() {
     }
     
     // 仅在纯AP模式下才认为 192.168.4.x 无互联网
-    // AP+STA模式下，WiFi.localIP() 返回的是STA IP，不需要此检查
     if (mode == WIFI_AP) {
         if (localIP[0] == 192 && localIP[1] == 168 && localIP[2] == 4) {
             return false;
@@ -468,11 +357,7 @@ void WiFiManager::updateStatusInfo() {
             // 只有在当前状态是 CONNECTED 时才切换到断开状态
             // 如果是 AP_MODE 或其他状态则保持不变
             if (statusInfo.status == NetworkStatus::CONNECTED) {
-                // 检查是否是 AP+STA 模式且 AP 正在运行
-                if ((mode & WIFI_AP) && WiFi.softAPIP() != IPAddress(0, 0, 0, 0)) {
-                    statusInfo.status = NetworkStatus::AP_MODE;
-                    LOG_INFO("WiFiManager: STA disconnected, switching to AP_MODE status");
-                } else {
+                    {
                     statusInfo.status = NetworkStatus::DISCONNECTED;
                 }
                 statusInfo.ipAddress = "";
@@ -674,7 +559,7 @@ String WiFiManager::getWiFiModeString() {
         case WIFI_MODE_NULL: return "NULL";
         case WIFI_MODE_STA: return "STA";
         case WIFI_MODE_AP: return "AP";
-        case WIFI_MODE_APSTA: return "AP+STA";
+
         default: return "Unknown";
     }
 }

@@ -14,7 +14,6 @@ const EventDef STATIC_EVENTS[] = {
     // 网络模式事件
     {EventType::EVENT_NET_MODE_AP, "net_mode_ap", "网络模式切换为AP", "网络"},
     {EventType::EVENT_NET_MODE_STA, "net_mode_sta", "网络模式切换为STA", "网络"},
-    {EventType::EVENT_NET_MODE_AP_STA, "net_mode_ap_sta", "网络模式切换为AP+STA", "网络"},
     // 协议事件
     {EventType::EVENT_MODBUS_RTU_ENABLED, "modbus_rtu_enabled", "Modbus RTU启用", "协议"},
     {EventType::EVENT_MODBUS_TCP_ENABLED, "modbus_tcp_enabled", "Modbus TCP启用", "协议"},
@@ -26,11 +25,6 @@ const EventDef STATIC_EVENTS[] = {
     {EventType::EVENT_OTA_START, "ota_start", "OTA升级开始", "系统"},
     {EventType::EVENT_OTA_SUCCESS, "ota_success", "OTA升级成功", "系统"},
     {EventType::EVENT_OTA_FAILED, "ota_failed", "OTA升级失败", "系统"},
-    // 配网事件
-    {EventType::EVENT_AP_PROVISION_START, "ap_provision_start", "AP配网开始", "配网"},
-    {EventType::EVENT_AP_PROVISION_DONE, "ap_provision_done", "AP配网完成", "配网"},
-    {EventType::EVENT_BLE_PROVISION_START, "ble_provision_start", "蓝牙配网开始", "配网"},
-    {EventType::EVENT_BLE_PROVISION_DONE, "ble_provision_done", "蓝牙配网完成", "配网"},
     // 规则引擎事件
     {EventType::EVENT_RULE_EXEC_TIME, "rule_exec_time", "规则脚本执行时间", "规则"},
     {EventType::EVENT_RULE_EXEC_ERROR, "rule_exec_error", "规则脚本执行错误", "规则"},

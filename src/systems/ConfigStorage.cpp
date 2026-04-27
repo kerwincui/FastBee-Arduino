@@ -110,7 +110,7 @@ bool ConfigStorage::saveJSONConfig(const String& filename, const JsonDocument& c
                 ConfigCacheEntry* entry = findInCache(filename);
                 if (entry) {
                     entry->dirty = true;
-                    entry->debounceUntil = millis() + 5000;
+                    entry->debounceUntil = millis() + 3000;
                 }
                 return true;  // 延迟写入
             }

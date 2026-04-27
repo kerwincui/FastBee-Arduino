@@ -59,12 +59,12 @@
             const pathEl = document.getElementById('current-dir-path');
             if (pathEl) pathEl.textContent = path;
 
-            treeContainer.textContent = i18n.t('fs-loading-text');
+            treeContainer.innerHTML = i18n.t('fs-loading-text');
 
             apiGet('/api/files', { path: path })
                 .then(res => {
                     if (!res || !res.success) {
-                        treeContainer.textContent = i18n.t('fs-load-fail-text');
+                        treeContainer.innerHTML = i18n.t('fs-load-fail-text');
                         return;
                     }
 
@@ -111,7 +111,7 @@
 
                     treeContainer.innerHTML = '';
                     if (dirs.length === 0 && files.length === 0) {
-                        treeContainer.textContent = i18n.t('fs-empty-dir-html');
+                        treeContainer.innerHTML = i18n.t('fs-empty-dir-html');
                     } else {
                         treeContainer.appendChild(fragment);
                     }
@@ -138,7 +138,7 @@
                 })
                 .catch(err => {
                     console.error('Load file tree failed:', err);
-                    treeContainer.textContent = i18n.t('fs-load-fail-text');
+                    treeContainer.innerHTML = i18n.t('fs-load-fail-text');
                 });
         },
 

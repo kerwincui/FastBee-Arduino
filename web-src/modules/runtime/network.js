@@ -46,15 +46,6 @@
                 });
             }
 
-            // AP配网事件绑定（整合到热点配置页面）
-            const apProvisionRefreshBtn = document.getElementById('ap-provision-refresh-btn');
-            if (apProvisionRefreshBtn) apProvisionRefreshBtn.addEventListener('click', () => this.loadProvisionStatus());
-
-            const apProvisionStartBtn = document.getElementById('ap-provision-start-btn');
-            if (apProvisionStartBtn) apProvisionStartBtn.addEventListener('click', () => this.startProvision());
-
-            const apProvisionStopBtn = document.getElementById('ap-provision-stop-btn');
-            if (apProvisionStopBtn) apProvisionStopBtn.addEventListener('click', () => this.stopProvision());
         },
 
         _renderWifiNote(text) {
@@ -241,23 +232,6 @@
                             noticeMessage += i18n.t('wifi-mode-notice-ap')
                                 .replace('{ssid}', data.apSSID || 'fastbee-ap')
                                 .replace('{ip}', data.apIP || '192.168.4.1');
-                        } else if (mode === 2 || modeText === 'AP+STA') {
-                            if (data.mdnsDomain && data.apSSID) {
-                                const hint = i18n.t('wifi-mode-apsta-hint')
-                                    .replace('{ssid}', data.apSSID)
-                                    .replace('{ip}', data.apIP || '192.168.4.1')
-                                    .replace('{domain}', data.mdnsDomain);
-                                message += '<br>' + this._renderWifiNote(hint);
-                                noticeMessage += i18n.t('wifi-mode-notice-apsta');
-                            } else if (data.apSSID) {
-                                const hint = i18n.t('wifi-mode-ap-hint')
-                                    .replace('{ssid}', data.apSSID)
-                                    .replace('{ip}', data.apIP || '192.168.4.1');
-                                message += '<br>' + this._renderWifiNote(hint);
-                                noticeMessage += i18n.t('wifi-mode-notice-ap')
-                                    .replace('{ssid}', data.apSSID)
-                                    .replace('{ip}', data.apIP || '192.168.4.1');
-                            }
                         }
 
                         message += '<br>' + this._renderWifiNote(i18n.t('wifi-reconnect-hint'));
@@ -520,137 +494,6 @@
                 });
         },
 
-        // ============ AP配网功能 ============
-
-        loadProvisionStatus() {
-            apiGet('/api/provision/status')
-                .then(res => {
-                    if (!res || !res.success) return;
-                    const d = res.data || {};
-
-                    const statusEl = document.getElementById('ap-provision-status');
-                    if (statusEl) {
-                        if (d.active) {
-                            statusEl.textContent = i18n.t('provision-active');
-                            statusEl.className = 'badge badge-success';
-                        } else {
-                            statusEl.textContent = i18n.t('provision-inactive');
-                            statusEl.className = 'badge badge-info';
-                        }
-                    }
-
-                    this._setTextContent('ap-provision-ap-name', d.apSSID || '--');
-                    this._setTextContent('ap-provision-clients', d.clients || '0');
-
-                    const startBtn = document.getElementById('ap-provision-start-btn');
-                    const stopBtn = document.getElementById('ap-provision-stop-btn');
-                    if (startBtn) startBtn.disabled = d.active;
-                    if (stopBtn) stopBtn.disabled = !d.active;
-                })
-                .catch(err => {
-                    console.error('Load provision status failed:', err);
-                });
-        },
-
-        loadProvisionConfig() {
-            apiGet('/api/provision/config')
-                .then(res => {
-                    if (!res || !res.success) return;
-                    const d = res.data || {};
-
-                    this._setValue('provision-ssid', d.provisionSSID || '');
-                    this._setValue('provision-password', d.provisionPassword || '');
-                    this._setValue('provision-timeout', d.provisionTimeout || 300);
-                    this._setValue('provision-user-id', d.provisionUserId || '');
-                    this._setValue('provision-product-id', d.provisionProductId || '');
-                    this._setValue('provision-auth-code', d.provisionAuthCode || '');
-                    this._setValue('provision-ip', d.provisionIP || '192.168.4.1');
-                    this._setValue('provision-gateway', d.provisionGateway || '192.168.4.1');
-                    this._setValue('provision-subnet', d.provisionSubnet || '255.255.255.0');
-                })
-                .catch(err => {
-                    console.error('Load provision config failed:', err);
-                });
-        },
-
-        saveProvisionConfig() {
-            const data = {
-                provisionSSID:     document.getElementById('provision-ssid')?.value || '',
-                provisionPassword: document.getElementById('provision-password')?.value || '',
-                provisionTimeout:  document.getElementById('provision-timeout')?.value || '300',
-                provisionUserId:   document.getElementById('provision-user-id')?.value || '',
-                provisionProductId: document.getElementById('provision-product-id')?.value || '',
-                provisionAuthCode: document.getElementById('provision-auth-code')?.value || '',
-                provisionIP:       document.getElementById('provision-ip')?.value || '192.168.4.1',
-                provisionGateway:  document.getElementById('provision-gateway')?.value || '192.168.4.1',
-                provisionSubnet:   document.getElementById('provision-subnet')?.value || '255.255.255.0'
-            };
-
-            apiPut('/api/provision/config', data)
-                .then(res => {
-                    if (res && res.success) {
-                        this._showMessage('provision-success', true);
-                        Notification.success(i18n.t('provision-save-ok'), i18n.t('provision-title'));
-                    } else {
-                        Notification.error(res?.message || i18n.t('dev-save-fail'), i18n.t('provision-title'));
-                    }
-                })
-                .catch(err => {
-                    Notification.error(i18n.t('provision-start-fail') + ': ' + (err.message || err), i18n.t('provision-title'));
-                });
-        },
-
-        startProvision() {
-            const startBtn = document.getElementById('ap-provision-start-btn');
-            if (startBtn) {
-                startBtn.disabled = true;
-                startBtn.innerHTML = i18n.t('provision-starting-html');
-            }
-
-            apiPost('/api/provision/start', {})
-                .then(res => {
-                    if (res && res.success) {
-                        Notification.success(`${i18n.t('provision-start-ok-prefix')}${res.data?.apSSID || ''}`, i18n.t('provision-title'));
-                        this.loadProvisionStatus();
-                    } else {
-                        Notification.error(res?.message || i18n.t('provision-start-fail'), i18n.t('provision-title'));
-                    }
-                })
-                .catch(err => {
-                    Notification.error(i18n.t('provision-start-fail') + ': ' + (err.message || err), i18n.t('provision-title'));
-                })
-                .finally(() => {
-                    if (startBtn) {
-                        startBtn.innerHTML = i18n.t('provision-start-html');
-                    }
-                });
-        },
-
-        stopProvision() {
-            const stopBtn = document.getElementById('ap-provision-stop-btn');
-            if (stopBtn) {
-                stopBtn.disabled = true;
-                stopBtn.innerHTML = i18n.t('provision-stopping-html');
-            }
-
-            apiPost('/api/provision/stop', {})
-                .then(res => {
-                    if (res && res.success) {
-                        Notification.success(i18n.t('provision-stop-ok'), i18n.t('provision-title'));
-                        this.loadProvisionStatus();
-                    } else {
-                        Notification.error(res?.message || i18n.t('provision-stop-fail'), i18n.t('provision-title'));
-                    }
-                })
-                .catch(err => {
-                    Notification.error(i18n.t('provision-stop-fail') + ': ' + (err.message || err), i18n.t('provision-title'));
-                })
-                .finally(() => {
-                    if (stopBtn) {
-                        stopBtn.innerHTML = i18n.t('provision-stop-html');
-                    }
-                });
-        }
     });
 
     // 自动绑定事件

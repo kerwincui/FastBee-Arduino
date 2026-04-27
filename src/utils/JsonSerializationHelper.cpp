@@ -82,10 +82,8 @@ String JsonSerializationHelper::networkModeToString(NetworkMode mode) {
     uint8_t modeValue = static_cast<uint8_t>(mode);
     
     switch(modeValue) {
-        case 0: return "关闭";          // WIFI_OFF / WIFI_MODE_NULL
-        case 1: return "站点模式";      // WIFI_STA / WIFI_MODE_STA
-        case 2: return "热点模式";      // WIFI_AP / WIFI_MODE_AP
-        case 3: return "混合模式";      // WIFI_AP_STA / WIFI_MODE_APSTA
+        case 0: return "站点模式";      // NETWORK_STA
+        case 1: return "热点模式";      // NETWORK_AP
         default: return "未知";
     }
 }
