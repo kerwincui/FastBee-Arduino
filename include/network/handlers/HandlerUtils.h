@@ -38,8 +38,28 @@ inline void sendJsonError(AsyncWebServerRequest* request, int code, const char* 
 // 内存检查 - 返回 true 表示内存不足（已发送 503 响应）
 // 同时检查总空闲堆和最大连续块（检测碎片化）
 inline bool checkLowMemory(AsyncWebServerRequest* request, size_t threshold = 20480) {
-    if (ESP.getFreeHeap() < threshold || ESP.getMaxAllocHeap() < 8192) {
-        sendJsonError(request, 503, "Low memory");
+    uint32_t freeHeap = ESP.getFreeHeap();
+    uint32_t maxAlloc = ESP.getMaxAllocHeap();
+    if (freeHeap < threshold || maxAlloc < 8192) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Low memory: heap=%lu maxAlloc=%lu", (unsigned long)freeHeap, (unsigned long)maxAlloc);
+        sendJsonError(request, 503, msg);
+        return true;
+    }
+    return false;
+}
+
+// 带响应大小预估的内存检查 - 返回 true 表示内存不足
+inline bool checkResponseMemory(AsyncWebServerRequest* request, size_t responseSize) {
+    uint32_t maxAlloc = ESP.getMaxAllocHeap();
+    size_t safeSize = responseSize + 512;  // 预留 512 字节安全余量
+    if (maxAlloc < safeSize) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Low memory: need ~%u bytes, maxAlloc=%lu",
+                 (unsigned)safeSize, (unsigned long)maxAlloc);
+        AsyncWebServerResponse* response = request->beginResponse(503, "text/plain", msg);
+        response->addHeader("Retry-After", "5");
+        request->send(response);
         return true;
     }
     return false;

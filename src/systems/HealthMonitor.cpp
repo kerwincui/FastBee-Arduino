@@ -196,9 +196,11 @@ void HealthMonitor::logTaskStackWatermarks() {
 // ── MemGuard 等级判断 ────────────────────────────────────────────────
 
 void HealthMonitor::updateMemoryGuardLevel() {
-    uint32_t freeHeap = currentHealth.freeHeap;  // 使用已采集的值，避免重复调用
+    uint32_t freeHeap = currentHealth.freeHeap;
+    uint32_t largestBlock = currentHealth.largestFreeBlock;
     MemoryGuardLevel newLevel;
 
+    // 基于 freeHeap 的初步判断
     if (freeHeap >= MEM_THRESHOLD_NORMAL) {
         newLevel = MemoryGuardLevel::NORMAL;
     } else if (freeHeap >= MEM_THRESHOLD_WARN) {
@@ -209,11 +211,35 @@ void HealthMonitor::updateMemoryGuardLevel() {
         newLevel = MemoryGuardLevel::CRITICAL;
     }
 
-    // 碎片率过高时至少提升到 WARN
-    if (isFragmentationHigh() && newLevel == MemoryGuardLevel::NORMAL) {
-        newLevel = MemoryGuardLevel::WARN;
-        Serial.printf("[MEMGUARD] High fragmentation (%d%%), elevating to WARN\n",
-                      (int)currentHealth.heapFragmentation);
+    // 基于 largestFreeBlock 的强制提升：即使 freeHeap 看起来正常，
+    // 如果最大可分配块过小，Web 服务仍无法响应请求
+    if (largestBlock < 4096) {
+        // 最大块 < 4KB：几乎无法分配任何 HTTP 响应缓冲区
+        if (newLevel != MemoryGuardLevel::CRITICAL) {
+            Serial.printf("[MEMGUARD] largestFreeBlock=%lu < 4KB, elevating to CRITICAL\n",
+                          (unsigned long)largestBlock);
+            newLevel = MemoryGuardLevel::CRITICAL;
+        }
+    } else if (largestBlock < 8192) {
+        // 最大块 < 8KB：只能响应小请求
+        if (newLevel < MemoryGuardLevel::SEVERE) {
+            Serial.printf("[MEMGUARD] largestFreeBlock=%lu < 8KB, elevating to SEVERE\n",
+                          (unsigned long)largestBlock);
+            newLevel = MemoryGuardLevel::SEVERE;
+        }
+    }
+
+    // 碎片率过高时至少提升到 WARN，若 largestFreeBlock 也小则进一步提升
+    if (isFragmentationHigh()) {
+        if (newLevel == MemoryGuardLevel::NORMAL) {
+            newLevel = MemoryGuardLevel::WARN;
+            Serial.printf("[MEMGUARD] High fragmentation (%d%%), elevating to WARN\n",
+                          (int)currentHealth.heapFragmentation);
+        } else if (newLevel == MemoryGuardLevel::WARN && largestBlock < 8192) {
+            newLevel = MemoryGuardLevel::SEVERE;
+            Serial.printf("[MEMGUARD] High fragmentation (%d%%) + small block=%lu, elevating to SEVERE\n",
+                          (int)currentHealth.heapFragmentation, (unsigned long)largestBlock);
+        }
     }
 
     // 等级变化时执行降级/恢复措施
@@ -353,7 +379,9 @@ bool HealthMonitor::isMemorySevere() const {
 }
 
 bool HealthMonitor::isMemoryCritical() const {
-    return _currentLevel == MemoryGuardLevel::CRITICAL;
+    if (_currentLevel == MemoryGuardLevel::CRITICAL) return true;
+    // 即使等级尚未更新，直接检查 largestFreeBlock 作为兜底
+    return currentHealth.largestFreeBlock < 4096;
 }
 
 bool HealthMonitor::isFragmentationHigh() const {

@@ -378,7 +378,7 @@ a:hover { text-decoration: underline; }
 .section-title { font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: var(--space-4); padding-bottom: var(--space-2); border-bottom: 1px solid var(--border); }
 .fb-form .fb-form-group { margin-bottom: var(--space-4); }
 .fb-form .fb-form-group label { margin-bottom: var(--space-2); display: block; font-weight: 500; color: var(--text-secondary); }
-.config-form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-3) var(--space-5); }
+.config-form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-3) var(--space-5); margin-bottom:10px; }
 .config-form-grid > .fb-form-group { margin-bottom: 0; }
 .resource-grid { display: grid; grid-template-columns: 1fr; gap: var(--space-5); }
 @media (min-width: 992px) { .resource-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -652,16 +652,16 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
 .mqtt-status-detecting { background: var(--warning-light); color: var(--warning); }
 
 /* Periph Exec Dynamic Config Items */
-.periph-exec-config-item { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--rounded); padding: var(--space-3); margin-bottom: var(--space-2); position: relative; }
+.periph-exec-config-item { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--rounded); padding: var(--space-3); margin-bottom: var(--space-2); position: relative; transition: border-color 0.2s ease, box-shadow 0.2s ease; }
 .periph-exec-config-item:hover { border-color: var(--primary); box-shadow: var(--shadow-sm); }
 .pe-add-btn { font-size: 12px; padding: 4px 10px; }
 #periph-exec-triggers, #periph-exec-actions { margin-bottom: var(--space-4); }
 .pe-action-extra-row { margin-top: var(--space-2); }
-.pe-checkbox-label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: normal; min-height: 38px; line-height: 1.2; }
-.pe-checkbox-label input[type="checkbox"] { margin: 0; width: 18px; height: 18px; flex-shrink: 0; accent-color: var(--primary); cursor: pointer; position: relative; top: -1px; }
-.pe-checkbox-label span { line-height: 1.2; }
+.pe-checkbox-label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal; min-height: auto; line-height: 1.2; }
+.pe-checkbox-label input[type="checkbox"] { margin: 0; width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--primary); cursor: pointer; position: relative; top: -1px; }
+.pe-checkbox-label span { line-height: 1.2; vertical-align: middle; }
 /* Checkbox group that visually aligns with input fields in grid rows */
-.pe-check-align { display: flex; align-items: center; min-height: 38px; }
+.pe-check-align { display: flex; align-items: center; min-height: auto; }
 .pe-sync-delay-group input { width: 100%; }
 /* Base config: name spans full width, checkboxes inline */
 .pe-base-grid { display: grid; grid-template-columns: 1fr; gap: var(--space-3) var(--space-5); }
@@ -672,14 +672,15 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
 .pe-action-grid > .fb-form-group { margin-bottom: 0; }
 .pe-exec-row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3) var(--space-5); }
 .pe-exec-row > .fb-form-group { margin-bottom: 0; }
-.pe-poll-tasks-list { border: 1px solid var(--border); border-radius: 4px; padding: 8px; max-height: 200px; overflow-y: auto; background: color-mix(in srgb, var(--bg-card) 92%, var(--gray-4) 8%); }
-.add-device-menu { position: absolute; top: 100%; left: 0; background: #fff; border: 1px solid var(--border); border-radius: var(--rounded); box-shadow: 0 2px 8px rgba(0,0,0,.12); z-index: 50; min-width: 130px; }
-.add-device-menu-item { padding: 8px 14px; cursor: pointer; font-size: 13px; white-space: nowrap; }
-.add-device-menu-item:hover { background: var(--slate-100, #f1f5f9); }
-.pe-sensor-config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; border: 1px solid #ddd; border-radius: 4px; padding: 8px; background: #fafafa; }
+.pe-poll-tasks-list { border: 1px solid var(--border); border-radius: var(--rounded-md); padding: var(--space-3); max-height: 200px; overflow-y: auto; background: var(--bg-card); }
+.add-device-menu { position: absolute; top: 100%; left: 0; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--rounded); box-shadow: var(--shadow-md); z-index: 50; min-width: 130px; }
+.add-device-menu-item { padding: 8px 14px; cursor: pointer; font-size: 13px; white-space: nowrap; color: var(--text-primary); }
+.add-device-menu-item:hover { background: var(--gray-2, #f1f5f9); }
+.pe-sensor-config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3) var(--space-5); border: 1px solid var(--border); border-radius: var(--rounded-md); padding: var(--space-3); background: var(--bg-card); }
 .pe-sensor-config-grid .fb-form-group { margin-bottom: 0; }
-.pe-sensor-config-grid label { font-size: 12px; font-weight: bold; display: block; margin-bottom: 2px; }
-.pe-sensor-config-grid input, .pe-sensor-config-grid select { font-size: 13px; }
+.pe-sensor-config-grid label { font-size: inherit; font-weight: 500; display: block; margin-bottom: var(--space-2); color: var(--text-secondary); }
+.pe-sensor-config-grid input,
+.pe-sensor-config-grid select { font-size: 0.875em; width: 100%; padding: 0.5em 0.75em; border: 1px solid var(--border); border-radius: var(--rounded-md); background: var(--bg-input, #fff); color: var(--text-primary); box-sizing: border-box; }
 .pe-action-value[readonly] { background: var(--bg-tertiary, #f5f5f5); cursor: not-allowed; opacity: 0.7; }
 .pe-compare-value-group { transition: opacity 0.2s; }
 
@@ -1202,23 +1203,29 @@ body.fullscreen-page .fullscreen-toolbar-actions { display: flex; align-items: c
 .pe-event-group .pe-event-modbus-ctrl-panel { margin-top: var(--space-3); }
 .pe-modbus-select-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3) var(--space-5); align-items: start; }
 .pe-modbus-select-grid .pe-field-stack-compact { margin-bottom: 0; }
-/* Removed: .pe-modbus-select-grid > :only-child spanning rule - single fields (e.g. motor action) should stay in one column */
 /* In action grid, modbus panel spans full width for multi-field types (relay/pwm/pid) */
 .pe-action-grid > .pe-modbus-ctrl-panel:not(.pe-ctrl-single) { grid-column: 1 / -1; }
-/* Normalize modbus panel labels to match standard form labels */
-.pe-action-grid .pe-field-label-compact,
-.pe-event-modbus-ctrl-panel .pe-field-label-compact { font-size: inherit; font-weight: 500; margin-bottom: var(--space-2); }
+/* Motor type: single field should fill the entire column width */
+.pe-modbus-ctrl-panel.pe-ctrl-single .pe-modbus-select-grid { grid-template-columns: 1fr; }
 .pe-pid-fields { display: flex; gap: var(--space-5); }
 .pe-pid-fields .pe-field-stack-compact { flex: 1; min-width: 0; }
-.pe-field-stack-compact { margin-bottom: 8px; }
-.pe-field-label-compact { display: block; margin-bottom: 4px; font-size: 12px; font-weight: 700; color: var(--text-secondary); }
+.pe-field-stack-compact { margin-bottom: 0; }
+.pe-field-label-compact { display: block; margin-bottom: var(--space-2); font-size: inherit; font-weight: 500; color: var(--text-secondary); }
 .pe-inline-wrap { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .pe-inline-wrap label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; }
 .pe-input-compact { width: 80px; min-height: 28px; padding: 2px 4px; font-size: 12px; line-height: 1.4; }
-.pe-modbus-action-name { flex: 1; min-width: 100px; background: color-mix(in srgb, var(--bg-card) 92%, var(--gray-4) 8%); cursor: default; color: var(--text-secondary); }
+.pe-modbus-action-name { flex: 1; min-width: 100px; background: var(--bg-card); cursor: default; color: var(--text-secondary); }
 .pe-span-all { grid-column: 1 / -1; }
-.pe-help-text { color: var(--text-muted); }
+.pe-help-text { display: block; margin-top: var(--space-1); font-size: 12px; color: var(--text-muted); }
 .pe-script-textarea { font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 13px; resize: vertical; }
+
+/* Prevent fb-form-group label styles from breaking checkbox layout */
+.fb-form .fb-form-group .pe-checkbox-label { display: inline-flex; margin-bottom: 0; }
+
+/* Unified focus state for all periph-exec inputs */
+.periph-exec-config-item input:focus,
+.periph-exec-config-item select:focus,
+.periph-exec-config-item textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(22,119,255,0.08); }
 
 .fs-layout { display: flex; height: 600px; gap: 10px; }
 .fs-sidebar { width: 300px; min-width: 250px; border: 1px solid var(--border); border-radius: 4px; overflow-y: auto; background: color-mix(in srgb, var(--bg-card) 92%, var(--gray-4) 8%); }

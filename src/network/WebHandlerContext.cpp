@@ -118,6 +118,30 @@ bool WebHandlerContext::checkPermission(AsyncWebServerRequest* request, const St
     return authManager->checkPermission(authResult.username, permission);
 }
 
+// ============ 内存保护辅助 ============
+
+static bool canAllocateResponse(size_t requiredSize) {
+    auto* fw = FastBeeFramework::getInstance();
+    HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+    if (!monitor) return true;
+    SystemHealth health = monitor->getHealthStatus();
+    // 预留 512 字节安全余量，防止序列化过程中的临时分配
+    size_t safeSize = requiredSize + 512;
+    if (health.largestFreeBlock < safeSize) {
+        Serial.printf("[MemGuard] Rejecting response: need ~%u bytes, largest block=%lu\n",
+                      (unsigned)safeSize, (unsigned long)health.largestFreeBlock);
+        return false;
+    }
+    return true;
+}
+
+static void sendServiceUnavailable(AsyncWebServerRequest* request) {
+    AsyncWebServerResponse* response = request->beginResponse(503, "text/plain",
+                                                              "Service Unavailable - Low Memory");
+    response->addHeader("Retry-After", "5");
+    request->send(response);
+}
+
 // ============ 响应辅助方法 ============
 
 void WebHandlerContext::sendJsonResponse(AsyncWebServerRequest* request, int code,
@@ -130,7 +154,12 @@ void WebHandlerContext::sendJsonResponse(AsyncWebServerRequest* request, int cod
     auto* fw = FastBeeFramework::getInstance();
     HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
     if (monitor && monitor->isMemoryCritical() && docSize > 1024) {
-        request->send(503, "text/plain", "Service Unavailable - Low Memory");
+        sendServiceUnavailable(request);
+        return;
+    }
+    // MemGuard: 检查最大可分配块是否足够
+    if (!canAllocateResponse(docSize)) {
+        sendServiceUnavailable(request);
         return;
     }
     AsyncWebServerResponse* response;
@@ -156,7 +185,12 @@ void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const JsonDo
     HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
     size_t estimatedSize = measureJson(data);
     if (monitor && monitor->isMemoryCritical() && estimatedSize > 1024) {
-        request->send(503, "text/plain", "Service Unavailable - Low Memory");
+        sendServiceUnavailable(request);
+        return;
+    }
+    // MemGuard: 检查最大可分配块是否足够（含 wrapper 开销 ~48 字节 + 安全余量）
+    if (!canAllocateResponse(estimatedSize + 64)) {
+        sendServiceUnavailable(request);
         return;
     }
 

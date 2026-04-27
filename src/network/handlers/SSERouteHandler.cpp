@@ -2,6 +2,7 @@
 #include "./network/WebHandlerContext.h"
 #include "systems/LoggerSystem.h"
 #include "core/FeatureFlags.h"
+#include <esp_heap_caps.h>
 #if FASTBEE_ENABLE_HEALTH_MONITOR
 #include "systems/HealthMonitor.h"
 #include "core/FastBeeFramework.h"
@@ -181,8 +182,10 @@ void SSERouteHandler::untrackClient(AsyncEventSourceClient* client) {
 }
 
 bool SSERouteHandler::shouldSkipBroadcast() const {
-    if (ESP.getFreeHeap() < LOW_MEMORY_THRESHOLD) {
-        LOG_WARNING("[SSE] Low memory, skipping broadcast");
+    // 使用最大可分配块而非总空闲堆，更准确地反映能否进行网络操作
+    uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    if (largestBlock < 8192) {
+        LOG_WARNINGF("[SSE] Low memory (largestBlock=%lu), skipping broadcast", (unsigned long)largestBlock);
         return true;
     }
     return false;

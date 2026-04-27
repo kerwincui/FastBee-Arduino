@@ -2,6 +2,7 @@
 #include "./network/WebHandlerContext.h"
 #include "systems/HealthMonitor.h"
 #include "protocols/ProtocolManager.h"
+#include <esp_heap_caps.h>
 #include "./network/handlers/StaticRouteHandler.h"
 #include "./network/handlers/AuthRouteHandler.h"
 #include "./network/handlers/UserRouteHandler.h"
@@ -156,28 +157,79 @@ void WebConfigManager::performMaintenance() {
         ESP.restart();
     }
 
-    // 内存恢复：CRITICAL 状态（< 15KB）持续过长时强制重启
-    // 避免设备长期处于 503 不可用状态
-    {
-        uint32_t freeHeap = ESP.getFreeHeap();
-        static unsigned long criticalSince = 0;
-        unsigned long now = millis();
-        if (freeHeap < MEM_THRESHOLD_SEVERE) {
-            if (criticalSince == 0) {
-                criticalSince = now;
-                LOG_ERRORF("[WebConfig] Memory CRITICAL: %lu bytes, restart in 60s if not recovered",
-                           (unsigned long)freeHeap);
-            } else if (now - criticalSince >= 60000UL) {
-                LOG_ERROR("[WebConfig] Memory CRITICAL for 60s, force restarting...");
-                delay(100);
-                ESP.restart();
-            }
-        } else {
-            if (criticalSince != 0) {
-                LOG_INFOF("[WebConfig] Memory recovered: %lu bytes", (unsigned long)freeHeap);
-            }
-            criticalSince = 0;
+    unsigned long now = millis();
+    uint32_t freeHeap = ESP.getFreeHeap();
+    uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    uint8_t frag = (freeHeap > 0) ? static_cast<uint8_t>(100U - (largestBlock * 100U / freeHeap)) : 0;
+
+    // ── 策略1: freeHeap < 15KB 持续 60s → 硬复位 ──
+    static unsigned long criticalSince = 0;
+    if (freeHeap < MEM_THRESHOLD_SEVERE) {
+        if (criticalSince == 0) {
+            criticalSince = now;
+            LOG_ERRORF("[WebConfig] Memory CRITICAL: freeHeap=%lu largestBlock=%lu, restart in 60s if not recovered",
+                       (unsigned long)freeHeap, (unsigned long)largestBlock);
+        } else if (now - criticalSince >= 60000UL) {
+            LOG_ERROR("[WebConfig] Memory CRITICAL for 60s, force restarting...");
+            delay(100);
+            ESP.restart();
         }
+    } else {
+        if (criticalSince != 0) {
+            LOG_INFOF("[WebConfig] Memory recovered: freeHeap=%lu largestBlock=%lu",
+                      (unsigned long)freeHeap, (unsigned long)largestBlock);
+        }
+        criticalSince = 0;
+    }
+
+    // ── 策略2: largestBlock < 6KB 持续 30s → 硬复位 ──
+    // 即使 freeHeap 看起来还行，如果最大可分配块太小，Web 服务已不可用
+    static unsigned long smallBlockSince = 0;
+    if (largestBlock < 6144) {
+        if (smallBlockSince == 0) {
+            smallBlockSince = now;
+            LOG_ERRORF("[WebConfig] largestBlock CRITICAL: %lu bytes, restart in 30s if not recovered",
+                       (unsigned long)largestBlock);
+        } else if (now - smallBlockSince >= 30000UL) {
+            LOG_ERROR("[WebConfig] largestBlock CRITICAL for 30s, force restarting...");
+            delay(100);
+            ESP.restart();
+        }
+    } else {
+        smallBlockSince = 0;
+    }
+
+    // ── 策略3: 碎片率 >80% 且 largestBlock < 8KB 持续 60s → 硬复位 ──
+    static unsigned long fragSince = 0;
+    if (frag > 80 && largestBlock < 8192) {
+        if (fragSince == 0) {
+            fragSince = now;
+            LOG_ERRORF("[WebConfig] High fragmentation: frag=%d%% largestBlock=%lu, restart in 60s if not recovered",
+                       (int)frag, (unsigned long)largestBlock);
+        } else if (now - fragSince >= 60000UL) {
+            LOG_ERROR("[WebConfig] High fragmentation for 60s, force restarting...");
+            delay(100);
+            ESP.restart();
+        }
+    } else {
+        fragSince = 0;
+    }
+
+    // ── 策略4: 轻度碎片化时尝试 Web 服务软重启 ──
+    // 比硬复位更轻量，可能释放 async_tcp 积压的缓冲区
+    static unsigned long softRestartSince = 0;
+    if (frag > 60 && largestBlock < 16384 && isRunning) {
+        if (softRestartSince == 0) {
+            softRestartSince = now;
+        } else if (now - softRestartSince >= 120000UL) {
+            LOG_WARNING("[WebConfig] Triggering soft web server restart due to fragmentation");
+            server->end();
+            delay(50);
+            server->begin();
+            softRestartSince = 0;
+        }
+    } else {
+        softRestartSince = 0;
     }
 
     // SSE 维护：心跳、僵尸连接清理、客户端数上报
