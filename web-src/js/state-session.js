@@ -136,6 +136,8 @@
         // 移除骨架屏
         var skeleton = document.getElementById('skeleton-screen');
         if (skeleton) skeleton.remove();
+        // 处理 URL 参数指定的跳转（新标签页全屏等场景）
+        if (typeof this._applyUrlParams === 'function') this._applyUrlParams();
     };
 
     // ============ 登录 ============

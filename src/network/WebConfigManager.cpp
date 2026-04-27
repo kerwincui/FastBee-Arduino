@@ -1,5 +1,6 @@
 #include "./network/WebConfigManager.h"
 #include "./network/WebHandlerContext.h"
+#include "systems/HealthMonitor.h"
 #include "protocols/ProtocolManager.h"
 #include "./network/handlers/StaticRouteHandler.h"
 #include "./network/handlers/AuthRouteHandler.h"
@@ -153,6 +154,30 @@ void WebConfigManager::performMaintenance() {
         LOG_INFO("[WebConfig] Executing scheduled restart");
         delay(100);
         ESP.restart();
+    }
+
+    // 内存恢复：CRITICAL 状态（< 15KB）持续过长时强制重启
+    // 避免设备长期处于 503 不可用状态
+    {
+        uint32_t freeHeap = ESP.getFreeHeap();
+        static unsigned long criticalSince = 0;
+        unsigned long now = millis();
+        if (freeHeap < MEM_THRESHOLD_SEVERE) {
+            if (criticalSince == 0) {
+                criticalSince = now;
+                LOG_ERRORF("[WebConfig] Memory CRITICAL: %lu bytes, restart in 60s if not recovered",
+                           (unsigned long)freeHeap);
+            } else if (now - criticalSince >= 60000UL) {
+                LOG_ERROR("[WebConfig] Memory CRITICAL for 60s, force restarting...");
+                delay(100);
+                ESP.restart();
+            }
+        } else {
+            if (criticalSince != 0) {
+                LOG_INFOF("[WebConfig] Memory recovered: %lu bytes", (unsigned long)freeHeap);
+            }
+            criticalSince = 0;
+        }
     }
 
     // SSE 维护：心跳、僵尸连接清理、客户端数上报

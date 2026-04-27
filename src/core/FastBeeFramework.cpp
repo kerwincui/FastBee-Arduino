@@ -463,12 +463,13 @@ bool FastBeeFramework::initialize() {
                         chReport["value"] = stateStr;
                         chReport["remark"] = remarkText;
                     }
-                    // 触发 mc: 事件
+                    // 触发 mc: 事件（使用 c/a 格式与规则匹配逻辑一致）
                     char mcIdBuf[16];
                     snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", match.deviceIndex);
                     char mcDataBuf[160];
-                    snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"id\":\"%s\",\"v\":\"%s\"}",
-                        match.deviceIndex, sensorId.c_str(), reportValue.c_str());
+                    const char* allAct = state ? "on" : "off";
+                    snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"c\":%d,\"a\":\"%s\"}",
+                        match.deviceIndex, match.channel, allAct);
                     PeriphExecManager::getInstance().triggerEventById(String(mcIdBuf), String(mcDataBuf));
                     return true;  // 批量已自行构建报告
                 } else if (devType == "pwm") {
@@ -496,13 +497,32 @@ bool FastBeeFramework::initialize() {
                 }
             }
 
-            // 控制成功后触发 mc: 事件
+            // 控制成功后触发 mc: 事件（使用 c/a 格式与规则匹配逻辑一致）
             if (writeOk) {
                 char mcIdBuf[16];
                 snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", match.deviceIndex);
+                // 根据设备类型和动作构建事件数据
+                String devTypeStr(dev.deviceType);
+                String evAct;
+                if (devTypeStr == "relay") {
+                    evAct = (value == "1" || value.equalsIgnoreCase("on") || value.equalsIgnoreCase("true")) ? "on" : "off";
+                } else if (devTypeStr == "pwm") {
+                    evAct = "pwm";
+                } else if (devTypeStr == "pid") {
+                    evAct = "pid";
+                } else if (devTypeStr == "motor") {
+                    if (match.action == "oper") {
+                        int operVal = value.toInt();
+                        evAct = (operVal == 1) ? "forward" : (operVal == 2) ? "reverse" : "stop";
+                    } else {
+                        evAct = "motor";
+                    }
+                } else {
+                    evAct = match.action.isEmpty() ? "on" : match.action.c_str();
+                }
                 char mcDataBuf[160];
-                snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"id\":\"%s\",\"v\":\"%s\"}",
-                    match.deviceIndex, sensorId.c_str(), reportValue.c_str());
+                snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"c\":%d,\"a\":\"%s\"}",
+                    match.deviceIndex, match.channel, evAct.c_str());
                 PeriphExecManager::getInstance().triggerEventById(String(mcIdBuf), String(mcDataBuf));
             }
 
@@ -930,12 +950,33 @@ void FastBeeFramework::run() {
 // 检查是否需要重启
 void FastBeeFramework::checkForRestart() {
     static unsigned long lastRestartCheck = 0;
+    static unsigned long criticalSince = 0;   // CRITICAL 状态持续时间
     unsigned long currentTime = millis();
 
-    // 每小时检查一次（3600000ms）
-    if (currentTime - lastRestartCheck > 3600000UL) {
+    uint32_t freeHeap = ESP.getFreeHeap();
+
+    // CRITICAL 状态（< 15KB）持续 30 秒以上则强制重启
+    // 避免 Web 服务长时间返回 503 导致设备不可用
+    if (freeHeap < MEM_THRESHOLD_SEVERE) {
+        if (criticalSince == 0) {
+            criticalSince = currentTime;
+            char buf[80];
+            snprintf(buf, sizeof(buf),
+                     "[MEMGUARD] CRITICAL detected: heap=%lu, starting 30s restart timer",
+                     (unsigned long)freeHeap);
+            LOG_ERROR(buf);
+        } else if (currentTime - criticalSince >= 30000UL) {
+            LOG_ERROR("[MEMGUARD] CRITICAL for 30s, force restarting...");
+            delay(100);
+            ESP.restart();
+        }
+    } else {
+        criticalSince = 0;  // 内存恢复正常，重置计时器
+    }
+
+    // 每5分钟常规检查一次（比原来的1小时更频繁）
+    if (currentTime - lastRestartCheck > 300000UL) {
         lastRestartCheck = currentTime;
-        uint32_t freeHeap = ESP.getFreeHeap();
         if (freeHeap < HealthCheck::MIN_FREE_HEAP) {
             char buf[64];
             snprintf(buf, sizeof(buf),

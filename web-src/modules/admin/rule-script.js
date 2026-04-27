@@ -73,7 +73,7 @@
         _refreshRuleScriptList() {
             var btn = document.getElementById('rule-script-refresh-btn');
             if (btn && btn.disabled) return;
-            if (btn) { btn.disabled = true; btn.innerHTML = '<span class="fb-spin">&#x21bb;</span> 加载中...'; }
+            if (btn) { btn.disabled = true; btn.textContent = '加载中...'; }
             if (typeof window.apiInvalidateCache === 'function') {
                 window.apiInvalidateCache('/api/rule-script');
             }

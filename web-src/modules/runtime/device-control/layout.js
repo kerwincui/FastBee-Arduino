@@ -51,8 +51,9 @@
             document.addEventListener('mousemove', function(e) {
                 // 处理 resize
                 if (self._dcResizeEl) {
-                    var dx = e.clientX - self._dcResizeStart.x;
-                    var dy = e.clientY - self._dcResizeStart.y;
+                    var scale = self._dcZoomLevel || 1;
+                    var dx = (e.clientX - self._dcResizeStart.x) / scale;
+                    var dy = (e.clientY - self._dcResizeStart.y) / scale;
                     var newW = Math.max(200, Math.min(self._dcResizeStart.w + dx, flow.clientWidth));
                     var newH = Math.max(100, self._dcResizeStart.h + dy);
                     self._dcResizeEl.style.width = newW + 'px';
@@ -64,8 +65,9 @@
                 if (!self._dcDragEl) return;
                 var flowRect = flow.getBoundingClientRect();
                 if (!flowRect) return;
-                var x = e.clientX - flowRect.left - self._dcDragOffset.x;
-                var y = e.clientY - flowRect.top - self._dcDragOffset.y;
+                var scale = self._dcZoomLevel || 1;
+                var x = (e.clientX - flowRect.left - self._dcDragOffset.x) / scale;
+                var y = (e.clientY - flowRect.top - self._dcDragOffset.y) / scale;
                 x = Math.max(0, Math.min(x, flow.clientWidth - self._dcDragEl.offsetWidth));
                 y = Math.max(0, y);
                 self._dcDragEl.style.left = x + 'px';

@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>设备监控</title>
+    <link rel="icon" href="../assets/favicon.ico" type="image/x-icon">
+    <style>
+    :root{--primary:#1677ff;--primary-hover:#4096ff;--primary-active:#0958d9;--primary-light:#e6f4ff;--bg-body-fallback:#f5f5f5;--bg-body:linear-gradient(135deg,#f5f5f5 0%,#fafafa 50%,#f0f0f0 100%);--bg-card:rgba(255,255,255,0.92);--glass-bg:rgba(255,255,255,0.78);--glass-border:rgba(22,119,255,0.12);--glass-shadow:0 6px 16px 0 rgba(0,0,0,0.08),0 3px 6px -4px rgba(0,0,0,0.12),0 9px 28px 8px rgba(0,0,0,0.05);--text-primary:rgba(0,0,0,0.88);--text-secondary:rgba(0,0,0,0.65);--border:#d9d9d9;--border-secondary:rgba(0,0,0,0.06);--space-2:8px;--space-3:12px;--space-4:16px;--space-5:20px;--space-6:24px;--space-8:32px;--rounded-md:6px;--rounded-2xl:16px;--shadow-md:0 4px 6px -1px rgb(0 0 0/0.1),0 2px 4px -2px rgb(0 0 0/0.1);--success:#52c41a;--danger:#ff4d4f;--warning:#faad14;--info:#1677ff;--gray-9:#f0f0f0;--gray-11:#1f1f1f}
+    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg-body-fallback);background-image:var(--bg-body);background-attachment:fixed;color:var(--text-primary);line-height:1.6;min-height:100vh;margin:0}
+    .fb-btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);padding:var(--space-2) var(--space-4);font-size:13px;font-weight:500;border:1px solid var(--border);border-radius:var(--rounded-md);background:var(--bg-card);color:var(--text-primary);cursor:pointer;transition:all 0.2s;white-space:nowrap}
+    .fb-btn-primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+    .fb-btn-primary:hover{background:var(--primary-hover);border-color:var(--primary-hover);color:#fff}
+    .fb-btn-refresh{background:transparent;border:1px solid var(--border-secondary);color:var(--text-secondary);font-size:12px;padding:4px 10px}
+    .fb-btn-refresh:hover{color:var(--primary);border-color:var(--primary)}
+    .fb-btn-danger{background:var(--danger);color:#fff;border-color:var(--danger)}
+    .fb-btn-danger:hover{opacity:0.85}
+    .notification-container{position:fixed;top:var(--space-5);right:var(--space-5);z-index:9999;max-width:350px;width:100%}
+    </style>
+    <link rel="stylesheet" href="../css/main.css" media="print" onload="this.media='all'">
+    <noscript><link rel="stylesheet" href="../css/main.css"></noscript>
+</head>
+<body class="fullscreen-page">
+    <!-- 消息通知容器 -->
+    <div id="notification-container" class="notification-container"></div>
+
+    <div class="fullscreen-container">
+        <!-- 全屏工具栏 -->
+        <div class="fullscreen-toolbar">
+            <h3 data-i18n="dashboard-device-monitor">设备监控</h3>
+            <div class="fullscreen-toolbar-actions">
+                <div class="auto-refresh-indicator" id="auto-refresh-indicator">
+                    <span class="refresh-dot"></span>
+                    <span data-i18n="dashboard-auto-refresh">自动刷新</span>
+                </div>
+                <button class="fb-btn fb-btn-refresh" id="fullscreen-refresh-btn"><span data-i18n="dashboard-refresh">刷新</span></button>
+                <button class="fb-btn fb-btn-danger" id="fullscreen-close-btn"><span data-i18n="dashboard-exit-newtab">关闭标签页</span></button>
+            </div>
+        </div>
+
+        <!-- 设备信息卡片 -->
+        <div class="stats-grid dashboard-top-stats u-mb-0">
+            <div class="stat-card stat-card-primary">
+                <div class="stat-card-top">
+                    <div class="stat-card-text">
+                        <div class="stat-label" data-i18n="dashboard-device-info">设备信息</div>
+                        <div class="stat-value" id="monitor-chip-model">--</div>
+                    </div>
+                    <div class="stat-card-icon stat-icon-primary"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3"/><circle cx="12" cy="12" r="3"/></svg></div>
+                </div>
+                <div class="stat-desc">CPU: <span id="monitor-cpu-freq">--</span> MHz | SDK: <span id="monitor-sdk">--</span></div>
+            </div>
+            <div class="stat-card stat-card-success">
+                <div class="stat-card-top">
+                    <div class="stat-card-text">
+                        <div class="stat-label" data-i18n="dashboard-uptime">运行时间</div>
+                        <div class="stat-value" id="monitor-uptime">--</div>
+                    </div>
+                    <div class="stat-card-icon stat-icon-success"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+                </div>
+                <div class="stat-desc" data-i18n="dashboard-uptime-desc">系统启动至今</div>
+            </div>
+            <div class="stat-card stat-card-warning">
+                <div class="stat-card-top">
+                    <div class="stat-card-text">
+                        <div class="stat-label" data-i18n="dashboard-network">网络状态</div>
+                        <div class="stat-value fb-text-lg" id="monitor-network-status">--</div>
+                    </div>
+                    <div class="stat-card-icon stat-icon-warning"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1" fill="currentColor"/></svg></div>
+                </div>
+                <div class="stat-desc" id="monitor-ip">--</div>
+            </div>
+        </div>
+
+        <div class="stats-grid u-mb-0">
+            <div class="stat-card stat-card-primary">
+                <div class="stat-value" id="monitor-user-total">--</div>
+                <div class="stat-label" data-i18n="dashboard-total-users">总用户数</div>
+            </div>
+            <div class="stat-card stat-card-success">
+                <div class="stat-value" id="monitor-user-online">--</div>
+                <div class="stat-label" data-i18n="dashboard-online-users">在线用户</div>
+            </div>
+            <div class="stat-card stat-card-warning">
+                <div class="stat-value" id="monitor-user-sessions">--</div>
+                <div class="stat-label" data-i18n="dashboard-active-sessions">活跃会话</div>
+            </div>
+        </div>
+
+        <!-- 资源使用情况 -->
+        <div class="dashboard-section-header">
+            <div class="dashboard-section-title">
+                <span class="dashboard-section-bar"></span>
+                <span data-i18n="dashboard-resource-usage">资源使用情况</span>
+            </div>
+        </div>
+        <div class="resource-grid">
+            <div class="resource-card">
+                <div class="resource-header">
+                    <span class="resource-title"><span class="resource-icon resource-icon-danger"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></span> <span data-i18n="dashboard-flash">Flash 存储</span></span>
+                    <span class="resource-percent" id="monitor-flash-percent">--%</span>
+                </div>
+                <div class="progress-bar"><div class="progress-fill progress-fill-danger progress-fill-zero" id="monitor-flash-bar"></div></div>
+                <div class="resource-stats">
+                    <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-flash-used">--</span></span>
+                    <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-flash-free">--</span></span>
+                </div>
+                <div class="resource-footer">
+                    <span data-i18n="dashboard-total">总计</span>: <span id="monitor-flash-total">--</span> | <span data-i18n="dashboard-firmware">固件</span>: <span id="monitor-flash-sketch">--</span>
+                </div>
+            </div>
+            <div class="resource-card">
+                <div class="resource-header">
+                    <span class="resource-title"><span class="resource-icon resource-icon-success"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span> <span data-i18n="dashboard-heap">内存 (Heap)</span></span>
+                    <span class="resource-percent" id="monitor-heap-percent">--%</span>
+                </div>
+                <div class="progress-bar"><div class="progress-fill progress-fill-success progress-fill-zero" id="monitor-heap-bar"></div></div>
+                <div class="resource-stats">
+                    <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-heap-used">--</span></span>
+                    <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-heap-free">--</span></span>
+                </div>
+                <div class="resource-footer">
+                    <span data-i18n="dashboard-total">总计</span>: <span id="monitor-heap-total">--</span> | <span data-i18n="dashboard-min-free">最小可用</span>: <span id="monitor-heap-min">--</span>
+                </div>
+            </div>
+            <div class="resource-card">
+                <div class="resource-header">
+                    <span class="resource-title"><span class="resource-icon resource-icon-warning"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg></span> <span data-i18n="dashboard-fs">文件系统 (LittleFS)</span></span>
+                    <span class="resource-percent" id="monitor-fs-percent">--%</span>
+                </div>
+                <div class="progress-bar"><div class="progress-fill progress-fill-info progress-fill-zero" id="monitor-fs-bar"></div></div>
+                <div class="resource-stats">
+                    <span><span data-i18n="dashboard-used">已用</span>: <span id="monitor-fs-used">--</span></span>
+                    <span><span data-i18n="dashboard-free">可用</span>: <span id="monitor-fs-free">--</span></span>
+                </div>
+                <div class="resource-footer">
+                    <span data-i18n="dashboard-total">总计</span>: <span id="monitor-fs-total">--</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 当前网络状态 -->
+        <div class="dashboard-section-header">
+            <div class="dashboard-section-title">
+                <span class="dashboard-section-bar"></span>
+                <span data-i18n="net-status-title">当前网络状态</span>
+            </div>
+        </div>
+        <div class="dashboard-network-grid">
+            <div class="info-card">
+                <div class="info-card-header info-card-header-primary">
+                    <span class="icon-network"></span> <span data-i18n="net-sta-info">STA 连接信息</span>
+                </div>
+                <div class="info-card-body">
+                    <table class="info-table"><tbody>
+                        <tr><td data-i18n="net-sta-status-label">状态</td><td id="ns-status"><span class="badge badge-info">待加载...</span></td></tr>
+                        <tr><td>SSID</td><td id="ns-ssid">--</td></tr>
+                        <tr><td data-i18n="static-ip-label">IP 地址</td><td id="ns-ip">--</td></tr>
+                        <tr><td data-i18n="gateway-label">网关</td><td id="ns-gateway">--</td></tr>
+                        <tr><td data-i18n="subnet-label">子网掩码</td><td id="ns-subnet">--</td></tr>
+                        <tr><td data-i18n="dns1-label">首选 DNS</td><td id="ns-dns">--</td></tr>
+                        <tr><td data-i18n="dns2-label">备用 DNS</td><td id="ns-dns2">--</td></tr>
+                        <tr><td>RSSI</td><td id="ns-rssi">--</td></tr>
+                        <tr><td>MAC</td><td id="ns-mac">--</td></tr>
+                        <tr><td data-i18n="ns-conn-time-label">连接时长</td><td id="ns-conn-time">--</td></tr>
+                    </tbody></table>
+                </div>
+            </div>
+            <div class="info-card">
+                <div class="info-card-header info-card-header-danger">
+                    <span class="icon-network"></span> <span data-i18n="net-ap-info">AP 热点信息</span>
+                </div>
+                <div class="info-card-body">
+                    <table class="info-table"><tbody>
+                        <tr><td data-i18n="ap-ssid-label">AP 名称</td><td id="ns-ap-ssid">--</td></tr>
+                        <tr><td>AP IP</td><td id="ns-ap-ip">--</td></tr>
+                        <tr><td data-i18n="ap-channel-label">信道</td><td id="ns-ap-channel">--</td></tr>
+                        <tr><td data-i18n="dev-provision-clients-label">连接客户数</td><td id="ns-ap-clients">--</td></tr>
+                    </tbody></table>
+                </div>
+            </div>
+            <div class="info-card">
+                <div class="info-card-header info-card-header-success">
+                    <span class="icon-dashboard"></span> <span data-i18n="net-stats">连接统计</span>
+                </div>
+                <div class="info-card-body">
+                    <table class="info-table"><tbody>
+                        <tr><td data-i18n="wifi-mode-label">网络模式</td><td id="ns-mode">--</td></tr>
+                        <tr><td data-i18n="wifi-mdns-label">mDNS</td><td id="ns-mdns">--</td></tr>
+                        <tr><td data-i18n="ns-reconnect-label">重连次数</td><td id="ns-reconnect">--</td></tr>
+                        <tr><td data-i18n="ns-tx-count-label">发送计数</td><td id="ns-tx-count">--</td></tr>
+                        <tr><td data-i18n="ns-rx-count-label">接收计数</td><td id="ns-rx-count">--</td></tr>
+                        <tr><td data-i18n="ns-internet-label">互联网</td><td id="ns-internet">--</td></tr>
+                        <tr><td data-i18n="ns-conflict-label">IP 冲突</td><td id="ns-conflict">--</td></tr>
+                        <tr><td data-i18n="ns-uptime-label">运行时间</td><td id="ns-uptime">--</td></tr>
+                    </tbody></table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 核心依赖（独立页面需要完整加载） -->
+    <script src="../js/utils.js"></script>
+    <script src="../js/ui-components.js"></script>
+    <script src="../js/request-governor.js"></script>
+    <script src="../js/notification.js"></script>
+    <script src="../js/modules/i18n-engine.js"></script>
+    <script src="../js/modules/i18n-zh-CN.js"></script>
+    <script src="../js/state-sse.js"></script>
+    <script src="../js/modules/dashboard-fullscreen.js"></script>
+</body>
+</html>

@@ -7,6 +7,7 @@
 #include "./network/NetworkManager.h"
 #include "./protocols/ProtocolManager.h"
 #include "./protocols/ModbusHandler.h"
+#include "core/PeriphExecManager.h"
 #include <ArduinoJson.h>
 
 // ============================================================================
@@ -674,6 +675,17 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
         publishControlReport(ctx, modbus, devIdx, channel, String(reportState ? 1 : 0));
     }
     
+    // 触发 mc: 事件（供事件触发规则匹配）
+    if (devIdx >= 0) {
+        char mcIdBuf[16];
+        snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", devIdx);
+        const char* evAct = newState ? "on" : "off";
+        char mcDataBuf[96];
+        snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"c\":%d,\"a\":\"%s\"}",
+            devIdx, channel, evAct);
+        PeriphExecManager::getInstance().triggerEventById(String(mcIdBuf), String(mcDataBuf));
+    }
+    
     JsonDocument doc;
     doc["success"] = true;
     JsonObject data = doc["data"].to<JsonObject>();
@@ -888,6 +900,19 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
             publishBatchControlReport(ctx, modbus, devIdx, channelCount, reportValues);
         } else {
             publishBatchControlReport(ctx, modbus, devIdx, channelCount, stateValues);
+        }
+    }
+
+    // 触发 mc: 事件（供事件触发规则匹配，按每个通道独立触发）
+    if (devIdx >= 0) {
+        char mcIdBuf[16];
+        snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", devIdx);
+        for (uint16_t ch = 0; ch < channelCount; ch++) {
+            bool chState = (ch < 32) ? stateValues[ch] : (action == "allOn");
+            char mcDataBuf[96];
+            snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"c\":%d,\"a\":\"%s\"}",
+                devIdx, ch, chState ? "on" : "off");
+            PeriphExecManager::getInstance().triggerEventById(String(mcIdBuf), String(mcDataBuf));
         }
     }
 
@@ -1661,6 +1686,19 @@ void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request
         else if (action == "setPulse") actionKey = "pls";
         else actionKey = action;
         publishControlReport(ctx, modbus, devIdx, 0, actionKey + ":" + String(writeValue));
+    }
+    
+    // 触发 mc: 事件（供事件触发规则匹配）
+    if (devIdx >= 0) {
+        char mcIdBuf[16];
+        snprintf(mcIdBuf, sizeof(mcIdBuf), "mc:%d", devIdx);
+        const char* evAct = "stop";
+        if (action == "forward") evAct = "forward";
+        else if (action == "reverse") evAct = "reverse";
+        char mcDataBuf[96];
+        snprintf(mcDataBuf, sizeof(mcDataBuf), "{\"d\":%d,\"a\":\"%s\"}",
+            devIdx, evAct);
+        PeriphExecManager::getInstance().triggerEventById(String(mcIdBuf), String(mcDataBuf));
     }
     
     JsonDocument doc;

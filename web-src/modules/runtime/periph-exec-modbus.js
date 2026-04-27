@@ -476,6 +476,12 @@
             }
             html += '</div>';
             container.innerHTML = html;
+            // 电机类型只有子设备动作一个字段，添加 pe-ctrl-single 使其与执行外设并排显示
+            if (dt === 'motor') {
+                container.classList.add('pe-ctrl-single');
+            } else {
+                container.classList.remove('pe-ctrl-single');
+            }
             this._setSectionVisible(container, true);
         },
 

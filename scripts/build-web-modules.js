@@ -42,6 +42,7 @@ const DIRECT_RUNTIME_MODULES = [
     'device-control.js',
     'peripherals.js',
     'dashboard.js',
+    'dashboard-fullscreen.js',
     'device-config.js',
     'network.js'
 ];

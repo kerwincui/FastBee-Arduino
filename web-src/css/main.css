@@ -229,12 +229,11 @@ a:hover { text-decoration: underline; }
 .fb-btn-sm { padding: var(--space-1) var(--space-2); font-size: 12px; }
 .fb-btn-xs { padding: 2px var(--space-2); font-size: 11px; }
 
-/* 列表刷新按钮 */
-.fb-btn-refresh { background: var(--bg-card); color: var(--text-secondary); border-color: var(--border); }
-.fb-btn-refresh:hover { background: var(--bg-hover); color: var(--primary); border-color: var(--primary); }
-.fb-btn-refresh:disabled { opacity: 0.5; cursor: not-allowed; }
-.fb-btn-refresh .fb-spin { display: inline-block; animation: fb-spin 1s linear infinite; }
-@keyframes fb-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+/* 刷新按钮 — 统一视觉规范（继承secondary语义色） */
+.fb-btn-refresh { background: var(--slate-100); color: var(--text-primary); border-color: var(--border); }
+.fb-btn-refresh:hover { background: var(--slate-200); border-color: var(--slate-300); }
+.fb-btn-refresh:disabled { background: var(--slate-50) !important; border-color: var(--border-secondary) !important; color: var(--text-quaternary) !important; cursor: not-allowed; opacity: 1; }
+[data-theme="dark"] .fb-btn-refresh { background: var(--slate-800); color: var(--text-primary); border-color: var(--border); }
 
 /* ========== Form System (fb-form) ========== */
 .fb-form {}
@@ -658,8 +657,8 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
 .pe-add-btn { font-size: 12px; padding: 4px 10px; }
 #periph-exec-triggers, #periph-exec-actions { margin-bottom: var(--space-4); }
 .pe-action-extra-row { margin-top: var(--space-2); }
-.pe-checkbox-label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: normal; min-height: 38px; line-height: 1; }
-.pe-checkbox-label input[type="checkbox"] { margin: 0; width: 18px; height: 18px; flex-shrink: 0; accent-color: var(--primary); cursor: pointer; }
+.pe-checkbox-label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: normal; min-height: 38px; line-height: 1.2; }
+.pe-checkbox-label input[type="checkbox"] { margin: 0; width: 18px; height: 18px; flex-shrink: 0; accent-color: var(--primary); cursor: pointer; position: relative; top: -1px; }
 .pe-checkbox-label span { line-height: 1.2; }
 /* Checkbox group that visually aligns with input fields in grid rows */
 .pe-check-align { display: flex; align-items: center; min-height: 38px; }
@@ -875,6 +874,84 @@ input:focus, select:focus, textarea:focus { border-color: var(--border-focus) !i
 /* Reduce gap between section header and its grid */
 #dashboard-page > .dashboard-section-header + .resource-grid,
 #dashboard-page > .dashboard-section-header + .dashboard-network-grid { margin-top: -8px; }
+
+/* ========== Fullscreen Mode (设备大屏专用) ========== */
+.fullscreen-mode .sidebar,
+.fullscreen-mode .header,
+.fullscreen-mode .app-footer { display: none !important; }
+.fullscreen-mode .main-content { margin-left: 0; width: 100%; }
+.fullscreen-mode .content { padding: var(--space-5); height: 100vh; overflow-y: auto; }
+/* Fullscreen: header toolbar no bottom border */
+.fullscreen-mode .dc-header-card-inner { border-bottom: none !important; }
+/* Fullscreen large-screen optimization for device-control */
+.fullscreen-mode .dc-header-card { padding: 16px 20px; }
+.fullscreen-mode .dc-header-title { font-size: 18px; }
+.fullscreen-mode .dc-control-flow { gap: 18px; }
+.fullscreen-mode .dc-coil-card { padding: 16px; }
+.fullscreen-mode .dc-coil-channel { font-size: 15px; }
+.fullscreen-mode .dc-monitor-value { font-size: 28px; }
+.fullscreen-mode .dc-monitor-label { font-size: 13px; }
+.fullscreen-mode .dc-risk-banner { padding: 16px 20px; }
+.fullscreen-mode .dc-risk-metrics { gap: 24px; }
+.fullscreen-mode .dc-risk-metric strong { font-size: 18px; }
+/* Fullscreen button in header toolbar */
+.dc-btn-fullscreen { background: var(--bg-card); color: var(--success); border: 1px solid var(--success); }
+.dc-btn-fullscreen:hover { background: var(--success); color: #fff; }
+.dc-btn-fullscreen.dc-btn-active { background: var(--danger); color: #fff; border-color: var(--danger); }
+
+/* Zoom wrapper and controls */
+.dc-zoom-wrapper { transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1); will-change: transform; }
+.dc-btn-zoom { background: transparent; border: 1px solid var(--border-secondary); color: var(--text-secondary); min-width: 44px; padding: 10px 10px; font-size: 13px; font-weight: 600; }
+.dc-btn-zoom:hover { color: var(--primary); border-color: var(--primary); background: rgba(22,119,255,0.06); }
+.dc-btn-zoom:active { transform: scale(0.92); }
+#dc-zoom-reset-btn { min-width: 56px; font-size: 12px; font-weight: 500; }
+
+/* Fullscreen zoom optimizations */
+.fullscreen-mode .dc-zoom-wrapper { transition: transform 0.2s ease; }
+.fullscreen-mode .dashboard-section-header { padding: 12px 0; }
+/* ========== Fullscreen Standalone Page (fullscreen.html) ========== */
+body.fullscreen-page { margin: 0; padding: 0; overflow-x: hidden; }
+body.fullscreen-page .fullscreen-container {
+    max-width: 100%; padding: var(--space-5);
+    min-height: 100vh; box-sizing: border-box;
+}
+/* 大屏自适应布局 */
+body.fullscreen-page .dashboard-top-stats { grid-template-columns: repeat(3, 1fr); }
+body.fullscreen-page .stats-grid:not(.dashboard-top-stats) { grid-template-columns: repeat(3, 1fr); }
+body.fullscreen-page .resource-grid { grid-template-columns: repeat(3, 1fr); gap: 16px; }
+body.fullscreen-page .dashboard-network-grid { grid-template-columns: repeat(3, 1fr); gap: 16px; }
+/* 大屏字体和间距优化 */
+body.fullscreen-page .stat-value { font-size: 32px; }
+body.fullscreen-page .stat-label { font-size: 14px; }
+body.fullscreen-page .resource-card { padding: 20px; }
+body.fullscreen-page .info-card-body { padding: 16px; }
+/* 全屏页面工具栏 */
+body.fullscreen-page .fullscreen-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 8px 16px; border-bottom: 1px solid var(--border-secondary);
+    margin-bottom: var(--space-4);
+}
+body.fullscreen-page .fullscreen-toolbar h3 { font-size: 20px; font-weight: 700; margin: 0; }
+body.fullscreen-page .fullscreen-toolbar-actions { display: flex; align-items: center; gap: 12px; }
+/* 宽屏 (>1400px) 额外优化 */
+@media (min-width: 1400px) {
+    body.fullscreen-page .resource-grid { grid-template-columns: repeat(3, 1fr); gap: 20px; }
+    body.fullscreen-page .stat-value { font-size: 36px; }
+    body.fullscreen-page .info-table td { font-size: 15px; padding: 10px 14px; }
+}
+/* 自动刷新指示器 */
+.auto-refresh-indicator {
+    font-size: 12px; color: var(--text-secondary);
+    display: flex; align-items: center; gap: 6px;
+}
+.auto-refresh-indicator .refresh-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--success); animation: fs-pulse 2s infinite;
+}
+@keyframes fs-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+/* 全屏页面按钮次要样式 */
+.fb-btn-secondary { background: var(--bg-card); color: var(--text-primary); border-color: var(--border); }
+.fb-btn-secondary:hover { color: var(--primary); border-color: var(--primary); }
 /* Resource grid - 3 columns */
 #dashboard-page .resource-grid { grid-template-columns: repeat(3, 1fr); gap: 14px; }
 #dashboard-page .resource-card { background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); padding: 16px; backdrop-filter: none; -webkit-backdrop-filter: none; }
@@ -1121,11 +1198,13 @@ input:focus, select:focus, textarea:focus { border-color: var(--border-focus) !i
 .u-collapse-pad-sm { padding: 0 12px 12px; }
 .u-collapse-pad-md { padding: 0 15px 15px; }
 .pe-empty-inline { color: var(--text-muted); font-size: 12px; }
+/* Spacing between event category/event selectors and modbus match channel/action panel */
+.pe-event-group .pe-event-modbus-ctrl-panel { margin-top: var(--space-3); }
 .pe-modbus-select-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3) var(--space-5); align-items: start; }
 .pe-modbus-select-grid .pe-field-stack-compact { margin-bottom: 0; }
 /* Removed: .pe-modbus-select-grid > :only-child spanning rule - single fields (e.g. motor action) should stay in one column */
-/* In action grid, modbus panel spans full width so its columns align with parent grid */
-.pe-action-grid > .pe-modbus-ctrl-panel { grid-column: 1 / -1; }
+/* In action grid, modbus panel spans full width for multi-field types (relay/pwm/pid) */
+.pe-action-grid > .pe-modbus-ctrl-panel:not(.pe-ctrl-single) { grid-column: 1 / -1; }
 /* Normalize modbus panel labels to match standard form labels */
 .pe-action-grid .pe-field-label-compact,
 .pe-event-modbus-ctrl-panel .pe-field-label-compact { font-size: inherit; font-weight: 500; margin-bottom: var(--space-2); }
@@ -1143,7 +1222,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--border-focus) !i
 
 .fs-layout { display: flex; height: 600px; gap: 10px; }
 .fs-sidebar { width: 300px; min-width: 250px; border: 1px solid var(--border); border-radius: 4px; overflow-y: auto; background: color-mix(in srgb, var(--bg-card) 92%, var(--gray-4) 8%); }
-.fs-sidebar-header { display: flex; align-items: center; gap: 8px; padding: 15px; background: color-mix(in srgb, var(--bg-card) 88%, var(--gray-4) 12%); border-bottom: 1px solid var(--border); font-weight: 700; }
+.fs-sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 15px; background: color-mix(in srgb, var(--bg-card) 88%, var(--gray-4) 12%); border-bottom: 1px solid var(--border); font-weight: 700; }
 .fs-sidebar-actions { display: flex; gap: 8px; flex-shrink: 0; }
 .fs-current-dir { font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fs-tree { padding: 10px; font-family: 'Consolas','Monaco','Courier New',monospace; font-size: 13px; }
@@ -1205,7 +1284,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--border-focus) !i
 
 /* === 25. Unified Page Overrides === */
 .page .fb-card { border-color: var(--glass-border) !important; }
-.page .fb-card-header { background: color-mix(in srgb, var(--glass-bg) 82%, var(--primary-light) 18%) !important; border-bottom: 1px solid var(--glass-border) !important; color: var(--text-primary); }
+.page .fb-card-header { background: color-mix(in srgb, var(--glass-bg) 82%, var(--primary-light) 18%) !important; color: var(--text-primary); }
 [data-theme="dark"] .page .fb-card-header { background: color-mix(in srgb, var(--glass-bg) 84%, #0f172a 16%) !important; }
 [data-theme="dark"] .file-tree-item:hover { background: color-mix(in srgb, var(--primary) 18%, transparent); }
 [data-theme="dark"] .file-tree-item.is-active { background: color-mix(in srgb, var(--primary) 26%, transparent); }
@@ -1664,16 +1743,35 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 /* Action buttons */
 .dc-btn-sm { padding: 10px 14px; font-size: 12px; font-weight: 500; border: 1px solid var(--border); border-radius: 6px; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+.dc-btn-sm:active { transform: scale(0.96); }
 .dc-btn-on { background: var(--success); color: #fff; border-color: var(--success); }
 .dc-btn-on:hover { opacity: 0.85; }
 .dc-btn-off { background: var(--danger); color: #fff; border-color: var(--danger); }
 .dc-btn-off:hover { background: var(--danger-active); border-color: var(--danger-active); }
 .dc-btn-toggle { background: var(--primary); color: #fff; border-color: var(--primary); }
 .dc-btn-toggle:hover { opacity: 0.85; }
-.dc-btn-refresh { background: var(--bg-card); color: var(--text-secondary); border-color: var(--border); }
-.dc-btn-refresh:hover { background: var(--gray-2); border-color: var(--primary); color: var(--primary); }
-.dc-btn-reset { background: var(--warning, #ff9500); color: #fff; border-color: var(--warning, #ff9500); }
+.dc-btn-refresh { background: var(--bg-card); color: var(--primary); border-color: var(--primary); }
+.dc-btn-refresh:hover { background: var(--primary); color: #fff; }
+.dc-btn-reset { background: var(--warning, #faad14); color: #fff; border-color: var(--warning, #faad14); }
 .dc-btn-reset:hover { opacity: 0.85; background: var(--warning, #e68600); border-color: var(--warning, #e68600); }
+
+/* === Visual enhancements for device-control === */
+/* Monitor card value highlight animation */
+@keyframes dc-value-flash { 0% { color: var(--primary); text-shadow: 0 0 8px rgba(22,119,255,0.3); } 100% { color: var(--text-primary); text-shadow: none; } }
+.dc-monitor-value.dc-value-changed { animation: dc-value-flash 0.6s ease-out; }
+
+/* Coil card active pulse */
+@keyframes dc-coil-pulse { 0% { box-shadow: 0 0 0 0 rgba(82,196,26,0.4); } 70% { box-shadow: 0 0 0 6px rgba(82,196,26,0); } 100% { box-shadow: 0 0 0 0 rgba(82,196,26,0); } }
+.dc-coil-card.dc-coil-on { animation: dc-coil-pulse 2s infinite; }
+
+/* Card lift on hover enhancement */
+.dc-control-group, .dc-modbus-device-panel, .dc-monitor-card { transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease; }
+.dc-control-group:hover { transform: translateY(-2px); }
+.dc-modbus-device-panel:hover { transform: translateY(-2px); }
+
+/* Online status pulse dot */
+@keyframes dc-online-pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.6; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
+.dc-device-status::before { content: ''; display: inline-block; width: 7px; height: 7px; background: var(--success); border-radius: 50%; margin-right: 5px; animation: dc-online-pulse 2.5s ease-in-out infinite; }
 
 /* === Dark theme === */
 [data-theme="dark"] .dc-risk-banner { background: var(--gray-11); border-color: var(--gray-9); box-shadow: 0 1px 4px rgba(0,0,0,0.2); }

@@ -1330,10 +1330,35 @@ void PeriphExecManager::dispatchEventMatchedRules(const String& eventId, const S
                             if (!deserializeJson(evDoc, eventData) && evDoc.is<JsonObject>()) {
                                 JsonObject evObj = evDoc.as<JsonObject>();
                                 // 匹配通道和动作
+                                // 支持两种事件数据格式：
+                                //   标准格式: {"d":0,"c":1,"a":"on"}
+                                //   旧格式:   {"d":0,"id":"relay_0_1","v":"1"}
                                 uint8_t trigCh = trigCtrl["c"] | 255;  // 255 表示不限制
                                 const char* trigAct = trigCtrl["a"] | "";
-                                uint8_t evCh = evObj["c"] | 0;
-                                const char* evAct = evObj["a"] | "";
+                                uint8_t evCh = 255;   // 未知状态
+                                String evActStr;      // 动作字符串（延用生命用）
+                                // 标准格式：直接取 c 和 a 字段
+                                if (evObj.containsKey("c")) {
+                                    evCh = evObj["c"];
+                                }
+                                if (evObj.containsKey("a")) {
+                                    evActStr = evObj["a"].as<String>();
+                                }
+                                // 旧格式降级：从 id 字段解析通道号
+                                if (evCh == 255 && evObj.containsKey("id")) {
+                                    String evId = evObj["id"].as<String>();
+                                    int lastUnderscore = evId.lastIndexOf('_');
+                                    if (lastUnderscore > 0) {
+                                        evCh = evId.substring(lastUnderscore + 1).toInt();
+                                    }
+                                }
+                                // 旧格式降级：从 v 字段推导动作
+                                if (evActStr.isEmpty() && evObj.containsKey("v")) {
+                                    String evVal = evObj["v"].as<String>();
+                                    evActStr = (evVal == "1" || evVal.equalsIgnoreCase("on") || evVal.equalsIgnoreCase("true")) ? "on" : "off";
+                                }
+                                if (evCh == 255) evCh = 0;  // 无法解析通道时默认为 0
+                                const char* evAct = evActStr.c_str();
                                 if ((trigCh == 255 || trigCh == evCh) &&
                                     (strlen(trigAct) == 0 || strcmp(trigAct, evAct) == 0)) {
                                     ctrlMatched = true;

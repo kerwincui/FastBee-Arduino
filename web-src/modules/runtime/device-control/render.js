@@ -210,10 +210,14 @@
                 html += '<div class="dc-header-actions">';
                 var _sidChecked = localStorage.getItem('dc_show_sid') === '1';
                 html += '<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:#666;margin-right:8px;cursor:pointer;user-select:none;"><input type="checkbox" id="dc-sid-toggle"' + (_sidChecked ? ' checked' : '') + ' style="margin:0;">\u663E\u793A\u7269\u6A21\u578B\u6807\u8BC6</label>';
+                html += '<button class="dc-btn-sm dc-btn-zoom" id="dc-zoom-out-btn" title="Ctrl+-">-</button>';
+                html += '<button class="dc-btn-sm dc-btn-zoom" id="dc-zoom-reset-btn" title="Ctrl+0">100%</button>';
+                html += '<button class="dc-btn-sm dc-btn-zoom" id="dc-zoom-in-btn" title="Ctrl++">+</button>';
                 html += '<button class="dc-btn-sm dc-btn-refresh" id="dc-refresh-btn">' + this._t('dashboard-refresh') + '</button>';
                 html += '<button class="dc-btn-sm dc-btn-reset dc-layout-reset">' + this._t('device-control-reset-layout') + '</button>';
+                html += '<button class="dc-btn-sm dc-btn-fullscreen" id="dc-fullscreen-btn" title="Ctrl+F">' + this._t('dashboard-fullscreen') + '</button>';
                 html += '</div></div></div>';
-                html += '<div class="dc-control-flow">';
+                html += '<div class="dc-zoom-wrapper"><div class="dc-control-flow">';
                 html += this._renderMonitorSection(data);
                 if (gpioItems.length > 0) html += this._renderGpioGroup(gpioItems);
                 if (modbusCtrlItems.length > 0) html += this._renderControlGroup('Modbus', modbusCtrlItems, 'modbus', false);
@@ -222,7 +226,7 @@
                 if (otherItems.length > 0) html += this._renderControlGroup('Other', otherItems, 'other', false);
                 if (systemItems.length > 0) html += this._renderSystemGroup(systemItems);
                 if (modbusDeviceList.length > 0) html += this._renderModbusDevicePanels(modbusDeviceList);
-                html += '</div>';
+                html += '</div></div>';
             } else {
                 html += '<div class="dc-empty">' + this._t('device-control-no-action') + '</div>';
             }
@@ -239,7 +243,7 @@
                 var setAttr = item && item.hasSetMode ? ' data-has-set-mode="true"' : '';
                 html += '<button class="dc-ctrl-btn dc-sys-card" data-id="' + escapeHtml(item.id) + '" data-system="true" data-name="' + escapeHtml(item.name) + '"' + setAttr + '><div class="dc-sys-card-name">' + escapeHtml(item.name) + '</div></button>';
             }
-            html += '</div><div class="dc-resize-handle" title="拖拽调整大小"></div></div>';
+            html += '</div><div class="dc-resize-handle" title="\u62d6\u62fd\u8c03\u6574\u5927\u5c0f"></div></div>';
             return html;
         },
 
@@ -252,9 +256,10 @@
                 var item = items[i];
                 var setAttr = item && item.hasSetMode ? ' data-has-set-mode="true"' : '';
                 html += '<div class="dc-gpio-row"><span class="dc-gpio-name">' + escapeHtml(item.name) + '</span>';
-                html += '<button class="dc-ctrl-btn dc-gpio" data-id="' + escapeHtml(item.id) + '" data-name="' + escapeHtml(item.name) + '"' + setAttr + '>' + this._t('device-control-execute') + '</button></div>';
+                html += '<button class="dc-ctrl-btn dc-gpio" data-id="' + escapeHtml(item.id) + '" data-name="' + escapeHtml(item.name) + '"' + setAttr + '>' + this._t('device-control-execute') + '</button>';
+                html += '</div>';
             }
-            html += '</div><div class="dc-resize-handle" title="拖拽调整大小"></div></div>';
+            html += '</div><div class="dc-resize-handle" title="\u62d6\u62fd\u8c03\u6574\u5927\u5c0f"></div></div>';
             return html;
         },
 
@@ -441,10 +446,45 @@
             var dev = (this._modbusDevices || [])[devIdx];
             if (!dev || !dev.sensorId) return '';
             var sid = dev.sensorId + suffix;
+            return this._renderGenericSidTag(sid, valueDesc);
+        },
+
+        // 通用物模型标识渲染（适用于 GPIO/System/Script/Sensor 等任意控件）
+        _renderGenericSidTag: function(sensorId, valueDesc) {
+            if (!sensorId) return '';
             var vis = localStorage.getItem('dc_show_sid') === '1' ? '' : 'display:none;';
-            var text = escapeHtml(sid);
+            var text = escapeHtml(sensorId);
             if (valueDesc) text += '<br><span style="color:#b0b8c8;">' + escapeHtml(valueDesc) + '</span>';
             return '<span class="dc-sid-tag" style="' + vis + 'font-size:10px;color:#8a9bb5;text-align:center;line-height:1.2;margin-top:2px;">' + text + '</span>';
+        },
+
+        // GPIO actionType 对应的物模型值说明
+        _getGpioActionDesc: function(actionType) {
+            switch (actionType) {
+                case 0: return '1=\u9ad8\u7535\u5e73';
+                case 1: return '0=\u4f4e\u7535\u5e73';
+                case 2: return '\u95ea\u70c1';
+                case 3: return '\u547c\u5438\u706f';
+                case 4: return '0~255';
+                case 5: return '0~255';
+                case 13: return '1=\u9ad8\u7535\u5e73(\u53cd)';
+                case 14: return '0=\u4f4e\u7535\u5e73(\u53cd)';
+                default: return '';
+            }
+        },
+
+        // System actionType 对应的物模型值说明
+        _getSystemActionDesc: function(actionType) {
+            switch (actionType) {
+                case 6: return '1=\u91cd\u542f';
+                case 7: return '1=\u6062\u590d\u51fa\u5382';
+                case 8: return '1=\u540c\u6b65\u65f6\u95f4';
+                case 9: return '1=OTA';
+                case 10: return '1=AP\u914d\u7f51';
+                case 11: return '1=BLE\u914d\u7f51';
+                case 12: return '\u8c03\u7528\u5916\u8bbe';
+                default: return '';
+            }
         },
 
         _renderDcCoilGrid: function(devIdx, channelCount, states, ncMode) {
@@ -537,6 +577,10 @@
             var dataAttrs = 'data-id="' + escapeHtml(item.id) + '" data-name="' + escapeHtml(item.name) + '"';
             if (item && item.hasSetMode) dataAttrs += ' data-has-set-mode="true"';
             if (isSystem) dataAttrs += ' data-system="true"';
+            var sidTag = this._renderGenericSidTag(item.id, '');
+            if (sidTag) {
+                return '<span style="display:inline-flex;flex-direction:column;align-items:center;"><button class="dc-ctrl-btn dc-' + typeClass + '" ' + dataAttrs + '>' + escapeHtml(item.name) + '</button>' + sidTag + '</span>';
+            }
             return '<button class="dc-ctrl-btn dc-' + typeClass + '" ' + dataAttrs + '>' + escapeHtml(item.name) + '</button>';
         }
     });

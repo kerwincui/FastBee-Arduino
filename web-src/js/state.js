@@ -50,6 +50,39 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         ModuleLoader.loadModule(name, callback);
     },
 
+    // ============ URL 参数处理 ============
+    _handleUrlParams() {
+        var params = new URLSearchParams(window.location.search);
+        var targetPage = params.get('page');
+        var goFullscreen = params.get('fullscreen') === '1';
+        if (targetPage) {
+            this._pendingUrlPage = targetPage;
+            this._pendingUrlFullscreen = goFullscreen;
+            // 清除 URL 参数，避免刷新时重复触发
+            var cleanUrl = window.location.pathname;
+            window.history.replaceState({}, '', cleanUrl);
+        }
+    },
+
+    // 在页面加载后执行 URL 参数指定的跳转和全屏
+    _applyUrlParams() {
+        if (!this._pendingUrlPage) return;
+        var page = this._pendingUrlPage;
+        var goFullscreen = this._pendingUrlFullscreen;
+        delete this._pendingUrlPage;
+        delete this._pendingUrlFullscreen;
+        // 跳转到指定页面
+        this.changePage(page);
+        // 延迟进入全屏（等待页面和模块加载完成）
+        if (goFullscreen && page === 'device-control') {
+            setTimeout(function() {
+                if (typeof AppState._dcToggleFullscreen === 'function') {
+                    AppState._dcToggleFullscreen();
+                }
+            }, 1500);
+        }
+    },
+
     // ============ 初始化 ============
     init() {
         this.setupTheme();  // 主题初始化
@@ -59,6 +92,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         this.setupConfigTabs();
         this.setupEventListeners();
         this.setupGlobalEventDelegation(); // 全局事件委托
+        this._handleUrlParams(); // 处理 URL 参数（新标签页全屏等）
         this.refreshPage();
     },
 

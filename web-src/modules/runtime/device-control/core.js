@@ -60,15 +60,37 @@
         _eventsBound: false,
         _periphExecRunPromptState: null,
 
+        _dcZoomLevel: 1,
+        _dcMinZoom: 0.5,
+        _dcMaxZoom: 2.0,
+        _dcZoomStep: 0.1,
+
         // ============ 事件绑定 ============
         setupDeviceControlEvents: function() {
             var self = this;
 
+            // 全屏状态变更监听
+            document.addEventListener('fullscreenchange', function() { self._dcOnFullscreenChange(); });
+            document.addEventListener('webkitfullscreenchange', function() { self._dcOnFullscreenChange(); });
+
             var content = document.getElementById('dc-content');
             if (content && !this._eventsBound) {
+                // 滚轮缩放（Ctrl+滚轮）
+                content.addEventListener('wheel', function(e) {
+                    if (e.ctrlKey) {
+                        e.preventDefault();
+                        if (e.deltaY < 0) self._dcZoomIn();
+                        else self._dcZoomOut();
+                    }
+                }, { passive: false });
+
                 content.addEventListener('click', function(e) {
                     if (e.target.closest('.dc-layout-reset')) { self._dcResetLayout(); return; }
                     if (e.target.closest('#dc-refresh-btn')) { self.loadDeviceControlPage(); return; }
+                    if (e.target.closest('#dc-fullscreen-btn')) { self._dcToggleFullscreen(); return; }
+                    if (e.target.closest('#dc-zoom-out-btn')) { self._dcZoomOut(); return; }
+                    if (e.target.closest('#dc-zoom-reset-btn')) { self._dcZoomReset(); return; }
+                    if (e.target.closest('#dc-zoom-in-btn')) { self._dcZoomIn(); return; }
                     var btn = e.target.closest('.dc-ctrl-btn');
                     if (!btn) return;
                     var ruleId = btn.getAttribute('data-id');
@@ -165,6 +187,28 @@
             }
 
             this._eventsBound = true;
+
+            // 键盘快捷键（仅设备大屏页面激活时触发）
+            document.addEventListener('keydown', function(e) {
+                var page = document.getElementById('device-control-page');
+                if (!page || !page.classList.contains('active')) return;
+                if (e.ctrlKey && e.key === 'f') {
+                    e.preventDefault();
+                    self._dcToggleFullscreen();
+                }
+                if (e.ctrlKey && (e.key === '+' || e.key === '=')) {
+                    e.preventDefault();
+                    self._dcZoomIn();
+                }
+                if (e.ctrlKey && e.key === '-') {
+                    e.preventDefault();
+                    self._dcZoomOut();
+                }
+                if (e.ctrlKey && e.key === '0') {
+                    e.preventDefault();
+                    self._dcZoomReset();
+                }
+            });
         },
 
         // ============ Periph-exec 运行值弹窗 ============
@@ -314,6 +358,7 @@
                 try {
                     var html = self._renderControlPanel(data);
                     content.innerHTML = html;
+                    self._dcApplyZoom();
                     self._dcApplyLayout();
                     self._dcInitFreeLayout();
                     self._dcInitModbusDeviceStates();
@@ -470,7 +515,107 @@
 
         // ============ 安全翻译函数 ============
         // _t 直接委托 i18n.t()，i18n.t() 已内置 key 回退逻辑
-        _t: function(key) { return i18n.t(key); }
+        _t: function(key) { return i18n.t(key); },
+
+        // ============ 全屏功能 ============
+
+        /**
+         * 切换全屏模式
+         */
+        _dcToggleFullscreen: function() {
+            var el = document.getElementById('app-container');
+            if (!el) return;
+
+            var isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
+
+            if (!isFullscreen) {
+                // 进入全屏
+                var req = el.requestFullscreen || el.webkitRequestFullscreen;
+                if (req) {
+                    req.call(el).catch(function(err) {
+                        // Fullscreen API 不可用时，降级为 CSS-only 全屏
+                        console.warn('[DeviceControl] Fullscreen API failed, using CSS fallback:', err);
+                        el.classList.add('fullscreen-mode');
+                        AppState._dcUpdateFullscreenBtn(true);
+                    });
+                } else {
+                    el.classList.add('fullscreen-mode');
+                    AppState._dcUpdateFullscreenBtn(true);
+                }
+            } else {
+                // 退出全屏
+                var exit = document.exitFullscreen || document.webkitExitFullscreen;
+                if (exit) {
+                    exit.call(document).catch(function() {});
+                }
+                el.classList.remove('fullscreen-mode');
+                AppState._dcUpdateFullscreenBtn(false);
+            }
+        },
+
+        /**
+         * 全屏状态变更回调
+         */
+        _dcOnFullscreenChange: function() {
+            var el = document.getElementById('app-container');
+            var isFullscreen = !!(document.fullscreenElement || document.webkitFullscreenElement);
+
+            if (isFullscreen) {
+                if (el) el.classList.add('fullscreen-mode');
+            } else {
+                if (el) el.classList.remove('fullscreen-mode');
+            }
+            AppState._dcUpdateFullscreenBtn(isFullscreen);
+        },
+
+        _dcUpdateFullscreenBtn: function(isFullscreen) {
+            var btn = document.getElementById('dc-fullscreen-btn');
+            if (!btn) return;
+            if (isFullscreen) {
+                btn.textContent = i18n.t('dashboard-exit-fullscreen');
+                btn.classList.add('dc-btn-active');
+            } else {
+                btn.textContent = i18n.t('dashboard-fullscreen');
+                btn.classList.remove('dc-btn-active');
+            }
+        },
+
+        // ============ 缩放功能 ============
+        _dcGetZoom: function() {
+            var z = parseFloat(localStorage.getItem('dc_zoom_level'));
+            return isFinite(z) && z >= 0.5 && z <= 2.0 ? z : 1;
+        },
+
+        _dcSetZoom: function(zoom) {
+            zoom = Math.max(0.5, Math.min(2.0, Math.round(zoom * 10) / 10));
+            this._dcZoomLevel = zoom;
+            try { localStorage.setItem('dc_zoom_level', String(zoom)); } catch(e) {}
+            this._dcApplyZoom();
+        },
+
+        _dcApplyZoom: function() {
+            var wrapper = document.querySelector('.dc-zoom-wrapper');
+            if (!wrapper) return;
+            var zoom = this._dcZoomLevel || this._dcGetZoom();
+            this._dcZoomLevel = zoom;
+            wrapper.style.setProperty('--dc-zoom', zoom);
+            wrapper.style.transform = 'scale(' + zoom + ')';
+            wrapper.style.transformOrigin = '0 0';
+            var resetBtn = document.getElementById('dc-zoom-reset-btn');
+            if (resetBtn) resetBtn.textContent = Math.round(zoom * 100) + '%';
+        },
+
+        _dcZoomIn: function() {
+            this._dcSetZoom((this._dcZoomLevel || this._dcGetZoom()) + 0.1);
+        },
+
+        _dcZoomOut: function() {
+            this._dcSetZoom((this._dcZoomLevel || this._dcGetZoom()) - 0.1);
+        },
+
+        _dcZoomReset: function() {
+            this._dcSetZoom(1);
+        }
     });
 
     // 事件绑定由入口文件 device-control.js 在所有子模块加载完成后统一调用

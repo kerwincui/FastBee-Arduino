@@ -158,7 +158,9 @@
                     entry.resolve(data);
                 })
                 .catch(function (err) {
-                    if (self._isCooldownError(err)) {
+                    // 503 on auth endpoints should NOT trigger global cooldown (avoid blocking other requests)
+                    var isAuthEndpoint = entry.path.indexOf('/api/auth/') === 0;
+                    if (!isAuthEndpoint && self._isCooldownError(err)) {
                         self._cooldownUntil = Date.now() + self._backoffMs;
                         console.warn('[Governor] Cooldown ' + self._backoffMs + 'ms after overload');
                         self._backoffMs = Math.min(self._backoffMs * 2, 10000);

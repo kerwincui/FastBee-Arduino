@@ -335,7 +335,7 @@
             if (btn && btn.disabled) return;
             if (btn) {
                 btn.disabled = true;
-                btn.innerHTML = '<span class="fb-spin">&#x21bb;</span> 加载中...';
+                btn.textContent = '加载中...';
             }
             this._protocolConfig = null;
             if (typeof window.apiInvalidateCache === 'function') {

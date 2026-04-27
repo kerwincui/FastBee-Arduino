@@ -261,7 +261,8 @@
                 ? `<span class="badge badge-danger">${i18n.t('net-conflict-yes')}</span>`
                 : `<span class="badge badge-success">${i18n.t('net-no-conflict')}</span>`);
             setText('ns-uptime', d.uptimeFormatted || '--');
-        }
+        },
+
     });
 
     // 自动绑定事件

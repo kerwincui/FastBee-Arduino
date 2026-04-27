@@ -38,8 +38,8 @@
             <strong id="master-stat-timeout" class="modbus-status-value fb-text-orange">0</strong>
         </div>
         <div class="modbus-status-item modbus-status-actions">
-            <button type="button" class="fb-btn fb-btn-sm fb-btn-secondary" data-action="refreshMasterStatus">
-                <span class="icon-refresh"></span> <span data-i18n="refresh-btn">刷新</span>
+            <button type="button" class="fb-btn fb-btn-sm fb-btn-refresh" data-action="refreshMasterStatus">
+                <span data-i18n="refresh-btn">刷新</span>
             </button>
         </div>
         <div id="master-health-warnings" class="modbus-health-warnings is-hidden"></div>
@@ -101,7 +101,7 @@
                 data-action="_showAddDeviceMenu"
                 data-i18n="modbus-add-device">+ 添加设备</button>
             <button type="button" class="fb-btn fb-btn-refresh" id="modbus-refresh-devices-btn"
-                data-action="_refreshModbusDeviceList">&#x21bb; 刷新列表</button>
+                data-action="_refreshModbusDeviceList"><span data-i18n="refresh-btn">刷新列表</span></button>
             <div id="add-device-menu" class="add-device-menu fb-hidden">
                 <div class="add-device-menu-item" data-action="_addSensorDevice" data-i18n="modbus-add-sensor">采集设备</div>
                 <div class="add-device-menu-item" data-action="_addControlDevice" data-i18n="modbus-add-control">控制设备</div>
@@ -288,7 +288,7 @@
                             <input type="checkbox" id="modbus-ctrl-auto-refresh" data-change-action="toggleCoilAutoRefresh">
                             <span data-i18n="modbus-ctrl-auto-refresh">自动刷新</span>
                         </label>
-                        <button type="button" class="fb-btn fb-btn-sm fb-btn-secondary" data-action="refreshCoilStatus" data-i18n="modbus-ctrl-refresh">刷新状态</button>
+                        <button type="button" class="fb-btn fb-btn-sm fb-btn-refresh" data-action="refreshCoilStatus"><span data-i18n="modbus-ctrl-refresh">刷新状态</span></button>
                     </div>
                     <div class="fb-flex fb-items-center fb-flex-gap-2 fb-flex-wrap fb-mt-2">
                         <button type="button" class="fb-btn fb-btn-sm fb-btn-success" data-action="batchCoil" data-args="allOn" data-i18n="modbus-ctrl-all-on">全部开启</button>
@@ -314,7 +314,7 @@
                             <button type="button" class="fb-btn fb-btn-sm fb-btn-success" data-action="batchPwm" data-args="max" data-i18n="modbus-ctrl-pwm-set-all-max">全部最大</button>
                             <button type="button" class="fb-btn fb-btn-sm fb-btn-danger" data-action="batchPwm" data-args="off" data-i18n="modbus-ctrl-pwm-set-all-off">全部关闭</button>
                         </div>
-                        <button type="button" class="fb-btn fb-btn-sm fb-btn-secondary" data-action="refreshPwmStatus" data-i18n="modbus-ctrl-pwm-refresh">刷新状态</button>
+                        <button type="button" class="fb-btn fb-btn-sm fb-btn-refresh" data-action="refreshPwmStatus"><span data-i18n="modbus-ctrl-pwm-refresh">刷新状态</span></button>
                     </div>
                 </div>
                 <!-- PID 控制面板 -->
@@ -325,7 +325,7 @@
                             <input type="checkbox" id="modbus-ctrl-pid-auto-refresh" data-change-action="togglePidAutoRefresh">
                             <span data-i18n="modbus-ctrl-pid-auto-refresh">自动刷新</span>
                         </label>
-                        <button type="button" class="fb-btn fb-btn-sm fb-btn-secondary" data-action="refreshPidStatus" data-i18n="modbus-ctrl-pid-refresh">刷新数据</button>
+                        <button type="button" class="fb-btn fb-btn-sm fb-btn-refresh" data-action="refreshPidStatus"><span data-i18n="modbus-ctrl-pid-refresh">刷新数据</span></button>
                     </div>
                 </div>
                 <!-- Motor 控制面板（步进电机/伺服电机） -->
@@ -336,7 +336,7 @@
                             <span data-i18n="modbus-motor-status">状态</span>
                             <div class="motor-header-actions">
                                 <span id="modbus-ctrl-motor-run-status" class="motor-run-badge motor-run-idle">--</span>
-                                <button type="button" class="motor-refresh-btn" data-action="refreshMotorStatus" title="刷新">&#x21bb;</button>
+                                <button type="button" class="fb-btn fb-btn-sm fb-btn-refresh" data-action="refreshMotorStatus" title="刷新"><span data-i18n="refresh-btn">刷新</span></button>
                             </div>
                         </div>
                         <div class="motor-status-grid">

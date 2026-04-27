@@ -1,5 +1,5 @@
 /**
- * protocol/protocol-config.js — 协议配置加载/保存、Master 状态刷新、导入/导出
+ * protocol/protocol-config.js — 协议配置加载/保存、Master 状态刷新
  */
 (function() {
     Object.assign(AppState, {
@@ -507,70 +507,5 @@
             grid.classList.toggle('is-hidden', !html);
         },
 
-        // ========== 导入/导出 ==========
-
-        exportProtocolConfig() {
-            apiGet('/api/protocol/config')
-                .then(res => {
-                    if (!res || !res.success) { Notification.error(i18n.t('protocol-export-fail'), i18n.t('protocol-config-title')); return; }
-                    const jsonStr = JSON.stringify(res.data || {}, null, 2);
-                    const blob = new Blob([jsonStr], { type: 'application/json' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url; a.download = 'protocol-config.json';
-                    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                    Notification.success(i18n.t('protocol-export-ok'), i18n.t('protocol-config-title'));
-                })
-                .catch(err => {
-                    console.error('Export protocol config failed:', err);
-                    Notification.error(i18n.t('protocol-export-fail'), i18n.t('protocol-config-title'));
-                });
-        },
-
-        importProtocolConfig() {
-            const input = document.createElement('input');
-            input.type = 'file'; input.accept = '.json';
-            input.onchange = (e) => {
-                const file = e.target.files[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = (evt) => {
-                    try {
-                        const config = JSON.parse(evt.target.result);
-                        if (!confirm(i18n.t('protocol-import-confirm'))) return;
-                        const data = {};
-                        const flatten = (obj, prefix) => {
-                            for (const key in obj) {
-                                const val = obj[key];
-                                const flatKey = prefix ? prefix + '_' + key : key;
-                                if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
-                                    flatten(val, flatKey);
-                                } else {
-                                    data[flatKey] = typeof val === 'object' ? JSON.stringify(val) : String(val);
-                                }
-                            }
-                        };
-                        flatten(config, '');
-                        apiPost('/api/protocol/config', data)
-                            .then(res => {
-                                if (res && res.success) {
-                                    this._protocolConfig = null;
-                                    Notification.success(i18n.t('protocol-import-ok'), i18n.t('protocol-config-title'));
-                                    const activeTab = document.querySelector('#protocol-page .config-tab.active');
-                                    if (activeTab) { const tabId = activeTab.getAttribute('data-tab'); this.loadProtocolConfig(tabId); }
-                                } else {
-                                    Notification.error(i18n.t('protocol-import-fail'), i18n.t('protocol-config-title'));
-                                }
-                            })
-                            .catch(() => { Notification.error(i18n.t('protocol-import-fail'), i18n.t('protocol-config-title')); });
-                    } catch (parseErr) {
-                        Notification.error(i18n.t('protocol-import-invalid'), i18n.t('protocol-config-title'));
-                    }
-                };
-                reader.readAsText(file);
-            };
-            input.click();
-        }
     });
 })();

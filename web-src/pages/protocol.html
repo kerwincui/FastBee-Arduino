@@ -3,23 +3,15 @@
     <div class="fb-card">
         <div class="fb-card-header fb-card-header-toolbar">
             <h2 class="fb-card-title" id="protocol-title" data-i18n="protocol-title">通信协议配置</h2>
-            <div class="u-toolbar-sm">
-                <button type="button" class="fb-btn fb-btn-sm"
-                    data-action="exportProtocolConfig"
-                    data-i18n="protocol-export-btn">导出配置</button>
-                <button type="button" class="fb-btn fb-btn-sm"
-                    data-action="importProtocolConfig"
-                    data-i18n="protocol-import-btn">导入配置</button>
-            </div>
         </div>
         <div class="fb-card-body">
             <div class="config-tabs">
                 <div class="config-tab active" data-tab="mqtt">MQTT</div>
                 <div class="config-tab" data-tab="modbus-rtu">Modbus RTU</div>
-                <div class="config-tab" data-tab="modbus-tcp">Modbus TCP</div>
-                <div class="config-tab" data-tab="http">HTTP</div>
-                <div class="config-tab" data-tab="coap">CoAP</div>
-                <div class="config-tab" data-tab="tcp">TCP</div>
+                <div class="config-tab tab-disabled" data-tab="modbus-tcp" title="Modbus TCP">Modbus TCP</div>
+                <div class="config-tab tab-disabled" data-tab="http" title="HTTP">HTTP</div>
+                <div class="config-tab tab-disabled" data-tab="coap" title="CoAP">CoAP</div>
+                <div class="config-tab tab-disabled" data-tab="tcp" title="TCP">TCP</div>
             </div>
 
             <!-- MQTT 配置 - 按需分片加载 -->

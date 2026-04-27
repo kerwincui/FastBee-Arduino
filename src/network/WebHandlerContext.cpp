@@ -124,15 +124,15 @@ void WebHandlerContext::sendJsonResponse(AsyncWebServerRequest* request, int cod
                                          const JsonDocument& doc) {
     if (!request) return;
 
-    // MemGuard: CRITICAL 时拒绝大响应，返回 503
+    size_t docSize = measureJson(doc);
+
+    // MemGuard: CRITICAL 时仅拒绝大响应（>1KB），小响应放行以确保基础 API（如 auth/session）可用
     auto* fw = FastBeeFramework::getInstance();
     HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
-    if (monitor && monitor->isMemoryCritical()) {
+    if (monitor && monitor->isMemoryCritical() && docSize > 1024) {
         request->send(503, "text/plain", "Service Unavailable - Low Memory");
         return;
     }
-
-    size_t docSize = measureJson(doc);
     AsyncWebServerResponse* response;
 
     if (docSize < 512) {
@@ -151,10 +151,11 @@ void WebHandlerContext::sendJsonResponse(AsyncWebServerRequest* request, int cod
 }
 
 void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const JsonDocument& data) {
-    // MemGuard: CRITICAL 时返回精简响应
+    // MemGuard: CRITICAL 时仅拒绝大响应（>1KB），小响应放行
     auto* fw = FastBeeFramework::getInstance();
     HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
-    if (monitor && monitor->isMemoryCritical()) {
+    size_t estimatedSize = measureJson(data);
+    if (monitor && monitor->isMemoryCritical() && estimatedSize > 1024) {
         request->send(503, "text/plain", "Service Unavailable - Low Memory");
         return;
     }
