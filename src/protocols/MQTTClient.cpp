@@ -12,6 +12,8 @@
  */
 
 #include "protocols/MQTTClient.h"
+#include "protocols/ProtocolManager.h"
+#include "protocols/ModbusHandler.h"
 #include "core/AsyncExecTypes.h"
 #include "systems/LoggerSystem.h"
 #include "core/FeatureFlags.h"
@@ -389,7 +391,15 @@ bool MQTTClient::publishToTopic(size_t topicIndex, const String& message) {
     String payload = message;
 #endif
     bool ok = mqttClient.publish(fullTopic.c_str(), payload.c_str(), pt.retain);
-    
+
+    // 统一打印 MQTT 上报日志（Serial.printf 避免 LoggerSystem 文件 I/O 在发布路径中加剧栈压力）
+    {
+        String truncatedPayload = payload.length() > 120 ? payload.substring(0, 120) + "..." : payload;
+        Serial.printf("[MQTT] TX ▲ topic=%s len=%u payload=%s result=%s\n",
+                      fullTopic.c_str(), payload.length(), truncatedPayload.c_str(),
+                      ok ? "OK" : "FAIL");
+    }
+
     if (!ok) {
         char buf[80];
         snprintf(buf, sizeof(buf), "MQTT: Publish failed topic=%s", fullTopic.c_str());
@@ -469,18 +479,7 @@ bool MQTTClient::publishDeviceInfo() {
 
     bool ok = publishToTopic((size_t)infoTopicIdx, payload);
 
-    // 打印发布主题和内容
     LOG_INFO(ok ? "MQTT: Published device info" : "MQTT: Failed to publish device info");
-    {
-        char topicBuf[128];
-        snprintf(topicBuf, sizeof(topicBuf), "MQTT: Topic: %s", fullTopic.c_str());
-        LOG_INFO(topicBuf);
-    }
-    {
-        // payload 可能较长，分段打印
-        String logMsg = "MQTT: Payload: " + payload;
-        LOG_INFO(logMsg.c_str());
-    }
 
     return ok;
 }
@@ -549,6 +548,9 @@ bool MQTTClient::publishMonitorData() {
     }
 
     bool ok = publishToTopic((size_t)monTopicIdx, payload);
+
+    LOG_INFO(ok ? "MQTT: Published monitor data" : "MQTT: Failed to publish monitor data");
+
     return ok;
 }
 
@@ -580,10 +582,6 @@ bool MQTTClient::publishReportData(const String& payload) {
     snprintf(logBuf, sizeof(logBuf), "MQTT: %s DATA_REPORT topic=%s",
              ok ? "Published" : "Failed to publish", fullTopic.c_str());
     ok ? LOG_INFO(logBuf) : LOG_WARNING(logBuf);
-    {
-        String logMsg = "MQTT: Report payload: " + payload;
-        LOG_DEBUG(logMsg.c_str());
-    }
 
     return ok;
 }
@@ -626,10 +624,6 @@ bool MQTTClient::publishNtpSync() {
     snprintf(logBuf, sizeof(logBuf), "MQTT: %s NTP_SYNC topic=%s",
              ok ? "Published" : "Failed to publish", fullTopic.c_str());
     ok ? LOG_INFO(logBuf) : LOG_WARNING(logBuf);
-    {
-        String logMsg = "MQTT: NTP payload: " + payload;
-        LOG_DEBUG(logMsg.c_str());
-    }
 
     return ok;
 }
@@ -933,6 +927,15 @@ MqttTopicType MQTTClient::getTopicTypeByPath(const String& topicPath, int8_t* ou
     return MqttTopicType::DATA_COMMAND; // 默认
 }
 
+String MQTTClient::getReportTopic() const {
+    for (const auto& pt : config.publishTopics) {
+        if (pt.topicType == MqttTopicType::DATA_REPORT && pt.enabled) {
+            return buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
+        }
+    }
+    return "(no_report_topic)";
+}
+
 String MQTTClient::buildFullTopic(const String& topic, bool autoPrefix) const {
     return buildFullTopicWithType(topic, autoPrefix, MqttTopicType::DATA_REPORT);
 }
@@ -971,6 +974,14 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
 
     // 根据主题路径查找对应的主题类型
     MqttTopicType tType = getTopicTypeByPath(topicStr);
+
+    // 无条件记录下行原始消息（诊断用）——无论 topic 是否匹配配置、tType 是什么都打印
+    // 使用 Serial.printf 避免 LoggerSystem 文件 I/O 在 MQTT 回调中加剧栈压力
+    {
+        String truncatedRaw = message.length() > 120 ? message.substring(0, 120) + "..." : message;
+        Serial.printf("[MQTT] RX ▼ topic=%s type=%d len=%u data=%s\n",
+                      topic, (int)tType, length, truncatedRaw.c_str());
+    }
 
     // 数据接收转换管道
 #if FASTBEE_ENABLE_RULE_SCRIPT
@@ -1012,8 +1023,36 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
     // 收到数据下发指令时，入队延迟处理（避免在回调中阻塞 MQTT 连接）
     if (tType == MqttTopicType::DATA_COMMAND) {
         LOG_INFO("MQTT: Received DATA_COMMAND, queuing...");
+
+        // 透传模式：平台下发的是原始字节帧（非 JSON），需要封装成 modbus_raw_send 指令再入队
+        String enqueueMsg = message;
+        {
+            // 检测 payload 是否看起来为 JSON（首个非空白字节为 '[' 或 '{'）
+            bool looksLikeJson = false;
+            for (unsigned int i = 0; i < length; i++) {
+                char c = (char)payload[i];
+                if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+                looksLikeJson = (c == '[' || c == '{');
+                break;
+            }
+
+            // 非 JSON 格式且长度 >= 2：视为透传原始字节帧，自动封装为 modbus_raw_send
+            if (!looksLikeJson && length >= 2) {
+                // 将原始字节转为 HEX 字符串
+                String hexStr;
+                hexStr.reserve(length * 2);
+                for (unsigned int i = 0; i < length; i++) {
+                    char buf[3];
+                    snprintf(buf, sizeof(buf), "%02X", payload[i]);
+                    hexStr += buf;
+                }
+                enqueueMsg = "[{\"id\":\"modbus_raw_send\",\"value\":\"" + hexStr + "\"}]";
+                Serial.printf("[MQTT] RX ▼ TRANSPARENT->HEX len=%u hex=%s\n", length, hexStr.c_str());
+            }
+        }
+
         if (_dataCommandQueue) {
-            String* cmd = new (std::nothrow) String(message);
+            String* cmd = new (std::nothrow) String(enqueueMsg);
             if (cmd) {
                 if (xQueueSend(_dataCommandQueue, &cmd, 0) != pdTRUE) {
                     LOG_WARNING("MQTT: DATA_COMMAND queue full, dropping");

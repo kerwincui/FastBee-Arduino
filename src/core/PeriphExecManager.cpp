@@ -1660,6 +1660,7 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
     }
 
     // 预处理阶段：处理 modbus_raw_send 指令（透传模式：平台下发 HEX 帧）
+    String transparentHexResult;
     if (_modbusRawSendCallback) {
         int idx = 0;
         for (JsonObject item : cmdArr) {
@@ -1673,6 +1674,9 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
                     for (JsonVariant v : tmpDoc.as<JsonArray>()) {
                         modbusReportArr.add(v);
                     }
+                } else if (rawResult.length() > 0) {
+                    // 透传模式：返回的是纯 HEX 字符串，非 JSON 数组
+                    transparentHexResult = rawResult;
                 }
             }
             idx++;
@@ -1830,6 +1834,11 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
         reportItem["id"] = unmatchedIds[i];
         reportItem["value"] = actualValue;
         reportItem["remark"] = directOk ? "direct_peripheral" : "no matching rule";
+    }
+
+    // 透传模式：若返回的是纯 HEX 字符串且无其他 JSON 内容，直接返回 HEX
+    if (transparentHexResult.length() > 0 && reportArr.size() == 0) {
+        return transparentHexResult;
     }
 
     String result;

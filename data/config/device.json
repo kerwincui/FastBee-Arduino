@@ -1,6 +1,6 @@
 {
-  "deviceId": "FBE100900001",
-  "productNumber": 1070,
+  "deviceId": "D1L3K9XCGYAJ",
+  "productNumber": 1372,
   "userId": "1",
   "deviceName": "FastBee-Device",
   "location": "",
@@ -11,5 +11,6 @@
   "timezone": "CST-8",
   "syncInterval": 3600,
   "logLevel": "INFO",
-  "autoStart": true
+  "autoStart": true,
+  "cacheDuration": 86400
 }

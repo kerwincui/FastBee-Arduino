@@ -76,8 +76,10 @@
                 this.onModbusModeChange('master');
                 if (rtu.master) {
                     this._masterTasks = rtu.master.tasks || [];
+                    this._modbusDevices = rtu.master.devices || [];
                 } else {
                     this._masterTasks = [];
+                    this._modbusDevices = [];
                 }
                 this._modbusRtuLoaded = true;
                 // 先加载设备列表（内部会调用 _renderAllDevices），再启动状态刷新

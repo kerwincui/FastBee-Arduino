@@ -166,6 +166,9 @@ public:
     // 根据主题路径查找对应的主题类型（可选输出订阅主题索引）
     MqttTopicType getTopicTypeByPath(const String& topicPath, int8_t* outSubIndex = nullptr) const;
 
+    // 获取数据上报主题的完整路径（透传模式调试日志用）
+    String getReportTopic() const;
+
 private:
     WiFiClient wifiClient;
     PubSubClient mqttClient;

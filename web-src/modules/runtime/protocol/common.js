@@ -225,14 +225,14 @@
             var info = (fcNames[task.functionCode] || 'FC03') + ' @' + (task.startAddress || 0) + ' x' + (task.quantity || 10);
             var mappingCount = (task.mappings && task.mappings.length) || 0;
             if (mappingCount > 0) info += ' [' + mappingCount + (i18n.t('modbus-dev-mappings-suffix') || '映射') + ']';
-            var isTransparent = this._isTransparentMode();
+            // 采集任务始终允许打开寄存器映射配置：
+            // - JSON 模式：映射用于解析寄存器为物模型属性
+            // - 透传模式：映射仍可用于本地缓存展示（device-control/render.js 依赖 mappings）
             var actions = [
-                this._renderProtocolActionButton(i18n.t('modbus-task-edit-btn') || '编辑', 'primary', 'edit-device', index, 'sensor')
+                this._renderProtocolActionButton(i18n.t('modbus-task-edit-btn') || '编辑', 'primary', 'edit-device', index, 'sensor'),
+                this._renderProtocolActionButton(i18n.t('modbus-mapping-btn') || '映射', 'warning', 'open-mapping', index),
+                this._renderProtocolActionButton(i18n.t('modbus-master-delete-task') || '删除', 'danger', 'delete-device', index, 'sensor')
             ];
-            if (!isTransparent) {
-                actions.push(this._renderProtocolActionButton(i18n.t('modbus-mapping-btn') || '映射', 'warning', 'open-mapping', index));
-            }
-            actions.push(this._renderProtocolActionButton(i18n.t('modbus-master-delete-task') || '删除', 'danger', 'delete-device', index, 'sensor'));
             return '<tr>' +
                 '<td>' + escapeHtml(label) + '</td>' +
                 '<td>' + this._renderProtocolBadge('sensor', typeLabels.sensor) + '</td>' +

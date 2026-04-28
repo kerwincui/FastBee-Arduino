@@ -20,9 +20,6 @@
         },
 
         _onTransferTypeChange() {
-            var isTransparent = this._isTransparentMode();
-            var addControlItem = document.querySelector('[data-action="_addControlDevice"]');
-            if (addControlItem) addControlItem.style.display = isTransparent ? 'none' : '';
             this._renderAllDevices();
         },
 
@@ -31,8 +28,7 @@
             if (!tbody) return;
             var tasks = this._masterTasks || [];
             var devices = this._modbusDevices || [];
-            var isTransparent = this._isTransparentMode();
-            var visibleDevices = isTransparent ? [] : devices;
+            var visibleDevices = devices;
             if (tasks.length === 0 && visibleDevices.length === 0) {
                 tbody.innerHTML = this._renderProtocolEmptyRow(6, i18n.t('modbus-no-devices') || '暂无子设备');
                 return;
@@ -130,10 +126,9 @@
             f('task-edit-start-addr').value = task.startAddress || 0;
             f('task-edit-quantity').value = task.quantity || 10;
             f('task-edit-name').value = task.name || task.label || '';
-            f('task-edit-type').value = task.deviceType || 'holding';
             f('task-edit-enabled').checked = task.enabled !== false;
             var titleEl = modal.querySelector('.modal-header h3');
-            if (titleEl) titleEl.textContent = idx < 0 ? i18n.t('modbus-task-add-title') : i18n.t('modbus-task-edit-title');
+            if (titleEl) titleEl.textContent = idx < 0 ? (i18n.t('modbus-task-add-title') || '新建子设备') : (i18n.t('modbus-task-edit-title') || '编辑子设备');
             AppState.showModal(modal);
         },
 
@@ -143,21 +138,17 @@
             this._editingTaskIdx = -1;
         },
 
-        _onTaskTypeChange(val) {
-            var fcMap = { holding: '3', input: '4', coil: '1', discrete: '2' };
-            var fcEl = document.getElementById('task-edit-fc');
-            if (fcEl && fcMap[val]) fcEl.value = fcMap[val];
-        },
-
         _saveTaskEditModal() {
             var f = function(id) { return document.getElementById(id); };
+            var fc = parseInt(f('task-edit-fc').value) || 3;
+            var fcToDeviceType = {1: 'coil', 2: 'discrete', 3: 'holding', 4: 'input'};
             var task = {
                 slaveAddress: parseInt(f('task-edit-slave-addr').value) || 1,
-                functionCode: parseInt(f('task-edit-fc').value) || 3,
+                functionCode: fc,
                 startAddress: parseInt(f('task-edit-start-addr').value) || 0,
                 quantity: parseInt(f('task-edit-quantity').value) || 10,
                 name: f('task-edit-name').value || '',
-                deviceType: f('task-edit-type').value || 'holding',
+                deviceType: fcToDeviceType[fc] || 'holding',
                 enabled: f('task-edit-enabled').checked
             };
             if (!this._masterTasks) this._masterTasks = [];
@@ -278,15 +269,20 @@
         // ============ 设备加载与管理 ============
 
         _loadModbusDevices() {
-            var serverDevices = [];
-            try {
-                var rtu = this._protocolConfig && this._protocolConfig.modbusRtu;
-                if (rtu && rtu.master && rtu.master.devices && rtu.master.devices.length > 0) {
-                    serverDevices = Array.isArray(rtu.master.devices)
-                        ? rtu.master.devices.slice()
-                        : Object.keys(rtu.master.devices).map(function(k) { return rtu.master.devices[k]; });
-                }
-            } catch(e) {}
+            // 如果 _fillProtocolForm 已从配置参数设置 _modbusDevices，则仅做规范化处理
+            var serverDevices = this._modbusDevices || [];
+
+            // 尝试从 _protocolConfig 补充加载（仅在 _modbusDevices 为空时）
+            if (serverDevices.length === 0) {
+                try {
+                    var rtu = this._protocolConfig && this._protocolConfig.modbusRtu;
+                    if (rtu && rtu.master && rtu.master.devices && rtu.master.devices.length > 0) {
+                        serverDevices = Array.isArray(rtu.master.devices)
+                            ? rtu.master.devices.slice()
+                            : Object.keys(rtu.master.devices).map(function(k) { return rtu.master.devices[k]; });
+                    }
+                } catch(e) {}
+            }
 
             if (serverDevices.length === 0) {
                 try {

@@ -407,7 +407,7 @@
 <div id="task-edit-modal" class="modal">
     <div class="modal-content fb-max-w-modal-sm">
         <div class="modal-header">
-            <h3 data-i18n="modbus-task-edit-title">编辑轮询任务</h3>
+            <h3 data-i18n="modbus-task-edit-title">编辑子设备</h3>
             <button type="button" class="modal-close"
                 data-action="_closeTaskEditModal">&times;</button>
         </div>
@@ -416,15 +416,6 @@
                 <div>
                     <label data-i18n="modbus-master-label">名称</label>
                     <input id="task-edit-name" type="text" maxlength="15" class="" placeholder="">
-                </div>
-                <div>
-                    <label data-i18n="modbus-task-type">类型</label>
-                    <select id="task-edit-type" class="" data-change-action="_onTaskTypeChange">
-                        <option value="holding">保持寄存器</option>
-                        <option value="input">输入寄存器</option>
-                        <option value="coil">线圈状态</option>
-                        <option value="discrete">离散输入</option>
-                    </select>
                 </div>
                 <div>
                     <label data-i18n="modbus-master-slave-addr">从站地址</label>

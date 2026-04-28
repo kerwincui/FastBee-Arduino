@@ -2262,15 +2262,13 @@ String ModbusHandler::executePollTaskByIndex(uint8_t taskIdx, uint16_t timeout, 
         task.pollInterval = task.originalInterval;
     }
 
-    // 透传模式：将读取结果格式化为原始 HEX 帧上报
+    // 透传模式：将读取结果格式化为原始 HEX 帧直接上报
     if (config.transferType == 1) {
         String hexStr = formatRawHex(task.slaveAddress, task.functionCode, result.data, result.count);
-        String json = "[{\"id\":\"modbus_raw_" + String(task.slaveAddress) +
-                      "\",\"value\":\"" + hexStr + "\"}]";
         if (emitCallback && dataCallback) {
-            dataCallback(task.slaveAddress, json);
+            dataCallback(task.slaveAddress, hexStr);
         }
-        return json;
+        return hexStr;
     }
 
     // 应用寄存器映射生成 JSON

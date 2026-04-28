@@ -377,7 +377,10 @@ private:
     // 内部方法
     bool initializeSerial();
     bool initializePins();
+public:
+    // CRC 计算（Modbus CRC-16），对外开放以便 ProtocolManager 等调用
     uint16_t calculateCRC(const uint8_t* data, uint8_t length);
+private:
     bool validateFrame(const uint8_t* frame, uint8_t length);
     void processModbusFrame(const uint8_t* frame, uint8_t length);
     void sendResponse(const uint8_t* data, uint8_t length);

@@ -328,6 +328,13 @@ void ProtocolManager::dispatchModbusData(uint8_t slaveAddress, const String& dat
     // 1. MQTT 上报（所有来源都上报）
 #if FASTBEE_ENABLE_MQTT
     if (mqttClient && mqttClient->getIsConnected()) {
+        // 透传模式下记录详细调试日志（主题+HEX内容）
+        // 使用 Serial.printf 避免 LoggerSystem 文件 I/O 加剧异步任务栈压力
+        if (modbusHandler && modbusHandler->getConfig().transferType == 1) {
+            String reportTopic = mqttClient->getReportTopic();
+            Serial.printf("[Modbus] TX ▲ topic=%s slave=%d data=%s\n",
+                          reportTopic.c_str(), slaveAddress, data.c_str());
+        }
         mqttClient->publishReportData(data);
     }
 #endif
@@ -913,41 +920,23 @@ String ProtocolManager::executeModbusRead(const String& paramsJson) {
 // ========== MQTT触发的Modbus原始HEX帧透传 ==========
 
 String ProtocolManager::executeModbusRawSend(const String& hexPayload) {
-    FastBeeJsonDoc resultDoc;
-    JsonArray resultArr = resultDoc.to<JsonArray>();
-
     // 检查 Modbus 是否可用
     if (!modbusHandler) {
-        JsonObject err = resultArr.add<JsonObject>();
-        err["id"] = "modbus_raw_send";
-        err["value"] = "0";
-        err["remark"] = "error:not_initialized";
-        String out;
-        serializeJson(resultDoc, out);
-        return out;
+        LOG_WARNING("[Modbus] RawSend: not initialized");
+        return "";
     }
 
     if (modbusHandler->getMode() != MODBUS_MASTER) {
-        JsonObject err = resultArr.add<JsonObject>();
-        err["id"] = "modbus_raw_send";
-        err["value"] = "0";
-        err["remark"] = "error:not_master_mode";
-        String out;
-        serializeJson(resultDoc, out);
-        return out;
+        LOG_WARNING("[Modbus] RawSend: not master mode");
+        return "";
     }
 
     // 校验 HEX 字符串格式
     String hex = hexPayload;
     hex.trim();
     if (hex.length() < 4 || (hex.length() % 2) != 0 || hex.length() > (Protocols::MODBUS_BUFFER_SIZE - 2) * 2) {
-        JsonObject err = resultArr.add<JsonObject>();
-        err["id"] = "modbus_raw_send";
-        err["value"] = "0";
-        err["remark"] = "error:invalid_hex_length";
-        String out;
-        serializeJson(resultDoc, out);
-        return out;
+        LOG_WARNINGF("[Modbus] RawSend: invalid hex length=%d", hex.length());
+        return "";
     }
 
     // HEX 字符串解码为字节数组
@@ -964,44 +953,34 @@ String ProtocolManager::executeModbusRawSend(const String& hexPayload) {
         };
         int8_t hv = hexVal(hi), lv = hexVal(lo);
         if (hv < 0 || lv < 0) {
-            JsonObject err = resultArr.add<JsonObject>();
-            err["id"] = "modbus_raw_send";
-            err["value"] = "0";
-            err["remark"] = "error:invalid_hex_char";
-            String out;
-            serializeJson(resultDoc, out);
-            return out;
+            LOG_WARNING("[Modbus] RawSend: invalid hex char");
+            return "";
         }
         byteArray[i] = (uint8_t)((hv << 4) | lv);
     }
 
     uint8_t slaveAddr = byteArray[0];
-    LOG_INFOF("[Modbus] RawSend: slave=%d, %d bytes (without CRC)", slaveAddr, byteLen);
+
+    // 自动检测末尾是否已含 CRC（平台透传下发的 Modbus 帧通常已包含 CRC）
+    // sendRawFrameOnce 期望 dataWithoutCRC，若输入已含 CRC 会被重复追加 CRC 导致帧无效
+    uint8_t effectiveLen = byteLen;
+    if (byteLen >= 4) {
+        uint16_t crcCalc = modbusHandler->calculateCRC(byteArray, byteLen - 2);
+        uint8_t crcLo = crcCalc & 0xFF;
+        uint8_t crcHi = (crcCalc >> 8) & 0xFF;
+        if (byteArray[byteLen - 2] == crcLo && byteArray[byteLen - 1] == crcHi) {
+            effectiveLen = byteLen - 2;
+            LOG_INFOF("[Modbus] RawSend: detected trailing CRC, stripping (origLen=%d, dataLen=%d)", byteLen, effectiveLen);
+        }
+    }
+    LOG_INFOF("[Modbus] RawSend: slave=%d, %d bytes (without CRC)", slaveAddr, effectiveLen);
 
     // 发送原始帧（sendRawFrameOnce 自动追加 CRC）
-    OneShotResult rawResult = modbusHandler->sendRawFrameOnce(slaveAddr, byteArray, byteLen, false);
+    OneShotResult rawResult = modbusHandler->sendRawFrameOnce(slaveAddr, byteArray, effectiveLen, false);
 
     if (rawResult.error != ONESHOT_SUCCESS) {
-        JsonObject err = resultArr.add<JsonObject>();
-        char idBuf[20];
-        snprintf(idBuf, sizeof(idBuf), "modbus_raw_%d", slaveAddr);
-        err["id"] = idBuf;
-        err["value"] = "0";
-        switch (rawResult.error) {
-            case ONESHOT_TIMEOUT:    err["remark"] = "error:timeout"; break;
-            case ONESHOT_CRC_ERROR:  err["remark"] = "error:crc_error"; break;
-            case ONESHOT_EXCEPTION: {
-                char buf[24];
-                snprintf(buf, sizeof(buf), "error:exception:0x%02X", rawResult.exceptionCode);
-                err["remark"] = buf;
-                break;
-            }
-            case ONESHOT_BUSY:       err["remark"] = "error:busy"; break;
-            default:                 err["remark"] = "error:unknown"; break;
-        }
-        String out;
-        serializeJson(resultDoc, out);
-        return out;
+        LOG_WARNINGF("[Modbus] RawSend: failed, error=%d", rawResult.error);
+        return "";
     }
 
     // 成功：将原始响应字节格式化为 HEX 字符串
@@ -1014,17 +993,8 @@ String ProtocolManager::executeModbusRawSend(const String& hexPayload) {
         respHex += buf;
     }
 
-    JsonObject item = resultArr.add<JsonObject>();
-    char idBuf[20];
-    snprintf(idBuf, sizeof(idBuf), "modbus_raw_%d", slaveAddr);
-    item["id"] = idBuf;
-    item["value"] = respHex;
-    item["remark"] = "";
-
-    String out;
-    serializeJson(resultDoc, out);
-    LOG_INFOF("[Modbus] RawSend: result: %s", out.c_str());
-    return out;
+    LOG_INFOF("[Modbus] RawSend: result hex=%s", respHex.c_str());
+    return respHex;
 }
 #endif // FASTBEE_ENABLE_MODBUS (restartModbus + stopModbus + restartModbusDeferred + executeModbusRead + executeModbusRawSend)
 

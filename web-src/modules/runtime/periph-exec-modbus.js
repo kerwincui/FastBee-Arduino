@@ -231,13 +231,27 @@
             const sources = [];
             if (!protocolConfig) return sources;
             const rtu = protocolConfig.modbusRtu;
-            if (rtu && rtu.enabled && rtu.master && rtu.master.tasks) {
-                rtu.master.tasks.forEach(task => {
-                    if (!task.enabled || !task.mappings) return;
-                    task.mappings.forEach(m => {
-                        if (m.sensorId) sources.push({ id: m.sensorId, label: (task.name || task.label || 'Modbus') + '/' + m.sensorId });
+            const isTransparent = rtu && (rtu.transferType === 1);
+            if (rtu && rtu.enabled && rtu.master) {
+                // 采集任务（tasks）
+                if (rtu.master.tasks) {
+                    rtu.master.tasks.forEach(task => {
+                        if (!task.enabled) return;
+                        if (task.mappings && task.mappings.length > 0) {
+                            // JSON 模式或透传模式下有映射的任务：从映射提取数据源
+                            task.mappings.forEach(m => {
+                                if (m.sensorId) sources.push({ id: m.sensorId, label: (task.name || task.label || 'Modbus') + '/' + m.sensorId });
+                            });
+                        } else if (isTransparent) {
+                            // 透传模式下无映射的任务：将整个任务作为数据源
+                            var taskId = task.name || task.label || ('Slave' + (task.slaveAddress || 1));
+                            var dsId = 'modbus_raw_' + (task.slaveAddress || 0);
+                            sources.push({ id: dsId, label: taskId + ' (透传)' });
+                        }
                     });
-                });
+                }
+                // 控制设备（devices）不在 _peDataSources 中重复添加
+                // 它们通过 _modbusDevices 在事件下拉列表的「控制设备」分组中展示
             }
             const tcp = protocolConfig.modbusTcp;
             if (tcp && tcp.enabled && tcp.master && tcp.master.tasks) {
