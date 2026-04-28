@@ -186,7 +186,8 @@ pio run --target upload
     <td><img src="./images/device_09.png" alt="主题切换"/></td>
   </tr>
   <tr>
-    <td colspan="2"><img src="./images/device_11.png" alt="移动端适配"/></td>
+    <td><img src="./images/device_11.png" alt="中英文适配"/></td>
+     <td><img src="./images/device_12.png" alt="设备大屏"/></td>
   </tr>
 </table>
 
