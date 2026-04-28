@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  Flash &amp; Go · No Programming Required · Visual Web Configuration · Multi-Protocol &amp; Multi-Peripheral
+  Flash &amp; Go · No Programming Required · Visual Web Configuration · AP+STA Auto-Switching
 </p>
 
 ---
@@ -43,12 +43,13 @@ Whether you're a maker rapidly prototyping a hardware idea or a product team dep
 - **Bilingual (CN/EN)**: 2,500+ translation keys with instant language switching
 - **Responsive UI**: Dark / light themes, mobile-friendly layout, SSE real-time push, Service Worker offline cache
 
-### 📡 Full ESP32 Family Support — Multi-Chip, Multi-Peripheral, Smart Provisioning
+### 📡 Full ESP32 Family Support — Multi-Chip, Multi-Peripheral, Smart Network Switching
 
 - **Three Chip Variants**: ESP32 (dual-core 240 MHz), ESP32-S3 (AI acceleration), ESP32-C3 (low-cost RISC-V)
-- **Smart Provisioning**: WiFi STA / AP / dual-mode, BLE provisioning, mDNS discovery
+- **AP+STA Dual-Mode Auto-Switching**: On first boot or when STA connection fails, the device automatically falls back to AP mode; after configuring WiFi via Web UI, it switches to STA automatically; if STA fails again, it falls back to AP — guaranteeing the device is always reachable
 - **3-Layer IP Conflict Detection**: Ensures reliable network connectivity
-- **35+ Compile Switches**: 3 build presets (full / minimal / release) — enable only what you need
+- **mDNS Local Discovery**: No IP scanning needed — reach the device via `fastbee.local`
+- **35+ Compile Switches**: 3 build presets (standard / minimal / full) — enable only what you need
 
 ### 🔌 Versatile IoT Device — Multi-Protocol, Rule Engine, Remote Maintenance
 
@@ -160,11 +161,13 @@ pio device monitor -b 115200
 
 ### 3. Access the Device
 
-- On first boot the device enters **AP provisioning mode** — connect to `fastbee-ap`
+- On first boot (no WiFi configured) the device enters **AP mode** — connect to `fastbee-ap`
 - Open `192.168.4.1` or `http://fastbee.local` in your browser
 - Default credentials: `admin` / `admin123`
+- Fill in the WiFi SSID / password in the Web UI under "Network" — the device automatically switches to STA mode; if STA fails, it falls back to AP mode
 
 > After flashing, zero code needed! Open your browser to visually configure WiFi, peripherals, protocols, rules, and everything else.
+> **Note**: The standalone BLE provisioning and AP provisioning wizards have been removed. Network onboarding is now handled uniformly through the AP+STA dual-mode auto-switching mechanism.
 
 ---
 
