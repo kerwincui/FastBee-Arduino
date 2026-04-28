@@ -10,8 +10,8 @@
   <img src="https://img.shields.io/badge/platform-ESP32%20|%20ESP32--S3%20|%20ESP32--C3-blue" alt="Platform">
   <img src="https://img.shields.io/badge/framework-Arduino%20%2B%20PlatformIO-orange" alt="Framework">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-green" alt="License">
-  <img src="https://img.shields.io/badge/code-11K%2B%20lines-brightgreen" alt="Code Size">
-  <img src="https://img.shields.io/badge/web%20UI-180KB-blueviolet" alt="Web UI">
+  <img src="https://img.shields.io/badge/code-15K%2B%20lines-brightgreen" alt="Code Size">
+  <img src="https://img.shields.io/badge/web%20UI-260KB%20gzip-blueviolet" alt="Web UI">
 </p>
 
 <p align="center">
@@ -53,9 +53,12 @@ Whether you're a maker rapidly prototyping a hardware idea or a product team dep
 ### 🔌 Versatile IoT Device — Multi-Protocol, Rule Engine, Remote Maintenance
 
 - **5 Communication Protocols**: MQTT (dual auth / QoS 0-2 / TLS), Modbus RTU master-slave, TCP / CoAP / HTTP
+- **Modbus RTU Passthrough Mode**: Platform sends raw HEX frames → automatic CRC verification & stripping → forwarded to RS485 unchanged → raw HEX response reported directly to the cloud, compatible with any non-standard slave protocol
 - **Enterprise Security**: RBAC with 3 roles & 24 permissions, cookie sessions, MD5+Salt passwords, AES-CBC-128 MQTT auth
+- **Scriptable Rule Engine**: Built-in JavaScript engine for custom rule scripts (`FASTBEE_ENABLE_RULE_SCRIPT`) — dynamically loadable without re-flashing firmware
 - **OTA Remote Updates**: Dual-channel firmware upgrade, no on-site access needed
 - **Four-Level Memory Guard**: MemGuard (NORMAL / WARN / SEVERE / CRITICAL), ring-buffer logging
+- **End-to-End Debug Logging**: Unified `[MQTT] RX ▼ / TX ▲` I/O logs + `[Modbus] RawSend` passthrough logs — zero-cost issue diagnosis
 
 ---
 
@@ -145,11 +148,14 @@ cd fastbee-arduino
 # Compress frontend assets (optional — prebuilt files included)
 node scripts/gzip-www.js
 
-# Upload filesystem image
-pio run --target uploadfs
+# Upload filesystem image (default env: esp32dev)
+pio run -e esp32dev --target uploadfs
 
 # Compile and flash firmware
-pio run --target upload
+pio run -e esp32dev --target upload
+
+# Open serial monitor (115200 baud)
+pio device monitor -b 115200
 ```
 
 ### 3. Access the Device
@@ -206,8 +212,8 @@ pio run --target upload
 
 | Protocol | Features |
 |----------|----------|
-| MQTT | Dual auth (simple / AES-encrypted), QoS 0/1/2, TLS, exponential-backoff reconnect, ring-buffer queue |
-| Modbus RTU | Industrial RS485 bus, master & slave, 8 function codes, 16 sub-devices, 5 device types (details below) |
+| MQTT | Dual auth (simple / AES-encrypted), QoS 0/1/2, TLS, exponential-backoff reconnect, ring-buffer queue, unified `RX ▼ / TX ▲` debug logs |
+| Modbus RTU | Industrial RS485 bus, master & slave, 8 function codes, 16 sub-devices, 5 device types, **passthrough HEX + CRC auto-handling** (details below) |
 | TCP | Server & client, 12 concurrent connections, 64-message queue |
 | CoAP | Lightweight IoT protocol, compile-time toggle |
 | HTTP | Client wrapper with HTTPS support |
@@ -227,7 +233,7 @@ FastBee-Arduino ships with a full **industrial-grade Modbus RTU** protocol stack
 | Continuous Timeout Protection | Auto frequency reduction or skip when a slave is unresponsive, preventing bus congestion |
 | Data Change Detection | Hash-based change detection — reports only when data changes, reducing unnecessary communication |
 | Dead Zone & Dynamic Frequency | Register value changes below the dead-zone threshold are suppressed; polling frequency adjusts dynamically based on communication quality |
-| Passthrough Mode | RAW HEX forwarding for non-standard protocols or debugging scenarios |
+| Passthrough Mode | **`transferType=1`** when enabled: platform sends raw HEX → auto-detect & strip trailing CRC → `sendRawFrameOnce` re-appends CRC and transmits → raw response frame reported directly as HEX via `/property/post`, compatible with non-standard slaves (requires platform-side JS script for parsing) |
 | Compile Switches | `FASTBEE_ENABLE_MODBUS` (master), `FASTBEE_MODBUS_SLAVE_ENABLE` (slave) — enable as needed |
 
 ### Key Metrics
@@ -235,35 +241,44 @@ FastBee-Arduino ships with a full **industrial-grade Modbus RTU** protocol stack
 | Metric | Value |
 |--------|-------|
 | REST API Endpoints | 80+ |
-| Web Route Handlers | 12 |
+| Web Route Handlers | 18+ |
 | Peripheral Types | 35+ |
 | Compile Switches | 35+ |
+| Build Environments | 9 (3 chips × 3 presets) |
 | RBAC Permissions | 24 |
 | i18n Translation Keys | 2,500+ |
-| Frontend Compression | 81.6% (Gzip) |
+| Frontend Gzip Size | 260 KB (compression 77.5%) |
+| LittleFS Capacity | 1.6 MB |
 | SSE Concurrent Clients | 3 |
 
 ---
 
 ## ⚙️ Build Configurations
 
-The project ships with **6 chip-specific environments** and **3 feature presets**:
+The project ships with **3 chips × 3 presets = 9 build environments**. Pick an environment and flash directly, no build flag tweaks needed.
 
-| Preset | Description | Use Case |
-|--------|-------------|----------|
-| `full` | All features enabled (MQTT + Modbus + CoAP + TCP + HTTP + BLE) | Development & evaluation |
-| `minimal` | Minimum feature set (MQTT + Web only) | Resource-constrained devices |
-| `release` | Production build (no debug logs, optimizations on) | Mass deployment |
+### Feature Presets
 
-```ini
-# Switch presets in platformio.ini
-[env:esp32-full]
-board = esp32dev
-build_flags = -DFEATURE_FULL
+| Preset | Description | Use Case | Flash Footprint |
+|--------|-------------|----------|-----------------|
+| `standard` (default) | Core features: MQTT + Modbus + Web + OTA + BLE | Recommended for most scenarios | ~920 KB |
+| `minimal` | Minimum features: MQTT + Web only, disables CoAP / TCP / rule engine / Modbus slave / slave mode | Resource-constrained devices | ~850 KB |
+| `full` | All features: standard + CoAP + HTTP client + rule script engine + Modbus slave mode | Development, evaluation, full testing | ~970 KB |
 
-[env:esp32s3-release]
-board = esp32-s3-devkitc-1
-build_flags = -DFEATURE_RELEASE
+### All 9 Environments
+
+| Chip | Standard | Minimal | Full |
+|------|----------|---------|------|
+| ESP32 | `esp32dev` | `esp32dev-minimal` | `esp32dev-full` |
+| ESP32-S3 | `esp32s3` | `esp32s3-minimal` | `esp32s3-full` |
+| ESP32-C3 | `esp32c3` | `esp32c3-minimal` | `esp32c3-full` |
+
+```bash
+# Example: build & flash the ESP32-S3 full-feature environment
+pio run -e esp32s3-full --target upload
+
+# Example: flash the ESP32-C3 minimal environment to save flash
+pio run -e esp32c3-minimal --target upload
 ```
 
 ---
@@ -279,9 +294,9 @@ FastBee-Arduino/
 │   ├── security/             # Security (user / role / auth / crypto)
 │   ├── systems/              # System services (logger, scheduler, health, config storage)
 │   └── utils/                # Utilities
-├── src/                      # Source implementation (~11K lines C++)
+├── src/                      # Source implementation (~15K lines C++)
 ├── data/                     # Filesystem image
-│   ├── www/                  # Web frontend (~180 KB, 8 functional pages)
+│   ├── www/                  # Web frontend (~260 KB gzip, 8 functional pages)
 │   ├── config/               # JSON configuration files
 │   └── logs/                 # Log directory
 ├── web-src/                  # Web frontend source (development)
