@@ -9,7 +9,3 @@
 .cursor
 test/
 nul
-
-# Web build artifacts (source lives in web-src/, data/www/ is fully generated)
-data/www/*
-!data/www/assets/

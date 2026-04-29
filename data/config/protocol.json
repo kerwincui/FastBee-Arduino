@@ -5,7 +5,7 @@
     "timeout": 1000,
     "mode": "master",
     "dePin": 14,
-    "transferType": 1,
+    "transferType": 0,
     "master": {
       "responseTimeout": 500,
       "maxRetries": 1,
@@ -147,8 +147,7 @@
             3,
             4,
             5
-          ],
-          "motorDecimals": 0
+          ]
         },
         {
           "name": "继电器板模块",
@@ -171,8 +170,7 @@
             3,
             4,
             5
-          ],
-          "motorDecimals": 0
+          ]
         },
         {
           "name": "调速",
@@ -195,8 +193,7 @@
             3,
             4,
             5
-          ],
-          "motorDecimals": 0
+          ]
         },
         {
           "name": "M88继电器",
@@ -219,8 +216,7 @@
             3,
             4,
             5
-          ],
-          "motorDecimals": 0
+          ]
         },
         {
           "name": "网络继电器",
@@ -243,8 +239,7 @@
             3,
             4,
             5
-          ],
-          "motorDecimals": 0
+          ]
         },
         {
           "name": "4路继电器",
@@ -256,6 +251,7 @@
           "ncMode": false,
           "controlProtocol": 1,
           "batchRegister": 52,
+          "batchRegType": 1,
           "pwmRegBase": 0,
           "pwmResolution": 8,
           "pidDecimals": 1,
@@ -267,8 +263,7 @@
             3,
             4,
             5
-          ],
-          "motorDecimals": 0
+          ]
         },
         {
           "name": "电机",
@@ -283,6 +278,7 @@
           "pwmRegBase": 0,
           "pwmResolution": 8,
           "pidDecimals": 1,
+          "motorDecimals": 0,
           "enabled": true,
           "pidAddrs": [
             0,
@@ -292,7 +288,6 @@
             4,
             5
           ],
-          "motorDecimals": 0,
           "motorRegs": [
             0,
             1,
@@ -315,9 +310,9 @@
     "enabled": true,
     "server": "iot.fastbee.cn",
     "port": 1883,
-    "clientId": "S&D1L3K9XCGYAJ&1372&1",
+    "clientId": "S&FBE100900001&1070&1",
     "username": "admin",
-    "password": "P162S282H8LK0Z9M",
+    "password": "PE6987BNXN4NW98O",
     "keepAlive": 60,
     "autoReconnect": true,
     "connectionTimeout": 30000,
