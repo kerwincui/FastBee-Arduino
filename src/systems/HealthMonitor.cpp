@@ -22,6 +22,8 @@
 #include "core/FastBeeFramework.h"
 #include "protocols/ProtocolManager.h"
 #include "protocols/MQTTClient.h"
+#include "network/WebConfigManager.h"
+#include "network/handlers/SSERouteHandler.h"
 #endif
 
 HealthMonitor::HealthMonitor()
@@ -310,6 +312,18 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
         if (logger.isFileLoggingEnabled()) {
             logger.enableFileLogging(false);
             Serial.println("[MEMGUARD] SEVERE: file logging disabled");
+        }
+        // 强制关闭所有 SSE 客户端：释放 lwip TCP 缓冲区，避免 Web 请求无法应答
+        // 仅在从低级别升级到 SEVERE/CRITICAL 的跳变时触发一次
+        if (oldLevel < MemoryGuardLevel::SEVERE) {
+            FastBeeFramework* fw = FastBeeFramework::getInstance();
+            WebConfigManager* wcm = fw ? fw->getWebConfigManager() : nullptr;
+            SSERouteHandler* sse = wcm ? wcm->getSseRouteHandler() : nullptr;
+            if (sse) {
+                size_t closed = sse->closeAllClients();
+                Serial.printf("[MEMGUARD] SEVERE: closed %u SSE clients to reclaim memory\n",
+                              (unsigned)closed);
+            }
         }
         // MQTT 降采样：降低上报频率以减少内存压力
 #if FASTBEE_ENABLE_MQTT

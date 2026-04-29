@@ -553,6 +553,8 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                 if (resultsArr.size() > 0 && interDelay > 0) vTaskDelay(pdMS_TO_TICKS(interDelay));
                 // emitCallback=false: PeriphExec 有自己的数据处理流程，不需要通过 dataCallback 重复分发
                 String result = modbus->executePollTaskByIndex(taskIdx, timeout, retries, false);
+                LOGGER.infof("[PeriphExec] Poll task[%d] raw result: %s",
+                             taskIdx, result.length() > 200 ? (result.substring(0, 200) + "...").c_str() : result.c_str());
                 if (result != "[]") {
                     anySuccess = true;
                     // 解析任务结果并追加到结构化数组（避免字符串拼接）
@@ -562,6 +564,8 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                         for (JsonVariant item : taskArr) {
                             resultsArr.add(item);
                         }
+                    } else {
+                        LOGGER.warningf("[PeriphExec] Poll task[%d] result JSON parse failed", taskIdx);
                     }
                 }
             }
@@ -574,6 +578,9 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                 if (protMgr) {
                     protMgr->dispatchModbusData(0, mergedJson, ModbusDataSource::PeriphExecPoll);
                 }
+            } else {
+                LOGGER.warningf("[PeriphExec] Poll: no valid data to dispatch (anySuccess=%d, resultsSize=%d) - report skipped",
+                                (int)anySuccess, (int)resultsArr.size());
             }
         }
 

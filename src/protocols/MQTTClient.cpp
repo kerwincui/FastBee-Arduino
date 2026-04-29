@@ -17,9 +17,9 @@
 #include "core/AsyncExecTypes.h"
 #include "systems/LoggerSystem.h"
 #include "core/FeatureFlags.h"
+#include "core/FastBeeFramework.h"
 #if FASTBEE_ENABLE_HEALTH_MONITOR
 #include "systems/HealthMonitor.h"
-#include "core/FastBeeFramework.h"
 #endif
 #include <ArduinoJson.h>
 #include <core/ConfigDefines.h>
@@ -576,7 +576,65 @@ bool MQTTClient::publishReportData(const String& payload) {
     const MqttPublishTopic& pt = config.publishTopics[reportTopicIdx];
     String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
 
-    bool ok = publishToTopic((size_t)reportTopicIdx, payload);
+    // 透传HEX模式：当 Modbus transferType==1 且 payload 是纯 HEX ASCII 字符串时，
+    // 将 payload 解码为二进制字节帧后发送（平台直接按 Modbus 帧解析）
+    bool sentAsBinary = false;
+    bool ok = false;
+#if FASTBEE_ENABLE_MODBUS
+    do {
+        uint8_t transferType = 0;
+        auto* fw = FastBeeFramework::getInstance();
+        if (!fw) break;
+        auto* pm = fw->getProtocolManager();
+        if (!pm) break;
+        ModbusHandler* mh = pm->getModbusHandler();
+        if (!mh) break;
+        transferType = mh->getConfig().transferType;
+        if (transferType != 1) break;
+
+        // 校验是否为偶数长度且字符集全部为 [0-9a-fA-F]
+        unsigned int hexLen = payload.length();
+        if (hexLen < 4 || (hexLen % 2) != 0) break;
+        bool allHex = true;
+        for (unsigned int i = 0; i < hexLen; i++) {
+            char c = payload.charAt(i);
+            bool v = (c >= '0' && c <= '9') ||
+                     (c >= 'a' && c <= 'f') ||
+                     (c >= 'A' && c <= 'F');
+            if (!v) { allHex = false; break; }
+        }
+        if (!allHex) break;
+
+        // HEX ASCII 转换为字节数组
+        unsigned int byteLen = hexLen / 2;
+        if (byteLen > 256) byteLen = 256;
+        uint8_t buf[256];
+        auto hexVal = [](char c) -> uint8_t {
+            if (c >= '0' && c <= '9') return (uint8_t)(c - '0');
+            if (c >= 'a' && c <= 'f') return (uint8_t)(c - 'a' + 10);
+            if (c >= 'A' && c <= 'F') return (uint8_t)(c - 'A' + 10);
+            return 0;
+        };
+        for (unsigned int i = 0; i < byteLen; i++) {
+            buf[i] = (uint8_t)((hexVal(payload.charAt(i * 2)) << 4) |
+                               hexVal(payload.charAt(i * 2 + 1)));
+        }
+
+        // 以二进制方式发布（PubSubClient 接受 const uint8_t*+length）
+        {
+            RecursiveMutexGuard lock(_publishMutex);
+            ok = mqttClient.publish(fullTopic.c_str(), buf, byteLen, pt.retain);
+        }
+        sentAsBinary = true;
+        Serial.printf("[MQTT] TX ▲ topic=%s BIN len=%u hex=%s result=%s\n",
+                      fullTopic.c_str(), byteLen, payload.c_str(), ok ? "OK" : "FAIL");
+    } while (false);
+#endif
+
+    if (!sentAsBinary) {
+        // 非透传模式或 payload 不是纯 HEX ASCII：按文本发布（原有逻辑）
+        ok = publishToTopic((size_t)reportTopicIdx, payload);
+    }
 
     char logBuf[128];
     snprintf(logBuf, sizeof(logBuf), "MQTT: %s DATA_REPORT topic=%s",
@@ -1024,8 +1082,11 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
     if (tType == MqttTopicType::DATA_COMMAND) {
         LOG_INFO("MQTT: Received DATA_COMMAND, queuing...");
 
-        // 透传模式：平台下发的是原始字节帧（非 JSON），需要封装成 modbus_raw_send 指令再入队
+        // 严格按 Modbus transferType 分流：
+        //   transferType=0（JSON/结构体）：只接受 JSON 格式，非 JSON 直接告警丢弃
+        //   transferType=1（透传HEX帧）  ：非 JSON 视为 HEX 帧（ASCII 或二进制）封装为 modbus_raw_send
         String enqueueMsg = message;
+        bool shouldEnqueue = true;
         {
             // 检测 payload 是否看起来为 JSON（首个非空白字节为 '[' 或 '{'）
             bool looksLikeJson = false;
@@ -1036,22 +1097,73 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
                 break;
             }
 
-            // 非 JSON 格式且长度 >= 2：视为透传原始字节帧，自动封装为 modbus_raw_send
+            // 非 JSON 格式需要按 transferType 决定处理方式
             if (!looksLikeJson && length >= 2) {
-                // 将原始字节转为 HEX 字符串
-                String hexStr;
-                hexStr.reserve(length * 2);
-                for (unsigned int i = 0; i < length; i++) {
-                    char buf[3];
-                    snprintf(buf, sizeof(buf), "%02X", payload[i]);
-                    hexStr += buf;
+                // 读取当前 Modbus 传输类型：透传（HEX帧）=1，标准JSON=0
+                uint8_t transferType = 0;
+#if FASTBEE_ENABLE_MODBUS
+                {
+                    auto* fw = FastBeeFramework::getInstance();
+                    if (fw) {
+                        auto* pm = fw->getProtocolManager();
+                        if (pm) {
+                            ModbusHandler* mh = pm->getModbusHandler();
+                            if (mh) transferType = mh->getConfig().transferType;
+                        }
+                    }
                 }
-                enqueueMsg = "[{\"id\":\"modbus_raw_send\",\"value\":\"" + hexStr + "\"}]";
-                Serial.printf("[MQTT] RX ▼ TRANSPARENT->HEX len=%u hex=%s\n", length, hexStr.c_str());
+#endif
+
+                if (transferType != 1) {
+                    // JSON 模式严格校验：非 JSON payload 一律丢弃并告警
+                    char warnBuf[128];
+                    snprintf(warnBuf, sizeof(warnBuf),
+                             "MQTT: transferType=%u(JSON) requires JSON payload, non-JSON dropped (len=%u)",
+                             transferType, length);
+                    LOG_WARNING(warnBuf);
+                    shouldEnqueue = false;
+                } else {
+                    // 透传HEX模式：判定 payload 是否已是 HEX ASCII 字符串
+                    auto isHexAsciiPayload = [&]() -> bool {
+                        if ((length % 2) != 0 || length < 4) return false;
+                        for (unsigned int i = 0; i < length; i++) {
+                            char c = (char)payload[i];
+                            bool ok = (c >= '0' && c <= '9') ||
+                                      (c >= 'a' && c <= 'f') ||
+                                      (c >= 'A' && c <= 'F');
+                            if (!ok) return false;
+                        }
+                        return true;
+                    };
+
+                    String hexStr;
+                    if (isHexAsciiPayload()) {
+                        // Payload 本身就是 HEX ASCII（MQTTX Plaintext 模式发 "010300010001D5CA"）
+                        hexStr.reserve(length);
+                        for (unsigned int i = 0; i < length; i++) {
+                            char c = (char)payload[i];
+                            if (c >= 'a' && c <= 'f') c = c - 'a' + 'A';
+                            hexStr += c;
+                        }
+                        Serial.printf("[MQTT] RX ▼ TRANSPARENT(HEX-ASCII) len=%u hex=%s\n",
+                                      length, hexStr.c_str());
+                    } else {
+                        // 真实二进制字节帧（MQTTX Hex 模式发 01 03 00 01 00 01 D5 CA）
+                        hexStr.reserve(length * 2);
+                        for (unsigned int i = 0; i < length; i++) {
+                            char buf[3];
+                            snprintf(buf, sizeof(buf), "%02X", payload[i]);
+                            hexStr += buf;
+                        }
+                        Serial.printf("[MQTT] RX ▼ TRANSPARENT(BIN->HEX) len=%u hex=%s\n",
+                                      length, hexStr.c_str());
+                    }
+                    enqueueMsg = "[{\"id\":\"modbus_raw_send\",\"value\":\"" + hexStr + "\"}]";
+                }
             }
         }
 
-        if (_dataCommandQueue) {
+        if (shouldEnqueue && _dataCommandQueue) {
             String* cmd = new (std::nothrow) String(enqueueMsg);
             if (cmd) {
                 if (xQueueSend(_dataCommandQueue, &cmd, 0) != pdTRUE) {
@@ -1275,6 +1387,20 @@ void MQTTClient::doReconnect() {
             if (consecutiveTimeouts == DNS_FAIL_THRESHOLD) {
                 reconnectInterval = SLOW_RETRY_INTERVAL;
                 LOG_WARNING("[MQTT] 3 consecutive connect failures (DNS/network down), slow mode activated");
+            }
+            // 加固：连续 6 次 connect 失败 → WiFi STA 可能处于僵尸状态（RSSI 正常但 socket 不通）
+            // 主动重走 disconnect+reconnect 刷新 lwip TCP/IP 栈，避免累计内存劣化
+            // 仅在第 6 、 12 、 18… 次触发（避免频繁刷 WiFi）
+            constexpr uint8_t WIFI_RESET_THRESHOLD = 6;
+            if (consecutiveTimeouts >= WIFI_RESET_THRESHOLD &&
+                (consecutiveTimeouts % WIFI_RESET_THRESHOLD) == 0) {
+                wl_status_t st = WiFi.status();
+                LOG_WARNINGF("[MQTT] %u consecutive failures, soft-resetting WiFi STA (status=%d, rssi=%d)",
+                             (unsigned)consecutiveTimeouts, (int)st, (int)WiFi.RSSI());
+                // 关闭 STA 但保留配置，然后重新 reconnect（不会丢弃 SSID/密码）
+                WiFi.disconnect(false, false);
+                delay(100);
+                WiFi.reconnect();
             }
         } else {
             consecutiveTimeouts = 0;

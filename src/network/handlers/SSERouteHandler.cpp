@@ -93,6 +93,23 @@ size_t SSERouteHandler::clientCount() const {
     return _events.count();
 }
 
+size_t SSERouteHandler::closeAllClients() {
+    size_t closed = 0;
+    for (auto& s : _slots) {
+        if (s.client) {
+            if (s.client->connected()) {
+                s.client->close();
+                closed++;
+            }
+            s.client = nullptr;
+        }
+    }
+    if (closed > 0) {
+        Serial.printf("[SSE] Force-closed %u clients (memory pressure)\n", (unsigned)closed);
+    }
+    return closed;
+}
+
 void SSERouteHandler::performMaintenance() {
     unsigned long now = millis();
 

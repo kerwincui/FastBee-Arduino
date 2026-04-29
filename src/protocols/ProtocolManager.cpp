@@ -328,14 +328,24 @@ void ProtocolManager::dispatchModbusData(uint8_t slaveAddress, const String& dat
     // 1. MQTT 上报（所有来源都上报）
 #if FASTBEE_ENABLE_MQTT
     if (mqttClient && mqttClient->getIsConnected()) {
-        // 透传模式下记录详细调试日志（主题+HEX内容）
+        // 统一上报日志：无论 transferType=0(JSON) 或 1(HEX) 都打印上报主题、格式、内容
         // 使用 Serial.printf 避免 LoggerSystem 文件 I/O 加剧异步任务栈压力
+        const char* fmt = "JSON";
         if (modbusHandler && modbusHandler->getConfig().transferType == 1) {
-            String reportTopic = mqttClient->getReportTopic();
-            Serial.printf("[Modbus] TX ▲ topic=%s slave=%d data=%s\n",
-                          reportTopic.c_str(), slaveAddress, data.c_str());
+            fmt = "HEX";
         }
+        String reportTopic = mqttClient->getReportTopic();
+        const char* srcName = (source == ModbusDataSource::PeriphExecPoll) ? "PeriphExecPoll"
+                            : (source == ModbusDataSource::LiveCallback)   ? "LiveCallback"
+                                                                           : "Unknown";
+        String truncated = data.length() > 200 ? (data.substring(0, 200) + "...") : data;
+        Serial.printf("[Modbus] TX ▲ topic=%s src=%s format=%s slave=%d len=%u content=%s\n",
+                      reportTopic.c_str(), srcName, fmt, slaveAddress,
+                      (unsigned)data.length(), truncated.c_str());
         mqttClient->publishReportData(data);
+    } else {
+        Serial.printf("[Modbus] TX ▲ DROPPED (MQTT offline) slave=%d len=%u\n",
+                      slaveAddress, (unsigned)data.length());
     }
 #endif
     // 2. SSE 实时推送（所有来源都推送）

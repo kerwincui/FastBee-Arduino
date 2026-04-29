@@ -65,6 +65,9 @@ public:
     AsyncWebServer* getWebServer() const;
     void performMaintenance();
 
+    /// 暴露 SSE 路由处理器（供 HealthMonitor 在内存严重不足时强制断开 SSE 客户端）
+    SSERouteHandler* getSseRouteHandler() const { return sseRouteHandler.get(); }
+
 private:
     AsyncWebServer* server;
     bool isRunning;

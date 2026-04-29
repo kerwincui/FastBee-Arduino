@@ -21,6 +21,11 @@ public:
     /// 应在 WebConfigManager::performMaintenance() 中定期调用
     void performMaintenance();
 
+    /// 强制关闭所有 SSE 客户端连接（释放 lwip TCP 缓冲区）
+    /// 由 HealthMonitor 在内存进入 SEVERE 时调用
+    /// @return 实际被关闭的客户端数
+    size_t closeAllClients();
+
     // 最大 SSE 客户端数，防止多客户端导致内存压力
     static constexpr size_t MAX_SSE_CLIENTS = 2;
     // 单次消息最大字节数，超过则截断
