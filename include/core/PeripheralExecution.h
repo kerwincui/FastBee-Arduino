@@ -37,7 +37,8 @@ enum class ExecActionType : uint8_t {
     ACTION_MODBUS_COIL_WRITE = 16,  // Modbus 线圈写入 (FC05)
     ACTION_MODBUS_REG_WRITE = 17,   // Modbus 寄存器写入 (FC06)
     ACTION_MODBUS_POLL = 18,        // Modbus 轮询子设备采集 (由 PeriphExec 调度)
-    ACTION_SENSOR_READ = 19         // 传感器数据读取 (模拟/数字/脉冲)
+    ACTION_SENSOR_READ = 19,        // 传感器数据读取 (模拟/数字/脉冲)
+    ACTION_BUZZER_BEEP = 20         // 蜂鸣器预设节奏 (actionValue: beep/long/alarm/sos，默认 beep)
 };
 
 // 传感器类别枚举

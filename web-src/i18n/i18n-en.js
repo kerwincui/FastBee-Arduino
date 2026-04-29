@@ -53,6 +53,7 @@
         'device-control-visualization': 'Device Visualization',
                 'device-control-dashboard': 'Device Dashboard',
         'device-control-online': 'Online',
+        'device-control-offline': 'Offline',
         'device-control-no-monitor': 'No monitor data',
         'device-control-no-action': 'No control actions',
         'device-control-group-gpio': 'GPIO Control',
@@ -1658,6 +1659,7 @@
         'periph-opt-motor': 'Motor',
         'periph-opt-encoder': 'Encoder',
         'periph-opt-onewire': 'One-Wire',
+        'periph-opt-buzzer': 'Buzzer',
         
         // Permission group name translations
         'perm-group-device': 'Device',

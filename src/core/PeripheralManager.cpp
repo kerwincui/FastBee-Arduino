@@ -452,7 +452,7 @@ bool PeripheralManager::writePin(const String& peripheralId, GPIOState state) {
         return writeModbusPin(peripheralId, *config, state);
     }
     
-    if (!config->isGPIOPeripheral()) {
+    if (!config->isGPIOPeripheral() && config->type != PeripheralType::BUZZER) {
         return false;
     }
     
@@ -466,6 +466,7 @@ bool PeripheralManager::writePin(const String& peripheralId, GPIOState state) {
     
     switch (config->type) {
         case PeripheralType::GPIO_DIGITAL_OUTPUT:
+        case PeripheralType::BUZZER:
             digitalWrite(pin, physicalState == GPIOState::STATE_HIGH ? HIGH : LOW);
             break;
             
@@ -932,7 +933,18 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
     if (config.isGPIOPeripheral()) {
         return setupGPIOPin(config);
     }
-    
+        
+    // 蜂鸣器：当作数字输出初始化
+    if (config.type == PeripheralType::BUZZER) {
+        uint8_t pin = config.getPrimaryPin();
+        if (pin != 255 && isValidPin(pin)) {
+            pinMode(pin, OUTPUT);
+            digitalWrite(pin, LOW);  // 初始状态：静音
+            LOG_INFOF("Peripheral Manager: Buzzer '%s' initialized on pin %d", config.id.c_str(), pin);
+        }
+        return true;
+    }
+        
     // Modbus 外设不需要本地硬件初始化（通过 RS485 总线通信）
     if (config.isModbusPeripheral()) {
         LOG_INFOF("Peripheral Manager: Modbus device '%s' (slave=%d) registered, no local HW init needed",

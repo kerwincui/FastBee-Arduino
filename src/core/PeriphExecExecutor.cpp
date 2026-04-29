@@ -359,6 +359,53 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
             return true;
         }
 
+        case ExecActionType::ACTION_BUZZER_BEEP: {
+            // 蜂鸣器预设节奏：beep/long/alarm/sos
+            // 格式为 HIGH/LOW 持续时间对（毫秒），最后一组 offMs 为 0 表示不等待
+            struct BuzzStep { uint16_t onMs; uint16_t offMs; };
+            static const BuzzStep BEEP_SEQ[]  = { {100, 0} };
+            static const BuzzStep LONG_SEQ[]  = { {1000, 0} };
+            static const BuzzStep ALARM_SEQ[] = { {120, 80}, {120, 80}, {120, 0} };
+            static const BuzzStep SOS_SEQ[]   = {
+                {100, 100}, {100, 100}, {100, 250},   // · · ·
+                {300, 100}, {300, 100}, {300, 250},   // — — —
+                {100, 100}, {100, 100}, {100, 0}      // · · ·
+            };
+
+            String pattern = effectiveValue;
+            pattern.trim();
+            pattern.toLowerCase();
+            if (pattern.isEmpty()) pattern = "beep";
+
+            const BuzzStep* seq = BEEP_SEQ;
+            size_t seqLen = sizeof(BEEP_SEQ) / sizeof(BuzzStep);
+            if (pattern == "long") {
+                seq = LONG_SEQ;
+                seqLen = sizeof(LONG_SEQ) / sizeof(BuzzStep);
+            } else if (pattern == "alarm") {
+                seq = ALARM_SEQ;
+                seqLen = sizeof(ALARM_SEQ) / sizeof(BuzzStep);
+            } else if (pattern == "sos") {
+                seq = SOS_SEQ;
+                seqLen = sizeof(SOS_SEQ) / sizeof(BuzzStep);
+            } else {
+                pattern = "beep";  // 未知模式降级为默认
+            }
+
+            LOGGER.infof("[PeriphExec] Execute BUZZER(%s) on %s",
+                         pattern.c_str(), action.targetPeriphId.c_str());
+            pm.stopActionTicker(action.targetPeriphId);
+
+            bool ok = true;
+            for (size_t i = 0; i < seqLen; i++) {
+                if (!pm.writePin(action.targetPeriphId, GPIOState::STATE_HIGH)) { ok = false; break; }
+                if (seq[i].onMs > 0) vTaskDelay(pdMS_TO_TICKS(seq[i].onMs));
+                pm.writePin(action.targetPeriphId, GPIOState::STATE_LOW);
+                if (seq[i].offMs > 0) vTaskDelay(pdMS_TO_TICKS(seq[i].offMs));
+            }
+            return ok;
+        }
+
         case ExecActionType::ACTION_SET_PWM: {
             uint32_t duty = effectiveValue.isEmpty() ? 0 : effectiveValue.toInt();
             LOGGER.infof("[PeriphExec] Execute SetPWM(%d) on %s", (int)duty, action.targetPeriphId.c_str());
@@ -878,6 +925,7 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
 }
 
 bool PeriphExecExecutor::executeScriptAction(const ExecAction& action) {
+#if FASTBEE_ENABLE_RULE_SCRIPT
     if (action.actionValue.isEmpty()) {
         LOGGER.warning("[PeriphExec] Script is empty");
         return false;
@@ -899,6 +947,11 @@ bool PeriphExecExecutor::executeScriptAction(const ExecAction& action) {
 
     MQTTClient* mqtt = getMqttClient();
     return ScriptEngine::execute(cmds, mqtt);
+#else
+    (void)action;
+    LOGGER.warning("[PeriphExec] Script action disabled (FASTBEE_ENABLE_RULE_SCRIPT=0)");
+    return false;
+#endif
 }
 
 bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, const String& effectiveValue) {

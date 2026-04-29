@@ -9,6 +9,22 @@
 
 FastBeeFramework* framework;
 
+// ----------------------------------------------------------------------------
+// 覆盖 Arduino-ESP32 框架的 weak 符号：提升 loopTask 栈到 24KB
+// 原因：Arduino-ESP32 框架的 main.cpp 被 PlatformIO 预编译为 libFrameworkArduino.a，
+//       platformio.ini 里的 -DARDUINO_LOOP_STACK_SIZE 对已编译的 main.o 无效。
+//       框架在 cores/esp32/main.cpp 把 getArduinoLoopTaskStackSize() 标记为 __attribute__((weak))，
+//       在用户代码里重新实现即可覆盖，真正放大 loopTask 栈。
+// 场景：Modbus JSON 模式 registerModbusSubDevices 循环注册多个子设备，
+//       每次 addPeripheral -> initHardware -> setupHardware 调用链深，
+//       默认 8KB 栈不够 → Double Exception (EXCCAUSE=2, EXCVADDR=0x00fffffc)。
+// 24KB 预留足够裕度，以 ~16KB DRAM 换栈溢出防护，值得。
+// ----------------------------------------------------------------------------
+extern "C++" size_t getArduinoLoopTaskStackSize(void);
+size_t getArduinoLoopTaskStackSize(void) {
+    return 24 * 1024;  // 24KB (默认 8KB)
+}
+
 // 全局异常终止处理器：作为最后防线，防止 uncaught exception → abort()
 // 场景：库代码（FS/NVS/ArduinoJson）抛出异常但未被捕获时触发
 static void fastbee_terminate_handler() {

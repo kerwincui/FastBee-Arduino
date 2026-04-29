@@ -80,7 +80,8 @@ static bool executeDirectOutputCommand(PeripheralManager& pm,
                                        String& actualValue) {
     if (!config.enabled) return false;
 
-    if (config.type == PeripheralType::GPIO_DIGITAL_OUTPUT) {
+    if (config.type == PeripheralType::GPIO_DIGITAL_OUTPUT ||
+        config.type == PeripheralType::BUZZER) {
         bool state = false;
         if (!tryParseBoolLike(requestedValue, state)) return false;
         pm.stopActionTicker(config.id);
@@ -775,7 +776,15 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
     if (config) {
         PeripheralType pType = config->type;
 
-        if (isInputType(pType)) {
+        if (pType == PeripheralType::BUZZER) {
+            // 蜂鸣器：预设节奏 + 基础数字输出
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_BUZZER_BEEP), "蜂鸣器预设(beep/long/alarm/sos)", "蜂鸣器");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH), "持续鸣响", "蜂鸣器");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW), "静音", "蜂鸣器");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_BLINK), "闪烁鸣响", "蜂鸣器");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+        } else if (isInputType(pType)) {
             // 输入类型外设：不支持GPIO输出动作，只支持系统功能和脚本
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
@@ -830,6 +839,7 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH_INVERTED), "设置高电平(反转)", "GPIO");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW_INVERTED), "设置低电平(反转)", "GPIO");
+        addAction(static_cast<uint8_t>(ExecActionType::ACTION_BUZZER_BEEP), "蜂鸣器预设(beep/long/alarm/sos)", "蜂鸣器");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
     }
 

@@ -1677,23 +1677,23 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .dc-modbus-device-panel { background: var(--bg-card); border: 1px solid var(--border-secondary); border-radius: 10px; padding: 14px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); transition: border-color 0.2s; }
 .dc-modbus-device-panel:hover { border-color: rgba(22,119,255,0.25); }
 
-/* Offline / unreachable device panel */
-.dc-modbus-device-panel.dc-offline { opacity: 0.55; background: var(--gray-3); border-color: var(--gray-5); }
+/* Offline / unreachable device panel (softer gray for readability) */
+.dc-modbus-device-panel.dc-offline { opacity: 0.88; background: var(--bg-card); border-color: var(--gray-4); border-style: dashed; }
 .dc-modbus-device-panel.dc-offline:hover { border-color: var(--gray-5); }
-.dc-modbus-device-panel.dc-offline .dc-coil-card { opacity: 0.5; pointer-events: none; cursor: not-allowed; }
+.dc-modbus-device-panel.dc-offline .dc-coil-card { opacity: 0.82; pointer-events: none; cursor: not-allowed; }
 .dc-modbus-device-panel.dc-offline .dc-coil-card:hover { transform: none; box-shadow: none; }
-.dc-modbus-device-panel.dc-offline .dc-btn-sm { opacity: 0.45; pointer-events: none; cursor: not-allowed; }
+.dc-modbus-device-panel.dc-offline .dc-btn-sm { opacity: 0.78; pointer-events: none; cursor: not-allowed; }
 .dc-modbus-device-panel.dc-offline .dc-btn-sm:hover { transform: none; box-shadow: none; }
-.dc-modbus-device-panel.dc-offline .dc-pwm-slider { pointer-events: none; opacity: 0.4; }
+.dc-modbus-device-panel.dc-offline .dc-pwm-slider { pointer-events: none; opacity: 0.75; }
 .dc-modbus-device-panel.dc-offline .dc-pwm-num,
 .dc-modbus-device-panel.dc-offline .dc-pid-input,
-.dc-modbus-device-panel.dc-offline .motor-param-input { pointer-events: none; opacity: 0.4; }
+.dc-modbus-device-panel.dc-offline .motor-param-input { pointer-events: none; opacity: 0.8; }
 .dc-modbus-device-panel.dc-offline .dc-delay-start,
 .dc-modbus-device-panel.dc-offline .dc-motor-action,
 .dc-modbus-device-panel.dc-offline .dc-motor-set,
-.dc-modbus-device-panel.dc-offline .dc-pid-set { pointer-events: none; opacity: 0.45; cursor: not-allowed; }
+.dc-modbus-device-panel.dc-offline .dc-pid-set { pointer-events: none; opacity: 0.78; cursor: not-allowed; }
 .dc-offline-badge { display: inline-block; font-size: 9px; color: var(--danger); background: var(--danger-light); border: 1px solid var(--danger-border); padding: 1px 6px; border-radius: 8px; margin-left: 6px; font-weight: 600; vertical-align: middle; }
-[data-theme="dark"] .dc-modbus-device-panel.dc-offline { background: var(--gray-12); border-color: var(--gray-8); }
+[data-theme="dark"] .dc-modbus-device-panel.dc-offline { background: var(--bg-card); border-color: var(--gray-8); border-style: dashed; }
 [data-theme="dark"] .dc-offline-badge { background: rgba(255,77,79,0.12); border-color: rgba(255,77,79,0.3); }
 .dc-modbus-device-panel .dc-card-header { padding-bottom: 10px; border-bottom: 1px solid var(--border-secondary); margin-bottom: 10px; }
 .dc-modbus-device-addr { font-size: 10px; color: var(--text-muted); margin-left: auto; font-family: 'Consolas',monospace; }

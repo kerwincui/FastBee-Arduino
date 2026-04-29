@@ -5,7 +5,7 @@
     "timeout": 1000,
     "mode": "master",
     "dePin": 14,
-    "transferType": 0,
+    "transferType": 1,
     "master": {
       "responseTimeout": 500,
       "maxRetries": 1,
