@@ -195,7 +195,8 @@ pio device monitor -b 115200
     <td><img src="./images/device_10.png" alt="Theme Toggle"/></td>
   </tr>
   <tr>
-    <td colspan="2"><img src="./images/device_11.png" alt="Mobile Layout"/></td>
+    <td><img src="./images/device_11.png" alt="中英文适配"/></td>
+     <td><img src="./images/device_12.png" alt="设备大屏"/></td>
   </tr>
 </table>
 
