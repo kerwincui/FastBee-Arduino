@@ -47,7 +47,7 @@ bool CoAPHandler::loadConfigFromLittleFS(const char* configPath) {
         return false;
     }
     
-    DynamicJsonDocument doc(1024);
+    JsonDocument doc;  // ArduinoJson 7.x 弹性分配，CoAP 配置节点 <1KB
     DeserializationError error = deserializeJson(doc, configFile);
     configFile.close();
     LittleFS.end();

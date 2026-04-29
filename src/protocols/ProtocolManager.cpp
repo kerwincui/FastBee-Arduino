@@ -7,6 +7,7 @@
 
 #include "protocols/ProtocolManager.h"
 #include "systems/LoggerSystem.h"
+#include "systems/ConfigStorage.h"
 #include "core/PeriphExecManager.h"
 #include "core/FeatureFlags.h"
 #include <ArduinoJson.h>
@@ -510,22 +511,25 @@ bool ProtocolManager::restartModbus() {
         LOG_WARNING("Protocol Manager: No protocol config found for Modbus");
         return false;
     }
-    
-    File f = LittleFS.open("/config/protocol.json", "r");
-    if (!f) {
-        LOG_ERROR("Protocol Manager: Failed to open protocol config");
-        return false;
+
+    // 优化：使用 Filter 仅反序列化 modbusRtu 子节点，堆峰值从 ~15KB 降至 ~12KB
+    // （modbusRtu 占比最大，但掉 mqtt/publishTopics/subscribeTopics 仍可省数 KB）
+    JsonDocument doc;
+    if (!ConfigStorage::getInstance().loadProtocolSection("modbusRtu", doc)) {
+        LOG_WARNING("Protocol Manager: modbusRtu section missing/invalid, fallback to full load");
+        File f = LittleFS.open("/config/protocol.json", "r");
+        if (!f) {
+            LOG_ERROR("Protocol Manager: Failed to open protocol config");
+            return false;
+        }
+        DeserializationError err = deserializeJson(doc, f);
+        f.close();
+        if (err) {
+            LOG_ERRORF("Protocol Manager: JSON parse error: %s", err.c_str());
+            return false;
+        }
     }
-    
-    FastBeeJsonDocLarge doc;
-    DeserializationError err = deserializeJson(doc, f);
-    f.close();
-    
-    if (err) {
-        LOG_ERRORF("Protocol Manager: JSON parse error: %s", err.c_str());
-        return false;
-    }
-    
+
     JsonVariant rtu = doc["modbusRtu"];
     if (!rtu.is<JsonObject>()) {
         LOG_WARNING("Protocol Manager: No modbusRtu config found");

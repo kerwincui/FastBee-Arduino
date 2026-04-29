@@ -102,11 +102,11 @@ bool ConfigStorage::saveJSONConfig(const String& filename, const JsonDocument& c
     {
         CacheLock lock(_cacheMutex);
         if (lock) {
-            // 更新缓存
-            updateCacheEntry(filename, config, 0);  // modTime=0 表示待写入
+            // 更新缓存：返回 false 表示文件超阈未缓存，需直接写磁盘
+            bool cached = updateCacheEntry(filename, config, 0);  // modTime=0 表示待写入
 
-            if (!isCritical) {
-                // 非关键配置：标记为 dirty，5秒后通过定时任务写入
+            if (cached && !isCritical) {
+                // 非关键配置：标记为 dirty，稍后通过定时任务写入
                 ConfigCacheEntry* entry = findInCache(filename);
                 if (entry) {
                     entry->dirty = true;
@@ -114,10 +114,11 @@ bool ConfigStorage::saveJSONConfig(const String& filename, const JsonDocument& c
                 }
                 return true;  // 延迟写入
             }
+            // 大文件或关键配置：继续执行立即写入
         }
     }
 
-    // 关键配置：立即写入（文件 I/O 不需要锁）
+    // 关键配置或缓存超阈：立即写入（文件 I/O 不需要锁）
     bool result = flushToDisk(filename, config);
     if (result) {
         CacheLock lock(_cacheMutex);
@@ -152,17 +153,24 @@ bool ConfigStorage::loadJSONConfig(const String& filename, JsonDocument& config)
         CacheLock lock(_cacheMutex);
         if (lock) {
             ConfigCacheEntry* entry = findInCache(filename);
-            if (entry && entry->cachedDoc && entry->lastLoadTime > 0) {
+            if (entry && entry->rawJson.length() > 0 && entry->lastLoadTime > 0) {
                 // 检查文件是否被外部修改
                 File checkFile = LittleFS.open(filename, FILE_READ);
                 if (checkFile) {
                     time_t fileTime = checkFile.getLastWrite();
                     checkFile.close();
                     if (fileTime <= entry->fileModifyTime) {
-                        // 缓存命中
-                        config = *entry->cachedDoc;
-                        entry->accessCount++;
-                        return true;
+                        // 缓存命中：从 rawJson 反序列化到调用方 Doc
+                        // （相比旧实现 config = *entry->cachedDoc 的 DOM 深拷贝，
+                        //   绕行缓存是小文件 <=4KB，临时峰值几乎可忽）
+                        DeserializationError err = deserializeJson(config, entry->rawJson);
+                        if (!err) {
+                            entry->accessCount++;
+                            return true;
+                        }
+                        // 缓存文本损坏，清除后走文件 I/O
+                        entry->rawJson = "";
+                        entry->lastLoadTime = 0;
                     }
                 }
             }
@@ -192,7 +200,7 @@ bool ConfigStorage::loadJSONConfig(const String& filename, JsonDocument& config)
     }
 
 #if FASTBEE_ENABLE_STORAGE_CACHE
-    // 更新缓存（加锁）
+    // 更新缓存（加锁）；大文件会被 updateCacheEntry 内部跳过
     {
         CacheLock lock(_cacheMutex);
         if (lock) {
@@ -212,6 +220,45 @@ bool ConfigStorage::saveUserConfig(const JsonDocument& config)      { return sav
 bool ConfigStorage::loadUserConfig(JsonDocument& config)            { return loadJSONConfig(FileSystem::USER_CONFIG_FILE,      config); }
 bool ConfigStorage::saveProtocolConfig(const JsonDocument& config)  { return saveJSONConfig(FileSystem::PROTOCOL_CONFIG_FILE,  config); }
 bool ConfigStorage::loadProtocolConfig(JsonDocument& config)        { return loadJSONConfig(FileSystem::PROTOCOL_CONFIG_FILE,  config); }
+
+// 使用 ArduinoJson Filter 仅反序列化 protocol.json 的单个顶层子节点
+// 优势：堆峰值从 ~15KB 降至对应子节点实际体积（如 mqtt ~3KB, coap/tcp/http <0.5KB）
+// 注意：本方法绕过 StorageCache（protocol.json > 4KB 阈值），直接走 LittleFS
+bool ConfigStorage::loadProtocolSection(const String& section, JsonDocument& outDoc) {
+    if (!_initialized && !initializeInternal()) {
+        return false;
+    }
+
+    const char* filename = FileSystem::PROTOCOL_CONFIG_FILE;
+    if (!LittleFS.exists(filename)) {
+        LOG_WARNINGF("ConfigStorage: Protocol config not found: %s", filename);
+        return false;
+    }
+
+    File f = LittleFS.open(filename, "r");
+    if (!f) {
+        LOG_ERRORF("ConfigStorage: Failed to open %s", filename);
+        return false;
+    }
+
+    // 构造 Filter：{ "<section>": true }，只保留匹配子节点，其它全部跳过
+    JsonDocument filter;
+    filter[section] = true;
+
+    DeserializationError err = deserializeJson(outDoc, f, DeserializationOption::Filter(filter));
+    f.close();
+
+    if (err) {
+        LOG_ERRORF("ConfigStorage: Section '%s' parse error: %s", section.c_str(), err.c_str());
+        return false;
+    }
+
+    if (!outDoc[section].is<JsonObject>()) {
+        LOG_WARNINGF("ConfigStorage: Section '%s' missing in %s", section.c_str(), filename);
+        return false;
+    }
+    return true;
+}
 
 // ── IConfigStorage 接口实现 ──────────────────────────────────────────────────
 
@@ -331,9 +378,9 @@ bool ConfigStorage::evictLRUEntry() {
         }
     }
 
-    // 如果找到的条目是 dirty 的，先 flush
-    if (_cache[minIdx].dirty && _cache[minIdx].cachedDoc) {
-        flushToDisk(_cache[minIdx].filename, *_cache[minIdx].cachedDoc);
+    // 如果找到的条目是 dirty 的，先 flush（直接用 rawJson，避免重序列化）
+    if (_cache[minIdx].dirty && _cache[minIdx].rawJson.length() > 0) {
+        flushRawToDisk(_cache[minIdx].filename, _cache[minIdx].rawJson);
     }
 
     // 移除：将最后一个条目移到被淘汰的位置
@@ -344,7 +391,27 @@ bool ConfigStorage::evictLRUEntry() {
     return true;
 }
 
-void ConfigStorage::updateCacheEntry(const String& filename, const JsonDocument& doc, time_t modTime) {
+bool ConfigStorage::updateCacheEntry(const String& filename, const JsonDocument& doc, time_t modTime) {
+    // 先估测序列化后的大小，超阈值直接不缓存。
+    // measureJson 只遍历 DOM 不分配新内存，开销很小。
+    const size_t estSize = measureJson(doc);
+    if (estSize > CACHE_MAX_FILE_BYTES) {
+        // 大文件（如 protocol.json/peripherals.json）绕过缓存，避免堆峰值翻倍
+        // 并清除残留旧条目，避免后续不一致
+        ConfigCacheEntry* stale = findInCache(filename);
+        if (stale) {
+            if (stale->dirty && stale->rawJson.length() > 0) {
+                flushRawToDisk(stale->filename, stale->rawJson);
+            }
+            size_t idx = stale - _cache;
+            if (idx < _cacheSize - 1) {
+                _cache[idx] = std::move(_cache[_cacheSize - 1]);
+            }
+            _cacheSize--;
+        }
+        return false;
+    }
+
     ConfigCacheEntry* entry = findInCache(filename);
     if (!entry) {
         // 缓存已满，淘汰一个
@@ -355,10 +422,14 @@ void ConfigStorage::updateCacheEntry(const String& filename, const JsonDocument&
         entry->filename = filename;
         entry->accessCount = 0;
     }
-    entry->cachedDoc.reset(new JsonDocument(doc));
+    // 一次性序列化到 rawJson（String reserve 避免多次扩容）
+    entry->rawJson = "";
+    entry->rawJson.reserve(estSize + 16);
+    serializeJson(doc, entry->rawJson);
     entry->lastLoadTime = millis();
     entry->fileModifyTime = modTime;
     entry->accessCount++;
+    return true;
 }
 
 bool ConfigStorage::flushToDisk(const String& filename, const JsonDocument& config) {
@@ -374,14 +445,27 @@ bool ConfigStorage::flushToDisk(const String& filename, const JsonDocument& conf
     return written > 0;
 }
 
+bool ConfigStorage::flushRawToDisk(const String& filename, const String& rawJson) {
+    File file = LittleFS.open(filename, FILE_WRITE);
+    if (!file) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "ConfigStorage: Cannot open %s for write", filename.c_str());
+        LOG_ERROR(buf);
+        return false;
+    }
+    size_t written = file.print(rawJson);
+    file.close();
+    return written > 0;
+}
+
 void ConfigStorage::flushDirtyEntries() {
     CacheLock lock(_cacheMutex);
     if (!lock) return;
 
     unsigned long now = millis();
     for (size_t i = 0; i < _cacheSize; i++) {
-        if (_cache[i].dirty && now >= _cache[i].debounceUntil && _cache[i].cachedDoc) {
-            if (flushToDisk(_cache[i].filename, *_cache[i].cachedDoc)) {
+        if (_cache[i].dirty && now >= _cache[i].debounceUntil && _cache[i].rawJson.length() > 0) {
+            if (flushRawToDisk(_cache[i].filename, _cache[i].rawJson)) {
                 _cache[i].dirty = false;
                 _cache[i].fileModifyTime = 0; // 下次 load 时会刷新
             }
@@ -394,10 +478,10 @@ void ConfigStorage::clearCache() {
     if (!lock) return;
 
     for (size_t i = 0; i < _cacheSize; i++) {
-        if (_cache[i].dirty && _cache[i].cachedDoc) {
-            flushToDisk(_cache[i].filename, *_cache[i].cachedDoc);
+        if (_cache[i].dirty && _cache[i].rawJson.length() > 0) {
+            flushRawToDisk(_cache[i].filename, _cache[i].rawJson);
         }
-        _cache[i].cachedDoc.reset();
+        _cache[i].rawJson = "";
         _cache[i].filename = "";
     }
     _cacheSize = 0;
@@ -409,8 +493,8 @@ void ConfigStorage::clearCache(const String& filename) {
 
     ConfigCacheEntry* entry = findInCache(filename);
     if (entry) {
-        if (entry->dirty && entry->cachedDoc) {
-            flushToDisk(entry->filename, *entry->cachedDoc);
+        if (entry->dirty && entry->rawJson.length() > 0) {
+            flushRawToDisk(entry->filename, entry->rawJson);
         }
         // 移除条目
         size_t idx = entry - _cache;

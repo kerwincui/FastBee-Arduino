@@ -276,7 +276,7 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
         return false;
     }
     
-    DynamicJsonDocument doc(8192);
+    JsonDocument doc;  // ArduinoJson 7.x 弹性分配，替代固定 8192 容量
     DeserializationError error = deserializeJson(doc, jsonContent);
     if (error) {
         LOG_ERRORF("Modbus: JSON parse error: %s", error.c_str());
@@ -456,7 +456,7 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
     String actualPath = configPath.isEmpty() ? config.configFile : configPath;
     sanitizeConfig(config);
     
-    DynamicJsonDocument doc(8192);
+    JsonDocument doc;  // ArduinoJson 7.x 弹性分配，替代固定 8192 容量
     doc["slaveAddress"] = config.slaveAddress;
     doc["baudRate"] = config.baudRate;
     doc["txPin"] = config.txPin;

@@ -218,7 +218,7 @@ void OTAManager::handleOTAUpload(AsyncWebServerRequest *request, const String& f
 
 // 处理OTA状态查询
 void OTAManager::handleOTAStatus(AsyncWebServerRequest *request) {
-    DynamicJsonDocument doc(256);
+    JsonDocument doc;  // ArduinoJson 7.x 弹性分配，OTA 状态响应 <256B
     
     doc["in_progress"] = otaInProgress;
     doc["start_time"] = otaStartTime;

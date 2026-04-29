@@ -11,6 +11,7 @@
 #include <LittleFS.h>
 #include "PeripheralExecution.h"
 #include "AsyncExecTypes.h"
+#include "utils/StaticPoolAllocator.h"
 
 // 前向声明
 class PeriphExecExecutor;
@@ -167,7 +168,10 @@ public:
     SemaphoreHandle_t getRunningRulesMutex() const { return _runningRulesMutex; }
 
     // 获取规则列表（需在持有 rulesMutex 时访问）
-    std::map<String, PeriphExecRule>& getRules() { return rules; }
+    // 使用 RuleMap typedef 指向封装了自定义 Allocator 的 map 类型
+    using RuleMapAllocator = FastBee::PooledAllocator<std::pair<const String, PeriphExecRule>, 192, 32>;
+    using RuleMap = std::map<String, PeriphExecRule, std::less<String>, RuleMapAllocator>;
+    RuleMap& getRules() { return rules; }
 
     // 获取运行中规则ID集合
     std::set<String>& getRunningRuleIds() { return _runningRuleIds; }
@@ -239,7 +243,11 @@ private:
     std::unique_ptr<PeriphExecScheduler> _scheduler;
 
     // ========== 规则存储 ==========
-    std::map<String, PeriphExecRule> rules;
+    // 内存优化（T3）：使用静态池分配器消除 std::map 节点频繁分配造成的堆碎片
+    // 参数选型：BlockSize=192 (PeriphExecRule 节点 ~128字节、留余量)，BlockCount=32 (典型规则数 5~30 条，2倍冗余)
+    // 总 RAM 固定开销 = 192 * 32 = 6KB；池耗尽时自动 fallback malloc，不影响功能
+    // 类型别名已在 public 区声明为 RuleMapAllocator / RuleMap
+    RuleMap rules;
 
     // ========== FreeRTOS 同步原语 ==========
     SemaphoreHandle_t _rulesMutex = nullptr;       // 保护 rules map 的互斥量

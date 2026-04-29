@@ -16,6 +16,7 @@
 #include "protocols/ModbusHandler.h"
 #include "core/AsyncExecTypes.h"
 #include "systems/LoggerSystem.h"
+#include "systems/ConfigStorage.h"
 #include "core/FeatureFlags.h"
 #include "core/FastBeeFramework.h"
 #if FASTBEE_ENABLE_HEALTH_MONITOR
@@ -102,23 +103,31 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
         return false;
     }
 
-    File file = LittleFS.open(filename, "r");
-    if (!file) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "MQTT: Failed to open config: %s", filename.c_str());
-        LOG_ERROR(buf);
-        return false;
-    }
-
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, file);
-    file.close();
+    // 优化：优先走分段加载 (Filter) 仅反序列化 "mqtt" 子节点，堆峰值 ~15KB → ~3KB
+    // 退化路径：当 filename 不是标准 protocol.json 或 section 不存在时，回滚到全量反序列化（兼容旧配置）
+    bool sectionLoaded = false;
+    if (filename == String(FileSystem::PROTOCOL_CONFIG_FILE)) {
+        sectionLoaded = ConfigStorage::getInstance().loadProtocolSection("mqtt", doc);
+    }
+    if (!sectionLoaded) {
+        File file = LittleFS.open(filename, "r");
+        if (!file) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "MQTT: Failed to open config: %s", filename.c_str());
+            LOG_ERROR(buf);
+            return false;
+        }
 
-    if (err) {
-        char buf[80];
-        snprintf(buf, sizeof(buf), "MQTT: Config parse error: %s", err.c_str());
-        LOG_ERROR(buf);
-        return false;
+        DeserializationError err = deserializeJson(doc, file);
+        file.close();
+
+        if (err) {
+            char buf[80];
+            snprintf(buf, sizeof(buf), "MQTT: Config parse error: %s", err.c_str());
+            LOG_ERROR(buf);
+            return false;
+        }
     }
 
     // protocol.json 结构为 { "mqtt": { ... }, "modbusRtu": { ... }, ... }
