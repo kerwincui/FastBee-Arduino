@@ -102,8 +102,8 @@
 #endif
 
 /**
- * @brief BLE 蓝牙配网支持
- * 默认：禁用（功能尚未完全实现）
+ * @brief BLE 蓝牙通信支持（保留通用 BLE 能力；配网已统一由 AP+STA 双模自动切换处理）
+ * 默认：禁用（standard 预设已 lib_ignore NimBLE-Arduino）
  * 占用：约 80KB Flash（NimBLE 库）
  * 需要：NimBLE-Arduino 库
  */

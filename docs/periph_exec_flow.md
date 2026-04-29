@@ -91,8 +91,6 @@ PeriphExec (Peripheral Execution) 是 FastBee-Arduino 物联网设备的**规则
 | 8 | `ACTION_FACTORY_RESET` | 系统 | 恢复出厂设置 |
 | 9 | `ACTION_NTP_SYNC` | 系统 | NTP 时间同步 |
 | 10 | `ACTION_OTA_UPDATE` | 系统 | OTA 固件更新 (预留) |
-| 11 | `ACTION_AP_MODE` | 系统 | 切换 AP 模式 (预留) |
-| 12 | `ACTION_BLE_TOGGLE` | 系统 | 切换蓝牙 (预留) |
 | 13 | `ACTION_MODBUS_WRITE` | 通信 | Modbus 写入 (FC05/FC06) |
 | 14 | `ACTION_MQTT_PUBLISH` | 通信 | MQTT 发布消息 |
 | 15 | `ACTION_HTTP_REQUEST` | 通信 | HTTP 请求 (预留) |
@@ -397,8 +395,8 @@ checkTimers() 每秒执行
 | ACTION_FACTORY_RESET (8) | `LittleFS格式化 + restart` | **强制同步** |
 | ACTION_NTP_SYNC (9) | `configTime(gmtOffset, daylightOffset, ntpServer)` | 可异步 |
 | ACTION_OTA_UPDATE (10) | 预留，未实现 | — |
-| ACTION_AP_MODE (11) | 预留，未实现 | — |
-| ACTION_BLE_TOGGLE (12) | 预留，未实现 | — |
+
+**注**：旧版曾预留 `ACTION_AP_MODE`(11) 和 `ACTION_BLE_TOGGLE`(12)，因项目移除独立蓝牙配网与 AP 配网向导、统一采用 AP+STA 双模自动切换，已移除这两个枚举值。
 
 **重要：** 系统动作 (RESTART/FACTORY_RESET) 在 `dispatchAsync()` 中会被**强制降级为同步执行**，因为异步任务在重启后无法正确完成。
 
@@ -1255,8 +1253,6 @@ bool floatEq(float a, float b, float eps = 0.001) {
 
 以下动作类型已定义枚举值但未实现：
 - `ACTION_OTA_UPDATE` (10)
-- `ACTION_AP_MODE` (11)
-- `ACTION_BLE_TOGGLE` (12)
 - `ACTION_HTTP_REQUEST` (15)
 - `ACTION_LOG_EVENT` (18)
 

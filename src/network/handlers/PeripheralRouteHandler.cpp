@@ -446,11 +446,14 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
     }
 
     PeripheralManager& pm = PeripheralManager::getInstance();
-    if (pm.addPeripheral(config)) {
+    String errorMsg;
+    if (pm.addPeripheral(config, errorMsg)) {
         pm.saveConfiguration();
         ctx->sendSuccess(request, "Peripheral added");
     } else {
-        ctx->sendError(request, 400, "Failed to add peripheral");
+        String msg = errorMsg.isEmpty() ? String("Failed to add peripheral")
+                                        : (String("Failed to add peripheral: ") + errorMsg);
+        ctx->sendError(request, 400, msg);
     }
 }
 

@@ -691,35 +691,6 @@
         'dashboard-connected-prefix': 'Network connected IP: ',
         'dashboard-disconnected': 'Network disconnected',
         
-        // AP provision dynamic text
-        'provision-active': 'Provisioning',
-        'provision-inactive': 'Not Started',
-        'provision-save-ok': 'AP provision config saved',
-        'provision-title': 'AP Provision',
-        'provision-start-ok-prefix': 'AP started: ',
-        'provision-start-fail': 'Start failed',
-        'provision-starting-html': '<i class="fas fa-spinner fa-spin"></i> Starting...',
-        'provision-start-html': '<i class="fas fa-play"></i> Start Provision',
-        'provision-stop-ok': 'AP provision stopped',
-        'provision-stop-fail': 'Stop failed',
-        'provision-stopping-html': '<i class="fas fa-spinner fa-spin"></i> Stopping...',
-        'provision-stop-html': '<i class="fas fa-stop"></i> Stop Provision',
-        
-        // BLE provision dynamic text
-        'ble-active': 'Provisioning',
-        'ble-inactive': 'Not Started',
-        'ble-remaining-unit': 's',
-        'ble-save-ok': 'BLE provision config saved',
-        'ble-title': 'BLE Provision',
-        'ble-start-ok-prefix': 'BLE provision started: ',
-        'ble-start-fail': 'Start failed',
-        'ble-starting-html': '<i class="fas fa-spinner fa-spin"></i> Starting...',
-        'ble-start-html': '<i class="fas fa-play"></i> Start BLE',
-        'ble-stop-ok': 'BLE provision stopped',
-        'ble-stop-fail': 'Stop failed',
-        'ble-stopping-html': '<i class="fas fa-spinner fa-spin"></i> Stopping...',
-        'ble-stop-html': '<i class="fas fa-stop"></i> Stop BLE',
-        
         // OTA update dynamic text
         'ota-ready': 'Ready',
         'ota-in-progress': 'Updating',

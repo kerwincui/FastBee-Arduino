@@ -47,8 +47,12 @@ bool PeripheralManager::initialize() {
 // ========== 外设管理（增删改查） ==========
 
 bool PeripheralManager::addPeripheral(const PeripheralConfig& config) {
-    // 验证配置
     String errorMsg;
+    return addPeripheral(config, errorMsg);
+}
+
+bool PeripheralManager::addPeripheral(const PeripheralConfig& config, String& errorMsg) {
+    // 验证配置
     if (!validateConfig(config, errorMsg)) {
         LOG_ERRORF("Peripheral Manager: Invalid config - %s", errorMsg.c_str());
         return false;
@@ -56,15 +60,40 @@ bool PeripheralManager::addPeripheral(const PeripheralConfig& config) {
     
     // 检查ID是否已存在
     if (hasPeripheral(config.id)) {
+        errorMsg = String("外设 ID '") + config.id + "' 已存在";
         LOG_ERRORF("Peripheral Manager: Peripheral with ID '%s' already exists", config.id.c_str());
         return false;
     }
     
     // 检查引脚冲突（Modbus 外设不使用 GPIO 引脚，跳过此检查）
+    // 加固：传入 excludeId=config.id 防止同 ID 自冲突；冲突时报告实际占用者便于定位
     if (!config.isModbusPeripheral()) {
         for (int i = 0; i < config.pinCount && i < 8; i++) {
-            if (config.pins[i] != 255 && checkPinConflict(config.pins[i])) {
-                LOG_ERRORF("Peripheral Manager: Pin %d is already in use", config.pins[i]);
+            if (config.pins[i] != 255 && checkPinConflict(config.pins[i], config.id)) {
+                // 基于真实数据查找占用者（仅启用的外设算占用，与 checkPinConflict 语义一致）
+                String owner;
+                for (const auto& p : peripherals) {
+                    if (p.first == config.id) continue;
+                    if (!p.second.enabled) continue;
+                    if (p.second.isModbusPeripheral()) continue;
+                    for (uint8_t k = 0; k < p.second.pinCount && k < 8; k++) {
+                        if (p.second.pins[k] == config.pins[i]) { owner = p.first; break; }
+                    }
+                    if (!owner.isEmpty()) break;
+                }
+                LOG_ERRORF("Peripheral Manager: Pin %d is already in use by '%s'",
+                           config.pins[i], owner.isEmpty() ? "<stale-mapping>" : owner.c_str());
+                // 如果实际找不到占用者，说明是缓存残留，自动修复后重试一次
+                if (owner.isEmpty()) {
+                    LOG_WARNING("Peripheral Manager: stale pin mapping detected, rebuilding cache");
+                    rebuildPinMapping();
+                    // 重建后再检一次，如果真的不占用，放行
+                    if (!checkPinConflict(config.pins[i], config.id)) {
+                        continue;
+                    }
+                }
+                errorMsg = String("引脚 ") + config.pins[i] + " 已被外设 '" +
+                           (owner.isEmpty() ? "<未知>" : owner.c_str()) + "' 占用";
                 return false;
             }
         }
@@ -145,14 +174,15 @@ bool PeripheralManager::removePeripheral(const String& id) {
     // 先禁用并释放硬件
     deinitHardware(id);
     
-    // 移除引脚映射
-    removePinMapping(id);
-    
     // 移除运行时状态
     runtimeStates.erase(id);
     
     // 移除配置
     peripherals.erase(id);
+    
+    // 加固：基于最新 peripherals 数据完全重建引脚映射缓存，
+    // 避免 removePinMapping 在多外设共享同引脚（缓存被覆盖）场景下漏删或误删
+    rebuildPinMapping();
     
     LOG_INFOF("Peripheral Manager: Removed peripheral '%s'", id.c_str());
     return true;
@@ -217,6 +247,17 @@ bool PeripheralManager::hasPeripheral(const String& id) const {
 bool PeripheralManager::enablePeripheral(const String& id) {
     auto config = getPeripheral(id);
     if (!config) return false;
+    
+    // 启用前检查引脚冲突（禁用状态下允许共享引脚定义，此处重新校验）
+    if (!config->isModbusPeripheral()) {
+        for (int i = 0; i < config->pinCount && i < 8; i++) {
+            if (config->pins[i] != 255 && checkPinConflict(config->pins[i], id)) {
+                LOG_ERRORF("Peripheral Manager: Cannot enable '%s', pin %d is in use by another enabled peripheral",
+                           id.c_str(), config->pins[i]);
+                return false;
+            }
+        }
+    }
     
     config->enabled = true;
     
@@ -714,6 +755,11 @@ bool PeripheralManager::loadConfiguration() {
         }
     }
     
+    // 加固：加载完成后基于真实数据重建引脚映射缓存，确保一致性
+    // （保险套：如果配置文件历史遗留同引脚多外设，updatePinMapping 会覆盖后者，
+    //   由 checkPinConflict 基于真实数据的逻辑兼容此情况）
+    rebuildPinMapping();
+    
     LOG_INFOF("Peripheral Manager: Loaded %d peripheral configurations", loadedCount);
     return true;
 }
@@ -871,6 +917,18 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
 }
 
 bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
+    // 加固：统一校验外设声明使用的所有引脚是否在当前芯片有效范围内
+    // （对 Modbus 等不占 GPIO 的外设，pinCount 通常为 0，校验自然通过）
+    for (uint8_t i = 0; i < config.pinCount && i < 8; i++) {
+        uint8_t p = config.pins[i];
+        if (p == 255) continue;  // 未使用位
+        if (!isValidPin(p)) {
+            LOG_ERRORF("Peripheral Manager: '%s' pin %u invalid on %s (max GPIO=%d) - skipping hardware init",
+                       config.id.c_str(), (unsigned)p, CHIP_NAME, (int)CHIP_MAX_GPIO);
+            return false;
+        }
+    }
+
     if (config.isGPIOPeripheral()) {
         return setupGPIOPin(config);
     }
@@ -917,6 +975,12 @@ bool PeripheralManager::teardownHardware(const PeripheralConfig& config) {
 bool PeripheralManager::setupGPIOPin(const PeripheralConfig& config) {
     uint8_t pin = config.getPrimaryPin();
     if (pin == 255) return false;
+    // 双保险：底层 pinMode 前再核验一次引脚，避免无效 pin 触发底层 abort
+    if (!isValidPin(pin)) {
+        LOG_ERRORF("Peripheral Manager: setupGPIOPin '%s' reject invalid pin %u on %s",
+                   config.id.c_str(), (unsigned)pin, CHIP_NAME);
+        return false;
+    }
     
     switch (config.type) {
         case PeripheralType::GPIO_DIGITAL_INPUT:
@@ -955,6 +1019,11 @@ bool PeripheralManager::setupGPIOPin(const PeripheralConfig& config) {
 bool PeripheralManager::setupPWMPin(const PeripheralConfig& config) {
     uint8_t pin = config.getPrimaryPin();
     if (pin == 255) return false;
+    if (!isValidPin(pin)) {
+        LOG_ERRORF("Peripheral Manager: setupPWMPin '%s' reject invalid pin %u on %s",
+                   config.id.c_str(), (unsigned)pin, CHIP_NAME);
+        return false;
+    }
     
     uint8_t channel = config.params.gpio.pwmChannel;
     if (channel >= CHIP_MAX_PWM_CH) {
@@ -1181,11 +1250,36 @@ bool PeripheralManager::isInputOnlyPin(uint8_t pin) const {
 }
 
 bool PeripheralManager::checkPinConflict(uint8_t pin, const String& excludeId) const {
-    auto it = pinToPeripheral.find(pin);
-    if (it != pinToPeripheral.end()) {
-        return excludeId.isEmpty() || it->second != excludeId;
+    // 加固：基于 peripherals 真实数据扫描，避免 pinToPeripheral 缓存不一致导致的
+    // “实际未占用但被误报占用”或“已占用但被误报空闲”
+    // 语义：只有“启用”的非 Modbus 外设才算占用引脚；禁用的外设让出引脚，
+    // 允许新外设复用；启用时再做一次冲突检查
+    for (const auto& pair : peripherals) {
+        if (!excludeId.isEmpty() && pair.first == excludeId) continue;
+        const PeripheralConfig& cfg = pair.second;
+        if (!cfg.enabled) continue;
+        // Modbus 外设不占用实际 GPIO
+        if (cfg.isModbusPeripheral()) continue;
+        for (uint8_t i = 0; i < cfg.pinCount && i < 8; i++) {
+            if (cfg.pins[i] == pin) return true;
+        }
     }
     return false;
+}
+
+// 完全从 peripherals 真实数据重建 pinToPeripheral 缓存
+// 用途：删除/加载配置/检测到残留时保证缓存与真实数据一致
+void PeripheralManager::rebuildPinMapping() {
+    pinToPeripheral.clear();
+    for (const auto& pair : peripherals) {
+        const PeripheralConfig& cfg = pair.second;
+        if (cfg.isModbusPeripheral()) continue;  // Modbus 不占 GPIO
+        for (uint8_t i = 0; i < cfg.pinCount && i < 8; i++) {
+            if (cfg.pins[i] != 255) {
+                pinToPeripheral[cfg.pins[i]] = pair.first;
+            }
+        }
+    }
 }
 
 // 获取引脚冲突详细信息

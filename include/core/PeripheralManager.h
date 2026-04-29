@@ -36,6 +36,8 @@ public:
     
     // 添加外设
     bool addPeripheral(const PeripheralConfig& config);
+    // 添加外设（带错误信息输出，用于 API 返回具体失败原因）
+    bool addPeripheral(const PeripheralConfig& config, String& errorMsg);
     
     // 更新外设
     bool updatePeripheral(const String& id, const PeripheralConfig& config);
@@ -227,6 +229,8 @@ private:
     // 更新引脚映射
     void updatePinMapping(const String& id, const PeripheralConfig& config);
     void removePinMapping(const String& id);
+    // 完全从 peripherals 真实数据重建 pinToPeripheral 缓存（消除残留/错乱）
+    void rebuildPinMapping();
     
     // 中断处理
     static void IRAM_ATTR isrHandler(void* arg);

@@ -691,35 +691,6 @@
         'dashboard-connected-prefix': '网络已连接 IP: ',
         'dashboard-disconnected': '网络未连接',
         
-        // AP配网动态文本
-        'provision-active': '配网中',
-        'provision-inactive': '未启动',
-        'provision-save-ok': 'AP配网配置保存成功',
-        'provision-title': 'AP配网',
-        'provision-start-ok-prefix': '配网热点已启动: ',
-        'provision-start-fail': '启动失败',
-        'provision-starting-html': '<i class="fas fa-spinner fa-spin"></i> 启动中...',
-        'provision-start-html': '<i class="fas fa-play"></i> 启动配网',
-        'provision-stop-ok': '配网热点已停止',
-        'provision-stop-fail': '停止失败',
-        'provision-stopping-html': '<i class="fas fa-spinner fa-spin"></i> 停止中...',
-        'provision-stop-html': '<i class="fas fa-stop"></i> 停止配网',
-        
-        // 蓝牙配网动态文本
-        'ble-active': '配网中',
-        'ble-inactive': '未启动',
-        'ble-remaining-unit': '秒',
-        'ble-save-ok': '蓝牙配网配置保存成功',
-        'ble-title': '蓝牙配网',
-        'ble-start-ok-prefix': '蓝牙配网已启动: ',
-        'ble-start-fail': '启动失败',
-        'ble-starting-html': '<i class="fas fa-spinner fa-spin"></i> 启动中...',
-        'ble-start-html': '<i class="fas fa-play"></i> 启动蓝牙配网',
-        'ble-stop-ok': '蓝牙配网已停止',
-        'ble-stop-fail': '停止失败',
-        'ble-stopping-html': '<i class="fas fa-spinner fa-spin"></i> 停止中...',
-        'ble-stop-html': '<i class="fas fa-stop"></i> 停止蓝牙配网',
-        
         // OTA升级动态文本
         'ota-ready': '就绪',
         'ota-in-progress': '升级中',
