@@ -14,10 +14,12 @@
 #define MAX_ASYNC_TASKS       3
 #endif
 
-// 脚本类任务栈大小（含 MQTT publish / JSON 解析 / Modbus Poll 结果合并 / LoggerSystem 文件 I/O）
-// 14336 仍不足：Poll dispatch → MQTT publish → WiFiClient::write 调用链深，增至 16384
+// 脚本类任务栈大小（含 JSON 解析 / Modbus Poll）
+// MQTT publish 已改为 queueReportData 队列化，不再在任务栈上执行 TCP/IP 发送
+// Poll 路径已改用 Serial.printf 替代 LOGGER（避免 LittleFS flush 文件 I/O 加剧栈压力）
+// 20480 覆盖 Modbus 读取 + JSON 解析 + 多层嵌套调用链
 #ifndef SCRIPT_TASK_STACK
-#define SCRIPT_TASK_STACK     16384
+#define SCRIPT_TASK_STACK     20480
 #endif
 
 // 简单外设动作任务栈大小（增加以避免 reportActionResults 中的 JSON/MQTT 操作导致栈溢出）

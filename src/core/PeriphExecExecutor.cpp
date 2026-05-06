@@ -533,16 +533,16 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
         HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
         if (monitor) {
             if (monitor->isMemoryCritical()) {
-                LOGGER.warning("[PeriphExec] Modbus poll skipped - memory CRITICAL");
+                Serial.println("[PeriphExec] Modbus poll skipped - memory CRITICAL");
                 return false;
             }
             if (monitor->isMemorySevere()) {
-                LOGGER.warningf("[PeriphExec] Modbus poll skipped - memory SEVERE (heap=%d)",
-                                (int)ESP.getFreeHeap());
+                Serial.printf("[PeriphExec] Modbus poll skipped - memory SEVERE (heap=%d)\n",
+                              (int)ESP.getFreeHeap());
                 return false;
             }
         } else if (ESP.getFreeHeap() < 25000) {
-            LOGGER.warningf("[PeriphExec] Insufficient heap for Modbus poll: %d bytes free", ESP.getFreeHeap());
+            Serial.printf("[PeriphExec] Insufficient heap for Modbus poll: %d bytes free\n", ESP.getFreeHeap());
             return false;
         }
     }
@@ -562,7 +562,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
 
     String actionVal = action.actionValue;
     if (actionVal.isEmpty()) {
-        LOGGER.warning("[PeriphExec] Poll action has empty actionValue");
+        Serial.println("[PeriphExec] Poll action has empty actionValue");
         return false;
     }
 
@@ -572,7 +572,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
         JsonDocument doc;
         DeserializationError err = deserializeJson(doc, actionVal);
         if (err) {
-            LOGGER.warningf("[PeriphExec] Failed to parse JSON actionValue: %s", err.c_str());
+            Serial.printf("[PeriphExec] Failed to parse JSON actionValue: %s\n", err.c_str());
             return false;
         }
 
@@ -591,8 +591,8 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     auto* fwInner = FastBeeFramework::getInstance();
                     HealthMonitor* monInner = fwInner ? fwInner->getHealthMonitor() : nullptr;
                     if ((monInner && monInner->isMemoryCritical()) || ESP.getFreeHeap() < 15000) {
-                        LOGGER.warningf("[PeriphExec] Heap dropped to %d during poll, stopping early",
-                                        (int)ESP.getFreeHeap());
+                        Serial.printf("[PeriphExec] Heap dropped to %d during poll, stopping early\n",
+                                      (int)ESP.getFreeHeap());
                         break;
                     }
                 }
@@ -600,8 +600,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                 if (resultsArr.size() > 0 && interDelay > 0) vTaskDelay(pdMS_TO_TICKS(interDelay));
                 // emitCallback=false: PeriphExec 有自己的数据处理流程，不需要通过 dataCallback 重复分发
                 String result = modbus->executePollTaskByIndex(taskIdx, timeout, retries, false);
-                LOGGER.infof("[PeriphExec] Poll task[%d] raw result: %s",
-                             taskIdx, result.length() > 200 ? (result.substring(0, 200) + "...").c_str() : result.c_str());
+                Serial.printf("[PeriphExec] Poll task[%d] len=%u\n", taskIdx, (unsigned)result.length());
                 if (result != "[]") {
                     anySuccess = true;
                     // 解析任务结果并追加到结构化数组（避免字符串拼接）
@@ -612,7 +611,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                             resultsArr.add(item);
                         }
                     } else {
-                        LOGGER.warningf("[PeriphExec] Poll task[%d] result JSON parse failed", taskIdx);
+                        Serial.printf("[PeriphExec] Poll task[%d] result JSON parse failed\n", taskIdx);
                     }
                 }
             }
@@ -620,14 +619,14 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                 // 只在最终出口做一次 serializeJson
                 String mergedJson;
                 serializeJson(resultDoc, mergedJson);
-                LOGGER.infof("[PeriphExec] Poll completed, dispatching %d bytes via unified outlet", mergedJson.length());
+                Serial.printf("[PeriphExec] Poll completed, dispatching %d bytes\n", mergedJson.length());
                 // 统一通过 dispatchModbusData 分发（PeriphExecPoll: 仅 MQTT+SSE，不重复规则匹配）
                 if (protMgr) {
                     protMgr->dispatchModbusData(0, mergedJson, ModbusDataSource::PeriphExecPoll);
                 }
             } else {
-                LOGGER.warningf("[PeriphExec] Poll: no valid data to dispatch (anySuccess=%d, resultsSize=%d) - report skipped",
-                                (int)anySuccess, (int)resultsArr.size());
+                Serial.printf("[PeriphExec] Poll: no valid data (anySuccess=%d, size=%d)\n",
+                              (int)anySuccess, (int)resultsArr.size());
             }
         }
 
@@ -638,7 +637,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
             for (JsonVariant cv : ctrlArr) {
                 uint8_t devIdx = cv["d"].as<uint8_t>();
                 if (devIdx >= cfg.master.deviceCount) {
-                    LOGGER.warningf("[PeriphExec] ctrl device index %d out of range", devIdx);
+                    Serial.printf("[PeriphExec] ctrl device index %d out of range\n", devIdx);
                     continue;
                 }
                 const ModbusSubDevice& dev = cfg.master.devices[devIdx];
@@ -661,14 +660,14 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                         auto res = modbus->writeCoilOnce(dev.slaveAddress, addr, coilVal, true);
                         ok = (res.error == ONESHOT_SUCCESS);
                         anySuccess = anySuccess || ok;
-                        LOGGER.infof("[PeriphExec] Relay ctrl: slave=%d coil=%d val=%d ok=%d",
+                        Serial.printf("[PeriphExec] Relay ctrl: slave=%d coil=%d val=%d ok=%d\n",
                             dev.slaveAddress, addr, coilVal, ok);
                     } else {
                         uint16_t regVal = coilVal ? 1 : 0;
                         auto res = modbus->writeRegisterOnce(dev.slaveAddress, addr, regVal, true);
                         ok = (res.error == ONESHOT_SUCCESS);
                         anySuccess = anySuccess || ok;
-                        LOGGER.infof("[PeriphExec] Relay reg ctrl: slave=%d reg=%d val=0x%04X ok=%d",
+                        Serial.printf("[PeriphExec] Relay reg ctrl: slave=%d reg=%d val=0x%04X ok=%d\n",
                             dev.slaveAddress, addr, regVal, ok);
                     }
                     if (controlResults) {
@@ -691,7 +690,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     auto res = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, val, true);
                     bool ok = (res.error == ONESHOT_SUCCESS);
                     anySuccess = anySuccess || ok;
-                    LOGGER.infof("[PeriphExec] PWM ctrl: slave=%d reg=%d val=%d ok=%d",
+                    Serial.printf("[PeriphExec] PWM ctrl: slave=%d reg=%d val=%d ok=%d\n",
                         dev.slaveAddress, regAddr, val, ok);
                     if (controlResults) {
                         char idBuf[16], valBuf[16];
@@ -717,7 +716,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     auto res = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, val, true);
                     bool ok = (res.error == ONESHOT_SUCCESS);
                     anySuccess = anySuccess || ok;
-                    LOGGER.infof("[PeriphExec] PID ctrl: slave=%d param=%s reg=%d val=%d ok=%d",
+                    Serial.printf("[PeriphExec] PID ctrl: slave=%d param=%s reg=%d val=%d ok=%d\n",
                         dev.slaveAddress, param, regAddr, val, ok);
                     if (controlResults) {
                         char idBuf[16], valBuf[16];

@@ -335,15 +335,18 @@ void ProtocolManager::dispatchModbusData(uint8_t slaveAddress, const String& dat
         if (modbusHandler && modbusHandler->getConfig().transferType == 1) {
             fmt = "HEX";
         }
-        String reportTopic = mqttClient->getReportTopic();
         const char* srcName = (source == ModbusDataSource::PeriphExecPoll) ? "PeriphExecPoll"
                             : (source == ModbusDataSource::LiveCallback)   ? "LiveCallback"
                                                                            : "Unknown";
-        String truncated = data.length() > 200 ? (data.substring(0, 200) + "...") : data;
-        Serial.printf("[Modbus] TX ▲ topic=%s src=%s format=%s slave=%d len=%u content=%s\n",
-                      reportTopic.c_str(), srcName, fmt, slaveAddress,
-                      (unsigned)data.length(), truncated.c_str());
-        mqttClient->publishReportData(data);
+        Serial.printf("[Modbus] TX ▲ src=%s format=%s slave=%d len=%u\n",
+                      srcName, fmt, slaveAddress, (unsigned)data.length());
+        // PeriphExecPoll 来自异步任务栈，用 queueReportData 避免 TCP/IP 深栈调用导致栈溢出
+        // LiveCallback 来自主循环，可直接 publish
+        if (source == ModbusDataSource::PeriphExecPoll) {
+            mqttClient->queueReportData(data);
+        } else {
+            mqttClient->publishReportData(data);
+        }
     } else {
         Serial.printf("[Modbus] TX ▲ DROPPED (MQTT offline) slave=%d len=%u\n",
                       slaveAddress, (unsigned)data.length());
@@ -1273,7 +1276,7 @@ String ProtocolManager::collectLocalSensorData() const {
         json += config.id;
         json += "\",\"value\":\"";
         json += value;
-        json += "\",\"remark\":\"\",\"dataSource\":\"local\"}";
+        json += "\",\"remark\":\"local\"}";
         first = false;
     }
     json += "]";

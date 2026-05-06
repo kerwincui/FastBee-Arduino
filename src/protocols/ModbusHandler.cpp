@@ -2445,7 +2445,7 @@ String ModbusHandler::collectCachedPollData() const {
             json += m.sensorId;
             json += "\",\"value\":\"";
             json += valBuf;
-            json += "\",\"remark\":\"\",\"dataSource\":\"modbus\"}";
+            json += "\",\"remark\":\"modbus\"}";
             first = false;
         }
     }
