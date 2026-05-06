@@ -234,6 +234,9 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
 
     std::vector<ActionExecResult> results;
     results.reserve(rule.actions.size());
+    // 仅采集类动作（SENSOR_READ / MODBUS_POLL）的结果才进入实时监测上报队列
+    // 其他动作（GPIO/PWM/BUZZER/系统指令等）的执行结果不触发实时监测上报
+    std::vector<ActionExecResult> reportableResults;
 
     for (const auto& action : rule.actions) {
         // MemGuard 堆守卫：基于等级决定是否继续执行
@@ -270,17 +273,21 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
 
         bool ok = false;
         std::vector<ActionExecResult> actionResults;
+        // 标记本次动作是否属于采集类（可上报实时监测）
+        bool isReportableAction = false;
         if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) {
             ActionExecResult ar;
             ok = executeSensorReadAction(action, ar);
             ar.success = ok;
             ar.remark = ok ? "success" : "sensor_read_failed";
             actionResults.push_back(ar);
+            isReportableAction = true;
         } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_MODBUS_POLL)) {
             ok = executeModbusPollAction(action, rule, &actionResults);
             if (!ok && actionResults.empty()) {
                 appendActionResult(actionResults, action.targetPeriphId, effectiveValue, false, "modbus_poll_failed");
             }
+            isReportableAction = true;
         } else {
             ok = executeActionItem(action, effectiveValue);
             appendActionResult(
@@ -293,6 +300,11 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
         }
 
         results.insert(results.end(), actionResults.begin(), actionResults.end());
+        // 仅 SENSOR_READ / MODBUS_POLL 结果进入上报列表
+        if (isReportableAction) {
+            reportableResults.insert(reportableResults.end(),
+                                     actionResults.begin(), actionResults.end());
+        }
 
         // 打印每个动作的执行结果
         for (const auto& ar : actionResults) {
@@ -302,13 +314,13 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
         }
     }
 
-    // 精准上报执行结果
-    if (rule.reportAfterExec && !suppressReport && !results.empty()) {
-        LOGGER.infof("[PeriphExec] Rule '%s' execution done, reporting %d results",
-            rule.name.c_str(), results.size());
-        reportActionResults(results);
+    // 精准上报执行结果（仅上报采集类动作的结果）
+    if (rule.reportAfterExec && !suppressReport && !reportableResults.empty()) {
+        LOGGER.infof("[PeriphExec] Rule '%s' execution done, reporting %d sensor/poll results",
+            rule.name.c_str(), reportableResults.size());
+        reportActionResults(reportableResults);
     } else if (!results.empty()) {
-        LOGGER.infof("[PeriphExec] Rule '%s' execution done, %d results (report suppressed)",
+        LOGGER.infof("[PeriphExec] Rule '%s' execution done, %d results (no sensor/poll data to report)",
             rule.name.c_str(), results.size());
     }
 

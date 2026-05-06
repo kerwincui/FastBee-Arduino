@@ -1072,7 +1072,16 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
         if (!err) {
             int count = monDoc["count"] | 0;
             unsigned long interval = monDoc["interval"] | 1000;
-            if (count > 0 && interval >= 100) {
+            // count=0 表示停止上报，立即终止已运行的实时监测，interval 参数被忽略
+            if (count == 0) {
+                if (monitorActive) {
+                    monitorActive = false;
+                    monitorRemaining = 0;
+                    LOG_INFO("MQTT: Monitor STOPPED by count=0");
+                } else {
+                    LOG_DEBUG("MQTT: Monitor count=0 received (not running, ignored)");
+                }
+            } else if (count > 0 && interval >= 100) {
                 monitorRemaining = count;
                 monitorInterval = interval;
                 monitorActive = true;
@@ -1083,6 +1092,12 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
                 // 立即发布第一次
                 publishMonitorData();
                 monitorRemaining--;
+                if (monitorRemaining <= 0) {
+                    monitorActive = false;
+                    LOG_INFO("MQTT: Monitor completed (count=1, single-shot)");
+                }
+            } else {
+                LOG_WARNING("MQTT: Invalid monitor params (count<0 or interval<100ms)");
             }
         }
     }

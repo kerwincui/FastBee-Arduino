@@ -1252,17 +1252,24 @@ String ProtocolManager::collectLocalSensorData() const {
     for (const auto& config : allPeriphs) {
         if (!config.enabled) continue;
 
-        int typeVal = static_cast<int>(config.type);
-        if (typeVal < 11 || typeVal > 26) continue;  // 仅 GPIO/ADC/DAC 类型
+        // 实时监测仅上报输入类传感器数据，排除输出类控制外设
+        // （如 GPIO_DIGITAL_OUTPUT=12 / GPIO_ANALOG_OUTPUT=16 / GPIO_PWM_OUTPUT=17 / DAC=27 / BUZZER=46）
+        if (!isInputType(config.type)) continue;
 
+        // 排除按键事件型外设（GPIO_DIGITAL_INPUT_PULLUP=13 / GPIO_DIGITAL_INPUT_PULLDOWN=14）
+        // 这些外设由按键事件检测线程驱动，属于事件型而非定时采样型，不应纳入实时监测扫描
+        // 实时监测仅上报由 ACTION_SENSOR_READ / ACTION_MODBUS_POLL 类语义对应的传感器外设
+        if (supportsButtonEvent(config.type)) continue;
+
+        int typeVal = static_cast<int>(config.type);
         String value;
-        if (typeVal >= 11 && typeVal <= 14) {
-            // 数字输入/输出类型
+        if (isDigitalInputType(config.type)) {
+            // 数字输入（已排除按键，仅剩 GPIO_DIGITAL_INPUT=11 普通数字传感器）
             GPIOState state = pm.readPin(config.id);
             if (state == GPIOState::STATE_UNDEFINED) continue;
             value = (state == GPIOState::STATE_HIGH) ? "1" : "0";
         } else if (typeVal == 15 || typeVal == 26) {
-            // 模拟输入或 ADC — 用 snprintf 避免 String(int) 临时对象
+            // 模拟输入 (GPIO_ANALOG_INPUT=15) 或 ADC=26
             uint16_t analog = pm.readAnalog(config.id);
             char analogBuf[8];
             snprintf(analogBuf, sizeof(analogBuf), "%u", analog);
