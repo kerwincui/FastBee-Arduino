@@ -14,10 +14,10 @@
 #define MAX_ASYNC_TASKS       3
 #endif
 
-// 脚本类任务栈大小（含 MQTT / JSON 解析 / LoggerSystem 文件 I/O）
-// 从 12288 增至 14336：透传模式下 publishReportData→LoggerSystem→fs::open 调用链深，需更大栈
+// 脚本类任务栈大小（含 MQTT publish / JSON 解析 / Modbus Poll 结果合并 / LoggerSystem 文件 I/O）
+// 14336 仍不足：Poll dispatch → MQTT publish → WiFiClient::write 调用链深，增至 16384
 #ifndef SCRIPT_TASK_STACK
-#define SCRIPT_TASK_STACK     14336
+#define SCRIPT_TASK_STACK     16384
 #endif
 
 // 简单外设动作任务栈大小（增加以避免 reportActionResults 中的 JSON/MQTT 操作导致栈溢出）
