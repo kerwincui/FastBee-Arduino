@@ -288,6 +288,29 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
                 appendActionResult(actionResults, action.targetPeriphId, effectiveValue, false, "modbus_poll_failed");
             }
             isReportableAction = true;
+        } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_TRIGGER_EVENT)) {
+            // 触发设备事件：直接以当前规则为事件源
+            //   eventId   = rule.id   (例如 exec_1745678901)
+            //   eventName = rule.name (规则显示名称)
+            //   eventData = effectiveValue (可选，利用 actionValue 传送额外数据)
+            // 当 reportAfterExec 开启时，MQTT 自动切换到 DEVICE_EVENT 类型主题广播事件；
+            // 否则仅做规则内联动，不向外上报。
+            LOGGER.infof("[PeriphExec] Trigger device event: id=%s name=%s (data=%s)",
+                         rule.id.c_str(), rule.name.c_str(), effectiveValue.c_str());
+            // 分发给规则（供其他规则订阅事件作为触发源），不受 reportAfterExec 控制
+            PeriphExecManager::getInstance().triggerEventById(rule.id, effectiveValue);
+            // 仅在勾选“是否上报数据”且未被外部抑制时，通过 DEVICE_EVENT 主题上报
+            if (rule.reportAfterExec && !suppressReport) {
+                PeriphExecManager::getInstance().notifyMqttEventPublish(rule.id, rule.name, effectiveValue);
+            }
+            ok = true;
+            appendActionResult(
+                actionResults,
+                rule.id,
+                rule.name,
+                ok,
+                "event_triggered"
+            );
         } else {
             ok = executeActionItem(action, effectiveValue);
             appendActionResult(
@@ -896,6 +919,8 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
     switch (actType) {
         case ExecActionType::ACTION_SYS_RESTART:
             LOGGER.info("[PeriphExec] Executing system restart...");
+            // 触发 restart 事件以便 DEVICE_EVENT 主题上报
+            PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_SYS_RESTART, "");
             delay(500);
             ESP.restart();
             return true;

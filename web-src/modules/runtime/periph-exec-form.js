@@ -20,6 +20,7 @@
             const showEvent = triggerType === '4';
             const isDataSourceEvent = showEvent && data.eventId && String(data.eventId).indexOf('ds:') === 0;
             const isModbusCtrlEvent = showEvent && data.eventId && String(data.eventId).indexOf('mc:') === 0;
+            const isButtonEvent = showEvent && data.eventId && String(data.eventId).indexOf('button_') === 0;
             const showPoll = triggerType === '5';
             const timerMode = String(data.timerMode ?? 0);
             const showInterval = timerMode === '0';
@@ -37,7 +38,7 @@
                         '<option value="1"' + (triggerType === '1' ? ' selected' : '') + '>' + i18n.t('periph-exec-trigger-timer') + '</option>' +
                         '<option value="5"' + (triggerType === '5' ? ' selected' : '') + '>' + i18n.t('periph-exec-trigger-poll') + '</option>' +
                     '</select></div>' +
-                    '<div class="fb-form-group pe-trigger-periph-group' + this._hiddenClass(showPlatform) + '">' +
+                    '<div class="fb-form-group pe-trigger-periph-group' + this._hiddenClass(showPlatform || isButtonEvent) + '">' +
                     '<label>' + i18n.t('periph-exec-trigger-periph-label') + '</label>' +
                     '<select class="pe-trigger-periph"><option value="">' + i18n.t('periph-exec-select-periph') + '</option></select></div>' +
                 '</div>' +
@@ -95,7 +96,13 @@
                     '<div class="pe-event-modbus-ctrl-panel' + this._hiddenClass(isModbusCtrlEvent) + '"></div>' +
                     '</div>';
             container.appendChild(div);
-            this._populateTriggerPeriphSelect(div.querySelector('.pe-trigger-periph'), data.triggerPeriphId || data.sourcePeriphId || '');
+            // 合并后的触发外设下拉：平台触发列全部外设，按键事件仅列按键类型
+            const periphSel = div.querySelector('.pe-trigger-periph');
+            if (showPlatform) {
+                this._populateTriggerPeriphSelect(periphSel, data.triggerPeriphId || data.sourcePeriphId || '');
+            } else if (isButtonEvent) {
+                this._populateButtonPeriphSelect(periphSel, data.triggerPeriphId || '');
+            }
             if (showEvent) this._populateEventCategoriesInBlock(div, data.eventId, data.compareValue || '');
         },
 
@@ -111,7 +118,8 @@
             const isModbusPoll = actionTypeInt === 18;
             const isSensorRead = actionTypeInt === 19;
             const isModbusTarget = data.targetPeriphId && data.targetPeriphId.indexOf('modbus:') === 0;
-            const showPeriphGroup = isPollMode || (isModbusTarget || !((actionTypeInt >= 6 && actionTypeInt <= 11) || actionTypeInt === 15 || isModbusPoll));
+            const isTriggerEvent = actionTypeInt === 21;
+            const showPeriphGroup = isPollMode || (isModbusTarget || !((actionTypeInt >= 6 && actionTypeInt <= 11) || actionTypeInt === 15 || isModbusPoll || isTriggerEvent));
             const needsValue = !isPollMode && !isModbusTarget && (actionTypeInt >= 2 && actionTypeInt <= 5);
             const showRecv = !isPollMode && !isModbusTarget && this._hasSetModeTrigger() && needsValue;
             const isScript = !isPollMode && actionTypeInt === 15;
@@ -135,10 +143,6 @@
                     '<div class="fb-form-group pe-sync-delay-group">' +
                     '<label>' + i18n.t('periph-exec-sync-delay-label') + '</label>' +
                     '<input type="number" class="pe-sync-delay" min="0" max="10000" step="100" value="' + (data.syncDelayMs || 0) + '" placeholder="0"></div></div>' +
-                    '<div class="fb-form-group pe-target-group' + this._hiddenClass(showPeriphGroup) + '">' +
-                    '<label>' + i18n.t('periph-exec-target-periph-label') + '</label>' +
-                    '<select class="pe-target-periph"><option value="">' + i18n.t('periph-exec-select-periph') + '</option></select></div>' +
-                    '<div class="fb-form-group pe-modbus-ctrl-panel' + this._hiddenClass(isModbusTarget) + '"></div>' +
                     '<div class="fb-form-group pe-action-type-group' + this._hiddenClass(showActionType) + '"><label>' + i18n.t('periph-exec-action-type-label') + '</label>' +
                     '<select class="pe-action-type">' +
                         '<optgroup label="' + i18n.t('periph-exec-action-cat-gpio') + '">' +
@@ -155,13 +159,16 @@
                         '<option value="6" ' + sel(6) + '>' + i18n.t('periph-exec-action-restart') + '</option>' +
                         '<option value="7" ' + sel(7) + '>' + i18n.t('periph-exec-action-factory') + '</option>' +
                         '<option value="8" ' + sel(8) + '>' + i18n.t('periph-exec-action-ntp') + '</option>' +
-                        '<option value="9" ' + sel(9) + '>' + i18n.t('periph-exec-action-ota') + '</option>' +
-                        '<option value="10" ' + sel(10) + '>' + i18n.t('periph-exec-action-ap') + '</option>' +
-                        '<option value="11" ' + sel(11) + '>' + i18n.t('periph-exec-action-ble') + '</option></optgroup>' +
+                        '<option value="9" ' + sel(9) + '>' + i18n.t('periph-exec-action-ota') + '</option></optgroup>' +
                         '<optgroup label="' + i18n.t('periph-exec-action-cat-advanced') + '">' +
                         '<option value="15" ' + sel(15) + '>' + i18n.t('periph-exec-action-script') + '</option>' +
-                        '<option value="19" ' + sel(19) + '>' + i18n.t('periph-exec-action-sensor-read') + '</option></optgroup>' +
+                        '<option value="19" ' + sel(19) + '>' + i18n.t('periph-exec-action-sensor-read') + '</option>' +
+                        '<option value="21" ' + sel(21) + '>' + i18n.t('periph-exec-action-trigger-event') + '</option></optgroup>' +
                     '</select></div>' +
+                    '<div class="fb-form-group pe-target-group' + this._hiddenClass(showPeriphGroup) + '">' +
+                    '<label>' + i18n.t('periph-exec-target-periph-label') + '</label>' +
+                    '<select class="pe-target-periph"><option value="">' + i18n.t('periph-exec-select-periph') + '</option></select></div>' +
+                    '<div class="fb-form-group pe-modbus-ctrl-panel' + this._hiddenClass(isModbusTarget) + '"></div>' +
                     '<div class="fb-form-group pe-action-value-group' + this._hiddenClass(needsValue) + '">' +
                     '<label>' + i18n.t('periph-exec-action-value-label') + '</label>' +
                     '<input type="text" class="pe-action-value" value="' + (isScript ? '' : escapeHtml(data.actionValue)) + '" placeholder="' + escapeHtml(i18n.t('periph-exec-action-value-hint')) + '"' + (showRecv && data.useReceivedValue !== false ? ' readonly' : '') + '>' +
@@ -195,7 +202,8 @@
             if (!isPollMode && isSensorRead) {
                 this._populateSensorPeriphSelect(div, sensorCfg.sensorCategory || 'analog', sensorCfg.periphId || data.targetPeriphId || '');
             } else {
-                this._populatePeriphSelect(div.querySelector('.pe-target-periph'), data.targetPeriphId || '', isPollMode);
+                var initActType = parseInt(data.actionType);
+                this._populatePeriphSelect(div.querySelector('.pe-target-periph'), data.targetPeriphId || '', isPollMode, initActType === 21);
             }
             if (!isPollMode && isModbusPoll && !isModbusTarget) this._populateModbusDevicePanel(div.querySelector('.pe-poll-tasks-list'), data.actionValue || '');
             if (isModbusTarget) this._showModbusCtrlPanel(div.querySelector('.pe-modbus-ctrl-panel'), data.targetPeriphId, data.actionValue || '');
@@ -254,7 +262,20 @@
             const pollParams = block.querySelector('.pe-poll-params');
             const timerConfig = block.querySelector('.pe-timer-config');
             const eventGroup = block.querySelector('.pe-event-group');
-            this._setSectionVisible(triggerPeriphGroup, val === '0');
+            const periphSel = block.querySelector('.pe-trigger-periph');
+            // 触发外设下拉：平台触发则展示并填充全部外设；事件触发则依据当前已选事件是否按键决定显示，其他类型隐藏
+            if (val === '0') {
+                this._setSectionVisible(triggerPeriphGroup, true);
+                if (periphSel) this._populateTriggerPeriphSelect(periphSel, periphSel.value || '');
+            } else if (val === '4') {
+                const eventSel = block.querySelector('.pe-event');
+                const curEv = eventSel ? eventSel.value : '';
+                const isBtn = curEv && String(curEv).indexOf('button_') === 0;
+                this._setSectionVisible(triggerPeriphGroup, !!isBtn);
+                if (isBtn && periphSel) this._populateButtonPeriphSelect(periphSel, periphSel.value || '');
+            } else {
+                this._setSectionVisible(triggerPeriphGroup, false);
+            }
             this._setSectionVisible(platformCondition, val === '0');
             this._setSectionVisible(pollParams, val === '5');
             this._setSectionVisible(timerConfig, val === '1');
@@ -346,6 +367,8 @@
             const block = this._getPeriphExecBlock('periph-exec-triggers', index);
             if (!block) return;
             this._populateEventSelectInBlock(block, val);
+            // 切换分类时默认隐藏触发外设下拉，待选定具体按键事件后再显示
+            this._setSectionVisible(block.querySelector('.pe-trigger-periph-group'), false);
         },
 
         onPeriphExecEventChangeInBlock(val, index) {
@@ -353,8 +376,18 @@
             if (!block) return;
             var isDataSource = val && val.indexOf('ds:') === 0;
             var isModbusCtrl = val && val.indexOf('mc:') === 0;
+            var isButtonEvt = val && String(val).indexOf('button_') === 0;
             this._setSectionVisible(block.querySelector('.pe-event-condition-group'), isDataSource);
             this._setSectionVisible(block.querySelector('.pe-event-compare-group'), isDataSource);
+            // 按键事件时显示触发外设下拉并填充按键类型外设；否则隐藏
+            var triggerPeriphGroup = block.querySelector('.pe-trigger-periph-group');
+            if (triggerPeriphGroup) {
+                this._setSectionVisible(triggerPeriphGroup, !!isButtonEvt);
+                if (isButtonEvt) {
+                    var btnSel = block.querySelector('.pe-trigger-periph');
+                    if (btnSel) this._populateButtonPeriphSelect(btnSel, btnSel.value || '');
+                }
+            }
             var ctrlPanel = block.querySelector('.pe-event-modbus-ctrl-panel');
             if (ctrlPanel) {
                 if (isModbusCtrl) {
@@ -377,7 +410,8 @@
             const pollTasksGroup = block.querySelector('.pe-poll-tasks-group');
             const isModbusPoll = actionType === 18;
             const isSensorRead = actionType === 19;
-            const showTargetGroup = !((actionType >= 6 && actionType <= 11) || actionType === 15 || isModbusPoll);
+            const isTriggerEvent = actionType === 21;
+            const showTargetGroup = !((actionType >= 6 && actionType <= 11) || actionType === 15 || isModbusPoll || isTriggerEvent);
             this._setSectionVisible(targetGroup, showTargetGroup);
             const needsValue = (actionType >= 2 && actionType <= 5);
             this._setSectionVisible(valueGroup, needsValue);
@@ -398,7 +432,7 @@
             }
             if (targetGroup && !targetGroup.classList.contains('is-hidden')) {
                 var peSelect = block.querySelector('.pe-target-periph');
-                this._populatePeriphSelect(peSelect, peSelect ? peSelect.value : '', this._isPollTriggerActive());
+                this._populatePeriphSelect(peSelect, peSelect ? peSelect.value : '', this._isPollTriggerActive(), isTriggerEvent);
             }
             // 使用接收值: 仅在平台触发+设置+需要数值的动作类型时显示
             const recvGroup = block.querySelector('.pe-use-received-value-group');
@@ -564,6 +598,9 @@
                     if (trigger.eventId.indexOf('ds:') === 0) {
                         trigger.operatorType = parseInt(item.querySelector('.pe-event-operator')?.value || '0', 10);
                         trigger.compareValue = item.querySelector('.pe-event-compare')?.value?.trim() || '';
+                    } else if (trigger.eventId.indexOf('button_') === 0) {
+                        // 按键事件：读取统一后的触发外设下拉（留空表示任意按键外设均可触发）
+                        trigger.triggerPeriphId = item.querySelector('.pe-trigger-periph')?.value || '';
                     } else if (trigger.eventId.indexOf('mc:') === 0) {
                         // Modbus控制设备触发器：从控制面板读取通道/动作配置
                         var ctrlPanel = item.querySelector('.pe-event-modbus-ctrl-panel');

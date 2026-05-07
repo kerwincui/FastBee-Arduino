@@ -86,13 +86,18 @@
         },
 
         _loadDeviceHardwareInfo() {
+            // 兼容后端返回结构差异：res 可能是 {success, data} 或直接是 data（如 batch 子响应）
             apiGet('/api/system/info')
                 .then(res => {
-                    if (!res || !res.success) return;
-                    const d = res.data || {};
+                    if (!res) {
+                        console.warn('[device-config] /api/system/info empty response');
+                        return;
+                    }
+                    // 优先取 res.data；若无则把 res 自身视作 data
+                    const d = (res && typeof res === 'object' && res.data) ? res.data : res;
                     const dev = d.device || {};
                     const fw = d.firmware || {};
-                    const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val || '--'; };
+                    const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = (val !== undefined && val !== null && val !== '') ? val : '--'; };
                     set('dev-sys-chip', dev.chipModel);
                     set('dev-sys-cpu', dev.cpuFreqMHz ? dev.cpuFreqMHz + ' MHz' : '--');
                     set('dev-sys-heap', dev.freeHeap ? Math.round(dev.freeHeap / 1024) + ' KB' : '--');
@@ -100,7 +105,9 @@
                     set('dev-sys-sdk', dev.sdkVersion);
                     set('dev-sys-fw', fw.version || dev.firmwareVersion || '--');
                 })
-                .catch(() => {});
+                .catch(err => {
+                    console.warn('[device-config] /api/system/info failed:', err && (err.status || err.message || err));
+                });
         },
 
         saveDeviceBasic() {

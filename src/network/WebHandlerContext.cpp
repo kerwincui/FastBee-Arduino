@@ -298,8 +298,11 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
             response->addHeader("ETag", etag);
 
             // 添加 Link header 用于资源预加载（仅对 index.html）
+            // 注意：预加载目标必须与 HTML 中实际主动加载的资源一致，否则浏览器会报
+            // "preloaded using link preload but not used" 警告。
+            // 当前主加载路径是 app-bundle.js（合并版），state.js 仅在降级时才加载。
             if (path == "/www/index.html" || path == "/index.html") {
-                response->addHeader("Link", "</js/state.js>; rel=preload; as=script, </css/main.css>; rel=preload; as=style");
+                response->addHeader("Link", "</js/app-bundle.js>; rel=preload; as=script, </css/main.css>; rel=preload; as=style");
             }
             // Service Worker 文件特殊处理
             if (path == "/www/sw.js" || path == "/sw.js") {

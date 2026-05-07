@@ -196,11 +196,13 @@ void PeriphExecScheduler::triggerEvent(EventType eventType, const String& eventD
     // 启动保护：PeriphExecManager 未初始化时（mutex 未创建），跳过事件处理
     if (!_manager->isInitialized()) return;
 
-    // 查找匹配的事件ID
+    // 查找匹配的事件ID / 名称
     const char* targetEventId = nullptr;
+    const char* targetEventName = nullptr;
     for (size_t i = 0; STATIC_EVENTS[i].id != nullptr; i++) {
         if (STATIC_EVENTS[i].type == eventType) {
             targetEventId = STATIC_EVENTS[i].id;
+            targetEventName = STATIC_EVENTS[i].name;
             break;
         }
     }
@@ -214,26 +216,51 @@ void PeriphExecScheduler::triggerEvent(EventType eventType, const String& eventD
 
     // 通过 manager 分发事件匹配的规则
     _manager->dispatchEventMatchedRules(targetEventId, eventData);
+
+    // 同步通知 MQTT 层：若有订阅了此事件的 DEVICE_EVENT 主题，则上报
+    _manager->notifyMqttEventPublish(String(targetEventId),
+                                     targetEventName ? String(targetEventName) : String(),
+                                     eventData);
 }
 
 void PeriphExecScheduler::triggerEventById(const String& eventId, const String& eventData) {
     const EventDef* def = findStaticEvent(eventId.c_str());
     if (def) {
         triggerEvent(def->type, eventData);
-    } else {
-        // 检查是否是外设执行规则事件
-        if (eventId.startsWith("exec_")) {
-            triggerPeriphExecEvent(eventId, eventData);
-        } else if (eventId.startsWith("mc:")) {
-            // Modbus 控制类子设备事件
-            if (!_manager) return;
-            if (!_manager->isInitialized()) return;
-            LOGGER.infof("[PeriphExec] Modbus control event triggered: %s (data=%s)", eventId.c_str(), eventData.c_str());
-            _manager->dispatchEventMatchedRules(eventId, eventData);
-        } else {
-            LOGGER.warningf("[PeriphExec] Unknown event ID: %s", eventId.c_str());
-        }
+        return;
     }
+
+    // 非静态事件：判断前缀或外设类型
+    if (!_manager) return;
+    if (!_manager->isInitialized()) return;
+
+    if (eventId.startsWith("exec_")) {
+        triggerPeriphExecEvent(eventId, eventData);
+        return;
+    }
+    if (eventId.startsWith("mc:")) {
+        // Modbus 控制类子设备事件
+        LOGGER.infof("[PeriphExec] Modbus control event triggered: %s (data=%s)", eventId.c_str(), eventData.c_str());
+        _manager->dispatchEventMatchedRules(eventId, eventData);
+        return;
+    }
+
+    // 可能是用户自定义的 DEVICE_EVENT 外设事件：尝试查找外设
+    String eventName;
+    PeripheralConfig* cfg = PeripheralManager::getInstance().getPeripheral(eventId);
+    if (cfg && cfg->type == PeripheralType::DEVICE_EVENT) {
+        eventName = cfg->name;
+        LOGGER.infof("[PeriphExec] Device event triggered: %s (%s, data=%s)",
+                     eventId.c_str(), eventName.c_str(), eventData.c_str());
+        // 同时分发给规则（若有规则以此外设为触发源）与 MQTT
+        _manager->dispatchEventMatchedRules(eventId, eventData);
+        _manager->notifyMqttEventPublish(eventId, eventName, eventData);
+        return;
+    }
+
+    // 未匹配：仍尝试通知 MQTT（用户可能手动配置了某个非外设的事件 ID）
+    LOGGER.warningf("[PeriphExec] Unknown event ID: %s (forwarding to MQTT only)", eventId.c_str());
+    _manager->notifyMqttEventPublish(eventId, String(), eventData);
 }
 
 void PeriphExecScheduler::triggerPeriphExecEvent(const String& ruleId, const String& eventData) {
@@ -600,14 +627,13 @@ String PeriphExecScheduler::getEventCategoriesJson() {
     JsonArray arr = doc.to<JsonArray>();
 
     // 定义事件分类
-    const char* categories[] = {"WiFi", "MQTT", "网络", "协议", "系统", "配网", "规则", "按键", "数据", "Modbus子设备", "外设执行"};
+    const char* categories[] = {"WiFi", "MQTT", "网络", "协议", "系统", "规则", "按键", "数据", "Modbus子设备", "外设执行"};
     const char* descriptions[] = {
         "WiFi连接状态变化事件",
         "MQTT连接状态变化事件",
         "网络模式切换事件",
         "协议启用事件",
         "系统服务事件",
-        "配网过程事件",
         "规则引擎事件",
         "按键输入事件",
         "协议数据收发事件",

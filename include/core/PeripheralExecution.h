@@ -38,7 +38,8 @@ enum class ExecActionType : uint8_t {
     ACTION_MODBUS_REG_WRITE = 17,   // Modbus 寄存器写入 (FC06)
     ACTION_MODBUS_POLL = 18,        // Modbus 轮询子设备采集 (由 PeriphExec 调度)
     ACTION_SENSOR_READ = 19,        // 传感器数据读取 (模拟/数字/脉冲)
-    ACTION_BUZZER_BEEP = 20         // 蜂鸣器预设节奏 (actionValue: beep/long/alarm/sos，默认 beep)
+    ACTION_BUZZER_BEEP = 20,        // 蜂鸣器预设节奏 (actionValue: beep/long/alarm/sos，默认 beep)
+    ACTION_TRIGGER_EVENT = 21       // 触发设备事件（targetPeriphId 为事件 ID；系统内置事件 ID 或 DEVICE_EVENT 外设 ID；actionValue 为事件额外数据）
 };
 
 // 传感器类别枚举
@@ -106,7 +107,13 @@ enum class EventType : uint8_t {
     
     // 数据事件 (100-109) - 协议数据收发事件
     EVENT_DATA_RECEIVE = 100,            // 数据接收（协议数据到达）
-    EVENT_DATA_REPORT = 101              // 数据上报（协议数据发送）
+    EVENT_DATA_REPORT = 101,             // 数据上报（协议数据发送）
+
+    // 系统级设备事件 (110-119) - 可由规则主动发射，用于 MQTT DEVICE_EVENT 主题上报
+    EVENT_SYS_BREAKDOWN = 110,           // 设备故障 (break_down)
+    EVENT_SYS_RESTART = 111,             // 设备重启 (restart)
+    EVENT_SYS_ALARM = 112,               // 设备告警 (device_alarm)
+    EVENT_SYS_LOW_POWER = 113            // 低电量预警 (low_power)
 };
 
 // 触发事件定义结构体

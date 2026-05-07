@@ -222,6 +222,11 @@
                 const dacParams = document.getElementById('dac-params');
                 this.showElement(dacParams);
             }
+            // DEVICE_EVENT (60) 和 Modbus (51) 无引脚配置，隐藏 pins 字段
+            const pinsGroup = document.getElementById('peripheral-pins-group');
+            if (pinsGroup) {
+                (type === 60 || type === 51) ? this.hideElement(pinsGroup) : this.showElement(pinsGroup);
+            }
         },
 
         loadPeripheralForEdit(id) {
@@ -283,7 +288,7 @@
             const enabled = document.getElementById('peripheral-enabled-input').checked ? 1 : 0;
             const pinsStr = document.getElementById('peripheral-pins-input').value.trim();
             const errEl = document.getElementById('peripheral-error');
-            if (!name || !type || !pinsStr) {
+            if (!name || !type || (!pinsStr && parseInt(type) !== 60 && parseInt(type) !== 51)) {
                 this.showInlineError(errEl, i18n.t('peripheral-validate-required'));
                 return;
             }

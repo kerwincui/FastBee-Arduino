@@ -69,6 +69,10 @@ function syncDirectRuntimeModules() {
 
     // 1. Sync top-level entry files
     DIRECT_RUNTIME_MODULES.forEach((fileName) => {
+        // 入口文件（protocol.js / device-control.js / periph-exec.js）由 buildSubdirBundles 负责
+        if (BUNDLED_ENTRY_FILES.has(fileName) || BUNDLED_SIBLING_FILES.has(fileName)) {
+            return;
+        }
         const sourceFile = path.join(RUNTIME_SOURCE_DIR, fileName);
         const publishFile = path.join(PUBLISH_MODULE_DIR, fileName);
 
@@ -88,8 +92,9 @@ function syncDirectRuntimeModules() {
         });
     });
 
-    // 2. Sync sub-directory modules (protocol/, device-control/)
+    // 2. Sync sub-directory modules (protocol/, device-control/) - skip those handled by bundle
     RUNTIME_SUB_DIRS.forEach((subDir) => {
+        if (BUNDLED_SUBDIRS.has(subDir)) return; // 已被 buildSubdirBundles 合并
         const srcDir = path.join(RUNTIME_SOURCE_DIR, subDir);
         if (!fs.existsSync(srcDir)) return;
 
@@ -261,13 +266,18 @@ function validateSourceCoverage() {
 
     // Build the set of expected output files
     const expectedFiles = new Set();
-    DIRECT_RUNTIME_MODULES.forEach((f) => expectedFiles.add(f));
+    DIRECT_RUNTIME_MODULES.forEach((f) => {
+        // 被 bundle 合并的 sibling 文件不会独立输出
+        if (BUNDLED_SIBLING_FILES.has(f)) return;
+        expectedFiles.add(f);
+    });
     I18N_MODULES.forEach(({ file }) => expectedFiles.add(file));
     expectedFiles.add('admin-bundle.js');
     ADMIN_SOURCE_FILES.forEach((f) => expectedFiles.add(f)); // admin stubs
 
-    // Add sub-directory files to expected set
+    // Add sub-directory files to expected set (skip dirs handled by bundle)
     RUNTIME_SUB_DIRS.forEach((subDir) => {
+        if (BUNDLED_SUBDIRS.has(subDir)) return;
         const srcDir = path.join(RUNTIME_SOURCE_DIR, subDir);
         if (!fs.existsSync(srcDir)) return;
         fs.readdirSync(srcDir).forEach((file) => {
@@ -298,12 +308,141 @@ function validateSourceCoverage() {
     }
 }
 
+// Sub-directory bundles: 把入口 + 子模块合并为单文件 bundle，避免 ESP32 多次 HTTP 连接。
+// 拼接顺序：[按 order 拼接的子模块] + [入口文件内容]，
+// 入口文件已重写为合并模式（不再运行时动态加载子模块）。
+const SUBDIR_BUNDLES = [
+    {
+        outName: 'protocol.js',
+        entry: 'protocol.js',
+        subDir: 'protocol',
+        order: ['common.js', 'mqtt-config.js', 'modbus-config.js', 'protocol-config.js', 'modbus-control.js', 'modbus-relay-motor.js']
+    },
+    {
+        outName: 'device-control.js',
+        entry: 'device-control.js',
+        subDir: 'device-control',
+        order: ['core.js', 'render.js', 'modbus-ops.js', 'modbus-ctrl.js', 'layout.js']
+    },
+    {
+        outName: 'periph-exec.js',
+        entry: 'periph-exec.js',
+        subDir: null,
+        siblings: ['periph-exec-modbus.js', 'periph-exec-form.js']
+    }
+];
+
+// 在独立同步、子目录同步中需要跳过的文件（已被 bundle 包含）
+const BUNDLED_ENTRY_FILES = new Set(SUBDIR_BUNDLES.map(b => b.entry));
+const BUNDLED_SIBLING_FILES = new Set();
+SUBDIR_BUNDLES.forEach(b => (b.siblings || []).forEach(s => BUNDLED_SIBLING_FILES.add(s)));
+const BUNDLED_SUBDIRS = new Set(SUBDIR_BUNDLES.filter(b => b.subDir).map(b => b.subDir));
+
+function buildSubdirBundles() {
+    const noMinify = process.argv.includes('--no-minify');
+    const results = [];
+
+    SUBDIR_BUNDLES.forEach((bundle) => {
+        const parts = [];
+
+        // 1. 子目录下的按顺序子模块
+        if (bundle.subDir) {
+            const srcDir = path.join(RUNTIME_SOURCE_DIR, bundle.subDir);
+            if (!fs.existsSync(srcDir)) {
+                throw new Error(`Missing subdir for bundle ${bundle.outName}: ${srcDir}`);
+            }
+            bundle.order.forEach((f) => {
+                const fp = path.join(srcDir, f);
+                if (!fs.existsSync(fp)) {
+                    throw new Error(`Missing sub-module ${bundle.subDir}/${f} for bundle ${bundle.outName}`);
+                }
+                parts.push(`/* ===== ${bundle.subDir}/${f} ===== */`);
+                parts.push(readUtf8(fp).trim());
+            });
+        }
+
+        // 2. 同级 sibling 子模块（如 periph-exec-modbus.js / periph-exec-form.js）
+        if (bundle.siblings) {
+            bundle.siblings.forEach((f) => {
+                const fp = path.join(RUNTIME_SOURCE_DIR, f);
+                if (!fs.existsSync(fp)) {
+                    throw new Error(`Missing sibling ${f} for bundle ${bundle.outName}`);
+                }
+                parts.push(`/* ===== ${f} ===== */`);
+                parts.push(readUtf8(fp).trim());
+            });
+        }
+
+        // 3. 入口文件（已重写为合并模式，不再动态加载子模块）
+        const entryPath = path.join(RUNTIME_SOURCE_DIR, bundle.entry);
+        if (!fs.existsSync(entryPath)) {
+            throw new Error(`Missing entry ${bundle.entry} for bundle ${bundle.outName}`);
+        }
+        parts.push(`/* ===== ${bundle.entry} (entry) ===== */`);
+        parts.push(readUtf8(entryPath).trim());
+
+        const header = `/* AUTO-GENERATED bundle: ${bundle.outName} (entry + sub-modules merged). DO NOT EDIT. */\n`;
+        const raw = header + parts.join('\n\n') + '\n';
+        const content = noMinify ? raw : minifyJS(raw);
+
+        const outPath = path.join(PUBLISH_MODULE_DIR, bundle.outName);
+        writeUtf8(outPath, content);
+
+        results.push({
+            outName: bundle.outName,
+            outPath,
+            size: Buffer.byteLength(content, 'utf8'),
+            sourceCount: parts.filter(p => !p.startsWith('/*')).length
+        });
+    });
+
+    return results;
+}
+
+// 清理已被 bundle 取代的遗留产物：子目录 + 独立 sibling 文件（含 .gz）
+function cleanBundledArtifacts() {
+    const removed = [];
+
+    // 删除子目录
+BUNDLED_SUBDIRS.forEach((dirName) => {
+        const dirPath = path.join(PUBLISH_MODULE_DIR, dirName);
+        if (fs.existsSync(dirPath)) {
+            fs.rmSync(dirPath, { recursive: true, force: true });
+            removed.push(`modules/${dirName}/ (recursive)`);
+        }
+    });
+
+    // 删除独立 sibling 文件 + .gz
+    BUNDLED_SIBLING_FILES.forEach((f) => {
+        [path.join(PUBLISH_MODULE_DIR, f), path.join(PUBLISH_MODULE_DIR, f + '.gz')].forEach((fp) => {
+            if (fs.existsSync(fp)) {
+                fs.rmSync(fp, { force: true });
+                removed.push(`modules/${path.basename(fp)}`);
+            }
+        });
+    });
+
+    // 删除 entry bundle 的过时 .gz（入口文件已被 buildSubdirBundles 重生成，
+    // 旧 .gz 会被 ESP32 .gz 优先路径返回造成代码不一致）
+    BUNDLED_ENTRY_FILES.forEach((f) => {
+        const gzPath = path.join(PUBLISH_MODULE_DIR, f + '.gz');
+        if (fs.existsSync(gzPath)) {
+            fs.rmSync(gzPath, { force: true });
+            removed.push(`modules/${path.basename(gzPath)} (stale)`);
+        }
+    });
+
+    return removed;
+}
+
 function buildWebModules() {
     const staticAssets = syncStaticAssets();
     const syncedModules = syncDirectRuntimeModules();
     const i18nModules = syncI18nModules();
     const adminBundle = buildAdminBundle();
     const appBundle = buildAppBundle();
+    const subdirBundles = buildSubdirBundles();
+    const removedArtifacts = cleanBundledArtifacts();
 
     validateSourceCoverage();
 
@@ -312,7 +451,9 @@ function buildWebModules() {
         syncedModules,
         i18nModules,
         adminBundle,
-        appBundle
+        appBundle,
+        subdirBundles,
+        removedArtifacts
     };
 }
 
@@ -332,6 +473,14 @@ if (require.main === module) {
     });
     console.log(`Built admin bundle: ${path.relative(ROOT_DIR, result.adminBundle.outputFile)} (${result.adminBundle.size} bytes)`);
     console.log(`Built app bundle: ${path.relative(ROOT_DIR, result.appBundle.outputFile)} (${result.appBundle.size} bytes${result.appBundle.minified ? ', minified' : ''})`);
+    console.log(`Built ${result.subdirBundles.length} subdir bundles:`);
+    result.subdirBundles.forEach((b) => {
+        console.log(`  Bundle: ${path.relative(ROOT_DIR, b.outPath)} (${b.size} bytes, ${b.sourceCount} sources merged)`);
+    });
+    if (result.removedArtifacts.length > 0) {
+        console.log(`Cleaned ${result.removedArtifacts.length} obsolete artifacts:`);
+        result.removedArtifacts.forEach((p) => console.log(`  Removed: data/www/js/${p}`));
+    }
 }
 
 module.exports = {

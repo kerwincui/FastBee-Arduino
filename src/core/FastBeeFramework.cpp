@@ -376,6 +376,13 @@ bool FastBeeFramework::initialize() {
             return mqtt->queueReportData(reportData);
         });
 
+        // MQTT 设备事件上报回调（DEVICE_EVENT 主题）
+        pem.setMqttEventPublishCallback([pm](const String& eventId, const String& eventName, const String& eventData) -> bool {
+            MQTTClient* mqtt = pm->getMQTTClient();
+            if (!mqtt) return false;
+            return mqtt->publishDeviceEvent(eventId, eventName, eventData);
+        });
+
 #if FASTBEE_ENABLE_MODBUS
         // Modbus sensorId 构建回调
         pem.setModbusBuildSensorIdCallback([pm](uint8_t deviceIndex, uint16_t channel) -> String {

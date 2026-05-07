@@ -56,7 +56,7 @@ struct MqttPublishTopic {
     bool autoPrefix;    // 是否启用自动前缀（拼接topicPrefix到主题前）
     String content;
     MqttTopicType topicType;
-    
+
     MqttPublishTopic() : qos(0), retain(false), enabled(true), autoPrefix(false), topicType(MqttTopicType::DATA_REPORT) {}
 };
 
@@ -131,6 +131,7 @@ public:
     bool publishDeviceInfo();  // 发布设备信息到 topicType=DEVICE_INFO 的主题
     bool publishMonitorData(); // 发布一次实时监测数据到 topicType=REALTIME_MON 的主题
     bool publishReportData(const String& payload); // 发布数据上报到 topicType=DATA_REPORT 的主题
+    bool publishDeviceEvent(const String& eventId, const String& eventName, const String& eventData); // 发布设备事件到 topicType=DEVICE_EVENT 主题（格式同 DATA_REPORT）
     bool queueReportData(const String& payload);   // 线程安全入队上报数据（异步任务调用）
     bool queueReportData(const char* payload, uint16_t length); // 零拷贝版本
     uint8_t getQueueDepth() const { return _slotCount; } // 获取上报队列深度

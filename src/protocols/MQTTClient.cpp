@@ -653,6 +653,69 @@ bool MQTTClient::publishReportData(const String& payload) {
     return ok;
 }
 
+bool MQTTClient::publishDeviceEvent(const String& eventId, const String& eventName, const String& eventData) {
+    if (!isConnected) {
+        return false;
+    }
+    if (eventId.isEmpty()) {
+        return false;
+    }
+
+    // 构造与 DATA_REPORT 一致的数组格式：[{"id":"<eventId>","value":"<value>","remark":"event"}]
+    // value 优先取 eventName，为空时退化为 eventData，仍为空时默认 "1"
+    String value = eventName;
+    if (value.isEmpty()) value = eventData;
+    if (value.isEmpty()) value = "1";
+
+    // JSON 转义：最小限度处理双引号和反斜杠
+    auto escapeJson = [](const String& s) {
+        String out;
+        out.reserve(s.length() + 4);
+        for (size_t i = 0; i < s.length(); ++i) {
+            char c = s[i];
+            if (c == '"' || c == '\\') {
+                out += '\\';
+                out += c;
+            } else if (c == '\n') {
+                out += "\\n";
+            } else if (c == '\r') {
+                out += "\\r";
+            } else if (c == '\t') {
+                out += "\\t";
+            } else {
+                out += c;
+            }
+        }
+        return out;
+    };
+
+    String payload;
+    payload.reserve(64 + eventId.length() + value.length());
+    payload = "[{\"id\":\"";
+    payload += escapeJson(eventId);
+    payload += "\",\"value\":\"";
+    payload += escapeJson(value);
+    payload += "\",\"remark\":\"event\"}]";
+
+    // 遍历所有启用的 DEVICE_EVENT 类型主题，广播事件
+    bool anyPublished = false;
+    for (size_t i = 0; i < config.publishTopics.size(); i++) {
+        const MqttPublishTopic& pt = config.publishTopics[i];
+        if (pt.topicType != MqttTopicType::DEVICE_EVENT) continue;
+        if (!pt.enabled) continue;
+
+        String fullTopic = buildFullTopicWithType(pt.topic, pt.autoPrefix, pt.topicType);
+        bool ok = publishToTopic(i, payload);
+        char evLogBuf[160];
+        snprintf(evLogBuf, sizeof(evLogBuf), "MQTT: %s DEVICE_EVENT eventId=%s topic=%s",
+                 ok ? "Published" : "Failed to publish", eventId.c_str(), fullTopic.c_str());
+        ok ? LOG_INFO(evLogBuf) : LOG_WARNING(evLogBuf);
+        if (ok) anyPublished = true;
+    }
+
+    return anyPublished;
+}
+
 bool MQTTClient::publishNtpSync() {
     if (!isConnected) {
         return false;

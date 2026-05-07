@@ -169,9 +169,26 @@
 
         // ============ Periph select with Modbus groups ============
 
-        _populatePeriphSelect(selectEl, selectedValue, pollOnly) {
+        _populatePeriphSelect(selectEl, selectedValue, pollOnly, eventOnly) {
             if (!selectEl) return;
             var html = '<option value="">' + i18n.t('periph-exec-select-periph') + '</option>';
+            if (eventOnly) {
+                // 触发事件动作: 仅显示设备事件外设 (type=60)
+                var eventPeriphs = [];
+                (this._pePeripherals || []).forEach(p => {
+                    if (p.type === 60) eventPeriphs.push(p);
+                });
+                if (eventPeriphs.length > 0) {
+                    html += '<optgroup label="' + escapeHtml(i18n.t('peripheral-type-device-event') || '设备事件') + '">';
+                    eventPeriphs.forEach(p => {
+                        html += '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.name + ' (' + p.id + ')') + '</option>';
+                    });
+                    html += '</optgroup>';
+                }
+                selectEl.innerHTML = html;
+                if (selectedValue) selectEl.value = selectedValue;
+                return;
+            }
             if (pollOnly) {
                 // 轮询触发模式: 仅显示 Modbus 采集类子设备
                 var tasks = this._masterTasks || [];

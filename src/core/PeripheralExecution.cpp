@@ -46,6 +46,11 @@ const EventDef STATIC_EVENTS[] = {
     // 数据事件
     {EventType::EVENT_DATA_RECEIVE, "data_receive", "数据接收", "数据"},
     {EventType::EVENT_DATA_REPORT, "data_report", "数据上报", "数据"},
+    // 系统级设备事件
+    {EventType::EVENT_SYS_BREAKDOWN, "break_down", "设备故障", "系统"},
+    {EventType::EVENT_SYS_RESTART, "restart", "设备重启", "系统"},
+    {EventType::EVENT_SYS_ALARM, "device_alarm", "设备告警", "系统"},
+    {EventType::EVENT_SYS_LOW_POWER, "low_power", "低电量预警", "系统"},
     // 终止标记
     {EventType::NONE, nullptr, nullptr, nullptr}
 };

@@ -480,9 +480,7 @@
                 case 7: return '1=\u6062\u590d\u51fa\u5382';
                 case 8: return '1=\u540c\u6b65\u65f6\u95f4';
                 case 9: return '1=OTA';
-                case 10: return '1=AP\u914d\u7f51';
-                case 11: return '1=BLE\u914d\u7f51';
-                case 12: return '\u8c03\u7528\u5916\u8bbe';
+                case 10: return '\u8c03\u7528\u5916\u8bbe';
                 default: return '';
             }
         },

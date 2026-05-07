@@ -65,9 +65,9 @@ bool PeripheralManager::addPeripheral(const PeripheralConfig& config, String& er
         return false;
     }
     
-    // 检查引脚冲突（Modbus 外设不使用 GPIO 引脚，跳过此检查）
+    // 检查引脚冲突（Modbus 外设不使用 GPIO 引脚，设备事件虚拟外设无引脚，跳过此检查）
     // 加固：传入 excludeId=config.id 防止同 ID 自冲突；冲突时报告实际占用者便于定位
-    if (!config.isModbusPeripheral()) {
+    if (!config.isModbusPeripheral() && !isDeviceEventType(config.type)) {
         for (int i = 0; i < config.pinCount && i < 8; i++) {
             if (config.pins[i] != 255 && checkPinConflict(config.pins[i], config.id)) {
                 // 基于真实数据查找占用者（仅启用的外设算占用，与 checkPinConflict 语义一致）
@@ -792,6 +792,11 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
         }
         return true;
     }
+
+    // 设备事件虚拟外设：无需引脚/参数校验，仅用 id+name
+    if (isDeviceEventType(config.type)) {
+        return true;
+    }
     
     if (config.pinCount == 0) {
         errorMsg = "至少需要配置一个引脚";
@@ -949,6 +954,13 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
     if (config.isModbusPeripheral()) {
         LOG_INFOF("Peripheral Manager: Modbus device '%s' (slave=%d) registered, no local HW init needed",
                   config.name.c_str(), config.params.modbus.slaveAddress);
+        return true;
+    }
+
+    // 设备事件虚拟外设（无物理 GPIO）：仅作为事件发射源，直接返回成功
+    if (isDeviceEventType(config.type)) {
+        LOG_INFOF("Peripheral Manager: Device event emitter '%s' (%s) registered",
+                  config.name.c_str(), config.id.c_str());
         return true;
     }
     

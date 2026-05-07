@@ -381,6 +381,18 @@
             if (selectedValue) selectEl.value = selectedValue;
         },
 
+        // 填充按键类型的触发外设下拉：仅保留数字输入（上拉=13 / 下拉=14）
+        _populateButtonPeriphSelect(selectEl, selectedValue) {
+            if (!selectEl) return;
+            selectEl.innerHTML = '<option value="">' + i18n.t('periph-exec-event-button-periph-any') + '</option>';
+            (this._pePeripherals || []).filter(p => p.type === 13 || p.type === 14).forEach(p => {
+                var opt = document.createElement('option');
+                opt.value = p.id; opt.textContent = p.name + ' (' + p.id + ')';
+                selectEl.appendChild(opt);
+            });
+            if (selectedValue) selectEl.value = selectedValue;
+        },
+
         _isPollTriggerActive() {
             var container = document.getElementById('periph-exec-triggers');
             if (!container) return false;
@@ -710,8 +722,7 @@
                         4: i18n.t('periph-exec-action-pwm'), 5: i18n.t('periph-exec-action-dac'),
                         6: i18n.t('periph-exec-action-restart'), 7: i18n.t('periph-exec-action-factory'),
                         8: i18n.t('periph-exec-action-ntp'), 9: i18n.t('periph-exec-action-ota'),
-                        10: i18n.t('periph-exec-action-ap'), 11: i18n.t('periph-exec-action-ble'),
-                        12: i18n.t('periph-exec-action-call-periph'),
+                        10: i18n.t('periph-exec-action-call-periph'),
                         15: i18n.t('periph-exec-action-script')
                     };
                     let html = '';
@@ -756,25 +767,9 @@
         }
     });
 
-    // ============ 加载子模块，完成后绑定事件 ============
-    var _peSubModules = ['/js/modules/periph-exec-modbus.js', '/js/modules/periph-exec-form.js'];
-    var _peSubIdx = 0;
-    function _loadNextPeSub() {
-        if (_peSubIdx >= _peSubModules.length) {
-            // 所有子模块加载完成，绑定事件
-            if (typeof AppState.setupPeriphExecEvents === 'function') {
-                AppState.setupPeriphExecEvents();
-            }
-            return;
-        }
-        var s = document.createElement('script');
-        s.src = _peSubModules[_peSubIdx++];
-        s.onload = _loadNextPeSub;
-        s.onerror = function() {
-            console.warn('[periph-exec] Failed to load sub-module: ' + s.src);
-            _loadNextPeSub(); // 继续加载下一个，不阻塞
-        };
-        document.head.appendChild(s);
+    // ============ 合并模式：子模块代码已被构建脚本 prepend 到本文件之前 ============
+    // 不再运行时动态加载，直接绑定事件（3 个 HTTP 请求 → 1 个）
+    if (typeof AppState.setupPeriphExecEvents === 'function') {
+        AppState.setupPeriphExecEvents();
     }
-    _loadNextPeSub();
 })();

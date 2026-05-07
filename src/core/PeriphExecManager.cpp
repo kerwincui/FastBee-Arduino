@@ -695,6 +695,16 @@ void PeriphExecManager::setModbusDynamicEventsCallback(ModbusDynamicEventsCallba
     _modbusDynamicEventsCb = cb;
 }
 
+void PeriphExecManager::setMqttEventPublishCallback(MqttEventPublishCallback cb) {
+    _mqttEventPublishCb = cb;
+}
+
+bool PeriphExecManager::notifyMqttEventPublish(const String& eventId, const String& eventName, const String& eventData) {
+    if (!_mqttEventPublishCb) return false;
+    if (eventId.isEmpty()) return false;
+    return _mqttEventPublishCb(eventId, eventName, eventData);
+}
+
 void PeriphExecManager::checkButtonEvents() {
     if (_scheduler) _scheduler->checkButtonEvents();
 }
@@ -1451,6 +1461,8 @@ void PeriphExecManager::dispatchButtonEventRules(const String& eventId, const St
             for (auto& trigger : rule.triggers) {
                 if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER)) continue;
                 if (trigger.eventId != eventId) continue;
+                // 若规则指定了触发外设，仅匹配该外设产生的按键事件；triggerPeriphId 为空则兼容任意按键
+                if (!trigger.triggerPeriphId.isEmpty() && trigger.triggerPeriphId != periphId) continue;
 
                 unsigned long now = millis();
                 if (trigger.lastTriggerTime > 0 && (now - trigger.lastTriggerTime) < 100) continue;

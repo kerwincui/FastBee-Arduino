@@ -1,38 +1,19 @@
 /**
- * device-control.js — 入口文件
- * 按顺序加载子模块脚本，确保依赖关系正确
+ * device-control.js — 入口（合并模式）
+ *
+ * 注意：
+ *   构建脚本 build-web-modules.js 会把 web-src/modules/runtime/device-control/*.js
+ *   按依赖顺序 prepend 到本文件之前，输出为单文件 data/www/js/modules/device-control.js。
+ *   因此这里**不再**做运行时 loadScript 动态加载——子模块代码已经先于本 IIFE 执行完毕。
+ *   这样把 6 个 HTTP 请求合并为 1 个，避免 ESP32 AsyncTCP 连接频繁建立/拆除引发的内存碎片。
  */
 (function() {
-    var basePath = '/js/modules/device-control';
-    var scripts = [
-        'core.js',
-        'render.js',
-        'modbus-ops.js',
-        'modbus-ctrl.js',
-        'layout.js'
-    ];
-
-    function loadScript(src) {
-        return new Promise(function(resolve, reject) {
-            var s = document.createElement('script');
-            s.src = basePath + '/' + src;
-            s.onload = resolve;
-            s.onerror = function() { reject(new Error('Failed to load ' + src)); };
-            document.head.appendChild(s);
-        });
+    if (typeof AppState === 'undefined') return;
+    if (typeof AppState.registerModule === 'function') {
+        AppState.registerModule('device-control', {});
     }
-
-    (async function() {
-        for (var i = 0; i < scripts.length; i++) {
-            await loadScript(scripts[i]);
-        }
-        // 所有子模块加载完毕后，统一触发 ModuleLoader 回调
-        if (AppState && typeof AppState.registerModule === 'function') {
-            AppState.registerModule('device-control', {});
-        }
-        if (typeof AppState.setupDeviceControlEvents === 'function') {
-            AppState.setupDeviceControlEvents();
-        }
-        document.dispatchEvent(new CustomEvent('device-control-modules-loaded'));
-    })();
+    if (typeof AppState.setupDeviceControlEvents === 'function') {
+        AppState.setupDeviceControlEvents();
+    }
+    document.dispatchEvent(new CustomEvent('device-control-modules-loaded'));
 })();

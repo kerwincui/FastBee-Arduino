@@ -1025,10 +1025,10 @@
         'periph-exec-action-dac': 'Set DAC',
         'periph-exec-action-restart': 'Restart',
         'periph-exec-action-factory': 'Factory Reset',
+        'periph-exec-action-trigger-event': 'Trigger Event',
         'periph-exec-action-ntp': 'NTP Sync',
         'periph-exec-action-ota': 'OTA Update',
-        'periph-exec-action-ap': 'AP Provision',
-        'periph-exec-action-ble': 'BLE Provision',
+        
         'periph-exec-action-call-periph': 'Call Peripheral',
         'periph-exec-action-cat-advanced': 'Advanced',
         'periph-exec-action-sensor-read': 'Sensor Data Read',
@@ -1049,7 +1049,7 @@
         'periph-exec-script-empty': 'Script content is required',
         'periph-exec-script-too-long': 'Script exceeds max size (1024 bytes)',
         'periph-exec-script-lines': ' lines',
-        'periph-exec-report-label': 'Report After Execution',
+        'periph-exec-report-label': 'Report Data',
         'periph-exec-report-help': 'Automatically report device data after action succeeds',
         'periph-exec-report-yes': 'Report Data',
         'periph-exec-report-no': 'Do Not Report Data',
@@ -1059,6 +1059,7 @@
         'periph-exec-periph-group': 'Peripherals',
         'periph-exec-modbus-group': 'Modbus Sub-devices',
         'periph-exec-select-periph': '-- Select Peripheral --',
+        'periph-exec-event-button-periph-any': '-- Any Button Peripheral --',
         'periph-exec-section-trigger': 'Trigger Configuration',
         'periph-exec-section-action': 'Action Configuration',
         'periph-exec-add-trigger': 'Add Trigger',
@@ -1600,7 +1601,6 @@
         'dev-ble-guide-2': 'Use mobile APP to search and connect to the BLE device',
         'dev-ble-guide-3': 'Enter the WiFi name and password in the APP',
         'dev-ble-guide-4': 'Device will auto-connect to WiFi after receiving config, BLE disconnects',
-        'dev-ble-guide-tip': 'Tip: BLE provisioning is for scenarios where AP provisioning is unavailable. Requires a BLE-compatible mobile APP.',
         'dev-ble-not-started': 'Not Started',
         
         // OTA notes
@@ -1660,6 +1660,7 @@
         'periph-opt-encoder': 'Encoder',
         'periph-opt-onewire': 'One-Wire',
         'periph-opt-buzzer': 'Buzzer',
+        'peripheral-type-device-event': 'Device Event',
         
         // Permission group name translations
         'perm-group-device': 'Device',

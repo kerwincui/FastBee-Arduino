@@ -29,6 +29,8 @@ using ModbusBuildSensorIdCallback = std::function<String(uint8_t deviceIndex, ui
 using ModbusDirectControlCallback = std::function<bool(const String& sensorId, const String& value, JsonArray& reportArr)>;
 // Modbus 动态事件列表填充
 using ModbusDynamicEventsCallback = std::function<void(JsonArray& arr)>;
+// MQTT 设备事件上报回调：(eventId, eventName, eventData) → true=已发布
+using MqttEventPublishCallback = std::function<bool(const String& eventId, const String& eventName, const String& eventData)>;
 
 class PeriphExecManager {
 public:
@@ -104,6 +106,10 @@ public:
     void setModbusBuildSensorIdCallback(ModbusBuildSensorIdCallback cb);
     void setModbusDirectControlCallback(ModbusDirectControlCallback cb);
     void setModbusDynamicEventsCallback(ModbusDynamicEventsCallback cb);
+    void setMqttEventPublishCallback(MqttEventPublishCallback cb);
+
+    // 通知 MQTT 层发布设备事件（由 Scheduler triggerEvent/triggerEventById 调用）
+    bool notifyMqttEventPublish(const String& eventId, const String& eventName, const String& eventData);
 
     // ========== 异步执行 ==========
 
@@ -269,6 +275,7 @@ private:
     ModbusBuildSensorIdCallback _modbusBuildSensorIdCb;
     ModbusDirectControlCallback _modbusDirectControlCb;
     ModbusDynamicEventsCallback _modbusDynamicEventsCb;
+    MqttEventPublishCallback _mqttEventPublishCb;
 
     // ========== 任务运行状态跟踪 ==========
     std::set<String> _runningRuleIds;           // 正在运行的规则ID集合

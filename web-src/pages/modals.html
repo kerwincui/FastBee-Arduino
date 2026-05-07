@@ -123,6 +123,7 @@
                                         <option value="44">单总线</option>
                                         <option value="45">NeoPixel</option>
                                         <option value="46" data-i18n="periph-opt-buzzer">蜂鸣器</option>
+                                        <option value="60" data-i18n="peripheral-type-device-event">设备事件</option>
                                     </optgroup>
                                 </select>
                             </div>
@@ -138,7 +139,7 @@
 
                         <!-- 右列：引脚和参数 -->
                         <div class="config-form-column">
-                            <div class="fb-form-group">
+                            <div class="fb-form-group" id="peripheral-pins-group">
                                 <label for="peripheral-pins-input" data-i18n="peripheral-pins-label">引脚配置</label>
                                 <input type="text" id="peripheral-pins-input" class=""
                                     placeholder="例如: 2,4,5 (逗号分隔)" required
@@ -331,14 +332,18 @@
                                 placeholder="例如: 温度过高报警" required data-i18n-placeholder="periph-exec-name-hint">
                         </div>
                         <div class="pe-base-checks">
-                            <label class="pe-checkbox-label">
-                                <input type="checkbox" id="periph-exec-report" checked>
-                                <span data-i18n="periph-exec-report-label">是否上报数据</span>
-                            </label>
-                            <label class="pe-checkbox-label">
-                                <input type="checkbox" id="periph-exec-enabled" checked>
-                                <span data-i18n="periph-exec-enabled-label">启用</span>
-                            </label>
+                            <div class="fb-form-group fb-mb-0">
+                                <label class="fb-checkbox fb-m-0 fb-font-medium">
+                                    <input type="checkbox" id="periph-exec-report" checked>
+                                    <span data-i18n="periph-exec-report-label">上报数据</span>
+                                </label>
+                            </div>
+                            <div class="fb-form-group fb-mb-0">
+                                <label class="fb-checkbox fb-m-0 fb-font-medium">
+                                    <input type="checkbox" id="periph-exec-enabled" checked>
+                                    <span data-i18n="periph-exec-enabled-label">启用</span>
+                                </label>
+                            </div>
                         </div>
                     </div>
 

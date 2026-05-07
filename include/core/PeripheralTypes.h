@@ -49,7 +49,10 @@ enum class PeripheralType {
     BUZZER,             // 蜂鸣器（数字驱动，支持 beep/long/alarm/sos 预设节奏）
     
     // Modbus外设 (51-55)
-    MODBUS_DEVICE = 51  // Modbus子设备（继电器/PWM/PID等）
+    MODBUS_DEVICE = 51, // Modbus子设备（继电器/PWM/PID等）
+
+    // 虚拟/逻辑外设 (60-69)
+    DEVICE_EVENT = 60   // 设备事件（无物理引脚，仅作为事件发射源，由规则触发并通过 MQTT DEVICE_EVENT 主题上报）
 };
 
 // 外设状态枚举
@@ -92,6 +95,7 @@ inline PeripheralCategory getPeripheralCategory(PeripheralType type) {
     if (typeValue >= 31 && typeValue <= 35) return PeripheralCategory::CATEGORY_DEBUG;
     if (typeValue >= 36 && typeValue <= 50) return PeripheralCategory::CATEGORY_SPECIAL;
     if (typeValue >= 51 && typeValue <= 55) return PeripheralCategory::CATEGORY_SPECIAL;
+    if (typeValue == 60) return PeripheralCategory::CATEGORY_SPECIAL;
     return PeripheralCategory::CATEGORY_GPIO;
 }
 
@@ -141,7 +145,10 @@ inline const char* getPeripheralTypeName(PeripheralType type) {
         
         // Modbus外设
         case PeripheralType::MODBUS_DEVICE: return "Modbus Device";
-        
+
+        // 虚拟外设
+        case PeripheralType::DEVICE_EVENT: return "Device Event";
+
         default: return "Unknown";
     }
 }
@@ -198,7 +205,11 @@ inline uint8_t getPeripheralPinCount(PeripheralType type) {
         // Modbus外设不使用GPIO引脚
         case PeripheralType::MODBUS_DEVICE:
             return 0;
-            
+
+        // 设备事件虚拟外设不使用GPIO引脚
+        case PeripheralType::DEVICE_EVENT:
+            return 0;
+
         default:
             return 1;
     }
@@ -251,13 +262,16 @@ inline PeripheralType parsePeripheralType(const char* typeStr) {
     
     // Modbus外设
     if (strcasecmp(typeStr, "MODBUS_DEVICE") == 0) return PeripheralType::MODBUS_DEVICE;
-    
+
+    // 虚拟外设
+    if (strcasecmp(typeStr, "DEVICE_EVENT") == 0) return PeripheralType::DEVICE_EVENT;
+
     return PeripheralType::UNCONFIGURED;
 }
 
 // 从整数值解析外设类型
 inline PeripheralType peripheralTypeFromInt(int value) {
-    if ((value >= 0 && value <= 50) || (value >= 51 && value <= 55)) {
+    if ((value >= 0 && value <= 50) || (value >= 51 && value <= 55) || value == 60) {
         return static_cast<PeripheralType>(value);
     }
     return PeripheralType::UNCONFIGURED;
@@ -311,6 +325,11 @@ inline bool isGPIOType(PeripheralType type) {
 // 检查是否为Modbus外设类型
 inline bool isModbusType(PeripheralType type) {
     return type == PeripheralType::MODBUS_DEVICE;
+}
+
+// 检查是否为设备事件虚拟外设（无 GPIO 操作，作为事件发射源）
+inline bool isDeviceEventType(PeripheralType type) {
+    return type == PeripheralType::DEVICE_EVENT;
 }
 
 #endif // PERIPHERAL_TYPES_H
