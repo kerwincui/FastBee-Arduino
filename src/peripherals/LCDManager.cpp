@@ -332,6 +332,166 @@ bool LCDManager::drawDisc(uint8_t x, uint8_t y, uint8_t r)
     return true;
 }
 
+// ========== 通用传感器数据显示模块 ==========
+
+void LCDManager::updateSensorEntry(const String& id, const String& label, float value,
+                                    const String& unit, uint8_t decimals)
+{
+    if (!_initialized) return;
+    
+    // 查找已有条目
+    for (auto& entry : _sensorEntries)
+    {
+        if (entry.id == id)
+        {
+            entry.label = label;
+            entry.value = value;
+            entry.unit = unit;
+            entry.decimals = decimals;
+            entry.timestamp = millis();
+            entry.valid = true;
+            return;
+        }
+    }
+    
+    // 新增条目（限制最大数量）
+    if (_sensorEntries.size() >= MAX_SENSOR_ENTRIES)
+    {
+        LOG_WARNING("LCD Manager: Sensor entries full, ignoring new entry");
+        return;
+    }
+    
+    SensorDisplayEntry entry;
+    entry.id = id;
+    entry.label = label;
+    entry.value = value;
+    entry.unit = unit;
+    entry.decimals = decimals;
+    entry.timestamp = millis();
+    entry.valid = true;
+    _sensorEntries.push_back(entry);
+    
+    LOG_INFOF("LCD Manager: Registered sensor entry '%s' (%s)", id.c_str(), label.c_str());
+}
+
+void LCDManager::invalidateSensorEntry(const String& id)
+{
+    for (auto& entry : _sensorEntries)
+    {
+        if (entry.id == id)
+        {
+            entry.valid = false;
+            return;
+        }
+    }
+}
+
+uint8_t LCDManager::getSensorPageCount() const
+{
+    if (_sensorEntries.empty()) return 0;
+    
+    // 每页显示行数 = maxLines - 1（顶部标题行）
+    uint8_t linesPerPage = getMaxLines() - 1;
+    if (linesPerPage == 0) linesPerPage = 1;
+    
+    return (_sensorEntries.size() + linesPerPage - 1) / linesPerPage;
+}
+
+bool LCDManager::showSensorPage(int8_t page)
+{
+    if (!_display || !_initialized) return false;
+    if (_sensorEntries.empty()) return false;
+    
+    uint8_t linesPerPage = getMaxLines() - 1;  // 预留标题行
+    if (linesPerPage == 0) linesPerPage = 1;
+    
+    uint8_t totalPages = getSensorPageCount();
+    
+    // 自动轮播模式
+    if (page < 0)
+    {
+        page = _currentSensorPage;
+    }
+    
+    if ((uint8_t)page >= totalPages)
+    {
+        page = 0;
+    }
+    
+    clear();
+    
+    // 绘制标题行（含页码）
+    uint8_t fontH = getFontHeight();
+    char titleBuf[32];
+    if (totalPages > 1)
+    {
+        snprintf(titleBuf, sizeof(titleBuf), "Sensor [%d/%d]", page + 1, totalPages);
+    }
+    else
+    {
+        snprintf(titleBuf, sizeof(titleBuf), "Sensor Data");
+    }
+    print(String(titleBuf), 0, fontH, TextAlign::CENTER);
+    
+    // 绘制分隔线
+    drawLine(0, fontH + 2, _width, fontH + 2);
+    
+    // 绘制传感器数据行
+    uint8_t startIdx = (uint8_t)page * linesPerPage;
+    uint8_t endIdx = startIdx + linesPerPage;
+    if (endIdx > _sensorEntries.size()) endIdx = _sensorEntries.size();
+    
+    for (uint8_t i = startIdx; i < endIdx; i++)
+    {
+        uint8_t lineNum = (i - startIdx) + 1;  // 从第1行开始（第0行是标题）
+        uint8_t y = (lineNum + 1) * fontH;
+        
+        const SensorDisplayEntry& entry = _sensorEntries[i];
+        char lineBuf[40];
+        
+        if (entry.valid)
+        {
+            // 格式: "标签: 数值单位"
+            char valueBuf[16];
+            dtostrf(entry.value, 0, entry.decimals, valueBuf);
+            snprintf(lineBuf, sizeof(lineBuf), "%s: %s%s",
+                     entry.label.c_str(), valueBuf, entry.unit.c_str());
+        }
+        else
+        {
+            // 数据无效
+            snprintf(lineBuf, sizeof(lineBuf), "%s: --", entry.label.c_str());
+        }
+        
+        print(String(lineBuf), 2, y, TextAlign::LEFT);
+    }
+    
+    return refresh();
+}
+
+void LCDManager::autoRefreshSensorDisplay(unsigned long intervalMs)
+{
+    if (!_initialized || _sensorEntries.empty()) return;
+    
+    unsigned long now = millis();
+    
+    // 检查是否到翻页时间
+    if (now - _lastPageSwitch >= intervalMs)
+    {
+        _lastPageSwitch = now;
+        _currentSensorPage++;
+        
+        uint8_t totalPages = getSensorPageCount();
+        if (_currentSensorPage >= totalPages)
+        {
+            _currentSensorPage = 0;
+        }
+    }
+    
+    // 显示当前页
+    showSensorPage(_currentSensorPage);
+}
+
 // ========== 高级功能 ==========
 
 bool LCDManager::setFont(uint8_t fontIndex)

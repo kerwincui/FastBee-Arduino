@@ -21,8 +21,17 @@
                     console.warn('[SSE] 数据解析失败:', err);
                 }
             };
+            this._sseSensorHandler = function(e) {
+                try {
+                    var data = JSON.parse(e.data);
+                    self._handleSSESensorData(data);
+                } catch (err) {
+                    console.warn('[SSE] 传感器数据解析失败:', err);
+                }
+            };
 
             AppState.onSSEEvent('modbus-data', this._sseModbusHandler);
+            AppState.onSSEEvent('sensor-data', this._sseSensorHandler);
         },
 
         _closeSSE: function() {
@@ -30,10 +39,30 @@
                 AppState.offSSEEvent('modbus-data', this._sseModbusHandler);
                 this._sseModbusHandler = null;
             }
+            if (this._sseSensorHandler) {
+                AppState.offSSEEvent('sensor-data', this._sseSensorHandler);
+                this._sseSensorHandler = null;
+            }
             AppState.disconnectSSE();
             if (this._sseDebounceTimer) {
                 clearTimeout(this._sseDebounceTimer);
                 this._sseDebounceTimer = null;
+            }
+        },
+
+        /**
+         * 处理 SSE 传感器数据更新
+         * data 格式: {key: "dht_01_temperature", label: "温度", value: "25.3", unit: "°C"}
+         */
+        _handleSSESensorData: function(data) {
+            if (!data || !data.key) return;
+            // 查找对应的监测卡片并更新数值
+            var card = document.querySelector('.dc-monitor-card[data-id="' + data.key + '"]');
+            if (card) {
+                var valEl = card.querySelector('.dc-monitor-value');
+                var unitEl = card.querySelector('.dc-monitor-unit');
+                if (valEl) valEl.textContent = data.value || '--';
+                if (unitEl && data.unit) unitEl.textContent = data.unit;
             }
         },
 

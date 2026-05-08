@@ -15,6 +15,7 @@ public:
     void broadcastModbusData(const String& data);
     void broadcastMqttStatus(const String& data);
     void broadcastModbusStatus(const String& data);
+    void broadcastSensorData(const String& data);
     size_t clientCount() const;
 
     /// 周期性维护：发送心跳、清理超时连接、上报 SSE 客户端数

@@ -20,6 +20,9 @@
 #if FASTBEE_ENABLE_SENSOR_DRIVER
 #include "peripherals/SensorDriver.h"
 #endif
+#if FASTBEE_ENABLE_LCD
+#include "peripherals/LCDManager.h"
+#endif
 #include <freertos/task.h>
 
 namespace {
@@ -924,6 +927,11 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         rawValue = SensorDriver::getInstance().readDHT(pin, dhtType, String(dataField));
         if (isnan(rawValue)) {
             LOGGER.warningf("[PeriphExec] Sensor read: DHT read failed on '%s' pin %d", periphId, pin);
+#if FASTBEE_ENABLE_LCD
+            if (LCDManager::getInstance().isInitialized()) {
+                LCDManager::getInstance().invalidateSensorEntry(String(periphId) + "_" + String(dataField));
+            }
+#endif
             return false;
         }
     } else if (strcmp(category, "ds18b20") == 0) {
@@ -941,6 +949,11 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
         rawValue = SensorDriver::getInstance().readDS18B20(pin, deviceIndex);
         if (isnan(rawValue)) {
             LOGGER.warningf("[PeriphExec] Sensor read: DS18B20 read failed on '%s' pin %d", periphId, pin);
+#if FASTBEE_ENABLE_LCD
+            if (LCDManager::getInstance().isInitialized()) {
+                LCDManager::getInstance().invalidateSensorEntry(String(periphId) + "_" + String(dataField));
+            }
+#endif
             return false;
         }
 #endif // FASTBEE_ENABLE_SENSOR_DRIVER
@@ -957,6 +970,21 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
 
     LOGGER.infof("[PeriphExec] Sensor read: periph=%s cat=%s raw=%.1f processed=%s%s label=%s",
         periphId, category, rawValue, result.actualValue.c_str(), unit, label);
+
+    // 推送传感器数据到 LCD 显示模块
+#if FASTBEE_ENABLE_LCD
+    if (LCDManager::getInstance().isInitialized() && strlen(label) > 0)
+    {
+        String entryId = String(periphId) + "_" + String(dataField);
+        LCDManager::getInstance().updateSensorEntry(entryId, String(label), processed, String(unit), decimals);
+    }
+#endif
+
+    // 更新传感器读取值缓存（供 controls API 和 SSE 使用）
+    {
+        String cacheKey = String(periphId) + "_" + String(dataField);
+        PeriphExecManager::getInstance().updateSensorReadCache(cacheKey, String(label), result.actualValue, String(unit));
+    }
 
     return true;
 }

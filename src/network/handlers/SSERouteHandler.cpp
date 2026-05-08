@@ -89,6 +89,13 @@ void SSERouteHandler::broadcastModbusStatus(const String& data) {
     _events.send(data.c_str(), "modbus-status", _messageId++);
 }
 
+void SSERouteHandler::broadcastSensorData(const String& data) {
+    if (_events.count() == 0 || shouldSkipBroadcast()) {
+        return;
+    }
+    _events.send(data.c_str(), "sensor-data", _messageId++);
+}
+
 size_t SSERouteHandler::clientCount() const {
     return _events.count();
 }

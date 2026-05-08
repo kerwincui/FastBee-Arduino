@@ -428,6 +428,23 @@ void PeriphExecManager::rebuildButtonEventCache() {
     }
 }
 
+void PeriphExecManager::updateSensorReadCache(const String& key, const String& label, const String& value, const String& unit) {
+    SensorReadCache& cache = _sensorReadCache[key];
+    cache.label = label;
+    cache.value = value;
+    cache.unit = unit;
+    cache.timestamp = millis();
+    // 通过 SSE 推送实时传感器数据
+    notifySensorDataSSE(key, label, value, unit);
+}
+
+void PeriphExecManager::notifySensorDataSSE(const String& key, const String& label, const String& value, const String& unit) {
+    if (!_sensorSSECb) return;
+    // 构建简单 JSON: {"key":"...","label":"...","value":"...","unit":"..."}
+    String json = "{\"key\":\"" + key + "\",\"label\":\"" + label + "\",\"value\":\"" + value + "\",\"unit\":\"" + unit + "\"}";
+    _sensorSSECb(json);
+}
+
 // ========== 持久化 ==========
 
 bool PeriphExecManager::saveConfiguration() {

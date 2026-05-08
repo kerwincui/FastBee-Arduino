@@ -668,6 +668,37 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
             }
         }
 
+        // 传感器读取：附加最近读取值、标签、单位
+        if (at == 19) {
+            const auto& sensorCache = mgr.getSensorReadCache();
+            // 遍历该规则所有 action，收集传感器缓存数据
+            item += ",\"sensors\":[";
+            bool firstSensorItem = true;
+            for (const auto& action : rule.actions) {
+                if (action.actionType != 19) continue;
+                if (action.actionValue.isEmpty()) continue;
+                JsonDocument sDoc;
+                DeserializationError sErr = deserializeJson(sDoc, action.actionValue);
+                if (sErr) continue;
+                const char* sPeriphId = sDoc["periphId"] | "";
+                const char* sDataField = sDoc["dataField"] | "temperature";
+                const char* sLabel = sDoc["sensorLabel"] | "";
+                const char* sUnit = sDoc["unit"] | "";
+                String cacheKey = String(sPeriphId) + "_" + String(sDataField);
+                if (!firstSensorItem) item += ",";
+                firstSensorItem = false;
+                item += "{\"key\":\"" + cacheKey + "\"";
+                item += ",\"label\":\"" + String(sLabel) + "\"";
+                item += ",\"unit\":\"" + String(sUnit) + "\"";
+                auto cacheIt = sensorCache.find(cacheKey);
+                if (cacheIt != sensorCache.end()) {
+                    item += ",\"value\":\"" + cacheIt->second.value + "\"";
+                }
+                item += "}";
+            }
+            item += "]";
+        }
+
         item += "}";
         *targetBuf += item;
     }

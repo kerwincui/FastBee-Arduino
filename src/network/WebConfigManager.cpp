@@ -16,6 +16,7 @@
 #include "./network/handlers/PeripheralRouteHandler.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include "./network/handlers/PeriphExecRouteHandler.h"
+#include "core/PeriphExecManager.h"
 #endif
 #if FASTBEE_ENABLE_RULE_SCRIPT
 #include "./network/handlers/RuleScriptRouteHandler.h"
@@ -323,6 +324,20 @@ void WebConfigManager::setupAllRoutes() {
             }
         );
     }
+
+    // 注册传感器数据 SSE 回调（PeriphExec 传感器读取后推送）
+#if FASTBEE_ENABLE_PERIPH_EXEC
+    {
+        SSERouteHandler* ssePtr = sseRouteHandler.get();
+        PeriphExecManager::getInstance().setSensorSSECallback(
+            [ssePtr](const String& data) {
+                if (ssePtr && ssePtr->clientCount() > 0) {
+                    ssePtr->broadcastSensorData(data);
+                }
+            }
+        );
+    }
+#endif
 
     // 12. 静态文件与页面路由（/, /login, /dashboard, /users, 404 fallback）
     // 必须最后注册，因为 onNotFound 是全局 fallback

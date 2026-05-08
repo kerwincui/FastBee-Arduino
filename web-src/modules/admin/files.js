@@ -7,6 +7,8 @@
 
         // ============ 事件绑定 ============
         setupFilesEvents() {
+            if (this._filesEventsBound) return;
+
             // 刷新文件列表按钮
             const fsRefreshBtn = document.getElementById('fs-refresh-btn');
             if (fsRefreshBtn) fsRefreshBtn.addEventListener('click', () => this.loadFileTree(this._currentDir || '/'));
@@ -22,6 +24,8 @@
             // 导入配置按钮
             const importBtn = document.getElementById('fs-import-config-btn');
             if (importBtn) importBtn.addEventListener('click', () => this.importConfigFile());
+
+            this._filesEventsBound = true;
         },
 
         // ============ 文件管理 ============

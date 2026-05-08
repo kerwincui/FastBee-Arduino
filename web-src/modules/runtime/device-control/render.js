@@ -82,12 +82,31 @@
 
         _renderMonitorDataCard: function(data) {
             var monitorGroups = this._buildMonitorGroupsFromModbus();
-            var hasMonitor = monitorGroups.length > 0;
-            var monitorItems = [];
-            if (!hasMonitor) {
-                monitorItems = this._filterByActionType(data.modbus, [18]).concat(this._filterByActionType(data.sensor, [19]));
-                hasMonitor = monitorItems.length > 0;
+            var sensorCards = [];
+            // 从 sensor 规则的 sensors[] 数组构建监测卡片
+            var sensorRules = this._filterByActionType(data.sensor, [19]);
+            for (var i = 0; i < sensorRules.length; i++) {
+                var rule = sensorRules[i];
+                if (rule.sensors && rule.sensors.length > 0) {
+                    for (var j = 0; j < rule.sensors.length; j++) {
+                        var s = rule.sensors[j];
+                        sensorCards.push({
+                            id: s.key,
+                            name: s.label || s.key,
+                            value: s.value || '--',
+                            unit: s.unit || this._getMonitorUnit(s.label || '')
+                        });
+                    }
+                }
             }
+            // 合并 Modbus 监测规则（无 Modbus groups 时）
+            if (monitorGroups.length === 0) {
+                var modbusMonitorItems = this._filterByActionType(data.modbus, [18]);
+                for (var i = 0; i < modbusMonitorItems.length; i++) {
+                    sensorCards.push(modbusMonitorItems[i]);
+                }
+            }
+            var hasMonitor = monitorGroups.length > 0 || sensorCards.length > 0;
             if (!hasMonitor) return '';
             var html = '<div class="dc-monitor-grid" data-dc-sort-key="monitor-data">';
             if (monitorGroups.length > 0) {
@@ -95,9 +114,9 @@
                     var group = monitorGroups[i];
                     for (var j = 0; j < group.items.length; j++) html += this._renderMonitorCard(group.items[j], group.label);
                 }
-            } else {
-                for (var i = 0; i < monitorItems.length; i++) html += this._renderMonitorCard(monitorItems[i]);
             }
+            // 传感器卡片始终显示（与 Modbus 并列）
+            for (var i = 0; i < sensorCards.length; i++) html += this._renderMonitorCard(sensorCards[i]);
             html += '<div class="dc-resize-handle" title="拖拽调整大小"></div></div>';
             return html;
         },

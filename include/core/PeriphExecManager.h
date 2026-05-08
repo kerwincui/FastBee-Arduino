@@ -111,6 +111,11 @@ public:
     // 通知 MQTT 层发布设备事件（由 Scheduler triggerEvent/triggerEventById 调用）
     bool notifyMqttEventPublish(const String& eventId, const String& eventName, const String& eventData);
 
+    // SSE 传感器数据广播回调
+    using SensorSSECallback = std::function<void(const String& data)>;
+    void setSensorSSECallback(SensorSSECallback cb) { _sensorSSECb = cb; }
+    void notifySensorDataSSE(const String& key, const String& label, const String& value, const String& unit);
+
     // ========== 异步执行 ==========
 
     // 记录异步执行结果（由异步任务完成时调用）
@@ -280,6 +285,7 @@ private:
     ModbusDirectControlCallback _modbusDirectControlCb;
     ModbusDynamicEventsCallback _modbusDynamicEventsCb;
     MqttEventPublishCallback _mqttEventPublishCb;
+    SensorSSECallback _sensorSSECb;
 
     // ========== 任务运行状态跟踪 ==========
     std::set<String> _runningRuleIds;           // 正在运行的规则ID集合
@@ -292,6 +298,19 @@ private:
     // ========== 按键规则缓存（无锁，仅主循环线程读写） ==========
     std::set<String> _buttonEventCache;  // 存储 "eventId" 或 "periphId:eventId"
     void rebuildButtonEventCache();      // 规则变更时重建缓存
+
+    // ========== 传感器读取值缓存（供 controls API 和 SSE 使用） ==========
+public:
+    struct SensorReadCache {
+        String label;           // 显示标签
+        String value;           // 格式化后的数值字符串
+        String unit;            // 单位
+        unsigned long timestamp; // 更新时间 millis()
+    };
+    void updateSensorReadCache(const String& key, const String& label, const String& value, const String& unit);
+    const std::map<String, SensorReadCache>& getSensorReadCache() const { return _sensorReadCache; }
+private:
+    std::map<String, SensorReadCache> _sensorReadCache;  // key = periphId + "_" + dataField
 
     // ========== 异步执行上下文对象池 ==========
     AsyncExecContextPool _contextPool;          // 固定大小的上下文对象池
