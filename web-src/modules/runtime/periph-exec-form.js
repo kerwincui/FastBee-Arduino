@@ -128,7 +128,7 @@
             const showExecRow = true;
             const execMode = parseInt(data.execMode ?? 0);
             const sel = (v) => actionType === String(v) ? 'selected' : '';
-            var sensorCfg = {sensorCategory:'analog',periphId:'',scaleFactor:1,offset:0,decimalPlaces:2,sensorLabel:'',unit:''};
+            var sensorCfg = {sensorCategory:'analog',periphId:'',scaleFactor:1,offset:0,decimalPlaces:2,sensorLabel:'',unit:'',dataField:'temperature',deviceIndex:0};
             if (isSensorRead && data.actionValue) { try { Object.assign(sensorCfg, JSON.parse(data.actionValue)); } catch(e) {} }
             const selCat = (v) => sensorCfg.sensorCategory === v ? 'selected' : '';
             div.innerHTML = '<span class="mqtt-topic-index">' + (index + 1) + '</span>' +
@@ -194,7 +194,16 @@
                     '<select class="pe-sensor-category">' +
                     '<option value="analog" ' + selCat('analog') + '>' + i18n.t('periph-exec-sensor-cat-analog') + '</option>' +
                     '<option value="digital" ' + selCat('digital') + '>' + i18n.t('periph-exec-sensor-cat-digital') + '</option>' +
-                    '<option value="pulse" ' + selCat('pulse') + '>' + i18n.t('periph-exec-sensor-cat-pulse') + '</option></select></div>' +
+                    '<option value="pulse" ' + selCat('pulse') + '>' + i18n.t('periph-exec-sensor-cat-pulse') + '</option>' +
+                    '<option value="dht11" ' + selCat('dht11') + '>' + i18n.t('periph-exec-sensor-cat-dht11') + '</option>' +
+                    '<option value="dht22" ' + selCat('dht22') + '>' + i18n.t('periph-exec-sensor-cat-dht22') + '</option>' +
+                    '<option value="ds18b20" ' + selCat('ds18b20') + '>' + i18n.t('periph-exec-sensor-cat-ds18b20') + '</option></select></div>' +
+                    '<div class="fb-form-group pe-sensor-datafield-group' + this._hiddenClass(sensorCfg.sensorCategory === 'dht11' || sensorCfg.sensorCategory === 'dht22') + '"><label>' + i18n.t('periph-exec-sensor-datafield') + '</label>' +
+                    '<select class="pe-sensor-datafield">' +
+                    '<option value="temperature"' + (sensorCfg.dataField === 'temperature' ? ' selected' : '') + '>' + i18n.t('periph-exec-sensor-datafield-temp') + '</option>' +
+                    '<option value="humidity"' + (sensorCfg.dataField === 'humidity' ? ' selected' : '') + '>' + i18n.t('periph-exec-sensor-datafield-humi') + '</option></select></div>' +
+                    '<div class="fb-form-group pe-sensor-devindex-group' + this._hiddenClass(sensorCfg.sensorCategory === 'ds18b20') + '"><label>' + i18n.t('periph-exec-sensor-devindex') + '</label>' +
+                    '<input type="number" class="pe-sensor-devindex" min="0" max="15" value="' + sensorCfg.deviceIndex + '"></div>' +
                     '<div class="fb-form-group"><label>' + i18n.t('periph-exec-sensor-scale') + '</label><input type="number" class="pe-sensor-scale" step="any" value="' + sensorCfg.scaleFactor + '"></div>' +
                     '<div class="fb-form-group"><label>' + i18n.t('periph-exec-sensor-offset') + '</label><input type="number" class="pe-sensor-offset" step="any" value="' + sensorCfg.offset + '"></div>' +
                     '<div class="fb-form-group"><label>' + i18n.t('periph-exec-sensor-decimals') + '</label><input type="number" class="pe-sensor-decimals" min="0" max="6" value="' + sensorCfg.decimalPlaces + '"></div>' +
@@ -752,7 +761,7 @@
                     if (isNaN(decimals)) decimals = 2;
                     var sensorLabel = item.querySelector('.pe-sensor-label')?.value?.trim() || '';
                     var sUnit = item.querySelector('.pe-sensor-unit')?.value?.trim() || '';
-                    action.actionValue = JSON.stringify({
+                    var sensorData = {
                         periphId: sensorPeriphId,
                         sensorCategory: sensorCat,
                         scaleFactor: scaleFactor,
@@ -760,7 +769,14 @@
                         decimalPlaces: decimals,
                         sensorLabel: sensorLabel,
                         unit: sUnit
-                    });
+                    };
+                    if (sensorCat === 'dht11' || sensorCat === 'dht22') {
+                        sensorData.dataField = item.querySelector('.pe-sensor-datafield')?.value || 'temperature';
+                    }
+                    if (sensorCat === 'ds18b20') {
+                        sensorData.deviceIndex = parseInt(item.querySelector('.pe-sensor-devindex')?.value) || 0;
+                    }
+                    action.actionValue = JSON.stringify(sensorData);
                 } else {
                     action.actionValue = item.querySelector('.pe-action-value')?.value?.trim() || '';
                 }

@@ -14,6 +14,23 @@
 #include <SPI.h>
 #include <ArduinoJson.h>
 #include "core/PeripheralConfig.h"
+#include <vector>
+
+/**
+ * @brief 传感器显示数据条目
+ * 
+ * 通用传感器数据结构，支持任意类型传感器的显示。
+ * 每条数据包含标识符、显示标签、数值、单位和更新时间戳。
+ */
+struct SensorDisplayEntry {
+    String id;              // 唯一标识（如 "dht_01_temp"）
+    String label;           // 显示标签（如 "温度"、"湿度"）
+    float value;            // 当前数值
+    String unit;            // 单位（如 "°C"、"%"）
+    uint8_t decimals;       // 小数位数
+    unsigned long timestamp; // 最后更新时间 (millis)
+    bool valid;             // 数据是否有效
+};
 
 /**
  * @brief 显示屏接口类型
@@ -123,7 +140,7 @@ public:
     bool printLines(const String lines[], uint8_t lineCount);
     
     /**
-     * @brief 显示传感器数据
+     * @brief 显示传感器数据（单条）
      * 
      * @param name 传感器名称
      * @param value 数值
@@ -132,6 +149,57 @@ public:
      * @return bool 成功返回true
      */
     bool showSensorData(const String& name, float value, const String& unit, uint8_t line = 0);
+    
+    // ========== 通用传感器数据显示模块 ==========
+    
+    /**
+     * @brief 更新传感器数据（供外部模块推送数据）
+     * 
+     * 如果 id 已存在则更新，否则新增条目。
+     * 
+     * @param id 传感器唯一标识
+     * @param label 显示标签
+     * @param value 数值
+     * @param unit 单位
+     * @param decimals 小数位数
+     */
+    void updateSensorEntry(const String& id, const String& label, float value, 
+                           const String& unit, uint8_t decimals = 1);
+    
+    /**
+     * @brief 标记传感器数据无效（读取失败时调用）
+     */
+    void invalidateSensorEntry(const String& id);
+    
+    /**
+     * @brief 显示传感器数据页面
+     * 
+     * 自动分页显示所有已注册的传感器数据。
+     * 每页显示 maxLines-1 条数据（顶部保留标题行）。
+     * 
+     * @param page 页码（0开始），-1 表示自动轮播
+     * @return bool 成功返回true
+     */
+    bool showSensorPage(int8_t page = -1);
+    
+    /**
+     * @brief 获取已注册的传感器条目数
+     */
+    uint8_t getSensorEntryCount() const { return _sensorEntries.size(); }
+    
+    /**
+     * @brief 获取传感器显示总页数
+     */
+    uint8_t getSensorPageCount() const;
+    
+    /**
+     * @brief 自动刷新传感器页面（在主循环中调用）
+     * 
+     * 根据设定的轮播间隔自动切换页面并刷新显示。
+     * 
+     * @param intervalMs 页面轮播间隔（毫秒），默认5秒
+     */
+    void autoRefreshSensorDisplay(unsigned long intervalMs = 5000);
     
     /**
      * @brief 显示系统信息
@@ -244,6 +312,12 @@ private:
     bool _contentChanged = false;
     unsigned long _lastUpdate = 0;
     const unsigned long _minUpdateInterval = 50;  // 最小刷新间隔（ms）
+    
+    // 传感器显示模块
+    std::vector<SensorDisplayEntry> _sensorEntries;  // 传感器数据注册表
+    uint8_t _currentSensorPage = 0;                  // 当前显示页码
+    unsigned long _lastPageSwitch = 0;               // 上次翻页时间
+    static constexpr uint8_t MAX_SENSOR_ENTRIES = 16; // 最大传感器条目数
     
     // 内部方法
     

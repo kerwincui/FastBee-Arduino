@@ -470,21 +470,76 @@ checkTimers() 每秒执行
 
 通过 `executeSensorReadAction()` 执行，actionValue 为 JSON 配置：
 
+**模拟/数字传感器：**
 ```json
 {
   "periphId": "sensor_01",
-  "category": "temperature",
+  "sensorCategory": "analog",
   "scaleFactor": 1.0,
   "offset": 0.0,
-  "decimals": 2
+  "decimalPlaces": 2,
+  "sensorLabel": "光照",
+  "unit": "lux"
 }
 ```
 
+**DHT11/DHT22 温湿度传感器：**
+```json
+{
+  "periphId": "dht_01",
+  "sensorCategory": "dht11",
+  "dataField": "temperature",
+  "scaleFactor": 1.0,
+  "offset": 0.0,
+  "decimalPlaces": 1,
+  "sensorLabel": "温度",
+  "unit": "°C"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `sensorCategory` | `"dht11"` 或 `"dht22"` |
+| `dataField` | `"temperature"` (温度) 或 `"humidity"` (湿度) |
+
+**DS18B20 数字温度传感器：**
+```json
+{
+  "periphId": "ds18b20_01",
+  "sensorCategory": "ds18b20",
+  "deviceIndex": 0,
+  "scaleFactor": 1.0,
+  "offset": 0.0,
+  "decimalPlaces": 2,
+  "sensorLabel": "水温",
+  "unit": "°C"
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `sensorCategory` | `"ds18b20"` |
+| `deviceIndex` | OneWire 总线上设备索引（默认 0，多设备时指定） |
+
+**支持的 sensorCategory 值：**
+
+| 值 | 传感器类型 | 读取方式 | 特点 |
+|------|----------|----------|------|
+| `analog` | 模拟输入 (ADC) | `analogRead()` | 0-4095 原始值 |
+| `digital` | 数字输入 (GPIO) | `digitalRead()` | 0/1 |
+| `pulse` | 脉冲/频率 | 未实现 | 预留 |
+| `dht11` | DHT11 温湿度 | 单总线时序 | 温度 0-50°C, 湿度 20-90% |
+| `dht22` | DHT22/AM2302 | 单总线时序 | 温度 -40~80°C, 湿度 0-100% |
+| `ds18b20` | DS18B20 数字温度 | OneWire 协议 | -55~125°C, 12位精度 |
+
 执行流程：
 ```
-解析 JSON 配置 → 读取外设原始值 → 应用缩放: value * scaleFactor + offset
-  → 按 decimals 格式化 → 记录结果
+解析 JSON 配置 → 获取外设引脚 → 调用对应驱动读取原始值
+  → 应用缩放: value * scaleFactor + offset
+  → 按 decimalPlaces 格式化 → 记录结果
 ```
+
+**非阻塞保障：** DHT11 读取约 25ms，DS18B20 转换约 750ms。由于 ACTION_SENSOR_READ 规则始终在独立 FreeRTOS 异步任务中执行，不会阻塞主循环。驱动内置缓存机制（DHT 2s / DS18B20 1s）避免过于频繁读取。
 
 #### ACTION_LOG_EVENT (18)
 

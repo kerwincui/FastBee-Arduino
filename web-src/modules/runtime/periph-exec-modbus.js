@@ -304,9 +304,13 @@
             if (!sel) return;
             var periphs = this._pePeripherals || [];
             var analogTypes = [15, 26]; var digitalTypes = [11, 13, 14]; var pulseTypes = [46];
+            var dhtTypes = [11, 13, 14, 38, 44]; // GPIO_DI, SENSOR, ONE_WIRE
+            var ds18b20Types = [44, 38, 11, 13, 14]; // ONE_WIRE, SENSOR, GPIO_DI
             var allowedTypes;
             if (category === 'digital') allowedTypes = digitalTypes;
             else if (category === 'pulse') allowedTypes = pulseTypes;
+            else if (category === 'dht11' || category === 'dht22') allowedTypes = dhtTypes;
+            else if (category === 'ds18b20') allowedTypes = ds18b20Types;
             else allowedTypes = analogTypes;
             var prev = selectedValue || sel.value;
             sel.innerHTML = '<option value="">--</option>';
@@ -323,7 +327,14 @@
         onSensorCategoryChange(selectEl, index) {
             var block = this._getPeriphExecBlock('periph-exec-actions', index);
             if (!block) return;
-            this._populateSensorPeriphSelect(block, selectEl.value);
+            var cat = selectEl.value;
+            this._populateSensorPeriphSelect(block, cat);
+            // 显示/隐藏 DHT 数据字段选择器
+            var dfGroup = block.querySelector('.pe-sensor-datafield-group');
+            if (dfGroup) dfGroup.classList.toggle('hidden', cat !== 'dht11' && cat !== 'dht22');
+            // 显示/隐藏 DS18B20 设备索引
+            var diGroup = block.querySelector('.pe-sensor-devindex-group');
+            if (diGroup) diGroup.classList.toggle('hidden', cat !== 'ds18b20');
         },
 
         // ============ Poll tasks / Modbus device panel ============

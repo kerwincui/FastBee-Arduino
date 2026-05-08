@@ -258,6 +258,18 @@
 #endif
 
 /**
+ * @brief 传感器驱动支持（DHT11/DHT22/DS18B20）
+ * 默认：启用
+ * 占用：约 8KB Flash（DHT 库 ~3KB + OneWire ~2KB + DallasTemperature ~3KB）
+ * RAM：约 200B（驱动实例 + 缓存）
+ * 需要：Adafruit DHT sensor library, OneWire, DallasTemperature
+ * 说明：支持通过 ACTION_SENSOR_READ 读取温湿度传感器数据
+ */
+#ifndef FASTBEE_ENABLE_SENSOR_DRIVER
+#define FASTBEE_ENABLE_SENSOR_DRIVER 1
+#endif
+
+/**
  * @brief LED 屏幕支持（WS2812B/APA102 等 NeoPixel）
  * 默认：禁用
  * 占用：约 15KB Flash（驱动库~10KB + 管理器~5KB）

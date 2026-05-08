@@ -48,7 +48,10 @@ enum class ExecActionType : uint8_t {
 enum class SensorCategory : uint8_t {
     SENSOR_ANALOG = 0,    // 模拟输入 (ADC, GPIO_ANALOG_INPUT)
     SENSOR_DIGITAL = 1,   // 数字输入 (GPIO_DIGITAL_INPUT, PULLUP, PULLDOWN)
-    SENSOR_PULSE = 2      // 脉冲/频率 (ENCODER, 预留)
+    SENSOR_PULSE = 2,     // 脉冲/频率 (ENCODER, 预留)
+    SENSOR_DHT11 = 3,     // DHT11 温湿度传感器
+    SENSOR_DHT22 = 4,     // DHT22/AM2302 温湿度传感器
+    SENSOR_DS18B20 = 5    // DS18B20 数字温度传感器 (OneWire)
 };
 
 // 触发类型

@@ -17,6 +17,9 @@
 #include "systems/HealthMonitor.h"
 #include "core/PeripheralManager.h"
 #include "core/ChipConfig.h"
+#if FASTBEE_ENABLE_SENSOR_DRIVER
+#include "peripherals/SensorDriver.h"
+#endif
 #include <freertos/task.h>
 
 namespace {
@@ -884,6 +887,8 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
     uint8_t decimals = doc["decimalPlaces"] | 2;
     const char* label = doc["sensorLabel"] | "";
     const char* unit = doc["unit"] | "";
+    const char* dataField = doc["dataField"] | "temperature";
+    uint8_t deviceIndex = doc["deviceIndex"] | 0;
 
     if (strlen(periphId) == 0) {
         LOGGER.warning("[PeriphExec] Sensor read: no periphId specified");
@@ -901,6 +906,44 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
     } else if (strcmp(category, "pulse") == 0) {
         LOGGER.warning("[PeriphExec] Sensor read: pulse/frequency not yet implemented");
         rawValue = 0;
+#if FASTBEE_ENABLE_SENSOR_DRIVER
+    } else if (strcmp(category, "dht11") == 0 || strcmp(category, "dht22") == 0) {
+        // DHT11/DHT22 温湿度传感器
+        const PeripheralConfig* cfg = pm.getPeripheral(String(periphId));
+        if (!cfg) {
+            LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
+            return false;
+        }
+        uint8_t pin = cfg->getPrimaryPin();
+        if (pin == 255) {
+            LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' has no valid pin", periphId);
+            return false;
+        }
+        SensorDriverType dhtType = (strcmp(category, "dht11") == 0) ?
+            SensorDriverType::DHT11 : SensorDriverType::DHT22;
+        rawValue = SensorDriver::getInstance().readDHT(pin, dhtType, String(dataField));
+        if (isnan(rawValue)) {
+            LOGGER.warningf("[PeriphExec] Sensor read: DHT read failed on '%s' pin %d", periphId, pin);
+            return false;
+        }
+    } else if (strcmp(category, "ds18b20") == 0) {
+        // DS18B20 数字温度传感器
+        const PeripheralConfig* cfg = pm.getPeripheral(String(periphId));
+        if (!cfg) {
+            LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
+            return false;
+        }
+        uint8_t pin = cfg->getPrimaryPin();
+        if (pin == 255) {
+            LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' has no valid pin", periphId);
+            return false;
+        }
+        rawValue = SensorDriver::getInstance().readDS18B20(pin, deviceIndex);
+        if (isnan(rawValue)) {
+            LOGGER.warningf("[PeriphExec] Sensor read: DS18B20 read failed on '%s' pin %d", periphId, pin);
+            return false;
+        }
+#endif // FASTBEE_ENABLE_SENSOR_DRIVER
     } else {
         LOGGER.warningf("[PeriphExec] Sensor read: unknown category '%s'", category);
         return false;
