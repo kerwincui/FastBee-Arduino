@@ -1031,6 +1031,13 @@
         
         'periph-exec-action-call-periph': 'Call Peripheral',
         'periph-exec-action-cat-advanced': 'Advanced',
+        'periph-exec-action-cat-rule': 'Rule Control',
+        'periph-exec-action-enable-rule': 'Enable Exec Rule',
+        'periph-exec-action-disable-rule': 'Disable Exec Rule',
+        'periph-exec-target-rule-label': 'Target Exec Rule',
+        'periph-exec-select-rule': '-- Select Exec Rule --',
+        'periph-exec-enabled': 'Enabled',
+        'periph-exec-disabled': 'Disabled',
         'periph-exec-action-sensor-read': 'Sensor Data Read',
         'periph-exec-sensor-category': 'Sensor Category',
         'periph-exec-sensor-cat-analog': 'Analog (ADC)',

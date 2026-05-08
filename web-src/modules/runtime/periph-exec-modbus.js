@@ -169,9 +169,24 @@
 
         // ============ Periph select with Modbus groups ============
 
-        _populatePeriphSelect(selectEl, selectedValue, pollOnly, eventOnly) {
+        _populatePeriphSelect(selectEl, selectedValue, pollOnly, eventOnly, execRuleOnly) {
             if (!selectEl) return;
-            var html = '<option value="">' + i18n.t('periph-exec-select-periph') + '</option>';
+            var html = '<option value="">' + (execRuleOnly ? i18n.t('periph-exec-select-rule') : i18n.t('periph-exec-select-periph')) + '</option>';
+            if (execRuleOnly) {
+                // 规则控制动作：仅显示已配置的外设执行规则
+                var rules = this._peExecRules || [];
+                if (rules.length > 0) {
+                    html += '<optgroup label="' + escapeHtml(i18n.t('periph-exec-target-rule-label') || '执行规则') + '">';
+                    rules.forEach(function(r) {
+                        var stateTxt = r.enabled !== false ? (i18n.t('periph-exec-enabled') || '启用') : (i18n.t('periph-exec-disabled') || '禁用');
+                        html += '<option value="' + escapeHtml(r.id) + '">' + escapeHtml((r.name || r.id) + ' [' + stateTxt + ']') + '</option>';
+                    });
+                    html += '</optgroup>';
+                }
+                selectEl.innerHTML = html;
+                if (selectedValue) selectEl.value = selectedValue;
+                return;
+            }
             if (eventOnly) {
                 // 触发事件动作: 仅显示设备事件外设 (type=60)
                 var eventPeriphs = [];

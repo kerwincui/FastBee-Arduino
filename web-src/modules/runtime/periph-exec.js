@@ -81,6 +81,7 @@
             if (safeId) { this.showModal(modal); return; }
             this._pePeripherals = [];
             this._peDataSources = [];
+            this._peExecRules = [];
             apiGet('/api/peripherals?pageSize=50').then(res => {
                 if (res && res.success && res.data) this._pePeripherals = res.data.filter(p => p.enabled);
                 return apiGet('/api/protocol/config');
@@ -92,6 +93,11 @@
                         this._masterTasks = protoData.modbusRtu.master.tasks || [];
                         this._modbusDevices = protoData.modbusRtu.master.devices || [];
                     }
+                }
+                return apiGet('/api/periph-exec?pageSize=100');
+            }).then(rulesRes => {
+                if (rulesRes && rulesRes.success && Array.isArray(rulesRes.data)) {
+                    this._peExecRules = rulesRes.data;
                 }
                 this._createPeriphExecTriggerElement({}, 0);
                 this._createPeriphExecActionElement({}, 0);
@@ -504,8 +510,8 @@
 
         editPeriphExecRule(id) {
             this.openPeriphExecModal(id);
-            Promise.all([apiGet('/api/periph-exec?id=' + id), apiGet('/api/peripherals?pageSize=50'), apiGet('/api/protocol/config')])
-                .then(([execRes, periphRes, protoRes]) => {
+            Promise.all([apiGet('/api/periph-exec?id=' + id), apiGet('/api/peripherals?pageSize=50'), apiGet('/api/protocol/config'), apiGet('/api/periph-exec?pageSize=100')])
+                .then(([execRes, periphRes, protoRes, rulesRes]) => {
                     if (periphRes && periphRes.success && periphRes.data) {
                         this._pePeripherals = periphRes.data.filter(p => p.enabled);
                     }
@@ -517,6 +523,11 @@
                             this._masterTasks = protoData.modbusRtu.master.tasks || [];
                             this._modbusDevices = protoData.modbusRtu.master.devices || [];
                         }
+                    }
+                    if (rulesRes && rulesRes.success && Array.isArray(rulesRes.data)) {
+                        this._peExecRules = rulesRes.data;
+                    } else {
+                        this._peExecRules = [];
                     }
                     if (!execRes || !execRes.success || !execRes.data) return;
                     const rule = execRes.data;
@@ -723,7 +734,9 @@
                         6: i18n.t('periph-exec-action-restart'), 7: i18n.t('periph-exec-action-factory'),
                         8: i18n.t('periph-exec-action-ntp'), 9: i18n.t('periph-exec-action-ota'),
                         10: i18n.t('periph-exec-action-call-periph'),
-                        15: i18n.t('periph-exec-action-script')
+                        15: i18n.t('periph-exec-action-script'),
+                        22: i18n.t('periph-exec-action-enable-rule'),
+                        23: i18n.t('periph-exec-action-disable-rule')
                     };
                     let html = '';
                     rules.forEach(r => {

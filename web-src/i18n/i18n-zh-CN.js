@@ -1029,6 +1029,13 @@
         
         'periph-exec-action-call-periph': '调用外设',
         'periph-exec-action-cat-advanced': '高级功能',
+        'periph-exec-action-cat-rule': '规则控制',
+        'periph-exec-action-enable-rule': '启用执行规则',
+        'periph-exec-action-disable-rule': '禁用执行规则',
+        'periph-exec-target-rule-label': '目标执行规则',
+        'periph-exec-select-rule': '-- 选择执行规则 --',
+        'periph-exec-enabled': '启用',
+        'periph-exec-disabled': '禁用',
         'periph-exec-action-sensor-read': '传感器数据读取',
         'periph-exec-sensor-category': '传感器类别',
         'periph-exec-sensor-cat-analog': '模拟量 (ADC)',

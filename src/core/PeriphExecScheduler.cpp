@@ -487,6 +487,14 @@ void PeriphExecScheduler::checkButtonEvents() {
 
                         LOGGER.debugf("[PeriphExec] Button CLICK (%d): %s, duration=%lums",
                             btnState.clickCount, config.id.c_str(), pressDuration);
+
+                        // 优化：若未配置双击规则，单击即时触发（避免 300ms clickInterval 延迟）
+                        if (btnState.clickCount == 1 && _manager &&
+                            !_manager->hasButtonEventRule(config.id, "button_double_click")) {
+                            triggerButtonEvent(config.id, EventType::EVENT_BUTTON_CLICK);
+                            btnState.clickCount = 0;
+                            LOGGER.debugf("[PeriphExec] Button CLICK (immediate, no double-click rule): %s", config.id.c_str());
+                        }
                     }
 
                     // 重置长按触发标记

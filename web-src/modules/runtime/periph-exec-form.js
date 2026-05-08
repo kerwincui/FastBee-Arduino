@@ -119,9 +119,10 @@
             const isSensorRead = actionTypeInt === 19;
             const isModbusTarget = data.targetPeriphId && data.targetPeriphId.indexOf('modbus:') === 0;
             const isTriggerEvent = actionTypeInt === 21;
-            const showPeriphGroup = isPollMode || (isModbusTarget || !((actionTypeInt >= 6 && actionTypeInt <= 11) || actionTypeInt === 15 || isModbusPoll || isTriggerEvent));
-            const needsValue = !isPollMode && !isModbusTarget && (actionTypeInt >= 2 && actionTypeInt <= 5);
-            const showRecv = !isPollMode && !isModbusTarget && this._hasSetModeTrigger() && needsValue;
+            const isRuleCtrlAction = (actionTypeInt === 22 || actionTypeInt === 23);
+            const showPeriphGroup = isPollMode || isRuleCtrlAction || (isModbusTarget || !((actionTypeInt >= 6 && actionTypeInt <= 11) || actionTypeInt === 15 || isModbusPoll || isTriggerEvent));
+            const needsValue = !isPollMode && !isModbusTarget && !isRuleCtrlAction && (actionTypeInt >= 2 && actionTypeInt <= 5);
+            const showRecv = !isPollMode && !isModbusTarget && !isRuleCtrlAction && this._hasSetModeTrigger() && needsValue;
             const isScript = !isPollMode && actionTypeInt === 15;
             const showActionType = !isPollMode && !isModbusTarget;
             const showExecRow = true;
@@ -164,10 +165,13 @@
                         '<option value="15" ' + sel(15) + '>' + i18n.t('periph-exec-action-script') + '</option>' +
                         '<option value="19" ' + sel(19) + '>' + i18n.t('periph-exec-action-sensor-read') + '</option>' +
                         '<option value="21" ' + sel(21) + '>' + i18n.t('periph-exec-action-trigger-event') + '</option></optgroup>' +
+                        '<optgroup label="' + i18n.t('periph-exec-action-cat-rule') + '">' +
+                        '<option value="22" ' + sel(22) + '>' + i18n.t('periph-exec-action-enable-rule') + '</option>' +
+                        '<option value="23" ' + sel(23) + '>' + i18n.t('periph-exec-action-disable-rule') + '</option></optgroup>' +
                     '</select></div>' +
                     '<div class="fb-form-group pe-target-group' + this._hiddenClass(showPeriphGroup) + '">' +
-                    '<label>' + i18n.t('periph-exec-target-periph-label') + '</label>' +
-                    '<select class="pe-target-periph"><option value="">' + i18n.t('periph-exec-select-periph') + '</option></select></div>' +
+                    '<label>' + (isRuleCtrlAction ? i18n.t('periph-exec-target-rule-label') : i18n.t('periph-exec-target-periph-label')) + '</label>' +
+                    '<select class="pe-target-periph"><option value="">' + (isRuleCtrlAction ? i18n.t('periph-exec-select-rule') : i18n.t('periph-exec-select-periph')) + '</option></select></div>' +
                     '<div class="fb-form-group pe-modbus-ctrl-panel' + this._hiddenClass(isModbusTarget) + '"></div>' +
                     '<div class="fb-form-group pe-action-value-group' + this._hiddenClass(needsValue) + '">' +
                     '<label>' + i18n.t('periph-exec-action-value-label') + '</label>' +
@@ -203,7 +207,7 @@
                 this._populateSensorPeriphSelect(div, sensorCfg.sensorCategory || 'analog', sensorCfg.periphId || data.targetPeriphId || '');
             } else {
                 var initActType = parseInt(data.actionType);
-                this._populatePeriphSelect(div.querySelector('.pe-target-periph'), data.targetPeriphId || '', isPollMode, initActType === 21);
+                this._populatePeriphSelect(div.querySelector('.pe-target-periph'), data.targetPeriphId || '', isPollMode, initActType === 21, (initActType === 22 || initActType === 23));
             }
             if (!isPollMode && isModbusPoll && !isModbusTarget) this._populateModbusDevicePanel(div.querySelector('.pe-poll-tasks-list'), data.actionValue || '');
             if (isModbusTarget) this._showModbusCtrlPanel(div.querySelector('.pe-modbus-ctrl-panel'), data.targetPeriphId, data.actionValue || '');
@@ -411,9 +415,15 @@
             const isModbusPoll = actionType === 18;
             const isSensorRead = actionType === 19;
             const isTriggerEvent = actionType === 21;
-            const showTargetGroup = !((actionType >= 6 && actionType <= 11) || actionType === 15 || isModbusPoll || isTriggerEvent);
+            const isRuleCtrlAction = (actionType === 22 || actionType === 23);
+            const showTargetGroup = isRuleCtrlAction || !((actionType >= 6 && actionType <= 11) || actionType === 15 || isModbusPoll || isTriggerEvent);
             this._setSectionVisible(targetGroup, showTargetGroup);
-            const needsValue = (actionType >= 2 && actionType <= 5);
+            // 切换目标分组的 label 和空选项提示（规则 vs 外设）
+            if (targetGroup) {
+                var labelEl = targetGroup.querySelector('label');
+                if (labelEl) labelEl.textContent = isRuleCtrlAction ? i18n.t('periph-exec-target-rule-label') : i18n.t('periph-exec-target-periph-label');
+            }
+            const needsValue = !isRuleCtrlAction && (actionType >= 2 && actionType <= 5);
             this._setSectionVisible(valueGroup, needsValue);
             this._setSectionVisible(scriptGroup, actionType === 15);
             if (pollTasksGroup) {
@@ -432,7 +442,7 @@
             }
             if (targetGroup && !targetGroup.classList.contains('is-hidden')) {
                 var peSelect = block.querySelector('.pe-target-periph');
-                this._populatePeriphSelect(peSelect, peSelect ? peSelect.value : '', this._isPollTriggerActive(), isTriggerEvent);
+                this._populatePeriphSelect(peSelect, peSelect ? peSelect.value : '', this._isPollTriggerActive(), isTriggerEvent, isRuleCtrlAction);
             }
             // 使用接收值: 仅在平台触发+设置+需要数值的动作类型时显示
             const recvGroup = block.querySelector('.pe-use-received-value-group');
@@ -453,21 +463,52 @@
         _populateEventCategoriesInBlock(blockEl, eventIdToSet, compareValue) {
             const sel = blockEl.querySelector('.pe-event-category');
             if (!sel) return;
-            var isDs = eventIdToSet && String(eventIdToSet).indexOf('ds:') === 0;
-            var isMc = eventIdToSet && String(eventIdToSet).indexOf('mc:') === 0;
-            apiGet('/api/periph-exec/events/categories').then(res => {
-                if (!res || !res.success || !res.data) return;
-                let opts = '<option value="">' + i18n.t('periph-exec-select-category') + '</option>';
-                res.data.forEach(cat => {
-                    const translatedCat = i18n.t('event-cat-' + cat.name) || cat.name;
+            var eventId = eventIdToSet ? String(eventIdToSet) : '';
+            var isDs = eventId && eventId.indexOf('ds:') === 0;
+            var isMc = eventId && eventId.indexOf('mc:') === 0;
+            var isBtn = eventId && eventId.indexOf('button_') === 0;
+            var self = this;
+            // 并行加载分类列表与事件列表，以便从 eventId 推导类别
+            Promise.all([
+                apiGet('/api/periph-exec/events/categories'),
+                (isDs || isMc || isBtn || !eventId) ? Promise.resolve(null) : apiGet('/api/periph-exec/events/static'),
+                (isDs || isMc || isBtn || !eventId) ? Promise.resolve(null) : apiGet('/api/periph-exec/events/dynamic')
+            ]).then(function(results) {
+                var catRes = results[0];
+                var staticRes = results[1];
+                var dynamicRes = results[2];
+                if (!catRes || !catRes.success || !catRes.data) return;
+                var opts = '<option value="">' + i18n.t('periph-exec-select-category') + '</option>';
+                catRes.data.forEach(function(cat) {
+                    var translatedCat = i18n.t('event-cat-' + cat.name) || cat.name;
                     opts += '<option value="' + cat.name + '">' + translatedCat + '</option>';
                 });
                 sel.innerHTML = opts;
+
+                // 根据 eventId 推导 category
+                var resolvedCategory = '';
                 if (isDs || isMc) {
-                    sel.value = 'Modbus子设备';
-                    this._populateEventSelectInBlock(blockEl, 'Modbus子设备', eventIdToSet, compareValue);
+                    resolvedCategory = 'Modbus子设备';
+                } else if (isBtn) {
+                    resolvedCategory = '按键';
+                } else if (eventId) {
+                    // 先查静态事件表
+                    if (staticRes && staticRes.success && Array.isArray(staticRes.data)) {
+                        var found = staticRes.data.find(function(e) { return e.id === eventId; });
+                        if (found && found.category) resolvedCategory = found.category;
+                    }
+                    // 再查动态事件表（规则 ID / Modbus 控制事件等）
+                    if (!resolvedCategory && dynamicRes && dynamicRes.success && Array.isArray(dynamicRes.data)) {
+                        var foundD = dynamicRes.data.find(function(e) { return e.id === eventId; });
+                        if (foundD && foundD.category) resolvedCategory = foundD.category;
+                    }
+                }
+
+                if (resolvedCategory) {
+                    sel.value = resolvedCategory;
+                    self._populateEventSelectInBlock(blockEl, resolvedCategory, eventId, compareValue);
                 } else {
-                    this._populateEventSelectInBlock(blockEl, '', eventIdToSet, compareValue);
+                    self._populateEventSelectInBlock(blockEl, '', eventId, compareValue);
                 }
             });
         },

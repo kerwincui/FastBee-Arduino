@@ -135,6 +135,10 @@ public:
     // 按键事件检测（由 TaskManager 定时任务调用，用于检测按键类型事件）
     void checkButtonEvents();
 
+    // 查询是否存在启用中的按键事件规则（用于按键单击/双击检测优化）
+    // periphId: 按键外设 ID；eventId: 事件 ID（如 "button_double_click"）
+    bool hasButtonEventRule(const String& periphId, const String& eventId);
+
     // ========== 配置辅助方法（委托给 Scheduler） ==========
 
     // 获取有效触发类型列表（JSON数组格式）
@@ -284,6 +288,10 @@ private:
     SemaphoreHandle_t _pollIngressMutex = nullptr;    // 保护轮询注入节流状态
     std::map<String, unsigned long> _pollSourceLastAccepted;   // 最近一次接受的轮询数据时间
     std::map<String, unsigned long> _pollSourceLastThrottleLog; // 最近一次节流日志时间
+
+    // ========== 按键规则缓存（无锁，仅主循环线程读写） ==========
+    std::set<String> _buttonEventCache;  // 存储 "eventId" 或 "periphId:eventId"
+    void rebuildButtonEventCache();      // 规则变更时重建缓存
 
     // ========== 异步执行上下文对象池 ==========
     AsyncExecContextPool _contextPool;          // 固定大小的上下文对象池

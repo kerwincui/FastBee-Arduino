@@ -313,6 +313,7 @@ bool PeriphExecManager::addRule(const PeriphExecRule& rule) {
         t.triggerCount = 0;
     }
     rules[newRule.id] = newRule;
+    rebuildButtonEventCache();
     LOGGER.infof("[PeriphExec] Added rule: %s (%s)", newRule.id.c_str(), newRule.name.c_str());
     return true;
 }
@@ -345,6 +346,7 @@ bool PeriphExecManager::updateRule(const String& id, const PeriphExecRule& rule)
         }
     }
     rules[id] = updated;
+    rebuildButtonEventCache();
     LOGGER.infof("[PeriphExec] Updated rule: %s", id.c_str());
     return true;
 }
@@ -358,6 +360,7 @@ bool PeriphExecManager::removeRule(const String& id) {
         return false;
     }
     rules.erase(it);
+    rebuildButtonEventCache();
     LOGGER.infof("[PeriphExec] Removed rule: %s", id.c_str());
     return true;
 }
@@ -384,6 +387,7 @@ bool PeriphExecManager::enableRule(const String& id) {
     auto it = rules.find(id);
     if (it == rules.end()) return false;
     it->second.enabled = true;
+    rebuildButtonEventCache();
     return true;
 }
 
@@ -393,7 +397,35 @@ bool PeriphExecManager::disableRule(const String& id) {
     auto it = rules.find(id);
     if (it == rules.end()) return false;
     it->second.enabled = false;
+    rebuildButtonEventCache();
     return true;
+}
+
+bool PeriphExecManager::hasButtonEventRule(const String& periphId, const String& eventId) {
+    // 无锁查询缓存（仅主循环线程调用，线程安全）
+    // 缓存中存储了 eventId（兼容任意按键）和 "periphId:eventId"（指定按键）
+    return _buttonEventCache.count(eventId) > 0 ||
+           _buttonEventCache.count(periphId + ":" + eventId) > 0;
+}
+
+void PeriphExecManager::rebuildButtonEventCache() {
+    // 在已持有 _rulesMutex 的上下文中调用，或在初始化时调用
+    _buttonEventCache.clear();
+    for (const auto& pair : rules) {
+        const PeriphExecRule& rule = pair.second;
+        if (!rule.enabled) continue;
+        for (const auto& trigger : rule.triggers) {
+            if (trigger.triggerType != static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER)) continue;
+            if (!trigger.eventId.startsWith("button_")) continue;
+            if (trigger.triggerPeriphId.isEmpty()) {
+                // 兼容任意按键
+                _buttonEventCache.insert(trigger.eventId);
+            } else {
+                // 指定按键外设
+                _buttonEventCache.insert(trigger.triggerPeriphId + ":" + trigger.eventId);
+            }
+        }
+    }
 }
 
 // ========== 持久化 ==========
@@ -614,6 +646,9 @@ bool PeriphExecManager::loadConfiguration() {
     }
 
     LOGGER.infof("[PeriphExec] Loaded %d rules (config v%d)", (int)rules.size(), configVersion);
+
+    // 重建按键规则缓存（初始化时无锁竞争，安全调用）
+    rebuildButtonEventCache();
 
     // v1/v2 自动升级为 v3
     if (configVersion < 3) {
@@ -933,19 +968,10 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
         }
     }
 
-    // 用户指定同步执行（per-action 或 rule-level 向后兼容）
-    bool hasSyncAction = false;
-    for (const auto& a : rule.actions) {
-        if (a.execMode == static_cast<uint8_t>(ExecMode::EXEC_SYNC)) {
-            hasSyncAction = true;
-            break;
-        }
-    }
-    if (hasSyncAction || rule.execMode == static_cast<uint8_t>(ExecMode::EXEC_SYNC)) {
-        LOGGER.infof("[PeriphExec] Sync execute (user config): '%s'", rule.name.c_str());
-        executeSyncWithCompletion(rule, receivedValue);
-        return;
-    }
+    // 用户指定同步执行（per-action 或 rule-level）
+    // 注意："同步"指规则内动作串行执行（非并行），但规则本身仍应在独立任务中运行
+    // 避免阻塞主循环（如流水灯 7s delay 不应卡死 TaskManager 导致按键失效）
+    // 唯一真正需要在主循环中同步执行的是系统动作（重启/恢复出厂，已在上方处理）
 
     // 检查任务是否已在运行中（防止重复分发）
     {
@@ -1164,6 +1190,10 @@ std::vector<ActionExecResult> PeriphExecManager::executeAllActions(
 
 // 同步执行并触发完成事件（用于同步降级路径，确保链式执行正常工作）
 void PeriphExecManager::executeSyncWithCompletion(const PeriphExecRule& rule, const String& receivedValue) {
+    // 注意：不在此处检查 shouldAvoidSyncFallback，因为：
+    // 1. 用户明确配置同步执行的规则应被允许（从 dispatchAsync 的 user-config 路径调用）
+    // 2. 系统回退路径已在 dispatchAsync() 中通过 shouldAvoidSyncFallback() 拦截
+
     // 1. 加入运行中集合防重入
     {
         MutexGuard runLock(_runningRulesMutex);
@@ -1233,24 +1263,27 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
     std::vector<String> triggeredRuleIds;
     triggeredRuleIds.reserve(4);  // 预分配避免 push_back 时重新分配
 
+    // 第一阶段：收集候选规则（短持锁，避免嵌套锁）
+    struct CandidateRule {
+        String id;
+        String name;
+        bool needsModbus;
+        size_t triggerIdx;
+    };
+    std::vector<CandidateRule> candidates;
+    candidates.reserve(4);
+
     {
-        MutexGuard lock(_rulesMutex);
+        MutexGuard lock(_rulesMutex, pdMS_TO_TICKS(100));
+        if (!lock.isLocked()) return;  // 获取失败则跳过本轮
 
         for (auto& pair : rules) {
             PeriphExecRule& rule = pair.second;
             if (!rule.enabled) continue;
 
-            // 检查失败退避：如果上次执行失败且未过退避期，跳过
-            {
-                MutexGuard runLock(_runningRulesMutex);
-                auto it = _failureBackoff.find(rule.id);
-                if (it != _failureBackoff.end() && now < it->second) {
-                    continue;  // 仍在退避期内
-                }
-            }
-
             // 遍历触发器，寻找定时触发或轮询触发类型
-            for (auto& trigger : rule.triggers) {
+            for (size_t ti = 0; ti < rule.triggers.size(); ti++) {
+                auto& trigger = rule.triggers[ti];
                 uint8_t tt = trigger.triggerType;
                 if (tt != static_cast<uint8_t>(ExecTriggerType::TIMER_TRIGGER) &&
                     tt != static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER)) continue;
@@ -1282,31 +1315,12 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
                 }
 
                 if (shouldTrigger) {
-                    // 检查规则是否需要 Modbus，以及 Modbus 是否可用
-                    bool needsModbus = ruleNeedsModbus(rule);
-
-                    // 如果需要 Modbus 但不可用，跳过本次触发并记录警告
-                    if (needsModbus && !modbusAvailable) {
-                        LOGGER.warningf("[PeriphExec] Skip timer '%s': Modbus not available", rule.name.c_str());
-                        continue;
-                    }
-
-                    // 检查任务是否已在运行中
-                    bool alreadyRunning = false;
-                    {
-                        MutexGuard runLock(_runningRulesMutex);
-                        alreadyRunning = (_runningRuleIds.count(rule.id) > 0);
-                    }
-
-                    if (alreadyRunning) {
-                        LOGGER.warningf("[PeriphExec] Skip timer '%s': task already running", rule.name.c_str());
-                        continue;
-                    }
-
-                    LOGGER.infof("[PeriphExec] Timer triggered: '%s'", rule.name.c_str());
-                    trigger.lastTriggerTime = now;
-                    trigger.triggerCount++;
-                    triggeredRuleIds.push_back(rule.id);
+                    CandidateRule c;
+                    c.id = rule.id;
+                    c.name = rule.name;
+                    c.needsModbus = ruleNeedsModbus(rule);
+                    c.triggerIdx = ti;
+                    candidates.push_back(c);
                     break;  // 一个触发器匹配即可触发该规则
                 }
             }
@@ -1314,7 +1328,48 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
     }
     // 锁已释放
 
-    // 阶段2: 无锁异步分发（定时触发无接收值）
+    // 第二阶段：锁外检查运行状态和退避，避免嵌套锁阻塞
+    for (const auto& c : candidates) {
+        // 检查 Modbus 可用性
+        if (c.needsModbus && !modbusAvailable) {
+            LOGGER.warningf("[PeriphExec] Skip timer '%s': Modbus not available", c.name.c_str());
+            continue;
+        }
+
+        // 检查失败退避和运行状态
+        bool skip = false;
+        {
+            MutexGuard runLock(_runningRulesMutex, pdMS_TO_TICKS(10));
+            if (runLock.isLocked()) {
+                auto it = _failureBackoff.find(c.id);
+                if (it != _failureBackoff.end() && now < it->second) {
+                    skip = true;  // 仍在退避期内
+                }
+                if (!skip && _runningRuleIds.count(c.id) > 0) {
+                    LOGGER.warningf("[PeriphExec] Skip timer '%s': task already running", c.name.c_str());
+                    skip = true;
+                }
+            }
+        }
+        if (skip) continue;
+
+        // 更新触发时间戳（需要短暂重新获取 rulesMutex）
+        {
+            MutexGuard lock(_rulesMutex, pdMS_TO_TICKS(20));
+            if (lock.isLocked()) {
+                auto it = rules.find(c.id);
+                if (it != rules.end() && c.triggerIdx < it->second.triggers.size()) {
+                    it->second.triggers[c.triggerIdx].lastTriggerTime = now;
+                    it->second.triggers[c.triggerIdx].triggerCount++;
+                }
+            }
+        }
+
+        LOGGER.infof("[PeriphExec] Timer triggered: '%s'", c.name.c_str());
+        triggeredRuleIds.push_back(c.id);
+    }
+
+    // 阶段3: 无锁异步分发（定时触发无接收值）
     for (const auto& ruleId : triggeredRuleIds) {
         dispatchByRuleId(ruleId, "");
     }
@@ -1452,7 +1507,11 @@ void PeriphExecManager::dispatchButtonEventRules(const String& eventId, const St
     std::vector<String> triggeredRuleIds;
 
     {
-        MutexGuard lock(_rulesMutex);
+        MutexGuard lock(_rulesMutex, pdMS_TO_TICKS(50));
+        if (!lock.isLocked()) {
+            LOGGER.debug("[PeriphExec] Button dispatch: mutex busy, will retry next cycle");
+            return;  // 下次 checkButtonEvents 会再次触发
+        }
 
         for (auto& pair : rules) {
             PeriphExecRule& rule = pair.second;

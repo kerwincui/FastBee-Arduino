@@ -225,6 +225,11 @@ bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const Strin
     if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL)) {
         return executeCallPeripheralAction(action, effectiveValue);
     }
+    // 外设执行规则启用/禁用 (actionType 22/23)
+    if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_ENABLE_EXEC_RULE) ||
+        action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_DISABLE_EXEC_RULE)) {
+        return executeRuleControlAction(action);
+    }
     // 外设动作（GPIO、Modbus子设备等统一由 PeripheralManager 管理）
     return executePeripheralAction(action, effectiveValue);
 }
@@ -1053,6 +1058,33 @@ bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, c
         LOGGER.warningf("[PeriphExec] Call peripheral: unknown action '%s'", actionCmd);
         return false;
     }
+}
+
+// ========== 规则控制动作（启用/禁用外设执行规则）==========
+
+bool PeriphExecExecutor::executeRuleControlAction(const ExecAction& action) {
+    if (!_manager) {
+        LOGGER.warning("[PeriphExec] Rule control: manager not initialized");
+        return false;
+    }
+    const String& ruleId = action.targetPeriphId;
+    if (ruleId.isEmpty()) {
+        LOGGER.warning("[PeriphExec] Rule control: no target rule ID");
+        return false;
+    }
+
+    bool enable = (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_ENABLE_EXEC_RULE));
+    bool ok = enable ? _manager->enableRule(ruleId) : _manager->disableRule(ruleId);
+    if (ok) {
+        // 状态变化后持久化
+        _manager->saveConfiguration();
+        LOGGER.infof("[PeriphExec] Rule control: %s rule '%s' success",
+                     enable ? "enable" : "disable", ruleId.c_str());
+    } else {
+        LOGGER.warningf("[PeriphExec] Rule control: %s rule '%s' failed (not found)",
+                        enable ? "enable" : "disable", ruleId.c_str());
+    }
+    return ok;
 }
 
 // ========== 工具方法 ==========

@@ -39,7 +39,9 @@ enum class ExecActionType : uint8_t {
     ACTION_MODBUS_POLL = 18,        // Modbus 轮询子设备采集 (由 PeriphExec 调度)
     ACTION_SENSOR_READ = 19,        // 传感器数据读取 (模拟/数字/脉冲)
     ACTION_BUZZER_BEEP = 20,        // 蜂鸣器预设节奏 (actionValue: beep/long/alarm/sos，默认 beep)
-    ACTION_TRIGGER_EVENT = 21       // 触发设备事件（targetPeriphId 为事件 ID；系统内置事件 ID 或 DEVICE_EVENT 外设 ID；actionValue 为事件额外数据）
+    ACTION_TRIGGER_EVENT = 21,      // 触发设备事件（targetPeriphId 为事件 ID；系统内置事件 ID 或 DEVICE_EVENT 外设 ID；actionValue 为事件额外数据）
+    ACTION_ENABLE_EXEC_RULE = 22,   // 启用指定外设执行规则（targetPeriphId 为规则 ID）
+    ACTION_DISABLE_EXEC_RULE = 23   // 禁用指定外设执行规则（targetPeriphId 为规则 ID）
 };
 
 // 传感器类别枚举
