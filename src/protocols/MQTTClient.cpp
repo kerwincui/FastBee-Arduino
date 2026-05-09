@@ -248,11 +248,14 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
 
     // clientId 若配置文件未指定，按 FastBee 认证格式自动生成：认证类型&设备编号&产品编号&用户ID
     if (cfg["clientId"].isNull() || cfg["clientId"].as<String>().isEmpty()) {
-        // 如果 deviceNum 仍为空，生成 FBE+MAC
+        // 如果 deviceNum 仍为空，生成 FBE+MAC（启动期 ensureDeviceIdentity() 应已保证非空，
+        // 此处进入说明 device.json 的 deviceId 字段缺失或被异常清空，追加警告帮助诊断）
         if (config.deviceNum.isEmpty()) {
             String mac = WiFi.macAddress();
             mac.replace(":", "");
             config.deviceNum = "FBE" + mac;
+            LOG_WARNINGF("[MQTT] deviceNum empty after loadConfig, fallback to %s (check device.json)",
+                         config.deviceNum.c_str());
         }
         // productId 为空时使用默认值 "1"
         if (config.productId.isEmpty()) {

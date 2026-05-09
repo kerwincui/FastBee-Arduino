@@ -12,6 +12,7 @@
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <WiFi.h>
+#include <memory>
 
 SystemRouteHandler::SystemRouteHandler(WebHandlerContext* ctx)
     : ctx(ctx) {
@@ -200,90 +201,183 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         if (!file) { ctx->sendError(request, 500, "Failed to open file"); return; }
         size_t fileSize = file.size();
         if (fileSize > 128 * 1024) { file.close(); ctx->sendError(request, 413, "File too large (max 128KB)"); return; }
-    
-        // 堆内存检查
-        size_t freeHeap = ESP.getFreeHeap();
-        if (freeHeap < 30000) {
-            file.close();
-            HandlerUtils::sendJsonError(request, 503, "Low memory");
-            return;
-        }
-    
-        // 第一遍扫描：精确计算 JSON 转义后的大小
-        size_t escapedSize = 0;
-        size_t rawSize = 0;
-        {
-            uint8_t scanBuf[256];
-            while (file.available() && rawSize < fileSize) {
-                int toRead = std::min((size_t)sizeof(scanBuf), fileSize - rawSize);
-                int bytesRead = file.read(scanBuf, toRead);
-                if (bytesRead <= 0) break;
-                rawSize += bytesRead;
-                for (int i = 0; i < bytesRead; i++) {
-                    char c = (char)scanBuf[i];
-                    if (c == '"' || c == '\\') escapedSize += 2;
-                    else if (c == '\n' || c == '\r' || c == '\t') escapedSize += 2;
-                    else if (c >= 0x20) escapedSize += 1;
-                }
-            }
-        }
-    
-        size_t totalJsonSize = escapedSize + path.length() + 128;
-    
-        size_t availableForJson = freeHeap - 20000;
-        if (totalJsonSize > availableForJson) {
-            size_t maxEscaped = availableForJson - 128 - path.length();
-            size_t maxRaw = (rawSize > 0 && escapedSize > 0)
-                ? (size_t)((double)maxEscaped * rawSize / escapedSize)
-                : maxEscaped;
-            if (maxRaw > rawSize) maxRaw = rawSize;
-            rawSize = maxRaw;
-            escapedSize = maxEscaped;
-            totalJsonSize = availableForJson;
-        }
-        if (totalJsonSize > 65536) {
-            file.close();
-            HandlerUtils::sendJsonError(request, 413, "Escaped content too large");
-            return;
-        }
-    
-        file.seek(0);
-    
-        String json;
-        json.reserve(totalJsonSize + 64);
-        json += F("{\"success\":true,\"data\":{\"path\":\"");
-        json += path;
-        json += F("\",\"size\":");
-        json += String((unsigned int)fileSize);
-        json += F(",\"content\":\"");
-    
-        uint8_t readBuf[256]; size_t totalRead = 0;
-        while (file.available() && totalRead < rawSize) {
-            int toRead = std::min((size_t)sizeof(readBuf), rawSize - totalRead);
-            int bytesRead = file.read(readBuf, toRead);
-            if (bytesRead <= 0) break;
-            totalRead += bytesRead;
-            for (int i = 0; i < bytesRead; i++) {
-                char c = (char)readBuf[i];
-                switch (c) {
-                    case '"':  json += F("\\\""); break;
-                    case '\\': json += F("\\\\"); break;
-                    case '\n': json += F("\\n"); break;
-                    case '\r': json += F("\\r"); break;
-                    case '\t': json += F("\\t"); break;
-                    default: if (c >= 0x20) json += c; break;
-                }
-            }
-        }
-        file.close();
-        json += F("\"}}");
 
-        if (json.length() < 20 || !json.endsWith("}}")) {
-            HandlerUtils::sendJsonError(request, 503, "Response truncated, low memory");
+        // ★ Raw 快速路径：raw=1 时直接 chunked 流式回传文件原始字节（无 JSON 包装、无转义）
+        // 用于配置文件导出场景：即使设备处于 MemGuard CRITICAL 级也能成功下载，
+        // 内存开销仅~256B TCP 发送缓冲 + File 句柄，脱敏由前端在浏览器本地完成。
+        bool rawDownload = request->hasParam("raw") && request->getParam("raw")->value() == "1";
+        if (rawDownload) {
+            auto state = std::make_shared<File>(file);
+            AsyncWebServerResponse* resp = request->beginChunkedResponse(
+                "application/octet-stream",
+                [state](uint8_t* buffer, size_t maxLen, size_t /*index*/) -> size_t {
+                    if (!state || !(*state)) return 0;
+                    if (!state->available()) {
+                        state->close();
+                        return 0;
+                    }
+                    return state->read(buffer, maxLen);
+                });
+            if (!resp) {
+                file.close();
+                HandlerUtils::sendJsonError(request, 500, "Failed to create raw response");
+                return;
+            }
+            String fileName = path;
+            int lastSlash = fileName.lastIndexOf('/');
+            if (lastSlash >= 0) fileName = fileName.substring(lastSlash + 1);
+            resp->addHeader("Content-Disposition", String("attachment; filename=\"") + fileName + "\"");
+            resp->addHeader("X-Content-Type-Options", "nosniff");
+            resp->addHeader("Cache-Control", "no-store");
+            request->send(resp);
             return;
         }
-    
-        AsyncWebServerResponse* resp = request->beginResponse(200, "application/json", json);
+
+        // 文件分级（用于 MemGuard 策略决策）：
+        // - isTinyFile (≤ 4KB)：极小文件（device.json/network.json）
+        // - isConfigFile (/config/ 下 ≤ 16KB)：受保护配置文件（peripherals/protocol/periph_exec）
+        // - 其它：普通文件
+        const bool isTinyFile = (fileSize <= 4096);
+        const bool isConfigFile = path.startsWith("/config/") && (fileSize <= 16 * 1024);
+        const bool isProtectedFile = isTinyFile || isConfigFile;
+
+        // MemGuard 策略（chunked 流式响应，内存占用恒定 ~256B 缓冲 + 少量 state）：
+        // - 受保护文件（config/tiny）：无视 MemGuard 级别，始终放行（CRITICAL 级下也能救援导出）
+        // - 非受保护文件：CRITICAL 级全拒；SEVERE 级拒绝（避免大文件拖垮已濒临 OOM 的系统）
+        FastBeeFramework* fw = FastBeeFramework::getInstance();
+        if (fw && fw->getHealthMonitor() && !isProtectedFile) {
+            MemoryGuardLevel level = fw->getHealthMonitor()->getMemoryGuardLevel();
+            if (level >= MemoryGuardLevel::CRITICAL) {
+                file.close();
+                HandlerUtils::sendJsonError(request, 503, "Device memory critical, file read unavailable");
+                return;
+            }
+            if (level >= MemoryGuardLevel::SEVERE) {
+                file.close();
+                HandlerUtils::sendJsonError(request, 503, "Device memory low, large file read temporarily unavailable");
+                return;
+            }
+        }
+
+        // 堆内存最小阈值（chunked 流式仅需极少内存即可发送）：
+        // - 受保护文件：free ≥ 6KB, maxAlloc ≥ 2KB（仅需状态结构 + TCP 发送缓冲）
+        // - 非受保护大文件：free ≥ 20KB, maxAlloc ≥ 8KB
+        size_t freeHeap = ESP.getFreeHeap();
+        size_t maxAlloc = ESP.getMaxAllocHeap();
+        size_t minFreeHeap = isProtectedFile ? 6000  : 20000;
+        size_t minMaxAlloc = isProtectedFile ? 2000  : 8000;
+        if (freeHeap < minFreeHeap || maxAlloc < minMaxAlloc) {
+            file.close();
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Low memory: heap=%u maxAlloc=%u", (unsigned)freeHeap, (unsigned)maxAlloc);
+            HandlerUtils::sendJsonError(request, 503, msg);
+            return;
+        }
+
+        // ============ Chunked 流式响应状态机 ============
+        // 避免一次性分配大 String，让 CRITICAL 级下的配置文件也能完整导出。
+        // 阶段：0=header, 1=content（读文件+转义）, 2=trailer "\"}}", 3=done
+        struct FileStreamState {
+            File file;
+            size_t fileSize = 0;
+            size_t rawPos = 0;
+            String header;
+            size_t headerPos = 0;
+            size_t trailerPos = 0;
+            // pendingBuf 缓存：当 buffer 剩余空间不足以写入 2 字节转义时，暂存到下次回调
+            uint8_t pendingBuf[4] = {0};
+            size_t pendingLen = 0;
+            size_t pendingHead = 0;
+            uint8_t phase = 0;
+        };
+
+        auto state = std::make_shared<FileStreamState>();
+        state->file = file;  // 移交文件句柄所有权
+        state->fileSize = fileSize;
+        state->header = F("{\"success\":true,\"data\":{\"path\":\"");
+        state->header += path;
+        state->header += F("\",\"size\":");
+        state->header += String((unsigned int)fileSize);
+        state->header += F(",\"content\":\"");
+
+        AsyncWebServerResponse* resp = request->beginChunkedResponse(
+            "application/json",
+            [state](uint8_t* buffer, size_t maxLen, size_t /*index*/) -> size_t {
+                size_t written = 0;
+                // ---- Phase 0: header ----
+                if (state->phase == 0) {
+                    size_t headerLen = state->header.length();
+                    while (state->headerPos < headerLen && written < maxLen) {
+                        size_t remain = headerLen - state->headerPos;
+                        size_t toCopy = (remain < (maxLen - written)) ? remain : (maxLen - written);
+                        memcpy(buffer + written, state->header.c_str() + state->headerPos, toCopy);
+                        state->headerPos += toCopy;
+                        written += toCopy;
+                    }
+                    if (state->headerPos >= headerLen) state->phase = 1;
+                    if (written > 0) return written;
+                }
+                // ---- Phase 1: 文件内容转义 ----
+                if (state->phase == 1) {
+                    // 优先消耗上次未能写入的转义字节
+                    while (state->pendingLen > 0 && written < maxLen) {
+                        buffer[written++] = state->pendingBuf[state->pendingHead++];
+                        state->pendingLen--;
+                    }
+                    if (state->pendingLen == 0) state->pendingHead = 0;
+
+                    uint8_t raw[64];
+                    while (written < maxLen && state->rawPos < state->fileSize && state->file.available()) {
+                        size_t canRead = std::min((size_t)sizeof(raw), state->fileSize - state->rawPos);
+                        int n = state->file.read(raw, canRead);
+                        if (n <= 0) break;
+                        state->rawPos += n;
+                        for (int i = 0; i < n; i++) {
+                            char c = (char)raw[i];
+                            char esc[2]; size_t escLen = 0;
+                            switch (c) {
+                                case '"':  esc[0]='\\'; esc[1]='"'; escLen=2; break;
+                                case '\\': esc[0]='\\'; esc[1]='\\'; escLen=2; break;
+                                case '\n': esc[0]='\\'; esc[1]='n'; escLen=2; break;
+                                case '\r': esc[0]='\\'; esc[1]='r'; escLen=2; break;
+                                case '\t': esc[0]='\\'; esc[1]='t'; escLen=2; break;
+                                default:
+                                    if ((uint8_t)c >= 0x20) { esc[0]=c; escLen=1; }
+                                    break;
+                            }
+                            if (escLen == 0) continue;  // 控制字符直接丢弃
+                            if (written + escLen <= maxLen) {
+                                for (size_t j = 0; j < escLen; j++) buffer[written++] = esc[j];
+                            } else {
+                                // buffer 装不下完整转义序列，暂存到 pendingBuf
+                                for (size_t j = 0; j < escLen; j++) {
+                                    state->pendingBuf[state->pendingLen++] = esc[j];
+                                }
+                            }
+                        }
+                        // buffer 写满且 pending 非空：退出，下次再来
+                        if (written >= maxLen) break;
+                    }
+                    if (state->rawPos >= state->fileSize && state->pendingLen == 0) {
+                        state->phase = 2;
+                    }
+                    if (written > 0) return written;
+                }
+                // ---- Phase 2: trailer "\"}}" ----
+                if (state->phase == 2) {
+                    static const char kTrailer[] = "\"}}";
+                    const size_t trailerLen = 3;
+                    while (state->trailerPos < trailerLen && written < maxLen) {
+                        buffer[written++] = (uint8_t)kTrailer[state->trailerPos++];
+                    }
+                    if (state->trailerPos >= trailerLen) state->phase = 3;
+                    if (written > 0) return written;
+                }
+                // ---- Phase 3: done ----
+                if (state->file) state->file.close();
+                return 0;
+            }
+        );
         request->send(resp);
     });
 
@@ -311,6 +405,17 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         file.close();
         if (written == content.length()) {
             LOGGER.infof("File saved via web: %s", path.c_str());
+
+            // 导入/保存配置后回填身份字段：当写入 device.json 或 protocol.json 时，
+            // 复用启动阶段的 ensureDeviceIdentity() 自动填充空的 deviceId / mqtt.clientId，
+            // 确保跨设备导入也能正确生成一致的设备标识。
+            if (path == "/config/device.json" || path == "/config/protocol.json") {
+                FastBeeFramework* fw = FastBeeFramework::getInstance();
+                if (fw) {
+                    fw->ensureDeviceIdentity();
+                }
+            }
+
             ctx->sendSuccess(request, "File saved successfully");
         } else { ctx->sendError(request, 500, "Failed to write complete file"); }
     });

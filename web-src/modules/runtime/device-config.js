@@ -131,6 +131,13 @@
             apiPut('/api/device/config', config)
                 .then(res => {
                     if (res && res.success) {
+                        // 后端可能自动生成了新的 deviceId（FBE+MAC），立即回填输入框
+                        if (res.data && res.data.deviceId && deviceIdInput) {
+                            deviceIdInput.value = res.data.deviceId;
+                        }
+                        if (typeof window.apiInvalidateCache === 'function') {
+                            window.apiInvalidateCache('/api/device/config');
+                        }
                         this._showMessage('dev-basic-success', true);
                         Notification.success(i18n.t('dev-save-basic-ok'), i18n.t('dev-config-title'));
                     } else {

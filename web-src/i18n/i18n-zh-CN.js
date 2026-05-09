@@ -600,6 +600,7 @@
         'fs-file-load-fail': '加载失败',
         'fs-file-load-fail-prefix': '加载失败: ',
         'fs-file-unknown-error': '未知错误',
+        'fs-file-empty-response': ' (服务器响应为空，设备可能内存不足，请稍后重试)',
         'fs-saving-text': '保存中...',
         'fs-save-ok-text': '保存成功',
         'fs-save-fail-prefix': '保存失败: ',

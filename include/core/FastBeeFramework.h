@@ -101,6 +101,13 @@ public:
     RoleManager* getRoleManager() const;
     ProtocolManager* getProtocolManager() const;
     
+    /**
+     * @brief 检测并回填设备身份标识（deviceId 和 MQTT clientId）
+     *        空值时使用与 Web 保存逻辑一致的规则自动生成并写回 JSON 文件
+     *        可在启动阶段以及导入配置后调用
+     */
+    void ensureDeviceIdentity();
+    
 private:
     // 私有方法 - 初始化阶段拆分
     bool initStorageAndFS();           // 阶段 1: 存储和文件系统

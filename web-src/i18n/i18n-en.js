@@ -599,6 +599,7 @@
         'fs-file-load-fail': 'Load failed',
         'fs-file-load-fail-prefix': 'Load failed: ',
         'fs-file-unknown-error': 'Unknown error',
+                'fs-file-empty-response': ' (Empty server response, device may be low on memory, please retry later)',
         'fs-saving-text': 'Saving...',
         'fs-save-ok-text': 'Saved',
         'fs-save-fail-prefix': 'Save failed: ',

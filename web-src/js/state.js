@@ -259,7 +259,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             'periph-exec': () => { this.loadPeriphExecPage(); },
             protocol: () => { this.loadProtocolConfig('mqtt'); if (this._startMqttStatusPolling) this._startMqttStatusPolling(); },
             'rule-script': () => { this.loadRuleScriptPage(); },
-            data: () => { if (typeof this.setupFilesEvents === 'function' && !this._filesEventsBound) { this.setupFilesEvents(); this._filesEventsBound = true; } this.loadFileTree(this._currentDir || '/'); this.loadFileSystemInfo(); },
+            data: () => { if (typeof this.setupFilesEvents === 'function') { this.setupFilesEvents(); } this.loadFileTree(this._currentDir || '/'); this.loadFileSystemInfo(); },
             logs: () => {
                 if (!this._currentLogFile) {
                     this._currentLogFile = 'system.log';

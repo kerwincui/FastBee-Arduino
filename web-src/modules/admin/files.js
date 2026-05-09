@@ -6,26 +6,26 @@
     AppState.registerModule('files', {
 
         // ============ 事件绑定 ============
+        // 使用 onclick 属性赋值（而非 addEventListener）：onclick 同一时间仅能持有一个处理器，
+        // 即使 setupFilesEvents 被多次调用或 DOM 节点被重新渲染，也能确保每个按钮仅响应一次。
         setupFilesEvents() {
-            if (this._filesEventsBound) return;
+            var self = this;
 
             // 刷新文件列表按钮
             const fsRefreshBtn = document.getElementById('fs-refresh-btn');
-            if (fsRefreshBtn) fsRefreshBtn.addEventListener('click', () => this.loadFileTree(this._currentDir || '/'));
+            if (fsRefreshBtn) fsRefreshBtn.onclick = function() { self.loadFileTree(self._currentDir || '/'); };
 
             // 返回上级按钮
             const fsUpBtn = document.getElementById('fs-up-btn');
-            if (fsUpBtn) fsUpBtn.addEventListener('click', () => this.navigateUp());
+            if (fsUpBtn) fsUpBtn.onclick = function() { self.navigateUp(); };
 
             // 导出配置按钮
             const exportBtn = document.getElementById('fs-export-config-btn');
-            if (exportBtn) exportBtn.addEventListener('click', () => this.exportConfigFile());
+            if (exportBtn) exportBtn.onclick = function() { self.exportConfigFile(); };
 
             // 导入配置按钮
             const importBtn = document.getElementById('fs-import-config-btn');
-            if (importBtn) importBtn.addEventListener('click', () => this.importConfigFile());
-
-            this._filesEventsBound = true;
+            if (importBtn) importBtn.onclick = function() { self.importConfigFile(); };
         },
 
         // ============ 文件管理 ============
@@ -167,21 +167,39 @@
             if (exportBtn) exportBtn.classList.toggle('fb-hidden', !isConfigJson);
             if (importBtn) importBtn.classList.toggle('fb-hidden', !isConfigJson);
 
+            // ★ 状态立即同步：一旦用户选中文件，_currentFilePath 即更新
+            // （不等待内容加载成功），确保导出/导入始终作用于用户伸手选中的目标，
+            // 而不会被上一个文件的遗留状态“偽装”。
+            pathSpan.textContent = path;
+            this._currentFilePath = path;
+
+            // 先清空编辑器内容，避免用户误以为旧内容属于新选中文件
+            editor.value = '';
+            editor.readOnly = true;
+
             if (!editable) {
                 statusDiv.textContent = i18n.t('fs-file-type-unsupported');
                 return;
             }
 
-            pathSpan.textContent = path;
             statusDiv.textContent = i18n.t('fs-file-loading');
 
             apiGet('/api/files/content', { path: path })
                 .then(res => {
+                    // 异步回调期间用户可能已选中别的文件，丢弃过时响应
+                    if (this._currentFilePath !== path) return;
+
                     if (!res || !res.success) {
+                        // 优先使用服务器返回的 message/error 字段
                         var detail = (res && res.message) ? ' (' + res.message + ')'
                                    : (res && res.error) ? ' (' + res.error + ')'
                                    : '';
-                        statusDiv.textContent = i18n.t('fs-file-load-fail-prefix') + (detail || i18n.t('fs-file-unknown-error'));
+                        if (!detail) {
+                            detail = res && typeof res === 'object' && Object.keys(res).length === 0
+                                   ? (i18n.t('fs-file-empty-response') || ' (服务器响应为空，设备可能内存不足，请稍后重试)')
+                                   : (' (' + i18n.t('fs-file-unknown-error') + ')');
+                        }
+                        statusDiv.textContent = i18n.t('fs-file-load-fail-prefix') + detail;
                         return;
                     }
 
@@ -194,15 +212,20 @@
                                 data.size < 1024 * 1024 ? `${(data.size / 1024).toFixed(1)} KB` :
                                 `${(data.size / 1024 / 1024).toFixed(2)} MB`;
                     statusDiv.textContent = `${i18n.t('fs-file-ready-prefix')}${size}${i18n.t('fs-file-ready-suffix')}`;
-
-                    this._currentFilePath = path;
                 })
                 .catch(err => {
+                    if (this._currentFilePath !== path) return;
                     console.error('Open file failed:', err);
                     var msg = i18n.t('fs-file-load-fail');
-                    if (err && err.status) msg += ' (HTTP ' + err.status + ')';
-                    else if (err && err.message) msg += ' (' + err.message + ')';
-                    statusDiv.textContent = msg;
+                    var detail = '';
+                    if (err && err.data && (err.data.message || err.data.error)) {
+                        detail = ' (' + (err.data.message || err.data.error) + ')';
+                    } else if (err && err.status) {
+                        detail = ' (HTTP ' + err.status + ')';
+                    } else if (err && err.message) {
+                        detail = ' (' + err.message + ')';
+                    }
+                    statusDiv.textContent = msg + detail;
                 });
         },
 
@@ -236,42 +259,139 @@
 
         /**
          * 导出当前配置文件（下载为本地 JSON 文件）
+         *
+         * 内存友好策略：优先走后端 raw=1 流式接口。
+         * - raw=1：后端 chunked 流式返回原始字节，无 JSON 包装、设备内存占用 ~数百 B，
+         *   即使 MemGuard CRITICAL 级也能下载，根本不依赖文件是否成功打开。
+         * - 脱敏（清空 deviceId / clientId）在浏览器本地完成，不消耗设备内存。
+         * - 如果 raw 也失败（如权限不足），冒着降级操作使用编辑器内容。
          */
         exportConfigFile() {
+            var self = this;
             var filePath = this._currentFilePath;
             if (!filePath) {
                 Notification.warning(i18n.t('fs-no-file-selected') || '请先选择一个配置文件');
                 return;
             }
 
-            var editor = document.getElementById('file-editor');
-            if (!editor || !editor.value) {
-                Notification.warning(i18n.t('fs-editor-empty') || '文件内容为空');
-                return;
-            }
-
-            // 验证 JSON 格式
+            // ★ 优先走 raw 流式下载：无需加载到编辑器，内存不足时仍可成功
+            // 注意：项目用 Authorization: Bearer <token> 认证（token 存在 localStorage），
+            // 原生 fetch 必须手动带上此 header，否则后端返回 401 Unauthorized。
+            var rawUrl = '/api/files/content?path=' + encodeURIComponent(filePath) + '&raw=1';
+            var headers = {};
             try {
-                JSON.parse(editor.value);
+                var token = localStorage.getItem('auth_token');
+                if (token) headers['Authorization'] = 'Bearer ' + token;
+            } catch (tokErr) {}
+            fetch(rawUrl, { credentials: 'include', headers: headers, cache: 'no-store' })
+                .then(function(resp) {
+                    if (!resp.ok) {
+                        throw new Error('HTTP ' + resp.status);
+                    }
+                    return resp.text();
+                })
+                .then(function(rawContent) {
+                    self._doExport(filePath, rawContent);
+                })
+                .catch(function(err) {
+                    console.warn('Raw export failed, falling back to editor content:', err);
+                    // 降级元备方案：用已加载的编辑器内容（若有）
+                    var editor = document.getElementById('file-editor');
+                    if (editor && editor.value) {
+                        self._doExport(filePath, editor.value);
+                        return;
+                    }
+                    Notification.error(
+                        (i18n.t('fs-export-fetch-fail') || '无法从设备获取配置内容') +
+                        ' (' + (err && err.message ? err.message : 'unknown') + ')'
+                    );
+                });
+        },
+
+        /**
+         * 实际执行导出动作（脱敏→格式化→下载）
+         *
+         * 关键实现要点：
+         * - 延迟释放 object URL：浏览器的下载触发是异步的，若在 a.click() 后立即 revokeObjectURL，
+         *   浏览器可能还没来得及读取 Blob 就被销毁导致下载静默失败。
+         * - msSaveBlob 兑底：老 IE / 旧 Edge 不支持 a.download。
+         * - try/catch 包裹：捕获 Blob / URL API 异常并提示用户（之前版本任何异常都会被后续的 success 通知掉包裹掉）。
+         */
+        _doExport(filePath, rawContent) {
+            // 验证 JSON 格式
+            var parsed;
+            try {
+                parsed = JSON.parse(rawContent);
             } catch (e) {
                 Notification.error(i18n.t('fs-invalid-json') || '文件内容不是有效的 JSON 格式');
                 return;
             }
 
+            // 导出时脱敏：清空设备相关的唯一标识，便于跨设备复用配置模板
+            // - device.json：清空 deviceId
+            // - protocol.json：清空 mqtt.clientId
+            // 导入到目标设备时，后端会自动按 "FBE+MAC" / "S&deviceId&productId&userId" 规则回填
+            try {
+                if (filePath === '/config/device.json' && parsed && typeof parsed === 'object') {
+                    if ('deviceId' in parsed) parsed.deviceId = '';
+                }
+                if (filePath === '/config/protocol.json' && parsed && typeof parsed === 'object') {
+                    if (parsed.mqtt && typeof parsed.mqtt === 'object' && 'clientId' in parsed.mqtt) {
+                        parsed.mqtt.clientId = '';
+                    }
+                }
+            } catch (sanitizeErr) {
+                console.warn('Sanitize export content failed:', sanitizeErr);
+            }
+
+            // 使用 2 空格缩进，保持可读性
+            var exportText = JSON.stringify(parsed, null, 2);
+
             // 提取文件名
             var parts = filePath.split('/');
             var fileName = parts[parts.length - 1] || 'config.json';
 
-            var blob = new Blob([editor.value], { type: 'application/json' });
-            var url = URL.createObjectURL(blob);
-            var a = document.createElement('a');
-            a.href = url;
-            a.download = fileName;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            Notification.success(i18n.t('fs-export-ok') || '配置导出成功');
+            try {
+                var blob = new Blob([exportText], { type: 'application/json;charset=utf-8' });
+
+                // 旧 IE / 旧 Edge 兑底：不支持 a.download
+                if (window.navigator && typeof window.navigator.msSaveBlob === 'function') {
+                    window.navigator.msSaveBlob(blob, fileName);
+                    Notification.success(i18n.t('fs-export-ok') || '配置导出成功');
+                    return;
+                }
+
+                var url = URL.createObjectURL(blob);
+                var a = document.createElement('a');
+                a.href = url;
+                a.download = fileName;
+                a.rel = 'noopener';
+                a.style.display = 'none';
+                document.body.appendChild(a);
+
+                // 触发下载
+                a.click();
+
+                // ★ 延迟清理：a.click() 在浏览器内部以异步方式触发下载，
+                // 立即 revokeObjectURL 会让部分浏览器（尤其 Firefox / Safari）读不到 Blob
+                // 内容而静默失败；延迟 ≥ 100ms 可避免这一种种子。
+                setTimeout(function() {
+                    try {
+                        if (a.parentNode) a.parentNode.removeChild(a);
+                        URL.revokeObjectURL(url);
+                    } catch (cleanupErr) {
+                        console.warn('Cleanup export anchor failed:', cleanupErr);
+                    }
+                }, 250);
+
+                Notification.success(i18n.t('fs-export-ok') || '配置导出成功');
+            } catch (downloadErr) {
+                console.error('Export download failed:', downloadErr);
+                Notification.error(
+                    (i18n.t('fs-export-fail') || '配置导出失败') +
+                    ' (' + (downloadErr && downloadErr.message ? downloadErr.message : 'unknown') + ')'
+                );
+            }
         },
 
         /**
@@ -321,11 +441,13 @@
                     }
 
                     // 上传到设备
-                    apiPost('/api/files/content', { path: filePath, content: content })
+                    // 注意：后端实现的写入接口是 /api/files/save（需要 config.edit 权限），
+                    // 保存 device.json / protocol.json 时后端会自动回填空的 deviceId / mqtt.clientId
+                    apiPost('/api/files/save', { path: filePath, content: content })
                         .then(function(res) {
                             if (res && res.success) {
                                 Notification.success(i18n.t('fs-import-ok') || '配置导入成功');
-                                // 刷新编辑器显示
+                                // 刷新编辑器显示（会读到已回填的身份字段）
                                 self.openFile(filePath);
                             } else {
                                 Notification.error(

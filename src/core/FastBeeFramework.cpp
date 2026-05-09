@@ -325,6 +325,14 @@ bool FastBeeFramework::initialize() {
     }
     LOGGER.infof("[Boot] HealthMonitor: %lu ms", millis() - stepStart);
     
+    // 步骤10.5: 确保设备身份标识（deviceId / MQTT clientId 空值自动生成并写回 JSON 配置）
+    // 依赖：LittleFS（STEP1）、Logger（STEP2）、WiFi 栏已起（STEP4/STEP7-E 后 MAC 可读）
+    // 必须在 ProtocolManager (STEP11) 之前，确保 MQTTClient loadMqttConfig() 读取到已回填的配置
+    stepStart = millis();
+    LOG_INFO("[STEP10.5] Ensuring device identity...");
+    ensureDeviceIdentity();
+    LOGGER.infof("[Boot] ensureDeviceIdentity: %lu ms", millis() - stepStart);
+    
     // 步骤11: 初始化协议管理器
     stepStart = millis();
     LOG_INFO("[STEP11] Initializing ProtocolManager...");
@@ -1120,4 +1128,123 @@ void FastBeeFramework::syncTimeFromConfig() {
 
     // 确保时区设置生效
     tzset();
+}
+
+// 启动时回填 deviceId 和 MQTT clientId（与 DeviceRouteHandler / ProtocolRouteHandler 的自动生成逻辑一致）
+// - deviceId 为空时：使用 "FBE" + MAC（去冒号），并写回 /config/device.json
+// - MQTT clientId 为空时：按 "S&deviceId&productNumber&userId"（authType==1 时前缀为 "E"），并写回 /config/protocol.json
+void FastBeeFramework::ensureDeviceIdentity() {
+    const char* devicePath = "/config/device.json";
+    const char* protocolPath = "/config/protocol.json";
+
+    // --------- 1. 处理 device.json 的 deviceId ---------
+    JsonDocument devDoc;
+    bool devDirty = false;
+    bool devParsed = false;
+
+    if (LittleFS.exists(devicePath)) {
+        File f = LittleFS.open(devicePath, "r");
+        if (f) {
+            DeserializationError err = deserializeJson(devDoc, f);
+            f.close();
+            if (err) {
+                LOG_WARNINGF("[Identity] device.json parse failed: %s, will regenerate", err.c_str());
+                devDoc.clear();
+            } else {
+                devParsed = true;
+            }
+        }
+    }
+
+    if (!devParsed) {
+        // 文件不存在或解析失败：创建最小默认配置
+        devDoc["deviceName"] = "FastBee-Device";
+        devDoc["userId"] = "1";
+        devDirty = true;
+    }
+
+    String deviceId = devDoc["deviceId"].is<const char*>() ? String((const char*)devDoc["deviceId"]) : String("");
+    deviceId.trim();
+    if (deviceId.isEmpty()) {
+        String mac = WiFi.macAddress();
+        mac.replace(":", "");
+        // 防御 WiFi 未启时返回全零或空
+        if (mac.length() == 0 || mac == "000000000000") {
+            uint64_t efuseMac = ESP.getEfuseMac();
+            char macBuf[13];
+            snprintf(macBuf, sizeof(macBuf), "%04X%08X",
+                     (uint16_t)(efuseMac >> 32), (uint32_t)efuseMac);
+            mac = macBuf;
+        }
+        deviceId = "FBE" + mac;
+        devDoc["deviceId"] = deviceId;
+        devDirty = true;
+        LOG_INFOF("[Identity] deviceId auto-generated: %s", deviceId.c_str());
+    }
+
+    if (devDirty) {
+        File f = LittleFS.open(devicePath, "w");
+        if (f) {
+            serializeJsonPretty(devDoc, f);
+            f.close();
+            LOG_INFO("[Identity] device.json persisted");
+        } else {
+            LOG_ERROR("[Identity] Failed to write device.json");
+        }
+    }
+
+    // --------- 2. 处理 protocol.json 的 mqtt.clientId ---------
+    // 若文件不存在，不主动创建（避免伪造一堆默认协议字段）
+    if (!LittleFS.exists(protocolPath)) {
+        return;
+    }
+
+    JsonDocument protoDoc;
+    {
+        File pf = LittleFS.open(protocolPath, "r");
+        if (!pf) return;
+        DeserializationError perr = deserializeJson(protoDoc, pf);
+        pf.close();
+        if (perr) {
+            LOG_WARNINGF("[Identity] protocol.json parse failed: %s", perr.c_str());
+            return;
+        }
+    }
+
+    if (!protoDoc["mqtt"].is<JsonObject>()) {
+        return;  // 没有 mqtt 节，跳过
+    }
+
+    String clientId = protoDoc["mqtt"]["clientId"].is<const char*>()
+                          ? String((const char*)protoDoc["mqtt"]["clientId"])
+                          : String("");
+    clientId.trim();
+    if (clientId.isEmpty()) {
+        int authType = protoDoc["mqtt"]["authType"] | 0;
+
+        // 产品编号：优先从 device.json 的 productNumber 读取，默认 "1"
+        String productId = "1";
+        int pn = devDoc["productNumber"] | 0;
+        if (pn > 0) productId = String(pn);
+
+        // userId：从 device.json 读取，默认 "1"
+        String userId = devDoc["userId"].is<const char*>()
+                            ? String((const char*)devDoc["userId"])
+                            : String("1");
+        if (userId.isEmpty()) userId = "1";
+
+        String prefix = (authType == 1) ? "E" : "S";
+        clientId = prefix + "&" + deviceId + "&" + productId + "&" + userId;
+        protoDoc["mqtt"]["clientId"] = clientId;
+        LOG_INFOF("[Identity] MQTT clientId auto-generated: %s", clientId.c_str());
+
+        File pf2 = LittleFS.open(protocolPath, "w");
+        if (pf2) {
+            serializeJsonPretty(protoDoc, pf2);
+            pf2.close();
+            LOG_INFO("[Identity] protocol.json persisted");
+        } else {
+            LOG_ERROR("[Identity] Failed to write protocol.json");
+        }
+    }
 }
