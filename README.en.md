@@ -63,6 +63,33 @@ Whether you're a maker rapidly prototyping a hardware idea or a product team dep
 
 ---
 
+## 🔄 Usage Workflow
+
+From flashing to cloud-ready in just 5 steps — turn an ESP32 into a controllable IoT endpoint:
+
+```mermaid
+graph LR
+    A[ESP32 Hardware] -->|1. Flash firmware| B[FastBee-Arduino Firmware]
+    B -->|2. Initialize device| C[Peripheral Config]
+    B -->|3. Connect network| D[Network Config]
+    B -->|4. Connect IoT platform| E[Communication Protocol]
+    B -->|5. Execute rules| F[Peripheral Execution]
+    D --> G[IoT Platform]
+    E --> G
+```
+
+| Step | Stage | What to do | Web Page |
+|------|-------|------------|----------|
+| 1️⃣ | **Flash Firmware** | Use PlatformIO to flash FastBee-Arduino firmware onto ESP32 | — |
+| 2️⃣ | **Peripheral Setup** | Pick peripheral types and assign GPIO pins via Web UI to finish hardware init | Peripheral Setup |
+| 3️⃣ | **Network Config** | Enter WiFi SSID & password — AP+STA dual-mode auto-switches online | Network Config |
+| 4️⃣ | **Protocol Setup** | Configure MQTT / Modbus / TCP and connect to the IoT platform | Protocol Manager |
+| 5️⃣ | **Peripheral Execution** | Define triggers & actions to build automation rules (button-to-light, schedules, sensor linkage, …) | Peripheral Execution / Rule Scripts |
+
+> Zero programming required: flash firmware → open browser → click & configure → the device is live.
+
+---
+
 ## 🏗️ Architecture
 
 ```
