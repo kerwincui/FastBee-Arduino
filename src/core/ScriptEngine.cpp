@@ -10,6 +10,9 @@
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
 #include "peripherals/SevenSegmentDriver.h"
 #endif
+#if FASTBEE_ENABLE_LCD
+#include "peripherals/LCDManager.h"
+#endif
 #if FASTBEE_ENABLE_MQTT
 #include "protocols/MQTTClient.h"
 #endif
@@ -130,6 +133,13 @@ bool ScriptEngine::parseLine(const String& line, ScriptCommand& cmd) {
         if (cmd.subAction == "HIGH" || cmd.subAction == "LOW" || cmd.subAction == "STOP" ||
             cmd.subAction == "CLEAR") {
             // 无需额外参数
+        } else if (cmd.subAction == "SHOW") {
+            // LCD/OLED 显示传感器页面：可选页码（默认轮播）
+            if (tokens.size() >= 4) {
+                cmd.extraParam = tokens[3];
+            } else {
+                cmd.extraParam = "";
+            }
         } else if (cmd.subAction == "PWM" || cmd.subAction == "BLINK" || cmd.subAction == "BREATHE" ||
                    cmd.subAction == "BRIGHTNESS") {
             if (tokens.size() < 4) return false;
@@ -351,6 +361,28 @@ bool ScriptEngine::execute(const std::vector<ScriptCommand>& cmds, MQTTClient* m
                     uint8_t bri = (uint8_t)constrain(cmd.intParam, 0, 7);
                     SevenSegmentDriver::instance().setBrightness(cmd.strParam, bri);
                     LOGGER.infof("[Script] PERIPH %s BRIGHTNESS %d", cmd.strParam.c_str(), bri);
+                    break;
+                }
+#endif
+
+#if FASTBEE_ENABLE_LCD
+                // LCD/OLED 显示屏渲染子动作
+                if (cmd.subAction == "SHOW") {
+                    // 显示已注册的传感器数据页面，自动轮播，extraParam 可指定页码
+                    int8_t page = -1;
+                    if (cmd.extraParam.length() > 0) {
+                        page = (int8_t)cmd.extraParam.toInt();
+                    }
+                    bool ok = LCDManager::getInstance().showSensorPage(page);
+                    LOGGER.infof("[Script] PERIPH %s SHOW page=%d entries=%d %s",
+                                 cmd.strParam.c_str(), page,
+                                 LCDManager::getInstance().getSensorEntryCount(),
+                                 ok ? "OK" : "FAIL");
+                    break;
+                } else if (cmd.subAction == "CLEAR") {
+                    LCDManager::getInstance().clear();
+                    LCDManager::getInstance().refresh();
+                    LOGGER.infof("[Script] PERIPH %s LCD CLEAR", cmd.strParam.c_str());
                     break;
                 }
 #endif

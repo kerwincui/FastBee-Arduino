@@ -430,6 +430,21 @@
       "params": {}
     },
     {
+      "id": "oled_display",
+      "name": "OLED显示屏",
+      "type": 36,
+      "enabled": true,
+      "pins": [
+        23,
+        22
+      ],
+      "params": {
+        "width": 128,
+        "height": 64,
+        "interface": 2
+      }
+    },
+    {
       "id": "oled_sh1106",
       "name": "OLED显示屏-SH1106",
       "type": 36,

@@ -623,6 +623,13 @@ bool PeripheralManager::saveConfiguration() {
         else if (config.type == PeripheralType::DAC) {
             params["channel"] = config.params.dac.channel;
         }
+#if FASTBEE_ENABLE_LCD
+        else if (config.type == PeripheralType::LCD) {
+            params["width"]     = config.params.lcd.width;
+            params["height"]    = config.params.lcd.height;
+            params["interface"] = config.params.lcd.interface;
+        }
+#endif
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
         else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
             params["brightness"] = config.params.segment.brightness;
@@ -749,6 +756,17 @@ bool PeripheralManager::loadConfiguration() {
             else if (config.type == PeripheralType::DAC) {
                 config.params.dac.channel = params["channel"] | 1;
             }
+#if FASTBEE_ENABLE_LCD
+            else if (config.type == PeripheralType::LCD) {
+                // 支持扩展宽度/高度（用 int 读取避免 uint8_t 默认值裁剪）
+                int w = params["width"]  | 128;
+                int h = params["height"] | 64;
+                int iface = params["interface"] | 2; // 0=Parallel, 1=SPI, 2=I2C
+                config.params.lcd.width     = (uint8_t)(w > 255 ? 255 : (w < 0 ? 0 : w));
+                config.params.lcd.height    = (uint8_t)(h > 255 ? 255 : (h < 0 ? 0 : h));
+                config.params.lcd.interface = (uint8_t)(iface < 0 ? 2 : iface);
+            }
+#endif
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
             else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
                 int b = params["brightness"] | 2;

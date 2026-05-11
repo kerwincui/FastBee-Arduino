@@ -160,8 +160,9 @@ void LCDManager::setDefaultFont()
 {
     if (!_display) return;
     
-    // 默认使用中等字体，适合显示中文和英文
-    _display->setFont(u8g2_font_ncenB08_tr);
+    // 默认使用 WQY 12 像素中文字体，同时支持 ASCII，配合 drawUTF8 可显示中英文混排
+    // 符号、单位（如 ℃）均包含在 GB2312 子集中
+    _display->setFont(u8g2_font_wqy12_t_gb2312a);
     _currentFont = 1;
 }
 
@@ -192,17 +193,17 @@ bool LCDManager::print(const String& text, uint8_t x, uint8_t y, TextAlign align
     uint8_t textX = x;
     if (align == TextAlign::CENTER)
     {
-        uint16_t textWidth = _display->getStrWidth(text.c_str());
+        uint16_t textWidth = _display->getUTF8Width(text.c_str());
         textX = (_width - textWidth) / 2;
     }
     else if (align == TextAlign::RIGHT)
     {
-        uint16_t textWidth = _display->getStrWidth(text.c_str());
+        uint16_t textWidth = _display->getUTF8Width(text.c_str());
         textX = _width - textWidth - x;
     }
     
-    // 绘制文本
-    _display->drawStr(textX, y, text.c_str());
+    // 绘制文本（使用 UTF-8 渲染，支持 °/Latin-1 等扩展字符）
+    _display->drawUTF8(textX, y, text.c_str());
     _contentChanged = true;
     
     return true;
@@ -425,11 +426,11 @@ bool LCDManager::showSensorPage(int8_t page)
     char titleBuf[32];
     if (totalPages > 1)
     {
-        snprintf(titleBuf, sizeof(titleBuf), "Sensor [%d/%d]", page + 1, totalPages);
+        snprintf(titleBuf, sizeof(titleBuf), "传感器数据 [%d/%d]", page + 1, totalPages);
     }
     else
     {
-        snprintf(titleBuf, sizeof(titleBuf), "Sensor Data");
+        snprintf(titleBuf, sizeof(titleBuf), "传感器数据");
     }
     print(String(titleBuf), 0, fontH, TextAlign::CENTER);
     
@@ -451,16 +452,16 @@ bool LCDManager::showSensorPage(int8_t page)
         
         if (entry.valid)
         {
-            // 格式: "标签: 数值单位"
+            // 格式：“标签：数值单位”（全角冒号，适配中文 label）
             char valueBuf[16];
             dtostrf(entry.value, 0, entry.decimals, valueBuf);
-            snprintf(lineBuf, sizeof(lineBuf), "%s: %s%s",
+            snprintf(lineBuf, sizeof(lineBuf), "%s：%s%s",
                      entry.label.c_str(), valueBuf, entry.unit.c_str());
         }
         else
         {
             // 数据无效
-            snprintf(lineBuf, sizeof(lineBuf), "%s: --", entry.label.c_str());
+            snprintf(lineBuf, sizeof(lineBuf), "%s：--", entry.label.c_str());
         }
         
         print(String(lineBuf), 2, y, TextAlign::LEFT);
@@ -500,16 +501,16 @@ bool LCDManager::setFont(uint8_t fontIndex)
     
     switch (fontIndex)
     {
-        case 0:  // 小字体
+        case 0:  // 小字体（仅 ASCII，省带宽，不支持中文）
             _display->setFont(u8g2_font_5x7_tf);
             _currentFont = 0;
             break;
-        case 1:  // 中字体（默认）
-            _display->setFont(u8g2_font_ncenB08_tr);
+        case 1:  // 中字体（默认，WQY 12像素 GB2312 中文 + ASCII）
+            _display->setFont(u8g2_font_wqy12_t_gb2312a);
             _currentFont = 1;
             break;
-        case 2:  // 大字体
-            _display->setFont(u8g2_font_ncenB10_tr);
+        case 2:  // 大字体（WQY 15像素中英文）
+            _display->setFont(u8g2_font_wqy15_t_gb2312a);
             _currentFont = 2;
             break;
         default:
@@ -576,10 +577,10 @@ uint8_t LCDManager::getFontHeight() const
     
     switch (_currentFont)
     {
-        case 0: return 7;
-        case 1: return 10;
-        case 2: return 13;
-        default: return 10;
+        case 0: return 8;
+        case 1: return 13;   // WQY 12 像素行高约 12-13px
+        case 2: return 16;   // WQY 15 像素行高约 15-16px
+        default: return 13;
     }
 }
 
