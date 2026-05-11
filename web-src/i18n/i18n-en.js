@@ -1035,6 +1035,10 @@
         'periph-exec-action-cat-rule': 'Rule Control',
         'periph-exec-action-enable-rule': 'Enable Exec Rule',
         'periph-exec-action-disable-rule': 'Disable Exec Rule',
+        'periph-exec-action-display-number': 'Display Number',
+        'periph-exec-action-display-text': 'Display Text',
+        'periph-exec-action-display-clear': 'Clear Display',
+        'periph-exec-action-cat-display': 'Display',
         'periph-exec-target-rule-label': 'Target Exec Rule',
         'periph-exec-select-rule': '-- Select Exec Rule --',
         'periph-exec-enabled': 'Enabled',
@@ -1675,6 +1679,12 @@
         'periph-opt-encoder': 'Encoder',
         'periph-opt-onewire': 'One-Wire',
         'periph-opt-buzzer': 'Buzzer',
+        'periph-opt-seven-segment': 'TM1637 7-Segment',
+        'segment-params-title': '7-Segment Params',
+        'segment-brightness-label': 'Brightness (0-7)',
+        'segment-brightness-help': '0=dimmest, 7=brightest, default 3',
+        'segment-pin-hint': 'Pin order: pin1=CLK, pin2=DIO',
+        'periph-exec-action-display-value-hint': 'Supports ${periphId.field} template (e.g. ${dht_01.temperature}), pulls latest value from sensor cache',
         'peripheral-type-device-event': 'Device Event',
         
         // Permission group name translations

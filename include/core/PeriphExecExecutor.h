@@ -100,6 +100,10 @@ public:
     // 获取MQTTClient指针
     MQTTClient* getMqttClient();
 
+    // 解析 actionValue 中的 ${periphId.field} 模板，从传感器读取缓存替换为最新值。
+    // 支持忂零或多占位符。无缓存时保留原占位符文本，便于调试。
+    static String resolveSensorTemplate(const String& input);
+
     // 上报动作执行结果
     void reportActionResults(const std::vector<ActionExecResult>& results);
 

@@ -123,6 +123,7 @@
                                         <option value="44">单总线</option>
                                         <option value="45">NeoPixel</option>
                                         <option value="46" data-i18n="periph-opt-buzzer">蜂鸣器</option>
+                                        <option value="47" data-i18n="periph-opt-seven-segment">TM1637 数码管</option>
                                         <option value="60" data-i18n="peripheral-type-device-event">设备事件</option>
                                     </optgroup>
                                 </select>
@@ -293,6 +294,20 @@
                                             (0-255)</label>
                                         <input type="number" id="dac-default-value" class="" value="0"
                                             min="0" max="255">
+                                    </div>
+                                </div>
+
+                                <!-- TM1637 数码管参数 -->
+                                <div id="segment-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10" data-i18n="segment-params-title">数码管参数</h4>
+                                    <div class="fb-form-group">
+                                        <label for="segment-brightness" data-i18n="segment-brightness-label">亮度 (0-7)</label>
+                                        <input type="number" id="segment-brightness" class="" value="3"
+                                            min="0" max="7">
+                                        <small data-i18n="segment-brightness-help">0=最暗，7=最亮，默认 3</small>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <small data-i18n="segment-pin-hint">引脚顺序：引脚1=CLK, 引脚2=DIO</small>
                                     </div>
                                 </div>
                             </div>

@@ -615,6 +615,10 @@ PERIPH <外设ID> <子动作> [参数]
 | `BLINK [ms]` | 可选，间隔毫秒，默认 500 | 启动闪烁效果（异步定时器） |
 | `BREATHE [ms]` | 可选，周期毫秒，默认 2000 | 启动呼吸灯效果（异步定时器） |
 | `STOP` | 无 | 停止当前定时器动作（闪烁/呼吸灯） |
+| `DISPLAY <内容>` | 数字字符串，支持模板 | **数码管**显示数字（最多 4 位，支持小数点和冒号） |
+| `TEXT <内容>` | 最多 4 字符，支持模板 | **数码管**显示英文/数字混合文本 |
+| `CLEAR` | 无 | **数码管**清屏（全段熄灭） |
+| `BRIGHTNESS <级别>` | 0-7 | **数码管**调节亮度（0=最暗，7=最亮） |
 
 **示例：**
 
@@ -630,12 +634,148 @@ PERIPH led_strip PWM 200     # LED 灯带亮度调到 200
 PERIPH status_led BLINK 300  # 状态灯 300ms 间隔闪烁
 PERIPH mood_led BREATHE 1500 # 氛围灯 1.5 秒周期呼吸
 PERIPH mood_led STOP         # 停止呼吸灯效果
+
+# 数码管显示（TM1637）
+PERIPH tm1637_01 DISPLAY 25.3        # 显示 25.3
+PERIPH tm1637_01 DISPLAY 12:34       # 显示时钟 12:34
+PERIPH tm1637_01 TEXT HELO           # 显示 HELO（最多 4 字符）
+PERIPH tm1637_01 BRIGHTNESS 5        # 亮度调到 5 级
+PERIPH tm1637_01 CLEAR               # 清屏
 ```
 
 **注意：**
 - 外设 ID 必须与外设配置页面中已配置的外设一致
 - `BLINK` 和 `BREATHE` 启动异步定时器后立即返回，不阻塞后续命令
 - 若外设 ID 不存在，该命令会被跳过（记录警告日志），脚本继续执行
+- `DISPLAY`/`TEXT`/`CLEAR`/`BRIGHTNESS` 仅对数码管（TM1637）类型外设有效，需在外设配置中启用数码管
+
+---
+
+### 数码管显示（TM1637）专用说明
+
+当 `PERIPH` 命令的目标外设为 TM1637 四位数码管时，可使用 `DISPLAY`、`TEXT`、`CLEAR`、`BRIGHTNESS` 四个子动作进行显示控制。
+
+#### DISPLAY -- 显示数字
+
+在数码管上显示数字内容，支持整数、小数和冒号分隔的时钟格式。
+
+```
+PERIPH <数码管ID> DISPLAY <内容>
+```
+
+| 格式 | 示例 | 显示效果 |
+|------|------|---------|
+| 整数 | `DISPLAY 1234` | `1234` |
+| 带小数点 | `DISPLAY 25.3` | `25.3`（显示到对应位的小数点） |
+| 时钟格式 | `DISPLAY 12:34` | `12:34`（中间冒号点亮） |
+| 负数 | `DISPLAY -12` | `-12`（首位显示减号） |
+| 模板占位符 | `DISPLAY ${dht_01.temperature}` | 动态替换为传感器读数 |
+
+**注意：**
+- 数码管仅有 4 位，超出部分会被截断或提示溢出
+- 浮点数会根据数位自动放置小数点
+- 当占位符未命中缓存时，保留原始文本便于调试
+
+#### TEXT -- 显示文本
+
+在数码管上显示英文字母与数字混合字符（最多 4 字符）。受限于 7 段数码管段码表，仅部分字母可清晰显示（如 A/b/C/d/E/F/H/L/o/P/U 等）。
+
+```
+PERIPH <数码管ID> TEXT <内容>
+```
+
+**示例：**
+
+```
+PERIPH tm1637_01 TEXT ON          # 显示 ON
+PERIPH tm1637_01 TEXT OFF         # 显示 OFF
+PERIPH tm1637_01 TEXT HELO        # 显示 HELO
+PERIPH tm1637_01 TEXT ${dht_01.temperature.unit}  # 显示单位字符
+```
+
+#### CLEAR -- 清屏
+
+熄灭所有段，清空数码管显示。
+
+```
+PERIPH <数码管ID> CLEAR
+```
+
+#### BRIGHTNESS -- 亮度调节
+
+设置数码管亮度级别，共 8 级。
+
+```
+PERIPH <数码管ID> BRIGHTNESS <级别>
+```
+
+| 级别 | 说明 |
+|------|------|
+| 0 | 最暗（几乎不可见） |
+| 1-2 | 夜间低亮度 |
+| 3 | 默认亮度（适合室内） |
+| 4-5 | 正常亮度 |
+| 6-7 | 最亮（适合强光环境） |
+
+**示例：**
+
+```
+PERIPH tm1637_01 BRIGHTNESS 0     # 夜间熄灯前降到最暗
+PERIPH tm1637_01 BRIGHTNESS 3     # 恢复默认亮度
+PERIPH tm1637_01 BRIGHTNESS 7     # 白天户外最亮
+```
+
+超出 0-7 范围的值会被自动截断到边界。
+
+---
+
+### 传感器数据模板（`${periphId.field}`）
+
+命令脚本中的 `PERIPH ... DISPLAY` 与 `PERIPH ... TEXT` 子动作以及外设执行规则的 `显示数字`/`显示文本` 动作值，都支持通过 `${periphId.field}` 占位符动态读取传感器数据缓存，实现"采集 -> 显示"的联动。
+
+#### 语法格式
+
+```
+${<外设ID>.<字段名>[.<属性>]}
+```
+
+| 属性 | 说明 | 示例 |
+|------|------|------|
+| 省略（默认 value） | 读取字段当前值 | `${dht_01.temperature}` -> `25.3` |
+| `.unit` | 读取字段单位 | `${dht_01.temperature.unit}` -> `℃` |
+| `.label` | 读取字段显示标签 | `${dht_01.temperature.label}` -> `温度` |
+
+#### 工作机制
+
+1. 传感器类外设（如 DHT11/DHT22/DS18B20/Modbus 采集）在采集完成后，将每个字段以 `<外设ID>_<字段名>` 作为键写入全局缓存
+2. `DISPLAY`/`TEXT` 执行前，扫描 `${...}` 占位符并从缓存查找对应值进行文本替换
+3. 未命中缓存时保留原始占位符文本，方便在日志中定位未采集或 ID/字段名拼写错误
+
+#### 典型字段名
+
+| 外设类型 | 常见字段名 |
+|---------|----------|
+| DHT11/DHT22 | `temperature`、`humidity` |
+| DS18B20 | `temperature` |
+| Modbus 采集 | 由物模型标识符决定，如 `temp`、`humi`、`voltage` 等 |
+
+#### 示例
+
+```
+# 显示 DHT11 温度读数
+PERIPH tm1637_01 DISPLAY ${dht_01.temperature}
+
+# 显示湿度读数
+PERIPH tm1637_01 DISPLAY ${dht_01.humidity}
+
+# 显示 DS18B20 温度
+PERIPH tm1637_01 DISPLAY ${ds18b20_01.temperature}
+```
+
+**注意：**
+- 模板替换发生在脚本运行时，每次执行都会重新读取最新缓存值
+- 若外设未启用或尚未完成首次采集，缓存为空会保留占位符原文
+- 外设 ID 与字段名均区分大小写，需与外设配置页面显示完全一致
 
 ---
 
@@ -809,6 +949,36 @@ MQTT 0 [{"id":"alarm","value":"1"},{"id":"alarm_type","value":"temperature_high"
 LOG 报警状态已上报
 ```
 
+### 示例 6：数码管温湿度轮换显示
+
+配合外设执行的定时触发（建议 `intervalSec=8`），数码管先显示 3 秒温度，再显示 3 秒湿度，循环往复。依赖 DHT11 外设已启用并完成首次采集。
+
+```
+# TM1637 温湿度轮换显示
+PERIPH tm1637_01 DISPLAY ${dht_01.temperature}
+DELAY 3000
+PERIPH tm1637_01 DISPLAY ${dht_01.humidity}
+DELAY 2800
+```
+
+**配合配置要点：**
+- 外设配置中 `tm1637_01`（数码管）与 `dht_01`（DHT11）均需 `enabled=true`
+- 外设执行规则建议 `execMode=1`（异步执行），避免阻塞主调度循环
+- `intervalSec` 应大于脚本内 `DELAY` 累计时间 1-2 秒，给任务栈释放留出缓冲
+
+### 示例 7：数码管状态与亮度联动
+
+夜间自动调暗数码管，清晨恢复默认亮度。
+
+```
+# 进入夜间模式
+LOG 进入夜间模式
+PERIPH tm1637_01 BRIGHTNESS 1
+PERIPH tm1637_01 TEXT NITE
+DELAY 2000
+PERIPH tm1637_01 DISPLAY ${dht_01.temperature}
+```
+
 ---
 
 # 第三部分：常见问题与故障排除
@@ -864,6 +1034,33 @@ LOG 报警状态已上报
 ### Q: MQTT 命令无效果
 
 MQTT 未连接或主题索引错误。检查 MQTT 连接状态，确认主题索引对应的发布主题存在。
+
+### Q: 数码管不亮或不显示内容
+
+按以下顺序排查：
+
+1. **硬件启用**：确认 `platformio.ini` 已启用 `-DFASTBEE_ENABLE_SEVEN_SEGMENT=1`，重新编译并烧录固件
+2. **外设启用**：外设配置页面确认数码管条目 `enabled=true`
+3. **规则启用**：外设执行规则确认 `enabled=true`，并已触发（查看触发次数）
+4. **接线**：CLK/DIO 引脚与外设配置的 `pins` 一致，交流 VCC/GND 供电正常
+5. **亮度**：`BRIGHTNESS` 若设为 0 几乎看不到，试设为 3-5
+
+### Q: `${periphId.field}` 显示为原文而非值
+
+表示传感器缓存中没有对应键。常见原因：
+
+1. 传感器外设（如 DHT11）`enabled=false`，从未采集
+2. 传感器首次采集尚未完成（设备刚启动或定时间隔过长）
+3. 外设 ID 或字段名拼写错误（大小写敏感）
+4. 传感器采集失败，缓存未更新，查看日志 `[PeriphExec] Update sensor cache` 确认
+
+### Q: 数码管轮换显示规则报告 "insufficient memory"
+
+`intervalSec` 与脚本 `DELAY` 累计时间过于接近，异步任务栈来不及释放。解决方法：
+
+1. 加大 `intervalSec`（建议比 DELAY 总和多 2 秒以上）
+2. 关闭其他高频异步规则（如流水灯、BLINK/BREATHE）
+3. 简化脚本，减少命令条数
 
 ## 调试方法
 

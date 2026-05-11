@@ -27,7 +27,8 @@ struct ScriptCommand {
     uint8_t pin;           // GPIO/PWM/DAC 引脚号
     int32_t intParam;      // delay ms / duty / dac value / sub-action param
     String strParam;       // 外设ID 或 LOG 消息
-    String subAction;      // PERIPH 子动作: HIGH/LOW/PWM/BLINK/BREATHE/STOP
+    String subAction;      // PERIPH 子动作: HIGH/LOW/PWM/BLINK/BREATHE/STOP/DISPLAY/TEXT/CLEAR/BRIGHTNESS
+    String extraParam;     // PERIPH DISPLAY/TEXT 的显示内容（支持 ${periphId.field} 模板）
 };
 
 /**
@@ -40,6 +41,11 @@ struct ScriptCommand {
  *   DAC <pin> <value>         - 设置DAC输出(0-255)
  *   LOG <message>             - 输出日志
  *   PERIPH <id> <action> [p]  - 通过外设ID控制
+ *                               HIGH/LOW/PWM/BLINK/BREATHE/STOP
+ *                               DISPLAY <value>   - TM1637 数码管显示数字（支持 ${id.field} 模板）
+ *                               TEXT <value>      - TM1637 数码管显示文本
+ *                               CLEAR             - TM1637 数码管清屏
+ *                               BRIGHTNESS <0-7>  - 数码管亮度
  *   MQTT <idx> <message>      - 发布MQTT消息(支持RANDOM/RANDOMF表达式)
  * 
  * 随机数表达式(可用于 MQTT 消息和 LOG 消息):

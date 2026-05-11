@@ -293,6 +293,17 @@
     #define FASTBEE_ENABLE_LCD 0
 #endif
 
+/**
+ * @brief TM1637 4位数码管支持
+ * 默认：禁用（需硬件支持）
+ * 占用：约 3KB Flash（自写 bit-bang 驱动，无外部库依赖）
+ * RAM：约 32B × 实例数
+ * 说明：通过 ACTION_DISPLAY_NUMBER / ACTION_DISPLAY_TEXT / ACTION_DISPLAY_CLEAR 驱动显示
+ */
+#ifndef FASTBEE_ENABLE_SEVEN_SEGMENT
+    #define FASTBEE_ENABLE_SEVEN_SEGMENT 0
+#endif
+
 // ============================================================================
 // 调试功能开关
 // ============================================================================

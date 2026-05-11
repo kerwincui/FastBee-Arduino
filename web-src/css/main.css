@@ -1225,7 +1225,7 @@ body.fullscreen-page .fullscreen-toolbar-actions { display: flex; align-items: c
 .pe-script-textarea { font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 13px; resize: vertical; }
 
 /* Prevent fb-form-group label styles from breaking checkbox layout */
-.fb-form .fb-form-group .pe-checkbox-label { display: inline-flex; margin-bottom: 0; }
+.fb-form .fb-form-group .pe-checkbox-label { display: inline-flex; margin-bottom: 0; padding-top:34px;}
 
 /* Unified focus state for all periph-exec inputs */
 .periph-exec-config-item input:focus,

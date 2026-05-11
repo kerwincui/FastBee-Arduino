@@ -23,6 +23,9 @@
 #if FASTBEE_ENABLE_LCD
 #include "peripherals/LCDManager.h"
 #endif
+#if FASTBEE_ENABLE_SEVEN_SEGMENT
+#include "peripherals/SevenSegmentDriver.h"
+#endif
 #include <freertos/task.h>
 
 namespace {
@@ -540,6 +543,51 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
                 cfg->params.modbus.slaveAddress, regAddr, regVal);
             return pm.writeModbusReg(action.targetPeriphId, regAddr, regVal);
         }
+
+#if FASTBEE_ENABLE_SEVEN_SEGMENT
+        case ExecActionType::ACTION_DISPLAY_NUMBER: {
+            // TM1637/数码管显示数字：支持 "12.34" / "12:34" / "1234" / "-12"
+            // 支持 ${periphId.field} 模板，自动从传感器读取缓存替换
+            String resolved = resolveSensorTemplate(effectiveValue);
+            LOGGER.infof("[PeriphExec] Execute DisplayNumber(%s -> %s) on %s",
+                         effectiveValue.c_str(), resolved.c_str(), action.targetPeriphId.c_str());
+            PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
+            if (!cfg) return false;
+            if (cfg->type != PeripheralType::SEVEN_SEGMENT_TM1637) {
+                LOGGER.warningf("[PeriphExec] DISPLAY_NUMBER target '%s' is not TM1637",
+                                action.targetPeriphId.c_str());
+                return false;
+            }
+            return SevenSegmentDriver::instance().displayNumber(action.targetPeriphId, resolved);
+        }
+
+        case ExecActionType::ACTION_DISPLAY_TEXT: {
+            // TM1637/数码管显示文本：最多 4 字符，支持 ${periphId.field} 模板
+            String resolved = resolveSensorTemplate(effectiveValue);
+            LOGGER.infof("[PeriphExec] Execute DisplayText(%s -> %s) on %s",
+                         effectiveValue.c_str(), resolved.c_str(), action.targetPeriphId.c_str());
+            PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
+            if (!cfg) return false;
+            if (cfg->type != PeripheralType::SEVEN_SEGMENT_TM1637) {
+                LOGGER.warningf("[PeriphExec] DISPLAY_TEXT target '%s' is not TM1637",
+                                action.targetPeriphId.c_str());
+                return false;
+            }
+            return SevenSegmentDriver::instance().displayText(action.targetPeriphId, resolved);
+        }
+
+        case ExecActionType::ACTION_DISPLAY_CLEAR: {
+            LOGGER.infof("[PeriphExec] Execute DisplayClear on %s", action.targetPeriphId.c_str());
+            PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
+            if (!cfg) return false;
+            if (cfg->type != PeripheralType::SEVEN_SEGMENT_TM1637) {
+                LOGGER.warningf("[PeriphExec] DISPLAY_CLEAR target '%s' is not TM1637",
+                                action.targetPeriphId.c_str());
+                return false;
+            }
+            return SevenSegmentDriver::instance().clear(action.targetPeriphId);
+        }
+#endif
 
         default:
             LOGGER.warningf("[PeriphExec] Unknown peripheral action: %d", action.actionType);
@@ -1323,6 +1371,66 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
             enqueueOrCache(chunkPayload);
         }
     }
+}
+
+// ========== 传感器模板变量解析 ==========
+//
+// 支持语法：
+//   ${periphId.field}         -> 从 PeriphExecManager 的传感器缓存中读取 key=periphId_field 的 value
+//   ${periphId.field.unit}    -> 同上，但取 unit 字段
+//   ${periphId.field.label}   -> 同上，但取 label 字段
+// 寻不到时保留原占位符文本。
+//
+// 考虑 TM1637 只有 4 位数码管，一般只会用到 ${id.field}。
+String PeriphExecExecutor::resolveSensorTemplate(const String& input) {
+    if (input.indexOf("${") < 0) return input;
+    const auto& cache = PeriphExecManager::getInstance().getSensorReadCache();
+    String out;
+    out.reserve(input.length() + 8);
+    int i = 0;
+    const int n = input.length();
+    while (i < n) {
+        if (i + 1 < n && input[i] == '$' && input[i + 1] == '{') {
+            int end = input.indexOf('}', i + 2);
+            if (end < 0) {
+                out += input.substring(i);
+                break;
+            }
+            String expr = input.substring(i + 2, end);
+            expr.trim();
+            int dot1 = expr.indexOf('.');
+            if (dot1 > 0) {
+                String periphId = expr.substring(0, dot1);
+                String rest = expr.substring(dot1 + 1);
+                int dot2 = rest.indexOf('.');
+                String field, attr;
+                if (dot2 > 0) {
+                    field = rest.substring(0, dot2);
+                    attr = rest.substring(dot2 + 1);
+                } else {
+                    field = rest;
+                    attr = "value";
+                }
+                String key = periphId + "_" + field;
+                auto it = cache.find(key);
+                if (it != cache.end()) {
+                    if (attr == "unit") out += it->second.unit;
+                    else if (attr == "label") out += it->second.label;
+                    else out += it->second.value;
+                } else {
+                    // 未命中缓存：保留原占位符便于调试
+                    out += input.substring(i, end + 1);
+                }
+            } else {
+                out += input.substring(i, end + 1);
+            }
+            i = end + 1;
+        } else {
+            out += input[i];
+            i++;
+        }
+    }
+    return out;
 }
 
 #endif // FASTBEE_ENABLE_PERIPH_EXEC

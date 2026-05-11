@@ -13,6 +13,9 @@
 #if FASTBEE_ENABLE_LCD
 #include "peripherals/LCDManager.h"
 #endif
+#if FASTBEE_ENABLE_SEVEN_SEGMENT
+#include "peripherals/SevenSegmentDriver.h"
+#endif
 #include <Wire.h>
 #include <SPI.h>
 
@@ -620,6 +623,11 @@ bool PeripheralManager::saveConfiguration() {
         else if (config.type == PeripheralType::DAC) {
             params["channel"] = config.params.dac.channel;
         }
+#if FASTBEE_ENABLE_SEVEN_SEGMENT
+        else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
+            params["brightness"] = config.params.segment.brightness;
+        }
+#endif
     }
     
     String jsonStr;
@@ -741,6 +749,14 @@ bool PeripheralManager::loadConfiguration() {
             else if (config.type == PeripheralType::DAC) {
                 config.params.dac.channel = params["channel"] | 1;
             }
+#if FASTBEE_ENABLE_SEVEN_SEGMENT
+            else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
+                int b = params["brightness"] | 2;
+                if (b < 0) b = 0;
+                if (b > 7) b = 7;
+                config.params.segment.brightness = (uint8_t)b;
+            }
+#endif
         }
         
         if (!config.id.isEmpty() && config.type != PeripheralType::UNCONFIGURED) {
@@ -949,7 +965,31 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
         }
         return true;
     }
-        
+
+#if FASTBEE_ENABLE_SEVEN_SEGMENT
+    // TM1637 数码管：使用 CLK + DIO 两个引脚，bit-bang 初始化
+    if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
+        if (config.pinCount < 2) {
+            LOG_WARNINGF("Peripheral Manager: TM1637 '%s' requires 2 pins (CLK, DIO)", config.id.c_str());
+            return false;
+        }
+        uint8_t clk = config.pins[0];
+        uint8_t dio = config.pins[1];
+        if (!isValidPin(clk) || !isValidPin(dio)) {
+            LOG_WARNINGF("Peripheral Manager: TM1637 '%s' invalid pins CLK=%d DIO=%d",
+                         config.id.c_str(), clk, dio);
+            return false;
+        }
+        // 亮度从配置 params.segment.brightness 读取（0-7，越界自动限制）
+        uint8_t bri = config.params.segment.brightness;
+        if (bri > 7) bri = 2;
+        bool ok = SevenSegmentDriver::instance().begin(config.id, clk, dio, bri);
+        LOG_INFOF("Peripheral Manager: TM1637 '%s' init CLK=%d DIO=%d bri=%d -> %s",
+                  config.id.c_str(), clk, dio, bri, ok ? "ok" : "fail");
+        return ok;
+    }
+#endif
+
     // Modbus 外设不需要本地硬件初始化（通过 RS485 总线通信）
     if (config.isModbusPeripheral()) {
         LOG_INFOF("Peripheral Manager: Modbus device '%s' (slave=%d) registered, no local HW init needed",
@@ -991,7 +1031,14 @@ bool PeripheralManager::teardownHardware(const PeripheralConfig& config) {
         LCDManager::getInstance().deinitialize();
     }
 #endif
-    
+
+    // TM1637 数码管清理
+#if FASTBEE_ENABLE_SEVEN_SEGMENT
+    if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
+        SevenSegmentDriver::instance().release(config.id);
+    }
+#endif
+
     // TODO: 实现其他类型外设的硬件释放
     return true;
 }

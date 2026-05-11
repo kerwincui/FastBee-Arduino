@@ -221,6 +221,9 @@
             } else if (type === 27) {
                 const dacParams = document.getElementById('dac-params');
                 this.showElement(dacParams);
+            } else if (type === 47) {
+                const segParams = document.getElementById('segment-params');
+                if (segParams) this.showElement(segParams);
             }
             // DEVICE_EVENT (60) 和 Modbus (51) 无引脚配置，隐藏 pins 字段
             const pinsGroup = document.getElementById('peripheral-pins-group');
@@ -269,6 +272,7 @@
                             if (data.params.defaultDuty !== undefined) { const el = document.getElementById('gpio-default-duty'); if (el) el.value = data.params.defaultDuty; }
                             if (data.params.debounceMs !== undefined) { const el = document.getElementById('gpio-debounce-ms'); if (el) el.value = data.params.debounceMs; }
                             if (data.params.defaultValue !== undefined) { const el = document.getElementById('dac-default-value'); if (el) el.value = data.params.defaultValue; }
+                            if (data.params.brightness !== undefined) { const el = document.getElementById('segment-brightness'); if (el) el.value = data.params.brightness; }
                         }
                     } else {
                         Notification.error(i18n.t('peripheral-load-fail'), i18n.t('peripheral-title'));
@@ -327,6 +331,8 @@
                 data.attenuation = document.getElementById('adc-attenuation')?.value || '3';
             } else if (typeNum === 27) {
                 data.defaultValue = document.getElementById('dac-default-value')?.value || '0';
+            } else if (typeNum === 47) {
+                data.brightness = document.getElementById('segment-brightness')?.value || '3';
             }
             const saveBtn = document.getElementById('save-peripheral-btn');
             const origText = saveBtn?.textContent;

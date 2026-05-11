@@ -1,6 +1,7 @@
 #include "./network/handlers/PeripheralRouteHandler.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
+#include "core/FeatureFlags.h"
 #include "core/PeripheralManager.h"
 #include <ArduinoJson.h>
 #include <algorithm>
@@ -374,6 +375,11 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
         params["channel"] = config->params.dac.channel;
         params["defaultValue"] = config->params.dac.defaultValue;
     }
+#if FASTBEE_ENABLE_SEVEN_SEGMENT
+    else if (config->type == PeripheralType::SEVEN_SEGMENT_TM1637) {
+        params["brightness"] = config->params.segment.brightness;
+    }
+#endif
 
     auto runtimeState = pm.getRuntimeState(id);
     if (runtimeState) {
@@ -440,6 +446,14 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
         config.params.dac.channel = ctx->getParamInt(request, "channel", 1);
         config.params.dac.defaultValue = ctx->getParamInt(request, "defaultValue", 0);
     }
+#if FASTBEE_ENABLE_SEVEN_SEGMENT
+    else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
+        int b = ctx->getParamInt(request, "brightness", 2);
+        if (b < 0) b = 0;
+        if (b > 7) b = 7;
+        config.params.segment.brightness = (uint8_t)b;
+    }
+#endif
 
     if (config.id.isEmpty()) {
         config.id = "periph_" + String(millis());
@@ -533,6 +547,14 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
         config.params.dac.channel = ctx->getParamInt(request, "channel", config.params.dac.channel);
         config.params.dac.defaultValue = ctx->getParamInt(request, "defaultValue", config.params.dac.defaultValue);
     }
+#if FASTBEE_ENABLE_SEVEN_SEGMENT
+    else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
+        int b = ctx->getParamInt(request, "brightness", config.params.segment.brightness);
+        if (b < 0) b = 0;
+        if (b > 7) b = 7;
+        config.params.segment.brightness = (uint8_t)b;
+    }
+#endif
 
     if (pm.updatePeripheral(id, config)) {
         pm.saveConfiguration();

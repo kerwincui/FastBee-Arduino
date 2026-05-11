@@ -4,6 +4,12 @@
 #include "core/ScriptEngine.h"
 #include "core/PeripheralManager.h"
 #include "core/ChipConfig.h"
+#if FASTBEE_ENABLE_PERIPH_EXEC
+#include "core/PeriphExecExecutor.h"
+#endif
+#if FASTBEE_ENABLE_SEVEN_SEGMENT
+#include "peripherals/SevenSegmentDriver.h"
+#endif
 #if FASTBEE_ENABLE_MQTT
 #include "protocols/MQTTClient.h"
 #endif
@@ -121,11 +127,22 @@ bool ScriptEngine::parseLine(const String& line, ScriptCommand& cmd) {
         cmd.subAction = tokens[2];
         cmd.subAction.toUpperCase();
 
-        if (cmd.subAction == "HIGH" || cmd.subAction == "LOW" || cmd.subAction == "STOP") {
+        if (cmd.subAction == "HIGH" || cmd.subAction == "LOW" || cmd.subAction == "STOP" ||
+            cmd.subAction == "CLEAR") {
             // 无需额外参数
-        } else if (cmd.subAction == "PWM" || cmd.subAction == "BLINK" || cmd.subAction == "BREATHE") {
+        } else if (cmd.subAction == "PWM" || cmd.subAction == "BLINK" || cmd.subAction == "BREATHE" ||
+                   cmd.subAction == "BRIGHTNESS") {
             if (tokens.size() < 4) return false;
             cmd.intParam = tokens[3].toInt();
+        } else if (cmd.subAction == "DISPLAY" || cmd.subAction == "TEXT") {
+            // 显示内容：合并剩余 token，保留空格，支持 ${id.field} 模板
+            if (tokens.size() < 4) return false;
+            String val;
+            for (size_t i = 3; i < tokens.size(); i++) {
+                if (i > 3) val += ' ';
+                val += tokens[i];
+            }
+            cmd.extraParam = val;
         } else {
             return false;
         }
@@ -307,6 +324,36 @@ bool ScriptEngine::execute(const std::vector<ScriptCommand>& cmds, MQTTClient* m
                 } else if (cmd.subAction == "STOP") {
                     pm.stopActionTicker(cmd.strParam);
                 }
+#if FASTBEE_ENABLE_SEVEN_SEGMENT
+                else if (cmd.subAction == "DISPLAY") {
+                    // TM1637 显示数字，支持 ${id.field} 模板
+                    String val = cmd.extraParam;
+#if FASTBEE_ENABLE_PERIPH_EXEC
+                    val = PeriphExecExecutor::resolveSensorTemplate(val);
+#endif
+                    SevenSegmentDriver::instance().displayNumber(cmd.strParam, val);
+                    LOGGER.infof("[Script] PERIPH %s DISPLAY %s (raw=%s)",
+                                 cmd.strParam.c_str(), val.c_str(), cmd.extraParam.c_str());
+                    break;
+                } else if (cmd.subAction == "TEXT") {
+                    String val = cmd.extraParam;
+#if FASTBEE_ENABLE_PERIPH_EXEC
+                    val = PeriphExecExecutor::resolveSensorTemplate(val);
+#endif
+                    SevenSegmentDriver::instance().displayText(cmd.strParam, val);
+                    LOGGER.infof("[Script] PERIPH %s TEXT %s", cmd.strParam.c_str(), val.c_str());
+                    break;
+                } else if (cmd.subAction == "CLEAR") {
+                    SevenSegmentDriver::instance().clear(cmd.strParam);
+                    LOGGER.infof("[Script] PERIPH %s CLEAR", cmd.strParam.c_str());
+                    break;
+                } else if (cmd.subAction == "BRIGHTNESS") {
+                    uint8_t bri = (uint8_t)constrain(cmd.intParam, 0, 7);
+                    SevenSegmentDriver::instance().setBrightness(cmd.strParam, bri);
+                    LOGGER.infof("[Script] PERIPH %s BRIGHTNESS %d", cmd.strParam.c_str(), bri);
+                    break;
+                }
+#endif
 
                 LOGGER.infof("[Script] PERIPH %s %s", cmd.strParam.c_str(), cmd.subAction.c_str());
                 break;

@@ -120,8 +120,9 @@
             const isModbusTarget = data.targetPeriphId && data.targetPeriphId.indexOf('modbus:') === 0;
             const isTriggerEvent = actionTypeInt === 21;
             const isRuleCtrlAction = (actionTypeInt === 22 || actionTypeInt === 23);
+            const isDisplayAction = (actionTypeInt === 24 || actionTypeInt === 25 || actionTypeInt === 26);
             const showPeriphGroup = isPollMode || isRuleCtrlAction || (isModbusTarget || !((actionTypeInt >= 6 && actionTypeInt <= 11) || actionTypeInt === 15 || isModbusPoll || isTriggerEvent));
-            const needsValue = !isPollMode && !isModbusTarget && !isRuleCtrlAction && (actionTypeInt >= 2 && actionTypeInt <= 5);
+            const needsValue = !isPollMode && !isModbusTarget && !isRuleCtrlAction && ((actionTypeInt >= 2 && actionTypeInt <= 5) || actionTypeInt === 24 || actionTypeInt === 25);
             const showRecv = !isPollMode && !isModbusTarget && !isRuleCtrlAction && this._hasSetModeTrigger() && needsValue;
             const isScript = !isPollMode && actionTypeInt === 15;
             const showActionType = !isPollMode && !isModbusTarget;
@@ -168,6 +169,10 @@
                         '<optgroup label="' + i18n.t('periph-exec-action-cat-rule') + '">' +
                         '<option value="22" ' + sel(22) + '>' + i18n.t('periph-exec-action-enable-rule') + '</option>' +
                         '<option value="23" ' + sel(23) + '>' + i18n.t('periph-exec-action-disable-rule') + '</option></optgroup>' +
+                        '<optgroup label="' + i18n.t('periph-exec-action-cat-display') + '">' +
+                        '<option value="24" ' + sel(24) + '>' + i18n.t('periph-exec-action-display-number') + '</option>' +
+                        '<option value="25" ' + sel(25) + '>' + i18n.t('periph-exec-action-display-text') + '</option>' +
+                        '<option value="26" ' + sel(26) + '>' + i18n.t('periph-exec-action-display-clear') + '</option></optgroup>' +
                     '</select></div>' +
                     '<div class="fb-form-group pe-target-group' + this._hiddenClass(showPeriphGroup) + '">' +
                     '<label>' + (isRuleCtrlAction ? i18n.t('periph-exec-target-rule-label') : i18n.t('periph-exec-target-periph-label')) + '</label>' +
@@ -175,8 +180,8 @@
                     '<div class="fb-form-group pe-modbus-ctrl-panel' + this._hiddenClass(isModbusTarget) + '"></div>' +
                     '<div class="fb-form-group pe-action-value-group' + this._hiddenClass(needsValue) + '">' +
                     '<label>' + i18n.t('periph-exec-action-value-label') + '</label>' +
-                    '<input type="text" class="pe-action-value" value="' + (isScript ? '' : escapeHtml(data.actionValue)) + '" placeholder="' + escapeHtml(i18n.t('periph-exec-action-value-hint')) + '"' + (showRecv && data.useReceivedValue !== false ? ' readonly' : '') + '>' +
-                    '<small class="pe-help-text">' + i18n.t('periph-exec-action-value-help') + '</small></div>' +
+                    '<input type="text" class="pe-action-value" value="' + (isScript ? '' : escapeHtml(data.actionValue)) + '" placeholder="' + escapeHtml(isDisplayAction ? i18n.t('periph-exec-action-display-value-hint') : i18n.t('periph-exec-action-value-hint')) + '"' + (showRecv && data.useReceivedValue !== false ? ' readonly' : '') + '>' +
+                    '<small class="pe-help-text">' + (isDisplayAction ? i18n.t('periph-exec-action-display-value-hint') : i18n.t('periph-exec-action-value-help')) + '</small></div>' +
                     '<div class="fb-form-group pe-use-received-value-group' + this._hiddenClass(showRecv) + '">' +
                     '<label class="pe-checkbox-label pe-check-align"><input type="checkbox" class="pe-use-received-value"' + (showRecv && data.useReceivedValue !== false ? ' checked' : '') + '>' +
                     i18n.t('periph-exec-use-received-value-help') + '</label></div>' +

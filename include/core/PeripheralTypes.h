@@ -47,7 +47,8 @@ enum class PeripheralType {
     ONE_WIRE,           // 单总线
     NEO_PIXEL,          // WS2812等LED
     BUZZER,             // 蜂鸣器（数字驱动，支持 beep/long/alarm/sos 预设节奏）
-    
+    SEVEN_SEGMENT_TM1637, // TM1637 4位数码管（2个引脚：CLK/DIO，bit-bang 驱动）
+
     // Modbus外设 (51-55)
     MODBUS_DEVICE = 51, // Modbus子设备（继电器/PWM/PID等）
 
@@ -142,7 +143,8 @@ inline const char* getPeripheralTypeName(PeripheralType type) {
         case PeripheralType::ONE_WIRE: return "OneWire";
         case PeripheralType::NEO_PIXEL: return "NeoPixel";
         case PeripheralType::BUZZER: return "Buzzer";
-        
+        case PeripheralType::SEVEN_SEGMENT_TM1637: return "TM1637 7-Segment";
+
         // Modbus外设
         case PeripheralType::MODBUS_DEVICE: return "Modbus Device";
 
@@ -179,6 +181,7 @@ inline uint8_t getPeripheralPinCount(PeripheralType type) {
         case PeripheralType::UART:
         case PeripheralType::I2C:
         case PeripheralType::ENCODER:
+        case PeripheralType::SEVEN_SEGMENT_TM1637:  // CLK + DIO
             return 2;
             
         // 三引脚
@@ -259,7 +262,9 @@ inline PeripheralType parsePeripheralType(const char* typeStr) {
     if (strcasecmp(typeStr, "ONE_WIRE") == 0) return PeripheralType::ONE_WIRE;
     if (strcasecmp(typeStr, "NEO_PIXEL") == 0) return PeripheralType::NEO_PIXEL;
     if (strcasecmp(typeStr, "BUZZER") == 0) return PeripheralType::BUZZER;
-    
+    if (strcasecmp(typeStr, "SEVEN_SEGMENT_TM1637") == 0 ||
+        strcasecmp(typeStr, "TM1637") == 0) return PeripheralType::SEVEN_SEGMENT_TM1637;
+
     // Modbus外设
     if (strcasecmp(typeStr, "MODBUS_DEVICE") == 0) return PeripheralType::MODBUS_DEVICE;
 

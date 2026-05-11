@@ -97,6 +97,11 @@ struct PeripheralConfig {
             uint8_t sensorType;       // 传感器类型ID
             uint32_t sampleInterval;  // 采样间隔(ms)
         } sensor;
+
+        // 数码管参数（TM1637 等）
+        struct {
+            uint8_t brightness;       // 亮度 0-7
+        } segment;
         
         // Modbus子设备参数
         struct {
