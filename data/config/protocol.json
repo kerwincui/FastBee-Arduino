@@ -1,6 +1,6 @@
 {
   "modbusRtu": {
-    "enabled": true,
+    "enabled": false,
     "peripheralId": "modbus_rtu",
     "timeout": 1000,
     "mode": "master",
@@ -307,7 +307,7 @@
     "timeout": 5000
   },
   "mqtt": {
-    "enabled": true,
+    "enabled": false,
     "server": "iot.fastbee.cn",
     "port": 1883,
     "clientId": "S&FBE100900001&1070&1",

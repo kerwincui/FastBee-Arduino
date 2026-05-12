@@ -8,6 +8,7 @@
 #include "core/SystemConstants.h"
 #include "utils/NetworkUtils.h"
 #include "utils/TimeUtils.h"
+#include "utils/StaticPoolAllocator.h"
 #include "core/FeatureFlags.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
@@ -597,6 +598,28 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
     doc["data"]["memory"]["heapMinFree"] = minFreeHeap;
     doc["data"]["memory"]["heapMaxAlloc"] = ESP.getMaxAllocHeap();
     doc["data"]["memory"]["heapUsagePercent"] = (int)(((heapSize - freeHeap) * 100) / heapSize);
+
+    // 静态池利用率监控（T1+T2 碎片治理成果可观测点）
+    // 三个池：
+    //   - (256, 32): peripherals + runtimeStates 节点池 （8KB DRAM）
+    //   - (192, 32): rules 节点池 （6KB DRAM）
+    //   - (64, 64) : SmallNodePool 高频小容器节点池 （4KB DRAM）
+    JsonObject pools = doc["data"]["memory"]["staticPools"].to<JsonObject>();
+#define FB_FILL_POOL_STATS(NAME, B, N) do {                                          \
+    auto& _p = FastBee::sharedSlabPool<(B), (N)>();                                  \
+    JsonObject _o = pools[NAME].to<JsonObject>();                                    \
+    _o["capacity"]      = (uint32_t)_p.capacity();                                   \
+    _o["blockSize"]     = (uint32_t)_p.blockSize();                                  \
+    _o["used"]          = (uint32_t)_p.usedCount();                                  \
+    _o["peakUsed"]      = (uint32_t)_p.peakUsed();                                   \
+    _o["overflowCount"] = (uint32_t)_p.overflowCount();                              \
+    _o["totalBytes"]    = (uint32_t)_p.totalBytes();                                 \
+} while (0)
+    FB_FILL_POOL_STATS("periph256", 256, 32);
+    FB_FILL_POOL_STATS("rule192",   192, 32);
+    FB_FILL_POOL_STATS("small64",   FastBee::SMALL_NODE_BLOCK_SIZE,
+                                    FastBee::SMALL_NODE_BLOCK_COUNT);
+#undef FB_FILL_POOL_STATS
 
     size_t psramSize = ESP.getPsramSize();
     if (psramSize > 0) {

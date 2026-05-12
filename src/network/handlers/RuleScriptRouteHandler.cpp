@@ -5,6 +5,7 @@
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "core/RuleScriptManager.h"
+#include "core/AsyncExecTypes.h"  // MutexGuard
 #include <ArduinoJson.h>
 
 RuleScriptRouteHandler::RuleScriptRouteHandler(WebHandlerContext* ctx)
@@ -40,27 +41,61 @@ void RuleScriptRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     }
 
     RuleScriptManager& mgr = RuleScriptManager::getInstance();
-    auto rules = mgr.getAllRules();
 
-    JsonDocument doc;
-    doc["success"] = true;
-    JsonArray data = doc["data"].to<JsonArray>();
+    // 检查堆内存
+    if (HandlerUtils::checkLowMemory(request)) return;
 
-    for (const auto& rule : rules) {
-        JsonObject obj = data.add<JsonObject>();
-        obj["id"] = rule.id;
-        obj["name"] = rule.name;
-        obj["enabled"] = rule.enabled;
-        obj["triggerType"] = rule.triggerType;
-        obj["protocolType"] = rule.protocolType;
-        obj["scriptContent"] = rule.scriptContent;
-        obj["lastTriggerTime"] = rule.lastTriggerTime;
-        obj["triggerCount"] = rule.triggerCount;
+    // 持锁迭代引用，避免全量 vector 拷贝；在持锁临界区内序列化为 items
+    std::vector<String> items;
+    {
+        MutexGuard lock(mgr.getMutex());
+        if (!lock.isLocked()) {
+            HandlerUtils::sendJsonError(request, 503, "Service busy, try again");
+            return;
+        }
+        const auto& ruleMap = mgr.getRulesRef();
+        items.reserve(ruleMap.size());
+        for (const auto& pair : ruleMap) {
+            const auto& rule = pair.second;
+            // 转义 name 中的双引号
+            String safeName = rule.name;
+            safeName.replace("\"", "\\\"");
+            // scriptContent 可能较长，逐项拼接（在持锁内完成，脱锁后不再依赖 map 内部字符串）
+            String safeScript = rule.scriptContent;
+            safeScript.replace("\\", "\\\\");
+            safeScript.replace("\"", "\\\"");
+            safeScript.replace("\n", "\\n");
+            safeScript.replace("\r", "\\r");
+            safeScript.replace("\t", "\\t");
+
+            String item;
+            item.reserve(128 + safeScript.length());
+            item += F("{\"id\":\"");
+            item += rule.id;
+            item += F("\",\"name\":\"");
+            item += safeName;
+            item += F("\",\"enabled\":");
+            item += rule.enabled ? F("true") : F("false");
+            item += F(",\"triggerType\":");
+            item += String(rule.triggerType);
+            item += F(",\"protocolType\":");
+            item += String(rule.protocolType);
+            item += F(",\"scriptContent\":\"");
+            item += safeScript;
+            item += F("\",\"lastTriggerTime\":");
+            item += String(rule.lastTriggerTime);
+            item += F(",\"triggerCount\":");
+            item += String(rule.triggerCount);
+            item += F("}");
+            items.emplace_back(std::move(item));
+        }
+    }  // 释放锁
+
+    // 流式输出，避免一次性 String 拼接所有 item
+    String header = F("{\"success\":true,\"data\":[");
+    if (!HandlerUtils::sendJsonListChunked(request, header, std::move(items))) {
+        HandlerUtils::sendJsonError(request, 503, "Failed to create streaming response");
     }
-
-    String output;
-    serializeJson(doc, output);
-    request->send(200, "application/json", output);
 }
 
 // ========== 新增规则 ==========

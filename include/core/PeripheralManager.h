@@ -12,6 +12,27 @@
 #include <functional>
 #include "PeripheralTypes.h"
 #include "PeripheralConfig.h"
+#include "utils/StaticPoolAllocator.h"
+
+// 外设容器静态池参数（T1：根治 std::map 节点堆碎片）
+//   - BlockSize 256: 容纳 _Rb_tree_node<pair<const String, PeripheralConfig>>(~200B) 与
+//                     _Rb_tree_node<pair<const String, PeripheralRuntimeState>>(~120B)
+//   - BlockCount 32: 覆盖 ~16 个外设×2 容器，冷启动预分配 8KB DRAM
+//   - 池耗尽会优雅回退 ::malloc（不限制外设上限）
+static constexpr size_t PERIPH_NODE_BLOCK_SIZE  = 256;
+static constexpr size_t PERIPH_NODE_BLOCK_COUNT = 32;
+
+using PeripheralMapAllocator = FastBee::PooledAllocator<
+    std::pair<const String, PeripheralConfig>,
+    PERIPH_NODE_BLOCK_SIZE, PERIPH_NODE_BLOCK_COUNT>;
+using RuntimeStateMapAllocator = FastBee::PooledAllocator<
+    std::pair<const String, PeripheralRuntimeState>,
+    PERIPH_NODE_BLOCK_SIZE, PERIPH_NODE_BLOCK_COUNT>;
+
+using PeripheralMap   = std::map<String, PeripheralConfig,
+                                  std::less<String>, PeripheralMapAllocator>;
+using RuntimeStateMap = std::map<String, PeripheralRuntimeState,
+                                  std::less<String>, RuntimeStateMapAllocator>;
 
 // Modbus 通信委托回调类型（用于解耦 PeripheralManager 和 ModbusHandler）
 using ModbusCoilWriteFunc = std::function<bool(uint8_t slaveAddr, uint16_t coilAddr, bool value)>;
@@ -198,13 +219,16 @@ private:
     // 线程安全互斥量（递归，支持嵌套调用）
     SemaphoreHandle_t _mutex = nullptr;
 
-    // 外设存储
-    std::map<String, PeripheralConfig> peripherals;
-    std::map<String, PeripheralRuntimeState> runtimeStates;
-    std::map<uint8_t, String> pinToPeripheral;  // 引脚到外设ID的映射
+    // 外设存储（T1：使用静态池 allocator，节点不再碎片化系统堆）
+    PeripheralMap   peripherals;
+    RuntimeStateMap runtimeStates;
+    // 引脚到外设ID的映射（T2：高频重建，走 SmallNodePool）
+    std::map<uint8_t, String, std::less<uint8_t>,
+             FastBee::SmallNodeAllocator<std::pair<const uint8_t, String>>> pinToPeripheral;
     
-    // 动作定时器
-    std::map<String, ActionTickerData*> actionTickers;
+    // 动作定时器（T2：高频增删，走 SmallNodePool）
+    std::map<String, ActionTickerData*, std::less<String>,
+             FastBee::SmallNodeAllocator<std::pair<const String, ActionTickerData*>>> actionTickers;
     
     // Modbus 通信委托
     ModbusCoilWriteFunc _modbusCoilWrite = nullptr;

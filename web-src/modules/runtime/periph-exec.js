@@ -510,8 +510,15 @@
 
         editPeriphExecRule(id) {
             this.openPeriphExecModal(id);
-            Promise.all([apiGet('/api/periph-exec?id=' + id), apiGet('/api/peripherals?pageSize=50'), apiGet('/api/protocol/config'), apiGet('/api/periph-exec?pageSize=100')])
-                .then(([execRes, periphRes, protoRes, rulesRes]) => {
+            // 串行请求：ESP32 heap 紧张时并发 4 个请求会 OOM，必须逐个等完
+            const _editResults = {};
+            apiGet('/api/periph-exec?id=' + id)
+                .then(execRes => { _editResults.execRes = execRes; return apiGet('/api/peripherals?pageSize=50'); })
+                .then(periphRes => { _editResults.periphRes = periphRes; return apiGet('/api/protocol/config'); })
+                .then(protoRes => { _editResults.protoRes = protoRes; return apiGet('/api/periph-exec?pageSize=100'); })
+                .then(rulesRes => {
+                    _editResults.rulesRes = rulesRes;
+                    const { execRes, periphRes, protoRes } = _editResults;
                     if (periphRes && periphRes.success && periphRes.data) {
                         this._pePeripherals = periphRes.data.filter(p => p.enabled);
                     }
@@ -572,6 +579,9 @@
                         this._syncSetModeToActions(true);
                     }
                     this._refreshPeriphExecRiskNotice({ allowFetch: true });
+                })
+                .catch(err => {
+                    console.error('Failed to load periph exec edit data:', err);
                 });
         },
 

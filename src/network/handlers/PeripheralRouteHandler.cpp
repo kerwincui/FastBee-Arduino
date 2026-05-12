@@ -197,54 +197,32 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         serializedItems.push_back(std::move(itemStr));
     }
     
-    // 精确计算总 JSON 大小（header + commas + items + footer）
-    size_t headerSize = 80;  // {"success":true,"total":NN,"page":N,"pageSize":NN,"data":[
-    size_t commaSize = (serializedItems.size() > 0) ? serializedItems.size() - 1 : 0;
-    size_t totalJsonSize = headerSize + totalItemsSize + commaSize + 4;  // +4 for ]}
-    
-    // 检查可用内存是否足够（保留 6KB 安全余量）
+     // ============ Chunked 流式响应（复用 HandlerUtils::sendJsonListChunked）============
+    // 旧方案：先构建一个 totalJsonSize 大小的连续 String（~10-20KB），对碎片化堆极不友好。
+    // 新方案：items 已在 vector<String> 中，按 index 按需复制到 TCP 发送缓冲（~256B），
+    //         堆峰 = items 合计（~6KB），不再产生额外大 String。
     size_t freeHeap = ESP.getFreeHeap();
-    if (totalJsonSize + 6144 > freeHeap) {
-        LOG_ERRORF("[Periph] Not enough memory: need=%d free=%d", totalJsonSize, freeHeap);
-        HandlerUtils::sendJsonError(request, 503, "Not enough memory for response");
-        return;
-    }
-    
-    // 第二遍：用精确 reserve 构建最终 JSON
-    String json;
-    if (!json.reserve(totalJsonSize + 64)) {
-        LOG_ERRORF("[Periph] Reserve failed: %d bytes, heap=%d", totalJsonSize + 64, freeHeap);
-        HandlerUtils::sendJsonError(request, 503, "Memory allocation failed");
-        return;
-    }
-    
-    json += F("{\"success\":true,\"total\":");
-    json += String(total);
-    json += F(",\"page\":");
-    json += String(page);
-    json += F(",\"pageSize\":");
-    json += String(pageSize);
-    json += F(",\"data\":[");
-    
-    for (size_t i = 0; i < serializedItems.size(); i++) {
-        if (i > 0) json += ',';
-        json += serializedItems[i];
-    }
-    
-    json += F("]}");
-    
-    // 释放临时序列化数据
-    serializedItems.clear();
-    serializedItems.shrink_to_fit();
-
-    // 校验 JSON 完整性
-    if (json.length() < 20 || !json.endsWith("]}")) {
-        LOG_ERRORF("[Periph] JSON truncated! len=%d heap=%d", json.length(), ESP.getFreeHeap());
-        HandlerUtils::sendJsonError(request, 503, "Response truncated, low memory");
+    if (freeHeap < 8192) {
+        LOG_ERRORF("[Periph] Low heap for chunked response: free=%u", (unsigned)freeHeap);
+        HandlerUtils::sendJsonError(request, 503, "Low memory for response");
         return;
     }
 
-    request->send(200, "application/json", json);
+    // 构建 header：{"success":true,"total":N,"page":P,"pageSize":S,"data":[
+    String header;
+    header.reserve(96);
+    header = F("{\"success\":true,\"total\":");
+    header += String(total);
+    header += F(",\"page\":");
+    header += String(page);
+    header += F(",\"pageSize\":");
+    header += String(pageSize);
+    header += F(",\"data\":[");
+
+    if (!HandlerUtils::sendJsonListChunked(request, header, std::move(serializedItems))) {
+        LOG_ERRORF("[Periph] beginChunkedResponse failed, heap=%u", (unsigned)ESP.getFreeHeap());
+        HandlerUtils::sendJsonError(request, 503, "Failed to create streaming response");
+    }
 }
 
 void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* request) {

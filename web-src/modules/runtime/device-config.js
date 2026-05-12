@@ -388,12 +388,14 @@
         // ============ OTA升级 ============
 
         loadOtaStatus() {
-            Promise.all([
-                apiGet('/api/ota/status'),
-                apiGet('/api/network/status'),
-                apiGet('/api/system/info')
-            ])
-                .then(([otaRes, netRes, sysRes]) => {
+            // 串行请求：避免并发 3 个接口（包含 system/info 大响应）把 ESP32 heap 撐爆
+            const _otaResults = {};
+            apiGet('/api/ota/status')
+                .then(otaRes => { _otaResults.otaRes = otaRes; return apiGet('/api/network/status'); })
+                .then(netRes => { _otaResults.netRes = netRes; return apiGet('/api/system/info'); })
+                .then(sysRes => {
+                    _otaResults.sysRes = sysRes;
+                    const { otaRes, netRes } = _otaResults;
                     const internetAvailable = (netRes && netRes.success && netRes.data) ? netRes.data.internetAvailable === true : false;
 
                     if (otaRes) {

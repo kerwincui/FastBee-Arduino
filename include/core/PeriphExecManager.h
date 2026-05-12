@@ -188,11 +188,17 @@ public:
     using RuleMap = std::map<String, PeriphExecRule, std::less<String>, RuleMapAllocator>;
     RuleMap& getRules() { return rules; }
 
+    // 运行中规则ID集合 / 失败退避表（T2：同样走 SmallNodePool）
+    using RunningRuleSet = std::set<String, std::less<String>,
+                                    FastBee::SmallNodeAllocator<String>>;
+    using FailureBackoffMap = std::map<String, unsigned long, std::less<String>,
+                                        FastBee::SmallNodeAllocator<std::pair<const String, unsigned long>>>;
+
     // 获取运行中规则ID集合
-    std::set<String>& getRunningRuleIds() { return _runningRuleIds; }
+    RunningRuleSet& getRunningRuleIds() { return _runningRuleIds; }
 
     // 获取失败退避记录
-    std::map<String, unsigned long>& getFailureBackoff() { return _failureBackoff; }
+    FailureBackoffMap& getFailureBackoff() { return _failureBackoff; }
 
     // 获取任务槽信号量
     SemaphoreHandle_t getTaskSlotSemaphore() const { return _taskSlotSemaphore; }
@@ -287,16 +293,20 @@ private:
     MqttEventPublishCallback _mqttEventPublishCb;
     SensorSSECallback _sensorSSECb;
 
-    // ========== 任务运行状态跟踪 ==========
-    std::set<String> _runningRuleIds;           // 正在运行的规则ID集合
-    std::map<String, unsigned long> _failureBackoff;  // 规则失败后的退避时间戳
+    // ========== 任务运行状态跟踪（T2：高频增删，走 SmallNodePool） ==========
+    RunningRuleSet    _runningRuleIds;     // 正在运行的规则ID集合
+    FailureBackoffMap _failureBackoff;     // 规则失败后的退避时间戳
+    std::map<String, unsigned long> _runningStartTime;  // 规则进入运行集合的时间戳（自愈用）
     SemaphoreHandle_t _runningRulesMutex = nullptr;   // 保护 _runningRuleIds 的互斥量
     SemaphoreHandle_t _pollIngressMutex = nullptr;    // 保护轮询注入节流状态
-    std::map<String, unsigned long> _pollSourceLastAccepted;   // 最近一次接受的轮询数据时间
-    std::map<String, unsigned long> _pollSourceLastThrottleLog; // 最近一次节流日志时间
+    std::map<String, unsigned long, std::less<String>,
+             FastBee::SmallNodeAllocator<std::pair<const String, unsigned long>>> _pollSourceLastAccepted;   // 最近一次接受的轮询数据时间
+    std::map<String, unsigned long, std::less<String>,
+             FastBee::SmallNodeAllocator<std::pair<const String, unsigned long>>> _pollSourceLastThrottleLog; // 最近一次节流日志时间
 
-    // ========== 按键规则缓存（无锁，仅主循环线程读写） ==========
-    std::set<String> _buttonEventCache;  // 存储 "eventId" 或 "periphId:eventId"
+    // ========== 按键规则缓存（无锁，仅主循环线程读写）——T2：走 SmallNodePool ==========
+    std::set<String, std::less<String>,
+             FastBee::SmallNodeAllocator<String>> _buttonEventCache;  // 存储 "eventId" 或 "periphId:eventId"
     void rebuildButtonEventCache();      // 规则变更时重建缓存
 
     // ========== 传感器读取值缓存（供 controls API 和 SSE 使用） ==========

@@ -72,7 +72,7 @@
     {
       "id": "exec_181189",
       "name": "采集环境质量",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
@@ -522,7 +522,7 @@
     {
       "id": "exec_71484",
       "name": "流水灯",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
@@ -633,7 +633,7 @@
           "operatorType": 0,
           "compareValue": "",
           "timerMode": 0,
-          "intervalSec": 8,
+          "intervalSec": 10,
           "timePoint": "",
           "eventId": "",
           "pollResponseTimeout": 1000,
@@ -645,7 +645,7 @@
         {
           "targetPeriphId": "",
           "actionType": 15,
-          "actionValue": "PERIPH tm1637_01 DISPLAY ${dht_01.temperature}\nDELAY 4000\nPERIPH tm1637_01 DISPLAY ${dht_01.humidity}\nDELAY 2000",
+          "actionValue": "PERIPH tm1637_01 DISPLAY ${dht_01.temperature}\nDELAY 4500\nPERIPH tm1637_01 DISPLAY ${dht_01.humidity}\nDELAY 4500",
           "useReceivedValue": false,
           "syncDelayMs": 0,
           "execMode": 1

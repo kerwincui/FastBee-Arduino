@@ -994,8 +994,20 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
     {
         MutexGuard runLock(_runningRulesMutex);
         if (_runningRuleIds.count(rule.id) > 0) {
-            LOGGER.warningf("[PeriphExec] Skip dispatch: task '%s' already running", rule.name.c_str());
-            return;
+            // 自愈机制：若规则挂在运行集合超过 60 秒，视为 task 已异常终止
+            // 强制清理，避免 _runningRuleIds 永久卡死导致按键等事件规则失效
+            auto itTime = _runningStartTime.find(rule.id);
+            unsigned long now = millis();
+            if (itTime != _runningStartTime.end() && (now - itTime->second) > 60000UL) {
+                LOGGER.warningf("[PeriphExec] Rule '%s' stuck in running set for %lums, auto-cleanup",
+                                rule.name.c_str(), now - itTime->second);
+                _runningRuleIds.erase(rule.id);
+                _runningStartTime.erase(rule.id);
+                // 继续执行下方分发逻辑
+            } else {
+                LOGGER.warningf("[PeriphExec] Skip dispatch: task '%s' already running", rule.name.c_str());
+                return;
+            }
         }
     }
 
@@ -1071,6 +1083,7 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
     {
         MutexGuard runLock(_runningRulesMutex);
         _runningRuleIds.insert(rule.id);
+        _runningStartTime[rule.id] = millis();
     }
 
     BaseType_t created =
@@ -1101,9 +1114,18 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
         {
             MutexGuard runLock(_runningRulesMutex);
             _runningRuleIds.erase(rule.id);
+            _runningStartTime.erase(rule.id);
         }
         _contextPool.release(ctx);  // 归还对象池
         xSemaphoreGive(_taskSlotSemaphore);
+        // 重资源规则（脚本/Modbus/多动作）绝对不能同步 fallback：
+        // 9s+ 同步执行会阻塞 timer 任务，饯死 web_client_handler / network_update 等 100ms 调度，
+        // 导致 Web 服务少响应。此处与前面三个失败分支保持一致：heavy rule 丢入 backoff 跳过本轮。
+        if (shouldAvoidSyncFallback(rule)) {
+            MutexGuard runLock(_runningRulesMutex);
+            _failureBackoff[rule.id] = millis() + 5000;
+            return;
+        }
         executeSyncWithCompletion(rule, receivedValue);
         return;
     }
@@ -1160,6 +1182,7 @@ void PeriphExecManager::asyncExecTaskFunc(void* pvParameters) {
     {
         MutexGuard runLock(ctx->manager->_runningRulesMutex);
         ctx->manager->_runningRuleIds.erase(ctx->ruleCopy.id);
+        ctx->manager->_runningStartTime.erase(ctx->ruleCopy.id);
     }
 
     // 如果执行失败，设置退避时间（30秒后才能再次触发）
@@ -1215,6 +1238,7 @@ void PeriphExecManager::executeSyncWithCompletion(const PeriphExecRule& rule, co
     {
         MutexGuard runLock(_runningRulesMutex);
         _runningRuleIds.insert(rule.id);
+        _runningStartTime[rule.id] = millis();
     }
 
     // 2. 执行所有动作
@@ -1232,6 +1256,7 @@ void PeriphExecManager::executeSyncWithCompletion(const PeriphExecRule& rule, co
     {
         MutexGuard runLock(_runningRulesMutex);
         _runningRuleIds.erase(rule.id);
+        _runningStartTime.erase(rule.id);
     }
 
     // 5. 设置或清除退避记录

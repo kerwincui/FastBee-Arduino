@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <vector>
 
 namespace HandlerUtils {
 
@@ -153,5 +154,19 @@ inline bool getParamBool(AsyncWebServerRequest* request, const char* name, bool 
     }
     return defaultVal;
 }
+
+// 列表型 JSON 响应的 Chunked 流式输出（非 inline，避免在多个 handler 中重复展开、膨胀 Flash）
+// 输入 items 会被 std::move 接管，调用者不需手动释放。
+// 输出格式：{header} {item0} ',' {item1} ... {footer}
+// 典型用法：header = `{"success":true,"total":N,"data":[`, footer = `]}`.
+// 特点：
+//   - 不产生连续大 String 堆块（逐项拷贝到 TCP 发送缓冲，粒度 ~256B）
+//   - 项发完后立即释放该 String，堆占用单调递减
+//   - 由 shared_ptr 接管状态，在 lambda 释放后自动销毁
+bool sendJsonListChunked(
+    AsyncWebServerRequest* request,
+    const String& header,
+    std::vector<String>&& items,
+    const char* footer = "]}");
 
 } // namespace HandlerUtils

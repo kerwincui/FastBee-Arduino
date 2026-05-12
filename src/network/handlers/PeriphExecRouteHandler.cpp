@@ -6,6 +6,7 @@
 #include "./network/WebHandlerContext.h"
 #include "core/PeriphExecManager.h"
 #include "core/PeripheralManager.h"
+#include "core/AsyncExecTypes.h"  // MutexGuard
 #if FASTBEE_ENABLE_MQTT
 #include "protocols/MQTTClient.h"
 #endif
@@ -93,32 +94,28 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     PeripheralManager& pm = PeripheralManager::getInstance();
 
-    // 如果传了 id 参数，只返回单条规则（避免编辑时加载全部规则导致内存不足）
+    // ============ 单条查询：用 getRule() 直接拿指针，零拷贝 ============
     if (request->hasParam("id")) {
         String ruleId = request->getParam("id")->value();
-        auto rules = mgr.getAllRules();
-        for (const auto& rule : rules) {
-            if (rule.id == ruleId) {
-                // 找到规则，使用辅助方法完整序列化
-                String response = serializeRuleFull(rule);
-                HandlerUtils::sendJsonSuccess(request, response);
-                return;
-            }
+        // getRule() 内部不持锁，但返回指向 map 内的指针；这里短暂持锁，序列化后立即释放
+        MutexGuard lock(mgr.getRulesMutex());
+        if (!lock.isLocked()) {
+            HandlerUtils::sendJsonError(request, 503, "Service busy, try again");
+            return;
         }
-        request->send(404, "application/json", "{\"success\":false,\"message\":\"Rule not found\"}");
+        const PeriphExecRule* rule = mgr.getRule(ruleId);
+        if (!rule) {
+            request->send(404, "application/json", "{\"success\":false,\"message\":\"Rule not found\"}");
+            return;
+        }
+        String response = serializeRuleFull(*rule);
+        // 锁在 RAII 释放后，再发送响应（响应可能涉及异步发送）
+        // 这里 lock 仍在作用域内，但 send 是同步入队，不阻塞太久
+        HandlerUtils::sendJsonSuccess(request, response);
         return;
     }
 
-    auto rules = mgr.getAllRules();
-
-    // 排序：启用的排前面，然后按名称排序
-    std::sort(rules.begin(), rules.end(), [](const PeriphExecRule& a, const PeriphExecRule& b) {
-        if (a.enabled != b.enabled) return a.enabled > b.enabled;
-        return strcmp(a.name.c_str(), b.name.c_str()) < 0;
-    });
-
-    int total = rules.size();
-
+    // ============ 列表查询：仅指针排序 + 当前页序列化，避免全量深拷贝 ============
     // 解析分页参数
     int page = 1;
     int pageSize = 10;
@@ -132,74 +129,100 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         if (pageSize > 50) pageSize = 50;
     }
 
-    // 计算分页范围
-    int startIdx = (page - 1) * pageSize;
-    int endIdx = (startIdx < total) ? min(startIdx + pageSize, total) : startIdx;
-
     // 检查堆内存是否充足（预留 20KB 给系统其他部分）
     if (HandlerUtils::checkLowMemory(request)) return;
-    
-    // 构建 JSON String 响应，避免 AsyncResponseStream cbuf 扩容 OOM
-    String json;
-    json.reserve(256 + (endIdx - startIdx) * 300);
-    char itemBuf[512];
-    json += F("{\"success\":true,\"total\":");
-    json += String(total);
-    json += F(",\"page\":");
-    json += String(page);
-    json += F(",\"pageSize\":");
-    json += String(pageSize);
-    json += F(",\"data\":[");
-    
-    bool firstRule = true;
-    for (int i = startIdx; i < endIdx; i++) {
-        if (!firstRule) json += ',';
-        firstRule = false;
-    
-        const auto& rule = rules[i];
-    
-        // 列表视图只返回摘要字段
-        int triggerCount = rule.triggers.size();
-        int actionCount = rule.actions.size();
-        int triggerSummary = triggerCount > 0 ? rule.triggers[0].triggerType : -1;
-        int actionSummary = actionCount > 0 ? rule.actions[0].actionType : -1;
-    
-        bool hasSetMode = false;
-        for (const auto& trigger : rule.triggers) {
-            if (trigger.triggerType == 0 && trigger.operatorType == 1) {
-                hasSetMode = true;
-                break;
+
+    // 持锁短临界区：构建指针 vector + 排序 + 序列化当前页到 items
+    int total = 0;
+    int startIdx = 0;
+    int endIdx = 0;
+    std::vector<String> items;
+    {
+        MutexGuard lock(mgr.getRulesMutex());
+        if (!lock.isLocked()) {
+            HandlerUtils::sendJsonError(request, 503, "Service busy, try again");
+            return;
+        }
+        auto& ruleMap = mgr.getRules();
+        // 仅指针 vector，每项 4-8 字节，46 条规则也只有 ~370 字节
+        std::vector<const PeriphExecRule*> ptrs;
+        ptrs.reserve(ruleMap.size());
+        for (const auto& pair : ruleMap) {
+            ptrs.push_back(&pair.second);
+        }
+        // 排序：启用的排前面，然后按名称排序
+        std::sort(ptrs.begin(), ptrs.end(), [](const PeriphExecRule* a, const PeriphExecRule* b) {
+            if (a->enabled != b->enabled) return a->enabled > b->enabled;
+            return strcmp(a->name.c_str(), b->name.c_str()) < 0;
+        });
+
+        total = static_cast<int>(ptrs.size());
+        startIdx = (page - 1) * pageSize;
+        endIdx = (startIdx < total) ? min(startIdx + pageSize, total) : startIdx;
+
+        items.reserve(endIdx - startIdx);
+        char itemBuf[512];
+        for (int i = startIdx; i < endIdx; i++) {
+            const auto& rule = *ptrs[i];
+
+            // 列表视图只返回摘要字段
+            int triggerCount = rule.triggers.size();
+            int actionCount = rule.actions.size();
+            int triggerSummary = triggerCount > 0 ? rule.triggers[0].triggerType : -1;
+            int actionSummary = actionCount > 0 ? rule.actions[0].actionType : -1;
+
+            bool hasSetMode = false;
+            for (const auto& trigger : rule.triggers) {
+                if (trigger.triggerType == 0 && trigger.operatorType == 1) {
+                    hasSetMode = true;
+                    break;
+                }
             }
+
+            String targetPeriphName;
+            if (actionCount > 0 && !rule.actions[0].targetPeriphId.isEmpty()) {
+                const PeripheralConfig* periph = pm.getPeripheral(rule.actions[0].targetPeriphId);
+                if (periph) targetPeriphName = periph->name;
+            }
+
+            snprintf(itemBuf, sizeof(itemBuf),
+                "{\"id\":\"%s\",\"name\":\"%s\",\"enabled\":%s,"
+                "\"execMode\":%d,\"reportAfterExec\":%s,"
+                "\"triggerCount\":%d,\"actionCount\":%d,"
+                "\"triggerSummary\":%d,\"actionSummary\":%d,"
+                "\"hasSetMode\":%s,"
+                "\"targetPeriphName\":\"%s\"}",
+                rule.id.c_str(),
+                rule.name.c_str(),
+                rule.enabled ? "true" : "false",
+                rule.execMode,
+                rule.reportAfterExec ? "true" : "false",
+                triggerCount, actionCount,
+                triggerSummary, actionSummary,
+                hasSetMode ? "true" : "false",
+                targetPeriphName.c_str()
+            );
+            items.emplace_back(itemBuf);
         }
-    
-        String targetPeriphName;
-        if (actionCount > 0 && !rule.actions[0].targetPeriphId.isEmpty()) {
-            const PeripheralConfig* periph = pm.getPeripheral(rule.actions[0].targetPeriphId);
-            if (periph) targetPeriphName = periph->name;
-        }
-    
-        snprintf(itemBuf, sizeof(itemBuf),
-            "{\"id\":\"%s\",\"name\":\"%s\",\"enabled\":%s,"
-            "\"execMode\":%d,\"reportAfterExec\":%s,"
-            "\"triggerCount\":%d,\"actionCount\":%d,"
-            "\"triggerSummary\":%d,\"actionSummary\":%d,"
-            "\"hasSetMode\":%s,"
-            "\"targetPeriphName\":\"%s\"}",
-            rule.id.c_str(),
-            rule.name.c_str(),
-            rule.enabled ? "true" : "false",
-            rule.execMode,
-            rule.reportAfterExec ? "true" : "false",
-            triggerCount, actionCount,
-            triggerSummary, actionSummary,
-            hasSetMode ? "true" : "false",
-            targetPeriphName.c_str()
-        );
-        json += itemBuf;
+    }  // 释放 _rulesMutex
+
+    // 处理空页边界（避免 items 为空时调用 sendJsonListChunked）
+    // 依然需要返回有效的分页响应结构
+
+    // 复用 HandlerUtils::sendJsonListChunked（与 handleGetPeripherals 同模式）
+    String header;
+    header.reserve(96);
+    header = F("{\"success\":true,\"total\":");
+    header += String(total);
+    header += F(",\"page\":");
+    header += String(page);
+    header += F(",\"pageSize\":");
+    header += String(pageSize);
+    header += F(",\"data\":[");
+
+    if (!HandlerUtils::sendJsonListChunked(request, header, std::move(items))) {
+        HandlerUtils::sendJsonError(request, 503, "Failed to create streaming response");
     }
-    
-    json += F("]}");
-    request->send(200, "application/json", json);
 }
 
 // ========== 新增规则（form-encoded 向后兼容） ==========
@@ -577,9 +600,17 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     PeripheralManager& pm = PeripheralManager::getInstance();
-    auto rules = mgr.getAllRules();
 
-    // 构建 JSON String 响应，避免 AsyncResponseStream cbuf 扩容 OOM
+    // 检查堆内存
+    if (HandlerUtils::checkLowMemory(request)) return;
+
+    // 持锁上下文：避免全量拷贝 vector，直接迭代 RuleMap 引用
+    MutexGuard lock(mgr.getRulesMutex());
+    if (!lock.isLocked()) {
+        HandlerUtils::sendJsonError(request, 503, "Service busy, try again");
+        return;
+    }
+    auto& ruleMap = mgr.getRules();
 
     // 分组缓冲：记录每个分组是否已写入第一条
     bool firstGpio = true, firstModbus = true, firstSystem = true;
@@ -588,7 +619,8 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
     // 临时缓冲各分组的内容
     String gpioItems, modbusItems, systemItems, scriptItems, sensorItems, otherItems;
 
-    for (const auto& rule : rules) {
+    for (const auto& pair : ruleMap) {
+        const auto& rule = pair.second;
         if (!rule.enabled) continue;
         if (rule.actions.empty()) continue;
 

@@ -29,6 +29,9 @@ public:
     bool removeRule(const String& id);
     RuleScript* getRule(const String& id);
     std::vector<RuleScript> getAllRules() const;
+    // 零拷贝迭代用：调用方须自行持 getMutex() 保证线程安全
+    const std::map<String, RuleScript>& getRulesRef() const { return _rules; }
+    SemaphoreHandle_t getMutex() const { return _mutex; }
     bool enableRule(const String& id);
     bool disableRule(const String& id);
     size_t getRuleCount() const { return _rules.size(); }

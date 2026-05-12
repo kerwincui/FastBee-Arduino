@@ -101,6 +101,14 @@ private:
     }
 };
 
+// 跨 T 共享的池访问函数：以 (BlockSize, BlockCount) 为唯一键
+// 避免多个 std::map<K,V> 同参数多池冗余（修复原设计中 Meyers 单例在模板内导致的 T 隔离问题）
+template <size_t BlockSize, size_t BlockCount>
+inline StaticSlabPool<BlockSize, BlockCount>& sharedSlabPool() noexcept {
+    static StaticSlabPool<BlockSize, BlockCount> instance;
+    return instance;
+}
+
 // ── STL Allocator 适配器 ────────────────────────────────────────────────────
 // 所有同 (BlockSize, BlockCount) 的实例共享一个 Meyers 单例 pool
 // 用法：std::map<K, V, std::less<K>, PooledAllocator<std::pair<const K, V>, 512, 16>>
@@ -153,10 +161,9 @@ public:
         ::free(p);
     }
 
-    // 获取池实例（Meyers 单例：首次调用时初始化，函数局部静态，线程安全）
+    // 获取池实例（跨 T 共享同 (BlockSize, BlockCount) 的全局单例池）
     static StaticSlabPool<BlockSize, BlockCount>& pool() {
-        static StaticSlabPool<BlockSize, BlockCount> instance;
-        return instance;
+        return sharedSlabPool<BlockSize, BlockCount>();
     }
 };
 
@@ -169,6 +176,19 @@ template <typename T1, typename T2, size_t B, size_t N>
 bool operator!=(const PooledAllocator<T1, B, N>& a, const PooledAllocator<T2, B, N>& b) noexcept {
     return !(a == b);
 }
+
+// ── 预设池参数（跨模块共享同一 Meyers 单例池）──────────────────────────
+// SmallNodePool: 小节点 std::map/std::set 专用（高频增删的节点型容器）
+//   - 64B/块 × 64 块 = 4KB DRAM 预分配
+//   - 容纳 _Rb_tree_node<pair<String, ulong>>(~40B)、_Rb_tree_node<String>(~32B)
+//             、_Rb_tree_node<pair<uint8_t, String>>(~36B)、_Rb_tree_node<pair<String, void*>>(~36B)
+//   - 适用于：_failureBackoff / _runningRuleIds / _buttonEventCache /
+//             actionTickers / pinToPeripheral / _pollSourceLast* 等高频小容器
+static constexpr size_t SMALL_NODE_BLOCK_SIZE  = 64;
+static constexpr size_t SMALL_NODE_BLOCK_COUNT = 64;
+
+template <typename T>
+using SmallNodeAllocator = PooledAllocator<T, SMALL_NODE_BLOCK_SIZE, SMALL_NODE_BLOCK_COUNT>;
 
 } // namespace FastBee
 
