@@ -41,21 +41,32 @@ void RoleRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on(AsyncURIMatcher::exact("/api/roles"), HTTP_POST,
               [this](AsyncWebServerRequest* request) { handleCreateRole(request); });
 
-    // 正则路由
-    server->on("^\\/api\\/roles\\/([^\\/]+)$", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleGetRole(request); });
+    // 前缀路由：取代原 5 个正则路由（std::regex 每个占 ~1.3KB）
+    // GET /api/roles/{id}            -> handleGetRole
+    // GET /api/roles/{id}/permissions -> handleGetRolePermissions
+    server->on(AsyncURIMatcher::prefix("/api/roles/"), HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        if (request->url().endsWith("/permissions")) {
+            handleGetRolePermissions(request);
+        } else {
+            handleGetRole(request);
+        }
+    });
 
-    server->on("^\\/api\\/roles\\/([^\\/]+)$", HTTP_PUT,
-              [this](AsyncWebServerRequest* request) { handleUpdateRole(request); });
+    // PUT /api/roles/{id}             -> handleUpdateRole
+    // PUT /api/roles/{id}/permissions -> handleSetRolePermissions
+    server->on(AsyncURIMatcher::prefix("/api/roles/"), HTTP_PUT,
+              [this](AsyncWebServerRequest* request) {
+        if (request->url().endsWith("/permissions")) {
+            handleSetRolePermissions(request);
+        } else {
+            handleUpdateRole(request);
+        }
+    });
 
-    server->on("^\\/api\\/roles\\/([^\\/]+)$", HTTP_DELETE,
+    // DELETE /api/roles/{id}
+    server->on(AsyncURIMatcher::prefix("/api/roles/"), HTTP_DELETE,
               [this](AsyncWebServerRequest* request) { handleDeleteRole(request); });
-
-    server->on("^\\/api\\/roles\\/([^\\/]+)\\/permissions$", HTTP_GET,
-              [this](AsyncWebServerRequest* request) { handleGetRolePermissions(request); });
-
-    server->on("^\\/api\\/roles\\/([^\\/]+)\\/permissions$", HTTP_PUT,
-              [this](AsyncWebServerRequest* request) { handleSetRolePermissions(request); });
 
     // 审计日志
     server->on("/api/audit/logs", HTTP_GET,

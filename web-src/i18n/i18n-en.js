@@ -793,7 +793,7 @@
         'peripheral-type-dac': 'DAC',
         'peripheral-type-jtag': 'JTAG Debug',
         'peripheral-type-swd': 'SWD Debug',
-        'peripheral-type-lcd': 'LCD Display',
+        'peripheral-type-lcd': 'LCD/OLED Display',
         'peripheral-type-sdio': 'SD Card',
         'peripheral-type-sensor': 'Sensor',
         'peripheral-type-camera': 'Camera',
@@ -1038,6 +1038,7 @@
         'periph-exec-action-display-number': 'Display Number',
         'periph-exec-action-display-text': 'Display Text',
         'periph-exec-action-display-clear': 'Clear Display',
+                'periph-exec-action-oled-display': 'OLED Custom Display',
         'periph-exec-action-cat-display': 'Display',
         'periph-exec-target-rule-label': 'Target Exec Rule',
         'periph-exec-select-rule': '-- Select Exec Rule --',
@@ -1685,6 +1686,8 @@
         'segment-brightness-help': '0=dimmest, 7=brightest, default 3',
         'segment-pin-hint': 'Pin order: pin1=CLK, pin2=DIO',
         'periph-exec-action-display-value-hint': 'Supports ${periphId.field} template (e.g. ${dht_01.temperature}), pulls latest value from sensor cache',
+                'periph-exec-action-oled-value-hint': 'Multiline text, one entry per line. First line starting with # becomes centered title. Supports ${periphId.field} (sensor cache) and $value (received value) templates. Example:\n# Environment\nTemp:${dht_01.temperature}C\nHumi:${dht_01.humidity}%\nDevice:$value',
+                'periph-exec-action-oled-value-help': 'Up to 6 lines, auto-fit to OLED. Use \\n for newlines. First # line renders as centered title with divider. Variables: ${periphId.field} from sensor cache, $value from MQTT/rule payload',
         'peripheral-type-device-event': 'Device Event',
         
         // Permission group name translations

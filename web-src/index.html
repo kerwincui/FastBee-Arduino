@@ -190,13 +190,22 @@
         </div>
     </div>
 
-    <!-- 核心 JS 合并为单文件，将 14 个并发请求降至 1 个，避免 ESP32 连接重置 -->
-    <script defer src="./js/app-bundle.js"></script>
-    <!-- 降级：若 bundle 加载失败（如网络中断），回退到逐个加载 -->
+    <!-- 核心 JS 拆分为 9 个 chunk（每个 gz≤5KB），适配 ESP32 单 free_block ≤6KB 的稳态内存碎片化限制 -->
+    <!-- defer 保证按文档顺序执行，依赖关系：1→2→3→4→5→6→7→8→9 -->
+    <script defer src="./js/chunk-1-core-a.js"></script>
+    <script defer src="./js/chunk-2-core-b.js"></script>
+    <script defer src="./js/chunk-3-i18n-engine.js"></script>
+    <script defer src="./js/chunk-4-i18n-zh-1.js"></script>
+    <script defer src="./js/chunk-5-i18n-zh-2.js"></script>
+    <script defer src="./js/chunk-6-i18n-zh-3.js"></script>
+    <script defer src="./js/chunk-7-i18n-zh-4.js"></script>
+    <script defer src="./js/chunk-8-state-1.js"></script>
+    <script defer src="./js/chunk-9-state-2.js"></script>
+    <!-- 降级：若 chunk 加载失败（如网络中断），回退到逐个加载所有源文件 -->
     <script>
     document.addEventListener('DOMContentLoaded', function() {
-        if (typeof AppState !== 'undefined') return; // bundle 正常加载
-        console.warn('[FastBee] app-bundle failed, loading individual files...');
+        if (typeof AppState !== 'undefined') return; // chunks 正常加载
+        console.warn('[FastBee] app chunks failed, loading individual files...');
         var files = [
             './js/utils.js', './js/ui-components.js',
             './js/request-governor.js', './js/notification.js',

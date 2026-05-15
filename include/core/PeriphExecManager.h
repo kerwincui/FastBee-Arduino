@@ -16,6 +16,7 @@
 // 前向声明
 class PeriphExecExecutor;
 class PeriphExecScheduler;
+class PeriphExecWorkerPool;
 
 // ===== 协议层回调类型定义（解耦 core → protocols 依赖） =====
 
@@ -215,6 +216,10 @@ public:
     // 异步分发规则执行
     void dispatchAsync(const PeriphExecRule& rule, const String& receivedValue);
 
+    // 单任务执行（由 WorkerPool 在 worker 线程内调用）
+    // 包含执行规则、清理 _runningRuleIds、归还信号量、归还对象池等完整生命周期
+    void executeWorkerJob(AsyncExecContext* ctx);
+
     // 执行规则的所有动作（供异步任务调用）
     std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue, bool suppressReport = false);
 
@@ -296,7 +301,10 @@ private:
     // ========== 任务运行状态跟踪（T2：高频增删，走 SmallNodePool） ==========
     RunningRuleSet    _runningRuleIds;     // 正在运行的规则ID集合
     FailureBackoffMap _failureBackoff;     // 规则失败后的退避时间戳
-    std::map<String, unsigned long> _runningStartTime;  // 规则进入运行集合的时间戳（自愈用）
+    std::map<String, unsigned long, std::less<String>,
+             FastBee::SmallNodeAllocator<std::pair<const String, unsigned long>>> _runningStartTime;  // 规则进入运行集合的时间戳（自愈用）
+    unsigned long _lastBackoffCleanupTime = 0;  // 上次 _failureBackoff 过期清理时间
+    unsigned long _lastDiagLogTime = 0;         // 上次诊断日志输出时间
     SemaphoreHandle_t _runningRulesMutex = nullptr;   // 保护 _runningRuleIds 的互斥量
     SemaphoreHandle_t _pollIngressMutex = nullptr;    // 保护轮询注入节流状态
     std::map<String, unsigned long, std::less<String>,
@@ -325,14 +333,16 @@ private:
     // ========== 异步执行上下文对象池 ==========
     AsyncExecContextPool _contextPool;          // 固定大小的上下文对象池
 
+    // ========== 常驻 Worker 任务池（D 方案：消除运行期 xTaskCreate 碎片）==========
+    std::unique_ptr<PeriphExecWorkerPool> _workerPool;
+
     // ========== 待上报数据缓存（MQTT 未连接时缓存，恢复后重试） ==========
     static const size_t MAX_PENDING_REPORTS = 5;           // 最大缓存条数
     static const unsigned long PENDING_REPORT_RETRY_MS = 5000;  // 重试间隔 5秒
     std::vector<String> _pendingReports;                    // 待上报数据缓存
     unsigned long _lastPendingReportRetry = 0;              // 上次重试时间
 
-    // FreeRTOS 任务入口函数（静态）
-    static void asyncExecTaskFunc(void* pvParameters);
+
 
     // ID 生成
     String generateUniqueId();

@@ -4,6 +4,7 @@
 #include "core/PeriphExecManager.h"
 #include "core/PeriphExecExecutor.h"
 #include "core/PeriphExecScheduler.h"
+#include "core/PeriphExecWorkerPool.h"
 #include "core/RuleScript.h"
 #include "core/FastBeeFramework.h"
 #include "core/ChipConfig.h"
@@ -127,6 +128,15 @@ bool PeriphExecManager::initialize() {
     _scheduler->initialize(this, _executor.get());
 
     bool loaded = loadConfiguration();
+
+    // 启动常驻 Worker 任务池（D 方案）
+    // 在启动期一次性预分配 3 个 worker 栈（3×20KB=60KB），
+    // 之后运行期零碎片增长，按键/定时事件不再被 xTaskCreate 失败丢弃
+    _workerPool.reset(new PeriphExecWorkerPool());
+    if (!_workerPool->begin()) {
+        LOGGER.error("[PeriphExec] WorkerPool start failed, async dispatch will fall back to sync");
+        _workerPool.reset();  // 后续 dispatchAsync 检测 nullptr 走原同步降级路径
+    }
 
     // 配置加载后安全校验：检测并修正危险的任务数/轮询间隔组合
     if (loaded && _scheduler) {
@@ -994,18 +1004,29 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
     {
         MutexGuard runLock(_runningRulesMutex);
         if (_runningRuleIds.count(rule.id) > 0) {
-            // 自愈机制：若规则挂在运行集合超过 60 秒，视为 task 已异常终止
-            // 强制清理，避免 _runningRuleIds 永久卡死导致按键等事件规则失效
+            // 自愈机制：规则挂在运行集合时，若满足以下任一条件则视为异常状态并强制清理
+            //  A) 已运行超过 60 秒（任务很可能已异常终止/卡死）
+            //  B) _runningStartTime 中无对应记录（状态不一致，典型来自 async task OOM/栈溢出
+            //     被 FreeRTOS 强制 delete，导致 _runningRuleIds 残留但 startTime 已丢失）
+            // 避免 _runningRuleIds 永久卡死导致按键等事件规则失效（已观察到长时间运行后
+            // 按键单击/双击/长按不响应）
             auto itTime = _runningStartTime.find(rule.id);
             unsigned long now = millis();
-            if (itTime != _runningStartTime.end() && (now - itTime->second) > 60000UL) {
-                LOGGER.warningf("[PeriphExec] Rule '%s' stuck in running set for %lums, auto-cleanup",
-                                rule.name.c_str(), now - itTime->second);
+            bool startTimeMissing = (itTime == _runningStartTime.end());
+            unsigned long elapsed = startTimeMissing ? 0 : (now - itTime->second);
+            bool stuckTooLong = !startTimeMissing && (elapsed > 60000UL);
+
+            if (startTimeMissing || stuckTooLong) {
+                LOGGER.warningf("[PeriphExec] Rule '%s' stale in running set (reason=%s elapsed=%lums), auto-cleanup",
+                                rule.name.c_str(),
+                                startTimeMissing ? "startTimeMissing" : "stuck>60s",
+                                elapsed);
                 _runningRuleIds.erase(rule.id);
-                _runningStartTime.erase(rule.id);
+                if (!startTimeMissing) _runningStartTime.erase(rule.id);
                 // 继续执行下方分发逻辑
             } else {
-                LOGGER.warningf("[PeriphExec] Skip dispatch: task '%s' already running", rule.name.c_str());
+                LOGGER.warningf("[PeriphExec] Skip dispatch: task '%s' already running (elapsed=%lums)",
+                                rule.name.c_str(), elapsed);
                 return;
             }
         }
@@ -1071,46 +1092,25 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
     ctx->mqtt = nullptr;  // Will be set by executor if needed
     ctx->taskSlot = _taskSlotSemaphore;
 
-    // 确定栈大小：有脚本/Modbus动作用大栈，其他用小栈
-    bool needLargeStack = shouldAvoidSyncFallback(rule);
-    uint32_t stackSize = needLargeStack ? SCRIPT_TASK_STACK : SIMPLE_TASK_STACK;
-
-    // 创建 FreeRTOS 任务
-    char taskName[24];
-    snprintf(taskName, sizeof(taskName), "exec_%.16s", rule.id.c_str());
-
-    // 在创建任务前先将规则ID加入运行中集合
+    // 在投递前先将规则ID加入运行中集合
     {
         MutexGuard runLock(_runningRulesMutex);
         _runningRuleIds.insert(rule.id);
         _runningStartTime[rule.id] = millis();
     }
 
-    BaseType_t created =
-#if CHIP_DUAL_CORE
-        xTaskCreatePinnedToCore(
-            asyncExecTaskFunc,      // 任务函数
-            taskName,               // 任务名称
-            stackSize,              // 栈大小
-            ctx,                    // 参数
-            ASYNC_TASK_PRIORITY,    // 优先级 0（低于主循环）
-            nullptr,                // 不需要任务句柄
-            1                       // 运行在 Core 1（与主循环相同）
-        );
-#else
-        xTaskCreate(
-            asyncExecTaskFunc,      // 任务函数
-            taskName,               // 任务名称
-            stackSize,              // 栈大小
-            ctx,                    // 参数
-            ASYNC_TASK_PRIORITY,    // 优先级 0（低于主循环）
-            nullptr                 // 不需要任务句柄
-        );
-#endif
+    // D 方案：投递到常驻 worker pool，避免运行期 xTaskCreate 碎片
+    // worker pool 在启动期预分配 3×20KB 栈，运行期只需一次队列投递
+    bool dispatched = false;
+    if (_workerPool && _workerPool->isStarted()) {
+        dispatched = _workerPool->enqueue(ctx);
+    }
 
-    if (created != pdPASS) {
-        LOGGER.errorf("[PeriphExec] Failed to create async task, insufficient memory: '%s'", rule.name.c_str());
-        // 任务创建失败，从运行中集合移除
+    if (!dispatched) {
+        LOGGER.errorf("[PeriphExec] Failed to dispatch to worker pool: '%s' (pool=%s)",
+                      rule.name.c_str(),
+                      _workerPool ? "queue-full" : "unavailable");
+        // 投递失败，从运行中集合移除
         {
             MutexGuard runLock(_runningRulesMutex);
             _runningRuleIds.erase(rule.id);
@@ -1130,18 +1130,16 @@ void PeriphExecManager::dispatchAsync(const PeriphExecRule& rule, const String& 
         return;
     }
 
-    LOG_DEBUGF("[PeriphExec] Async dispatched: '%s' (stack=%d, heap=%d)",
-                 rule.name.c_str(), (int)stackSize, (int)ESP.getFreeHeap());
+    LOG_DEBUGF("[PeriphExec] Async dispatched: '%s' (heap=%d, queue=%u/%u)",
+                 rule.name.c_str(),
+                 (int)ESP.getFreeHeap(),
+                 (unsigned)(_workerPool ? _workerPool->pendingCount() : 0),
+                 (unsigned)PeriphExecWorkerPool::capacity());
 }
 
-// FreeRTOS 任务入口函数
-void PeriphExecManager::asyncExecTaskFunc(void* pvParameters) {
-    AsyncExecContext* ctx = static_cast<AsyncExecContext*>(pvParameters);
-    if (!ctx) {
-        vTaskDelete(nullptr);
-        return;
-    }
-
+// 单任务执行（由 PeriphExecWorkerPool 在 worker 线程内调用）
+// 等价于原 asyncExecTaskFunc 的业务体，但不再调用 vTaskDelete
+void PeriphExecManager::executeWorkerJob(AsyncExecContext* ctx) {
     AsyncExecResult result;
     result.ruleId = ctx->ruleCopy.id;
     result.ruleName = ctx->ruleCopy.name;
@@ -1207,16 +1205,15 @@ void PeriphExecManager::asyncExecTaskFunc(void* pvParameters) {
     // 释放任务槽
     xSemaphoreGive(ctx->taskSlot);
 
-    // 栈高水位标记（用于验证栈缩减安全性）
+    // 栈高水位标记（worker 任务自身，跨多个 job 的历史最低可用栈）
     UBaseType_t hwm = uxTaskGetStackHighWaterMark(nullptr);
-    LOGGER.infof("[PExec] Task '%s' stack HWM: %u bytes free",
+    LOGGER.infof("[PExec] Worker after '%s' stack HWM: %u bytes free",
                  result.ruleName.c_str(), (unsigned int)(hwm * sizeof(StackType_t)));
 
     // 归还上下文到对象池
     ctx->manager->_contextPool.release(ctx);
-
-    // 删除自身任务
-    vTaskDelete(nullptr);
+    // 注意：D 方案下 worker 是常驻任务，不再 vTaskDelete；
+    // 控制权返回 PeriphExecWorkerPool::workerLoop 继续接下一个 job
 }
 
 // 执行规则的所有动作（供异步任务调用）
@@ -1300,6 +1297,50 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
             // 守卫回退：HealthMonitor 不可用时的硬编码阈值
             return;
         }
+    }
+
+    // 周期性清理 _failureBackoff 过期 entry：避免长期运行后 map 累积死 entry 导致碎片
+    // entry->second 是“下次可执行时间戳”，超过其 5 分钟仍无请求清除时，视为无效
+    if (now - _lastBackoffCleanupTime > 60000UL) {
+        _lastBackoffCleanupTime = now;
+        MutexGuard runLock(_runningRulesMutex, pdMS_TO_TICKS(20));
+        if (runLock.isLocked() && !_failureBackoff.empty()) {
+            size_t erasedCount = 0;
+            for (auto it = _failureBackoff.begin(); it != _failureBackoff.end(); ) {
+                if (now > it->second && (now - it->second) > 300000UL) {
+                    it = _failureBackoff.erase(it);
+                    erasedCount++;
+                } else {
+                    ++it;
+                }
+            }
+            if (erasedCount > 0) {
+                LOGGER.infof("[PeriphExec] Backoff GC: erased %u expired entries, remaining=%u",
+                             (unsigned)erasedCount, (unsigned)_failureBackoff.size());
+            }
+        }
+    }
+
+    // 周期性诊断日志：每 5 分钟输出一次运行状态，便于长期追踪退化趋势
+    // 关键指标：running 任务数 / backoff entry 数 / context pool 占用 / heap 状况
+    if (now - _lastDiagLogTime > 300000UL) {
+        _lastDiagLogTime = now;
+        size_t runningSize = 0;
+        size_t backoffSize = 0;
+        {
+            MutexGuard runLock(_runningRulesMutex, pdMS_TO_TICKS(20));
+            if (runLock.isLocked()) {
+                runningSize = _runningRuleIds.size();
+                backoffSize = _failureBackoff.size();
+            }
+        }
+        LOGGER.infof("[PeriphExec] Diag: running=%u backoff=%u ctxPool=%u/%u heap=%u largest=%u",
+                     (unsigned)runningSize,
+                     (unsigned)backoffSize,
+                     (unsigned)_contextPool.usedCount(),
+                     (unsigned)AsyncExecContextPool::poolSize(),
+                     (unsigned)ESP.getFreeHeap(),
+                     (unsigned)ESP.getMaxAllocHeap());
     }
 
     std::vector<String> triggeredRuleIds;
@@ -1972,12 +2013,27 @@ String PeriphExecManager::processDataCommandMatch(JsonArray& cmdArr, const std::
 // 按规则ID安全分发（锁内拷贝规则，锁外调用dispatchAsync，避免死锁）
 void PeriphExecManager::dispatchByRuleId(const String& ruleId, const String& receivedValue) {
     PeriphExecRule ruleCopy;
-    {
+    bool ruleAcquired = false;
+    bool ruleMissing = false;
+    // 最多尝试 3 次（每次 50ms，总超时约 150ms）避免按键等一次性事件因瞬时锁竞争
+    // （例如 checkTimerTriggers 正持 rulesMutex 100ms）而被直接丢弃
+    for (int attempt = 0; attempt < 3 && !ruleAcquired && !ruleMissing; ++attempt) {
         MutexGuard lock(_rulesMutex, pdMS_TO_TICKS(50));
-        if (!lock.isLocked()) return;
-        auto it = rules.find(ruleId);
-        if (it == rules.end() || !it->second.enabled) return;
-        ruleCopy = it->second;  // 锁内做一次深拷贝
+        if (lock.isLocked()) {
+            auto it = rules.find(ruleId);
+            if (it == rules.end() || !it->second.enabled) {
+                ruleMissing = true;  // 规则不存在或被禁用，不再重试
+                break;
+            }
+            ruleCopy = it->second;  // 锁内做一次深拷贝
+            ruleAcquired = true;
+        }
+    }
+    if (ruleMissing) return;
+    if (!ruleAcquired) {
+        LOGGER.warningf("[PeriphExec] dispatchByRuleId: rulesMutex busy, drop event for rule '%s'",
+                        ruleId.c_str());
+        return;
     }
     // 锁已释放，安全调用 dispatchAsync
     dispatchAsync(ruleCopy, receivedValue);

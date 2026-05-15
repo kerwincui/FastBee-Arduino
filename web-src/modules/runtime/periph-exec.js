@@ -702,11 +702,17 @@
             const filterSel = document.getElementById('periph-exec-filter-periph');
             const filterPeriphName = filterSel ? filterSel.value : '';
 
-            this._populatePeriphExecFilter();
             this.renderEmptyTableRow(tbody, 7, i18n.t('periph-exec-loading'));
 
+            const self = this;
             const apiUrl = '/api/periph-exec?page=' + this._peCurrentPage + '&pageSize=' + this._pePageSize;
-            apiGet(apiUrl)
+
+            // 串行化：先填充 filter（仅首次调用会发请求），再发主请求，
+            // 避免并发两个请求在 ESP32 低 heap 状态下触发 OOM TCP RST。
+            Promise.resolve()
+                .then(function () { return self._populatePeriphExecFilter(); })
+                .catch(function () { /* filter 失败静默，不阻塞主流程 */ })
+                .then(function () { return apiGet(apiUrl); })
                 .then(execRes => {
                     this._peTotalRules = execRes && execRes.total ? execRes.total : 0;
                     const currentPage = execRes && execRes.page ? execRes.page : 1;
@@ -775,8 +781,8 @@
 
         _populatePeriphExecFilter() {
             const sel = document.getElementById('periph-exec-filter-periph');
-            if (!sel || sel._populated) return;
-            apiGet('/api/peripherals?pageSize=50').then(res => {
+            if (!sel || sel._populated) return Promise.resolve();
+            return apiGet('/api/peripherals?pageSize=50').then(res => {
                 if (!res || !res.success || !res.data) return;
                 const currentVal = sel.value;
                 let opts = '<option value="">' + i18n.t('periph-exec-filter-all') + '</option>';
@@ -786,6 +792,9 @@
                 sel.innerHTML = opts;
                 if (currentVal) sel.value = currentVal;
                 sel._populated = true;
+            }).catch(() => {
+                // 静默处理：ESP32 OOM 时 RST/超时会抛出 rejection，不能变成 unhandled；
+                // 保持 _populated=false 以便下一次重试
             });
         }
     });

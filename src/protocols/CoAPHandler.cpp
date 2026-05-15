@@ -15,6 +15,7 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <esp_random.h>
+#include "systems/ConfigStorage.h"
 
 CoAPHandler::CoAPHandler() 
     : isInitialized(false), messageId(0), recentMsgIdIndex(0) {
@@ -27,51 +28,49 @@ CoAPHandler::~CoAPHandler() {
 }
 
 bool CoAPHandler::loadConfigFromLittleFS(const char* configPath) {
-    if (!LittleFS.begin()) {
-        LOG_ERROR("CoAP: Failed to mount LittleFS");
-        return false;
+    // 优化：优先使用 Filter 分段加载，仅反序列化 "coap" 子节点，堆峰值 <0.5KB
+    JsonDocument doc;
+    bool sectionLoaded = false;
+    if (String(configPath) == String(FileSystem::PROTOCOL_CONFIG_FILE)) {
+        sectionLoaded = ConfigStorage::getInstance().loadProtocolSection("coap", doc);
     }
-    
-    File configFile = LittleFS.open(configPath, "r");
-    if (!configFile) {
-        LOG_ERRORF("CoAP: Failed to open config: %s", configPath);
-        LittleFS.end();
-        return false;
-    }
-    
-    size_t size = configFile.size();
-    if (size == 0) {
-        LOG_WARNING("CoAP: Config file is empty");
+
+    JsonVariant cfg;
+    if (sectionLoaded) {
+        cfg = doc["coap"];
+    } else {
+        // 降级路径：全量反序列化（兼容旧配置或独立文件）
+        File configFile = LittleFS.open(configPath, "r");
+        if (!configFile) {
+            LOG_ERRORF("CoAP: Failed to open config: %s", configPath);
+            return false;
+        }
+
+        DeserializationError error = deserializeJson(doc, configFile);
         configFile.close();
-        LittleFS.end();
-        return false;
+
+        if (error) {
+            LOG_ERRORF("CoAP: Config parse error: %s", error.c_str());
+            return false;
+        }
+        cfg = doc.as<JsonVariant>();
     }
     
-    JsonDocument doc;  // ArduinoJson 7.x 弹性分配，CoAP 配置节点 <1KB
-    DeserializationError error = deserializeJson(doc, configFile);
-    configFile.close();
-    LittleFS.end();
+    config.server = cfg["server"] | "coap.me";
+    config.port = cfg["port"] | 5683;
+    config.localPort = cfg["localPort"] | 5683;
+    config.defaultMethod = cfg["defaultMethod"] | cfg["method"] | "POST";
+    config.timeout = cfg["timeout"] | 5000;
+    config.retransmitCount = cfg["retransmitCount"] | cfg["retransmit"] | 3;
     
-    if (error) {
-        LOG_ERRORF("CoAP: Config parse error: %s", error.c_str());
-        return false;
-    }
-    
-    config.server = doc["server"] | "coap.me";
-    config.port = doc["port"] | 5683;
-    config.localPort = doc["localPort"] | 5683;
-    config.defaultMethod = doc["defaultMethod"] | "POST";
-    config.timeout = doc["timeout"] | 5000;
-    config.retransmitCount = doc["retransmitCount"] | 3;
-    
-    if (doc.containsKey("resources")) {
-        JsonObject resources = doc["resources"];
+    if (cfg["resources"].is<JsonObject>()) {
+        JsonObject resources = cfg["resources"];
         for (JsonPair resource : resources) {
             config.resourceMap[String(resource.key().c_str())] = String(resource.value().as<const char*>());
         }
     }
     
-    LOG_INFO("CoAP: Configuration loaded from LittleFS");
+    LOG_INFO("CoAP: Configuration loaded");
     LOG_INFOF("  Server: %s:%d, Local: %d", config.server.c_str(), config.port, config.localPort);
     LOG_INFOF("  Method: %s, Timeout: %lums, Retransmit: %d",
               config.defaultMethod.c_str(), config.timeout, config.retransmitCount);

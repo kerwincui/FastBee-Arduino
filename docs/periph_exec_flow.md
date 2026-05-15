@@ -78,26 +78,36 @@ PeriphExec (Peripheral Execution) 是 FastBee-Arduino 物联网设备的**规则
 
 #### ExecActionType - 动作类型
 
-| 值 | 名称 | 分类 | 说明 |
-|----|------|------|------|
-| 0 | `ACTION_HIGH` | GPIO | 设置引脚高电平 |
-| 1 | `ACTION_LOW` | GPIO | 设置引脚低电平 |
-| 2 | `ACTION_BLINK` | GPIO | 闪烁 (actionValue=次数) |
-| 3 | `ACTION_BREATHE` | GPIO | 呼吸灯效果 |
-| 4 | `ACTION_PWM` | GPIO | PWM 输出 (actionValue=占空比) |
-| 5 | `ACTION_DAC` | GPIO | DAC 输出 (actionValue=电压值) |
-| 6 | `ACTION_INVERTED` | GPIO | 翻转当前电平状态 |
-| 7 | `ACTION_RESTART` | 系统 | 重启设备 (延迟500ms) |
-| 8 | `ACTION_FACTORY_RESET` | 系统 | 恢复出厂设置 |
-| 9 | `ACTION_NTP_SYNC` | 系统 | NTP 时间同步 |
-| 10 | `ACTION_OTA_UPDATE` | 系统 | OTA 固件更新 (预留) |
-| 13 | `ACTION_MODBUS_WRITE` | 通信 | Modbus 写入 (FC05/FC06) |
-| 14 | `ACTION_MQTT_PUBLISH` | 通信 | MQTT 发布消息 |
-| 15 | `ACTION_HTTP_REQUEST` | 通信 | HTTP 请求 (预留) |
-| 16 | `ACTION_SCRIPT_EXEC` | 数据 | 执行脚本 |
-| 17 | `ACTION_MODBUS_POLL` | 通信 | Modbus 轮询+控制 |
-| 18 | `ACTION_LOG_EVENT` | 数据 | 记录事件日志 (预留) |
-| 19 | `ACTION_SENSOR_READ` | 数据 | 读取传感器数据 |
+动作枚举定义于 `include/core/PeripheralExecution.h`。注意枚举值 11、12 已弃用保留。
+
+| 值 | 枚举名称 | 分类 | actionValue 含义 |
+|----|------|------|-----------------|
+| 0 | `ACTION_HIGH` | GPIO | 忽略，设置目标引脚高电平 |
+| 1 | `ACTION_LOW` | GPIO | 忽略，设置目标引脚低电平 |
+| 2 | `ACTION_BLINK` | GPIO | 闪烁间隔毫秒（默认 500） |
+| 3 | `ACTION_BREATHE` | GPIO | 呼吸灯周期毫秒（默认 2000） |
+| 4 | `ACTION_SET_PWM` | GPIO | PWM 占空比 0-255 |
+| 5 | `ACTION_SET_DAC` | GPIO | DAC 输出值 0-255 |
+| 6 | `ACTION_SYS_RESTART` | 系统 | 忽略，延时 500ms 后重启设备 |
+| 7 | `ACTION_SYS_FACTORY_RESET` | 系统 | 忽略，格式化 LittleFS 后重启 |
+| 8 | `ACTION_SYS_NTP_SYNC` | 系统 | 忽略，触发 NTP 时间同步 |
+| 9 | `ACTION_SYS_OTA` | 系统 | OTA 固件更新 URL（空则使用已配置的默认 URL） |
+| 10 | `ACTION_CALL_PERIPHERAL` | 联动 | 调用其他外设，actionValue 为可选参数 |
+| 13 | `ACTION_HIGH_INVERTED` | GPIO | 忽略，逐位反转后输出高（逻辑高 = 物理低） |
+| 14 | `ACTION_LOW_INVERTED` | GPIO | 忽略，逐位反转后输出低（逻辑低 = 物理高） |
+| 15 | `ACTION_SCRIPT` | 脚本 | 命令序列脚本文本，多行命令逐行执行 |
+| 16 | `ACTION_MODBUS_COIL_WRITE` | Modbus | 线圈写入（FC05），格式 `slave,addr,value` |
+| 17 | `ACTION_MODBUS_REG_WRITE` | Modbus | 寄存器写入（FC06），格式 `slave,addr,value` |
+| 18 | `ACTION_MODBUS_POLL` | Modbus | 轮询子设备采集 + 可选控制指令，JSON 或逗号列表 |
+| 19 | `ACTION_SENSOR_READ` | 采集 | JSON，采集传感器数据并上报 |
+| 20 | `ACTION_BUZZER_BEEP` | 外设 | 蜂鸣器预设节奏：`beep`（默认）/`long`/`alarm`/`sos` |
+| 21 | `ACTION_TRIGGER_EVENT` | 事件 | 触发设备事件，`targetPeriphId` 为事件 ID，actionValue 为额外数据 |
+| 22 | `ACTION_ENABLE_EXEC_RULE` | 规则 | 启用指定外设执行规则，`targetPeriphId` 为规则 ID |
+| 23 | `ACTION_DISABLE_EXEC_RULE` | 规则 | 禁用指定外设执行规则，`targetPeriphId` 为规则 ID |
+| 24 | `ACTION_DISPLAY_NUMBER` | 显示屏 | 数码管/显示屏显示数字，如 `12.34` / `12:34` / `1234`，支持 `${id.field}` 模板 |
+| 25 | `ACTION_DISPLAY_TEXT` | 显示屏 | 数码管/显示屏显示文本，如 `PLAY`、`ON` |
+| 26 | `ACTION_DISPLAY_CLEAR` | 显示屏 | 数码管/显示屏清屏 |
+| 27 | `ACTION_OLED_DISPLAY` | 显示屏 | OLED 自定义多行显示，支持 `${id.field}` 和 `$value` 模板，首行 `#` 开头为居中标题 |
 
 #### ExecOperator - 条件运算符
 
@@ -369,65 +379,92 @@ checkTimers() 每秒执行
 
 ## 5. 动作类型详解
 
-### 5.1 GPIO 动作 (type 0-6)
+动作实际分发逻辑位于 `PeriphExecExecutor::executeAllActions()`，按 `ExecActionType` 枚举值路由到对应的内部处理函数。以下按功能分组说明。
 
-通过 `executePeripheralAction()` 执行，调用 `PeripheralManager` 操作硬件引脚：
+### 5.1 GPIO 直接控制（0-5、13、14）
+
+通过 `PeripheralManager` 操作硬件引脚（含反转模式），记录结果用于后续上报。
 
 | 动作 | 实现方式 | actionValue |
 |------|----------|-------------|
-| ACTION_HIGH (0) | `pm.setPeripheralState(id, true)` | 忽略 |
-| ACTION_LOW (1) | `pm.setPeripheralState(id, false)` | 忽略 |
-| ACTION_BLINK (2) | `pm.blinkPeripheral(id, times)` | 闪烁次数 |
-| ACTION_BREATHE (3) | `pm.breathePeripheral(id)` | 忽略 |
-| ACTION_PWM (4) | `pm.setPWMValue(id, value)` | 占空比 (0-255) |
-| ACTION_DAC (5) | `pm.setDACValue(id, value)` | DAC值 |
-| ACTION_INVERTED (6) | `pm.invertPeripheral(id)` | 忽略 |
+| `ACTION_HIGH` (0) | `pm.setPeripheralState(id, true)` | 忽略 |
+| `ACTION_LOW` (1) | `pm.setPeripheralState(id, false)` | 忽略 |
+| `ACTION_BLINK` (2) | `pm.blinkPeripheral(id, intervalMs)` | 闪烁间隔毫秒（默认 500） |
+| `ACTION_BREATHE` (3) | `pm.breathePeripheral(id, periodMs)` | 呼吸周期毫秒（默认 2000） |
+| `ACTION_SET_PWM` (4) | `pm.setPWMValue(id, duty)` | 占空比 0-255 |
+| `ACTION_SET_DAC` (5) | `pm.setDACValue(id, value)` | DAC 值 0-255（GPIO25/26） |
+| `ACTION_HIGH_INVERTED` (13) | 反转后 `setPeripheralState(true)` | 逻辑高对应物理低，用于低电平有效的继电器/蜂鸣器 |
+| `ACTION_LOW_INVERTED` (14) | 反转后 `setPeripheralState(false)` | 逻辑低对应物理高 |
 
-**执行后操作：** 记录动作结果 `{id, value, remark}` 用于后续上报。
+### 5.2 系统动作（6-9）
 
-### 5.2 系统动作 (type 7-12)
-
-通过 `executeSystemAction()` 执行：
+通过 `executeSystemAction()` 执行，影响整机状态：
 
 | 动作 | 实现 | 异步策略 |
 |------|------|----------|
-| ACTION_RESTART (7) | `delay(500); ESP.restart()` | **强制同步** |
-| ACTION_FACTORY_RESET (8) | `LittleFS格式化 + restart` | **强制同步** |
-| ACTION_NTP_SYNC (9) | `configTime(gmtOffset, daylightOffset, ntpServer)` | 可异步 |
-| ACTION_OTA_UPDATE (10) | 预留，未实现 | — |
+| `ACTION_SYS_RESTART` (6) | `delay(500); ESP.restart()` | **强制同步**（异步任务无法在重启后完成） |
+| `ACTION_SYS_FACTORY_RESET` (7) | 格式化 LittleFS + 重启 | **强制同步** |
+| `ACTION_SYS_NTP_SYNC` (8) | `configTime(gmtOffset, daylightOffset, ntpServer)` 重新同步 | 可异步 |
+| `ACTION_SYS_OTA` (9) | 触发 OTAManager 启动固件升级，actionValue 可选作为 URL | 可异步 |
 
-**注**：旧版曾预留 `ACTION_AP_MODE`(11) 和 `ACTION_BLE_TOGGLE`(12)，因项目移除独立蓝牙配网与 AP 配网向导、统一采用 AP+STA 双模自动切换，已移除这两个枚举值。
+**重要：** 在 `dispatchAsync()` 中，`ACTION_SYS_RESTART` 与 `ACTION_SYS_FACTORY_RESET` 会被自动降级为同步执行。
 
-**重要：** 系统动作 (RESTART/FACTORY_RESET) 在 `dispatchAsync()` 中会被**强制降级为同步执行**，因为异步任务在重启后无法正确完成。
+**说明：** 枚举值 11、12 原预留给 `ACTION_AP_MODE` 和 `ACTION_BLE_TOGGLE`，项目统一采用 AP+STA 双模自动切换后移除，这两个值现保留不可用。
 
-### 5.3 通信动作 (type 13-15, 17)
+### 5.3 外设联动（10）
 
-#### ACTION_MODBUS_WRITE (13)
+#### ACTION_CALL_PERIPHERAL (10)
 
-通过 `executeModbusAction()` 执行：
+调用其他外设的上层行为方法，`targetPeriphId` 为被调外设 ID，`actionValue` 为可选参数字符串。该动作不直接操作 GPIO，而是触发外设驱动内部定义的行为（如激活蜂鸣器预设序列、触发 LCD 重绘等）。
+
+### 5.4 脚本动作（15）
+
+#### ACTION_SCRIPT (15)
+
+通过 `executeScriptAction()` 执行多行命令脚本。`actionValue` 为脚本文本（而非 `scriptContent`），脚本语法详见 [script-guide.md](./script-guide.md) 命令脚本部分：
 
 ```
-解析 targetPeriphId: "modbus:<index>"
-  │
-  ├─ 获取 ModbusRTU 接口
-  ├─ actionValue 判断:
-  │   ├─ 以 "FC05:" 开头 → 写线圈 (coilWrite)
-  │   ├─ 以 "FC06:" 开头 → 写寄存器 (writeHreg)
-  │   └─ 数值型:
-  │       ├─ value 为 0/1 → FC05 写线圈
-  │       └─ 其他 → FC06 写寄存器
-  └─ 记录结果
+GPIO 5 HIGH
+DELAY 500
+PERIPH buzzer BEEP
+MQTT 0 [{"id":"alarm","value":"1"}]
 ```
 
-#### ACTION_MODBUS_POLL (17)
+脚本在异步任务中执行（`SCRIPT_TASK_STACK=8192`），支持 `PERIPH`/`GPIO`/`DELAY`/`PWM`/`DAC`/`LOG`/`MQTT` 命令及 `RANDOM()`/`RANDOMF()` 表达式。
 
-通过 `executeModbusPollAction()` 执行，支持两种数据格式：
+### 5.5 Modbus 通信动作（16-18）
 
-**JSON 格式：**
+#### ACTION_MODBUS_COIL_WRITE (16)
+
+写单个 Modbus 线圈（功能码 FC05），用于布尔类型输出。
+
+```
+actionValue 格式：slave,addr,value
+  slave: 从机地址 1-247
+  addr:  线圈地址 0-65535
+  value: 0 或 1
+```
+
+#### ACTION_MODBUS_REG_WRITE (17)
+
+写单个保持寄存器（功能码 FC06），用于数值类型输出。
+
+```
+actionValue 格式：slave,addr,value
+  slave: 从机地址
+  addr:  寄存器地址
+  value: 0-65535
+```
+
+#### ACTION_MODBUS_POLL (18)
+
+由 `executeModbusPollAction()` 执行，支持**批量轮询**和**可选控制指令**，两种数据格式：
+
+**JSON 格式（推荐）：**
 ```json
 {
-  "poll": [0, 1],           // 轮询的从机索引列表
-  "ctrl": [                 // 可选控制指令
+  "poll": [0, 1],
+  "ctrl": [
     {"type":"relay","idx":0,"val":1},
     {"type":"pwm","idx":0,"val":128},
     {"type":"pid","idx":0,"sp":25.0}
@@ -435,40 +472,18 @@ checkTimers() 每秒执行
 }
 ```
 
-**旧版逗号分隔格式：**
+**旧版逗号分隔格式（只轮询，无控制）：**
 ```
-0,1,2   // 轮询的从机索引列表
-```
-
-#### ACTION_MQTT_PUBLISH (14)
-
-```
-解析 actionValue 为 topic (或使用默认设备 topic)
-  └─ mqtt->publish(topic, value)
+0,1,2
 ```
 
-#### ACTION_HTTP_REQUEST (15)
+轮询参数 `pollResponseTimeout`、`pollMaxRetries`、`pollInterPollDelay` 在触发器结构中配置。
 
-预留，未实现。
-
-### 5.4 数据动作 (type 16, 18, 19)
-
-#### ACTION_SCRIPT_EXEC (16)
-
-通过 `executeScriptAction()` 执行：
-
-```
-获取 ScriptEngine 实例
-  ├─ parse(scriptContent) → 语法检查
-  ├─ validate() → 语义检查
-  └─ execute(receivedValue) → 执行脚本
-```
-
-脚本使用 `protocolType` 和 `scriptContent` 字段，支持数据转换逻辑。
+### 5.6 传感器采集（19）
 
 #### ACTION_SENSOR_READ (19)
 
-通过 `executeSensorReadAction()` 执行，actionValue 为 JSON 配置：
+由 `executeSensorReadAction()` 执行，actionValue 为 JSON 配置字符串。
 
 **模拟/数字传感器：**
 ```json
@@ -483,7 +498,7 @@ checkTimers() 每秒执行
 }
 ```
 
-**DHT11/DHT22 温湿度传感器：**
+**DHT11/DHT22：**
 ```json
 {
   "periphId": "dht_01",
@@ -497,12 +512,7 @@ checkTimers() 每秒执行
 }
 ```
 
-| 字段 | 说明 |
-|------|------|
-| `sensorCategory` | `"dht11"` 或 `"dht22"` |
-| `dataField` | `"temperature"` (温度) 或 `"humidity"` (湿度) |
-
-**DS18B20 数字温度传感器：**
+**DS18B20：**
 ```json
 {
   "periphId": "ds18b20_01",
@@ -516,34 +526,100 @@ checkTimers() 每秒执行
 }
 ```
 
-| 字段 | 说明 |
-|------|------|
-| `sensorCategory` | `"ds18b20"` |
-| `deviceIndex` | OneWire 总线上设备索引（默认 0，多设备时指定） |
-
-**支持的 sensorCategory 值：**
+**支持的 sensorCategory：**
 
 | 值 | 传感器类型 | 读取方式 | 特点 |
 |------|----------|----------|------|
 | `analog` | 模拟输入 (ADC) | `analogRead()` | 0-4095 原始值 |
 | `digital` | 数字输入 (GPIO) | `digitalRead()` | 0/1 |
-| `pulse` | 脉冲/频率 | 未实现 | 预留 |
+| `pulse` | 脉冲/频率 | 预留 | 未实现 |
 | `dht11` | DHT11 温湿度 | 单总线时序 | 温度 0-50°C, 湿度 20-90% |
 | `dht22` | DHT22/AM2302 | 单总线时序 | 温度 -40~80°C, 湿度 0-100% |
-| `ds18b20` | DS18B20 数字温度 | OneWire 协议 | -55~125°C, 12位精度 |
+| `ds18b20` | DS18B20 数字温度 | OneWire 协议 | -55~125°C, 12 位精度 |
 
-执行流程：
+**非阻塞保障：** DHT11 读取约 25ms、DS18B20 转换约 750ms，由于始终在独立异步任务中执行，不阻塞主循环；驱动内置缓存（DHT 2s / DS18B20 1s）避免过频读取。
+
+### 5.7 外设动作（20）
+
+#### ACTION_BUZZER_BEEP (20)
+
+触发蜂鸣器预设节奏，`targetPeriphId` 指向已配置的 BUZZER 外设，`actionValue` 指定预设模式：
+
+| 模式 | 说明 |
+|------|------|
+| `beep`（默认） | 单声短鸣 |
+| `long` | 单声长鸣 |
+| `alarm` | 连续报警声 |
+| `sos` | SOS 摩斯电码节奏 |
+
+### 5.8 事件与规则控制（21-23）
+
+#### ACTION_TRIGGER_EVENT (21)
+
+主动触发设备事件，可用于：
+- 触发系统内置事件（`targetPeriphId` 为事件 ID，如 `sys_breakdown`、`sys_alarm`、`low_power`）
+- 触发 `DEVICE_EVENT` 外设定义的自定义事件
+
+`actionValue` 作为事件额外数据随事件传递，可被其他 `EVENT_TRIGGER` 规则匹配或经 MQTT 上报平台。
+
+#### ACTION_ENABLE_EXEC_RULE (22) / ACTION_DISABLE_EXEC_RULE (23)
+
+在运行时启用或禁用指定的外设执行规则，`targetPeriphId` 为目标规则的 ID（形如 `exec_xxxxx`）。可实现"一条规则临时关闭另一条规则"的编排，例如：
+
+- 进入维护模式时禁用全部定时规则
+- 白天启用采集规则，夜间禁用
+- 连锁保护：触发告警规则后自动禁用会扰动现场的动作规则
+
+### 5.9 显示屏动作（24-27）
+
+显示屏动作统一由显示控制器（TM1637 七段数码管 / OLED）驱动消化。所有动作均支持 `${periphId.field}` 占位符读取传感器缓存，部分支持 `$value` 表示触发接收到的值。
+
+#### ACTION_DISPLAY_NUMBER (24)
+
+在数码管或 OLED 上显示数字，actionValue 格式示例：
+
 ```
-解析 JSON 配置 → 获取外设引脚 → 调用对应驱动读取原始值
-  → 应用缩放: value * scaleFactor + offset
-  → 按 decimalPlaces 格式化 → 记录结果
+12.34                  # 显示 12.34
+12:34                  # 显示 12:34（冒号点亮）
+1234                   # 显示 1234
+${dht_01.temperature}  # 显示 DHT11 实时温度
+$value                 # 显示触发接收值（配合 useReceivedValue）
 ```
 
-**非阻塞保障：** DHT11 读取约 25ms，DS18B20 转换约 750ms。由于 ACTION_SENSOR_READ 规则始终在独立 FreeRTOS 异步任务中执行，不会阻塞主循环。驱动内置缓存机制（DHT 2s / DS18B20 1s）避免过于频繁读取。
+#### ACTION_DISPLAY_TEXT (25)
 
-#### ACTION_LOG_EVENT (18)
+在数码管/OLED 上显示短文本（数码管最多 4 字符），受段码表限制仅部分字母可识别（A/b/C/d/E/F/H/L/o/P/U 等）。
 
-预留，未实现。
+```
+ON        # 打开
+OFF       # 关闭
+PLAY      # 播放
+${dht_01.temperature.unit}   # 显示温度单位
+```
+
+#### ACTION_DISPLAY_CLEAR (26)
+
+清空显示内容，熄灭所有段。无需 actionValue。
+
+#### ACTION_OLED_DISPLAY (27)
+
+**OLED 专用**多行自定义显示，通过 `LCDManager::showCustomText()` 渲染：
+
+- 内容按 `\n` 切分为多行
+- 首行以 `#` 开头时识别为**居中标题**并绘制分隔线
+- 其余行默认左对齐
+- 支持 `${periphId.field}` 与 `$value` 模板
+- 超过最大行数后自动截断
+
+actionValue 示例：
+
+```
+# 环境监测
+温度: ${dht_01.temperature}°C
+湿度: ${dht_01.humidity}%
+水温: ${ds18b20_01.temperature}°C
+状态: 正常
+```
 
 ---
 
@@ -622,13 +698,17 @@ executeAllActions(rule, receivedValue)
   │   └─ 将 actionValue 替换为 receivedValue (数据透传)
   │
   ├─ 根据 actionType 分发到对应执行函数:
-  │   ├─ 0-6: executePeripheralAction()  // GPIO
-  │   ├─ 7-12: executeSystemAction()     // 系统
-  │   ├─ 13: executeModbusAction()       // Modbus写
-  │   ├─ 14: MQTT publish                // MQTT发布
-  │   ├─ 16: executeScriptAction()       // 脚本
-  │   ├─ 17: executeModbusPollAction()   // Modbus轮询
-  │   └─ 19: executeSensorReadAction()   // 传感器读取
+  │   ├─ 0-5, 13, 14 → executePeripheralAction()  // GPIO 与反转输出
+  │   ├─ 6-9         → executeSystemAction()      // 系统动作
+  │   ├─ 10          → 外设联动 (CALL_PERIPHERAL)
+  │   ├─ 15          → executeScriptAction()      // 命令序列脚本
+  │   ├─ 16, 17      → executeModbusAction()      // FC05/FC06 写入
+  │   ├─ 18          → executeModbusPollAction()  // 轮询+控制
+  │   ├─ 19          → executeSensorReadAction()  // 传感器采集
+  │   ├─ 20          → executeBuzzerAction()      // 蜂鸣器预设节奏
+  │   ├─ 21          → triggerEvent()              // 触发设备事件
+  │   ├─ 22, 23      → enable/disableRule()        // 规则启禁
+  │   └─ 24-27       → executeDisplayAction()      // 数码管/OLED 显示
   │
   ├─ syncDelayMs > 0? (最大 10000ms)
   │   └─ delay(syncDelayMs)  // 动作间延迟
@@ -779,13 +859,17 @@ executeAllActions(rule, receivedValue)
   │   │   └─ else: effectiveValue = action.actionValue
   │   │
   │   ├─ switch (action.actionType):
-  │   │   ├─ 0-6 → executePeripheralAction(action, effectiveValue, results)
-  │   │   ├─ 7-12 → executeSystemAction(action, effectiveValue)
-  │   │   ├─ 13 → executeModbusAction(action, effectiveValue, results)
-  │   │   ├─ 14 → MQTT publish
-  │   │   ├─ 16 → executeScriptAction(rule, effectiveValue)
-  │   │   ├─ 17 → executeModbusPollAction(action, effectiveValue, results)
-  │   │   └─ 19 → executeSensorReadAction(action, effectiveValue, results)
+  │   │   ├─ 0-5, 13, 14 → executePeripheralAction(action, effectiveValue, results)
+  │   │   ├─ 6-9         → executeSystemAction(action, effectiveValue)
+  │   │   ├─ 10          → callPeripheralAction(action)
+  │   │   ├─ 15          → executeScriptAction(action, effectiveValue)
+  │   │   ├─ 16, 17      → executeModbusAction(action, effectiveValue, results)
+  │   │   ├─ 18          → executeModbusPollAction(action, effectiveValue, results)
+  │   │   ├─ 19          → executeSensorReadAction(action, effectiveValue, results)
+  │   │   ├─ 20          → executeBuzzerAction(action, effectiveValue)
+  │   │   ├─ 21          → triggerEvent(action.targetPeriphId, effectiveValue)
+  │   │   ├─ 22/23       → enableRule/disableRule(action.targetPeriphId)
+  │   │   └─ 24-27       → executeDisplayAction(action, effectiveValue)
   │   │
   │   └─ syncDelayMs > 0 && syncDelayMs <= 10000?
   │       └─ delay(min(syncDelayMs, 10000))
@@ -925,10 +1009,10 @@ public:
   ├─ ACTION_SENSOR_READ:
   │   └─ rawValue → value * scaleFactor + offset → 格式化(decimals)
   │
-  ├─ ACTION_SCRIPT_EXEC:
-  │   └─ ScriptEngine 执行自定义数据转换脚本
-  │       rule.protocolType → 选择协议解析方式
-  │       rule.scriptContent → 转换脚本内容
+  ├─ ACTION_SCRIPT (15):
+  │   └─ ScriptEngine 执行命令序列脚本
+  │       action.actionValue → 多行命令文本
+  │       支持 GPIO/PWM/DAC/PERIPH/MQTT/RANDOM 等命令
   │
   └─ Modbus 数据预处理 (handleDataCommand):
       └─ 寄存器地址 → 外设ID 映射 → 业务值
@@ -1129,7 +1213,7 @@ v1 扁平字段:
 ```
 
 额外迁移处理：
-- `inverted` 字段 → `ACTION_INVERTED` 动作
+- `inverted` 字段 → 根据原始动作映射为 `ACTION_HIGH_INVERTED` (13) 或 `ACTION_LOW_INVERTED` (14)
 - 旧 `eventId` 格式迁移到新的事件编号系统
 
 #### v2 → v3 迁移
@@ -1304,16 +1388,11 @@ bool floatEq(float a, float b, float eps = 0.001) {
 
 **建议：** 可提供配置项让用户在"单击响应速度"和"双击支持"之间选择。不需要双击的场景可禁用双击检测以获得更快的单击响应。
 
-### 13.10 未实现的预留功能
+### 13.10 旧版预留枚举与版本兼容
 
-以下动作类型已定义枚举值但未实现：
-- `ACTION_OTA_UPDATE` (10)
-- `ACTION_HTTP_REQUEST` (15)
-- `ACTION_LOG_EVENT` (18)
+`ExecActionType` 中的空缺位 11、12 是早期版本预留的 `ACTION_AP_MODE` 和 `ACTION_BLE_TOGGLE`，在采用 AP+STA 双模自动切换后移除，定义同时移除以避免被新动作覆用。从旧版本升级的配置文件中如果残留 `actionType=11` 或 `12`，执行时会在 switch 默认分支被警告跳过。
 
-这些在 `executeAllActions` 的 switch 中没有对应的 case，执行时会静默跳过。
-
-**建议：** 对未实现的动作类型，至少输出日志警告，避免用户配置后无反馈。
+**建议：** 更新 UI 和 API 下拉选项时确保不暴露 11、12 这两个值，更新时强制映射到替代动作（如 `EVENT_TRIGGER` + WiFi 相关事件）。
 
 ---
 

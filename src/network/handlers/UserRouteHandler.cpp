@@ -46,10 +46,12 @@ void UserRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on(AsyncURIMatcher::exact("/api/users"), HTTP_POST,
               [this](AsyncWebServerRequest* request) { handleAddUser(request); });
 
-    // REST风格路由
-    server->on("^\\/api\\/users\\/([^\\/]+)$", HTTP_GET,
+    // REST风格路由：前缀匹配取代原 2 个正则路由（std::regex 每个占 ~1.3KB）
+    // 注意：/api/users/update /online /reset-password /unlock-account 已在前面注册，
+    // ESPAsyncWebServer 按注册顺序匹配，该 prefix 路由不会吸走这些固定路径。
+    server->on(AsyncURIMatcher::prefix("/api/users/"), HTTP_GET,
               [this](AsyncWebServerRequest* request) {
-        // 从URL路径提取用户名
+        // 从 URL 路径提取用户名
         String path = request->url();
         int lastSlash = path.lastIndexOf('/');
         if (lastSlash == -1) {
@@ -80,7 +82,7 @@ void UserRouteHandler::setupRoutes(AsyncWebServer* server) {
         ctx->sendSuccess(request, doc);
     });
 
-    server->on("^\\/api\\/users\\/([^\\/]+)$", HTTP_DELETE,
+    server->on(AsyncURIMatcher::prefix("/api/users/"), HTTP_DELETE,
               [this](AsyncWebServerRequest* request) { handleDeleteUser(request); });
 }
 

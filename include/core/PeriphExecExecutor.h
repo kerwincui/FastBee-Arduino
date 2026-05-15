@@ -58,7 +58,8 @@ public:
     // ========== 动作执行接口 ==========
 
     // 执行单个动作项
-    bool executeActionItem(const ExecAction& action, const String& effectiveValue);
+    bool executeActionItem(const ExecAction& action, const String& effectiveValue,
+                           const String& receivedValue = String());
 
     // 执行规则的所有动作（同步）
     std::vector<ActionExecResult> executeAllActions(const PeriphExecRule& rule, const String& receivedValue, bool suppressReport = false);
@@ -66,7 +67,8 @@ public:
     // ========== 具体动作执行方法 ==========
 
     // 执行外设动作（GPIO、PWM、DAC、Modbus子设备等）
-    bool executePeripheralAction(const ExecAction& action, const String& effectiveValue);
+    bool executePeripheralAction(const ExecAction& action, const String& effectiveValue,
+                                 const String& receivedValue = String());
 
     // 执行Modbus轮询动作
     bool executeModbusPollAction(const ExecAction& action, const PeriphExecRule& rule,

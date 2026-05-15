@@ -121,8 +121,9 @@
             const isTriggerEvent = actionTypeInt === 21;
             const isRuleCtrlAction = (actionTypeInt === 22 || actionTypeInt === 23);
             const isDisplayAction = (actionTypeInt === 24 || actionTypeInt === 25 || actionTypeInt === 26);
+            const isOledDisplay = (actionTypeInt === 27);
             const showPeriphGroup = isPollMode || isRuleCtrlAction || (isModbusTarget || !((actionTypeInt >= 6 && actionTypeInt <= 11) || actionTypeInt === 15 || isModbusPoll || isTriggerEvent));
-            const needsValue = !isPollMode && !isModbusTarget && !isRuleCtrlAction && ((actionTypeInt >= 2 && actionTypeInt <= 5) || actionTypeInt === 24 || actionTypeInt === 25);
+            const needsValue = !isPollMode && !isModbusTarget && !isRuleCtrlAction && ((actionTypeInt >= 2 && actionTypeInt <= 5) || actionTypeInt === 24 || actionTypeInt === 25 || isOledDisplay);
             const showRecv = !isPollMode && !isModbusTarget && !isRuleCtrlAction && this._hasSetModeTrigger() && needsValue;
             const isScript = !isPollMode && actionTypeInt === 15;
             const showActionType = !isPollMode && !isModbusTarget;
@@ -172,7 +173,8 @@
                         '<optgroup label="' + i18n.t('periph-exec-action-cat-display') + '">' +
                         '<option value="24" ' + sel(24) + '>' + i18n.t('periph-exec-action-display-number') + '</option>' +
                         '<option value="25" ' + sel(25) + '>' + i18n.t('periph-exec-action-display-text') + '</option>' +
-                        '<option value="26" ' + sel(26) + '>' + i18n.t('periph-exec-action-display-clear') + '</option></optgroup>' +
+                        '<option value="26" ' + sel(26) + '>' + i18n.t('periph-exec-action-display-clear') + '</option>' +
+                        '<option value="27" ' + sel(27) + '>' + i18n.t('periph-exec-action-oled-display') + '</option></optgroup>' +
                     '</select></div>' +
                     '<div class="fb-form-group pe-target-group' + this._hiddenClass(showPeriphGroup) + '">' +
                     '<label>' + (isRuleCtrlAction ? i18n.t('periph-exec-target-rule-label') : i18n.t('periph-exec-target-periph-label')) + '</label>' +
@@ -180,8 +182,9 @@
                     '<div class="fb-form-group pe-modbus-ctrl-panel' + this._hiddenClass(isModbusTarget) + '"></div>' +
                     '<div class="fb-form-group pe-action-value-group' + this._hiddenClass(needsValue) + '">' +
                     '<label>' + i18n.t('periph-exec-action-value-label') + '</label>' +
-                    '<input type="text" class="pe-action-value" value="' + (isScript ? '' : escapeHtml(data.actionValue)) + '" placeholder="' + escapeHtml(isDisplayAction ? i18n.t('periph-exec-action-display-value-hint') : i18n.t('periph-exec-action-value-hint')) + '"' + (showRecv && data.useReceivedValue !== false ? ' readonly' : '') + '>' +
-                    '<small class="pe-help-text">' + (isDisplayAction ? i18n.t('periph-exec-action-display-value-hint') : i18n.t('periph-exec-action-value-help')) + '</small></div>' +
+                    '<input type="text" class="pe-action-value' + (isOledDisplay ? ' is-hidden' : '') + '" value="' + (isScript || isOledDisplay ? '' : escapeHtml(data.actionValue)) + '" placeholder="' + escapeHtml(isDisplayAction ? i18n.t('periph-exec-action-display-value-hint') : i18n.t('periph-exec-action-value-hint')) + '"' + (showRecv && data.useReceivedValue !== false ? ' readonly' : '') + '>' +
+                    '<textarea class="pe-action-value-oled pe-script-textarea' + (isOledDisplay ? '' : ' is-hidden') + '" rows="6" maxlength="512" placeholder="' + escapeHtml(i18n.t('periph-exec-action-oled-value-hint')) + '">' + (isOledDisplay ? escapeHtml(data.actionValue || '') : '') + '</textarea>' +
+                    '<small class="pe-help-text">' + (isOledDisplay ? i18n.t('periph-exec-action-oled-value-help') : (isDisplayAction ? i18n.t('periph-exec-action-display-value-hint') : i18n.t('periph-exec-action-value-help'))) + '</small></div>' +
                     '<div class="fb-form-group pe-use-received-value-group' + this._hiddenClass(showRecv) + '">' +
                     '<label class="pe-checkbox-label pe-check-align"><input type="checkbox" class="pe-use-received-value"' + (showRecv && data.useReceivedValue !== false ? ' checked' : '') + '>' +
                     i18n.t('periph-exec-use-received-value-help') + '</label></div>' +
@@ -437,9 +440,30 @@
                 var labelEl = targetGroup.querySelector('label');
                 if (labelEl) labelEl.textContent = isRuleCtrlAction ? i18n.t('periph-exec-target-rule-label') : i18n.t('periph-exec-target-periph-label');
             }
-            const needsValue = !isRuleCtrlAction && (actionType >= 2 && actionType <= 5);
+            const needsValue = !isRuleCtrlAction && ((actionType >= 2 && actionType <= 5) || actionType === 24 || actionType === 25 || actionType === 27);
             this._setSectionVisible(valueGroup, needsValue);
             this._setSectionVisible(scriptGroup, actionType === 15);
+            // OLED 自定义显示：在 value-group 内 input / textarea 两种控件互斥显示
+            if (valueGroup) {
+                const singleEl = valueGroup.querySelector('.pe-action-value');
+                const multiEl = valueGroup.querySelector('.pe-action-value-oled');
+                const isOled = actionType === 27;
+                if (singleEl) {
+                    if (isOled) singleEl.classList.add('is-hidden');
+                    else singleEl.classList.remove('is-hidden');
+                }
+                if (multiEl) {
+                    if (isOled) multiEl.classList.remove('is-hidden');
+                    else multiEl.classList.add('is-hidden');
+                }
+                // 提示文案同步切换
+                const helpEl = valueGroup.querySelector('.pe-help-text');
+                if (helpEl) {
+                    if (isOled) helpEl.textContent = i18n.t('periph-exec-action-oled-value-help');
+                    else if (actionType === 24 || actionType === 25 || actionType === 26) helpEl.textContent = i18n.t('periph-exec-action-display-value-hint');
+                    else helpEl.textContent = i18n.t('periph-exec-action-value-help');
+                }
+            }
             if (pollTasksGroup) {
                 this._setSectionVisible(pollTasksGroup, isModbusPoll);
                 if (isModbusPoll) {
@@ -458,10 +482,10 @@
                 var peSelect = block.querySelector('.pe-target-periph');
                 this._populatePeriphSelect(peSelect, peSelect ? peSelect.value : '', this._isPollTriggerActive(), isTriggerEvent, isRuleCtrlAction);
             }
-            // 使用接收值: 仅在平台触发+设置+需要数值的动作类型时显示
+            // 使用接收值: 仅在平台触发+设置+需要数值的动作类型时显示（OLED_DISPLAY 不需要整体替换，通过 $value 占位符嵌入）
             const recvGroup = block.querySelector('.pe-use-received-value-group');
             const isSetMode = this._hasSetModeTrigger();
-            const showRecv = isSetMode && needsValue;
+            const showRecv = isSetMode && needsValue && actionType !== 27;
             this._setSectionVisible(recvGroup, showRecv);
             const checkbox = block.querySelector('.pe-use-received-value');
             if (checkbox) checkbox.checked = showRecv;
@@ -782,6 +806,9 @@
                         sensorData.deviceIndex = parseInt(item.querySelector('.pe-sensor-devindex')?.value) || 0;
                     }
                     action.actionValue = JSON.stringify(sensorData);
+                } else if (action.actionType === 27) {
+                    // OLED 自定义显示：多行文本，不做 trim，保留用户显式换行
+                    action.actionValue = item.querySelector('.pe-action-value-oled')?.value || '';
                 } else {
                     action.actionValue = item.querySelector('.pe-action-value')?.value?.trim() || '';
                 }

@@ -45,17 +45,21 @@ bool WebConfigManager::initialize() {
         return false;
     }
 
-    // 创建 15 个专职 Handler
+    // 创建专职 Handler（条件编译裁剪未启用的模块，节省 Flash 和 RAM）
     staticHandler      = std::unique_ptr<StaticRouteHandler>(new StaticRouteHandler(ctx.get()));
     authHandler        = std::unique_ptr<AuthRouteHandler>(new AuthRouteHandler(ctx.get()));
     userHandler        = std::unique_ptr<UserRouteHandler>(new UserRouteHandler(ctx.get()));
     roleHandler        = std::unique_ptr<RoleRouteHandler>(new RoleRouteHandler(ctx.get()));
     systemHandler      = std::unique_ptr<SystemRouteHandler>(new SystemRouteHandler(ctx.get()));
+#if FASTBEE_ENABLE_LOGGER
     logHandler         = std::unique_ptr<LogRouteHandler>(new LogRouteHandler(ctx.get()));
+#endif
     deviceHandler      = std::unique_ptr<DeviceRouteHandler>(new DeviceRouteHandler(ctx.get()));
     batchHandler       = std::unique_ptr<BatchRouteHandler>(new BatchRouteHandler(ctx.get()));
     provisionHandler   = std::unique_ptr<ProvisionRouteHandler>(new ProvisionRouteHandler(ctx.get()));
+#if FASTBEE_ENABLE_OTA
     otaHandler         = std::unique_ptr<OTARouteHandler>(new OTARouteHandler(ctx.get()));
+#endif
     peripheralHandler  = std::unique_ptr<PeripheralRouteHandler>(new PeripheralRouteHandler(ctx.get()));
 #if FASTBEE_ENABLE_PERIPH_EXEC
     periphExecHandler  = std::unique_ptr<PeriphExecRouteHandler>(new PeriphExecRouteHandler(ctx.get()));
@@ -63,7 +67,9 @@ bool WebConfigManager::initialize() {
 #if FASTBEE_ENABLE_RULE_SCRIPT
     ruleScriptHandler  = std::unique_ptr<RuleScriptRouteHandler>(new RuleScriptRouteHandler(ctx.get()));
 #endif
+#if FASTBEE_ENABLE_MQTT || FASTBEE_ENABLE_MODBUS || FASTBEE_ENABLE_TCP || FASTBEE_ENABLE_HTTP || FASTBEE_ENABLE_COAP
     protocolHandler    = std::unique_ptr<ProtocolRouteHandler>(new ProtocolRouteHandler(ctx.get()));
+#endif
     sseRouteHandler    = std::unique_ptr<SSERouteHandler>(new SSERouteHandler(ctx.get()));
 
     // 全局 CORS 头 —— 自动注入到所有 HTTP 响应（含静态文件）
@@ -78,7 +84,7 @@ bool WebConfigManager::initialize() {
 
     setupAllRoutes();
 
-    LOG_INFO("[WebConfig] Initialized with 15 route handlers");
+    LOG_INFO("[WebConfig] Initialized with route handlers");
     return true;
 }
 
@@ -245,58 +251,79 @@ void WebConfigManager::setupAllRoutes() {
     // 注册顺序严格遵循 ESPAsyncWebServer 前缀匹配规则：
     // 子路径必须在父路径之前注册
 
+    // [RouteProbe] 逐 handler heap 采样，默认关闭。打开方式：在编译参数加 -DFASTBEE_ROUTE_PROBE=1
+    // 用于定位路由注册的堆消耗大头（OOM 排查辅助）
+#if FASTBEE_ROUTE_PROBE
+    auto probe = [](const char* tag) {
+        uint32_t fh = ESP.getFreeHeap();
+        uint32_t mb = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+        LOGGER.infof("[RouteProbe] %-12s heap=%u maxBlock=%u", tag, (unsigned)fh, (unsigned)mb);
+    };
+    #define ROUTE_PROBE(tag) probe(tag)
+#else
+    #define ROUTE_PROBE(tag) ((void)0)
+#endif
+    ROUTE_PROBE("Begin");
+
     // CORS 预检（CORS/安全头已由 DefaultHeaders 全局注入，此处仅补充 Max-Age）
     server->on("/api/*", HTTP_OPTIONS, [this](AsyncWebServerRequest* request) {
         AsyncWebServerResponse* response = request->beginResponse(204);
         response->addHeader("Access-Control-Max-Age", "86400");
         request->send(response);
     });
+    ROUTE_PROBE("CORS");
 
     // 1. 认证路由（/api/auth/*）
-    authHandler->setupRoutes(server);
+    authHandler->setupRoutes(server);                        ROUTE_PROBE("Auth");
 
     // 2. 用户路由（/api/users/*）
-    userHandler->setupRoutes(server);
+    userHandler->setupRoutes(server);                        ROUTE_PROBE("User");
 
     // 3. 角色路由（/api/roles/*, /api/permissions, /api/audit/*）
-    roleHandler->setupRoutes(server);
+    roleHandler->setupRoutes(server);                        ROUTE_PROBE("Role");
 
     // 4. 系统路由（/api/system/*, /api/network/*, /api/files/*, /api/config, /api/health）
-    systemHandler->setupRoutes(server);
+    systemHandler->setupRoutes(server);                      ROUTE_PROBE("System");
 
     // 4a. 日志路由（/api/logs/*, /api/system/logs/*）
-    logHandler->setupRoutes(server);
+#if FASTBEE_ENABLE_LOGGER
+    logHandler->setupRoutes(server);                         ROUTE_PROBE("Log");
+#endif
 
     // 4b. 设备路由（/api/device/*）
-    deviceHandler->setupRoutes(server);
+    deviceHandler->setupRoutes(server);                      ROUTE_PROBE("Device");
 
     // 4c. 批量请求路由（/api/batch）
-    batchHandler->setupRoutes(server);
+    batchHandler->setupRoutes(server);                       ROUTE_PROBE("Batch");
 
     // 5. 配网路由（/setup, /api/wifi/*）
-    provisionHandler->setupRoutes(server);
+    provisionHandler->setupRoutes(server);                   ROUTE_PROBE("Provision");
 
     // 6. OTA路由（/api/ota/*）
-    otaHandler->setupRoutes(server);
+#if FASTBEE_ENABLE_OTA
+    otaHandler->setupRoutes(server);                         ROUTE_PROBE("OTA");
+#endif
 
     // 7. 外设路由（/api/peripherals/*）
-    peripheralHandler->setupRoutes(server);
+    peripheralHandler->setupRoutes(server);                  ROUTE_PROBE("Peripheral");
 
     // 8. 外设执行路由（/api/periph-exec/*）
 #if FASTBEE_ENABLE_PERIPH_EXEC
-    periphExecHandler->setupRoutes(server);
+    periphExecHandler->setupRoutes(server);                  ROUTE_PROBE("PeriphExec");
 #endif
 
     // 9. 规则脚本路由（/api/rule-script/*）
 #if FASTBEE_ENABLE_RULE_SCRIPT
-    ruleScriptHandler->setupRoutes(server);
+    ruleScriptHandler->setupRoutes(server);                  ROUTE_PROBE("RuleScript");
 #endif
 
     // 10. 协议路由（/api/protocol/*）
-    protocolHandler->setupRoutes(server);
+#if FASTBEE_ENABLE_MQTT || FASTBEE_ENABLE_MODBUS || FASTBEE_ENABLE_TCP || FASTBEE_ENABLE_HTTP || FASTBEE_ENABLE_COAP
+    protocolHandler->setupRoutes(server);                    ROUTE_PROBE("Protocol");
+#endif
 
     // 11. SSE 事件推送路由（/api/events）
-    sseRouteHandler->setupRoutes(server);
+    sseRouteHandler->setupRoutes(server);                    ROUTE_PROBE("SSE");
     ctx->sseHandler = sseRouteHandler.get();
     if (ctx->protocolManager) {
         SSERouteHandler* ssePtr = sseRouteHandler.get();
@@ -341,5 +368,7 @@ void WebConfigManager::setupAllRoutes() {
 
     // 12. 静态文件与页面路由（/, /login, /dashboard, /users, 404 fallback）
     // 必须最后注册，因为 onNotFound 是全局 fallback
-    staticHandler->setupRoutes(server);
+    staticHandler->setupRoutes(server);                      ROUTE_PROBE("Static");
+    ROUTE_PROBE("End");
+#undef ROUTE_PROBE
 }

@@ -44,7 +44,8 @@ enum class ExecActionType : uint8_t {
     ACTION_DISABLE_EXEC_RULE = 23,  // 禁用指定外设执行规则（targetPeriphId 为规则 ID）
     ACTION_DISPLAY_NUMBER = 24,     // 数码管/显示屏显示数字（actionValue: "12.34" / "12:34" / "1234"）
     ACTION_DISPLAY_TEXT = 25,       // 数码管/显示屏显示文本（actionValue: "PLAY" 等）
-    ACTION_DISPLAY_CLEAR = 26       // 数码管/显示屏清屏
+    ACTION_DISPLAY_CLEAR = 26,      // 数码管/显示屏清屏
+    ACTION_OLED_DISPLAY = 27        // OLED 自定义多行显示（actionValue: 多行文本 + ${id.field} + $value 模板，首行 # 开头为居中标题）
 };
 
 // 传感器类别枚举

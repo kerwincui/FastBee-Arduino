@@ -75,17 +75,21 @@ private:
     // 共享上下文（所有 Handler 通过指针引用）
     std::unique_ptr<WebHandlerContext> ctx;
 
-    // 14 个专职路由处理器
+    // 14 个专职路由处理器（条件编译裁剪未启用的模块）
     std::unique_ptr<StaticRouteHandler>     staticHandler;
     std::unique_ptr<AuthRouteHandler>       authHandler;
     std::unique_ptr<UserRouteHandler>       userHandler;
     std::unique_ptr<RoleRouteHandler>       roleHandler;
     std::unique_ptr<SystemRouteHandler>     systemHandler;
+#if FASTBEE_ENABLE_LOGGER
     std::unique_ptr<LogRouteHandler>        logHandler;
+#endif
     std::unique_ptr<DeviceRouteHandler>     deviceHandler;
     std::unique_ptr<BatchRouteHandler>      batchHandler;
     std::unique_ptr<ProvisionRouteHandler>  provisionHandler;
+#if FASTBEE_ENABLE_OTA
     std::unique_ptr<OTARouteHandler>        otaHandler;
+#endif
     std::unique_ptr<PeripheralRouteHandler> peripheralHandler;
 #if FASTBEE_ENABLE_PERIPH_EXEC
     std::unique_ptr<PeriphExecRouteHandler> periphExecHandler;
@@ -93,7 +97,9 @@ private:
 #if FASTBEE_ENABLE_RULE_SCRIPT
     std::unique_ptr<RuleScriptRouteHandler> ruleScriptHandler;
 #endif
+#if FASTBEE_ENABLE_MQTT || FASTBEE_ENABLE_MODBUS || FASTBEE_ENABLE_TCP || FASTBEE_ENABLE_HTTP || FASTBEE_ENABLE_COAP
     std::unique_ptr<ProtocolRouteHandler>   protocolHandler;
+#endif
     std::unique_ptr<SSERouteHandler>        sseRouteHandler;
 
     void setupAllRoutes();

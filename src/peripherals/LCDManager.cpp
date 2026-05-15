@@ -237,6 +237,75 @@ bool LCDManager::printLines(const String lines[], uint8_t lineCount)
     return refresh();
 }
 
+bool LCDManager::showCustomText(const String& content)
+{
+    if (!_display || !_initialized) return false;
+
+    // 最多显示行数：受屏高和字体限制，同时加上硬上限避免栈数组过大
+    static constexpr uint8_t MAX_CUSTOM_LINES = 6;
+
+    // 预扫描：统计有效行数（按 \n 切分），最多取 MAX_CUSTOM_LINES
+    // 为了避免堆分配，直接在原串上用下标位记再 substring 推进
+    clear();
+
+    uint8_t fontH = getFontHeight();
+    if (fontH == 0) fontH = 12;
+    uint8_t maxPixelLines = getMaxLines();
+    if (maxPixelLines == 0) maxPixelLines = 4;
+    uint8_t maxLines = (maxPixelLines < MAX_CUSTOM_LINES) ? maxPixelLines : MAX_CUSTOM_LINES;
+
+    // 切分行：记录每行的起始下标和长度，不产生 String 数组堆分配
+    struct LineSlice { int start; int len; };
+    LineSlice slices[MAX_CUSTOM_LINES];
+    uint8_t lineCount = 0;
+    int n = content.length();
+    int cursor = 0;
+    while (cursor <= n && lineCount < maxLines) {
+        int nl = content.indexOf('\n', cursor);
+        int end = (nl < 0) ? n : nl;
+        slices[lineCount].start = cursor;
+        slices[lineCount].len = end - cursor;
+        lineCount++;
+        if (nl < 0) break;
+        cursor = nl + 1;
+    }
+
+    if (lineCount == 0) {
+        return refresh();  // 空内容 = 清屏效果
+    }
+
+    // 判断首行是否为标题（以 # 开头）
+    bool hasTitle = false;
+    String titleText;
+    uint8_t bodyStart = 0;
+    if (slices[0].len > 0 && content.charAt(slices[0].start) == '#') {
+        hasTitle = true;
+        // 去掉 # 和前置空格
+        int ts = slices[0].start + 1;
+        while (ts < slices[0].start + slices[0].len && content.charAt(ts) == ' ') ts++;
+        titleText = content.substring(ts, slices[0].start + slices[0].len);
+        bodyStart = 1;
+    }
+
+    uint8_t y = fontH;
+    if (hasTitle) {
+        print(titleText, 0, y, TextAlign::CENTER);
+        // 标题下方绘分隔线
+        drawLine(0, y + 2, _width, y + 2);
+        y += fontH + 2;
+    }
+
+    // 正文行：左对齐，超出屏高丢弃
+    for (uint8_t i = bodyStart; i < lineCount; i++) {
+        if (y > _height) break;
+        String lineText = content.substring(slices[i].start, slices[i].start + slices[i].len);
+        print(lineText, 0, y, TextAlign::LEFT);
+        y += fontH;
+    }
+
+    return refresh();
+}
+
 bool LCDManager::showSensorData(const String& name, float value, const String& unit, uint8_t line)
 {
     if (!_display || !_initialized) return false;

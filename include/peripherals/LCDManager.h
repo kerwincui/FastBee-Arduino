@@ -140,6 +140,17 @@ public:
     bool printLines(const String lines[], uint8_t lineCount);
     
     /**
+     * @brief 自定义多行文本显示（供外设执行规则使用）
+     * 
+     * 内容按 \n 切分，首行以 # 开头时视为居中标题（自动绘制分隔线），
+     * 其余行默认左对齐。最多显示 MAX_CUSTOM_LINES 行，超出截断。
+     * 
+     * @param content 多行文本内容
+     * @return bool 成功返回true
+     */
+    bool showCustomText(const String& content);
+    
+    /**
      * @brief 显示传感器数据（单条）
      * 
      * @param name 传感器名称

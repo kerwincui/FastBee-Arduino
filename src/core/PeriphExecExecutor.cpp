@@ -221,7 +221,8 @@ void PeriphExecExecutor::initialize(PeriphExecManager* manager) {
 
 // ========== 动作执行接口 ==========
 
-bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const String& effectiveValue) {
+bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const String& effectiveValue,
+                                           const String& receivedValue) {
     // 系统功能 (actionType 6-11)
     if (action.actionType >= 6 && action.actionType <= 11) {
         return executeSystemAction(action);
@@ -240,7 +241,8 @@ bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const Strin
         return executeRuleControlAction(action);
     }
     // 外设动作（GPIO、Modbus子设备等统一由 PeripheralManager 管理）
-    return executePeripheralAction(action, effectiveValue);
+    // receivedValue 透传：供 ACTION_OLED_DISPLAY 等需要访问原始下发值的动作替换 $value 占位符
+    return executePeripheralAction(action, effectiveValue, receivedValue);
 }
 
 std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
@@ -326,7 +328,8 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
                 "event_triggered"
             );
         } else {
-            ok = executeActionItem(action, effectiveValue);
+            // 将原始 receivedValue 透传给下层动作，便于 OLED_DISPLAY 等动作中 $value 占位符替换
+            ok = executeActionItem(action, effectiveValue, receivedValue);
             appendActionResult(
                 actionResults,
                 action.targetPeriphId,
@@ -366,7 +369,8 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
 
 // ========== 具体动作执行方法 ==========
 
-bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const String& effectiveValue) {
+bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const String& effectiveValue,
+                                                 const String& receivedValue) {
     PeripheralManager& pm = PeripheralManager::getInstance();
 
     if (action.targetPeriphId.isEmpty()) {
@@ -586,6 +590,34 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
                 return false;
             }
             return SevenSegmentDriver::instance().clear(action.targetPeriphId);
+        }
+#endif
+
+#if FASTBEE_ENABLE_LCD
+        case ExecActionType::ACTION_OLED_DISPLAY: {
+            // OLED 自定义多行显示：
+            //   - 支持 ${periphId.field} 模板（从传感器读缓存替换）
+            //   - 支持 $value 占位符（替换为 MQTT/规则下发的原始接收值）
+            //   - 首行以 # 开头为居中标题 + 分隔线
+            //   - actionValue 多行文本，\n 分行
+            PeripheralConfig* cfg = pm.getPeripheral(action.targetPeriphId);
+            if (!cfg) {
+                LOGGER.warningf("[PeriphExec] OLED_DISPLAY target not found: %s",
+                                action.targetPeriphId.c_str());
+                return false;
+            }
+            if (cfg->type != PeripheralType::LCD) {
+                LOGGER.warningf("[PeriphExec] OLED_DISPLAY target '%s' is not LCD",
+                                action.targetPeriphId.c_str());
+                return false;
+            }
+            String resolved = resolveSensorTemplate(effectiveValue);
+            if (resolved.indexOf("$value") >= 0) {
+                resolved.replace("$value", receivedValue);
+            }
+            LOGGER.infof("[PeriphExec] Execute OledDisplay(%d bytes) on %s",
+                         (int)resolved.length(), action.targetPeriphId.c_str());
+            return LCDManager::getInstance().showCustomText(resolved);
         }
 #endif
 
@@ -1219,6 +1251,21 @@ MQTTClient* PeriphExecExecutor::getMqttClient() {
 
 void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>& results) {
     if (results.empty()) return;
+
+    // 早期短路：MQTT 完全未启用（mqttClient == nullptr）时跳过所有上报构造，
+    //   避免每次采集都构造 1KB JsonDocument + 序列化字符串入队，
+    //   减少 CPU 浪费与堆碎片。
+    //   （“启用但临时未连接”走下方 enqueueOrCache 的缓存重试分支，仍按原逻辑入队。）
+    if (!getMqttClient()) {
+        static unsigned long s_lastWarn = 0;
+        unsigned long now = millis();
+        if (now - s_lastWarn > 60000) {
+            LOGGER.infof("[PeriphExec] reportActionResults: MQTT disabled, dropping %d results (suppressed for 60s)",
+                         (int)results.size());
+            s_lastWarn = now;
+        }
+        return;
+    }
 
     LOGGER.infof("[PeriphExec] reportActionResults: %d action results to process", results.size());
 

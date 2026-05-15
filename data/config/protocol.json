@@ -307,7 +307,7 @@
     "timeout": 5000
   },
   "mqtt": {
-    "enabled": false,
+    "enabled": true,
     "server": "iot.fastbee.cn",
     "port": 1883,
     "clientId": "S&FBE100900001&1070&1",

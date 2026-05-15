@@ -7,19 +7,22 @@
 #include <freertos/task.h>
 #include "core/interfaces/ILoggerSystem.h"  // LogLevel 枚举
 
-// 内存保护等级
+// 内存保护等级（ESP32 D0WD-V3 no-PSRAM 实测：WiFi+WebServer+外设常态吃掉 ~210KB，
+// 剩余 25~30KB 是稳定工作区间，不应被判为警报）
 enum class MemoryGuardLevel : uint8_t {
-    NORMAL = 0,    // freeHeap >= 40KB → 所有功能正常
-    WARN = 1,      // 40KB > freeHeap >= 25KB → 降低轮询频率、降低日志级别
-    SEVERE = 2,    // 25KB > freeHeap >= 15KB → 暂停Modbus轮询、MQTT降采样、停止日志文件写
-    CRITICAL = 3   // freeHeap < 15KB → 禁用文件日志、拒绝大响应、只保留关键页面
+    NORMAL = 0,    // freeHeap >= 20KB 或 largestBlock >= 12KB → 所有功能正常
+    WARN = 1,      // 20KB > freeHeap >= 10KB → 降低轮询频率、降低日志级别
+    SEVERE = 2,    // 10KB > freeHeap >= 6KB → 暂停Modbus轮询、MQTT降采样、停止日志文件写
+    CRITICAL = 3   // freeHeap < 6KB → 禁用文件日志、拒绝大响应、只保留关键页面
 };
 
-// 阈值常量
-static constexpr uint32_t MEM_THRESHOLD_NORMAL  = 40960;  // 40KB
-static constexpr uint32_t MEM_THRESHOLD_WARN    = 25600;  // 25KB
-static constexpr uint32_t MEM_THRESHOLD_SEVERE  = 15360;  // 15KB
-static constexpr uint8_t  FRAG_THRESHOLD_COMPACT = 75;    // 碎片率75%触发紧凑化
+// 阈值常量（贴合 ESP32 no-PSRAM 实际：空闲 heap~27KB，web服务时临时降至 10-15KB 是正常行为）
+static constexpr uint32_t MEM_THRESHOLD_NORMAL  = 20480;  // 20KB
+static constexpr uint32_t MEM_THRESHOLD_WARN    = 10240;  // 10KB
+static constexpr uint32_t MEM_THRESHOLD_SEVERE  =  6144;  //  6KB
+// largestFreeBlock 健康反证：连续块 >= 12KB 足以响应 HTTP 响应，强制维持 NORMAL
+static constexpr uint32_t MEM_LARGEST_HEALTHY    = 12288;  // 12KB
+static constexpr uint8_t  FRAG_THRESHOLD_COMPACT = 80;    // 碎片率80%触发紧凑化
 
 // 任务栈水位信息
 struct TaskStackInfo {

@@ -704,6 +704,108 @@
       "protocolType": 0,
       "scriptContent": "",
       "reportAfterExec": true
+    },
+    {
+      "id": "exec_oled_custom_timer",
+      "name": "OLED自定义显示-定时混排",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 1,
+          "triggerPeriphId": "",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 15,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "oled_display",
+          "actionType": 27,
+          "actionValue": "# 环境监测\n温度:${dht_01.temperature}°C\n湿度:${dht_01.humidity}%\n状态:运行中",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    },
+    {
+      "id": "exec_oled_custom_mqtt",
+      "name": "OLED自定义显示-MQTT下发消息",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "oled_display",
+          "operatorType": 1,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "oled_display",
+          "actionType": 27,
+          "actionValue": "# 平台消息\n温度:${dht_01.temperature}°C\n湿度:${dht_01.humidity}%\n内容:$value",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    },
+    {
+      "id": "exec_oled_custom_button",
+      "name": "OLED自定义显示-按键触发设备信息",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 4,
+          "triggerPeriphId": "key1",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "",
+          "eventId": "button_click",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "oled_display",
+          "actionType": 27,
+          "actionValue": "# 设备信息\nFastBee ESP32\n温度:${dht_01.temperature}°C\n湿度:${dht_01.humidity}%\n按键已触发",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
     }
   ]
 }

@@ -67,6 +67,11 @@ public:
     // 返回 outDoc 结构保持 { "<section>": { ... } }，调用方按 outDoc[section] 访问即可
     bool loadProtocolSection(const String& section, JsonDocument& outDoc);
 
+    // 通用分段加载：从任意 JSON 文件中仅反序列化指定顶层 section（使用 ArduinoJson Filter）
+    // 适用于任何大配置文件的按需加载，降低堆峰值
+    // 返回 outDoc 结构保持 { "<section>": { ... } }，调用方按 outDoc[section] 访问
+    bool loadConfigSection(const char* filename, const String& section, JsonDocument& outDoc);
+
     // ── 文件系统管理 ────────────────────────────────────────────────────────
     bool isFileSystemOK();
     bool formatFileSystem();       // 谨慎使用：会清除所有数据

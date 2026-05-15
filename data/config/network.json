@@ -8,6 +8,10 @@
   "apMaxConnections": 4,
   "staSSID": "fastbee",
   "staPassword": "15208747707",
+  "networks": [
+    {"ssid": "fastbee", "password": "15208747707", "priority": 0},
+    {"ssid": "fastbee-5G", "password": "15208747707", "priority": 1}
+  ],
   "ipConfigType": 0,
   "staticIP": "",
   "gateway": "",

@@ -11,6 +11,7 @@
 
 #include <ArduinoJson.h>
 #include <LittleFS.h>
+#include "systems/ConfigStorage.h"
 
 
 HTTPClientWrapper::HTTPClientWrapper() 
@@ -31,37 +32,41 @@ bool HTTPClientWrapper::begin(const HTTPConfig& config) {
 }
 
 bool HTTPClientWrapper::beginFromConfig(const char* configPath) {
-    if (!LittleFS.begin()) {
-        Serial.println("[HTTPClient] Failed to mount LittleFS");
-        return false;
+    // 优化：优先使用 Filter 分段加载，仅反序列化 "http" 子节点，堆峰值 <0.5KB
+    JsonDocument doc;
+    bool sectionLoaded = false;
+    if (String(configPath) == String(FileSystem::PROTOCOL_CONFIG_FILE)) {
+        sectionLoaded = ConfigStorage::getInstance().loadProtocolSection("http", doc);
     }
 
-    File configFile = LittleFS.open(configPath, "r");
-    if (!configFile) {
-        Serial.printf("[HTTPClient] Failed to open config file: %s\n", configPath);
-        return false;
+    JsonVariant cfg;
+    if (sectionLoaded) {
+        cfg = doc["http"];
+    } else {
+        // 降级路径：全量反序列化（兼容旧配置或独立文件）
+        File configFile = LittleFS.open(configPath, "r");
+        if (!configFile) {
+            Serial.printf("[HTTPClient] Failed to open config file: %s\n", configPath);
+            return false;
+        }
+
+        DeserializationError error = deserializeJson(doc, configFile);
+        configFile.close();
+
+        if (error) {
+            Serial.printf("[HTTPClient] JSON deserialization failed: %s\n", error.c_str());
+            return false;
+        }
+        cfg = doc.as<JsonVariant>();
     }
 
-    size_t size = configFile.size();
-    std::unique_ptr<char[]> buf(new char[size]);
-    configFile.readBytes(buf.get(), size);
-    configFile.close();
-
-    // 使用静态JSON文档减少内存碎片
-    StaticJsonDocument<1024> doc;
-    DeserializationError error = deserializeJson(doc, buf.get());
-    if (error) {
-        Serial.printf("[HTTPClient] JSON deserialization failed: %s\n", error.c_str());
-        return false;
-    }
-
-    // 解析配置
-    config.baseURL = doc["baseURL"] | "";
-    config.timeout = doc["timeout"] | 10000;
-    config.contentType = doc["contentType"] | "application/json";
+    // 解析配置（兼容旧字段名）
+    config.baseURL = cfg["baseURL"] | cfg["url"] | "";
+    config.timeout = cfg["timeout"] | 10000;
+    config.contentType = cfg["contentType"] | "application/json";
 
     if (config.baseURL.isEmpty()) {
-        Serial.println("[HTTPClient] baseURL is empty in config file");
+        Serial.println("[HTTPClient] baseURL is empty in config");
         return false;
     }
 

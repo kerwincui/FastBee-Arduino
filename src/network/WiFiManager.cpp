@@ -37,7 +37,22 @@ bool WiFiManager::initialize() {
 }
 
 bool WiFiManager::connectToWiFi() {
-    if (wifiConfig.staSSID.isEmpty()) {
+    // 多 SSID 择优逻辑：如果配置了 networks 列表，扫描并选择最佳网络
+    String targetSSID = wifiConfig.staSSID;
+    String targetPassword = wifiConfig.staPassword;
+    
+    if (!wifiConfig.networks.empty()) {
+        String bestSSID, bestPassword;
+        if (selectBestNetwork(bestSSID, bestPassword)) {
+            targetSSID = bestSSID;
+            targetPassword = bestPassword;
+            LOG_INFO("WiFiManager: Selected best network: " + targetSSID);
+        } else {
+            LOG_WARNING("WiFiManager: No configured network found in scan, using primary SSID");
+        }
+    }
+    
+    if (targetSSID.isEmpty()) {
         LOG_INFO("WiFiManager: No STA SSID configured");
         return false;
     }
@@ -77,12 +92,12 @@ bool WiFiManager::connectToWiFi() {
     connectingStartTime = millis();
 
     // 开始连接
-    WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
+    WiFi.begin(targetSSID.c_str(), targetPassword.c_str());
     staInitialized = true;  // 标记STA已初始化
     
     char buffer[100];
-    snprintf(buffer, sizeof(buffer), "Connecting to WiFi: %s", wifiConfig.staSSID.c_str());
-    LOG_INFO("WiFiManager: Attempting to connect to " + wifiConfig.staSSID);
+    snprintf(buffer, sizeof(buffer), "Connecting to WiFi: %s", targetSSID.c_str());
+    LOG_INFO("WiFiManager: Attempting to connect to " + targetSSID);
     triggerEvent(NetworkStatus::CONNECTING, buffer);
     
     return true;
@@ -574,5 +589,62 @@ String WiFiManager::getChipID() {
     snprintf(chipidStr, sizeof(chipidStr), "%04X%08X", 
              (uint16_t)(chipid >> 32), (uint32_t)chipid);
     return String(chipidStr);
+}
+
+bool WiFiManager::selectBestNetwork(String& outSSID, String& outPassword) {
+    if (wifiConfig.networks.empty()) {
+        return false;
+    }
+    
+    // 扫描可用网络
+    LOG_INFO("WiFiManager: Scanning for best network...");
+    int numFound = WiFi.scanNetworks(false, false, false, 300);
+    if (numFound <= 0) {
+        LOG_WARNING("WiFiManager: No networks found in scan");
+        WiFi.scanDelete();
+        // 扫描失败时，返回优先级最高的网络
+        outSSID = wifiConfig.networks[0].ssid;
+        outPassword = wifiConfig.networks[0].password;
+        return true;
+    }
+    
+    // 在扫描结果中匹配配置的网络，按 priority 分组后取 RSSI 最高者
+    struct Candidate {
+        String ssid;
+        String password;
+        uint8_t priority;
+        int32_t rssi;
+    };
+    std::vector<Candidate> candidates;
+    
+    for (int i = 0; i < numFound; i++) {
+        String scannedSSID = WiFi.SSID(i);
+        int32_t scannedRSSI = WiFi.RSSI(i);
+        
+        for (const auto& net : wifiConfig.networks) {
+            if (net.ssid == scannedSSID) {
+                candidates.push_back({scannedSSID, net.password, net.priority, scannedRSSI});
+                break;
+            }
+        }
+    }
+    WiFi.scanDelete();
+    
+    if (candidates.empty()) {
+        LOG_WARNING("WiFiManager: None of configured networks found in scan");
+        return false;
+    }
+    
+    // 排序：先按 priority 升序，同 priority 按 RSSI 降序
+    std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
+        if (a.priority != b.priority) return a.priority < b.priority;
+        return a.rssi > b.rssi;
+    });
+    
+    outSSID = candidates[0].ssid;
+    outPassword = candidates[0].password;
+    LOGGER.infof("WiFiManager: Best network: %s (priority=%d, RSSI=%d)",
+                 outSSID.c_str(), candidates[0].priority, candidates[0].rssi);
+    return true;
 }
 

@@ -4,6 +4,7 @@
 #include <WiFi.h>
 #include <functional>
 #include <vector>
+#include <algorithm>
 
 /**
  * @brief WiFi 模式枚举
@@ -53,6 +54,15 @@ enum class IPFailoverStrategy {
 };
 
 /**
+ * @brief WiFi 网络条目（多 SSID 列表）
+ */
+struct WiFiNetwork {
+    String ssid;
+    String password;
+    uint8_t priority = 0;  // 优先级，数值越小优先级越高
+};
+
+/**
  * @brief 网络配置结构体
  */
 struct WiFiConfig {
@@ -67,9 +77,13 @@ struct WiFiConfig {
     bool apHidden = false;
     uint8_t apMaxConnections = 4;
     
-    // STA 配置
+    // STA 配置（单 SSID 兼容模式）
     String staSSID = "";
     String staPassword = "";
+    
+    // 多 SSID 列表（最多 3 个，按 priority 排序后 RSSI 择优）
+    std::vector<WiFiNetwork> networks;
+    
     IPConfigType ipConfigType = IPConfigType::DHCP;
     
     // 静态 IP 配置
@@ -145,7 +159,7 @@ public:
     bool initialize();
     
     /**
-     * @brief 连接到 WiFi 网络
+     * @brief 连接到 WiFi 网络（支持多 SSID RSSI 择优）
      * @return 是否连接成功
      */
     bool connectToWiFi();
@@ -338,6 +352,14 @@ private:
      * @brief 尝试重连
      */
     void attemptReconnect();
+    
+    /**
+     * @brief 选择最佳 SSID（扫描 + RSSI 择优）
+     * @param outSSID 输出最佳 SSID
+     * @param outPassword 输出对应密码
+     * @return 是否找到可用网络
+     */
+    bool selectBestNetwork(String& outSSID, String& outPassword);
 };
 
 #endif // WIFI_MANAGER_H

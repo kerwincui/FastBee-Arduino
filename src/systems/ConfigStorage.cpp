@@ -225,13 +225,18 @@ bool ConfigStorage::loadProtocolConfig(JsonDocument& config)        { return loa
 // 优势：堆峰值从 ~15KB 降至对应子节点实际体积（如 mqtt ~3KB, coap/tcp/http <0.5KB）
 // 注意：本方法绕过 StorageCache（protocol.json > 4KB 阈值），直接走 LittleFS
 bool ConfigStorage::loadProtocolSection(const String& section, JsonDocument& outDoc) {
+    return loadConfigSection(FileSystem::PROTOCOL_CONFIG_FILE, section, outDoc);
+}
+
+// 通用分段加载：从任意 JSON 文件中仅反序列化指定顶层 section
+// 使用 ArduinoJson Filter 机制，堆峰值仅为对应子节点实际体积，而非整文件
+bool ConfigStorage::loadConfigSection(const char* filename, const String& section, JsonDocument& outDoc) {
     if (!_initialized && !initializeInternal()) {
         return false;
     }
 
-    const char* filename = FileSystem::PROTOCOL_CONFIG_FILE;
     if (!LittleFS.exists(filename)) {
-        LOG_WARNINGF("ConfigStorage: Protocol config not found: %s", filename);
+        LOG_WARNINGF("ConfigStorage: Config not found: %s", filename);
         return false;
     }
 
@@ -249,7 +254,7 @@ bool ConfigStorage::loadProtocolSection(const String& section, JsonDocument& out
     f.close();
 
     if (err) {
-        LOG_ERRORF("ConfigStorage: Section '%s' parse error: %s", section.c_str(), err.c_str());
+        LOG_ERRORF("ConfigStorage: Section '%s' parse error in %s: %s", section.c_str(), filename, err.c_str());
         return false;
     }
 

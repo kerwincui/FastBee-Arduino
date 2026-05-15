@@ -17,6 +17,7 @@
 #include <ESPmDNS.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include <algorithm>
 
 static const char* NETWORK_CONFIG_FILE = "/config/network.json";
 
@@ -393,6 +394,28 @@ bool NetworkManager::loadNetworkConfig() {
         if (doc.containsKey("maxFailoverAttempts"))  wifiConfig.maxFailoverAttempts = doc["maxFailoverAttempts"].as<uint8_t>();
         if (doc.containsKey("conflictThreshold"))    wifiConfig.conflictThreshold = doc["conflictThreshold"].as<uint8_t>();
         if (doc.containsKey("fallbackToDHCP"))       wifiConfig.fallbackToDHCP = doc["fallbackToDHCP"].as<bool>();
+        
+        // 多 SSID 列表解析（向下兼容：无 networks 字段时使用 staSSID/staPassword）
+        if (doc.containsKey("networks") && doc["networks"].is<JsonArray>()) {
+            wifiConfig.networks.clear();
+            JsonArray arr = doc["networks"].as<JsonArray>();
+            uint8_t count = 0;
+            for (JsonObject netObj : arr) {
+                if (count >= 3) break;  // 最多 3 个
+                WiFiNetwork net;
+                net.ssid = netObj["ssid"] | "";
+                net.password = netObj["password"] | "";
+                net.priority = netObj["priority"] | count;
+                if (!net.ssid.isEmpty()) {
+                    wifiConfig.networks.push_back(net);
+                    count++;
+                }
+            }
+            // 按 priority 升序排序
+            std::sort(wifiConfig.networks.begin(), wifiConfig.networks.end(),
+                [](const WiFiNetwork& a, const WiFiNetwork& b) { return a.priority < b.priority; });
+            LOG_INFO("NetworkManager: Loaded " + String(wifiConfig.networks.size()) + " WiFi networks");
+        }
         LOGGER.infof("NetworkManager: Config loaded from %s", path);
         return true;
     };

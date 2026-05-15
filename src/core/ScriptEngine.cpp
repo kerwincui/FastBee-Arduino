@@ -334,6 +334,22 @@ bool ScriptEngine::execute(const std::vector<ScriptCommand>& cmds, MQTTClient* m
                 } else if (cmd.subAction == "STOP") {
                     pm.stopActionTicker(cmd.strParam);
                 }
+#if FASTBEE_ENABLE_LCD
+                // LCD/OLED 优先分流：当目标外设类型为 LCD 时，TEXT/DISPLAY 子动作走自定义多行显示
+                else if ((cmd.subAction == "TEXT" || cmd.subAction == "DISPLAY") &&
+                         pm.getPeripheral(cmd.strParam) &&
+                         pm.getPeripheral(cmd.strParam)->type == PeripheralType::LCD) {
+                    String val = cmd.extraParam;
+#if FASTBEE_ENABLE_PERIPH_EXEC
+                    val = PeriphExecExecutor::resolveSensorTemplate(val);
+#endif
+                    bool ok = LCDManager::getInstance().showCustomText(val);
+                    LOGGER.infof("[Script] PERIPH %s LCD TEXT %d bytes %s",
+                                 cmd.strParam.c_str(), (int)val.length(),
+                                 ok ? "OK" : "FAIL");
+                    break;
+                }
+#endif
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
                 else if (cmd.subAction == "DISPLAY") {
                     // TM1637 显示数字，支持 ${id.field} 模板

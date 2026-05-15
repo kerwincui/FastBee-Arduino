@@ -593,7 +593,135 @@ FC 0x02（Read Discrete Inputs）
 
 ---
 
-### 5.3 错误响应格式
+### 5.3 通用寄存器与状态 API
+
+#### GET `/api/modbus/status` — 获取 Modbus 运行状态
+
+**权限**：`config.view`
+
+返回当前 Modbus 模式、通信统计、任务概览等信息（500ms 内部缓存）。常用于 Web 面板实时状态显示。
+
+**成功响应（示例）**：
+```json
+{
+  "success": true,
+  "data": {
+    "mode": "master",
+    "running": true,
+    "stats": { "txCount": 123, "rxCount": 120, "timeoutCount": 3 },
+    "tasks": [ /* 主站轮询任务运行态 */ ]
+  }
+}
+```
+
+---
+
+#### POST `/api/modbus/write` — 队列写单个保持寄存器（FC 0x06，入队）
+
+**权限**：`config.edit`
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| slaveAddress | int | 是 | 从站地址 (1-247) |
+| regAddress | int | 是 | 寄存器地址 |
+| value | int | 是 | 写入值 (0-65535) |
+
+> 与 `/api/modbus/register/write` 区别：此接口**将写请求入队**（受 Modbus 调度器排程），适用于非阻塞的主站控制场景；后者走 one-shot 接口直接发送并等待应答。
+
+**成功响应**：`{"success": true, "message": "Write request queued"}`
+
+---
+
+#### GET `/api/modbus/register/read` — 读保持/输入寄存器（one-shot）
+
+**权限**：`config.view` 或 `config.edit`
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| slaveAddress | int | 是 | 从站地址 (1-247) |
+| startAddress | int | 是 | 起始寄存器地址 |
+| quantity | int | 是 | 数量 (1-125) |
+| functionCode | int | 否 | `3`=Holding（默认）/ `4`=Input |
+
+**成功响应**：
+```json
+{
+  "success": true,
+  "data": {
+    "count": 4,
+    "startAddress": 0,
+    "values": [100, 200, 0, 1]
+  }
+}
+```
+
+---
+
+#### POST `/api/modbus/register/write` — 写单个保持寄存器（FC 0x06，one-shot）
+
+**权限**：`config.edit`
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| slaveAddress | int | 是 | 从站地址 (1-247) |
+| registerAddress | int | 是 | 寄存器地址 |
+| value | int | 是 | 写入值 (0-65535) |
+
+写入成功后，若寄存器落在某个 Modbus 子设备的 `coilBase` 控制区间内，会自动发布 MQTT 控制上报。
+
+**成功响应**：
+```json
+{ "success": true, "data": { "register": 5, "value": 100 } }
+```
+
+---
+
+#### POST `/api/modbus/register/batch-write` — 批量写保持寄存器（FC 0x10）
+
+**权限**：`config.edit`
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| slaveAddress | int | 是 | 从站地址 (1-247) |
+| startAddress | int | 是 | 起始寄存器地址 |
+| values | string (JSON数组) | 是 | 要写入的值数组，如 `"[100,200,300]"`，长度 1-125 |
+
+**成功响应**：
+```json
+{
+  "success": true,
+  "data": { "startAddress": 0, "quantity": 3, "values": [100,200,300] }
+}
+```
+
+---
+
+### 5.4 电机控制 API
+
+#### POST `/api/modbus/motor/control` — Modbus 电机控制（正反转/停止/调速/脉冲）
+
+**权限**：`config.edit`
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| slaveAddress | int | 是 | 从站地址 (1-247) |
+| action | string | 是 | `forward`/`reverse`/`stop`/`setSpeed`/`setPulse`/`readStatus` |
+| value | int | 否 | `setSpeed`/`setPulse` 时的写入值 |
+| registers | string (JSON数组) | 否 | 覆盖默认寄存器映射 `[forward, reverse, stop, speed, pulse]`（缺省为 `[0x0000,0x0001,0x0002,0x0005,0x0007]`，兼容 YF-53 等） |
+
+优先从设备配置的 `motorRegs` 读取寄存器映射；若设备未配置，则使用默认或 `registers` 参数覆盖。`readStatus` 会读取速度/脉冲寄存器区间用于前端面板状态刷新。
+
+**成功响应（forward 示例）**：
+```json
+{
+  "success": true,
+  "data": { "action": "forward", "register": 0, "value": 1 }
+}
+```
+
+---
+
+### 5.5 错误响应格式
 
 所有 API 在操作失败时返回统一格式：
 

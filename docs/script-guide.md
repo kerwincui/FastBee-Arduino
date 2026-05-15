@@ -35,12 +35,12 @@
 
 | 触发类型 | 编号 | 说明 | 数据流向 |
 |---------|------|------|---------|
-| 数据接收 (DATA_RECEIVE) | 3 | 协议数据到达时触发 | 外部 --> ESP32 |
-| 数据上报 (DATA_REPORT) | 4 | 协议数据发送前触发 | ESP32 --> 外部 |
+| 数据接收 (DATA_RECEIVE) | 0 | 协议数据到达时触发 | 外部 --> ESP32 |
+| 数据上报 (DATA_REPORT) | 1 | 协议数据发送前触发 | ESP32 --> 外部 |
 
-**数据接收 (triggerType=3)：** 设备从外部接收到数据后，先经过规则脚本转换，再交给系统处理。典型场景是将第三方设备发来的自定义 JSON 格式转为 FastBee 标准数组格式。
+**数据接收 (triggerType=0)：** 设备从外部接收到数据后，先经过规则脚本转换，再交给系统处理。典型场景是将第三方设备发来的自定义 JSON 格式转为 FastBee 标准数组格式。
 
-**数据上报 (triggerType=4)：** 设备准备向外部发送数据前，先经过规则脚本转换。典型场景是将 FastBee 内部的标准数组格式转为目标平台要求的 JSON 格式。
+**数据上报 (triggerType=1)：** 设备准备向外部发送数据前，先经过规则脚本转换。典型场景是将 FastBee 内部的标准数组格式转为目标平台要求的 JSON 格式。
 
 ### 2.2 协议类型
 
@@ -340,22 +340,22 @@ HTTP上报:自定义格式
 
 ## 7. API 接口说明
 
-规则脚本通过与外设执行共用的 REST API 进行管理。规则脚本与普通外设执行规则存储在同一配置文件中，通过 `triggerType` 字段区分。
+规则脚本由独立的 `RuleScriptManager` 管理，通过专用 REST API (`/api/rule-script*`) 进行增删改查。规则脚本存储在独立配置文件 `/config/rule_scripts.json` 中，与外设执行规则 (`/config/periph_exec.json`) 完全分离。
 
 ### 7.1 获取所有规则
 
 ```
-GET /api/periph-exec
+GET /api/rule-script
 ```
 
-**响应字段（规则脚本相关）：**
+**响应字段：**
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | id | string | 规则唯一标识 |
 | name | string | 规则名称 |
 | enabled | boolean | 是否启用 |
-| triggerType | number | 触发类型（3=数据接收, 4=数据上报） |
+| triggerType | number | 触发类型（0=数据接收, 1=数据上报） |
 | protocolType | number | 协议类型（0-5） |
 | scriptContent | string | 模板脚本内容 |
 | lastTriggerTime | number | 上次触发时间（毫秒时间戳） |
@@ -364,35 +364,25 @@ GET /api/periph-exec
 ### 7.2 新增规则
 
 ```
-POST /api/periph-exec
+POST /api/rule-script
 Content-Type: application/x-www-form-urlencoded
 
 name=MQTT上报:数组转对象
-&triggerType=4
+&triggerType=1
 &protocolType=0
 &scriptContent={"temperature": ${temperature}, "humidity": ${humidity}}
 &enabled=true
-&execMode=0
-&operatorType=0
-&compareValue=
-&sourcePeriphId=
-&timerMode=0
-&intervalSec=60
-&timePoint=
-&targetPeriphId=
-&actionType=0
-&actionValue=
 ```
 
 ### 7.3 更新规则
 
 ```
-POST /api/periph-exec/update
+POST /api/rule-script/update
 Content-Type: application/x-www-form-urlencoded
 
-id=exec_script_mqtt_a2o
+id=script_mqtt_a2o
 &name=MQTT上报:数组转对象
-&triggerType=4
+&triggerType=1
 &protocolType=0
 &scriptContent={"temperature": ${temperature}, "humidity": ${humidity}}
 ```
@@ -400,14 +390,14 @@ id=exec_script_mqtt_a2o
 ### 7.4 启用/禁用规则
 
 ```
-POST /api/periph-exec/enable   id=exec_script_mqtt_a2o
-POST /api/periph-exec/disable  id=exec_script_mqtt_a2o
+POST /api/rule-script/enable   id=script_mqtt_a2o
+POST /api/rule-script/disable  id=script_mqtt_a2o
 ```
 
 ### 7.5 删除规则
 
 ```
-DELETE /api/periph-exec/?id=exec_script_mqtt_a2o
+DELETE /api/rule-script/?id=script_mqtt_a2o
 ```
 
 ---
@@ -989,7 +979,7 @@ PERIPH tm1637_01 DISPLAY ${dht_01.temperature}
 
 **检查项：**
 1. 规则是否已启用（enabled=true）
-2. 触发类型是否正确（3=数据接收，4=数据上报）
+2. 触发类型是否正确（0=数据接收，1=数据上报）
 3. 协议类型是否匹配（确保与实际使用的通信协议一致）
 4. 脚本内容中的 `${key}` 变量名是否与输入数据中的 key 完全一致（大小写敏感）
 
@@ -1091,8 +1081,14 @@ MQTT 未连接或主题索引错误。检查 MQTT 连接状态，确认主题索
 
 ## 配置文件
 
-规则脚本和命令脚本的规则都存储在 `/config/periph_exec.json` 文件中，通过 `triggerType` 字段区分：
+脚本系统使用两个独立配置文件：
 
-- `triggerType` 0/1/2: 外设执行规则（平台触发/定时触发/设备触发）
-- `triggerType` 3: 规则脚本 - 数据接收转换
-- `triggerType` 4: 规则脚本 - 数据上报转换
+- **`/config/rule_scripts.json`** — 存储规则脚本（数据转换模板），由 `RuleScriptManager` 管理。`triggerType` 字段含义：
+  - `0`: 数据接收（DATA_RECEIVE）
+  - `1`: 数据上报（DATA_REPORT）
+- **`/config/periph_exec.json`** — 存储外设执行规则（含命令脚本动作），由 `PeriphExecManager` 管理。`triggerType` 字段含义：
+  - `0`: 平台触发
+  - `1`: 定时触发
+  - `2`: 设备触发
+
+两类规则使用不同的 REST API 命名空间（`/api/rule-script*` 与 `/api/periph-exec*`），互不干扰。

@@ -6,6 +6,14 @@
 #include <DHT.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <soc/gpio_periph.h>
+
+// 引脚有效性预检：避免对无效 pin 反复 new OneWire/DHT 导致内存泄漏
+static inline bool sensor_pin_valid(uint8_t pin) {
+    if (pin == 255) return false;
+    if (pin > GPIO_NUM_MAX - 1) return false;
+    return GPIO_IS_VALID_GPIO(pin);
+}
 
 SensorDriver& SensorDriver::getInstance() {
     static SensorDriver instance;
@@ -17,6 +25,17 @@ SensorDriver::~SensorDriver() {
 }
 
 float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& field) {
+    // 引脚有效性预检：避免对无效 pin 反复 new DHT 导致内存泄漏
+    if (!sensor_pin_valid(pin)) {
+        static unsigned long s_lastWarn = 0;
+        unsigned long now = millis();
+        if (now - s_lastWarn > 60000) {
+            LOGGER.errorf("[SensorDriver] DHT invalid pin %u, refuse to init (suppressed for 60s)", (unsigned)pin);
+            s_lastWarn = now;
+        }
+        return NAN;
+    }
+
     // 查找或创建 DHT 实例
     auto it = _dhtInstances.find(pin);
     if (it == _dhtInstances.end()) {
@@ -78,6 +97,17 @@ float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& fi
 }
 
 float SensorDriver::readDS18B20(uint8_t pin, uint8_t index) {
+    // 引脚有效性预检：避免对无效 pin 反复 new OneWire/DallasTemperature 导致内存泄漏
+    if (!sensor_pin_valid(pin)) {
+        static unsigned long s_lastWarn = 0;
+        unsigned long now = millis();
+        if (now - s_lastWarn > 60000) {
+            LOGGER.errorf("[SensorDriver] DS18B20 invalid pin %u, refuse to init (suppressed for 60s)", (unsigned)pin);
+            s_lastWarn = now;
+        }
+        return NAN;
+    }
+
     // 查找或创建 DS18B20 实例
     auto it = _ds18b20Instances.find(pin);
     if (it == _ds18b20Instances.end()) {

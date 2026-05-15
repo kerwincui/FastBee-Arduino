@@ -12,6 +12,7 @@
 #if FASTBEE_ENABLE_TCP
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include "systems/ConfigStorage.h"
 
 TCPHandler::TCPHandler() 
     : tcpServer(nullptr), isConnected(false),
@@ -23,48 +24,54 @@ TCPHandler::~TCPHandler() {
 }
 
 bool TCPHandler::loadConfigFromLittleFS(const char* configPath) {
-    if (!LittleFS.begin()) {
-        LOG_ERROR("TCP: Failed to mount LittleFS");
-        return false;
+    // 优化：优先使用 Filter 分段加载，仅反序列化 "tcp" 子节点，堆峰值 <1KB
+    JsonDocument doc;
+    bool sectionLoaded = false;
+    if (String(configPath) == String(FileSystem::PROTOCOL_CONFIG_FILE)) {
+        sectionLoaded = ConfigStorage::getInstance().loadProtocolSection("tcp", doc);
     }
-    
-    File configFile = LittleFS.open(configPath, "r");
-    if (!configFile) {
-        LOG_ERRORF("TCP: Failed to open config file: %s", configPath);
-        LittleFS.end();
-        return false;
-    }
-    
-    size_t size = configFile.size();
-    if (size == 0) {
-        LOG_WARNING("TCP: Config file is empty");
+
+    if (sectionLoaded) {
+        JsonVariant tcpObj = doc["tcp"];
+        config.isServer = tcpObj["mode"] == "server";
+        config.server = tcpObj["server"] | "";
+        config.port = tcpObj["port"] | 8080;
+        config.localPort = tcpObj["localPort"] | 8080;
+        config.keepAliveInterval = (tcpObj["keepAlive"] | 60) * 1000UL;
+        config.idleTimeout = (tcpObj["idleTimeout"] | 120) * 1000UL;
+        config.maxClients = tcpObj["maxClients"] | 5;
+        if (tcpObj["heartbeatMsg"].is<const char*>()) {
+            config.keepAliveMessage = tcpObj["heartbeatMsg"].as<String>();
+        }
+    } else {
+        // 降级路径：全量反序列化（兼容旧配置或独立文件）
+        File configFile = LittleFS.open(configPath, "r");
+        if (!configFile) {
+            LOG_ERRORF("TCP: Failed to open config file: %s", configPath);
+            return false;
+        }
+
+        DeserializationError error = deserializeJson(doc, configFile);
         configFile.close();
-        LittleFS.end();
-        return false;
+
+        if (error) {
+            LOG_ERRORF("TCP: Failed to parse config: %s", error.c_str());
+            return false;
+        }
+
+        config.isServer = doc["isServer"] | false;
+        config.server = doc["server"] | "";
+        config.port = doc["port"] | 8080;
+        config.localPort = doc["localPort"] | 8080;
+        config.keepAliveInterval = doc["keepAliveInterval"] | 30000;
+        config.idleTimeout = doc["idleTimeout"] | 120000;
+        config.maxClients = doc["maxClients"] | 5;
+        if (doc["keepAliveMessage"].is<const char*>()) {
+            config.keepAliveMessage = doc["keepAliveMessage"].as<String>();
+        }
     }
     
-    StaticJsonDocument<1024> doc;
-    DeserializationError error = deserializeJson(doc, configFile);
-    configFile.close();
-    LittleFS.end();
-    
-    if (error) {
-        LOG_ERRORF("TCP: Failed to parse config: %s", error.c_str());
-        return false;
-    }
-    
-    config.isServer = doc["isServer"] | false;
-    config.server = doc["server"] | "";
-    config.port = doc["port"] | 8080;
-    config.localPort = doc["localPort"] | 8080;
-    config.keepAliveInterval = doc["keepAliveInterval"] | 30000;
-    config.idleTimeout = doc["idleTimeout"] | 120000;
-    config.maxClients = doc["maxClients"] | 5;
-    if (doc.containsKey("keepAliveMessage")) {
-        config.keepAliveMessage = doc["keepAliveMessage"].as<String>();
-    }
-    
-    LOG_INFO("TCP: Configuration loaded from LittleFS");
+    LOG_INFO("TCP: Configuration loaded");
     LOG_INFOF("  Mode: %s, Server: %s, Port: %d",
               config.isServer ? "Server" : "Client",
               config.server.c_str(), config.port);

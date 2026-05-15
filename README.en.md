@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  Flash &amp; Go · No Programming Required · Visual Web Configuration · AP+STA Auto-Switching
+  Flash &amp; Go · No Programming Required · Visual Web Configuration · Multi-Protocol &amp; Multi-Peripheral
 </p>
 
 ---
@@ -28,38 +28,30 @@ Whether you're a maker rapidly prototyping a hardware idea or a product team dep
 
 ## ✨ Four Core Advantages
 
-### 🎛️ Zero-Code Configuration — No Programming, Everything Visual
+### 🎛️ Zero-Code Visual Configuration
 
-- **Web-Based Visual Setup**: Configure all hardware peripherals, communication protocols, and automation rules right from the browser
-- **35+ Peripheral Types**: GPIO / PWM / ADC / I2C / SPI / RS485 / UART and more — point, click, done
-- **Rule Engine**: 5 trigger types × 20+ actions, build conditional automations without code
-- **Full Pin Mapping**: Auto-adapted for ESP32 / S3 / C3, with built-in pin conflict detection
+- **Fully Web-Based**: Peripherals, protocols, and rules are all configured through point-and-click in the browser — no programming
+- **35+ Peripheral Types + Auto Pin Mapping**: GPIO / PWM / ADC / I2C / SPI / RS485 / UART, with built-in ESP32 / S3 / C3 pin conflict detection
+- **Rule Engine**: 5 trigger types × 20+ actions — orchestrate conditional automations on the fly
 
-### 🌐 Visual Management Dashboard — 8 Pages, 80+ APIs, Ready Out of the Box
+### 🌐 Out-of-the-Box Management UI
 
-- **8 Functional Pages**: Dashboard, Device Control, Network Config, Protocol Manager, Peripheral Setup, Peripheral Execution, Rule Scripts, System Admin
-- **Device Dashboard**: Integrates data acquisition and device control — view sensor data, GPIO states, Modbus registers in real time, and remotely control relays, PWM, motors and more
-- **80+ REST APIs**: Complete device management interface for third-party integration
-- **Bilingual (CN/EN)**: 2,500+ translation keys with instant language switching
-- **Responsive UI**: Dark / light themes, mobile-friendly layout, SSE real-time push, Service Worker offline cache
+- **8 Functional Pages + 80+ REST APIs**: Dashboard, Device Control, Network, Protocol, Peripheral Setup, Peripheral Execution, Rule Scripts, System Admin
+- **Device Dashboard**: Real-time view of sensor data and Modbus register values; remotely control relays, PWM, motors and more
+- **2,500+ i18n Keys (CN/EN) + SSE Real-Time Push + Service Worker Offline Cache**
 
-### 📡 Full ESP32 Family Support — Multi-Chip, Multi-Peripheral, Smart Network Switching
+### 📡 Full ESP32 Family + Smart Networking
 
 - **Three Chip Variants**: ESP32 (dual-core 240 MHz), ESP32-S3 (AI acceleration), ESP32-C3 (low-cost RISC-V)
-- **AP+STA Dual-Mode Auto-Switching**: On first boot or when STA connection fails, the device automatically falls back to AP mode; after configuring WiFi via Web UI, it switches to STA automatically; if STA fails again, it falls back to AP — guaranteeing the device is always reachable
-- **3-Layer IP Conflict Detection**: Ensures reliable network connectivity
-- **mDNS Local Discovery**: No IP scanning needed — reach the device via `fastbee.local`
-- **35+ Compile Switches**: 3 build presets (standard / minimal / full) — enable only what you need
+- **AP+STA Dual-Mode Auto-Switching**: Falls back to AP when STA fails, switches back to STA after configuration — the device is always reachable
+- **mDNS Local Discovery**: Reach the device via `fastbee.local` — no IP scanning needed
 
-### 🔌 Versatile IoT Device — Multi-Protocol, Rule Engine, Remote Maintenance
+### 🔌 Industrial-Grade Protocols + Security
 
-- **5 Communication Protocols**: MQTT (dual auth / QoS 0-2 / TLS), Modbus RTU master-slave, TCP / CoAP / HTTP
-- **Modbus RTU Passthrough Mode**: Platform sends raw HEX frames → automatic CRC verification & stripping → forwarded to RS485 unchanged → raw HEX response reported directly to the cloud, compatible with any non-standard slave protocol
-- **Enterprise Security**: RBAC with 3 roles & 24 permissions, cookie sessions, MD5+Salt passwords, AES-CBC-128 MQTT auth
-- **Scriptable Rule Engine**: Built-in JavaScript engine for custom rule scripts (`FASTBEE_ENABLE_RULE_SCRIPT`) — dynamically loadable without re-flashing firmware
-- **OTA Remote Updates**: Dual-channel firmware upgrade, no on-site access needed
-- **Four-Level Memory Guard**: MemGuard (NORMAL / WARN / SEVERE / CRITICAL), ring-buffer logging
-- **End-to-End Debug Logging**: Unified `[MQTT] RX ▼ / TX ▲` I/O logs + `[Modbus] RawSend` passthrough logs — zero-cost issue diagnosis
+- **MQTT Dual Auth + Modbus RTU Master/Slave**: MQTT supports QoS 0-2 / TLS / AES-CBC-128; Modbus supports raw HEX passthrough, compatible with non-standard slaves
+- **Enterprise Security**: RBAC with 3 roles & 24 permissions, cookie sessions, MD5+Salt password hashing
+- **Scriptable Rule Engine**: Built-in JavaScript engine for custom rule scripts — dynamically loadable without re-flashing
+- **OTA Remote Updates + Four-Level Memory Guard (MemGuard) + End-to-End Debug Logging**
 
 ---
 
@@ -83,38 +75,10 @@ graph LR
 | 1️⃣ | **Flash Firmware** | Use PlatformIO to flash FastBee-Arduino firmware onto ESP32 | — |
 | 2️⃣ | **Peripheral Setup** | Pick peripheral types and assign GPIO pins via Web UI to finish hardware init | Peripheral Setup |
 | 3️⃣ | **Network Config** | Enter WiFi SSID & password — AP+STA dual-mode auto-switches online | Network Config |
-| 4️⃣ | **Protocol Setup** | Configure MQTT / Modbus / TCP and connect to the IoT platform | Protocol Manager |
+| 4️⃣ | **Protocol Setup** | Configure MQTT / Modbus and connect to the IoT platform | Protocol Manager |
 | 5️⃣ | **Peripheral Execution** | Define triggers & actions to build automation rules (button-to-light, schedules, sensor linkage, …) | Peripheral Execution / Rule Scripts |
 
 > Zero programming required: flash firmware → open browser → click & configure → the device is live.
-
----
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                   Web Management Layer (8 pages)             │
-│  Dashboard │ Devices │ Network │ Protocol │ Periph │ Admin  │
-├─────────────────────────────────────────────────────────────┤
-│                   Application Services                       │
-│  80+ REST APIs │ SSE Push │ OTA │ Logger │ Health │ Tasks   │
-├─────────────────────────────────────────────────────────────┤
-│                   Protocol Engine                            │
-│     MQTT      │  Modbus RTU  │   TCP   │  CoAP  │   HTTP   │
-├─────────────────────────────────────────────────────────────┤
-│                   Security Layer                             │
-│    RBAC       │  Sessions    │  AES Crypto  │  MD5+Salt    │
-├─────────────────────────────────────────────────────────────┤
-│                   Storage Layer                              │
-│        LittleFS (JSON configs)    │    NVS Preferences      │
-├─────────────────────────────────────────────────────────────┤
-│                   Hardware Abstraction                       │
-│  GPIO │ RS485 │ I2C │ SPI │ PWM │ ADC │ WiFi │ BLE │ UART │
-├─────────────────────────────────────────────────────────────┤
-│               ESP32 / ESP32-S3 / ESP32-C3                    │
-└─────────────────────────────────────────────────────────────┘
-```
 
 ---
 
@@ -222,8 +186,8 @@ pio device monitor -b 115200
     <td><img src="./images/device_10.png" alt="Theme Toggle"/></td>
   </tr>
   <tr>
-    <td><img src="./images/device_11.png" alt="中英文适配"/></td>
-     <td><img src="./images/device_12.png" alt="设备大屏"/></td>
+    <td><img src="./images/device_11.png" alt="Bilingual UI"/></td>
+     <td><img src="./images/device_12.png" alt="Device Dashboard"/></td>
   </tr>
 </table>
 
@@ -241,17 +205,16 @@ pio device monitor -b 115200
 
 ### Protocol Support
 
+FastBee-Arduino focuses on the two communication protocols most widely used in industrial scenarios:
+
 | Protocol | Features |
 |----------|----------|
-| MQTT | Dual auth (simple / AES-encrypted), QoS 0/1/2, TLS, exponential-backoff reconnect, ring-buffer queue, unified `RX ▼ / TX ▲` debug logs |
-| Modbus RTU | Industrial RS485 bus, master & slave, 8 function codes, 16 sub-devices, 5 device types, **passthrough HEX + CRC auto-handling** (details below) |
-| TCP | Server & client, 12 concurrent connections, 64-message queue |
-| CoAP | Lightweight IoT protocol, compile-time toggle |
-| HTTP | Client wrapper with HTTPS support |
+| MQTT | Dual auth (simple / AES-CBC-128), QoS 0/1/2, TLS, exponential-backoff reconnect, ring-buffer queue, unified `RX ▼ / TX ▲` debug logs |
+| Modbus RTU | Industrial RS485 bus, master & slave, 8 function codes, up to 16 slaves, 5 device types, **raw HEX passthrough** |
 
 ### 🏭 Industrial Modbus RTU Protocol
 
-FastBee-Arduino ships with a full **industrial-grade Modbus RTU** protocol stack. Via the RS485 bus it seamlessly integrates with PLCs, VFDs, temperature/humidity transmitters, power meters, and other industrial equipment.
+Via the RS485 bus, FastBee-Arduino seamlessly integrates with PLCs, VFDs, temperature/humidity transmitters, power meters, and other industrial equipment.
 
 | Feature | Description |
 |---------|-------------|
@@ -267,51 +230,6 @@ FastBee-Arduino ships with a full **industrial-grade Modbus RTU** protocol stack
 | Passthrough Mode | **`transferType=1`** when enabled: platform sends raw HEX → auto-detect & strip trailing CRC → `sendRawFrameOnce` re-appends CRC and transmits → raw response frame reported directly as HEX via `/property/post`, compatible with non-standard slaves (requires platform-side JS script for parsing) |
 | Compile Switches | `FASTBEE_ENABLE_MODBUS` (master), `FASTBEE_MODBUS_SLAVE_ENABLE` (slave) — enable as needed |
 
-### Key Metrics
-
-| Metric | Value |
-|--------|-------|
-| REST API Endpoints | 80+ |
-| Web Route Handlers | 18+ |
-| Peripheral Types | 35+ |
-| Compile Switches | 35+ |
-| Build Environments | 9 (3 chips × 3 presets) |
-| RBAC Permissions | 24 |
-| i18n Translation Keys | 2,500+ |
-| Frontend Gzip Size | 260 KB (compression 77.5%) |
-| LittleFS Capacity | 1.6 MB |
-| SSE Concurrent Clients | 3 |
-
----
-
-## ⚙️ Build Configurations
-
-The project ships with **3 chips × 3 presets = 9 build environments**. Pick an environment and flash directly, no build flag tweaks needed.
-
-### Feature Presets
-
-| Preset | Description | Use Case | Flash Footprint |
-|--------|-------------|----------|-----------------|
-| `standard` (default) | Core features: MQTT + Modbus + Web + OTA + BLE | Recommended for most scenarios | ~920 KB |
-| `minimal` | Minimum features: MQTT + Web only, disables CoAP / TCP / rule engine / Modbus slave / slave mode | Resource-constrained devices | ~850 KB |
-| `full` | All features: standard + CoAP + HTTP client + rule script engine + Modbus slave mode | Development, evaluation, full testing | ~970 KB |
-
-### All 9 Environments
-
-| Chip | Standard | Minimal | Full |
-|------|----------|---------|------|
-| ESP32 | `esp32dev` | `esp32dev-minimal` | `esp32dev-full` |
-| ESP32-S3 | `esp32s3` | `esp32s3-minimal` | `esp32s3-full` |
-| ESP32-C3 | `esp32c3` | `esp32c3-minimal` | `esp32c3-full` |
-
-```bash
-# Example: build & flash the ESP32-S3 full-feature environment
-pio run -e esp32s3-full --target upload
-
-# Example: flash the ESP32-C3 minimal environment to save flash
-pio run -e esp32c3-minimal --target upload
-```
-
 ---
 
 ## 📁 Project Structure
@@ -320,8 +238,8 @@ pio run -e esp32c3-minimal --target upload
 FastBee-Arduino/
 ├── include/                  # Header files
 │   ├── core/                 # Core framework (FastBeeFramework, peripherals, rule engine)
-│   ├── network/              # Networking (WiFi, web server, OTA, 12 route handlers)
-│   ├── protocols/            # Protocol engine (MQTT, Modbus, TCP, CoAP, HTTP)
+│   ├── network/              # Networking (WiFi, web server, OTA, route handlers)
+│   ├── protocols/            # Protocol engine (MQTT, Modbus)
 │   ├── security/             # Security (user / role / auth / crypto)
 │   ├── systems/              # System services (logger, scheduler, health, config storage)
 │   └── utils/                # Utilities
@@ -338,20 +256,6 @@ FastBee-Arduino/
 ├── platformio.ini            # PlatformIO multi-env config
 └── fastbee.csv               # Custom partition table
 ```
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Here's how to get started:
-
-1. **Fork** the repository
-2. Create a feature branch: `git checkout -b feature/your-feature`
-3. Commit your changes: `git commit -m 'Add your feature'`
-4. Push to the branch: `git push origin feature/your-feature`
-5. Open a **Pull Request**
-
-> **Bug reports & feature requests**: [Open an Issue](https://gitee.com/beecue/fastbee-arduino/issues)
 
 ---
 

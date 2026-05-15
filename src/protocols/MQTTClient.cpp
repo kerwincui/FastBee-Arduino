@@ -299,7 +299,7 @@ bool MQTTClient::begin() {
         BaseType_t ret = xTaskCreate(
             reconnectTaskEntry,
             "mqtt_reconn",
-            4096,           // 栈大小：4KB 足够 reconnect 使用
+            3072,           // 栈：reconnect() 实测峰值 ~2KB，3KB 足够（节省 1KB heap）
             this,           // 参数
             1,              // 优先级：与 loopTask 同级
             &_reconnectTaskHandle
@@ -1422,6 +1422,11 @@ bool MQTTClient::reconnect() {
 
 void MQTTClient::reconnectTaskEntry(void* param) {
     MQTTClient* client = (MQTTClient*)param;
+    // 启动期延迟 30s 才允许首次重连：让 Web 路由/SSE/HealthMonitor 先稳定，
+    // 避免 boot 早期 MQTT DNS+TCP 抢占内存导致 web 无法访问
+    LOG_INFO("[MQTT] Reconnect task armed, holding 30s for boot stabilization");
+    vTaskDelay(pdMS_TO_TICKS(30000));
+    LOG_INFO("[MQTT] Reconnect task active");
     while (true) {
         if (client->_reconnectPending && !client->_reconnectRunning) {
             client->doReconnect();
@@ -1437,8 +1442,10 @@ void MQTTClient::doReconnect() {
     // 重连次数保护：连续失败超过 20 次后拉长间隔至 5 分钟，降低内存压力
     constexpr uint32_t MAX_FAST_RETRIES = 20;
     constexpr uint32_t SLOW_RETRY_INTERVAL = 300000;  // 5分钟
-    // 连续 3 次 TCP/DNS 超时即视为网络不可用，立即切换慢模式
-    constexpr uint8_t  DNS_FAIL_THRESHOLD = 3;
+    // 单次 TCP/DNS 超时即视为网络不可用，立即切换慢模式（5 分钟）
+    // 历史 3 次门槛在 iot.fastbee.cn 不可达场景下会在 15s 内反复 DNS 解析+wifiClient.stop，
+    // 累计 6-8KB 堆碎片导致 web 不可访问。1 次失败立即慢模式可避免反复抖动。
+    constexpr uint8_t  DNS_FAIL_THRESHOLD = 1;
     
     bool slowMode = (reconnectCount > MAX_FAST_RETRIES) ||
                     (consecutiveTimeouts >= DNS_FAIL_THRESHOLD);
@@ -1474,9 +1481,10 @@ void MQTTClient::doReconnect() {
         // 连续 3 次说明网络层不通（如 WiFi 僵尸状态），立即进入慢模式
         if (lastErrorCode == -2) {
             consecutiveTimeouts++;
-            if (consecutiveTimeouts == DNS_FAIL_THRESHOLD) {
+            if (consecutiveTimeouts >= DNS_FAIL_THRESHOLD) {
                 reconnectInterval = SLOW_RETRY_INTERVAL;
-                LOG_WARNING("[MQTT] 3 consecutive connect failures (DNS/network down), slow mode activated");
+                LOG_WARNINGF("[MQTT] connect failure (rc=-2 DNS/network), slow mode (next retry %lus)",
+                             (unsigned long)(SLOW_RETRY_INTERVAL / 1000));
             }
             // 加固：连续 6 次 connect 失败 → WiFi STA 可能处于僵尸状态（RSSI 正常但 socket 不通）
             // 主动重走 disconnect+reconnect 刷新 lwip TCP/IP 栈，避免累计内存劣化

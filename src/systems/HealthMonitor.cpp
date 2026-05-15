@@ -202,6 +202,13 @@ void HealthMonitor::updateMemoryGuardLevel() {
     uint32_t largestBlock = currentHealth.largestFreeBlock;
     MemoryGuardLevel newLevel;
 
+    // 启动期 grace period：前 90 秒为框架 + lwip + AsyncTCP + NTP + 日志 flush 等
+    // 并发初始化阶段，ESP32 no-PSRAM 堆会出现一次性高碎片/小 largestBlock 峰值。
+    // 此期间不基于 largestBlock / 碎片率 主动提升到 SEVERE/CRITICAL（仅告警），
+    // 避免在系统尚未稳定时误触发永久降级导致主循环卡死。
+    // freeHeap 绝对值低的强降级仍然保留——那是真正的危险信号。
+    const bool inStartupGrace = (millis() < 90000UL);
+
     // 基于 freeHeap 的初步判断
     if (freeHeap >= MEM_THRESHOLD_NORMAL) {
         newLevel = MemoryGuardLevel::NORMAL;
@@ -213,31 +220,66 @@ void HealthMonitor::updateMemoryGuardLevel() {
         newLevel = MemoryGuardLevel::CRITICAL;
     }
 
+    // 健康反证：freeHeap 虽略低，但 largestBlock 足够大时保持 NORMAL
+    // （ESP32 常态 freeHeap ~27KB、largest ~22KB 是健康运行区间，不应降级）
+    if (newLevel == MemoryGuardLevel::WARN && largestBlock >= MEM_LARGEST_HEALTHY) {
+        newLevel = MemoryGuardLevel::NORMAL;
+    }
+
     // 基于 largestFreeBlock 的强制提升：即使 freeHeap 看起来正常，
-    // 如果最大可分配块过小，Web 服务仍无法响应请求
-    if (largestBlock < 4096) {
-        // 最大块 < 4KB：几乎无法分配任何 HTTP 响应缓冲区
-        if (newLevel != MemoryGuardLevel::CRITICAL) {
-            Serial.printf("[MEMGUARD] largestFreeBlock=%lu < 4KB, elevating to CRITICAL\n",
+    // 如果最大可分配块过小，系统无法工作。
+    // 注意：MAX_CONNECTIONS=4 + Connection:close 时正常 web 服务期间 largest 会临时降到 3-8KB，
+    // 因此 CRITICAL 阈值设为 2KB，SEVERE 设为 3KB，避免访问网页时误触发降级。
+    if (largestBlock < 2048) {
+        // 最大块 < 2KB：无法分配 TCP segment，系统基本不可用
+        if (inStartupGrace) {
+            static uint32_t lastGraceWarnCrit = 0;
+            uint32_t now = millis();
+            if (now - lastGraceWarnCrit > 10000UL) {
+                lastGraceWarnCrit = now;
+                Serial.printf("[MEMGUARD] startup-grace(%lus): largestBlock=%lu<2KB (skip CRITICAL)\n",
+                              (unsigned long)(now / 1000), (unsigned long)largestBlock);
+            }
+        } else if (newLevel != MemoryGuardLevel::CRITICAL) {
+            Serial.printf("[MEMGUARD] largestFreeBlock=%lu < 2KB, elevating to CRITICAL\n",
                           (unsigned long)largestBlock);
             newLevel = MemoryGuardLevel::CRITICAL;
         }
-    } else if (largestBlock < 8192) {
-        // 最大块 < 8KB：只能响应小请求
-        if (newLevel < MemoryGuardLevel::SEVERE) {
-            Serial.printf("[MEMGUARD] largestFreeBlock=%lu < 8KB, elevating to SEVERE\n",
+    } else if (largestBlock < 3072) {
+        // 最大块 < 3KB：只能响应小请求
+        if (inStartupGrace) {
+            static uint32_t lastGraceWarnSev = 0;
+            uint32_t now = millis();
+            if (now - lastGraceWarnSev > 10000UL) {
+                lastGraceWarnSev = now;
+                Serial.printf("[MEMGUARD] startup-grace(%lus): largestBlock=%lu<3KB (skip SEVERE)\n",
+                              (unsigned long)(now / 1000), (unsigned long)largestBlock);
+            }
+        } else if (newLevel < MemoryGuardLevel::SEVERE) {
+            Serial.printf("[MEMGUARD] largestFreeBlock=%lu < 3KB, elevating to SEVERE\n",
                           (unsigned long)largestBlock);
             newLevel = MemoryGuardLevel::SEVERE;
         }
     }
 
     // 碎片率过高时至少提升到 WARN，若 largestFreeBlock 也小则进一步提升
+    // 启动期同样只告警不升级（碎片率在启动高峰后通常会自然回落）
     if (isFragmentationHigh()) {
-        if (newLevel == MemoryGuardLevel::NORMAL) {
+        if (inStartupGrace) {
+            static uint32_t lastGraceWarnFrag = 0;
+            uint32_t now = millis();
+            if (now - lastGraceWarnFrag > 10000UL) {
+                lastGraceWarnFrag = now;
+                Serial.printf("[MEMGUARD] startup-grace(%lus): frag=%d%% largest=%lu (skip elevation)\n",
+                              (unsigned long)(now / 1000),
+                              (int)currentHealth.heapFragmentation,
+                              (unsigned long)largestBlock);
+            }
+        } else if (newLevel == MemoryGuardLevel::NORMAL) {
             newLevel = MemoryGuardLevel::WARN;
             Serial.printf("[MEMGUARD] High fragmentation (%d%%), elevating to WARN\n",
                           (int)currentHealth.heapFragmentation);
-        } else if (newLevel == MemoryGuardLevel::WARN && largestBlock < 8192) {
+        } else if (newLevel == MemoryGuardLevel::WARN && largestBlock < 3072) {
             newLevel = MemoryGuardLevel::SEVERE;
             Serial.printf("[MEMGUARD] High fragmentation (%d%%) + small block=%lu, elevating to SEVERE\n",
                           (int)currentHealth.heapFragmentation, (unsigned long)largestBlock);

@@ -35,6 +35,23 @@ void SSERouteHandler::setupRoutes(AsyncWebServer* server) {
         if (!ctx || !request) {
             return false;
         }
+        // 内存门控：largestBlock < 16KB 或 MEMGUARD >= SEVERE 时拒绝新 SSE
+        // 避免浏览器多 tab 自动重连持续吃堆，让系统有恢复窗口
+        uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+        if (largestBlock < LOW_MEMORY_THRESHOLD) {
+            LOG_WARNINGF("[SSE] Connection rejected: low memory (largestBlock=%lu < %u)",
+                         (unsigned long)largestBlock, (unsigned)LOW_MEMORY_THRESHOLD);
+            request->send(503, "text/plain", "Server low memory, retry later");
+            return false;
+        }
+#if FASTBEE_ENABLE_HEALTH_MONITOR
+        HealthMonitor* hm = getHealthMonitor();
+        if (hm && (hm->isMemorySevere() || hm->isMemoryCritical())) {
+            LOG_WARNING("[SSE] Connection rejected: MEMGUARD SEVERE/CRITICAL active");
+            request->send(503, "text/plain", "Server memory guard active, retry later");
+            return false;
+        }
+#endif
         // 并发连接限制：所有槽位被活跃连接占满时拒绝（503 语义）
         uint8_t activeCount = 0;
         for (const auto& s : _slots) {

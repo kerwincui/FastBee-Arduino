@@ -6,14 +6,26 @@ FastBee-Arduino 现已支持 OLED/LCD 显示屏，通过简单的配置即可实
 
 ## 支持的显示屏
 
-| 型号 | 尺寸 | 分辨率 | 接口 | 状态 |
-|------|------|--------|------|------|
-| SSD1306 | 0.96寸 | 128x64 | I2C | ✅ 完全支持 |
-| SSD1306 | 0.91寸 | 128x32 | I2C | ✅ 完全支持 |
-| SH1106 | 1.3寸 | 128x64 | I2C | ✅ 完全支持 |
-| 其他 | - | - | SPI | ⚠️ 预留接口 |
+FastBee 底层使用 `U8g2` 库驱动显示屏，通过 `DisplayController` 枚举选择控制器。当前支持的控制器如下：
 
-**推荐使用 I2C 接口的 SSD1306 OLED**，性能最优。
+| 控制器枚举 | 编号 | 典型尺寸/分辨率 | 接口 | 说明 |
+|-----------|------|---------------|------|------|
+| `SSD1306` | 0 | 0.96"/1.3" · 128x64 / 128x32 | I2C / SPI | 最常见的单色 OLED，默认选项 |
+| `SH1106` | 1 | 1.3" · 128x64 | I2C / SPI | 1.3 寸 OLED，SSD1306 的兼容型号 |
+| `SSD1309` | 2 | 2.42" · 128x64 | I2C / SPI | 大尺寸 OLED |
+| `ST7567` | 3 | 128x64 LCD | I2C / SPI | 单色 LCD |
+| `ST7920` | 4 | 128x64 LCD | SPI | 带内置中文字库的 LCD |
+| `PCD8544` | 5 | 84x48 LCD | SPI | Nokia 5110 经典屏幕 |
+
+**接口类型** (`DisplayInterface`)：
+
+| 枚举 | 编号 | 说明 |
+|------|------|------|
+| `PARALLEL` | 0 | 并行接口（目前预留） |
+| `SPI_MODE` | 1 | SPI 串行接口 |
+| `I2C_MODE` | 2 | I2C 串行接口（默认推荐） |
+
+**推荐配置**：I2C 接口的 SSD1306 128x64 OLED，驱动成本低、资源占用少。
 
 ## 硬件连接
 
@@ -345,39 +357,72 @@ lcd.refresh();  // 发送整个缓冲区（OLED 特性）
 
 ### C++ API
 
+#### 初始化与状态
+
 | 方法 | 说明 |
 |------|------|
-| `initialize(config)` | 初始化显示屏 |
+| `initialize(config)` | 根据外设配置初始化显示屏 |
+| `deinitialize()` | 释放显示屏资源 |
+| `isInitialized()` | 查询是否已初始化 |
+| `getWidth()` / `getHeight()` | 返回屏幕像素宽高 |
+| `getFontHeight()` | 当前字体的行高 |
+| `getMaxLines()` | 当前字体下可显示的最大行数 |
+
+#### 基础显示
+
+| 方法 | 说明 |
+|------|------|
 | `clear()` | 清空缓冲区 |
-| `print(text, x, y, align)` | 显示文本（坐标模式） |
-| `printLine(text, line)` | 显示文本（行号模式） |
-| `printLines(lines[], count)` | 显示多行文本 |
-| `showSensorData(name, value, unit, line)` | 显示传感器数据 |
-| `showSystemInfo()` | 显示系统信息 |
-| `refresh()` | 刷新显示（发送缓冲区） |
-| `setFont(index)` | 设置字体 (0-2) |
+| `refresh()` | 将缓冲区推送到屏幕（含防拖油 50ms 间隔） |
+| `print(text, x, y, align)` | 按坐标显示文本 |
+| `printLine(text, line)` | 按行号显示文本 |
+| `printLines(lines[], count)` | 一次性显示多行 |
+| `showCustomText(content)` | 解析 `\n` 多行文本，首行 `#` 开头自动识别为居中标题并绘分隔线 |
+| `showSystemInfo()` | 显示 IP/WiFi/内存/运行时间等系统信息 |
+
+#### 传感器数据显示模块（自动轮播）
+
+LCDManager 内置通用的传感器数据表（最多 16 条）和自动分页轮播机制，配合外设执行可实现多传感器数据的轮换展示。
+
+| 方法 | 说明 |
+|------|------|
+| `updateSensorEntry(id, label, value, unit, decimals)` | 注册或更新一条传感器数据 |
+| `invalidateSensorEntry(id)` | 将传感器条目标记为无效（采集失败时调用） |
+| `showSensorPage(page=-1)` | 显示指定页或自动轮播 |
+| `autoRefreshSensorDisplay(intervalMs)` | 在主循环内调用，按指定间隔自动翻页 |
+| `getSensorEntryCount()` | 当前注册的传感器条数 |
+| `getSensorPageCount()` | 当前数据的总页数 |
+| `showSensorData(name, value, unit, line)` | 单条简单显示（不入表） |
+
+#### 图形绘制
+
+| 方法 | 说明 |
+|------|------|
+| `drawLine(x1, y1, x2, y2)` | 绘制直线 |
+| `drawRect(x, y, w, h)` | 绘制空心矩形 |
+| `drawBox(x, y, w, h)` | 绘制填充矩形 |
+| `drawCircle(x, y, r)` | 绘制空心圆 |
+| `drawDisc(x, y, r)` | 绘制填充圆 |
+
+#### 外观与字体
+
+| 方法 | 说明 |
+|------|------|
+| `setFont(index)` | 设置字体（0=小，1=中（默认），2=大） |
 | `setContrast(value)` | 设置对比度 (0-255) |
-| `setDisplayOn(bool)` | 开关显示 |
+| `setFlip(flip)` | 翻转显示（折叠安装时使用） |
+| `setDisplayOn(on)` | 开/关显示 |
 
 ## 资源占用
 
 | 项目 | 占用 |
 |------|------|
-| Flash | +50KB (u8g2库) |
-| RAM | +1KB (128x64 OLED缓冲区) |
-| CPU | < 3% (10Hz刷新) |
+| Flash | +50KB（u8g2 库） |
+| RAM | +1KB（128x64 OLED 缓冲区） |
+| CPU | < 3%（10Hz 刷新） |
 
 **结论**：对 ESP32 性能影响极小，可放心使用。
 
-## 下一步
-
-- [ ] 添加中文支持
-- [ ] 支持更多显示屏型号
-- [ ] 添加图形绘制API
-- [ ] 支持SPI接口
-
 ---
 
-**版本**：v1.0  
-**更新日期**：2025-04-15  
-**维护者**：FastBee开发团队
+**维护者**：FastBee 开发团队

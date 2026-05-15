@@ -36,6 +36,11 @@
 #include <LittleFS.h>
 #include <time.h>
 
+// 启动期 heap 采样：定位哪个 STEP 吞掉了堆（OOM 排查辅助）
+// tag 仅作日志标记，与上一行 LOGGER.infof("[Boot] xxx: ms") 配合使用
+#define LOG_BOOT_HEAP(tag) LOGGER.infof("[BootHeap] %s heap=%u maxBlock=%u", \
+    (tag), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap())
+
 // 构造函数
 FastBeeFramework::FastBeeFramework()
     : systemInitialized(false),
@@ -124,6 +129,7 @@ bool FastBeeFramework::initialize() {
         LOG_INFO("[STEP2.5] Peripheral manager OK");
     }
     LOGGER.infof("[Boot] PeripheralManager: %lu ms", millis() - stepStart);
+    LOG_BOOT_HEAP("PeripheralManager");
     
     // 步骤3: 创建HTTP服务器
     stepStart = millis();
@@ -180,6 +186,7 @@ bool FastBeeFramework::initialize() {
     webConfig->setRoleManager(roleManager.get());
     // NetworkManager 尚未创建，暂不注入，在步骤7-E中注入
     LOGGER.infof("[Boot] WebConfigManager routes: %lu ms", millis() - stepStart);
+    LOG_BOOT_HEAP("WebConfigManager-routes");
 
     // 步骤7-E: 初始化网络管理器（启动 WiFi，带起 LwIP TCP/IP 栈）
     stepStart = millis();
@@ -208,6 +215,7 @@ bool FastBeeFramework::initialize() {
         LOG_WARNING("[STEP7-E] Network not connected");
     }
     LOGGER.infof("[Boot] NetworkManager: %lu ms", networkMs);
+    LOG_BOOT_HEAP("NetworkManager");
 
     // 步骤7.5-E: 启动 HTTP 服务器（此时 TCP/IP 栈已就绪，AP 或 STA 模式均可用）
     stepStart = millis();
@@ -365,6 +373,7 @@ bool FastBeeFramework::initialize() {
         LOG_INFO("[STEP11.5] Periph exec manager OK");
     }
     LOGGER.infof("[Boot] PeriphExecManager: %lu ms", millis() - stepStart);
+    LOG_BOOT_HEAP("PeriphExecManager");
 
     // 注入协议层回调到 PeriphExecManager（解耦 core → protocols 依赖）
     if (protocolManager) {
@@ -584,6 +593,7 @@ bool FastBeeFramework::initialize() {
         LOG_INFO("[STEP11.6] Rule script manager OK");
     }
     LOGGER.infof("[Boot] RuleScriptManager: %lu ms", millis() - stepStart);
+    LOG_BOOT_HEAP("RuleScriptManager");
 #endif
     
     // 注入 MQTT 消息回调：消息到达时匹配外设执行
@@ -604,6 +614,7 @@ bool FastBeeFramework::initialize() {
         LOG_WARNING("[STEP12] Failed to add some system tasks");
     }
     LOGGER.infof("[Boot] addSystemTasks: %lu ms", millis() - stepStart);
+    LOG_BOOT_HEAP("addSystemTasks");
     
     // 步骤13: 检查系统健康状态
     LOG_INFO("[STEP13] Checking system health...");
@@ -778,11 +789,12 @@ bool FastBeeFramework::addSystemTasks() {
                         }
                     }  // doc 在此处销毁，释放 8KB 栈空间
                     
-                    // 启动 MQTT
+                    // 启动 MQTT（延迟连接：仅 begin，由 reconnectTask 30s 后发起首次连接）
+                    // 避免 boot 期同步 connect() 抢占资源导致 web/SSE 不可访问
 #if FASTBEE_ENABLE_MQTT
                     if (mqttEnabled) {
-                        LOG_INFO("[MQTT] MQTT enabled, auto-starting...");
-                        framework->protocolManager->restartMQTT();
+                        LOG_INFO("[MQTT] MQTT enabled, auto-starting (deferred connect)...");
+                        framework->protocolManager->restartMQTTDeferred();
                     } else {
                         LOG_INFO("[MQTT] MQTT not enabled in config, skipping auto-start");
                     }
@@ -893,11 +905,11 @@ bool FastBeeFramework::addSystemTasks() {
         LOG_WARNING("Failed to add periph device trigger task");
     }
         
-    // 按键事件检测任务（每100ms）- 平衡响应灵敏度和系统稳定性
+    // 按键事件检测任务（每100ms）- 优先级 HIGH 确保 MEMGUARD SEVERE 时仍执行
     // 注意：50ms间隔过于激进，可能导致执行超时和看门狗复位
     if (!taskManager->addTask("button_event_check", [](void* param) {
         PeriphExecManager::getInstance().checkButtonEvents();
-    }, nullptr, 100)) {
+    }, nullptr, 100, TaskPriority::PRIORITY_HIGH)) {
         LOG_WARNING("Failed to add button event check task");
     }
 #endif
