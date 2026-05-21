@@ -12,6 +12,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     configTab: 'modbus',
     currentUser: { name: '', role: '', canManageFs: false },
     sidebarCollapsed: false,
+    _pageNavSeq: 0,
 
     // SSE 连接管理（属性由 state-sse.js 注册）
 
@@ -392,6 +393,8 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
 
     // ============ 页面切换 ============
     async changePage(page) {
+        const navSeq = (this._pageNavSeq || 0) + 1;
+        this._pageNavSeq = navSeq;
         // 取消旧页面排队中的请求，释放 ESP32 资源
         if (typeof window.apiAbortPageRequests === 'function') {
             window.apiAbortPageRequests();
@@ -402,6 +405,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
 
         // 先确保页面HTML已加载
         await this.loadPage(normalizedPage + '-page');
+        if (navSeq !== this._pageNavSeq) return;
 
         // 对新加载的页面应用 i18n 翻译
         if (typeof i18n !== 'undefined' && i18n.updatePageText) {
@@ -457,11 +461,15 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
 
         const moduleName = pageModuleMap[normalizedPage];
         const loader = pageLoaders[normalizedPage];
+        const runLoader = () => {
+            if (navSeq !== this._pageNavSeq || this.currentPage !== normalizedPage) return;
+            loader();
+        };
         
         if (moduleName && loader) {
-            this._loadModule(moduleName, loader);
+            this._loadModule(moduleName, runLoader);
         } else if (loader) {
-            loader();
+            runLoader();
         } else {
             console.warn('[changePage] no page loader mapped for:', normalizedPage);
         }

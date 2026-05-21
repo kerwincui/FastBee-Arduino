@@ -988,8 +988,8 @@ body.fullscreen-page .fullscreen-toolbar-actions { display: flex; align-items: c
 @media (max-width: 768px) { .dashboard-network-grid { grid-template-columns: 1fr; } #dashboard-page .resource-grid { grid-template-columns: 1fr; } #dashboard-page .stats-grid { grid-template-columns: 1fr; } .ota-inline-action-row { flex-direction: column; align-items: stretch; } }
 
 /* Device / BLE / OTA Layout */
-.dev-basic-footer-row { display: flex; justify-content: flex-start; margin-top: var(--space-2); }
-.dev-user-id-bottom-left { width: min(360px, 100%); margin-bottom: 0; }
+.dev-basic-footer-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3) var(--space-5); margin-top: var(--space-2); }
+.dev-basic-footer-field { width: 100%; margin-bottom: 0; }
 .ble-config-grid { align-items: start; }
 .ble-autostart-switch-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: 6px 0; }
 .ble-autostart-switch-row > label:first-child { margin-bottom: 0; flex: 1; }
@@ -1034,7 +1034,7 @@ body.fullscreen-page .fullscreen-toolbar-actions { display: flex; align-items: c
   .config-tabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
   .info-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   .notification-container { left: var(--space-5); right: var(--space-5); max-width: none; }
-  .config-form-grid, .form-grid { grid-template-columns: 1fr; }
+  .config-form-grid, .form-grid, .dev-basic-footer-row { grid-template-columns: 1fr; }
   .table-container { -webkit-overflow-scrolling: touch; box-shadow: inset -5px 0 5px -5px rgba(0,0,0,0.1); }
   .fb-table { min-width: 600px; font-size: 12px; }
   .fb-table th, .fb-table td { padding: var(--space-2) var(--space-2); min-width: 70px; }
@@ -1351,7 +1351,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 @media (max-width: 1024px) {
   .content { padding: var(--space-4); }
   .fb-card-body { padding: var(--space-4); }
-  .form-grid, .config-form-grid, .resource-grid { grid-template-columns: 1fr !important; gap: var(--space-4) !important; }
+  .form-grid, .config-form-grid, .dev-basic-footer-row, .resource-grid { grid-template-columns: 1fr !important; gap: var(--space-4) !important; }
   .pe-action-grid { grid-template-columns: 1fr; gap: var(--space-3); }
   .pe-action-grid > [style*="grid-column"], .pe-action-grid > .pe-span-all { grid-column: auto; }
   .pe-sensor-config-grid { grid-template-columns: 1fr; }

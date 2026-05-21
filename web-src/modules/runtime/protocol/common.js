@@ -31,6 +31,10 @@
         _mqttStatusTimer: null,
         _modbusCtrlOffline: false,
         _protocolEventsBound: false,
+        _modbusControlModuleLoading: false,
+        _modbusControlPendingIndex: -1,
+        _modbusControlPendingButton: null,
+        _modbusControlLoadTimer: null,
 
         // ============ 事件绑定 ============
         setupProtocolEvents() {
@@ -101,8 +105,75 @@
             else if (action === 'open-mapping') this.openMappingModal(index);
             else if (action === 'delete-device') this._deleteDevice(source, index);
             else if (action === 'open-edit-modal') this._openEditModal(index);
-            else if (action === 'open-control-modal') this._openCtrlModal(index);
+            else if (action === 'open-control-modal') this._openModbusControlModal(index, button);
             else if (action === 'remove-device') this._removeDevice(index);
+        },
+
+        _setProtocolActionLoading(button, loading) {
+            if (!button) return;
+            if (loading) {
+                if (!button.dataset.fbOriginalText) button.dataset.fbOriginalText = button.textContent || '';
+                button.disabled = true;
+                button.textContent = (i18n.t('loading') || '加载中...');
+                return;
+            }
+            if (button.dataset.fbOriginalText) {
+                button.textContent = button.dataset.fbOriginalText;
+                delete button.dataset.fbOriginalText;
+            }
+            button.disabled = false;
+        },
+
+        _openModbusControlModal(index, button) {
+            if (typeof this._openCtrlModal === 'function') {
+                this._openCtrlModal(index);
+                return;
+            }
+            if (typeof ModuleLoader === 'undefined' || typeof ModuleLoader.loadModule !== 'function') {
+                Notification.error(i18n.t('fragment-load-error') || '加载失败，请刷新重试');
+                return;
+            }
+
+            if (this._modbusControlPendingButton && this._modbusControlPendingButton !== button) {
+                this._setProtocolActionLoading(this._modbusControlPendingButton, false);
+            }
+            this._modbusControlPendingIndex = index;
+            this._modbusControlPendingButton = button || this._modbusControlPendingButton;
+            this._setProtocolActionLoading(this._modbusControlPendingButton, true);
+
+            if (this._modbusControlModuleLoading) return;
+
+            var self = this;
+            this._modbusControlModuleLoading = true;
+            if (this._modbusControlLoadTimer) clearTimeout(this._modbusControlLoadTimer);
+            this._modbusControlLoadTimer = setTimeout(function() {
+                if (!self._modbusControlModuleLoading) return;
+                self._modbusControlModuleLoading = false;
+                self._setProtocolActionLoading(self._modbusControlPendingButton, false);
+                self._modbusControlPendingButton = null;
+                self._modbusControlPendingIndex = -1;
+                Notification.error(i18n.t('fragment-load-error') || '加载失败，请刷新重试');
+            }, 20000);
+
+            ModuleLoader.loadModule('protocol-modbus-control', function() {
+                var targetIndex = self._modbusControlPendingIndex;
+                var targetButton = self._modbusControlPendingButton;
+                self._modbusControlModuleLoading = false;
+                if (self._modbusControlLoadTimer) {
+                    clearTimeout(self._modbusControlLoadTimer);
+                    self._modbusControlLoadTimer = null;
+                }
+                self._modbusControlPendingIndex = -1;
+                self._modbusControlPendingButton = null;
+                self._setProtocolActionLoading(targetButton, false);
+
+                if (typeof self.setupProtocolEvents === 'function') self.setupProtocolEvents();
+                if (typeof self._openCtrlModal === 'function' && targetIndex >= 0) {
+                    self._openCtrlModal(targetIndex);
+                } else {
+                    Notification.error(i18n.t('fragment-load-error') || '加载失败，请刷新重试');
+                }
+            });
         },
 
         _handlePwmGridInput(event) {
@@ -138,6 +209,27 @@
         },
 
         // ============ UI 渲染辅助 ============
+
+        _setProtocolFragmentLoading(tabId) {
+            var fragInfo = this._protocolFragmentMap && this._protocolFragmentMap[tabId];
+            if (!fragInfo) return;
+            var container = document.getElementById(fragInfo.container);
+            if (!container || container.querySelector('form')) return;
+            var title = (i18n.t('loading') || '加载中...');
+            container.innerHTML = '<div class="fb-loading-placeholder protocol-loading-placeholder">' +
+                '<div class="fb-loading-placeholder-title">' + title + '</div>' +
+                '</div>';
+        },
+
+        _setProtocolFragmentError(tabId, message) {
+            var fragInfo = this._protocolFragmentMap && this._protocolFragmentMap[tabId];
+            if (!fragInfo) return;
+            var container = document.getElementById(fragInfo.container);
+            if (!container || container.querySelector('form')) return;
+            container.innerHTML = '<div class="message message-error">' +
+                escapeHtml(message || (i18n.t('fragment-load-error') || '加载失败，请刷新重试')) +
+                '</div>';
+        },
 
         _renderProtocolEmptyRow(colspan, text) {
             return '<tr><td colspan="' + colspan + '" class="u-empty-cell">' + (text || '') + '</td></tr>';

@@ -72,6 +72,7 @@ const PROD_STATIC_SKIP = new Set([
 const PROD_IGNORED_ORPHAN_MODULES = new Set([
     'files.js',
     'i18n-en.js',
+    'i18n-engine.js',
     'i18n-zh-CN.js',
     'logs.js',
     'roles.js',
@@ -145,13 +146,19 @@ function stripProdOnlyCssRules(content) {
         /^\.file-tree-/,
         /^\.role-/,
         /^\.rule-script-/,
+        /^\.ota-/,
         /^\.ota-inline-/,
+        /^body\.fullscreen-page/,
+        /^\.fullscreen-container/,
+        /^\.fullscreen-toolbar/,
         /^@keyframes\s+fs-/,
         /^\[data-theme="dark"\]\s+\.fs-/,
         /^\[data-theme="dark"\]\s+\.logs-/,
         /^\[data-theme="dark"\]\s+\.log-/,
         /^\[data-theme="dark"\]\s+\.file-tree-/,
-        /^\[data-theme="dark"\]\s+\.role-/
+        /^\[data-theme="dark"\]\s+\.role-/,
+        /^\[data-theme="dark"\]\s+\.rule-script-/,
+        /^\[data-theme="dark"\]\s+\.ota-/
     ];
 
     return content
@@ -179,6 +186,7 @@ function transformStaticAssetContent(relPath, content) {
             .reduce((acc, page) => stripMenuItemByPage(acc, page), content);
         next = stripDivByClass(next, 'login-lang-switch');
         next = stripSelectById(next, 'language-select');
+        next = next.replace(/\.login-lang-switch\{[^}]*\}\.login-lang-switch select,\s*\.header-actions select\{[^}]*\}/g, '');
         return next;
     }
 
@@ -523,7 +531,13 @@ const SUBDIR_BUNDLES = [
         outName: 'protocol-modbus-rtu.js',
         entry: null,
         subDir: 'protocol',
-        order: ['modbus-config.js', 'modbus-control.js', 'modbus-relay-motor.js']
+        order: ['modbus-config.js']
+    },
+    {
+        outName: 'protocol-modbus-control.js',
+        entry: null,
+        subDir: 'protocol',
+        order: ['modbus-control.js', 'modbus-relay-motor.js']
     },
     {
         outName: 'device-control.js',

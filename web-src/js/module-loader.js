@@ -22,6 +22,9 @@ var ModuleLoader = {
             'protocol-full-config',
             'protocol-modbus-rtu'
         ],
+        'protocol-modbus-control': [
+            'protocol-modbus-control'
+        ],
         'device-control': [
             'device-control'
         ],

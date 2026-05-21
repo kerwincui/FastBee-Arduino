@@ -78,11 +78,9 @@
                                     placeholder="输入设备名称" data-i18n-placeholder="dev-name-label">
                             </div>
                             <div class="fb-form-group">
-                                <label for="dev-description"
-                                    data-i18n="dev-description-label">设备描述</label>
-                                <textarea id="dev-description" class="" rows="3"
-                                    placeholder="输入设备描述"
-                                    data-i18n-placeholder="dev-description-label"></textarea>
+                                <label for="dev-user-id" data-i18n="dev-user-id-label">用户ID</label>
+                                <input type="text" id="dev-user-id" class=""
+                                    placeholder="输入用户ID" data-i18n-placeholder="dev-user-id-label">
                             </div>
                         </div>
 
@@ -103,10 +101,12 @@
                         </div>
                     </div>
                     <div class="dev-basic-footer-row">
-                        <div class="fb-form-group dev-user-id-bottom-left">
-                            <label for="dev-user-id" data-i18n="dev-user-id-label">用户ID</label>
-                            <input type="text" id="dev-user-id" class=""
-                                placeholder="输入用户ID" data-i18n-placeholder="dev-user-id-label">
+                        <div class="fb-form-group dev-basic-footer-field">
+                            <label for="dev-description"
+                                data-i18n="dev-description-label">设备描述</label>
+                            <textarea id="dev-description" class="" rows="3"
+                                placeholder="输入设备描述"
+                                data-i18n-placeholder="dev-description-label"></textarea>
                         </div>
                     </div>
                     <div class="message message-success is-hidden u-mt-15" id="dev-basic-success"

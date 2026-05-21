@@ -88,20 +88,48 @@
             options = options || {};
             if (this._dashboardMonitorLoadPromise) return this._dashboardMonitorLoadPromise;
             var self = this;
-            var batchGetter = null;
-            if (options.noCache === true && typeof apiBatchGetFresh === 'function') {
-                batchGetter = apiBatchGetFresh;
-            } else if (typeof apiBatchGet === 'function') {
-                batchGetter = apiBatchGet;
+            var monitorSourcePromise;
+            if (typeof apiBatchGetMany === 'function') {
+                var batchMany = (options.noCache === true && typeof apiBatchGetManyFresh === 'function')
+                    ? apiBatchGetManyFresh
+                    : apiBatchGetMany;
+                monitorSourcePromise = batchMany([
+                    { url: '/api/system/info' },
+                    { url: '/api/network/status' }
+                ]).then(function(results) {
+                    return {
+                        info: results && results[0],
+                        network: results && results[1]
+                    };
+                });
+            } else {
+                var batchGetter = null;
+                if (options.noCache === true && typeof apiBatchGetFresh === 'function') {
+                    batchGetter = apiBatchGetFresh;
+                } else if (typeof apiBatchGet === 'function') {
+                    batchGetter = apiBatchGet;
+                }
+                var getter = batchGetter || (options.noCache === true && typeof apiGetFresh === 'function' ? apiGetFresh : apiGet);
+                // Fallback keeps the older batch-window path for full profile builds.
+                var infoPromise = getter('/api/system/info');
+                var netPromise = getter('/api/network/status');
+                monitorSourcePromise = infoPromise.then(function(res) {
+                    return netPromise
+                        .then(function(netRes) {
+                            return { info: res, network: netRes };
+                        })
+                        .catch(function(err) {
+                            if (!(err && err._pageAborted)) {
+                                console.error('Load network status failed:', err);
+                            }
+                            return { info: res, network: null };
+                        });
+                });
             }
-            var getter = batchGetter || (options.noCache === true && typeof apiGetFresh === 'function' ? apiGetFresh : apiGet);
-            // 使用 apiBatchGet 同时发起 system/info 和 network/status
-            // 它们会在 50ms 窗口内被合并为单个 /api/batch 请求
-            var infoPromise = getter('/api/system/info');
-            var netPromise = getter('/api/network/status');
 
-            var monitorPromise = infoPromise
-                .then(res => {
+            var monitorPromise = monitorSourcePromise
+                .then(result => {
+                    const res = result && result.info;
                     if (!res || !res.success) return;
 
                     const data = res.data || {};
@@ -150,17 +178,16 @@
                     this._setText('monitor-fs-free', this._formatBytes(fs.free || 0));
                     this._setText('monitor-fs-total', this._formatBytes(fs.total || 0));
 
-                    // 网络状态通过独立的 promise 加载（已被批量合并）
-                    netPromise.then(netRes => {
-                        if (netRes && netRes.success) {
-                            self._applyNetworkStatus(netRes);
-                        }
-                    }).catch(err => {
-                        console.error('Load network status failed:', err);
-                    });
+                    // Apply network status once the batched/fallback result is ready.
+                    const netRes = result && result.network;
+                    if (netRes && netRes.success) {
+                        self._applyNetworkStatus(netRes);
+                    }
                 })
                 .catch(err => {
-                    console.error('Load system monitor failed:', err);
+                    if (!(err && err._pageAborted)) {
+                        console.error('Load system monitor failed:', err);
+                    }
                 });
 
             if (options.loadRuntime === true) {

@@ -13,17 +13,26 @@
             var self = this;
             var liteLoader = this.loadProtocolConfig;
             var sequence = tabId === 'modbus-rtu' ? 'protocol-modbus-rtu' : 'protocol-full-config';
+            if (typeof this._setProtocolFragmentLoading === 'function') {
+                this._setProtocolFragmentLoading(tabId);
+            }
             if (typeof ModuleLoader !== 'undefined' &&
                 ModuleLoader &&
                 typeof ModuleLoader.loadModule === 'function' &&
                 (!ModuleLoader.isLoaded || !ModuleLoader.isLoaded(sequence))) {
                 return new Promise(function(resolve, reject) {
                     var timer = setTimeout(function() {
+                        if (typeof self._setProtocolFragmentError === 'function') {
+                            self._setProtocolFragmentError(tabId);
+                        }
                         reject(new Error('Protocol module load timeout'));
                     }, 15000);
                     ModuleLoader.loadModule(sequence, function() {
                         clearTimeout(timer);
                         if (self.loadProtocolConfig === liteLoader) {
+                            if (typeof self._setProtocolFragmentError === 'function') {
+                                self._setProtocolFragmentError(tabId);
+                            }
                             reject(new Error('Protocol module did not register'));
                             return;
                         }
@@ -56,6 +65,9 @@
 
             var fragInfo = this._protocolFragmentMap[tabId];
             if (fragInfo) {
+                if (typeof this._setProtocolFragmentLoading === 'function') {
+                    this._setProtocolFragmentLoading(tabId);
+                }
                 return PageLoader.loadFragment(fragInfo.container, fragInfo.fragment).then(function() {
                     self.setupProtocolEvents();
                     return self._loadProtocolConfigData(tabId, options);

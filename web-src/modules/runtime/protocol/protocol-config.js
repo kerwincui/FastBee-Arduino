@@ -19,8 +19,14 @@
                 ModuleLoader &&
                 typeof ModuleLoader.isLoaded === 'function' &&
                 !ModuleLoader.isLoaded('protocol-modbus-rtu')) {
+                if (typeof this._setProtocolFragmentLoading === 'function') {
+                    this._setProtocolFragmentLoading(tabId);
+                }
                 return new Promise(function(resolve, reject) {
                     var timer = setTimeout(function() {
+                        if (typeof self._setProtocolFragmentError === 'function') {
+                            self._setProtocolFragmentError(tabId);
+                        }
                         reject(new Error('Modbus RTU module load timeout'));
                     }, 15000);
                     ModuleLoader.loadModule('protocol-modbus-rtu', function() {
@@ -44,13 +50,16 @@
             if (tabId !== 'mqtt' && typeof this._stopMqttStatusPolling === 'function') {
                 this._stopMqttStatusPolling();
             }
-            if (tabId === 'modbus-rtu') {
+            if (tabId === 'modbus-rtu' && typeof this._updateDelayChannelSelect === 'function') {
                 this._updateDelayChannelSelect();
             }
 
             // 按需加载分片 HTML，加载完成后再填充表单
             var fragInfo = this._protocolFragmentMap[tabId];
             if (fragInfo) {
+                if (typeof this._setProtocolFragmentLoading === 'function') {
+                    this._setProtocolFragmentLoading(tabId);
+                }
                 return PageLoader.loadFragment(fragInfo.container, fragInfo.fragment).then(function() {
                     // 分片加载完成后重新尝试绑定事件（新 DOM 元素可能需要）
                     self.setupProtocolEvents();
@@ -116,7 +125,9 @@
                 this._onTransferTypeChange();  // 根据传输类型联动 UI
                 this.refreshMasterStatus({ noCache: options && options.noCache === true });
                 this._startMasterStatusRefresh();
-                this._updateDelayChannelSelect();
+                if (typeof this._updateDelayChannelSelect === 'function') {
+                    this._updateDelayChannelSelect();
+                }
             }
             if (tabId === 'mqtt' && config.mqtt) {
                 const mqtt = config.mqtt;

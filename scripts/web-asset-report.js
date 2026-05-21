@@ -24,6 +24,7 @@ const PAGE_BUNDLES = [
     'js/modules/protocol.js',
     'js/modules/protocol-full-config.js',
     'js/modules/protocol-modbus-rtu.js',
+    'js/modules/protocol-modbus-control.js',
     'js/modules/periph-exec.js',
     'js/modules/device-control.js',
     'js/modules/device-control-view.js',

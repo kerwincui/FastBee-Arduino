@@ -504,6 +504,12 @@
             var self = this;
             request(entry.method, entry.path, entry.options, entry.timeoutMs)
                 .then(function (data) {
+                    if (entry.pageGen < self._pageGen && !(entry.options && entry.options.staleOk === true)) {
+                        var staleErr = new Error('Request result ignored after page navigation');
+                        staleErr._pageAborted = true;
+                        entry.reject(staleErr);
+                        return;
+                    }
                     self._backoffMs = 1000;
                     if (entry.method === 'GET' && entry.profile && entry.profile.cacheTtl > 0) {
                         self._cache[entry.fullUrl] = { data: data, ts: Date.now() };
@@ -615,6 +621,18 @@
 
         abortPageRequests: function () {
             this._pageGen++;
+            for (var b = this._batchQueue.length - 1; b >= 0; b--) {
+                if (this._batchQueue[b].pageGen < this._pageGen) {
+                    var expiredBatch = this._batchQueue.splice(b, 1)[0];
+                    var batchErr = new Error('Batch request cancelled by page navigation');
+                    batchErr._pageAborted = true;
+                    expiredBatch.reject(batchErr);
+                }
+            }
+            if (this._batchQueue.length === 0 && this._batchTimer) {
+                clearTimeout(this._batchTimer);
+                this._batchTimer = null;
+            }
             for (var i = this._queue.length - 1; i >= 0; i--) {
                 if (this._queue[i].pageGen < this._pageGen) {
                     var expired = this._queue.splice(i, 1)[0];
@@ -693,7 +711,8 @@
                     profile: profile,
                     silent: isSilent,
                     priority: priority,
-                    noCache: skipCache
+                    noCache: skipCache,
+                    pageGen: self._pageGen
                 });
 
                 if (!self._batchTimer) {
@@ -704,12 +723,95 @@
             });
         },
 
+        batchGetMany: function (requests, options) {
+            var self = this;
+            options = options || {};
+            requests = Array.isArray(requests) ? requests : [];
+            if (requests.length === 0) return Promise.resolve([]);
+
+            var pageGen = this._pageGen;
+            var skipCache = options.noCache === true;
+            var cachedResults = new Array(requests.length);
+            var pendingRequests = [];
+            var batchPriority = typeof options.priority === 'number' ? options.priority : 0;
+
+            requests.forEach(function (item, index) {
+                item = item || {};
+                var params = item.params || {};
+                var profile = resolveRequestProfile(item.url, params);
+                var fullUrl = buildUrl(item.url, params);
+                batchPriority = Math.max(batchPriority, options.silent ? 0 : (profile.priority || 0));
+                if (!skipCache && profile.cacheTtl > 0) {
+                    var cached = self._cache[fullUrl];
+                    if (cached && (Date.now() - cached.ts < profile.cacheTtl)) {
+                        cachedResults[index] = JSON.parse(JSON.stringify(cached.data));
+                        return;
+                    }
+                }
+                pendingRequests.push({
+                    index: index,
+                    url: item.url,
+                    params: params,
+                    profile: profile,
+                    fullUrl: fullUrl
+                });
+            });
+
+            if (pendingRequests.length === 0) return Promise.resolve(cachedResults);
+            if (pendingRequests.length === 1) {
+                var single = pendingRequests[0];
+                return this.batchGet(single.url, single.params, options).then(function (res) {
+                    cachedResults[single.index] = res;
+                    return cachedResults;
+                });
+            }
+
+            var payload = pendingRequests.map(function (item) {
+                var req = { url: item.url };
+                if (item.params && Object.keys(item.params).length > 0) req.params = item.params;
+                return req;
+            });
+
+            return this.enqueue('POST', '/api/batch', {
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ requests: payload }),
+                priority: batchPriority,
+                silent: !!options.silent,
+                staleOk: options.staleOk === true
+            }).then(function (resp) {
+                if (pageGen < self._pageGen && options.staleOk !== true) {
+                    var staleErr = new Error('Batch result ignored after page navigation');
+                    staleErr._pageAborted = true;
+                    throw staleErr;
+                }
+                var results = resp.results || resp;
+                if (!Array.isArray(results)) throw new Error('Invalid batch response');
+                if (results.length < pendingRequests.length) throw new Error('Incomplete batch response');
+                pendingRequests.forEach(function (pending, index) {
+                    var item = results[index];
+                    if (pending.profile && pending.profile.cacheTtl > 0 && !skipCache && item && item.success !== false && !item.error) {
+                        self._cache[pending.fullUrl] = { data: item, ts: Date.now() };
+                    }
+                    cachedResults[pending.index] = item;
+                });
+                return cachedResults;
+            });
+        },
+
         _flushBatch: function () {
             var queue = this._batchQueue;
             this._batchQueue = [];
             this._batchTimer = null;
 
             var self = this;
+            if (queue.length === 0) return;
+            queue = queue.filter(function (item) {
+                if (item.pageGen >= self._pageGen) return true;
+                var err = new Error('Batch request cancelled by page navigation');
+                err._pageAborted = true;
+                item.reject(err);
+                return false;
+            });
             if (queue.length === 0) return;
 
             if (queue.length === 1) {
@@ -748,6 +850,12 @@
 
                 results.forEach(function (item, index) {
                     if (index >= queue.length) return;
+                    if (queue[index].pageGen < self._pageGen) {
+                        var staleErr = new Error('Batch result ignored after page navigation');
+                        staleErr._pageAborted = true;
+                        queue[index].reject(staleErr);
+                        return;
+                    }
 
                     if (item.success === false || item.error) {
                         queue[index].reject(item.error || new Error('Batch sub-request failed'));
@@ -879,6 +987,14 @@
 
     window.apiBatchGetFresh = function (url, params) {
         return Governor.batchGet(url, params, { noCache: true });
+    };
+
+    window.apiBatchGetMany = function (requests, options) {
+        return Governor.batchGetMany(requests, options || {});
+    };
+
+    window.apiBatchGetManyFresh = function (requests, options) {
+        return Governor.batchGetMany(requests, Object.assign({}, options || {}, { noCache: true }));
     };
 
     window.apiBatchGetSilentFresh = function (url, params) {
