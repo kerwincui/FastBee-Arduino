@@ -4,6 +4,13 @@
 // ============================================================
 var PageLoader = {
     _loadedPages: {},
+    _loadingPages: {},
+    _resolveAssetUrl(path) {
+        if (typeof window !== 'undefined' && typeof window.__fastbeeResolveAssetUrl === 'function') {
+            return window.__fastbeeResolveAssetUrl(path);
+        }
+        return path;
+    },
 
     /**
      * 加载页面 HTML 片段到 content-area
@@ -13,9 +20,10 @@ var PageLoader = {
     async loadPage(pageId, pageMapping) {
         var moduleName = pageMapping[pageId];
         if (!moduleName || this._loadedPages[moduleName]) return;
+        if (this._loadingPages[moduleName]) return this._loadingPages[moduleName];
 
-        try {
-            var resp = await fetch('/pages/' + moduleName + '.html');
+        this._loadingPages[moduleName] = (async () => {
+            var resp = await fetch(this._resolveAssetUrl('/pages/' + moduleName + '.html'));
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
             var html = await resp.text();
             var container = document.getElementById('content-area');
@@ -28,9 +36,28 @@ var PageLoader = {
                 }
             }
             this._loadedPages[moduleName] = true;
+        })();
+
+        try {
+            await this._loadingPages[moduleName];
         } catch(e) {
             console.error('[PageLoader] Failed to load:', moduleName, e);
+        } finally {
+            delete this._loadingPages[moduleName];
         }
+    },
+
+    preloadPages(pageIds, pageMapping, options) {
+        options = options || {};
+        var delayMs = Number(options.delayMs || 180);
+        var self = this;
+        return (pageIds || []).reduce(function(chain, pageId) {
+            return chain.then(function() {
+                return self.loadPage(pageId, pageMapping).then(function() {
+                    return new Promise(function(resolve) { setTimeout(resolve, delayMs); });
+                });
+            });
+        }, Promise.resolve());
     },
 
     /**
@@ -39,7 +66,7 @@ var PageLoader = {
     async loadModals() {
         if (this._loadedPages['modals']) return;
         try {
-            var resp = await fetch('/pages/modals.html');
+            var resp = await fetch(this._resolveAssetUrl('/pages/modals.html'));
             if (!resp.ok) return;
             var html = await resp.text();
             var wrapper = document.createElement('div');
@@ -66,7 +93,7 @@ var PageLoader = {
             return;
         }
         try {
-            var resp = await fetch('/pages/fragments/' + fragmentName + '.html');
+            var resp = await fetch(this._resolveAssetUrl('/pages/fragments/' + fragmentName + '.html'));
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
             var html = await resp.text();
             var container = document.getElementById(containerId);

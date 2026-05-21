@@ -8,10 +8,6 @@
             <div class="config-tabs">
                 <div class="config-tab active" data-tab="mqtt">MQTT</div>
                 <div class="config-tab" data-tab="modbus-rtu">Modbus RTU</div>
-                <div class="config-tab tab-disabled" data-tab="modbus-tcp" title="Modbus TCP">Modbus TCP</div>
-                <div class="config-tab tab-disabled" data-tab="http" title="HTTP">HTTP</div>
-                <div class="config-tab tab-disabled" data-tab="coap" title="CoAP">CoAP</div>
-                <div class="config-tab tab-disabled" data-tab="tcp" title="TCP">TCP</div>
             </div>
 
             <!-- MQTT 配置 - 按需分片加载 -->
@@ -26,80 +22,6 @@
             <div id="modbus-rtu" class="config-content">
                 <div id="modbus-rtu-fragment-container">
                     <!-- Fragment: protocol-modbus-rtu.html loaded on demand -->
-                </div>
-            </div>
-
-            <!-- Modbus TCP 配置 - 两列布局 -->
-            <div id="modbus-tcp" class="config-content">
-                <form id="modbus-tcp-form" class="fb-form">
-                    <div class="fb-form-group fb-mb-3 fb-pb-3 fb-border-bottom">
-                        <label class="fb-checkbox">
-                            <input type="checkbox" id="modbus-tcp-enabled"> <span
-                                data-i18n="modbus-tcp-enabled-label">启用Modbus TCP</span>
-                        </label>
-                    </div>
-                    <div class="config-form-grid">
-                        <div class="config-form-column">
-                            <div class="fb-form-group">
-                                <label for="tcp-ip" data-i18n="tcp-ip-label">IP地址</label>
-                                <input type="text" id="tcp-ip" class=""
-                                    value="192.168.1.100">
-                            </div>
-
-                            <div class="fb-form-group">
-                                <label for="tcp-slave-id"
-                                    data-i18n="tcp-slave-id-label">从站ID</label>
-                                <input type="number" id="tcp-slave-id" class=""
-                                    value="1" min="1" max="247">
-                            </div>
-                        </div>
-
-                        <div class="config-form-column">
-                            <div class="fb-form-group">
-                                <label for="tcp-mport" data-i18n="tcp-port-label">端口</label>
-                                <input type="number" id="tcp-mport" class="" value="502"
-                                    min="1" max="65535">
-                            </div>
-
-                            <div class="fb-form-group">
-                                <label for="tcp-mtimeout"
-                                    data-i18n="tcp-timeout-label">超时时间(ms)</label>
-                                <input type="number" id="tcp-mtimeout" class=""
-                                    value="5000" min="100" max="30000">
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="message message-success is-hidden" id="modbus-tcp-success"
-                        data-i18n="modbus-tcp-save-ok">
-                        Modbus TCP配置保存成功！
-                    </div>
-
-                    <div class="fb-mt-4">
-                        <button type="submit" class="fb-btn fb-btn-primary"
-                            data-i18n="btn-save-config">保存配置</button>
-                    </div>
-                </form>
-            </div>
-
-            <!-- HTTP 配置 - 按需分片加载 -->
-            <div id="http" class="config-content">
-                <div id="http-fragment-container">
-                    <!-- Fragment: protocol-http.html loaded on demand -->
-                </div>
-            </div>
-
-            <!-- CoAP 配置 - 按需分片加载 -->
-            <div id="coap" class="config-content">
-                <div id="coap-fragment-container">
-                    <!-- Fragment: protocol-coap.html loaded on demand -->
-                </div>
-            </div>
-
-            <!-- TCP 配置 - 按需分片加载 -->
-            <div id="tcp" class="config-content">
-                <div id="tcp-fragment-container">
-                    <!-- Fragment: protocol-tcp.html loaded on demand -->
                 </div>
             </div>
         </div>

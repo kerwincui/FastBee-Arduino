@@ -40,6 +40,9 @@
         'menu-periph-exec': '外设执行',
         'menu-rule-script': '规则脚本',
         'menu-device-control': '设备大屏',
+        'logs-title': '设备日志',
+        'logs-refresh': '刷新日志',
+        'logs-clear': '清空',
         
         // 设备控制页面
         'page-title-device-control': '设备大屏',
@@ -429,19 +432,6 @@
         'role-save-btn': '保存',
         'role-saving-btn': '保存中...',
         
-        // 日志管理
-        'logs-title': '设备日志',
-        'log-auto-refresh-label': '自动刷新',
-        'log-refresh-btn': '刷新日志',
-        'log-clear-btn': '清空日志',
-        'log-loading': '正在加载日志...',
-        'log-empty': '日志文件为空',
-        'log-load-fail': '加载日志失败',
-        'log-truncated': ' (部分显示)',
-        'log-clear-confirm': '确定要清空所有设备日志吗？此操作不可恢复。',
-        'log-clear-ok': '日志已清空',
-        'log-current-file-prefix': '当前日志：',
-        
         // GPIO配置
         'gpio-title': 'GPIO配置',
         'add-gpio-btn-text': '新增GPIO',
@@ -577,18 +567,6 @@
         'role-deleted-msg': '已删除',
         'role-detail-suffix': ' - 权限详情',
         
-        // 日志动态文本
-        'log-load-fail-html': '<div class="u-empty-state u-text-danger">加载日志失败</div>',
-        'log-empty-html': '<div class="u-empty-state u-text-muted">日志文件为空</div>',
-        'log-line-unit': ' 行 | ',
-        'log-truncated-suffix': ' (部分显示)',
-        'log-clear-confirm-msg': '确定要清空所有设备日志吗？此操作不可恢复。',
-        'log-clearing-html': '<i class="fas fa-spinner fa-spin"></i> 清空中...',
-        'log-clear-btn-html': '<i class="fas fa-trash"></i> 清空日志',
-        'log-cleared-msg': '日志已清空',
-        'log-op-title': '操作成功',
-        'log-op-fail': '操作失败',
-        
         // 文件管理动态文本
         'fs-loading-text': '<div class="u-text-muted">加载中...</div>',
         'fs-load-fail-text': '<div class="u-text-danger">加载失败</div>',
@@ -682,6 +660,15 @@
         'dev-save-fail': '保存失败',
         'dev-config-title': '设备配置',
         'dev-ntp-config-title': 'NTP配置',
+        'dev-config-transfer-type': '配置类型',
+        'dev-config-type-all': '全部配置包',
+        'dev-config-type-device': '设备信息',
+        'dev-config-type-network': '网络配置',
+        'dev-config-type-peripherals': '外设配置',
+        'dev-config-type-periph-exec': '外设执行',
+        'dev-config-type-protocol': '通信协议',
+        'dev-config-type-users': '用户配置',
+        'dev-config-type-roles': '角色配置',
         'dev-restart-confirm-prefix': '确定要重启设备？将在 ',
         'dev-restart-confirm-suffix': ' 秒后重启。',
         'dev-restarting-html': '<i class="fas fa-spinner fa-spin"></i> 处理中...',
@@ -1018,6 +1005,7 @@
         'periph-exec-action-low': '设置低电平',
         'periph-exec-action-blink': '闪烁',
         'periph-exec-action-breathe': '呼吸灯',
+        'periph-exec-action-buzzer-beep': '蜂鸣器预设',
         'periph-exec-action-high-inverted': '高电平反转',
         'periph-exec-action-low-inverted': '低电平反转',
         'periph-exec-action-pwm': '设置PWM',
@@ -1171,6 +1159,7 @@
         'event-cat-规则': '规则',
         'event-cat-Modbus子设备': 'Modbus子设备',
         'event-cat-modbus-acquisition': '采集设备',
+        'event-cat-local-sensor': '本地传感器',
         'event-cat-modbus-control': '控制设备',
         'event-cat-按键': '按键',
         'event-cat-外设执行': '外设执行',
@@ -1668,7 +1657,7 @@
         'perm-device.control': '控制设备',
         'perm-network.view': '查看网络配置',
         'perm-network.config': '修改网络配置',
-        'perm-system.info': '查看系统信息',
+        'perm-system.view': '查看系统信息',
         'perm-system.restart': '重启系统',
         'perm-user.view': '查看用户',
         'perm-user.edit': '编辑用户',
@@ -1726,7 +1715,60 @@
         'modbus-motor-ctrl-stop-ok': '停止指令已发送',
         'modbus-motor-ctrl-speed-ok': '速度设置成功',
         'modbus-motor-ctrl-pulse-ok': '脉冲数设置成功'
+        , 'dashboard-web-runtime': 'Web杩愯鎬?'
+        , 'dashboard-web-guard': 'MemGuard'
+        , 'dashboard-web-sse': 'SSE鐘舵€?'
+        , 'dashboard-web-recovery': '鎭㈠璁板綍'
+        , 'dashboard-web-guard-level': '淇濇姢绛夌骇'
+        , 'dashboard-web-largest-block': '鏈€澶ц繛缁潡'
+        , 'dashboard-web-max-alloc': '鏈€澶у彲鍒嗛厤'
+        , 'dashboard-web-health': '鍋ュ悍鎽樿'
+        , 'dashboard-web-clients': '杩炴帴鏁?'
+        , 'dashboard-web-rejects': '鎷掔粷缁熻'
+        , 'dashboard-web-skips': '璺宠繃骞挎挱'
+        , 'dashboard-web-last-reject': '鏈€杩戞嫆缁?'
+        , 'dashboard-web-soft-restarts': '杞噸鍚鏁?'
+        , 'dashboard-web-last-restart': '鏈€杩戣蒋閲嶅惎'
+        , 'dashboard-web-pressure': '鎸佺画鍘嬪姏'
+        , 'dashboard-web-events': '鏈€杩戜簨浠?'
+        , 'dashboard-web-none': '鏃?'
+        , 'dashboard-web-runtime': 'Web Runtime'
+        , 'dashboard-web-guard': 'MemGuard'
+        , 'dashboard-web-sse': 'SSE Status'
+        , 'dashboard-web-recovery': 'Recovery'
+        , 'dashboard-web-guard-level': 'Guard Level'
+        , 'dashboard-web-largest-block': 'Largest Block'
+        , 'dashboard-web-max-alloc': 'Max Alloc'
+        , 'dashboard-web-health': 'Health Summary'
+        , 'dashboard-web-clients': 'Clients'
+        , 'dashboard-web-rejects': 'Rejects'
+        , 'dashboard-web-skips': 'Skipped Broadcasts'
+        , 'dashboard-web-last-reject': 'Last Reject'
+        , 'dashboard-web-soft-restarts': 'Soft Restarts'
+        , 'dashboard-web-last-restart': 'Last Soft Restart'
+        , 'dashboard-web-pressure': 'Pressure'
+        , 'dashboard-web-events': 'Recent Events'
+        , 'dashboard-web-none': 'None'
     };
+    Object.assign(zhTranslations, {
+        'dashboard-web-runtime': '\u7F51\u9875\u8FD0\u884C\u6001',
+        'dashboard-web-guard': 'MemGuard',
+        'dashboard-web-sse': 'SSE \u72B6\u6001',
+        'dashboard-web-recovery': '\u6062\u590D',
+        'dashboard-web-guard-level': '\u4FDD\u62A4\u7B49\u7EA7',
+        'dashboard-web-largest-block': '\u6700\u5927\u8FDE\u7EED\u5757',
+        'dashboard-web-max-alloc': '\u6700\u5927\u53EF\u5206\u914D',
+        'dashboard-web-health': '\u5065\u5EB7\u6458\u8981',
+        'dashboard-web-clients': '\u5BA2\u6237\u7AEF',
+        'dashboard-web-rejects': '\u62D2\u7EDD\u6B21\u6570',
+        'dashboard-web-skips': '\u8DF3\u8FC7\u5E7F\u64AD',
+        'dashboard-web-last-reject': '\u6700\u8FD1\u62D2\u7EDD',
+        'dashboard-web-soft-restarts': '\u8F6F\u91CD\u542F\u6B21\u6570',
+        'dashboard-web-last-restart': '\u6700\u8FD1\u8F6F\u91CD\u542F',
+        'dashboard-web-pressure': '\u6301\u7EED\u538B\u529B',
+        'dashboard-web-events': '\u6700\u8FD1\u4E8B\u4EF6',
+        'dashboard-web-none': '\u65E0'
+    });
     i18n.addTranslations('zh-CN', zhTranslations);
     i18n._zhLoaded = true;
 })();

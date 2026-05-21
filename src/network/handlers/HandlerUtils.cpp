@@ -109,6 +109,7 @@ bool sendJsonListChunked(
     if (!resp) {
         return false;
     }
+    resp->addHeader("Connection", "close");
     request->send(resp);
     return true;
 }

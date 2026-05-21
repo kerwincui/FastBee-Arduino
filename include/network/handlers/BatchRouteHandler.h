@@ -25,7 +25,7 @@ private:
     AsyncCallbackJsonWebHandler* _batchJsonHandler = nullptr;
 
     void handleBatchRequest(AsyncWebServerRequest* request, JsonVariant& json);
-    bool buildSubResponse(const String& url, JsonObject out);
+    bool buildSubResponse(AsyncWebServerRequest* request, const String& url, JsonObject out);
 };
 
 #endif // BATCH_ROUTE_HANDLER_H

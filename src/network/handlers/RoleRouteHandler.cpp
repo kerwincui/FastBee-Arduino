@@ -1,3 +1,6 @@
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_ROLE_ADMIN
+
 #include "./network/handlers/RoleRouteHandler.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
@@ -82,6 +85,11 @@ void RoleRouteHandler::handleGetRoles(AsyncWebServerRequest* request) {
         return;
     }
 
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Role list", MemoryGuardLevel::SEVERE, 8)) {
+        return;
+    }
+    if (HandlerUtils::checkLowMemory(request, 12288)) return;
+
     if (!ctx->roleManager) {
         ctx->sendError(request, 500, "Role manager unavailable");
         return;
@@ -133,6 +141,7 @@ void RoleRouteHandler::handleGetRole(AsyncWebServerRequest* request) {
 
     String json = ctx->roleManager->roleToJson(roleId);
     AsyncWebServerResponse* resp = request->beginResponse(200, "application/json", json);
+    resp->addHeader("Connection", "close");
     request->send(resp);
 }
 
@@ -296,6 +305,11 @@ void RoleRouteHandler::handleGetPermissions(AsyncWebServerRequest* request) {
         return;
     }
 
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Permission list", MemoryGuardLevel::SEVERE, 8)) {
+        return;
+    }
+    if (HandlerUtils::checkLowMemory(request, 8192)) return;
+
     if (!ctx->roleManager) {
         ctx->sendError(request, 500, "Role service unavailable");
         return;
@@ -322,6 +336,11 @@ void RoleRouteHandler::handleGetAuditLog(AsyncWebServerRequest* request) {
         return;
     }
 
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Audit log", MemoryGuardLevel::SEVERE, 8)) {
+        return;
+    }
+    if (HandlerUtils::checkLowMemory(request, 12288)) return;
+
     if (!ctx->authManager) {
         ctx->sendError(request, 500, "Auth service unavailable");
         return;
@@ -332,6 +351,7 @@ void RoleRouteHandler::handleGetAuditLog(AsyncWebServerRequest* request) {
 
     String json = static_cast<AuthManager*>(ctx->authManager)->getAuditLogJson((size_t)limit);
     AsyncWebServerResponse* resp = request->beginResponse(200, "application/json", json);
+    resp->addHeader("Connection", "close");
     request->send(resp);
 }
 
@@ -353,3 +373,5 @@ void RoleRouteHandler::handleClearAuditLog(AsyncWebServerRequest* request) {
         true, ctx->getClientIP(request));
     ctx->sendSuccess(request, "Audit log cleared");
 }
+
+#endif // FASTBEE_ENABLE_ROLE_ADMIN

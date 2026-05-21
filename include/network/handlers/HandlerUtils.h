@@ -4,8 +4,16 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <vector>
+#include "core/FastBeeFramework.h"
+#include "systems/HealthMonitor.h"
 
 namespace HandlerUtils {
+
+inline void sendWithClose(AsyncWebServerRequest* request, AsyncWebServerResponse* response) {
+    if (!request || !response) return;
+    response->addHeader("Connection", "close");
+    request->send(response);
+}
 
 // 发送 JSON 成功响应
 inline void sendJsonSuccess(AsyncWebServerRequest* request, const String& data = "") {
@@ -17,7 +25,8 @@ inline void sendJsonSuccess(AsyncWebServerRequest* request, const String& data =
         json += data;
     }
     json += '}';
-    request->send(200, "application/json", json);
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", json);
+    sendWithClose(request, response);
 }
 
 // 发送带消息的成功响应
@@ -25,27 +34,66 @@ inline void sendJsonSuccessMsg(AsyncWebServerRequest* request, const char* messa
     String json = "{\"success\":true,\"message\":\"";
     json += message;
     json += "\"}";
-    request->send(200, "application/json", json);
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", json);
+    sendWithClose(request, response);
 }
 
 // 发送 JSON 错误响应
-inline void sendJsonError(AsyncWebServerRequest* request, int code, const char* message) {
+inline void sendJsonError(AsyncWebServerRequest* request, int code, const char* message, int retryAfterSeconds = 0) {
     String json = "{\"success\":false,\"message\":\"";
     json += message;
     json += "\"}";
-    request->send(code, "application/json", json);
+    AsyncWebServerResponse* response = request->beginResponse(code, "application/json", json);
+    if (retryAfterSeconds > 0) {
+        response->addHeader("Retry-After", String(retryAfterSeconds));
+    }
+    sendWithClose(request, response);
+}
+
+inline const char* memoryGuardLevelName(MemoryGuardLevel level) {
+    switch (level) {
+        case MemoryGuardLevel::WARN: return "WARN";
+        case MemoryGuardLevel::SEVERE: return "SEVERE";
+        case MemoryGuardLevel::CRITICAL: return "CRITICAL";
+        default: return "NORMAL";
+    }
+}
+
+inline bool rejectHeavyRequestOnPressure(
+    AsyncWebServerRequest* request,
+    const char* requestLabel = "Heavy request",
+    MemoryGuardLevel rejectLevel = MemoryGuardLevel::SEVERE,
+    int retryAfterSeconds = 5) {
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+    if (!monitor) return false;
+
+    MemoryGuardLevel currentLevel = monitor->getMemoryGuardLevel();
+    if (static_cast<uint8_t>(currentLevel) < static_cast<uint8_t>(rejectLevel)) {
+        return false;
+    }
+
+    const char* label = (requestLabel && requestLabel[0] != '\0')
+        ? requestLabel
+        : "Heavy request";
+    char msg[128];
+    snprintf(msg, sizeof(msg), "%s temporarily unavailable (%s memory pressure)",
+             label, memoryGuardLevelName(currentLevel));
+    sendJsonError(request, 503, msg, retryAfterSeconds);
+    return true;
 }
 
 // 内存检查 - 返回 true 表示内存不足（已发送 503 响应）
 // 同时检查总空闲堆和最大连续块（检测碎片化）
 // 阈值选定（路由瘦身后调低）：启动 heap=179984，仅在真正资源耗尽边缘熔断
-inline bool checkLowMemory(AsyncWebServerRequest* request, size_t threshold = 12288) {
+inline bool checkLowMemory(AsyncWebServerRequest* request, size_t threshold = 8192) {
     uint32_t freeHeap = ESP.getFreeHeap();
     uint32_t maxAlloc = ESP.getMaxAllocHeap();
-    if (freeHeap < threshold || maxAlloc < 6144) {
+    uint32_t minMaxAlloc = (threshold >= 16384) ? 6144 : 4096;
+    if (freeHeap < threshold || maxAlloc < minMaxAlloc) {
         char msg[64];
         snprintf(msg, sizeof(msg), "Low memory: heap=%lu maxAlloc=%lu", (unsigned long)freeHeap, (unsigned long)maxAlloc);
-        sendJsonError(request, 503, msg);
+        sendJsonError(request, 503, msg, 5);
         return true;
     }
     return false;
@@ -61,7 +109,7 @@ inline bool checkResponseMemory(AsyncWebServerRequest* request, size_t responseS
                  (unsigned)safeSize, (unsigned long)maxAlloc);
         AsyncWebServerResponse* response = request->beginResponse(503, "text/plain", msg);
         response->addHeader("Retry-After", "5");
-        request->send(response);
+        sendWithClose(request, response);
         return true;
     }
     return false;
@@ -93,23 +141,29 @@ inline void writeJsonEscapedString(AsyncResponseStream* response, const String& 
 
 // 发送 JSON 文档（序列化到 String 后一次性发送，避免 AsyncResponseStream cbuf 扩容 OOM）
 inline void sendJsonStream(AsyncWebServerRequest* request, JsonDocument& doc) {
-    if (checkLowMemory(request)) return;
+    const size_t responseSize = measureJson(doc);
+    if (checkResponseMemory(request, responseSize)) return;
     String json;
+    json.reserve(responseSize + 1);
     serializeJson(doc, json);
-    request->send(200, "application/json", json);
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", json);
+    sendWithClose(request, response);
 }
 
 // 发送带 success:true 包装的 JSON 文档
 inline void sendJsonDocSuccess(AsyncWebServerRequest* request, JsonDocument& doc) {
-    if (checkLowMemory(request)) return;
+    const size_t innerSize = measureJson(doc);
+    if (checkResponseMemory(request, innerSize + 32)) return;
     String json;
-    json.reserve(measureJson(doc) + 32);
-    json += F("{\"success\":true,\"data\":");
     String inner;
+    inner.reserve(innerSize + 1);
     serializeJson(doc, inner);
+    json.reserve(inner.length() + 32);
+    json += F("{\"success\":true,\"data\":");
     json += inner;
     json += '}';
-    request->send(200, "application/json", json);
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", json);
+    sendWithClose(request, response);
 }
 
 // 统一的 "read JSON file -> deserialize -> modify -> serialize -> write" 流程

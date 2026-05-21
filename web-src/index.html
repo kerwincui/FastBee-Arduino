@@ -5,29 +5,29 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FastBee设备配置管理</title>
-    <link rel="icon" href="./assets/favicon.ico" type="image/x-icon">
+    <link rel="icon" href="/assets/favicon.ico" type="image/x-icon">
     <!-- Critical CSS: 登录页骨架 + 基础变量（避免 FOUC） -->
     <style>
-    :root{--primary:#1677ff;--primary-hover:#4096ff;--primary-active:#0958d9;--primary-light:#e6f4ff;--bg-body-fallback:#f5f5f5;--bg-body:linear-gradient(135deg,#f5f5f5 0%,#fafafa 50%,#f0f0f0 100%);--bg-card:rgba(255,255,255,0.92);--glass-bg:rgba(255,255,255,0.78);--glass-border:rgba(22,119,255,0.12);--glass-shadow:0 6px 16px 0 rgba(0,0,0,0.08),0 3px 6px -4px rgba(0,0,0,0.12),0 9px 28px 8px rgba(0,0,0,0.05);--text-primary:rgba(0,0,0,0.88);--text-secondary:rgba(0,0,0,0.65);--border:#d9d9d9;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:20px;--space-6:24px;--space-8:32px;--rounded-md:6px;--rounded-2xl:16px;--shadow-md:0 4px 6px -1px rgb(0 0 0/0.1),0 2px 4px -2px rgb(0 0 0/0.1)}
-    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg-body-fallback);background-image:var(--bg-body);background-attachment:fixed;color:var(--text-primary);line-height:1.6;min-height:100vh;margin:0}
-    .login-page{background:linear-gradient(135deg,#f5f5f5 0%,#fafafa 30%,#f0f0f0 70%,#e6f4ff 100%);height:100vh;display:flex;align-items:center;justify-content:center;padding:var(--space-5);position:relative}
+    :root{--primary:#1677ff;--primary-hover:#4096ff;--bg-body-fallback:#f5f5f5;--bg-body:linear-gradient(135deg,#f5f5f5 0%,#fafafa 50%,#f0f0f0 100%);--text-primary:rgba(0,0,0,.88);--border:#d9d9d9;--space-2:8px;--space-4:16px;--space-5:20px;--space-8:32px;--rounded-md:6px;--rounded-2xl:16px;--glass-shadow:0 6px 16px 0 rgba(0,0,0,.08),0 3px 6px -4px rgba(0,0,0,.12),0 9px 28px 8px rgba(0,0,0,.05)}
+    body{margin:0;min-height:100vh;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;line-height:1.6;color:var(--text-primary);background:var(--bg-body-fallback);background-image:var(--bg-body);background-attachment:fixed}
+    .login-page{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:var(--space-5);background:linear-gradient(135deg,#f5f5f5 0%,#fafafa 30%,#f0f0f0 70%,#e6f4ff 100%)}
     .app-container.fb-hidden{display:none}
-    .login-card{background:rgba(255,255,255,0.75);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:var(--rounded-2xl);box-shadow:var(--glass-shadow);width:100%;max-width:400px;position:relative;border:none}
-    .login-header{padding:var(--space-8) var(--space-5) 0;text-align:center}
-    .login-header img{width:50px}
-    .login-body{padding:var(--space-8)}
-    .fb-btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);padding:var(--space-2) var(--space-4);font-size:13px;font-weight:500;border:1px solid var(--border);border-radius:var(--rounded-md);background:var(--bg-card);color:var(--text-primary);cursor:pointer;transition:all 0.2s;white-space:nowrap}
-    .fb-btn-primary{background:var(--primary);color:#fff;border-color:var(--primary)}
-    .fb-btn-primary:hover{background:var(--primary-hover);border-color:var(--primary-hover);color:#fff}
-    .notification-container{position:fixed;top:var(--space-5);right:var(--space-5);z-index:9999;max-width:350px;width:100%}
-    .fb-m-0{margin:0}.fb-text-xl{font-size:1.25rem}.fb-text-primary{color:var(--primary)}
-    .fb-form input[type="text"],.fb-form input[type="password"]{width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--rounded-md);font-size:14px;box-sizing:border-box}
-    .fb-input-full{width:100%}
-    .fb-u-1{width:100%}
-    .fb-mt-3{margin-top:12px}.fb-my-3{margin-top:12px;margin-bottom:12px}
+    .login-card{width:100%;max-width:400px;background:rgba(255,255,255,.75);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:0;border-radius:var(--rounded-2xl);box-shadow:var(--glass-shadow)}
+    .login-lang-switch{display:flex;justify-content:flex-end;padding:12px 12px 0}.login-lang-switch select,.header-actions select{padding:6px 10px;border:1px solid var(--border);border-radius:var(--rounded-md);background:#fff;color:var(--text-primary)}
+    .login-header{text-align:center;padding:var(--space-8) var(--space-5) 0}.login-logo-img{display:inline-block;width:56px;height:56px;object-fit:contain;filter:drop-shadow(0 10px 24px rgba(22,119,255,.22))}.login-body{padding:var(--space-8)}.login-body fieldset{border:0;margin:0;padding:0;min-width:0}
+    .fb-form input[type=text],.fb-form input[type=password],.fb-btn{box-sizing:border-box}
+    .fb-form input[type=text],.fb-form input[type=password]{width:100%;padding:8px 12px;font-size:14px;border:1px solid var(--border);border-radius:var(--rounded-md)}
+    .fb-btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);padding:8px var(--space-4);font-size:13px;font-weight:500;border:1px solid var(--border);border-radius:var(--rounded-md);cursor:pointer;white-space:nowrap}
+    .fb-btn-primary{width:100%;color:#fff;background:var(--primary);border-color:var(--primary)}
+    .fb-m-0{margin:0}.fb-text-xl{font-size:1.25rem}.fb-text-primary{color:var(--primary)}.fb-mt-3{margin-top:12px}.fb-my-3{margin:12px 0}
     </style>
-    <!-- 异步加载完整 CSS -->
-    <link rel="stylesheet" href="./css/main.css" media="print" onload="this.media='all'">
+    <script>
+    window.__fastbeeAssetVersion = '20260519-1822';
+    window.__fastbeeResolveAssetUrl = function(path) {
+        var separator = path.indexOf('?') === -1 ? '?' : '&';
+        return path + separator + 'v=' + window.__fastbeeAssetVersion;
+    };
+    </script>
     <noscript>
         <link rel="stylesheet" href="./css/main.css">
     </noscript>
@@ -47,7 +47,7 @@
                 </select>
             </div>
             <div class="login-header">
-                <div><img src="/assets/logo.png" alt="FastBee Logo"></div>
+                <img class="login-logo-img" src="/assets/logo.png" alt="FastBee Logo">
                 <h1 class="fb-m-0 fb-text-xl fb-text-primary" id="login-title" data-i18n="login-title">设备配置管理</h1>
             </div>
 
@@ -82,7 +82,7 @@
             <!-- 侧边栏 -->
             <div class="sidebar" id="sidebar">
                 <div class="sidebar-header">
-                    <img src="/assets/logo.png" alt="FastBee Logo">
+                    <img id="sidebar-logo" data-lazy-src="/assets/logo.png" alt="FastBee Logo">
                     <h3 id="app-title" data-i18n="app-title">设备管理系统</h3>
                 </div>
                 <div class="sidebar-menu">
@@ -103,27 +103,26 @@
                         <span class="menu-icon">⚡</span> <span id="menu-periph-exec"
                             data-i18n="menu-periph-exec">外设执行</span>
                     </a>
-                    <a href="#" class="menu-item" data-page="device-control">
-                        <span class="menu-icon">📺</span> <span id="menu-device-control" data-i18n="menu-device-control">设备控制</span>
-                    </a>
                     <a href="#" class="menu-item" data-page="protocol">
                         <span class="menu-icon">🔌</span> <span id="menu-protocol" data-i18n="menu-protocol">通信协议</span>
                     </a>
-                    <a href="#" class="menu-item" data-page="rule-script">
-                        <span class="menu-icon">📜</span> <span id="menu-rule-script"
-                            data-i18n="menu-rule-script">规则脚本</span>
+                    <a href="#" class="menu-item" data-page="device-control">
+                        <span class="menu-icon">📺</span> <span id="menu-device-control" data-i18n="menu-device-control">设备控制</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="logs">
+                        <span class="menu-icon">📜</span> <span id="menu-logs" data-i18n="menu-logs">设备日志</span>
                     </a>
                     <a href="#" class="menu-item" data-page="data">
                         <span class="menu-icon">📁</span> <span id="menu-data" data-i18n="menu-data">文件管理</span>
-                    </a>
-                    <a href="#" class="menu-item" data-page="logs">
-                        <span class="menu-icon">📊</span> <span id="menu-logs" data-i18n="menu-logs">设备日志</span>
                     </a>
                     <a href="#" class="menu-item" data-page="users">
                         <span class="menu-icon">👥</span> <span id="menu-users" data-i18n="menu-users">用户管理</span>
                     </a>
                     <a href="#" class="menu-item" data-page="roles">
-                        <span class="menu-icon">🛡️</span> <span id="menu-roles" data-i18n="menu-roles">角色管理</span>
+                        <span class="menu-icon">🔐</span> <span id="menu-roles" data-i18n="menu-roles">角色权限</span>
+                    </a>
+                    <a href="#" class="menu-item" data-page="rule-script">
+                        <span class="menu-icon">📜</span> <span id="menu-rule-script" data-i18n="menu-rule-script">规则脚本</span>
                     </a>
                 </div>
 
@@ -138,7 +137,6 @@
                         <h1 class="page-title" id="page-title">设备监控仪表盘</h1>
                     </div>
                     <div class="header-actions">
-                        <!-- 语言切换 -->
                         <select id="language-select" class="fb-w-auto">
                             <option value="zh-CN">中文</option>
                             <option value="en">English</option>
@@ -190,55 +188,200 @@
         </div>
     </div>
 
-    <!-- 核心 JS 拆分为 9 个 chunk（每个 gz≤5KB），适配 ESP32 单 free_block ≤6KB 的稳态内存碎片化限制 -->
-    <!-- defer 保证按文档顺序执行，依赖关系：1→2→3→4→5→6→7→8→9 -->
-    <script defer src="./js/chunk-1-core-a.js"></script>
-    <script defer src="./js/chunk-2-core-b.js"></script>
-    <script defer src="./js/chunk-3-i18n-engine.js"></script>
-    <script defer src="./js/chunk-4-i18n-zh-1.js"></script>
-    <script defer src="./js/chunk-5-i18n-zh-2.js"></script>
-    <script defer src="./js/chunk-6-i18n-zh-3.js"></script>
-    <script defer src="./js/chunk-7-i18n-zh-4.js"></script>
-    <script defer src="./js/chunk-8-state-1.js"></script>
-    <script defer src="./js/chunk-9-state-2.js"></script>
-    <!-- 降级：若 chunk 加载失败（如网络中断），回退到逐个加载所有源文件 -->
+    <!-- 串行加载 9 个 chunk：ESP32 站 lwIP socket pool 仅 4-5 个，并发请求会造成 RST。
+         依靠 async=false + 顺序 appendChild 保证按顺序执行，与 defer 语义等价但严格单连接。 -->
     <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        if (typeof AppState !== 'undefined') return; // chunks 正常加载
-        console.warn('[FastBee] app chunks failed, loading individual files...');
-        var files = [
-            './js/utils.js', './js/ui-components.js',
-            './js/request-governor.js', './js/notification.js',
-            './js/page-loader.js', './js/module-loader.js',
-            './js/modules/i18n-engine.js', './js/modules/i18n-zh-CN.js',
-            './js/state.js', './js/state-theme.js',
-            './js/state-session.js', './js/state-sse.js',
-            './js/state-ui.js', './js/main.js'
+    (function() {
+        var bootChunks = [
+            './js/chunk-1-core-a.js',
+            './js/chunk-2-core-b.js',
+            './js/chunk-3-i18n-engine.js',
+            './js/chunk-8-state-1.js',
+            './js/chunk-9-state-2.js'
         ];
-        var i = 0;
-        function loadNext() {
-            if (i >= files.length) return;
-            var s = document.createElement('script');
-            s.src = files[i++];
-            s.onload = loadNext;
-            s.onerror = function() {
-                console.warn('[FastBee] Failed:', this.src);
-                loadNext();
-            };
-            document.head.appendChild(s);
+        var zhChunks = [
+            './js/chunk-4-i18n-zh-1.js',
+            './js/chunk-5-i18n-zh-2.js',
+            './js/chunk-6-i18n-zh-3.js',
+            './js/chunk-7-i18n-zh-4.js'
+        ];
+        var started = false;
+        var zhStarted = false;
+        var zhDone = false;
+        function loadSequence(files, delayMs, onDone) {
+            var i = 0;
+            function loadNext() {
+                if (i >= files.length) {
+                    if (typeof onDone === 'function') onDone(true);
+                    return;
+                }
+                var s = document.createElement('script');
+                s.src = window.__fastbeeResolveAssetUrl(files[i++]);
+                s.async = false;
+                s.onload = function() { setTimeout(loadNext, delayMs || 30); };
+                s.onerror = function() {
+                    console.error('[FastBee] chunk failed:', this.src);
+                    setTimeout(loadNext, 300);
+                };
+                document.head.appendChild(s);
+            }
+            setTimeout(loadNext, 60);
         }
-        loadNext();
-    });
+        function startChunkLoad() {
+            if (started) return;
+            started = true;
+            loadSequence(bootChunks, 30);
+        }
+        function loadZhChunks(onDone) {
+            if (zhDone) {
+                if (typeof onDone === 'function') onDone(true);
+                return;
+            }
+            if (zhStarted) {
+                if (typeof onDone === 'function') {
+                    document.addEventListener('fastbee:zh-ready', function() {
+                        onDone(true);
+                    }, { once: true });
+                }
+                return;
+            }
+            zhStarted = true;
+            loadSequence(zhChunks, 60, function() {
+                zhDone = true;
+                try {
+                    document.dispatchEvent(new Event('fastbee:zh-ready'));
+                } catch (_) {}
+                if (typeof onDone === 'function') onDone(true);
+            });
+        }
+        window.__fastbeeStartChunks = startChunkLoad;
+        window.__fastbeeLoadZhChunks = loadZhChunks;
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', startChunkLoad, { once: true });
+        } else {
+            startChunkLoad();
+        }
+    })();
+    </script>
+    <script>
+    (function() {
+        function setSubmitState(submitBtn, isLoading, text) {
+            if (!submitBtn) return;
+            submitBtn.disabled = !!isLoading;
+            if (typeof text === 'string') submitBtn.innerHTML = text;
+        }
+
+        function inlineLoginFallback(originalText, submitBtn) {
+            var usernameEl = document.getElementById('username');
+            var passwordEl = document.getElementById('password');
+            var rememberEl = document.getElementById('remember');
+            var username = usernameEl ? usernameEl.value : '';
+            var password = passwordEl ? passwordEl.value : '';
+            var remember = rememberEl ? !!rememberEl.checked : false;
+
+            if (!username || !password) {
+                setSubmitState(submitBtn, false, originalText);
+                return;
+            }
+
+            setSubmitState(submitBtn, true, '登录中...');
+            fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                credentials: 'include',
+                cache: 'no-store',
+                body: 'username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password)
+            }).then(function(resp) {
+                return resp.json().catch(function() { return {}; }).then(function(data) {
+                    if (!resp.ok || !data || !data.success || !data.sessionId) {
+                        throw new Error((data && data.error) || 'login failed');
+                    }
+                    localStorage.setItem('auth_token', data.sessionId);
+                    localStorage.setItem('sessionId', data.sessionId);
+                    if (remember) {
+                        localStorage.setItem('remember', 'true');
+                        localStorage.setItem('username', username);
+                        localStorage.setItem('password', password);
+                    } else {
+                        ['remember', 'username', 'password'].forEach(function(key) {
+                            localStorage.removeItem(key);
+                        });
+                    }
+                    location.replace(window.__fastbeeResolveAssetUrl('/'));
+                });
+            }).catch(function(err) {
+                console.error('[FastBee] inline login fallback failed:', err);
+                setSubmitState(submitBtn, false, originalText);
+            });
+        }
+
+        function waitForBootAndLogin(deadline, originalText, submitBtn) {
+            if (window.__fastbeeBootReady && window.AppState && typeof window.AppState.handleLogin === 'function') {
+                setSubmitState(submitBtn, false, originalText);
+                window.AppState.handleLogin();
+                return;
+            }
+            if (Date.now() >= deadline) {
+                console.warn('[FastBee] boot not ready before login submit timeout');
+                inlineLoginFallback(originalText, submitBtn);
+                return;
+            }
+            setTimeout(function() {
+                waitForBootAndLogin(deadline, originalText, submitBtn);
+            }, 150);
+        }
+
+        var bootLoginWaitMs = 2500;
+
+        function installLoginBootGuard() {
+            var loginForm = document.getElementById('login-form');
+            if (!loginForm) return;
+            loginForm.addEventListener('submit', function(e) {
+                if (window.__fastbeeBootReady && window.AppState && typeof window.AppState.handleLogin === 'function') {
+                    return;
+                }
+                e.preventDefault();
+                if (typeof window.__fastbeeStartChunks === 'function') {
+                    window.__fastbeeStartChunks();
+                }
+                var submitBtn = loginForm.querySelector('button[type="submit"]');
+                var originalText = submitBtn ? submitBtn.innerHTML : '';
+                setSubmitState(submitBtn, true, '页面初始化中...');
+                waitForBootAndLogin(Date.now() + bootLoginWaitMs, originalText, submitBtn);
+            }, true);
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', installLoginBootGuard, { once: true });
+        } else {
+            installLoginBootGuard();
+        }
+    })();
     </script>
     <!-- Service Worker 注册 -->
     <script>
-    if ('serviceWorker' in navigator) {
+    (function() {
+        if (!('serviceWorker' in navigator)) return;
         window.addEventListener('load', function() {
-            navigator.serviceWorker.register('/sw.js').catch(function(e) {
-                console.log('SW registration failed:', e);
-            });
-        });
-    }
+            var version = window.__fastbeeAssetVersion || 'dev';
+            try {
+                var key = 'fastbeeAssetVersion';
+                var previous = localStorage.getItem(key) || '';
+                localStorage.setItem(key, version);
+                if (previous && previous !== version && window.caches) {
+                    caches.keys().then(function(names) {
+                        return Promise.all(names.filter(function(name) {
+                            return name.indexOf('fastbee-') === 0;
+                        }).map(function(name) {
+                            return caches.delete(name).catch(function() { return false; });
+                        }));
+                    }).catch(function() {});
+                }
+            } catch (_) {}
+            navigator.serviceWorker.register(window.__fastbeeResolveAssetUrl('/sw.js'))
+                .catch(function(err) { console.warn('[FastBee] service worker register failed:', err); });
+        }, { once: true });
+    })();
     </script>
 </body>
 

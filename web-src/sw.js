@@ -78,6 +78,23 @@ function staleWhileRevalidate(event, trim) {
     });
 }
 
+function networkFirst(event, trim) {
+    return fetch(event.request).then(function(resp) {
+        if (resp.ok) {
+            var clone = resp.clone();
+            caches.open(CACHE_NAME).then(function(c) {
+                c.put(event.request, clone);
+                if (trim) trimCache(c);
+            });
+        }
+        return resp;
+    }).catch(function() {
+        return caches.match(event.request).then(function(cached) {
+            return cached || offline();
+        });
+    });
+}
+
 self.addEventListener('install', function() { self.skipWaiting(); });
 
 self.addEventListener('activate', function(e) {
@@ -109,19 +126,14 @@ self.addEventListener('fetch', function(e) {
     var accept = e.request.headers.get('Accept') || '';
     if (accept.indexOf('text/event-stream') !== -1) return;
 
-    // API: Network First
+    // API: pass through, never cache.
     if (url.pathname.startsWith('/api/')) {
-        e.respondWith(
-            fetch(e.request).then(function(resp) {
-                if (resp.ok) {
-                    var clone = resp.clone();
-                    caches.open(CACHE_NAME).then(function(c) { c.put(e.request, clone); });
-                }
-                return resp;
-            }).catch(function() {
-                return caches.match(e.request).then(function(c) { return c || offline(); });
-            })
-        );
+        return;
+    }
+
+    // Navigation: network-first so index.html never pins an old asset version.
+    if (e.request.mode === 'navigate' || accept.indexOf('text/html') !== -1) {
+        e.respondWith(networkFirst(e, false));
         return;
     }
 
@@ -134,12 +146,6 @@ self.addEventListener('fetch', function(e) {
 
     if (isStatic || isMedia) {
         e.respondWith(staleWhileRevalidate(e, isMedia));
-        return;
-    }
-
-    // Navigation: Stale-While-Revalidate
-    if (e.request.mode === 'navigate' || accept.indexOf('text/html') !== -1) {
-        e.respondWith(staleWhileRevalidate(e, false));
         return;
     }
 

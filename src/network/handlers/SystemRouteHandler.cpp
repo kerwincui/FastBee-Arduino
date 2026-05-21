@@ -10,10 +10,67 @@
 #include "utils/TimeUtils.h"
 #include "utils/StaticPoolAllocator.h"
 #include "core/FeatureFlags.h"
+#include "./network/WebConfigManager.h"
+#include "./network/handlers/SSERouteHandler.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <WiFi.h>
+#include <esp_heap_caps.h>
 #include <memory>
+#include <ctype.h>
+
+namespace {
+// Keep inline imports small because form parsing already holds the body in RAM.
+// Larger config files are transferred through /api/config/transfer/import-chunk.
+constexpr size_t kMaxConfigTransferBytes = 128 * 1024;
+constexpr size_t kMaxConfigInlineImportBytes = 24 * 1024;
+constexpr size_t kMaxConfigTransferChunkBytes = 8 * 1024;
+constexpr int kMaxConfigTransferChunks = 32;
+
+bool isSafeConfigFileName(const String& name) {
+    if (name.isEmpty() || name.length() > 48) return false;
+    if (name.indexOf('/') >= 0 || name.indexOf('\\') >= 0 || name.indexOf("..") >= 0) return false;
+    if (name[0] == '.' || !name.endsWith(".json")) return false;
+    for (size_t i = 0; i < name.length(); ++i) {
+        char c = name[i];
+        if (isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.') continue;
+        return false;
+    }
+    return true;
+}
+
+bool isAllowedConfigTransferFileName(const String& name) {
+    if (!isSafeConfigFileName(name)) return false;
+#if !FASTBEE_ENABLE_ROLE_ADMIN
+    if (name == "roles.json") return false;
+#endif
+#if FASTBEE_SINGLE_ADMIN_MODE || !FASTBEE_ENABLE_USER_ADMIN
+    if (name == "users.json") return false;
+#endif
+    return true;
+}
+
+bool isIgnoredConfigImportFileName(const String& name) {
+#if !FASTBEE_ENABLE_ROLE_ADMIN
+    if (name == "roles.json") return true;
+#endif
+#if FASTBEE_SINGLE_ADMIN_MODE || !FASTBEE_ENABLE_USER_ADMIN
+    if (name == "users.json") return true;
+#endif
+    return false;
+}
+
+String configPathForName(const String& name) {
+    return String("/config/") + name;
+}
+
+String basenameOfFile(const char* path) {
+    String name(path ? path : "");
+    int slash = name.lastIndexOf('/');
+    if (slash >= 0) name = name.substring(slash + 1);
+    return name;
+}
+}
 
 SystemRouteHandler::SystemRouteHandler(WebHandlerContext* ctx)
     : ctx(ctx) {
@@ -186,6 +243,204 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     networkJsonHandler->setMethod(HTTP_POST | HTTP_PUT);
     server->addHandler(networkJsonHandler);
 
+#if FASTBEE_ENABLE_CONFIG_TRANSFER
+    server->on("/api/config/transfer/list", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        if (!ctx->checkPermission(request, "config.view")) { ctx->sendUnauthorized(request); return; }
+        if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config list", MemoryGuardLevel::SEVERE, 8)) return;
+        if (HandlerUtils::checkLowMemory(request, 8192)) return;
+
+        JsonDocument doc;
+        doc["success"] = true;
+        JsonArray files = doc["data"]["files"].to<JsonArray>();
+
+        File root = LittleFS.open("/config");
+        if (root && root.isDirectory()) {
+            File file = root.openNextFile();
+            uint8_t count = 0;
+            while (file && count < 32) {
+                if (!file.isDirectory()) {
+                    String name = basenameOfFile(file.name());
+                    if (isAllowedConfigTransferFileName(name) && file.size() <= kMaxConfigTransferBytes) {
+                        JsonObject item = files.add<JsonObject>();
+                        item["name"] = name;
+                        item["size"] = file.size();
+                        count++;
+                    }
+                }
+                file = root.openNextFile();
+            }
+            root.close();
+        }
+
+        HandlerUtils::sendJsonStream(request, doc);
+    });
+
+    server->on("/api/config/transfer/export", HTTP_GET,
+              [this](AsyncWebServerRequest* request) {
+        if (!ctx->checkPermission(request, "config.view")) { ctx->sendUnauthorized(request); return; }
+        if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config export", MemoryGuardLevel::SEVERE, 8)) return;
+        if (!request->hasParam("name")) { ctx->sendError(request, 400, "Missing name parameter"); return; }
+        String name = request->getParam("name")->value();
+        if (!isAllowedConfigTransferFileName(name)) { ctx->sendError(request, 403, "Invalid config file name"); return; }
+
+        String path = configPathForName(name);
+        if (!LittleFS.exists(path)) { ctx->sendError(request, 404, "Config file not found"); return; }
+        File file = LittleFS.open(path, "r");
+        if (!file) { ctx->sendError(request, 500, "Failed to open config file"); return; }
+        if (file.size() > kMaxConfigTransferBytes) {
+            file.close();
+            ctx->sendError(request, 413, "Config file too large");
+            return;
+        }
+
+        auto state = std::make_shared<File>(file);
+        AsyncWebServerResponse* resp = request->beginChunkedResponse(
+            "application/json",
+            [state](uint8_t* buffer, size_t maxLen, size_t /*index*/) -> size_t {
+                if (!state || !(*state)) return 0;
+                if (!state->available()) {
+                    state->close();
+                    return 0;
+                }
+                return state->read(buffer, maxLen);
+            });
+        if (!resp) {
+            file.close();
+            HandlerUtils::sendJsonError(request, 500, "Failed to create export response");
+            return;
+        }
+        resp->addHeader("Content-Disposition", String("attachment; filename=\"") + name + "\"");
+        resp->addHeader("Cache-Control", "no-store");
+        resp->addHeader("Connection", "close");
+        request->send(resp);
+    });
+
+    server->on("/api/config/transfer/import", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        if (!ctx->checkPermission(request, "config.edit")) { ctx->sendUnauthorized(request); return; }
+        if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config import", MemoryGuardLevel::SEVERE, 8)) return;
+        if (!request->hasParam("name", true) || !request->hasParam("content", true)) {
+            ctx->sendError(request, 400, "Missing name or content parameter");
+            return;
+        }
+        String name = request->getParam("name", true)->value();
+        const String& content = request->getParam("content", true)->value();
+        if (!isSafeConfigFileName(name)) { ctx->sendError(request, 403, "Invalid config file name"); return; }
+        if (isIgnoredConfigImportFileName(name)) {
+            JsonDocument skipped;
+            skipped["name"] = name;
+            skipped["skipped"] = true;
+            ctx->sendSuccess(request, skipped);
+            return;
+        }
+        if (content.isEmpty() || content.length() > kMaxConfigInlineImportBytes) {
+            ctx->sendError(request, 413, "Config content too large for inline import");
+            return;
+        }
+        if (HandlerUtils::checkLowMemory(request, 24576)) return;
+
+        if (!LittleFS.exists("/config") && !LittleFS.mkdir("/config")) {
+            ctx->sendError(request, 500, "Failed to create config directory");
+            return;
+        }
+
+        String path = configPathForName(name);
+        File out = LittleFS.open(path, "w");
+        if (!out) { ctx->sendError(request, 500, "Failed to open config file for writing"); return; }
+        size_t written = out.print(content);
+        out.close();
+        if (written != content.length()) {
+            ctx->sendError(request, 500, "Failed to write complete config file");
+            return;
+        }
+
+        if (name == "device.json" || name == "protocol.json") {
+            FastBeeFramework* fw = FastBeeFramework::getInstance();
+            if (fw) fw->ensureDeviceIdentity();
+        }
+
+        JsonDocument doc;
+        doc["name"] = name;
+        doc["size"] = written;
+        ctx->sendSuccess(request, doc);
+    });
+
+    server->on("/api/config/transfer/import-chunk", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        if (!ctx->checkPermission(request, "config.edit")) { ctx->sendUnauthorized(request); return; }
+        if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config chunk import", MemoryGuardLevel::SEVERE, 8)) return;
+        if (!request->hasParam("name", true) || !request->hasParam("chunk", true)
+            || !request->hasParam("index", true) || !request->hasParam("total", true)) {
+            ctx->sendError(request, 400, "Missing chunk import parameter");
+            return;
+        }
+
+        String name = request->getParam("name", true)->value();
+        const String& chunk = request->getParam("chunk", true)->value();
+        int index = request->getParam("index", true)->value().toInt();
+        int total = request->getParam("total", true)->value().toInt();
+
+        if (!isSafeConfigFileName(name)) { ctx->sendError(request, 403, "Invalid config file name"); return; }
+        if (isIgnoredConfigImportFileName(name)) {
+            JsonDocument skipped;
+            skipped["name"] = name;
+            skipped["skipped"] = true;
+            ctx->sendSuccess(request, skipped);
+            return;
+        }
+        if (total <= 0 || total > kMaxConfigTransferChunks || index < 0 || index >= total) {
+            ctx->sendError(request, 400, "Invalid chunk index");
+            return;
+        }
+        if (chunk.isEmpty() || chunk.length() > kMaxConfigTransferChunkBytes) {
+            ctx->sendError(request, 413, "Config chunk too large or empty");
+            return;
+        }
+        if (HandlerUtils::checkLowMemory(request, 24576)) return;
+
+        if (!LittleFS.exists("/config") && !LittleFS.mkdir("/config")) {
+            ctx->sendError(request, 500, "Failed to create config directory");
+            return;
+        }
+
+        String path = configPathForName(name);
+        if (index > 0 && !LittleFS.exists(path)) {
+            ctx->sendError(request, 409, "Missing previous config chunk");
+            return;
+        }
+
+        File out = LittleFS.open(path, index == 0 ? "w" : "a");
+        if (!out) { ctx->sendError(request, 500, "Failed to open config file for chunk write"); return; }
+        size_t written = out.print(chunk);
+        size_t fileSize = out.size();
+        out.close();
+
+        if (written != chunk.length()) {
+            ctx->sendError(request, 500, "Failed to write complete config chunk");
+            return;
+        }
+        if (fileSize > kMaxConfigTransferBytes) {
+            LittleFS.remove(path);
+            ctx->sendError(request, 413, "Config file too large");
+            return;
+        }
+
+        if (index == total - 1 && (name == "device.json" || name == "protocol.json")) {
+            FastBeeFramework* fw = FastBeeFramework::getInstance();
+            if (fw) fw->ensureDeviceIdentity();
+        }
+
+        JsonDocument doc;
+        doc["name"] = name;
+        doc["index"] = index;
+        doc["total"] = total;
+        doc["size"] = fileSize;
+        ctx->sendSuccess(request, doc);
+    });
+#endif
+
+#if FASTBEE_ENABLE_FILE_MANAGER
     // Files
     server->on(AsyncURIMatcher::exact("/api/files"), HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetFilesList(request); });
@@ -230,6 +485,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             resp->addHeader("Content-Disposition", String("attachment; filename=\"") + fileName + "\"");
             resp->addHeader("X-Content-Type-Options", "nosniff");
             resp->addHeader("Cache-Control", "no-store");
+            resp->addHeader("Connection", "close");
             request->send(resp);
             return;
         }
@@ -245,19 +501,13 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         // MemGuard 策略（chunked 流式响应，内存占用恒定 ~256B 缓冲 + 少量 state）：
         // - 受保护文件（config/tiny）：无视 MemGuard 级别，始终放行（CRITICAL 级下也能救援导出）
         // - 非受保护文件：CRITICAL 级全拒；SEVERE 级拒绝（避免大文件拖垮已濒临 OOM 的系统）
-        FastBeeFramework* fw = FastBeeFramework::getInstance();
-        if (fw && fw->getHealthMonitor() && !isProtectedFile) {
-            MemoryGuardLevel level = fw->getHealthMonitor()->getMemoryGuardLevel();
-            if (level >= MemoryGuardLevel::CRITICAL) {
-                file.close();
-                HandlerUtils::sendJsonError(request, 503, "Device memory critical, file read unavailable");
-                return;
-            }
-            if (level >= MemoryGuardLevel::SEVERE) {
-                file.close();
-                HandlerUtils::sendJsonError(request, 503, "Device memory low, large file read temporarily unavailable");
-                return;
-            }
+        if (!isProtectedFile && HandlerUtils::rejectHeavyRequestOnPressure(
+                request,
+                rawDownload ? "Raw file download" : "File content",
+                MemoryGuardLevel::SEVERE,
+                8)) {
+            file.close();
+            return;
         }
 
         // 堆内存最小阈值（chunked 流式仅需极少内存即可发送）：
@@ -379,6 +629,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 return 0;
             }
         );
+        resp->addHeader("Connection", "close");
         request->send(resp);
     });
 
@@ -425,6 +676,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/filesystem", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
         if (!ctx->checkPermission(request, "fs.view")) { ctx->sendUnauthorized(request); return; }
+        if (HandlerUtils::checkLowMemory(request, 6144)) return;
         JsonDocument doc;
         size_t total = LittleFS.totalBytes();
         size_t used  = LittleFS.usedBytes();
@@ -434,6 +686,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         doc["usedPercent"]= total > 0 ? (used * 100 / total) : 0;
         ctx->sendSuccess(request, doc);
     });
+#endif // FASTBEE_ENABLE_FILE_MANAGER
 
     // Factory reset
     server->on("/api/system/factory-reset", HTTP_POST,
@@ -442,7 +695,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         LOGGER.info("Factory reset initiated by user");
         const char* configFiles[] = {
             "/config/device.json", "/config/network.json", "/config/protocol.json",
-            "/config/users.json", "/config/system.json",
+            "/config/users.json", "/config/auth.json", "/config/system.json",
             "/config/http.json", "/config/mqtt.json", "/config/tcp.json",
             "/config/modbus.json", "/config/coap.json",
             "/config/roles.json", "/config/peripherals.json", "/config/periph_exec.json"
@@ -453,10 +706,12 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 if (LittleFS.remove(configFiles[i])) { deletedCount++; LOGGER.infof("Deleted config file: %s", configFiles[i]); }
             }
         }
+#if FASTBEE_ENABLE_FILE_LOGGING || FASTBEE_ENABLE_LOG_VIEWER
         if (LittleFS.exists("/logs/system.log")) {
             File logFile = LittleFS.open("/logs/system.log", "w");
             if (logFile) { logFile.close(); LOGGER.info("Cleared system log file"); }
         }
+#endif
         JsonDocument doc;
         doc["success"] = true;
         doc["message"] = "Factory reset completed. Device will restart.";
@@ -514,6 +769,9 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     // System metrics
     server->on("/api/system/metrics", HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleSystemMetrics(request); });
+
+    server->on("/api/system/web-runtime", HTTP_GET,
+              [this](AsyncWebServerRequest* request) { handleWebRuntime(request); });
 
     // System capabilities (no auth required - public endpoint)
     server->on("/api/system/capabilities", HTTP_GET,
@@ -649,6 +907,7 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
         doc["data"]["network"]["macAddress"] = WiFi.macAddress();
     }
 
+#if FASTBEE_ENABLE_USER_ADMIN
     if (ctx->userManager) {
         doc["data"]["users"]["total"] = ctx->userManager->getUserCount();
     }
@@ -656,6 +915,7 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
         doc["data"]["users"]["activeSessions"] = ctx->authManager->getActiveSessionCount();
         doc["data"]["users"]["online"] = ctx->authManager->getOnlineUserCount();
     }
+#endif
 
     doc["success"] = true;
     HandlerUtils::sendJsonStream(request, doc);
@@ -664,7 +924,9 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
 void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
     unsigned long now = millis();
     if (_statusCache.valid && (now - _statusCache.timestamp) < STATUS_CACHE_TTL) {
-        request->send(200, "application/json", _statusCache.json);
+        AsyncWebServerResponse* response = request->beginResponse(200, "application/json", _statusCache.json);
+        response->addHeader("Connection", "close");
+        request->send(response);
         return;
     }
 
@@ -688,7 +950,9 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
     serializeJson(wrapper, _statusCache.json);
     _statusCache.timestamp = millis();
     _statusCache.valid = true;
-    request->send(200, "application/json", _statusCache.json);
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", _statusCache.json);
+    response->addHeader("Connection", "close");
+    request->send(response);
 }
 
 void SystemRouteHandler::handleSystemRestart(AsyncWebServerRequest* request) {
@@ -792,11 +1056,17 @@ void SystemRouteHandler::handleSaveNetworkConfig(AsyncWebServerRequest* request)
     ctx->sendSuccess(request, "Use JSON body for network config update");
 }
 
+#if FASTBEE_ENABLE_FILE_MANAGER
 void SystemRouteHandler::handleGetFilesList(AsyncWebServerRequest* request) {
     if (!ctx->checkPermission(request, "system.view")) {
         ctx->sendUnauthorized(request);
         return;
     }
+
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "File list", MemoryGuardLevel::SEVERE, 8)) {
+        return;
+    }
+    if (HandlerUtils::checkLowMemory(request, 8192)) return;
 
     String path = "/";
     if (request->hasParam("path")) {
@@ -837,6 +1107,7 @@ void SystemRouteHandler::handleGetFilesList(AsyncWebServerRequest* request) {
 
     HandlerUtils::sendJsonStream(request, doc);
 }
+#endif // FASTBEE_ENABLE_FILE_MANAGER
 
 void SystemRouteHandler::handleGetHealth(AsyncWebServerRequest* request) {
     JsonDocument doc;
@@ -859,7 +1130,158 @@ void SystemRouteHandler::handleSystemMetrics(AsyncWebServerRequest* request) {
     }
 
     String json = fw->getHealthMonitor()->getMetricsJson();
-    request->send(200, "application/json", json);
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", json);
+    response->addHeader("Connection", "close");
+    request->send(response);
+}
+
+void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "system.view")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+
+    JsonDocument doc;
+    JsonObject data = doc["data"].to<JsonObject>();
+    unsigned long now = millis();
+
+    uint32_t freeHeap = ESP.getFreeHeap();
+    uint32_t minFreeHeap = ESP.getMinFreeHeap();
+    uint32_t maxAlloc = ESP.getMaxAllocHeap();
+    uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    uint8_t frag = (freeHeap > 0)
+        ? static_cast<uint8_t>(100U - (largestBlock * 100U / freeHeap))
+        : 0;
+
+    data["server"]["nowMs"] = now;
+    data["server"]["scheduleRestart"] = ctx->scheduleRestart;
+    data["server"]["scheduledRestartAtMs"] = ctx->scheduledRestartTime;
+    data["server"]["scheduledRestartInMs"] =
+        (ctx->scheduleRestart && ctx->scheduledRestartTime > now)
+            ? (ctx->scheduledRestartTime - now)
+            : 0;
+
+    data["memory"]["freeHeap"] = freeHeap;
+    data["memory"]["minFreeHeap"] = minFreeHeap;
+    data["memory"]["maxAlloc"] = maxAlloc;
+    data["memory"]["largestBlock"] = largestBlock;
+    data["memory"]["fragmentation"] = frag;
+
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    WebConfigManager* webCfg = fw ? fw->getWebConfigManager() : nullptr;
+    data["server"]["webRunning"] = webCfg ? webCfg->isServerRunning() : false;
+
+    if (fw && fw->getHealthMonitor()) {
+        HealthMonitor* hm = fw->getHealthMonitor();
+        MemoryGuardLevel level = hm->getMemoryGuardLevel();
+        const char* levelText = "NORMAL";
+        switch (level) {
+            case MemoryGuardLevel::WARN:     levelText = "WARN"; break;
+            case MemoryGuardLevel::SEVERE:   levelText = "SEVERE"; break;
+            case MemoryGuardLevel::CRITICAL: levelText = "CRITICAL"; break;
+            default: break;
+        }
+        data["memory"]["guardLevel"] = levelText;
+        char healthBuf[192];
+        hm->getHealthReport(healthBuf, sizeof(healthBuf));
+        data["memory"]["healthReport"] = healthBuf;
+    }
+
+    if (webCfg) {
+        data["web"]["sseClients"] = webCfg->getSseClientCount();
+        data["web"]["sseMaxClients"] = static_cast<uint32_t>(SSERouteHandler::MAX_SSE_CLIENTS);
+        if (SSERouteHandler* sseHandler = webCfg->getSseRouteHandler()) {
+            SSEStatsSnapshot sseStats = sseHandler->getStats();
+            JsonObject sseStatsJson = data["web"]["sseStats"].to<JsonObject>();
+            sseStatsJson["acceptedConnections"] = sseStats.acceptedConnections;
+            sseStatsJson["rejectedLowMemory"] = sseStats.rejectedLowMemory;
+            sseStatsJson["rejectedGuard"] = sseStats.rejectedGuard;
+            sseStatsJson["rejectedCapacity"] = sseStats.rejectedCapacity;
+            sseStatsJson["evictedOldestClients"] = sseStats.evictedOldestClients;
+            sseStatsJson["forcedClosedClients"] = sseStats.forcedClosedClients;
+            sseStatsJson["timedOutClients"] = sseStats.timedOutClients;
+            sseStatsJson["disconnectedCleanups"] = sseStats.disconnectedCleanups;
+            sseStatsJson["skippedBroadcastLowMemory"] = sseStats.skippedBroadcastLowMemory;
+            sseStatsJson["skippedBroadcastGuard"] = sseStats.skippedBroadcastGuard;
+            sseStatsJson["lastConnectAtMs"] = sseStats.lastConnectAtMs;
+            sseStatsJson["lastRejectAtMs"] = sseStats.lastRejectAtMs;
+            sseStatsJson["lastForcedCloseAtMs"] = sseStats.lastForcedCloseAtMs;
+            sseStatsJson["lastCleanupAtMs"] = sseStats.lastCleanupAtMs;
+            sseStatsJson["lastSkipBroadcastAtMs"] = sseStats.lastSkipBroadcastAtMs;
+            sseStatsJson["lastRejectReason"] = sseStats.lastRejectReason;
+            sseStatsJson["lastSkipReason"] = sseStats.lastSkipReason;
+        }
+        data["recovery"]["softRestartCount"] = webCfg->getSoftRestartCount();
+        data["recovery"]["lastSoftRestartAtMs"] = webCfg->getLastSoftRestartAtMs();
+        data["recovery"]["lastSoftRestartAgeMs"] =
+            (webCfg->getLastSoftRestartAtMs() > 0 && now >= webCfg->getLastSoftRestartAtMs())
+                ? (now - webCfg->getLastSoftRestartAtMs())
+                : 0;
+        data["recovery"]["lastSoftRestartReason"] = webCfg->getLastSoftRestartReason();
+        data["recovery"]["lastSoftRestartFreeHeap"] = webCfg->getLastSoftRestartFreeHeap();
+        data["recovery"]["lastSoftRestartLargestBlock"] = webCfg->getLastSoftRestartLargestBlock();
+        data["recovery"]["lastSoftRestartFragmentation"] = webCfg->getLastSoftRestartFragmentation();
+        data["recovery"]["severePressureSinceMs"] = webCfg->getSeverePressureSinceMs();
+        data["recovery"]["severePressureDurationMs"] =
+            (webCfg->getSeverePressureSinceMs() > 0 && now >= webCfg->getSeverePressureSinceMs())
+                ? (now - webCfg->getSeverePressureSinceMs())
+                : 0;
+        WebRecoveryEvent recoveryEvents[8];
+        const size_t recoveryCount = webCfg->copyRecoveryEvents(recoveryEvents, 8);
+        JsonArray recoveryEventsJson = data["recovery"]["events"].to<JsonArray>();
+        for (size_t i = 0; i < recoveryCount; ++i) {
+            JsonObject eventJson = recoveryEventsJson.add<JsonObject>();
+            eventJson["type"] = recoveryEvents[i].type;
+            eventJson["reason"] = recoveryEvents[i].reason;
+            eventJson["atMs"] = recoveryEvents[i].atMs;
+            eventJson["ageMs"] =
+                (recoveryEvents[i].atMs > 0 && now >= recoveryEvents[i].atMs)
+                    ? (now - recoveryEvents[i].atMs)
+                    : 0;
+            eventJson["freeHeap"] = recoveryEvents[i].freeHeap;
+            eventJson["largestBlock"] = recoveryEvents[i].largestBlock;
+            eventJson["fragmentation"] = recoveryEvents[i].fragmentation;
+            eventJson["sseClients"] = recoveryEvents[i].sseClients;
+        }
+    }
+
+    if (ctx->networkManager) {
+        NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+        netMgr->updateStatusInfo();
+        NetworkStatusInfo info = netMgr->getStatusInfo();
+        WiFiConfig cfg = netMgr->getConfig();
+
+        const char* statusText = "unknown";
+        switch (info.status) {
+            case NetworkStatus::CONNECTED:         statusText = "connected"; break;
+            case NetworkStatus::DISCONNECTED:      statusText = "disconnected"; break;
+            case NetworkStatus::CONNECTING:        statusText = "connecting"; break;
+            case NetworkStatus::AP_MODE:           statusText = "ap_mode"; break;
+            case NetworkStatus::CONNECTION_FAILED: statusText = "failed"; break;
+            default: break;
+        }
+        const char* modeText = "unknown";
+        switch (cfg.mode) {
+            case NetworkMode::NETWORK_STA: modeText = "STA"; break;
+            case NetworkMode::NETWORK_AP:  modeText = "AP"; break;
+            default: break;
+        }
+
+        data["network"]["status"] = statusText;
+        data["network"]["mode"] = modeText;
+        data["network"]["ipAddress"] = info.ipAddress;
+        data["network"]["apIPAddress"] = info.apIPAddress;
+        data["network"]["ssid"] = info.ssid.isEmpty() ? cfg.staSSID : info.ssid;
+        data["network"]["internetAvailable"] = info.internetAvailable;
+        data["network"]["customDomain"] = cfg.customDomain;
+        auto* dns = netMgr->getDNSManager();
+        if (dns) {
+            data["network"]["mdnsDomain"] = dns->getActualHostname();
+        }
+    }
+
+    doc["success"] = true;
+    HandlerUtils::sendJsonStream(request, doc);
 }
 
 void SystemRouteHandler::handleGetCapabilities(AsyncWebServerRequest* request) {
@@ -881,6 +1303,8 @@ void SystemRouteHandler::handleGetCapabilities(AsyncWebServerRequest* request) {
     doc["data"]["webServer"]    = (bool)FASTBEE_ENABLE_WEB_SERVER;
     doc["data"]["healthMonitor"]= (bool)FASTBEE_ENABLE_HEALTH_MONITOR;
     doc["data"]["logger"]       = (bool)FASTBEE_ENABLE_LOGGER;
+    doc["data"]["logViewer"]    = (bool)FASTBEE_ENABLE_LOG_VIEWER;
+    doc["data"]["fileLogging"]  = (bool)FASTBEE_ENABLE_FILE_LOGGING;
     doc["data"]["taskManager"]  = (bool)FASTBEE_ENABLE_TASK_MANAGER;
 
     doc["success"] = true;

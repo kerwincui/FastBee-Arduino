@@ -13,7 +13,10 @@
 
             // 刷新文件列表按钮
             const fsRefreshBtn = document.getElementById('fs-refresh-btn');
-            if (fsRefreshBtn) fsRefreshBtn.onclick = function() { self.loadFileTree(self._currentDir || '/'); };
+            if (fsRefreshBtn) fsRefreshBtn.onclick = function() {
+                self.loadFileSystemInfo({ noCache: true });
+                self.loadFileTree(self._currentDir || '/', { noCache: true });
+            };
 
             // 返回上级按钮
             const fsUpBtn = document.getElementById('fs-up-btn');
@@ -33,8 +36,9 @@
         /**
          * 加载文件系统信息
          */
-        loadFileSystemInfo() {
-            apiGet('/api/filesystem')
+        loadFileSystemInfo(options) {
+            var getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            getter('/api/filesystem')
                 .then(res => {
                     if (res && res.success) {
                         const d = res.data || {};
@@ -52,7 +56,7 @@
         /**
          * 加载文件树
          */
-        loadFileTree(path) {
+        loadFileTree(path, options) {
             const treeContainer = document.getElementById('file-tree');
             if (!treeContainer) return;
 
@@ -65,7 +69,8 @@
 
             treeContainer.innerHTML = i18n.t('fs-loading-text');
 
-            apiGet('/api/files', { path: path })
+            var getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            getter('/api/files', { path: path })
                 .then(res => {
                     if (!res || !res.success) {
                         treeContainer.innerHTML = i18n.t('fs-load-fail-text');

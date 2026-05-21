@@ -93,6 +93,28 @@ static ModbusHandler* getModbusMaster(WebHandlerContext* ctx, AsyncWebServerRequ
     return modbus;
 }
 
+static bool rejectModbusHeavyRequest(AsyncWebServerRequest* request,
+                                     const char* requestLabel,
+                                     size_t minHeapThreshold = 8192,
+                                     int retryAfterSeconds = 6) {
+    if (HandlerUtils::rejectHeavyRequestOnPressure(
+            request, requestLabel, MemoryGuardLevel::SEVERE, retryAfterSeconds)) {
+        return true;
+    }
+    return HandlerUtils::checkLowMemory(request, minHeapThreshold);
+}
+
+static bool rejectModbusCriticalControl(AsyncWebServerRequest* request,
+                                        const char* requestLabel,
+                                        size_t minHeapThreshold = 6144,
+                                        int retryAfterSeconds = 4) {
+    if (HandlerUtils::rejectHeavyRequestOnPressure(
+            request, requestLabel, MemoryGuardLevel::CRITICAL, retryAfterSeconds)) {
+        return true;
+    }
+    return HandlerUtils::checkLowMemory(request, minHeapThreshold);
+}
+
 // 辅助：将 Modbus TX/RX 调试帧添加到 JSON 响应
 static void addModbusDebug(JsonDocument& doc, ModbusHandler* modbus) {
     JsonObject debug = doc["debug"].to<JsonObject>();
@@ -342,7 +364,7 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
     ModbusHandler* modbus = pm->getModbusHandler();
 
     // 内存检查：Modbus 状态响应可能包含大量任务数据
-    if (HandlerUtils::checkLowMemory(request)) return;
+    if (rejectModbusHeavyRequest(request, "Modbus status", 8192)) return;
 
     JsonDocument doc;
     doc["success"] = true;
@@ -557,6 +579,8 @@ void ModbusRouteHandler::handleModbusWrite(AsyncWebServerRequest* request) {
         return;
     }
 
+    if (rejectModbusCriticalControl(request, "Modbus queued write", 6144)) return;
+
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
     uint16_t regAddr = (uint16_t)ctx->getParamInt(request, "regAddress", 0);
     uint16_t value = (uint16_t)ctx->getParamInt(request, "value", 0);
@@ -595,11 +619,13 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
     uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
     String action = ctx->getParamValue(request, "action", "toggle");
     String mode = ctx->getParamValue(request, "mode", "coil");
-    
+
     LOG_WARNINGF("[CoilCtrl#%u] HTTP entry: slave=%d ch=%d action=%s mode=%s clientIP=%s",
                  reqSeq, slaveAddr, channel, action.c_str(), mode.c_str(),
                  request->client() ? request->client()->remoteIP().toString().c_str() : "?");
-    
+
+    if (rejectModbusCriticalControl(request, "Modbus relay control", 6144)) return;
+
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
         return;
@@ -725,7 +751,9 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
     LOG_WARNINGF("[CoilBatch#%u] HTTP entry: slave=%d count=%d action=%s mode=%s clientIP=%s",
                  reqSeq, slaveAddr, channelCount, action.c_str(), mode.c_str(),
                  request->client() ? request->client()->remoteIP().toString().c_str() : "?");
-    
+
+    if (rejectModbusHeavyRequest(request, "Modbus batch control", 8192)) return;
+
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
         return;
@@ -953,7 +981,9 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
             delayMode = delayDev.delayMode;
         }
     }
-    
+
+    if (rejectModbusHeavyRequest(request, "Modbus delayed control", 8192)) return;
+
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
         return;
@@ -1125,6 +1155,8 @@ void ModbusRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request) 
     uint16_t channelCount = (uint16_t)ctx->getParamInt(request, "channelCount", 8);
     uint16_t coilBase = (uint16_t)ctx->getParamInt(request, "coilBase", 0);
     String mode = ctx->getParamValue(request, "mode", "coil");
+
+    if (rejectModbusHeavyRequest(request, "Modbus coil status", 8192)) return;
     
     // 验证 mode 参数
     if (mode != "coil" && mode != "register") {
@@ -1192,7 +1224,9 @@ void ModbusRouteHandler::handleModbusDeviceAddress(AsyncWebServerRequest* reques
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
     uint16_t addrRegister = (uint16_t)ctx->getParamInt(request, "addressRegister", 0x0000);
     String newAddrStr = ctx->getParamValue(request, "newAddress", "");
-    
+
+    if (rejectModbusHeavyRequest(request, "Modbus device address", 8192)) return;
+
     JsonDocument doc;
     doc["success"] = true;
     JsonObject data = doc["data"].to<JsonObject>();
@@ -1249,6 +1283,8 @@ void ModbusRouteHandler::handleModbusDeviceBaudrate(AsyncWebServerRequest* reque
     uint8_t mode = (uint8_t)ctx->getParamInt(request, "mode", 0);
     // baudRateReg: FC06模式下波特率寄存器地址(默认0x0033)
     uint16_t baudRateReg = (uint16_t)ctx->getParamInt(request, "baudRateReg", 0x0033);
+
+    if (rejectModbusHeavyRequest(request, "Modbus baudrate change", 8192)) return;
     
     // 从设备配置中查找默认值
     int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
@@ -1370,7 +1406,9 @@ void ModbusRouteHandler::handleModbusDiscreteInputs(AsyncWebServerRequest* reque
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
     uint16_t inputCount = (uint16_t)ctx->getParamInt(request, "inputCount", 4);
     uint16_t inputBase = (uint16_t)ctx->getParamInt(request, "inputBase", 0);
-    
+
+    if (rejectModbusHeavyRequest(request, "Modbus discrete inputs", 8192)) return;
+
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
         return;
@@ -1420,6 +1458,8 @@ void ModbusRouteHandler::handleModbusRegisterRead(AsyncWebServerRequest* request
     uint16_t startAddr = (uint16_t)ctx->getParamInt(request, "startAddress", 0);
     uint16_t quantity = (uint16_t)ctx->getParamInt(request, "quantity", 1);
     uint8_t fc = (uint8_t)ctx->getParamInt(request, "functionCode", 3);
+
+    if (rejectModbusHeavyRequest(request, "Modbus register read", 12288)) return;
     
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
@@ -1470,6 +1510,8 @@ void ModbusRouteHandler::handleModbusRegisterWrite(AsyncWebServerRequest* reques
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
     uint16_t regAddr = (uint16_t)ctx->getParamInt(request, "registerAddress", 0);
     uint16_t value = (uint16_t)ctx->getParamInt(request, "value", 0);
+
+    if (rejectModbusCriticalControl(request, "Modbus register write", 6144)) return;
     
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
@@ -1517,6 +1559,8 @@ void ModbusRouteHandler::handleModbusRegisterBatchWrite(AsyncWebServerRequest* r
     uint8_t slaveAddr = (uint8_t)ctx->getParamInt(request, "slaveAddress", 1);
     uint16_t startAddr = (uint16_t)ctx->getParamInt(request, "startAddress", 0);
     String valuesStr = ctx->getParamValue(request, "values", "[]");
+
+    if (rejectModbusHeavyRequest(request, "Modbus batch register write", 8192)) return;
     
     if (slaveAddr < 1 || slaveAddr > 247) {
         ctx->sendBadRequest(request, "Invalid slave address (1-247)");
@@ -1588,6 +1632,12 @@ void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request
     if (action.isEmpty()) {
         ctx->sendBadRequest(request, "Missing 'action' parameter");
         return;
+    }
+
+    if (action == "readStatus") {
+        if (rejectModbusHeavyRequest(request, "Modbus motor status", 8192)) return;
+    } else {
+        if (rejectModbusCriticalControl(request, "Modbus motor control", 6144)) return;
     }
     
     // 从设备配置中查找电机寄存器映射

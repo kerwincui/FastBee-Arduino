@@ -2,6 +2,14 @@
 
 > 本文档基于源码 `include/core/PeripheralTypes.h`、`src/core/PeripheralManager.cpp`、`data/config/peripherals.json`、`include/core/FeatureFlags.h`、`include/core/interfaces/ISensorDriver.h`、`include/core/DriverRegistry.h` 和 `platformio.ini` 整理，用于说明外设配置系统支持的所有类型、引脚要求、参数含义、支持状态以及最佳实践。
 
+## 当前版本提示
+
+- 默认 `esp32`、`esp32c3`、`esp32s3` 构建为精简版，保留 UART/I2C/SPI、GPIO、传感器、蜂鸣器、OLED/LCD、TM1637、Modbus 子设备等核心外设能力。
+- 精简版默认关闭 NeoPixel/LED 屏、BLE、OTA、文件管理、日志查看、多用户/角色和 RuleScript；如需验证完整能力，请使用 `esp32s3-full`。
+- 外设配置保存到 `/config/peripherals.json`，可在 Web 的“配置导入/导出”中按“外设配置”单独备份和恢复。
+- 传感器数据要作为外设执行事件触发来源时，需要先在外设执行中配置传感器采集动作，系统会将采集结果缓存为 `ds:<外设ID>_<字段>` 数据源。
+- Modbus 子设备由通信协议页管理，作为虚拟外设参与设备控制和外设执行，不占用本地 GPIO。
+
 ## 目录
 
 - [1. 总览](#1-总览)
@@ -26,7 +34,7 @@
 外设配置系统采用"**类型驱动 + 引脚占用校验 + 运行时状态**"的三层模型：
 
 - **配置层**：`data/config/peripherals.json`，冷启动从 LittleFS 加载。
-- **管理层**：[`PeripheralManager`](file:///d:/project/gitee/FastBee-Arduino/src/core/PeripheralManager.cpp) 单例，负责 CRUD、引脚冲突检测、硬件初始化/释放、通用读写接口。
+- **管理层**：[`PeripheralManager`](../src/core/PeripheralManager.cpp) 单例，负责 CRUD、引脚冲突检测、硬件初始化/释放、通用读写接口。
 - **驱动层**：按类型分派到底层：
   - GPIO 系列 → `pinMode/digitalWrite/ledcWrite`
   - I²C/SPI/UART → `Wire/SPI/Serial`
@@ -150,7 +158,7 @@
 | 13 `GPIO_DIGITAL_INPUT_PULLUP` | 内部上拉 | 按键（按下接 GND） |
 | 14 `GPIO_DIGITAL_INPUT_PULLDOWN` | 内部下拉 | 按键（按下接 VCC） |
 
-> **按键事件**：只有 type=13/14 会被 [`PeriphExecScheduler::checkButtonEvents`](file:///d:/project/gitee/FastBee-Arduino/src/core/PeriphExecScheduler.cpp) 扫描，支持 `button_click` / `button_double_click` / `button_long_press_2s/5s/10s`。
+> **按键事件**：只有 type=13/14 会被 [`PeriphExecScheduler::checkButtonEvents`](../src/core/PeriphExecScheduler.cpp) 扫描，支持 `button_click` / `button_double_click` / `button_long_press_2s/5s/10s`。
 
 ### 4.2 模拟输入 (type=15) / ADC (type=26)
 
@@ -203,7 +211,7 @@
 
 ### 7.1 LCD/OLED 显示屏 (type=36)
 
-> **实现状态**：✅ 完整实现。默认 `esp32dev` 环境启用（`FASTBEE_ENABLE_LCD=1`）。
+> **实现状态**：✅ 完整实现。默认 `esp32` 环境启用（`FASTBEE_ENABLE_LCD=1`）。
 
 **支持的控制器**（由 U8g2 库覆盖）：
 - SSD1306（128×64 / 128×32 OLED，I²C 0x3C）
@@ -229,11 +237,11 @@
   "params": { "width": 128, "height": 64, "interface": 2 } }
 ```
 
-**相关规则动作**：`ACTION_DISPLAY_CUSTOM`（OLED 自定义显示，支持多行文本 + 变量插值）。详见 [`docs/oled_usage_guide.md`](file:///d:/project/gitee/FastBee-Arduino/docs/oled_usage_guide.md)。
+**相关规则动作**：`ACTION_DISPLAY_CUSTOM`（OLED 自定义显示，支持多行文本 + 变量插值）。详见 [`oled_usage_guide.md`](./oled_usage_guide.md)。
 
 ### 7.2 TM1637 数码管 (type=47)
 
-> **实现状态**：✅ 已实现，自写 bit-bang 驱动（`SevenSegmentDriver`），默认 `esp32dev` 环境启用。
+> **实现状态**：✅ 已实现，自写 bit-bang 驱动（`SevenSegmentDriver`），默认 `esp32` 环境启用。
 
 | 字段 | 含义 |
 | --- | --- |
@@ -335,7 +343,7 @@
 - `id` 必须全局唯一；改名（name）可直接 PUT，改 ID 需先 DELETE 后 POST。
 - `pins[]` 最大 8 个，`pinCount` 自动从非 255 的数量推断。
 - **禁用 (`enabled=false`) 的外设不占引脚**——允许多外设声明同一引脚但只启用其中一个。
-- 保留引脚（Flash SPI、Boot、USB D+/D-）由 [`ChipConfig.h`](file:///d:/project/gitee/FastBee-Arduino/include/core/ChipConfig.h) 定义，`validatePinForType` 会拒绝越界。
+- 保留引脚（Flash SPI、Boot、USB D+/D-）由 [`ChipConfig.h`](../include/core/ChipConfig.h) 定义，`validatePinForType` 会拒绝越界。
 
 ### 10.2 引脚冲突检测
 
@@ -346,12 +354,12 @@
 
 ## 11. 功能编译开关（FeatureFlags）
 
-关键开关位于 [`include/core/FeatureFlags.h`](file:///d:/project/gitee/FastBee-Arduino/include/core/FeatureFlags.h)，可在 `platformio.ini` 的 `build_flags` 中覆盖：
+关键开关位于 [`include/core/FeatureFlags.h`](../include/core/FeatureFlags.h)，可在 `platformio.ini` 的 `build_flags` 中覆盖：
 
 | 宏 | 默认值 | 说明 |
 | --- | :---: | --- |
-| `FASTBEE_ENABLE_LCD` | 0（esp32dev=1） | U8g2 LCD/OLED 驱动 |
-| `FASTBEE_ENABLE_SEVEN_SEGMENT` | 0（esp32dev=1） | TM1637 驱动 |
+| `FASTBEE_ENABLE_LCD` | 0（esp32=1） | U8g2 LCD/OLED 驱动 |
+| `FASTBEE_ENABLE_SEVEN_SEGMENT` | 0（esp32=1） | TM1637 驱动 |
 | `FASTBEE_ENABLE_LED_SCREEN` | 0 | NeoPixel 灯带 |
 | `FASTBEE_ENABLE_SENSOR_DRIVER` | 1 | DHT/DS18B20 |
 | `FASTBEE_ENABLE_MODBUS` | 1 | Modbus RTU/TCP |
@@ -361,7 +369,7 @@
 
 | 预设 | LCD | TM1637 | NeoPixel | CoAP |
 | --- | :---: | :---: | :---: | :---: |
-| `esp32dev` 默认 | ✅ | ✅ | ❌ | ❌ |
+| `esp32` 默认 | ✅ | ✅ | ❌ | ❌ |
 | `minimal` | ❌ | ❌ | ❌ | ❌ |
 | `full` | ✅ | ✅ | ✅ | ✅ |
 
@@ -413,7 +421,7 @@ Modbus RTU 的 RS485 DE（Direction Enable）引脚由 `protocol.json` 中 `modb
 | 用途 | 字符/图形显示 | 多彩像素灯 |
 | 接口 | I²C / SPI | RMT（单信号线 WS2812B） |
 | 驱动库 | U8g2 | Adafruit NeoPixel |
-| 默认启用 | ✅ esp32dev 启用 | ❌ 默认禁用 |
+| 默认启用 | ✅ esp32 启用 | ❌ 默认禁用 |
 
 如果你要驱动 "一只 LED 单灯"，应使用 `GPIO_DIGITAL_OUTPUT` (type=12) 或 `GPIO_PWM_OUTPUT` (type=17)；如果要 "WS2812 灯带"，使用 `NEO_PIXEL` (type=45)；显示屏才是 `LCD` (type=36)。
 
@@ -446,12 +454,12 @@ Modbus RTU 的 RS485 DE（Direction Enable）引脚由 `protocol.json` 中 `modb
 
 ### 13.5 扩展新外设
 
-1. 在 [`PeripheralTypes.h`](file:///d:/project/gitee/FastBee-Arduino/include/core/PeripheralTypes.h) 添加枚举值（遵循区段 ID 规则）。
+1. 在 [`PeripheralTypes.h`](../include/core/PeripheralTypes.h) 添加枚举值（遵循区段 ID 规则）。
 2. 更新 `getPeripheralTypeName` / `parsePeripheralType` / `getPeripheralPinCount`。
 3. 在 `PeripheralManager::setupHardware` 添加初始化分支。
-4. 在 [`web-src/pages/modals.html`](file:///d:/project/gitee/FastBee-Arduino/web-src/pages/modals.html) 添加 `<option>` 及 `data-i18n`。
+4. 在 [`web-src/pages/modals.html`](../web-src/pages/modals.html) 添加 `<option>` 及 `data-i18n`。
 5. 在 `web-src/i18n/i18n-zh-CN.js` / `i18n-en.js` 添加翻译键。
-6. （可选）在 [`web-src/modules/runtime/periph-exec-form.js`](file:///d:/project/gitee/FastBee-Arduino/web-src/modules/runtime/periph-exec-form.js) 添加规则动作支持。
+6. （可选）在 [`web-src/modules/runtime/periph-exec-form.js`](../web-src/modules/runtime/periph-exec-form.js) 添加规则动作支持。
 
 > **提示**：若要扩展的是**传感器类**外设（需周期性读取温度/湿度/光照等数值），推荐优先使用第 14 章的 `ISensorDriver` 驱动接口，无需侵入 `PeripheralManager` 核心代码。
 
@@ -470,7 +478,7 @@ Modbus RTU 的 RS485 DE（Direction Enable）引脚由 `protocol.json` 中 `modb
 
 ### 14.2 核心接口
 
-头文件：[`include/core/interfaces/ISensorDriver.h`](file:///d:/project/gitee/FastBee-Arduino/include/core/interfaces/ISensorDriver.h)
+头文件：[`include/core/interfaces/ISensorDriver.h`](../include/core/interfaces/ISensorDriver.h)
 
 ```cpp
 struct SensorReading {
@@ -499,7 +507,7 @@ public:
 
 ### 14.3 注册机制
 
-头文件：[`include/core/DriverRegistry.h`](file:///d:/project/gitee/FastBee-Arduino/include/core/DriverRegistry.h)
+头文件：[`include/core/DriverRegistry.h`](../include/core/DriverRegistry.h)
 
 | 要素 | 说明 |
 |------|------|
@@ -513,7 +521,7 @@ public:
 
 ### 14.4 编写自定义驱动
 
-以 [`include/peripherals/drivers/SHT31Driver.h`](file:///d:/project/gitee/FastBee-Arduino/include/peripherals/drivers/SHT31Driver.h) 为模板：
+以 [`include/peripherals/drivers/SHT31Driver.h`](../include/peripherals/drivers/SHT31Driver.h) 为模板：
 
 ```cpp
 #include "core/interfaces/ISensorDriver.h"
@@ -567,7 +575,7 @@ FASTBEE_REGISTER_SENSOR("my_sensor", MySensorDriver);
 
 ## 参考文档
 
-- [`docs/oled_usage_guide.md`](file:///d:/project/gitee/FastBee-Arduino/docs/oled_usage_guide.md) — OLED 自定义显示规则
-- [`docs/modbus_usage_guide.md`](file:///d:/project/gitee/FastBee-Arduino/docs/modbus_usage_guide.md) — Modbus 使用指南
-- [`docs/periph_exec_flow.md`](file:///d:/project/gitee/FastBee-Arduino/docs/periph_exec_flow.md) — 外设执行规则流程
-- [`docs/script-guide.md`](file:///d:/project/gitee/FastBee-Arduino/docs/script-guide.md) — 规则脚本手册
+- [`oled_usage_guide.md`](./oled_usage_guide.md) — OLED 自定义显示规则
+- [`modbus_usage_guide.md`](./modbus_usage_guide.md) — Modbus 使用指南
+- [`periph_exec_flow.md`](./periph_exec_flow.md) — 外设执行规则流程
+- [`script-guide.md`](./script-guide.md) — 规则脚本手册

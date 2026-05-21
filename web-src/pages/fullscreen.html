@@ -5,20 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>设备监控</title>
     <link rel="icon" href="../assets/favicon.ico" type="image/x-icon">
-    <style>
-    :root{--primary:#1677ff;--primary-hover:#4096ff;--primary-active:#0958d9;--primary-light:#e6f4ff;--bg-body-fallback:#f5f5f5;--bg-body:linear-gradient(135deg,#f5f5f5 0%,#fafafa 50%,#f0f0f0 100%);--bg-card:rgba(255,255,255,0.92);--glass-bg:rgba(255,255,255,0.78);--glass-border:rgba(22,119,255,0.12);--glass-shadow:0 6px 16px 0 rgba(0,0,0,0.08),0 3px 6px -4px rgba(0,0,0,0.12),0 9px 28px 8px rgba(0,0,0,0.05);--text-primary:rgba(0,0,0,0.88);--text-secondary:rgba(0,0,0,0.65);--border:#d9d9d9;--border-secondary:rgba(0,0,0,0.06);--space-2:8px;--space-3:12px;--space-4:16px;--space-5:20px;--space-6:24px;--space-8:32px;--rounded-md:6px;--rounded-2xl:16px;--shadow-md:0 4px 6px -1px rgb(0 0 0/0.1),0 2px 4px -2px rgb(0 0 0/0.1);--success:#52c41a;--danger:#ff4d4f;--warning:#faad14;--info:#1677ff;--gray-9:#f0f0f0;--gray-11:#1f1f1f}
-    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg-body-fallback);background-image:var(--bg-body);background-attachment:fixed;color:var(--text-primary);line-height:1.6;min-height:100vh;margin:0}
-    .fb-btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);padding:var(--space-2) var(--space-4);font-size:13px;font-weight:500;border:1px solid var(--border);border-radius:var(--rounded-md);background:var(--bg-card);color:var(--text-primary);cursor:pointer;transition:all 0.2s;white-space:nowrap}
-    .fb-btn-primary{background:var(--primary);color:#fff;border-color:var(--primary)}
-    .fb-btn-primary:hover{background:var(--primary-hover);border-color:var(--primary-hover);color:#fff}
-    .fb-btn-refresh{background:transparent;border:1px solid var(--border-secondary);color:var(--text-secondary);font-size:12px;padding:4px 10px}
-    .fb-btn-refresh:hover{color:var(--primary);border-color:var(--primary)}
-    .fb-btn-danger{background:var(--danger);color:#fff;border-color:var(--danger)}
-    .fb-btn-danger:hover{opacity:0.85}
-    .notification-container{position:fixed;top:var(--space-5);right:var(--space-5);z-index:9999;max-width:350px;width:100%}
-    </style>
-    <link rel="stylesheet" href="../css/main.css" media="print" onload="this.media='all'">
-    <noscript><link rel="stylesheet" href="../css/main.css"></noscript>
+    <link rel="stylesheet" href="../css/main.css">
 </head>
 <body class="fullscreen-page">
     <!-- 消息通知容器 -->
@@ -69,21 +56,6 @@
                     <div class="stat-card-icon stat-icon-warning"><svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1" fill="currentColor"/></svg></div>
                 </div>
                 <div class="stat-desc" id="monitor-ip">--</div>
-            </div>
-        </div>
-
-        <div class="stats-grid u-mb-0">
-            <div class="stat-card stat-card-primary">
-                <div class="stat-value" id="monitor-user-total">--</div>
-                <div class="stat-label" data-i18n="dashboard-total-users">总用户数</div>
-            </div>
-            <div class="stat-card stat-card-success">
-                <div class="stat-value" id="monitor-user-online">--</div>
-                <div class="stat-label" data-i18n="dashboard-online-users">在线用户</div>
-            </div>
-            <div class="stat-card stat-card-warning">
-                <div class="stat-value" id="monitor-user-sessions">--</div>
-                <div class="stat-label" data-i18n="dashboard-active-sessions">活跃会话</div>
             </div>
         </div>
 
@@ -200,13 +172,13 @@
     </div>
 
     <!-- 核心依赖（独立页面需要完整加载） -->
-    <script src="../js/utils.js"></script>
-    <script src="../js/ui-components.js"></script>
-    <script src="../js/request-governor.js"></script>
+    <script src="../js/chunk-1-core-a.js"></script>
     <script src="../js/notification.js"></script>
-    <script src="../js/modules/i18n-engine.js"></script>
-    <script src="../js/modules/i18n-zh-CN.js"></script>
-    <script src="../js/state-sse.js"></script>
+    <script src="../js/chunk-3-i18n-engine.js"></script>
+    <script src="../js/chunk-4-i18n-zh-1.js"></script>
+    <script src="../js/chunk-5-i18n-zh-2.js"></script>
+    <script src="../js/chunk-6-i18n-zh-3.js"></script>
+    <script src="../js/chunk-7-i18n-zh-4.js"></script>
     <script src="../js/modules/dashboard-fullscreen.js"></script>
 </body>
 </html>

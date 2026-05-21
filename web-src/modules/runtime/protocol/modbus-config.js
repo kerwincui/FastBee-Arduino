@@ -60,10 +60,23 @@
         },
 
         _deleteDevice(source, idx) {
+            var msg = i18n.t('modbus-device-delete-confirm') || '确定删除？';
+            if (!confirm(msg)) return;
             if (source === 'sensor') {
                 if (this._masterTasks) this._masterTasks.splice(idx, 1);
             } else {
-                if (this._modbusDevices) this._modbusDevices.splice(idx, 1);
+                if (this._modbusDevices) {
+                    var devKey = 'dev_' + idx;
+                    delete this._deviceCoilCache[devKey];
+                    delete this._devicePwmCache[devKey];
+                    delete this._devicePidCache[devKey];
+                    this._modbusDevices.splice(idx, 1);
+                    if (this._activeDeviceIdx === idx) {
+                        this._activeDeviceIdx = -1;
+                    } else if (this._activeDeviceIdx > idx) {
+                        this._activeDeviceIdx--;
+                    }
+                }
             }
             this._renderAllDevices();
         },
@@ -336,13 +349,12 @@
             this._protocolConfig = null;
             if (typeof window.apiInvalidateCache === 'function') {
                 window.apiInvalidateCache('/api/protocol/config');
+                window.apiInvalidateCache('/api/peripherals');
+                window.apiInvalidateCache('/api/modbus/status');
             }
-            var self = this;
-            apiGet('/api/protocol/config')
+            this.loadProtocolConfig('modbus-rtu', { noCache: true })
                 .then(function(res) {
-                    if (res && res.success) {
-                        self._protocolConfig = res.data || {};
-                        self._fillProtocolForm('modbus-rtu', self._protocolConfig);
+                    if (res) {
                         Notification.success('设备列表已刷新');
                     } else {
                         Notification.error('获取配置失败');
@@ -543,11 +555,17 @@
 
         // ========== UART 外设 ==========
 
-        async _loadUartPeripherals(selectedId) {
+        async _loadUartPeripherals(selectedId, options) {
             const select = document.getElementById('rtu-peripheral-id');
             if (!select) return;
             try {
-                const res = await apiGet('/api/peripherals?pageSize=50');
+                const getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+                const res = await getter('/api/peripherals', {
+                    pageSize: 100,
+                    compact: 1,
+                    enabledOnly: 1,
+                    category: 'communication'
+                });
                 if (!res || !res.success) return;
                 this._uartPeripherals = (res.data || []).filter(p => p.type === 1 && p.enabled);
                 select.innerHTML = '<option value="" disabled>' + i18n.t('rtu-peripheral-placeholder') + '</option>';
@@ -564,17 +582,18 @@
                 });
                 if (selectedId) {
                     select.value = selectedId;
-                    this.onRtuPeripheralChange(selectedId);
+                    this.onRtuPeripheralChange(selectedId, options);
                 }
             } catch (e) { console.error('Failed to load UART peripherals:', e); }
         },
 
-        onRtuPeripheralChange(peripheralId) {
+        onRtuPeripheralChange(peripheralId, options) {
             const infoDiv = document.getElementById('rtu-peripheral-info');
             if (!infoDiv || !peripheralId) { if (infoDiv) AppState.hideElement(infoDiv); return; }
             const periph = (this._uartPeripherals || []).find(p => p.id === peripheralId);
             if (!periph) { AppState.hideElement(infoDiv); return; }
-            apiGet('/api/peripherals/?id=' + peripheralId).then(res => {
+            const getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            getter('/api/peripherals/', { id: peripheralId }).then(res => {
                 if (!res || !res.success) return;
                 const data = res.data;
                 const baudRate = data.params?.baudRate || i18n.t('unknown') || '未知';

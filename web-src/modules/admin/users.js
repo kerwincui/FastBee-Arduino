@@ -45,14 +45,15 @@
             if (typeof window.apiInvalidateCache === 'function') {
                 window.apiInvalidateCache('/api/users');
             }
-            this.loadUsers();
+            this.loadUsers({ noCache: true });
             setTimeout(function() {
                 if (btn) { btn.disabled = false; btn.innerHTML = '&#x21bb; 刷新'; }
             }, 2000);
         },
 
-        loadUsers() {
-            apiGet('/api/users', { page: 1, limit: 100 })
+        loadUsers(options) {
+            var getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            getter('/api/users', { page: 1, limit: 100 })
                 .then(res => {
                     if (!res || !res.success) return;
                     const users = (res.data && res.data.users) ? res.data.users : [];
@@ -243,7 +244,7 @@
                         // 重置用户名输入框状态
                         const usernameInput = document.getElementById('add-username-input');
                         if (usernameInput) usernameInput.disabled = false;
-                        this.loadUsers(); // 刷新列表
+                        this.loadUsers({ noCache: true }); // 刷新列表
                     } else {
                         showErr((res && res.error) || (isEditMode ? i18n.t('modify-user-fail-msg') : i18n.t('add-user-fail-msg')));
                     }
@@ -309,7 +310,7 @@
                 .then(res => {
                     if (res && res.success) {
                         Notification.success(`${username} ${enable ? i18n.t('user-enabled-msg') : i18n.t('user-disabled-msg')}`, i18n.t('user-status-update'));
-                        this.loadUsers();
+                        this.loadUsers({ noCache: true });
                     } else {
                         Notification.error((res && res.error) || i18n.t('operation-fail'), i18n.t('operation-fail'));
                     }
@@ -324,7 +325,7 @@
                 .then(res => {
                     if (res && res.success) {
                         Notification.success(`${username} ${i18n.t('user-unlocked-msg')}`, i18n.t('unlock-success'));
-                        this.loadUsers();
+                        this.loadUsers({ noCache: true });
                     } else {
                         Notification.error((res && res.error) || i18n.t('operation-fail'), i18n.t('operation-fail'));
                     }
@@ -340,7 +341,7 @@
                 .then(res => {
                     if (res && res.success) {
                         Notification.success(`${username} ${i18n.t('user-deleted-msg')}`, i18n.t('delete-success'));
-                        this.loadUsers();
+                        this.loadUsers({ noCache: true });
                     } else {
                         Notification.error((res && res.error) || i18n.t('operation-fail'), i18n.t('operation-fail'));
                     }

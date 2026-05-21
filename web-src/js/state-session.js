@@ -33,11 +33,7 @@
                     this.currentUser.name = res.data.username || 'Admin';
                     this.currentUser.role = res.data.role || 'VIEWER';
                     this.currentUser.canManageFs = res.data.canManageFs === true;
-                    this._showAppPage();
-                    this._loadModule('dashboard', () => {
-                        this.renderDashboard();
-                        this.loadSystemMonitor();
-                    });
+                    this._bootDashboardAfterAuth();
                 } else {
                     // 会话无效，尝试使用保存的凭据重新登录
                     this._tryAutoLogin(savedRemember, savedUsername, savedPassword);
@@ -80,11 +76,7 @@
                             }
                         }).catch(() => {});
 
-                        this._showAppPage();
-                        this._loadModule('dashboard', () => {
-                            this.renderDashboard();
-                            this.loadSystemMonitor();
-                        });
+                        this._bootDashboardAfterAuth();
                     } else {
                         // 自动登录失败（如密码已更改），清除无效凭据并显示登录页
                         localStorage.removeItem('password');
@@ -117,6 +109,59 @@
         if (rememberCheckbox && savedRemember === 'true') rememberCheckbox.checked = true;
     };
 
+    AppState._bootDashboardAfterAuth = async function() {
+        try {
+            await this._showAppPage();
+        } catch (e) {
+            console.error('[Auth] Failed to prepare app shell:', e);
+        }
+
+        this._loadModule('dashboard', () => {
+            var self = this;
+            if (typeof this.bootDashboardPage === 'function') {
+                this.bootDashboardPage();
+            } else {
+                this.renderDashboard();
+                setTimeout(function() {
+                    self.loadSystemMonitor();
+                }, 120);
+            }
+
+            setTimeout(function() {
+                if (typeof ApiPreloader !== 'undefined' && typeof ApiPreloader.preloadPageData === 'function') {
+                    ApiPreloader.preloadPageData('device');
+                }
+                if (typeof PageLoader !== 'undefined' && typeof PageLoader.preloadPages === 'function') {
+                    PageLoader.preloadPages([
+                        'device-page',
+                        'network-page',
+                        'peripheral-page',
+                        'protocol-page'
+                    ], self._pageMapping, { delayMs: 220 }).catch(function() {});
+                }
+            }, 1600);
+        });
+
+        var self = this;
+        setTimeout(function() {
+            self._loadModals();
+        }, 900);
+
+        setTimeout(function() {
+            if (typeof i18n === 'undefined' || i18n.currentLang !== 'zh-CN' || i18n._zhLoaded) {
+                return;
+            }
+            if (typeof window.__fastbeeLoadZhChunks !== 'function') {
+                return;
+            }
+            window.__fastbeeLoadZhChunks(function() {
+                if (typeof i18n !== 'undefined' && typeof i18n.updatePageText === 'function') {
+                    i18n.updatePageText();
+                }
+            });
+        }, 2400);
+    };
+
     /**
      * 显示主应用页面
      * @private
@@ -124,23 +169,52 @@
     AppState._showAppPage = async function() {
         document.getElementById('login-page').style.display = 'none';
         document.getElementById('app-container').classList.remove('fb-hidden');
-        // 登录成功后将URL从 /login 等路径重定向到根路径 /
         if (location.pathname !== '/' || location.hash) {
             history.replaceState(null, '', '/');
         }
-        // 并行加载模态框和仪表盘页面（消除串行 await 延迟）
-        await Promise.all([
-            this._loadModals(),
-            this.loadPage('dashboard-page')
-        ]);
-        // 移除骨架屏
+        await this.loadPage('dashboard-page');
         var skeleton = document.getElementById('skeleton-screen');
         if (skeleton) skeleton.remove();
-        // 处理 URL 参数指定的跳转（新标签页全屏等场景）
+        setTimeout(function() {
+            var sidebarLogo = document.getElementById('sidebar-logo');
+            if (!sidebarLogo || sidebarLogo.getAttribute('src')) return;
+            var lazySrc = sidebarLogo.getAttribute('data-lazy-src');
+            if (lazySrc) sidebarLogo.setAttribute('src', lazySrc);
+        }, 1500);
         if (typeof this._applyUrlParams === 'function') this._applyUrlParams();
     };
 
     // ============ 登录 ============
+
+    AppState._loginText = function(key) {
+        var translated = (typeof i18n !== 'undefined' && i18n.t) ? i18n.t(key) : '';
+        if (translated && translated !== key) return translated;
+        if (typeof __fastbeeCriticalZh !== 'undefined' && __fastbeeCriticalZh[key]) {
+            return __fastbeeCriticalZh[key];
+        }
+        return translated || key;
+    };
+
+    AppState._loginErrorText = function(message) {
+        var text = String(message || '');
+        if (!text) return this._loginText('login-fail-msg');
+        var lower = text.toLowerCase();
+        if (lower.indexOf('invalid username or password') !== -1 ||
+            lower.indexOf('invalid credentials') !== -1 ||
+            lower.indexOf('login failed') !== -1) {
+            return this._loginText('login-fail-msg');
+        }
+        if (lower.indexOf('too many') !== -1 && lower.indexOf('attempt') !== -1) {
+            return '登录失败次数过多，账号已锁定';
+        }
+        if (lower.indexOf('account') !== -1 && lower.indexOf('locked') !== -1) {
+            return '账号已锁定，请稍后再试';
+        }
+        if (lower.indexOf('ip address not allowed') !== -1) {
+            return '当前 IP 不允许登录';
+        }
+        return text;
+    };
 
     /**
      * 处理登录表单提交
@@ -151,13 +225,13 @@
         const remember = (document.getElementById('remember') || {}).checked;
 
         if (!username || !password) {
-            Notification.warning(i18n.t('login-empty-warning'), i18n.t('login-fail-title'));
+            Notification.warning(this._loginText('login-empty-warning'), this._loginText('login-fail-title'));
             return;
         }
 
         const submitBtn = document.querySelector('#login-form button[type="submit"]');
         const originalText = submitBtn ? submitBtn.innerHTML : '';
-        if (submitBtn) { submitBtn.innerHTML = i18n.t('login-logging-in-html'); submitBtn.disabled = true; }
+        if (submitBtn) { submitBtn.innerHTML = this._loginText('login-logging-in-html'); submitBtn.disabled = true; }
 
         apiPost('/api/auth/login', { username, password })
             .then(res => {
@@ -188,20 +262,16 @@
                         }
                     }).catch(() => {});
 
-                    this._showAppPage();
-                    this._loadModule('dashboard', () => {
-                        this.renderDashboard();
-                        this.loadSystemMonitor();
-                    });
-                    Notification.success(i18n.t('login-success-msg'), i18n.t('login-welcome-title'));
+                    this._bootDashboardAfterAuth();
+                    Notification.success(this._loginText('login-success-msg'), this._loginText('login-welcome-title'));
                 } else {
-                    Notification.error((res && res.error) || i18n.t('login-fail-title'), i18n.t('login-fail-title'));
+                    Notification.error(this._loginErrorText(res && res.error), this._loginText('login-fail-title'));
                 }
             })
             .catch((err) => {
                 // 登录失败，显示错误信息
-                const errorMsg = (err && err.data && err.data.error) || i18n.t('login-fail-msg');
-                Notification.error(errorMsg, i18n.t('login-fail-title'));
+                const errorMsg = this._loginErrorText(err && err.data && err.data.error);
+                Notification.error(errorMsg, this._loginText('login-fail-title'));
             })
             .finally(() => {
                 if (submitBtn) { submitBtn.innerHTML = originalText; submitBtn.disabled = false; }

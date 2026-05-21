@@ -62,6 +62,25 @@ bool UserManager::initialize() {
         initializeDefaultAdmin();
     }
 
+#if !FASTBEE_ENABLE_USER_ADMIN
+    auto adminIt = users.find(DEFAULT_ADMIN_USER);
+    if (adminIt == users.end()) {
+        users.clear();
+        initializeDefaultAdmin();
+    } else if (users.size() != 1 || adminIt->second.role != UserRole::ADMIN ||
+               !adminIt->second.hasRole(BuiltinRoles::ADMIN) || !adminIt->second.enabled) {
+        User admin = adminIt->second;
+        admin.role = UserRole::ADMIN;
+        admin.roles = { BuiltinRoles::ADMIN };
+        admin.enabled = true;
+        admin.lastModified = millis();
+        users.clear();
+        users[DEFAULT_ADMIN_USER] = admin;
+        saveUsersToStorage();
+        LOG_INFO("UserManager: Single-admin mode applied");
+    }
+#endif
+
     char buf[48];
     snprintf(buf, sizeof(buf), "UserManager: Initialized with %u users", (unsigned)users.size());
     LOG_INFO(buf);
@@ -84,6 +103,7 @@ void UserManager::initializeDefaultAdmin() {
     users[DEFAULT_ADMIN_USER] = admin;
     
     // 创建默认查看者用户
+#if FASTBEE_ENABLE_USER_ADMIN
     User viewer;
     viewer.username     = "viewer";
     viewer.salt         = generateSalt();
@@ -96,6 +116,7 @@ void UserManager::initializeDefaultAdmin() {
     viewer.createBy     = "system";
 
     users["viewer"] = viewer;
+#endif
     
     saveUsersToStorage();
 }
@@ -161,6 +182,10 @@ void UserManager::updateUserLastModified(const String& username) {
 
 
 bool UserManager::deleteUser(const String& username) {
+#if FASTBEE_SINGLE_ADMIN_MODE
+    (void)username;
+    return false;
+#endif
     // 不能删除默认管理员
     if (username == DEFAULT_ADMIN_USER) {
         return false;
@@ -179,6 +204,13 @@ bool UserManager::deleteUser(const String& username) {
 
 bool UserManager::updateUser(const String& username, const String& newPassword,
                            const String& newRole, bool enabled) {
+#if FASTBEE_SINGLE_ADMIN_MODE
+    if (username != DEFAULT_ADMIN_USER) {
+        return false;
+    }
+    (void)newRole;
+    (void)enabled;
+#endif
     auto it = users.find(username);
     if (it == users.end()) {
         return false;
@@ -196,12 +228,18 @@ bool UserManager::updateUser(const String& username, const String& newPassword,
     }
     
     // 更新角色
+#if !FASTBEE_SINGLE_ADMIN_MODE
     if (!newRole.isEmpty()) {
         user.role = stringToRole(newRole);
     }
     
     // 更新启用状态
     user.enabled = enabled;
+#else
+    user.role = UserRole::ADMIN;
+    user.roles = { BuiltinRoles::ADMIN };
+    user.enabled = true;
+#endif
     
     // 更新修改时间
     user.lastModified = millis();
@@ -363,6 +401,62 @@ void UserManager::updateLastLogin(const String& username) {
 // ============ 持久化方法 ============
 
 bool UserManager::saveUsersToStorage() {
+#if FASTBEE_SINGLE_ADMIN_MODE
+    auto adminIt = users.find(DEFAULT_ADMIN_USER);
+    if (adminIt == users.end()) {
+        LOG_ERROR("UserManager: Cannot save single-admin auth without admin user");
+        return false;
+    }
+
+    const User& admin = adminIt->second;
+    JsonDocument doc;
+    doc["version"] = "1.0";
+
+    JsonObject adminObj = doc["admin"].to<JsonObject>();
+    adminObj["username"]     = DEFAULT_ADMIN_USER;
+    adminObj["passwordHash"] = admin.passwordHash;
+    adminObj["salt"]         = admin.salt;
+    adminObj["lastLogin"]    = admin.lastLogin;
+    adminObj["lastModified"] = admin.lastModified;
+
+    JsonObject security = doc["security"].to<JsonObject>();
+    security["maxLoginAttempts"]        = config.maxLoginAttempts;
+    security["loginLockoutTime"]        = config.loginLockoutTime;
+    security["minPasswordLength"]       = config.minPasswordLength;
+    security["maxPasswordLength"]       = config.maxPasswordLength;
+    security["requireStrongPasswords"]  = config.requireStrongPasswords;
+    security["allowMultipleSessions"]   = config.allowMultipleSessions;
+    security["sessionTimeout"]          = config.sessionTimeout;
+    security["sessionCleanupInterval"]  = config.sessionCleanupInterval;
+    security["enableSessionPersistence"]= config.enableSessionPersistence;
+    security["cookieName"]              = config.cookieName;
+    security["cookieMaxAge"]            = config.cookieMaxAge;
+    security["cookieHttpOnly"]          = config.cookieHttpOnly;
+    security["cookieSecure"]            = config.cookieSecure;
+
+    if (!LittleFS.exists("/config") && !LittleFS.mkdir("/config")) {
+        LOG_ERROR("UserManager: Failed to create /config directory");
+        return false;
+    }
+
+    File file = LittleFS.open(ADMIN_AUTH_CONFIG_FILE, "w");
+    if (!file) {
+        LOG_ERROR("UserManager: Failed to open auth file for writing");
+        return false;
+    }
+
+    size_t written = serializeJson(doc, file);
+    file.close();
+    if (written == 0) {
+        LOG_ERROR("UserManager: Failed to write auth file");
+        return false;
+    }
+
+    if (LittleFS.exists(USERS_CONFIG_FILE)) {
+        LittleFS.remove(USERS_CONFIG_FILE);
+    }
+    return true;
+#else
     FastBeeJsonDocLarge doc;
     doc["version"] = "2.0";
     
@@ -432,9 +526,109 @@ bool UserManager::saveUsersToStorage() {
         LOG_ERROR("UserManager: Failed to write users to file");
         return false;
     }
+#endif
 }
 
 bool UserManager::loadUsersFromStorage() {
+#if FASTBEE_SINGLE_ADMIN_MODE
+    const bool hasAuthFile = LittleFS.exists(ADMIN_AUTH_CONFIG_FILE);
+    const bool migrateLegacyUsers = !hasAuthFile && LittleFS.exists(USERS_CONFIG_FILE);
+    const char* loadPath = hasAuthFile ? ADMIN_AUTH_CONFIG_FILE : USERS_CONFIG_FILE;
+
+    if (!hasAuthFile && !migrateLegacyUsers) {
+        LOG_INFO("UserManager: Auth file not found");
+        return false;
+    }
+
+    File file = LittleFS.open(loadPath, "r");
+    if (!file) {
+        LOG_ERROR("UserManager: Failed to open auth file for reading");
+        return false;
+    }
+
+    FastBeeJsonDocLarge doc;
+    DeserializationError error = deserializeJson(doc, file);
+    file.close();
+    if (error) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "UserManager: Failed to parse auth data: %s", error.c_str());
+        LOG_ERROR(buf);
+        return false;
+    }
+
+    User admin;
+    admin.username = DEFAULT_ADMIN_USER;
+    admin.role = UserRole::ADMIN;
+    admin.roles = { BuiltinRoles::ADMIN };
+    admin.enabled = true;
+    admin.createBy = "system";
+    admin.createTime = millis();
+    admin.lastModified = millis();
+
+    if (migrateLegacyUsers) {
+        JsonArray usersArray = doc["users"];
+        bool foundAdmin = false;
+        for (JsonObject userObj : usersArray) {
+            String username = userObj["username"].as<String>();
+            if (username != DEFAULT_ADMIN_USER) {
+                continue;
+            }
+            admin.passwordHash = userObj["passwordHash"].as<String>();
+            admin.salt = userObj["salt"].as<String>();
+            admin.lastLogin = userObj["lastLogin"] | 0UL;
+            admin.lastModified = userObj["lastModified"] | millis();
+            admin.createTime = userObj["createTime"] | millis();
+            foundAdmin = true;
+            break;
+        }
+        if (!foundAdmin || admin.passwordHash.isEmpty() || admin.salt.isEmpty()) {
+            LOG_ERROR("UserManager: Legacy admin user missing during auth migration");
+            return false;
+        }
+    } else {
+        JsonObject adminObj = doc["admin"];
+        if (adminObj.isNull()) {
+            LOG_ERROR("UserManager: Auth file missing admin object");
+            return false;
+        }
+        admin.passwordHash = adminObj["passwordHash"].as<String>();
+        admin.salt = adminObj["salt"].as<String>();
+        admin.lastLogin = adminObj["lastLogin"] | 0UL;
+        admin.lastModified = adminObj["lastModified"] | millis();
+        if (admin.passwordHash.isEmpty() || admin.salt.isEmpty()) {
+            LOG_ERROR("UserManager: Auth file missing admin credential");
+            return false;
+        }
+    }
+
+    users.clear();
+    users[DEFAULT_ADMIN_USER] = admin;
+
+    JsonObject security = doc["security"];
+    if (!security.isNull()) {
+        config.maxLoginAttempts        = security["maxLoginAttempts"] | 5;
+        config.loginLockoutTime        = security["loginLockoutTime"] | 300000UL;
+        config.minPasswordLength       = security["minPasswordLength"] | 6;
+        config.maxPasswordLength       = security["maxPasswordLength"] | 32;
+        config.requireStrongPasswords  = security["requireStrongPasswords"] | false;
+        config.allowMultipleSessions   = security["allowMultipleSessions"] | true;
+        config.sessionTimeout          = security["sessionTimeout"] | 3600000UL;
+        config.sessionCleanupInterval  = security["sessionCleanupInterval"] | 60000UL;
+        config.enableSessionPersistence= security["enableSessionPersistence"] | true;
+        config.cookieName              = security["cookieName"] | "sessionId";
+        config.cookieMaxAge            = security["cookieMaxAge"] | 3600UL;
+        config.cookieHttpOnly          = security["cookieHttpOnly"] | true;
+        config.cookieSecure            = security["cookieSecure"] | false;
+    }
+
+    if (migrateLegacyUsers) {
+        saveUsersToStorage();
+        LOG_INFO("UserManager: Migrated legacy users.json to single-admin auth.json");
+    }
+
+    LOG_INFO("UserManager: Loaded single-admin auth");
+    return true;
+#else
     if (!LittleFS.exists(USERS_CONFIG_FILE)) {
         LOG_INFO("UserManager: Users file not found");
         return false;
@@ -505,7 +699,7 @@ bool UserManager::loadUsersFromStorage() {
         config.sessionTimeout          = security["sessionTimeout"] | 3600000UL;
         config.sessionCleanupInterval  = security["sessionCleanupInterval"] | 60000UL;
         config.enableSessionPersistence= security["enableSessionPersistence"] | true;
-        config.cookieName              = security["cookieName"] | "session";
+        config.cookieName              = security["cookieName"] | "sessionId";
         config.cookieMaxAge            = security["cookieMaxAge"] | 3600UL;
         config.cookieHttpOnly          = security["cookieHttpOnly"] | true;
         config.cookieSecure            = security["cookieSecure"] | false;
@@ -515,6 +709,7 @@ bool UserManager::loadUsersFromStorage() {
     snprintf(buf, sizeof(buf), "UserManager: Loaded %u users from file", (unsigned)users.size());
     LOG_INFO(buf);
     return true;
+#endif
 }
 
 bool UserManager::saveConfig() {
@@ -588,6 +783,11 @@ bool UserManager::validatePassword(const String& password, uint8_t minLength,
 // ============ 多角色管理方法 ============
 
 bool UserManager::assignRole(const String& username, const String& roleId) {
+#if FASTBEE_SINGLE_ADMIN_MODE
+    (void)username;
+    (void)roleId;
+    return false;
+#endif
     auto it = users.find(username);
     if (it == users.end()) return false;
     if (!it->second.hasRole(roleId)) {
@@ -597,6 +797,11 @@ bool UserManager::assignRole(const String& username, const String& roleId) {
 }
 
 bool UserManager::removeRole(const String& username, const String& roleId) {
+#if FASTBEE_SINGLE_ADMIN_MODE
+    (void)username;
+    (void)roleId;
+    return false;
+#endif
     auto it = users.find(username);
     if (it == users.end()) return false;
     auto& roleVec = it->second.roles;
@@ -610,6 +815,11 @@ bool UserManager::removeRole(const String& username, const String& roleId) {
 }
 
 bool UserManager::setRoles(const String& username, const std::vector<String>& roleIds) {
+#if FASTBEE_SINGLE_ADMIN_MODE
+    (void)username;
+    (void)roleIds;
+    return false;
+#endif
     auto it = users.find(username);
     if (it == users.end()) return false;
     it->second.roles = roleIds;
@@ -631,6 +841,12 @@ bool UserManager::hasRole(const String& username, const String& roleId) const {
 }
 
 bool UserManager::updateUserMeta(const String& username, const String& email, const String& remark) {
+#if FASTBEE_SINGLE_ADMIN_MODE
+    (void)username;
+    (void)email;
+    (void)remark;
+    return false;
+#endif
     auto it = users.find(username);
     if (it == users.end()) return false;
     if (!email.isEmpty())  it->second.email  = email;
@@ -642,6 +858,12 @@ bool UserManager::updateUserMeta(const String& username, const String& email, co
 // IUserManager 接口实现
 
 bool UserManager::addUser(const String& username, const String& password, const String& role) {
+#if FASTBEE_SINGLE_ADMIN_MODE
+    (void)username;
+    (void)password;
+    (void)role;
+    return false;
+#endif
     UserRole userRole = stringToRole(role);
     if (users.find(username) != users.end()) {
         return false;

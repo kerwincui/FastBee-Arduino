@@ -34,7 +34,7 @@
 
 // 最低可用堆内存阈值，低于此值回退同步执行（字节）
 #ifndef MIN_HEAP_FOR_ASYNC
-#define MIN_HEAP_FOR_ASYNC    30000
+#define MIN_HEAP_FOR_ASYNC    24576
 #endif
 
 // ========== 异步执行状态 ==========

@@ -1,52 +1,89 @@
 /**
- * API 数据预加载器
- * 在应用初始化时并行预加载关键 API 数据，利用 Governor 缓存机制
- * 减少后续页面切换时的等待时间
+ * API preloader
  *
- * 依赖: request-governor.js (apiGet, apiInvalidateCache)
+ * Keep this opt-in and conservative on classic ESP32 boards:
+ * - do not parallel-hit multiple config endpoints
+ * - only warm endpoints that fit the batch response budget
+ * - leave protocol config out because the payload is usually too large
  */
 var ApiPreloader = (function() {
     'use strict';
 
-    // 关键 API 列表 — 这些是页面切换时最常请求的端点
-    // 与 Governor._cacheTTL 中已配置缓存的端点对齐
     var CRITICAL_APIS = [
-        '/api/system/info',      // dashboard + device-config 共用
-        '/api/network/config',   // network 模块
-        '/api/protocol/config',  // protocol + periph-exec 共用
-        '/api/device/config'     // device-config 模块
+        '/api/system/info',
+        '/api/network/config',
+        '/api/device/config'
     ];
 
-    /**
-     * 预加载关键数据（并行触发 apiGet 预热 Governor 缓存）
-     * 失败静默处理，不影响正常功能
-     */
+    function uniqueUrls(urls) {
+        var seen = {};
+        return (urls || []).filter(function(url) {
+            if (!url || seen[url]) return false;
+            seen[url] = true;
+            return true;
+        });
+    }
+
+    function shouldPreloadUrl(url) {
+        if (typeof apiGetRequestProfile !== 'function') return true;
+        var profile = apiGetRequestProfile(url);
+        return !!profile && profile.tier !== 'heavy' && profile.cacheTtl > 0;
+    }
+
+    function pickGetter(url, options) {
+        options = options || {};
+        var profile = (typeof apiGetRequestProfile === 'function') ? apiGetRequestProfile(url) : null;
+        var useFresh = options.noCache === true;
+        var preferSilent = options.silent !== false;
+
+        if (profile && profile.batchSafe) {
+            if (useFresh && preferSilent && typeof apiBatchGetSilentFresh === 'function') return apiBatchGetSilentFresh;
+            if (useFresh && typeof apiBatchGetFresh === 'function') return apiBatchGetFresh;
+            if (preferSilent && typeof apiBatchGetSilent === 'function') return apiBatchGetSilent;
+            if (typeof apiBatchGet === 'function') return apiBatchGet;
+        }
+
+        if (useFresh && preferSilent && typeof apiGetSilentFresh === 'function') return apiGetSilentFresh;
+        if (useFresh && typeof apiGetFresh === 'function') return apiGetFresh;
+        if (preferSilent && typeof apiGetSilent === 'function') return apiGetSilent;
+        return apiGet;
+    }
+
+    function preloadUrls(urls, options) {
+        return uniqueUrls(urls).filter(shouldPreloadUrl).reduce(function(chain, url) {
+            return chain.then(function() {
+                return pickGetter(url, options)(url).catch(function() {
+                    // Ignore preload failures so page flow is never blocked.
+                });
+            });
+        }, Promise.resolve());
+    }
+
     function preloadCriticalData() {
         if (typeof apiGet !== 'function') {
             console.warn('[Preloader] apiGet not available, skip preload');
             return Promise.resolve();
         }
-
-        var promises = CRITICAL_APIS.map(function(url) {
-            return apiGet(url).catch(function() {
-                // 预加载失败静默忽略
-            });
-        });
-
-        return Promise.allSettled
-            ? Promise.allSettled(promises)
-            : Promise.all(promises.map(function(p) {
-                return p.then(function(v) { return { status: 'fulfilled', value: v }; },
-                              function(e) { return { status: 'rejected', reason: e }; });
-            })).then(function() {});
+        return preloadUrls(CRITICAL_APIS, { silent: true });
     }
 
-    /**
-     * 从缓存获取数据（委托给 Governor 的 apiGet，自动命中缓存）
-     * @param {string} url API 路径
-     * @param {object} [params] 查询参数
-     * @returns {Promise} 数据 Promise
-     */
+    function preloadPageData(pageKey, options) {
+        options = options || {};
+        if (typeof FastBeePageRequestContracts === 'undefined') {
+            return Promise.resolve();
+        }
+
+        var contract = FastBeePageRequestContracts[pageKey];
+        if (!contract) return Promise.resolve();
+
+        var urls = [].concat(contract.firstScreen || []);
+        if (options.includeDeferred === true) {
+            urls = urls.concat(contract.deferred || []);
+        }
+
+        return preloadUrls(urls, { silent: true, noCache: options.noCache === true });
+    }
+
     function getData(url, params) {
         if (typeof apiGet !== 'function') {
             return Promise.reject(new Error('apiGet not available'));
@@ -54,28 +91,18 @@ var ApiPreloader = (function() {
         return apiGet(url, params);
     }
 
-    /**
-     * 使特定 URL 的缓存失效
-     * @param {string} url API 路径（或路径片段，支持模糊匹配）
-     */
     function invalidate(url) {
         if (typeof apiInvalidateCache === 'function') {
             apiInvalidateCache(url);
         }
     }
 
-    /**
-     * 清除所有缓存
-     */
     function clearAll() {
         if (typeof apiInvalidateCache === 'function') {
             apiInvalidateCache();
         }
     }
 
-    /**
-     * 获取关键 API 列表（只读）
-     */
     function getCriticalAPIs() {
         return CRITICAL_APIS.slice();
     }
@@ -85,6 +112,7 @@ var ApiPreloader = (function() {
         getData: getData,
         invalidate: invalidate,
         clearAll: clearAll,
-        getCriticalAPIs: getCriticalAPIs
+        getCriticalAPIs: getCriticalAPIs,
+        preloadPageData: preloadPageData
     };
 })();

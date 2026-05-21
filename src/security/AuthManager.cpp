@@ -1,6 +1,9 @@
 #include "./security/AuthManager.h"
 #include "systems/LoggerSystem.h"
 #include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_ROLE_ADMIN
+#include "security/RoleManager.h"
+#endif
 #include <esp_random.h>
 
 #if FASTBEE_ENABLE_AUTH
@@ -44,7 +47,7 @@ bool AuthManager::initialize() {
 
 void AuthManager::initializePermissions() {
     // 系统权限
-    permissions["system.info"] = Permission("system.info", "查看系统信息", UserRole::VIEWER);
+    permissions["system.view"] = Permission("system.view", "查看系统信息", UserRole::VIEWER);
     permissions["system.restart"] = Permission("system.restart", "重启系统", UserRole::USER);  // 操作员可重启
     
     // 用户管理权限
@@ -53,11 +56,13 @@ void AuthManager::initializePermissions() {
     permissions["user.edit"] = Permission("user.edit", "编辑用户", UserRole::ADMIN);
     permissions["user.delete"] = Permission("user.delete", "删除用户", UserRole::ADMIN);
     
+#if FASTBEE_ENABLE_ROLE_ADMIN
     // 角色管理权限
     permissions["role.view"] = Permission("role.view", "查看角色", UserRole::VIEWER);
     permissions["role.create"] = Permission("role.create", "创建角色", UserRole::ADMIN);
     permissions["role.edit"] = Permission("role.edit", "编辑角色", UserRole::ADMIN);
     permissions["role.delete"] = Permission("role.delete", "删除角色", UserRole::ADMIN);
+#endif
     
     // 配置权限
     permissions["config.view"] = Permission("config.view", "查看配置", UserRole::VIEWER);
@@ -71,15 +76,22 @@ void AuthManager::initializePermissions() {
     permissions["device.view"] = Permission("device.view", "查看设备状态", UserRole::VIEWER);
     permissions["device.control"] = Permission("device.control", "控制设备", UserRole::USER);  // 操作员可控制
     
+#if FASTBEE_ENABLE_OTA
     // OTA权限
     permissions["ota.update"] = Permission("ota.update", "OTA更新", UserRole::USER);  // 操作员可升级
+#endif
     
+#if FASTBEE_ENABLE_FILE_MANAGER
     // 文件系统权限
     permissions["fs.view"] = Permission("fs.view", "查看文件系统", UserRole::VIEWER);
     permissions["fs.manage"] = Permission("fs.manage", "管理文件系统", UserRole::ADMIN);
+#endif
     
+#if FASTBEE_ENABLE_ROLE_ADMIN
     // 审计日志权限
     permissions["audit.view"] = Permission("audit.view", "查看审计日志", UserRole::VIEWER);
+    permissions["audit.clear"] = Permission("audit.clear", "清除审计日志", UserRole::ADMIN);
+#endif
 }
 
 String AuthManager::generateSessionId(const String& username) {
@@ -598,6 +610,7 @@ bool AuthManager::checkPermission(const String& username, const String& permissi
         }
     }
 
+#if FASTBEE_ENABLE_ROLE_ADMIN
     // 优先使用 RoleManager 进行多角色权限校验
     bool result = false;
     if (roleManager && userManager) {
@@ -631,6 +644,7 @@ bool AuthManager::checkPermission(const String& username, const String& permissi
             return true;
         }
     }
+#endif
 
     // 降级：旧枚举比较（无 RoleManager 或无角色列表时兜底）
     auto permIt = permissions.find(permission);

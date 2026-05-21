@@ -77,16 +77,17 @@
             if (typeof window.apiInvalidateCache === 'function') {
                 window.apiInvalidateCache('/api/rule-script');
             }
-            this.loadRuleScriptPage();
+            this.loadRuleScriptPage({ noCache: true });
             setTimeout(function() {
                 if (btn) { btn.disabled = false; btn.innerHTML = '&#x21bb; 刷新'; }
             }, 2000);
         },
 
-        loadRuleScriptPage() {
+        loadRuleScriptPage(options) {
             const tbody = document.getElementById('rule-script-table-body');
             if (!tbody) return;
-            apiGet('/api/rule-script').then(res => {
+            var getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            getter('/api/rule-script').then(res => {
                 if (!res || !res.success || !res.data) {
                     this.renderEmptyTableRow(tbody, 6, i18n.t('rule-script-no-data'));
                     return;
@@ -150,7 +151,10 @@
                 if (res && res.success) {
                     Notification.success(i18n.t(isEdit ? 'rule-script-update-ok' : 'rule-script-add-ok'), i18n.t('rule-script-title'));
                     this.closeRuleScriptModal();
-                    if (this.currentPage === 'rule-script') this.loadRuleScriptPage();
+                    if (typeof window.apiInvalidateCache === 'function') {
+                        window.apiInvalidateCache('/api/rule-script');
+                    }
+                    if (this.currentPage === 'rule-script') this.loadRuleScriptPage({ noCache: true });
                 } else {
                     this.showInlineError('rule-script-error', res?.error || i18n.t('rule-script-save-fail'));
                 }
@@ -161,7 +165,8 @@
 
         editRuleScript(id) {
             this.openRuleScriptModal(id);
-            apiGet('/api/rule-script').then(res => {
+            const getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            getter('/api/rule-script').then(res => {
                 if (!res || !res.success || !res.data) return;
                 const rule = res.data.find(r => r.id === id);
                 if (!rule) return;
@@ -177,7 +182,10 @@
             const url = enable ? '/api/rule-script/enable' : '/api/rule-script/disable';
             apiPost(url, { id: id }).then(res => {
                 if (res && res.success) {
-                    if (this.currentPage === 'rule-script') this.loadRuleScriptPage();
+                    if (typeof window.apiInvalidateCache === 'function') {
+                        window.apiInvalidateCache('/api/rule-script');
+                    }
+                    if (this.currentPage === 'rule-script') this.loadRuleScriptPage({ noCache: true });
                 }
             });
         },
@@ -187,7 +195,10 @@
             apiDelete('/api/rule-script/', { id: id }).then(res => {
                 if (res && res.success) {
                     Notification.success(i18n.t('rule-script-delete-ok'), i18n.t('rule-script-title'));
-                    if (this.currentPage === 'rule-script') this.loadRuleScriptPage();
+                    if (typeof window.apiInvalidateCache === 'function') {
+                        window.apiInvalidateCache('/api/rule-script');
+                    }
+                    if (this.currentPage === 'rule-script') this.loadRuleScriptPage({ noCache: true });
                 }
             });
         }

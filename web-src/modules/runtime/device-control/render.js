@@ -228,7 +228,7 @@
                 html += '<h2 class="fb-card-title dc-header-title">' + this._t('device-control-dashboard') + '</h2>';
                 html += '<div class="dc-header-actions">';
                 var _sidChecked = localStorage.getItem('dc_show_sid') === '1';
-                html += '<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:#666;margin-right:8px;cursor:pointer;user-select:none;"><input type="checkbox" id="dc-sid-toggle"' + (_sidChecked ? ' checked' : '') + ' style="margin:0;">\u663E\u793A\u7269\u6A21\u578B\u6807\u8BC6</label>';
+                html += '<label class="dc-sid-toggle"><input type="checkbox" id="dc-sid-toggle"' + (_sidChecked ? ' checked' : '') + '>\u663E\u793A\u7269\u6A21\u578B\u6807\u8BC6</label>';
                 html += '<button class="dc-btn-sm dc-btn-zoom" id="dc-zoom-out-btn" title="Ctrl+-">-</button>';
                 html += '<button class="dc-btn-sm dc-btn-zoom" id="dc-zoom-reset-btn" title="Ctrl+0">100%</button>';
                 html += '<button class="dc-btn-sm dc-btn-zoom" id="dc-zoom-in-btn" title="Ctrl++">+</button>';
@@ -339,7 +339,7 @@
                 { className: 'dc-coil-batch dc-btn-sm dc-btn-toggle', devIdx: devIdx, action: 'allToggle', label: this._t('modbus-ctrl-all-toggle') }
             ];
             for (var ri = 0; ri < relayBtns.length; ri++) {
-                html += '<span style="display:inline-flex;flex-direction:column;align-items:center;">';
+                html += '<span class="dc-action-stack">';
                 html += this._renderDcActionButton(relayBtns[ri]);
                 if (ri === 0) html += this._renderSidTag(devIdx, '_all', '1=\u5168\u5f00, 0=\u5168\u5173');
                 html += '</span>';
@@ -375,7 +375,7 @@
                 { className: 'dc-pwm-batch dc-btn-sm dc-btn-off', devIdx: devIdx, action: 'off', label: this._t('modbus-ctrl-pwm-set-all-off') }
             ];
             for (var pi = 0; pi < pwmBtns.length; pi++) {
-                html += '<span style="display:inline-flex;flex-direction:column;align-items:center;">';
+                html += '<span class="dc-action-stack">';
                 html += this._renderDcActionButton(pwmBtns[pi]);
                 if (pi === 0) html += this._renderSidTag(devIdx, '_all', '\u503c=\u5168\u90e8\u8bbe\u4e3a\u6b64\u503c');
                 html += '</span>';
@@ -471,10 +471,10 @@
         // 通用物模型标识渲染（适用于 GPIO/System/Script/Sensor 等任意控件）
         _renderGenericSidTag: function(sensorId, valueDesc) {
             if (!sensorId) return '';
-            var vis = localStorage.getItem('dc_show_sid') === '1' ? '' : 'display:none;';
+            var hiddenClass = localStorage.getItem('dc_show_sid') === '1' ? '' : ' fb-hidden';
             var text = escapeHtml(sensorId);
-            if (valueDesc) text += '<br><span style="color:#b0b8c8;">' + escapeHtml(valueDesc) + '</span>';
-            return '<span class="dc-sid-tag" style="' + vis + 'font-size:10px;color:#8a9bb5;text-align:center;line-height:1.2;margin-top:2px;">' + text + '</span>';
+            if (valueDesc) text += '<br><span class="dc-sid-detail">' + escapeHtml(valueDesc) + '</span>';
+            return '<span class="dc-sid-tag' + hiddenClass + '">' + text + '</span>';
         },
 
         // GPIO actionType 对应的物模型值说明
@@ -498,7 +498,6 @@
                 case 6: return '1=\u91cd\u542f';
                 case 7: return '1=\u6062\u590d\u51fa\u5382';
                 case 8: return '1=\u540c\u6b65\u65f6\u95f4';
-                case 9: return '1=OTA';
                 case 10: return '\u8c03\u7528\u5916\u8bbe';
                 default: return '';
             }
@@ -579,7 +578,7 @@
         },
 
         _renderDcLoadingPlaceholder: function(message) {
-            return '<div class="dc-loading-placeholder" style="text-align:center;padding:30px 20px;color:#999;"><div style="font-size:24px;margin-bottom:10px;">⏳</div><div style="font-size:13px;">' + escapeHtml(message || '加载中...') + '</div></div>';
+            return '<div class="fb-loading-placeholder"><div class="fb-loading-placeholder-icon">&#9203;</div><div class="fb-loading-placeholder-detail">' + escapeHtml(message || 'Loading...') + '</div></div>';
         },
 
         _renderControlGroup: function(titleKey, items, typeClass, isSystem) {
@@ -596,7 +595,7 @@
             if (isSystem) dataAttrs += ' data-system="true"';
             var sidTag = this._renderGenericSidTag(item.id, '');
             if (sidTag) {
-                return '<span style="display:inline-flex;flex-direction:column;align-items:center;"><button class="dc-ctrl-btn dc-' + typeClass + '" ' + dataAttrs + '>' + escapeHtml(item.name) + '</button>' + sidTag + '</span>';
+                return '<span class="dc-action-stack"><button class="dc-ctrl-btn dc-' + typeClass + '" ' + dataAttrs + '>' + escapeHtml(item.name) + '</button>' + sidTag + '</span>';
             }
             return '<button class="dc-ctrl-btn dc-' + typeClass + '" ' + dataAttrs + '>' + escapeHtml(item.name) + '</button>';
         }

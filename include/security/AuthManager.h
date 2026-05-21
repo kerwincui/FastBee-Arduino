@@ -10,12 +10,12 @@
 #include "core/interfaces/IAuthManager.h"
 #include "core/interfaces/IUserManager.h"
 #include "UserManager.h"
-#include "RoleManager.h"
 #include "core/SystemConstants.h"
 #include <ESPAsyncWebServer.h>
 
 // 前向声明
 class LoggerSystem;
+class RoleManager;
 
 /**
  * @brief 用户会话结构体
@@ -60,7 +60,7 @@ struct SecurityConfig {
     std::vector<String> ipWhitelist;
     
     // Cookie配置
-    String cookieName = "session";
+    String cookieName = "sessionId";
     uint32_t cookieMaxAge = 3600; // 1小时
     bool cookieHttpOnly = true;
     bool cookieSecure = false;
@@ -370,7 +370,7 @@ public:
      * @brief 从HTTP请求中提取会话ID
      */
     static String extractSessionIdFromRequest(AsyncWebServerRequest* request, 
-                                             const String& cookieName = "session");
+                                             const String& cookieName = "sessionId");
     
     /**
      * @brief 验证密码强度

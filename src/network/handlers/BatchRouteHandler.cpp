@@ -2,15 +2,20 @@
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
+#include "core/FeatureFlags.h"
 #include "core/SystemConstants.h"
 #include "utils/NetworkUtils.h"
+#include "utils/TimeUtils.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <WiFi.h>
 
+namespace {
+constexpr const char* DEVICE_CONFIG_FILE = "/config/device.json";
+}
+
 BatchRouteHandler::BatchRouteHandler(WebHandlerContext* ctx)
     : ctx(ctx) {
-    // 预分配 JSON body handler，避免 setupRoutes() 期间集中堆分配
     _batchJsonHandler = new AsyncCallbackJsonWebHandler("/api/batch",
         [this](AsyncWebServerRequest* request, JsonVariant& json) {
             handleBatchRequest(request, json);
@@ -19,19 +24,15 @@ BatchRouteHandler::BatchRouteHandler(WebHandlerContext* ctx)
 }
 
 BatchRouteHandler::~BatchRouteHandler() {
-    // handler 由 AsyncWebServer 管理生命周期，不在此 delete
+    // Handler lifetime is owned by AsyncWebServer.
 }
 
 void BatchRouteHandler::setupRoutes(AsyncWebServer* server) {
-    // Batch API endpoint - combine multiple GET requests into one
-    // JSON handler 已在构造函数中预分配
     server->addHandler(_batchJsonHandler);
 }
 
-// ── Batch API: 合并多个 GET 请求为一次响应 ──
 void BatchRouteHandler::handleBatchRequest(AsyncWebServerRequest* request, JsonVariant& json) {
-    if (!ctx->checkPermission(request, "system.view")) {
-        ctx->sendUnauthorized(request);
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Batch request", MemoryGuardLevel::SEVERE, 8)) {
         return;
     }
     if (HandlerUtils::checkLowMemory(request)) return;
@@ -59,13 +60,12 @@ void BatchRouteHandler::handleBatchRequest(AsyncWebServerRequest* request, JsonV
             item["error"] = "Missing url";
             continue;
         }
-        if (!buildSubResponse(url, item)) {
+        if (!buildSubResponse(request, url, item)) {
             item["success"] = false;
             item["error"] = "Unsupported endpoint";
         }
     }
 
-    // 检查响应大小不超过 8KB
     size_t jsonSize = measureJson(respDoc);
     if (jsonSize > 8192) {
         HandlerUtils::sendJsonError(request, 413, "Batch response too large");
@@ -75,9 +75,14 @@ void BatchRouteHandler::handleBatchRequest(AsyncWebServerRequest* request, JsonV
     HandlerUtils::sendJsonStream(request, respDoc);
 }
 
-bool BatchRouteHandler::buildSubResponse(const String& url, JsonObject out) {
-    // /api/system/info — 完整系统信息
+bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const String& url, JsonObject out) {
     if (url == "/api/system/info") {
+        if (!ctx->checkPermission(request, "system.view")) {
+            out["success"] = false;
+            out["error"] = "Unauthorized";
+            return true;
+        }
+
         out["success"] = true;
         JsonObject data = out["data"].to<JsonObject>();
 
@@ -129,16 +134,23 @@ bool BatchRouteHandler::buildSubResponse(const String& url, JsonObject out) {
             data["network"]["macAddress"] = WiFi.macAddress();
         }
 
+#if FASTBEE_ENABLE_USER_ADMIN
         if (ctx->userManager) data["users"]["total"] = ctx->userManager->getUserCount();
         if (ctx->authManager) {
             data["users"]["activeSessions"] = ctx->authManager->getActiveSessionCount();
             data["users"]["online"] = ctx->authManager->getOnlineUserCount();
         }
+#endif
         return true;
     }
 
-    // /api/system/status — 轻量状态
     if (url == "/api/system/status") {
+        if (!ctx->checkPermission(request, "system.view")) {
+            out["success"] = false;
+            out["error"] = "Unauthorized";
+            return true;
+        }
+
         out["success"] = true;
         JsonObject data = out["data"].to<JsonObject>();
         data["status"] = "running";
@@ -155,14 +167,19 @@ bool BatchRouteHandler::buildSubResponse(const String& url, JsonObject out) {
         return true;
     }
 
-    // /api/network/status — 网络详情
     if (url == "/api/network/status") {
-        out["success"] = true;
+        if (!ctx->checkPermission(request, "network.view")) {
+            out["success"] = false;
+            out["error"] = "Unauthorized";
+            return true;
+        }
         if (!ctx->networkManager) {
             out["success"] = false;
             out["error"] = "Network service unavailable";
             return true;
         }
+
+        out["success"] = true;
         JsonObject data = out["data"].to<JsonObject>();
         NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
         netMgr->updateStatusInfo();
@@ -171,14 +188,15 @@ bool BatchRouteHandler::buildSubResponse(const String& url, JsonObject out) {
 
         const char* statusText = "unknown";
         switch (info.status) {
-            case NetworkStatus::CONNECTED:        statusText = "connected";   break;
-            case NetworkStatus::DISCONNECTED:     statusText = "disconnected"; break;
-            case NetworkStatus::CONNECTING:       statusText = "connecting";  break;
-            case NetworkStatus::AP_MODE:          statusText = "ap_mode";     break;
-            case NetworkStatus::CONNECTION_FAILED:statusText = "failed";      break;
+            case NetworkStatus::CONNECTED:         statusText = "connected"; break;
+            case NetworkStatus::DISCONNECTED:      statusText = "disconnected"; break;
+            case NetworkStatus::CONNECTING:        statusText = "connecting"; break;
+            case NetworkStatus::AP_MODE:           statusText = "ap_mode"; break;
+            case NetworkStatus::CONNECTION_FAILED: statusText = "failed"; break;
             default: break;
         }
         data["status"] = statusText;
+        data["statusCode"] = static_cast<uint8_t>(info.status);
         data["ssid"] = info.ssid.isEmpty() ? cfg.staSSID : info.ssid;
         data["ipAddress"] = info.ipAddress;
         data["macAddress"] = info.macAddress.isEmpty() ? WiFi.macAddress() : info.macAddress;
@@ -197,15 +215,18 @@ bool BatchRouteHandler::buildSubResponse(const String& url, JsonObject out) {
         data["uptime"] = info.uptime;
         data["internetAvailable"] = info.internetAvailable;
         data["conflictDetected"] = info.conflictDetected;
+        data["failoverCount"] = info.failoverCount;
+        data["activeIPType"] = info.activeIPType;
         data["txCount"] = info.txCount;
         data["rxCount"] = info.rxCount;
         const char* modeText = "unknown";
         switch (cfg.mode) {
-            case NetworkMode::NETWORK_STA:    modeText = "STA"; break;
-            case NetworkMode::NETWORK_AP:     modeText = "AP";  break;
+            case NetworkMode::NETWORK_STA: modeText = "STA"; break;
+            case NetworkMode::NETWORK_AP:  modeText = "AP"; break;
             default: break;
         }
         data["mode"] = modeText;
+        data["modeCode"] = static_cast<uint8_t>(cfg.mode);
         data["enableMDNS"] = cfg.enableMDNS;
         data["customDomain"] = cfg.customDomain;
         DNSManager* dns = netMgr->getDNSManager();
@@ -219,8 +240,146 @@ bool BatchRouteHandler::buildSubResponse(const String& url, JsonObject out) {
         return true;
     }
 
-    // /api/system/health — 健康检查
+    if (url == "/api/network/config") {
+        if (!ctx->checkPermission(request, "network.view")) {
+            out["success"] = false;
+            out["error"] = "Unauthorized";
+            return true;
+        }
+        if (!ctx->networkManager) {
+            out["success"] = false;
+            out["error"] = "Network service unavailable";
+            return true;
+        }
+
+        out["success"] = true;
+        JsonObject data = out["data"].to<JsonObject>();
+        NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+        WiFiConfig cfg = netMgr->getConfig();
+        NetworkStatusInfo info = netMgr->getStatusInfo();
+
+        data["device"]["macAddress"] = WiFi.macAddress();
+        data["network"]["mode"] = static_cast<uint8_t>(cfg.mode);
+        data["network"]["ipConfigType"] = static_cast<uint8_t>(cfg.ipConfigType);
+        data["network"]["enableMDNS"] = cfg.enableMDNS;
+        data["network"]["customDomain"] = cfg.customDomain;
+
+        data["sta"]["ssid"] = cfg.staSSID;
+        data["sta"]["password"] = cfg.staPassword.length() > 0 ? "********" : "";
+        data["sta"]["hasPassword"] = cfg.staPassword.length() > 0;
+        data["sta"]["staticIP"] = cfg.staticIP;
+        data["sta"]["gateway"] = cfg.gateway;
+        data["sta"]["subnet"] = cfg.subnet;
+        data["sta"]["dns1"] = cfg.dns1;
+        data["sta"]["dns2"] = cfg.dns2;
+
+        data["ap"]["ssid"] = cfg.apSSID;
+        data["ap"]["password"] = cfg.apPassword.length() > 0 ? "********" : "";
+        data["ap"]["hasPassword"] = cfg.apPassword.length() > 0;
+        data["ap"]["channel"] = cfg.apChannel;
+        data["ap"]["hidden"] = cfg.apHidden;
+        data["ap"]["maxConnections"] = cfg.apMaxConnections;
+
+        data["advanced"]["connectTimeout"] = cfg.connectTimeout;
+        data["advanced"]["reconnectInterval"] = cfg.reconnectInterval;
+        data["advanced"]["maxReconnectAttempts"] = cfg.maxReconnectAttempts;
+        data["advanced"]["conflictDetection"] = static_cast<uint8_t>(cfg.conflictDetection);
+        data["advanced"]["failoverStrategy"] = static_cast<uint8_t>(cfg.failoverStrategy);
+        data["advanced"]["autoFailover"] = cfg.autoFailover;
+        data["advanced"]["conflictCheckInterval"] = cfg.conflictCheckInterval;
+        data["advanced"]["maxFailoverAttempts"] = cfg.maxFailoverAttempts;
+        data["advanced"]["conflictThreshold"] = cfg.conflictThreshold;
+        data["advanced"]["fallbackToDHCP"] = cfg.fallbackToDHCP;
+
+        data["status"]["connected"] = (info.status == NetworkStatus::CONNECTED);
+        data["status"]["ipAddress"] = info.ipAddress;
+        data["status"]["rssi"] = info.rssi;
+        data["status"]["ssid"] = info.ssid;
+        return true;
+    }
+
+    if (url == "/api/device/config") {
+        if (!ctx->checkPermission(request, "system.view")) {
+            out["success"] = false;
+            out["error"] = "Unauthorized";
+            return true;
+        }
+
+        if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
+            File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+            if (f) {
+                JsonDocument fileCfg;
+                DeserializationError err = deserializeJson(fileCfg, f);
+                f.close();
+                if (!err) {
+                    out["success"] = true;
+                    out["data"] = fileCfg;
+                    return true;
+                }
+            }
+        }
+
+        out["success"] = true;
+        out["data"]["deviceName"] = "FastBee-ESP32";
+        out["data"]["deviceId"] = String((uint32_t)ESP.getEfuseMac(), HEX);
+        return true;
+    }
+
+    if (url == "/api/device/time") {
+        if (!ctx->checkPermission(request, "system.view")) {
+            out["success"] = false;
+            out["error"] = "Unauthorized";
+            return true;
+        }
+
+        out["success"] = true;
+        JsonObject data = out["data"].to<JsonObject>();
+        time_t now = TimeUtils::getTimestamp();
+        bool internetAvailable = false;
+
+        if (ctx->networkManager) {
+            NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+            NetworkStatusInfo netInfo = netMgr->getStatusInfo();
+            internetAvailable = netInfo.internetAvailable;
+        }
+
+        bool timeValid = (now > 1577836800);
+        bool synced = timeValid && internetAvailable;
+
+        data["datetime"] = TimeUtils::formatTime(now, TimeUtils::HUMAN_READABLE);
+        data["timestamp"] = (long)now;
+        data["synced"] = synced;
+        data["timeValid"] = timeValid;
+        data["internetAvailable"] = internetAvailable;
+        data["uptime"] = millis();
+        data["timezone"] = "CST-8";
+
+        if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
+            File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+            if (f) {
+                JsonDocument cfg;
+                if (deserializeJson(cfg, f) == DeserializationError::Ok) {
+                    if (cfg["timezone"].is<String>()) data["timezone"] = cfg["timezone"].as<String>();
+                }
+                f.close();
+            }
+        }
+        return true;
+    }
+
+    if (url == "/api/protocol/config") {
+        out["success"] = false;
+        out["error"] = "Protocol config is too large for batch";
+        return true;
+    }
+
     if (url == "/api/system/health") {
+        if (!ctx->checkPermission(request, "system.view")) {
+            out["success"] = false;
+            out["error"] = "Unauthorized";
+            return true;
+        }
+
         out["success"] = true;
         JsonObject data = out["data"].to<JsonObject>();
         data["status"] = "ok";

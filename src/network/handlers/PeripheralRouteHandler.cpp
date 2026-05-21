@@ -97,8 +97,14 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         return;
     }
 
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Peripheral list", MemoryGuardLevel::SEVERE, 8)) {
+        return;
+    }
+
     String typeFilter = ctx->getParamValue(request, "type", "");
     String categoryFilter = ctx->getParamValue(request, "category", "");
+    bool enabledOnly = ctx->getParamValue(request, "enabledOnly", "0") == "1";
+    bool compact = ctx->getParamValue(request, "compact", "0") == "1";
 
     // 使用指针向量代替深拷贝，大幅减少内存占用（38个外设：指针~152B vs 拷贝~6KB）
     std::vector<const PeripheralConfig*> ptrs;
@@ -106,8 +112,10 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
 
     if (!typeFilter.isEmpty()) {
         PeripheralType type = parsePeripheralType(typeFilter.c_str());
-        pm.forEachPeripheral([&ptrs, type](const PeripheralConfig& p) {
-            if (p.type == type && p.type != PeripheralType::MODBUS_DEVICE) {
+        pm.forEachPeripheral([&ptrs, type, enabledOnly](const PeripheralConfig& p) {
+            if (p.type == type &&
+                p.type != PeripheralType::MODBUS_DEVICE &&
+                (!enabledOnly || p.enabled)) {
                 ptrs.push_back(&p);
             }
         });
@@ -118,14 +126,17 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         else if (categoryFilter == "analog") category = PeripheralCategory::CATEGORY_ANALOG_SIGNAL;
         else if (categoryFilter == "debug") category = PeripheralCategory::CATEGORY_DEBUG;
         else if (categoryFilter == "special") category = PeripheralCategory::CATEGORY_SPECIAL;
-        pm.forEachPeripheral([&ptrs, category](const PeripheralConfig& p) {
-            if (getPeripheralCategory(p.type) == category && p.type != PeripheralType::MODBUS_DEVICE) {
+        pm.forEachPeripheral([&ptrs, category, enabledOnly](const PeripheralConfig& p) {
+            if (getPeripheralCategory(p.type) == category &&
+                p.type != PeripheralType::MODBUS_DEVICE &&
+                (!enabledOnly || p.enabled)) {
                 ptrs.push_back(&p);
             }
         });
     } else {
-        pm.forEachPeripheral([&ptrs](const PeripheralConfig& p) {
-            if (p.type != PeripheralType::MODBUS_DEVICE) {
+        pm.forEachPeripheral([&ptrs, enabledOnly](const PeripheralConfig& p) {
+            if (p.type != PeripheralType::MODBUS_DEVICE &&
+                (!enabledOnly || p.enabled)) {
                 ptrs.push_back(&p);
             }
         });
@@ -149,7 +160,7 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
     if (request->hasParam("pageSize")) {
         pageSize = request->getParam("pageSize")->value().toInt();
         if (pageSize < 1) pageSize = 1;
-        if (pageSize > 50) pageSize = 50;
+        if (pageSize > (compact ? 100 : 50)) pageSize = compact ? 100 : 50;
     }
 
     // 计算分页范围
@@ -157,7 +168,7 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
     int endIdx = (startIdx < total) ? std::min(startIdx + pageSize, total) : startIdx;
 
     // 检查堆内存是否充足
-    if (HandlerUtils::checkLowMemory(request, 12288)) return;
+    if (HandlerUtils::checkLowMemory(request, compact ? 8192 : 12288)) return;
     
     // 两遍法：先序列化每个项计算精确大小，再用精确 reserve 构建响应
     int itemCount = endIdx - startIdx;
@@ -176,21 +187,23 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         itemDoc["typeName"] = getPeripheralTypeName(config.type);
         itemDoc["category"] = getCategoryName(getPeripheralCategory(config.type));
         itemDoc["enabled"] = config.enabled;
-    
-        JsonArray pins = itemDoc["pins"].to<JsonArray>();
-        for (int j = 0; j < config.pinCount && j < 8; j++) {
-            if (config.pins[j] != 255) {
-                pins.add(config.pins[j]);
+
+        if (!compact) {
+            JsonArray pins = itemDoc["pins"].to<JsonArray>();
+            for (int j = 0; j < config.pinCount && j < 8; j++) {
+                if (config.pins[j] != 255) {
+                    pins.add(config.pins[j]);
+                }
+            }
+
+            auto runtimeState = pm.getRuntimeState(config.id);
+            if (runtimeState) {
+                itemDoc["status"] = static_cast<int>(runtimeState->status);
+            } else {
+                itemDoc["status"] = 0;
             }
         }
-    
-        auto runtimeState = pm.getRuntimeState(config.id);
-        if (runtimeState) {
-            itemDoc["status"] = static_cast<int>(runtimeState->status);
-        } else {
-            itemDoc["status"] = 0;
-        }
-    
+
         String itemStr;
         serializeJson(itemDoc, itemStr);
         totalItemsSize += itemStr.length();

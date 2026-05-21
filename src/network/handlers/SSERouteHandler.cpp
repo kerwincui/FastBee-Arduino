@@ -3,6 +3,7 @@
 #include "systems/LoggerSystem.h"
 #include "core/FeatureFlags.h"
 #include <esp_heap_caps.h>
+#include <cstdio>
 #if FASTBEE_ENABLE_HEALTH_MONITOR
 #include "systems/HealthMonitor.h"
 #include "core/FastBeeFramework.h"
@@ -21,6 +22,8 @@ void SSERouteHandler::setupRoutes(AsyncWebServer* server) {
     _events.onConnect([this](AsyncEventSourceClient* client) {
         unsigned long now = millis();
         trackClient(client, now);
+        _stats.acceptedConnections++;
+        _stats.lastConnectAtMs = now;
         LOG_INFOF("SSE client connected, id: %p (total: %u)", static_cast<void*>(client), _events.count());
         reportClientCount();
     });
@@ -39,6 +42,9 @@ void SSERouteHandler::setupRoutes(AsyncWebServer* server) {
         // 避免浏览器多 tab 自动重连持续吃堆，让系统有恢复窗口
         uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
         if (largestBlock < LOW_MEMORY_THRESHOLD) {
+            _stats.rejectedLowMemory++;
+            _stats.lastRejectAtMs = millis();
+            setReason(_stats.lastRejectReason, sizeof(_stats.lastRejectReason), "low_memory");
             LOG_WARNINGF("[SSE] Connection rejected: low memory (largestBlock=%lu < %u)",
                          (unsigned long)largestBlock, (unsigned)LOW_MEMORY_THRESHOLD);
             request->send(503, "text/plain", "Server low memory, retry later");
@@ -47,6 +53,9 @@ void SSERouteHandler::setupRoutes(AsyncWebServer* server) {
 #if FASTBEE_ENABLE_HEALTH_MONITOR
         HealthMonitor* hm = getHealthMonitor();
         if (hm && (hm->isMemorySevere() || hm->isMemoryCritical())) {
+            _stats.rejectedGuard++;
+            _stats.lastRejectAtMs = millis();
+            setReason(_stats.lastRejectReason, sizeof(_stats.lastRejectReason), "guard_active");
             LOG_WARNING("[SSE] Connection rejected: MEMGUARD SEVERE/CRITICAL active");
             request->send(503, "text/plain", "Server memory guard active, retry later");
             return false;
@@ -60,6 +69,9 @@ void SSERouteHandler::setupRoutes(AsyncWebServer* server) {
             }
         }
         if (activeCount >= MAX_SSE_CLIENTS) {
+            _stats.rejectedCapacity++;
+            _stats.lastRejectAtMs = millis();
+            setReason(_stats.lastRejectReason, sizeof(_stats.lastRejectReason), "capacity");
             LOG_WARNINGF("[SSE] Connection rejected: %u/%u slots occupied",
                          activeCount, (unsigned)MAX_SSE_CLIENTS);
             request->send(503, "text/plain", "Too many SSE connections");
@@ -119,16 +131,19 @@ size_t SSERouteHandler::clientCount() const {
 
 size_t SSERouteHandler::closeAllClients() {
     size_t closed = 0;
+    unsigned long now = millis();
     for (auto& s : _slots) {
         if (s.client) {
             if (s.client->connected()) {
                 s.client->close();
                 closed++;
             }
-            s.client = nullptr;
+            s = ClientSlot{};
         }
     }
     if (closed > 0) {
+        _stats.forcedClosedClients += static_cast<uint32_t>(closed);
+        _stats.lastForcedCloseAtMs = now;
         Serial.printf("[SSE] Force-closed %u clients (memory pressure)\n", (unsigned)closed);
     }
     return closed;
@@ -173,7 +188,9 @@ void SSERouteHandler::cleanupStaleConnections(unsigned long now) {
         // 已断开 → 直接清理槽位
         if (!s.client->connected()) {
             LOG_INFOF("[SSE] Removing disconnected client %p", static_cast<void*>(s.client));
-            s.client = nullptr;
+            _stats.disconnectedCleanups++;
+            _stats.lastCleanupAtMs = now;
+            s = ClientSlot{};
             continue;
         }
         // 超时 → 主动关闭
@@ -182,7 +199,9 @@ void SSERouteHandler::cleanupStaleConnections(unsigned long now) {
                          static_cast<void*>(s.client),
                          (unsigned long)(now - s.lastActiveMs));
             s.client->close();
-            s.client = nullptr;
+            _stats.timedOutClients++;
+            _stats.lastCleanupAtMs = now;
+            s = ClientSlot{};
         }
     }
 }
@@ -208,6 +227,8 @@ void SSERouteHandler::trackClient(AsyncEventSourceClient* client, unsigned long 
                  static_cast<void*>(_slots[oldest].client),
                  (unsigned long)(now - _slots[oldest].connectTime));
     _slots[oldest].client->close();
+    _stats.evictedOldestClients++;
+    _stats.lastForcedCloseAtMs = now;
     _slots[oldest].client = client;
     _slots[oldest].connectTime = now;
     _slots[oldest].lastActiveMs = now;
@@ -216,20 +237,49 @@ void SSERouteHandler::trackClient(AsyncEventSourceClient* client, unsigned long 
 void SSERouteHandler::untrackClient(AsyncEventSourceClient* client) {
     for (auto& s : _slots) {
         if (s.client == client) {
-            s.client = nullptr;
+            s = ClientSlot{};
             return;
         }
     }
 }
 
-bool SSERouteHandler::shouldSkipBroadcast() const {
+bool SSERouteHandler::shouldSkipBroadcast() {
+    const unsigned long now = millis();
+
+#if FASTBEE_ENABLE_HEALTH_MONITOR
+    HealthMonitor* hm = getHealthMonitor();
+    if (hm && (hm->isMemorySevere() || hm->isMemoryCritical())) {
+        _stats.skippedBroadcastGuard++;
+        _stats.lastSkipBroadcastAtMs = now;
+        setReason(_stats.lastSkipReason, sizeof(_stats.lastSkipReason), "guard_active");
+        if (_lastSkipLogMs == 0 || now - _lastSkipLogMs >= 10000UL) {
+            LOG_WARNING("[SSE] MEMGUARD SEVERE/CRITICAL active, skipping broadcast");
+            _lastSkipLogMs = now;
+        }
+        return true;
+    }
+#endif
     // 使用最大可分配块而非总空闲堆，更准确地反映能否进行网络操作
     uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
-    if (largestBlock < 8192) {
-        LOG_WARNINGF("[SSE] Low memory (largestBlock=%lu), skipping broadcast", (unsigned long)largestBlock);
+    if (largestBlock < LOW_MEMORY_THRESHOLD) {
+        _stats.skippedBroadcastLowMemory++;
+        _stats.lastSkipBroadcastAtMs = now;
+        setReason(_stats.lastSkipReason, sizeof(_stats.lastSkipReason), "low_memory");
+        if (_lastSkipLogMs == 0 || now - _lastSkipLogMs >= 10000UL) {
+            LOG_WARNINGF("[SSE] Low memory (largestBlock=%lu), skipping broadcast",
+                         (unsigned long)largestBlock);
+            _lastSkipLogMs = now;
+        }
         return true;
     }
     return false;
+}
+
+void SSERouteHandler::setReason(char* dest, size_t destSize, const char* reason) const {
+    if (!dest || destSize == 0) {
+        return;
+    }
+    snprintf(dest, destSize, "%s", reason ? reason : "");
 }
 
 void SSERouteHandler::reportClientCount() {

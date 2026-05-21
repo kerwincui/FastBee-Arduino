@@ -26,6 +26,7 @@
                     coilBase: p.coilBase, mode: p.relayMode
                 });
                 if (res && res.success && res.data && res.data.states) {
+                    this._markCtrlModalOnline();
                     this._coilAutoRefreshErrors = 0;
                     this._coilStates = res.data.states;
                     var cacheKey = 'dev_' + this._activeDeviceIdx;
@@ -35,6 +36,7 @@
                 } else if (res && !res.success) {
                     this._coilAutoRefreshErrors++;
                     this._stopAutoRefreshOnErrors();
+                    this._setCtrlModalOffline(true, res.error || (i18n.t('device-control-offline') || '设备离线，当前控制不可操作'));
                     Notification.error(res.error || i18n.t('modbus-ctrl-fail'));
                     this._appendDebugError(res.error || 'ReadCoils failed', res.debug);
                 } else {
@@ -50,6 +52,7 @@
                     for (var i = 0; i < p.channelCount; i++) this._coilStates.push(false);
                 }
                 this._renderCoilGrid();
+                this._setCtrlModalOffline(true, i18n.t('device-control-offline') || '设备离线，当前控制不可操作');
             }
         },
 
@@ -73,11 +76,12 @@
         },
 
         async toggleCoil(ch) {
+            if (this._isCtrlModalOffline()) return;
             const card = document.querySelector('.coil-card[data-ch="' + ch + '"]');
             if (card) card.classList.add('coil-loading');
             const p = this._getCoilParams();
             try {
-                const res = await apiPost('/api/modbus/coil/control', {
+                const res = await apiPostPriority('/api/modbus/coil/control', {
                     slaveAddress: p.slaveAddress, channel: ch, coilBase: p.coilBase,
                     action: 'toggle', mode: p.relayMode
                 });
@@ -97,6 +101,7 @@
         },
 
         async batchCoil(action) {
+            if (this._isCtrlModalOffline()) return;
             const p = this._getCoilParams();
             let modbusAction = action;
             if (p.ncMode) {
@@ -104,7 +109,7 @@
                 else if (action === 'allOff') modbusAction = 'allOn';
             }
             try {
-                const res = await apiPost('/api/modbus/coil/batch', {
+                const res = await apiPostPriority('/api/modbus/coil/batch', {
                     slaveAddress: p.slaveAddress, channelCount: p.channelCount,
                     coilBase: p.coilBase, action: modbusAction, mode: p.relayMode
                 });
@@ -123,6 +128,7 @@
         },
 
         async startCoilDelay() {
+            if (this._isCtrlModalOffline()) return;
             const p = this._getCoilParams();
             const ch = parseInt(document.getElementById('modbus-ctrl-delay-ch')?.value || '0');
             const units = parseInt(document.getElementById('modbus-ctrl-delay-units')?.value || '50');
@@ -135,7 +141,7 @@
                     slaveAddress: p.slaveAddress, channel: ch, delayBase: 0x0200,
                     delayUnits: units, ncMode: p.ncMode, coilBase: p.coilBase
                 };
-                const res = await apiPost('/api/modbus/coil/delay', params);
+                const res = await apiPostPriority('/api/modbus/coil/delay', params);
                 if (res && res.success) {
                     Notification.success(i18n.t('modbus-ctrl-delay-ok'));
                     this._appendDebugLog(res.debug, 'Delay CH' + ch + ' ' + units + 'x100ms' + (p.ncMode ? ' (NC)' : ''));
@@ -173,19 +179,45 @@
             if (checked) {
                 this._coilAutoRefreshErrors = 0;
                 this.refreshCoilStatus();
-                this._coilAutoRefreshTimer = setInterval(() => this.refreshCoilStatus(), 8000);
+                this._scheduleCoilAutoRefresh();
             } else {
-                if (this._coilAutoRefreshTimer) {
-                    clearInterval(this._coilAutoRefreshTimer);
-                    this._coilAutoRefreshTimer = null;
-                }
+                this._stopCoilAutoRefresh();
+            }
+        },
+
+        _getModbusControlRefreshInterval() {
+            if (typeof apiGetPressureAwareInterval === 'function') {
+                return apiGetPressureAwareInterval('modbusControl', 8000);
+            }
+            return 8000;
+        },
+
+        _scheduleCoilAutoRefresh() {
+            var self = this;
+            this._stopCoilAutoRefresh();
+            this._coilAutoRefreshTimer = setTimeout(function() {
+                self._coilAutoRefreshTimer = null;
+                var autoRefreshEl = document.getElementById('modbus-ctrl-auto-refresh');
+                if (!autoRefreshEl || !autoRefreshEl.checked) return;
+                Promise.resolve(self.refreshCoilStatus()).finally(function() {
+                    var nextAutoRefreshEl = document.getElementById('modbus-ctrl-auto-refresh');
+                    if (nextAutoRefreshEl && nextAutoRefreshEl.checked) {
+                        self._scheduleCoilAutoRefresh();
+                    }
+                });
+            }, this._getModbusControlRefreshInterval());
+        },
+
+        _stopCoilAutoRefresh() {
+            if (this._coilAutoRefreshTimer) {
+                clearTimeout(this._coilAutoRefreshTimer);
+                this._coilAutoRefreshTimer = null;
             }
         },
 
         _stopAutoRefreshOnErrors() {
-            if (this._coilAutoRefreshErrors >= 3 && this._coilAutoRefreshTimer) {
-                clearInterval(this._coilAutoRefreshTimer);
-                this._coilAutoRefreshTimer = null;
+            if (this._coilAutoRefreshErrors >= 3) {
+                this._stopCoilAutoRefresh();
                 var el = document.getElementById('modbus-ctrl-auto-refresh');
                 if (el) el.checked = false;
                 console.warn('[protocol] Coil auto-refresh stopped after', this._coilAutoRefreshErrors, 'consecutive errors');
@@ -193,9 +225,10 @@
         },
 
         _stopPidAutoRefreshOnErrors() {
-            if (this._pidAutoRefreshErrors >= 3 && this._pidAutoRefreshTimer) {
-                clearInterval(this._pidAutoRefreshTimer);
-                this._pidAutoRefreshTimer = null;
+            if (this._pidAutoRefreshErrors >= 3) {
+                if (typeof this._stopPidAutoRefresh === 'function') {
+                    this._stopPidAutoRefresh();
+                }
                 var el = document.getElementById('modbus-ctrl-pid-auto-refresh');
                 if (el) el.checked = false;
                 console.warn('[protocol] PID auto-refresh stopped after', this._pidAutoRefreshErrors, 'consecutive errors');
@@ -247,10 +280,11 @@
         },
 
         async motorForward() {
+            if (this._isCtrlModalOffline()) return;
             var p = this._getMotorDevParams();
             if (!p) return;
             try {
-                var res = await apiPostSilent('/api/modbus/motor/control', { slaveAddress: p.slaveAddress, action: 'forward' });
+                var res = await apiPostSilentPriority('/api/modbus/motor/control', { slaveAddress: p.slaveAddress, action: 'forward' });
                 if (res && res.success) {
                     Notification.success(i18n.t('modbus-motor-ctrl-forward-ok') || '正转指令已发送');
                     this._appendDebugLog(res.debug, 'Motor Forward');
@@ -265,10 +299,11 @@
         },
 
         async motorReverse() {
+            if (this._isCtrlModalOffline()) return;
             var p = this._getMotorDevParams();
             if (!p) return;
             try {
-                var res = await apiPostSilent('/api/modbus/motor/control', { slaveAddress: p.slaveAddress, action: 'reverse' });
+                var res = await apiPostSilentPriority('/api/modbus/motor/control', { slaveAddress: p.slaveAddress, action: 'reverse' });
                 if (res && res.success) {
                     Notification.success(i18n.t('modbus-motor-ctrl-reverse-ok') || '反转指令已发送');
                     this._appendDebugLog(res.debug, 'Motor Reverse');
@@ -283,10 +318,11 @@
         },
 
         async motorStop() {
+            if (this._isCtrlModalOffline()) return;
             var p = this._getMotorDevParams();
             if (!p) return;
             try {
-                var res = await apiPostSilent('/api/modbus/motor/control', { slaveAddress: p.slaveAddress, action: 'stop' });
+                var res = await apiPostSilentPriority('/api/modbus/motor/control', { slaveAddress: p.slaveAddress, action: 'stop' });
                 if (res && res.success) {
                     Notification.success(i18n.t('modbus-motor-ctrl-stop-ok') || '停止指令已发送');
                     this._appendDebugLog(res.debug, 'Motor Stop');
@@ -301,11 +337,12 @@
         },
 
         async setMotorSpeed() {
+            if (this._isCtrlModalOffline()) return;
             var p = this._getMotorDevParams();
             if (!p) return;
             var speed = parseInt(document.getElementById('modbus-ctrl-motor-speed').value) || 50;
             try {
-                var res = await apiPostSilent('/api/modbus/motor/control', { slaveAddress: p.slaveAddress, action: 'setSpeed', value: speed });
+                var res = await apiPostSilentPriority('/api/modbus/motor/control', { slaveAddress: p.slaveAddress, action: 'setSpeed', value: speed });
                 if (res && res.success) {
                     Notification.success(i18n.t('modbus-motor-ctrl-speed-ok') || '速度设置成功');
                     this._appendDebugLog(res.debug, 'Motor SetSpeed');
@@ -317,11 +354,12 @@
         },
 
         async setMotorPulse() {
+            if (this._isCtrlModalOffline()) return;
             var p = this._getMotorDevParams();
             if (!p) return;
             var pulse = parseInt(document.getElementById('modbus-ctrl-motor-pulse').value) || 1600;
             try {
-                var res = await apiPostSilent('/api/modbus/motor/control', { slaveAddress: p.slaveAddress, action: 'setPulse', value: pulse });
+                var res = await apiPostSilentPriority('/api/modbus/motor/control', { slaveAddress: p.slaveAddress, action: 'setPulse', value: pulse });
                 if (res && res.success) {
                     Notification.success(i18n.t('modbus-motor-ctrl-pulse-ok') || '脉冲数设置成功');
                     this._appendDebugLog(res.debug, 'Motor SetPulse');
@@ -338,6 +376,7 @@
             try {
                 var res = await apiPostSilent('/api/modbus/motor/control', { slaveAddress: p.slaveAddress, action: 'readStatus' });
                 if (res && res.success && res.data) {
+                    this._markCtrlModalOnline();
                     var data = res.data;
                     var sf = Math.pow(10, p.motorDecimals || 0);
                     var elSpeed = document.getElementById('motor-cur-speed');
@@ -365,9 +404,11 @@
                     this._appendDebugLog(res.debug, 'Motor ReadStatus');
                 } else {
                     this._appendDebugError('Motor ReadStatus failed', res && res.debug);
+                    this._setCtrlModalOffline(true, (res && res.error) || (i18n.t('device-control-offline') || '设备离线，当前控制不可操作'));
                 }
             } catch (e) {
                 console.error('refreshMotorStatus failed:', e);
+                this._setCtrlModalOffline(true, i18n.t('device-control-offline') || '设备离线，当前控制不可操作');
             }
         },
 

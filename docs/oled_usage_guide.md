@@ -4,6 +4,8 @@
 
 FastBee-Arduino 现已支持 OLED/LCD 显示屏，通过简单的配置即可实现数据显示功能。
 
+当前精简版默认保留 OLED/LCD 和 TM1637 数码管能力。外设执行页面中，显示相关动作已按“显示屏”类别聚合展示，用户只需要在“显示数字、显示文本、数码管清屏、OLED 自定义显示”四类动作中选择即可。若硬件项目不需要显示屏，可在构建配置中关闭 `FASTBEE_ENABLE_LCD` 或 `FASTBEE_ENABLE_SEVEN_SEGMENT` 进一步节省资源。
+
 ## 支持的显示屏
 
 FastBee 底层使用 `U8g2` 库驱动显示屏，通过 `DisplayController` 枚举选择控制器。当前支持的控制器如下：

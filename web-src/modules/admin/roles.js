@@ -36,14 +36,15 @@
             if (typeof window.apiInvalidateCache === 'function') {
                 window.apiInvalidateCache('/api/roles');
             }
-            this.loadRoles();
+            this.loadRoles({ noCache: true });
             setTimeout(function() {
                 if (btn) { btn.disabled = false; btn.innerHTML = '&#x21bb; 刷新'; }
             }, 2000);
         },
 
-        loadRoles() {
-            apiGet('/api/roles')
+        loadRoles(options) {
+            var getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            getter('/api/roles')
                 .then(res => {
                     if (!res || !res.success) return;
                     const roles = (res.data && res.data.roles) ? res.data.roles : [];
@@ -258,7 +259,8 @@
             modal.dataset.editRoleId = roleId;
 
             // 获取角色信息
-            apiGet('/api/roles')
+            var getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            getter('/api/roles')
                 .then(res => {
                     if (!res || !res.success) return;
                     const roles = (res.data && res.data.roles) ? res.data.roles : [];
@@ -416,7 +418,10 @@
                     if (res && res.success) {
                         Notification.success(`${i18n.t('role-mgmt-title')}: ${name} ${isEditMode ? i18n.t('role-updated') : i18n.t('role-created')}${i18n.t('role-success-suffix')}`, i18n.t('role-mgmt-title'));
                         if (modal) AppState.hideModal(modal);
-                        this.loadRoles();
+                        if (typeof window.apiInvalidateCache === 'function') {
+                            window.apiInvalidateCache('/api/roles');
+                        }
+                        this.loadRoles({ noCache: true });
                     } else {
                         showErr((res && res.error) || i18n.t('role-op-fail'));
                     }
@@ -436,7 +441,10 @@
                 .then(res => {
                     if (res && res.success) {
                         Notification.success(`${roleName || roleId} ${i18n.t('role-deleted-msg')}`, i18n.t('delete-success'));
-                        this.loadRoles();
+                        if (typeof window.apiInvalidateCache === 'function') {
+                            window.apiInvalidateCache('/api/roles');
+                        }
+                        this.loadRoles({ noCache: true });
                     } else {
                         Notification.error((res && res.error) || i18n.t('operation-fail'), i18n.t('operation-fail'));
                     }

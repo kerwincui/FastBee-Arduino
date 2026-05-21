@@ -1,3 +1,6 @@
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_USER_ADMIN
+
 #include "./network/handlers/UserRouteHandler.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
@@ -91,6 +94,11 @@ void UserRouteHandler::handleGetUsers(AsyncWebServerRequest* request) {
         ctx->sendUnauthorized(request);
         return;
     }
+
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "User list", MemoryGuardLevel::SEVERE, 8)) {
+        return;
+    }
+    if (HandlerUtils::checkLowMemory(request, 12288)) return;
 
     if (!ctx->userManager) {
         ctx->sendError(request, 500, "User service unavailable");
@@ -289,6 +297,11 @@ void UserRouteHandler::handleGetOnlineUsers(AsyncWebServerRequest* request) {
         return;
     }
 
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Online user list", MemoryGuardLevel::SEVERE, 8)) {
+        return;
+    }
+    if (HandlerUtils::checkLowMemory(request, 8192)) return;
+
     if (!ctx->authManager) {
         ctx->sendError(request, 500, "Authentication service unavailable");
         return;
@@ -344,3 +357,5 @@ void UserRouteHandler::handleResetPassword(AsyncWebServerRequest* request) {
         ctx->sendError(request, 400, "Failed to reset password");
     }
 }
+
+#endif // FASTBEE_ENABLE_USER_ADMIN

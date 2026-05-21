@@ -50,6 +50,7 @@ void StaticRouteHandler::handleNotFound(AsyncWebServerRequest* request) {
     if (request->method() == HTTP_OPTIONS) {
         AsyncWebServerResponse* response = request->beginResponse(204);
         response->addHeader("Access-Control-Max-Age", "86400");
+        response->addHeader("Connection", "close");
         request->send(response);
         return;
     }

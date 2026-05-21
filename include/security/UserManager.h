@@ -11,6 +11,7 @@
 
 // 用户配置文件路径
 static const char* USERS_CONFIG_FILE = "/config/users.json";
+static const char* ADMIN_AUTH_CONFIG_FILE = "/config/auth.json";
 
 /**
  * @brief 用户角色枚举
@@ -92,7 +93,7 @@ private:
         uint32_t sessionTimeout = 3600000;        // 1小时
         uint32_t sessionCleanupInterval = 60000;  // 1分钟
         bool enableSessionPersistence = true;
-        String cookieName = "session";
+        String cookieName = "sessionId";
         uint32_t cookieMaxAge = 3600;             // 1小时
         bool cookieHttpOnly = true;
         bool cookieSecure = false;

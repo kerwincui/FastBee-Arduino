@@ -63,7 +63,7 @@
         },
 
         _renderPeripheralActionButton(action, id, label, className) {
-            return '<button class="fb-btn fb-btn-sm ' + className + '" data-peripheral-action="' + action + '" data-id="' + escapeHtml(id) + '">' + label + '</button>';
+            return '<button class="fb-btn fb-btn-sm fb-btn-compact ' + className + '" data-peripheral-action="' + action + '" data-id="' + escapeHtml(id) + '">' + label + '</button>';
         },
 
         // ============ 外设列表 ============
@@ -76,19 +76,23 @@
                 window.apiInvalidateCache('/api/peripherals');
             }
             var filter = document.getElementById('peripheral-filter-type');
-            this.loadPeripherals((filter && filter.value) || '');
+            this.loadPeripherals((filter && filter.value) || '', { noCache: true });
             setTimeout(function() {
                 if (btn) { btn.disabled = false; btn.innerHTML = '&#x21bb; 刷新'; }
             }, 2000);
         },
 
-        loadPeripherals(filterType = '') {
+        loadPeripherals(filterType = '', options) {
             const tbody = document.getElementById('peripheral-table-body');
             if (!tbody) return;
             this.renderEmptyTableRow(tbody, 6, i18n.t('peripheral-loading'));
-            let url = '/api/peripherals?page=' + this._periphCurrentPage + '&pageSize=' + this._periphPageSize;
-            if (filterType) url += '&category=' + filterType;
-            apiGet(url)
+            var getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            var params = {
+                page: this._periphCurrentPage,
+                pageSize: this._periphPageSize
+            };
+            if (filterType) params.category = filterType;
+            getter('/api/peripherals', params)
                 .then(res => {
                     if (!res || !res.success) {
                         var detail = (res && res.message) ? ' (' + res.message + ')' : '';
@@ -126,11 +130,11 @@
                             '<td>' + safeType + '</td>' +
                             '<td>' + pinsStr + '</td>' +
                             '<td><span class="badge ' + statusBadgeClass + '">' + escapeHtml(statusName) + '</span></td>' +
-                            '<td class="u-cell-nowrap">' +
+                            '<td class="u-cell-nowrap"><div class="u-table-action-row">' +
                                 this._renderPeripheralActionButton('edit', periph.id, i18n.t('peripheral-edit'), 'fb-btn-primary') +
                                 this._renderPeripheralActionButton('toggle', periph.id, periph.enabled ? i18n.t('peripheral-disable') : i18n.t('peripheral-enable'), periph.enabled ? 'fb-btn-warning' : 'fb-btn-success') +
                                 this._renderPeripheralActionButton('delete', periph.id, i18n.t('peripheral-delete'), 'fb-btn-danger') +
-                            '</td></tr>';
+                            '</div></td></tr>';
                     });
                     tbody.innerHTML = html;
                     this._renderPeriphPagination(total, page, pageSize);
@@ -151,6 +155,7 @@
                 total,
                 page,
                 pageSize,
+                maxVisiblePages: 3,
                 summaryText: i18n.t('periph-exec-total') + ': ' + total,
                 onPageChange: (nextPage) => {
                     this._periphCurrentPage = nextPage;
@@ -233,7 +238,8 @@
         },
 
         loadPeripheralForEdit(id) {
-            apiGet('/api/peripherals/', { id: id })
+            var getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            getter('/api/peripherals/', { id: id })
                 .then(res => {
                     if (res && res.success && res.data) {
                         const data = res.data;
@@ -342,7 +348,10 @@
                 .then(res => {
                     if (res && res.success) {
                         this.closePeripheralModal();
-                        this.loadPeripherals(document.getElementById('peripheral-filter-type')?.value || '');
+                        if (typeof window.apiInvalidateCache === 'function') {
+                            window.apiInvalidateCache('/api/peripherals');
+                        }
+                        this.loadPeripherals(document.getElementById('peripheral-filter-type')?.value || '', { noCache: true });
                         Notification.success(isEdit ? i18n.t('peripheral-update-ok') : i18n.t('peripheral-add-ok'), i18n.t('peripheral-title'));
                     } else {
                         this.showInlineError(errEl, res?.error || i18n.t('peripheral-save-fail'));
@@ -363,11 +372,14 @@
 
         deletePeripheral(id) {
             if (!confirm(i18n.t('peripheral-confirm-delete') + id + i18n.t('peripheral-confirm-suffix'))) return;
-            apiDelete('/api/peripherals/?id=' + encodeURIComponent(id))
+            apiDelete('/api/peripherals/', { id: id })
                 .then(res => {
                     if (res && res.success) {
                         Notification.success(i18n.t('peripheral-deleted'), i18n.t('peripheral-title'));
-                        this.loadPeripherals(document.getElementById('peripheral-filter-type')?.value || '');
+                        if (typeof window.apiInvalidateCache === 'function') {
+                            window.apiInvalidateCache('/api/peripherals');
+                        }
+                        this.loadPeripherals(document.getElementById('peripheral-filter-type')?.value || '', { noCache: true });
                     } else {
                         Notification.error(res?.error || i18n.t('peripheral-delete-fail'), i18n.t('peripheral-title'));
                     }
@@ -379,7 +391,8 @@
         },
 
         togglePeripheral(id) {
-            apiGet('/api/peripherals/status', { id: id })
+            var getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            getter('/api/peripherals/status', { id: id })
                 .then(res => {
                     if (res && res.success && res.data) {
                         const isEnabled = res.data.enabled;
@@ -388,7 +401,10 @@
                             .then(res2 => {
                                 if (res2 && res2.success) {
                                     Notification.success(isEnabled ? i18n.t('peripheral-disabled') : i18n.t('peripheral-enabled'), i18n.t('peripheral-title'));
-                                    this.loadPeripherals(document.getElementById('peripheral-filter-type')?.value || '');
+                                    if (typeof window.apiInvalidateCache === 'function') {
+                                        window.apiInvalidateCache('/api/peripherals');
+                                    }
+                                    this.loadPeripherals(document.getElementById('peripheral-filter-type')?.value || '', { noCache: true });
                                 } else {
                                     Notification.error(res2?.error || i18n.t('peripheral-toggle-fail'), i18n.t('peripheral-title'));
                                 }

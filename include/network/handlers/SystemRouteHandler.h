@@ -3,6 +3,7 @@
 
 #include <ESPAsyncWebServer.h>
 #include <Arduino.h>
+#include "core/FeatureFlags.h"
 
 class WebHandlerContext;
 
@@ -36,9 +37,12 @@ private:
     void handleSystemRestart(AsyncWebServerRequest* request);
     void handleNetworkConfig(AsyncWebServerRequest* request);
     void handleSaveNetworkConfig(AsyncWebServerRequest* request);
+#if FASTBEE_ENABLE_FILE_MANAGER
     void handleGetFilesList(AsyncWebServerRequest* request);
+#endif
     void handleGetHealth(AsyncWebServerRequest* request);
     void handleSystemMetrics(AsyncWebServerRequest* request);
+    void handleWebRuntime(AsyncWebServerRequest* request);
     void handleGetCapabilities(AsyncWebServerRequest* request);
 };
 

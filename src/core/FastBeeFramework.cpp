@@ -22,7 +22,9 @@
 #include "systems/TaskManager.h"
 #include "systems/HealthMonitor.h"
 #include "security/UserManager.h"
+#if FASTBEE_ENABLE_ROLE_ADMIN
 #include "security/RoleManager.h"
+#endif
 #include "security/AuthManager.h"
 #include "protocols/ProtocolManager.h"
 #include "systems/ConfigStorage.h"
@@ -155,6 +157,7 @@ bool FastBeeFramework::initialize() {
     LOG_INFO("[STEP4-E] User manager OK");
 
     // 步骤4-E.5: 初始化角色管理器（提前，Web服务需要）
+#if FASTBEE_ENABLE_ROLE_ADMIN
     LOG_INFO("[STEP4-E.5] Initializing RoleManager...");
     roleManager.reset(new RoleManager());
     if (!roleManager || !roleManager->initialize()) {
@@ -162,10 +165,17 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     LOG_INFO("[STEP4-E.5] Role manager OK");
+#else
+    LOG_INFO("[STEP4-E.5] RoleManager disabled");
+#endif
 
     // 步骤5-E: 初始化认证管理器（提前，Web服务需要）
     LOG_INFO("[STEP5-E] Initializing AuthManager...");
+#if FASTBEE_ENABLE_ROLE_ADMIN
     authManager.reset(new AuthManager(userManager.get(), roleManager.get()));
+#else
+    authManager.reset(new AuthManager(userManager.get(), nullptr));
+#endif
     if (!authManager || !authManager->initialize()) {
         LOG_ERROR("[STEP5-E] Failed to initialize auth manager!");
         return false;
@@ -183,7 +193,9 @@ bool FastBeeFramework::initialize() {
         LOG_ERROR("[STEP6-E] Failed to initialize web config manager");
         return false;
     }
+#if FASTBEE_ENABLE_ROLE_ADMIN
     webConfig->setRoleManager(roleManager.get());
+#endif
     // NetworkManager 尚未创建，暂不注入，在步骤7-E中注入
     LOGGER.infof("[Boot] WebConfigManager routes: %lu ms", millis() - stepStart);
     LOG_BOOT_HEAP("WebConfigManager-routes");
@@ -265,6 +277,7 @@ bool FastBeeFramework::initialize() {
     LOG_INFO("[STEP5] User manager OK");
 
     // 步骤5.5: 初始化角色管理器
+#if FASTBEE_ENABLE_ROLE_ADMIN
     LOG_INFO("[STEP5.5] Initializing RoleManager...");
     roleManager.reset(new RoleManager());
     if (!roleManager || !roleManager->initialize()) {
@@ -272,10 +285,17 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     LOG_INFO("[STEP5.5] Role manager OK");
+#else
+    LOG_INFO("[STEP5.5] RoleManager disabled");
+#endif
 
     // 步骤6: 初始化认证管理器（注入 RoleManager）
     LOG_INFO("[STEP6] Initializing AuthManager...");
+#if FASTBEE_ENABLE_ROLE_ADMIN
     authManager.reset(new AuthManager(userManager.get(), roleManager.get()));
+#else
+    authManager.reset(new AuthManager(userManager.get(), nullptr));
+#endif
     if (!authManager || !authManager->initialize()) {
         LOG_ERROR("[STEP6] Failed to initialize auth manager!");
         return false;
@@ -292,7 +312,9 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     // 注入 RoleManager 和 NetworkManager 给 WebConfigManager
+#if FASTBEE_ENABLE_ROLE_ADMIN
     webConfig->setRoleManager(roleManager.get());
+#endif
     webConfig->setNetworkManager(network.get());
     // 启动 HTTP 服务器（监听端口 80）
     if (!webConfig->start()) {
@@ -303,6 +325,7 @@ bool FastBeeFramework::initialize() {
 
 #endif  // FASTBEE_WEB_START_EARLY
     
+#if FASTBEE_ENABLE_OTA
     // 步骤8: 初始化OTA管理器
     stepStart = millis();
     LOG_INFO("[STEP8] Initializing OTAManager...");
@@ -312,6 +335,9 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     LOGGER.infof("[Boot] OTAManager: %lu ms", millis() - stepStart);
+#else
+    LOG_INFO("[STEP8] OTAManager disabled by FASTBEE_ENABLE_OTA=0");
+#endif
     
     // 步骤9: 初始化任务管理器
     stepStart = millis();
@@ -717,7 +743,7 @@ bool FastBeeFramework::addSystemTasks() {
                 LOG_DEBUG(buf);
             }
         }
-    }, this, 30000)) {
+    }, this, 5000, TaskPriority::PRIORITY_HIGH)) {
         LOG_ERROR("Failed to add health check task");
         return false;
     }
@@ -885,7 +911,7 @@ bool FastBeeFramework::addSystemTasks() {
         if (!framework || !framework->webConfig) return;
         
         framework->webConfig->performMaintenance();
-    }, this, 300000)) {
+    }, this, 1000, TaskPriority::PRIORITY_HIGH)) {
         LOG_WARNING("Failed to add web maintenance task");
     }
 #endif
@@ -976,6 +1002,11 @@ void FastBeeFramework::run() {
 
 // 检查是否需要重启
 void FastBeeFramework::checkForRestart() {
+    // HealthMonitor 宸茬粡璐熻矗鍐呭瓨瀹堟姢鍜屾渶鍚庣殑閲嶅惎淇濇姢锛岄伩鍏嶈繖閲屽啀鍙犲姞涓€灞傞噸鍚垽鏂?
+    if (healthMonitor) {
+        return;
+    }
+
     static unsigned long lastRestartCheck = 0;
     static unsigned long criticalSince = 0;   // CRITICAL 状态持续时间
     unsigned long currentTime = millis();
@@ -1072,7 +1103,9 @@ TaskManager* FastBeeFramework::getTaskManager() const { return taskManager.get()
 HealthMonitor* FastBeeFramework::getHealthMonitor() const { return healthMonitor.get(); }
 UserManager* FastBeeFramework::getUserManager() const { return userManager.get(); }
 AuthManager* FastBeeFramework::getAuthManager() const { return authManager.get(); }
+#if FASTBEE_ENABLE_ROLE_ADMIN
 RoleManager* FastBeeFramework::getRoleManager() const { return roleManager.get(); }
+#endif
 ProtocolManager* FastBeeFramework::getProtocolManager() const { return protocolManager.get(); }
 
 // 检查系统是否已初始化

@@ -9,6 +9,10 @@
     var FS = {
         _sseSource: null,
         _refreshTimer: null,
+        _monitorLoadPromise: null,
+        _networkLoadPromise: null,
+        _lastMonitorRefreshAt: 0,
+        _lastNetworkRefreshAt: 0,
         REFRESH_INTERVAL: 30000,  // 30 秒自动刷新
 
         // ============ 初始化 ============
@@ -18,9 +22,11 @@
                 i18n.updatePageText();
             }
 
+            this.ensureWebRuntimePanel();
+
             // 绑定按钮事件
             var refreshBtn = document.getElementById('fullscreen-refresh-btn');
-            if (refreshBtn) refreshBtn.addEventListener('click', function() { FS.loadAll(); });
+            if (refreshBtn) refreshBtn.addEventListener('click', function() { FS.loadAll({ noCache: true, force: true }); });
 
             var closeBtn = document.getElementById('fullscreen-close-btn');
             if (closeBtn) closeBtn.addEventListener('click', function() { FS.closeWindow(); });
@@ -36,18 +42,38 @@
         },
 
         // ============ 数据加载 ============
-        loadAll: function() {
-            this.loadSystemMonitor();
-            this.loadNetworkStatus();
+        loadAll: function(options) {
+            this.loadSystemMonitor(options);
+            this.loadNetworkStatus(options);
+            this._scheduleAutoRefresh();
         },
 
-        loadSystemMonitor: function() {
-            var self = this;
-            var infoPromise = (typeof apiBatchGet === 'function')
-                ? apiBatchGet('/api/system/info')
-                : self._fetchJson('/api/system/info');
+        loadSystemMonitor: function(options) {
+            options = options || {};
+            if (this._monitorLoadPromise) {
+                return this._monitorLoadPromise;
+            }
 
-            infoPromise
+            var self = this;
+            this.ensureWebRuntimePanel();
+            var batchGetter = null;
+            if (options.noCache === true && typeof apiBatchGetFresh === 'function') {
+                batchGetter = apiBatchGetFresh;
+            } else if (typeof apiBatchGet === 'function') {
+                batchGetter = apiBatchGet;
+            }
+
+            var getter = batchGetter || (
+                options.noCache === true && typeof apiGetFresh === 'function'
+                    ? apiGetFresh
+                    : ((typeof apiGet === 'function') ? apiGet : self._fetchJson.bind(self))
+            );
+            var runtimeGetter = options.noCache === true && typeof apiGetFresh === 'function'
+                ? apiGetFresh
+                : ((typeof apiGet === 'function') ? apiGet : self._fetchJson.bind(self));
+            var infoPromise = getter('/api/system/info');
+
+            var monitorPromise = infoPromise
                 .then(function(res) {
                     if (!res || !res.success) return;
                     var data = res.data || {};
@@ -96,31 +122,67 @@
                     self._setText('monitor-fs-free', self._formatBytes(fs.free || 0));
                     self._setText('monitor-fs-total', self._formatBytes(fs.total || 0));
 
-                    // 用户统计
-                    var users = data.users || {};
-                    self._setText('monitor-user-total', users.total || 0);
-                    self._setText('monitor-user-online', users.online || 0);
-                    self._setText('monitor-user-sessions', users.activeSessions || 0);
                 })
                 .catch(function(err) {
                     console.error('[Fullscreen] Load system monitor failed:', err);
                 });
+
+            var runtimePromise = infoPromise
+                .then(function(res) {
+                    if (!res || !res.success) return null;
+                    return runtimeGetter('/api/system/web-runtime');
+                })
+                .then(function(res) {
+                    if (res && res.success) {
+                        self._applyWebRuntime(res);
+                    }
+                })
+                .catch(function(err) {
+                    console.error('[Fullscreen] Load web runtime failed:', err);
+                });
+
+            this._monitorLoadPromise = Promise.allSettled([monitorPromise, runtimePromise]).finally(function() {
+                self._monitorLoadPromise = null;
+                self._lastMonitorRefreshAt = Date.now();
+            });
+
+            return this._monitorLoadPromise;
         },
 
-        loadNetworkStatus: function() {
-            var self = this;
-            var promise = (typeof apiGet === 'function')
-                ? apiGet('/api/network/status')
-                : self._fetchJson('/api/network/status');
+        loadNetworkStatus: function(options) {
+            options = options || {};
+            if (this._networkLoadPromise) {
+                return this._networkLoadPromise;
+            }
 
-            promise
+            var self = this;
+            var batchGetter = null;
+            if (options.noCache === true && typeof apiBatchGetFresh === 'function') {
+                batchGetter = apiBatchGetFresh;
+            } else if (typeof apiBatchGet === 'function') {
+                batchGetter = apiBatchGet;
+            }
+
+            var getter = batchGetter || (
+                options.noCache === true && typeof apiGetFresh === 'function'
+                    ? apiGetFresh
+                    : ((typeof apiGet === 'function') ? apiGet : self._fetchJson.bind(self))
+            );
+
+            this._networkLoadPromise = getter('/api/network/status')
                 .then(function(res) {
                     if (!res || !res.success) return;
                     self._applyNetworkStatus(res);
                 })
                 .catch(function(err) {
                     console.error('[Fullscreen] Load network status failed:', err);
+                })
+                .finally(function() {
+                    self._networkLoadPromise = null;
+                    self._lastNetworkRefreshAt = Date.now();
                 });
+
+            return this._networkLoadPromise;
         },
 
         // ============ 网络状态渲染 ============
@@ -204,6 +266,86 @@
         },
 
         // ============ SSE 连接 ============
+        ensureWebRuntimePanel: function() {
+            var networkGrid = document.getElementById('ns-status');
+            networkGrid = networkGrid ? networkGrid.closest('.dashboard-network-grid') : null;
+            var networkHeader = networkGrid ? networkGrid.previousElementSibling : null;
+            if (window.WebRuntimeDiagnostics) {
+                window.WebRuntimeDiagnostics.ensurePanel({
+                    anchorEl: networkHeader,
+                    t: this._t.bind(this)
+                });
+            }
+        },
+
+        _applyWebRuntime: function(res) {
+            if (window.WebRuntimeDiagnostics) {
+                window.WebRuntimeDiagnostics.apply({
+                    t: this._t.bind(this),
+                    setText: this._setText.bind(this),
+                    setHtml: this._setHtml.bind(this),
+                    formatBytes: this._formatBytes.bind(this)
+                }, res);
+            }
+        },
+
+        _getPressureState: function() {
+            if (typeof apiGetPressureState === 'function') {
+                return apiGetPressureState();
+            }
+            return { level: 'NORMAL', activeRank: 0 };
+        },
+
+        _getAutoRefreshIntervalMs: function() {
+            var pressure = this._getPressureState();
+            var rank = pressure && typeof pressure.activeRank === 'number' ? pressure.activeRank : 0;
+            if (rank >= 3) return 120000;
+            if (rank >= 2) return 60000;
+            if (rank >= 1) return 45000;
+            return this.REFRESH_INTERVAL;
+        },
+
+        _getEventRefreshIntervalMs: function(kind) {
+            var pressure = this._getPressureState();
+            var rank = pressure && typeof pressure.activeRank === 'number' ? pressure.activeRank : 0;
+
+            if (kind === 'network') {
+                if (rank >= 3) return 45000;
+                if (rank >= 2) return 20000;
+                return 8000;
+            }
+
+            if (rank >= 3) return 30000;
+            if (rank >= 2) return 15000;
+            return 6000;
+        },
+
+        _scheduleAutoRefresh: function() {
+            var self = this;
+            if (this._refreshTimer) {
+                clearTimeout(this._refreshTimer);
+            }
+            this._refreshTimer = setTimeout(function() {
+                self.loadAll();
+            }, this._getAutoRefreshIntervalMs());
+        },
+
+        _requestMonitorRefresh: function(options) {
+            options = options || {};
+            if (options.force !== true && (Date.now() - this._lastMonitorRefreshAt) < this._getEventRefreshIntervalMs('monitor')) {
+                return Promise.resolve(null);
+            }
+            return this.loadSystemMonitor(options);
+        },
+
+        _requestNetworkRefresh: function(options) {
+            options = options || {};
+            if (options.force !== true && (Date.now() - this._lastNetworkRefreshAt) < this._getEventRefreshIntervalMs('network')) {
+                return Promise.resolve(null);
+            }
+            return this.loadNetworkStatus(options);
+        },
+
         _setupSSE: function() {
             try {
                 this._sseSource = new EventSource('/api/events');
@@ -225,17 +367,17 @@
                 // 监听 modbus 数据事件 - 触发数据刷新
                 this._sseSource.addEventListener('modbus-data', function(e) {
                     // Modbus 数据更新时刷新监控数据
-                    self.loadSystemMonitor();
+                    self._requestMonitorRefresh();
                 });
 
                 // 监听 MQTT 状态事件
                 this._sseSource.addEventListener('mqtt-status', function(e) {
-                    self.loadNetworkStatus();
+                    self._requestNetworkRefresh();
                 });
 
                 // 监听 Modbus 状态事件
                 this._sseSource.addEventListener('modbus-status', function(e) {
-                    self.loadSystemMonitor();
+                    self._requestMonitorRefresh();
                 });
             } catch (e) {
                 console.error('[Fullscreen] SSE setup failed:', e);
@@ -244,10 +386,7 @@
 
         // ============ 自动刷新 ============
         _setupAutoRefresh: function() {
-            var self = this;
-            this._refreshTimer = setInterval(function() {
-                self.loadAll();
-            }, this.REFRESH_INTERVAL);
+            this._scheduleAutoRefresh();
         },
 
         // ============ 关闭窗口 ============
@@ -259,7 +398,7 @@
             }
             // 清理定时器
             if (this._refreshTimer) {
-                clearInterval(this._refreshTimer);
+                clearTimeout(this._refreshTimer);
                 this._refreshTimer = null;
             }
             // 尝试关闭窗口（仅对脚本打开的窗口有效）

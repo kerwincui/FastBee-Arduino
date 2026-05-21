@@ -40,7 +40,7 @@ LoggerSystem::LoggerSystem()
     : currentLevel(LOG_DEBUG),  // 调试阶段显示所有日志
       outputStream(&Serial),
       serialEnabled(true),
-      fileLoggingEnabled(true),   // 启用文件日志
+      fileLoggingEnabled(FASTBEE_ENABLE_FILE_LOGGING != 0),
       initialized(false),
       espLogCaptureEnabled(false),   // 默认禁用 ESP 日志捕获（降低 LittleFS/堆碎片压力）
       logFileSizeLimit(8192) {      // 限制日志文件大小为 8KB

@@ -1085,10 +1085,33 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
             LOGGER.info("[PeriphExec] Executing factory reset...");
             const char* configFiles[] = {
                 "/config/device.json", "/config/network.json", "/config/protocol.json",
-                "/config/users.json", "/config/system.json",
-                "/config/http.json", "/config/mqtt.json", "/config/tcp.json",
-                "/config/modbus.json", "/config/coap.json", PERIPH_EXEC_CONFIG_FILE,
-                RULE_SCRIPT_CONFIG_FILE, "/config/peripherals.json", "/config/roles.json"
+#if !FASTBEE_SINGLE_ADMIN_MODE
+                "/config/users.json",
+#endif
+                "/config/system.json",
+#if FASTBEE_ENABLE_HTTP
+                "/config/http.json",
+#endif
+#if FASTBEE_ENABLE_MQTT
+                "/config/mqtt.json",
+#endif
+#if FASTBEE_ENABLE_TCP
+                "/config/tcp.json",
+#endif
+#if FASTBEE_ENABLE_MODBUS
+                "/config/modbus.json",
+#endif
+#if FASTBEE_ENABLE_COAP
+                "/config/coap.json",
+#endif
+                PERIPH_EXEC_CONFIG_FILE,
+#if FASTBEE_ENABLE_RULE_SCRIPT
+                RULE_SCRIPT_CONFIG_FILE,
+#endif
+                "/config/peripherals.json",
+#if FASTBEE_ENABLE_ROLE_ADMIN
+                "/config/roles.json",
+#endif
             };
             for (int i = 0; i < (int)(sizeof(configFiles) / sizeof(configFiles[0])); i++) {
                 if (LittleFS.exists(configFiles[i])) {
@@ -1106,9 +1129,11 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
             return true;
         }
 
+#if FASTBEE_ENABLE_OTA
         case ExecActionType::ACTION_SYS_OTA:
             LOGGER.info("[PeriphExec] OTA action - reserved for future implementation");
             return true;
+#endif
 
         default:
             LOGGER.warningf("[PeriphExec] Unknown system action: %d", action.actionType);

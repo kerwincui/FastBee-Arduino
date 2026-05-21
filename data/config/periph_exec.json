@@ -609,9 +609,9 @@
       ],
       "actions": [
         {
-          "targetPeriphId": "",
-          "actionType": 15,
-          "actionValue": "PERIPH oled_display SHOW",
+          "targetPeriphId": "oled_display",
+          "actionType": 27,
+          "actionValue": "# 环境监测\n温度:${dht_01.temperature}°C\n湿度:${dht_01.humidity}%\n状态:运行中",
           "useReceivedValue": false,
           "syncDelayMs": 0,
           "execMode": 0
@@ -643,11 +643,19 @@
       ],
       "actions": [
         {
-          "targetPeriphId": "",
-          "actionType": 15,
-          "actionValue": "PERIPH tm1637_01 DISPLAY ${dht_01.temperature}\nDELAY 4500\nPERIPH tm1637_01 DISPLAY ${dht_01.humidity}\nDELAY 4500",
+          "targetPeriphId": "tm1637_01",
+          "actionType": 24,
+          "actionValue": "${dht_01.temperature}",
           "useReceivedValue": false,
           "syncDelayMs": 0,
+          "execMode": 0
+        },
+        {
+          "targetPeriphId": "tm1637_01",
+          "actionType": 24,
+          "actionValue": "${dht_01.humidity}",
+          "useReceivedValue": false,
+          "syncDelayMs": 4500,
           "execMode": 1
         }
       ],
@@ -798,6 +806,74 @@
           "targetPeriphId": "oled_display",
           "actionType": 27,
           "actionValue": "# 设备信息\nFastBee ESP32\n温度:${dht_01.temperature}°C\n湿度:${dht_01.humidity}%\n按键已触发",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    },
+    {
+      "id": "exec_dht11_temp_buzzer",
+      "name": "DHT11温度大于25打开蜂鸣器",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 4,
+          "triggerPeriphId": "",
+          "operatorType": 2,
+          "compareValue": "25",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "",
+          "eventId": "ds:dht_01_temperature",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "beep",
+          "actionType": 0,
+          "actionValue": "",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    },
+    {
+      "id": "exec_dht11_temp_buzzer_off",
+      "name": "DHT11温度不高于25关闭蜂鸣器",
+      "enabled": true,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 4,
+          "triggerPeriphId": "",
+          "operatorType": 5,
+          "compareValue": "25",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "",
+          "eventId": "ds:dht_01_temperature",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "beep",
+          "actionType": 1,
+          "actionValue": "",
           "useReceivedValue": false,
           "syncDelayMs": 0,
           "execMode": 0

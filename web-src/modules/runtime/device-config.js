@@ -1,8 +1,22 @@
 /**
  * 设备配置模块
- * 包含设备基本信息、NTP配置、重启/恢复出厂、OTA升级
+ * 包含设备基本信息、NTP配置、重启/恢复出厂、配置导入导出
  */
 (function() {
+    const MAX_CONFIG_TRANSFER_BYTES = 128 * 1024;
+    const CONFIG_IMPORT_CHUNK_BYTES = 6 * 1024;
+    const MAX_CONFIG_BUNDLE_BYTES = 512 * 1024;
+    const CONFIG_TRANSFER_LABELS = {
+        'all': '全部配置包',
+        'device.json': '设备信息',
+        'network.json': '网络配置',
+        'peripherals.json': '外设配置',
+        'periph_exec.json': '外设执行',
+        'protocol.json': '通信协议',
+        'users.json': '用户配置',
+        'roles.json': '角色配置'
+    };
+
     AppState.registerModule('device-config', {
 
         // ============ 事件绑定 ============
@@ -37,33 +51,36 @@
             const devFactoryBtn = document.getElementById('dev-factory-btn');
             if (devFactoryBtn) devFactoryBtn.addEventListener('click', () => this.factoryReset());
 
-            // OTA升级事件绑定
-            const otaUrlForm = document.getElementById('ota-url-form');
-            if (otaUrlForm) otaUrlForm.addEventListener('submit', (e) => { e.preventDefault(); this.startOtaUrl(); });
+            const configExportBtn = document.getElementById('dev-config-export-btn');
+            if (configExportBtn) configExportBtn.addEventListener('click', () => this.exportDeviceConfigBundle());
 
-            const otaUploadForm = document.getElementById('ota-upload-form');
-            if (otaUploadForm) otaUploadForm.addEventListener('submit', (e) => { e.preventDefault(); this.startOtaUpload(); });
+            const configImportBtn = document.getElementById('dev-config-import-btn');
+            if (configImportBtn) configImportBtn.addEventListener('click', () => this.importDeviceConfigBundle());
 
-            const otaRefreshBtn = document.getElementById('ota-refresh-btn');
-            if (otaRefreshBtn) otaRefreshBtn.addEventListener('click', () => this.loadOtaStatus());
-
-            // OTA文件选择更新文件名显示
-            const otaFileInput = document.getElementById('ota-file');
-            if (otaFileInput) {
-                otaFileInput.addEventListener('change', (e) => {
-                    const fileNameEl = document.getElementById('ota-file-name');
-                    if (fileNameEl) {
-                        const file = e.target.files?.[0];
-                        fileNameEl.textContent = file ? file.name : i18n.t('no-file-selected');
-                    }
+            const configImportFile = document.getElementById('dev-config-import-file');
+            if (configImportFile) {
+                configImportFile.addEventListener('change', (e) => {
+                    const files = e.target.files ? Array.from(e.target.files) : [];
+                    this._setConfigTransferStatus(files.length ? ('已选择：' + files.map(file => file.name).join('、')) : '--');
                 });
             }
+
         },
 
         // ============ 设备配置 ============
 
-        loadDeviceConfig() {
-            apiGet('/api/device/config')
+        loadDeviceConfig(options) {
+            options = options || {};
+            var self = this;
+            var batchGetter = null;
+            if (options.noCache === true && typeof apiBatchGetFresh === 'function') {
+                batchGetter = apiBatchGetFresh;
+            } else if (typeof apiBatchGet === 'function') {
+                batchGetter = apiBatchGet;
+            }
+            var getter = batchGetter || (options.noCache === true && typeof apiGetFresh === 'function' ? apiGetFresh : apiGet);
+            var configRequest = getter('/api/device/config');
+            configRequest
                 .then(res => {
                     if (!res || !res.success) return;
                     const d = res.data || {};
@@ -81,13 +98,23 @@
                     this._setValue('dev-cache-duration', d.cacheDuration !== undefined ? String(d.cacheDuration) : '86400');
                 })
                 .catch(err => console.error('Load device config failed:', err));
-            // 同时加载硬件信息
-            this._loadDeviceHardwareInfo();
+            setTimeout(function() {
+                self._loadDeviceHardwareInfo({ noCache: options.noCache === true });
+            }, options.deferHardware === false ? 0 : 120);
         },
 
-        _loadDeviceHardwareInfo() {
+        _loadDeviceHardwareInfo(options) {
+            options = options || {};
             // 兼容后端返回结构差异：res 可能是 {success, data} 或直接是 data（如 batch 子响应）
-            apiGet('/api/system/info')
+            var batchGetter = null;
+            if (options.noCache === true && typeof apiBatchGetFresh === 'function') {
+                batchGetter = apiBatchGetFresh;
+            } else if (typeof apiBatchGet === 'function') {
+                batchGetter = apiBatchGet;
+            }
+            var getter = batchGetter || (options.noCache === true && typeof apiGetFresh === 'function' ? apiGetFresh : apiGet);
+            var infoRequest = getter('/api/system/info');
+            infoRequest
                 .then(res => {
                     if (!res) {
                         console.warn('[device-config] /api/system/info empty response');
@@ -185,8 +212,15 @@
                 });
                 // 补充可能已被浏览器缓存的按需加载模块
                 var origin = window.location.origin;
-                var modules = ['dashboard', 'device-config', 'device-control', 'network',
-                    'peripherals', 'periph-exec', 'protocol', 'i18n', 'i18n-en', 'admin-bundle'];
+                var modules = [
+                    'dashboard',
+                    'device-config',
+                    'device-control',
+                    'network',
+                    'peripherals',
+                    'periph-exec',
+                    'protocol'
+                ];
                 modules.forEach(function(m) { urlMap[origin + '/js/modules/' + m + '.js'] = true; });
                 var urls = Object.keys(urlMap);
 
@@ -230,7 +264,7 @@
                     if (res && res.success) {
                         this._showMessage('dev-ntp-success', true);
                         Notification.success(i18n.t('dev-save-ntp-ok'), i18n.t('dev-config-title'));
-                        this.loadDeviceTime();
+                        this.loadDeviceTime({ noCache: true });
                     } else {
                         Notification.error(res?.error || i18n.t('dev-save-fail'), i18n.t('dev-ntp-config-title'));
                     }
@@ -238,21 +272,62 @@
                 .catch(() => Notification.error(i18n.t('dev-save-fail'), i18n.t('dev-ntp-config-title')));
         },
 
-        loadDeviceTime() {
+        loadDeviceTime(options) {
+            options = options || {};
+            var self = this;
             const btn = document.getElementById('dev-time-refresh-btn');
             if (btn) { btn.disabled = true; btn.innerHTML = i18n.t('dev-refreshing-html'); }
 
-            Promise.all([
-                apiGet('/api/device/time'),
-                apiGet('/api/network/status')
-            ])
+            var batchGetter = null;
+            if (options.noCache === true && typeof apiBatchGetFresh === 'function') {
+                batchGetter = apiBatchGetFresh;
+            } else if (typeof apiBatchGet === 'function') {
+                batchGetter = apiBatchGet;
+            }
+
+            if (batchGetter) {
+                Promise.all([
+                    batchGetter('/api/device/time'),
+                    batchGetter('/api/network/status')
+                ])
+                    .then(([timeRes, netRes]) => {
+                        const timeData = (timeRes && timeRes.success) ? timeRes.data || {} : {};
+                        const netData = (netRes && netRes.success) ? netRes.data || {} : {};
+                        const internetAvailable = netData.internetAvailable === true;
+                        self._renderDeviceTime(timeData, internetAvailable);
+                    })
+                    .catch(err => {
+                        console.error('Load device time failed:', err);
+                        if (btn) {
+                            btn.disabled = false;
+                            btn.innerHTML = i18n.t('dev-refresh-html');
+                            btn.title = '';
+                        }
+                    });
+                return;
+            }
+
+            var getter = (options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            getter('/api/device/time')
+                .then(timeRes => {
+                    return getter('/api/network/status')
+                        .catch(() => null)
+                        .then(netRes => [timeRes, netRes]);
+                })
                 .then(([timeRes, netRes]) => {
                     const timeData = (timeRes && timeRes.success) ? timeRes.data || {} : {};
                     const netData = (netRes && netRes.success) ? netRes.data || {} : {};
                     const internetAvailable = netData.internetAvailable === true;
-                    this._renderDeviceTime(timeData, internetAvailable);
+                    self._renderDeviceTime(timeData, internetAvailable);
                 })
-                .catch(err => console.error('Load device time failed:', err));
+                .catch(err => {
+                    console.error('Load device time failed:', err);
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = i18n.t('dev-refresh-html');
+                        btn.title = '';
+                    }
+                });
         },
 
         syncDeviceTime() {
@@ -262,7 +337,7 @@
                 .then(res => {
                     if (!res || !res.success) {
                         Notification.warning(i18n.t('dev-time-sync-fail') || 'NTP同步失败', 'NTP');
-                        this.loadDeviceTime();
+                        this.loadDeviceTime({ noCache: true });
                         return;
                     }
                     this._renderDeviceTime(res.data || {}, true);
@@ -273,7 +348,7 @@
                 .catch(err => {
                     console.error('Sync device time failed:', err);
                     Notification.error(i18n.t('dev-time-sync-fail') || 'NTP同步失败', 'NTP');
-                    this.loadDeviceTime();
+                    this.loadDeviceTime({ noCache: true });
                 });
         },
 
@@ -385,186 +460,250 @@
                 });
         },
 
-        // ============ OTA升级 ============
+        _setConfigTransferStatus(text) {
+            const el = document.getElementById('dev-config-transfer-status');
+            if (el) el.textContent = text || '--';
+        },
 
-        loadOtaStatus() {
-            // 串行请求：避免并发 3 个接口（包含 system/info 大响应）把 ESP32 heap 撐爆
-            const _otaResults = {};
-            apiGet('/api/ota/status')
-                .then(otaRes => { _otaResults.otaRes = otaRes; return apiGet('/api/network/status'); })
-                .then(netRes => { _otaResults.netRes = netRes; return apiGet('/api/system/info'); })
-                .then(sysRes => {
-                    _otaResults.sysRes = sysRes;
-                    const { otaRes, netRes } = _otaResults;
-                    const internetAvailable = (netRes && netRes.success && netRes.data) ? netRes.data.internetAvailable === true : false;
+        _configTransferFetch(url) {
+            const headers = {};
+            const token = localStorage.getItem('auth_token');
+            if (token) headers.Authorization = 'Bearer ' + token;
+            return fetch(url, {
+                method: 'GET',
+                headers,
+                credentials: 'include',
+                cache: 'no-store'
+            });
+        },
 
-                    if (otaRes) {
-                        const badge = document.getElementById('ota-status-badge');
-                        const progressWrap = document.getElementById('ota-progress-wrap');
-                        const progressBar = document.getElementById('ota-progress-bar');
-                        const progressText = document.getElementById('ota-progress-text');
+        _normalizeConfigFileName(name) {
+            return String(name || '')
+                .replace(/^fastbee-config-/, '')
+                .replace(/\s+\(\d+\)(?=\.json$)/i, '');
+        },
 
-                        if (otaRes.status === 'OTA ready') {
-                            if (badge) { badge.className = 'status-badge status-online'; badge.textContent = i18n.t('ota-ready'); }
-                            if (progressWrap) progressWrap.classList.add('is-hidden');
-                        } else if (otaRes.progress > 0 && otaRes.progress < 100) {
-                            if (badge) { badge.className = 'status-badge status-warning'; badge.textContent = i18n.t('ota-in-progress'); }
-                            if (progressWrap) progressWrap.classList.remove('is-hidden');
-                            if (progressBar) progressBar.style.width = otaRes.progress + '%';
-                            if (progressText) progressText.textContent = otaRes.progress + '%';
+        _getConfigTransferType() {
+            const select = document.getElementById('dev-config-transfer-type');
+            const value = select ? select.value : 'all';
+            return CONFIG_TRANSFER_LABELS[value] ? value : 'all';
+        },
+
+        _getConfigTransferLabel(type) {
+            return CONFIG_TRANSFER_LABELS[type] || type || '--';
+        },
+
+        _filterConfigTransferEntries(entries, type) {
+            if (type === 'all') return entries;
+            const filtered = entries.filter((entry) => this._normalizeConfigFileName(entry.name) === type);
+            if (!filtered.length) {
+                throw new Error('所选文件中没有 ' + this._getConfigTransferLabel(type) + ' 配置');
+            }
+            return filtered;
+        },
+
+        _configTransferByteLength(content) {
+            let bytes = 0;
+            for (let i = 0; i < content.length;) {
+                const code = content.codePointAt(i);
+                bytes += code <= 0x7F ? 1 : (code <= 0x7FF ? 2 : (code <= 0xFFFF ? 3 : 4));
+                i += code > 0xFFFF ? 2 : 1;
+            }
+            return bytes;
+        },
+
+        _splitConfigTransferChunks(content, maxBytes) {
+            const chunks = [];
+            let start = 0;
+            let bytes = 0;
+            for (let i = 0; i < content.length;) {
+                const code = content.codePointAt(i);
+                const charLen = code > 0xFFFF ? 2 : 1;
+                const charBytes = code <= 0x7F ? 1 : (code <= 0x7FF ? 2 : (code <= 0xFFFF ? 3 : 4));
+                if (bytes > 0 && bytes + charBytes > maxBytes) {
+                    chunks.push(content.slice(start, i));
+                    start = i;
+                    bytes = 0;
+                }
+                bytes += charBytes;
+                i += charLen;
+            }
+            if (start < content.length) chunks.push(content.slice(start));
+            return chunks;
+        },
+
+        _validateConfigTransferEntry(item) {
+            const name = this._normalizeConfigFileName(item && item.name);
+            const content = String((item && item.content) || '');
+            if (!/^[A-Za-z0-9_.-]+\.json$/.test(name)) {
+                throw new Error('配置文件名不正确：' + (item && item.name ? item.name : '--'));
+            }
+            if (!content || this._configTransferByteLength(content) > MAX_CONFIG_TRANSFER_BYTES) {
+                throw new Error('配置文件过大或为空：' + name);
+            }
+            try {
+                JSON.parse(content);
+            } catch (err) {
+                throw new Error('配置文件不是有效 JSON：' + name);
+            }
+            return { name, content };
+        },
+
+        async _importConfigTransferEntry(item) {
+            const entry = this._validateConfigTransferEntry(item);
+            const chunks = this._splitConfigTransferChunks(entry.content, CONFIG_IMPORT_CHUNK_BYTES);
+            const total = chunks.length;
+            for (let i = 0; i < total; i++) {
+                const res = await apiPost('/api/config/transfer/import-chunk', {
+                    name: entry.name,
+                    index: String(i),
+                    total: String(total),
+                    chunk: chunks[i]
+                }, 30000);
+                if (!res || !res.success) {
+                    throw new Error((res && res.error) || ('分片导入失败：' + entry.name));
+                }
+            }
+            return { success: true, name: entry.name };
+        },
+
+        _readSelectedConfigEntries(selectedFiles) {
+            return Promise.all(selectedFiles.map((file) => file.text().then((text) => ({ file, text }))))
+                .then((items) => {
+                    const entries = [];
+                    items.forEach(({ file, text }) => {
+                        let parsed = null;
+                        try {
+                            parsed = JSON.parse(text);
+                        } catch (err) {
+                            parsed = null;
                         }
-                    }
 
-                    const urlBtn = document.getElementById('ota-url-btn');
-                    const urlInput = document.getElementById('ota-url');
-                    const urlHint = document.getElementById('ota-url-hint');
-                    if (urlBtn) {
-                        if (internetAvailable) {
-                            urlBtn.disabled = false;
-                            urlBtn.title = '';
-                            if (urlInput) urlInput.disabled = false;
-                            if (urlHint) urlHint.classList.add('is-hidden');
-                        } else {
-                            urlBtn.disabled = true;
-                            urlBtn.title = i18n.t('ota-no-network-tip');
-                            if (urlInput) urlInput.disabled = true;
-                            if (urlHint) {
-                                urlHint.classList.remove('is-hidden');
-                                urlHint.innerHTML = `<span class="badge badge-danger">${i18n.t('ota-no-network-msg')}</span>`;
-                            }
+                        if (parsed && parsed.type === 'fastbee-config-bundle' && Array.isArray(parsed.files)) {
+                            parsed.files.forEach((item) => entries.push(item));
+                            return;
                         }
-                    }
 
-                    if (sysRes && sysRes.success) {
-                        const d = sysRes.data || {};
-                        this._setValue('ota-current-version', d.firmwareVersion || '--');
-                        const flashSize = d.flashChipSize || 0;
-                        const freeSketch = d.freeSketchSpace || 0;
-                        const flashSizeEl = document.getElementById('ota-flash-size');
-                        const freeSpaceEl = document.getElementById('ota-free-space');
-                        if (flashSizeEl) flashSizeEl.textContent = flashSize > 0 ? (flashSize / 1024 / 1024).toFixed(2) + ' MB' : '--';
-                        if (freeSpaceEl) freeSpaceEl.textContent = freeSketch > 0 ? (freeSketch / 1024).toFixed(0) + ' KB' : '--';
-                    }
-                })
-                .catch(err => {
-                    console.error('加载OTA状态失败:', err);
+                        entries.push({
+                            name: file.name,
+                            content: text
+                        });
+                    });
+
+                    return entries.map((item) => this._validateConfigTransferEntry(item));
                 });
         },
 
-        startOtaUrl() {
-            const url = document.getElementById('ota-url')?.value || '';
-            if (!url) { Notification.error(i18n.t('ota-url-empty'), i18n.t('ota-title')); return; }
-            if (!url.startsWith('http://') && !url.startsWith('https://')) { Notification.error(i18n.t('ota-url-invalid'), i18n.t('ota-title')); return; }
+        exportDeviceConfigBundle() {
+            const btn = document.getElementById('dev-config-export-btn');
+            const type = this._getConfigTransferType();
+            if (btn) btn.disabled = true;
+            this._setConfigTransferStatus('正在读取配置列表...');
 
-            const btn = document.getElementById('ota-url-btn');
-            if (btn) { btn.disabled = true; btn.innerHTML = i18n.t('ota-downloading-html'); }
-
-            const progressWrap = document.getElementById('ota-progress-wrap');
-            if (progressWrap) progressWrap.classList.remove('is-hidden');
-
-            apiPost('/api/ota/url', { url })
-                .then(res => {
-                    if (res && res.success) {
-                        Notification.success(i18n.t('ota-start-ok'), i18n.t('ota-title'));
-                        this._pollOtaProgress();
-                    } else {
-                        Notification.error(res?.message || i18n.t('ota-start-fail'), i18n.t('ota-title'));
-                        if (progressWrap) progressWrap.classList.add('is-hidden');
+            apiGetFresh('/api/config/transfer/list')
+                .then(async (res) => {
+                    let files = (res && res.success && res.data && res.data.files) ? res.data.files : [];
+                    if (!files.length) throw new Error('没有可导出的配置文件');
+                    if (type !== 'all') {
+                        files = files.filter((item) => this._normalizeConfigFileName(item.name) === type);
+                        if (!files.length) throw new Error('当前设备没有可导出的 ' + this._getConfigTransferLabel(type) + ' 配置');
                     }
+
+                    const bundle = {
+                        type: 'fastbee-config-bundle',
+                        version: 1,
+                        scope: type,
+                        exportedAt: new Date().toISOString(),
+                        files: []
+                    };
+
+                    for (let i = 0; i < files.length; i++) {
+                        const item = files[i];
+                        this._setConfigTransferStatus(`正在导出 ${item.name} (${i + 1}/${files.length})...`);
+                        const url = new URL('/api/config/transfer/export', window.location.origin);
+                        url.searchParams.set('name', item.name);
+                        const resp = await this._configTransferFetch(url.toString());
+                        if (!resp.ok) throw new Error(`导出失败：${item.name}`);
+                        const content = await resp.text();
+                        if (this._configTransferByteLength(content) > MAX_CONFIG_TRANSFER_BYTES) {
+                            throw new Error(`配置文件过大：${item.name}`);
+                        }
+                        bundle.files.push({ name: item.name, content });
+                    }
+
+                    const exportContent = type === 'all'
+                        ? JSON.stringify(bundle, null, 2)
+                        : bundle.files[0].content;
+                    const exportName = type === 'all'
+                        ? 'fastbee-config-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json'
+                        : bundle.files[0].name;
+                    const blob = new Blob([exportContent], { type: 'application/json' });
+                    const link = document.createElement('a');
+                    const objectUrl = URL.createObjectURL(blob);
+                    link.href = objectUrl;
+                    link.download = exportName;
+                    document.body.appendChild(link);
+                    link.click();
+                    link.remove();
+                    setTimeout(() => URL.revokeObjectURL(objectUrl), 3000);
+
+                    this._setConfigTransferStatus(`配置导出完成：${this._getConfigTransferLabel(type)}，${bundle.files.length} 个文件`);
+                    Notification.success('配置导出完成', '配置导入/导出');
                 })
-                .catch(err => {
-                    Notification.error(i18n.t('ota-start-fail') + ': ' + (err.message || err), i18n.t('ota-title'));
-                    if (progressWrap) progressWrap.classList.add('is-hidden');
+                .catch((err) => {
+                    console.error('[device-config] export config bundle failed:', err);
+                    this._setConfigTransferStatus('配置导出失败');
+                    Notification.error(err && err.message ? err.message : '配置导出失败', '配置导入/导出');
                 })
                 .finally(() => {
-                    if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('ota-start-url-html'); }
+                    if (btn) btn.disabled = false;
                 });
         },
 
-        startOtaUpload() {
-            const fileInput = document.getElementById('ota-file');
-            const file = fileInput?.files?.[0];
-            if (!file) { Notification.error(i18n.t('ota-file-empty'), i18n.t('ota-title')); return; }
-            if (!file.name.endsWith('.bin')) { Notification.error(i18n.t('ota-file-invalid'), i18n.t('ota-title')); return; }
+        importDeviceConfigBundle() {
+            const input = document.getElementById('dev-config-import-file');
+            const btn = document.getElementById('dev-config-import-btn');
+            const type = this._getConfigTransferType();
+            const selectedFiles = input && input.files ? Array.from(input.files) : [];
+            if (!selectedFiles.length) {
+                Notification.warning('请先选择配置文件或配置包', '配置导入/导出');
+                return;
+            }
+            const totalSize = selectedFiles.reduce((sum, file) => sum + (file.size || 0), 0);
+            if (totalSize > MAX_CONFIG_BUNDLE_BYTES) {
+                Notification.warning('配置文件总量过大，请分批导入', '配置导入/导出');
+                return;
+            }
+            if (!confirm('导入 ' + this._getConfigTransferLabel(type) + ' 会覆盖设备现有 /config 配置文件，是否继续？')) return;
 
-            const btn = document.getElementById('ota-upload-btn');
-            if (btn) { btn.disabled = true; btn.innerHTML = i18n.t('ota-uploading-html'); }
+            if (btn) btn.disabled = true;
+            this._setConfigTransferStatus('正在读取配置文件...');
 
-            const progressWrap = document.getElementById('ota-progress-wrap');
-            const progressBar = document.getElementById('ota-progress-bar');
-            const progressText = document.getElementById('ota-progress-text');
-            if (progressWrap) progressWrap.classList.remove('is-hidden');
-
-            const formData = new FormData();
-            formData.append('firmware', file);
-
-            const xhr = new XMLHttpRequest();
-
-            xhr.upload.addEventListener('progress', (e) => {
-                if (e.lengthComputable) {
-                    const percent = Math.round((e.loaded / e.total) * 100);
-                    if (progressBar) progressBar.style.width = percent + '%';
-                    if (progressText) progressText.textContent = percent + '%';
-                }
-            });
-
-            xhr.addEventListener('load', () => {
-                if (xhr.status === 200) {
-                    try {
-                        const res = JSON.parse(xhr.responseText);
-                        if (res.success) {
-                            Notification.success(i18n.t('ota-upload-ok'), i18n.t('ota-title'));
-                            setTimeout(() => { window.location.reload(); }, 5000);
-                        } else {
-                            Notification.error(res.message || i18n.t('ota-upload-fail'), i18n.t('ota-title'));
-                        }
-                    } catch (e) {
-                        Notification.success(i18n.t('ota-upload-ok2'), i18n.t('ota-title'));
+            this._readSelectedConfigEntries(selectedFiles)
+                .then(async (files) => {
+                    if (!files.length) throw new Error('配置包内没有可导入的配置文件');
+                    files = this._filterConfigTransferEntries(files, type);
+                    for (let i = 0; i < files.length; i++) {
+                        const item = files[i];
+                        this._setConfigTransferStatus(`正在导入 ${item.name} (${i + 1}/${files.length})...`);
+                        await this._importConfigTransferEntry(item);
                     }
-                } else {
-                    Notification.error(i18n.t('ota-upload-fail-prefix') + xhr.status, i18n.t('ota-title'));
-                }
-                if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('ota-upload-btn-html'); }
-            });
-
-            xhr.addEventListener('error', () => {
-                Notification.error(i18n.t('ota-upload-network-fail'), i18n.t('ota-title'));
-                if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('ota-upload-btn-html'); }
-                if (progressWrap) progressWrap.classList.add('is-hidden');
-            });
-
-            xhr.open('POST', '/api/ota/upload');
-            xhr.setRequestHeader('Authorization', 'Bearer ' + localStorage.getItem('token'));
-            xhr.send(formData);
+                    this._setConfigTransferStatus(`配置导入完成：${files.length} 个文件，建议重启设备使配置完全生效`);
+                    Notification.success('配置导入完成，建议重启设备', '配置导入/导出');
+                    if (typeof window.apiInvalidateCache === 'function') {
+                        window.apiInvalidateCache();
+                    }
+                })
+                .catch((err) => {
+                    console.error('[device-config] import config bundle failed:', err);
+                    this._setConfigTransferStatus('配置导入失败');
+                    Notification.error(err && err.message ? err.message : '配置导入失败', '配置导入/导出');
+                })
+                .finally(() => {
+                    if (btn) btn.disabled = false;
+                });
         },
 
-        _pollOtaProgress() {
-            const progressBar = document.getElementById('ota-progress-bar');
-            const progressText = document.getElementById('ota-progress-text');
-            const badge = document.getElementById('ota-status-badge');
-
-            const poll = () => {
-                apiGet('/api/ota/status')
-                    .then(res => {
-                        if (!res) return;
-                        const progress = res.progress || 0;
-                        if (progressBar) progressBar.style.width = progress + '%';
-                        if (progressText) progressText.textContent = progress + '%';
-
-                        if (progress < 100 && res.status !== 'OTA ready') {
-                            if (badge) { badge.className = 'status-badge status-warning'; badge.textContent = i18n.t('ota-in-progress'); }
-                            setTimeout(poll, 1000);
-                        } else if (progress >= 100) {
-                            if (badge) { badge.className = 'status-badge status-online'; badge.textContent = i18n.t('ota-done'); }
-                            Notification.success(i18n.t('ota-complete-msg'), i18n.t('ota-title'));
-                        }
-                    })
-                    .catch(err => {
-                        console.error(i18n.t('ota-progress-fail'), err);
-                    });
-            };
-            poll();
-        }
     });
 
     // 自动绑定事件

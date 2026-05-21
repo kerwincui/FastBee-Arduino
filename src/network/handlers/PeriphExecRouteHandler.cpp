@@ -15,6 +15,35 @@
 #include <AsyncJson.h>
 #include <algorithm>
 
+namespace {
+String escapePeriphExecJsonString(const String& value) {
+    String out;
+    out.reserve(value.length() + 8);
+    for (size_t i = 0; i < value.length(); ++i) {
+        char c = value[i];
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<uint8_t>(c) < 0x20) {
+                    char buf[7];
+                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<uint8_t>(c));
+                    out += buf;
+                } else {
+                    out += c;
+                }
+                break;
+        }
+    }
+    return out;
+}
+}
+
 PeriphExecRouteHandler::PeriphExecRouteHandler(WebHandlerContext* ctx)
     : ctx(ctx) {
 }
@@ -91,6 +120,10 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         return;
     }
 
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Rule list", MemoryGuardLevel::SEVERE, 8)) {
+        return;
+    }
+
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     PeripheralManager& pm = PeripheralManager::getInstance();
 
@@ -137,6 +170,8 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     int startIdx = 0;
     int endIdx = 0;
     std::vector<String> items;
+    std::vector<String> sensorSourceIds;
+    String sensorSources;
     {
         MutexGuard lock(mgr.getRulesMutex());
         if (!lock.isLocked()) {
@@ -150,6 +185,54 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         for (const auto& pair : ruleMap) {
             ptrs.push_back(&pair.second);
         }
+
+        auto addSensorSource = [&](const ExecAction& action) {
+            if (action.actionType != static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ)) return;
+            if (action.actionValue.isEmpty()) return;
+
+            JsonDocument sDoc;
+            DeserializationError sErr = deserializeJson(sDoc, action.actionValue);
+            if (sErr) return;
+
+            String periphId = sDoc["periphId"].as<String>();
+            if (periphId.isEmpty()) periphId = action.targetPeriphId;
+            if (periphId.isEmpty()) return;
+
+            String dataField = sDoc["dataField"].as<String>();
+            if (dataField.isEmpty()) dataField = "temperature";
+            String sourceId = periphId + "_" + dataField;
+            for (const auto& existingId : sensorSourceIds) {
+                if (existingId == sourceId) return;
+            }
+            sensorSourceIds.push_back(sourceId);
+
+            String sensorLabel = sDoc["sensorLabel"].as<String>();
+            if (sensorLabel.isEmpty()) {
+                sensorLabel = (dataField == "humidity") ? "湿度" : "温度";
+            }
+            String unit = sDoc["unit"].as<String>();
+
+            String periphName = periphId;
+            const PeripheralConfig* periph = pm.getPeripheral(periphId);
+            if (periph && !periph->name.isEmpty()) periphName = periph->name;
+
+            String displayLabel = periphName + " - " + sensorLabel;
+            if (!sensorSources.isEmpty()) sensorSources += ",";
+            sensorSources += "{\"id\":\"" + escapePeriphExecJsonString(sourceId) + "\"";
+            sensorSources += ",\"label\":\"" + escapePeriphExecJsonString(displayLabel) + "\"";
+            sensorSources += ",\"periphId\":\"" + escapePeriphExecJsonString(periphId) + "\"";
+            sensorSources += ",\"field\":\"" + escapePeriphExecJsonString(dataField) + "\"";
+            if (!unit.isEmpty()) sensorSources += ",\"unit\":\"" + escapePeriphExecJsonString(unit) + "\"";
+            sensorSources += "}";
+        };
+
+        for (const auto* rule : ptrs) {
+            if (!rule) continue;
+            for (const auto& action : rule->actions) {
+                addSensorSource(action);
+            }
+        }
+
         // 排序：启用的排前面，然后按名称排序
         std::sort(ptrs.begin(), ptrs.end(), [](const PeriphExecRule* a, const PeriphExecRule* b) {
             if (a->enabled != b->enabled) return a->enabled > b->enabled;
@@ -211,13 +294,16 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
 
     // 复用 HandlerUtils::sendJsonListChunked（与 handleGetPeripherals 同模式）
     String header;
-    header.reserve(96);
+    header.reserve(128 + sensorSources.length());
     header = F("{\"success\":true,\"total\":");
     header += String(total);
     header += F(",\"page\":");
     header += String(page);
     header += F(",\"pageSize\":");
     header += String(pageSize);
+    header += F(",\"sensorSources\":[");
+    header += sensorSources;
+    header += F("]");
     header += F(",\"data\":[");
 
     if (!HandlerUtils::sendJsonListChunked(request, header, std::move(items))) {
@@ -469,6 +555,11 @@ void PeriphExecRouteHandler::handleGetDynamicEvents(AsyncWebServerRequest* reque
         return;
     }
 
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Dynamic event list", MemoryGuardLevel::SEVERE, 8)) {
+        return;
+    }
+    if (HandlerUtils::checkLowMemory(request, 12288)) return;
+
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     String eventsJson = mgr.getDynamicEventsJson();
     HandlerUtils::sendJsonSuccess(request, eventsJson);
@@ -598,6 +689,10 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
         return;
     }
 
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Control list", MemoryGuardLevel::SEVERE, 8)) {
+        return;
+    }
+
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     PeripheralManager& pm = PeripheralManager::getInstance();
 
@@ -626,6 +721,12 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
 
         const ExecAction& firstAction = rule.actions[0];
         int at = firstAction.actionType;
+#if !FASTBEE_ENABLE_OTA
+        if (at == static_cast<int>(ExecActionType::ACTION_SYS_OTA)) continue;
+#endif
+#if !FASTBEE_ENABLE_RULE_SCRIPT
+        if (at == static_cast<int>(ExecActionType::ACTION_SCRIPT)) continue;
+#endif
 
         // 确定分组
         String* targetBuf = nullptr;

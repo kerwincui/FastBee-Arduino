@@ -4,16 +4,27 @@
  */
 (function() {
     AppState.registerModule('dashboard', {
+        _dashboardMonitorLoadPromise: null,
+        _dashboardNetworkLoadPromise: null,
+        _dashboardRuntimeLoadPromise: null,
 
         // ============ 事件绑定 ============
         setupDashboardEvents() {
             // 刷新监控按钮
             const monitorRefreshBtn = document.getElementById('monitor-refresh-btn');
-            if (monitorRefreshBtn) monitorRefreshBtn.addEventListener('click', () => this.loadSystemMonitor());
+            if (monitorRefreshBtn) monitorRefreshBtn.addEventListener('click', () => this.loadSystemMonitor({ noCache: true, loadRuntime: true, runtimeDelayMs: 200 }));
 
             // 仪表盘网络状态刷新按钮
             const dashboardNetRefreshBtn = document.getElementById('dashboard-net-refresh-btn');
-            if (dashboardNetRefreshBtn) dashboardNetRefreshBtn.addEventListener('click', () => this.loadNetworkStatus());
+            if (dashboardNetRefreshBtn) dashboardNetRefreshBtn.addEventListener('click', () => this.loadNetworkStatus({ noCache: true }));
+        },
+
+        bootDashboardPage() {
+            var self = this;
+            this.loadSystemMonitor({ loadRuntime: false });
+            setTimeout(function() {
+                self.loadWebRuntimeDiagnostics();
+            }, 1200);
         },
 
         // ============ 仪表板（从 /api/system/status 加载实时数据）============
@@ -64,8 +75,6 @@
                     set('sys-free-heap', d.freeHeap ? Math.round(d.freeHeap / 1024) + ' KB' : '—');
                     set('sys-uptime', d.uptime ? Math.round(d.uptime / 1000) + ' s' : '—');
                     set('sys-sdk-version', d.sdkVersion || '—');
-                    set('sys-user-count', d.userCount || '—');
-                    set('sys-sessions', d.activeSessions || '—');
                 })
                 .catch(() => {});
         },
@@ -75,14 +84,23 @@
         /**
          * 加载系统监控数据
          */
-        loadSystemMonitor() {
+        loadSystemMonitor(options) {
+            options = options || {};
+            if (this._dashboardMonitorLoadPromise) return this._dashboardMonitorLoadPromise;
             var self = this;
+            var batchGetter = null;
+            if (options.noCache === true && typeof apiBatchGetFresh === 'function') {
+                batchGetter = apiBatchGetFresh;
+            } else if (typeof apiBatchGet === 'function') {
+                batchGetter = apiBatchGet;
+            }
+            var getter = batchGetter || (options.noCache === true && typeof apiGetFresh === 'function' ? apiGetFresh : apiGet);
             // 使用 apiBatchGet 同时发起 system/info 和 network/status
             // 它们会在 50ms 窗口内被合并为单个 /api/batch 请求
-            var infoPromise = apiBatchGet('/api/system/info');
-            var netPromise = apiBatchGet('/api/network/status');
+            var infoPromise = getter('/api/system/info');
+            var netPromise = getter('/api/network/status');
 
-            infoPromise
+            var monitorPromise = infoPromise
                 .then(res => {
                     if (!res || !res.success) return;
 
@@ -132,12 +150,6 @@
                     this._setText('monitor-fs-free', this._formatBytes(fs.free || 0));
                     this._setText('monitor-fs-total', this._formatBytes(fs.total || 0));
 
-                    // 用户统计
-                    const users = data.users || {};
-                    this._setText('monitor-user-total', users.total || 0);
-                    this._setText('monitor-user-online', users.online || 0);
-                    this._setText('monitor-user-sessions', users.activeSessions || 0);
-
                     // 网络状态通过独立的 promise 加载（已被批量合并）
                     netPromise.then(netRes => {
                         if (netRes && netRes.success) {
@@ -150,12 +162,47 @@
                 .catch(err => {
                     console.error('Load system monitor failed:', err);
                 });
+
+            if (options.loadRuntime === true) {
+                setTimeout(function() {
+                    self.loadWebRuntimeDiagnostics({ noCache: options.noCache === true });
+                }, options.runtimeDelayMs || 0);
+            }
+            this._dashboardMonitorLoadPromise = monitorPromise.finally(function() {
+                self._dashboardMonitorLoadPromise = null;
+            });
+            return this._dashboardMonitorLoadPromise;
+        },
+
+        loadWebRuntimeDiagnostics(options) {
+            options = options || {};
+            if (this._dashboardRuntimeLoadPromise) return this._dashboardRuntimeLoadPromise;
+            var self = this;
+            var getter = (options.noCache === true && typeof apiGetFresh === 'function')
+                ? apiGetFresh
+                : (typeof apiGetSilent === 'function' ? apiGetSilent : apiGet);
+            this.ensureWebRuntimePanel();
+            this._dashboardRuntimeLoadPromise = getter('/api/system/web-runtime')
+                .then(function(res) {
+                    if (res && res.success) {
+                        self._applyWebRuntime(res);
+                    }
+                })
+                .catch(function(err) {
+                    console.error('Load web runtime failed:', err);
+                })
+                .finally(function() {
+                    self._dashboardRuntimeLoadPromise = null;
+                });
+            return this._dashboardRuntimeLoadPromise;
         },
 
         /**
          * 加载并显示网络状态
          */
-        loadNetworkStatus() {
+        loadNetworkStatus(options) {
+            options = options || {};
+            if (this._dashboardNetworkLoadPromise) return this._dashboardNetworkLoadPromise;
             var self = this;
             const refreshBtn = document.getElementById('dashboard-net-refresh-btn');
             if (refreshBtn) {
@@ -163,7 +210,8 @@
                 refreshBtn.innerHTML = i18n.t('net-refreshing-html');
             }
 
-            apiGet('/api/network/status')
+            var getter = (options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            this._dashboardNetworkLoadPromise = getter('/api/network/status')
                 .then(res => {
                     if (!res || !res.success) {
                         Notification.error(i18n.t('net-status-load-fail'), i18n.t('net-status-title-msg'));
@@ -180,7 +228,9 @@
                         refreshBtn.disabled = false;
                         refreshBtn.innerHTML = i18n.t('net-refresh-html');
                     }
+                    this._dashboardNetworkLoadPromise = null;
                 });
+            return this._dashboardNetworkLoadPromise;
         },
 
         /**
@@ -260,6 +310,28 @@
                 ? `<span class="badge badge-danger">${i18n.t('net-conflict-yes')}</span>`
                 : `<span class="badge badge-success">${i18n.t('net-no-conflict')}</span>`);
             setText('ns-uptime', d.uptimeFormatted || '--');
+        },
+
+        ensureWebRuntimePanel() {
+            var trigger = document.getElementById('dashboard-net-refresh-btn');
+            var networkHeader = trigger ? trigger.closest('.dashboard-section-header') : null;
+            if (window.WebRuntimeDiagnostics) {
+                window.WebRuntimeDiagnostics.ensurePanel({
+                    anchorEl: networkHeader,
+                    t: this._t.bind(this)
+                });
+            }
+        },
+
+        _applyWebRuntime(res) {
+            if (window.WebRuntimeDiagnostics) {
+                window.WebRuntimeDiagnostics.apply({
+                    t: this._t.bind(this),
+                    setText: this._setText.bind(this),
+                    setHtml: this._setHtml.bind(this),
+                    formatBytes: this._formatBytes.bind(this)
+                }, res);
+            }
         },
 
     });

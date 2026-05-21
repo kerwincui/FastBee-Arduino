@@ -1,4 +1,4 @@
-﻿#ifndef WEB_CONFIG_MANAGER_H
+#ifndef WEB_CONFIG_MANAGER_H
 #define WEB_CONFIG_MANAGER_H
 
 #include <Arduino.h>
@@ -19,10 +19,14 @@ class ProtocolManager;
 class WebHandlerContext;
 class StaticRouteHandler;
 class AuthRouteHandler;
+#if FASTBEE_ENABLE_USER_ADMIN
 class UserRouteHandler;
+#endif
+#if FASTBEE_ENABLE_ROLE_ADMIN
 class RoleRouteHandler;
-class SystemRouteHandler;
+#endif
 class LogRouteHandler;
+class SystemRouteHandler;
 class DeviceRouteHandler;
 class BatchRouteHandler;
 class ProvisionRouteHandler;
@@ -36,6 +40,16 @@ class RuleScriptRouteHandler;
 #endif
 class ProtocolRouteHandler;
 class SSERouteHandler;
+
+struct WebRecoveryEvent {
+    unsigned long atMs = 0;
+    uint32_t freeHeap = 0;
+    uint32_t largestBlock = 0;
+    uint8_t fragmentation = 0;
+    uint8_t sseClients = 0;
+    char type[24] = "";
+    char reason[32] = "";
+};
 
 /**
  * @brief Web配置管理器 - 瘦协调器
@@ -67,8 +81,19 @@ public:
 
     /// 暴露 SSE 路由处理器（供 HealthMonitor 在内存严重不足时强制断开 SSE 客户端）
     SSERouteHandler* getSseRouteHandler() const { return sseRouteHandler.get(); }
+    size_t getSseClientCount() const;
+    unsigned long getLastSoftRestartAtMs() const { return lastSoftRestartAtMs; }
+    const String& getLastSoftRestartReason() const { return lastSoftRestartReason; }
+    uint32_t getLastSoftRestartFreeHeap() const { return lastSoftRestartFreeHeap; }
+    uint32_t getLastSoftRestartLargestBlock() const { return lastSoftRestartLargestBlock; }
+    uint8_t getLastSoftRestartFragmentation() const { return lastSoftRestartFrag; }
+    uint32_t getSoftRestartCount() const { return softRestartCount; }
+    unsigned long getSeverePressureSinceMs() const { return severePressureSinceMs; }
+    size_t copyRecoveryEvents(WebRecoveryEvent* out, size_t maxEvents) const;
 
 private:
+    static constexpr size_t MAX_RECOVERY_EVENTS = 8;
+
     AsyncWebServer* server;
     bool isRunning;
 
@@ -78,12 +103,16 @@ private:
     // 14 个专职路由处理器（条件编译裁剪未启用的模块）
     std::unique_ptr<StaticRouteHandler>     staticHandler;
     std::unique_ptr<AuthRouteHandler>       authHandler;
+#if FASTBEE_ENABLE_USER_ADMIN
     std::unique_ptr<UserRouteHandler>       userHandler;
+#endif
+#if FASTBEE_ENABLE_ROLE_ADMIN
     std::unique_ptr<RoleRouteHandler>       roleHandler;
-    std::unique_ptr<SystemRouteHandler>     systemHandler;
-#if FASTBEE_ENABLE_LOGGER
+#endif
+#if FASTBEE_ENABLE_LOG_VIEWER || FASTBEE_ENABLE_FILE_LOGGING
     std::unique_ptr<LogRouteHandler>        logHandler;
 #endif
+    std::unique_ptr<SystemRouteHandler>     systemHandler;
     std::unique_ptr<DeviceRouteHandler>     deviceHandler;
     std::unique_ptr<BatchRouteHandler>      batchHandler;
     std::unique_ptr<ProvisionRouteHandler>  provisionHandler;
@@ -102,7 +131,31 @@ private:
 #endif
     std::unique_ptr<SSERouteHandler>        sseRouteHandler;
 
+    unsigned long lastSoftRestartAtMs = 0;
+    String lastSoftRestartReason;
+    uint32_t lastSoftRestartFreeHeap = 0;
+    uint32_t lastSoftRestartLargestBlock = 0;
+    uint8_t lastSoftRestartFrag = 0;
+    uint32_t softRestartCount = 0;
+    unsigned long severePressureSinceMs = 0;
+    WebRecoveryEvent recoveryEvents[MAX_RECOVERY_EVENTS];
+    size_t recoveryEventCount = 0;
+    size_t recoveryEventHead = 0;
+
     void setupAllRoutes();
+    void recordRecoveryEvent(const char* type,
+                             const char* reason,
+                             unsigned long atMs,
+                             uint32_t freeHeap,
+                             uint32_t largestBlock,
+                             uint8_t fragmentation);
+    void scheduleDeviceRestartForWebRecovery(const char* reason,
+                                             unsigned long atMs,
+                                             uint32_t freeHeap,
+                                             uint32_t largestBlock,
+                                             uint8_t fragmentation,
+                                             unsigned long delayMs = 3000UL);
+    void copyText(char* dest, size_t destSize, const char* text) const;
 };
 
 #endif // WEB_CONFIG_MANAGER_H

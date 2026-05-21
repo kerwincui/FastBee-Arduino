@@ -7,6 +7,26 @@
 class WebHandlerContext;
 class HealthMonitor;
 
+struct SSEStatsSnapshot {
+    uint32_t acceptedConnections = 0;
+    uint32_t rejectedLowMemory = 0;
+    uint32_t rejectedGuard = 0;
+    uint32_t rejectedCapacity = 0;
+    uint32_t evictedOldestClients = 0;
+    uint32_t forcedClosedClients = 0;
+    uint32_t timedOutClients = 0;
+    uint32_t disconnectedCleanups = 0;
+    uint32_t skippedBroadcastLowMemory = 0;
+    uint32_t skippedBroadcastGuard = 0;
+    unsigned long lastConnectAtMs = 0;
+    unsigned long lastRejectAtMs = 0;
+    unsigned long lastForcedCloseAtMs = 0;
+    unsigned long lastCleanupAtMs = 0;
+    unsigned long lastSkipBroadcastAtMs = 0;
+    char lastRejectReason[24] = "";
+    char lastSkipReason[24] = "";
+};
+
 class SSERouteHandler {
 public:
     explicit SSERouteHandler(WebHandlerContext* ctx);
@@ -17,6 +37,7 @@ public:
     void broadcastModbusStatus(const String& data);
     void broadcastSensorData(const String& data);
     size_t clientCount() const;
+    SSEStatsSnapshot getStats() const { return _stats; }
 
     /// 周期性维护：发送心跳、清理超时连接、上报 SSE 客户端数
     /// 应在 WebConfigManager::performMaintenance() 中定期调用
@@ -36,7 +57,9 @@ public:
     // 超时阈值：2 个心跳周期无响应则清理
     static constexpr unsigned long CLIENT_TIMEOUT_MS = 120000;
     // 低内存保护阈值（字节）
-    static constexpr size_t LOW_MEMORY_THRESHOLD = 15360;
+    // no-PSRAM ESP32 在 Web 稳态下 largestFreeBlock 常会落到 8-12KB；
+    // 这里保守放宽到 8KB，避免 SSE 在正常页面访问时持续被拒并触发重连风暴。
+    static constexpr size_t LOW_MEMORY_THRESHOLD = 8192;
 
 private:
     /// 轻量级客户端活动追踪（与 MAX_SSE_CLIENTS 对齐）
@@ -51,6 +74,8 @@ private:
     AsyncEventSource _events;
     uint32_t _messageId;
     unsigned long _lastHeartbeatMs = 0;
+    unsigned long _lastSkipLogMs = 0;
+    SSEStatsSnapshot _stats;
 
     /// 获取 HealthMonitor 指针（通过 FastBeeFramework 单例）
     HealthMonitor* getHealthMonitor() const;
@@ -63,7 +88,8 @@ private:
     /// 从跟踪槽位移除断开的客户端
     void untrackClient(AsyncEventSourceClient* client);
     /// 低内存时是否应跳过 SSE 推送
-    bool shouldSkipBroadcast() const;
+    bool shouldSkipBroadcast();
+    void setReason(char* dest, size_t destSize, const char* reason) const;
 };
 
 #endif // SSE_ROUTE_HANDLER_H

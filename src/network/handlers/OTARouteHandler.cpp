@@ -1,3 +1,6 @@
+#include "core/FeatureFlags.h"
+#if FASTBEE_ENABLE_OTA
+
 #include "./network/handlers/OTARouteHandler.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "./network/WebHandlerContext.h"
@@ -164,3 +167,5 @@ void OTARouteHandler::handleOtaUpload(AsyncWebServerRequest* request, const Stri
         }
     }
 }
+
+#endif // FASTBEE_ENABLE_OTA

@@ -1,5 +1,5 @@
 /**
- * @description: 任务管理器实�?
+ * @description: Task manager implementation
  * @author: kerwincui
  * @copyright: FastBee All rights reserved.
  * @date: 2025-12-02 17:32:59
@@ -62,7 +62,7 @@ bool TaskManager::addTask(const String& name, TaskFunction func, void* param,
     
     ScheduledTask newTask;
     strncpy(newTask.name, name.c_str(), sizeof(newTask.name) - 1);
-    newTask.name[sizeof(newTask.name) - 1] = '\0'; // 确保字符串结�?
+    newTask.name[sizeof(newTask.name) - 1] = '\0'; // Ensure null termination
     newTask.function       = func;
     newTask.parameter      = param;
     newTask.interval       = interval;
@@ -199,7 +199,7 @@ void TaskManager::listTasks() {
     LOG_INFO("=== Scheduled Tasks ===");
     for (const auto& task : tasks) {
         unsigned long ago = millis() - task.lastRun;
-        // 使用格式化日志宏，避免多�?String 拼接
+        // Use a fixed buffer to avoid repeated String concatenation
         char buf[160];
         snprintf(buf, sizeof(buf),
                  "  [%s] interval=%lums priority=%d enabled=%s lastRun=%lums ago exec=%lu lastExec=%lums maxExec=%lums",
@@ -224,7 +224,7 @@ bool TaskManager::taskExists(const String& name) {
     return false;
 }
 
-// �?新增：停止所有任�?
+// Stop all tasks
 void TaskManager::stopAllTasks() {
     if (!isRunning) {
         return;
@@ -232,7 +232,7 @@ void TaskManager::stopAllTasks() {
     
     LOG_INFO("Task Manager: Stopping all tasks...");
     
-    // 禁用所有任�?
+    // Disable all tasks
     for (auto& task : tasks) {
         task.enabled = false;
     }
@@ -241,7 +241,7 @@ void TaskManager::stopAllTasks() {
     LOG_INFO("Task Manager: All tasks stopped");
 }
 
-// �?新增：重新启动所有任�?
+// Restart all tasks
 void TaskManager::restartAllTasks() {
     LOG_INFO("Task Manager: Restarting all tasks...");
     
@@ -256,24 +256,24 @@ void TaskManager::restartAllTasks() {
     LOG_INFO("Task Manager: All tasks restarted");
 }
 
-// �?新增：暂停任务管理器（不执行任何任务�?
+// Pause the task manager
 void TaskManager::pause() {
     LOG_INFO("Task Manager: Paused");
     isRunning = false;
 }
 
-// �?新增：恢复任务管理器
+// Resume the task manager
 void TaskManager::resume() {
     LOG_INFO("Task Manager: Resumed");
     isRunning = true;
 }
 
-// �?新增：获取任务管理器状�?
+// Get task manager running state
 bool TaskManager::isRunningStatus() const {
     return isRunning;
 }
 
-// �?新增：获取活动任务数�?
+// Get active task count
 size_t TaskManager::getActiveTaskCount() const {
     size_t count = 0;
     for (const auto& task : tasks) {
@@ -284,14 +284,14 @@ size_t TaskManager::getActiveTaskCount() const {
     return count;
 }
 
-// �?新增：清空所有任�?
+// Clear all tasks
 void TaskManager::clearAllTasks() {
     LOG_INFO("Task Manager: Clearing all tasks...");
     tasks.clear();
     LOG_INFO("Task Manager: All tasks cleared");
 }
 
-// �?新增：获取特定任务的统计信息
+// Get statistics for a specific task
 TaskStatistics TaskManager::getTaskStatistics(const String& name) {
     for (auto& task : tasks) {
         if (strcmp(task.name, name.c_str()) == 0) {

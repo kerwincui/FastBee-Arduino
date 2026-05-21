@@ -40,6 +40,10 @@ void RuleScriptRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         return;
     }
 
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Script rule list", MemoryGuardLevel::SEVERE, 8)) {
+        return;
+    }
+
     RuleScriptManager& mgr = RuleScriptManager::getInstance();
 
     // 检查堆内存

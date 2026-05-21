@@ -3,12 +3,19 @@
 #include "systems/HealthMonitor.h"
 #include "protocols/ProtocolManager.h"
 #include <esp_heap_caps.h>
+#include <cstdio>
 #include "./network/handlers/StaticRouteHandler.h"
 #include "./network/handlers/AuthRouteHandler.h"
+#if FASTBEE_ENABLE_USER_ADMIN
 #include "./network/handlers/UserRouteHandler.h"
+#endif
+#if FASTBEE_ENABLE_ROLE_ADMIN
 #include "./network/handlers/RoleRouteHandler.h"
-#include "./network/handlers/SystemRouteHandler.h"
+#endif
+#if FASTBEE_ENABLE_LOG_VIEWER || FASTBEE_ENABLE_FILE_LOGGING
 #include "./network/handlers/LogRouteHandler.h"
+#endif
+#include "./network/handlers/SystemRouteHandler.h"
 #include "./network/handlers/DeviceRouteHandler.h"
 #include "./network/handlers/BatchRouteHandler.h"
 #include "./network/handlers/ProvisionRouteHandler.h"
@@ -48,12 +55,16 @@ bool WebConfigManager::initialize() {
     // 创建专职 Handler（条件编译裁剪未启用的模块，节省 Flash 和 RAM）
     staticHandler      = std::unique_ptr<StaticRouteHandler>(new StaticRouteHandler(ctx.get()));
     authHandler        = std::unique_ptr<AuthRouteHandler>(new AuthRouteHandler(ctx.get()));
+#if FASTBEE_ENABLE_USER_ADMIN
     userHandler        = std::unique_ptr<UserRouteHandler>(new UserRouteHandler(ctx.get()));
+#endif
+#if FASTBEE_ENABLE_ROLE_ADMIN
     roleHandler        = std::unique_ptr<RoleRouteHandler>(new RoleRouteHandler(ctx.get()));
-    systemHandler      = std::unique_ptr<SystemRouteHandler>(new SystemRouteHandler(ctx.get()));
-#if FASTBEE_ENABLE_LOGGER
+#endif
+#if FASTBEE_ENABLE_LOG_VIEWER || FASTBEE_ENABLE_FILE_LOGGING
     logHandler         = std::unique_ptr<LogRouteHandler>(new LogRouteHandler(ctx.get()));
 #endif
+    systemHandler      = std::unique_ptr<SystemRouteHandler>(new SystemRouteHandler(ctx.get()));
     deviceHandler      = std::unique_ptr<DeviceRouteHandler>(new DeviceRouteHandler(ctx.get()));
     batchHandler       = std::unique_ptr<BatchRouteHandler>(new BatchRouteHandler(ctx.get()));
     provisionHandler   = std::unique_ptr<ProvisionRouteHandler>(new ProvisionRouteHandler(ctx.get()));
@@ -154,6 +165,22 @@ void WebConfigManager::setProtocolManager(ProtocolManager* protoMgr) {
 }
 
 AsyncWebServer* WebConfigManager::getWebServer() const { return server; }
+size_t WebConfigManager::getSseClientCount() const {
+    return sseRouteHandler ? sseRouteHandler->clientCount() : 0;
+}
+
+size_t WebConfigManager::copyRecoveryEvents(WebRecoveryEvent* out, size_t maxEvents) const {
+    if (!out || maxEvents == 0 || recoveryEventCount == 0) {
+        return 0;
+    }
+
+    const size_t count = (recoveryEventCount < maxEvents) ? recoveryEventCount : maxEvents;
+    const size_t start = (recoveryEventHead + MAX_RECOVERY_EVENTS - count) % MAX_RECOVERY_EVENTS;
+    for (size_t i = 0; i < count; ++i) {
+        out[i] = recoveryEvents[(start + i) % MAX_RECOVERY_EVENTS];
+    }
+    return count;
+}
 
 // ============ 维护 ============
 
@@ -164,6 +191,82 @@ void WebConfigManager::performMaintenance() {
         ESP.restart();
     }
 
+    if (sseRouteHandler) {
+        sseRouteHandler->performMaintenance();
+    }
+
+    if (ctx) {
+        ctx->maintainWebForegroundTaskBudget();
+    }
+
+    const unsigned long maintenanceNow = millis();
+    const bool inStartupGrace = (maintenanceNow < 120000UL);
+    static unsigned long safeSoftRestartSince = 0;
+
+    if (!isRunning) {
+        safeSoftRestartSince = 0;
+        severePressureSinceMs = 0;
+        return;
+    }
+
+    if (inStartupGrace) {
+        safeSoftRestartSince = 0;
+        severePressureSinceMs = 0;
+        return;
+    }
+
+    const uint32_t maintenanceFreeHeap = ESP.getFreeHeap();
+    const uint32_t maintenanceLargestBlock =
+        heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    const uint8_t maintenanceFrag = (maintenanceFreeHeap > 0)
+        ? static_cast<uint8_t>(100U - (maintenanceLargestBlock * 100U / maintenanceFreeHeap))
+        : 0;
+
+    const bool severeWebPressure =
+        (maintenanceFreeHeap < 16384U) ||
+        (maintenanceLargestBlock < 6144U) ||
+        (maintenanceFrag >= 65U && maintenanceLargestBlock < 8192U);
+
+    if (severeWebPressure) {
+        if (safeSoftRestartSince == 0) {
+            safeSoftRestartSince = maintenanceNow;
+            severePressureSinceMs = maintenanceNow;
+            recordRecoveryEvent("pressure_start",
+                                "severe_web_pressure",
+                                maintenanceNow,
+                                maintenanceFreeHeap,
+                                maintenanceLargestBlock,
+                                maintenanceFrag);
+            LOG_WARNINGF("[WebConfig] Severe web memory pressure: heap=%lu largest=%lu frag=%u%%",
+                         (unsigned long)maintenanceFreeHeap,
+                         (unsigned long)maintenanceLargestBlock,
+                         (unsigned int)maintenanceFrag);
+        } else if (maintenanceNow - safeSoftRestartSince >= 120000UL) {
+            LOG_WARNING("[WebConfig] Scheduling device restart after sustained web pressure");
+            scheduleDeviceRestartForWebRecovery("sustained_web_pressure",
+                                                maintenanceNow,
+                                                maintenanceFreeHeap,
+                                                maintenanceLargestBlock,
+                                                maintenanceFrag);
+            safeSoftRestartSince = 0;
+            severePressureSinceMs = 0;
+        }
+    } else {
+        if (severePressureSinceMs != 0) {
+            recordRecoveryEvent("pressure_clear",
+                                "recovered",
+                                maintenanceNow,
+                                maintenanceFreeHeap,
+                                maintenanceLargestBlock,
+                                maintenanceFrag);
+        }
+        safeSoftRestartSince = 0;
+        severePressureSinceMs = 0;
+    }
+
+    return;
+
+#if 0
     unsigned long now = millis();
     uint32_t freeHeap = ESP.getFreeHeap();
     uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
@@ -229,10 +332,12 @@ void WebConfigManager::performMaintenance() {
         if (softRestartSince == 0) {
             softRestartSince = now;
         } else if (now - softRestartSince >= 120000UL) {
-            LOG_WARNING("[WebConfig] Triggering soft web server restart due to fragmentation");
-            server->end();
-            delay(50);
-            server->begin();
+            LOG_WARNING("[WebConfig] Scheduling device restart due to fragmentation");
+            scheduleDeviceRestartForWebRecovery("high_fragmentation",
+                                                now,
+                                                freeHeap,
+                                                largestBlock,
+                                                frag);
             softRestartSince = 0;
         }
     } else {
@@ -243,9 +348,78 @@ void WebConfigManager::performMaintenance() {
     if (sseRouteHandler) {
         sseRouteHandler->performMaintenance();
     }
+#endif
 }
 
 // ============ 路由注册（严格顺序）============
+
+void WebConfigManager::recordRecoveryEvent(const char* type,
+                                           const char* reason,
+                                           unsigned long atMs,
+                                           uint32_t freeHeap,
+                                           uint32_t largestBlock,
+                                           uint8_t fragmentation) {
+    WebRecoveryEvent& event = recoveryEvents[recoveryEventHead];
+    event.atMs = atMs;
+    event.freeHeap = freeHeap;
+    event.largestBlock = largestBlock;
+    event.fragmentation = fragmentation;
+    const size_t sseClients = getSseClientCount();
+    event.sseClients = static_cast<uint8_t>(sseClients > 255U ? 255U : sseClients);
+    copyText(event.type, sizeof(event.type), type);
+    copyText(event.reason, sizeof(event.reason), reason);
+
+    recoveryEventHead = (recoveryEventHead + 1) % MAX_RECOVERY_EVENTS;
+    if (recoveryEventCount < MAX_RECOVERY_EVENTS) {
+        recoveryEventCount++;
+    }
+}
+
+void WebConfigManager::scheduleDeviceRestartForWebRecovery(const char* reason,
+                                                           unsigned long atMs,
+                                                           uint32_t freeHeap,
+                                                           uint32_t largestBlock,
+                                                           uint8_t fragmentation,
+                                                           unsigned long delayMs) {
+    lastSoftRestartAtMs = atMs;
+    lastSoftRestartReason = reason ? reason : "web_recovery";
+    lastSoftRestartFreeHeap = freeHeap;
+    lastSoftRestartLargestBlock = largestBlock;
+    lastSoftRestartFrag = fragmentation;
+    softRestartCount++;
+
+    recordRecoveryEvent("restart_scheduled",
+                        lastSoftRestartReason.c_str(),
+                        atMs,
+                        freeHeap,
+                        largestBlock,
+                        fragmentation);
+
+    if (!ctx) {
+        LOG_ERRORF("[WebConfig] Cannot schedule web recovery restart: %s",
+                   lastSoftRestartReason.c_str());
+        return;
+    }
+
+    if (!ctx->scheduleRestart) {
+        ctx->scheduleRestart = true;
+        ctx->scheduledRestartTime = atMs + delayMs;
+    }
+
+    LOG_WARNINGF("[WebConfig] Device restart scheduled for web recovery: reason=%s delay=%lums heap=%lu largest=%lu frag=%u%%",
+                 lastSoftRestartReason.c_str(),
+                 (unsigned long)delayMs,
+                 (unsigned long)freeHeap,
+                 (unsigned long)largestBlock,
+                 (unsigned int)fragmentation);
+}
+
+void WebConfigManager::copyText(char* dest, size_t destSize, const char* text) const {
+    if (!dest || destSize == 0) {
+        return;
+    }
+    snprintf(dest, destSize, "%s", text ? text : "");
+}
 
 void WebConfigManager::setupAllRoutes() {
     // 注册顺序严格遵循 ESPAsyncWebServer 前缀匹配规则：
@@ -269,6 +443,7 @@ void WebConfigManager::setupAllRoutes() {
     server->on("/api/*", HTTP_OPTIONS, [this](AsyncWebServerRequest* request) {
         AsyncWebServerResponse* response = request->beginResponse(204);
         response->addHeader("Access-Control-Max-Age", "86400");
+        response->addHeader("Connection", "close");
         request->send(response);
     });
     ROUTE_PROBE("CORS");
@@ -277,16 +452,19 @@ void WebConfigManager::setupAllRoutes() {
     authHandler->setupRoutes(server);                        ROUTE_PROBE("Auth");
 
     // 2. 用户路由（/api/users/*）
+#if FASTBEE_ENABLE_USER_ADMIN
     userHandler->setupRoutes(server);                        ROUTE_PROBE("User");
+#endif
 
     // 3. 角色路由（/api/roles/*, /api/permissions, /api/audit/*）
+#if FASTBEE_ENABLE_ROLE_ADMIN
     roleHandler->setupRoutes(server);                        ROUTE_PROBE("Role");
+#endif
 
     // 4. 系统路由（/api/system/*, /api/network/*, /api/files/*, /api/config, /api/health）
     systemHandler->setupRoutes(server);                      ROUTE_PROBE("System");
 
-    // 4a. 日志路由（/api/logs/*, /api/system/logs/*）
-#if FASTBEE_ENABLE_LOGGER
+#if FASTBEE_ENABLE_LOG_VIEWER || FASTBEE_ENABLE_FILE_LOGGING
     logHandler->setupRoutes(server);                         ROUTE_PROBE("Log");
 #endif
 

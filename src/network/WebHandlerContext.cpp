@@ -2,13 +2,16 @@
 #include "./security/AuthManager.h"
 #include "systems/LoggerSystem.h"
 #include "systems/HealthMonitor.h"
+#include "systems/TaskManager.h"
 #include "core/FastBeeFramework.h"
+#include <esp_heap_caps.h>
 
 WebHandlerContext::WebHandlerContext(AsyncWebServer* srv, IAuthManager* authMgr, IUserManager* userMgr)
     : server(srv), authManager(authMgr), userManager(userMgr),
       roleManager(nullptr), networkManager(nullptr), otaManager(nullptr),
       protocolManager(nullptr), sseHandler(nullptr), webRootPath("/www"),
-      scheduleRestart(false), scheduledRestartTime(0), cacheDuration(86400) {
+      scheduleRestart(false), scheduledRestartTime(0), cacheDuration(86400),
+      webForegroundModeActive(false), webForegroundUntilMs(0) {
     loadCacheDuration();
 }
 
@@ -139,6 +142,7 @@ static void sendServiceUnavailable(AsyncWebServerRequest* request) {
     AsyncWebServerResponse* response = request->beginResponse(503, "text/plain",
                                                               "Service Unavailable - Low Memory");
     response->addHeader("Retry-After", "5");
+    response->addHeader("Connection", "close");  // 立即释放 TCP pbuf
     request->send(response);
 }
 
@@ -147,6 +151,7 @@ static void sendServiceUnavailable(AsyncWebServerRequest* request) {
 void WebHandlerContext::sendJsonResponse(AsyncWebServerRequest* request, int code,
                                          const JsonDocument& doc) {
     if (!request) return;
+    noteWebRequestActivity();
 
     size_t docSize = measureJson(doc);
 
@@ -176,10 +181,13 @@ void WebHandlerContext::sendJsonResponse(AsyncWebServerRequest* request, int cod
     }
 
     // CORS 头已由 DefaultHeaders 全局注入，无需重复设置
+    // MAX_CONNECTIONS=2 + Connection:close 模式：响应后立即释放 TCP pbuf（避免 28KB heap 被 keep-alive 几个连接吃光）
+    response->addHeader("Connection", "close");
     request->send(response);
 }
 
 void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const JsonDocument& data) {
+    noteWebRequestActivity();
     // MemGuard: CRITICAL 时仅拒绝大响应（>1KB），小响应放行
     auto* fw = FastBeeFramework::getInstance();
     HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
@@ -212,10 +220,12 @@ void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const JsonDo
     out += "}";
 
     AsyncWebServerResponse* response = request->beginResponse(200, "application/json", out);
+    response->addHeader("Connection", "close");
     request->send(response);
 }
 
 void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const String& message) {
+    noteWebRequestActivity();
     char jsonBuffer[256];
     if (message.isEmpty()) {
         snprintf(jsonBuffer, sizeof(jsonBuffer), "{\"success\":true,\"timestamp\":%lu}", millis());
@@ -225,16 +235,19 @@ void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const String
     }
 
     AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonBuffer);
+    response->addHeader("Connection", "close");
     request->send(response);
 }
 
 void WebHandlerContext::sendError(AsyncWebServerRequest* request, int code, const String& message) {
+    noteWebRequestActivity();
     char jsonBuffer[256];
     snprintf(jsonBuffer, sizeof(jsonBuffer),
              "{\"success\":false,\"error\":\"%s\",\"code\":%d,\"timestamp\":%lu}",
              message.c_str(), code, millis());
 
     AsyncWebServerResponse* response = request->beginResponse(code, "application/json", jsonBuffer);
+    response->addHeader("Connection", "close");
     request->send(response);
 }
 
@@ -257,6 +270,7 @@ void WebHandlerContext::sendBadRequest(AsyncWebServerRequest* request, const Str
 // ============ 内置页面 ============
 
 void WebHandlerContext::sendBuiltinSetupPage(AsyncWebServerRequest* request) {
+    noteWebRequestActivity();
     // 优先从 LittleFS 提供（节省 ~4KB 固件 Flash）
     if (LittleFS.exists("/www/setup.html.gz")) {
         request->send(LittleFS, "/www/setup.html.gz", "text/html");
@@ -273,84 +287,75 @@ bool WebHandlerContext::serveStaticFile(AsyncWebServerRequest* request, const St
     String ext = path.substring(path.lastIndexOf('.'));
     String contentType = getContentType(path);
     bool isCompressible = (ext == ".html" || ext == ".js" || ext == ".css");
+    bool isCoreEntry = (path == "/www/index.html" || path == "/www/index.html.gz" ||
+                        path == "/www/setup.html" || path == "/www/setup.html.gz");
+    bool isServiceWorker = (path == "/www/sw.js" || path == "/sw.js");
+    bool isCacheableStatic = !isCoreEntry && !isServiceWorker;
+    unsigned long staticHoldMs = isCoreEntry ? 3000UL : (isCompressible ? 5000UL : 1500UL);
+    noteWebRequestActivity(staticHoldMs);
 
-    // 优先尝试 .gz 压缩版本（直接 open 代替 exists + open 双次IO）
+    // 入口内存门控：largestBlock < 2KB 时拒接静态文件请求（历史经验：不要设太高造成 503 风暴）
+    // 避免 AsyncFileResponse 内部分配出错造成 lwIP 死锁
+    {
+        auto* fw = FastBeeFramework::getInstance();
+        HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+        if (monitor) {
+            SystemHealth h = monitor->getHealthStatus();
+            uint32_t liveLargestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+            size_t minLargestBlock = 2048;
+            if (isCompressible && !isCoreEntry) {
+                minLargestBlock = 3072;
+            }
+            uint32_t largestBlock = h.largestFreeBlock;
+            if (liveLargestBlock > 0 && liveLargestBlock < largestBlock) {
+                largestBlock = liveLargestBlock;
+            }
+            if (largestBlock < minLargestBlock) {
+                Serial.printf("[MemGuard] Reject static %s: largestBlock=%lu < %uB\n",
+                              path.c_str(), (unsigned long)largestBlock,
+                              static_cast<unsigned>(minLargestBlock));
+                sendServiceUnavailable(request);
+                return true;
+            }
+        }
+    }
+
+    // Prefer a single-open gzip path for html/js/css.
     if (isCompressible) {
         String gzPath = path + ".gz";
         File gzFile = LittleFS.open(gzPath, "r");
         if (gzFile) {
-            size_t fileSize = gzFile.size();
-            gzFile.close();
+            AsyncWebServerResponse *response = new AsyncFileResponse(gzFile, path, contentType, false);
 
-            // ETag 基于文件大小（flash 上文件稳定后大小不变）
-            String etag = "\"" + String(fileSize, HEX) + "\"";
-
-            // 在创建 response 之前检查缓存命中（避免 beginResponse 打开文件后又丢弃）
-            if (request->hasHeader("If-None-Match")) {
-                if (request->header("If-None-Match") == etag) {
-                    request->send(304);
-                    return true;
-                }
-            }
-
-            AsyncWebServerResponse *response = request->beginResponse(LittleFS, gzPath, contentType);
-            response->addHeader("Content-Encoding", "gzip");
-            response->addHeader("ETag", etag);
-
-            // 添加 Link header 用于资源预加载（仅对 index.html）
-            // 注意：预加载目标必须与 HTML 中实际主动加载的资源一致，否则浏览器会报
-            // "preloaded using link preload but not used" 警告。
-            // 当前主加载路径是 app-bundle.js（合并版），state.js 仅在降级时才加载。
-            if (path == "/www/index.html" || path == "/index.html") {
-                response->addHeader("Link", "</js/app-bundle.js>; rel=preload; as=script, </css/main.css>; rel=preload; as=style");
-            }
-            // Service Worker 文件特殊处理
-            if (path == "/www/sw.js" || path == "/sw.js") {
+            // Keep the service worker uncached so clients can recover.
+            if (isServiceWorker) {
                 response->addHeader("Service-Worker-Allowed", "/");
-                response->addHeader("Cache-Control", "no-cache");  // SW 文件不缓存，确保更新
-            }
-            // pages 目录：长缓存（内容几乎不变）
-            if (path.startsWith("/www/pages/")) {
-                response->addHeader("Cache-Control", "public, max-age=86400, must-revalidate");
-            } else if (ext == ".html") {
-                response->addHeader("Cache-Control", "public, max-age=3600, must-revalidate");
+                response->addHeader("Cache-Control", "no-cache");
+            } else if (isCacheableStatic && cacheDuration > 0) {
+                response->addHeader("Cache-Control", "public, max-age=" + String(cacheDuration));
             } else {
-                // JS/CSS 静态资源：1天缓存
-                response->addHeader("Cache-Control", "public, max-age=86400, must-revalidate");
+                response->addHeader("Cache-Control", "no-cache");
             }
-            response->addHeader("Vary", "Accept-Encoding");
+            response->addHeader("Connection", "close");
 
             request->send(response);
             return true;
         }
     }
 
-    // 尝试原始文件（直接 open，一次 IO）
+    // Fall back to a single-open raw file response.
     File file = LittleFS.open(path, "r");
     if (file) {
-        size_t fileSize = file.size();
-        file.close();
-
-        String etag = "\"" + String(fileSize, HEX) + "\"";
-
-        // 在创建 response 之前检查缓存命中
-        if (request->hasHeader("If-None-Match")) {
-            if (request->header("If-None-Match") == etag) {
-                request->send(304);
-                return true;
-            }
-        }
-
-        AsyncWebServerResponse *response = request->beginResponse(LittleFS, path, contentType);
-        response->addHeader("ETag", etag);
-
-        // 图片等不可压缩资源缓存7天
-        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" ||
-            ext == ".ico" || ext == ".svg" || ext == ".woff" || ext == ".woff2") {
-            response->addHeader("Cache-Control", "public, max-age=604800, immutable");
+        AsyncWebServerResponse *response = new AsyncFileResponse(file, path, contentType, false);
+        if (isServiceWorker) {
+            response->addHeader("Service-Worker-Allowed", "/");
+            response->addHeader("Cache-Control", "no-cache");
+        } else if (isCacheableStatic && cacheDuration > 0) {
+            response->addHeader("Cache-Control", "public, max-age=" + String(cacheDuration));
         } else {
             response->addHeader("Cache-Control", "no-cache");
         }
+        response->addHeader("Connection", "close");
 
         request->send(response);
         return true;
@@ -431,4 +436,52 @@ void WebHandlerContext::loadCacheDuration() {
         }
         f.close();
     }
+}
+
+void WebHandlerContext::noteWebRequestActivity(unsigned long holdMs) {
+    unsigned long now = millis();
+    unsigned long nextUntil = now + holdMs;
+    if (nextUntil > webForegroundUntilMs) {
+        webForegroundUntilMs = nextUntil;
+    }
+
+    FastBeeFramework* framework = FastBeeFramework::getInstance();
+    TaskManager* taskManager = framework ? framework->getTaskManager() : nullptr;
+    if (!taskManager || webForegroundModeActive) {
+        return;
+    }
+
+    bool changed = false;
+    changed = taskManager->disableTask("periph_exec_timer") || changed;
+    changed = taskManager->disableTask("protocol_handle") || changed;
+    changed = taskManager->disableTask("network_update") || changed;
+
+    if (changed) {
+        webForegroundModeActive = true;
+        LOG_INFO("[WebConfig] Foreground request protection enabled");
+    }
+}
+
+void WebHandlerContext::maintainWebForegroundTaskBudget() {
+    if (!webForegroundModeActive) {
+        return;
+    }
+
+    unsigned long now = millis();
+    if ((long)(webForegroundUntilMs - now) > 0) {
+        return;
+    }
+
+    FastBeeFramework* framework = FastBeeFramework::getInstance();
+    TaskManager* taskManager = framework ? framework->getTaskManager() : nullptr;
+    if (!taskManager) {
+        webForegroundModeActive = false;
+        return;
+    }
+
+    taskManager->enableTask("network_update");
+    taskManager->enableTask("protocol_handle");
+    taskManager->enableTask("periph_exec_timer");
+    webForegroundModeActive = false;
+    LOG_INFO("[WebConfig] Foreground request protection cleared");
 }

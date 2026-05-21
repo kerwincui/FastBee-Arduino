@@ -241,6 +241,7 @@
                 if (resultEl) { resultEl.textContent = i18n.t('mqtt-test-no-server'); resultEl.style.color = '#f56c6c'; }
                 return;
             }
+            this._clearMqttDeferredTestTimer();
             if (clientId) {
                 if (authType === '0' && !clientId.startsWith('S&')) {
                     if (resultEl) { resultEl.textContent = i18n.t('mqtt-test-clientid-simple-prefix'); resultEl.style.color = '#e6a23c'; }
@@ -257,24 +258,7 @@
                         if (res.data.deferred) {
                             if (resultEl) { resultEl.textContent = i18n.t('mqtt-test-deferred') || 'MQTT connecting asynchronously, check status...'; resultEl.style.color = '#e6a23c'; }
                             if (btn) btn.classList.add('mqtt-test-success');
-                            let pollCount = 0;
-                            const pollInterval = setInterval(() => {
-                                pollCount++;
-                                this._loadMqttStatus();
-                                const badge = document.getElementById('mqtt-status-badge');
-                                if (badge && badge.classList.contains('mqtt-status-online')) {
-                                    clearInterval(pollInterval);
-                                    if (resultEl) { resultEl.textContent = i18n.t('mqtt-test-success'); resultEl.style.color = '#67c23a'; }
-                                }
-                                if (pollCount >= 15) {
-                                    clearInterval(pollInterval);
-                                    if (resultEl && !resultEl.textContent.includes(i18n.t('mqtt-test-success'))) {
-                                        resultEl.textContent = i18n.t('mqtt-test-deferred-timeout') || 'Connection timeout, check logs';
-                                        resultEl.style.color = '#f56c6c';
-                                        if (btn) { btn.classList.remove('mqtt-test-success'); btn.classList.add('mqtt-test-fail'); }
-                                    }
-                                }
-                            }, 2000);
+                            this._scheduleMqttDeferredStatusPoll(0, btn, resultEl);
                             return;
                         }
                         if (res.data.connected) {
@@ -328,6 +312,7 @@
         disconnectMqtt() {
             const btn = document.querySelector('#mqtt-form .mqtt-disconnect-btn');
             if (btn) { btn.disabled = true; btn.textContent = i18n.t('mqtt-disconnecting'); }
+            this._clearMqttDeferredTestTimer();
             this._stopMqttStatusPolling();
             apiPostSilent('/api/mqtt/disconnect', {})
                 .then(res => {
@@ -390,6 +375,53 @@
             return map[String(code)] || ('Error ' + code);
         },
 
+        _clearMqttDeferredTestTimer() {
+            if (this._mqttDeferredTestTimer) {
+                clearTimeout(this._mqttDeferredTestTimer);
+                this._mqttDeferredTestTimer = null;
+            }
+        },
+
+        _getMqttDeferredPollIntervalMs() {
+            if (typeof apiGetPressureAwareInterval === 'function') {
+                return apiGetPressureAwareInterval('mqttDeferred', 2000);
+            }
+            return 2000;
+        },
+
+        _scheduleMqttDeferredStatusPoll(pollCount, btn, resultEl) {
+            var self = this;
+            this._clearMqttDeferredTestTimer();
+            this._mqttDeferredTestTimer = setTimeout(function() {
+                self._mqttDeferredTestTimer = null;
+                var nextPollCount = pollCount + 1;
+                self._loadMqttStatus();
+
+                const badge = document.getElementById('mqtt-status-badge');
+                if (badge && badge.classList.contains('mqtt-status-online')) {
+                    if (resultEl) {
+                        resultEl.textContent = i18n.t('mqtt-test-success');
+                        resultEl.style.color = '#67c23a';
+                    }
+                    return;
+                }
+
+                if (nextPollCount >= 15) {
+                    if (resultEl && !resultEl.textContent.includes(i18n.t('mqtt-test-success'))) {
+                        resultEl.textContent = i18n.t('mqtt-test-deferred-timeout') || 'Connection timeout, check logs';
+                        resultEl.style.color = '#f56c6c';
+                        if (btn) {
+                            btn.classList.remove('mqtt-test-success');
+                            btn.classList.add('mqtt-test-fail');
+                        }
+                    }
+                    return;
+                }
+
+                self._scheduleMqttDeferredStatusPoll(nextPollCount, btn, resultEl);
+            }, this._getMqttDeferredPollIntervalMs());
+        },
+
         _startMqttStatusPolling() {
             this._stopMqttStatusPolling();
             AppState.connectSSE();
@@ -407,6 +439,7 @@
         },
 
         _stopMqttStatusPolling() {
+            this._clearMqttDeferredTestTimer();
             if (this._mqttStatusTimer) {
                 clearInterval(this._mqttStatusTimer);
                 this._mqttStatusTimer = null;

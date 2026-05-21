@@ -50,6 +50,9 @@ public:
     unsigned long scheduledRestartTime;
     uint32_t cacheDuration;  // 缓存时间(秒), 默认86400(24h), 0=no-cache
 
+    bool   webForegroundModeActive;
+    unsigned long webForegroundUntilMs;
+
     WebHandlerContext(AsyncWebServer* srv, IAuthManager* authMgr, IUserManager* userMgr);
     ~WebHandlerContext() = default;
 
@@ -96,6 +99,8 @@ public:
     // ============ 工具方法 ============
     String formatUptime(unsigned long ms);
     void   loadCacheDuration();
+    void   noteWebRequestActivity(unsigned long holdMs = 3500UL);
+    void   maintainWebForegroundTaskBudget();
 };
 
 #endif // WEB_HANDLER_CONTEXT_H

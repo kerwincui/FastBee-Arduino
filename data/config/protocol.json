@@ -1,6 +1,7 @@
 {
+  "version": 2,
   "modbusRtu": {
-    "enabled": false,
+    "enabled": true,
     "peripheralId": "modbus_rtu",
     "timeout": 1000,
     "mode": "master",

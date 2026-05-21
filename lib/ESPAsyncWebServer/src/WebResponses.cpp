@@ -21,6 +21,10 @@
 #endif
 #endif
 
+#ifndef ASYNC_RESPONSE_MAX_CHUNKS_PER_ACK
+#define ASYNC_RESPONSE_MAX_CHUNKS_PER_ACK 1
+#endif
+
 using namespace asyncsrv;
 
 /*
@@ -412,6 +416,7 @@ size_t AsyncAbstractResponse::write_send_buffs(AsyncWebServerRequest *request, s
 
   // send content body
   if (_state == RESPONSE_CONTENT) {
+    size_t chunksThisCall = 0;
     do {
       if (_send_buffer_len && _send_buffer) {
         // data is pending in buffer from a previous call or previous iteration
@@ -426,6 +431,9 @@ size_t AsyncAbstractResponse::write_send_buffs(AsyncWebServerRequest *request, s
           _send_buffer_len = _send_buffer_offset = 0;  // consider buffer empty
         }
         payloadlen += added_len;
+        if (added_len && ++chunksThisCall >= ASYNC_RESPONSE_MAX_CHUNKS_PER_ACK) {
+          break;
+        }
       }
 
       auto tcp_win = request->client()->space();
@@ -764,9 +772,6 @@ AsyncFileResponse::AsyncFileResponse(FS &fs, const String &path, const char *con
     buf += filename;
     buf += "\"";
     addHeader(T_Content_Disposition, buf, false);
-  } else {
-    // Serve file inline (display in browser)
-    addHeader(T_Content_Disposition, T_inline, false);
   }
 
   _code = 200;
@@ -802,9 +807,6 @@ AsyncFileResponse::AsyncFileResponse(File content, const String &path, const cha
     buf += filename;
     buf += "\"";
     addHeader(T_Content_Disposition, buf, false);
-  } else {
-    // Serve file inline (display in browser)
-    addHeader(T_Content_Disposition, T_inline, false);
   }
 }
 

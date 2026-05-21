@@ -39,7 +39,7 @@
  * 需要：FASTBEE_ENABLE_MODBUS=1
  */
 #ifndef FASTBEE_MODBUS_SLAVE_ENABLE
-#define FASTBEE_MODBUS_SLAVE_ENABLE 1
+#define FASTBEE_MODBUS_SLAVE_ENABLE 0
 #endif
 
 /**
@@ -48,7 +48,7 @@
  * 占用：约 10KB Flash
  */
 #ifndef FASTBEE_ENABLE_TCP
-#define FASTBEE_ENABLE_TCP 1
+#define FASTBEE_ENABLE_TCP 0
 #endif
 
 /**
@@ -57,7 +57,7 @@
  * 占用：约 8KB Flash
  */
 #ifndef FASTBEE_ENABLE_HTTP
-#define FASTBEE_ENABLE_HTTP 1
+#define FASTBEE_ENABLE_HTTP 0
 #endif
 
 /**
@@ -67,7 +67,7 @@
  * 建议：如不使用可禁用以节省空间
  */
 #ifndef FASTBEE_ENABLE_COAP
-#define FASTBEE_ENABLE_COAP 1
+#define FASTBEE_ENABLE_COAP 0
 #endif
 
 // ============================================================================
@@ -175,6 +175,28 @@
 #define FASTBEE_ENABLE_SESSION 1
 #endif
 
+// Web admin surface switches. Keep auth/session available, but allow small
+// ESP32 production builds to remove rarely used management APIs and pages.
+#ifndef FASTBEE_ENABLE_USER_ADMIN
+#define FASTBEE_ENABLE_USER_ADMIN 0
+#endif
+
+#ifndef FASTBEE_ENABLE_ROLE_ADMIN
+#define FASTBEE_ENABLE_ROLE_ADMIN 0
+#endif
+
+#ifndef FASTBEE_ENABLE_FILE_MANAGER
+#define FASTBEE_ENABLE_FILE_MANAGER 0
+#endif
+
+#ifndef FASTBEE_ENABLE_CONFIG_TRANSFER
+#define FASTBEE_ENABLE_CONFIG_TRANSFER 1
+#endif
+
+#ifndef FASTBEE_SINGLE_ADMIN_MODE
+#define FASTBEE_SINGLE_ADMIN_MODE 1
+#endif
+
 // ============================================================================
 // OTA升级开关
 // ============================================================================
@@ -185,7 +207,7 @@
  * 占用：约 10KB Flash
  */
 #ifndef FASTBEE_ENABLE_OTA
-#define FASTBEE_ENABLE_OTA 1
+#define FASTBEE_ENABLE_OTA 0
 #endif
 
 /**
@@ -194,7 +216,7 @@
  * 需要：FASTBEE_ENABLE_OTA=1
  */
 #ifndef FASTBEE_ENABLE_OTA_FS
-#define FASTBEE_ENABLE_OTA_FS 1
+#define FASTBEE_ENABLE_OTA_FS 0
 #endif
 
 // ============================================================================
@@ -228,6 +250,14 @@
 #define FASTBEE_ENABLE_LOGGER 1
 #endif
 
+#ifndef FASTBEE_ENABLE_LOG_VIEWER
+#define FASTBEE_ENABLE_LOG_VIEWER 0
+#endif
+
+#ifndef FASTBEE_ENABLE_FILE_LOGGING
+#define FASTBEE_ENABLE_FILE_LOGGING 0
+#endif
+
 /**
  * @brief 外设执行规则系统
  * 默认：启用
@@ -245,7 +275,7 @@
  * 说明：包含规则管理、模板引擎、命令序列脚本执行
  */
 #ifndef FASTBEE_ENABLE_RULE_SCRIPT
-  #define FASTBEE_ENABLE_RULE_SCRIPT 1
+  #define FASTBEE_ENABLE_RULE_SCRIPT 0
 #endif
 
 /**

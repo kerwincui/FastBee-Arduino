@@ -6,6 +6,47 @@
 
         // ========== 控制弹窗 ==========
 
+        _isCtrlModalOffline() {
+            return this._modbusCtrlOffline === true;
+        },
+
+        _setCtrlModalOffline(offline, message) {
+            var modal = document.getElementById('modbus-device-ctrl-modal');
+            if (!modal) {
+                this._modbusCtrlOffline = !!offline;
+                return;
+            }
+            var isOffline = !!offline;
+            this._modbusCtrlOffline = isOffline;
+            modal.classList.toggle('modbus-ctrl-offline', isOffline);
+            var banner = document.getElementById('modbus-ctrl-offline-banner');
+            if (banner) banner.remove();
+            if (isOffline) {
+                if (typeof this._stopCoilAutoRefresh === 'function') this._stopCoilAutoRefresh();
+                if (typeof this._stopPidAutoRefresh === 'function') this._stopPidAutoRefresh();
+                var autoEl = document.getElementById('modbus-ctrl-auto-refresh');
+                if (autoEl) autoEl.checked = false;
+                var pidAutoEl = document.getElementById('modbus-ctrl-pid-auto-refresh');
+                if (pidAutoEl) pidAutoEl.checked = false;
+            }
+            var controls = modal.querySelectorAll('.modal-body input, .modal-body select, .modal-body textarea, .modal-body button');
+            controls.forEach(function(el) {
+                if (isOffline) {
+                    if (!el.disabled) el.dataset.modbusOfflineDisabled = '1';
+                    el.disabled = true;
+                } else if (el.dataset.modbusOfflineDisabled === '1') {
+                    el.disabled = false;
+                    delete el.dataset.modbusOfflineDisabled;
+                }
+            });
+        },
+
+        _markCtrlModalOnline() {
+            if (this._modbusCtrlOffline === true) {
+                this._setCtrlModalOffline(false);
+            }
+        },
+
         _openCtrlModal(idx) {
             if (idx === undefined || idx === null || isNaN(idx)) {
                 console.warn('[protocol] Invalid device index:', idx);
@@ -20,11 +61,11 @@
                 return;
             }
             if (this._coilAutoRefreshTimer) {
-                clearInterval(this._coilAutoRefreshTimer);
+                clearTimeout(this._coilAutoRefreshTimer);
                 this._coilAutoRefreshTimer = null;
             }
             if (this._pidAutoRefreshTimer) {
-                clearInterval(this._pidAutoRefreshTimer);
+                clearTimeout(this._pidAutoRefreshTimer);
                 this._pidAutoRefreshTimer = null;
             }
             var autoEl = document.getElementById('modbus-ctrl-auto-refresh');
@@ -45,6 +86,8 @@
             localStorage.setItem('modbus_active_device', String(idx));
             var dev = this._modbusDevices[idx];
             var type = dev.deviceType || 'relay';
+            var deviceOffline = dev.enabled === false;
+            this._setCtrlModalOffline(false);
             var title = document.getElementById('modbus-ctrl-modal-title');
             if (title) title.textContent = (dev.name || 'Device') + ' - ' + (i18n.t('modbus-device-ctrl-title') || '设备控制');
             var relayConfig = document.getElementById('modbus-relay-config');
@@ -68,8 +111,8 @@
                     this._renderPwmGrid();
                 } else {
                     this._pwmStates = [];
-                    this._renderPwmGrid(true);
-                    this.refreshPwmStatus();
+                    this._renderPwmGrid(!deviceOffline);
+                    if (!deviceOffline) this.refreshPwmStatus();
                 }
             } else if (type === 'pid') {
                 if (this._devicePidCache[newCacheKey]) {
@@ -77,11 +120,11 @@
                     this._renderPidGrid();
                 } else {
                     this._pidValues = {};
-                    this._renderPidGrid(true);
-                    this.refreshPidStatus();
+                    this._renderPidGrid(!deviceOffline);
+                    if (!deviceOffline) this.refreshPidStatus();
                 }
             } else if (type === 'motor') {
-                this.refreshMotorStatus();
+                if (!deviceOffline) this.refreshMotorStatus();
             } else {
                 if (this._deviceCoilCache[newCacheKey]) {
                     this._coilStates = this._deviceCoilCache[newCacheKey].slice();
@@ -89,7 +132,7 @@
                 } else {
                     this._coilStates = [];
                     this._renderCoilGrid();
-                    this.refreshCoilStatus();
+                    if (!deviceOffline) this.refreshCoilStatus();
                 }
             }
             var modal = document.getElementById('modbus-device-ctrl-modal');
@@ -98,13 +141,14 @@
                 return;
             }
             AppState.showModal(modal);
+            if (deviceOffline) {
+                this._setCtrlModalOffline(true, i18n.t('device-control-offline') || '设备离线，当前控制不可操作');
+            }
         },
 
         _closeCtrlModal() {
-            if (this._coilAutoRefreshTimer) {
-                clearInterval(this._coilAutoRefreshTimer);
-                this._coilAutoRefreshTimer = null;
-            }
+            if (typeof this._stopCoilAutoRefresh === 'function') this._stopCoilAutoRefresh();
+            if (typeof this._stopPidAutoRefresh === 'function') this._stopPidAutoRefresh();
             var autoEl = document.getElementById('modbus-ctrl-auto-refresh');
             if (autoEl) autoEl.checked = false;
             var pidAutoEl = document.getElementById('modbus-ctrl-pid-auto-refresh');
@@ -167,11 +211,7 @@
             var p = this._getPwmParams();
             var html = '';
             if (loading) {
-                html = '<div class="pwm-loading-placeholder" style="text-align:center;padding:30px;color:#999;">'
-                    + '<div style="font-size:14px;margin-bottom:10px;">加载中...</div>'
-                    + '<div style="font-size:12px;">正在获取 PWM 通道状态</div>'
-                    + '</div>';
-                grid.innerHTML = html;
+                grid.innerHTML = '<div class="fb-loading-placeholder pwm-loading-placeholder"><div class="fb-loading-placeholder-title">Loading...</div><div class="fb-loading-placeholder-detail">Loading PWM channel status</div></div>';
                 return;
             }
             for (var i = 0; i < p.channelCount; i++) {
@@ -196,11 +236,14 @@
                     quantity: p.channelCount, functionCode: 3
                 });
                 if (res && res.success && res.data && res.data.values) {
+                    this._markCtrlModalOnline();
                     this._pwmStates = res.data.values;
                     var cacheKey = 'dev_' + this._activeDeviceIdx;
                     this._devicePwmCache[cacheKey] = this._pwmStates.slice();
                     this._renderPwmGrid();
                     this._appendDebugLog(res.debug, 'ReadRegs FC03');
+                } else if (res && !res.success) {
+                    this._setCtrlModalOffline(true, res.error || (i18n.t('device-control-offline') || '设备离线，当前控制不可操作'));
                 }
             } catch (e) {
                 if (this._pwmStates.length === 0) {
@@ -208,13 +251,15 @@
                     this._pwmStates = new Array(p2.channelCount).fill(0);
                 }
                 this._renderPwmGrid();
+                this._setCtrlModalOffline(true, i18n.t('device-control-offline') || '设备离线，当前控制不可操作');
             }
         },
 
         async setPwmChannel(ch, value) {
+            if (this._isCtrlModalOffline()) return;
             var p = this._getPwmParams();
             try {
-                var res = await apiPost('/api/modbus/register/write', {
+                var res = await apiPostPriority('/api/modbus/register/write', {
                     slaveAddress: p.slaveAddress, registerAddress: p.regBase + ch, value: value
                 });
                 if (res && res.success) {
@@ -227,12 +272,13 @@
         },
 
         async batchPwm(action) {
+            if (this._isCtrlModalOffline()) return;
             var p = this._getPwmParams();
             var values = [];
             var fillVal = action === 'max' ? p.maxValue : 0;
             for (var i = 0; i < p.channelCount; i++) values.push(fillVal);
             try {
-                var res = await apiPost('/api/modbus/register/batch-write', {
+                var res = await apiPostPriority('/api/modbus/register/batch-write', {
                     slaveAddress: p.slaveAddress, startAddress: p.regBase,
                     values: JSON.stringify(values)
                 });
@@ -290,9 +336,7 @@
             var container = document.getElementById('pid-data-grid');
             if (!container) return;
             if (loading) {
-                container.innerHTML = '<div class="pid-loading-placeholder" style="text-align:center;padding:30px;color:#999;">'
-                    + '<div style="font-size:14px;margin-bottom:10px;">加载中...</div>'
-                    + '<div style="font-size:12px;">正在获取 PID 数据</div></div>';
+                container.innerHTML = '<div class="fb-loading-placeholder pid-loading-placeholder"><div class="fb-loading-placeholder-title">Loading...</div><div class="fb-loading-placeholder-detail">Loading PID data</div></div>';
                 return;
             }
             var p = this._getPidParams();
@@ -352,6 +396,7 @@
                 slaveAddress: p.slaveAddress, startAddress: minAddr, quantity: quantity, functionCode: 3
             }).then(function(res) {
                 if (res && res.success && res.data && res.data.values) {
+                    self._markCtrlModalOnline();
                     self._pidAutoRefreshErrors = 0;
                     var vals = res.data.values;
                     self._pidValues = {
@@ -365,6 +410,7 @@
                 } else {
                     self._pidAutoRefreshErrors++;
                     self._stopPidAutoRefreshOnErrors();
+                    self._setCtrlModalOffline(true, (res && res.error) || (i18n.t('device-control-offline') || '设备离线，当前控制不可操作'));
                 }
                 if (res && res.debug) {
                     self._appendDebugLog(res.debug.tx ? { tx: res.debug.tx, rx: res.debug.rx } : null, 'PID Read');
@@ -376,16 +422,18 @@
                     self._pidValues = { pv: 0, sv: 0, out: 0, p: 0, i: 0, d: 0 };
                 }
                 self._renderPidGrid();
+                self._setCtrlModalOffline(true, i18n.t('device-control-offline') || '设备离线，当前控制不可操作');
             });
         },
 
         setPidRegister(paramName, rawValue) {
+            if (this._isCtrlModalOffline()) return;
             var p = this._getPidParams();
             var addrMap = { sv: p.svAddr, p: p.pAddr, i: p.iAddr, d: p.dAddr };
             var addr = addrMap[paramName];
             if (addr === undefined) return;
             var self = this;
-            apiPost('/api/modbus/register/write', {
+            apiPostPriority('/api/modbus/register/write', {
                 slaveAddress: p.slaveAddress, registerAddress: addr, value: rawValue
             }).then(function(res) {
                 if (res && res.success) {
@@ -410,9 +458,27 @@
 
         _stopPidAutoRefresh() {
             if (this._pidAutoRefreshTimer) {
-                clearInterval(this._pidAutoRefreshTimer);
+                clearTimeout(this._pidAutoRefreshTimer);
                 this._pidAutoRefreshTimer = null;
             }
+        },
+
+        _schedulePidAutoRefresh() {
+            var self = this;
+            this._stopPidAutoRefresh();
+            this._pidAutoRefreshTimer = setTimeout(function() {
+                self._pidAutoRefreshTimer = null;
+                var autoRefreshEl = document.getElementById('modbus-ctrl-pid-auto-refresh');
+                if (!autoRefreshEl || !autoRefreshEl.checked) return;
+                Promise.resolve(self.refreshPidStatus()).finally(function() {
+                    var nextAutoRefreshEl = document.getElementById('modbus-ctrl-pid-auto-refresh');
+                    if (nextAutoRefreshEl && nextAutoRefreshEl.checked) {
+                        self._schedulePidAutoRefresh();
+                    }
+                });
+            }, typeof apiGetPressureAwareInterval === 'function'
+                ? apiGetPressureAwareInterval('modbusControl', 8000)
+                : 8000);
         },
 
         togglePidAutoRefresh() {
@@ -420,8 +486,7 @@
             if (checked) {
                 this._pidAutoRefreshErrors = 0;
                 this.refreshPidStatus();
-                var self = this;
-                this._pidAutoRefreshTimer = setInterval(function() { self.refreshPidStatus(); }, 8000);
+                this._schedulePidAutoRefresh();
             } else {
                 this._stopPidAutoRefresh();
             }

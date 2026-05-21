@@ -59,6 +59,8 @@
         _deviceName: 'FastBee Device',
         _eventsBound: false,
         _periphExecRunPromptState: null,
+        _dcPageLoadPromise: null,
+        _dcRuntimeLoadPromise: null,
 
         _dcZoomLevel: 1,
         _dcMinZoom: 0.5,
@@ -66,6 +68,50 @@
         _dcZoomStep: 0.1,
 
         // ============ 事件绑定 ============
+        _isDeviceControlRuntimeReady: function() {
+            return typeof this._renderControlPanel === 'function' &&
+                typeof this._dcApplyLayout === 'function' &&
+                typeof this._dcInitFreeLayout === 'function' &&
+                typeof this._setupSSE === 'function' &&
+                typeof this._dcRefreshCoilStatus === 'function';
+        },
+
+        _ensureDeviceControlRuntime: function() {
+            var self = this;
+            if (this._isDeviceControlRuntimeReady()) {
+                return Promise.resolve();
+            }
+            if (this._dcRuntimeLoadPromise) {
+                return this._dcRuntimeLoadPromise;
+            }
+            if (typeof ModuleLoader === 'undefined' ||
+                !ModuleLoader ||
+                typeof ModuleLoader.loadModule !== 'function') {
+                return Promise.reject(new Error('Device control runtime loader unavailable'));
+            }
+            this._dcRuntimeLoadPromise = new Promise(function(resolve, reject) {
+                var timer = setTimeout(function() {
+                    self._dcRuntimeLoadPromise = null;
+                    reject(new Error('Device control runtime load timeout'));
+                }, 15000);
+                ModuleLoader.loadModule('device-control-runtime', function() {
+                    clearTimeout(timer);
+                    if (self._isDeviceControlRuntimeReady()) {
+                        resolve();
+                    } else {
+                        self._dcRuntimeLoadPromise = null;
+                        reject(new Error('Device control runtime did not register'));
+                    }
+                });
+            }).then(function() {
+                self._dcRuntimeLoadPromise = null;
+            }, function(error) {
+                self._dcRuntimeLoadPromise = null;
+                throw error;
+            });
+            return this._dcRuntimeLoadPromise;
+        },
+
         setupDeviceControlEvents: function() {
             var self = this;
 
@@ -86,7 +132,7 @@
 
                 content.addEventListener('click', function(e) {
                     if (e.target.closest('.dc-layout-reset')) { self._dcResetLayout(); return; }
-                    if (e.target.closest('#dc-refresh-btn')) { self.loadDeviceControlPage(); return; }
+                    if (e.target.closest('#dc-refresh-btn')) { self.loadDeviceControlPage({ noCache: true }); return; }
                     if (e.target.closest('#dc-fullscreen-btn')) { self._dcToggleFullscreen(); return; }
                     if (e.target.closest('#dc-zoom-out-btn')) { self._dcZoomOut(); return; }
                     if (e.target.closest('#dc-zoom-reset-btn')) { self._dcZoomReset(); return; }
@@ -181,7 +227,7 @@
                         var show = e.target.checked;
                         localStorage.setItem('dc_show_sid', show ? '1' : '0');
                         var tags = document.querySelectorAll('.dc-sid-tag');
-                        for (var t = 0; t < tags.length; t++) tags[t].style.display = show ? '' : 'none';
+                        for (var t = 0; t < tags.length; t++) tags[t].classList.toggle('fb-hidden', !show);
                     }
                 });
             }
@@ -319,7 +365,16 @@
         },
 
         // ============ 加载控制面板 ============
-        loadDeviceControlPage: function() {
+        _setDeviceControlRefreshLoading: function(isLoading) {
+            var btn = document.getElementById('dc-refresh-btn');
+            if (!btn) return;
+            btn.disabled = !!isLoading;
+            btn.textContent = isLoading ? (this._t('loading') || 'Loading...') : this._t('dashboard-refresh');
+        },
+
+        loadDeviceControlPage: function(options) {
+            options = options || {};
+            if (this._dcPageLoadPromise) return this._dcPageLoadPromise;
             this._modbusDevices = [];
             this._dcDeviceOnline = {};
             if (!this._eventsBound) this.setupDeviceControlEvents();
@@ -327,15 +382,21 @@
             if (!content) { console.error('[device-control] Content element "dc-content" not found!'); return; }
             this._setContentState(content, 'loading');
             var self = this;
+            var controlsGetter = (options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            var silentGetter = (options.noCache === true && typeof apiGetSilentFresh === 'function') ? apiGetSilentFresh : apiGetSilent;
+            var runtimeReady = this._ensureDeviceControlRuntime();
+            this._setDeviceControlRefreshLoading(true);
             this._dcStopAllAutoRefresh();
-            this._fetchDeviceInfo().then(function() {
-                return apiGet('/api/periph-exec/controls');
+            this._dcPageLoadPromise = this._fetchDeviceInfo(options).then(function() {
+                return controlsGetter('/api/periph-exec/controls');
             }).then(function(controlsRes) {
                 self._tempControlsRes = controlsRes;
-                return apiGetSilent('/api/modbus/status').catch(function() { return null; });
+                return silentGetter('/api/modbus/status').catch(function() { return null; });
             }).then(function(modbusRes) {
                 self._tempModbusRes = modbusRes;
-                return apiGetSilent('/api/protocol/config').catch(function() { return null; });
+                return silentGetter('/api/protocol/config', { compact: 1, section: 'device-control' }).catch(function() { return null; });
+            }).then(function(protoRes) {
+                return runtimeReady.then(function() { return protoRes; });
             }).then(function(protoRes) {
                 var res = self._tempControlsRes;
                 var modbusRes = self._tempModbusRes;
@@ -366,12 +427,15 @@
                     if (self._modbusDevices.length === 0) {
                         setTimeout(function() {
                             if (self.currentPage !== 'device-control') return;
-                            apiGetSilent('/api/protocol/config').then(function(retryRes) {
+                            silentGetter('/api/protocol/config', { compact: 1, section: 'device-control' }).then(function(retryRes) {
                                 if (!retryRes || !retryRes.success || !retryRes.data) return;
                                 var rtu = retryRes.data.modbusRtu;
                                 if (rtu && rtu.enabled && rtu.master && rtu.master.devices) {
                                     var newDevices = rtu.master.devices.filter(function(d) { return d.enabled !== false; });
-                                    if (newDevices.length > 0) { self._modbusDevices = newDevices; self.loadDeviceControlPage(); }
+                                    if (newDevices.length > 0) {
+                                        self._modbusDevices = newDevices;
+                                        self.loadDeviceControlPage(options.noCache === true ? { noCache: true } : undefined);
+                                    }
                                 }
                             }).catch(function() {});
                         }, 2000);
@@ -385,12 +449,17 @@
                 if (err && err.data && err.data.error) errMsg = err.data.error;
                 else if (err && err.message) errMsg = err.message;
                 self._setContentState(content, 'error', errMsg);
+            }).finally(function() {
+                self._dcPageLoadPromise = null;
+                self._setDeviceControlRefreshLoading(false);
             });
+            return this._dcPageLoadPromise;
         },
 
-        _fetchDeviceInfo: function() {
+        _fetchDeviceInfo: function(options) {
             var self = this;
-            return apiGetSilent('/api/device/config').then(function(res) {
+            var getter = (options && options.noCache === true && typeof apiGetSilentFresh === 'function') ? apiGetSilentFresh : apiGetSilent;
+            return getter('/api/device/config').then(function(res) {
                 if (res && res.success && res.data) self._deviceName = res.data.deviceName || res.data.name || 'FastBee Device';
             }).catch(function() { self._deviceName = 'FastBee Device'; });
         },
@@ -436,7 +505,9 @@
         _dcCancelInit: function() {
             if (this._dcModbusInitRunning) {
                 this._dcInitCancelled = true;
-
+            }
+            if (typeof window.apiAbortPageRequests === 'function') {
+                window.apiAbortPageRequests();
             }
         },
 
@@ -464,7 +535,7 @@
 
         _dcStopAllAutoRefresh: function() {
             var timers = this._dcAutoRefreshTimers || {};
-            this._closeSSE();
+            if (typeof this._closeSSE === 'function') this._closeSSE();
             for (var key in timers) {
                 if (timers.hasOwnProperty(key) && timers[key]) {
                     clearInterval(timers[key]);

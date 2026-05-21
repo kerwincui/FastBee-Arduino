@@ -38,7 +38,7 @@
             <strong id="master-stat-timeout" class="modbus-status-value fb-text-orange">0</strong>
         </div>
         <div class="modbus-status-item modbus-status-actions">
-            <button type="button" class="fb-btn fb-btn-sm fb-btn-refresh" data-action="refreshMasterStatus">
+            <button type="button" class="fb-btn fb-btn-sm fb-btn-refresh" data-action="refreshMasterStatusFresh">
                 <span data-i18n="refresh-btn">刷新</span>
             </button>
         </div>
@@ -48,7 +48,7 @@
 
     <div class="fb-form-group u-separator-row">
         <label class="fb-checkbox">
-            <input type="checkbox" id="modbus-rtu-enabled"> <span
+            <input type="checkbox" id="modbus-rtu-enabled" checked> <span
                 data-i18n="modbus-rtu-enabled-label">启用Modbus RTU</span>
         </label>
     </div>
@@ -262,8 +262,8 @@
                     </div>
                 </div>
             </div>
-            <div class="modal-footer u-footer-topline">
-                <button type="button" class="fb-btn" data-action="_closeEditModal" data-i18n="modbus-mapping-cancel">取消</button>
+            <div class="modal-footer u-footer-topline modal-actions-inline">
+                <button type="button" class="fb-btn fb-btn-secondary" data-action="_closeEditModal" data-i18n="modbus-mapping-cancel">取消</button>
                 <button type="button" class="fb-btn fb-btn-primary u-ml-8" data-action="_saveEditModal" data-i18n="modbus-mapping-save">确定</button>
             </div>
         </div>
@@ -373,9 +373,9 @@
                     </div>
                     <!-- 控制按钮区 -->
                     <div class="motor-actions">
-                        <button type="button" class="motor-action-btn motor-action-forward" data-action="motorForward" data-i18n="modbus-motor-ctrl-forward">正转</button>
-                        <button type="button" class="motor-action-btn motor-action-stop" data-action="motorStop" data-i18n="modbus-motor-ctrl-stop">停止</button>
-                        <button type="button" class="motor-action-btn motor-action-reverse" data-action="motorReverse" data-i18n="modbus-motor-ctrl-reverse">反转</button>
+                        <button type="button" class="fb-btn fb-btn-sm fb-btn-success motor-action-btn" data-action="motorForward" data-i18n="modbus-motor-ctrl-forward">正转</button>
+                        <button type="button" class="fb-btn fb-btn-sm fb-btn-danger motor-action-btn" data-action="motorStop" data-i18n="modbus-motor-ctrl-stop">停止</button>
+                        <button type="button" class="fb-btn fb-btn-sm fb-btn-warning motor-action-btn" data-action="motorReverse" data-i18n="modbus-motor-ctrl-reverse">反转</button>
                     </div>
 
                 </div>
@@ -397,7 +397,7 @@
         Modbus RTU配置保存成功！
     </div>
 
-    <div class="fb-mt-4">
+    <div class="fb-mt-4 u-action-row protocol-form-actions">
         <button type="submit" class="fb-btn fb-btn-primary"
             data-i18n="btn-save-config">保存配置</button>
     </div>
@@ -446,8 +446,8 @@
                 </label>
             </div>
         </div>
-        <div class="modal-footer u-footer-topline">
-            <button type="button" class="fb-btn"
+        <div class="modal-footer u-footer-topline modal-actions-inline">
+            <button type="button" class="fb-btn fb-btn-secondary"
                 data-action="_closeTaskEditModal"
                 data-i18n="modbus-mapping-cancel">取消</button>
             <button type="button" class="fb-btn fb-btn-primary u-ml-8"
@@ -490,8 +490,8 @@
                     data-i18n="modbus-mapping-max">每任务最多8个映射</small>
             </div>
         </div>
-        <div class="modal-footer u-footer-topline">
-            <button type="button" class="fb-btn"
+        <div class="modal-footer u-footer-topline modal-actions-inline">
+            <button type="button" class="fb-btn fb-btn-secondary"
                 data-action="closeMappingModal"
                 data-i18n="modbus-mapping-cancel">取消</button>
             <button type="button" class="fb-btn fb-btn-primary u-ml-8"

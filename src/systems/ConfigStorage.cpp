@@ -13,6 +13,7 @@
 
 #include "systems/ConfigStorage.h"
 #include "systems/LoggerSystem.h"
+#include "core/FeatureFlags.h"
 #include <LittleFS.h>
 #include <core/SystemConstants.h>
 
@@ -44,7 +45,13 @@ bool ConfigStorage::initializeInternal() {
     }
 
     // 确保必要目录存在（首次启动或文件系统格式化后自动创建）
-    const char* requiredDirs[] = { "/config", "/logs", "/www" };
+    const char* requiredDirs[] = {
+        "/config",
+#if FASTBEE_ENABLE_FILE_LOGGING || FASTBEE_ENABLE_LOG_VIEWER
+        "/logs",
+#endif
+        "/www"
+    };
     for (const char* dir : requiredDirs) {
         if (!LittleFS.exists(dir)) {
             LittleFS.mkdir(dir);

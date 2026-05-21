@@ -176,7 +176,7 @@
             return wrap;
         }
 
-        appendButton('«', currentPage - 1, currentPage <= 1, false);
+        appendButton('\u2039', currentPage - 1, currentPage <= 1, false);
 
         var startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
         var endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
@@ -198,7 +198,7 @@
             appendButton(String(totalPages), totalPages, false, false);
         }
 
-        appendButton('»', currentPage + 1, currentPage >= totalPages, false);
+        appendButton('\u203a', currentPage + 1, currentPage >= totalPages, false);
         appendSummary();
 
         container.appendChild(wrap);

@@ -4,94 +4,59 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FastBee WiFi Setup</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
-        .setup-box { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 15px 35px rgba(0,0,0,0.2); width: 100%; max-width: 450px; }
-        h1 { text-align: center; color: #333; margin-bottom: 10px; font-size: 22px; }
-        .subtitle { text-align: center; color: #888; margin-bottom: 25px; font-size: 14px; }
-        .form-group { margin-bottom: 20px; }
-        label { display: block; margin-bottom: 8px; color: #555; font-weight: bold; }
-        select, input[type="text"], input[type="password"] { width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 5px; font-size: 16px; }
-        select:focus, input:focus { outline: none; border-color: #667eea; }
-        button { width: 100%; padding: 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; margin-top: 10px; }
-        button:hover { opacity: 0.9; }
-        button:disabled { background: #ccc; cursor: not-allowed; }
-        .scan-btn { background: #4CAF50; margin-bottom: 15px; }
-        .message { padding: 12px; border-radius: 5px; margin-bottom: 20px; text-align: center; }
-        .error { background: #ffe0e0; color: #c00; }
-        .success { background: #e0ffe0; color: #080; }
-        .info { background: #e3f2fd; color: #1565c0; }
-        .network-list { max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 5px; margin-bottom: 15px; }
-        .network-item { padding: 12px; border-bottom: 1px solid #eee; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
-        .network-item:hover { background: #f5f5f5; }
-        .network-item:last-child { border-bottom: none; }
-        .network-name { font-weight: 500; }
-        .network-signal { color: #888; font-size: 14px; }
-        .signal-strong { color: #4CAF50; }
-        .signal-medium { color: #FF9800; }
-        .signal-weak { color: #f44336; }
-        .lock-icon { margin-left: 8px; }
-        .current-status { background: #f5f5f5; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
-        .status-row { display: flex; justify-content: space-between; margin-bottom: 8px; }
-        .status-row:last-child { margin-bottom: 0; }
-        .status-label { color: #888; }
-        .status-value { font-weight: 500; }
-        .connected { color: #4CAF50; }
-        .disconnected { color: #f44336; }
-        .lang-switch { position: absolute; top: 15px; right: 15px; background: rgba(255,255,255,0.2); border: none; color: white; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; }
-        .lang-switch:hover { background: rgba(255,255,255,0.35); }
-    </style>
+    <link rel="stylesheet" href="./css/main.css">
 </head>
-<body>
-    <button class="lang-switch" id="langBtn" onclick="toggleLang()">EN</button>
-    <div class="setup-box">
-        <h1 id="pageTitle">FastBee WiFi Setup</h1>
-        <p class="subtitle" id="pageSubtitle">Configure your device's WiFi connection</p>
-        <div class="current-status">
-            <div class="status-row">
-                <span class="status-label" id="lblStatus">Status:</span>
-                <span id="connStatus" class="status-value disconnected">Checking...</span>
+<body class="setup-page">
+    <div class="setup-shell">
+        <div class="login-card setup-card">
+            <div class="setup-card-body">
+                <h1 class="fb-m-0 fb-text-xl fb-text-primary fb-text-center" id="pageTitle">FastBee WiFi 配网</h1>
+                <p class="setup-subtitle" id="pageSubtitle">配置设备的 WiFi 连接</p>
+                <div class="setup-status-panel">
+                    <div class="setup-status-row">
+                        <span class="setup-status-label" id="lblStatus">Status:</span>
+                        <span id="connStatus" class="setup-status-value is-disconnected">Checking...</span>
+                    </div>
+                    <div class="setup-status-row">
+                        <span class="setup-status-label" id="lblIp">IP Address:</span>
+                        <span id="ipAddr" class="setup-status-value">-</span>
+                    </div>
+                </div>
+                <div id="message" class="message message-info fb-hidden"></div>
+                <button class="fb-btn fb-btn-success fb-w-full fb-mb-3" onclick="scanNetworks()" id="scanBtn">Scan WiFi Networks</button>
+                <div id="networkList" class="wifi-list fb-hidden"></div>
+                <form id="wifiForm" class="fb-form">
+                    <div class="fb-form-group">
+                        <label for="ssid" id="lblSsid">WiFi Name (SSID)</label>
+                        <input type="text" id="ssid" name="ssid" required placeholder="Enter or select WiFi name">
+                    </div>
+                    <div class="fb-form-group">
+                        <label for="password" id="lblPwd">Password</label>
+                        <input type="password" id="password" name="password" placeholder="Enter WiFi password">
+                    </div>
+                    <button class="fb-btn fb-btn-primary fb-w-full" type="submit" id="connectBtn">Connect</button>
+                </form>
+                <div class="setup-link-row">
+                    <a href="/login" class="setup-link" id="loginLink">Go to Login Page</a>
+                </div>
             </div>
-            <div class="status-row">
-                <span class="status-label" id="lblIp">IP Address:</span>
-                <span id="ipAddr" class="status-value">-</span>
-            </div>
-        </div>
-        <div id="message" class="message info" style="display:none;"></div>
-        <button class="scan-btn" onclick="scanNetworks()" id="scanBtn">Scan WiFi Networks</button>
-        <div id="networkList" class="network-list" style="display:none;"></div>
-        <form id="wifiForm">
-            <div class="form-group">
-                <label id="lblSsid">WiFi Name (SSID)</label>
-                <input type="text" id="ssid" name="ssid" required placeholder="Enter or select WiFi name">
-            </div>
-            <div class="form-group">
-                <label id="lblPwd">Password</label>
-                <input type="password" id="password" name="password" placeholder="Enter WiFi password">
-            </div>
-            <button type="submit" id="connectBtn">Connect</button>
-        </form>
-        <div style="text-align:center; margin-top:20px;">
-            <a href="/login" style="color:#667eea;" id="loginLink">Go to Login Page</a>
         </div>
     </div>
     <script>
-        var T={zh:{pageTitle:'FastBee WiFi',pageSubtitle:'WiFi',lblStatus:'',lblIp:'IP',lblSsid:'WiFi (SSID)',lblPwd:'',scanBtn:'WiFi',connectBtn:'',loginLink:'',phSsid:'WiFi',phPwd:'WiFi',scanning:'...',noNet:'WiFi',scanFail:': ',connecting:'WiFi...',waitMsg:'... 10',connOk:'! : http://',connYes:'',connNo:'',checking:'...'},en:{pageTitle:'FastBee WiFi Setup',pageSubtitle:'Configure your device\'s WiFi connection',lblStatus:'Status:',lblIp:'IP Address:',lblSsid:'WiFi Name (SSID)',lblPwd:'Password',scanBtn:'Scan WiFi Networks',connectBtn:'Connect',loginLink:'Go to Login Page',phSsid:'Enter or select WiFi name',phPwd:'Enter WiFi password',scanning:'Scanning...',noNet:'No networks found',scanFail:'Scan failed: ',connecting:'Connecting to WiFi...',waitMsg:'Connecting... Please wait 10 seconds then refresh.',connOk:'Connected! You can now access via: http://',connYes:'Connected',connNo:'Not Connected',checking:'Checking...'}};
-        var lang=localStorage.getItem('language')==='en'?'en':'zh';
-        function applyLang(){var t=T[lang];['pageTitle','pageSubtitle','lblStatus','lblIp','lblSsid','lblPwd','scanBtn','connectBtn','loginLink'].forEach(function(k){var e=document.getElementById(k);if(e)e.textContent=t[k];});document.getElementById('ssid').placeholder=t.phSsid;document.getElementById('password').placeholder=t.phPwd;document.getElementById('langBtn').textContent=lang==='zh'?'EN':'中文';}
-        function toggleLang(){lang=lang==='zh'?'en':'zh';localStorage.setItem('language',lang==='zh'?'zh-CN':'en');applyLang();}
+        var T={zh:{pageTitle:'FastBee WiFi 配网',pageSubtitle:'配置设备的 WiFi 连接',lblStatus:'状态：',lblIp:'IP 地址：',lblSsid:'WiFi 名称 (SSID)',lblPwd:'密码',scanBtn:'扫描 WiFi 网络',connectBtn:'连接',loginLink:'进入登录页',phSsid:'输入或选择 WiFi 名称',phPwd:'输入 WiFi 密码',scanning:'扫描中...',noNet:'未发现 WiFi 网络',scanFail:'扫描失败：',connecting:'正在连接 WiFi...',waitMsg:'正在连接，请等待 10 秒后刷新。',connOk:'已连接，可访问：http://',connYes:'已连接',connNo:'未连接',checking:'检测中...'}};
+        var lang='zh';
+        function applyLang(){var t=T.zh;['pageTitle','pageSubtitle','lblStatus','lblIp','lblSsid','lblPwd','scanBtn','connectBtn','loginLink'].forEach(function(k){var e=document.getElementById(k);if(e)e.textContent=t[k];});document.getElementById('ssid').placeholder=t.phSsid;document.getElementById('password').placeholder=t.phPwd;}
         applyLang();
         function showMessage(text, type) {
             var msg = document.getElementById('message');
             msg.textContent = text;
-            msg.className = 'message ' + type;
-            msg.style.display = 'block';
+            msg.className = 'message message-' + type;
+            msg.classList.remove('fb-hidden');
         }
         function getSignalClass(rssi) {
-            if (rssi >= -50) return 'signal-strong';
-            if (rssi >= -70) return 'signal-medium';
-            return 'signal-weak';
+            if (rssi >= -50) return 'strong';
+            if (rssi >= -70) return 'medium';
+            return 'weak';
         }
         function getSignalBars(rssi) {
             if (rssi >= -50) return '\u2582\u2584\u2586\u2588';
@@ -109,15 +74,23 @@
                 var resp = await fetch('/api/wifi/scan');
                 var data = await resp.json();
                 if (data.networks && data.networks.length > 0) {
-                    list.innerHTML = data.networks.map(function(n){ return '<div class="network-item" data-ssid="' + esc(n.ssid) + '"><span class="network-name">' + esc(n.ssid) + (n.encrypted ? '<span class="lock-icon">\uD83D\uDD12</span>' : '') + '</span><span class="network-signal ' + getSignalClass(n.rssi) + '">' + getSignalBars(n.rssi) + ' ' + n.rssi + 'dBm</span></div>'; }).join('');
-                    list.style.display = 'block';
-                } else { showMessage(T[lang].noNet, 'info'); }
-            } catch (e) { showMessage(T[lang].scanFail + e.message, 'error'); }
+                    list.innerHTML = data.networks.map(function(n){ return '<div class="wifi-item" data-ssid="' + esc(n.ssid) + '"><span class="wifi-ssid">' + esc(n.ssid) + (n.encrypted ? '<span class="wifi-lock-icon-secure"> \uD83D\uDD12</span>' : '') + '</span><span class="wifi-signal ' + getSignalClass(n.rssi) + '">' + getSignalBars(n.rssi) + ' ' + n.rssi + 'dBm</span></div>'; }).join('');
+                    list.classList.remove('fb-hidden');
+                } else {
+                    list.innerHTML = '';
+                    list.classList.add('fb-hidden');
+                    showMessage(T[lang].noNet, 'info');
+                }
+            } catch (e) {
+                list.innerHTML = '';
+                list.classList.add('fb-hidden');
+                showMessage(T[lang].scanFail + e.message, 'error');
+            }
             btn.disabled = false;
             btn.textContent = T[lang].scanBtn;
         }
         document.getElementById('networkList').addEventListener('click', function(e) {
-            var item = e.target.closest('.network-item');
+            var item = e.target.closest('.wifi-item');
             if (item && item.dataset.ssid) { selectNetwork(item.dataset.ssid); }
         });
         function selectNetwork(ssid) {
@@ -150,12 +123,12 @@
                 var ip = document.getElementById('ipAddr');
                 if (data.connected) {
                     status.textContent = T[lang].connYes;
-                    status.className = 'status-value connected';
+                    status.className = 'setup-status-value is-connected';
                     ip.textContent = data.ipAddress || '-';
                     showMessage(T[lang].connOk + data.ipAddress, 'success');
                 } else {
                     status.textContent = T[lang].connNo;
-                    status.className = 'status-value disconnected';
+                    status.className = 'setup-status-value is-disconnected';
                     ip.textContent = '-';
                 }
             } catch (e) { console.error('Status check failed:', e); }

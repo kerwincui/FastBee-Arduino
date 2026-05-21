@@ -17,6 +17,7 @@ const ROOT_DIR = path.join(__dirname, '..');
 const WWW_DIR = path.join(ROOT_DIR, 'data', 'www');
 const SW_TEMPLATE = path.join(ROOT_DIR, 'web-src', 'sw.js.template');
 const SW_OUTPUT = path.join(WWW_DIR, 'sw.js');
+const INDEX_OUTPUT = path.join(WWW_DIR, 'index.html');
 
 const CACHEABLE_EXTENSIONS = new Set(['.html', '.js', '.css', '.png', '.ico', '.json']);
 
@@ -46,16 +47,28 @@ function generateManifest() {
         .sort();
 
     // 2. Build relative URL paths
+    // 仅预缓存首屏关键资源（~13 个），其他资源按需缓存（fetch 拦截器 staleWhileRevalidate）。
+    // ESP32 lwIP socket pool 仅 4-5 个，预缓存太多会与首屏加载冲突造成 OOM 死锁。
+    const PRECACHE_WHITELIST = new Set([
+        '/',
+        '/index.html',
+        '/css/main.css',
+        '/js/chunk-1-core-a.js',
+        '/js/chunk-2-core-b.js',
+        '/js/chunk-3-i18n-engine.js',
+        '/js/chunk-8-state-1.js',
+        '/js/chunk-9-state-2.js',
+        '/assets/logo.png'
+    ]);
+
     const precacheUrls = ['/']; // always include root
     cacheable.forEach((f) => {
         const relPath = '/' + path.relative(WWW_DIR, f).replace(/\\/g, '/');
-        // Avoid duplicating root index.html as both / and /index.html
-        if (relPath === '/index.html') {
-            precacheUrls.push(relPath);
-            return;
-        }
         // Skip sw.js itself from precache
         if (relPath === '/sw.js') return;
+        // 白名单过滤：仅预缓存首屏关键资源
+        if (!PRECACHE_WHITELIST.has(relPath)) return;
+        // Avoid duplicating root index.html
         precacheUrls.push(relPath);
     });
 
@@ -96,6 +109,23 @@ function generateManifest() {
         .replace('/*PRECACHE_URLS*/', urlsArrayStr);
 
     fs.writeFileSync(SW_OUTPUT, swContent, 'utf8');
+
+    // Keep the runtime asset query version aligned with the generated SW version.
+    // Otherwise browsers can mix stale JS/CSS chunks with the newly flashed filesystem.
+    if (fs.existsSync(INDEX_OUTPUT)) {
+        const assetVersion = cacheVersion.replace(/^v/, '');
+        const indexContent = fs.readFileSync(INDEX_OUTPUT, 'utf8');
+        const updatedIndex = indexContent.replace(
+            /window\.__fastbeeAssetVersion\s*=\s*'[^']*';/,
+            "window.__fastbeeAssetVersion = '" + assetVersion + "';"
+        );
+        if (updatedIndex !== indexContent) {
+            fs.writeFileSync(INDEX_OUTPUT, updatedIndex, 'utf8');
+            console.log('  ASSET_VERSION: ' + assetVersion);
+        } else {
+            console.warn('  WARNING: index.html asset version marker not found');
+        }
+    }
 
     console.log('SW manifest updated:');
     console.log('  CACHE_VERSION: ' + cacheVersion);

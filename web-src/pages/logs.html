@@ -1,0 +1,19 @@
+<div id="logs-page" class="page page-layout-flat">
+    <div class="fb-card">
+        <div class="fb-card-header u-header-between">
+            <h2 class="fb-card-title" data-i18n="logs-title">设备日志</h2>
+            <div class="u-toolbar-sm">
+                <select id="log-file-select" class="fb-select fb-w-auto">
+                    <option value="system.log">system.log</option>
+                </select>
+                <button class="fb-btn fb-btn-refresh" id="log-refresh-list-btn" data-i18n="refresh-btn">刷新</button>
+                <button class="fb-btn fb-btn-primary" id="refresh-logs-btn" data-i18n="logs-refresh">刷新日志</button>
+                <button class="fb-btn fb-btn-danger" id="clear-logs-btn" data-i18n="logs-clear">清空</button>
+            </div>
+        </div>
+        <div class="fb-card-body">
+            <div id="log-meta" class="u-text-secondary u-mb-12">-</div>
+            <pre id="log-content" class="log-content">日志加载中...</pre>
+        </div>
+    </div>
+</div>

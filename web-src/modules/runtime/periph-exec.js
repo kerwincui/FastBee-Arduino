@@ -9,6 +9,7 @@
         // ============ 状态变量 ============
         _pePeripherals: [],
         _peDataSources: [],
+        _peSensorSources: [],
         _peCurrentPage: 1,
         _pePageSize: 10,
         _peTotalRules: 0,
@@ -16,7 +17,47 @@
         _peModbusHealth: null,
         _peModbusHealthFetchedAt: 0,
         _peModbusHealthPromise: null,
+        _peEventCategories: null,
+        _peEventCategoriesFetchedAt: 0,
+        _peEventCategoriesPromise: null,
+        _peStaticEvents: null,
+        _peStaticEventsFetchedAt: 0,
+        _peStaticEventsPromise: null,
+        _peDynamicEvents: null,
+        _peDynamicEventsFetchedAt: 0,
+        _peDynamicEventsPromise: null,
         _periphExecRunPromptState: null,
+
+        _isPeriphExecEditorReady() {
+            return typeof this._createPeriphExecTriggerElement === 'function' &&
+                typeof this._createPeriphExecActionElement === 'function' &&
+                typeof this.savePeriphExecRule === 'function';
+        },
+
+        _ensurePeriphExecEditor() {
+            var self = this;
+            if (this._isPeriphExecEditorReady()) {
+                return Promise.resolve();
+            }
+            if (typeof ModuleLoader === 'undefined' ||
+                !ModuleLoader ||
+                typeof ModuleLoader.loadModule !== 'function') {
+                return Promise.reject(new Error('Periph exec editor loader unavailable'));
+            }
+            return new Promise(function(resolve, reject) {
+                var timer = setTimeout(function() {
+                    reject(new Error('Periph exec editor load timeout'));
+                }, 15000);
+                ModuleLoader.loadModule('periph-exec-editor', function() {
+                    clearTimeout(timer);
+                    if (self._isPeriphExecEditorReady()) {
+                        resolve();
+                    } else {
+                        reject(new Error('Periph exec editor did not register'));
+                    }
+                });
+            });
+        },
 
         // ============ 事件绑定 ============
         setupPeriphExecEvents() {
@@ -61,6 +102,17 @@
         // ============ 模态框 ============
 
         openPeriphExecModal(editId) {
+            if (!this._isPeriphExecEditorReady()) {
+                var self = this;
+                return this._ensurePeriphExecEditor()
+                    .then(function() { return self.openPeriphExecModal(editId); })
+                    .catch(function(err) {
+                        console.error('Failed to load periph exec editor:', err);
+                        if (typeof Notification !== 'undefined') {
+                            Notification.error(i18n.t('periph-exec-load-failed') || '加载执行规则编辑器失败');
+                        }
+                    });
+            }
             const modal = document.getElementById('periph-exec-modal');
             if (!modal) return;
             const titleEl = document.getElementById('periph-exec-modal-title');
@@ -81,10 +133,11 @@
             if (safeId) { this.showModal(modal); return; }
             this._pePeripherals = [];
             this._peDataSources = [];
+            this._peSensorSources = [];
             this._peExecRules = [];
-            apiGet('/api/peripherals?pageSize=50').then(res => {
-                if (res && res.success && res.data) this._pePeripherals = res.data.filter(p => p.enabled);
-                return apiGet('/api/protocol/config');
+            apiGet('/api/peripherals', { pageSize: 100, compact: 1, enabledOnly: 1 }).then(res => {
+                if (res && res.success && res.data) this._pePeripherals = res.data;
+                return apiGet('/api/protocol/config', { compact: 1, section: 'periph-exec' });
             }).then(protoRes => {
                 if (protoRes && protoRes.success && protoRes.data) {
                     const protoData = protoRes.data;
@@ -94,11 +147,12 @@
                         this._modbusDevices = protoData.modbusRtu.master.devices || [];
                     }
                 }
-                return apiGet('/api/periph-exec?pageSize=100');
+                return apiGet('/api/periph-exec', { pageSize: 100 });
             }).then(rulesRes => {
                 if (rulesRes && rulesRes.success && Array.isArray(rulesRes.data)) {
                     this._peExecRules = rulesRes.data;
                 }
+                this._peSensorSources = (rulesRes && Array.isArray(rulesRes.sensorSources)) ? rulesRes.sensorSources : [];
                 this._createPeriphExecTriggerElement({}, 0);
                 this._createPeriphExecActionElement({}, 0);
                 this._refreshPeriphExecRiskNotice({ allowFetch: true });
@@ -117,7 +171,10 @@
             this.hideModal('periph-exec-modal');
             this._pePeripherals = [];
             this._peDataSources = [];
-            this._clearPeriphExecRiskNotice();
+            this._peSensorSources = [];
+            if (typeof this._clearPeriphExecRiskNotice === 'function') {
+                this._clearPeriphExecRiskNotice();
+            }
         },
 
         // ============ 通用辅助 ============
@@ -128,6 +185,15 @@
 
         _setSectionVisible(ref, visible, displayValue) {
             return visible ? this.showElement(ref, displayValue) : this.hideElement(ref);
+        },
+
+        _invalidatePeriphExecRuntimeCaches() {
+            if (typeof window.apiInvalidateCache === 'function') {
+                window.apiInvalidateCache('/api/periph-exec');
+            }
+            if (typeof this._clearPeriphExecEventCatalogCache === 'function') {
+                this._clearPeriphExecEventCatalogCache();
+            }
         },
 
         // ============ 执行值输入弹窗 ============
@@ -465,7 +531,7 @@
         _renderPeriphExecActionButton(action, ruleId, label, extraClass, extraAttrs) {
             var attrs = 'data-pe-action="' + action + '" data-id="' + escapeHtml(ruleId) + '"';
             if (extraAttrs) attrs += ' ' + extraAttrs;
-            return '<button class="fb-btn fb-btn-sm ' + (extraClass || '') + '" ' + attrs + '>' + escapeHtml(label) + '</button>';
+            return '<button class="fb-btn fb-btn-sm fb-btn-compact ' + (extraClass || '') + '" ' + attrs + '>' + escapeHtml(label) + '</button>';
         },
 
         _renderPeriphExecRuleActions(ruleId, enabled, hasSetMode, ruleName) {
@@ -482,7 +548,7 @@
                 'data-next-enabled="' + (enabled ? 'false' : 'true') + '"'
             ));
             buttons.push(this._renderPeriphExecActionButton('delete', ruleId, i18n.t('peripheral-delete'), 'fb-btn-danger'));
-            return buttons.join(' ');
+            return '<div class="u-table-action-row">' + buttons.join('') + '</div>';
         },
 
         _renderPeriphExecRuleRow(rule, triggerLabels, actionLabels) {
@@ -509,18 +575,25 @@
     Object.assign(AppState, {
 
         editPeriphExecRule(id) {
+            if (!this._isPeriphExecEditorReady()) {
+                var self = this;
+                return this._ensurePeriphExecEditor().then(function() {
+                    return self.editPeriphExecRule(id);
+                });
+            }
             this.openPeriphExecModal(id);
             // 串行请求：ESP32 heap 紧张时并发 4 个请求会 OOM，必须逐个等完
             const _editResults = {};
-            apiGet('/api/periph-exec?id=' + id)
-                .then(execRes => { _editResults.execRes = execRes; return apiGet('/api/peripherals?pageSize=50'); })
-                .then(periphRes => { _editResults.periphRes = periphRes; return apiGet('/api/protocol/config'); })
-                .then(protoRes => { _editResults.protoRes = protoRes; return apiGet('/api/periph-exec?pageSize=100'); })
+            const loadRule = typeof apiGetFresh === 'function' ? apiGetFresh : apiGet;
+            loadRule('/api/periph-exec', { id: id })
+                .then(execRes => { _editResults.execRes = execRes; return apiGet('/api/peripherals', { pageSize: 100, compact: 1, enabledOnly: 1 }); })
+                .then(periphRes => { _editResults.periphRes = periphRes; return apiGet('/api/protocol/config', { compact: 1, section: 'periph-exec' }); })
+                .then(protoRes => { _editResults.protoRes = protoRes; return apiGet('/api/periph-exec', { pageSize: 100 }); })
                 .then(rulesRes => {
                     _editResults.rulesRes = rulesRes;
                     const { execRes, periphRes, protoRes } = _editResults;
                     if (periphRes && periphRes.success && periphRes.data) {
-                        this._pePeripherals = periphRes.data.filter(p => p.enabled);
+                        this._pePeripherals = periphRes.data;
                     }
                     this._peDataSources = [];
                     if (protoRes && protoRes.success && protoRes.data) {
@@ -536,6 +609,7 @@
                     } else {
                         this._peExecRules = [];
                     }
+                    this._peSensorSources = (rulesRes && Array.isArray(rulesRes.sensorSources)) ? rulesRes.sensorSources : [];
                     if (!execRes || !execRes.success || !execRes.data) return;
                     const rule = execRes.data;
                     if (!rule) return;
@@ -590,6 +664,7 @@
             apiDelete('/api/periph-exec/', { id: id })
                 .then(res => {
                     if (res && res.success) {
+                        this._invalidatePeriphExecRuntimeCaches();
                         Notification.success(i18n.t('periph-exec-delete-ok'), i18n.t('periph-exec-title'));
                         if (this.currentPage === 'periph-exec') this.loadPeriphExecPage();
                     } else {
@@ -619,6 +694,7 @@
             apiPost(url, { id: id })
                 .then(res => {
                     if (res && res.success) {
+                        this._invalidatePeriphExecRuntimeCaches();
                         if (this.currentPage === 'periph-exec') this.loadPeriphExecPage();
                     } else {
                         Notification.error(res?.error || i18n.t('periph-exec-toggle-fail'), i18n.t('periph-exec-title'));
@@ -715,6 +791,9 @@
                 .then(function () { return apiGet(apiUrl); })
                 .then(execRes => {
                     this._peTotalRules = execRes && execRes.total ? execRes.total : 0;
+                    if (execRes && Array.isArray(execRes.sensorSources)) {
+                        this._peSensorSources = execRes.sensorSources;
+                    }
                     const currentPage = execRes && execRes.page ? execRes.page : 1;
                     const currentPageSize = execRes && execRes.pageSize ? execRes.pageSize : 10;
                     
@@ -748,9 +827,15 @@
                         2: i18n.t('periph-exec-action-blink'), 3: i18n.t('periph-exec-action-breathe'),
                         4: i18n.t('periph-exec-action-pwm'), 5: i18n.t('periph-exec-action-dac'),
                         6: i18n.t('periph-exec-action-restart'), 7: i18n.t('periph-exec-action-factory'),
-                        8: i18n.t('periph-exec-action-ntp'), 9: i18n.t('periph-exec-action-ota'),
+                        8: i18n.t('periph-exec-action-ntp'),
                         10: i18n.t('periph-exec-action-call-periph'),
-                        15: i18n.t('periph-exec-action-script'),
+                        19: i18n.t('periph-exec-action-sensor-read'),
+                        20: i18n.t('periph-exec-action-buzzer-beep') || i18n.t('periph-exec-action-high'),
+                        21: i18n.t('periph-exec-action-trigger-event'),
+                        24: i18n.t('periph-exec-action-display-number'),
+                        25: i18n.t('periph-exec-action-display-text'),
+                        26: i18n.t('periph-exec-action-display-clear'),
+                        27: i18n.t('periph-exec-action-oled-display'),
                         22: i18n.t('periph-exec-action-enable-rule'),
                         23: i18n.t('periph-exec-action-disable-rule')
                     };
@@ -771,6 +856,7 @@
                 total,
                 page,
                 pageSize,
+                maxVisiblePages: 3,
                 summaryText: i18n.t('periph-exec-total') + ': ' + total,
                 onPageChange: (nextPage) => {
                     this._peCurrentPage = nextPage;
@@ -782,7 +868,7 @@
         _populatePeriphExecFilter() {
             const sel = document.getElementById('periph-exec-filter-periph');
             if (!sel || sel._populated) return Promise.resolve();
-            return apiGet('/api/peripherals?pageSize=50').then(res => {
+            return apiGet('/api/peripherals', { pageSize: 100, compact: 1, enabledOnly: 1 }).then(res => {
                 if (!res || !res.success || !res.data) return;
                 const currentVal = sel.value;
                 let opts = '<option value="">' + i18n.t('periph-exec-filter-all') + '</option>';

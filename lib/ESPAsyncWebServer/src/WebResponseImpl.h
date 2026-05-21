@@ -24,7 +24,9 @@
 #endif
 #endif
 
+#ifndef ASYNC_RESPONCE_BUFF_SIZE
 #define ASYNC_RESPONCE_BUFF_SIZE CONFIG_LWIP_TCP_MSS * 2
+#endif
 // It is possible to restore these defines, but one can use _min and _max instead. Or std::min, std::max.
 
 class AsyncBasicResponse : public AsyncWebServerResponse {

@@ -12,7 +12,6 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     configTab: 'modbus',
     currentUser: { name: '', role: '', canManageFs: false },
     sidebarCollapsed: false,
-    _logAutoRefreshTimer: null,  // 日志自动刷新定时器
 
     // SSE 连接管理（属性由 state-sse.js 注册）
 
@@ -22,13 +21,13 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         'protocol-page': 'protocol',
         'network-page': 'network',
         'device-page': 'device',
-        'data-page': 'admin',
-        'users-page': 'admin',
-        'roles-page': 'admin',
-        'logs-page': 'admin',
         'peripheral-page': 'peripheral',
         'periph-exec-page': 'peripheral',
         'device-control-page': 'peripheral',
+        'logs-page': 'logs',
+        'data-page': 'admin',
+        'users-page': 'admin',
+        'roles-page': 'admin',
         'rule-script-page': 'rule-script'
     },
 
@@ -162,7 +161,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             if (!form) return;
     
             // 仅处理协议页面的表单
-            const protocolForms = ['mqtt-form', 'modbus-rtu-form', 'modbus-tcp-form', 'http-form', 'coap-form', 'tcp-form'];
+            const protocolForms = ['mqtt-form', 'modbus-rtu-form'];
             if (protocolForms.includes(form.id)) {
                 e.preventDefault();
                 if (typeof self.saveProtocolConfig === 'function') {
@@ -183,12 +182,6 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         });
     },
 
-    // 触发 OTA 文件选择
-    triggerOtaFileSelect() {
-        const fileInput = document.getElementById('ota-file');
-        if (fileInput) fileInput.click();
-    },
-
     // ============ UI 工具方法（由 state-ui.js 注册） ============
     // getEl, showElement, hideElement, showModal, hideModal,
     // showInlineError, clearInlineError, renderEmptyTableRow, toggleVisible,
@@ -205,27 +198,22 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         // 初始化时立即应用 i18n 到登录页（在登录前就需要正确显示）
         i18n.updatePageText();
 
-        // 登录页语言切换
         const loginLangSelect = document.getElementById('login-language-select');
         if (loginLangSelect) {
             loginLangSelect.value = i18n.currentLang;
             loginLangSelect.addEventListener('change', e => {
                 i18n.setLanguage(e.target.value);
-                // 同步主应用的语言选择器
                 const mainSelect = document.getElementById('language-select');
                 if (mainSelect) mainSelect.value = e.target.value;
             });
         }
 
-        // 主应用语言切换
         const langSelect = document.getElementById('language-select');
         if (langSelect) {
             langSelect.value = i18n.currentLang;
             langSelect.addEventListener('change', e => {
                 i18n.setLanguage(e.target.value);
-                // 同步登录页的语言选择器
                 if (loginLangSelect) loginLangSelect.value = e.target.value;
-                // 仅刷新当前页的动态 i18n 内容，避免额外预加载其它模块
                 this._refreshCurrentPageLocalizedContent();
             });
         }
@@ -236,47 +224,41 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             dashboard: 'dashboard',
             network: 'network',
             device: 'device-config',
-            users: 'users',
-            roles: 'roles',
             peripheral: 'peripherals',
             'periph-exec': 'periph-exec',
             protocol: 'protocol',
-            'rule-script': 'rule-script',
-            data: 'files',
+            'device-control': 'device-control',
             logs: 'logs',
-            'device-control': 'device-control'
+            data: 'files',
+            users: 'users',
+            roles: 'roles',
+            'rule-script': 'rule-script'
         };
     },
 
     _getPageLoaders() {
         return {
-            dashboard: () => { this.renderDashboard(); this.loadSystemMonitor(); },
+            dashboard: () => {
+                var self = this;
+                if (typeof this.bootDashboardPage === 'function') {
+                    this.bootDashboardPage();
+                } else {
+                    this.renderDashboard();
+                    setTimeout(function() {
+                        self.loadSystemMonitor();
+                    }, 120);
+                }
+            },
             network: () => { this.loadNetworkConfig(); },
-            device: () => { this.loadDeviceConfig(); },
-            users: () => { this.loadUsers(); },
-            roles: () => { this.loadRoles(); },
+            device: () => { this.loadDeviceConfig({ deferHardware: true }); },
             peripheral: () => { this.loadPeripherals(); },
             'periph-exec': () => { this.loadPeriphExecPage(); },
             protocol: () => { this.loadProtocolConfig('mqtt'); if (this._startMqttStatusPolling) this._startMqttStatusPolling(); },
-            'rule-script': () => { this.loadRuleScriptPage(); },
-            data: () => { if (typeof this.setupFilesEvents === 'function') { this.setupFilesEvents(); } this.loadFileTree(this._currentDir || '/'); this.loadFileSystemInfo(); },
-            logs: () => {
-                if (!this._currentLogFile) {
-                    this._currentLogFile = 'system.log';
-                }
-                const currentSpan = document.getElementById('current-log-file');
-                if (currentSpan) currentSpan.textContent = i18n.t('log-current-file-prefix') + this._currentLogFile;
-                var self = this;
-                // 延迟初始加载，让 ESP32 完成静态文件传输
-                setTimeout(function() {
-                    self.loadLogFileList();
-                    self.loadLogs();
-                    var autoRefresh = document.getElementById('log-auto-refresh');
-                    if (autoRefresh && autoRefresh.checked) {
-                        self.startLogAutoRefresh();
-                    }
-                }, 500);
-            },
+            logs: () => { this.loadLogsPage({ noCache: true }); },
+            data: () => { this.loadFileSystemInfo({ noCache: true }); this.loadFileTree('/', { noCache: true }); },
+            users: () => { this.loadUsers({ noCache: true }); },
+            roles: () => { this.loadRoles({ noCache: true }); },
+            'rule-script': () => { this.loadRuleScriptPage({ noCache: true }); },
             'device-control': () => {
                 if (typeof this.loadDeviceControlPage === 'function') {
                     this.loadDeviceControlPage();
@@ -326,7 +308,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     
 
     _getProtocolName(formId) {
-        const map = { 'modbus-rtu': 'Modbus RTU', 'modbus-tcp': 'Modbus TCP', mqtt: 'MQTT', http: 'HTTP', coap: 'CoAP' };
+        const map = { 'modbus-rtu': 'Modbus RTU', mqtt: 'MQTT' };
         for (const key of Object.keys(map)) {
             if (formId.includes(key)) return map[key];
         }
@@ -350,22 +332,15 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         
         // 切换到设备监控页面时自动加载网络状态
         if (pageId === 'dashboard-page') {
-            if (typeof this.loadNetworkStatus === 'function') this.loadNetworkStatus();
+            if (typeof this.loadNetworkStatus === 'function') this.loadNetworkStatus({ noCache: true });
         }
         // 切换到NTP时间tab时自动加载时间
         if (pageId === 'device-page' && tabId === 'dev-ntp') {
-            if (typeof this.loadDeviceTime === 'function') this.loadDeviceTime();
+            if (typeof this.loadDeviceTime === 'function') this.loadDeviceTime({ noCache: true });
         }
         // 切换到基本信息tab时自动加载硬件信息
         if (pageId === 'device-page' && tabId === 'dev-basic') {
-            if (typeof this._loadDeviceHardwareInfo === 'function') this._loadDeviceHardwareInfo();
-        }
-        // 切换到OTA升级tab时自动加载OTA状态
-        if (pageId === 'device-page' && tabId === 'dev-ota') {
-            var selfOta = this;
-            PageLoader.loadFragment('dev-ota-fragment-container', 'device-ota', function() {
-                if (typeof selfOta.loadOtaStatus === 'function') selfOta.loadOtaStatus();
-            });
+            if (typeof this._loadDeviceHardwareInfo === 'function') this._loadDeviceHardwareInfo({ noCache: true });
         }
     },
 
@@ -454,11 +429,6 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         // 模块名到页面的映射
         const pageModuleMap = this._getPageModuleMap();
         const pageLoaders = this._getPageLoaders();
-
-        if (normalizedPage !== 'logs' && this._logAutoRefreshTimer) {
-            clearInterval(this._logAutoRefreshTimer);
-            this._logAutoRefreshTimer = null;
-        }
 
         if (normalizedPage !== 'device-control' && typeof this._dcStopAllAutoRefresh === 'function') {
             this._dcStopAllAutoRefresh();

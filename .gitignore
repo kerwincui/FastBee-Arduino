@@ -7,5 +7,15 @@
 .qoderignore
 .qoder
 .cursor
+.codex
 test/
 nul
+
+# Web frontend source lives in web-src/. data/www is generated publish output.
+# Keep tracked gzip/static assets when release artifacts are intentionally updated,
+# but ignore raw generated copies and stale split-module directories.
+data/www/**/*.html
+data/www/**/*.js
+data/www/**/*.css
+data/www/js/modules/device-control/
+data/www/js/modules/protocol/

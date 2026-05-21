@@ -29,52 +29,42 @@
         _masterStatusTimer: null,
         _uartPeripherals: [],
         _mqttStatusTimer: null,
+        _modbusCtrlOffline: false,
         _protocolEventsBound: false,
 
         // ============ 事件绑定 ============
         setupProtocolEvents() {
-            if (this._protocolEventsBound) return;
-
+            var boundAny = false;
+            var bindOnce = function(el, eventName, flagName, handler) {
+                if (!el || el[flagName]) return false;
+                el.addEventListener(eventName, handler);
+                el[flagName] = true;
+                return true;
+            };
             var allDevicesBody = document.getElementById('all-devices-body');
             var modbusDevicesBody = document.getElementById('modbus-devices-body');
 
             // 如果关键表格元素尚未加载到 DOM，延迟绑定
-            if (!allDevicesBody && !modbusDevicesBody) {
+            if (false && !allDevicesBody && !modbusDevicesBody) {
                 return; // 不设置 _protocolEventsBound，下次调用时重试
             }
 
             var publishTopics = document.getElementById('mqtt-publish-topics');
-            if (publishTopics) {
-                publishTopics.addEventListener('click', (event) => this._handlePublishTopicClick(event));
-            }
+            boundAny = bindOnce(publishTopics, 'click', '__fbProtocolPublishTopicClick', (event) => this._handlePublishTopicClick(event)) || boundAny;
             var subscribeTopics = document.getElementById('mqtt-subscribe-topics');
-            if (subscribeTopics) {
-                subscribeTopics.addEventListener('click', (event) => this._handleSubscribeTopicClick(event));
-            }
+            boundAny = bindOnce(subscribeTopics, 'click', '__fbProtocolSubscribeTopicClick', (event) => this._handleSubscribeTopicClick(event)) || boundAny;
             var mappingTableBody = document.getElementById('mapping-table-body');
-            if (mappingTableBody) {
-                mappingTableBody.addEventListener('click', (event) => this._handleMappingTableClick(event));
-            }
-            if (allDevicesBody) {
-                allDevicesBody.addEventListener('click', (event) => this._handleProtocolActionClick(event));
-            }
-            if (modbusDevicesBody) {
-                modbusDevicesBody.addEventListener('click', (event) => this._handleProtocolActionClick(event));
-            }
+            boundAny = bindOnce(mappingTableBody, 'click', '__fbProtocolMappingClick', (event) => this._handleMappingTableClick(event)) || boundAny;
+            boundAny = bindOnce(allDevicesBody, 'click', '__fbProtocolActionClick', (event) => this._handleProtocolActionClick(event)) || boundAny;
+            boundAny = bindOnce(modbusDevicesBody, 'click', '__fbProtocolActionClick', (event) => this._handleProtocolActionClick(event)) || boundAny;
             var pwmGrid = document.getElementById('pwm-channel-grid');
-            if (pwmGrid) {
-                pwmGrid.addEventListener('input', (event) => this._handlePwmGridInput(event));
-                pwmGrid.addEventListener('change', (event) => this._handlePwmGridChange(event));
-            }
+            boundAny = bindOnce(pwmGrid, 'input', '__fbProtocolPwmInput', (event) => this._handlePwmGridInput(event)) || boundAny;
+            boundAny = bindOnce(pwmGrid, 'change', '__fbProtocolPwmChange', (event) => this._handlePwmGridChange(event)) || boundAny;
             var pidGrid = document.getElementById('pid-data-grid');
-            if (pidGrid) {
-                pidGrid.addEventListener('click', (event) => this._handlePidGridClick(event));
-            }
+            boundAny = bindOnce(pidGrid, 'click', '__fbProtocolPidClick', (event) => this._handlePidGridClick(event)) || boundAny;
             var coilGrid = document.getElementById('coil-status-grid');
-            if (coilGrid) {
-                coilGrid.addEventListener('click', (event) => this._handleCoilGridClick(event));
-            }
-            this._protocolEventsBound = true;
+            boundAny = bindOnce(coilGrid, 'click', '__fbProtocolCoilClick', (event) => this._handleCoilGridClick(event)) || boundAny;
+            if (boundAny) this._protocolEventsBound = true;
         },
 
         // ============ 事件处理器 ============
@@ -140,6 +130,7 @@
         },
 
         _handleCoilGridClick(event) {
+            if (typeof this._isCtrlModalOffline === 'function' && this._isCtrlModalOffline()) return;
             var card = event.target.closest('.coil-card');
             if (!card) return;
             var ch = parseInt(card.getAttribute('data-ch'), 10);
@@ -280,28 +271,10 @@
 
         // ========== UI 辅助 ==========
 
-        onHttpAuthTypeChange(type) {
-            const userGroup = document.getElementById('http-auth-user')?.closest('.fb-form-group');
-            const tokenGroup = document.getElementById('http-auth-token')?.closest('.fb-form-group');
-            if (userGroup) AppState.toggleVisible(userGroup, type === 'basic');
-            if (tokenGroup) AppState.toggleVisible(tokenGroup, type === 'basic' || type === 'bearer');
-        },
-
-        onTcpModeChange(mode) {
-            const clientConfig = document.getElementById('tcp-client-config');
-            const serverConfig = document.getElementById('tcp-server-config');
-            if (clientConfig) AppState.toggleVisible(clientConfig, mode === 'client');
-            if (serverConfig) AppState.toggleVisible(serverConfig, mode === 'server');
-        },
-
         _getProtocolName(formId) {
             var map = {
                 'modbus-rtu-form': 'Modbus RTU',
-                'modbus-tcp-form': 'Modbus TCP',
-                'mqtt-form': 'MQTT',
-                'http-form': 'HTTP',
-                'coap-form': 'CoAP',
-                'tcp-form': 'TCP'
+                'mqtt-form': 'MQTT'
             };
             return map[formId] || 'Protocol';
         }

@@ -14,6 +14,7 @@
 #endif
 #include "systems/LoggerSystem.h"
 #include "core/PeripheralManager.h"
+#include <esp_heap_caps.h>
 #include <WiFi.h>
 
 // 注意：不再使用静态 JsonDocument，因为 ArduinoJson v7 的 JsonDocument
@@ -23,9 +24,43 @@
 // 协议连接状态标志位
 #define PROTOCOL_MQTT_CONNECTED    (1 << 0)
 #define PROTOCOL_MODBUS_CONNECTED  (1 << 1)
+#if FASTBEE_ENABLE_TCP
 #define PROTOCOL_TCP_CONNECTED     (1 << 2)
+#endif
+#if FASTBEE_ENABLE_HTTP
 #define PROTOCOL_HTTP_CONNECTED    (1 << 3)
+#endif
+#if FASTBEE_ENABLE_COAP
 #define PROTOCOL_COAP_CONNECTED    (1 << 4)
+#endif
+
+namespace {
+constexpr uint32_t WEB_RESERVE_FREE_HEAP_BYTES = 18432U;
+constexpr uint32_t WEB_RESERVE_LARGEST_BLOCK_BYTES = 6144U;
+constexpr uint32_t WEB_RESERVE_FRAGMENTED_BLOCK_BYTES = 12288U;
+constexpr uint8_t WEB_RESERVE_FRAGMENTATION_PERCENT = 65U;
+constexpr unsigned long WEB_RESERVE_LOG_INTERVAL_MS = 15000UL;
+
+bool shouldSuspendBackgroundPolling(MemoryGuardLevel level,
+                                    uint32_t freeHeap,
+                                    uint32_t largestBlock,
+                                    uint8_t fragmentation) {
+    if (level >= MemoryGuardLevel::SEVERE) {
+        return true;
+    }
+
+    if (freeHeap < WEB_RESERVE_FREE_HEAP_BYTES) {
+        return true;
+    }
+
+    if (largestBlock < WEB_RESERVE_LARGEST_BLOCK_BYTES) {
+        return true;
+    }
+
+    return fragmentation >= WEB_RESERVE_FRAGMENTATION_PERCENT &&
+           largestBlock < WEB_RESERVE_FRAGMENTED_BLOCK_BYTES;
+}
+}
 
 PeriphExecScheduler::PeriphExecScheduler() = default;
 PeriphExecScheduler::~PeriphExecScheduler() = default;
@@ -124,6 +159,8 @@ uint32_t PeriphExecScheduler::getDynamicCheckPeriod(MemoryGuardLevel level) {
 
 void PeriphExecScheduler::checkTimers() {
     unsigned long now = millis();
+    static bool webReserveSuspended = false;
+    static unsigned long lastWebReserveLogAt = 0;
 
     if (!_manager) return;
 
@@ -135,6 +172,38 @@ void PeriphExecScheduler::checkTimers() {
         if (monitor) {
             currentLevel = monitor->getMemoryGuardLevel();
         }
+    }
+
+    const uint32_t freeHeap = ESP.getFreeHeap();
+    const uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    const uint8_t fragmentation = (freeHeap > 0)
+        ? static_cast<uint8_t>(100U - (largestBlock * 100U / freeHeap))
+        : 0U;
+
+    if (shouldSuspendBackgroundPolling(currentLevel, freeHeap, largestBlock, fragmentation)) {
+        if (!webReserveSuspended || (now - lastWebReserveLogAt) >= WEB_RESERVE_LOG_INTERVAL_MS) {
+            LOGGER.warningf("[PeriphExec] Background timer/poll suspended for web reserve "
+                            "(guard=%d heap=%lu largest=%lu frag=%u%%)",
+                            static_cast<int>(currentLevel),
+                            static_cast<unsigned long>(freeHeap),
+                            static_cast<unsigned long>(largestBlock),
+                            static_cast<unsigned int>(fragmentation));
+            lastWebReserveLogAt = now;
+        }
+        webReserveSuspended = true;
+        _lastMemGuardLevel = currentLevel;
+        _currentCheckPeriodMs = CHECK_PERIOD_SEVERE_MS;
+        return;
+    }
+
+    if (webReserveSuspended) {
+        LOGGER.infof("[PeriphExec] Background timer/poll resumed "
+                     "(guard=%d heap=%lu largest=%lu frag=%u%%)",
+                     static_cast<int>(currentLevel),
+                     static_cast<unsigned long>(freeHeap),
+                     static_cast<unsigned long>(largestBlock),
+                     static_cast<unsigned int>(fragmentation));
+        webReserveSuspended = false;
     }
 
     // CRITICAL: 暂停非关键轮询，直接返回
@@ -375,6 +444,7 @@ bool PeriphExecScheduler::tryReportDeviceData() {
     }
 
     // 备选：通过 TCP 上报
+#if FASTBEE_ENABLE_TCP
     if (connectedProtocols & PROTOCOL_TCP_CONNECTED) {
         auto* fw = FastBeeFramework::getInstance();
         if (fw) {
@@ -390,6 +460,9 @@ bool PeriphExecScheduler::tryReportDeviceData() {
     }
 
     // 备选：通过 HTTP POST 上报
+#endif
+
+#if FASTBEE_ENABLE_HTTP
     if (connectedProtocols & PROTOCOL_HTTP_CONNECTED) {
         auto* fw = FastBeeFramework::getInstance();
         if (fw) {
@@ -405,6 +478,9 @@ bool PeriphExecScheduler::tryReportDeviceData() {
     }
 
     // 备选：通过 CoAP 上报
+#endif
+
+#if FASTBEE_ENABLE_COAP
     if (connectedProtocols & PROTOCOL_COAP_CONNECTED) {
         auto* fw = FastBeeFramework::getInstance();
         if (fw) {
@@ -418,6 +494,8 @@ bool PeriphExecScheduler::tryReportDeviceData() {
             }
         }
     }
+
+#endif
 
     LOGGER.warning("[PeriphExec] Data report failed, no available protocol");
     return false;
@@ -742,6 +820,7 @@ bool PeriphExecScheduler::checkNetworkAndProtocolStatus(uint8_t& connectedProtoc
     }
 
     // 检查 TCP 连接状态（通过状态字符串判断）
+#if FASTBEE_ENABLE_TCP
     String tcpStatus = protocolMgr->getProtocolStatus(ProtocolType::TCP);
     if (tcpStatus.indexOf("connected") >= 0 || tcpStatus.indexOf("listening") >= 0) {
         connectedProtocols |= PROTOCOL_TCP_CONNECTED;
@@ -749,6 +828,8 @@ bool PeriphExecScheduler::checkNetworkAndProtocolStatus(uint8_t& connectedProtoc
     }
 
     // 检查 Modbus 状态（使用 bool 方法替代字符串分配）
+#endif
+
     ModbusHandler* modbus = protocolMgr->getModbusHandler();
     if (modbus && modbus->isRunning()) {
         connectedProtocols |= PROTOCOL_MODBUS_CONNECTED;
@@ -756,6 +837,7 @@ bool PeriphExecScheduler::checkNetworkAndProtocolStatus(uint8_t& connectedProtoc
     }
 
     // 检查 HTTP 状态（通过状态字符串判断）
+#if FASTBEE_ENABLE_HTTP
     String httpStatus = protocolMgr->getProtocolStatus(ProtocolType::HTTP);
     if (httpStatus.indexOf("initialized") >= 0 || httpStatus.indexOf("ready") >= 0) {
         connectedProtocols |= PROTOCOL_HTTP_CONNECTED;
@@ -763,11 +845,16 @@ bool PeriphExecScheduler::checkNetworkAndProtocolStatus(uint8_t& connectedProtoc
     }
 
     // 检查 CoAP 状态
+#endif
+
+#if FASTBEE_ENABLE_COAP
     String coapStatus = protocolMgr->getProtocolStatus(ProtocolType::COAP);
     if (coapStatus.indexOf("initialized") >= 0 || coapStatus.indexOf("ready") >= 0) {
         connectedProtocols |= PROTOCOL_COAP_CONNECTED;
         hasConnectedProtocol = true;
     }
+
+#endif
 
     return hasConnectedProtocol;
 }

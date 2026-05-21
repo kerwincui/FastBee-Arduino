@@ -26,6 +26,7 @@
 #include <core/ConfigDefines.h>
 #include <LittleFS.h>
 #include <HTTPClient.h>
+#include <esp_heap_caps.h>
 #include <mbedtls/aes.h>
 #include <core/FeatureFlags.h>
 #if FASTBEE_ENABLE_PERIPH_EXEC
@@ -299,9 +300,9 @@ bool MQTTClient::begin() {
         BaseType_t ret = xTaskCreate(
             reconnectTaskEntry,
             "mqtt_reconn",
-            3072,           // 栈：reconnect() 实测峰值 ~2KB，3KB 足够（节省 1KB heap）
-            this,           // 参数
-            1,              // 优先级：与 loopTask 同级
+            SIMPLE_TASK_STACK,
+            this,
+            1,
             &_reconnectTaskHandle
         );
         if (ret != pdPASS) {
@@ -1424,8 +1425,8 @@ void MQTTClient::reconnectTaskEntry(void* param) {
     MQTTClient* client = (MQTTClient*)param;
     // 启动期延迟 30s 才允许首次重连：让 Web 路由/SSE/HealthMonitor 先稳定，
     // 避免 boot 早期 MQTT DNS+TCP 抢占内存导致 web 无法访问
-    LOG_INFO("[MQTT] Reconnect task armed, holding 30s for boot stabilization");
-    vTaskDelay(pdMS_TO_TICKS(30000));
+    LOG_INFO("[MQTT] Reconnect task armed, holding 90s for web boot stabilization");
+    vTaskDelay(pdMS_TO_TICKS(90000));
     LOG_INFO("[MQTT] Reconnect task active");
     while (true) {
         if (client->_reconnectPending && !client->_reconnectRunning) {
@@ -1461,8 +1462,12 @@ void MQTTClient::doReconnect() {
     }
 
     // 内存保护：堆内存严重不足时跳过重连，避免加剧内存压力
-    if (ESP.getFreeHeap() < 30720) {
-        LOG_WARNING("[MQTT] Heap too low for reconnect, skipping");
+    uint32_t reconnectFreeHeap = ESP.getFreeHeap();
+    uint32_t reconnectLargestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    if (reconnectFreeHeap < 49152 || reconnectLargestBlock < 12288) {
+        LOG_WARNINGF("[MQTT] Memory too low for reconnect, skipping (heap=%lu largest=%lu)",
+                     (unsigned long)reconnectFreeHeap,
+                     (unsigned long)reconnectLargestBlock);
         _reconnectRunning = false;
         return;
     }

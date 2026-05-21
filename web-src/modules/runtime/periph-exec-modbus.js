@@ -297,6 +297,25 @@
             return sources;
         },
 
+        _getPeriphExecLocalSensorSources() {
+            var configuredSources = this._peSensorSources || [];
+            var sources = [];
+            var seen = {};
+
+            function addSource(id, label) {
+                if (!id || seen[id]) return;
+                seen[id] = true;
+                sources.push({ id: id, label: label });
+            }
+
+            configuredSources.forEach(function(src) {
+                if (!src || !src.id) return;
+                addSource(String(src.id), src.label || src.id);
+            });
+
+            return sources;
+        },
+
         // ============ Sensor periph select ============
 
         _populateSensorPeriphSelect(blockEl, category, selectedValue) {
@@ -428,7 +447,6 @@
             var actionTypeGroup = block.querySelector('.pe-action-type-group');
             var actionValueGroup = block.querySelector('.pe-action-value-group');
             var recvGroup = block.querySelector('.pe-use-received-value-group');
-            var scriptGroup = block.querySelector('.pe-script-group');
             var pollTasksGroup = block.querySelector('.pe-poll-tasks-group');
             var sensorGroup = block.querySelector('.pe-sensor-group');
             var ctrlPanel = block.querySelector('.pe-modbus-ctrl-panel');
@@ -437,7 +455,6 @@
                 this._setSectionVisible(actionTypeGroup, false);
                 this._setSectionVisible(actionValueGroup, false);
                 this._setSectionVisible(recvGroup, false);
-                this._setSectionVisible(scriptGroup, false);
                 this._setSectionVisible(pollTasksGroup, false);
                 this._setSectionVisible(sensorGroup, false);
                 this._setSectionVisible(ctrlPanel, false);
@@ -445,7 +462,6 @@
                 this._setSectionVisible(actionTypeGroup, false);
                 this._setSectionVisible(actionValueGroup, false);
                 this._setSectionVisible(recvGroup, false);
-                this._setSectionVisible(scriptGroup, false);
                 this._setSectionVisible(pollTasksGroup, false);
                 this._setSectionVisible(sensorGroup, false);
                 this._showModbusCtrlPanel(ctrlPanel, periphId, '');

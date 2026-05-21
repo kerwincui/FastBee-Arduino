@@ -8,7 +8,7 @@
  *
  * Chunks (loaded sequentially via <script defer> in index.html):
  *   1. chunk-1-core-a.js        : utils + ui-components + request-governor
- *   2. chunk-2-core-b.js        : notification + page-loader + module-loader
+ *   2. chunk-2-core-b.js        : notification + page-loader + module-loader + api-preloader
  *   3. chunk-3-i18n-engine.js   : i18n-engine
  *   4. chunk-4-i18n-zh-1.js     : i18n-zh-CN quarter 1
  *   5. chunk-5-i18n-zh-2.js     : i18n-zh-CN quarter 2
@@ -17,7 +17,7 @@
  *   8. chunk-8-state-1.js       : state + state-theme + state-session
  *   9. chunk-9-state-2.js       : state-sse + state-ui + main
  *
- * i18n-en.js is NOT bundled (loaded on-demand via i18n-engine).
+ * The prod web build keeps a single zh-CN language pack.
  *
  * Usage:
  *   node scripts/build-app-bundle.js
@@ -28,11 +28,28 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const { minifyJS } = require('./minify-js');
+const { isProdWebProfile } = require('./web-profile');
 
 const ROOT_DIR = path.join(__dirname, '..');
 const JS_SRC_DIR = path.join(ROOT_DIR, 'web-src', 'js');
 const I18N_SRC_DIR = path.join(ROOT_DIR, 'web-src', 'i18n');
 const WWW_JS_DIR = path.join(ROOT_DIR, 'data', 'www', 'js');
+const CRITICAL_ZH_TRANSLATIONS = {
+    'login-title': '设备配置管理',
+    'username-label': '用户名',
+    'username-placeholder': '请输入用户名',
+    'password-label': '密码',
+    'password-placeholder': '请输入密码',
+    'remember-label': '记住密码',
+    'login-button': '登录系统',
+    'login-logging-in': '登录中...',
+    'login-logging-in-html': '<i class="fas fa-spinner fa-spin"></i> 登录中...',
+    'login-success-msg': '登录成功',
+    'login-welcome-title': '欢迎',
+    'login-fail-title': '登录失败',
+    'login-fail-msg': '用户名或密码错误',
+    'login-empty-warning': '请输入用户名和密码'
+};
 
 // Source files in dependency order (kept for backward-compat / fallback path in index.html)
 const BUNDLE_SOURCES = [
@@ -42,6 +59,7 @@ const BUNDLE_SOURCES = [
     { dir: JS_SRC_DIR, file: 'notification.js' },
     { dir: JS_SRC_DIR, file: 'page-loader.js' },
     { dir: JS_SRC_DIR, file: 'module-loader.js' },
+    { dir: JS_SRC_DIR, file: 'api-preloader.js' },
     { dir: I18N_SRC_DIR, file: 'i18n-engine.js' },
     { dir: I18N_SRC_DIR, file: 'i18n-zh-CN.js' },
     { dir: JS_SRC_DIR, file: 'state.js' },
@@ -67,7 +85,8 @@ const CHUNK_GROUPS = [
         files: [
             { dir: JS_SRC_DIR, file: 'notification.js' },
             { dir: JS_SRC_DIR, file: 'page-loader.js' },
-            { dir: JS_SRC_DIR, file: 'module-loader.js' }
+            { dir: JS_SRC_DIR, file: 'module-loader.js' },
+            { dir: JS_SRC_DIR, file: 'api-preloader.js' }
         ]
     },
     {
@@ -116,6 +135,144 @@ function readUtf8(filePath) {
     return fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
 }
 
+const PROD_I18N_DROP_PREFIXES = [
+    'dev-ota-',
+    'ota-',
+    'fs-',
+    'file-',
+    'logs-',
+    'log-',
+    'users-',
+    'user-',
+    'roles-',
+    'role-',
+    'perm-',
+    'rule-script-',
+    'modbus-tcp-',
+    'http-',
+    'coap-',
+    'tcp-'
+];
+
+const PROD_I18N_DROP_KEYS = new Set([
+    'page-title-data',
+    'page-title-users',
+    'page-title-roles',
+    'page-title-logs',
+    'page-title-rule-script',
+    'menu-data',
+    'menu-users',
+    'menu-roles',
+    'menu-logs',
+    'menu-rule-script',
+    'data-page-title',
+    'logs-title',
+    'dashboard-total-users',
+    'dashboard-online-users',
+    'dashboard-active-sessions',
+    'dashboard-user-stats',
+    'dev-tab-ota',
+    'choose-file-btn',
+    'no-file-selected',
+    'add-user',
+    'add-user-btn-text',
+    'add-role-label',
+    'add-role-btn-text',
+    'add-user-title',
+    'add-user-confirm',
+    'add-user-success',
+    'add-user-fail',
+    'add-user-fail-msg',
+    'add-user-modal-title',
+    'edit-user-modal-title',
+    'edit-user-success',
+    'edit-user-fail',
+    'modify-user-fail-msg',
+    'confirm-delete-role',
+    'confirm-delete-role-msg',
+    'confirm-delete-role-suffix',
+    'confirm-delete-user',
+    'confirm-delete-user-msg',
+    'confirm-delete-user-suffix',
+    'confirm-enable-user',
+    'confirm-disable-user',
+    'confirm-unlock-user',
+    'user-username-col',
+    'user-role-col',
+    'user-lastlogin-col',
+    'user-status-col',
+    'user-actions-col',
+    'user-status-active',
+    'user-status-inactive',
+    'user-status-locked',
+    'user-locked-badge',
+    'user-enabled-msg',
+    'user-disabled-msg',
+    'user-unlocked-msg',
+    'user-deleted-msg',
+    'user-status-update',
+    'user-added',
+    'delete-user-title',
+    'edit-user',
+    'delete-user',
+    'disable-user',
+    'enable-user',
+    'unlock-user',
+    'no-users',
+    'no-users-data',
+    'mqtt-topic-type-ota-upgrade',
+    'mqtt-topic-type-ota-binary',
+    'mqtt-topic-http-upgrade-reply',
+    'mqtt-topic-http-upgrade-set',
+    'mqtt-topic-fetch-upgrade-reply',
+    'mqtt-topic-fetch-upgrade-set',
+    'periph-exec-action-ota',
+    'periph-exec-action-script',
+    'periph-exec-script-label',
+    'periph-exec-script-placeholder',
+    'periph-exec-script-help',
+    'event-ota_start',
+    'event-ota_success',
+    'event-ota_failed',
+    'event-tcp_enabled',
+    'event-http_enabled',
+    'event-coap_enabled',
+    'event-rule_exec_time',
+    'event-rule_exec_error',
+    'event-cat-规则',
+    'event-modbus_tcp_enabled',
+    'perm-group-user',
+    'perm-group-file',
+    'perm-user.view',
+    'perm-user.edit',
+    'perm-user.admin',
+    'perm-user.create',
+    'perm-user.delete',
+    'perm-role.view',
+    'perm-role.create',
+    'perm-role.edit',
+    'perm-role.delete',
+    'perm-fs.view',
+    'perm-fs.manage',
+    'perm-audit.view',
+    'perm-audit.clear',
+    'perm-ota.update'
+]);
+
+function shouldDropProdI18nKey(key) {
+    return PROD_I18N_DROP_KEYS.has(key)
+        || PROD_I18N_DROP_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+function filterProdI18nTranslations(all) {
+    if (!isProdWebProfile()) return all;
+    const filtered = {};
+    Object.keys(all).forEach((key) => {
+        if (!shouldDropProdI18nKey(key)) filtered[key] = all[key];
+    });
+    return filtered;
+}
+
 // Run i18n-zh-CN.js in a sandbox to extract its translation object,
 // avoiding fragile regex/line-based splitting of the source file.
 function extractZhTranslations() {
@@ -146,7 +303,7 @@ function buildI18nZhChunk(spec) {
     if (!Number.isInteger(quarter) || !Number.isInteger(total) || quarter < 1 || quarter > total) {
         throw new Error(`Invalid i18nZhSplit spec: ${JSON.stringify(spec)}`);
     }
-    const all = extractZhTranslations();
+    const all = filterProdI18nTranslations(extractZhTranslations());
     const keys = Object.keys(all);
     const N = keys.length;
     const start = Math.floor((N * (quarter - 1)) / total);
@@ -163,6 +320,18 @@ function buildI18nZhChunk(spec) {
     return `(function(){if(typeof i18n==='undefined')return;i18n.addTranslations('zh-CN',${jsonStr});${tail}})();\n`;
 }
 
+function buildSlimI18nEngine() {
+    const criticalJson = JSON.stringify(CRITICAL_ZH_TRANSLATIONS);
+    return `var __fastbeeCriticalZh=${criticalJson};var i18n=typeof i18n!=='undefined'?i18n:{currentLang:'zh-CN',translations:{'zh-CN':Object.assign({},__fastbeeCriticalZh)},t:function(key){var translated=this.translations['zh-CN']&&this.translations['zh-CN'][key];if(!translated&&typeof console!=='undefined'&&console.warn){if(window.DEBUG||location.hostname==='localhost'||location.hostname==='127.0.0.1'||location.hostname==='192.168.4.1'){console.warn('[i18n] Missing key:',key);}}return translated||key;},addTranslations:function(lang,data){if(!this.translations['zh-CN'])this.translations['zh-CN']={};Object.assign(this.translations['zh-CN'],data||{});},mergeTranslations:function(lang,data){this.addTranslations('zh-CN',data);},isLanguageLoaded:function(lang){return lang==='zh-CN'&&!!this._zhLoaded;},isLanguageLoading:function(){return false;},loadLanguagePack:function(lang,callback){this.currentLang='zh-CN';if(callback)callback(true);},setLanguage:function(){this.currentLang='zh-CN';this.updatePageText();return true;},updatePageText:function(root){var scope=root&&root.querySelectorAll?root:document;var self=this;var each=function(selector,handler){if(scope.matches&&scope.matches(selector))handler(scope);scope.querySelectorAll(selector).forEach(handler);};each('[data-i18n]',function(element){var key=element.getAttribute('data-i18n');var translation=self.t(key);if(translation&&translation!==key){if(element.tagName==='INPUT'||element.tagName==='TEXTAREA'){if(element.type==='button'||element.type==='submit'){element.value=translation;}else{element.placeholder=translation;}}else if(element.tagName==='SELECT'){return;}else if(element.tagName==='OPTION'){element.textContent=translation;var select=element.parentElement;if(select&&select.tagName==='SELECT'){var idx=select.selectedIndex;select.selectedIndex=idx;}}else{element.textContent=translation;}}});each('[data-i18n-placeholder]',function(element){var key=element.getAttribute('data-i18n-placeholder');var translation=self.t(key);if(translation&&translation!==key){element.placeholder=translation;}});each('[data-i18n-title]',function(element){var key=element.getAttribute('data-i18n-title');var translation=self.t(key);if(translation&&translation!==key){element.title=translation;}});document.documentElement.lang=this.currentLang;}};i18n.addTranslations('zh-CN',__fastbeeCriticalZh);\n`;
+}
+
+function readChunkSource(dir, file) {
+    if (isProdWebProfile() && dir === I18N_SRC_DIR && file === 'i18n-engine.js') {
+        return buildSlimI18nEngine();
+    }
+    return readUtf8(path.join(dir, file)).trim();
+}
+
 function buildChunkContent(chunk) {
     if (chunk.i18nZhSplit) {
         return buildI18nZhChunk(chunk.i18nZhSplit);
@@ -177,7 +346,7 @@ function buildChunkContent(chunk) {
         }
         return [
             `/* ===== ${file} ===== */`,
-            readUtf8(fp).trim()
+            readChunkSource(dir, file)
         ].join('\n');
     });
     return sections.join('\n\n') + '\n';
@@ -245,6 +414,8 @@ if (require.main === module) {
 module.exports = {
     buildAppBundle,
     buildAppChunks,
+    extractZhTranslations,
+    filterProdI18nTranslations,
     BUNDLE_SOURCES,
     CHUNK_GROUPS,
     OBSOLETE_OUTPUTS,

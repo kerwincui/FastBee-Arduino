@@ -105,6 +105,116 @@ static bool executeDirectOutputCommand(PeripheralManager& pm,
 
     return false;
 }
+
+#if !FASTBEE_ENABLE_RULE_SCRIPT
+static uint16_t clampLegacyDelay(long delayMs) {
+    if (delayMs <= 0) return 0;
+    if (delayMs > 10000) return 10000;
+    return static_cast<uint16_t>(delayMs);
+}
+
+static ExecAction makeDisplayAction(const String& target, uint8_t type, const String& value,
+                                    uint16_t syncDelayMs, uint8_t execMode) {
+    ExecAction action;
+    action.targetPeriphId = target;
+    action.actionType = type;
+    action.actionValue = value;
+    action.useReceivedValue = false;
+    action.syncDelayMs = syncDelayMs;
+    action.execMode = execMode;
+    return action;
+}
+
+static bool migrateLegacyDisplayScriptRule(PeriphExecRule& rule) {
+    bool changed = false;
+    std::vector<ExecAction> migratedActions;
+    migratedActions.reserve(rule.actions.size() + 1);
+
+    for (const auto& action : rule.actions) {
+        if (action.actionType != static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT)) {
+            migratedActions.push_back(action);
+            continue;
+        }
+
+        String script = action.actionValue;
+        script.replace("\r\n", "\n");
+        script.replace('\r', '\n');
+
+        std::vector<ExecAction> displayActions;
+        uint16_t pendingDelayMs = 0;
+        int start = 0;
+
+        while (start <= script.length()) {
+            int end = script.indexOf('\n', start);
+            if (end < 0) end = script.length();
+
+            String line = script.substring(start, end);
+            line.trim();
+            String upperLine = line;
+            upperLine.toUpperCase();
+
+            if (upperLine.startsWith("DELAY ")) {
+                pendingDelayMs = clampLegacyDelay(line.substring(6).toInt());
+            } else if (upperLine.startsWith("PERIPH ")) {
+                int displayIdx = upperLine.indexOf(" DISPLAY ");
+                int showIdx = upperLine.indexOf(" SHOW");
+
+                if (displayIdx > 7) {
+                    String target = line.substring(7, displayIdx);
+                    target.trim();
+                    String value = line.substring(displayIdx + 9);
+                    value.trim();
+
+                    if (!target.isEmpty() && !value.isEmpty()) {
+                        displayActions.push_back(makeDisplayAction(
+                            target,
+                            static_cast<uint8_t>(ExecActionType::ACTION_DISPLAY_NUMBER),
+                            value,
+                            pendingDelayMs,
+                            action.execMode
+                        ));
+                        pendingDelayMs = 0;
+                    }
+                } else if (showIdx > 7) {
+                    String target = line.substring(7, showIdx);
+                    target.trim();
+                    String targetLower = target;
+                    targetLower.toLowerCase();
+
+                    if (!target.isEmpty() && targetLower.indexOf("oled") >= 0) {
+                        displayActions.push_back(makeDisplayAction(
+                            target,
+                            static_cast<uint8_t>(ExecActionType::ACTION_OLED_DISPLAY),
+                            "# 环境监测\n温度:${dht_01.temperature}°C\n湿度:${dht_01.humidity}%\n状态:运行中",
+                            pendingDelayMs,
+                            action.execMode
+                        ));
+                        pendingDelayMs = 0;
+                    }
+                }
+            }
+
+            if (end >= script.length()) break;
+            start = end + 1;
+        }
+
+        if (displayActions.empty()) {
+            migratedActions.push_back(action);
+            continue;
+        }
+
+        migratedActions.insert(migratedActions.end(), displayActions.begin(), displayActions.end());
+        changed = true;
+    }
+
+    if (changed) {
+        rule.actions = migratedActions;
+        LOGGER.infof("[PeriphExec] Migrated legacy display script rule: %s", rule.id.c_str());
+    }
+
+    return changed;
+}
+#endif
 }
 
 PeriphExecManager& PeriphExecManager::getInstance() {
@@ -446,6 +556,18 @@ void PeriphExecManager::updateSensorReadCache(const String& key, const String& l
     cache.timestamp = millis();
     // 通过 SSE 推送实时传感器数据
     notifySensorDataSSE(key, label, value, unit);
+
+    if (_scheduler && !key.isEmpty()) {
+        JsonDocument doc;
+        JsonArray arr = doc.to<JsonArray>();
+        JsonObject item = arr.add<JsonObject>();
+        item["id"] = key;
+        item["value"] = value;
+
+        String payload;
+        serializeJson(doc, payload);
+        _scheduler->handlePollData("sensor_cache", payload);
+    }
 }
 
 void PeriphExecManager::notifySensorDataSSE(const String& key, const String& label, const String& value, const String& unit) {
@@ -546,6 +668,7 @@ bool PeriphExecManager::loadConfiguration() {
     }
 
     int configVersion = doc["version"] | 1;
+    bool legacyScriptMigrated = false;
     rules.clear();
     JsonArray arr = doc["rules"].as<JsonArray>();
 
@@ -667,6 +790,12 @@ bool PeriphExecManager::loadConfiguration() {
             sanitizeRuleForSafety(r);
         }
 
+#if !FASTBEE_ENABLE_RULE_SCRIPT
+        if (migrateLegacyDisplayScriptRule(r)) {
+            legacyScriptMigrated = true;
+        }
+#endif
+
         if (!r.id.isEmpty()) {
             rules[r.id] = r;
         }
@@ -678,8 +807,8 @@ bool PeriphExecManager::loadConfiguration() {
     rebuildButtonEventCache();
 
     // v1/v2 自动升级为 v3
-    if (configVersion < 3) {
-        LOGGER.info("[PeriphExec] Migrating config to v3...");
+    if (configVersion < 3 || legacyScriptMigrated) {
+        LOGGER.info("[PeriphExec] Persisting migrated config...");
         saveConfiguration();
     }
 
@@ -855,14 +984,18 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW), "静音", "蜂鸣器");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_BLINK), "闪烁鸣响", "蜂鸣器");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
+#if FASTBEE_ENABLE_RULE_SCRIPT
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+#endif
         } else if (isInputType(pType)) {
             // 输入类型外设：不支持GPIO输出动作，只支持系统功能和脚本
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
+#if FASTBEE_ENABLE_RULE_SCRIPT
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+#endif
         } else if (isOutputType(pType)) {
             // 输出类型外设：支持所有GPIO输出动作
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH), "设置高电平", "GPIO");
@@ -887,14 +1020,18 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
+#if FASTBEE_ENABLE_RULE_SCRIPT
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+#endif
         } else {
             // 其他类型外设：只支持系统功能和脚本
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
+#if FASTBEE_ENABLE_RULE_SCRIPT
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+#endif
         }
     } else {
         // 未指定外设，返回所有动作类型
@@ -907,12 +1044,16 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_RESTART), "系统重启", "系统");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_FACTORY_RESET), "恢复出厂设置", "系统");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_NTP_SYNC), "NTP时间同步", "系统");
+#if FASTBEE_ENABLE_OTA
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SYS_OTA), "OTA升级", "系统");
+#endif
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_HIGH_INVERTED), "设置高电平(反转)", "GPIO");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_LOW_INVERTED), "设置低电平(反转)", "GPIO");
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_BUZZER_BEEP), "蜂鸣器预设(beep/long/alarm/sos)", "蜂鸣器");
+#if FASTBEE_ENABLE_RULE_SCRIPT
         addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+#endif
     }
 
     String result;
@@ -1150,7 +1291,7 @@ void PeriphExecManager::executeWorkerJob(AsyncExecContext* ctx) {
 
     // 堆守卫：任务开始时检查堆内存，过低时直接放弃执行防止 abort()
     bool allOk = false;
-    if (ESP.getFreeHeap() < 20000) {
+    if (ESP.getFreeHeap() < 16384) {
         LOGGER.warningf("[PeriphExec] Heap too low (%d), skip execution: '%s'",
                         (int)ESP.getFreeHeap(), result.ruleName.c_str());
         result.status = AsyncExecStatus::FAILED;

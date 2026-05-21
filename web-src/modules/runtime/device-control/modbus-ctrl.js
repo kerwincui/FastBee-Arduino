@@ -120,7 +120,7 @@
                 cardEl.style.pointerEvents = 'none';
             }
 
-            apiPost('/api/modbus/coil/control', {
+            apiPostPriority('/api/modbus/coil/control', {
                 slaveAddress: p.slaveAddress, channel: ch, coilBase: p.coilBase,
                 action: 'toggle', mode: p.relayMode
             }).then(function(res) {
@@ -172,7 +172,7 @@
             this._dcCoilStates[devIdx] = optimistic;
             this._dcUpdateAllCoilUI(devIdx);
 
-            apiPost('/api/modbus/coil/batch', {
+            apiPostPriority('/api/modbus/coil/batch', {
                 slaveAddress: p.slaveAddress, channelCount: p.channelCount,
                 coilBase: p.coilBase, action: modbusAction, mode: p.relayMode
             }).then(function(res) {
@@ -211,7 +211,7 @@
                 mode: p.relayMode
             };
 
-            apiPost('/api/modbus/coil/delay', params).then(function(res) {
+            apiPostPriority('/api/modbus/coil/delay', params).then(function(res) {
                 if (res && res.success) {
                     window.Notification && Notification.success(
                         self._t('modbus-delay-success') + ' CH' + channel + ' ' + (delayUnits * 0.1).toFixed(1) + 's'
@@ -293,7 +293,7 @@
             if (ch < states.length) states[ch] = value;
             this._dcPwmStates[devIdx] = states;
             this._dcRerenderPwmGrid(devIdx);
-            apiPost('/api/modbus/register/write', {
+            apiPostPriority('/api/modbus/register/write', {
                 slaveAddress: p.slaveAddress,
                 registerAddress: p.regBase + ch,
                 value: value
@@ -326,7 +326,7 @@
             for (var i = 0; i < p.channelCount; i++) values.push(fillVal);
             this._dcPwmStates[devIdx] = values.slice();
             this._dcRerenderPwmGrid(devIdx);
-            apiPost('/api/modbus/register/batch-write', {
+            apiPostPriority('/api/modbus/register/batch-write', {
                 slaveAddress: p.slaveAddress,
                 startAddress: p.regBase,
                 values: JSON.stringify(values)
@@ -419,7 +419,7 @@
             if (addr === undefined) return;
             var rawValue = Math.round(parseFloat(displayValue) * p.scaleFactor);
             if (isNaN(rawValue)) return;
-            apiPost('/api/modbus/register/write', {
+            apiPostPriority('/api/modbus/register/write', {
                 slaveAddress: p.slaveAddress, registerAddress: addr, value: rawValue
             }).then(function(res) {
                 if (res && res.success) {
@@ -485,7 +485,7 @@
             this._dcCancelInit();
             var self = this;
             var p = this._dcGetMotorParams(devIdx);
-            apiPostSilent('/api/modbus/motor/control', {
+            apiPostSilentPriority('/api/modbus/motor/control', {
                 slaveAddress: p.slaveAddress, action: action
             }).then(function(res) {
                 if (res && res.success) {
@@ -521,7 +521,7 @@
             var input = document.getElementById(inputId);
             var value = parseInt(input ? input.value : 0) || 0;
             var action = param === 'speed' ? 'setSpeed' : 'setPulse';
-            apiPostSilent('/api/modbus/motor/control', {
+            apiPostSilentPriority('/api/modbus/motor/control', {
                 slaveAddress: p.slaveAddress, action: action, value: value
             }).then(function(res) {
                 if (res && res.success) {

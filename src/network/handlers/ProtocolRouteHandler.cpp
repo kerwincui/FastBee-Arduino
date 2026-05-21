@@ -17,6 +17,7 @@
 static const char* PROTOCOL_CONFIG_PATH = "/config/protocol.json";
 
 namespace {
+constexpr uint8_t PROTOCOL_CONFIG_VERSION = 2;
 constexpr uint16_t PROTOCOL_MIN_MODBUS_POLL_INTERVAL_SEC = 2;
 constexpr uint16_t PROTOCOL_MAX_MODBUS_POLL_INTERVAL_SEC = 3600;
 
@@ -25,6 +26,28 @@ T clampProtocolValue(T value, T minVal, T maxVal) {
     if (value < minVal) return minVal;
     if (value > maxVal) return maxVal;
     return value;
+}
+
+bool hasProtocolParam(AsyncWebServerRequest* request, const char* key) {
+    return request && (request->hasParam(key, true) || request->hasParam(key, false));
+}
+
+void normalizeProtocolConfig(JsonDocument& doc) {
+    if (!doc["version"].is<int>()) {
+        doc["version"] = PROTOCOL_CONFIG_VERSION;
+    }
+    if (!doc["modbusRtu"]["enabled"].is<bool>()) {
+        doc["modbusRtu"]["enabled"] = true;
+    }
+    if (!doc["modbusRtu"]["mode"].is<const char*>()) {
+        doc["modbusRtu"]["mode"] = "master";
+    }
+    if (!doc["modbusRtu"]["timeout"].is<int>()) {
+        doc["modbusRtu"]["timeout"] = 1000;
+    }
+    if (!doc["mqtt"]["enabled"].is<bool>()) {
+        doc["mqtt"]["enabled"] = true;
+    }
 }
 }
 
@@ -53,6 +76,16 @@ void ProtocolRouteHandler::setupRoutes(AsyncWebServer* server) {
         handleSaveProtocolConfig(request);
     });
 
+    server->on("/api/protocol/mqtt/config", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleSaveProtocolConfig(request);
+    });
+
+    server->on("/api/protocol/modbus-rtu/config", HTTP_POST,
+              [this](AsyncWebServerRequest* request) {
+        handleSaveProtocolConfig(request);
+    });
+
     // 委托给 ModbusRouteHandler 注册所有 /api/modbus/* 路由
 #if FASTBEE_ENABLE_MODBUS
     if (modbusHandler) {
@@ -73,6 +106,88 @@ void ProtocolRouteHandler::handleGetProtocolConfig(AsyncWebServerRequest* reques
         ctx->sendUnauthorized(request);
         return;
     }
+
+    String section = ctx->getParamValue(request, "section", "");
+    bool compact = ctx->getParamBool(request, "compact", false);
+    if (compact && (section == "mqtt" || section == "device-control" || section == "periph-exec" || section == "runtime")) {
+        if (HandlerUtils::checkLowMemory(request, 6144)) return;
+
+        JsonDocument filtered;
+        JsonDocument filter;
+        if (section == "mqtt") {
+            filter["mqtt"] = true;
+        } else if (section == "device-control") {
+            filter["modbusRtu"]["enabled"] = true;
+            filter["modbusRtu"]["master"]["devices"] = true;
+        } else if (section == "periph-exec") {
+            filter["modbusRtu"]["enabled"] = true;
+            filter["modbusRtu"]["transferType"] = true;
+
+            JsonObject taskFilter = filter["modbusRtu"]["master"]["tasks"][0].to<JsonObject>();
+            taskFilter["enabled"] = true;
+            taskFilter["name"] = true;
+            taskFilter["label"] = true;
+            taskFilter["slaveAddress"] = true;
+            taskFilter["functionCode"] = true;
+            taskFilter["startAddress"] = true;
+            taskFilter["quantity"] = true;
+            taskFilter["mappings"][0]["sensorId"] = true;
+
+            JsonObject deviceFilter = filter["modbusRtu"]["master"]["devices"][0].to<JsonObject>();
+            deviceFilter["enabled"] = true;
+            deviceFilter["name"] = true;
+            deviceFilter["sensorId"] = true;
+            deviceFilter["deviceType"] = true;
+            deviceFilter["channelCount"] = true;
+            deviceFilter["pwmResolution"] = true;
+
+#if FASTBEE_ENABLE_TCP
+            filter["modbusTcp"]["enabled"] = true;
+            JsonObject tcpTaskFilter = filter["modbusTcp"]["master"]["tasks"][0].to<JsonObject>();
+            tcpTaskFilter["enabled"] = true;
+            tcpTaskFilter["mappings"][0]["sensorId"] = true;
+#endif
+        } else {
+            filter["modbusRtu"] = true;
+#if FASTBEE_ENABLE_TCP
+            filter["modbusTcp"] = true;
+#endif
+        }
+
+        if (LittleFS.exists(PROTOCOL_CONFIG_PATH)) {
+            File f = LittleFS.open(PROTOCOL_CONFIG_PATH, "r");
+            if (f) {
+                deserializeJson(filtered, f, DeserializationOption::Filter(filter));
+                f.close();
+            }
+        }
+
+        JsonDocument doc;
+        doc["success"] = true;
+        JsonObject data = doc["data"].to<JsonObject>();
+        if (section == "mqtt") {
+            data["mqtt"].set(filtered["mqtt"]);
+        } else if (section == "device-control") {
+            data["modbusRtu"].set(filtered["modbusRtu"]);
+        } else if (section == "periph-exec") {
+            data["modbusRtu"].set(filtered["modbusRtu"]);
+#if FASTBEE_ENABLE_TCP
+            data["modbusTcp"].set(filtered["modbusTcp"]);
+#endif
+        } else {
+            data["modbusRtu"].set(filtered["modbusRtu"]);
+#if FASTBEE_ENABLE_TCP
+            data["modbusTcp"].set(filtered["modbusTcp"]);
+#endif
+        }
+        HandlerUtils::sendJsonStream(request, doc);
+        return;
+    }
+
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Protocol config", MemoryGuardLevel::SEVERE, 8)) {
+        return;
+    }
+    if (HandlerUtils::checkLowMemory(request, 12288)) return;
 
     if (LittleFS.exists(PROTOCOL_CONFIG_PATH)) {
         // 使用 chunked response 避免一次性分配大缓冲区
@@ -145,12 +260,30 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
             f.close();
         }
     }
+    normalizeProtocolConfig(doc);
+    doc["version"] = PROTOCOL_CONFIG_VERSION;
 
     #define GP(key, def) ctx->getParamValue(request, key, def)
     #define GPI(key, def) GP(key, def).toInt()
 
+    bool updateModbusRtu = hasProtocolParam(request, "modbusRtu_enabled") ||
+                           hasProtocolParam(request, "modbusRtu_peripheralId") ||
+                           hasProtocolParam(request, "modbusRtu_master_tasks") ||
+                           hasProtocolParam(request, "modbusRtu_master_devices");
+    bool updateMqtt = hasProtocolParam(request, "mqtt_enabled") ||
+                      hasProtocolParam(request, "mqtt_server") ||
+                      hasProtocolParam(request, "mqtt_publishTopics") ||
+                      hasProtocolParam(request, "mqtt_subscribeTopics");
+    bool updateModbusTcp = hasProtocolParam(request, "modbusTcp_enabled");
+    bool updateHttp = hasProtocolParam(request, "http_enabled");
+    bool updateCoap = hasProtocolParam(request, "coap_enabled");
+    bool updateTcp = hasProtocolParam(request, "tcp_enabled");
+    bool clientIdGenerated = false;
+    String clientId = doc["mqtt"]["clientId"] | "";
+
     // Modbus RTU
-    doc["modbusRtu"]["enabled"] = GP("modbusRtu_enabled", "false") == "true";
+    if (updateModbusRtu) {
+    doc["modbusRtu"]["enabled"] = GP("modbusRtu_enabled", "true") == "true";
     doc["modbusRtu"]["peripheralId"] = GP("modbusRtu_peripheralId", "");
     doc["modbusRtu"]["timeout"] = 1000; // 硬编码默认值，前端已移除此字段
     doc["modbusRtu"]["mode"] = GP("modbusRtu_mode", "master");
@@ -254,24 +387,29 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         }
     }
     } // end: masterDevicesJson.length() > 0
+    } // end: updateModbusRtu
 
+#if FASTBEE_ENABLE_TCP
     // Modbus TCP
+    if (updateModbusTcp) {
     doc["modbusTcp"]["enabled"] = GP("modbusTcp_enabled", "false") == "true";
     doc["modbusTcp"]["server"] = GP("modbusTcp_server", "192.168.1.100");
     doc["modbusTcp"]["port"] = GPI("modbusTcp_port", "502");
     doc["modbusTcp"]["slaveId"] = GPI("modbusTcp_slaveId", "1");
     doc["modbusTcp"]["timeout"] = GPI("modbusTcp_timeout", "5000");
+    }
+#endif
 
     // MQTT
+    if (updateMqtt) {
     doc["mqtt"]["enabled"] = GP("mqtt_enabled", "true") == "true";
     doc["mqtt"]["server"] = GP("mqtt_server", "iot.fastbee.cn");
     doc["mqtt"]["port"] = GPI("mqtt_port", "1883");
 
     // 读取 clientId 和 authType，如果 clientId 为空则自动生成
-    String clientId = GP("mqtt_clientId", "");
+    clientId = GP("mqtt_clientId", "");
     clientId.trim();
     int authType = GPI("mqtt_authType", "0");
-    bool clientIdGenerated = false;  // 标记是否为自动生成
 
     if (clientId.isEmpty()) {
         clientIdGenerated = true;  // 标记为自动生成
@@ -388,8 +526,11 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         defaultTopic["autoPrefix"] = false;
         defaultTopic["topicType"] = 1;
     }
+    } // end: updateMqtt
 
+#if FASTBEE_ENABLE_HTTP
     // HTTP
+    if (updateHttp) {
     doc["http"]["enabled"] = GP("http_enabled", "false") == "true";
     doc["http"]["url"] = GP("http_url", "https://api.example.com");
     doc["http"]["port"] = GPI("http_port", "80");
@@ -402,8 +543,12 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["http"]["authUser"] = GP("http_authUser", "");
     doc["http"]["authToken"] = GP("http_authToken", "");
     doc["http"]["contentType"] = GP("http_contentType", "application/json");
+    }
+#endif
 
+#if FASTBEE_ENABLE_COAP
     // CoAP
+    if (updateCoap) {
     doc["coap"]["enabled"] = GP("coap_enabled", "false") == "true";
     doc["coap"]["server"] = GP("coap_server", "coap://example.com");
     doc["coap"]["port"] = GPI("coap_port", "5683");
@@ -412,8 +557,12 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["coap"]["msgType"] = GP("coap_msgType", "CON");
     doc["coap"]["retransmit"] = GPI("coap_retransmit", "3");
     doc["coap"]["timeout"] = GPI("coap_timeout", "5000");
+    }
+#endif
 
+#if FASTBEE_ENABLE_TCP
     // TCP
+    if (updateTcp) {
     doc["tcp"]["enabled"] = GP("tcp_enabled", "false") == "true";
     doc["tcp"]["server"] = GP("tcp_server", "192.168.1.200");
     doc["tcp"]["port"] = GPI("tcp_port", "5000");
@@ -426,6 +575,8 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["tcp"]["maxClients"] = GPI("tcp_maxClients", "5");
     doc["tcp"]["idleTimeout"] = GPI("tcp_idleTimeout", "120");
     doc["tcp"]["localPort"] = GPI("tcp_localPort", "8080");
+    }
+#endif
 
     #undef GP
     #undef GPI
@@ -450,7 +601,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     bool mqttDisconnected = false;
     int mqttError = 0;
 #if FASTBEE_ENABLE_MQTT
-    if (doc["mqtt"]["enabled"].as<bool>()) {
+    if (updateMqtt && doc["mqtt"]["enabled"].as<bool>()) {
         ProtocolManager* pm = ctx->protocolManager;
         if (pm) {
             // 使用非阻塞重启：仅重载配置，由 loop 自动重连
@@ -460,7 +611,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                 mqttError = -1;  // begin() 失败
             }
         }
-    } else {
+    } else if (updateMqtt) {
         // MQTT未启用，断开现有连接
         ProtocolManager* pm = ctx->protocolManager;
         if (pm) {
@@ -473,13 +624,13 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     // 保存成功后，根据Modbus启用状态处理
     bool modbusRestarted = false;
 #if FASTBEE_ENABLE_MODBUS
-    if (doc["modbusRtu"]["enabled"].as<bool>()) {
+    if (updateModbusRtu && doc["modbusRtu"]["enabled"].as<bool>()) {
         ProtocolManager* pm = ctx->protocolManager;
         if (pm) {
             // 延迟重启：避免在 AsyncTCP 小栈任务中执行 restartModbus()
             modbusRestarted = pm->restartModbusDeferred();
         }
-    } else {
+    } else if (updateModbusRtu) {
         ProtocolManager* pm = ctx->protocolManager;
         if (pm) {
             pm->stopModbus();
@@ -498,7 +649,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     if (clientIdGenerated) {
         resp["data"]["mqttClientId"] = clientId;
     }
-    if (!mqttReconnected && doc["mqtt"]["enabled"].as<bool>()) {
+    if (updateMqtt && !mqttReconnected && doc["mqtt"]["enabled"].as<bool>()) {
         resp["data"]["mqttError"] = mqttError;
     }
     HandlerUtils::sendJsonStream(request, resp);
