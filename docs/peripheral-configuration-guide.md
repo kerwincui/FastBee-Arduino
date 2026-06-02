@@ -4,7 +4,7 @@
 
 ## 当前版本提示
 
-- 默认 `esp32`、`esp32c3`、`esp32s3` 构建为精简版，保留 UART/I2C/SPI、GPIO、传感器、蜂鸣器、OLED/LCD、TM1637、Modbus 子设备等核心外设能力。
+- 默认 `esp32`、`esp32c3`、`esp32s3` 构建为精简版，保留 UART/I2C/SPI、GPIO、传感器、OLED/LCD、TM1637、Modbus 子设备等核心外设能力。
 - 精简版默认关闭 NeoPixel/LED 屏、BLE、OTA、文件管理、日志查看、多用户/角色和 RuleScript；如需验证完整能力，请使用 `esp32s3-full`。
 - 外设配置保存到 `/config/peripherals.json`，可在 Web 的“配置导入/导出”中按“外设配置”单独备份和恢复。
 - 传感器数据要作为外设执行事件触发来源时，需要先在外设执行中配置传感器采集动作，系统会将采集结果缓存为 `ds:<外设ID>_<字段>` 数据源。
@@ -77,11 +77,11 @@
 | 39  | `CAMERA` | 专用外设 | 摄像头 | ⚠️ 配置框架就绪，驱动 TODO | 8 |
 | 40  | `ETHERNET` | 专用外设 | 以太网 | ⚠️ 配置框架就绪，驱动 TODO | 4 |
 | 41  | `PWM_SERVO` | 专用外设 | 舵机 | ✅ 已实现（LEDC） | 1 |
-| 42  | `STEPPER_MOTOR` | 专用外设 | 步进电机 | ⚠️ 配置框架就绪，驱动 TODO | 4 |
+| 42  | `STEPPER_MOTOR` | 专用外设 | 步进电机 | ✅ 已实现（ULN2003 四相半步，非阻塞 Ticker） | 4 (IN1,IN2,IN3,IN4) |
 | 43  | `ENCODER` | 专用外设 | 编码器 | ⚠️ 配置框架就绪，驱动 TODO | 2 |
 | 44  | `ONE_WIRE` | 专用外设 | 单总线 | ✅ 通过 SENSOR 驱动链路实现（DS18B20） | 1 |
 | 45  | `NEO_PIXEL` | 专用外设 | **LED 灯带 (NeoPixel)** | 🔒 默认禁用（`FASTBEE_ENABLE_LED_SCREEN=0`） | 1 |
-| 46  | `BUZZER` | 专用外设 | 蜂鸣器 | ✅ 已实现（数字输出） | 1 |
+| 46  | `RESERVED_46` | 兼容保留 | 保留位 | 🔒 旧版蜂鸣器类型占位，UI 不再展示 | 0 |
 | 47  | `SEVEN_SEGMENT_TM1637` | 专用外设 | TM1637 4 位数码管 | ✅ 已实现（`FASTBEE_ENABLE_SEVEN_SEGMENT`） | 2 (CLK,DIO) |
 | 51  | `MODBUS_DEVICE` | Modbus | Modbus 子设备 | ✅ 已实现（不占 GPIO） | 0 |
 | 60  | `DEVICE_EVENT` | 虚拟 | 设备事件发射源 | ✅ 已实现（无硬件） | 0 |
@@ -260,10 +260,9 @@
 
 通过外设执行动作 `ACTION_SENSOR_READ` 读取并缓存。需启用 `FASTBEE_ENABLE_SENSOR_DRIVER`（默认开）。
 
-### 7.4 蜂鸣器 (type=46)
+### 7.4 保留位 (type=46)
 
-- 底层按 `GPIO_DIGITAL_OUTPUT` 初始化，高电平响、低电平静音。
-- 支持规则动作 `ACTION_BUZZER_PRESET`（beep/long/alarm/sos）。
+旧版专用蜂鸣器类型已移除，`type=46` 仅作为历史编号保留，Web 不再提供新增入口。
 
 ### 7.5 NeoPixel 灯带 (type=45)
 
@@ -275,7 +274,24 @@
 
 使用 LEDC 50Hz PWM，脉宽 0.5ms~2.5ms 对应 0°~180°。
 
-### 7.7 SDIO / 摄像头 / 以太网 / 步进电机 / 编码器
+### 7.7 步进电机 (type=42)
+
+面向 28BYJ-48 + ULN2003 一类四相步进电机驱动板，`pins[0..3]` 按顺序接 ULN2003 的 `IN1, IN2, IN3, IN4`。驱动采用 8 拍半步序列，通过 `Ticker` 非阻塞输出，不会在外设执行动作里长时间阻塞 Web 服务。
+
+| 字段 | 含义 | 默认值 / 范围 |
+| --- | --- | --- |
+| `pins[0]` | IN1 | 有效 GPIO |
+| `pins[1]` | IN2 | 有效 GPIO |
+| `pins[2]` | IN3 | 有效 GPIO |
+| `pins[3]` | IN4 | 有效 GPIO |
+| `params.stepsPerRevolution` | 每圈步数 | 默认 `2048` |
+| `params.speed` | 默认转速 RPM | 默认 `8`，最大 `30` |
+
+外设执行可通过 `ACTION_CALL_PERIPHERAL` 控制该外设，支持 `forward`、`reverse`、`stop`、`faster`、`slower`、`setSpeed`、`direction` 等动作。
+
+> 安全提醒：经典 ESP32 的 GPIO9/10/11 通常被 Flash SPI 占用，固件会拒绝在当前芯片保留引脚上启用步进电机，避免误配置导致重启。GPIO 11/10/9/13 更适合 ESP32-S3；经典 ESP32 建议换成空闲 GPIO。
+
+### 7.8 SDIO / 摄像头 / 以太网 / 编码器
 
 当前仅保存配置，**底层驱动未实现**。需要使用请自行扩展 `PeripheralManager::setupHardware`。
 

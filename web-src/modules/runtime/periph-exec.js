@@ -491,10 +491,15 @@
             // 收集当前动作数据
             var existingActions = [];
             container.querySelectorAll('.periph-exec-config-item').forEach(item => {
+                var actionType = parseInt(item.querySelector('.pe-action-type')?.value || '0');
+                var actionValue = '';
+                if (actionType === 15) actionValue = item.querySelector('.pe-action-value-script')?.value || '';
+                else if (actionType === 27) actionValue = item.querySelector('.pe-action-value-oled')?.value || '';
+                else actionValue = item.querySelector('.pe-action-value')?.value || '';
                 existingActions.push({
-                    actionType: parseInt(item.querySelector('.pe-action-type')?.value || '0'),
+                    actionType: actionType,
                     targetPeriphId: item.querySelector('.pe-target-periph')?.value || '',
-                    actionValue: item.querySelector('.pe-action-value')?.value || '',
+                    actionValue: actionValue,
                     execMode: parseInt(item.querySelector('.pe-exec-mode')?.value || '0'),
                     syncDelayMs: parseInt(item.querySelector('.pe-sync-delay')?.value || '0')
                 });
@@ -830,7 +835,6 @@
                         8: i18n.t('periph-exec-action-ntp'),
                         10: i18n.t('periph-exec-action-call-periph'),
                         19: i18n.t('periph-exec-action-sensor-read'),
-                        20: i18n.t('periph-exec-action-buzzer-beep') || i18n.t('periph-exec-action-high'),
                         21: i18n.t('periph-exec-action-trigger-event'),
                         24: i18n.t('periph-exec-action-display-number'),
                         25: i18n.t('periph-exec-action-display-text'),

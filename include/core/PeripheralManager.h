@@ -210,6 +210,20 @@ public:
     void startActionTicker(const String& id, uint8_t actionMode, uint16_t paramValue);
     void stopActionTicker(const String& id);
 
+    // ULN2003/4 相步进电机控制（非阻塞半步序列）
+    struct StepperTickerData {
+        PeripheralManager* mgr;
+        String id;
+        Ticker ticker;
+        uint8_t phase;
+        int8_t direction;      // 1=正转, -1=反转, 0=停止
+        uint16_t rpm;
+        uint16_t stepsPerRev;
+        bool running;
+    };
+    bool controlStepper(const String& id, const String& action, int value = 0);
+    bool stopStepper(const String& id);
+
     // 线程安全：获取互斥量句柄（供 Ticker 回调非阻塞尝试加锁）
     SemaphoreHandle_t getMutex() const { return _mutex; }
 
@@ -229,6 +243,9 @@ private:
     // 动作定时器（T2：高频增删，走 SmallNodePool）
     std::map<String, ActionTickerData*, std::less<String>,
              FastBee::SmallNodeAllocator<std::pair<const String, ActionTickerData*>>> actionTickers;
+
+    std::map<String, StepperTickerData*, std::less<String>,
+             FastBee::SmallNodeAllocator<std::pair<const String, StepperTickerData*>>> stepperTickers;
     
     // Modbus 通信委托
     ModbusCoilWriteFunc _modbusCoilWrite = nullptr;

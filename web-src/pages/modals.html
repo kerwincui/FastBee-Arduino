@@ -118,11 +118,10 @@
                                         <option value="39">摄像头</option>
                                         <option value="40">以太网</option>
                                         <option value="41">舵机</option>
-                                        <option value="42">步进电机</option>
+                                        <option value="42" data-i18n="periph-opt-stepper">步进电机</option>
                                         <option value="43">编码器</option>
                                         <option value="44">单总线</option>
                                         <option value="45">NeoPixel</option>
-                                        <option value="46" data-i18n="periph-opt-buzzer">蜂鸣器</option>
                                         <option value="47" data-i18n="periph-opt-seven-segment">TM1637 数码管</option>
                                         <option value="60" data-i18n="peripheral-type-device-event">设备事件</option>
                                     </optgroup>
@@ -308,6 +307,26 @@
                                     </div>
                                     <div class="fb-form-group">
                                         <small data-i18n="segment-pin-hint">引脚顺序：引脚1=CLK, 引脚2=DIO</small>
+                                    </div>
+                                </div>
+
+                                <!-- 步进电机参数 -->
+                                <div id="stepper-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10" data-i18n="stepper-params-title">步进电机参数</h4>
+                                    <div class="fb-form-group">
+                                        <label for="stepper-steps-per-rev" data-i18n="stepper-steps-label">每圈步数</label>
+                                        <input type="number" id="stepper-steps-per-rev" class="" value="2048"
+                                            min="1" max="4096">
+                                        <small data-i18n="stepper-steps-help">28BYJ-48 + ULN2003 常用 2048 半步/圈</small>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label for="stepper-speed" data-i18n="stepper-speed-label">默认转速 (RPM)</label>
+                                        <input type="number" id="stepper-speed" class="" value="8"
+                                            min="1" max="30">
+                                        <small data-i18n="stepper-speed-help">建议 1-15 RPM，过高容易丢步或发热</small>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <small data-i18n="stepper-pin-hint">引脚顺序：IN1, IN2, IN3, IN4；ULN2003 示例为 11,10,9,13</small>
                                     </div>
                                 </div>
                             </div>

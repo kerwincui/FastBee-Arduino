@@ -1,5 +1,5 @@
 #include "core/FeatureFlags.h"
-#if FASTBEE_ENABLE_RULE_SCRIPT
+#if FASTBEE_ENABLE_COMMAND_SCRIPT
 
 #include "core/ScriptEngine.h"
 #include "core/PeripheralManager.h"
@@ -519,4 +519,4 @@ String ScriptEngine::processRandomExpressions(const String& input) {
 
     return result;
 }
-#endif // FASTBEE_ENABLE_RULE_SCRIPT
+#endif // FASTBEE_ENABLE_COMMAND_SCRIPT

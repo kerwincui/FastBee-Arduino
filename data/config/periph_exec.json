@@ -350,40 +350,6 @@
       "reportAfterExec": true
     },
     {
-      "id": "exec_3471871",
-      "name": "蜂鸣器报警",
-      "enabled": true,
-      "execMode": 0,
-      "triggers": [
-        {
-          "triggerType": 0,
-          "triggerPeriphId": "beep",
-          "operatorType": 1,
-          "compareValue": "",
-          "timerMode": 0,
-          "intervalSec": 60,
-          "timePoint": "",
-          "eventId": "",
-          "pollResponseTimeout": 1000,
-          "pollMaxRetries": 2,
-          "pollInterPollDelay": 100
-        }
-      ],
-      "actions": [
-        {
-          "targetPeriphId": "beep",
-          "actionType": 4,
-          "actionValue": "",
-          "useReceivedValue": true,
-          "syncDelayMs": 0,
-          "execMode": 0
-        }
-      ],
-      "protocolType": 0,
-      "scriptContent": "",
-      "reportAfterExec": true
-    },
-    {
       "id": "exec_502689",
       "name": "加湿器订阅打开",
       "enabled": true,
@@ -816,20 +782,20 @@
       "reportAfterExec": false
     },
     {
-      "id": "exec_dht11_temp_buzzer",
-      "name": "DHT11温度大于25打开蜂鸣器",
+      "id": "exec_stepper_button_forward",
+      "name": "步进电机-按键单击正转",
       "enabled": false,
       "execMode": 0,
       "triggers": [
         {
           "triggerType": 4,
-          "triggerPeriphId": "",
-          "operatorType": 2,
-          "compareValue": "25",
+          "triggerPeriphId": "key1",
+          "operatorType": 0,
+          "compareValue": "",
           "timerMode": 0,
           "intervalSec": 60,
           "timePoint": "",
-          "eventId": "ds:dht_01_temperature",
+          "eventId": "button_click",
           "pollResponseTimeout": 1000,
           "pollMaxRetries": 2,
           "pollInterPollDelay": 100
@@ -837,9 +803,9 @@
       ],
       "actions": [
         {
-          "targetPeriphId": "beep",
-          "actionType": 0,
-          "actionValue": "",
+          "targetPeriphId": "stepper",
+          "actionType": 10,
+          "actionValue": "{\"periphId\":\"stepper\",\"action\":\"forward\"}",
           "useReceivedValue": false,
           "syncDelayMs": 0,
           "execMode": 0
@@ -850,20 +816,20 @@
       "reportAfterExec": false
     },
     {
-      "id": "exec_dht11_temp_buzzer_off",
-      "name": "DHT11温度不高于25关闭蜂鸣器",
-      "enabled": true,
+      "id": "exec_stepper_button_reverse",
+      "name": "步进电机-按键双击反转",
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
           "triggerType": 4,
-          "triggerPeriphId": "",
-          "operatorType": 5,
-          "compareValue": "25",
+          "triggerPeriphId": "key1",
+          "operatorType": 0,
+          "compareValue": "",
           "timerMode": 0,
           "intervalSec": 60,
           "timePoint": "",
-          "eventId": "ds:dht_01_temperature",
+          "eventId": "button_double_click",
           "pollResponseTimeout": 1000,
           "pollMaxRetries": 2,
           "pollInterPollDelay": 100
@@ -871,9 +837,77 @@
       ],
       "actions": [
         {
-          "targetPeriphId": "beep",
-          "actionType": 1,
-          "actionValue": "",
+          "targetPeriphId": "stepper",
+          "actionType": 10,
+          "actionValue": "{\"periphId\":\"stepper\",\"action\":\"reverse\"}",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    },
+    {
+      "id": "exec_stepper_button_faster",
+      "name": "步进电机-长按2秒加速",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 4,
+          "triggerPeriphId": "key1",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "",
+          "eventId": "button_long_press_2s",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "stepper",
+          "actionType": 10,
+          "actionValue": "{\"periphId\":\"stepper\",\"action\":\"faster\",\"value\":\"2\"}",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    },
+    {
+      "id": "exec_stepper_button_slower",
+      "name": "步进电机-长按5秒减速",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 4,
+          "triggerPeriphId": "key1",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "",
+          "eventId": "button_long_press_5s",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "stepper",
+          "actionType": 10,
+          "actionValue": "{\"periphId\":\"stepper\",\"action\":\"slower\",\"value\":\"2\"}",
           "useReceivedValue": false,
           "syncDelayMs": 0,
           "execMode": 0

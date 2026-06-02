@@ -10,10 +10,10 @@
 
 ## 当前版本提示
 
-- 精简版默认保留外设执行能力，关闭 RuleScript 脚本引擎；脚本类动作仅建议在 `esp32s3-full` 中验证。
+- 精简版默认保留外设执行能力和轻量命令脚本，关闭完整 RuleScript 引擎。
 - 事件触发已支持本地传感器数据源，事件 ID 使用 `ds:<sourceId>` 形式，例如 `ds:dht_01_temperature`。
 - “本地传感器”下拉只显示已经在外设执行规则中通过传感器采集动作配置过的数据源；未配置采集动作时不会显示无效传感器来源。
-- 默认配置中包含两条 DHT11 温度联动示例：温度大于 25 打开蜂鸣器的规则默认禁用，仅用于测试；温度不高于 25 关闭蜂鸣器的规则默认启用。
+- 默认配置不再内置专用蜂鸣器外设或蜂鸣器预设动作；`actionType=20` 作为历史保留位。
 - 显示屏动作在 Web 界面中按“显示屏”类别合并展示，保留“显示数字、显示文本、数码管清屏、OLED 自定义显示”四类动作，便于用户选择。
 - 配置备份和迁移建议使用“设备配置 > 高级配置 > 配置导入/导出”，可按“外设执行”单独导入导出 `periph_exec.json`。
 
@@ -33,7 +33,7 @@
   - [4.3 系统管理类动作（6/7/8/9）](#43-系统管理类动作6789)
   - [4.4 调用 / 脚本类动作（10/15）](#44-调用--脚本类动作1015)
   - [4.5 Modbus 类动作（16/17/18）](#45-modbus-类动作161718)
-  - [4.6 数据 / 声音 / 事件类动作（19/20/21）](#46-数据--声音--事件类动作192021)
+  - [4.6 数据 / 事件类动作（19/21）](#46-数据--事件类动作1921)
   - [4.7 规则控制类动作（22/23）](#47-规则控制类动作2223)
   - [4.8 显示屏类动作（24/25/26/27）](#48-显示屏类动作24252627)
   - [4.9 动作类型完整速查表](#49-动作类型完整速查表)
@@ -87,7 +87,7 @@
   ],
 
   "actions": [
-    { "targetPeriphId": "buzzer_01", "actionType": 20, "actionValue": "alarm", "execMode": 0 },
+    { "targetPeriphId": "fan_01", "actionType": 0, "execMode": 1 },
     { "targetPeriphId": "lcd_01",    "actionType": 27, "actionValue": "# 高温报警\n温度: ${dht_01.temperature}℃", "syncDelayMs": 200 }
   ],
 
@@ -296,8 +296,19 @@
 
 | actionType | 名称 | 说明 |
 |---|---|---|
-| `10` | ACTION_CALL_PERIPHERAL | 将 `actionValue` 作为命令转发给 `targetPeriphId` 外设（例如发送 UART 字符串） |
+| `10` | ACTION_CALL_PERIPHERAL | 将 `actionValue` 作为命令转发给 `targetPeriphId` 外设；步进电机支持 JSON 命令 |
 | `15` | ACTION_SCRIPT | 执行命令序列脚本，`actionValue` 为脚本内容。详见 [`script-guide.md`](./script-guide.md) |
+
+步进电机（`STEPPER_MOTOR`，type=42）建议使用 JSON 格式，避免命令参数歧义：
+
+| actionValue 示例 | 说明 |
+|---|---|
+| `{"periphId":"stepper","action":"forward"}` | 正转 |
+| `{"periphId":"stepper","action":"reverse"}` | 反转 |
+| `{"periphId":"stepper","action":"stop"}` | 停止并释放线圈 |
+| `{"periphId":"stepper","action":"faster","value":"2"}` | 加速 2 RPM |
+| `{"periphId":"stepper","action":"slower","value":"2"}` | 减速 2 RPM |
+| `{"periphId":"stepper","action":"setSpeed","value":"12"}` | 设置转速为 12 RPM |
 
 ### 4.5 Modbus 类动作（16/17/18）
 
@@ -309,12 +320,11 @@
 
 > `targetPeriphId` 必须是已配置的 Modbus 子设备（`MODBUS_DEVICE`，type=51）。
 
-### 4.6 数据 / 声音 / 事件类动作（19/20/21）
+### 4.6 数据 / 事件类动作（19/21）
 
 | actionType | 名称 | actionValue | 适用目标 |
 |---|---|---|---|
 | `19` | ACTION_SENSOR_READ | — | 传感器（DHT/DS18B20/ADC/脉冲），用于主动触发一次采集并缓存 |
-| `20` | ACTION_BUZZER_BEEP | `"beep"`/`"long"`/`"alarm"`/`"sos"`（默认 `beep`） | `BUZZER`（type=46） |
 | `21` | ACTION_TRIGGER_EVENT | 事件额外数据（可空） | `targetPeriphId` = 事件 ID（系统内置或 `DEVICE_EVENT` 外设 ID） |
 
 > `ACTION_TRIGGER_EVENT` 用于**规则间联动**：一条规则可以作为事件源唤醒其他以该事件为触发的规则。
@@ -361,7 +371,7 @@
 | 17 | ACTION_MODBUS_REG_WRITE | Modbus | `addr:val` |
 | 18 | ACTION_MODBUS_POLL | Modbus | — |
 | 19 | ACTION_SENSOR_READ | 数据 | — |
-| 20 | ACTION_BUZZER_BEEP | 声音 | `beep/long/alarm/sos` |
+| 20 | 保留位 | — | 旧版蜂鸣器预设动作已移除 |
 | 21 | ACTION_TRIGGER_EVENT | 事件 | 事件数据 |
 | 22 | ACTION_ENABLE_EXEC_RULE | 规则控制 | 规则 ID |
 | 23 | ACTION_DISABLE_EXEC_RULE | 规则控制 | 规则 ID |
@@ -489,7 +499,7 @@
 }
 ```
 
-### 7.3 温度过高告警（蜂鸣器+OLED+MQTT 事件上报）
+### 7.3 温度过高告警（风扇+OLED+MQTT 事件上报）
 
 ```json
 {
@@ -500,7 +510,7 @@
     { "triggerType": 5, "triggerPeriphId": "dht_01", "operatorType": 2, "compareValue": "32", "intervalSec": 10 }
   ],
   "actions": [
-    { "targetPeriphId": "buzzer_01", "actionType": 20, "actionValue": "alarm" },
+    { "targetPeriphId": "fan_01", "actionType": 0, "execMode": 1 },
     { "targetPeriphId": "lcd_01", "actionType": 27, "actionValue": "# 高温告警\n温度: ${dht_01.temperature}°C\n请注意散热", "syncDelayMs": 200 },
     { "targetPeriphId": "device_alarm", "actionType": 21, "actionValue": "temp_high" }
   ]
@@ -535,7 +545,7 @@
     { "triggerType": 4, "eventId": "wifi_disconnected" }
   ],
   "actions": [
-    { "targetPeriphId": "buzzer_01", "actionType": 20, "actionValue": "beep" },
+    { "targetPeriphId": "status_led", "actionType": 2, "actionValue": "500" },
     { "targetPeriphId": "lcd_01", "actionType": 27, "actionValue": "# 网络异常\nWiFi 已断开\n系统将自动重连", "syncDelayMs": 300 }
   ]
 }
@@ -595,7 +605,7 @@
 
 ### 8.3 编排与时序
 
-- 多动作按数组顺序执行；用 `syncDelayMs` 做简单编排（如蜂鸣器响 200ms 后再刷屏）。
+- 多动作按数组顺序执行；用 `syncDelayMs` 做简单编排（如先打开风扇再刷新屏幕）。
 - `syncDelayMs` 最大 10000ms；需要更长等待请拆成两条规则 + 事件桥接。
 
 ### 8.4 模板使用
@@ -641,7 +651,7 @@
 ### Q5：同一个传感器怎么同时做"本地告警"和"平台上报"？
 
 两条规则：
-- 规则 A：轮询触发温度 > 阈值 → 蜂鸣器+OLED（本地告警）
+- 规则 A：轮询触发温度 > 阈值 → 风扇+OLED（本地告警）
 - 规则 B：定时触发每 60s → `ACTION_SENSOR_READ`（触发采集）+ `reportAfterExec=true`（上报 MQTT）
 
 或一条规则的动作数组里串联：采集 → 告警 → 上报，启用 `reportAfterExec`。

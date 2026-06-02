@@ -934,9 +934,9 @@ LOG 环境数据上报完成
 # 异常报警联动
 LOG 检测到异常，启动报警
 PERIPH alarm_led BLINK 200
-PERIPH buzzer HIGH
+PERIPH alarm_out HIGH
 DELAY 3000
-PERIPH buzzer LOW
+PERIPH alarm_out LOW
 MQTT 0 [{"id":"alarm","value":"1"},{"id":"alarm_type","value":"temperature_high"}]
 LOG 报警状态已上报
 ```

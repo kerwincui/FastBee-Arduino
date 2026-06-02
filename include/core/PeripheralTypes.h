@@ -46,8 +46,8 @@ enum class PeripheralType {
     ENCODER,            // 编码器
     ONE_WIRE,           // 单总线
     NEO_PIXEL,          // WS2812等LED
-    BUZZER,             // 蜂鸣器（数字驱动，支持 beep/long/alarm/sos 预设节奏）
-    SEVEN_SEGMENT_TM1637, // TM1637 4位数码管（2个引脚：CLK/DIO，bit-bang 驱动）
+    RESERVED_46 = 46,   // Reserved legacy type slot
+    SEVEN_SEGMENT_TM1637 = 47, // TM1637 4位数码管（2个引脚：CLK/DIO，bit-bang 驱动）
 
     // Modbus外设 (51-55)
     MODBUS_DEVICE = 51, // Modbus子设备（继电器/PWM/PID等）
@@ -142,7 +142,7 @@ inline const char* getPeripheralTypeName(PeripheralType type) {
         case PeripheralType::ENCODER: return "Encoder";
         case PeripheralType::ONE_WIRE: return "OneWire";
         case PeripheralType::NEO_PIXEL: return "NeoPixel";
-        case PeripheralType::BUZZER: return "Buzzer";
+        case PeripheralType::RESERVED_46: return "Reserved";
         case PeripheralType::SEVEN_SEGMENT_TM1637: return "TM1637 7-Segment";
 
         // Modbus外设
@@ -174,7 +174,6 @@ inline uint8_t getPeripheralPinCount(PeripheralType type) {
         case PeripheralType::DAC:
         case PeripheralType::ONE_WIRE:
         case PeripheralType::NEO_PIXEL:
-        case PeripheralType::BUZZER:
             return 1;
             
         // 双引脚
@@ -261,7 +260,6 @@ inline PeripheralType parsePeripheralType(const char* typeStr) {
     if (strcasecmp(typeStr, "ENCODER") == 0) return PeripheralType::ENCODER;
     if (strcasecmp(typeStr, "ONE_WIRE") == 0) return PeripheralType::ONE_WIRE;
     if (strcasecmp(typeStr, "NEO_PIXEL") == 0) return PeripheralType::NEO_PIXEL;
-    if (strcasecmp(typeStr, "BUZZER") == 0) return PeripheralType::BUZZER;
     if (strcasecmp(typeStr, "SEVEN_SEGMENT_TM1637") == 0 ||
         strcasecmp(typeStr, "TM1637") == 0) return PeripheralType::SEVEN_SEGMENT_TM1637;
 
@@ -302,12 +300,12 @@ inline bool isInputType(PeripheralType type) {
     return isDigitalInputType(type) || isAnalogInputType(type);
 }
 
-// 检查是否为输出类型（数字输出、PWM、DAC、蜂鸣器等）
+// 检查是否为输出类型（数字输出、PWM、DAC 等）
 inline bool isOutputType(PeripheralType type) {
     int typeVal = static_cast<int>(type);
     // GPIO_DIGITAL_OUTPUT = 12, GPIO_ANALOG_OUTPUT = 16, GPIO_PWM_OUTPUT = 17
-    // DAC = 27, BUZZER = 46（数字驱动输出）
-    return typeVal == 12 || typeVal == 16 || typeVal == 17 || typeVal == 27 || typeVal == 46;
+    // DAC = 27
+    return typeVal == 12 || typeVal == 16 || typeVal == 17 || typeVal == 27;
 }
 
 // 检查是否支持按键事件检测（仅上拉/下拉输入类型）

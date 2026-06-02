@@ -1253,7 +1253,7 @@ String ProtocolManager::collectLocalSensorData() const {
         if (!config.enabled) continue;
 
         // 实时监测仅上报输入类传感器数据，排除输出类控制外设
-        // （如 GPIO_DIGITAL_OUTPUT=12 / GPIO_ANALOG_OUTPUT=16 / GPIO_PWM_OUTPUT=17 / DAC=27 / BUZZER=46）
+        // （如 GPIO_DIGITAL_OUTPUT=12 / GPIO_ANALOG_OUTPUT=16 / GPIO_PWM_OUTPUT=17 / DAC=27）
         if (!isInputType(config.type)) continue;
 
         // 排除按键事件型外设（GPIO_DIGITAL_INPUT_PULLUP=13 / GPIO_DIGITAL_INPUT_PULLDOWN=14）

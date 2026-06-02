@@ -125,12 +125,14 @@ function transformProdConfigFile(sourcePath, normalizedRel) {
 
     if (normalizedRel === 'config/periph_exec.json') {
         const doc = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
-        const unsupportedActions = new Set([9, 15]); // OTA, command/script sequence
+        const unsupportedActions = new Set([9, 20]); // OTA, legacy reserved action
         const unsupportedProtocols = new Set([2, 3, 4, 5]); // Modbus TCP, HTTP, CoAP, TCP
         const rules = Array.isArray(doc.rules) ? doc.rules : [];
         doc.rules = rules
             .map((rule) => {
-                if (rule && rule.enabled === false) return null;
+                const ruleId = String((rule && rule.id) || '');
+                const keepDisabledTemplate = ruleId.startsWith('exec_stepper_');
+                if (rule && rule.enabled === false && !keepDisabledTemplate) return null;
                 if (unsupportedProtocols.has(Number(rule.protocolType))) return null;
                 const actions = Array.isArray(rule.actions)
                     ? rule.actions.filter((action) => !unsupportedActions.has(Number(action.actionType)))
@@ -149,6 +151,7 @@ function transformProdConfigFile(sourcePath, normalizedRel) {
         if (Array.isArray(doc.peripherals)) {
             doc.peripherals = doc.peripherals.filter((item) => {
                 if (String(item.id || '') === 'modbus_tcp') return false;
+                if (String(item.id || '') === 'stepper') return true;
                 return item.enabled !== false;
             });
         }

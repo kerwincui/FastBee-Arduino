@@ -36,7 +36,7 @@ FastBee-Arduino 默认面向 classic ESP32、ESP32-C3、ESP32-S3 提供精简版
 1. 烧录固件和 LittleFS。
 2. 首次启动后连接设备 AP，进入 Web 管理界面。
 3. 在“网络设置”配置 WiFi。
-4. 在“外设配置”添加 UART/RS485、DHT11、蜂鸣器、OLED、数码管等硬件。
+4. 在“外设配置”添加 UART/RS485、DHT11、OLED、数码管等硬件。
 5. 在“通信协议”配置 MQTT 或 Modbus RTU。
 6. 在“外设执行”配置定时、事件或传感器联动规则。
 7. 在“设备配置 > 高级配置”按类型导出配置备份。

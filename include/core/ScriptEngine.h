@@ -2,7 +2,7 @@
 #define SCRIPT_ENGINE_H
 
 #include "core/FeatureFlags.h"
-#if FASTBEE_ENABLE_RULE_SCRIPT
+#if FASTBEE_ENABLE_COMMAND_SCRIPT
 
 #include <Arduino.h>
 #include <vector>
@@ -85,6 +85,6 @@ private:
     static bool scriptDelay(uint32_t ms, unsigned long scriptStartTime);
 };
 
-#endif // FASTBEE_ENABLE_RULE_SCRIPT
+#endif // FASTBEE_ENABLE_COMMAND_SCRIPT
 
 #endif // SCRIPT_ENGINE_H

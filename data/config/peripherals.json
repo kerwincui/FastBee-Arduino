@@ -15,22 +15,6 @@
       }
     },
     {
-      "id": "beep",
-      "name": "蜂鸣器",
-      "type": 17,
-      "enabled": true,
-      "pins": [
-        4
-      ],
-      "params": {
-        "initialState": 0,
-        "pwmChannel": 0,
-        "pwmFrequency": 1000,
-        "pwmResolution": 8,
-        "defaultDuty": 0
-      }
-    },
-    {
       "id": "camera",
       "name": "摄像头接口",
       "type": 39,
@@ -570,16 +554,19 @@
     },
     {
       "id": "stepper",
-      "name": "步进电机",
+      "name": "ULN2003步进电机",
       "type": 42,
       "enabled": false,
       "pins": [
-        26,
-        25,
-        33,
-        32
+        11,
+        10,
+        9,
+        13
       ],
-      "params": {}
+      "params": {
+        "stepsPerRevolution": 2048,
+        "speed": 8
+      }
     },
     {
       "id": "swd",

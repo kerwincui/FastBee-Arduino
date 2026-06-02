@@ -279,6 +279,15 @@
 #endif
 
 /**
+ * @brief Command script action for PeriphExec ACTION_SCRIPT.
+ * This is independent from RuleScript pages/API so slim builds can keep
+ * local command scripts without restoring the full rule-script module.
+ */
+#ifndef FASTBEE_ENABLE_COMMAND_SCRIPT
+  #define FASTBEE_ENABLE_COMMAND_SCRIPT FASTBEE_ENABLE_RULE_SCRIPT
+#endif
+
+/**
  * @brief GPIO 管理
  * 默认：启用
  * 占用：约 3KB Flash

@@ -19,6 +19,69 @@
 #include <Wire.h>
 #include <SPI.h>
 
+namespace {
+constexpr uint16_t STEPPER_DEFAULT_STEPS_PER_REV = 2048;
+constexpr uint16_t STEPPER_DEFAULT_RPM = 8;
+constexpr uint16_t STEPPER_MIN_RPM = 1;
+constexpr uint16_t STEPPER_MAX_RPM = 30;
+
+uint16_t clampStepperSpeed(uint16_t rpm) {
+    if (rpm < STEPPER_MIN_RPM) return STEPPER_MIN_RPM;
+    if (rpm > STEPPER_MAX_RPM) return STEPPER_MAX_RPM;
+    return rpm;
+}
+
+uint32_t stepperIntervalMs(uint16_t rpm, uint16_t stepsPerRev) {
+    rpm = clampStepperSpeed(rpm == 0 ? STEPPER_DEFAULT_RPM : rpm);
+    if (stepsPerRev == 0) stepsPerRev = STEPPER_DEFAULT_STEPS_PER_REV;
+    uint32_t interval = 60000UL / ((uint32_t)rpm * stepsPerRev);
+    if (interval < 2) interval = 2;
+    if (interval > 1000) interval = 1000;
+    return interval;
+}
+
+void writeStepperPhase(const PeripheralConfig& config, uint8_t phase) {
+    static const uint8_t HALF_STEP_SEQ[8][4] = {
+        {1, 0, 0, 0},
+        {1, 1, 0, 0},
+        {0, 1, 0, 0},
+        {0, 1, 1, 0},
+        {0, 0, 1, 0},
+        {0, 0, 1, 1},
+        {0, 0, 0, 1},
+        {1, 0, 0, 1}
+    };
+    for (uint8_t i = 0; i < 4 && i < config.pinCount; i++) {
+        digitalWrite(config.pins[i], HALF_STEP_SEQ[phase & 0x07][i] ? HIGH : LOW);
+    }
+}
+
+void releaseStepperCoils(const PeripheralConfig& config) {
+    for (uint8_t i = 0; i < 4 && i < config.pinCount; i++) {
+        digitalWrite(config.pins[i], LOW);
+    }
+}
+
+void stepperTickerCallback(PeripheralManager::StepperTickerData* data) {
+    if (!data || !data->mgr || !data->running || data->direction == 0) return;
+    SemaphoreHandle_t mtx = data->mgr->getMutex();
+    if (!mtx || xSemaphoreTakeRecursive(mtx, 0) != pdTRUE) return;
+
+    PeripheralConfig* config = data->mgr->getPeripheral(data->id);
+    if (config && config->enabled && config->type == PeripheralType::STEPPER_MOTOR && config->pinCount >= 4) {
+        data->phase = (data->direction > 0) ? ((data->phase + 1) & 0x07) : ((data->phase + 7) & 0x07);
+        writeStepperPhase(*config, data->phase);
+        auto* state = data->mgr->getRuntimeState(data->id);
+        if (state) {
+            state->status = PeripheralStatus::PERIPHERAL_RUNNING;
+            state->lastActivity = millis();
+        }
+    }
+
+    xSemaphoreGiveRecursive(mtx);
+}
+}
+
 // 单例实现
 PeripheralManager& PeripheralManager::getInstance() {
     static PeripheralManager instance;
@@ -455,7 +518,7 @@ bool PeripheralManager::writePin(const String& peripheralId, GPIOState state) {
         return writeModbusPin(peripheralId, *config, state);
     }
     
-    if (!config->isGPIOPeripheral() && config->type != PeripheralType::BUZZER) {
+    if (!config->isGPIOPeripheral()) {
         return false;
     }
     
@@ -469,7 +532,6 @@ bool PeripheralManager::writePin(const String& peripheralId, GPIOState state) {
     
     switch (config->type) {
         case PeripheralType::GPIO_DIGITAL_OUTPUT:
-        case PeripheralType::BUZZER:
             digitalWrite(pin, physicalState == GPIOState::STATE_HIGH ? HIGH : LOW);
             break;
             
@@ -623,6 +685,10 @@ bool PeripheralManager::saveConfiguration() {
         else if (config.type == PeripheralType::DAC) {
             params["channel"] = config.params.dac.channel;
         }
+        else if (config.type == PeripheralType::STEPPER_MOTOR) {
+            params["stepsPerRevolution"] = config.params.stepper.stepsPerRevolution;
+            params["speed"] = config.params.stepper.speed;
+        }
 #if FASTBEE_ENABLE_LCD
         else if (config.type == PeripheralType::LCD) {
             params["width"]     = config.params.lcd.width;
@@ -711,6 +777,15 @@ bool PeripheralManager::loadConfiguration() {
         config.name = obj["name"] | "";
         config.type = static_cast<PeripheralType>(obj["type"] | 0);
         config.enabled = obj["enabled"] | false;
+
+        if (config.type == PeripheralType::RESERVED_46) {
+            LOG_WARNINGF("Peripheral Manager: Skipping removed peripheral type 46 for '%s'", config.id.c_str());
+            continue;
+        }
+        if (config.type == PeripheralType::STEPPER_MOTOR) {
+            config.params.stepper.stepsPerRevolution = STEPPER_DEFAULT_STEPS_PER_REV;
+            config.params.stepper.speed = STEPPER_DEFAULT_RPM;
+        }
         
         // 引脚配置
         JsonArray pins = obj["pins"].as<JsonArray>();
@@ -755,6 +830,10 @@ bool PeripheralManager::loadConfiguration() {
             }
             else if (config.type == PeripheralType::DAC) {
                 config.params.dac.channel = params["channel"] | 1;
+            }
+            else if (config.type == PeripheralType::STEPPER_MOTOR) {
+                config.params.stepper.stepsPerRevolution = params["stepsPerRevolution"] | STEPPER_DEFAULT_STEPS_PER_REV;
+                config.params.stepper.speed = clampStepperSpeed(params["speed"] | STEPPER_DEFAULT_RPM);
             }
 #if FASTBEE_ENABLE_LCD
             else if (config.type == PeripheralType::LCD) {
@@ -815,6 +894,11 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
     
     if (config.type == PeripheralType::UNCONFIGURED) {
         errorMsg = "外设类型不能为空";
+        return false;
+    }
+
+    if (config.type == PeripheralType::RESERVED_46) {
+        errorMsg = "该外设类型已移除";
         return false;
     }
     
@@ -947,6 +1031,27 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
                 return false;
             }
             break;
+
+        case PeripheralType::STEPPER_MOTOR:
+            if (config.pinCount < 4) {
+                errorMsg = "步进电机需要 4 个引脚 (IN1,IN2,IN3,IN4)";
+                return false;
+            }
+            for (uint8_t i = 0; i < 4; i++) {
+                if (isReservedPin(config.pins[i])) {
+                    errorMsg = String("GPIO") + String(config.pins[i]) + " 是当前芯片保留引脚，不能用于步进电机";
+                    return false;
+                }
+            }
+            if (config.params.stepper.stepsPerRevolution == 0) {
+                errorMsg = "步进电机每圈步数必须大于 0";
+                return false;
+            }
+            if (config.params.stepper.speed > STEPPER_MAX_RPM) {
+                errorMsg = "步进电机默认转速过高 (最大 " + String(STEPPER_MAX_RPM) + " RPM)";
+                return false;
+            }
+            break;
             
         default:
             // 其他类型暂不需要特殊验证
@@ -972,18 +1077,27 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
     if (config.isGPIOPeripheral()) {
         return setupGPIOPin(config);
     }
-        
-    // 蜂鸣器：当作数字输出初始化
-    if (config.type == PeripheralType::BUZZER) {
-        uint8_t pin = config.getPrimaryPin();
-        if (pin != 255 && isValidPin(pin)) {
-            pinMode(pin, OUTPUT);
-            digitalWrite(pin, LOW);  // 初始状态：静音
-            LOG_INFOF("Peripheral Manager: Buzzer '%s' initialized on pin %d", config.id.c_str(), pin);
+
+    if (config.type == PeripheralType::STEPPER_MOTOR) {
+        if (config.pinCount < 4) {
+            LOG_WARNINGF("Peripheral Manager: Stepper '%s' requires 4 pins (IN1-IN4)", config.id.c_str());
+            return false;
         }
+        for (uint8_t i = 0; i < 4; i++) {
+            if (isReservedPin(config.pins[i])) {
+                LOG_ERRORF("Peripheral Manager: Stepper '%s' rejects reserved GPIO%d on %s",
+                           config.id.c_str(), config.pins[i], CHIP_NAME);
+                return false;
+            }
+            pinMode(config.pins[i], OUTPUT);
+            digitalWrite(config.pins[i], LOW);
+        }
+        LOG_INFOF("Peripheral Manager: Stepper '%s' initialized IN1=%d IN2=%d IN3=%d IN4=%d speed=%d rpm steps=%d",
+                  config.id.c_str(), config.pins[0], config.pins[1], config.pins[2], config.pins[3],
+                  clampStepperSpeed(config.params.stepper.speed), config.params.stepper.stepsPerRevolution);
         return true;
     }
-
+        
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
     // TM1637 数码管：使用 CLK + DIO 两个引脚，bit-bang 初始化
     if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
@@ -1056,6 +1170,21 @@ bool PeripheralManager::teardownHardware(const PeripheralConfig& config) {
         SevenSegmentDriver::instance().release(config.id);
     }
 #endif
+
+    if (config.type == PeripheralType::STEPPER_MOTOR) {
+        stopStepper(config.id);
+        auto it = stepperTickers.find(config.id);
+        if (it != stepperTickers.end()) {
+            it->second->ticker.detach();
+            delete it->second;
+            stepperTickers.erase(it);
+        }
+        bool safeRelease = config.pinCount >= 4;
+        for (uint8_t i = 0; safeRelease && i < 4; i++) {
+            if (isReservedPin(config.pins[i])) safeRelease = false;
+        }
+        if (safeRelease) releaseStepperCoils(config);
+    }
 
     // TODO: 实现其他类型外设的硬件释放
     return true;
@@ -1217,6 +1346,121 @@ void PeripheralManager::startActionTicker(const String& id, uint8_t actionMode, 
         LOG_INFOF("Peripheral Manager: Breathe ticker started for '%s' (speed=%dms)", 
                   id.c_str(), speedMs);
     }
+}
+
+bool PeripheralManager::stopStepper(const String& id) {
+    RecursiveMutexGuard lock(_mutex);
+    auto it = stepperTickers.find(id);
+    if (it != stepperTickers.end()) {
+        it->second->ticker.detach();
+        it->second->running = false;
+        it->second->direction = 0;
+    }
+
+    PeripheralConfig* config = getPeripheral(id);
+    if (!config || config->type != PeripheralType::STEPPER_MOTOR) return false;
+    bool safeRelease = config->pinCount >= 4;
+    for (uint8_t i = 0; safeRelease && i < 4; i++) {
+        if (isReservedPin(config->pins[i])) safeRelease = false;
+    }
+    if (safeRelease) releaseStepperCoils(*config);
+    if (runtimeStates.find(id) != runtimeStates.end()) {
+        runtimeStates[id].status = PeripheralStatus::PERIPHERAL_INITIALIZED;
+        runtimeStates[id].lastActivity = millis();
+    }
+    LOG_INFOF("Peripheral Manager: Stepper '%s' stopped", id.c_str());
+    return true;
+}
+
+bool PeripheralManager::controlStepper(const String& id, const String& action, int value) {
+    RecursiveMutexGuard lock(_mutex);
+    PeripheralConfig* config = getPeripheral(id);
+    if (!config || config->type != PeripheralType::STEPPER_MOTOR) {
+        LOG_WARNINGF("Peripheral Manager: Stepper control target invalid: %s", id.c_str());
+        return false;
+    }
+    if (!config->enabled) {
+        LOG_WARNINGF("Peripheral Manager: Stepper '%s' is disabled", id.c_str());
+        return false;
+    }
+    if (config->pinCount < 4) {
+        LOG_WARNINGF("Peripheral Manager: Stepper '%s' requires 4 pins", id.c_str());
+        return false;
+    }
+
+    String cmd = action;
+    cmd.trim();
+    cmd.toLowerCase();
+    uint16_t rpm = clampStepperSpeed(config->params.stepper.speed == 0 ? STEPPER_DEFAULT_RPM : config->params.stepper.speed);
+    uint16_t steps = config->params.stepper.stepsPerRevolution == 0 ? STEPPER_DEFAULT_STEPS_PER_REV : config->params.stepper.stepsPerRevolution;
+
+    if (cmd == "stop" || cmd == "off" || cmd == "idle") {
+        return stopStepper(id);
+    }
+
+    if (cmd == "setspeed" || cmd == "speed") {
+        if (value <= 0) value = rpm;
+        config->params.stepper.speed = clampStepperSpeed((uint16_t)value);
+        rpm = config->params.stepper.speed;
+    } else if (cmd == "faster" || cmd == "accelerate" || cmd == "speedup" || cmd == "inc") {
+        uint16_t delta = value > 0 ? (uint16_t)value : 2;
+        config->params.stepper.speed = clampStepperSpeed((uint16_t)(rpm + delta));
+        rpm = config->params.stepper.speed;
+    } else if (cmd == "slower" || cmd == "decelerate" || cmd == "speeddown" || cmd == "dec") {
+        uint16_t delta = value > 0 ? (uint16_t)value : 2;
+        config->params.stepper.speed = (rpm > delta) ? clampStepperSpeed((uint16_t)(rpm - delta)) : STEPPER_MIN_RPM;
+        rpm = config->params.stepper.speed;
+    }
+
+    int8_t direction = 0;
+    if (cmd == "forward" || cmd == "cw" || cmd == "start") {
+        direction = 1;
+    } else if (cmd == "reverse" || cmd == "backward" || cmd == "ccw") {
+        direction = -1;
+    } else if (cmd == "direction") {
+        direction = (value < 0) ? -1 : 1;
+    }
+
+    auto it = stepperTickers.find(id);
+    StepperTickerData* data = (it != stepperTickers.end()) ? it->second : nullptr;
+    if (!data) {
+        if (ESP.getFreeHeap() < 4096) {
+            LOG_WARNINGF("Peripheral Manager: Not enough heap to start stepper '%s'", id.c_str());
+            return false;
+        }
+        data = new StepperTickerData();
+        data->mgr = this;
+        data->id = id;
+        data->phase = 0;
+        data->direction = 0;
+        data->rpm = rpm;
+        data->stepsPerRev = steps;
+        data->running = false;
+        stepperTickers[id] = data;
+    }
+
+    data->ticker.detach();
+    data->rpm = rpm;
+    data->stepsPerRev = steps;
+    if (direction != 0) {
+        data->direction = direction;
+        data->running = true;
+    }
+
+    if (!data->running || data->direction == 0) {
+        LOG_INFOF("Peripheral Manager: Stepper '%s' speed set to %d rpm", id.c_str(), rpm);
+        return true;
+    }
+
+    uint32_t interval = stepperIntervalMs(data->rpm, data->stepsPerRev);
+    data->ticker.attach_ms(interval, stepperTickerCallback, data);
+    if (runtimeStates.find(id) != runtimeStates.end()) {
+        runtimeStates[id].status = PeripheralStatus::PERIPHERAL_RUNNING;
+        runtimeStates[id].lastActivity = millis();
+    }
+    LOG_INFOF("Peripheral Manager: Stepper '%s' %s speed=%d rpm interval=%lums",
+              id.c_str(), data->direction > 0 ? "forward" : "reverse", data->rpm, interval);
+    return true;
 }
 
 // ========== DAC 硬件初始化 ==========

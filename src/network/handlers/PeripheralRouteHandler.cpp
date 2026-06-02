@@ -365,6 +365,9 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
     } else if (config->type == PeripheralType::DAC) {
         params["channel"] = config->params.dac.channel;
         params["defaultValue"] = config->params.dac.defaultValue;
+    } else if (config->type == PeripheralType::STEPPER_MOTOR) {
+        params["stepsPerRevolution"] = config->params.stepper.stepsPerRevolution;
+        params["speed"] = config->params.stepper.speed;
     }
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
     else if (config->type == PeripheralType::SEVEN_SEGMENT_TM1637) {
@@ -436,6 +439,9 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
     } else if (config.type == PeripheralType::DAC) {
         config.params.dac.channel = ctx->getParamInt(request, "channel", 1);
         config.params.dac.defaultValue = ctx->getParamInt(request, "defaultValue", 0);
+    } else if (config.type == PeripheralType::STEPPER_MOTOR) {
+        config.params.stepper.stepsPerRevolution = ctx->getParamInt(request, "stepsPerRevolution", 2048);
+        config.params.stepper.speed = ctx->getParamInt(request, "speed", 8);
     }
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
     else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
@@ -537,6 +543,9 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
     } else if (config.type == PeripheralType::DAC) {
         config.params.dac.channel = ctx->getParamInt(request, "channel", config.params.dac.channel);
         config.params.dac.defaultValue = ctx->getParamInt(request, "defaultValue", config.params.dac.defaultValue);
+    } else if (config.type == PeripheralType::STEPPER_MOTOR) {
+        config.params.stepper.stepsPerRevolution = ctx->getParamInt(request, "stepsPerRevolution", config.params.stepper.stepsPerRevolution ? config.params.stepper.stepsPerRevolution : 2048);
+        config.params.stepper.speed = ctx->getParamInt(request, "speed", config.params.stepper.speed ? config.params.stepper.speed : 8);
     }
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
     else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {

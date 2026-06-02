@@ -231,7 +231,7 @@ bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const Strin
     if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT)) {
         return executeScriptAction(action);
     }
-    // 调用其他外设 (actionType 12)
+    // 调用其他外设 (actionType 10)
     if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL)) {
         return executeCallPeripheralAction(action, effectiveValue);
     }
@@ -251,7 +251,7 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
     std::vector<ActionExecResult> results;
     results.reserve(rule.actions.size());
     // 仅采集类动作（SENSOR_READ / MODBUS_POLL）的结果才进入实时监测上报队列
-    // 其他动作（GPIO/PWM/BUZZER/系统指令等）的执行结果不触发实时监测上报
+    // 其他动作（GPIO/PWM/系统指令等）的执行结果不触发实时监测上报
     std::vector<ActionExecResult> reportableResults;
 
     for (const auto& action : rule.actions) {
@@ -410,53 +410,6 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
             uint16_t speed = effectiveValue.isEmpty() ? 2000 : effectiveValue.toInt();
             pm.startActionTicker(action.targetPeriphId, 2, speed);
             return true;
-        }
-
-        case ExecActionType::ACTION_BUZZER_BEEP: {
-            // 蜂鸣器预设节奏：beep/long/alarm/sos
-            // 格式为 HIGH/LOW 持续时间对（毫秒），最后一组 offMs 为 0 表示不等待
-            struct BuzzStep { uint16_t onMs; uint16_t offMs; };
-            static const BuzzStep BEEP_SEQ[]  = { {100, 0} };
-            static const BuzzStep LONG_SEQ[]  = { {1000, 0} };
-            static const BuzzStep ALARM_SEQ[] = { {120, 80}, {120, 80}, {120, 0} };
-            static const BuzzStep SOS_SEQ[]   = {
-                {100, 100}, {100, 100}, {100, 250},   // · · ·
-                {300, 100}, {300, 100}, {300, 250},   // — — —
-                {100, 100}, {100, 100}, {100, 0}      // · · ·
-            };
-
-            String pattern = effectiveValue;
-            pattern.trim();
-            pattern.toLowerCase();
-            if (pattern.isEmpty()) pattern = "beep";
-
-            const BuzzStep* seq = BEEP_SEQ;
-            size_t seqLen = sizeof(BEEP_SEQ) / sizeof(BuzzStep);
-            if (pattern == "long") {
-                seq = LONG_SEQ;
-                seqLen = sizeof(LONG_SEQ) / sizeof(BuzzStep);
-            } else if (pattern == "alarm") {
-                seq = ALARM_SEQ;
-                seqLen = sizeof(ALARM_SEQ) / sizeof(BuzzStep);
-            } else if (pattern == "sos") {
-                seq = SOS_SEQ;
-                seqLen = sizeof(SOS_SEQ) / sizeof(BuzzStep);
-            } else {
-                pattern = "beep";  // 未知模式降级为默认
-            }
-
-            LOGGER.infof("[PeriphExec] Execute BUZZER(%s) on %s",
-                         pattern.c_str(), action.targetPeriphId.c_str());
-            pm.stopActionTicker(action.targetPeriphId);
-
-            bool ok = true;
-            for (size_t i = 0; i < seqLen; i++) {
-                if (!pm.writePin(action.targetPeriphId, GPIOState::STATE_HIGH)) { ok = false; break; }
-                if (seq[i].onMs > 0) vTaskDelay(pdMS_TO_TICKS(seq[i].onMs));
-                pm.writePin(action.targetPeriphId, GPIOState::STATE_LOW);
-                if (seq[i].offMs > 0) vTaskDelay(pdMS_TO_TICKS(seq[i].offMs));
-            }
-            return ok;
         }
 
         case ExecActionType::ACTION_SET_PWM: {
@@ -1142,7 +1095,7 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
 }
 
 bool PeriphExecExecutor::executeScriptAction(const ExecAction& action) {
-#if FASTBEE_ENABLE_RULE_SCRIPT
+#if FASTBEE_ENABLE_COMMAND_SCRIPT
     if (action.actionValue.isEmpty()) {
         LOGGER.warning("[PeriphExec] Script is empty");
         return false;
@@ -1166,72 +1119,91 @@ bool PeriphExecExecutor::executeScriptAction(const ExecAction& action) {
     return ScriptEngine::execute(cmds, mqtt);
 #else
     (void)action;
-    LOGGER.warning("[PeriphExec] Script action disabled (FASTBEE_ENABLE_RULE_SCRIPT=0)");
+    LOGGER.warning("[PeriphExec] Script action disabled (FASTBEE_ENABLE_COMMAND_SCRIPT=0)");
     return false;
 #endif
 }
 
 bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, const String& effectiveValue) {
-    // 解析 actionValue 格式: {"periphId":"xxx","action":"on/off/toggle","value":"xxx"}
-    if (action.actionValue.isEmpty() || action.actionValue.charAt(0) != '{') {
-        LOGGER.warning("[PeriphExec] Call peripheral: invalid actionValue format");
-        return false;
+    // 支持两种格式:
+    //   1) actionValue JSON: {"periphId":"xxx","action":"forward","value":"2"}
+    //   2) targetPeriphId + actionValue 文本: forward / reverse / stop / faster / slower
+    String targetId = action.targetPeriphId;
+    String actionCmdStr;
+    String valueString;
+
+    if (!action.actionValue.isEmpty() && action.actionValue.charAt(0) == '{') {
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, action.actionValue);
+        if (err) {
+            LOGGER.warningf("[PeriphExec] Call peripheral: JSON parse failed: %s", err.c_str());
+            return false;
+        }
+        const char* jsonTarget = doc["periphId"] | "";
+        if (strlen(jsonTarget) > 0) targetId = jsonTarget;
+        actionCmdStr = doc["action"] | "";
+        valueString = doc["value"] | "";
+    } else {
+        actionCmdStr = effectiveValue.isEmpty() ? action.actionValue : effectiveValue;
     }
 
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, action.actionValue);
-    if (err) {
-        LOGGER.warningf("[PeriphExec] Call peripheral: JSON parse failed: %s", err.c_str());
-        return false;
-    }
-
-    const char* targetPeriphId = doc["periphId"] | "";
-    const char* actionCmd = doc["action"] | "";
-    const char* valueStr = doc["value"] | "";
-
-    if (strlen(targetPeriphId) == 0) {
+    if (targetId.isEmpty()) {
         LOGGER.warning("[PeriphExec] Call peripheral: no target periphId specified");
         return false;
     }
 
     PeripheralManager& pm = PeripheralManager::getInstance();
-    if (!pm.hasPeripheral(targetPeriphId)) {
-        LOGGER.warningf("[PeriphExec] Call peripheral: target not found: %s", targetPeriphId);
+    PeripheralConfig* targetCfg = pm.getPeripheral(targetId);
+    if (!targetCfg) {
+        LOGGER.warningf("[PeriphExec] Call peripheral: target not found: %s", targetId.c_str());
         return false;
     }
 
     LOGGER.infof("[PeriphExec] Call peripheral: %s action=%s value=%s",
-        targetPeriphId, actionCmd, valueStr);
+        targetId.c_str(), actionCmdStr.c_str(), valueString.c_str());
 
-    String cmd = String(actionCmd);
+    String cmd = actionCmdStr;
     cmd.toLowerCase();
+    String valueStr = valueString;
+
+    if (targetCfg->type == PeripheralType::STEPPER_MOTOR) {
+        int value = 0;
+        String valueLower = valueStr;
+        valueLower.toLowerCase();
+        if (cmd == "direction") {
+            value = (valueLower == "reverse" || valueLower == "backward" || valueLower == "ccw" || valueLower == "-1") ? -1 : 1;
+        } else {
+            value = valueStr.toInt();
+        }
+        return pm.controlStepper(targetId, cmd, value);
+    }
 
     if (cmd == "on" || cmd == "high" || cmd == "1") {
-        pm.stopActionTicker(targetPeriphId);
-        return pm.writePin(targetPeriphId, GPIOState::STATE_HIGH);
+        pm.stopActionTicker(targetId);
+        return pm.writePin(targetId, GPIOState::STATE_HIGH);
     } else if (cmd == "off" || cmd == "low" || cmd == "0") {
-        pm.stopActionTicker(targetPeriphId);
-        return pm.writePin(targetPeriphId, GPIOState::STATE_LOW);
+        pm.stopActionTicker(targetId);
+        return pm.writePin(targetId, GPIOState::STATE_LOW);
     } else if (cmd == "toggle") {
-        GPIOState current = pm.readPin(targetPeriphId);
+        GPIOState current = pm.readPin(targetId);
         GPIOState next = (current == GPIOState::STATE_HIGH) ? GPIOState::STATE_LOW : GPIOState::STATE_HIGH;
-        pm.stopActionTicker(targetPeriphId);
-        return pm.writePin(targetPeriphId, next);
+        pm.stopActionTicker(targetId);
+        return pm.writePin(targetId, next);
     } else if (cmd == "pwm") {
-        uint32_t duty = String(valueStr).toInt();
-        return pm.writePWM(targetPeriphId, duty);
+        uint32_t duty = valueStr.toInt();
+        return pm.writePWM(targetId, duty);
     } else if (cmd == "blink") {
-        uint16_t interval = String(valueStr).toInt();
+        uint16_t interval = valueStr.toInt();
         if (interval == 0) interval = 500;
-        pm.startActionTicker(targetPeriphId, 1, interval);
+        pm.startActionTicker(targetId, 1, interval);
         return true;
     } else if (cmd == "breathe") {
-        uint16_t speed = String(valueStr).toInt();
+        uint16_t speed = valueStr.toInt();
         if (speed == 0) speed = 2000;
-        pm.startActionTicker(targetPeriphId, 2, speed);
+        pm.startActionTicker(targetId, 2, speed);
         return true;
     } else {
-        LOGGER.warningf("[PeriphExec] Call peripheral: unknown action '%s'", actionCmd);
+        LOGGER.warningf("[PeriphExec] Call peripheral: unknown action '%s'", actionCmdStr.c_str());
         return false;
     }
 }

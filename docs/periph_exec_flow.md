@@ -5,7 +5,7 @@
 - 精简版默认启用 PeriphExec，但关闭 RuleScript；脚本相关流程只适用于完整版或定制构建。
 - 传感器采集动作会把最近一次读数写入本地缓存，并产生 `sensor_cache` 数据事件；事件触发可使用 `ds:<外设ID>_<字段>` 作为数据源，例如 `ds:dht_01_temperature`。
 - `/api/periph-exec` 会返回 `sensorSources`，前端“本地传感器”列表只展示已经由外设执行规则配置过的传感器采集来源。
-- 默认 DHT11 温度大于 25 打开蜂鸣器规则为禁用状态，仅作测试模板；温度不高于 25 关闭蜂鸣器规则为启用状态。
+- 默认配置不再内置专用蜂鸣器外设或蜂鸣器预设动作；`actionType=20` 仅作为历史保留位。
 
 ## 目录
 
@@ -107,7 +107,7 @@ PeriphExec (Peripheral Execution) 是 FastBee-Arduino 物联网设备的**规则
 | 17 | `ACTION_MODBUS_REG_WRITE` | Modbus | 寄存器写入（FC06），格式 `slave,addr,value` |
 | 18 | `ACTION_MODBUS_POLL` | Modbus | 轮询子设备采集 + 可选控制指令，JSON 或逗号列表 |
 | 19 | `ACTION_SENSOR_READ` | 采集 | JSON，采集传感器数据并上报 |
-| 20 | `ACTION_BUZZER_BEEP` | 外设 | 蜂鸣器预设节奏：`beep`（默认）/`long`/`alarm`/`sos` |
+| 20 | `ACTION_RESERVED_20` | 保留 | 旧版蜂鸣器预设动作占位 |
 | 21 | `ACTION_TRIGGER_EVENT` | 事件 | 触发设备事件，`targetPeriphId` 为事件 ID，actionValue 为额外数据 |
 | 22 | `ACTION_ENABLE_EXEC_RULE` | 规则 | 启用指定外设执行规则，`targetPeriphId` 为规则 ID |
 | 23 | `ACTION_DISABLE_EXEC_RULE` | 规则 | 禁用指定外设执行规则，`targetPeriphId` 为规则 ID |
@@ -400,7 +400,7 @@ checkTimers() 每秒执行
 | `ACTION_BREATHE` (3) | `pm.breathePeripheral(id, periodMs)` | 呼吸周期毫秒（默认 2000） |
 | `ACTION_SET_PWM` (4) | `pm.setPWMValue(id, duty)` | 占空比 0-255 |
 | `ACTION_SET_DAC` (5) | `pm.setDACValue(id, value)` | DAC 值 0-255（GPIO25/26） |
-| `ACTION_HIGH_INVERTED` (13) | 反转后 `setPeripheralState(true)` | 逻辑高对应物理低，用于低电平有效的继电器/蜂鸣器 |
+| `ACTION_HIGH_INVERTED` (13) | 反转后 `setPeripheralState(true)` | 逻辑高对应物理低，用于低电平有效的继电器等负载 |
 | `ACTION_LOW_INVERTED` (14) | 反转后 `setPeripheralState(false)` | 逻辑低对应物理高 |
 
 ### 5.2 系统动作（6-9）
@@ -422,7 +422,18 @@ checkTimers() 每秒执行
 
 #### ACTION_CALL_PERIPHERAL (10)
 
-调用其他外设的上层行为方法，`targetPeriphId` 为被调外设 ID，`actionValue` 为可选参数字符串。该动作不直接操作 GPIO，而是触发外设驱动内部定义的行为（如激活蜂鸣器预设序列、触发 LCD 重绘等）。
+调用其他外设的上层行为方法，`targetPeriphId` 为被调外设 ID，`actionValue` 为可选参数字符串或 JSON。该动作不直接操作 GPIO，而是触发外设驱动内部定义的行为（如触发 LCD 重绘、控制步进电机等）。
+
+ULN2003 步进电机（`STEPPER_MOTOR`）支持以下 JSON 命令：
+
+| actionValue | 行为 |
+|---|---|
+| `{"periphId":"stepper","action":"forward"}` | 正转 |
+| `{"periphId":"stepper","action":"reverse"}` | 反转 |
+| `{"periphId":"stepper","action":"stop"}` | 停止并释放线圈 |
+| `{"periphId":"stepper","action":"faster","value":"2"}` | 每次增加 2 RPM |
+| `{"periphId":"stepper","action":"slower","value":"2"}` | 每次降低 2 RPM |
+| `{"periphId":"stepper","action":"setSpeed","value":"12"}` | 设置为 12 RPM |
 
 ### 5.4 脚本动作（15）
 
@@ -433,7 +444,7 @@ checkTimers() 每秒执行
 ```
 GPIO 5 HIGH
 DELAY 500
-PERIPH buzzer BEEP
+PERIPH relay_1 HIGH
 MQTT 0 [{"id":"alarm","value":"1"}]
 ```
 
@@ -548,16 +559,9 @@ actionValue 格式：slave,addr,value
 
 ### 5.7 外设动作（20）
 
-#### ACTION_BUZZER_BEEP (20)
+#### ACTION_RESERVED_20 (20)
 
-触发蜂鸣器预设节奏，`targetPeriphId` 指向已配置的 BUZZER 外设，`actionValue` 指定预设模式：
-
-| 模式 | 说明 |
-|------|------|
-| `beep`（默认） | 单声短鸣 |
-| `long` | 单声长鸣 |
-| `alarm` | 连续报警声 |
-| `sos` | SOS 摩斯电码节奏 |
+历史保留位。旧版专用蜂鸣器预设动作已移除，新配置不应再使用 `actionType=20`。
 
 ### 5.8 事件与规则控制（21-23）
 
@@ -712,7 +716,7 @@ executeAllActions(rule, receivedValue)
   │   ├─ 16, 17      → executeModbusAction()      // FC05/FC06 写入
   │   ├─ 18          → executeModbusPollAction()  // 轮询+控制
   │   ├─ 19          → executeSensorReadAction()  // 传感器采集
-  │   ├─ 20          → executeBuzzerAction()      // 蜂鸣器预设节奏
+  │   ├─ 20          → reserved                   // 历史保留位
   │   ├─ 21          → triggerEvent()              // 触发设备事件
   │   ├─ 22, 23      → enable/disableRule()        // 规则启禁
   │   └─ 24-27       → executeDisplayAction()      // 数码管/OLED 显示
@@ -873,7 +877,7 @@ executeAllActions(rule, receivedValue)
   │   │   ├─ 16, 17      → executeModbusAction(action, effectiveValue, results)
   │   │   ├─ 18          → executeModbusPollAction(action, effectiveValue, results)
   │   │   ├─ 19          → executeSensorReadAction(action, effectiveValue, results)
-  │   │   ├─ 20          → executeBuzzerAction(action, effectiveValue)
+  │   │   ├─ 20          → reserved
   │   │   ├─ 21          → triggerEvent(action.targetPeriphId, effectiveValue)
   │   │   ├─ 22/23       → enableRule/disableRule(action.targetPeriphId)
   │   │   └─ 24-27       → executeDisplayAction(action, effectiveValue)
