@@ -52,7 +52,7 @@ namespace Hardware {
 // ============================================================================
 // 网络配置常量
 // ============================================================================
-namespace Network {
+namespace NetConst {
     // WiFi配置
     constexpr const char* DEFAULT_AP_SSID = "fastbee-ap";
     constexpr const char* DEFAULT_AP_PASSWORD = "fastbee123";

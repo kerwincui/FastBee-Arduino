@@ -124,7 +124,7 @@ void WebConfigManager::setRoleManager(RoleManager* roleMgr) {
     if (ctx) ctx->roleManager = roleMgr;
 }
 
-void WebConfigManager::setNetworkManager(NetworkManager* netMgr) {
+void WebConfigManager::setNetworkManager(FBNetworkManager* netMgr) {
     if (ctx) ctx->networkManager = netMgr;
 }
 

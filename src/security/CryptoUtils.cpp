@@ -74,9 +74,9 @@ CryptoResult CryptoUtils::hash(const String& data, HashAlgorithm algorithm) {
         case HashAlgorithm::MD5: {
             mbedtls_md5_context ctx;
             mbedtls_md5_init(&ctx);
-            ret = mbedtls_md5_starts_ret(&ctx);
-            if (ret == 0) ret = mbedtls_md5_update_ret(&ctx, input, inputLength);
-            if (ret == 0) ret = mbedtls_md5_finish_ret(&ctx, output);
+            ret = mbedtls_md5_starts(&ctx);
+            if (ret == 0) ret = mbedtls_md5_update(&ctx, input, inputLength);
+            if (ret == 0) ret = mbedtls_md5_finish(&ctx, output);
             mbedtls_md5_free(&ctx);
             outputLength = 16;
             break;
@@ -91,9 +91,9 @@ CryptoResult CryptoUtils::hash(const String& data, HashAlgorithm algorithm) {
         case HashAlgorithm::SHA256: {
             mbedtls_sha256_context ctx;
             mbedtls_sha256_init(&ctx);
-            ret = mbedtls_sha256_starts_ret(&ctx, 0); // 0 = SHA256
-            if (ret == 0) ret = mbedtls_sha256_update_ret(&ctx, input, inputLength);
-            if (ret == 0) ret = mbedtls_sha256_finish_ret(&ctx, output);
+            ret = mbedtls_sha256_starts(&ctx, 0); // 0 = SHA256
+            if (ret == 0) ret = mbedtls_sha256_update(&ctx, input, inputLength);
+            if (ret == 0) ret = mbedtls_sha256_finish(&ctx, output);
             mbedtls_sha256_free(&ctx);
             outputLength = 32;
             break;

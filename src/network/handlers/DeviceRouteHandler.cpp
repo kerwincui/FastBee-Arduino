@@ -49,7 +49,7 @@ void DeviceRouteHandler::setupRoutes(AsyncWebServer* server) {
         // 检查网络状态
         bool internetAvailable = false;
         if (ctx->networkManager) {
-            NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+            FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
             NetworkStatusInfo netInfo = netMgr->getStatusInfo();
             internetAvailable = netInfo.internetAvailable;
         }
@@ -86,7 +86,7 @@ void DeviceRouteHandler::setupRoutes(AsyncWebServer* server) {
         // 检查网络状态
         bool internetAvailable = false;
         if (ctx->networkManager) {
-            NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+            FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
             NetworkStatusInfo netInfo = netMgr->getStatusInfo();
             internetAvailable = netInfo.internetAvailable;
         }

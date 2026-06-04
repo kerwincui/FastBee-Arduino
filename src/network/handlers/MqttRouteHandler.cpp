@@ -22,8 +22,8 @@ static const char* MQTT_AES_IV = "wumei-smart-open";
 
 static Client* selectMqttTestClient(WebHandlerContext* ctx, WiFiClient& fallbackClient, String& errorMessage) {
     errorMessage = "";
-    NetworkManager* netMgr = (ctx && ctx->networkManager)
-                                 ? static_cast<NetworkManager*>(ctx->networkManager)
+    FBNetworkManager* netMgr = (ctx && ctx->networkManager)
+                                 ? static_cast<FBNetworkManager*>(ctx->networkManager)
                                  : nullptr;
     if (!netMgr || netMgr->getNetworkType() == NetworkType::NET_WIFI) {
         return &fallbackClient;
@@ -504,7 +504,7 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
     // 检查网络状态
     bool internetAvailable = false;
     if (ctx->networkManager) {
-        NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+        FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
         NetworkStatusInfo netInfo = netMgr->getStatusInfo();
         internetAvailable = netInfo.internetAvailable;
     }

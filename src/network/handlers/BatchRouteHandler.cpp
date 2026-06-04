@@ -181,7 +181,7 @@ bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const S
 
         out["success"] = true;
         JsonObject data = out["data"].to<JsonObject>();
-        NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+        FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
         netMgr->updateStatusInfo();
         NetworkStatusInfo info = netMgr->getStatusInfo();
         WiFiConfig cfg = netMgr->getConfig();
@@ -254,7 +254,7 @@ bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const S
 
         out["success"] = true;
         JsonObject data = out["data"].to<JsonObject>();
-        NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+        FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
         WiFiConfig cfg = netMgr->getConfig();
         NetworkStatusInfo info = netMgr->getStatusInfo();
 
@@ -338,7 +338,7 @@ bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const S
         bool internetAvailable = false;
 
         if (ctx->networkManager) {
-            NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+            FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
             NetworkStatusInfo netInfo = netMgr->getStatusInfo();
             internetAvailable = netInfo.internetAvailable;
         }

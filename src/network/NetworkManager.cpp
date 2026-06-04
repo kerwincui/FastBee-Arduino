@@ -32,7 +32,7 @@
 
 static const char* NETWORK_CONFIG_FILE = "/config/network.json";
 
-NetworkManager::NetworkManager(AsyncWebServer* webServerPtr) 
+FBNetworkManager::FBNetworkManager(AsyncWebServer* webServerPtr) 
     : webServer(webServerPtr),
       lastReconnectAttempt(0),
       lastStatusUpdate(0),
@@ -53,14 +53,14 @@ NetworkManager::NetworkManager(AsyncWebServer* webServerPtr)
     dnsManager.reset(new DNSManager());
 }
 
-NetworkManager::~NetworkManager() {
+FBNetworkManager::~FBNetworkManager() {
     disconnect();
     if (preferences.isKey("initialized")) {
         preferences.end();
     }
 }
 
-void NetworkManager::setWiFiCredentials(const String& ssid, const String& password) {
+void FBNetworkManager::setWiFiCredentials(const String& ssid, const String& password) {
     wifiConfig.staSSID = ssid;
     wifiConfig.staPassword = password;
     wifiConfig.mode = NetworkMode::NETWORK_STA;  // 强制使用 STA 模式
@@ -70,7 +70,7 @@ void NetworkManager::setWiFiCredentials(const String& ssid, const String& passwo
     LOG_INFO(buf);
 }
 
-bool NetworkManager::initialize() {
+bool FBNetworkManager::initialize() {
     if (isInitialized) {
         return true;
     }
@@ -307,7 +307,7 @@ bool NetworkManager::initialize() {
     return success;
 }
 
-void NetworkManager::disconnect() {
+void FBNetworkManager::disconnect() {
     LOG_INFO("NetworkManager: Disconnecting all network connections...");
     
     // 停止mDNS
@@ -348,7 +348,7 @@ void NetworkManager::disconnect() {
     LOG_INFO("NetworkManager: All network connections disconnected");
 }
 
-void NetworkManager::update() {
+void FBNetworkManager::update() {
     unsigned long currentTime = millis();
     static bool wasConnected = false;
     static unsigned long lastMdnsUpdate = 0;
@@ -543,7 +543,7 @@ void NetworkManager::update() {
     }
 }
 
-bool NetworkManager::loadNetworkConfig() {
+bool FBNetworkManager::loadNetworkConfig() {
     LOG_INFO("NetworkManager: Loading network configuration...");
     
     // 加载辅助函数：从文件读取配置
@@ -730,14 +730,14 @@ bool NetworkManager::loadNetworkConfig() {
         wifiConfig.maxReconnectAttempts = preferences.getUChar("max_reconnect", 5);
 
         // 域名配置
-        wifiConfig.customDomain = preferences.getString("custom_domain", Network::DEFAULT_MDNS_HOSTNAME);
+        wifiConfig.customDomain = preferences.getString("custom_domain", NetConst::DEFAULT_MDNS_HOSTNAME);
         wifiConfig.enableMDNS = preferences.getBool("enable_mdns", true);
 
         LOG_INFO("NetworkManager: Configuration loaded successfully");
     return true;
 }
 
-bool NetworkManager::saveNetworkConfig() {
+bool FBNetworkManager::saveNetworkConfig() {
     // 构建 JSON内容共用
     JsonDocument doc;
     doc["mode"] = static_cast<uint8_t>(wifiConfig.mode);
@@ -883,7 +883,7 @@ bool NetworkManager::saveNetworkConfig() {
     return true;
 }
 
-bool NetworkManager::startAPMode() {
+bool FBNetworkManager::startAPMode() {
     if (!wifiManager->startAPMode()) {
         return false;
     }
@@ -900,14 +900,14 @@ bool NetworkManager::startAPMode() {
     return true;
 }
 
-void NetworkManager::stopAPMode() {
+void FBNetworkManager::stopAPMode() {
     if (WiFi.getMode() & WIFI_AP) {
         WiFi.softAPdisconnect(true);
         LOG_INFO("NetworkManager: AP mode stopped");
     }
 }
 
-bool NetworkManager::connectToWiFi() {
+bool FBNetworkManager::connectToWiFi() {
     if (wifiConfig.staSSID.isEmpty()) {
         LOG_INFO("NetworkManager: No STA SSID configured");
         return false;
@@ -944,7 +944,7 @@ bool NetworkManager::connectToWiFi() {
     return true;
 }
 
-bool NetworkManager::connectToWiFiBlocking() {
+bool FBNetworkManager::connectToWiFiBlocking() {
     if (wifiConfig.staSSID.isEmpty()) {
         LOG_INFO("NetworkManager: No STA SSID configured, skipping STA connection");
         return false;
@@ -1024,7 +1024,7 @@ bool NetworkManager::connectToWiFiBlocking() {
     return false;
 }
 
-void NetworkManager::disconnectWiFi() {
+void FBNetworkManager::disconnectWiFi() {
     wifiManager->disconnectWiFi();
     connecting = false;
     
@@ -1035,7 +1035,7 @@ void NetworkManager::disconnectWiFi() {
     triggerEvent(NetworkStatus::DISCONNECTED, "WiFi disconnected");
 }
 
-bool NetworkManager::configureStaticIP() {
+bool FBNetworkManager::configureStaticIP() {
     // 配置 IP 管理器的静态 IP 设置
     ipManager->staticIP = wifiConfig.staticIP;
     ipManager->gateway = wifiConfig.gateway;
@@ -1044,15 +1044,15 @@ bool NetworkManager::configureStaticIP() {
     return wifiManager->configureStaticIP();
 }
 
-bool NetworkManager::configureDHCP() {
+bool FBNetworkManager::configureDHCP() {
     return wifiManager->configureDHCP();
 }
 
-bool NetworkManager::startMDNS() {
+bool FBNetworkManager::startMDNS() {
     return dnsManager->startMDNS(wifiConfig.customDomain);
 }
 
-void NetworkManager::stopMDNS() {
+void FBNetworkManager::stopMDNS() {
     dnsManager->stopMDNS();
 }
 
@@ -1060,7 +1060,7 @@ void NetworkManager::stopMDNS() {
 
 // handleWiFiEvent 方法已移至 WiFiManager 类
 
-void NetworkManager::updateStatusInfo() {
+void FBNetworkManager::updateStatusInfo() {
     // 调用 WiFi 管理器的更新方法
     wifiManager->updateStatusInfo();
     
@@ -1122,7 +1122,7 @@ void NetworkManager::updateStatusInfo() {
 
 // IP 冲突检测和故障转移方法已移至 IPManager 类
 
-void NetworkManager::attemptReconnect() {
+void FBNetworkManager::attemptReconnect() {
     // 重连次数限制：达到最大次数后切换到AP模式
     if (statusInfo.reconnectAttempts >= wifiConfig.maxReconnectAttempts) {
         LOG_WARNING("NetworkManager: Max reconnect attempts reached in STA mode, switching to AP mode");
@@ -1165,7 +1165,7 @@ void NetworkManager::attemptReconnect() {
     wifiManager->connectToWiFi();
 }
 
-void NetworkManager::triggerEvent(NetworkStatus status, const String& message) {
+void FBNetworkManager::triggerEvent(NetworkStatus status, const String& message) {
     NetworkEventCallback callback = nullptr;
     
     switch (status) {
@@ -1187,15 +1187,15 @@ void NetworkManager::triggerEvent(NetworkStatus status, const String& message) {
     }
 }
 
-WiFiConfig NetworkManager::getConfig() const {
+WiFiConfig FBNetworkManager::getConfig() const {
     return wifiConfig;
 }
 
-NetworkStatusInfo NetworkManager::getStatusInfo() const {
+NetworkStatusInfo FBNetworkManager::getStatusInfo() const {
     return statusInfo;
 }
 
-String NetworkManager::scanNetworks() {
+String FBNetworkManager::scanNetworks() {
     // 使用静态JSON文档减少内存碎片
     static char buffer[2048];
     StaticJsonDocument<2048> doc;
@@ -1218,7 +1218,7 @@ String NetworkManager::scanNetworks() {
     return String(buffer);
 }
 
-bool NetworkManager::connectToNetwork(const String& ssid, const String& password) {
+bool FBNetworkManager::connectToNetwork(const String& ssid, const String& password) {
     if (ssid.isEmpty()) {
         LOG_WARNING("NetworkManager: SSID cannot be empty");
         return false;
@@ -1234,11 +1234,11 @@ bool NetworkManager::connectToNetwork(const String& ssid, const String& password
     return wifiManager->connectToWiFi();
 }
 
-void NetworkManager::disconnectNetwork() {
+void FBNetworkManager::disconnectNetwork() {
     wifiManager->disconnectWiFi();
 }
 
-bool NetworkManager::restartNetwork() {
+bool FBNetworkManager::restartNetwork() {
     char modeBuf[64];
     snprintf(modeBuf, sizeof(modeBuf), "NetworkManager: Restarting network (mode: %d)...", (int)wifiConfig.mode);
     LOG_INFO(modeBuf);
@@ -1295,29 +1295,29 @@ bool NetworkManager::restartNetwork() {
     return ok;
 }
 
-bool NetworkManager::checkInternetConnection() {
+bool FBNetworkManager::checkInternetConnection() {
     return isNetworkConnected();
 }
 
-void NetworkManager::setConnectionCallback(NetworkEventCallback callback) {
+void FBNetworkManager::setConnectionCallback(NetworkEventCallback callback) {
     connectionCallback = callback;
 }
 
-void NetworkManager::setDisconnectionCallback(NetworkEventCallback callback) {
+void FBNetworkManager::setDisconnectionCallback(NetworkEventCallback callback) {
     disconnectionCallback = callback;
 }
 
-void NetworkManager::setIPConflictCallback(NetworkEventCallback callback) {
+void FBNetworkManager::setIPConflictCallback(NetworkEventCallback callback) {
     ipConflictCallback = callback;
 }
 
-void NetworkManager::setAutoReconnect(bool enabled) {
+void FBNetworkManager::setAutoReconnect(bool enabled) {
     autoReconnectEnabled = enabled;
     LOG_INFO("NetworkManager: Auto reconnect: " + 
              String(enabled ? "enabled" : "disabled"));
 }
 
-String NetworkManager::getConfigJSON() {
+String FBNetworkManager::getConfigJSON() {
     StaticJsonDocument<3072> doc;
     
     // 基本配置
@@ -1399,7 +1399,7 @@ String NetworkManager::getConfigJSON() {
     return result;
 }
 
-bool NetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStorage) {
+bool FBNetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStorage) {
     bool restartRequired = false;
     
     // 检查是否需要重启网络
@@ -1436,7 +1436,7 @@ bool NetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStorag
     return saveSuccess;
 }
 
-bool NetworkManager::updateConfigFromJSON(const String& jsonConfig) {
+bool FBNetworkManager::updateConfigFromJSON(const String& jsonConfig) {
     StaticJsonDocument<3072> doc;
     DeserializationError error = deserializeJson(doc, jsonConfig);
     
@@ -1558,7 +1558,7 @@ bool NetworkManager::updateConfigFromJSON(const String& jsonConfig) {
     return updateConfig(newConfig, true);
 }
 
-bool NetworkManager::resetToDefaults() {
+bool FBNetworkManager::resetToDefaults() {
     wifiConfig = WiFiConfig();
     preferences.clear();
     
@@ -1566,7 +1566,7 @@ bool NetworkManager::resetToDefaults() {
     return restartNetwork();
 }
 
-String NetworkManager::getStatistics() {
+String FBNetworkManager::getStatistics() {
     StaticJsonDocument<1024> doc;
     
     doc["status"] = static_cast<uint8_t>(statusInfo.status);
@@ -1592,20 +1592,20 @@ String NetworkManager::getStatistics() {
     return result;
 }
 
-bool NetworkManager::isValidIP(const String& ip) {
+bool FBNetworkManager::isValidIP(const String& ip) {
     IPAddress addr;
     return addr.fromString(ip);
 }
 
-bool NetworkManager::isValidSubnet(const String& subnet) {
+bool FBNetworkManager::isValidSubnet(const String& subnet) {
     return isValidIP(subnet);
 }
 
-String NetworkManager::getMACAddress() {
+String FBNetworkManager::getMACAddress() {
     return WiFi.macAddress();
 }
 
-String NetworkManager::getChipID() {
+String FBNetworkManager::getChipID() {
     uint64_t chipid = ESP.getEfuseMac();
     char chipidStr[13];
     snprintf(chipidStr, sizeof(chipidStr), "%04X%08X", 
@@ -1613,33 +1613,33 @@ String NetworkManager::getChipID() {
     return String(chipidStr);
 }
 
-String NetworkManager::getWiFiModeString() {
+String FBNetworkManager::getWiFiModeString() {
     WiFiMode_t mode = WiFi.getMode();
     return NetworkUtils::getWiFiModeString(mode);
 }
 
-bool NetworkManager::checkIPConflict() {
+bool FBNetworkManager::checkIPConflict() {
     return ipManager->checkIPConflict();
 }
 
-WiFiManager* NetworkManager::getWiFiManager() {
+WiFiManager* FBNetworkManager::getWiFiManager() {
     return wifiManager.get();
 }
 
-IPManager* NetworkManager::getIPManager() {
+IPManager* FBNetworkManager::getIPManager() {
     return ipManager.get();
 }
 
-DNSManager* NetworkManager::getDNSManager() {
+DNSManager* FBNetworkManager::getDNSManager() {
     return dnsManager.get();
 }
 
-void NetworkManager::incrementTxCount() { statusInfo.txCount++; }
-void NetworkManager::incrementRxCount() { statusInfo.rxCount++; }
+void FBNetworkManager::incrementTxCount() { statusInfo.txCount++; }
+void FBNetworkManager::incrementRxCount() { statusInfo.rxCount++; }
 
 // ============ 多网络类型支持 ============
 
-Client* NetworkManager::getActiveClient() {
+Client* FBNetworkManager::getActiveClient() {
     switch (wifiConfig.networkType) {
         case NetworkType::NET_WIFI:
             // WiFi 使用默认的 WiFiClient（由 MQTTClient 内部创建）
@@ -1674,7 +1674,7 @@ Client* NetworkManager::getActiveClient() {
     }
 }
 
-bool NetworkManager::isNetworkConnected() {
+bool FBNetworkManager::isNetworkConnected() {
     switch (wifiConfig.networkType) {
         case NetworkType::NET_WIFI:
             return WiFi.status() == WL_CONNECTED;

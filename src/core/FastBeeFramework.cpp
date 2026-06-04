@@ -204,7 +204,7 @@ bool FastBeeFramework::initialize() {
     // 步骤7-E: 初始化网络管理器（启动 WiFi，带起 LwIP TCP/IP 栈）
     stepStart = millis();
     LOG_INFO("[STEP7-E] Creating NetworkManager...");
-    network.reset(new NetworkManager(server.get()));
+    network.reset(new FBNetworkManager(server.get()));
     if (!network) {
         LOG_ERROR("[STEP7-E] Failed to create network manager");
         return false;
@@ -245,7 +245,7 @@ bool FastBeeFramework::initialize() {
     // 步骤 4: 初始化网络管理器（可能阻塞：STA模式下 connectToWiFiBlocking 最长等待 connectTimeout ms）
     stepStart = millis();
     LOG_INFO("[STEP4] Creating NetworkManager...");
-    network.reset(new NetworkManager(server.get()));
+    network.reset(new FBNetworkManager(server.get()));
     if (!network) {
         LOG_ERROR("[STEP4] Failed to create network manager");
         return false;
@@ -385,7 +385,7 @@ bool FastBeeFramework::initialize() {
 
     // 注入 TX/RX 计数回调：协议层消息收发时递增网络层计数器
     if (network && protocolManager) {
-        NetworkManager* netMgr = network.get();
+        FBNetworkManager* netMgr = network.get();
         protocolManager->setTxCallback([netMgr]() { netMgr->incrementTxCount(); });
         protocolManager->setRxCallback([netMgr]() { netMgr->incrementRxCount(); });
     }
@@ -693,8 +693,8 @@ bool FastBeeFramework::initialize() {
     } else if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
         LOGGER.info("Mode: AP (Access Point)");
         // 以 NetworkManager 的实际配置为准，避免误导用户
-        String apSSID = Network::DEFAULT_AP_SSID;
-        String apPass = Network::DEFAULT_AP_PASSWORD;
+        String apSSID = NetConst::DEFAULT_AP_SSID;
+        String apPass = NetConst::DEFAULT_AP_PASSWORD;
         if (network) {
             WiFiConfig cfg = network->getConfig();
             if (cfg.apSSID.length() > 0) apSSID = cfg.apSSID;

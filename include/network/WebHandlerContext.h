@@ -15,7 +15,7 @@
 class AuthManager;
 class UserManager;
 class RoleManager;
-class NetworkManager;
+class FBNetworkManager;
 class OTAManager;
 class ProtocolManager;
 class SSERouteHandler;
@@ -39,7 +39,7 @@ public:
     IAuthManager*   authManager;
     IUserManager*   userManager;
     RoleManager*    roleManager;
-    NetworkManager* networkManager;
+    FBNetworkManager* networkManager;
     OTAManager*     otaManager;
     ProtocolManager* protocolManager;
     SSERouteHandler* sseHandler;

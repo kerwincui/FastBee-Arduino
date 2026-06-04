@@ -18,7 +18,7 @@
 #include <WiFi.h>
 
 // ESP-IDF 底层以太网驱动 API（Core 2.x 回退路径需要）
-#if !defined(ETH_PHY_W5500)
+#if !defined(ETH_SPI_SUPPORTS_CUSTOM)
 #include "esp_eth.h"
 #include "esp_eth_mac.h"
 #include "esp_eth_phy.h"
@@ -85,8 +85,8 @@ bool EthernetAdapter::begin(const WiFiConfig& config) {
     }
 
     // 使用 ETH.begin() - 兼容不同版本的 Arduino Core
-#if defined(ETH_PHY_W5500)
-    // Arduino-ESP32 Core 3.x+
+#if defined(ETH_SPI_SUPPORTS_CUSTOM)
+    // Arduino-ESP32 Core 3.x+ (pioarduino)
     if (!ETH.begin(ETH_PHY_W5500, 0, _pinConfig.csPin, _pinConfig.intPin, _pinConfig.rstPin, *_spi)) {
         LOG_ERROR("EthernetAdapter: ETH.begin() failed");
         delete _spi;

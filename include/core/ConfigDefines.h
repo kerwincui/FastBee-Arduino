@@ -6,7 +6,7 @@
  * @brief 【已废弃】历史遗留宏定义文件
  *
  * 所有常量已迁移至 SystemConstants.h 中的对应 constexpr namespace：
- *   - 网络配置  →  namespace Network
+ *   - 网络配置  →  namespace NetConst
  *   - 文件路径  →  namespace FileSystem
  *   - 存储配置  →  namespace Storage
  *   - 安全配置  →  namespace Security
@@ -37,33 +37,33 @@
 #endif
 
 #ifndef MDNS_HOSTNAME
-#define MDNS_HOSTNAME Network::DEFAULT_MDNS_HOSTNAME
+#define MDNS_HOSTNAME NetConst::DEFAULT_MDNS_HOSTNAME
 #endif
 #ifndef CUSTOM_DOMAIN
-#define CUSTOM_DOMAIN Network::DEFAULT_CUSTOM_DOMAIN
+#define CUSTOM_DOMAIN NetConst::DEFAULT_CUSTOM_DOMAIN
 #endif
 
 #ifndef WIFI_CONNECT_TIMEOUT
-#define WIFI_CONNECT_TIMEOUT Network::WIFI_CONNECT_TIMEOUT
+#define WIFI_CONNECT_TIMEOUT NetConst::WIFI_CONNECT_TIMEOUT
 #endif
 #ifndef WIFI_RECONNECT_INTERVAL
-#define WIFI_RECONNECT_INTERVAL Network::WIFI_RECONNECT_INTERVAL
+#define WIFI_RECONNECT_INTERVAL NetConst::WIFI_RECONNECT_INTERVAL
 #endif
 #ifndef MAX_WIFI_ATTEMPTS
-#define MAX_WIFI_ATTEMPTS Network::MAX_WIFI_ATTEMPTS
+#define MAX_WIFI_ATTEMPTS NetConst::MAX_WIFI_ATTEMPTS
 #endif
 
 #ifndef WEB_SERVER_PORT
-#define WEB_SERVER_PORT Network::WEB_SERVER_PORT
+#define WEB_SERVER_PORT NetConst::WEB_SERVER_PORT
 #endif
 #ifndef WEB_SOCKET_PORT
-#define WEB_SOCKET_PORT Network::WEB_SOCKET_PORT
+#define WEB_SOCKET_PORT NetConst::WEB_SOCKET_PORT
 #endif
 #ifndef WEB_UPLOAD_BUFFER_SIZE
-#define WEB_UPLOAD_BUFFER_SIZE Network::WEB_UPLOAD_BUFFER_SIZE
+#define WEB_UPLOAD_BUFFER_SIZE NetConst::WEB_UPLOAD_BUFFER_SIZE
 #endif
 #ifndef WEB_SESSION_TIMEOUT
-#define WEB_SESSION_TIMEOUT Network::WEB_SESSION_TIMEOUT
+#define WEB_SESSION_TIMEOUT NetConst::WEB_SESSION_TIMEOUT
 #endif
 
 #ifndef PREFERENCES_NETWORK

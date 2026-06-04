@@ -99,7 +99,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         JsonDocument doc;
         doc["success"] = true;
         if (ctx->networkManager) {
-            NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+            FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
             netMgr->updateStatusInfo();
             NetworkStatusInfo info = netMgr->getStatusInfo();
             WiFiConfig cfg = netMgr->getConfig();
@@ -194,7 +194,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 ctx->sendError(request, 500, "Network service unavailable");
                 return;
             }
-            NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+            FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
             WiFiConfig cfg = netMgr->getConfig();
             JsonObject obj = json.as<JsonObject>();
             if (obj["mode"].is<String>()) cfg.mode = static_cast<NetworkMode>(obj["mode"].as<String>().toInt());
@@ -1045,7 +1045,7 @@ void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
     JsonDocument doc;
 
     if (ctx->networkManager) {
-        NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+        FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
         WiFiConfig cfg = netMgr->getConfig();
 
         doc["data"]["device"]["macAddress"] = WiFi.macAddress();
@@ -1315,7 +1315,7 @@ void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
     }
 
     if (ctx->networkManager) {
-        NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+        FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
         netMgr->updateStatusInfo();
         NetworkStatusInfo info = netMgr->getStatusInfo();
         WiFiConfig cfg = netMgr->getConfig();

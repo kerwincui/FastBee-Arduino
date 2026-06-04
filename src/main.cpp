@@ -6,6 +6,7 @@
 #endif
 #include <esp_chip_info.h>
 #include <esp_task_wdt.h>
+#include <esp_idf_version.h>
 #include <exception>
 #include <cstdlib>
 
@@ -82,7 +83,16 @@ void setup() {
 #endif
 
     // 增大任务看门狗超时为 10 秒，防止 async_tcp/loopTask 在执行文件 I/O 或大型 JSON 序列化时触发 WDT
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+    esp_task_wdt_config_t wdt_config = {
+        .timeout_ms = 10000,
+        .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,
+        .trigger_panic = true,
+    };
+    esp_task_wdt_init(&wdt_config);
+#else
     esp_task_wdt_init(10, true);
+#endif
 
     framework = FastBeeFramework::getInstance();
 

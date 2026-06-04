@@ -21,7 +21,7 @@ static bool configureMqttTransport(MQTTClient* mqttClient) {
     if (!mqttClient) return false;
 
     FastBeeFramework* fw = FastBeeFramework::getInstance();
-    NetworkManager* netMgr = fw ? static_cast<NetworkManager*>(fw->getNetworkManager()) : nullptr;
+    FBNetworkManager* netMgr = fw ? static_cast<FBNetworkManager*>(fw->getNetworkManager()) : nullptr;
     if (!netMgr || netMgr->getNetworkType() == NetworkType::NET_WIFI) {
         mqttClient->setTransportClient(nullptr);
         return true;

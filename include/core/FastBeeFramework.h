@@ -16,7 +16,7 @@
 // 前向声明（减少头文件依赖）
 class AsyncWebServer;
 class AsyncWebServerRequest;
-class NetworkManager;
+class FBNetworkManager;
 class WebConfigManager;
 class OTAManager;
 class TaskManager;
@@ -142,7 +142,7 @@ private:
     std::unique_ptr<AsyncWebServer> server;
     
     // 子系统指针
-    std::unique_ptr<NetworkManager> network;
+    std::unique_ptr<FBNetworkManager> network;
     std::unique_ptr<WebConfigManager> webConfig;
     std::unique_ptr<OTAManager> ota;
     std::unique_ptr<TaskManager> taskManager;

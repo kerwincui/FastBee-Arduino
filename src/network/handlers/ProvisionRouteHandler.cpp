@@ -103,7 +103,7 @@ void ProvisionRouteHandler::handleWiFiConnect(AsyncWebServerRequest* request) {
 
     // 通过 NetworkManager 保存配置并连接
     if (ctx->networkManager) {
-        NetworkManager* netMgr = static_cast<NetworkManager*>(ctx->networkManager);
+        FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
         WiFiConfig cfg = netMgr->getConfig();
         
         // 更新 STA 配置

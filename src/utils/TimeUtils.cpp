@@ -11,6 +11,7 @@
 #include <Ticker.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <WiFi.h>
 
 // 定时器管理
 std::map<int, Ticker*> timers;

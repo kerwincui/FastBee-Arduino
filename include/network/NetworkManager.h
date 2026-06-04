@@ -35,21 +35,21 @@ typedef std::function<void(NetworkStatus, const String&)> NetworkEventCallback;
 class AsyncWebServer;
 
 /**
- * @class NetworkManager
+ * @class FBNetworkManager
  * @brief 网络管理器类，提供完整的网络管理功能
  */
-class NetworkManager : public INetworkManager {
+class FBNetworkManager : public INetworkManager {
 public:
     /**
      * @brief 构造函数
      * @param webServerPtr Web服务器指针
      */
-    explicit NetworkManager(AsyncWebServer* webServerPtr = nullptr);
+    explicit FBNetworkManager(AsyncWebServer* webServerPtr = nullptr);
     
     /**
      * @brief 析构函数
      */
-    ~NetworkManager();
+    ~FBNetworkManager();
     
     /**
      * @brief 初始化网络管理器

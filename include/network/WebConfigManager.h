@@ -13,7 +13,7 @@
 
 // 前向声明
 class RoleManager;
-class NetworkManager;
+class FBNetworkManager;
 class OTAManager;
 class ProtocolManager;
 class WebHandlerContext;
@@ -72,7 +72,7 @@ public:
     bool isServerRunning() const;
 
     void setRoleManager(RoleManager* roleMgr);
-    void setNetworkManager(NetworkManager* netMgr);
+    void setNetworkManager(FBNetworkManager* netMgr);
     void setOTAManager(OTAManager* otaMgr);
     void setProtocolManager(ProtocolManager* protoMgr);
 

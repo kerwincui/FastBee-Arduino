@@ -1640,14 +1640,13 @@ bool PeripheralManager::setupPWMPin(const PeripheralConfig& config) {
         return false;
     }
     
-    ledcSetup(channel, config.params.gpio.pwmFrequency, config.params.gpio.pwmResolution);
-    ledcAttachPin(pin, channel);
+    ledcAttach(pin, config.params.gpio.pwmFrequency, config.params.gpio.pwmResolution);
     
     // 设置初始值
     if (config.params.gpio.initialState == GPIOState::STATE_HIGH) {
-        ledcWrite(channel, (1 << config.params.gpio.pwmResolution) - 1);
+        ledcWrite(pin, (1 << config.params.gpio.pwmResolution) - 1);
     } else {
-        ledcWrite(channel, 0);
+        ledcWrite(pin, 0);
     }
     
     return true;
