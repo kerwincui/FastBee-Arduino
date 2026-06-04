@@ -39,7 +39,10 @@ constexpr uint32_t WEB_RESERVE_FREE_HEAP_BYTES = 18432U;
 constexpr uint32_t WEB_RESERVE_LARGEST_BLOCK_BYTES = 6144U;
 constexpr uint32_t WEB_RESERVE_FRAGMENTED_BLOCK_BYTES = 12288U;
 constexpr uint8_t WEB_RESERVE_FRAGMENTATION_PERCENT = 65U;
-constexpr unsigned long WEB_RESERVE_LOG_INTERVAL_MS = 15000UL;
+constexpr unsigned long SERIAL_CHECK_INTERVAL_MS = 250UL;
+constexpr unsigned long SERIAL_FRAME_IDLE_MS = 500UL;
+constexpr size_t SERIAL_READ_CHUNK_BYTES = 64;
+constexpr size_t SERIAL_FRAME_MAX_BYTES = 160;
 
 bool shouldSuspendBackgroundPolling(MemoryGuardLevel level,
                                     uint32_t freeHeap,
@@ -160,7 +163,6 @@ uint32_t PeriphExecScheduler::getDynamicCheckPeriod(MemoryGuardLevel level) {
 void PeriphExecScheduler::checkTimers() {
     unsigned long now = millis();
     static bool webReserveSuspended = false;
-    static unsigned long lastWebReserveLogAt = 0;
 
     if (!_manager) return;
 
@@ -181,14 +183,14 @@ void PeriphExecScheduler::checkTimers() {
         : 0U;
 
     if (shouldSuspendBackgroundPolling(currentLevel, freeHeap, largestBlock, fragmentation)) {
-        if (!webReserveSuspended || (now - lastWebReserveLogAt) >= WEB_RESERVE_LOG_INTERVAL_MS) {
+        if (!webReserveSuspended) {
+            // 仅在进入暂停状态时输出一次日志，避免周期性刷屏
             LOGGER.warningf("[PeriphExec] Background timer/poll suspended for web reserve "
                             "(guard=%d heap=%lu largest=%lu frag=%u%%)",
                             static_cast<int>(currentLevel),
                             static_cast<unsigned long>(freeHeap),
                             static_cast<unsigned long>(largestBlock),
                             static_cast<unsigned int>(fragmentation));
-            lastWebReserveLogAt = now;
         }
         webReserveSuspended = true;
         _lastMemGuardLevel = currentLevel;
@@ -254,7 +256,11 @@ void PeriphExecScheduler::checkTimers() {
     }
 
     // 通过 manager 获取规则列表并检查定时触发
+    checkSerialEvents();
     _manager->checkTimerTriggers(now, modbusAvailable);
+
+    // 定期淘汰过期传感器缓存（每次定时器检查周期顺带执行，开销忽略不计）
+    _manager->evictStaleSensorCache();
 }
 
 // ========== 事件触发 ==========
@@ -405,6 +411,78 @@ String PeriphExecScheduler::handleDataCommand(const String& message) {
 
     // 通过 manager 处理数据命令匹配和执行
     return _manager->processDataCommandMatch(cmdArr, processedIndices);
+}
+
+void PeriphExecScheduler::checkSerialEvents() {
+    if (!_manager) return;
+
+    unsigned long now = millis();
+    if (_lastSerialCheck > 0 && (now - _lastSerialCheck) < SERIAL_CHECK_INTERVAL_MS) return;
+    _lastSerialCheck = now;
+
+    if (ESP.getFreeHeap() < 16000) return;
+
+    PeripheralManager& pm = PeripheralManager::getInstance();
+
+    auto dispatchFrame = [&](const String& id, String frame) {
+        frame.trim();
+        if (frame.isEmpty()) return;
+        if (frame.length() > SERIAL_FRAME_MAX_BYTES) {
+            frame = frame.substring(0, SERIAL_FRAME_MAX_BYTES);
+        }
+
+        JsonDocument doc;
+        JsonArray arr = doc.to<JsonArray>();
+        JsonObject item = arr.add<JsonObject>();
+        item["id"] = id;
+        item["value"] = frame;
+
+        String payload;
+        serializeJson(doc, payload);
+        _manager->handlePollData("serial", payload);
+        LOGGER.infof("[PeriphExec] Serial data source: %s='%s'", id.c_str(), frame.c_str());
+    };
+
+    pm.forEachPeripheral([&](const PeripheralConfig& config) {
+        if (!config.enabled || config.type != PeripheralType::UART) return;
+        if (!_manager->hasDataSourceRule(config.id)) {
+            _serialRxBuffers.erase(config.id);
+            _serialRxLastByteAt.erase(config.id);
+            return;
+        }
+
+        uint8_t bytes[SERIAL_READ_CHUNK_BYTES];
+        size_t len = sizeof(bytes);
+        if (!pm.readData(config.id, bytes, len)) return;
+
+        String& rx = _serialRxBuffers[config.id];
+        if (len > 0) {
+            _serialRxLastByteAt[config.id] = now;
+            for (size_t i = 0; i < len; i++) {
+                char ch = static_cast<char>(bytes[i]);
+                if (ch == '\r' || ch == '\n') {
+                    if (!rx.isEmpty()) {
+                        dispatchFrame(config.id, rx);
+                        rx = "";
+                    }
+                    continue;
+                }
+                if (rx.length() < SERIAL_FRAME_MAX_BYTES) {
+                    rx += ch;
+                } else {
+                    dispatchFrame(config.id, rx);
+                    rx = "";
+                }
+            }
+        }
+
+        auto lastIt = _serialRxLastByteAt.find(config.id);
+        if (!rx.isEmpty() && lastIt != _serialRxLastByteAt.end() &&
+            (now - lastIt->second) >= SERIAL_FRAME_IDLE_MS) {
+            dispatchFrame(config.id, rx);
+            rx = "";
+        }
+    });
 }
 
 // ========== 数据上报 ==========

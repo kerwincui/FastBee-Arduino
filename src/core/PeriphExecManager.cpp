@@ -11,6 +11,7 @@
 #include "systems/LoggerSystem.h"
 #include "systems/HealthMonitor.h"
 #include "core/PeripheralManager.h"
+#include "utils/FileUtils.h"
 
 namespace {
 constexpr uint32_t PERIPH_EXEC_MIN_TIMER_INTERVAL_SEC = 1;
@@ -27,6 +28,54 @@ constexpr unsigned long PERIPH_EXEC_POLL_TRIGGER_MIN_INTERVAL_MS = 1000;
 constexpr unsigned long PERIPH_EXEC_HEAVY_POLL_TRIGGER_MIN_INTERVAL_MS = 2000;
 constexpr unsigned long PERIPH_EXEC_MODBUS_POLL_INGRESS_MIN_INTERVAL_MS = 1000;
 constexpr unsigned long PERIPH_EXEC_POLL_THROTTLE_LOG_INTERVAL_MS = 5000;
+constexpr size_t PERIPH_EXEC_CONFIG_MAX_BYTES = 96 * 1024;
+constexpr unsigned long SENSOR_CACHE_LOCK_WARN_INTERVAL_MS = 5000;
+
+static bool validateRuleProfileLimits(const PeriphExecRule& rule, const char* operation, String* errorMsg = nullptr) {
+    if (rule.id.length() > FastBee::ResourceProfile::MAX_RULE_ID_LEN) {
+        LOGGER.warningf("[PeriphExec] %s: rule id too long (max=%u)",
+                        operation,
+                        static_cast<unsigned int>(FastBee::ResourceProfile::MAX_RULE_ID_LEN));
+        if (errorMsg) {
+            *errorMsg = String("Rule ID is too long (max ") +
+                        String(static_cast<unsigned int>(FastBee::ResourceProfile::MAX_RULE_ID_LEN)) + ")";
+        }
+        return false;
+    }
+    if (rule.name.length() > FastBee::ResourceProfile::MAX_RULE_NAME_LEN) {
+        LOGGER.warningf("[PeriphExec] %s: rule name too long (max=%u)",
+                        operation,
+                        static_cast<unsigned int>(FastBee::ResourceProfile::MAX_RULE_NAME_LEN));
+        if (errorMsg) {
+            *errorMsg = String("Rule name is too long (max ") +
+                        String(static_cast<unsigned int>(FastBee::ResourceProfile::MAX_RULE_NAME_LEN)) + ")";
+        }
+        return false;
+    }
+    if (rule.scriptContent.length() > FastBee::ResourceProfile::MAX_SCRIPT_CONTENT_LEN) {
+        LOGGER.warningf("[PeriphExec] %s: script content too long (max=%u)",
+                        operation,
+                        static_cast<unsigned int>(FastBee::ResourceProfile::MAX_SCRIPT_CONTENT_LEN));
+        if (errorMsg) {
+            *errorMsg = String("Script content is too long (max ") +
+                        String(static_cast<unsigned int>(FastBee::ResourceProfile::MAX_SCRIPT_CONTENT_LEN)) + ")";
+        }
+        return false;
+    }
+    for (const auto& action : rule.actions) {
+        if (action.actionValue.length() > FastBee::ResourceProfile::MAX_ACTION_VALUE_LEN) {
+            LOGGER.warningf("[PeriphExec] %s: action value too long (max=%u)",
+                            operation,
+                            static_cast<unsigned int>(FastBee::ResourceProfile::MAX_ACTION_VALUE_LEN));
+            if (errorMsg) {
+                *errorMsg = String("Action value is too long (max ") +
+                            String(static_cast<unsigned int>(FastBee::ResourceProfile::MAX_ACTION_VALUE_LEN)) + ")";
+            }
+            return false;
+        }
+    }
+    return true;
+}
 
 // 判断字符串是否为有效数值（整数或浮点数，含负数）
 static bool isNumericString(const String& s) {
@@ -228,6 +277,7 @@ bool PeriphExecManager::initialize() {
     _taskSlotSemaphore = xSemaphoreCreateCounting(MAX_ASYNC_TASKS, MAX_ASYNC_TASKS);
     _runningRulesMutex = xSemaphoreCreateMutex();
     _pollIngressMutex = xSemaphoreCreateMutex();
+    _sensorCacheMutex = xSemaphoreCreateMutex();
 
     // 创建子模块
     _executor.reset(new PeriphExecExecutor());
@@ -405,8 +455,17 @@ bool PeriphExecManager::shouldThrottlePollIngress(const String& source, unsigned
 }
 
 bool PeriphExecManager::addRule(const PeriphExecRule& rule) {
+    String errorMsg;
+    return addRule(rule, errorMsg);
+}
+
+bool PeriphExecManager::addRule(const PeriphExecRule& rule, String& errorMsg) {
+    errorMsg = "";
     MutexGuard lock(_rulesMutex);
-    if (!lock.isLocked()) return false;
+    if (!lock.isLocked()) {
+        errorMsg = "Rule service is busy, try again";
+        return false;
+    }
 
     PeriphExecRule newRule = rule;
     if (newRule.id.isEmpty()) {
@@ -414,15 +473,32 @@ bool PeriphExecManager::addRule(const PeriphExecRule& rule) {
     }
     if (rules.count(newRule.id)) {
         LOGGER.warningf("[PeriphExec] Rule ID already exists: %s", newRule.id.c_str());
+        errorMsg = "Rule ID already exists";
+        return false;
+    }
+    if (rules.size() >= FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES) {
+        LOGGER.warningf("[PeriphExec] Rule limit reached for profile %s (max=%u)",
+                        FastBee::ResourceProfile::NAME,
+                        static_cast<unsigned int>(FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES));
+        errorMsg = String("Rule limit reached for profile ") +
+                   FastBee::ResourceProfile::NAME +
+                   " (max " +
+                   String(static_cast<unsigned int>(FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES)) +
+                   ")";
         return false;
     }
     // 上限检查
     if (newRule.triggers.size() > MAX_TRIGGERS_PER_RULE) {
         LOGGER.warningf("[PeriphExec] Too many triggers: %d", (int)newRule.triggers.size());
+        errorMsg = String("Too many triggers (max ") + String(MAX_TRIGGERS_PER_RULE) + ")";
         return false;
     }
     if (newRule.actions.size() > MAX_ACTIONS_PER_RULE) {
         LOGGER.warningf("[PeriphExec] Too many actions: %d", (int)newRule.actions.size());
+        errorMsg = String("Too many actions (max ") + String(MAX_ACTIONS_PER_RULE) + ")";
+        return false;
+    }
+    if (!validateRuleProfileLimits(newRule, "addRule", &errorMsg)) {
         return false;
     }
     sanitizeRuleForSafety(newRule);
@@ -433,22 +509,65 @@ bool PeriphExecManager::addRule(const PeriphExecRule& rule) {
     }
     rules[newRule.id] = newRule;
     rebuildButtonEventCache();
+    rebuildDataSourceCache();
     LOGGER.infof("[PeriphExec] Added rule: %s (%s)", newRule.id.c_str(), newRule.name.c_str());
     return true;
 }
 
 bool PeriphExecManager::updateRule(const String& id, const PeriphExecRule& rule) {
+    String errorMsg;
+    return updateRule(id, rule, errorMsg);
+}
+
+bool PeriphExecManager::updateRule(const String& id, const PeriphExecRule& rule, String& errorMsg) {
+    errorMsg = "";
     MutexGuard lock(_rulesMutex);
-    if (!lock.isLocked()) return false;
+    if (!lock.isLocked()) {
+        errorMsg = "Rule service is busy, try again";
+        return false;
+    }
 
     auto it = rules.find(id);
     if (it == rules.end()) {
         LOGGER.warningf("[PeriphExec] Rule not found for update: %s", id.c_str());
+        errorMsg = "Rule not found";
         return false;
     }
     // 上限检查
-    if (rule.triggers.size() > MAX_TRIGGERS_PER_RULE) return false;
-    if (rule.actions.size() > MAX_ACTIONS_PER_RULE) return false;
+    if (rule.triggers.size() > MAX_TRIGGERS_PER_RULE) {
+        errorMsg = String("Too many triggers (max ") + String(MAX_TRIGGERS_PER_RULE) + ")";
+        return false;
+    }
+    if (rule.actions.size() > MAX_ACTIONS_PER_RULE) {
+        errorMsg = String("Too many actions (max ") + String(MAX_ACTIONS_PER_RULE) + ")";
+        return false;
+    }
+    if (!validateRuleProfileLimits(rule, "updateRule", &errorMsg)) return false;
+
+    // 字段校验：名称不能为空，至少有一个触发器和一个动作
+    if (rule.name.isEmpty()) {
+        LOGGER.warning("[PeriphExec] updateRule: name is empty");
+        errorMsg = "Rule name is required";
+        return false;
+    }
+    if (rule.triggers.empty()) {
+        LOGGER.warning("[PeriphExec] updateRule: no triggers");
+        errorMsg = "At least one trigger is required";
+        return false;
+    }
+    if (rule.actions.empty()) {
+        LOGGER.warning("[PeriphExec] updateRule: no actions");
+        errorMsg = "At least one action is required";
+        return false;
+    }
+    // 校验触发器类型有效性 (0~4)
+    for (const auto& t : rule.triggers) {
+        if (t.triggerType > 5) {
+            LOGGER.warningf("[PeriphExec] updateRule: invalid triggerType %d", (int)t.triggerType);
+            errorMsg = "Invalid trigger type";
+            return false;
+        }
+    }
 
     // 保留 per-trigger 运行时字段：按索引匹配旧触发器
     const auto& oldTriggers = it->second.triggers;
@@ -466,6 +585,7 @@ bool PeriphExecManager::updateRule(const String& id, const PeriphExecRule& rule)
     }
     rules[id] = updated;
     rebuildButtonEventCache();
+    rebuildDataSourceCache();
     LOGGER.infof("[PeriphExec] Updated rule: %s", id.c_str());
     return true;
 }
@@ -480,6 +600,7 @@ bool PeriphExecManager::removeRule(const String& id) {
     }
     rules.erase(it);
     rebuildButtonEventCache();
+    rebuildDataSourceCache();
     LOGGER.infof("[PeriphExec] Removed rule: %s", id.c_str());
     return true;
 }
@@ -507,6 +628,7 @@ bool PeriphExecManager::enableRule(const String& id) {
     if (it == rules.end()) return false;
     it->second.enabled = true;
     rebuildButtonEventCache();
+    rebuildDataSourceCache();
     return true;
 }
 
@@ -517,6 +639,7 @@ bool PeriphExecManager::disableRule(const String& id) {
     if (it == rules.end()) return false;
     it->second.enabled = false;
     rebuildButtonEventCache();
+    rebuildDataSourceCache();
     return true;
 }
 
@@ -525,6 +648,12 @@ bool PeriphExecManager::hasButtonEventRule(const String& periphId, const String&
     // 缓存中存储了 eventId（兼容任意按键）和 "periphId:eventId"（指定按键）
     return _buttonEventCache.count(eventId) > 0 ||
            _buttonEventCache.count(periphId + ":" + eventId) > 0;
+}
+
+bool PeriphExecManager::hasDataSourceRule(const String& sourceId) {
+    if (sourceId.isEmpty()) return false;
+    // O(log n) 查找缓存（无锁，仅主循环线程调用）
+    return _dataSourceCache.count(sourceId) > 0;
 }
 
 void PeriphExecManager::rebuildButtonEventCache() {
@@ -547,13 +676,54 @@ void PeriphExecManager::rebuildButtonEventCache() {
     }
 }
 
+void PeriphExecManager::rebuildDataSourceCache() {
+    // 在已持有 _rulesMutex 的上下文中调用，或在初始化时调用
+    _dataSourceCache.clear();
+    for (const auto& pair : rules) {
+        const PeriphExecRule& rule = pair.second;
+        if (!rule.enabled) continue;
+        for (const auto& trigger : rule.triggers) {
+            if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER) &&
+                trigger.eventId.startsWith("ds:")) {
+                // ds:sourceId 格式，提取 sourceId
+                _dataSourceCache.insert(trigger.eventId.substring(3));
+            }
+            if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER) &&
+                !trigger.triggerPeriphId.isEmpty()) {
+                _dataSourceCache.insert(trigger.triggerPeriphId);
+            }
+        }
+    }
+}
+
 void PeriphExecManager::updateSensorReadCache(const String& key, const String& label, const String& value, const String& unit) {
-    SensorReadCache& cache = _sensorReadCache[key];
-    cache.label = label;
-    cache.value = value;
-    cache.unit = unit;
-    cache.timestamp = millis();
-    // 通过 SSE 推送实时传感器数据
+    static unsigned long lastLockWarn = 0;
+    unsigned long now = millis();
+    bool cacheUpdated = false;
+
+    if (_sensorCacheMutex && xSemaphoreTake(_sensorCacheMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        // 淘汰最旧条目（当达到上限时）
+        if (_sensorReadCache.size() >= SENSOR_CACHE_MAX_ENTRIES && _sensorReadCache.find(key) == _sensorReadCache.end()) {
+            // 找到最旧的条目并删除
+            auto oldest = _sensorReadCache.begin();
+            for (auto it = _sensorReadCache.begin(); it != _sensorReadCache.end(); ++it) {
+                if (it->second.timestamp < oldest->second.timestamp) oldest = it;
+            }
+            _sensorReadCache.erase(oldest);
+        }
+        SensorReadCache& cache = _sensorReadCache[key];
+        cache.label = label;
+        cache.value = value;
+        cache.unit = unit;
+        cache.timestamp = now;
+        cacheUpdated = true;
+        xSemaphoreGive(_sensorCacheMutex);
+    }
+
+    if (!cacheUpdated && (lastLockWarn == 0 || (now - lastLockWarn) >= SENSOR_CACHE_LOCK_WARN_INTERVAL_MS)) {
+        LOGGER.warning("[PeriphExec] Sensor read cache update skipped: mutex unavailable");
+        lastLockWarn = now;
+    }
     notifySensorDataSSE(key, label, value, unit);
 
     if (_scheduler && !key.isEmpty()) {
@@ -567,6 +737,35 @@ void PeriphExecManager::updateSensorReadCache(const String& key, const String& l
         serializeJson(doc, payload);
         _scheduler->handlePollData("sensor_cache", payload);
     }
+}
+
+std::map<String, PeriphExecManager::SensorReadCache> PeriphExecManager::getSensorReadCacheCopy() const {
+    std::map<String, SensorReadCache> copy;
+    if (_sensorCacheMutex && xSemaphoreTake(_sensorCacheMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        copy = _sensorReadCache;
+        xSemaphoreGive(_sensorCacheMutex);
+    }
+    return copy;
+}
+
+void PeriphExecManager::evictStaleSensorCache() {
+    if (!_sensorCacheMutex) return;
+    if (xSemaphoreTake(_sensorCacheMutex, pdMS_TO_TICKS(10)) != pdTRUE) return;
+    if (_sensorReadCache.empty()) {
+        xSemaphoreGive(_sensorCacheMutex);
+        return;
+    }
+
+    unsigned long now = millis();
+    auto it = _sensorReadCache.begin();
+    while (it != _sensorReadCache.end()) {
+        if ((now - it->second.timestamp) > SENSOR_CACHE_TTL_MS) {
+            it = _sensorReadCache.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    xSemaphoreGive(_sensorCacheMutex);
 }
 
 void PeriphExecManager::notifySensorDataSSE(const String& key, const String& label, const String& value, const String& unit) {
@@ -631,17 +830,17 @@ bool PeriphExecManager::saveConfiguration() {
         obj["reportAfterExec"] = r.reportAfterExec;
     }
 
-    File file = LittleFS.open(PERIPH_EXEC_CONFIG_FILE, "w");
-    if (!file) {
-        LOGGER.error("[PeriphExec] Failed to open config file for writing");
+    String payload;
+    payload.reserve(measureJson(doc) + 1);
+    serializeJson(doc, payload);
+
+    if (!FileUtils::atomicWriteFile(PERIPH_EXEC_CONFIG_FILE, payload)) {
+        LOGGER.error("[PeriphExec] Failed to save config atomically");
         return false;
     }
 
-    size_t written = serializeJson(doc, file);
-    file.close();
-
-    LOGGER.infof("[PeriphExec] Saved %d rules (%d bytes, v3)", (int)rules.size(), (int)written);
-    return written > 0;
+    LOGGER.infof("[PeriphExec] Saved %d rules (%d bytes, v3)", (int)rules.size(), (int)payload.length());
+    return true;
 }
 
 bool PeriphExecManager::loadConfiguration() {
@@ -657,13 +856,28 @@ bool PeriphExecManager::loadConfiguration() {
         return false;
     }
 
+    size_t fileSize = file.size();
+    if (fileSize > PERIPH_EXEC_CONFIG_MAX_BYTES) {
+        file.close();
+        LOGGER.errorf("[PeriphExec] Config too large (%u bytes, max=%u), falling back to empty rules",
+                      static_cast<unsigned int>(fileSize),
+                      static_cast<unsigned int>(PERIPH_EXEC_CONFIG_MAX_BYTES));
+        rules.clear();
+        rebuildButtonEventCache();
+        rebuildDataSourceCache();
+        return true;
+    }
+
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, file);
     file.close();
 
     if (err) {
         LOGGER.errorf("[PeriphExec] JSON parse error: %s", err.c_str());
-        return false;
+        rules.clear();
+        rebuildButtonEventCache();
+        rebuildDataSourceCache();
+        return true;
     }
 
     int configVersion = doc["version"] | 1;
@@ -672,6 +886,12 @@ bool PeriphExecManager::loadConfiguration() {
     JsonArray arr = doc["rules"].as<JsonArray>();
 
     for (JsonObject obj : arr) {
+        if (rules.size() >= FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES) {
+            LOGGER.warningf("[PeriphExec] Profile %s allows max %u rules, skipping remaining config entries",
+                            FastBee::ResourceProfile::NAME,
+                            static_cast<unsigned int>(FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES));
+            break;
+        }
         PeriphExecRule r;
         r.id = obj["id"].as<String>();
         r.name = obj["name"].as<String>();
@@ -795,7 +1015,24 @@ bool PeriphExecManager::loadConfiguration() {
         }
 #endif
 
+        if (r.triggers.size() > MAX_TRIGGERS_PER_RULE) {
+            LOGGER.warningf("[PeriphExec] Rule '%s' has too many triggers in config, truncating to %u",
+                            r.id.c_str(),
+                            static_cast<unsigned int>(MAX_TRIGGERS_PER_RULE));
+            r.triggers.resize(MAX_TRIGGERS_PER_RULE);
+        }
+        if (r.actions.size() > MAX_ACTIONS_PER_RULE) {
+            LOGGER.warningf("[PeriphExec] Rule '%s' has too many actions in config, truncating to %u",
+                            r.id.c_str(),
+                            static_cast<unsigned int>(MAX_ACTIONS_PER_RULE));
+            r.actions.resize(MAX_ACTIONS_PER_RULE);
+        }
+
         if (!r.id.isEmpty()) {
+            if (!validateRuleProfileLimits(r, "loadConfiguration")) {
+                LOGGER.warningf("[PeriphExec] Skipping rule '%s': exceeds profile limits", r.id.c_str());
+                continue;
+            }
             rules[r.id] = r;
         }
     }
@@ -804,6 +1041,7 @@ bool PeriphExecManager::loadConfiguration() {
 
     // 重建按键规则缓存（初始化时无锁竞争，安全调用）
     rebuildButtonEventCache();
+    rebuildDataSourceCache();
 
     // v1/v2 自动升级为 v3
     if (configVersion < 3 || legacyScriptMigrated) {
@@ -978,6 +1216,16 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
 
         if (pType == PeripheralType::STEPPER_MOTOR) {
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "步进电机控制(forward/reverse/stop/faster/slower/setSpeed)", "步进电机");
+#if FASTBEE_ENABLE_COMMAND_SCRIPT
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+#endif
+        } else if (pType == PeripheralType::NEO_PIXEL) {
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "WS2812B控制(color/off/rainbow/brightness)", "灯珠");
+#if FASTBEE_ENABLE_COMMAND_SCRIPT
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+#endif
+        } else if (pType == PeripheralType::UART) {
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "串口发送(send/text)", "串口");
 #if FASTBEE_ENABLE_COMMAND_SCRIPT
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
 #endif

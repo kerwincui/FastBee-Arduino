@@ -51,6 +51,11 @@ const EventDef STATIC_EVENTS[] = {
     {EventType::EVENT_SYS_RESTART, "restart", "设备重启", "系统"},
     {EventType::EVENT_SYS_ALARM, "device_alarm", "设备告警", "系统"},
     {EventType::EVENT_SYS_LOW_POWER, "low_power", "低电量预警", "系统"},
+    // RFID 事件
+    {EventType::EVENT_RFID_CARD_DETECTED, "rfid_card_detected", "RFID卡片检测", "RFID"},
+    {EventType::EVENT_RFID_CARD_REMOVED, "rfid_card_removed", "RFID卡片移开", "RFID"},
+    // 红外遥控事件
+    {EventType::EVENT_IR_CODE_RECEIVED, "ir_code_received", "红外编码接收", "红外"},
     // 终止标记
     {EventType::NONE, nullptr, nullptr, nullptr}
 };

@@ -680,6 +680,312 @@
       "reportAfterExec": true
     },
     {
+      "id": "exec_adc_voltage_collect",
+      "name": "ADC电压采集上报",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 1,
+          "triggerPeriphId": "",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 10,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "adc",
+          "actionType": 19,
+          "actionValue": "{\"periphId\":\"adc\",\"sensorCategory\":\"analog\",\"dataField\":\"voltage\",\"scaleFactor\":0.00080586,\"offset\":0,\"decimalPlaces\":2,\"sensorLabel\":\"电压\",\"unit\":\"V\"}",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": true
+    },
+    {
+      "id": "exec_adc_voltage_tm1637",
+      "name": "ADC电压显示到数码管",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 1,
+          "triggerPeriphId": "",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 10,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "tm1637_01",
+          "actionType": 24,
+          "actionValue": "${adc.voltage}",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    },
+    {
+      "id": "exec_adc_voltage_relay_on",
+      "name": "ADC电压高于2.50V打开继电器",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 4,
+          "triggerPeriphId": "",
+          "operatorType": 2,
+          "compareValue": "2.50",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "",
+          "eventId": "ds:adc_voltage",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "relay",
+          "actionType": 0,
+          "actionValue": "",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    },
+    {
+      "id": "exec_adc_voltage_relay_off",
+      "name": "ADC电压低于2.30V关闭继电器",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 4,
+          "triggerPeriphId": "",
+          "operatorType": 3,
+          "compareValue": "2.30",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "",
+          "eventId": "ds:adc_voltage",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "relay",
+          "actionType": 1,
+          "actionValue": "",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    },
+    {
+      "id": "exec_ws2812b_platform_color",
+      "name": "WS2812B平台下发颜色",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "ws2812b",
+          "operatorType": 1,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "ws2812b",
+          "actionType": 10,
+          "actionValue": "color",
+          "useReceivedValue": true,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    },
+    {
+      "id": "exec_ws2812b_rainbow_cycle",
+      "name": "WS2812B赤橙黄绿青蓝紫循环",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 1,
+          "triggerPeriphId": "",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 2,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "ws2812b",
+          "actionType": 10,
+          "actionValue": "{\"periphId\":\"ws2812b\",\"action\":\"rainbow\"}",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    },
+    {
+      "id": "exec_uart_debug_match_relay_on",
+      "name": "串口匹配打开继电器",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 4,
+          "triggerPeriphId": "",
+          "operatorType": 0,
+          "compareValue": "relay_on",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "",
+          "eventId": "ds:uart_debug",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "relay",
+          "actionType": 0,
+          "actionValue": "",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    },
+    {
+      "id": "exec_uart_debug_timer_send",
+      "name": "定时发送串口消息",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 1,
+          "triggerPeriphId": "",
+          "operatorType": 0,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 10,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "uart_debug",
+          "actionType": 10,
+          "actionValue": "hello from fastbee\n",
+          "useReceivedValue": false,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    },
+    {
+      "id": "exec_uart_debug_platform_forward",
+      "name": "平台下发转发到串口",
+      "enabled": false,
+      "execMode": 0,
+      "triggers": [
+        {
+          "triggerType": 0,
+          "triggerPeriphId": "uart_debug",
+          "operatorType": 1,
+          "compareValue": "",
+          "timerMode": 0,
+          "intervalSec": 60,
+          "timePoint": "",
+          "eventId": "",
+          "pollResponseTimeout": 1000,
+          "pollMaxRetries": 2,
+          "pollInterPollDelay": 100
+        }
+      ],
+      "actions": [
+        {
+          "targetPeriphId": "uart_debug",
+          "actionType": 10,
+          "actionValue": "send",
+          "useReceivedValue": true,
+          "syncDelayMs": 0,
+          "execMode": 0
+        }
+      ],
+      "protocolType": 0,
+      "scriptContent": "",
+      "reportAfterExec": false
+    },
+    {
       "id": "exec_oled_custom_timer",
       "name": "OLED自定义显示-定时混排",
       "enabled": false,

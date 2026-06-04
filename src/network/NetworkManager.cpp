@@ -12,9 +12,20 @@
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include "core/PeriphExecManager.h"
 #endif
+#if FASTBEE_ENABLE_ETHERNET
+#include "network/EthernetAdapter.h"
+#endif
+#if FASTBEE_ENABLE_CELLULAR
+#include "network/CellularAdapter.h"
+#endif
+#if FASTBEE_ENABLE_LORA
+#include "network/LoRaAdapter.h"
+#endif
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#if FASTBEE_ENABLE_MDNS
 #include <ESPmDNS.h>
+#endif
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <algorithm>
@@ -85,7 +96,8 @@ bool NetworkManager::initialize() {
     // 智能模式修正：首次启动或配置不完整时自动调整
     // 如果 mode 是 NETWORK_STA 但没有配置 staSSID，改为 NETWORK_AP
     // 这样可以确保首次启动时用户能通过 AP 模式配网
-    if (wifiConfig.staSSID.isEmpty() && wifiConfig.mode == NetworkMode::NETWORK_STA) {
+    if (wifiConfig.networkType == NetworkType::NET_WIFI &&
+        wifiConfig.staSSID.isEmpty() && wifiConfig.mode == NetworkMode::NETWORK_STA) {
         LOG_WARNING("NetworkManager: No staSSID configured, switching from STA to AP mode");
         wifiConfig.mode = NetworkMode::NETWORK_AP;
         saveNetworkConfig();
@@ -112,6 +124,117 @@ bool NetworkManager::initialize() {
         wifiManager->handleWiFiEvent(event);
     });
 
+    // ========== 非 WiFi 联网方式初始化 ==========
+#if FASTBEE_ENABLE_ETHERNET
+    if (wifiConfig.networkType == NetworkType::NET_ETHERNET) {
+        LOG_INFO("NetworkManager: Initializing Ethernet (W5500)...");
+        ethernetAdapter.reset(new EthernetAdapter());
+        bool ethOk = ethernetAdapter->begin(wifiConfig);
+        if (ethOk) {
+            ethOk = ethernetAdapter->waitForConnection(10000);
+        }
+        if (ethOk) {
+            LOG_INFO("NetworkManager: Ethernet connected, IP: " + ethernetAdapter->localIP().toString());
+            statusInfo.status = NetworkStatus::CONNECTED;
+            statusInfo.ipAddress = ethernetAdapter->localIP().toString();
+            statusInfo.lastConnectionTime = millis();
+            
+            // 启动 mDNS
+            if (wifiConfig.enableMDNS) {
+                dnsManager->startMDNS(wifiConfig.customDomain);
+            }
+            
+            // ========== 混合模式：以太网 + WiFi AP本地配置 ==========
+            // 启动WiFi AP热点，用于本地Web配置访问
+            LOG_INFO("NetworkManager: Starting WiFi AP for local config access...");
+            bool apStarted = startAPMode();
+            if (apStarted) {
+                IPAddress apIP = WiFi.softAPIP();
+                statusInfo.apIPAddress = apIP.toString();
+                // 混合模式下网络状态应保持CONNECTED（因为以太网是主网络）
+                statusInfo.status = NetworkStatus::CONNECTED;
+                LOGGER.infof(">>> Config AP: %s  IP: %s <<<", 
+                    wifiConfig.apSSID.c_str(), apIP.toString().c_str());
+                LOG_INFO("NetworkManager: Hybrid mode active (Ethernet + WiFi AP)");
+            } else {
+                LOG_WARNING("NetworkManager: Failed to start WiFi AP, Ethernet only mode");
+            }
+            
+            isInitialized = true;
+            return true;
+        } else {
+            LOG_WARNING("NetworkManager: Ethernet failed, falling back to WiFi");
+            ethernetAdapter.reset();
+            wifiConfig.networkType = NetworkType::NET_WIFI;
+        }
+    }
+#endif
+
+#if FASTBEE_ENABLE_CELLULAR
+    if (wifiConfig.networkType == NetworkType::NET_4G) {
+        LOG_INFO("NetworkManager: Initializing 4G Cellular (EC801E-CN)...");
+        cellularAdapter.reset(new CellularAdapter());
+        bool cellOk = cellularAdapter->begin(wifiConfig);
+        if (cellOk) {
+            LOG_INFO("NetworkManager: 4G connected");
+            statusInfo.status = NetworkStatus::CONNECTED;
+            statusInfo.lastConnectionTime = millis();
+            
+            // 获取4G IP地址
+            if (cellularAdapter) {
+                IPAddress cellIP = cellularAdapter->localIP();
+                if (cellIP != IPAddress(0, 0, 0, 0)) {
+                    statusInfo.ipAddress = cellIP.toString();
+                    LOGGER.infof("NetworkManager: 4G IP: %s", cellIP.toString().c_str());
+                }
+            }
+            
+            // ========== 混合模式：4G上网 + WiFi AP本地配置 ==========
+            // 启动WiFi AP热点，用于本地Web配置访问
+            LOG_INFO("NetworkManager: Starting WiFi AP for local config access...");
+            bool apStarted = startAPMode();
+            if (apStarted) {
+                IPAddress apIP = WiFi.softAPIP();
+                statusInfo.apIPAddress = apIP.toString();
+                // 混合模式下网络状态应保持CONNECTED（因为4G是主网络）
+                statusInfo.status = NetworkStatus::CONNECTED;
+                LOGGER.infof(">>> Config AP: %s  IP: %s <<<", 
+                    wifiConfig.apSSID.c_str(), apIP.toString().c_str());
+                LOG_INFO("NetworkManager: Hybrid mode active (4G + WiFi AP)");
+            } else {
+                LOG_WARNING("NetworkManager: Failed to start WiFi AP, 4G only mode");
+            }
+            
+            isInitialized = true;
+            return true;
+        } else {
+            LOG_WARNING("NetworkManager: 4G failed, falling back to WiFi");
+            cellularAdapter.reset();
+            wifiConfig.networkType = NetworkType::NET_WIFI;
+        }
+    }
+#endif
+
+#if FASTBEE_ENABLE_LORA
+    if (wifiConfig.networkType == NetworkType::NET_LORA) {
+        LOG_INFO("NetworkManager: Initializing LoRa (E22-400T22D)...");
+        loraAdapter.reset(new LoRaAdapter());
+        bool loraOk = loraAdapter->begin(wifiConfig);
+        if (loraOk) {
+            LOG_INFO("NetworkManager: LoRa adapter ready");
+            statusInfo.status = NetworkStatus::CONNECTED;
+            statusInfo.lastConnectionTime = millis();
+            isInitialized = true;
+            return true;
+        } else {
+            LOG_WARNING("NetworkManager: LoRa failed, falling back to WiFi");
+            loraAdapter.reset();
+            wifiConfig.networkType = NetworkType::NET_WIFI;
+        }
+    }
+#endif
+
+    // ========== WiFi 联网方式（默认 / 回退） ==========
     // 网络启动策略（仅支持 STA 和 AP 两种模式）：
     // 1. NETWORK_STA (0): 尝试连接WiFi，失败则自动切换到AP模式
     // 2. NETWORK_AP (1): 直接启动热点
@@ -127,15 +250,25 @@ bool NetworkManager::initialize() {
                     LOGGER.infof(">>> STA IP: %s <<<", WiFi.localIP().toString().c_str());
                 } else {
                     LOG_WARNING("NetworkManager: STA connection failed, falling back to AP mode");
+                    Serial.println("[NET] STA failed, switching to AP mode...");
+                    ets_printf("[NET] STA failed, switching to AP mode...\n");
                     wifiManager->setModeTransitioning(false);
                     // 连接失败，切换到AP模式提供配置界面
                     wifiConfig.mode = NetworkMode::NETWORK_AP;
                     success = startAPMode();
                     if (success) {
+                        Serial.printf("[NET] AP started: %s  IP: %s\n",
+                            wifiConfig.apSSID.c_str(),
+                            WiFi.softAPIP().toString().c_str());
+                        ets_printf("[NET] AP started: %s  IP: %s\n",
+                            wifiConfig.apSSID.c_str(),
+                            WiFi.softAPIP().toString().c_str());
                         LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:[%s] <<<",
                             WiFi.softAPIP().toString().c_str(),
                             wifiConfig.apSSID.c_str(),
                             wifiConfig.apPassword.c_str());
+                    } else {
+                        Serial.println("[NET] AP start FAILED!");
                     }
                 }
             } else {
@@ -179,6 +312,25 @@ void NetworkManager::disconnect() {
     
     // 停止mDNS
     dnsManager->stopMDNS();
+
+#if FASTBEE_ENABLE_ETHERNET
+    if (ethernetAdapter) {
+        ethernetAdapter->disconnect();
+        ethernetAdapter.reset();
+    }
+#endif
+#if FASTBEE_ENABLE_CELLULAR
+    if (cellularAdapter) {
+        cellularAdapter->disconnect();
+        cellularAdapter.reset();
+    }
+#endif
+#if FASTBEE_ENABLE_LORA
+    if (loraAdapter) {
+        loraAdapter->disconnect();
+        loraAdapter.reset();
+    }
+#endif
     
     // 停止AP模式和WiFi连接
     wifiManager->stopAPMode();
@@ -215,6 +367,51 @@ void NetworkManager::update() {
     }
 
     // 检测 WiFi 连接状态变化
+    if (wifiConfig.networkType != NetworkType::NET_WIFI) {
+#if FASTBEE_ENABLE_ETHERNET
+        if (wifiConfig.networkType == NetworkType::NET_ETHERNET && ethernetAdapter) {
+            ethernetAdapter->update();
+        }
+#endif
+#if FASTBEE_ENABLE_CELLULAR
+        if (wifiConfig.networkType == NetworkType::NET_4G && cellularAdapter) {
+            cellularAdapter->update();
+        }
+#endif
+#if FASTBEE_ENABLE_LORA
+        if (wifiConfig.networkType == NetworkType::NET_LORA && loraAdapter) {
+            loraAdapter->update();
+        }
+#endif
+
+        bool activeConnected = isNetworkConnected();
+        if (activeConnected && !wasConnected) {
+            LOG_INFO("NetworkManager: active network connected");
+            statusInfo.reconnectAttempts = 0;
+            statusInfo.status = NetworkStatus::CONNECTED;
+            statusInfo.lastConnectionTime = millis();
+            triggerEvent(NetworkStatus::CONNECTED, statusInfo.ipAddress);
+        } else if (!activeConnected && wasConnected) {
+            LOG_WARNING("NetworkManager: active network disconnected");
+            statusInfo.status = NetworkStatus::DISCONNECTED;
+            triggerEvent(NetworkStatus::DISCONNECTED, "Network disconnected");
+        }
+        wasConnected = activeConnected;
+
+        if (currentTime - lastStatusUpdate >= 1000) {
+            updateStatusInfo();
+            lastStatusUpdate = currentTime;
+        }
+
+        if (currentTime - lastMdnsUpdate >= 30000) {
+            if (wifiConfig.enableMDNS) {
+                dnsManager->checkMDNSHealth();
+            }
+            lastMdnsUpdate = currentTime;
+        }
+        return;
+    }
+
     bool isConnected = (WiFi.status() == WL_CONNECTED);
     
     // WiFi 连接成功（从断开变为连接）
@@ -371,6 +568,7 @@ bool NetworkManager::loadNetworkConfig() {
         if (doc.containsKey("deviceName"))           wifiConfig.deviceName = doc["deviceName"].as<String>();
         if (doc.containsKey("apSSID"))               wifiConfig.apSSID = doc["apSSID"].as<String>();
         if (doc.containsKey("apPassword"))           wifiConfig.apPassword = doc["apPassword"].as<String>();
+        if (doc.containsKey("apIP"))                 wifiConfig.apIP = doc["apIP"].as<String>();
         if (doc.containsKey("apChannel"))            wifiConfig.apChannel = doc["apChannel"].as<uint8_t>();
         if (doc.containsKey("apHidden"))             wifiConfig.apHidden = doc["apHidden"].as<bool>();
         if (doc.containsKey("apMaxConnections"))     wifiConfig.apMaxConnections = doc["apMaxConnections"].as<uint8_t>();
@@ -394,7 +592,40 @@ bool NetworkManager::loadNetworkConfig() {
         if (doc.containsKey("maxFailoverAttempts"))  wifiConfig.maxFailoverAttempts = doc["maxFailoverAttempts"].as<uint8_t>();
         if (doc.containsKey("conflictThreshold"))    wifiConfig.conflictThreshold = doc["conflictThreshold"].as<uint8_t>();
         if (doc.containsKey("fallbackToDHCP"))       wifiConfig.fallbackToDHCP = doc["fallbackToDHCP"].as<bool>();
-        
+
+        // 联网方式
+        if (doc.containsKey("networkType"))            wifiConfig.networkType = static_cast<NetworkType>(doc["networkType"].as<uint8_t>());
+
+        // 以太网配置
+        if (doc.containsKey("ethernet") && doc["ethernet"].is<JsonObject>()) {
+            JsonObject eth = doc["ethernet"];
+            if (eth.containsKey("spiMosi")) wifiConfig.ethernet.spiMosi = eth["spiMosi"].as<int8_t>();
+            if (eth.containsKey("spiMiso")) wifiConfig.ethernet.spiMiso = eth["spiMiso"].as<int8_t>();
+            if (eth.containsKey("spiSck"))  wifiConfig.ethernet.spiSck  = eth["spiSck"].as<int8_t>();
+            if (eth.containsKey("csPin"))   wifiConfig.ethernet.csPin   = eth["csPin"].as<int8_t>();
+            if (eth.containsKey("rstPin"))  wifiConfig.ethernet.rstPin  = eth["rstPin"].as<int8_t>();
+            if (eth.containsKey("intPin"))  wifiConfig.ethernet.intPin  = eth["intPin"].as<int8_t>();
+        }
+
+        // 4G 蜂窝配置
+        if (doc.containsKey("cellular") && doc["cellular"].is<JsonObject>()) {
+            JsonObject cell = doc["cellular"];
+            if (cell.containsKey("txPin"))    wifiConfig.cellular.txPin    = cell["txPin"].as<int8_t>();
+            if (cell.containsKey("rxPin"))    wifiConfig.cellular.rxPin    = cell["rxPin"].as<int8_t>();
+            if (cell.containsKey("pwrPin"))   wifiConfig.cellular.pwrPin   = cell["pwrPin"].as<int8_t>();
+            if (cell.containsKey("baudRate")) wifiConfig.cellular.baudRate = cell["baudRate"].as<uint32_t>();
+            if (cell.containsKey("apn"))      wifiConfig.cellular.apn      = cell["apn"].as<String>();
+        }
+
+        // LoRa 配置
+        if (doc.containsKey("lora") && doc["lora"].is<JsonObject>()) {
+            JsonObject lora = doc["lora"];
+            if (lora.containsKey("txPin"))    wifiConfig.lora.txPin    = lora["txPin"].as<int8_t>();
+            if (lora.containsKey("rxPin"))    wifiConfig.lora.rxPin    = lora["rxPin"].as<int8_t>();
+            if (lora.containsKey("m1Pin"))    wifiConfig.lora.m1Pin    = lora["m1Pin"].as<int8_t>();
+            if (lora.containsKey("baudRate")) wifiConfig.lora.baudRate = lora["baudRate"].as<uint32_t>();
+        }
+
         // 多 SSID 列表解析（向下兼容：无 networks 字段时使用 staSSID/staPassword）
         if (doc.containsKey("networks") && doc["networks"].is<JsonArray>()) {
             wifiConfig.networks.clear();
@@ -513,6 +744,7 @@ bool NetworkManager::saveNetworkConfig() {
     doc["deviceName"] = wifiConfig.deviceName;
     doc["apSSID"] = wifiConfig.apSSID;
     doc["apPassword"] = wifiConfig.apPassword;
+    doc["apIP"] = wifiConfig.apIP;
     doc["apChannel"] = wifiConfig.apChannel;
     doc["apHidden"] = wifiConfig.apHidden;
     doc["apMaxConnections"] = wifiConfig.apMaxConnections;
@@ -536,6 +768,33 @@ bool NetworkManager::saveNetworkConfig() {
     doc["maxFailoverAttempts"] = wifiConfig.maxFailoverAttempts;
     doc["conflictThreshold"] = wifiConfig.conflictThreshold;
     doc["fallbackToDHCP"] = wifiConfig.fallbackToDHCP;
+
+    // 联网方式
+    doc["networkType"] = static_cast<uint8_t>(wifiConfig.networkType);
+
+    // 以太网配置
+    JsonObject ethObj = doc["ethernet"].to<JsonObject>();
+    ethObj["spiMosi"] = wifiConfig.ethernet.spiMosi;
+    ethObj["spiMiso"] = wifiConfig.ethernet.spiMiso;
+    ethObj["spiSck"]  = wifiConfig.ethernet.spiSck;
+    ethObj["csPin"]   = wifiConfig.ethernet.csPin;
+    ethObj["rstPin"]  = wifiConfig.ethernet.rstPin;
+    ethObj["intPin"]  = wifiConfig.ethernet.intPin;
+
+    // 4G 蜂窝配置
+    JsonObject cellObj = doc["cellular"].to<JsonObject>();
+    cellObj["txPin"]    = wifiConfig.cellular.txPin;
+    cellObj["rxPin"]    = wifiConfig.cellular.rxPin;
+    cellObj["pwrPin"]   = wifiConfig.cellular.pwrPin;
+    cellObj["baudRate"] = wifiConfig.cellular.baudRate;
+    cellObj["apn"]      = wifiConfig.cellular.apn;
+
+    // LoRa 配置
+    JsonObject loraObj = doc["lora"].to<JsonObject>();
+    loraObj["txPin"]    = wifiConfig.lora.txPin;
+    loraObj["rxPin"]    = wifiConfig.lora.rxPin;
+    loraObj["m1Pin"]    = wifiConfig.lora.m1Pin;
+    loraObj["baudRate"] = wifiConfig.lora.baudRate;
 
     // 辅助写文件函数
     auto writeToFile = [&doc](const char* path) -> bool {
@@ -715,7 +974,9 @@ bool NetworkManager::connectToWiFiBlocking() {
     statusInfo.status = NetworkStatus::CONNECTING;
 
     char buf[80];
-    snprintf(buf, sizeof(buf), "NetworkManager: Connecting to WiFi [%s]...", wifiConfig.staSSID.c_str());
+    snprintf(buf, sizeof(buf), "[NET] Connecting to WiFi [%s]...", wifiConfig.staSSID.c_str());
+    Serial.println(buf);
+    ets_printf("%s\n", buf);
     LOG_INFO(buf);
     // 调试：打印实际使用的连接凭据
     LOGGER.debugf("NetworkManager: staSSID=[%s] len=%d", wifiConfig.staSSID.c_str(), wifiConfig.staSSID.length());
@@ -739,7 +1000,9 @@ bool NetworkManager::connectToWiFiBlocking() {
         statusInfo.ipAddress = WiFi.localIP().toString();
         statusInfo.ssid = WiFi.SSID();
 
-        snprintf(buf, sizeof(buf), "NetworkManager: WiFi connected! IP: %s", statusInfo.ipAddress.c_str());
+        snprintf(buf, sizeof(buf), "[NET] WiFi connected! IP: %s", statusInfo.ipAddress.c_str());
+        Serial.println(buf);
+        ets_printf("%s\n", buf);
         LOG_INFO(buf);
 
         // STA 已获得 IP，立即启动 mDNS
@@ -753,7 +1016,9 @@ bool NetworkManager::connectToWiFiBlocking() {
 
     connecting = false;
     statusInfo.status = NetworkStatus::CONNECTION_FAILED;
-    snprintf(buf, sizeof(buf), "NetworkManager: WiFi connect timeout (SSID: %s)", wifiConfig.staSSID.c_str());
+    snprintf(buf, sizeof(buf), "[NET] WiFi connect TIMEOUT (SSID: %s)", wifiConfig.staSSID.c_str());
+    Serial.println(buf);
+    ets_printf("%s\n", buf);
     LOG_WARNING(buf);
     LOGGER.debugf("NetworkManager: WiFi status code = %d", (int)WiFi.status());
     return false;
@@ -801,6 +1066,56 @@ void NetworkManager::updateStatusInfo() {
     
     // 同步状态信息
     statusInfo = wifiManager->getStatusInfo();
+
+#if FASTBEE_ENABLE_ETHERNET
+    if (wifiConfig.networkType == NetworkType::NET_ETHERNET && ethernetAdapter) {
+        bool connected = ethernetAdapter->isConnected();
+        statusInfo.status = connected ? NetworkStatus::CONNECTED : NetworkStatus::DISCONNECTED;
+        statusInfo.ipAddress = connected ? ethernetAdapter->localIP().toString() : "";
+        statusInfo.macAddress = ethernetAdapter->macAddress();
+        statusInfo.internetAvailable = connected;
+    }
+#endif
+
+    // 根据联网方式更新对应的状态信息
+#if FASTBEE_ENABLE_CELLULAR
+    if (wifiConfig.networkType == NetworkType::NET_4G && cellularAdapter) {
+        bool connected = cellularAdapter->isConnected();
+        statusInfo.status = connected ? NetworkStatus::CONNECTED : NetworkStatus::DISCONNECTED;
+        statusInfo.internetAvailable = connected;
+        // 更新 4G 蜂窝网络状态
+        statusInfo.simStatus = cellularAdapter->isSimReady() ? "ready" : "missing";
+        statusInfo.operatorName = cellularAdapter->getOperator();
+        statusInfo.cellularNetworkType = cellularAdapter->getNetworkType();
+        statusInfo.apn = wifiConfig.cellular.apn;
+        statusInfo.imei = cellularAdapter->getIMEI();
+        statusInfo.iccid = cellularAdapter->getICCID();
+        
+        // 信号质量转换 (CSQ 0-31 -> RSSI dBm)
+        int csq = cellularAdapter->getSignalQualityCSQ();
+        if (csq >= 0 && csq <= 31) {
+            statusInfo.cellularSignalQuality = csq;
+            statusInfo.rssi = -113 + (csq * 2);  // CSQ to dBm conversion
+        } else {
+            statusInfo.cellularSignalQuality = 99;  // 未知
+            statusInfo.rssi = 0;
+        }
+    }
+#endif
+
+#if FASTBEE_ENABLE_LORA
+    if (wifiConfig.networkType == NetworkType::NET_LORA && loraAdapter) {
+        bool connected = loraAdapter->isConnected();
+        statusInfo.status = connected ? NetworkStatus::CONNECTED : NetworkStatus::DISCONNECTED;
+        statusInfo.internetAvailable = connected;
+        // 更新 LoRa 状态
+        statusInfo.loraMode = loraAdapter->isTransparentMode() ? "透传模式" : "配置模式";
+        statusInfo.loraAddress = String(loraAdapter->getAddress());
+        statusInfo.loraFrequency = loraAdapter->getFrequencyString();
+        statusInfo.loraAirRate = loraAdapter->getAirRateString();
+        statusInfo.loraChannel = loraAdapter->getChannel();
+    }
+#endif
 }
 
 // updateIPConflictStatus 方法已移至 IPManager 类
@@ -933,16 +1248,15 @@ bool NetworkManager::restartNetwork() {
     
     // 保存当前模式以便比较
     NetworkMode newMode = wifiConfig.mode;
+    bool keepAutoReconnect = autoReconnectEnabled;
     
-    if (newMode == NetworkMode::NETWORK_AP) {
+    if (wifiConfig.networkType == NetworkType::NET_WIFI && newMode == NetworkMode::NETWORK_AP) {
         LOG_INFO("NetworkManager: Restarting in AP mode...");
         
         // 断开STA连接
-        if (WiFi.status() == WL_CONNECTED) {
-            WiFi.disconnect(false);
-        }
+        disconnect();
+        autoReconnectEnabled = keepAutoReconnect;
         // 停止现有AP，再重新启动以确保配置正确
-        wifiManager->stopAPMode();
         delay(100);
         wifiManager->setNetworkConfig(wifiConfig);
         if (!wifiManager->startAPMode()) {
@@ -974,13 +1288,15 @@ bool NetworkManager::restartNetwork() {
     PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_NET_MODE_STA, "");
 #endif
     disconnect();
+    autoReconnectEnabled = keepAutoReconnect;
     delay(500);
-    return initialize();
+    bool ok = initialize();
+    wifiManager->setModeTransitioning(false);
+    return ok;
 }
 
 bool NetworkManager::checkInternetConnection() {
-    return WiFi.status() == WL_CONNECTED && 
-           WiFi.localIP() != IPAddress(0, 0, 0, 0);
+    return isNetworkConnected();
 }
 
 void NetworkManager::setConnectionCallback(NetworkEventCallback callback) {
@@ -1002,7 +1318,7 @@ void NetworkManager::setAutoReconnect(bool enabled) {
 }
 
 String NetworkManager::getConfigJSON() {
-    StaticJsonDocument<2048> doc;
+    StaticJsonDocument<3072> doc;
     
     // 基本配置
     doc["mode"] = static_cast<uint8_t>(wifiConfig.mode);
@@ -1050,6 +1366,33 @@ String NetworkManager::getConfigJSON() {
     // 域名配置
     doc["customDomain"] = wifiConfig.customDomain;
     doc["enableMDNS"] = wifiConfig.enableMDNS;
+
+    // 联网方式
+    doc["networkType"] = static_cast<uint8_t>(wifiConfig.networkType);
+
+    // 以太网配置
+    JsonObject ethCfg = doc.createNestedObject("ethernet");
+    ethCfg["spiMosi"] = wifiConfig.ethernet.spiMosi;
+    ethCfg["spiMiso"] = wifiConfig.ethernet.spiMiso;
+    ethCfg["spiSck"]  = wifiConfig.ethernet.spiSck;
+    ethCfg["csPin"]   = wifiConfig.ethernet.csPin;
+    ethCfg["rstPin"]  = wifiConfig.ethernet.rstPin;
+    ethCfg["intPin"]  = wifiConfig.ethernet.intPin;
+
+    // 4G 蜂窝配置
+    JsonObject cellCfg = doc.createNestedObject("cellular");
+    cellCfg["txPin"]    = wifiConfig.cellular.txPin;
+    cellCfg["rxPin"]    = wifiConfig.cellular.rxPin;
+    cellCfg["pwrPin"]   = wifiConfig.cellular.pwrPin;
+    cellCfg["baudRate"] = wifiConfig.cellular.baudRate;
+    cellCfg["apn"]      = wifiConfig.cellular.apn;
+
+    // LoRa 配置
+    JsonObject loraCfg = doc.createNestedObject("lora");
+    loraCfg["txPin"]    = wifiConfig.lora.txPin;
+    loraCfg["rxPin"]    = wifiConfig.lora.rxPin;
+    loraCfg["m1Pin"]    = wifiConfig.lora.m1Pin;
+    loraCfg["baudRate"] = wifiConfig.lora.baudRate;
     
     String result;
     serializeJson(doc, result);
@@ -1063,7 +1406,8 @@ bool NetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStorag
     if (newConfig.mode != wifiConfig.mode ||
         newConfig.apSSID != wifiConfig.apSSID ||
         newConfig.staSSID != wifiConfig.staSSID ||
-        newConfig.ipConfigType != wifiConfig.ipConfigType) {
+        newConfig.ipConfigType != wifiConfig.ipConfigType ||
+        newConfig.networkType != wifiConfig.networkType) {
         restartRequired = true;
     }
     
@@ -1093,7 +1437,7 @@ bool NetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStorag
 }
 
 bool NetworkManager::updateConfigFromJSON(const String& jsonConfig) {
-    StaticJsonDocument<2048> doc;
+    StaticJsonDocument<3072> doc;
     DeserializationError error = deserializeJson(doc, jsonConfig);
     
     if (error) {
@@ -1176,6 +1520,40 @@ bool NetworkManager::updateConfigFromJSON(const String& jsonConfig) {
         newConfig.customDomain = doc["customDomain"].as<String>();
     if (doc.containsKey("enableMDNS")) 
         newConfig.enableMDNS = doc["enableMDNS"].as<bool>();
+
+    // 联网方式
+    if (doc.containsKey("networkType"))
+        newConfig.networkType = static_cast<NetworkType>(doc["networkType"].as<uint8_t>());
+
+    // 以太网配置
+    if (doc.containsKey("ethernet") && doc["ethernet"].is<JsonObject>()) {
+        JsonObject eth = doc["ethernet"];
+        if (eth.containsKey("spiMosi")) newConfig.ethernet.spiMosi = eth["spiMosi"].as<int8_t>();
+        if (eth.containsKey("spiMiso")) newConfig.ethernet.spiMiso = eth["spiMiso"].as<int8_t>();
+        if (eth.containsKey("spiSck"))  newConfig.ethernet.spiSck  = eth["spiSck"].as<int8_t>();
+        if (eth.containsKey("csPin"))   newConfig.ethernet.csPin   = eth["csPin"].as<int8_t>();
+        if (eth.containsKey("rstPin"))  newConfig.ethernet.rstPin  = eth["rstPin"].as<int8_t>();
+        if (eth.containsKey("intPin"))  newConfig.ethernet.intPin  = eth["intPin"].as<int8_t>();
+    }
+
+    // 4G 蜂窝配置
+    if (doc.containsKey("cellular") && doc["cellular"].is<JsonObject>()) {
+        JsonObject cell = doc["cellular"];
+        if (cell.containsKey("txPin"))    newConfig.cellular.txPin    = cell["txPin"].as<int8_t>();
+        if (cell.containsKey("rxPin"))    newConfig.cellular.rxPin    = cell["rxPin"].as<int8_t>();
+        if (cell.containsKey("pwrPin"))   newConfig.cellular.pwrPin   = cell["pwrPin"].as<int8_t>();
+        if (cell.containsKey("baudRate")) newConfig.cellular.baudRate = cell["baudRate"].as<uint32_t>();
+        if (cell.containsKey("apn"))      newConfig.cellular.apn      = cell["apn"].as<String>();
+    }
+
+    // LoRa 配置
+    if (doc.containsKey("lora") && doc["lora"].is<JsonObject>()) {
+        JsonObject lora = doc["lora"];
+        if (lora.containsKey("txPin"))    newConfig.lora.txPin    = lora["txPin"].as<int8_t>();
+        if (lora.containsKey("rxPin"))    newConfig.lora.rxPin    = lora["rxPin"].as<int8_t>();
+        if (lora.containsKey("m1Pin"))    newConfig.lora.m1Pin    = lora["m1Pin"].as<int8_t>();
+        if (lora.containsKey("baudRate")) newConfig.lora.baudRate = lora["baudRate"].as<uint32_t>();
+    }
     
     return updateConfig(newConfig, true);
 }
@@ -1258,3 +1636,65 @@ DNSManager* NetworkManager::getDNSManager() {
 
 void NetworkManager::incrementTxCount() { statusInfo.txCount++; }
 void NetworkManager::incrementRxCount() { statusInfo.rxCount++; }
+
+// ============ 多网络类型支持 ============
+
+Client* NetworkManager::getActiveClient() {
+    switch (wifiConfig.networkType) {
+        case NetworkType::NET_WIFI:
+            // WiFi 使用默认的 WiFiClient（由 MQTTClient 内部创建）
+            return nullptr;  // 返回 nullptr 表示使用默认 WiFiClient
+
+#if FASTBEE_ENABLE_ETHERNET
+        case NetworkType::NET_ETHERNET:
+            if (ethernetAdapter && ethernetAdapter->isConnected()) {
+                return ethernetAdapter->getClient();
+            }
+            return nullptr;
+#endif
+
+#if FASTBEE_ENABLE_CELLULAR
+        case NetworkType::NET_4G:
+            if (cellularAdapter && cellularAdapter->isConnected()) {
+                return cellularAdapter->getClient();
+            }
+            return nullptr;
+#endif
+
+#if FASTBEE_ENABLE_LORA
+        case NetworkType::NET_LORA:
+            if (loraAdapter && loraAdapter->isConnected()) {
+                return loraAdapter->getClient();
+            }
+            return nullptr;
+#endif
+
+        default:
+            return nullptr;
+    }
+}
+
+bool NetworkManager::isNetworkConnected() {
+    switch (wifiConfig.networkType) {
+        case NetworkType::NET_WIFI:
+            return WiFi.status() == WL_CONNECTED;
+
+#if FASTBEE_ENABLE_ETHERNET
+        case NetworkType::NET_ETHERNET:
+            return ethernetAdapter && ethernetAdapter->isConnected();
+#endif
+
+#if FASTBEE_ENABLE_CELLULAR
+        case NetworkType::NET_4G:
+            return cellularAdapter && cellularAdapter->isConnected();
+#endif
+
+#if FASTBEE_ENABLE_LORA
+        case NetworkType::NET_LORA:
+            return loraAdapter && loraAdapter->isConnected();
+#endif
+
+        default:
+            return false;
+    }
+}

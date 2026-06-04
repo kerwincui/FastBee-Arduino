@@ -7,6 +7,12 @@
 
         // ============ 事件绑定 ============
         setupNetworkEvents() {
+            // 联网方式切换
+            const networkType = document.getElementById('network-type');
+            if (networkType) {
+                networkType.addEventListener('change', (e) => this._onNetworkTypeChange(e.target.value));
+            }
+
             // WiFi扫描按钮
             const wifiScanBtn = document.getElementById('wifi-scan-btn');
             if (wifiScanBtn) wifiScanBtn.addEventListener('click', () => this.scanWifiNetworks());
@@ -38,6 +44,33 @@
                 });
             }
 
+            // 以太网配置表单提交
+            const ethernetForm = document.getElementById('ethernet-form');
+            if (ethernetForm) {
+                ethernetForm.addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    this.saveEthernetConfig();
+                });
+            }
+
+            // 4G 配置表单提交
+            const cellularForm = document.getElementById('cellular-form');
+            if (cellularForm) {
+                cellularForm.addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    this.saveCellularConfig();
+                });
+            }
+
+            // LoRa 配置表单提交
+            const loraForm = document.getElementById('lora-form');
+            if (loraForm) {
+                loraForm.addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    this.saveLoRaConfig();
+                });
+            }
+
             // DHCP/静态IP切换
             const wifiDhcp = document.getElementById('wifi-dhcp');
             if (wifiDhcp) {
@@ -46,6 +79,21 @@
                 });
             }
 
+        },
+
+        /**
+         * 联网方式切换处理
+         */
+        _onNetworkTypeChange(value) {
+            const panels = ['wifi-panel', 'ethernet-panel', 'cellular-panel', 'lora-panel'];
+            panels.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) this.hideElement(el);
+            });
+
+            const panelMap = { '0': 'wifi-panel', '1': 'ethernet-panel', '2': 'cellular-panel', '3': 'lora-panel' };
+            const target = document.getElementById(panelMap[value] || 'wifi-panel');
+            if (target) this.showElement(target, 'block');
         },
 
         _renderWifiNote(text) {
@@ -113,6 +161,11 @@
                     const ap = data.ap || {};
                     const advanced = data.advanced || {};
 
+                    // ========== 联网方式 ==========
+                    const networkType = network.networkType !== undefined ? network.networkType.toString() : '0';
+                    this._setValue('network-type', networkType);
+                    this._onNetworkTypeChange(networkType);
+
                     // ========== 基本配置 ==========
                     this._setValue('wifi-mode', network.mode !== undefined ? network.mode.toString() : '2');
 
@@ -124,6 +177,7 @@
                     // ========== 热点配置 ==========
                     this._setValue('ap-ssid', ap.ssid || '');
                     this._setValue('ap-password', ap.password || '');
+                    this._setValue('ap-ip', ap.ip || '192.168.4.1');
                     this._setValue('ap-channel', ap.channel !== undefined ? ap.channel.toString() : '1');
                     this._setValue('ap-hidden', ap.hidden ? '1' : '0');
                     this._setValue('ap-max-connections', ap.maxConnections !== undefined ? ap.maxConnections.toString() : '4');
@@ -149,6 +203,30 @@
                     this._setValue('reconnect-interval', advanced.reconnectInterval !== undefined ? advanced.reconnectInterval.toString() : '5000');
                     this._setValue('max-reconnect-attempts', advanced.maxReconnectAttempts !== undefined ? advanced.maxReconnectAttempts.toString() : '5');
                     this._setValue('conflict-detection', advanced.conflictDetection !== undefined ? advanced.conflictDetection.toString() : '3');
+
+                    // ========== 以太网配置 ==========
+                    const eth = data.ethernet || {};
+                    this._setValue('eth-mosi', eth.spiMosi !== undefined ? eth.spiMosi.toString() : '11');
+                    this._setValue('eth-miso', eth.spiMiso !== undefined ? eth.spiMiso.toString() : '13');
+                    this._setValue('eth-sck', eth.spiSck !== undefined ? eth.spiSck.toString() : '12');
+                    this._setValue('eth-cs', eth.csPin !== undefined ? eth.csPin.toString() : '47');
+                    this._setValue('eth-rst', eth.rstPin !== undefined ? eth.rstPin.toString() : '48');
+                    this._setValue('eth-int', eth.intPin !== undefined ? eth.intPin.toString() : '14');
+
+                    // ========== 4G 配置 ==========
+                    const cell = data.cellular || {};
+                    this._setValue('cell-tx', cell.txPin !== undefined ? cell.txPin.toString() : '39');
+                    this._setValue('cell-rx', cell.rxPin !== undefined ? cell.rxPin.toString() : '40');
+                    this._setValue('cell-pwr', cell.pwrPin !== undefined ? cell.pwrPin.toString() : '38');
+                    this._setValue('cell-baud', cell.baudRate !== undefined ? cell.baudRate.toString() : '115200');
+                    this._setValue('cell-apn', cell.apn || 'CMNET');
+
+                    // ========== LoRa 配置 ==========
+                    const lora = data.lora || {};
+                    this._setValue('lora-tx', lora.txPin !== undefined ? lora.txPin.toString() : '39');
+                    this._setValue('lora-rx', lora.rxPin !== undefined ? lora.rxPin.toString() : '40');
+                    this._setValue('lora-m1', lora.m1Pin !== undefined ? lora.m1Pin.toString() : '41');
+                    this._setValue('lora-baud', lora.baudRate !== undefined ? lora.baudRate.toString() : '9600');
                 })
                 .catch(err => {
                     console.error('Load network config failed:', err);
@@ -181,6 +259,7 @@
          */
         saveNetworkConfig() {
             const config = {
+                networkType: document.getElementById('network-type')?.value || '0',
                 mode: document.getElementById('wifi-mode')?.value || '2',
                 staSSID: document.getElementById('wifi-ssid')?.value || '',
                 staPassword: document.getElementById('wifi-password')?.value || '',
@@ -315,6 +394,7 @@
             const config = {
                 apSSID: document.getElementById('ap-ssid')?.value || '',
                 apPassword: document.getElementById('ap-password')?.value || '',
+                apIP: document.getElementById('ap-ip')?.value || '192.168.4.1',
                 apChannel: document.getElementById('ap-channel')?.value || '1',
                 apHidden: document.getElementById('ap-hidden')?.value || '0',
                 apMaxConnections: document.getElementById('ap-max-connections')?.value || '4'
@@ -393,6 +473,81 @@
                         submitBtn.innerHTML = originalText;
                     }
                 });
+        },
+
+        /**
+         * 保存以太网配置
+         */
+        saveEthernetConfig() {
+            const config = {
+                networkType: '1',
+                ethernet: {
+                    spiMosi: parseInt(document.getElementById('eth-mosi')?.value || '11'),
+                    spiMiso: parseInt(document.getElementById('eth-miso')?.value || '13'),
+                    spiSck: parseInt(document.getElementById('eth-sck')?.value || '12'),
+                    csPin: parseInt(document.getElementById('eth-cs')?.value || '47'),
+                    rstPin: parseInt(document.getElementById('eth-rst')?.value || '48'),
+                    intPin: parseInt(document.getElementById('eth-int')?.value || '14')
+                }
+            };
+            apiPut('/api/network/config', config)
+                .then(res => {
+                    if (res && res.success) {
+                        Notification.success('以太网配置已保存', '网络设置');
+                    } else {
+                        Notification.error(res?.error || '保存失败', '网络设置');
+                    }
+                })
+                .catch(() => Notification.error('保存失败', '网络设置'));
+        },
+
+        /**
+         * 保存4G配置
+         */
+        saveCellularConfig() {
+            const config = {
+                networkType: '2',
+                cellular: {
+                    txPin: parseInt(document.getElementById('cell-tx')?.value || '39'),
+                    rxPin: parseInt(document.getElementById('cell-rx')?.value || '40'),
+                    pwrPin: parseInt(document.getElementById('cell-pwr')?.value || '38'),
+                    baudRate: parseInt(document.getElementById('cell-baud')?.value || '115200'),
+                    apn: document.getElementById('cell-apn')?.value || 'CMNET'
+                }
+            };
+            apiPut('/api/network/config', config)
+                .then(res => {
+                    if (res && res.success) {
+                        Notification.success('4G配置已保存', '网络设置');
+                    } else {
+                        Notification.error(res?.error || '保存失败', '网络设置');
+                    }
+                })
+                .catch(() => Notification.error('保存失败', '网络设置'));
+        },
+
+        /**
+         * 保存LoRa配置
+         */
+        saveLoRaConfig() {
+            const config = {
+                networkType: '3',
+                lora: {
+                    txPin: parseInt(document.getElementById('lora-tx')?.value || '39'),
+                    rxPin: parseInt(document.getElementById('lora-rx')?.value || '40'),
+                    m1Pin: parseInt(document.getElementById('lora-m1')?.value || '41'),
+                    baudRate: parseInt(document.getElementById('lora-baud')?.value || '9600')
+                }
+            };
+            apiPut('/api/network/config', config)
+                .then(res => {
+                    if (res && res.success) {
+                        Notification.success('LoRa配置已保存', '网络设置');
+                    } else {
+                        Notification.error(res?.error || '保存失败', '网络设置');
+                    }
+                })
+                .catch(() => Notification.error('保存失败', '网络设置'));
         },
 
         /**
@@ -494,10 +649,261 @@
                 });
         },
 
+        // ============ 网络状态显示 ============
+
+        /**
+         * 加载并显示网络状态
+         */
+        loadNetworkStatus() {
+            apiGet('/api/network/status')
+                .then(res => {
+                    if (!res || !res.success || !res.data) return;
+                    this._updateNetworkStatus(res.data);
+                })
+                .catch(err => {
+                    console.error('Failed to load network status:', err);
+                });
+        },
+
+        /**
+         * 更新网络状态显示
+         */
+        _updateNetworkStatus(data) {
+            const networkType = document.getElementById('network-type');
+            const typeValue = networkType ? networkType.value : '0';
+
+            // 隐藏所有状态面板
+            ['wifi-status-panel', 'ethernet-status-panel', 'cellular-status-panel', 'lora-status-panel'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.classList.add('fb-hidden');
+            });
+
+            // 根据联网方式显示对应面板
+            switch(typeValue) {
+                case '0': // WiFi
+                    this._updateWifiStatus(data);
+                    document.getElementById('wifi-status-panel')?.classList.remove('fb-hidden');
+                    break;
+                case '1': // Ethernet
+                    this._updateEthernetStatus(data);
+                    document.getElementById('ethernet-status-panel')?.classList.remove('fb-hidden');
+                    break;
+                case '2': // 4G
+                    this._updateCellularStatus(data);
+                    document.getElementById('cellular-status-panel')?.classList.remove('fb-hidden');
+                    break;
+                case '3': // LoRa
+                    this._updateLoRaStatus(data);
+                    document.getElementById('lora-status-panel')?.classList.remove('fb-hidden');
+                    break;
+            }
+        },
+
+        /**
+         * 更新WiFi状态显示
+         */
+        _updateWifiStatus(data) {
+            const statusBadge = document.getElementById('wifi-status-badge');
+            if (statusBadge) {
+                statusBadge.className = 'status-badge';
+                switch(data.status) {
+                    case 'connected':
+                        statusBadge.classList.add('status-connected');
+                        statusBadge.textContent = i18n.t('net-status-connected') || '已连接';
+                        break;
+                    case 'connecting':
+                        statusBadge.classList.add('status-connecting');
+                        statusBadge.textContent = i18n.t('net-status-connecting') || '连接中';
+                        break;
+                    case 'ap_mode':
+                        statusBadge.classList.add('status-ap-mode');
+                        statusBadge.textContent = i18n.t('net-status-ap') || 'AP模式';
+                        break;
+                    default:
+                        statusBadge.classList.add('status-disconnected');
+                        statusBadge.textContent = i18n.t('net-status-disconnected') || '未连接';
+                }
+            }
+
+            document.getElementById('wifi-mode-display').textContent = data.mode || '--';
+            document.getElementById('wifi-ssid-display').textContent = data.ssid || '--';
+            document.getElementById('wifi-ip-display').textContent = data.ipAddress || '--';
+            
+            // 信号强度
+            if (data.rssi !== undefined && data.rssi !== 0) {
+                const signalPercent = data.signalStrength || 0;
+                document.getElementById('wifi-signal-display').textContent = `${data.rssi} dBm (${signalPercent}%)`;
+            } else {
+                document.getElementById('wifi-signal-display').textContent = '--';
+            }
+
+            // 连接时长
+            if (data.connectedTime) {
+                const seconds = parseInt(data.connectedTime);
+                const hours = Math.floor(seconds / 3600);
+                const minutes = Math.floor((seconds % 3600) / 60);
+                const secs = seconds % 60;
+                document.getElementById('wifi-uptime-display').textContent = 
+                    `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            } else {
+                document.getElementById('wifi-uptime-display').textContent = '--';
+            }
+        },
+
+        /**
+         * 更新以太网状态显示
+         */
+        _updateEthernetStatus(data) {
+            const statusBadge = document.getElementById('eth-status-badge');
+            if (statusBadge) {
+                statusBadge.className = 'status-badge';
+                if (data.status === 'connected') {
+                    statusBadge.classList.add('status-connected');
+                    statusBadge.textContent = i18n.t('net-status-connected') || '已连接';
+                } else {
+                    statusBadge.classList.add('status-disconnected');
+                    statusBadge.textContent = i18n.t('net-status-disconnected') || '未连接';
+                }
+            }
+
+            document.getElementById('eth-ip-display').textContent = data.ipAddress || '--';
+            document.getElementById('eth-mac-display').textContent = data.macAddress || '--';
+            document.getElementById('eth-gateway-display').textContent = data.gateway || '--';
+            
+            if (data.connectedTime) {
+                const seconds = parseInt(data.connectedTime);
+                const hours = Math.floor(seconds / 3600);
+                const minutes = Math.floor((seconds % 3600) / 60);
+                const secs = seconds % 60;
+                document.getElementById('eth-uptime-display').textContent = 
+                    `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            } else {
+                document.getElementById('eth-uptime-display').textContent = '--';
+            }
+            
+            // 配置热点信息（混合模式）
+            document.getElementById('eth-ap-ssid-display').textContent = data.apSSID || '--';
+            document.getElementById('eth-ap-ip-display').textContent = data.apIPAddress || '--';
+        },
+
+        /**
+         * 更新4G蜂窝状态显示
+         */
+        _updateCellularStatus(data) {
+            const statusBadge = document.getElementById('cell-status-badge');
+            if (statusBadge) {
+                statusBadge.className = 'status-badge';
+                if (data.status === 'connected') {
+                    statusBadge.classList.add('status-connected');
+                    statusBadge.textContent = i18n.t('net-status-connected') || '已连接';
+                } else {
+                    statusBadge.classList.add('status-disconnected');
+                    statusBadge.textContent = i18n.t('net-status-disconnected') || '未连接';
+                }
+            }
+
+            // SIM卡状态（后端需要添加此字段）
+            document.getElementById('cell-sim-status').textContent = data.simStatus || (data.status === 'connected' ? '就绪' : '--');
+            document.getElementById('cell-operator').textContent = data.operator || '--';
+            
+            // 信号强度
+            if (data.rssi !== undefined && data.rssi !== 0) {
+                const signalPercent = data.signalStrength || 0;
+                document.getElementById('cell-signal').textContent = `${data.rssi} dBm (${signalPercent}%)`;
+            } else {
+                document.getElementById('cell-signal').textContent = '--';
+            }
+
+            document.getElementById('cell-ip-display').textContent = data.ipAddress || '--';
+            document.getElementById('cell-apn-display').textContent = data.apn || '--';
+            document.getElementById('cell-network-type').textContent = data.networkType || '--';
+            
+            if (data.connectedTime) {
+                const seconds = parseInt(data.connectedTime);
+                const hours = Math.floor(seconds / 3600);
+                const minutes = Math.floor((seconds % 3600) / 60);
+                const secs = seconds % 60;
+                document.getElementById('cell-uptime-display').textContent = 
+                    `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            } else {
+                document.getElementById('cell-uptime-display').textContent = '--';
+            }
+
+            // ICCID (SIM卡号)
+            document.getElementById('cell-iccid-display').textContent = data.iccId || data.iccid || '--';
+            
+            // IMEI (设备号)
+            document.getElementById('cell-imei-display').textContent = data.imei || '--';
+            
+            // 配置热点信息（混合模式）
+            document.getElementById('cell-ap-ssid-display').textContent = data.apSSID || '--';
+            document.getElementById('cell-ap-ip-display').textContent = data.apIPAddress || '--';
+        },
+
+        /**
+         * 更新LoRa状态显示
+         */
+        _updateLoRaStatus(data) {
+            const statusBadge = document.getElementById('lora-status-badge');
+            if (statusBadge) {
+                statusBadge.className = 'status-badge';
+                if (data.status === 'connected') {
+                    statusBadge.classList.add('status-connected');
+                    statusBadge.textContent = i18n.t('net-status-connected') || '已连接';
+                } else {
+                    statusBadge.classList.add('status-disconnected');
+                    statusBadge.textContent = i18n.t('net-status-disconnected') || '未连接';
+                }
+            }
+
+            document.getElementById('lora-mode-display').textContent = data.loraMode || '透传模式';
+            document.getElementById('lora-address').textContent = data.loraAddress || '--';
+            document.getElementById('lora-frequency').textContent = data.loraFrequency || '470MHz';
+            document.getElementById('lora-airrate').textContent = data.loraAirRate || '2.4kbps';
+            document.getElementById('lora-channel').textContent = data.loraChannel || '--';
+        },
+
+        /**
+         * 初始化网络状态刷新按钮
+         */
+        setupStatusRefresh() {
+            const refreshBtn = document.getElementById('refresh-status-btn');
+            if (refreshBtn) {
+                refreshBtn.addEventListener('click', () => {
+                    refreshBtn.classList.add('fa-spin');
+                    this.loadNetworkStatus();
+                    setTimeout(() => {
+                        refreshBtn.classList.remove('fa-spin');
+                    }, 1000);
+                });
+            }
+
+            // 联网方式切换时也刷新状态
+            const networkType = document.getElementById('network-type');
+            if (networkType) {
+                networkType.addEventListener('change', () => {
+                    setTimeout(() => this.loadNetworkStatus(), 300);
+                });
+            }
+
+            // 首次加载网络配置时同时加载状态
+            const originalLoadConfig = this.loadNetworkConfig.bind(this);
+            this.loadNetworkConfig = () => {
+                originalLoadConfig();
+                setTimeout(() => this.loadNetworkStatus(), 500);
+            };
+        },
+
     });
 
     // 自动绑定事件
     if (typeof AppState.setupNetworkEvents === 'function') {
         AppState.setupNetworkEvents();
+    }
+
+    // 初始化状态刷新功能
+    const networkModule = AppState.getModule('network');
+    if (networkModule && typeof networkModule.setupStatusRefresh === 'function') {
+        networkModule.setupStatusRefresh();
     }
 })();

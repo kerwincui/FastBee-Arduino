@@ -173,6 +173,9 @@
             history.replaceState(null, '', '/');
         }
         await this.loadPage('dashboard-page');
+        if (typeof this._refreshDeveloperModeState === 'function') {
+            this._refreshDeveloperModeState({ silent: true, noCache: true });
+        }
         var skeleton = document.getElementById('skeleton-screen');
         if (skeleton) skeleton.remove();
         setTimeout(function() {

@@ -121,7 +121,7 @@
                                         <option value="42" data-i18n="periph-opt-stepper">步进电机</option>
                                         <option value="43">编码器</option>
                                         <option value="44">单总线</option>
-                                        <option value="45">NeoPixel</option>
+                                        <option value="45" data-i18n="periph-opt-neopixel">WS2812B 灯珠</option>
                                         <option value="47" data-i18n="periph-opt-seven-segment">TM1637 数码管</option>
                                         <option value="60" data-i18n="peripheral-type-device-event">设备事件</option>
                                     </optgroup>
@@ -327,6 +327,26 @@
                                     </div>
                                     <div class="fb-form-group">
                                         <small data-i18n="stepper-pin-hint">引脚顺序：IN1, IN2, IN3, IN4；ULN2003 示例为 11,10,9,13</small>
+                                    </div>
+                                </div>
+
+                                <!-- WS2812B / NeoPixel 参数 -->
+                                <div id="neopixel-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10" data-i18n="neopixel-params-title">WS2812B 灯珠参数</h4>
+                                    <div class="fb-form-group">
+                                        <label for="neopixel-count" data-i18n="neopixel-count-label">灯珠数量</label>
+                                        <input type="number" id="neopixel-count" class="" value="1"
+                                            min="1" max="64">
+                                        <small data-i18n="neopixel-count-help">建议 ESP32 精简版先使用 1-16 颗，最大限制 64 颗</small>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label for="neopixel-brightness" data-i18n="neopixel-brightness-label">默认亮度 (0-255)</label>
+                                        <input type="number" id="neopixel-brightness" class="" value="64"
+                                            min="0" max="255">
+                                        <small data-i18n="neopixel-brightness-help">亮度越高耗电越大，测试建议 32-96</small>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <small data-i18n="neopixel-pin-hint">引脚顺序：只填 1 个数据引脚 DIN，例如 GPIO4</small>
                                     </div>
                                 </div>
                             </div>

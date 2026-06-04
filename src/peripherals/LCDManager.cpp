@@ -48,11 +48,45 @@ bool LCDManager::initialize(const PeripheralConfig& config)
             _i2cAddress = 0x3C;
             _resetPin = -1;
             
-            // 初始化 I2C
-            Wire.begin(config.pins[0], config.pins[1]);
+            // 验证引脚有效性后再初始化
+            int sda = config.pins[0];
+            int scl = config.pins[1];
             
-            LOG_INFOF("LCD Manager: I2C mode, SDA=%d, SCL=%d, Addr=0x%02X", 
-                      config.pins[0], config.pins[1], _i2cAddress);
+#if CONFIG_IDF_TARGET_ESP32S3
+            // ESP32-S3 有效 GPIO: 0-21, 33-48 (排除 22-32)
+            auto isValidGpio = [](int pin) {
+                return (pin >= 0 && pin <= 21) || (pin >= 33 && pin <= 48);
+            };
+            bool pinsValid = isValidGpio(sda) && isValidGpio(scl);
+#elif CONFIG_IDF_TARGET_ESP32C3
+            // ESP32-C3 有效 GPIO: 0-21
+            bool pinsValid = (sda >= 0 && sda <= 21) && (scl >= 0 && scl <= 21);
+#elif CONFIG_IDF_TARGET_ESP32C6
+            // ESP32-C6 有效 GPIO: 0-30
+            bool pinsValid = (sda >= 0 && sda <= 30) && (scl >= 0 && scl <= 30);
+#elif CONFIG_IDF_TARGET_ESP32S2
+            // ESP32-S2 有效 GPIO: 0-46 (排除 22-25 Flash/PSRAM)
+            auto isValidGpioS2 = [](int pin) {
+                return (pin >= 0 && pin <= 21) || (pin >= 26 && pin <= 46);
+            };
+            bool pinsValid = isValidGpioS2(sda) && isValidGpioS2(scl);
+#else
+            // ESP32 经典版 有效 GPIO: 0-19, 21-23, 25-27, 32-39
+            auto isValidGpioClassic = [](int pin) {
+                return (pin >= 0 && pin <= 19) || pin == 21 || pin == 22 || pin == 23 ||
+                       (pin >= 25 && pin <= 27) || (pin >= 32 && pin <= 39);
+            };
+            bool pinsValid = isValidGpioClassic(sda) && isValidGpioClassic(scl);
+#endif
+            
+            if (pinsValid) {
+                Wire.begin(sda, scl);
+                LOG_INFOF("LCD Manager: I2C mode, SDA=%d, SCL=%d, Addr=0x%02X", 
+                          sda, scl, _i2cAddress);
+            } else {
+                LOG_WARNINGF("LCD Manager: Invalid I2C pins (SDA=%d, SCL=%d), skipping I2C init", sda, scl);
+                return false;
+            }
         }
         // SPI 模式：pins[0] = MOSI, pins[1] = SCK, pins[2] = CS, pins[3] = DC
         else if (_interface == DisplayInterface::SPI_MODE && config.pinCount >= 4)

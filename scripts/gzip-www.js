@@ -131,7 +131,10 @@ function transformProdConfigFile(sourcePath, normalizedRel) {
         doc.rules = rules
             .map((rule) => {
                 const ruleId = String((rule && rule.id) || '');
-                const keepDisabledTemplate = ruleId.startsWith('exec_stepper_');
+                const keepDisabledTemplate = ruleId.startsWith('exec_stepper_') ||
+                    ruleId.startsWith('exec_adc_voltage_') ||
+                    ruleId.startsWith('exec_ws2812b_') ||
+                    ruleId.startsWith('exec_uart_debug_');
                 if (rule && rule.enabled === false && !keepDisabledTemplate) return null;
                 if (unsupportedProtocols.has(Number(rule.protocolType))) return null;
                 const actions = Array.isArray(rule.actions)
@@ -152,6 +155,9 @@ function transformProdConfigFile(sourcePath, normalizedRel) {
             doc.peripherals = doc.peripherals.filter((item) => {
                 if (String(item.id || '') === 'modbus_tcp') return false;
                 if (String(item.id || '') === 'stepper') return true;
+                if (String(item.id || '') === 'adc') return true;
+                if (String(item.id || '') === 'ws2812b') return true;
+                if (String(item.id || '') === 'uart_debug') return true;
                 return item.enabled !== false;
             });
         }

@@ -36,6 +36,9 @@ void DeviceRouteHandler::setupRoutes(AsyncWebServer* server) {
     // JSON body handler（构造函数中已预分配）
     server->addHandler(_deviceJsonHandler);
 
+    server->on("/api/device/developer-mode", HTTP_POST,
+              [this](AsyncWebServerRequest* request) { handleSetDeveloperMode(request); });
+
     // Device time
     server->on("/api/device/time", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
@@ -196,6 +199,9 @@ void DeviceRouteHandler::handleSaveDeviceConfigJson(AsyncWebServerRequest* reque
         doc["cacheDuration"] = cd;
         ctx->cacheDuration = (uint32_t)cd;
     }
+    if (!doc["developerModeEnabled"].is<bool>()) {
+        doc["developerModeEnabled"] = true;
+    }
 
     File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
     if (!f) { ctx->sendError(request, 500, "Failed to save device config"); return; }
@@ -224,6 +230,9 @@ void DeviceRouteHandler::handleGetDeviceConfig(AsyncWebServerRequest* request) {
             DeserializationError err = deserializeJson(fileCfg, f);
             f.close();
             if (!err) {
+                if (!fileCfg["developerModeEnabled"].is<bool>()) {
+                    fileCfg["developerModeEnabled"] = true;
+                }
                 JsonDocument doc;
                 doc["success"] = true;
                 doc["data"] = fileCfg;
@@ -237,7 +246,49 @@ void DeviceRouteHandler::handleGetDeviceConfig(AsyncWebServerRequest* request) {
     doc["success"] = true;
     doc["data"]["deviceName"] = "FastBee-ESP32";
     doc["data"]["deviceId"] = String((uint32_t)ESP.getEfuseMac(), HEX);
+    doc["data"]["developerModeEnabled"] = true;
     HandlerUtils::sendJsonStream(request, doc);
+}
+
+void DeviceRouteHandler::handleSetDeveloperMode(AsyncWebServerRequest* request) {
+    if (!ctx->checkPermission(request, "config.edit")) {
+        ctx->sendUnauthorized(request);
+        return;
+    }
+
+    String password = ctx->getParamValue(request, "password", "");
+    if (!ctx->verifyCurrentUserPassword(request, password)) {
+        ctx->sendError(request, 403, "Password verification failed");
+        return;
+    }
+
+    bool enabled = ctx->getParamBool(request, "enabled", true);
+    JsonDocument doc;
+    if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
+        File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+        if (f) {
+            deserializeJson(doc, f);
+            f.close();
+        }
+    }
+
+    if (!doc["deviceName"].is<String>()) doc["deviceName"] = "FastBee-ESP32";
+    if (!doc["deviceId"].is<String>()) doc["deviceId"] = String((uint32_t)ESP.getEfuseMac(), HEX);
+    doc["developerModeEnabled"] = enabled;
+
+    File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
+    if (!f) {
+        ctx->sendError(request, 500, "Failed to save device config");
+        return;
+    }
+    serializeJsonPretty(doc, f);
+    f.close();
+
+    JsonDocument resp;
+    resp["success"] = true;
+    resp["message"] = enabled ? "Developer mode enabled" : "Developer mode disabled";
+    resp["data"]["developerModeEnabled"] = enabled;
+    HandlerUtils::sendJsonStream(request, resp);
 }
 
 void DeviceRouteHandler::handleSaveDeviceConfig(AsyncWebServerRequest* request) {
@@ -257,6 +308,7 @@ void DeviceRouteHandler::handleSaveDeviceConfig(AsyncWebServerRequest* request) 
         devId = "FBE" + mac;
     }
     doc["deviceId"] = devId;
+    doc["developerModeEnabled"] = ctx->isDeveloperModeEnabled();
 
     File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
     if (!f) {

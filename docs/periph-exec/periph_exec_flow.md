@@ -554,6 +554,14 @@ actionValue 格式：slave,addr,value
 | `dht11` | DHT11 温湿度 | 单总线时序 | 温度 0-50°C, 湿度 20-90% |
 | `dht22` | DHT22/AM2302 | 单总线时序 | 温度 -40~80°C, 湿度 0-100% |
 | `ds18b20` | DS18B20 数字温度 | OneWire 协议 | -55~125°C, 12 位精度 |
+| `ultrasonic` | HC-SR04 超声波 | Trig+Echo | 输出 `distance`，单位 cm |
+| `current` | 电流型传感器 | ADC+线性校准 | 输出 `current`，支持 ACS712 等 |
+| `voltage` | 电压型传感器 | ADC+分压比还原 | 输出 `voltage` |
+| `SHT31` | SHT31 温湿度 | I2C 轻量驱动 | 输出 `temperature`、`humidity` |
+| `AHT20` | AHT20 温湿度 | I2C 轻量驱动 | 输出 `temperature`、`humidity` |
+| `BH1750` | BH1750 光照 | I2C 轻量驱动 | 输出 `illuminance`，单位 lx |
+| `BMP280` | BMP280 气压 | I2C 高级驱动 | 输出 `temperature`、`pressure`、`altitude`，建议 S3-full |
+| `MPU6050` | MPU6050 姿态 | I2C 高级驱动 | 输出加速度/温度/角速度，建议 S3-full |
 
 **非阻塞保障：** DHT11 读取约 25ms、DS18B20 转换约 750ms，由于始终在独立异步任务中执行，不阻塞主循环；驱动内置缓存（DHT 2s / DS18B20 1s）避免过频读取。
 

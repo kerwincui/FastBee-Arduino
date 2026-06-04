@@ -11,6 +11,8 @@
 #include <WiFiUdp.h>
 // DNS服务器已移除，仅保留mDNS功能
 
+#if FASTBEE_ENABLE_MDNS
+
 /**
  * @brief 探测网络上是否已有指定 hostname 的 mDNS 设备
  * @param hostname 要探测的 hostname（不含 .local 后缀）
@@ -346,3 +348,49 @@ void DNSManager::restartMDNS(const String& hostname) {
 String DNSManager::getActualHostname() const {
     return actualHostname;
 }
+
+#else
+
+DNSManager::DNSManager() = default;
+DNSManager::~DNSManager() = default;
+
+bool DNSManager::initialize() {
+    LOG_INFO("DNSManager: mDNS disabled by feature flag");
+    return true;
+}
+
+bool DNSManager::startMDNS(const String&) {
+    return false;
+}
+
+void DNSManager::stopMDNS() {
+}
+
+bool DNSManager::isMDNSStarted() const {
+    return false;
+}
+
+void DNSManager::setCustomDomain(const String& domain) {
+    customDomain = domain;
+}
+
+String DNSManager::getCustomDomain() const {
+    return customDomain;
+}
+
+void DNSManager::setMDNSEnabled(bool enabled) {
+    mdnsEnabled = enabled;
+}
+
+bool DNSManager::checkMDNSHealth() {
+    return false;
+}
+
+void DNSManager::restartMDNS(const String&) {
+}
+
+String DNSManager::getActualHostname() const {
+    return "";
+}
+
+#endif

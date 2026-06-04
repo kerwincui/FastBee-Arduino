@@ -12,6 +12,7 @@
 #include <functional>
 #include "PeripheralTypes.h"
 #include "PeripheralConfig.h"
+#include "ResourceProfile.h"
 #include "utils/StaticPoolAllocator.h"
 
 // 外设容器静态池参数（T1：根治 std::map 节点堆碎片）
@@ -224,6 +225,9 @@ public:
     bool controlStepper(const String& id, const String& action, int value = 0);
     bool stopStepper(const String& id);
 
+    // WS2812B / NeoPixel 控制（RMT 非阻塞发送，规则层定时调用可实现循环）
+    bool controlNeoPixel(const String& id, const String& action, const String& value = "");
+
     // 线程安全：获取互斥量句柄（供 Ticker 回调非阻塞尝试加锁）
     SemaphoreHandle_t getMutex() const { return _mutex; }
 
@@ -246,6 +250,12 @@ private:
 
     std::map<String, StepperTickerData*, std::less<String>,
              FastBee::SmallNodeAllocator<std::pair<const String, StepperTickerData*>>> stepperTickers;
+
+    std::map<String, uint8_t, std::less<String>,
+             FastBee::SmallNodeAllocator<std::pair<const String, uint8_t>>> neopixelRainbowIndex;
+
+    std::map<String, uint8_t, std::less<String>,
+             FastBee::SmallNodeAllocator<std::pair<const String, uint8_t>>> uartPortById;
     
     // Modbus 通信委托
     ModbusCoilWriteFunc _modbusCoilWrite = nullptr;
@@ -255,6 +265,8 @@ private:
     bool validateConfig(const PeripheralConfig& config, String& errorMsg);
     bool setupHardware(const PeripheralConfig& config);
     bool teardownHardware(const PeripheralConfig& config);
+    bool setupUartHardware(const PeripheralConfig& config);
+    HardwareSerial* getUartSerial(const String& id);
     
     // GPIO硬件设置
     bool setupGPIOPin(const PeripheralConfig& config);

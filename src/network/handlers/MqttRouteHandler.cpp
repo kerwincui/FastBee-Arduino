@@ -20,6 +20,28 @@ static const char* MQTT_AES_IV = "wumei-smart-open";
 // MQTT 测试辅助函数
 // ============================================================================
 
+static Client* selectMqttTestClient(WebHandlerContext* ctx, WiFiClient& fallbackClient, String& errorMessage) {
+    errorMessage = "";
+    NetworkManager* netMgr = (ctx && ctx->networkManager)
+                                 ? static_cast<NetworkManager*>(ctx->networkManager)
+                                 : nullptr;
+    if (!netMgr || netMgr->getNetworkType() == NetworkType::NET_WIFI) {
+        return &fallbackClient;
+    }
+
+    if (!netMgr->isNetworkConnected()) {
+        errorMessage = "Active network is not connected";
+        return nullptr;
+    }
+
+    Client* activeClient = netMgr->getActiveClient();
+    if (!activeClient) {
+        errorMessage = "Active network client is unavailable";
+        return nullptr;
+    }
+    return activeClient;
+}
+
 static String aesEncryptForMqttTest(const String& plainData, const String& key, const String& iv) {
     if (key.length() < 16 || iv.length() < 16) return "";
 
@@ -353,7 +375,17 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
             doc["data"]["errorMessage"] = aesErr.isEmpty() ? "AES password generation failed" : aesErr;
         } else {
             WiFiClient testWifi;
-            PubSubClient testClient(testWifi);
+            String transportError;
+            Client* testTransport = selectMqttTestClient(ctx, testWifi, transportError);
+            if (!testTransport) {
+                doc["data"]["connected"] = false;
+                doc["data"]["error"] = -9;
+                doc["data"]["errorMessage"] = transportError;
+                HandlerUtils::sendJsonStream(request, doc);
+                return;
+            }
+
+            PubSubClient testClient(*testTransport);
             testClient.setServer(server.c_str(), port);
             testClient.setBufferSize(512);
 
@@ -401,8 +433,23 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
         connPassword = password + "&" + authCode;
     }
 
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["data"]["clientId"] = clientId;  // 返回实际使用的clientId
+    doc["data"]["authType"] = "Simple";  // 标识认证类型
+
     WiFiClient testWifi;
-    PubSubClient testClient(testWifi);
+    String transportError;
+    Client* testTransport = selectMqttTestClient(ctx, testWifi, transportError);
+    if (!testTransport) {
+        doc["data"]["connected"] = false;
+        doc["data"]["error"] = -9;
+        doc["data"]["errorMessage"] = transportError;
+        HandlerUtils::sendJsonStream(request, doc);
+        return;
+    }
+
+    PubSubClient testClient(*testTransport);
     testClient.setServer(server.c_str(), port);
     testClient.setBufferSize(512);
 
@@ -411,10 +458,6 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
         username.isEmpty() ? nullptr : username.c_str(),
         connPassword.isEmpty() ? nullptr : connPassword.c_str());
 
-    JsonDocument doc;
-    doc["success"] = true;
-    doc["data"]["clientId"] = clientId;  // 返回实际使用的clientId
-    doc["data"]["authType"] = "Simple";  // 标识认证类型
     doc["data"]["connected"] = connected;
     if (!connected) {
         doc["data"]["error"] = testClient.state();

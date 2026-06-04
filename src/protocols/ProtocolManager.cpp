@@ -8,11 +8,40 @@
 #include "protocols/ProtocolManager.h"
 #include "systems/LoggerSystem.h"
 #include "systems/ConfigStorage.h"
+#include "core/FastBeeFramework.h"
 #include "core/PeriphExecManager.h"
 #include "core/FeatureFlags.h"
+#include "network/NetworkManager.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <memory>
+
+#if FASTBEE_ENABLE_MQTT
+static bool configureMqttTransport(MQTTClient* mqttClient) {
+    if (!mqttClient) return false;
+
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    NetworkManager* netMgr = fw ? static_cast<NetworkManager*>(fw->getNetworkManager()) : nullptr;
+    if (!netMgr || netMgr->getNetworkType() == NetworkType::NET_WIFI) {
+        mqttClient->setTransportClient(nullptr);
+        return true;
+    }
+
+    if (!netMgr->isNetworkConnected()) {
+        LOG_WARNING("Protocol Manager: MQTT transport unavailable, active network is offline");
+        return false;
+    }
+
+    Client* transport = netMgr->getActiveClient();
+    if (!transport) {
+        LOG_WARNING("Protocol Manager: MQTT transport unavailable, active Client is null");
+        return false;
+    }
+
+    mqttClient->setTransportClient(transport);
+    return true;
+}
+#endif
 
 ProtocolManager::ProtocolManager() 
     : isInitialized(false)
@@ -386,6 +415,11 @@ bool ProtocolManager::restartMQTT() {
     mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
         handleMessage(ProtocolType::MQTT, topic, message);
     });
+    if (!configureMqttTransport(mqttClient.get())) {
+        LOG_WARNING("Protocol Manager: MQTT restart aborted, no usable transport");
+        mqttClient.reset();
+        return false;
+    }
     
     // 设置状态变化回调（SSE 推送用）
     if (mqttStatusSSECallback) {
@@ -448,6 +482,11 @@ bool ProtocolManager::restartMQTTDeferred() {
     mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
         handleMessage(ProtocolType::MQTT, topic, message);
     });
+    if (!configureMqttTransport(mqttClient.get())) {
+        LOG_WARNING("Protocol Manager: MQTT deferred restart aborted, no usable transport");
+        mqttClient.reset();
+        return false;
+    }
     
     // 设置状态变化回调（SSE 推送用）
     if (mqttStatusSSECallback) {
@@ -661,6 +700,11 @@ bool ProtocolManager::restartModbus() {
                 dev.pwmResolution   = d["pwmResolution"] | (uint8_t)8;
                 dev.pidDecimals     = d["pidDecimals"] | (uint8_t)1;
                 dev.motorDecimals   = d["motorDecimals"] | (uint8_t)0;
+                dev.motorMinPosition = d["motorMinPosition"] | (int32_t)0;
+                dev.motorMaxPosition = d["motorMaxPosition"] | (int32_t)0;
+                dev.motorCurrentPosition = d["motorCurrentPosition"] | (int32_t)0;
+                dev.motorMoveStep = d["motorMoveStep"] | (int32_t)0;
+                dev.motorLastPulse = d["motorLastPulse"] | (uint16_t)0;
                 dev.enabled         = d["enabled"] | true;
                 if (d.containsKey("pidAddrs") && d["pidAddrs"].is<JsonArray>()) {
                     JsonArray pa = d["pidAddrs"].as<JsonArray>();
@@ -1030,6 +1074,12 @@ bool ProtocolManager::initMQTT(void* config) {
         handleMessage(ProtocolType::MQTT, topic, message);
     });
 
+    if (!configureMqttTransport(mqttClient.get())) {
+        LOG_WARNING("Protocol Manager: MQTT init aborted, no usable transport");
+        mqttClient.reset();
+        return false;
+    }
+
     // 设置状态变化回调（SSE 推送用）
     if (mqttStatusSSECallback) {
         mqttClient->setStatusChangeCallback([this](const String& data) {
@@ -1215,6 +1265,11 @@ void ProtocolManager::registerModbusSubDevices(const ModbusConfig& config) {
         // 电机参数
         memcpy(pCfg.params.modbus.motorRegs, dev.motorRegs, sizeof(dev.motorRegs));
         pCfg.params.modbus.motorDecimals = dev.motorDecimals;
+        pCfg.params.modbus.motorMinPosition = dev.motorMinPosition;
+        pCfg.params.modbus.motorMaxPosition = dev.motorMaxPosition;
+        pCfg.params.modbus.motorCurrentPosition = dev.motorCurrentPosition;
+        pCfg.params.modbus.motorMoveStep = dev.motorMoveStep;
+        pCfg.params.modbus.motorLastPulse = dev.motorLastPulse;
         
         if (pm.addPeripheral(pCfg)) {
             LOG_INFOF("Protocol Manager: Registered Modbus sub-device '%s' as peripheral 'modbus:%d'",

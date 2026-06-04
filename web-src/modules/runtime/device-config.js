@@ -51,6 +51,9 @@
             const devFactoryBtn = document.getElementById('dev-factory-btn');
             if (devFactoryBtn) devFactoryBtn.addEventListener('click', () => this.factoryReset());
 
+            const devModeToggleBtn = document.getElementById('dev-mode-toggle-btn');
+            if (devModeToggleBtn) devModeToggleBtn.addEventListener('click', () => this.toggleDeveloperMode());
+
             const configExportBtn = document.getElementById('dev-config-export-btn');
             if (configExportBtn) configExportBtn.addEventListener('click', () => this.exportDeviceConfigBundle());
 
@@ -96,6 +99,8 @@
                     this._setValue('dev-timezone', d.timezone || 'CST-8');
                     this._setValue('dev-sync-interval', d.syncInterval !== undefined ? String(d.syncInterval) : '3600');
                     this._setValue('dev-cache-duration', d.cacheDuration !== undefined ? String(d.cacheDuration) : '86400');
+                    this.setDeveloperModeState(d.developerModeEnabled !== false);
+                    this._renderDeveloperModeState();
                 })
                 .catch(err => console.error('Load device config failed:', err));
             setTimeout(function() {
@@ -458,6 +463,75 @@
                         Notification.error(i18n.t('dev-sys-factory-fail'), i18n.t('dev-sys-factory-title-msg'));
                     }
                 });
+        },
+
+        _renderDeveloperModeState() {
+            const enabled = this.isDeveloperModeEnabled();
+            const statusEl = document.getElementById('dev-mode-status');
+            const btn = document.getElementById('dev-mode-toggle-btn');
+            if (statusEl) {
+                statusEl.textContent = enabled
+                    ? (i18n.t('dev-mode-enabled') || '已启用')
+                    : (i18n.t('dev-mode-disabled') || '已禁用');
+                statusEl.classList.toggle('u-text-danger', !enabled);
+            }
+            if (btn) {
+                btn.classList.remove('fb-btn-warning');
+                btn.classList.toggle('fb-btn-danger', enabled);
+                btn.classList.toggle('fb-btn-success', !enabled);
+                btn.innerHTML = enabled
+                    ? '<i class="fas fa-lock"></i> <span>' + (i18n.t('dev-mode-disable-btn') || '禁用开发环境') + '</span>'
+                    : '<i class="fas fa-unlock"></i> <span>' + (i18n.t('dev-mode-enable-btn') || '启用开发环境') + '</span>';
+            }
+        },
+
+        toggleDeveloperMode() {
+            const enabled = this.isDeveloperModeEnabled();
+            const passwordInput = document.getElementById('dev-mode-password');
+            const btn = document.getElementById('dev-mode-toggle-btn');
+            const password = passwordInput ? passwordInput.value : '';
+            if (!password) {
+                Notification.warning(i18n.t('dev-mode-password-required') || '请输入登录密码', i18n.t('dev-mode-title') || '开发环境功能');
+                if (passwordInput) passwordInput.focus();
+                return;
+            }
+            const confirmText = enabled
+                ? (i18n.t('dev-mode-disable-confirm') || '确定要禁用开发环境功能吗？')
+                : (i18n.t('dev-mode-enable-confirm') || '确定要启用开发环境功能吗？');
+            if (!confirm(confirmText)) return;
+
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> <span>' + (i18n.t('processing') || '处理中...') + '</span>';
+            }
+            apiPost('/api/device/developer-mode', {
+                enabled: enabled ? 'false' : 'true',
+                password: password
+            }).then((res) => {
+                if (res && res.success) {
+                    const nextEnabled = res.data ? res.data.developerModeEnabled !== false : !enabled;
+                    this.setDeveloperModeState(nextEnabled);
+                    this._renderDeveloperModeState();
+                    if (passwordInput) passwordInput.value = '';
+                    Notification.success(
+                        nextEnabled ? (i18n.t('dev-mode-enable-ok') || '开发环境已启用') : (i18n.t('dev-mode-disable-ok') || '开发环境已禁用'),
+                        i18n.t('dev-mode-title') || '开发环境功能'
+                    );
+                } else {
+                    Notification.error(res?.error || (i18n.t('dev-mode-save-fail') || '开发环境设置失败'), i18n.t('dev-mode-title') || '开发环境功能');
+                }
+            }).catch((err) => {
+                if (typeof window.apiNotifyError === 'function') {
+                    window.apiNotifyError(err, i18n.t('dev-mode-save-fail') || '开发环境设置失败', i18n.t('dev-mode-title') || '开发环境功能');
+                } else {
+                    Notification.error(i18n.t('dev-mode-save-fail') || '开发环境设置失败', i18n.t('dev-mode-title') || '开发环境功能');
+                }
+            }).finally(() => {
+                if (btn) {
+                    btn.disabled = false;
+                    this._renderDeveloperModeState();
+                }
+            });
         },
 
         _setConfigTransferStatus(text) {

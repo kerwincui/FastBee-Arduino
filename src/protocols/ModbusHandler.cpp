@@ -400,6 +400,11 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
                 dev.pwmResolution   = d["pwmResolution"] | (uint8_t)8;
                 dev.pidDecimals     = d["pidDecimals"] | (uint8_t)1;
                 dev.motorDecimals   = d["motorDecimals"] | (uint8_t)0;
+                dev.motorMinPosition = d["motorMinPosition"] | (int32_t)0;
+                dev.motorMaxPosition = d["motorMaxPosition"] | (int32_t)0;
+                dev.motorCurrentPosition = d["motorCurrentPosition"] | (int32_t)0;
+                dev.motorMoveStep = d["motorMoveStep"] | (int32_t)0;
+                dev.motorLastPulse = d["motorLastPulse"] | (uint16_t)0;
                 dev.enabled         = d["enabled"] | true;
                 if (d.containsKey("pidAddrs") && d["pidAddrs"].is<JsonArray>()) {
                     JsonArray pa = d["pidAddrs"].as<JsonArray>();
@@ -526,9 +531,17 @@ bool ModbusHandler::saveConfigToFile(const String& configPath) {
         d["pwmRegBase"]      = dev.pwmRegBase;
         d["pwmResolution"]   = dev.pwmResolution;
         d["pidDecimals"]     = dev.pidDecimals;
+        d["motorDecimals"]   = dev.motorDecimals;
+        d["motorMinPosition"] = dev.motorMinPosition;
+        d["motorMaxPosition"] = dev.motorMaxPosition;
+        d["motorCurrentPosition"] = dev.motorCurrentPosition;
+        d["motorMoveStep"] = dev.motorMoveStep;
+        d["motorLastPulse"] = dev.motorLastPulse;
         d["enabled"]         = dev.enabled;
         JsonArray pa = d.createNestedArray("pidAddrs");
         for (int j = 0; j < 6; j++) pa.add(dev.pidAddrs[j]);
+        JsonArray mr = d.createNestedArray("motorRegs");
+        for (int j = 0; j < 5; j++) mr.add(dev.motorRegs[j]);
     }
     
     String jsonContent;
@@ -1212,6 +1225,14 @@ const ModbusSubDevice& ModbusHandler::getSubDevice(uint8_t index) const {
     static const ModbusSubDevice emptyDevice;
     if (index >= config.master.deviceCount) return emptyDevice;
     return config.master.devices[index];
+}
+
+bool ModbusHandler::updateMotorRuntime(uint8_t index, int32_t currentPosition, uint16_t lastPulse) {
+    if (index >= config.master.deviceCount) return false;
+    ModbusSubDevice& dev = config.master.devices[index];
+    dev.motorCurrentPosition = currentPosition;
+    dev.motorLastPulse = lastPulse;
+    return true;
 }
 
 String ModbusHandler::buildSensorId(uint8_t deviceIndex, uint16_t channel) const {

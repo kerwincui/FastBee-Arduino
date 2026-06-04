@@ -67,6 +67,9 @@ public:
     static String calculateFileHash(const String& path);
     static bool verifyFileIntegrity(const String& path, const String& expectedHash);
     
+    // 原子写入（先写临时文件，再 rename，防止断电导致文件损坏）
+    static bool atomicWriteFile(const String& path, const String& content);
+    
     // 文本文件操作
     static bool appendToFile(const String& path, const String& content);
     static std::vector<String> readLines(const String& path);

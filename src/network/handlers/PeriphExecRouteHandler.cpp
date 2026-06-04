@@ -6,6 +6,7 @@
 #include "./network/WebHandlerContext.h"
 #include "core/PeriphExecManager.h"
 #include "core/PeripheralManager.h"
+#include "core/ResourceProfile.h"
 #include "core/AsyncExecTypes.h"  // MutexGuard
 #if FASTBEE_ENABLE_MQTT
 #include "protocols/MQTTClient.h"
@@ -208,7 +209,10 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
 
             String sensorLabel = sDoc["sensorLabel"].as<String>();
             if (sensorLabel.isEmpty()) {
-                sensorLabel = (dataField == "humidity") ? "湿度" : "温度";
+                if (dataField == "humidity") sensorLabel = "湿度";
+                else if (dataField == "voltage") sensorLabel = "电压";
+                else if (dataField == "value") sensorLabel = "数值";
+                else sensorLabel = "温度";
             }
             String unit = sDoc["unit"].as<String>();
 
@@ -244,7 +248,6 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         endIdx = (startIdx < total) ? min(startIdx + pageSize, total) : startIdx;
 
         items.reserve(endIdx - startIdx);
-        char itemBuf[512];
         for (int i = startIdx; i < endIdx; i++) {
             const auto& rule = *ptrs[i];
 
@@ -268,24 +271,32 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
                 if (periph) targetPeriphName = periph->name;
             }
 
-            snprintf(itemBuf, sizeof(itemBuf),
-                "{\"id\":\"%s\",\"name\":\"%s\",\"enabled\":%s,"
-                "\"execMode\":%d,\"reportAfterExec\":%s,"
-                "\"triggerCount\":%d,\"actionCount\":%d,"
-                "\"triggerSummary\":%d,\"actionSummary\":%d,"
-                "\"hasSetMode\":%s,"
-                "\"targetPeriphName\":\"%s\"}",
-                rule.id.c_str(),
-                rule.name.c_str(),
-                rule.enabled ? "true" : "false",
-                rule.execMode,
-                rule.reportAfterExec ? "true" : "false",
-                triggerCount, actionCount,
-                triggerSummary, actionSummary,
-                hasSetMode ? "true" : "false",
-                targetPeriphName.c_str()
-            );
-            items.emplace_back(itemBuf);
+            String item;
+            item.reserve(160 + rule.id.length() + rule.name.length() + targetPeriphName.length());
+            item = F("{\"id\":\"");
+            item += escapePeriphExecJsonString(rule.id);
+            item += F("\",\"name\":\"");
+            item += escapePeriphExecJsonString(rule.name);
+            item += F("\",\"enabled\":");
+            item += rule.enabled ? F("true") : F("false");
+            item += F(",\"execMode\":");
+            item += String(rule.execMode);
+            item += F(",\"reportAfterExec\":");
+            item += rule.reportAfterExec ? F("true") : F("false");
+            item += F(",\"triggerCount\":");
+            item += String(triggerCount);
+            item += F(",\"actionCount\":");
+            item += String(actionCount);
+            item += F(",\"triggerSummary\":");
+            item += String(triggerSummary);
+            item += F(",\"actionSummary\":");
+            item += String(actionSummary);
+            item += F(",\"hasSetMode\":");
+            item += hasSetMode ? F("true") : F("false");
+            item += F(",\"targetPeriphName\":\"");
+            item += escapePeriphExecJsonString(targetPeriphName);
+            item += F("\"}");
+            items.emplace_back(std::move(item));
         }
     }  // 释放 _rulesMutex
 
@@ -294,13 +305,25 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
 
     // 复用 HandlerUtils::sendJsonListChunked（与 handleGetPeripherals 同模式）
     String header;
-    header.reserve(128 + sensorSources.length());
+    const int profileMax = static_cast<int>(FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES);
+    const int profileRemaining = std::max(0, profileMax - total);
+
+    header.reserve(220 + sensorSources.length());
     header = F("{\"success\":true,\"total\":");
     header += String(total);
     header += F(",\"page\":");
     header += String(page);
     header += F(",\"pageSize\":");
     header += String(pageSize);
+    header += F(",\"profile\":{\"name\":\"");
+    header += FastBee::ResourceProfile::NAME;
+    header += F("\",\"max\":");
+    header += String(profileMax);
+    header += F(",\"used\":");
+    header += String(total);
+    header += F(",\"remaining\":");
+    header += String(profileRemaining);
+    header += F("}");
     header += F(",\"sensorSources\":[");
     header += sensorSources;
     header += F("]");
@@ -318,6 +341,7 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
         ctx->sendUnauthorized(request);
         return;
     }
+    if (!ctx->requireDeveloperMode(request)) return;
 
     PeriphExecRule rule;
     rule.id = ctx->getParamValue(request, "id", "");
@@ -357,11 +381,12 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     }
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
-    if (mgr.addRule(rule)) {
+    String errorMsg;
+    if (mgr.addRule(rule, errorMsg)) {
         mgr.saveConfiguration();
         ctx->sendSuccess(request, "Rule added");
     } else {
-        ctx->sendError(request, 500, "Failed to add rule");
+        ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to add rule" : errorMsg);
     }
 }
 
@@ -372,6 +397,7 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
         ctx->sendUnauthorized(request);
         return;
     }
+    if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -425,11 +451,12 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     a.execMode = rule.execMode;  // form-encoded 模式：从规则级别继承
     rule.actions.push_back(a);
 
-    if (mgr.updateRule(id, rule)) {
+    String errorMsg;
+    if (mgr.updateRule(id, rule, errorMsg)) {
         mgr.saveConfiguration();
         ctx->sendSuccess(request, "Rule updated");
     } else {
-        ctx->sendError(request, 500, "Failed to update rule");
+        ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to update rule" : errorMsg);
     }
 }
 
@@ -440,6 +467,7 @@ void PeriphExecRouteHandler::handleDeleteRule(AsyncWebServerRequest* request) {
         ctx->sendUnauthorized(request);
         return;
     }
+    if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -463,6 +491,7 @@ void PeriphExecRouteHandler::handleEnableRule(AsyncWebServerRequest* request) {
         ctx->sendUnauthorized(request);
         return;
     }
+    if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -486,6 +515,7 @@ void PeriphExecRouteHandler::handleDisableRule(AsyncWebServerRequest* request) {
         ctx->sendUnauthorized(request);
         return;
     }
+    if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -659,6 +689,7 @@ void PeriphExecRouteHandler::handleAddRuleJson(AsyncWebServerRequest* request, J
         ctx->sendUnauthorized(request);
         return;
     }
+    if (!ctx->requireDeveloperMode(request)) return;
 
     JsonObject obj = json.as<JsonObject>();
     PeriphExecRule rule;
@@ -673,11 +704,12 @@ void PeriphExecRouteHandler::handleAddRuleJson(AsyncWebServerRequest* request, J
     }
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
-    if (mgr.addRule(rule)) {
+    String errorMsg;
+    if (mgr.addRule(rule, errorMsg)) {
         mgr.saveConfiguration();
         ctx->sendSuccess(request, "Rule added");
     } else {
-        ctx->sendError(request, 500, "Failed to add rule");
+        ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to add rule" : errorMsg);
     }
 }
 
@@ -803,7 +835,7 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
 
         // 传感器读取：附加最近读取值、标签、单位
         if (at == 19) {
-            const auto& sensorCache = mgr.getSensorReadCache();
+            const auto sensorCache = mgr.getSensorReadCacheCopy();
             // 遍历该规则所有 action，收集传感器缓存数据
             item += ",\"sensors\":[";
             bool firstSensorItem = true;
@@ -858,6 +890,7 @@ void PeriphExecRouteHandler::handleUpdateRuleJson(AsyncWebServerRequest* request
         ctx->sendUnauthorized(request);
         return;
     }
+    if (!ctx->requireDeveloperMode(request)) return;
 
     JsonObject obj = json.as<JsonObject>();
     // as<String>() 对缺失字段返回 "null" 字符串，用 | 运算符安全提取
@@ -880,11 +913,12 @@ void PeriphExecRouteHandler::handleUpdateRuleJson(AsyncWebServerRequest* request
     parseRuleFromJson(obj, rule);
     rule.id = id;
 
-    if (mgr.updateRule(id, rule)) {
+    String errorMsg;
+    if (mgr.updateRule(id, rule, errorMsg)) {
         mgr.saveConfiguration();
         ctx->sendSuccess(request, "Rule updated");
     } else {
-        ctx->sendError(request, 500, "Failed to update rule");
+        ctx->sendError(request, 400, errorMsg.isEmpty() ? "Failed to update rule" : errorMsg);
     }
 }
 

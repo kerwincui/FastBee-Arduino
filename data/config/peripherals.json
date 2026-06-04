@@ -328,8 +328,8 @@
       "type": 2,
       "enabled": false,
       "pins": [
-        21,
-        22
+        17,
+        18
       ],
       "params": {
         "frequency": 100000,
@@ -404,14 +404,17 @@
       "params": {}
     },
     {
-      "id": "neopixel",
-      "name": "NeoPixel(WS2812)",
+      "id": "ws2812b",
+      "name": "WS2812B灯珠",
       "type": 45,
       "enabled": false,
       "pins": [
         4
       ],
-      "params": {}
+      "params": {
+        "count": 1,
+        "brightness": 64
+      }
     },
     {
       "id": "oled_display",
@@ -587,6 +590,22 @@
       "pins": [
         16,
         17
+      ],
+      "params": {
+        "baudRate": 115200,
+        "dataBits": 8,
+        "stopBits": 1,
+        "parity": 0
+      }
+    },
+    {
+      "id": "uart_debug",
+      "name": "串口调试助手",
+      "type": 1,
+      "enabled": false,
+      "pins": [
+        18,
+        19
       ],
       "params": {
         "baudRate": 115200,

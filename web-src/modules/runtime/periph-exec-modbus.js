@@ -313,23 +313,96 @@
                 addSource(String(src.id), src.label || src.id);
             });
 
+            (this._pePeripherals || []).forEach(function(p) {
+                if (!p || p.enabled === false || Number(p.type) !== 1) return;
+                addSource(String(p.id), (p.name || p.id) + ' / UART');
+            });
+
             return sources;
         },
 
         // ============ Sensor periph select ============
 
+        _renderSensorDataFieldOptions(category, selectedValue) {
+            var cat = String(category || '').toLowerCase();
+            var fields;
+            if (cat === 'analog') {
+                fields = [
+                    ['voltage', i18n.t('periph-exec-sensor-datafield-voltage') || '电压'],
+                    ['value', i18n.t('periph-exec-sensor-datafield-value') || '原始值']
+                ];
+            } else if (cat === 'digital' || cat === 'pulse') {
+                fields = [
+                    ['value', i18n.t('periph-exec-sensor-datafield-value') || '数值']
+                ];
+            } else if (cat === 'dht11' || cat === 'dht22' || cat === 'sht31' || cat === 'aht20') {
+                fields = [
+                    ['temperature', i18n.t('periph-exec-sensor-datafield-temp') || '温度'],
+                    ['humidity', i18n.t('periph-exec-sensor-datafield-humi') || '湿度']
+                ];
+            } else if (cat === 'ultrasonic') {
+                fields = [
+                    ['distance', i18n.t('periph-exec-sensor-datafield-distance') || '距离']
+                ];
+            } else if (cat === 'current') {
+                fields = [
+                    ['current', i18n.t('periph-exec-sensor-datafield-current') || '电流']
+                ];
+            } else if (cat === 'voltage') {
+                fields = [
+                    ['voltage', i18n.t('periph-exec-sensor-datafield-voltage') || '电压']
+                ];
+            } else if (cat === 'bh1750') {
+                fields = [
+                    ['illuminance', i18n.t('periph-exec-sensor-datafield-illuminance') || '光照']
+                ];
+            } else if (cat === 'bmp280') {
+                fields = [
+                    ['temperature', i18n.t('periph-exec-sensor-datafield-temp') || '温度'],
+                    ['pressure', i18n.t('periph-exec-sensor-datafield-pressure') || '气压'],
+                    ['altitude', i18n.t('periph-exec-sensor-datafield-altitude') || '海拔']
+                ];
+            } else if (cat === 'mpu6050') {
+                fields = [
+                    ['accelX', 'X 加速度'],
+                    ['accelY', 'Y 加速度'],
+                    ['accelZ', 'Z 加速度'],
+                    ['temperature', i18n.t('periph-exec-sensor-datafield-temp') || '温度'],
+                    ['gyroX', 'X 角速度'],
+                    ['gyroY', 'Y 角速度'],
+                    ['gyroZ', 'Z 角速度']
+                ];
+            } else {
+                fields = [
+                    ['temperature', i18n.t('periph-exec-sensor-datafield-temp') || '温度']
+                ];
+            }
+            var selected = selectedValue || fields[0][0];
+            return fields.map(function(item) {
+                return '<option value="' + escapeHtml(item[0]) + '"' +
+                    (selected === item[0] ? ' selected' : '') + '>' +
+                    escapeHtml(item[1]) + '</option>';
+            }).join('');
+        },
+
         _populateSensorPeriphSelect(blockEl, category, selectedValue) {
             var sel = blockEl.querySelector('.pe-target-periph');
             if (!sel) return;
+            var cat = String(category || '').toLowerCase();
             var periphs = this._pePeripherals || [];
             var analogTypes = [15, 26]; var digitalTypes = [11, 13, 14]; var pulseTypes = [46];
             var dhtTypes = [11, 13, 14, 38, 44]; // GPIO_DI, SENSOR, ONE_WIRE
             var ds18b20Types = [44, 38, 11, 13, 14]; // ONE_WIRE, SENSOR, GPIO_DI
+            var i2cSensorTypes = [2, 38]; // I2C, SENSOR
+            var ultrasonicTypes = [38, 11, 13, 14];
             var allowedTypes;
-            if (category === 'digital') allowedTypes = digitalTypes;
-            else if (category === 'pulse') allowedTypes = pulseTypes;
-            else if (category === 'dht11' || category === 'dht22') allowedTypes = dhtTypes;
-            else if (category === 'ds18b20') allowedTypes = ds18b20Types;
+            if (cat === 'digital') allowedTypes = digitalTypes;
+            else if (cat === 'pulse') allowedTypes = pulseTypes;
+            else if (cat === 'dht11' || cat === 'dht22') allowedTypes = dhtTypes;
+            else if (cat === 'ds18b20') allowedTypes = ds18b20Types;
+            else if (cat === 'ultrasonic') allowedTypes = ultrasonicTypes;
+            else if (cat === 'current' || cat === 'voltage') allowedTypes = analogTypes.concat([38]);
+            else if (cat === 'sht31' || cat === 'aht20' || cat === 'bh1750' || cat === 'bmp280' || cat === 'mpu6050') allowedTypes = i2cSensorTypes;
             else allowedTypes = analogTypes;
             var prev = selectedValue || sel.value;
             sel.innerHTML = '<option value="">--</option>';
@@ -347,13 +420,61 @@
             var block = this._getPeriphExecBlock('periph-exec-actions', index);
             if (!block) return;
             var cat = selectEl.value;
+            var normCat = String(cat || '').toLowerCase();
             this._populateSensorPeriphSelect(block, cat);
-            // 显示/隐藏 DHT 数据字段选择器
+            // 数据字段随类别切换：ADC 默认 voltage，DHT 默认 temperature/humidity。
             var dfGroup = block.querySelector('.pe-sensor-datafield-group');
-            if (dfGroup) dfGroup.classList.toggle('hidden', cat !== 'dht11' && cat !== 'dht22');
+            if (dfGroup) dfGroup.classList.remove('is-hidden', 'hidden');
+            var dfSel = block.querySelector('.pe-sensor-datafield');
+            if (dfSel) dfSel.innerHTML = this._renderSensorDataFieldOptions(cat, '');
+            var labelEl = block.querySelector('.pe-sensor-label');
+            var unitEl = block.querySelector('.pe-sensor-unit');
+            var scaleEl = block.querySelector('.pe-sensor-scale');
+            var decEl = block.querySelector('.pe-sensor-decimals');
+            if (normCat === 'analog') {
+                if (labelEl && (!labelEl.value || labelEl.value === '温度' || labelEl.value === '湿度')) labelEl.value = '电压';
+                if (unitEl && (!unitEl.value || unitEl.value === '℃' || unitEl.value === '%')) unitEl.value = 'V';
+                if (scaleEl && (!scaleEl.value || scaleEl.value === '1')) scaleEl.value = '0.00080586';
+                if (decEl && (!decEl.value || decEl.value === '1' || decEl.value === '0')) decEl.value = '2';
+            } else if (normCat === 'current') {
+                if (labelEl) labelEl.value = '电流';
+                if (unitEl) unitEl.value = 'A';
+                if (scaleEl) scaleEl.value = '1';
+                if (decEl) decEl.value = '3';
+            } else if (normCat === 'voltage') {
+                if (labelEl) labelEl.value = '电压';
+                if (unitEl) unitEl.value = 'V';
+                if (scaleEl) scaleEl.value = '1';
+                if (decEl) decEl.value = '2';
+            } else if (normCat === 'ultrasonic') {
+                if (labelEl) labelEl.value = '距离';
+                if (unitEl) unitEl.value = 'cm';
+                if (scaleEl) scaleEl.value = '1';
+                if (decEl) decEl.value = '1';
+            } else if (normCat === 'bh1750') {
+                if (labelEl) labelEl.value = '光照';
+                if (unitEl) unitEl.value = 'lx';
+                if (scaleEl) scaleEl.value = '1';
+                if (decEl) decEl.value = '0';
+            } else if (normCat === 'sht31' || normCat === 'aht20' || normCat === 'dht11' || normCat === 'dht22' || normCat === 'ds18b20') {
+                if (labelEl) labelEl.value = '温度';
+                if (unitEl) unitEl.value = '℃';
+                if (scaleEl) scaleEl.value = '1';
+                if (decEl) decEl.value = '1';
+            } else if (normCat === 'bmp280') {
+                if (labelEl) labelEl.value = '气压/温度';
+                if (unitEl) unitEl.value = '℃';
+                if (scaleEl) scaleEl.value = '1';
+                if (decEl) decEl.value = '1';
+            } else if (normCat === 'mpu6050') {
+                if (labelEl) labelEl.value = '加速度';
+                if (unitEl) unitEl.value = 'm/s2';
+                if (scaleEl) scaleEl.value = '1';
+                if (decEl) decEl.value = '2';
+            }
             // 显示/隐藏 DS18B20 设备索引
             var diGroup = block.querySelector('.pe-sensor-devindex-group');
-            if (diGroup) diGroup.classList.toggle('hidden', cat !== 'ds18b20');
+            if (diGroup) this._setSectionVisible(diGroup, normCat === 'ds18b20');
         },
 
         // ============ Poll tasks / Modbus device panel ============

@@ -7,6 +7,16 @@
 #include <algorithm>
 
 /**
+ * @brief 联网方式类型（决定物理层通道）
+ */
+enum class NetworkType : uint8_t {
+    NET_WIFI     = 0,   // WiFi（默认）
+    NET_ETHERNET = 1,   // 以太网 W5500 SPI
+    NET_4G       = 2,   // 4G蜂窝 EC801E-CN
+    NET_LORA     = 3    // LoRa 网关透传 E22-400T22D
+};
+
+/**
  * @brief WiFi 模式枚举
  */
 enum class NetworkMode {
@@ -63,9 +73,45 @@ struct WiFiNetwork {
 };
 
 /**
+ * @brief 以太网配置 (W5500)
+ */
+struct EthernetConfig {
+    int8_t spiMosi = 11;
+    int8_t spiMiso = 13;
+    int8_t spiSck  = 12;
+    int8_t csPin   = 47;
+    int8_t rstPin  = 48;
+    int8_t intPin  = 14;
+};
+
+/**
+ * @brief 4G 蜂窝模块配置 (EC801E-CN)
+ */
+struct CellularConfig {
+    int8_t txPin   = 39;
+    int8_t rxPin   = 40;
+    int8_t pwrPin  = 38;
+    uint32_t baudRate = 115200;
+    String apn = "CMNET";
+};
+
+/**
+ * @brief LoRa 模块配置 (E22-400T22D)
+ */
+struct LoRaConfig {
+    int8_t txPin   = 39;
+    int8_t rxPin   = 40;
+    int8_t m1Pin   = 41;
+    uint32_t baudRate = 9600;
+};
+
+/**
  * @brief 网络配置结构体
  */
 struct WiFiConfig {
+    // 联网方式
+    NetworkType networkType = NetworkType::NET_WIFI;
+    
     // 基本配置
     NetworkMode mode = NetworkMode::NETWORK_STA;      // 默认 STA 模式
     String deviceName = "FastBee";
@@ -73,6 +119,7 @@ struct WiFiConfig {
     // AP 配置（首次启动或 STA 失败时的配网热点）
     String apSSID = "fastbee-ap";  // 默认 AP 热点名称，确保不为空
     String apPassword = "";            // 开放热点，方便首次配网
+    String apIP = "192.168.4.1";       // AP 固定IP，冲突时自动切换备用网段
     uint8_t apChannel = 1;
     bool apHidden = false;
     uint8_t apMaxConnections = 4;
@@ -111,6 +158,15 @@ struct WiFiConfig {
     // 域名配置
     String customDomain = "fastbee";
     bool enableMDNS = true;
+    
+    // 以太网配置 (W5500)
+    EthernetConfig ethernet;
+    
+    // 4G 蜂窝模块配置 (EC801E-CN)
+    CellularConfig cellular;
+    
+    // LoRa 模块配置 (E22-400T22D)
+    LoRaConfig lora;
 };
 
 /**
@@ -136,6 +192,22 @@ struct NetworkStatusInfo {
     bool conflictDetected = false;
     uint32_t txCount = 0;   // 协议消息发送计数
     uint32_t rxCount = 0;   // 协议消息接收计数
+
+    // ========== 4G 蜂窝网络状态 ==========
+    String simStatus = "";         // SIM卡状态: "ready"/"missing"/"error"
+    String operatorName = "";      // 运营商名称: "CMCC"/"CUCC"/"CTCC"
+    String cellularNetworkType = ""; // 网络类型: "4G"/"3G"/"2G"
+    String apn = "";               // APN配置
+    String imei = "";              // 设备IMEI
+    String iccid = "";             // SIM卡ICCID
+    int cellularSignalQuality = 0; // 信号质量 (0-31, 99=未知)
+
+    // ========== LoRa 状态 ==========
+    String loraMode = "";          // 工作模式: "透传"/"配置"
+    String loraAddress = "";       // 设备地址
+    String loraFrequency = "";     // 工作频率
+    String loraAirRate = "";       // 空中速率
+    uint8_t loraChannel = 0;       // 信道
 };
 
 /**

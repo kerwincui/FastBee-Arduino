@@ -88,7 +88,6 @@ private:
     bool _initialized = false;
 };
 
-// 热插拔注册：编译链接时自动注册到 DriverRegistry
-FASTBEE_REGISTER_SENSOR("SHT31", SHT31Driver);
+// Runtime registration lives in src/peripherals/drivers/SHT31Driver.cpp.
 
 #endif // SHT31_DRIVER_H

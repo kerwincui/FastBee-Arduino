@@ -32,6 +32,22 @@
   #define CHIP_DUAL_CORE      0
   #define CHIP_UART_COUNT     2
   #define CHIP_NAME           "ESP32-C3"
+#elif defined(CONFIG_IDF_TARGET_ESP32C6)
+  #define CHIP_MAX_GPIO       30
+  #define CHIP_HAS_DAC        0
+  #define CHIP_HAS_TOUCH      0
+  #define CHIP_MAX_PWM_CH     6
+  #define CHIP_DUAL_CORE      0
+  #define CHIP_UART_COUNT     2
+  #define CHIP_NAME           "ESP32-C6"
+#elif defined(CONFIG_IDF_TARGET_ESP32S2)
+  #define CHIP_MAX_GPIO       46
+  #define CHIP_HAS_DAC        1
+  #define CHIP_HAS_TOUCH      1
+  #define CHIP_MAX_PWM_CH     8
+  #define CHIP_DUAL_CORE      0
+  #define CHIP_UART_COUNT     2
+  #define CHIP_NAME           "ESP32-S2"
 #else
   // 默认兼容经典 ESP32
   #define CHIP_MAX_GPIO       39
@@ -65,6 +81,18 @@
   static const uint8_t CHIP_RESERVED_PIN_COUNT = 7;
   static const uint8_t CHIP_INPUT_ONLY_PINS[] = {};
   static const uint8_t CHIP_INPUT_ONLY_PIN_COUNT = 0;
+#elif defined(CONFIG_IDF_TARGET_ESP32C6)
+  // ESP32-C6: GPIO 12-14 = Flash SPI, GPIO 24-30 = SPI
+  static const uint8_t CHIP_RESERVED_PINS[] = { 12, 13, 14, 24, 25, 26, 27, 28, 29, 30 };
+  static const uint8_t CHIP_RESERVED_PIN_COUNT = 10;
+  static const uint8_t CHIP_INPUT_ONLY_PINS[] = {};
+  static const uint8_t CHIP_INPUT_ONLY_PIN_COUNT = 0;
+#elif defined(CONFIG_IDF_TARGET_ESP32S2)
+  // ESP32-S2: GPIO 19/20 = USB, GPIO 26-32 = Flash/PSRAM (WROVER)
+  static const uint8_t CHIP_RESERVED_PINS[] = { 0, 19, 20, 26, 27, 28, 29, 30, 31, 32 };
+  static const uint8_t CHIP_RESERVED_PIN_COUNT = 10;
+  static const uint8_t CHIP_INPUT_ONLY_PINS[] = { 46 };
+  static const uint8_t CHIP_INPUT_ONLY_PIN_COUNT = 1;
 #else
   static const uint8_t CHIP_RESERVED_PINS[] = { 0, 1, 3, 6, 7, 8, 9, 10, 11 };
   static const uint8_t CHIP_RESERVED_PIN_COUNT = 9;
@@ -81,6 +109,10 @@
     static const uint8_t CHIP_TOUCH_PIN_COUNT = 10;
   #elif defined(CONFIG_IDF_TARGET_ESP32S3)
     // ESP32-S3 触摸引脚: T1=GPIO1 ~ T14=GPIO14
+    static const uint8_t CHIP_TOUCH_PINS[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 };
+    static const uint8_t CHIP_TOUCH_PIN_COUNT = 14;
+  #elif defined(CONFIG_IDF_TARGET_ESP32S2)
+    // ESP32-S2 触摸引脚: T1=GPIO1 ~ T14=GPIO14
     static const uint8_t CHIP_TOUCH_PINS[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 };
     static const uint8_t CHIP_TOUCH_PIN_COUNT = 14;
   #endif

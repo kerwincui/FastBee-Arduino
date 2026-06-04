@@ -101,6 +101,7 @@
             var action = button.getAttribute('data-protocol-action');
             var source = button.getAttribute('data-source') || '';
             if (isNaN(index) || !action) return;
+            if (action !== 'open-control-modal' && !this.guardDeveloperModeAction()) return;
             if (action === 'edit-device') this._editDevice(source, index);
             else if (action === 'open-mapping') this.openMappingModal(index);
             else if (action === 'delete-device') this._deleteDevice(source, index);
@@ -260,8 +261,10 @@
             var attrs = 'data-protocol-action="' + action + '"';
             if (index !== undefined && index !== null) attrs += ' data-index="' + index + '"';
             if (source) attrs += ' data-source="' + source + '"';
+            var locked = action !== 'open-control-modal' && !this.isDeveloperModeEnabled();
+            if (locked) attrs += ' disabled title="' + escapeHtml(this.getDeveloperModeDisabledText()) + '"';
             return '<button type="button" class="fb-btn fb-btn-sm protocol-action-btn protocol-action-btn--' + tone +
-                '" ' + attrs + '>' + label + '</button>';
+                (locked ? ' dev-mode-locked' : '') + '" ' + attrs + '>' + label + '</button>';
         },
 
         _renderProtocolActionCell(buttons) {

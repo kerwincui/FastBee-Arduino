@@ -26,6 +26,7 @@
         _renderAllDevices() {
             var tbody = document.getElementById('all-devices-body');
             if (!tbody) return;
+            this.applyDeveloperModeState();
             var tasks = this._masterTasks || [];
             var devices = this._modbusDevices || [];
             var visibleDevices = devices;
@@ -49,9 +50,11 @@
                 rows += this._renderAllDeviceControlRow(visibleDevices[j], j, typeLabels);
             }
             tbody.innerHTML = rows;
+            this.applyDeveloperModeState(tbody);
         },
 
         _editDevice(source, idx) {
+            if (!this.guardDeveloperModeAction()) return;
             if (source === 'sensor') {
                 this._openTaskEditModal(idx);
             } else {
@@ -60,6 +63,7 @@
         },
 
         _deleteDevice(source, idx) {
+            if (!this.guardDeveloperModeAction()) return;
             var msg = i18n.t('modbus-device-delete-confirm') || '确定删除？';
             if (!confirm(msg)) return;
             if (source === 'sensor') {
@@ -82,6 +86,7 @@
         },
 
         _showAddDeviceMenu() {
+            if (!this.guardDeveloperModeAction()) return;
             var menu = document.getElementById('add-device-menu');
             if (!menu) return;
             var isVisible = !menu.classList.contains('fb-hidden');
@@ -100,6 +105,7 @@
         },
 
         _addSensorDevice() {
+            if (!this.guardDeveloperModeAction()) return;
             var menu = document.getElementById('add-device-menu');
             if (menu) menu.classList.add('fb-hidden');
             if (!this._masterTasks) this._masterTasks = [];
@@ -111,6 +117,7 @@
         },
 
         _addControlDevice() {
+            if (!this.guardDeveloperModeAction()) return;
             var menu = document.getElementById('add-device-menu');
             if (menu) menu.classList.add('fb-hidden');
             if (!this._modbusDevices) this._modbusDevices = [];
@@ -124,6 +131,7 @@
         // ============ 轮询任务编辑弹窗 ============
 
         _openTaskEditModal(idx) {
+            if (!this.guardDeveloperModeAction()) return;
             var modal = document.getElementById('task-edit-modal');
             if (!modal) return;
             this._editingTaskIdx = idx;
@@ -152,6 +160,7 @@
         },
 
         _saveTaskEditModal() {
+            if (!this.guardDeveloperModeAction()) return;
             var f = function(id) { return document.getElementById(id); };
             var fc = parseInt(f('task-edit-fc').value) || 3;
             var fcToDeviceType = {1: 'coil', 2: 'discrete', 3: 'holding', 4: 'input'};
@@ -179,6 +188,7 @@
         },
 
         addMasterPollTask() {
+            if (!this.guardDeveloperModeAction()) return;
             if (!this._masterTasks) this._masterTasks = [];
             if (this._masterTasks.length >= 8) {
                 Notification.warning('Max 8 tasks', i18n.t('modbus-master-title'));
@@ -188,6 +198,7 @@
         },
 
         removeMasterPollTask(idx) {
+            if (!this.guardDeveloperModeAction()) return;
             if (this._masterTasks) {
                 this._masterTasks.splice(idx, 1);
                 this._renderAllDevices();
@@ -197,6 +208,7 @@
         // ============ 寄存器映射管理 ============
 
         openMappingModal(taskIdx) {
+            if (!this.guardDeveloperModeAction()) return;
             if (!this._masterTasks || !this._masterTasks[taskIdx]) return;
             this._currentMappingTaskIdx = taskIdx;
             this._currentMappings = JSON.parse(JSON.stringify(this._masterTasks[taskIdx].mappings || []));
@@ -211,6 +223,7 @@
         },
 
         saveMappingModal() {
+            if (!this.guardDeveloperModeAction()) return;
             if (this._currentMappingTaskIdx < 0) return;
             this._collectMappingValues();
             this._masterTasks[this._currentMappingTaskIdx].mappings = this._currentMappings;
@@ -219,6 +232,7 @@
         },
 
         addMapping() {
+            if (!this.guardDeveloperModeAction()) return;
             if (this._currentMappings.length >= 8) {
                 Notification.warning(i18n.t('modbus-mapping-max'));
                 return;
@@ -229,6 +243,7 @@
         },
 
         removeMapping(idx) {
+            if (!this.guardDeveloperModeAction()) return;
             this._collectMappingValues();
             this._currentMappings.splice(idx, 1);
             this._renderMappingTable();
@@ -277,6 +292,7 @@
                     '<td><button type="button" class="fb-btn fb-btn-sm fb-btn-danger protocol-mapping-remove" data-index="' + idx + '">删除</button></td>' +
                 '</tr>';
             }).join('');
+            this.applyDeveloperModeState(tbody);
         },
 
         // ============ 设备加载与管理 ============
@@ -386,6 +402,7 @@
             tbody.innerHTML = this._modbusDevices.map(function(dev, idx) {
                 return self._renderModbusDeviceRow(dev, idx, typeLabels, protLabels);
             }).join('');
+            this.applyDeveloperModeState(tbody);
         },
 
         _updateDevice(idx, field, value) {
@@ -415,6 +432,7 @@
         },
 
         addModbusDevice() {
+            if (!this.guardDeveloperModeAction()) return;
             if (!this._modbusDevices) this._modbusDevices = [];
             if (this._modbusDevices.length >= 8) {
                 Notification.warning(i18n.t('modbus-device-max-reached') || '最多8个子设备');
@@ -424,6 +442,7 @@
         },
 
         _removeDevice(idx) {
+            if (!this.guardDeveloperModeAction()) return;
             if (!this._modbusDevices) return;
             var msg = i18n.t('modbus-device-delete-confirm') || '确定要删除此设备？';
             if (!confirm(msg)) return;
@@ -443,6 +462,7 @@
         // ========== 编辑弹窗 ==========
 
         _openEditModal(idx) {
+            if (!this.guardDeveloperModeAction()) return;
             this._editingDeviceIdx = idx;
             var dev = (idx >= 0 && this._modbusDevices && this._modbusDevices[idx])
                 ? this._modbusDevices[idx] : null;
@@ -506,6 +526,7 @@
         },
 
         _saveEditModal() {
+            if (!this.guardDeveloperModeAction()) return;
             var idx = this._editingDeviceIdx;
             var isNew = (idx < 0);
             if (isNew) {

@@ -128,14 +128,25 @@
             const isOledDisplay = (actionTypeInt === 27);
             const showPeriphGroup = isPollMode || isRuleCtrlAction || (isModbusTarget || !((actionTypeInt >= 6 && actionTypeInt <= 9) || isModbusPoll || isTriggerEvent));
             const needsValue = !isPollMode && !isModbusTarget && !isRuleCtrlAction && ((actionTypeInt >= 2 && actionTypeInt <= 5) || actionTypeInt === 10 || actionTypeInt === 24 || actionTypeInt === 25 || isOledDisplay || isScriptAction);
-            const showRecv = !isPollMode && !isModbusTarget && !isRuleCtrlAction && this._hasSetModeTrigger() && needsValue && !isOledDisplay && !isScriptAction && actionTypeInt !== 10;
+            const showRecv = !isPollMode && !isModbusTarget && !isRuleCtrlAction && this._hasSetModeTrigger() && needsValue && !isOledDisplay && !isScriptAction;
             const showActionType = !isPollMode && !isModbusTarget;
             const showExecRow = true;
             const execMode = parseInt(data.execMode ?? 0);
             const sel = (v) => actionType === String(v) ? 'selected' : '';
-            var sensorCfg = {sensorCategory:'analog',periphId:'',scaleFactor:1,offset:0,decimalPlaces:2,sensorLabel:'',unit:'',dataField:'temperature',deviceIndex:0};
+            var sensorCfg = {sensorCategory:'analog',periphId:'',scaleFactor:0.00080586,offset:0,decimalPlaces:2,sensorLabel:'电压',unit:'V',dataField:'voltage',deviceIndex:0};
             if (isSensorRead && data.actionValue) { try { Object.assign(sensorCfg, JSON.parse(data.actionValue)); } catch(e) {} }
+            if (!sensorCfg.dataField) sensorCfg.dataField = sensorCfg.sensorCategory === 'analog' ? 'voltage' : 'temperature';
+            const sensorBaseKeys = {
+                periphId: 1, sensorCategory: 1, scaleFactor: 1, offset: 1, decimalPlaces: 1,
+                sensorLabel: 1, unit: 1, dataField: 1, deviceIndex: 1
+            };
+            var sensorExtra = {};
+            Object.keys(sensorCfg).forEach(function(k) {
+                if (!sensorBaseKeys[k]) sensorExtra[k] = sensorCfg[k];
+            });
+            const sensorExtraJson = Object.keys(sensorExtra).length ? JSON.stringify(sensorExtra) : '';
             const selCat = (v) => sensorCfg.sensorCategory === v ? 'selected' : '';
+            const sensorFieldOptions = this._renderSensorDataFieldOptions(sensorCfg.sensorCategory, sensorCfg.dataField);
             div.innerHTML = '<span class="mqtt-topic-index">' + (index + 1) + '</span>' +
                 '<button type="button" class="mqtt-topic-delete">' + i18n.t('peripheral-delete') + '</button>' +
                 '<div class="pe-action-grid">' +
@@ -205,11 +216,18 @@
                     '<option value="pulse" ' + selCat('pulse') + '>' + i18n.t('periph-exec-sensor-cat-pulse') + '</option>' +
                     '<option value="dht11" ' + selCat('dht11') + '>' + i18n.t('periph-exec-sensor-cat-dht11') + '</option>' +
                     '<option value="dht22" ' + selCat('dht22') + '>' + i18n.t('periph-exec-sensor-cat-dht22') + '</option>' +
-                    '<option value="ds18b20" ' + selCat('ds18b20') + '>' + i18n.t('periph-exec-sensor-cat-ds18b20') + '</option></select></div>' +
-                    '<div class="fb-form-group pe-sensor-datafield-group' + this._hiddenClass(sensorCfg.sensorCategory === 'dht11' || sensorCfg.sensorCategory === 'dht22') + '"><label>' + i18n.t('periph-exec-sensor-datafield') + '</label>' +
+                    '<option value="ds18b20" ' + selCat('ds18b20') + '>' + i18n.t('periph-exec-sensor-cat-ds18b20') + '</option>' +
+                    '<option value="ultrasonic" ' + selCat('ultrasonic') + '>' + (i18n.t('periph-exec-sensor-cat-ultrasonic') || 'HC-SR04 超声波') + '</option>' +
+                    '<option value="current" ' + selCat('current') + '>' + (i18n.t('periph-exec-sensor-cat-current') || '电流型传感器') + '</option>' +
+                    '<option value="voltage" ' + selCat('voltage') + '>' + (i18n.t('periph-exec-sensor-cat-voltage') || '电压型传感器') + '</option>' +
+                    '<option value="SHT31" ' + selCat('SHT31') + '>' + (i18n.t('periph-exec-sensor-cat-sht31') || 'SHT31 温湿度') + '</option>' +
+                    '<option value="AHT20" ' + selCat('AHT20') + '>' + (i18n.t('periph-exec-sensor-cat-aht20') || 'AHT20 温湿度') + '</option>' +
+                    '<option value="BH1750" ' + selCat('BH1750') + '>' + (i18n.t('periph-exec-sensor-cat-bh1750') || 'BH1750 光照') + '</option>' +
+                    '<option value="BMP280" ' + selCat('BMP280') + '>' + (i18n.t('periph-exec-sensor-cat-bmp280') || 'BMP280 气压') + '</option>' +
+                    '<option value="MPU6050" ' + selCat('MPU6050') + '>' + (i18n.t('periph-exec-sensor-cat-mpu6050') || 'MPU6050 姿态') + '</option></select></div>' +
+                    '<div class="fb-form-group pe-sensor-datafield-group"><label>' + i18n.t('periph-exec-sensor-datafield') + '</label>' +
                     '<select class="pe-sensor-datafield">' +
-                    '<option value="temperature"' + (sensorCfg.dataField === 'temperature' ? ' selected' : '') + '>' + i18n.t('periph-exec-sensor-datafield-temp') + '</option>' +
-                    '<option value="humidity"' + (sensorCfg.dataField === 'humidity' ? ' selected' : '') + '>' + i18n.t('periph-exec-sensor-datafield-humi') + '</option></select></div>' +
+                    sensorFieldOptions + '</select></div>' +
                     '<div class="fb-form-group pe-sensor-devindex-group' + this._hiddenClass(sensorCfg.sensorCategory === 'ds18b20') + '"><label>' + i18n.t('periph-exec-sensor-devindex') + '</label>' +
                     '<input type="number" class="pe-sensor-devindex" min="0" max="15" value="' + sensorCfg.deviceIndex + '"></div>' +
                     '<div class="fb-form-group"><label>' + i18n.t('periph-exec-sensor-scale') + '</label><input type="number" class="pe-sensor-scale" step="any" value="' + sensorCfg.scaleFactor + '"></div>' +
@@ -217,6 +235,9 @@
                     '<div class="fb-form-group"><label>' + i18n.t('periph-exec-sensor-decimals') + '</label><input type="number" class="pe-sensor-decimals" min="0" max="6" value="' + sensorCfg.decimalPlaces + '"></div>' +
                     '<div class="fb-form-group"><label>' + i18n.t('periph-exec-sensor-label') + '</label><input type="text" class="pe-sensor-label" value="' + escapeHtml(sensorCfg.sensorLabel) + '" placeholder="' + i18n.t('periph-exec-sensor-label') + '"></div>' +
                     '<div class="fb-form-group"><label>' + i18n.t('periph-exec-sensor-unit') + '</label><input type="text" class="pe-sensor-unit" value="' + escapeHtml(sensorCfg.unit) + '" maxlength="8" placeholder="°C, %, V..."></div>' +
+                    '<div class="fb-form-group pe-span-all"><label>' + (i18n.t('periph-exec-sensor-extra-json') || '高级参数(JSON)') + '</label>' +
+                    '<textarea class="pe-sensor-extra-json" rows="2" maxlength="512" placeholder="' + escapeHtml(i18n.t('periph-exec-sensor-extra-json-hint') || '{"driverParams":{"addr":"0x44","sda":21,"scl":22}}') + '">' + escapeHtml(sensorExtraJson) + '</textarea>' +
+                    '<small class="pe-help-text">' + (i18n.t('periph-exec-sensor-extra-json-help') || '可填写分压比、电流零点、I2C 地址等高级参数；留空则使用默认值。') + '</small></div>' +
                     '</div></div>' +
                     '</div>';
             container.appendChild(div);
@@ -361,7 +382,7 @@
                 const valueInput = item.querySelector('.pe-action-value');
                 const recvGroup = item.querySelector('.pe-use-received-value-group');
                 const actionType = parseInt(item.querySelector('.pe-action-type')?.value || '0');
-                const needsValue = (actionType >= 2 && actionType <= 5);
+                const needsValue = (actionType >= 2 && actionType <= 5) || actionType === 10;
                 const showRecv = isSetMode && needsValue;
                 if (recvGroup) {
                     if (showRecv) recvGroup.classList.remove('is-hidden');
@@ -491,7 +512,7 @@
             // 使用接收值: 仅在平台触发+设置+需要数值的动作类型时显示（OLED_DISPLAY 不需要整体替换，通过 $value 占位符嵌入）
             const recvGroup = block.querySelector('.pe-use-received-value-group');
             const isSetMode = this._hasSetModeTrigger();
-            const showRecv = isSetMode && needsValue && actionType !== 10 && actionType !== 15 && actionType !== 27;
+            const showRecv = isSetMode && needsValue && actionType !== 15 && actionType !== 27;
             this._setSectionVisible(recvGroup, showRecv);
             const checkbox = block.querySelector('.pe-use-received-value');
             if (checkbox) checkbox.checked = showRecv;
@@ -883,6 +904,7 @@
         _collectPeriphExecActions() {
             const container = document.getElementById('periph-exec-actions');
             if (!container) return [];
+            this._peSensorExtraJsonError = false;
             const actions = [];
             const isPollMode = this._isPollTriggerActive();
             container.querySelectorAll('.periph-exec-config-item').forEach(item => {
@@ -961,11 +983,22 @@
                         sensorLabel: sensorLabel,
                         unit: sUnit
                     };
-                    if (sensorCat === 'dht11' || sensorCat === 'dht22') {
-                        sensorData.dataField = item.querySelector('.pe-sensor-datafield')?.value || 'temperature';
-                    }
+                    sensorData.dataField = item.querySelector('.pe-sensor-datafield')?.value || (sensorCat === 'analog' ? 'voltage' : 'temperature');
                     if (sensorCat === 'ds18b20') {
                         sensorData.deviceIndex = parseInt(item.querySelector('.pe-sensor-devindex')?.value) || 0;
+                    }
+                    var extraJson = item.querySelector('.pe-sensor-extra-json')?.value?.trim() || '';
+                    if (extraJson) {
+                        try {
+                            var extraObj = JSON.parse(extraJson);
+                            if (extraObj && typeof extraObj === 'object' && !Array.isArray(extraObj)) {
+                                Object.keys(extraObj).forEach(function(k) { sensorData[k] = extraObj[k]; });
+                            } else {
+                                this._peSensorExtraJsonError = true;
+                            }
+                        } catch(e) {
+                            this._peSensorExtraJsonError = true;
+                        }
                     }
                     action.actionValue = JSON.stringify(sensorData);
                 } else if (action.actionType === 27) {
@@ -987,6 +1020,7 @@
         // ============ Save (form validation + API call) ============
 
         savePeriphExecRule() {
+            if (!this.guardDeveloperModeAction()) return;
             const errEl = document.getElementById('periph-exec-error');
             this.clearInlineError(errEl);
             const originalId = document.getElementById('periph-exec-original-id').value;
@@ -1007,6 +1041,10 @@
             ruleData.triggers = triggers;
 
             const actions = this._collectPeriphExecActions();
+            if (this._peSensorExtraJsonError) {
+                this.showInlineError(errEl, i18n.t('periph-exec-sensor-extra-json-invalid') || '传感器高级参数必须是 JSON 对象');
+                return;
+            }
             ruleData.actions = actions;
             for (let i = 0; i < actions.length; i++) {
                 if (actions[i].actionType === 19) {
@@ -1046,6 +1084,10 @@
                 })
                 .catch(err => {
                     console.error('Save periph exec rule failed:', err);
+                    if (err?.data?.error || err?.data?.message) {
+                        this.showInlineError(errEl, err.data.error || err.data.message);
+                        return;
+                    }
                     const isNetworkError = err && (
                         err.name === 'TypeError' ||
                         (err.message && (

@@ -154,6 +154,9 @@ public:
     // MQTT 上报降采样：设置最小上报间隔（毫秒），0 表示无限制
     void setMinReportInterval(uint32_t ms);
 
+    // 设置外部 Transport Client（由 NetworkManager 注入，用于非 WiFi 联网方式）
+    void setTransportClient(Client* client);
+
     // 设置消息回调（topic, message, topicType）
     void setMessageCallback(std::function<void(const String&, const String&, MqttTopicType)> callback);
 
@@ -172,6 +175,7 @@ public:
 
 private:
     WiFiClient wifiClient;
+    Client* _externalClient = nullptr;  // 外部注入的 Client（非 WiFi 时使用）
     PubSubClient mqttClient;
     MQTTConfig config;
     bool isConnected;

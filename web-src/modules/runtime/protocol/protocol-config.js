@@ -63,6 +63,7 @@
                 return PageLoader.loadFragment(fragInfo.container, fragInfo.fragment).then(function() {
                     // 分片加载完成后重新尝试绑定事件（新 DOM 元素可能需要）
                     self.setupProtocolEvents();
+                    self.applyDeveloperModeState();
                     return self._loadProtocolConfigData(tabId, options);
                 });
             }
@@ -128,6 +129,7 @@
                 if (typeof this._updateDelayChannelSelect === 'function') {
                     this._updateDelayChannelSelect();
                 }
+                this.applyDeveloperModeState();
             }
             if (tabId === 'mqtt' && config.mqtt) {
                 const mqtt = config.mqtt;
@@ -167,6 +169,7 @@
             const data = {};
             const isModbusForm = formId === 'modbus-rtu-form' || (!formId && document.getElementById('modbus-rtu-enabled'));
             const isMqttForm = formId === 'mqtt-form' || (!formId && document.getElementById('mqtt-enabled'));
+            if (isModbusForm && !this.guardDeveloperModeAction()) return;
             if (isModbusForm) {
                 data.modbusRtu_enabled = document.getElementById('modbus-rtu-enabled')?.checked ? 'true' : 'false';
                 data.modbusRtu_peripheralId = document.getElementById('rtu-peripheral-id')?.value || '';

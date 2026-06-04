@@ -11,5 +11,6 @@
   "timezone": "CST-8",
   "syncInterval": 3600,
   "logLevel": "INFO",
-  "autoStart": true
+  "autoStart": true,
+  "developerModeEnabled": true
 }

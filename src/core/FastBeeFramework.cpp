@@ -78,6 +78,7 @@ bool FastBeeFramework::initialize() {
     Serial.println("  FastBee IoT Platform Starting...");
     Serial.println("========================================");
     Serial.println();
+    ets_printf("[BOOT] FastBee IoT Platform Starting...\n");
 
     // 步骤1: 初始化配置存储（Logger 之前，只能用 Serial）
     stepStart = millis();
@@ -676,6 +677,8 @@ bool FastBeeFramework::initialize() {
     LOGGER.info("========================================");
     LOG_INFO("FastBee IoT Platform initialized successfully");
     LOG_INFO("Device ready for operation");
+    Serial.printf("[BOOT] Platform ready! Heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
+    ets_printf("[BOOT] Platform ready! Heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
     
     // 输出访问信息（同时输出到串口和日志）
     LOGGER.info("========================================");
@@ -780,16 +783,33 @@ bool FastBeeFramework::addSystemTasks() {
             
             // WiFi连接后自动启动协议（MQTT + Modbus，仅执行一次）
             // 合并读取 protocol.json，减少一次 JsonDocument 分配（~8KB 栈空间）
+            static unsigned long protocolWaitStart = 0;
+            static bool lastProtocolNetworkReady = false;
+            static NetworkType lastProtocolNetworkType = NetworkType::NET_WIFI;
+            bool protocolNetworkReady = framework->network->isNetworkConnected();
+            NetworkType protocolNetworkType = framework->network->getNetworkType();
+
+            if (!protocolNetworkReady) {
+                protocolWaitStart = 0;
+                lastProtocolNetworkReady = false;
+            } else if (!lastProtocolNetworkReady || protocolNetworkType != lastProtocolNetworkType) {
+                framework->mqttAutoStarted = false;
+                protocolWaitStart = millis();
+                lastProtocolNetworkReady = true;
+                lastProtocolNetworkType = protocolNetworkType;
+            }
+
             if ((!framework->mqttAutoStarted || !framework->modbusAutoStarted) 
-                && WiFi.status() == WL_CONNECTED && framework->protocolManager) {
-                static unsigned long protocolWaitStart = 0;
+                && protocolNetworkReady && framework->protocolManager) {
                 if (protocolWaitStart == 0) {
                     protocolWaitStart = millis();
                 } else if (millis() - protocolWaitStart > 5000) {
                     // WiFi稳定5秒后，一次性读取 protocol.json 并启动所有协议
+                    bool shouldStartMqtt = !framework->mqttAutoStarted;
+                    bool shouldStartModbus = !framework->modbusAutoStarted;
                     framework->mqttAutoStarted = true;
                     framework->modbusAutoStarted = true;
-                    LOG_INFO("[Protocol] WiFi stable, auto-starting protocols...");
+                    LOG_INFO("[Protocol] Network stable, auto-starting protocols...");
                     
                     // 单次读取 protocol.json，同时检查 MQTT 和 Modbus 配置
 #if FASTBEE_ENABLE_MQTT
@@ -818,20 +838,20 @@ bool FastBeeFramework::addSystemTasks() {
                     // 启动 MQTT（延迟连接：仅 begin，由 reconnectTask 30s 后发起首次连接）
                     // 避免 boot 期同步 connect() 抢占资源导致 web/SSE 不可访问
 #if FASTBEE_ENABLE_MQTT
-                    if (mqttEnabled) {
+                    if (shouldStartMqtt && mqttEnabled) {
                         LOG_INFO("[MQTT] MQTT enabled, auto-starting (deferred connect)...");
                         framework->protocolManager->restartMQTTDeferred();
-                    } else {
+                    } else if (!mqttEnabled) {
                         LOG_INFO("[MQTT] MQTT not enabled in config, skipping auto-start");
                     }
 #endif
                     
                     // 启动 Modbus
 #if FASTBEE_ENABLE_MODBUS
-                    if (modbusEnabled) {
+                    if (shouldStartModbus && modbusEnabled) {
                         LOG_INFO("[Modbus] Modbus enabled, auto-starting...");
                         framework->protocolManager->restartModbus();
-                    } else {
+                    } else if (!modbusEnabled) {
                         LOG_INFO("[Modbus] Modbus not enabled in config, skipping auto-start");
                     }
 #endif

@@ -1,7 +1,9 @@
 // main.cpp
 #include "core/FastBeeFramework.h"
 #include <esp_heap_caps.h>
+#if !defined(CONFIG_IDF_TARGET_ESP32S2)
 #include <esp_bt.h>
+#endif
 #include <esp_chip_info.h>
 #include <esp_task_wdt.h>
 #include <exception>
@@ -51,7 +53,13 @@ void setup() {
 
     // 释放蓝牙控制器内存（~30KB），BLE配网需要时重启后启用
     // 通过 device.json 的 "bleReserve":true 可保留BT内存
+    // ESP32-S2 无蓝牙硬件, ESP32-C6 只有 BLE 无 Classic
+#if defined(CONFIG_IDF_TARGET_ESP32)
     esp_bt_controller_mem_release(ESP_BT_MODE_BTDM);
+#elif defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C6)
+    esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
+#endif
+    // ESP32-S2: 无蓝牙硬件，无需释放
 
     // 启动诊断：输出芯片信息和可用内存，快速判断 PSRAM / 堆是否正常
     Serial.printf("[BOOT] Chip: %s Rev%d\n", ESP.getChipModel(), ESP.getChipRevision());

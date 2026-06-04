@@ -3,20 +3,20 @@
 <h1 align="center">FastBee-Arduino</h1>
 
 <p align="center">
-  <strong>A lightweight local Web IoT firmware for ESP32 / ESP32-S3</strong>
+  <strong>A zero-code, visual-config IoT firmware for ESP32 full series</strong>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/platform-ESP32%20%7C%20ESP32--S3-blue" alt="Platform">
-  <img src="https://img.shields.io/badge/framework-Arduino%20%2B%20PlatformIO-orange" alt="Framework">
-  <img src="https://img.shields.io/badge/web%20image-%E2%89%88217KB-success" alt="Web Image">
+  <img src="https://img.shields.io/badge/platform-ESP32%20|%20S3%20|%20C3%20|%20C6%20|%20S2-blue" alt="Platform">
+  <img src="https://img.shields.io/badge/Arduino--ESP32-3.x%20(IDF%205.1)-orange" alt="Framework">
+  <img src="https://img.shields.io/badge/PlatformIO-espressif32%207.x-orange" alt="PlatformIO">
   <img src="https://img.shields.io/badge/protocol-MQTT%20%2B%20Modbus%20RTU-informational" alt="Protocols">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-green" alt="License">
 </p>
 
-FastBee-Arduino is a local Web configuration firmware designed for resource-constrained ESP32 devices. The current default build focuses on Web accessibility, login reliability, low-memory stability, and predictable behavior under concurrent browser requests.
+FastBee-Arduino is a local Web IoT firmware for the **full ESP32 chip family** (ESP32 / ESP32-S3 / ESP32-C3 / ESP32-C6 / ESP32-S2), built on **Arduino-ESP32 3.x** (ESP-IDF 5.1+).
 
-The slim default profile keeps the core IoT workflow: dashboard, network setup, device settings, MQTT, Modbus RTU, peripheral configuration, peripheral execution, and device-control screen. High-memory and low-frequency features have been removed from the default ESP32 build to reduce boot, login, and page-loading pressure.
+The project provides three edition tiers based on hardware resources: **Lite** (C3/C6/S2 low-cost nodes), **Standard** (ESP32/S3 general-purpose), and **Full** (S3 flagship gateway). All editions share the same codebase and configuration format — switch by changing the build target. See [Edition Comparison](docs/system/edition-comparison.md) for details.
 
 ---
 
@@ -24,24 +24,43 @@ The slim default profile keeps the core IoT workflow: dashboard, network setup, 
 
 FastBee-Arduino combines ESP32 firmware, a local Web console, peripheral configuration, and protocol integration into one lightweight IoT system for fast hardware validation and long-running field devices.
 
+- **Full chip family support**: ESP32, ESP32-S3, ESP32-C3, ESP32-C6, ESP32-S2 — one codebase covers from ¥9 entry-level to flagship solutions.
+- **Arduino 3.x ecosystem**: Built on Arduino-ESP32 3.x (ESP-IDF 5.1+) with ESPAsyncWebServer 3.x, NimBLE 2.x, and other actively maintained libraries.
 - **Visual configuration**: configure peripherals, networking, MQTT, Modbus RTU, execution rules, and the device-control screen from the browser.
-- **Resource-aware builds**: slim builds target classic ESP32 / ESP32-C3 / ESP32-S3 for core workflows and low-memory stability; `esp32s3-full` enables full-feature validation on larger ESP32-S3 boards.
+- **Multi-network connectivity**: WiFi by default; Standard/Full support Ethernet (W5500 SPI) and 4G cellular (TinyGSM), while Full also supports LoRa gateway passthrough (E22-400T22D).
+- **Three-tier architecture**: Lite (C3/C6/S2) → Standard (ESP32/S3) → Full (S3), feature-scaled via compile-time flags with seamless upgrade path.
 
 ---
 
 ## Build Profiles
 
-| Environment | Target | Profile | Notes |
+| Environment | Target | Edition | Notes |
 |-------------|--------|---------|-------|
-| `esp32` | Classic ESP32 | Slim production | Default recommended profile for 4MB Flash ESP32 boards |
-| `esp32c3` | ESP32-C3 | Slim production | Conservative network and task-stack profile for smaller boards |
-| `esp32s3` | ESP32-S3 | Slim production | Same feature set with more network headroom |
-| `esp32s3-full` | ESP32-S3 | Full | For larger boards and feature validation |
+| `esp32` | Classic ESP32 | Standard | Default recommended, classic dual-core |
+| `esp32c3` | ESP32-C3 | Lite | RISC-V low-cost (¥9-12) |
+| `esp32c6` | ESP32-C6 | Lite | WiFi 6 + BLE 5.3, next-gen low-cost |
+| `esp32s2` | ESP32-S2 | Lite | Xtensa single-core, WiFi only (no BLE) |
+| `esp32s3` | ESP32-S3 | Standard | High-performance dual-core with I2C/RFID/IR |
+| `esp32s3-full` | ESP32-S3 | Full | OTA + multi-user + BLE provisioning + all protocols |
 | `native` | PC | Test | Host-side unit tests |
 
-PlatformIO does not auto-switch build profiles from the chip detected on the serial port. The target is selected by the `-e` environment name: `pio run -e esp32` builds for classic ESP32, `pio run -e esp32c3` builds for ESP32-C3, `pio run -e esp32s3` builds the ESP32-S3 slim profile, and `pio run -e esp32s3-full` builds the ESP32-S3 full profile. If `-e` is omitted, `platformio.ini` uses `default_envs = esp32`; the chip name printed by `esptool` during upload is only a connection/write verification result and does not change the build target.
+PlatformIO does not auto-switch build profiles from the chip detected on the serial port. The target is selected by the `-e` environment name. If `-e` is omitted, `platformio.ini` uses `default_envs = esp32`.
 
-Slim builds keep dashboard, device control, network settings, device settings, protocol settings, peripheral configuration, peripheral execution, MQTT, Modbus RTU master, and core peripheral support. The full profile is mainly for ESP32-S3 validation of OTA, files/logs, multi-user features, RuleScript, and additional protocols.
+```bash
+# Lite edition
+pio run -e esp32c3        # ESP32-C3
+pio run -e esp32c6        # ESP32-C6 (requires pioarduino platform)
+pio run -e esp32s2        # ESP32-S2
+
+# Standard edition
+pio run -e esp32          # Classic ESP32 (default)
+pio run -e esp32s3        # ESP32-S3
+
+# Full edition
+pio run -e esp32s3-full   # ESP32-S3 full features
+```
+
+> **Note**: The ESP32-C6 environment requires the [pioarduino](https://github.com/pioarduino/platform-espressif32) community platform since the official espressif32 platform does not yet support C6 with Arduino framework.
 
 ---
 
@@ -121,6 +140,7 @@ pio device monitor -e esp32 -b 115200
 ### Protocols
 
 - MQTT connection configuration, authentication, status check, and test connection.
+- MQTT supports multiple network transports by edition: WiFi on all builds, Ethernet/4G on Standard and Full, and LoRa passthrough on Full.
 - Modbus RTU serial binding, master status, device mapping, and control helpers.
 
 ### Peripheral Configuration and Execution
@@ -142,11 +162,12 @@ pio device monitor -e esp32 -b 115200
 FastBee-Arduino/
 ├── include/                  # Headers
 │   ├── core/                 # Framework, peripherals, execution scheduler
-│   ├── network/              # WiFi, Web server, route handlers
+│   ├── network/              # WiFi, Web server, route handlers, network adapters
 │   ├── protocols/            # MQTT and Modbus
 │   ├── security/             # Auth, session, single-admin mode
 │   └── systems/              # Health monitor, config storage, logger system
 ├── src/                      # C++ implementation
+│   └── network/              # Contains EthernetAdapter / CellularAdapter / LoRaAdapter
 ├── web-src/                  # Editable Web frontend source
 │   ├── css/                  # Source styles
 │   ├── js/                   # Boot, state, request-governor source
@@ -171,7 +192,8 @@ FastBee-Arduino/
 ## Deployment Notes
 
 - Use `esp32` for classic ESP32 unless there is a strong reason not to.
-- Use `esp32s3` first on ESP32-S3 devices; switch to `esp32s3-full` only after confirming memory and flash headroom.
+- Use `esp32s3` (Standard) first on ESP32-S3 devices; switch to `esp32s3-full` only after confirming memory and flash headroom.
+- For low-cost nodes, prefer `esp32c3` (cheapest) or `esp32c6` (WiFi 6, future-proof).
 - Always flash both filesystem and firmware. Updating only firmware can leave stale Web files on the device.
 - If `data/www` contains locked stale files on Windows, use the clean `.pio/fs-staging/run-*/www` package as the authoritative filesystem image.
 

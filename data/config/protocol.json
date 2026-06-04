@@ -280,6 +280,11 @@
           "pwmResolution": 8,
           "pidDecimals": 1,
           "motorDecimals": 0,
+          "motorMinPosition": 0,
+          "motorMaxPosition": 10000,
+          "motorCurrentPosition": 0,
+          "motorMoveStep": 1600,
+          "motorLastPulse": 1600,
           "enabled": true,
           "pidAddrs": [
             0,

@@ -55,7 +55,10 @@ enum class SensorCategory : uint8_t {
     SENSOR_PULSE = 2,     // 脉冲/频率 (ENCODER, 预留)
     SENSOR_DHT11 = 3,     // DHT11 温湿度传感器
     SENSOR_DHT22 = 4,     // DHT22/AM2302 温湿度传感器
-    SENSOR_DS18B20 = 5    // DS18B20 数字温度传感器 (OneWire)
+    SENSOR_DS18B20 = 5,   // DS18B20 数字温度传感器 (OneWire)
+    SENSOR_ULTRASONIC = 6,// HC-SR04 超声波距离传感器 (Trig+Echo 双引脚)
+    SENSOR_CURRENT = 7,   // 电流型传感器 (ACS712 等，ADC + 线性校准)
+    SENSOR_VOLTAGE = 8    // 电压型传感器 (分压器 ADC + 比例校准)
 };
 
 // 触发类型
@@ -122,7 +125,14 @@ enum class EventType : uint8_t {
     EVENT_SYS_BREAKDOWN = 110,           // 设备故障 (break_down)
     EVENT_SYS_RESTART = 111,             // 设备重启 (restart)
     EVENT_SYS_ALARM = 112,               // 设备告警 (device_alarm)
-    EVENT_SYS_LOW_POWER = 113            // 低电量预警 (low_power)
+    EVENT_SYS_LOW_POWER = 113,           // 低电量预警 (low_power)
+
+    // RFID 事件 (120-124) - MFRC522 卡片检测事件
+    EVENT_RFID_CARD_DETECTED = 120,      // RFID 卡片检测到（data 包含 UID）
+    EVENT_RFID_CARD_REMOVED = 121,       // RFID 卡片移开
+
+    // 红外遥控事件 (125-129) - IR 信号接收事件
+    EVENT_IR_CODE_RECEIVED = 125         // 红外编码接收（data 包含协议+编码值）
 };
 
 // 触发事件定义结构体

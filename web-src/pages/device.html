@@ -351,6 +351,35 @@
                             <div id="dev-config-transfer-status" class="u-fs-13 u-text-secondary">--</div>
                         </div>
                     </div>
+
+                    <!-- 开发环境功能卡片 -->
+                    <div class="fb-panel fb-panel u-flex-1-min-300 dev-developer-panel">
+                        <div class="fb-card-header fb-panel-header-warning">
+                            <h4 class="fb-panel-title"><i class="fas fa-tools"></i>
+                                <span data-i18n="dev-mode-title">开发环境功能</span>
+                            </h4>
+                        </div>
+                        <div class="fb-card-body fb-panel-body-lg">
+                            <p class="u-mb-10 u-fs-13 u-text-secondary"
+                                data-i18n="dev-mode-hint">禁用后，外设配置、外设执行和 Modbus 子设备的新增、删除、编辑、映射入口将不可用。</p>
+                            <p class="u-mb-15 u-fs-13">
+                                <span data-i18n="dev-mode-current">当前状态：</span>
+                                <strong id="dev-mode-status" class="u-value-lg">--</strong>
+                            </p>
+                            <div class="u-form-inline-wrap factory-reset-actions">
+                                <label class="u-fs-13"
+                                    data-i18n="dev-mode-password-label">登录密码：</label>
+                                <input type="password" id="dev-mode-password"
+                                    class="u-input-w-100 factory-reset-input"
+                                    data-i18n-placeholder="password-placeholder"
+                                    placeholder="请输入密码">
+                                <button id="dev-mode-toggle-btn" type="button"
+                                    class="fb-btn fb-btn-warning">
+                                    <i class="fas fa-lock"></i> <span data-i18n="dev-mode-disable-btn">禁用开发环境</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

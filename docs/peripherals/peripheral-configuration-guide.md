@@ -80,7 +80,7 @@
 | 42  | `STEPPER_MOTOR` | 专用外设 | 步进电机 | ✅ 已实现（ULN2003 四相半步，非阻塞 Ticker） | 4 (IN1,IN2,IN3,IN4) |
 | 43  | `ENCODER` | 专用外设 | 编码器 | ⚠️ 配置框架就绪，驱动 TODO | 2 |
 | 44  | `ONE_WIRE` | 专用外设 | 单总线 | ✅ 通过 SENSOR 驱动链路实现（DS18B20） | 1 |
-| 45  | `NEO_PIXEL` | 专用外设 | **LED 灯带 (NeoPixel)** | 🔒 默认禁用（`FASTBEE_ENABLE_LED_SCREEN=0`） | 1 |
+| 45  | `NEO_PIXEL` | 专用外设 | **WS2812B 灯珠/灯带** | ✅ 已实现（ESP32 RMT，默认配置禁用） | 1 |
 | 46  | `RESERVED_46` | 兼容保留 | 保留位 | 🔒 旧版蜂鸣器类型占位，UI 不再展示 | 0 |
 | 47  | `SEVEN_SEGMENT_TM1637` | 专用外设 | TM1637 4 位数码管 | ✅ 已实现（`FASTBEE_ENABLE_SEVEN_SEGMENT`） | 2 (CLK,DIO) |
 | 51  | `MODBUS_DEVICE` | Modbus | Modbus 子设备 | ✅ 已实现（不占 GPIO） | 0 |
@@ -264,11 +264,24 @@
 
 旧版专用蜂鸣器类型已移除，`type=46` 仅作为历史编号保留，Web 不再提供新增入口。
 
-### 7.5 NeoPixel 灯带 (type=45)
+### 7.5 WS2812B / NeoPixel 灯珠 (type=45)
 
-> **实现状态**：🔒 默认禁用（`FASTBEE_ENABLE_LED_SCREEN=0`）。启用需：
-> 1. `platformio.ini` 添加 `-DFASTBEE_ENABLE_LED_SCREEN=1`
-> 2. 添加 `Adafruit NeoPixel` 库依赖
+使用 ESP32 RMT 外设发送 WS2812B GRB 时序，不依赖第三方 NeoPixel 库。`pins[0]` 接 WS2812B 的 `DIN`，默认测试模板为 `ws2812b`，GPIO4，1 颗灯珠，亮度 64，默认禁用。
+
+| 字段 | 含义 | 默认值 / 范围 |
+| --- | --- | --- |
+| `pins[0]` | DIN 数据引脚 | 有效输出 GPIO |
+| `params.count` | 灯珠数量 | 默认 `1`，最大 `64` |
+| `params.brightness` | 全局亮度 | 默认 `64`，范围 `0~255` |
+
+外设执行通过 `ACTION_CALL_PERIPHERAL` 控制：
+
+| actionValue 示例 | 行为 |
+| --- | --- |
+| `{"periphId":"ws2812b","action":"color","value":"#ff0000"}` | 显示红色 |
+| `{"periphId":"ws2812b","action":"off"}` | 熄灭 |
+| `{"periphId":"ws2812b","action":"rainbow"}` | 推进一次赤橙黄绿青蓝紫循环 |
+| `{"periphId":"ws2812b","action":"brightness","value":"96"}` | 设置亮度 |
 
 ### 7.6 舵机 (type=41)
 

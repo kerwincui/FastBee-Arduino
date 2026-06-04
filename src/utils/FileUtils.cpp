@@ -158,6 +158,23 @@ bool FileUtils::renameFile(const String& oldPath, const String& newPath) {
     return LittleFS.rename(oldPath, newPath);
 }
 
+bool FileUtils::atomicWriteFile(const String& path, const String& content) {
+    if (!fsInitialized) return false;
+    String tmpPath = path + ".tmp";
+    // 写入临时文件
+    File file = LittleFS.open(tmpPath, "w");
+    if (!file) return false;
+    size_t written = file.print(content);
+    file.close();
+    if (written != content.length()) {
+        LittleFS.remove(tmpPath);
+        return false;
+    }
+    // 删除旧文件，重命名临时文件
+    LittleFS.remove(path);
+    return LittleFS.rename(tmpPath, path);
+}
+
 bool FileUtils::copyFile(const String& sourcePath, const String& destPath) {
     if (!fsInitialized || !exists(sourcePath) || exists(destPath) || isDirectory(sourcePath)) {
         return false;

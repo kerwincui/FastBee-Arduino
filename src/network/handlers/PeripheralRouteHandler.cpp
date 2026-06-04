@@ -3,6 +3,7 @@
 #include "./network/WebHandlerContext.h"
 #include "core/FeatureFlags.h"
 #include "core/PeripheralManager.h"
+#include "core/ResourceProfile.h"
 #include <ArduinoJson.h>
 #include <algorithm>
 #include <vector>
@@ -222,14 +223,27 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
     }
 
     // 构建 header：{"success":true,"total":N,"page":P,"pageSize":S,"data":[
+    const int profileMax = static_cast<int>(FastBee::ResourceProfile::MAX_PERIPHERALS);
+    const int profileUsed = static_cast<int>(pm.getPeripheralCount());
+    const int profileRemaining = std::max(0, profileMax - profileUsed);
+
     String header;
-    header.reserve(96);
+    header.reserve(180);
     header = F("{\"success\":true,\"total\":");
     header += String(total);
     header += F(",\"page\":");
     header += String(page);
     header += F(",\"pageSize\":");
     header += String(pageSize);
+    header += F(",\"profile\":{\"name\":\"");
+    header += FastBee::ResourceProfile::NAME;
+    header += F("\",\"max\":");
+    header += String(profileMax);
+    header += F(",\"used\":");
+    header += String(profileUsed);
+    header += F(",\"remaining\":");
+    header += String(profileRemaining);
+    header += F("}");
     header += F(",\"data\":[");
 
     if (!HandlerUtils::sendJsonListChunked(request, header, std::move(serializedItems))) {
@@ -246,6 +260,13 @@ void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* req
 
     JsonDocument doc;
     doc["success"] = true;
+    JsonObject profile = doc["profile"].to<JsonObject>();
+    const int profileMax = static_cast<int>(FastBee::ResourceProfile::MAX_PERIPHERALS);
+    const int profileUsed = static_cast<int>(PeripheralManager::getInstance().getPeripheralCount());
+    profile["name"] = FastBee::ResourceProfile::NAME;
+    profile["max"] = profileMax;
+    profile["used"] = profileUsed;
+    profile["remaining"] = std::max(0, profileMax - profileUsed);
     JsonObject data = doc["data"].to<JsonObject>();
 
     // 通信接口
@@ -368,6 +389,9 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
     } else if (config->type == PeripheralType::STEPPER_MOTOR) {
         params["stepsPerRevolution"] = config->params.stepper.stepsPerRevolution;
         params["speed"] = config->params.stepper.speed;
+    } else if (config->type == PeripheralType::NEO_PIXEL) {
+        params["count"] = config->params.neopixel.count;
+        params["brightness"] = config->params.neopixel.brightness;
     }
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
     else if (config->type == PeripheralType::SEVEN_SEGMENT_TM1637) {
@@ -392,6 +416,7 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
         ctx->sendUnauthorized(request);
         return;
     }
+    if (!ctx->requireDeveloperMode(request)) return;
 
     PeripheralConfig config;
     config.id = ctx->getParamValue(request, "id", "");
@@ -442,6 +467,15 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
     } else if (config.type == PeripheralType::STEPPER_MOTOR) {
         config.params.stepper.stepsPerRevolution = ctx->getParamInt(request, "stepsPerRevolution", 2048);
         config.params.stepper.speed = ctx->getParamInt(request, "speed", 8);
+    } else if (config.type == PeripheralType::NEO_PIXEL) {
+        int count = ctx->getParamInt(request, "count", 1);
+        int brightness = ctx->getParamInt(request, "brightness", 64);
+        if (count < 1) count = 1;
+        if (count > 64) count = 64;
+        if (brightness < 0) brightness = 0;
+        if (brightness > 255) brightness = 255;
+        config.params.neopixel.count = (uint16_t)count;
+        config.params.neopixel.brightness = (uint8_t)brightness;
     }
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
     else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
@@ -473,6 +507,7 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
         ctx->sendUnauthorized(request);
         return;
     }
+    if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -546,6 +581,15 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
     } else if (config.type == PeripheralType::STEPPER_MOTOR) {
         config.params.stepper.stepsPerRevolution = ctx->getParamInt(request, "stepsPerRevolution", config.params.stepper.stepsPerRevolution ? config.params.stepper.stepsPerRevolution : 2048);
         config.params.stepper.speed = ctx->getParamInt(request, "speed", config.params.stepper.speed ? config.params.stepper.speed : 8);
+    } else if (config.type == PeripheralType::NEO_PIXEL) {
+        int count = ctx->getParamInt(request, "count", config.params.neopixel.count ? config.params.neopixel.count : 1);
+        int brightness = ctx->getParamInt(request, "brightness", config.params.neopixel.brightness);
+        if (count < 1) count = 1;
+        if (count > 64) count = 64;
+        if (brightness < 0) brightness = 0;
+        if (brightness > 255) brightness = 255;
+        config.params.neopixel.count = (uint16_t)count;
+        config.params.neopixel.brightness = (uint8_t)brightness;
     }
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
     else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
@@ -569,6 +613,7 @@ void PeripheralRouteHandler::handleDeletePeripheral(AsyncWebServerRequest* reque
         ctx->sendUnauthorized(request);
         return;
     }
+    if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -590,6 +635,7 @@ void PeripheralRouteHandler::handleEnablePeripheral(AsyncWebServerRequest* reque
         ctx->sendUnauthorized(request);
         return;
     }
+    if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -611,6 +657,7 @@ void PeripheralRouteHandler::handleDisablePeripheral(AsyncWebServerRequest* requ
         ctx->sendUnauthorized(request);
         return;
     }
+    if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {

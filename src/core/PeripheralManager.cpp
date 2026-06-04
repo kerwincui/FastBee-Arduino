@@ -9,7 +9,11 @@
 #include "core/AsyncExecTypes.h"
 #include "core/FeatureFlags.h"
 #include "core/ChipConfig.h"
+#include "utils/FileUtils.h"
 #include "systems/LoggerSystem.h"
+#if defined(ARDUINO_ARCH_ESP32)
+#include "driver/rmt.h"
+#endif
 #if FASTBEE_ENABLE_LCD
 #include "peripherals/LCDManager.h"
 #endif
@@ -18,12 +22,24 @@
 #endif
 #include <Wire.h>
 #include <SPI.h>
+#include <new>
+#include <cstdlib>
 
 namespace {
 constexpr uint16_t STEPPER_DEFAULT_STEPS_PER_REV = 2048;
 constexpr uint16_t STEPPER_DEFAULT_RPM = 8;
 constexpr uint16_t STEPPER_MIN_RPM = 1;
 constexpr uint16_t STEPPER_MAX_RPM = 30;
+constexpr uint16_t NEOPIXEL_DEFAULT_COUNT = 1;
+constexpr uint16_t NEOPIXEL_MAX_COUNT = 64;
+constexpr uint8_t NEOPIXEL_DEFAULT_BRIGHTNESS = 64;
+constexpr uint8_t UART_PORT_UNASSIGNED = 255;
+
+struct NeoPixelRgb {
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+};
 
 uint16_t clampStepperSpeed(uint16_t rpm) {
     if (rpm < STEPPER_MIN_RPM) return STEPPER_MIN_RPM;
@@ -62,6 +78,90 @@ void releaseStepperCoils(const PeripheralConfig& config) {
     }
 }
 
+HardwareSerial* serialForPort(uint8_t port) {
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
+    // ESP32-S3: Serial is HWCDC (USB), Serial0 is UART0
+    if (port == 0) return &Serial0;
+#else
+    if (port == 0) return &Serial;
+#endif
+#if CHIP_UART_COUNT >= 2
+    if (port == 1) return &Serial1;
+#endif
+#if CHIP_UART_COUNT >= 3
+    if (port == 2) return &Serial2;
+#endif
+    return nullptr;
+}
+
+uint32_t uartSerialConfig(const PeripheralConfig& config) {
+    uint8_t parity = config.params.uart.parity;
+    uint8_t stopBits = config.params.uart.stopBits;
+    if (parity == 1) return stopBits == 2 ? SERIAL_8O2 : SERIAL_8O1;
+    if (parity == 2) return stopBits == 2 ? SERIAL_8E2 : SERIAL_8E1;
+    return stopBits == 2 ? SERIAL_8N2 : SERIAL_8N1;
+}
+
+bool isUsbSerialPins(uint8_t rxPin, uint8_t txPin) {
+    // Normal order is RX,TX. The legacy default stored UART0 as TX,RX, so accept both.
+    return (rxPin == 3 && txPin == 1) || (rxPin == 1 && txPin == 3);
+}
+
+bool isProtocolOwnedUartId(const String& id) {
+    String lowered = id;
+    lowered.toLowerCase();
+    return lowered.startsWith("modbus") || lowered.startsWith("rs485");
+}
+
+struct ModbusMotorLimitResult {
+    bool enabled = false;
+    bool allowed = true;
+    bool isMove = false;
+    uint16_t pulse = 0;
+    int32_t nextPosition = 0;
+};
+
+ModbusMotorLimitResult evaluateModbusMotorLimit(const PeripheralConfig& config, uint16_t regAddr, uint16_t value) {
+    ModbusMotorLimitResult r;
+    r.nextPosition = config.params.modbus.motorCurrentPosition;
+    if (config.params.modbus.deviceType != 3) return r;
+    if (config.params.modbus.motorMaxPosition <= config.params.modbus.motorMinPosition) return r;
+
+    const bool forward = (regAddr == config.params.modbus.motorRegs[0]);
+    const bool reverse = (regAddr == config.params.modbus.motorRegs[1]);
+    if (!forward && !reverse) return r;
+
+    r.enabled = true;
+    r.isMove = true;
+    int32_t desiredPulse = value > 1 ? value : 0;
+    if (desiredPulse <= 0 && config.params.modbus.motorLastPulse > 0) {
+        desiredPulse = config.params.modbus.motorLastPulse;
+    }
+    if (desiredPulse <= 0 && config.params.modbus.motorMoveStep > 0) {
+        desiredPulse = config.params.modbus.motorMoveStep;
+    }
+    if (desiredPulse <= 0) {
+        r.allowed = false;
+        return r;
+    }
+
+    int32_t room = forward
+        ? (config.params.modbus.motorMaxPosition - config.params.modbus.motorCurrentPosition)
+        : (config.params.modbus.motorCurrentPosition - config.params.modbus.motorMinPosition);
+    if (room <= 0) {
+        r.allowed = false;
+        return r;
+    }
+
+    if (desiredPulse > room) desiredPulse = room;
+    if (desiredPulse > 65535) desiredPulse = 65535;
+    r.pulse = static_cast<uint16_t>(desiredPulse);
+    r.nextPosition = forward
+        ? config.params.modbus.motorCurrentPosition + desiredPulse
+        : config.params.modbus.motorCurrentPosition - desiredPulse;
+    return r;
+}
+
 void stepperTickerCallback(PeripheralManager::StepperTickerData* data) {
     if (!data || !data->mgr || !data->running || data->direction == 0) return;
     SemaphoreHandle_t mtx = data->mgr->getMutex();
@@ -79,6 +179,198 @@ void stepperTickerCallback(PeripheralManager::StepperTickerData* data) {
     }
 
     xSemaphoreGiveRecursive(mtx);
+}
+
+uint16_t clampNeoPixelCount(uint16_t count) {
+    if (count == 0) return NEOPIXEL_DEFAULT_COUNT;
+    if (count > NEOPIXEL_MAX_COUNT) return NEOPIXEL_MAX_COUNT;
+    return count;
+}
+
+uint8_t clampNeoPixelBrightness(uint16_t brightness) {
+    if (brightness > 255) return 255;
+    return static_cast<uint8_t>(brightness);
+}
+
+bool parseNeoPixelColor(const String& raw, NeoPixelRgb& color) {
+    String value = raw;
+    value.trim();
+    value.toLowerCase();
+    if (value.isEmpty()) return false;
+
+    if (value == "red" || value == "r") {
+        color = {255, 0, 0};
+        return true;
+    }
+    if (value == "orange") {
+        color = {255, 96, 0};
+        return true;
+    }
+    if (value == "yellow") {
+        color = {255, 220, 0};
+        return true;
+    }
+    if (value == "green" || value == "g") {
+        color = {0, 255, 0};
+        return true;
+    }
+    if (value == "cyan") {
+        color = {0, 180, 180};
+        return true;
+    }
+    if (value == "blue" || value == "b") {
+        color = {0, 0, 255};
+        return true;
+    }
+    if (value == "purple" || value == "violet") {
+        color = {128, 0, 255};
+        return true;
+    }
+    if (value == "white" || value == "w") {
+        color = {255, 255, 255};
+        return true;
+    }
+    if (value == "off" || value == "black" || value == "0") {
+        color = {0, 0, 0};
+        return true;
+    }
+
+    int comma1 = value.indexOf(',');
+    if (comma1 > 0) {
+        int comma2 = value.indexOf(',', comma1 + 1);
+        if (comma2 > comma1) {
+            int r = value.substring(0, comma1).toInt();
+            int g = value.substring(comma1 + 1, comma2).toInt();
+            int b = value.substring(comma2 + 1).toInt();
+            color = {
+                static_cast<uint8_t>(r < 0 ? 0 : (r > 255 ? 255 : r)),
+                static_cast<uint8_t>(g < 0 ? 0 : (g > 255 ? 255 : g)),
+                static_cast<uint8_t>(b < 0 ? 0 : (b > 255 ? 255 : b))
+            };
+            return true;
+        }
+    }
+
+    if (value.startsWith("#")) value = value.substring(1);
+    if (value.length() == 3) {
+        String expanded;
+        expanded.reserve(6);
+        for (uint8_t i = 0; i < 3; i++) {
+            expanded += value[i];
+            expanded += value[i];
+        }
+        value = expanded;
+    }
+    if (value.length() == 6) {
+        char* end = nullptr;
+        uint32_t rgb = strtoul(value.c_str(), &end, 16);
+        if (end && *end == '\0') {
+            color = {
+                static_cast<uint8_t>((rgb >> 16) & 0xFF),
+                static_cast<uint8_t>((rgb >> 8) & 0xFF),
+                static_cast<uint8_t>(rgb & 0xFF)
+            };
+            return true;
+        }
+    }
+
+    return false;
+}
+
+NeoPixelRgb rainbowColorAt(uint8_t index) {
+    static const NeoPixelRgb COLORS[] = {
+        {255, 0, 0},     // 赤
+        {255, 96, 0},    // 橙
+        {255, 220, 0},   // 黄
+        {0, 220, 0},     // 绿
+        {0, 180, 180},   // 青
+        {0, 0, 255},     // 蓝
+        {128, 0, 255}    // 紫
+    };
+    return COLORS[index % (sizeof(COLORS) / sizeof(COLORS[0]))];
+}
+
+NeoPixelRgb applyNeoPixelBrightness(NeoPixelRgb color, uint8_t brightness) {
+    color.r = static_cast<uint8_t>((static_cast<uint16_t>(color.r) * brightness) / 255);
+    color.g = static_cast<uint8_t>((static_cast<uint16_t>(color.g) * brightness) / 255);
+    color.b = static_cast<uint8_t>((static_cast<uint16_t>(color.b) * brightness) / 255);
+    return color;
+}
+
+bool writeNeoPixelSolid(uint8_t pin, uint16_t count, NeoPixelRgb color) {
+#if defined(ARDUINO_ARCH_ESP32)
+    static constexpr rmt_channel_t CHANNEL = RMT_CHANNEL_0;
+    static constexpr uint8_t CLK_DIV = 2;          // 80MHz / 2 = 40MHz, 25ns/tick
+    static constexpr uint16_t T0H = 14;            // 350ns
+    static constexpr uint16_t T0L = 34;            // 850ns
+    static constexpr uint16_t T1H = 28;            // 700ns
+    static constexpr uint16_t T1L = 24;            // 600ns
+
+    count = clampNeoPixelCount(count);
+    const size_t itemCount = static_cast<size_t>(count) * 24U;
+    const size_t bytesNeeded = itemCount * sizeof(rmt_item32_t);
+    if (ESP.getFreeHeap() < bytesNeeded + 4096U) {
+        LOG_WARNINGF("Peripheral Manager: NeoPixel heap low (need=%u free=%u)",
+                     static_cast<unsigned int>(bytesNeeded),
+                     static_cast<unsigned int>(ESP.getFreeHeap()));
+        return false;
+    }
+
+    rmt_item32_t* items = new (std::nothrow) rmt_item32_t[itemCount];
+    if (!items) return false;
+
+    size_t idx = 0;
+    const uint8_t grb[3] = { color.g, color.r, color.b };
+    for (uint16_t led = 0; led < count; led++) {
+        for (uint8_t byteIdx = 0; byteIdx < 3; byteIdx++) {
+            uint8_t byteVal = grb[byteIdx];
+            for (int8_t bit = 7; bit >= 0; bit--) {
+                bool one = (byteVal & (1U << bit)) != 0;
+                items[idx].level0 = 1;
+                items[idx].duration0 = one ? T1H : T0H;
+                items[idx].level1 = 0;
+                items[idx].duration1 = one ? T1L : T0L;
+                idx++;
+            }
+        }
+    }
+
+    rmt_driver_uninstall(CHANNEL);
+
+    rmt_config_t config = {};
+    config.rmt_mode = RMT_MODE_TX;
+    config.channel = CHANNEL;
+    config.gpio_num = static_cast<gpio_num_t>(pin);
+    config.mem_block_num = 1;
+    config.clk_div = CLK_DIV;
+    config.tx_config.loop_en = false;
+    config.tx_config.carrier_en = false;
+    config.tx_config.idle_output_en = true;
+    config.tx_config.idle_level = RMT_IDLE_LEVEL_LOW;
+
+    esp_err_t err = rmt_config(&config);
+    bool installed = false;
+    if (err == ESP_OK) {
+        err = rmt_driver_install(CHANNEL, 0, 0);
+        installed = (err == ESP_OK);
+    }
+    if (err == ESP_OK) {
+        err = rmt_write_items(CHANNEL, items, itemCount, true);
+    }
+    if (err == ESP_OK) {
+        err = rmt_wait_tx_done(CHANNEL, pdMS_TO_TICKS(100));
+    }
+    if (installed) rmt_driver_uninstall(CHANNEL);
+    delete[] items;
+
+    delayMicroseconds(80);  // WS2812 reset latch
+    return err == ESP_OK;
+#else
+    (void)pin;
+    (void)count;
+    (void)color;
+    return false;
+#endif
 }
 }
 
@@ -133,6 +425,13 @@ bool PeripheralManager::addPeripheral(const PeripheralConfig& config, String& er
     
     // 检查引脚冲突（Modbus 外设不使用 GPIO 引脚，设备事件虚拟外设无引脚，跳过此检查）
     // 加固：传入 excludeId=config.id 防止同 ID 自冲突；冲突时报告实际占用者便于定位
+    if (peripherals.size() >= FastBee::ResourceProfile::MAX_PERIPHERALS) {
+        errorMsg = String("Peripheral limit reached for profile ") +
+                   FastBee::ResourceProfile::NAME + " (max " +
+                   String(FastBee::ResourceProfile::MAX_PERIPHERALS) + ")";
+        LOG_ERRORF("Peripheral Manager: %s", errorMsg.c_str());
+        return false;
+    }
     if (!config.isModbusPeripheral() && !isDeviceEventType(config.type)) {
         for (int i = 0; i < config.pinCount && i < 8; i++) {
             if (config.pins[i] != 255 && checkPinConflict(config.pins[i], config.id)) {
@@ -701,25 +1000,21 @@ bool PeripheralManager::saveConfiguration() {
             params["brightness"] = config.params.segment.brightness;
         }
 #endif
+        else if (config.type == PeripheralType::NEO_PIXEL) {
+            params["count"] = clampNeoPixelCount(config.params.neopixel.count);
+            params["brightness"] = config.params.neopixel.brightness;
+        }
     }
     
     String jsonStr;
     serializeJson(doc, jsonStr);
     
-    File file = LittleFS.open(PERIPHERAL_CONFIG_FILE, "w");
-    if (!file) {
-        LOG_ERROR("Peripheral Manager: Failed to open config file for writing");
-        return false;
-    }
-    
-    size_t written = file.print(jsonStr);
-    file.close();
-    
-    if (written == jsonStr.length()) {
+    // 原子写入：先写临时文件再 rename，防止断电导致配置损坏
+    if (FileUtils::atomicWriteFile(PERIPHERAL_CONFIG_FILE, jsonStr)) {
         LOG_INFO("Peripheral Manager: Configuration saved successfully");
         return true;
     } else {
-        LOG_ERROR("Peripheral Manager: Failed to write complete configuration");
+        LOG_ERROR("Peripheral Manager: Failed to save configuration (atomic write)");
         return false;
     }
 }
@@ -771,6 +1066,13 @@ bool PeripheralManager::loadConfiguration() {
     
     int loadedCount = 0;
     for (JsonObject obj : periphs) {
+        if (peripherals.size() >= FastBee::ResourceProfile::MAX_PERIPHERALS) {
+            LOG_WARNINGF("Peripheral Manager: profile %s allows max %u peripherals, skipping remaining config entries",
+                         FastBee::ResourceProfile::NAME,
+                         static_cast<unsigned int>(FastBee::ResourceProfile::MAX_PERIPHERALS));
+            break;
+        }
+
         PeripheralConfig config;
         
         config.id = obj["id"] | "";
@@ -785,6 +1087,9 @@ bool PeripheralManager::loadConfiguration() {
         if (config.type == PeripheralType::STEPPER_MOTOR) {
             config.params.stepper.stepsPerRevolution = STEPPER_DEFAULT_STEPS_PER_REV;
             config.params.stepper.speed = STEPPER_DEFAULT_RPM;
+        } else if (config.type == PeripheralType::NEO_PIXEL) {
+            config.params.neopixel.count = NEOPIXEL_DEFAULT_COUNT;
+            config.params.neopixel.brightness = NEOPIXEL_DEFAULT_BRIGHTNESS;
         }
         
         // 引脚配置
@@ -854,9 +1159,23 @@ bool PeripheralManager::loadConfiguration() {
                 config.params.segment.brightness = (uint8_t)b;
             }
 #endif
+            else if (config.type == PeripheralType::NEO_PIXEL) {
+                int count = params["count"] | NEOPIXEL_DEFAULT_COUNT;
+                int brightness = params["brightness"] | NEOPIXEL_DEFAULT_BRIGHTNESS;
+                config.params.neopixel.count = clampNeoPixelCount(count < 0 ? 0 : (uint16_t)count);
+                config.params.neopixel.brightness = clampNeoPixelBrightness(brightness < 0 ? 0 : (uint16_t)brightness);
+            }
         }
         
         if (!config.id.isEmpty() && config.type != PeripheralType::UNCONFIGURED) {
+            String errorMsg;
+            if (!validateConfig(config, errorMsg)) {
+                LOG_WARNINGF("Peripheral Manager: Skipping invalid config '%s': %s",
+                             config.id.c_str(),
+                             errorMsg.c_str());
+                continue;
+            }
+
             peripherals[config.id] = config;
             
             PeripheralRuntimeState state;
@@ -892,6 +1211,16 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
         return false;
     }
     
+    if (config.id.length() > FastBee::ResourceProfile::MAX_PERIPHERAL_ID_LEN) {
+        errorMsg = "Peripheral ID too long (max " + String(FastBee::ResourceProfile::MAX_PERIPHERAL_ID_LEN) + ")";
+        return false;
+    }
+
+    if (config.name.length() > FastBee::ResourceProfile::MAX_PERIPHERAL_NAME_LEN) {
+        errorMsg = "Peripheral name too long (max " + String(FastBee::ResourceProfile::MAX_PERIPHERAL_NAME_LEN) + ")";
+        return false;
+    }
+
     if (config.type == PeripheralType::UNCONFIGURED) {
         errorMsg = "外设类型不能为空";
         return false;
@@ -1052,6 +1381,21 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
                 return false;
             }
             break;
+
+        case PeripheralType::NEO_PIXEL:
+            if (config.pinCount < 1) {
+                errorMsg = "WS2812B 需要 1 个数据引脚";
+                return false;
+            }
+            if (isReservedPin(config.pins[0]) || isInputOnlyPin(config.pins[0])) {
+                errorMsg = String("GPIO") + String(config.pins[0]) + " 不适合输出 WS2812B 信号";
+                return false;
+            }
+            if (config.params.neopixel.count == 0 || config.params.neopixel.count > NEOPIXEL_MAX_COUNT) {
+                errorMsg = "WS2812B 灯珠数量无效 (1-" + String(NEOPIXEL_MAX_COUNT) + ")";
+                return false;
+            }
+            break;
             
         default:
             // 其他类型暂不需要特殊验证
@@ -1078,6 +1422,10 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
         return setupGPIOPin(config);
     }
 
+    if (config.type == PeripheralType::UART) {
+        return setupUartHardware(config);
+    }
+
     if (config.type == PeripheralType::STEPPER_MOTOR) {
         if (config.pinCount < 4) {
             LOG_WARNINGF("Peripheral Manager: Stepper '%s' requires 4 pins (IN1-IN4)", config.id.c_str());
@@ -1095,6 +1443,28 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
         LOG_INFOF("Peripheral Manager: Stepper '%s' initialized IN1=%d IN2=%d IN3=%d IN4=%d speed=%d rpm steps=%d",
                   config.id.c_str(), config.pins[0], config.pins[1], config.pins[2], config.pins[3],
                   clampStepperSpeed(config.params.stepper.speed), config.params.stepper.stepsPerRevolution);
+        return true;
+    }
+
+    if (config.type == PeripheralType::NEO_PIXEL) {
+        if (config.pinCount < 1) {
+            LOG_WARNINGF("Peripheral Manager: NeoPixel '%s' requires 1 data pin", config.id.c_str());
+            return false;
+        }
+        uint8_t pin = config.pins[0];
+        if (isReservedPin(pin) || isInputOnlyPin(pin)) {
+            LOG_ERRORF("Peripheral Manager: NeoPixel '%s' rejects GPIO%d on %s",
+                       config.id.c_str(), pin, CHIP_NAME);
+            return false;
+        }
+        pinMode(pin, OUTPUT);
+        digitalWrite(pin, LOW);
+        NeoPixelRgb off = {0, 0, 0};
+        writeNeoPixelSolid(pin, clampNeoPixelCount(config.params.neopixel.count), off);
+        LOG_INFOF("Peripheral Manager: NeoPixel '%s' initialized pin=%d count=%d brightness=%d",
+                  config.id.c_str(), pin,
+                  clampNeoPixelCount(config.params.neopixel.count),
+                  config.params.neopixel.brightness);
         return true;
     }
         
@@ -1156,6 +1526,18 @@ bool PeripheralManager::teardownHardware(const PeripheralConfig& config) {
             detachInterrupt(pin);
         }
     }
+
+    if (config.type == PeripheralType::UART) {
+        auto it = uartPortById.find(config.id);
+        if (it != uartPortById.end()) {
+            HardwareSerial* serial = serialForPort(it->second);
+            if (serial && it->second != 0) {
+                serial->end();
+            }
+            uartPortById.erase(it);
+        }
+        return true;
+    }
     
     // LCD/OLED 显示屏清理
 #if FASTBEE_ENABLE_LCD
@@ -1184,6 +1566,15 @@ bool PeripheralManager::teardownHardware(const PeripheralConfig& config) {
             if (isReservedPin(config.pins[i])) safeRelease = false;
         }
         if (safeRelease) releaseStepperCoils(config);
+    }
+
+    if (config.type == PeripheralType::NEO_PIXEL) {
+        if (config.pinCount >= 1 && !isReservedPin(config.pins[0]) && !isInputOnlyPin(config.pins[0])) {
+            NeoPixelRgb off = {0, 0, 0};
+            writeNeoPixelSolid(config.pins[0], clampNeoPixelCount(config.params.neopixel.count), off);
+            digitalWrite(config.pins[0], LOW);
+        }
+        neopixelRainbowIndex.erase(config.id);
     }
 
     // TODO: 实现其他类型外设的硬件释放
@@ -1259,6 +1650,67 @@ bool PeripheralManager::setupPWMPin(const PeripheralConfig& config) {
         ledcWrite(channel, 0);
     }
     
+    return true;
+}
+
+HardwareSerial* PeripheralManager::getUartSerial(const String& id) {
+    auto it = uartPortById.find(id);
+    if (it == uartPortById.end()) return nullptr;
+    return serialForPort(it->second);
+}
+
+bool PeripheralManager::setupUartHardware(const PeripheralConfig& config) {
+    if (config.pinCount < 2) {
+        LOG_WARNINGF("Peripheral Manager: UART '%s' requires RX/TX pins", config.id.c_str());
+        return false;
+    }
+
+    if (isProtocolOwnedUartId(config.id)) {
+        LOG_INFOF("Peripheral Manager: UART '%s' reserved for protocol stack, skip generic serial init",
+                  config.id.c_str());
+        return true;
+    }
+
+    uint8_t rxPin = config.pins[0];
+    uint8_t txPin = config.pins[1];
+    uint8_t port = UART_PORT_UNASSIGNED;
+
+    auto existing = uartPortById.find(config.id);
+    if (existing != uartPortById.end()) {
+        port = existing->second;
+    } else if (isUsbSerialPins(rxPin, txPin)) {
+        port = 0;
+    } else {
+        bool used[CHIP_UART_COUNT] = {false};
+        used[0] = true; // UART0 is shared with USB/logging.
+        for (const auto& pair : uartPortById) {
+            if (pair.second < CHIP_UART_COUNT) used[pair.second] = true;
+        }
+        for (uint8_t i = 1; i < CHIP_UART_COUNT; i++) {
+            if (!used[i]) {
+                port = i;
+                break;
+            }
+        }
+    }
+
+    HardwareSerial* serial = serialForPort(port);
+    if (!serial) {
+        LOG_WARNINGF("Peripheral Manager: No free UART port for '%s'", config.id.c_str());
+        return false;
+    }
+
+    uartPortById[config.id] = port;
+    if (port == 0) {
+        LOG_INFOF("Peripheral Manager: UART '%s' mapped to Serial0 (USB/log shared)", config.id.c_str());
+        return true;
+    }
+
+    uint32_t baud = config.params.uart.baudRate > 0 ? config.params.uart.baudRate : 115200;
+    serial->begin(baud, uartSerialConfig(config), rxPin, txPin);
+    serial->setTimeout(0);
+    LOG_INFOF("Peripheral Manager: UART '%s' initialized on Serial%d RX=%d TX=%d baud=%lu",
+              config.id.c_str(), port, rxPin, txPin, (unsigned long)baud);
     return true;
 }
 
@@ -1463,6 +1915,73 @@ bool PeripheralManager::controlStepper(const String& id, const String& action, i
     return true;
 }
 
+bool PeripheralManager::controlNeoPixel(const String& id, const String& action, const String& value) {
+    RecursiveMutexGuard lock(_mutex);
+    PeripheralConfig* config = getPeripheral(id);
+    if (!config || config->type != PeripheralType::NEO_PIXEL) {
+        LOG_WARNINGF("Peripheral Manager: NeoPixel control target invalid: %s", id.c_str());
+        return false;
+    }
+    if (!config->enabled) {
+        LOG_WARNINGF("Peripheral Manager: NeoPixel '%s' is disabled", id.c_str());
+        return false;
+    }
+    if (config->pinCount < 1) {
+        LOG_WARNINGF("Peripheral Manager: NeoPixel '%s' requires data pin", id.c_str());
+        return false;
+    }
+    uint8_t pin = config->pins[0];
+    if (isReservedPin(pin) || isInputOnlyPin(pin)) {
+        LOG_WARNINGF("Peripheral Manager: NeoPixel '%s' rejects GPIO%d", id.c_str(), pin);
+        return false;
+    }
+
+    String cmd = action;
+    cmd.trim();
+    cmd.toLowerCase();
+    String rawValue = value;
+    rawValue.trim();
+
+    if (cmd == "brightness") {
+        int b = rawValue.toInt();
+        config->params.neopixel.brightness = clampNeoPixelBrightness(b < 0 ? 0 : (uint16_t)b);
+        LOG_INFOF("Peripheral Manager: NeoPixel '%s' brightness=%d",
+                  id.c_str(), config->params.neopixel.brightness);
+        return true;
+    }
+
+    NeoPixelRgb color = {0, 0, 0};
+    if (cmd == "rainbow" || cmd == "cycle" || cmd == "next") {
+        uint8_t& index = neopixelRainbowIndex[id];
+        color = rainbowColorAt(index++);
+    } else if (cmd == "off" || cmd == "clear" || cmd == "black") {
+        color = {0, 0, 0};
+    } else {
+        String colorText = rawValue.isEmpty() ? cmd : rawValue;
+        if (cmd == "color" || cmd == "set" || cmd == "fill") {
+            colorText = rawValue;
+        }
+        if (!parseNeoPixelColor(colorText, color)) {
+            LOG_WARNINGF("Peripheral Manager: NeoPixel '%s' unknown color/action '%s' value='%s'",
+                         id.c_str(), action.c_str(), value.c_str());
+            return false;
+        }
+    }
+
+    uint8_t brightness = config->params.neopixel.brightness;
+    color = applyNeoPixelBrightness(color, brightness);
+    uint16_t count = clampNeoPixelCount(config->params.neopixel.count);
+    bool ok = writeNeoPixelSolid(pin, count, color);
+    if (runtimeStates.find(id) != runtimeStates.end()) {
+        runtimeStates[id].status = ok ? PeripheralStatus::PERIPHERAL_RUNNING : PeripheralStatus::PERIPHERAL_ERROR;
+        runtimeStates[id].lastActivity = millis();
+        if (!ok) runtimeStates[id].errorCount++;
+    }
+    LOG_INFOF("Peripheral Manager: NeoPixel '%s' action=%s value=%s count=%d brightness=%d -> %s",
+              id.c_str(), action.c_str(), value.c_str(), count, brightness, ok ? "ok" : "fail");
+    return ok;
+}
+
 // ========== DAC 硬件初始化 ==========
 
 bool PeripheralManager::setupDACPin(const PeripheralConfig& config) {
@@ -1553,6 +2072,12 @@ bool PeripheralManager::isValidPin(uint8_t pin) const {
             #elif defined(CONFIG_IDF_TARGET_ESP32C3)
             // ESP32-C3: GPIO 12-17 是 Flash SPI
             if (pin >= 12 && pin <= 17) return false;
+            #elif defined(CONFIG_IDF_TARGET_ESP32C6)
+            // ESP32-C6: GPIO 12-14 是 Flash SPI
+            if (pin >= 12 && pin <= 14) return false;
+            #elif defined(CONFIG_IDF_TARGET_ESP32S2)
+            // ESP32-S2: GPIO 26-32 是 Flash/PSRAM
+            if (pin >= 26 && pin <= 32) return false;
             #else
             if (pin >= 6 && pin <= 11) return false;
             #endif
@@ -1827,13 +2352,9 @@ bool PeripheralManager::writeData(const String& id, const uint8_t* data, size_t 
             
         // UART 发送
         case PeripheralType::UART:
-            // 需要根据配置的 UART 端口发送数据
-            // 这里使用 Serial（UART0）作为示例
-            if (config->pins[0] == 1 && config->pins[1] == 3) {
-                Serial.write(data, len);
-                success = true;
+            if (HardwareSerial* serial = getUartSerial(id)) {
+                success = (serial->write(data, len) == len);
             }
-            // TODO: 支持 Serial1/Serial2
             break;
             
         // I2C 写入
@@ -1911,14 +2432,13 @@ bool PeripheralManager::readData(const String& id, uint8_t* buffer, size_t& len)
             
         // UART 接收
         case PeripheralType::UART:
-            if (config->pins[0] == 1 && config->pins[1] == 3) {
+            if (HardwareSerial* serial = getUartSerial(id)) {
                 len = 0;
-                while (Serial.available() && len < maxLen) {
-                    buffer[len++] = Serial.read();
+                while (serial->available() && len < maxLen) {
+                    buffer[len++] = serial->read();
                 }
                 success = true;
             }
-            // TODO: 支持 Serial1/Serial2
             break;
             
         // I2C 读取
@@ -2141,11 +2661,41 @@ bool PeripheralManager::writeModbusReg(const String& id, uint16_t regAddr, uint1
         LOG_WARNINGF("Peripheral Manager: '%s' is not a Modbus peripheral", id.c_str());
         return false;
     }
+
+    ModbusMotorLimitResult motorLimit = evaluateModbusMotorLimit(*config, regAddr, value);
+    if (motorLimit.enabled && !motorLimit.allowed) {
+        LOG_WARNINGF("Peripheral Manager: Modbus motor '%s' blocked by soft limit (pos=%ld min=%ld max=%ld reg=%u)",
+                     id.c_str(),
+                     static_cast<long>(config->params.modbus.motorCurrentPosition),
+                     static_cast<long>(config->params.modbus.motorMinPosition),
+                     static_cast<long>(config->params.modbus.motorMaxPosition),
+                     static_cast<unsigned int>(regAddr));
+        return false;
+    }
+    if (motorLimit.enabled && motorLimit.isMove && config->params.modbus.motorRegs[4] != 0) {
+        bool pulseOk = _modbusRegWrite(config->params.modbus.slaveAddress,
+                                       config->params.modbus.motorRegs[4],
+                                       motorLimit.pulse);
+        if (!pulseOk) {
+            LOG_WARNINGF("Peripheral Manager: Modbus motor '%s' failed to write bounded pulse=%u",
+                         id.c_str(),
+                         static_cast<unsigned int>(motorLimit.pulse));
+            return false;
+        }
+    }
     
     bool success = _modbusRegWrite(config->params.modbus.slaveAddress, regAddr, value);
     
     if (success && runtimeStates.find(id) != runtimeStates.end()) {
         runtimeStates[id].lastActivity = millis();
+    }
+    if (success && config->params.modbus.deviceType == 3) {
+        if (regAddr == config->params.modbus.motorRegs[4]) {
+            config->params.modbus.motorLastPulse = value;
+        } else if (motorLimit.enabled && motorLimit.isMove) {
+            config->params.modbus.motorCurrentPosition = motorLimit.nextPosition;
+            config->params.modbus.motorLastPulse = motorLimit.pulse;
+        }
     }
     
     LOG_INFOF("Peripheral Manager: Modbus writeReg '%s' slave=%d reg=%d val=%d %s",

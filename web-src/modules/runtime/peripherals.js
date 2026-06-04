@@ -9,6 +9,7 @@
         _periphCurrentPage: 1,
         _periphPageSize: 10,
         _periphTotalCount: 0,
+        _periphProfile: null,
         _periphEventsBound: false,
 
         // ============ 事件绑定 ============
@@ -57,13 +58,45 @@
             var action = button.getAttribute('data-peripheral-action');
             var id = button.getAttribute('data-id');
             if (!action || !id) return;
+            if (action !== 'read' && !this.guardDeveloperModeAction()) return;
             if (action === 'edit') this.editPeripheral(id);
             else if (action === 'toggle') this.togglePeripheral(id);
             else if (action === 'delete') this.deletePeripheral(id);
         },
 
         _renderPeripheralActionButton(action, id, label, className) {
-            return '<button class="fb-btn fb-btn-sm fb-btn-compact ' + className + '" data-peripheral-action="' + action + '" data-id="' + escapeHtml(id) + '">' + label + '</button>';
+            var locked = !this.isDeveloperModeEnabled();
+            var attrs = locked ? ' disabled title="' + escapeHtml(this.getDeveloperModeDisabledText()) + '"' : '';
+            var lockClass = locked ? ' dev-mode-locked' : '';
+            return '<button class="fb-btn fb-btn-sm fb-btn-compact ' + className + lockClass + '" data-peripheral-action="' + action + '" data-id="' + escapeHtml(id) + '"' + attrs + '>' + label + '</button>';
+        },
+
+        _setPeripheralCapacity(profile) {
+            this._periphProfile = profile || null;
+            var btn = document.getElementById('add-peripheral-btn');
+            if (!btn) return;
+            var locked = !!(profile && Number(profile.remaining) <= 0);
+            if (locked) {
+                btn.setAttribute('data-resource-locked', 'true');
+                btn.disabled = true;
+                btn.title = '当前资源档位外设数量已达上限';
+            } else {
+                btn.removeAttribute('data-resource-locked');
+                if (this.isDeveloperModeEnabled()) {
+                    btn.disabled = false;
+                    btn.removeAttribute('title');
+                }
+            }
+        },
+
+        _formatPeripheralCapacitySummary(total) {
+            var summary = i18n.t('periph-exec-total') + ': ' + total;
+            var profile = this._periphProfile;
+            if (profile && profile.max !== undefined) {
+                summary += ' / ' + (profile.name || 'profile') + ' ' +
+                    (profile.used || 0) + '/' + profile.max;
+            }
+            return summary;
         },
 
         // ============ 外设列表 ============
@@ -85,6 +118,7 @@
         loadPeripherals(filterType = '', options) {
             const tbody = document.getElementById('peripheral-table-body');
             if (!tbody) return;
+            this.applyDeveloperModeState();
             this.renderEmptyTableRow(tbody, 6, i18n.t('peripheral-loading'));
             var getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
             var params = {
@@ -104,6 +138,7 @@
                     const page = res.page || 1;
                     const pageSize = res.pageSize || 10;
                     this._periphTotalCount = total;
+                    this._setPeripheralCapacity(res.profile || null);
                     const peripherals = res.data || [];
                     if (peripherals.length === 0) {
                         this.renderEmptyTableRow(tbody, 6, i18n.t('peripheral-empty'));
@@ -138,6 +173,7 @@
                     });
                     tbody.innerHTML = html;
                     this._renderPeriphPagination(total, page, pageSize);
+                    this.applyDeveloperModeState(tbody);
                 })
                 .catch(err => {
                     var msg = i18n.t('peripheral-load-fail');
@@ -156,7 +192,7 @@
                 page,
                 pageSize,
                 maxVisiblePages: 3,
-                summaryText: i18n.t('periph-exec-total') + ': ' + total,
+                summaryText: this._formatPeripheralCapacitySummary(total),
                 onPageChange: (nextPage) => {
                     this._periphCurrentPage = nextPage;
                     this.loadPeripherals(filterValue);
@@ -167,6 +203,11 @@
         // ============ 外设模态框 ============
 
         openPeripheralModal(isEdit = false, peripheralId = null) {
+            if (!this.guardDeveloperModeAction()) return;
+            if (!isEdit && this._periphProfile && Number(this._periphProfile.remaining) <= 0) {
+                Notification.warning('当前资源档位外设数量已达上限', i18n.t('peripheral-title'));
+                return;
+            }
             const modal = document.getElementById('peripheral-modal');
             const title = document.getElementById('peripheral-modal-title');
             const form = document.getElementById('peripheral-form');
@@ -232,6 +273,9 @@
             } else if (type === 42) {
                 const stepperParams = document.getElementById('stepper-params');
                 if (stepperParams) this.showElement(stepperParams);
+            } else if (type === 45) {
+                const neoParams = document.getElementById('neopixel-params');
+                if (neoParams) this.showElement(neoParams);
             }
             // DEVICE_EVENT (60) 和 Modbus (51) 无引脚配置，隐藏 pins 字段
             const pinsGroup = document.getElementById('peripheral-pins-group');
@@ -284,6 +328,8 @@
                             if (data.params.brightness !== undefined) { const el = document.getElementById('segment-brightness'); if (el) el.value = data.params.brightness; }
                             if (data.params.stepsPerRevolution !== undefined) { const el = document.getElementById('stepper-steps-per-rev'); if (el) el.value = data.params.stepsPerRevolution; }
                             if (data.params.speed !== undefined) { const el = document.getElementById('stepper-speed'); if (el) el.value = data.params.speed; }
+                            if (data.params.count !== undefined) { const el = document.getElementById('neopixel-count'); if (el) el.value = data.params.count; }
+                            if (data.params.brightness !== undefined) { const el = document.getElementById('neopixel-brightness'); if (el) el.value = data.params.brightness; }
                         }
                     } else {
                         Notification.error(i18n.t('peripheral-load-fail'), i18n.t('peripheral-title'));
@@ -296,6 +342,7 @@
         },
 
         savePeripheralConfig() {
+            if (!this.guardDeveloperModeAction()) return;
             const originalId = document.getElementById('peripheral-original-id').value;
             const id = document.getElementById('peripheral-id-input').value.trim();
             const name = document.getElementById('peripheral-name-input').value.trim();
@@ -347,6 +394,9 @@
             } else if (typeNum === 42) {
                 data.stepsPerRevolution = document.getElementById('stepper-steps-per-rev')?.value || '2048';
                 data.speed = document.getElementById('stepper-speed')?.value || '8';
+            } else if (typeNum === 45) {
+                data.count = document.getElementById('neopixel-count')?.value || '1';
+                data.brightness = document.getElementById('neopixel-brightness')?.value || '64';
             }
             const saveBtn = document.getElementById('save-peripheral-btn');
             const origText = saveBtn?.textContent;
@@ -367,7 +417,7 @@
                 })
                 .catch(err => {
                     console.error('Save peripheral failed:', err);
-                    this.showInlineError(errEl, i18n.t('peripheral-save-fail'));
+                    this.showInlineError(errEl, err?.data?.error || err?.data?.message || i18n.t('peripheral-save-fail'));
                 })
                 .finally(() => {
                     if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = origText; }
@@ -375,10 +425,12 @@
         },
 
         editPeripheral(id) {
+            if (!this.guardDeveloperModeAction()) return;
             this.openPeripheralModal(true, id);
         },
 
         deletePeripheral(id) {
+            if (!this.guardDeveloperModeAction()) return;
             if (!confirm(i18n.t('peripheral-confirm-delete') + id + i18n.t('peripheral-confirm-suffix'))) return;
             apiDelete('/api/peripherals/', { id: id })
                 .then(res => {
@@ -399,6 +451,7 @@
         },
 
         togglePeripheral(id) {
+            if (!this.guardDeveloperModeAction()) return;
             var getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
             getter('/api/peripherals/status', { id: id })
                 .then(res => {

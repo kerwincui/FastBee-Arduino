@@ -1,7 +1,11 @@
 #ifndef DNS_MANAGER_H
 #define DNS_MANAGER_H
 
+#include "core/FeatureFlags.h"
+
+#if FASTBEE_ENABLE_MDNS
 #include <ESPmDNS.h>
+#endif
 
 /**
  * @brief DNS 管理器类

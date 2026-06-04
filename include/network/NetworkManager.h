@@ -15,9 +15,19 @@
 #include <core/SystemConstants.h>
 #include <ArduinoJson.h>
 #include "core/interfaces/INetworkManager.h"
+#include "core/FeatureFlags.h"
 #include "network/WiFiManager.h"
 #include "network/IPManager.h"
 #include "network/DNSManager.h"
+#if FASTBEE_ENABLE_ETHERNET
+#include "network/EthernetAdapter.h"
+#endif
+#if FASTBEE_ENABLE_CELLULAR
+#include "network/CellularAdapter.h"
+#endif
+#if FASTBEE_ENABLE_LORA
+#include "network/LoRaAdapter.h"
+#endif
 
 // 事件回调类型
 typedef std::function<void(NetworkStatus, const String&)> NetworkEventCallback;
@@ -197,6 +207,33 @@ public:
      * @return DNS管理器指针
      */
     DNSManager* getDNSManager();
+
+    /**
+     * @brief 获取当前活动的 Arduino Client 指针
+     * @details 根据当前 networkType 返回对应适配器的 Client
+     * @return Client 指针，用于 PubSubClient 等协议层
+     */
+    Client* getActiveClient();
+
+    /**
+     * @brief 获取当前联网方式类型
+     */
+    NetworkType getNetworkType() const { return wifiConfig.networkType; }
+
+    /**
+     * @brief 检查当前网络是否已连接（与 networkType 无关）
+     */
+    bool isNetworkConnected();
+
+#if FASTBEE_ENABLE_ETHERNET
+    EthernetAdapter* getEthernetAdapter() { return ethernetAdapter.get(); }
+#endif
+#if FASTBEE_ENABLE_CELLULAR
+    CellularAdapter* getCellularAdapter() { return cellularAdapter.get(); }
+#endif
+#if FASTBEE_ENABLE_LORA
+    LoRaAdapter* getLoRaAdapter() { return loraAdapter.get(); }
+#endif
     
     // 静态工具方法
     static bool isValidIP(const String& ip);
@@ -236,6 +273,15 @@ private:
     std::unique_ptr<WiFiManager> wifiManager;
     std::unique_ptr<IPManager> ipManager;
     std::unique_ptr<DNSManager> dnsManager;
+#if FASTBEE_ENABLE_ETHERNET
+    std::unique_ptr<EthernetAdapter> ethernetAdapter;
+#endif
+#if FASTBEE_ENABLE_CELLULAR
+    std::unique_ptr<CellularAdapter> cellularAdapter;
+#endif
+#if FASTBEE_ENABLE_LORA
+    std::unique_ptr<LoRaAdapter> loraAdapter;
+#endif
     
     // 连接状态
     bool isInitialized;

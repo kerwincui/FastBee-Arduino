@@ -1,8 +1,10 @@
 {
   "mode": 0,
+  "networkType": 0,
   "deviceName": "FastBee-Device",
   "apSSID": "fastbee-ap",
   "apPassword": "12345678",
+  "apIP": "192.168.4.1",
   "apChannel": 1,
   "apHidden": false,
   "apMaxConnections": 4,
@@ -30,5 +32,26 @@
   "conflictCheckInterval": 30000,
   "maxFailoverAttempts": 3,
   "conflictThreshold": 2,
-  "fallbackToDHCP": true
+  "fallbackToDHCP": true,
+  "ethernet": {
+    "spiMosi": 11,
+    "spiMiso": 13,
+    "spiSck": 12,
+    "csPin": 47,
+    "rstPin": 48,
+    "intPin": 14
+  },
+  "cellular": {
+    "txPin": 39,
+    "rxPin": 40,
+    "pwrPin": 38,
+    "baudRate": 115200,
+    "apn": "CMNET"
+  },
+  "lora": {
+    "txPin": 39,
+    "rxPin": 40,
+    "m1Pin": 41,
+    "baudRate": 9600
+  }
 }

@@ -20,6 +20,7 @@
 #if FASTBEE_ENABLE_SENSOR_DRIVER
 #include "peripherals/SensorDriver.h"
 #endif
+#include "core/DriverRegistry.h"
 #if FASTBEE_ENABLE_LCD
 #include "peripherals/LCDManager.h"
 #endif
@@ -114,6 +115,51 @@ String buildModbusReportValue(uint16_t channel,
              normalizeBinaryReportValue(preferredValue, fallbackValue, defaultState).c_str());
     return String(buf);
 }
+
+#if FASTBEE_ENABLE_MODBUS
+struct MotorSoftLimitDecision {
+    bool enabled = false;
+    bool allowed = true;
+    uint16_t pulse = 0;
+    int32_t nextPosition = 0;
+};
+
+MotorSoftLimitDecision evaluateMotorSoftLimit(const ModbusSubDevice& dev,
+                                              const char* action,
+                                              uint16_t requestedValue) {
+    MotorSoftLimitDecision d;
+    d.nextPosition = dev.motorCurrentPosition;
+    if (!dev.hasMotorSoftLimit() ||
+        (strcmp(action, "forward") != 0 && strcmp(action, "reverse") != 0)) {
+        return d;
+    }
+
+    d.enabled = true;
+    int32_t desiredPulse = requestedValue > 1 ? requestedValue : 0;
+    if (desiredPulse <= 0 && dev.motorLastPulse > 0) desiredPulse = dev.motorLastPulse;
+    if (desiredPulse <= 0 && dev.motorMoveStep > 0) desiredPulse = dev.motorMoveStep;
+    if (desiredPulse <= 0) {
+        d.allowed = false;
+        return d;
+    }
+
+    int32_t room = (strcmp(action, "forward") == 0)
+        ? (dev.motorMaxPosition - dev.motorCurrentPosition)
+        : (dev.motorCurrentPosition - dev.motorMinPosition);
+    if (room <= 0) {
+        d.allowed = false;
+        return d;
+    }
+
+    if (desiredPulse > room) desiredPulse = room;
+    if (desiredPulse > 65535) desiredPulse = 65535;
+    d.pulse = static_cast<uint16_t>(desiredPulse);
+    d.nextPosition = (strcmp(action, "forward") == 0)
+        ? dev.motorCurrentPosition + desiredPulse
+        : dev.motorCurrentPosition - desiredPulse;
+    return d;
+}
+#endif
 
 String buildActionReportValue(const ExecAction& action,
                               const String& effectiveValue,
@@ -223,6 +269,10 @@ void PeriphExecExecutor::initialize(PeriphExecManager* manager) {
 
 bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const String& effectiveValue,
                                            const String& receivedValue) {
+    // 调用其他外设 (actionType 10) 必须先于系统动作范围判断。
+    if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL)) {
+        return executeCallPeripheralAction(action, effectiveValue);
+    }
     // 系统功能 (actionType 6-11)
     if (action.actionType >= 6 && action.actionType <= 11) {
         return executeSystemAction(action);
@@ -230,10 +280,6 @@ bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const Strin
     // 命令脚本 (actionType 15)
     if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT)) {
         return executeScriptAction(action);
-    }
-    // 调用其他外设 (actionType 10)
-    if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL)) {
-        return executeCallPeripheralAction(action, effectiveValue);
     }
     // 外设执行规则启用/禁用 (actionType 22/23)
     if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_ENABLE_EXEC_RULE) ||
@@ -821,8 +867,43 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                     else motorRegIdx = 2; // stop
                     uint16_t regAddr = dev.motorRegs[motorRegIdx];
                     uint16_t motorVal = cv["v"] | 1;
+                    MotorSoftLimitDecision limitDecision = evaluateMotorSoftLimit(dev, act, motorVal);
+                    if (limitDecision.enabled && !limitDecision.allowed) {
+                        LOGGER.warningf("[PeriphExec] Motor ctrl blocked by soft limit: dev=%d act=%s pos=%ld min=%ld max=%ld",
+                                        devIdx, act,
+                                        static_cast<long>(dev.motorCurrentPosition),
+                                        static_cast<long>(dev.motorMinPosition),
+                                        static_cast<long>(dev.motorMaxPosition));
+                        if (controlResults) {
+                            char idBuf[16];
+                            snprintf(idBuf, sizeof(idBuf), "modbus:%d", devIdx);
+                            appendActionResult(*controlResults, idBuf, "0", false, "motor_soft_limit");
+                        }
+                        continue;
+                    }
+                    if (limitDecision.enabled && dev.motorRegs[4] != 0) {
+                        auto pulseRes = modbus->writeRegisterOnce(dev.slaveAddress, dev.motorRegs[4], limitDecision.pulse, true);
+                        if (pulseRes.error != ONESHOT_SUCCESS) {
+                            LOGGER.warningf("[PeriphExec] Motor ctrl failed to write bounded pulse: dev=%d pulse=%u",
+                                            devIdx, static_cast<unsigned int>(limitDecision.pulse));
+                            if (controlResults) {
+                                char idBuf[16];
+                                snprintf(idBuf, sizeof(idBuf), "modbus:%d", devIdx);
+                                appendActionResult(*controlResults, idBuf, "0", false, "modbus_write_failed");
+                            }
+                            continue;
+                        }
+                        motorVal = 1;
+                    }
                     auto res = modbus->writeRegisterOnce(dev.slaveAddress, regAddr, motorVal, true);
                     bool ok = (res.error == ONESHOT_SUCCESS);
+                    if (ok) {
+                        if (limitDecision.enabled) {
+                            modbus->updateMotorRuntime(devIdx, limitDecision.nextPosition, limitDecision.pulse);
+                        } else if (motorRegIdx == 4) {
+                            modbus->updateMotorRuntime(devIdx, dev.motorCurrentPosition, motorVal);
+                        }
+                    }
                     anySuccess = anySuccess || ok;
                     LOGGER.infof("[PeriphExec] Motor ctrl: slave=%d act=%s reg=%d val=%d ok=%d",
                         dev.slaveAddress, act, regAddr, motorVal, ok);
@@ -923,7 +1004,30 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
     uint8_t decimals = doc["decimalPlaces"] | 2;
     const char* label = doc["sensorLabel"] | "";
     const char* unit = doc["unit"] | "";
-    const char* dataField = doc["dataField"] | "temperature";
+    String dataFieldStr = doc["dataField"] | "";
+    if (dataFieldStr.isEmpty()) {
+        if (strcmp(category, "dht11") == 0 || strcmp(category, "dht22") == 0 ||
+            strcmp(category, "ds18b20") == 0) {
+            dataFieldStr = "temperature";
+        } else if (strcmp(category, "ultrasonic") == 0) {
+            dataFieldStr = "distance";
+        } else if (strcmp(category, "current") == 0) {
+            dataFieldStr = "current";
+        } else if (strcmp(category, "voltage") == 0) {
+            dataFieldStr = "voltage";
+        } else if (strcmp(category, "sht31") == 0 || strcmp(category, "SHT31") == 0 ||
+                   strcmp(category, "aht20") == 0 || strcmp(category, "AHT20") == 0 ||
+                   strcmp(category, "bmp280") == 0 || strcmp(category, "BMP280") == 0) {
+            dataFieldStr = "temperature";
+        } else if (strcmp(category, "mpu6050") == 0 || strcmp(category, "MPU6050") == 0) {
+            dataFieldStr = "accelX";
+        } else if (strcmp(category, "bh1750") == 0 || strcmp(category, "BH1750") == 0) {
+            dataFieldStr = "illuminance";
+        } else {
+            dataFieldStr = "value";
+        }
+    }
+    const char* dataField = dataFieldStr.c_str();
     uint8_t deviceIndex = doc["deviceIndex"] | 0;
 
     if (strlen(periphId) == 0) {
@@ -989,10 +1093,110 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
 #endif
             return false;
         }
+    } else if (strcmp(category, "ultrasonic") == 0) {
+        const PeripheralConfig* cfg = pm.getPeripheral(String(periphId));
+        if (!cfg) {
+            LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
+            return false;
+        }
+        if (cfg->pinCount < 2 || cfg->pins[0] == 255 || cfg->pins[1] == 255) {
+            LOGGER.warningf("[PeriphExec] Sensor read: ultrasonic '%s' needs trig+echo pins", periphId);
+            return false;
+        }
+        rawValue = SensorDriver::getInstance().readUltrasonic(cfg->pins[0], cfg->pins[1]);
+        if (isnan(rawValue)) {
+            LOGGER.warningf("[PeriphExec] Sensor read: ultrasonic read failed on '%s'", periphId);
+#if FASTBEE_ENABLE_LCD
+            if (LCDManager::getInstance().isInitialized()) {
+                LCDManager::getInstance().invalidateSensorEntry(String(periphId) + "_" + String(dataField));
+            }
+#endif
+            return false;
+        }
+    } else if (strcmp(category, "current") == 0) {
+        const PeripheralConfig* cfg = pm.getPeripheral(String(periphId));
+        if (!cfg) {
+            LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
+            return false;
+        }
+        uint8_t pin = cfg->getPrimaryPin();
+        if (pin == 255) {
+            LOGGER.warningf("[PeriphExec] Sensor read: current sensor '%s' has no valid pin", periphId);
+            return false;
+        }
+        ADCSensorCalibration cal;
+        cal.sensitivity = doc["sensitivity"] | 0.100f;
+        cal.offset = doc["zeroOffset"] | (doc["sensorOffset"] | 1.65f);
+        cal.vRef = doc["vRef"] | 3.3f;
+        cal.adcMax = doc["adcMax"] | 4095;
+        rawValue = SensorDriver::getInstance().readCurrent(pin, cal);
+        if (isnan(rawValue)) {
+            LOGGER.warningf("[PeriphExec] Sensor read: current read failed on '%s'", periphId);
+            return false;
+        }
+    } else if (strcmp(category, "voltage") == 0) {
+        const PeripheralConfig* cfg = pm.getPeripheral(String(periphId));
+        if (!cfg) {
+            LOGGER.warningf("[PeriphExec] Sensor read: peripheral '%s' not found", periphId);
+            return false;
+        }
+        uint8_t pin = cfg->getPrimaryPin();
+        if (pin == 255) {
+            LOGGER.warningf("[PeriphExec] Sensor read: voltage sensor '%s' has no valid pin", periphId);
+            return false;
+        }
+        ADCSensorCalibration cal;
+        cal.ratio = doc["ratio"] | 1.0f;
+        cal.vRef = doc["vRef"] | 3.3f;
+        cal.adcMax = doc["adcMax"] | 4095;
+        rawValue = SensorDriver::getInstance().readVoltage(pin, cal);
+        if (isnan(rawValue)) {
+            LOGGER.warningf("[PeriphExec] Sensor read: voltage read failed on '%s'", periphId);
+            return false;
+        }
 #endif // FASTBEE_ENABLE_SENSOR_DRIVER
     } else {
-        LOGGER.warningf("[PeriphExec] Sensor read: unknown category '%s'", category);
-        return false;
+        // 尝试通过 DriverRegistry 查找注册的驱动（BMP280/MPU6050 等）
+        ISensorDriver* driver = FastBee::DriverRegistry::getInstance().createDriver(category);
+        if (driver) {
+            const PeripheralConfig* cfg = pm.getPeripheral(String(periphId));
+            uint8_t pin = cfg ? cfg->getPrimaryPin() : 0;
+            String driverParamsBuffer;
+            const char* driverParams = nullptr;
+            JsonVariantConst driverParamsNode = doc["driverParams"];
+            if (driverParamsNode.is<const char*>()) {
+                driverParams = driverParamsNode.as<const char*>();
+            } else if (driverParamsNode.is<JsonObjectConst>() || driverParamsNode.is<JsonArrayConst>()) {
+                serializeJson(driverParamsNode, driverParamsBuffer);
+                driverParams = driverParamsBuffer.c_str();
+            }
+            if (!driver->init(pin, driverParams)) {
+                LOGGER.warningf("[PeriphExec] Sensor read: driver '%s' init failed", category);
+                delete driver;
+                return false;
+            }
+            SensorReading reading;
+            if (!driver->read(reading)) {
+                LOGGER.warningf("[PeriphExec] Sensor read: driver '%s' read failed", category);
+                driver->deinit();
+                delete driver;
+                return false;
+            }
+            // 根据 dataField 选择通道
+            uint8_t ch = 0;
+            for (uint8_t i = 0; i < reading.channelCount; i++) {
+                if (strcmp(dataField, driver->getChannelName(i)) == 0) {
+                    ch = i;
+                    break;
+                }
+            }
+            rawValue = reading.values[ch];
+            driver->deinit();
+            delete driver;
+        } else {
+            LOGGER.warningf("[PeriphExec] Sensor read: unknown category '%s'", category);
+            return false;
+        }
     }
 
     float processed = rawValue * scaleFactor + offset;
@@ -1143,6 +1347,18 @@ bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, c
         if (strlen(jsonTarget) > 0) targetId = jsonTarget;
         actionCmdStr = doc["action"] | "";
         valueString = doc["value"] | "";
+        if (valueString.isEmpty()) {
+            valueString = doc["color"] | "";
+        }
+        if (valueString.isEmpty()) {
+            valueString = doc["text"] | "";
+        }
+        if (valueString.isEmpty()) {
+            valueString = doc["message"] | "";
+        }
+        if (valueString.isEmpty() && effectiveValue != action.actionValue) {
+            valueString = effectiveValue;
+        }
     } else {
         actionCmdStr = effectiveValue.isEmpty() ? action.actionValue : effectiveValue;
     }
@@ -1176,6 +1392,22 @@ bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, c
             value = valueStr.toInt();
         }
         return pm.controlStepper(targetId, cmd, value);
+    }
+
+    if (targetCfg->type == PeripheralType::NEO_PIXEL) {
+        return pm.controlNeoPixel(targetId, cmd, valueStr);
+    }
+
+    if (targetCfg->type == PeripheralType::UART) {
+        String payload = valueStr;
+        if (payload.isEmpty() && (cmd != "send" && cmd != "text" && cmd != "write")) {
+            payload = actionCmdStr;
+        }
+        if (payload.isEmpty()) {
+            LOGGER.warningf("[PeriphExec] UART send: empty payload for '%s'", targetId.c_str());
+            return false;
+        }
+        return pm.writeString(targetId, payload);
     }
 
     if (cmd == "on" || cmd == "high" || cmd == "1") {
@@ -1428,7 +1660,7 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
 // 考虑 TM1637 只有 4 位数码管，一般只会用到 ${id.field}。
 String PeriphExecExecutor::resolveSensorTemplate(const String& input) {
     if (input.indexOf("${") < 0) return input;
-    const auto& cache = PeriphExecManager::getInstance().getSensorReadCache();
+    const auto cache = PeriphExecManager::getInstance().getSensorReadCacheCopy();
     String out;
     out.reserve(input.length() + 8);
     int i = 0;

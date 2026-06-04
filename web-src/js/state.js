@@ -11,6 +11,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     currentPage: 'dashboard',
     configTab: 'modbus',
     currentUser: { name: '', role: '', canManageFs: false },
+    developerModeEnabled: true,
     sidebarCollapsed: false,
     _pageNavSeq: 0,
 
@@ -48,6 +49,82 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
 
     _loadModule(name, callback) {
         ModuleLoader.loadModule(name, callback);
+    },
+
+    isDeveloperModeEnabled() {
+        return this.developerModeEnabled !== false;
+    },
+
+    setDeveloperModeState(enabled) {
+        this.developerModeEnabled = enabled !== false;
+        document.documentElement.classList.toggle('developer-mode-disabled', !this.developerModeEnabled);
+        this.applyDeveloperModeState();
+    },
+
+    _refreshDeveloperModeState(options) {
+        options = options || {};
+        var getter = options.noCache === true && typeof apiGetFresh === 'function' ? apiGetFresh : apiGet;
+        return getter('/api/device/config')
+            .then((res) => {
+                if (res && res.success && res.data) {
+                    this.setDeveloperModeState(res.data.developerModeEnabled !== false);
+                }
+                return this.developerModeEnabled;
+            })
+            .catch((err) => {
+                if (!options.silent) console.warn('[developer-mode] load failed:', err);
+                return this.developerModeEnabled;
+            });
+    },
+
+    getDeveloperModeDisabledText() {
+        return (typeof i18n !== 'undefined' && i18n.t && i18n.t('dev-mode-disabled-tip') !== 'dev-mode-disabled-tip')
+            ? i18n.t('dev-mode-disabled-tip')
+            : '开发环境已禁用，请到设备配置的高级配置中启用后再修改。';
+    },
+
+    guardDeveloperModeAction() {
+        if (this.isDeveloperModeEnabled()) return true;
+        if (typeof Notification !== 'undefined') {
+            Notification.warning(this.getDeveloperModeDisabledText(), '开发环境');
+        }
+        return false;
+    },
+
+    applyDeveloperModeState(root) {
+        var scope = root && root.querySelectorAll ? root : document;
+        var disabled = !this.isDeveloperModeEnabled();
+        var tip = this.getDeveloperModeDisabledText();
+        [
+            '#add-peripheral-btn',
+            '#periph-exec-page-add-btn',
+            '[data-pe-action="edit"]',
+            '[data-pe-action="toggle"]',
+            '[data-pe-action="delete"]',
+            '[data-peripheral-action="edit"]',
+            '[data-peripheral-action="toggle"]',
+            '[data-peripheral-action="delete"]',
+            '[data-action="_showAddDeviceMenu"]',
+            '#modbus-rtu-form button[type="submit"]',
+            '[data-action="_saveEditModal"]',
+            '[data-action="_saveTaskEditModal"]',
+            '[data-action="saveMappingModal"]',
+            '[data-action="addMapping"]',
+            '.protocol-mapping-remove',
+            '.protocol-action-btn[data-protocol-action="edit-device"]',
+            '.protocol-action-btn[data-protocol-action="open-mapping"]',
+            '.protocol-action-btn[data-protocol-action="delete-device"]',
+            '.protocol-action-btn[data-protocol-action="open-edit-modal"]',
+            '.protocol-action-btn[data-protocol-action="remove-device"]'
+        ].forEach(function(selector) {
+            scope.querySelectorAll(selector).forEach(function(el) {
+                var resourceLocked = el.getAttribute('data-resource-locked') === 'true';
+                el.disabled = disabled || resourceLocked;
+                el.classList.toggle('dev-mode-locked', disabled);
+                if (disabled) el.title = tip;
+                else if (!resourceLocked) el.removeAttribute('title');
+            });
+        });
     },
 
     // ============ URL 参数处理 ============

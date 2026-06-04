@@ -11,6 +11,7 @@
 #include <LittleFS.h>
 #include "PeripheralExecution.h"
 #include "AsyncExecTypes.h"
+#include "ResourceProfile.h"
 #include "utils/StaticPoolAllocator.h"
 
 // 前向声明
@@ -46,7 +47,9 @@ public:
 
     // ========== CRUD ==========
     bool addRule(const PeriphExecRule& rule);
+    bool addRule(const PeriphExecRule& rule, String& errorMsg);
     bool updateRule(const String& id, const PeriphExecRule& rule);
+    bool updateRule(const String& id, const PeriphExecRule& rule, String& errorMsg);
     bool removeRule(const String& id);
     PeriphExecRule* getRule(const String& id);
     std::vector<PeriphExecRule> getAllRules() const;
@@ -144,6 +147,9 @@ public:
     // 查询是否存在启用中的按键事件规则（用于按键单击/双击检测优化）
     // periphId: 按键外设 ID；eventId: 事件 ID（如 "button_double_click"）
     bool hasButtonEventRule(const String& periphId, const String& eventId);
+
+    // 查询是否存在启用中的数据源规则（用于 UART 等本地数据源按需轮询）
+    bool hasDataSourceRule(const String& sourceId);
 
     // ========== 配置辅助方法（委托给 Scheduler） ==========
 
@@ -317,6 +323,11 @@ private:
              FastBee::SmallNodeAllocator<String>> _buttonEventCache;  // 存储 "eventId" 或 "periphId:eventId"
     void rebuildButtonEventCache();      // 规则变更时重建缓存
 
+    // ========== 数据源倒排索引（无锁，仅主循环线程读写） ==========
+    std::set<String, std::less<String>,
+             FastBee::SmallNodeAllocator<String>> _dataSourceCache;  // 启用中的数据源 ID 集合
+    void rebuildDataSourceCache();       // 规则变更时重建索引
+
     // ========== 传感器读取值缓存（供 controls API 和 SSE 使用） ==========
 public:
     struct SensorReadCache {
@@ -325,10 +336,15 @@ public:
         String unit;            // 单位
         unsigned long timestamp; // 更新时间 millis()
     };
+    static constexpr size_t SENSOR_CACHE_MAX_ENTRIES = FastBee::ResourceProfile::SENSOR_CACHE_MAX_ENTRIES;   // 最大缓存条目数
+    static constexpr unsigned long SENSOR_CACHE_TTL_MS = 120000; // 缓存 TTL: 120s
+
     void updateSensorReadCache(const String& key, const String& label, const String& value, const String& unit);
-    const std::map<String, SensorReadCache>& getSensorReadCache() const { return _sensorReadCache; }
+    std::map<String, SensorReadCache> getSensorReadCacheCopy() const;  // 线程安全的拷贝访问
+    void evictStaleSensorCache();  // 淘汰过期条目（由 checkTimers 定期调用）
 private:
     std::map<String, SensorReadCache> _sensorReadCache;  // key = periphId + "_" + dataField
+    mutable SemaphoreHandle_t _sensorCacheMutex = nullptr; // 保护传感器缓存的互斥量
 
     // ========== 异步执行上下文对象池 ==========
     AsyncExecContextPool _contextPool;          // 固定大小的上下文对象池

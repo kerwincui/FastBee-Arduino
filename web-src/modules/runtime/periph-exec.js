@@ -13,6 +13,7 @@
         _peCurrentPage: 1,
         _pePageSize: 10,
         _peTotalRules: 0,
+        _peProfile: null,
         _peEventsBound: false,
         _peModbusHealth: null,
         _peModbusHealthFetchedAt: 0,
@@ -87,6 +88,7 @@
                     var action = button.getAttribute('data-pe-action');
                     var ruleId = button.getAttribute('data-id');
                     if (!action || !ruleId) return;
+                    if (action !== 'run' && !this.guardDeveloperModeAction()) return;
                     if (action === 'run') this.runPeriphExecOnce(ruleId, button.getAttribute('data-has-set-mode') === 'true', button.getAttribute('data-name') || '');
                     else if (action === 'edit') this.editPeriphExecRule(ruleId);
                     else if (action === 'toggle') this.togglePeriphExecRule(ruleId, button.getAttribute('data-next-enabled') === 'true');
@@ -102,6 +104,11 @@
         // ============ 模态框 ============
 
         openPeriphExecModal(editId) {
+            if (!this.guardDeveloperModeAction()) return;
+            if (!editId && this._isPeriphExecCapacityFull()) {
+                Notification.warning('当前资源档位执行规则数量已达上限', i18n.t('periph-exec-title'));
+                return;
+            }
             if (!this._isPeriphExecEditorReady()) {
                 var self = this;
                 return this._ensurePeriphExecEditor()
@@ -194,6 +201,38 @@
             if (typeof this._clearPeriphExecEventCatalogCache === 'function') {
                 this._clearPeriphExecEventCatalogCache();
             }
+        },
+
+        _isPeriphExecCapacityFull() {
+            return !!(this._peProfile && Number(this._peProfile.remaining) <= 0);
+        },
+
+        _setPeriphExecCapacity(profile) {
+            this._peProfile = profile || null;
+            var btn = document.getElementById('periph-exec-page-add-btn');
+            if (!btn) return;
+            var locked = this._isPeriphExecCapacityFull();
+            if (locked) {
+                btn.setAttribute('data-resource-locked', 'true');
+                btn.disabled = true;
+                btn.title = '当前资源档位执行规则数量已达上限';
+            } else {
+                btn.removeAttribute('data-resource-locked');
+                if (this.isDeveloperModeEnabled()) {
+                    btn.disabled = false;
+                    btn.removeAttribute('title');
+                }
+            }
+        },
+
+        _formatPeriphExecCapacitySummary(total) {
+            var summary = i18n.t('periph-exec-total') + ': ' + total;
+            var profile = this._peProfile;
+            if (profile && profile.max !== undefined) {
+                summary += ' / ' + (profile.name || 'profile') + ' ' +
+                    (profile.used || 0) + '/' + profile.max;
+            }
+            return summary;
         },
 
         // ============ 执行值输入弹窗 ============
@@ -536,7 +575,9 @@
         _renderPeriphExecActionButton(action, ruleId, label, extraClass, extraAttrs) {
             var attrs = 'data-pe-action="' + action + '" data-id="' + escapeHtml(ruleId) + '"';
             if (extraAttrs) attrs += ' ' + extraAttrs;
-            return '<button class="fb-btn fb-btn-sm fb-btn-compact ' + (extraClass || '') + '" ' + attrs + '>' + escapeHtml(label) + '</button>';
+            var locked = action !== 'run' && !this.isDeveloperModeEnabled();
+            if (locked) attrs += ' disabled title="' + escapeHtml(this.getDeveloperModeDisabledText()) + '"';
+            return '<button class="fb-btn fb-btn-sm fb-btn-compact ' + (extraClass || '') + (locked ? ' dev-mode-locked' : '') + '" ' + attrs + '>' + escapeHtml(label) + '</button>';
         },
 
         _renderPeriphExecRuleActions(ruleId, enabled, hasSetMode, ruleName) {
@@ -580,6 +621,7 @@
     Object.assign(AppState, {
 
         editPeriphExecRule(id) {
+            if (!this.guardDeveloperModeAction()) return;
             if (!this._isPeriphExecEditorReady()) {
                 var self = this;
                 return this._ensurePeriphExecEditor().then(function() {
@@ -665,6 +707,7 @@
         },
 
         deletePeriphExecRule(id) {
+            if (!this.guardDeveloperModeAction()) return;
             if (!confirm(i18n.t('periph-exec-confirm-delete'))) return;
             apiDelete('/api/periph-exec/', { id: id })
                 .then(res => {
@@ -695,6 +738,7 @@
         },
 
         togglePeriphExecRule(id, enable) {
+            if (!this.guardDeveloperModeAction()) return;
             const url = enable ? '/api/periph-exec/enable' : '/api/periph-exec/disable';
             apiPost(url, { id: id })
                 .then(res => {
@@ -780,6 +824,7 @@
         loadPeriphExecPage() {
             const tbody = document.getElementById('periph-exec-table-body');
             if (!tbody) return;
+            this.applyDeveloperModeState();
             const filterSel = document.getElementById('periph-exec-filter-periph');
             const filterPeriphName = filterSel ? filterSel.value : '';
 
@@ -796,6 +841,7 @@
                 .then(function () { return apiGet(apiUrl); })
                 .then(execRes => {
                     this._peTotalRules = execRes && execRes.total ? execRes.total : 0;
+                    this._setPeriphExecCapacity(execRes && execRes.profile ? execRes.profile : null);
                     if (execRes && Array.isArray(execRes.sensorSources)) {
                         this._peSensorSources = execRes.sensorSources;
                     }
@@ -849,6 +895,7 @@
                     });
                     tbody.innerHTML = html;
                     this._renderPeriphExecPagination(this._peTotalRules, currentPage, currentPageSize);
+                    this.applyDeveloperModeState(tbody);
                 })
                 .catch(() => {
                     this.renderEmptyTableRow(tbody, 7, i18n.t('periph-exec-no-data'));
@@ -861,7 +908,7 @@
                 page,
                 pageSize,
                 maxVisiblePages: 3,
-                summaryText: i18n.t('periph-exec-total') + ': ' + total,
+                summaryText: this._formatPeriphExecCapacitySummary(total),
                 onPageChange: (nextPage) => {
                     this._peCurrentPage = nextPage;
                     this.loadPeriphExecPage();

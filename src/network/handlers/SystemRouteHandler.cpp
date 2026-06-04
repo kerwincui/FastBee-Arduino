@@ -136,6 +136,22 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             doc["data"]["activeIPType"]      = info.activeIPType;
             doc["data"]["txCount"]           = info.txCount;
             doc["data"]["rxCount"]           = info.rxCount;
+
+            // 4G 蜂窝网络状态
+            doc["data"]["simStatus"]         = info.simStatus;
+            doc["data"]["operator"]          = info.operatorName;
+            doc["data"]["networkType"]       = info.cellularNetworkType;
+            doc["data"]["apn"]               = info.apn;
+            doc["data"]["imei"]              = info.imei;
+            doc["data"]["iccId"]             = info.iccid;
+            doc["data"]["signalQuality"]     = info.cellularSignalQuality;
+
+            // LoRa 状态
+            doc["data"]["loraMode"]          = info.loraMode;
+            doc["data"]["loraAddress"]       = info.loraAddress;
+            doc["data"]["loraFrequency"]     = info.loraFrequency;
+            doc["data"]["loraAirRate"]       = info.loraAirRate;
+            doc["data"]["loraChannel"]       = info.loraChannel;
             const char* modeText = "unknown";
             switch (cfg.mode) {
                 case NetworkMode::NETWORK_STA:    modeText = "STA"; break;
@@ -190,6 +206,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             if (obj["subnet"].is<String>()) cfg.subnet = obj["subnet"].as<String>();
             if (obj["apSSID"].is<String>()) cfg.apSSID = obj["apSSID"].as<String>();
             if (obj["apPassword"].is<String>()) { String pwd = obj["apPassword"].as<String>(); if (!pwd.isEmpty() && pwd != "********") cfg.apPassword = pwd; }
+            if (obj["apIP"].is<String>()) cfg.apIP = obj["apIP"].as<String>();
             if (obj["apChannel"].is<String>() || obj["apChannel"].is<int>()) cfg.apChannel = obj["apChannel"].as<int>();
             if (obj["apHidden"].is<String>() || obj["apHidden"].is<bool>()) { String h = obj["apHidden"].as<String>(); cfg.apHidden = (h == "1" || h == "true" || obj["apHidden"].as<bool>()); }
             if (obj["apMaxConnections"].is<String>() || obj["apMaxConnections"].is<int>()) cfg.apMaxConnections = obj["apMaxConnections"].as<int>();
@@ -201,6 +218,35 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             if (obj["reconnectInterval"].is<String>() || obj["reconnectInterval"].is<int>()) cfg.reconnectInterval = obj["reconnectInterval"].as<int>();
             if (obj["maxReconnectAttempts"].is<String>() || obj["maxReconnectAttempts"].is<int>()) cfg.maxReconnectAttempts = obj["maxReconnectAttempts"].as<int>();
             if (obj["conflictDetection"].is<String>() || obj["conflictDetection"].is<int>()) cfg.conflictDetection = static_cast<IPConflictMode>(obj["conflictDetection"].as<int>());
+            // 联网方式
+            if (obj["networkType"].is<String>() || obj["networkType"].is<int>()) cfg.networkType = static_cast<NetworkType>(obj["networkType"].as<String>().toInt());
+            // 以太网配置
+            if (obj["ethernet"].is<JsonObject>()) {
+                JsonObject eth = obj["ethernet"];
+                if (eth.containsKey("spiMosi")) cfg.ethernet.spiMosi = eth["spiMosi"].as<int8_t>();
+                if (eth.containsKey("spiMiso")) cfg.ethernet.spiMiso = eth["spiMiso"].as<int8_t>();
+                if (eth.containsKey("spiSck"))  cfg.ethernet.spiSck  = eth["spiSck"].as<int8_t>();
+                if (eth.containsKey("csPin"))   cfg.ethernet.csPin   = eth["csPin"].as<int8_t>();
+                if (eth.containsKey("rstPin"))  cfg.ethernet.rstPin  = eth["rstPin"].as<int8_t>();
+                if (eth.containsKey("intPin"))  cfg.ethernet.intPin  = eth["intPin"].as<int8_t>();
+            }
+            // 4G 蜂窝配置
+            if (obj["cellular"].is<JsonObject>()) {
+                JsonObject cell = obj["cellular"];
+                if (cell.containsKey("txPin"))    cfg.cellular.txPin    = cell["txPin"].as<int8_t>();
+                if (cell.containsKey("rxPin"))    cfg.cellular.rxPin    = cell["rxPin"].as<int8_t>();
+                if (cell.containsKey("pwrPin"))   cfg.cellular.pwrPin   = cell["pwrPin"].as<int8_t>();
+                if (cell.containsKey("baudRate")) cfg.cellular.baudRate = cell["baudRate"].as<uint32_t>();
+                if (cell.containsKey("apn"))      cfg.cellular.apn      = cell["apn"].as<String>();
+            }
+            // LoRa 配置
+            if (obj["lora"].is<JsonObject>()) {
+                JsonObject lora = obj["lora"];
+                if (lora.containsKey("txPin"))    cfg.lora.txPin    = lora["txPin"].as<int8_t>();
+                if (lora.containsKey("rxPin"))    cfg.lora.rxPin    = lora["rxPin"].as<int8_t>();
+                if (lora.containsKey("m1Pin"))    cfg.lora.m1Pin    = lora["m1Pin"].as<int8_t>();
+                if (lora.containsKey("baudRate")) cfg.lora.baudRate = lora["baudRate"].as<uint32_t>();
+            }
             if (netMgr->updateConfig(cfg, true)) {
                 LOGGER.info("Network configuration updated via web");
                 
@@ -223,7 +269,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 if (cfg.mode == NetworkMode::NETWORK_AP) {
                     respDoc["data"]["apSSID"] = cfg.apSSID;
                     respDoc["data"]["apPassword"] = cfg.apPassword;
-                    respDoc["data"]["apIP"] = "192.168.4.1";  // 默认AP IP
+                    respDoc["data"]["apIP"] = cfg.apIP;  // 配置的AP IP
                 }
                 
                 // mDNS信息（STA模式需要）
@@ -1004,6 +1050,7 @@ void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
 
         doc["data"]["device"]["macAddress"] = WiFi.macAddress();
         doc["data"]["network"]["mode"] = static_cast<uint8_t>(cfg.mode);
+        doc["data"]["network"]["networkType"] = static_cast<uint8_t>(cfg.networkType);
         doc["data"]["network"]["ipConfigType"] = static_cast<uint8_t>(cfg.ipConfigType);
         doc["data"]["network"]["enableMDNS"] = cfg.enableMDNS;
         doc["data"]["network"]["customDomain"] = cfg.customDomain;
@@ -1018,6 +1065,7 @@ void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
         doc["data"]["ap"]["ssid"] = cfg.apSSID;
         doc["data"]["ap"]["password"] = cfg.apPassword.length() > 0 ? "********" : "";
         doc["data"]["ap"]["hasPassword"] = cfg.apPassword.length() > 0;
+        doc["data"]["ap"]["ip"] = cfg.apIP;
         doc["data"]["ap"]["channel"] = cfg.apChannel;
         doc["data"]["ap"]["hidden"] = cfg.apHidden;
         doc["data"]["ap"]["maxConnections"] = cfg.apMaxConnections;
@@ -1031,6 +1079,27 @@ void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
         doc["data"]["advanced"]["maxFailoverAttempts"] = cfg.maxFailoverAttempts;
         doc["data"]["advanced"]["conflictThreshold"] = cfg.conflictThreshold;
         doc["data"]["advanced"]["fallbackToDHCP"] = cfg.fallbackToDHCP;
+
+        // 以太网配置
+        doc["data"]["ethernet"]["spiMosi"] = cfg.ethernet.spiMosi;
+        doc["data"]["ethernet"]["spiMiso"] = cfg.ethernet.spiMiso;
+        doc["data"]["ethernet"]["spiSck"]  = cfg.ethernet.spiSck;
+        doc["data"]["ethernet"]["csPin"]   = cfg.ethernet.csPin;
+        doc["data"]["ethernet"]["rstPin"]  = cfg.ethernet.rstPin;
+        doc["data"]["ethernet"]["intPin"]  = cfg.ethernet.intPin;
+
+        // 4G 蜂窝配置
+        doc["data"]["cellular"]["txPin"]    = cfg.cellular.txPin;
+        doc["data"]["cellular"]["rxPin"]    = cfg.cellular.rxPin;
+        doc["data"]["cellular"]["pwrPin"]   = cfg.cellular.pwrPin;
+        doc["data"]["cellular"]["baudRate"] = cfg.cellular.baudRate;
+        doc["data"]["cellular"]["apn"]      = cfg.cellular.apn;
+
+        // LoRa 配置
+        doc["data"]["lora"]["txPin"]    = cfg.lora.txPin;
+        doc["data"]["lora"]["rxPin"]    = cfg.lora.rxPin;
+        doc["data"]["lora"]["m1Pin"]    = cfg.lora.m1Pin;
+        doc["data"]["lora"]["baudRate"] = cfg.lora.baudRate;
 
         NetworkStatusInfo info = netMgr->getStatusInfo();
         doc["data"]["status"]["connected"] = (info.status == NetworkStatus::CONNECTED);

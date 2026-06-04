@@ -284,7 +284,13 @@ bool MQTTClient::begin() {
     stopped = false;
     loadMqttConfig();
 
-    mqttClient.setClient(wifiClient);
+    // 根据是否有外部 Client 注入来选择传输层
+    if (_externalClient) {
+        mqttClient.setClient(*_externalClient);
+        LOG_INFO("MQTT: Using external transport client");
+    } else {
+        mqttClient.setClient(wifiClient);
+    }
     mqttClient.setServer(config.server.c_str(), config.port);
     mqttClient.setBufferSize(1024);
     mqttClient.setKeepAlive(config.keepAlive);
@@ -820,8 +826,8 @@ bool MQTTClient::subscribeAll() {
 void MQTTClient::handle() {
     if (stopped) return;  // 被显式停止时不做任何操作
 
-    // 检查WiFi连接状态，WiFi断开时不尝试重连
-    if (WiFi.status() != WL_CONNECTED) {
+    // 检查网络连接状态：若使用外部 Client 则跳过 WiFi 状态检查
+    if (!_externalClient && WiFi.status() != WL_CONNECTED) {
         if (isConnected) {
             isConnected = false;
             LOG_WARNING("MQTT: WiFi disconnected, marking MQTT offline");
@@ -849,8 +855,8 @@ void MQTTClient::handle() {
         unsigned long now = millis();
         if (now - lastReconnectAttempt >= reconnectInterval) {
             lastReconnectAttempt = now;
-            // WiFi 未连接时跳过重连，避免 WiFiClient 内部 socket 已失效导致空指针崩溃
-            if (WiFi.status() != WL_CONNECTED) {
+            // WiFi 未连接时跳过重连（仅当未使用外部 Client 时检查）
+            if (!_externalClient && WiFi.status() != WL_CONNECTED) {
                 LOGGER.infof("[MQTT] WiFi not connected (status=%d), skipping reconnect", WiFi.status());
                 return;
             }
@@ -992,6 +998,17 @@ bool MQTTClient::queueReportData(const char* payload, uint16_t length) {
 
 String MQTTClient::getStatus() const {
     return isConnected ? F("Connected") : F("Disconnected");
+}
+
+void MQTTClient::setTransportClient(Client* client) {
+    _externalClient = client;
+    if (client) {
+        mqttClient.setClient(*client);
+        LOG_INFO("MQTT: External transport client set");
+    } else {
+        mqttClient.setClient(wifiClient);
+        LOG_INFO("MQTT: Transport client cleared, using WiFiClient");
+    }
 }
 
 void MQTTClient::setMessageCallback(std::function<void(const String&, const String&, MqttTopicType)> callback) {
@@ -1326,10 +1343,10 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
 }
 
 bool MQTTClient::reconnect() {
-    // 显式关闭旧 TCP socket，防止 PubSubClient::connect() 创建新 socket 时旧 socket 泄漏
-    // 每次失败的 connect() 都会残留 socket 描述符 + 内核缓冲区（2-4KB），
-    // 高频重连会快速耗尽堆内存（268KB → 4KB）
-    wifiClient.stop();
+    // 显式关闭旧 TCP socket（仅对默认 WiFiClient）
+    if (!_externalClient) {
+        wifiClient.stop();
+    }
 
     LOG_INFO("MQTT: Connecting...");
 
@@ -1403,8 +1420,10 @@ bool MQTTClient::reconnect() {
         // 连接成功后发起 NTP 时间同步
         publishNtpSync();
     } else {
-        // 连接失败时立即关闭 socket，避免残留 TCP 连接占用 lwip 缓冲区（2-4KB）
-        wifiClient.stop();
+        // 连接失败时立即关闭 socket（仅默认 WiFiClient）
+        if (!_externalClient) {
+            wifiClient.stop();
+        }
         lastErrorCode = mqttClient.state();
         reconnectCount++;
         char buf2[48];

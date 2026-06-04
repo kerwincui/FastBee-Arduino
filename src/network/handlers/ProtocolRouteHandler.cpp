@@ -268,6 +268,9 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
 
     bool updateModbusRtu = hasProtocolParam(request, "modbusRtu_enabled") ||
                            hasProtocolParam(request, "modbusRtu_peripheralId") ||
+                           hasProtocolParam(request, "modbusRtu_mode") ||
+                           hasProtocolParam(request, "modbusRtu_dePin") ||
+                           hasProtocolParam(request, "modbusRtu_transferType") ||
                            hasProtocolParam(request, "modbusRtu_master_tasks") ||
                            hasProtocolParam(request, "modbusRtu_master_devices");
     bool updateMqtt = hasProtocolParam(request, "mqtt_enabled") ||
@@ -281,14 +284,24 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     bool clientIdGenerated = false;
     String clientId = doc["mqtt"]["clientId"] | "";
 
+    if (updateModbusRtu && !ctx->requireDeveloperMode(request)) {
+        return;
+    }
+
     // Modbus RTU
     if (updateModbusRtu) {
-    doc["modbusRtu"]["enabled"] = GP("modbusRtu_enabled", "true") == "true";
-    doc["modbusRtu"]["peripheralId"] = GP("modbusRtu_peripheralId", "");
+    bool currentEnabled = doc["modbusRtu"]["enabled"] | true;
+    String currentPeripheralId = doc["modbusRtu"]["peripheralId"] | "";
+    String currentMode = doc["modbusRtu"]["mode"] | "master";
+    int currentDePin = doc["modbusRtu"]["dePin"] | -1;
+    int currentTransferType = doc["modbusRtu"]["transferType"] | 0;
+
+    doc["modbusRtu"]["enabled"] = GP("modbusRtu_enabled", currentEnabled ? "true" : "false") == "true";
+    doc["modbusRtu"]["peripheralId"] = GP("modbusRtu_peripheralId", currentPeripheralId);
     doc["modbusRtu"]["timeout"] = 1000; // 硬编码默认值，前端已移除此字段
-    doc["modbusRtu"]["mode"] = GP("modbusRtu_mode", "master");
-    doc["modbusRtu"]["dePin"] = GPI("modbusRtu_dePin", "-1");
-    doc["modbusRtu"]["transferType"] = GPI("modbusRtu_transferType", "0");
+    doc["modbusRtu"]["mode"] = GP("modbusRtu_mode", currentMode);
+    doc["modbusRtu"]["dePin"] = GPI("modbusRtu_dePin", String(currentDePin));
+    doc["modbusRtu"]["transferType"] = GPI("modbusRtu_transferType", String(currentTransferType));
     // workMode 已移除：由轮询任务配置自动推导，不再保存
 
     // Modbus RTU Master 配置（仅在配置中不存在时写入默认值，不覆盖已有配置）
@@ -378,6 +391,11 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                 }
                 // 电机参数
                 devObj["motorDecimals"] = dv["motorDecimals"] | 0;
+                devObj["motorMinPosition"] = dv["motorMinPosition"] | 0;
+                devObj["motorMaxPosition"] = dv["motorMaxPosition"] | 0;
+                devObj["motorCurrentPosition"] = dv["motorCurrentPosition"] | 0;
+                devObj["motorMoveStep"] = dv["motorMoveStep"] | 0;
+                devObj["motorLastPulse"] = dv["motorLastPulse"] | 0;
                 if (dv.containsKey("motorRegs") && dv["motorRegs"].is<JsonArray>()) {
                     JsonArray mr = devObj["motorRegs"].to<JsonArray>();
                     for (JsonVariant mv : dv["motorRegs"].as<JsonArray>())

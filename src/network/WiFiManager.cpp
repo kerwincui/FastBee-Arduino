@@ -143,13 +143,53 @@ bool WiFiManager::startAPMode() {
     }
     
     // 配置 AP 网络参数（必须在 softAP 之前调用）
-    IPAddress apIP(192, 168, 4, 1);
-    IPAddress apGateway(192, 168, 4, 1);
+    // 使用配置的固定IP，如果冲突则自动切换备用网段
+    IPAddress apIP;
+    IPAddress apGateway;
     IPAddress apSubnet(255, 255, 255, 0);
     
-    if (!WiFi.softAPConfig(apIP, apGateway, apSubnet)) {
-        LOG_WARNING("WiFiManager: Failed to configure AP network");
-        // 继续尝试启动 AP，可能使用默认配置
+    // 解析配置的AP IP
+    if (!wifiConfig.apIP.isEmpty() && apIP.fromString(wifiConfig.apIP)) {
+        apGateway = apIP;  // 网关即为AP自身
+    } else {
+        apIP = IPAddress(192, 168, 4, 1);
+        apGateway = apIP;
+    }
+    
+    // 检测是否与STA网段冲突（如果同时存在STA连接）
+    if (WiFi.status() == WL_CONNECTED) {
+        IPAddress staIP = WiFi.localIP();
+        // 比较前三字节（同一子网即冲突）
+        if ((staIP[0] == apIP[0]) && (staIP[1] == apIP[1]) && (staIP[2] == apIP[2])) {
+            LOG_WARNING("WiFiManager: AP IP conflicts with STA subnet, switching to backup");
+            apIP = IPAddress(192, 168, 44, 1);
+            apGateway = apIP;
+        }
+    }
+    
+    // 备用IP列表（当主配置IP无法使用时尝试）
+    IPAddress fallbackIPs[] = {
+        apIP,                          // 配置的主IP
+        IPAddress(192, 168, 44, 1),    // 备用网段1
+        IPAddress(10, 10, 10, 1),      // 备用网段2
+        IPAddress(172, 16, 0, 1)       // 备用网段3
+    };
+    
+    bool apConfigured = false;
+    for (int i = 0; i < 4; i++) {
+        apIP = fallbackIPs[i];
+        apGateway = apIP;
+        if (WiFi.softAPConfig(apIP, apGateway, apSubnet)) {
+            LOGGER.infof("WiFiManager: AP IP configured: %s", apIP.toString().c_str());
+            apConfigured = true;
+            break;
+        }
+        LOG_WARNING("WiFiManager: Failed to configure AP with IP: " + apIP.toString() + ", trying next...");
+    }
+    
+    if (!apConfigured) {
+        LOG_ERROR("WiFiManager: All AP IP configurations failed");
+        // 最后尝试不配置IP，使用默认值
     }
     
     // 配置 AP 参数
@@ -344,19 +384,12 @@ void WiFiManager::updateStatusInfo() {
             statusInfo.rssi = WiFi.RSSI();
             statusInfo.internetAvailable = checkInternetConnection();
             
-            // 只有在真正有互联网连接时才标记为 CONNECTED
-            // 否则标记为 AP_MODE（表示 STA 已连接但无互联网）
-            if (statusInfo.internetAvailable) {
-                if (statusInfo.status != NetworkStatus::CONNECTED && !connecting) {
-                    statusInfo.status = NetworkStatus::CONNECTED;
-                }
-            } else {
-                // STA 已连接但无互联网（可能是 AP+STA 模式）
-                if (statusInfo.status == NetworkStatus::CONNECTED) {
-                    // 保持 CONNECTED 状态但 internetAvailable 为 false
-                    // 这样前端可以区分 "WiFi已连接但无互联网"
-                }
+            // WiFi已连接就标记为CONNECTED状态（不管是否有互联网）
+            // internetAvailable 用于区分"WiFi已连接但无互联网"的场景
+            if (statusInfo.status != NetworkStatus::CONNECTED) {
+                statusInfo.status = NetworkStatus::CONNECTED;
             }
+            
             // 始终更新网络信息（IP、网关、子网、DNS）
             statusInfo.ipAddress = WiFi.localIP().toString();
             statusInfo.currentGateway = WiFi.gatewayIP().toString();

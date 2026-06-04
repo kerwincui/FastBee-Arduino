@@ -121,6 +121,45 @@ bool WebHandlerContext::checkPermission(AsyncWebServerRequest* request, const St
     return authManager->checkPermission(authResult.username, permission);
 }
 
+bool WebHandlerContext::isDeveloperModeEnabled() {
+    File f = LittleFS.open("/config/device.json", "r");
+    if (!f) {
+        return true;
+    }
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, f);
+    f.close();
+    if (err) {
+        return true;
+    }
+    if (!doc["developerModeEnabled"].is<bool>()) {
+        return true;
+    }
+    return doc["developerModeEnabled"].as<bool>();
+}
+
+bool WebHandlerContext::verifyCurrentUserPassword(AsyncWebServerRequest* request, const String& password) {
+    if (!request || !userManager || password.isEmpty()) {
+        return false;
+    }
+
+    AuthResult authResult = authenticateRequest(request);
+    if (!authResult.success || authResult.username.isEmpty()) {
+        return false;
+    }
+
+    return userManager->validateUser(authResult.username, password);
+}
+
+bool WebHandlerContext::requireDeveloperMode(AsyncWebServerRequest* request) {
+    if (isDeveloperModeEnabled()) {
+        return true;
+    }
+    sendError(request, 403, "Developer mode is disabled");
+    return false;
+}
+
 // ============ 内存保护辅助 ============
 
 static bool canAllocateResponse(size_t requiredSize) {

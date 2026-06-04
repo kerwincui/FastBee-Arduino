@@ -136,6 +136,11 @@ private:
     std::map<String, ButtonRuntimeState> _buttonStates;
     ButtonEventConfig _buttonConfig;
 
+    // UART receive buffers. Only UARTs referenced by enabled rules are polled.
+    unsigned long _lastSerialCheck = 0;
+    std::map<String, String> _serialRxBuffers;
+    std::map<String, unsigned long> _serialRxLastByteAt;
+
     // ========== 内部方法 ==========
 
     // 数据源类型枚举（用于区分 MQTT 消息和轮询数据）
@@ -149,6 +154,9 @@ private:
 
     // 收集所有外设状态数据（JSON数组格式）
     String collectPeripheralData();
+
+    // 轻量串口接收检查（按需轮询，收到一行后注入数据源匹配）
+    void checkSerialEvents();
 
     // 检查网络和协议连接状态
     bool checkNetworkAndProtocolStatus(uint8_t& connectedProtocols);

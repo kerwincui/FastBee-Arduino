@@ -102,6 +102,12 @@ struct PeripheralConfig {
         struct {
             uint8_t brightness;       // 亮度 0-7
         } segment;
+
+        // WS2812B / NeoPixel 参数
+        struct {
+            uint16_t count;           // 灯珠数量
+            uint8_t brightness;       // 全局亮度 0-255
+        } neopixel;
         
         // Modbus子设备参数
         struct {
@@ -117,6 +123,11 @@ struct PeripheralConfig {
             uint8_t  pwmResolution;    // PWM 分辨率(bits)
             uint16_t motorRegs[5];     // 电机寄存器地址 [正转,反转,停止,速度,脉冲数]
             uint8_t  motorDecimals;    // 电机参数小数位
+            int32_t  motorMinPosition; // 软限位最小位置（步数）
+            int32_t  motorMaxPosition; // 软限位最大位置（步数，> min 时启用）
+            int32_t  motorCurrentPosition; // 当前估算位置（步数）
+            int32_t  motorMoveStep;    // forward/reverse 默认相对移动步数
+            uint16_t motorLastPulse;   // 最近一次 setPulse 值（运行时）
             char     sensorId[32];     // 传感器标识符 (同 MODBUS_DEVICE_SENSOR_ID_MAX)
         } modbus;
     } params;

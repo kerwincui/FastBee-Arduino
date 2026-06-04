@@ -102,6 +102,37 @@
 #endif
 
 /**
+ * @brief 以太网 W5500 SPI 支持
+ * 默认：禁用（Standard/Full 构建启用；Lite 为稳定性默认关闭）
+ * 占用：约 8KB Flash
+ * 需要：硬件连接 W5500 芯片到 SPI2 接口
+ */
+#ifndef FASTBEE_ENABLE_ETHERNET
+    #define FASTBEE_ENABLE_ETHERNET 0
+#endif
+
+/**
+ * @brief 4G 蜂窝模块支持 (EC801E-CN)
+ * 默认：禁用（Standard/Full 构建启用；Lite 为稳定性默认关闭）
+ * 占用：约 15KB Flash
+ * 需要：硬件连接 EC801E-CN 模块到 UART2
+ * 依赖：TinyGSM 库
+ */
+#ifndef FASTBEE_ENABLE_CELLULAR
+    #define FASTBEE_ENABLE_CELLULAR 0
+#endif
+
+/**
+ * @brief LoRa 网关透传支持 (E22-400T22D)
+ * 默认：禁用（仅 ESP32-S3 full 构建启用）
+ * 占用：约 5KB Flash
+ * 需要：硬件连接 E22-400T22D 模块到 UART
+ */
+#ifndef FASTBEE_ENABLE_LORA
+    #define FASTBEE_ENABLE_LORA 0
+#endif
+
+/**
  * @brief BLE 蓝牙通信支持（保留通用 BLE 能力；配网已统一由 AP+STA 双模自动切换处理）
  * 默认：禁用（standard 预设已 lib_ignore NimBLE-Arduino）
  * 占用：约 80KB Flash（NimBLE 库）
@@ -309,12 +340,12 @@
 #endif
 
 /**
- * @brief LED 屏幕支持（WS2812B/APA102 等 NeoPixel）
- * 默认：禁用
- * 占用：约 15KB Flash（驱动库~10KB + 管理器~5KB）
- * RAM：3 bytes × 像素数（帧缓冲区）+ ~200B 管理器开销
- * 需要：Adafruit NeoPixel 库
- * 说明：使用 ESP32 RMT 硬件外设发送时序，不占用 CPU
+ * @brief LED 灯珠支持（WS2812B/NeoPixel）
+ * 默认：按环境配置
+ * 占用：约 10KB Flash（轻量 RMT 发送器）
+ * RAM：发送时临时分配 24 × 灯珠数 × rmt_item32_t，默认限制 64 颗
+ * 需要：ESP32 RMT 外设，无第三方 NeoPixel 库依赖
+ * 说明：使用 ESP32 RMT 硬件外设发送 GRB 时序
  */
 #ifndef FASTBEE_ENABLE_LED_SCREEN
 #define FASTBEE_ENABLE_LED_SCREEN 0
@@ -341,6 +372,42 @@
  */
 #ifndef FASTBEE_ENABLE_SEVEN_SEGMENT
     #define FASTBEE_ENABLE_SEVEN_SEGMENT 0
+#endif
+
+/**
+ * @brief I2C 高级传感器支持（BMP280 气压/MPU6050 陀螺仪等）
+ * 默认：禁用（仅 ESP32-S3 full 构建启用）
+ * 占用：约 15KB Flash（BMP280 ~5KB + MPU6050 ~10KB）
+ * RAM：约 500B（驱动实例 + 数据缓存）
+ * 需要：Adafruit BMP280 Library, Adafruit MPU6050 Library
+ * 说明：支持通过 ACTION_SENSOR_READ 读取气压/温度/海拔/加速度/角速度数据
+ */
+#ifndef FASTBEE_ENABLE_I2C_SENSORS
+    #define FASTBEE_ENABLE_I2C_SENSORS 0
+#endif
+
+/**
+ * @brief MFRC522 RFID 射频卡模块支持
+ * 默认：禁用（仅 ESP32-S3 full 构建启用）
+ * 占用：约 12KB Flash
+ * RAM：约 200B
+ * 需要：MFRC522 Library (SPI)
+ * 说明：支持卡片 UID 读取、事件触发（刷卡事件）
+ */
+#ifndef FASTBEE_ENABLE_RFID
+    #define FASTBEE_ENABLE_RFID 0
+#endif
+
+/**
+ * @brief 红外遥控收发支持
+ * 默认：禁用（仅 ESP32-S3 full 构建启用）
+ * 占用：约 8KB Flash
+ * RAM：约 300B（接收缓冲区）
+ * 需要：IRremoteESP8266 Library
+ * 说明：支持 NEC/RC5/SONY 等协议的红外解码，可作为事件触发源
+ */
+#ifndef FASTBEE_ENABLE_IR_REMOTE
+    #define FASTBEE_ENABLE_IR_REMOTE 0
 #endif
 
 // ============================================================================

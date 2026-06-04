@@ -145,6 +145,11 @@ struct ModbusSubDevice {
     // Motor 扩展（电机控制器：步进/伺服通用）
     uint16_t motorRegs[5];      // 电机寄存器地址 [正转,反转,停止,速度,脉冲数]
     uint8_t  motorDecimals;     // 电机参数小数位(速度/脉冲缩放)
+    int32_t  motorMinPosition;  // 软限位最小位置（步数）
+    int32_t  motorMaxPosition;  // 软限位最大位置（步数，> min 时启用）
+    int32_t  motorCurrentPosition; // 当前估算位置（步数）
+    int32_t  motorMoveStep;     // forward/reverse 默认相对移动步数
+    uint16_t motorLastPulse;    // 最近一次 setPulse 值（运行时）
     bool     enabled;           // 启用状态
 
     ModbusSubDevice()
@@ -152,7 +157,9 @@ struct ModbusSubDevice {
           ncMode(false), controlProtocol(0), batchRegister(0), batchRegType(0),
           delayMode(0), baudRateMode(0), baudRateReg(0), addressReg(0),
           pwmRegBase(0), pwmResolution(8), pidDecimals(1),
-          motorDecimals(0), enabled(true) {
+          motorDecimals(0), motorMinPosition(0), motorMaxPosition(0),
+          motorCurrentPosition(0), motorMoveStep(0), motorLastPulse(0),
+          enabled(true) {
         memset(name, 0, sizeof(name));
         strncpy(name, "Device", sizeof(name) - 1);
         memset(sensorId, 0, sizeof(sensorId));
@@ -160,6 +167,10 @@ struct ModbusSubDevice {
         strncpy(deviceType, "relay", sizeof(deviceType) - 1);
         memset(pidAddrs, 0, sizeof(pidAddrs));
         memset(motorRegs, 0, sizeof(motorRegs));
+    }
+
+    bool hasMotorSoftLimit() const {
+        return motorMaxPosition > motorMinPosition;
     }
 };
 
@@ -274,6 +285,7 @@ public:
     // 子设备管理
     uint8_t getSubDeviceCount() const { return config.master.deviceCount; }
     const ModbusSubDevice& getSubDevice(uint8_t index) const;
+    bool updateMotorRuntime(uint8_t index, int32_t currentPosition, uint16_t lastPulse);
 
     // sensorId 查找辅助（单通道返回 sensorId，多通道返回 sensorId_chN）
     String buildSensorId(uint8_t deviceIndex, uint16_t channel = 0) const;

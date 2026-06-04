@@ -5,6 +5,164 @@
             <h2 class="fb-card-title" id="network-title" data-i18n="network-title">网络设置</h2>
         </div>
         <div class="fb-card-body">
+            <!-- 网络连接状态面板 -->
+            <div id="network-status-card" class="fb-status-card fb-mb-3">
+                <div class="status-header">
+                    <h3 class="status-title" data-i18n="network-status-title">网络连接状态</h3>
+                    <button id="refresh-status-btn" class="fb-btn fb-btn-sm fb-btn-outline" title="刷新状态">
+                        <i class="fas fa-sync-alt"></i>
+                    </button>
+                </div>
+                
+                <!-- WiFi 状态面板 -->
+                <div id="wifi-status-panel" class="status-panel">
+                    <div class="status-grid">
+                        <div class="status-item">
+                            <span class="status-label" data-i18n="net-status-connection">连接状态</span>
+                            <span id="wifi-status-badge" class="status-badge status-disconnected" data-i18n="net-status-disconnected">未连接</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label" data-i18n="net-mode-label">网络模式</span>
+                            <span id="wifi-mode-display" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label" data-i18n="net-ssid-label">WiFi名称</span>
+                            <span id="wifi-ssid-display" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label" data-i18n="net-ip-label">IP地址</span>
+                            <span id="wifi-ip-display" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label" data-i18n="net-signal-label">信号强度</span>
+                            <span id="wifi-signal-display" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label" data-i18n="net-uptime-label">连接时长</span>
+                            <span id="wifi-uptime-display" class="status-value">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 以太网状态面板 -->
+                <div id="ethernet-status-panel" class="status-panel fb-hidden">
+                    <div class="status-grid">
+                        <div class="status-item">
+                            <span class="status-label" data-i18n="net-status-connection">连接状态</span>
+                            <span id="eth-status-badge" class="status-badge status-disconnected">未连接</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">IP地址</span>
+                            <span id="eth-ip-display" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">MAC地址</span>
+                            <span id="eth-mac-display" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">网关</span>
+                            <span id="eth-gateway-display" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">连接时长</span>
+                            <span id="eth-uptime-display" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">配置热点 SSID</span>
+                            <span id="eth-ap-ssid-display" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">配置热点 IP</span>
+                            <span id="eth-ap-ip-display" class="status-value">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 4G 蜂窝状态面板 -->
+                <div id="cellular-status-panel" class="status-panel fb-hidden">
+                    <div class="status-grid">
+                        <div class="status-item">
+                            <span class="status-label" data-i18n="net-status-connection">连接状态</span>
+                            <span id="cell-status-badge" class="status-badge status-disconnected">未连接</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">SIM卡状态</span>
+                            <span id="cell-sim-status" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">运营商</span>
+                            <span id="cell-operator" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">信号强度</span>
+                            <span id="cell-signal" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">IP地址</span>
+                            <span id="cell-ip-display" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">APN</span>
+                            <span id="cell-apn-display" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">网络类型</span>
+                            <span id="cell-network-type" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">连接时长</span>
+                            <span id="cell-uptime-display" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">ICCID (卡号)</span>
+                            <span id="cell-iccid-display" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">IMEI (设备号)</span>
+                            <span id="cell-imei-display" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">配置热点 SSID</span>
+                            <span id="cell-ap-ssid-display" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">配置热点 IP</span>
+                            <span id="cell-ap-ip-display" class="status-value">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- LoRa 状态面板 -->
+                <div id="lora-status-panel" class="status-panel fb-hidden">
+                    <div class="status-grid">
+                        <div class="status-item">
+                            <span class="status-label" data-i18n="net-status-connection">连接状态</span>
+                            <span id="lora-status-badge" class="status-badge status-disconnected">未连接</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">工作模式</span>
+                            <span id="lora-mode-display" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">设备地址</span>
+                            <span id="lora-address" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">频率</span>
+                            <span id="lora-frequency" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">空中速率</span>
+                            <span id="lora-airrate" class="status-value">--</span>
+                        </div>
+                        <div class="status-item">
+                            <span class="status-label">信道</span>
+                            <span id="lora-channel" class="status-value">--</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="config-tabs">
                 <div class="config-tab active" data-tab="base" data-i18n="net-tab-basic">基本配置</div>
                 <div class="config-tab" data-tab="ap-config" data-i18n="net-tab-ap">热点配置</div>
@@ -13,13 +171,26 @@
 
             <!-- 基本配置 -->
             <div id="base" class="config-content active">
-                <!-- WiFi选择按钮 -->
-                <div class="wifi-config fb-mb-3">
-                    <button id="wifi-scan-btn" class="fb-btn fb-btn-refresh"
-                        data-i18n="wifi-scan-btn">
-                        选择Wifi网络
-                    </button>
+                <!-- 联网方式选择 -->
+                <div class="fb-form-group fb-mb-3">
+                    <label for="network-type" data-i18n="net-type-label">联网方式</label>
+                    <select id="network-type" class="">
+                        <option value="0" selected data-i18n="net-type-wifi">WiFi</option>
+                        <option value="1" data-i18n="net-type-ethernet">以太网 (W5500)</option>
+                        <option value="2" data-i18n="net-type-4g">4G蜂窝 (EC801E)</option>
+                        <option value="3" data-i18n="net-type-lora">LoRa 网关透传</option>
+                    </select>
                 </div>
+
+                <!-- WiFi 配置面板 -->
+                <div id="wifi-panel">
+                    <!-- WiFi选择按钮 -->
+                    <div class="wifi-config fb-mb-3">
+                        <button id="wifi-scan-btn" class="fb-btn fb-btn-refresh"
+                            data-i18n="wifi-scan-btn">
+                            选择Wifi网络
+                        </button>
+                    </div>
 
                 <form id="wifi-form" class="fb-form">
                     <div class="config-form-grid">
@@ -81,6 +252,122 @@
                         </button>
                     </div>
                 </form>
+                </div><!-- /wifi-panel -->
+
+                <!-- 以太网配置面板 -->
+                <div id="ethernet-panel" class="fb-hidden">
+                    <form id="ethernet-form" class="fb-form">
+                        <h4 class="fb-section-title" data-i18n="eth-pin-config">W5500 SPI 引脚配置</h4>
+                        <div class="config-form-grid">
+                            <div class="config-form-column">
+                                <div class="fb-form-group">
+                                    <label for="eth-mosi">MOSI</label>
+                                    <input type="number" id="eth-mosi" class="" value="11" min="0" max="48">
+                                </div>
+                                <div class="fb-form-group">
+                                    <label for="eth-miso">MISO</label>
+                                    <input type="number" id="eth-miso" class="" value="13" min="0" max="48">
+                                </div>
+                                <div class="fb-form-group">
+                                    <label for="eth-sck">SCK</label>
+                                    <input type="number" id="eth-sck" class="" value="12" min="0" max="48">
+                                </div>
+                            </div>
+                            <div class="config-form-column">
+                                <div class="fb-form-group">
+                                    <label for="eth-cs">CS</label>
+                                    <input type="number" id="eth-cs" class="" value="47" min="0" max="48">
+                                </div>
+                                <div class="fb-form-group">
+                                    <label for="eth-rst">RST</label>
+                                    <input type="number" id="eth-rst" class="" value="48" min="0" max="48">
+                                </div>
+                                <div class="fb-form-group">
+                                    <label for="eth-int">INT</label>
+                                    <input type="number" id="eth-int" class="" value="14" min="0" max="48">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="fb-mt-4 u-action-row">
+                            <button type="submit" class="fb-btn fb-btn-primary fb-btn-compact">
+                                <i class="fas fa-save"></i> <span data-i18n="save-config-btn">保存配置</span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- 4G 蜂窝配置面板 -->
+                <div id="cellular-panel" class="fb-hidden">
+                    <form id="cellular-form" class="fb-form">
+                        <h4 class="fb-section-title" data-i18n="cellular-config">EC801E-CN 4G 配置</h4>
+                        <div class="config-form-grid">
+                            <div class="config-form-column">
+                                <div class="fb-form-group">
+                                    <label for="cell-tx">TX Pin</label>
+                                    <input type="number" id="cell-tx" class="" value="39" min="0" max="48">
+                                </div>
+                                <div class="fb-form-group">
+                                    <label for="cell-rx">RX Pin</label>
+                                    <input type="number" id="cell-rx" class="" value="40" min="0" max="48">
+                                </div>
+                                <div class="fb-form-group">
+                                    <label for="cell-pwr">PWR Pin</label>
+                                    <input type="number" id="cell-pwr" class="" value="38" min="0" max="48">
+                                </div>
+                            </div>
+                            <div class="config-form-column">
+                                <div class="fb-form-group">
+                                    <label for="cell-baud" data-i18n="cellular-baud">波特率</label>
+                                    <input type="number" id="cell-baud" class="" value="115200">
+                                </div>
+                                <div class="fb-form-group">
+                                    <label for="cell-apn">APN</label>
+                                    <input type="text" id="cell-apn" class="" value="CMNET" placeholder="CMNET">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="fb-mt-4 u-action-row">
+                            <button type="submit" class="fb-btn fb-btn-primary fb-btn-compact">
+                                <i class="fas fa-save"></i> <span data-i18n="save-config-btn">保存配置</span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- LoRa 配置面板 -->
+                <div id="lora-panel" class="fb-hidden">
+                    <form id="lora-form" class="fb-form">
+                        <h4 class="fb-section-title" data-i18n="lora-config">E22-400T22D LoRa 配置</h4>
+                        <div class="config-form-grid">
+                            <div class="config-form-column">
+                                <div class="fb-form-group">
+                                    <label for="lora-tx">TX Pin</label>
+                                    <input type="number" id="lora-tx" class="" value="39" min="0" max="48">
+                                </div>
+                                <div class="fb-form-group">
+                                    <label for="lora-rx">RX Pin</label>
+                                    <input type="number" id="lora-rx" class="" value="40" min="0" max="48">
+                                </div>
+                            </div>
+                            <div class="config-form-column">
+                                <div class="fb-form-group">
+                                    <label for="lora-m1">M1 Pin</label>
+                                    <input type="number" id="lora-m1" class="" value="41" min="0" max="48">
+                                </div>
+                                <div class="fb-form-group">
+                                    <label for="lora-baud" data-i18n="lora-baud">波特率</label>
+                                    <input type="number" id="lora-baud" class="" value="9600">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="fb-mt-4 u-action-row">
+                            <button type="submit" class="fb-btn fb-btn-primary fb-btn-compact">
+                                <i class="fas fa-save"></i> <span data-i18n="save-config-btn">保存配置</span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
             </div>
 
             <!-- 热点配置 -->
@@ -99,6 +386,14 @@
                                 <label for="ap-password" data-i18n="ap-password-label">热点密码</label>
                                 <input type="password" id="ap-password" class=""
                                     placeholder="输入热点密码（至少8位）">
+                            </div>
+
+                            <div class="fb-form-group">
+                                <label for="ap-ip">热点IP地址</label>
+                                <input type="text" id="ap-ip" class=""
+                                    value="192.168.4.1"
+                                    placeholder="192.168.4.1">
+                                <small class="fb-form-hint">冲突时自动切换备用网段</small>
                             </div>
 
                             <div class="fb-form-group">

@@ -75,6 +75,51 @@ static void sendOneShotError(WebHandlerContext* ctx, AsyncWebServerRequest* requ
 }
 
 // 获取 ModbusHandler 指针并校验 Master 模式，失败时发送错误响应
+struct MotorSoftLimitDecision {
+    bool enabled = false;
+    bool allowed = true;
+    uint16_t pulse = 0;
+    int32_t nextPosition = 0;
+    const char* reason = "";
+};
+
+static MotorSoftLimitDecision evaluateMotorSoftLimit(const ModbusSubDevice& dev,
+                                                     const String& action,
+                                                     int requestedValue) {
+    MotorSoftLimitDecision d;
+    d.nextPosition = dev.motorCurrentPosition;
+    if (!dev.hasMotorSoftLimit() || (action != "forward" && action != "reverse")) {
+        return d;
+    }
+
+    d.enabled = true;
+    int32_t desiredPulse = requestedValue > 0 ? requestedValue : 0;
+    if (desiredPulse <= 0 && dev.motorLastPulse > 0) desiredPulse = dev.motorLastPulse;
+    if (desiredPulse <= 0 && dev.motorMoveStep > 0) desiredPulse = dev.motorMoveStep;
+    if (desiredPulse <= 0) {
+        d.allowed = false;
+        d.reason = "motor_soft_limit_requires_pulse";
+        return d;
+    }
+
+    int32_t room = (action == "forward")
+        ? (dev.motorMaxPosition - dev.motorCurrentPosition)
+        : (dev.motorCurrentPosition - dev.motorMinPosition);
+    if (room <= 0) {
+        d.allowed = false;
+        d.reason = (action == "forward") ? "motor_at_right_limit" : "motor_at_left_limit";
+        return d;
+    }
+
+    if (desiredPulse > room) desiredPulse = room;
+    if (desiredPulse > 65535) desiredPulse = 65535;
+    d.pulse = static_cast<uint16_t>(desiredPulse);
+    d.nextPosition = (action == "forward")
+        ? dev.motorCurrentPosition + desiredPulse
+        : dev.motorCurrentPosition - desiredPulse;
+    return d;
+}
+
 static ModbusHandler* getModbusMaster(WebHandlerContext* ctx, AsyncWebServerRequest* request) {
     ProtocolManager* pm = ctx->protocolManager;
     if (!pm) {
@@ -1518,6 +1563,42 @@ void ModbusRouteHandler::handleModbusRegisterWrite(AsyncWebServerRequest* reques
         return;
     }
     
+    int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
+    const ModbusSubDevice* motorDevPtr = nullptr;
+    MotorSoftLimitDecision limitDecision;
+    if (devIdx >= 0) {
+        const ModbusSubDevice& dev = modbus->getSubDevice((uint8_t)devIdx);
+        if (String(dev.deviceType) == "motor") {
+            motorDevPtr = &dev;
+            String motorAction;
+            if (regAddr == dev.motorRegs[0]) motorAction = "forward";
+            else if (regAddr == dev.motorRegs[1]) motorAction = "reverse";
+            if (!motorAction.isEmpty()) {
+                limitDecision = evaluateMotorSoftLimit(dev, motorAction, value);
+                if (!limitDecision.allowed) {
+                    JsonDocument doc;
+                    doc["success"] = false;
+                    doc["errorCode"] = "MOTOR_SOFT_LIMIT";
+                    doc["error"] = "motor_soft_limit";
+                    JsonObject data = doc["data"].to<JsonObject>();
+                    data["currentPosition"] = dev.motorCurrentPosition;
+                    data["minPosition"] = dev.motorMinPosition;
+                    data["maxPosition"] = dev.motorMaxPosition;
+                    HandlerUtils::sendJsonStream(request, doc);
+                    return;
+                }
+                if (limitDecision.enabled && dev.motorRegs[4] != 0) {
+                    OneShotResult pulseResult = modbus->writeRegisterOnce(slaveAddr, dev.motorRegs[4], limitDecision.pulse, true);
+                    if (pulseResult.error != ONESHOT_SUCCESS) {
+                        sendOneShotError(ctx, request, pulseResult);
+                        return;
+                    }
+                    value = 1;
+                }
+            }
+        }
+    }
+
     OneShotResult result = modbus->writeRegisterOnce(slaveAddr, regAddr, value, true);  // isControl=true
     if (result.error != ONESHOT_SUCCESS) {
         sendOneShotError(ctx, request, result);
@@ -1525,7 +1606,14 @@ void ModbusRouteHandler::handleModbusRegisterWrite(AsyncWebServerRequest* reques
     }
     
     // MQTT 上报寄存器写入结果
-    int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
+    if (devIdx >= 0 && motorDevPtr) {
+        if (regAddr == motorDevPtr->motorRegs[4]) {
+            modbus->updateMotorRuntime((uint8_t)devIdx, motorDevPtr->motorCurrentPosition, value);
+        } else if (limitDecision.enabled) {
+            modbus->updateMotorRuntime((uint8_t)devIdx, limitDecision.nextPosition, limitDecision.pulse);
+        }
+    }
+
     if (devIdx >= 0) {
         const ModbusSubDevice& dev = modbus->getSubDevice((uint8_t)devIdx);
         uint16_t channel = (regAddr >= dev.coilBase && regAddr < dev.coilBase + dev.channelCount)
@@ -1643,8 +1731,10 @@ void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request
     // 从设备配置中查找电机寄存器映射
     uint16_t motorRegs[5] = {0x0000, 0x0001, 0x0002, 0x0005, 0x0007}; // 默认值(YF-53兼容)
     int devIdx = findDeviceIndexBySlaveAddr(modbus, slaveAddr);
+    const ModbusSubDevice* motorDevPtr = nullptr;
     if (devIdx >= 0) {
         const ModbusSubDevice& motorDev = modbus->getSubDevice((uint8_t)devIdx);
+        motorDevPtr = &motorDev;
         memcpy(motorRegs, motorDev.motorRegs, sizeof(motorRegs));
         bool allZero = true;
         for (int i = 0; i < 5; i++) { if (motorRegs[i] != 0) { allZero = false; break; } }
@@ -1720,10 +1810,48 @@ void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request
     }
     
     // FC06 写单个寄存器
+    MotorSoftLimitDecision limitDecision;
+    if (motorDevPtr) {
+        limitDecision = evaluateMotorSoftLimit(*motorDevPtr, action, value);
+        if (!limitDecision.allowed) {
+            JsonDocument doc;
+            doc["success"] = false;
+            doc["errorCode"] = "MOTOR_SOFT_LIMIT";
+            doc["error"] = limitDecision.reason;
+            JsonObject data = doc["data"].to<JsonObject>();
+            data["currentPosition"] = motorDevPtr->motorCurrentPosition;
+            data["minPosition"] = motorDevPtr->motorMinPosition;
+            data["maxPosition"] = motorDevPtr->motorMaxPosition;
+            HandlerUtils::sendJsonStream(request, doc);
+            return;
+        }
+
+        if (limitDecision.enabled && motorRegs[4] != 0) {
+            OneShotResult pulseResult = modbus->writeRegisterOnce(slaveAddr, motorRegs[4], limitDecision.pulse, true);
+            if (pulseResult.error != ONESHOT_SUCCESS) {
+                sendOneShotError(ctx, request, pulseResult);
+                return;
+            }
+            writeValue = 1;
+        }
+    }
+
     OneShotResult result = modbus->writeRegisterOnce(slaveAddr, targetReg, writeValue, true);
     if (result.error != ONESHOT_SUCCESS) {
         sendOneShotError(ctx, request, result);
         return;
+    }
+
+    if (devIdx >= 0 && motorDevPtr) {
+        int32_t nextPosition = motorDevPtr->motorCurrentPosition;
+        uint16_t nextPulse = motorDevPtr->motorLastPulse;
+        if (action == "setPulse") {
+            nextPulse = static_cast<uint16_t>(writeValue);
+        } else if (limitDecision.enabled && (action == "forward" || action == "reverse")) {
+            nextPosition = limitDecision.nextPosition;
+            nextPulse = limitDecision.pulse;
+        }
+        modbus->updateMotorRuntime((uint8_t)devIdx, nextPosition, nextPulse);
     }
     
     // MQTT 上报
@@ -1757,6 +1885,13 @@ void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request
     data["action"] = action;
     data["register"] = targetReg;
     data["value"] = writeValue;
+    if (motorDevPtr) {
+        data["softLimitEnabled"] = motorDevPtr->hasMotorSoftLimit();
+        data["currentPosition"] = motorDevPtr->motorCurrentPosition;
+        data["minPosition"] = motorDevPtr->motorMinPosition;
+        data["maxPosition"] = motorDevPtr->motorMaxPosition;
+        data["pulse"] = (limitDecision.enabled ? limitDecision.pulse : motorDevPtr->motorLastPulse);
+    }
     addModbusDebug(doc, modbus);
     
     HandlerUtils::sendJsonStream(request, doc);

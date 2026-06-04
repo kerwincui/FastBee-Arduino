@@ -26,6 +26,7 @@ private:
     void handleGetDeviceConfig(AsyncWebServerRequest* request);
     void handleSaveDeviceConfig(AsyncWebServerRequest* request);
     void handleSaveDeviceConfigJson(AsyncWebServerRequest* request, JsonVariant& json);
+    void handleSetDeveloperMode(AsyncWebServerRequest* request);
     void handleGetDeviceInfo(AsyncWebServerRequest* request);
 };
 

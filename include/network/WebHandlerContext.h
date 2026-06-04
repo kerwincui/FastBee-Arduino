@@ -74,6 +74,9 @@ public:
     String     getClientIP(AsyncWebServerRequest* request);
     String     getUserAgent(AsyncWebServerRequest* request);
     bool       checkPermission(AsyncWebServerRequest* request, const String& permission);
+    bool       isDeveloperModeEnabled();
+    bool       verifyCurrentUserPassword(AsyncWebServerRequest* request, const String& password);
+    bool       requireDeveloperMode(AsyncWebServerRequest* request);
 
     // ============ 响应辅助方法 ============
     void sendJsonResponse(AsyncWebServerRequest* request, int code,
