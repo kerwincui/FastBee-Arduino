@@ -1,4 +1,0 @@
-interface:
-  display_name: "FastBee ESP32 Deploy"
-  short_description: "Deploy FastBee firmware and LittleFS safely."
-  default_prompt: "Use $fastbee-esp32-deploy to deploy FastBee-Arduino to an ESP32 board."
