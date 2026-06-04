@@ -245,8 +245,9 @@ void PeriphExecScheduler::checkTimers() {
     _lastTimerCheck = now;
 
     // 预先获取 ModbusHandler 状态（避免在锁内调用）
-    ModbusHandler* modbus = nullptr;
     bool modbusAvailable = false;
+#if FASTBEE_ENABLE_MODBUS
+    ModbusHandler* modbus = nullptr;
     if (fw) {
         auto* protMgr = fw->getProtocolManager();
         if (protMgr) {
@@ -254,6 +255,7 @@ void PeriphExecScheduler::checkTimers() {
             modbusAvailable = (modbus != nullptr && modbus->getMode() == MODBUS_MASTER);
         }
     }
+#endif
 
     // 通过 manager 获取规则列表并检查定时触发
     checkSerialEvents();
@@ -908,11 +910,13 @@ bool PeriphExecScheduler::checkNetworkAndProtocolStatus(uint8_t& connectedProtoc
     // 检查 Modbus 状态（使用 bool 方法替代字符串分配）
 #endif
 
+#if FASTBEE_ENABLE_MODBUS
     ModbusHandler* modbus = protocolMgr->getModbusHandler();
     if (modbus && modbus->isRunning()) {
         connectedProtocols |= PROTOCOL_MODBUS_CONNECTED;
         hasConnectedProtocol = true;
     }
+#endif
 
     // 检查 HTTP 状态（通过状态字符串判断）
 #if FASTBEE_ENABLE_HTTP

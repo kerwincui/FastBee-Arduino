@@ -629,6 +629,10 @@ bool PeriphExecExecutor::executePeripheralAction(const ExecAction& action, const
 bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
                                                  const PeriphExecRule& rule,
                                                  std::vector<ActionExecResult>* controlResults) {
+#if !FASTBEE_ENABLE_MODBUS
+    (void)action; (void)rule; (void)controlResults;
+    return false;
+#else
     auto* fw = FastBeeFramework::getInstance();
     if (!fw) { LOGGER.warning("[PeriphExec] Framework not available"); return false; }
     auto* protMgr = fw->getProtocolManager();
@@ -981,6 +985,7 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
     }
 
     return anySuccess;
+#endif // FASTBEE_ENABLE_MODBUS
 }
 
 bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, ActionExecResult& result) {
@@ -1500,6 +1505,7 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
 
     // 检查 Modbus 传输类型（0=JSON, 1=透传HEX）并获取 ModbusHandler 指针
     uint8_t modbusTransferType = 0;
+#if FASTBEE_ENABLE_MODBUS
     ModbusHandler* modbus = nullptr;
     auto* fw = FastBeeFramework::getInstance();
     if (fw) {
@@ -1511,6 +1517,7 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
             }
         }
     }
+#endif
 
     PeripheralManager& pm = PeripheralManager::getInstance();
 
@@ -1537,7 +1544,11 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
         String reportId = ar.targetPeriphId;
         String reportValue = ar.actualValue;
 
-        if (isModbusTarget && modbus && cfg->params.modbus.sensorId[0] != '\0') {
+        if (isModbusTarget
+#if FASTBEE_ENABLE_MODBUS
+            && modbus
+#endif
+            && cfg->params.modbus.sensorId[0] != '\0') {
             // 从 actualValue 解析 channel（格式 "channel:state" 或 "state"）
             uint16_t channel = 0;
             int sepIdx = ar.actualValue.indexOf(':');
@@ -1545,10 +1556,12 @@ void PeriphExecExecutor::reportActionResults(const std::vector<ActionExecResult>
                 channel = ar.actualValue.substring(0, sepIdx).toInt();
                 reportValue = ar.actualValue.substring(sepIdx + 1);
             }
+#if FASTBEE_ENABLE_MODBUS
             String sid = modbus->buildSensorId(cfg->params.modbus.deviceIndex, channel);
             if (!sid.isEmpty()) {
                 reportId = sid;
             }
+#endif
         }
 
         // 确定上报 remark：优先使用动作执行时设置的 remark，否则根据 success 生成
