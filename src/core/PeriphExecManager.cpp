@@ -476,17 +476,18 @@ bool PeriphExecManager::addRule(const PeriphExecRule& rule, String& errorMsg) {
         errorMsg = "Rule ID already exists";
         return false;
     }
+
+    // 软性推荐值检查：超过推荐数量时记录警告，但不拒绝创建
+    // 实际限制由 MAX_ACTIVE_TASKS（同时运行的规则数）和系统资源决定
     if (rules.size() >= FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES) {
-        LOGGER.warningf("[PeriphExec] Rule limit reached for profile %s (max=%u)",
+        LOGGER.warningf("[PeriphExec] Rule count (%u) exceeds recommended limit for profile %s (recommended=%u). "
+                        "System stability may be affected if too many rules run simultaneously.",
+                        static_cast<unsigned int>(rules.size() + 1),
                         FastBee::ResourceProfile::NAME,
                         static_cast<unsigned int>(FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES));
-        errorMsg = String("Rule limit reached for profile ") +
-                   FastBee::ResourceProfile::NAME +
-                   " (max " +
-                   String(static_cast<unsigned int>(FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES)) +
-                   ")";
-        return false;
+        // 不阻断，继续添加
     }
+
     // 上限检查
     if (newRule.triggers.size() > MAX_TRIGGERS_PER_RULE) {
         LOGGER.warningf("[PeriphExec] Too many triggers: %d", (int)newRule.triggers.size());
@@ -886,11 +887,16 @@ bool PeriphExecManager::loadConfiguration() {
     JsonArray arr = doc["rules"].as<JsonArray>();
 
     for (JsonObject obj : arr) {
+        // 软性推荐值检查：超过推荐数量时警告，但不再跳过
         if (rules.size() >= FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES) {
-            LOGGER.warningf("[PeriphExec] Profile %s allows max %u rules, skipping remaining config entries",
-                            FastBee::ResourceProfile::NAME,
-                            static_cast<unsigned int>(FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES));
-            break;
+            if (rules.size() == FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES) {
+                LOGGER.warningf("[PeriphExec] Rule count (%u) exceeds recommended limit for profile %s (recommended=%u). "
+                                "Loading remaining rules, but system stability may be affected.",
+                                static_cast<unsigned int>(arr.size()),
+                                FastBee::ResourceProfile::NAME,
+                                static_cast<unsigned int>(FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES));
+            }
+            // 不再 break，继续加载所有规则
         }
         PeriphExecRule r;
         r.id = obj["id"].as<String>();
@@ -1221,6 +1227,17 @@ String PeriphExecManager::getValidActionTypes(const String& periphId) {
 #endif
         } else if (pType == PeripheralType::NEO_PIXEL) {
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "WS2812B控制(color/off/rainbow/brightness)", "灯珠");
+#if FASTBEE_ENABLE_COMMAND_SCRIPT
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+#endif
+        } else if (pType == PeripheralType::RF_MODULE) {
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "射频发送(send code/bits/pulseWidth/repeat)", "射频");
+#if FASTBEE_ENABLE_COMMAND_SCRIPT
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
+#endif
+        } else if (pType == PeripheralType::RADAR_SENSOR) {
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_SENSOR_READ), "雷达读取(radar presence)", "雷达");
+            addAction(static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL), "调用其他外设", "外设");
 #if FASTBEE_ENABLE_COMMAND_SCRIPT
             addAction(static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT), "脚本命令", "脚本");
 #endif

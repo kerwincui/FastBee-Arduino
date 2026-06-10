@@ -201,31 +201,36 @@ pio run -t clean
 
 ### 构建 Web 资源
 
-**生成并上传**:
+**推荐：构建并烧录匹配版本**:
 ```powershell
-node scripts/gzip-www.js --web-slim --no-monitor
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32 -Port COM6
 ```
 
-**仅生成不上传**:
+**只编译不上传**:
 ```powershell
-node scripts/gzip-www.js --web-slim --no-upload --no-monitor
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-full -BuildOnly
 ```
 
-**完整版 Web**:
+**底层文件系统构建命令**:
 ```powershell
-node scripts/gzip-www.js --web-full --no-monitor
+pio run -e esp32s3-full --target buildfs
 ```
 
 ### 烧录到设备
 
-**上传固件**:
+**上传文件系统和固件**:
 ```powershell
-pio run -e esp32 --target upload
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32 -Port COM6
 ```
 
-**上传文件系统**:
+**仅上传固件**:
 ```powershell
-pio run -e esp32 --target uploadfs
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32 -Port COM6 -SkipFs
+```
+
+**仅上传文件系统**:
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32 -Port COM6 -SkipFirmware
 ```
 
 **打开串口监视器**:
@@ -235,7 +240,7 @@ pio device monitor -e esp32 -b 115200
 
 **一键编译上传监视**:
 ```powershell
-pio run -e esp32 --target upload && pio device monitor -e esp32 -b 115200
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32 -Port COM6 -Monitor
 ```
 
 ## 测试流程

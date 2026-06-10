@@ -6,7 +6,7 @@
 
 ### 必需工具
 - **VSCode** + **PlatformIO IDE 插件** (推荐),或 PlatformIO CLI
-- **ESP32 系列开发板** (ESP32/ESP32-S3/ESP32-C3/ESP32-C6/ESP32-S2)
+- **ESP32 系列开发板** (ESP32/ESP32-S3/ESP32-C3/ESP32-C6)
 - **USB 数据线** (支持数据传输)
 
 ### 可选工具
@@ -24,7 +24,6 @@
 |---------|---------|---------|----------|
 | `esp32c3` | 精简版 | ESP32-C3 | 低成本节点,¥9-12 |
 | `esp32c6` | 精简版 | ESP32-C6 | WiFi 6 新一代低成本,¥12-15 |
-| `esp32s2` | 精简版 | ESP32-S2 | WiFi only (无 BLE) |
 | `esp32` | 标准版 | ESP32 | 以太网/4G/Modbus + 常规项目 (推荐) |
 | `esp32s3` | 标准版 | ESP32-S3 | 高性能,支持 I2C/RFID/IR |
 | `esp32s3-full` | 全功能版 | ESP32-S3 | OTA + 多用户 + RuleScript + 多语言 |
@@ -33,7 +32,7 @@
 
 > **注意**: ESP32-C6 需使用 [pioarduino](https://github.com/pioarduino/platform-espressif32) 社区平台，详见 [版本对比指南](system/edition-comparison.md)。
 
-### 1.2 构建 Web 文件系统
+### 1.2 一键构建并烧录
 
 打开终端,进入项目目录:
 
@@ -41,24 +40,46 @@
 cd D:\project\gitee\FastBee-Arduino
 ```
 
-生成并上传 Web 资源:
+推荐使用项目提供的部署脚本。脚本会先上传与版本匹配的 LittleFS Web 文件系统,再烧录固件:
 
 ```powershell
-node scripts/gzip-www.js --web-slim --no-monitor
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32 -Port COM6
 ```
 
-> 如只需生成不上传,添加 `--no-upload` 参数。
-
-### 1.3 编译并烧录固件
+ESP32-S3 标准版:
 
 ```powershell
-pio run -e esp32 --target upload
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3 -Port COM6
 ```
 
 ESP32-S3 全功能版:
 
 ```powershell
-pio run -e esp32s3-full --target upload
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-full -Port COM6
+```
+
+只编译不上传:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-full -BuildOnly
+```
+
+> Web 文件系统和固件版本必须配套。不要把 `esp32s3-full` 的 Web 文件系统和 `esp32` 固件混合烧录。
+
+> 默认外设和外设执行规则都是安全模板：烧录后不会自动驱动 GPIO、UART 或显示屏。首次接线请先确认引脚、供电和外设 ID，再在 Web 中启用对应外设和规则。
+
+### 1.3 部署后检查
+
+烧录完成并启动后,可以运行接口冒烟测试:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl http://192.168.4.1 -Profile standard
+```
+
+如果设备已经连入局域网,把地址替换为实际 IP:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl http://192.168.5.116 -Profile full
 ```
 
 ### 1.4 查看串口日志

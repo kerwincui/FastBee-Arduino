@@ -46,7 +46,7 @@
       "id": "d1",
       "name": "d1",
       "type": 12,
-      "enabled": true,
+      "enabled": false,
       "pins": [
         15
       ],
@@ -62,7 +62,7 @@
       "id": "d2",
       "name": "d2",
       "type": 12,
-      "enabled": true,
+      "enabled": false,
       "pins": [
         2
       ],
@@ -78,7 +78,7 @@
       "id": "d3",
       "name": "d3",
       "type": 12,
-      "enabled": true,
+      "enabled": false,
       "pins": [
         0
       ],
@@ -106,7 +106,7 @@
       "id": "dht_01",
       "name": "DHT11温湿度",
       "type": 38,
-      "enabled": true,
+      "enabled": false,
       "pins": [
         27
       ],
@@ -116,7 +116,7 @@
       "id": "ds18b20_01",
       "name": "DS18B20温度",
       "type": 44,
-      "enabled": true,
+      "enabled": false,
       "pins": [
         28
       ],
@@ -294,7 +294,7 @@
       "id": "gpio_pwm",
       "name": "PWM输出",
       "type": 17,
-      "enabled": true,
+      "enabled": false,
       "pins": [
         21
       ],
@@ -354,7 +354,7 @@
       "id": "key1",
       "name": "按键1",
       "type": 13,
-      "enabled": true,
+      "enabled": false,
       "pins": [
         26
       ],
@@ -383,7 +383,7 @@
       "id": "modbus_rtu",
       "name": "Modbus RTU-工业设备",
       "type": 1,
-      "enabled": true,
+      "enabled": false,
       "pins": [
         16,
         17
@@ -420,7 +420,7 @@
       "id": "oled_display",
       "name": "OLED显示屏",
       "type": 36,
-      "enabled": true,
+      "enabled": false,
       "pins": [
         23,
         22
@@ -478,7 +478,7 @@
       "id": "relay",
       "name": "继电器",
       "type": 12,
-      "enabled": true,
+      "enabled": false,
       "pins": [
         25
       ],
@@ -546,7 +546,7 @@
       "id": "tm1637_01",
       "name": "TM1637数码管",
       "type": 47,
-      "enabled": true,
+      "enabled": false,
       "pins": [
         18,
         19
@@ -618,7 +618,7 @@
       "id": "uart0",
       "name": "串口0-调试",
       "type": 1,
-      "enabled": true,
+      "enabled": false,
       "pins": [
         1,
         3

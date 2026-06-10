@@ -253,8 +253,9 @@ bool FBNetworkManager::initialize() {
                     Serial.println("[NET] STA failed, switching to AP mode...");
                     ets_printf("[NET] STA failed, switching to AP mode...\n");
                     wifiManager->setModeTransitioning(false);
-                    // 连接失败，切换到AP模式提供配置界面
-                    wifiConfig.mode = NetworkMode::NETWORK_AP;
+                    // Keep the configured mode as STA so auto-reconnect can recover
+                    // after a temporary router/signal failure. AP is only a fallback
+                    // management surface here.
                     success = startAPMode();
                     if (success) {
                         Serial.printf("[NET] AP started: %s  IP: %s\n",
@@ -419,6 +420,7 @@ void FBNetworkManager::update() {
         LOG_INFO("NetworkManager: WiFi connected, IP: " + WiFi.localIP().toString());
         statusInfo.reconnectAttempts = 0;  // 重置重连计数器
         statusInfo.status = NetworkStatus::CONNECTED;
+        statusInfo.lastConnectionTime = millis();
         
         // 重新启动mDNS以更新IP绑定
         if (wifiConfig.enableMDNS) {
@@ -914,6 +916,10 @@ bool FBNetworkManager::connectToWiFi() {
     }
 
     // 重置故障转移状态
+    wifiManager->setNetworkConfig(wifiConfig);
+    WiFi.disconnect(false);
+    delay(150);
+
     ipManager->generateBackupIPs();
 
     // 配置网络
@@ -970,6 +976,8 @@ bool FBNetworkManager::connectToWiFiBlocking() {
     }
 
     // 发起连接
+    WiFi.disconnect(false);
+    delay(150);
     WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
     statusInfo.status = NetworkStatus::CONNECTING;
 
@@ -999,6 +1007,7 @@ bool FBNetworkManager::connectToWiFiBlocking() {
         statusInfo.status = NetworkStatus::CONNECTED;
         statusInfo.ipAddress = WiFi.localIP().toString();
         statusInfo.ssid = WiFi.SSID();
+        statusInfo.lastConnectionTime = millis();
 
         snprintf(buf, sizeof(buf), "[NET] WiFi connected! IP: %s", statusInfo.ipAddress.c_str());
         Serial.println(buf);
@@ -1021,6 +1030,8 @@ bool FBNetworkManager::connectToWiFiBlocking() {
     ets_printf("%s\n", buf);
     LOG_WARNING(buf);
     LOGGER.debugf("NetworkManager: WiFi status code = %d", (int)WiFi.status());
+    WiFi.disconnect(false);
+    delay(100);
     return false;
 }
 
@@ -1082,6 +1093,7 @@ void FBNetworkManager::updateStatusInfo() {
     if (wifiConfig.networkType == NetworkType::NET_4G && cellularAdapter) {
         bool connected = cellularAdapter->isConnected();
         statusInfo.status = connected ? NetworkStatus::CONNECTED : NetworkStatus::DISCONNECTED;
+        statusInfo.ipAddress = connected ? cellularAdapter->localIP().toString() : "";
         statusInfo.internetAvailable = connected;
         // 更新 4G 蜂窝网络状态
         statusInfo.simStatus = cellularAdapter->isSimReady() ? "ready" : "missing";
@@ -1123,12 +1135,9 @@ void FBNetworkManager::updateStatusInfo() {
 // IP 冲突检测和故障转移方法已移至 IPManager 类
 
 void FBNetworkManager::attemptReconnect() {
-    // 重连次数限制：达到最大次数后切换到AP模式
+    // 重连次数限制：达到最大次数后开启 AP 配置入口，但继续保留 STA 自动重试
     if (statusInfo.reconnectAttempts >= wifiConfig.maxReconnectAttempts) {
-        LOG_WARNING("NetworkManager: Max reconnect attempts reached in STA mode, switching to AP mode");
-        
-        // 切换到AP模式，提供Web配置界面
-        wifiConfig.mode = NetworkMode::NETWORK_AP;
+        LOG_WARNING("NetworkManager: Max reconnect attempts reached; starting AP fallback and keeping STA retry enabled");
         
         // 断开当前STA连接
         wifiManager->disconnectWiFi();
@@ -1139,11 +1148,12 @@ void FBNetworkManager::attemptReconnect() {
                 WiFi.softAPIP().toString().c_str(),
                 wifiConfig.apSSID.c_str(),
                 wifiConfig.apPassword.c_str());
-            LOG_INFO("NetworkManager: Switched to AP mode, Web config available");
+            LOG_INFO("NetworkManager: AP fallback active, STA retry remains enabled");
             
             // 重置重连计数器
             statusInfo.reconnectAttempts = 0;
-            autoReconnectEnabled = false;
+            statusInfo.reconnectAttempts = 0;
+            lastReconnectAttempt = millis();
         } else {
             LOG_ERROR("NetworkManager: Failed to start AP mode after STA failure");
             // 如果AP启动失败，重置计数器，等待更长时间后再试
@@ -1162,7 +1172,10 @@ void FBNetworkManager::attemptReconnect() {
 
     // 同步配置到 WiFiManager 后再尝试重连
     wifiManager->setNetworkConfig(wifiConfig);
-    wifiManager->connectToWiFi();
+    if (!connectToWiFi()) {
+        connecting = false;
+        statusInfo.status = NetworkStatus::CONNECTION_FAILED;
+    }
 }
 
 void FBNetworkManager::triggerEvent(NetworkStatus status, const String& message) {
@@ -1407,7 +1420,22 @@ bool FBNetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStor
         newConfig.apSSID != wifiConfig.apSSID ||
         newConfig.staSSID != wifiConfig.staSSID ||
         newConfig.ipConfigType != wifiConfig.ipConfigType ||
-        newConfig.networkType != wifiConfig.networkType) {
+        newConfig.networkType != wifiConfig.networkType ||
+        newConfig.ethernet.spiMosi != wifiConfig.ethernet.spiMosi ||
+        newConfig.ethernet.spiMiso != wifiConfig.ethernet.spiMiso ||
+        newConfig.ethernet.spiSck != wifiConfig.ethernet.spiSck ||
+        newConfig.ethernet.csPin != wifiConfig.ethernet.csPin ||
+        newConfig.ethernet.rstPin != wifiConfig.ethernet.rstPin ||
+        newConfig.ethernet.intPin != wifiConfig.ethernet.intPin ||
+        newConfig.cellular.txPin != wifiConfig.cellular.txPin ||
+        newConfig.cellular.rxPin != wifiConfig.cellular.rxPin ||
+        newConfig.cellular.pwrPin != wifiConfig.cellular.pwrPin ||
+        newConfig.cellular.baudRate != wifiConfig.cellular.baudRate ||
+        newConfig.cellular.apn != wifiConfig.cellular.apn ||
+        newConfig.lora.txPin != wifiConfig.lora.txPin ||
+        newConfig.lora.rxPin != wifiConfig.lora.rxPin ||
+        newConfig.lora.m1Pin != wifiConfig.lora.m1Pin ||
+        newConfig.lora.baudRate != wifiConfig.lora.baudRate) {
         restartRequired = true;
     }
     

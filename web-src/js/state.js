@@ -39,7 +39,23 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     },
 
     _loadModals() {
-        return PageLoader.loadModals();
+        var self = this;
+        return PageLoader.loadModals().then(function() {
+            // 模态窗 DOM 加载后重新绑定事件（setupEvents 调用时这些元素还不存在）
+            var closeId = function(id) { self.hideModal(id); };
+            ['close-password-modal', 'cancel-password-btn'].forEach(function(id) {
+                var el = document.getElementById(id);
+                if (el && !el._modalBound) {
+                    el._modalBound = true;
+                    el.addEventListener('click', function() { closeId('change-password-modal'); });
+                }
+            });
+            var confirmPwd = document.getElementById('confirm-password-btn');
+            if (confirmPwd && !confirmPwd._modalBound) {
+                confirmPwd._modalBound = true;
+                confirmPwd.addEventListener('click', function() { self.changePassword(); });
+            }
+        });
     },
 
     // ============ 委托给 ModuleLoader ============
@@ -294,6 +310,13 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
                 if (loginLangSelect) loginLangSelect.value = e.target.value;
                 this._refreshCurrentPageLocalizedContent();
             });
+        } else {
+            // lite/standard 版本无语言选择器，强制使用中文
+            if (i18n.currentLang !== 'zh-CN') {
+                i18n.currentLang = 'zh-CN';
+                localStorage.setItem('language', 'zh-CN');
+                i18n.updatePageText();
+            }
         }
     },
 

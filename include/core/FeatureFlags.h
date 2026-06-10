@@ -375,6 +375,28 @@
 #endif
 
 /**
+ * @brief WS2812/NeoPixel RGB LED 灯带支持
+ * 默认：启用（使用 Adafruit_NeoPixel 库，跨芯片兼容）
+ * 占用：约 12KB Flash
+ * RAM：约 3B × 灯珠数 + 2KB（库开销），64 颗约 212B
+ * 需要：Adafruit NeoPixel Library
+ * 说明：支持通过 ACTION_CALL_PERIPHERAL 控制（color/off/rainbow/brightness）
+ * 兼容：ESP32/S3/C3/C6（统一使用新版 RMT 驱动）
+ */
+#ifndef FASTBEE_ENABLE_NEOPIXEL
+    #define FASTBEE_ENABLE_NEOPIXEL 1
+#endif
+
+/**
+ * @brief WS2812/NeoPixel 最大灯珠数
+ * 默认：64（可在 platformio.ini 中覆盖）
+ * 说明：内存受限芯片可设为 32 以节省内存
+ */
+#ifndef FASTBEE_NEOPIXEL_MAX_LEDS
+    #define FASTBEE_NEOPIXEL_MAX_LEDS 64
+#endif
+
+/**
  * @brief I2C 高级传感器支持（BMP280 气压/MPU6050 陀螺仪等）
  * 默认：禁用（仅 ESP32-S3 full 构建启用）
  * 占用：约 15KB Flash（BMP280 ~5KB + MPU6050 ~10KB）

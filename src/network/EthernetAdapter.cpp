@@ -27,7 +27,7 @@
 #endif
 
 // 兼容 Arduino-ESP32 Core 2.x 和 3.x 的 SPI Host 定义
-#if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32C6)
+#if defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32C6)
   #ifndef SPI2_HOST
     #define SPI2_HOST FSPI
   #endif

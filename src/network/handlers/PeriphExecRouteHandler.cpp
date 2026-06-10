@@ -43,6 +43,16 @@ String escapePeriphExecJsonString(const String& value) {
     }
     return out;
 }
+
+bool shouldDegradeControlsResponse() {
+    return ESP.getFreeHeap() < 16384 || ESP.getMaxAllocHeap() < 8192;
+}
+
+void sendDegradedControlsResponse(AsyncWebServerRequest* request) {
+    request->send(200, "application/json",
+        F("{\"success\":true,\"degraded\":true,\"message\":\"Low memory - controls temporarily reduced\","
+          "\"data\":{\"gpio\":[],\"modbus\":[],\"system\":[],\"script\":[],\"sensor\":[],\"other\":[]}}"));
+}
 }
 
 PeriphExecRouteHandler::PeriphExecRouteHandler(WebHandlerContext* ctx)
@@ -121,7 +131,7 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         return;
     }
 
-    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Rule list", MemoryGuardLevel::SEVERE, 8)) {
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Rule list", MemoryGuardLevel::CRITICAL, 5)) {
         return;
     }
 
@@ -163,10 +173,18 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         if (pageSize > 50) pageSize = 50;
     }
 
-    // 检查堆内存是否充足（预留 20KB 给系统其他部分）
-    if (HandlerUtils::checkLowMemory(request)) return;
+    // 检查堆内存是否充足（chunked流式发送内存占用很小，只需保证最低运行空间）
+    if (HandlerUtils::checkLowMemory(request, 3072)) return;
+
+    // degraded 模式：内存不足时限制每页条数，与 PeripheralRouteHandler 一致
+    const bool degraded = (ESP.getFreeHeap() < 16384) || (ESP.getMaxAllocHeap() < 8192);
+    int effectivePageSize = pageSize;
+    if (degraded && effectivePageSize > 5) {
+        effectivePageSize = 5;
+    }
 
     // 持锁短临界区：构建指针 vector + 排序 + 序列化当前页到 items
+    // 超时 2000ms：避免规则执行占用锁时无限等待导致分页请求卡死
     int total = 0;
     int startIdx = 0;
     int endIdx = 0;
@@ -174,9 +192,9 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     std::vector<String> sensorSourceIds;
     String sensorSources;
     {
-        MutexGuard lock(mgr.getRulesMutex());
+        MutexGuard lock(mgr.getRulesMutex(), pdMS_TO_TICKS(2000));
         if (!lock.isLocked()) {
-            HandlerUtils::sendJsonError(request, 503, "Service busy, try again");
+            HandlerUtils::sendJsonError(request, 503, "Service busy (rules locked), retry in 2s", 2);
             return;
         }
         auto& ruleMap = mgr.getRules();
@@ -244,8 +262,8 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
         });
 
         total = static_cast<int>(ptrs.size());
-        startIdx = (page - 1) * pageSize;
-        endIdx = (startIdx < total) ? min(startIdx + pageSize, total) : startIdx;
+        startIdx = (page - 1) * effectivePageSize;
+        endIdx = (startIdx < total) ? min(startIdx + effectivePageSize, total) : startIdx;
 
         items.reserve(endIdx - startIdx);
         for (int i = startIdx; i < endIdx; i++) {
@@ -314,7 +332,10 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     header += F(",\"page\":");
     header += String(page);
     header += F(",\"pageSize\":");
-    header += String(pageSize);
+    header += String(effectivePageSize);
+    if (degraded) {
+        header += F(",\"degraded\":true");
+    }
     header += F(",\"profile\":{\"name\":\"");
     header += FastBee::ResourceProfile::NAME;
     header += F("\",\"max\":");
@@ -585,13 +606,19 @@ void PeriphExecRouteHandler::handleGetDynamicEvents(AsyncWebServerRequest* reque
         return;
     }
 
-    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Dynamic event list", MemoryGuardLevel::SEVERE, 8)) {
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Dynamic event list", MemoryGuardLevel::CRITICAL, 5)) {
         return;
     }
-    if (HandlerUtils::checkLowMemory(request, 12288)) return;
+    if (HandlerUtils::checkLowMemory(request, 6144)) return;
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     String eventsJson = mgr.getDynamicEventsJson();
+    if (eventsJson.isEmpty()) {
+        AsyncWebServerResponse* response = request->beginResponse(200, "application/json",
+            F("{\"success\":true,\"degraded\":true,\"message\":\"Low memory - dynamic events temporarily reduced\",\"data\":[]}"));
+        HandlerUtils::sendWithClose(request, response);
+        return;
+    }
     HandlerUtils::sendJsonSuccess(request, eventsJson);
 }
 
@@ -721,20 +748,18 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
         return;
     }
 
-    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Control list", MemoryGuardLevel::SEVERE, 8)) {
+    if (shouldDegradeControlsResponse()) {
+        sendDegradedControlsResponse(request);
         return;
     }
 
     PeriphExecManager& mgr = PeriphExecManager::getInstance();
     PeripheralManager& pm = PeripheralManager::getInstance();
 
-    // 检查堆内存
-    if (HandlerUtils::checkLowMemory(request)) return;
-
     // 持锁上下文：避免全量拷贝 vector，直接迭代 RuleMap 引用
-    MutexGuard lock(mgr.getRulesMutex());
+    MutexGuard lock(mgr.getRulesMutex(), pdMS_TO_TICKS(50));
     if (!lock.isLocked()) {
-        HandlerUtils::sendJsonError(request, 503, "Service busy, try again");
+        sendDegradedControlsResponse(request);
         return;
     }
     auto& ruleMap = mgr.getRules();

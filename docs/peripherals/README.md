@@ -1,6 +1,8 @@
 # FastBee-Arduino 外设配置完整指南
 
 > 本指南整合了所有外设配置相关内容,包括外设类型、引脚分配、参数配置、Web配置步骤和联动示例。
+>
+> 选模块前先看：[支持的模块和传感器清单](supported-sensors-and-modules.md)。
 
 ## 目录
 

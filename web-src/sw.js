@@ -24,7 +24,7 @@ function sequentialCache(cache, urls) {
         if (i >= urls.length) return Promise.resolve();
         var url = urls[i++];
         return fetch(url).then(function(r) {
-            if (r.ok) return cache.put(url, r);
+            if (r.ok) return cache.put(url, withCacheTimestamp(r));
         }).catch(function() {}).then(function() {
             return new Promise(function(r) { setTimeout(r, 100); });
         }).then(next);
@@ -47,6 +47,22 @@ function offline() {
     });
 }
 
+function withCacheTimestamp(response) {
+    if (!response) return response;
+    if (response.headers.get('date') || response.headers.get('sw-cached-at')) return response;
+
+    try {
+        var headers = new Headers(response.headers);
+        headers.set('sw-cached-at', new Date().toUTCString());
+        return new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: headers
+        });
+    } catch (err) {
+        return response;
+    }
+}
 // 缓存过期检测 - 基于缓存响应的Date头或自定义时间戳
 function isStaleCache(response, maxAgeMs) {
     if (!response) return true;
@@ -62,7 +78,7 @@ function staleWhileRevalidate(event, trim) {
             if (resp.ok) {
                 var clone = resp.clone();
                 caches.open(CACHE_NAME).then(function(c) {
-                    c.put(event.request, clone);
+                    c.put(event.request, withCacheTimestamp(clone));
                     if (trim) trimCache(c);
                 });
             }
@@ -83,7 +99,7 @@ function networkFirst(event, trim) {
         if (resp.ok) {
             var clone = resp.clone();
             caches.open(CACHE_NAME).then(function(c) {
-                c.put(event.request, clone);
+                c.put(event.request, withCacheTimestamp(clone));
                 if (trim) trimCache(c);
             });
         }

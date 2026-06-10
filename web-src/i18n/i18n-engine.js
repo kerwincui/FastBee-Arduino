@@ -8,7 +8,7 @@ var __fastbeeCriticalZh = typeof __fastbeeCriticalZh !== 'undefined' ? __fastbee
     'remember-label': '记住密码',
     'login-button': '登录系统',
     'login-logging-in': '登录中...',
-    'login-logging-in-html': '<i class="fas fa-spinner fa-spin"></i> 登录中...',
+    'login-logging-in-html': '… 登录中...',
     'login-success-msg': '登录成功',
     'login-welcome-title': '欢迎',
     'login-fail-title': '登录失败',
@@ -26,7 +26,10 @@ var i18n = typeof i18n !== 'undefined' ? i18n : {
     },
 
     t(key) {
-        const translated = this.translations[this.currentLang] && this.translations[this.currentLang][key];
+        var translated = this.translations[this.currentLang] && this.translations[this.currentLang][key];
+        if (!translated && this.currentLang !== 'zh-CN') {
+            translated = this.translations['zh-CN'] && this.translations['zh-CN'][key];
+        }
         if (!translated && typeof console !== 'undefined' && console.warn) {
             if (window.DEBUG || location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.hostname === '192.168.4.1') {
                 console.warn('[i18n] Missing key:', key, 'in', this.currentLang || 'unknown');

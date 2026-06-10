@@ -58,7 +58,9 @@ enum class SensorCategory : uint8_t {
     SENSOR_DS18B20 = 5,   // DS18B20 数字温度传感器 (OneWire)
     SENSOR_ULTRASONIC = 6,// HC-SR04 超声波距离传感器 (Trig+Echo 双引脚)
     SENSOR_CURRENT = 7,   // 电流型传感器 (ACS712 等，ADC + 线性校准)
-    SENSOR_VOLTAGE = 8    // 电压型传感器 (分压器 ADC + 比例校准)
+    SENSOR_VOLTAGE = 8,   // 电压型传感器 (分压器 ADC + 比例校准)
+    SENSOR_RADAR = 9,     // 雷达存在/运动检测 (RCWL-0516/5.8GHz OUT)
+    SENSOR_RF_LEVEL = 10  // 433MHz RF RX level monitor
 };
 
 // 触发类型

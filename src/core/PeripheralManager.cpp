@@ -11,8 +11,10 @@
 #include "core/ChipConfig.h"
 #include "utils/FileUtils.h"
 #include "systems/LoggerSystem.h"
-#if defined(ARDUINO_ARCH_ESP32)
-#include "driver/rmt.h"
+#include <driver/gpio.h>
+// WS2812 NeoPixel 支持：使用 Adafruit_NeoPixel 库（跨芯片兼容）
+#if FASTBEE_ENABLE_NEOPIXEL
+#include <Adafruit_NeoPixel.h>
 #endif
 #if FASTBEE_ENABLE_LCD
 #include "peripherals/LCDManager.h"
@@ -31,9 +33,23 @@ constexpr uint16_t STEPPER_DEFAULT_RPM = 8;
 constexpr uint16_t STEPPER_MIN_RPM = 1;
 constexpr uint16_t STEPPER_MAX_RPM = 30;
 constexpr uint16_t NEOPIXEL_DEFAULT_COUNT = 1;
-constexpr uint16_t NEOPIXEL_MAX_COUNT = 64;
+constexpr uint16_t NEOPIXEL_MAX_COUNT = FASTBEE_NEOPIXEL_MAX_LEDS;
 constexpr uint8_t NEOPIXEL_DEFAULT_BRIGHTNESS = 64;
 constexpr uint8_t UART_PORT_UNASSIGNED = 255;
+constexpr uint8_t RF_MODE_TX = 0;
+constexpr uint8_t RF_MODE_RX = 1;
+constexpr uint16_t RF_DEFAULT_PULSE_WIDTH_US = 350;
+constexpr uint16_t RF_MIN_PULSE_WIDTH_US = 100;
+constexpr uint16_t RF_MAX_PULSE_WIDTH_US = 2000;
+constexpr uint8_t RF_DEFAULT_REPEAT = 8;
+constexpr uint8_t RF_MIN_REPEAT = 1;
+constexpr uint8_t RF_MAX_REPEAT = 20;
+constexpr uint8_t RF_DEFAULT_BIT_LENGTH = 24;
+constexpr uint8_t RF_MIN_BIT_LENGTH = 1;
+constexpr uint8_t RF_MAX_BIT_LENGTH = 32;
+constexpr uint8_t RADAR_MODE_DIGITAL = 0;
+constexpr uint16_t RADAR_DEFAULT_DEBOUNCE_MS = 50;
+constexpr uint16_t RADAR_DEFAULT_HOLD_MS = 2000;
 
 struct NeoPixelRgb {
     uint8_t r;
@@ -45,6 +61,75 @@ uint16_t clampStepperSpeed(uint16_t rpm) {
     if (rpm < STEPPER_MIN_RPM) return STEPPER_MIN_RPM;
     if (rpm > STEPPER_MAX_RPM) return STEPPER_MAX_RPM;
     return rpm;
+}
+
+uint16_t clampRfPulseWidth(uint16_t pulseWidth) {
+    if (pulseWidth < RF_MIN_PULSE_WIDTH_US) return RF_DEFAULT_PULSE_WIDTH_US;
+    if (pulseWidth > RF_MAX_PULSE_WIDTH_US) return RF_MAX_PULSE_WIDTH_US;
+    return pulseWidth;
+}
+
+uint8_t clampRfRepeat(uint8_t repeat) {
+    if (repeat < RF_MIN_REPEAT) return RF_DEFAULT_REPEAT;
+    if (repeat > RF_MAX_REPEAT) return RF_MAX_REPEAT;
+    return repeat;
+}
+
+uint8_t clampRfBitLength(uint8_t bitLength) {
+    if (bitLength < RF_MIN_BIT_LENGTH) return RF_DEFAULT_BIT_LENGTH;
+    if (bitLength > RF_MAX_BIT_LENGTH) return RF_MAX_BIT_LENGTH;
+    return bitLength;
+}
+
+bool isPrintablePayload(const uint8_t* data, size_t len) {
+    if (!data || len == 0 || len > 64) return false;
+    for (size_t i = 0; i < len; i++) {
+        if (data[i] < 32 || data[i] > 126) return false;
+    }
+    return true;
+}
+
+bool parseRfCodeText(String text, uint32_t& code, uint8_t& inferredBits) {
+    text.trim();
+    text.replace(" ", "");
+    text.replace("_", "");
+    if (text.isEmpty()) return false;
+
+    inferredBits = 0;
+    if (text.startsWith("0b") || text.startsWith("0B")) {
+        text.remove(0, 2);
+        if (text.length() == 0 || text.length() > RF_MAX_BIT_LENGTH) return false;
+        uint32_t value = 0;
+        for (size_t i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c != '0' && c != '1') return false;
+            value = (value << 1) | (c == '1' ? 1UL : 0UL);
+        }
+        code = value;
+        inferredBits = (uint8_t)text.length();
+        return true;
+    }
+
+    int base = 10;
+    if (text.startsWith("0x") || text.startsWith("0X")) {
+        base = 16;
+        text.remove(0, 2);
+    } else {
+        for (size_t i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+                base = 16;
+                break;
+            }
+        }
+    }
+
+    if (text.isEmpty()) return false;
+    char* endPtr = nullptr;
+    unsigned long parsed = strtoul(text.c_str(), &endPtr, base);
+    if (!endPtr || *endPtr != '\0') return false;
+    code = (uint32_t)parsed;
+    return true;
 }
 
 uint32_t stepperIntervalMs(uint16_t rpm, uint16_t stepsPerRev) {
@@ -297,74 +382,64 @@ NeoPixelRgb applyNeoPixelBrightness(NeoPixelRgb color, uint8_t brightness) {
     return color;
 }
 
-bool writeNeoPixelSolid(uint8_t pin, uint16_t count, NeoPixelRgb color) {
-#if defined(ARDUINO_ARCH_ESP32)
-    static constexpr rmt_channel_t CHANNEL = RMT_CHANNEL_0;
-    static constexpr uint8_t CLK_DIV = 2;          // 80MHz / 2 = 40MHz, 25ns/tick
-    static constexpr uint16_t T0H = 14;            // 350ns
-    static constexpr uint16_t T0L = 34;            // 850ns
-    static constexpr uint16_t T1H = 28;            // 700ns
-    static constexpr uint16_t T1L = 24;            // 600ns
+// NeoPixel 全局实例管理（懒加载，节省内存）
+#if FASTBEE_ENABLE_NEOPIXEL
+static Adafruit_NeoPixel* g_neopixelInstance = nullptr;
+static uint8_t g_neopixelPin = 255;
+static uint16_t g_neopixelCount = 0;
 
+Adafruit_NeoPixel* getNeoPixelInstance(uint8_t pin, uint16_t count) {
+    // 如果已初始化且参数相同，直接返回
+    if (g_neopixelInstance && g_neopixelPin == pin && g_neopixelCount == count) {
+        return g_neopixelInstance;
+    }
+    
+    // 如果参数不同，释放旧实例
+    if (g_neopixelInstance) {
+        delete g_neopixelInstance;
+        g_neopixelInstance = nullptr;
+    }
+    
+    // 创建新实例
+    g_neopixelInstance = new (std::nothrow) Adafruit_NeoPixel(count, pin, NEO_GRB + NEO_KHZ800);
+    if (g_neopixelInstance) {
+        g_neopixelInstance->begin();
+        g_neopixelInstance->show(); // 初始化所有灯珠为关闭状态
+        g_neopixelPin = pin;
+        g_neopixelCount = count;
+    }
+    
+    return g_neopixelInstance;
+}
+#endif
+
+bool writeNeoPixelSolid(uint8_t pin, uint16_t count, NeoPixelRgb color) {
+#if FASTBEE_ENABLE_NEOPIXEL
     count = clampNeoPixelCount(count);
-    const size_t itemCount = static_cast<size_t>(count) * 24U;
-    const size_t bytesNeeded = itemCount * sizeof(rmt_item32_t);
-    if (ESP.getFreeHeap() < bytesNeeded + 4096U) {
+    
+    // 检查内存
+    if (ESP.getFreeHeap() < (count * 3 + 2048)) {
         LOG_WARNINGF("Peripheral Manager: NeoPixel heap low (need=%u free=%u)",
-                     static_cast<unsigned int>(bytesNeeded),
+                     static_cast<unsigned int>(count * 3),
                      static_cast<unsigned int>(ESP.getFreeHeap()));
         return false;
     }
-
-    rmt_item32_t* items = new (std::nothrow) rmt_item32_t[itemCount];
-    if (!items) return false;
-
-    size_t idx = 0;
-    const uint8_t grb[3] = { color.g, color.r, color.b };
-    for (uint16_t led = 0; led < count; led++) {
-        for (uint8_t byteIdx = 0; byteIdx < 3; byteIdx++) {
-            uint8_t byteVal = grb[byteIdx];
-            for (int8_t bit = 7; bit >= 0; bit--) {
-                bool one = (byteVal & (1U << bit)) != 0;
-                items[idx].level0 = 1;
-                items[idx].duration0 = one ? T1H : T0H;
-                items[idx].level1 = 0;
-                items[idx].duration1 = one ? T1L : T0L;
-                idx++;
-            }
-        }
+    
+    Adafruit_NeoPixel* strip = getNeoPixelInstance(pin, count);
+    if (!strip) {
+        LOG_WARNING("Peripheral Manager: Failed to create NeoPixel instance");
+        return false;
     }
-
-    rmt_driver_uninstall(CHANNEL);
-
-    rmt_config_t config = {};
-    config.rmt_mode = RMT_MODE_TX;
-    config.channel = CHANNEL;
-    config.gpio_num = static_cast<gpio_num_t>(pin);
-    config.mem_block_num = 1;
-    config.clk_div = CLK_DIV;
-    config.tx_config.loop_en = false;
-    config.tx_config.carrier_en = false;
-    config.tx_config.idle_output_en = true;
-    config.tx_config.idle_level = RMT_IDLE_LEVEL_LOW;
-
-    esp_err_t err = rmt_config(&config);
-    bool installed = false;
-    if (err == ESP_OK) {
-        err = rmt_driver_install(CHANNEL, 0, 0);
-        installed = (err == ESP_OK);
+    
+    // 设置所有灯珠颜色
+    uint32_t neoColor = strip->Color(color.r, color.g, color.b);
+    for (uint16_t i = 0; i < count; i++) {
+        strip->setPixelColor(i, neoColor);
     }
-    if (err == ESP_OK) {
-        err = rmt_write_items(CHANNEL, items, itemCount, true);
-    }
-    if (err == ESP_OK) {
-        err = rmt_wait_tx_done(CHANNEL, pdMS_TO_TICKS(100));
-    }
-    if (installed) rmt_driver_uninstall(CHANNEL);
-    delete[] items;
-
-    delayMicroseconds(80);  // WS2812 reset latch
-    return err == ESP_OK;
+    strip->setBrightness(clampNeoPixelBrightness(NEOPIXEL_DEFAULT_BRIGHTNESS));
+    strip->show();
+    
+    return true;
 #else
     (void)pin;
     (void)count;
@@ -619,6 +694,9 @@ bool PeripheralManager::enablePeripheral(const String& id) {
             if (config->pins[i] != 255 && checkPinConflict(config->pins[i], id)) {
                 LOG_ERRORF("Peripheral Manager: Cannot enable '%s', pin %d is in use by another enabled peripheral",
                            id.c_str(), config->pins[i]);
+                lastEnableError = "Pin ";
+                lastEnableError += String(config->pins[i]);
+                lastEnableError += " conflict with another peripheral";
                 return false;
             }
         }
@@ -630,7 +708,13 @@ bool PeripheralManager::enablePeripheral(const String& id) {
         runtimeStates[id].status = PeripheralStatus::PERIPHERAL_ENABLED;
     }
     
-    return initHardware(id);
+    if (!initHardware(id)) {
+        lastEnableError = "Hardware init failed for '" + id + "'";
+        config->enabled = false;
+        return false;
+    }
+    lastEnableError = "";
+    return true;
 }
 
 bool PeripheralManager::disablePeripheral(const String& id) {
@@ -765,6 +849,18 @@ GPIOState PeripheralManager::readPin(const String& peripheralId) {
             return runtimeStates[peripheralId].state.gpio.currentState;
         }
         return GPIOState::STATE_UNDEFINED;
+    }
+
+    if (config->type == PeripheralType::RADAR_SENSOR) {
+        bool detected = false;
+        if (!readRadarState(peripheralId, detected)) return GPIOState::STATE_UNDEFINED;
+        return detected ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
+    }
+
+    if (config->type == PeripheralType::RF_MODULE && config->params.rf.mode == RF_MODE_RX) {
+        bool level = false;
+        if (!readRfLevel(peripheralId, level)) return GPIOState::STATE_UNDEFINED;
+        return level ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
     }
     
     if (!config->isGPIOPeripheral()) {
@@ -1004,6 +1100,19 @@ bool PeripheralManager::saveConfiguration() {
             params["count"] = clampNeoPixelCount(config.params.neopixel.count);
             params["brightness"] = config.params.neopixel.brightness;
         }
+        else if (config.type == PeripheralType::RF_MODULE) {
+            params["mode"] = config.params.rf.mode;
+            params["pulseWidth"] = clampRfPulseWidth(config.params.rf.pulseWidth);
+            params["repeat"] = clampRfRepeat(config.params.rf.repeat);
+            params["bitLength"] = clampRfBitLength(config.params.rf.bitLength);
+            params["activeHigh"] = config.params.rf.activeHigh;
+        }
+        else if (config.type == PeripheralType::RADAR_SENSOR) {
+            params["mode"] = config.params.radar.mode;
+            params["activeHigh"] = config.params.radar.activeHigh;
+            params["debounceMs"] = config.params.radar.debounceMs;
+            params["holdMs"] = config.params.radar.holdMs;
+        }
     }
     
     String jsonStr;
@@ -1090,6 +1199,17 @@ bool PeripheralManager::loadConfiguration() {
         } else if (config.type == PeripheralType::NEO_PIXEL) {
             config.params.neopixel.count = NEOPIXEL_DEFAULT_COUNT;
             config.params.neopixel.brightness = NEOPIXEL_DEFAULT_BRIGHTNESS;
+        } else if (config.type == PeripheralType::RF_MODULE) {
+            config.params.rf.mode = RF_MODE_TX;
+            config.params.rf.pulseWidth = RF_DEFAULT_PULSE_WIDTH_US;
+            config.params.rf.repeat = RF_DEFAULT_REPEAT;
+            config.params.rf.bitLength = RF_DEFAULT_BIT_LENGTH;
+            config.params.rf.activeHigh = true;
+        } else if (config.type == PeripheralType::RADAR_SENSOR) {
+            config.params.radar.mode = RADAR_MODE_DIGITAL;
+            config.params.radar.activeHigh = true;
+            config.params.radar.debounceMs = RADAR_DEFAULT_DEBOUNCE_MS;
+            config.params.radar.holdMs = RADAR_DEFAULT_HOLD_MS;
         }
         
         // 引脚配置
@@ -1164,6 +1284,20 @@ bool PeripheralManager::loadConfiguration() {
                 int brightness = params["brightness"] | NEOPIXEL_DEFAULT_BRIGHTNESS;
                 config.params.neopixel.count = clampNeoPixelCount(count < 0 ? 0 : (uint16_t)count);
                 config.params.neopixel.brightness = clampNeoPixelBrightness(brightness < 0 ? 0 : (uint16_t)brightness);
+            }
+            else if (config.type == PeripheralType::RF_MODULE) {
+                int mode = params["mode"] | RF_MODE_TX;
+                config.params.rf.mode = (mode == RF_MODE_RX) ? RF_MODE_RX : RF_MODE_TX;
+                config.params.rf.pulseWidth = clampRfPulseWidth(params["pulseWidth"] | RF_DEFAULT_PULSE_WIDTH_US);
+                config.params.rf.repeat = clampRfRepeat(params["repeat"] | RF_DEFAULT_REPEAT);
+                config.params.rf.bitLength = clampRfBitLength(params["bitLength"] | RF_DEFAULT_BIT_LENGTH);
+                config.params.rf.activeHigh = params["activeHigh"] | true;
+            }
+            else if (config.type == PeripheralType::RADAR_SENSOR) {
+                config.params.radar.mode = RADAR_MODE_DIGITAL;
+                config.params.radar.activeHigh = params["activeHigh"] | true;
+                config.params.radar.debounceMs = params["debounceMs"] | RADAR_DEFAULT_DEBOUNCE_MS;
+                config.params.radar.holdMs = params["holdMs"] | RADAR_DEFAULT_HOLD_MS;
             }
         }
         
@@ -1396,6 +1530,52 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
                 return false;
             }
             break;
+
+        case PeripheralType::RF_MODULE:
+            if (config.pinCount < 1) {
+                errorMsg = "RF module requires 1 data pin";
+                return false;
+            }
+            if (config.params.rf.mode > RF_MODE_RX) {
+                errorMsg = "RF module mode must be 0(TX) or 1(RX)";
+                return false;
+            }
+            if (config.params.rf.mode == RF_MODE_TX &&
+                (isReservedPin(config.pins[0]) || isInputOnlyPin(config.pins[0]))) {
+                errorMsg = String("GPIO") + String(config.pins[0]) + " cannot output RF signal";
+                return false;
+            }
+            if (config.params.rf.pulseWidth < RF_MIN_PULSE_WIDTH_US ||
+                config.params.rf.pulseWidth > RF_MAX_PULSE_WIDTH_US) {
+                errorMsg = "RF pulseWidth must be 100-2000 us";
+                return false;
+            }
+            if (config.params.rf.repeat < RF_MIN_REPEAT ||
+                config.params.rf.repeat > RF_MAX_REPEAT) {
+                errorMsg = "RF repeat must be 1-20";
+                return false;
+            }
+            if (config.params.rf.bitLength < RF_MIN_BIT_LENGTH ||
+                config.params.rf.bitLength > RF_MAX_BIT_LENGTH) {
+                errorMsg = "RF bitLength must be 1-32";
+                return false;
+            }
+            break;
+
+        case PeripheralType::RADAR_SENSOR:
+            if (config.pinCount < 1) {
+                errorMsg = "Radar sensor requires 1 OUT pin";
+                return false;
+            }
+            if (config.params.radar.mode != RADAR_MODE_DIGITAL) {
+                errorMsg = "Radar sensor mode currently supports digital OUT only";
+                return false;
+            }
+            if (config.params.radar.debounceMs > 5000 || config.params.radar.holdMs > 60000) {
+                errorMsg = "Radar debounceMs/holdMs is out of range";
+                return false;
+            }
+            break;
             
         default:
             // 其他类型暂不需要特殊验证
@@ -1465,6 +1645,47 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
                   config.id.c_str(), pin,
                   clampNeoPixelCount(config.params.neopixel.count),
                   config.params.neopixel.brightness);
+        return true;
+    }
+
+    if (config.type == PeripheralType::RF_MODULE) {
+        if (config.pinCount < 1) {
+            LOG_WARNINGF("Peripheral Manager: RF module '%s' requires 1 data pin", config.id.c_str());
+            return false;
+        }
+        uint8_t pin = config.pins[0];
+        if (config.params.rf.mode == RF_MODE_RX) {
+            pinMode(pin, INPUT);
+            LOG_INFOF("Peripheral Manager: RF RX '%s' initialized pin=%d activeHigh=%d",
+                      config.id.c_str(), pin, config.params.rf.activeHigh ? 1 : 0);
+        } else {
+            if (isReservedPin(pin) || isInputOnlyPin(pin)) {
+                LOG_ERRORF("Peripheral Manager: RF TX '%s' rejects GPIO%d on %s",
+                           config.id.c_str(), pin, CHIP_NAME);
+                return false;
+            }
+            pinMode(pin, OUTPUT);
+            digitalWrite(pin, config.params.rf.activeHigh ? LOW : HIGH);
+            LOG_INFOF("Peripheral Manager: RF TX '%s' initialized pin=%d bits=%d pulse=%dus repeat=%d activeHigh=%d",
+                      config.id.c_str(), pin,
+                      clampRfBitLength(config.params.rf.bitLength),
+                      clampRfPulseWidth(config.params.rf.pulseWidth),
+                      clampRfRepeat(config.params.rf.repeat),
+                      config.params.rf.activeHigh ? 1 : 0);
+        }
+        return true;
+    }
+
+    if (config.type == PeripheralType::RADAR_SENSOR) {
+        if (config.pinCount < 1) {
+            LOG_WARNINGF("Peripheral Manager: Radar '%s' requires 1 OUT pin", config.id.c_str());
+            return false;
+        }
+        pinMode(config.pins[0], INPUT);
+        LOG_INFOF("Peripheral Manager: Radar '%s' initialized OUT=%d activeHigh=%d hold=%ums",
+                  config.id.c_str(), config.pins[0],
+                  config.params.radar.activeHigh ? 1 : 0,
+                  (unsigned)config.params.radar.holdMs);
         return true;
     }
         
@@ -1575,6 +1796,14 @@ bool PeripheralManager::teardownHardware(const PeripheralConfig& config) {
             digitalWrite(config.pins[0], LOW);
         }
         neopixelRainbowIndex.erase(config.id);
+    }
+
+    if (config.type == PeripheralType::RF_MODULE &&
+        config.params.rf.mode == RF_MODE_TX &&
+        config.pinCount >= 1 &&
+        !isReservedPin(config.pins[0]) &&
+        !isInputOnlyPin(config.pins[0])) {
+        digitalWrite(config.pins[0], config.params.rf.activeHigh ? LOW : HIGH);
     }
 
     // TODO: 实现其他类型外设的硬件释放
@@ -2058,6 +2287,7 @@ static String getPinReservedReason(uint8_t pin) {
 bool PeripheralManager::isValidPin(uint8_t pin) const {
     // 使用 ChipConfig.h 中的最大 GPIO 编号
     if (pin > CHIP_MAX_GPIO) return false;
+    if (!GPIO_IS_VALID_GPIO(static_cast<gpio_num_t>(pin))) return false;
     
     // 内部Flash使用的引脚（绝对禁止）- 检查是否为保留引脚
     for (uint8_t i = 0; i < CHIP_RESERVED_PIN_COUNT; i++) {
@@ -2067,16 +2297,13 @@ bool PeripheralManager::isValidPin(uint8_t pin) const {
             if (pin >= 6 && pin <= 11) return false;
             #elif defined(CONFIG_IDF_TARGET_ESP32S3)
             // ESP32-S3: GPIO 26-32 是 Octal Flash/PSRAM
-            if (pin >= 26 && pin <= 32) return false;
+            if ((pin >= 19 && pin <= 20) || (pin >= 22 && pin <= 32)) return false;
             #elif defined(CONFIG_IDF_TARGET_ESP32C3)
             // ESP32-C3: GPIO 12-17 是 Flash SPI
             if (pin >= 12 && pin <= 17) return false;
             #elif defined(CONFIG_IDF_TARGET_ESP32C6)
             // ESP32-C6: GPIO 12-14 是 Flash SPI
             if (pin >= 12 && pin <= 14) return false;
-            #elif defined(CONFIG_IDF_TARGET_ESP32S2)
-            // ESP32-S2: GPIO 26-32 是 Flash/PSRAM
-            if (pin >= 26 && pin <= 32) return false;
             #else
             if (pin >= 6 && pin <= 11) return false;
             #endif
@@ -2178,6 +2405,18 @@ bool PeripheralManager::validatePinForType(uint8_t pin, PeripheralType type, Str
     }
     
     // 检查输入专用引脚
+    if (isReservedPin(pin) &&
+        (type == PeripheralType::GPIO_DIGITAL_OUTPUT ||
+         type == PeripheralType::GPIO_ANALOG_OUTPUT ||
+         type == PeripheralType::GPIO_PWM_OUTPUT ||
+         type == PeripheralType::PWM_SERVO ||
+         type == PeripheralType::DAC ||
+         type == PeripheralType::NEO_PIXEL ||
+         type == PeripheralType::SEVEN_SEGMENT_TM1637)) {
+        errorMsg = String("GPIO") + String(pin) + " is reserved on this chip and cannot be used as an output";
+        return false;
+    }
+
     if (isInputOnlyPin(pin)) {
         // GPIO34-39 只能用于输入类型
         int typeVal = static_cast<int>(type);
@@ -2188,7 +2427,9 @@ bool PeripheralManager::validatePinForType(uint8_t pin, PeripheralType type, Str
                            type == PeripheralType::ADC ||
                            type == PeripheralType::GPIO_INTERRUPT_RISING ||
                            type == PeripheralType::GPIO_INTERRUPT_FALLING ||
-                           type == PeripheralType::GPIO_INTERRUPT_CHANGE);
+                           type == PeripheralType::GPIO_INTERRUPT_CHANGE ||
+                           type == PeripheralType::RADAR_SENSOR ||
+                           type == PeripheralType::RF_MODULE);
         
         if (!isInputType) {
             errorMsg = String("GPIO") + String(pin) + " 只能用于输入模式，不能配置为 " + getPeripheralTypeName(type);
@@ -2296,6 +2537,105 @@ void PeripheralManager::handleInterrupt(uint8_t pin) {
     }
 }
 
+bool PeripheralManager::sendRfCode(const String& id, const String& codeText,
+                                   uint8_t bitLength, uint16_t pulseWidth, uint8_t repeat) {
+    RecursiveMutexGuard lock(_mutex);
+    PeripheralConfig* config = getPeripheral(id);
+    if (!config || !config->enabled || config->type != PeripheralType::RF_MODULE) {
+        LOG_WARNINGF("RF send: peripheral '%s' not found, disabled, or not RF_MODULE", id.c_str());
+        return false;
+    }
+    if (config->params.rf.mode != RF_MODE_TX) {
+        LOG_WARNINGF("RF send: peripheral '%s' is not configured as TX", id.c_str());
+        return false;
+    }
+    if (config->pinCount < 1 || config->pins[0] == 255) {
+        LOG_WARNINGF("RF send: peripheral '%s' has no data pin", id.c_str());
+        return false;
+    }
+
+    uint32_t code = 0;
+    uint8_t inferredBits = 0;
+    if (!parseRfCodeText(codeText, code, inferredBits)) {
+        LOG_WARNINGF("RF send: invalid code '%s'", codeText.c_str());
+        return false;
+    }
+
+    uint8_t bits = bitLength ? bitLength : (inferredBits ? inferredBits : config->params.rf.bitLength);
+    bits = clampRfBitLength(bits);
+    uint16_t pulse = clampRfPulseWidth(pulseWidth ? pulseWidth : config->params.rf.pulseWidth);
+    uint8_t reps = clampRfRepeat(repeat ? repeat : config->params.rf.repeat);
+    uint8_t pin = config->pins[0];
+    const bool activeHigh = config->params.rf.activeHigh;
+    const uint8_t onLevel = activeHigh ? HIGH : LOW;
+    const uint8_t offLevel = activeHigh ? LOW : HIGH;
+
+    auto sendPulse = [&](uint8_t highPulses, uint8_t lowPulses) {
+        digitalWrite(pin, onLevel);
+        delayMicroseconds((uint32_t)pulse * highPulses);
+        digitalWrite(pin, offLevel);
+        delayMicroseconds((uint32_t)pulse * lowPulses);
+    };
+
+    for (uint8_t r = 0; r < reps; r++) {
+        sendPulse(1, 31); // sync
+        for (int8_t bit = (int8_t)bits - 1; bit >= 0; bit--) {
+            if ((code >> bit) & 0x1) {
+                sendPulse(3, 1);
+            } else {
+                sendPulse(1, 3);
+            }
+        }
+        digitalWrite(pin, offLevel);
+        delay(1);
+        yield();
+    }
+
+    if (runtimeStates.find(id) != runtimeStates.end()) {
+        runtimeStates[id].lastActivity = millis();
+        runtimeStates[id].state.comm.bytesSent += 4;
+    }
+    LOG_INFOF("RF send: '%s' code=0x%lX bits=%u pulse=%uus repeat=%u",
+              id.c_str(), (unsigned long)code, bits, (unsigned)pulse, reps);
+    return true;
+}
+
+bool PeripheralManager::readRfLevel(const String& id, bool& level) {
+    RecursiveMutexGuard lock(_mutex);
+    PeripheralConfig* config = getPeripheral(id);
+    if (!config || !config->enabled || config->type != PeripheralType::RF_MODULE) {
+        return false;
+    }
+    if (config->pinCount < 1 || config->pins[0] == 255) {
+        return false;
+    }
+    bool physicalHigh = digitalRead(config->pins[0]) == HIGH;
+    level = config->params.rf.activeHigh ? physicalHigh : !physicalHigh;
+    if (runtimeStates.find(id) != runtimeStates.end()) {
+        runtimeStates[id].lastActivity = millis();
+        runtimeStates[id].state.gpio.currentState = level ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
+    }
+    return true;
+}
+
+bool PeripheralManager::readRadarState(const String& id, bool& detected) {
+    RecursiveMutexGuard lock(_mutex);
+    PeripheralConfig* config = getPeripheral(id);
+    if (!config || !config->enabled || config->type != PeripheralType::RADAR_SENSOR) {
+        return false;
+    }
+    if (config->pinCount < 1 || config->pins[0] == 255) {
+        return false;
+    }
+    bool physicalHigh = digitalRead(config->pins[0]) == HIGH;
+    detected = config->params.radar.activeHigh ? physicalHigh : !physicalHigh;
+    if (runtimeStates.find(id) != runtimeStates.end()) {
+        runtimeStates[id].lastActivity = millis();
+        runtimeStates[id].state.gpio.currentState = detected ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
+    }
+    return true;
+}
+
 // ========== 通用数据读写接口 ==========
 
 bool PeripheralManager::writeData(const String& id, const uint8_t* data, size_t len) {
@@ -2376,6 +2716,22 @@ bool PeripheralManager::writeData(const String& id, const uint8_t* data, size_t 
             SPI.endTransaction();
             success = true;
             break;
+
+        case PeripheralType::RF_MODULE:
+            if (len > 0) {
+                if (isPrintablePayload(data, len)) {
+                    String code((const char*)data, len);
+                    success = sendRfCode(id, code);
+                } else {
+                    uint32_t code = 0;
+                    size_t n = len > 4 ? 4 : len;
+                    for (size_t i = 0; i < n; i++) {
+                        code |= ((uint32_t)data[i]) << (i * 8);
+                    }
+                    success = sendRfCode(id, String(code));
+                }
+            }
+            break;
             
         default:
             LOG_WARNINGF("writeData: Unsupported peripheral type %d", static_cast<int>(config->type));
@@ -2385,7 +2741,9 @@ bool PeripheralManager::writeData(const String& id, const uint8_t* data, size_t 
     // 更新运行时状态
     if (success && runtimeStates.find(id) != runtimeStates.end()) {
         runtimeStates[id].lastActivity = millis();
-        runtimeStates[id].state.comm.bytesSent += len;
+        if (config->type != PeripheralType::RF_MODULE) {
+            runtimeStates[id].state.comm.bytesSent += len;
+        }
     }
     
     return success;
@@ -2464,6 +2822,28 @@ bool PeripheralManager::readData(const String& id, uint8_t* buffer, size_t& len)
             SPI.endTransaction();
             len = maxLen;
             success = true;
+            break;
+
+        case PeripheralType::RADAR_SENSOR:
+            if (maxLen >= 1) {
+                bool detected = false;
+                success = readRadarState(id, detected);
+                if (success) {
+                    buffer[0] = detected ? 1 : 0;
+                    len = 1;
+                }
+            }
+            break;
+
+        case PeripheralType::RF_MODULE:
+            if (maxLen >= 1) {
+                bool level = false;
+                success = readRfLevel(id, level);
+                if (success) {
+                    buffer[0] = level ? 1 : 0;
+                    len = 1;
+                }
+            }
             break;
             
         default:

@@ -5,6 +5,7 @@
 #include "core/FeatureFlags.h"
 #include "core/SystemConstants.h"
 #include "utils/NetworkUtils.h"
+#include "utils/PsramJsonDocument.h"
 #include "utils/TimeUtils.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
@@ -12,6 +13,101 @@
 
 namespace {
 constexpr const char* DEVICE_CONFIG_FILE = "/config/device.json";
+
+bool isBatchMemoryCriticallyLow() {
+    if (FastBee::psramAvailableForJson(32768)) {
+        return ESP.getFreeHeap() < 2048 || ESP.getMaxAllocHeap() < 1024;
+    }
+    return ESP.getFreeHeap() < 4096 || ESP.getMaxAllocHeap() < 1536;
+}
+
+bool shouldUseCompactSystemInfo() {
+    return ESP.getFreeHeap() < 12288 || ESP.getMaxAllocHeap() < 6144;
+}
+
+void fillMemorySummary(JsonObject memory) {
+    size_t heapSize = ESP.getHeapSize();
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t heapUsed = heapSize > freeHeap ? heapSize - freeHeap : 0;
+
+    memory["heapTotal"] = heapSize;
+    memory["heapFree"] = freeHeap;
+    memory["heapUsed"] = heapUsed;
+    memory["heapMinFree"] = ESP.getMinFreeHeap();
+    memory["heapMaxAlloc"] = ESP.getMaxAllocHeap();
+    memory["heapUsagePercent"] = heapSize > 0 ? (int)((heapUsed * 100) / heapSize) : 0;
+
+    size_t psramSize = ESP.getPsramSize();
+    size_t psramFree = psramSize > 0 ? ESP.getFreePsram() : 0;
+    size_t psramUsed = psramSize > psramFree ? psramSize - psramFree : 0;
+    if (psramSize > 0) {
+        memory["psramTotal"] = psramSize;
+        memory["psramFree"] = psramFree;
+        memory["psramUsed"] = psramUsed;
+        memory["psramMinFree"] = ESP.getMinFreePsram();
+        memory["psramUsagePercent"] = (int)((psramUsed * 100) / psramSize);
+    }
+
+    size_t total = heapSize + psramSize;
+    size_t free = freeHeap + psramFree;
+    size_t used = total > free ? total - free : 0;
+    memory["total"] = total;
+    memory["free"] = free;
+    memory["used"] = used;
+    memory["usagePercent"] = total > 0 ? (int)((used * 100) / total) : 0;
+}
+
+void fillCompactSystemInfo(JsonObject data, WebHandlerContext* ctx, bool degraded) {
+    JsonObject device = data["device"].to<JsonObject>();
+    device["id"] = String((uint32_t)ESP.getEfuseMac(), HEX);
+    device["chipModel"] = ESP.getChipModel();
+    device["chipRevision"] = ESP.getChipRevision();
+    device["cpuFreqMHz"] = ESP.getCpuFreqMHz();
+    device["sdkVersion"] = ESP.getSdkVersion();
+    device["freeHeap"] = ESP.getFreeHeap();
+    device["flashSize"] = ESP.getFlashChipSize();
+    device["firmwareVersion"] = SystemInfo::VERSION;
+
+    size_t sketchSize = ESP.getSketchSize();
+    size_t freeSketchSpace = ESP.getFreeSketchSpace();
+    JsonObject flash = data["flash"].to<JsonObject>();
+    flash["total"] = ESP.getFlashChipSize();
+    flash["sketchSize"] = sketchSize;
+    flash["freeSketchSpace"] = freeSketchSpace;
+    flash["used"] = sketchSize;
+    flash["free"] = freeSketchSpace;
+    flash["usagePercent"] = (int)((sketchSize * 100) / (sketchSize + freeSketchSpace));
+
+    JsonObject memory = data["memory"].to<JsonObject>();
+    fillMemorySummary(memory);
+
+    size_t fsTotal = LittleFS.totalBytes();
+    size_t fsUsed = LittleFS.usedBytes();
+    JsonObject filesystem = data["filesystem"].to<JsonObject>();
+    filesystem["total"] = fsTotal;
+    filesystem["used"] = fsUsed;
+    filesystem["free"] = fsTotal - fsUsed;
+    filesystem["usagePercent"] = fsTotal > 0 ? (int)((fsUsed * 100) / fsTotal) : 0;
+
+    unsigned long uptime = millis();
+    JsonObject uptimeObj = data["uptime"].to<JsonObject>();
+    uptimeObj["ms"] = uptime;
+    uptimeObj["seconds"] = uptime / 1000;
+    uptimeObj["formatted"] = ctx ? ctx->formatUptime(uptime) : String(uptime / 1000) + "s";
+
+    if (ctx && ctx->networkManager) {
+        NetworkStatusInfo info = ctx->networkManager->getStatusInfo();
+        JsonObject network = data["network"].to<JsonObject>();
+        network["connected"] = (info.status == NetworkStatus::CONNECTED);
+        network["ipAddress"] = info.ipAddress;
+        network["ssid"] = info.ssid;
+        network["rssi"] = info.rssi;
+        network["macAddress"] = WiFi.macAddress();
+    }
+
+    data["brief"] = true;
+    data["degraded"] = degraded;
+}
 }
 
 BatchRouteHandler::BatchRouteHandler(WebHandlerContext* ctx)
@@ -32,10 +128,13 @@ void BatchRouteHandler::setupRoutes(AsyncWebServer* server) {
 }
 
 void BatchRouteHandler::handleBatchRequest(AsyncWebServerRequest* request, JsonVariant& json) {
-    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Batch request", MemoryGuardLevel::SEVERE, 8)) {
+    if (isBatchMemoryCriticallyLow()) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Low memory: heap=%lu maxAlloc=%lu",
+                 (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
+        HandlerUtils::sendJsonError(request, 503, msg, 5);
         return;
     }
-    if (HandlerUtils::checkLowMemory(request)) return;
 
     JsonObject body = json.as<JsonObject>();
     JsonArray requests = body["requests"].as<JsonArray>();
@@ -48,7 +147,7 @@ void BatchRouteHandler::handleBatchRequest(AsyncWebServerRequest* request, JsonV
         return;
     }
 
-    JsonDocument respDoc;
+    auto respDoc = FastBee::makeJsonDocument();
     respDoc["success"] = true;
     JsonArray results = respDoc["results"].to<JsonArray>();
 
@@ -86,61 +185,7 @@ bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const S
         out["success"] = true;
         JsonObject data = out["data"].to<JsonObject>();
 
-        data["device"]["id"] = String((uint32_t)ESP.getEfuseMac(), HEX);
-        data["device"]["chipModel"] = ESP.getChipModel();
-        data["device"]["chipRevision"] = ESP.getChipRevision();
-        data["device"]["cpuFreqMHz"] = ESP.getCpuFreqMHz();
-        data["device"]["sdkVersion"] = ESP.getSdkVersion();
-        data["device"]["freeHeap"] = ESP.getFreeHeap();
-        data["device"]["flashSize"] = ESP.getFlashChipSize();
-        data["device"]["firmwareVersion"] = SystemInfo::VERSION;
-
-        size_t sketchSize = ESP.getSketchSize();
-        size_t freeSketchSpace = ESP.getFreeSketchSpace();
-        data["flash"]["total"] = ESP.getFlashChipSize();
-        data["flash"]["sketchSize"] = sketchSize;
-        data["flash"]["freeSketchSpace"] = freeSketchSpace;
-        data["flash"]["used"] = sketchSize;
-        data["flash"]["free"] = freeSketchSpace;
-        data["flash"]["usagePercent"] = (int)((sketchSize * 100) / (sketchSize + freeSketchSpace));
-
-        size_t heapSize = ESP.getHeapSize();
-        size_t freeHeap = ESP.getFreeHeap();
-        data["memory"]["heapTotal"] = heapSize;
-        data["memory"]["heapFree"] = freeHeap;
-        data["memory"]["heapUsed"] = heapSize - freeHeap;
-        data["memory"]["heapMinFree"] = ESP.getMinFreeHeap();
-        data["memory"]["heapMaxAlloc"] = ESP.getMaxAllocHeap();
-        data["memory"]["heapUsagePercent"] = (int)(((heapSize - freeHeap) * 100) / heapSize);
-
-        size_t fsTotal = LittleFS.totalBytes();
-        size_t fsUsed = LittleFS.usedBytes();
-        data["filesystem"]["total"] = fsTotal;
-        data["filesystem"]["used"] = fsUsed;
-        data["filesystem"]["free"] = fsTotal - fsUsed;
-        data["filesystem"]["usagePercent"] = fsTotal > 0 ? (int)((fsUsed * 100) / fsTotal) : 0;
-
-        unsigned long uptime = millis();
-        data["uptime"]["ms"] = uptime;
-        data["uptime"]["seconds"] = uptime / 1000;
-        data["uptime"]["formatted"] = ctx->formatUptime(uptime);
-
-        if (ctx->networkManager) {
-            NetworkStatusInfo info = ctx->networkManager->getStatusInfo();
-            data["network"]["connected"] = (info.status == NetworkStatus::CONNECTED);
-            data["network"]["ipAddress"] = info.ipAddress;
-            data["network"]["ssid"] = info.ssid;
-            data["network"]["rssi"] = info.rssi;
-            data["network"]["macAddress"] = WiFi.macAddress();
-        }
-
-#if FASTBEE_ENABLE_USER_ADMIN
-        if (ctx->userManager) data["users"]["total"] = ctx->userManager->getUserCount();
-        if (ctx->authManager) {
-            data["users"]["activeSessions"] = ctx->authManager->getActiveSessionCount();
-            data["users"]["online"] = ctx->authManager->getOnlineUserCount();
-        }
-#endif
+        fillCompactSystemInfo(data, ctx, shouldUseCompactSystemInfo());
         return true;
     }
 
@@ -158,11 +203,36 @@ bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const S
         data["freeHeap"] = ESP.getFreeHeap();
         data["uptime"] = millis();
         if (ctx->networkManager) {
-            NetworkStatusInfo info = ctx->networkManager->getStatusInfo();
+            FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
+            netMgr->updateStatusInfo();
+            NetworkStatusInfo info = netMgr->getStatusInfo();
+            WiFiConfig cfg = netMgr->getConfig();
+            if (cfg.networkType == NetworkType::NET_WIFI && WiFi.status() == WL_CONNECTED) {
+                info.status = NetworkStatus::CONNECTED;
+                if (info.ipAddress.isEmpty() || info.ipAddress == "0.0.0.0") info.ipAddress = WiFi.localIP().toString();
+                if (info.ssid.isEmpty()) info.ssid = WiFi.SSID();
+                info.rssi = WiFi.RSSI();
+                if (info.macAddress.isEmpty()) info.macAddress = WiFi.macAddress();
+            }
+            const char* statusText = "unknown";
+            switch (info.status) {
+                case NetworkStatus::CONNECTED:         statusText = "connected"; break;
+                case NetworkStatus::DISCONNECTED:      statusText = "disconnected"; break;
+                case NetworkStatus::CONNECTING:        statusText = "connecting"; break;
+                case NetworkStatus::AP_MODE:           statusText = "ap_mode"; break;
+                case NetworkStatus::CONNECTION_FAILED: statusText = "failed"; break;
+                default: break;
+            }
+            data["networkStatus"] = statusText;
+            data["networkStatusCode"] = static_cast<uint8_t>(info.status);
             data["networkConnected"] = (info.status == NetworkStatus::CONNECTED);
+            data["connected"] = (info.status == NetworkStatus::CONNECTED);
+            data["deviceNetworkType"] = static_cast<uint8_t>(cfg.networkType);
             data["ipAddress"] = info.ipAddress;
             data["ssid"] = info.ssid;
             data["rssi"] = info.rssi;
+            data["macAddress"] = info.macAddress.isEmpty() ? WiFi.macAddress() : info.macAddress;
+            data["internetAvailable"] = info.internetAvailable;
         }
         return true;
     }
@@ -185,6 +255,13 @@ bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const S
         netMgr->updateStatusInfo();
         NetworkStatusInfo info = netMgr->getStatusInfo();
         WiFiConfig cfg = netMgr->getConfig();
+        if (cfg.networkType == NetworkType::NET_WIFI && WiFi.status() == WL_CONNECTED) {
+            info.status = NetworkStatus::CONNECTED;
+            if (info.ipAddress.isEmpty() || info.ipAddress == "0.0.0.0") info.ipAddress = WiFi.localIP().toString();
+            if (info.ssid.isEmpty()) info.ssid = WiFi.SSID();
+            info.rssi = WiFi.RSSI();
+            if (info.macAddress.isEmpty()) info.macAddress = WiFi.macAddress();
+        }
 
         const char* statusText = "unknown";
         switch (info.status) {
@@ -197,6 +274,8 @@ bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const S
         }
         data["status"] = statusText;
         data["statusCode"] = static_cast<uint8_t>(info.status);
+        data["connected"] = (info.status == NetworkStatus::CONNECTED);
+        data["deviceNetworkType"] = static_cast<uint8_t>(cfg.networkType);
         data["ssid"] = info.ssid.isEmpty() ? cfg.staSSID : info.ssid;
         data["ipAddress"] = info.ipAddress;
         data["macAddress"] = info.macAddress.isEmpty() ? WiFi.macAddress() : info.macAddress;
@@ -259,6 +338,7 @@ bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const S
         NetworkStatusInfo info = netMgr->getStatusInfo();
 
         data["device"]["macAddress"] = WiFi.macAddress();
+        data["network"]["networkType"] = static_cast<uint8_t>(cfg.networkType);
         data["network"]["mode"] = static_cast<uint8_t>(cfg.mode);
         data["network"]["ipConfigType"] = static_cast<uint8_t>(cfg.ipConfigType);
         data["network"]["enableMDNS"] = cfg.enableMDNS;

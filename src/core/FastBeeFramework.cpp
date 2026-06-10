@@ -37,6 +37,7 @@
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <time.h>
+#include <esp_task_wdt.h>
 
 // 启动期 heap 采样：定位哪个 STEP 吞掉了堆（OOM 排查辅助）
 // tag 仅作日志标记，与上一行 LOGGER.infof("[Boot] xxx: ms") 配合使用
@@ -125,94 +126,94 @@ bool FastBeeFramework::initialize() {
     // 步骤2.5: 初始化外设管理器（尽早初始化，确保GPIO输出引脚在WiFi连接前就位）
     // 依赖：LittleFS（STEP1）、Logger（STEP2），无需网络
     stepStart = millis();
-    LOG_INFO("[STEP2.5] Initializing PeripheralManager...");
+    Serial.println("[STEP2.5] Initializing PeripheralManager...");
     if (!PeripheralManager::getInstance().initialize()) {
-        LOG_WARNING("[STEP2.5] Failed to initialize peripheral manager");
+        Serial.println("[STEP2.5] WARN: Peripheral manager init failed");
     } else {
-        LOG_INFO("[STEP2.5] Peripheral manager OK");
+        Serial.println("[STEP2.5] Peripheral manager OK");
     }
-    LOGGER.infof("[Boot] PeripheralManager: %lu ms", millis() - stepStart);
+    Serial.printf("[Boot] PeripheralManager: %lu ms\n", millis() - stepStart);
     LOG_BOOT_HEAP("PeripheralManager");
     
     // 步骤3: 创建HTTP服务器
     stepStart = millis();
-    LOG_INFO("[STEP3] Creating HTTP server...");
+    Serial.println("[STEP3] Creating HTTP server...");
     server.reset(new AsyncWebServer(80));
     if (!server) {
-        LOG_ERROR("[STEP3] Failed to create HTTP server");
+        Serial.println("[STEP3] FATAL: Failed to create HTTP server");
         return false;
     }
-    LOGGER.infof("[Boot] AsyncWebServer: %lu ms", millis() - stepStart);
+    Serial.printf("[Boot] AsyncWebServer: %lu ms\n", millis() - stepStart);
     
 #if FASTBEE_WEB_START_EARLY
     // ---- 提前启动模式：Web服务器在WiFi连接前启动（AP模式直接可用）----
 
     // 步骤4-E: 初始化用户管理器（提前，Web服务需要）
     stepStart = millis();
-    LOG_INFO("[STEP4-E] Initializing UserManager...");
+    Serial.println("[STEP4-E] Initializing UserManager...");
     userManager.reset(new UserManager());
     if (!userManager || !userManager->initialize()) {
-        LOG_ERROR("[STEP4-E] Failed to initialize user manager");
+        Serial.println("[STEP4-E] FATAL: Failed to initialize user manager");
         return false;
     }
-    LOG_INFO("[STEP4-E] User manager OK");
+    Serial.println("[STEP4-E] User manager OK");
 
     // 步骤4-E.5: 初始化角色管理器（提前，Web服务需要）
 #if FASTBEE_ENABLE_ROLE_ADMIN
-    LOG_INFO("[STEP4-E.5] Initializing RoleManager...");
+    Serial.println("[STEP4-E.5] Initializing RoleManager...");
     roleManager.reset(new RoleManager());
     if (!roleManager || !roleManager->initialize()) {
-        LOG_ERROR("[STEP4-E.5] Failed to initialize role manager");
+        Serial.println("[STEP4-E.5] FATAL: Failed to init role manager");
         return false;
     }
-    LOG_INFO("[STEP4-E.5] Role manager OK");
+    Serial.println("[STEP4-E.5] Role manager OK");
 #else
-    LOG_INFO("[STEP4-E.5] RoleManager disabled");
+    Serial.println("[STEP4-E.5] RoleManager disabled");
 #endif
 
     // 步骤5-E: 初始化认证管理器（提前，Web服务需要）
-    LOG_INFO("[STEP5-E] Initializing AuthManager...");
+    Serial.println("[STEP5-E] Initializing AuthManager...");
 #if FASTBEE_ENABLE_ROLE_ADMIN
     authManager.reset(new AuthManager(userManager.get(), roleManager.get()));
 #else
     authManager.reset(new AuthManager(userManager.get(), nullptr));
 #endif
     if (!authManager || !authManager->initialize()) {
-        LOG_ERROR("[STEP5-E] Failed to initialize auth manager!");
+        Serial.println("[STEP5-E] FATAL: Failed to initialize auth manager!");
         return false;
     }
-    LOG_INFO("[STEP5-E] Auth manager OK");
-    LOGGER.infof("[Boot] User/Role/AuthManager (early): %lu ms", millis() - stepStart);
+    Serial.println("[STEP5-E] Auth manager OK");
+    Serial.printf("[Boot] User/Role/AuthManager (early): %lu ms\n", millis() - stepStart);
 
     // 步骤6-E: 初始化 Web配置管理器（仅注册路由，暂不调用 server->begin()）
     // 注意：server->begin() 需要 LwIP TCP/IP 栈就绪，必须先等 NetworkManager 初始化 WiFi，
     //       否则会触发 lwip tcpip_api_call "Invalid mbox" 断言导致重启。
     stepStart = millis();
-    LOG_INFO("[STEP6-E] Initializing WebConfigManager (routes only)...");
+    Serial.println("[STEP6-E] Initializing WebConfigManager (routes only)...");
     webConfig.reset(new WebConfigManager(server.get(), authManager.get(), userManager.get()));
     if (!webConfig || !webConfig->initialize()) {
-        LOG_ERROR("[STEP6-E] Failed to initialize web config manager");
+        Serial.println("[STEP6-E] FATAL: Failed to init web config manager");
         return false;
     }
 #if FASTBEE_ENABLE_ROLE_ADMIN
     webConfig->setRoleManager(roleManager.get());
 #endif
     // NetworkManager 尚未创建，暂不注入，在步骤7-E中注入
-    LOGGER.infof("[Boot] WebConfigManager routes: %lu ms", millis() - stepStart);
+    Serial.printf("[Boot] WebConfigManager routes: %lu ms\n", millis() - stepStart);
     LOG_BOOT_HEAP("WebConfigManager-routes");
 
     // 步骤7-E: 初始化网络管理器（启动 WiFi，带起 LwIP TCP/IP 栈）
     stepStart = millis();
-    LOG_INFO("[STEP7-E] Creating NetworkManager...");
+    Serial.println("[STEP7-E] Creating NetworkManager...");
     network.reset(new FBNetworkManager(server.get()));
     if (!network) {
-        LOG_ERROR("[STEP7-E] Failed to create network manager");
+        Serial.println("[STEP7-E] FATAL: Failed to create network manager");
         return false;
     }
     
     // 初始化网络（会从 network.json 加载配置，可能阻塞等待WiFi连接）
     if (!network->initialize()) {
-        LOG_WARNING("[STEP7-E] Network initialization returned false");
+        Serial.println("[STEP7-E] WARN: Network initialization returned false");
     }
     
     // 回注 NetworkManager 到 WebConfigManager
@@ -221,95 +222,95 @@ bool FastBeeFramework::initialize() {
     unsigned long networkMs = millis() - stepStart;
     // 检查网络状态
     if (WiFi.status() == WL_CONNECTED) {
-        LOGGER.infof("[STEP7-E] WiFi Connected! IP: %s", WiFi.localIP().toString().c_str());
+        Serial.printf("[STEP7-E] WiFi Connected! IP: %s\n", WiFi.localIP().toString().c_str());
     } else if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
-        LOGGER.infof("[STEP7-E] AP Mode IP: %s", WiFi.softAPIP().toString().c_str());
+        Serial.printf("[STEP7-E] AP Mode IP: %s\n", WiFi.softAPIP().toString().c_str());
     } else {
-        LOG_WARNING("[STEP7-E] Network not connected");
+        Serial.println("[STEP7-E] WARN: Network not connected");
     }
-    LOGGER.infof("[Boot] NetworkManager: %lu ms", networkMs);
+    Serial.printf("[Boot] NetworkManager: %lu ms\n", networkMs);
     LOG_BOOT_HEAP("NetworkManager");
 
     // 步骤7.5-E: 启动 HTTP 服务器（此时 TCP/IP 栈已就绪，AP 或 STA 模式均可用）
     stepStart = millis();
-    LOG_INFO("[STEP7.5-E] Starting web server...");
+    Serial.println("[STEP7.5-E] Starting web server...");
     if (!webConfig->start()) {
-        LOG_ERROR("[STEP7.5-E] Failed to start web server");
+        Serial.println("[STEP7.5-E] FATAL: Failed to start web server");
         return false;
     }
-    LOGGER.infof("[Boot] WebServer start: %lu ms", millis() - stepStart);
+    Serial.printf("[Boot] WebServer start: %lu ms\n", millis() - stepStart);
 
 #else  // !FASTBEE_WEB_START_EARLY
     // ---- 常规模式：WiFi连接完成后再启动Web服务器 ----
 
     // 步骤 4: 初始化网络管理器（可能阻塞：STA模式下 connectToWiFiBlocking 最长等待 connectTimeout ms）
     stepStart = millis();
-    LOG_INFO("[STEP4] Creating NetworkManager...");
+    Serial.println("[STEP4] Creating NetworkManager...");
     network.reset(new FBNetworkManager(server.get()));
     if (!network) {
-        LOG_ERROR("[STEP4] Failed to create network manager");
+        Serial.println("[STEP4] FATAL: Failed to create network manager");
         return false;
     }
     
     // 初始化网络（会从 network.json 加载配置）
     if (!network->initialize()) {
-        LOG_WARNING("[STEP4] Network initialization returned false");
+        Serial.println("[STEP4] WARN: Network initialization returned false");
     }
     
     unsigned long networkMs = millis() - stepStart;
     // 检查网络状态
     if (WiFi.status() == WL_CONNECTED) {
-        LOGGER.infof("[STEP4] WiFi Connected! IP: %s", WiFi.localIP().toString().c_str());
+        Serial.printf("[STEP4] WiFi Connected! IP: %s\n", WiFi.localIP().toString().c_str());
     } else if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
-        LOGGER.infof("[STEP4] AP Mode IP: %s", WiFi.softAPIP().toString().c_str());
+        Serial.printf("[STEP4] AP Mode IP: %s\n", WiFi.softAPIP().toString().c_str());
     } else {
-        LOG_WARNING("[STEP4] Network not connected");
+        Serial.println("[STEP4] WARN: Network not connected");
     }
-    LOGGER.infof("[Boot] NetworkManager: %lu ms", networkMs);
+    Serial.printf("[Boot] NetworkManager: %lu ms\n", networkMs);
 
     // 步骤5: 初始化用户管理器
     stepStart = millis();
-    LOG_INFO("[STEP5] Initializing UserManager...");
+    Serial.println("[STEP5] Initializing UserManager...");
     userManager.reset(new UserManager());
     if (!userManager || !userManager->initialize()) {
-        LOG_ERROR("[STEP5] Failed to initialize user manager");
+        Serial.println("[STEP5] FATAL: Failed to initialize user manager");
         return false;
     }
-    LOG_INFO("[STEP5] User manager OK");
+    Serial.println("[STEP5] User manager OK");
 
     // 步骤5.5: 初始化角色管理器
 #if FASTBEE_ENABLE_ROLE_ADMIN
-    LOG_INFO("[STEP5.5] Initializing RoleManager...");
+    Serial.println("[STEP5.5] Initializing RoleManager...");
     roleManager.reset(new RoleManager());
     if (!roleManager || !roleManager->initialize()) {
-        LOG_ERROR("[STEP5.5] Failed to initialize role manager");
+        Serial.println("[STEP5.5] FATAL: Failed to initialize role manager");
         return false;
     }
-    LOG_INFO("[STEP5.5] Role manager OK");
+    Serial.println("[STEP5.5] Role manager OK");
 #else
-    LOG_INFO("[STEP5.5] RoleManager disabled");
+    Serial.println("[STEP5.5] RoleManager disabled");
 #endif
 
     // 步骤6: 初始化认证管理器（注入 RoleManager）
-    LOG_INFO("[STEP6] Initializing AuthManager...");
+    Serial.println("[STEP6] Initializing AuthManager...");
 #if FASTBEE_ENABLE_ROLE_ADMIN
     authManager.reset(new AuthManager(userManager.get(), roleManager.get()));
 #else
     authManager.reset(new AuthManager(userManager.get(), nullptr));
 #endif
     if (!authManager || !authManager->initialize()) {
-        LOG_ERROR("[STEP6] Failed to initialize auth manager!");
+        Serial.println("[STEP6] FATAL: Failed to initialize auth manager!");
         return false;
     }
-    LOG_INFO("[STEP6] Auth manager OK");
-    LOGGER.infof("[Boot] User/Role/AuthManager: %lu ms", millis() - stepStart);
+    Serial.println("[STEP6] Auth manager OK");
+    Serial.printf("[Boot] User/Role/AuthManager: %lu ms\n", millis() - stepStart);
 
     // 步骤 7: 初始化 Web配置管理器
     stepStart = millis();
-    LOG_INFO("[STEP7] Initializing WebConfigManager...");
+    Serial.println("[STEP7] Initializing WebConfigManager...");
     webConfig.reset(new WebConfigManager(server.get(), authManager.get(), userManager.get()));
     if (!webConfig || !webConfig->initialize()) {
-        LOG_ERROR("[STEP7] Failed to initialize web config manager");
+        Serial.println("[STEP7] FATAL: Failed to init web config manager");
         return false;
     }
     // 注入 RoleManager 和 NetworkManager 给 WebConfigManager
@@ -319,64 +320,64 @@ bool FastBeeFramework::initialize() {
     webConfig->setNetworkManager(network.get());
     // 启动 HTTP 服务器（监听端口 80）
     if (!webConfig->start()) {
-        LOG_ERROR("[STEP7] Failed to start web server");
+        Serial.println("[STEP7] FATAL: Failed to start web server");
         return false;
     }
-    LOGGER.infof("[Boot] WebConfigManager: %lu ms", millis() - stepStart);
+    Serial.printf("[Boot] WebConfigManager: %lu ms\n", millis() - stepStart);
 
 #endif  // FASTBEE_WEB_START_EARLY
     
 #if FASTBEE_ENABLE_OTA
     // 步骤8: 初始化OTA管理器
     stepStart = millis();
-    LOG_INFO("[STEP8] Initializing OTAManager...");
+    Serial.println("[STEP8] Initializing OTAManager...");
     ota.reset(new OTAManager(server.get()));
     if (!ota || !ota->initialize()) {
-        LOG_ERROR("[STEP8] Failed to initialize OTA manager");
+        Serial.println("[STEP8] FATAL: Failed to initialize OTA manager");
         return false;
     }
-    LOGGER.infof("[Boot] OTAManager: %lu ms", millis() - stepStart);
+    Serial.printf("[Boot] OTAManager: %lu ms\n", millis() - stepStart);
 #else
-    LOG_INFO("[STEP8] OTAManager disabled by FASTBEE_ENABLE_OTA=0");
+    Serial.println("[STEP8] OTAManager disabled by FASTBEE_ENABLE_OTA=0");
 #endif
     
     // 步骤9: 初始化任务管理器
     stepStart = millis();
-    LOG_INFO("[STEP9] Initializing TaskManager...");
+    Serial.println("[STEP9] Initializing TaskManager...");
     taskManager.reset(new TaskManager());
     if (!taskManager || !taskManager->initialize()) {
-        LOG_ERROR("[STEP9] Failed to initialize task manager");
+        Serial.println("[STEP9] FATAL: Failed to initialize task manager");
         return false;
     }
-    LOGGER.infof("[Boot] TaskManager: %lu ms", millis() - stepStart);
+    Serial.printf("[Boot] TaskManager: %lu ms\n", millis() - stepStart);
     
     // 步骤10: 初始化健康监控器
     stepStart = millis();
-    LOG_INFO("[STEP10] Initializing HealthMonitor...");
+    Serial.println("[STEP10] Initializing HealthMonitor...");
     healthMonitor.reset(new HealthMonitor());
     if (!healthMonitor || !healthMonitor->initialize()) {
-        LOG_ERROR("[STEP10] Failed to initialize health monitor");
+        Serial.println("[STEP10] FATAL: Failed to initialize health monitor");
         return false;
     }
-    LOGGER.infof("[Boot] HealthMonitor: %lu ms", millis() - stepStart);
+    Serial.printf("[Boot] HealthMonitor: %lu ms\n", millis() - stepStart);
     
     // 步骤10.5: 确保设备身份标识（deviceId / MQTT clientId 空值自动生成并写回 JSON 配置）
     // 依赖：LittleFS（STEP1）、Logger（STEP2）、WiFi 栏已起（STEP4/STEP7-E 后 MAC 可读）
     // 必须在 ProtocolManager (STEP11) 之前，确保 MQTTClient loadMqttConfig() 读取到已回填的配置
     stepStart = millis();
-    LOG_INFO("[STEP10.5] Ensuring device identity...");
+    Serial.println("[STEP10.5] Ensuring device identity...");
     ensureDeviceIdentity();
-    LOGGER.infof("[Boot] ensureDeviceIdentity: %lu ms", millis() - stepStart);
+    Serial.printf("[Boot] ensureDeviceIdentity: %lu ms\n", millis() - stepStart);
     
     // 步骤11: 初始化协议管理器
     stepStart = millis();
-    LOG_INFO("[STEP11] Initializing ProtocolManager...");
+    Serial.println("[STEP11] Initializing ProtocolManager...");
     protocolManager.reset(new ProtocolManager());
     if (!protocolManager || !protocolManager->initialize()) {
-        LOG_ERROR("[STEP11] Failed to initialize protocol manager");
+        Serial.println("[STEP11] FATAL: Failed to initialize protocol manager");
         return false;
     }
-    LOGGER.infof("[Boot] ProtocolManager: %lu ms", millis() - stepStart);
+    Serial.printf("[Boot] ProtocolManager: %lu ms\n", millis() - stepStart);
     
     // 注入 ProtocolManager 到 WebConfig，供 API 路由访问
     if (webConfig && protocolManager) {
@@ -393,13 +394,13 @@ bool FastBeeFramework::initialize() {
     // 步骤11.5: 初始化外设执行管理器
 #if FASTBEE_ENABLE_PERIPH_EXEC
     stepStart = millis();
-    LOG_INFO("[STEP11.5] Initializing PeriphExecManager...");
+    Serial.println("[STEP11.5] Initializing PeriphExecManager...");
     if (!PeriphExecManager::getInstance().initialize()) {
-        LOG_WARNING("[STEP11.5] Failed to initialize periph exec manager");
+        Serial.println("[STEP11.5] WARN: Periph exec manager init failed");
     } else {
-        LOG_INFO("[STEP11.5] Periph exec manager OK");
+        Serial.println("[STEP11.5] Periph exec manager OK");
     }
-    LOGGER.infof("[Boot] PeriphExecManager: %lu ms", millis() - stepStart);
+    Serial.printf("[Boot] PeriphExecManager: %lu ms\n", millis() - stepStart);
     LOG_BOOT_HEAP("PeriphExecManager");
 
     // 注入协议层回调到 PeriphExecManager（解耦 core → protocols 依赖）
@@ -606,20 +607,20 @@ bool FastBeeFramework::initialize() {
         });
 #endif  // FASTBEE_ENABLE_MODBUS
 
-        LOG_INFO("[STEP11.5] Protocol callbacks injected into PeriphExecManager");
+        Serial.println("[STEP11.5] Protocol callbacks injected into PeriphExecManager");
     }
 #endif
 
     // 步骤11.6: 初始化规则脚本管理器
 #if FASTBEE_ENABLE_RULE_SCRIPT
     stepStart = millis();
-    LOG_INFO("[STEP11.6] Initializing RuleScriptManager...");
+    Serial.println("[STEP11.6] Initializing RuleScriptManager...");
     if (!RuleScriptManager::getInstance().initialize()) {
-        LOG_WARNING("[STEP11.6] Failed to initialize rule script manager");
+        Serial.println("[STEP11.6] WARN: Rule script manager init failed");
     } else {
-        LOG_INFO("[STEP11.6] Rule script manager OK");
+        Serial.println("[STEP11.6] Rule script manager OK");
     }
-    LOGGER.infof("[Boot] RuleScriptManager: %lu ms", millis() - stepStart);
+    Serial.printf("[Boot] RuleScriptManager: %lu ms\n", millis() - stepStart);
     LOG_BOOT_HEAP("RuleScriptManager");
 #endif
     
@@ -636,21 +637,21 @@ bool FastBeeFramework::initialize() {
     
     // 步骤12: 添加系统任务
     stepStart = millis();
-    LOG_INFO("[STEP12] Adding system tasks...");
+    Serial.println("[STEP12] Adding system tasks...");
     if (!addSystemTasks()) {
-        LOG_WARNING("[STEP12] Failed to add some system tasks");
+        Serial.println("[STEP12] WARN: Failed to add some system tasks");
     }
-    LOGGER.infof("[Boot] addSystemTasks: %lu ms", millis() - stepStart);
+    Serial.printf("[Boot] addSystemTasks: %lu ms\n", millis() - stepStart);
     LOG_BOOT_HEAP("addSystemTasks");
     
     // 步骤13: 检查系统健康状态
-    LOG_INFO("[STEP13] Checking system health...");
+    Serial.println("[STEP13] Checking system health...");
     if (!healthMonitor->isSystemHealthy()) {
         char buf[160];
         healthMonitor->getHealthReport(buf, sizeof(buf));
-        LOG_WARNING(buf);
+        Serial.printf("[STEP13] WARN: %s\n", buf);
     }
-    LOG_INFO("[STEP13] Health check completed");
+    Serial.println("[STEP13] Health check completed");
     
     // 计算启动耗时
     unsigned long bootTime = millis() - startTime;
@@ -658,12 +659,12 @@ bool FastBeeFramework::initialize() {
     systemInitialized = true;
     
     // 输出 Boot Performance Report
-    LOGGER.info("[Boot] === Performance Report ===");
-    LOGGER.infof("[Boot] Total boot time: %lu ms", bootTime);
+    Serial.println("[Boot] === Performance Report ===");
+    Serial.printf("[Boot] Total boot time: %lu ms\n", bootTime);
     if (networkMs > 1000) {
-        LOGGER.infof("[Boot] WARNING: NetworkManager took %lu ms (may block on WiFi connect)", networkMs);
+        Serial.printf("[Boot] WARNING: NetworkManager took %lu ms (may block on WiFi connect)\n", networkMs);
     }
-    LOGGER.info("[Boot] === End Report ===");
+    Serial.println("[Boot] === End Report ===");
     
     // 将启动耗时记录到 HealthMonitor
 #if FASTBEE_ENABLE_HEALTH_MONITOR
@@ -672,26 +673,24 @@ bool FastBeeFramework::initialize() {
     }
 #endif
     
-    LOGGER.info("========================================");
-    LOGGER.infof("System initialization completed in %lu ms", bootTime);
-    LOGGER.info("========================================");
-    LOG_INFO("FastBee IoT Platform initialized successfully");
-    LOG_INFO("Device ready for operation");
+    Serial.println("========================================");
+    Serial.printf("  System initialized in %lu ms\n", bootTime);
+    Serial.println("========================================");
     Serial.printf("[BOOT] Platform ready! Heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
     ets_printf("[BOOT] Platform ready! Heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
     
     // 输出访问信息（同时输出到串口和日志）
-    LOGGER.info("========================================");
-    LOGGER.info("  FastBee IoT Platform Ready!");
-    LOGGER.info("========================================");
+    Serial.println("========================================");
+    Serial.println("  FastBee IoT Platform Ready!");
+    Serial.println("========================================");
     
     if (WiFi.status() == WL_CONNECTED) {
-        LOGGER.info("Mode: STA (WiFi Client)");
-        LOGGER.infof("IP Address: %s", WiFi.localIP().toString().c_str());
-        LOGGER.infof("Access URL: http://%s", WiFi.localIP().toString().c_str());
-        LOGGER.info("mDNS URL: http://fastbee.local");
+        Serial.println("Mode: STA (WiFi Client)");
+        Serial.printf("IP Address: %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("Access URL: http://%s\n", WiFi.localIP().toString().c_str());
+        Serial.println("mDNS URL: http://fastbee.local");
     } else if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
-        LOGGER.info("Mode: AP (Access Point)");
+        Serial.println("Mode: AP (Access Point)");
         // 以 NetworkManager 的实际配置为准，避免误导用户
         String apSSID = NetConst::DEFAULT_AP_SSID;
         String apPass = NetConst::DEFAULT_AP_PASSWORD;
@@ -700,17 +699,17 @@ bool FastBeeFramework::initialize() {
             if (cfg.apSSID.length() > 0) apSSID = cfg.apSSID;
             if (cfg.apPassword.length() > 0) apPass = cfg.apPassword;
         }
-        LOGGER.infof("WiFi Name: %s", apSSID.c_str());
-        LOGGER.infof("WiFi Pass: %s", apPass.c_str());
-        LOGGER.infof("IP Address: %s", WiFi.softAPIP().toString().c_str());
-        LOGGER.infof("Setup URL: http://%s/setup", WiFi.softAPIP().toString().c_str());
+        Serial.printf("WiFi Name: %s\n", apSSID.c_str());
+        Serial.printf("WiFi Pass: %s\n", apPass.c_str());
+        Serial.printf("IP Address: %s\n", WiFi.softAPIP().toString().c_str());
+        Serial.printf("Setup URL: http://%s/setup\n", WiFi.softAPIP().toString().c_str());
     } else {
-        LOGGER.info("Network: Not connected");
+        Serial.println("Network: Not connected");
     }
     
-    LOGGER.info("----------------------------------------");
-    LOGGER.info("Default Login: admin / admin123");
-    LOGGER.info("========================================");
+    Serial.println("----------------------------------------");
+    Serial.println("Default Login: admin / admin123");
+    Serial.println("========================================");
     
     return true;
 }
@@ -810,6 +809,17 @@ bool FastBeeFramework::addSystemTasks() {
                     framework->mqttAutoStarted = true;
                     framework->modbusAutoStarted = true;
                     LOG_INFO("[Protocol] Network stable, auto-starting protocols...");
+
+                    // 堆保护：内部堆低于安全阈值时跳过协议启动，防止 new/malloc 失败触发 abort()
+                    uint32_t protoStartHeap = ESP.getFreeHeap();
+                    uint32_t protoStartMaxBlock = ESP.getMaxAllocHeap();
+                    if (protoStartHeap < 30000 || protoStartMaxBlock < 8192) {
+                        LOG_WARNINGF("[Protocol] Heap too low for protocol start, deferring (heap=%lu maxBlock=%lu)",
+                                     (unsigned long)protoStartHeap, (unsigned long)protoStartMaxBlock);
+                        // 允许下次重试
+                        framework->mqttAutoStarted = !shouldStartMqtt;
+                        framework->modbusAutoStarted = !shouldStartModbus;
+                    } else {
                     
                     // 单次读取 protocol.json，同时检查 MQTT 和 Modbus 配置
 #if FASTBEE_ENABLE_MQTT
@@ -855,6 +865,7 @@ bool FastBeeFramework::addSystemTasks() {
                         LOG_INFO("[Modbus] Modbus not enabled in config, skipping auto-start");
                     }
 #endif
+                    } // end of heap-safe else block
                 }
             }
         }
@@ -998,6 +1009,20 @@ void FastBeeFramework::run() {
     if (!systemInitialized) {
         LOG_ERROR("Framework not initialized, cannot run");
         return;
+    }
+    
+    // 周期性内存状态串口输出（每 30 秒，用于快速诊断）
+    static unsigned long lastMemPrint = 0;
+    unsigned long nowMs = millis();
+    if (nowMs - lastMemPrint > 30000) {
+        lastMemPrint = nowMs;
+        Serial.printf("[MEM] heap=%lu maxBlk=%lu",
+                      (unsigned long)ESP.getFreeHeap(),
+                      (unsigned long)ESP.getMaxAllocHeap());
+#ifdef BOARD_HAS_PSRAM
+        Serial.printf(" psram=%lu", (unsigned long)ESP.getFreePsram());
+#endif
+        Serial.println();
     }
     
     // 执行任务调度

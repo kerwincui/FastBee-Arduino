@@ -1,9 +1,11 @@
 #include "./network/WebHandlerContext.h"
 #include "./security/AuthManager.h"
+#include "./network/handlers/HandlerUtils.h"
 #include "systems/LoggerSystem.h"
 #include "systems/HealthMonitor.h"
 #include "systems/TaskManager.h"
 #include "core/FastBeeFramework.h"
+#include "utils/PsramJsonDocument.h"
 #include <esp_heap_caps.h>
 
 WebHandlerContext::WebHandlerContext(AsyncWebServer* srv, IAuthManager* authMgr, IUserManager* userMgr)
@@ -170,6 +172,10 @@ static bool canAllocateResponse(size_t requiredSize) {
     // 预留 512 字节安全余量，防止序列化过程中的临时分配
     size_t safeSize = requiredSize + 512;
     if (health.largestFreeBlock < safeSize) {
+        if (FastBee::psramAvailableForJson(safeSize + 4096) &&
+            ESP.getFreeHeap() >= 2048 && ESP.getMaxAllocHeap() >= 1024) {
+            return true;
+        }
         Serial.printf("[MemGuard] Rejecting response: need ~%u bytes, largest block=%lu\n",
                       (unsigned)safeSize, (unsigned long)health.largestFreeBlock);
         return false;
@@ -178,8 +184,10 @@ static bool canAllocateResponse(size_t requiredSize) {
 }
 
 static void sendServiceUnavailable(AsyncWebServerRequest* request) {
-    AsyncWebServerResponse* response = request->beginResponse(503, "text/plain",
-                                                              "Service Unavailable - Low Memory");
+    AsyncWebServerResponse* response = request->beginResponse(
+        503,
+        "application/json",
+        "{\"success\":false,\"message\":\"Service unavailable - low memory\",\"error\":\"Service unavailable - low memory\",\"code\":503,\"retryAfter\":5}");
     response->addHeader("Retry-After", "5");
     response->addHeader("Connection", "close");  // 立即释放 TCP pbuf
     request->send(response);
@@ -197,7 +205,9 @@ void WebHandlerContext::sendJsonResponse(AsyncWebServerRequest* request, int cod
     // MemGuard: CRITICAL 时仅拒绝大响应（>1KB），小响应放行以确保基础 API（如 auth/session）可用
     auto* fw = FastBeeFramework::getInstance();
     HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
-    if (monitor && monitor->isMemoryCritical() && docSize > 1024) {
+    if (monitor && monitor->isMemoryCritical() && docSize > 1024 &&
+        !(FastBee::psramAvailableForJson(docSize + 4096) &&
+          ESP.getFreeHeap() >= 2048 && ESP.getMaxAllocHeap() >= 1024)) {
         sendServiceUnavailable(request);
         return;
     }
@@ -231,7 +241,9 @@ void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const JsonDo
     auto* fw = FastBeeFramework::getInstance();
     HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
     size_t estimatedSize = measureJson(data);
-    if (monitor && monitor->isMemoryCritical() && estimatedSize > 1024) {
+    if (monitor && monitor->isMemoryCritical() && estimatedSize > 1024 &&
+        !(FastBee::psramAvailableForJson(estimatedSize + 4096) &&
+          ESP.getFreeHeap() >= 2048 && ESP.getMaxAllocHeap() >= 1024)) {
         sendServiceUnavailable(request);
         return;
     }
@@ -243,24 +255,13 @@ void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const JsonDo
 
     // 注意：ArduinoJson v7 的 serializeJson(doc, String) 会先清空目标字符串，
     // 因此必须先序列化到独立字符串，再拼接到响应中。
-    String dataStr;
+    auto outDoc = FastBee::makeJsonDocument(estimatedSize + 4096);
+    outDoc["success"] = true;
+    outDoc["timestamp"] = millis();
     if (!data.isNull()) {
-        serializeJson(data, dataStr);
+        outDoc["data"].set(data);
     }
-
-    String out;
-    out.reserve(dataStr.length() + 48);
-    out = "{\"success\":true,\"timestamp\":";
-    out += String(millis());
-    if (dataStr.length() > 0) {
-        out += ",\"data\":";
-        out += dataStr;
-    }
-    out += "}";
-
-    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", out);
-    response->addHeader("Connection", "close");
-    request->send(response);
+    HandlerUtils::sendJsonStream(request, outDoc);
 }
 
 void WebHandlerContext::sendSuccess(AsyncWebServerRequest* request, const String& message) {

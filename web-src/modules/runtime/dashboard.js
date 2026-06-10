@@ -163,11 +163,15 @@
 
                     // 内存
                     const memory = data.memory || {};
-                    this._setText('monitor-heap-percent', (memory.heapUsagePercent || 0) + '%');
-                    this._setBar('monitor-heap-bar', memory.heapUsagePercent || 0);
-                    this._setText('monitor-heap-used', this._formatBytes(memory.heapUsed || 0));
-                    this._setText('monitor-heap-free', this._formatBytes(memory.heapFree || 0));
-                    this._setText('monitor-heap-total', this._formatBytes(memory.heapTotal || 0));
+                    const memoryPercent = (memory.usagePercent !== undefined) ? memory.usagePercent : (memory.heapUsagePercent || 0);
+                    const memoryUsed = (memory.used !== undefined) ? memory.used : (memory.heapUsed || 0);
+                    const memoryFree = (memory.free !== undefined) ? memory.free : (memory.heapFree || 0);
+                    const memoryTotal = (memory.total !== undefined) ? memory.total : (memory.heapTotal || 0);
+                    this._setText('monitor-heap-percent', memoryPercent + '%');
+                    this._setBar('monitor-heap-bar', memoryPercent);
+                    this._setText('monitor-heap-used', this._formatBytes(memoryUsed));
+                    this._setText('monitor-heap-free', this._formatBytes(memoryFree));
+                    this._setText('monitor-heap-total', this._formatBytes(memoryTotal));
                     this._setText('monitor-heap-min', this._formatBytes(memory.heapMinFree || 0));
 
                     // 文件系统

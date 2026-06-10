@@ -28,7 +28,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const { minifyJS } = require('./minify-js');
-const { isProdWebProfile } = require('./web-profile');
+const { isCompactWebProfile, isLiteWebProfile } = require('./web-profile');
 
 const ROOT_DIR = path.join(__dirname, '..');
 const JS_SRC_DIR = path.join(ROOT_DIR, 'web-src', 'js');
@@ -255,13 +255,32 @@ const PROD_I18N_DROP_KEYS = new Set([
     'perm-ota.update'
 ]);
 
+const LITE_I18N_DROP_PREFIXES = [
+    'modbus-',
+    'dc-modbus-',
+    'device-control-modbus',
+    'periph-exec-modbus',
+    'event-modbus_',
+    'event-cat-modbus'
+];
+
+const LITE_I18N_DROP_KEYS = new Set([
+    'device-control-group-modbus',
+    'periph-exec-action-modbus-poll',
+    'protocol-tab-modbus-rtu'
+]);
+
 function shouldDropProdI18nKey(key) {
     return PROD_I18N_DROP_KEYS.has(key)
-        || PROD_I18N_DROP_PREFIXES.some((prefix) => key.startsWith(prefix));
+        || PROD_I18N_DROP_PREFIXES.some((prefix) => key.startsWith(prefix))
+        || (isLiteWebProfile() && (
+            LITE_I18N_DROP_KEYS.has(key) ||
+            LITE_I18N_DROP_PREFIXES.some((prefix) => key.startsWith(prefix))
+        ));
 }
 
 function filterProdI18nTranslations(all) {
-    if (!isProdWebProfile()) return all;
+    if (!isCompactWebProfile()) return all;
     const filtered = {};
     Object.keys(all).forEach((key) => {
         if (!shouldDropProdI18nKey(key)) filtered[key] = all[key];
@@ -334,10 +353,10 @@ function buildProdStateSource() {
 }
 
 function readChunkSource(dir, file) {
-    if (isProdWebProfile() && dir === I18N_SRC_DIR && file === 'i18n-engine.js') {
+    if (isCompactWebProfile() && dir === I18N_SRC_DIR && file === 'i18n-engine.js') {
         return buildSlimI18nEngine();
     }
-    if (isProdWebProfile() && dir === JS_SRC_DIR && file === 'state.js') {
+    if (isCompactWebProfile() && dir === JS_SRC_DIR && file === 'state.js') {
         return buildProdStateSource();
     }
     return readUtf8(path.join(dir, file)).trim();

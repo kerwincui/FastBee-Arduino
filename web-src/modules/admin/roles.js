@@ -121,7 +121,7 @@
                 if (role.id !== 'admin') {
                     // 编辑按钮
                     const editBtn = document.createElement('button');
-                    editBtn.className = 'fb-btn fb-btn-sm fb-btn-primary fb-mr-1';
+                    editBtn.className = 'fb-btn fb-btn-sm fb-btn-primary fb-btn-action-edit fb-mr-1';
                     editBtn.textContent = i18n.t('role-edit');
                     editBtn.addEventListener('click', () => this.showEditRoleModal(role.id));
                     tdAction.appendChild(editBtn);
@@ -339,7 +339,7 @@
                     const pName = i18n.t('perm-' + perm.id) !== ('perm-' + perm.id) ? i18n.t('perm-' + perm.id) : perm.name;
                     const pDesc = i18n.t('perm-' + perm.id) !== ('perm-' + perm.id) ? i18n.t('perm-' + perm.id) : perm.description;
                     const label = document.createElement('label');
-                    label.className = 'role-perm-label';
+                    label.className = 'role-perm-label fb-checkbox';
                     var checkbox = document.createElement('input');
                     checkbox.type = 'checkbox';
                     checkbox.name = 'role-perm';

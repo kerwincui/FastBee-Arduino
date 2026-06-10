@@ -15,7 +15,7 @@
                                 <button class="fb-btn fb-btn-refresh" id="peripheral-refresh-btn"><span data-i18n="refresh-btn">刷新</span></button>
                 <button class="fb-btn fb-btn-primary" id="add-peripheral-btn"
                     data-i18n="add-peripheral-btn-text">
-                    <i class="fas fa-plus"></i> <span data-i18n="add-peripheral-btn">新增外设</span>
+                    <span data-i18n="add-peripheral-btn">新增外设</span>
                 </button>
             </div>
         </div>
@@ -61,9 +61,12 @@
                                 <button class="fb-btn fb-btn-refresh" id="periph-exec-refresh-btn"><span data-i18n="refresh-btn">刷新</span></button>
                 <button class="fb-btn fb-btn-primary" id="periph-exec-page-add-btn"
                     data-action="openPeriphExecModalStandalone">
-                    <i class="fas fa-plus"></i> <span data-i18n="periph-exec-add-btn">新增规则</span>
+                    <span data-i18n="periph-exec-add-btn">新增规则</span>
                 </button>
             </div>
+        </div>
+        <div id="periph-exec-dev-mode-hint" class="u-hint-bar u-hint-bar-warning developer-mode-hint" style="display:none;margin:0 16px;padding:8px 12px;font-size:12px;background:#fff7e6;border:1px solid #ffd591;border-radius:4px;color:#d46b08;">
+            <span data-i18n="dev-mode-disabled-tip">开发环境已禁用，请到设备配置的高级配置中启用后再修改。</span>
         </div>
         <div class="fb-card-body">
             <div class="u-table-wrap">
@@ -71,7 +74,7 @@
                     <thead>
                         <tr>
                             <th data-i18n="periph-exec-col-name">名称</th>
-                            <th data-i18n="periph-exec-col-status">状态</th>
+                            <th data-i18n="periph-exec-col-status" style="width:92px;">状态</th>
                             <th data-i18n="periph-exec-col-trigger">触发方式</th>
                             <th data-i18n="periph-exec-col-target">目标外设</th>
                             <th data-i18n="periph-exec-col-action">动作</th>
@@ -92,7 +95,7 @@
     </div>
 </div>
 
-<!-- 设备控制页面 -->
+<!-- 设备大屏页面 -->
 <div id="device-control-page" class="page page-layout-flat">
     <div id="dc-content"></div>
 </div>

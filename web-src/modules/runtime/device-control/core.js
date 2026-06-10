@@ -391,7 +391,7 @@
                 return controlsGetter('/api/periph-exec/controls');
             }).then(function(controlsRes) {
                 self._tempControlsRes = controlsRes;
-                return silentGetter('/api/modbus/status').catch(function() { return null; });
+                return silentGetter('/api/modbus/status?compact=1').catch(function() { return null; });
             }).then(function(modbusRes) {
                 self._tempModbusRes = modbusRes;
                 return silentGetter('/api/protocol/config', { compact: 1, section: 'device-control' }).catch(function() { return null; });

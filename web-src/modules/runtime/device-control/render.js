@@ -68,7 +68,7 @@
             if (warnings.length > 0) {
                 var warnHtml = '<div class="dc-risk-warnings">';
                 for (var wi = 0; wi < warnings.length; wi++) {
-                    warnHtml += '<div class="dc-risk-warning"><i class="fas fa-exclamation-triangle"></i><span>' + escapeHtml(warnings[wi] || '') + '</span></div>';
+                    warnHtml += '<div class="dc-risk-warning"><span>' + escapeHtml(warnings[wi] || '') + '</span></div>';
                 }
                 html += warnHtml + '</div>';
             }

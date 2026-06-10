@@ -10,7 +10,6 @@
 |---|---|---|---|
 | `esp32c3` | 精简版 (Lite) | ESP32-C3 | Web 管理、WiFi/MQTT、mDNS、GPIO、DHT、DS18B20、OLED、TM1637、配置导入/导出 |
 | `esp32c6` | 精简版 (Lite) | ESP32-C6 | 同上，支持 WiFi 6 |
-| `esp32s2` | 精简版 (Lite) | ESP32-S2 | 同上，仅 WiFi（无 BLE） |
 | `esp32` | 标准版 (Standard) | ESP32 | 精简版基础 + 以太网 W5500 + 4G EC801E + Modbus RTU 主站 + I2C 传感器 + RFID + 红外 + 命令脚本 |
 | `esp32s3` | 标准版 (Standard) | ESP32-S3 | 同上，资源余量更好 |
 | `esp32s3-full` | 全功能版 (Full) | ESP32-S3 | 标准版基础 + LoRa + BLE + OTA + 多用户 + 文件/日志管理 + RuleScript + TCP/HTTP/CoAP + 多语言 |
@@ -23,29 +22,34 @@
 
 ## 2. 快速开始
 
-1. 编译并烧录固件。
-2. 上传 LittleFS 文件系统。
+1. 使用部署脚本烧录匹配的 LittleFS 文件系统和固件。
+2. 运行设备接口冒烟测试。
 3. 首次启动后连接设备 AP，进入 Web 管理页面。
 4. 在“网络设置”配置 WiFi。
 5. 在“外设配置”添加或导入硬件外设，先保持 `enabled: false`，确认引脚后再启用。
 6. 在“外设执行”创建采集、联动或控制规则。
 7. 在“设备配置 / 高级配置”导出配置备份。
 
-常用构建命令：
+常用部署命令：
 
 ```powershell
-pio run -e esp32
-pio run -e esp32c3
-pio run -e esp32s3
-pio run -e esp32s3-full
-node scripts/gzip-www.js --web-slim --no-upload --no-monitor
+# ESP32 标准版
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32 -Port COM6
+
+# ESP32-S3 标准版
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3 -Port COM6
+
+# ESP32-S3 全功能版
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-full -Port COM6
 ```
 
-`--web-slim` 用于精简版和标准版；全功能版需要完整页面时使用 full Web 资源：
+烧录后检查：
 
 ```powershell
-node scripts/gzip-www.js --web-profile=full --no-upload --no-monitor
+powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl http://192.168.4.1 -Profile standard
 ```
+
+设备已连入局域网时，将 `BaseUrl` 替换为实际 IP；全功能版使用 `-Profile full`。
 
 ## 3. 网络与 MQTT 平台对接
 

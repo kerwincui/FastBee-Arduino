@@ -435,6 +435,12 @@ bool MQTTClient::publishDeviceInfo() {
         return false;
     }
 
+    // 内存保护：该函数需要约 2KB 堆分配（JsonDocument + String payload）
+    if (ESP.getFreeHeap() < 30000) {
+        LOG_WARNING("MQTT: Heap too low, skip publishDeviceInfo");
+        return false;
+    }
+
     // 查找 topicType==DEVICE_INFO 的发布主题
     int infoTopicIdx = -1;
     for (size_t i = 0; i < config.publishTopics.size(); i++) {
@@ -505,6 +511,11 @@ bool MQTTClient::publishDeviceInfo() {
 
 bool MQTTClient::publishMonitorData() {
     if (!isConnected) {
+        return false;
+    }
+    // 内存保护：serializeJson 到 String
+    if (ESP.getFreeHeap() < 25000) {
+        LOG_WARNING("MQTT: Heap too low, skip publishMonitorData");
         return false;
     }
 
@@ -898,6 +909,8 @@ void MQTTClient::handle() {
 
 void MQTTClient::processQueuedCommands() {
     if (!_dataCommandQueue) return;
+    // 内存保护：handleDataCommand 内部大量 JSON 序列化
+    if (ESP.getFreeHeap() < 30000) return;
     String* cmd = nullptr;
     int processed = 0;
     while (processed < 2 && xQueueReceive(_dataCommandQueue, &cmd, 0) == pdTRUE) {
@@ -917,6 +930,8 @@ void MQTTClient::processQueuedCommands() {
 }
 
 void MQTTClient::processQueuedReports() {
+    // 内存保护：publishReportData 构造 String + MQTT publish
+    if (ESP.getFreeHeap() < 20000) return;
     int processed = 0;
     while (processed < 4 && _slotCount > 0) {
         MqttSlot& slot = _reportSlots[_slotReadIndex];

@@ -8,9 +8,18 @@
 .qoder
 .cursor
 .codex
-
-test/
+dist/*
+!dist/firmware/
+dist/firmware/*
+!dist/firmware/all-latest/
+!dist/firmware/all-latest/**
+*.pyc
+compile_commands.json
+upload_log.txt
 nul
+
+# ESP-IDF sdkconfig generated files
+sdkconfig*
 
 # Web frontend source lives in web-src/. data/www is generated publish output.
 # Keep tracked gzip/static assets when release artifacts are intentionally updated,

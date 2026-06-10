@@ -39,7 +39,7 @@
     "allowMultipleSessions": true,
     "sessionTimeout": 3600000,
     "sessionCleanupInterval": 60000,
-    "enableSessionPersistence": true,
+    "enableSessionPersistence": false,
     "cookieName": "session",
     "cookieMaxAge": 3600,
     "cookieHttpOnly": true,

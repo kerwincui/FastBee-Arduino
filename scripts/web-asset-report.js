@@ -150,6 +150,35 @@ function createWebAssetReport(options = {}) {
     };
 }
 
+function createSourceAssetReport() {
+    const sourceTargets = [
+        path.join(ROOT_DIR, 'web-src', 'js'),
+        path.join(ROOT_DIR, 'web-src', 'i18n'),
+        path.join(ROOT_DIR, 'web-src', 'modules'),
+        path.join(ROOT_DIR, 'web-src', 'pages'),
+        path.join(ROOT_DIR, 'web-src', 'css')
+    ];
+    const files = [];
+    sourceTargets.forEach((dir) => walkDir(dir, files));
+    const assets = files
+        .filter((filePath) => ['.html', '.js', '.css', '.json'].includes(path.extname(filePath).toLowerCase()))
+        .map((filePath) => ({
+            path: path.relative(ROOT_DIR, filePath).replace(/\\/g, '/'),
+            ext: path.extname(filePath).toLowerCase(),
+            raw: sizeOf(filePath)
+        }))
+        .sort((a, b) => a.path.localeCompare(b.path));
+    const totals = assets.reduce((acc, item) => {
+        acc.raw += item.raw;
+        acc.files += 1;
+        if (!acc.byExt[item.ext]) acc.byExt[item.ext] = { files: 0, raw: 0 };
+        acc.byExt[item.ext].files += 1;
+        acc.byExt[item.ext].raw += item.raw;
+        return acc;
+    }, { files: 0, raw: 0, byExt: {} });
+    return { generatedAt: new Date().toISOString(), totals, assets };
+}
+
 function formatBytes(value) {
     if (value >= 1024 * 1024) return (value / 1024 / 1024).toFixed(2) + ' MB';
     if (value >= 1024) return (value / 1024).toFixed(1) + ' KB';
@@ -207,13 +236,68 @@ function printWebAssetReport(report) {
     ]);
 }
 
+function printSourceAssetReport(report, topN = DEFAULT_TOP_N) {
+    console.log('\nWeb source asset report');
+    console.log('=======================');
+    console.log(`Files: ${report.totals.files}`);
+    console.log(`Total raw: ${formatBytes(report.totals.raw)}`);
+
+    console.log('\nBy extension');
+    const byExtRows = Object.keys(report.totals.byExt).sort().map((ext) => {
+        const item = report.totals.byExt[ext];
+        return { ext, files: item.files, raw: item.raw };
+    });
+    printTable(byExtRows, [
+        { label: 'Ext', value: (r) => r.ext },
+        { label: 'Files', value: (r) => r.files },
+        { label: 'Raw', value: (r) => formatBytes(r.raw) }
+    ]);
+
+    console.log('\nLargest source assets');
+    const largest = report.assets
+        .slice()
+        .sort((a, b) => b.raw - a.raw)
+        .slice(0, topN);
+    printTable(largest, [
+        { label: 'File', value: (r) => r.path },
+        { label: 'Raw', value: (r) => formatBytes(r.raw) }
+    ]);
+}
+
+function parseArgs(argv) {
+    const options = {
+        source: false,
+        json: false,
+        topN: DEFAULT_TOP_N
+    };
+    argv.forEach((arg, index) => {
+        if (arg === '--source') options.source = true;
+        if (arg === '--json') options.json = true;
+        if (arg === '--top' && argv[index + 1]) options.topN = Number(argv[index + 1]);
+        if (arg.startsWith('--top=')) options.topN = Number(arg.slice('--top='.length));
+    });
+    if (!Number.isFinite(options.topN) || options.topN <= 0) {
+        options.topN = DEFAULT_TOP_N;
+    }
+    return options;
+}
+
 if (require.main === module) {
-    const report = createWebAssetReport();
-    printWebAssetReport(report);
+    const options = parseArgs(process.argv.slice(2));
+    const report = options.source ? createSourceAssetReport() : createWebAssetReport(options);
+    if (options.json) {
+        console.log(JSON.stringify(report, null, 2));
+    } else if (options.source) {
+        printSourceAssetReport(report, options.topN);
+    } else {
+        printWebAssetReport(report);
+    }
 }
 
 module.exports = {
     createWebAssetReport,
+    createSourceAssetReport,
     printWebAssetReport,
+    printSourceAssetReport,
     formatBytes
 };

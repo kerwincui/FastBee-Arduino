@@ -135,7 +135,11 @@
             const sel = (v) => actionType === String(v) ? 'selected' : '';
             var sensorCfg = {sensorCategory:'analog',periphId:'',scaleFactor:0.00080586,offset:0,decimalPlaces:2,sensorLabel:'电压',unit:'V',dataField:'voltage',deviceIndex:0};
             if (isSensorRead && data.actionValue) { try { Object.assign(sensorCfg, JSON.parse(data.actionValue)); } catch(e) {} }
-            if (!sensorCfg.dataField) sensorCfg.dataField = sensorCfg.sensorCategory === 'analog' ? 'voltage' : 'temperature';
+            if (!sensorCfg.dataField) {
+                var sensorCatLower = String(sensorCfg.sensorCategory || '').toLowerCase();
+                sensorCfg.dataField = sensorCatLower === 'analog' ? 'voltage' :
+                    (sensorCatLower === 'radar' ? 'presence' : 'temperature');
+            }
             const sensorBaseKeys = {
                 periphId: 1, sensorCategory: 1, scaleFactor: 1, offset: 1, decimalPlaces: 1,
                 sensorLabel: 1, unit: 1, dataField: 1, deviceIndex: 1
@@ -218,6 +222,8 @@
                     '<option value="dht22" ' + selCat('dht22') + '>' + i18n.t('periph-exec-sensor-cat-dht22') + '</option>' +
                     '<option value="ds18b20" ' + selCat('ds18b20') + '>' + i18n.t('periph-exec-sensor-cat-ds18b20') + '</option>' +
                     '<option value="ultrasonic" ' + selCat('ultrasonic') + '>' + (i18n.t('periph-exec-sensor-cat-ultrasonic') || 'HC-SR04 超声波') + '</option>' +
+                    '<option value="radar" ' + selCat('radar') + '>雷达存在检测</option>' +
+                    '<option value="rf" ' + selCat('rf') + '>射频接收电平</option>' +
                     '<option value="current" ' + selCat('current') + '>' + (i18n.t('periph-exec-sensor-cat-current') || '电流型传感器') + '</option>' +
                     '<option value="voltage" ' + selCat('voltage') + '>' + (i18n.t('periph-exec-sensor-cat-voltage') || '电压型传感器') + '</option>' +
                     '<option value="SHT31" ' + selCat('SHT31') + '>' + (i18n.t('periph-exec-sensor-cat-sht31') || 'SHT31 温湿度') + '</option>' +
@@ -983,7 +989,8 @@
                         sensorLabel: sensorLabel,
                         unit: sUnit
                     };
-                    sensorData.dataField = item.querySelector('.pe-sensor-datafield')?.value || (sensorCat === 'analog' ? 'voltage' : 'temperature');
+                    sensorData.dataField = item.querySelector('.pe-sensor-datafield')?.value ||
+                        (sensorCat === 'analog' ? 'voltage' : (sensorCat === 'radar' ? 'presence' : 'temperature'));
                     if (sensorCat === 'ds18b20') {
                         sensorData.deviceIndex = parseInt(item.querySelector('.pe-sensor-devindex')?.value) || 0;
                     }

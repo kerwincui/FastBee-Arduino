@@ -71,7 +71,7 @@ void UserRouteHandler::setupRoutes(AsyncWebServer* server) {
             ctx->sendError(request, 404, "User not found");
             return;
         }
-        JsonDocument doc;
+        auto doc = FastBee::makeJsonDocument();
         doc["username"] = user->username;
         doc["role"] = UserManager::roleToString(user->role);
         doc["enabled"] = user->enabled;
@@ -112,11 +112,11 @@ void UserRouteHandler::handleGetUsers(AsyncWebServerRequest* request) {
     if (page < 1) page = 1;
     if (limit < 1 || limit > 200) limit = 50;
 
-    JsonDocument doc;
+    auto doc = FastBee::makeJsonDocument(16384);
     JsonArray usersArray = doc["users"].to<JsonArray>();
 
     String usersJson = ctx->userManager->getAllUsers();
-    JsonDocument usersDoc;
+    auto usersDoc = FastBee::makeJsonDocument(16384);
     DeserializationError error = deserializeJson(usersDoc, usersJson);
     if (error) {
         ctx->sendError(request, 500, "Failed to parse users data");
@@ -309,7 +309,7 @@ void UserRouteHandler::handleGetOnlineUsers(AsyncWebServerRequest* request) {
 
     std::vector<UserSession> sessions = ctx->authManager->getActiveSessions();
 
-    JsonDocument doc;
+    auto doc = FastBee::makeJsonDocument(16384);
     JsonArray onlineUsersArray = doc["onlineUsers"].to<JsonArray>();
 
     for (const UserSession& session : sessions) {

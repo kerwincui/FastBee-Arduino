@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const { createWebAssetReport, formatBytes } = require('./web-asset-report');
 
 const ROOT_DIR = path.join(__dirname, '..');
 const WWW_DIR = path.join(ROOT_DIR, 'data', 'www');
@@ -20,14 +21,45 @@ const REQUIRED_GZIP_ASSETS = [
     'js/modules/protocol-full-config.js.gz',
     'js/modules/protocol-modbus-rtu.js.gz',
     'js/modules/protocol-modbus-control.js.gz',
+    'js/modules/device-control.js.gz',
+    'js/modules/device-control-view.js.gz',
+    'js/modules/device-control-modbus.js.gz',
+    'js/modules/device-config.js.gz',
+    'js/modules/periph-exec.js.gz',
+    'js/modules/periph-exec-form.js.gz',
+    'js/modules/periph-exec-modbus.js.gz',
+    'js/modules/network.js.gz',
+    'js/modules/admin-bundle.js.gz',
+    'js/modules/files.js.gz',
+    'js/modules/logs.js.gz',
+    'js/modules/roles.js.gz',
+    'js/modules/rule-script.js.gz',
+    'js/modules/users.js.gz',
     'pages/dashboard.html.gz',
     'pages/device.html.gz',
+    'pages/network.html.gz',
+    'pages/peripheral.html.gz',
     'pages/protocol.html.gz',
+    'pages/admin.html.gz',
+    'pages/logs.html.gz',
+    'pages/rule-script.html.gz',
+    'pages/fullscreen.html.gz',
+    'pages/modals.html.gz',
+    'pages/fragments/device-ota.html.gz',
+    'pages/fragments/protocol-coap.html.gz',
+    'pages/fragments/protocol-http.html.gz',
     'pages/fragments/protocol-mqtt.html.gz',
-    'pages/fragments/protocol-modbus-rtu.html.gz'
+    'pages/fragments/protocol-modbus-rtu.html.gz',
+    'pages/fragments/protocol-tcp.html.gz'
 ];
 
 const COMPRESSIBLE_EXTENSIONS = new Set(['.html', '.css', '.js']);
+const WEB_ASSET_BUDGETS = {
+    totalGzip: 280 * 1024,
+    bootGzip: 64 * 1024,
+    singleAssetGzip: 32 * 1024,
+    pageBundleGzip: 14 * 1024
+};
 const failures = [];
 
 function normalizeRel(filePath) {
@@ -110,7 +142,10 @@ function checkUiRegressionGuards(files) {
     const protocolFull = readGzipText('js/modules/protocol-full-config.js.gz');
     const modbusRtu = readGzipText('js/modules/protocol-modbus-rtu.js.gz');
     const devicePage = readGzipText('pages/device.html.gz');
+    const serviceWorker = readGzipText('sw.js.gz');
 
+    assert(serviceWorker.includes('withCacheTimestamp'), 'service worker cache timestamp helper missing');
+    assert(serviceWorker.includes('sw-cached-at'), 'service worker cache timestamp header missing');
     assert(allJs.includes('apiBatchGetMany'), 'batchGetMany API missing from built JS');
     assert(allJs.includes('Request result ignored after page navigation'), 'page-navigation stale response guard missing');
     assert(protocolEntry.includes('_setProtocolFragmentLoading'), 'protocol loading placeholder helper missing');
@@ -125,6 +160,64 @@ function checkUiRegressionGuards(files) {
     assert(devicePage.includes('dev-basic-footer-field'), 'device basic footer layout class missing');
 }
 
+function checkPaginationRegressionGuards(files) {
+    const allJs = files
+        .map(normalizeRel)
+        .filter((relPath) => relPath.endsWith('.js.gz'))
+        .map(readGzipText)
+        .join('\n');
+
+    // Pagination component must exist
+    assert(allJs.includes('renderPagination'), 'renderPagination helper missing from built JS');
+    assert(allJs.includes('u-pagination'), 'pagination CSS class missing from built JS');
+    assert(allJs.includes('onPageChange'), 'pagination onPageChange callback missing');
+
+    // Peripheral config pagination
+    assert(allJs.includes('_periphCurrentPage'), 'peripheral config page state missing');
+    assert(allJs.includes('_periphPageSize') || allJs.includes('periphPageSize'), 'peripheral config pageSize state missing');
+    assert(allJs.includes('periph-pagination'), 'peripheral pagination container ID missing');
+
+    // Periph-exec pagination
+    assert(allJs.includes('_peCurrentPage'), 'periph-exec page state missing');
+    assert(allJs.includes('_pePageSize') || allJs.includes('pePageSize'), 'periph-exec pageSize state missing');
+    assert(allJs.includes('periph-exec-pagination'), 'periph-exec pagination container ID missing');
+
+    // API URL must include pagination params
+    assert(allJs.includes('page=') && allJs.includes('pageSize='), 'API pagination query params missing from JS');
+
+    // Pagination uses server-returned total for page calculation
+    assert(allJs.includes('totalPages') || allJs.includes('Math.ceil'), 'pagination page calculation logic missing');
+}
+
+function checkAssetBudgets() {
+    const report = createWebAssetReport({ topN: 999 });
+
+    assert(
+        report.totals.gzip <= WEB_ASSET_BUDGETS.totalGzip,
+        `web total gzip ${formatBytes(report.totals.gzip)} exceeds budget ${formatBytes(WEB_ASSET_BUDGETS.totalGzip)}`
+    );
+    assert(
+        report.boot.gzip <= WEB_ASSET_BUDGETS.bootGzip,
+        `boot gzip ${formatBytes(report.boot.gzip)} exceeds budget ${formatBytes(WEB_ASSET_BUDGETS.bootGzip)}`
+    );
+
+    const oversizedAssets = report.largest.filter((item) => {
+        return (item.gzip || item.raw) > WEB_ASSET_BUDGETS.singleAssetGzip;
+    });
+    assert(
+        oversizedAssets.length === 0,
+        `oversized web assets: ${oversizedAssets.map((item) => `${item.path}=${formatBytes(item.gzip || item.raw)}`).join(', ')}`
+    );
+
+    const oversizedBundles = report.pageBundles.filter((item) => {
+        return item.gzip > WEB_ASSET_BUDGETS.pageBundleGzip;
+    });
+    assert(
+        oversizedBundles.length === 0,
+        `runtime bundle gzip exceeds budget: ${oversizedBundles.map((item) => `${item.path}=${formatBytes(item.gzip)}`).join(', ')}`
+    );
+}
+
 function run() {
     const files = [];
     walkDir(WWW_DIR, files);
@@ -133,6 +226,8 @@ function run() {
     checkCompressedOnly(files);
     checkJavascriptSyntax(files);
     checkUiRegressionGuards(files);
+    checkPaginationRegressionGuards(files);
+    checkAssetBudgets();
 
     if (failures.length > 0) {
         console.error(`\nWeb smoke test failed: ${failures.length} issue(s)`);

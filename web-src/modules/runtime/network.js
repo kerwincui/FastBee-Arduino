@@ -13,6 +13,11 @@
                 networkType.addEventListener('change', (e) => this._onNetworkTypeChange(e.target.value));
             }
 
+            const networkTypeSaveBtn = document.getElementById('network-type-save-btn');
+            if (networkTypeSaveBtn) {
+                networkTypeSaveBtn.addEventListener('click', () => this.saveActiveNetworkConfig());
+            }
+
             // WiFi扫描按钮
             const wifiScanBtn = document.getElementById('wifi-scan-btn');
             if (wifiScanBtn) wifiScanBtn.addEventListener('click', () => this.scanWifiNetworks());
@@ -94,6 +99,45 @@
             const panelMap = { '0': 'wifi-panel', '1': 'ethernet-panel', '2': 'cellular-panel', '3': 'lora-panel' };
             const target = document.getElementById(panelMap[value] || 'wifi-panel');
             if (target) this.showElement(target, 'block');
+
+            // WiFi扫描按钮仅在WiFi模式下显示
+            const wifiScanGroup = document.getElementById('wifi-scan-group');
+            if (wifiScanGroup) {
+                if (value === '0') {
+                    this.showElement(wifiScanGroup, 'block');
+                } else {
+                    this.hideElement(wifiScanGroup);
+                }
+            }
+
+            // 动态调整高级配置内容显示
+            // IP配置部分：仅WiFi和以太网需要DHCP/静态IP配置
+            const ipConfigSection = document.querySelector('#advance .fb-section-title');
+            if (ipConfigSection) {
+                const ipContainer = ipConfigSection.parentElement;
+                const ipGrid = ipConfigSection.nextElementSibling;
+                const showIpConfig = (value === '0' || value === '1');
+                if (ipConfigSection) ipConfigSection.style.display = showIpConfig ? '' : 'none';
+                if (ipGrid && ipGrid.classList.contains('config-form-grid')) {
+                    ipGrid.style.display = showIpConfig ? '' : 'none';
+                }
+            }
+
+            // 连接设置部分：仅WiFi模式需要超时/重连配置
+            const connSettings = document.querySelectorAll('#advance .fb-section-title-mt');
+            if (connSettings.length >= 2) {
+                const connTitle = connSettings[1];
+                const connGrid = connTitle.nextElementSibling;
+                const showConnConfig = (value === '0');
+                if (connTitle) connTitle.style.display = showConnConfig ? '' : 'none';
+                if (connGrid && connGrid.classList.contains('config-form-grid')) {
+                    connGrid.style.display = showConnConfig ? '' : 'none';
+                }
+            }
+
+            const saveBtn = document.getElementById('network-type-save-btn');
+            if (saveBtn) saveBtn.disabled = false;
+            setTimeout(() => this.loadNetworkStatus(), 300);
         },
 
         _renderWifiNote(text) {
@@ -114,7 +158,6 @@
 
         _renderWifiScanState(message, detail) {
             let html = '<div class="wifi-scan-state is-error">' +
-                '<i class="fas fa-exclamation-circle wifi-scan-state-icon"></i>' +
                 '<div class="wifi-scan-state-text">' + message + '</div>';
             if (detail) {
                 html += '<div class="wifi-scan-state-detail">' + detail + '</div>';
@@ -125,8 +168,8 @@
 
         _getWifiLockIcon(isEncrypted) {
             return isEncrypted
-                ? '<i class="fas fa-lock wifi-lock-icon-secure"></i>'
-                : '<i class="fas fa-lock-open wifi-lock-icon-open"></i>';
+                ? '<span class="wifi-lock-icon-secure">🔒</span>'
+                : '<span class="wifi-lock-icon-open">🔓</span>';
         },
 
         _ensureWifiModalEvents(modal) {
@@ -257,6 +300,24 @@
         /**
          * 保存基本网络配置
          */
+        saveActiveNetworkConfig() {
+            const networkType = document.getElementById('network-type')?.value || '0';
+            switch (networkType) {
+                case '1':
+                    return this.saveEthernetConfig();
+                case '2':
+                    return this.saveCellularConfig();
+                case '3':
+                    return this.saveLoRaConfig();
+                default:
+                    return this.saveNetworkConfig();
+            }
+        },
+
+        _refreshNetworkStatusSoon(delayMs) {
+            setTimeout(() => this.loadNetworkStatus(), delayMs || 800);
+        },
+
         saveNetworkConfig() {
             const config = {
                 networkType: document.getElementById('network-type')?.value || '0',
@@ -493,12 +554,13 @@
             apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success('以太网配置已保存', '网络设置');
+                        Notification.success(i18n.t('wifi-save-ok'), i18n.t('net-settings-title'));
+                        this._refreshNetworkStatusSoon(1200);
                     } else {
-                        Notification.error(res?.error || '保存失败', '网络设置');
+                        Notification.error(res?.error || i18n.t('net-save-fail'), i18n.t('net-settings-title'));
                     }
                 })
-                .catch(() => Notification.error('保存失败', '网络设置'));
+                .catch(() => Notification.error(i18n.t('net-save-fail'), i18n.t('net-settings-title')));
         },
 
         /**
@@ -518,12 +580,13 @@
             apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success('4G配置已保存', '网络设置');
+                        Notification.success(i18n.t('wifi-save-ok'), i18n.t('net-settings-title'));
+                        this._refreshNetworkStatusSoon(1200);
                     } else {
-                        Notification.error(res?.error || '保存失败', '网络设置');
+                        Notification.error(res?.error || i18n.t('net-save-fail'), i18n.t('net-settings-title'));
                     }
                 })
-                .catch(() => Notification.error('保存失败', '网络设置'));
+                .catch(() => Notification.error(i18n.t('net-save-fail'), i18n.t('net-settings-title')));
         },
 
         /**
@@ -542,12 +605,13 @@
             apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success('LoRa配置已保存', '网络设置');
+                        Notification.success(i18n.t('wifi-save-ok'), i18n.t('net-settings-title'));
+                        this._refreshNetworkStatusSoon(1200);
                     } else {
-                        Notification.error(res?.error || '保存失败', '网络设置');
+                        Notification.error(res?.error || i18n.t('net-save-fail'), i18n.t('net-settings-title'));
                     }
                 })
-                .catch(() => Notification.error('保存失败', '网络设置'));
+                .catch(() => Notification.error(i18n.t('net-save-fail'), i18n.t('net-settings-title')));
         },
 
         /**
@@ -607,7 +671,7 @@
                                     </div>
                                 </div>
                                 <div class="wifi-signal ${signalClass}">
-                                    <i class="fas fa-signal"></i> ${net.rssi} dBm
+                                    ${net.rssi} dBm
                                 </div>
                             </div>
                         `;
@@ -654,14 +718,53 @@
         /**
          * 加载并显示网络状态
          */
-        loadNetworkStatus() {
+        loadNetworkStatus(retryCount) {
+            retryCount = retryCount || 0;
             apiGet('/api/network/status')
                 .then(res => {
-                    if (!res || !res.success || !res.data) return;
+                    if (!res || !res.success || !res.data) {
+                        // 响应无效，重试一次
+                        if (retryCount < 2) {
+                            setTimeout(() => this.loadNetworkStatus(retryCount + 1), 2000);
+                        } else {
+                            this._loadNetworkStatusFallback();
+                        }
+                        return;
+                    }
                     this._updateNetworkStatus(res.data);
                 })
                 .catch(err => {
                     console.error('Failed to load network status:', err);
+                    // 网络错误时重试（可能是内存压力导致503）
+                    if (retryCount < 2) {
+                        setTimeout(() => this.loadNetworkStatus(retryCount + 1), 3000);
+                    } else {
+                        this._loadNetworkStatusFallback();
+                    }
+                });
+        },
+
+        _loadNetworkStatusFallback() {
+            const getter = (typeof apiGetSilentFresh === 'function')
+                ? apiGetSilentFresh
+                : (typeof apiGetFresh === 'function' ? apiGetFresh : apiGet);
+            getter('/api/system/status')
+                .then(res => {
+                    if (!res || !res.success || !res.data) return;
+                    const d = res.data || {};
+                    this._updateNetworkStatus({
+                        status: d.networkConnected ? 'connected' : 'disconnected',
+                        mode: 'STA',
+                        deviceNetworkType: 0,
+                        ssid: d.ssid || '',
+                        ipAddress: d.ipAddress || '',
+                        rssi: d.rssi || 0,
+                        signalStrength: d.rssi ? Math.max(0, Math.min(100, Math.round((Number(d.rssi) + 100) * 2))) : 0,
+                        connectedTime: d.uptime ? Math.floor(Number(d.uptime) / 1000) : 0
+                    });
+                })
+                .catch(err => {
+                    console.warn('Network status fallback failed:', err);
                 });
         },
 
@@ -669,8 +772,11 @@
          * 更新网络状态显示
          */
         _updateNetworkStatus(data) {
+            // 优先使用API返回的设备实际联网类型，若无则回退到选择框值
             const networkType = document.getElementById('network-type');
-            const typeValue = networkType ? networkType.value : '0';
+            const typeValue = (data.deviceNetworkType !== undefined)
+                ? data.deviceNetworkType.toString()
+                : (networkType ? networkType.value : '0');
 
             // 隐藏所有状态面板
             ['wifi-status-panel', 'ethernet-status-panel', 'cellular-status-panel', 'lora-status-panel'].forEach(id => {
@@ -704,9 +810,10 @@
          */
         _updateWifiStatus(data) {
             const statusBadge = document.getElementById('wifi-status-badge');
+            const status = data.status || ((data.connected || data.networkConnected || data.ipAddress) ? 'connected' : 'disconnected');
             if (statusBadge) {
                 statusBadge.className = 'status-badge';
-                switch(data.status) {
+                switch(status) {
                     case 'connected':
                         statusBadge.classList.add('status-connected');
                         statusBadge.textContent = i18n.t('net-status-connected') || '已连接';
@@ -726,7 +833,7 @@
             }
 
             document.getElementById('wifi-mode-display').textContent = data.mode || '--';
-            document.getElementById('wifi-ssid-display').textContent = data.ssid || '--';
+            document.getElementById('wifi-ssid-display').textContent = data.ssid || data.staSSID || '--';
             document.getElementById('wifi-ip-display').textContent = data.ipAddress || '--';
             
             // 信号强度
@@ -870,19 +977,11 @@
             const refreshBtn = document.getElementById('refresh-status-btn');
             if (refreshBtn) {
                 refreshBtn.addEventListener('click', () => {
-                    refreshBtn.classList.add('fa-spin');
+                    refreshBtn.disabled = true;
                     this.loadNetworkStatus();
                     setTimeout(() => {
-                        refreshBtn.classList.remove('fa-spin');
-                    }, 1000);
-                });
-            }
-
-            // 联网方式切换时也刷新状态
-            const networkType = document.getElementById('network-type');
-            if (networkType) {
-                networkType.addEventListener('change', () => {
-                    setTimeout(() => this.loadNetworkStatus(), 300);
+                        refreshBtn.disabled = false;
+                    }, 1500);
                 });
             }
 

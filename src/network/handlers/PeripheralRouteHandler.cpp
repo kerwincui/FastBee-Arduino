@@ -9,6 +9,16 @@
 #include <vector>
 #include "systems/LoggerSystem.h"
 
+namespace {
+bool isListMemoryCriticallyLow() {
+    return ESP.getFreeHeap() < 4096 || ESP.getMaxAllocHeap() < 1536;
+}
+
+bool shouldForceCompactList() {
+    return ESP.getFreeHeap() < 16384 || ESP.getMaxAllocHeap() < 8192;
+}
+}
+
 PeripheralRouteHandler::PeripheralRouteHandler(WebHandlerContext* ctx)
     : ctx(ctx) {
 }
@@ -98,14 +108,16 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         return;
     }
 
-    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Peripheral list", MemoryGuardLevel::SEVERE, 8)) {
+    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Peripheral list", MemoryGuardLevel::CRITICAL, 5)) {
         return;
     }
 
     String typeFilter = ctx->getParamValue(request, "type", "");
     String categoryFilter = ctx->getParamValue(request, "category", "");
     bool enabledOnly = ctx->getParamValue(request, "enabledOnly", "0") == "1";
-    bool compact = ctx->getParamValue(request, "compact", "0") == "1";
+    bool requestedCompact = ctx->getParamValue(request, "compact", "0") == "1";
+    bool degraded = shouldForceCompactList();
+    bool compact = requestedCompact || degraded;
 
     // 使用指针向量代替深拷贝，大幅减少内存占用（38个外设：指针~152B vs 拷贝~6KB）
     std::vector<const PeripheralConfig*> ptrs;
@@ -161,15 +173,30 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
     if (request->hasParam("pageSize")) {
         pageSize = request->getParam("pageSize")->value().toInt();
         if (pageSize < 1) pageSize = 1;
-        if (pageSize > (compact ? 100 : 50)) pageSize = compact ? 100 : 50;
+        if (pageSize > (compact ? 50 : 20)) pageSize = compact ? 50 : 20;
     }
 
-    // 计算分页范围
-    int startIdx = (page - 1) * pageSize;
-    int endIdx = (startIdx < total) ? std::min(startIdx + pageSize, total) : startIdx;
+    // degraded 模式：统一使用 effectivePageSize 作为分页步长，
+    // startIdx/endIdx/返回pageSize 三者一致，避免数据间隙（items被跳过无法显示）。
+    // 前端通过响应中的 pageSize 字段重新计算 totalPages，确保所有数据可达。
+    int effectivePageSize = pageSize;
+    if (degraded && effectivePageSize > 5) {
+        effectivePageSize = 5;
+    }
 
-    // 检查堆内存是否充足
-    if (HandlerUtils::checkLowMemory(request, compact ? 8192 : 12288)) return;
+    // 计算分页范围（统一使用 effectivePageSize）
+    int startIdx = (page - 1) * effectivePageSize;
+    int endIdx = (startIdx < total) ? std::min(startIdx + effectivePageSize, total) : startIdx;
+
+    // Chunked responses can operate with small contiguous blocks. Only reject
+    // when even per-item scratch strings are likely to fail.
+    if (isListMemoryCriticallyLow()) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Low memory: heap=%lu maxAlloc=%lu",
+                 (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
+        HandlerUtils::sendJsonError(request, 503, msg, 5);
+        return;
+    }
     
     // 两遍法：先序列化每个项计算精确大小，再用精确 reserve 构建响应
     int itemCount = endIdx - startIdx;
@@ -216,7 +243,7 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
     // 新方案：items 已在 vector<String> 中，按 index 按需复制到 TCP 发送缓冲（~256B），
     //         堆峰 = items 合计（~6KB），不再产生额外大 String。
     size_t freeHeap = ESP.getFreeHeap();
-    if (freeHeap < 8192) {
+    if (freeHeap < 4096) {
         LOG_ERRORF("[Periph] Low heap for chunked response: free=%u", (unsigned)freeHeap);
         HandlerUtils::sendJsonError(request, 503, "Low memory for response");
         return;
@@ -234,7 +261,10 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
     header += F(",\"page\":");
     header += String(page);
     header += F(",\"pageSize\":");
-    header += String(pageSize);
+    header += String(effectivePageSize);
+    if (degraded) {
+        header += F(",\"degraded\":true");
+    }
     header += F(",\"profile\":{\"name\":\"");
     header += FastBee::ResourceProfile::NAME;
     header += F("\",\"max\":");
@@ -318,6 +348,14 @@ void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* req
         typeObj["name"] = getPeripheralTypeName(type);
         typeObj["pinCount"] = getPeripheralPinCount(type);
     }
+    const int extraSpecialTypes[] = {47, 48, 49, 51, 60};
+    for (int value : extraSpecialTypes) {
+        PeripheralType type = static_cast<PeripheralType>(value);
+        JsonObject typeObj = specialTypes.add<JsonObject>();
+        typeObj["value"] = value;
+        typeObj["name"] = getPeripheralTypeName(type);
+        typeObj["pinCount"] = getPeripheralPinCount(type);
+    }
 
     HandlerUtils::sendJsonStream(request, doc);
 }
@@ -392,6 +430,17 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
     } else if (config->type == PeripheralType::NEO_PIXEL) {
         params["count"] = config->params.neopixel.count;
         params["brightness"] = config->params.neopixel.brightness;
+    } else if (config->type == PeripheralType::RF_MODULE) {
+        params["mode"] = config->params.rf.mode;
+        params["pulseWidth"] = config->params.rf.pulseWidth;
+        params["repeat"] = config->params.rf.repeat;
+        params["bitLength"] = config->params.rf.bitLength;
+        params["activeHigh"] = config->params.rf.activeHigh;
+    } else if (config->type == PeripheralType::RADAR_SENSOR) {
+        params["mode"] = config->params.radar.mode;
+        params["activeHigh"] = config->params.radar.activeHigh;
+        params["debounceMs"] = config->params.radar.debounceMs;
+        params["holdMs"] = config->params.radar.holdMs;
     }
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
     else if (config->type == PeripheralType::SEVEN_SEGMENT_TM1637) {
@@ -476,6 +525,34 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
         if (brightness > 255) brightness = 255;
         config.params.neopixel.count = (uint16_t)count;
         config.params.neopixel.brightness = (uint8_t)brightness;
+    } else if (config.type == PeripheralType::RF_MODULE) {
+        int mode = ctx->getParamInt(request, "mode", 0);
+        int pulseWidth = ctx->getParamInt(request, "pulseWidth", 350);
+        int repeat = ctx->getParamInt(request, "repeat", 8);
+        int bitLength = ctx->getParamInt(request, "bitLength", 24);
+        if (mode != 1) mode = 0;
+        if (pulseWidth < 100) pulseWidth = 350;
+        if (pulseWidth > 2000) pulseWidth = 2000;
+        if (repeat < 1) repeat = 8;
+        if (repeat > 20) repeat = 20;
+        if (bitLength < 1) bitLength = 24;
+        if (bitLength > 32) bitLength = 32;
+        config.params.rf.mode = (uint8_t)mode;
+        config.params.rf.pulseWidth = (uint16_t)pulseWidth;
+        config.params.rf.repeat = (uint8_t)repeat;
+        config.params.rf.bitLength = (uint8_t)bitLength;
+        config.params.rf.activeHigh = ctx->getParamBool(request, "activeHigh", true);
+    } else if (config.type == PeripheralType::RADAR_SENSOR) {
+        int debounceMs = ctx->getParamInt(request, "debounceMs", 50);
+        int holdMs = ctx->getParamInt(request, "holdMs", 2000);
+        if (debounceMs < 0) debounceMs = 0;
+        if (debounceMs > 5000) debounceMs = 5000;
+        if (holdMs < 0) holdMs = 0;
+        if (holdMs > 60000) holdMs = 60000;
+        config.params.radar.mode = 0;
+        config.params.radar.activeHigh = ctx->getParamBool(request, "activeHigh", true);
+        config.params.radar.debounceMs = (uint16_t)debounceMs;
+        config.params.radar.holdMs = (uint16_t)holdMs;
     }
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
     else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
@@ -590,6 +667,34 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
         if (brightness > 255) brightness = 255;
         config.params.neopixel.count = (uint16_t)count;
         config.params.neopixel.brightness = (uint8_t)brightness;
+    } else if (config.type == PeripheralType::RF_MODULE) {
+        int mode = ctx->getParamInt(request, "mode", config.params.rf.mode);
+        int pulseWidth = ctx->getParamInt(request, "pulseWidth", config.params.rf.pulseWidth ? config.params.rf.pulseWidth : 350);
+        int repeat = ctx->getParamInt(request, "repeat", config.params.rf.repeat ? config.params.rf.repeat : 8);
+        int bitLength = ctx->getParamInt(request, "bitLength", config.params.rf.bitLength ? config.params.rf.bitLength : 24);
+        if (mode != 1) mode = 0;
+        if (pulseWidth < 100) pulseWidth = 350;
+        if (pulseWidth > 2000) pulseWidth = 2000;
+        if (repeat < 1) repeat = 8;
+        if (repeat > 20) repeat = 20;
+        if (bitLength < 1) bitLength = 24;
+        if (bitLength > 32) bitLength = 32;
+        config.params.rf.mode = (uint8_t)mode;
+        config.params.rf.pulseWidth = (uint16_t)pulseWidth;
+        config.params.rf.repeat = (uint8_t)repeat;
+        config.params.rf.bitLength = (uint8_t)bitLength;
+        config.params.rf.activeHigh = ctx->getParamBool(request, "activeHigh", config.params.rf.activeHigh);
+    } else if (config.type == PeripheralType::RADAR_SENSOR) {
+        int debounceMs = ctx->getParamInt(request, "debounceMs", config.params.radar.debounceMs ? config.params.radar.debounceMs : 50);
+        int holdMs = ctx->getParamInt(request, "holdMs", config.params.radar.holdMs ? config.params.radar.holdMs : 2000);
+        if (debounceMs < 0) debounceMs = 0;
+        if (debounceMs > 5000) debounceMs = 5000;
+        if (holdMs < 0) holdMs = 0;
+        if (holdMs > 60000) holdMs = 60000;
+        config.params.radar.mode = 0;
+        config.params.radar.activeHigh = ctx->getParamBool(request, "activeHigh", config.params.radar.activeHigh);
+        config.params.radar.debounceMs = (uint16_t)debounceMs;
+        config.params.radar.holdMs = (uint16_t)holdMs;
     }
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
     else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
@@ -648,7 +753,11 @@ void PeripheralRouteHandler::handleEnablePeripheral(AsyncWebServerRequest* reque
         pm.saveConfiguration();
         ctx->sendSuccess(request, "Peripheral enabled");
     } else {
-        ctx->sendError(request, 400, "Failed to enable peripheral");
+        String errMsg = "Failed to enable peripheral";
+        if (pm.lastEnableError.length() > 0) {
+            errMsg += ": " + pm.lastEnableError;
+        }
+        ctx->sendError(request, 400, errMsg.c_str());
     }
 }
 
@@ -781,6 +890,26 @@ void PeripheralRouteHandler::handleReadPeripheral(AsyncWebServerRequest* request
             data["hex"] = "";
             data["length"] = 0;
         }
+    } else if (config->type == PeripheralType::RADAR_SENSOR) {
+        bool detected = false;
+        if (pm.readRadarState(id, detected)) {
+            data["detected"] = detected;
+            data["value"] = detected ? 1 : 0;
+            data["stateName"] = detected ? "DETECTED" : "CLEAR";
+        } else {
+            data["detected"] = nullptr;
+            data["value"] = nullptr;
+        }
+    } else if (config->type == PeripheralType::RF_MODULE) {
+        bool level = false;
+        if (pm.readRfLevel(id, level)) {
+            data["level"] = level;
+            data["value"] = level ? 1 : 0;
+            data["stateName"] = level ? "ACTIVE" : "IDLE";
+        } else {
+            data["level"] = nullptr;
+            data["value"] = nullptr;
+        }
     } else if (config->type == PeripheralType::DAC) {
         data["channel"] = config->params.dac.channel;
         data["pin"] = config->getPrimaryPin();
@@ -860,6 +989,25 @@ void PeripheralRouteHandler::handleWritePeripheral(AsyncWebServerRequest* reques
             ctx->sendError(request, 400, "Missing value parameter");
             return;
         }
+    } else if (config->type == PeripheralType::RF_MODULE) {
+        String code = ctx->getParamValue(request, "code", "");
+        if (code.isEmpty()) code = ctx->getParamValue(request, "data", "");
+        if (code.isEmpty()) code = ctx->getParamValue(request, "value", "");
+        if (code.isEmpty()) {
+            ctx->sendError(request, 400, "Missing code parameter");
+            return;
+        }
+        int bits = ctx->getParamInt(request, "bits", 0);
+        int pulseWidth = ctx->getParamInt(request, "pulseWidth", 0);
+        int repeat = ctx->getParamInt(request, "repeat", 0);
+        if (bits < 0) bits = 0;
+        if (bits > 32) bits = 32;
+        if (pulseWidth < 0) pulseWidth = 0;
+        if (pulseWidth > 2000) pulseWidth = 2000;
+        if (repeat < 0) repeat = 0;
+        if (repeat > 20) repeat = 20;
+        success = pm.sendRfCode(id, code, (uint8_t)bits, (uint16_t)pulseWidth, (uint8_t)repeat);
+        message = success ? "RF code sent" : "RF send failed";
     } else if (config->isCommunicationPeripheral()) {
         if (request->hasParam("data", true)) {
             String dataStr = ctx->getParamValue(request, "data", "");

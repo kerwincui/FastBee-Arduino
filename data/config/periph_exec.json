@@ -114,7 +114,7 @@
     {
       "id": "exec_2147281",
       "name": "设备重启",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
@@ -148,7 +148,7 @@
     {
       "id": "exec_2451103",
       "name": "设备恢复出厂设置",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
@@ -182,7 +182,7 @@
     {
       "id": "exec_2498615",
       "name": "NTP时间同步",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
@@ -216,7 +216,7 @@
     {
       "id": "exec_2612316",
       "name": "继电器打开",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
@@ -250,7 +250,7 @@
     {
       "id": "exec_2666607",
       "name": "继电器关闭",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
@@ -284,7 +284,7 @@
     {
       "id": "exec_2984818",
       "name": "OTA升级",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
@@ -318,7 +318,7 @@
     {
       "id": "exec_313227",
       "name": "风机订阅PWM",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
@@ -352,7 +352,7 @@
     {
       "id": "exec_502689",
       "name": "加湿器订阅打开",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
@@ -386,7 +386,7 @@
     {
       "id": "exec_521094",
       "name": "加湿器订阅关闭",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
@@ -420,7 +420,7 @@
     {
       "id": "exec_5294488",
       "name": "按键控制继电器打开",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
@@ -454,7 +454,7 @@
     {
       "id": "exec_5960292",
       "name": "按键控制继电器关闭",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
@@ -556,7 +556,7 @@
     {
       "id": "exec_oled_show",
       "name": "OLED温湿度显示",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
@@ -590,7 +590,7 @@
     {
       "id": "exec_tm1637_show",
       "name": "数码管温湿度轮换显示",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {
@@ -632,7 +632,7 @@
     {
       "id": "exec_903001",
       "name": "采集温湿度",
-      "enabled": true,
+      "enabled": false,
       "execMode": 0,
       "triggers": [
         {

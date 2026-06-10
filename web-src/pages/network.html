@@ -9,9 +9,7 @@
             <div id="network-status-card" class="fb-status-card fb-mb-3">
                 <div class="status-header">
                     <h3 class="status-title" data-i18n="network-status-title">网络连接状态</h3>
-                    <button id="refresh-status-btn" class="fb-btn fb-btn-sm fb-btn-outline" title="刷新状态">
-                        <i class="fas fa-sync-alt"></i>
-                    </button>
+                    <button id="refresh-status-btn" class="fb-btn fb-btn-refresh" title="刷新状态"><span data-i18n="refresh-btn">刷新</span></button>
                 </div>
                 
                 <!-- WiFi 状态面板 -->
@@ -171,26 +169,33 @@
 
             <!-- 基本配置 -->
             <div id="base" class="config-content active">
-                <!-- 联网方式选择 -->
-                <div class="fb-form-group fb-mb-3">
-                    <label for="network-type" data-i18n="net-type-label">联网方式</label>
-                    <select id="network-type" class="">
-                        <option value="0" selected data-i18n="net-type-wifi">WiFi</option>
-                        <option value="1" data-i18n="net-type-ethernet">以太网 (W5500)</option>
-                        <option value="2" data-i18n="net-type-4g">4G蜂窝 (EC801E)</option>
-                        <option value="3" data-i18n="net-type-lora">LoRa 网关透传</option>
-                    </select>
+                <!-- 联网方式 + WiFi选择并排布局 -->
+                <div class="config-form-grid fb-mb-3">
+                    <div class="config-form-column">
+                        <div class="fb-form-group">
+                            <label for="network-type" data-i18n="net-type-label">联网方式</label>
+                            <select id="network-type" class="">
+                                <option value="0" selected data-i18n="net-type-wifi">WiFi</option>
+                                <option value="1" data-i18n="net-type-ethernet">以太网 (W5500)</option>
+                                <option value="2" data-i18n="net-type-4g">4G蜂窝 (EC801E)</option>
+                                <option value="3" data-i18n="net-type-lora">LoRa 网关透传</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="config-form-column">
+                        <!-- WiFi选择按钮（仅WiFi模式显示） -->
+                        <div id="wifi-scan-group" class="fb-form-group">
+                            <label data-i18n="wifi-scan-label">选择网络</label>
+                            <button id="wifi-scan-btn" type="button" class="fb-btn fb-btn-refresh"
+                                data-i18n="wifi-scan-btn">
+                                选择Wifi网络
+                            </button>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- WiFi 配置面板 -->
                 <div id="wifi-panel">
-                    <!-- WiFi选择按钮 -->
-                    <div class="wifi-config fb-mb-3">
-                        <button id="wifi-scan-btn" class="fb-btn fb-btn-refresh"
-                            data-i18n="wifi-scan-btn">
-                            选择Wifi网络
-                        </button>
-                    </div>
 
                 <form id="wifi-form" class="fb-form">
                     <div class="config-form-grid">
@@ -242,12 +247,12 @@
                         Wifi配置保存失败！</div>
                     <!-- 网络模式切换提醒区域 -->
                     <div class="message message-info fb-hidden fb-mt-3" id="wifi-mode-notice">
-                        <i class="fas fa-info-circle"></i> <span id="wifi-mode-notice-text"></span>
+                        <span id="wifi-mode-notice-text"></span>
                     </div>
 
                     <div class="fb-mt-4 u-action-row">
                         <button type="submit" id="wifi-save-btn" class="fb-btn fb-btn-primary fb-btn-compact">
-                            <i class="fas fa-save"></i> <span id="wifi-save-btn-text"
+                            <span id="wifi-save-btn-text"
                                 data-i18n="save-config-btn">保存配置</span>
                         </button>
                     </div>
@@ -290,7 +295,7 @@
                         </div>
                         <div class="fb-mt-4 u-action-row">
                             <button type="submit" class="fb-btn fb-btn-primary fb-btn-compact">
-                                <i class="fas fa-save"></i> <span data-i18n="save-config-btn">保存配置</span>
+                                <span data-i18n="save-config-btn">保存配置</span>
                             </button>
                         </div>
                     </form>
@@ -328,7 +333,7 @@
                         </div>
                         <div class="fb-mt-4 u-action-row">
                             <button type="submit" class="fb-btn fb-btn-primary fb-btn-compact">
-                                <i class="fas fa-save"></i> <span data-i18n="save-config-btn">保存配置</span>
+                                <span data-i18n="save-config-btn">保存配置</span>
                             </button>
                         </div>
                     </form>
@@ -362,7 +367,7 @@
                         </div>
                         <div class="fb-mt-4 u-action-row">
                             <button type="submit" class="fb-btn fb-btn-primary fb-btn-compact">
-                                <i class="fas fa-save"></i> <span data-i18n="save-config-btn">保存配置</span>
+                                <span data-i18n="save-config-btn">保存配置</span>
                             </button>
                         </div>
                     </form>
@@ -449,7 +454,7 @@
 
                     <div class="fb-mt-4 u-action-row">
                         <button type="submit" class="fb-btn fb-btn-primary fb-btn-compact">
-                            <i class="fas fa-save"></i> <span
+                            <span
                                 data-i18n="save-config-btn">保存配置</span>
                         </button>
                     </div>
@@ -583,7 +588,7 @@
 
                     <div class="fb-mt-4 u-action-row">
                         <button type="submit" class="fb-btn fb-btn-primary fb-btn-compact">
-                            <i class="fas fa-save"></i> <span
+                            <span
                                 data-i18n="save-config-btn">保存配置</span>
                         </button>
                     </div>

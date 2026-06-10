@@ -90,6 +90,7 @@ public:
     bool enablePeripheral(const String& id);
     bool disablePeripheral(const String& id);
     bool isPeripheralEnabled(const String& id) const;
+    String lastEnableError;  // 最近一次 enablePeripheral 失败原因
     
     // 获取外设状态
     PeripheralStatus getPeripheralStatus(const String& id) const;
@@ -227,6 +228,14 @@ public:
 
     // WS2812B / NeoPixel 控制（RMT 非阻塞发送，规则层定时调用可实现循环）
     bool controlNeoPixel(const String& id, const String& action, const String& value = "");
+
+    // 433MHz RF module helpers
+    bool sendRfCode(const String& id, const String& code,
+                    uint8_t bitLength = 0, uint16_t pulseWidth = 0, uint8_t repeat = 0);
+    bool readRfLevel(const String& id, bool& level);
+
+    // Radar/presence module helper
+    bool readRadarState(const String& id, bool& detected);
 
     // 线程安全：获取互斥量句柄（供 Ticker 回调非阻塞尝试加锁）
     SemaphoreHandle_t getMutex() const { return _mutex; }

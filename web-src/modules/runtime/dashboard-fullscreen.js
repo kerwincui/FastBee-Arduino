@@ -107,11 +107,15 @@
 
                     // 内存
                     var memory = data.memory || {};
-                    self._setText('monitor-heap-percent', (memory.heapUsagePercent || 0) + '%');
-                    self._setBar('monitor-heap-bar', memory.heapUsagePercent || 0);
-                    self._setText('monitor-heap-used', self._formatBytes(memory.heapUsed || 0));
-                    self._setText('monitor-heap-free', self._formatBytes(memory.heapFree || 0));
-                    self._setText('monitor-heap-total', self._formatBytes(memory.heapTotal || 0));
+                    var memoryPercent = (memory.usagePercent !== undefined) ? memory.usagePercent : (memory.heapUsagePercent || 0);
+                    var memoryUsed = (memory.used !== undefined) ? memory.used : (memory.heapUsed || 0);
+                    var memoryFree = (memory.free !== undefined) ? memory.free : (memory.heapFree || 0);
+                    var memoryTotal = (memory.total !== undefined) ? memory.total : (memory.heapTotal || 0);
+                    self._setText('monitor-heap-percent', memoryPercent + '%');
+                    self._setBar('monitor-heap-bar', memoryPercent);
+                    self._setText('monitor-heap-used', self._formatBytes(memoryUsed));
+                    self._setText('monitor-heap-free', self._formatBytes(memoryFree));
+                    self._setText('monitor-heap-total', self._formatBytes(memoryTotal));
                     self._setText('monitor-heap-min', self._formatBytes(memory.heapMinFree || 0));
 
                     // 文件系统

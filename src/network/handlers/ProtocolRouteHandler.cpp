@@ -10,6 +10,7 @@
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
 #include "./protocols/ProtocolManager.h"
+#include "utils/PsramJsonDocument.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <memory>
@@ -48,6 +49,423 @@ void normalizeProtocolConfig(JsonDocument& doc) {
     if (!doc["mqtt"]["enabled"].is<bool>()) {
         doc["mqtt"]["enabled"] = true;
     }
+}
+
+bool loadProtocolConfigDocument(JsonDocument& doc) {
+    if (!LittleFS.exists(PROTOCOL_CONFIG_PATH)) {
+        normalizeProtocolConfig(doc);
+        return false;
+    }
+
+    File f = LittleFS.open(PROTOCOL_CONFIG_PATH, "r");
+    if (!f) {
+        normalizeProtocolConfig(doc);
+        return false;
+    }
+
+    DeserializationError err = deserializeJson(doc, f);
+    f.close();
+    normalizeProtocolConfig(doc);
+    return !err;
+}
+
+void copyJsonMember(JsonObject dst, JsonObject src, const char* key) {
+    if (!src[key].isNull()) {
+        dst[key].set(src[key]);
+    }
+}
+
+void copyMqttTopicList(JsonArray dst, JsonArray src, bool publishList) {
+    for (JsonObject topicIn : src) {
+        JsonObject topicOut = dst.add<JsonObject>();
+        topicOut["topic"] = topicIn["topic"] | "";
+        topicOut["qos"] = topicIn["qos"] | 0;
+        topicOut["enabled"] = topicIn["enabled"] | true;
+        topicOut["autoPrefix"] = topicIn["autoPrefix"] | true;
+        topicOut["topicType"] = topicIn["topicType"] | 0;
+        if (publishList) {
+            topicOut["retain"] = topicIn["retain"] | false;
+        }
+    }
+}
+
+void copyMqttPublishTopicList(JsonArray dst, const std::vector<MqttPublishTopic>& src) {
+    for (const MqttPublishTopic& topic : src) {
+        JsonObject out = dst.add<JsonObject>();
+        out["topic"] = topic.topic;
+        out["qos"] = topic.qos;
+        out["retain"] = topic.retain;
+        out["enabled"] = topic.enabled;
+        out["autoPrefix"] = topic.autoPrefix;
+        out["topicType"] = static_cast<uint8_t>(topic.topicType);
+    }
+}
+
+void copyMqttSubscribeTopicList(JsonArray dst, const std::vector<MqttSubscribeTopic>& src) {
+    for (const MqttSubscribeTopic& topic : src) {
+        JsonObject out = dst.add<JsonObject>();
+        out["topic"] = topic.topic;
+        out["qos"] = topic.qos;
+        out["enabled"] = topic.enabled;
+        out["autoPrefix"] = topic.autoPrefix;
+        out["topicType"] = static_cast<uint8_t>(topic.topicType);
+    }
+}
+
+void fillCompactMqttDefaults(JsonObject mqttOut) {
+    mqttOut["enabled"] = false;
+    mqttOut["server"] = "iot.fastbee.cn";
+    mqttOut["port"] = 1883;
+    mqttOut["clientId"] = "";
+    mqttOut["username"] = "";
+    mqttOut["password"] = "";
+    mqttOut["keepAlive"] = 60;
+    mqttOut["autoReconnect"] = true;
+    mqttOut["connectionTimeout"] = 30000;
+    mqttOut["authType"] = 0;
+    mqttOut["mqttSecret"] = "";
+    mqttOut["authCode"] = "";
+    mqttOut["willTopic"] = "";
+    mqttOut["willPayload"] = "";
+    mqttOut["willQos"] = 0;
+    mqttOut["willRetain"] = false;
+    mqttOut["longitude"] = 0;
+    mqttOut["latitude"] = 0;
+    mqttOut["iccid"] = "";
+    mqttOut["cardPlatformId"] = 0;
+    mqttOut["summary"] = "";
+    mqttOut["publishTopics"].to<JsonArray>();
+    mqttOut["subscribeTopics"].to<JsonArray>();
+}
+
+void copyMqttRuntimeConfig(JsonObject mqttOut, const MQTTConfig& cfg) {
+    mqttOut["enabled"] = true;
+    mqttOut["server"] = cfg.server;
+    mqttOut["port"] = cfg.port;
+    mqttOut["clientId"] = cfg.clientId;
+    mqttOut["username"] = cfg.username;
+    mqttOut["password"] = cfg.password;
+    mqttOut["keepAlive"] = cfg.keepAlive;
+    mqttOut["autoReconnect"] = cfg.autoReconnect;
+    mqttOut["connectionTimeout"] = cfg.connectionTimeout;
+    mqttOut["authType"] = static_cast<uint8_t>(cfg.authType);
+    mqttOut["mqttSecret"] = cfg.mqttSecret;
+    mqttOut["authCode"] = cfg.authCode;
+    mqttOut["willTopic"] = cfg.willTopic;
+    mqttOut["willPayload"] = cfg.willPayload;
+    mqttOut["willQos"] = cfg.willQos;
+    mqttOut["willRetain"] = cfg.willRetain;
+    mqttOut["longitude"] = cfg.longitude;
+    mqttOut["latitude"] = cfg.latitude;
+    mqttOut["iccid"] = cfg.iccid;
+    mqttOut["cardPlatformId"] = cfg.cardPlatformId;
+    mqttOut["summary"] = cfg.summary;
+    copyMqttPublishTopicList(mqttOut["publishTopics"].to<JsonArray>(), cfg.publishTopics);
+    copyMqttSubscribeTopicList(mqttOut["subscribeTopics"].to<JsonArray>(), cfg.subscribeTopics);
+}
+
+void sendCompactMqttConfig(AsyncWebServerRequest* request, ProtocolManager* protocolManager) {
+    bool enabled = false;
+#if FASTBEE_ENABLE_MQTT
+    MQTTClient* mqtt = protocolManager ? protocolManager->getMQTTClient() : nullptr;
+    if (mqtt) {
+        enabled = true;
+    }
+#endif
+    char json[768];
+    snprintf(json, sizeof(json),
+        "{\"success\":true,\"data\":{\"mqtt\":{"
+        "\"enabled\":%s,"
+        "\"server\":\"iot.fastbee.cn\","
+        "\"port\":1883,"
+        "\"clientId\":\"\","
+        "\"username\":\"\","
+        "\"password\":\"\","
+        "\"keepAlive\":60,"
+        "\"autoReconnect\":true,"
+        "\"connectionTimeout\":30000,"
+        "\"authType\":0,"
+        "\"mqttSecret\":\"K451265A72244J79\","
+        "\"authCode\":\"\","
+        "\"willTopic\":\"\","
+        "\"willPayload\":\"\","
+        "\"willQos\":0,"
+        "\"willRetain\":false,"
+        "\"longitude\":0,"
+        "\"latitude\":0,"
+        "\"iccid\":\"\","
+        "\"cardPlatformId\":0,"
+        "\"summary\":\"\","
+        "\"publishTopics\":[],"
+        "\"subscribeTopics\":[],"
+        "\"compact\":true,"
+        "\"degraded\":true"
+        "}}}",
+        enabled ? "true" : "false");
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", json);
+    response->addHeader("Connection", "close");
+    request->send(response);
+}
+
+void sendCompactMqttConfigFromFile(AsyncWebServerRequest* request) {
+    auto source = FastBee::makeJsonDocument(32768);
+    loadProtocolConfigDocument(source);
+
+    auto doc = FastBee::makeJsonDocument(16384);
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    JsonObject mqttOut = data["mqtt"].to<JsonObject>();
+    JsonObject mqttIn = source["mqtt"].as<JsonObject>();
+
+    mqttOut["enabled"] = mqttIn["enabled"] | true;
+    mqttOut["server"] = mqttIn["server"] | "iot.fastbee.cn";
+    mqttOut["port"] = mqttIn["port"] | 1883;
+    mqttOut["clientId"] = mqttIn["clientId"] | "";
+    mqttOut["username"] = mqttIn["username"] | "";
+    mqttOut["password"] = mqttIn["password"] | "";
+    mqttOut["keepAlive"] = mqttIn["keepAlive"] | 60;
+    mqttOut["autoReconnect"] = mqttIn["autoReconnect"] | true;
+    mqttOut["connectionTimeout"] = mqttIn["connectionTimeout"] | 30000;
+    mqttOut["authType"] = mqttIn["authType"] | 0;
+    mqttOut["mqttSecret"] = mqttIn["mqttSecret"] | "";
+    mqttOut["authCode"] = mqttIn["authCode"] | "";
+    mqttOut["willTopic"] = mqttIn["willTopic"] | "";
+    mqttOut["willPayload"] = mqttIn["willPayload"] | "";
+    mqttOut["willQos"] = mqttIn["willQos"] | 0;
+    mqttOut["willRetain"] = mqttIn["willRetain"] | false;
+    mqttOut["longitude"] = mqttIn["longitude"] | 0;
+    mqttOut["latitude"] = mqttIn["latitude"] | 0;
+    mqttOut["iccid"] = mqttIn["iccid"] | "";
+    mqttOut["cardPlatformId"] = mqttIn["cardPlatformId"] | 0;
+    mqttOut["summary"] = mqttIn["summary"] | "";
+    copyMqttTopicList(
+        mqttOut["publishTopics"].to<JsonArray>(),
+        mqttIn["publishTopics"].as<JsonArray>(),
+        true);
+    copyMqttTopicList(
+        mqttOut["subscribeTopics"].to<JsonArray>(),
+        mqttIn["subscribeTopics"].as<JsonArray>(),
+        false);
+    HandlerUtils::sendJsonStream(request, doc);
+}
+
+void copyModbusTaskSummary(JsonObject out, JsonObject in) {
+    out["enabled"] = in["enabled"] | true;
+    out["name"] = in["name"] | "";
+    out["label"] = in["label"] | "";
+    out["slaveAddress"] = in["slaveAddress"] | 1;
+    out["functionCode"] = in["functionCode"] | 3;
+    out["startAddress"] = in["startAddress"] | 0;
+    out["quantity"] = in["quantity"] | 1;
+
+    JsonArray mappingsOut = out["mappings"].to<JsonArray>();
+    JsonArray mappingsIn = in["mappings"].as<JsonArray>();
+    for (JsonObject mappingIn : mappingsIn) {
+        JsonObject mappingOut = mappingsOut.add<JsonObject>();
+        copyJsonMember(mappingOut, mappingIn, "sensorId");
+        copyJsonMember(mappingOut, mappingIn, "unit");
+        copyJsonMember(mappingOut, mappingIn, "regOffset");
+    }
+}
+
+void copyModbusDeviceSummary(JsonObject out, JsonObject in) {
+    out["enabled"] = in["enabled"] | true;
+    out["name"] = in["name"] | "";
+    out["sensorId"] = in["sensorId"] | "";
+    out["deviceType"] = in["deviceType"] | "relay";
+    out["slaveAddress"] = in["slaveAddress"] | 1;
+    out["channelCount"] = in["channelCount"] | 2;
+    out["pwmResolution"] = in["pwmResolution"] | 8;
+    copyJsonMember(out, in, "coilBase");
+    copyJsonMember(out, in, "ncMode");
+    copyJsonMember(out, in, "controlProtocol");
+    copyJsonMember(out, in, "batchRegister");
+    copyJsonMember(out, in, "batchRegType");
+    copyJsonMember(out, in, "pwmRegBase");
+    copyJsonMember(out, in, "pidDecimals");
+}
+
+void copyPeriphExecModbusSummary(JsonObject out, JsonObject in) {
+    out["enabled"] = in["enabled"] | true;
+    out["transferType"] = in["transferType"] | 0;
+
+    JsonObject masterOut = out["master"].to<JsonObject>();
+    JsonObject masterIn = in["master"].as<JsonObject>();
+
+    JsonArray tasksOut = masterOut["tasks"].to<JsonArray>();
+    JsonArray tasksIn = masterIn["tasks"].as<JsonArray>();
+    for (JsonObject taskIn : tasksIn) {
+        JsonObject taskOut = tasksOut.add<JsonObject>();
+        copyModbusTaskSummary(taskOut, taskIn);
+    }
+
+    JsonArray devicesOut = masterOut["devices"].to<JsonArray>();
+    JsonArray devicesIn = masterIn["devices"].as<JsonArray>();
+    for (JsonObject deviceIn : devicesIn) {
+        JsonObject deviceOut = devicesOut.add<JsonObject>();
+        copyModbusDeviceSummary(deviceOut, deviceIn);
+    }
+}
+
+#if FASTBEE_ENABLE_MODBUS
+void copyPeriphExecModbusSummary(JsonObject out, const ModbusConfig& cfg, bool enabled) {
+    out["enabled"] = enabled;
+    out["transferType"] = cfg.transferType;
+
+    JsonObject masterOut = out["master"].to<JsonObject>();
+
+    JsonArray tasksOut = masterOut["tasks"].to<JsonArray>();
+    for (uint8_t i = 0; i < cfg.master.taskCount && i < Protocols::MODBUS_MAX_POLL_TASKS; ++i) {
+        const PollTask& task = cfg.master.tasks[i];
+        JsonObject taskOut = tasksOut.add<JsonObject>();
+        taskOut["enabled"] = task.enabled;
+        taskOut["name"] = task.name;
+        taskOut["label"] = task.name;
+        taskOut["slaveAddress"] = task.slaveAddress;
+        taskOut["functionCode"] = task.functionCode;
+        taskOut["startAddress"] = task.startAddress;
+        taskOut["quantity"] = task.quantity;
+
+        JsonArray mappingsOut = taskOut["mappings"].to<JsonArray>();
+        for (uint8_t j = 0; j < task.mappingCount && j < Protocols::MODBUS_MAX_MAPPINGS_PER_TASK; ++j) {
+            const RegisterMapping& mapping = task.mappings[j];
+            JsonObject mappingOut = mappingsOut.add<JsonObject>();
+            mappingOut["sensorId"] = mapping.sensorId;
+            mappingOut["unit"] = mapping.unit;
+            mappingOut["regOffset"] = mapping.regOffset;
+        }
+    }
+
+    JsonArray devicesOut = masterOut["devices"].to<JsonArray>();
+    for (uint8_t i = 0; i < cfg.master.deviceCount && i < Protocols::MODBUS_MAX_SUB_DEVICES; ++i) {
+        const ModbusSubDevice& device = cfg.master.devices[i];
+        JsonObject deviceOut = devicesOut.add<JsonObject>();
+        deviceOut["enabled"] = device.enabled;
+        deviceOut["name"] = device.name;
+        deviceOut["sensorId"] = device.sensorId;
+        deviceOut["deviceType"] = device.deviceType;
+        deviceOut["slaveAddress"] = device.slaveAddress;
+        deviceOut["channelCount"] = device.channelCount;
+        deviceOut["pwmResolution"] = device.pwmResolution;
+        deviceOut["coilBase"] = device.coilBase;
+        deviceOut["ncMode"] = device.ncMode;
+        deviceOut["controlProtocol"] = device.controlProtocol;
+        deviceOut["batchRegister"] = device.batchRegister;
+        deviceOut["batchRegType"] = device.batchRegType;
+        deviceOut["pwmRegBase"] = device.pwmRegBase;
+        deviceOut["pidDecimals"] = device.pidDecimals;
+    }
+}
+#endif // FASTBEE_ENABLE_MODBUS
+
+void sendCompactPeriphExecConfig(AsyncWebServerRequest* request, ProtocolManager* protocolManager) {
+    auto doc = FastBee::makeJsonDocument(12288);
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+
+#if FASTBEE_ENABLE_MODBUS
+    ModbusHandler* modbus = protocolManager ? protocolManager->getModbusHandler() : nullptr;
+    if (modbus) {
+        JsonObject rtuOut = data["modbusRtu"].to<JsonObject>();
+        copyPeriphExecModbusSummary(rtuOut, modbus->getConfigRef(), modbus->isRunning());
+    } else
+#endif
+    {
+        JsonObject rtuOut = data["modbusRtu"].to<JsonObject>();
+        rtuOut["enabled"] = false;
+        rtuOut["transferType"] = 0;
+        JsonObject masterOut = rtuOut["master"].to<JsonObject>();
+        masterOut["tasks"].to<JsonArray>();
+        masterOut["devices"].to<JsonArray>();
+    }
+
+    HandlerUtils::sendJsonStream(request, doc);
+}
+
+void sendCompactRuntimeProtocolConfigFromFile(AsyncWebServerRequest* request, bool deviceControlOnly) {
+    auto source = FastBee::makeJsonDocument(32768);
+    loadProtocolConfigDocument(source);
+
+    auto doc = FastBee::makeJsonDocument(12288);
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    data["compact"] = true;
+
+    JsonObject rtuIn = source["modbusRtu"].as<JsonObject>();
+    if (!rtuIn.isNull()) {
+        JsonObject rtuOut = data["modbusRtu"].to<JsonObject>();
+        copyPeriphExecModbusSummary(rtuOut, rtuIn);
+    } else {
+        JsonObject rtuOut = data["modbusRtu"].to<JsonObject>();
+        rtuOut["enabled"] = false;
+        rtuOut["transferType"] = 0;
+        JsonObject masterOut = rtuOut["master"].to<JsonObject>();
+        masterOut["tasks"].to<JsonArray>();
+        masterOut["devices"].to<JsonArray>();
+    }
+
+#if FASTBEE_ENABLE_TCP
+    if (!deviceControlOnly) {
+        JsonObject tcpOut = data["modbusTcp"].to<JsonObject>();
+        tcpOut["enabled"] = false;
+        tcpOut["compact"] = true;
+    }
+#endif
+
+    HandlerUtils::sendJsonStream(request, doc);
+}
+
+void sendCompactRuntimeProtocolConfig(AsyncWebServerRequest* request,
+                                      ProtocolManager* protocolManager,
+                                      bool deviceControlOnly) {
+    auto doc = FastBee::makeJsonDocument(12288);
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    data["compact"] = true;
+
+    bool hasRuntimeData = false;
+#if FASTBEE_ENABLE_MODBUS
+    ModbusHandler* modbus = protocolManager ? protocolManager->getModbusHandler() : nullptr;
+    if (modbus) {
+        const ModbusConfig& cfg = modbus->getConfigRef();
+        if (cfg.master.taskCount > 0 || cfg.master.deviceCount > 0) {
+            JsonObject rtuOut = data["modbusRtu"].to<JsonObject>();
+            copyPeriphExecModbusSummary(rtuOut, cfg, modbus->isRunning());
+            hasRuntimeData = true;
+        }
+    }
+#endif
+    if (!hasRuntimeData) {
+        // Runtime config empty/unavailable, fall back to file
+        sendCompactRuntimeProtocolConfigFromFile(request, deviceControlOnly);
+        return;
+    }
+
+#if FASTBEE_ENABLE_TCP
+    if (!deviceControlOnly) {
+        JsonObject tcpOut = data["modbusTcp"].to<JsonObject>();
+        tcpOut["enabled"] = false;
+        tcpOut["compact"] = true;
+    }
+#endif
+
+    HandlerUtils::sendJsonStream(request, doc);
+}
+
+bool isInternalHeapTight(uint32_t minFreeHeap, uint32_t minMaxAlloc) {
+    return ESP.getFreeHeap() < minFreeHeap || ESP.getMaxAllocHeap() < minMaxAlloc;
+}
+
+void sendDegradedRuntimeProtocolConfig(AsyncWebServerRequest* request) {
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json",
+        F("{\"success\":true,\"degraded\":true,\"message\":\"Low memory - runtime protocol config temporarily reduced\",\"data\":{\"compact\":true,\"degraded\":true,\"modbusRtu\":{\"enabled\":false,\"degraded\":true,\"transferType\":0,\"master\":{\"tasks\":[],\"devices\":[]}},\"modbusTcp\":{\"enabled\":false,\"degraded\":true}}}"));
+    HandlerUtils::sendWithClose(request, response);
+}
+
+void sendDegradedPeriphExecProtocolConfig(AsyncWebServerRequest* request) {
+    AsyncWebServerResponse* response = request->beginResponse(200, "application/json",
+        F("{\"success\":true,\"degraded\":true,\"message\":\"Low memory - periph-exec protocol config temporarily reduced\",\"data\":{\"degraded\":true,\"modbusRtu\":{\"enabled\":false,\"degraded\":true,\"transferType\":0,\"master\":{\"tasks\":[],\"devices\":[]}}}}"));
+    HandlerUtils::sendWithClose(request, response);
 }
 }
 
@@ -109,78 +527,28 @@ void ProtocolRouteHandler::handleGetProtocolConfig(AsyncWebServerRequest* reques
 
     String section = ctx->getParamValue(request, "section", "");
     bool compact = ctx->getParamBool(request, "compact", false);
-    if (compact && (section == "mqtt" || section == "device-control" || section == "periph-exec" || section == "runtime")) {
-        if (HandlerUtils::checkLowMemory(request, 6144)) return;
-
-        JsonDocument filtered;
-        JsonDocument filter;
-        if (section == "mqtt") {
-            filter["mqtt"] = true;
-        } else if (section == "device-control") {
-            filter["modbusRtu"]["enabled"] = true;
-            filter["modbusRtu"]["master"]["devices"] = true;
-        } else if (section == "periph-exec") {
-            filter["modbusRtu"]["enabled"] = true;
-            filter["modbusRtu"]["transferType"] = true;
-
-            JsonObject taskFilter = filter["modbusRtu"]["master"]["tasks"][0].to<JsonObject>();
-            taskFilter["enabled"] = true;
-            taskFilter["name"] = true;
-            taskFilter["label"] = true;
-            taskFilter["slaveAddress"] = true;
-            taskFilter["functionCode"] = true;
-            taskFilter["startAddress"] = true;
-            taskFilter["quantity"] = true;
-            taskFilter["mappings"][0]["sensorId"] = true;
-
-            JsonObject deviceFilter = filter["modbusRtu"]["master"]["devices"][0].to<JsonObject>();
-            deviceFilter["enabled"] = true;
-            deviceFilter["name"] = true;
-            deviceFilter["sensorId"] = true;
-            deviceFilter["deviceType"] = true;
-            deviceFilter["channelCount"] = true;
-            deviceFilter["pwmResolution"] = true;
-
-#if FASTBEE_ENABLE_TCP
-            filter["modbusTcp"]["enabled"] = true;
-            JsonObject tcpTaskFilter = filter["modbusTcp"]["master"]["tasks"][0].to<JsonObject>();
-            tcpTaskFilter["enabled"] = true;
-            tcpTaskFilter["mappings"][0]["sensorId"] = true;
-#endif
-        } else {
-            filter["modbusRtu"] = true;
-#if FASTBEE_ENABLE_TCP
-            filter["modbusTcp"] = true;
-#endif
+    if (compact && section == "mqtt") {
+        if (HandlerUtils::checkLowMemory(request, 4096)) return;
+        sendCompactMqttConfigFromFile(request);
+        return;
+    }
+    if (compact && section == "periph-exec") {
+        if (isInternalHeapTight(8192, 4096)) {
+            sendDegradedPeriphExecProtocolConfig(request);
+            return;
         }
-
-        if (LittleFS.exists(PROTOCOL_CONFIG_PATH)) {
-            File f = LittleFS.open(PROTOCOL_CONFIG_PATH, "r");
-            if (f) {
-                deserializeJson(filtered, f, DeserializationOption::Filter(filter));
-                f.close();
-            }
+        if (HandlerUtils::checkLowMemory(request, 4096)) return;
+        sendCompactPeriphExecConfig(request, ctx->protocolManager);
+        return;
+    }
+    if (compact && (section == "device-control" || section == "runtime")) {
+        if (section == "runtime" && isInternalHeapTight(12288, 6144)) {
+            // Low internal heap but PSRAM may be available; try file-based response
+            sendCompactRuntimeProtocolConfigFromFile(request, false);
+            return;
         }
-
-        JsonDocument doc;
-        doc["success"] = true;
-        JsonObject data = doc["data"].to<JsonObject>();
-        if (section == "mqtt") {
-            data["mqtt"].set(filtered["mqtt"]);
-        } else if (section == "device-control") {
-            data["modbusRtu"].set(filtered["modbusRtu"]);
-        } else if (section == "periph-exec") {
-            data["modbusRtu"].set(filtered["modbusRtu"]);
-#if FASTBEE_ENABLE_TCP
-            data["modbusTcp"].set(filtered["modbusTcp"]);
-#endif
-        } else {
-            data["modbusRtu"].set(filtered["modbusRtu"]);
-#if FASTBEE_ENABLE_TCP
-            data["modbusTcp"].set(filtered["modbusTcp"]);
-#endif
-        }
-        HandlerUtils::sendJsonStream(request, doc);
+        if (HandlerUtils::checkLowMemory(request, 4096)) return;
+        sendCompactRuntimeProtocolConfig(request, ctx->protocolManager, section == "device-control");
         return;
     }
 

@@ -480,6 +480,13 @@ void WiFiManager::handleWiFiEvent(arduino_event_id_t event) {
             break;
             
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+            // ESP32-C3 在 STA+AP 双模下可能会收到此事件，但实际 STA 仍然连接
+            // 需要检查实际连接状态，避免误报
+            if (WiFi.status() == WL_CONNECTED) {
+                LOG_DEBUG("WiFiManager: STA disconnected event received but still connected (dual-mode behavior)");
+                return;  // 忽略误报事件
+            }
+            
             statusInfo.status = NetworkStatus::DISCONNECTED;
             connecting = false;
             // 触发WiFi断开连接系统事件

@@ -7,6 +7,7 @@
 #include "./security/AuthManager.h"
 #include "./security/RoleManager.h"
 #include "systems/LoggerSystem.h"
+#include <Arduino.h>
 #include <ArduinoJson.h>
 #include <vector>
 
@@ -95,7 +96,7 @@ void RoleRouteHandler::handleGetRoles(AsyncWebServerRequest* request) {
         return;
     }
 
-    JsonDocument doc;
+    auto doc = FastBee::makeJsonDocument(24576);
     JsonArray rolesArray = doc["roles"].to<JsonArray>();
     std::vector<Role> roles = ctx->roleManager->getAllRoles();
     for (const Role& role : roles) {
@@ -256,7 +257,7 @@ void RoleRouteHandler::handleGetRolePermissions(AsyncWebServerRequest* request) 
         return;
     }
 
-    JsonDocument doc;
+    auto doc = FastBee::makeJsonDocument();
     JsonArray arr = doc["permissions"].to<JsonArray>();
     for (const String& perm : ctx->roleManager->getRolePermissions(roleId)) {
         arr.add(perm);
@@ -315,7 +316,24 @@ void RoleRouteHandler::handleGetPermissions(AsyncWebServerRequest* request) {
         return;
     }
 
-    JsonDocument doc;
+    bool compact = ctx->getParamBool(request, "compact", false) ||
+                   ESP.getFreeHeap() < 12288 ||
+                   ESP.getMaxAllocHeap() < 6144;
+    if (compact) {
+        auto doc = FastBee::makeJsonDocument(4096);
+        JsonArray groups = doc["groups"].to<JsonArray>();
+        size_t total = 0;
+        for (const auto& kv : ctx->roleManager->getPermissionsByGroup()) {
+            groups.add(kv.first);
+            total += kv.second.size();
+        }
+        doc["total"] = total;
+        doc["compact"] = true;
+        ctx->sendSuccess(request, doc);
+        return;
+    }
+
+    auto doc = FastBee::makeJsonDocument(24576);
     JsonObject groups = doc["groups"].to<JsonObject>();
     for (const auto& kv : ctx->roleManager->getPermissionsByGroup()) {
         JsonArray grpArr = groups[kv.first].to<JsonArray>();

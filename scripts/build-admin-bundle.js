@@ -13,7 +13,7 @@
 const fs = require('fs');
 const path = require('path');
 const { minifyJS } = require('./minify-js');
-const { isProdWebProfile } = require('./web-profile');
+const { isFullWebProfile } = require('./web-profile');
 
 const ROOT_DIR = path.join(__dirname, '..');
 const SOURCE_DIR = path.join(ROOT_DIR, 'web-src', 'modules', 'admin');
@@ -29,7 +29,7 @@ const ALL_SOURCE_FILES = [
 const PROD_SOURCE_FILES = [];
 
 function getSourceFiles() {
-    return isProdWebProfile() ? PROD_SOURCE_FILES : ALL_SOURCE_FILES;
+    return isFullWebProfile() ? ALL_SOURCE_FILES : PROD_SOURCE_FILES;
 }
 
 function readSourceFile(fileName) {

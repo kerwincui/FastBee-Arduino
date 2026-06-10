@@ -16,7 +16,12 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const { buildAdminBundle, SOURCE_FILES: ADMIN_SOURCE_FILES } = require('./build-admin-bundle');
-const { getWebProfile, isProdWebProfile } = require('./web-profile');
+const {
+    getWebProfile,
+    isCompactWebProfile,
+    isLiteWebProfile,
+    isFullWebProfile
+} = require('./web-profile');
 const {
     buildAppBundle,
     BUNDLE_SOURCES: APP_BUNDLE_SOURCES,
@@ -47,19 +52,19 @@ const DIRECT_RUNTIME_MODULES = [
     'periph-exec.js',
     'periph-exec-form.js',
     'periph-exec-modbus.js',
-    'device-control.js',
     'peripherals.js',
     'dashboard.js',
     'device-config.js',
     'network.js'
-].concat(isProdWebProfile() ? [] : ['dashboard-fullscreen.js']);
-const I18N_MODULES = isProdWebProfile()
+].concat(isLiteWebProfile() ? [] : ['device-control.js'])
+ .concat(isFullWebProfile() ? ['dashboard-fullscreen.js'] : []);
+const I18N_MODULES = isCompactWebProfile()
     ? []
     : [
         { file: 'i18n-zh-CN.js', minify: false },
         { file: 'i18n-en.js', minify: false, optional: true, fallbackPublish: true }
     ];
-const PROD_STATIC_SKIP = new Set([
+const COMPACT_STATIC_SKIP = new Set([
     'pages/admin.html',
     'pages/fullscreen.html',
     'pages/logs.html',
@@ -68,6 +73,9 @@ const PROD_STATIC_SKIP = new Set([
     'pages/fragments/protocol-coap.html',
     'pages/fragments/protocol-http.html',
     'pages/fragments/protocol-tcp.html'
+]);
+const LITE_STATIC_SKIP = new Set([
+    'pages/fragments/protocol-modbus-rtu.html'
 ]);
 const PROD_IGNORED_ORPHAN_MODULES = new Set([
     'files.js',
@@ -78,11 +86,14 @@ const PROD_IGNORED_ORPHAN_MODULES = new Set([
     'roles.js',
     'rule-script.js',
     'users.js',
-    'dashboard-fullscreen.js'
+    'dashboard-fullscreen.js',
+    'device-control.js',
+    'device-control-view.js',
+    'device-control-modbus.js'
 ]);
-const STANDALONE_ROOT_JS = isProdWebProfile()
-    ? []
-    : [{ file: 'notification.js', minify: true }];
+const STANDALONE_ROOT_JS = isFullWebProfile()
+    ? [{ file: 'notification.js', minify: true }]
+    : [];
 const STANDALONE_ROOT_JS_SET = new Set(STANDALONE_ROOT_JS.map((item) => item.file));
 const APP_CHUNK_FILES = new Set(APP_CHUNK_GROUPS.map((chunk) => chunk.outName));
 
@@ -95,12 +106,25 @@ function writeUtf8(filePath, content) {
 }
 
 function removeGeneratedFile(filePath) {
-    fs.rmSync(filePath, { force: true });
-    fs.rmSync(`${filePath}.gz`, { force: true });
+    [filePath, `${filePath}.gz`].forEach((targetPath) => {
+        if (!fs.existsSync(targetPath)) return;
+        try {
+            fs.chmodSync(targetPath, 0o666);
+        } catch (_) {
+            // Best effort on Windows locked/read-only generated files.
+        }
+        try {
+            fs.rmSync(targetPath, { force: true });
+        } catch (error) {
+            console.warn(`  generated file kept: ${path.relative(ROOT_DIR, targetPath)} (${error.code || error.message})`);
+        }
+    });
 }
 
 function shouldSkipStaticAsset(relPath) {
-    return isProdWebProfile() && PROD_STATIC_SKIP.has(normalizePath(relPath));
+    const normalized = normalizePath(relPath);
+    return (isCompactWebProfile() && COMPACT_STATIC_SKIP.has(normalized))
+        || (isLiteWebProfile() && LITE_STATIC_SKIP.has(normalized));
 }
 
 function stripSection(content, startMarker, endMarker) {
@@ -161,6 +185,27 @@ function stripProdOnlyCssRules(content) {
         /^\[data-theme="dark"\]\s+\.ota-/
     ];
 
+    // 精简版额外移除：暗黑主题 + device-control + Modbus UI 相关样式
+    if (isLiteWebProfile()) {
+        dropSelectors.push(
+            /^\[data-theme="dark"\]/,           // 所有暗黑主题规则
+            /^\/\*\s*Dark\s/,                    // Dark Theme 注释行
+            /^\.dc-/,                             // device-control 样式
+            /^\.fullscreen-mode\s+\.dc-/,        // fullscreen 下的 dc 样式
+            /^\.coil-/,                            // 继电器线圈卡片
+            /^\.pwm-/,                             // PWM 通道
+            /^\.sensor-grid/,                      // 传感器网格
+            /^\.sensor-card/,                      // 传感器卡片
+            /^\.sensor-ch-/,                       // 传感器通道配置
+            /^\.pid-/,                             // PID 控制器
+            /^\.motor-/,                           // 电机控制面板
+            /^#master-data-grid/,                   // Modbus 采集数据网格
+            /^\.master-data-/,                     // Modbus 采集数据项
+            /^\.modbus-/,                          // Modbus UI 样式
+            /^#dc-zoom-reset-btn/                   // device-control 缩放按钮
+        );
+    }
+
     return content
         .split(/\r?\n/)
         .filter((line) => {
@@ -171,27 +216,48 @@ function stripProdOnlyCssRules(content) {
 }
 
 function transformStaticAssetContent(relPath, content) {
-    if (!isProdWebProfile()) return content;
+    if (!isCompactWebProfile()) return content;
 
     const normalized = normalizePath(relPath);
     if (normalized === 'pages/modals.html') {
         let next = content;
         next = stripSection(next, '<!-- 规则脚本模态窗 -->', '<!-- 兼容旧版：GPIO配置模态窗 -->');
         next = stripSection(next, '<!-- 添加用户模态窗 -->', '');
+        if (isLiteWebProfile()) {
+            // 精简版移除兼容旧版GPIO配置模态窗（已被新外设配置系统替代）
+            next = stripSection(next, '<!-- 兼容旧版：GPIO配置模态窗 -->', '');
+        }
         return next;
     }
 
     if (normalized === 'index.html') {
         let next = ['logs', 'data', 'users', 'roles', 'rule-script']
             .reduce((acc, page) => stripMenuItemByPage(acc, page), content);
+        if (isLiteWebProfile()) {
+            next = stripMenuItemByPage(next, 'device-control');
+            // 移除主题切换按钮（精简版无暗黑主题）
+            next = next.replace(/\s*<button\s+class="dropdown-item"\s+id="theme-toggle-item"[\s\S]*?<\/button>/g, '');
+            // 移除 Service Worker 注册代码块
+            next = next.replace(/\s*<!-- Service Worker 注册 -->\s*<script>[\s\S]*?serviceWorker[\s\S]*?<\/script>/g, '');
+        }
         next = stripDivByClass(next, 'login-lang-switch');
         next = stripSelectById(next, 'language-select');
         next = next.replace(/\.login-lang-switch\{[^}]*\}\.login-lang-switch select,\s*\.header-actions select\{[^}]*\}/g, '');
         return next;
     }
 
+    if (normalized === 'pages/protocol.html' && isLiteWebProfile()) {
+        let next = content;
+        next = next.replace(/\s*<div class="config-tab" data-tab="modbus-rtu">[\s\S]*?<\/div>/g, '');
+        next = next.replace(
+            /\s*<!-- Modbus RTU 配置[\s\S]*?-->\s*<div id="modbus-rtu" class="config-content">[\s\S]*?<div id="modbus-rtu-fragment-container">[\s\S]*?<\/div>\s*<\/div>/,
+            ''
+        );
+        return next;
+    }
+
     if (normalized === 'css/main.css') {
-        return stripProdOnlyCssRules(content)
+        let css = stripProdOnlyCssRules(content)
             .replace(/@media\s*\(max-width:\s*768px\)\s*\{[^{}]*\.ota-inline-action-row[^{}]*\}/g, '')
             .replace(/@media\s*\(max-width:\s*768px\)\s*\{[^{}]*\.fs-[^{}]*\}/g, '')
             .replace(/\.ota-inline-action-row\s*\{[^}]*\}/g, '')
@@ -199,6 +265,16 @@ function transformStaticAssetContent(relPath, content) {
             .replace(/\.ota-inline-action-row\s+\.fb-btn\s*\{[^}]*\}/g, '')
             .replace(/\.log-content\s*\{[^}]*\}/g, '')
             .replace(/\.rule-script-stats-cell\s*\{[^}]*\}/g, '');
+        if (isLiteWebProfile()) {
+            // 移除暗黑主题变量声明块（多行: [data-theme="dark"] { ... }）
+            css = css.replace(/\/\*\s*Dark Theme[\s\S]*?\n\}/g, '');
+            // 移除 fullscreen-mode 内的 dc 样式块
+            css = css.replace(/\.fullscreen-mode\s+\.dc-[^{]*\{[^}]*\}/g, '');
+            // 移除 @media 内 device-control / modbus 相关规则
+            css = css.replace(/@media\s*\(max-width:\s*\d+px\)\s*\{[^{}]*\.motor-[^{}]*\}/g, '');
+            css = css.replace(/@media\s*\(max-width:\s*\d+px\)\s*\{[^{}]*\.modbus-[^{}]*\}/g, '');
+        }
+        return css;
     }
 
     return content;
@@ -216,7 +292,7 @@ function syncDirectRuntimeModules() {
     const noMinify = process.argv.includes('--no-minify');
 
     // 1. Sync top-level entry files
-    if (isProdWebProfile()) {
+    if (isCompactWebProfile()) {
         removeGeneratedFile(path.join(PUBLISH_MODULE_DIR, 'dashboard-fullscreen.js'));
     }
 
@@ -308,7 +384,7 @@ function syncI18nModules() {
         const noMinify = process.argv.includes('--no-minify');
         let content;
 
-        if (isProdWebProfile() && file === 'i18n-zh-CN.js') {
+        if (isCompactWebProfile() && file === 'i18n-zh-CN.js') {
             const filtered = filterProdI18nTranslations(extractZhTranslations());
             content = `(function(){if(typeof i18n==='undefined')return;i18n.addTranslations('zh-CN',${JSON.stringify(filtered)});i18n._zhLoaded=true;})();\n`;
             if (shouldMinify && !noMinify) {
@@ -344,8 +420,7 @@ function syncStaticAssets() {
         { src: 'index.html', dest: 'index.html' },
         { src: 'setup.html', dest: 'setup.html' },
         { src: '404.html', dest: '404.html' },
-        { src: 'sw.js', dest: 'sw.js' },
-    ];
+    ].concat(isLiteWebProfile() ? [] : [{ src: 'sw.js', dest: 'sw.js' }]);
 
     // Copy individual root-level files
     syncMappings.forEach(({ src, dest }) => {
@@ -427,7 +502,7 @@ function syncStaticAssets() {
         if (!fs.existsSync(jsDestDir)) {
             fs.mkdirSync(jsDestDir, { recursive: true });
         }
-        if (isProdWebProfile()) {
+        if (isCompactWebProfile()) {
             removeGeneratedFile(path.join(jsDestDir, 'notification.js'));
         }
         const noMinify = process.argv.includes('--no-minify');
@@ -461,7 +536,7 @@ function validateSourceCoverage() {
     DIRECT_RUNTIME_MODULES.forEach((f) => {
         expectedFiles.add(f);
     });
-    SUBDIR_BUNDLES.forEach((bundle) => {
+    activeSubdirBundles().forEach((bundle) => {
         expectedFiles.add(bundle.outName);
     });
     I18N_MODULES.forEach(({ file }) => expectedFiles.add(file));
@@ -493,7 +568,7 @@ function validateSourceCoverage() {
     const ignoredProdOrphans = [];
     const orphaned = actualFiles.filter((f) => {
         if (f === 'i18n-engine.js' || expectedFiles.has(f)) return false;
-        if (isProdWebProfile() && PROD_IGNORED_ORPHAN_MODULES.has(f)) {
+        if (isCompactWebProfile() && PROD_IGNORED_ORPHAN_MODULES.has(f)) {
             ignoredProdOrphans.push(f);
             return false;
         }
@@ -531,31 +606,36 @@ const SUBDIR_BUNDLES = [
         outName: 'protocol-modbus-rtu.js',
         entry: null,
         subDir: 'protocol',
-        order: ['modbus-config.js']
+        order: ['modbus-config.js'],
+        skipProfiles: ['lite']
     },
     {
         outName: 'protocol-modbus-control.js',
         entry: null,
         subDir: 'protocol',
-        order: ['modbus-control.js', 'modbus-relay-motor.js']
+        order: ['modbus-control.js', 'modbus-relay-motor.js'],
+        skipProfiles: ['lite']
     },
     {
         outName: 'device-control.js',
         entry: 'device-control.js',
         subDir: 'device-control',
-        order: ['core.js']
+        order: ['core.js'],
+        skipProfiles: ['lite']
     },
     {
         outName: 'device-control-view.js',
         entry: null,
         subDir: 'device-control',
-        order: ['render.js', 'layout.js']
+        order: ['render.js', 'layout.js'],
+        skipProfiles: ['lite']
     },
     {
         outName: 'device-control-modbus.js',
         entry: null,
         subDir: 'device-control',
-        order: ['modbus-ops.js', 'modbus-ctrl.js']
+        order: ['modbus-ops.js', 'modbus-ctrl.js'],
+        skipProfiles: ['lite']
     },
     {
         outName: 'periph-exec.js',
@@ -564,17 +644,22 @@ const SUBDIR_BUNDLES = [
     }
 ];
 
+function activeSubdirBundles() {
+    const profile = getWebProfile();
+    return SUBDIR_BUNDLES.filter((bundle) => !(bundle.skipProfiles || []).includes(profile));
+}
+
 // 在独立同步、子目录同步中需要跳过的文件（已被 bundle 包含）
-const BUNDLED_ENTRY_FILES = new Set(SUBDIR_BUNDLES.map(b => b.entry).filter(Boolean));
+const BUNDLED_ENTRY_FILES = new Set(activeSubdirBundles().map(b => b.entry).filter(Boolean));
 const BUNDLED_SIBLING_FILES = new Set();
-SUBDIR_BUNDLES.forEach(b => (b.siblings || []).forEach(s => BUNDLED_SIBLING_FILES.add(s)));
+activeSubdirBundles().forEach(b => (b.siblings || []).forEach(s => BUNDLED_SIBLING_FILES.add(s)));
 const BUNDLED_SUBDIRS = new Set(SUBDIR_BUNDLES.filter(b => b.subDir).map(b => b.subDir));
 
 function buildSubdirBundles() {
     const noMinify = process.argv.includes('--no-minify');
     const results = [];
 
-    SUBDIR_BUNDLES.forEach((bundle) => {
+    activeSubdirBundles().forEach((bundle) => {
         const parts = [];
 
         // 1. 子目录下的按顺序子模块
@@ -732,14 +817,16 @@ function cleanObsoleteRootJs() {
 
 function cleanProdObsoleteModules() {
     const removed = [];
-    if (!isProdWebProfile()) return removed;
-    PROD_IGNORED_ORPHAN_MODULES.forEach((fileName) => {
+    if (!isCompactWebProfile()) return removed;
+    const fileNames = new Set(PROD_IGNORED_ORPHAN_MODULES);
+    if (isLiteWebProfile()) {
+        fileNames.add('protocol-modbus-rtu.js');
+        fileNames.add('protocol-modbus-control.js');
+    }
+    fileNames.forEach((fileName) => {
         const targetPath = path.join(PUBLISH_MODULE_DIR, fileName);
-        [targetPath, `${targetPath}.gz`].forEach((filePath) => {
-            if (!fs.existsSync(filePath)) return;
-            fs.rmSync(filePath, { force: true });
-            removed.push(path.basename(filePath));
-        });
+        removeGeneratedFile(targetPath);
+        removed.push(fileName);
     });
     return removed;
 }

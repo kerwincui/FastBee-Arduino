@@ -313,6 +313,21 @@ String ProtocolManager::getProtocolStatus(ProtocolType type) {
 }
 
 void ProtocolManager::handle() {
+    // 内存保护：堆低于安全阈值时跳过协议处理，避免 JSON 序列化 OOM → abort()
+    // MQTT publishDeviceInfo / processQueuedCommands 等操作需要 String 动态分配，
+    // 在堆不足时执行会导致 new 失败 → lock_init_generic → abort()
+    uint32_t freeHeap = ESP.getFreeHeap();
+    if (freeHeap < 30000) {
+        // 每 10 秒打印一次警告，避免刷屏
+        static unsigned long lastWarnMs = 0;
+        unsigned long now = millis();
+        if (now - lastWarnMs > 10000) {
+            lastWarnMs = now;
+            Serial.printf("[PROTO] Heap too low (%lu), skipping protocol handle\n", (unsigned long)freeHeap);
+        }
+        return;
+    }
+
     // 检查延迟重启标志（在 loopTask 16KB 栈中安全执行）
 #if FASTBEE_ENABLE_MODBUS
     if (modbusRestartPending) {
@@ -471,6 +486,14 @@ bool ProtocolManager::restartMQTT() {
 bool ProtocolManager::restartMQTTDeferred() {
     LOG_INFO("Protocol Manager: Restarting MQTT (deferred connect)...");
     
+    // 堆保护：防止低内存时对象创建触发 abort()
+    uint32_t freeHeap = ESP.getFreeHeap();
+    if (freeHeap < 25000) {
+        LOG_WARNINGF("Protocol Manager: Heap too low for MQTT deferred restart (heap=%lu), skipping",
+                     (unsigned long)freeHeap);
+        return false;
+    }
+    
     // 断开现有连接
     if (mqttClient) {
         mqttClient->disconnect();
@@ -541,6 +564,14 @@ void ProtocolManager::stopMQTT() {
 #if FASTBEE_ENABLE_MODBUS
 bool ProtocolManager::restartModbus() {
     LOG_INFO("Protocol Manager: Restarting Modbus...");
+    
+    // 堆保护：防止低内存时 JSON 解析/对象创建触发 abort()
+    uint32_t freeHeap = ESP.getFreeHeap();
+    if (freeHeap < 25000) {
+        LOG_WARNINGF("Protocol Manager: Heap too low for Modbus restart (heap=%lu), skipping",
+                     (unsigned long)freeHeap);
+        return false;
+    }
     
     // 停止现有实例
     if (modbusHandler) {

@@ -476,12 +476,11 @@
                 statusEl.classList.toggle('u-text-danger', !enabled);
             }
             if (btn) {
-                btn.classList.remove('fb-btn-warning');
-                btn.classList.toggle('fb-btn-danger', enabled);
-                btn.classList.toggle('fb-btn-success', !enabled);
+                btn.classList.remove('fb-btn-danger', 'fb-btn-success');
+                btn.classList.add('fb-btn-warning');
                 btn.innerHTML = enabled
-                    ? '<i class="fas fa-lock"></i> <span>' + (i18n.t('dev-mode-disable-btn') || '禁用开发环境') + '</span>'
-                    : '<i class="fas fa-unlock"></i> <span>' + (i18n.t('dev-mode-enable-btn') || '启用开发环境') + '</span>';
+                    ? '<span>' + (i18n.t('dev-mode-disable-btn') || '禁用开发环境') + '</span>'
+                    : '<span>' + (i18n.t('dev-mode-enable-btn') || '启用开发环境') + '</span>';
             }
         },
 
@@ -502,7 +501,7 @@
 
             if (btn) {
                 btn.disabled = true;
-                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> <span>' + (i18n.t('processing') || '处理中...') + '</span>';
+                btn.innerHTML = '<span>' + (i18n.t('processing') || '处理中...') + '</span>';
             }
             apiPost('/api/device/developer-mode', {
                 enabled: enabled ? 'false' : 'true',

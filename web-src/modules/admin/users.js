@@ -109,7 +109,7 @@
                 actionCell.className = 'u-toolbar-sm';
 
                 const editBtn = document.createElement('button');
-                editBtn.className = 'fb-btn fb-btn-sm fb-btn-primary';
+                editBtn.className = 'fb-btn fb-btn-sm fb-btn-primary fb-btn-action-edit';
                 editBtn.textContent = i18n.t('edit-user');
                 editBtn.addEventListener('click', () => this.showEditUserModal(user));
                 actionCell.appendChild(editBtn);

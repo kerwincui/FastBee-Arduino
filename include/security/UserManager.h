@@ -92,7 +92,7 @@ private:
         // 会话安全配置（从 AuthManager 合并）
         uint32_t sessionTimeout = 3600000;        // 1小时
         uint32_t sessionCleanupInterval = 60000;  // 1分钟
-        bool enableSessionPersistence = true;
+        bool enableSessionPersistence = false;
         String cookieName = "sessionId";
         uint32_t cookieMaxAge = 3600;             // 1小时
         bool cookieHttpOnly = true;
@@ -318,6 +318,11 @@ public:
      * @brief 获取登录锁定时间（毫秒）
      */
     uint32_t getLoginLockoutTime() const { return config.loginLockoutTime; }
+
+    /**
+     * @brief Whether the same user may keep multiple active sessions.
+     */
+    bool allowsMultipleSessions() const { return config.allowMultipleSessions; }
     
     /**
      * @brief 更新安全配置

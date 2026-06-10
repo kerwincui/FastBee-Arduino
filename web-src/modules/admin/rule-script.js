@@ -45,7 +45,8 @@
         _renderRuleScriptActionButton(action, id, label, className, enabledValue) {
             let attrs = 'data-rule-script-action="' + action + '" data-id="' + escapeHtml(id) + '"';
             if (enabledValue !== undefined) attrs += ' data-enabled="' + (enabledValue ? 'true' : 'false') + '"';
-            return '<button class="fb-btn fb-btn-sm ' + className + '" ' + attrs + '>' + label + '</button>';
+            const actionClass = action === 'edit' ? ' fb-btn-action-edit' : '';
+            return '<button class="fb-btn fb-btn-sm ' + className + actionClass + '" ' + attrs + '>' + label + '</button>';
         },
 
         _renderRuleScriptRow(rule, triggerLabels, protocolLabels) {

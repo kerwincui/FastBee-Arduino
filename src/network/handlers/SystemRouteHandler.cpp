@@ -9,6 +9,7 @@
 #include "utils/NetworkUtils.h"
 #include "utils/TimeUtils.h"
 #include "utils/StaticPoolAllocator.h"
+#include "utils/PsramJsonDocument.h"
 #include "core/FeatureFlags.h"
 #include "./network/WebConfigManager.h"
 #include "./network/handlers/SSERouteHandler.h"
@@ -70,6 +71,102 @@ String basenameOfFile(const char* path) {
     if (slash >= 0) name = name.substring(slash + 1);
     return name;
 }
+
+bool shouldUseCompactSystemInfo(bool explicitBrief) {
+    return explicitBrief || ESP.getFreeHeap() < 12288 || ESP.getMaxAllocHeap() < 6144;
+}
+
+void fillMemorySummary(JsonObject memory) {
+    size_t heapSize = ESP.getHeapSize();
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t heapUsed = heapSize > freeHeap ? heapSize - freeHeap : 0;
+
+    memory["heapTotal"] = heapSize;
+    memory["heapFree"] = freeHeap;
+    memory["heapUsed"] = heapUsed;
+    memory["heapMinFree"] = ESP.getMinFreeHeap();
+    memory["heapMaxAlloc"] = ESP.getMaxAllocHeap();
+    memory["heapUsagePercent"] = heapSize > 0 ? (int)((heapUsed * 100) / heapSize) : 0;
+
+    size_t psramSize = ESP.getPsramSize();
+    size_t psramFree = psramSize > 0 ? ESP.getFreePsram() : 0;
+    size_t psramUsed = psramSize > psramFree ? psramSize - psramFree : 0;
+    if (psramSize > 0) {
+        memory["psramTotal"] = psramSize;
+        memory["psramFree"] = psramFree;
+        memory["psramUsed"] = psramUsed;
+        memory["psramMinFree"] = ESP.getMinFreePsram();
+        memory["psramUsagePercent"] = (int)((psramUsed * 100) / psramSize);
+    }
+
+    size_t total = heapSize + psramSize;
+    size_t free = freeHeap + psramFree;
+    size_t used = total > free ? total - free : 0;
+    memory["total"] = total;
+    memory["free"] = free;
+    memory["used"] = used;
+    memory["usagePercent"] = total > 0 ? (int)((used * 100) / total) : 0;
+}
+
+void fillCompactSystemInfo(JsonObject data, WebHandlerContext* ctx, bool degraded) {
+    JsonObject device = data["device"].to<JsonObject>();
+    device["id"] = String((uint32_t)ESP.getEfuseMac(), HEX);
+    device["chipModel"] = ESP.getChipModel();
+    device["chipRevision"] = ESP.getChipRevision();
+    device["cpuFreqMHz"] = ESP.getCpuFreqMHz();
+    device["sdkVersion"] = ESP.getSdkVersion();
+    device["freeHeap"] = ESP.getFreeHeap();
+    device["flashSize"] = ESP.getFlashChipSize();
+    device["firmwareVersion"] = SystemInfo::VERSION;
+
+    size_t sketchSize = ESP.getSketchSize();
+    size_t freeSketchSpace = ESP.getFreeSketchSpace();
+    JsonObject flash = data["flash"].to<JsonObject>();
+    flash["total"] = ESP.getFlashChipSize();
+    flash["sketchSize"] = sketchSize;
+    flash["freeSketchSpace"] = freeSketchSpace;
+    flash["used"] = sketchSize;
+    flash["free"] = freeSketchSpace;
+    flash["usagePercent"] = (int)((sketchSize * 100) / (sketchSize + freeSketchSpace));
+
+    JsonObject memory = data["memory"].to<JsonObject>();
+    fillMemorySummary(memory);
+
+    size_t fsTotal = LittleFS.totalBytes();
+    size_t fsUsed = LittleFS.usedBytes();
+    JsonObject filesystem = data["filesystem"].to<JsonObject>();
+    filesystem["total"] = fsTotal;
+    filesystem["used"] = fsUsed;
+    filesystem["free"] = fsTotal - fsUsed;
+    filesystem["usagePercent"] = fsTotal > 0 ? (int)((fsUsed * 100) / fsTotal) : 0;
+
+    unsigned long uptime = millis();
+    JsonObject uptimeObj = data["uptime"].to<JsonObject>();
+    uptimeObj["ms"] = uptime;
+    uptimeObj["seconds"] = uptime / 1000;
+    uptimeObj["formatted"] = ctx ? ctx->formatUptime(uptime) : String(uptime / 1000) + "s";
+
+    if (ctx && ctx->networkManager) {
+        NetworkStatusInfo info = ctx->networkManager->getStatusInfo();
+        JsonObject network = data["network"].to<JsonObject>();
+        network["connected"] = (info.status == NetworkStatus::CONNECTED);
+        network["ipAddress"] = info.ipAddress;
+        network["ssid"] = info.ssid;
+        network["rssi"] = info.rssi;
+        network["macAddress"] = WiFi.macAddress();
+    }
+
+    data["brief"] = true;
+    data["degraded"] = degraded;
+}
+
+void sendCompactSystemInfo(AsyncWebServerRequest* request, WebHandlerContext* ctx, bool degraded) {
+    auto doc = FastBee::makeJsonDocument();
+    doc["success"] = true;
+    JsonObject data = doc["data"].to<JsonObject>();
+    fillCompactSystemInfo(data, ctx, degraded);
+    HandlerUtils::sendJsonStream(request, doc);
+}
 }
 
 SystemRouteHandler::SystemRouteHandler(WebHandlerContext* ctx)
@@ -91,18 +188,25 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/network/status", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
-        // Network status handler - reuse network config with status focus
+        // Network status handler - critical endpoint, bypass heavy memory guard
         if (!ctx->checkPermission(request, "network.view")) {
             ctx->sendUnauthorized(request);
             return;
         }
-        JsonDocument doc;
+        auto doc = FastBee::makeJsonDocument();
         doc["success"] = true;
         if (ctx->networkManager) {
             FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
             netMgr->updateStatusInfo();
             NetworkStatusInfo info = netMgr->getStatusInfo();
             WiFiConfig cfg = netMgr->getConfig();
+            if (cfg.networkType == NetworkType::NET_WIFI && WiFi.status() == WL_CONNECTED) {
+                info.status = NetworkStatus::CONNECTED;
+                if (info.ipAddress.isEmpty() || info.ipAddress == "0.0.0.0") info.ipAddress = WiFi.localIP().toString();
+                if (info.ssid.isEmpty()) info.ssid = WiFi.SSID();
+                info.rssi = WiFi.RSSI();
+                if (info.macAddress.isEmpty()) info.macAddress = WiFi.macAddress();
+            }
             const char* statusText = "unknown";
             switch (info.status) {
                 case NetworkStatus::CONNECTED:        statusText = "connected";   break;
@@ -114,44 +218,54 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             }
             doc["data"]["status"] = statusText;
             doc["data"]["statusCode"] = static_cast<uint8_t>(info.status);
-            doc["data"]["ssid"]          = info.ssid.isEmpty() ? cfg.staSSID : info.ssid;
+            doc["data"]["connected"] = (info.status == NetworkStatus::CONNECTED);
+            doc["data"]["deviceNetworkType"] = static_cast<uint8_t>(cfg.networkType);
             doc["data"]["ipAddress"]     = info.ipAddress;
             doc["data"]["macAddress"]    = info.macAddress.isEmpty() ? WiFi.macAddress() : info.macAddress;
-            doc["data"]["rssi"]          = info.rssi;
-            doc["data"]["signalStrength"]= NetworkUtils::rssiToPercentage(info.rssi);
-            doc["data"]["gateway"]       = info.currentGateway;
-            doc["data"]["subnet"]        = info.currentSubnet;
-            doc["data"]["dnsServer"]     = info.dnsServer;
-            doc["data"]["dnsServer2"]    = WiFi.status() == WL_CONNECTED ? WiFi.dnsIP(1).toString() : String("");
             doc["data"]["connectedTime"] = info.lastConnectionTime > 0 ? (millis() - info.lastConnectionTime) / 1000 : 0;
             doc["data"]["apIPAddress"]   = info.apIPAddress;
             doc["data"]["apClientCount"] = info.apClientCount;
             doc["data"]["apSSID"]        = cfg.apSSID;
-            doc["data"]["apChannel"]     = cfg.apChannel;
-            doc["data"]["reconnectAttempts"] = info.reconnectAttempts;
-            doc["data"]["uptime"]            = info.uptime;
             doc["data"]["internetAvailable"] = info.internetAvailable;
-            doc["data"]["conflictDetected"]  = info.conflictDetected;
-            doc["data"]["failoverCount"]     = info.failoverCount;
-            doc["data"]["activeIPType"]      = info.activeIPType;
-            doc["data"]["txCount"]           = info.txCount;
-            doc["data"]["rxCount"]           = info.rxCount;
 
-            // 4G 蜂窝网络状态
-            doc["data"]["simStatus"]         = info.simStatus;
-            doc["data"]["operator"]          = info.operatorName;
-            doc["data"]["networkType"]       = info.cellularNetworkType;
-            doc["data"]["apn"]               = info.apn;
-            doc["data"]["imei"]              = info.imei;
-            doc["data"]["iccId"]             = info.iccid;
-            doc["data"]["signalQuality"]     = info.cellularSignalQuality;
+            // WiFi 鐗规湁瀛楁
+            if (cfg.networkType == NetworkType::NET_WIFI) {
+                doc["data"]["ssid"]          = info.ssid.isEmpty() ? cfg.staSSID : info.ssid;
+                doc["data"]["rssi"]          = info.rssi;
+                doc["data"]["signalStrength"]= NetworkUtils::rssiToPercentage(info.rssi);
+                doc["data"]["gateway"]       = info.currentGateway;
+                doc["data"]["subnet"]        = info.currentSubnet;
+                doc["data"]["dnsServer"]     = info.dnsServer;
+                doc["data"]["reconnectAttempts"] = info.reconnectAttempts;
+            }
 
-            // LoRa 状态
-            doc["data"]["loraMode"]          = info.loraMode;
-            doc["data"]["loraAddress"]       = info.loraAddress;
-            doc["data"]["loraFrequency"]     = info.loraFrequency;
-            doc["data"]["loraAirRate"]       = info.loraAirRate;
-            doc["data"]["loraChannel"]       = info.loraChannel;
+            // 4G 铚傜獫缃戠粶鐘舵€侊紙浠呭湪 4G 妯″紡鏃惰繑鍥烇級
+            if (cfg.networkType == NetworkType::NET_4G) {
+                doc["data"]["simStatus"]         = info.simStatus;
+                doc["data"]["operator"]          = info.operatorName;
+                doc["data"]["networkType"]       = info.cellularNetworkType;
+                doc["data"]["apn"]               = info.apn;
+                doc["data"]["imei"]              = info.imei;
+                doc["data"]["iccId"]             = info.iccid;
+                doc["data"]["signalQuality"]     = info.cellularSignalQuality;
+                doc["data"]["rssi"]              = info.rssi;
+                doc["data"]["signalStrength"]    = NetworkUtils::rssiToPercentage(info.rssi);
+            }
+
+            // 浠ュお缃戠姸鎬?
+            if (cfg.networkType == NetworkType::NET_ETHERNET) {
+                doc["data"]["gateway"]       = info.currentGateway;
+            }
+
+            // LoRa 鐘舵€侊紙浠呭湪 LoRa 妯″紡鏃惰繑鍥烇級
+            if (cfg.networkType == NetworkType::NET_LORA) {
+                doc["data"]["loraMode"]          = info.loraMode;
+                doc["data"]["loraAddress"]       = info.loraAddress;
+                doc["data"]["loraFrequency"]     = info.loraFrequency;
+                doc["data"]["loraAirRate"]       = info.loraAirRate;
+                doc["data"]["loraChannel"]       = info.loraChannel;
+            }
+
             const char* modeText = "unknown";
             switch (cfg.mode) {
                 case NetworkMode::NETWORK_STA:    modeText = "STA"; break;
@@ -162,7 +276,6 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             doc["data"]["modeCode"]   = static_cast<uint8_t>(cfg.mode);
             doc["data"]["enableMDNS"] = cfg.enableMDNS;
             doc["data"]["customDomain"] = cfg.customDomain;
-            // 返回实际注册的 mDNS hostname（可能带 -2/-3 后缀）
             DNSManager* dns = netMgr->getDNSManager();
             if (dns) {
                 doc["data"]["mdnsDomain"] = dns->getActualHostname();
@@ -177,6 +290,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             doc["success"] = false;
             doc["error"] = "Network service unavailable";
         }
+        // 缃戠粶鐘舵€佹槸UI鍏抽敭绔偣锛屽搷搴斾綋杈冨皬锛?1KB锛夛紝鐩存帴鍙戦€佷笉妫€鏌ュ唴瀛樺畧鍗?
         HandlerUtils::sendJsonStream(request, doc);
     });
 
@@ -218,9 +332,9 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             if (obj["reconnectInterval"].is<String>() || obj["reconnectInterval"].is<int>()) cfg.reconnectInterval = obj["reconnectInterval"].as<int>();
             if (obj["maxReconnectAttempts"].is<String>() || obj["maxReconnectAttempts"].is<int>()) cfg.maxReconnectAttempts = obj["maxReconnectAttempts"].as<int>();
             if (obj["conflictDetection"].is<String>() || obj["conflictDetection"].is<int>()) cfg.conflictDetection = static_cast<IPConflictMode>(obj["conflictDetection"].as<int>());
-            // 联网方式
+            // 鑱旂綉鏂瑰紡
             if (obj["networkType"].is<String>() || obj["networkType"].is<int>()) cfg.networkType = static_cast<NetworkType>(obj["networkType"].as<String>().toInt());
-            // 以太网配置
+            // 浠ュお缃戦厤缃?
             if (obj["ethernet"].is<JsonObject>()) {
                 JsonObject eth = obj["ethernet"];
                 if (eth.containsKey("spiMosi")) cfg.ethernet.spiMosi = eth["spiMosi"].as<int8_t>();
@@ -230,7 +344,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 if (eth.containsKey("rstPin"))  cfg.ethernet.rstPin  = eth["rstPin"].as<int8_t>();
                 if (eth.containsKey("intPin"))  cfg.ethernet.intPin  = eth["intPin"].as<int8_t>();
             }
-            // 4G 蜂窝配置
+            // 4G 铚傜獫閰嶇疆
             if (obj["cellular"].is<JsonObject>()) {
                 JsonObject cell = obj["cellular"];
                 if (cell.containsKey("txPin"))    cfg.cellular.txPin    = cell["txPin"].as<int8_t>();
@@ -239,7 +353,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 if (cell.containsKey("baudRate")) cfg.cellular.baudRate = cell["baudRate"].as<uint32_t>();
                 if (cell.containsKey("apn"))      cfg.cellular.apn      = cell["apn"].as<String>();
             }
-            // LoRa 配置
+            // LoRa 閰嶇疆
             if (obj["lora"].is<JsonObject>()) {
                 JsonObject lora = obj["lora"];
                 if (lora.containsKey("txPin"))    cfg.lora.txPin    = lora["txPin"].as<int8_t>();
@@ -250,12 +364,13 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             if (netMgr->updateConfig(cfg, true)) {
                 LOGGER.info("Network configuration updated via web");
                 
-                // 构建详细响应，包含网络模式和访问信息
-                JsonDocument respDoc;
+                // 鏋勫缓璇︾粏鍝嶅簲锛屽寘鍚綉缁滄ā寮忓拰璁块棶淇℃伅
+                auto respDoc = FastBee::makeJsonDocument();
                 respDoc["success"] = true;
                 respDoc["message"] = "Network configuration saved successfully";
                 
-                // 网络模式信息
+                // 缃戠粶妯″紡淇℃伅
+                respDoc["data"]["networkType"] = static_cast<uint8_t>(cfg.networkType);
                 respDoc["data"]["mode"] = static_cast<uint8_t>(cfg.mode);
                 const char* modeText = "unknown";
                 switch (cfg.mode) {
@@ -265,20 +380,20 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 }
                 respDoc["data"]["modeText"] = modeText;
                 
-                // AP信息（AP模式需要）
+                // AP淇℃伅锛圓P妯″紡闇€瑕侊級
                 if (cfg.mode == NetworkMode::NETWORK_AP) {
                     respDoc["data"]["apSSID"] = cfg.apSSID;
                     respDoc["data"]["apPassword"] = cfg.apPassword;
-                    respDoc["data"]["apIP"] = cfg.apIP;  // 配置的AP IP
+                    respDoc["data"]["apIP"] = cfg.apIP;  // 閰嶇疆鐨凙P IP
                 }
                 
-                // mDNS信息（STA模式需要）
+                // mDNS淇℃伅锛圫TA妯″紡闇€瑕侊級
                 if (cfg.mode == NetworkMode::NETWORK_STA && cfg.enableMDNS) {
                     String domain = cfg.customDomain.length() > 0 ? cfg.customDomain : "fastbee";
                     respDoc["data"]["mdnsDomain"] = domain + ".local";
                 }
                 
-                // 提示网络重启需要时间
+                // 鎻愮ず缃戠粶閲嶅惎闇€瑕佹椂闂?
                 respDoc["data"]["restartRequired"] = true;
                 
                 HandlerUtils::sendJsonStream(request, respDoc);
@@ -504,9 +619,9 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         size_t fileSize = file.size();
         if (fileSize > 128 * 1024) { file.close(); ctx->sendError(request, 413, "File too large (max 128KB)"); return; }
 
-        // ★ Raw 快速路径：raw=1 时直接 chunked 流式回传文件原始字节（无 JSON 包装、无转义）
-        // 用于配置文件导出场景：即使设备处于 MemGuard CRITICAL 级也能成功下载，
-        // 内存开销仅~256B TCP 发送缓冲 + File 句柄，脱敏由前端在浏览器本地完成。
+        // 鈽?Raw 蹇€熻矾寰勶細raw=1 鏃剁洿鎺?chunked 娴佸紡鍥炰紶鏂囦欢鍘熷瀛楄妭锛堟棤 JSON 鍖呰銆佹棤杞箟锛?
+        // 鐢ㄤ簬閰嶇疆鏂囦欢瀵煎嚭鍦烘櫙锛氬嵆浣胯澶囧浜?MemGuard CRITICAL 绾т篃鑳芥垚鍔熶笅杞斤紝
+        // 鍐呭瓨寮€閿€浠厏256B TCP 鍙戦€佺紦鍐?+ File 鍙ユ焺锛岃劚鏁忕敱鍓嶇鍦ㄦ祻瑙堝櫒鏈湴瀹屾垚銆?
         bool rawDownload = request->hasParam("raw") && request->getParam("raw")->value() == "1";
         if (rawDownload) {
             auto state = std::make_shared<File>(file);
@@ -536,17 +651,17 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             return;
         }
 
-        // 文件分级（用于 MemGuard 策略决策）：
-        // - isTinyFile (≤ 4KB)：极小文件（device.json/network.json）
-        // - isConfigFile (/config/ 下 ≤ 16KB)：受保护配置文件（peripherals/protocol/periph_exec）
-        // - 其它：普通文件
+        // 鏂囦欢鍒嗙骇锛堢敤浜?MemGuard 绛栫暐鍐崇瓥锛夛細
+        // - isTinyFile (鈮?4KB)锛氭瀬灏忔枃浠讹紙device.json/network.json锛?
+        // - isConfigFile (/config/ 涓?鈮?16KB)锛氬彈淇濇姢閰嶇疆鏂囦欢锛坧eripherals/protocol/periph_exec锛?
+        // - 鍏跺畠锛氭櫘閫氭枃浠?
         const bool isTinyFile = (fileSize <= 4096);
         const bool isConfigFile = path.startsWith("/config/") && (fileSize <= 16 * 1024);
         const bool isProtectedFile = isTinyFile || isConfigFile;
 
-        // MemGuard 策略（chunked 流式响应，内存占用恒定 ~256B 缓冲 + 少量 state）：
-        // - 受保护文件（config/tiny）：无视 MemGuard 级别，始终放行（CRITICAL 级下也能救援导出）
-        // - 非受保护文件：CRITICAL 级全拒；SEVERE 级拒绝（避免大文件拖垮已濒临 OOM 的系统）
+        // MemGuard 绛栫暐锛坈hunked 娴佸紡鍝嶅簲锛屽唴瀛樺崰鐢ㄦ亽瀹?~256B 缂撳啿 + 灏戦噺 state锛夛細
+        // - 鍙椾繚鎶ゆ枃浠讹紙config/tiny锛夛細鏃犺 MemGuard 绾у埆锛屽缁堟斁琛岋紙CRITICAL 绾т笅涔熻兘鏁戞彺瀵煎嚭锛?
+        // - 闈炲彈淇濇姢鏂囦欢锛欳RITICAL 绾у叏鎷掞紱SEVERE 绾ф嫆缁濓紙閬垮厤澶ф枃浠舵嫋鍨凡婵掍复 OOM 鐨勭郴缁燂級
         if (!isProtectedFile && HandlerUtils::rejectHeavyRequestOnPressure(
                 request,
                 rawDownload ? "Raw file download" : "File content",
@@ -556,24 +671,28 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             return;
         }
 
-        // 堆内存最小阈值（chunked 流式仅需极少内存即可发送）：
-        // - 受保护文件：free ≥ 6KB, maxAlloc ≥ 2KB（仅需状态结构 + TCP 发送缓冲）
-        // - 非受保护大文件：free ≥ 20KB, maxAlloc ≥ 8KB
+        // 鍫嗗唴瀛樻渶灏忛槇鍊硷紙chunked 娴佸紡浠呴渶鏋佸皯鍐呭瓨鍗冲彲鍙戦€侊級锛?
+        // - 鍙椾繚鎶ゆ枃浠讹細free 鈮?6KB, maxAlloc 鈮?2KB锛堜粎闇€鐘舵€佺粨鏋?+ TCP 鍙戦€佺紦鍐诧級
+        // - 闈炲彈淇濇姢澶ф枃浠讹細free 鈮?20KB, maxAlloc 鈮?8KB
         size_t freeHeap = ESP.getFreeHeap();
         size_t maxAlloc = ESP.getMaxAllocHeap();
         size_t minFreeHeap = isProtectedFile ? 6000  : 20000;
         size_t minMaxAlloc = isProtectedFile ? 2000  : 8000;
         if (freeHeap < minFreeHeap || maxAlloc < minMaxAlloc) {
-            file.close();
-            char msg[96];
-            snprintf(msg, sizeof(msg), "Low memory: heap=%u maxAlloc=%u", (unsigned)freeHeap, (unsigned)maxAlloc);
-            HandlerUtils::sendJsonError(request, 503, msg);
-            return;
+            // Chunked streaming uses minimal internal heap (~300B state + TCP buffer).
+            // If PSRAM is available and heap isn't critically low, safe to proceed.
+            if (!FastBee::psramAvailableForJson(4096) || HandlerUtils::internalHeapCriticallyLow(freeHeap, maxAlloc)) {
+                file.close();
+                char msg[96];
+                snprintf(msg, sizeof(msg), "Low memory: heap=%u maxAlloc=%u", (unsigned)freeHeap, (unsigned)maxAlloc);
+                HandlerUtils::sendJsonError(request, 503, msg);
+                return;
+            }
         }
 
-        // ============ Chunked 流式响应状态机 ============
-        // 避免一次性分配大 String，让 CRITICAL 级下的配置文件也能完整导出。
-        // 阶段：0=header, 1=content（读文件+转义）, 2=trailer "\"}}", 3=done
+        // ============ Chunked 娴佸紡鍝嶅簲鐘舵€佹満 ============
+        // 閬垮厤涓€娆℃€у垎閰嶅ぇ String锛岃 CRITICAL 绾т笅鐨勯厤缃枃浠朵篃鑳藉畬鏁村鍑恒€?
+        // 闃舵锛?=header, 1=content锛堣鏂囦欢+杞箟锛? 2=trailer "\"}}", 3=done
         struct FileStreamState {
             File file;
             size_t fileSize = 0;
@@ -581,15 +700,15 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             String header;
             size_t headerPos = 0;
             size_t trailerPos = 0;
-            // pendingBuf 缓存：当 buffer 剩余空间不足以写入 2 字节转义时，暂存到下次回调
-            uint8_t pendingBuf[4] = {0};
+            // pendingBuf 缂撳瓨锛氬綋 buffer 鍓╀綑绌洪棿涓嶈冻浠ュ啓鍏?2 瀛楄妭杞箟鏃讹紝鏆傚瓨鍒颁笅娆″洖璋?
+            uint8_t pendingBuf[130] = {0};  // 64 raw bytes * 2 max escape = 128 worst case
             size_t pendingLen = 0;
             size_t pendingHead = 0;
             uint8_t phase = 0;
         };
 
         auto state = std::make_shared<FileStreamState>();
-        state->file = file;  // 移交文件句柄所有权
+        state->file = file;  // 绉讳氦鏂囦欢鍙ユ焺鎵€鏈夋潈
         state->fileSize = fileSize;
         state->header = F("{\"success\":true,\"data\":{\"path\":\"");
         state->header += path;
@@ -614,9 +733,9 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                     if (state->headerPos >= headerLen) state->phase = 1;
                     if (written > 0) return written;
                 }
-                // ---- Phase 1: 文件内容转义 ----
+                // ---- Phase 1: 鏂囦欢鍐呭杞箟 ----
                 if (state->phase == 1) {
-                    // 优先消耗上次未能写入的转义字节
+                    // 浼樺厛娑堣€椾笂娆℃湭鑳藉啓鍏ョ殑杞箟瀛楄妭
                     while (state->pendingLen > 0 && written < maxLen) {
                         buffer[written++] = state->pendingBuf[state->pendingHead++];
                         state->pendingLen--;
@@ -642,17 +761,19 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                                     if ((uint8_t)c >= 0x20) { esc[0]=c; escLen=1; }
                                     break;
                             }
-                            if (escLen == 0) continue;  // 控制字符直接丢弃
+                            if (escLen == 0) continue;  // 鎺у埗瀛楃鐩存帴涓㈠純
                             if (written + escLen <= maxLen) {
                                 for (size_t j = 0; j < escLen; j++) buffer[written++] = esc[j];
                             } else {
-                                // buffer 装不下完整转义序列，暂存到 pendingBuf
+                                // buffer 瑁呬笉涓嬪畬鏁磋浆涔夊簭鍒楋紝鏆傚瓨鍒?pendingBuf
                                 for (size_t j = 0; j < escLen; j++) {
-                                    state->pendingBuf[state->pendingLen++] = esc[j];
+                                    if (state->pendingLen < sizeof(state->pendingBuf)) {
+                                        state->pendingBuf[state->pendingLen++] = esc[j];
+                                    }
                                 }
                             }
                         }
-                        // buffer 写满且 pending 非空：退出，下次再来
+                        // buffer 鍐欐弧涓?pending 闈炵┖锛氶€€鍑猴紝涓嬫鍐嶆潵
                         if (written >= maxLen) break;
                     }
                     if (state->rawPos >= state->fileSize && state->pendingLen == 0) {
@@ -704,9 +825,9 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         if (written == content.length()) {
             LOGGER.infof("File saved via web: %s", path.c_str());
 
-            // 导入/保存配置后回填身份字段：当写入 device.json 或 protocol.json 时，
-            // 复用启动阶段的 ensureDeviceIdentity() 自动填充空的 deviceId / mqtt.clientId，
-            // 确保跨设备导入也能正确生成一致的设备标识。
+            // 瀵煎叆/淇濆瓨閰嶇疆鍚庡洖濉韩浠藉瓧娈碉細褰撳啓鍏?device.json 鎴?protocol.json 鏃讹紝
+            // 澶嶇敤鍚姩闃舵鐨?ensureDeviceIdentity() 鑷姩濉厖绌虹殑 deviceId / mqtt.clientId锛?
+            // 纭繚璺ㄨ澶囧鍏ヤ篃鑳芥纭敓鎴愪竴鑷寸殑璁惧鏍囪瘑銆?
             if (path == "/config/device.json" || path == "/config/protocol.json") {
                 FastBeeFramework* fw = FastBeeFramework::getInstance();
                 if (fw) {
@@ -722,8 +843,11 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/filesystem", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
         if (!ctx->checkPermission(request, "fs.view")) { ctx->sendUnauthorized(request); return; }
-        if (HandlerUtils::checkLowMemory(request, 6144)) return;
-        JsonDocument doc;
+        if (ESP.getFreeHeap() < 2048 || ESP.getMaxAllocHeap() < 1024) {
+            HandlerUtils::sendJsonError(request, 503, "Critical memory - filesystem info unavailable", 5);
+            return;
+        }
+        auto doc = FastBee::makeJsonDocument(2048);
         size_t total = LittleFS.totalBytes();
         size_t used  = LittleFS.usedBytes();
         doc["totalBytes"] = total;
@@ -811,6 +935,8 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     // Health check
     server->on("/api/health", HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetHealth(request); });
+    server->on("/api/system/health", HTTP_GET,
+              [this](AsyncWebServerRequest* request) { handleGetHealth(request); });
 
     // System metrics
     server->on("/api/system/metrics", HTTP_GET,
@@ -830,48 +956,49 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
         return;
     }
 
+    if (request->hasParam("probe")) {
+        char json[512];
+        snprintf(json, sizeof(json),
+                 "{\"success\":true,\"data\":{\"memory\":{\"heapFree\":%lu,\"heapMaxAlloc\":%lu,"
+                 "\"psramTotal\":%lu,\"psramFree\":%lu},\"brief\":true,\"probe\":true}}",
+                 (unsigned long)ESP.getFreeHeap(),
+                 (unsigned long)ESP.getMaxAllocHeap(),
+                 (unsigned long)ESP.getPsramSize(),
+                 (unsigned long)ESP.getFreePsram());
+        AsyncWebServerResponse* response = request->beginResponse(200, "application/json", json);
+        response->addHeader("Connection", "close");
+        request->send(response);
+        return;
+    }
+
     FastBeeFramework* fw = FastBeeFramework::getInstance();
     bool forceBrief = false;
     if (fw && fw->getHealthMonitor()) {
         MemoryGuardLevel level = fw->getHealthMonitor()->getMemoryGuardLevel();
         if (level >= MemoryGuardLevel::CRITICAL) {
-            HandlerUtils::sendJsonError(request, 503, "Critical memory - system info unavailable");
-            return;
+            if (!FastBee::psramAvailableForJson(32768) && ESP.getFreeHeap() < 4096) {
+                HandlerUtils::sendJsonError(request, 503, "Critical memory - system info unavailable");
+                return;
+            }
+            forceBrief = true;
         }
         if (level >= MemoryGuardLevel::SEVERE) {
             forceBrief = true;
         }
     }
 
-    bool brief = forceBrief || request->hasParam("brief");
-    if (HandlerUtils::checkLowMemory(request)) return;
-
-    JsonDocument doc;
-
+    bool explicitFull = request->hasParam("full") &&
+        request->getParam("full")->value() == "1";
+    bool explicitBrief = request->hasParam("brief");
+    bool brief = !explicitFull || forceBrief || shouldUseCompactSystemInfo(explicitBrief);
     if (brief) {
-        doc["data"]["device"]["chipModel"] = ESP.getChipModel();
-        doc["data"]["device"]["freeHeap"] = ESP.getFreeHeap();
-        doc["data"]["device"]["firmwareVersion"] = SystemInfo::VERSION;
-
-        size_t freeHeap = ESP.getFreeHeap();
-        size_t heapSize = ESP.getHeapSize();
-        doc["data"]["memory"]["heapFree"] = freeHeap;
-        doc["data"]["memory"]["heapUsagePercent"] = (int)(((heapSize - freeHeap) * 100) / heapSize);
-
-        unsigned long uptime = millis();
-        doc["data"]["uptime"]["seconds"] = uptime / 1000;
-
-        if (ctx->networkManager) {
-            NetworkStatusInfo info = ctx->networkManager->getStatusInfo();
-            doc["data"]["network"]["connected"] = (info.status == NetworkStatus::CONNECTED);
-            doc["data"]["network"]["ipAddress"] = info.ipAddress;
-        }
-
-        doc["data"]["brief"] = true;
-        doc["success"] = true;
-        HandlerUtils::sendJsonStream(request, doc);
+        sendCompactSystemInfo(request, ctx, forceBrief || (explicitFull && !explicitBrief));
         return;
     }
+
+    if (HandlerUtils::checkLowMemory(request)) return;
+
+    auto doc = FastBee::makeJsonDocument();
 
     doc["data"]["device"]["id"] = String((uint32_t)ESP.getEfuseMac(), HEX);
     doc["data"]["device"]["chipModel"] = ESP.getChipModel();
@@ -893,22 +1020,15 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
     doc["data"]["flash"]["free"] = freeSketchSpace;
     doc["data"]["flash"]["usagePercent"] = (int)((sketchSize * 100) / (sketchSize + freeSketchSpace));
 
-    size_t heapSize = ESP.getHeapSize();
-    size_t freeHeap = ESP.getFreeHeap();
-    size_t minFreeHeap = ESP.getMinFreeHeap();
-    doc["data"]["memory"]["heapTotal"] = heapSize;
-    doc["data"]["memory"]["heapFree"] = freeHeap;
-    doc["data"]["memory"]["heapUsed"] = heapSize - freeHeap;
-    doc["data"]["memory"]["heapMinFree"] = minFreeHeap;
-    doc["data"]["memory"]["heapMaxAlloc"] = ESP.getMaxAllocHeap();
-    doc["data"]["memory"]["heapUsagePercent"] = (int)(((heapSize - freeHeap) * 100) / heapSize);
+    JsonObject memory = doc["data"]["memory"].to<JsonObject>();
+    fillMemorySummary(memory);
 
-    // 静态池利用率监控（T1+T2 碎片治理成果可观测点）
-    // 三个池：
-    //   - (256, 32): peripherals + runtimeStates 节点池 （8KB DRAM）
-    //   - (192, 32): rules 节点池 （6KB DRAM）
-    //   - (64, 64) : SmallNodePool 高频小容器节点池 （4KB DRAM）
-    JsonObject pools = doc["data"]["memory"]["staticPools"].to<JsonObject>();
+    // 闈欐€佹睜鍒╃敤鐜囩洃鎺э紙T1+T2 纰庣墖娌荤悊鎴愭灉鍙娴嬬偣锛?
+    // 涓変釜姹狅細
+    //   - (256, 32): peripherals + runtimeStates 鑺傜偣姹?锛?KB DRAM锛?
+    //   - (192, 32): rules 鑺傜偣姹?锛?KB DRAM锛?
+    //   - (64, 64) : SmallNodePool 楂橀灏忓鍣ㄨ妭鐐规睜 锛?KB DRAM锛?
+    JsonObject pools = memory["staticPools"].to<JsonObject>();
 #define FB_FILL_POOL_STATS(NAME, B, N) do {                                          \
     auto& _p = FastBee::sharedSlabPool<(B), (N)>();                                  \
     JsonObject _o = pools[NAME].to<JsonObject>();                                    \
@@ -924,13 +1044,6 @@ void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
     FB_FILL_POOL_STATS("small64",   FastBee::SMALL_NODE_BLOCK_SIZE,
                                     FastBee::SMALL_NODE_BLOCK_COUNT);
 #undef FB_FILL_POOL_STATS
-
-    size_t psramSize = ESP.getPsramSize();
-    if (psramSize > 0) {
-        doc["data"]["memory"]["psramTotal"] = psramSize;
-        doc["data"]["memory"]["psramFree"] = ESP.getFreePsram();
-        doc["data"]["memory"]["psramMinFree"] = ESP.getMinFreePsram();
-    }
 
     size_t fsTotal = LittleFS.totalBytes();
     size_t fsUsed = LittleFS.usedBytes();
@@ -976,21 +1089,46 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
         return;
     }
 
-    JsonDocument doc;
+    auto doc = FastBee::makeJsonDocument();
     doc["status"]    = "running";
     doc["timestamp"] = millis();
     doc["freeHeap"]  = ESP.getFreeHeap();
     doc["uptime"]    = millis();
 
     if (ctx->networkManager) {
-        NetworkStatusInfo info = ctx->networkManager->getStatusInfo();
+        FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
+        netMgr->updateStatusInfo();
+        NetworkStatusInfo info = netMgr->getStatusInfo();
+        WiFiConfig cfg = netMgr->getConfig();
+        if (cfg.networkType == NetworkType::NET_WIFI && WiFi.status() == WL_CONNECTED) {
+            info.status = NetworkStatus::CONNECTED;
+            if (info.ipAddress.isEmpty() || info.ipAddress == "0.0.0.0") info.ipAddress = WiFi.localIP().toString();
+            if (info.ssid.isEmpty()) info.ssid = WiFi.SSID();
+            info.rssi = WiFi.RSSI();
+            if (info.macAddress.isEmpty()) info.macAddress = WiFi.macAddress();
+        }
+        const char* statusText = "unknown";
+        switch (info.status) {
+            case NetworkStatus::CONNECTED:         statusText = "connected"; break;
+            case NetworkStatus::DISCONNECTED:      statusText = "disconnected"; break;
+            case NetworkStatus::CONNECTING:        statusText = "connecting"; break;
+            case NetworkStatus::AP_MODE:           statusText = "ap_mode"; break;
+            case NetworkStatus::CONNECTION_FAILED: statusText = "failed"; break;
+            default: break;
+        }
+        doc["networkStatus"]    = statusText;
+        doc["networkStatusCode"] = static_cast<uint8_t>(info.status);
         doc["networkConnected"] = (info.status == NetworkStatus::CONNECTED);
+        doc["connected"]        = (info.status == NetworkStatus::CONNECTED);
+        doc["deviceNetworkType"] = static_cast<uint8_t>(cfg.networkType);
         doc["ipAddress"]        = info.ipAddress;
         doc["ssid"]             = info.ssid;
         doc["rssi"]             = info.rssi;
+        doc["macAddress"]       = info.macAddress.isEmpty() ? WiFi.macAddress() : info.macAddress;
+        doc["internetAvailable"] = info.internetAvailable;
     }
 
-    JsonDocument wrapper;
+    auto wrapper = FastBee::makeJsonDocument();
     wrapper["success"] = true;
     wrapper["data"] = doc;
     serializeJson(wrapper, _statusCache.json);
@@ -1042,7 +1180,7 @@ void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
         return;
     }
 
-    JsonDocument doc;
+    auto doc = FastBee::makeJsonDocument(8192);
 
     if (ctx->networkManager) {
         FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
@@ -1080,7 +1218,7 @@ void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
         doc["data"]["advanced"]["conflictThreshold"] = cfg.conflictThreshold;
         doc["data"]["advanced"]["fallbackToDHCP"] = cfg.fallbackToDHCP;
 
-        // 以太网配置
+        // 浠ュお缃戦厤缃?
         doc["data"]["ethernet"]["spiMosi"] = cfg.ethernet.spiMosi;
         doc["data"]["ethernet"]["spiMiso"] = cfg.ethernet.spiMiso;
         doc["data"]["ethernet"]["spiSck"]  = cfg.ethernet.spiSck;
@@ -1088,14 +1226,14 @@ void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
         doc["data"]["ethernet"]["rstPin"]  = cfg.ethernet.rstPin;
         doc["data"]["ethernet"]["intPin"]  = cfg.ethernet.intPin;
 
-        // 4G 蜂窝配置
+        // 4G 铚傜獫閰嶇疆
         doc["data"]["cellular"]["txPin"]    = cfg.cellular.txPin;
         doc["data"]["cellular"]["rxPin"]    = cfg.cellular.rxPin;
         doc["data"]["cellular"]["pwrPin"]   = cfg.cellular.pwrPin;
         doc["data"]["cellular"]["baudRate"] = cfg.cellular.baudRate;
         doc["data"]["cellular"]["apn"]      = cfg.cellular.apn;
 
-        // LoRa 配置
+        // LoRa 閰嶇疆
         doc["data"]["lora"]["txPin"]    = cfg.lora.txPin;
         doc["data"]["lora"]["rxPin"]    = cfg.lora.rxPin;
         doc["data"]["lora"]["m1Pin"]    = cfg.lora.m1Pin;
@@ -1103,6 +1241,7 @@ void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
 
         NetworkStatusInfo info = netMgr->getStatusInfo();
         doc["data"]["status"]["connected"] = (info.status == NetworkStatus::CONNECTED);
+        doc["data"]["status"]["statusCode"] = static_cast<uint8_t>(info.status);
         doc["data"]["status"]["ipAddress"] = info.ipAddress;
         doc["data"]["status"]["rssi"] = info.rssi;
         doc["data"]["status"]["ssid"] = info.ssid;
@@ -1132,10 +1271,16 @@ void SystemRouteHandler::handleGetFilesList(AsyncWebServerRequest* request) {
         return;
     }
 
-    if (HandlerUtils::rejectHeavyRequestOnPressure(request, "File list", MemoryGuardLevel::SEVERE, 8)) {
+    const bool psramBacked = FastBee::psramAvailableForJson(32768);
+    if (!psramBacked) {
+        if (HandlerUtils::rejectHeavyRequestOnPressure(request, "File list", MemoryGuardLevel::SEVERE, 8)) {
+            return;
+        }
+        if (HandlerUtils::checkLowMemory(request, 4096)) return;
+    } else if (ESP.getFreeHeap() < 2048 || ESP.getMaxAllocHeap() < 1024) {
+        HandlerUtils::sendJsonError(request, 503, "Critical memory - file list unavailable", 5);
         return;
     }
-    if (HandlerUtils::checkLowMemory(request, 8192)) return;
 
     String path = "/";
     if (request->hasParam("path")) {
@@ -1145,7 +1290,7 @@ void SystemRouteHandler::handleGetFilesList(AsyncWebServerRequest* request) {
         path = "/" + path;
     }
 
-    JsonDocument doc;
+    auto doc = FastBee::makeJsonDocument();
     doc["success"] = true;
     doc["data"]["path"] = path;
 
@@ -1183,6 +1328,15 @@ void SystemRouteHandler::handleGetHealth(AsyncWebServerRequest* request) {
     doc["status"] = "healthy";
     doc["timestamp"] = millis();
     doc["freeHeap"] = ESP.getFreeHeap();
+    JsonObject memory = doc["memory"].to<JsonObject>();
+    fillMemorySummary(memory);
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+    if (monitor) {
+        MemoryGuardLevel level = monitor->getMemoryGuardLevel();
+        memory["guardLevel"] = HandlerUtils::memoryGuardLevelName(level);
+        memory["critical"] = monitor->isMemoryCritical();
+    }
     ctx->sendSuccess(request, doc);
 }
 
@@ -1210,7 +1364,31 @@ void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
         return;
     }
 
-    JsonDocument doc;
+    if (request->hasParam("probe")) {
+        char json[512];
+        unsigned long now = millis();
+        snprintf(json, sizeof(json),
+            "{\"success\":true,\"data\":{"
+            "\"server\":{\"nowMs\":%lu,\"scheduleRestart\":%s,\"scheduledRestartInMs\":%lu},"
+            "\"memory\":{\"freeHeap\":%lu,\"minFreeHeap\":%lu,\"maxAlloc\":%lu,\"largestBlock\":%lu},"
+            "\"compact\":true,\"probe\":true"
+            "}}",
+            now,
+            ctx->scheduleRestart ? "true" : "false",
+            (ctx->scheduleRestart && ctx->scheduledRestartTime > now)
+                ? (ctx->scheduledRestartTime - now)
+                : 0,
+            (unsigned long)ESP.getFreeHeap(),
+            (unsigned long)ESP.getMinFreeHeap(),
+            (unsigned long)ESP.getMaxAllocHeap(),
+            (unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
+        AsyncWebServerResponse* response = request->beginResponse(200, "application/json", json);
+        response->addHeader("Connection", "close");
+        request->send(response);
+        return;
+    }
+
+    auto doc = FastBee::makeJsonDocument(24576);
     JsonObject data = doc["data"].to<JsonObject>();
     unsigned long now = millis();
 
@@ -1218,6 +1396,8 @@ void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
     uint32_t minFreeHeap = ESP.getMinFreeHeap();
     uint32_t maxAlloc = ESP.getMaxAllocHeap();
     uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    bool explicitFull = request->hasParam("full") && request->getParam("full")->value() == "1";
+    bool compactRuntime = !explicitFull || freeHeap < 12288 || maxAlloc < 6144;
     uint8_t frag = (freeHeap > 0)
         ? static_cast<uint8_t>(100U - (largestBlock * 100U / freeHeap))
         : 0;
@@ -1251,12 +1431,14 @@ void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
             default: break;
         }
         data["memory"]["guardLevel"] = levelText;
-        char healthBuf[192];
-        hm->getHealthReport(healthBuf, sizeof(healthBuf));
-        data["memory"]["healthReport"] = healthBuf;
+        if (!compactRuntime) {
+            char healthBuf[192];
+            hm->getHealthReport(healthBuf, sizeof(healthBuf));
+            data["memory"]["healthReport"] = healthBuf;
+        }
     }
 
-    if (webCfg) {
+    if (webCfg && !compactRuntime) {
         data["web"]["sseClients"] = webCfg->getSseClientCount();
         data["web"]["sseMaxClients"] = static_cast<uint32_t>(SSERouteHandler::MAX_SSE_CLIENTS);
         if (SSERouteHandler* sseHandler = webCfg->getSseRouteHandler()) {
@@ -1316,7 +1498,9 @@ void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
 
     if (ctx->networkManager) {
         FBNetworkManager* netMgr = static_cast<FBNetworkManager*>(ctx->networkManager);
-        netMgr->updateStatusInfo();
+        if (!compactRuntime) {
+            netMgr->updateStatusInfo();
+        }
         NetworkStatusInfo info = netMgr->getStatusInfo();
         WiFiConfig cfg = netMgr->getConfig();
 
@@ -1349,6 +1533,7 @@ void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
         }
     }
 
+    data["compact"] = compactRuntime;
     doc["success"] = true;
     HandlerUtils::sendJsonStream(request, doc);
 }

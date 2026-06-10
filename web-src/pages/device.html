@@ -18,7 +18,7 @@
                     <!-- 硬件信息卡片 - 页面顶部整行展示（两列布局） -->
                     <div class="fb-panel fb-border-default fb-mb-3">
                         <div class="fb-card-header fb-p-2 fb-bg-gray">
-                            <h4 class="fb-m-0 fb-text-sm"><i class="fas fa-microchip"></i>
+                            <h4 class="fb-m-0 fb-text-sm">
                                 <span data-i18n="dev-sys-hw-title">硬件信息</span>
                             </h4>
                         </div>
@@ -113,8 +113,8 @@
                         data-i18n="dev-basic-save-ok">
                         设备信息保存成功！</div>
                     <div class="u-mt-20 u-mb-20 device-form-actions">
-                        <button type="submit" class="fb-btn fb-btn-primary fb-btn-action">
-                            <i class="fas fa-save"></i> <span
+                        <button type="submit" class="fb-btn fb-btn-warning fb-btn-action">
+                            <span
                                 data-i18n="dev-basic-save-btn">保存信息</span>
                         </button>
                     </div>
@@ -127,7 +127,7 @@
                 <!-- 当前时间显示 -->
                 <div class="fb-panel">
                     <div class="fb-card-header fb-panel-header u-header-between-wrap">
-                        <h4 class="fb-panel-title"><i class="fas fa-clock"></i> <span
+                        <h4 class="fb-panel-title"><span
                                 data-i18n="dev-time-title">当前时间</span></h4>
                         <button id="dev-time-refresh-btn" class="fb-btn fb-btn-sm fb-btn-refresh">
                             <span data-i18n="dev-time-refresh">刷新</span>
@@ -210,8 +210,8 @@
                         data-i18n="dev-ntp-save-ok">
                         NTP配置保存成功！</div>
                     <div class="u-mt-20 device-form-actions">
-                        <button type="submit" class="fb-btn fb-btn-primary fb-btn-action fb-btn-action-wide">
-                            <i class="fas fa-save"></i> <span
+                        <button type="submit" class="fb-btn fb-btn-warning fb-btn-action fb-btn-action-wide">
+                            <span
                                 data-i18n="dev-ntp-save-btn">保存NTP配置</span>
                         </button>
                     </div>
@@ -220,77 +220,77 @@
 
             <!-- 高级配置 tab -->
             <div id="dev-advanced" class="config-content">
-                <!-- 系统操作区域 - 左右并列布局 -->
-                <div class="u-flex-wrap-gap-20">
-                    <!-- 设备重启卡片 -->
-                    <div class="fb-panel fb-panel u-flex-1-min-300 dev-restart-panel">
-                        <div class="fb-card-header fb-panel-header-warning">
-                            <h4 class="fb-panel-title"><i class="fas fa-redo"></i>
+                <!-- 系统操作区 -->
+                <div class="u-flex-wrap-gap-20" style="margin-bottom:16px">
+                    <!-- 开发环境功能 -->
+                    <div class="fb-panel u-flex-1-min-280 dev-developer-panel">
+                        <div class="fb-card-body" style="padding:14px 18px">
+                            <h4 style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--warning)">
+                                <span data-i18n="dev-mode-title">开发环境功能</span>
+                                <strong id="dev-mode-status" style="margin-left:8px;font-size:13px">--</strong>
+                            </h4>
+                            <p style="margin:0 0 10px;font-size:12px;color:var(--text-secondary)" data-i18n="dev-mode-hint">禁用后，外设配置、外设执行和 Modbus 子设备的新增、删除、编辑、映射入口将不可用。</p>
+                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap">
+                                <input type="password" id="dev-mode-password" class="u-input-w-100"
+                                    data-i18n-placeholder="password-placeholder" placeholder="请输入密码" style="height:30px;font-size:12px;flex:1;min-width:100px">
+                                <button id="dev-mode-toggle-btn" type="button" class="fb-btn fb-btn-warning fb-btn-compact">
+                                    <span data-i18n="dev-mode-disable-btn">禁用开发环境</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 设备重启 -->
+                    <div class="fb-panel u-flex-1-min-280">
+                        <div class="fb-card-body" style="padding:14px 18px">
+                            <h4 style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--warning)">
                                 <span data-i18n="dev-sys-restart-title">重启设备</span>
                             </h4>
-                        </div>
-                        <div class="fb-card-body fb-panel-body-lg">
-                            <p class="u-mb-15 u-fs-13 u-text-secondary"
-                                data-i18n="dev-sys-restart-hint">重启设备将会断开所有连接，配置数据将保留。</p>
-                            <div class="u-form-inline-wrap">
-                                <label class="u-fs-13"
-                                    data-i18n="dev-sys-restart-delay">延迟（秒）：</label>
-                                <select id="dev-restart-delay" class="u-select-w-80">
+                            <p style="margin:0 0 10px;font-size:12px;color:var(--text-secondary)" data-i18n="dev-sys-restart-hint">重启设备将会断开所有连接，配置数据将保留。</p>
+                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                                <label style="font-size:12px;white-space:nowrap" data-i18n="dev-sys-restart-delay">延迟（秒）：</label>
+                                <select id="dev-restart-delay" style="width:60px;height:30px;font-size:12px;padding:2px 6px;border:1px solid var(--border);border-radius:4px">
                                     <option value="1">1</option>
                                     <option value="3" selected>3</option>
                                     <option value="5">5</option>
                                     <option value="10">10</option>
                                 </select>
-                                <button id="dev-restart-btn" type="button"
-                                    class="fb-btn fb-btn-warning">
-                                    <i class="fas fa-power-off"></i> <span
-                                        data-i18n="dev-sys-restart-btn">立即重启</span>
+                                <button id="dev-restart-btn" type="button" class="fb-btn fb-btn-warning fb-btn-compact">
+                                    <span data-i18n="dev-sys-restart-btn">立即重启</span>
                                 </button>
                             </div>
                         </div>
                     </div>
-
-                    <!-- 恢复出厂设置卡片 -->
-                    <div class="fb-panel fb-panel u-flex-1-min-300 dev-factory-panel">
-                        <div class="fb-card-header fb-panel-header-warning">
-                            <h4 class="fb-panel-title"><i
-                                    class="fas fa-exclamation-triangle"></i> <span
-                                    data-i18n="dev-sys-factory-title">恢复出厂设置</span></h4>
-                        </div>
-                        <div class="fb-card-body fb-panel-body-lg">
-                            <p class="u-mb-10 u-fs-13 u-text-danger u-fw-700"
-                                data-i18n="dev-sys-factory-warning">
-                                警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！</p>
-                            <p class="u-mb-15 u-fs-13 u-text-secondary"
-                                data-i18n="dev-sys-factory-hint">设备将自动重启，所有配置将丢失，请谨慎操作。</p>
-                            <div class="u-form-inline-wrap factory-reset-actions">
-                                <label class="u-fs-13"
-                                    data-i18n="dev-sys-factory-confirm-label">输入"RESET"确认：</label>
-                                <input type="text" id="dev-factory-confirm"
-                                    class="u-input-w-100 factory-reset-input" placeholder="RESET">
-                                <button id="dev-factory-btn" type="button"
-                                    class="fb-btn fb-btn-danger">
-                                    <i class="fas fa-undo"></i> <span
-                                        data-i18n="dev-sys-factory-btn">恢复出厂设置</span>
+            
+                    <!-- 恢复出厂设置 -->
+                    <div class="fb-panel u-flex-1-min-280">
+                        <div class="fb-card-body" style="padding:14px 18px">
+                            <h4 style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--danger)">
+                                <span data-i18n="dev-sys-factory-title">恢复出厂设置</span>
+                            </h4>
+                            <p style="margin:0 0 10px;font-size:12px;color:var(--danger);font-weight:500" data-i18n="dev-sys-factory-warning">警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！</p>
+                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                                <label style="font-size:12px;white-space:nowrap" data-i18n="dev-sys-factory-confirm-label">输入“RESET”确认：</label>
+                                <input type="text" id="dev-factory-confirm" placeholder="RESET" style="width:80px;height:30px;font-size:12px;padding:2px 8px;border:1px solid var(--border);border-radius:4px">
+                                <button id="dev-factory-btn" type="button" class="fb-btn fb-btn-danger fb-btn-compact">
+                                    <span data-i18n="dev-sys-factory-btn">恢复出厂设置</span>
                                 </button>
                             </div>
                         </div>
                     </div>
                 </div>
-
-                <!-- 缓存管理 + 配置导入/导出卡片 -->
-                <div class="u-flex-wrap-gap-20 u-mt-20">
-                    <div class="fb-panel fb-panel u-flex-1-min-300 dev-cache-panel">
-                        <div class="fb-card-header fb-panel-header-info">
-                            <h4 class="fb-panel-title"><i class="fas fa-database"></i>
+            
+                <!-- 数据管理区 -->
+                <div class="u-flex-wrap-gap-20">
+                    <!-- 缓存管理 -->
+                    <div class="fb-panel u-flex-1-min-280">
+                        <div class="fb-card-body" style="padding:14px 18px">
+                            <h4 style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--warning)">
                                 <span data-i18n="dev-cache-title">缓存管理</span>
                             </h4>
-                        </div>
-                        <div class="fb-card-body fb-panel-body-lg">
-                            <div class="u-form-inline-wrap u-action-row u-mb-15">
-                                <label class="u-fs-13 u-label-nowrap"
-                                    data-i18n="dev-cache-duration-label">缓存时间设置：</label>
-                                <select id="dev-cache-duration" class="u-select-w-120">
+                            <p style="margin:0 0 10px;font-size:12px;color:var(--text-secondary)" data-i18n="dev-cache-hint">设置浏览器缓存JS/CSS资源的有效期，修改后新请求生效。</p>
+                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                                <select id="dev-cache-duration" style="width:90px;height:30px;font-size:12px;padding:2px 6px;border:1px solid var(--border);border-radius:4px">
                                     <option value="3600" data-i18n="dev-cache-1h">1小时</option>
                                     <option value="21600" data-i18n="dev-cache-6h">6小时</option>
                                     <option value="43200" data-i18n="dev-cache-12h">12小时</option>
@@ -298,34 +298,25 @@
                                     <option value="172800" data-i18n="dev-cache-48h">48小时</option>
                                     <option value="259200" data-i18n="dev-cache-72h">72小时</option>
                                 </select>
-                                <button type="button"
-                                    class="fb-btn fb-btn-primary fb-btn-compact"
-                                    data-action="saveCacheDuration">
-                                    <i class="fas fa-save"></i> <span data-i18n="dev-cache-save-btn">保存</span>
+                                <button type="button" class="fb-btn fb-btn-warning fb-btn-compact" data-action="saveCacheDuration">
+                                    <span data-i18n="dev-cache-save-btn">保存</span>
                                 </button>
-                                <button type="button" class="fb-btn fb-btn-danger fb-btn-compact"
-                                    data-action="clearBrowserCache">
-                                    <i class="fas fa-trash-alt"></i> <span
-                                        data-i18n="dev-cache-clear-btn">清除浏览器缓存</span>
+                                <button type="button" class="fb-btn fb-btn-warning fb-btn-compact" data-action="clearBrowserCache">
+                                    <span data-i18n="dev-cache-clear-btn">清除浏览器缓存</span>
                                 </button>
                             </div>
-                            <p class="u-mb-15 u-fs-13 u-text-secondary"
-                                data-i18n="dev-cache-hint">设置浏览器缓存JS/CSS资源的有效期，修改后新请求生效。</p>
                         </div>
                     </div>
-
-                    <div class="fb-panel fb-panel u-flex-1-min-300 dev-config-transfer-panel">
-                        <div class="fb-card-header fb-panel-header-info">
-                            <h4 class="fb-panel-title"><i class="fas fa-file-export"></i>
+            
+                    <!-- 配置导入/导出 -->
+                    <div class="fb-panel u-flex-1-min-280">
+                        <div class="fb-card-body" style="padding:14px 18px">
+                            <h4 style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--warning)">
                                 <span data-i18n="dev-config-transfer-title">配置导入/导出</span>
                             </h4>
-                        </div>
-                        <div class="fb-card-body fb-panel-body-lg">
-                            <p class="u-mb-15 u-fs-13 u-text-secondary"
-                                data-i18n="dev-config-transfer-hint">仅导入/导出 /config 目录下的 JSON 配置文件，不包含 Web 静态资源和日志。</p>
-                            <div class="config-transfer-scope u-mb-15">
-                                <label for="dev-config-transfer-type" data-i18n="dev-config-transfer-type">配置类型</label>
-                                <select id="dev-config-transfer-type" class="form-control">
+                            <p style="margin:0 0 10px;font-size:12px;color:var(--text-secondary)" data-i18n="dev-config-transfer-hint">仅导入/导出 /config 目录下的 JSON 配置文件。</p>
+                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+                                <select id="dev-config-transfer-type" style="flex:1;min-width:100px;max-width:160px;height:30px;font-size:12px;padding:2px 6px;border:1px solid var(--border);border-radius:4px">
                                     <option value="all" data-i18n="dev-config-type-all">全部配置包</option>
                                     <option value="device.json" data-i18n="dev-config-type-device">设备信息</option>
                                     <option value="network.json" data-i18n="dev-config-type-network">网络配置</option>
@@ -335,49 +326,18 @@
                                     <option value="users.json" data-i18n="dev-config-type-users">用户配置</option>
                                     <option value="roles.json" data-i18n="dev-config-type-roles">角色配置</option>
                                 </select>
-                            </div>
-                            <div class="u-form-inline-wrap u-action-row config-transfer-actions u-mb-15">
-                                <label class="fb-btn fb-btn-secondary fb-btn-compact" for="dev-config-import-file">
-                                    <i class="fas fa-upload"></i> <span data-i18n="dev-config-import-pick">选择配置文件</span>
+                                <label class="fb-btn fb-btn-secondary fb-btn-compact" for="dev-config-import-file" style="margin:0;cursor:pointer">
+                                    <span data-i18n="dev-config-import-pick">选择文件</span>
                                 </label>
                                 <input type="file" id="dev-config-import-file" accept="application/json,.json" class="is-hidden" multiple>
                                 <button id="dev-config-import-btn" type="button" class="fb-btn fb-btn-warning fb-btn-compact">
-                                    <i class="fas fa-file-import"></i> <span data-i18n="dev-config-import-btn">导入配置</span>
+                                    <span data-i18n="dev-config-import-btn">导入</span>
                                 </button>
-                                <button id="dev-config-export-btn" type="button" class="fb-btn fb-btn-primary fb-btn-compact">
-                                    <i class="fas fa-download"></i> <span data-i18n="dev-config-export-btn">导出配置包</span>
-                                </button>
-                            </div>
-                            <div id="dev-config-transfer-status" class="u-fs-13 u-text-secondary">--</div>
-                        </div>
-                    </div>
-
-                    <!-- 开发环境功能卡片 -->
-                    <div class="fb-panel fb-panel u-flex-1-min-300 dev-developer-panel">
-                        <div class="fb-card-header fb-panel-header-warning">
-                            <h4 class="fb-panel-title"><i class="fas fa-tools"></i>
-                                <span data-i18n="dev-mode-title">开发环境功能</span>
-                            </h4>
-                        </div>
-                        <div class="fb-card-body fb-panel-body-lg">
-                            <p class="u-mb-10 u-fs-13 u-text-secondary"
-                                data-i18n="dev-mode-hint">禁用后，外设配置、外设执行和 Modbus 子设备的新增、删除、编辑、映射入口将不可用。</p>
-                            <p class="u-mb-15 u-fs-13">
-                                <span data-i18n="dev-mode-current">当前状态：</span>
-                                <strong id="dev-mode-status" class="u-value-lg">--</strong>
-                            </p>
-                            <div class="u-form-inline-wrap factory-reset-actions">
-                                <label class="u-fs-13"
-                                    data-i18n="dev-mode-password-label">登录密码：</label>
-                                <input type="password" id="dev-mode-password"
-                                    class="u-input-w-100 factory-reset-input"
-                                    data-i18n-placeholder="password-placeholder"
-                                    placeholder="请输入密码">
-                                <button id="dev-mode-toggle-btn" type="button"
-                                    class="fb-btn fb-btn-warning">
-                                    <i class="fas fa-lock"></i> <span data-i18n="dev-mode-disable-btn">禁用开发环境</span>
+                                <button id="dev-config-export-btn" type="button" class="fb-btn fb-btn-warning fb-btn-compact">
+                                    <span data-i18n="dev-config-export-btn">导出</span>
                                 </button>
                             </div>
+                            <div id="dev-config-transfer-status" style="font-size:12px;color:var(--text-secondary)">--</div>
                         </div>
                     </div>
                 </div>

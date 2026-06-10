@@ -108,6 +108,23 @@ struct PeripheralConfig {
             uint16_t count;           // 灯珠数量
             uint8_t brightness;       // 全局亮度 0-255
         } neopixel;
+
+        // 433MHz RF OOK module parameters
+        struct {
+            uint8_t mode;             // 0=TX, 1=RX level monitor
+            uint16_t pulseWidth;      // microseconds, default 350
+            uint8_t repeat;           // send repeat count
+            uint8_t bitLength;        // code bit length, usually 24
+            bool activeHigh;          // true: HIGH is RF on / active
+        } rf;
+
+        // Radar/presence module parameters
+        struct {
+            uint8_t mode;             // 0=digital OUT pin
+            bool activeHigh;          // true: HIGH means detected
+            uint16_t debounceMs;      // UI/documented debounce hint
+            uint16_t holdMs;          // UI/documented stable hold hint
+        } radar;
         
         // Modbus子设备参数
         struct {

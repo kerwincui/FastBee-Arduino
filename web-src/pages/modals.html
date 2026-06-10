@@ -123,6 +123,8 @@
                                         <option value="44">单总线</option>
                                         <option value="45" data-i18n="periph-opt-neopixel">WS2812B 灯珠</option>
                                         <option value="47" data-i18n="periph-opt-seven-segment">TM1637 数码管</option>
+                                        <option value="48" data-i18n="periph-opt-rf-module">433MHz 射频模块</option>
+                                        <option value="49" data-i18n="periph-opt-radar-sensor">雷达感应模块</option>
                                         <option value="60" data-i18n="peripheral-type-device-event">设备事件</option>
                                     </optgroup>
                                 </select>
@@ -349,6 +351,61 @@
                                         <small data-i18n="neopixel-pin-hint">引脚顺序：只填 1 个数据引脚 DIN，例如 GPIO4</small>
                                     </div>
                                 </div>
+
+                                <!-- 433MHz RF 参数 -->
+                                <div id="rf-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10" data-i18n="rf-params-title">433MHz 射频参数</h4>
+                                    <div class="fb-form-group">
+                                        <label for="rf-mode" data-i18n="rf-mode-label">模式</label>
+                                        <select id="rf-mode" class="">
+                                            <option value="0" selected data-i18n="rf-mode-tx">发射</option>
+                                            <option value="1" data-i18n="rf-mode-rx">接收电平</option>
+                                        </select>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label for="rf-bit-length" data-i18n="rf-bit-length-label">编码位数</label>
+                                        <input type="number" id="rf-bit-length" class="" value="24" min="1" max="32">
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label for="rf-pulse-width" data-i18n="rf-pulse-width-label">脉宽 (us)</label>
+                                        <input type="number" id="rf-pulse-width" class="" value="350" min="100" max="2000">
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label for="rf-repeat" data-i18n="rf-repeat-label">重复次数</label>
+                                        <input type="number" id="rf-repeat" class="" value="8" min="1" max="20">
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label class="fb-checkbox fb-m-0">
+                                            <input type="checkbox" id="rf-active-high" checked>
+                                            <span data-i18n="rf-active-high-label">高电平有效</span>
+                                        </label>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <small data-i18n="rf-pin-hint">引脚顺序：DATA，发射模块接 DIN/ATAD，接收模块接 DATA/OUT</small>
+                                    </div>
+                                </div>
+
+                                <!-- 雷达感应参数 -->
+                                <div id="radar-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10" data-i18n="radar-params-title">雷达感应参数</h4>
+                                    <div class="fb-form-group">
+                                        <label class="fb-checkbox fb-m-0">
+                                            <input type="checkbox" id="radar-active-high" checked>
+                                            <span data-i18n="radar-active-high-label">OUT 高电平表示检测到</span>
+                                        </label>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label for="radar-debounce-ms" data-i18n="radar-debounce-label">去抖时间 (ms)</label>
+                                        <input type="number" id="radar-debounce-ms" class="" value="50" min="0" max="5000">
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label for="radar-hold-ms" data-i18n="radar-hold-label">保持时间 (ms)</label>
+                                        <input type="number" id="radar-hold-ms" class="" value="2000" min="0" max="60000">
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <small data-i18n="radar-pin-hint">引脚顺序：OUT；RCWL-0516 可用 3V3 或 VIN 供电，GND 共地</small>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -406,7 +463,7 @@
                     <div class="section-title section-title-actions">
                         <span data-i18n="periph-exec-section-trigger">触发配置</span>
                         <button type="button" class="fb-btn fb-btn-sm" data-action="addPeriphExecTrigger">
-                            <i class="fas fa-plus"></i> <span data-i18n="periph-exec-add-trigger">添加触发</span>
+                            <span data-i18n="periph-exec-add-trigger">添加触发</span>
                         </button>
                     </div>
                     <div id="periph-exec-triggers">
@@ -417,7 +474,7 @@
                     <div class="section-title section-title-actions">
                         <span data-i18n="periph-exec-section-action">执行动作配置</span>
                         <button type="button" class="fb-btn fb-btn-sm" data-action="addPeriphExecAction">
-                            <i class="fas fa-plus"></i> <span data-i18n="periph-exec-add-action">添加动作</span>
+                            <span data-i18n="periph-exec-add-action">添加动作</span>
                         </button>
                     </div>
                     <div id="periph-exec-actions">

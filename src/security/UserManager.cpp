@@ -614,7 +614,7 @@ bool UserManager::loadUsersFromStorage() {
         config.allowMultipleSessions   = security["allowMultipleSessions"] | true;
         config.sessionTimeout          = security["sessionTimeout"] | 3600000UL;
         config.sessionCleanupInterval  = security["sessionCleanupInterval"] | 60000UL;
-        config.enableSessionPersistence= security["enableSessionPersistence"] | true;
+        config.enableSessionPersistence= security["enableSessionPersistence"] | false;
         config.cookieName              = security["cookieName"] | "sessionId";
         config.cookieMaxAge            = security["cookieMaxAge"] | 3600UL;
         config.cookieHttpOnly          = security["cookieHttpOnly"] | true;
@@ -698,7 +698,7 @@ bool UserManager::loadUsersFromStorage() {
         config.allowMultipleSessions   = security["allowMultipleSessions"] | true;
         config.sessionTimeout          = security["sessionTimeout"] | 3600000UL;
         config.sessionCleanupInterval  = security["sessionCleanupInterval"] | 60000UL;
-        config.enableSessionPersistence= security["enableSessionPersistence"] | true;
+        config.enableSessionPersistence= security["enableSessionPersistence"] | false;
         config.cookieName              = security["cookieName"] | "sessionId";
         config.cookieMaxAge            = security["cookieMaxAge"] | 3600UL;
         config.cookieHttpOnly          = security["cookieHttpOnly"] | true;

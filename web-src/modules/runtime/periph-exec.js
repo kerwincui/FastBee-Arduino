@@ -226,11 +226,10 @@
         },
 
         _formatPeriphExecCapacitySummary(total) {
-            var summary = i18n.t('periph-exec-total') + ': ' + total;
+            var summary = i18n.t('periph-exec-total') + ' ' + total + ' ' + i18n.t('periph-exec-unit');
             var profile = this._peProfile;
             if (profile && profile.max !== undefined) {
-                summary += ' / ' + (profile.name || 'profile') + ' ' +
-                    (profile.used || 0) + '/' + profile.max;
+                summary += ' (' + (profile.used || 0) + '/' + profile.max + ')';
             }
             return summary;
         },
@@ -825,6 +824,9 @@
             const tbody = document.getElementById('periph-exec-table-body');
             if (!tbody) return;
             this.applyDeveloperModeState();
+            // Show/hide developer mode hint banner
+            var devHint = document.getElementById('periph-exec-dev-mode-hint');
+            if (devHint) devHint.style.display = this.isDeveloperModeEnabled() ? 'none' : 'block';
             const filterSel = document.getElementById('periph-exec-filter-periph');
             const filterPeriphName = filterSel ? filterSel.value : '';
 

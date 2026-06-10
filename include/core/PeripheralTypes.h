@@ -48,6 +48,8 @@ enum class PeripheralType {
     NEO_PIXEL,          // WS2812等LED
     RESERVED_46 = 46,   // Reserved legacy type slot
     SEVEN_SEGMENT_TM1637 = 47, // TM1637 4位数码管（2个引脚：CLK/DIO，bit-bang 驱动）
+    RF_MODULE = 48,     // 433MHz OOK/EV1527 style RF module
+    RADAR_SENSOR = 49,  // RCWL-0516 / 5.8GHz radar digital presence sensor
 
     // Modbus外设 (51-55)
     MODBUS_DEVICE = 51, // Modbus子设备（继电器/PWM/PID等）
@@ -144,6 +146,8 @@ inline const char* getPeripheralTypeName(PeripheralType type) {
         case PeripheralType::NEO_PIXEL: return "NeoPixel";
         case PeripheralType::RESERVED_46: return "Reserved";
         case PeripheralType::SEVEN_SEGMENT_TM1637: return "TM1637 7-Segment";
+        case PeripheralType::RF_MODULE: return "RF Module";
+        case PeripheralType::RADAR_SENSOR: return "Radar Sensor";
 
         // Modbus外设
         case PeripheralType::MODBUS_DEVICE: return "Modbus Device";
@@ -174,6 +178,8 @@ inline uint8_t getPeripheralPinCount(PeripheralType type) {
         case PeripheralType::DAC:
         case PeripheralType::ONE_WIRE:
         case PeripheralType::NEO_PIXEL:
+        case PeripheralType::RF_MODULE:
+        case PeripheralType::RADAR_SENSOR:
             return 1;
             
         // 双引脚
@@ -262,6 +268,13 @@ inline PeripheralType parsePeripheralType(const char* typeStr) {
     if (strcasecmp(typeStr, "NEO_PIXEL") == 0) return PeripheralType::NEO_PIXEL;
     if (strcasecmp(typeStr, "SEVEN_SEGMENT_TM1637") == 0 ||
         strcasecmp(typeStr, "TM1637") == 0) return PeripheralType::SEVEN_SEGMENT_TM1637;
+    if (strcasecmp(typeStr, "RF_MODULE") == 0 ||
+        strcasecmp(typeStr, "RF") == 0 ||
+        strcasecmp(typeStr, "433M") == 0) return PeripheralType::RF_MODULE;
+    if (strcasecmp(typeStr, "RADAR_SENSOR") == 0 ||
+        strcasecmp(typeStr, "RADAR") == 0 ||
+        strcasecmp(typeStr, "RCWL_0516") == 0 ||
+        strcasecmp(typeStr, "RCWL-0516") == 0) return PeripheralType::RADAR_SENSOR;
 
     // Modbus外设
     if (strcasecmp(typeStr, "MODBUS_DEVICE") == 0) return PeripheralType::MODBUS_DEVICE;
@@ -286,7 +299,8 @@ inline PeripheralType peripheralTypeFromInt(int value) {
 inline bool isDigitalInputType(PeripheralType type) {
     return type == PeripheralType::GPIO_DIGITAL_INPUT ||
            type == PeripheralType::GPIO_DIGITAL_INPUT_PULLUP ||
-           type == PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN;
+           type == PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN ||
+           type == PeripheralType::RADAR_SENSOR;
 }
 
 // 检查是否为模拟输入类型

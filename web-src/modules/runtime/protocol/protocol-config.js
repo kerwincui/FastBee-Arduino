@@ -346,7 +346,7 @@
 
             var warnings = Array.isArray(health.warnings) ? health.warnings : [];
             warningsEl.innerHTML = warnings.map(function(msg) {
-                return '<div class="modbus-health-warning"><i class="fas fa-exclamation-triangle"></i><span>' +
+                return '<div class="modbus-health-warning"><span>' +
                     escapeHtml(msg || '') + '</span></div>';
             }).join('');
 
@@ -375,7 +375,7 @@
 
         refreshMasterStatus(options) {
             var getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
-            return getter('/api/modbus/status')
+            return getter('/api/modbus/status?full=1')
                 .then(res => {
                     if (!res || !res.success || !res.data) {
                         this._renderMasterHealth(null);

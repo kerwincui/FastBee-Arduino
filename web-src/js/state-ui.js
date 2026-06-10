@@ -24,6 +24,7 @@
         var el = this.getEl(ref);
         if (!el) return null;
         el.classList.remove('is-hidden');
+        el.classList.remove('fb-hidden');
         if (displayValue) {
             el.style.display = displayValue;
         } else {
@@ -36,6 +37,7 @@
         var el = this.getEl(ref);
         if (!el) return null;
         el.classList.add('is-hidden');
+        el.classList.add('fb-hidden');
         el.style.display = 'none';
         return el;
     };

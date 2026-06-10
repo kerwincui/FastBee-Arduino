@@ -1,9 +1,7 @@
 // main.cpp
 #include "core/FastBeeFramework.h"
 #include <esp_heap_caps.h>
-#if !defined(CONFIG_IDF_TARGET_ESP32S2)
 #include <esp_bt.h>
-#endif
 #include <esp_chip_info.h>
 #include <esp_task_wdt.h>
 #include <esp_idf_version.h>
@@ -54,13 +52,12 @@ void setup() {
 
     // 释放蓝牙控制器内存（~30KB），BLE配网需要时重启后启用
     // 通过 device.json 的 "bleReserve":true 可保留BT内存
-    // ESP32-S2 无蓝牙硬件, ESP32-C6 只有 BLE 无 Classic
+    // ESP32-C6 只有 BLE 无 Classic
 #if defined(CONFIG_IDF_TARGET_ESP32)
     esp_bt_controller_mem_release(ESP_BT_MODE_BTDM);
 #elif defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C6)
     esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
 #endif
-    // ESP32-S2: 无蓝牙硬件，无需释放
 
     // 启动诊断：输出芯片信息和可用内存，快速判断 PSRAM / 堆是否正常
     Serial.printf("[BOOT] Chip: %s Rev%d\n", ESP.getChipModel(), ESP.getChipRevision());
@@ -78,20 +75,34 @@ void setup() {
 #ifdef BOARD_HAS_PSRAM
     Serial.printf("[BOOT] PSRAM size: %lu bytes\n", (unsigned long)ESP.getPsramSize());
     Serial.printf("[BOOT] Free PSRAM: %lu bytes\n", (unsigned long)ESP.getFreePsram());
+    // 启用 PSRAM 分配策略：当内部 DRAM 不足时自动 fallback 到 PSRAM
+    // 这对 ArduinoJson serializeJson → String 分配至关重要，
+    // 否则内部 DRAM 耗尽时 String realloc 失败 → abort()
+    heap_caps_malloc_extmem_enable(4096);  // ≥ 4KB 的分配请求优先用 PSRAM
+    Serial.println("[BOOT] PSRAM malloc enabled (threshold=4096)");
 #else
     Serial.println("[BOOT] PSRAM: disabled (no-PSRAM build)");
 #endif
 
-    // 增大任务看门狗超时为 10 秒，防止 async_tcp/loopTask 在执行文件 I/O 或大型 JSON 序列化时触发 WDT
+    // 重新配置任务看门狗（Task Watchdog Timer）
+    // ESP-IDF v5 框架默认启用 TWDT（5s超时），AsyncTCP 库内部会调用 esp_task_wdt_reset()
+    // 不能 deinit（否则库调用 reset 会报错），只需加大超时防止长操作触发复位
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
-    esp_task_wdt_config_t wdt_config = {
-        .timeout_ms = 10000,
-        .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,
-        .trigger_panic = true,
+    esp_task_wdt_config_t wdt_cfg = {
+        .timeout_ms = 60000,       // 60秒超时（默认5秒太短）
+        .idle_core_mask = 0,       // 不监控空闲任务
+        .trigger_panic = false     // 超时不触发panic，只打印警告
     };
-    esp_task_wdt_init(&wdt_config);
+    esp_err_t err = esp_task_wdt_reconfigure(&wdt_cfg);
+    if (err == ESP_OK) {
+        Serial.println("[WDT] Task watchdog reconfigured: 60s timeout");
+    } else {
+        Serial.printf("[WDT] Reconfigure failed (0x%x), deinit fallback\n", err);
+        esp_task_wdt_deinit();
+    }
 #else
-    esp_task_wdt_init(10, true);
+    esp_task_wdt_init(60, false);  // false = 不触发 panic
+    Serial.println("[WDT] Task watchdog timeout set to 60s");
 #endif
 
     framework = FastBeeFramework::getInstance();
@@ -121,9 +132,6 @@ void setup() {
 void loop() {
     // 运行框架主循环
     framework->run();
-    
-    // 喝狗：确保 loopTask 不触发 WDT
-    esp_task_wdt_reset();
     
     // 让出 CPU 时间，平衡响应和功耗，提升稳定性
     delay(10); 

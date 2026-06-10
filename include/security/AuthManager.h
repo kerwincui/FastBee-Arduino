@@ -55,8 +55,9 @@ struct Permission {
 struct SecurityConfig {
     uint32_t sessionTimeout = 3600000; // 1小时
     uint32_t sessionCleanupInterval = 60000; // 1分钟
-    bool enableSessionPersistence = true;
+    bool enableSessionPersistence = false;
     bool enableIpWhitelist = false;
+    bool allowMultipleSessions = true;
     std::vector<String> ipWhitelist;
     
     // Cookie配置
@@ -106,6 +107,8 @@ private:
     std::map<String, UserSession> activeSessions;
     std::map<String, unsigned long> lockedAccounts;
     unsigned long lastSessionCleanup;
+    static constexpr size_t MAX_ACTIVE_SESSIONS = 6;
+    static constexpr size_t MAX_SESSIONS_PER_USER = 3;
 
     // 权限定义（保留旧结构供向下兼容）
     std::map<String, Permission> permissions;
@@ -133,6 +136,8 @@ private:
     void initializePermissions();
     String generateSessionId(const String& username);
     void cleanupExpiredSessions();
+    bool removeOldestSession(const String& username = "");
+    void trimActiveSessions(const String& username = "");
     void lockAccount(const String& username);
     void logAuthEvent(const String& event, const String& username,
                      const String& details, bool success = true);

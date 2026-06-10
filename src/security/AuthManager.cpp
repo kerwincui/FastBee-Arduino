@@ -184,6 +184,62 @@ void AuthManager::cleanupExpiredSessions() {
     }
 }
 
+bool AuthManager::removeOldestSession(const String& username) {
+    auto oldest = activeSessions.end();
+
+    for (auto it = activeSessions.begin(); it != activeSessions.end(); ++it) {
+        if (!username.isEmpty() && it->second.username != username) {
+            continue;
+        }
+        if (oldest == activeSessions.end() ||
+            it->second.lastAccessTime < oldest->second.lastAccessTime) {
+            oldest = it;
+        }
+    }
+
+    if (oldest == activeSessions.end()) {
+        return false;
+    }
+
+    String prunedUser = oldest->second.username;
+    activeSessions.erase(oldest);
+    logAuthEvent("session_pruned", prunedUser, "Session limit reached", true);
+    return true;
+}
+
+void AuthManager::trimActiveSessions(const String& username) {
+    if (!securityConfig.allowMultipleSessions) {
+        return;
+    }
+
+    size_t userLimit = MAX_SESSIONS_PER_USER;
+    if (!username.isEmpty() && userLimit > 0) {
+        userLimit -= 1;  // Keep one slot for the session being created.
+    }
+
+    while (!username.isEmpty()) {
+        size_t userSessions = 0;
+        for (const auto& pair : activeSessions) {
+            if (pair.second.username == username) {
+                userSessions++;
+            }
+        }
+        if (userSessions <= userLimit || !removeOldestSession(username)) {
+            break;
+        }
+    }
+
+    size_t totalLimit = MAX_ACTIVE_SESSIONS;
+    if (!username.isEmpty() && totalLimit > 0) {
+        totalLimit -= 1;  // Keep one slot for the session being created.
+    }
+    while (activeSessions.size() > totalLimit) {
+        if (!removeOldestSession("")) {
+            break;
+        }
+    }
+}
+
 bool AuthManager::isAccountLocked(const String& username) {
     auto it = lockedAccounts.find(username);
     if (it != lockedAccounts.end()) {
@@ -263,6 +319,7 @@ bool AuthManager::loadSecurityConfig() {
         securityConfig.cookieMaxAge = um->getCookieMaxAge();
         securityConfig.cookieHttpOnly = um->isCookieHttpOnly();
         securityConfig.cookieSecure = um->isCookieSecure();
+        securityConfig.allowMultipleSessions = um->allowsMultipleSessions();
     }
     
     // IP白名单保持在内存中（运行时配置，不持久化）
@@ -340,7 +397,12 @@ AuthResult AuthManager::login(const String& username, const String& password,
     
     // 检查是否允许多会话
     // 嵌入式设备场景下，同一用户登录时清理旧会话，避免会话无限累积
-    forceLogout(username);
+    cleanupExpiredSessions();
+    if (securityConfig.allowMultipleSessions) {
+        trimActiveSessions(username);
+    } else {
+        forceLogout(username);
+    }
     
     // 创建新会话
     UserSession session;
@@ -888,30 +950,78 @@ String AuthManager::generateRandomToken(uint8_t length) {
     return token;
 }
 
+static String readSessionCookieValue(const String& cookieHeader, const String& cookieName) {
+    int start = cookieHeader.indexOf(cookieName + "=");
+    if (start == -1) {
+        return "";
+    }
+
+    start += cookieName.length() + 1;
+    int end = cookieHeader.indexOf(';', start);
+    if (end == -1) {
+        end = cookieHeader.length();
+    }
+    String value = cookieHeader.substring(start, end);
+    value.trim();
+    return value;
+}
+
 String AuthManager::extractSessionIdFromRequest(AsyncWebServerRequest* request, 
                                                const String& cookieName) {
     if (!request) return "";
+
+    if (request->authType() == AsyncAuthType::AUTH_BEARER) {
+        String token = request->authChallenge();
+        token.trim();
+        if (!token.isEmpty()) {
+            return token;
+        }
+    }
+
+    if (request->hasHeader("Authorization")) {
+        String authHeader = request->header("Authorization");
+        authHeader.trim();
+        if (authHeader.startsWith("Bearer ")) {
+            String token = authHeader.substring(7);
+            token.trim();
+            if (!token.isEmpty()) {
+                return token;
+            }
+        }
+    }
+
+    for (const auto& header : request->getHeaders()) {
+        if (!header.name().equalsIgnoreCase("Authorization")) continue;
+        String authHeader = header.value();
+        authHeader.trim();
+        if (authHeader.startsWith("Bearer ")) {
+            String token = authHeader.substring(7);
+            token.trim();
+            if (!token.isEmpty()) {
+                return token;
+            }
+        }
+    }
     
     // 1. 从Cookie获取
     if (request->hasHeader("Cookie")) {
         String cookieHeader = request->header("Cookie");
-        int start = cookieHeader.indexOf(cookieName + "=");
-        if (start != -1) {
-            start += cookieName.length() + 1;
-            int end = cookieHeader.indexOf(';', start);
-            if (end == -1) end = cookieHeader.length();
-            return cookieHeader.substring(start, end);
-        }
+        String token = readSessionCookieValue(cookieHeader, cookieName);
+        if (token.isEmpty() && cookieName != "sessionId") token = readSessionCookieValue(cookieHeader, "sessionId");
+        if (token.isEmpty() && cookieName != "session") token = readSessionCookieValue(cookieHeader, "session");
+        if (!token.isEmpty()) return token;
     }
-    
-    // 2. 从Authorization头获取
-    if (request->hasHeader("Authorization")) {
-        String authHeader = request->header("Authorization");
-        if (authHeader.startsWith("Bearer ")) {
-            return authHeader.substring(7);
-        }
+
+    // 2. Some ESPAsyncWebServer builds expose Cookie only through the header iterator.
+    for (const auto& header : request->getHeaders()) {
+        if (!header.name().equalsIgnoreCase("Cookie")) continue;
+        String cookieHeader = header.value();
+        String token = readSessionCookieValue(cookieHeader, cookieName);
+        if (token.isEmpty() && cookieName != "sessionId") token = readSessionCookieValue(cookieHeader, "sessionId");
+        if (token.isEmpty() && cookieName != "session") token = readSessionCookieValue(cookieHeader, "session");
+        if (!token.isEmpty()) return token;
     }
-    
+
     // 3. 从查询参数获取
     if (request->hasParam("session")) {
         return request->getParam("session")->value();

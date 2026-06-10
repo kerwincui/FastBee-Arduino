@@ -1020,6 +1020,10 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
             dataFieldStr = "current";
         } else if (strcmp(category, "voltage") == 0) {
             dataFieldStr = "voltage";
+        } else if (strcmp(category, "radar") == 0) {
+            dataFieldStr = "presence";
+        } else if (strcmp(category, "rf") == 0 || strcmp(category, "rfLevel") == 0) {
+            dataFieldStr = "value";
         } else if (strcmp(category, "sht31") == 0 || strcmp(category, "SHT31") == 0 ||
                    strcmp(category, "aht20") == 0 || strcmp(category, "AHT20") == 0 ||
                    strcmp(category, "bmp280") == 0 || strcmp(category, "BMP280") == 0) {
@@ -1048,6 +1052,20 @@ bool PeriphExecExecutor::executeSensorReadAction(const ExecAction& action, Actio
     } else if (strcmp(category, "digital") == 0) {
         GPIOState state = pm.readPin(String(periphId));
         rawValue = (state == GPIOState::STATE_HIGH) ? 1.0f : 0.0f;
+    } else if (strcmp(category, "radar") == 0) {
+        bool detected = false;
+        if (!pm.readRadarState(String(periphId), detected)) {
+            LOGGER.warningf("[PeriphExec] Sensor read: radar read failed on '%s'", periphId);
+            return false;
+        }
+        rawValue = detected ? 1.0f : 0.0f;
+    } else if (strcmp(category, "rf") == 0 || strcmp(category, "rfLevel") == 0) {
+        bool level = false;
+        if (!pm.readRfLevel(String(periphId), level)) {
+            LOGGER.warningf("[PeriphExec] Sensor read: RF level read failed on '%s'", periphId);
+            return false;
+        }
+        rawValue = level ? 1.0f : 0.0f;
     } else if (strcmp(category, "pulse") == 0) {
         LOGGER.warning("[PeriphExec] Sensor read: pulse/frequency not yet implemented");
         rawValue = 0;
@@ -1340,6 +1358,9 @@ bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, c
     String targetId = action.targetPeriphId;
     String actionCmdStr;
     String valueString;
+    uint8_t rfBits = 0;
+    uint16_t rfPulseWidth = 0;
+    uint8_t rfRepeat = 0;
 
     if (!action.actionValue.isEmpty() && action.actionValue.charAt(0) == '{') {
         JsonDocument doc;
@@ -1353,6 +1374,9 @@ bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, c
         actionCmdStr = doc["action"] | "";
         valueString = doc["value"] | "";
         if (valueString.isEmpty()) {
+            valueString = doc["code"] | "";
+        }
+        if (valueString.isEmpty()) {
             valueString = doc["color"] | "";
         }
         if (valueString.isEmpty()) {
@@ -1364,6 +1388,9 @@ bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, c
         if (valueString.isEmpty() && effectiveValue != action.actionValue) {
             valueString = effectiveValue;
         }
+        rfBits = doc["bits"] | (doc["bitLength"] | 0);
+        rfPulseWidth = doc["pulseWidth"] | 0;
+        rfRepeat = doc["repeat"] | 0;
     } else {
         actionCmdStr = effectiveValue.isEmpty() ? action.actionValue : effectiveValue;
     }
@@ -1401,6 +1428,23 @@ bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, c
 
     if (targetCfg->type == PeripheralType::NEO_PIXEL) {
         return pm.controlNeoPixel(targetId, cmd, valueStr);
+    }
+
+    if (targetCfg->type == PeripheralType::RF_MODULE) {
+        String code = valueStr;
+        if (code.isEmpty()) {
+            code = actionCmdStr;
+        }
+        bool recognizedSendAction = (cmd == "send" || cmd == "tx" || cmd == "write" || cmd == "code");
+        if (recognizedSendAction || valueStr.isEmpty()) {
+            if (code.isEmpty()) {
+                LOGGER.warningf("[PeriphExec] RF send: empty code for '%s'", targetId.c_str());
+                return false;
+            }
+            return pm.sendRfCode(targetId, code, rfBits, rfPulseWidth, rfRepeat);
+        }
+        LOGGER.warningf("[PeriphExec] RF send: unsupported action '%s'", actionCmdStr.c_str());
+        return false;
     }
 
     if (targetCfg->type == PeripheralType::UART) {

@@ -29,7 +29,7 @@
             if (!forceRefresh && this._peModbusHealthPromise) {
                 return this._peModbusHealthPromise;
             }
-            this._peModbusHealthPromise = apiGetSilent('/api/modbus/status')
+            this._peModbusHealthPromise = apiGetSilent('/api/modbus/status?compact=1')
                 .then((res) => {
                     var health = res && res.success && res.data ? (res.data.health || null) : null;
                     this._peModbusHealth = health;
@@ -140,7 +140,7 @@
             var riskMeta = this._getPeriphExecRiskMeta(this._resolvePeriphExecRiskLevel(formWarnings.length, health));
 
             var html = '<div class="u-header-between-wrap u-mb-12">' +
-                '<h4 class="u-note-title u-note-title-warning u-mb-0"><i class="fas fa-exclamation-triangle"></i> ' +
+                '<h4 class="u-note-title u-note-title-warning u-mb-0">' +
                 escapeHtml(i18n.t('periph-exec-risk-title')) + '</h4>' +
                 '<span class="modbus-risk-badge ' + riskMeta.className + '">' + escapeHtml(riskMeta.text) + '</span>' +
                 '</div>' +
@@ -157,7 +157,7 @@
 
             if (warnings.length > 0) {
                 html += '<div class="modbus-health-warnings">' + warnings.map(function(msg) {
-                    return '<div class="modbus-health-warning"><i class="fas fa-exclamation-triangle"></i><span>' +
+                    return '<div class="modbus-health-warning"><span>' +
                         escapeHtml(msg || '') + '</span></div>';
                 }).join('') + '</div>';
             }
@@ -335,6 +335,14 @@
                 fields = [
                     ['value', i18n.t('periph-exec-sensor-datafield-value') || '数值']
                 ];
+            } else if (cat === 'radar') {
+                fields = [
+                    ['presence', '存在检测']
+                ];
+            } else if (cat === 'rf' || cat === 'rflevel') {
+                fields = [
+                    ['value', '接收电平']
+                ];
             } else if (cat === 'dht11' || cat === 'dht22' || cat === 'sht31' || cat === 'aht20') {
                 fields = [
                     ['temperature', i18n.t('periph-exec-sensor-datafield-temp') || '温度'],
@@ -395,9 +403,13 @@
             var ds18b20Types = [44, 38, 11, 13, 14]; // ONE_WIRE, SENSOR, GPIO_DI
             var i2cSensorTypes = [2, 38]; // I2C, SENSOR
             var ultrasonicTypes = [38, 11, 13, 14];
+            var radarTypes = [49];
+            var rfTypes = [48];
             var allowedTypes;
             if (cat === 'digital') allowedTypes = digitalTypes;
             else if (cat === 'pulse') allowedTypes = pulseTypes;
+            else if (cat === 'radar') allowedTypes = radarTypes;
+            else if (cat === 'rf' || cat === 'rflevel') allowedTypes = rfTypes;
             else if (cat === 'dht11' || cat === 'dht22') allowedTypes = dhtTypes;
             else if (cat === 'ds18b20') allowedTypes = ds18b20Types;
             else if (cat === 'ultrasonic') allowedTypes = ultrasonicTypes;
@@ -451,6 +463,16 @@
                 if (unitEl) unitEl.value = 'cm';
                 if (scaleEl) scaleEl.value = '1';
                 if (decEl) decEl.value = '1';
+            } else if (normCat === 'radar') {
+                if (labelEl) labelEl.value = '雷达存在';
+                if (unitEl) unitEl.value = '';
+                if (scaleEl) scaleEl.value = '1';
+                if (decEl) decEl.value = '0';
+            } else if (normCat === 'rf' || normCat === 'rflevel') {
+                if (labelEl) labelEl.value = '射频电平';
+                if (unitEl) unitEl.value = '';
+                if (scaleEl) scaleEl.value = '1';
+                if (decEl) decEl.value = '0';
             } else if (normCat === 'bh1750') {
                 if (labelEl) labelEl.value = '光照';
                 if (unitEl) unitEl.value = 'lx';

@@ -265,6 +265,8 @@
                             if (res.data.realConnected) {
                                 if (resultEl) { resultEl.textContent = i18n.t('mqtt-test-success'); resultEl.style.color = '#67c23a'; }
                                 if (btn) btn.classList.add('mqtt-test-success');
+                                this._updateMqttStatusPanel(true, server, port, clientId);
+                                this._startMqttStatusPolling();
                             } else {
                                 const realErr = res.data.realError;
                                 const errMsg = realErr ? this._mqttErrorCodeToText(realErr) : '';

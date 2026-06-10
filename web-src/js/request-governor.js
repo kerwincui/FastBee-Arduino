@@ -114,6 +114,7 @@
         '/api/batch': { tier: 'heavy', cost: 3, priority: 2, timeoutMs: 15000 },
         '/api/system/status': { tier: 'cheap', cost: 1, batchSafe: true, cacheTtl: 5000, priority: 3, timeoutMs: 8000 },
         '/api/system/info': { tier: 'cheap', cost: 1, batchSafe: true, cacheTtl: 30000, priority: 3, timeoutMs: 10000 },
+        '/api/health': { tier: 'cheap', cost: 1, batchSafe: true, cacheTtl: 5000, priority: 2, timeoutMs: 8000 },
         '/api/system/health': { tier: 'cheap', cost: 1, batchSafe: true, cacheTtl: 5000, priority: 2, timeoutMs: 8000 },
         '/api/system/web-runtime': { tier: 'cheap', cost: 1, cacheTtl: 15000, priority: 0, timeoutMs: 8000 },
         '/api/network/status': { tier: 'cheap', cost: 1, batchSafe: true, cacheTtl: 5000, priority: 3, timeoutMs: 8000 },
@@ -166,7 +167,7 @@
         },
         protocol: {
             firstScreen: ['/api/protocol/config?compact=1&section=mqtt'],
-            deferred: ['/api/modbus/status', '/api/peripherals?compact=1&enabledOnly=1&pageSize=100&category=communication']
+            deferred: ['/api/modbus/status?compact=1', '/api/peripherals?compact=1&enabledOnly=1&pageSize=100&category=communication']
         },
         periphExec: {
             firstScreen: ['/api/peripherals?compact=1&enabledOnly=1&pageSize=100', '/api/periph-exec?pageSize=100'],
@@ -230,7 +231,7 @@
                 if (err && err._pageAborted) return Promise.reject(err);
 
                 if (err && err.status !== undefined) {
-                    _handleHttpError(err.status, err.data);
+                    _handleHttpError(err.status, err.data, token);
                     err._handled = true;
                 } else if (err && err.name === 'AbortError') {
                     err._handled = false;
@@ -244,7 +245,7 @@
             });
     }
 
-    function _handleHttpError(status, data) {
+    function _handleHttpError(status, data, requestToken) {
         if (typeof Notification === 'undefined') return;
 
         const errMsg = (data && data.error) ? data.error : '请求失败';
@@ -253,6 +254,10 @@
                 Notification.warning(errMsg || '请求参数错误', '参数错误');
                 break;
             case 401:
+                if (requestToken && localStorage.getItem('auth_token') &&
+                    localStorage.getItem('auth_token') !== requestToken) {
+                    return;
+                }
                 localStorage.removeItem('auth_token');
                 localStorage.removeItem('sessionId');
                 if (!document.getElementById('login-page') || document.getElementById('login-page').style.display === 'none') {

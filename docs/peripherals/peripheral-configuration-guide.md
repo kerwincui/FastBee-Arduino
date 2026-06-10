@@ -7,6 +7,7 @@
 - 默认 `esp32`、`esp32c3`、`esp32s3` 构建为精简版，保留 UART/I2C/SPI、GPIO、传感器、OLED/LCD、TM1637、Modbus 子设备等核心外设能力。
 - 精简版默认关闭 NeoPixel/LED 屏、BLE、OTA、文件管理、日志查看、多用户/角色和 RuleScript；如需验证完整能力，请使用 `esp32s3-full`。
 - 外设配置保存到 `/config/peripherals.json`，可在 Web 的“配置导入/导出”中按“外设配置”单独备份和恢复。
+- 出厂 `data/config/peripherals.json` 作为安全模板发布，硬件外设默认 `enabled: false`；文档示例中的 `enabled: true` 表示完成接线核对后的目标状态。
 - 传感器数据要作为外设执行事件触发来源时，需要先在外设执行中配置传感器采集动作，系统会将采集结果缓存为 `ds:<外设ID>_<字段>` 数据源。
 - Modbus 子设备由通信协议页管理，作为虚拟外设参与设备控制和外设执行，不占用本地 GPIO。
 

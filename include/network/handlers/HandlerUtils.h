@@ -4,8 +4,11 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <vector>
+#include <memory>
+#include <cstring>
 #include "core/FastBeeFramework.h"
 #include "systems/HealthMonitor.h"
+#include "utils/PsramJsonDocument.h"
 
 namespace HandlerUtils {
 
@@ -42,7 +45,28 @@ inline void sendJsonSuccessMsg(AsyncWebServerRequest* request, const char* messa
 inline void sendJsonError(AsyncWebServerRequest* request, int code, const char* message, int retryAfterSeconds = 0) {
     String json = "{\"success\":false,\"message\":\"";
     json += message;
-    json += "\"}";
+    json += "\",\"error\":\"";
+    json += message;
+    json += "\",\"code\":";
+    json += String(code);
+    if (retryAfterSeconds > 0) {
+        json += ",\"retryAfter\":";
+        json += String(retryAfterSeconds);
+    }
+    if (code == 503) {
+        json += ",\"memory\":{\"heapFree\":";
+        json += String((unsigned long)ESP.getFreeHeap());
+        json += ",\"heapMaxAlloc\":";
+        json += String((unsigned long)ESP.getMaxAllocHeap());
+#if FASTBEE_USE_PSRAM
+        json += ",\"psramTotal\":";
+        json += String((unsigned long)ESP.getPsramSize());
+        json += ",\"psramFree\":";
+        json += String((unsigned long)ESP.getFreePsram());
+#endif
+        json += "}";
+    }
+    json += "}";
     AsyncWebServerResponse* response = request->beginResponse(code, "application/json", json);
     if (retryAfterSeconds > 0) {
         response->addHeader("Retry-After", String(retryAfterSeconds));
@@ -59,6 +83,16 @@ inline const char* memoryGuardLevelName(MemoryGuardLevel level) {
     }
 }
 
+inline bool internalHeapCriticallyLow(uint32_t freeHeap = ESP.getFreeHeap(),
+                                      uint32_t maxAlloc = ESP.getMaxAllocHeap()) {
+    return freeHeap < 2048 || maxAlloc < 1024;
+}
+
+inline bool psramCanServeJson(size_t estimatedBytes = 8192) {
+    return FastBee::psramAvailableForJson(estimatedBytes + 4096) &&
+           !internalHeapCriticallyLow();
+}
+
 inline bool rejectHeavyRequestOnPressure(
     AsyncWebServerRequest* request,
     const char* requestLabel = "Heavy request",
@@ -70,6 +104,9 @@ inline bool rejectHeavyRequestOnPressure(
 
     MemoryGuardLevel currentLevel = monitor->getMemoryGuardLevel();
     if (static_cast<uint8_t>(currentLevel) < static_cast<uint8_t>(rejectLevel)) {
+        return false;
+    }
+    if (psramCanServeJson(16384)) {
         return false;
     }
 
@@ -91,6 +128,10 @@ inline bool checkLowMemory(AsyncWebServerRequest* request, size_t threshold = 81
     uint32_t maxAlloc = ESP.getMaxAllocHeap();
     uint32_t minMaxAlloc = (threshold >= 16384) ? 6144 : 4096;
     if (freeHeap < threshold || maxAlloc < minMaxAlloc) {
+        if (FastBee::psramAvailableForJson(threshold + 4096) &&
+            !internalHeapCriticallyLow(freeHeap, maxAlloc)) {
+            return false;
+        }
         char msg[64];
         snprintf(msg, sizeof(msg), "Low memory: heap=%lu maxAlloc=%lu", (unsigned long)freeHeap, (unsigned long)maxAlloc);
         sendJsonError(request, 503, msg, 5);
@@ -104,6 +145,10 @@ inline bool checkResponseMemory(AsyncWebServerRequest* request, size_t responseS
     uint32_t maxAlloc = ESP.getMaxAllocHeap();
     size_t safeSize = responseSize + 512;  // 预留 512 字节安全余量
     if (maxAlloc < safeSize) {
+        if (FastBee::psramAvailableForJson(safeSize + 4096) &&
+            !internalHeapCriticallyLow()) {
+            return false;
+        }
         char msg[96];
         snprintf(msg, sizeof(msg), "Low memory: need ~%u bytes, maxAlloc=%lu",
                  (unsigned)safeSize, (unsigned long)maxAlloc);
@@ -116,6 +161,48 @@ inline bool checkResponseMemory(AsyncWebServerRequest* request, size_t responseS
 }
 
 // 将字符串以 JSON 转义格式写入流（含引号），避免中间 String/JsonDocument 拷贝
+inline bool sendJsonFromPsramBuffer(AsyncWebServerRequest* request, const JsonDocument& doc, size_t responseSize) {
+    if (!FastBee::psramAvailableForJson(responseSize + 4096)) {
+        return false;
+    }
+
+    char* raw = static_cast<char*>(
+        heap_caps_malloc(responseSize + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!raw) {
+        return false;
+    }
+
+    size_t len = serializeJson(doc, raw, responseSize + 1);
+    raw[len] = '\0';
+
+    struct State {
+        std::shared_ptr<char> data;
+        size_t len = 0;
+    };
+    auto state = std::make_shared<State>();
+    state->data = std::shared_ptr<char>(raw, [](char* ptr) {
+        if (ptr) heap_caps_free(ptr);
+    });
+    state->len = len;
+
+    AsyncWebServerResponse* response = request->beginResponse(
+        "application/json",
+        state->len,
+        [state](uint8_t* buffer, size_t maxLen, size_t index) -> size_t {
+            if (index >= state->len) return 0;
+            size_t remain = state->len - index;
+            size_t copy = remain < maxLen ? remain : maxLen;
+            memcpy(buffer, state->data.get() + index, copy);
+            return copy;
+        });
+    if (!response) {
+        return false;
+    }
+    response->addHeader("Connection", "close");
+    request->send(response);
+    return true;
+}
+
 inline void writeJsonEscapedString(AsyncResponseStream* response, const String& str) {
     response->print('"');
     for (size_t i = 0; i < str.length(); i++) {
@@ -143,6 +230,10 @@ inline void writeJsonEscapedString(AsyncResponseStream* response, const String& 
 inline void sendJsonStream(AsyncWebServerRequest* request, JsonDocument& doc) {
     const size_t responseSize = measureJson(doc);
     if (checkResponseMemory(request, responseSize)) return;
+    if ((responseSize >= 2048 || responseSize + 512 > ESP.getMaxAllocHeap()) &&
+        sendJsonFromPsramBuffer(request, doc, responseSize)) {
+        return;
+    }
     String json;
     json.reserve(responseSize + 1);
     serializeJson(doc, json);
@@ -154,16 +245,11 @@ inline void sendJsonStream(AsyncWebServerRequest* request, JsonDocument& doc) {
 inline void sendJsonDocSuccess(AsyncWebServerRequest* request, JsonDocument& doc) {
     const size_t innerSize = measureJson(doc);
     if (checkResponseMemory(request, innerSize + 32)) return;
-    String json;
-    String inner;
-    inner.reserve(innerSize + 1);
-    serializeJson(doc, inner);
-    json.reserve(inner.length() + 32);
-    json += F("{\"success\":true,\"data\":");
-    json += inner;
-    json += '}';
-    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", json);
-    sendWithClose(request, response);
+
+    auto outDoc = FastBee::makeJsonDocument(innerSize + 4096);
+    outDoc["success"] = true;
+    outDoc["data"].set(doc);
+    sendJsonStream(request, outDoc);
 }
 
 // 统一的 "read JSON file -> deserialize -> modify -> serialize -> write" 流程

@@ -4,8 +4,10 @@
 #include "peripherals/SensorDriver.h"
 #include "systems/LoggerSystem.h"
 #include <DHT.h>
+#if defined(FASTBEE_ENABLE_DS18B20) && FASTBEE_ENABLE_DS18B20
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#endif
 #include <soc/gpio_periph.h>
 
 // 引脚有效性预检：避免对无效 pin 反复 new OneWire/DHT 导致内存泄漏
@@ -97,6 +99,7 @@ float SensorDriver::readDHT(uint8_t pin, SensorDriverType type, const String& fi
 }
 
 float SensorDriver::readDS18B20(uint8_t pin, uint8_t index) {
+#if defined(FASTBEE_ENABLE_DS18B20) && FASTBEE_ENABLE_DS18B20
     // 引脚有效性预检：避免对无效 pin 反复 new OneWire/DallasTemperature 导致内存泄漏
     if (!sensor_pin_valid(pin)) {
         static unsigned long s_lastWarn = 0;
@@ -159,6 +162,11 @@ float SensorDriver::readDS18B20(uint8_t pin, uint8_t index) {
 
     LOGGER.debugf("[SensorDriver] DS18B20 pin=%d idx=%d temp=%.2f", pin, index, temperature);
     return temperature;
+#else
+    (void)pin; (void)index;
+    LOGGER.warning("[SensorDriver] DS18B20 not available (FASTBEE_ENABLE_DS18B20=0)");
+    return NAN;
+#endif
 }
 
 // ========== 超声波测距 (HC-SR04) ==========
@@ -386,12 +394,14 @@ void SensorDriver::release(uint8_t pin) {
         _dhtInstances.erase(dhtIt);
     }
     // 释放 DS18B20
+#if defined(FASTBEE_ENABLE_DS18B20) && FASTBEE_ENABLE_DS18B20
     auto dsIt = _ds18b20Instances.find(pin);
     if (dsIt != _ds18b20Instances.end()) {
         delete static_cast<DallasTemperature*>(dsIt->second.sensors);
         delete static_cast<OneWire*>(dsIt->second.oneWire);
         _ds18b20Instances.erase(dsIt);
     }
+#endif
     // 释放超声波
     _ultrasonicInstances.erase(pin);
     // 释放 ADC 传感器
@@ -405,8 +415,10 @@ void SensorDriver::releaseAll() {
     _dhtInstances.clear();
 
     for (auto& pair : _ds18b20Instances) {
+#if defined(FASTBEE_ENABLE_DS18B20) && FASTBEE_ENABLE_DS18B20
         delete static_cast<DallasTemperature*>(pair.second.sensors);
         delete static_cast<OneWire*>(pair.second.oneWire);
+#endif
     }
     _ds18b20Instances.clear();
 

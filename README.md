@@ -3,314 +3,178 @@
 <h1 align="center">FastBee-Arduino</h1>
 
 <p align="center">
-  <strong>零代码、可视化配置，让 ESP32 像搭积木一样秒变全能物联网设备。</strong>
+  <strong>面向 ESP32 全系列的零代码 Web 物联网固件。</strong>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/platform-ESP32%20|%20S3%20|%20C3%20|%20C6%20|%20S2-blue" alt="Platform">
+  <img src="https://img.shields.io/badge/platform-ESP32%20|%20S3%20|%20C3%20|%20C6-blue" alt="Platform">
   <img src="https://img.shields.io/badge/Arduino--ESP32-3.x%20(IDF%205.1)-orange" alt="Framework">
   <img src="https://img.shields.io/badge/PlatformIO-espressif32%207.x-orange" alt="PlatformIO">
   <img src="https://img.shields.io/badge/license-AGPL--3.0-green" alt="License">
-  <img src="https://img.shields.io/badge/slim%20web-%E2%89%88174KB%20gzip-success" alt="Slim Web">
-  <img src="https://img.shields.io/badge/full%20build-ESP32--S3-blueviolet" alt="Full Build">
 </p>
 
-<p align="center">
-  烧录即用 · 无需编程 · Web 可视化配置 · 多协议多外设
-</p>
+FastBee-Arduino 烧录后即可通过浏览器完成网络、设备、协议、外设和规则配置，适合 ESP32 节点、轻量网关和现场采集控制终端。无论你是零基础还是专业开发者，FastBee-Arduino 都能帮你快速、轻松地完成物联网设备的开发与量产。
 
----
+支持芯片：`ESP32`、`ESP32-S3`、`ESP32-C3`、`ESP32-C6`。
 
-FastBee-Arduino 是一个面向 ESP32 系列芯片的**开源物联网固件框架**。无需编写一行代码，通过内置的 Web 管理界面即可完成外设配置、协议对接、规则编排和远程维护，真正实现“烧录即用”。
+## 版本选择
 
-**无论你是零基础还是专业开发者，FastBee-Arduino 都能帮你快速、轻松地完成物联网设备的开发与量产。**
+| PlatformIO 环境 | 版本 | 推荐硬件 | 主要能力 | 推荐上限 |
+| --- | --- | --- | --- | --- |
+| `esp32c3` | Lite | ESP32-C3 4MB Flash | WiFi、MQTT、基础外设、外设执行 | ≤16 外设，≤12 规则（软性） |
+| `esp32c6` | Lite | ESP32-C6 8MB Flash | WiFi 6、MQTT、基础外设、外设执行 | ≤16 外设，≤12 规则（软性） |
+| `esp32` | Standard | ESP32 4MB Flash | MQTT、Modbus RTU、以太网、4G、常用外设 | ≤24 外设，≤16 规则（软性） |
+| `esp32s3` | Standard | ESP32-S3 8MB Flash | 标准版能力，更高性能 | ≤24 外设，≤16 规则（软性） |
+| `esp32s3-full` | Full | ESP32-S3 16MB Flash + 8MB PSRAM | OTA、文件、日志、用户角色、RuleScript、多语言、LoRa | ≤32 外设，≤32 规则（软性） |
 
-本项目支持 **ESP32 全系列芯片**（ESP32 / ESP32-S3 / ESP32-C3 / ESP32-C6 / ESP32-S2），基于 **Arduino-ESP32 3.x**（ESP-IDF 5.1+）构建。按硬件资源和功能需求划分为**精简版 (Lite)**、**标准版 (Standard)** 和**全功能版 (Full)** 三个层级：精简版面向 C3/C6/S2 低成本节点，标准版面向 ESP32/S3 通用开发，全功能版面向 S3 旗舰级网关。详见 [版本对比指南](docs/system/edition-comparison.md)。
+首次使用推荐 `esp32`；低成本节点选 `esp32c3`；需要完整管理功能选带 PSRAM 的 `esp32s3-full`。
 
----
+## 快速烧录
 
-## 系统特点
+### 从源码构建烧录
 
-FastBee-Arduino 是为资源受限 ESP32 全系列芯片打磨的本地 Web 物联网固件：烧录后通过浏览器完成联网、外设、协议和执行规则配置，适合从样机验证到轻量现场终端部署。
-
-- **全系列芯片支持**：ESP32、ESP32-S3、ESP32-C3、ESP32-C6、ESP32-S2 全面覆盖，从 ¥9 入门到旗舰级方案一套代码搞定。
-- **Arduino 3.x 生态**：基于 Arduino-ESP32 3.x（ESP-IDF 5.1+），搭配 ESPAsyncWebServer 3.x、NimBLE 2.x 等最新库，长期维护有保障。
-- **浏览器即控制台**：设备监控、设备大屏、网络配置、设备配置、缓存管理、配置导入/导出和外设执行都在本地 Web 界面完成。
-- **多联网方式**：默认 WiFi；标准版/全功能版支持以太网（W5500 SPI）和 4G 蜂窝（TinyGSM），全功能版支持 LoRa 网关透传（E22-400T22D）。
-- **协议与外设一体化**：内置 MQTT；标准版/全功能版支持 Modbus RTU 主站、寄存器映射、子设备控制，并提供 GPIO、传感器、显示屏、数码管、RS485/UART 等常用外设能力。
-- **面向现场稳定性**：AP/STA 入网、mDNS 访问、按需加载、轻量化首屏请求、多文件/分片配置导入，降低 ESP32 在浏览器并发访问下的内存压力。
-- **三层版本体系**：精简版（C3/C6/S2）→ 标准版（ESP32/S3）→ 全功能版（S3），通过编译开关裁剪，配置文件通用，无缝升级。
-
----
-
-## 🔄 使用流程
-
-从烧录到上云，只需 5 步即可让 ESP32 变成可控的物联网终端：
-
-```mermaid
-graph LR
-    A[ESP32 硬件设备] -->|1. 烧录代码| B[FastBee-Arduino 固件]
-    B -->|2. 初始化设备| C[外设配置]
-    B -->|3. 选择联网方式| D[网络配置]
-    B -->|4. 连接 IoT 平台| E[通信协议]
-    B -->|5. 设备执行规则编排| F[外设执行]
-    D -->|WiFi、4g、以太网| G[物联网平台]
-    E --> G
-```
-
-| 步骤 | 环节 | 做什么 | 对应页面 |
-|------|------|--------|----------|
-| 1 | **烧录固件** | 用 PlatformIO 把 FastBee-Arduino 固件烧录到 ESP32 | — |
-| 2 | **外设配置** | 在 Web 界面勾选外设类型、分配引脚，完成硬件初始化 | 外设配置 |
-| 3 | **网络配置** | 选择联网方式（WiFi / 以太网 / 4G），填写参数后保存，AP+STA 双模自动切换上线 | 网络配置 |
-| 4 | **通信协议** | 配置 MQTT / Modbus RTU 等协议，接入物联网平台 | 通信协议 |
-| 5 | **外设执行** | 配置触发条件与动作，实现按键控灯、定时联动、传感器联控等 | 外设执行 |
-
-> 全程无需编程：烧录固件 → 打开浏览器 → 点选配置 → 设备即刻投入使用。
-
----
-
-## 📦 硬件产品
-
-<p align="center">
-  <img src="./images/device.png" alt="FastBee 物联网终端"/>
-</p>
-
-### 核心规格
-
-| 参数 | 说明 |
-|------|------|
-| 芯片 | ESP32-WROOM-32U |
-| CPU | 双核 Xtensa LX6 @ 240 MHz |
-| Flash | 4 MB SPI Flash |
-| SRAM | 520 KB |
-| 无线 | WiFi 802.11 b/g/n + Bluetooth 4.2 + BLE |
-| 供电电压 | DC 9-36V |
-| 特性 | 外置天线、USB 烧录口、配置按键 |
-
-### 接线端子说明
-
-| 端子 | 功能 | 引脚 |
-|------|------|------|
-| A/L | RS485-A（TX） | GPIO17 |
-| B/H | RS485-B（RX） | GPIO16 |
-| VCC | 供电正极 | DC 9-36V |
-| GND | 供电负极 | — |
-| DGND | 数字地（隔离 GND） | — |
-| EGND | 保护地（连接设备外壳） | — |
-| IO/L | 隔离型数字输入/输出低端 | GPIO21 |
-| IO/H | 隔离型数字输入/输出高端 | GPIO22 |
-
-### 指示灯与按键
-
-| 名称 | 类型 | 说明 |
-|------|------|------|
-| POWER | 指示灯 | 电源指示灯，常亮表示供电正常 |
-| STATE | 指示灯 (GPIO5) | 状态指示灯，低电平点亮 |
-| DATA | 指示灯 | 通讯指示灯，数据收发时闪烁 |
-| BOOT | 按键 (GPIO0) | 长按进入配置模式 |
-
----
-
-## 📸 功能截图
-
-以下截图覆盖精简版核心页面和 `esp32s3-full` 全功能版能力。不同构建环境会按版本层级裁剪菜单和功能：精简版（C3/C6/S2）展示核心页面，标准版（ESP32/S3）增加以太网、4G、Modbus、I2C/RFID/IR 支持，全功能版保留文件、日志、用户角色、RuleScript、OTA 和中英文切换等能力。
-
-<table>
-  <tr>
-    <td><img src="./images/device_01.png" alt="设备监控首页"/></td>
-    <td><img src="./images/device_10.png" alt="设备大屏"/></td>
-  </tr>
-  <tr>
-    <td><img src="./images/device_02.png" alt="网络配置"/></td>
-    <td><img src="./images/device_03.png" alt="通信协议"/></td>
-  </tr>
-  <tr>
-    <td><img src="./images/device_04.png" alt="外设配置"/></td>
-    <td><img src="./images/device_05.png" alt="外设执行"/></td>
-  </tr>
-  <tr>
-    <td><img src="./images/device_06.png" alt="RuleScript 规则脚本"/></td>
-    <td><img src="./images/device_07.png" alt="系统管理"/></td>
-  </tr>
-  <tr>
-    <td><img src="./images/device_08.png" alt="设备日志"/></td>
-    <td><img src="./images/device_09.png" alt="主题切换"/></td>
-  </tr>
-  <tr>
-    <td><img src="./images/device_11.png" alt="中英文适配"/></td>
-    <td><img src="./images/device_12.png" alt="全屏显示"/></td>
-  </tr>
-</table>
-
----
-
-## 快速开始
-
-### 1. 环境准备
-
-安装 VSCode 和 PlatformIO，或直接使用 PlatformIO CLI。
-
-### 2. 构建并上传 Web 文件系统
+1. 安装 VSCode + PlatformIO，或安装 PlatformIO CLI。
+2. 连接开发板，确认串口号，例如 `COM6`。
+3. 在项目根目录执行：
 
 ```powershell
 cd D:\project\gitee\FastBee-Arduino
-node scripts/gzip-www.js --web-slim --no-monitor
+powershell -ExecutionPolicy Bypass -File scripts\doctor.ps1 -Port COM6
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32 -Port COM6
 ```
 
-该命令会生成 slim Web 资源、gzip 压缩、组装干净 staging 镜像，并使用 `platformio.ini` 中的默认 `esp32` 环境上传 LittleFS 文件系统。
-
-如只想生成镜像不上传：
+常用烧录命令：
 
 ```powershell
-node scripts/gzip-www.js --web-slim --no-upload --no-monitor
+# ESP32 标准版
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32 -Port COM6
+
+# ESP32-S3 标准版
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3 -Port COM6
+
+# ESP32-S3 全功能版
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-full -Port COM6
+
+# 部署完成后自动打开串口监视器
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-full -Port COM6 -Monitor
+
+# 只编译，不烧录
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-full -BuildOnly
 ```
 
-生成后的镜像位于：
+`deploy.ps1` 会先上传与 `-Env` 匹配的 LittleFS Web 文件系统，再烧录固件。加 `-Monitor` 可在部署完成后自动打开串口监视器查看启动日志。脚本启动时会自动清理残留的 esptool/python 进程，避免"文件被占用"错误。
+
+### 直接烧录发布包
+
+仓库保留 `dist/firmware/all-latest/` 下的合并固件，适合不想本地编译的用户直接烧录。合并镜像已经包含 bootloader、分区表、应用固件和 LittleFS Web 文件系统，烧录地址固定为 `0x0`。
+
+| 固件文件 | 目标硬件 |
+| --- | --- |
+| `dist/firmware/all-latest/fastbee-esp32n4r0-std.bin` | ESP32 4MB Flash |
+| `dist/firmware/all-latest/fastbee-esp32c3n4r0-lite.bin` | ESP32-C3 4MB Flash |
+| `dist/firmware/all-latest/fastbee-esp32c6n8r0-lite.bin` | ESP32-C6 8MB Flash |
+| `dist/firmware/all-latest/fastbee-esp32s3n8r0-std.bin` | ESP32-S3 8MB Flash |
+| `dist/firmware/all-latest/fastbee-esp32s3n16r8-full.bin` | ESP32-S3 16MB Flash + 8MB PSRAM |
+
+命令行烧录示例：
+
+```powershell
+# 可选：先擦除整片 Flash
+esptool.py --chip auto --port COM6 erase_flash
+
+# ESP32 标准版合并镜像，从 0x0 写入
+esptool.py --chip auto --port COM6 --baud 921600 write_flash -z 0x0 dist\firmware\all-latest\fastbee-esp32n4r0-std.bin
+
+# ESP32-S3 全功能版合并镜像，必须使用 16MB Flash + PSRAM 硬件
+esptool.py --chip auto --port COM6 --baud 921600 write_flash -z 0x0 dist\firmware\all-latest\fastbee-esp32s3n16r8-full.bin
+```
+
+也可以使用 Espressif Flash Download Tool：选择对应 `.bin` 文件，地址填 `0x0`，先 `ERASE` 再 `START`。如果烧录后页面异常，优先确认固件文件与实际芯片/Flash/PSRAM 规格一致。
+
+## 首次访问
+
+设备首次启动或未配置 WiFi 时会进入 AP 模式：
+
+| 项目 | 默认值 |
+| --- | --- |
+| WiFi 热点 | `FastBee-XXXX` |
+| 浏览器地址 | `http://192.168.4.1` 或 `http://fastbee.local` |
+| 用户名 | `admin` |
+| 密码 | `admin123` |
+
+登录后按顺序完成：
+
+1. 在“网络配置”中配置 WiFi、以太网或 4G。
+2. 在“设备配置”中确认设备编号、产品编号和时间配置。
+3. 在“通信协议”中配置 MQTT、Modbus RTU 等协议。
+4. 在“外设配置”中添加并启用实际接线的外设。
+5. 在“外设执行”中配置定时、事件或传感器联动规则。
+
+默认外设模板和执行规则都是安全禁用状态，首次接线后请先确认引脚、供电和外设 ID，再逐项启用。
+
+## 验证测试
+
+本项目提供统一测试入口，用于保证不同芯片、不同版本和 Web 页面产物可用。
+
+```powershell
+# 提交前快速检查：配置、i18n、Web 资源、全芯片编译
+powershell -ExecutionPolicy Bypass -File scripts\test-all.ps1 -Checks static,build
+
+# 本地完整矩阵，不访问真实设备
+powershell -ExecutionPolicy Bypass -File scripts\test-all.ps1 -Checks static,native,build,artifacts
+
+# 烧录真实设备后的 API 冒烟
+powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl http://192.168.4.1 -Profile standard
+
+# 长时间稳定性测试，输出 CSV
+powershell -ExecutionPolicy Bypass -File scripts\soak-test-device.ps1 -BaseUrl http://设备IP -Profile full -Rounds 100
+```
+
+设备测试按 `lite`、`standard`、`full` 档位检查登录、系统、网络、设备配置、协议、MQTT、外设、外设执行和 Full 管理接口。Web 静态冒烟会检查 gzip 资源、页面/模块完整性、JS 语法和首屏资源预算，避免页面访问变慢或资源缺失。
+
+## 发布产物
+
+一次生成所有版本合并固件：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-all-artifacts.ps1 -CleanOutput
+```
+
+输出目录：
 
 ```text
-.pio/fs-staging/run-*/www
+dist/firmware/all-latest/
 ```
 
-### 3. 编译并烧录固件
-
-```powershell
-pio run -e esp32 --target upload
-```
-
-ESP32-S3 标准版：
-
-```powershell
-pio run -e esp32s3 --target upload
-```
-
-ESP32-S3 全功能版：
-
-```powershell
-pio run -e esp32s3-full --target upload
-```
-
-### 4. 打开串口监视器
-
-```powershell
-pio device monitor -e esp32 -b 115200
-```
-
-### 5. 访问设备
-
-- 首次启动或 WiFi 未配置时，设备进入 AP 模式。
-- 浏览器访问 `http://192.168.4.1` 或 `http://fastbee.local`。
-- 默认账号：`admin`
-- 默认密码：`admin123`
-
----
-
-## 构建环境
-
-| 环境 | 目标硬件 | 版本层级 | 说明 |
-|------|----------|----------|------|
-| `esp32` | ESP32-WROOM / ESP32-WROVER | 标准版 | 默认推荐，经典双核方案 |
-| `esp32c3` | ESP32-C3 | 精简版 | RISC-V 低成本方案（¥9-12） |
-| `esp32c6` | ESP32-C6 | 精简版 | WiFi 6 + BLE 5.3 新一代低成本方案 |
-| `esp32s2` | ESP32-S2 | 精简版 | Xtensa 单核，WiFi only（无 BLE） |
-| `esp32s3` | ESP32-S3 | 标准版 | 高性能双核，I2C/RFID/IR 扩展 |
-| `esp32s3-full` | ESP32-S3 | 全功能版 | OTA + 多用户 + BLE 配网 + 全协议 |
-| `native` | PC | 测试 | 本机单元测试 |
-
-PlatformIO 不会根据串口连接自动切换构建环境，目标由命令中的 `-e` 环境名决定。未显式指定 `-e` 时按 `default_envs = esp32` 构建。
-
-```powershell
-# 精简版
-pio run -e esp32c3        # ESP32-C3
-pio run -e esp32c6        # ESP32-C6（需 pioarduino 平台）
-pio run -e esp32s2        # ESP32-S2
-
-# 标准版
-pio run -e esp32          # 经典 ESP32（默认）
-pio run -e esp32s3        # ESP32-S3
-
-# 全功能版
-pio run -e esp32s3-full   # ESP32-S3 全功能
-```
-
-实际部署建议 classic ESP32 优先使用 `esp32`，ESP32-S3 先使用 `esp32s3` 标准版，确认资源余量后再切换 `esp32s3-full`。Web 文件系统和固件需要配套烧录；`data/www` 只保留上传硬件用的压缩产物，部署时以 `.pio/fs-staging/run-*/www` 生成的干净镜像为准。
-
-> **注意**：ESP32-C6 环境需使用 [pioarduino](https://github.com/pioarduino/platform-espressif32) 社区平台，详见 [版本对比指南](docs/system/edition-comparison.md#esp32-c6-特别说明)。
-
----
+产物是包含 bootloader、分区表、应用固件和 LittleFS 的合并镜像，适合量产烧录工具使用。
 
 ## 项目结构
 
 ```text
-FastBee-Arduino/
-├── include/                  # 头文件
-│   ├── core/                 # 框架、外设、执行调度
-│   ├── network/              # WiFi、Web 服务、路由处理器、多联网适配器
-│   ├── protocols/            # MQTT、Modbus
-│   ├── security/             # 认证、session、单管理员模式
-│   └── systems/              # 健康监控、配置存储、日志系统
-├── src/                      # C++ 实现
-│   └── network/              # 含 EthernetAdapter / CellularAdapter / LoRaAdapter
-├── web-src/                  # Web 前端源码，页面/样式/模块都从这里维护
-│   ├── css/                  # 共享样式源码
-│   ├── js/                   # 启动、状态、请求调度源码
-│   ├── modules/              # 页面运行时模块源码
-│   └── pages/                # 页面和页面片段源码
-├── data/
-│   ├── config/               # 默认 JSON 配置
-│   └── www/                  # Web 发布产物，仅保留上传硬件用压缩文件和静态图片
-│       ├── assets/           # logo、favicon 等静态二进制资源
-│       ├── css/*.css.gz      # 由 web-src/css 生成的压缩样式
-│       ├── js/**/*.js.gz     # 由 web-src/js、web-src/modules 生成的压缩脚本
-│       └── pages/**/*.html.gz # 由 web-src/pages 生成的压缩页面
-├── scripts/                  # Web 构建、gzip、manifest、校验脚本
-├── test/                     # 单元测试与 mock
-├── docs/                     # 项目文档
-├── platformio.ini            # 精简后的 PlatformIO 环境矩阵
-└── fastbee.csv               # 分区表
+src/          固件源码
+include/      头文件和功能开关
+data/         LittleFS 默认配置与 Web 产物
+web-src/      Web 前端源码
+scripts/      构建、烧录、测试、发布脚本
+test/         PlatformIO native 测试
+docs/         使用、部署、测试和功能文档
 ```
+
+## 常用文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [快速开始](docs/quick-start.md) | 从烧录到创建第一条规则 |
+| [部署与版本验证](docs/deployment.md) | 固件、LittleFS、发布包和真实设备验证 |
+| [测试与版本验证](docs/testing.md) | 静态检查、native、全芯片编译、冒烟和稳定性测试 |
+| [版本对比](docs/system/edition-comparison.md) | Lite、Standard、Full 功能差异 |
+| [项目结构](docs/project-structure.md) | 目录、模块和构建产物说明 |
+| [用户手册](docs/user-manual.md) | Web 页面和功能操作说明 |
+| [支持模块清单](docs/peripherals/supported-sensors-and-modules.md) | 各版本支持的模块、传感器和接入方式 |
+| [外设文档](docs/peripherals/README.md) | GPIO、传感器、显示、RFID、Modbus 外设 |
+| [外设执行](docs/periph-exec/README.md) | 触发器、动作和联动规则 |
+| [示例教程](docs/examples/README.md) | LED、继电器、传感器、显示屏和 Modbus 示例 |
 
 ## 许可证
 
-本项目采用 **AGPL-3.0** 许可证，详见 [LICENSE](./LICENSE)。
-
----
-
-## 相关文档
-
-> 📚 **完整文档索引**: [docs/README.md](docs/README.md)
-
-### 📘 新手入门
-- [项目概述](docs/overview.md) - 项目背景、目标、特性、技术栈
-- [快速开始](docs/quick-start.md) - 5步完成首次配置 ⭐
-- [用户手册](docs/user-manual.md) - 完整操作手册、排错指南
-
-### 📗 进阶学习
-- [架构设计](docs/architecture.md) - 系统架构和模块关系
-- [核心框架](docs/core-framework.md) - 主要组件和关键类
-- [开发指南](docs/development-guide.md) - 环境搭建和贡献规范
-
-### 📙 配置参考
-- [外设配置指南](docs/peripherals/peripheral-configuration-guide.md) - 所有外设类型详解(610行)
-- [外设执行指南](docs/periph-exec/periph-exec-configuration-guide.md) - 触发器与动作详解(694行)
-- [Modbus使用指南](docs/protocols/modbus_usage_guide.md) - Modbus协议详解(1158行)
-- [OLED使用指南](docs/peripherals/oled_usage_guide.md) - OLED显示详解(430行)
-- [脚本使用指南](docs/periph-exec/script-guide.md) - 命令脚本完整说明(1096行)
-- [配置导入导出](docs/system/device-config.md) - 配置备份和迁移
-- [外设执行流程](docs/periph-exec/periph_exec_flow.md) - 底层架构和任务调度(1457行)
-
-### 📕 示例教程
-- [示例文档](docs/examples/README.md) - 48个典型应用示例
-- [传感器完整指南](docs/peripherals/sensor-guide-complete.md) - 40+种传感器参考手册
-- [应用场景](docs/scenarios/README.md) - 完整应用场景方案
-
-### 📓 系统文档
-- [系统管理](docs/system/README.md) - 设备/网络/用户/文件管理
-- [配置导入导出](docs/system/device-config.md) - 备份和恢复配置
-- [固件版本说明](docs/system/firmware-version-profiles.md) - Lite/Standard/Full 版本功能差异
-- [版本对比指南](docs/system/edition-comparison.md) - 精简版/标准版/全功能版对比
-
-### 🔗 外部资源
-- [Wiki 文档](https://gitee.com/beecue/fastbee-arduino/wikis)
-- [问题反馈](https://gitee.com/beecue/fastbee-arduino/issues)
-- [Gitee 仓库](https://gitee.com/beecue/fastbee-arduino)
+本项目采用 [AGPL-3.0](LICENSE) 许可证。

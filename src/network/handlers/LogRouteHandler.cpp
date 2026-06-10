@@ -17,6 +17,12 @@ bool hasLogPermission(WebHandlerContext* ctx, AsyncWebServerRequest* request) {
     return ctx && ctx->checkPermission(request, "system.view");
 }
 
+void sendLowMemoryLogPlaceholder(AsyncWebServerRequest* request) {
+    request->send(200, "application/json",
+        F("{\"success\":true,\"data\":{\"content\":\"[Low memory - log temporarily unavailable]\","
+          "\"size\":0,\"lines\":0,\"truncated\":true,\"degraded\":true}}"));
+}
+
 String sanitizeLogFileName(WebHandlerContext* ctx, AsyncWebServerRequest* request) {
     String name = ctx->getParamValue(request, "file", DEFAULT_LOG_FILE);
     if (name.indexOf('/') >= 0 || name.indexOf('\\') >= 0 || !name.endsWith(".log")) {
@@ -59,7 +65,7 @@ void LogRouteHandler::handleInfo(AsyncWebServerRequest* request) {
         return;
     }
 
-    JsonDocument doc;
+    auto doc = FastBee::makeJsonDocument();
     doc["success"] = true;
     doc["data"]["enabled"] = true;
     doc["data"]["fileLogging"] = LOGGER.isFileLoggingEnabled();
@@ -86,7 +92,7 @@ void LogRouteHandler::handleList(AsyncWebServerRequest* request) {
         return;
     }
 
-    JsonDocument doc;
+    auto doc = FastBee::makeJsonDocument();
     doc["success"] = true;
     JsonArray files = doc["data"].to<JsonArray>();
 
@@ -119,15 +125,17 @@ void LogRouteHandler::handleRead(AsyncWebServerRequest* request) {
         return;
     }
 
+    const bool psramBacked = HandlerUtils::psramCanServeJson(8192);
     auto* fw = FastBeeFramework::getInstance();
     HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
-    if (monitor && monitor->getMemoryGuardLevel() >= MemoryGuardLevel::SEVERE) {
-        request->send(200, "application/json",
-            F("{\"success\":true,\"data\":{\"content\":\"[Low memory - log temporarily unavailable]\",\"size\":0,\"lines\":0,\"truncated\":true}}"));
+    if (!psramBacked &&
+        ((monitor && monitor->getMemoryGuardLevel() >= MemoryGuardLevel::SEVERE) ||
+         ESP.getFreeHeap() < 24576 || ESP.getMaxAllocHeap() < 6144)) {
+        sendLowMemoryLogPlaceholder(request);
         return;
     }
 
-    if (HandlerUtils::checkLowMemory(request, 24576)) return;
+    if (!psramBacked && HandlerUtils::checkLowMemory(request, 24576)) return;
 
     String name = sanitizeLogFileName(ctx, request);
     if (name.isEmpty()) {
@@ -150,6 +158,9 @@ void LogRouteHandler::handleRead(AsyncWebServerRequest* request) {
 
     const size_t fileSize = file.size();
     size_t maxSize = ESP.getFreeHeap() < 61440 ? 1536 : 4096;
+    if (psramBacked && ESP.getMaxAllocHeap() < 4096) {
+        maxSize = 1024;
+    }
     if (request->hasParam("limit")) {
         int requested = request->getParam("limit")->value().toInt();
         if (requested > 0 && static_cast<size_t>(requested) < maxSize) {
@@ -159,7 +170,27 @@ void LogRouteHandler::handleRead(AsyncWebServerRequest* request) {
 
     const size_t start = fileSize > maxSize ? fileSize - maxSize : 0;
     file.seek(start);
-    String content = file.readString();
+
+    String content;
+    content.reserve(maxSize + 1);
+    bool readBudgetExceeded = false;
+    unsigned long readStartMs = millis();
+    size_t remaining = maxSize;
+    char buffer[129];
+    while (remaining > 0 && file.available()) {
+        size_t chunk = remaining < (sizeof(buffer) - 1) ? remaining : (sizeof(buffer) - 1);
+        size_t bytesRead = file.read(reinterpret_cast<uint8_t*>(buffer), chunk);
+        if (bytesRead == 0) {
+            break;
+        }
+        buffer[bytesRead] = '\0';
+        content.concat(buffer, bytesRead);
+        remaining -= bytesRead;
+        if (millis() - readStartMs > 120) {
+            readBudgetExceeded = true;
+            break;
+        }
+    }
     file.close();
 
     int maxLines = ctx->getParamInt(request, "tail", ctx->getParamInt(request, "lines", 80));
@@ -176,12 +207,13 @@ void LogRouteHandler::handleRead(AsyncWebServerRequest* request) {
     }
     if (cut > 0) content = content.substring(cut);
 
-    JsonDocument doc;
+    auto doc = FastBee::makeJsonDocument(maxSize + 2048);
     doc["success"] = true;
     doc["data"]["content"] = content;
     doc["data"]["size"] = fileSize;
     doc["data"]["lines"] = seen;
-    doc["data"]["truncated"] = start > 0 || cut > 0;
+    doc["data"]["truncated"] = start > 0 || cut > 0 || readBudgetExceeded;
+    doc["data"]["degraded"] = readBudgetExceeded;
     HandlerUtils::sendJsonStream(request, doc);
 }
 

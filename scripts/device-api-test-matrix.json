@@ -1,0 +1,336 @@
+{
+  "version": 2,
+  "description": "Device API smoke/soak checks shared by smoke-test-device.ps1 and soak-test-device.ps1.",
+  "checks": [
+    {
+      "name": "auth-session",
+      "method": "GET",
+      "path": "/api/auth/session",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "auth-multi-session",
+      "type": "multi-session",
+      "method": "POST",
+      "path": "/api/auth/login",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "auth-bearer-over-cookie",
+      "type": "bearer-over-cookie",
+      "method": "GET",
+      "path": "/api/auth/session",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "system-health",
+      "method": "GET",
+      "path": "/api/health",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "system-health-alias",
+      "method": "GET",
+      "path": "/api/system/health",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "system-info",
+      "method": "GET",
+      "path": "/api/system/info?probe=1",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "system-status",
+      "method": "GET",
+      "path": "/api/system/status",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "system-web-runtime",
+      "method": "GET",
+      "path": "/api/system/web-runtime?probe=1",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "system-capabilities",
+      "method": "GET",
+      "path": "/api/system/capabilities",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "system-metrics",
+      "method": "GET",
+      "path": "/api/system/metrics",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "device-config",
+      "method": "GET",
+      "path": "/api/device/config",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "device-info",
+      "method": "GET",
+      "path": "/api/device/info",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "device-time",
+      "method": "GET",
+      "path": "/api/device/time",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "network-status",
+      "method": "GET",
+      "path": "/api/network/status",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "network-config",
+      "method": "GET",
+      "path": "/api/network/config?compact=1",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "mqtt-status",
+      "method": "GET",
+      "path": "/api/mqtt/status",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "protocol-config",
+      "method": "GET",
+      "path": "/api/protocol/config?compact=1&section=runtime",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "protocol-mqtt-config",
+      "method": "GET",
+      "path": "/api/protocol/config?compact=1&section=mqtt",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "protocol-periph-exec-config",
+      "method": "GET",
+      "path": "/api/protocol/config?compact=1&section=periph-exec",
+      "profiles": ["standard", "full"]
+    },
+    {
+      "name": "modbus-status",
+      "method": "GET",
+      "path": "/api/modbus/status?compact=1",
+      "profiles": ["standard", "full"]
+    },
+    {
+      "name": "modbus-unavailable",
+      "type": "expect-unavailable",
+      "method": "GET",
+      "path": "/api/modbus/status?compact=1",
+      "profiles": ["lite"],
+      "allowedStatuses": [404, 405, 501]
+    },
+    {
+      "name": "peripherals",
+      "method": "GET",
+      "path": "/api/peripherals?page=1&pageSize=5&compact=1",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "peripheral-types",
+      "method": "GET",
+      "path": "/api/peripherals/types",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "peripheral-status-missing-id",
+      "type": "expect-error",
+      "method": "GET",
+      "path": "/api/peripherals/status",
+      "profiles": ["lite", "standard", "full"],
+      "allowedStatuses": [400]
+    },
+    {
+      "name": "periph-exec-rules",
+      "method": "GET",
+      "path": "/api/periph-exec?page=1&pageSize=10",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "periph-exec-controls",
+      "method": "GET",
+      "path": "/api/periph-exec/controls",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "periph-exec-trigger-types",
+      "method": "GET",
+      "path": "/api/periph-exec/trigger-types",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "periph-exec-static-events",
+      "method": "GET",
+      "path": "/api/periph-exec/events/static",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "periph-exec-dynamic-events",
+      "method": "GET",
+      "path": "/api/periph-exec/events/dynamic",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "periph-exec-events",
+      "method": "GET",
+      "path": "/api/periph-exec/events/categories",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "config-transfer-list",
+      "method": "GET",
+      "path": "/api/config/transfer/list",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
+      "name": "batch-basic",
+      "method": "POST",
+      "path": "/api/batch",
+      "jsonBody": true,
+      "profiles": ["lite", "standard", "full"],
+      "body": {
+        "requests": [
+          { "url": "/api/system/status" },
+          { "url": "/api/system/info" },
+          { "url": "/api/network/status" }
+        ]
+      }
+    },
+    {
+      "name": "filesystem",
+      "method": "GET",
+      "path": "/api/filesystem",
+      "profiles": ["full"]
+    },
+    {
+      "name": "filesystem-unavailable",
+      "type": "expect-unavailable",
+      "method": "GET",
+      "path": "/api/filesystem",
+      "profiles": ["lite", "standard"],
+      "allowedStatuses": [404, 405, 501]
+    },
+    {
+      "name": "files-root",
+      "method": "GET",
+      "path": "/api/files?path=%2F",
+      "profiles": ["full"]
+    },
+    {
+      "name": "files-unavailable",
+      "type": "expect-unavailable",
+      "method": "GET",
+      "path": "/api/files?path=%2F",
+      "profiles": ["lite", "standard"],
+      "allowedStatuses": [404, 405, 501]
+    },
+    {
+      "name": "logs-list",
+      "method": "GET",
+      "path": "/api/logs/list",
+      "profiles": ["full"]
+    },
+    {
+      "name": "logs-tail",
+      "method": "GET",
+      "path": "/api/logs?file=system.log&tail=80&limit=4096",
+      "profiles": ["full"]
+    },
+    {
+      "name": "logs-info",
+      "method": "GET",
+      "path": "/api/logs/info",
+      "profiles": ["full"]
+    },
+    {
+      "name": "logs-unavailable",
+      "type": "expect-unavailable",
+      "method": "GET",
+      "path": "/api/logs/info",
+      "profiles": ["lite", "standard"],
+      "allowedStatuses": [404, 405, 501]
+    },
+    {
+      "name": "ota-status",
+      "method": "GET",
+      "path": "/api/ota/status",
+      "profiles": ["full"]
+    },
+    {
+      "name": "ota-unavailable",
+      "type": "expect-unavailable",
+      "method": "GET",
+      "path": "/api/ota/status",
+      "profiles": ["lite", "standard"],
+      "allowedStatuses": [404, 405, 501]
+    },
+    {
+      "name": "rule-scripts",
+      "method": "GET",
+      "path": "/api/rule-script",
+      "profiles": ["full"]
+    },
+    {
+      "name": "rule-scripts-unavailable",
+      "type": "expect-unavailable",
+      "method": "GET",
+      "path": "/api/rule-script",
+      "profiles": ["lite", "standard"],
+      "allowedStatuses": [404, 405, 501]
+    },
+    {
+      "name": "users",
+      "method": "GET",
+      "path": "/api/users?page=1&limit=20",
+      "profiles": ["full"]
+    },
+    {
+      "name": "users-unavailable",
+      "type": "expect-unavailable",
+      "method": "GET",
+      "path": "/api/users?page=1&limit=20",
+      "profiles": ["lite", "standard"],
+      "allowedStatuses": [404, 405, 501]
+    },
+    {
+      "name": "roles",
+      "method": "GET",
+      "path": "/api/roles",
+      "profiles": ["full"]
+    },
+    {
+      "name": "roles-unavailable",
+      "type": "expect-unavailable",
+      "method": "GET",
+      "path": "/api/roles",
+      "profiles": ["lite", "standard"],
+      "allowedStatuses": [404, 405, 501]
+    },
+    {
+      "name": "permissions",
+      "method": "GET",
+      "path": "/api/permissions?compact=1",
+      "profiles": ["full"]
+    },
+    {
+      "name": "permissions-unavailable",
+      "type": "expect-unavailable",
+      "method": "GET",
+      "path": "/api/permissions?compact=1",
+      "profiles": ["lite", "standard"],
+      "allowedStatuses": [404, 405, 501]
+    }
+  ]
+}

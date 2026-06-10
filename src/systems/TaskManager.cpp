@@ -175,9 +175,6 @@ void TaskManager::run() {
         task.totalExecutionTime += duration;
         task.lastRun = now;
         
-        // 每个任务执行完后喂狗，防止累计执行时间触发 WDT
-        esp_task_wdt_reset();
-        
         // 检查任务执行时间是否过长
         if (duration > 3000) {
             char buf[128];

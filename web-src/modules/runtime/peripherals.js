@@ -90,11 +90,10 @@
         },
 
         _formatPeripheralCapacitySummary(total) {
-            var summary = i18n.t('periph-exec-total') + ': ' + total;
+            var summary = i18n.t('periph-exec-total') + ' ' + total + ' ' + i18n.t('periph-exec-unit');
             var profile = this._periphProfile;
             if (profile && profile.max !== undefined) {
-                summary += ' / ' + (profile.name || 'profile') + ' ' +
-                    (profile.used || 0) + '/' + profile.max;
+                summary += ' (' + (profile.used || 0) + '/' + profile.max + ')';
             }
             return summary;
         },
@@ -276,6 +275,12 @@
             } else if (type === 45) {
                 const neoParams = document.getElementById('neopixel-params');
                 if (neoParams) this.showElement(neoParams);
+            } else if (type === 48) {
+                const rfParams = document.getElementById('rf-params');
+                if (rfParams) this.showElement(rfParams);
+            } else if (type === 49) {
+                const radarParams = document.getElementById('radar-params');
+                if (radarParams) this.showElement(radarParams);
             }
             // DEVICE_EVENT (60) 和 Modbus (51) 无引脚配置，隐藏 pins 字段
             const pinsGroup = document.getElementById('peripheral-pins-group');
@@ -330,6 +335,18 @@
                             if (data.params.speed !== undefined) { const el = document.getElementById('stepper-speed'); if (el) el.value = data.params.speed; }
                             if (data.params.count !== undefined) { const el = document.getElementById('neopixel-count'); if (el) el.value = data.params.count; }
                             if (data.params.brightness !== undefined) { const el = document.getElementById('neopixel-brightness'); if (el) el.value = data.params.brightness; }
+                            if (data.params.mode !== undefined) { const el = document.getElementById('rf-mode'); if (el) el.value = data.params.mode; }
+                            if (data.params.bitLength !== undefined) { const el = document.getElementById('rf-bit-length'); if (el) el.value = data.params.bitLength; }
+                            if (data.params.pulseWidth !== undefined) { const el = document.getElementById('rf-pulse-width'); if (el) el.value = data.params.pulseWidth; }
+                            if (data.params.repeat !== undefined) { const el = document.getElementById('rf-repeat'); if (el) el.value = data.params.repeat; }
+                            if (data.params.activeHigh !== undefined) {
+                                const rfActive = document.getElementById('rf-active-high');
+                                const radarActive = document.getElementById('radar-active-high');
+                                if (rfActive) rfActive.checked = !!data.params.activeHigh;
+                                if (radarActive) radarActive.checked = !!data.params.activeHigh;
+                            }
+                            if (data.params.debounceMs !== undefined) { const el = document.getElementById('radar-debounce-ms'); if (el) el.value = data.params.debounceMs; }
+                            if (data.params.holdMs !== undefined) { const el = document.getElementById('radar-hold-ms'); if (el) el.value = data.params.holdMs; }
                         }
                     } else {
                         Notification.error(i18n.t('peripheral-load-fail'), i18n.t('peripheral-title'));
@@ -397,6 +414,16 @@
             } else if (typeNum === 45) {
                 data.count = document.getElementById('neopixel-count')?.value || '1';
                 data.brightness = document.getElementById('neopixel-brightness')?.value || '64';
+            } else if (typeNum === 48) {
+                data.mode = document.getElementById('rf-mode')?.value || '0';
+                data.bitLength = document.getElementById('rf-bit-length')?.value || '24';
+                data.pulseWidth = document.getElementById('rf-pulse-width')?.value || '350';
+                data.repeat = document.getElementById('rf-repeat')?.value || '8';
+                data.activeHigh = document.getElementById('rf-active-high')?.checked ? '1' : '0';
+            } else if (typeNum === 49) {
+                data.activeHigh = document.getElementById('radar-active-high')?.checked ? '1' : '0';
+                data.debounceMs = document.getElementById('radar-debounce-ms')?.value || '50';
+                data.holdMs = document.getElementById('radar-hold-ms')?.value || '2000';
             }
             const saveBtn = document.getElementById('save-peripheral-btn');
             const origText = saveBtn?.textContent;

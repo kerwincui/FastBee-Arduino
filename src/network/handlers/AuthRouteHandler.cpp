@@ -69,11 +69,9 @@ void AuthRouteHandler::handleLogin(AsyncWebServerRequest* request) {
         serializeJson(responseDoc, jsonStr);
         AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonStr);
 
-        String cookieName = "sessionId";
-        String cookieValue = cookieName + "=" + result.sessionId + "; Path=/; Max-Age=" +
-                           String(3600);
-
-        response->addHeader("Set-Cookie", cookieValue);
+        String cookieValue = result.sessionId + "; Path=/; Max-Age=" + String(3600);
+        response->addHeader("Set-Cookie", "sessionId=" + cookieValue);
+        response->addHeader("Set-Cookie", "session=" + cookieValue);
         response->addHeader("Connection", "close");
         request->send(response);
     } else {

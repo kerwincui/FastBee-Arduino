@@ -16,13 +16,18 @@ const zlib = require('zlib');
 const { spawn } = require('child_process');
 const { buildWebModules } = require('./build-web-modules');
 const { generateManifest } = require('./generate-sw-manifest');
-const { isProdWebProfile } = require('./web-profile');
+const {
+    getWebProfile,
+    isCompactWebProfile,
+    isLiteWebProfile,
+    isStandardWebProfile
+} = require('./web-profile');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const WWW_DIR = path.join(DATA_DIR, 'www');
 const STAGING_ROOT_DIR = path.join(ROOT_DIR(), '.pio', 'fs-staging');
 const STAGING_RUN_ID = `run-${Date.now()}-${process.pid}`;
-const STAGING_DATA_DIR = path.join(STAGING_ROOT_DIR, STAGING_RUN_ID);
+const STAGING_DATA_DIR = resolveStageDir();
 const STAGING_WWW_DIR = path.join(STAGING_DATA_DIR, 'www');
 const COMPRESS_EXTENSIONS = new Set(['.html', '.js', '.css']);
 let activeWwwWhitelist = null;
@@ -60,8 +65,28 @@ function normalizeRelativePath(relPath) {
     return relPath.replace(/\\/g, '/').replace(/^\.\//, '');
 }
 
+function readArgValue(prefixes) {
+    for (const arg of process.argv.slice(2)) {
+        for (const prefix of prefixes) {
+            if (arg.startsWith(prefix)) {
+                return arg.slice(prefix.length);
+            }
+        }
+    }
+    return '';
+}
+
+function resolveStageDir() {
+    const fromArg = readArgValue(['--stage-dir=', '--staging-dir=']);
+    const fromEnv = process.env.FASTBEE_FS_STAGE_DIR || process.env.PLATFORMIO_DATA_DIR || '';
+    const selected = fromArg || fromEnv;
+    return selected
+        ? path.resolve(selected)
+        : path.join(STAGING_ROOT_DIR, STAGING_RUN_ID);
+}
+
 function shouldSkipProdDataPath(relPath) {
-    if (!isProdWebProfile()) return false;
+    if (!isCompactWebProfile()) return false;
     const normalized = normalizeRelativePath(relPath);
     return normalized === 'config/users.json'
         || normalized === 'config/auth.json'
@@ -74,8 +99,34 @@ function relativeFromWww(filePath) {
 }
 
 function ensureCleanDir(dir) {
-    fs.rmSync(dir, { recursive: true, force: true });
+    forceRemovePath(dir);
     fs.mkdirSync(dir, { recursive: true });
+}
+
+function forceRemovePath(targetPath) {
+    if (!fs.existsSync(targetPath)) return;
+    const stat = fs.lstatSync(targetPath);
+    if (stat.isDirectory()) {
+        fs.readdirSync(targetPath).forEach((entry) => {
+            forceRemovePath(path.join(targetPath, entry));
+        });
+        try {
+            fs.rmdirSync(targetPath);
+        } catch (error) {
+            fs.rmSync(targetPath, { recursive: true, force: true });
+        }
+        return;
+    }
+    try {
+        fs.chmodSync(targetPath, 0o666);
+    } catch (_) {
+        // Best effort for Windows EPERM cleanup.
+    }
+    try {
+        fs.unlinkSync(targetPath);
+    } catch (error) {
+        fs.rmSync(targetPath, { force: true });
+    }
 }
 
 function isCompressiblePath(relPath) {
@@ -99,14 +150,72 @@ function addWhitelistAbsolute(files, absPath) {
     addWhitelistPath(files, relativeFromWww(absPath));
 }
 
+function shouldKeepProfilePeripheral(item) {
+    const id = String((item && item.id) || '');
+    if (id === 'modbus_tcp') return false;
+    if (isLiteWebProfile() && (id === 'modbus_rtu' || id === 'ethernet')) return false;
+    if (id === 'stepper' || id === 'adc' || id === 'ws2812b' || id === 'uart_debug') return true;
+    return item && item.enabled !== false;
+}
+
+function getProfilePeripheralIds() {
+    const configPath = path.join(DATA_DIR, 'config', 'peripherals.json');
+    if (!fs.existsSync(configPath)) return new Set();
+    const doc = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const peripherals = Array.isArray(doc.peripherals) ? doc.peripherals : [];
+    return new Set(
+        peripherals
+            .filter(shouldKeepProfilePeripheral)
+            .map((item) => String(item.id || ''))
+            .filter(Boolean)
+    );
+}
+
+function actionTargetRequiresPeripheral(action) {
+    if (!action || !action.targetPeriphId) return false;
+    const targetId = String(action.targetPeriphId || '');
+    if (!targetId || targetId.startsWith('modbus-task:') || targetId.startsWith('modbus:')) return false;
+
+    const actionType = Number(action.actionType);
+    const nonPeripheralTargetActions = new Set([
+        6,  // system restart
+        7,  // factory reset
+        8,  // NTP sync
+        9,  // OTA
+        15, // command script; peripheral refs live in actionValue
+        21, // trigger event
+        22, // enable rule
+        23  // disable rule
+    ]);
+    return !nonPeripheralTargetActions.has(actionType);
+}
+
+function getScriptPeripheralRefs(actionValue) {
+    const refs = [];
+    String(actionValue || '').split(/\r?\n/).forEach((line) => {
+        const match = line.match(/^\s*PERIPH\s+([^\s#]+)/i);
+        if (match && match[1]) refs.push(match[1]);
+    });
+    return refs;
+}
+
+function scriptPeripheralRefsAreKept(action, profilePeripheralIds) {
+    if (Number(action && action.actionType) !== 15) return true;
+    const refs = getScriptPeripheralRefs(action.actionValue);
+    return refs.every((id) => profilePeripheralIds.has(String(id)));
+}
+
 function transformProdConfigFile(sourcePath, normalizedRel) {
-    if (!isProdWebProfile()) return null;
+    if (!isCompactWebProfile()) return null;
 
     if (normalizedRel === 'config/protocol.json') {
         const doc = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
         ['modbusTcp', 'http', 'coap', 'tcp'].forEach((key) => {
             if (Object.prototype.hasOwnProperty.call(doc, key)) delete doc[key];
         });
+        if (isLiteWebProfile() && Object.prototype.hasOwnProperty.call(doc, 'modbusRtu')) {
+            delete doc.modbusRtu;
+        }
         if (doc.mqtt) {
             const keepTopic = (topic) => {
                 const topicType = Number(topic && topic.topicType);
@@ -127,6 +236,11 @@ function transformProdConfigFile(sourcePath, normalizedRel) {
         const doc = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
         const unsupportedActions = new Set([9, 20]); // OTA, legacy reserved action
         const unsupportedProtocols = new Set([2, 3, 4, 5]); // Modbus TCP, HTTP, CoAP, TCP
+        const profilePeripheralIds = getProfilePeripheralIds();
+        if (isLiteWebProfile()) {
+            [16, 17, 18].forEach((actionType) => unsupportedActions.add(actionType)); // Modbus control/poll
+            unsupportedProtocols.add(1); // Modbus RTU
+        }
         const rules = Array.isArray(doc.rules) ? doc.rules : [];
         doc.rules = rules
             .map((rule) => {
@@ -138,7 +252,16 @@ function transformProdConfigFile(sourcePath, normalizedRel) {
                 if (rule && rule.enabled === false && !keepDisabledTemplate) return null;
                 if (unsupportedProtocols.has(Number(rule.protocolType))) return null;
                 const actions = Array.isArray(rule.actions)
-                    ? rule.actions.filter((action) => !unsupportedActions.has(Number(action.actionType)))
+                    ? rule.actions.filter((action) => {
+                        if (unsupportedActions.has(Number(action.actionType))) return false;
+                        if (isLiteWebProfile() && String(action.targetPeriphId || '').indexOf('modbus') === 0) return false;
+                        if (!scriptPeripheralRefsAreKept(action, profilePeripheralIds)) return false;
+                        if (actionTargetRequiresPeripheral(action) &&
+                            !profilePeripheralIds.has(String(action.targetPeriphId || ''))) {
+                            return false;
+                        }
+                        return true;
+                    })
                     : [];
                 if (actions.length === 0) return null;
                 const next = { ...rule, actions };
@@ -152,14 +275,20 @@ function transformProdConfigFile(sourcePath, normalizedRel) {
     if (normalizedRel === 'config/peripherals.json') {
         const doc = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
         if (Array.isArray(doc.peripherals)) {
-            doc.peripherals = doc.peripherals.filter((item) => {
-                if (String(item.id || '') === 'modbus_tcp') return false;
-                if (String(item.id || '') === 'stepper') return true;
-                if (String(item.id || '') === 'adc') return true;
-                if (String(item.id || '') === 'ws2812b') return true;
-                if (String(item.id || '') === 'uart_debug') return true;
-                return item.enabled !== false;
-            });
+            doc.peripherals = doc.peripherals.filter(shouldKeepProfilePeripheral);
+        }
+        return JSON.stringify(doc, null, 2) + '\n';
+    }
+
+    if (normalizedRel === 'config/network.json') {
+        const doc = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
+        if (isLiteWebProfile()) {
+            doc.networkType = 0;
+            delete doc.ethernet;
+            delete doc.cellular;
+            delete doc.lora;
+        } else if (isStandardWebProfile()) {
+            delete doc.lora;
         }
         return JSON.stringify(doc, null, 2) + '\n';
     }
@@ -286,7 +415,7 @@ function stagePublishArtifacts(buildResult) {
     console.log(`  Staged files: ${stageState.fileCount}`);
     console.log(`  Staged size: ${stageState.totalBytes} bytes`);
     if (stageState.transformed.length > 0) {
-        console.log(`  Slim transformed config(s): ${stageState.transformed.length}`);
+        console.log(`  ${getWebProfile()} transformed config(s): ${stageState.transformed.length}`);
         stageState.transformed.forEach((item) => console.log(`    - ${item}`));
     }
     if (stageState.missing.length > 0) {
@@ -477,9 +606,15 @@ async function main() {
     console.log('\n[Step 1] Generating SW manifest...');
     generateManifest();
 
-    if (isProdWebProfile()) {
+    // 精简版不部署 SW，移除 generateManifest 产生的 sw.js
+    if (isLiteWebProfile()) {
+        const swFile = path.join(WWW_DIR, 'sw.js');
+        if (fs.existsSync(swFile)) fs.unlinkSync(swFile);
+    }
+
+    if (isCompactWebProfile()) {
         activeWwwWhitelist = collectStageWhitelist(buildResult);
-        console.log(`  Slim compression whitelist: ${activeWwwWhitelist.size} web file(s)`);
+        console.log(`  ${getWebProfile()} compression whitelist: ${activeWwwWhitelist.size} web file(s)`);
     }
 
     deleteOldGzFiles();

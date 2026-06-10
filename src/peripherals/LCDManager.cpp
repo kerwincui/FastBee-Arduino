@@ -64,12 +64,6 @@ bool LCDManager::initialize(const PeripheralConfig& config)
 #elif CONFIG_IDF_TARGET_ESP32C6
             // ESP32-C6 有效 GPIO: 0-30
             bool pinsValid = (sda >= 0 && sda <= 30) && (scl >= 0 && scl <= 30);
-#elif CONFIG_IDF_TARGET_ESP32S2
-            // ESP32-S2 有效 GPIO: 0-46 (排除 22-25 Flash/PSRAM)
-            auto isValidGpioS2 = [](int pin) {
-                return (pin >= 0 && pin <= 21) || (pin >= 26 && pin <= 46);
-            };
-            bool pinsValid = isValidGpioS2(sda) && isValidGpioS2(scl);
 #else
             // ESP32 经典版 有效 GPIO: 0-19, 21-23, 25-27, 32-39
             auto isValidGpioClassic = [](int pin) {
