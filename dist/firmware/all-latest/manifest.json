@@ -1,0 +1,117 @@
+{
+    "generatedAt":  "2026-06-10T18:02:34.5485653Z",
+    "gitSha":  "6157ded48587",
+    "outputDir":  "dist/firmware/all-latest",
+    "environments":  [
+                         {
+                             "environment":  "esp32",
+                             "filesystemProfile":  "standard",
+                             "hardware":  "ESP32 4MB Flash",
+                             "releaseFile":  "fastbee-esp32n4r0-std.bin",
+                             "deployCommand":  "powershell -ExecutionPolicy Bypass -File scripts\\deploy.ps1 -Env esp32 -Port COMx",
+                             "sourceDir":  "dist/firmware/esp32",
+                             "smokeTest":  {
+                                               "required":  true,
+                                               "command":  "powershell -ExecutionPolicy Bypass -File scripts\\smoke-test-device.ps1 -BaseUrl http://\u003cdevice-ip\u003e -Profile standard",
+                                               "status":  "not-run"
+                                           },
+                             "files":  {
+                                           "factory-with-fs.bin":  "fastbee-esp32n4r0-std.bin"
+                                       },
+                             "sizes":  {
+                                           "fastbee-esp32n4r0-std.bin":  4194304
+                                       },
+                             "sha256":  {
+                                            "fastbee-esp32n4r0-std.bin":  "a76d835eaabcb45eaf9695df9730c059485ace73d141e7fc955141c2be4105f1"
+                                        }
+                         },
+                         {
+                             "environment":  "esp32c3",
+                             "filesystemProfile":  "lite",
+                             "hardware":  "ESP32-C3 4MB Flash",
+                             "releaseFile":  "fastbee-esp32c3n4r0-lite.bin",
+                             "deployCommand":  "powershell -ExecutionPolicy Bypass -File scripts\\deploy.ps1 -Env esp32c3 -Port COMx",
+                             "sourceDir":  "dist/firmware/esp32c3",
+                             "smokeTest":  {
+                                               "required":  true,
+                                               "command":  "powershell -ExecutionPolicy Bypass -File scripts\\smoke-test-device.ps1 -BaseUrl http://\u003cdevice-ip\u003e -Profile lite",
+                                               "status":  "not-run"
+                                           },
+                             "files":  {
+                                           "factory-with-fs.bin":  "fastbee-esp32c3n4r0-lite.bin"
+                                       },
+                             "sizes":  {
+                                           "fastbee-esp32c3n4r0-lite.bin":  4194304
+                                       },
+                             "sha256":  {
+                                            "fastbee-esp32c3n4r0-lite.bin":  "7a81ced58964ce68c734542021dc008b997cd24255588e8c63705fb51b00e436"
+                                        }
+                         },
+                         {
+                             "environment":  "esp32s3",
+                             "filesystemProfile":  "standard",
+                             "hardware":  "ESP32-S3 8MB Flash",
+                             "releaseFile":  "fastbee-esp32s3n8r0-std.bin",
+                             "deployCommand":  "powershell -ExecutionPolicy Bypass -File scripts\\deploy.ps1 -Env esp32s3 -Port COMx",
+                             "sourceDir":  "dist/firmware/esp32s3",
+                             "smokeTest":  {
+                                               "required":  true,
+                                               "command":  "powershell -ExecutionPolicy Bypass -File scripts\\smoke-test-device.ps1 -BaseUrl http://\u003cdevice-ip\u003e -Profile standard",
+                                               "status":  "not-run"
+                                           },
+                             "files":  {
+                                           "factory-with-fs.bin":  "fastbee-esp32s3n8r0-std.bin"
+                                       },
+                             "sizes":  {
+                                           "fastbee-esp32s3n8r0-std.bin":  4194304
+                                       },
+                             "sha256":  {
+                                            "fastbee-esp32s3n8r0-std.bin":  "bc37ee4bbafb13c02acd1b18b7dc9fc0214871da320f4fc716ca7abe230e7ddf"
+                                        }
+                         },
+                         {
+                             "environment":  "esp32c6",
+                             "filesystemProfile":  "lite",
+                             "hardware":  "ESP32-C6 8MB Flash",
+                             "releaseFile":  "fastbee-esp32c6n8r0-lite.bin",
+                             "deployCommand":  "powershell -ExecutionPolicy Bypass -File scripts\\deploy.ps1 -Env esp32c6 -Port COMx",
+                             "sourceDir":  "dist/firmware/esp32c6",
+                             "smokeTest":  {
+                                               "required":  true,
+                                               "command":  "powershell -ExecutionPolicy Bypass -File scripts\\smoke-test-device.ps1 -BaseUrl http://\u003cdevice-ip\u003e -Profile lite",
+                                               "status":  "not-run"
+                                           },
+                             "files":  {
+                                           "factory-with-fs.bin":  "fastbee-esp32c6n8r0-lite.bin"
+                                       },
+                             "sizes":  {
+                                           "fastbee-esp32c6n8r0-lite.bin":  4194304
+                                       },
+                             "sha256":  {
+                                            "fastbee-esp32c6n8r0-lite.bin":  "aea9e8f460e7fb45bc889c710d62c4796baf6a8b4e0b62356dfe8367ccfdac9f"
+                                        }
+                         },
+                         {
+                             "environment":  "esp32s3-full",
+                             "filesystemProfile":  "full",
+                             "hardware":  "ESP32-S3 16MB Flash + 8MB PSRAM",
+                             "releaseFile":  "fastbee-esp32s3n16r8-full.bin",
+                             "deployCommand":  "powershell -ExecutionPolicy Bypass -File scripts\\deploy.ps1 -Env esp32s3-full -Port COMx",
+                             "sourceDir":  "dist/firmware/esp32s3-full",
+                             "smokeTest":  {
+                                               "required":  true,
+                                               "command":  "powershell -ExecutionPolicy Bypass -File scripts\\smoke-test-device.ps1 -BaseUrl http://\u003cdevice-ip\u003e -Profile full",
+                                               "status":  "not-run"
+                                           },
+                             "files":  {
+                                           "factory-with-fs.bin":  "fastbee-esp32s3n16r8-full.bin"
+                                       },
+                             "sizes":  {
+                                           "fastbee-esp32s3n16r8-full.bin":  16711680
+                                       },
+                             "sha256":  {
+                                            "fastbee-esp32s3n16r8-full.bin":  "58a42c5929df3a7a6a7ac45a5bd6331a2b0a571226108420013003a584a793f4"
+                                        }
+                         }
+                     ]
+}
