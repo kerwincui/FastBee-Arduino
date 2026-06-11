@@ -3,7 +3,7 @@
 <h1 align="center">FastBee-Arduino</h1>
 
 <p align="center">
-  <strong>面向 ESP32 全系列的零代码 Web 物联网固件。</strong>
+  <strong>零代码、可视化配置，让 ESP32 像搭积木一样秒变全能物联网设备。</strong>
 </p>
 
 <p align="center">
@@ -13,21 +13,32 @@
   <img src="https://img.shields.io/badge/license-AGPL--3.0-green" alt="License">
 </p>
 
-FastBee-Arduino 烧录后即可通过浏览器完成网络、设备、协议、外设和规则配置，适合 ESP32 节点、轻量网关和现场采集控制终端。无论你是零基础还是专业开发者，FastBee-Arduino 都能帮你快速、轻松地完成物联网设备的开发与量产。
+FastBee-Arduino 烧录后即可通过浏览器完成网络、设备、协议、外设和规则配置，适合 ESP32 节点、轻量网关和现场采集控制终端，是面向 ESP32 全系列的零代码 Web 物联网固件。无论你是零基础还是专业开发者，FastBee-Arduino 都能帮你快速、轻松地完成物联网设备的开发与量产。
 
 支持芯片：`ESP32`、`ESP32-S3`、`ESP32-C3`、`ESP32-C6`。
 
 ## 版本选择
 
-| PlatformIO 环境 | 版本 | 推荐硬件 | 主要能力 | 推荐上限 |
-| --- | --- | --- | --- | --- |
-| `esp32c3` | Lite | ESP32-C3 4MB Flash | WiFi、MQTT、基础外设、外设执行 | ≤16 外设，≤12 规则（软性） |
-| `esp32c6` | Lite | ESP32-C6 8MB Flash | WiFi 6、MQTT、基础外设、外设执行 | ≤16 外设，≤12 规则（软性） |
-| `esp32` | Standard | ESP32 4MB Flash | MQTT、Modbus RTU、以太网、4G、常用外设 | ≤24 外设，≤16 规则（软性） |
-| `esp32s3` | Standard | ESP32-S3 8MB Flash | 标准版能力，更高性能 | ≤24 外设，≤16 规则（软性） |
-| `esp32s3-full` | Full | ESP32-S3 16MB Flash + 8MB PSRAM | OTA、文件、日志、用户角色、RuleScript、多语言、LoRa | ≤32 外设，≤32 规则（软性） |
+### 版本功能对比
 
-首次使用推荐 `esp32`；低成本节点选 `esp32c3`；需要完整管理功能选带 PSRAM 的 `esp32s3-full`。
+| 版本 | 硬件最低要求 | 主要能力 | 推荐上限 |
+| --- | --- | --- | --- |
+| **Lite** 精简版 | 4MB Flash，无 PSRAM | WiFi、MQTT、基础外设、外设执行、命令脚本 | ≤16 外设，≤12 规则 |
+| **Standard** 标准版 | 4MB Flash，无 PSRAM | Lite + Modbus RTU、以太网、4G、I2C 传感器、RFID、红外 | ≤24 外设，≤16 规则 |
+| **Full** 全功能版 | ≥8MB Flash + ≥2MB PSRAM | Standard + OTA、文件管理、日志查看、多用户角色、RuleScript、LoRa、BLE | ≤32 外设，≤32 规则 |
+
+### 根据硬件选版本
+
+| 你的硬件配置 | 推荐 PlatformIO 环境 | 说明 |
+| --- | --- | --- |
+| ESP32-C3 4MB Flash | `esp32c3` (Lite) | 单核 RISC-V，适合低成本节点 |
+| ESP32-C6 4~8MB Flash | `esp32c6` (Lite) | WiFi 6 + Thread/Zigbee，低功耗节点 |
+| ESP32 4MB Flash（无 PSRAM） | `esp32` (Standard) | 经典双核，首次使用推荐 |
+| ESP32 8MB Flash + PSRAM | `esp32` (Standard) | 可运行标准版全部功能，余量充足 |
+| ESP32-S3 8MB Flash（无 PSRAM） | `esp32s3` (Standard) | 高性能双核，更大 Flash 余量 |
+| ESP32-S3 8MB+ Flash + ≥2MB PSRAM | `esp32s3-full` (Full) | 全功能版，推荐 16MB+8MB 配置 |
+
+> **提示**：版本选择的核心依据是 **Flash 容量** 和 **是否有 PSRAM**，与芯片具体型号无关。只要硬件满足最低要求，就可以使用对应版本。ESP32 系列带 PSRAM 的模组（如 ESP32-WROVER、ESP32-S3-WROOM-1-N8R2）也可以使用 Full 版本，但需要自行调整分区表以匹配实际 Flash 大小。
 
 ## 快速烧录
 
