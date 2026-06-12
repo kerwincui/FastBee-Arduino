@@ -776,7 +776,8 @@ bool FastBeeFramework::addSystemTasks() {
             framework->network->update();
 
             // 标记WiFi已连接，触发NTP同步任务（仅执行一次）
-            if (!framework->ntpSynced && WiFi.status() == WL_CONNECTED) {
+            if (!framework->ntpSynced && !framework->ntpSyncPending && !framework->ntpSyncStarted &&
+                framework->ntpRetryCount == 0 && WiFi.status() == WL_CONNECTED) {
                 static unsigned long wifiConnectedTime = 0;
                 if (wifiConnectedTime == 0) {
                     wifiConnectedTime = millis();
@@ -784,7 +785,6 @@ bool FastBeeFramework::addSystemTasks() {
                     // WiFi连接稳定3秒后标记需要同步
                     LOG_INFO("[NTP] WiFi connected, NTP sync scheduled");
                     framework->ntpSyncPending = true;
-                    framework->ntpSynced = true; // 标记已处理，避免重复
                 }
             }
 
@@ -908,7 +908,11 @@ bool FastBeeFramework::addSystemTasks() {
                 strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &timeinfo);
                 LOG_INFOF("[NTP] Sync successful: %s", timeStr);
                 framework->ntpSyncStarted = false;
+                framework->ntpSynced = true;
                 framework->ntpRetryCount = 0;
+#if FASTBEE_ENABLE_PERIPH_EXEC
+                PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_NTP_SYNCED, timeStr);
+#endif
             } else {
                 // 同步失败，重试
                 framework->ntpRetryCount++;

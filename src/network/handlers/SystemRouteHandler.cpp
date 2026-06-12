@@ -1469,9 +1469,7 @@ void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
     uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
     bool explicitFull = request->hasParam("full") && request->getParam("full")->value() == "1";
     bool compactRuntime = !explicitFull || freeHeap < 12288 || maxAlloc < 6144;
-    uint8_t frag = (freeHeap > 0)
-        ? static_cast<uint8_t>(100U - (largestBlock * 100U / freeHeap))
-        : 0;
+    uint8_t frag = calculateHeapFragmentationPercent(freeHeap, largestBlock);
 
     data["server"]["nowMs"] = now;
     data["server"]["scheduleRestart"] = ctx->scheduleRestart;

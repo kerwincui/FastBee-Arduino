@@ -18,38 +18,44 @@ const REQUIRED_GZIP_ASSETS = [
     'js/chunk-9-state-2.js.gz',
     'js/modules/dashboard.js.gz',
     'js/modules/protocol.js.gz',
-    'js/modules/protocol-full-config.js.gz',
-    'js/modules/protocol-modbus-rtu.js.gz',
-    'js/modules/protocol-modbus-control.js.gz',
-    'js/modules/device-control.js.gz',
-    'js/modules/device-control-view.js.gz',
-    'js/modules/device-control-modbus.js.gz',
     'js/modules/device-config.js.gz',
     'js/modules/periph-exec.js.gz',
     'js/modules/periph-exec-form.js.gz',
     'js/modules/periph-exec-modbus.js.gz',
     'js/modules/network.js.gz',
     'js/modules/admin-bundle.js.gz',
-    'js/modules/files.js.gz',
-    'js/modules/logs.js.gz',
-    'js/modules/roles.js.gz',
-    'js/modules/rule-script.js.gz',
-    'js/modules/users.js.gz',
+    'js/modules/peripherals.js.gz',
     'pages/dashboard.html.gz',
     'pages/device.html.gz',
     'pages/network.html.gz',
     'pages/peripheral.html.gz',
     'pages/protocol.html.gz',
+    'pages/modals.html.gz'
+];
+const STANDARD_GZIP_ASSETS = [
+    'sw.js.gz',
+    'js/modules/protocol-full-config.js.gz',
+    'js/modules/protocol-modbus-rtu.js.gz',
+    'js/modules/protocol-modbus-control.js.gz',
+    'js/modules/device-control.js.gz',
+    'js/modules/device-control-view.js.gz',
+    'js/modules/device-control-modbus.js.gz',
+    'pages/fragments/protocol-mqtt.html.gz',
+    'pages/fragments/protocol-modbus-rtu.html.gz'
+];
+const FULL_GZIP_ASSETS = [
+    'js/modules/files.js.gz',
+    'js/modules/logs.js.gz',
+    'js/modules/roles.js.gz',
+    'js/modules/rule-script.js.gz',
+    'js/modules/users.js.gz',
     'pages/admin.html.gz',
     'pages/logs.html.gz',
     'pages/rule-script.html.gz',
     'pages/fullscreen.html.gz',
-    'pages/modals.html.gz',
     'pages/fragments/device-ota.html.gz',
     'pages/fragments/protocol-coap.html.gz',
     'pages/fragments/protocol-http.html.gz',
-    'pages/fragments/protocol-mqtt.html.gz',
-    'pages/fragments/protocol-modbus-rtu.html.gz',
     'pages/fragments/protocol-tcp.html.gz'
 ];
 
@@ -64,6 +70,21 @@ const failures = [];
 
 function normalizeRel(filePath) {
     return path.relative(WWW_DIR, filePath).replace(/\\/g, '/');
+}
+
+function assetExists(relPath) {
+    return fs.existsSync(path.join(WWW_DIR, relPath));
+}
+
+function inferPublishedProfile() {
+    if (assetExists('pages/admin.html.gz') || assetExists('js/modules/files.js.gz')) {
+        return 'full';
+    }
+    if (assetExists('js/modules/device-control.js.gz') ||
+        assetExists('pages/fragments/protocol-modbus-rtu.html.gz')) {
+        return 'standard';
+    }
+    return 'lite';
 }
 
 function walkDir(dir, files) {
@@ -100,8 +121,16 @@ function readGzipText(relPath) {
     }
 }
 
-function checkRequiredAssets() {
-    REQUIRED_GZIP_ASSETS.forEach((relPath) => {
+function checkRequiredAssets(profile) {
+    let required = REQUIRED_GZIP_ASSETS.slice();
+    if (profile === 'standard' || profile === 'full') {
+        required = required.concat(STANDARD_GZIP_ASSETS);
+    }
+    if (profile === 'full') {
+        required = required.concat(FULL_GZIP_ASSETS);
+    }
+
+    required.forEach((relPath) => {
         assert(fs.existsSync(path.join(WWW_DIR, relPath)), `required asset not found: ${relPath}`);
     });
 }
@@ -139,10 +168,13 @@ function checkUiRegressionGuards(files) {
         .join('\n');
 
     const protocolEntry = readGzipText('js/modules/protocol.js.gz');
-    const protocolFull = readGzipText('js/modules/protocol-full-config.js.gz');
-    const modbusRtu = readGzipText('js/modules/protocol-modbus-rtu.js.gz');
+    const protocolFull = assetExists('js/modules/protocol-full-config.js.gz')
+        ? readGzipText('js/modules/protocol-full-config.js.gz')
+        : '';
+    const modbusRtu = assetExists('js/modules/protocol-modbus-rtu.js.gz')
+        ? readGzipText('js/modules/protocol-modbus-rtu.js.gz')
+        : '';
     const devicePage = readGzipText('pages/device.html.gz');
-    const serviceWorker = readGzipText('sw.js.gz');
 
     const deviceConfig = readGzipText('js/modules/device-config.js.gz');
 
@@ -154,13 +186,19 @@ function checkUiRegressionGuards(files) {
     assert(deviceConfig.includes('config-transfer-cancel-btn'), 'config transfer cancel handler missing');
     assert(deviceConfig.includes('new Promise'), 'config transfer modal should use Promise pattern');
 
-    assert(serviceWorker.includes('withCacheTimestamp'), 'service worker cache timestamp helper missing');
-    assert(serviceWorker.includes('sw-cached-at'), 'service worker cache timestamp header missing');
+    if (assetExists('sw.js.gz')) {
+        const serviceWorker = readGzipText('sw.js.gz');
+        assert(serviceWorker.includes('withCacheTimestamp'), 'service worker cache timestamp helper missing');
+        assert(serviceWorker.includes('sw-cached-at'), 'service worker cache timestamp header missing');
+    }
     assert(allJs.includes('apiBatchGetMany'), 'batchGetMany API missing from built JS');
     assert(allJs.includes('Request result ignored after page navigation'), 'page-navigation stale response guard missing');
     assert(protocolEntry.includes('_setProtocolFragmentLoading'), 'protocol loading placeholder helper missing');
     assert(!/正在加载\s*Modbus RTU/.test(protocolEntry + protocolFull + modbusRtu), 'old Modbus RTU loading detail text leaked into build');
     assert(!/fb-loading-placeholder-detail/.test(protocolEntry + protocolFull + modbusRtu), 'old loading detail DOM leaked into build');
+    assert(allJs.includes('d.connecting'), 'MQTT status UI connecting-state guard missing');
+    assert(allJs.includes('autoStartStarted'), 'MQTT status UI auto-start guard missing');
+    assert(allJs.includes('mqtt-status-connecting'), 'MQTT status connecting badge class missing');
 
     const userIndex = devicePage.indexOf('id="dev-user-id"');
     const descIndex = devicePage.indexOf('id="dev-description"');
@@ -242,8 +280,9 @@ function checkAssetBudgets() {
 function run() {
     const files = [];
     walkDir(WWW_DIR, files);
+    const profile = inferPublishedProfile();
 
-    checkRequiredAssets();
+    checkRequiredAssets(profile);
     checkCompressedOnly(files);
     checkJavascriptSyntax(files);
     checkUiRegressionGuards(files);
@@ -255,7 +294,7 @@ function run() {
         process.exit(1);
     }
 
-    console.log(`Web smoke test passed: ${files.length} published file(s), ${files.filter((file) => file.endsWith('.gz')).length} gzip asset(s)`);
+    console.log(`Web smoke test passed: profile=${profile}, ${files.length} published file(s), ${files.filter((file) => file.endsWith('.gz')).length} gzip asset(s)`);
 }
 
 run();

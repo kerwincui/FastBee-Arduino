@@ -16,6 +16,7 @@
 
 #include <unity.h>
 #include <Arduino.h>
+#include "utils/HeapFragmentation.h"
 #include "mocks/MockHealthMonitor.h"
 #include "helpers/TestConfig.h"
 #include "helpers/TestAssertions.h"
@@ -85,6 +86,20 @@ void test_memory_guard_level_boundaries() {
 }
 
 // ========== 降级恢复循环 ==========
+
+void test_heap_fragmentation_percent_bounds() {
+    TestLog::testStart("Memory Guard: Fragmentation Percent Bounds");
+
+    TEST_ASSERT_EQUAL_UINT8(0, calculateHeapFragmentationPercent(0, 0));
+    TEST_ASSERT_EQUAL_UINT8(0, calculateHeapFragmentationPercent(16 * 1024, 16 * 1024));
+    TEST_ASSERT_EQUAL_UINT8(0, calculateHeapFragmentationPercent(16 * 1024, 8 * 1024 * 1024));
+    TEST_ASSERT_EQUAL_UINT8(50, calculateHeapFragmentationPercent(16 * 1024, 8 * 1024));
+    TEST_ASSERT_EQUAL_UINT8(75, calculateHeapFragmentationPercent(16 * 1024, 4 * 1024));
+    TEST_ASSERT_EQUAL_UINT8(100, calculateHeapFragmentationPercent(16 * 1024, 0));
+
+    TestLog::step("Fragmentation is clamped to 0-100 even when PSRAM is the largest block");
+    TestLog::testEnd(true);
+}
 
 void test_degradation_recovery_cycle() {
     TestLog::testStart("Health: Degradation → Recovery Cycle");
@@ -364,6 +379,7 @@ void test_health_monitor_group() {
 
     // 内存保护等级
     RUN_TEST(test_memory_guard_level_boundaries);
+    RUN_TEST(test_heap_fragmentation_percent_bounds);
     RUN_TEST(test_degradation_recovery_cycle);
 
     // 健康报告

@@ -7,6 +7,7 @@
 #include "./network/NetworkManager.h"
 #include "./protocols/ProtocolManager.h"
 #include "./protocols/MQTTClient.h"
+#include "./systems/ConfigStorage.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <PubSubClient.h>
@@ -145,6 +146,58 @@ static double jsonVariantToDouble(JsonVariantConst v) {
     if (v.is<unsigned int>()) return static_cast<double>(v.as<unsigned int>());
     String s = jsonVariantToString(v);
     return s.isEmpty() ? 0.0 : s.toDouble();
+}
+
+static bool loadMqttStatusConfig(bool& enabled, String& server, int& port, String& clientId) {
+    enabled = false;
+    server = "";
+    port = 0;
+    clientId = "";
+
+    JsonDocument doc;
+    if (!ConfigStorage::getInstance().loadProtocolSection("mqtt", doc)) {
+        return false;
+    }
+
+    JsonVariant mqtt = doc["mqtt"];
+    if (!mqtt.is<JsonObject>()) {
+        return false;
+    }
+
+    enabled = mqtt["enabled"] | true;
+    server = jsonVariantToString(mqtt["server"]);
+    port = mqtt["port"] | 1883;
+    clientId = jsonVariantToString(mqtt["clientId"]);
+    return true;
+}
+
+static bool mqttHasValidRuntimeConfig(MQTTClient* mqtt) {
+    if (!mqtt) return false;
+    MQTTConfig cfg = mqtt->getConfig();
+    return (cfg.server != nullptr && cfg.server[0] != '\0' && cfg.port > 0);
+}
+
+static bool tryAutoStartMqttForStatus(ProtocolManager* pm,
+                                      MQTTClient* mqtt,
+                                      bool configLoaded,
+                                      bool configEnabled,
+                                      bool& attempted,
+                                      bool& started) {
+    attempted = false;
+    started = false;
+    if (!pm || !configLoaded || !configEnabled) return false;
+    if (mqttHasValidRuntimeConfig(mqtt)) return false;
+
+    static unsigned long lastAttemptMs = 0;
+    unsigned long now = millis();
+    if (lastAttemptMs != 0 && (now - lastAttemptMs) < 10000UL) {
+        return false;
+    }
+
+    lastAttemptMs = now;
+    attempted = true;
+    started = pm->restartMQTTDeferred();
+    return true;
 }
 
 static String buildEncryptedPasswordForMqttTest(const String& password,
@@ -502,17 +555,44 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
         internetAvailable = netInfo.internetAvailable;
     }
 
+    bool mqttConfigEnabled = false;
+    String configuredServer;
+    int configuredPort = 0;
+    String configuredClientId;
+    bool mqttConfigLoaded = loadMqttStatusConfig(
+        mqttConfigEnabled,
+        configuredServer,
+        configuredPort,
+        configuredClientId
+    );
+
     MQTTClient* mqtt = pm->getMQTTClient();
+    bool autoStartAttempted = false;
+    bool autoStartStarted = false;
+    tryAutoStartMqttForStatus(
+        pm,
+        mqtt,
+        mqttConfigLoaded,
+        mqttConfigEnabled,
+        autoStartAttempted,
+        autoStartStarted
+    );
+    if (autoStartStarted) {
+        mqtt = pm->getMQTTClient();
+    }
     
     JsonDocument doc;
     doc["success"] = true;
     JsonObject data = doc["data"].to<JsonObject>();
+    data["enabled"] = mqttConfigLoaded ? mqttConfigEnabled : false;
+    data["autoStartAttempted"] = autoStartAttempted;
+    data["autoStartStarted"] = autoStartStarted;
 
     if (mqtt) {
         // 防御性检查：确保 MQTT 对象已完全初始化
         // 通过检查 server 和 port 是否有效来判断配置是否已加载
         MQTTConfig cfg = mqtt->getConfig();
-        bool hasValidConfig = (cfg.server != nullptr && cfg.server[0] != '\0' && cfg.port > 0);
+        bool hasValidConfig = mqttHasValidRuntimeConfig(mqtt);
         
         if (hasValidConfig) {
             data["initialized"] = true;
@@ -520,6 +600,8 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
             // MQTT连接状态：返回实际连接状态，internetAvailable 作为参考信息
             bool mqttConnected = mqtt->getIsConnected() && !mqtt->isStopped();
             data["connected"] = mqttConnected;
+            data["connecting"] = !mqttConnected && cfg.autoReconnect && !mqtt->isStopped();
+            data["stopped"] = mqtt->isStopped();
             data["internetAvailable"] = internetAvailable;
             data["server"] = cfg.server;
             data["port"] = cfg.port;
@@ -533,13 +615,21 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
             // MQTT 对象存在但配置未加载
             data["initialized"] = false;
             data["connected"] = false;
+            data["connecting"] = mqttConfigEnabled && autoStartAttempted;
             data["internetAvailable"] = internetAvailable;
+            if (!configuredServer.isEmpty()) data["server"] = configuredServer;
+            if (configuredPort > 0) data["port"] = configuredPort;
+            if (!configuredClientId.isEmpty()) data["clientId"] = configuredClientId;
             data["error"] = "MQTT config not loaded";
         }
     } else {
         data["initialized"] = false;
         data["connected"] = false;
+        data["connecting"] = mqttConfigEnabled && autoStartAttempted;
         data["internetAvailable"] = internetAvailable;
+        if (!configuredServer.isEmpty()) data["server"] = configuredServer;
+        if (configuredPort > 0) data["port"] = configuredPort;
+        if (!configuredClientId.isEmpty()) data["clientId"] = configuredClientId;
     }
 
     HandlerUtils::sendJsonStream(request, doc);

@@ -20,6 +20,7 @@
 #include "protocols/MQTTClient.h"
 #endif
 #include "systems/LoggerSystem.h"
+#include "utils/HeapFragmentation.h"
 #include "core/PeripheralManager.h"
 #include <esp_heap_caps.h>
 #include <WiFi.h>
@@ -184,9 +185,7 @@ void PeriphExecScheduler::checkTimers() {
 
     const uint32_t freeHeap = ESP.getFreeHeap();
     const uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
-    const uint8_t fragmentation = (freeHeap > 0)
-        ? static_cast<uint8_t>(100U - (largestBlock * 100U / freeHeap))
-        : 0U;
+    const uint8_t fragmentation = calculateHeapFragmentationPercent(freeHeap, largestBlock);
 
     if (shouldSuspendBackgroundPolling(currentLevel, freeHeap, largestBlock, fragmentation)) {
         if (!_webReserveSuspended) {

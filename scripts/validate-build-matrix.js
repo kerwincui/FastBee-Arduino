@@ -9,7 +9,15 @@ const TEST_ALL_PATH = path.join(ROOT_DIR, 'scripts', 'test-all.ps1');
 const BUILD_ALL_PATH = path.join(ROOT_DIR, 'scripts', 'build-all-artifacts.ps1');
 const COLLECT_ARTIFACTS_PATH = path.join(ROOT_DIR, 'scripts', 'collect-artifacts.ps1');
 const FASTBEE_ARTIFACTS_PATH = path.join(ROOT_DIR, 'scripts', 'fastbee-artifacts.py');
+const README_PATHS = [
+    path.join(ROOT_DIR, 'README.md'),
+    path.join(ROOT_DIR, 'README.en.md'),
+    path.join(ROOT_DIR, 'scripts', 'README.md'),
+    path.join(ROOT_DIR, 'docs', 'README.md')
+];
 const PROFILES = new Set(['lite', 'standard', 'full']);
+const TEST_ALL_CHECKS = new Set(['doctor', 'static', 'native', 'build', 'artifacts', 'device-smoke', 'device-soak', 'all']);
+const LEGACY_ENV_NAMES = ['esp32-full', 'esp32s3-full'];
 
 const CRITICAL_ENV_EXPECTATIONS = {
     'esp32c3-F4R0': {
@@ -29,7 +37,7 @@ const CRITICAL_ENV_EXPECTATIONS = {
     'esp32-F4R0': {
         profile: 'standard',
         board: 'esp32dev',
-        buildFlags: ['${esp32_runtime_flags.build_flags}', '${standard_flags.build_flags}'],
+        buildFlags: ['${esp32_runtime_flags.build_flags}', '${standard_flags.build_flags}', '-DFASTBEE_ENABLE_OTA=0', '-DFASTBEE_ENABLE_OTA_FS=0'],
         forbiddenBuildFlags: ['${slim_flags.build_flags}', '${full_flags.build_flags}'],
         libIgnore: ['NimBLE-Arduino']
     }
@@ -59,7 +67,6 @@ const FLAG_SECTION_REQUIREMENTS = {
         '-DFASTBEE_ENABLE_MODBUS=1',
         '-DFASTBEE_ENABLE_COMMAND_SCRIPT=1',
         '-DFASTBEE_ENABLE_RULE_SCRIPT=0',
-        '-DFASTBEE_ENABLE_OTA=0',
         '-DFASTBEE_ENABLE_USER_ADMIN=0',
         '-DFASTBEE_ENABLE_FILE_MANAGER=0'
     ],
@@ -305,6 +312,51 @@ function validateFlagSectionRequirements(platformioText, issues) {
     });
 }
 
+function resolveIniBuildFlags(platformioText, sectionName, stack = []) {
+    if (stack.includes(sectionName)) {
+        return [];
+    }
+
+    const rawFlags = extractIniList(platformioText, sectionName, 'build_flags');
+    const resolved = [];
+    rawFlags.forEach((flag) => {
+        const ref = flag.match(/^\$\{([^}.]+)\.build_flags\}$/);
+        if (ref) {
+            resolved.push(...resolveIniBuildFlags(platformioText, ref[1], stack.concat(sectionName)));
+            return;
+        }
+        resolved.push(flag);
+    });
+    return resolved;
+}
+
+function validateNoConflictingMacroDefines(platformioText, allPlatformioEnvs, issues) {
+    allPlatformioEnvs.forEach((envName) => {
+        if (envName === 'native') return;
+        const sectionName = `env:${envName}`;
+        const flags = resolveIniBuildFlags(platformioText, sectionName);
+        const defines = new Map();
+
+        flags.forEach((flag) => {
+            const match = flag.match(/^-D([^=\s]+)(?:=(.*))?$/);
+            if (!match) return;
+            const name = match[1];
+            const value = match[2] === undefined ? '' : match[2];
+            if (!defines.has(name)) {
+                defines.set(name, []);
+            }
+            defines.get(name).push(value);
+        });
+
+        defines.forEach((values, name) => {
+            const uniqueValues = sortedUnique(values);
+            if (uniqueValues.length > 1) {
+                issues.push(`${rel(PLATFORMIO_PATH)} [${sectionName}] build_flags: conflicting macro ${name} (${values.join(', ')})`);
+            }
+        });
+    });
+}
+
 function validateOutputNames(outputNameByEnv, collectEnvMap, firmwareEnvs, issues) {
     const names = [];
     firmwareEnvs.forEach((envName) => {
@@ -327,6 +379,111 @@ function validateOutputNames(outputNameByEnv, collectEnvMap, firmwareEnvs, issue
 
     findDuplicates(names).forEach((value) => {
         issues.push(`build-all-artifacts.ps1 OutputNameByEnv: duplicate release file name '${value}'`);
+    });
+}
+
+function lineNumberAt(text, index) {
+    return text.slice(0, index).split(/\r?\n/).length;
+}
+
+function extractReadmeScriptReferences(text) {
+    const refs = [];
+    const regex = /scripts[\\/][A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*\.(?:ps1|js|py|json)/g;
+    let match = regex.exec(text);
+    while (match) {
+        refs.push({ value: match[0], index: match.index });
+        match = regex.exec(text);
+    }
+    return refs;
+}
+
+function extractReadmeOptionValues(line, optionName) {
+    const pattern = escapeRegex(optionName) + '\\s+([^|`\\r\\n]+)';
+    const match = new RegExp(pattern).exec(line);
+    if (!match) return [];
+
+    const values = [];
+    const tokens = match[1].trim().split(/\s+/).filter(Boolean);
+    for (let i = 0; i < tokens.length; i += 1) {
+        const token = tokens[i].replace(/[`"'.,]+$/, '');
+        if (!token || token.startsWith('-')) break;
+        values.push(...token.split(',').map((item) => item.trim()).filter(Boolean));
+    }
+    return values;
+}
+
+function validateReadmeScriptExamples(firmwareEnvs, allPlatformioEnvs, outputNameByEnv, issues) {
+    const firmwareEnvSet = new Set(firmwareEnvs);
+    const platformioEnvSet = new Set(allPlatformioEnvs);
+    const releaseFiles = new Set(Array.from(outputNameByEnv.values()).filter(Boolean));
+
+    README_PATHS.forEach((readmePath) => {
+        if (!fs.existsSync(readmePath)) {
+            issues.push(`${rel(readmePath)}: missing README file`);
+            return;
+        }
+
+        const text = readText(readmePath);
+        const label = rel(readmePath);
+
+        LEGACY_ENV_NAMES.forEach((envName) => {
+            const index = text.indexOf(envName);
+            if (index >= 0) {
+                issues.push(`${label}:${lineNumberAt(text, index)}: legacy environment '${envName}' is not accepted by deploy scripts`);
+            }
+        });
+
+        extractReadmeScriptReferences(text).forEach((refInfo) => {
+            const normalizedRef = refInfo.value.replace(/\\/g, path.sep).replace(/\//g, path.sep);
+            const fullPath = path.join(ROOT_DIR, normalizedRef);
+            if (!fs.existsSync(fullPath)) {
+                issues.push(`${label}:${lineNumberAt(text, refInfo.index)}: referenced script does not exist: ${refInfo.value}`);
+            }
+        });
+
+        const envRegex = /(?:^|[\s`])-(Env)\s+([A-Za-z0-9-]+)/g;
+        let envMatch = envRegex.exec(text);
+        while (envMatch) {
+            const envName = envMatch[2];
+            if (!firmwareEnvSet.has(envName)) {
+                issues.push(`${label}:${lineNumberAt(text, envMatch.index)}: -Env references unknown firmware environment '${envName}'`);
+            }
+            envMatch = envRegex.exec(text);
+        }
+
+        const pioEnvRegex = /(?:^|[\s`])-e\s+([A-Za-z0-9-]+)/g;
+        let pioEnvMatch = pioEnvRegex.exec(text);
+        while (pioEnvMatch) {
+            const envName = pioEnvMatch[1];
+            if (!platformioEnvSet.has(envName)) {
+                issues.push(`${label}:${lineNumberAt(text, pioEnvMatch.index)}: -e references unknown PlatformIO environment '${envName}'`);
+            }
+            pioEnvMatch = pioEnvRegex.exec(text);
+        }
+
+        const releaseRegex = /fastbee-[a-z0-9]+-F\d+R\d+\.bin/g;
+        let releaseMatch = releaseRegex.exec(text);
+        while (releaseMatch) {
+            const fileName = releaseMatch[0];
+            if (!releaseFiles.has(fileName)) {
+                issues.push(`${label}:${lineNumberAt(text, releaseMatch.index)}: release image '${fileName}' is not produced by build-all-artifacts.ps1`);
+            }
+            releaseMatch = releaseRegex.exec(text);
+        }
+
+        text.split(/\r?\n/).forEach((line, index) => {
+            if (!line.includes('-Checks')) return;
+            const usesFile = /powershell\b.*-File\b.*scripts[\\/]test-all\.ps1/i.test(line);
+            const checkValues = extractReadmeOptionValues(line, '-Checks');
+            if (usesFile && checkValues.length > 1) {
+                issues.push(`${label}:${index + 1}: use powershell -Command for multiple -Checks values`);
+            }
+            checkValues.forEach((checkName) => {
+                if (!TEST_ALL_CHECKS.has(checkName)) {
+                    issues.push(`${label}:${index + 1}: -Checks references unknown test step '${checkName}'`);
+                }
+            });
+        });
     });
 }
 
@@ -395,6 +552,8 @@ function main() {
     validateOutputNames(outputNameByEnv, collectEnvMap, firmwareEnvs, issues);
     validateCriticalEnvProfiles(platformioText, profileByEnv, fastbeeProfileByEnv, issues);
     validateFlagSectionRequirements(platformioText, issues);
+    validateNoConflictingMacroDefines(platformioText, allPlatformioEnvs, issues);
+    validateReadmeScriptExamples(firmwareEnvs, allPlatformioEnvs, outputNameByEnv, issues);
 
     if (issues.length > 0) {
         console.error('FastBee build matrix validation failed:');

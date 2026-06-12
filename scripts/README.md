@@ -7,10 +7,10 @@
 | 脚本 | 用途 | 常用命令 |
 |------|------|----------|
 | `doctor.ps1` | 检查 PlatformIO、Node、Git、串口和 native 工具链，部署或测试前优先运行 | `powershell -ExecutionPolicy Bypass -File scripts\doctor.ps1 -Port COM6` |
-| `test-all.ps1` | 统一测试矩阵入口，串起静态检查、native 测试、全版本编译、产物构建、设备冒烟和稳定性测试 | `powershell -ExecutionPolicy Bypass -File scripts\test-all.ps1 -Checks static build` |
-| `deploy.ps1` | 构建并烧录指定 PlatformIO 环境的固件和 LittleFS 文件系统 | `powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-full -Port COM6` |
+| `test-all.ps1` | 统一测试矩阵入口，串起静态检查、native 测试、全版本编译、产物构建、设备冒烟和稳定性测试 | `powershell -ExecutionPolicy Bypass -Command ".\scripts\test-all.ps1 -Checks static,build"` |
+| `deploy.ps1` | 构建并烧录指定 PlatformIO 环境的固件和 LittleFS 文件系统 | `powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F16R8 -Port COM6` |
 | `build-all-artifacts.ps1` | 为所有版本生成发布固件包和 `manifest.json` | `powershell -ExecutionPolicy Bypass -File scripts\build-all-artifacts.ps1 -CleanOutput` |
-| `flash-release.ps1` | 直接烧录 `dist\firmware\all-latest` 中的合并发布镜像，适合量产和现场恢复 | `powershell -ExecutionPolicy Bypass -File scripts\flash-release.ps1 -Env esp32s3-full -Port COM6` |
+| `flash-release.ps1` | 直接烧录 `dist\firmware\all-latest` 中的合并发布镜像，适合量产和现场恢复 | `powershell -ExecutionPolicy Bypass -File scripts\flash-release.ps1 -Env esp32s3-F16R8 -Port COM6` |
 | `smoke-test-device.ps1` | 对已上线设备执行一轮 API 冒烟测试 | `powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl http://192.168.5.116 -Profile full` |
 | `soak-test-device.ps1` | 对已上线设备循环执行 API 稳定性测试并输出 CSV | `powershell -ExecutionPolicy Bypass -File scripts\soak-test-device.ps1 -BaseUrl http://192.168.5.116 -Profile full -Rounds 100` |
 
@@ -66,6 +66,7 @@
 | 脚本 | 说明 |
 |------|------|
 | `check-utf8-text.js` | 检查文本文件 UTF-8、BOM 和替换字符 |
+| `validate-mqtt-ntp-lifecycle.js` | 校验启动 NTP 同步事件和 MQTT 启用后的自动连接状态链路 |
 | `kill-stale-processes.py` | 清理本地调试残留进程 |
 | `serial-diagnostics.py` | 串口日志抓取和可选硬复位诊断，替代旧的串口嗅探脚本 |
 

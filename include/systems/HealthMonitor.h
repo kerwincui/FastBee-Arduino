@@ -5,6 +5,7 @@
 #include <ArduinoJson.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include "utils/HeapFragmentation.h"
 #include "core/interfaces/ILoggerSystem.h"  // LogLevel 枚举
 
 // 内存保护等级（ESP32 D0WD-V3 no-PSRAM 实测：WiFi+WebServer+外设常态吃掉 ~210KB，

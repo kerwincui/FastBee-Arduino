@@ -12,6 +12,7 @@
  */
 
 #include "systems/RestartDiagnostics.h"
+#include "utils/HeapFragmentation.h"
 #include <esp_system.h>
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
@@ -46,9 +47,9 @@ void RestartDiagnostics::collectCurrentState(PreRestartSnapshot& snap) {
     snap.freeHeap = ESP.getFreeHeap();
     snap.minFreeHeap = heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
     snap.largestFreeBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
-    snap.heapFragmentation = (snap.freeHeap > 0)
-        ? static_cast<uint8_t>(100U - (snap.largestFreeBlock * 100U / snap.freeHeap))
-        : 0;
+    snap.heapFragmentation = calculateHeapFragmentationPercent(
+        snap.freeHeap,
+        snap.largestFreeBlock);
     
     // 任务栈水位
     TaskHandle_t loopTask = xTaskGetHandle("loopTask");

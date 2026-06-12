@@ -996,7 +996,7 @@
             var host = document.getElementById('periph-exec-results-list');
             if (!host) return Promise.resolve();
             var getter = (options && options.noCache && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
-            return getter('/api/periph-exec/results', { limit: 8 })
+            return getter('/api/periph-exec/results', { limit: 10 })
                 .then(res => {
                     if (!res || !res.success) {
                         host.innerHTML = '<div class="u-empty-cell u-text-danger">执行结果读取失败</div>';

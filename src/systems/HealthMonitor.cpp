@@ -88,9 +88,9 @@ void HealthMonitor::performHealthCheck() {
     // 碎片率 = 1 - (最大连续块 / 总空闲)
     size_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
     currentHealth.largestFreeBlock = largestBlock;
-    currentHealth.heapFragmentation = (currentHealth.freeHeap > 0)
-        ? static_cast<uint8_t>(100U - (largestBlock * 100U / currentHealth.freeHeap))
-        : 0;
+    currentHealth.heapFragmentation = calculateHeapFragmentationPercent(
+        currentHealth.freeHeap,
+        static_cast<uint32_t>(largestBlock));
 
     // ── 文件系统状态（检测挂载而非特定文件）──────────────────────────────
     // LittleFS 挂载后 totalBytes() > 0 即为正常
@@ -446,8 +446,9 @@ bool HealthMonitor::isMemoryCritical() const {
 }
 
 bool HealthMonitor::isFragmentationHigh() const {
-    if (currentHealth.freeHeap == 0) return false;
-    uint8_t frag = 100 - (currentHealth.largestFreeBlock * 100 / currentHealth.freeHeap);
+    uint8_t frag = calculateHeapFragmentationPercent(
+        currentHealth.freeHeap,
+        currentHealth.largestFreeBlock);
     return frag > FRAG_THRESHOLD_COMPACT;
 }
 

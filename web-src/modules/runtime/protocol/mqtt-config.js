@@ -485,8 +485,10 @@
             const clientEl = document.getElementById('mqtt-status-clientid');
             const reconnEl = document.getElementById('mqtt-status-reconnects');
             if (badge) {
-                if (!d.initialized) { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = '未初始化'; }
-                else if (d.connected) { badge.className = 'mqtt-status-badge mqtt-status-online'; badge.textContent = '已连接'; }
+                const connecting = !!(d.connecting || d.autoStartStarted || (d.enabled && d.autoStartAttempted));
+                if (d.connected) { badge.className = 'mqtt-status-badge mqtt-status-online'; badge.textContent = '已连接'; }
+                else if (connecting) { badge.className = 'mqtt-status-badge mqtt-status-connecting'; badge.textContent = '连接中'; }
+                else if (!d.initialized) { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = '未初始化'; }
                 else { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = '未连接'; }
             }
             if (serverEl) serverEl.textContent = d.server ? (d.server + ':' + d.port) : '--';

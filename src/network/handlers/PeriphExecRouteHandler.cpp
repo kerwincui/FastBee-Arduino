@@ -638,7 +638,7 @@ void PeriphExecRouteHandler::handleRunOnce(AsyncWebServerRequest* request) {
 void PeriphExecRouteHandler::handleGetRecentResults(AsyncWebServerRequest* request) {
     if (!ctx->requirePermission(request, "system.view")) return;
 
-    int limit = 8;
+    int limit = 10;
     if (request->hasParam("limit")) {
         limit = request->getParam("limit")->value().toInt();
         if (limit < 1) limit = 1;

@@ -218,11 +218,12 @@ function transformStaticAssetContent(relPath, content) {
     const normalized = normalizePath(relPath);
     if (normalized === 'pages/modals.html') {
         let next = content;
+        const configTransferMarker = '<!-- 配置导入/导出选择弹窗 -->';
         next = stripSection(next, '<!-- 规则脚本模态窗 -->', '<!-- 兼容旧版：GPIO配置模态窗 -->');
-        next = stripSection(next, '<!-- 添加用户模态窗 -->', '');
+        next = stripSection(next, '<!-- 添加用户模态窗 -->', configTransferMarker);
         if (isLiteWebProfile()) {
             // 精简版移除兼容旧版GPIO配置模态窗（已被新外设配置系统替代）
-            next = stripSection(next, '<!-- 兼容旧版：GPIO配置模态窗 -->', '');
+            next = stripSection(next, '<!-- 兼容旧版：GPIO配置模态窗 -->', configTransferMarker);
         }
         return next;
     }

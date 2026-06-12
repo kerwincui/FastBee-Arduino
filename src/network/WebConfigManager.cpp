@@ -218,9 +218,9 @@ void WebConfigManager::performMaintenance() {
     const uint32_t maintenanceFreeHeap = ESP.getFreeHeap();
     const uint32_t maintenanceLargestBlock =
         heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
-    const uint8_t maintenanceFrag = (maintenanceFreeHeap > 0)
-        ? static_cast<uint8_t>(100U - (maintenanceLargestBlock * 100U / maintenanceFreeHeap))
-        : 0;
+    const uint8_t maintenanceFrag = calculateHeapFragmentationPercent(
+        maintenanceFreeHeap,
+        maintenanceLargestBlock);
 
     const bool severeWebPressure =
         (maintenanceFreeHeap < 16384U) ||
