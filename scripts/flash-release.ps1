@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("esp32", "esp32c3", "esp32s3", "esp32c6", "esp32s3-full")]
-    [string]$Env = "esp32",
+    [ValidateSet("esp32-F4R0", "esp32-F8R4", "esp32c3-F4R0", "esp32c6-F4R0", "esp32s3-F8R0", "esp32s3-F8R4", "esp32s3-F16R8")]
+    [string]$Env = "esp32-F4R0",
 
     [Parameter(Mandatory = $true)]
     [string]$Port,
@@ -19,14 +19,10 @@ Set-Location $ProjectDir
 function Get-ChipName {
     param([string]$Environment)
 
-    switch ($Environment) {
-        "esp32" { return "esp32" }
-        "esp32c3" { return "esp32c3" }
-        "esp32c6" { return "esp32c6" }
-        "esp32s3" { return "esp32s3" }
-        "esp32s3-full" { return "esp32s3" }
-        default { throw "Unsupported environment: $Environment" }
+    if ($Environment -match '^(esp32[a-z0-9]*)-') {
+        return $Matches[1]
     }
+    return "esp32"
 }
 
 function Get-PythonForEsptool {

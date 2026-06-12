@@ -1188,7 +1188,196 @@ ESP32仅GPIO25和GPIO26支持DAC
 
 ---
 
-## 八、相关文档
+## 八、性能调优最佳实践
+
+### 8.1 内存管理策略
+
+系统采用多层内存保护机制确保长期稳定运行：
+
+| 机制 | 阈值 | 行为 |
+|------|------|------|
+| PooledAllocator | 冷启动 8KB 预分配 | 消除 std::map 堆碎片 |
+| WorkerPool 常驻栈 | 2×6144B = 12KB | 运行期零碎片异步执行 |
+| MemGuard 动态降频 | NORMAL→WARN→SEVERE | 检查周期 1s→2s→4s |
+| Web预留保护 | freeHeap<18432 \| largestBlock<6144 | 暂停后台轮询 |
+| 传感器LRU缓存 | 最大 entries + 120s TTL | 避免重复采集 |
+
+**建议**：
+- 活跃定时/轮询任务建议不超过 8 个（告警阈值），绝对上限 12 个
+- 轮询间隔绝对下限 5 秒，推荐 30 秒以上
+- 高负载场景（任务 > 8）轮询间隔会被自动修正为 30 秒
+
+### 8.2 执行规则性能建议
+
+```
+推荐配置组合（ESP32-S3, 320KB SRAM）：
+┌─────────────────────────────────────────────┐
+│ 定时规则数: ≤ 6 个                          │
+│ 轮询间隔:   ≥ 10s（少量任务时可 5s）        │
+│ 动作数/规则: ≤ 4 个                          │
+│ 脚本动作:   ≤ 2 个/规则（内存开销较大）     │
+│ 总规则数:   ≤ 20 个                          │
+│ 配置文件:   ≤ 96KB                          │
+└─────────────────────────────────────────────┘
+```
+
+### 8.3 串口数据源优化
+
+- UART 外设仅在关联了轮询规则时才被轮询（按需注册）
+- 帧完整性通过换行符 `\n` 或空闲超时 500ms 判定
+- 单帧最大 160 字节，超长帧自动截断并分发
+- 串口检查间隔 250ms，仅消耗微量 CPU
+
+---
+
+## 九、故障排查指南
+
+### 9.1 常见问题速查
+
+| 现象 | 可能原因 | 解决方案 |
+|------|----------|----------|
+| 规则不触发 | 规则未启用 / 外设 disabled | 检查 `enabled` 状态 |
+| 定时触发延迟 | MemGuard 降频中 | 查看日志 `MemGuard level changed` |
+| 轮询任务被暂停 | 内存不足触发 Web 预留保护 | 减少活跃任务数或增大轮询间隔 |
+| 执行失败退避 | 连续失败触发 `_failureBackoff` | 检查目标外设硬件连接 |
+| 前端编辑器加载超时 | 网络延迟 / 模块加载失败 | 刷新页面重试，检查 JS 资源加载 |
+| PWM 输出无效 | 引脚不支持 PWM / 频率超限 | 验证引脚 PWM 能力和频率范围 |
+| Modbus 读取超时 | 波特率不匹配 / 设备离线 | 检查串口参数和设备供电 |
+
+### 9.2 日志关键词
+
+调试时关注以下日志标签：
+
+```
+[PeriphExec] Background timer/poll suspended   — 内存保护触发暂停
+[PeriphExec] Background timer/poll resumed     — 内存恢复后继续
+[PeriphExec] MemGuard level changed            — 降频级别变化
+[PeriphExec] Config auto-corrected             — 轮询间隔被自动修正
+[PeriphExec] Worker pool started               — 异步执行池启动成功
+[PeriphExec] Async dispatch failed             — 异步投递失败(队列满)
+[PeripheralMgr] Pin conflict                   — 引脚冲突检测
+```
+
+### 9.3 内存诊断
+
+通过 Web API 获取实时内存状态：
+
+```bash
+# 获取健康状态
+GET /api/system/health
+
+# 响应示例
+{
+  "freeHeap": 65536,
+  "largestBlock": 32768,
+  "fragmentation": 50,
+  "memGuardLevel": "NORMAL"
+}
+```
+
+当 `memGuardLevel` 持续为 `WARN` 或 `SEVERE` 时，建议：
+1. 减少同时启用的规则数量
+2. 增大轮询间隔到 30s 以上
+3. 禁用不必要的外设释放内存
+4. 重启设备清除碎片化
+
+---
+
+## 十、执行规则配置示例
+
+### 10.1 温度超限自动报警
+
+```json
+{
+  "id": "rule_temp_alarm",
+  "name": "温度超限报警",
+  "enabled": true,
+  "triggers": [{
+    "triggerType": 5,
+    "triggerPeriphId": "ds18b20_1",
+    "operator": 3,
+    "compareValue": "40",
+    "intervalSec": 10
+  }],
+  "actions": [{
+    "actionType": 1,
+    "targetPeriphId": "buzzer_1",
+    "actionValue": "1"
+  }]
+}
+```
+
+**说明**：每 10 秒轮询 DS18B20 传感器，当温度 > 40°C 时激活蜂鸣器。
+
+### 10.2 按键双击切换 LED
+
+```json
+{
+  "id": "rule_btn_dblclick",
+  "name": "按键双击切换",
+  "enabled": true,
+  "triggers": [{
+    "triggerType": 4,
+    "triggerPeriphId": "btn_main",
+    "eventId": "evt_double_click"
+  }],
+  "actions": [{
+    "actionType": 4,
+    "targetPeriphId": "led_status",
+    "actionValue": ""
+  }]
+}
+```
+
+**说明**：主按键双击时翻转状态 LED，actionType=4 为 TOGGLE 动作。
+
+### 10.3 定时上报传感器数据
+
+```json
+{
+  "id": "rule_periodic_report",
+  "name": "定时数据上报",
+  "enabled": true,
+  "triggers": [{
+    "triggerType": 3,
+    "intervalSec": 60
+  }],
+  "actions": [{
+    "actionType": 10,
+    "targetPeriphId": "",
+    "actionValue": "report_all"
+  }]
+}
+```
+
+**说明**：每 60 秒触发一次全量数据上报，actionType=10 为脚本执行动作。
+
+### 10.4 MQTT 下发控制 PWM
+
+```json
+{
+  "id": "rule_mqtt_pwm",
+  "name": "MQTT控制PWM",
+  "enabled": true,
+  "triggers": [{
+    "triggerType": 1,
+    "triggerPeriphId": "pwm_fan",
+    "operator": 0
+  }],
+  "actions": [{
+    "actionType": 2,
+    "targetPeriphId": "pwm_fan",
+    "actionValue": "",
+    "useReceivedValue": true
+  }]
+}
+```
+
+**说明**：收到 MQTT 数据命令时，将接收到的值直接写入 PWM 外设（useReceivedValue=true）。
+
+---
+
+## 十一、相关文档
 
 - [外设执行管理](./periph-exec-management.md) - 规则联动配置
 - [传感器完整指南](../peripherals/sensor-guide-complete.md) - 40+种模块详细接线

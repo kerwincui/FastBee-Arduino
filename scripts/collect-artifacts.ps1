@@ -1,4 +1,4 @@
-# Compatibility helper: copy existing factory-with-fs.bin files into all-latest.
+﻿# Compatibility helper: copy existing factory-with-fs.bin files into all-latest.
 # For a full release build, prefer scripts\build-all-artifacts.ps1.
 $ErrorActionPreference = "Stop"
 
@@ -13,13 +13,13 @@ if (Test-Path $OutputDir) {
 }
 
 # Environment -> release file name.
-# Naming: fastbee-{chip}n{flash}r{psram}-{edition}.bin
+# Naming: fastbee-{chip}-F{flash}R{psram}.bin
 $EnvMap = @{
-    "esp32"        = "fastbee-esp32n4r0-std.bin"
-    "esp32c3"      = "fastbee-esp32c3n4r0-lite.bin"
-    "esp32c6"      = "fastbee-esp32c6n8r0-lite.bin"
-    "esp32s3"      = "fastbee-esp32s3n8r0-std.bin"
-    "esp32s3-full" = "fastbee-esp32s3n16r8-full.bin"
+    "esp32-F4R0"     = "fastbee-esp32-F4R0.bin"
+    "esp32c3-F4R0"   = "fastbee-esp32c3-F4R0.bin"
+    "esp32c6-F4R0"   = "fastbee-esp32c6-F4R0.bin"
+    "esp32s3-F8R0"   = "fastbee-esp32s3-F8R0.bin"
+    "esp32s3-F16R8"  = "fastbee-esp32s3-F16R8.bin"
 }
 
 foreach ($EnvName in $EnvMap.Keys) {

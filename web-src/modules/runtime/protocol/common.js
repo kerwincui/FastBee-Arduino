@@ -115,7 +115,7 @@
             if (loading) {
                 if (!button.dataset.fbOriginalText) button.dataset.fbOriginalText = button.textContent || '';
                 button.disabled = true;
-                button.textContent = (i18n.t('loading') || '加载中...');
+                button.textContent = '加载中...';
                 return;
             }
             if (button.dataset.fbOriginalText) {
@@ -131,7 +131,7 @@
                 return;
             }
             if (typeof ModuleLoader === 'undefined' || typeof ModuleLoader.loadModule !== 'function') {
-                Notification.error(i18n.t('fragment-load-error') || '加载失败，请刷新重试');
+                Notification.error('加载失败，请刷新重试');
                 return;
             }
 
@@ -153,7 +153,7 @@
                 self._setProtocolActionLoading(self._modbusControlPendingButton, false);
                 self._modbusControlPendingButton = null;
                 self._modbusControlPendingIndex = -1;
-                Notification.error(i18n.t('fragment-load-error') || '加载失败，请刷新重试');
+                Notification.error('加载失败，请刷新重试');
             }, 20000);
 
             ModuleLoader.loadModule('protocol-modbus-control', function() {
@@ -172,7 +172,7 @@
                 if (typeof self._openCtrlModal === 'function' && targetIndex >= 0) {
                     self._openCtrlModal(targetIndex);
                 } else {
-                    Notification.error(i18n.t('fragment-load-error') || '加载失败，请刷新重试');
+                    Notification.error('加载失败，请刷新重试');
                 }
             });
         },
@@ -216,7 +216,7 @@
             if (!fragInfo) return;
             var container = document.getElementById(fragInfo.container);
             if (!container || container.querySelector('form')) return;
-            var title = (i18n.t('loading') || '加载中...');
+            var title = '加载中...';
             container.innerHTML = '<div class="fb-loading-placeholder protocol-loading-placeholder">' +
                 '<div class="fb-loading-placeholder-title">' + title + '</div>' +
                 '</div>';
@@ -228,7 +228,7 @@
             var container = document.getElementById(fragInfo.container);
             if (!container || container.querySelector('form')) return;
             container.innerHTML = '<div class="message message-error">' +
-                escapeHtml(message || (i18n.t('fragment-load-error') || '加载失败，请刷新重试')) +
+                escapeHtml(message || '加载失败，请刷新重试') +
                 '</div>';
         },
 
@@ -310,14 +310,14 @@
             var label = task.name || task.label || ('Slave ' + (task.slaveAddress || 1));
             var info = (fcNames[task.functionCode] || 'FC03') + ' @' + (task.startAddress || 0) + ' x' + (task.quantity || 10);
             var mappingCount = (task.mappings && task.mappings.length) || 0;
-            if (mappingCount > 0) info += ' [' + mappingCount + (i18n.t('modbus-dev-mappings-suffix') || '映射') + ']';
+            if (mappingCount > 0) info += ' [' + mappingCount + '映射]';
             // 采集任务始终允许打开寄存器映射配置：
             // - JSON 模式：映射用于解析寄存器为物模型属性
             // - 透传模式：映射仍可用于本地缓存展示（device-control/render.js 依赖 mappings）
             var actions = [
-                this._renderProtocolActionButton(i18n.t('modbus-task-edit-btn') || '编辑', 'primary', 'edit-device', index, 'sensor'),
-                this._renderProtocolActionButton(i18n.t('modbus-mapping-btn') || '映射', 'warning', 'open-mapping', index),
-                this._renderProtocolActionButton(i18n.t('modbus-master-delete-task') || '删除', 'danger', 'delete-device', index, 'sensor')
+                this._renderProtocolActionButton('编辑', 'primary', 'edit-device', index, 'sensor'),
+                this._renderProtocolActionButton('映射', 'warning', 'open-mapping', index),
+                this._renderProtocolActionButton('删除', 'danger', 'delete-device', index, 'sensor')
             ];
             return '<tr>' +
                 '<td>' + escapeHtml(label) + '</td>' +
@@ -338,9 +338,9 @@
                 '<td><small>' + escapeHtml(this._getProtocolControlDeviceInfo(device)) + '</small></td>' +
                 '<td>' + this._renderProtocolStatus(device.enabled) + '</td>' +
                 this._renderProtocolActionCell([
-                    this._renderProtocolActionButton(i18n.t('modbus-device-edit-btn') || '编辑', 'primary', 'edit-device', index, 'control'),
-                    this._renderProtocolActionButton(i18n.t('modbus-device-select-btn') || '控制', 'warning', 'open-control-modal', index),
-                    this._renderProtocolActionButton(i18n.t('modbus-master-delete-task') || '删除', 'danger', 'delete-device', index, 'control')
+                    this._renderProtocolActionButton('编辑', 'primary', 'edit-device', index, 'control'),
+                    this._renderProtocolActionButton('控制', 'warning', 'open-control-modal', index),
+                    this._renderProtocolActionButton('删除', 'danger', 'delete-device', index, 'control')
                 ]) +
                 '</tr>';
         },
@@ -357,9 +357,9 @@
                 '<td>' + (protocolLabels[controlProtocol] || 'Coil') + '</td>' +
                 '<td>' + (device.ncMode ? 'ON' : '-') + '</td>' +
                 this._renderProtocolActionCell([
-                    this._renderProtocolActionButton(i18n.t('modbus-device-edit-btn') || '编辑', 'primary', 'open-edit-modal', index),
-                    this._renderProtocolActionButton(i18n.t('modbus-device-select-btn') || '控制', 'warning', 'open-control-modal', index),
-                    this._renderProtocolActionButton(i18n.t('modbus-master-delete-task') || '删除', 'danger', 'remove-device', index)
+                    this._renderProtocolActionButton('编辑', 'primary', 'open-edit-modal', index),
+                    this._renderProtocolActionButton('控制', 'warning', 'open-control-modal', index),
+                    this._renderProtocolActionButton('删除', 'danger', 'remove-device', index)
                 ]) +
                 '</tr>';
         },

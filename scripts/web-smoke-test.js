@@ -144,6 +144,16 @@ function checkUiRegressionGuards(files) {
     const devicePage = readGzipText('pages/device.html.gz');
     const serviceWorker = readGzipText('sw.js.gz');
 
+    const deviceConfig = readGzipText('js/modules/device-config.js.gz');
+
+    // Config transfer multi-select modal logic
+    assert(deviceConfig.includes('_showConfigTransferModal'), 'config transfer modal show method missing');
+    assert(deviceConfig.includes('config-transfer-select-all'), 'config transfer select-all logic missing');
+    assert(deviceConfig.includes('config-transfer-list'), 'config transfer list rendering logic missing');
+    assert(deviceConfig.includes('config-transfer-confirm-btn'), 'config transfer confirm handler missing');
+    assert(deviceConfig.includes('config-transfer-cancel-btn'), 'config transfer cancel handler missing');
+    assert(deviceConfig.includes('new Promise'), 'config transfer modal should use Promise pattern');
+
     assert(serviceWorker.includes('withCacheTimestamp'), 'service worker cache timestamp helper missing');
     assert(serviceWorker.includes('sw-cached-at'), 'service worker cache timestamp header missing');
     assert(allJs.includes('apiBatchGetMany'), 'batchGetMany API missing from built JS');
@@ -158,6 +168,17 @@ function checkUiRegressionGuards(files) {
     assert(descIndex >= 0, 'device basic description field missing');
     assert(userIndex >= 0 && descIndex >= 0 && userIndex < descIndex, 'device basic field order should be user ID before description');
     assert(devicePage.includes('dev-basic-footer-field'), 'device basic footer layout class missing');
+
+    // Config transfer modal structure
+    assert(devicePage.includes('dev-config-import-file'), 'config transfer file input missing');
+    assert(devicePage.includes('dev-config-import-btn'), 'config transfer import button missing');
+    assert(devicePage.includes('dev-config-export-btn'), 'config transfer export button missing');
+    const modalsPage = readGzipText('pages/modals.html.gz');
+    assert(modalsPage.includes('config-transfer-modal'), 'config transfer modal container missing');
+    assert(modalsPage.includes('config-transfer-select-all'), 'config transfer select-all checkbox missing');
+    assert(modalsPage.includes('config-transfer-list'), 'config transfer list container missing');
+    assert(modalsPage.includes('config-transfer-confirm-btn'), 'config transfer confirm button missing');
+    assert(modalsPage.includes('config-transfer-cancel-btn'), 'config transfer cancel button missing');
 }
 
 function checkPaginationRegressionGuards(files) {

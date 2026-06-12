@@ -1,201 +1,150 @@
-// i18n core engine. Translation data is loaded from zh-CN/en language packs.
-var __fastbeeCriticalZh = typeof __fastbeeCriticalZh !== 'undefined' ? __fastbeeCriticalZh : {
-    'login-title': '设备配置管理',
-    'username-label': '用户名',
-    'username-placeholder': '请输入用户名',
-    'password-label': '密码',
-    'password-placeholder': '请输入密码',
-    'remember-label': '记住密码',
-    'login-button': '登录系统',
-    'login-logging-in': '登录中...',
-    'login-logging-in-html': '… 登录中...',
-    'login-success-msg': '登录成功',
-    'login-welcome-title': '欢迎',
-    'login-fail-title': '登录失败',
-    'login-fail-msg': '用户名或密码错误',
-    'login-empty-warning': '请输入用户名和密码'
-};
+// i18n 引擎 - 默认中文，Full版本支持中英文切换
+var i18n = typeof i18n !== 'undefined' ? i18n : (function() {
+    var _translations = {};
+    var _currentLang = 'zh-CN';
+    var _zhLoaded = false;
+    var _enLoaded = false;
+    var _loading = false;
 
-var i18n = typeof i18n !== 'undefined' ? i18n : {
-    currentLang: localStorage.getItem('language') || 'zh-CN',
-    loadedLanguages: ['zh-CN'],
-    loadingLanguages: [],
-    translations: {
-        'zh-CN': Object.assign({}, __fastbeeCriticalZh),
-        en: {}
-    },
+    return {
+        currentLang: _currentLang,
+        _zhLoaded: false,
+        _enLoaded: false,
 
-    t(key) {
-        var translated = this.translations[this.currentLang] && this.translations[this.currentLang][key];
-        if (!translated && this.currentLang !== 'zh-CN') {
-            translated = this.translations['zh-CN'] && this.translations['zh-CN'][key];
-        }
-        if (!translated && typeof console !== 'undefined' && console.warn) {
-            if (window.DEBUG || location.hostname === 'localhost' || location.hostname === '127.0.0.1' || location.hostname === '192.168.4.1') {
-                console.warn('[i18n] Missing key:', key, 'in', this.currentLang || 'unknown');
+        /**
+         * 翻译键值
+         * 中文硬编码在HTML中，仅英文需要翻译替换
+         */
+        t: function(key) {
+            if (!key) return '';
+            var langData = _translations[_currentLang];
+            if (langData && langData[key] !== undefined) {
+                return langData[key];
             }
-        }
-        return translated || key;
-    },
-
-    addTranslations(lang, data) {
-        if (!this.translations[lang]) {
-            this.translations[lang] = {};
-        }
-        Object.assign(this.translations[lang], data || {});
-        if (!this.loadedLanguages.includes(lang)) {
-            this.loadedLanguages.push(lang);
-        }
-        const loadingIndex = this.loadingLanguages.indexOf(lang);
-        if (loadingIndex > -1) {
-            this.loadingLanguages.splice(loadingIndex, 1);
-        }
-    },
-
-    mergeTranslations(lang, data) {
-        this.addTranslations(lang, data);
-    },
-
-    isLanguageLoaded(lang) {
-        return this.loadedLanguages.includes(lang);
-    },
-
-    isLanguageLoading(lang) {
-        return this.loadingLanguages.indexOf(lang) > -1;
-    },
-
-    loadLanguagePack(lang, callback) {
-        if (this.isLanguageLoaded(lang)) {
-            if (callback) callback(true);
-            return;
-        }
-
-        if (this.isLanguageLoading(lang)) {
-            let waitCount = 0;
-            const waitInterval = setInterval(() => {
-                waitCount++;
-                if (this.isLanguageLoaded(lang)) {
-                    clearInterval(waitInterval);
-                    if (callback) callback(true);
-                } else if (waitCount > 50) {
-                    clearInterval(waitInterval);
-                    if (callback) callback(false);
-                }
-            }, 100);
-            return;
-        }
-
-        this.loadingLanguages.push(lang);
-
-        const script = document.createElement('script');
-        const packPath = './js/modules/i18n-' + lang + '.js';
-        script.src = (typeof window.__fastbeeResolveAssetUrl === 'function')
-            ? window.__fastbeeResolveAssetUrl(packPath)
-            : packPath;
-        script.onload = () => {
-            if (callback) callback(true);
-        };
-        script.onerror = () => {
-            const loadingIndex = this.loadingLanguages.indexOf(lang);
-            if (loadingIndex > -1) {
-                this.loadingLanguages.splice(loadingIndex, 1);
+            // 回退到中文
+            var zhData = _translations['zh-CN'];
+            if (zhData && zhData[key] !== undefined) {
+                return zhData[key];
             }
-            console.error('Failed to load language pack: ' + lang);
-            if (callback) callback(false);
-        };
-        document.head.appendChild(script);
-    },
+            return key;
+        },
 
-    setLanguage(lang) {
-        const doSwitch = () => {
-            if (this.translations[lang]) {
-                this.currentLang = lang;
-                localStorage.setItem('language', lang);
-                this.updatePageText();
+        /**
+         * 添加翻译数据
+         */
+        addTranslations: function(lang, data) {
+            if (!lang || !data) return;
+            _translations[lang] = data;
+            if (lang === 'zh-CN') this._zhLoaded = true;
+            if (lang === 'en') this._enLoaded = true;
+        },
 
-                if (typeof Notification !== 'undefined') {
-                    Notification.success(
-                        lang === 'zh-CN' ? '语言已切换为中文' : 'Language switched to English',
-                        lang === 'zh-CN' ? '成功' : 'Success'
-                    );
-                }
+        /**
+         * 合并翻译数据（增量）
+         */
+        mergeTranslations: function(lang, data) {
+            if (!lang || !data) return;
+            if (!_translations[lang]) _translations[lang] = {};
+            var target = _translations[lang];
+            var keys = Object.keys(data);
+            for (var i = 0; i < keys.length; i++) {
+                target[keys[i]] = data[keys[i]];
+            }
+        },
+
+        isLanguageLoaded: function(lang) {
+            if (lang === 'zh-CN') return this._zhLoaded;
+            if (lang === 'en') return this._enLoaded;
+            return !!_translations[lang];
+        },
+
+        isLanguageLoading: function() {
+            return _loading;
+        },
+
+        /**
+         * 按需加载语言包脚本
+         */
+        loadLanguagePack: function(lang, cb) {
+            var self = this;
+            if (self.isLanguageLoaded(lang)) {
+                if (cb) cb(true);
+                return;
+            }
+            _loading = true;
+            var fileMap = { 'zh-CN': 'i18n-zh-CN', 'en': 'i18n-en' };
+            var fileName = fileMap[lang];
+            if (!fileName) {
+                _loading = false;
+                if (cb) cb(false);
+                return;
+            }
+            var script = document.createElement('script');
+            var basePath = './js/modules/' + fileName + '.js';
+            script.src = (typeof window.__fastbeeResolveAssetUrl === 'function')
+                ? window.__fastbeeResolveAssetUrl(basePath)
+                : basePath;
+            script.onload = function() {
+                _loading = false;
+                if (cb) cb(true);
+            };
+            script.onerror = function() {
+                _loading = false;
+                if (cb) cb(false);
+            };
+            document.head.appendChild(script);
+        },
+
+        /**
+         * 切换语言
+         */
+        setLanguage: function(lang, cb) {
+            var self = this;
+            _currentLang = lang || 'zh-CN';
+            self.currentLang = _currentLang;
+            localStorage.setItem('language', _currentLang);
+
+            if (self.isLanguageLoaded(_currentLang)) {
+                self.updatePageText();
+                if (cb) cb(true);
                 return true;
             }
-            return false;
-        };
 
-        if (!this.isLanguageLoaded(lang) && lang !== 'zh-CN') {
-            this.loadLanguagePack(lang, (success) => {
-                if (success) {
-                    doSwitch();
-                    return;
-                }
-                if (typeof Notification !== 'undefined') {
-                    Notification.error(
-                        lang === 'zh-CN' ? '语言包加载失败，已回退到中文' : 'Language pack load failed, fallback to Chinese',
-                        lang === 'zh-CN' ? '错误' : 'Error'
-                    );
-                }
-                this.setLanguage('zh-CN');
+            // 按需加载语言包
+            self.loadLanguagePack(_currentLang, function(ok) {
+                if (ok) self.updatePageText();
+                if (cb) cb(ok);
             });
-            return false;
-        }
+            return true;
+        },
 
-        return doSwitch();
-    },
-
-    updatePageText(root) {
-        const scope = root && root.querySelectorAll ? root : document;
-        const each = (selector, handler) => {
-            if (scope.matches && scope.matches(selector)) handler(scope);
-            scope.querySelectorAll(selector).forEach(handler);
-        };
-
-        each('[data-i18n]', element => {
-            const key = element.getAttribute('data-i18n');
-            const translation = this.t(key);
-            if (translation && translation !== key) {
-                if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
-                    if (element.type === 'button' || element.type === 'submit') {
-                        element.value = translation;
-                    } else {
-                        element.placeholder = translation;
-                    }
-                } else if (element.tagName === 'SELECT') {
-                    return;
-                } else if (element.tagName === 'OPTION') {
-                    element.textContent = translation;
-                    const select = element.parentElement;
-                    if (select && select.tagName === 'SELECT') {
-                        const idx = select.selectedIndex;
-                        select.selectedIndex = idx;
-                    }
-                } else {
-                    element.textContent = translation;
+        /**
+         * 更新页面所有 data-i18n 元素的文本
+         */
+        updatePageText: function(root) {
+            var scope = root || document;
+            var elements = scope.querySelectorAll('[data-i18n]');
+            for (var i = 0; i < elements.length; i++) {
+                var el = elements[i];
+                var key = el.getAttribute('data-i18n');
+                if (!key) continue;
+                var translation = this.t(key);
+                // 仅当翻译不等于 key 时才替换（避免丢失硬编码中文）
+                if (translation !== key) {
+                    el.textContent = translation;
                 }
             }
-        });
-
-        each('[data-i18n-placeholder]', element => {
-            const key = element.getAttribute('data-i18n-placeholder');
-            const translation = this.t(key);
-            if (translation && translation !== key) {
-                element.placeholder = translation;
+            // placeholder 翻译
+            var placeholders = scope.querySelectorAll('[data-i18n-placeholder]');
+            for (var j = 0; j < placeholders.length; j++) {
+                var pel = placeholders[j];
+                var pkey = pel.getAttribute('data-i18n-placeholder');
+                if (!pkey) continue;
+                var ptrans = this.t(pkey);
+                if (ptrans !== pkey) {
+                    pel.placeholder = ptrans;
+                }
             }
-        });
-
-        each('[data-i18n-title]', element => {
-            const key = element.getAttribute('data-i18n-title');
-            const translation = this.t(key);
-            if (translation && translation !== key) {
-                element.title = translation;
-            }
-        });
-
-        document.documentElement.lang = this.currentLang;
-    }
-};
-
-if (typeof i18n !== 'undefined' && i18n.addTranslations) {
-    i18n.addTranslations('zh-CN', __fastbeeCriticalZh);
-}
+        }
+    };
+})();

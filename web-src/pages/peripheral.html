@@ -57,6 +57,11 @@
                 <select id="periph-exec-filter-periph" class="u-select-auto"
                     data-change-action="loadPeriphExecPage">
                     <option value="" data-i18n="periph-exec-filter-all">全部规则</option>
+                    <option value="trigger:1" data-i18n="periph-exec-trigger-timer">定时触发</option>
+                    <option value="trigger:4" data-i18n="periph-exec-trigger-event">事件触发</option>
+                    <option value="trigger:5" data-i18n="periph-exec-trigger-poll">轮询触发</option>
+                    <option value="trigger:0" data-i18n="periph-exec-trigger-platform">平台触发</option>
+                    <option value="trigger:6" data-i18n="periph-exec-trigger-periph-exec">规则联动</option>
                 </select>
                                 <button class="fb-btn fb-btn-refresh" id="periph-exec-refresh-btn"><span data-i18n="refresh-btn">刷新</span></button>
                 <button class="fb-btn fb-btn-primary" id="periph-exec-page-add-btn"

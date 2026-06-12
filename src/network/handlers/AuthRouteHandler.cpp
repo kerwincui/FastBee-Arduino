@@ -3,6 +3,7 @@
 #include "./network/WebHandlerContext.h"
 #include "./security/AuthManager.h"
 #include "./security/UserManager.h"
+#include "./security/RoleManager.h"
 #include "systems/LoggerSystem.h"
 #include <ArduinoJson.h>
 
@@ -110,13 +111,24 @@ void AuthRouteHandler::handleVerifySession(AsyncWebServerRequest* request) {
         responseDoc["sessionValid"] = true;
         responseDoc["timestamp"] = millis();
 
+        String role = "VIEWER";
         if (ctx->userManager) {
-            responseDoc["role"] = ctx->userManager->getUserRole(authResult.username);
-        } else {
-            responseDoc["role"] = "VIEWER";
+            role = ctx->userManager->getUserRole(authResult.username);
         }
+        responseDoc["role"] = role;
         responseDoc["canManageFs"] = ctx->authManager->checkSessionPermission(
             authResult.sessionId, "fs.manage");
+
+        // 返回用户权限列表供前端 UI 控制按钮显示/隐藏
+#if FASTBEE_ENABLE_ROLE_ADMIN
+        if (ctx->roleManager) {
+            std::vector<String> perms = ctx->roleManager->getRolePermissions(role);
+            JsonArray permArr = responseDoc["permissions"].to<JsonArray>();
+            for (const auto& p : perms) {
+                permArr.add(p);
+            }
+        }
+#endif
 
         ctx->sendSuccess(request, responseDoc);
     } else {
@@ -125,10 +137,7 @@ void AuthRouteHandler::handleVerifySession(AsyncWebServerRequest* request) {
 }
 
 void AuthRouteHandler::handleChangePassword(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "user.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "user.edit")) return;
 
     String oldPassword = ctx->getParamValue(request, "oldPassword", "");
     String newPassword = ctx->getParamValue(request, "newPassword", "");

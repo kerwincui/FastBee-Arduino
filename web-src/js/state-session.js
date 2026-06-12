@@ -33,6 +33,7 @@
                     this.currentUser.name = res.data.username || 'Admin';
                     this.currentUser.role = res.data.role || 'VIEWER';
                     this.currentUser.canManageFs = res.data.canManageFs === true;
+                    this.currentUser.permissions = res.data.permissions || [];
                     this._bootDashboardAfterAuth();
                 } else {
                     // 会话无效，尝试使用保存的凭据重新登录
@@ -73,6 +74,7 @@
                             if (sr && sr.success && sr.data) {
                                 this.currentUser.role = sr.data.role || 'VIEWER';
                                 this.currentUser.canManageFs = sr.data.canManageFs === true;
+                                this.currentUser.permissions = sr.data.permissions || [];
                             }
                         }).catch(() => {});
 
@@ -100,7 +102,26 @@
         document.getElementById('login-page').style.display = 'flex';
         document.getElementById('app-container').classList.add('fb-hidden');
 
-        // 预填充已保存的用户名和"记住密码"状态
+        // 初始化登录页语言选择器
+        var loginLangSelect = document.getElementById('login-language-select');
+        if (loginLangSelect && !loginLangSelect._bound) {
+            loginLangSelect._bound = true;
+            var savedLang = localStorage.getItem('language') || 'zh-CN';
+            loginLangSelect.value = savedLang;
+            // 若已保存英文偏好，立即切换登录页语言
+            if (savedLang !== 'zh-CN' && typeof i18n !== 'undefined') {
+                i18n.setLanguage(savedLang);
+            }
+            loginLangSelect.addEventListener('change', function() {
+                var lang = loginLangSelect.value;
+                localStorage.setItem('language', lang);
+                if (typeof i18n !== 'undefined') {
+                    i18n.setLanguage(lang);
+                }
+            });
+        }
+
+        // 预填充已保存的用户名和“记住密码”状态
         const savedUsername = localStorage.getItem('username');
         const savedRemember = localStorage.getItem('remember');
         const usernameInput = document.getElementById('username');
@@ -146,20 +167,6 @@
         setTimeout(function() {
             self._loadModals();
         }, 900);
-
-        setTimeout(function() {
-            if (typeof i18n === 'undefined' || i18n.currentLang !== 'zh-CN' || i18n._zhLoaded) {
-                return;
-            }
-            if (typeof window.__fastbeeLoadZhChunks !== 'function') {
-                return;
-            }
-            window.__fastbeeLoadZhChunks(function() {
-                if (typeof i18n !== 'undefined' && typeof i18n.updatePageText === 'function') {
-                    i18n.updatePageText();
-                }
-            });
-        }, 2400);
     };
 
     /**
@@ -189,23 +196,14 @@
 
     // ============ 登录 ============
 
-    AppState._loginText = function(key) {
-        var translated = (typeof i18n !== 'undefined' && i18n.t) ? i18n.t(key) : '';
-        if (translated && translated !== key) return translated;
-        if (typeof __fastbeeCriticalZh !== 'undefined' && __fastbeeCriticalZh[key]) {
-            return __fastbeeCriticalZh[key];
-        }
-        return translated || key;
-    };
-
     AppState._loginErrorText = function(message) {
         var text = String(message || '');
-        if (!text) return this._loginText('login-fail-msg');
+        if (!text) return '用户名或密码错误';
         var lower = text.toLowerCase();
         if (lower.indexOf('invalid username or password') !== -1 ||
             lower.indexOf('invalid credentials') !== -1 ||
             lower.indexOf('login failed') !== -1) {
-            return this._loginText('login-fail-msg');
+            return '用户名或密码错误';
         }
         if (lower.indexOf('too many') !== -1 && lower.indexOf('attempt') !== -1) {
             return '登录失败次数过多，账号已锁定';
@@ -228,13 +226,13 @@
         const remember = (document.getElementById('remember') || {}).checked;
 
         if (!username || !password) {
-            Notification.warning(this._loginText('login-empty-warning'), this._loginText('login-fail-title'));
+            Notification.warning('请输入用户名和密码', '登录失败');
             return;
         }
 
         const submitBtn = document.querySelector('#login-form button[type="submit"]');
         const originalText = submitBtn ? submitBtn.innerHTML : '';
-        if (submitBtn) { submitBtn.innerHTML = this._loginText('login-logging-in-html'); submitBtn.disabled = true; }
+        if (submitBtn) { submitBtn.innerHTML = '… 登录中...'; submitBtn.disabled = true; }
 
         apiPost('/api/auth/login', { username, password })
             .then(res => {
@@ -262,19 +260,20 @@
                         if (sr && sr.success && sr.data) {
                             this.currentUser.role = sr.data.role || 'VIEWER';
                             this.currentUser.canManageFs = sr.data.canManageFs === true;
+                            this.currentUser.permissions = sr.data.permissions || [];
                         }
                     }).catch(() => {});
 
                     this._bootDashboardAfterAuth();
-                    Notification.success(this._loginText('login-success-msg'), this._loginText('login-welcome-title'));
+                    Notification.success('登录成功', '欢迎');
                 } else {
-                    Notification.error(this._loginErrorText(res && res.error), this._loginText('login-fail-title'));
+                    Notification.error(this._loginErrorText(res && res.error), '登录失败');
                 }
             })
             .catch((err) => {
                 // 登录失败，显示错误信息
                 const errorMsg = this._loginErrorText(err && err.data && err.data.error);
-                Notification.error(errorMsg, this._loginText('login-fail-title'));
+                Notification.error(errorMsg, '登录失败');
             })
             .finally(() => {
                 if (submitBtn) { submitBtn.innerHTML = originalText; submitBtn.disabled = false; }
@@ -303,22 +302,22 @@
         const confirmPwd = (document.getElementById('confirm-password-input') || {}).value || '';
         const showErr = (msg) => {
             this.showInlineError('password-error', msg);
-            Notification.error(msg, i18n.t('change-pwd-fail'));
+            Notification.error(msg, '修改密码失败');
         };
 
-        if (!oldPwd || !newPwd || !confirmPwd) return showErr(i18n.t('validate-all-fields'));
-        if (newPwd !== confirmPwd) return showErr(i18n.t('password-error') || i18n.t('validate-new-pwd-mismatch'));
-        if (newPwd.length < 6) return showErr(i18n.t('validate-new-pwd-len'));
+        if (!oldPwd || !newPwd || !confirmPwd) return showErr('请填写所有字段！');
+        if (newPwd !== confirmPwd) return showErr('新密码与确认密码不一致！');
+        if (newPwd.length < 6) return showErr('新密码长度至少6位！');
 
         this.clearInlineError('password-error');
 
         const btn = document.getElementById('confirm-password-btn');
-        if (btn) { btn.disabled = true; btn.textContent = i18n.t('change-pwd-submitting'); }
+        if (btn) { btn.disabled = true; btn.textContent = '提交中...'; }
 
         apiPost('/api/auth/change-password', { oldPassword: oldPwd, newPassword: newPwd })
             .then(res => {
                 if (res && res.success) {
-                    Notification.success(i18n.t('change-pwd-success-msg'), i18n.t('change-pwd-success-title'));
+                    Notification.success('密码修改成功，请重新登录', '修改成功');
                     this.hideModal('change-password-modal');
                     // 修改密码后后端会踢出所有会话，需重新登录
                     setTimeout(() => {
@@ -326,11 +325,11 @@
                         this._showLoginPage();
                     }, 1500);
                 } else {
-                    showErr((res && res.error) || i18n.t('change-pwd-fail-msg'));
+                    showErr((res && res.error) || '密码修改失败，请检查原密码是否正确');
                 }
             })
             .catch(() => {})
-            .finally(() => { if (btn) { btn.disabled = false; btn.textContent = i18n.t('confirm-change-btn'); } });
+            .finally(() => { if (btn) { btn.disabled = false; btn.textContent = '确认修改'; } });
     };
 
     // ============ 退出登录 ============
@@ -339,7 +338,7 @@
      * 退出登录
      */
     AppState.logout = function() {
-        if (!confirm(i18n.t('logout-confirm') || '确定要退出登录吗？')) return;
+        if (!confirm('确定要退出登录吗？')) return;
 
         this._showLoginPage();
         document.getElementById('login-form') && document.getElementById('login-form').reset();
@@ -353,8 +352,40 @@
                 localStorage.removeItem('password');
                 sessionStorage.removeItem('savedPassword');
                 sessionStorage.removeItem('currentUsername');
-                Notification.success(i18n.t('logout-success'), i18n.t('logout-title'));
+                Notification.success('已成功退出登录', '退出登录');
             });
+    };
+
+    // ============ 权限工具方法 ============
+
+    /**
+     * 检查当前用户是否拥有指定权限
+     * @param {string} permission - 权限标识符，如 'user.admin', 'config.edit'
+     * @returns {boolean}
+     */
+    AppState.hasPermission = function(permission) {
+        if (!permission) return false;
+        var role = this.currentUser.role;
+        // admin 角色拥有所有权限
+        if (role === 'ADMIN') return true;
+        var perms = this.currentUser.permissions;
+        if (!perms || !perms.length) return false;
+        return perms.indexOf(permission) !== -1;
+    };
+
+    /**
+     * 检查当前用户是否拥有任一指定权限
+     * @param {...string} permissions - 权限标识符列表
+     * @returns {boolean}
+     */
+    AppState.hasAnyPermission = function() {
+        if (this.currentUser.role === 'ADMIN') return true;
+        var perms = this.currentUser.permissions;
+        if (!perms || !perms.length) return false;
+        for (var i = 0; i < arguments.length; i++) {
+            if (perms.indexOf(arguments[i]) !== -1) return true;
+        }
+        return false;
     };
 
 })();

@@ -3,7 +3,7 @@
     if (typeof i18n === 'undefined') return;
     var enTranslations = {
         // Login page
-        'login-title': 'Device Management',
+        'login-title': 'FastBee Arduino',
         'username-label': 'Username',
         'password-label': 'Password',
         'username-placeholder': 'Enter username',
@@ -1136,6 +1136,7 @@
         'periph-exec-add-btn': 'Add Rule',
         'periph-exec-page-title': 'Periph Exec Management',
         'periph-exec-filter-all': 'All Rules',
+        'periph-exec-filter-by-periph': 'By Peripheral',
         'periph-exec-no-data': 'No periph exec rules',
         'periph-exec-loading': 'Loading...',
         'periph-exec-col-status': 'Status',
@@ -1690,6 +1691,11 @@
         'segment-brightness-label': 'Brightness (0-7)',
         'segment-brightness-help': '0=darkest, 7=brightest, default 3',
         'segment-pin-hint': 'Pin order: Pin1=CLK, Pin2=DIO',
+                'lcd-params-title': 'Display Parameters',
+                'lcd-width-label': 'Screen Width (px)',
+                'lcd-height-label': 'Screen Height (px)',
+                'lcd-interface-label': 'Interface Type',
+                'lcd-pin-hint-i2c': 'I2C pin order: SDA, SCL. ESP32-C3 example: 5, 6',
         'periph-exec-action-display-value-hint': 'Supports ${periphId.field} template (e.g. ${dht_01.temperature})',
         'periph-exec-action-oled-value-hint': 'Multi-line text. First line with # = centered title. Supports ${periphId.field} and $value templates.',
         'periph-exec-action-oled-value-help': 'Max 6 lines for OLED. # prefix = centered title with separator. ${id.field} for sensor cache, $value for MQTT/rule value.',
@@ -1767,25 +1773,6 @@
         'modbus-motor-ctrl-stop-ok': 'Stop command sent',
         'modbus-motor-ctrl-speed-ok': 'Speed set',
         'modbus-motor-ctrl-pulse-ok': 'Pulses set',
-
-        // Dashboard web runtime
-        'dashboard-web-runtime': 'Web Runtime',
-        'dashboard-web-guard': 'MemGuard',
-        'dashboard-web-sse': 'SSE Status',
-        'dashboard-web-recovery': 'Recovery',
-        'dashboard-web-guard-level': 'Guard Level',
-        'dashboard-web-largest-block': 'Largest Block',
-        'dashboard-web-max-alloc': 'Max Alloc',
-        'dashboard-web-health': 'Health Summary',
-        'dashboard-web-clients': 'Clients',
-        'dashboard-web-rejects': 'Rejects',
-        'dashboard-web-skips': 'Skipped Broadcasts',
-        'dashboard-web-last-reject': 'Last Reject',
-        'dashboard-web-soft-restarts': 'Soft Restarts',
-        'dashboard-web-last-restart': 'Last Soft Restart',
-        'dashboard-web-pressure': 'Pressure',
-        'dashboard-web-events': 'Recent Events',
-        'dashboard-web-none': 'None',
 
         // Modbus device delete confirm
         'modbus-device-delete-confirm': 'Delete this device?'

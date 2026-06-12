@@ -156,6 +156,10 @@
                 this._setValue('mqtt-auth-code', mqtt.authCode || '');
                 this._loadMqttPublishTopics(mqtt.publishTopics || []);
                 this._loadMqttSubscribeTopics(mqtt.subscribeTopics || []);
+                // MQTT 启用时自动开始状态轮询，确保顶部状态指示器反映实际连接状态
+                if (mqtt.enabled) {
+                    this._startMqttStatusPolling({ initialDelayMs: 1500 });
+                }
             }
         },
 
@@ -177,7 +181,7 @@
                 data.modbusRtu_dePin = document.getElementById('rtu-de-pin')?.value || '14';
                 data.modbusRtu_transferType = document.getElementById('rtu-transfer-type')?.value || '0';
                 if (data.modbusRtu_enabled === 'true' && !data.modbusRtu_peripheralId) {
-                    Notification.warning(i18n.t('rtu-no-uart-peripherals'));
+                    Notification.warning('未找到已启用的UART外设，请先在外设管理中配置');
                     return;
                 }
                 data.modbusRtu_master_tasks = JSON.stringify(this._masterTasks || []);
@@ -215,21 +219,21 @@
                         this._protocolConfig = null;
                         if (res.data && typeof res.data.mqttReconnected !== 'undefined') {
                             if (res.data.mqttReconnected && res.data.mqttDeferred) {
-                                Notification.success(i18n.t('mqtt-reconnect-ok'), i18n.t('protocol-config-title'));
+                                Notification.success('MQTT已重新连接', '通信协议');
                             } else if (res.data.mqttReconnected) {
-                                Notification.success(i18n.t('mqtt-reconnect-ok'), i18n.t('protocol-config-title'));
+                                Notification.success('MQTT已重新连接', '通信协议');
                             } else if (res.data.mqttDisconnected) {
-                                Notification.success(i18n.t('mqtt-disconnect-ok'), i18n.t('protocol-config-title'));
+                                Notification.success('MQTT已断开连接', '通信协议');
                             } else if (data.mqtt_enabled === 'true') {
                                 const errCode = res.data.mqttError || '';
                                 const errMsg = errCode ? this._mqttErrorCodeToText(errCode) : '';
                                 Notification.warning(
-                                    i18n.t('mqtt-reconnect-fail') + (errMsg ? ' (' + errMsg + ')' : ''),
-                                    i18n.t('protocol-config-title')
+                                    'MQTT重连失败' + (errMsg ? ' (' + errMsg + ')' : ''),
+                                    '通信协议'
                                 );
                             }
                         }
-                        Notification.success(`${protocolName} ${i18n.t('protocol-save-ok-suffix')}`, i18n.t('protocol-config-title'));
+                        Notification.success(`${protocolName} 配置保存成功！`, '通信协议');
                         // 如果后端自动生成了 clientId，更新输入框显示
                         if (res.data && res.data.mqttClientId) {
                             const clientIdInput = document.getElementById('mqtt-client-id');
@@ -249,29 +253,29 @@
                         if (this.currentPage === 'protocol') {
                             var mqttTab = document.getElementById('mqtt-tab');
                             if (mqttTab && mqttTab.classList.contains('active')) {
-                                this._startMqttStatusPolling();
+                                this._startMqttStatusPolling({ initialDelayMs: 2000 });
                             }
                         }
                     } else {
-                        Notification.error(res?.message || i18n.t('protocol-save-fail'), i18n.t('protocol-title'));
+                        Notification.error(res?.message || '保存失败', '通信协议配置');
                     }
                 })
                 .catch(err => {
                     console.error('saveProtocolConfig error:', err);
                     if (typeof window.apiNotifyError === 'function') {
-                        window.apiNotifyError(err, i18n.t('protocol-save-fail'), i18n.t('protocol-title'));
+                        window.apiNotifyError(err, '保存失败', '通信协议配置');
                         return;
                     }
                     if (err && err.name === 'AbortError') {
-                        Notification.error(i18n.t('protocol-save-timeout') || '保存超时，设备可能正忙，请稍后重试', i18n.t('protocol-title'));
+                        Notification.error('保存超时，设备可能正忙，请稍后重试', '通信协议配置');
                     } else if (err && err._pageAborted) {
                         // 页面切换导致取消，静默忽略
                     } else if (err instanceof TypeError && /fetch/i.test(err.message)) {
-                        Notification.error('设备连接失败，请检查网络后重试', i18n.t('protocol-title'));
+                        Notification.error('设备连接失败，请检查网络后重试', '通信协议配置');
                     } else if (err && err.status === 504) {
-                        Notification.error('设备响应超时(504)，请稍后重试', i18n.t('protocol-title'));
+                        Notification.error('设备响应超时(504)，请稍后重试', '通信协议配置');
                     } else {
-                        Notification.error(i18n.t('protocol-save-fail'), i18n.t('protocol-title'));
+                        Notification.error('保存失败', '通信协议配置');
                     }
                 });
         },
@@ -281,26 +285,26 @@
         _getMasterRiskMeta(level) {
             switch ((level || 'low').toLowerCase()) {
                 case 'high':
-                    return { text: i18n.t('modbus-master-risk-high') || 'HIGH', className: 'modbus-risk-high' };
+                    return { text: '高', className: 'modbus-risk-high' };
                 case 'medium':
-                    return { text: i18n.t('modbus-master-risk-medium') || 'MEDIUM', className: 'modbus-risk-medium' };
+                    return { text: '中', className: 'modbus-risk-medium' };
                 default:
-                    return { text: i18n.t('modbus-master-risk-low') || 'LOW', className: 'modbus-risk-low' };
+                    return { text: '低', className: 'modbus-risk-low' };
             }
         },
 
         _getMasterTaskStatusMeta(status) {
             switch ((status || 'pending').toLowerCase()) {
                 case 'ok':
-                    return { text: i18n.t('modbus-master-task-ok') || 'OK', className: 'is-ok', cardClass: '' };
+                    return { text: 'OK', className: 'is-ok', cardClass: '' };
                 case 'stale':
-                    return { text: i18n.t('modbus-master-task-stale') || 'STALE', className: 'is-stale', cardClass: 'is-stale' };
+                    return { text: '过时', className: 'is-stale', cardClass: 'is-stale' };
                 case 'error':
-                    return { text: i18n.t('modbus-master-task-error') || 'ERROR', className: 'is-error', cardClass: 'is-error' };
+                    return { text: '错误', className: 'is-error', cardClass: 'is-error' };
                 case 'disabled':
-                    return { text: i18n.t('modbus-master-task-disabled') || 'OFF', className: 'is-pending', cardClass: 'is-pending' };
+                    return { text: '禁用', className: 'is-pending', cardClass: 'is-pending' };
                 default:
-                    return { text: i18n.t('modbus-master-task-pending') || 'PENDING', className: 'is-pending', cardClass: 'is-pending' };
+                    return { text: '等待中', className: 'is-pending', cardClass: 'is-pending' };
             }
         },
 

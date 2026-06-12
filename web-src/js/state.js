@@ -10,7 +10,7 @@
 var AppState = typeof AppState !== 'undefined' ? AppState : {
     currentPage: 'dashboard',
     configTab: 'modbus',
-    currentUser: { name: '', role: '', canManageFs: false },
+    currentUser: { name: '', role: '', canManageFs: false, permissions: [] },
     developerModeEnabled: true,
     sidebarCollapsed: false,
     _pageNavSeq: 0,
@@ -94,9 +94,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
     },
 
     getDeveloperModeDisabledText() {
-        return (typeof i18n !== 'undefined' && i18n.t && i18n.t('dev-mode-disabled-tip') !== 'dev-mode-disabled-tip')
-            ? i18n.t('dev-mode-disabled-tip')
-            : '开发环境已禁用，请到设备配置的高级配置中启用后再修改。';
+        return '开发环境已禁用，请到设备配置的高级配置中启用后再修改。';
     },
 
     guardDeveloperModeAction() {
@@ -289,35 +287,39 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
 
     // ============ 语言 ============
     setupLanguage() {
-        // 初始化时立即应用 i18n 到登录页（在登录前就需要正确显示）
-        i18n.updatePageText();
-
-        const loginLangSelect = document.getElementById('login-language-select');
-        if (loginLangSelect) {
-            loginLangSelect.value = i18n.currentLang;
-            loginLangSelect.addEventListener('change', e => {
-                i18n.setLanguage(e.target.value);
-                const mainSelect = document.getElementById('language-select');
-                if (mainSelect) mainSelect.value = e.target.value;
-            });
+        // 非 Full 版本默认中文（不覆盖已有偏好）
+        if (!localStorage.getItem('language')) {
+            localStorage.setItem('language', 'zh-CN');
+        }
+        if (typeof i18n !== 'undefined') {
+            i18n.currentLang = localStorage.getItem('language') || 'zh-CN';
         }
 
-        const langSelect = document.getElementById('language-select');
-        if (langSelect) {
-            langSelect.value = i18n.currentLang;
-            langSelect.addEventListener('change', e => {
-                i18n.setLanguage(e.target.value);
-                if (loginLangSelect) loginLangSelect.value = e.target.value;
-                this._refreshCurrentPageLocalizedContent();
-            });
-        } else {
-            // lite/standard 版本无语言选择器，强制使用中文
-            if (i18n.currentLang !== 'zh-CN') {
-                i18n.currentLang = 'zh-CN';
-                localStorage.setItem('language', 'zh-CN');
-                i18n.updatePageText();
+        // 通过 capabilities API 检测是否支持多语言（Full版本）
+        var self = this;
+        var getter = (typeof apiGetSilentFresh === 'function') ? apiGetSilentFresh
+            : (typeof apiGetFresh === 'function' ? apiGetFresh : (typeof apiGet === 'function' ? apiGet : null));
+        if (!getter) return;
+        getter('/api/system/capabilities').then(function(res) {
+            if (!res || !res.success || !res.data || !res.data.i18n) return;
+            // Full 版本启用语言切换
+            var langSelect = document.getElementById('language-select');
+            if (!langSelect) return;
+            langSelect.classList.remove('fb-hidden');
+            // 恢复用户上次选择的语言
+            var savedLang = localStorage.getItem('language') || 'zh-CN';
+            langSelect.value = savedLang;
+            if (savedLang !== 'zh-CN' && typeof i18n !== 'undefined') {
+                i18n.setLanguage(savedLang);
             }
-        }
+            // 绑定切换事件
+            langSelect.addEventListener('change', function() {
+                var lang = langSelect.value;
+                if (typeof i18n !== 'undefined') {
+                    i18n.setLanguage(lang);
+                }
+            });
+        }).catch(function() { /* 静默失败，保持中文 */ });
     },
 
     _getPageModuleMap() {
@@ -370,7 +372,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
                         content.innerHTML = '';
                         var loadDiv = document.createElement('div');
                         loadDiv.className = 'dc-empty';
-                        loadDiv.textContent = i18n.t('loading');
+                        loadDiv.textContent = '加载中...';
                         content.appendChild(loadDiv);
                         var self = this;
                         setTimeout(function() {
@@ -380,7 +382,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
                                 content.innerHTML = '';
                                 var errDiv = document.createElement('div');
                                 errDiv.className = 'dc-empty u-text-danger';
-                                errDiv.textContent = i18n.t('module-load-fail') || '模块加载失败，请刷新页面重试';
+                                errDiv.textContent = '模块加载失败，请刷新页面重试';
                                 content.appendChild(errDiv);
                             }
                         }, 1000);
@@ -390,13 +392,6 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
                 }
             }
         };
-    },
-
-    _refreshCurrentPageLocalizedContent() {
-        const loader = this._getPageLoaders()[this.currentPage];
-        if (typeof loader === 'function') {
-            loader();
-        }
     },
 
     // ============ 配置选项卡 ============
@@ -507,11 +502,6 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         await this.loadPage(normalizedPage + '-page');
         if (navSeq !== this._pageNavSeq) return;
 
-        // 对新加载的页面应用 i18n 翻译
-        if (typeof i18n !== 'undefined' && i18n.updatePageText) {
-            i18n.updatePageText();
-        }
-
         document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
         const target = document.getElementById(normalizedPage + '-page');
         if (!target) {
@@ -526,7 +516,22 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
 
         const titleKey = `page-title-${normalizedPage}`;
         const titleEl = document.getElementById('page-title');
-        if (titleEl) titleEl.textContent = i18n.t(titleKey);
+        var _pageTitleMap = {
+            'page-title-dashboard': '设备监控仪表盘',
+            'page-title-protocol': '通信协议',
+            'page-title-network': '网络设置',
+            'page-title-device': '设备配置',
+            'page-title-data': '文件管理',
+            'page-title-system': '系统监控',
+            'page-title-users': '用户管理',
+            'page-title-roles': '角色管理',
+            'page-title-logs': '设备日志',
+            'page-title-gpio': 'GPIO配置',
+            'page-title-peripheral': '外设配置',
+            'page-title-periph-exec': '外设执行',
+            'page-title-device-control': '设备大屏'
+        };
+        if (titleEl) titleEl.textContent = _pageTitleMap[titleKey] || normalizedPage;
 
         this.currentPage = normalizedPage;
 

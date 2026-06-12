@@ -129,8 +129,8 @@
             var numVal = parseInt(value, 10) || 0;
             var boolVal = numVal !== 0;
             var isOn = ncMode ? !boolVal : boolVal;
-            var onText = this._t('modbus-ctrl-status-on') || 'ON';
-            var offText = this._t('modbus-ctrl-status-off') || 'OFF';
+            var onText = 'ON';
+            var offText = 'OFF';
 
             // 更新本地状态缓存
             var states = this._dcCoilStates[devIdx] || [];
@@ -225,12 +225,12 @@
                 // 根据标签文本判断是否匹配
                 var labelText = (labelEl.textContent || '').toLowerCase();
                 var paramLabels = {
-                    'pv': this._t('modbus-ctrl-pid-pv-label') || 'pv',
-                    'sv': this._t('modbus-ctrl-pid-sv-label') || 'sv',
-                    'out': this._t('modbus-ctrl-pid-out-label') || 'out',
-                    'p': this._t('modbus-ctrl-pid-p-label') || 'p',
-                    'i': this._t('modbus-ctrl-pid-i-label') || 'i',
-                    'd': this._t('modbus-ctrl-pid-d-label') || 'd'
+                    'pv': '过程值 PV',
+                    'sv': '设定值 SV',
+                    'out': '输出 %',
+                    'p': 'P 比例',
+                    'i': 'I 积分',
+                    'd': 'D 微分'
                 };
 
                 var expectedLabel = (paramLabels[paramName] || paramName).toLowerCase();
@@ -264,17 +264,17 @@
             var badgeClass = 'motor-run-idle';
             var runText = '--';
             if (v === 'forward' || v === '1' || v === '正转') {
-                dirText = '← ' + (this._t('modbus-motor-ctrl-forward') || '正转');
+                dirText = '← 正转';
                 badgeClass = 'motor-run-forward';
-                runText = this._t('modbus-motor-dir-forward') || '正转中';
+                runText = '正转中';
             } else if (v === 'reverse' || v === '-1' || v === '反转') {
-                dirText = '→ ' + (this._t('modbus-motor-ctrl-reverse') || '反转');
+                dirText = '→ 反转';
                 badgeClass = 'motor-run-reverse';
-                runText = this._t('modbus-motor-dir-reverse') || '反转中';
+                runText = '反转中';
             } else if (v === 'stop' || v === '0' || v === '停止') {
-                dirText = this._t('modbus-motor-status-stop') || '停止';
+                dirText = '停止';
                 badgeClass = 'motor-run-stopped';
-                runText = this._t('modbus-motor-status-stop') || '停止';
+                runText = '停止';
             }
             if (elDir) elDir.textContent = dirText;
             if (elRun) {

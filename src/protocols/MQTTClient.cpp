@@ -1042,16 +1042,18 @@ void MQTTClient::_notifyStatusChange() {
     if (!_statusChangeCallback) return;
 
     // 构建轻量级 JSON 状态字符串
-    // 参考 MqttRouteHandler::handleGetMqttStatus 的 JSON 结构
+    // 字段名必须与 MqttRouteHandler::handleGetMqttStatus 保持一致，
+    // 前端 _updateMqttStatusUI 依赖 initialized/connected/reconnectCount 等字段
     JsonDocument doc;
     JsonObject data = doc.to<JsonObject>();
 
+    data["initialized"] = true;  // SSE 推送时 MQTT 客户端已存在且配置已加载
     data["connected"] = isConnected;
     data["stopped"] = stopped;
     data["server"] = config.server;
     data["port"] = config.port;
     data["clientId"] = config.clientId;
-    data["reconnects"] = reconnectCount;
+    data["reconnectCount"] = reconnectCount;
     data["lastError"] = lastErrorCode;
 
     String json;
@@ -1457,10 +1459,11 @@ bool MQTTClient::reconnect() {
 
 void MQTTClient::reconnectTaskEntry(void* param) {
     MQTTClient* client = (MQTTClient*)param;
-    // 启动期延迟 30s 才允许首次重连：让 Web 路由/SSE/HealthMonitor 先稳定，
+    // 启动期延迟 15s 才允许首次重连：让 Web 路由/SSE/HealthMonitor 先稳定，
     // 避免 boot 早期 MQTT DNS+TCP 抢占内存导致 web 无法访问
-    LOG_INFO("[MQTT] Reconnect task armed, holding 90s for web boot stabilization");
-    vTaskDelay(pdMS_TO_TICKS(90000));
+    // 注：doReconnect() 内部有堆内存保护（<49KB 跳过），无需过长延迟
+    LOG_INFO("[MQTT] Reconnect task armed, holding 15s for web boot stabilization");
+    vTaskDelay(pdMS_TO_TICKS(15000));
     LOG_INFO("[MQTT] Reconnect task active");
     while (true) {
         if (client->_reconnectPending && !client->_reconnectRunning) {

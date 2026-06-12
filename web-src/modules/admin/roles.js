@@ -9,9 +9,15 @@
         setupRolesEvents() {
             const closeId = (id) => { this.hideModal(id); };
 
-            // 添加角色按钮
+            // 添加角色按钮（权限检查）
             const addRoleBtn = document.getElementById('add-role-btn');
-            if (addRoleBtn) addRoleBtn.addEventListener('click', () => this.showAddRoleModal());
+            if (addRoleBtn) {
+                if (AppState.hasPermission('role.admin')) {
+                    addRoleBtn.addEventListener('click', () => this.showAddRoleModal());
+                } else {
+                    addRoleBtn.style.display = 'none';
+                }
+            }
 
             // 角色模态窗关闭
             ['close-role-modal', 'cancel-role-btn'].forEach(id => {
@@ -71,7 +77,8 @@
                 // 角色名称 - 翻译内置角色名
                 const tdName = document.createElement('td');
                 const _rnm = {'管理员': 'role-admin', '操作员': 'role-operator', '查看者': 'role-viewer'};
-                const dName = _rnm[role.name] ? i18n.t(_rnm[role.name]) : role.name;
+                const _rnmZh = {'管理员': '管理员', '操作员': '操作员', '查看者': '查看者'};
+                const dName = _rnmZh[role.name] || role.name;
                 tdName.textContent = dName;
                 row.appendChild(tdName);
 
@@ -95,13 +102,13 @@
                 var typeSpan = document.createElement('span');
                 if (role.id === 'admin') {
                     typeSpan.className = 'role-pill role-pill--super';
-                    typeSpan.textContent = i18n.t('role-type-super');
+                    typeSpan.textContent = '超级管理员';
                 } else if (role.isBuiltin) {
                     typeSpan.className = 'role-pill role-pill--builtin';
-                    typeSpan.textContent = i18n.t('role-type-builtin');
+                    typeSpan.textContent = '内置角色';
                 } else {
                     typeSpan.className = 'role-pill role-pill--custom';
-                    typeSpan.textContent = i18n.t('role-type-custom');
+                    typeSpan.textContent = '自定义';
                 }
                 tdType.appendChild(typeSpan);
                 row.appendChild(tdType);
@@ -110,10 +117,12 @@
                 const tdAction = document.createElement('td');
                 tdAction.className = 'u-toolbar-sm';
 
+                const canManageRoles = AppState.hasPermission('role.admin');
+
                 // 查看权限按钮
                 const viewBtn = document.createElement('button');
                 viewBtn.className = 'fb-btn fb-btn-sm fb-btn-secondary';
-                viewBtn.textContent = i18n.t('role-view-perms');
+                viewBtn.textContent = '查看权限';
                 viewBtn.addEventListener('click', () => this.showRolePermissions(role));
                 tdAction.appendChild(viewBtn);
 
@@ -122,19 +131,28 @@
                     // 编辑按钮
                     const editBtn = document.createElement('button');
                     editBtn.className = 'fb-btn fb-btn-sm fb-btn-primary fb-btn-action-edit fb-mr-1';
-                    editBtn.textContent = i18n.t('role-edit');
-                    editBtn.addEventListener('click', () => this.showEditRoleModal(role.id));
+                    editBtn.textContent = '编辑';
+                    if (canManageRoles) {
+                        editBtn.addEventListener('click', () => this.showEditRoleModal(role.id));
+                    } else {
+                        editBtn.disabled = true;
+                        editBtn.title = '没有操作权限';
+                    }
                     tdAction.appendChild(editBtn);
 
                     // 删除按钮
                     const delBtn = document.createElement('button');
                     delBtn.className = 'fb-btn fb-btn-sm fb-btn-danger';
-                    delBtn.textContent = i18n.t('role-delete');
-                    delBtn.addEventListener('click', () => {
-                        const _rnm2 = {'管理员': 'role-admin', '操作员': 'role-operator', '查看者': 'role-viewer'};
-                        const dName2 = _rnm2[role.name] ? i18n.t(_rnm2[role.name]) : role.name;
-                        this.deleteRole(role.id, dName2);
-                    });
+                    delBtn.textContent = '删除';
+                    if (canManageRoles) {
+                        delBtn.addEventListener('click', () => {
+                            const dName2 = role.name;
+                            this.deleteRole(role.id, dName2);
+                        });
+                    } else {
+                        delBtn.disabled = true;
+                        delBtn.title = '没有操作权限';
+                    }
                     tdAction.appendChild(delBtn);
                 }
 
@@ -170,14 +188,15 @@
 
             let html = `<div class="role-perm-sheet">`;
             Object.keys(permGroups).sort().forEach(group => {
-                const gKey = _gpk[group] ? i18n.t('perm-group-' + _gpk[group]) : group;
+                const _permGroupZh = {'device':'设备','network':'网络','system':'系统','user':'用户','file':'文件','protocol':'协议','audit':'审计','gpio':'GPIO','peripheral':'外设'};
+                const gKey = _gpk[group] ? (_permGroupZh[_gpk[group]] || group) : group;
                 html += `<div class="role-perm-group">`;
                 html += `<h4 class="role-perm-group-title">${gKey}</h4>`;
                 html += `<div class="role-perm-chip-list">`;
                 permGroups[group].forEach(perm => {
                     const hasPerm = rolePerms.has(perm.id);
-                    const pName = i18n.t('perm-' + perm.id) !== ('perm-' + perm.id) ? i18n.t('perm-' + perm.id) : perm.name;
-                    const pDesc = i18n.t('perm-' + perm.id) !== ('perm-' + perm.id) ? i18n.t('perm-' + perm.id) : perm.description;
+                    const pName = perm.name;
+                    const pDesc = perm.description || perm.name;
                     html += `<span class="role-perm-chip${hasPerm ? ' is-enabled' : ''}">`;
                     html += `<span class="role-perm-chip-indicator">${hasPerm ? '✓' : '✗'}</span>`;
                     html += `<span title="${escapeHtml(pDesc)}">${escapeHtml(pName)}</span></span>`;
@@ -187,15 +206,15 @@
             html += `</div>`;
 
             // 翻译角色名
-            const roleNameMap = {'管理员': 'role-admin', '操作员': 'role-operator', '查看者': 'role-viewer'};
-            const displayRoleName = roleNameMap[role.name] ? i18n.t(roleNameMap[role.name]) : role.name;
+            const roleNameMap = {'管理员': '管理员', '操作员': '操作员', '查看者': '查看者'};
+            const displayRoleName = roleNameMap[role.name] || role.name;
 
             const overlay = document.createElement('div');
             overlay.className = 'role-perm-overlay';
             overlay.innerHTML = `
                 <div class="role-perm-dialog">
                     <div class="role-perm-dialog-header">
-                        <h3 class="role-perm-dialog-title">${escapeHtml(displayRoleName)}${escapeHtml(i18n.t('role-detail-suffix'))}</h3>
+                        <h3 class="role-perm-dialog-title">${escapeHtml(displayRoleName)} - 权限详情</h3>
                         <button type="button" class="role-perm-dialog-close">×</button>
                     </div>
                     <div class="role-perm-dialog-body">${html}</div>
@@ -223,7 +242,7 @@
 
             // 设置标题
             const title = document.getElementById('role-modal-title');
-            if (title) title.textContent = i18n.t('role-add-title');
+            if (title) title.textContent = '新增角色';
 
             // 清空输入
             const idInput = document.getElementById('role-id-input');
@@ -266,13 +285,13 @@
                     const roles = (res.data && res.data.roles) ? res.data.roles : [];
                     const role = roles.find(r => r.id === roleId);
                     if (!role) {
-                        Notification.error(i18n.t('role-not-exist'), i18n.t('error-title'));
+                        Notification.error('角色不存在', '错误');
                         return;
                     }
 
                     // 设置标题
                     const title = document.getElementById('role-modal-title');
-                    if (title) title.textContent = i18n.t('role-edit-title');
+                    if (title) title.textContent = '编辑角色';
 
                     // 填充数据
                     const idInput = document.getElementById('role-id-input');
@@ -326,7 +345,8 @@
                 const groupDiv = document.createElement('div');
                 groupDiv.className = 'role-perm-group';
 
-                const gKey = _gpk[group] ? i18n.t('perm-group-' + _gpk[group]) : group;
+                const _permGroupZh2 = {'device':'设备','network':'网络','system':'系统','user':'用户','file':'文件','protocol':'协议','audit':'审计','gpio':'GPIO','peripheral':'外设'};
+                                const gKey = _gpk[group] ? (_permGroupZh2[_gpk[group]] || group) : group;
                 const groupTitle = document.createElement('h5');
                 groupTitle.className = 'role-perm-group-title';
                 groupTitle.textContent = gKey;
@@ -336,8 +356,8 @@
                 permList.className = 'role-perm-list';
 
                 permGroups[group].forEach(perm => {
-                    const pName = i18n.t('perm-' + perm.id) !== ('perm-' + perm.id) ? i18n.t('perm-' + perm.id) : perm.name;
-                    const pDesc = i18n.t('perm-' + perm.id) !== ('perm-' + perm.id) ? i18n.t('perm-' + perm.id) : perm.description;
+                    const pName = perm.name;
+                    const pDesc = perm.description || perm.name;
                     const label = document.createElement('label');
                     label.className = 'role-perm-label fb-checkbox';
                     var checkbox = document.createElement('input');
@@ -361,7 +381,7 @@
         saveRole() {
             const modal = document.getElementById('role-modal');
             if (!modal) {
-                Notification.error(i18n.t('role-modal-not-found'), i18n.t('error-title'));
+                Notification.error('弹窗元素不存在', '错误');
                 return;
             }
 
@@ -376,11 +396,11 @@
 
             const showErr = (msg) => {
                 AppState.showInlineError('role-error', msg);
-                Notification.error(msg, isEditMode ? i18n.t('role-fail-edit') : i18n.t('role-fail-add'));
+                Notification.error(msg, isEditMode ? '编辑角色失败' : '新增角色失败');
             };
 
-            if (!id) return showErr(i18n.t('role-validate-id'));
-            if (!name) return showErr(i18n.t('role-validate-name'));
+            if (!id) return showErr('请输入角色ID！');
+            if (!name) return showErr('请输入角色名称！');
             
             // 获取选中的权限
             const permCheckboxes = document.querySelectorAll('input[name="role-perm"]:checked');
@@ -389,7 +409,7 @@
             AppState.clearInlineError('role-error');
 
             const btn = document.getElementById('confirm-role-btn');
-            if (btn) { btn.disabled = true; btn.textContent = i18n.t('role-saving-text'); }
+            if (btn) { btn.disabled = true; btn.textContent = '保存中...'; }
 
 
             let apiCall;
@@ -400,7 +420,7 @@
                         if (res && res.success) {
                             return apiPutForm('/api/roles/' + encodeURIComponent(id) + '/permissions', { permissions });
                         }
-                        throw new Error(res.error || i18n.t('role-fail-update-msg'));
+                        throw new Error(res.error || '更新角色失败');
                     });
             } else {
                 // 新增模式
@@ -409,44 +429,44 @@
                         if (res && res.success) {
                             return apiPutForm('/api/roles/' + encodeURIComponent(id) + '/permissions', { permissions });
                         }
-                        throw new Error(res.error || i18n.t('role-fail-create-msg'));
+                        throw new Error(res.error || '创建角色失败');
                     });
             }
 
             apiCall
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success(`${i18n.t('role-mgmt-title')}: ${name} ${isEditMode ? i18n.t('role-updated') : i18n.t('role-created')}${i18n.t('role-success-suffix')}`, i18n.t('role-mgmt-title'));
+                        Notification.success(`角色管理: ${name} ${isEditMode ? '修改' : '创建'}成功`, '角色管理');
                         if (modal) AppState.hideModal(modal);
                         if (typeof window.apiInvalidateCache === 'function') {
                             window.apiInvalidateCache('/api/roles');
                         }
                         this.loadRoles({ noCache: true });
                     } else {
-                        showErr((res && res.error) || i18n.t('role-op-fail'));
+                        showErr((res && res.error) || '操作失败');
                     }
                 })
                 .catch(err => {
-                    showErr(err.message || i18n.t('role-op-fail'));
+                    showErr(err.message || '操作失败');
                 })
                 .finally(() => {
-                    if (btn) { btn.disabled = false; btn.textContent = i18n.t('role-save-text'); }
+                    if (btn) { btn.disabled = false; btn.textContent = '保存'; }
                 });
         },
 
         deleteRole(roleId, roleName) {
-            if (!confirm(`${i18n.t('confirm-delete-role-msg')} "${roleName || roleId}" ${i18n.t('confirm-delete-role-suffix')}`)) return;
+            if (!confirm(`确定要删除角色 "${roleName || roleId}" 吗？`)) return;
 
             apiDelete('/api/roles/' + encodeURIComponent(roleId))
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success(`${roleName || roleId} ${i18n.t('role-deleted-msg')}`, i18n.t('delete-success'));
+                        Notification.success(`${roleName || roleId} 已删除`, '删除成功');
                         if (typeof window.apiInvalidateCache === 'function') {
                             window.apiInvalidateCache('/api/roles');
                         }
                         this.loadRoles({ noCache: true });
                     } else {
-                        Notification.error((res && res.error) || i18n.t('operation-fail'), i18n.t('operation-fail'));
+                        Notification.error((res && res.error) || '操作失败', '操作失败');
                     }
                 })
                 .catch(() => {});

@@ -178,20 +178,23 @@ function loadPeripherals() {
 
 **精简版 (推荐)**:
 ```powershell
-# ESP32
-pio run -e esp32
+# ESP32 标准版 (4MB Flash)
+pio run -e esp32-F4R0
 
-# ESP32-C3
-pio run -e esp32c3
+# ESP32-C3 轻量版 (4MB Flash)
+pio run -e esp32c3-F4R0
 
-# ESP32-S3
-pio run -e esp32s3
+# ESP32-S3 标准版 (8MB Flash)
+pio run -e esp32s3-F8R0
+
+# ESP32-S3 全功能版 (16MB Flash + 8MB PSRAM)
+pio run -e esp32s3-F16R8
 ```
 
 **完整版**:
 ```powershell
-# ESP32-S3 完整版
-pio run -e esp32s3-full
+# ESP32-S3 全功能版 (16MB Flash + 8MB PSRAM)
+pio run -e esp32s3-F16R8
 ```
 
 **清理构建**:
@@ -203,44 +206,44 @@ pio run -t clean
 
 **推荐：构建并烧录匹配版本**:
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32 -Port COM6
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32-F4R0 -Port COM6
 ```
 
 **只编译不上传**:
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-full -BuildOnly
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F16R8 -BuildOnly
 ```
 
 **底层文件系统构建命令**:
 ```powershell
-pio run -e esp32s3-full --target buildfs
+pio run -e esp32s3-F16R8 --target buildfs
 ```
 
 ### 烧录到设备
 
 **上传文件系统和固件**:
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32 -Port COM6
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32-F4R0 -Port COM6
 ```
 
 **仅上传固件**:
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32 -Port COM6 -SkipFs
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32-F4R0 -Port COM6 -SkipFs
 ```
 
 **仅上传文件系统**:
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32 -Port COM6 -SkipFirmware
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32-F4R0 -Port COM6 -SkipFirmware
 ```
 
 **打开串口监视器**:
 ```powershell
-pio device monitor -e esp32 -b 115200
+pio device monitor -e esp32-F4R0 -b 115200
 ```
 
 **一键编译上传监视**:
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32 -Port COM6 -Monitor
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32-F4R0 -Port COM6 -Monitor
 ```
 
 ## 测试流程
@@ -262,11 +265,24 @@ pio test -e native -f test_mqtt_protocol
 
 | 测试文件 | 覆盖内容 |
 |---------|---------|
+| `test_main.cpp` | 测试主入口与 Unity 框架 |
 | `test_web_api.cpp` | Web API 路由、请求响应 |
-| `test_network_config.cpp` | 网络配置管理 |
-| `test_mqtt_protocol.cpp` | MQTT 协议处理 |
-| `test_e2e_scenarios.cpp` | 端到端场景测试 |
-| `test_system_stability.cpp` | 系统稳定性测试 |
+| `test_network_config.cpp` | 网络配置解析与切换 |
+| `test_wifi_ip_dns.cpp` | WiFi / IP / DNS 管理 |
+| `test_mqtt_protocol.cpp` | MQTT 协议配置与认证 |
+| `test_system_stability.cpp` | 系统稳定性、资源保护与边界条件 |
+| `test_e2e_scenarios.cpp` | 端到端场景组合测试 |
+| `test_command_bus.cpp` | CommandBus 命令总线 |
+| `test_error_handler.cpp` | 错误处理与错误码 |
+| `test_ota_manager.cpp` | OTA 状态与校验逻辑 |
+| `test_batch_sse.cpp` | 批量请求与 SSE 实时推送 |
+| `test_periph_exec.cpp` | 外设执行引擎调度与动作 |
+| `test_protocol_handlers.cpp` | TCP / HTTP / CoAP / Modbus 协议处理器 |
+| `test_rule_script.cpp` | 规则脚本引擎解析与执行 |
+| `test_security_auth.cpp` | 认证、用户、角色与权限边界 |
+| `test_system_services.cpp` | 日志、配置存储、健康监控 |
+| `test_pagination_fixes.cpp` | 分页与边界修复 |
+| `test_performance_bench.cpp` | 性能基准与耗时测量 |
 
 ### 添加测试用例
 

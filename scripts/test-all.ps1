@@ -4,11 +4,13 @@ param(
     [string[]]$Checks = @("static", "native", "build"),
 
     [string[]]$Environments = @(
-        "esp32",
-        "esp32c3",
-        "esp32s3",
-        "esp32c6",
-        "esp32s3-full"
+        "esp32-F4R0",
+        "esp32-F8R4",
+        "esp32c3-F4R0",
+        "esp32c6-F4R0",
+        "esp32s3-F8R0",
+        "esp32s3-F8R4",
+        "esp32s3-F16R8"
     ),
 
     [string]$BaseUrl = "http://192.168.4.1",

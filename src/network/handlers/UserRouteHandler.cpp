@@ -25,10 +25,7 @@ void UserRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/users/unlock-account", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->checkPermission(request, "user.edit")) {
-            ctx->sendUnauthorized(request);
-            return;
-        }
+        if (!ctx->requirePermission(request, "user.edit")) return;
         String username = ctx->getParamValue(request, "username", "");
         if (username.isEmpty()) {
             ctx->sendBadRequest(request, "Username is required");
@@ -90,10 +87,7 @@ void UserRouteHandler::setupRoutes(AsyncWebServer* server) {
 }
 
 void UserRouteHandler::handleGetUsers(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "user.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "user.view")) return;
 
     if (HandlerUtils::rejectHeavyRequestOnPressure(request, "User list", MemoryGuardLevel::SEVERE, 8)) {
         return;
@@ -165,10 +159,7 @@ void UserRouteHandler::handleGetUsers(AsyncWebServerRequest* request) {
 }
 
 void UserRouteHandler::handleAddUser(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "user.create")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "user.create")) return;
 
     String username = ctx->getParamValue(request, "username", "");
     String password = ctx->getParamValue(request, "password", "");
@@ -206,10 +197,7 @@ void UserRouteHandler::handleAddUser(AsyncWebServerRequest* request) {
 }
 
 void UserRouteHandler::handleUpdateUser(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "user.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "user.edit")) return;
 
     String username = ctx->getParamValue(request, "username", "");
     if (username.isEmpty()) {
@@ -250,10 +238,7 @@ void UserRouteHandler::handleUpdateUser(AsyncWebServerRequest* request) {
 }
 
 void UserRouteHandler::handleDeleteUser(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "user.delete")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "user.delete")) return;
 
     String path = request->url();
     int lastSlash = path.lastIndexOf('/');
@@ -292,10 +277,7 @@ void UserRouteHandler::handleDeleteUser(AsyncWebServerRequest* request) {
 
 
 void UserRouteHandler::handleGetOnlineUsers(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "user.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "user.view")) return;
 
     if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Online user list", MemoryGuardLevel::SEVERE, 8)) {
         return;
@@ -330,10 +312,7 @@ void UserRouteHandler::handleGetOnlineUsers(AsyncWebServerRequest* request) {
 }
 
 void UserRouteHandler::handleResetPassword(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "user.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "user.edit")) return;
 
     String username = ctx->getParamValue(request, "username", "");
     String newPassword = ctx->getParamValue(request, "newPassword", "");

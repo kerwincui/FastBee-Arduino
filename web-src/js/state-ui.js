@@ -215,7 +215,7 @@
             el.setAttribute('data-original-text', el.textContent);
         }
         el.disabled = true;
-        el.textContent = text || (typeof i18n !== 'undefined' ? i18n.t('saving') : '保存中...');
+        el.textContent = text || '保存中...';
         el.classList.add('is-loading');
         return el;
     };

@@ -24,11 +24,23 @@
 
             // 导出配置按钮
             const exportBtn = document.getElementById('fs-export-config-btn');
-            if (exportBtn) exportBtn.onclick = function() { self.exportConfigFile(); };
+            if (exportBtn) exportBtn.onclick = function() {
+                if (!AppState.hasPermission('config.edit')) {
+                    Notification.warning('没有操作权限', '权限不足');
+                    return;
+                }
+                self.exportConfigFile();
+            };
 
             // 导入配置按钮
             const importBtn = document.getElementById('fs-import-config-btn');
-            if (importBtn) importBtn.onclick = function() { self.importConfigFile(); };
+            if (importBtn) importBtn.onclick = function() {
+                if (!AppState.hasPermission('config.edit')) {
+                    Notification.warning('没有操作权限', '权限不足');
+                    return;
+                }
+                self.importConfigFile();
+            };
         },
 
         // ============ 文件管理 ============
@@ -46,7 +58,7 @@
                         if (infoSpan) {
                             const total = d.totalBytes ? (d.totalBytes / 1024 / 1024).toFixed(2) + ' MB' : 'N/A';
                             const used = d.usedBytes ? (d.usedBytes / 1024 / 1024).toFixed(2) + ' MB' : 'N/A';
-                            infoSpan.textContent = `${i18n.t('fs-space-prefix')}${total}${i18n.t('fs-space-used-prefix')}${used}`;
+                            infoSpan.textContent = `总空间: ${total} | 已用: ${used}`;
                         }
                     }
                 })
@@ -67,13 +79,13 @@
             const pathEl = document.getElementById('current-dir-path');
             if (pathEl) pathEl.textContent = path;
 
-            treeContainer.innerHTML = i18n.t('fs-loading-text');
+            treeContainer.innerHTML = '<div class="u-text-muted">加载中...</div>';
 
             var getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
             getter('/api/files', { path: path })
                 .then(res => {
                     if (!res || !res.success) {
-                        treeContainer.innerHTML = i18n.t('fs-load-fail-text');
+                        treeContainer.innerHTML = '<div class="u-text-danger">加载失败</div>';
                         return;
                     }
 
@@ -120,7 +132,7 @@
 
                     treeContainer.innerHTML = '';
                     if (dirs.length === 0 && files.length === 0) {
-                        treeContainer.innerHTML = i18n.t('fs-empty-dir-html');
+                        treeContainer.innerHTML = '<div class="u-empty-state u-text-muted">空目录</div>';
                     } else {
                         treeContainer.appendChild(fragment);
                     }
@@ -147,7 +159,7 @@
                 })
                 .catch(err => {
                     console.error('Load file tree failed:', err);
-                    treeContainer.innerHTML = i18n.t('fs-load-fail-text');
+                    treeContainer.innerHTML = '<div class="u-text-danger">加载失败</div>';
                 });
         },
 
@@ -183,11 +195,11 @@
             editor.readOnly = true;
 
             if (!editable) {
-                statusDiv.textContent = i18n.t('fs-file-type-unsupported');
+                statusDiv.textContent = '此文件类型不支持编辑';
                 return;
             }
 
-            statusDiv.textContent = i18n.t('fs-file-loading');
+            statusDiv.textContent = '加载中...';
 
             apiGet('/api/files/content', { path: path })
                 .then(res => {
@@ -201,10 +213,10 @@
                                    : '';
                         if (!detail) {
                             detail = res && typeof res === 'object' && Object.keys(res).length === 0
-                                   ? (i18n.t('fs-file-empty-response') || ' (服务器响应为空，设备可能内存不足，请稍后重试)')
-                                   : (' (' + i18n.t('fs-file-unknown-error') + ')');
+                                   ? ' (服务器响应为空，设备可能内存不足，请稍后重试)'
+                                   : ' (未知错误)';
                         }
-                        statusDiv.textContent = i18n.t('fs-file-load-fail-prefix') + detail;
+                        statusDiv.textContent = '加载失败: ' + detail;
                         return;
                     }
 
@@ -216,12 +228,12 @@
                     const size = data.size < 1024 ? `${data.size} B` :
                                 data.size < 1024 * 1024 ? `${(data.size / 1024).toFixed(1)} KB` :
                                 `${(data.size / 1024 / 1024).toFixed(2)} MB`;
-                    statusDiv.textContent = `${i18n.t('fs-file-ready-prefix')}${size}${i18n.t('fs-file-ready-suffix')}`;
+                    statusDiv.textContent = `大小: ${size} | 就绪`;
                 })
                 .catch(err => {
                     if (this._currentFilePath !== path) return;
                     console.error('Open file failed:', err);
-                    var msg = i18n.t('fs-file-load-fail');
+                    var msg = '加载失败';
                     var detail = '';
                     if (err && err.data && (err.data.message || err.data.error)) {
                         detail = ' (' + (err.data.message || err.data.error) + ')';
@@ -275,7 +287,7 @@
             var self = this;
             var filePath = this._currentFilePath;
             if (!filePath) {
-                Notification.warning(i18n.t('fs-no-file-selected') || '请先选择一个配置文件');
+                Notification.warning('请先选择一个配置文件');
                 return;
             }
 
@@ -307,7 +319,7 @@
                         return;
                     }
                     Notification.error(
-                        (i18n.t('fs-export-fetch-fail') || '无法从设备获取配置内容') +
+                        '无法从设备获取配置内容' +
                         ' (' + (err && err.message ? err.message : 'unknown') + ')'
                     );
                 });
@@ -328,7 +340,7 @@
             try {
                 parsed = JSON.parse(rawContent);
             } catch (e) {
-                Notification.error(i18n.t('fs-invalid-json') || '文件内容不是有效的 JSON 格式');
+                Notification.error('文件内容不是有效的 JSON 格式');
                 return;
             }
 
@@ -362,7 +374,7 @@
                 // 旧 IE / 旧 Edge 兑底：不支持 a.download
                 if (window.navigator && typeof window.navigator.msSaveBlob === 'function') {
                     window.navigator.msSaveBlob(blob, fileName);
-                    Notification.success(i18n.t('fs-export-ok') || '配置导出成功');
+                    Notification.success('配置导出成功');
                     return;
                 }
 
@@ -389,11 +401,11 @@
                     }
                 }, 250);
 
-                Notification.success(i18n.t('fs-export-ok') || '配置导出成功');
+                Notification.success('配置导出成功');
             } catch (downloadErr) {
                 console.error('Export download failed:', downloadErr);
                 Notification.error(
-                    (i18n.t('fs-export-fail') || '配置导出失败') +
+                    '配置导出失败' +
                     ' (' + (downloadErr && downloadErr.message ? downloadErr.message : 'unknown') + ')'
                 );
             }
@@ -406,7 +418,7 @@
             var self = this;
             var filePath = this._currentFilePath;
             if (!filePath) {
-                Notification.warning(i18n.t('fs-no-file-selected') || '请先选择一个配置文件');
+                Notification.warning('请先选择一个配置文件');
                 return;
             }
 
@@ -419,7 +431,7 @@
 
                 // 文件大小检查（限制 64KB）
                 if (file.size > 65536) {
-                    Notification.error(i18n.t('fs-import-too-large') || '文件过大，最大支持 64KB');
+                    Notification.error('文件过大，最大支持 64KB');
                     return;
                 }
 
@@ -432,16 +444,16 @@
                         var parsed = JSON.parse(content);
                         // 验证必须是对象类型
                         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-                            Notification.error(i18n.t('fs-import-not-object') || '配置文件必须是 JSON 对象格式');
+                            Notification.error('配置文件必须是 JSON 对象格式');
                             return;
                         }
                     } catch (parseErr) {
-                        Notification.error(i18n.t('fs-import-invalid-json') || '文件内容不是有效的 JSON 格式');
+                        Notification.error('文件内容不是有效的 JSON 格式');
                         return;
                     }
 
                     // 确认覆盖
-                    if (!confirm(i18n.t('fs-import-confirm') || '确定要用导入的文件覆盖当前配置吗？此操作不可撤销！')) {
+                    if (!confirm('确定要用导入的文件覆盖当前配置吗？此操作不可撤销！')) {
                         return;
                     }
 
@@ -451,18 +463,18 @@
                     apiPost('/api/files/save', { path: filePath, content: content })
                         .then(function(res) {
                             if (res && res.success) {
-                                Notification.success(i18n.t('fs-import-ok') || '配置导入成功');
+                                Notification.success('配置导入成功');
                                 // 刷新编辑器显示（会读到已回填的身份字段）
                                 self.openFile(filePath);
                             } else {
                                 Notification.error(
-                                    (res && res.message) || i18n.t('fs-import-fail') || '配置导入失败'
+                                    (res && res.message) || '配置导入失败'
                                 );
                             }
                         })
                         .catch(function(err) {
                             console.error('Import config failed:', err);
-                            Notification.error(i18n.t('fs-import-fail') || '配置导入失败');
+                            Notification.error('配置导入失败');
                         });
                 };
                 reader.readAsText(file);

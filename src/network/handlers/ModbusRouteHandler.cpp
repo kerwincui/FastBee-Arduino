@@ -389,10 +389,7 @@ void ModbusRouteHandler::setupRoutes(AsyncWebServer* server) {
 // ============================================================================
 
 void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "config.view")) return;
 
     bool explicitFull = request->hasParam("full") && request->getParam("full")->value() == "1";
     bool compactStatus = !explicitFull ||
@@ -601,10 +598,7 @@ void ModbusRouteHandler::handleGetModbusStatus(AsyncWebServerRequest* request) {
 // ============================================================================
 
 void ModbusRouteHandler::handleModbusWrite(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "config.edit")) return;
 
     ProtocolManager* pm = ctx->protocolManager;
     if (!pm) {
@@ -650,10 +644,7 @@ void ModbusRouteHandler::handleModbusCoilControl(AsyncWebServerRequest* request)
     static uint32_t _coilCtrlSeq = 0;
     uint32_t reqSeq = ++_coilCtrlSeq;
     
-    if (!ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "config.edit")) return;
     
     ModbusHandler* modbus = getModbusMaster(ctx, request);
     if (!modbus) return;
@@ -778,10 +769,7 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
     static uint32_t _coilBatchSeq = 0;
     uint32_t reqSeq = ++_coilBatchSeq;
     
-    if (!ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "config.edit")) return;
     
     ModbusHandler* modbus = getModbusMaster(ctx, request);
     if (!modbus) return;
@@ -999,10 +987,7 @@ void ModbusRouteHandler::handleModbusCoilBatch(AsyncWebServerRequest* request) {
 // ============================================================================
 
 void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "config.edit")) return;
     
     ModbusHandler* modbus = getModbusMaster(ctx, request);
     if (!modbus) return;
@@ -1186,11 +1171,7 @@ void ModbusRouteHandler::handleModbusCoilDelay(AsyncWebServerRequest* request) {
 // ============================================================================
 
 void ModbusRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.view") &&
-        !ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requireAnyPermission(request, "config.view", "config.edit")) return;
     
     ModbusHandler* modbus = getModbusMaster(ctx, request);
     if (!modbus) return;
@@ -1257,10 +1238,7 @@ void ModbusRouteHandler::handleModbusCoilStatus(AsyncWebServerRequest* request) 
 // ============================================================================
 
 void ModbusRouteHandler::handleModbusDeviceAddress(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "config.edit")) return;
     
     ModbusHandler* modbus = getModbusMaster(ctx, request);
     if (!modbus) return;
@@ -1313,10 +1291,7 @@ void ModbusRouteHandler::handleModbusDeviceAddress(AsyncWebServerRequest* reques
 // ============================================================================
 
 void ModbusRouteHandler::handleModbusDeviceBaudrate(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "config.edit")) return;
     
     ModbusHandler* modbus = getModbusMaster(ctx, request);
     if (!modbus) return;
@@ -1438,11 +1413,7 @@ void ModbusRouteHandler::handleModbusDeviceBaudrate(AsyncWebServerRequest* reque
 // ============================================================================
 
 void ModbusRouteHandler::handleModbusDiscreteInputs(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.view") &&
-        !ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requireAnyPermission(request, "config.view", "config.edit")) return;
     
     ModbusHandler* modbus = getModbusMaster(ctx, request);
     if (!modbus) return;
@@ -1489,11 +1460,7 @@ void ModbusRouteHandler::handleModbusDiscreteInputs(AsyncWebServerRequest* reque
 // ============================================================================
 
 void ModbusRouteHandler::handleModbusRegisterRead(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.view") &&
-        !ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requireAnyPermission(request, "config.view", "config.edit")) return;
     
     ModbusHandler* modbus = getModbusMaster(ctx, request);
     if (!modbus) return;
@@ -1543,10 +1510,7 @@ void ModbusRouteHandler::handleModbusRegisterRead(AsyncWebServerRequest* request
 // ============================================================================
 
 void ModbusRouteHandler::handleModbusRegisterWrite(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "config.edit")) return;
     
     ModbusHandler* modbus = getModbusMaster(ctx, request);
     if (!modbus) return;
@@ -1635,10 +1599,7 @@ void ModbusRouteHandler::handleModbusRegisterWrite(AsyncWebServerRequest* reques
 // ============================================================================
 
 void ModbusRouteHandler::handleModbusRegisterBatchWrite(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "config.edit")) return;
     
     ModbusHandler* modbus = getModbusMaster(ctx, request);
     if (!modbus) return;
@@ -1699,10 +1660,7 @@ void ModbusRouteHandler::handleModbusRegisterBatchWrite(AsyncWebServerRequest* r
 // ============================================================================
 
 void ModbusRouteHandler::handleModbusMotorControl(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "config.edit")) return;
     
     ModbusHandler* modbus = getModbusMaster(ctx, request);
     if (!modbus) return;

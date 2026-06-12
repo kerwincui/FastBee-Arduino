@@ -171,12 +171,12 @@
                             window.apiInvalidateCache('/api/device/config');
                         }
                         this._showMessage('dev-basic-success', true);
-                        Notification.success(i18n.t('dev-save-basic-ok'), i18n.t('dev-config-title'));
+                        Notification.success('设备信息保存成功', '设备配置');
                     } else {
-                        Notification.error(res?.error || i18n.t('dev-save-fail'), i18n.t('dev-config-title'));
+                        Notification.error(res?.error || '保存失败', '设备配置');
                     }
                 })
-                .catch(() => Notification.error(i18n.t('dev-save-fail'), i18n.t('dev-config-title')));
+                .catch(() => Notification.error('保存失败', '设备配置'));
         },
 
         saveCacheDuration() {
@@ -184,12 +184,12 @@
             apiPut('/api/device/config', { cacheDuration: duration })
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success(i18n.t('dev-cache-save-ok'), i18n.t('dev-cache-title'));
+                        Notification.success('缓存时间设置已保存', '缓存管理');
                     } else {
-                        Notification.error(res?.error || i18n.t('dev-save-fail'), i18n.t('dev-cache-title'));
+                        Notification.error(res?.error || '保存失败', '缓存管理');
                     }
                 })
-                .catch(() => Notification.error(i18n.t('dev-save-fail'), i18n.t('dev-cache-title')));
+                .catch(() => Notification.error('保存失败', '缓存管理'));
         },
 
         clearBrowserCache: function() {
@@ -233,8 +233,8 @@
                 //    分批执行（每次2个并发），避免 ESP32 连接过多
                 var idx = 0;
                 Notification.success(
-                    (typeof i18n !== 'undefined' ? i18n.t('dev-cache-clear-ok') : '正在清除缓存并刷新资源...'),
-                    (typeof i18n !== 'undefined' ? i18n.t('dev-cache-title') : '缓存管理')
+                    '正在清除缓存并刷新资源...',
+                    '缓存管理'
                 );
 
                 function fetchBatch() {
@@ -268,20 +268,20 @@
                 .then(res => {
                     if (res && res.success) {
                         this._showMessage('dev-ntp-success', true);
-                        Notification.success(i18n.t('dev-save-ntp-ok'), i18n.t('dev-config-title'));
+                        Notification.success('NTP配置保存成功', '设备配置');
                         this.loadDeviceTime({ noCache: true });
                     } else {
-                        Notification.error(res?.error || i18n.t('dev-save-fail'), i18n.t('dev-ntp-config-title'));
+                        Notification.error(res?.error || '保存失败', 'NTP配置');
                     }
                 })
-                .catch(() => Notification.error(i18n.t('dev-save-fail'), i18n.t('dev-ntp-config-title')));
+                .catch(() => Notification.error('保存失败', 'NTP配置'));
         },
 
         loadDeviceTime(options) {
             options = options || {};
             var self = this;
             const btn = document.getElementById('dev-time-refresh-btn');
-            if (btn) { btn.disabled = true; btn.innerHTML = i18n.t('dev-refreshing-html'); }
+            if (btn) { btn.disabled = true; btn.innerHTML = '刷新中...'; }
 
             var batchGetter = null;
             if (options.noCache === true && typeof apiBatchGetFresh === 'function') {
@@ -305,7 +305,7 @@
                         console.error('Load device time failed:', err);
                         if (btn) {
                             btn.disabled = false;
-                            btn.innerHTML = i18n.t('dev-refresh-html');
+                            btn.innerHTML = '刷新';
                             btn.title = '';
                         }
                     });
@@ -329,7 +329,7 @@
                     console.error('Load device time failed:', err);
                     if (btn) {
                         btn.disabled = false;
-                        btn.innerHTML = i18n.t('dev-refresh-html');
+                        btn.innerHTML = '刷新';
                         btn.title = '';
                     }
                 });
@@ -337,22 +337,22 @@
 
         syncDeviceTime() {
             const btn = document.getElementById('dev-time-refresh-btn');
-            if (btn) { btn.disabled = true; btn.innerHTML = i18n.t('dev-refreshing-html'); }
+            if (btn) { btn.disabled = true; btn.innerHTML = '刷新中...'; }
             apiPost('/api/device/time/sync', {})
                 .then(res => {
                     if (!res || !res.success) {
-                        Notification.warning(i18n.t('dev-time-sync-fail') || 'NTP同步失败', 'NTP');
+                        Notification.warning('NTP同步失败', 'NTP');
                         this.loadDeviceTime({ noCache: true });
                         return;
                     }
                     this._renderDeviceTime(res.data || {}, true);
                     if (res.data && res.data.synced) {
-                        Notification.success(i18n.t('dev-time-sync-ok') || 'NTP同步成功', 'NTP');
+                        Notification.success('NTP同步成功', 'NTP');
                     }
                 })
                 .catch(err => {
                     console.error('Sync device time failed:', err);
-                    Notification.error(i18n.t('dev-time-sync-fail') || 'NTP同步失败', 'NTP');
+                    Notification.error('NTP同步失败', 'NTP');
                     this.loadDeviceTime({ noCache: true });
                 });
         },
@@ -364,11 +364,11 @@
             setEl('dev-time-datetime', d.datetime);
 
             if (!internetAvailable) {
-                setHtml('dev-time-synced', i18n.t('dev-time-no-network-html'));
+                setHtml('dev-time-synced', '<span class="badge badge-warning">未同步</span>');
             } else if (d.synced) {
-                setHtml('dev-time-synced', i18n.t('dev-time-synced-html'));
+                setHtml('dev-time-synced', '<span class="badge badge-success">已同步</span>');
             } else {
-                setHtml('dev-time-synced', i18n.t('dev-time-not-synced-html'));
+                setHtml('dev-time-synced', '<span class="badge badge-warning">未同步</span>');
             }
 
             if (d.uptime !== undefined) {
@@ -376,19 +376,19 @@
                 const h = Math.floor(ms / 3600000);
                 const m = Math.floor((ms % 3600000) / 60000);
                 const s = Math.floor((ms % 60000) / 1000);
-                setEl('dev-time-uptime', `${h}${i18n.t('dev-time-uptime-unit')}${m}${i18n.t('dev-time-uptime-min')}${s}${i18n.t('dev-time-uptime-sec')}`);
+                setEl('dev-time-uptime', `${h}时 ${m}分 ${s}秒`);
             }
 
             const btn = document.getElementById('dev-time-refresh-btn');
             if (btn) {
                 if (internetAvailable) {
                     btn.disabled = false;
-                    btn.innerHTML = i18n.t('dev-refresh-html');
+                    btn.innerHTML = '刷新';
                     btn.title = '';
                 } else {
                     btn.disabled = true;
-                    btn.innerHTML = i18n.t('dev-refresh-disabled-html');
-                    btn.title = i18n.t('dev-time-no-network-tip');
+                    btn.innerHTML = '没有网络';
+                    btn.title = '没有网络连接，无法进行NTP同步';
                 }
             }
         },
@@ -396,16 +396,16 @@
         restartDevice() {
             const delay = document.getElementById('dev-restart-delay')?.value || '3';
             const btn = document.getElementById('dev-restart-btn');
-            if (!confirm(`${i18n.t('dev-restart-confirm-prefix')}${delay}${i18n.t('dev-restart-confirm-suffix')}`)) return;
-            if (btn) { btn.disabled = true; btn.innerHTML = i18n.t('dev-restarting-html'); }
+            if (!confirm(`确定要重启设备？将在 ${delay} 秒后重启。`)) return;
+            if (btn) { btn.disabled = true; btn.innerHTML = '… 处理中...'; }
 
             apiRestart({ delay })
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success(`${i18n.t('dev-restart-msg-prefix')}${delay}${i18n.t('dev-restart-msg-suffix')}`, i18n.t('dev-restart-title'));
+                        Notification.success(`设备将在 ${delay} 秒后重启，请稍后刷新页面。`, '设备重启');
                     } else {
-                        if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-restart-btn-html'); }
-                        Notification.error(i18n.t('dev-restart-fail'), i18n.t('dev-restart-title'));
+                        if (btn) { btn.disabled = false; btn.innerHTML = '立即重启'; }
+                        Notification.error('重启指令发送失败', '设备重启');
                     }
                 })
                 .catch(err => {
@@ -415,10 +415,10 @@
                         (err.message && (err.message.includes('fetch') || err.message.includes('network')))
                     );
                     if (isConnectionClosed) {
-                        Notification.success(`${i18n.t('dev-restart-msg-prefix')}${delay}${i18n.t('dev-restart-msg-suffix')}`, i18n.t('dev-restart-title'));
+                        Notification.success(`设备将在 ${delay} 秒后重启，请稍后刷新页面。`, '设备重启');
                     } else {
-                        if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-restart-btn-html'); }
-                        Notification.error(i18n.t('dev-restart-fail'), i18n.t('dev-restart-title'));
+                        if (btn) { btn.disabled = false; btn.innerHTML = '立即重启'; }
+                        Notification.error('重启指令发送失败', '设备重启');
                     }
                 });
         },
@@ -429,25 +429,25 @@
             const confirmValue = confirmInput?.value?.toUpperCase().trim();
 
             if (confirmValue !== 'RESET') {
-                Notification.warning(i18n.t('dev-sys-factory-confirm-error'), i18n.t('dev-sys-factory-title-msg'));
+                Notification.warning('请输入 RESET 以确认操作', '恢复出厂设置');
                 if (confirmInput) confirmInput.focus();
                 return;
             }
 
-            if (!confirm(i18n.t('dev-sys-factory-warning'))) {
+            if (!confirm('警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！')) {
                 if (confirmInput) confirmInput.value = '';
                 return;
             }
 
-            if (btn) { btn.disabled = true; btn.innerHTML = i18n.t('dev-sys-factory-processing'); }
+            if (btn) { btn.disabled = true; btn.innerHTML = '… 处理中...'; }
 
             apiFactoryReset()
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success(i18n.t('dev-sys-factory-success'), i18n.t('dev-sys-factory-title-msg'));
+                        Notification.success('恢复出厂设置成功，设备正在重启...', '恢复出厂设置');
                     } else {
-                        if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-sys-factory-btn-html'); }
-                        Notification.error(i18n.t('dev-sys-factory-fail'), i18n.t('dev-sys-factory-title-msg'));
+                        if (btn) { btn.disabled = false; btn.innerHTML = '恢复出厂设置'; }
+                        Notification.error('恢复出厂设置失败', '恢复出厂设置');
                     }
                 })
                 .catch(err => {
@@ -457,10 +457,10 @@
                         (err.message && (err.message.includes('fetch') || err.message.includes('network')))
                     );
                     if (isConnectionClosed) {
-                        Notification.success(i18n.t('dev-sys-factory-success'), i18n.t('dev-sys-factory-title-msg'));
+                        Notification.success('恢复出厂设置成功，设备正在重启...', '恢复出厂设置');
                     } else {
-                        if (btn) { btn.disabled = false; btn.innerHTML = i18n.t('dev-sys-factory-btn-html'); }
-                        Notification.error(i18n.t('dev-sys-factory-fail'), i18n.t('dev-sys-factory-title-msg'));
+                        if (btn) { btn.disabled = false; btn.innerHTML = '恢复出厂设置'; }
+                        Notification.error('恢复出厂设置失败', '恢复出厂设置');
                     }
                 });
         },
@@ -470,17 +470,15 @@
             const statusEl = document.getElementById('dev-mode-status');
             const btn = document.getElementById('dev-mode-toggle-btn');
             if (statusEl) {
-                statusEl.textContent = enabled
-                    ? (i18n.t('dev-mode-enabled') || '已启用')
-                    : (i18n.t('dev-mode-disabled') || '已禁用');
+                statusEl.textContent = enabled ? '已启用' : '已禁用';
                 statusEl.classList.toggle('u-text-danger', !enabled);
             }
             if (btn) {
                 btn.classList.remove('fb-btn-danger', 'fb-btn-success');
                 btn.classList.add('fb-btn-warning');
                 btn.innerHTML = enabled
-                    ? '<span>' + (i18n.t('dev-mode-disable-btn') || '禁用开发环境') + '</span>'
-                    : '<span>' + (i18n.t('dev-mode-enable-btn') || '启用开发环境') + '</span>';
+                    ? '<span>禁用开发环境</span>'
+                    : '<span>启用开发环境</span>';
             }
         },
 
@@ -490,18 +488,18 @@
             const btn = document.getElementById('dev-mode-toggle-btn');
             const password = passwordInput ? passwordInput.value : '';
             if (!password) {
-                Notification.warning(i18n.t('dev-mode-password-required') || '请输入登录密码', i18n.t('dev-mode-title') || '开发环境功能');
+                Notification.warning('请输入登录密码', '开发环境功能');
                 if (passwordInput) passwordInput.focus();
                 return;
             }
             const confirmText = enabled
-                ? (i18n.t('dev-mode-disable-confirm') || '确定要禁用开发环境功能吗？')
-                : (i18n.t('dev-mode-enable-confirm') || '确定要启用开发环境功能吗？');
+                ? '确定要禁用开发环境功能吗？'
+                : '确定要启用开发环境功能吗？';
             if (!confirm(confirmText)) return;
 
             if (btn) {
                 btn.disabled = true;
-                btn.innerHTML = '<span>' + (i18n.t('processing') || '处理中...') + '</span>';
+                btn.innerHTML = '<span>处理中...</span>';
             }
             apiPost('/api/device/developer-mode', {
                 enabled: enabled ? 'false' : 'true',
@@ -513,17 +511,17 @@
                     this._renderDeveloperModeState();
                     if (passwordInput) passwordInput.value = '';
                     Notification.success(
-                        nextEnabled ? (i18n.t('dev-mode-enable-ok') || '开发环境已启用') : (i18n.t('dev-mode-disable-ok') || '开发环境已禁用'),
-                        i18n.t('dev-mode-title') || '开发环境功能'
+                        nextEnabled ? '开发环境已启用' : '开发环境已禁用',
+                        '开发环境功能'
                     );
                 } else {
-                    Notification.error(res?.error || (i18n.t('dev-mode-save-fail') || '开发环境设置失败'), i18n.t('dev-mode-title') || '开发环境功能');
+                    Notification.error(res?.error || '开发环境设置失败', '开发环境功能');
                 }
             }).catch((err) => {
                 if (typeof window.apiNotifyError === 'function') {
-                    window.apiNotifyError(err, i18n.t('dev-mode-save-fail') || '开发环境设置失败', i18n.t('dev-mode-title') || '开发环境功能');
+                    window.apiNotifyError(err, '开发环境设置失败', '开发环境功能');
                 } else {
-                    Notification.error(i18n.t('dev-mode-save-fail') || '开发环境设置失败', i18n.t('dev-mode-title') || '开发环境功能');
+                    Notification.error('开发环境设置失败', '开发环境功能');
                 }
             }).finally(() => {
                 if (btn) {
@@ -556,23 +554,96 @@
                 .replace(/\s+\(\d+\)(?=\.json$)/i, '');
         },
 
-        _getConfigTransferType() {
-            const select = document.getElementById('dev-config-transfer-type');
-            const value = select ? select.value : 'all';
-            return CONFIG_TRANSFER_LABELS[value] ? value : 'all';
+        _getConfigTransferLabel(name) {
+            return CONFIG_TRANSFER_LABELS[name] || name || '--';
         },
 
-        _getConfigTransferLabel(type) {
-            return CONFIG_TRANSFER_LABELS[type] || type || '--';
-        },
+        /**
+         * 显示配置文件选择弹窗
+         * @param {Array} items - [{name, size?}] 配置文件列表
+         * @param {string} mode - 'export' 或 'import'
+         * @returns {Promise<Array>} 用户选中的文件列表
+         */
+        _showConfigTransferModal(items, mode) {
+            const self = this;
+            return new Promise((resolve, reject) => {
+                const titleEl = document.getElementById('config-transfer-modal-title');
+                const listEl = document.getElementById('config-transfer-list');
+                const selectAllEl = document.getElementById('config-transfer-select-all');
+                const summaryEl = document.getElementById('config-transfer-summary');
+                const confirmBtn = document.getElementById('config-transfer-confirm-btn');
+                const cancelBtn = document.getElementById('config-transfer-cancel-btn');
+                if (!listEl || !confirmBtn || !cancelBtn) { reject(new Error('弹窗元素不存在')); return; }
 
-        _filterConfigTransferEntries(entries, type) {
-            if (type === 'all') return entries;
-            const filtered = entries.filter((entry) => this._normalizeConfigFileName(entry.name) === type);
-            if (!filtered.length) {
-                throw new Error('所选文件中没有 ' + this._getConfigTransferLabel(type) + ' 配置');
-            }
-            return filtered;
+                // 设置标题和确认按钮文字
+                if (titleEl) titleEl.textContent = mode === 'export' ? '选择导出的配置' : '选择导入的配置';
+                confirmBtn.textContent = mode === 'export' ? '确认导出' : '确认导入';
+
+                // 渲染复选框列表
+                listEl.innerHTML = '';
+                items.forEach((item, idx) => {
+                    const label = document.createElement('label');
+                    label.className = 'fb-checkbox';
+                    const cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.checked = true;
+                    cb.dataset.idx = idx;
+                    const span = document.createElement('span');
+                    const displayName = self._getConfigTransferLabel(item.name);
+                    span.textContent = displayName + (item.size ? ' (' + (item.size > 1024 ? (item.size / 1024).toFixed(1) + ' KB' : item.size + ' B') + ')' : '');
+                    label.appendChild(cb);
+                    label.appendChild(span);
+                    listEl.appendChild(label);
+                });
+
+                // 更新摘要
+                function updateSummary() {
+                    const checked = listEl.querySelectorAll('input[type="checkbox"]:checked').length;
+                    if (summaryEl) summaryEl.textContent = checked + '/' + items.length + ' 项';
+                    confirmBtn.disabled = checked === 0;
+                    if (selectAllEl) selectAllEl.checked = checked === items.length;
+                }
+                updateSummary();
+
+                // 全选/取消全选
+                function onSelectAll() {
+                    const checked = selectAllEl.checked;
+                    listEl.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = checked; });
+                    updateSummary();
+                }
+                if (selectAllEl) { selectAllEl.checked = true; selectAllEl.addEventListener('change', onSelectAll); }
+
+                // 单项变化
+                function onItemChange() { updateSummary(); }
+                listEl.addEventListener('change', onItemChange);
+
+                // 清理函数
+                function cleanup() {
+                    if (selectAllEl) selectAllEl.removeEventListener('change', onSelectAll);
+                    listEl.removeEventListener('change', onItemChange);
+                    confirmBtn.removeEventListener('click', onConfirm);
+                    cancelBtn.removeEventListener('click', onCancel);
+                    AppState.hideModal('config-transfer-modal');
+                }
+
+                function onConfirm() {
+                    const selected = [];
+                    listEl.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+                        const idx = parseInt(cb.dataset.idx);
+                        if (items[idx]) selected.push(items[idx]);
+                    });
+                    cleanup();
+                    resolve(selected);
+                }
+                function onCancel() {
+                    cleanup();
+                    reject(new Error('用户取消'));
+                }
+
+                confirmBtn.addEventListener('click', onConfirm);
+                cancelBtn.addEventListener('click', onCancel);
+                AppState.showModal('config-transfer-modal');
+            });
         },
 
         _configTransferByteLength(content) {
@@ -669,30 +740,30 @@
 
         exportDeviceConfigBundle() {
             const btn = document.getElementById('dev-config-export-btn');
-            const type = this._getConfigTransferType();
             if (btn) btn.disabled = true;
             this._setConfigTransferStatus('正在读取配置列表...');
 
             apiGetFresh('/api/config/transfer/list')
-                .then(async (res) => {
-                    let files = (res && res.success && res.data && res.data.files) ? res.data.files : [];
+                .then((res) => {
+                    const files = (res && res.success && res.data && res.data.files) ? res.data.files : [];
                     if (!files.length) throw new Error('没有可导出的配置文件');
-                    if (type !== 'all') {
-                        files = files.filter((item) => this._normalizeConfigFileName(item.name) === type);
-                        if (!files.length) throw new Error('当前设备没有可导出的 ' + this._getConfigTransferLabel(type) + ' 配置');
-                    }
+                    return this._showConfigTransferModal(files, 'export');
+                })
+                .then(async (selected) => {
+                    if (!selected.length) throw new Error('未选择任何配置文件');
+                    this._setConfigTransferStatus('正在导出...');
 
                     const bundle = {
                         type: 'fastbee-config-bundle',
                         version: 1,
-                        scope: type,
+                        scope: selected.length === 1 ? selected[0].name : 'selected',
                         exportedAt: new Date().toISOString(),
                         files: []
                     };
 
-                    for (let i = 0; i < files.length; i++) {
-                        const item = files[i];
-                        this._setConfigTransferStatus(`正在导出 ${item.name} (${i + 1}/${files.length})...`);
+                    for (let i = 0; i < selected.length; i++) {
+                        const item = selected[i];
+                        this._setConfigTransferStatus(`正在导出 ${item.name} (${i + 1}/${selected.length})...`);
                         const url = new URL('/api/config/transfer/export', window.location.origin);
                         url.searchParams.set('name', item.name);
                         const resp = await this._configTransferFetch(url.toString());
@@ -704,12 +775,13 @@
                         bundle.files.push({ name: item.name, content });
                     }
 
-                    const exportContent = type === 'all'
-                        ? JSON.stringify(bundle, null, 2)
-                        : bundle.files[0].content;
-                    const exportName = type === 'all'
-                        ? 'fastbee-config-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json'
-                        : bundle.files[0].name;
+                    // 单文件直接导出原始JSON，多文件导出bundle包
+                    const exportContent = selected.length === 1
+                        ? bundle.files[0].content
+                        : JSON.stringify(bundle, null, 2);
+                    const exportName = selected.length === 1
+                        ? bundle.files[0].name
+                        : 'fastbee-config-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
                     const blob = new Blob([exportContent], { type: 'application/json' });
                     const link = document.createElement('a');
                     const objectUrl = URL.createObjectURL(blob);
@@ -720,10 +792,14 @@
                     link.remove();
                     setTimeout(() => URL.revokeObjectURL(objectUrl), 3000);
 
-                    this._setConfigTransferStatus(`配置导出完成：${this._getConfigTransferLabel(type)}，${bundle.files.length} 个文件`);
+                    this._setConfigTransferStatus(`配置导出完成：${bundle.files.length} 个文件`);
                     Notification.success('配置导出完成', '配置导入/导出');
                 })
                 .catch((err) => {
+                    if (err && err.message === '用户取消') {
+                        this._setConfigTransferStatus('--');
+                        return;
+                    }
                     console.error('[device-config] export config bundle failed:', err);
                     this._setConfigTransferStatus('配置导出失败');
                     Notification.error(err && err.message ? err.message : '配置导出失败', '配置导入/导出');
@@ -736,7 +812,6 @@
         importDeviceConfigBundle() {
             const input = document.getElementById('dev-config-import-file');
             const btn = document.getElementById('dev-config-import-btn');
-            const type = this._getConfigTransferType();
             const selectedFiles = input && input.files ? Array.from(input.files) : [];
             if (!selectedFiles.length) {
                 Notification.warning('请先选择配置文件或配置包', '配置导入/导出');
@@ -747,15 +822,25 @@
                 Notification.warning('配置文件总量过大，请分批导入', '配置导入/导出');
                 return;
             }
-            if (!confirm('导入 ' + this._getConfigTransferLabel(type) + ' 会覆盖设备现有 /config 配置文件，是否继续？')) return;
 
             if (btn) btn.disabled = true;
-            this._setConfigTransferStatus('正在读取配置文件...');
+            this._setConfigTransferStatus('正在解析配置文件...');
 
             this._readSelectedConfigEntries(selectedFiles)
-                .then(async (files) => {
+                .then((files) => {
                     if (!files.length) throw new Error('配置包内没有可导入的配置文件');
-                    files = this._filterConfigTransferEntries(files, type);
+                    // 弹窗让用户选择要导入的配置
+                    return this._showConfigTransferModal(
+                        files.map(f => ({ name: f.name, size: f.content ? f.content.length : 0 })),
+                        'import'
+                    ).then((selected) => {
+                        // 只导入用户选中的文件
+                        const selectedNames = selected.map(s => s.name);
+                        return files.filter(f => selectedNames.includes(f.name));
+                    });
+                })
+                .then(async (files) => {
+                    if (!files.length) throw new Error('未选择任何配置文件');
                     for (let i = 0; i < files.length; i++) {
                         const item = files[i];
                         this._setConfigTransferStatus(`正在导入 ${item.name} (${i + 1}/${files.length})...`);
@@ -768,6 +853,10 @@
                     }
                 })
                 .catch((err) => {
+                    if (err && err.message === '用户取消') {
+                        this._setConfigTransferStatus('--');
+                        return;
+                    }
                     console.error('[device-config] import config bundle failed:', err);
                     this._setConfigTransferStatus('配置导入失败');
                     Notification.error(err && err.message ? err.message : '配置导入失败', '配置导入/导出');

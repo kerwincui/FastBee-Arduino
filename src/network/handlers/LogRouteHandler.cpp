@@ -60,10 +60,7 @@ void LogRouteHandler::setupRoutes(AsyncWebServer* server) {
 }
 
 void LogRouteHandler::handleInfo(AsyncWebServerRequest* request) {
-    if (!hasLogPermission(ctx, request)) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "system.view")) return;
 
     auto doc = FastBee::makeJsonDocument();
     doc["success"] = true;
@@ -87,10 +84,7 @@ void LogRouteHandler::handleInfo(AsyncWebServerRequest* request) {
 }
 
 void LogRouteHandler::handleList(AsyncWebServerRequest* request) {
-    if (!hasLogPermission(ctx, request)) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "system.view")) return;
 
     auto doc = FastBee::makeJsonDocument();
     doc["success"] = true;
@@ -120,10 +114,7 @@ void LogRouteHandler::handleList(AsyncWebServerRequest* request) {
 }
 
 void LogRouteHandler::handleRead(AsyncWebServerRequest* request) {
-    if (!hasLogPermission(ctx, request)) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "system.view")) return;
 
     const bool psramBacked = HandlerUtils::psramCanServeJson(8192);
     auto* fw = FastBeeFramework::getInstance();
@@ -218,10 +209,7 @@ void LogRouteHandler::handleRead(AsyncWebServerRequest* request) {
 }
 
 void LogRouteHandler::handleClear(AsyncWebServerRequest* request) {
-    if (!hasLogPermission(ctx, request)) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "system.view")) return;
 
     String name = sanitizeLogFileName(ctx, request);
     if (name.isEmpty()) name = DEFAULT_LOG_FILE;

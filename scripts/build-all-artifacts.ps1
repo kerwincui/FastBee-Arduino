@@ -1,11 +1,13 @@
 ﻿[CmdletBinding()]
 param(
     [string[]]$Environments = @(
-        "esp32",
-        "esp32c3",
-        "esp32s3",
-        "esp32c6",
-        "esp32s3-full"
+        "esp32-F4R0",
+        "esp32-F8R4",
+        "esp32c3-F4R0",
+        "esp32c6-F4R0",
+        "esp32s3-F8R0",
+        "esp32s3-F8R4",
+        "esp32s3-F16R8"
     ),
     [string]$OutputDir = "dist\firmware\all-latest",
     [switch]$SkipBuild,
@@ -21,51 +23,51 @@ $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 # 导致后续编译报错："另一个程序正在使用此文件，进程无法访问"
 function Kill-StaleProcesses {
     $killed = 0
-    # 清理 esptool
-    Get-Process -Name esptool -ErrorAction SilentlyContinue | ForEach-Object {
-        Write-Host "  Killing stale esptool.exe (PID $($_.Id))" -ForegroundColor Yellow
-        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
-        $killed++
-    }
-    # 清理 PlatformIO 相关 python 进程（仅限 .platformio 路径下的）
-    $pyProcs = Get-Process -Name python -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path -like "*\.platformio\*" }
-    if ($pyProcs) {
-        $pyProcs | ForEach-Object {
-            Write-Host "  Killing stale python.exe (PID $($_.Id))" -ForegroundColor Yellow
+    $procNames = @('esptool', 'python', 'xtensa-esp-elf-gcc', 'xtensa-esp-elf-g++', 'xtensa-esp-elf-ar', 'xtensa-esp-elf-ld')
+    foreach ($name in $procNames) {
+        Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($name -eq 'python' -and ($_.Path -notlike '*\.platformio\*')) { return }
+            Write-Host "  Killing stale $name (PID $($_.Id))" -ForegroundColor Yellow
             Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
             $killed++
         }
     }
     if ($killed -gt 0) {
-        Write-Host "  Cleaned $killed stale process(es)" -ForegroundColor Yellow
-        Start-Sleep -Milliseconds 500  # 等待文件锁释放
+        Write-Host "  Cleaned $killed stale process(es), waiting for file locks to release..." -ForegroundColor Yellow
+        Start-Sleep -Seconds 1
     }
 }
 
 Write-Host "[Pre-Build] Checking for stale processes..." -ForegroundColor Cyan
 Kill-StaleProcesses
 $ProfileByEnv = @{
-    "esp32c3"     = "lite"
-    "esp32c6"     = "lite"
-    "esp32"       = "standard"
-    "esp32s3"     = "standard"
-    "esp32s3-full" = "full"
+    "esp32c3-F4R0"   = "lite"
+    "esp32c6-F4R0"   = "lite"
+    "esp32-F4R0"     = "standard"
+    "esp32-F8R4"     = "full"
+    "esp32s3-F8R0"   = "standard"
+    "esp32s3-F8R4"   = "full"
+    "esp32s3-F16R8"  = "full"
 }
-# Release naming: fastbee-{chip}n{flash}r{psram}-{edition}.bin
-# Examples: fastbee-esp32n4r0-std.bin, fastbee-esp32s3n16r8-full.bin
+# Release naming: fastbee-{chip}-F{flash}R{psram}.bin
+# Examples: fastbee-esp32-F4R0.bin, fastbee-esp32s3-F16R8.bin
 $OutputNameByEnv = @{
-    "esp32"        = "fastbee-esp32n4r0-std.bin"
-    "esp32c3"      = "fastbee-esp32c3n4r0-lite.bin"
-    "esp32s3"      = "fastbee-esp32s3n8r0-std.bin"
-    "esp32c6"      = "fastbee-esp32c6n8r0-lite.bin"
-    "esp32s3-full" = "fastbee-esp32s3n16r8-full.bin"
+    "esp32-F4R0"     = "fastbee-esp32-F4R0.bin"
+    "esp32-F8R4"     = "fastbee-esp32-F8R4.bin"
+    "esp32c3-F4R0"   = "fastbee-esp32c3-F4R0.bin"
+    "esp32c6-F4R0"   = "fastbee-esp32c6-F4R0.bin"
+    "esp32s3-F8R0"   = "fastbee-esp32s3-F8R0.bin"
+    "esp32s3-F8R4"   = "fastbee-esp32s3-F8R4.bin"
+    "esp32s3-F16R8"  = "fastbee-esp32s3-F16R8.bin"
 }
 $HardwareByEnv = @{
-    "esp32"        = "ESP32 4MB Flash"
-    "esp32c3"      = "ESP32-C3 4MB Flash"
-    "esp32s3"      = "ESP32-S3 8MB Flash"
-    "esp32c6"      = "ESP32-C6 8MB Flash"
-    "esp32s3-full" = "ESP32-S3 16MB Flash + 8MB PSRAM"
+    "esp32-F4R0"     = "ESP32 4MB Flash"
+    "esp32-F8R4"     = "ESP32 8MB Flash + 4MB PSRAM"
+    "esp32c3-F4R0"   = "ESP32-C3 4MB Flash"
+    "esp32c6-F4R0"   = "ESP32-C6 4MB Flash"
+    "esp32s3-F8R0"   = "ESP32-S3 8MB Flash"
+    "esp32s3-F8R4"   = "ESP32-S3 8MB Flash + 4MB PSRAM"
+    "esp32s3-F16R8"  = "ESP32-S3 16MB Flash + 8MB PSRAM"
 }
 # 只收集完整固件文件(包含 bootloader + partitions + firmware + filesystem)
 $FilesToCollect = @(
@@ -113,6 +115,69 @@ function Invoke-Pio {
     if ($LASTEXITCODE -ne 0) {
         throw "PlatformIO command failed: pio $($Arguments -join ' ')"
     }
+}
+
+function Test-BuildCacheIntegrity {
+    param([string]$BuildEnv)
+
+    $buildDir = Join-Path $ProjectDir ".pio\build\$BuildEnv"
+    if (-not (Test-Path -LiteralPath $buildDir -PathType Container)) { return }
+
+    $libFile = Join-Path $buildDir "libFrameworkArduino.a"
+    $hasArchive = Test-Path -LiteralPath $libFile -PathType Leaf
+    $hasObjects = @(
+        Get-ChildItem -LiteralPath $buildDir -Filter "*.o" -Recurse -ErrorAction SilentlyContinue
+    ).Count -gt 0
+
+    if ($hasObjects -and -not $hasArchive) {
+        Write-Host "[Integrity] Build cache corrupted for $BuildEnv (archive missing). Cleaning..." -ForegroundColor Yellow
+        & pio run -e $BuildEnv -t clean 2>$null | Out-Null
+        return
+    }
+
+    $bootloader = Join-Path $buildDir "bootloader.bin"
+    if (Test-Path -LiteralPath $bootloader -PathType Leaf) {
+        try {
+            $handle = [System.IO.File]::Open($bootloader, 'Open', 'ReadWrite', 'None')
+            $handle.Close()
+        }
+        catch {
+            Write-Host "[Integrity] bootloader.bin locked for $BuildEnv. Cleaning..." -ForegroundColor Yellow
+            & pio run -e $BuildEnv -t clean 2>$null | Out-Null
+        }
+    }
+}
+
+function Invoke-PioWithRetry {
+    param([string[]]$Arguments)
+
+    Write-Host ""
+    Write-Host "pio $($Arguments -join ' ')" -ForegroundColor Cyan
+    & pio @Arguments
+    if ($LASTEXITCODE -eq 0) { return }
+
+    # 构建失败 → 清理缓存后重试一次
+    Write-Host ""
+    Write-Host "[Retry] Build failed, cleaning cache and rebuilding..." -ForegroundColor Yellow
+    $envArg = $null
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        if ($Arguments[$i] -eq '-e' -and ($i + 1) -lt $Arguments.Count) {
+            $envArg = $Arguments[$i + 1]
+            break
+        }
+    }
+    if ($envArg) {
+        & pio run -e $envArg -t clean 2>$null | Out-Null
+    }
+    Kill-StaleProcesses
+
+    Write-Host ""
+    Write-Host "[Retry] pio $($Arguments -join ' ')" -ForegroundColor Cyan
+    & pio @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Build failed after retry: pio $($Arguments -join ' ')"
+    }
+    Write-Host "[Retry] Build succeeded after clean rebuild." -ForegroundColor Green
 }
 
 function Get-GitCommitSha {
@@ -215,8 +280,10 @@ foreach ($EnvName in $Environments) {
     Write-Host "=== FastBee $EnvName ($Profile) ===" -ForegroundColor Green
 
     if (-not $SkipBuild) {
-        Invoke-Pio -Arguments @("run", "-e", $EnvName)
-        Invoke-Pio -Arguments @("run", "-e", $EnvName, "--target", "buildfs")
+        Test-BuildCacheIntegrity -BuildEnv $EnvName
+        Kill-StaleProcesses
+        Invoke-PioWithRetry -Arguments @("run", "-e", $EnvName)
+        Invoke-PioWithRetry -Arguments @("run", "-e", $EnvName, "--target", "buildfs")
     }
 
     $EnvDist = Join-Path $ProjectDir "dist\firmware\$EnvName"

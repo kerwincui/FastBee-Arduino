@@ -265,10 +265,7 @@ void MqttRouteHandler::setupRoutes(AsyncWebServer* server) {
 // ============================================================================
 
 void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "config.edit")) return;
 
     String server = ctx->getParamValue(request, "server", "");
     int port = ctx->getParamInt(request, "port", 1883);
@@ -489,11 +486,7 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
 
 void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
     // 兼容"可编辑但不可查看"的自定义角色：允许 config.view 或 config.edit 访问状态接口
-    if (!ctx->checkPermission(request, "config.view") &&
-        !ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requireAnyPermission(request, "config.view", "config.edit")) return;
 
     ProtocolManager* pm = ctx->protocolManager;
     if (!pm) {
@@ -557,10 +550,7 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
 // ============================================================================
 
 void MqttRouteHandler::handleMqttReconnect(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "config.edit")) return;
 
     ProtocolManager* pm = ctx->protocolManager;
     if (!pm) {
@@ -586,10 +576,7 @@ void MqttRouteHandler::handleMqttReconnect(AsyncWebServerRequest* request) {
 // ============================================================================
 
 void MqttRouteHandler::handleMqttDisconnect(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "config.edit")) return;
 
     ProtocolManager* pm = ctx->protocolManager;
     if (!pm) {
@@ -616,10 +603,7 @@ void MqttRouteHandler::handleMqttDisconnect(AsyncWebServerRequest* request) {
 // ============================================================================
 
 void MqttRouteHandler::handleMqttNtpSync(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "config.edit")) return;
 
     ProtocolManager* pm = ctx->protocolManager;
     if (!pm) {

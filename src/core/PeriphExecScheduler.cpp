@@ -1,3 +1,10 @@
+/**
+ * @file PeriphExecScheduler.cpp
+ * @brief 外设执行调度器实现
+ * @author kerwincui
+ * @copyright FastBee All rights reserved.
+ */
+
 #include "core/FeatureFlags.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
 
@@ -162,7 +169,6 @@ uint32_t PeriphExecScheduler::getDynamicCheckPeriod(MemoryGuardLevel level) {
 
 void PeriphExecScheduler::checkTimers() {
     unsigned long now = millis();
-    static bool webReserveSuspended = false;
 
     if (!_manager) return;
 
@@ -183,7 +189,7 @@ void PeriphExecScheduler::checkTimers() {
         : 0U;
 
     if (shouldSuspendBackgroundPolling(currentLevel, freeHeap, largestBlock, fragmentation)) {
-        if (!webReserveSuspended) {
+        if (!_webReserveSuspended) {
             // 仅在进入暂停状态时输出一次日志，避免周期性刷屏
             LOGGER.warningf("[PeriphExec] Background timer/poll suspended for web reserve "
                             "(guard=%d heap=%lu largest=%lu frag=%u%%)",
@@ -192,20 +198,20 @@ void PeriphExecScheduler::checkTimers() {
                             static_cast<unsigned long>(largestBlock),
                             static_cast<unsigned int>(fragmentation));
         }
-        webReserveSuspended = true;
+        _webReserveSuspended = true;
         _lastMemGuardLevel = currentLevel;
         _currentCheckPeriodMs = CHECK_PERIOD_SEVERE_MS;
         return;
     }
 
-    if (webReserveSuspended) {
+    if (_webReserveSuspended) {
         LOGGER.infof("[PeriphExec] Background timer/poll resumed "
                      "(guard=%d heap=%lu largest=%lu frag=%u%%)",
                      static_cast<int>(currentLevel),
                      static_cast<unsigned long>(freeHeap),
                      static_cast<unsigned long>(largestBlock),
                      static_cast<unsigned int>(fragmentation));
-        webReserveSuspended = false;
+        _webReserveSuspended = false;
     }
 
     // CRITICAL: 暂停非关键轮询，直接返回
@@ -442,7 +448,7 @@ void PeriphExecScheduler::checkSerialEvents() {
         String payload;
         serializeJson(doc, payload);
         _manager->handlePollData("serial", payload);
-        LOGGER.infof("[PeriphExec] Serial data source: %s='%s'", id.c_str(), frame.c_str());
+        LOGGER.debugf("[PeriphExec] Serial data source: %s='%s'", id.c_str(), frame.c_str());
     };
 
     pm.forEachPeripheral([&](const PeripheralConfig& config) {

@@ -163,6 +163,12 @@ public:
 
     char operator[](size_t index) const { return _value[index]; }
     char& operator[](size_t index) { return _value[index]; }
+    void setCharAt(size_t index, char c) {
+        if (index < _value.length()) _value[index] = c;
+    }
+    int compareTo(const String& other) const {
+        return _value.compare(other._value);
+    }
     operator std::string() const { return _value; }
 
     String& operator=(const char* value) {
@@ -248,6 +254,11 @@ inline std::map<void*, size_t> __fastbeeMockAllocations;
 inline unsigned long millis() {
     auto elapsed = std::chrono::steady_clock::now() - __fastbeeMockStartTime;
     return static_cast<unsigned long>(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+}
+
+inline unsigned long micros() {
+    auto elapsed = std::chrono::steady_clock::now() - __fastbeeMockStartTime;
+    return static_cast<unsigned long>(std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count());
 }
 
 inline void delay(unsigned long ms) {

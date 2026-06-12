@@ -1,8 +1,9 @@
 /**
- * @description: FastBee物联网平台框架核心
- * @author: kerwincui
- * @copyright: FastBee All rights reserved.
- * @date: 2025-12-02 17:28:57
+ * @file FastBeeFramework.cpp
+ * @brief FastBee 物联网平台框架核心实现
+ * @author kerwincui
+ * @copyright FastBee All rights reserved.
+ * @date 2025-12-02
  */
 
 #include "core/FastBeeFramework.h"
@@ -21,6 +22,7 @@
 #include "network/OTAManager.h"
 #include "systems/TaskManager.h"
 #include "systems/HealthMonitor.h"
+#include "systems/RestartDiagnostics.h"
 #include "security/UserManager.h"
 #if FASTBEE_ENABLE_ROLE_ADMIN
 #include "security/RoleManager.h"
@@ -69,17 +71,19 @@ bool FastBeeFramework::initialize() {
         LOG_WARNING("Framework already initialized");
         return true;
     }
-    
+
     // 记录启动时间戳（用于日志）
     unsigned long startTime = millis();
     unsigned long stepStart;  // 分步骤计时
-    
+
     Serial.println();
     Serial.println("========================================");
     Serial.println("  FastBee IoT Platform Starting...");
+    Serial.printf("  Version: %s (%s)\n", SystemInfo::VERSION, SystemInfo::FIRMWARE_TYPE);
+    Serial.printf("  Build: %s %s\n", __DATE__, __TIME__);
     Serial.println("========================================");
     Serial.println();
-    ets_printf("[BOOT] FastBee IoT Platform Starting...\n");
+    ets_printf("[BOOT] FastBee IoT Platform v%s Starting...\n", SystemInfo::VERSION);
 
     // 步骤1: 初始化配置存储（Logger 之前，只能用 Serial）
     stepStart = millis();
@@ -112,7 +116,7 @@ bool FastBeeFramework::initialize() {
     }
     LOGGER.setLogLevel(LOG_DEBUG);
     unsigned long loggerMs = millis() - stepStart;
-    
+
     // 日志系统初始化完成后，补充记录早期启动信息到日志文件
     LOGGER.info("========================================");
     LOGGER.info("  FastBee IoT Platform Boot Log");
@@ -122,7 +126,7 @@ bool FastBeeFramework::initialize() {
     LOGGER.infof("[Boot] FileUtils: %lu ms", fileUtilsMs);
     LOGGER.infof("[Boot] Logger: %lu ms", loggerMs);
     LOG_INFO("Logger system initialized and file logging enabled");
-    
+
     // 步骤2.5: 初始化外设管理器（尽早初始化，确保GPIO输出引脚在WiFi连接前就位）
     // 依赖：LittleFS（STEP1）、Logger（STEP2），无需网络
     stepStart = millis();
@@ -134,7 +138,7 @@ bool FastBeeFramework::initialize() {
     }
     Serial.printf("[Boot] PeripheralManager: %lu ms\n", millis() - stepStart);
     LOG_BOOT_HEAP("PeripheralManager");
-    
+
     // 步骤3: 创建HTTP服务器
     stepStart = millis();
     Serial.println("[STEP3] Creating HTTP server...");
@@ -144,7 +148,7 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     Serial.printf("[Boot] AsyncWebServer: %lu ms\n", millis() - stepStart);
-    
+
 #if FASTBEE_WEB_START_EARLY
     // ---- 提前启动模式：Web服务器在WiFi连接前启动（AP模式直接可用）----
 
@@ -210,15 +214,15 @@ bool FastBeeFramework::initialize() {
         Serial.println("[STEP7-E] FATAL: Failed to create network manager");
         return false;
     }
-    
+
     // 初始化网络（会从 network.json 加载配置，可能阻塞等待WiFi连接）
     if (!network->initialize()) {
         Serial.println("[STEP7-E] WARN: Network initialization returned false");
     }
-    
+
     // 回注 NetworkManager 到 WebConfigManager
     webConfig->setNetworkManager(network.get());
-    
+
     unsigned long networkMs = millis() - stepStart;
     // 检查网络状态
     if (WiFi.status() == WL_CONNECTED) {
@@ -251,12 +255,12 @@ bool FastBeeFramework::initialize() {
         Serial.println("[STEP4] FATAL: Failed to create network manager");
         return false;
     }
-    
+
     // 初始化网络（会从 network.json 加载配置）
     if (!network->initialize()) {
         Serial.println("[STEP4] WARN: Network initialization returned false");
     }
-    
+
     unsigned long networkMs = millis() - stepStart;
     // 检查网络状态
     if (WiFi.status() == WL_CONNECTED) {
@@ -326,7 +330,7 @@ bool FastBeeFramework::initialize() {
     Serial.printf("[Boot] WebConfigManager: %lu ms\n", millis() - stepStart);
 
 #endif  // FASTBEE_WEB_START_EARLY
-    
+
 #if FASTBEE_ENABLE_OTA
     // 步骤8: 初始化OTA管理器
     stepStart = millis();
@@ -340,7 +344,7 @@ bool FastBeeFramework::initialize() {
 #else
     Serial.println("[STEP8] OTAManager disabled by FASTBEE_ENABLE_OTA=0");
 #endif
-    
+
     // 步骤9: 初始化任务管理器
     stepStart = millis();
     Serial.println("[STEP9] Initializing TaskManager...");
@@ -350,7 +354,7 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     Serial.printf("[Boot] TaskManager: %lu ms\n", millis() - stepStart);
-    
+
     // 步骤10: 初始化健康监控器
     stepStart = millis();
     Serial.println("[STEP10] Initializing HealthMonitor...");
@@ -360,7 +364,7 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     Serial.printf("[Boot] HealthMonitor: %lu ms\n", millis() - stepStart);
-    
+
     // 步骤10.5: 确保设备身份标识（deviceId / MQTT clientId 空值自动生成并写回 JSON 配置）
     // 依赖：LittleFS（STEP1）、Logger（STEP2）、WiFi 栏已起（STEP4/STEP7-E 后 MAC 可读）
     // 必须在 ProtocolManager (STEP11) 之前，确保 MQTTClient loadMqttConfig() 读取到已回填的配置
@@ -368,7 +372,7 @@ bool FastBeeFramework::initialize() {
     Serial.println("[STEP10.5] Ensuring device identity...");
     ensureDeviceIdentity();
     Serial.printf("[Boot] ensureDeviceIdentity: %lu ms\n", millis() - stepStart);
-    
+
     // 步骤11: 初始化协议管理器
     stepStart = millis();
     Serial.println("[STEP11] Initializing ProtocolManager...");
@@ -378,7 +382,7 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     Serial.printf("[Boot] ProtocolManager: %lu ms\n", millis() - stepStart);
-    
+
     // 注入 ProtocolManager 到 WebConfig，供 API 路由访问
     if (webConfig && protocolManager) {
         webConfig->setProtocolManager(protocolManager.get());
@@ -390,7 +394,7 @@ bool FastBeeFramework::initialize() {
         protocolManager->setTxCallback([netMgr]() { netMgr->incrementTxCount(); });
         protocolManager->setRxCallback([netMgr]() { netMgr->incrementRxCount(); });
     }
-    
+
     // 步骤11.5: 初始化外设执行管理器
 #if FASTBEE_ENABLE_PERIPH_EXEC
     stepStart = millis();
@@ -623,7 +627,7 @@ bool FastBeeFramework::initialize() {
     Serial.printf("[Boot] RuleScriptManager: %lu ms\n", millis() - stepStart);
     LOG_BOOT_HEAP("RuleScriptManager");
 #endif
-    
+
     // 注入 MQTT 消息回调：消息到达时匹配外设执行
     if (protocolManager) {
         protocolManager->setMessageCallback([](ProtocolType type, const String& topic, const String& msg) {
@@ -634,7 +638,7 @@ bool FastBeeFramework::initialize() {
             }
         });
     }
-    
+
     // 步骤12: 添加系统任务
     stepStart = millis();
     Serial.println("[STEP12] Adding system tasks...");
@@ -643,7 +647,7 @@ bool FastBeeFramework::initialize() {
     }
     Serial.printf("[Boot] addSystemTasks: %lu ms\n", millis() - stepStart);
     LOG_BOOT_HEAP("addSystemTasks");
-    
+
     // 步骤13: 检查系统健康状态
     Serial.println("[STEP13] Checking system health...");
     if (!healthMonitor->isSystemHealthy()) {
@@ -652,12 +656,12 @@ bool FastBeeFramework::initialize() {
         Serial.printf("[STEP13] WARN: %s\n", buf);
     }
     Serial.println("[STEP13] Health check completed");
-    
+
     // 计算启动耗时
     unsigned long bootTime = millis() - startTime;
-    
+
     systemInitialized = true;
-    
+
     // 输出 Boot Performance Report
     Serial.println("[Boot] === Performance Report ===");
     Serial.printf("[Boot] Total boot time: %lu ms\n", bootTime);
@@ -665,28 +669,32 @@ bool FastBeeFramework::initialize() {
         Serial.printf("[Boot] WARNING: NetworkManager took %lu ms (may block on WiFi connect)\n", networkMs);
     }
     Serial.println("[Boot] === End Report ===");
-    
+
     // 将启动耗时记录到 HealthMonitor
 #if FASTBEE_ENABLE_HEALTH_MONITOR
     if (healthMonitor) {
         healthMonitor->setBootTime(bootTime);
     }
 #endif
-    
+
     Serial.println("========================================");
     Serial.printf("  System initialized in %lu ms\n", bootTime);
     Serial.println("========================================");
     Serial.printf("[BOOT] Platform ready! Heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
     ets_printf("[BOOT] Platform ready! Heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
-    
+
     // 输出访问信息（同时输出到串口和日志）
     Serial.println("========================================");
     Serial.println("  FastBee IoT Platform Ready!");
     Serial.println("========================================");
-    
+
     if (WiFi.status() == WL_CONNECTED) {
         Serial.println("Mode: STA (WiFi Client)");
+        Serial.printf("SSID: %s\n", WiFi.SSID().c_str());
         Serial.printf("IP Address: %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
+        Serial.printf("DNS: %s\n", WiFi.dnsIP(0).toString().c_str());
+        Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
         Serial.printf("Access URL: http://%s\n", WiFi.localIP().toString().c_str());
         Serial.println("mDNS URL: http://fastbee.local");
     } else if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
@@ -706,11 +714,11 @@ bool FastBeeFramework::initialize() {
     } else {
         Serial.println("Network: Not connected");
     }
-    
+
     Serial.println("----------------------------------------");
     Serial.println("Default Login: admin / admin123");
     Serial.println("========================================");
-    
+
     return true;
 }
 
@@ -720,7 +728,7 @@ bool FastBeeFramework::addSystemTasks() {
         LOG_ERROR("Task manager not initialized");
         return false;
     }
-    
+
     // 健康检查任务（每30秒）
 #if FASTBEE_ENABLE_HEALTH_MONITOR
     if (!taskManager->addTask("health_check", [](void* param) {
@@ -750,7 +758,7 @@ bool FastBeeFramework::addSystemTasks() {
         return false;
     }
 #endif
-    
+
     // Web客户端处理任务（每100ms）
 #if FASTBEE_ENABLE_WEB_SERVER
     if (!taskManager->addTask("web_client_handler", [](void* param) {
@@ -760,13 +768,13 @@ bool FastBeeFramework::addSystemTasks() {
         LOG_WARNING("Failed to add web client handler task");
         // 这个任务不是关键的，所以不返回错误
     }
-    
+
     // 网络状态更新任务（每5秒）
     if (!taskManager->addTask("network_update", [](void* param) {
         FastBeeFramework* framework = (FastBeeFramework*)param;
         if (framework && framework->network) {
             framework->network->update();
-            
+
             // 标记WiFi已连接，触发NTP同步任务（仅执行一次）
             if (!framework->ntpSynced && WiFi.status() == WL_CONNECTED) {
                 static unsigned long wifiConnectedTime = 0;
@@ -779,7 +787,7 @@ bool FastBeeFramework::addSystemTasks() {
                     framework->ntpSynced = true; // 标记已处理，避免重复
                 }
             }
-            
+
             // WiFi连接后自动启动协议（MQTT + Modbus，仅执行一次）
             // 合并读取 protocol.json，减少一次 JsonDocument 分配（~8KB 栈空间）
             static unsigned long protocolWaitStart = 0;
@@ -798,7 +806,7 @@ bool FastBeeFramework::addSystemTasks() {
                 lastProtocolNetworkType = protocolNetworkType;
             }
 
-            if ((!framework->mqttAutoStarted || !framework->modbusAutoStarted) 
+            if ((!framework->mqttAutoStarted || !framework->modbusAutoStarted)
                 && protocolNetworkReady && framework->protocolManager) {
                 if (protocolWaitStart == 0) {
                     protocolWaitStart = millis();
@@ -820,7 +828,7 @@ bool FastBeeFramework::addSystemTasks() {
                         framework->mqttAutoStarted = !shouldStartMqtt;
                         framework->modbusAutoStarted = !shouldStartModbus;
                     } else {
-                    
+
                     // 单次读取 protocol.json，同时检查 MQTT 和 Modbus 配置
 #if FASTBEE_ENABLE_MQTT
                     bool mqttEnabled = false;
@@ -844,7 +852,7 @@ bool FastBeeFramework::addSystemTasks() {
                             }
                         }
                     }  // doc 在此处销毁，释放 8KB 栈空间
-                    
+
                     // 启动 MQTT（延迟连接：仅 begin，由 reconnectTask 30s 后发起首次连接）
                     // 避免 boot 期同步 connect() 抢占资源导致 web/SSE 不可访问
 #if FASTBEE_ENABLE_MQTT
@@ -855,7 +863,7 @@ bool FastBeeFramework::addSystemTasks() {
                         LOG_INFO("[MQTT] MQTT not enabled in config, skipping auto-start");
                     }
 #endif
-                    
+
                     // 启动 Modbus
 #if FASTBEE_ENABLE_MODBUS
                     if (shouldStartModbus && modbusEnabled) {
@@ -872,12 +880,12 @@ bool FastBeeFramework::addSystemTasks() {
     }, this, 5000)) {
         LOG_WARNING("Failed to add network update task");
     }
-    
+
     // NTP同步任务（每10秒检查一次）
     if (!taskManager->addTask("ntp_sync", [](void* param) {
         FastBeeFramework* framework = (FastBeeFramework*)param;
         if (!framework) return;
-        
+
         // 检查是否需要启动同步
         if (framework->ntpSyncPending && WiFi.status() == WL_CONNECTED) {
             framework->ntpSyncPending = false;
@@ -886,7 +894,7 @@ bool FastBeeFramework::addSystemTasks() {
             framework->ntpSyncStarted = true;  // 标记已启动同步
             return;  // 等待下一次任务检查结果
         }
-        
+
         // 检查同步结果（同步启动后）
         if (framework->ntpSyncStarted) {
             struct tm timeinfo;
@@ -916,17 +924,17 @@ bool FastBeeFramework::addSystemTasks() {
     }, this, 10000)) {
         LOG_WARNING("Failed to add NTP sync task");
     }
-    
+
     // 内存监控任务（每60秒）
     if (!taskManager->addTask("memory_monitor", [](void* param) {
         static uint32_t lastHeap = 0;
         uint32_t currentHeap = ESP.getFreeHeap();
-        
+
         if (lastHeap > 0) {
             int32_t diff = currentHeap - lastHeap;
             if (abs(diff) > 1024) { // 变化超过1KB时记录
                 static char buffer[100];
-                snprintf(buffer, sizeof(buffer), "Memory: %luKB free (%+ld bytes)", 
+                snprintf(buffer, sizeof(buffer), "Memory: %luKB free (%+ld bytes)",
                          currentHeap / 1024, diff);
                 LOG_DEBUG(buffer);
             }
@@ -935,18 +943,18 @@ bool FastBeeFramework::addSystemTasks() {
     }, nullptr, 60000)) {
         LOG_WARNING("Failed to add memory monitor task");
     }
-    
+
     // Web服务器维护任务（每5分钟）
     if (!taskManager->addTask("web_maintenance", [](void* param) {
         FastBeeFramework* framework = static_cast<FastBeeFramework*>(param);
         if (!framework || !framework->webConfig) return;
-        
+
         framework->webConfig->performMaintenance();
     }, this, 1000, TaskPriority::PRIORITY_HIGH)) {
         LOG_WARNING("Failed to add web maintenance task");
     }
 #endif
-    
+
 #if FASTBEE_ENABLE_PERIPH_EXEC
     // 外设执行定时器检查任务（每1秒）
     if (!taskManager->addTask("periph_exec_timer", [](void* param) {
@@ -954,14 +962,14 @@ bool FastBeeFramework::addSystemTasks() {
     }, nullptr, 1000)) {
         LOG_WARNING("Failed to add periph exec timer task");
     }
-    
+
     // 设备触发轮询检查任务（每200ms）
     if (!taskManager->addTask("periph_device_trigger", [](void* param) {
         // 设备触发检测已移除，统一使用触发事件
     }, nullptr, 200)) {
         LOG_WARNING("Failed to add periph device trigger task");
     }
-        
+
     // 按键事件检测任务（每100ms）- 优先级 HIGH 确保 MEMGUARD SEVERE 时仍执行
     // 注意：50ms间隔过于激进，可能导致执行超时和看门狗复位
     if (!taskManager->addTask("button_event_check", [](void* param) {
@@ -970,7 +978,7 @@ bool FastBeeFramework::addSystemTasks() {
         LOG_WARNING("Failed to add button event check task");
     }
 #endif
-    
+
     // 协议处理任务（每100ms）— 维持MQTT心跳和消息收发
     if (!taskManager->addTask("protocol_handle", [](void* param) {
         FastBeeFramework* framework = static_cast<FastBeeFramework*>(param);
@@ -980,7 +988,7 @@ bool FastBeeFramework::addSystemTasks() {
     }, this, 100)) {
         LOG_WARNING("Failed to add protocol handle task");
     }
-    
+
     LOG_INFO("System tasks added");
 
 #if FASTBEE_ENABLE_STORAGE_CACHE
@@ -1010,26 +1018,57 @@ void FastBeeFramework::run() {
         LOG_ERROR("Framework not initialized, cannot run");
         return;
     }
-    
-    // 周期性内存状态串口输出（每 30 秒，用于快速诊断）
-    static unsigned long lastMemPrint = 0;
+
+    // 周期性系统状态串口输出（每 30 秒，提供完整运行状态）
+    static unsigned long lastStatusPrint = 0;
     unsigned long nowMs = millis();
-    if (nowMs - lastMemPrint > 30000) {
-        lastMemPrint = nowMs;
-        Serial.printf("[MEM] heap=%lu maxBlk=%lu",
-                      (unsigned long)ESP.getFreeHeap(),
-                      (unsigned long)ESP.getMaxAllocHeap());
+    if (nowMs - lastStatusPrint > 30000) {
+        lastStatusPrint = nowMs;
+        unsigned long uptimeSec = nowMs / 1000;
+        unsigned long hours = uptimeSec / 3600;
+        unsigned long mins = (uptimeSec % 3600) / 60;
+        unsigned long secs = uptimeSec % 60;
+
+        // 内存状态
+        uint32_t freeHeap = ESP.getFreeHeap();
+        uint32_t maxBlock = ESP.getMaxAllocHeap();
+        Serial.printf("[STATUS] uptime=%luh%lum%lus heap=%lu/%lu",
+                      hours, mins, secs, (unsigned long)freeHeap, (unsigned long)maxBlock);
 #ifdef BOARD_HAS_PSRAM
         Serial.printf(" psram=%lu", (unsigned long)ESP.getFreePsram());
 #endif
         Serial.println();
+
+        // 网络状态
+        wl_status_t wifiSt = WiFi.status();
+        if (wifiSt == WL_CONNECTED) {
+            Serial.printf("[STATUS] WiFi=CONNECTED ssid=%s ip=%s rssi=%d ch=%d\n",
+                          WiFi.SSID().c_str(),
+                          WiFi.localIP().toString().c_str(),
+                          WiFi.RSSI(),
+                          WiFi.channel());
+        } else if (WiFi.getMode() & WIFI_AP) {
+            Serial.printf("[STATUS] WiFi=AP_MODE ap_ip=%s clients=%d\n",
+                          WiFi.softAPIP().toString().c_str(),
+                          WiFi.softAPgetStationNum());
+        } else {
+            const char* stStr = "UNKNOWN";
+            switch (wifiSt) {
+                case WL_IDLE_STATUS:    stStr = "IDLE"; break;
+                case WL_NO_SSID_AVAIL: stStr = "NO_SSID"; break;
+                case WL_CONNECT_FAILED:stStr = "CONN_FAIL"; break;
+                case WL_DISCONNECTED:  stStr = "DISCONNECTED"; break;
+                default: break;
+            }
+            Serial.printf("[STATUS] WiFi=%s mode=%d\n", stStr, (int)WiFi.getMode());
+        }
     }
-    
+
     // 执行任务调度
     if (taskManager) {
         taskManager->run();
     }
-    
+
     // 定期健康检查（除了任务调度中的检查外）
     unsigned long currentTime = millis();
     if (currentTime - lastHealthCheck > 60000UL) { // 每分钟额外检查一次
@@ -1040,7 +1079,7 @@ void FastBeeFramework::run() {
             LOG_WARNING(buf);
         }
     }
-    
+
     // 检查是否需要重启（例如在OTA更新后）
     checkForRestart();
 }
@@ -1070,6 +1109,9 @@ void FastBeeFramework::checkForRestart() {
             LOG_ERROR(buf);
         } else if (currentTime - criticalSince >= 30000UL) {
             LOG_ERROR("[MEMGUARD] CRITICAL for 30s, force restarting...");
+            RestartDiagnostics::savePreRestartState(
+                RestartReason::FRAMEWORK_LOW_MEMORY,
+                "Framework: heap < 15KB for 30s");
             delay(100);
             ESP.restart();
         }
@@ -1085,6 +1127,9 @@ void FastBeeFramework::checkForRestart() {
             snprintf(buf, sizeof(buf),
                      "Low memory: %lu bytes free, restarting...", (unsigned long)freeHeap);
             LOG_ERROR(buf);
+            RestartDiagnostics::savePreRestartState(
+                RestartReason::FRAMEWORK_LOW_MEMORY,
+                "Framework: periodic check — heap below MIN_FREE_HEAP");
             delay(500);
             ESP.restart();
         }

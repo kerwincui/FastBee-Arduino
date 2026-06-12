@@ -99,4 +99,33 @@ inline bool isValidIP(const String& ip) {
     return true;
 }
 
+// ========== 多网络模式断言 ==========
+
+// 联网方式回退断言：失败后必须回退到 AP 模式而非 STA
+#define TEST_ASSERT_FALLBACK_TO_AP(networkType, mode) \
+    do { \
+        TEST_ASSERT_EQUAL_MESSAGE(0, (int)(networkType), "networkType should fallback to NET_WIFI(0)"); \
+        TEST_ASSERT_EQUAL_MESSAGE(1, (int)(mode), "mode should fallback to NETWORK_AP(1)"); \
+    } while(0)
+
+// 非WiFi联网时 AP 必须保持运行
+#define TEST_ASSERT_AP_ACTIVE_IN_HYBRID(apIP, apSSID) \
+    do { \
+        TEST_ASSERT_FALSE_MESSAGE(apIP.isEmpty(), "AP IP should not be empty in hybrid mode"); \
+        TEST_ASSERT_FALSE_MESSAGE(apSSID.isEmpty(), "AP SSID should not be empty in hybrid mode"); \
+    } while(0)
+
+// 非WiFi联网时 STA 不应活跃
+#define TEST_ASSERT_STA_INACTIVE(wifiMode) \
+    do { \
+        TEST_ASSERT_FALSE_MESSAGE((wifiMode) & WIFI_STA, "WiFi STA should NOT be active in non-WiFi network type"); \
+    } while(0)
+
+// 状态隔离断言：非WiFi联网时主状态不应被WiFi状态覆盖
+#define TEST_ASSERT_STATUS_ISOLATED(primaryStatus, wifiStatus) \
+    do { \
+        TEST_ASSERT_NOT_EQUAL_MESSAGE((int)(primaryStatus), (int)(wifiStatus), \
+            "Primary network status should be isolated from WiFi status"); \
+    } while(0)
+
 #endif // TEST_ASSERTIONS_H

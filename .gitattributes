@@ -1,0 +1,16 @@
+# FastBee-Arduino 行尾规范化
+# 统一使用 LF，与 .editorconfig 保持一致
+
+* text=auto eol=lf
+
+# Windows 批处理需要 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件不做行尾转换
+*.bin binary
+*.gz binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.csv text eol=lf

@@ -8,6 +8,7 @@
 
 #include "core/CommandBus.h"
 #include "core/FeatureFlags.h"
+#include "systems/RestartDiagnostics.h"
 #include <ESP.h>
 
 // ============ 内置命令 ============
@@ -15,6 +16,9 @@
 // reboot - 重启设备
 static CommandResult cmdReboot(const String& args, CommandSource source) {
     (void)args; (void)source;
+    RestartDiagnostics::savePreRestartState(
+        RestartReason::USER_COMMAND, "User reboot command");
+    delay(100);
     ESP.restart();
     return CommandResult::ok("Rebooting...");
 }

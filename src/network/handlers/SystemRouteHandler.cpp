@@ -3,6 +3,7 @@
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
 #include "systems/LoggerSystem.h"
+#include "systems/ConfigStorage.h"
 #include "systems/HealthMonitor.h"
 #include "core/FastBeeFramework.h"
 #include "core/SystemConstants.h"
@@ -189,10 +190,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/network/status", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
         // Network status handler - critical endpoint, bypass heavy memory guard
-        if (!ctx->checkPermission(request, "network.view")) {
-            ctx->sendUnauthorized(request);
-            return;
-        }
+                if (!ctx->requirePermission(request, "network.view")) return;
         auto doc = FastBee::makeJsonDocument();
         doc["success"] = true;
         if (ctx->networkManager) {
@@ -300,10 +298,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     // JSON body handler for network config update
     auto* networkJsonHandler = new AsyncCallbackJsonWebHandler("/api/network/config",
         [this](AsyncWebServerRequest* request, JsonVariant& json) {
-            if (!ctx->checkPermission(request, "network.edit")) {
-                ctx->sendUnauthorized(request);
-                return;
-            }
+            if (!ctx->requirePermission(request, "network.edit")) return;
             if (!ctx->networkManager) {
                 ctx->sendError(request, 500, "Network service unavailable");
                 return;
@@ -407,7 +402,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 #if FASTBEE_ENABLE_CONFIG_TRANSFER
     server->on("/api/config/transfer/list", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->checkPermission(request, "config.view")) { ctx->sendUnauthorized(request); return; }
+        if (!ctx->requirePermission(request, "config.view")) return;
         if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config list", MemoryGuardLevel::SEVERE, 8)) return;
         if (HandlerUtils::checkLowMemory(request, 8192)) return;
 
@@ -439,7 +434,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/config/transfer/export", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->checkPermission(request, "config.view")) { ctx->sendUnauthorized(request); return; }
+        if (!ctx->requirePermission(request, "config.view")) return;
         if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config export", MemoryGuardLevel::SEVERE, 8)) return;
         if (!request->hasParam("name")) { ctx->sendError(request, 400, "Missing name parameter"); return; }
         String name = request->getParam("name")->value();
@@ -479,7 +474,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/config/transfer/import", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->checkPermission(request, "config.edit")) { ctx->sendUnauthorized(request); return; }
+        if (!ctx->requirePermission(request, "config.edit")) return;
         if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config import", MemoryGuardLevel::SEVERE, 8)) return;
         if (!request->hasParam("name", true) || !request->hasParam("content", true)) {
             ctx->sendError(request, 400, "Missing name or content parameter");
@@ -529,7 +524,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/config/transfer/import-chunk", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->checkPermission(request, "config.edit")) { ctx->sendUnauthorized(request); return; }
+        if (!ctx->requirePermission(request, "config.edit")) return;
         if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config chunk import", MemoryGuardLevel::SEVERE, 8)) return;
         if (!request->hasParam("name", true) || !request->hasParam("chunk", true)
             || !request->hasParam("index", true) || !request->hasParam("total", true)) {
@@ -608,7 +603,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/files/content", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->checkPermission(request, "system.view")) { ctx->sendUnauthorized(request); return; }
+        if (!ctx->requirePermission(request, "system.view")) return;
         if (!request->hasParam("path")) { ctx->sendError(request, 400, "Missing path parameter"); return; }
         String path = request->getParam("path")->value();
         if (!path.startsWith("/")) path = "/" + path;
@@ -802,7 +797,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/files/save", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->checkPermission(request, "config.edit")) { ctx->sendUnauthorized(request); return; }
+        if (!ctx->requirePermission(request, "config.edit")) return;
         if (!request->hasParam("path", true)) { ctx->sendError(request, 400, "Missing path parameter"); return; }
         String path = request->getParam("path", true)->value();
         if (!path.startsWith("/")) path = "/" + path;
@@ -842,7 +837,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     // Filesystem info
     server->on("/api/filesystem", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->checkPermission(request, "fs.view")) { ctx->sendUnauthorized(request); return; }
+        if (!ctx->requirePermission(request, "fs.view")) return;
         if (ESP.getFreeHeap() < 2048 || ESP.getMaxAllocHeap() < 1024) {
             HandlerUtils::sendJsonError(request, 503, "Critical memory - filesystem info unavailable", 5);
             return;
@@ -858,34 +853,131 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     });
 #endif // FASTBEE_ENABLE_FILE_MANAGER
 
-    // Factory reset
+    // Factory reset - 恢复默认配置而非删除文件，避免 Web 系统因文件缺失报错
     server->on("/api/system/factory-reset", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->checkPermission(request, "system.restart")) { ctx->sendUnauthorized(request); return; }
+        if (!ctx->requirePermission(request, "system.restart")) return;
         LOGGER.info("Factory reset initiated by user");
-        const char* configFiles[] = {
-            "/config/device.json", "/config/network.json", "/config/protocol.json",
-            "/config/users.json", "/config/auth.json", "/config/system.json",
-            "/config/http.json", "/config/mqtt.json", "/config/tcp.json",
-            "/config/modbus.json", "/config/coap.json",
-            "/config/roles.json", "/config/peripherals.json", "/config/periph_exec.json"
+
+        // 写入默认配置内容的辅助 lambda
+        auto writeDefault = [](const char* path, const char* content) -> bool {
+            File f = LittleFS.open(path, FILE_WRITE);
+            if (!f) return false;
+            f.print(content);
+            f.close();
+            return true;
         };
-        int deletedCount = 0;
-        for (int i = 0; i < (int)(sizeof(configFiles) / sizeof(configFiles[0])); i++) {
-            if (LittleFS.exists(configFiles[i])) {
-                if (LittleFS.remove(configFiles[i])) { deletedCount++; LOGGER.infof("Deleted config file: %s", configFiles[i]); }
+
+        int resetCount = 0;
+
+        // ── 核心配置文件：写入默认 JSON ──────────────────────────────────────
+        // device.json - 设备基本信息（清除个性化配置，保留合理默认值）
+        static const char DEFAULT_DEVICE[] PROGMEM =
+            "{\"deviceId\":\"FBE100900001\",\"productNumber\":1070,\"userId\":\"1\","
+            "\"deviceName\":\"FastBee-Device\",\"location\":\"\",\"description\":\"FastBee-Arduino\","
+            "\"enableNTP\":true,\"ntpServer1\":\"ntp.aliyun.com\",\"ntpServer2\":\"cn.pool.ntp.org\","
+            "\"timezone\":\"CST-8\",\"syncInterval\":3600,\"logLevel\":\"INFO\","
+            "\"autoStart\":true,\"developerModeEnabled\":true}";
+        if (writeDefault("/config/device.json", DEFAULT_DEVICE)) { resetCount++; }
+
+        // network.json - 网络配置（清除WiFi凭据，恢复AP模式以便用户重新配网）
+        static const char DEFAULT_NETWORK[] PROGMEM =
+            "{\"mode\":0,\"networkType\":0,\"deviceName\":\"FastBee-Device\","
+            "\"apSSID\":\"fastbee-ap\",\"apPassword\":\"12345678\",\"apIP\":\"192.168.4.1\","
+            "\"apChannel\":1,\"apHidden\":false,\"apMaxConnections\":4,"
+            "\"staSSID\":\"\",\"staPassword\":\"\",\"networks\":[],"
+            "\"ipConfigType\":0,\"staticIP\":\"\",\"gateway\":\"\",\"subnet\":\"\","
+            "\"dns1\":\"8.8.8.8\",\"dns2\":\"8.8.4.4\",\"connectTimeout\":20000,"
+            "\"reconnectInterval\":5000,\"maxReconnectAttempts\":5,"
+            "\"customDomain\":\"fastbee\",\"enableMDNS\":true,\"enableDNS\":true}";
+        if (writeDefault("/config/network.json", DEFAULT_NETWORK)) { resetCount++; }
+
+        // users.json - 恢复默认用户（admin/viewer）
+        static const char DEFAULT_USERS[] PROGMEM =
+            "{\"version\":\"2.0\",\"users\":["
+            "{\"username\":\"admin\",\"passwordHash\":\"MMqroQgcopTMz5bU/x3brwufT38Ks6YAWGPRkmE5jDw=\","
+            "\"salt\":\"RmFzdEJlZURlZmF1bHQhIQ==\",\"role\":2,\"enabled\":true,"
+            "\"createTime\":0,\"lastLogin\":0,\"lastModified\":0,"
+            "\"email\":\"\",\"remark\":\"\",\"createBy\":\"system\",\"roles\":[\"admin\"]},"
+            "{\"username\":\"viewer\",\"passwordHash\":\"8GzolfPWya4MDDWln2gLrhPhcitJHQGboXspAgr1CDU=\","
+            "\"salt\":\"Vmlld2VyRGVmYXVsdCEhIQ==\",\"role\":0,\"enabled\":true,"
+            "\"createTime\":0,\"lastLogin\":0,\"lastModified\":0,"
+            "\"email\":\"\",\"remark\":\"\",\"createBy\":\"system\",\"roles\":[\"viewer\"]}],"
+            "\"security\":{\"maxLoginAttempts\":5,\"loginLockoutTime\":300000,"
+            "\"minPasswordLength\":6,\"maxPasswordLength\":32,\"requireStrongPasswords\":false,"
+            "\"allowMultipleSessions\":true,\"sessionTimeout\":3600000,"
+            "\"sessionCleanupInterval\":60000,\"enableSessionPersistence\":false,"
+            "\"cookieName\":\"session\",\"cookieMaxAge\":3600,"
+            "\"cookieHttpOnly\":true,\"cookieSecure\":false}}";
+        if (writeDefault("/config/users.json", DEFAULT_USERS)) { resetCount++; }
+
+        // roles.json - 恢复默认角色权限
+        static const char DEFAULT_ROLES[] PROGMEM =
+            "{\"roles\":["
+            "{\"id\":\"admin\",\"name\":\"超级管理员\",\"description\":\"拥有所有操作权限\",\"isBuiltin\":true,"
+            "\"permissions\":[\"user.view\",\"user.create\",\"user.edit\",\"user.delete\","
+            "\"role.view\",\"role.create\",\"role.edit\",\"role.delete\","
+            "\"system.view\",\"system.restart\",\"config.view\",\"config.edit\","
+            "\"network.view\",\"network.edit\",\"device.view\",\"device.control\","
+            "\"ota.update\",\"fs.view\",\"fs.manage\",\"audit.view\",\"audit.clear\"]},"
+            "{\"id\":\"operator\",\"name\":\"操作员\",\"description\":\"可操作设备和修改配置\",\"isBuiltin\":true,"
+            "\"permissions\":[\"system.view\",\"system.restart\",\"config.view\",\"config.edit\","
+            "\"network.view\",\"network.edit\",\"device.view\",\"device.control\","
+            "\"ota.update\",\"fs.view\",\"audit.view\",\"user.view\",\"role.view\"]},"
+            "{\"id\":\"viewer\",\"name\":\"查看者\",\"description\":\"只读权限\",\"isBuiltin\":true,"
+            "\"permissions\":[\"system.view\",\"config.view\",\"network.view\","
+            "\"device.view\",\"fs.view\",\"audit.view\",\"user.view\",\"role.view\"]}]}";
+        if (writeDefault("/config/roles.json", DEFAULT_ROLES)) { resetCount++; }
+
+        // protocol.json - 所有协议禁用，用户需重新配置
+        static const char DEFAULT_PROTOCOL[] PROGMEM =
+            "{\"version\":2,"
+            "\"modbusRtu\":{\"enabled\":false,\"peripheralId\":\"modbus_rtu\",\"timeout\":1000,\"mode\":\"master\",\"dePin\":14,\"transferType\":1,\"master\":{\"responseTimeout\":500,\"maxRetries\":1,\"interPollDelay\":50,\"tasks\":[],\"devices\":[]}},"
+            "\"modbusTcp\":{\"enabled\":false,\"server\":\"\",\"port\":502,\"slaveId\":1,\"timeout\":5000},"
+            "\"mqtt\":{\"enabled\":false,\"server\":\"\",\"port\":1883,\"clientId\":\"\",\"username\":\"\",\"password\":\"\",\"keepAlive\":60,\"autoReconnect\":true,\"connectionTimeout\":30000,\"authType\":0,\"publishTopics\":[],\"subscribeTopics\":[]},"
+            "\"http\":{\"enabled\":false,\"url\":\"\",\"port\":80,\"method\":\"POST\",\"timeout\":30,\"interval\":60},"
+            "\"coap\":{\"enabled\":false,\"server\":\"\",\"port\":5683},"
+            "\"tcp\":{\"enabled\":false,\"server\":\"\",\"port\":5000,\"timeout\":5000}}";
+        if (writeDefault("/config/protocol.json", DEFAULT_PROTOCOL)) { resetCount++; }
+
+        // peripherals.json - 清空外设配置（用户按需添加）
+        static const char DEFAULT_PERIPHERALS[] PROGMEM = "{\"peripherals\":[]}";
+        if (writeDefault("/config/peripherals.json", DEFAULT_PERIPHERALS)) { resetCount++; }
+
+        // periph_exec.json - 清空执行规则
+        static const char DEFAULT_PERIPH_EXEC[] PROGMEM = "{\"version\":3,\"rules\":[]}";
+        if (writeDefault("/config/periph_exec.json", DEFAULT_PERIPH_EXEC)) { resetCount++; }
+
+        // ── 运行时可选配置文件：直接删除（各模块已处理文件不存在的情况）────
+        const char* optionalFiles[] = {
+            "/config/auth.json", "/config/system.json",
+            "/config/http.json", "/config/mqtt.json", "/config/tcp.json",
+            "/config/modbus.json", "/config/coap.json"
+        };
+        for (const char* optFile : optionalFiles) {
+            if (LittleFS.exists(optFile)) {
+                LittleFS.remove(optFile);
             }
         }
+
 #if FASTBEE_ENABLE_FILE_LOGGING || FASTBEE_ENABLE_LOG_VIEWER
         if (LittleFS.exists("/logs/system.log")) {
             File logFile = LittleFS.open("/logs/system.log", "w");
             if (logFile) { logFile.close(); LOGGER.info("Cleared system log file"); }
         }
 #endif
+
+#if FASTBEE_ENABLE_STORAGE_CACHE
+        // 清除配置缓存，确保重启前不会把旧缓存写回磁盘
+        ConfigStorage::getInstance().clearCache();
+#endif
+
+        LOGGER.infof("Factory reset: %d config files restored to defaults", resetCount);
+
         JsonDocument doc;
         doc["success"] = true;
         doc["message"] = "Factory reset completed. Device will restart.";
-        doc["deletedFiles"] = deletedCount;
+        doc["restoredFiles"] = resetCount;
         doc["timestamp"] = millis();
         String jsonStr; serializeJson(doc, jsonStr);
         AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonStr);
@@ -901,7 +993,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     // Config
     server->on("/api/config", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->checkPermission(request, "config.view")) { ctx->sendUnauthorized(request); return; }
+        if (!ctx->requirePermission(request, "config.view")) return;
         JsonDocument doc;
         Preferences prefs;
         prefs.begin("webconfig", true);
@@ -915,7 +1007,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/config", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->checkPermission(request, "config.edit")) { ctx->sendUnauthorized(request); return; }
+        if (!ctx->requirePermission(request, "config.edit")) return;
         Preferences prefs;
         prefs.begin("webconfig", false);
         uint32_t webPort = ctx->getParamInt(request, "webPort", 0);
@@ -951,10 +1043,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 }
 
 void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "system.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "system.view")) return;
 
     if (request->hasParam("probe")) {
         char json[512];
@@ -1140,10 +1229,7 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
 }
 
 void SystemRouteHandler::handleSystemRestart(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "system.restart")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "system.restart")) return;
 
     int delaySeconds = ctx->getParamInt(request, "delay", 3);
     delaySeconds = constrain(delaySeconds, 1, 30);
@@ -1175,10 +1261,7 @@ void SystemRouteHandler::handleSystemRestart(AsyncWebServerRequest* request) {
 }
 
 void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "network.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "network.view")) return;
 
     auto doc = FastBee::makeJsonDocument(8192);
 
@@ -1257,19 +1340,13 @@ void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
 }
 
 void SystemRouteHandler::handleSaveNetworkConfig(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "network.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "network.edit")) return;
     ctx->sendSuccess(request, "Use JSON body for network config update");
 }
 
 #if FASTBEE_ENABLE_FILE_MANAGER
 void SystemRouteHandler::handleGetFilesList(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "system.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "system.view")) return;
 
     const bool psramBacked = FastBee::psramAvailableForJson(32768);
     if (!psramBacked) {
@@ -1341,10 +1418,7 @@ void SystemRouteHandler::handleGetHealth(AsyncWebServerRequest* request) {
 }
 
 void SystemRouteHandler::handleSystemMetrics(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "system.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "system.view")) return;
 
     FastBeeFramework* fw = FastBeeFramework::getInstance();
     if (!fw || !fw->getHealthMonitor()) {
@@ -1359,10 +1433,7 @@ void SystemRouteHandler::handleSystemMetrics(AsyncWebServerRequest* request) {
 }
 
 void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "system.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "system.view")) return;
 
     if (request->hasParam("probe")) {
         char json[512];
@@ -1552,6 +1623,10 @@ void SystemRouteHandler::handleGetCapabilities(AsyncWebServerRequest* request) {
     doc["data"]["lcd"]        = (bool)FASTBEE_ENABLE_LCD;
     doc["data"]["ledScreen"]  = (bool)FASTBEE_ENABLE_LED_SCREEN;
 
+    doc["data"]["ethernet"]     = (bool)FASTBEE_ENABLE_ETHERNET;
+    doc["data"]["cellular"]     = (bool)FASTBEE_ENABLE_CELLULAR;
+    doc["data"]["lora"]         = (bool)FASTBEE_ENABLE_LORA;
+
     doc["data"]["ota"]           = (bool)FASTBEE_ENABLE_OTA;
     doc["data"]["auth"]         = (bool)FASTBEE_ENABLE_AUTH;
     doc["data"]["webServer"]    = (bool)FASTBEE_ENABLE_WEB_SERVER;
@@ -1560,6 +1635,7 @@ void SystemRouteHandler::handleGetCapabilities(AsyncWebServerRequest* request) {
     doc["data"]["logViewer"]    = (bool)FASTBEE_ENABLE_LOG_VIEWER;
     doc["data"]["fileLogging"]  = (bool)FASTBEE_ENABLE_FILE_LOGGING;
     doc["data"]["taskManager"]  = (bool)FASTBEE_ENABLE_TASK_MANAGER;
+    doc["data"]["i18n"]          = (bool)FASTBEE_ENABLE_I18N;
 
     doc["success"] = true;
     HandlerUtils::sendJsonStream(request, doc);

@@ -123,6 +123,50 @@ bool WebHandlerContext::checkPermission(AsyncWebServerRequest* request, const St
     return authManager->checkPermission(authResult.username, permission);
 }
 
+bool WebHandlerContext::requirePermission(AsyncWebServerRequest* request, const String& permission) {
+    if (!authManager || !request) {
+        sendUnauthorized(request);
+        return false;
+    }
+
+    AuthResult authResult = authenticateRequest(request);
+    if (!authResult.success) {
+        // 未认证或会话过期 → 401
+        sendUnauthorized(request);
+        return false;
+    }
+
+    // 已认证，检查权限
+    if (!authManager->checkPermission(authResult.username, permission)) {
+        // 已登录但无权限 → 403
+        sendForbidden(request);
+        return false;
+    }
+
+    return true;
+}
+
+bool WebHandlerContext::requireAnyPermission(AsyncWebServerRequest* request, const String& perm1, const String& perm2) {
+    if (!authManager || !request) {
+        sendUnauthorized(request);
+        return false;
+    }
+
+    AuthResult authResult = authenticateRequest(request);
+    if (!authResult.success) {
+        sendUnauthorized(request);
+        return false;
+    }
+
+    if (!authManager->checkPermission(authResult.username, perm1) &&
+        !authManager->checkPermission(authResult.username, perm2)) {
+        sendForbidden(request);
+        return false;
+    }
+
+    return true;
+}
+
 bool WebHandlerContext::isDeveloperModeEnabled() {
     File f = LittleFS.open("/config/device.json", "r");
     if (!f) {

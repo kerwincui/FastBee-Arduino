@@ -465,6 +465,21 @@
       "params": {}
     },
     {
+      "id": "oled_ssd1306_c3",
+      "name": "OLED显示屏-SSD1306(ESP32-C3 72x40)",
+      "type": 36,
+      "enabled": false,
+      "pins": [
+        5,
+        6
+      ],
+      "params": {
+        "width": 72,
+        "height": 40,
+        "interface": 2
+      }
+    },
+    {
       "id": "onewire",
       "name": "单总线(OneWire)",
       "type": 44,

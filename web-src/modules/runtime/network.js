@@ -193,7 +193,7 @@
             apiGet('/api/network/config')
                 .then(res => {
                     if (!res || !res.success) {
-                        Notification.error(i18n.t('net-load-fail'), i18n.t('net-settings-title'));
+                        Notification.error('加载网络配置失败', '网络设置');
                         return;
                     }
 
@@ -273,7 +273,7 @@
                 })
                 .catch(err => {
                     console.error('Load network config failed:', err);
-                    Notification.error(i18n.t('net-load-fail'), i18n.t('net-settings-title'));
+                    Notification.error('加载网络配置失败', '网络设置');
                 });
         },
 
@@ -333,7 +333,7 @@
 
             if (submitBtn && submitBtnText) {
                 submitBtn.disabled = true;
-                submitBtnText.innerHTML = i18n.t('wifi-saving-mode');
+                submitBtnText.innerHTML = '网络模式切换中...';
             }
 
             this._showMessage('wifi-success', false);
@@ -348,11 +348,11 @@
                         this._showMessage('wifi-success', true);
 
                         const data = res.data || {};
-                        let message = i18n.t('wifi-save-ok');
-                        let noticeMessage = i18n.t('wifi-mode-notice-title');
+                        let message = 'WiFi配置保存成功！';
+                        let noticeMessage = '网络模式切换提醒：';
 
                         if (data.restartRequired) {
-                            message += '<br>' + this._renderWifiNote(i18n.t('wifi-restart-hint'));
+                            message += '<br>' + this._renderWifiNote('网络配置变更需要重启网络服务才能生效，请等待约10秒...');
                         }
 
                         const mode = data.mode;
@@ -360,26 +360,22 @@
 
                         if (mode === 0 || modeText === 'STA') {
                             if (data.mdnsDomain) {
-                                const hint = i18n.t('wifi-mode-sta-hint').replace('{domain}', data.mdnsDomain);
+                                const hint = '可通过域名 http://' + data.mdnsDomain + ' 访问Web服务';
                                 message += '<br>' + this._renderWifiNote(hint);
-                                noticeMessage += i18n.t('wifi-mode-notice-sta').replace('{domain}', data.mdnsDomain);
+                                noticeMessage += '切换到STA模式后，可通过 http://' + data.mdnsDomain + ' 访问';
                             }
                         } else if (mode === 1 || modeText === 'AP') {
-                            const hint = i18n.t('wifi-mode-ap-hint')
-                                .replace('{ssid}', data.apSSID || 'fastbee-ap')
-                                .replace('{ip}', data.apIP || '192.168.4.1');
+                            const hint = '请先连接热点 [' + (data.apSSID || 'fastbee-ap') + ']，然后访问 http://' + (data.apIP || '192.168.4.1');
                             message += '<br>' + this._renderWifiNote(hint);
-                            noticeMessage += i18n.t('wifi-mode-notice-ap')
-                                .replace('{ssid}', data.apSSID || 'fastbee-ap')
-                                .replace('{ip}', data.apIP || '192.168.4.1');
+                            noticeMessage += '切换到AP模式后，请连接热点 [' + (data.apSSID || 'fastbee-ap') + '] 访问 http://' + (data.apIP || '192.168.4.1');
                         }
 
-                        message += '<br>' + this._renderWifiNote(i18n.t('wifi-reconnect-hint'));
+                        message += '<br>' + this._renderWifiNote('如无法访问，请刷新页面或重新连接网络。');
                         this._setWifiModeNotice(noticeMessage);
 
                         Notification.show({
                             type: 'success',
-                            title: i18n.t('wifi-mode-changed-title'),
+                            title: '网络配置已保存',
                             message: message,
                             duration: 8000
                         });
@@ -392,17 +388,17 @@
                                 clearInterval(countdownInterval);
                                 if (submitBtn && submitBtnText) {
                                     submitBtn.disabled = false;
-                                    submitBtnText.textContent = originalText || i18n.t('wifi-save-ready');
+                                    submitBtnText.textContent = originalText || '保存配置';
                                 }
                                 if (noticeTextEl && noticeMessage) {
                                     noticeTextEl.textContent = noticeMessage;
                                 }
                             } else {
                                 if (submitBtnText) {
-                                    submitBtnText.textContent = i18n.t('wifi-saving-mode') + ' (' + countdown + 's)';
+                                    submitBtnText.textContent = '网络模式切换中... (' + countdown + 's)';
                                 }
                                 if (noticeTextEl) {
-                                    const countdownText = i18n.t('wifi-mode-notice-countdown').replace('{seconds}', countdown);
+                                    const countdownText = '按钮将在 ' + countdown + ' 秒后恢复可用。';
                                     noticeTextEl.textContent = noticeMessage + ' ' + countdownText;
                                 }
                             }
@@ -410,10 +406,10 @@
 
                     } else {
                         this._showMessage('wifi-error', true);
-                        Notification.error(res?.error || i18n.t('net-save-fail'), i18n.t('net-settings-title'));
+                        Notification.error(res?.error || '保存失败', '网络设置');
                         if (submitBtn && submitBtnText) {
                             submitBtn.disabled = false;
-                            submitBtnText.innerHTML = originalText || i18n.t('wifi-save-ready');
+                            submitBtnText.innerHTML = originalText || '保存配置';
                         }
                     }
                 })
@@ -433,16 +429,16 @@
                         this._showMessage('wifi-success', true);
                         Notification.show({
                             type: 'success',
-                            title: i18n.t('wifi-mode-changed-title'),
-                            message: i18n.t('wifi-save-ok') + '<br>' + this._renderWifiNote(i18n.t('wifi-restart-hint')),
+                            title: '网络配置已保存',
+                            message: 'WiFi配置保存成功！<br>' + this._renderWifiNote('网络配置变更需要重启网络服务才能生效，请等待约10秒...'),
                             duration: 8000
                         });
                     } else {
                         this._showMessage('wifi-error', true);
-                        Notification.error(i18n.t('net-save-fail'), i18n.t('net-settings-title'));
+                        Notification.error('保存失败', '网络设置');
                         if (submitBtn && submitBtnText) {
                             submitBtn.disabled = false;
-                            submitBtnText.innerHTML = originalText || i18n.t('wifi-save-ready');
+                            submitBtnText.innerHTML = originalText || '保存配置';
                         }
                     }
                 });
@@ -465,21 +461,21 @@
             const originalText = submitBtn?.innerHTML;
             if (submitBtn) {
                 submitBtn.disabled = true;
-                submitBtn.innerHTML = i18n.t('net-saving-html');
+                submitBtn.innerHTML = '… 保存中...';
             }
 
             apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
                         this._showMessage('ap-success', true);
-                        Notification.success(i18n.t('ap-save-ok'), i18n.t('net-settings-title'));
+                        Notification.success('热点配置保存成功！', '网络设置');
                     } else {
-                        Notification.error(res?.error || i18n.t('net-save-fail'), i18n.t('net-settings-title'));
+                        Notification.error(res?.error || '保存失败', '网络设置');
                     }
                 })
                 .catch(err => {
                     console.error('Save AP config failed:', err);
-                    Notification.error(i18n.t('net-save-fail'), i18n.t('net-settings-title'));
+                    Notification.error('保存失败', '网络设置');
                 })
                 .finally(() => {
                     if (submitBtn) {
@@ -512,21 +508,21 @@
             const originalText = submitBtn?.innerHTML;
             if (submitBtn) {
                 submitBtn.disabled = true;
-                submitBtn.innerHTML = i18n.t('net-saving-html');
+                submitBtn.innerHTML = '… 保存中...';
             }
 
             apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
                         this._showMessage('advanced-success', true);
-                        Notification.success(i18n.t('advanced-save-ok'), i18n.t('net-settings-title'));
+                        Notification.success('高级配置保存成功！', '网络设置');
                     } else {
-                        Notification.error(res?.error || i18n.t('net-save-fail'), i18n.t('net-settings-title'));
+                        Notification.error(res?.error || '保存失败', '网络设置');
                     }
                 })
                 .catch(err => {
                     console.error('Save advanced config failed:', err);
-                    Notification.error(i18n.t('net-save-fail'), i18n.t('net-settings-title'));
+                    Notification.error('保存失败', '网络设置');
                 })
                 .finally(() => {
                     if (submitBtn) {
@@ -554,13 +550,13 @@
             apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success(i18n.t('wifi-save-ok'), i18n.t('net-settings-title'));
+                        Notification.success('WiFi配置保存成功！', '网络设置');
                         this._refreshNetworkStatusSoon(1200);
                     } else {
-                        Notification.error(res?.error || i18n.t('net-save-fail'), i18n.t('net-settings-title'));
+                        Notification.error(res?.error || '保存失败', '网络设置');
                     }
                 })
-                .catch(() => Notification.error(i18n.t('net-save-fail'), i18n.t('net-settings-title')));
+                .catch(() => Notification.error('保存失败', '网络设置'));
         },
 
         /**
@@ -580,13 +576,13 @@
             apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success(i18n.t('wifi-save-ok'), i18n.t('net-settings-title'));
+                        Notification.success('WiFi配置保存成功！', '网络设置');
                         this._refreshNetworkStatusSoon(1200);
                     } else {
-                        Notification.error(res?.error || i18n.t('net-save-fail'), i18n.t('net-settings-title'));
+                        Notification.error(res?.error || '保存失败', '网络设置');
                     }
                 })
-                .catch(() => Notification.error(i18n.t('net-save-fail'), i18n.t('net-settings-title')));
+                .catch(() => Notification.error('保存失败', '网络设置'));
         },
 
         /**
@@ -605,13 +601,13 @@
             apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success(i18n.t('wifi-save-ok'), i18n.t('net-settings-title'));
+                        Notification.success('WiFi配置保存成功！', '网络设置');
                         this._refreshNetworkStatusSoon(1200);
                     } else {
-                        Notification.error(res?.error || i18n.t('net-save-fail'), i18n.t('net-settings-title'));
+                        Notification.error(res?.error || '保存失败', '网络设置');
                     }
                 })
-                .catch(() => Notification.error(i18n.t('net-save-fail'), i18n.t('net-settings-title')));
+                .catch(() => Notification.error('保存失败', '网络设置'));
         },
 
         /**
@@ -626,21 +622,21 @@
 
             this.showModal(modal);
             this._ensureWifiModalEvents(modal);
-            modalBody.innerHTML = i18n.t('wifi-scanning-result');
+            modalBody.innerHTML = '<div class="wifi-scan-state"><div class="wifi-scan-state-text">正在扫描...</div></div>';
 
             if (scanBtn) {
                 scanBtn.disabled = true;
-                scanBtn.innerHTML = i18n.t('wifi-scanning-html');
+                scanBtn.innerHTML = '… 扫描中...';
             }
 
             apiGet('/api/wifi/scan')
                 .then(res => {
                     if (!res || !res.success) {
                         if (res && res.error === 'scan_busy') {
-                            modalBody.innerHTML = i18n.t('wifi-scan-busy');
+                            modalBody.innerHTML = '<div class="wifi-scan-state is-warning"><div class="wifi-scan-state-text">扫描正在进行中，请稍后再试</div></div>';
                         } else {
                             modalBody.innerHTML = this._renderWifiScanState(
-                                i18n.t('wifi-scan-fail-msg'),
+                                '扫描失败，请稍后重试',
                                 res?.error || 'Unknown error'
                             );
                         }
@@ -650,7 +646,7 @@
                     const networks = res.data || [];
 
                     if (networks.length === 0) {
-                        modalBody.innerHTML = i18n.t('wifi-no-network');
+                        modalBody.innerHTML = '<div class="wifi-scan-state"><div class="wifi-scan-state-text">未找到WiFi网络</div></div>';
                         return;
                     }
 
@@ -667,7 +663,7 @@
                                 <div class="wifi-info">
                                     <div class="wifi-ssid">${net.ssid}</div>
                                     <div class="wifi-meta">
-                                        ${encryptIcon} ${net.encryption > 0 ? i18n.t('wifi-encrypted') : i18n.t('wifi-open')}
+                                        ${encryptIcon} ${net.encryption > 0 ? '加密' : '开放'}
                                     </div>
                                 </div>
                                 <div class="wifi-signal ${signalClass}">
@@ -697,18 +693,18 @@
                             if (passwordInput) passwordInput.value = '';
 
                             this.hideModal(modal);
-                            Notification.success(`${i18n.t('wifi-selected-prefix')}${ssid}`, i18n.t('wifi-scan-title'));
+                            Notification.success(`已选择: ${ssid}`, 'WiFi');
                         });
                     });
                 })
                 .catch(err => {
                     console.error('WiFi scan failed:', err);
-                    modalBody.innerHTML = this._renderWifiScanState(i18n.t('wifi-scan-fail-msg'));
+                    modalBody.innerHTML = this._renderWifiScanState('扫描失败，请稍后重试');
                 })
                 .finally(() => {
                     if (scanBtn) {
                         scanBtn.disabled = false;
-                        scanBtn.innerHTML = i18n.t('wifi-scan-btn-html');
+                        scanBtn.innerHTML = '选择Wifi网络';
                     }
                 });
         },
@@ -720,7 +716,8 @@
          */
         loadNetworkStatus(retryCount) {
             retryCount = retryCount || 0;
-            apiGet('/api/network/status')
+            var getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            getter('/api/network/status')
                 .then(res => {
                     if (!res || !res.success || !res.data) {
                         // 响应无效，重试一次
@@ -816,19 +813,19 @@
                 switch(status) {
                     case 'connected':
                         statusBadge.classList.add('status-connected');
-                        statusBadge.textContent = i18n.t('net-status-connected') || '已连接';
+                        statusBadge.textContent = '已连接';
                         break;
                     case 'connecting':
                         statusBadge.classList.add('status-connecting');
-                        statusBadge.textContent = i18n.t('net-status-connecting') || '连接中';
+                        statusBadge.textContent = '连接中';
                         break;
                     case 'ap_mode':
                         statusBadge.classList.add('status-ap-mode');
-                        statusBadge.textContent = i18n.t('net-status-ap') || 'AP模式';
+                        statusBadge.textContent = 'AP模式';
                         break;
                     default:
                         statusBadge.classList.add('status-disconnected');
-                        statusBadge.textContent = i18n.t('net-status-disconnected') || '未连接';
+                        statusBadge.textContent = '未连接';
                 }
             }
 
@@ -866,10 +863,10 @@
                 statusBadge.className = 'status-badge';
                 if (data.status === 'connected') {
                     statusBadge.classList.add('status-connected');
-                    statusBadge.textContent = i18n.t('net-status-connected') || '已连接';
+                    statusBadge.textContent = '已连接';
                 } else {
                     statusBadge.classList.add('status-disconnected');
-                    statusBadge.textContent = i18n.t('net-status-disconnected') || '未连接';
+                    statusBadge.textContent = '未连接';
                 }
             }
 
@@ -902,10 +899,10 @@
                 statusBadge.className = 'status-badge';
                 if (data.status === 'connected') {
                     statusBadge.classList.add('status-connected');
-                    statusBadge.textContent = i18n.t('net-status-connected') || '已连接';
+                    statusBadge.textContent = '已连接';
                 } else {
                     statusBadge.classList.add('status-disconnected');
-                    statusBadge.textContent = i18n.t('net-status-disconnected') || '未连接';
+                    statusBadge.textContent = '未连接';
                 }
             }
 
@@ -956,10 +953,10 @@
                 statusBadge.className = 'status-badge';
                 if (data.status === 'connected') {
                     statusBadge.classList.add('status-connected');
-                    statusBadge.textContent = i18n.t('net-status-connected') || '已连接';
+                    statusBadge.textContent = '已连接';
                 } else {
                     statusBadge.classList.add('status-disconnected');
-                    statusBadge.textContent = i18n.t('net-status-disconnected') || '未连接';
+                    statusBadge.textContent = '未连接';
                 }
             }
 
@@ -1001,8 +998,33 @@
     }
 
     // 初始化状态刷新功能
-    const networkModule = AppState.getModule('network');
-    if (networkModule && typeof networkModule.setupStatusRefresh === 'function') {
-        networkModule.setupStatusRefresh();
+    if (typeof AppState.setupStatusRefresh === 'function') {
+        AppState.setupStatusRefresh();
     }
+
+    // 根据固件能力隐藏不支持的联网方式
+    (function filterNetworkTypesByCapabilities() {
+        var getter = (typeof apiGetSilentFresh === 'function') ? apiGetSilentFresh
+            : (typeof apiGetFresh === 'function' ? apiGetFresh : (typeof apiGet === 'function' ? apiGet : null));
+        if (!getter) return;
+        getter('/api/system/capabilities').then(function(res) {
+            if (!res || !res.success || !res.data) return;
+            var caps = res.data;
+            var select = document.getElementById('network-type');
+            if (!select) return;
+            // value="1" = 以太网 W5500, value="2" = 4G EC801E, value="3" = LoRa 透传
+            if (!caps.ethernet) {
+                var opt1 = select.querySelector('option[value="1"]');
+                if (opt1) opt1.remove();
+            }
+            if (!caps.cellular) {
+                var opt2 = select.querySelector('option[value="2"]');
+                if (opt2) opt2.remove();
+            }
+            if (!caps.lora) {
+                var opt3 = select.querySelector('option[value="3"]');
+                if (opt3) opt3.remove();
+            }
+        }).catch(function() { /* 静默失败，保留所有选项 */ });
+    })();
 })();

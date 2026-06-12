@@ -36,6 +36,10 @@ var PageLoader = {
                 }
             }
             this._loadedPages[moduleName] = true;
+            // 若当前语言非中文，翻译新加载的页面内容
+            if (typeof i18n !== 'undefined' && i18n.currentLang !== 'zh-CN' && container) {
+                i18n.updatePageText(container);
+            }
         })();
 
         try {
@@ -75,6 +79,10 @@ var PageLoader = {
                 document.body.appendChild(wrapper.firstChild);
             }
             this._loadedPages['modals'] = true;
+            // 若当前语言非中文，翻译新加载的模态框内容
+            if (typeof i18n !== 'undefined' && i18n.currentLang !== 'zh-CN') {
+                i18n.updatePageText(document.body);
+            }
         } catch(e) {
             console.error('[PageLoader] Failed to load modals:', e);
         }
@@ -99,22 +107,19 @@ var PageLoader = {
             var container = document.getElementById(containerId);
             if (container) {
                 container.innerHTML = html;
-                // 应用 i18n 翻译到新加载的内容
-                if (typeof i18n !== 'undefined' && i18n.updatePageText) {
-                    i18n.updatePageText(container);
-                }
             }
             this._loadedPages[cacheKey] = true;
+            // 若当前语言非中文，翻译新加载的分片内容
+            if (typeof i18n !== 'undefined' && i18n.currentLang !== 'zh-CN' && container) {
+                i18n.updatePageText(container);
+            }
             if (typeof onLoaded === 'function') onLoaded();
         } catch(e) {
             console.error('[PageLoader] Failed to load fragment:', fragmentName, e);
             // Fallback：在容器中显示错误提示
             var container = document.getElementById(containerId);
             if (container) {
-                container.innerHTML = '<div class="message message-error" data-i18n="fragment-load-error">加载失败，请刷新重试</div>';
-                if (typeof i18n !== 'undefined' && i18n.updatePageText) {
-                    i18n.updatePageText(container);
-                }
+                container.innerHTML = '<div class="message message-error">加载失败，请刷新重试</div>';
             }
         }
     },

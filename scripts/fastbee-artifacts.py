@@ -21,11 +21,13 @@ Import("env")  # type: ignore[name-defined]
 
 
 ENV_TO_PROFILE = {
-    "esp32c3": "lite",
-    "esp32c6": "lite",
-    "esp32": "standard",
-    "esp32s3": "standard",
-    "esp32s3-full": "full",
+    "esp32c3-F4R0": "lite",
+    "esp32c6-F4R0": "lite",
+    "esp32-F4R0": "standard",
+    "esp32-F8R4": "full",
+    "esp32s3-F8R0": "standard",
+    "esp32s3-F8R4": "full",
+    "esp32s3-F16R8": "full",
 }
 
 FS_TARGETS = {"buildfs", "uploadfs", "uploadfsota"}

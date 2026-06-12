@@ -49,7 +49,8 @@ typedef std::function<void(const char* topic, const uint8_t* payload,
 // 模拟MQTT客户端类
 class MockMQTTClient {
 public:
-    MockMQTTClient() : _connected(false), _reconnectCount(0),
+    MockMQTTClient() : _connected(false), _stopped(false), _reconnectPending(false),
+                       _reconnectCount(0),
                        _lastError(0), _messageId(0),
                        _shouldFailConnect(false), _shouldFailPublish(false),
                        _lastReconnectAttempt(0) {}
@@ -59,6 +60,9 @@ public:
         _config = config;
         _reconnectCount = 0;
         _lastError = 0;
+        _lastReconnectAttempt = 0;
+        _reconnectPending = false;
+        _stopped = false;
     }
 
     // 连接管理
@@ -231,6 +235,60 @@ public:
     void setConnected(bool connected) { _connected = connected; }
     void clearPublishedMessages() { _publishedMessages.clear(); }
 
+    // ========== 自动连接 & 状态通知模拟 ==========
+
+    // 状态变更回调
+    typedef std::function<void(const String& json)> StatusChangeCallback;
+    void setStatusChangeCallback(StatusChangeCallback cb) { _statusChangeCallback = cb; }
+
+    // 模拟 _notifyStatusChange (与生产代码保持字段一致)
+    void notifyStatusChange() {
+        if (!_statusChangeCallback) return;
+        // 生产代码中：initialized=true, connected, stopped, server, port, clientId, reconnectCount, lastError
+        String json = "{\"initialized\":true,\"connected\":";
+        json += _connected ? "true" : "false";
+        json += ",\"stopped\":";
+        json += _stopped ? "true" : "false";
+        json += ",\"server\":\"";
+        json += _config.server;
+        json += "\",\"port\":";
+        json += String(_config.port);
+        json += ",\"clientId\":\"";
+        json += _config.clientId;
+        json += "\",\"reconnectCount\":";
+        json += String(_reconnectCount);
+        json += ",\"lastError\":";
+        json += String(_lastError);
+        json += "}";
+        _statusChangeCallback(json);
+    }
+
+    // 自动重连调度模拟 (模拟 handle() 中的逻辑)
+    // 返回是否调度了重连
+    bool handleAutoReconnect(unsigned long currentMillis) {
+        if (_stopped) return false;
+        if (_connected) return false;
+        if (!_config.autoReconnect) return false;
+        unsigned long elapsed = currentMillis - _lastReconnectAttempt;
+        unsigned long interval = (unsigned long)_config.reconnectInterval;
+        if (elapsed >= interval) {
+            _lastReconnectAttempt = currentMillis;
+            if (!_reconnectPending) {
+                _reconnectPending = true;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool isReconnectPending() const { return _reconnectPending; }
+    void clearReconnectPending() { _reconnectPending = false; }
+    void setStopped(bool s) { _stopped = s; }
+    bool isStopped() const { return _stopped; }
+
+    // 后台重连延迟常量 (与生产代码同步)
+    static constexpr uint32_t BOOT_STABILIZATION_DELAY_MS = 15000;
+
 private:
     bool validateAuth() {
         // 简单认证验证
@@ -249,6 +307,8 @@ private:
 
     MQTTConfig _config;
     bool _connected;
+    bool _stopped = false;
+    bool _reconnectPending = false;
     int _reconnectCount;
     int _lastError;
     int _messageId;
@@ -257,6 +317,7 @@ private:
     unsigned long _lastReconnectAttempt;
     
     MQTTCallback _callback;
+    StatusChangeCallback _statusChangeCallback;
     std::vector<PublishedMessage> _publishedMessages;
     std::vector<Subscription> _subscriptions;
 };

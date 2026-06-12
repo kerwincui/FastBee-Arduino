@@ -54,7 +54,8 @@ enum class ActionType {
     SET_DAC = 3,            // 设置DAC
     TOGGLE = 4,             // 翻转
     PULSE = 5,              // 脉冲
-    SCRIPT_EXECUTE = 10     // 执行脚本
+    SCRIPT_EXECUTE = 10,    // 执行脚本
+    OLED_CUSTOM = 27        // OLED 自定义多行显示
 };
 
 // 外设配置结构

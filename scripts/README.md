@@ -7,7 +7,7 @@
 | 脚本 | 用途 | 常用命令 |
 |------|------|----------|
 | `doctor.ps1` | 检查 PlatformIO、Node、Git、串口和 native 工具链，部署或测试前优先运行 | `powershell -ExecutionPolicy Bypass -File scripts\doctor.ps1 -Port COM6` |
-| `test-all.ps1` | 统一测试矩阵入口，串起静态检查、native 测试、全版本编译、产物构建、设备冒烟和稳定性测试 | `powershell -ExecutionPolicy Bypass -File scripts\test-all.ps1 -Checks static,build` |
+| `test-all.ps1` | 统一测试矩阵入口，串起静态检查、native 测试、全版本编译、产物构建、设备冒烟和稳定性测试 | `powershell -ExecutionPolicy Bypass -File scripts\test-all.ps1 -Checks static build` |
 | `deploy.ps1` | 构建并烧录指定 PlatformIO 环境的固件和 LittleFS 文件系统 | `powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-full -Port COM6` |
 | `build-all-artifacts.ps1` | 为所有版本生成发布固件包和 `manifest.json` | `powershell -ExecutionPolicy Bypass -File scripts\build-all-artifacts.ps1 -CleanOutput` |
 | `flash-release.ps1` | 直接烧录 `dist\firmware\all-latest` 中的合并发布镜像，适合量产和现场恢复 | `powershell -ExecutionPolicy Bypass -File scripts\flash-release.ps1 -Env esp32s3-full -Port COM6` |

@@ -3,7 +3,7 @@
     if (typeof i18n === 'undefined') return;
     var zhTranslations = {
         // 登录页面
-        'login-title': '设备配置管理',
+        'login-title': 'FastBee Arduino',
         'username-label': '用户名',
         'password-label': '密码',
         'username-placeholder': '请输入用户名',
@@ -1145,6 +1145,7 @@
         'periph-exec-add-btn': '新增规则',
         'periph-exec-page-title': '外设执行管理',
         'periph-exec-filter-all': '全部规则',
+        'periph-exec-filter-by-periph': '按外设筛选',
         'periph-exec-no-data': '暂无外设执行',
         'periph-exec-loading': '加载中...',
         'periph-exec-col-status': '状态',
@@ -1195,7 +1196,7 @@
         'event-button_double_click': '按键双击',
         'event-button_long_press_2s': '按键长按2秒',
         'event-button_long_press_5s': '按键长按5秒',
-        'event-button_long_press_10s': '按键长按 10 秒',
+        'event-button_long_press_10s': '按键长按10秒',
         'event-button_press': '按键按下',
         'event-button_release': '按键释放',
         'event-periph_exec_completed': '外设执行完成',
@@ -1701,6 +1702,11 @@
         'segment-brightness-label': '亮度 (0-7)',
         'segment-brightness-help': '0=最暗，7=最亮，默认 3',
         'segment-pin-hint': '引脚顺序：引脚1=CLK, 引脚2=DIO',
+                'lcd-params-title': '显示屏参数',
+                'lcd-width-label': '屏幕宽度 (px)',
+                'lcd-height-label': '屏幕高度 (px)',
+                'lcd-interface-label': '接口类型',
+                'lcd-pin-hint-i2c': 'I2C 引脚顺序：SDA, SCL。ESP32-C3 示例：5, 6',
         'periph-exec-action-display-value-hint': '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值',
                 'periph-exec-action-oled-value-hint': '多行文本，每行一条。首行以 # 开头为居中标题。支持 ${periphId.field}（传感器缓存）和 $value（下发变量）模板。例：\n# 环境监测\n温度:${dht_01.temperature}°C\n湿度:${dht_01.humidity}%\n设备:$value',
                 'periph-exec-action-oled-value-help': '最多 6 行、6 行以内可自动适配 OLED 显示。\n 换行。首行 # 开头为居中标题带分隔线。支持变量：${外设ID.字段} 从传感器缓存取值，$value 取 MQTT/规则下发的原始值',
@@ -1778,60 +1784,7 @@
         'modbus-motor-ctrl-stop-ok': '停止指令已发送',
         'modbus-motor-ctrl-speed-ok': '速度设置成功',
         'modbus-motor-ctrl-pulse-ok': '脉冲数设置成功'
-        , 'dashboard-web-runtime': 'Web杩愯鎬?'
-        , 'dashboard-web-guard': 'MemGuard'
-        , 'dashboard-web-sse': 'SSE鐘舵€?'
-        , 'dashboard-web-recovery': '鎭㈠璁板綍'
-        , 'dashboard-web-guard-level': '淇濇姢绛夌骇'
-        , 'dashboard-web-largest-block': '鏈€澶ц繛缁潡'
-        , 'dashboard-web-max-alloc': '鏈€澶у彲鍒嗛厤'
-        , 'dashboard-web-health': '鍋ュ悍鎽樿'
-        , 'dashboard-web-clients': '杩炴帴鏁?'
-        , 'dashboard-web-rejects': '鎷掔粷缁熻'
-        , 'dashboard-web-skips': '璺宠繃骞挎挱'
-        , 'dashboard-web-last-reject': '鏈€杩戞嫆缁?'
-        , 'dashboard-web-soft-restarts': '杞噸鍚鏁?'
-        , 'dashboard-web-last-restart': '鏈€杩戣蒋閲嶅惎'
-        , 'dashboard-web-pressure': '鎸佺画鍘嬪姏'
-        , 'dashboard-web-events': '鏈€杩戜簨浠?'
-        , 'dashboard-web-none': '鏃?'
-        , 'dashboard-web-runtime': 'Web Runtime'
-        , 'dashboard-web-guard': 'MemGuard'
-        , 'dashboard-web-sse': 'SSE Status'
-        , 'dashboard-web-recovery': 'Recovery'
-        , 'dashboard-web-guard-level': 'Guard Level'
-        , 'dashboard-web-largest-block': 'Largest Block'
-        , 'dashboard-web-max-alloc': 'Max Alloc'
-        , 'dashboard-web-health': 'Health Summary'
-        , 'dashboard-web-clients': 'Clients'
-        , 'dashboard-web-rejects': 'Rejects'
-        , 'dashboard-web-skips': 'Skipped Broadcasts'
-        , 'dashboard-web-last-reject': 'Last Reject'
-        , 'dashboard-web-soft-restarts': 'Soft Restarts'
-        , 'dashboard-web-last-restart': 'Last Soft Restart'
-        , 'dashboard-web-pressure': 'Pressure'
-        , 'dashboard-web-events': 'Recent Events'
-        , 'dashboard-web-none': 'None'
     };
-    Object.assign(zhTranslations, {
-        'dashboard-web-runtime': '\u7F51\u9875\u8FD0\u884C\u6001',
-        'dashboard-web-guard': 'MemGuard',
-        'dashboard-web-sse': 'SSE \u72B6\u6001',
-        'dashboard-web-recovery': '\u6062\u590D',
-        'dashboard-web-guard-level': '\u4FDD\u62A4\u7B49\u7EA7',
-        'dashboard-web-largest-block': '\u6700\u5927\u8FDE\u7EED\u5757',
-        'dashboard-web-max-alloc': '\u6700\u5927\u53EF\u5206\u914D',
-        'dashboard-web-health': '\u5065\u5EB7\u6458\u8981',
-        'dashboard-web-clients': '\u5BA2\u6237\u7AEF',
-        'dashboard-web-rejects': '\u62D2\u7EDD\u6B21\u6570',
-        'dashboard-web-skips': '\u8DF3\u8FC7\u5E7F\u64AD',
-        'dashboard-web-last-reject': '\u6700\u8FD1\u62D2\u7EDD',
-        'dashboard-web-soft-restarts': '\u8F6F\u91CD\u542F\u6B21\u6570',
-        'dashboard-web-last-restart': '\u6700\u8FD1\u8F6F\u91CD\u542F',
-        'dashboard-web-pressure': '\u6301\u7EED\u538B\u529B',
-        'dashboard-web-events': '\u6700\u8FD1\u4E8B\u4EF6',
-        'dashboard-web-none': '\u65E0'
-    });
     i18n.addTranslations('zh-CN', zhTranslations);
     i18n._zhLoaded = true;
 })();

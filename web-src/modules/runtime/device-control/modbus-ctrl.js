@@ -67,7 +67,7 @@
                 if (header && !header.querySelector('.dc-offline-badge')) {
                     var span = document.createElement('span');
                     span.className = 'dc-offline-badge';
-                    span.textContent = this._t('device-control-offline') || '离线';
+                    span.textContent = '离线';
                     header.appendChild(span);
                 }
             }
@@ -87,8 +87,8 @@
             card.classList.add(isOn ? 'dc-coil-on' : 'dc-coil-off');
             var stEl = card.querySelector('.dc-coil-st');
             if (stEl) stEl.textContent = isOn
-                ? (this._t('modbus-ctrl-status-on') || 'ON')
-                : (this._t('modbus-ctrl-status-off') || 'OFF');
+                ? 'ON'
+                : 'OFF';
             return true;
         },
 
@@ -136,7 +136,7 @@
                     if (ch < st.length) st[ch] = prevState;
                     self._dcCoilStates[devIdx] = st;
                     self._dcUpdateSingleCoilUI(devIdx, ch);
-                    Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
+                    Notification.error((res && res.error) || '操作失败');
                 }
                 if (cardEl) cardEl.style.pointerEvents = '';
                 self._dcCoilPending[devIdx + '_' + ch] = false;
@@ -145,7 +145,7 @@
                 if (ch < st.length) st[ch] = prevState;
                 self._dcCoilStates[devIdx] = st;
                 self._dcUpdateSingleCoilUI(devIdx, ch);
-                Notification.error(self._t('modbus-ctrl-fail'));
+                Notification.error('操作失败');
                 if (cardEl) cardEl.style.pointerEvents = '';
                 self._dcCoilPending[devIdx + '_' + ch] = false;
             });
@@ -182,14 +182,14 @@
                 } else {
                     self._dcCoilStates[devIdx] = prevStates;
                     self._dcUpdateAllCoilUI(devIdx);
-                    Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
+                    Notification.error((res && res.error) || '操作失败');
                 }
                 if (btnEl) btnEl.disabled = false;
                 self._dcBatchPending = false;
             }, function() {
                 self._dcCoilStates[devIdx] = prevStates;
                 self._dcUpdateAllCoilUI(devIdx);
-                Notification.error(self._t('modbus-ctrl-fail'));
+                Notification.error('操作失败');
                 if (btnEl) btnEl.disabled = false;
                 self._dcBatchPending = false;
             });
@@ -214,15 +214,15 @@
             apiPostPriority('/api/modbus/coil/delay', params).then(function(res) {
                 if (res && res.success) {
                     window.Notification && Notification.success(
-                        self._t('modbus-delay-success') + ' CH' + channel + ' ' + (delayUnits * 0.1).toFixed(1) + 's'
+                        '延时已启动 CH' + channel + ' ' + (delayUnits * 0.1).toFixed(1) + 's'
                     );
                 } else {
                     window.Notification && Notification.error(
-                        (res && res.error) || self._t('modbus-delay-fail')
+                        (res && res.error) || '延时启动失败'
                     );
                 }
             }).catch(function() {
-                window.Notification && Notification.error(self._t('modbus-delay-fail'));
+                window.Notification && Notification.error('延时启动失败');
             });
         },
 
@@ -299,20 +299,20 @@
                 value: value
             }).then(function(res) {
                 if (res && res.success) {
-                    Notification.success(self._t('modbus-ctrl-success'));
+                    Notification.success('操作成功');
                 } else {
                     var s = (self._dcPwmStates[devIdx] || []).slice();
                     if (ch < s.length) s[ch] = prevVal;
                     self._dcPwmStates[devIdx] = s;
                     self._dcRerenderPwmGrid(devIdx);
-                    Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
+                    Notification.error((res && res.error) || '操作失败');
                 }
             }).catch(function() {
                 var s = (self._dcPwmStates[devIdx] || []).slice();
                 if (ch < s.length) s[ch] = prevVal;
                 self._dcPwmStates[devIdx] = s;
                 self._dcRerenderPwmGrid(devIdx);
-                Notification.error(self._t('modbus-ctrl-fail'));
+                Notification.error('操作失败');
             });
         },
 
@@ -332,16 +332,16 @@
                 values: JSON.stringify(values)
             }).then(function(res) {
                 if (res && res.success) {
-                    Notification.success(self._t('modbus-ctrl-success'));
+                    Notification.success('操作成功');
                 } else {
                     self._dcPwmStates[devIdx] = prevStates;
                     self._dcRerenderPwmGrid(devIdx);
-                    Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
+                    Notification.error((res && res.error) || '操作失败');
                 }
             }).catch(function() {
                 self._dcPwmStates[devIdx] = prevStates;
                 self._dcRerenderPwmGrid(devIdx);
-                Notification.error(self._t('modbus-ctrl-fail'));
+                Notification.error('操作失败');
             });
         },
 
@@ -427,12 +427,12 @@
                     v[paramName] = rawValue;
                     self._dcPidValues[devIdx] = v;
                     self._dcRerenderPidGrid(devIdx);
-                    Notification.success(self._t('modbus-ctrl-success'));
+                    Notification.success('操作成功');
                 } else {
-                    Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
+                    Notification.error((res && res.error) || '操作失败');
                 }
             }).catch(function() {
-                Notification.error(self._t('modbus-ctrl-fail'));
+                Notification.error('操作失败');
             });
         },
 
@@ -466,18 +466,18 @@
             if (data.pulse !== undefined && elPulse) elPulse.textContent = data.pulse;
             if (elDir) {
                 if (data.direction === 'forward' || data.direction === 1) {
-                    elDir.textContent = '← ' + (this._t('modbus-motor-ctrl-forward') || '正转');
+                    elDir.textContent = '← 正转';
                 } else if (data.direction === 'reverse' || data.direction === -1) {
-                    elDir.textContent = '→ ' + (this._t('modbus-motor-ctrl-reverse') || '反转');
+                    elDir.textContent = '→ 反转';
                 } else {
-                    elDir.textContent = this._t('modbus-motor-status-stop') || '停止';
+                    elDir.textContent = '停止';
                 }
             }
-            if (data.count !== undefined && elCount) elCount.textContent = data.count + ' ' + (this._t('modbus-motor-count') || '次');
+            if (data.count !== undefined && elCount) elCount.textContent = data.count + ' 次';
             if (elRun) {
                 var dir = data.direction || '';
                 elRun.className = 'motor-run-badge ' + (dir === 'forward' || dir === 1 ? 'motor-run-forward' : dir === 'reverse' || dir === -1 ? 'motor-run-reverse' : 'motor-run-stopped');
-                elRun.textContent = (dir === 'forward' || dir === 1) ? (this._t('modbus-motor-dir-forward') || '正转中') : (dir === 'reverse' || dir === -1) ? (this._t('modbus-motor-dir-reverse') || '反转中') : (this._t('modbus-motor-status-stop') || '停止');
+                elRun.textContent = (dir === 'forward' || dir === 1) ? '正转中' : (dir === 'reverse' || dir === -1) ? '反转中' : '停止';
             }
         },
 
@@ -489,27 +489,27 @@
                 slaveAddress: p.slaveAddress, action: action
             }).then(function(res) {
                 if (res && res.success) {
-                    Notification.success(self._t('modbus-motor-ctrl-' + action + '-ok') || (action === 'forward' ? '正转指令已发送' : action === 'reverse' ? '反转指令已发送' : '停止指令已发送'));
+                    Notification.success(action === 'forward' ? '正转指令已发送' : action === 'reverse' ? '反转指令已发送' : '停止指令已发送');
                     var elDir = document.getElementById('dc-motor-dir-' + devIdx);
                     var elRun = document.getElementById('dc-motor-run-' + devIdx);
                     if (elDir) {
                         if (action === 'forward') {
-                            elDir.textContent = '← ' + (self._t('modbus-motor-ctrl-forward') || '正转');
+                            elDir.textContent = '← 正转';
                         } else if (action === 'reverse') {
-                            elDir.textContent = '→ ' + (self._t('modbus-motor-ctrl-reverse') || '反转');
+                            elDir.textContent = '→ 反转';
                         } else {
-                            elDir.textContent = self._t('modbus-motor-status-stop') || '停止';
+                            elDir.textContent = '停止';
                         }
                     }
                     if (elRun) {
                         elRun.className = 'motor-run-badge ' + (action === 'forward' ? 'motor-run-forward' : action === 'reverse' ? 'motor-run-reverse' : 'motor-run-stopped');
-                        elRun.textContent = (action === 'forward' ? (self._t('modbus-motor-dir-forward') || '正转中') : action === 'reverse' ? (self._t('modbus-motor-dir-reverse') || '反转中') : (self._t('modbus-motor-status-stop') || '停止'));
+                        elRun.textContent = (action === 'forward' ? '正转中' : action === 'reverse' ? '反转中' : '停止');
                     }
                 } else {
-                    Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
+                    Notification.error((res && res.error) || '操作失败');
                 }
             }).catch(function() {
-                Notification.error(self._t('modbus-ctrl-fail'));
+                Notification.error('操作失败');
             });
         },
 
@@ -525,12 +525,12 @@
                 slaveAddress: p.slaveAddress, action: action, value: value
             }).then(function(res) {
                 if (res && res.success) {
-                    Notification.success(self._t('modbus-motor-ctrl-' + param + '-ok') || (param === 'speed' ? '速度设置成功' : '脉冲数设置成功'));
+                    Notification.success(param === 'speed' ? '速度设置成功' : '脉冲数设置成功');
                 } else {
-                    Notification.error((res && res.error) || self._t('modbus-ctrl-fail'));
+                    Notification.error((res && res.error) || '操作失败');
                 }
             }).catch(function() {
-                Notification.error(self._t('modbus-ctrl-fail'));
+                Notification.error('操作失败');
             });
         }
     });

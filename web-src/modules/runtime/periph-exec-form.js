@@ -29,69 +29,69 @@
             const mappedOp = (opVal === '0' || opVal === '1') ? opVal : '0';
             const showCompareValue = showPlatform && mappedOp !== '1';
             div.innerHTML = '<span class="mqtt-topic-index">' + (index + 1) + '</span>' +
-                '<button type="button" class="mqtt-topic-delete">' + i18n.t('peripheral-delete') + '</button>' +
+                '<button type="button" class="mqtt-topic-delete">' + '删除' + '</button>' +
                 '<div class="config-form-grid">' +
-                    '<div class="fb-form-group"><label>' + i18n.t('periph-exec-trigger-type-label') + '</label>' +
+                    '<div class="fb-form-group"><label>' + '触发类型' + '</label>' +
                     '<select class="pe-trigger-type">' +
-                        '<option value="0"' + (triggerType === '0' ? ' selected' : '') + '>' + i18n.t('periph-exec-trigger-platform') + '</option>' +
-                        '<option value="4"' + (triggerType === '4' ? ' selected' : '') + '>' + i18n.t('periph-exec-trigger-event') + '</option>' +
-                        '<option value="1"' + (triggerType === '1' ? ' selected' : '') + '>' + i18n.t('periph-exec-trigger-timer') + '</option>' +
-                        '<option value="5"' + (triggerType === '5' ? ' selected' : '') + '>' + i18n.t('periph-exec-trigger-poll') + '</option>' +
+                        '<option value="0"' + (triggerType === '0' ? ' selected' : '') + '>' + '平台触发 (MQTT)' + '</option>' +
+                        '<option value="4"' + (triggerType === '4' ? ' selected' : '') + '>' + '事件触发' + '</option>' +
+                        '<option value="1"' + (triggerType === '1' ? ' selected' : '') + '>' + '定时触发' + '</option>' +
+                        '<option value="5"' + (triggerType === '5' ? ' selected' : '') + '>' + '轮询触发 (本地数据)' + '</option>' +
                     '</select></div>' +
                     '<div class="fb-form-group pe-trigger-periph-group' + this._hiddenClass(showPlatform || isButtonEvent) + '">' +
-                    '<label>' + i18n.t('periph-exec-trigger-periph-label') + '</label>' +
-                    '<select class="pe-trigger-periph"><option value="">' + i18n.t('periph-exec-select-periph') + '</option></select></div>' +
+                    '<label>' + '触发外设' + '</label>' +
+                    '<select class="pe-trigger-periph"><option value="">' + '-- 选择外设 --' + '</option></select></div>' +
                 '</div>' +
                 '<div class="pe-platform-condition' + this._hiddenClass(showPlatform) + '">' +
                     '<div class="config-form-grid">' +
-                    '<div class="fb-form-group"><label>' + i18n.t('periph-exec-operator-label') + '</label>' +
+                    '<div class="fb-form-group"><label>' + '处理方式' + '</label>' +
                     '<select class="pe-operator">' +
-                        '<option value="0"' + (mappedOp === '0' ? ' selected' : '') + '>' + i18n.t('periph-exec-handle-match') + '</option>' +
-                        '<option value="1"' + (mappedOp === '1' ? ' selected' : '') + '>' + i18n.t('periph-exec-handle-set') + '</option>' +
+                        '<option value="0"' + (mappedOp === '0' ? ' selected' : '') + '>' + '匹配' + '</option>' +
+                        '<option value="1"' + (mappedOp === '1' ? ' selected' : '') + '>' + '设置' + '</option>' +
                     '</select></div>' +
                     '<div class="fb-form-group pe-compare-value-group' + this._hiddenClass(showCompareValue) + '">' +
-                    '<label>' + i18n.t('periph-exec-compare-label') + '</label>' +
-                    '<input type="text" class="pe-compare-value" value="' + escapeHtml(data.compareValue) + '" placeholder="' + escapeHtml(i18n.t('periph-exec-compare-hint')) + '"></div>' +
+                    '<label>' + '匹配值' + '</label>' +
+                    '<input type="text" class="pe-compare-value" value="' + escapeHtml(data.compareValue) + '" placeholder="' + escapeHtml('如: 1 或 ON') + '"></div>' +
                     '</div></div>' +
                 '<div class="pe-poll-params' + this._hiddenClass(showPoll) + '">' +
                     '<div class="config-form-grid">' +
-                    '<div class="fb-form-group"><label>' + i18n.t('periph-exec-poll-interval-label') + '</label><input type="number" class="pe-poll-interval" value="' + (data.intervalSec || 60) + '" min="5" max="86400"></div>' +
-                    '<div class="fb-form-group"><label>' + i18n.t('periph-exec-poll-timeout-label') + '</label><input type="number" class="pe-poll-timeout" value="' + (data.pollResponseTimeout || 1000) + '" min="100" max="5000"></div>' +
-                    '<div class="fb-form-group"><label>' + i18n.t('periph-exec-poll-retries-label') + '</label><input type="number" class="pe-poll-retries" value="' + (data.pollMaxRetries ?? 2) + '" min="0" max="3"></div>' +
-                    '<div class="fb-form-group"><label>' + i18n.t('periph-exec-poll-delay-label') + '</label><input type="number" class="pe-poll-inter-delay" value="' + (data.pollInterPollDelay || 100) + '" min="20" max="1000"></div>' +
+                    '<div class="fb-form-group"><label>' + '轮询间隔 (秒)' + '</label><input type="number" class="pe-poll-interval" value="' + (data.intervalSec || 60) + '" min="5" max="86400"></div>' +
+                    '<div class="fb-form-group"><label>' + '响应超时 (ms)' + '</label><input type="number" class="pe-poll-timeout" value="' + (data.pollResponseTimeout || 1000) + '" min="100" max="5000"></div>' +
+                    '<div class="fb-form-group"><label>' + '最大重试次数' + '</label><input type="number" class="pe-poll-retries" value="' + (data.pollMaxRetries ?? 2) + '" min="0" max="3"></div>' +
+                    '<div class="fb-form-group"><label>' + '请求间隔 (ms)' + '</label><input type="number" class="pe-poll-inter-delay" value="' + (data.pollInterPollDelay || 100) + '" min="20" max="1000"></div>' +
                     '</div></div>' +
                 '<div class="pe-timer-config' + this._hiddenClass(showTimer) + '">' +
                     '<div class="config-form-grid">' +
-                    '<div class="fb-form-group"><label>' + i18n.t('periph-exec-timer-mode-label') + '</label>' +
+                    '<div class="fb-form-group"><label>' + '定时模式' + '</label>' +
                     '<select class="pe-timer-mode">' +
-                        '<option value="0"' + (timerMode === '0' ? ' selected' : '') + '>' + i18n.t('periph-exec-timer-interval') + '</option>' +
-                        '<option value="1"' + (timerMode === '1' ? ' selected' : '') + '>' + i18n.t('periph-exec-timer-daily') + '</option>' +
+                        '<option value="0"' + (timerMode === '0' ? ' selected' : '') + '>' + '间隔触发' + '</option>' +
+                        '<option value="1"' + (timerMode === '1' ? ' selected' : '') + '>' + '每日时间点' + '</option>' +
                     '</select></div>' +
-                    '<div class="fb-form-group pe-interval-fields' + this._hiddenClass(showInterval) + '"><label>' + i18n.t('periph-exec-interval-label') + '</label><input type="number" class="pe-interval" value="' + (data.intervalSec || 60) + '" min="1" max="86400"></div>' +
-                    '<div class="fb-form-group pe-daily-fields' + this._hiddenClass(showDaily) + '"><label>' + i18n.t('periph-exec-timepoint-label') + '</label><input type="time" class="pe-timepoint" value="' + (data.timePoint || '08:00') + '"></div>' +
+                    '<div class="fb-form-group pe-interval-fields' + this._hiddenClass(showInterval) + '"><label>' + '间隔 (秒)' + '</label><input type="number" class="pe-interval" value="' + (data.intervalSec || 60) + '" min="1" max="86400"></div>' +
+                    '<div class="fb-form-group pe-daily-fields' + this._hiddenClass(showDaily) + '"><label>' + '执行时间 (HH:MM)' + '</label><input type="time" class="pe-timepoint" value="' + (data.timePoint || '08:00') + '"></div>' +
                     '</div></div>' +
                 '<div class="pe-event-group' + this._hiddenClass(showEvent) + '">' +
                     '<div class="config-form-grid">' +
-                    '<div class="fb-form-group"><label>' + i18n.t('periph-exec-event-category-label') + '</label>' +
+                    '<div class="fb-form-group"><label>' + '事件分类' + '</label>' +
                     '<select class="pe-event-category">' +
-                    '<option value="">' + i18n.t('periph-exec-select-category') + '</option></select></div>' +
-                    '<div class="fb-form-group"><label>' + i18n.t('periph-exec-event-label') + '</label>' +
-                    '<select class="pe-event"><option value="">' + i18n.t('periph-exec-select-event') + '</option></select></div>' +
-                    '<div class="fb-form-group pe-event-condition-group' + this._hiddenClass(isDataSourceEvent) + '"><label>' + (i18n.t('periph-exec-event-operator-label') || '比较操作符') + '</label>' +
+                    '<option value="">' + '-- 选择分类 --' + '</option></select></div>' +
+                    '<div class="fb-form-group"><label>' + '触发事件' + '</label>' +
+                    '<select class="pe-event"><option value="">' + '-- 选择事件 --' + '</option></select></div>' +
+                    '<div class="fb-form-group pe-event-condition-group' + this._hiddenClass(isDataSourceEvent) + '"><label>' + '比较操作符' + '</label>' +
                     '<select class="pe-event-operator">' +
-                    '<option value="0"' + (opVal === '0' ? ' selected' : '') + '>' + i18n.t('periph-exec-op-eq') + '</option>' +
-                    '<option value="1"' + (opVal === '1' ? ' selected' : '') + '>' + i18n.t('periph-exec-op-neq') + '</option>' +
-                    '<option value="2"' + (opVal === '2' ? ' selected' : '') + '>' + i18n.t('periph-exec-op-gt') + '</option>' +
-                    '<option value="3"' + (opVal === '3' ? ' selected' : '') + '>' + i18n.t('periph-exec-op-lt') + '</option>' +
-                    '<option value="4"' + (opVal === '4' ? ' selected' : '') + '>' + i18n.t('periph-exec-op-gte') + '</option>' +
-                    '<option value="5"' + (opVal === '5' ? ' selected' : '') + '>' + i18n.t('periph-exec-op-lte') + '</option>' +
-                    '<option value="6"' + (opVal === '6' ? ' selected' : '') + '>' + i18n.t('periph-exec-op-between') + '</option>' +
-                    '<option value="7"' + (opVal === '7' ? ' selected' : '') + '>' + i18n.t('periph-exec-op-not-between') + '</option>' +
-                    '<option value="8"' + (opVal === '8' ? ' selected' : '') + '>' + i18n.t('periph-exec-op-contain') + '</option>' +
-                    '<option value="9"' + (opVal === '9' ? ' selected' : '') + '>' + i18n.t('periph-exec-op-not-contain') + '</option>' +
+                    '<option value="0"' + (opVal === '0' ? ' selected' : '') + '>' + '等于 (=)' + '</option>' +
+                    '<option value="1"' + (opVal === '1' ? ' selected' : '') + '>' + '不等于 (!=)' + '</option>' +
+                    '<option value="2"' + (opVal === '2' ? ' selected' : '') + '>' + '大于 (>)' + '</option>' +
+                    '<option value="3"' + (opVal === '3' ? ' selected' : '') + '>' + '小于 (<)' + '</option>' +
+                    '<option value="4"' + (opVal === '4' ? ' selected' : '') + '>' + '大于等于 (>=)' + '</option>' +
+                    '<option value="5"' + (opVal === '5' ? ' selected' : '') + '>' + '小于等于 (<=)' + '</option>' +
+                    '<option value="6"' + (opVal === '6' ? ' selected' : '') + '>' + '区间内 (a,b)' + '</option>' +
+                    '<option value="7"' + (opVal === '7' ? ' selected' : '') + '>' + '区间外' + '</option>' +
+                    '<option value="8"' + (opVal === '8' ? ' selected' : '') + '>' + '包含' + '</option>' +
+                    '<option value="9"' + (opVal === '9' ? ' selected' : '') + '>' + '不包含' + '</option>' +
                     '</select></div>' +
-                    '<div class="fb-form-group pe-event-compare-group' + this._hiddenClass(isDataSourceEvent) + '"><label>' + (i18n.t('periph-exec-event-compare-label') || '比较值') + '</label>' +
-                    '<input type="text" class="pe-event-compare" value="' + escapeHtml(data.compareValue || '') + '" placeholder="' + escapeHtml(i18n.t('periph-exec-event-compare-hint') || '如: 25.5') + '"></div>' +
+                    '<div class="fb-form-group pe-event-compare-group' + this._hiddenClass(isDataSourceEvent) + '"><label>' + '比较值' + '</label>' +
+                    '<input type="text" class="pe-event-compare" value="' + escapeHtml(data.compareValue || '') + '" placeholder="' + escapeHtml('如: 25.5') + '"></div>' +
                     '</div>' +
                     '<div class="pe-event-modbus-ctrl-panel' + this._hiddenClass(isModbusCtrlEvent) + '"></div>' +
                     '</div>';
@@ -152,98 +152,98 @@
             const selCat = (v) => sensorCfg.sensorCategory === v ? 'selected' : '';
             const sensorFieldOptions = this._renderSensorDataFieldOptions(sensorCfg.sensorCategory, sensorCfg.dataField);
             div.innerHTML = '<span class="mqtt-topic-index">' + (index + 1) + '</span>' +
-                '<button type="button" class="mqtt-topic-delete">' + i18n.t('peripheral-delete') + '</button>' +
+                '<button type="button" class="mqtt-topic-delete">' + '删除' + '</button>' +
                 '<div class="pe-action-grid">' +
                     '<div class="pe-exec-row pe-span-all' + this._hiddenClass(showExecRow) + '">' +
                     '<div class="fb-form-group pe-exec-mode-group">' +
-                    '<label>' + i18n.t('periph-exec-exec-mode-label') + '</label>' +
+                    '<label>' + '执行模式' + '</label>' +
                     '<select class="pe-exec-mode">' +
-                    '<option value="0"' + (execMode === 0 ? ' selected' : '') + '>' + i18n.t('periph-exec-exec-mode-async') + '</option>' +
-                    '<option value="1"' + (execMode === 1 ? ' selected' : '') + '>' + i18n.t('periph-exec-exec-mode-sync') + '</option>' +
+                    '<option value="0"' + (execMode === 0 ? ' selected' : '') + '>' + '异步执行' + '</option>' +
+                    '<option value="1"' + (execMode === 1 ? ' selected' : '') + '>' + '同步执行' + '</option>' +
                     '</select></div>' +
                     '<div class="fb-form-group pe-sync-delay-group">' +
-                    '<label>' + i18n.t('periph-exec-sync-delay-label') + '</label>' +
+                    '<label>' + '执行前延时(0-10000ms)' + '</label>' +
                     '<input type="number" class="pe-sync-delay" min="0" max="10000" step="100" value="' + (data.syncDelayMs || 0) + '" placeholder="0"></div></div>' +
-                    '<div class="fb-form-group pe-action-type-group' + this._hiddenClass(showActionType) + '"><label>' + i18n.t('periph-exec-action-type-label') + '</label>' +
+                    '<div class="fb-form-group pe-action-type-group' + this._hiddenClass(showActionType) + '"><label>' + '执行动作' + '</label>' +
                     '<select class="pe-action-type">' +
-                        '<optgroup label="' + i18n.t('periph-exec-action-cat-gpio') + '">' +
-                        '<option value="0" ' + sel(0) + '>' + i18n.t('periph-exec-action-high') + '</option>' +
-                        '<option value="1" ' + sel(1) + '>' + i18n.t('periph-exec-action-low') + '</option>' +
-                        '<option value="2" ' + sel(2) + '>' + i18n.t('periph-exec-action-blink') + '</option>' +
-                        '<option value="3" ' + sel(3) + '>' + i18n.t('periph-exec-action-breathe') + '</option>' +
-                        '<option value="13" ' + sel(13) + '>' + i18n.t('periph-exec-action-high-inverted') + '</option>' +
-                        '<option value="14" ' + sel(14) + '>' + i18n.t('periph-exec-action-low-inverted') + '</option></optgroup>' +
-                        '<optgroup label="' + i18n.t('periph-exec-action-cat-analog') + '">' +
-                        '<option value="4" ' + sel(4) + '>' + i18n.t('periph-exec-action-pwm') + '</option>' +
-                        '<option value="5" ' + sel(5) + '>' + i18n.t('periph-exec-action-dac') + '</option></optgroup>' +
-                        '<optgroup label="' + i18n.t('periph-exec-action-cat-system') + '">' +
-                        '<option value="6" ' + sel(6) + '>' + i18n.t('periph-exec-action-restart') + '</option>' +
-                        '<option value="7" ' + sel(7) + '>' + i18n.t('periph-exec-action-factory') + '</option>' +
-                        '<option value="8" ' + sel(8) + '>' + i18n.t('periph-exec-action-ntp') + '</option></optgroup>' +
-                        '<optgroup label="' + i18n.t('periph-exec-action-cat-advanced') + '">' +
-                        '<option value="10" ' + sel(10) + '>' + i18n.t('periph-exec-action-call-periph') + '</option>' +
-                        '<option value="19" ' + sel(19) + '>' + i18n.t('periph-exec-action-sensor-read') + '</option>' +
-                        '<option value="21" ' + sel(21) + '>' + i18n.t('periph-exec-action-trigger-event') + '</option>' +
-                        '<option value="15" ' + sel(15) + '>' + i18n.t('periph-exec-action-script') + '</option></optgroup>' +
-                        '<optgroup label="' + i18n.t('periph-exec-action-cat-rule') + '">' +
-                        '<option value="22" ' + sel(22) + '>' + i18n.t('periph-exec-action-enable-rule') + '</option>' +
-                        '<option value="23" ' + sel(23) + '>' + i18n.t('periph-exec-action-disable-rule') + '</option></optgroup>' +
-                        '<optgroup label="' + i18n.t('periph-exec-action-cat-display') + '">' +
-                        '<option value="24" ' + sel(24) + '>' + i18n.t('periph-exec-action-display-number') + '</option>' +
-                        '<option value="25" ' + sel(25) + '>' + i18n.t('periph-exec-action-display-text') + '</option>' +
-                        '<option value="26" ' + sel(26) + '>' + i18n.t('periph-exec-action-display-clear') + '</option>' +
-                        '<option value="27" ' + sel(27) + '>' + i18n.t('periph-exec-action-oled-display') + '</option></optgroup>' +
+                        '<optgroup label="' + 'GPIO操作' + '">' +
+                        '<option value="0" ' + sel(0) + '>' + '设置高电平' + '</option>' +
+                        '<option value="1" ' + sel(1) + '>' + '设置低电平' + '</option>' +
+                        '<option value="2" ' + sel(2) + '>' + '闪烁' + '</option>' +
+                        '<option value="3" ' + sel(3) + '>' + '呼吸灯' + '</option>' +
+                        '<option value="13" ' + sel(13) + '>' + '高电平反转' + '</option>' +
+                        '<option value="14" ' + sel(14) + '>' + '低电平反转' + '</option></optgroup>' +
+                        '<optgroup label="' + '模拟输出' + '">' +
+                        '<option value="4" ' + sel(4) + '>' + '设置PWM' + '</option>' +
+                        '<option value="5" ' + sel(5) + '>' + '设置DAC' + '</option></optgroup>' +
+                        '<optgroup label="' + '系统功能' + '">' +
+                        '<option value="6" ' + sel(6) + '>' + '系统重启' + '</option>' +
+                        '<option value="7" ' + sel(7) + '>' + '恢复出厂' + '</option>' +
+                        '<option value="8" ' + sel(8) + '>' + 'NTP同步' + '</option></optgroup>' +
+                        '<optgroup label="' + '高级功能' + '">' +
+                        '<option value="10" ' + sel(10) + '>' + '调用外设' + '</option>' +
+                        '<option value="19" ' + sel(19) + '>' + '传感器数据读取' + '</option>' +
+                        '<option value="21" ' + sel(21) + '>' + '触发设备事件' + '</option>' +
+                        '<option value="15" ' + sel(15) + '>' + '命令脚本' + '</option></optgroup>' +
+                        '<optgroup label="' + '规则控制' + '">' +
+                        '<option value="22" ' + sel(22) + '>' + '启用执行规则' + '</option>' +
+                        '<option value="23" ' + sel(23) + '>' + '禁用执行规则' + '</option></optgroup>' +
+                        '<optgroup label="' + '显示屏' + '">' +
+                        '<option value="24" ' + sel(24) + '>' + '显示数字' + '</option>' +
+                        '<option value="25" ' + sel(25) + '>' + '显示文本' + '</option>' +
+                        '<option value="26" ' + sel(26) + '>' + '数码管清屏' + '</option>' +
+                        '<option value="27" ' + sel(27) + '>' + 'OLED自定义显示' + '</option></optgroup>' +
                     '</select></div>' +
                     '<div class="fb-form-group pe-target-group' + this._hiddenClass(showPeriphGroup) + '">' +
-                    '<label>' + (isRuleCtrlAction ? i18n.t('periph-exec-target-rule-label') : i18n.t('periph-exec-target-periph-label')) + '</label>' +
-                    '<select class="pe-target-periph"><option value="">' + (isRuleCtrlAction ? i18n.t('periph-exec-select-rule') : i18n.t('periph-exec-select-periph')) + '</option></select></div>' +
+                    '<label>' + (isRuleCtrlAction ? '目标执行规则' : '执行外设') + '</label>' +
+                    '<select class="pe-target-periph"><option value="">' + (isRuleCtrlAction ? '-- 选择执行规则 --' : '-- 选择外设 --') + '</option></select></div>' +
                     '<div class="fb-form-group pe-modbus-ctrl-panel' + this._hiddenClass(isModbusTarget) + '"></div>' +
                     '<div class="fb-form-group pe-action-value-group' + this._hiddenClass(needsValue) + '">' +
-                    '<label>' + i18n.t('periph-exec-action-value-label') + '</label>' +
-                    '<input type="text" class="pe-action-value' + ((isOledDisplay || isScriptAction) ? ' is-hidden' : '') + '" value="' + ((isOledDisplay || isScriptAction) ? '' : escapeHtml(data.actionValue)) + '" placeholder="' + escapeHtml(isDisplayAction ? i18n.t('periph-exec-action-display-value-hint') : i18n.t('periph-exec-action-value-hint')) + '"' + (showRecv && data.useReceivedValue !== false ? ' readonly' : '') + '>' +
-                    '<textarea class="pe-action-value-oled pe-script-textarea' + (isOledDisplay ? '' : ' is-hidden') + '" rows="6" maxlength="512" placeholder="' + escapeHtml(i18n.t('periph-exec-action-oled-value-hint')) + '">' + (isOledDisplay ? escapeHtml(data.actionValue || '') : '') + '</textarea>' +
-                    '<textarea class="pe-action-value-script pe-script-textarea' + (isScriptAction ? '' : ' is-hidden') + '" rows="7" maxlength="1024" placeholder="' + escapeHtml(i18n.t('periph-exec-script-placeholder')) + '">' + (isScriptAction ? escapeHtml(data.actionValue || '') : '') + '</textarea>' +
-                    '<small class="pe-help-text">' + (actionTypeInt === 10 ? i18n.t('periph-exec-action-call-help') : (isScriptAction ? i18n.t('periph-exec-script-help') : (isOledDisplay ? i18n.t('periph-exec-action-oled-value-help') : (isDisplayAction ? i18n.t('periph-exec-action-display-value-hint') : i18n.t('periph-exec-action-value-help'))))) + '</small></div>' +
+                    '<label>' + '动作参数' + '</label>' +
+                    '<input type="text" class="pe-action-value' + ((isOledDisplay || isScriptAction) ? ' is-hidden' : '') + '" value="' + ((isOledDisplay || isScriptAction) ? '' : escapeHtml(data.actionValue)) + '" placeholder="' + escapeHtml(isDisplayAction ? '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值' : '如: PWM值、闪烁间隔ms') + '"' + (showRecv && data.useReceivedValue !== false ? ' readonly' : '') + '>' +
+                    '<textarea class="pe-action-value-oled pe-script-textarea' + (isOledDisplay ? '' : ' is-hidden') + '" rows="6" maxlength="512" placeholder="' + escapeHtml('多行文本，每行一条。首行以 # 开头为居中标题。支持 ${periphId.field}（传感器缓存）和 $value（下发变量）模板。例：\n# 环境监测\n温度:${dht_01.temperature}°C\n湿度:${dht_01.humidity}%\n设备:$value') + '">' + (isOledDisplay ? escapeHtml(data.actionValue || '') : '') + '</textarea>' +
+                    '<textarea class="pe-action-value-script pe-script-textarea' + (isScriptAction ? '' : ' is-hidden') + '" rows="7" maxlength="1024" placeholder="' + escapeHtml('每行一条命令，如:\nGPIO 2 HIGH\nDELAY 500\nGPIO 2 LOW\nLOG 执行完成') + '">' + (isScriptAction ? escapeHtml(data.actionValue || '') : '') + '</textarea>' +
+                    '<small class="pe-help-text">' + (actionTypeInt === 10 ? '调用外设 JSON，例如 {"periphId":"stepper","action":"forward"}、{"periphId":"ws2812b","action":"color","value":"#ff0000"}、{"periphId":"uart_debug","action":"send","value":"hello"}；UART 目标也可直接填写要发送的文本' : (isScriptAction ? '可用: GPIO pin HIGH/LOW, DELAY ms, PWM pin duty, DAC pin val, LOG msg, PERIPH id 动作' : (isOledDisplay ? '最多 6 行、可自动适配 OLED 显示。\n 换行。首行 # 开头为居中标题带分隔线。支持变量：${外设id.字段} 从传感器缓存取值，$value 取 MQTT/规则下发的原始值' : (isDisplayAction ? '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值' : '闪烁/呼吸灯填间隔ms, PWM填占空比, DAC填0-255')))) + '</small></div>' +
                     '<div class="fb-form-group pe-use-received-value-group' + this._hiddenClass(showRecv) + '">' +
                     '<label class="pe-checkbox-label pe-check-align"><input type="checkbox" class="pe-use-received-value"' + (showRecv && data.useReceivedValue !== false ? ' checked' : '') + '>' +
-                    i18n.t('periph-exec-use-received-value-help') + '</label></div>' +
+                    '勾选后动作参数将使用平台下发或触发源的值' + '</label></div>' +
                     '<div class="fb-form-group pe-poll-tasks-group pe-span-all' + this._hiddenClass(!isPollMode && isModbusPoll && !isModbusTarget) + '">' +
-                    '<label>' + i18n.t('periph-exec-poll-tasks-label') + '</label>' +
+                    '<label>' + '选择子设备' + '</label>' +
                     '<div class="pe-poll-tasks-list"></div>' +
-                    '<small class="pe-help-text">' + i18n.t('periph-exec-poll-tasks-help') + '</small></div>' +
+                    '<small class="pe-help-text">' + '选择要执行的 Modbus 子设备' + '</small></div>' +
                     '<div class="fb-form-group pe-sensor-group pe-span-all' + this._hiddenClass(isSensorRead) + '">' +
                     '<div class="pe-sensor-config-grid">' +
-                    '<div class="fb-form-group"><label>' + i18n.t('periph-exec-sensor-category') + '</label>' +
+                    '<div class="fb-form-group"><label>' + '传感器类别' + '</label>' +
                     '<select class="pe-sensor-category">' +
-                    '<option value="analog" ' + selCat('analog') + '>' + i18n.t('periph-exec-sensor-cat-analog') + '</option>' +
-                    '<option value="digital" ' + selCat('digital') + '>' + i18n.t('periph-exec-sensor-cat-digital') + '</option>' +
-                    '<option value="pulse" ' + selCat('pulse') + '>' + i18n.t('periph-exec-sensor-cat-pulse') + '</option>' +
-                    '<option value="dht11" ' + selCat('dht11') + '>' + i18n.t('periph-exec-sensor-cat-dht11') + '</option>' +
-                    '<option value="dht22" ' + selCat('dht22') + '>' + i18n.t('periph-exec-sensor-cat-dht22') + '</option>' +
-                    '<option value="ds18b20" ' + selCat('ds18b20') + '>' + i18n.t('periph-exec-sensor-cat-ds18b20') + '</option>' +
-                    '<option value="ultrasonic" ' + selCat('ultrasonic') + '>' + (i18n.t('periph-exec-sensor-cat-ultrasonic') || 'HC-SR04 超声波') + '</option>' +
+                    '<option value="analog" ' + selCat('analog') + '>' + '模拟量 (ADC)' + '</option>' +
+                    '<option value="digital" ' + selCat('digital') + '>' + '数字量 (DI)' + '</option>' +
+                    '<option value="pulse" ' + selCat('pulse') + '>' + '脉冲/频率' + '</option>' +
+                    '<option value="dht11" ' + selCat('dht11') + '>' + 'DHT11 温湿度' + '</option>' +
+                    '<option value="dht22" ' + selCat('dht22') + '>' + 'DHT22 温湿度' + '</option>' +
+                    '<option value="ds18b20" ' + selCat('ds18b20') + '>' + 'DS18B20 温度' + '</option>' +
+                    '<option value="ultrasonic" ' + selCat('ultrasonic') + '>' + 'HC-SR04 超声波' + '</option>' +
                     '<option value="radar" ' + selCat('radar') + '>雷达存在检测</option>' +
                     '<option value="rf" ' + selCat('rf') + '>射频接收电平</option>' +
-                    '<option value="current" ' + selCat('current') + '>' + (i18n.t('periph-exec-sensor-cat-current') || '电流型传感器') + '</option>' +
-                    '<option value="voltage" ' + selCat('voltage') + '>' + (i18n.t('periph-exec-sensor-cat-voltage') || '电压型传感器') + '</option>' +
-                    '<option value="SHT31" ' + selCat('SHT31') + '>' + (i18n.t('periph-exec-sensor-cat-sht31') || 'SHT31 温湿度') + '</option>' +
-                    '<option value="AHT20" ' + selCat('AHT20') + '>' + (i18n.t('periph-exec-sensor-cat-aht20') || 'AHT20 温湿度') + '</option>' +
-                    '<option value="BH1750" ' + selCat('BH1750') + '>' + (i18n.t('periph-exec-sensor-cat-bh1750') || 'BH1750 光照') + '</option>' +
-                    '<option value="BMP280" ' + selCat('BMP280') + '>' + (i18n.t('periph-exec-sensor-cat-bmp280') || 'BMP280 气压') + '</option>' +
-                    '<option value="MPU6050" ' + selCat('MPU6050') + '>' + (i18n.t('periph-exec-sensor-cat-mpu6050') || 'MPU6050 姿态') + '</option></select></div>' +
-                    '<div class="fb-form-group pe-sensor-datafield-group"><label>' + i18n.t('periph-exec-sensor-datafield') + '</label>' +
+                    '<option value="current" ' + selCat('current') + '>' + '电流型传感器' + '</option>' +
+                    '<option value="voltage" ' + selCat('voltage') + '>' + '电压型传感器' + '</option>' +
+                    '<option value="SHT31" ' + selCat('SHT31') + '>' + 'SHT31 温湿度' + '</option>' +
+                    '<option value="AHT20" ' + selCat('AHT20') + '>' + 'AHT20 温湿度' + '</option>' +
+                    '<option value="BH1750" ' + selCat('BH1750') + '>' + 'BH1750 光照' + '</option>' +
+                    '<option value="BMP280" ' + selCat('BMP280') + '>' + 'BMP280 气压' + '</option>' +
+                    '<option value="MPU6050" ' + selCat('MPU6050') + '>' + 'MPU6050 姿态' + '</option></select></div>' +
+                    '<div class="fb-form-group pe-sensor-datafield-group"><label>' + '数据字段' + '</label>' +
                     '<select class="pe-sensor-datafield">' +
                     sensorFieldOptions + '</select></div>' +
-                    '<div class="fb-form-group pe-sensor-devindex-group' + this._hiddenClass(sensorCfg.sensorCategory === 'ds18b20') + '"><label>' + i18n.t('periph-exec-sensor-devindex') + '</label>' +
+                    '<div class="fb-form-group pe-sensor-devindex-group' + this._hiddenClass(sensorCfg.sensorCategory === 'ds18b20') + '"><label>' + '设备索引' + '</label>' +
                     '<input type="number" class="pe-sensor-devindex" min="0" max="15" value="' + sensorCfg.deviceIndex + '"></div>' +
-                    '<div class="fb-form-group"><label>' + i18n.t('periph-exec-sensor-scale') + '</label><input type="number" class="pe-sensor-scale" step="any" value="' + sensorCfg.scaleFactor + '"></div>' +
-                    '<div class="fb-form-group"><label>' + i18n.t('periph-exec-sensor-offset') + '</label><input type="number" class="pe-sensor-offset" step="any" value="' + sensorCfg.offset + '"></div>' +
-                    '<div class="fb-form-group"><label>' + i18n.t('periph-exec-sensor-decimals') + '</label><input type="number" class="pe-sensor-decimals" min="0" max="6" value="' + sensorCfg.decimalPlaces + '"></div>' +
-                    '<div class="fb-form-group"><label>' + i18n.t('periph-exec-sensor-label') + '</label><input type="text" class="pe-sensor-label" value="' + escapeHtml(sensorCfg.sensorLabel) + '" placeholder="' + i18n.t('periph-exec-sensor-label') + '"></div>' +
-                    '<div class="fb-form-group"><label>' + i18n.t('periph-exec-sensor-unit') + '</label><input type="text" class="pe-sensor-unit" value="' + escapeHtml(sensorCfg.unit) + '" maxlength="8" placeholder="°C, %, V..."></div>' +
-                    '<div class="fb-form-group pe-span-all"><label>' + (i18n.t('periph-exec-sensor-extra-json') || '高级参数(JSON)') + '</label>' +
-                    '<textarea class="pe-sensor-extra-json" rows="2" maxlength="512" placeholder="' + escapeHtml(i18n.t('periph-exec-sensor-extra-json-hint') || '{"driverParams":{"addr":"0x44","sda":21,"scl":22}}') + '">' + escapeHtml(sensorExtraJson) + '</textarea>' +
-                    '<small class="pe-help-text">' + (i18n.t('periph-exec-sensor-extra-json-help') || '可填写分压比、电流零点、I2C 地址等高级参数；留空则使用默认值。') + '</small></div>' +
+                    '<div class="fb-form-group"><label>' + '缩放系数' + '</label><input type="number" class="pe-sensor-scale" step="any" value="' + sensorCfg.scaleFactor + '"></div>' +
+                    '<div class="fb-form-group"><label>' + '偏移量' + '</label><input type="number" class="pe-sensor-offset" step="any" value="' + sensorCfg.offset + '"></div>' +
+                    '<div class="fb-form-group"><label>' + '小数位数' + '</label><input type="number" class="pe-sensor-decimals" min="0" max="6" value="' + sensorCfg.decimalPlaces + '"></div>' +
+                    '<div class="fb-form-group"><label>' + '数据标签' + '</label><input type="text" class="pe-sensor-label" value="' + escapeHtml(sensorCfg.sensorLabel) + '" placeholder="' + '数据标签' + '"></div>' +
+                    '<div class="fb-form-group"><label>' + '单位' + '</label><input type="text" class="pe-sensor-unit" value="' + escapeHtml(sensorCfg.unit) + '" maxlength="8" placeholder="°C, %, V..."></div>' +
+                    '<div class="fb-form-group pe-span-all"><label>' + '高级参数(JSON)' + '</label>' +
+                    '<textarea class="pe-sensor-extra-json" rows="2" maxlength="512" placeholder="' + escapeHtml('{"driverParams":{"addr":"0x44","sda":21,"scl":22}}') + '">' + escapeHtml(sensorExtraJson) + '</textarea>' +
+                    '<small class="pe-help-text">' + '可填写分压比、电流零点、I2C 地址等高级参数；留空则使用默认值。' + '</small></div>' +
                     '</div></div>' +
                     '</div>';
             container.appendChild(div);
@@ -464,7 +464,7 @@
             // 切换目标分组的 label 和空选项提示（规则 vs 外设）
             if (targetGroup) {
                 var labelEl = targetGroup.querySelector('label');
-                if (labelEl) labelEl.textContent = isRuleCtrlAction ? i18n.t('periph-exec-target-rule-label') : i18n.t('periph-exec-target-periph-label');
+                if (labelEl) labelEl.textContent = isRuleCtrlAction ? '目标执行规则' : '执行外设';
             }
             const needsValue = !isRuleCtrlAction && ((actionType >= 2 && actionType <= 5) || actionType === 10 || actionType === 15 || actionType === 24 || actionType === 25 || actionType === 27);
             this._setSectionVisible(valueGroup, needsValue);
@@ -490,11 +490,11 @@
                 // 提示文案同步切换
                 const helpEl = valueGroup.querySelector('.pe-help-text');
                 if (helpEl) {
-                    if (actionType === 10) helpEl.textContent = i18n.t('periph-exec-action-call-help');
-                    else if (isScript) helpEl.textContent = i18n.t('periph-exec-script-help');
-                    else if (isOled) helpEl.textContent = i18n.t('periph-exec-action-oled-value-help');
-                    else if (actionType === 24 || actionType === 25 || actionType === 26) helpEl.textContent = i18n.t('periph-exec-action-display-value-hint');
-                    else helpEl.textContent = i18n.t('periph-exec-action-value-help');
+                    if (actionType === 10) helpEl.textContent = '调用外设 JSON，例如 {"periphId":"stepper","action":"forward"}、{"periphId":"ws2812b","action":"color","value":"#ff0000"}、{"periphId":"uart_debug","action":"send","value":"hello"}；UART 目标也可直接填写要发送的文本';
+                    else if (isScript) helpEl.textContent = '可用: GPIO pin HIGH/LOW, DELAY ms, PWM pin duty, DAC pin val, LOG msg, PERIPH id 动作';
+                    else if (isOled) helpEl.textContent = '最多 6 行、可自动适配 OLED 显示。\n 换行。首行 # 开头为居中标题带分隔线。支持变量：${外设id.字段} 从传感器缓存取值，$value 取 MQTT/规则下发的原始值';
+                    else if (actionType === 24 || actionType === 25 || actionType === 26) helpEl.textContent = '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值';
+                    else helpEl.textContent = '闪烁/呼吸灯填间隔ms, PWM填占空比, DAC填0-255';
                 }
             }
             if (pollTasksGroup) {
@@ -655,12 +655,13 @@
                 var categoryList = Array.isArray(results[0]) ? results[0] : [];
                 var staticEvents = Array.isArray(results[1]) ? results[1] : [];
                 var dynamicEvents = Array.isArray(results[2]) ? results[2] : [];
-                var opts = '<option value="">' + i18n.t('periph-exec-select-category') + '</option>';
+                var opts = '<option value="">' + '-- 选择分类 --' + '</option>';
                 var seenCategories = {};
                 function addCategoryOption(categoryName) {
                     if (!categoryName || seenCategories[categoryName]) return;
                     seenCategories[categoryName] = true;
-                    var translatedCat = i18n.t('event-cat-' + categoryName) || categoryName;
+                var _eventCatMap = {'WiFi':'WiFi','MQTT':'MQTT','网络':'网络','协议':'协议','系统':'系统','规则':'规则','Modbus子设备':'Modbus子设备','按键':'按键','外设执行':'外设执行','数据':'数据','数据源':'数据源','modbus-acquisition':'采集设备','local-sensor':'本地传感器','modbus-control':'控制设备'};
+                    var translatedCat = _eventCatMap[categoryName] || categoryName;
                     opts += '<option value="' + categoryName + '">' + translatedCat + '</option>';
                 }
                 categoryList.forEach(function(cat) {
@@ -698,7 +699,7 @@
                 }
             }).catch(function(err) {
                 console.warn('Failed to load periph exec event categories:', err);
-                sel.innerHTML = '<option value="">' + i18n.t('periph-exec-select-category') + '</option>';
+                sel.innerHTML = '<option value="">' + '-- 选择分类 --' + '</option>';
                 self._populateEventSelectInBlock(blockEl, '', eventId, compareValue);
             });
         },
@@ -709,16 +710,16 @@
             var localSources = (typeof this._getPeriphExecLocalSensorSources === 'function') ? this._getPeriphExecLocalSensorSources() : [];
             var modbusSources = this._peDataSources || [];
             if (categoryFilter === '数据源') {
-                var dataOpts = '<option value="">' + i18n.t('periph-exec-select-event') + '</option>';
+                var dataOpts = '<option value="">' + '-- 选择事件 --' + '</option>';
                 if (localSources.length > 0) {
-                    dataOpts += '<optgroup label="' + escapeHtml(i18n.t('event-cat-local-sensor') || '本地传感器') + '">';
+                    dataOpts += '<optgroup label="' + escapeHtml('本地传感器') + '">';
                     localSources.forEach(function(ds) {
                         dataOpts += '<option value="ds:' + escapeHtml(ds.id) + '">' + escapeHtml(ds.label) + '</option>';
                     });
                     dataOpts += '</optgroup>';
                 }
                 if (modbusSources.length > 0) {
-                    dataOpts += '<optgroup label="' + escapeHtml(i18n.t('event-cat-modbus-acquisition') || '采集设备') + '">';
+                    dataOpts += '<optgroup label="' + escapeHtml('采集设备') + '">';
                     modbusSources.forEach(function(ds) {
                         dataOpts += '<option value="ds:' + escapeHtml(ds.id) + '">' + escapeHtml(ds.label) + '</option>';
                     });
@@ -737,9 +738,9 @@
             if (categoryFilter === 'Modbus子设备') {
                 var sources = this._peDataSources || [];
                 var ctrlDevices = this._modbusDevices || [];
-                var opts = '<option value="">' + i18n.t('periph-exec-select-event') + '</option>';
+                var opts = '<option value="">' + '-- 选择事件 --' + '</option>';
                 if (sources.length > 0) {
-                    var acqCatLabel = i18n.t('event-cat-modbus-acquisition') || '采集设备';
+                    var acqCatLabel = '采集设备';
                     opts += '<optgroup label="' + acqCatLabel + '">';
                     sources.forEach(function(ds) {
                         opts += '<option value="ds:' + ds.id + '">' + escapeHtml(ds.label) + '</option>';
@@ -747,7 +748,7 @@
                     opts += '</optgroup>';
                 }
                 if (ctrlDevices.length > 0) {
-                    var ctrlCatLabel = i18n.t('event-cat-modbus-control') || '控制设备';
+                    var ctrlCatLabel = '控制设备';
                     opts += '<optgroup label="' + ctrlCatLabel + '">';
                     ctrlDevices.forEach(function(dev, idx) {
                         if (dev.enabled === false) return;
@@ -789,19 +790,21 @@
                         if (!categories[e.category]) categories[e.category] = [];
                         categories[e.category].push(e);
                     });
-                    let opts = '<option value="">' + i18n.t('periph-exec-select-event') + '</option>';
+                    let opts = '<option value="">' + '-- 选择事件 --' + '</option>';
                     for (const cat in categories) {
-                        const translatedCat = i18n.t('event-cat-' + cat) || cat;
+                        var _evCatMap2 = {'WiFi':'WiFi','MQTT':'MQTT','网络':'网络','协议':'协议','系统':'系统','规则':'规则','Modbus子设备':'Modbus子设备','按键':'按键','外设执行':'外设执行','数据':'数据','数据源':'数据源','modbus-acquisition':'采集设备','local-sensor':'本地传感器','modbus-control':'控制设备'};
+                        const translatedCat = _evCatMap2[cat] || cat;
                         opts += '<optgroup label="' + translatedCat + '">';
                         categories[cat].forEach(e => {
-                            const translatedName = e.isDynamic ? e.name : (i18n.t('event-' + e.id) || e.name);
+                            var _evNameMap = {'wifi_connected':'WiFi连接成功','wifi_disconnected':'WiFi断开连接','wifi_conn_failed':'WiFi连接失败','mqtt_connected':'MQTT连接成功','mqtt_disconnected':'MQTT断开连接','mqtt_conn_failed':'MQTT连接失败','mqtt_enabled':'MQTT协议启用','net_mode_ap':'网络模式切换为AP','net_mode_sta':'网络模式切换为STA','modbus_rtu_enabled':'Modbus RTU启用','modbus_tcp_enabled':'Modbus TCP启用','tcp_enabled':'TCP协议启用','http_enabled':'HTTP协议启用','coap_enabled':'CoAP协议启用','ntp_synced':'NTP时间同步完成','ota_start':'OTA升级开始','ota_success':'OTA升级成功','ota_failed':'OTA升级失败','rule_exec_time':'规则脚本执行时间','rule_exec_error':'规则脚本执行错误','system_boot':'系统启动','system_ready':'系统就绪','system_error':'系统错误','factory_reset':'恢复出厂设置','button_click':'按键单击','button_double_click':'按键双击','button_long_press_2s':'按键长按2秒','button_long_press_5s':'按键长按5秒','button_long_press_10s':'按键长按10秒','button_press':'按键按下','button_release':'按键释放','periph_exec_completed':'外设执行完成','data_receive':'数据接收','data_report':'数据上报'};
+                            const translatedName = e.isDynamic ? e.name : (_evNameMap[e.id] || e.name);
                             opts += '<option value="' + e.id + '">' + translatedName + '</option>';
                         });
                         opts += '</optgroup>';
                     }
                     // 未选分类时，追加Modbus子设备选项
                     if (!categoryFilter && localSources.length > 0) {
-                        opts += '<optgroup label="' + escapeHtml(i18n.t('event-cat-local-sensor') || '本地传感器') + '">';
+                        opts += '<optgroup label="' + escapeHtml('本地传感器') + '">';
                         localSources.forEach(function(ds) {
                             opts += '<option value="ds:' + escapeHtml(ds.id) + '">' + escapeHtml(ds.label) + '</option>';
                         });
@@ -811,7 +814,7 @@
                         var sources = this._peDataSources || [];
                         var ctrlDevices = this._modbusDevices || [];
                         if (sources.length > 0 || ctrlDevices.length > 0) {
-                            var dsCatLabel = i18n.t('event-cat-Modbus子设备') || 'Modbus子设备';
+                            var dsCatLabel = 'Modbus子设备';
                             opts += '<optgroup label="' + dsCatLabel + '">';
                             sources.forEach(function(ds) {
                                 opts += '<option value="ds:' + ds.id + '">' + escapeHtml(ds.label) + '</option>';
@@ -842,7 +845,7 @@
                     }
             }).catch((err) => {
                 console.warn('Failed to load periph exec events:', err);
-                sel.innerHTML = '<option value="">' + i18n.t('periph-exec-select-event') + '</option>';
+                sel.innerHTML = '<option value="">' + '-- 选择事件 --' + '</option>';
             });
         },
 
@@ -1040,7 +1043,7 @@
             };
 
             if (!ruleData.name) {
-                this.showInlineError(errEl, i18n.t('periph-exec-validate-name'));
+                this.showInlineError(errEl, '请输入规则名称');
                 return;
             }
 
@@ -1049,7 +1052,7 @@
 
             const actions = this._collectPeriphExecActions();
             if (this._peSensorExtraJsonError) {
-                this.showInlineError(errEl, i18n.t('periph-exec-sensor-extra-json-invalid') || '传感器高级参数必须是 JSON 对象');
+                this.showInlineError(errEl, '传感器高级参数必须是 JSON 对象');
                 return;
             }
             ruleData.actions = actions;
@@ -1058,17 +1061,17 @@
                     var sv = {};
                     try { sv = JSON.parse(actions[i].actionValue); } catch(e) {}
                     if (!sv.periphId) {
-                        this.showInlineError(errEl, i18n.t('periph-exec-sensor-no-periph'));
+                        this.showInlineError(errEl, '请选择传感器外设');
                         return;
                     }
                 } else if (actions[i].actionType === 15) {
                     var scriptValue = actions[i].actionValue || '';
                     if (!scriptValue.trim()) {
-                        this.showInlineError(errEl, i18n.t('periph-exec-script-empty'));
+                        this.showInlineError(errEl, '脚本内容不能为空');
                         return;
                     }
                     if (scriptValue.length > 1024) {
-                        this.showInlineError(errEl, i18n.t('periph-exec-script-too-long'));
+                        this.showInlineError(errEl, '脚本超过最大长度限制(1024字节)');
                         return;
                     }
                 }
@@ -1082,11 +1085,11 @@
                         if (typeof this._invalidatePeriphExecRuntimeCaches === 'function') {
                             this._invalidatePeriphExecRuntimeCaches();
                         }
-                        Notification.success(i18n.t(isEdit ? 'periph-exec-update-ok' : 'periph-exec-add-ok'), i18n.t('periph-exec-title'));
+                        Notification.success(isEdit ? '规则更新成功' : '规则添加成功', '外设执行');
                         this.closePeriphExecModal();
                         if (this.currentPage === 'periph-exec') this.loadPeriphExecPage();
                     } else {
-                        this.showInlineError(errEl, res?.error || i18n.t('periph-exec-save-fail'));
+                        this.showInlineError(errEl, res?.error || '保存失败');
                     }
                 })
                 .catch(err => {
@@ -1103,7 +1106,7 @@
                             err.message.includes('network')
                         ))
                     );
-                    this.showInlineError(errEl, isNetworkError ? i18n.t('device-offline-error') : i18n.t('periph-exec-save-fail'));
+                    this.showInlineError(errEl, isNetworkError ? '设备离线或不可达，请检查网络连接' : '保存失败');
                 });
         }
 

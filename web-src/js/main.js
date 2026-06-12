@@ -80,11 +80,6 @@ function _bootApp() {
         Notification.init();
     }
 
-    // 初始化多语言
-    if (typeof i18n !== 'undefined') {
-        i18n.updatePageText();
-    }
-
     // 加载保存的登录信息
     var savedUsername = localStorage.getItem('username');
     var savedPassword = localStorage.getItem('password');

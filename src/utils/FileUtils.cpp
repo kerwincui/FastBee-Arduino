@@ -11,6 +11,7 @@
 #include <ArduinoJson.h>
 #include <vector>
 #include <map>
+#include <MD5Builder.h>
 
 // 静态成员初始化
 bool FileUtils::fsInitialized = false;
@@ -21,20 +22,20 @@ bool FileUtils::initialize(bool formatIfFailed) {
     if (fsInitialized) {
         return true;
     }
-    
+
     // LittleFS 由 ConfigStorage 统一挂载，此处检测挂载状态
     if (LittleFS.totalBytes() > 0) {
         fsInitialized = true;
         return true;
     }
-    
+
     // 若 ConfigStorage 尚未初始化（单独使用场景），则自行挂载
     fsInitialized = LittleFS.begin(formatIfFailed);
     if (!fsInitialized) {
         LOG_ERROR("[FileUtils] LittleFS mount failed");
         return false;
     }
-    
+
     return fsInitialized;
 }
 
@@ -47,7 +48,7 @@ bool FileUtils::exists(const String& path) {
 
 bool FileUtils::isDirectory(const String& path) {
     if (!fsInitialized || !exists(path)) return false;
-    
+
     File file = LittleFS.open(path);
     bool result = file.isDirectory();
     file.close();
@@ -56,10 +57,10 @@ bool FileUtils::isDirectory(const String& path) {
 
 size_t FileUtils::getFileSize(const String& path) {
     if (!fsInitialized || !exists(path) || isDirectory(path)) return 0;
-    
+
     File file = LittleFS.open(path, "r");
     if (!file) return 0;
-    
+
     size_t size = file.size();
     file.close();
     return size;
@@ -76,12 +77,12 @@ String FileUtils::readFile(const String& path) {
     if (!fsInitialized || !exists(path) || isDirectory(path)) {
         return "";
     }
-    
+
     File file = LittleFS.open(path, "r");
     if (!file) {
         return "";
     }
-    
+
     String content = file.readString();
     file.close();
     return content;
@@ -91,48 +92,48 @@ size_t FileUtils::readFileToBuffer(const String& path, uint8_t* buffer, size_t b
     if (!fsInitialized || !exists(path) || isDirectory(path)) {
         return 0;
     }
-    
+
     File file = LittleFS.open(path, "r");
     if (!file) {
         return 0;
     }
-    
+
     size_t fileSize = file.size();
     size_t bytesToRead = (bufferSize < fileSize) ? bufferSize : fileSize;
-    
+
     size_t bytesRead = file.read(buffer, bytesToRead);
     file.close();
-    
+
     return bytesRead;
 }
 
 bool FileUtils::writeFile(const String& path, const String& content, bool append) {
     if (!fsInitialized) return false;
-    
+
     String mode = append ? "a" : "w";
     File file = LittleFS.open(path, mode.c_str());
     if (!file) {
         return false;
     }
-    
+
     size_t bytesWritten = file.print(content);
     file.close();
-    
+
     return bytesWritten == content.length();
 }
 
 bool FileUtils::writeFileFromBuffer(const String& path, const uint8_t* buffer, size_t size, bool append) {
     if (!fsInitialized) return false;
-    
+
     String mode = append ? "a" : "w";
     File file = LittleFS.open(path, mode.c_str());
     if (!file) {
         return false;
     }
-    
+
     size_t bytesWritten = file.write(buffer, size);
     file.close();
-    
+
     return bytesWritten == size;
 }
 
@@ -142,11 +143,11 @@ bool FileUtils::deleteFile(const String& path) {
     if (!fsInitialized || !exists(path)) {
         return false;
     }
-    
+
     if (isDirectory(path)) {
         return deleteDirectory(path);
     }
-    
+
     return LittleFS.remove(path);
 }
 
@@ -154,7 +155,7 @@ bool FileUtils::renameFile(const String& oldPath, const String& newPath) {
     if (!fsInitialized || !exists(oldPath) || exists(newPath)) {
         return false;
     }
-    
+
     return LittleFS.rename(oldPath, newPath);
 }
 
@@ -179,32 +180,32 @@ bool FileUtils::copyFile(const String& sourcePath, const String& destPath) {
     if (!fsInitialized || !exists(sourcePath) || exists(destPath) || isDirectory(sourcePath)) {
         return false;
     }
-    
+
     // 读取源文件
     File sourceFile = LittleFS.open(sourcePath, "r");
     if (!sourceFile) {
         return false;
     }
-    
+
     // 创建目标文件
     File destFile = LittleFS.open(destPath, "w");
     if (!destFile) {
         sourceFile.close();
         return false;
     }
-    
+
     // 复制数据
     size_t bufferSize = 512;
     uint8_t buffer[bufferSize];
-    
+
     while (sourceFile.available()) {
         size_t bytesRead = sourceFile.read(buffer, bufferSize);
         destFile.write(buffer, bytesRead);
     }
-    
+
     sourceFile.close();
     destFile.close();
-    
+
     return true;
 }
 
@@ -212,7 +213,7 @@ bool FileUtils::moveFile(const String& sourcePath, const String& destPath) {
     if (!copyFile(sourcePath, destPath)) {
         return false;
     }
-    
+
     return deleteFile(sourcePath);
 }
 
@@ -222,7 +223,7 @@ bool FileUtils::createDirectory(const String& path) {
     if (!fsInitialized || exists(path)) {
         return false;
     }
-    
+
     return LittleFS.mkdir(path);
 }
 
@@ -230,10 +231,10 @@ bool FileUtils::createDirectories(const String& path) {
     if (!fsInitialized || exists(path)) {
         return exists(path);
     }
-    
+
     String normalizedPath = normalizePath(path);
     String currentPath = "";
-    
+
     // 按 '/' 分割路径
     int start = 0;
     while (start < normalizedPath.length()) {
@@ -241,7 +242,7 @@ bool FileUtils::createDirectories(const String& path) {
         if (end == -1) {
             end = normalizedPath.length();
         }
-        
+
         String segment = normalizedPath.substring(start, end);
         if (!segment.isEmpty()) {
             currentPath = currentPath.isEmpty() ? segment : currentPath + "/" + segment;
@@ -251,10 +252,10 @@ bool FileUtils::createDirectories(const String& path) {
                 }
             }
         }
-        
+
         start = end + 1;
     }
-    
+
     return true;
 }
 
@@ -262,7 +263,7 @@ bool FileUtils::deleteDirectory(const String& path) {
     if (!fsInitialized || !exists(path) || !isDirectory(path)) {
         return false;
     }
-    
+
     return recursiveDeleteDirectory(path);
 }
 
@@ -271,12 +272,12 @@ bool FileUtils::recursiveDeleteDirectory(const String& path) {
     if (!dir || !dir.isDirectory()) {
         return false;
     }
-    
+
     File file = dir.openNextFile();
     while (file) {
         String fileName = file.name();
         String fullPath = path + "/" + fileName;
-        
+
         if (file.isDirectory()) {
             if (!recursiveDeleteDirectory(fullPath)) {
                 dir.close();
@@ -288,12 +289,12 @@ bool FileUtils::recursiveDeleteDirectory(const String& path) {
                 return false;
             }
         }
-        
+
         file = dir.openNextFile();
     }
-    
+
     dir.close();
-    
+
     // 删除空目录
     return LittleFS.rmdir(path);
 }
@@ -302,17 +303,17 @@ bool FileUtils::recursiveDeleteDirectory(const String& path) {
 
 std::vector<FileInfo> FileUtils::listDirectory(const String& path, bool recursive) {
     std::vector<FileInfo> results;
-    
+
     if (!fsInitialized || !exists(path) || !isDirectory(path)) {
         return results;
     }
-    
+
     if (recursive) {
         listDirectoryRecursive(path, results);
     } else {
         File dir = LittleFS.open(path);
         File file = dir.openNextFile();
-        
+
         while (file) {
             FileInfo info;
             info.name = getFileName(file.name());
@@ -320,14 +321,14 @@ std::vector<FileInfo> FileUtils::listDirectory(const String& path, bool recursiv
             info.size = file.size();
             info.isDirectory = file.isDirectory();
             info.modifiedTime = getModifiedTime(info.path);
-            
+
             results.push_back(info);
             file = dir.openNextFile();
         }
-        
+
         dir.close();
     }
-    
+
     return results;
 }
 
@@ -336,7 +337,7 @@ void FileUtils::listDirectoryRecursive(const String& path, std::vector<FileInfo>
     if (!dir || !dir.isDirectory()) {
         return;
     }
-    
+
     File file = dir.openNextFile();
     while (file) {
         FileInfo info;
@@ -345,42 +346,42 @@ void FileUtils::listDirectoryRecursive(const String& path, std::vector<FileInfo>
         info.size = file.size();
         info.isDirectory = file.isDirectory();
         info.modifiedTime = getModifiedTime(info.path);
-        
+
         results.push_back(info);
-        
+
         if (file.isDirectory()) {
             listDirectoryRecursive(info.path, results);
         }
-        
+
         file = dir.openNextFile();
     }
-    
+
     dir.close();
 }
 
 std::vector<FileInfo> FileUtils::findFiles(const String& directory, const String& pattern, bool recursive) {
     std::vector<FileInfo> results;
-    
+
     if (!fsInitialized || !exists(directory) || !isDirectory(directory)) {
         return results;
     }
-    
+
     findFilesRecursive(directory, pattern, results, recursive);
     return results;
 }
 
-void FileUtils::findFilesRecursive(const String& directory, const String& pattern, 
+void FileUtils::findFilesRecursive(const String& directory, const String& pattern,
                                   std::vector<FileInfo>& results, bool recursive) {
     File dir = LittleFS.open(directory);
     if (!dir || !dir.isDirectory()) {
         return;
     }
-    
+
     File file = dir.openNextFile();
     while (file) {
         String fileName = getFileName(file.name());
         String fullPath = file.name();
-        
+
         if (file.isDirectory()) {
             if (recursive) {
                 findFilesRecursive(fullPath, pattern, results, recursive);
@@ -394,14 +395,14 @@ void FileUtils::findFilesRecursive(const String& directory, const String& patter
                 info.size = file.size();
                 info.isDirectory = false;
                 info.modifiedTime = getModifiedTime(fullPath);
-                
+
                 results.push_back(info);
             }
         }
-        
+
         file = dir.openNextFile();
     }
-    
+
     dir.close();
 }
 
@@ -409,12 +410,12 @@ void FileUtils::findFilesRecursive(const String& directory, const String& patter
 bool FileUtils::patternMatches(const String& fileName, const String& pattern) {
     if (pattern == "*") return true;
     if (pattern.isEmpty()) return fileName.isEmpty();
-    
+
     // 简单的通配符匹配实现
     // 支持 *（任意字符）和 ?（单个字符）
     int i = 0, j = 0;
     int starPos = -1, matchPos = -1;
-    
+
     while (i < fileName.length()) {
         if (j < pattern.length() && (pattern[j] == fileName[i] || pattern[j] == '?')) {
             i++;
@@ -430,11 +431,11 @@ bool FileUtils::patternMatches(const String& fileName, const String& pattern) {
             return false;
         }
     }
-    
+
     while (j < pattern.length() && pattern[j] == '*') {
         j++;
     }
-    
+
     return j == pattern.length();
 }
 
@@ -442,17 +443,17 @@ bool FileUtils::patternMatches(const String& fileName, const String& pattern) {
 
 FileInfo FileUtils::getFileInfo(const String& path) {
     FileInfo info;
-    
+
     if (!fsInitialized || !exists(path)) {
         return info;
     }
-    
+
     info.name = getFileName(path);
     info.path = path;
     info.isDirectory = isDirectory(path);
     info.size = info.isDirectory ? 0 : getFileSize(path);
     info.modifiedTime = getModifiedTime(path);
-    
+
     return info;
 }
 
@@ -466,32 +467,32 @@ size_t FileUtils::calculateFolderSize(const String& folderPath) {
     if (!fsInitialized || !exists(folderPath)) {
         return 0;
     }
-    
+
     return calculateFolderSizeRecursive(folderPath);
 }
 
 size_t FileUtils::calculateFolderSizeRecursive(const String& folderPath) {
     size_t totalSize = 0;
-    
+
     File dir = LittleFS.open(folderPath);
     if (!dir || !dir.isDirectory()) {
         return 0;
     }
-    
+
     File file = dir.openNextFile();
     while (file) {
         String fileName = file.name();
         String fullPath = fileName; // 已经是完整路径
-        
+
         if (file.isDirectory()) {
             totalSize += calculateFolderSizeRecursive(fullPath);
         } else {
             totalSize += file.size();
         }
-        
+
         file = dir.openNextFile();
     }
-    
+
     dir.close();
     return totalSize;
 }
@@ -500,36 +501,36 @@ size_t FileUtils::calculateFolderSizeOptimized(const String& folderPath) {
     if (!fsInitialized || !exists(folderPath)) {
         return 0;
     }
-    
+
     size_t totalSize = 0;
     std::vector<String> directories;
     directories.push_back(folderPath);
-    
+
     while (!directories.empty()) {
         String currentDir = directories.back();
         directories.pop_back();
-        
+
         File dir = LittleFS.open(currentDir);
         if (!dir || !dir.isDirectory()) {
             continue;
         }
-        
+
         File file = dir.openNextFile();
         while (file) {
             String fileName = file.name();
             String fullPath = fileName; // LittleFS 返回完整路径
-            
+
             if (file.isDirectory()) {
                 directories.push_back(fullPath);
             } else {
                 totalSize += file.size();
             }
-            
+
             file = dir.openNextFile();
         }
         dir.close();
     }
-    
+
     return totalSize;
 }
 
@@ -560,16 +561,16 @@ bool FileUtils::appendToFile(const String& path, const String& content) {
 
 std::vector<String> FileUtils::readLines(const String& path) {
     std::vector<String> lines;
-    
+
     if (!fsInitialized || !exists(path) || isDirectory(path)) {
         return lines;
     }
-    
+
     File file = LittleFS.open(path, "r");
     if (!file) {
         return lines;
     }
-    
+
     String line;
     while (file.available()) {
         line = file.readStringUntil('\n');
@@ -578,23 +579,23 @@ std::vector<String> FileUtils::readLines(const String& path) {
             lines.push_back(line);
         }
     }
-    
+
     file.close();
     return lines;
 }
 
 bool FileUtils::writeLines(const String& path, const std::vector<String>& lines) {
     if (!fsInitialized) return false;
-    
+
     File file = LittleFS.open(path, "w");
     if (!file) {
         return false;
     }
-    
+
     for (size_t i = 0; i < lines.size(); i++) {
         file.println(lines[i]);
     }
-    
+
     file.close();
     return true;
 }
@@ -604,41 +605,41 @@ bool FileUtils::writeLines(const String& path, const std::vector<String>& lines)
 String FileUtils::getFileExtension(const String& path) {
     int dotIndex = path.lastIndexOf('.');
     if (dotIndex == -1) return "";
-    
+
     int slashIndex = path.lastIndexOf('/');
     if (slashIndex > dotIndex) return "";
-    
+
     return path.substring(dotIndex + 1);
 }
 
 String FileUtils::getDirectoryPath(const String& path) {
     int slashIndex = path.lastIndexOf('/');
     if (slashIndex == -1) return "";
-    
+
     return path.substring(0, slashIndex);
 }
 
 String FileUtils::joinPath(const String& base, const String& part) {
     if (base.isEmpty()) return part;
     if (part.isEmpty()) return base;
-    
+
     // 预分配足够空间: base + "/" + part
     String result;
     result.reserve(base.length() + part.length() + 2);
     result = base;
-    
+
     // 确保 base 以 / 结尾
     if (!result.endsWith("/")) {
         result += "/";
     }
-    
+
     // 如果 part 以 / 开头，去掉开头的 /
     if (part.startsWith("/")) {
         result += part.substring(1);
     } else {
         result += part;
     }
-    
+
     // 规范化路径（移除多余的 //）
     return normalizePath(result);
 }
@@ -647,19 +648,19 @@ String FileUtils::normalizePath(const String& path) {
     if (path.length() == 0 || path == "/") {
         return "/";
     }
-    
+
     String result = path;
-    
+
     // 确保以 '/' 开头
     if (result.charAt(0) != '/') {
         result = "/" + result;
     }
-    
+
     // 移除末尾的 '/'
     if (result.length() > 1 && result.charAt(result.length() - 1) == '/') {
         result = result.substring(0, result.length() - 1);
     }
-    
+
     return result;
 }
 
@@ -667,12 +668,12 @@ String FileUtils::getFileName(const String& path) {
     if (path.length() == 0) {
         return "";
     }
-    
+
     int lastSlash = path.lastIndexOf('/');
     if (lastSlash == -1) {
         return path;
     }
-    
+
     // 如果以斜杠结尾，可能是目录，尝试获取上一级
     if (lastSlash == path.length() - 1) {
         String parent = path.substring(0, path.length() - 1);
@@ -682,7 +683,7 @@ String FileUtils::getFileName(const String& path) {
         }
         return parent.substring(prevSlash + 1);
     }
-    
+
     return path.substring(lastSlash + 1);
 }
 
@@ -690,12 +691,12 @@ String FileUtils::ensureAbsolutePath(const String& path, const String& baseDir) 
     if (path.length() == 0) {
         return baseDir;
     }
-    
+
     // 如果已经是绝对路径
     if (path.charAt(0) == '/') {
         return normalizePath(path);
     }
-    
+
     // 相对路径，基于 baseDir 构建绝对路径
     String base = normalizePath(baseDir);
     if (base == "/") {
@@ -826,20 +827,45 @@ String FileUtils::getFileSystemInfoJSON() {
     return jsonString;
 }
 
-// ==================== 暂未实现的方法（占位符） ====================
-// @todo NOT IMPLEMENTED - 以下方法为预留接口占位符，返回空值或默认值
-// 调用前请确认实现状态，避免依赖未实现的返回值
+// ==================== 文件哈希与完整性校验 ====================
 
 String FileUtils::calculateFileHash(const String& path) {
-    return "";
+    if (!fsInitialized || !exists(path) || isDirectory(path)) {
+        return "";
+    }
+    File file = LittleFS.open(path, "r");
+    if (!file) return "";
+
+    MD5Builder md5;
+    md5.begin();
+
+    uint8_t buf[256];
+    while (file.available()) {
+        size_t bytesRead = file.read(buf, sizeof(buf));
+        if (bytesRead == 0) break;
+        md5.add(buf, bytesRead);
+    }
+    file.close();
+
+    md5.calculate();
+    return md5.toString();
 }
 
 bool FileUtils::verifyFileIntegrity(const String& path, const String& expectedHash) {
-    return calculateFileHash(path) == expectedHash;
+    if (expectedHash.isEmpty()) return false;
+    String computed = calculateFileHash(path);
+    if (computed.isEmpty()) return false;
+    return computed.equalsIgnoreCase(expectedHash);
 }
+
+// ==================== 临时文件管理 ====================
 
 String FileUtils::createTempFile(const String& prefix, const String& content) {
     static int counter = 0;
+    // 确保 /tmp 目录存在
+    if (!exists("/tmp")) {
+        LittleFS.mkdir("/tmp");
+    }
     String tempPath = "/tmp/" + prefix + "_" + String(millis()) + "_" + String(counter++);
     if (!content.isEmpty()) {
         writeFile(tempPath, content);
@@ -848,20 +874,88 @@ String FileUtils::createTempFile(const String& prefix, const String& content) {
 }
 
 int FileUtils::cleanupTempFiles(const String& tempDir, time_t olderThan) {
-    return 0;
+    if (!fsInitialized || !exists(tempDir) || !isDirectory(tempDir)) {
+        return 0;
+    }
+    int removed = 0;
+    File dir = LittleFS.open(tempDir);
+    if (!dir || !dir.isDirectory()) return 0;
+
+    // 收集要删除的文件路径（避免遍历时删除）
+    std::vector<String> toDelete;
+    File file = dir.openNextFile();
+    while (file) {
+        if (!file.isDirectory()) {
+            // LittleFS不支持修改时间，若olderThan=0则删除全部
+            if (olderThan == 0) {
+                toDelete.push_back(String(file.name()));
+            }
+        }
+        file = dir.openNextFile();
+    }
+    dir.close();
+
+    for (const auto& p : toDelete) {
+        if (LittleFS.remove(p)) {
+            removed++;
+        }
+    }
+    return removed;
 }
+
+// ==================== 备份与恢复 ====================
 
 String FileUtils::backupFile(const String& sourcePath, const String& backupDir) {
     if (!exists(sourcePath)) return "";
+    // 确保备份目录存在
+    if (!exists(backupDir)) {
+        LittleFS.mkdir(backupDir);
+    }
     String backupName = getFileName(sourcePath) + "." + String(millis()) + ".bak";
     String backupPath = joinPath(backupDir, backupName);
     return copyFile(sourcePath, backupPath) ? backupPath : "";
 }
 
 bool FileUtils::restoreBackup(const String& backupPath, const String& restorePath) {
+    if (!exists(backupPath)) return false;
+    // 先删除目标文件（copyFile要求目标不存在）
+    if (exists(restorePath)) {
+        deleteFile(restorePath);
+    }
     return copyFile(backupPath, restorePath);
 }
 
 int FileUtils::cleanupOldBackups(const String& backupDir, int keepCount) {
-    return 0;
+    if (!fsInitialized || !exists(backupDir) || !isDirectory(backupDir)) {
+        return 0;
+    }
+
+    // 收集所有 .bak 文件
+    std::vector<String> backups;
+    File dir = LittleFS.open(backupDir);
+    if (!dir || !dir.isDirectory()) return 0;
+
+    File file = dir.openNextFile();
+    while (file) {
+        if (!file.isDirectory()) {
+            String name = String(file.name());
+            if (name.endsWith(".bak")) {
+                backups.push_back(name);
+            }
+        }
+        file = dir.openNextFile();
+    }
+    dir.close();
+
+    // 按文件名排序（包含时间戳，字典序即时间序）
+    std::sort(backups.begin(), backups.end());
+
+    int removed = 0;
+    int toRemove = (int)backups.size() - keepCount;
+    for (int i = 0; i < toRemove; i++) {
+        if (LittleFS.remove(backups[i])) {
+            removed++;
+        }
+    }
+    return removed;
 }

@@ -1,5 +1,6 @@
 // main.cpp
 #include "core/FastBeeFramework.h"
+#include "systems/RestartDiagnostics.h"
 #include <esp_heap_caps.h>
 #include <esp_bt.h>
 #include <esp_chip_info.h>
@@ -33,8 +34,10 @@ static void fastbee_terminate_handler() {
     Serial.println("===== FATAL: Uncaught Exception =====");
     Serial.printf("Free heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
     
-    // 尝试获取当前异常信息（C++ 标准不支持，但 ESP32 GCC 可能输出有用信息）
-    // 无法安全获取异常类型，只记录堆栈和内存
+    // 保存重启前状态快照到 RTC 内存
+    RestartDiagnostics::savePreRestartState(
+        RestartReason::UNCAUGHT_EXCEPTION,
+        "std::terminate() — uncaught exception");
     
     Serial.println("System will reboot in 3 seconds...");
     Serial.println("=====================================");
@@ -58,6 +61,10 @@ void setup() {
 #elif defined(CONFIG_IDF_TARGET_ESP32S3) || defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C6)
     esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
 #endif
+
+    // ======== 启动诊断：检测重启原因 ========
+    // 必须在 Serial 初始化后尽早调用，输出上次重启的完整诊断信息
+    RestartDiagnostics::logBootDiagnostics();
 
     // 启动诊断：输出芯片信息和可用内存，快速判断 PSRAM / 堆是否正常
     Serial.printf("[BOOT] Chip: %s Rev%d\n", ESP.getChipModel(), ESP.getChipRevision());

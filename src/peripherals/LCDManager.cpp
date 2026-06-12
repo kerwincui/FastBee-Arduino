@@ -150,6 +150,14 @@ bool LCDManager::createDisplay(const PeripheralConfig& config)
             );
             _controller = DisplayController::SSD1306;
         }
+        else if (_width == 72 && _height == 40)
+        {
+            // ESP32-C3 OLED 开发板常见 0.42寸 SSD1306 72x40
+            _display = new U8G2_SSD1306_72X40_ER_F_HW_I2C(
+                U8G2_R0, _resetPin, config.pins[1], config.pins[0]
+            );
+            _controller = DisplayController::SSD1306;
+        }
         else if (_width == 64 && _height == 128)
         {
             // SH1106 1.3寸 OLED

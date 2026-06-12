@@ -13,6 +13,7 @@
 
 #include "systems/HealthMonitor.h"
 #include "systems/LoggerSystem.h"
+#include "systems/RestartDiagnostics.h"
 #include <esp_heap_caps.h>
 #include <LittleFS.h>
 #include <WiFi.h>
@@ -154,6 +155,10 @@ void HealthMonitor::checkCriticalMemory() {
 
         if (consecutiveLowMemCount >= CRITICAL_COUNT_THRESHOLD) {
             LOG_ERROR("Health: Memory critically low for too long, rebooting!");
+            // 保存重启前状态快照到 RTC 内存，供下次启动诊断
+            RestartDiagnostics::savePreRestartState(
+                RestartReason::CRITICAL_LOW_MEMORY,
+                "HealthMonitor: heap < 8KB for 15s");
             delay(100);
             ESP.restart();
         }

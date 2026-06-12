@@ -292,6 +292,15 @@ function Test-CheckSemantics {
         }
         "config-transfer-list" {
             if ($null -eq $data) { return "missing data" }
+            if ($null -eq (Get-ObjectValue -Object $data -Name "entries")) { return "missing entries" }
+        }
+        "config-transfer-export" {
+            if ($null -eq $data) { return "missing data" }
+            if ($null -eq (Get-ObjectValue -Object $data -Name "bundle")) { return "missing bundle" }
+        }
+        "config-transfer-import" {
+            if ($null -eq $data) { return "missing data" }
+            if ($null -eq (Get-ObjectValue -Object $data -Name "imported")) { return "missing imported count" }
         }
         "filesystem" {
             if ($null -eq $data) { return "missing data" }
@@ -700,6 +709,76 @@ foreach ($check in Get-MatrixChecks) {
         -Path ([string]$check.path) `
         -Body (Get-CheckValue -Check $check -Name "body") `
         -JsonBody:([bool](Get-CheckValue -Check $check -Name "jsonBody" -DefaultValue $false))
+}
+
+# Configuration transfer end-to-end tests
+Write-Host "" -NoNewline
+Write-Host "Running config transfer end-to-end tests..." -ForegroundColor Cyan
+
+# Test 1: Export single config
+$exportSingle = Invoke-FastBeeApi -Method POST -Path "/api/config/transfer/export" -Body @{
+    entries = @("/config/device.json")
+} -JsonBody
+$exportSingleOk = ($null -ne $exportSingle -and $exportSingle.success -eq $true)
+$exportSingleBundle = Get-ObjectValue -Object $exportSingle -Name "data" | ForEach-Object { Get-ObjectValue -Object $_ -Name "bundle" }
+$exportSingleOk = $exportSingleOk -and ($null -ne $exportSingleBundle -and [string]$exportSingleBundle -ne "")
+$script:Results += [pscustomobject]@{
+    Name = "config-transfer-export-single"
+    Method = "POST"
+    Path = "/api/config/transfer/export"
+    Passed = $exportSingleOk
+    Attempts = 1
+    Message = if ($exportSingleOk) { "OK" } else { "single config export failed" }
+}
+
+# Test 2: Export multiple configs
+$exportMulti = Invoke-FastBeeApi -Method POST -Path "/api/config/transfer/export" -Body @{
+    entries = @("/config/device.json", "/config/network.json")
+} -JsonBody
+$exportMultiOk = ($null -ne $exportMulti -and $exportMulti.success -eq $true)
+$exportMultiBundle = Get-ObjectValue -Object $exportMulti -Name "data" | ForEach-Object { Get-ObjectValue -Object $_ -Name "bundle" }
+$exportMultiOk = $exportMultiOk -and ($null -ne $exportMultiBundle -and [string]$exportMultiBundle -ne "")
+$exportMultiOk = $exportMultiOk -and ([string]$exportMultiBundle -match '"format"\s*:\s*"fastbee-config-bundle"')
+$script:Results += [pscustomobject]@{
+    Name = "config-transfer-export-multiple"
+    Method = "POST"
+    Path = "/api/config/transfer/export"
+    Passed = $exportMultiOk
+    Attempts = 1
+    Message = if ($exportMultiOk) { "OK" } else { "multiple config export failed" }
+}
+
+# Test 3: Import config (using exported bundle)
+if ($exportSingleOk) {
+    $bundleContent = [string]$exportSingleBundle
+    $importChunk = Invoke-FastBeeApi -Method POST -Path "/api/config/transfer/import-chunk" -Body @{
+        chunk = $bundleContent
+        isLast = $true
+    } -JsonBody
+    $importOk = ($null -ne $importChunk -and $importChunk.success -eq $true)
+    $importedCount = Get-ObjectValue -Object $importChunk -Name "data" | ForEach-Object { Get-ObjectValue -Object $_ -Name "imported" }
+    $importOk = $importOk -and ($null -ne $importedCount -and [int]$importedCount -ge 0)
+    $script:Results += [pscustomobject]@{
+        Name = "config-transfer-import-roundtrip"
+        Method = "POST"
+        Path = "/api/config/transfer/import-chunk"
+        Passed = $importOk
+        Attempts = 1
+        Message = if ($importOk) { "OK" } else { "config import roundtrip failed" }
+    }
+} else {
+    $script:Results += [pscustomobject]@{
+        Name = "config-transfer-import-roundtrip"
+        Method = "POST"
+        Path = "/api/config/transfer/import-chunk"
+        Passed = $false
+        Attempts = 0
+        Message = "skipped (export prerequisite failed)"
+    }
+}
+
+if ($DelayMs -gt 0) {
+    Start-Sleep -Milliseconds $DelayMs
 }
 
 Write-Host ""

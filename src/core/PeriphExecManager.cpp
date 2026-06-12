@@ -1,3 +1,10 @@
+/**
+ * @file PeriphExecManager.cpp
+ * @brief 外设执行管理器实现
+ * @author kerwincui
+ * @copyright FastBee All rights reserved.
+ */
+
 #include "core/FeatureFlags.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
 
@@ -511,6 +518,7 @@ bool PeriphExecManager::addRule(const PeriphExecRule& rule, String& errorMsg) {
     rules[newRule.id] = newRule;
     rebuildButtonEventCache();
     rebuildDataSourceCache();
+    if (_scheduler) _scheduler->validateLoadedConfig();
     LOGGER.infof("[PeriphExec] Added rule: %s (%s)", newRule.id.c_str(), newRule.name.c_str());
     return true;
 }
@@ -587,6 +595,7 @@ bool PeriphExecManager::updateRule(const String& id, const PeriphExecRule& rule,
     rules[id] = updated;
     rebuildButtonEventCache();
     rebuildDataSourceCache();
+    if (_scheduler) _scheduler->validateLoadedConfig();
     LOGGER.infof("[PeriphExec] Updated rule: %s", id.c_str());
     return true;
 }
@@ -602,6 +611,7 @@ bool PeriphExecManager::removeRule(const String& id) {
     rules.erase(it);
     rebuildButtonEventCache();
     rebuildDataSourceCache();
+    if (_scheduler) _scheduler->validateLoadedConfig();
     LOGGER.infof("[PeriphExec] Removed rule: %s", id.c_str());
     return true;
 }
@@ -630,6 +640,7 @@ bool PeriphExecManager::enableRule(const String& id) {
     it->second.enabled = true;
     rebuildButtonEventCache();
     rebuildDataSourceCache();
+    if (_scheduler) _scheduler->validateLoadedConfig();
     return true;
 }
 
@@ -641,6 +652,7 @@ bool PeriphExecManager::disableRule(const String& id) {
     it->second.enabled = false;
     rebuildButtonEventCache();
     rebuildDataSourceCache();
+    if (_scheduler) _scheduler->validateLoadedConfig();
     return true;
 }
 

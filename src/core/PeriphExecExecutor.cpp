@@ -1,3 +1,10 @@
+/**
+ * @file PeriphExecExecutor.cpp
+ * @brief 外设执行动作执行器实现
+ * @author kerwincui
+ * @copyright FastBee All rights reserved.
+ */
+
 #include "core/FeatureFlags.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
 
@@ -707,6 +714,10 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
 
         bool anySuccess = false;
 
+        // 批次总超时：防止 poll+ctrl 累积耗时过长占用 worker 线程
+        unsigned long batchStart = millis();
+        constexpr unsigned long MODBUS_POLL_BATCH_TIMEOUT_MS = 30000; // 30s
+
         // 处理 poll 数组: 执行采集任务
         JsonArray pollArr = doc["poll"].as<JsonArray>();
         if (pollArr) {
@@ -715,6 +726,12 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
             JsonArray resultsArr = resultDoc.to<JsonArray>();
 
             for (JsonVariant v : pollArr) {
+                // 批次总超时检查
+                if (millis() - batchStart > MODBUS_POLL_BATCH_TIMEOUT_MS) {
+                    Serial.printf("[PeriphExec] Poll batch timeout (%lums), stopping early\n",
+                                  (unsigned long)MODBUS_POLL_BATCH_TIMEOUT_MS);
+                    break;
+                }
                 // MemGuard 动态堆检查：防止多任务迭代中堆逐渐耗尽
                 {
                     auto* fwInner = FastBeeFramework::getInstance();
@@ -764,6 +781,22 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
         if (ctrlArr) {
             const ModbusConfig& cfg = modbus->getConfigRef();
             for (JsonVariant cv : ctrlArr) {
+                // 批次总超时检查（poll+ctrl 共享同一时间预算）
+                if (millis() - batchStart > MODBUS_POLL_BATCH_TIMEOUT_MS) {
+                    Serial.printf("[PeriphExec] Ctrl batch timeout (%lums), stopping early\n",
+                                  (unsigned long)MODBUS_POLL_BATCH_TIMEOUT_MS);
+                    break;
+                }
+                // MemGuard 堆守卫：与 pollArr 保持一致的防护
+                {
+                    auto* fwCtrl = FastBeeFramework::getInstance();
+                    HealthMonitor* monCtrl = fwCtrl ? fwCtrl->getHealthMonitor() : nullptr;
+                    if ((monCtrl && monCtrl->isMemoryCritical()) || ESP.getFreeHeap() < 15000) {
+                        Serial.printf("[PeriphExec] Heap dropped to %d during ctrl, stopping early\n",
+                                      (int)ESP.getFreeHeap());
+                        break;
+                    }
+                }
                 uint8_t devIdx = cv["d"].as<uint8_t>();
                 if (devIdx >= cfg.master.deviceCount) {
                     Serial.printf("[PeriphExec] ctrl device index %d out of range\n", devIdx);
@@ -942,9 +975,17 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
     JsonDocument resultDoc;
     JsonArray resultsArr = resultDoc.to<JsonArray>();
     bool anySuccess = false;
+    unsigned long legacyBatchStart = millis();
+    constexpr unsigned long MODBUS_LEGACY_BATCH_TIMEOUT_MS = 30000;
 
     int start = 0;
     while (start <= (int)actionVal.length()) {
+        // 批次总超时检查
+        if (millis() - legacyBatchStart > MODBUS_LEGACY_BATCH_TIMEOUT_MS) {
+            Serial.printf("[PeriphExec] Legacy poll batch timeout (%lums), stopping early\n",
+                          (unsigned long)MODBUS_LEGACY_BATCH_TIMEOUT_MS);
+            break;
+        }
         int comma = actionVal.indexOf(',', start);
         if (comma < 0) comma = actionVal.length();
         String token = actionVal.substring(start, comma);

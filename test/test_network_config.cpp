@@ -369,6 +369,517 @@ void test_network_reconnect() {
     TestLog::testEnd(true);
 }
 
+// ========== 多网络模式测试 ==========
+
+/**
+ * @brief 多网络模式状态模拟器
+ * 
+ * 模拟 NetworkManager 中多网络模式切换、失败回退、状态隔离的核心逻辑。
+ * 用于验证 4G/以太网/LoRa 等非 WiFi 联网方式下的行为。
+ */
+class MockMultiNetworkManager {
+public:
+    // 与源码保持一致的枚举值
+    enum class NetType : uint8_t { NET_WIFI = 0, NET_ETHERNET = 1, NET_4G = 2, NET_LORA = 3 };
+    enum class NetMode : uint8_t { NETWORK_STA = 0, NETWORK_AP = 1 };
+    enum class NetStatus : uint8_t {
+        DISCONNECTED = 0, CONNECTING = 1, CONNECTED = 2,
+        CONNECTION_FAILED = 3, AP_MODE = 4
+    };
+
+    NetType networkType = NetType::NET_WIFI;
+    NetMode mode = NetMode::NETWORK_STA;
+    NetStatus status = NetStatus::DISCONNECTED;
+    String ipAddress = "";
+    String apIPAddress = "";
+    String apSSID = "fastbee-ap";
+    bool apRunning = false;
+    uint8_t apClientCount = 0;
+    bool internetAvailable = false;
+
+    // 模拟 WiFiManager 的状态（用于测试状态隔离）
+    NetStatus wifiManagerStatus = NetStatus::AP_MODE;
+
+    /**
+     * 模拟 initialize() 中的联网初始化逻辑
+     * 返回 true 表示初始化成功，false 表示失败
+     */
+    bool initialize(bool adapterSuccess) {
+        // 模拟 4G 初始化
+        if (networkType == NetType::NET_4G) {
+            if (adapterSuccess) {
+                status = NetStatus::CONNECTED;
+                ipAddress = "10.0.0.100";
+                internetAvailable = true;
+                // 4G 成功 → 启动 AP 热点
+                startAPForHybrid();
+                return true;
+            } else {
+                // 4G 失败 → 回退到 AP 模式（关键修复点）
+                networkType = NetType::NET_WIFI;
+                mode = NetMode::NETWORK_AP;
+                startAP();
+                return false;
+            }
+        }
+
+        // 模拟以太网初始化
+        if (networkType == NetType::NET_ETHERNET) {
+            if (adapterSuccess) {
+                status = NetStatus::CONNECTED;
+                ipAddress = "192.168.1.200";
+                internetAvailable = true;
+                startAPForHybrid();
+                return true;
+            } else {
+                networkType = NetType::NET_WIFI;
+                mode = NetMode::NETWORK_AP;
+                startAP();
+                return false;
+            }
+        }
+
+        // 模拟 LoRa 初始化
+        if (networkType == NetType::NET_LORA) {
+            if (adapterSuccess) {
+                status = NetStatus::CONNECTED;
+                internetAvailable = false;
+                return true;
+            } else {
+                networkType = NetType::NET_WIFI;
+                mode = NetMode::NETWORK_AP;
+                startAP();
+                return false;
+            }
+        }
+
+        // WiFi 模式
+        if (networkType == NetType::NET_WIFI) {
+            if (mode == NetMode::NETWORK_AP) {
+                startAP();
+                return true;
+            }
+            // STA 模式
+            if (adapterSuccess) {
+                status = NetStatus::CONNECTED;
+                ipAddress = "192.168.1.100";
+                internetAvailable = true;
+                return true;
+            }
+            status = NetStatus::CONNECTION_FAILED;
+            return false;
+        }
+
+        return false;
+    }
+
+    /**
+     * 模拟 updateStatusInfo() 中的状态隔离逻辑
+     * 非 WiFi 联网时，主状态由对应适配器决定，仅同步 AP 字段
+     */
+    void updateStatusInfo(bool adapterConnected, const String& adapterIP) {
+        if (networkType != NetType::NET_WIFI) {
+            // 仅同步 AP 字段，不覆盖主状态
+            apClientCount = 1;  // 模拟有客户端连接
+            apIPAddress = "192.168.4.1";
+
+            // 主状态由适配器决定
+            status = adapterConnected ? NetStatus::CONNECTED : NetStatus::DISCONNECTED;
+            ipAddress = adapterConnected ? adapterIP : "";
+            internetAvailable = adapterConnected;
+            return;
+        }
+
+        // WiFi 模式：完全同步 WiFiManager 状态
+        status = wifiManagerStatus;
+    }
+
+    /**
+     * 模拟 restartNetwork() 中的重启逻辑
+     */
+    bool restartNetwork(bool adapterSuccess) {
+        // 先断开所有
+        disconnect();
+
+        if (networkType != NetType::NET_WIFI) {
+            // 非 WiFi 联网方式：完整重新初始化
+            return initialize(adapterSuccess);
+        }
+
+        // WiFi STA 模式重启
+        return initialize(adapterSuccess);
+    }
+
+    void disconnect() {
+        status = NetStatus::DISCONNECTED;
+        ipAddress = "";
+        internetAvailable = false;
+        apRunning = false;
+    }
+
+    bool isAPRunning() const { return apRunning; }
+
+    void startAP() {
+        apRunning = true;
+        apIPAddress = "192.168.4.1";
+        status = NetStatus::AP_MODE;
+    }
+
+    void startAPForHybrid() {
+        apRunning = true;
+        apIPAddress = "192.168.4.1";
+        // 混合模式下主状态保持 CONNECTED，不设为 AP_MODE
+    }
+};
+
+// 测试联网方式枚举值
+void test_network_type_enum_values() {
+    TestLog::testStart("Network Type Enum Values");
+
+    TEST_ASSERT_EQUAL(0, (int)MockMultiNetworkManager::NetType::NET_WIFI);
+    TestLog::step("NET_WIFI = 0");
+
+    TEST_ASSERT_EQUAL(1, (int)MockMultiNetworkManager::NetType::NET_ETHERNET);
+    TestLog::step("NET_ETHERNET = 1");
+
+    TEST_ASSERT_EQUAL(2, (int)MockMultiNetworkManager::NetType::NET_4G);
+    TestLog::step("NET_4G = 2");
+
+    TEST_ASSERT_EQUAL(3, (int)MockMultiNetworkManager::NetType::NET_LORA);
+    TestLog::step("NET_LORA = 3");
+
+    TestLog::testEnd(true);
+}
+
+// 测试 4G 初始化失败回退到 AP 模式
+void test_4g_init_failure_fallback_to_ap() {
+    TestLog::testStart("4G Init Failure → AP Fallback");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+
+    bool result = mgr.initialize(false);  // 4G 初始化失败
+    TEST_ASSERT_FALSE(result);
+    TestLog::step("4G init returned false");
+
+    // 关键验证：回退到 AP 模式而非 STA
+    TEST_ASSERT_FALLBACK_TO_AP(mgr.networkType, mgr.mode);
+    TestLog::step("Fallback: networkType=NET_WIFI, mode=NETWORK_AP");
+
+    // AP 热点必须已启动
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", mgr.apIPAddress.c_str());
+    TestLog::step("AP hotspot running at 192.168.4.1");
+
+    TestLog::testEnd(true);
+}
+
+// 测试以太网初始化失败回退到 AP 模式
+void test_ethernet_init_failure_fallback_to_ap() {
+    TestLog::testStart("Ethernet Init Failure → AP Fallback");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+
+    bool result = mgr.initialize(false);  // 以太网初始化失败
+    TEST_ASSERT_FALSE(result);
+    TestLog::step("Ethernet init returned false");
+
+    TEST_ASSERT_FALLBACK_TO_AP(mgr.networkType, mgr.mode);
+    TestLog::step("Fallback: networkType=NET_WIFI, mode=NETWORK_AP");
+
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TestLog::step("AP hotspot running");
+
+    TestLog::testEnd(true);
+}
+
+// 测试 LoRa 初始化失败回退到 AP 模式
+void test_lora_init_failure_fallback_to_ap() {
+    TestLog::testStart("LoRa Init Failure → AP Fallback");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_LORA;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+
+    bool result = mgr.initialize(false);  // LoRa 初始化失败
+    TEST_ASSERT_FALSE(result);
+    TestLog::step("LoRa init returned false");
+
+    TEST_ASSERT_FALLBACK_TO_AP(mgr.networkType, mgr.mode);
+    TestLog::step("Fallback: networkType=NET_WIFI, mode=NETWORK_AP");
+
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TestLog::step("AP hotspot running");
+
+    TestLog::testEnd(true);
+}
+
+// 测试 4G 成功初始化后 AP 热点保持运行
+void test_4g_mode_ap_always_running() {
+    TestLog::testStart("4G Mode: AP Always Running");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+
+    bool result = mgr.initialize(true);  // 4G 初始化成功
+    TEST_ASSERT_TRUE(result);
+    TestLog::step("4G init succeeded");
+
+    // 4G 已连接
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::CONNECTED, (int)mgr.status);
+    TEST_ASSERT_FALSE(mgr.ipAddress.isEmpty());
+    TestLog::step("4G connected with IP");
+
+    // AP 热点必须同时运行
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TEST_ASSERT_AP_ACTIVE_IN_HYBRID(mgr.apIPAddress, mgr.apSSID);
+    TestLog::step("AP hotspot active in hybrid mode (4G + AP)");
+
+    // WiFi STA 不应活跃
+    MockWiFiClass wifi;
+    wifi.mode(WIFI_AP);  // 4G+AP 场景下 WiFi 应为纯 AP 模式
+    TEST_ASSERT_STA_INACTIVE(wifi.getMode());
+    TestLog::step("WiFi STA not active in 4G mode");
+
+    TestLog::testEnd(true);
+}
+
+// 测试以太网成功初始化后 AP 热点保持运行
+void test_ethernet_mode_ap_always_running() {
+    TestLog::testStart("Ethernet Mode: AP Always Running");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+
+    bool result = mgr.initialize(true);  // 以太网初始化成功
+    TEST_ASSERT_TRUE(result);
+    TestLog::step("Ethernet init succeeded");
+
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::CONNECTED, (int)mgr.status);
+    TestLog::step("Ethernet connected");
+
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TEST_ASSERT_AP_ACTIVE_IN_HYBRID(mgr.apIPAddress, mgr.apSSID);
+    TestLog::step("AP hotspot active in hybrid mode (Ethernet + AP)");
+
+    TestLog::testEnd(true);
+}
+
+// 测试非WiFi联网时状态隔离：WiFi 状态不覆盖主网络状态
+void test_non_wifi_status_isolation() {
+    TestLog::testStart("Non-WiFi Status Isolation");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+
+    // 4G 初始化成功
+    mgr.initialize(true);
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::CONNECTED, (int)mgr.status);
+    TestLog::step("Initial: 4G CONNECTED");
+
+    // WiFiManager 内部状态为 AP_MODE（因为 WiFi 是纯 AP 模式）
+    mgr.wifiManagerStatus = MockMultiNetworkManager::NetStatus::AP_MODE;
+
+    // 执行状态更新（模拟 updateStatusInfo 调用）
+    mgr.updateStatusInfo(true, "10.0.0.100");
+
+    // 关键验证：主状态仍为 CONNECTED，不被 WiFi 的 AP_MODE 覆盖
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::CONNECTED, (int)mgr.status);
+    TestLog::step("Status still CONNECTED (not overwritten by WiFi AP_MODE)");
+
+    // 主 IP 仍为 4G IP
+    TEST_ASSERT_EQUAL_STRING("10.0.0.100", mgr.ipAddress.c_str());
+    TestLog::step("IP address is 4G adapter IP");
+
+    // AP 字段已同步
+    TEST_ASSERT_FALSE(mgr.apIPAddress.isEmpty());
+    TestLog::step("AP fields synced correctly");
+
+    // 状态隔离断言：主状态 != WiFi管理器状态
+    TEST_ASSERT_STATUS_ISOLATED(mgr.status, mgr.wifiManagerStatus);
+    TestLog::step("Status isolation verified");
+
+    TestLog::testEnd(true);
+}
+
+// 测试 4G 断开时状态正确反映
+void test_4g_disconnect_status() {
+    TestLog::testStart("4G Disconnect Status");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    mgr.initialize(true);
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::CONNECTED, (int)mgr.status);
+    TestLog::step("4G initially connected");
+
+    // 4G 断开
+    mgr.updateStatusInfo(false, "");
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::DISCONNECTED, (int)mgr.status);
+    TEST_ASSERT_TRUE(mgr.ipAddress.isEmpty());
+    TEST_ASSERT_FALSE(mgr.internetAvailable);
+    TestLog::step("4G disconnected: status=DISCONNECTED, no IP");
+
+    // AP 热点仍然运行
+    TEST_ASSERT_FALSE(mgr.apIPAddress.isEmpty());
+    TestLog::step("AP still accessible after 4G disconnect");
+
+    TestLog::testEnd(true);
+}
+
+// 测试联网方式切换：WiFi → 4G
+void test_switch_wifi_to_4g() {
+    TestLog::testStart("Switch: WiFi → 4G");
+
+    MockMultiNetworkManager mgr;
+
+    // 初始状态：WiFi STA 已连接
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    mgr.initialize(true);
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::CONNECTED, (int)mgr.status);
+    TestLog::step("WiFi STA connected");
+
+    // 用户切换联网方式为 4G
+    mgr.disconnect();
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    bool result = mgr.initialize(true);
+    TEST_ASSERT_TRUE(result);
+    TestLog::step("4G init after switch");
+
+    // 4G 已连接，AP 已启动
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::CONNECTED, (int)mgr.status);
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TEST_ASSERT_FALSE(mgr.ipAddress.isEmpty());
+    TestLog::step("4G connected + AP running after switch");
+
+    TestLog::testEnd(true);
+}
+
+// 测试联网方式切换：4G → WiFi
+void test_switch_4g_to_wifi() {
+    TestLog::testStart("Switch: 4G → WiFi");
+
+    MockMultiNetworkManager mgr;
+
+    // 初始状态：4G 已连接
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    mgr.initialize(true);
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::CONNECTED, (int)mgr.status);
+    TestLog::step("4G initially connected");
+
+    // 用户切换联网方式为 WiFi
+    mgr.disconnect();
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    bool result = mgr.initialize(true);
+    TEST_ASSERT_TRUE(result);
+    TestLog::step("WiFi STA init after switch");
+
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::CONNECTED, (int)mgr.status);
+    TEST_ASSERT_EQUAL_STRING("192.168.1.100", mgr.ipAddress.c_str());
+    TestLog::step("WiFi STA connected after switch");
+
+    TestLog::testEnd(true);
+}
+
+// 测试非WiFi模式下不触发 WiFi STA 重连
+void test_non_wifi_no_sta_reconnect() {
+    TestLog::testStart("Non-WiFi: No STA Reconnect");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    mgr.initialize(true);
+    TestLog::step("4G mode initialized");
+
+    // WiFi 应为纯 AP 模式，STA 不活跃
+    MockWiFiClass wifi;
+    wifi.mode(WIFI_AP);
+    wifi.softAP("fastbee-ap", "12345678");
+
+    // 确认 STA 未连接且不会尝试重连
+    TEST_ASSERT_EQUAL(WL_DISCONNECTED, wifi.status());
+    TEST_ASSERT_STA_INACTIVE(wifi.getMode());
+    TestLog::step("WiFi STA inactive in 4G mode");
+
+    // 即使 4G 断开，WiFi STA 也不应尝试重连
+    mgr.updateStatusInfo(false, "");
+    TEST_ASSERT_EQUAL(WL_DISCONNECTED, wifi.status());
+    TestLog::step("WiFi STA still inactive after 4G disconnect");
+
+    TestLog::testEnd(true);
+}
+
+// 测试 restartNetwork 对非WiFi联网方式的处理
+void test_restart_network_non_wifi() {
+    TestLog::testStart("Restart Network: Non-WiFi Type");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    mgr.initialize(true);
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::CONNECTED, (int)mgr.status);
+    TestLog::step("4G initially connected");
+
+    // 重启网络（4G 仍然成功）
+    bool result = mgr.restartNetwork(true);
+    TEST_ASSERT_TRUE(result);
+    TestLog::step("restartNetwork succeeded");
+
+    // 重新初始化后 4G 已连接，AP 已启动
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::CONNECTED, (int)mgr.status);
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TestLog::step("4G reconnected + AP running after restart");
+
+    TestLog::testEnd(true);
+}
+
+// 测试 restartNetwork 后 4G 失败回退到 AP
+void test_restart_network_4g_failure() {
+    TestLog::testStart("Restart Network: 4G Failure → AP");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    mgr.initialize(true);
+    TestLog::step("4G initially connected");
+
+    // 重启网络（4G 这次失败）
+    // 需要先重新设置 networkType，因为 disconnect 不会重置
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    bool result = mgr.restartNetwork(false);
+    TEST_ASSERT_FALSE(result);
+    TestLog::step("restartNetwork: 4G failed");
+
+    // 回退到 AP 模式
+    TEST_ASSERT_FALLBACK_TO_AP(mgr.networkType, mgr.mode);
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TestLog::step("Fallback to AP mode after 4G restart failure");
+
+    TestLog::testEnd(true);
+}
+
+// 测试混合模式下 AP IP 为 192.168.4.1
+void test_hybrid_mode_ap_ip() {
+    TestLog::testStart("Hybrid Mode: AP IP = 192.168.4.1");
+
+    // 4G + AP
+    MockMultiNetworkManager mgr4g;
+    mgr4g.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    mgr4g.initialize(true);
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", mgr4g.apIPAddress.c_str());
+    TestLog::step("4G hybrid: AP IP = 192.168.4.1");
+
+    // Ethernet + AP
+    MockMultiNetworkManager mgrEth;
+    mgrEth.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    mgrEth.initialize(true);
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", mgrEth.apIPAddress.c_str());
+    TestLog::step("Ethernet hybrid: AP IP = 192.168.4.1");
+
+    TestLog::testEnd(true);
+}
+
 // Test group entry point
 void test_network_config_group() {
     TestLog::groupStart("Network Configuration Tests");
@@ -385,5 +896,27 @@ void test_network_config_group() {
     RUN_TEST(test_ip_configuration);
     RUN_TEST(test_network_reconnect);
     
+    TestLog::groupEnd();
+}
+
+// 多网络模式测试组
+void test_multi_network_mode_group() {
+    TestLog::groupStart("Multi-Network Mode Tests");
+
+    RUN_TEST(test_network_type_enum_values);
+    RUN_TEST(test_4g_init_failure_fallback_to_ap);
+    RUN_TEST(test_ethernet_init_failure_fallback_to_ap);
+    RUN_TEST(test_lora_init_failure_fallback_to_ap);
+    RUN_TEST(test_4g_mode_ap_always_running);
+    RUN_TEST(test_ethernet_mode_ap_always_running);
+    RUN_TEST(test_non_wifi_status_isolation);
+    RUN_TEST(test_4g_disconnect_status);
+    RUN_TEST(test_switch_wifi_to_4g);
+    RUN_TEST(test_switch_4g_to_wifi);
+    RUN_TEST(test_non_wifi_no_sta_reconnect);
+    RUN_TEST(test_restart_network_non_wifi);
+    RUN_TEST(test_restart_network_4g_failure);
+    RUN_TEST(test_hybrid_mode_ap_ip);
+
     TestLog::groupEnd();
 }

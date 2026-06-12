@@ -1,0 +1,14 @@
+# Name,   Type, SubType, Offset,   Size,     Flags
+# 16MB Flash Partition Table (FastBee IoT Platform)
+# Layout:
+#   Bootloader  0x000000  36KB   (reserved)
+#   NVS         0x009000  20KB   (non-volatile storage)
+#   OTA Data    0x00E000   8KB   (OTA state)
+#   App0        0x010000   4MB   (firmware - active)
+#   App1        0x410000   4MB   (firmware - OTA update)
+#   LittleFS    0x810000   7.9MB (file system - logs/web/config)
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+app0,     app,  ota_0,   0x10000, 0x400000,
+app1,     app,  ota_1,   0x410000,0x400000,
+spiffs,   data, spiffs,  0x810000,0x7F0000,

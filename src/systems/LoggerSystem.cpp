@@ -81,17 +81,17 @@ bool LoggerSystem::initialize() {
     _ringBuffer.lastFlushMs = millis();
 
     initialized = true;
-    
+
     // 检查文件系统状态
     if (fileLoggingEnabled) {
         size_t total = LittleFS.totalBytes();
         size_t used = LittleFS.usedBytes();
         size_t freeSpace = (total > used) ? (total - used) : 0;
-        
-        Serial.printf("[Logger] FileSystem: total=%lu, used=%lu, free=%lu\n", 
-                      (unsigned long)total, (unsigned long)used, 
+
+        Serial.printf("[Logger] FileSystem: total=%lu, used=%lu, free=%lu\n",
+                      (unsigned long)total, (unsigned long)used,
                       (unsigned long)freeSpace);
-        
+
         if (total == 0) {
             fileLoggingEnabled = false;
             Serial.println("[Logger] WARNING: LittleFS not mounted, file logging disabled");
@@ -103,13 +103,13 @@ bool LoggerSystem::initialize() {
             Serial.printf("[Logger] File logging enabled, log file: %s\n", LOG_FILE_PATH);
         }
     }
-    
+
     // 启用 ESP-IDF 日志捕获
     if (espLogCaptureEnabled) {
         enableEspLogCapture(true);
         Serial.println("[Logger] ESP-IDF log capture enabled");
     }
-    
+
     info("Logger system initialized", "Logger");
     return true;
 }
@@ -195,7 +195,7 @@ void LoggerSystem::log(LogLevel level, const char* message, const char* module) 
     // 格式：[YYYY-MM-DD HH:MM:SS] [LEVEL] [MODULE] message
     char entry[LOG_BUF_SIZE];
     const char* levelStr = getLevelString(level);
-    
+
     // 获取当前时间
     struct tm timeinfo;
     char timeStr[32] = "1970-01-01 00:00:00";
@@ -234,7 +234,7 @@ void LoggerSystem::log(LogLevel level, const char* message, const char* module) 
         if (xSemaphoreTake(_logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             logToBuffer(entry, len);
             logToBuffer("\n", 1);
-            
+
             // 缓冲满 80% 时立即 flush
             if (bufferedDataSize() >= LOG_FLUSH_THRESHOLD) {
                 flushBufferInternal();
@@ -289,6 +289,8 @@ size_t LoggerSystem::bufferedDataSize() const {
 }
 
 void LoggerSystem::checkLogFileSize() {
+    // 内存保护：低内存时跳过文件大小检查，避免 VFS abort()
+    if (ESP.getFreeHeap() < 8192) return;
     if (getLogFileSize() >= logFileSizeLimit) {
         rotateLogFile();
     }
@@ -297,7 +299,13 @@ void LoggerSystem::checkLogFileSize() {
 void LoggerSystem::flushBufferInternal() {
     size_t dataSize = bufferedDataSize();
     if (dataSize == 0) return;
-    
+
+    // 内存保护：VFS 打开文件需要分配互斥锁，堆不足时会触发 abort()
+    // 安全阈值：确保至少有 8KB 可用堆内存才尝试文件操作
+    if (ESP.getFreeHeap() < 8192) {
+        return;  // 内存不足，跳过本次flush，数据保留在环形缓冲区中
+    }
+
     File logFile = LittleFS.open(LOG_FILE_PATH, FILE_APPEND);
     if (!logFile) {
         fileLoggingEnabled = false;
@@ -306,7 +314,7 @@ void LoggerSystem::flushBufferInternal() {
         }
         return;
     }
-    
+
     // 批量写入
     if (_ringBuffer.readPos < _ringBuffer.writePos) {
         logFile.write((const uint8_t*)&_ringBuffer.data[_ringBuffer.readPos], dataSize);
@@ -316,11 +324,11 @@ void LoggerSystem::flushBufferInternal() {
         logFile.write((const uint8_t*)&_ringBuffer.data[_ringBuffer.readPos], tailSize);
         logFile.write((const uint8_t*)&_ringBuffer.data[0], _ringBuffer.writePos);
     }
-    
+
     _ringBuffer.readPos = _ringBuffer.writePos;
     _ringBuffer.lastFlushMs = millis();
     logFile.close();
-    
+
     // 检查文件大小（现有的 rotate 逻辑）
     checkLogFileSize();
 }
@@ -338,7 +346,10 @@ void LoggerSystem::flushBuffer() {
 // 清理多余的日志备份文件，保留最新的MAX_LOG_FILES个
 void LoggerSystem::cleanupOldLogFiles() {
     constexpr size_t MAX_LOG_FILES = 20;
-    
+
+    // 内存保护：目录遍历和 vector 分配需要较多内存
+    if (ESP.getFreeHeap() < 12288) return;
+
     // 收集所有 system_*.log 备份文件
     std::vector<String> logFiles;
     File root = LittleFS.open("/logs");
@@ -346,7 +357,7 @@ void LoggerSystem::cleanupOldLogFiles() {
         if (root) root.close();
         return;
     }
-    
+
     File file = root.openNextFile();
     while (file) {
         const char* name = file.name();
@@ -357,7 +368,7 @@ void LoggerSystem::cleanupOldLogFiles() {
         file = root.openNextFile();
     }
     root.close();
-    
+
     // 如果文件数量超过限制，删除最旧的
     while (logFiles.size() > MAX_LOG_FILES) {
         // 文件名包含时间戳，按字母序排序即可找到最旧的
@@ -505,16 +516,16 @@ bool LoggerSystem::isModuleFiltered(const char* module) const {
  */
 int LoggerSystem::espLogCallback(const char* format, va_list args) {
     LoggerSystem& logger = getInstance();
-    
+
     // 格式化日志消息到临时缓冲区
     char buffer[512];
     int len = vsnprintf(buffer, sizeof(buffer), format, args);
-    
+
     // 去除末尾换行符
     if (len > 0 && buffer[len-1] == '\n') {
         buffer[len-1] = '\0';
     }
-    
+
     // 写入到日志文件（通过环形缓冲）
     if (logger.fileLoggingEnabled && logger.initialized && logger._logMutex) {
         size_t bufLen = strlen(buffer);
@@ -527,13 +538,13 @@ int LoggerSystem::espLogCallback(const char* format, va_list args) {
             xSemaphoreGive(logger._logMutex);
         }
     }
-    
+
     // 同时输出到原始串口（保持串口输出）
     if (originalEspLogFunc) {
         // 重新创建 va_list 因为已经被使用过了
         return Serial.printf("%s\n", buffer);
     }
-    
+
     return len;
 }
 
@@ -542,7 +553,7 @@ int LoggerSystem::espLogCallback(const char* format, va_list args) {
  */
 void LoggerSystem::enableEspLogCapture(bool enable) {
     espLogCaptureEnabled = enable;
-    
+
     if (enable) {
         // 保存原始输出函数并设置自定义回调
         if (!originalEspLogFunc) {
@@ -567,7 +578,7 @@ void LoggerSystem::writeRawLog(const char* message) {
     if (!message || !fileLoggingEnabled || !initialized) {
         return;
     }
-    
+
     // 通过环形缓冲写入
     if (_logMutex && xSemaphoreTake(_logMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         size_t len = strlen(message);

@@ -8,17 +8,17 @@
 
         _mqttTopicTypeOptions(selected) {
             const types = [
-                { value: 0, key: 'mqtt-topic-type-data-report' },
-                { value: 1, key: 'mqtt-topic-type-data-command' },
-                { value: 2, key: 'mqtt-topic-type-device-info' },
-                { value: 3, key: 'mqtt-topic-type-realtime-mon' },
-                { value: 4, key: 'mqtt-topic-type-device-event' },
-                { value: 5, key: 'mqtt-topic-type-ota-upgrade' },
-                { value: 6, key: 'mqtt-topic-type-ota-binary' },
-                { value: 7, key: 'mqtt-topic-type-ntp-sync' }
+                { value: 0, label: '数据上报' },
+                { value: 1, label: '数据下发' },
+                { value: 2, label: '设备信息' },
+                { value: 3, label: '实时监测' },
+                { value: 4, label: '设备事件' },
+                { value: 5, label: 'OTA升级' },
+                { value: 6, label: 'OTA二进制' },
+                { value: 7, label: 'NTP时间同步' }
             ];
             return types.map(t =>
-                `<option value="${t.value}" ${Number(selected) === t.value ? 'selected' : ''}>${i18n.t(t.key)}</option>`
+                `<option value="${t.value}" ${Number(selected) === t.value ? 'selected' : ''}>${t.label}</option>`
             ).join('');
         },
 
@@ -40,26 +40,26 @@
             const toggleHtml = options.toggles.map((toggle) => {
                 const checked = toggle.checked ? ' checked' : '';
                 return '<label class="fb-checkbox">' +
-                    '<input type="checkbox" class="' + toggle.inputClass + '"' + checked + '> ' + i18n.t(toggle.labelKey) +
+                    '<input type="checkbox" class="' + toggle.inputClass + '"' + checked + '> ' + toggle.label +
                     '</label>';
             }).join('');
 
             return `
                 <span class="${options.indexClass}">${index + 1}</span>
-                <button type="button" class="mqtt-topic-delete">${i18n.t('mqtt-delete-topic-btn')}</button>
+                <button type="button" class="mqtt-topic-delete">删除</button>
                 <div class="config-form-grid">
                     <div class="fb-form-group">
-                        <label>${i18n.t(options.topicLabelKey)}</label>
+                        <label>${options.topicLabel}</label>
                         <input type="text" class="${options.topicInputClass}" value="${topicData.topic || ''}" placeholder="/topic/path">
                     </div>
                     <div class="fb-form-group">
-                        <label>${i18n.t(options.topicTypeLabelKey)}</label>
+                        <label>${options.topicTypeLabel}</label>
                         <select class="${options.topicTypeInputClass}">
                             ${this._mqttTopicTypeOptions(topicType)}
                         </select>
                     </div>
                     <div class="fb-form-group">
-                        <label>${i18n.t(options.qosLabelKey)}</label>
+                        <label>${options.qosLabel}</label>
                         <select class="${options.qosInputClass}">
                             ${this._renderMqttQosOptions(qos)}
                         </select>
@@ -122,20 +122,20 @@
             return {
                 itemClass: 'mqtt-topic-item',
                 indexClass: 'mqtt-topic-index',
-                topicLabelKey: 'mqtt-publish-label',
+                topicLabel: '发布主题',
                 topicInputClass: 'mqtt-topic-input',
-                topicTypeLabelKey: 'mqtt-topic-type-label',
+                topicTypeLabel: '主题类型',
                 topicTypeInputClass: 'mqtt-topic-type-input',
-                qosLabelKey: 'mqtt-publish-qos-label',
+                qosLabel: '发布QoS',
                 qosInputClass: 'mqtt-qos-input',
                 enabledInputClass: 'mqtt-enabled-input',
                 autoPrefixInputClass: 'mqtt-autoprefix-input',
                 retainInputClass: 'mqtt-retain-input',
                 defaultTopicType: 0,
                 toggles: [
-                    { inputClass: 'mqtt-retain-input', checked: topicData.retain === true, labelKey: 'mqtt-publish-retain-label' },
-                    { inputClass: 'mqtt-enabled-input', checked: topicData.enabled !== false, labelKey: 'mqtt-topic-enabled-label' },
-                    { inputClass: 'mqtt-autoprefix-input', checked: topicData.autoPrefix === true, labelKey: 'mqtt-auto-prefix-label' }
+                    { inputClass: 'mqtt-retain-input', checked: topicData.retain === true, label: '保留消息' },
+                    { inputClass: 'mqtt-enabled-input', checked: topicData.enabled !== false, label: '启用' },
+                    { inputClass: 'mqtt-autoprefix-input', checked: topicData.autoPrefix === true, label: '自动前缀' }
                 ]
             };
         },
@@ -144,18 +144,18 @@
             return {
                 itemClass: 'mqtt-topic-item mqtt-topic-item-sub',
                 indexClass: 'mqtt-topic-index mqtt-topic-index-sub',
-                topicLabelKey: 'mqtt-subscribe-topic-label',
+                topicLabel: '订阅主题',
                 topicInputClass: 'mqtt-sub-topic-input',
-                topicTypeLabelKey: 'mqtt-subscribe-topictype-label',
+                topicTypeLabel: '主题类型',
                 topicTypeInputClass: 'mqtt-sub-topic-type-input',
-                qosLabelKey: 'mqtt-subscribe-qos-label',
+                qosLabel: '订阅QoS',
                 qosInputClass: 'mqtt-sub-qos-input',
                 enabledInputClass: 'mqtt-sub-enabled-input',
                 autoPrefixInputClass: 'mqtt-sub-autoprefix-input',
                 defaultTopicType: 1,
                 toggles: [
-                    { inputClass: 'mqtt-sub-enabled-input', checked: topicData.enabled !== false, labelKey: 'mqtt-topic-enabled-label' },
-                    { inputClass: 'mqtt-sub-autoprefix-input', checked: topicData.autoPrefix === true, labelKey: 'mqtt-auto-prefix-label' }
+                    { inputClass: 'mqtt-sub-enabled-input', checked: topicData.enabled !== false, label: '启用' },
+                    { inputClass: 'mqtt-sub-autoprefix-input', checked: topicData.autoPrefix === true, label: '自动前缀' }
                 ]
             };
         },
@@ -238,53 +238,53 @@
             const mqttSecret = document.getElementById('mqtt-secret')?.value || '';
             const authType = document.getElementById('mqtt-auth-type')?.value || '0';
             if (!server) {
-                if (resultEl) { resultEl.textContent = i18n.t('mqtt-test-no-server'); resultEl.style.color = '#f56c6c'; }
+                if (resultEl) { resultEl.textContent = '请先填写Broker地址'; resultEl.style.color = '#f56c6c'; }
                 return;
             }
             this._clearMqttDeferredTestTimer();
             if (clientId) {
                 if (authType === '0' && !clientId.startsWith('S&')) {
-                    if (resultEl) { resultEl.textContent = i18n.t('mqtt-test-clientid-simple-prefix'); resultEl.style.color = '#e6a23c'; }
+                    if (resultEl) { resultEl.textContent = "提示: FastBee平台简单认证模式下，客户端ID通常以'S&'开头（格式: S&设备编号&产品ID&用户ID）"; resultEl.style.color = '#e6a23c'; }
                 }
                 if (authType === '1' && !clientId.startsWith('E&')) {
-                    if (resultEl) { resultEl.textContent = i18n.t('mqtt-test-clientid-encrypted-prefix'); resultEl.style.color = '#e6a23c'; }
+                    if (resultEl) { resultEl.textContent = "提示: FastBee平台加密认证模式下，客户端ID通常以'E&'开头（格式: E&设备编号&产品ID&用户ID）"; resultEl.style.color = '#e6a23c'; }
                 }
             }
-            if (btn) { btn.disabled = true; btn.textContent = i18n.t('mqtt-test-testing'); btn.classList.remove('mqtt-test-success', 'mqtt-test-fail'); }
-            if (resultEl) { resultEl.textContent = i18n.t('mqtt-test-testing'); resultEl.style.color = '#909399'; }
+            if (btn) { btn.disabled = true; btn.textContent = '测试中...'; btn.classList.remove('mqtt-test-success', 'mqtt-test-fail'); }
+            if (resultEl) { resultEl.textContent = '测试中...'; resultEl.style.color = '#909399'; }
             apiMqttTest({ server, port, clientId, username, password, authCode, authType, mqttSecret })
                 .then(res => {
                     if (res && res.success && res.data) {
                         if (res.data.deferred) {
-                            if (resultEl) { resultEl.textContent = i18n.t('mqtt-test-deferred') || 'MQTT connecting asynchronously, check status...'; resultEl.style.color = '#e6a23c'; }
+                            if (resultEl) { resultEl.textContent = 'MQTT 正在异步连接中，请关注状态变化...'; resultEl.style.color = '#e6a23c'; }
                             if (btn) btn.classList.add('mqtt-test-success');
                             this._scheduleMqttDeferredStatusPoll(0, btn, resultEl);
                             return;
                         }
                         if (res.data.connected) {
                             if (res.data.realConnected) {
-                                if (resultEl) { resultEl.textContent = i18n.t('mqtt-test-success'); resultEl.style.color = '#67c23a'; }
+                                if (resultEl) { resultEl.textContent = '连接成功！'; resultEl.style.color = '#67c23a'; }
                                 if (btn) btn.classList.add('mqtt-test-success');
                                 this._updateMqttStatusPanel(true, server, port, clientId);
-                                this._startMqttStatusPolling();
+                                this._startMqttStatusPolling({ initialDelayMs: 2500 });
                             } else {
                                 const realErr = res.data.realError;
                                 const errMsg = realErr ? this._mqttErrorCodeToText(realErr) : '';
-                                if (resultEl) { resultEl.textContent = i18n.t('mqtt-test-ok-real-fail') + (errMsg ? ' (' + errMsg + ')' : ''); resultEl.style.color = '#e6a23c'; }
+                                if (resultEl) { resultEl.textContent = '凭证验证通过，但实际连接失败，请先点击保存配置后再测试' + (errMsg ? ' (' + errMsg + ')' : ''); resultEl.style.color = '#e6a23c'; }
                                 if (btn) btn.classList.add('mqtt-test-fail');
                             }
                         } else {
                             const errCode = res.data.error || 'Unknown';
                             let errMsg = this._mqttErrorCodeToText(errCode);
                             if (authType === '1' && String(errCode) === '4') {
-                                const hint = i18n.t('mqtt-test-aes-bad-credentials-hint') || 'AES认证失败，请检查用户名、密码、产品密钥(mqttSecret)和授权码(authCode)是否与平台一致';
+                                const hint = 'AES认证失败，请检查用户名、密码、产品密钥(mqttSecret)和授权码(authCode)是否与平台一致';
                                 errMsg = errMsg + ' - ' + hint;
                             }
-                            if (resultEl) { resultEl.textContent = i18n.t('mqtt-test-fail-prefix') + errMsg; resultEl.style.color = '#f56c6c'; }
+                            if (resultEl) { resultEl.textContent = '连接失败: ' + errMsg; resultEl.style.color = '#f56c6c'; }
                             if (btn) btn.classList.add('mqtt-test-fail');
                         }
                     } else {
-                        if (resultEl) { resultEl.textContent = i18n.t('mqtt-test-error'); resultEl.style.color = '#f56c6c'; }
+                        if (resultEl) { resultEl.textContent = '测试请求失败'; resultEl.style.color = '#f56c6c'; }
                         if (btn) btn.classList.add('mqtt-test-fail');
                     }
                 })
@@ -293,11 +293,11 @@
                     if (resultEl) {
                         const isTimeout = err && (err.name === 'AbortError' || (err.message && err.message.includes('abort')));
                         const isUnauthorized = err && err.status === 401;
-                        if (isUnauthorized) { resultEl.textContent = i18n.t('mqtt-test-error') || '测试请求失败，请稍后重试'; }
-                        else if (isTimeout) { resultEl.textContent = i18n.t('mqtt-test-timeout') || '测试超时，请检查Broker地址是否正确'; }
+                        if (isUnauthorized) { resultEl.textContent = '测试请求失败，请稍后重试'; }
+                        else if (isTimeout) { resultEl.textContent = '测试超时，请检查Broker地址是否正确'; }
                         else {
                             const errData = err && err.data;
-                            const errMsg = (errData && errData.error) ? errData.error : i18n.t('mqtt-test-error');
+                            const errMsg = (errData && errData.error) ? errData.error : '测试请求失败';
                             resultEl.textContent = errMsg;
                         }
                         resultEl.style.color = '#f56c6c';
@@ -305,37 +305,37 @@
                     if (btn) btn.classList.add('mqtt-test-fail');
                 })
                 .finally(() => {
-                    if (btn) { btn.disabled = false; btn.textContent = i18n.t('mqtt-test-btn-text'); }
-                    setTimeout(() => this._loadMqttStatus(), 1000);
+                    if (btn) { btn.disabled = false; btn.textContent = '测试连接'; }
+                    setTimeout(() => this._loadMqttStatus(), 2500);
                     setTimeout(() => { if (btn) btn.classList.remove('mqtt-test-success', 'mqtt-test-fail'); }, 3000);
                 });
         },
 
         disconnectMqtt() {
             const btn = document.querySelector('#mqtt-form .mqtt-disconnect-btn');
-            if (btn) { btn.disabled = true; btn.textContent = i18n.t('mqtt-disconnecting'); }
+            if (btn) { btn.disabled = true; btn.textContent = '断开中...'; }
             this._clearMqttDeferredTestTimer();
             this._stopMqttStatusPolling();
             apiPostSilent('/api/mqtt/disconnect', {})
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success(i18n.t('mqtt-disconnect-ok'), 'MQTT');
+                        Notification.success('MQTT已断开连接', 'MQTT');
                         const badge = document.getElementById('mqtt-status-badge');
-                        if (badge) { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = i18n.t('mqtt-status-disconnected'); }
+                        if (badge) { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = '未连接'; }
                         const resultEl = document.getElementById('mqtt-test-result');
-                        if (resultEl) { resultEl.textContent = i18n.t('mqtt-disconnect-ok'); resultEl.style.color = '#909399'; }
+                        if (resultEl) { resultEl.textContent = 'MQTT已断开连接'; resultEl.style.color = '#909399'; }
                     } else {
-                        Notification.error(i18n.t('mqtt-disconnect-fail'), 'MQTT');
+                        Notification.error('MQTT断开失败', 'MQTT');
                         this._startMqttStatusPolling();
                     }
                 })
                 .catch(err => {
                     console.error('MQTT disconnect failed:', err);
-                    Notification.error(i18n.t('mqtt-disconnect-fail'), 'MQTT');
+                    Notification.error('MQTT断开失败', 'MQTT');
                     this._startMqttStatusPolling();
                 })
                 .finally(() => {
-                    if (btn) { btn.disabled = false; btn.textContent = i18n.t('mqtt-disconnect-btn'); }
+                    if (btn) { btn.disabled = false; btn.textContent = '断开连接'; }
                     setTimeout(() => this._loadMqttStatus(), 500);
                 });
         },
@@ -343,26 +343,26 @@
         mqttNtpSync() {
             const btn = document.querySelector('#mqtt-form .mqtt-ntp-sync-btn');
             const resultEl = document.getElementById('mqtt-test-result');
-            if (btn) { btn.disabled = true; btn.textContent = i18n.t('mqtt-ntp-syncing'); }
+            if (btn) { btn.disabled = true; btn.textContent = '同步中...'; }
             if (resultEl) resultEl.textContent = '';
             apiPost('/api/mqtt/ntp-sync', {})
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success(i18n.t('mqtt-ntp-sync-ok'), 'MQTT');
-                        if (resultEl) { resultEl.style.color = '#67c23a'; resultEl.textContent = i18n.t('mqtt-ntp-sync-ok'); }
+                        Notification.success('MQTT时间同步请求已发送', 'MQTT');
+                        if (resultEl) { resultEl.style.color = '#67c23a'; resultEl.textContent = 'MQTT时间同步请求已发送'; }
                     } else {
-                        const errMsg = (res && res.error) ? res.error : i18n.t('mqtt-ntp-sync-fail');
+                        const errMsg = (res && res.error) ? res.error : 'MQTT时间同步失败';
                         Notification.error(errMsg, 'MQTT');
                         if (resultEl) { resultEl.style.color = '#f56c6c'; resultEl.textContent = errMsg; }
                     }
                 })
                 .catch(err => {
                     console.error('MQTT NTP sync failed:', err);
-                    Notification.error(i18n.t('mqtt-ntp-sync-fail'), 'MQTT');
-                    if (resultEl) { resultEl.style.color = '#f56c6c'; resultEl.textContent = i18n.t('mqtt-ntp-sync-fail'); }
+                    Notification.error('MQTT时间同步失败', 'MQTT');
+                    if (resultEl) { resultEl.style.color = '#f56c6c'; resultEl.textContent = 'MQTT时间同步失败'; }
                 })
                 .finally(() => {
-                    if (btn) { btn.disabled = false; btn.textContent = i18n.t('mqtt-ntp-sync-btn'); }
+                    if (btn) { btn.disabled = false; btn.textContent = 'MQTT时间同步'; }
                     setTimeout(() => { if (resultEl) resultEl.textContent = ''; }, 3000);
                 });
         },
@@ -402,15 +402,15 @@
                 const badge = document.getElementById('mqtt-status-badge');
                 if (badge && badge.classList.contains('mqtt-status-online')) {
                     if (resultEl) {
-                        resultEl.textContent = i18n.t('mqtt-test-success');
+                        resultEl.textContent = '连接成功！';
                         resultEl.style.color = '#67c23a';
                     }
                     return;
                 }
 
                 if (nextPollCount >= 15) {
-                    if (resultEl && !resultEl.textContent.includes(i18n.t('mqtt-test-success'))) {
-                        resultEl.textContent = i18n.t('mqtt-test-deferred-timeout') || 'Connection timeout, check logs';
+                    if (resultEl && !resultEl.textContent.includes('连接成功')) {
+                        resultEl.textContent = '异步连接超时，请检查配置或查看日志';
                         resultEl.style.color = '#f56c6c';
                         if (btn) {
                             btn.classList.remove('mqtt-test-success');
@@ -424,7 +424,8 @@
             }, this._getMqttDeferredPollIntervalMs());
         },
 
-        _startMqttStatusPolling() {
+        _startMqttStatusPolling(options) {
+            options = options || {};
             this._stopMqttStatusPolling();
             AppState.connectSSE();
             var self = this;
@@ -437,7 +438,16 @@
                 }
             };
             AppState.onSSEEvent('mqtt-status', this._mqttSSEHandler);
-            this._loadMqttStatus();
+            // 延迟首次REST状态查询，给后端MQTT客户端初始化留出时间
+            var delayMs = options.initialDelayMs || 0;
+            if (delayMs > 0) {
+                this._mqttStatusTimer = setTimeout(function() {
+                    self._mqttStatusTimer = null;
+                    self._loadMqttStatus();
+                }, delayMs);
+            } else {
+                this._loadMqttStatus();
+            }
         },
 
         _stopMqttStatusPolling() {
@@ -463,7 +473,7 @@
                     if (err && err.status === 401) {
                         this._stopMqttStatusPolling();
                         const badge = document.getElementById('mqtt-status-badge');
-                        if (badge) { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = i18n.t('mqtt-status-auth-fail') || 'Unauthorized'; }
+                        if (badge) { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = '未授权'; }
                     }
                 });
         },
@@ -475,9 +485,9 @@
             const clientEl = document.getElementById('mqtt-status-clientid');
             const reconnEl = document.getElementById('mqtt-status-reconnects');
             if (badge) {
-                if (!d.initialized) { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = i18n.t('mqtt-status-uninit'); }
-                else if (d.connected) { badge.className = 'mqtt-status-badge mqtt-status-online'; badge.textContent = i18n.t('mqtt-status-connected'); }
-                else { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = i18n.t('mqtt-status-disconnected'); }
+                if (!d.initialized) { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = '未初始化'; }
+                else if (d.connected) { badge.className = 'mqtt-status-badge mqtt-status-online'; badge.textContent = '已连接'; }
+                else { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = '未连接'; }
             }
             if (serverEl) serverEl.textContent = d.server ? (d.server + ':' + d.port) : '--';
             if (clientEl) clientEl.textContent = d.clientId || '--';
@@ -489,8 +499,8 @@
             const serverEl = document.getElementById('mqtt-status-server');
             const clientEl = document.getElementById('mqtt-status-clientid');
             if (badge) {
-                if (connected) { badge.className = 'mqtt-status-badge mqtt-status-online'; badge.textContent = i18n.t('mqtt-status-connected'); }
-                else { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = i18n.t('mqtt-status-disconnected'); }
+                if (connected) { badge.className = 'mqtt-status-badge mqtt-status-online'; badge.textContent = '已连接'; }
+                else { badge.className = 'mqtt-status-badge mqtt-status-offline'; badge.textContent = '未连接'; }
             }
             if (serverEl) serverEl.textContent = server ? (server + ':' + port) : '--';
             if (clientEl) clientEl.textContent = clientId || '--';

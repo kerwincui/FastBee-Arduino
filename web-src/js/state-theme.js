@@ -87,7 +87,7 @@
             if (textSpan) {
                 // 获取当前语言的翻译
                 const key = theme === 'dark' ? 'theme-light' : 'theme-dark';
-                const translated = window.i18n ? window.i18n.t(key) : (theme === 'dark' ? '浅色模式' : '深色模式');
+                const translated = theme === 'dark' ? '浅色模式' : '深色模式';
                 textSpan.textContent = translated;
             }
         }

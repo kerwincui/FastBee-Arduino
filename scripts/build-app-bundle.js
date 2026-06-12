@@ -35,7 +35,7 @@ const JS_SRC_DIR = path.join(ROOT_DIR, 'web-src', 'js');
 const I18N_SRC_DIR = path.join(ROOT_DIR, 'web-src', 'i18n');
 const WWW_JS_DIR = path.join(ROOT_DIR, 'data', 'www', 'js');
 const CRITICAL_ZH_TRANSLATIONS = {
-    'login-title': '设备配置管理',
+    'login-title': 'FastBee Arduino',
     'username-label': '用户名',
     'username-placeholder': '请输入用户名',
     'password-label': '密码',

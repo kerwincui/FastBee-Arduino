@@ -51,11 +51,11 @@
         _getPeriphExecRiskMeta(level) {
             switch (String(level || 'medium').toLowerCase()) {
                 case 'high':
-                    return { text: i18n.t('modbus-master-risk-high'), className: 'modbus-risk-high' };
+                    return { text: '高', className: 'modbus-risk-high' };
                 case 'low':
-                    return { text: i18n.t('modbus-master-risk-low'), className: 'modbus-risk-low' };
+                    return { text: '低', className: 'modbus-risk-low' };
                 default:
-                    return { text: i18n.t('modbus-master-risk-medium'), className: 'modbus-risk-medium' };
+                    return { text: '中', className: 'modbus-risk-medium' };
             }
         },
 
@@ -83,16 +83,16 @@
                 var retries = Number(trigger.pollMaxRetries || 0);
                 var interDelayMs = Number(trigger.pollInterPollDelay || 0);
                 if (intervalSec > 0 && intervalSec < 5) {
-                    warnings.push(i18n.t('periph-exec-poll-interval-label') + ' < 5s');
+                    warnings.push('轮询间隔 (秒) < 5s');
                 }
                 if (timeoutMs > 3000) {
-                    warnings.push(i18n.t('periph-exec-poll-timeout-label') + ' > 3000ms');
+                    warnings.push('响应超时 (ms) > 3000ms');
                 }
                 if (retries > 2) {
-                    warnings.push(i18n.t('periph-exec-poll-retries-label') + ' > 2');
+                    warnings.push('最大重试次数 > 2');
                 }
                 if (interDelayMs > 0 && interDelayMs < 100) {
-                    warnings.push(i18n.t('periph-exec-poll-delay-label') + ' < 100ms');
+                    warnings.push('请求间隔 (ms) < 100ms');
                 }
             });
             return warnings.filter(function(msg, idx, list) {
@@ -141,17 +141,17 @@
 
             var html = '<div class="u-header-between-wrap u-mb-12">' +
                 '<h4 class="u-note-title u-note-title-warning u-mb-0">' +
-                escapeHtml(i18n.t('periph-exec-risk-title')) + '</h4>' +
+                escapeHtml('当前组合会放大轮询和总线负载') + '</h4>' +
                 '<span class="modbus-risk-badge ' + riskMeta.className + '">' + escapeHtml(riskMeta.text) + '</span>' +
                 '</div>' +
-                '<p class="u-text-secondary u-mb-0">' + escapeHtml(i18n.t('periph-exec-risk-body')) + '</p>';
+                '<p class="u-text-secondary u-mb-0">' + escapeHtml('轮询触发搭配 Modbus 采集动作时，规则执行、串口总线和 Web 服务会同时承压，频率过高时容易出现响应变慢。') + '</p>';
 
             if (health) {
                 html += '<div class="modbus-health-metrics u-mb-12">' +
-                    '<span class="modbus-health-metric"><span class="u-text-muted u-fs-12">' + escapeHtml(i18n.t('modbus-master-enabled-tasks')) + '</span><strong>' + escapeHtml(String(health.enabledTaskCount ?? 0)) + '</strong></span>' +
-                    '<span class="modbus-health-metric"><span class="u-text-muted u-fs-12">' + escapeHtml(i18n.t('modbus-master-min-interval')) + '</span><strong>' + escapeHtml(health.minPollInterval ? (health.minPollInterval + 's') : '--') + '</strong></span>' +
-                    '<span class="modbus-health-metric"><span class="u-text-muted u-fs-12">' + escapeHtml(i18n.t('modbus-master-last-poll-age')) + '</span><strong>' + escapeHtml(this._formatPeriphExecAge(health.lastPollAgeSec)) + '</strong></span>' +
-                    '<span class="modbus-health-metric"><span class="u-text-muted u-fs-12">' + escapeHtml(i18n.t('modbus-master-timeout-rate')) + '</span><strong>' + escapeHtml(this._formatPeriphExecPercent(health.timeoutRate)) + '</strong></span>' +
+                    '<span class="modbus-health-metric"><span class="u-text-muted u-fs-12">' + escapeHtml('启用任务') + '</span><strong>' + escapeHtml(String(health.enabledTaskCount ?? 0)) + '</strong></span>' +
+                    '<span class="modbus-health-metric"><span class="u-text-muted u-fs-12">' + escapeHtml('最小间隔') + '</span><strong>' + escapeHtml(health.minPollInterval ? (health.minPollInterval + 's') : '--') + '</strong></span>' +
+                    '<span class="modbus-health-metric"><span class="u-text-muted u-fs-12">' + escapeHtml('最近轮询') + '</span><strong>' + escapeHtml(this._formatPeriphExecAge(health.lastPollAgeSec)) + '</strong></span>' +
+                    '<span class="modbus-health-metric"><span class="u-text-muted u-fs-12">' + escapeHtml('超时率') + '</span><strong>' + escapeHtml(this._formatPeriphExecPercent(health.timeoutRate)) + '</strong></span>' +
                     '</div>';
             }
 
@@ -162,7 +162,7 @@
                 }).join('') + '</div>';
             }
 
-            html += '<p class="u-note-tip">' + escapeHtml(i18n.t('periph-exec-risk-guard')) + '</p>';
+            html += '<p class="u-note-tip">' + escapeHtml('服务端已启用节流、自触发保护和参数钗制；建议轮询间隔保持在 5 秒及以上，超时不超过 3000ms，重试不超过 2 次，请求间隔不少于 100ms。') + '</p>';
             noteEl.innerHTML = html;
             noteEl.classList.remove('is-hidden');
         },
@@ -171,14 +171,14 @@
 
         _populatePeriphSelect(selectEl, selectedValue, pollOnly, eventOnly, execRuleOnly) {
             if (!selectEl) return;
-            var html = '<option value="">' + (execRuleOnly ? i18n.t('periph-exec-select-rule') : i18n.t('periph-exec-select-periph')) + '</option>';
+            var html = '<option value="">' + (execRuleOnly ? '-- 选择执行规则 --' : '-- 选择外设 --') + '</option>';
             if (execRuleOnly) {
                 // 规则控制动作：仅显示已配置的外设执行规则
                 var rules = this._peExecRules || [];
                 if (rules.length > 0) {
-                    html += '<optgroup label="' + escapeHtml(i18n.t('periph-exec-target-rule-label') || '执行规则') + '">';
+                    html += '<optgroup label="' + escapeHtml('执行规则') + '">';
                     rules.forEach(function(r) {
-                        var stateTxt = r.enabled !== false ? (i18n.t('periph-exec-enabled') || '启用') : (i18n.t('periph-exec-disabled') || '禁用');
+                        var stateTxt = r.enabled !== false ? '启用' : '禁用';
                         html += '<option value="' + escapeHtml(r.id) + '">' + escapeHtml((r.name || r.id) + ' [' + stateTxt + ']') + '</option>';
                     });
                     html += '</optgroup>';
@@ -194,7 +194,7 @@
                     if (p.type === 60) eventPeriphs.push(p);
                 });
                 if (eventPeriphs.length > 0) {
-                    html += '<optgroup label="' + escapeHtml(i18n.t('peripheral-type-device-event') || '设备事件') + '">';
+                    html += '<optgroup label="' + escapeHtml('设备事件') + '">';
                     eventPeriphs.forEach(p => {
                         html += '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.name + ' (' + p.id + ')') + '</option>';
                     });
@@ -211,7 +211,7 @@
                 var hasTask = false;
                 for (var ti = 0; ti < tasks.length; ti++) { if (tasks[ti].enabled !== false) { hasTask = true; break; } }
                 if (hasTask) {
-                    html += '<optgroup label="' + escapeHtml(i18n.t('modbus-type-sensor') || '采集设备') + '">';
+                    html += '<optgroup label="' + escapeHtml('采集设备') + '">';
                     for (var i = 0; i < tasks.length; i++) {
                         var t = tasks[i];
                         if (t.enabled === false) continue;
@@ -228,9 +228,9 @@
                     if (p.type !== 51) gpioPeriphs.push(p);
                 });
                 var modbusDevices = this._modbusDevices || [];
-                var typeLabels = {relay: i18n.t('modbus-type-relay') || '继电器', pwm: i18n.t('modbus-type-pwm') || 'PWM', pid: i18n.t('modbus-type-pid') || 'PID', motor: i18n.t('modbus-type-motor') || '步进电机'};
+                var typeLabels = {relay: '继电器', pwm: 'PWM', pid: 'PID', motor: '步进电机'};
                 if (gpioPeriphs.length > 0) {
-                    html += '<optgroup label="' + escapeHtml(i18n.t('periph-exec-periph-group') || '硬件外设') + '">';
+                    html += '<optgroup label="' + escapeHtml('硬件外设') + '">';
                     gpioPeriphs.forEach(p => {
                         html += '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.name + ' (' + p.id + ')') + '</option>';
                     });
@@ -241,7 +241,7 @@
                     if (modbusDevices[mi].enabled !== false) { hasModbus = true; break; }
                 }
                 if (hasModbus) {
-                    html += '<optgroup label="' + escapeHtml(i18n.t('periph-exec-modbus-group') || 'Modbus 子设备') + '">';
+                    html += '<optgroup label="' + escapeHtml('Modbus 子设备') + '">';
                     for (var j = 0; j < modbusDevices.length; j++) {
                         var d = modbusDevices[j];
                         if (d.enabled === false) continue;
@@ -328,12 +328,12 @@
             var fields;
             if (cat === 'analog') {
                 fields = [
-                    ['voltage', i18n.t('periph-exec-sensor-datafield-voltage') || '电压'],
-                    ['value', i18n.t('periph-exec-sensor-datafield-value') || '原始值']
+                    ['voltage', '电压'],
+                    ['value', '原始值']
                 ];
             } else if (cat === 'digital' || cat === 'pulse') {
                 fields = [
-                    ['value', i18n.t('periph-exec-sensor-datafield-value') || '数值']
+                    ['value', '数值']
                 ];
             } else if (cat === 'radar') {
                 fields = [
@@ -345,44 +345,44 @@
                 ];
             } else if (cat === 'dht11' || cat === 'dht22' || cat === 'sht31' || cat === 'aht20') {
                 fields = [
-                    ['temperature', i18n.t('periph-exec-sensor-datafield-temp') || '温度'],
-                    ['humidity', i18n.t('periph-exec-sensor-datafield-humi') || '湿度']
+                    ['temperature', '温度'],
+                    ['humidity', '湿度']
                 ];
             } else if (cat === 'ultrasonic') {
                 fields = [
-                    ['distance', i18n.t('periph-exec-sensor-datafield-distance') || '距离']
+                    ['distance', '距离']
                 ];
             } else if (cat === 'current') {
                 fields = [
-                    ['current', i18n.t('periph-exec-sensor-datafield-current') || '电流']
+                    ['current', '电流']
                 ];
             } else if (cat === 'voltage') {
                 fields = [
-                    ['voltage', i18n.t('periph-exec-sensor-datafield-voltage') || '电压']
+                    ['voltage', '电压']
                 ];
             } else if (cat === 'bh1750') {
                 fields = [
-                    ['illuminance', i18n.t('periph-exec-sensor-datafield-illuminance') || '光照']
+                    ['illuminance', '光照']
                 ];
             } else if (cat === 'bmp280') {
                 fields = [
-                    ['temperature', i18n.t('periph-exec-sensor-datafield-temp') || '温度'],
-                    ['pressure', i18n.t('periph-exec-sensor-datafield-pressure') || '气压'],
-                    ['altitude', i18n.t('periph-exec-sensor-datafield-altitude') || '海拔']
+                    ['temperature', '温度'],
+                    ['pressure', '气压'],
+                    ['altitude', '海拔']
                 ];
             } else if (cat === 'mpu6050') {
                 fields = [
                     ['accelX', 'X 加速度'],
                     ['accelY', 'Y 加速度'],
                     ['accelZ', 'Z 加速度'],
-                    ['temperature', i18n.t('periph-exec-sensor-datafield-temp') || '温度'],
+                    ['temperature', '温度'],
                     ['gyroX', 'X 角速度'],
                     ['gyroY', 'Y 角速度'],
                     ['gyroZ', 'Z 角速度']
                 ];
             } else {
                 fields = [
-                    ['temperature', i18n.t('periph-exec-sensor-datafield-temp') || '温度']
+                    ['temperature', '温度']
                 ];
             }
             var selected = selectedValue || fields[0][0];
@@ -506,7 +506,7 @@
             if (!container) return;
             var tasks = this._masterTasks || [];
             if (tasks.length === 0) {
-                container.innerHTML = '<span class="pe-empty-inline">' + (i18n.t('modbus-no-tasks') || '暂无采集任务') + '</span>';
+                container.innerHTML = '<span class="pe-empty-inline">暂无采集任务</span>';
                 return;
             }
             // 解析已选任务索引
@@ -522,7 +522,7 @@
             var fcNames = {1: 'FC01', 2: 'FC02', 3: 'FC03', 4: 'FC04'};
             var html = '<div class="pe-modbus-select-grid">';
             html += '<div class="fb-form-group pe-field-stack-compact">';
-            html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-poll-select-task') || '选择采集任务') + '</label>';
+            html += '<label class="pe-field-label-compact">选择采集任务</label>';
             html += '<select class="pe-poll-task-select">';
             html += '<option value="">--</option>';
             for (var i = 0; i < tasks.length; i++) {
@@ -541,7 +541,7 @@
             if (!container) return;
             var tasks = this._masterTasks || [];
             if (tasks.length === 0) {
-                container.innerHTML = '<span class="pe-empty-inline">' + (i18n.t('modbus-no-devices') || '暂无子设备') + '</span>';
+                container.innerHTML = '<span class="pe-empty-inline">暂无子设备</span>';
                 return;
             }
             var selTaskIdx = '';
@@ -559,7 +559,7 @@
             var fcNames = {1: 'FC01', 2: 'FC02', 3: 'FC03', 4: 'FC04'};
             var html = '<div class="pe-modbus-select-grid">';
             html += '<div class="fb-form-group pe-field-stack-compact">';
-            html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-poll-select-task') || '选择采集任务') + '</label>';
+            html += '<label class="pe-field-label-compact">选择采集任务</label>';
             html += '<select class="pe-modbus-device-select">';
             html += '<option value="">--</option>';
             for (var i = 0; i < tasks.length; i++) {
@@ -629,7 +629,7 @@
             if (!container) return;
             var dev = this._getModbusDeviceByPeriphId(periphId);
             if (!dev) {
-                container.innerHTML = '<span class="pe-empty-inline">' + (i18n.t('modbus-device-not-found') || '未找到对应子设备') + '</span>';
+                container.innerHTML = '<span class="pe-empty-inline">未找到对应子设备</span>';
                 this._setSectionVisible(container, true);
                 return;
             }
@@ -647,7 +647,7 @@
             var dt = dev.deviceType || 'relay';
             if (dt !== 'motor') {
                 html += '<div class="fb-form-group pe-field-stack-compact">';
-                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-select-channel') || '选择通道') + '</label>';
+                html += '<label class="pe-field-label-compact">选择通道</label>';
                 html += '<select class="pe-modbus-channel-select">';
                 for (var ch = 0; ch < (dev.channelCount || 2); ch++) {
                     html += '<option value="' + ch + '"' + (String(ch) === selChannel ? ' selected' : '') + '>CH' + ch + '</option>';
@@ -656,38 +656,38 @@
             }
             if (dt === 'relay') {
                 html += '<div class="fb-form-group pe-field-stack-compact">';
-                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-select-action') || '子设备动作') + '</label>';
+                html += '<label class="pe-field-label-compact">子设备动作</label>';
                 html += '<select class="pe-modbus-action-select">' +
-                    '<option value="on"' + (selAction === 'off' ? '' : ' selected') + '>' + (i18n.t('periph-exec-ctrl-on') || '打开') + '</option>' +
-                    '<option value="off"' + (selAction === 'off' ? ' selected' : '') + '>' + (i18n.t('periph-exec-ctrl-off') || '关闭') + '</option></select>';
+                    '<option value="on"' + (selAction === 'off' ? '' : ' selected') + '>打开</option>' +
+                    '<option value="off"' + (selAction === 'off' ? ' selected' : '') + '>关闭</option></select>';
                 html += '</div>';
             } else if (dt === 'pwm') {
                 var maxPwm = dev.pwmResolution === 10 ? 1023 : (dev.pwmResolution === 16 ? 65535 : 255);
                 html += '<div class="fb-form-group pe-field-stack-compact">';
-                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-ctrl-duty') || '占空比') + '</label>';
+                html += '<label class="pe-field-label-compact">占空比</label>';
                 html += '<input type="number" class="pe-modbus-action-value" min="0" max="' + maxPwm + '" value="' + (selValue || 0) + '">';
                 html += '</div>';
             } else if (dt === 'pid') {
                 html += '<div class="pe-pid-fields">';
                 html += '<div class="fb-form-group pe-field-stack-compact">';
-                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-ctrl-pid-param') || '参数') + '</label>';
+                html += '<label class="pe-field-label-compact">参数</label>';
                 html += '<select class="pe-modbus-action-param">' +
                     '<option value="P"' + (selParam === 'I' || selParam === 'D' ? '' : ' selected') + '>P</option>' +
                     '<option value="I"' + (selParam === 'I' ? ' selected' : '') + '>I</option>' +
                     '<option value="D"' + (selParam === 'D' ? ' selected' : '') + '>D</option></select>';
                 html += '</div>';
                 html += '<div class="fb-form-group pe-field-stack-compact">';
-                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-ctrl-value') || '值') + '</label>';
+                html += '<label class="pe-field-label-compact">值</label>';
                 html += '<input type="number" class="pe-modbus-action-value" value="' + (selValue || 0) + '">';
                 html += '</div>';
                 html += '</div>';
             } else if (dt === 'motor') {
                 html += '<div class="fb-form-group pe-field-stack-compact">';
-                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-select-action') || '子设备动作') + '</label>';
+                html += '<label class="pe-field-label-compact">子设备动作</label>';
                 html += '<select class="pe-modbus-action-select">' +
-                    '<option value="forward"' + (selAction === 'forward' ? ' selected' : '') + '>' + (i18n.t('periph-exec-ctrl-forward') || '正转') + '</option>' +
-                    '<option value="reverse"' + (selAction === 'reverse' ? ' selected' : '') + '>' + (i18n.t('periph-exec-ctrl-reverse') || '反转') + '</option>' +
-                    '<option value="stop"' + (selAction === 'stop' ? ' selected' : '') + '>' + (i18n.t('periph-exec-ctrl-stop') || '停止') + '</option></select>';
+                    '<option value="forward"' + (selAction === 'forward' ? ' selected' : '') + '>正转</option>' +
+                    '<option value="reverse"' + (selAction === 'reverse' ? ' selected' : '') + '>反转</option>' +
+                    '<option value="stop"' + (selAction === 'stop' ? ' selected' : '') + '>停止</option></select>';
                 html += '</div>';
             }
             html += '</div>';
@@ -706,7 +706,7 @@
             var devices = this._modbusDevices || [];
             var dev = devices[deviceIndex];
             if (!dev) {
-                container.innerHTML = '<span class="pe-empty-inline">' + (i18n.t('modbus-device-not-found') || '未找到对应子设备') + '</span>';
+                container.innerHTML = '<span class="pe-empty-inline">未找到对应子设备</span>';
                 this._setSectionVisible(container, true);
                 return;
             }
@@ -724,7 +724,7 @@
             var dt = dev.deviceType || 'relay';
             if (dt !== 'motor') {
                 html += '<div class="fb-form-group pe-field-stack-compact">';
-                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-match-channel') || '匹配通道') + '</label>';
+                html += '<label class="pe-field-label-compact">匹配通道</label>';
                 html += '<select class="pe-modbus-channel-select">';
                 for (var ch = 0; ch < (dev.channelCount || 2); ch++) {
                     html += '<option value="' + ch + '"' + (String(ch) === selChannel ? ' selected' : '') + '>CH' + ch + '</option>';
@@ -733,36 +733,36 @@
             }
             if (dt === 'relay') {
                 html += '<div class="fb-form-group pe-field-stack-compact">';
-                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-match-action') || '匹配动作') + '</label>';
+                html += '<label class="pe-field-label-compact">匹配动作</label>';
                 html += '<select class="pe-modbus-action-select">' +
-                    '<option value="on"' + (selAction === 'off' ? '' : ' selected') + '>' + (i18n.t('periph-exec-ctrl-on') || '打开') + '</option>' +
-                    '<option value="off"' + (selAction === 'off' ? ' selected' : '') + '>' + (i18n.t('periph-exec-ctrl-off') || '关闭') + '</option></select>';
+                    '<option value="on"' + (selAction === 'off' ? '' : ' selected') + '>打开</option>' +
+                    '<option value="off"' + (selAction === 'off' ? ' selected' : '') + '>关闭</option></select>';
                 html += '</div>';
             } else if (dt === 'motor') {
                 html += '<div class="fb-form-group pe-field-stack-compact">';
-                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-match-action') || '匹配动作') + '</label>';
+                html += '<label class="pe-field-label-compact">匹配动作</label>';
                 html += '<select class="pe-modbus-action-select">' +
-                    '<option value="forward"' + (selAction === 'forward' ? ' selected' : '') + '>' + (i18n.t('periph-exec-ctrl-forward') || '正转') + '</option>' +
-                    '<option value="reverse"' + (selAction === 'reverse' ? ' selected' : '') + '>' + (i18n.t('periph-exec-ctrl-reverse') || '反转') + '</option>' +
-                    '<option value="stop"' + (selAction === 'stop' ? ' selected' : '') + '>' + (i18n.t('periph-exec-ctrl-stop') || '停止') + '</option></select>';
+                    '<option value="forward"' + (selAction === 'forward' ? ' selected' : '') + '>正转</option>' +
+                    '<option value="reverse"' + (selAction === 'reverse' ? ' selected' : '') + '>反转</option>' +
+                    '<option value="stop"' + (selAction === 'stop' ? ' selected' : '') + '>停止</option></select>';
                 html += '</div>';
             } else if (dt === 'pwm') {
                 var maxPwm = dev.pwmResolution === 10 ? 1023 : (dev.pwmResolution === 16 ? 65535 : 255);
                 html += '<div class="fb-form-group pe-field-stack-compact">';
-                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-ctrl-duty') || '占空比') + '</label>';
+                html += '<label class="pe-field-label-compact">占空比</label>';
                 html += '<input type="number" class="pe-modbus-action-value" min="0" max="' + maxPwm + '" value="' + (selValue || 0) + '">';
                 html += '</div>';
             } else if (dt === 'pid') {
                 html += '<div class="pe-pid-fields">';
                 html += '<div class="fb-form-group pe-field-stack-compact">';
-                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-ctrl-pid-param') || '参数') + '</label>';
+                html += '<label class="pe-field-label-compact">参数</label>';
                 html += '<select class="pe-modbus-action-param">' +
                     '<option value="P"' + (selParam === 'I' || selParam === 'D' ? '' : ' selected') + '>P</option>' +
                     '<option value="I"' + (selParam === 'I' ? ' selected' : '') + '>I</option>' +
                     '<option value="D"' + (selParam === 'D' ? ' selected' : '') + '>D</option></select>';
                 html += '</div>';
                 html += '<div class="fb-form-group pe-field-stack-compact">';
-                html += '<label class="pe-field-label-compact">' + (i18n.t('periph-exec-ctrl-value') || '值') + '</label>';
+                html += '<label class="pe-field-label-compact">值</label>';
                 html += '<input type="number" class="pe-modbus-action-value" value="' + (selValue || 0) + '">';
                 html += '</div>';
                 html += '</div>';

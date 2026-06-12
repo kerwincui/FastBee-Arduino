@@ -74,6 +74,8 @@ public:
     String     getClientIP(AsyncWebServerRequest* request);
     String     getUserAgent(AsyncWebServerRequest* request);
     bool       checkPermission(AsyncWebServerRequest* request, const String& permission);
+    bool       requirePermission(AsyncWebServerRequest* request, const String& permission);
+    bool       requireAnyPermission(AsyncWebServerRequest* request, const String& perm1, const String& perm2);
     bool       isDeveloperModeEnabled();
     bool       verifyCurrentUserPassword(AsyncWebServerRequest* request, const String& password);
     bool       requireDeveloperMode(AsyncWebServerRequest* request);

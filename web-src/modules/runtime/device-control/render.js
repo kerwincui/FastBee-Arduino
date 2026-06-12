@@ -28,9 +28,9 @@
 
         _getDcRiskMeta: function(level) {
             switch (String(level || 'low').toLowerCase()) {
-                case 'high': return { text: this._t('modbus-master-risk-high'), className: 'modbus-risk-high' };
-                case 'medium': return { text: this._t('modbus-master-risk-medium'), className: 'modbus-risk-medium' };
-                default: return { text: this._t('modbus-master-risk-low'), className: 'modbus-risk-low' };
+                case 'high': return { text: '高', className: 'modbus-risk-high' };
+                case 'medium': return { text: '中', className: 'modbus-risk-medium' };
+                default: return { text: '低', className: 'modbus-risk-low' };
             }
         },
 
@@ -54,16 +54,16 @@
             var riskMeta = this._getDcRiskMeta(health.riskLevel);
             var warnings = Array.isArray(health.warnings) ? health.warnings.slice(0, 3) : [];
             var html = '<div class="dc-risk-banner" data-dc-sort-key="health">' +
-                '<div class="dc-risk-title">' + this._t('device-control-modbus-health-title') + '</div>' +
+                '<div class="dc-risk-title">Modbus 轮询健康</div>' +
                 '<div class="dc-risk-main">' +
-                '<span class="dc-risk-label">' + this._t('modbus-master-risk-level') + '</span>' +
+                '<span class="dc-risk-label">风险等级</span>' +
                 '<span class="modbus-risk-badge ' + riskMeta.className + '">' + escapeHtml(riskMeta.text) + '</span>' +
                 '</div>' +
                 '<div class="dc-risk-metrics">' +
-                '<span class="dc-risk-metric"><span class="dc-risk-metric-label">' + this._t('modbus-master-enabled-tasks') + '</span><strong>' + escapeHtml(health.enabledTaskCount ?? 0) + '</strong></span>' +
-                '<span class="dc-risk-metric"><span class="dc-risk-metric-label">' + this._t('modbus-master-min-interval') + '</span><strong>' + escapeHtml(health.minPollInterval ? (health.minPollInterval + 's') : '--') + '</strong></span>' +
-                '<span class="dc-risk-metric"><span class="dc-risk-metric-label">' + this._t('modbus-master-last-poll-age') + '</span><strong>' + escapeHtml(this._formatDcAge(health.lastPollAgeSec)) + '</strong></span>' +
-                '<span class="dc-risk-metric"><span class="dc-risk-metric-label">' + this._t('modbus-master-timeout-rate') + '</span><strong>' + escapeHtml(this._formatDcPercent(health.timeoutRate)) + '</strong></span>' +
+                '<span class="dc-risk-metric"><span class="dc-risk-metric-label">启用任务</span><strong>' + escapeHtml(health.enabledTaskCount ?? 0) + '</strong></span>' +
+                '<span class="dc-risk-metric"><span class="dc-risk-metric-label">最小间隔</span><strong>' + escapeHtml(health.minPollInterval ? (health.minPollInterval + 's') : '--') + '</strong></span>' +
+                '<span class="dc-risk-metric"><span class="dc-risk-metric-label">最近轮询</span><strong>' + escapeHtml(this._formatDcAge(health.lastPollAgeSec)) + '</strong></span>' +
+                '<span class="dc-risk-metric"><span class="dc-risk-metric-label">超时率</span><strong>' + escapeHtml(this._formatDcPercent(health.timeoutRate)) + '</strong></span>' +
                 '</div>';
             if (warnings.length > 0) {
                 var warnHtml = '<div class="dc-risk-warnings">';
@@ -225,16 +225,16 @@
             var hasAnyControls = hasButtonControls || modbusDeviceList.length > 0;
             if (hasAnyControls) {
                 html += '<div class="fb-card dc-header-card"><div class="fb-card-header fb-card-header-toolbar dc-header-card-inner">';
-                html += '<h2 class="fb-card-title dc-header-title">' + this._t('device-control-dashboard') + '</h2>';
+                html += '<h2 class="fb-card-title dc-header-title">设备大屏</h2>';
                 html += '<div class="dc-header-actions">';
                 var _sidChecked = localStorage.getItem('dc_show_sid') === '1';
                 html += '<label class="dc-sid-toggle"><input type="checkbox" id="dc-sid-toggle"' + (_sidChecked ? ' checked' : '') + '>\u663E\u793A\u7269\u6A21\u578B\u6807\u8BC6</label>';
                 html += '<button class="dc-btn-sm dc-btn-zoom" id="dc-zoom-out-btn" title="Ctrl+-">-</button>';
                 html += '<button class="dc-btn-sm dc-btn-zoom" id="dc-zoom-reset-btn" title="Ctrl+0">100%</button>';
                 html += '<button class="dc-btn-sm dc-btn-zoom" id="dc-zoom-in-btn" title="Ctrl++">+</button>';
-                html += '<button class="dc-btn-sm dc-btn-refresh" id="dc-refresh-btn">' + this._t('dashboard-refresh') + '</button>';
-                html += '<button class="dc-btn-sm dc-btn-reset dc-layout-reset">' + this._t('device-control-reset-layout') + '</button>';
-                html += '<button class="dc-btn-sm dc-btn-fullscreen" id="dc-fullscreen-btn" title="Ctrl+F">' + this._t('dashboard-fullscreen') + '</button>';
+                html += '<button class="dc-btn-sm dc-btn-refresh" id="dc-refresh-btn">刷新</button>';
+                html += '<button class="dc-btn-sm dc-btn-reset dc-layout-reset">重置布局</button>';
+                html += '<button class="dc-btn-sm dc-btn-fullscreen" id="dc-fullscreen-btn" title="Ctrl+F">全屏</button>';
                 html += '</div></div></div>';
                 html += '<div class="dc-zoom-wrapper"><div class="dc-control-flow">';
                 html += this._renderMonitorSection(data);
@@ -247,13 +247,13 @@
                 if (modbusDeviceList.length > 0) html += this._renderModbusDevicePanels(modbusDeviceList);
                 html += '</div></div>';
             } else {
-                html += '<div class="dc-empty">' + this._t('device-control-no-action') + '</div>';
+                html += '<div class="dc-empty">暂无控制操作</div>';
             }
             return html;
         },
 
         _renderSystemGroup: function(items) {
-            var title = this._t('device-control-group-system') || 'System';
+            var title = '系统操作';
             var html = '<div class="dc-control-group dc-group-card" data-dc-sort-key="system">';
             html += this._renderDcCardHeader('dc-card-badge--system', 'SYS', title);
             html += '<div class="dc-sys-grid">';
@@ -267,7 +267,7 @@
         },
 
         _renderGpioGroup: function(items) {
-            var title = this._t('device-control-group-gpio') || 'GPIO';
+            var title = 'GPIO 控制';
             var html = '<div class="dc-control-group dc-group-card" data-dc-sort-key="gpio">';
             html += this._renderDcCardHeader('dc-card-badge--gpio', 'GPIO', title);
             html += '<div class="dc-gpio-list">';
@@ -275,7 +275,7 @@
                 var item = items[i];
                 var setAttr = item && item.hasSetMode ? ' data-has-set-mode="true"' : '';
                 html += '<div class="dc-gpio-row"><span class="dc-gpio-name">' + escapeHtml(item.name) + '</span>';
-                html += '<button class="dc-ctrl-btn dc-gpio" data-id="' + escapeHtml(item.id) + '" data-name="' + escapeHtml(item.name) + '"' + setAttr + '>' + this._t('device-control-execute') + '</button>';
+                html += '<button class="dc-ctrl-btn dc-gpio" data-id="' + escapeHtml(item.id) + '" data-name="' + escapeHtml(item.name) + '"' + setAttr + '>执行</button>';
                 html += '</div>';
             }
             html += '</div><div class="dc-resize-handle" title="\u62d6\u62fd\u8c03\u6574\u5927\u5c0f"></div></div>';
@@ -310,8 +310,10 @@
 
         _renderSingleModbusPanel: function(devIdx, dev) {
             var dt = dev.deviceType || 'relay';
-            var typeLabel = this._t('modbus-type-' + dt) || dt;
-            var ctrlLabel = (dev.name || '') || (this._t('dc-modbus-ctrl-' + dt) || (typeLabel + ' ' + this._t('device-control-action-section')));
+            var typeLabelMap = { relay: '继电器', pwm: 'PWM', pid: 'PID', motor: '电机', sensor: '采集', control: '控制设备' };
+            var typeLabel = typeLabelMap[dt] || dt;
+            var ctrlLabelMap = { relay: '继电器控制', pwm: 'PWM 控制', pid: 'PID调速', motor: '电机控制' };
+            var ctrlLabel = (dev.name || '') || (ctrlLabelMap[dt] || (typeLabel + ' 控制操作'));
             var typeClassMap = {relay: 'dc-card-badge--relay', pwm: 'dc-card-badge--pwm', pid: 'dc-card-badge--pid', motor: 'dc-card-badge--motor'};
             var html = '<div class="dc-modbus-device-panel" data-dev-idx="' + devIdx + '" data-dc-sort-key="modbus-' + dt + '-' + devIdx + '">';
             var metaHtml = 'Addr: ' + (dev.slaveAddress || 1);
@@ -334,9 +336,9 @@
             html += this._renderDcRelayDelaySection(devIdx, dev);
             html += '<div class="dc-modbus-actions">';
             var relayBtns = [
-                { className: 'dc-coil-batch dc-btn-sm dc-btn-on', devIdx: devIdx, action: 'allOn', label: this._t('modbus-ctrl-all-on') },
-                { className: 'dc-coil-batch dc-btn-sm dc-btn-off', devIdx: devIdx, action: 'allOff', label: this._t('modbus-ctrl-all-off') },
-                { className: 'dc-coil-batch dc-btn-sm dc-btn-toggle', devIdx: devIdx, action: 'allToggle', label: this._t('modbus-ctrl-all-toggle') }
+                { className: 'dc-coil-batch dc-btn-sm dc-btn-on', devIdx: devIdx, action: 'allOn', label: '全部开启' },
+                { className: 'dc-coil-batch dc-btn-sm dc-btn-off', devIdx: devIdx, action: 'allOff', label: '全部关闭' },
+                { className: 'dc-coil-batch dc-btn-sm dc-btn-toggle', devIdx: devIdx, action: 'allToggle', label: '翻转' }
             ];
             for (var ri = 0; ri < relayBtns.length; ri++) {
                 html += '<span class="dc-action-stack">';
@@ -344,7 +346,7 @@
                 if (ri === 0) html += this._renderSidTag(devIdx, '_all', '1=\u5168\u5f00, 0=\u5168\u5173');
                 html += '</span>';
             }
-            html += this._renderDcActionButton({ className: 'dc-coil-refresh dc-btn-sm dc-btn-refresh', devIdx: devIdx, label: this._t('modbus-ctrl-refresh') });
+            html += this._renderDcActionButton({ className: 'dc-coil-refresh dc-btn-sm dc-btn-refresh', devIdx: devIdx, label: '刷新状态' });
             html += '</div></div>';
             return html;
         },
@@ -352,12 +354,12 @@
         _renderDcRelayDelaySection: function(devIdx, dev) {
             var channelCount = dev.channelCount || 2;
             var html = '<div class="dc-relay-delay-section"><div class="dc-delay-controls">';
-            html += '<span class="dc-delay-label">' + this._t('modbus-delay-title') + '</span>';
+            html += '<span class="dc-delay-label">延时断开</span>';
             html += '<select class="dc-delay-channel" data-dev="' + devIdx + '">';
             for (var ch = 0; ch < channelCount; ch++) html += '<option value="' + ch + '">CH' + ch + '</option>';
             html += '</select>';
             html += '<input type="number" class="dc-delay-input" min="1" max="255" value="50" data-dev="' + devIdx + '">';
-            html += '<button class="dc-delay-start dc-btn-sm" data-dev="' + devIdx + '">' + this._t('modbus-delay-start') + '</button>';
+            html += '<button class="dc-delay-start dc-btn-sm" data-dev="' + devIdx + '">启动</button>';
             html += '</div></div>';
             return html;
         },
@@ -371,8 +373,8 @@
             html += this._renderDcPwmGrid(devIdx, channelCount, states, maxValue);
             html += '<div class="dc-modbus-actions">';
             var pwmBtns = [
-                { className: 'dc-pwm-batch dc-btn-sm dc-btn-on', devIdx: devIdx, action: 'max', label: this._t('modbus-ctrl-pwm-set-all-max') },
-                { className: 'dc-pwm-batch dc-btn-sm dc-btn-off', devIdx: devIdx, action: 'off', label: this._t('modbus-ctrl-pwm-set-all-off') }
+                { className: 'dc-pwm-batch dc-btn-sm dc-btn-on', devIdx: devIdx, action: 'max', label: '全部最大' },
+                { className: 'dc-pwm-batch dc-btn-sm dc-btn-off', devIdx: devIdx, action: 'off', label: '全部关闭' }
             ];
             for (var pi = 0; pi < pwmBtns.length; pi++) {
                 html += '<span class="dc-action-stack">';
@@ -380,7 +382,7 @@
                 if (pi === 0) html += this._renderSidTag(devIdx, '_all', '\u503c=\u5168\u90e8\u8bbe\u4e3a\u6b64\u503c');
                 html += '</span>';
             }
-            html += this._renderDcActionButton({ className: 'dc-pwm-refresh dc-btn-sm dc-btn-refresh', devIdx: devIdx, label: this._t('modbus-ctrl-pwm-refresh') });
+            html += this._renderDcActionButton({ className: 'dc-pwm-refresh dc-btn-sm dc-btn-refresh', devIdx: devIdx, label: '刷新状态' });
             html += '</div></div>';
             return html;
         },
@@ -391,7 +393,7 @@
             if (!this._dcPidValues[devIdx]) this._dcPidValues[devIdx] = { pv: 0, sv: 0, out: 0, p: 0, i: 0, d: 0 };
             var html = '<div class="dc-modbus-device-body">';
             html += this._renderDcPidGrid(devIdx, sf, decimals);
-            html += this._renderDcActionBar([{ className: 'dc-pid-refresh dc-btn-sm dc-btn-refresh', devIdx: devIdx, label: this._t('modbus-ctrl-pid-refresh') }]);
+            html += this._renderDcActionBar([{ className: 'dc-pid-refresh dc-btn-sm dc-btn-refresh', devIdx: devIdx, label: '刷新数据' }]);
             html += '</div>';
             return html;
         },
@@ -402,9 +404,9 @@
             html += this._renderDcMotorParamsSection(devIdx, dev);
             html += '<div class="dc-modbus-actions">';
             var motorBtns = [
-                { className: 'dc-motor-action dc-btn-sm dc-btn-on', devIdx: devIdx, action: 'forward', label: this._t('modbus-motor-ctrl-forward') || '正转' },
-                { className: 'dc-motor-action dc-btn-sm dc-btn-off', devIdx: devIdx, action: 'stop', label: this._t('modbus-motor-ctrl-stop') || '停止' },
-                { className: 'dc-motor-action dc-btn-sm dc-btn-toggle', devIdx: devIdx, action: 'reverse', label: this._t('modbus-motor-ctrl-reverse') || '反转' }
+                { className: 'dc-motor-action dc-btn-sm dc-btn-on', devIdx: devIdx, action: 'forward', label: '正转' },
+                { className: 'dc-motor-action dc-btn-sm dc-btn-off', devIdx: devIdx, action: 'stop', label: '停止' },
+                { className: 'dc-motor-action dc-btn-sm dc-btn-toggle', devIdx: devIdx, action: 'reverse', label: '反转' }
             ];
             for (var mi = 0; mi < motorBtns.length; mi++) html += this._renderDcActionButton(motorBtns[mi]);
             html += '</div>';
@@ -414,27 +416,27 @@
         },
 
         _renderDcMotorStatusCard: function(devIdx) {
-            var html = '<div class="motor-status-card"><div class="motor-status-header"><span>' + (this._t('modbus-motor-status') || '状态') + '</span><div class="motor-header-actions">';
+            var html = '<div class="motor-status-card"><div class="motor-status-header"><span>状态</span><div class="motor-header-actions">';
             html += '<span id="dc-motor-run-' + devIdx + '" class="motor-run-badge motor-run-idle">--</span>';
-            html += '<button class="dc-motor-refresh motor-refresh-btn" data-dev="' + devIdx + '" title="' + (this._t('modbus-ctrl-refresh') || '刷新') + '">&#x21bb;</button>';
+            html += '<button class="dc-motor-refresh motor-refresh-btn" data-dev="' + devIdx + '" title="刷新">&#x21bb;</button>';
             html += '</div></div><div class="motor-status-grid">';
-            html += '<div class="motor-status-item"><span class="motor-status-label">' + (this._t('modbus-motor-speed') || '速度') + '</span><span class="motor-status-value" id="dc-motor-speed-' + devIdx + '">--</span><span class="motor-status-unit">rpm</span></div>';
-            html += '<div class="motor-status-item"><span class="motor-status-label">' + (this._t('modbus-motor-pulse') || '脉冲数') + '</span><span class="motor-status-value" id="dc-motor-pulse-' + devIdx + '">--</span></div>';
-            html += '<div class="motor-status-item"><span class="motor-status-label">' + (this._t('modbus-motor-dir') || '方向') + '</span><span class="motor-status-value" id="dc-motor-dir-' + devIdx + '">--</span></div>';
-            html += '<div class="motor-status-item"><span class="motor-status-label">' + (this._t('modbus-motor-count') || '计数') + '</span><span class="motor-status-value" id="dc-motor-count-' + devIdx + '">--</span><span class="motor-status-unit">次</span></div>';
+            html += '<div class="motor-status-item"><span class="motor-status-label">速度</span><span class="motor-status-value" id="dc-motor-speed-' + devIdx + '">--</span><span class="motor-status-unit">rpm</span></div>';
+            html += '<div class="motor-status-item"><span class="motor-status-label">脉冲数</span><span class="motor-status-value" id="dc-motor-pulse-' + devIdx + '">--</span></div>';
+            html += '<div class="motor-status-item"><span class="motor-status-label">方向</span><span class="motor-status-value" id="dc-motor-dir-' + devIdx + '">--</span></div>';
+            html += '<div class="motor-status-item"><span class="motor-status-label">计数</span><span class="motor-status-value" id="dc-motor-count-' + devIdx + '">--</span><span class="motor-status-unit">次</span></div>';
             html += '</div></div>';
             return html;
         },
 
         _renderDcMotorParamsSection: function(devIdx, dev) {
             var html = '<div class="motor-params-section">';
-            html += '<div class="motor-param-row"><label>' + (this._t('modbus-motor-speed') || '速度') + '</label>';
+            html += '<div class="motor-param-row"><label>速度</label>';
             html += '<input type="number" class="motor-param-input " id="dc-motor-speed-in-' + devIdx + '" value="50" min="0">';
-            html += this._renderDcActionButton({ className: 'dc-motor-set dc-btn-sm dc-btn-on', devIdx: devIdx, param: 'speed', label: this._t('modbus-motor-ctrl-set-speed') || '设置速度' });
+            html += this._renderDcActionButton({ className: 'dc-motor-set dc-btn-sm dc-btn-on', devIdx: devIdx, param: 'speed', label: '设置速度' });
             html += this._renderSidTag(devIdx, '_spd', '0~65535') + '</div>';
-            html += '<div class="motor-param-row"><label>' + (this._t('modbus-motor-pulse') || '脉冲') + '</label>';
+            html += '<div class="motor-param-row"><label>脉冲</label>';
             html += '<input type="number" class="motor-param-input " id="dc-motor-pulse-in-' + devIdx + '" value="1600" min="0">';
-            html += this._renderDcActionButton({ className: 'dc-motor-set dc-btn-sm dc-btn-on', devIdx: devIdx, param: 'pulse', label: this._t('modbus-motor-ctrl-set-pulse') || '设置脉冲' });
+            html += this._renderDcActionButton({ className: 'dc-motor-set dc-btn-sm dc-btn-on', devIdx: devIdx, param: 'pulse', label: '设置脉冲' });
             html += this._renderSidTag(devIdx, '_pls', '0~65535') + '</div></div>';
             return html;
         },
@@ -505,8 +507,8 @@
 
         _renderDcCoilGrid: function(devIdx, channelCount, states, ncMode) {
             var html = '<div class="dc-coil-grid" id="dc-coil-grid-' + devIdx + '">';
-            var onText = this._t('modbus-ctrl-status-on') || 'ON';
-            var offText = this._t('modbus-ctrl-status-off') || 'OFF';
+            var onText = 'ON';
+            var offText = 'OFF';
             for (var ch = 0; ch < channelCount; ch++) {
                 var isOn = ncMode ? !(ch < states.length ? states[ch] : false) : (ch < states.length ? states[ch] : false);
                 html += this._renderDcCoilCard(devIdx, ch, isOn, onText, offText);
@@ -547,12 +549,12 @@
         _getDcPidCards: function(devIdx, scaleFactor, decimals) {
             var values = this._dcPidValues[devIdx] || {};
             return [
-                { key: 'out', label: this._t('modbus-ctrl-pid-out-label'), value: this._formatDcScaledValue(values.out, scaleFactor, decimals, '%'), editable: false },
-                { key: 'pv', label: this._t('modbus-ctrl-pid-pv-label'), value: this._formatDcScaledValue(values.pv, scaleFactor, decimals), editable: false },
-                { key: 'sv', label: this._t('modbus-ctrl-pid-sv-label'), value: this._formatDcScaledValue(values.sv, scaleFactor, decimals), editable: true },
-                { key: 'p', label: this._t('modbus-ctrl-pid-p-label'), value: this._formatDcScaledValue(values.p, scaleFactor, decimals), editable: true },
-                { key: 'i', label: this._t('modbus-ctrl-pid-i-label'), value: this._formatDcScaledValue(values.i, scaleFactor, decimals), editable: true },
-                { key: 'd', label: this._t('modbus-ctrl-pid-d-label'), value: this._formatDcScaledValue(values.d, scaleFactor, decimals), editable: true }
+                { key: 'out', label: '输出 %', value: this._formatDcScaledValue(values.out, scaleFactor, decimals, '%'), editable: false },
+                { key: 'pv', label: '过程值 PV', value: this._formatDcScaledValue(values.pv, scaleFactor, decimals), editable: false },
+                { key: 'sv', label: '设定值 SV', value: this._formatDcScaledValue(values.sv, scaleFactor, decimals), editable: true },
+                { key: 'p', label: 'P 比例', value: this._formatDcScaledValue(values.p, scaleFactor, decimals), editable: true },
+                { key: 'i', label: 'I 积分', value: this._formatDcScaledValue(values.i, scaleFactor, decimals), editable: true },
+                { key: 'd', label: 'D 微分', value: this._formatDcScaledValue(values.d, scaleFactor, decimals), editable: true }
             ];
         },
 
@@ -571,7 +573,7 @@
             if (card.editable) {
                 var rawVal = (values[card.key] !== undefined && values[card.key] !== null) ? (values[card.key] / scaleFactor).toFixed(decimals) : '';
                 html += '<div class="dc-pid-edit"><input type="number" class="dc-pid-input" step="' + (1 / scaleFactor) + '" value="' + rawVal + '" data-dev="' + devIdx + '" data-param="' + escapeHtml(card.key) + '">';
-                html += this._renderDcActionButton({ className: 'dc-pid-set dc-btn-sm dc-btn-on', devIdx: devIdx, param: card.key, label: this._t('modbus-ctrl-pid-set') }) + '</div>';
+                html += this._renderDcActionButton({ className: 'dc-pid-set dc-btn-sm dc-btn-on', devIdx: devIdx, param: card.key, label: '设置' }) + '</div>';
             }
             html += this._renderSidTag(devIdx, '_' + card.key, card.editable ? '\u6574\u578b(int)' : '\u53ea\u8bfb') + '</div>';
             return html;
@@ -582,7 +584,8 @@
         },
 
         _renderControlGroup: function(titleKey, items, typeClass, isSystem) {
-            var title = this._t('device-control-group-' + titleKey.toLowerCase()) || titleKey;
+            var groupTitleMap = { modbus: 'Modbus 控制', script: '脚本执行', sensor: '传感器读取', other: '其他' };
+                        var title = groupTitleMap[titleKey.toLowerCase()] || titleKey;
             var html = '<div class="dc-control-group" data-dc-sort-key="' + typeClass + '"><div class="dc-control-group-title">' + title + '</div><div class="dc-control-grid">';
             for (var i = 0; i < items.length; i++) html += this._renderControlButton(items[i], typeClass, isSystem);
             html += '</div><div class="dc-resize-handle" title="拖拽调整大小"></div></div>';

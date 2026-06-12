@@ -535,4 +535,17 @@ using FastBeeJsonDocLarge = JsonDocument;
     #define FASTBEE_ENABLE_STORAGE_CACHE 1
 #endif
 
+// ============================================================================
+// 国际化支持
+// ============================================================================
+
+/**
+ * @brief Web UI 多语言(中英文切换)支持
+ * 默认：禁用（仅显示中文）
+ * 启用后：前端显示语言切换选择器，支持中/英文切换
+ */
+#ifndef FASTBEE_ENABLE_I18N
+#define FASTBEE_ENABLE_I18N 0
+#endif
+
 #endif // FEATURE_FLAGS_H

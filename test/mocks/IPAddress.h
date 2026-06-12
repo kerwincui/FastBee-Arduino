@@ -17,10 +17,23 @@ public:
         return true;
     }
 
+    uint8_t operator[](int index) const {
+        if (index >= 0 && index < 4) return _bytes[index];
+        return 0;
+    }
+
     String toString() const {
         char buffer[16];
         std::snprintf(buffer, sizeof(buffer), "%u.%u.%u.%u", _bytes[0], _bytes[1], _bytes[2], _bytes[3]);
         return String(buffer);
+    }
+
+    bool operator==(const IPAddress& other) const {
+        return _bytes == other._bytes;
+    }
+
+    bool operator!=(const IPAddress& other) const {
+        return _bytes != other._bytes;
     }
 
 private:

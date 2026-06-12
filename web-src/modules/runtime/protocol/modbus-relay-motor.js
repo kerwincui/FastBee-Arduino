@@ -36,8 +36,8 @@
                 } else if (res && !res.success) {
                     this._coilAutoRefreshErrors++;
                     this._stopAutoRefreshOnErrors();
-                    this._setCtrlModalOffline(true, res.error || (i18n.t('device-control-offline') || '设备离线，当前控制不可操作'));
-                    Notification.error(res.error || i18n.t('modbus-ctrl-fail'));
+                    this._setCtrlModalOffline(true, res.error || '设备离线，当前控制不可操作');
+                    Notification.error(res.error || '操作失败');
                     this._appendDebugError(res.error || 'ReadCoils failed', res.debug);
                 } else {
                     if (this._coilStates.length === 0) {
@@ -52,7 +52,7 @@
                     for (var i = 0; i < p.channelCount; i++) this._coilStates.push(false);
                 }
                 this._renderCoilGrid();
-                this._setCtrlModalOffline(true, i18n.t('device-control-offline') || '设备离线，当前控制不可操作');
+                this._setCtrlModalOffline(true, '设备离线，当前控制不可操作');
             }
         },
 
@@ -60,8 +60,8 @@
             const grid = document.getElementById('coil-status-grid');
             if (!grid) return;
             const p = this._getCoilParams();
-            const onText = i18n.t('modbus-ctrl-status-on') || 'ON';
-            const offText = i18n.t('modbus-ctrl-status-off') || 'OFF';
+            const onText = '开';
+            const offText = '关';
             let html = '';
             for (let i = 0; i < p.channelCount; i++) {
                 const coilState = i < this._coilStates.length ? this._coilStates[i] : false;
@@ -88,14 +88,14 @@
                 if (res && res.success && res.data) {
                     if (ch < this._coilStates.length) this._coilStates[ch] = res.data.state;
                     this._renderCoilGrid();
-                    Notification.success(i18n.t('modbus-ctrl-success'));
+                    Notification.success('操作成功');
                     this._appendDebugLog(res.debug, 'Toggle CH' + ch);
                 } else {
-                    Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
+                    Notification.error((res && res.error) || '操作失败');
                     this._appendDebugError('Toggle CH' + ch + ' failed', res && res.debug);
                 }
             } catch (e) {
-                Notification.error(i18n.t('modbus-ctrl-fail'));
+                Notification.error('操作失败');
             }
             if (card) card.classList.remove('coil-loading');
         },
@@ -116,14 +116,14 @@
                 if (res && res.success && res.data && res.data.states) {
                     this._coilStates = res.data.states;
                     this._renderCoilGrid();
-                    Notification.success(i18n.t('modbus-ctrl-success'));
+                    Notification.success('操作成功');
                     this._appendDebugLog(res.debug, 'Batch: ' + action);
                 } else {
-                    Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
+                    Notification.error((res && res.error) || '操作失败');
                     this._appendDebugError('Batch ' + action + ' failed', res && res.debug);
                 }
             } catch (e) {
-                Notification.error(i18n.t('modbus-ctrl-fail'));
+                Notification.error('操作失败');
             }
         },
 
@@ -133,7 +133,7 @@
             const ch = parseInt(document.getElementById('modbus-ctrl-delay-ch')?.value || '0');
             const units = parseInt(document.getElementById('modbus-ctrl-delay-units')?.value || '50');
             if (units < 1 || units > 255) {
-                Notification.warning(i18n.t('modbus-ctrl-fail') + ': 1-255 (x100ms)');
+                Notification.warning('操作失败: 1-255 (x100ms)');
                 return;
             }
             try {
@@ -143,16 +143,16 @@
                 };
                 const res = await apiPostPriority('/api/modbus/coil/delay', params);
                 if (res && res.success) {
-                    Notification.success(i18n.t('modbus-ctrl-delay-ok'));
+                    Notification.success('延时断开指令已发送');
                     this._appendDebugLog(res.debug, 'Delay CH' + ch + ' ' + units + 'x100ms' + (p.ncMode ? ' (NC)' : ''));
                     const refreshDelay = p.ncMode ? (units * 100 + 500) : 500;
                     setTimeout(() => this.refreshCoilStatus(), refreshDelay);
                 } else {
-                    Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
+                    Notification.error((res && res.error) || '操作失败');
                     this._appendDebugError('Delay CH' + ch + ' failed', res && res.debug);
                 }
             } catch (e) {
-                Notification.error(i18n.t('modbus-ctrl-fail'));
+                Notification.error('操作失败');
             }
         },
 
@@ -256,14 +256,14 @@
                         }
                         display.appendChild(chipList);
                     }
-                    Notification.success(i18n.t('modbus-ctrl-success'));
+                    Notification.success('操作成功');
                     this._appendDebugLog(res.debug, 'ReadInputs FC02');
                 } else {
                     if (display) display.innerHTML = '';
-                    Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
+                    Notification.error((res && res.error) || '操作失败');
                     this._appendDebugError('ReadInputs failed', res && res.debug);
                 }
-            } catch (e) { Notification.error(i18n.t('modbus-ctrl-fail')); }
+            } catch (e) { Notification.error('操作失败'); }
         },
 
         // ========== 电机控制 ==========
@@ -286,16 +286,16 @@
             try {
                 var res = await apiPostSilentPriority('/api/modbus/motor/control', { slaveAddress: p.slaveAddress, action: 'forward' });
                 if (res && res.success) {
-                    Notification.success(i18n.t('modbus-motor-ctrl-forward-ok') || '正转指令已发送');
+                    Notification.success('正转指令已发送');
                     this._appendDebugLog(res.debug, 'Motor Forward');
-                    document.getElementById('motor-cur-direction').textContent = '← ' + (i18n.t('modbus-motor-ctrl-forward') || '正转');
+                    document.getElementById('motor-cur-direction').textContent = '← 正转';
                     var elRun = document.getElementById('modbus-ctrl-motor-run-status');
-                    if (elRun) { elRun.className = 'motor-run-badge motor-run-forward'; elRun.textContent = i18n.t('modbus-motor-dir-forward') || '正转中'; }
+                    if (elRun) { elRun.className = 'motor-run-badge motor-run-forward'; elRun.textContent = '正转中'; }
                 } else {
-                    Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
+                    Notification.error((res && res.error) || '操作失败');
                     this._appendDebugError('Motor Forward failed', res && res.debug);
                 }
-            } catch (e) { Notification.error(i18n.t('modbus-ctrl-fail')); }
+            } catch (e) { Notification.error('操作失败'); }
         },
 
         async motorReverse() {
@@ -305,16 +305,16 @@
             try {
                 var res = await apiPostSilentPriority('/api/modbus/motor/control', { slaveAddress: p.slaveAddress, action: 'reverse' });
                 if (res && res.success) {
-                    Notification.success(i18n.t('modbus-motor-ctrl-reverse-ok') || '反转指令已发送');
+                    Notification.success('反转指令已发送');
                     this._appendDebugLog(res.debug, 'Motor Reverse');
-                    document.getElementById('motor-cur-direction').textContent = '→ ' + (i18n.t('modbus-motor-ctrl-reverse') || '反转');
+                    document.getElementById('motor-cur-direction').textContent = '→ 反转';
                     var elRun = document.getElementById('modbus-ctrl-motor-run-status');
-                    if (elRun) { elRun.className = 'motor-run-badge motor-run-reverse'; elRun.textContent = i18n.t('modbus-motor-dir-reverse') || '反转中'; }
+                    if (elRun) { elRun.className = 'motor-run-badge motor-run-reverse'; elRun.textContent = '反转中'; }
                 } else {
-                    Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
+                    Notification.error((res && res.error) || '操作失败');
                     this._appendDebugError('Motor Reverse failed', res && res.debug);
                 }
-            } catch (e) { Notification.error(i18n.t('modbus-ctrl-fail')); }
+            } catch (e) { Notification.error('操作失败'); }
         },
 
         async motorStop() {
@@ -324,16 +324,16 @@
             try {
                 var res = await apiPostSilentPriority('/api/modbus/motor/control', { slaveAddress: p.slaveAddress, action: 'stop' });
                 if (res && res.success) {
-                    Notification.success(i18n.t('modbus-motor-ctrl-stop-ok') || '停止指令已发送');
+                    Notification.success('停止指令已发送');
                     this._appendDebugLog(res.debug, 'Motor Stop');
-                    document.getElementById('motor-cur-direction').textContent = i18n.t('modbus-motor-status-stop') || '停止';
+                    document.getElementById('motor-cur-direction').textContent = '停止';
                     var elRun = document.getElementById('modbus-ctrl-motor-run-status');
-                    if (elRun) { elRun.className = 'motor-run-badge motor-run-stopped'; elRun.textContent = i18n.t('modbus-motor-status-stop') || '停止'; }
+                    if (elRun) { elRun.className = 'motor-run-badge motor-run-stopped'; elRun.textContent = '停止'; }
                 } else {
-                    Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
+                    Notification.error((res && res.error) || '操作失败');
                     this._appendDebugError('Motor Stop failed', res && res.debug);
                 }
-            } catch (e) { Notification.error(i18n.t('modbus-ctrl-fail')); }
+            } catch (e) { Notification.error('操作失败'); }
         },
 
         async setMotorSpeed() {
@@ -344,13 +344,13 @@
             try {
                 var res = await apiPostSilentPriority('/api/modbus/motor/control', { slaveAddress: p.slaveAddress, action: 'setSpeed', value: speed });
                 if (res && res.success) {
-                    Notification.success(i18n.t('modbus-motor-ctrl-speed-ok') || '速度设置成功');
+                    Notification.success('速度设置成功');
                     this._appendDebugLog(res.debug, 'Motor SetSpeed');
                 } else {
-                    Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
+                    Notification.error((res && res.error) || '操作失败');
                     this._appendDebugError('Motor SetSpeed failed', res && res.debug);
                 }
-            } catch (e) { Notification.error(i18n.t('modbus-ctrl-fail')); }
+            } catch (e) { Notification.error('操作失败'); }
         },
 
         async setMotorPulse() {
@@ -361,13 +361,13 @@
             try {
                 var res = await apiPostSilentPriority('/api/modbus/motor/control', { slaveAddress: p.slaveAddress, action: 'setPulse', value: pulse });
                 if (res && res.success) {
-                    Notification.success(i18n.t('modbus-motor-ctrl-pulse-ok') || '脉冲数设置成功');
+                    Notification.success('脉冲数设置成功');
                     this._appendDebugLog(res.debug, 'Motor SetPulse');
                 } else {
-                    Notification.error((res && res.error) || i18n.t('modbus-ctrl-fail'));
+                    Notification.error((res && res.error) || '操作失败');
                     this._appendDebugError('Motor SetPulse failed', res && res.debug);
                 }
-            } catch (e) { Notification.error(i18n.t('modbus-ctrl-fail')); }
+            } catch (e) { Notification.error('操作失败'); }
         },
 
         async refreshMotorStatus() {
@@ -388,27 +388,27 @@
                     if (data.pulse !== undefined && elPulse) elPulse.textContent = data.pulse;
                     if (elDir) {
                         if (data.direction === 'forward' || data.direction === 1) {
-                            elDir.textContent = '← ' + (i18n.t('modbus-motor-ctrl-forward') || '正转');
+                            elDir.textContent = '← 正转';
                         } else if (data.direction === 'reverse' || data.direction === -1) {
-                            elDir.textContent = '→ ' + (i18n.t('modbus-motor-ctrl-reverse') || '反转');
+                            elDir.textContent = '→ 反转';
                         } else {
-                            elDir.textContent = i18n.t('modbus-motor-status-stop') || '停止';
+                            elDir.textContent = '停止';
                         }
                     }
-                    if (data.count !== undefined && elCount) elCount.textContent = data.count + ' ' + (i18n.t('modbus-motor-count') || '次');
+                    if (data.count !== undefined && elCount) elCount.textContent = data.count + ' 计数';
                     if (elRun) {
                         var dir = data.direction || '';
                         elRun.className = 'motor-run-badge ' + (dir === 'forward' || dir === 1 ? 'motor-run-forward' : dir === 'reverse' || dir === -1 ? 'motor-run-reverse' : 'motor-run-stopped');
-                        elRun.textContent = (dir === 'forward' || dir === 1) ? (i18n.t('modbus-motor-dir-forward') || '正转中') : (dir === 'reverse' || dir === -1) ? (i18n.t('modbus-motor-dir-reverse') || '反转中') : (i18n.t('modbus-motor-status-stop') || '停止');
+                        elRun.textContent = (dir === 'forward' || dir === 1) ? '正转中' : (dir === 'reverse' || dir === -1) ? '反转中' : '停止';
                     }
                     this._appendDebugLog(res.debug, 'Motor ReadStatus');
                 } else {
                     this._appendDebugError('Motor ReadStatus failed', res && res.debug);
-                    this._setCtrlModalOffline(true, (res && res.error) || (i18n.t('device-control-offline') || '设备离线，当前控制不可操作'));
+                    this._setCtrlModalOffline(true, (res && res.error) || '设备离线，当前控制不可操作');
                 }
             } catch (e) {
                 console.error('refreshMotorStatus failed:', e);
-                this._setCtrlModalOffline(true, i18n.t('device-control-offline') || '设备离线，当前控制不可操作');
+                this._setCtrlModalOffline(true, '设备离线，当前控制不可操作');
             }
         },
 

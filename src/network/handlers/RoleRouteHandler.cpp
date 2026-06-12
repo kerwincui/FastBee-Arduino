@@ -81,10 +81,7 @@ void RoleRouteHandler::setupRoutes(AsyncWebServer* server) {
 }
 
 void RoleRouteHandler::handleGetRoles(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "role.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "role.view")) return;
 
     if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Role list", MemoryGuardLevel::SEVERE, 8)) {
         return;
@@ -126,10 +123,7 @@ void RoleRouteHandler::handleGetRoles(AsyncWebServerRequest* request) {
 }
 
 void RoleRouteHandler::handleGetRole(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "role.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "role.view")) return;
 
     String path = request->url();
     int p = path.lastIndexOf('/');
@@ -147,10 +141,7 @@ void RoleRouteHandler::handleGetRole(AsyncWebServerRequest* request) {
 }
 
 void RoleRouteHandler::handleCreateRole(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "role.create")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "role.create")) return;
 
     if (!ctx->roleManager) {
         ctx->sendError(request, 500, "Role service unavailable");
@@ -181,10 +172,7 @@ void RoleRouteHandler::handleCreateRole(AsyncWebServerRequest* request) {
 }
 
 void RoleRouteHandler::handleUpdateRole(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "role.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "role.edit")) return;
 
     String path = request->url();
     int p = path.lastIndexOf('/');
@@ -213,10 +201,7 @@ void RoleRouteHandler::handleUpdateRole(AsyncWebServerRequest* request) {
 }
 
 void RoleRouteHandler::handleDeleteRole(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "role.delete")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "role.delete")) return;
 
     String path = request->url();
     int p = path.lastIndexOf('/');
@@ -242,10 +227,7 @@ void RoleRouteHandler::handleDeleteRole(AsyncWebServerRequest* request) {
 }
 
 void RoleRouteHandler::handleGetRolePermissions(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "role.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "role.view")) return;
 
     String path = request->url();
     String trimmed = path.substring(0, path.lastIndexOf('/'));
@@ -266,10 +248,7 @@ void RoleRouteHandler::handleGetRolePermissions(AsyncWebServerRequest* request) 
 }
 
 void RoleRouteHandler::handleSetRolePermissions(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "role.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "role.edit")) return;
 
     String path = request->url();
     String trimmed = path.substring(0, path.lastIndexOf('/'));
@@ -301,10 +280,7 @@ void RoleRouteHandler::handleSetRolePermissions(AsyncWebServerRequest* request) 
 }
 
 void RoleRouteHandler::handleGetPermissions(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "role.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "role.view")) return;
 
     if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Permission list", MemoryGuardLevel::SEVERE, 8)) {
         return;
@@ -349,10 +325,7 @@ void RoleRouteHandler::handleGetPermissions(AsyncWebServerRequest* request) {
 }
 
 void RoleRouteHandler::handleGetAuditLog(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "audit.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "audit.view")) return;
 
     if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Audit log", MemoryGuardLevel::SEVERE, 8)) {
         return;
@@ -374,10 +347,7 @@ void RoleRouteHandler::handleGetAuditLog(AsyncWebServerRequest* request) {
 }
 
 void RoleRouteHandler::handleClearAuditLog(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "audit.clear")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "audit.clear")) return;
 
     if (!ctx->authManager) {
         ctx->sendError(request, 500, "Auth service unavailable");

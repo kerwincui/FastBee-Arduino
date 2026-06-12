@@ -164,15 +164,19 @@ public:
     std::vector<String> getAllPermissions() {
         return {
             "device.view", "device.control", "device.config",
-            "user.view", "user.create", "user.update", "user.delete",
-            "role.view", "role.create", "role.update", "role.delete",
-            "network.view", "network.config",
+            "user.view", "user.create", "user.update", "user.delete", "user.admin",
+            "role.view", "role.create", "role.update", "role.delete", "role.admin",
+            "network.view", "network.edit",
             "mqtt.view", "mqtt.config",
+            "modbus.view", "modbus.config",
             "ota.update", "ota.view",
-            "system.view", "system.config", "system.reboot",
+            "system.view", "system.restart",
+            "config.view", "config.edit",
             "log.view", "log.clear",
             "peripheral.view", "peripheral.control", "peripheral.config",
-            "script.view", "script.execute", "script.edit"
+            "fs.view", "fs.manage",
+            "script.view", "script.execute", "script.edit",
+            "rule.view", "rule.edit"
         };
     }
 
@@ -199,7 +203,9 @@ private:
             "device.view", "device.control",
             "peripheral.view", "peripheral.control",
             "script.view", "script.execute",
-            "log.view"
+            "log.view",
+            "config.view",
+            "rule.view", "rule.edit"
         };
         _roles["operator"] = operatorRole;
 

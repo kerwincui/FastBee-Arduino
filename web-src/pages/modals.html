@@ -406,6 +406,38 @@
                                         <small data-i18n="radar-pin-hint">引脚顺序：OUT；RCWL-0516 可用 3V3 或 VIN 供电，GND 共地</small>
                                     </div>
                                 </div>
+
+                                <!-- OLED/LCD 显示屏参数 -->
+                                <div id="lcd-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10" data-i18n="lcd-params-title">显示屏参数</h4>
+                                    <div class="fb-form-group">
+                                        <label for="lcd-width" data-i18n="lcd-width-label">屏幕宽度 (px)</label>
+                                        <select id="lcd-width" class="">
+                                            <option value="128" selected>128</option>
+                                            <option value="72">72</option>
+                                            <option value="64">64</option>
+                                        </select>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label for="lcd-height" data-i18n="lcd-height-label">屏幕高度 (px)</label>
+                                        <select id="lcd-height" class="">
+                                            <option value="64" selected>64</option>
+                                            <option value="40">40</option>
+                                            <option value="32">32</option>
+                                            <option value="128">128</option>
+                                        </select>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label for="lcd-interface" data-i18n="lcd-interface-label">接口类型</label>
+                                        <select id="lcd-interface" class="">
+                                            <option value="2" selected>I2C</option>
+                                            <option value="1">SPI</option>
+                                        </select>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <small data-i18n="lcd-pin-hint-i2c">I2C 引脚顺序：SDA, SCL。ESP32-C3 示例：5, 6</small>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -705,6 +737,32 @@
             <button class="fb-btn" id="cancel-role-btn" type="button" data-i18n="cancel">取消</button>
             <button class="fb-btn fb-btn-primary" id="confirm-role-btn" type="button"
                 data-i18n="role-save-btn">保存</button>
+        </div>
+    </div>
+</div>
+
+<!-- 配置导入/导出选择弹窗 -->
+<div id="config-transfer-modal" class="modal">
+    <div class="modal-content u-modal-content-560">
+        <div class="modal-header">
+            <h2 class="modal-title" id="config-transfer-modal-title">选择配置文件</h2>
+            <button class="modal-close-btn">&times;</button>
+        </div>
+        <div class="modal-body" style="padding:16px 20px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+                <label class="fb-checkbox" style="font-weight:600">
+                    <input type="checkbox" id="config-transfer-select-all" checked>
+                    <span>全选</span>
+                </label>
+                <span id="config-transfer-summary" style="font-size:12px;color:var(--text-secondary)"></span>
+            </div>
+            <div id="config-transfer-list" style="display:flex;flex-direction:column;gap:8px">
+                <!-- 动态填充配置文件复选框 -->
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="fb-btn" id="config-transfer-cancel-btn" type="button">取消</button>
+            <button class="fb-btn fb-btn-warning" id="config-transfer-confirm-btn" type="button">确认</button>
         </div>
     </div>
 </div>

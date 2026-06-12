@@ -6,7 +6,6 @@
     AppState.registerModule('dashboard', {
         _dashboardMonitorLoadPromise: null,
         _dashboardNetworkLoadPromise: null,
-        _dashboardRuntimeLoadPromise: null,
 
         // ============ 事件绑定 ============
         setupDashboardEvents() {
@@ -20,11 +19,7 @@
         },
 
         bootDashboardPage() {
-            var self = this;
             this.loadSystemMonitor({ loadRuntime: false });
-            setTimeout(function() {
-                self.loadWebRuntimeDiagnostics();
-            }, 1200);
         },
 
         // ============ 仪表板（从 /api/system/status 加载实时数据）============
@@ -49,7 +44,7 @@
                         this.renderEmptyTableRow(
                             tbody,
                             4,
-                            d.networkConnected ? i18n.t('dashboard-connected-prefix') + (d.ipAddress || '') : i18n.t('dashboard-disconnected')
+                            d.networkConnected ? '网络已连接 IP: ' + (d.ipAddress || '') : '网络未连接'
                         );
                     }
                 })
@@ -147,8 +142,8 @@
                     // 网络状态
                     const network = data.network || {};
                     const netStatus = network.connected ?
-                        `<span class="u-text-success">●</span> ${i18n.t('monitor-connected')} (${network.ssid || 'N/A'})` :
-                        `<span class="u-text-danger">●</span> ${i18n.t('monitor-disconnected')}`;
+                        `<span class="u-text-success">●</span> 已连接 (${network.ssid || 'N/A'})` :
+                        `<span class="u-text-danger">●</span> 未连接`;
                     this._setHtml('monitor-network-status', netStatus);
                     this._setText('monitor-ip', network.ipAddress || '--');
 
@@ -195,37 +190,12 @@
                 });
 
             if (options.loadRuntime === true) {
-                setTimeout(function() {
-                    self.loadWebRuntimeDiagnostics({ noCache: options.noCache === true });
-                }, options.runtimeDelayMs || 0);
+                // Web Runtime module removed
             }
             this._dashboardMonitorLoadPromise = monitorPromise.finally(function() {
                 self._dashboardMonitorLoadPromise = null;
             });
             return this._dashboardMonitorLoadPromise;
-        },
-
-        loadWebRuntimeDiagnostics(options) {
-            options = options || {};
-            if (this._dashboardRuntimeLoadPromise) return this._dashboardRuntimeLoadPromise;
-            var self = this;
-            var getter = (options.noCache === true && typeof apiGetFresh === 'function')
-                ? apiGetFresh
-                : (typeof apiGetSilent === 'function' ? apiGetSilent : apiGet);
-            this.ensureWebRuntimePanel();
-            this._dashboardRuntimeLoadPromise = getter('/api/system/web-runtime')
-                .then(function(res) {
-                    if (res && res.success) {
-                        self._applyWebRuntime(res);
-                    }
-                })
-                .catch(function(err) {
-                    console.error('Load web runtime failed:', err);
-                })
-                .finally(function() {
-                    self._dashboardRuntimeLoadPromise = null;
-                });
-            return this._dashboardRuntimeLoadPromise;
         },
 
         /**
@@ -238,26 +208,26 @@
             const refreshBtn = document.getElementById('dashboard-net-refresh-btn');
             if (refreshBtn) {
                 refreshBtn.disabled = true;
-                refreshBtn.innerHTML = i18n.t('net-refreshing-html');
+                refreshBtn.innerHTML = '刷新中...';
             }
 
             var getter = (options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
             this._dashboardNetworkLoadPromise = getter('/api/network/status')
                 .then(res => {
                     if (!res || !res.success) {
-                        Notification.error(i18n.t('net-status-load-fail'), i18n.t('net-status-title-msg'));
+                        Notification.error('获取网络状态失败', '网络状态');
                         return;
                     }
                     self._applyNetworkStatus(res);
                 })
                 .catch(err => {
                     console.error('Load network status failed:', err);
-                    Notification.error(i18n.t('net-status-load-fail'), i18n.t('net-status-title-msg'));
+                    Notification.error('获取网络状态失败', '网络状态');
                 })
                 .finally(() => {
                     if (refreshBtn) {
                         refreshBtn.disabled = false;
-                        refreshBtn.innerHTML = i18n.t('net-refresh-html');
+                        refreshBtn.innerHTML = '刷新';
                     }
                     this._dashboardNetworkLoadPromise = null;
                 });
@@ -281,11 +251,11 @@
 
             // 状态徽章
             const statusMap = {
-                connected:    `<span class="badge badge-success">${i18n.t('net-status-connected')}</span>`,
-                disconnected: `<span class="badge badge-danger">${i18n.t('net-status-disconnected')}</span>`,
-                connecting:   `<span class="badge badge-warning">${i18n.t('net-status-connecting')}</span>`,
-                ap_mode:      `<span class="badge badge-primary">${i18n.t('net-status-ap')}</span>`,
-                failed:       `<span class="badge badge-danger">${i18n.t('net-status-failed')}</span>`,
+                connected:    '<span class="badge badge-success">已连接</span>',
+                disconnected: '<span class="badge badge-danger">未连接</span>',
+                connecting:   '<span class="badge badge-warning">连接中...</span>',
+                ap_mode:      '<span class="badge badge-primary">AP模式</span>',
+                failed:       '<span class="badge badge-danger">连接失败</span>',
             };
             setHtml('ns-status', statusMap[d.status] || `<span class="badge badge-info">${d.status || '--'}</span>`);
 
@@ -321,48 +291,26 @@
             setText('ns-ap-ssid', d.apSSID);
             setText('ns-ap-ip', d.apIPAddress);
             setText('ns-ap-channel', d.apChannel !== undefined ? `CH ${d.apChannel}` : '--');
-            setText('ns-ap-clients', d.apClientCount !== undefined ? d.apClientCount + i18n.t('net-ap-clients-unit') : '--');
+            setText('ns-ap-clients', d.apClientCount !== undefined ? d.apClientCount + ' 台' : '--');
 
             // 连接统计
             const modeLabel = {
-                STA: i18n.t('net-mode-sta'),
-                AP: i18n.t('net-mode-ap')
+                STA: '仅客户端 (STA)',
+                AP: '仅热点 (AP)'
             };
             setText('ns-mode', modeLabel[d.mode] || d.mode || '--');
             var actualDomain = d.mdnsDomain || d.customDomain;
-            setText('ns-mdns', d.enableMDNS ? (actualDomain ? actualDomain + '.local' : i18n.t('net-mdns-enabled')) : i18n.t('net-mdns-disabled'));
-            setText('ns-reconnect', d.reconnectAttempts !== undefined ? d.reconnectAttempts + i18n.t('net-reconnect-unit') : '--');
-            setText('ns-tx-count', d.txCount !== undefined ? d.txCount + i18n.t('net-count-unit') : '--');
-            setText('ns-rx-count', d.rxCount !== undefined ? d.rxCount + i18n.t('net-count-unit') : '--');
+            setText('ns-mdns', d.enableMDNS ? (actualDomain ? actualDomain + '.local' : '已启用') : '禁用');
+            setText('ns-reconnect', d.reconnectAttempts !== undefined ? d.reconnectAttempts + ' 次' : '--');
+            setText('ns-tx-count', d.txCount !== undefined ? d.txCount + ' 条' : '--');
+            setText('ns-rx-count', d.rxCount !== undefined ? d.rxCount + ' 条' : '--');
             setHtml('ns-internet', d.internetAvailable
-                ? `<span class="badge badge-success">${i18n.t('net-accessible')}</span>`
-                : `<span class="badge badge-danger">${i18n.t('net-inaccessible')}</span>`);
+                ? '<span class="badge badge-success">可访问</span>'
+                : '<span class="badge badge-danger">不可访问</span>');
             setHtml('ns-conflict', d.conflictDetected
-                ? `<span class="badge badge-danger">${i18n.t('net-conflict-yes')}</span>`
-                : `<span class="badge badge-success">${i18n.t('net-no-conflict')}</span>`);
+                ? '<span class="badge badge-danger">已检测到冲突</span>'
+                : '<span class="badge badge-success">无冲突</span>');
             setText('ns-uptime', d.uptimeFormatted || '--');
-        },
-
-        ensureWebRuntimePanel() {
-            var trigger = document.getElementById('dashboard-net-refresh-btn');
-            var networkHeader = trigger ? trigger.closest('.dashboard-section-header') : null;
-            if (window.WebRuntimeDiagnostics) {
-                window.WebRuntimeDiagnostics.ensurePanel({
-                    anchorEl: networkHeader,
-                    t: this._t.bind(this)
-                });
-            }
-        },
-
-        _applyWebRuntime(res) {
-            if (window.WebRuntimeDiagnostics) {
-                window.WebRuntimeDiagnostics.apply({
-                    t: this._t.bind(this),
-                    setText: this._setText.bind(this),
-                    setHtml: this._setHtml.bind(this),
-                    formatBytes: this._formatBytes.bind(this)
-                }, res);
-            }
         },
 
     });

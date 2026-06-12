@@ -116,7 +116,6 @@
         '/api/system/info': { tier: 'cheap', cost: 1, batchSafe: true, cacheTtl: 30000, priority: 3, timeoutMs: 10000 },
         '/api/health': { tier: 'cheap', cost: 1, batchSafe: true, cacheTtl: 5000, priority: 2, timeoutMs: 8000 },
         '/api/system/health': { tier: 'cheap', cost: 1, batchSafe: true, cacheTtl: 5000, priority: 2, timeoutMs: 8000 },
-        '/api/system/web-runtime': { tier: 'cheap', cost: 1, cacheTtl: 15000, priority: 0, timeoutMs: 8000 },
         '/api/network/status': { tier: 'cheap', cost: 1, batchSafe: true, cacheTtl: 5000, priority: 3, timeoutMs: 8000 },
         '/api/network/config': { tier: 'cheap', cost: 1, batchSafe: true, cacheTtl: 60000, priority: 2, timeoutMs: 10000 },
         '/api/device/config': { tier: 'cheap', cost: 1, batchSafe: true, cacheTtl: 120000, priority: 2, timeoutMs: 10000 },
@@ -159,7 +158,7 @@
     const PAGE_REQUEST_CONTRACTS = Object.freeze({
         dashboard: {
             firstScreen: ['/api/system/status', '/api/system/info', '/api/network/status'],
-            deferred: ['/api/system/web-runtime']
+            deferred: []
         },
         device: {
             firstScreen: ['/api/device/config', '/api/system/info'],

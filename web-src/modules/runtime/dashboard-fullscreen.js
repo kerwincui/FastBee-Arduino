@@ -17,13 +17,6 @@
 
         // ============ 初始化 ============
         init: function() {
-            // 初始化 i18n
-            if (typeof i18n !== 'undefined' && i18n.updatePageText) {
-                i18n.updatePageText();
-            }
-
-            this.ensureWebRuntimePanel();
-
             // 绑定按钮事件
             var refreshBtn = document.getElementById('fullscreen-refresh-btn');
             if (refreshBtn) refreshBtn.addEventListener('click', function() { FS.loadAll({ noCache: true, force: true }); });
@@ -55,7 +48,6 @@
             }
 
             var self = this;
-            this.ensureWebRuntimePanel();
             var batchGetter = null;
             if (options.noCache === true && typeof apiBatchGetFresh === 'function') {
                 batchGetter = apiBatchGetFresh;
@@ -68,9 +60,6 @@
                     ? apiGetFresh
                     : ((typeof apiGet === 'function') ? apiGet : self._fetchJson.bind(self))
             );
-            var runtimeGetter = options.noCache === true && typeof apiGetFresh === 'function'
-                ? apiGetFresh
-                : ((typeof apiGet === 'function') ? apiGet : self._fetchJson.bind(self));
             var infoPromise = getter('/api/system/info');
 
             var monitorPromise = infoPromise
@@ -91,8 +80,8 @@
                     // 网络状态
                     var network = data.network || {};
                     var netStatus = network.connected
-                        ? '<span class="u-text-success">●</span> ' + self._t('monitor-connected') + ' (' + (network.ssid || 'N/A') + ')'
-                        : '<span class="u-text-danger">●</span> ' + self._t('monitor-disconnected');
+                        ? '<span class="u-text-success">●</span> 已连接 (' + (network.ssid || 'N/A') + ')'
+                        : '<span class="u-text-danger">●</span> 未连接';
                     self._setHtml('monitor-network-status', netStatus);
                     self._setText('monitor-ip', network.ipAddress || '--');
 
@@ -131,21 +120,7 @@
                     console.error('[Fullscreen] Load system monitor failed:', err);
                 });
 
-            var runtimePromise = infoPromise
-                .then(function(res) {
-                    if (!res || !res.success) return null;
-                    return runtimeGetter('/api/system/web-runtime');
-                })
-                .then(function(res) {
-                    if (res && res.success) {
-                        self._applyWebRuntime(res);
-                    }
-                })
-                .catch(function(err) {
-                    console.error('[Fullscreen] Load web runtime failed:', err);
-                });
-
-            this._monitorLoadPromise = Promise.allSettled([monitorPromise, runtimePromise]).finally(function() {
+            this._monitorLoadPromise = monitorPromise.finally(function() {
                 self._monitorLoadPromise = null;
                 self._lastMonitorRefreshAt = Date.now();
             });
@@ -205,11 +180,11 @@
 
             // 状态徽章
             var statusMap = {
-                connected:    '<span class="badge badge-success">' + self._t('net-status-connected') + '</span>',
-                disconnected: '<span class="badge badge-danger">' + self._t('net-status-disconnected') + '</span>',
-                connecting:   '<span class="badge badge-warning">' + self._t('net-status-connecting') + '</span>',
-                ap_mode:      '<span class="badge badge-primary">' + self._t('net-status-ap') + '</span>',
-                failed:       '<span class="badge badge-danger">' + self._t('net-status-failed') + '</span>'
+                connected:    '<span class="badge badge-success">已连接</span>',
+                disconnected: '<span class="badge badge-danger">未连接</span>',
+                connecting:   '<span class="badge badge-warning">连接中...</span>',
+                ap_mode:      '<span class="badge badge-primary">AP模式</span>',
+                failed:       '<span class="badge badge-danger">连接失败</span>'
             };
             setHtml('ns-status', statusMap[d.status] || '<span class="badge badge-info">' + (d.status || '--') + '</span>');
 
@@ -247,51 +222,29 @@
             setText('ns-ap-ssid', d.apSSID);
             setText('ns-ap-ip', d.apIPAddress);
             setText('ns-ap-channel', d.apChannel !== undefined ? 'CH ' + d.apChannel : '--');
-            setText('ns-ap-clients', d.apClientCount !== undefined ? d.apClientCount + self._t('net-ap-clients-unit') : '--');
+            setText('ns-ap-clients', d.apClientCount !== undefined ? d.apClientCount + ' 台' : '--');
 
             // 连接统计
             var modeLabel = {
-                STA: self._t('net-mode-sta'),
-                AP: self._t('net-mode-ap')
+                STA: '仅客户端 (STA)',
+                AP: '仅热点 (AP)'
             };
             setText('ns-mode', modeLabel[d.mode] || d.mode || '--');
             var actualDomain = d.mdnsDomain || d.customDomain;
-            setText('ns-mdns', d.enableMDNS ? (actualDomain ? actualDomain + '.local' : self._t('net-mdns-enabled')) : self._t('net-mdns-disabled'));
-            setText('ns-reconnect', d.reconnectAttempts !== undefined ? d.reconnectAttempts + self._t('net-reconnect-unit') : '--');
-            setText('ns-tx-count', d.txCount !== undefined ? d.txCount + self._t('net-count-unit') : '--');
-            setText('ns-rx-count', d.rxCount !== undefined ? d.rxCount + self._t('net-count-unit') : '--');
+            setText('ns-mdns', d.enableMDNS ? (actualDomain ? actualDomain + '.local' : '已启用') : '禁用');
+            setText('ns-reconnect', d.reconnectAttempts !== undefined ? d.reconnectAttempts + ' 次' : '--');
+            setText('ns-tx-count', d.txCount !== undefined ? d.txCount + ' 条' : '--');
+            setText('ns-rx-count', d.rxCount !== undefined ? d.rxCount + ' 条' : '--');
             setHtml('ns-internet', d.internetAvailable
-                ? '<span class="badge badge-success">' + self._t('net-accessible') + '</span>'
-                : '<span class="badge badge-danger">' + self._t('net-inaccessible') + '</span>');
+                ? '<span class="badge badge-success">可访问</span>'
+                : '<span class="badge badge-danger">不可访问</span>');
             setHtml('ns-conflict', d.conflictDetected
-                ? '<span class="badge badge-danger">' + self._t('net-conflict-yes') + '</span>'
-                : '<span class="badge badge-success">' + self._t('net-no-conflict') + '</span>');
+                ? '<span class="badge badge-danger">已检测到冲突</span>'
+                : '<span class="badge badge-success">无冲突</span>');
             setText('ns-uptime', d.uptimeFormatted || '--');
         },
 
         // ============ SSE 连接 ============
-        ensureWebRuntimePanel: function() {
-            var networkGrid = document.getElementById('ns-status');
-            networkGrid = networkGrid ? networkGrid.closest('.dashboard-network-grid') : null;
-            var networkHeader = networkGrid ? networkGrid.previousElementSibling : null;
-            if (window.WebRuntimeDiagnostics) {
-                window.WebRuntimeDiagnostics.ensurePanel({
-                    anchorEl: networkHeader,
-                    t: this._t.bind(this)
-                });
-            }
-        },
-
-        _applyWebRuntime: function(res) {
-            if (window.WebRuntimeDiagnostics) {
-                window.WebRuntimeDiagnostics.apply({
-                    t: this._t.bind(this),
-                    setText: this._setText.bind(this),
-                    setHtml: this._setHtml.bind(this),
-                    formatBytes: this._formatBytes.bind(this)
-                }, res);
-            }
-        },
 
         _getPressureState: function() {
             if (typeof apiGetPressureState === 'function') {
@@ -409,7 +362,7 @@
             window.close();
             // 如果 window.close() 被浏览器阻止，显示提示
             setTimeout(function() {
-                var msg = typeof i18n !== 'undefined' ? i18n.t('dashboard-close-hint') : '请手动关闭此标签页';
+                var msg = '请手动关闭此标签页';
                 alert(msg);
             }, 300);
         },
@@ -447,7 +400,6 @@
         },
 
         _t: function(key) {
-            if (typeof i18n !== 'undefined' && i18n.t) return i18n.t(key);
             return key;
         },
 

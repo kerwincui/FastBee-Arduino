@@ -50,12 +50,12 @@
         _openCtrlModal(idx) {
             if (idx === undefined || idx === null || isNaN(idx)) {
                 console.warn('[protocol] Invalid device index:', idx);
-                Notification.error(i18n.t('modbus-device-not-found') || '设备未找到');
+                Notification.error('设备未找到');
                 return;
             }
             if (!this._modbusDevices || !this._modbusDevices[idx]) {
                 console.warn('[protocol] Device not found at index', idx);
-                Notification.error(i18n.t('modbus-device-not-found') || '设备未找到，请刷新列表');
+                Notification.error('设备未找到，请刷新列表');
                 this._renderDeviceTable();
                 this._renderAllDevices();
                 return;
@@ -89,7 +89,7 @@
             var deviceOffline = dev.enabled === false;
             this._setCtrlModalOffline(false);
             var title = document.getElementById('modbus-ctrl-modal-title');
-            if (title) title.textContent = (dev.name || 'Device') + ' - ' + (i18n.t('modbus-device-ctrl-title') || '设备控制');
+            if (title) title.textContent = (dev.name || 'Device') + ' - 设备控制';
             var relayConfig = document.getElementById('modbus-relay-config');
             var relayPanel = document.getElementById('modbus-relay-panel');
             var pwmPanel = document.getElementById('modbus-pwm-panel');
@@ -142,7 +142,7 @@
             }
             AppState.showModal(modal);
             if (deviceOffline) {
-                this._setCtrlModalOffline(true, i18n.t('device-control-offline') || '设备离线，当前控制不可操作');
+                this._setCtrlModalOffline(true, '设备离线，当前控制不可操作');
             }
         },
 
@@ -185,8 +185,8 @@
             var hintEl = document.querySelector('#modbus-relay-config .field-hint');
             if (hintEl) {
                 hintEl.textContent = (mode === 'register')
-                    ? (i18n.t('modbus-ctrl-reg-base-hint') || '寄存器起始地址，如M88继电器从0x0008开始')
-                    : (i18n.t('modbus-ctrl-coil-base-hint') || '线圈起始地址，默认0');
+                    ? '寄存器起始地址，如M88继电器从0x0008开始'
+                    : '线圈起始地址，默认0';
             }
         },
 
@@ -243,7 +243,7 @@
                     this._renderPwmGrid();
                     this._appendDebugLog(res.debug, 'ReadRegs FC03');
                 } else if (res && !res.success) {
-                    this._setCtrlModalOffline(true, res.error || (i18n.t('device-control-offline') || '设备离线，当前控制不可操作'));
+                    this._setCtrlModalOffline(true, res.error || '设备离线，当前控制不可操作');
                 }
             } catch (e) {
                 if (this._pwmStates.length === 0) {
@@ -251,7 +251,7 @@
                     this._pwmStates = new Array(p2.channelCount).fill(0);
                 }
                 this._renderPwmGrid();
-                this._setCtrlModalOffline(true, i18n.t('device-control-offline') || '设备离线，当前控制不可操作');
+                this._setCtrlModalOffline(true, '设备离线，当前控制不可操作');
             }
         },
 
@@ -267,7 +267,7 @@
                     this._appendDebugLog(res.debug, 'WriteReg CH' + ch + '=' + value);
                 }
             } catch (e) {
-                Notification.error(i18n.t('modbus-ctrl-fail'));
+                Notification.error('操作失败');
             }
         },
 
@@ -285,10 +285,10 @@
                 if (res && res.success) {
                     this._pwmStates = values;
                     this._renderPwmGrid();
-                    Notification.success(i18n.t('modbus-ctrl-success'));
+                    Notification.success('操作成功');
                 }
             } catch (e) {
-                Notification.error(i18n.t('modbus-ctrl-fail'));
+                Notification.error('操作失败');
             }
         },
 
@@ -351,12 +351,12 @@
                 return (raw / sf).toFixed(p.decimals) + '%';
             };
             var cards = [
-                { key: 'pv', label: i18n.t('modbus-ctrl-pid-pv-label') || '过程值 PV', value: fmtVal(v.pv, p.decimals), editable: false, big: true },
-                { key: 'sv', label: i18n.t('modbus-ctrl-pid-sv-label') || '设定值 SV', value: fmtVal(v.sv, p.decimals), editable: true },
-                { key: 'out', label: i18n.t('modbus-ctrl-pid-out-label') || '输出 %', value: fmtPct(v.out), editable: false },
-                { key: 'p', label: i18n.t('modbus-ctrl-pid-p-label') || 'P 比例', value: fmtVal(v.p, p.decimals), editable: true },
-                { key: 'i', label: i18n.t('modbus-ctrl-pid-i-label') || 'I 积分', value: fmtVal(v.i, p.decimals), editable: true },
-                { key: 'd', label: i18n.t('modbus-ctrl-pid-d-label') || 'D 微分', value: fmtVal(v.d, p.decimals), editable: true }
+                { key: 'pv', label: '过程值 PV', value: fmtVal(v.pv, p.decimals), editable: false, big: true },
+                { key: 'sv', label: '设定值 SV', value: fmtVal(v.sv, p.decimals), editable: true },
+                { key: 'out', label: '输出 %', value: fmtPct(v.out), editable: false },
+                { key: 'p', label: 'P 比例', value: fmtVal(v.p, p.decimals), editable: true },
+                { key: 'i', label: 'I 积分', value: fmtVal(v.i, p.decimals), editable: true },
+                { key: 'd', label: 'D 微分', value: fmtVal(v.d, p.decimals), editable: true }
             ];
             var html = '';
             for (var ci = 0; ci < cards.length; ci++) {
@@ -370,7 +370,7 @@
                     html += '<div class="pid-edit-row">';
                     html += '<input type="number" class="pid-input" step="' + (1 / sf) + '" value="' + rawVal + '" data-param="' + c.key + '">';
                     html += '<button type="button" class="fb-btn fb-btn-sm fb-btn-success pid-set-btn pid-set-btn-wide" data-param="' + c.key + '">'
-                          + (i18n.t('modbus-ctrl-pid-set') || '设置') + '</button>';
+                          + '设置' + '</button>';
                     html += '</div>';
                 } else {
                     html += '<div class="pid-card-value">' + c.value + '</div>';
@@ -410,7 +410,7 @@
                 } else {
                     self._pidAutoRefreshErrors++;
                     self._stopPidAutoRefreshOnErrors();
-                    self._setCtrlModalOffline(true, (res && res.error) || (i18n.t('device-control-offline') || '设备离线，当前控制不可操作'));
+                    self._setCtrlModalOffline(true, (res && res.error) || '设备离线，当前控制不可操作');
                 }
                 if (res && res.debug) {
                     self._appendDebugLog(res.debug.tx ? { tx: res.debug.tx, rx: res.debug.rx } : null, 'PID Read');
@@ -422,7 +422,7 @@
                     self._pidValues = { pv: 0, sv: 0, out: 0, p: 0, i: 0, d: 0 };
                 }
                 self._renderPidGrid();
-                self._setCtrlModalOffline(true, i18n.t('device-control-offline') || '设备离线，当前控制不可操作');
+                self._setCtrlModalOffline(true, '设备离线，当前控制不可操作');
             });
         },
 

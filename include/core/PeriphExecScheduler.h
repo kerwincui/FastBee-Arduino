@@ -130,6 +130,7 @@ private:
     unsigned long _lastTimerCheck = 0;
     uint32_t _currentCheckPeriodMs = CHECK_PERIOD_NORMAL_MS;   // 当前检查周期（动态调整）
     MemoryGuardLevel _lastMemGuardLevel = MemoryGuardLevel::NORMAL;  // 上次 MemGuard 级别（用于变化检测）
+    bool _webReserveSuspended = false;  // 后台轮询是否因 Web 内存预留而暂停
 
     // 按键状态
     unsigned long _lastButtonCheck = 0;

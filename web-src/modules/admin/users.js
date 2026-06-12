@@ -7,9 +7,15 @@
 
         // ============ 事件绑定 ============
         setupUsersEvents() {
-            // 添加用户按钮
+            // 添加用户按钮（权限检查）
             const addUserBtn = document.getElementById('add-user-btn');
-            if (addUserBtn) addUserBtn.addEventListener('click', () => this.showAddUserModal());
+            if (addUserBtn) {
+                if (AppState.hasPermission('user.admin')) {
+                    addUserBtn.addEventListener('click', () => this.showAddUserModal());
+                } else {
+                    addUserBtn.style.display = 'none';
+                }
+            }
 
             // 关闭用户添加/编辑 modal 时重置状态
             const closeUserModal = () => {
@@ -68,7 +74,7 @@
 
             tbody.innerHTML = '';
             if (!users || users.length === 0) {
-                this.renderEmptyTableRow(tbody, 5, i18n.t('no-users-data'));
+                this.renderEmptyTableRow(tbody, 5, '暂无用户数据');
                 return;
             }
 
@@ -86,7 +92,7 @@
                 };
 
                 // 角色标签本地化
-                const roleMap = { admin: i18n.t('admin'), operator: i18n.t('operator'), viewer: i18n.t('viewer') };
+                const roleMap = { admin: '管理员', operator: '操作员', viewer: '查看者' };
                 const roleText = roleMap[user.role] || user.role || '—';
                 const lastLogin = user.lastLogin ? new Date(user.lastLogin * 1000).toLocaleString() : '—';
 
@@ -95,34 +101,51 @@
                 badge.className = 'badge';
                 if (user.isLocked) {
                     badge.classList.add('badge-warning');
-                    badge.textContent = i18n.t('user-locked-badge');
+                    badge.textContent = '已锁定';
                 } else if (!user.enabled) {
                     badge.classList.add('badge-danger');
-                    badge.textContent = i18n.t('user-status-inactive');
+                    badge.textContent = '禁用';
                 } else {
                     badge.classList.add('badge-success');
-                    badge.textContent = i18n.t('user-status-active');
+                    badge.textContent = '启用';
                 }
 
                 // 操作按钮区域
                 const actionCell = document.createElement('td');
                 actionCell.className = 'u-toolbar-sm';
 
+                const canManageUsers = AppState.hasPermission('user.admin');
+
                 const editBtn = document.createElement('button');
                 editBtn.className = 'fb-btn fb-btn-sm fb-btn-primary fb-btn-action-edit';
-                editBtn.textContent = i18n.t('edit-user');
-                editBtn.addEventListener('click', () => this.showEditUserModal(user));
+                editBtn.textContent = '编辑';
+                if (canManageUsers) {
+                    editBtn.addEventListener('click', () => this.showEditUserModal(user));
+                } else {
+                    editBtn.disabled = true;
+                    editBtn.title = '没有操作权限';
+                }
                 actionCell.appendChild(editBtn);
 
                 const toggleBtn = document.createElement('button');
                 if (user.enabled && !user.isLocked) {
                     toggleBtn.className = 'fb-btn fb-btn-sm fb-btn-warning';
-                    toggleBtn.textContent = i18n.t('disable-user');
-                    toggleBtn.addEventListener('click', () => this.toggleUserStatus(user.username, false));
+                    toggleBtn.textContent = '禁用';
+                    if (canManageUsers) {
+                        toggleBtn.addEventListener('click', () => this.toggleUserStatus(user.username, false));
+                    } else {
+                        toggleBtn.disabled = true;
+                        toggleBtn.title = '没有操作权限';
+                    }
                 } else {
                     toggleBtn.className = 'fb-btn fb-btn-sm fb-btn-success';
-                    toggleBtn.textContent = i18n.t('enable-user');
-                    toggleBtn.addEventListener('click', () => this.toggleUserStatus(user.username, true));
+                    toggleBtn.textContent = '启用';
+                    if (canManageUsers) {
+                        toggleBtn.addEventListener('click', () => this.toggleUserStatus(user.username, true));
+                    } else {
+                        toggleBtn.disabled = true;
+                        toggleBtn.title = '没有操作权限';
+                    }
                 }
                 actionCell.appendChild(toggleBtn);
 
@@ -130,8 +153,13 @@
                 if (user.isLocked) {
                     const unlockBtn = document.createElement('button');
                     unlockBtn.className = 'fb-btn fb-btn-sm fb-btn-success';
-                    unlockBtn.textContent = i18n.t('unlock-user');
-                    unlockBtn.addEventListener('click', () => this.unlockUser(user.username));
+                    unlockBtn.textContent = '解锁';
+                    if (canManageUsers) {
+                        unlockBtn.addEventListener('click', () => this.unlockUser(user.username));
+                    } else {
+                        unlockBtn.disabled = true;
+                        unlockBtn.title = '没有操作权限';
+                    }
                     actionCell.appendChild(unlockBtn);
                 }
 
@@ -139,12 +167,17 @@
                 if (user.username !== 'admin') {
                     const delBtn = document.createElement('button');
                     delBtn.className = 'fb-btn fb-btn-sm fb-btn-danger';
-                    delBtn.textContent = i18n.t('delete-user');
-                    delBtn.addEventListener('click', () => {
-                        if (confirm(`${i18n.t('confirm-delete-user-msg')} ${user.username} ${i18n.t('confirm-suffix')}`)) {
-                            this.deleteUser(user.username);
-                        }
-                    });
+                    delBtn.textContent = '删除';
+                    if (canManageUsers) {
+                        delBtn.addEventListener('click', () => {
+                            if (confirm(`确定要删除用户 ${user.username} 吗？`)) {
+                                this.deleteUser(user.username);
+                            }
+                        });
+                    } else {
+                        delBtn.disabled = true;
+                        delBtn.title = '没有操作权限';
+                    }
                     actionCell.appendChild(delBtn);
                 }
 
@@ -169,11 +202,11 @@
 
             // 修改标题
             const title = document.getElementById('add-user-title');
-            if (title) title.textContent = i18n.t('add-user-modal-title');
+            if (title) title.textContent = '添加用户';
 
             // 修改按钮文本
             const confirmBtn = document.getElementById('confirm-add-user-btn');
-            if (confirmBtn) confirmBtn.textContent = i18n.t('confirm-add-btn');
+            if (confirmBtn) confirmBtn.textContent = '确认添加';
 
             // 清空输入框
             ['add-username-input', 'add-password-input', 'add-confirm-password-input'].forEach(id => {
@@ -203,23 +236,23 @@
 
             const showErr = (msg) => {
                 AppState.showInlineError('add-user-error', msg);
-                Notification.error(msg, isEditMode ? i18n.t('edit-user-fail') : i18n.t('add-user-fail'));
+                Notification.error(msg, isEditMode ? '编辑用户失败' : '添加用户失败');
             };
 
-            if (!username) return showErr(i18n.t('validate-username-empty'));
+            if (!username) return showErr('请输入用户名！');
 
             // 用户名长度验证
-            if (username.length < 3 || username.length > 32) return showErr(i18n.t('validate-username-len'));
+            if (username.length < 3 || username.length > 32) return showErr('用户名长度3-32位！');
 
             // 密码验证（添加和编辑模式都要求密码必填）
-            if (!password || !confirmPwd) return showErr(i18n.t('validate-pwd-empty'));
-            if (password !== confirmPwd) return showErr(i18n.t('validate-pwd-mismatch'));
-            if (password.length < 6) return showErr(i18n.t('validate-pwd-len'));
+            if (!password || !confirmPwd) return showErr('请输入密码！');
+            if (password !== confirmPwd) return showErr('密码与确认密码不一致！');
+            if (password.length < 6) return showErr('密码长度至少6位！');
             
             AppState.clearInlineError('add-user-error');
 
             const btn = document.getElementById('confirm-add-user-btn');
-            if (btn) { btn.disabled = true; btn.textContent = isEditMode ? i18n.t('saving-btn') : i18n.t('adding-btn'); }
+            if (btn) { btn.disabled = true; btn.textContent = isEditMode ? '保存中...' : '添加中...'; }
 
             // 根据模式选择 API
             let apiCall;
@@ -234,7 +267,7 @@
             apiCall
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success(`${username} ${isEditMode ? i18n.t('role-updated') : i18n.t('role-created')}${i18n.t('role-success-suffix')}`, isEditMode ? i18n.t('edit-user-success') : i18n.t('add-user-success'));
+                        Notification.success(`${username} ${isEditMode ? '修改' : '创建'}成功`, isEditMode ? '编辑用户' : '添加成功');
                         // 关闭 modal 并重置状态
                         if (modal) {
                             AppState.hideModal(modal);
@@ -246,11 +279,11 @@
                         if (usernameInput) usernameInput.disabled = false;
                         this.loadUsers({ noCache: true }); // 刷新列表
                     } else {
-                        showErr((res && res.error) || (isEditMode ? i18n.t('modify-user-fail-msg') : i18n.t('add-user-fail-msg')));
+                        showErr((res && res.error) || (isEditMode ? '修改用户失败' : '添加用户失败，用户名可能已存在'));
                     }
                 })
                 .catch(() => {})
-                .finally(() => { if (btn) { btn.disabled = false; btn.textContent = i18n.t('confirm-add-btn'); } });
+                .finally(() => { if (btn) { btn.disabled = false; btn.textContent = '确认添加'; } });
         },
 
         // ============ 编辑用户（复用添加用户弹窗）============
@@ -260,7 +293,7 @@
             const modal = document.getElementById('add-user-modal');
             if (!modal) {
                 console.error('[showEditUserModal] Modal not found!');
-                Notification.info(`${i18n.t('edit-user-modal-title')}: ${user.username}`, i18n.t('edit-user-modal-title'));
+                Notification.info(`编辑用户: ${user.username}`, '编辑用户');
                 return;
             }
 
@@ -270,7 +303,7 @@
 
             // 修改标题
             const title = document.getElementById('add-user-title');
-            if (title) title.textContent = i18n.t('edit-user-modal-title');
+            if (title) title.textContent = '编辑用户';
 
             // 填充用户信息
             const usernameInput = document.getElementById('add-username-input');
@@ -291,7 +324,7 @@
 
             // 修改确认按钮文本
             const confirmBtn = document.getElementById('confirm-add-user-btn');
-            if (confirmBtn) confirmBtn.textContent = i18n.t('confirm-save-btn');
+            if (confirmBtn) confirmBtn.textContent = '保存修改';
 
             // 显示弹窗
             AppState.showModal(modal);
@@ -302,17 +335,17 @@
 
         // ============ 切换用户状态（启用/禁用）============
         toggleUserStatus(username, enable) {
-            const action = enable ? i18n.t('enable-user') : i18n.t('disable-user');
-            const confirmMsg = enable ? i18n.t('confirm-enable-user') : i18n.t('confirm-disable-user');
-            if (!confirm(`${confirmMsg} ${username} ${i18n.t('confirm-suffix')}`)) return;
+            const action = enable ? '启用' : '禁用';
+            const confirmMsg = enable ? '确定要启用用户' : '确定要禁用用户';
+            if (!confirm(`${confirmMsg} ${username} 吗？`)) return;
 
             apiPost('/api/users/update', { username, enabled: enable ? 'true' : 'false' })
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success(`${username} ${enable ? i18n.t('user-enabled-msg') : i18n.t('user-disabled-msg')}`, i18n.t('user-status-update'));
+                        Notification.success(`${username} ${enable ? '已启用' : '已禁用'}`, '状态更新');
                         this.loadUsers({ noCache: true });
                     } else {
-                        Notification.error((res && res.error) || i18n.t('operation-fail'), i18n.t('operation-fail'));
+                        Notification.error((res && res.error) || '操作失败', '操作失败');
                     }
                 })
                 .catch(() => {});
@@ -320,14 +353,14 @@
 
         // ============ 解锁用户 ============
         unlockUser(username) {
-            if (!confirm(`${i18n.t('confirm-unlock-user')} ${username} ${i18n.t('confirm-suffix')}`)) return;
+            if (!confirm(`确定要解锁账户 ${username} 吗？`)) return;
             apiPost('/api/users/unlock-account', { username })
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success(`${username} ${i18n.t('user-unlocked-msg')}`, i18n.t('unlock-success'));
+                        Notification.success(`${username} 已解锁`, '解锁成功');
                         this.loadUsers({ noCache: true });
                     } else {
-                        Notification.error((res && res.error) || i18n.t('operation-fail'), i18n.t('operation-fail'));
+                        Notification.error((res && res.error) || '操作失败', '操作失败');
                     }
                 })
                 .catch(() => {});
@@ -335,15 +368,15 @@
 
         // ============ 删除用户 ============
         deleteUser(username) {
-            if (!confirm(`${i18n.t('confirm-delete-user-msg')} ${username} ${i18n.t('confirm-suffix')}`)) return;
+            if (!confirm(`确定要删除用户 ${username} 吗？`)) return;
 
             apiDelete('/api/users/' + encodeURIComponent(username))
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success(`${username} ${i18n.t('user-deleted-msg')}`, i18n.t('delete-success'));
+                        Notification.success(`${username} 已删除`, '删除成功');
                         this.loadUsers({ noCache: true });
                     } else {
-                        Notification.error((res && res.error) || i18n.t('operation-fail'), i18n.t('operation-fail'));
+                        Notification.error((res && res.error) || '操作失败', '操作失败');
                     }
                 })
                 .catch(() => {});

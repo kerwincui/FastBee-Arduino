@@ -267,6 +267,16 @@ PeripheralManager 负责所有外设的生命周期管理。
 - `setupHardware()`: 配置引脚
 - `removePeripheral()`: 删除外设
 - `getPeripheral()`: 获取外设实例
+- `performMaintenance()`: 定期维护（处理 ISR 中断队列）
+- `processInterruptQueue()`: 从 FreeRTOS 队列取出中断事件并分发
+
+**中断处理机制**:
+
+GPIO 中断通过 FreeRTOS 队列从 ISR 上下文安全地传递到主循环：
+
+```
+ISR中断 → xQueueSendFromISR(pin) → 主循环 performMaintenance() → processInterruptQueue() → handleInterrupt(pin)
+```
 
 ### 传感器数据缓存
 

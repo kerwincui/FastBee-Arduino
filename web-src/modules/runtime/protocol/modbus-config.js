@@ -31,16 +31,16 @@
             var devices = this._modbusDevices || [];
             var visibleDevices = devices;
             if (tasks.length === 0 && visibleDevices.length === 0) {
-                tbody.innerHTML = this._renderProtocolEmptyRow(6, i18n.t('modbus-no-devices') || '暂无子设备');
+                tbody.innerHTML = this._renderProtocolEmptyRow(6, '暂无子设备');
                 return;
             }
             var fcNames = {1: 'FC01', 2: 'FC02', 3: 'FC03', 4: 'FC04'};
             var typeLabels = {
-                sensor: i18n.t('modbus-type-sensor') || '采集',
-                relay: i18n.t('modbus-type-relay') || '继电器',
-                pwm: i18n.t('modbus-type-pwm') || 'PWM',
-                pid: i18n.t('modbus-type-pid') || 'PID',
-                motor: i18n.t('modbus-type-motor') || '电机'
+                sensor: '采集',
+                relay: '继电器',
+                pwm: 'PWM',
+                pid: 'PID',
+                motor: '电机'
             };
             var rows = '';
             for (var i = 0; i < tasks.length; i++) {
@@ -64,7 +64,7 @@
 
         _deleteDevice(source, idx) {
             if (!this.guardDeveloperModeAction()) return;
-            var msg = i18n.t('modbus-device-delete-confirm') || '确定删除？';
+            var msg = '确定要删除此设备？';
             if (!confirm(msg)) return;
             if (source === 'sensor') {
                 if (this._masterTasks) this._masterTasks.splice(idx, 1);
@@ -110,7 +110,7 @@
             if (menu) menu.classList.add('fb-hidden');
             if (!this._masterTasks) this._masterTasks = [];
             if (this._masterTasks.length >= 8) {
-                Notification.warning('Max 8 sensor devices', i18n.t('modbus-all-devices-title'));
+                Notification.warning('最多8个采集设备', 'Modbus 子设备');
                 return;
             }
             this._openTaskEditModal(-1);
@@ -122,7 +122,7 @@
             if (menu) menu.classList.add('fb-hidden');
             if (!this._modbusDevices) this._modbusDevices = [];
             if (this._modbusDevices.length >= 8) {
-                Notification.warning('Max 8 control devices', i18n.t('modbus-all-devices-title'));
+                Notification.warning('最多8个控制设备', 'Modbus 子设备');
                 return;
             }
             this._openEditModal(-1);
@@ -149,7 +149,7 @@
             f('task-edit-name').value = task.name || task.label || '';
             f('task-edit-enabled').checked = task.enabled !== false;
             var titleEl = modal.querySelector('.modal-header h3');
-            if (titleEl) titleEl.textContent = idx < 0 ? (i18n.t('modbus-task-add-title') || '新建子设备') : (i18n.t('modbus-task-edit-title') || '编辑子设备');
+            if (titleEl) titleEl.textContent = idx < 0 ? '新建子设备' : '编辑子设备';
             AppState.showModal(modal);
         },
 
@@ -191,7 +191,7 @@
             if (!this.guardDeveloperModeAction()) return;
             if (!this._masterTasks) this._masterTasks = [];
             if (this._masterTasks.length >= 8) {
-                Notification.warning('Max 8 tasks', i18n.t('modbus-master-title'));
+                Notification.warning('最多8个轮询任务', 'Modbus 采集');
                 return;
             }
             this._openTaskEditModal(-1);
@@ -234,7 +234,7 @@
         addMapping() {
             if (!this.guardDeveloperModeAction()) return;
             if (this._currentMappings.length >= 8) {
-                Notification.warning(i18n.t('modbus-mapping-max'));
+                Notification.warning('每任务最多8个映射');
                 return;
             }
             this._collectMappingValues();
@@ -275,7 +275,7 @@
                 {v: 2, t: 'uint32'}, {v: 3, t: 'int32'}, {v: 4, t: 'float32'}
             ];
             if (this._currentMappings.length === 0) {
-                tbody.innerHTML = this._renderProtocolEmptyRow(7, i18n.t('modbus-master-no-tasks'));
+                tbody.innerHTML = this._renderProtocolEmptyRow(7, '暂无轮询任务');
                 return;
             }
             tbody.innerHTML = this._currentMappings.map((m, idx) => {
@@ -393,10 +393,10 @@
             var tbody = document.getElementById('modbus-devices-body');
             if (!tbody) return;
             if (!this._modbusDevices || this._modbusDevices.length === 0) {
-                tbody.innerHTML = this._renderProtocolEmptyRow(8, i18n.t('modbus-device-no-devices') || '暂无子设备');
+                tbody.innerHTML = this._renderProtocolEmptyRow(8, '暂无子设备，点击"添加设备"创建');
                 return;
             }
-            var typeLabels = { relay: i18n.t('modbus-ctrl-type-relay') || '继电器', pwm: 'PWM', pid: 'PID', motor: i18n.t('modbus-type-motor') || '电机' };
+            var typeLabels = { relay: '继电器', pwm: 'PWM', pid: 'PID', motor: '电机' };
             var protLabels = ['Coil', 'Register'];
             var self = this;
             tbody.innerHTML = this._modbusDevices.map(function(dev, idx) {
@@ -435,7 +435,7 @@
             if (!this.guardDeveloperModeAction()) return;
             if (!this._modbusDevices) this._modbusDevices = [];
             if (this._modbusDevices.length >= 8) {
-                Notification.warning(i18n.t('modbus-device-max-reached') || '最多8个子设备');
+                Notification.warning('最多支持8个子设备');
                 return;
             }
             this._openEditModal(-1);
@@ -444,7 +444,7 @@
         _removeDevice(idx) {
             if (!this.guardDeveloperModeAction()) return;
             if (!this._modbusDevices) return;
-            var msg = i18n.t('modbus-device-delete-confirm') || '确定要删除此设备？';
+            var msg = '确定要删除此设备？';
             if (!confirm(msg)) return;
             var devKey = 'dev_' + idx;
             delete this._deviceCoilCache[devKey];
@@ -468,7 +468,7 @@
                 ? this._modbusDevices[idx] : null;
             var modal = document.getElementById('modbus-device-edit-modal');
             if (!modal) return;
-            document.getElementById('mdev-edit-name').value = dev ? (dev.name || '') : ((i18n.t('modbus-ctrl-device-default-name') || '设备') + ((this._modbusDevices ? this._modbusDevices.length : 0) + 1));
+            document.getElementById('mdev-edit-name').value = dev ? (dev.name || '') : ('设备' + ((this._modbusDevices ? this._modbusDevices.length : 0) + 1));
             document.getElementById('mdev-edit-sensorid').value = dev ? (dev.sensorId || '') : '';
             document.getElementById('mdev-edit-type').value = dev ? (dev.deviceType || 'relay') : 'relay';
             document.getElementById('mdev-edit-addr').value = dev ? (dev.slaveAddress || 1) : 1;
@@ -498,8 +498,8 @@
             this._onEditTypeChange();
             var title = document.getElementById('modbus-edit-modal-title');
             if (title) title.textContent = (idx >= 0)
-                ? (i18n.t('modbus-device-edit-title') || '编辑子设备')
-                : (i18n.t('modbus-device-add') || '添加设备');
+                ? '编辑子设备'
+                : '添加设备';
             AppState.showModal(modal);
         },
 
@@ -534,7 +534,7 @@
                     this._modbusDevices = [];
                 }
                 if (this._modbusDevices.length >= 8) {
-                    Notification.warning(i18n.t('modbus-device-max-reached') || '最多8个子设备');
+                    Notification.warning('最多支持8个子设备');
                     return;
                 }
                 this._modbusDevices.push({});
@@ -589,9 +589,9 @@
                 });
                 if (!res || !res.success) return;
                 this._uartPeripherals = (res.data || []).filter(p => p.type === 1 && p.enabled);
-                select.innerHTML = '<option value="" disabled>' + i18n.t('rtu-peripheral-placeholder') + '</option>';
+                select.innerHTML = '<option value="" disabled>-- 请选择UART外设 --</option>';
                 if (this._uartPeripherals.length === 0) {
-                    select.innerHTML += '<option value="" disabled>' + i18n.t('rtu-no-uart-peripherals') + '</option>';
+                    select.innerHTML += '<option value="" disabled>未找到已启用的UART外设，请先在外设管理中配置</option>';
                     return;
                 }
                 this._uartPeripherals.forEach(p => {
@@ -617,9 +617,9 @@
             getter('/api/peripherals/', { id: peripheralId }).then(res => {
                 if (!res || !res.success) return;
                 const data = res.data;
-                const baudRate = data.params?.baudRate || i18n.t('unknown') || '未知';
+                const baudRate = data.params?.baudRate || '未知';
                 const pins = data.pins || [];
-                infoDiv.textContent = 'RX: GPIO' + pins[0] + ', TX: GPIO' + pins[1] + ', ' + i18n.t('uart-baudrate-label') + ': ' + baudRate;
+                infoDiv.textContent = 'RX: GPIO' + pins[0] + ', TX: GPIO' + pins[1] + ', 波特率: ' + baudRate;
                 AppState.showElement(infoDiv);
             }).catch(() => {
                 const pins = periph.pins || [];

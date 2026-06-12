@@ -143,7 +143,7 @@
                     var isSystem = btn.getAttribute('data-system') === 'true';
                     var ruleName = btn.getAttribute('data-name') || '';
                     if (isSystem) {
-                        if (confirm(self._t('device-control-confirm-system') + '\n' + ruleName)) {
+                        if (confirm('确认执行此系统操作？' + '\n' + ruleName)) {
                             self._executeRule(ruleId, btn);
                         }
                     } else {
@@ -324,7 +324,7 @@
             if (!input) { this._resolvePeriphExecRunValuePrompt(null); return; }
             var value = String(input.value || '').trim();
             if (!value.length) {
-                this._setPeriphExecRunValuePromptError(i18n.t('periph-exec-set-value-required') || '请输入要设置的值');
+                this._setPeriphExecRunValuePromptError('请输入要设置的值');
                 input.focus();
                 return;
             }
@@ -335,10 +335,10 @@
             var opts = options || {};
             var modal = this._ensurePeriphExecRunValueModal();
             if (!modal) {
-                var fallbackValue = prompt(i18n.t('periph-exec-set-value-prompt') || '请输入要设置的值:', opts.defaultValue != null ? String(opts.defaultValue) : '');
+                var fallbackValue = prompt('请输入要设置的值 (如: PWM占空比、PID参数等):', opts.defaultValue != null ? String(opts.defaultValue) : '');
                 if (fallbackValue === null) return Promise.resolve(null);
                 var normalizedValue = String(fallbackValue || '').trim();
-                if (!normalizedValue.length) { Notification.warning(i18n.t('periph-exec-set-value-required') || '请输入要设置的值', this._t('device-control-exec-fail')); return Promise.resolve(null); }
+                if (!normalizedValue.length) { Notification.warning('请输入要设置的值', '执行失败'); return Promise.resolve(null); }
                 return Promise.resolve(normalizedValue);
             }
             var titleEl = document.getElementById('periph-exec-run-value-modal-title');
@@ -347,14 +347,14 @@
             var input = document.getElementById('periph-exec-run-value-input');
             var cancelBtn = document.getElementById('cancel-periph-exec-run-value-btn');
             var confirmBtn = document.getElementById('confirm-periph-exec-run-value-btn');
-            if (titleEl) titleEl.textContent = opts.title || i18n.t('periph-exec-set-value-title') || '输入执行值';
-            if (labelEl) labelEl.textContent = opts.label || i18n.t('periph-exec-set-value-label') || '执行值';
-            var helpText = opts.helpText || i18n.t('periph-exec-set-value-help') || '请输入本次执行要设置的值';
+            if (titleEl) titleEl.textContent = opts.title || '输入执行值';
+            if (labelEl) labelEl.textContent = opts.label || '执行值';
+            var helpText = opts.helpText || '请输入本次执行要设置的值，例如 PWM 占空比、PID 参数或通道值。';
             if (opts.ruleName) helpText = opts.ruleName + ' - ' + helpText;
             if (helpEl) helpEl.textContent = helpText;
-            if (cancelBtn) cancelBtn.textContent = i18n.t('cancel') || '取消';
-            if (confirmBtn) confirmBtn.textContent = opts.confirmText || i18n.t('periph-exec-run-once') || '执行一次';
-            if (input) { input.value = opts.defaultValue != null ? String(opts.defaultValue) : ''; input.placeholder = opts.placeholder || i18n.t('periph-exec-set-value-placeholder') || ''; }
+            if (cancelBtn) cancelBtn.textContent = '取消';
+            if (confirmBtn) confirmBtn.textContent = opts.confirmText || '执行一次';
+            if (input) { input.value = opts.defaultValue != null ? String(opts.defaultValue) : ''; input.placeholder = opts.placeholder || '例如: 80、25.5、1,0,0.5'; }
             this._setPeriphExecRunValuePromptError('');
             if (this._periphExecRunPromptState && typeof this._periphExecRunPromptState.resolve === 'function') this._periphExecRunPromptState.resolve(null);
             return new Promise((resolve) => {
@@ -369,7 +369,7 @@
             var btn = document.getElementById('dc-refresh-btn');
             if (!btn) return;
             btn.disabled = !!isLoading;
-            btn.textContent = isLoading ? (this._t('loading') || 'Loading...') : this._t('dashboard-refresh');
+            btn.textContent = isLoading ? '加载中...' : '刷新';
         },
 
         loadDeviceControlPage: function(options) {
@@ -472,16 +472,16 @@
             var ruleName = btn ? (btn.getAttribute('data-name') || btn.textContent || '') : '';
             var doRun = function(value) {
                 var originalText = btn.textContent;
-                btn.textContent = self._t('device-control-executing');
+                btn.textContent = '执行中...';
                 btn.disabled = true;
                 btn.classList.add('dc-loading');
                 var payload = { id: ruleId };
                 if (value !== undefined && value !== '') payload.value = value;
                 apiPost('/api/periph-exec/run', payload).then(function(res) {
-                    if (res && res.success) Notification.success(self._t('device-control-exec-success'));
-                    else Notification.error((res && (res.error || res.message)) || self._t('device-control-exec-fail'));
+                    if (res && res.success) Notification.success('执行成功');
+                    else Notification.error((res && (res.error || res.message)) || '执行失败');
                 }).catch(function() {
-                    Notification.error(self._t('device-control-exec-fail'));
+                    Notification.error('执行失败');
                 }).then(function() {
                     btn.textContent = originalText;
                     btn.disabled = false;
@@ -561,7 +561,7 @@
             if (type === 'empty') {
                 container.innerHTML = this._renderEmptyState();
             } else if (type === 'loading') {
-                var loadingText = message || (typeof i18n !== 'undefined' ? i18n.t('loading') : '加载中...');
+                var loadingText = message || '加载中...';
                 container.innerHTML = '<div class="dc-empty">' + escapeHtml(loadingText) + '</div>';
             } else if (type === 'error') {
                 container.innerHTML = '<div class="dc-empty u-text-danger">' + escapeHtml(message || '请求失败') + '</div>';
@@ -572,21 +572,21 @@
             return '<div class="dc-device-banner">' + AppState._DC_DEVICE_ICON_SVG +
                 '<div class="dc-device-banner-info">' +
                 '<div class="dc-device-name">' + escapeHtml(this._deviceName) + '</div>' +
-                '<div class="dc-device-status">' + this._t('device-control-online') + '</div>' +
+                '<div class="dc-device-status">在线</div>' +
                 '</div></div>' +
                 '<div class="dc-section">' +
-                '<div class="dc-section-title">' + this._t('device-control-dashboard') + '</div>' +
-                '<div class="dc-empty">' + this._t('device-control-no-monitor') + '</div>' +
+                '<div class="dc-section-title">设备大屏</div>' +
+                '<div class="dc-empty">暂无监测数据</div>' +
                 '</div>' +
                 '<div class="dc-section">' +
-                '<div class="dc-section-title">' + this._t('device-control-action-section') + '</div>' +
-                '<div class="dc-empty">' + this._t('device-control-no-action') + '</div>' +
+                '<div class="dc-section-title">控制操作</div>' +
+                '<div class="dc-empty">暂无控制操作</div>' +
                 '</div>';
         },
 
         // ============ 安全翻译函数 ============
-        // _t 直接委托 i18n.t()，i18n.t() 已内置 key 回退逻辑
-        _t: function(key) { return i18n.t(key); },
+        // _t helper 已废弃，保留为空实现以兼容旧代码
+        _t: function(key) { return key; },
 
         // ============ 全屏功能 ============
 
@@ -643,10 +643,10 @@
             var btn = document.getElementById('dc-fullscreen-btn');
             if (!btn) return;
             if (isFullscreen) {
-                btn.textContent = i18n.t('dashboard-exit-fullscreen');
+                btn.textContent = '退出全屏';
                 btn.classList.add('dc-btn-active');
             } else {
-                btn.textContent = i18n.t('dashboard-fullscreen');
+                btn.textContent = '全屏';
                 btn.classList.remove('dc-btn-active');
             }
         },

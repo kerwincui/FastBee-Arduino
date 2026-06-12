@@ -86,10 +86,7 @@ const PROD_IGNORED_ORPHAN_MODULES = new Set([
     'roles.js',
     'rule-script.js',
     'users.js',
-    'dashboard-fullscreen.js',
-    'device-control.js',
-    'device-control-view.js',
-    'device-control-modbus.js'
+    'dashboard-fullscreen.js'
 ]);
 const STANDALONE_ROOT_JS = isFullWebProfile()
     ? [{ file: 'notification.js', minify: true }]
@@ -241,8 +238,14 @@ function transformStaticAssetContent(relPath, content) {
             next = next.replace(/\s*<!-- Service Worker 注册 -->\s*<script>[\s\S]*?serviceWorker[\s\S]*?<\/script>/g, '');
         }
         next = stripDivByClass(next, 'login-lang-switch');
-        next = stripSelectById(next, 'language-select');
-        next = next.replace(/\.login-lang-switch\{[^}]*\}\.login-lang-switch select,\s*\.header-actions select\{[^}]*\}/g, '');
+        if (!isFullWebProfile()) {
+            next = stripSelectById(next, 'language-select');
+            next = next.replace(/\.login-lang-switch\{[^}]*\}\.login-lang-switch select,\s*\.header-actions select\{[^}]*\}/g, '');
+        } else {
+            // Full版本保留 .header-actions select 样式，仅移除 .login-lang-switch
+            next = next.replace(/\.login-lang-switch\{[^}]*\}/g, '');
+            next = next.replace(/\.login-lang-switch select,\s*/g, '');
+        }
         return next;
     }
 
@@ -822,6 +825,9 @@ function cleanProdObsoleteModules() {
     if (isLiteWebProfile()) {
         fileNames.add('protocol-modbus-rtu.js');
         fileNames.add('protocol-modbus-control.js');
+        fileNames.add('device-control.js');
+        fileNames.add('device-control-view.js');
+        fileNames.add('device-control-modbus.js');
     }
     fileNames.forEach((fileName) => {
         const targetPath = path.join(PUBLISH_MODULE_DIR, fileName);

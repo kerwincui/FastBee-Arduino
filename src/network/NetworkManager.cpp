@@ -163,9 +163,11 @@ bool FBNetworkManager::initialize() {
             isInitialized = true;
             return true;
         } else {
-            LOG_WARNING("NetworkManager: Ethernet failed, falling back to WiFi");
+            LOG_WARNING("NetworkManager: Ethernet failed, falling back to AP mode for reconfiguration");
             ethernetAdapter.reset();
+            // 不切换到 WiFi STA，保持 AP 模式让用户通过热点重新配置
             wifiConfig.networkType = NetworkType::NET_WIFI;
+            wifiConfig.mode = NetworkMode::NETWORK_AP;
         }
     }
 #endif
@@ -208,9 +210,11 @@ bool FBNetworkManager::initialize() {
             isInitialized = true;
             return true;
         } else {
-            LOG_WARNING("NetworkManager: 4G failed, falling back to WiFi");
+            LOG_WARNING("NetworkManager: 4G failed, falling back to AP mode for reconfiguration");
             cellularAdapter.reset();
+            // 不切换到 WiFi STA，保持 AP 模式让用户通过热点重新配置
             wifiConfig.networkType = NetworkType::NET_WIFI;
+            wifiConfig.mode = NetworkMode::NETWORK_AP;
         }
     }
 #endif
@@ -227,9 +231,11 @@ bool FBNetworkManager::initialize() {
             isInitialized = true;
             return true;
         } else {
-            LOG_WARNING("NetworkManager: LoRa failed, falling back to WiFi");
+            LOG_WARNING("NetworkManager: LoRa failed, falling back to AP mode for reconfiguration");
             loraAdapter.reset();
+            // 不切换到 WiFi STA，保持 AP 模式让用户通过热点重新配置
             wifiConfig.networkType = NetworkType::NET_WIFI;
+            wifiConfig.mode = NetworkMode::NETWORK_AP;
         }
     }
 #endif
@@ -459,6 +465,8 @@ void FBNetworkManager::update() {
 
     // 处理连接超时
     if (connecting && (currentTime - connectingStartTime >= wifiConfig.connectTimeout)) {
+        Serial.printf("[WiFi] Connection timeout after %lums\n",
+                      (unsigned long)wifiConfig.connectTimeout);
         LOG_WARNING("NetworkManager: Connection timeout");
         connecting = false;
         
@@ -1072,62 +1080,71 @@ void FBNetworkManager::stopMDNS() {
 // handleWiFiEvent 方法已移至 WiFiManager 类
 
 void FBNetworkManager::updateStatusInfo() {
-    // 调用 WiFi 管理器的更新方法
+    // 更新 WiFi 底层状态（AP 客户端数、STA 信号等）
     wifiManager->updateStatusInfo();
-    
-    // 同步状态信息
-    statusInfo = wifiManager->getStatusInfo();
+
+    // 对于非 WiFi 联网方式，主状态由对应适配器决定，
+    // 仅同步 AP 相关信息（客户端数、AP IP），不覆盖主连接状态
+    if (wifiConfig.networkType != NetworkType::NET_WIFI) {
+        // 保留 WiFiManager 更新到的 AP 字段
+        NetworkStatusInfo wifiStatus = wifiManager->getStatusInfo();
+        statusInfo.apClientCount = wifiStatus.apClientCount;
+        statusInfo.apIPAddress = wifiStatus.apIPAddress;
 
 #if FASTBEE_ENABLE_ETHERNET
-    if (wifiConfig.networkType == NetworkType::NET_ETHERNET && ethernetAdapter) {
-        bool connected = ethernetAdapter->isConnected();
-        statusInfo.status = connected ? NetworkStatus::CONNECTED : NetworkStatus::DISCONNECTED;
-        statusInfo.ipAddress = connected ? ethernetAdapter->localIP().toString() : "";
-        statusInfo.macAddress = ethernetAdapter->macAddress();
-        statusInfo.internetAvailable = connected;
-    }
+        if (wifiConfig.networkType == NetworkType::NET_ETHERNET && ethernetAdapter) {
+            bool connected = ethernetAdapter->isConnected();
+            statusInfo.status = connected ? NetworkStatus::CONNECTED : NetworkStatus::DISCONNECTED;
+            statusInfo.ipAddress = connected ? ethernetAdapter->localIP().toString() : "";
+            statusInfo.macAddress = ethernetAdapter->macAddress();
+            statusInfo.internetAvailable = connected;
+        }
 #endif
 
-    // 根据联网方式更新对应的状态信息
 #if FASTBEE_ENABLE_CELLULAR
-    if (wifiConfig.networkType == NetworkType::NET_4G && cellularAdapter) {
-        bool connected = cellularAdapter->isConnected();
-        statusInfo.status = connected ? NetworkStatus::CONNECTED : NetworkStatus::DISCONNECTED;
-        statusInfo.ipAddress = connected ? cellularAdapter->localIP().toString() : "";
-        statusInfo.internetAvailable = connected;
-        // 更新 4G 蜂窝网络状态
-        statusInfo.simStatus = cellularAdapter->isSimReady() ? "ready" : "missing";
-        statusInfo.operatorName = cellularAdapter->getOperator();
-        statusInfo.cellularNetworkType = cellularAdapter->getNetworkType();
-        statusInfo.apn = wifiConfig.cellular.apn;
-        statusInfo.imei = cellularAdapter->getIMEI();
-        statusInfo.iccid = cellularAdapter->getICCID();
-        
-        // 信号质量转换 (CSQ 0-31 -> RSSI dBm)
-        int csq = cellularAdapter->getSignalQualityCSQ();
-        if (csq >= 0 && csq <= 31) {
-            statusInfo.cellularSignalQuality = csq;
-            statusInfo.rssi = -113 + (csq * 2);  // CSQ to dBm conversion
-        } else {
-            statusInfo.cellularSignalQuality = 99;  // 未知
-            statusInfo.rssi = 0;
+        if (wifiConfig.networkType == NetworkType::NET_4G && cellularAdapter) {
+            bool connected = cellularAdapter->isConnected();
+            statusInfo.status = connected ? NetworkStatus::CONNECTED : NetworkStatus::DISCONNECTED;
+            statusInfo.ipAddress = connected ? cellularAdapter->localIP().toString() : "";
+            statusInfo.internetAvailable = connected;
+            // 更新 4G 蜂窝网络状态
+            statusInfo.simStatus = cellularAdapter->isSimReady() ? "ready" : "missing";
+            statusInfo.operatorName = cellularAdapter->getOperator();
+            statusInfo.cellularNetworkType = cellularAdapter->getNetworkType();
+            statusInfo.apn = wifiConfig.cellular.apn;
+            statusInfo.imei = cellularAdapter->getIMEI();
+            statusInfo.iccid = cellularAdapter->getICCID();
+            
+            // 信号质量转换 (CSQ 0-31 -> RSSI dBm)
+            int csq = cellularAdapter->getSignalQualityCSQ();
+            if (csq >= 0 && csq <= 31) {
+                statusInfo.cellularSignalQuality = csq;
+                statusInfo.rssi = -113 + (csq * 2);  // CSQ to dBm conversion
+            } else {
+                statusInfo.cellularSignalQuality = 99;  // 未知
+                statusInfo.rssi = 0;
+            }
         }
-    }
 #endif
 
 #if FASTBEE_ENABLE_LORA
-    if (wifiConfig.networkType == NetworkType::NET_LORA && loraAdapter) {
-        bool connected = loraAdapter->isConnected();
-        statusInfo.status = connected ? NetworkStatus::CONNECTED : NetworkStatus::DISCONNECTED;
-        statusInfo.internetAvailable = connected;
-        // 更新 LoRa 状态
-        statusInfo.loraMode = loraAdapter->isTransparentMode() ? "透传模式" : "配置模式";
-        statusInfo.loraAddress = String(loraAdapter->getAddress());
-        statusInfo.loraFrequency = loraAdapter->getFrequencyString();
-        statusInfo.loraAirRate = loraAdapter->getAirRateString();
-        statusInfo.loraChannel = loraAdapter->getChannel();
-    }
+        if (wifiConfig.networkType == NetworkType::NET_LORA && loraAdapter) {
+            bool connected = loraAdapter->isConnected();
+            statusInfo.status = connected ? NetworkStatus::CONNECTED : NetworkStatus::DISCONNECTED;
+            statusInfo.internetAvailable = connected;
+            // 更新 LoRa 状态
+            statusInfo.loraMode = loraAdapter->isTransparentMode() ? "透传模式" : "配置模式";
+            statusInfo.loraAddress = String(loraAdapter->getAddress());
+            statusInfo.loraFrequency = loraAdapter->getFrequencyString();
+            statusInfo.loraAirRate = loraAdapter->getAirRateString();
+            statusInfo.loraChannel = loraAdapter->getChannel();
+        }
 #endif
+        return;  // 非 WiFi 联网方式状态更新完成
+    }
+
+    // ========== WiFi 联网方式：同步 WiFiManager 的完整状态 ==========
+    statusInfo = wifiManager->getStatusInfo();
 }
 
 // updateIPConflictStatus 方法已移至 IPManager 类
@@ -1166,6 +1183,13 @@ void FBNetworkManager::attemptReconnect() {
     lastReconnectAttempt = millis();
     statusInfo.reconnectAttempts++;
 
+    char reconnBuf[120];
+    snprintf(reconnBuf, sizeof(reconnBuf),
+             "[WiFi] Reconnect attempt %d/%d (interval=%lums)",
+             (int)statusInfo.reconnectAttempts,
+             (int)wifiConfig.maxReconnectAttempts,
+             (unsigned long)wifiConfig.reconnectInterval);
+    Serial.println(reconnBuf);
     LOG_INFO("NetworkManager: Reconnection attempt " +
              String(statusInfo.reconnectAttempts) +
              "/" + String(wifiConfig.maxReconnectAttempts));
@@ -1294,7 +1318,18 @@ bool FBNetworkManager::restartNetwork() {
         return true;
     }
     
-    // 对于STA模式，需要完全重启
+    // 对于非WiFi联网方式（4G/以太网/LoRa），完全重新初始化
+    if (wifiConfig.networkType != NetworkType::NET_WIFI) {
+        LOG_INFO("NetworkManager: Full network restart for non-WiFi type...");
+        disconnect();
+        autoReconnectEnabled = keepAutoReconnect;
+        delay(500);
+        bool ok = initialize();
+        wifiManager->setModeTransitioning(false);
+        return ok;
+    }
+    
+    // 对于WiFi STA模式，需要完全重启
     LOG_INFO("NetworkManager: Full network restart for STA mode...");
     // 触发网络模式切换为STA系统事件
 #if FASTBEE_ENABLE_PERIPH_EXEC

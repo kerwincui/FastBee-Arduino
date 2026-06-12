@@ -520,10 +520,7 @@ void ProtocolRouteHandler::setupRoutes(AsyncWebServer* server) {
 }
 
 void ProtocolRouteHandler::handleGetProtocolConfig(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.view")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "config.view")) return;
 
     String section = ctx->getParamValue(request, "section", "");
     bool compact = ctx->getParamBool(request, "compact", false);
@@ -613,10 +610,7 @@ void ProtocolRouteHandler::handleGetProtocolConfig(AsyncWebServerRequest* reques
 }
 
 void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* request) {
-    if (!ctx->checkPermission(request, "config.edit")) {
-        ctx->sendUnauthorized(request);
-        return;
-    }
+    if (!ctx->requirePermission(request, "config.edit")) return;
 
     JsonDocument doc;
 

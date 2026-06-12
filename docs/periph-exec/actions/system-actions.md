@@ -47,7 +47,7 @@
 
 3. 点击 **保存**
 
-> ⚠️ **警告**：恢复出厂设置会删除所有配置文件（device.json, network.json, protocol.json等），设备将恢复为初始状态，此操作不可逆！
+> ⚠️ **警告**：恢复出厂设置会将所有配置文件重置为默认值（device.json, network.json, protocol.json, users.json, roles.json, peripherals.json, periph_exec.json），WiFi 凭据将被清除，设备重启后进入 AP 模式，此操作不可逆！
 
 ---
 
@@ -129,6 +129,14 @@
 ## 注意事项
 
 1. **同步强制**：系统重启和恢复出厂动作强制同步执行，不进异步队列
-2. **不可逆**：恢复出厂设置会清除所有用户配置，谨慎使用
-3. **重启前延时**：建议设置 syncDelayMs 让 MQTT 消息发送完毕后再重启
-4. **OTA 前提**：OTA 需要网络连接和有效的升级服务器
+2. **不可逆**：恢复出厂设置会重置所有用户配置为默认值，谨慎使用
+3. **恢复内容**：
+   - `device.json` - 恢复默认设备名和 NTP 配置
+   - `network.json` - 清除 WiFi 凭据，恢复 AP 模式（SSID: `fastbee-ap`，密码: `12345678`）
+   - `users.json` - 恢复默认用户（admin/viewer）
+   - `roles.json` - 恢复默认角色权限
+   - `protocol.json` - 所有协议禁用
+   - `peripherals.json` - 清空外设配置
+   - `periph_exec.json` - 清空执行规则
+4. **重启前延时**：建议设置 syncDelayMs 让 MQTT 消息发送完毕后再重启
+5. **OTA 前提**：OTA 需要网络连接和有效的升级服务器

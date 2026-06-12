@@ -20,8 +20,17 @@ public:
             return;
         }
         auto it = g_mockFiles.find(path);
-        if (it != g_mockFiles.end()) _content = it->second;
-        if (mode.indexOf('a') >= 0) _pos = _content.length();
+        if (mode.indexOf('w') >= 0) {
+            // Write mode: truncate existing content (matches real FILE_WRITE behavior)
+            _content = "";
+        } else if (it != g_mockFiles.end()) {
+            _content = it->second;
+        }
+        if (mode.indexOf('a') >= 0) {
+            // Append mode: load existing and position at end
+            if (it != g_mockFiles.end()) _content = it->second;
+            _pos = _content.length();
+        }
     }
 
     size_t write(const uint8_t* buffer, size_t size) {

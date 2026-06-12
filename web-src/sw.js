@@ -12,8 +12,6 @@ var PRECACHE_URLS = [
     '/css/main.css',
     '/js/main.js',
     '/js/state.js',
-    '/js/modules/i18n-engine.js',
-    '/js/modules/i18n-zh-CN.js',
     '/assets/favicon.ico',
     '/assets/logo.png'
 ];

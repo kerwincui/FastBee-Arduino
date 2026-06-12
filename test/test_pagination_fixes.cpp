@@ -823,8 +823,6 @@ void test_smoke_periph_exec_pagination() {
 // ==============================================================
 
 void test_pagination_fixes_group() {
-    UNITY_BEGIN();
-
     TestLog::groupStart("Pagination Fixes & Smoke Tests");
 
     // 核心分页修复验证
@@ -855,6 +853,4 @@ void test_pagination_fixes_group() {
     RUN_TEST(test_smoke_periph_exec_pagination);
 
     TestLog::groupEnd();
-
-    UNITY_END();
 }
