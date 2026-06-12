@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820" role="img" aria-labelledby="title desc">
+  <title id="title">长期稳定性测试反馈闭环</title>
+  <desc id="desc">展示长期稳定性测试从循环请求、指标采集、失败分类、趋势判断到修复复测的闭环。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="0.52" stop-color="#f0f9ff"/>
+      <stop offset="1" stop-color="#fff7ed"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-14%" width="120%" height="128%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0f172a" flood-opacity="0.13"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <style>
+      text { font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #172033; }
+      .title { font-size: 42px; font-weight: 700; }
+      .subtitle { font-size: 20px; fill: #475569; }
+      .node { fill: #ffffff; stroke: #d7dee9; stroke-width: 1.5; rx: 18; filter: url(#shadow); }
+      .label { font-size: 21px; font-weight: 700; }
+      .small { font-size: 15px; fill: #475569; }
+      .tiny { font-size: 13px; fill: #64748b; }
+      .line { stroke: #2563eb; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .metric { rx: 14; fill: #ecfdf5; stroke: #a7f3d0; stroke-width: 1.4; }
+      .warn { rx: 14; fill: #fff7ed; stroke: #fdba74; stroke-width: 1.4; }
+      .bad { rx: 14; fill: #fff1f2; stroke: #fecdd3; stroke-width: 1.4; }
+    </style>
+  </defs>
+  <rect width="1440" height="820" fill="url(#bg)"/>
+  <text x="72" y="72" class="title">长期稳定性测试反馈闭环</text>
+  <text x="72" y="108" class="subtitle">Soak 不是简单跑很多轮接口，而是把资源趋势、失败上下文和修复复测绑定成闭环。</text>
+
+  <rect x="560" y="155" width="320" height="112" class="node"/>
+  <text x="608" y="200" class="label">1. 设定测试轮次</text>
+  <text x="608" y="232" class="small">Profile、Rounds、Delay、Retry</text>
+
+  <rect x="972" y="270" width="320" height="112" class="node"/>
+  <text x="1020" y="315" class="label">2. 执行接口矩阵</text>
+  <text x="1020" y="347" class="small">系统、网络、协议、外设、文件</text>
+
+  <rect x="972" y="515" width="320" height="112" class="node"/>
+  <text x="1020" y="560" class="label">3. 写入 CSV</text>
+  <text x="1020" y="592" class="small">状态码、耗时、错误、资源快照</text>
+
+  <rect x="560" y="630" width="320" height="112" class="node"/>
+  <text x="608" y="675" class="label">4. 趋势判定</text>
+  <text x="608" y="707" class="small">失败率、heap 曲线、恢复能力</text>
+
+  <rect x="148" y="515" width="320" height="112" class="node"/>
+  <text x="196" y="560" class="label">5. 归因修复</text>
+  <text x="196" y="592" class="small">接口、配置、内存、协议或硬件</text>
+
+  <rect x="148" y="270" width="320" height="112" class="node"/>
+  <text x="196" y="315" class="label">6. 复测确认</text>
+  <text x="196" y="347" class="small">同一版本条件下重新跑 soak</text>
+
+  <path d="M880 210 C955 220 1010 240 1062 270" class="line"/>
+  <path d="M1132 382 C1132 425 1132 472 1132 515" class="line"/>
+  <path d="M972 590 C895 625 865 640 820 650" class="line"/>
+  <path d="M560 687 C480 675 420 645 360 627" class="line"/>
+  <path d="M308 515 C308 470 308 425 308 382" class="line"/>
+  <path d="M468 326 C540 290 590 270 650 267" class="line"/>
+
+  <rect x="566" y="334" width="118" height="56" class="metric"/>
+  <text x="590" y="368" class="small">heapFree</text>
+  <rect x="700" y="334" width="132" height="56" class="metric"/>
+  <text x="722" y="368" class="small">heapMaxAlloc</text>
+  <rect x="848" y="334" width="118" height="56" class="metric"/>
+  <text x="880" y="368" class="small">PSRAM</text>
+
+  <rect x="566" y="415" width="118" height="56" class="warn"/>
+  <text x="596" y="449" class="small">Latency</text>
+  <rect x="700" y="415" width="132" height="56" class="warn"/>
+  <text x="722" y="449" class="small">FailureRate</text>
+  <rect x="848" y="415" width="118" height="56" class="bad"/>
+  <text x="878" y="449" class="small">Restart</text>
+
+  <rect x="110" y="735" width="1220" height="48" rx="14" fill="#0f172a" opacity="0.94"/>
+  <text x="148" y="766" fill="#e2e8f0" style="font-family: 'Microsoft YaHei', 'PingFang SC', Arial, sans-serif; font-size: 16px;">经验线：首次失败前后的 5 轮数据最有价值，优先保留 CSV、设备日志、串口日志和固件 manifest。</text>
+</svg>

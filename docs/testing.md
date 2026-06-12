@@ -2,6 +2,24 @@
 
 本文档说明 FastBee-Arduino 的本地测试、全版本编译、固件产物验证、设备冒烟测试和长期稳定性测试。目标是让每次功能调整都能覆盖对应版本和芯片，避免只在单一开发板上验证。
 
+真实设备测试完成后，应在 Web 控制台做一次人工复核：仪表盘确认在线和资源状态，网络页确认联网配置，日志页查看启动和告警信息。
+
+![设备监控仪表盘](images/fastbee-dashboard.png)
+
+![网络基础配置](system/images/network-settings.png)
+
+![设备日志页面](system/images/device-logs.png)
+
+测试分层可以按下图从低成本到高真实性逐层推进；日常开发优先跑底层，发布验收必须覆盖真机和长稳层。
+
+![测试验证金字塔](images/testing-verification-pyramid.svg)
+
+真实设备验证阶段可以把冒烟测试和长稳测试分开看：冒烟先判断“能不能继续测”，长稳再判断“能不能长期交付”。
+
+![真实设备 API 冒烟测试流程](images/api-smoke-test-flow.svg)
+
+![长期稳定性测试反馈闭环](images/soak-test-feedback-loop.svg)
+
 ## 测试分层
 
 | 层级 | 命令入口 | 覆盖内容 | 何时执行 |
@@ -46,6 +64,8 @@ powershell -ExecutionPolicy Bypass -File scripts\test-all.ps1 -Checks device-soa
 ## 设备冒烟覆盖
 
 设备 API 测试共用 `scripts\device-api-test-matrix.json`，当前覆盖：
+
+执行冒烟测试时，失败项应立刻回到流程图中的“失败即停”节点记录首个失败接口，不建议继续把后续失败堆在一起；首个失败通常最接近根因。
 
 | 类别 | 检查项 |
 |------|--------|
@@ -192,6 +212,8 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl 
 ## 长稳测试报告模板
 
 长稳测试建议每个版本单独出报告。Lite 至少 72 小时；Standard 至少 72 小时，建议 7 天；Full 至少 7 天，并覆盖 OTA 状态、文件/日志、用户角色和远程配置相关接口。
+
+长稳测试报告不要只写通过或失败，还要保留趋势判断：最小 `heapFree`、最小 `heapMaxAlloc`、失败率、重试次数和首次失败前后几轮的接口耗时，是后续判断内存碎片、网络抖动和接口阻塞的关键证据。
 
 ```text
 项目名称：FastBee-Arduino 嵌入式物联网软件系统

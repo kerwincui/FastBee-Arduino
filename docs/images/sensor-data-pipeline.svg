@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820">
+  <defs>
+    <style>
+      .bg{fill:#f8fafc}
+      .title{font:700 34px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .sub{font:400 18px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .box{fill:#fff;stroke:#cfd8e3;stroke-width:2}
+      .hw{fill:#eef6ff;stroke:#5b9bd8;stroke-width:2}
+      .drv{fill:#f0fbf3;stroke:#5cac75;stroke-width:2}
+      .cache{fill:#fff6e7;stroke:#d49b3d;stroke-width:2}
+      .rule{fill:#f5f0ff;stroke:#8b72c9;stroke-width:2}
+      .h{font:700 21px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .p{font:400 16px "Microsoft YaHei",Arial,sans-serif;fill:#445066}
+      .code{font:700 15px Consolas,"Microsoft YaHei",monospace;fill:#263248}
+      .small{font:400 14px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .arrow{stroke:#69778b;stroke-width:3;fill:none;marker-end:url(#arrow)}
+      .data{stroke:#2f7eca;stroke-width:3;fill:none;marker-end:url(#arrowBlue)}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#69778b"/></marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#2f7eca"/></marker>
+  </defs>
+
+  <rect class="bg" width="1440" height="820"/>
+  <text class="title" x="72" y="70">传感器数据采集与联动链路</text>
+  <text class="sub" x="72" y="106">传感器先作为外设对象初始化，再由驱动读取数据，写入缓存后供外设执行、显示和 MQTT 上报使用。</text>
+
+  <rect class="hw" x="78" y="176" width="246" height="150" rx="18"/>
+  <text class="h" x="116" y="222">物理模块</text>
+  <text class="p" x="116" y="260">DHT、DS18B20、BMP280</text>
+  <text class="p" x="116" y="288">ADC、电压、电流、超声波</text>
+
+  <rect class="box" x="390" y="176" width="246" height="150" rx="18"/>
+  <text class="h" x="428" y="222">外设配置</text>
+  <text class="p" x="428" y="260">ID、类型、引脚、地址</text>
+  <text class="p" x="428" y="288">保存到 peripherals.json</text>
+
+  <rect class="drv" x="702" y="176" width="246" height="150" rx="18"/>
+  <text class="h" x="740" y="222">驱动读取</text>
+  <text class="p" x="740" y="260">定时采样或规则触发</text>
+  <text class="p" x="740" y="288">单位换算和错误码</text>
+
+  <rect class="cache" x="1014" y="176" width="246" height="150" rx="18"/>
+  <text class="h" x="1052" y="222">数据缓存</text>
+  <text class="code" x="1052" y="260">ds:dht_01_temperature</text>
+  <text class="code" x="1052" y="288">sensor_cache event</text>
+
+  <path class="arrow" d="M324 251 H390"/>
+  <path class="arrow" d="M636 251 H702"/>
+  <path class="arrow" d="M948 251 H1014"/>
+
+  <rect class="rule" x="168" y="500" width="270" height="132" rx="18"/>
+  <text class="h" x="206" y="546">外设执行</text>
+  <text class="p" x="206" y="584">事件触发、轮询触发</text>
+  <text class="p" x="206" y="612">阈值判断和动作联动</text>
+
+  <rect class="rule" x="520" y="500" width="270" height="132" rx="18"/>
+  <text class="h" x="558" y="546">本地显示</text>
+  <text class="p" x="558" y="584">OLED、TM1637、LCD</text>
+  <text class="p" x="558" y="612">格式化文本和数值</text>
+
+  <rect class="rule" x="872" y="500" width="270" height="132" rx="18"/>
+  <text class="h" x="910" y="546">协议上报</text>
+  <text class="p" x="910" y="584">MQTT 属性或事件</text>
+  <text class="p" x="910" y="612">平台侧趋势和告警</text>
+
+  <path class="data" d="M1137 326 V420 H303 V500"/>
+  <path class="data" d="M1137 326 V420 H655 V500"/>
+  <path class="data" d="M1137 326 V420 H1007 V500"/>
+
+  <rect class="box" x="200" y="704" width="1040" height="58" rx="16"/>
+  <text class="small" x="240" y="739">配置建议：先让传感器在外设页稳定读数，再用外设执行生成数据源，最后再接入显示屏、继电器或 MQTT 上报。</text>
+</svg>

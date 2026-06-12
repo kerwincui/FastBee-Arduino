@@ -16,6 +16,18 @@
 
 ### 方式1：Web界面配置（推荐）
 
+本场景需要先添加烟雾 ADC、蜂鸣器和指示灯，再用外设执行规则实现阈值报警和 MQTT 上报。
+
+![外设配置列表](../../system/images/peripheral-management.png)
+
+![新增外设弹窗](../../system/images/peripheral-add-dialog.png)
+
+![外设执行规则列表](../../system/images/periph-exec-management.png)
+
+![典型场景自动化闭环](../../images/scenario-automation-loop.svg)
+
+烟雾报警场景按闭环拆解为：ADC 采集浓度、规则判断阈值、蜂鸣器和指示灯执行动作、MQTT 上报告警事件。
+
 #### 第一步：配置外设
 
 **步骤1：进入外设管理页面**

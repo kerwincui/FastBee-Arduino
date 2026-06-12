@@ -2,6 +2,20 @@
 
 本文档是 FastBee-Arduino 项目所有支持的传感器、模块和外设的完整参考手册，涵盖接线说明、配置参数、JSON示例、外设执行联动、编译开关和引脚占用等信息。
 
+传感器和模块都先在“外设配置”中登记为硬件对象，再由“外设执行”规则负责周期采集、阈值判断、显示或上报。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![外设执行规则列表](../system/images/periph-exec-management.png)
+
+![传感器数据采集与联动链路](../images/sensor-data-pipeline.svg)
+
+传感器读数并不是直接上报平台：它先经过外设配置、驱动读取和数据缓存，再由外设执行、显示屏或 MQTT 上报消费。
+
+![GPIO、ADC、PWM 接线校验图](../images/gpio-adc-pwm-wiring-check.svg)
+
+GPIO、ADC 和 PWM 类模块接入前先核对引脚能力、电平、供电和默认状态；会驱动负载的模块必须先禁用保存并单项验证。
+
 ## 目录
 
 - [1. GPIO 基础模块](#1-gpio-基础模块)
@@ -534,7 +548,7 @@
 3. **平台触发**: MQTT消息触发（如云端下发查询命令）
 4. **动作执行**: 读取传感器(`ACTION_SENSOR_READ`)、控制GPIO(`ACTION_GPIO_WRITE`)、上报数据
 
-详见 [外设执行文档](../system/periph-exec.md)
+详见 [外设执行文档](../system/periph-exec-management.md)
 
 ---
 

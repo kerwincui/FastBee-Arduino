@@ -12,6 +12,12 @@
 
 ### 方式1：Web界面配置（推荐）
 
+外设执行页面和 Modbus RTU 配置页如下。Modbus 动作配置时重点核对串口参数、从站地址、功能码、寄存器或线圈地址。
+
+![外设执行规则列表](../../system/images/periph-exec-management.png)
+
+![Modbus RTU 配置页面](../../system/images/protocol-modbus-rtu.png)
+
 #### 示例1：写线圈（控制继电器开关）
 
 **场景**：打开Modbus继电器的第1路（通道0）

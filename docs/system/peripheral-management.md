@@ -6,6 +6,28 @@
 
 出厂默认外设配置作为安全模板发布，硬件外设均为 `enabled: false`。首次添加或导入外设时，请先确认实际接线、引脚可用性和供电，再启用外设。
 
+![外设配置列表](images/peripheral-management.png)
+
+新增外设时，先选择类型，再填写名称、引脚和类型特定参数。未确认接线前保持“启用”关闭，保存后再逐个验证。
+
+![新增外设弹窗](images/peripheral-add-dialog.png)
+
+![外设接入与验证流程](../images/peripheral-onboarding-flow.svg)
+
+外设上线建议先保存为禁用状态，确认日志和单项动作正常后再启用；继电器、电机、Modbus 等会产生现场动作的对象尤其要先做单项验证。
+
+![外设类型选型地图](../images/peripheral-type-selection-map.svg)
+
+新增外设前先按选型地图确认类型大类，再填写 ID、名称、引脚和类型参数；这样能减少把传感器、总线设备和虚拟 Modbus 子设备混在一起配置的概率。
+
+![外设配置数据模型](../images/peripheral-config-data-model.svg)
+
+排查配置问题时建议按数据模型顺序走一遍：先确认页面字段和 JSON 是否一致，再看保存校验是否通过，最后确认运行时驱动是否被初始化以及外设执行、MQTT、日志是否引用同一个外设 ID。
+
+![外设类型参数速查矩阵](../images/peripheral-parameter-matrix.svg)
+
+新增外设时可以先按参数矩阵核对必填字段和启用前检查项，再进入具体类型章节。特别是 ADC、I2C、UART/RS485、运动控制和虚拟外设，参数漏填或版本能力不匹配时很容易表现为“保存成功但运行失败”。
+
 ### 核心概念
 
 | 概念 | 说明 | 示例 |
@@ -1136,6 +1158,8 @@ ESP32仅GPIO25和GPIO26支持DAC
 5. **简化测试**：先测试单个外设
 6. **检查冲突**：导出配置搜索重复引脚
 
+如果页面保存成功但规则或上报仍然异常，优先对照前文“外设配置数据模型”检查引用链：`peripherals.json` 中的 `id`、外设执行规则的 `targetPeriphId`、传感器缓存事件 `ds:<id>_<field>` 必须完全一致。
+
 ---
 
 ## 七、高级技巧
@@ -1382,7 +1406,7 @@ GET /api/system/health
 - [外设执行管理](./periph-exec-management.md) - 规则联动配置
 - [传感器完整指南](../peripherals/sensor-guide-complete.md) - 40+种模块详细接线
 - [外设执行示例](../periph-exec/scenarios/) - 完整场景配置
-- [引脚分配表](../peripherals/pin-allocation.md) - ESP32引脚详细说明
+- [外设配置指南](../peripherals/peripheral-configuration-guide.md) - ESP32 引脚与外设类型说明
 
 ---
 

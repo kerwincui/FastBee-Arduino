@@ -30,6 +30,14 @@ GPIO 数字输入用于读取按键、开关、传感器数字信号等。支持
 | 按下 | button_press | 按键按下瞬间 |
 | 释放 | button_release | 按键释放瞬间 |
 
+![GPIO、ADC、PWM 接线校验图](../images/gpio-adc-pwm-wiring-check.svg)
+
+数字输入排查优先看上拉/下拉和默认电平；按键、门磁、PIR 等模块建议先用日志确认事件，再接入外设执行规则。
+
+![按键与事件触发链路](../images/event-trigger-flow.svg)
+
+事件触发不生效时，先确认输入是否产生 `eventId`，再检查规则是否启用、`triggerPeriphId` 是否匹配、动作是否能手动执行。
+
 ## 典型应用
 
 | 应用 | 类型 | 接线方式 |
@@ -43,6 +51,12 @@ GPIO 数字输入用于读取按键、开关、传感器数字信号等。支持
 ## 配置方式
 
 ### 方式1：Web界面配置（推荐）
+
+外设配置页和新增弹窗的实机界面如下。GPIO 输入类外设重点核对输入模式、引脚号和是否需要上拉/下拉。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![新增外设弹窗](../system/images/peripheral-add-dialog.png)
 
 #### 步骤1：进入外设管理页面
 

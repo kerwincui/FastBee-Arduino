@@ -17,6 +17,15 @@ LCD1602 是一款 16列×2行 字符型液晶显示屏，通过 I2C 转接板（
 
 ## FastBee 外设配置
 
+本实验的 Web 操作入口如下：先在“外设配置”创建硬件对象，再在“外设执行”添加采集、控制或显示规则。新增外设时建议先保持禁用，确认接线后再启用。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![新增外设弹窗](../system/images/peripheral-add-dialog.png)
+
+![外设执行规则列表](../system/images/periph-exec-management.png)
+
+
 > ⚠️ **注意**：LCD1602字符屏驱动尚未内置，以下为占位配置，请保持禁用状态
 
 ### 方式1：Web界面配置（推荐）

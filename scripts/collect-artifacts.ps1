@@ -16,9 +16,11 @@ if (Test-Path $OutputDir) {
 # Naming: fastbee-{chip}-F{flash}R{psram}.bin
 $EnvMap = @{
     "esp32-F4R0"     = "fastbee-esp32-F4R0.bin"
+    "esp32-F8R4"     = "fastbee-esp32-F8R4.bin"
     "esp32c3-F4R0"   = "fastbee-esp32c3-F4R0.bin"
     "esp32c6-F4R0"   = "fastbee-esp32c6-F4R0.bin"
     "esp32s3-F8R0"   = "fastbee-esp32s3-F8R0.bin"
+    "esp32s3-F8R4"   = "fastbee-esp32s3-F8R4.bin"
     "esp32s3-F16R8"  = "fastbee-esp32s3-F16R8.bin"
 }
 

@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="800" viewBox="0 0 1440 800">
+  <defs>
+    <style>
+      .bg{fill:#f8fafc}
+      .title{font:700 34px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .sub{font:400 18px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .box{fill:#fff;stroke:#cfd8e3;stroke-width:2}
+      .script{fill:#eef6ff;stroke:#5b9bd8;stroke-width:2}
+      .parse{fill:#fff6e7;stroke:#d49b3d;stroke-width:2}
+      .exec{fill:#f0fbf3;stroke:#5cac75;stroke-width:2}
+      .guard{fill:#fff1f0;stroke:#d96a63;stroke-width:2}
+      .h{font:700 21px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .p{font:400 16px "Microsoft YaHei",Arial,sans-serif;fill:#445066}
+      .code{font:700 15px Consolas,"Microsoft YaHei",monospace;fill:#263248}
+      .small{font:400 14px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .arrow{stroke:#69778b;stroke-width:3;fill:none;marker-end:url(#arrow)}
+      .fail{stroke:#d96a63;stroke-width:3;fill:none;stroke-dasharray:8 8;marker-end:url(#arrowRed)}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#69778b"/></marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#d96a63"/></marker>
+  </defs>
+  <rect class="bg" width="1440" height="800"/>
+  <text class="title" x="72" y="70">命令脚本执行流程</text>
+  <text class="sub" x="72" y="106">命令脚本适合轻量硬件动作编排，执行前需要解析、校验、限时和逐条落到外设动作。</text>
+
+  <rect class="script" x="86" y="176" width="260" height="150" rx="18"/>
+  <text class="h" x="124" y="222">脚本文本</text>
+  <text class="code" x="124" y="260">PERIPH led PWM 128</text>
+  <text class="code" x="124" y="288">DELAY 500</text>
+
+  <rect class="parse" x="426" y="176" width="260" height="150" rx="18"/>
+  <text class="h" x="464" y="222">解析和校验</text>
+  <text class="p" x="464" y="260">命令、参数、目标外设</text>
+  <text class="p" x="464" y="288">行数、延时和语法限制</text>
+
+  <rect class="exec" x="766" y="176" width="260" height="150" rx="18"/>
+  <text class="h" x="804" y="222">逐条执行</text>
+  <text class="p" x="804" y="260">GPIO、PWM、显示、系统动作</text>
+  <text class="p" x="804" y="288">按顺序等待和反馈</text>
+
+  <rect class="guard" x="1106" y="176" width="260" height="150" rx="18"/>
+  <text class="h" x="1144" y="222">安全保护</text>
+  <text class="p" x="1144" y="260">超时、堆内存、错误中止</text>
+  <text class="p" x="1144" y="288">日志记录和回滚</text>
+
+  <path class="arrow" d="M346 251 H426"/>
+  <path class="arrow" d="M686 251 H766"/>
+  <path class="arrow" d="M1026 251 H1106"/>
+
+  <rect class="box" x="188" y="492" width="300" height="132" rx="18"/>
+  <text class="h" x="226" y="538">适合场景</text>
+  <text class="p" x="226" y="576">流水灯、渐变、简单动作序列</text>
+
+  <rect class="box" x="570" y="492" width="300" height="132" rx="18"/>
+  <text class="h" x="608" y="538">调试顺序</text>
+  <text class="p" x="608" y="576">单命令、短脚本、完整脚本</text>
+
+  <rect class="box" x="952" y="492" width="300" height="132" rx="18"/>
+  <text class="h" x="990" y="538">交付要求</text>
+  <text class="p" x="990" y="576">禁用保存、手动执行、日志留档</text>
+
+  <path class="arrow" d="M488 558 H570"/>
+  <path class="arrow" d="M870 558 H952"/>
+  <path class="fail" d="M1236 326 V428 H1102 V492"/>
+  <rect class="box" x="196" y="700" width="1048" height="58" rx="16"/>
+  <text class="small" x="236" y="735">建议：命令脚本只做可预期的短动作序列，复杂判断交给外设执行触发器和 RuleScript。</text>
+</svg>

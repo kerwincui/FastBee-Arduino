@@ -24,6 +24,10 @@
 - 惰性初始化，首次调用自动配置 ADC
 - 支持自定义校准参数（灵敏度、零偏移、参考电压）
 
+![GPIO、ADC、PWM 接线校验图](../images/gpio-adc-pwm-wiring-check.svg)
+
+电流模块调试时先校准零电流输出，再逐步加载；如果读数漂移，优先检查共地、参考电压、ADC 衰减和采样平均参数。
+
 ## 2. 接线说明
 
 ```
@@ -45,6 +49,12 @@ ACS712 模块           ESP32
 ## 3. 配置方式
 
 ### 方式1：Web界面配置（推荐）
+
+外设配置页和新增弹窗的实机界面如下。电流传感器保存前重点核对 ADC 引脚、零点偏移、灵敏度和量程保护。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![新增外设弹窗](../system/images/peripheral-add-dialog.png)
 
 #### 步骤1：进入外设管理页面
 

@@ -165,6 +165,12 @@
       "profiles": ["lite", "standard", "full"]
     },
     {
+      "name": "periph-exec-results",
+      "method": "GET",
+      "path": "/api/periph-exec/results?limit=3",
+      "profiles": ["lite", "standard", "full"]
+    },
+    {
       "name": "periph-exec-trigger-types",
       "method": "GET",
       "path": "/api/periph-exec/trigger-types",

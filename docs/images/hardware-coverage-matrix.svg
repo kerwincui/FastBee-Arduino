@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820" role="img" aria-labelledby="title desc">
+  <title id="title">硬件资料覆盖矩阵</title>
+  <desc id="desc">按硬件类别展示示例文档、外设类型、Web 配置、规则联动和版本能力的覆盖情况。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="0.6" stop-color="#f0fdf4"/>
+      <stop offset="1" stop-color="#eef6ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-8%" y="-12%" width="116%" height="124%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0f172a" flood-opacity="0.11"/>
+    </filter>
+    <style>
+      text { font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #172033; }
+      .title { font-size: 42px; font-weight: 700; }
+      .subtitle { font-size: 20px; fill: #475569; }
+      .panel { fill: #ffffff; stroke: #d7dee9; stroke-width: 1.5; rx: 18; filter: url(#shadow); }
+      .head { fill: #0f172a; }
+      .htext { fill: #ffffff; font-size: 16px; font-weight: 700; }
+      .row { fill: #ffffff; }
+      .alt { fill: #f8fafc; }
+      .label { font-size: 16px; font-weight: 700; }
+      .small { font-size: 14px; fill: #475569; }
+      .ok { fill: #dcfce7; stroke: #86efac; }
+      .mid { fill: #fef9c3; stroke: #fde68a; }
+      .full { fill: #dbeafe; stroke: #93c5fd; }
+      .cell { rx: 13; stroke-width: 1.2; }
+      .legend { font-size: 15px; fill: #475569; }
+    </style>
+  </defs>
+  <rect width="1440" height="820" fill="url(#bg)"/>
+  <text x="72" y="72" class="title">硬件资料覆盖矩阵</text>
+  <text x="72" y="108" class="subtitle">把普中 ESP32 常见模块与文档、外设类型、页面配置、规则联动和版本开关放在一起检查，方便补文档也方便补测试。</text>
+
+  <rect x="70" y="155" width="1300" height="555" class="panel"/>
+  <rect x="70" y="155" width="1300" height="58" rx="18" class="head"/>
+  <text x="105" y="191" class="htext">硬件类别</text>
+  <text x="310" y="191" class="htext">代表模块</text>
+  <text x="545" y="191" class="htext">示例文档</text>
+  <text x="735" y="191" class="htext">外设类型</text>
+  <text x="910" y="191" class="htext">Web 配置</text>
+  <text x="1088" y="191" class="htext">规则联动</text>
+  <text x="1242" y="191" class="htext">版本</text>
+
+  <g transform="translate(70 213)">
+    <rect width="1300" height="62" class="row"/>
+    <text x="35" y="38" class="label">基础 GPIO</text>
+    <text x="240" y="38" class="small">LED、按键、继电器</text>
+    <rect x="465" y="16" width="122" height="31" class="cell ok"/><text x="492" y="38" class="small">01-06</text>
+    <rect x="665" y="16" width="122" height="31" class="cell ok"/><text x="684" y="38" class="small">11/12/13</text>
+    <rect x="835" y="16" width="122" height="31" class="cell ok"/><text x="870" y="38" class="small">已覆盖</text>
+    <rect x="1015" y="16" width="122" height="31" class="cell ok"/><text x="1050" y="38" class="small">已覆盖</text>
+    <rect x="1178" y="16" width="82" height="31" class="cell full"/><text x="1198" y="38" class="small">全档</text>
+
+    <rect y="62" width="1300" height="62" class="alt"/>
+    <text x="35" y="100" class="label">模拟与 PWM</text>
+    <text x="240" y="100" class="small">ADC、电压、电流、PWM</text>
+    <rect x="465" y="78" width="122" height="31" class="cell ok"/><text x="496" y="100" class="small">11/13</text>
+    <rect x="665" y="78" width="122" height="31" class="cell ok"/><text x="695" y="100" class="small">15/17</text>
+    <rect x="835" y="78" width="122" height="31" class="cell ok"/><text x="870" y="100" class="small">已覆盖</text>
+    <rect x="1015" y="78" width="122" height="31" class="cell ok"/><text x="1050" y="100" class="small">已覆盖</text>
+    <rect x="1178" y="78" width="82" height="31" class="cell full"/><text x="1198" y="100" class="small">全档</text>
+
+    <rect y="124" width="1300" height="62" class="row"/>
+    <text x="35" y="162" class="label">环境传感</text>
+    <text x="240" y="162" class="small">DHT、DS18B20、BH1750</text>
+    <rect x="465" y="140" width="122" height="31" class="cell ok"/><text x="492" y="162" class="small">18-20</text>
+    <rect x="665" y="140" width="122" height="31" class="cell ok"/><text x="708" y="162" class="small">38</text>
+    <rect x="835" y="140" width="122" height="31" class="cell ok"/><text x="870" y="162" class="small">已覆盖</text>
+    <rect x="1015" y="140" width="122" height="31" class="cell ok"/><text x="1050" y="162" class="small">已覆盖</text>
+    <rect x="1178" y="140" width="82" height="31" class="cell full"/><text x="1198" y="162" class="small">全档</text>
+
+    <rect y="186" width="1300" height="62" class="alt"/>
+    <text x="35" y="224" class="label">显示输出</text>
+    <text x="240" y="224" class="small">OLED、LCD1602、TM1637</text>
+    <rect x="465" y="202" width="122" height="31" class="cell ok"/><text x="488" y="224" class="small">15/23/39</text>
+    <rect x="665" y="202" width="122" height="31" class="cell ok"/><text x="688" y="224" class="small">36/47</text>
+    <rect x="835" y="202" width="122" height="31" class="cell ok"/><text x="870" y="224" class="small">已覆盖</text>
+    <rect x="1015" y="202" width="122" height="31" class="cell ok"/><text x="1050" y="224" class="small">已覆盖</text>
+    <rect x="1178" y="202" width="82" height="31" class="cell full"/><text x="1198" y="224" class="small">标准+</text>
+
+    <rect y="248" width="1300" height="62" class="row"/>
+    <text x="35" y="286" class="label">运动控制</text>
+    <text x="240" y="286" class="small">舵机、步进电机、直流电机</text>
+    <rect x="465" y="264" width="122" height="31" class="cell ok"/><text x="488" y="286" class="small">07/22/46</text>
+    <rect x="665" y="264" width="122" height="31" class="cell ok"/><text x="688" y="286" class="small">41/42</text>
+    <rect x="835" y="264" width="122" height="31" class="cell ok"/><text x="870" y="286" class="small">已覆盖</text>
+    <rect x="1015" y="264" width="122" height="31" class="cell ok"/><text x="1050" y="286" class="small">已覆盖</text>
+    <rect x="1178" y="264" width="82" height="31" class="cell full"/><text x="1198" y="286" class="small">全档</text>
+
+    <rect y="310" width="1300" height="62" class="alt"/>
+    <text x="35" y="348" class="label">通信识别</text>
+    <text x="240" y="348" class="small">UART、RFID、红外、433M</text>
+    <rect x="465" y="326" width="122" height="31" class="cell ok"/><text x="488" y="348" class="small">12/21/43</text>
+    <rect x="665" y="326" width="122" height="31" class="cell ok"/><text x="692" y="348" class="small">1/3/38</text>
+    <rect x="835" y="326" width="122" height="31" class="cell ok"/><text x="870" y="348" class="small">已覆盖</text>
+    <rect x="1015" y="326" width="122" height="31" class="cell mid"/><text x="1050" y="348" class="small">部分</text>
+    <rect x="1178" y="326" width="82" height="31" class="cell full"/><text x="1198" y="348" class="small">标准+</text>
+
+    <rect y="372" width="1300" height="62" class="row"/>
+    <text x="35" y="410" class="label">Modbus</text>
+    <text x="240" y="410" class="small">温湿度、继电器、土壤传感</text>
+    <rect x="465" y="388" width="122" height="31" class="cell ok"/><text x="492" y="410" class="small">45-48</text>
+    <rect x="665" y="388" width="122" height="31" class="cell ok"/><text x="707" y="410" class="small">RTU</text>
+    <rect x="835" y="388" width="122" height="31" class="cell ok"/><text x="870" y="410" class="small">已覆盖</text>
+    <rect x="1015" y="388" width="122" height="31" class="cell ok"/><text x="1050" y="410" class="small">已覆盖</text>
+    <rect x="1178" y="388" width="82" height="31" class="cell full"/><text x="1198" y="410" class="small">标准+</text>
+  </g>
+
+  <text x="96" y="750" class="legend">图例：绿色为文档、配置和验证路径完整；黄色为仍建议补充专项场景；蓝色表示版本能力覆盖范围。</text>
+</svg>

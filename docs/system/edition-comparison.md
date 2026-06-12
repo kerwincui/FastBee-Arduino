@@ -4,6 +4,18 @@
 
 FastBee-Arduino 提供三个版本（Edition），面向不同硬件平台和应用场景，用户可根据成本预算、功能需求和硬件资源选择合适的版本。
 
+版本选择最终会影响 Web 控制台可见功能。Lite/Standard 重点保留仪表盘、网络、外设和外设执行；Full 版本额外提供文件、日志、用户和角色等管理能力。
+
+![设备仪表台总览](images/dashboard-overview.png)
+
+![文件管理页面](images/file-management.png)
+
+![用户管理页面](images/user-management.png)
+
+选型时可以先按下图确认资源、功能边界和交付目标，再回到后文表格核对细项。
+
+![固件版本选型决策图](../images/version-selection-guide.svg)
+
 ---
 
 ## 稳定性评估结论

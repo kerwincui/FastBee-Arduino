@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="840" viewBox="0 0 1440 840">
+  <defs>
+    <style>
+      .bg{fill:#f7f9fb}
+      .title{font:700 34px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .sub{font:400 18px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .center{fill:#eaf4ff;stroke:#3e88d7;stroke-width:3;rx:20}
+      .box{fill:#fff;stroke:#cfd8e3;stroke-width:2;rx:16}
+      .ops{fill:#fff8e8;stroke:#e0aa49;stroke-width:2;rx:16}
+      .h{font:700 20px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .p{font:400 15px "Microsoft YaHei",Arial,sans-serif;fill:#445066}
+      .arrow{stroke:#66758a;stroke-width:2.8;fill:none;marker-end:url(#arrow)}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#66758a"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="1440" height="840"/>
+  <text class="title" x="72" y="72">Web 控制台导航图</text>
+  <text class="sub" x="72" y="108">从仪表盘出发，按配置、自动化、协议和维护四类入口定位功能</text>
+
+  <rect class="center" x="570" y="320" width="300" height="145"/>
+  <text class="h" x="625" y="368">仪表盘 Dashboard</text>
+  <text class="p" x="610" y="402">设备在线、IP、WiFi、MQTT</text>
+  <text class="p" x="610" y="430">Flash / Heap / LittleFS</text>
+
+  <rect class="box" x="115" y="180" width="260" height="120"/>
+  <text class="h" x="145" y="224">网络配置</text>
+  <text class="p" x="145" y="256">STA / AP / mDNS / 静态 IP</text>
+
+  <rect class="box" x="440" y="150" width="260" height="120"/>
+  <text class="h" x="470" y="194">外设配置</text>
+  <text class="p" x="470" y="226">GPIO、ADC、传感器、显示</text>
+
+  <rect class="box" x="750" y="150" width="260" height="120"/>
+  <text class="h" x="780" y="194">外设执行</text>
+  <text class="p" x="780" y="226">触发器、动作、手动执行</text>
+
+  <rect class="box" x="1070" y="180" width="260" height="120"/>
+  <text class="h" x="1100" y="224">通信协议</text>
+  <text class="p" x="1100" y="256">MQTT / Modbus RTU</text>
+
+  <rect class="ops" x="160" y="565" width="260" height="120"/>
+  <text class="h" x="190" y="609">设备配置</text>
+  <text class="p" x="190" y="641">名称、编号、NTP、开发开关</text>
+
+  <rect class="ops" x="470" y="590" width="260" height="120"/>
+  <text class="h" x="500" y="634">文件管理</text>
+  <text class="p" x="500" y="666">LittleFS、导入导出、备份</text>
+
+  <rect class="ops" x="780" y="590" width="260" height="120"/>
+  <text class="h" x="810" y="634">日志</text>
+  <text class="p" x="810" y="666">启动、网络、外设、规则排障</text>
+
+  <rect class="ops" x="1090" y="565" width="260" height="120"/>
+  <text class="h" x="1120" y="609">用户与角色</text>
+  <text class="p" x="1120" y="641">账号、权限、现场运维边界</text>
+
+  <path class="arrow" d="M570 365 C455 345 405 275 375 240"/>
+  <path class="arrow" d="M650 320 C625 285 600 265 570 270"/>
+  <path class="arrow" d="M790 320 C820 285 845 265 880 270"/>
+  <path class="arrow" d="M870 365 C990 345 1040 275 1070 240"/>
+  <path class="arrow" d="M600 465 C495 505 405 545 330 565"/>
+  <path class="arrow" d="M670 465 C640 520 615 560 600 590"/>
+  <path class="arrow" d="M770 465 C820 520 875 560 910 590"/>
+  <path class="arrow" d="M840 465 C965 505 1090 545 1180 565"/>
+</svg>

@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820">
+  <defs>
+    <style>
+      .bg{fill:#f7f9fb}
+      .title{font:700 34px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .sub{font:400 18px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .box{fill:#fff;stroke:#cfd8e3;stroke-width:2}
+      .master{fill:#eef6ff;stroke:#5b9bd8;stroke-width:2}
+      .bus{stroke:#445066;stroke-width:8;stroke-linecap:round}
+      .slave{fill:#f0fbf3;stroke:#5cac75;stroke-width:2}
+      .warn{fill:#fff6e7;stroke:#d49b3d;stroke-width:2}
+      .purple{fill:#f5f0ff;stroke:#8b72c9;stroke-width:2}
+      .h{font:700 21px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .p{font:400 16px "Microsoft YaHei",Arial,sans-serif;fill:#445066}
+      .small{font:400 14px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .addr{font:700 15px Consolas,"Microsoft YaHei",monospace;fill:#263248}
+      .arrow{stroke:#69778b;stroke-width:3;fill:none;marker-end:url(#arrow)}
+      .poll{stroke:#2f7eca;stroke-width:3;fill:none;marker-end:url(#arrowBlue)}
+      .resp{stroke:#3f9b63;stroke-width:3;fill:none;marker-end:url(#arrowGreen)}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#69778b"/></marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#2f7eca"/></marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#3f9b63"/></marker>
+  </defs>
+
+  <rect class="bg" width="1440" height="820"/>
+  <text class="title" x="72" y="70">Modbus RTU 主站轮询链路</text>
+  <text class="sub" x="72" y="106">ESP32 作为主站，通过 UART 和 RS485 收发器轮询多个从站，再把寄存器值映射到外设、规则和 MQTT 上报。</text>
+
+  <rect class="master" x="78" y="182" width="270" height="176" rx="18"/>
+  <text class="h" x="116" y="230">ESP32 主站</text>
+  <text class="p" x="116" y="268">UART TX/RX</text>
+  <text class="p" x="116" y="296">RS485 DE/RE 控制</text>
+  <text class="p" x="116" y="324">轮询任务和超时重试</text>
+
+  <rect class="warn" x="424" y="202" width="220" height="136" rx="18"/>
+  <text class="h" x="462" y="250">RS485 收发器</text>
+  <text class="p" x="462" y="288">A/B 总线</text>
+  <text class="p" x="462" y="316">终端电阻和接地</text>
+
+  <line class="bus" x1="720" y1="270" x2="1290" y2="270"/>
+  <text class="small" x="930" y="238">RS485 总线</text>
+
+  <rect class="slave" x="760" y="330" width="170" height="126" rx="16"/>
+  <text class="h" x="800" y="374">从站 1</text>
+  <text class="addr" x="800" y="406">addr=1</text>
+  <text class="p" x="800" y="432">温湿度</text>
+
+  <rect class="slave" x="984" y="330" width="170" height="126" rx="16"/>
+  <text class="h" x="1024" y="374">从站 2</text>
+  <text class="addr" x="1024" y="406">addr=2</text>
+  <text class="p" x="1024" y="432">继电器</text>
+
+  <rect class="slave" x="1208" y="330" width="170" height="126" rx="16"/>
+  <text class="h" x="1248" y="374">从站 3</text>
+  <text class="addr" x="1248" y="406">addr=3</text>
+  <text class="p" x="1248" y="432">电机滑台</text>
+
+  <path class="arrow" d="M348 270 H424"/>
+  <path class="arrow" d="M644 270 H720"/>
+  <line class="bus" x1="845" y1="270" x2="845" y2="330"/>
+  <line class="bus" x1="1069" y1="270" x2="1069" y2="330"/>
+  <line class="bus" x1="1293" y1="270" x2="1293" y2="330"/>
+
+  <path class="poll" d="M212 358 V520 H845 V456"/>
+  <path class="resp" d="M845 456 V552 H212 V358"/>
+  <text class="small" x="386" y="506">请求：功能码、寄存器地址、长度</text>
+  <text class="small" x="386" y="584">响应：寄存器值、线圈状态、异常码</text>
+
+  <rect class="purple" x="150" y="642" width="326" height="116" rx="18"/>
+  <text class="h" x="186" y="688">外设映射</text>
+  <text class="p" x="186" y="724">peripherals.json 维护从站和寄存器</text>
+
+  <rect class="purple" x="556" y="642" width="326" height="116" rx="18"/>
+  <text class="h" x="592" y="688">规则联动</text>
+  <text class="p" x="592" y="724">PeriphExec 读取或写入线圈和寄存器</text>
+
+  <rect class="purple" x="962" y="642" width="326" height="116" rx="18"/>
+  <text class="h" x="998" y="688">协议上报</text>
+  <text class="p" x="998" y="724">MQTT 上报采集值和执行结果</text>
+
+  <path class="arrow" d="M476 700 H556"/>
+  <path class="arrow" d="M882 700 H962"/>
+</svg>

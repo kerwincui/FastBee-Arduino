@@ -312,6 +312,7 @@ public:
     void clearAll() {
         _tasks.clear();
         _statistics.clear();
+        _currentTime = 0;
     }
 
     // 测试辅助方法

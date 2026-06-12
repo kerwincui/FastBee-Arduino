@@ -4,6 +4,14 @@
 
 MQTT 是 FastBee 设备与云平台/私有服务器通信的主要协议。支持设备状态上报、远程控制指令下发、遗嘱消息和自动重连。
 
+![MQTT 配置页面](../system/images/protocol-mqtt-config.png)
+
+保存配置前先确认 Broker 地址、端口、客户端 ID 和主题前缀与平台侧一致；公网或生产环境建议启用认证并评估 TLS 资源占用。
+
+![MQTT 连接与数据生命周期](../images/mqtt-connection-lifecycle.svg)
+
+连接问题按图从左到右排查：网络未就绪时先回到网络页，认证失败时核对 Broker 和账号，主题异常时再检查平台侧 Topic 约定。
+
 ## 操作指南
 
 1. 进入 Web 界面 → **MQTT 配置**（或通信协议页面）

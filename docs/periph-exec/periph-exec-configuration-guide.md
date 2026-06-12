@@ -4,7 +4,7 @@
 >
 > 如果你关心**底层实现架构、任务调度、源码逻辑**，请阅读 [`periph_exec_flow.md`](./periph_exec_flow.md)。
 >
-> 如果你关心**外设本身**（类型、引脚、编译开关），请阅读 [`peripheral-configuration-guide.md`](./peripheral-configuration-guide.md)。
+> 如果你关心**外设本身**（类型、引脚、编译开关），请阅读 [`peripheral-configuration-guide.md`](../peripherals/peripheral-configuration-guide.md)。
 
 ---
 
@@ -16,6 +16,30 @@
 - 默认配置不再内置专用蜂鸣器外设或蜂鸣器预设动作；`actionType=20` 作为历史保留位。
 - 显示屏动作在 Web 界面中按“显示屏”类别合并展示，保留“显示数字、显示文本、数码管清屏、OLED 自定义显示”四类动作，便于用户选择。
 - 配置备份和迁移建议使用“设备配置 > 高级配置 > 配置导入/导出”，可按“外设执行”单独导入导出 `periph_exec.json`。
+
+外设执行页面用于查看规则列表、启用状态、触发器和动作入口。新建规则时建议先保持禁用，保存后通过“执行一次”和日志确认动作安全。
+
+![外设执行规则列表](../system/images/periph-exec-management.png)
+
+![外设执行规则链路图](../images/periph-exec-rule-flow.svg)
+
+配置时建议按链路图从左到右填写：先确认触发器来源，再选择动作目标，最后决定是否上报执行结果；复杂规则应先禁用保存，手动执行确认后再启用。
+
+![外设执行规则生命周期](../images/periph-exec-rule-lifecycle.svg)
+
+规则上线前请按生命周期图执行：先禁用保存，再检查触发器和动作参数，手动执行确认安全后才启用自动触发；异常时优先禁用规则并恢复备份。
+
+![触发器与动作选择地图](../images/trigger-action-selection-map.svg)
+
+配置规则时先回答“什么时候执行”，再回答“执行什么动作”。触发器保持单一明确，动作先从可观察、可回滚的单动作开始。
+
+![触发器时序对比](../images/trigger-timing-comparison.svg)
+
+触发器选择错误会让后续排查绕远路。平台触发排查平台消息和协议在线，定时触发排查时钟和间隔，事件触发排查事件 ID 和防抖，轮询触发排查采样周期、超时、重试和资源占用。
+
+![外设执行规则表单安全检查](../images/rule-builder-safety-checklist.svg)
+
+在启用规则前，按图检查基础信息、触发器、动作、结果上报和回滚手段。现场有真实负载时，强动作规则必须先禁用保存并手动验证。
 
 ## 目录
 
@@ -69,6 +93,10 @@
 ## 2. 规则结构总览
 
 单条规则 JSON 结构（`data/config/periph_exec.json` 数组中的一项）：
+
+![外设执行规则数据模型](../images/periph-exec-rule-data-model.svg)
+
+阅读 JSON 时可以对照数据模型：顶层字段描述规则身份和执行策略，`triggers` 描述来源和条件，`actions` 描述目标外设和动作参数，`reportAfterExec` 决定执行后是否形成可观测反馈。
 
 ```json
 {
@@ -611,7 +639,7 @@
 ### 8.4 模板使用
 
 - OLED 多行模板首行用 `#` 开头可得到居中标题+分隔线，提升可读性。
-- 传感器数据字段名参考 [`peripheral-configuration-guide.md`](./peripheral-configuration-guide.md) 的各传感器章节。
+- 传感器数据字段名参考 [`peripheral-configuration-guide.md`](../peripherals/peripheral-configuration-guide.md) 的各传感器章节。
 - `$value` 仅在 OLED 动作 27 中启用；其他动作如需接收值，用 `useReceivedValue=true`。
 
 ### 8.5 持久化与备份
@@ -687,8 +715,8 @@
 
 ## 相关文档
 
-- [外设配置指南](./peripheral-configuration-guide.md) — 外设类型、引脚、编译开关
+- [外设配置指南](../peripherals/peripheral-configuration-guide.md) — 外设类型、引脚、编译开关
 - [PeriphExec 模块深度文档](./periph_exec_flow.md) — 实现架构、任务调度、源码分析
-- [OLED 使用指南](./oled_usage_guide.md) — LCD/OLED 硬件连线与 U8g2 字库
-- [Modbus 使用指南](./modbus_usage_guide.md) — Modbus RTU/TCP 子设备配置
+- [OLED 使用指南](../peripherals/oled_usage_guide.md) — LCD/OLED 硬件连线与 U8g2 字库
+- [Modbus 使用指南](../protocols/modbus_usage_guide.md) — Modbus RTU/TCP 子设备配置
 - [脚本引擎指南](./script-guide.md) — `ACTION_SCRIPT` 动作使用的命令序列脚本

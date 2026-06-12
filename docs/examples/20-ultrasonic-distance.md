@@ -4,6 +4,10 @@
 
 HC-SR04 超声波传感器通过发射和接收超声波来测量距离，测量范围 2~400cm，精度约 3mm。FastBee 内置 `SENSOR` 外设类型（type: 38），配合 `category: ultrasonic` 支持超声波测距。
 
+![HC-SR04 超声波测距几何](../images/ultrasonic-ranging-geometry.svg)
+
+本实验优先验证固定距离下的稳定读数，再接入报警规则。若固定距离读数不稳定，先排查供电、电平转换、反射面和 Trig/Echo 接线，不要直接调规则阈值。
+
 ## 硬件接线
 
 | 开发板标识 | GPIO引脚 | 连接设备 |
@@ -14,6 +18,15 @@ HC-SR04 超声波传感器通过发射和接收超声波来测量距离，测量
 > TRIG 发送 10μs 高电平脉冲触发测量，ECHO 返回高电平持续时间表示距离。
 
 ## FastBee 外设配置
+
+本实验的 Web 操作入口如下：先在“外设配置”创建硬件对象，再在“外设执行”添加采集、控制或显示规则。新增外设时建议先保持禁用，确认接线后再启用。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![新增外设弹窗](../system/images/peripheral-add-dialog.png)
+
+![外设执行规则列表](../system/images/periph-exec-management.png)
+
 
 ### 方式1：Web界面配置（推荐）
 

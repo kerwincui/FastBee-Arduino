@@ -17,6 +17,18 @@
 
 ### 方式1：Web界面配置（推荐）
 
+本场景需要先添加温湿度传感器、继电器和显示屏，再用外设执行规则完成采集、阈值判断、控制和显示。
+
+![外设配置列表](../../system/images/peripheral-management.png)
+
+![新增外设弹窗](../../system/images/peripheral-add-dialog.png)
+
+![外设执行规则列表](../../system/images/periph-exec-management.png)
+
+![典型场景自动化闭环](../../images/scenario-automation-loop.svg)
+
+温控场景按闭环拆解为：DHT 采集温湿度、规则判断阈值、继电器或显示屏执行动作、MQTT 或日志记录结果。
+
 #### 第一步：配置外设
 
 **步骤1：进入外设管理页面**

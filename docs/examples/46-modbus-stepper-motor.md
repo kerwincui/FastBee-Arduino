@@ -37,6 +37,17 @@
 
 ## FastBee 外设配置
 
+本实验的 Web 操作入口如下：先确认 Modbus RTU 串口参数，再在“外设配置”添加 UART/Modbus 子设备，最后通过“外设执行”完成采集或控制规则。
+
+![Modbus RTU 配置页面](../system/images/protocol-modbus-rtu.png)
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![新增外设弹窗](../system/images/peripheral-add-dialog.png)
+
+![外设执行规则列表](../system/images/periph-exec-management.png)
+
+
 1. 进入 **外设管理** 页面
 2. 点击 **添加外设**
 3. 类型选择 `UART`（type: 1）

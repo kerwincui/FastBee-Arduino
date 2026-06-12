@@ -30,6 +30,7 @@ private:
     void handleGetPeripheralStatus(AsyncWebServerRequest* request);
     void handleReadPeripheral(AsyncWebServerRequest* request);
     void handleWritePeripheral(AsyncWebServerRequest* request);
+    void handleValidatePins(AsyncWebServerRequest* request);
 };
 
 #endif // PERIPHERAL_ROUTE_HANDLER_H

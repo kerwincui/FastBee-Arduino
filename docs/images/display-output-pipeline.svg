@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="800" viewBox="0 0 1440 800">
+  <defs>
+    <style>
+      .bg{fill:#f8fafc}
+      .title{font:700 34px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .sub{font:400 18px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .box{fill:#fff;stroke:#cfd8e3;stroke-width:2}
+      .src{fill:#eef6ff;stroke:#5b9bd8;stroke-width:2}
+      .fmt{fill:#fff6e7;stroke:#d49b3d;stroke-width:2}
+      .drv{fill:#f0fbf3;stroke:#5cac75;stroke-width:2}
+      .dev{fill:#f5f0ff;stroke:#8b72c9;stroke-width:2}
+      .h{font:700 21px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .p{font:400 16px "Microsoft YaHei",Arial,sans-serif;fill:#445066}
+      .code{font:700 15px Consolas,\"Microsoft YaHei\",monospace;fill:#263248}
+      .small{font:400 14px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .arrow{stroke:#69778b;stroke-width:3;fill:none;marker-end:url(#arrow)}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#69778b"/></marker>
+  </defs>
+  <rect class="bg" width="1440" height="800"/>
+  <text class="title" x="72" y="70">显示输出管道</text>
+  <text class="sub" x="72" y="106">显示动作把传感器缓存、系统状态或平台命令格式化为文本/数值，再交给 OLED、TM1637 或 LCD 驱动输出。</text>
+
+  <rect class="src" x="78" y="176" width="270" height="150" rx="18"/>
+  <text class="h" x="116" y="222">数据来源</text>
+  <text class="p" x="116" y="260">传感器缓存</text>
+  <text class="p" x="116" y="288">系统状态、平台命令</text>
+
+  <rect class="fmt" x="418" y="176" width="270" height="150" rx="18"/>
+  <text class="h" x="456" y="222">格式化</text>
+  <text class="code" x="456" y="260">温度 ${value} C</text>
+  <text class="p" x="456" y="288">小数位、单位、行号、坐标</text>
+
+  <rect class="drv" x="758" y="176" width="270" height="150" rx="18"/>
+  <text class="h" x="796" y="222">显示驱动</text>
+  <text class="p" x="796" y="260">I2C 地址、亮度、刷新</text>
+  <text class="p" x="796" y="288">清屏、定位、滚动</text>
+
+  <rect class="dev" x="1098" y="176" width="270" height="150" rx="18"/>
+  <text class="h" x="1136" y="222">显示设备</text>
+  <text class="p" x="1136" y="260">OLED / TM1637</text>
+  <text class="p" x="1136" y="288">LCD1602 / LED 屏扩展</text>
+
+  <path class="arrow" d="M348 251 H418"/>
+  <path class="arrow" d="M688 251 H758"/>
+  <path class="arrow" d="M1028 251 H1098"/>
+
+  <rect class="box" x="174" y="486" width="300" height="132" rx="18"/>
+  <text class="h" x="212" y="532">静态文本先跑通</text>
+  <text class="p" x="212" y="570">确认供电、地址、屏幕方向</text>
+
+  <rect class="box" x="570" y="486" width="300" height="132" rx="18"/>
+  <text class="h" x="608" y="532">再接入变量</text>
+  <text class="p" x="608" y="570">传感器字段、单位、小数位</text>
+
+  <rect class="box" x="966" y="486" width="300" height="132" rx="18"/>
+  <text class="h" x="1004" y="532">最后接入规则</text>
+  <text class="p" x="1004" y="570">定时刷新、事件刷新、告警文本</text>
+
+  <path class="arrow" d="M474 552 H570"/>
+  <path class="arrow" d="M870 552 H966"/>
+  <rect class="box" x="196" y="700" width="1048" height="58" rx="16"/>
+  <text class="small" x="236" y="735">排查顺序：屏幕不亮先看供电和 I2C 地址；文本错误再看模板；刷新异常最后看外设执行规则和日志。</text>
+</svg>

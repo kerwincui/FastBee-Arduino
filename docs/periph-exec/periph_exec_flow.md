@@ -7,6 +7,24 @@
 - `/api/periph-exec` 会返回 `sensorSources`，前端“本地传感器”列表只展示已经由外设执行规则配置过的传感器采集来源。
 - 默认配置不再内置专用蜂鸣器外设或蜂鸣器预设动作；`actionType=20` 仅作为历史保留位。
 
+前端的外设执行页面展示规则启用状态、触发器数量、动作数量和手动执行入口；后端业务流程与该页面的增删改查、启用禁用和执行一次操作对应。
+
+![外设执行规则列表](../system/images/periph-exec-management.png)
+
+截图要点：外设执行列表对应后端的规则加载、调度、执行和状态反馈流程。截图中每条规则的启用状态、触发器数量、动作数量和手动执行按钮，都能映射到本文后续的 Scheduler、Executor 和 WorkerPool 说明。
+
+![外设执行规则链路图](../images/periph-exec-rule-flow.svg)
+
+链路图用于快速建立阅读顺序：先看触发源如何命中规则，再看动作队列如何执行，最后看执行结果如何反馈到日志、状态和协议上报。
+
+![外设执行规则生命周期](../images/periph-exec-rule-lifecycle.svg)
+
+生命周期图用于理解规则从禁用草稿、配置校验、手动执行、启用运行到异常回滚的状态变化；后文的 CRUD、调度和 WorkerPool 细节都可以映射到这条链路。
+
+![外设执行引擎内部结构](../images/periph-exec-engine-internals.svg)
+
+内部结构图用于把本文后续章节串起来：Manager 负责规则和配置，Scheduler 负责触发命中，Executor 负责动作分发，WorkerPool 承接慢动作和脚本任务。
+
 ## 目录
 
 - [1. 模块概述](#1-模块概述)
@@ -71,6 +89,10 @@ PeriphExec (Peripheral Execution) 是 FastBee-Arduino 物联网设备的**规则
 ---
 
 ## 2. 数据模型
+
+![外设执行规则数据模型](../images/periph-exec-rule-data-model.svg)
+
+规则数据模型可以作为阅读本章的总索引：`PeriphExecRule` 是持久化和页面展示的核心对象，触发器决定数据来源，动作决定执行目标，运行态负责互斥、队列、结果和日志。
 
 ### 2.1 枚举定义
 
@@ -647,6 +669,10 @@ actionValue 示例：
 ### 6.1 两阶段锁模式 (Two-Phase Lock Pattern)
 
 这是 PeriphExec 最核心的设计模式，所有触发入口 (`handleMqttMessage`, `handlePollData`, `triggerEvent`, `triggerButtonEvent`) 都采用此模式：
+
+![两阶段锁执行流程](../images/two-phase-execution-lock-flow.svg)
+
+两阶段锁的关键是“持锁只做匹配和快照，释锁后再执行动作”。排查并发问题时，要先区分规则集合锁和外设资源锁，避免把耗时外设操作放进规则锁保护范围。
 
 ```
 Phase 1 - 持锁阶段 (规则匹配)
@@ -1261,6 +1287,10 @@ v2 同 v1 的扁平字段 → 转换为 triggers[]/actions[] 数组
 
 ## 12. API 路由层
 
+![PeriphExec API 路由地图](../images/periph-exec-api-route-map.svg)
+
+API 路由可以按“页面操作 -> REST API -> Manager 方法 -> 配置文件/运行态”的顺序阅读。遇到页面显示成功但规则未落盘时，先看 API 响应，再看 Manager 日志，最后确认 `/config/periph_exec.json` 是否更新。
+
 ### 12.1 路由注册
 
 **位置：** `PeriphExecRouteHandler.cpp:14-72`
@@ -1280,6 +1310,7 @@ v2 同 v1 的扁平字段 → 转换为 triggers[]/actions[] 数组
 | GET | `/api/periph-exec/events/dynamic` | handleGetDynamicEvents | system.view |
 | GET | `/api/periph-exec/events/categories` | handleGetEventCategories | system.view |
 | GET | `/api/periph-exec/trigger-types` | handleGetTriggerTypes | system.view |
+| GET | `/api/periph-exec/results` | handleGetRecentResults | system.view |
 
 ### 12.2 路由注册顺序
 

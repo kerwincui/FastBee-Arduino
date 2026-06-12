@@ -2,6 +2,24 @@
 
 本文档面向希望扩展 FastBee-Arduino 功能的开发者,涵盖开发环境搭建、编码规范、测试流程、扩展开发和贡献指南。
 
+开发调试时，先通过仪表盘确认固件在线和资源余量，再用文件、日志、外设和外设执行页面核对配置和行为。下面几张实机截图是扩展开发后最常用的验证入口。
+
+![设备监控仪表盘](images/fastbee-dashboard.png)
+
+![文件管理页面](system/images/file-management.png)
+
+![设备日志页面](system/images/device-logs.png)
+
+![外设执行规则列表](system/images/periph-exec-management.png)
+
+![构建与发布产物地图](images/release-artifact-map.svg)
+
+扩展开发完成后，按产物地图检查源码、配置、Web 资源、构建环境和设备验证记录是否同步，避免只更新固件而遗漏 LittleFS 或发布说明。
+
+![文档学习路径地图](images/docs-learning-path-map.svg)
+
+开发者建议先看架构和核心框架，再进入具体外设、协议或外设执行模块；改动完成后回到测试和发布路径做验证闭环。
+
 ## 开发环境搭建
 
 ### 必需工具
@@ -648,7 +666,7 @@ Serial.printf("Stack high water: %lu bytes\n", uxTaskGetStackHighWaterMark(NULL)
 
 - [架构设计](architecture.md) - 系统架构和模块关系
 - [核心框架](core-framework.md) - 主要组件和关键类
-- [外设执行流程](periph_exec_flow.md) - 规则引擎完整业务逻辑
+- [外设执行流程](periph-exec/periph_exec_flow.md) - 规则引擎完整业务逻辑
 - [快速开始](quick-start.md) - 5 步完成首次配置
 
 ---

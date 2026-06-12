@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="800" viewBox="0 0 1440 800">
+  <defs>
+    <style>
+      .bg{fill:#f8fafc}
+      .title{font:700 34px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .sub{font:400 18px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .box{fill:#fff;stroke:#cfd8e3;stroke-width:2}
+      .blue{fill:#eef6ff;stroke:#5b9bd8;stroke-width:2}
+      .green{fill:#f0fbf3;stroke:#5cac75;stroke-width:2}
+      .orange{fill:#fff6e7;stroke:#d49b3d;stroke-width:2}
+      .purple{fill:#f5f0ff;stroke:#8b72c9;stroke-width:2}
+      .bad{fill:#fff1f0;stroke:#d96a63;stroke-width:2}
+      .h{font:700 21px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .p{font:400 16px "Microsoft YaHei",Arial,sans-serif;fill:#445066}
+      .small{font:400 14px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .topic{font:700 15px Consolas,"Microsoft YaHei",monospace;fill:#263248}
+      .arrow{stroke:#69778b;stroke-width:3;fill:none;marker-end:url(#arrow)}
+      .up{stroke:#3f9b63;stroke-width:3;fill:none;marker-end:url(#arrowGreen)}
+      .down{stroke:#2f7eca;stroke-width:3;fill:none;marker-end:url(#arrowBlue)}
+      .fail{stroke:#d96a63;stroke-width:3;fill:none;stroke-dasharray:8 8;marker-end:url(#arrowRed)}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#69778b"/></marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#3f9b63"/></marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#2f7eca"/></marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#d96a63"/></marker>
+  </defs>
+
+  <rect class="bg" width="1440" height="800"/>
+  <text class="title" x="72" y="70">MQTT 连接与数据生命周期</text>
+  <text class="sub" x="72" y="106">MQTT 配置完成后，设备会经历网络可用、认证连接、主题订阅、数据上报和断线重连几个阶段。</text>
+
+  <rect class="blue" x="78" y="168" width="250" height="150" rx="18"/>
+  <text class="h" x="112" y="214">1. 网络就绪</text>
+  <text class="p" x="112" y="252">WiFi 或以太网在线</text>
+  <text class="p" x="112" y="280">DNS 和网关可用</text>
+
+  <rect class="orange" x="398" y="168" width="250" height="150" rx="18"/>
+  <text class="h" x="432" y="214">2. Broker 认证</text>
+  <text class="p" x="432" y="252">host、port、clientId</text>
+  <text class="p" x="432" y="280">username、password、TLS</text>
+
+  <rect class="green" x="718" y="168" width="250" height="150" rx="18"/>
+  <text class="h" x="752" y="214">3. 主题订阅</text>
+  <text class="p" x="752" y="252">命令、配置、规则控制</text>
+  <text class="p" x="752" y="280">保留订阅和心跳</text>
+
+  <rect class="purple" x="1038" y="168" width="250" height="150" rx="18"/>
+  <text class="h" x="1072" y="214">4. 数据上报</text>
+  <text class="p" x="1072" y="252">遥测、事件、执行结果</text>
+  <text class="p" x="1072" y="280">平台确认在线状态</text>
+
+  <path class="arrow" d="M328 243 H398"/>
+  <path class="arrow" d="M648 243 H718"/>
+  <path class="arrow" d="M968 243 H1038"/>
+
+  <rect class="box" x="114" y="430" width="340" height="160" rx="18"/>
+  <text class="h" x="152" y="476">上行主题</text>
+  <text class="topic" x="152" y="516">telemetry / event / status</text>
+  <text class="p" x="152" y="550">传感器读数、状态、外设执行结果</text>
+
+  <rect class="box" x="550" y="430" width="340" height="160" rx="18"/>
+  <text class="h" x="588" y="476">下行主题</text>
+  <text class="topic" x="588" y="516">command / config / rule</text>
+  <text class="p" x="588" y="550">平台控制、配置下发、规则触发</text>
+
+  <rect class="bad" x="986" y="430" width="340" height="160" rx="18"/>
+  <text class="h" x="1024" y="476">异常处理</text>
+  <text class="p" x="1024" y="516">认证失败、心跳超时、DNS 失败</text>
+  <text class="p" x="1024" y="550">记录日志并按重连策略恢复</text>
+
+  <path class="up" d="M1163 318 V370 H284 V430"/>
+  <path class="down" d="M843 318 V370 H720 V430"/>
+  <path class="fail" d="M523 318 V370 H1156 V430"/>
+
+  <rect class="box" x="170" y="672" width="1100" height="58" rx="16"/>
+  <text class="small" x="208" y="707">排查顺序：先看网络状态，再看 MQTT 配置页连接状态，最后对照日志中的 broker、clientId、认证和主题错误。</text>
+</svg>

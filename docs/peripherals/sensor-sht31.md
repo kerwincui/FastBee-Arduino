@@ -17,6 +17,12 @@ SHT31 是常用 I2C 温湿度传感器，精度和稳定性优于 DHT11，适合
 
 ### 方式1：Web界面配置（推荐）
 
+外设配置页和新增弹窗的实机界面如下。SHT31 保存前重点核对 I2C 地址、采样间隔和温湿度字段。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![新增外设弹窗](../system/images/peripheral-add-dialog.png)
+
 #### 步骤1：进入外设管理页面
 
 1. 打开浏览器访问 ESP32 IP 地址
@@ -166,4 +172,3 @@ SHT31 是常用 I2C 温湿度传感器，精度和稳定性优于 DHT11，适合
 |---|---|---|
 | `temperature` | 温度 | ℃ |
 | `humidity` | 相对湿度 | % |
-

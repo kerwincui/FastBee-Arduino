@@ -2,6 +2,16 @@
 
 本文档说明 FastBee-Arduino 仓库的主要目录、关键文件和生成产物。后续维护时优先按这里的边界修改，避免把生成文件、源码和发布产物混在一起。
 
+仓库中的 `web-src/`、`data/www/`、`data/config/` 和 LittleFS 运行时文件，最终会在设备端 Web 控制台中体现。文件管理页适合核对设备上的配置文件、日志和 Web 资源是否与源码构建产物一致。
+
+![文件管理页面](system/images/file-management.png)
+
+![设备配置页面](system/images/device-config.png)
+
+![构建与发布产物地图](images/release-artifact-map.svg)
+
+目录边界可以按产物地图理解：源码、配置和 Web 资源是输入，`.pio/` 是构建缓存，`dist/` 是发布输出；交付时只引用可追溯的构建产物和验收记录。
+
 ## 顶层目录
 
 | 路径 | 说明 |

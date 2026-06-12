@@ -2,6 +2,26 @@
 
 本清单用于每次功能调整、版本发布和现场部署前确认 FastBee-Arduino 在对应芯片上可构建、可部署、可长期运行。
 
+发布前除了脚本检查，还需要人工确认 Web 控制台关键页面：登录后仪表盘状态正常，网络在线，日志无异常告警，文件/配置备份可访问。
+
+![部署后登录页](images/fastbee-login.png)
+
+![部署后仪表盘](images/fastbee-dashboard.png)
+
+![网络基础配置](system/images/network-settings.png)
+
+![设备日志页面](system/images/device-logs.png)
+
+截图验收要点：登录页用于确认 Web 文件系统和认证入口正常；仪表盘用于确认固件、网络、内存和运行时间；网络配置用于确认现场连接参数；设备日志用于确认启动、MQTT、外设初始化和健康监控没有异常告警。
+
+发布检查推荐按测试金字塔逐层加码：先通过低成本检查，再进入构建、真机冒烟和长期稳定性验证。
+
+![测试验证金字塔](images/testing-verification-pyramid.svg)
+
+![真实设备 API 冒烟测试流程](images/api-smoke-test-flow.svg)
+
+冒烟测试通过后才进入长稳阶段；如果冒烟阶段已经出现认证、网络、版本能力或资源指标异常，应先定位并重刷固件或回滚配置。
+
 ## 1. 本地环境检查
 
 ```powershell
@@ -142,9 +162,31 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl 
 
 ## 6. 长期稳定性
 
+![长期稳定性测试反馈闭环](images/soak-test-feedback-loop.svg)
+
+长稳阶段重点看趋势，不只看最后一轮是否成功。若 CSV 中出现耗时持续升高、heap/maxAlloc 持续下降、同一接口间歇失败或认证偶发失效，应先归类根因再决定是修复、降频、关闭高风险功能还是回滚发布。
+
+### 发布级阈值预设
+
+长稳阈值统一由 `scripts/device-stability-thresholds.json` 管理，按 Lite / Standard / Full 三档分别定义发布级门控。使用 `-StabilityPreset release` 即可自动套用，不再需要逐个手填参数：
+
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\soak-test-device.ps1 -BaseUrl http://192.168.5.116 -Profile full -Rounds 100 -RetryCount 2 -DelayMs 500 -RequireNetworkConnected -ReportPath .pio\test-results\soak-full.csv
+powershell -ExecutionPolicy Bypass -File scripts\soak-test-device.ps1 -BaseUrl http://192.168.5.116 -Profile full -Rounds 100 -StabilityPreset release -RequireNetworkConnected -ReportPath .pio\test-results\soak-full.csv
 ```
+
+通过 `test-all.ps1` 统一入口时，预设参数会自动透传到 soak 脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -Command ".\scripts\test-all.ps1 -Checks device-soak -StabilityPreset release -SoakRounds 100 -DeviceProfile full"
+```
+
+如果需要临时放宽或收紧某项阈值，直接传参即可覆盖预设值（脚本会在启动日志中标注来源）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\soak-test-device.ps1 -BaseUrl http://192.168.5.116 -Profile full -Rounds 100 -StabilityPreset release -MaxP95LatencyMs 8000 -MinHeapFreeBytes 30000
+```
+
+阈值矩阵校验由 `scripts/validate-stability-thresholds.js` 负责，已纳入 static 检查。校验项包括：三档字段完整性、数值合法性、Full 档位 PSRAM 强制要求、以及 Lite ≤ Standard ≤ Full 的单调递增约束。
 
 CSV 报告会记录每个接口的状态、耗时、失败原因、`heapFree`、`heapMaxAlloc`、`psramFree` 和 `psramTotal`。如果出现偶发 `503 Low memory`，优先查看第一次失败前后的 heap/maxAlloc 和接口名称。
 
@@ -156,7 +198,8 @@ CSV 报告会记录每个接口的状态、耗时、失败原因、`heapFree`、
 | `-TimeoutSec` | 10 | 单次请求超时（秒） |
 | `-RetryCount` | 1 | 瞬态错误重试次数 |
 | `-DelayMs` | 500 | 请求间隔（毫秒） |
-| `-MaxFailureRatePercent` | 0 | 可容忍失败率，0 表示零容忍 |
+| `-StabilityPreset` | disabled | 阈值预设，`release` 自动套用 `device-stability-thresholds.json` 中对应档位的发布级门控 |
+| `-MaxFailureRatePercent` | 0 | 可容忍失败率，0 表示零容忍（preset 已填充时可省略） |
 | `-AuthChecksEvery` | 0 | 每 N 轮重新验证登录，0 表示不重复验证 |
 
 ## 7. 发布产物
@@ -176,6 +219,10 @@ powershell -ExecutionPolicy Bypass -File scripts\flash-release.ps1 -Env esp32s3-
 这会直接写入 `dist\firmware\all-latest` 中对应环境的合并镜像（默认波特率 921600），适合恢复被中断的升级或量产烧录。添加 `-DryRun` 可预览而不实际写入。
 
 ## 8. 现场问题定位
+
+现场排障建议先确认 Web 控制台是否可达，再看仪表盘资源状态，最后定位 MQTT、外设规则和配置文件。
+
+![现场故障排查决策树](images/troubleshooting-decision-tree.svg)
 
 低内存或接口偶发失败时，优先采集：
 

@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "description": "Profile-specific stability guard thresholds for device soak tests.",
+  "presets": {
+    "release": {
+      "description": "Conservative release gate for long-running device validation.",
+      "profiles": {
+        "lite": {
+          "maxFailureRatePercent": 0,
+          "maxP95LatencyMs": 5000,
+          "maxConsecutiveFailures": 1,
+          "maxEndpointFailureRatePercent": 0,
+          "maxUptimeResetCount": 0,
+          "minHeapFreeBytes": 16000,
+          "minHeapMaxAllocBytes": 8000,
+          "maxHeapFreeDropBytes": 20000,
+          "maxHeapMaxAllocDropBytes": 12000,
+          "minPsramFreeBytes": 0,
+          "maxPsramFreeDropBytes": 0
+        },
+        "standard": {
+          "maxFailureRatePercent": 0,
+          "maxP95LatencyMs": 5000,
+          "maxConsecutiveFailures": 1,
+          "maxEndpointFailureRatePercent": 0,
+          "maxUptimeResetCount": 0,
+          "minHeapFreeBytes": 20000,
+          "minHeapMaxAllocBytes": 10000,
+          "maxHeapFreeDropBytes": 25000,
+          "maxHeapMaxAllocDropBytes": 16000,
+          "minPsramFreeBytes": 0,
+          "maxPsramFreeDropBytes": 0
+        },
+        "full": {
+          "maxFailureRatePercent": 0,
+          "maxP95LatencyMs": 7000,
+          "maxConsecutiveFailures": 1,
+          "maxEndpointFailureRatePercent": 0,
+          "maxUptimeResetCount": 0,
+          "minHeapFreeBytes": 24000,
+          "minHeapMaxAllocBytes": 12000,
+          "maxHeapFreeDropBytes": 40000,
+          "maxHeapMaxAllocDropBytes": 24000,
+          "minPsramFreeBytes": 262144,
+          "maxPsramFreeDropBytes": 524288
+        }
+      }
+    }
+  }
+}

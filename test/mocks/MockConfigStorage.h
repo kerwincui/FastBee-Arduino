@@ -148,7 +148,7 @@ public:
             }
         }
         
-        DeserializationError error = deserializeJson(doc, it->second);
+        DeserializationError error = deserializeJson(doc, it->second.c_str());
         return error == DeserializationError::Ok;
     }
 
@@ -230,7 +230,7 @@ public:
     bool importConfig(const char* path, const String& jsonData) {
         // 验证JSON格式
         JsonDocument doc;
-        DeserializationError error = deserializeJson(doc, jsonData);
+        DeserializationError error = deserializeJson(doc, jsonData.c_str());
         if (error != DeserializationError::Ok) {
             return false;
         }

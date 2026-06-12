@@ -41,6 +41,12 @@ static void resetAuthState() {
     // 重置 admin 密码
     userMgr->resetPassword("admin", "admin123");
     
+    // 清除非系统角色，避免跨测试污染
+    auto roleIds = roleMgr->getRoleIds();
+    for (auto& id : roleIds) {
+        roleMgr->deleteRole(id);  // 系统角色受保护，不会被删除
+    }
+
     // 重新创建 AuthManager
     if (authMgr) delete authMgr;
     authMgr = new MockAuthManager(userMgr, roleMgr);
@@ -257,7 +263,7 @@ static void test_role_permission_check() {
     
     // admin 拥有所有权限
     TEST_ASSERT_TRUE(roleMgr->roleHasPermission("admin", "device.view"));
-    TEST_ASSERT_TRUE(roleMgr->roleHasPermission("admin", "system.reboot"));
+    TEST_ASSERT_TRUE(roleMgr->roleHasPermission("admin", "system.restart"));
     TEST_ASSERT_TRUE(roleMgr->roleHasPermission("admin", "user.delete"));
     
     // viewer 只有只读权限
@@ -412,7 +418,7 @@ static void test_user_has_permission() {
     
     // admin 用户有 admin 角色，拥有所有权限
     TEST_ASSERT_TRUE(authMgr->userHasPermission("admin", "device.view"));
-    TEST_ASSERT_TRUE(authMgr->userHasPermission("admin", "system.reboot"));
+    TEST_ASSERT_TRUE(authMgr->userHasPermission("admin", "system.restart"));
     TEST_ASSERT_TRUE(authMgr->userHasPermission("admin", "user.delete"));
 }
 
@@ -422,7 +428,7 @@ static void test_session_has_permission() {
     String sessionId = authMgr->authenticate("admin", "admin123");
     
     TEST_ASSERT_TRUE(authMgr->sessionHasPermission(sessionId, "device.view"));
-    TEST_ASSERT_TRUE(authMgr->sessionHasPermission(sessionId, "system.reboot"));
+    TEST_ASSERT_TRUE(authMgr->sessionHasPermission(sessionId, "system.restart"));
 }
 
 static void test_check_permission_resource_action() {
@@ -432,7 +438,7 @@ static void test_check_permission_resource_action() {
     
     // checkPermission 使用 resource + action 格式
     TEST_ASSERT_TRUE(authMgr->checkPermission(sessionId, "device", "view"));
-    TEST_ASSERT_TRUE(authMgr->checkPermission(sessionId, "system", "config"));
+    TEST_ASSERT_TRUE(authMgr->checkPermission(sessionId, "config", "edit"));
 }
 
 static void test_viewer_permission_boundary() {

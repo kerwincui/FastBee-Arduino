@@ -2,6 +2,25 @@
 
 本文面向实际接线和 Web 配置使用，覆盖从首次启动到外设配置、外设执行、传感器联动、导入导出和排错的完整流程。
 
+## Web 界面地图
+
+FastBee 的 Web 管理界面以左侧菜单组织功能：先看仪表盘确认设备在线，再进入网络、外设、规则和协议页面完成配置。以下截图来自同一台 ESP32-S3 设备，便于对照实际页面操作。
+
+![Web 控制台导航图](images/web-console-navigation-map.svg)
+
+![设备监控仪表盘](images/fastbee-dashboard.png)
+
+| 菜单 | 截图 | 主要用途 |
+|---|---|---|
+| 网络设置 | ![网络设置](system/images/network-settings.png) | 查看联网状态、配置 WiFi STA/AP、mDNS、静态 IP。 |
+| 外设配置 | ![外设配置](system/images/peripheral-management.png) | 添加传感器、GPIO、ADC、Modbus 子设备等外设对象。 |
+| 外设执行 | ![外设执行](system/images/periph-exec-management.png) | 创建定时、事件、平台触发等自动化规则。 |
+| 通信协议 | ![通信协议](system/images/protocol-mqtt-config.png) | 配置 MQTT 云平台连接和 Modbus RTU 总线。 |
+| 设备配置 | ![设备配置](system/images/device-config.png) | 修改设备名称、编号、NTP、开发环境开关等系统参数。 |
+| 文件管理 | ![文件管理](system/images/file-management.png) | 浏览 LittleFS、导入导出配置、下载日志或备份文件。 |
+
+如果只想先按截图熟悉页面入口，可阅读 [Web 控制台图文导览](web-console-visual-guide.md)。
+
 ## 1. 固件版本选择
 
 本项目基于 **Arduino-ESP32 3.x**（ESP-IDF 5.1+）构建，支持 ESP32 全系列芯片，分为三个版本层级：
@@ -19,6 +38,8 @@
 - 需要以太网、4G 或 Modbus：`esp32` 或 `esp32s3`
 - 需要 OTA、多用户、文件/日志、RuleScript、多语言或 LoRa：`esp32s3-full`
 - 详细对比见 [版本对比指南](system/edition-comparison.md)
+
+![固件版本选型决策图](images/version-selection-guide.svg)
 
 ## 2. 快速开始
 
@@ -51,6 +72,10 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl 
 
 设备已连入局域网时，将 `BaseUrl` 替换为实际 IP；全功能版使用 `-Profile full`。
 
+部署完成后，浏览器进入 Web 控制台应先看到仪表盘数据。若页面可访问但状态为空，通常是设备仍在启动或会话已过期，刷新并重新登录即可继续检查。
+
+![部署后仪表盘检查](images/fastbee-dashboard.png)
+
 ## 3. 网络与 MQTT 平台对接
 
 建议先确认“网络在线”，再配置 MQTT。MQTT 会使用当前活动网络传输：WiFi 场景走 `WiFiClient`，标准版/全功能版在以太网或 4G 在线时走对应适配器。
@@ -73,7 +98,11 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl 
 4. 使用页面上的 MQTT 连接测试，确认返回 connected。
 5. 创建外设执行规则时，平台触发使用 MQTT 下发，采集和执行结果通过 MQTT 上报。
 
-更多主题和消息格式说明见 [MQTT 配置](protocols/mqtt-config.md) 和 [统一网络 MQTT 说明](MQTT_UNIFIED_NETWORK.md)。
+更多主题和消息格式说明见 [MQTT 配置](protocols/mqtt-config.md) 和 [协议概览](protocols/README.md)。
+
+![网络配置页面](system/images/network-settings.png)
+
+![MQTT 配置页面](system/images/protocol-mqtt-config.png)
 
 ## 4. 外设配置基本规则
 
@@ -105,6 +134,16 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl 
 | TM1637 | 47 | 四位数码管 |
 | Modbus 设备 | 51 | RS485 从站控制（标准版/全功能版） |
 | DEVICE_EVENT | 60 | 逻辑事件源 |
+
+Web 页面新增外设时会按类型展开不同参数。建议先保存为禁用状态，确认引脚和供电后再启用。
+
+![外设配置列表](system/images/peripheral-management.png)
+
+![新增外设弹窗](system/images/peripheral-add-dialog.png)
+
+![外设配置数据模型](images/peripheral-config-data-model.svg)
+
+如果外设保存成功但运行不生效，按图检查页面字段、`peripherals.json`、运行时驱动和规则引用是否使用同一个外设 ID。
 
 ## 5. 外设执行基本规则
 
@@ -159,6 +198,16 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl 
 | 21 | 触发事件 | 向平台或本地规则发出逻辑事件 |
 | 24/25/26/27 | 显示动作 | TM1637、OLED 显示 |
 
+外设执行页面重点核对规则是否启用、触发器来源、动作数量和目标外设。首次上线建议保持规则禁用，先通过“执行一次”观察日志和外设状态。
+
+![外设执行规则列表](system/images/periph-exec-management.png)
+
+![触发器时序对比](images/trigger-timing-comparison.svg)
+
+![外设执行规则表单安全检查](images/rule-builder-safety-checklist.svg)
+
+普通用户配置规则时可以先看这两张图：触发器时序图帮助选择平台、定时、事件或轮询；安全检查图帮助确认启用前是否具备日志、上报和回滚手段。
+
 ## 6. 传感器读取 actionValue
 
 `actionType: 19` 使用 JSON 字符串描述读取方式。Web 表单会自动生成该字符串，也可以手动编辑。
@@ -198,6 +247,10 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl 
 
 ## 7. 典型场景
 
+![典型场景自动化闭环](images/scenario-automation-loop.svg)
+
+下面的场景都可以按“采集、判断、执行、上报、复核”的闭环拆解。初次配置时先跑单传感器、单规则、单动作，确认后再组合显示、告警和平台上报。
+
 ### 温湿度超过阈值打开继电器
 
 1. 配置 DHT11/DHT22/SHT31/AHT20。
@@ -234,6 +287,14 @@ powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl 
 - I2C 模块可以共用同一组 SDA/SCL，但地址不能冲突。
 - GPIO6-GPIO11 通常连接 Flash，不建议作为外设引脚。
 - GPIO34-GPIO39 仅输入，适合 ADC/数字输入，不适合继电器输出。
+
+全功能版可以直接在文件管理页查看和维护 LittleFS 文件，现场迁移前建议优先导出配置文件。
+
+![文件管理页面](system/images/file-management.png)
+
+配置导入导出建议按下图形成固定流程：每次修改先备份，导入前校验 JSON，导入后用仪表盘、日志和对应功能页复核。
+
+![配置文件生命周期流程图](images/config-lifecycle-flow.svg)
 
 ## 9. 排错
 

@@ -15,6 +15,28 @@
 - Modbus RTU 配置、子设备和映射保存在 `/config/protocol.json`，可在“设备配置 > 高级配置 > 配置导入/导出”中按“通信协议”单独备份或恢复。
 - 导入 `protocol.json` 后建议重启设备，确保串口、主站任务和子设备映射从新配置重新初始化。
 
+Modbus 调试主要在“通信协议 / Modbus RTU”页面完成；涉及联动时，再到“外设执行”页面创建轮询或控制规则。
+
+![Modbus RTU 配置页面](../system/images/protocol-modbus-rtu.png)
+
+![外设执行规则列表](../system/images/periph-exec-management.png)
+
+![Modbus RTU 主站轮询链路](../images/modbus-rtu-polling-flow.svg)
+
+调试时建议先让主站稳定读到单个从站，再扩展到多从站轮询；涉及控制动作时，再接入外设执行规则并观察日志。
+
+![Modbus RTU 调试闭环](../images/modbus-debug-loop.svg)
+
+遇到超时或异常码时按闭环图逐层排查：先物理层，再串口参数和从站映射，最后才检查外设执行控制动作和业务规则。
+
+![Modbus RTU 寄存器映射地图](../images/modbus-register-map.svg)
+
+配置寄存器前先对照映射地图确认三件事：功能码是否匹配目标数据区，手册地址是显示地址还是协议地址，FastBee API 中的 `address` 是否需要减 1。多数“读数偏一位”或“能读不能写”都出在这三处。
+
+![Modbus API 与功能码映射](../images/modbus-api-function-map.svg)
+
+当你从 Web 面板或 REST API 发起控制时，可用上图快速定位对应功能码和数据区。调试时先确认 API 参数和功能码匹配，再检查地址偏移、串口参数和从站响应。
+
 ## 目录
 
 1. [概述](#1-概述)
@@ -390,6 +412,10 @@ FC 0x02（Read Discrete Inputs）
 ## 5. REST API 参考
 
 所有 API 需要登录认证（Bearer Token 或 Session Cookie）。
+
+![Modbus API 与功能码映射](../images/modbus-api-function-map.svg)
+
+REST API 章节建议配合这张图阅读：线圈类接口对应 Coils 数据区，寄存器读写接口对应 Holding/Input Registers，设备参数和专有命令可能走私有帧或特定功能码。
 
 ### 5.1 线圈控制 API
 
@@ -1068,6 +1094,8 @@ FC 0x02（Read Discrete Inputs）
 ---
 
 ## 附录 A：Modbus RTU 帧结构
+
+帧结构排查建议结合前文的“Modbus RTU 寄存器映射地图”：先确认从站地址和功能码，再确认 `Addr` 字段是否使用协议地址。很多继电器板手册会把 `00001`、`40001` 当作人类可读地址，实际 RTU 帧中对应地址可能是 `0x0000`。
 
 ### 请求帧（Master -> Slave）
 

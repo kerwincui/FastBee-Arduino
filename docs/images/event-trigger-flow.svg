@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="800" viewBox="0 0 1440 800">
+  <defs>
+    <style>
+      .bg{fill:#f7f9fb}
+      .title{font:700 34px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .sub{font:400 18px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .box{fill:#fff;stroke:#cfd8e3;stroke-width:2}
+      .input{fill:#eef6ff;stroke:#5b9bd8;stroke-width:2}
+      .event{fill:#fff6e7;stroke:#d49b3d;stroke-width:2}
+      .rule{fill:#f5f0ff;stroke:#8b72c9;stroke-width:2}
+      .action{fill:#f0fbf3;stroke:#5cac75;stroke-width:2}
+      .h{font:700 21px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .p{font:400 16px "Microsoft YaHei",Arial,sans-serif;fill:#445066}
+      .code{font:700 15px Consolas,\"Microsoft YaHei\",monospace;fill:#263248}
+      .small{font:400 14px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .arrow{stroke:#69778b;stroke-width:3;fill:none;marker-end:url(#arrow)}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#69778b"/></marker>
+  </defs>
+  <rect class="bg" width="1440" height="800"/>
+  <text class="title" x="72" y="70">按键与事件触发链路</text>
+  <text class="sub" x="72" y="106">GPIO 输入、设备事件和传感器缓存事件会被规范化为 eventId，再由外设执行规则匹配并触发动作。</text>
+
+  <rect class="input" x="82" y="176" width="260" height="150" rx="18"/>
+  <text class="h" x="120" y="222">输入源</text>
+  <text class="p" x="120" y="260">按键、门磁、PIR</text>
+  <text class="p" x="120" y="288">设备状态、传感器缓存</text>
+
+  <rect class="event" x="422" y="176" width="260" height="150" rx="18"/>
+  <text class="h" x="460" y="222">事件识别</text>
+  <text class="code" x="460" y="260">button_click</text>
+  <text class="code" x="460" y="288">ds:dht_01_temperature</text>
+
+  <rect class="rule" x="762" y="176" width="260" height="150" rx="18"/>
+  <text class="h" x="800" y="222">规则匹配</text>
+  <text class="p" x="800" y="260">eventId、数据源、条件</text>
+  <text class="p" x="800" y="288">启用状态和防抖间隔</text>
+
+  <rect class="action" x="1102" y="176" width="260" height="150" rx="18"/>
+  <text class="h" x="1140" y="222">动作执行</text>
+  <text class="p" x="1140" y="260">GPIO、PWM、显示、MQTT</text>
+  <text class="p" x="1140" y="288">日志和结果上报</text>
+
+  <path class="arrow" d="M342 251 H422"/>
+  <path class="arrow" d="M682 251 H762"/>
+  <path class="arrow" d="M1022 251 H1102"/>
+
+  <rect class="box" x="190" y="490" width="310" height="132" rx="18"/>
+  <text class="h" x="228" y="536">先看原始事件</text>
+  <text class="p" x="228" y="574">串口或设备日志确认 eventId</text>
+
+  <rect class="box" x="565" y="490" width="310" height="132" rx="18"/>
+  <text class="h" x="603" y="536">再建单动作规则</text>
+  <text class="p" x="603" y="574">只控制一个安全目标</text>
+
+  <rect class="box" x="940" y="490" width="310" height="132" rx="18"/>
+  <text class="h" x="978" y="536">最后组合联动</text>
+  <text class="p" x="978" y="574">加入显示、上报、延时和回滚</text>
+
+  <path class="arrow" d="M500 556 H565"/>
+  <path class="arrow" d="M875 556 H940"/>
+  <rect class="box" x="202" y="700" width="1036" height="58" rx="16"/>
+  <text class="small" x="242" y="735">调试建议：事件触发不生效时，先确认 eventId 是否产生，再检查规则是否启用和目标动作是否安全可执行。</text>
+</svg>

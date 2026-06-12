@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="800" viewBox="0 0 1440 800">
+  <defs>
+    <style>
+      .bg{fill:#f7f9fb}
+      .title{font:700 34px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .sub{font:400 18px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .box{fill:#fff;stroke:#cfd8e3;stroke-width:2}
+      .in{fill:#eef6ff;stroke:#5b9bd8;stroke-width:2}
+      .rule{fill:#f5f0ff;stroke:#8b72c9;stroke-width:2}
+      .out{fill:#f0fbf3;stroke:#5cac75;stroke-width:2}
+      .warn{fill:#fff6e7;stroke:#d49b3d;stroke-width:2}
+      .bad{fill:#fff1f0;stroke:#d96a63;stroke-width:2}
+      .h{font:700 21px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .p{font:400 16px "Microsoft YaHei",Arial,sans-serif;fill:#445066}
+      .code{font:700 15px Consolas,"Microsoft YaHei",monospace;fill:#263248}
+      .small{font:400 14px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .arrow{stroke:#69778b;stroke-width:3;fill:none;marker-end:url(#arrow)}
+      .guard{stroke:#d96a63;stroke-width:3;fill:none;stroke-dasharray:8 8;marker-end:url(#arrowRed)}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#69778b"/></marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#d96a63"/></marker>
+  </defs>
+
+  <rect class="bg" width="1440" height="800"/>
+  <text class="title" x="72" y="70">脚本与模板转换管道</text>
+  <text class="sub" x="72" y="106">脚本系统把平台消息、传感器读数和执行结果统一进入匹配、模板解析、转换和输出链路。</text>
+
+  <rect class="in" x="74" y="176" width="260" height="160" rx="18"/>
+  <text class="h" x="112" y="222">输入数据</text>
+  <text class="p" x="112" y="260">MQTT 命令</text>
+  <text class="p" x="112" y="288">HTTP/API 请求</text>
+  <text class="p" x="112" y="316">sensor_cache 数据源</text>
+
+  <rect class="rule" x="414" y="176" width="260" height="160" rx="18"/>
+  <text class="h" x="452" y="222">规则匹配</text>
+  <text class="p" x="452" y="260">协议类型</text>
+  <text class="p" x="452" y="288">Topic 或事件 ID</text>
+  <text class="p" x="452" y="316">优先级和启用状态</text>
+
+  <rect class="warn" x="754" y="176" width="260" height="160" rx="18"/>
+  <text class="h" x="792" y="222">模板解析</text>
+  <text class="code" x="792" y="260">${temperature}</text>
+  <text class="code" x="792" y="288">ds:dht_01_humidity</text>
+  <text class="p" x="792" y="316">字段替换和格式化</text>
+
+  <rect class="out" x="1094" y="176" width="260" height="160" rx="18"/>
+  <text class="h" x="1132" y="222">输出结果</text>
+  <text class="p" x="1132" y="260">动作参数</text>
+  <text class="p" x="1132" y="288">上报 payload</text>
+  <text class="p" x="1132" y="316">显示文本或控制值</text>
+
+  <path class="arrow" d="M334 256 H414"/>
+  <path class="arrow" d="M674 256 H754"/>
+  <path class="arrow" d="M1014 256 H1094"/>
+
+  <rect class="box" x="166" y="492" width="310" height="138" rx="18"/>
+  <text class="h" x="204" y="538">轻量命令脚本</text>
+  <text class="p" x="204" y="574">适合固定字段转换</text>
+  <text class="p" x="204" y="602">低资源版本优先使用</text>
+
+  <rect class="box" x="565" y="492" width="310" height="138" rx="18"/>
+  <text class="h" x="603" y="538">RuleScript</text>
+  <text class="p" x="603" y="574">适合复杂表达式和组合逻辑</text>
+  <text class="p" x="603" y="602">建议 Full 或定制构建启用</text>
+
+  <rect class="bad" x="964" y="492" width="310" height="138" rx="18"/>
+  <text class="h" x="1002" y="538">失败保护</text>
+  <text class="p" x="1002" y="574">模板字段缺失或解析失败</text>
+  <text class="p" x="1002" y="602">记录日志并返回原始数据或空值</text>
+
+  <path class="arrow" d="M884 336 V420 H321 V492"/>
+  <path class="arrow" d="M884 336 V420 H720 V492"/>
+  <path class="guard" d="M884 336 V420 H1119 V492"/>
+
+  <rect class="box" x="186" y="696" width="1068" height="58" rx="16"/>
+  <text class="small" x="226" y="731">调试建议：先用固定模板跑通数据字段，再逐步加入条件、脚本和动作联动，避免一次性把协议、模板和外设问题混在一起。</text>
+</svg>

@@ -177,18 +177,15 @@ public:
         if (_inProgress) return false;
         
         _url = url;
-        _state = OTAState::OTA_DOWNLOADING;
-        _inProgress = true;
         
         // 模拟下载过程
         if (_shouldFail) {
             _state = OTAState::OTA_FAILED;
             _error = OTAError::OTA_ERROR_NETWORK;
-            _inProgress = false;
             return false;
         }
         
-        // 假设固件大小为100KB
+        // 假设固件大小为100KB，beginOTA 会设置 _inProgress 和 _state
         return beginOTA(102400);
     }
 

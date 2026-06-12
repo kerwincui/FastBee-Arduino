@@ -27,9 +27,19 @@ GPIO 数字输出用于控制继电器、LED、蜂鸣器、直流电机等执行
 | 蜂鸣器 | GPIO → 有源蜂鸣器+ | 高电平发声 |
 | 直流电机 | GPIO → 电机驱动模块 | 需外部驱动电路 |
 
+![GPIO、ADC、PWM 接线校验图](../images/gpio-adc-pwm-wiring-check.svg)
+
+数字输出会直接驱动现场负载，配置时先保持外设禁用，确认继电器或电机驱动模块的触发电平后，再用单项动作验证。
+
 ## 配置方式
 
 ### 方式1：Web界面配置（推荐）
+
+外设配置页和新增弹窗的实机界面如下。不同外设类型会展开不同参数，保存前重点核对外设 ID、类型、引脚和启用状态。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![新增外设弹窗](../system/images/peripheral-add-dialog.png)
 
 #### 步骤1：进入外设管理页面
 

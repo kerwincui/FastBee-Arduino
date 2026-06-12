@@ -1,5 +1,17 @@
 # 外设执行引擎 — 定时任务与 Modbus 轮询防卡死优化改进文档
 
+定时任务和 Modbus 轮询的优化需要同时关注外设执行规则列表和 Modbus RTU 配置页。规则侧看触发频率、动作数量和启用状态；协议侧看串口、从站、轮询和寄存器映射。
+
+![外设执行规则列表](../system/images/periph-exec-management.png)
+
+![Modbus RTU 配置页面](../system/images/protocol-modbus-rtu.png)
+
+截图要点：优化定时任务时，外设执行截图用于检查规则是否过密、动作链是否过长；Modbus RTU 截图用于检查轮询周期、从站数量和寄存器映射。两张截图要一起看，才能判断瓶颈是在规则调度侧还是串口总线侧。
+
+![Modbus RTU 调试闭环](../images/modbus-debug-loop.svg)
+
+优化时先用单从站低频轮询确认总线稳定，再逐步增加寄存器、控制动作和外设执行规则；批次总超时和堆守卫用于兜住异常从站或过密轮询。
+
 ## 1. 架构概述
 
 外设执行引擎采用 **Manager → Scheduler → Executor → WorkerPool** 四层架构：

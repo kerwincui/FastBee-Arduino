@@ -15,6 +15,18 @@
 
 ## FastBee 外设配置
 
+本实验的 Web 操作入口如下：先在“外设配置”创建硬件对象，再在“外设执行”添加采集、控制或显示规则。新增外设时建议先保持禁用，确认接线后再启用。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![新增外设弹窗](../system/images/peripheral-add-dialog.png)
+
+![外设执行规则列表](../system/images/periph-exec-management.png)
+
+![命令脚本执行流程](../images/command-script-execution-flow.svg)
+
+流水灯脚本适合按“单命令、短脚本、完整脚本”的顺序调试。先确认每个 LED 外设能单独开关，再把 `PERIPH` 和 `DELAY` 组合成流水效果。
+
 为4个 LED 分别创建 GPIO_DIGITAL_OUTPUT 外设：
 
 ```json
@@ -355,8 +367,8 @@ LED1 → LED2 → LED3 → LED4 → LED3 → LED2 → (循环)
 
 - [实验3：LED流水灯（JavaScript脚本）](03-led-flowing.md)
 - [脚本动作文档](../periph-exec/actions/script-actions.md)
-- [外设执行配置指南](../periph-exec-configuration-guide.md)
-- [脚本命令参考](../script-guide.md)
+- [外设执行配置指南](../periph-exec/periph-exec-configuration-guide.md)
+- [脚本命令参考](../periph-exec/script-guide.md)
 
 ---
 

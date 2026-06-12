@@ -79,6 +79,8 @@ public:
         _health = SystemHealth();
         _wifiOverride = false;
         _heapOverride = false;
+        _fsOverride = false;
+        _checks.clear();
         return true;
     }
 
@@ -95,9 +97,11 @@ public:
         _health.maxAllocHeap = random(40000, 80000);
         
         // 模拟文件系统信息
-        _health.fsTotalBytes = 1024 * 1024;  // 1MB
-        _health.fsUsedBytes = random(100000, 500000);
-        _health.fsFreeBytes = _health.fsTotalBytes - _health.fsUsedBytes;
+        if (!_fsOverride) {
+            _health.fsTotalBytes = 1024 * 1024;  // 1MB
+            _health.fsUsedBytes = random(100000, 500000);
+            _health.fsFreeBytes = _health.fsTotalBytes - _health.fsUsedBytes;
+        }
         
         // WiFi状态（允许测试显式覆盖）
         if (!_wifiOverride) {
@@ -235,6 +239,7 @@ public:
         _health.fsUsedBytes = used;
         _health.fsTotalBytes = total;
         _health.fsFreeBytes = total - used;
+        _fsOverride = true;
     }
 
     void addWarning(const String& warning) {
@@ -255,7 +260,8 @@ public:
 
 private:
     MockHealthMonitor() : _initialized(false), _checkInterval(30000), 
-                          _lastCheck(0), _heapOverride(false) {}
+                          _lastCheck(0), _wifiOverride(false), _heapOverride(false),
+                          _fsOverride(false) {}
 
     void performHealthChecks() {
         _health.warnings.clear();
@@ -309,6 +315,7 @@ private:
     unsigned long _lastCheck;
     bool _wifiOverride;
     bool _heapOverride;
+    bool _fsOverride;
     SystemHealth _health;
     std::vector<HealthCheckItem> _checks;
 };

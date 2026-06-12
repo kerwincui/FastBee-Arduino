@@ -29,6 +29,24 @@ const NON_PERIPHERAL_TARGET_ACTIONS = new Set([
     22, // enable rule
     23  // disable rule
 ]);
+const PROFILE_DEFAULT_BUDGETS = {
+    lite: {
+        maxPeripherals: 4,
+        maxRules: 9,
+        maxEnabledRules: 0,
+        unsupportedActionTypes: new Set([9, 15, 16, 17, 18, 20]),
+        unsupportedProtocols: new Set([1, 2, 3, 4, 5])
+    },
+    standard: {
+        maxPeripherals: 4,
+        maxRules: 9,
+        maxEnabledRules: 0,
+        unsupportedActionTypes: new Set([9, 20]),
+        unsupportedProtocols: new Set([2, 3, 4, 5])
+    }
+};
+const MAX_TRIGGERS_PER_RULE = 3;
+const MAX_ACTIONS_PER_RULE = 4;
 
 function readJson(filePath) {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -48,6 +66,14 @@ function getRules(doc) {
 
 function getPeripherals(doc) {
     return Array.isArray(doc && doc.peripherals) ? doc.peripherals : [];
+}
+
+function getRuleActions(rule) {
+    return Array.isArray(rule && rule.actions) ? rule.actions : [];
+}
+
+function getRuleTriggers(rule) {
+    return Array.isArray(rule && rule.triggers) ? rule.triggers : [];
 }
 
 function shouldKeepProfilePeripheral(item, profile) {
@@ -148,7 +174,7 @@ function transformRulesForProfile(execDoc, profile, profilePeripheralIds) {
     const unsupportedActions = new Set([9, 20]);
     const unsupportedProtocols = new Set([2, 3, 4, 5]);
     if (profile === 'lite') {
-        [16, 17, 18].forEach((actionType) => unsupportedActions.add(actionType));
+        [15, 16, 17, 18].forEach((actionType) => unsupportedActions.add(actionType));
         unsupportedProtocols.add(1);
     }
 
@@ -176,6 +202,44 @@ function transformRulesForProfile(execDoc, profile, profilePeripheralIds) {
             return { ...rule, actions };
         })
         .filter(Boolean);
+}
+
+function validateProfileFootprint(profile, peripheralIds, profileRules, scope, issues) {
+    const budget = PROFILE_DEFAULT_BUDGETS[profile];
+    if (!budget) return;
+
+    if (peripheralIds.size > budget.maxPeripherals) {
+        issues.push(`${scope}: ${profile} default peripherals ${peripheralIds.size} exceeds budget ${budget.maxPeripherals}`);
+    }
+    if (profileRules.length > budget.maxRules) {
+        issues.push(`${scope}: ${profile} default rules ${profileRules.length} exceeds budget ${budget.maxRules}`);
+    }
+
+    const enabledRules = profileRules.filter((rule) => rule && rule.enabled !== false);
+    if (enabledRules.length > budget.maxEnabledRules) {
+        issues.push(`${scope}: ${profile} default enabled rules ${enabledRules.length} exceeds budget ${budget.maxEnabledRules}`);
+    }
+
+    profileRules.forEach((rule) => {
+        const ruleLabel = `${scope} ${profile} rule '${rule && rule.id ? rule.id : '(missing-id)'}'`;
+        const triggers = getRuleTriggers(rule);
+        const actions = getRuleActions(rule);
+        if (triggers.length > MAX_TRIGGERS_PER_RULE) {
+            issues.push(`${ruleLabel}: triggers ${triggers.length} exceeds ${MAX_TRIGGERS_PER_RULE}`);
+        }
+        if (actions.length > MAX_ACTIONS_PER_RULE) {
+            issues.push(`${ruleLabel}: actions ${actions.length} exceeds ${MAX_ACTIONS_PER_RULE}`);
+        }
+        if (budget.unsupportedProtocols.has(Number(rule && rule.protocolType))) {
+            issues.push(`${ruleLabel}: protocolType ${rule.protocolType} is not allowed in ${profile} defaults`);
+        }
+        actions.forEach((action, actionIndex) => {
+            const actionType = Number(action && action.actionType);
+            if (budget.unsupportedActionTypes.has(actionType)) {
+                issues.push(`${ruleLabel} action=${actionIndex}: actionType ${actionType} is not allowed in ${profile} defaults`);
+            }
+        });
+    });
 }
 
 function parseStageDirName(dirName) {
@@ -226,6 +290,7 @@ function validateStagingRoot(stageRoot, latestOnly, issues) {
         const peripheralIds = new Set(getPeripherals(peripheralsDoc).map((periph) => String(periph.id || '')).filter(Boolean));
         const rules = getRules(execDoc);
         rules.forEach((rule) => validateRuleReferences(rule, peripheralIds, `staging:${item.name}`, issues));
+        validateProfileFootprint(item.profile, peripheralIds, rules, `staging:${item.name}`, issues);
         summaries.push({
             name: item.name,
             peripherals: peripheralIds.size,
@@ -258,6 +323,7 @@ function main() {
         const profilePeripheralIds = getProfilePeripheralIds(peripheralsDoc, profile);
         const profileRules = transformRulesForProfile(execDoc, profile, profilePeripheralIds);
         profileRules.forEach((rule) => validateRuleReferences(rule, profilePeripheralIds, `profile:${profile}`, issues));
+        validateProfileFootprint(profile, profilePeripheralIds, profileRules, `profile:${profile}`, issues);
         return {
             profile,
             peripherals: profilePeripheralIds.size,

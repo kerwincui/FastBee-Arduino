@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820">
+  <defs>
+    <style>
+      .bg{fill:#f7f9fb}
+      .title{font:700 34px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .sub{font:400 18px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .box{fill:#fff;stroke:#cfd8e3;stroke-width:2}
+      .ok{fill:#f0fbf3;stroke:#5cac75;stroke-width:2}
+      .warn{fill:#fff6e7;stroke:#d49b3d;stroke-width:2}
+      .bad{fill:#fff1f0;stroke:#d96a63;stroke-width:2}
+      .blue{fill:#eef6ff;stroke:#5b9bd8;stroke-width:2}
+      .h{font:700 21px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .p{font:400 16px "Microsoft YaHei",Arial,sans-serif;fill:#445066}
+      .small{font:400 14px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .arrow{stroke:#69778b;stroke-width:3;fill:none;marker-end:url(#arrow)}
+      .loop{stroke:#2f7eca;stroke-width:3;fill:none;marker-end:url(#arrowBlue)}
+      .fail{stroke:#d96a63;stroke-width:3;fill:none;stroke-dasharray:8 8;marker-end:url(#arrowRed)}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#69778b"/></marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#2f7eca"/></marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#d96a63"/></marker>
+  </defs>
+  <rect class="bg" width="1440" height="820"/>
+  <text class="title" x="72" y="70">Modbus RTU 调试闭环</text>
+  <text class="sub" x="72" y="106">从物理层到协议层再到规则联动逐步验证，避免把接线、地址、寄存器和业务动作混在一起排查。</text>
+
+  <rect class="blue" x="94" y="174" width="250" height="140" rx="18"/>
+  <text class="h" x="132" y="220">1. 物理层</text>
+  <text class="p" x="132" y="258">A/B 线、GND、终端电阻</text>
+  <text class="p" x="132" y="286">TX/RX、DE/RE 引脚</text>
+
+  <rect class="warn" x="430" y="174" width="250" height="140" rx="18"/>
+  <text class="h" x="468" y="220">2. 串口参数</text>
+  <text class="p" x="468" y="258">波特率、校验、停止位</text>
+  <text class="p" x="468" y="286">轮询周期和超时</text>
+
+  <rect class="warn" x="766" y="174" width="250" height="140" rx="18"/>
+  <text class="h" x="804" y="220">3. 从站映射</text>
+  <text class="p" x="804" y="258">地址、功能码、寄存器</text>
+  <text class="p" x="804" y="286">数据类型和字节序</text>
+
+  <rect class="ok" x="1102" y="174" width="250" height="140" rx="18"/>
+  <text class="h" x="1140" y="220">4. 稳定轮询</text>
+  <text class="p" x="1140" y="258">连续读取无超时</text>
+  <text class="p" x="1140" y="286">异常码可解释</text>
+
+  <path class="arrow" d="M344 244 H430"/>
+  <path class="arrow" d="M680 244 H766"/>
+  <path class="arrow" d="M1016 244 H1102"/>
+
+  <rect class="box" x="226" y="470" width="300" height="132" rx="18"/>
+  <text class="h" x="264" y="516">接入外设对象</text>
+  <text class="p" x="264" y="554">映射为 Modbus 子设备</text>
+  <text class="p" x="264" y="582">先保持规则禁用</text>
+
+  <rect class="box" x="570" y="470" width="300" height="132" rx="18"/>
+  <text class="h" x="608" y="516">接入控制规则</text>
+  <text class="p" x="608" y="554">单个动作手动执行</text>
+  <text class="p" x="608" y="582">确认方向和默认状态</text>
+
+  <rect class="bad" x="914" y="470" width="300" height="132" rx="18"/>
+  <text class="h" x="952" y="516">超时保护</text>
+  <text class="p" x="952" y="554">批次总超时、堆守卫</text>
+  <text class="p" x="952" y="582">失败时降低轮询频率</text>
+
+  <path class="loop" d="M1227 314 V392 H376 V470"/>
+  <path class="arrow" d="M526 536 H570"/>
+  <path class="fail" d="M870 536 H914"/>
+  <path class="loop" d="M1064 470 V392 H1227 V314"/>
+
+  <rect class="box" x="176" y="696" width="1088" height="58" rx="16"/>
+  <text class="small" x="216" y="731">调试建议：单从站、单寄存器、低频轮询先跑稳，再扩展多寄存器、控制动作和外设执行联动。</text>
+</svg>

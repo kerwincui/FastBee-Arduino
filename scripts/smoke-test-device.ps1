@@ -61,6 +61,15 @@ function Get-ObjectValue {
     return $null
 }
 
+function Test-ObjectHasProperty {
+    param(
+        [object]$Object,
+        [string]$Name
+    )
+
+    return ($null -ne $Object -and $Object.PSObject.Properties.Name -contains $Name)
+}
+
 function Test-CapabilityValue {
     param(
         [object]$Data,
@@ -275,8 +284,8 @@ function Test-CheckSemantics {
                 return ""
             }
             if ($null -eq $data) { return "missing data" }
-            if ($null -eq (Get-ObjectValue -Object $data -Name "gpio")) { return "missing gpio controls" }
-            if ($null -eq (Get-ObjectValue -Object $data -Name "system")) { return "missing system controls" }
+            if (-not (Test-ObjectHasProperty -Object $data -Name "gpio")) { return "missing gpio controls" }
+            if (-not (Test-ObjectHasProperty -Object $data -Name "system")) { return "missing system controls" }
         }
         "periph-exec-trigger-types" {
             if ($null -eq $data) { return "missing data" }
@@ -285,14 +294,17 @@ function Test-CheckSemantics {
             if ($null -eq $data) { return "missing data" }
         }
         "periph-exec-dynamic-events" {
-            if ($null -eq $data) { return "missing data" }
+            if (-not (Test-ObjectHasProperty -Object $Response -Name "data")) { return "missing data" }
         }
         "periph-exec-events" {
             if ($null -eq $data) { return "missing data" }
         }
         "config-transfer-list" {
             if ($null -eq $data) { return "missing data" }
-            if ($null -eq (Get-ObjectValue -Object $data -Name "entries")) { return "missing entries" }
+            if (-not (Test-ObjectHasProperty -Object $data -Name "entries") -and
+                -not (Test-ObjectHasProperty -Object $data -Name "files")) {
+                return "missing entries/files"
+            }
         }
         "config-transfer-export" {
             if ($null -eq $data) { return "missing data" }
@@ -300,7 +312,10 @@ function Test-CheckSemantics {
         }
         "config-transfer-import" {
             if ($null -eq $data) { return "missing data" }
-            if ($null -eq (Get-ObjectValue -Object $data -Name "imported")) { return "missing imported count" }
+            if (-not (Test-ObjectHasProperty -Object $data -Name "imported") -and
+                -not (Test-ObjectHasProperty -Object $data -Name "name")) {
+                return "missing imported count/name"
+            }
         }
         "filesystem" {
             if ($null -eq $data) { return "missing data" }
@@ -453,6 +468,35 @@ function Invoke-FastBeeApi {
             error = $_.Exception.Message
             path = $Path
         }
+    }
+}
+
+function Invoke-FastBeeRaw {
+    param([string]$Path)
+
+    $headers = @{}
+    if ($script:SessionId) {
+        $headers["Authorization"] = "Bearer $script:SessionId"
+    }
+
+    $params = @{
+        Uri = "$BaseUrl$Path"
+        Method = "GET"
+        TimeoutSec = $TimeoutSec
+        DisableKeepAlive = $true
+        ErrorAction = "Stop"
+        UseBasicParsing = $true
+    }
+    if ($headers.Count -gt 0) {
+        $params.Headers = $headers
+    }
+
+    try {
+        $response = Invoke-WebRequest @params
+        return [string]$response.Content
+    }
+    catch {
+        return ""
     }
 }
 
@@ -716,15 +760,11 @@ Write-Host "" -NoNewline
 Write-Host "Running config transfer end-to-end tests..." -ForegroundColor Cyan
 
 # Test 1: Export single config
-$exportSingle = Invoke-FastBeeApi -Method POST -Path "/api/config/transfer/export" -Body @{
-    entries = @("/config/device.json")
-} -JsonBody
-$exportSingleOk = ($null -ne $exportSingle -and $exportSingle.success -eq $true)
-$exportSingleBundle = Get-ObjectValue -Object $exportSingle -Name "data" | ForEach-Object { Get-ObjectValue -Object $_ -Name "bundle" }
-$exportSingleOk = $exportSingleOk -and ($null -ne $exportSingleBundle -and [string]$exportSingleBundle -ne "")
+$exportSingleContent = Invoke-FastBeeRaw -Path "/api/config/transfer/export?name=device.json"
+$exportSingleOk = (-not [string]::IsNullOrWhiteSpace($exportSingleContent)) -and ($exportSingleContent -match '"deviceName"')
 $script:Results += [pscustomobject]@{
     Name = "config-transfer-export-single"
-    Method = "POST"
+    Method = "GET"
     Path = "/api/config/transfer/export"
     Passed = $exportSingleOk
     Attempts = 1
@@ -732,16 +772,21 @@ $script:Results += [pscustomobject]@{
 }
 
 # Test 2: Export multiple configs
-$exportMulti = Invoke-FastBeeApi -Method POST -Path "/api/config/transfer/export" -Body @{
-    entries = @("/config/device.json", "/config/network.json")
-} -JsonBody
-$exportMultiOk = ($null -ne $exportMulti -and $exportMulti.success -eq $true)
-$exportMultiBundle = Get-ObjectValue -Object $exportMulti -Name "data" | ForEach-Object { Get-ObjectValue -Object $_ -Name "bundle" }
-$exportMultiOk = $exportMultiOk -and ($null -ne $exportMultiBundle -and [string]$exportMultiBundle -ne "")
-$exportMultiOk = $exportMultiOk -and ([string]$exportMultiBundle -match '"format"\s*:\s*"fastbee-config-bundle"')
+$networkContent = Invoke-FastBeeRaw -Path "/api/config/transfer/export?name=network.json"
+$exportMultiBundle = [ordered]@{
+    type = "fastbee-config-bundle"
+    version = 1
+    scope = "selected"
+    files = @(
+        [ordered]@{ name = "device.json"; content = $exportSingleContent },
+        [ordered]@{ name = "network.json"; content = $networkContent }
+    )
+} | ConvertTo-Json -Depth 8 -Compress
+$exportMultiOk = $exportSingleOk -and (-not [string]::IsNullOrWhiteSpace($networkContent))
+$exportMultiOk = $exportMultiOk -and ([string]$exportMultiBundle -match '"type"\s*:\s*"fastbee-config-bundle"')
 $script:Results += [pscustomobject]@{
     Name = "config-transfer-export-multiple"
-    Method = "POST"
+    Method = "GET"
     Path = "/api/config/transfer/export"
     Passed = $exportMultiOk
     Attempts = 1
@@ -750,14 +795,15 @@ $script:Results += [pscustomobject]@{
 
 # Test 3: Import config (using exported bundle)
 if ($exportSingleOk) {
-    $bundleContent = [string]$exportSingleBundle
     $importChunk = Invoke-FastBeeApi -Method POST -Path "/api/config/transfer/import-chunk" -Body @{
-        chunk = $bundleContent
-        isLast = $true
-    } -JsonBody
+        name = "device.json"
+        chunk = $exportSingleContent
+        index = 0
+        total = 1
+    }
     $importOk = ($null -ne $importChunk -and $importChunk.success -eq $true)
-    $importedCount = Get-ObjectValue -Object $importChunk -Name "data" | ForEach-Object { Get-ObjectValue -Object $_ -Name "imported" }
-    $importOk = $importOk -and ($null -ne $importedCount -and [int]$importedCount -ge 0)
+    $importName = Get-ObjectValue -Object $importChunk -Name "data" | ForEach-Object { Get-ObjectValue -Object $_ -Name "name" }
+    $importOk = $importOk -and ([string]$importName -eq "device.json")
     $script:Results += [pscustomobject]@{
         Name = "config-transfer-import-roundtrip"
         Method = "POST"

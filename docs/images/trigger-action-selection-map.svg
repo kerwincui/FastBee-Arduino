@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820">
+  <defs>
+    <style>
+      .bg{fill:#f7f9fb}
+      .title{font:700 34px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .sub{font:400 18px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .panel{fill:#fff;stroke:#cfd8e3;stroke-width:2}
+      .trg{fill:#eef6ff;stroke:#5b9bd8;stroke-width:2}
+      .act{fill:#f0fbf3;stroke:#5cac75;stroke-width:2}
+      .warn{fill:#fff6e7;stroke:#d49b3d;stroke-width:2}
+      .h{font:700 21px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .p{font:400 16px "Microsoft YaHei",Arial,sans-serif;fill:#445066}
+      .code{font:700 15px Consolas,"Microsoft YaHei",monospace;fill:#263248}
+      .small{font:400 14px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .arrow{stroke:#69778b;stroke-width:3;fill:none;marker-end:url(#arrow)}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10z" fill="#69778b"/></marker>
+  </defs>
+  <rect class="bg" width="1440" height="820"/>
+  <text class="title" x="72" y="70">触发器与动作选择地图</text>
+  <text class="sub" x="72" y="106">先决定规则什么时候触发，再决定执行什么动作；触发条件越清晰，动作越容易验证和回滚。</text>
+
+  <rect class="panel" x="82" y="158" width="570" height="470" rx="20"/>
+  <text class="h" x="120" y="204">触发器：什么时候执行</text>
+  <rect class="trg" x="122" y="236" width="230" height="110" rx="16"/>
+  <text class="h" x="152" y="276">平台触发</text>
+  <text class="code" x="152" y="310">PLATFORM_TRIGGER</text>
+  <rect class="trg" x="384" y="236" width="230" height="110" rx="16"/>
+  <text class="h" x="414" y="276">定时触发</text>
+  <text class="code" x="414" y="310">TIMER_TRIGGER</text>
+  <rect class="trg" x="122" y="388" width="230" height="110" rx="16"/>
+  <text class="h" x="152" y="428">事件触发</text>
+  <text class="code" x="152" y="462">EVENT_TRIGGER</text>
+  <rect class="trg" x="384" y="388" width="230" height="110" rx="16"/>
+  <text class="h" x="414" y="428">轮询触发</text>
+  <text class="code" x="414" y="462">POLL_TRIGGER</text>
+  <text class="small" x="122" y="564">经验：平台命令适合远程控制，定时适合周期采集，事件适合按键和数据源，轮询适合传感器或 Modbus。</text>
+
+  <rect class="panel" x="788" y="158" width="570" height="470" rx="20"/>
+  <text class="h" x="826" y="204">动作：执行什么结果</text>
+  <rect class="act" x="828" y="236" width="230" height="110" rx="16"/>
+  <text class="h" x="858" y="276">控制类</text>
+  <text class="code" x="858" y="310">GPIO / PWM / Servo</text>
+  <rect class="act" x="1090" y="236" width="230" height="110" rx="16"/>
+  <text class="h" x="1120" y="276">采集类</text>
+  <text class="code" x="1120" y="310">Sensor / Modbus</text>
+  <rect class="act" x="828" y="388" width="230" height="110" rx="16"/>
+  <text class="h" x="858" y="428">输出类</text>
+  <text class="code" x="858" y="462">Display / Event</text>
+  <rect class="act" x="1090" y="388" width="230" height="110" rx="16"/>
+  <text class="h" x="1120" y="428">系统类</text>
+  <text class="code" x="1120" y="462">Script / Restart</text>
+  <text class="small" x="828" y="564">经验：动作先从单一、安全、可观察开始，再加入延时、上报和多个动作的顺序执行。</text>
+
+  <path class="arrow" d="M652 393 H788"/>
+  <rect class="warn" x="398" y="682" width="644" height="74" rx="18"/>
+  <text class="h" x="438" y="726">上线前检查：规则禁用保存、手动执行一次、日志无异常、负载默认状态可回滚</text>
+</svg>

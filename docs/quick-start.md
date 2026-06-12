@@ -2,6 +2,22 @@
 
 本文面向第一次使用 FastBee-Arduino 的用户,按最短路径完成从烧录固件到创建联动规则的完整流程。全程无需编程,仅需 5 步即可让 ESP32 变成可控的物联网终端。
 
+## Web 界面预览
+
+烧录成功后，浏览器访问设备 IP 会先进入登录页。默认账号用于首次开箱验证，现场部署前请修改密码。
+
+![登录页](images/fastbee-login.png)
+
+登录后默认进入设备监控仪表盘。这里可以确认芯片型号、运行时间、网络 IP、Flash/Heap/LittleFS 使用情况和当前网络状态。
+
+![设备监控仪表盘](images/fastbee-dashboard.png)
+
+![文档学习路径地图](images/docs-learning-path-map.svg)
+
+第一次使用时按新手路径走完烧录、登录、网络和第一条规则；后续再按集成路径补外设、协议和场景配置。
+
+完整页面截图和现场验收路径可先参考 [Web 控制台图文导览](web-console-visual-guide.md)，再按本文步骤完成配置。
+
 ## 环境准备
 
 ### 必需工具
@@ -101,6 +117,8 @@ pio device monitor -e esp32 -b 115200
    - 用户名: `admin`
    - 密码: `admin123`
 
+登录成功后应能看到仪表盘中的网络状态、IP 地址和资源使用信息。如果页面能打开但数据为空，先等待设备启动完成，或刷新页面重新登录。
+
 ### 2.2 配置网络
 
 1. 进入 **网络配置** 页面
@@ -111,6 +129,14 @@ pio device monitor -e esp32 -b 115200
    - **LoRa** (全功能版): 确认串口引脚和网关在线
 3. 点击 **保存**,设备重启并连接网络
 4. 连接成功后,可通过路由器分配的 IP 或 `http://fastbee.local` 访问
+
+网络页顶部会显示当前连接状态、SSID、IP 地址和信号强度；下方页签分别用于 STA 基础配置、AP 热点配置和静态 IP/mDNS 等高级配置。
+
+![网络基础配置](system/images/network-settings.png)
+
+![热点配置](system/images/network-ap-settings.png)
+
+![网络高级配置](system/images/network-advanced-settings.png)
 
 > 精简版默认只保留 WiFi/mDNS/MQTT 和基础外设能力。如需以太网、4G 或 Modbus,请选择 `esp32` 或 `esp32s3` 标准版。
 
@@ -127,6 +153,12 @@ pio device monitor -e esp32 -b 115200
    - **引脚**: `13` (根据实际接线修改)
    - **启用**: 先保持禁用,确认引脚后再启用
 4. 点击 **保存**
+
+外设配置页会列出现有外设和启用状态。新增外设时，先填写外设 ID、名称、类型和引脚，确认接线后再启用。
+
+![外设配置列表](system/images/peripheral-management.png)
+
+![新增外设弹窗](system/images/peripheral-add-dialog.png)
 
 **JSON 配置示例**:
 
@@ -235,6 +267,17 @@ pio device monitor -e esp32 -b 115200
 3. 测试规则逻辑正确后,勾选 **启用**
 4. 点击 **保存全部**
 
+外设执行页用于查看规则状态、触发方式、目标外设和动作。首次导入或创建规则建议保持禁用，先点“执行一次”或编辑检查参数，再启用。
+
+![外设执行规则列表](system/images/periph-exec-management.png)
+
+规则编辑窗口会按触发器和动作类型展开不同字段，保存前重点核对目标外设、比较值、动作参数和“启用”状态。
+
+![外设执行规则表单安全检查](images/rule-builder-safety-checklist.svg)
+
+快速开始阶段建议只启用一条简单规则。确认继电器、传感器读取和日志都正常后，再继续扩展到平台触发、事件触发或多动作联动。
+
+
 **完整 JSON 配置**:
 
 ```json
@@ -297,6 +340,12 @@ pio device monitor -e esp32 -b 115200
 4. 点击 **保存并连接**
 5. 查看连接状态,确认成功
 
+通信协议页包含 MQTT 和 Modbus RTU 页签。MQTT 用于云平台连接，Modbus RTU 用于 RS485 从站采集和控制。
+
+![MQTT 配置](system/images/protocol-mqtt-config.png)
+
+![Modbus RTU 配置](system/images/protocol-modbus-rtu.png)
+
 ### 5.2 验证数据上报
 
 1. 使用 MQTT 客户端工具订阅主题: `fastbee/device01/#`
@@ -343,7 +392,7 @@ pio device monitor -e esp32 -b 115200
 ## 下一步
 
 - 查看 [示例文档](examples/README.md) 学习更多传感器配置
-- 阅读 [外设配置指南](peripheral-configuration-guide.md) 了解所有外设类型
+- 阅读 [外设配置指南](peripherals/peripheral-configuration-guide.md) 了解所有外设类型
 - 参考 [用户手册](user-manual.md) 掌握高级功能
 - 了解 [架构设计](architecture.md) 深入理解系统原理
 

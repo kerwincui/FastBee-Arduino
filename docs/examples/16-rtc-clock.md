@@ -12,6 +12,15 @@ ESP32 内部没有独立的 RTC 时钟芯片（断电丢失），但通过 WiFi 
 
 ## FastBee 外设配置
 
+本实验的 Web 操作入口如下：先在“设备配置”确认时间同步，再按需要在“外设配置”添加显示或控制对象，并通过“外设执行”创建定时规则。
+
+![设备配置页面](../system/images/device-config.png)
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![外设执行规则列表](../system/images/periph-exec-management.png)
+
+
 ### 系统时间配置（NTP）
 
 NTP 时间同步为系统内置功能，无需额外配置外设。

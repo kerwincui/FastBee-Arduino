@@ -17,6 +17,23 @@ bool isListMemoryCriticallyLow() {
 bool shouldForceCompactList() {
     return ESP.getFreeHeap() < 16384 || ESP.getMaxAllocHeap() < 8192;
 }
+
+String escapePeriphJsonString(const String& value) {
+    String out;
+    out.reserve(value.length() + 8);
+    for (size_t i = 0; i < value.length(); ++i) {
+        char c = value[i];
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default: out += c; break;
+        }
+    }
+    return out;
+}
 }
 
 PeripheralRouteHandler::PeripheralRouteHandler(WebHandlerContext* ctx)
@@ -40,6 +57,9 @@ void PeripheralRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/peripherals/read", HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleReadPeripheral(request); });
+
+    server->on("/api/peripherals/validate-pins", HTTP_GET,
+              [this](AsyncWebServerRequest* request) { handleValidatePins(request); });
 
     server->on("/api/peripherals/write", HTTP_POST,
               [this](AsyncWebServerRequest* request) { handleWritePeripheral(request); });
@@ -301,6 +321,7 @@ void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* req
         typeObj["value"] = i;
         typeObj["name"] = getPeripheralTypeName(type);
         typeObj["pinCount"] = getPeripheralPinCount(type);
+        typeObj["implemented"] = (i != 4 && i != 5);  // CAN, USB 未实现
     }
 
     // GPIO接口
@@ -341,6 +362,8 @@ void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* req
         typeObj["value"] = i;
         typeObj["name"] = getPeripheralTypeName(type);
         typeObj["pinCount"] = getPeripheralPinCount(type);
+        // CAN=4, USB=5, SDIO=37, CAMERA=39, ETHERNET=40, ENCODER=43 未实现硬件驱动
+        typeObj["implemented"] = (i != 37 && i != 39 && i != 40 && i != 43);
     }
     const int extraSpecialTypes[] = {47, 48, 49, 51, 60};
     for (int value : extraSpecialTypes) {
@@ -349,6 +372,7 @@ void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* req
         typeObj["value"] = value;
         typeObj["name"] = getPeripheralTypeName(type);
         typeObj["pinCount"] = getPeripheralPinCount(type);
+        typeObj["implemented"] = true;
     }
 
     HandlerUtils::sendJsonStream(request, doc);
@@ -904,8 +928,84 @@ void PeripheralRouteHandler::handleReadPeripheral(AsyncWebServerRequest* request
     HandlerUtils::sendJsonStream(request, doc);
 }
 
+void PeripheralRouteHandler::handleValidatePins(AsyncWebServerRequest* request) {
+    if (!ctx->requirePermission(request, "system.view")) return;
+
+    String typeStr = ctx->getParamValue(request, "type", "");
+    String pinsStr = ctx->getParamValue(request, "pins", "");
+    String excludeId = ctx->getParamValue(request, "excludeId", "");
+
+    if (typeStr.isEmpty() || pinsStr.isEmpty()) {
+        request->send(400, "application/json", "{\"success\":false,\"message\":\"Missing type or pins\"}");
+        return;
+    }
+
+    PeripheralType type = static_cast<PeripheralType>(typeStr.toInt());
+    PeripheralManager& pm = PeripheralManager::getInstance();
+
+    // 解析引脚列表（逗号分隔）
+    String items = "";
+    int pinIdx = 0;
+    int start = 0;
+    bool allValid = true;
+    while (start < (int)pinsStr.length()) {
+        int comma = pinsStr.indexOf(',', start);
+        String part = (comma < 0) ? pinsStr.substring(start) : pinsStr.substring(start, comma);
+        part.trim();
+        if (!part.isEmpty()) {
+            uint8_t pin = static_cast<uint8_t>(part.toInt());
+            String pinError;
+            bool pinOk = true;
+            String warnings;
+
+            // 检查引脚有效性
+            if (!pm.validatePinForType(pin, type, pinError)) {
+                pinOk = false;
+                allValid = false;
+            }
+
+            // 检查引脚冲突（与已启用外设）
+            String conflictInfo = pm.getPinConflictInfo(pin, excludeId);
+            if (!conflictInfo.isEmpty()) {
+                warnings = conflictInfo;
+                // 冲突不算失败，但给出警告
+            }
+
+            if (pinIdx > 0) items += ",";
+            items += F("{\"pin\":");
+            items += String(pin);
+            items += F(",\"valid\":");
+            items += pinOk ? F("true") : F("false");
+            if (!pinError.isEmpty()) {
+                items += F(",\"error\":\"");
+                items += escapePeriphJsonString(pinError);
+                items += F("\"");
+            }
+            if (!warnings.isEmpty()) {
+                items += F(",\"warning\":\"");
+                items += escapePeriphJsonString(warnings);
+                items += F("\"");
+            }
+            items += F("}");
+            pinIdx++;
+        }
+        if (comma < 0) break;
+        start = comma + 1;
+    }
+
+    String response;
+    response.reserve(64 + items.length());
+    response += F("{\"success\":true,\"allValid\":");
+    response += allValid ? F("true") : F("false");
+    response += F(",\"pins\":[");
+    response += items;
+    response += F("]}");
+    request->send(200, "application/json", response);
+}
+
 void PeripheralRouteHandler::handleWritePeripheral(AsyncWebServerRequest* request) {
     if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {

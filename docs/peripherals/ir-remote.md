@@ -34,6 +34,12 @@
 
 ### 方式1：Web界面配置（推荐）
 
+外设配置页和新增弹窗的实机界面如下。红外遥控保存前重点核对接收/发射引脚、协议类型和载波频率。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![新增外设弹窗](../system/images/peripheral-add-dialog.png)
+
 #### 步骤1：进入外设管理页面
 
 1. 打开浏览器访问 ESP32 IP 地址

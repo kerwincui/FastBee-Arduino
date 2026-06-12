@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="800" viewBox="0 0 1440 800">
+  <defs>
+    <style>
+      .bg{fill:#f8fafc}
+      .title{font:700 34px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .sub{font:400 18px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .box{fill:#fff;stroke:#cfd8e3;stroke-width:2}
+      .src{fill:#eef6ff;stroke:#5b9bd8;stroke-width:2}
+      .build{fill:#f0fbf3;stroke:#5cac75;stroke-width:2}
+      .artifact{fill:#fff6e7;stroke:#d49b3d;stroke-width:2}
+      .ship{fill:#f5f0ff;stroke:#8b72c9;stroke-width:2}
+      .h{font:700 21px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .p{font:400 16px "Microsoft YaHei",Arial,sans-serif;fill:#445066}
+      .code{font:700 15px Consolas,"Microsoft YaHei",monospace;fill:#263248}
+      .small{font:400 14px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .arrow{stroke:#69778b;stroke-width:3;fill:none;marker-end:url(#arrow)}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#69778b"/></marker>
+  </defs>
+
+  <rect class="bg" width="1440" height="800"/>
+  <text class="title" x="72" y="70">构建与发布产物地图</text>
+  <text class="sub" x="72" y="106">从源码、配置和 Web 资源出发，经过 PlatformIO 构建、LittleFS 打包和合并固件，形成可烧录和可追溯的交付包。</text>
+
+  <rect class="src" x="82" y="170" width="260" height="160" rx="18"/>
+  <text class="h" x="120" y="216">输入源</text>
+  <text class="code" x="120" y="254">src/ include/</text>
+  <text class="code" x="120" y="282">data/config/</text>
+  <text class="code" x="120" y="310">web_dist/</text>
+
+  <rect class="build" x="424" y="170" width="260" height="160" rx="18"/>
+  <text class="h" x="462" y="216">构建环境</text>
+  <text class="code" x="462" y="254">esp32 / esp32s3</text>
+  <text class="code" x="462" y="282">esp32c3 / esp32c6</text>
+  <text class="code" x="462" y="310">esp32s3-full</text>
+
+  <rect class="artifact" x="766" y="170" width="260" height="160" rx="18"/>
+  <text class="h" x="804" y="216">中间产物</text>
+  <text class="code" x="804" y="254">firmware.bin</text>
+  <text class="code" x="804" y="282">littlefs.bin</text>
+  <text class="code" x="804" y="310">manifest.json</text>
+
+  <rect class="ship" x="1108" y="170" width="260" height="160" rx="18"/>
+  <text class="h" x="1146" y="216">交付产物</text>
+  <text class="code" x="1146" y="254">merged.bin</text>
+  <text class="code" x="1146" y="282">release notes</text>
+  <text class="code" x="1146" y="310">验收截图和日志</text>
+
+  <path class="arrow" d="M342 250 H424"/>
+  <path class="arrow" d="M684 250 H766"/>
+  <path class="arrow" d="M1026 250 H1108"/>
+
+  <rect class="box" x="190" y="492" width="300" height="132" rx="18"/>
+  <text class="h" x="228" y="538">部署前检查</text>
+  <text class="p" x="228" y="576">构建矩阵、分区、版本档位</text>
+
+  <rect class="box" x="570" y="492" width="300" height="132" rx="18"/>
+  <text class="h" x="608" y="538">烧录和启动</text>
+  <text class="p" x="608" y="576">COM 端口、波特率、串口日志</text>
+
+  <rect class="box" x="950" y="492" width="300" height="132" rx="18"/>
+  <text class="h" x="988" y="538">验收留档</text>
+  <text class="p" x="988" y="576">IP、仪表盘、网络、协议、日志</text>
+
+  <path class="arrow" d="M490 558 H570"/>
+  <path class="arrow" d="M870 558 H950"/>
+
+  <rect class="box" x="196" y="694" width="1048" height="58" rx="16"/>
+  <text class="small" x="236" y="729">交付建议：发布包必须能追溯到构建环境、commit、分区、Web 资源版本、设备截图和冒烟测试结果。</text>
+</svg>

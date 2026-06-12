@@ -36,6 +36,10 @@ ratio = (R1 + R2) / R2
 - 惰性初始化，首次调用自动配置 ADC（12位/11dB衰减）
 - 支持自定义分压比和参考电压参数
 
+![GPIO、ADC、PWM 接线校验图](../images/gpio-adc-pwm-wiring-check.svg)
+
+电压采集属于 ADC 输入，接线前必须确认分压后电压不超过 ESP32 ADC 量程；调试时同时记录原始 ADC 值和换算后的实际电压。
+
 ## 2. 接线说明
 
 ```
@@ -71,6 +75,12 @@ ratio = (R1 + R2) / R2
 ## 3. 配置方式
 
 ### 方式1：Web界面配置（推荐）
+
+外设配置页和新增弹窗的实机界面如下。电压传感器保存前重点核对 ADC 引脚、分压比例和输入电压上限。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![新增外设弹窗](../system/images/peripheral-add-dialog.png)
 
 #### 步骤1：进入外设管理页面
 

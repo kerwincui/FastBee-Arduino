@@ -2,6 +2,22 @@
 
 本文档详细描述 FastBee-Arduino 的核心框架组件、关键类结构和重要方法,为开发者提供深入的实现参考。
 
+核心框架的几个主干模块对应到 Web 控制台中的状态、外设、规则和文件能力。调试框架生命周期时，建议同时观察仪表盘资源、外设列表、外设执行规则和文件系统状态。
+
+![设备仪表台总览](system/images/dashboard-overview.png)
+
+![外设配置列表](system/images/peripheral-management.png)
+
+![外设执行规则列表](system/images/periph-exec-management.png)
+
+![文件管理页面](system/images/file-management.png)
+
+![核心服务边界图](images/core-service-boundary-map.svg)
+
+核心服务边界图用于判断功能应该落在哪个模块：外设归 Peripheral，规则归 PeriphExec，联网归 Network，平台和总线归 Protocols，文件、日志和配置归系统服务。
+
+![外设执行引擎内部结构](images/periph-exec-engine-internals.svg)
+
 ## FastBeeFramework 主框架
 
 FastBeeFramework 是系统的核心控制器,负责初始化所有子模块并协调它们的工作。
@@ -450,8 +466,8 @@ ProtocolManager
 ## 相关文档
 
 - [架构设计](architecture.md) - 整体架构和模块关系
-- [外设执行流程](periph_exec_flow.md) - 规则引擎完整业务逻辑
-- [外设配置指南](peripheral-configuration-guide.md) - 所有外设类型详解
+- [外设执行流程](periph-exec/periph_exec_flow.md) - 规则引擎完整业务逻辑
+- [外设配置指南](peripherals/peripheral-configuration-guide.md) - 所有外设类型详解
 - [开发指南](development-guide.md) - 添加新外设和协议
 
 ---

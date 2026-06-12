@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="800" viewBox="0 0 1440 800">
+  <defs>
+    <style>
+      .bg{fill:#f8fafc}
+      .title{font:700 34px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .sub{font:400 18px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .card{fill:#fff;stroke:#cfd8e3;stroke-width:2}
+      .blue{fill:#eef6ff;stroke:#5b9bd8;stroke-width:2}
+      .green{fill:#f0fbf3;stroke:#5cac75;stroke-width:2}
+      .orange{fill:#fff6e7;stroke:#d49b3d;stroke-width:2}
+      .purple{fill:#f5f0ff;stroke:#8b72c9;stroke-width:2}
+      .red{fill:#fff1f0;stroke:#d96a63;stroke-width:2}
+      .h{font:700 21px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .p{font:400 16px "Microsoft YaHei",Arial,sans-serif;fill:#445066}
+      .small{font:400 14px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .num{font:700 15px "Microsoft YaHei",Arial,sans-serif;fill:#fff}
+      .arrow{stroke:#69778b;stroke-width:3;fill:none;marker-end:url(#arrow)}
+      .guard{stroke:#d96a63;stroke-width:3;fill:none;stroke-dasharray:8 8;marker-end:url(#arrowRed)}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#69778b"/></marker>
+    <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#d96a63"/></marker>
+  </defs>
+
+  <rect class="bg" width="1440" height="800"/>
+  <text class="title" x="72" y="70">外设接入与验证流程</text>
+  <text class="sub" x="72" y="106">新增外设时先确认硬件和版本能力，再配置页面、执行测试、观察日志，最后再接入自动化规则。</text>
+
+  <rect class="blue" x="80" y="168" width="238" height="150" rx="18"/>
+  <circle cx="120" cy="214" r="24" fill="#2f7eca"/>
+  <text class="num" x="107" y="220">1</text>
+  <text class="h" x="156" y="210">确认硬件</text>
+  <text class="p" x="110" y="252">模块供电和电平</text>
+  <text class="p" x="110" y="280">引脚是否可用</text>
+
+  <rect class="orange" x="380" y="168" width="238" height="150" rx="18"/>
+  <circle cx="420" cy="214" r="24" fill="#c47a1d"/>
+  <text class="num" x="407" y="220">2</text>
+  <text class="h" x="456" y="210">选择类型</text>
+  <text class="p" x="410" y="252">GPIO、ADC、I2C</text>
+  <text class="p" x="410" y="280">UART、Modbus、显示屏</text>
+
+  <rect class="green" x="680" y="168" width="238" height="150" rx="18"/>
+  <circle cx="720" cy="214" r="24" fill="#3f9b63"/>
+  <text class="num" x="707" y="220">3</text>
+  <text class="h" x="756" y="210">保存为禁用</text>
+  <text class="p" x="710" y="252">填写名称、ID、参数</text>
+  <text class="p" x="710" y="280">先不让现场动作生效</text>
+
+  <rect class="purple" x="980" y="168" width="238" height="150" rx="18"/>
+  <circle cx="1020" cy="214" r="24" fill="#7357b8"/>
+  <text class="num" x="1007" y="220">4</text>
+  <text class="h" x="1056" y="210">单项验证</text>
+  <text class="p" x="1010" y="252">查看状态和日志</text>
+  <text class="p" x="1010" y="280">确认读数或动作正确</text>
+
+  <path class="arrow" d="M318 243 H380"/>
+  <path class="arrow" d="M618 243 H680"/>
+  <path class="arrow" d="M918 243 H980"/>
+
+  <rect class="card" x="206" y="460" width="290" height="142" rx="18"/>
+  <text class="h" x="242" y="506">接入外设执行</text>
+  <text class="p" x="242" y="544">规则先保持禁用</text>
+  <text class="p" x="242" y="572">手动执行一次确认安全</text>
+
+  <rect class="card" x="574" y="460" width="290" height="142" rx="18"/>
+  <text class="h" x="610" y="506">启用并观察</text>
+  <text class="p" x="610" y="544">仪表盘看资源</text>
+  <text class="p" x="610" y="572">日志看初始化和动作结果</text>
+
+  <rect class="red" x="942" y="460" width="290" height="142" rx="18"/>
+  <text class="h" x="978" y="506">异常则回滚</text>
+  <text class="p" x="978" y="544">禁用外设或规则</text>
+  <text class="p" x="978" y="572">恢复导出的配置备份</text>
+
+  <path class="arrow" d="M1099 318 V400 H351 V460"/>
+  <path class="arrow" d="M496 531 H574"/>
+  <path class="guard" d="M864 531 H942"/>
+
+  <rect class="card" x="170" y="682" width="1100" height="58" rx="16"/>
+  <text class="small" x="208" y="717">安全原则：未知接线环境下不要导入即启用；先验证单个外设，再配置规则，最后再接入 MQTT 或平台联动。</text>
+</svg>

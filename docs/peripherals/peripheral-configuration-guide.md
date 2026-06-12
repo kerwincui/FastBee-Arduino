@@ -11,6 +11,34 @@
 - 传感器数据要作为外设执行事件触发来源时，需要先在外设执行中配置传感器采集动作，系统会将采集结果缓存为 `ds:<外设ID>_<字段>` 数据源。
 - Modbus 子设备由通信协议页管理，作为虚拟外设参与设备控制和外设执行，不占用本地 GPIO。
 
+外设配置的 Web 入口如下。新增外设时先选类型，再填引脚和类型参数；批量迁移时优先通过文件管理或配置导入导出备份 `peripherals.json`。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![新增外设弹窗](../system/images/peripheral-add-dialog.png)
+
+截图要点：
+
+- 外设配置列表用于确认对象 ID、类型、启用状态和当前运行状态。
+- 新增外设弹窗用于核对类型参数、引脚、总线地址和默认启用策略。
+- 修改现场配置前建议先截图或导出配置，尤其是继电器、电机、RS485、显示屏等会产生实际动作的外设。
+
+![外设接入与验证流程](../images/peripheral-onboarding-flow.svg)
+
+接入新模块时，不建议从 JSON 批量导入后立刻启用。更稳的顺序是先确认硬件和版本支持，再通过页面保存禁用配置，单项验证后再进入外设执行规则。
+
+![外设类型选型地图](../images/peripheral-type-selection-map.svg)
+
+如果不确定应该选择哪个 `type`，先按上图从开关量、模拟量、总线设备、RS485 从站和显示输出五类入口收敛范围，再回到后文的类型 ID 表确认字段。
+
+![外设配置数据模型](../images/peripheral-config-data-model.svg)
+
+外设配置不是单个表单字段，而是一条从 Web 表单、JSON 文件、校验逻辑、运行时驱动到规则消费者的链路。现场导入配置后，建议按图中的顺序检查 `id`、`type`、`pins`、`params`、`enabled` 和版本能力开关，确认每一层都能解释当前运行状态。
+
+![外设类型参数速查矩阵](../images/peripheral-parameter-matrix.svg)
+
+如果只想快速判断某类外设需要哪些字段，可以先看参数矩阵，再回到后文的类型 ID 表和字段说明。矩阵里的“启用前检查”适合作为现场接线核对清单。
+
 ## 目录
 
 - [1. 总览](#1-总览)
@@ -35,7 +63,7 @@
 外设配置系统采用"**类型驱动 + 引脚占用校验 + 运行时状态**"的三层模型：
 
 - **配置层**：`data/config/peripherals.json`，冷启动从 LittleFS 加载。
-- **管理层**：[`PeripheralManager`](../src/core/PeripheralManager.cpp) 单例，负责 CRUD、引脚冲突检测、硬件初始化/释放、通用读写接口。
+- **管理层**：[`PeripheralManager`](../../src/core/PeripheralManager.cpp) 单例，负责 CRUD、引脚冲突检测、硬件初始化/释放、通用读写接口。
 - **驱动层**：按类型分派到底层：
   - GPIO 系列 → `pinMode/digitalWrite/ledcWrite`
   - I²C/SPI/UART → `Wire/SPI/Serial`
@@ -159,7 +187,7 @@
 | 13 `GPIO_DIGITAL_INPUT_PULLUP` | 内部上拉 | 按键（按下接 GND） |
 | 14 `GPIO_DIGITAL_INPUT_PULLDOWN` | 内部下拉 | 按键（按下接 VCC） |
 
-> **按键事件**：只有 type=13/14 会被 [`PeriphExecScheduler::checkButtonEvents`](../src/core/PeriphExecScheduler.cpp) 扫描，支持 `button_click` / `button_double_click` / `button_long_press_2s/5s/10s`。
+> **按键事件**：只有 type=13/14 会被 [`PeriphExecScheduler::checkButtonEvents`](../../src/core/PeriphExecScheduler.cpp) 扫描，支持 `button_click` / `button_double_click` / `button_long_press_2s/5s/10s`。
 
 ### 4.2 模拟输入 (type=15) / ADC (type=26)
 
@@ -238,7 +266,7 @@
   "params": { "width": 128, "height": 64, "interface": 2 } }
 ```
 
-**相关规则动作**：`ACTION_DISPLAY_CUSTOM`（OLED 自定义显示，支持多行文本 + 变量插值）。详见 [`oled_usage_guide.md`](./oled_usage_guide.md)。
+**相关规则动作**：`ACTION_DISPLAY_CUSTOM`（OLED 自定义显示，支持多行文本 + 变量插值）。详见 [`oled_usage_guide.md`](oled_usage_guide.md)。
 
 ### 7.2 TM1637 数码管 (type=47)
 
@@ -347,6 +375,8 @@
 
 ## 10. 配置结构与字段说明
 
+参数矩阵适合和本章一起使用：先确认通用字段 `id`、`type`、`pins`、`enabled`，再按外设类型检查 `params` 中的地址、量程、校准、频率或动作边界。
+
 `peripherals.json` 顶级结构：
 
 ```jsonc
@@ -373,7 +403,7 @@
 - `id` 必须全局唯一；改名（name）可直接 PUT，改 ID 需先 DELETE 后 POST。
 - `pins[]` 最大 8 个，`pinCount` 自动从非 255 的数量推断。
 - **禁用 (`enabled=false`) 的外设不占引脚**——允许多外设声明同一引脚但只启用其中一个。
-- 保留引脚（Flash SPI、Boot、USB D+/D-）由 [`ChipConfig.h`](../include/core/ChipConfig.h) 定义，`validatePinForType` 会拒绝越界。
+- 保留引脚（Flash SPI、Boot、USB D+/D-）由 [`ChipConfig.h`](../../include/core/ChipConfig.h) 定义，`validatePinForType` 会拒绝越界。
 
 ### 10.2 引脚冲突检测
 
@@ -384,7 +414,7 @@
 
 ## 11. 功能编译开关（FeatureFlags）
 
-关键开关位于 [`include/core/FeatureFlags.h`](../include/core/FeatureFlags.h)，可在 `platformio.ini` 的 `build_flags` 中覆盖：
+关键开关位于 [`include/core/FeatureFlags.h`](../../include/core/FeatureFlags.h)，可在 `platformio.ini` 的 `build_flags` 中覆盖：
 
 | 宏 | 默认值 | 说明 |
 | --- | :---: | --- |
@@ -484,12 +514,12 @@ Modbus RTU 的 RS485 DE（Direction Enable）引脚由 `protocol.json` 中 `modb
 
 ### 13.5 扩展新外设
 
-1. 在 [`PeripheralTypes.h`](../include/core/PeripheralTypes.h) 添加枚举值（遵循区段 ID 规则）。
+1. 在 [`PeripheralTypes.h`](../../include/core/PeripheralTypes.h) 添加枚举值（遵循区段 ID 规则）。
 2. 更新 `getPeripheralTypeName` / `parsePeripheralType` / `getPeripheralPinCount`。
 3. 在 `PeripheralManager::setupHardware` 添加初始化分支。
-4. 在 [`web-src/pages/modals.html`](../web-src/pages/modals.html) 添加 `<option>` 及 `data-i18n`。
+4. 在 [`web-src/pages/modals.html`](../../web-src/pages/modals.html) 添加 `<option>` 及 `data-i18n`。
 5. 在 `web-src/i18n/i18n-zh-CN.js` / `i18n-en.js` 添加翻译键。
-6. （可选）在 [`web-src/modules/runtime/periph-exec-form.js`](../web-src/modules/runtime/periph-exec-form.js) 添加规则动作支持。
+6. （可选）在 [`web-src/modules/runtime/periph-exec-form.js`](../../web-src/modules/runtime/periph-exec-form.js) 添加规则动作支持。
 
 > **提示**：若要扩展的是**传感器类**外设（需周期性读取温度/湿度/光照等数值），推荐优先使用第 14 章的 `ISensorDriver` 驱动接口，无需侵入 `PeripheralManager` 核心代码。
 
@@ -508,7 +538,7 @@ Modbus RTU 的 RS485 DE（Direction Enable）引脚由 `protocol.json` 中 `modb
 
 ### 14.2 核心接口
 
-头文件：[`include/core/interfaces/ISensorDriver.h`](../include/core/interfaces/ISensorDriver.h)
+头文件：[`include/core/interfaces/ISensorDriver.h`](../../include/core/interfaces/ISensorDriver.h)
 
 ```cpp
 struct SensorReading {
@@ -537,7 +567,7 @@ public:
 
 ### 14.3 注册机制
 
-头文件：[`include/core/DriverRegistry.h`](../include/core/DriverRegistry.h)
+头文件：[`include/core/DriverRegistry.h`](../../include/core/DriverRegistry.h)
 
 | 要素 | 说明 |
 |------|------|
@@ -551,7 +581,7 @@ public:
 
 ### 14.4 编写自定义驱动
 
-以 [`include/peripherals/drivers/SHT31Driver.h`](../include/peripherals/drivers/SHT31Driver.h) 为模板：
+以 [`include/peripherals/drivers/SHT31Driver.h`](../../include/peripherals/drivers/SHT31Driver.h) 为模板：
 
 ```cpp
 #include "core/interfaces/ISensorDriver.h"
@@ -605,7 +635,7 @@ FASTBEE_REGISTER_SENSOR("my_sensor", MySensorDriver);
 
 ## 参考文档
 
-- [`oled_usage_guide.md`](./oled_usage_guide.md) — OLED 自定义显示规则
-- [`modbus_usage_guide.md`](./modbus_usage_guide.md) — Modbus 使用指南
-- [`periph_exec_flow.md`](./periph_exec_flow.md) — 外设执行规则流程
-- [`script-guide.md`](./script-guide.md) — 规则脚本手册
+- [`oled_usage_guide.md`](oled_usage_guide.md) — OLED 自定义显示规则
+- [`modbus_usage_guide.md`](../protocols/modbus_usage_guide.md) — Modbus 使用指南
+- [`periph_exec_flow.md`](../periph-exec/periph_exec_flow.md) — 外设执行规则流程
+- [`script-guide.md`](../periph-exec/script-guide.md) — 规则脚本手册

@@ -104,6 +104,7 @@
                 this._populateButtonPeriphSelect(periphSel, data.triggerPeriphId || '');
             }
             if (showEvent) this._populateEventCategoriesInBlock(div, data.eventId, data.compareValue || '');
+            this._updatePeriphExecAddButtons();
         },
 
         _createPeriphExecActionElement(data, index) {
@@ -255,11 +256,41 @@
             }
             if (!isPollMode && isModbusPoll && !isModbusTarget) this._populateModbusDevicePanel(div.querySelector('.pe-poll-tasks-list'), data.actionValue || '');
             if (isModbusTarget) this._showModbusCtrlPanel(div.querySelector('.pe-modbus-ctrl-panel'), data.targetPeriphId, data.actionValue || '');
+            this._updatePeriphExecAddButtons();
+        },
+
+        _getPeriphExecBlockLimit(kind) {
+            return kind === 'trigger' ? 3 : 4;
+        },
+
+        _updatePeriphExecAddButtons() {
+            var triggerContainer = document.getElementById('periph-exec-triggers');
+            var actionContainer = document.getElementById('periph-exec-actions');
+            var triggerBtn = document.querySelector('[data-action="addPeriphExecTrigger"]');
+            var actionBtn = document.querySelector('[data-action="addPeriphExecAction"]');
+            var triggerLimit = this._getPeriphExecBlockLimit('trigger');
+            var actionLimit = this._getPeriphExecBlockLimit('action');
+            if (triggerBtn && triggerContainer) {
+                var triggerFull = triggerContainer.children.length >= triggerLimit;
+                triggerBtn.disabled = triggerFull;
+                triggerBtn.title = triggerFull ? ('每条规则最多 ' + triggerLimit + ' 个触发器') : '';
+            }
+            if (actionBtn && actionContainer) {
+                var actionFull = actionContainer.children.length >= actionLimit;
+                actionBtn.disabled = actionFull;
+                actionBtn.title = actionFull ? ('每条规则最多 ' + actionLimit + ' 个动作') : '';
+            }
         },
 
         addPeriphExecTrigger() {
             const container = document.getElementById('periph-exec-triggers');
             if (!container) return;
+            var limit = this._getPeriphExecBlockLimit('trigger');
+            if (container.children.length >= limit) {
+                Notification.warning('每条规则最多 ' + limit + ' 个触发器', '外设执行');
+                this._updatePeriphExecAddButtons();
+                return;
+            }
             this._createPeriphExecTriggerElement({}, container.children.length);
             this._refreshPeriphExecRiskNotice({ allowFetch: true });
         },
@@ -271,12 +302,19 @@
             if (items.length <= 1) return;
             if (items[index]) items[index].remove();
             this._reindexPeriphExecBlocks(container);
+            this._updatePeriphExecAddButtons();
             this._refreshPeriphExecRiskNotice({ allowFetch: false });
         },
 
         addPeriphExecAction() {
             const container = document.getElementById('periph-exec-actions');
             if (!container) return;
+            var limit = this._getPeriphExecBlockLimit('action');
+            if (container.children.length >= limit) {
+                Notification.warning('每条规则最多 ' + limit + ' 个动作', '外设执行');
+                this._updatePeriphExecAddButtons();
+                return;
+            }
             this._createPeriphExecActionElement({}, container.children.length);
             this._refreshPeriphExecRiskNotice({ allowFetch: true });
         },
@@ -288,6 +326,7 @@
             if (items.length <= 1) return;
             if (items[index]) items[index].remove();
             this._reindexPeriphExecBlocks(container);
+            this._updatePeriphExecAddButtons();
             this._refreshPeriphExecRiskNotice({ allowFetch: false });
         },
 
@@ -1048,9 +1087,17 @@
             }
 
             const triggers = this._collectPeriphExecTriggers();
+            if (triggers.length > this._getPeriphExecBlockLimit('trigger')) {
+                this.showInlineError(errEl, '每条规则最多 ' + this._getPeriphExecBlockLimit('trigger') + ' 个触发器');
+                return;
+            }
             ruleData.triggers = triggers;
 
             const actions = this._collectPeriphExecActions();
+            if (actions.length > this._getPeriphExecBlockLimit('action')) {
+                this.showInlineError(errEl, '每条规则最多 ' + this._getPeriphExecBlockLimit('action') + ' 个动作');
+                return;
+            }
             if (this._peSensorExtraJsonError) {
                 this.showInlineError(errEl, '传感器高级参数必须是 JSON 对象');
                 return;

@@ -16,6 +16,14 @@
 
 ### 方式1：Web界面配置（推荐）
 
+本场景需要先配置 Modbus RTU 串口和从站，再在外设执行中创建轮询采集、MQTT 上报和 OLED 显示动作。
+
+![Modbus RTU 配置页面](../../system/images/protocol-modbus-rtu.png)
+
+![外设配置列表](../../system/images/peripheral-management.png)
+
+![外设执行规则列表](../../system/images/periph-exec-management.png)
+
 #### 第一步：配置外设
 
 > 💡 **前提**：需提前配置好Modbus传感器设备和OLED显示屏（参考scenarios/modbus-sensor-devices.md）

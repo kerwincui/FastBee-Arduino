@@ -23,6 +23,16 @@ TM1637 是一款 4 位 7 段数码管驱动芯片，通过 2 线串行接口（C
 
 ### 方式1：Web界面配置（推荐）
 
+外设配置页和新增弹窗的实机界面如下。TM1637 保存前重点核对 CLK/DIO 引脚、位数和亮度默认值。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![新增外设弹窗](../system/images/peripheral-add-dialog.png)
+
+![显示输出管道](../images/display-output-pipeline.svg)
+
+TM1637 调试先显示固定数字，确认 CLK/DIO 引脚和亮度后，再接入传感器读数或外设执行动作。
+
 #### 步骤1：进入外设管理页面
 
 1. 打开浏览器访问 ESP32 IP 地址

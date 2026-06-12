@@ -39,6 +39,14 @@ ESP32 ──── TTL转RS485 ──── A/B总线 ──┬── 传感器1
 
 ### 方式1：Web界面配置（推荐）
 
+本场景需要同时确认外设配置和 Modbus RTU 串口参数。添加 UART/Modbus 外设后，再到外设执行中配置轮询采集和上报规则。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![Modbus RTU 配置页面](../system/images/protocol-modbus-rtu.png)
+
+![外设执行规则列表](../system/images/periph-exec-management.png)
+
 #### 步骤1：进入外设管理页面
 
 1. 打开浏览器访问 ESP32 IP 地址

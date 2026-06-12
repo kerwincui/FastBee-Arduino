@@ -5,6 +5,33 @@
 
 ---
 
+## 图文导览
+
+下面截图来自一台已烧录 `esp32s3-F16R8` 的实际设备，访问地址为 `http://192.168.5.116/`。读者可以先看登录页和仪表台，确认 Web 管理界面的整体布局，再进入对应功能文档查看细节。
+
+![FastBee 登录页](images/fastbee-login.png)
+
+![设备监控仪表盘](images/fastbee-dashboard.png)
+
+| 功能界面 | 截图 | 说明 |
+|---|---|---|
+| 网络设置 | ![网络设置](system/images/network-settings.png) | 查看当前 WiFi、IP、信号强度，并配置 STA/AP、高级网络参数。 |
+| 外设配置 | ![外设配置](system/images/peripheral-management.png) | 管理 GPIO、ADC、传感器、Modbus 子设备等硬件抽象对象。 |
+| 外设执行 | ![外设执行](system/images/periph-exec-management.png) | 查看和维护自动化规则，默认规则保持禁用，现场确认后再启用。 |
+| 通信协议 | ![通信协议](system/images/protocol-mqtt-config.png) | 配置 MQTT、Modbus RTU 等平台对接与现场总线能力。 |
+| 文件管理 | ![文件管理](system/images/file-management.png) | 查看 LittleFS 文件和配置备份，适合现场维护与迁移。 |
+
+移动端也可以直接访问同一地址，常用于现场巡检或快速查看设备状态：
+
+![移动端仪表盘](images/fastbee-mobile-dashboard.png)
+
+![文档学习路径地图](images/docs-learning-path-map.svg)
+
+不同读者可以按学习路径图进入文档：新手先跑通设备，集成者看外设和协议，开发者看架构和核心框架，发布者看部署、测试和稳定性检查。
+
+更多页面截图、验收路径和图片复用说明见 [Web 控制台图文导览](web-console-visual-guide.md)。
+图片命名、替换和校验规则见 [文档图片资产维护指南](image-assets.md)。
+
 ## 发布稳定性入口
 
 发布、部署和长期运行验证请优先阅读：[稳定性与发布检查清单](stability-release-checklist.md)。

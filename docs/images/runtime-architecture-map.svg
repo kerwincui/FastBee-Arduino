@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820">
+  <defs>
+    <style>
+      .bg{fill:#f7f9fb}
+      .title{font:700 34px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .sub{font:400 18px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .box{fill:#fff;stroke:#cfd8e3;stroke-width:2;rx:16}
+      .box2{fill:#eef7ff;stroke:#78aee8;stroke-width:2;rx:16}
+      .box3{fill:#f3fff5;stroke:#77bf85;stroke-width:2;rx:16}
+      .box4{fill:#fff7ea;stroke:#e2a64d;stroke-width:2;rx:16}
+      .h{font:700 21px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .p{font:400 16px "Microsoft YaHei",Arial,sans-serif;fill:#445066}
+      .small{font:400 14px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .arrow{stroke:#67748a;stroke-width:3;fill:none;marker-end:url(#arrow)}
+      .arrow2{stroke:#2f7eca;stroke-width:3;fill:none;marker-end:url(#arrowBlue)}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#67748a"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f7eca"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="1440" height="820"/>
+  <text class="title" x="72" y="72">FastBee-Arduino 运行时架构图</text>
+  <text class="sub" x="72" y="108">从设备启动、Web 配置、外设抽象、规则执行到协议上报的主链路</text>
+
+  <rect class="box4" x="70" y="160" width="230" height="130"/>
+  <text class="h" x="95" y="204">启动与恢复</text>
+  <text class="p" x="95" y="236">加载 LittleFS 配置</text>
+  <text class="p" x="95" y="264">校验默认安全模板</text>
+
+  <rect class="box2" x="380" y="150" width="260" height="150"/>
+  <text class="h" x="410" y="194">Web 控制台 / REST API</text>
+  <text class="p" x="410" y="226">仪表盘、网络、协议</text>
+  <text class="p" x="410" y="254">外设、规则、文件、日志</text>
+
+  <rect class="box" x="720" y="150" width="250" height="150"/>
+  <text class="h" x="750" y="194">配置存储</text>
+  <text class="p" x="750" y="226">device / network</text>
+  <text class="p" x="750" y="254">peripherals / rules</text>
+
+  <rect class="box3" x="1070" y="160" width="270" height="130"/>
+  <text class="h" x="1100" y="204">健康监控</text>
+  <text class="p" x="1100" y="236">内存、网络、MQTT</text>
+  <text class="p" x="1100" y="264">日志与降级保护</text>
+
+  <rect class="box" x="120" y="430" width="260" height="150"/>
+  <text class="h" x="150" y="474">网络管理</text>
+  <text class="p" x="150" y="506">WiFi / Ethernet / 4G</text>
+  <text class="p" x="150" y="534">mDNS / 静态 IP</text>
+
+  <rect class="box" x="450" y="420" width="260" height="170"/>
+  <text class="h" x="480" y="464">外设管理</text>
+  <text class="p" x="480" y="496">GPIO / ADC / I2C</text>
+  <text class="p" x="480" y="524">Sensor / Display</text>
+  <text class="p" x="480" y="552">Modbus 子设备</text>
+
+  <rect class="box2" x="790" y="410" width="280" height="190"/>
+  <text class="h" x="820" y="454">外设执行引擎</text>
+  <text class="p" x="820" y="486">触发器匹配</text>
+  <text class="p" x="820" y="514">动作队列与 Worker</text>
+  <text class="p" x="820" y="542">脚本 / 显示 / 控制</text>
+  <text class="p" x="820" y="570">执行结果上报</text>
+
+  <rect class="box3" x="1150" y="430" width="220" height="150"/>
+  <text class="h" x="1180" y="474">协议输出</text>
+  <text class="p" x="1180" y="506">MQTT 云平台</text>
+  <text class="p" x="1180" y="534">Modbus RTU 总线</text>
+
+  <path class="arrow" d="M300 225 H380"/>
+  <path class="arrow" d="M640 225 H720"/>
+  <path class="arrow" d="M970 225 H1070"/>
+  <path class="arrow2" d="M845 300 V410"/>
+  <path class="arrow" d="M250 430 V330 H510 V300"/>
+  <path class="arrow" d="M580 420 V330 H845 V300"/>
+  <path class="arrow2" d="M710 505 H790"/>
+  <path class="arrow2" d="M1070 505 H1150"/>
+  <path class="arrow" d="M1205 430 V330 H845 V300"/>
+
+  <rect class="box4" x="80" y="665" width="1280" height="82"/>
+  <text class="h" x="110" y="703">读图提示</text>
+  <text class="small" x="110" y="730">配置从 Web/API 写入 LittleFS，运行时由网络、外设、规则和协议模块按需读取；现场排障时按“仪表盘 → 网络 → 外设 → 外设执行 → 日志”的顺序缩小问题范围。</text>
+</svg>

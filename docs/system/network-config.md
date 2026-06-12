@@ -15,6 +15,20 @@
 
 > 说明：精简构建通常只保留 WiFi；W5500、4G、LoRa 由 `FASTBEE_ENABLE_ETHERNET`、`FASTBEE_ENABLE_CELLULAR`、`FASTBEE_ENABLE_LORA` 控制，完整构建如 `esp32s3-full` 才适合启用全部联网方式。
 
+## 界面预览
+
+网络配置页面按基础、热点和高级配置拆分。现场修改前先确认当前 IP 和连接状态，修改 STA/AP、静态 IP 或联网方式后通常需要等待网络重连。
+
+![网络基础配置](images/network-settings.png)
+
+![热点配置](images/network-ap-settings.png)
+
+![网络高级配置](images/network-advanced-settings.png)
+
+联网配置建议按下图排查：先确认设备启动和已保存配置，再观察 STA 联网、AP 回退、IP 获取和协议上线状态。
+
+![网络配置与 AP 回退流程](../images/network-provisioning-flow.svg)
+
 ## 配置入口
 
 Web 界面路径：`网络设置`

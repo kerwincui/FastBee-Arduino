@@ -87,8 +87,8 @@
                                         <option value="1">UART</option>
                                         <option value="2">I2C</option>
                                         <option value="3">SPI</option>
-                                        <option value="4">CAN</option>
-                                        <option value="5">USB</option>
+                                        <option value="4">CAN (待驱动)</option>
+                                        <option value="5">USB (待驱动)</option>
                                     </optgroup>
                                     <optgroup label="GPIO接口" data-i18n-label="peripheral-cat-gpio">
                                         <option value="11">数字输入</option>
@@ -113,13 +113,13 @@
                                     </optgroup>
                                     <optgroup label="专用外设" data-i18n-label="peripheral-cat-special">
                                         <option value="36" data-i18n="peripheral-type-lcd">LCD/OLED 显示屏</option>
-                                        <option value="37">SDIO</option>
+                                        <option value="37">SDIO (待驱动)</option>
                                         <option value="38">传感器</option>
-                                        <option value="39">摄像头</option>
-                                        <option value="40">以太网</option>
+                                        <option value="39">摄像头 (待驱动)</option>
+                                        <option value="40">以太网 (待驱动)</option>
                                         <option value="41">舵机</option>
                                         <option value="42" data-i18n="periph-opt-stepper">步进电机</option>
-                                        <option value="43">编码器</option>
+                                        <option value="43">编码器 (待驱动)</option>
                                         <option value="44">单总线</option>
                                         <option value="45" data-i18n="periph-opt-neopixel">WS2812B 灯珠</option>
                                         <option value="47" data-i18n="periph-opt-seven-segment">TM1637 数码管</option>
@@ -146,6 +146,8 @@
                                 <input type="text" id="peripheral-pins-input" class=""
                                     placeholder="例如: 2,4,5 (逗号分隔)" required
                                     data-i18n-placeholder="peripheral-pins-hint">
+                                <small id="peripheral-pins-validation-hint" class="field-hint"></small>
+                                <small id="peripheral-pins-recommend" class="field-hint" style="color:var(--text-muted);display:none"></small>
                                 <small id="uart-pin-direction-hint" class="field-hint is-hidden"
                                     data-i18n="peripheral-uart-pin-hint">引脚顺序: 引脚1=RX(接收/输入), 引脚2=TX(发送/输出)</small>
                             </div>

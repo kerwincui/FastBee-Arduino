@@ -33,6 +33,12 @@ extern void test_performance_bench_group();
 extern void test_string_utils_group();
 extern void test_lcd_manager_group();
 extern void test_periph_config_group();
+extern void test_time_utils_group();
+extern void test_file_utils_group();
+extern void test_config_storage_group();
+extern void test_task_manager_group();
+extern void test_health_monitor_group();
+extern void test_regression_guard_group();
 
 // 测试夹具
 void setUp() {
@@ -136,6 +142,24 @@ void setup() {
 
     Serial.println("\n[TEST] Running Peripheral Configuration Tests...");
     test_periph_config_group();
+
+    Serial.println("\n[TEST] Running TimeUtils Tests...");
+    test_time_utils_group();
+
+    Serial.println("\n[TEST] Running FileUtils Tests...");
+    test_file_utils_group();
+
+    Serial.println("\n[TEST] Running ConfigStorage Tests...");
+    test_config_storage_group();
+
+    Serial.println("\n[TEST] Running TaskManager Tests...");
+    test_task_manager_group();
+
+    Serial.println("\n[TEST] Running HealthMonitor Tests...");
+    test_health_monitor_group();
+
+    Serial.println("\n[TEST] Running Regression Guard Tests...");
+    test_regression_guard_group();
 
     // 结束测试并输出结果
     int result = UNITY_END();

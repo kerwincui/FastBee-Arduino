@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="800" viewBox="0 0 1440 800">
+  <defs>
+    <style>
+      .bg{fill:#f7f9fb}
+      .title{font:700 34px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .sub{font:400 18px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .card{fill:#fff;stroke:#cfd8e3;stroke-width:2}
+      .io{fill:#eef6ff;stroke:#5b9bd8;stroke-width:2}
+      .adc{fill:#f0fbf3;stroke:#5cac75;stroke-width:2}
+      .pwm{fill:#fff6e7;stroke:#d49b3d;stroke-width:2}
+      .warn{fill:#fff1f0;stroke:#d96a63;stroke-width:2}
+      .h{font:700 21px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .p{font:400 16px "Microsoft YaHei",Arial,sans-serif;fill:#445066}
+      .small{font:400 14px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .tag{font:700 15px Consolas,"Microsoft YaHei",monospace;fill:#263248}
+      .arrow{stroke:#69778b;stroke-width:3;fill:none;marker-end:url(#arrow)}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#69778b"/></marker>
+  </defs>
+
+  <rect class="bg" width="1440" height="800"/>
+  <text class="title" x="72" y="70">GPIO、ADC、PWM 接线校验图</text>
+  <text class="sub" x="72" y="106">配置普通外设前，先按信号类型检查电平、引脚能力、供电、保护和默认状态。</text>
+
+  <rect class="io" x="88" y="172" width="360" height="208" rx="18"/>
+  <text class="h" x="126" y="220">GPIO 数字输入/输出</text>
+  <text class="p" x="126" y="258">输入：上拉/下拉、消抖、低电平触发</text>
+  <text class="p" x="126" y="288">输出：继电器、LED、蜂鸣器先低风险验证</text>
+  <text class="tag" x="126" y="324">避开 GPIO6-GPIO11</text>
+  <text class="tag" x="126" y="352">GPIO34-GPIO39 仅输入</text>
+
+  <rect class="adc" x="540" y="172" width="360" height="208" rx="18"/>
+  <text class="h" x="578" y="220">ADC 模拟输入</text>
+  <text class="p" x="578" y="258">确认量程不超过 3.3V</text>
+  <text class="p" x="578" y="288">电压/电流模块先校准零点和比例</text>
+  <text class="tag" x="578" y="324">分压、滤波、共地</text>
+  <text class="tag" x="578" y="352">记录 raw 和换算值</text>
+
+  <rect class="pwm" x="992" y="172" width="360" height="208" rx="18"/>
+  <text class="h" x="1030" y="220">PWM / 舵机 / 调光</text>
+  <text class="p" x="1030" y="258">确认频率、占空比和电源余量</text>
+  <text class="p" x="1030" y="288">电机和舵机使用独立供电更稳</text>
+  <text class="tag" x="1030" y="324">先小占空比测试</text>
+  <text class="tag" x="1030" y="352">再接入规则动作</text>
+
+  <rect class="card" x="152" y="502" width="270" height="136" rx="18"/>
+  <text class="h" x="190" y="548">1. 接线复核</text>
+  <text class="p" x="190" y="586">供电、电平、共地、保护</text>
+
+  <rect class="card" x="510" y="502" width="270" height="136" rx="18"/>
+  <text class="h" x="548" y="548">2. 禁用保存</text>
+  <text class="p" x="548" y="586">先建对象，不立即驱动现场负载</text>
+
+  <rect class="card" x="868" y="502" width="270" height="136" rx="18"/>
+  <text class="h" x="906" y="548">3. 单项验证</text>
+  <text class="p" x="906" y="586">看日志、读数、动作结果</text>
+
+  <path class="arrow" d="M422 570 H510"/>
+  <path class="arrow" d="M780 570 H868"/>
+
+  <rect class="warn" x="220" y="696" width="1000" height="58" rx="16"/>
+  <text class="small" x="260" y="731">现场风险点：继电器、电机、加热器和泵类负载必须先离线验证动作方向和默认状态，再启用自动规则。</text>
+</svg>

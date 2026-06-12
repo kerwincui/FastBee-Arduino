@@ -48,6 +48,12 @@ FastBee-Arduino 适配的硬件产品和终端设备案例。
 
 使用 `esp32` 标准版环境烧录，支持 MQTT、Modbus RTU（RS485）、GPIO 隔离输入输出等功能。
 
+烧录完成后，可通过 Web 控制台确认终端在线状态、IP、WiFi、内存余量和运行时间。
+
+![设备监控仪表盘](../images/fastbee-dashboard.png)
+
+截图要点：硬件展示类实验建议先用仪表盘确认设备稳定在线，再逐个启用外设。截图留档时记录当前固件环境和 IP，后续切换到其他开发板时可以快速对比网络、内存和运行状态。
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32 -Port COM6
 ```

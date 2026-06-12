@@ -2,6 +2,24 @@
 
 本文档描述 FastBee-Arduino 的整体架构、模块职责、数据流和关键设计模式,帮助开发者深入理解系统设计。
 
+## 运行界面视角
+
+架构中的网络、外设、规则、协议和系统管理模块最终都会落到 Web 控制台。阅读架构图时，可以用下面几张实机截图对应运行时边界：仪表盘负责系统状态总览，网络页负责联网配置，外设页负责硬件抽象，外设执行页负责规则编排。
+
+![FastBee-Arduino 运行时架构图](images/runtime-architecture-map.svg)
+
+![设备监控仪表盘](images/fastbee-dashboard.png)
+
+![网络基础配置](system/images/network-settings.png)
+
+![外设配置列表](system/images/peripheral-management.png)
+
+![外设执行规则列表](system/images/periph-exec-management.png)
+
+![核心服务边界图](images/core-service-boundary-map.svg)
+
+服务边界图用于把架构中的职责落到代码模块：新增能力前先判断它属于外设、规则、网络、协议、系统服务还是安全边界，再进入对应章节和目录。
+
 ## 整体架构
 
 FastBee-Arduino 采用分层架构设计,从硬件到应用层清晰划分职责,降低模块耦合度。
@@ -543,7 +561,7 @@ ds:<外设ID>_<字段名>
 ## 相关文档
 
 - [核心框架](core-framework.md) - 主要组件和关键类详解
-- [外设执行流程](periph_exec_flow.md) - 规则引擎完整业务逻辑
+- [外设执行流程](periph-exec/periph_exec_flow.md) - 规则引擎完整业务逻辑
 - [快速开始](quick-start.md) - 5步完成首次配置
 - [开发指南](development-guide.md) - 环境搭建和编码规范
 

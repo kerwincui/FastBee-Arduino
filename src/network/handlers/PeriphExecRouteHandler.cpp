@@ -79,6 +79,9 @@ void PeriphExecRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/periph-exec/trigger-types", HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetTriggerTypes(request); });
 
+    server->on("/api/periph-exec/results", HTTP_GET,
+              [this](AsyncWebServerRequest* request) { handleGetRecentResults(request); });
+
     // 向后兼容：旧版系统事件API重定向到静态事件
     server->on("/api/periph-exec/system-events", HTTP_GET,
               [this](AsyncWebServerRequest* request) { handleGetStaticEvents(request); });
@@ -286,8 +289,73 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
                 if (periph) targetPeriphName = periph->name;
             }
 
+            // 构建流程摘要: 触发 → 动作 → 上报
+            String flowSummary;
+            flowSummary.reserve(80);
+            if (triggerCount > 0) {
+                const auto& t = rule.triggers[0];
+                switch (t.triggerType) {
+                    case 0: flowSummary = (t.operatorType == 1) ? F("MQTT设值") : F("MQTT指令"); break;
+                    case 1:
+                        if (t.timerMode == 1 && !t.timePoint.isEmpty()) {
+                            flowSummary = F("每日"); flowSummary += t.timePoint;
+                        } else {
+                            flowSummary = F("每"); flowSummary += String(t.intervalSec); flowSummary += F("秒");
+                        }
+                        break;
+                    case 4: flowSummary = F("事件:"); flowSummary += t.eventId; break;
+                    case 5: flowSummary = F("轮询采集"); break;
+                    case 6: flowSummary = F("规则链"); break;
+                    default: flowSummary = F("触发"); break;
+                }
+                if (triggerCount > 1) { flowSummary += F("…"); }
+            }
+            flowSummary += F(" → ");
+            if (actionCount > 0) {
+                const auto& a = rule.actions[0];
+                switch (a.actionType) {
+                    case 0: flowSummary += F("设高电平"); break;
+                    case 1: flowSummary += F("设低电平"); break;
+                    case 2: flowSummary += F("闪烁"); break;
+                    case 3: flowSummary += F("呼吸灯"); break;
+                    case 4: flowSummary += F("PWM"); break;
+                    case 5: flowSummary += F("DAC"); break;
+                    case 6: flowSummary += F("重启"); break;
+                    case 10: flowSummary += F("调用"); break;
+                    case 13: flowSummary += F("高反转"); break;
+                    case 14: flowSummary += F("低反转"); break;
+                    case 15: flowSummary += F("脚本"); break;
+                    case 16: flowSummary += F("写线圈"); break;
+                    case 17: flowSummary += F("写寄存器"); break;
+                    case 18: flowSummary += F("Modbus采集"); break;
+                    case 19: flowSummary += F("读传感器"); break;
+                    case 21: flowSummary += F("发事件"); break;
+                    case 22: flowSummary += F("启用规则"); break;
+                    case 23: flowSummary += F("禁用规则"); break;
+                    case 24: flowSummary += F("显数字"); break;
+                    case 25: flowSummary += F("显文本"); break;
+                    case 26: flowSummary += F("清数码管"); break;
+                    case 27: flowSummary += F("OLED显示"); break;
+                    default: flowSummary += F("动作"); break;
+                }
+                if (!targetPeriphName.isEmpty()) { flowSummary += F(" → "); flowSummary += targetPeriphName; }
+                if (actionCount > 1) { flowSummary += F("…"); }
+            }
+            if (rule.reportAfterExec) { flowSummary += F(" → 上报"); }
+
+            // 条件分支（平台触发有比较时）
+            if (triggerCount > 0 && rule.triggers[0].triggerType == 0 && rule.triggers[0].operatorType != 1 && !rule.triggers[0].compareValue.isEmpty()) {
+                // 在触发和动作之间插入条件
+                String condPart = F("若>"); condPart += rule.triggers[0].compareValue;
+                // 替换第一个 " → " 为 " → 若X → "
+                int arrowPos = flowSummary.indexOf(F(" → "));
+                if (arrowPos >= 0) {
+                    flowSummary = flowSummary.substring(0, arrowPos + 4) + condPart + F(" → ") + flowSummary.substring(arrowPos + 4);
+                }
+            }
+
             String item;
-            item.reserve(160 + rule.id.length() + rule.name.length() + targetPeriphName.length());
+            item.reserve(200 + rule.id.length() + rule.name.length() + targetPeriphName.length() + flowSummary.length());
             item = F("{\"id\":\"");
             item += escapePeriphExecJsonString(rule.id);
             item += F("\",\"name\":\"");
@@ -310,6 +378,8 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
             item += hasSetMode ? F("true") : F("false");
             item += F(",\"targetPeriphName\":\"");
             item += escapePeriphExecJsonString(targetPeriphName);
+            item += F("\",\"flowSummary\":\"");
+            item += escapePeriphExecJsonString(flowSummary);
             item += F("\"}");
             items.emplace_back(std::move(item));
         }
@@ -563,6 +633,67 @@ void PeriphExecRouteHandler::handleRunOnce(AsyncWebServerRequest* request) {
         doc["message"] = "Rule not found";
     }
     HandlerUtils::sendJsonStream(request, doc);
+}
+
+void PeriphExecRouteHandler::handleGetRecentResults(AsyncWebServerRequest* request) {
+    if (!ctx->requirePermission(request, "system.view")) return;
+
+    int limit = 8;
+    if (request->hasParam("limit")) {
+        limit = request->getParam("limit")->value().toInt();
+        if (limit < 1) limit = 1;
+        if (limit > 20) limit = 20;
+    }
+
+    auto results = PeriphExecManager::getInstance().getRecentResults();
+    int total = static_cast<int>(results.size());
+    int emitted = 0;
+    String items;
+    items.reserve(static_cast<size_t>(limit) * 140);
+
+    for (int i = total - 1; i >= 0 && emitted < limit; --i) {
+        const auto& result = results[static_cast<size_t>(i)];
+        if (emitted > 0) items += ",";
+
+        const char* statusName = "unknown";
+        switch (result.status) {
+            case AsyncExecStatus::PENDING: statusName = "pending"; break;
+            case AsyncExecStatus::RUNNING: statusName = "running"; break;
+            case AsyncExecStatus::COMPLETED: statusName = "completed"; break;
+            case AsyncExecStatus::FAILED: statusName = "failed"; break;
+        }
+
+        unsigned long duration = 0;
+        if (result.endTime >= result.startTime) {
+            duration = result.endTime - result.startTime;
+        }
+
+        items += F("{\"ruleId\":\"");
+        items += escapePeriphExecJsonString(result.ruleId);
+        items += F("\",\"ruleName\":\"");
+        items += escapePeriphExecJsonString(result.ruleName);
+        items += F("\",\"status\":");
+        items += String(static_cast<int>(result.status));
+        items += F(",\"statusName\":\"");
+        items += statusName;
+        items += F("\",\"startTime\":");
+        items += String(result.startTime);
+        items += F(",\"endTime\":");
+        items += String(result.endTime);
+        items += F(",\"durationMs\":");
+        items += String(duration);
+        items += F("}");
+        emitted++;
+    }
+
+    String response;
+    response.reserve(80 + items.length());
+    response += F("{\"success\":true,\"total\":");
+    response += String(total);
+    response += F(",\"data\":[");
+    response += items;
+    response += F("]}");
+    request->send(200, "application/json", response);
 }
 
 // ========== 获取静态事件列表 ==========

@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="780" viewBox="0 0 1440 780">
+  <defs>
+    <style>
+      .bg{fill:#f7f9fb}
+      .title{font:700 34px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .sub{font:400 18px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .card{fill:#fff;stroke:#ccd6e2;stroke-width:2}
+      .lite{fill:#ecf8f1;stroke:#61ad73;stroke-width:2}
+      .std{fill:#eef6ff;stroke:#5b9bd8;stroke-width:2}
+      .full{fill:#fff4e5;stroke:#d89a35;stroke-width:2}
+      .chip{fill:#172033}
+      .h{font:700 22px "Microsoft YaHei",Arial,sans-serif;fill:#172033}
+      .p{font:400 16px "Microsoft YaHei",Arial,sans-serif;fill:#445066}
+      .small{font:400 14px "Microsoft YaHei",Arial,sans-serif;fill:#5a667a}
+      .tag{font:700 15px "Microsoft YaHei",Arial,sans-serif;fill:#fff}
+      .arrow{stroke:#6f7d90;stroke-width:3;fill:none;marker-end:url(#arrow)}
+      .arrowGreen{stroke:#3f9b63;stroke-width:3;fill:none;marker-end:url(#arrowGreen)}
+      .arrowBlue{stroke:#2f7eca;stroke-width:3;fill:none;marker-end:url(#arrowBlue)}
+      .arrowOrange{stroke:#c47a1d;stroke-width:3;fill:none;marker-end:url(#arrowOrange)}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6f7d90"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#3f9b63"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2f7eca"/>
+    </marker>
+    <marker id="arrowOrange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c47a1d"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1440" height="780"/>
+  <text class="title" x="72" y="70">固件版本选型决策图</text>
+  <text class="sub" x="72" y="106">先看芯片资源，再看协议、Web 管理和长期稳定性要求，避免把小容量设备推到全功能负载。</text>
+
+  <rect class="card" x="74" y="156" width="300" height="190" rx="18"/>
+  <circle class="chip" cx="124" cy="210" r="26"/>
+  <text class="tag" x="107" y="216">1</text>
+  <text class="h" x="168" y="204">确认硬件资源</text>
+  <text class="p" x="104" y="250">Flash 容量和分区策略</text>
+  <text class="p" x="104" y="278">PSRAM 是否可用</text>
+  <text class="p" x="104" y="306">现场需要的联网方式</text>
+
+  <rect class="card" x="426" y="156" width="300" height="190" rx="18"/>
+  <circle class="chip" cx="476" cy="210" r="26"/>
+  <text class="tag" x="459" y="216">2</text>
+  <text class="h" x="520" y="204">确认功能边界</text>
+  <text class="p" x="456" y="250">是否只需要核心采集</text>
+  <text class="p" x="456" y="278">是否依赖完整 Web 控制台</text>
+  <text class="p" x="456" y="306">是否需要脚本和复杂规则</text>
+
+  <rect class="card" x="778" y="156" width="300" height="190" rx="18"/>
+  <circle class="chip" cx="828" cy="210" r="26"/>
+  <text class="tag" x="811" y="216">3</text>
+  <text class="h" x="872" y="204">确认交付目标</text>
+  <text class="p" x="808" y="250">演示、量产或现场运维</text>
+  <text class="p" x="808" y="278">日志留存和回滚要求</text>
+  <text class="p" x="808" y="306">后续 OTA 或配置扩展</text>
+
+  <rect class="card" x="1130" y="156" width="236" height="190" rx="18"/>
+  <circle class="chip" cx="1180" cy="210" r="26"/>
+  <text class="tag" x="1163" y="216">4</text>
+  <text class="h" x="1224" y="204">做验证</text>
+  <text class="p" x="1160" y="250">构建矩阵</text>
+  <text class="p" x="1160" y="278">设备冒烟</text>
+  <text class="p" x="1160" y="306">稳定运行</text>
+
+  <path class="arrow" d="M374 251 H426"/>
+  <path class="arrow" d="M726 251 H778"/>
+  <path class="arrow" d="M1078 251 H1130"/>
+
+  <rect class="lite" x="92" y="438" width="360" height="220" rx="20"/>
+  <text class="h" x="124" y="486">Lite 精简版</text>
+  <text class="small" x="124" y="516">推荐：ESP32 4MB、资源紧张、只保留核心链路</text>
+  <text class="p" x="124" y="556">适合传感采集、基础 MQTT、少量外设。</text>
+  <text class="p" x="124" y="586">优先目标是低内存占用和可恢复运行。</text>
+  <text class="p" x="124" y="616">不建议承载复杂脚本和大量 Web 资产。</text>
+  <path class="arrowGreen" d="M272 438 V376 H224 V346"/>
+
+  <rect class="std" x="540" y="438" width="360" height="220" rx="20"/>
+  <text class="h" x="572" y="486">Standard 标准版</text>
+  <text class="small" x="572" y="516">推荐：ESP32-S3 8MB、常规项目默认选择</text>
+  <text class="p" x="572" y="556">覆盖 Web 管理、网络、MQTT、常见外设。</text>
+  <text class="p" x="572" y="586">适合大多数现场部署和演示交付。</text>
+  <text class="p" x="572" y="616">新增需求先从标准版验证边界。</text>
+  <path class="arrowBlue" d="M720 438 V376 H576 V346"/>
+
+  <rect class="full" x="988" y="438" width="360" height="220" rx="20"/>
+  <text class="h" x="1020" y="486">Full 全功能版</text>
+  <text class="small" x="1020" y="516">推荐：ESP32-S3 16MB 和 PSRAM 充足场景</text>
+  <text class="p" x="1020" y="556">启用更完整的规则、协议和运维能力。</text>
+  <text class="p" x="1020" y="586">适合网关型设备和多外设组合。</text>
+  <text class="p" x="1020" y="616">发布前必须跑完整构建和设备稳定性验证。</text>
+  <path class="arrowOrange" d="M1168 438 V376 H1226 V346"/>
+
+  <text class="small" x="72" y="724">经验规则：资源越小越要控制功能面；功能越多越要提高测试层级和日志留存要求。</text>
+</svg>

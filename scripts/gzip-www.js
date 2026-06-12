@@ -238,7 +238,7 @@ function transformProdConfigFile(sourcePath, normalizedRel) {
         const unsupportedProtocols = new Set([2, 3, 4, 5]); // Modbus TCP, HTTP, CoAP, TCP
         const profilePeripheralIds = getProfilePeripheralIds();
         if (isLiteWebProfile()) {
-            [16, 17, 18].forEach((actionType) => unsupportedActions.add(actionType)); // Modbus control/poll
+            [15, 16, 17, 18].forEach((actionType) => unsupportedActions.add(actionType)); // script and Modbus control/poll
             unsupportedProtocols.add(1); // Modbus RTU
         }
         const rules = Array.isArray(doc.rules) ? doc.rules : [];

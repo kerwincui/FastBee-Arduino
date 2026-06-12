@@ -33,6 +33,7 @@ private:
     void handleGetEventCategories(AsyncWebServerRequest* request);
     void handleGetTriggerTypes(AsyncWebServerRequest* request);
     void handleGetControls(AsyncWebServerRequest* request);
+    void handleGetRecentResults(AsyncWebServerRequest* request);
 
     // JSON body handlers（支持 triggers[]/actions[] 数组）
     void handleAddRuleJson(AsyncWebServerRequest* request, JsonVariant& json);

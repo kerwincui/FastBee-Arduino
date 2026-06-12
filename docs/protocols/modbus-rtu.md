@@ -4,6 +4,18 @@
 
 FastBee 支持作为 Modbus RTU Master，通过串口连接工业传感器和控制设备。支持自动从站扫描、寄存器批量读取和周期轮询。
 
+![Modbus RTU 配置页面](../system/images/protocol-modbus-rtu.png)
+
+配置时先固定 UART 引脚和波特率，再添加从站和寄存器映射。RS485 总线现场请确认 A/B 线、终端电阻、从站地址和轮询间隔。
+
+![Modbus RTU 主站轮询链路](../images/modbus-rtu-polling-flow.svg)
+
+如果轮询没有数据，先确认主站 UART 与 RS485 收发器，再逐个检查从站地址、功能码、寄存器地址和响应超时。
+
+![Modbus API 与功能码映射](../images/modbus-api-function-map.svg)
+
+配置面板、REST API 和功能码可以按上图对应起来。现场调试时，不要只看页面按钮是否点击成功，还要确认它实际调用的是读线圈、写线圈、读寄存器还是写寄存器。
+
 ## 操作指南
 
 1. 配置 UART 外设作为 Modbus 串口
@@ -130,5 +142,5 @@ FastBee 支持作为 Modbus RTU Master，通过串口连接工业传感器和控
 
 ## 相关文档
 
-- [Modbus 使用指南](../modbus_usage_guide.md) — 详细教程
+- [Modbus 使用指南](modbus_usage_guide.md) — 详细教程
 - [Modbus 设备外设](../peripherals/modbus-device.md) — 外设类型配置

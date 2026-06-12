@@ -2,6 +2,20 @@
 
 核对来源：`C:\Users\kerwin\Desktop\03-项目资料\硬件开发资料\普中-ESP32开发板资料\ai` 下 57 个 Python 示例、20 张接线图和 `普中ESP32开发攻略_V1.2--基于MicroPython.pdf`。PDF 共 299 页，目录包含开发板功能、Python 基础、LED、蜂鸣器、继电器、按键、电机、ADC、显示、传感器、WiFi、Socket、MQTT 和手机控制 LED 等章节。
 
+覆盖核对时，可以把资料中的模块映射到 Web 控制台的外设配置和执行规则：先确认是否已有外设类型，再确认是否能通过规则触发采集、控制或显示。
+
+![外设配置列表](images/peripheral-management.png)
+
+![新增外设弹窗](images/peripheral-add-dialog.png)
+
+![外设执行规则列表](images/periph-exec-management.png)
+
+截图要点：覆盖核对不只看“文档里有没有模块”，还要看 Web 端是否能配置、是否能被规则调度、是否能在现场被启用。外设配置截图用于查类型覆盖，新增弹窗用于查参数入口，外设执行截图用于查自动化能力。
+
+![硬件资料覆盖矩阵](../images/hardware-coverage-matrix.svg)
+
+覆盖矩阵用于快速判断某个硬件模块是否已经形成闭环：有示例文档、有外设类型、有 Web 配置入口、有规则联动路径，并且版本能力开关与目标固件档位一致。
+
 ## 总体结论
 
 - 24 个基础实验和 20 个扩展实验已在 `docs/examples/01..44` 建立对应文档。

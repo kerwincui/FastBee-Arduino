@@ -11,6 +11,8 @@
         _periphTotalCount: 0,
         _periphProfile: null,
         _periphEventsBound: false,
+        _periphTestId: '',
+        _periphTestConfig: null,
 
         // ============ 事件绑定 ============
         setupPeripheralsEvents() {
@@ -30,6 +32,9 @@
             // 外设类型选择变化
             var peripheralTypeInput = document.getElementById('peripheral-type-input');
             if (peripheralTypeInput) peripheralTypeInput.addEventListener('change', (e) => this.onPeripheralTypeChange(e.target.value));
+            // 引脚实时校验
+            var pinsInput = document.getElementById('peripheral-pins-input');
+            if (pinsInput) pinsInput.addEventListener('blur', (e) => this._validatePinsInline());
             // 外设过滤器
             var peripheralFilter = document.getElementById('peripheral-filter-type');
             if (peripheralFilter) peripheralFilter.addEventListener('change', (e) => { this._periphCurrentPage = 1; this.loadPeripherals(e.target.value); });
@@ -59,13 +64,14 @@
             var id = button.getAttribute('data-id');
             if (!action || !id) return;
             if (action !== 'read' && !this.guardDeveloperModeAction()) return;
-            if (action === 'edit') this.editPeripheral(id);
+            if (action === 'read') this.openPeripheralTestModal(id);
+            else if (action === 'edit') this.editPeripheral(id);
             else if (action === 'toggle') this.togglePeripheral(id);
             else if (action === 'delete') this.deletePeripheral(id);
         },
 
         _renderPeripheralActionButton(action, id, label, className) {
-            var locked = !this.isDeveloperModeEnabled();
+            var locked = action !== 'read' && !this.isDeveloperModeEnabled();
             var attrs = locked ? ' disabled title="' + escapeHtml(this.getDeveloperModeDisabledText()) + '"' : '';
             var lockClass = locked ? ' dev-mode-locked' : '';
             return '<button class="fb-btn fb-btn-sm fb-btn-compact ' + className + lockClass + '" data-peripheral-action="' + action + '" data-id="' + escapeHtml(id) + '"' + attrs + '>' + label + '</button>';
@@ -157,14 +163,18 @@
                         const safeId = escapeHtml(periph.id);
                         const safeName = escapeHtml(periph.name);
                         const safeType = escapeHtml(periph.typeName || periph.type || '--');
+                                                const typeVal = Number(periph.type || 0);
+                                                const unimplTypes = [4, 5, 37, 39, 40, 43]; // CAN, USB, SDIO, CAMERA, ETHERNET, ENCODER
+                                                const typeTag = unimplTypes.indexOf(typeVal) >= 0 ? ' <span class="badge badge-info" style="font-size:10px">待驱动</span>' : '';
                         const pinsStr = escapeHtml(periph.pins ? periph.pins.join(', ') : '--');
                         html += '<tr>' +
                             '<td>' + safeId + '</td>' +
                             '<td>' + safeName + '</td>' +
-                            '<td>' + safeType + '</td>' +
+                            '<td>' + safeType + typeTag + '</td>' +
                             '<td>' + pinsStr + '</td>' +
                             '<td><span class="badge ' + statusBadgeClass + '">' + escapeHtml(statusName) + '</span></td>' +
                             '<td class="u-cell-nowrap"><div class="u-table-action-row">' +
+                                this._renderPeripheralActionButton('read', periph.id, '测试', 'fb-btn-secondary') +
                                 this._renderPeripheralActionButton('edit', periph.id, '编辑', 'fb-btn-primary') +
                                 this._renderPeripheralActionButton('toggle', periph.id, periph.enabled ? '禁用' : '启用', periph.enabled ? 'fb-btn-warning' : 'fb-btn-success') +
                                 this._renderPeripheralActionButton('delete', periph.id, '删除', 'fb-btn-danger') +
@@ -224,6 +234,9 @@
                 title.textContent = '新增外设';
                 document.getElementById('peripheral-original-id').value = '';
                 document.getElementById('peripheral-id-input').disabled = false;
+                // 新增外设默认禁用（向导式：先保存再测试再启用）
+                var enabledCb = document.getElementById('peripheral-enabled-input');
+                if (enabledCb) enabledCb.checked = false;
                 this.onPeripheralTypeChange('11');
             }
             this.showModal(modal);
@@ -239,6 +252,15 @@
             document.querySelectorAll('.peripheral-params-group').forEach(el => this.hideElement(el));
             const pinHint = document.getElementById('uart-pin-direction-hint');
             this.hideElement(pinHint);
+
+            // 引脚推荐提示
+            var pinRecommendEl = document.getElementById('peripheral-pins-recommend');
+            if (pinRecommendEl) {
+                var rec = this._getPinRecommendation(type);
+                pinRecommendEl.textContent = rec;
+                pinRecommendEl.style.display = rec ? '' : 'none';
+            }
+
             if (type >= 11 && type <= 21) {
                 const gpioParams = document.getElementById('gpio-params');
                 if (gpioParams) {
@@ -365,6 +387,69 @@
                 });
         },
 
+        _getPinRecommendation(type) {
+            // ESP32 通用引脚推荐（6-11为Flash保留, 34-39仅输入）
+            var m = {
+                1: '推荐: 16(RX),17(TX) 或 25,26',
+                2: '推荐: 21(SCL),22(SDA)',
+                3: '推荐: 18(CLK),19(MISO),23(MOSI),5(CS)',
+                11: '推荐: 仅输入脚, 如 34-39',
+                12: '推荐: 通用输出脚, 如 2,4,25,26,27',
+                17: '推荐: PWM输出脚, 如 2,4,12-19,25-27',
+                26: '推荐: ADC输入脚, 如 34-39',
+                27: '推荐: DAC输出: 25 或 26',
+                41: '推荐: PWM脚, 如 13,14,25',
+                42: '推荐: 11,10,9,13 (ULN2003)',
+                44: '推荐: 4 (DHT) 或任意数字输入',
+                45: '推荐: 27 (数据脚)',
+                47: '推荐: CLK+DIO, 如 21,22',
+                48: '推荐: 任意输出脚',
+                49: '推荐: 任意输入脚'
+            };
+            return m[type] || '';
+        },
+
+        _validatePinsInline() {
+            var typeEl = document.getElementById('peripheral-type-input');
+            var pinsEl = document.getElementById('peripheral-pins-input');
+            var hintEl = document.getElementById('peripheral-pins-validation-hint');
+            if (!typeEl || !pinsEl) return;
+            var type = typeEl.value;
+            var pins = pinsEl.value.trim();
+            if (!type || !pins) {
+                if (hintEl) hintEl.innerHTML = '';
+                return;
+            }
+            var excludeId = document.getElementById('peripheral-original-id')?.value || '';
+            var self = this;
+            apiGet('/api/peripherals/validate-pins', { type: type, pins: pins, excludeId: excludeId })
+                .then(function(res) {
+                    if (!hintEl) return;
+                    if (!res || !res.success) {
+                        hintEl.innerHTML = '<span class="u-text-danger">校验请求失败</span>';
+                        return;
+                    }
+                    if (!res.pins || res.pins.length === 0) {
+                        hintEl.innerHTML = '';
+                        return;
+                    }
+                    var msgs = [];
+                    res.pins.forEach(function(p) {
+                        if (p.error) msgs.push('GPIO' + p.pin + ': ' + p.error);
+                        else if (p.warning) msgs.push('GPIO' + p.pin + ': ' + p.warning);
+                    });
+                    if (msgs.length === 0) {
+                        hintEl.innerHTML = '<span style="color:var(--success)">\u2713 引脚可用</span>';
+                    } else {
+                        var cls = res.allValid ? 'u-text-warning' : 'u-text-danger';
+                        hintEl.innerHTML = '<span class="' + cls + '">' + msgs.map(function(m) { return escapeHtml(m); }).join('<br>') + '</span>';
+                    }
+                })
+                .catch(function() {
+                    if (hintEl) hintEl.innerHTML = '';
+                });
+        },
+
         savePeripheralConfig() {
             if (!this.guardDeveloperModeAction()) return;
             const originalId = document.getElementById('peripheral-original-id').value;
@@ -443,12 +528,18 @@
             apiPost(url, data)
                 .then(res => {
                     if (res && res.success) {
+                        var newPeriphId = res.data && res.data.id ? res.data.id : (isEdit ? originalId : '');
                         this.closePeripheralModal();
                         if (typeof window.apiInvalidateCache === 'function') {
                             window.apiInvalidateCache('/api/peripherals');
                         }
                         this.loadPeripherals(document.getElementById('peripheral-filter-type')?.value || '', { noCache: true });
                         Notification.success(isEdit ? '外设更新成功' : '外设添加成功', '外设配置');
+                        // 向导式：新增外设保存后自动打开测试弹窗
+                        if (!isEdit && newPeriphId) {
+                            var self = this;
+                            setTimeout(function() { self.openPeripheralTestModal(newPeriphId); }, 400);
+                        }
                     } else {
                         this.showInlineError(errEl, res?.error || '保存失败，请检查连接');
                     }
@@ -459,6 +550,253 @@
                 })
                 .finally(() => {
                     if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = origText; }
+                });
+        },
+
+        _ensurePeripheralTestModal() {
+            var modal = document.getElementById('peripheral-test-modal');
+            if (modal) return modal;
+            if (!document.body) return null;
+
+            modal = document.createElement('div');
+            modal.id = 'peripheral-test-modal';
+            modal.className = 'modal is-hidden';
+            modal.innerHTML = '' +
+                '<div class="modal-content u-modal-content-800">' +
+                    '<div class="modal-header">' +
+                        '<h2 class="modal-title" id="peripheral-test-modal-title">外设测试</h2>' +
+                        '<button type="button" id="close-peripheral-test-modal" class="modal-close-btn">&times;</button>' +
+                    '</div>' +
+                    '<div class="modal-body">' +
+                        '<div id="peripheral-test-body" class="peripheral-test-body"></div>' +
+                        '<div id="peripheral-test-error" class="message message-error is-hidden"></div>' +
+                    '</div>' +
+                    '<div class="modal-footer">' +
+                        '<button class="fb-btn" id="cancel-peripheral-test-btn" type="button">关闭</button>' +
+                        '<button class="fb-btn fb-btn-primary" id="refresh-peripheral-test-btn" type="button">重新读取</button>' +
+                    '</div>' +
+                '</div>';
+            document.body.appendChild(modal);
+
+            var self = this;
+            var close = function() { self.closePeripheralTestModal(); };
+            var closeBtn = document.getElementById('close-peripheral-test-modal');
+            var cancelBtn = document.getElementById('cancel-peripheral-test-btn');
+            var refreshBtn = document.getElementById('refresh-peripheral-test-btn');
+            if (closeBtn) closeBtn.addEventListener('click', close);
+            if (cancelBtn) cancelBtn.addEventListener('click', close);
+            if (refreshBtn) refreshBtn.addEventListener('click', function() {
+                if (self._periphTestId) self._loadPeripheralTestData(self._periphTestId);
+            });
+            modal.addEventListener('click', function(event) {
+                if (event.target === modal) close();
+            });
+            modal.addEventListener('click', function(event) {
+                var button = event.target.closest('[data-periph-test-write]');
+                if (!button) return;
+                event.preventDefault();
+                self._handlePeripheralTestWrite(button);
+            });
+            return modal;
+        },
+
+        openPeripheralTestModal(id) {
+            var modal = this._ensurePeripheralTestModal();
+            if (!modal) return;
+            this._periphTestId = id;
+            this._periphTestConfig = null;
+            this.clearInlineError('peripheral-test-error');
+            var title = document.getElementById('peripheral-test-modal-title');
+            if (title) title.textContent = '外设测试 - ' + id;
+            var body = document.getElementById('peripheral-test-body');
+            if (body) body.innerHTML = '<div class="fb-loading-placeholder"><div class="fb-loading-placeholder-title">读取外设状态中...</div></div>';
+            this.showModal(modal);
+            this._loadPeripheralTestData(id);
+        },
+
+        closePeripheralTestModal() {
+            this.hideModal('peripheral-test-modal');
+            this._periphTestId = '';
+            this._periphTestConfig = null;
+            this.clearInlineError('peripheral-test-error');
+        },
+
+        _loadPeripheralTestData(id) {
+            var body = document.getElementById('peripheral-test-body');
+            if (!body) return;
+            body.innerHTML = '<div class="fb-loading-placeholder"><div class="fb-loading-placeholder-title">读取外设状态中...</div></div>';
+            this.clearInlineError('peripheral-test-error');
+            var getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
+            var readGetter = (typeof apiGetSilentFresh === 'function') ? apiGetSilentFresh : getter;
+            Promise.all([
+                getter('/api/peripherals/', { id: id }),
+                readGetter('/api/peripherals/read', { id: id }).catch(function(err) {
+                    return { success: false, error: (typeof apiDescribeError === 'function') ? apiDescribeError(err, '读取失败') : '读取失败' };
+                })
+            ]).then(([configRes, readRes]) => {
+                if (!configRes || !configRes.success || !configRes.data) {
+                    body.innerHTML = '<div class="message message-error">外设详情读取失败</div>';
+                    return;
+                }
+                this._periphTestConfig = configRes.data;
+                this._renderPeripheralTestBody(configRes.data, readRes);
+            }).catch(err => {
+                console.error('Load peripheral test data failed:', err);
+                body.innerHTML = '<div class="message message-error">外设状态读取失败</div>';
+            });
+        },
+
+        _renderPeripheralTestBody(config, readRes) {
+            var body = document.getElementById('peripheral-test-body');
+            if (!body) return;
+            var type = Number(config.type || 0);
+            var pins = Array.isArray(config.pins) && config.pins.length ? config.pins.join(', ') : '--';
+            var status = config.status && config.status.state !== undefined ? config.status.state : '--';
+            var readHtml = this._renderPeripheralReadResult(readRes);
+            var controlsHtml = this._renderPeripheralTestControls(config);
+            body.innerHTML = '' +
+                '<div class="peripheral-test-summary">' +
+                    '<div class="info-item"><div class="info-label">外设 ID</div><div class="info-value">' + escapeHtml(config.id || '') + '</div></div>' +
+                    '<div class="info-item"><div class="info-label">类型</div><div class="info-value">' + escapeHtml(config.typeName || type) + '</div></div>' +
+                    '<div class="info-item"><div class="info-label">引脚</div><div class="info-value">' + escapeHtml(pins) + '</div></div>' +
+                    '<div class="info-item"><div class="info-label">状态</div><div class="info-value">' + (config.enabled ? '已启用' : '未启用') + ' / ' + escapeHtml(status) + '</div></div>' +
+                '</div>' +
+                '<div class="section-title peripheral-test-section-title">读取结果</div>' +
+                readHtml +
+                '<div class="section-title peripheral-test-section-title">单项测试</div>' +
+                '<div id="peripheral-test-controls">' + controlsHtml + '</div>';
+        },
+
+        _renderPeripheralReadResult(readRes) {
+            if (!readRes || !readRes.success) {
+                return '<div class="message message-error">' + escapeHtml(readRes && (readRes.error || readRes.message) || '读取失败') + '</div>';
+            }
+            var data = readRes.data || {};
+            var keys = Object.keys(data).filter(function(key) {
+                return ['id', 'type', 'typeName'].indexOf(key) === -1;
+            });
+            if (!keys.length) {
+                return '<div class="peripheral-test-empty">暂无可读数据</div>';
+            }
+            var rows = keys.map(function(key) {
+                var value = data[key];
+                if (value === null || value === undefined) value = '--';
+                if (typeof value === 'object') value = JSON.stringify(value);
+                return '<tr><td>' + escapeHtml(key) + '</td><td>' + escapeHtml(value) + '</td></tr>';
+            }).join('');
+            return '<table class="info-table peripheral-test-table"><tbody>' + rows + '</tbody></table>';
+        },
+
+        _renderPeripheralTestControls(config) {
+            var type = Number(config.type || 0);
+            var locked = !this.isDeveloperModeEnabled();
+            var disabled = locked ? ' disabled title="' + escapeHtml(this.getDeveloperModeDisabledText()) + '"' : '';
+            var html = '';
+            var hasControls = false;
+            if (locked) {
+                html += '<div class="u-note-card u-note-card-warning peripheral-test-note">开发环境已禁用，当前仅允许读取外设状态。</div>';
+            }
+            if ([12, 16, 17].indexOf(type) !== -1) {
+                hasControls = true;
+                html += '<div class="peripheral-test-actions">' +
+                    '<button type="button" class="fb-btn fb-btn-success" data-periph-test-write="gpio-high"' + disabled + '>高电平</button>' +
+                    '<button type="button" class="fb-btn fb-btn-warning" data-periph-test-write="gpio-low"' + disabled + '>低电平</button>' +
+                    '<button type="button" class="fb-btn" data-periph-test-write="gpio-toggle"' + disabled + '>反转</button>' +
+                '</div>';
+            }
+            if ([16, 17].indexOf(type) !== -1) {
+                hasControls = true;
+                html += '<div class="peripheral-test-inline-form">' +
+                    '<label for="peripheral-test-pwm">PWM 占空比</label>' +
+                    '<input id="peripheral-test-pwm" type="number" min="0" max="65535" value="128">' +
+                    '<button type="button" class="fb-btn fb-btn-primary" data-periph-test-write="pwm"' + disabled + '>设置 PWM</button>' +
+                '</div>';
+            }
+            if (type === 27) {
+                hasControls = true;
+                html += '<div class="peripheral-test-inline-form">' +
+                    '<label for="peripheral-test-dac">DAC 值</label>' +
+                    '<input id="peripheral-test-dac" type="number" min="0" max="255" value="128">' +
+                    '<button type="button" class="fb-btn fb-btn-primary" data-periph-test-write="dac"' + disabled + '>设置 DAC</button>' +
+                '</div>';
+            }
+            if (type >= 1 && type <= 5) {
+                hasControls = true;
+                html += '<div class="peripheral-test-stack-form">' +
+                    '<label for="peripheral-test-data">发送数据</label>' +
+                    '<textarea id="peripheral-test-data" rows="3" maxlength="256" placeholder="hello"></textarea>' +
+                    '<label class="fb-checkbox"><input type="checkbox" id="peripheral-test-hex"><span>按 HEX 发送</span></label>' +
+                    '<button type="button" class="fb-btn fb-btn-primary" data-periph-test-write="send-data"' + disabled + '>发送</button>' +
+                '</div>';
+            }
+            if (type === 48) {
+                hasControls = true;
+                html += '<div class="peripheral-test-grid-form">' +
+                    '<div class="fb-form-group"><label for="peripheral-test-rf-code">编码</label><input id="peripheral-test-rf-code" type="text" maxlength="32" placeholder="123456"></div>' +
+                    '<div class="fb-form-group"><label for="peripheral-test-rf-bits">位数</label><input id="peripheral-test-rf-bits" type="number" min="0" max="32" value="24"></div>' +
+                    '<div class="fb-form-group"><label for="peripheral-test-rf-pulse">脉宽</label><input id="peripheral-test-rf-pulse" type="number" min="0" max="2000" value="350"></div>' +
+                    '<div class="fb-form-group"><label for="peripheral-test-rf-repeat">重复</label><input id="peripheral-test-rf-repeat" type="number" min="0" max="20" value="8"></div>' +
+                    '<button type="button" class="fb-btn fb-btn-primary pe-span-all" data-periph-test-write="rf-send"' + disabled + '>发送 RF 编码</button>' +
+                '</div>';
+            }
+            if (!hasControls) {
+                html += '<div class="peripheral-test-empty">当前类型暂无写入测试动作，可使用重新读取观察状态。</div>';
+            }
+            return html;
+        },
+
+        _handlePeripheralTestWrite(button) {
+            if (!this.guardDeveloperModeAction()) return;
+            var action = button.getAttribute('data-periph-test-write');
+            var id = this._periphTestId;
+            if (!id || !action) return;
+            var payload = { id: id };
+            if (action === 'gpio-high') payload.state = 1;
+            else if (action === 'gpio-low') payload.state = 0;
+            else if (action === 'gpio-toggle') payload.toggle = 1;
+            else if (action === 'pwm') payload.pwm = document.getElementById('peripheral-test-pwm')?.value || '0';
+            else if (action === 'dac') payload.value = document.getElementById('peripheral-test-dac')?.value || '0';
+            else if (action === 'send-data') {
+                var dataEl = document.getElementById('peripheral-test-data');
+                var dataValue = dataEl ? dataEl.value : '';
+                if (!dataValue) {
+                    this.showInlineError('peripheral-test-error', '请输入要发送的数据');
+                    return;
+                }
+                payload.data = dataValue;
+                payload.hex = document.getElementById('peripheral-test-hex')?.checked ? 1 : 0;
+            } else if (action === 'rf-send') {
+                payload.code = document.getElementById('peripheral-test-rf-code')?.value || '';
+                payload.bits = document.getElementById('peripheral-test-rf-bits')?.value || '24';
+                payload.pulseWidth = document.getElementById('peripheral-test-rf-pulse')?.value || '350';
+                payload.repeat = document.getElementById('peripheral-test-rf-repeat')?.value || '8';
+                if (!payload.code) {
+                    this.showInlineError('peripheral-test-error', '请输入 RF 编码');
+                    return;
+                }
+            } else {
+                return;
+            }
+            this.clearInlineError('peripheral-test-error');
+            button.disabled = true;
+            var originalText = button.textContent;
+            button.textContent = '执行中...';
+            apiPost('/api/peripherals/write', payload)
+                .then(res => {
+                    if (res && res.success) {
+                        Notification.success(res.message || '测试动作已执行', '外设测试');
+                        this._loadPeripheralTestData(id);
+                    } else {
+                        this.showInlineError('peripheral-test-error', res?.error || res?.message || '测试动作失败');
+                    }
+                })
+                .catch(err => {
+                    console.error('Peripheral test write failed:', err);
+                    this.showInlineError('peripheral-test-error', err?.data?.error || err?.data?.message || '测试动作失败');
+                })
+                .finally(() => {
+                    button.disabled = false;
+                    button.textContent = originalText;
                 });
         },
 

@@ -30,6 +30,15 @@
 
 ## FastBee 外设配置
 
+本实验的 Web 操作入口如下：先在“外设配置”保留 SD 卡占位配置，再通过“文件管理”确认当前可用文件系统。当前固件仍以 LittleFS 为主要配置和资源存储。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![新增外设弹窗](../system/images/peripheral-add-dialog.png)
+
+![文件管理页面](../system/images/file-management.png)
+
+
 > ⚠️ **注意**：当前SD卡配置框架已就绪，但运行时驱动和文件动作待补充
 
 ### 方式1：Web界面配置（推荐）

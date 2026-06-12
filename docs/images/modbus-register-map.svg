@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820" role="img" aria-labelledby="title desc">
+  <title id="title">Modbus RTU 寄存器映射地图</title>
+  <desc id="desc">展示 Modbus RTU 帧、四类数据区、功能码和 FastBee 配置字段之间的映射关系。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f9fafb"/>
+      <stop offset="0.5" stop-color="#eef6ff"/>
+      <stop offset="1" stop-color="#fff7ed"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-16%" width="120%" height="132%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0f172a" flood-opacity="0.13"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <style>
+      text { font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #172033; }
+      .title { font-size: 42px; font-weight: 700; }
+      .subtitle { font-size: 20px; fill: #475569; }
+      .card { fill: #ffffff; stroke: #d7dee9; stroke-width: 1.5; rx: 18; filter: url(#shadow); }
+      .section { font-size: 24px; font-weight: 700; }
+      .label { font-size: 18px; font-weight: 700; }
+      .small { font-size: 15px; fill: #475569; }
+      .tiny { font-size: 13px; fill: #64748b; }
+      .frame { fill: #eff6ff; stroke: #bfdbfe; stroke-width: 1.5; rx: 12; }
+      .coil { fill: #ecfdf5; stroke: #86efac; }
+      .disc { fill: #fefce8; stroke: #fde68a; }
+      .hold { fill: #fff7ed; stroke: #fdba74; }
+      .input { fill: #f5f3ff; stroke: #ddd6fe; }
+      .api { fill: #f8fafc; stroke: #cbd5e1; }
+      .line { stroke: #2563eb; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .warn { fill: #fff1f2; stroke: #fda4af; rx: 14; }
+    </style>
+  </defs>
+  <rect width="1440" height="820" fill="url(#bg)"/>
+  <text x="72" y="72" class="title">Modbus RTU 寄存器映射地图</text>
+  <text x="72" y="108" class="subtitle">用同一张图核对从站地址、功能码、寄存器区、0/1 基地址和 FastBee API 参数，避免“能读不能写”或地址偏移一位。</text>
+
+  <rect x="70" y="160" width="340" height="470" class="card"/>
+  <text x="102" y="205" class="section">RTU 请求帧</text>
+  <rect x="102" y="245" width="86" height="64" class="frame"/>
+  <text x="124" y="282" class="label">Slave</text>
+  <rect x="190" y="245" width="86" height="64" class="frame"/>
+  <text x="212" y="282" class="label">Func</text>
+  <rect x="278" y="245" width="92" height="64" class="frame"/>
+  <text x="294" y="282" class="label">Addr</text>
+  <rect x="102" y="332" width="130" height="64" class="frame"/>
+  <text x="127" y="369" class="label">Value</text>
+  <rect x="240" y="332" width="130" height="64" class="frame"/>
+  <text x="284" y="369" class="label">CRC</text>
+  <text x="102" y="448" class="small">Slave：从站地址 1-247</text>
+  <text x="102" y="480" class="small">Func：读写能力由设备手册决定</text>
+  <text x="102" y="512" class="small">Addr：协议地址通常从 0 开始</text>
+  <text x="102" y="544" class="small">Value：数量、单值或批量数据</text>
+
+  <rect x="470" y="160" width="500" height="470" class="card"/>
+  <text x="502" y="205" class="section">四类数据区与常用功能码</text>
+  <rect x="502" y="245" width="410" height="72" class="coil"/>
+  <text x="528" y="276" class="label">Coils 00001+</text>
+  <text x="528" y="300" class="small">FC01 读，FC05 写单线圈，FC0F 批量写</text>
+  <rect x="502" y="337" width="410" height="72" class="disc"/>
+  <text x="528" y="368" class="label">Discrete Inputs 10001+</text>
+  <text x="528" y="392" class="small">FC02 读离散输入，只读状态位</text>
+  <rect x="502" y="429" width="410" height="72" class="hold"/>
+  <text x="528" y="460" class="label">Holding Registers 40001+</text>
+  <text x="528" y="484" class="small">FC03 读，FC06 写单寄存器，FC10 批量写</text>
+  <rect x="502" y="521" width="410" height="72" class="input"/>
+  <text x="528" y="552" class="label">Input Registers 30001+</text>
+  <text x="528" y="576" class="small">FC04 读输入寄存器，适合只读测量值</text>
+
+  <rect x="1030" y="160" width="340" height="470" class="card"/>
+  <text x="1062" y="205" class="section">FastBee 配置落点</text>
+  <rect x="1062" y="245" width="250" height="52" class="api"/>
+  <text x="1088" y="278" class="label">协议配置</text>
+  <rect x="1062" y="314" width="250" height="52" class="api"/>
+  <text x="1088" y="347" class="label">Modbus 外设</text>
+  <rect x="1062" y="383" width="250" height="52" class="api"/>
+  <text x="1088" y="416" class="label">轮询动作</text>
+  <rect x="1062" y="452" width="250" height="52" class="api"/>
+  <text x="1088" y="485" class="label">控制 API</text>
+  <rect x="1062" y="521" width="250" height="52" class="api"/>
+  <text x="1088" y="554" class="label">数据上报</text>
+  <text x="1062" y="610" class="tiny">字段：slaveId、functionCode、address、quantity、scale、unit</text>
+
+  <path d="M410 395 C440 395 440 395 470 395" class="line"/>
+  <path d="M970 395 C1000 395 1000 395 1030 395" class="line"/>
+
+  <rect x="115" y="682" width="1210" height="82" class="warn"/>
+  <text x="150" y="716" class="label">地址核对口诀</text>
+  <text x="150" y="746" class="small">设备手册写 40001 时，实际协议地址经常是 0；手册写 0001 时，要确认它是显示地址还是 RTU 帧里的 Address 字段。</text>
+</svg>

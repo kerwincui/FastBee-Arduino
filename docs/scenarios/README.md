@@ -2,6 +2,16 @@
 
 完整的 FastBee-Arduino 应用场景配置示例，展示如何组合外设配置与外设执行规则实现实际项目需求。
 
+场景配置通常先在“外设配置”添加硬件对象，再到“外设执行”编排采集、显示、控制或上报规则。下面两张实机截图是所有场景的共同入口。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![外设执行规则列表](../system/images/periph-exec-management.png)
+
+![典型场景自动化闭环](../images/scenario-automation-loop.svg)
+
+所有场景都可以按“采集、判断、执行、上报、复核”的闭环拆解；先跑单点，再组合延时、显示、上报和回滚配置。
+
 ## 场景列表
 
 | 场景 | 说明 | 涉及外设 |

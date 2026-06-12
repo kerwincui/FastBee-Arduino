@@ -15,6 +15,14 @@
 
 ### 方式1：Web界面配置（推荐）
 
+本场景需要先添加光敏 ADC 和照明继电器，再用外设执行规则做阈值判断和开关控制。
+
+![外设配置列表](../../system/images/peripheral-management.png)
+
+![新增外设弹窗](../../system/images/peripheral-add-dialog.png)
+
+![外设执行规则列表](../../system/images/periph-exec-management.png)
+
 #### 第一步：配置外设
 
 **步骤1：进入外设管理页面**

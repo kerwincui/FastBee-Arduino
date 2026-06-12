@@ -4,6 +4,24 @@
 
 FastBee-Arduino 支持的通信协议配置指南。
 
+## Web 配置入口
+
+通信协议页面集中管理 MQTT 与 Modbus RTU。先确认网络已在线，再配置 MQTT；需要接入 RS485 从站时，再进入 Modbus RTU 页配置串口、从站和寄存器映射。
+
+![MQTT 配置](../system/images/protocol-mqtt-config.png)
+
+![Modbus RTU 配置](../system/images/protocol-modbus-rtu.png)
+
+截图要点：
+
+- MQTT 配置截图用于确认云端接入参数、客户端标识、连接状态和重连策略。
+- Modbus RTU 截图用于确认串口参数、从站地址、寄存器映射和轮询周期。
+- 协议类问题建议先截图网络状态，再截图协议页面，这样能区分“网络未通”和“协议参数错误”。
+
+![MQTT 连接与数据生命周期](../images/mqtt-connection-lifecycle.svg)
+
+![Modbus RTU 主站轮询链路](../images/modbus-rtu-polling-flow.svg)
+
 ## 文档列表
 
 | 文档 | 说明 |
@@ -205,4 +223,4 @@ FastBee 支持作为 Modbus RTU Master，通过串口连接多个从站设备：
 
 - [网络配置](../system/network-config.md) — WiFi、以太网、4G、LoRa 网络设置
 - [Modbus 设备外设](../peripherals/modbus-device.md) — Modbus 外设类型配置
-- [Modbus 使用指南](../modbus_usage_guide.md) — 详细 Modbus 使用教程
+- [Modbus 使用指南](modbus_usage_guide.md) — 详细 Modbus 使用教程

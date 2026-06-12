@@ -13,6 +13,15 @@
 
 ## FastBee 外设配置
 
+本实验的 Web 操作入口如下：先在“外设配置”创建硬件对象，再在“外设执行”添加采集、控制或显示规则。新增外设时建议先保持禁用，确认接线后再启用。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![新增外设弹窗](../system/images/peripheral-add-dialog.png)
+
+![外设执行规则列表](../system/images/periph-exec-management.png)
+
+
 ### 方式1：Web界面配置（推荐）
 
 #### 步骤1：进入外设管理页面

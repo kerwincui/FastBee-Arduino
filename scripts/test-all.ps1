@@ -25,6 +25,19 @@ param(
     [int]$RetryCount = 2,
     [int]$DelayMs = 500,
     [int]$SoakRounds = 10,
+    [ValidateSet("disabled", "release")]
+    [string]$StabilityPreset = "disabled",
+    [double]$MaxFailureRatePercent = 0,
+    [int]$MaxP95LatencyMs = 0,
+    [int]$MaxConsecutiveFailures = 0,
+    [double]$MaxEndpointFailureRatePercent = 0,
+    [int]$MaxUptimeResetCount = -1,
+    [int]$MinHeapFreeBytes = 0,
+    [int]$MinHeapMaxAllocBytes = 0,
+    [int]$MaxHeapFreeDropBytes = 0,
+    [int]$MaxHeapMaxAllocDropBytes = 0,
+    [int]$MinPsramFreeBytes = 0,
+    [int]$MaxPsramFreeDropBytes = 0,
     [string]$ReportDir = ".pio\test-results",
     [switch]$RequireNetworkConnected,
     [switch]$RequireMqttConnected,
@@ -36,6 +49,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$script:RootBoundParameters = @{} + $PSBoundParameters
 Set-Location $ProjectDir
 
 if ($Checks -contains "all") {
@@ -148,6 +162,11 @@ function Ensure-NativeToolchainPath {
 
 function Invoke-StaticChecks {
     Invoke-External @("node", "scripts\check-utf8-text.js", "README.md", "README.en.md", "docs", "scripts", "test", "web-src", "include", "src", "data\config\peripherals.json", "data\config\periph_exec.json", "data\config\users.json")
+    Invoke-External @("node", "scripts\validate-test-coverage.js")
+    Invoke-External @("node", "scripts\validate-device-api-matrix.js")
+    Invoke-External @("node", "scripts\validate-build-matrix.js")
+    Invoke-External @("node", "scripts\validate-stability-thresholds.js")
+    Invoke-External @("powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts\validate-powershell-syntax.ps1")
     Invoke-External @("node", "scripts\validate-config-defaults.js")
     Invoke-External @("node", "scripts\validate-i18n.js")
     Invoke-External @("node", "scripts\web-smoke-test.js")
@@ -214,6 +233,18 @@ function Invoke-DeviceSmoke {
     Invoke-External $args
 }
 
+function Add-BoundExternalArgument {
+    param(
+        [ref]$Arguments,
+        [string]$ParameterName,
+        [object]$Value
+    )
+
+    if ($script:RootBoundParameters.ContainsKey($ParameterName)) {
+        $Arguments.Value += @("-$ParameterName", [string]$Value)
+    }
+}
+
 function Invoke-DeviceSoak {
     $reportPath = Join-Path $ReportDir ("soak-{0}-{1}.csv" -f $DeviceProfile, (Get-Date -Format "yyyyMMdd-HHmmss"))
     $args = @(
@@ -226,8 +257,20 @@ function Invoke-DeviceSoak {
         "-TimeoutSec", [string]$TimeoutSec,
         "-RetryCount", [string]$RetryCount,
         "-DelayMs", [string]$DelayMs,
+        "-StabilityPreset", $StabilityPreset,
         "-ReportPath", $reportPath
     )
+    Add-BoundExternalArgument -Arguments ([ref]$args) -ParameterName "MaxFailureRatePercent" -Value $MaxFailureRatePercent
+    Add-BoundExternalArgument -Arguments ([ref]$args) -ParameterName "MaxP95LatencyMs" -Value $MaxP95LatencyMs
+    Add-BoundExternalArgument -Arguments ([ref]$args) -ParameterName "MaxConsecutiveFailures" -Value $MaxConsecutiveFailures
+    Add-BoundExternalArgument -Arguments ([ref]$args) -ParameterName "MaxEndpointFailureRatePercent" -Value $MaxEndpointFailureRatePercent
+    Add-BoundExternalArgument -Arguments ([ref]$args) -ParameterName "MaxUptimeResetCount" -Value $MaxUptimeResetCount
+    Add-BoundExternalArgument -Arguments ([ref]$args) -ParameterName "MinHeapFreeBytes" -Value $MinHeapFreeBytes
+    Add-BoundExternalArgument -Arguments ([ref]$args) -ParameterName "MinHeapMaxAllocBytes" -Value $MinHeapMaxAllocBytes
+    Add-BoundExternalArgument -Arguments ([ref]$args) -ParameterName "MaxHeapFreeDropBytes" -Value $MaxHeapFreeDropBytes
+    Add-BoundExternalArgument -Arguments ([ref]$args) -ParameterName "MaxHeapMaxAllocDropBytes" -Value $MaxHeapMaxAllocDropBytes
+    Add-BoundExternalArgument -Arguments ([ref]$args) -ParameterName "MinPsramFreeBytes" -Value $MinPsramFreeBytes
+    Add-BoundExternalArgument -Arguments ([ref]$args) -ParameterName "MaxPsramFreeDropBytes" -Value $MaxPsramFreeDropBytes
     if ($RequireNetworkConnected) { $args += "-RequireNetworkConnected" }
     if ($RequireMqttConnected) { $args += "-RequireMqttConnected" }
     Invoke-External $args
@@ -237,6 +280,7 @@ Write-Host "FastBee test matrix" -ForegroundColor Green
 Write-Host "  Checks       : $($Checks -join ', ')"
 Write-Host "  Environments : $($Environments -join ', ')"
 Write-Host "  Device       : $BaseUrl ($DeviceProfile)"
+Write-Host "  Stability    : $StabilityPreset"
 if ($Port) {
     Write-Host "  Port         : $Port"
 }

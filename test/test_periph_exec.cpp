@@ -735,7 +735,7 @@ void test_timer_interval_millis_overflow_safe() {
     TimerTriggerState ts;
     ts.intervalSec = 60;
     ts.lastTriggerTime = 4294967000UL;  // 接近 uint32 上限
-    unsigned long now = 295;  // millis() 溢出后回绕
+    unsigned long now = 60296UL;  // millis() 溢出后回绕，elapsed = 60296 + (4294967296 - 4294967000) = 60592
     // 溢出后 (now - lastTriggerTime) 仍正确计算
     unsigned long elapsed = now - ts.lastTriggerTime;
     TEST_ASSERT_TRUE(elapsed >= 60000UL);
@@ -744,11 +744,11 @@ void test_timer_interval_millis_overflow_safe() {
 void test_timer_interval_24h_boundary() {
     TimerTriggerState ts;
     ts.intervalSec = 86400;  // 24 小时
-    ts.lastTriggerTime = 0;
-    // 23h59m59s 后仍未到
+    ts.lastTriggerTime = 1000;  // 非零，避免首次触发逻辑
+    // 23h59m59s 后仍未到 (elapsed = 86399000 - 1000 = 86398000 < 86400000)
     TEST_ASSERT_FALSE(shouldTimerTrigger(ts, 86399000UL));
-    // 24h 后触发
-    TEST_ASSERT_TRUE(shouldTimerTrigger(ts, 86400000UL));
+    // 24h 后触发 (elapsed = 86401000 - 1000 = 86400000 >= 86400000)
+    TEST_ASSERT_TRUE(shouldTimerTrigger(ts, 86401000UL));
 }
 
 // 模拟失败退避机制

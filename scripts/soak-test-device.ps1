@@ -11,8 +11,21 @@ param(
     [int]$TimeoutSec = 10,
     [int]$RetryCount = 1,
     [int]$DelayMs = 500,
+    [ValidateSet("disabled", "release")]
+    [string]$StabilityPreset = "disabled",
     [double]$MaxFailureRatePercent = 0,
+    [int]$MaxP95LatencyMs = 0,
+    [int]$MaxConsecutiveFailures = 0,
+    [double]$MaxEndpointFailureRatePercent = 0,
+    [int]$MaxUptimeResetCount = -1,
+    [int]$MinHeapFreeBytes = 0,
+    [int]$MinHeapMaxAllocBytes = 0,
+    [int]$MaxHeapFreeDropBytes = 0,
+    [int]$MaxHeapMaxAllocDropBytes = 0,
+    [int]$MinPsramFreeBytes = 0,
+    [int]$MaxPsramFreeDropBytes = 0,
     [string]$ReportPath = "",
+    [string]$SummaryPath = "",
     [int]$AuthChecksEvery = 0,
     [switch]$RequireNetworkConnected,
     [switch]$RequireMqttConnected
@@ -21,8 +34,11 @@ param(
 $ErrorActionPreference = "Stop"
 
 $BaseUrl = $BaseUrl.TrimEnd("/")
+$script:RootBoundParameters = @{} + $PSBoundParameters
 $script:SessionId = ""
 $script:Rows = @()
+$script:AppliedStabilityThresholds = [ordered]@{}
+$script:StabilityThresholdSources = [ordered]@{}
 
 function Get-MatrixChecks {
     $matrixPath = Join-Path $PSScriptRoot "device-api-test-matrix.json"
@@ -63,6 +79,87 @@ function Get-ObjectValue {
         return $Object.$Name
     }
     return $null
+}
+
+function Test-ObjectHasProperty {
+    param(
+        [object]$Object,
+        [string]$Name
+    )
+
+    return ($null -ne $Object -and $Object.PSObject.Properties.Name -contains $Name)
+}
+
+function Set-StabilityThresholdFromPreset {
+    param(
+        [object]$Thresholds,
+        [string]$JsonName,
+        [string]$ParameterName
+    )
+
+    if ($script:RootBoundParameters.ContainsKey($ParameterName)) {
+        $script:StabilityThresholdSources[$ParameterName] = "manual"
+        return
+    }
+    if ($null -eq $Thresholds -or $Thresholds.PSObject.Properties.Name -notcontains $JsonName) {
+        return
+    }
+
+    $value = $Thresholds.$JsonName
+    Set-Variable -Name $ParameterName -Value $value -Scope Script
+    $script:StabilityThresholdSources[$ParameterName] = "preset"
+}
+
+function Get-StabilityThresholdSnapshot {
+    return [ordered]@{
+        MaxFailureRatePercent = $MaxFailureRatePercent
+        MaxP95LatencyMs = $MaxP95LatencyMs
+        MaxConsecutiveFailures = $MaxConsecutiveFailures
+        MaxEndpointFailureRatePercent = $MaxEndpointFailureRatePercent
+        MaxUptimeResetCount = $MaxUptimeResetCount
+        MinHeapFreeBytes = $MinHeapFreeBytes
+        MinHeapMaxAllocBytes = $MinHeapMaxAllocBytes
+        MaxHeapFreeDropBytes = $MaxHeapFreeDropBytes
+        MaxHeapMaxAllocDropBytes = $MaxHeapMaxAllocDropBytes
+        MinPsramFreeBytes = $MinPsramFreeBytes
+        MaxPsramFreeDropBytes = $MaxPsramFreeDropBytes
+    }
+}
+
+function Apply-StabilityPreset {
+    if ($StabilityPreset -eq "disabled") {
+        $script:AppliedStabilityThresholds = Get-StabilityThresholdSnapshot
+        return
+    }
+
+    $thresholdPath = Join-Path $PSScriptRoot "device-stability-thresholds.json"
+    if (-not (Test-Path -LiteralPath $thresholdPath -PathType Leaf)) {
+        throw "Device stability threshold matrix not found: $thresholdPath"
+    }
+
+    $doc = Get-Content -LiteralPath $thresholdPath -Raw | ConvertFrom-Json
+    $preset = $doc.presets.$StabilityPreset
+    if ($null -eq $preset) {
+        throw "Unknown stability preset: $StabilityPreset"
+    }
+    $thresholds = $preset.profiles.$Profile
+    if ($null -eq $thresholds) {
+        throw "Stability preset '$StabilityPreset' has no thresholds for profile '$Profile'"
+    }
+
+    Set-StabilityThresholdFromPreset -Thresholds $thresholds -JsonName "maxFailureRatePercent" -ParameterName "MaxFailureRatePercent"
+    Set-StabilityThresholdFromPreset -Thresholds $thresholds -JsonName "maxP95LatencyMs" -ParameterName "MaxP95LatencyMs"
+    Set-StabilityThresholdFromPreset -Thresholds $thresholds -JsonName "maxConsecutiveFailures" -ParameterName "MaxConsecutiveFailures"
+    Set-StabilityThresholdFromPreset -Thresholds $thresholds -JsonName "maxEndpointFailureRatePercent" -ParameterName "MaxEndpointFailureRatePercent"
+    Set-StabilityThresholdFromPreset -Thresholds $thresholds -JsonName "maxUptimeResetCount" -ParameterName "MaxUptimeResetCount"
+    Set-StabilityThresholdFromPreset -Thresholds $thresholds -JsonName "minHeapFreeBytes" -ParameterName "MinHeapFreeBytes"
+    Set-StabilityThresholdFromPreset -Thresholds $thresholds -JsonName "minHeapMaxAllocBytes" -ParameterName "MinHeapMaxAllocBytes"
+    Set-StabilityThresholdFromPreset -Thresholds $thresholds -JsonName "maxHeapFreeDropBytes" -ParameterName "MaxHeapFreeDropBytes"
+    Set-StabilityThresholdFromPreset -Thresholds $thresholds -JsonName "maxHeapMaxAllocDropBytes" -ParameterName "MaxHeapMaxAllocDropBytes"
+    Set-StabilityThresholdFromPreset -Thresholds $thresholds -JsonName "minPsramFreeBytes" -ParameterName "MinPsramFreeBytes"
+    Set-StabilityThresholdFromPreset -Thresholds $thresholds -JsonName "maxPsramFreeDropBytes" -ParameterName "MaxPsramFreeDropBytes"
+
+    $script:AppliedStabilityThresholds = Get-StabilityThresholdSnapshot
 }
 
 function Test-CapabilityValue {
@@ -140,7 +237,42 @@ function Test-ProfileCapabilities {
     return ""
 }
 
-function Get-MemoryMetrics {
+function Convert-ToInt64OrNull {
+    param([object]$Value)
+
+    if ($null -eq $Value -or [string]$Value -eq "") {
+        return $null
+    }
+    try {
+        return [int64]$Value
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-UptimeMilliseconds {
+    param([object]$Data)
+
+    $uptime = Get-ObjectValue -Object $Data -Name "uptime"
+    if ($null -eq $uptime) {
+        return $null
+    }
+
+    if ($uptime.PSObject.Properties.Name -contains "ms") {
+        return Convert-ToInt64OrNull (Get-ObjectValue -Object $uptime -Name "ms")
+    }
+    if ($uptime.PSObject.Properties.Name -contains "seconds") {
+        $seconds = Convert-ToInt64OrNull (Get-ObjectValue -Object $uptime -Name "seconds")
+        if ($null -ne $seconds) {
+            return $seconds * 1000
+        }
+    }
+
+    return Convert-ToInt64OrNull $uptime
+}
+
+function Get-ResponseMetrics {
     param([object]$Response)
 
     $metrics = [ordered]@{
@@ -148,6 +280,7 @@ function Get-MemoryMetrics {
         HeapMaxAlloc = $null
         PsramFree = $null
         PsramTotal = $null
+        UptimeMs = $null
     }
 
     $data = Get-ObjectValue -Object $Response -Name "data"
@@ -155,13 +288,21 @@ function Get-MemoryMetrics {
         return [pscustomobject]$metrics
     }
 
+    $metrics.UptimeMs = Get-UptimeMilliseconds -Data $data
+
     $memory = Get-ObjectValue -Object $data -Name "memory"
     if ($null -eq $memory) {
         return [pscustomobject]$metrics
     }
 
     $metrics.HeapFree = Get-ObjectValue -Object $memory -Name "heapFree"
+    if ($null -eq $metrics.HeapFree) {
+        $metrics.HeapFree = Get-ObjectValue -Object $memory -Name "freeHeap"
+    }
     $metrics.HeapMaxAlloc = Get-ObjectValue -Object $memory -Name "heapMaxAlloc"
+    if ($null -eq $metrics.HeapMaxAlloc) {
+        $metrics.HeapMaxAlloc = Get-ObjectValue -Object $memory -Name "maxAlloc"
+    }
     $metrics.PsramFree = Get-ObjectValue -Object $memory -Name "psramFree"
     $metrics.PsramTotal = Get-ObjectValue -Object $memory -Name "psramTotal"
     return [pscustomobject]$metrics
@@ -294,9 +435,13 @@ function Test-CheckSemantics {
             if ($null -eq $data) { return "missing data" }
         }
         "periph-exec-controls" {
+            if ((Get-ObjectValue -Object $Response -Name "degraded") -eq $true -or
+                ($null -ne $data -and (Get-ObjectValue -Object $data -Name "degraded") -eq $true)) {
+                return ""
+            }
             if ($null -eq $data) { return "missing data" }
-            if ($null -eq (Get-ObjectValue -Object $data -Name "gpio")) { return "missing gpio controls" }
-            if ($null -eq (Get-ObjectValue -Object $data -Name "system")) { return "missing system controls" }
+            if (-not (Test-ObjectHasProperty -Object $data -Name "gpio")) { return "missing gpio controls" }
+            if (-not (Test-ObjectHasProperty -Object $data -Name "system")) { return "missing system controls" }
         }
         "periph-exec-trigger-types" {
             if ($null -eq $data) { return "missing data" }
@@ -305,13 +450,28 @@ function Test-CheckSemantics {
             if ($null -eq $data) { return "missing data" }
         }
         "periph-exec-dynamic-events" {
-            if ($null -eq $data) { return "missing data" }
+            if (-not (Test-ObjectHasProperty -Object $Response -Name "data")) { return "missing data" }
         }
         "periph-exec-events" {
             if ($null -eq $data) { return "missing data" }
         }
         "config-transfer-list" {
             if ($null -eq $data) { return "missing data" }
+            if (-not (Test-ObjectHasProperty -Object $data -Name "entries") -and
+                -not (Test-ObjectHasProperty -Object $data -Name "files")) {
+                return "missing entries/files"
+            }
+        }
+        "config-transfer-export" {
+            if ($null -eq $data) { return "missing data" }
+            if ($null -eq (Get-ObjectValue -Object $data -Name "bundle")) { return "missing bundle" }
+        }
+        "config-transfer-import" {
+            if ($null -eq $data) { return "missing data" }
+            if (-not (Test-ObjectHasProperty -Object $data -Name "imported") -and
+                -not (Test-ObjectHasProperty -Object $data -Name "name")) {
+                return "missing imported count/name"
+            }
         }
         "filesystem" {
             if ($null -eq $data) { return "missing data" }
@@ -487,7 +647,7 @@ function Test-Endpoint {
         Start-Sleep -Milliseconds ([Math]::Max($DelayMs, 100))
     }
 
-    $mem = Get-MemoryMetrics -Response $result.Response
+    $metrics = Get-ResponseMetrics -Response $result.Response
     $script:Rows += [pscustomobject]@{
         Round = $Round
         Name = $Name
@@ -497,10 +657,11 @@ function Test-Endpoint {
         Status = $result.Status
         Attempts = $attempts
         ElapsedMs = $result.ElapsedMs
-        HeapFree = $mem.HeapFree
-        HeapMaxAlloc = $mem.HeapMaxAlloc
-        PsramFree = $mem.PsramFree
-        PsramTotal = $mem.PsramTotal
+        HeapFree = $metrics.HeapFree
+        HeapMaxAlloc = $metrics.HeapMaxAlloc
+        PsramFree = $metrics.PsramFree
+        PsramTotal = $metrics.PsramTotal
+        UptimeMs = $metrics.UptimeMs
         Message = $result.Message
     }
 
@@ -553,6 +714,7 @@ function Test-ExpectedStatusEndpoint {
         HeapMaxAlloc = $null
         PsramFree = $null
         PsramTotal = $null
+        UptimeMs = $null
         Message = $message
     }
 
@@ -611,6 +773,7 @@ function Test-BearerOverCookieEndpoint {
         HeapMaxAlloc = $null
         PsramFree = $null
         PsramTotal = $null
+        UptimeMs = $null
         Message = $message
     }
 
@@ -656,6 +819,11 @@ function Test-MultiSessionEndpoint {
         Status = $result.Status
         Attempts = 1
         ElapsedMs = $result.ElapsedMs
+        HeapFree = $null
+        HeapMaxAlloc = $null
+        PsramFree = $null
+        PsramTotal = $null
+        UptimeMs = $null
         Message = $message
     }
 
@@ -700,6 +868,132 @@ function Should-RunAuthStressCheck {
     return (($Round % $AuthChecksEvery) -eq 0)
 }
 
+function Get-MetricStats {
+    param([string]$PropertyName)
+
+    $points = @()
+    foreach ($row in $script:Rows) {
+        $prop = $row.PSObject.Properties[$PropertyName]
+        if ($null -eq $prop -or $null -eq $prop.Value -or [string]$prop.Value -eq "") {
+            continue
+        }
+        $points += [pscustomobject]@{
+            Round = $row.Round
+            Value = [int64]$prop.Value
+        }
+    }
+
+    if ($points.Count -eq 0) {
+        return $null
+    }
+
+    $measure = $points | Measure-Object -Property Value -Minimum -Maximum
+    $first = [int64]$points[0].Value
+    $last = [int64]$points[$points.Count - 1].Value
+    return [pscustomobject]@{
+        Count = $points.Count
+        First = $first
+        Last = $last
+        Min = [int64]$measure.Minimum
+        Max = [int64]$measure.Maximum
+        Drop = [Math]::Max(0, $first - $last)
+    }
+}
+
+function Add-MetricGuardIssue {
+    param(
+        [System.Collections.Generic.List[string]]$Issues,
+        [string]$Name,
+        [object]$Stats,
+        [int]$Minimum,
+        [int]$MaxDrop
+    )
+
+    if (($Minimum -gt 0 -or $MaxDrop -gt 0) -and $null -eq $Stats) {
+        $Issues.Add("${Name}: no samples collected") | Out-Null
+        return
+    }
+
+    if ($null -eq $Stats) {
+        return
+    }
+
+    if ($Minimum -gt 0 -and $Stats.Min -lt $Minimum) {
+        $Issues.Add("${Name}: min $($Stats.Min) below threshold $Minimum") | Out-Null
+    }
+    if ($MaxDrop -gt 0 -and $Stats.Drop -gt $MaxDrop) {
+        $Issues.Add("${Name}: end-to-end drop $($Stats.Drop) exceeds threshold $MaxDrop") | Out-Null
+    }
+}
+
+function Get-MaxConsecutiveFailureCount {
+    $current = 0
+    $max = 0
+    foreach ($row in $script:Rows) {
+        if ($row.Passed) {
+            $current = 0
+            continue
+        }
+        $current += 1
+        if ($current -gt $max) {
+            $max = $current
+        }
+    }
+    return $max
+}
+
+function Get-UptimeResetStats {
+    $previous = $null
+    $resets = 0
+    $samples = 0
+    $min = $null
+    $max = $null
+
+    foreach ($row in $script:Rows) {
+        if ($row.PSObject.Properties.Name -notcontains "UptimeMs" -or
+            $null -eq $row.UptimeMs -or [string]$row.UptimeMs -eq "") {
+            continue
+        }
+
+        $value = [int64]$row.UptimeMs
+        $samples += 1
+        if ($null -eq $min -or $value -lt $min) { $min = $value }
+        if ($null -eq $max -or $value -gt $max) { $max = $value }
+        if ($null -ne $previous -and ($value + 5000) -lt $previous) {
+            $resets += 1
+        }
+        $previous = $value
+    }
+
+    return [pscustomobject]@{
+        Samples = $samples
+        ResetCount = $resets
+        Min = $min
+        Max = $max
+    }
+}
+
+function Get-EndpointFailureStats {
+    $stats = @()
+    foreach ($group in ($script:Rows | Group-Object Name)) {
+        $items = @($group.Group)
+        $failedItems = @($items | Where-Object { -not $_.Passed })
+        $rate = if ($items.Count -gt 0) {
+            [Math]::Round(($failedItems.Count * 100.0) / $items.Count, 2)
+        } else {
+            0
+        }
+        $stats += [pscustomobject]@{
+            Name = $group.Name
+            Total = $items.Count
+            Failed = $failedItems.Count
+            FailureRatePercent = $rate
+        }
+    }
+    return @($stats | Sort-Object Failed, FailureRatePercent -Descending)
+}
+
+Apply-StabilityPreset
 $endpoints = Get-MatrixChecks
 
 Write-Host "FastBee device soak test" -ForegroundColor Green
@@ -708,6 +1002,17 @@ Write-Host "  Profile  : $Profile"
 Write-Host "  Rounds   : $Rounds"
 Write-Host "  Retry    : $RetryCount"
 Write-Host "  Delay    : ${DelayMs}ms"
+Write-Host ("  Stability: {0} (failure<={1}%, p95<={2}ms, uptime resets<={3})" -f `
+    $StabilityPreset, $MaxFailureRatePercent, $MaxP95LatencyMs, $MaxUptimeResetCount)
+if ($StabilityPreset -ne "disabled" -and $script:StabilityThresholdSources.Count -gt 0) {
+    $manualCount = @($script:StabilityThresholdSources.Values | Where-Object { $_ -eq "manual" }).Count
+    $presetCount = @($script:StabilityThresholdSources.Values | Where-Object { $_ -eq "preset" }).Count
+    Write-Host ("  Thresholds: {0} from preset, {1} manual override(s)" -f $presetCount, $manualCount)
+    if ($manualCount -gt 0) {
+        $manualKeys = @($script:StabilityThresholdSources.Keys | Where-Object { $script:StabilityThresholdSources[$_] -eq "manual" })
+        Write-Host ("    overridden: {0}" -f ($manualKeys -join ", "))
+    }
+}
 Write-Host "  Auth cadence: every $AuthChecksEvery round(s), always round 1"
 
 Login
@@ -763,13 +1068,57 @@ if ($total -gt 0) {
     $p95Ms = $sorted[$idx].ElapsedMs
 }
 
+$heapFreeStats = Get-MetricStats -PropertyName "HeapFree"
+$heapMaxAllocStats = Get-MetricStats -PropertyName "HeapMaxAlloc"
+$psramFreeStats = Get-MetricStats -PropertyName "PsramFree"
+$maxConsecutiveFailuresSeen = Get-MaxConsecutiveFailureCount
+$uptimeResetStats = Get-UptimeResetStats
+$endpointFailureStats = Get-EndpointFailureStats
+
 Write-Host ""
 Write-Host ("Soak summary: total={0}, failed={1}, failureRate={2}%, avg={3}ms, p95={4}ms" -f `
     $total, $failed.Count, $failureRate, $avgMs, $p95Ms)
+Write-Host ("  stability: maxConsecutiveFailures={0}, uptimeSamples={1}, uptimeResets={2}" -f `
+    $maxConsecutiveFailuresSeen, $uptimeResetStats.Samples, $uptimeResetStats.ResetCount)
+
+if ($null -ne $heapFreeStats -or $null -ne $heapMaxAllocStats -or $null -ne $psramFreeStats) {
+    if ($null -ne $heapFreeStats) {
+        Write-Host ("  heapFree: samples={0}, min={1}, first={2}, last={3}, drop={4}" -f `
+            $heapFreeStats.Count, $heapFreeStats.Min, $heapFreeStats.First, $heapFreeStats.Last, $heapFreeStats.Drop)
+    }
+    if ($null -ne $heapMaxAllocStats) {
+        Write-Host ("  heapMaxAlloc: samples={0}, min={1}, first={2}, last={3}, drop={4}" -f `
+            $heapMaxAllocStats.Count, $heapMaxAllocStats.Min, $heapMaxAllocStats.First, $heapMaxAllocStats.Last, $heapMaxAllocStats.Drop)
+    }
+    if ($null -ne $psramFreeStats) {
+        Write-Host ("  psramFree: samples={0}, min={1}, first={2}, last={3}, drop={4}" -f `
+            $psramFreeStats.Count, $psramFreeStats.Min, $psramFreeStats.First, $psramFreeStats.Last, $psramFreeStats.Drop)
+    }
+}
 
 if ($failed.Count -gt 0) {
-    $failed | Group-Object Name | Sort-Object Count -Descending |
-        Select-Object Count, Name | Format-Table -AutoSize
+    $endpointFailureStats | Where-Object { $_.Failed -gt 0 } |
+        Select-Object Failed, Total, FailureRatePercent, Name | Format-Table -AutoSize
+}
+
+$summary = [ordered]@{
+    BaseUrl = $BaseUrl
+    Profile = $Profile
+    Rounds = $Rounds
+    Total = $total
+    Failed = $failed.Count
+    FailureRatePercent = $failureRate
+    AverageMs = $avgMs
+    P95Ms = $p95Ms
+    MaxConsecutiveFailures = $maxConsecutiveFailuresSeen
+    StabilityPreset = $StabilityPreset
+    StabilityThresholds = $script:AppliedStabilityThresholds
+    StabilityThresholdSources = $script:StabilityThresholdSources
+    Uptime = $uptimeResetStats
+    HeapFree = $heapFreeStats
+    HeapMaxAlloc = $heapMaxAllocStats
+    PsramFree = $psramFreeStats
+    EndpointFailures = @($endpointFailureStats | Where-Object { $_.Failed -gt 0 })
 }
 
 if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
@@ -780,10 +1129,58 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
     }
     $script:Rows | Export-Csv -Path $reportFullPath -NoTypeInformation -Encoding UTF8
     Write-Host "Report written: $reportFullPath"
+
+    if ([string]::IsNullOrWhiteSpace($SummaryPath)) {
+        $SummaryPath = [System.IO.Path]::ChangeExtension($reportFullPath, ".summary.json")
+    }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($SummaryPath)) {
+    $summaryFullPath = [System.IO.Path]::GetFullPath($SummaryPath)
+    $summaryDir = Split-Path -Parent $summaryFullPath
+    if ($summaryDir -and -not (Test-Path $summaryDir)) {
+        New-Item -ItemType Directory -Path $summaryDir | Out-Null
+    }
+    $summary | ConvertTo-Json -Depth 8 | Set-Content -Path $summaryFullPath -Encoding UTF8
+    Write-Host "Summary written: $summaryFullPath"
 }
 
 if ($failureRate -gt $MaxFailureRatePercent) {
     throw "Soak test failed: failure rate $failureRate% exceeds allowed $MaxFailureRatePercent%."
+}
+
+$stabilityIssues = [System.Collections.Generic.List[string]]::new()
+if ($MaxP95LatencyMs -gt 0 -and $p95Ms -gt $MaxP95LatencyMs) {
+    $stabilityIssues.Add("p95 latency ${p95Ms}ms exceeds threshold ${MaxP95LatencyMs}ms") | Out-Null
+}
+if ($MaxConsecutiveFailures -gt 0 -and $maxConsecutiveFailuresSeen -gt $MaxConsecutiveFailures) {
+    $stabilityIssues.Add("max consecutive failures $maxConsecutiveFailuresSeen exceeds threshold $MaxConsecutiveFailures") | Out-Null
+}
+if ($MaxEndpointFailureRatePercent -gt 0) {
+    $badEndpoints = @($endpointFailureStats | Where-Object {
+        $_.Failed -gt 0 -and $_.FailureRatePercent -gt $MaxEndpointFailureRatePercent
+    })
+    foreach ($endpoint in $badEndpoints) {
+        $stabilityIssues.Add("endpoint $($endpoint.Name) failure rate $($endpoint.FailureRatePercent)% exceeds threshold $MaxEndpointFailureRatePercent%") | Out-Null
+    }
+}
+if ($MaxUptimeResetCount -ge 0) {
+    if ($uptimeResetStats.Samples -eq 0) {
+        $stabilityIssues.Add("uptime: no samples collected") | Out-Null
+    }
+    elseif ($uptimeResetStats.ResetCount -gt $MaxUptimeResetCount) {
+        $stabilityIssues.Add("uptime reset count $($uptimeResetStats.ResetCount) exceeds threshold $MaxUptimeResetCount") | Out-Null
+    }
+}
+Add-MetricGuardIssue -Issues $stabilityIssues -Name "heapFree" `
+    -Stats $heapFreeStats -Minimum $MinHeapFreeBytes -MaxDrop $MaxHeapFreeDropBytes
+Add-MetricGuardIssue -Issues $stabilityIssues -Name "heapMaxAlloc" `
+    -Stats $heapMaxAllocStats -Minimum $MinHeapMaxAllocBytes -MaxDrop $MaxHeapMaxAllocDropBytes
+Add-MetricGuardIssue -Issues $stabilityIssues -Name "psramFree" `
+    -Stats $psramFreeStats -Minimum $MinPsramFreeBytes -MaxDrop $MaxPsramFreeDropBytes
+
+if ($stabilityIssues.Count -gt 0) {
+    throw "Soak stability guard failed: $($stabilityIssues -join '; ')"
 }
 
 Write-Host "Soak test passed." -ForegroundColor Green

@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="820" viewBox="0 0 1440 820" role="img" aria-labelledby="title desc">
+  <title id="title">外设执行规则数据模型</title>
+  <desc id="desc">展示 PeriphExec 规则、触发器、动作、数据源、持久化文件和运行时状态之间的关系。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="0.52" stop-color="#eef6ff"/>
+      <stop offset="1" stop-color="#f0fdf4"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-16%" width="120%" height="132%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0f172a" flood-opacity="0.13"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <style>
+      text { font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #172033; }
+      .title { font-size: 42px; font-weight: 700; }
+      .subtitle { font-size: 20px; fill: #475569; }
+      .card { fill: #ffffff; stroke: #d7dee9; stroke-width: 1.5; rx: 18; filter: url(#shadow); }
+      .section { font-size: 23px; font-weight: 700; }
+      .label { font-size: 17px; font-weight: 700; }
+      .small { font-size: 14px; fill: #475569; }
+      .tiny { font-size: 13px; fill: #64748b; }
+      .line { stroke: #2563eb; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #94a3b8; stroke-width: 2.4; stroke-dasharray: 7 8; fill: none; marker-end: url(#arrow); }
+      .blue { fill: #eff6ff; stroke: #bfdbfe; rx: 13; }
+      .green { fill: #ecfdf5; stroke: #a7f3d0; rx: 13; }
+      .orange { fill: #fff7ed; stroke: #fed7aa; rx: 13; }
+      .red { fill: #fff1f2; stroke: #fecdd3; rx: 13; }
+      .dark { fill: #0f172a; }
+    </style>
+  </defs>
+  <rect width="1440" height="820" fill="url(#bg)"/>
+  <text x="72" y="72" class="title">外设执行规则数据模型</text>
+  <text x="72" y="108" class="subtitle">把一条规则拆成触发器、动作、数据源、持久化和运行态，便于检查 JSON、页面表单和执行结果是否对得上。</text>
+
+  <rect x="88" y="178" width="315" height="432" class="card"/>
+  <text x="120" y="222" class="section">PeriphExecRule</text>
+  <rect x="120" y="260" width="220" height="40" class="blue"/><text x="142" y="286" class="label">id / name / enabled</text>
+  <rect x="120" y="318" width="220" height="40" class="blue"/><text x="142" y="344" class="label">priority / debounce</text>
+  <rect x="120" y="376" width="220" height="40" class="blue"/><text x="142" y="402" class="label">reportAfterExec</text>
+  <rect x="120" y="434" width="220" height="40" class="blue"/><text x="142" y="460" class="label">lastRun / runCount</text>
+  <text x="120" y="525" class="small">规则是外设执行的最小发布单位。</text>
+  <text x="120" y="552" class="small">保存时进入 /config/periph_exec.json。</text>
+
+  <rect x="488" y="158" width="300" height="230" class="card"/>
+  <text x="520" y="202" class="section">Trigger[]</text>
+  <rect x="520" y="236" width="214" height="36" class="green"/><text x="542" y="260" class="label">platform / timer</text>
+  <rect x="520" y="286" width="214" height="36" class="green"/><text x="542" y="310" class="label">event / poll</text>
+  <rect x="520" y="336" width="214" height="36" class="green"/><text x="542" y="360" class="label">operator / compareValue</text>
+
+  <rect x="488" y="448" width="300" height="230" class="card"/>
+  <text x="520" y="492" class="section">Action[]</text>
+  <rect x="520" y="526" width="214" height="36" class="orange"/><text x="542" y="550" class="label">targetPeriphId</text>
+  <rect x="520" y="576" width="214" height="36" class="orange"/><text x="542" y="600" class="label">actionType</text>
+  <rect x="520" y="626" width="214" height="36" class="orange"/><text x="542" y="650" class="label">actionValue</text>
+
+  <rect x="872" y="158" width="230" height="230" class="card"/>
+  <text x="904" y="202" class="section">Data Source</text>
+  <rect x="904" y="238" width="152" height="36" class="blue"/><text x="928" y="262" class="label">platform msg</text>
+  <rect x="904" y="288" width="152" height="36" class="blue"/><text x="928" y="312" class="label">device event</text>
+  <rect x="904" y="338" width="152" height="36" class="blue"/><text x="928" y="362" class="label">sensor cache</text>
+
+  <rect x="872" y="448" width="230" height="230" class="card"/>
+  <text x="904" y="492" class="section">Runtime State</text>
+  <rect x="904" y="528" width="152" height="36" class="red"/><text x="928" y="552" class="label">mutex / queue</text>
+  <rect x="904" y="578" width="152" height="36" class="red"/><text x="928" y="602" class="label">worker task</text>
+  <rect x="904" y="628" width="152" height="36" class="red"/><text x="928" y="652" class="label">result log</text>
+
+  <rect x="1180" y="250" width="178" height="340" class="card"/>
+  <text x="1210" y="294" class="section">Consumers</text>
+  <text x="1210" y="350" class="small">Web 列表</text>
+  <text x="1210" y="392" class="small">API 路由</text>
+  <text x="1210" y="434" class="small">MQTT 上报</text>
+  <text x="1210" y="476" class="small">日志查看</text>
+  <text x="1210" y="518" class="small">配置导出</text>
+
+  <path d="M403 306 C438 290 455 276 488 260" class="line"/>
+  <path d="M403 500 C438 520 455 535 488 550" class="line"/>
+  <path d="M788 274 C816 274 842 274 872 274" class="line"/>
+  <path d="M788 566 C816 566 842 566 872 566" class="line"/>
+  <path d="M1102 420 C1132 420 1150 420 1180 420" class="line"/>
+  <path d="M1268 590 C1268 724 248 724 248 612" class="dash"/>
+
+  <rect x="118" y="708" width="1204" height="54" rx="16" class="dark" opacity="0.94"/>
+  <text x="154" y="742" fill="#e2e8f0" style="font-family: 'Microsoft YaHei', 'PingFang SC', Arial, sans-serif; font-size: 17px;">核对口诀：规则 ID 唯一，触发器能解释数据来源，动作能找到目标外设，运行态能留下日志，保存文件能被回滚。</text>
+</svg>

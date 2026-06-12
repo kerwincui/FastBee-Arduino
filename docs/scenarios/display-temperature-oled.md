@@ -35,6 +35,14 @@
 
 ### 方式1：Web界面配置（推荐）
 
+本场景需要先添加 DHT 传感器和 OLED 显示屏，再用外设执行规则把传感器读数写到屏幕。
+
+![外设配置列表](../system/images/peripheral-management.png)
+
+![新增外设弹窗](../system/images/peripheral-add-dialog.png)
+
+![外设执行规则列表](../system/images/periph-exec-management.png)
+
 #### 步骤1：进入外设管理页面
 
 1. 打开浏览器访问 ESP32 IP 地址

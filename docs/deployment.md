@@ -2,6 +2,12 @@
 
 本文用于从源码构建、烧录、发布和验证 FastBee-Arduino 固件。所有版本都应遵循同一条原则：**固件环境、LittleFS Web 文件系统和目标芯片必须一致**。
 
+![部署与验收流程图](images/deployment-verification-flow.svg)
+
+![构建与发布产物地图](images/release-artifact-map.svg)
+
+发布包需要能追溯源码、配置、Web 资源、构建环境和设备验收截图。构建脚本生成固件后，仍要通过串口日志和 Web 控制台截图完成现场验证。
+
 ## 选择版本
 
 | 环境 | 版本 | 推荐硬件 | 适用场景 |
@@ -17,6 +23,18 @@
 Lite/Standard 统一使用 `fastbee.csv` 的 4MB FastBee 分区布局；`esp32c6` 和 `esp32s3` 的发布文件名会体现 8MB 目标硬件，但镜像只占用当前稳定分区范围。`esp32s3-full` 使用 `default_16MB.csv`，面向 16MB Flash + PSRAM 的完整功能部署。
 
 默认外设配置是安全模板：`peripherals.json` 中的硬件模板默认禁用，`periph_exec.json` 中的规则默认也禁用。部署到现场后，请先确认实际接线、引脚和供电，再通过 Web 启用外设与规则；Lite/Standard 的文件系统生成会自动剔除当前档位不支持或已被裁掉的外设动作。
+
+部署成功后，浏览器访问设备 IP 应先进入登录页，登录后在仪表盘确认当前 IP、WiFi 状态、内存和运行时间。
+
+![部署后登录页](images/fastbee-login.png)
+
+![部署后仪表盘](images/fastbee-dashboard.png)
+
+截图要点：
+
+- 登录页能验证 LittleFS Web 文件系统已烧录成功，并且设备端 HTTP 服务已启动。
+- 仪表盘能验证固件正常运行，重点核对 IP、WiFi、MQTT、内存、运行时间和芯片信息。
+- 本次 COM6 设备的局域网访问地址为 `http://192.168.5.116/`；换设备或换网络后，以串口输出和仪表盘显示为准。
 
 ## 一键烧录
 
