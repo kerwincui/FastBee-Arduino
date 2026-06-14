@@ -527,7 +527,7 @@ function deleteOriginals() {
 function getActiveEnvFromPlatformioIni() {
     const iniPath = path.join(__dirname, '..', 'platformio.ini');
     if (!fs.existsSync(iniPath)) {
-        return 'esp32';
+        return 'esp32-F4R0';
     }
     const content = fs.readFileSync(iniPath, 'utf-8');
     const lines = content.split(/\r?\n/);
@@ -547,7 +547,7 @@ function getActiveEnvFromPlatformioIni() {
             }
         }
     }
-    return activeEnv || 'esp32';
+    return activeEnv || 'esp32-F4R0';
 }
 
 function runPioCommand(args, label, options = {}) {

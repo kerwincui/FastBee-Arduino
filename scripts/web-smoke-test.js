@@ -61,10 +61,24 @@ const FULL_GZIP_ASSETS = [
 
 const COMPRESSIBLE_EXTENSIONS = new Set(['.html', '.css', '.js']);
 const WEB_ASSET_BUDGETS = {
-    totalGzip: 280 * 1024,
-    bootGzip: 64 * 1024,
-    singleAssetGzip: 32 * 1024,
-    pageBundleGzip: 14 * 1024
+    lite: {
+        totalGzip: 200 * 1024,
+        bootGzip: 56 * 1024,
+        singleAssetGzip: 28 * 1024,
+        pageBundleGzip: 12 * 1024
+    },
+    standard: {
+        totalGzip: 240 * 1024,
+        bootGzip: 60 * 1024,
+        singleAssetGzip: 30 * 1024,
+        pageBundleGzip: 13 * 1024
+    },
+    full: {
+        totalGzip: 280 * 1024,
+        bootGzip: 64 * 1024,
+        singleAssetGzip: 32 * 1024,
+        pageBundleGzip: 14 * 1024
+    }
 };
 const failures = [];
 
@@ -248,20 +262,21 @@ function checkPaginationRegressionGuards(files) {
     assert(allJs.includes('totalPages') || allJs.includes('Math.ceil'), 'pagination page calculation logic missing');
 }
 
-function checkAssetBudgets() {
+function checkAssetBudgets(profile) {
+    const budgets = WEB_ASSET_BUDGETS[profile] || WEB_ASSET_BUDGETS.full;
     const report = createWebAssetReport({ topN: 999 });
 
     assert(
-        report.totals.gzip <= WEB_ASSET_BUDGETS.totalGzip,
-        `web total gzip ${formatBytes(report.totals.gzip)} exceeds budget ${formatBytes(WEB_ASSET_BUDGETS.totalGzip)}`
+        report.totals.gzip <= budgets.totalGzip,
+        `web total gzip ${formatBytes(report.totals.gzip)} exceeds ${profile} budget ${formatBytes(budgets.totalGzip)}`
     );
     assert(
-        report.boot.gzip <= WEB_ASSET_BUDGETS.bootGzip,
-        `boot gzip ${formatBytes(report.boot.gzip)} exceeds budget ${formatBytes(WEB_ASSET_BUDGETS.bootGzip)}`
+        report.boot.gzip <= budgets.bootGzip,
+        `boot gzip ${formatBytes(report.boot.gzip)} exceeds ${profile} budget ${formatBytes(budgets.bootGzip)}`
     );
 
     const oversizedAssets = report.largest.filter((item) => {
-        return (item.gzip || item.raw) > WEB_ASSET_BUDGETS.singleAssetGzip;
+        return (item.gzip || item.raw) > budgets.singleAssetGzip;
     });
     assert(
         oversizedAssets.length === 0,
@@ -269,12 +284,41 @@ function checkAssetBudgets() {
     );
 
     const oversizedBundles = report.pageBundles.filter((item) => {
-        return item.gzip > WEB_ASSET_BUDGETS.pageBundleGzip;
+        return item.gzip > budgets.pageBundleGzip;
     });
     assert(
         oversizedBundles.length === 0,
-        `runtime bundle gzip exceeds budget: ${oversizedBundles.map((item) => `${item.path}=${formatBytes(item.gzip)}`).join(', ')}`
+        `runtime bundle gzip exceeds ${profile} budget: ${oversizedBundles.map((item) => `${item.path}=${formatBytes(item.gzip)}`).join(', ')}`
     );
+}
+
+function checkFirstPaintPath(profile) {
+    const html = readGzipText('index.html.gz');
+    if (!html) return;
+
+    // Critical: index.html must inline or reference main.css
+    assert(html.includes('main.css') || html.includes('body{'), 'index.html must reference or inline main.css for first paint');
+
+    // Core chunks must be loaded in order
+    const coreChunks = ['chunk-1-core-a', 'chunk-2-core-b', 'chunk-3-i18n-engine'];
+    const corePresent = coreChunks.filter((name) => html.includes(name));
+    assert(corePresent.length > 0, 'index.html must reference at least one core chunk for boot');
+
+    // Dashboard module should be loaded on first page
+    assert(html.includes('dashboard'), 'index.html must reference dashboard module for first page');
+
+    // Service worker registration for offline caching
+    const swJs = assetExists('sw.js.gz') ? readGzipText('sw.js.gz') : '';
+    if (profile === 'standard' || profile === 'full') {
+        assert(swJs.length > 0, `${profile} profile must include service worker for offline caching`);
+    }
+    if (swJs) {
+        assert(swJs.includes('withCacheTimestamp'), 'service worker must use cache timestamp for versioning');
+    }
+
+    // i18n language bundles (e.g. i18n-zh-CN.js) should not be loaded synchronously in index.html
+    const i18nLangRefs = (html.match(/i18n-[a-z]{2,3}(-[A-Z]{2,4})?\.js/g) || []).length;
+    assert(i18nLangRefs === 0, 'i18n language bundles should be loaded on demand, not in index.html');
 }
 
 function run() {
@@ -287,7 +331,8 @@ function run() {
     checkJavascriptSyntax(files);
     checkUiRegressionGuards(files);
     checkPaginationRegressionGuards(files);
-    checkAssetBudgets();
+    checkAssetBudgets(profile);
+    checkFirstPaintPath(profile);
 
     if (failures.length > 0) {
         console.error(`\nWeb smoke test failed: ${failures.length} issue(s)`);

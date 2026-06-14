@@ -166,6 +166,7 @@ function Invoke-StaticChecks {
     Invoke-External @("node", "scripts\validate-device-api-matrix.js")
     Invoke-External @("node", "scripts\validate-mqtt-ntp-lifecycle.js")
     Invoke-External @("node", "scripts\validate-build-matrix.js")
+    Invoke-External @("node", "scripts\validate-doc-links.js")
     Invoke-External @("node", "scripts\validate-stability-thresholds.js")
     Invoke-External @("powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts\validate-powershell-syntax.ps1")
     Invoke-External @("node", "scripts\validate-config-defaults.js")

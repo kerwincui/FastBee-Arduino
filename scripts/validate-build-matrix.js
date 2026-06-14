@@ -9,6 +9,7 @@ const TEST_ALL_PATH = path.join(ROOT_DIR, 'scripts', 'test-all.ps1');
 const BUILD_ALL_PATH = path.join(ROOT_DIR, 'scripts', 'build-all-artifacts.ps1');
 const COLLECT_ARTIFACTS_PATH = path.join(ROOT_DIR, 'scripts', 'collect-artifacts.ps1');
 const FASTBEE_ARTIFACTS_PATH = path.join(ROOT_DIR, 'scripts', 'fastbee-artifacts.py');
+const GZIP_WWW_PATH = path.join(ROOT_DIR, 'scripts', 'gzip-www.js');
 const README_PATHS = [
     path.join(ROOT_DIR, 'README.md'),
     path.join(ROOT_DIR, 'README.en.md'),
@@ -19,10 +20,12 @@ const PROFILES = new Set(['lite', 'standard', 'full']);
 const TEST_ALL_CHECKS = new Set(['doctor', 'static', 'native', 'build', 'artifacts', 'device-smoke', 'device-soak', 'all']);
 const LEGACY_ENV_NAMES = ['esp32-full', 'esp32s3-full'];
 
-const CRITICAL_ENV_EXPECTATIONS = {
+const ENV_EXPECTATIONS = {
     'esp32c3-F4R0': {
         profile: 'lite',
         board: 'esp32-c3-devkitm-1',
+        partition: 'partitions/fastbee.csv',
+        psram: false,
         buildFlags: ['${esp32c3_runtime_flags.build_flags}', '${slim_flags.build_flags}'],
         forbiddenBuildFlags: ['${standard_flags.build_flags}', '${full_flags.build_flags}'],
         libIgnore: ['NimBLE-Arduino']
@@ -30,6 +33,8 @@ const CRITICAL_ENV_EXPECTATIONS = {
     'esp32c6-F4R0': {
         profile: 'lite',
         board: 'esp32-c6-devkitc-1',
+        partition: 'partitions/fastbee.csv',
+        psram: false,
         buildFlags: ['${esp32c6_runtime_flags.build_flags}', '${slim_flags.build_flags}', '-DFASTBEE_ENABLE_DS18B20=0'],
         forbiddenBuildFlags: ['${standard_flags.build_flags}', '${full_flags.build_flags}'],
         libIgnore: ['NimBLE-Arduino', 'OneWire', 'DallasTemperature']
@@ -37,9 +42,49 @@ const CRITICAL_ENV_EXPECTATIONS = {
     'esp32-F4R0': {
         profile: 'standard',
         board: 'esp32dev',
+        mcu: 'esp32',
+        partition: 'partitions/fastbee.csv',
+        psram: false,
         buildFlags: ['${esp32_runtime_flags.build_flags}', '${standard_flags.build_flags}', '-DFASTBEE_ENABLE_OTA=0', '-DFASTBEE_ENABLE_OTA_FS=0'],
         forbiddenBuildFlags: ['${slim_flags.build_flags}', '${full_flags.build_flags}'],
         libIgnore: ['NimBLE-Arduino']
+    },
+    'esp32-F8R4': {
+        profile: 'full',
+        board: 'esp32dev',
+        mcu: 'esp32',
+        partition: 'partitions/fastbee-8MB.csv',
+        flashSize: '8MB',
+        psram: true,
+        buildFlags: ['${esp32_runtime_flags.build_flags}', '${full_flags.build_flags}', '-DFASTBEE_ENABLE_IR_REMOTE=1'],
+        forbiddenBuildFlags: ['${slim_flags.build_flags}', '${standard_flags.build_flags}']
+    },
+    'esp32s3-F8R0': {
+        profile: 'standard',
+        board: 'esp32-s3-devkitc-1',
+        partition: 'partitions/fastbee-8MB.csv',
+        flashSize: '8MB',
+        psram: false,
+        buildFlags: ['${esp32s3_runtime_flags.build_flags}', '${standard_flags.build_flags}', '-DFASTBEE_ENABLE_OTA=1', '-DFASTBEE_ENABLE_OTA_FS=1'],
+        forbiddenBuildFlags: ['${slim_flags.build_flags}', '${full_flags.build_flags}']
+    },
+    'esp32s3-F8R4': {
+        profile: 'full',
+        board: 'esp32-s3-devkitc-1',
+        partition: 'partitions/fastbee-8MB.csv',
+        flashSize: '8MB',
+        psram: true,
+        buildFlags: ['${esp32s3_runtime_flags.build_flags}', '${full_flags.build_flags}', '-DFASTBEE_ENABLE_IR_REMOTE=0'],
+        forbiddenBuildFlags: ['${slim_flags.build_flags}', '${standard_flags.build_flags}']
+    },
+    'esp32s3-F16R8': {
+        profile: 'full',
+        board: 'esp32-s3-devkitc1-n16r8',
+        partition: 'partitions/fastbee-16MB.csv',
+        flashSize: '16MB',
+        psram: true,
+        buildFlags: ['${esp32s3_runtime_flags.build_flags}', '${full_flags.build_flags}', '-DFASTBEE_ENABLE_IR_REMOTE=0'],
+        forbiddenBuildFlags: ['${slim_flags.build_flags}', '${standard_flags.build_flags}']
     }
 };
 
@@ -69,6 +114,24 @@ const FLAG_SECTION_REQUIREMENTS = {
         '-DFASTBEE_ENABLE_RULE_SCRIPT=0',
         '-DFASTBEE_ENABLE_USER_ADMIN=0',
         '-DFASTBEE_ENABLE_FILE_MANAGER=0'
+    ],
+    full_flags: [
+        '-DFASTBEE_USE_PSRAM=1',
+        '-DBOARD_HAS_PSRAM',
+        '-DFASTBEE_ENABLE_TCP=1',
+        '-DFASTBEE_ENABLE_HTTP=1',
+        '-DFASTBEE_ENABLE_COAP=1',
+        '-DFASTBEE_ENABLE_MODBUS=1',
+        '-DFASTBEE_MODBUS_SLAVE_ENABLE=1',
+        '-DFASTBEE_ENABLE_OTA=1',
+        '-DFASTBEE_ENABLE_OTA_FS=1',
+        '-DFASTBEE_ENABLE_RULE_SCRIPT=1',
+        '-DFASTBEE_ENABLE_USER_ADMIN=1',
+        '-DFASTBEE_ENABLE_ROLE_ADMIN=1',
+        '-DFASTBEE_ENABLE_FILE_MANAGER=1',
+        '-DFASTBEE_ENABLE_BLE=1',
+        '-DFASTBEE_ENABLE_LORA=1',
+        '-DFASTBEE_ENABLE_I18N=1'
     ],
     esp32c3_runtime_flags: [
         '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=1',
@@ -154,6 +217,16 @@ function extractIniValue(text, sectionName, key) {
         if (match) return stripIniComment(match[1]);
     }
     return '';
+}
+
+function resolveIniValue(text, sectionName, key, stack = []) {
+    const value = extractIniValue(text, sectionName, key);
+    const ref = value.match(/^\$\{([^}.]+)\.([^}]+)\}$/);
+    if (!ref) return value;
+
+    const refKey = `${ref[1]}.${ref[2]}`;
+    if (stack.includes(refKey)) return value;
+    return resolveIniValue(text, ref[1], ref[2], stack.concat(refKey));
 }
 
 function stripIniComment(line) {
@@ -267,8 +340,8 @@ function validateMapCoverage(label, map, expectedKeys, issues) {
     validateSameSet(label, Array.from(map.keys()), expectedKeys, issues);
 }
 
-function validateCriticalEnvProfiles(platformioText, profileByEnv, fastbeeProfileByEnv, issues) {
-    Object.entries(CRITICAL_ENV_EXPECTATIONS).forEach(([envName, expectation]) => {
+function validateEnvExpectations(platformioText, profileByEnv, fastbeeProfileByEnv, issues) {
+    Object.entries(ENV_EXPECTATIONS).forEach(([envName, expectation]) => {
         const sectionName = `env:${envName}`;
         const label = `${rel(PLATFORMIO_PATH)} [${sectionName}]`;
         const section = extractIniSection(platformioText, sectionName);
@@ -282,12 +355,50 @@ function validateCriticalEnvProfiles(platformioText, profileByEnv, fastbeeProfil
             issues.push(`${label}: expected board '${expectation.board}', got '${board || '(missing)'}'`);
         }
 
+        if (expectation.mcu) {
+            const mcu = resolveIniValue(platformioText, sectionName, 'board_build.mcu');
+            if (mcu !== expectation.mcu) {
+                issues.push(`${label}: expected board_build.mcu '${expectation.mcu}', got '${mcu || '(missing)'}'`);
+            }
+        }
+
+        const partition = resolveIniValue(platformioText, sectionName, 'board_build.partitions');
+        if (partition !== expectation.partition) {
+            issues.push(`${label}: expected board_build.partitions '${expectation.partition}', got '${partition || '(missing)'}'`);
+        } else if (!fs.existsSync(path.join(ROOT_DIR, partition))) {
+            issues.push(`${label}: partition file does not exist: ${partition}`);
+        }
+
+        const flashSize = resolveIniValue(platformioText, sectionName, 'board_build.flash_size');
+        if (expectation.flashSize) {
+            if (flashSize !== expectation.flashSize) {
+                issues.push(`${label}: expected board_build.flash_size '${expectation.flashSize}', got '${flashSize || '(missing)'}'`);
+            }
+        } else if (flashSize) {
+            issues.push(`${label}: 4MB environment should not override board_build.flash_size`);
+        }
+
+        const psram = resolveIniValue(platformioText, sectionName, 'board_build.psram');
+        if (expectation.psram && psram !== 'enabled') {
+            issues.push(`${label}: full profile must set board_build.psram = enabled`);
+        }
+        if (!expectation.psram && psram) {
+            issues.push(`${label}: non-full profile must not set board_build.psram`);
+        }
+
         const buildFlags = extractIniList(platformioText, sectionName, 'build_flags');
         requireTokens(`${label} build_flags`, buildFlags, expectation.buildFlags, issues);
         forbidTokens(`${label} build_flags`, buildFlags, expectation.forbiddenBuildFlags, issues);
 
+        const resolvedBuildFlags = resolveIniBuildFlags(platformioText, sectionName);
+        if (expectation.psram) {
+            requireTokens(`${label} resolved build_flags`, resolvedBuildFlags, ['-DFASTBEE_USE_PSRAM=1', '-DBOARD_HAS_PSRAM'], issues);
+        } else {
+            forbidTokens(`${label} resolved build_flags`, resolvedBuildFlags, ['-DBOARD_HAS_PSRAM'], issues);
+        }
+
         const libIgnore = extractIniList(platformioText, sectionName, 'lib_ignore');
-        requireTokens(`${label} lib_ignore`, libIgnore, expectation.libIgnore, issues);
+        requireTokens(`${label} lib_ignore`, libIgnore, expectation.libIgnore || [], issues);
 
         const buildAllProfile = profileByEnv.get(envName);
         if (buildAllProfile !== expectation.profile) {
@@ -487,12 +598,137 @@ function validateReadmeScriptExamples(firmwareEnvs, allPlatformioEnvs, outputNam
     });
 }
 
+function validateGzipWwwEnvironmentFallback(gzipWwwText, firmwareEnvs, defaultEnvs, issues) {
+    const defaultEnv = defaultEnvs[0] || 'esp32-F4R0';
+    const fallbackRegex = /return\s+(?:activeEnv\s*\|\|\s*)?['"]([^'"]+)['"]\s*;/g;
+    let match = fallbackRegex.exec(gzipWwwText);
+    while (match) {
+        const envName = match[1];
+        if (envName === 'esp32' || envName === 'esp32s3' || LEGACY_ENV_NAMES.includes(envName)) {
+            issues.push(`${rel(GZIP_WWW_PATH)}:${lineNumberAt(gzipWwwText, match.index)}: legacy fallback environment '${envName}'`);
+        } else if (envName.includes('-') && !firmwareEnvs.includes(envName)) {
+            issues.push(`${rel(GZIP_WWW_PATH)}:${lineNumberAt(gzipWwwText, match.index)}: fallback environment '${envName}' is not a firmware environment`);
+        } else if (envName.includes('-') && envName !== defaultEnv) {
+            issues.push(`${rel(GZIP_WWW_PATH)}:${lineNumberAt(gzipWwwText, match.index)}: fallback environment '${envName}' should match default_envs '${defaultEnv}'`);
+        }
+        match = fallbackRegex.exec(gzipWwwText);
+    }
+}
+
+function validatePartitionTables(platformioText, issues) {
+    const PARTITION_DIR = path.join(ROOT_DIR, 'partitions');
+    const partitionEnvs = Object.entries(ENV_EXPECTATIONS);
+    const checkedFiles = new Set();
+    const otaEnvs = new Set();
+    const nonOtaEnvs = new Set();
+
+    partitionEnvs.forEach(([envName, exp]) => {
+        if (exp.profile === 'full') {
+            otaEnvs.add(envName);
+        } else {
+            nonOtaEnvs.add(envName);
+        }
+    });
+
+    partitionEnvs.forEach(([envName, exp]) => {
+        const partitionFile = exp.partition;
+        if (checkedFiles.has(partitionFile)) return;
+        checkedFiles.add(partitionFile);
+
+        const fullPath = path.join(ROOT_DIR, partitionFile);
+        if (!fs.existsSync(fullPath)) return;
+
+        const text = fs.readFileSync(fullPath, 'utf8');
+        const label = rel(fullPath);
+        const rows = [];
+
+        text.split(/\r?\n/).forEach((line) => {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) return;
+            const fields = trimmed.split(',').map((f) => f.trim());
+            if (fields.length < 5) return;
+            rows.push({ name: fields[0], type: fields[1], subtype: fields[2], offset: fields[3], size: fields[4] });
+        });
+
+        if (rows.length === 0) {
+            issues.push(`${label}: no valid partition entries found`);
+            return;
+        }
+
+        const hasOta0 = rows.some((r) => r.subtype === 'ota_0');
+        const hasOta1 = rows.some((r) => r.subtype === 'ota_1');
+        const hasSpiffs = rows.some((r) => r.subtype === 'spiffs');
+        const hasNvs = rows.some((r) => r.subtype === 'nvs');
+        const hasOtadata = rows.some((r) => r.subtype === 'ota' && r.type === 'data');
+
+        if (!hasNvs) {
+            issues.push(`${label}: missing NVS partition`);
+        }
+        if (!hasOtadata) {
+            issues.push(`${label}: missing OTA data partition`);
+        }
+        if (!hasSpiffs) {
+            issues.push(`${label}: missing SPIFFS/LittleFS partition`);
+        }
+
+        // 4MB partition should have single app slot (ota_0 only)
+        // 8MB/16MB partition should have dual app slots (ota_0 + ota_1)
+        const isSmallPartition = partitionFile.includes('fastbee.csv') && !partitionFile.includes('8MB') && !partitionFile.includes('16MB');
+
+        if (isSmallPartition) {
+            if (hasOta1) {
+                issues.push(`${label}: 4MB partition should not have dual OTA slots`);
+            }
+            if (!hasOta0) {
+                issues.push(`${label}: missing app partition (ota_0)`);
+            }
+        } else {
+            if (!hasOta0) {
+                issues.push(`${label}: missing app0 partition (ota_0)`);
+            }
+            if (!hasOta1) {
+                issues.push(`${label}: missing app1 partition (ota_1) for OTA support`);
+            }
+        }
+
+        // Check for overlapping partitions
+        const parsedOffsets = [];
+        rows.forEach((r) => {
+            const start = parseInt(r.offset, 16);
+            const sizeVal = parseInt(r.size, 16);
+            if (isNaN(start) || isNaN(sizeVal)) return;
+            parsedOffsets.push({ name: r.name, start, end: start + sizeVal });
+        });
+        parsedOffsets.sort((a, b) => a.start - b.start);
+        for (let i = 1; i < parsedOffsets.length; i++) {
+            if (parsedOffsets[i].start < parsedOffsets[i - 1].end) {
+                issues.push(`${label}: partition overlap between '${parsedOffsets[i - 1].name}' and '${parsedOffsets[i].name}'`);
+            }
+        }
+    });
+
+    // Verify OTA environments use dual-slot partitions, non-OTA use single-slot
+    otaEnvs.forEach((envName) => {
+        const partition = ENV_EXPECTATIONS[envName].partition;
+        if (partition.includes('fastbee.csv') && !partition.includes('8MB') && !partition.includes('16MB')) {
+            issues.push(`${rel(PLATFORMIO_PATH)} [env:${envName}]: full profile should use dual-slot partition table`);
+        }
+    });
+    nonOtaEnvs.forEach((envName) => {
+        const partition = ENV_EXPECTATIONS[envName].partition;
+        if (partition.includes('8MB') || partition.includes('16MB')) {
+            // Non-full environments using 8MB/16MB is OK (e.g., esp32s3-F8R0 is standard with 8MB)
+        }
+    });
+}
+
 function main() {
     const platformioText = readText(PLATFORMIO_PATH);
     const testAllText = readText(TEST_ALL_PATH);
     const buildAllText = readText(BUILD_ALL_PATH);
     const collectArtifactsText = readText(COLLECT_ARTIFACTS_PATH);
     const fastbeeArtifactsText = readText(FASTBEE_ARTIFACTS_PATH);
+    const gzipWwwText = readText(GZIP_WWW_PATH);
     const issues = [];
 
     const allPlatformioEnvs = extractPlatformioEnvNames(platformioText);
@@ -550,10 +786,12 @@ function main() {
     });
 
     validateOutputNames(outputNameByEnv, collectEnvMap, firmwareEnvs, issues);
-    validateCriticalEnvProfiles(platformioText, profileByEnv, fastbeeProfileByEnv, issues);
+    validateEnvExpectations(platformioText, profileByEnv, fastbeeProfileByEnv, issues);
     validateFlagSectionRequirements(platformioText, issues);
     validateNoConflictingMacroDefines(platformioText, allPlatformioEnvs, issues);
     validateReadmeScriptExamples(firmwareEnvs, allPlatformioEnvs, outputNameByEnv, issues);
+    validateGzipWwwEnvironmentFallback(gzipWwwText, firmwareEnvs, defaultEnvs, issues);
+    validatePartitionTables(platformioText, issues);
 
     if (issues.length > 0) {
         console.error('FastBee build matrix validation failed:');
