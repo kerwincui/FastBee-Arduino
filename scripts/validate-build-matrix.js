@@ -13,8 +13,7 @@ const GZIP_WWW_PATH = path.join(ROOT_DIR, 'scripts', 'gzip-www.js');
 const README_PATHS = [
     path.join(ROOT_DIR, 'README.md'),
     path.join(ROOT_DIR, 'README.en.md'),
-    path.join(ROOT_DIR, 'scripts', 'README.md'),
-    path.join(ROOT_DIR, 'docs', 'README.md')
+    path.join(ROOT_DIR, 'scripts', 'README.md')
 ];
 const PROFILES = new Set(['lite', 'standard', 'full']);
 const TEST_ALL_CHECKS = new Set(['doctor', 'static', 'native', 'build', 'artifacts', 'device-smoke', 'device-soak', 'all']);

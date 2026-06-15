@@ -62,7 +62,7 @@ Supported chips: `ESP32`, `ESP32-S3`, `ESP32-C3`, `ESP32-C6`.
 | **Limits** | Max Peripherals | 16 | 24 | 32 |
 | | Recommended Execution Rules | 12 | 16 | 32 |
 
-> Standard edition OTA is only supported on `esp32s3-F8R0` (8MB Flash); `esp32-F4R0` (4MB Flash) lacks OTA due to space constraints. For detailed differences, see [Edition Comparison](docs/system/edition-comparison.md).
+> Standard edition OTA is only supported on `esp32s3-F8R0` (8MB Flash); `esp32-F4R0` (4MB Flash) lacks OTA due to space constraints.
 
 ### Partition Tables
 
@@ -248,23 +248,24 @@ data/         LittleFS default config and Web artifacts
 web-src/      Web frontend source
 scripts/      Build, flash, test, and release scripts
 test/         PlatformIO native tests
-docs/         Usage, deployment, test, and feature documentation
 ```
 
 ## Documentation
 
+📖 **Full online documentation**: https://fastbee.cn/doc/device/
+
 | Document | Content |
 | --- | --- |
-| [Quick Start](docs/quick-start.md) | From flashing to creating your first rule |
-| [Deployment](docs/deployment.md) | Firmware, LittleFS, release packages, and device verification |
-| [Testing](docs/testing.md) | Static checks, native, all-chip build, smoke, and stability tests |
-| [Edition Comparison](docs/system/edition-comparison.md) | Lite, Standard, Full feature differences |
-| [Project Structure](docs/project-structure.md) | Directory, module, and build artifact description |
-| [User Manual](docs/user-manual.md) | Web page and feature operation guide |
-| [Supported Modules](docs/peripherals/supported-sensors-and-modules.md) | Modules, sensors, and access methods by edition |
-| [Peripheral Docs](docs/peripherals/README.md) | GPIO, sensors, displays, RFID, Modbus peripherals |
-| [Peripheral Execution](docs/periph-exec/README.md) | Triggers, actions, and linkage rules |
-| [Example Tutorials](docs/examples/README.md) | LED, relay, sensor, display, and Modbus examples |
+| Quick Start | From flashing to creating your first rule |
+| Deployment | Firmware, LittleFS, release packages, and device verification |
+| Testing | Static checks, native, all-chip build, smoke, and stability tests |
+| Edition Comparison | Lite, Standard, Full feature differences |
+| Project Structure | Directory, module, and build artifact description |
+| User Manual | Web page and feature operation guide |
+| Supported Modules | Modules, sensors, and access methods by edition |
+| Peripheral Docs | GPIO, sensors, displays, RFID, Modbus peripherals |
+| Peripheral Execution | Triggers, actions, and linkage rules |
+| Example Tutorials | LED, relay, sensor, display, and Modbus examples |
 
 ## License
 

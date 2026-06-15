@@ -192,12 +192,11 @@ function Invoke-NativeTests {
 }
 
 function Invoke-BuildMatrix {
-    $args = @("pio", "run")
+    # Build environments one by one to avoid long-running timeout
     foreach ($envName in $Environments) {
-        $args += @("-e", $envName)
+        $args = @("pio", "run", "-e", $envName, "--silent")
+        Invoke-External $args
     }
-    $args += "--silent"
-    Invoke-External $args
 }
 
 function Invoke-ArtifactMatrix {
