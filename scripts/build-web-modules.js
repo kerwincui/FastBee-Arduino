@@ -68,14 +68,14 @@ const COMPACT_STATIC_SKIP = new Set([
     'pages/admin.html',
     'pages/fullscreen.html',
     'pages/logs.html',
-    'pages/rule-script.html',
     'pages/fragments/device-ota.html',
     'pages/fragments/protocol-coap.html',
     'pages/fragments/protocol-http.html',
     'pages/fragments/protocol-tcp.html'
 ]);
 const LITE_STATIC_SKIP = new Set([
-    'pages/fragments/protocol-modbus-rtu.html'
+    'pages/fragments/protocol-modbus-rtu.html',
+    'pages/rule-script.html'
 ]);
 const PROD_IGNORED_ORPHAN_MODULES = new Set([
     'files.js',
@@ -84,7 +84,6 @@ const PROD_IGNORED_ORPHAN_MODULES = new Set([
     'i18n-zh-CN.js',
     'logs.js',
     'roles.js',
-    'rule-script.js',
     'users.js',
     'dashboard-fullscreen.js'
 ]);
@@ -166,7 +165,6 @@ function stripProdOnlyCssRules(content) {
         /^\.log-/,
         /^\.file-tree-/,
         /^\.role-/,
-        /^\.rule-script-/,
         /^\.ota-/,
         /^\.ota-inline-/,
         /^body\.fullscreen-page/,
@@ -178,12 +176,15 @@ function stripProdOnlyCssRules(content) {
         /^\[data-theme="dark"\]\s+\.log-/,
         /^\[data-theme="dark"\]\s+\.file-tree-/,
         /^\[data-theme="dark"\]\s+\.role-/,
-        /^\[data-theme="dark"\]\s+\.rule-script-/,
         /^\[data-theme="dark"\]\s+\.ota-/
     ];
 
-    // 精简版额外移除：暗黑主题 + device-control + Modbus UI 相关样式
+    // 精简版额外移除：rule-script 样式、暗黑主题、device-control、Modbus UI 相关样式
     if (isLiteWebProfile()) {
+        dropSelectors.push(
+            /^\.rule-script-/,
+            /^\[data-theme="dark"\]\s+\.rule-script-/
+        );
         dropSelectors.push(
             /^\[data-theme="dark"\]/,           // 所有暗黑主题规则
             /^\/\*\s*Dark\s/,                    // Dark Theme 注释行
@@ -219,7 +220,9 @@ function transformStaticAssetContent(relPath, content) {
     if (normalized === 'pages/modals.html') {
         let next = content;
         const configTransferMarker = '<!-- 配置导入/导出选择弹窗 -->';
-        next = stripSection(next, '<!-- 规则脚本模态窗 -->', '<!-- 兼容旧版：GPIO配置模态窗 -->');
+        if (isLiteWebProfile()) {
+            next = stripSection(next, '<!-- 规则脚本模态窗 -->', '<!-- 兼容旧版：GPIO配置模态窗 -->');
+        }
         next = stripSection(next, '<!-- 添加用户模态窗 -->', configTransferMarker);
         if (isLiteWebProfile()) {
             // 精简版移除兼容旧版GPIO配置模态窗（已被新外设配置系统替代）
@@ -229,9 +232,10 @@ function transformStaticAssetContent(relPath, content) {
     }
 
     if (normalized === 'index.html') {
-        let next = ['logs', 'data', 'users', 'roles', 'rule-script']
+        let next = ['logs', 'data', 'users', 'roles']
             .reduce((acc, page) => stripMenuItemByPage(acc, page), content);
         if (isLiteWebProfile()) {
+            next = stripMenuItemByPage(next, 'rule-script');
             next = stripMenuItemByPage(next, 'device-control');
             // 移除主题切换按钮（精简版无暗黑主题）
             next = next.replace(/\s*<button\s+class="dropdown-item"\s+id="theme-toggle-item"[\s\S]*?<\/button>/g, '');
@@ -267,9 +271,9 @@ function transformStaticAssetContent(relPath, content) {
             .replace(/\.ota-inline-action-row\s*\{[^}]*\}/g, '')
             .replace(/\.ota-inline-input-wrap\s*\{[^}]*\}/g, '')
             .replace(/\.ota-inline-action-row\s+\.fb-btn\s*\{[^}]*\}/g, '')
-            .replace(/\.log-content\s*\{[^}]*\}/g, '')
-            .replace(/\.rule-script-stats-cell\s*\{[^}]*\}/g, '');
+            .replace(/\.log-content\s*\{[^}]*\}/g, '');
         if (isLiteWebProfile()) {
+            css = css.replace(/\.rule-script-stats-cell\s*\{[^}]*\}/g, '');
             // 移除暗黑主题变量声明块（多行: [data-theme="dark"] { ... }）
             css = css.replace(/\/\*\s*Dark Theme[\s\S]*?\n\}/g, '');
             // 移除 fullscreen-mode 内的 dc 样式块
@@ -829,6 +833,7 @@ function cleanProdObsoleteModules() {
         fileNames.add('device-control.js');
         fileNames.add('device-control-view.js');
         fileNames.add('device-control-modbus.js');
+        fileNames.add('rule-script.js');
     }
     fileNames.forEach((fileName) => {
         const targetPath = path.join(PUBLISH_MODULE_DIR, fileName);

@@ -13,7 +13,7 @@
 const fs = require('fs');
 const path = require('path');
 const { minifyJS } = require('./minify-js');
-const { isFullWebProfile } = require('./web-profile');
+const { isFullWebProfile, isStandardWebProfile } = require('./web-profile');
 
 const ROOT_DIR = path.join(__dirname, '..');
 const SOURCE_DIR = path.join(ROOT_DIR, 'web-src', 'modules', 'admin');
@@ -26,10 +26,13 @@ const ALL_SOURCE_FILES = [
     'files.js',
     'rule-script.js'
 ];
+const STANDARD_SOURCE_FILES = ['rule-script.js'];
 const PROD_SOURCE_FILES = [];
 
 function getSourceFiles() {
-    return isFullWebProfile() ? ALL_SOURCE_FILES : PROD_SOURCE_FILES;
+    if (isFullWebProfile()) return ALL_SOURCE_FILES;
+    if (isStandardWebProfile()) return STANDARD_SOURCE_FILES;
+    return PROD_SOURCE_FILES;
 }
 
 function readSourceFile(fileName) {

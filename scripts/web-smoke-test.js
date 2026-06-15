@@ -40,8 +40,10 @@ const STANDARD_GZIP_ASSETS = [
     'js/modules/device-control.js.gz',
     'js/modules/device-control-view.js.gz',
     'js/modules/device-control-modbus.js.gz',
+    'js/modules/rule-script.js.gz',
     'pages/fragments/protocol-mqtt.html.gz',
-    'pages/fragments/protocol-modbus-rtu.html.gz'
+    'pages/fragments/protocol-modbus-rtu.html.gz',
+    'pages/rule-script.html.gz'
 ];
 const FULL_GZIP_ASSETS = [
     'js/modules/files.js.gz',

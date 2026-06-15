@@ -110,7 +110,7 @@ const FLAG_SECTION_REQUIREMENTS = {
         '-DFASTBEE_USE_PSRAM=0',
         '-DFASTBEE_ENABLE_MODBUS=1',
         '-DFASTBEE_ENABLE_COMMAND_SCRIPT=1',
-        '-DFASTBEE_ENABLE_RULE_SCRIPT=0',
+        '-DFASTBEE_ENABLE_RULE_SCRIPT=1',
         '-DFASTBEE_ENABLE_USER_ADMIN=0',
         '-DFASTBEE_ENABLE_FILE_MANAGER=0'
     ],
@@ -153,6 +153,20 @@ const FLAG_SECTION_REQUIREMENTS = {
         '-DSCRIPT_TASK_STACK=8192',
         '-DSIMPLE_TASK_STACK=6144'
     ]
+};
+
+/**
+ * Feature flag -> source files that must NOT be excluded when flag is enabled.
+ * Ensures build_src_filter does not accidentally strip files for active features.
+ */
+const FEATURE_FLAG_TO_SOURCES = {
+    FASTBEE_ENABLE_RULE_SCRIPT: ['core/RuleScriptManager.cpp', 'network/handlers/RuleScriptRouteHandler.cpp'],
+    FASTBEE_ENABLE_OTA: ['network/OTAManager.cpp', 'network/handlers/OTARouteHandler.cpp'],
+    FASTBEE_ENABLE_TCP: ['protocols/TCPHandler.cpp'],
+    FASTBEE_ENABLE_HTTP: ['protocols/HTTPClientWrapper.cpp'],
+    FASTBEE_ENABLE_COAP: ['protocols/CoAPHandler.cpp'],
+    FASTBEE_ENABLE_USER_ADMIN: ['network/handlers/UserRouteHandler.cpp'],
+    FASTBEE_ENABLE_ROLE_ADMIN: ['network/handlers/RoleRouteHandler.cpp']
 };
 
 function readText(filePath) {
@@ -438,6 +452,59 @@ function resolveIniBuildFlags(platformioText, sectionName, stack = []) {
         resolved.push(flag);
     });
     return resolved;
+}
+
+function resolveIniSrcFilter(platformioText, sectionName, stack = []) {
+    if (stack.includes(sectionName)) {
+        return [];
+    }
+
+    const rawFilters = extractIniList(platformioText, sectionName, 'build_src_filter');
+    const resolved = [];
+    rawFilters.forEach((filter) => {
+        const ref = filter.match(/^\$\{([^}.]+)\.build_src_filter\}$/);
+        if (ref) {
+            resolved.push(...resolveIniSrcFilter(platformioText, ref[1], stack.concat(sectionName)));
+            return;
+        }
+        resolved.push(filter);
+    });
+    return resolved;
+}
+
+function extractExcludedSources(platformioText, sectionName) {
+    const filters = resolveIniSrcFilter(platformioText, sectionName);
+    const excluded = [];
+    filters.forEach((filter) => {
+        if (filter.startsWith('-<') && filter.endsWith('>')) {
+            excluded.push(filter.slice(2, -1));
+        }
+    });
+    return excluded;
+}
+
+function validateFeatureFlagSourceConsistency(platformioText, allPlatformioEnvs, issues) {
+    allPlatformioEnvs.forEach((envName) => {
+        if (envName === 'native') return;
+        const sectionName = `env:${envName}`;
+        const flags = resolveIniBuildFlags(platformioText, sectionName);
+        const excluded = extractExcludedSources(platformioText, sectionName);
+
+        Object.entries(FEATURE_FLAG_TO_SOURCES).forEach(([flagName, sourceFiles]) => {
+            const isEnabled = flags.some((flag) => {
+                const match = flag.match(new RegExp(`^-D${escapeRegex(flagName)}=(.*)$`));
+                return match && match[1] === '1';
+            });
+
+            if (isEnabled) {
+                sourceFiles.forEach((srcFile) => {
+                    if (excluded.includes(srcFile)) {
+                        issues.push(`${rel(PLATFORMIO_PATH)} [${sectionName}]: ${flagName}=1 but build_src_filter excludes '${srcFile}'`);
+                    }
+                });
+            }
+        });
+    });
 }
 
 function validateNoConflictingMacroDefines(platformioText, allPlatformioEnvs, issues) {
@@ -791,6 +858,7 @@ function main() {
     validateReadmeScriptExamples(firmwareEnvs, allPlatformioEnvs, outputNameByEnv, issues);
     validateGzipWwwEnvironmentFallback(gzipWwwText, firmwareEnvs, defaultEnvs, issues);
     validatePartitionTables(platformioText, issues);
+    validateFeatureFlagSourceConsistency(platformioText, allPlatformioEnvs, issues);
 
     if (issues.length > 0) {
         console.error('FastBee build matrix validation failed:');
