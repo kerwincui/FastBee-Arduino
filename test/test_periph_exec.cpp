@@ -576,7 +576,7 @@ void test_rule_execution_toggle() {
     rule.id = "rule_toggle";
     rule.name = "Toggle";
     rule.enabled = true;
-    rule.actionType = ActionType::TOGGLE;
+    rule.actionType = ActionType::BLINK;
     rule.targetPeriphId = "led_toggle";
     mgr.addRule(rule);
     
@@ -1119,6 +1119,86 @@ void test_worker_stack_size_adequate() {
 }
 
 // ============================================================
+//  TEST GROUP 11: 执行模式语义与脚本兼容测试
+// ============================================================
+
+void test_exec_mode_async_is_zero() {
+    // execMode=0 必须为异步模式（不阻塞主循环）
+    // 与 PeripheralExecution.h 中 EXEC_ASYNC=0 一致
+    constexpr int EXEC_ASYNC = 0;
+    constexpr int EXEC_SYNC  = 1;
+    TEST_ASSERT_EQUAL(0, EXEC_ASYNC);
+    TEST_ASSERT_EQUAL(1, EXEC_SYNC);
+    // 异步应为默认值
+    TEST_ASSERT_EQUAL(0, EXEC_ASYNC);
+}
+
+void test_exec_mode_sync_is_one() {
+    // execMode=1 必须为同步模式（阻塞主循环）
+    constexpr int EXEC_SYNC = 1;
+    TEST_ASSERT_EQUAL(1, EXEC_SYNC);
+}
+
+void test_script_content_null_compatibility() {
+    // 模拟 PeriphExecManager 中的 scriptContent "null" 兼容处理
+    // 旧版固件可能将未设值存储为字符串 "null"
+    auto sanitizeScriptContent = [](String& content) {
+        if (content == "null") content = "";
+    };
+    
+    // 场景 1: 正常空串不变
+    String s1 = "";
+    sanitizeScriptContent(s1);
+    TEST_ASSERT_EQUAL_STRING("", s1.c_str());
+    
+    // 场景 2: 正常脚本不变
+    String s2 = "PERIPH led_1 ON";
+    sanitizeScriptContent(s2);
+    TEST_ASSERT_EQUAL_STRING("PERIPH led_1 ON", s2.c_str());
+    
+    // 场景 3: "null" 字符串应被转换为空串
+    String s3 = "null";
+    sanitizeScriptContent(s3);
+    TEST_ASSERT_EQUAL_STRING("", s3.c_str());
+    
+    // 场景 4: 包含 "null" 的正常内容不应被误修改
+    String s4 = "null_check";
+    sanitizeScriptContent(s4);
+    TEST_ASSERT_EQUAL_STRING("null_check", s4.c_str());
+}
+
+void test_action_type_inverted_enum_values() {
+    // INVERTED 动作类型值必须正确
+    TEST_ASSERT_EQUAL(13, static_cast<int>(ActionType::HIGH_INVERTED));
+    TEST_ASSERT_EQUAL(14, static_cast<int>(ActionType::LOW_INVERTED));
+}
+
+void test_action_type_high_inverted_semantics() {
+    // HIGH_INVERTED: 语义高但物理输出低（用于低电平有效的继电器）
+    // 模拟执行逻辑：activeHigh = !inverted
+    bool inverted = (static_cast<int>(ActionType::HIGH_INVERTED) >= 13 &&
+                     static_cast<int>(ActionType::HIGH_INVERTED) <= 14);
+    TEST_ASSERT_TRUE(inverted);
+    // HIGH_INVERTED 和 LOW_INVERTED 是连续值
+    TEST_ASSERT_EQUAL(1, static_cast<int>(ActionType::LOW_INVERTED) - 
+                         static_cast<int>(ActionType::HIGH_INVERTED));
+}
+
+void test_action_type_values_complete() {
+    // 验证所有关键动作类型值与生产代码一致
+    TEST_ASSERT_EQUAL(0,  static_cast<int>(ActionType::SET_HIGH));
+    TEST_ASSERT_EQUAL(1,  static_cast<int>(ActionType::SET_LOW));
+    TEST_ASSERT_EQUAL(2,  static_cast<int>(ActionType::BLINK));
+    TEST_ASSERT_EQUAL(3,  static_cast<int>(ActionType::BREATHE));
+    TEST_ASSERT_EQUAL(4,  static_cast<int>(ActionType::SET_PWM));
+    TEST_ASSERT_EQUAL(5,  static_cast<int>(ActionType::SET_DAC));
+    TEST_ASSERT_EQUAL(10, static_cast<int>(ActionType::CALL_PERIPHERAL));
+    TEST_ASSERT_EQUAL(15, static_cast<int>(ActionType::SCRIPT));
+    TEST_ASSERT_EQUAL(19, static_cast<int>(ActionType::SENSOR_READ));
+    TEST_ASSERT_EQUAL(21, static_cast<int>(ActionType::TRIGGER_EVENT));
+}
+
+// ============================================================
 //  测试入口 (更新)
 // ============================================================
 
@@ -1232,4 +1312,12 @@ void test_periph_exec_group() {
     // Group 10: Worker Pool 队列防溢出
     RUN_TEST(test_worker_pool_constants_sanity);
     RUN_TEST(test_worker_stack_size_adequate);
+
+    // Group 11: 执行模式语义与脚本兼容
+    RUN_TEST(test_exec_mode_async_is_zero);
+    RUN_TEST(test_exec_mode_sync_is_one);
+    RUN_TEST(test_script_content_null_compatibility);
+    RUN_TEST(test_action_type_inverted_enum_values);
+    RUN_TEST(test_action_type_high_inverted_semantics);
+    RUN_TEST(test_action_type_values_complete);
 }

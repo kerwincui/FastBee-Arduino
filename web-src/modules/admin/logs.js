@@ -18,14 +18,10 @@
         },
 
         loadLogsPage(options) {
-            // 权限控制：清空日志按钮（需要 system.view 权限）
+            // 清空日志按钮
             const clearBtn = document.getElementById('clear-logs-btn');
             if (clearBtn) {
-                if (AppState.hasPermission('system.view')) {
-                    clearBtn.style.display = '';
-                } else {
-                    clearBtn.style.display = 'none';
-                }
+                clearBtn.style.display = '';
             }
 
             this.setupLogsEvents();
@@ -86,11 +82,6 @@
         },
 
         clearLogs() {
-            if (!AppState.hasPermission('system.view')) {
-                Notification.warning('没有操作权限', '权限不足');
-                return;
-            }
-
             const select = document.getElementById('log-file-select');
             const file = select && select.value ? select.value : 'system.log';
             if (!confirm('确认清空日志文件 ' + file + '？')) return;

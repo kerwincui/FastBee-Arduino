@@ -129,7 +129,7 @@ void PeriphExecRouteHandler::setupRoutes(AsyncWebServer* server) {
 // ========== 获取所有规则 ==========
 
 void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Rule list", MemoryGuardLevel::CRITICAL, 5)) {
         return;
@@ -176,12 +176,9 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     // 检查堆内存是否充足（chunked流式发送内存占用很小，只需保证最低运行空间）
     if (HandlerUtils::checkLowMemory(request, 3072)) return;
 
-    // degraded 模式：内存不足时限制每页条数，与 PeripheralRouteHandler 一致
-    const bool degraded = (ESP.getFreeHeap() < 16384) || (ESP.getMaxAllocHeap() < 8192);
+    // 分页步长始终与前端请求保持一致，避免数据间隙。
+    // 内存不足时由 compact 模式（摘要字段）来节省空间，而非减少条数。
     int effectivePageSize = pageSize;
-    if (degraded && effectivePageSize > 5) {
-        effectivePageSize = 5;
-    }
 
     // 持锁短临界区：构建指针 vector + 排序 + 序列化当前页到 items
     // 超时 2000ms：避免规则执行占用锁时无限等待导致分页请求卡死
@@ -400,8 +397,10 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     header += String(page);
     header += F(",\"pageSize\":");
     header += String(effectivePageSize);
-    if (degraded) {
-        header += F(",\"degraded\":true");
+    // 保留 compact 标志，前端可据此判断是否缺少详细字段
+    const bool compact = (ESP.getFreeHeap() < 16384) || (ESP.getMaxAllocHeap() < 8192);
+    if (compact) {
+        header += F(",\"compact\":true");
     }
     header += F(",\"profile\":{\"name\":\"");
     header += FastBee::ResourceProfile::NAME;
@@ -425,7 +424,7 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
 // ========== 新增规则（form-encoded 向后兼容） ==========
 
 void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     PeriphExecRule rule;
@@ -478,7 +477,7 @@ void PeriphExecRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
 // ========== 更新规则 ==========
 
 void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
@@ -545,7 +544,7 @@ void PeriphExecRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
 // ========== 删除规则 ==========
 
 void PeriphExecRouteHandler::handleDeleteRule(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
@@ -566,7 +565,7 @@ void PeriphExecRouteHandler::handleDeleteRule(AsyncWebServerRequest* request) {
 // ========== 启用规则 ==========
 
 void PeriphExecRouteHandler::handleEnableRule(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
@@ -587,7 +586,7 @@ void PeriphExecRouteHandler::handleEnableRule(AsyncWebServerRequest* request) {
 // ========== 禁用规则 ==========
 
 void PeriphExecRouteHandler::handleDisableRule(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
@@ -608,7 +607,7 @@ void PeriphExecRouteHandler::handleDisableRule(AsyncWebServerRequest* request) {
 // ========== 执行一次规则 ==========
 
 void PeriphExecRouteHandler::handleRunOnce(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -636,7 +635,7 @@ void PeriphExecRouteHandler::handleRunOnce(AsyncWebServerRequest* request) {
 }
 
 void PeriphExecRouteHandler::handleGetRecentResults(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     int limit = 10;
     if (request->hasParam("limit")) {
@@ -699,7 +698,7 @@ void PeriphExecRouteHandler::handleGetRecentResults(AsyncWebServerRequest* reque
 // ========== 获取静态事件列表 ==========
 
 void PeriphExecRouteHandler::handleGetStaticEvents(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String eventsJson = PeriphExecManager::getStaticEventsJson();
     HandlerUtils::sendJsonSuccess(request, eventsJson);
@@ -708,7 +707,7 @@ void PeriphExecRouteHandler::handleGetStaticEvents(AsyncWebServerRequest* reques
 // ========== 获取动态事件列表（包含外设执行规则事件） ==========
 
 void PeriphExecRouteHandler::handleGetDynamicEvents(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Dynamic event list", MemoryGuardLevel::CRITICAL, 5)) {
         return;
@@ -729,7 +728,7 @@ void PeriphExecRouteHandler::handleGetDynamicEvents(AsyncWebServerRequest* reque
 // ========== 获取事件分类列表 ==========
 
 void PeriphExecRouteHandler::handleGetEventCategories(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String categoriesJson = PeriphExecManager::getEventCategoriesJson();
     HandlerUtils::sendJsonSuccess(request, categoriesJson);
@@ -738,7 +737,7 @@ void PeriphExecRouteHandler::handleGetEventCategories(AsyncWebServerRequest* req
 // ========== 获取触发类型列表 ==========
 
 void PeriphExecRouteHandler::handleGetTriggerTypes(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String triggerTypesJson = PeriphExecManager::getValidTriggerTypes();
     HandlerUtils::sendJsonSuccess(request, triggerTypesJson);
@@ -763,7 +762,11 @@ void PeriphExecRouteHandler::parseRuleFromJson(JsonObject& obj, PeriphExecRule& 
 
     // 数据转换管道
     rule.protocolType = jsonInt(obj["protocolType"], rule.protocolType);
-    if (obj["scriptContent"].is<const char*>()) rule.scriptContent = obj["scriptContent"] | "";
+    if (obj["scriptContent"].is<const char*>()) {
+        rule.scriptContent = obj["scriptContent"] | "";
+        // 兼容处理：旧版序列化可能将 null 存储为字符串 "null"
+        if (rule.scriptContent == "null") rule.scriptContent = "";
+    }
     if (obj["reportAfterExec"].is<bool>()) rule.reportAfterExec = obj["reportAfterExec"].as<bool>();
 
     // 解析 triggers 数组
@@ -810,7 +813,7 @@ void PeriphExecRouteHandler::parseRuleFromJson(JsonObject& obj, PeriphExecRule& 
 // ========== JSON body: 新增规则 ==========
 
 void PeriphExecRouteHandler::handleAddRuleJson(AsyncWebServerRequest* request, JsonVariant& json) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     JsonObject obj = json.as<JsonObject>();
@@ -838,7 +841,7 @@ void PeriphExecRouteHandler::handleAddRuleJson(AsyncWebServerRequest* request, J
 // ========== 获取设备控制列表（按动作类型分组） ==========
 
 void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     if (shouldDegradeControlsResponse()) {
         sendDegradedControlsResponse(request);
@@ -1003,7 +1006,7 @@ void PeriphExecRouteHandler::handleGetControls(AsyncWebServerRequest* request) {
 // ========== JSON body: 更新规则 ==========
 
 void PeriphExecRouteHandler::handleUpdateRuleJson(AsyncWebServerRequest* request, JsonVariant& json) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     JsonObject obj = json.as<JsonObject>();

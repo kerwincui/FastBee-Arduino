@@ -209,11 +209,7 @@
 // Web admin surface switches. Keep auth/session available, but allow small
 // ESP32 production builds to remove rarely used management APIs and pages.
 #ifndef FASTBEE_ENABLE_USER_ADMIN
-#define FASTBEE_ENABLE_USER_ADMIN 0
-#endif
-
-#ifndef FASTBEE_ENABLE_ROLE_ADMIN
-#define FASTBEE_ENABLE_ROLE_ADMIN 0
+#define FASTBEE_ENABLE_USER_ADMIN 1
 #endif
 
 #ifndef FASTBEE_ENABLE_FILE_MANAGER
@@ -225,7 +221,7 @@
 #endif
 
 #ifndef FASTBEE_SINGLE_ADMIN_MODE
-#define FASTBEE_SINGLE_ADMIN_MODE 1
+#define FASTBEE_SINGLE_ADMIN_MODE 0
 #endif
 
 // ============================================================================

@@ -3,7 +3,6 @@
 These files are the editable source modules for the admin area:
 
 - `users.js`
-- `roles.js`
 - `logs.js`
 - `files.js`
 - `rule-script.js`

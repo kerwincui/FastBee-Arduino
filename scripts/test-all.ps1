@@ -103,7 +103,16 @@ function Invoke-External {
         $rest = $Arguments[1..($Arguments.Count - 1)]
     }
     Write-Host "$exe $($rest -join ' ')" -ForegroundColor DarkCyan
-    & $exe @rest
+
+    # Prevent native-command stderr from triggering $ErrorActionPreference=Stop
+    # (e.g. git diff --check CRLF warnings). Exit code is the failure signal.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $exe @rest
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "Command failed with exit code ${LASTEXITCODE}: $exe $($rest -join ' ')"
     }

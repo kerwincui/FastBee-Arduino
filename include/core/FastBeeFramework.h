@@ -23,7 +23,6 @@ class TaskManager;
 class HealthMonitor;
 class UserManager;
 class AuthManager;
-class RoleManager;
 class ProtocolManager;
 class SystemHealth;
 struct NetworkStatusInfo;
@@ -99,9 +98,6 @@ public:
     HealthMonitor* getHealthMonitor() const;
     UserManager* getUserManager() const;
     AuthManager* getAuthManager() const;
-#if FASTBEE_ENABLE_ROLE_ADMIN
-    RoleManager* getRoleManager() const;
-#endif
     ProtocolManager* getProtocolManager() const;
     
     /**
@@ -148,9 +144,6 @@ private:
     std::unique_ptr<TaskManager> taskManager;
     std::unique_ptr<HealthMonitor> healthMonitor;
     std::unique_ptr<UserManager> userManager;
-#if FASTBEE_ENABLE_ROLE_ADMIN
-    std::unique_ptr<RoleManager> roleManager;
-#endif
     std::unique_ptr<AuthManager> authManager;
     std::unique_ptr<ProtocolManager> protocolManager;
 };

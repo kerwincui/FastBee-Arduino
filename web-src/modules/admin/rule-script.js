@@ -31,11 +31,6 @@
             const action = button.getAttribute('data-rule-script-action');
             const id = button.getAttribute('data-id');
             if (!action || !id) return;
-            // 编辑/启用/禁用/删除都需要 config.edit 权限
-            if (!AppState.hasPermission('config.edit')) {
-                Notification.warning('没有操作权限', '权限不足');
-                return;
-            }
             if (action === 'edit') this.editRuleScript(id);
             else if (action === 'toggle') this.toggleRuleScript(id, button.getAttribute('data-enabled') === 'true');
             else if (action === 'delete') this.deleteRuleScript(id);
@@ -55,18 +50,12 @@
         },
 
         _renderRuleScriptActions(rule) {
-            const hasEditPerm = AppState.hasPermission('config.edit');
             let html = '';
             html += this._renderRuleScriptActionButton('edit', rule.id, '编辑', 'fb-btn-primary');
             html += rule.enabled
                 ? this._renderRuleScriptActionButton('toggle', rule.id, '禁用', 'fb-btn-warning', false)
                 : this._renderRuleScriptActionButton('toggle', rule.id, '启用', 'fb-btn-success', true);
             html += this._renderRuleScriptActionButton('delete', rule.id, '删除', 'fb-btn-danger');
-
-            if (!hasEditPerm) {
-                // 无权限时给按钮添加禁用状态
-                html = html.replace(/<button/g, '<button disabled title="没有操作权限"');
-            }
             return html;
         },
 
@@ -102,14 +91,10 @@
         },
 
         loadRuleScriptPage(options) {
-            // 权限控制：新增规则按钮
+            // 新增规则按钮
             const addBtn = document.querySelector('[data-action="openRuleScriptModal"]');
             if (addBtn) {
-                if (AppState.hasPermission('config.edit')) {
-                    addBtn.style.display = '';
-                } else {
-                    addBtn.style.display = 'none';
-                }
+                addBtn.style.display = '';
             }
 
             const tbody = document.getElementById('rule-script-table-body');

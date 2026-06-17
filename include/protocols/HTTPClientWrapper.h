@@ -8,6 +8,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <core/SystemConstants.h>
 
 // HTTP配置结构体
@@ -47,8 +48,10 @@ public:
 private:
     HTTPConfig config;
     WiFiClient wifiClient;
+    WiFiClientSecure secureClient;
     ::HTTPClient httpClient;
     bool isInitialized;
+    bool isBaseUrlHttps() const { return config.baseURL.startsWith("https://"); }
     
     std::function<void(const String&, const String&)> responseCallback;
     

@@ -6,14 +6,17 @@
 #include "systems/TaskManager.h"
 #include "core/FastBeeFramework.h"
 #include "utils/PsramJsonDocument.h"
+#include "./network/WebConfigManager.h"
 #include <esp_heap_caps.h>
 
 WebHandlerContext::WebHandlerContext(AsyncWebServer* srv, IAuthManager* authMgr, IUserManager* userMgr)
     : server(srv), authManager(authMgr), userManager(userMgr),
-      roleManager(nullptr), networkManager(nullptr), otaManager(nullptr),
+      networkManager(nullptr), otaManager(nullptr),
       protocolManager(nullptr), sseHandler(nullptr), webRootPath("/www"),
       scheduleRestart(false), scheduledRestartTime(0), cacheDuration(86400),
-      webForegroundModeActive(false), webForegroundUntilMs(0) {
+      webForegroundModeActive(false), webForegroundUntilMs(0),
+      devModeCacheValid(false), devModeCacheValue(true), devModeCacheExpiryMs(0),
+      webConfigManager(nullptr) {
     loadCacheDuration();
 }
 
@@ -109,44 +112,7 @@ String WebHandlerContext::getUserAgent(AsyncWebServerRequest* request) {
     return "";
 }
 
-bool WebHandlerContext::checkPermission(AsyncWebServerRequest* request, const String& permission) {
-    if (!authManager || !request) {
-        return false;
-    }
-
-    AuthResult authResult = authenticateRequest(request);
-    if (!authResult.success) {
-        return false;
-    }
-
-    // 直接用已认证的 username 检查权限，避免 checkSessionPermission 中重复调用 verifySession
-    return authManager->checkPermission(authResult.username, permission);
-}
-
-bool WebHandlerContext::requirePermission(AsyncWebServerRequest* request, const String& permission) {
-    if (!authManager || !request) {
-        sendUnauthorized(request);
-        return false;
-    }
-
-    AuthResult authResult = authenticateRequest(request);
-    if (!authResult.success) {
-        // 未认证或会话过期 → 401
-        sendUnauthorized(request);
-        return false;
-    }
-
-    // 已认证，检查权限
-    if (!authManager->checkPermission(authResult.username, permission)) {
-        // 已登录但无权限 → 403
-        sendForbidden(request);
-        return false;
-    }
-
-    return true;
-}
-
-bool WebHandlerContext::requireAnyPermission(AsyncWebServerRequest* request, const String& perm1, const String& perm2) {
+bool WebHandlerContext::requireAuth(AsyncWebServerRequest* request) {
     if (!authManager || !request) {
         sendUnauthorized(request);
         return false;
@@ -155,12 +121,6 @@ bool WebHandlerContext::requireAnyPermission(AsyncWebServerRequest* request, con
     AuthResult authResult = authenticateRequest(request);
     if (!authResult.success) {
         sendUnauthorized(request);
-        return false;
-    }
-
-    if (!authManager->checkPermission(authResult.username, perm1) &&
-        !authManager->checkPermission(authResult.username, perm2)) {
-        sendForbidden(request);
         return false;
     }
 
@@ -168,8 +128,17 @@ bool WebHandlerContext::requireAnyPermission(AsyncWebServerRequest* request, con
 }
 
 bool WebHandlerContext::isDeveloperModeEnabled() {
+    // 缓存优化：避免每次请求都读取+解析 JSON 文件
+    unsigned long now = millis();
+    if (devModeCacheValid && (long)(devModeCacheExpiryMs - now) > 0) {
+        return devModeCacheValue;
+    }
+
     File f = LittleFS.open("/config/device.json", "r");
     if (!f) {
+        devModeCacheValue = true;
+        devModeCacheValid = true;
+        devModeCacheExpiryMs = now + 30000UL;  // 缓存 30s
         return true;
     }
 
@@ -177,12 +146,21 @@ bool WebHandlerContext::isDeveloperModeEnabled() {
     DeserializationError err = deserializeJson(doc, f);
     f.close();
     if (err) {
+        devModeCacheValue = true;
+        devModeCacheValid = true;
+        devModeCacheExpiryMs = now + 10000UL;  // 解析失败缓存 10s
         return true;
     }
     if (!doc["developerModeEnabled"].is<bool>()) {
+        devModeCacheValue = true;
+        devModeCacheValid = true;
+        devModeCacheExpiryMs = now + 30000UL;
         return true;
     }
-    return doc["developerModeEnabled"].as<bool>();
+    devModeCacheValue = doc["developerModeEnabled"].as<bool>();
+    devModeCacheValid = true;
+    devModeCacheExpiryMs = now + 60000UL;  // 成功读取缓存 60s
+    return devModeCacheValue;
 }
 
 bool WebHandlerContext::verifyCurrentUserPassword(AsyncWebServerRequest* request, const String& password) {
@@ -527,6 +505,11 @@ void WebHandlerContext::noteWebRequestActivity(unsigned long holdMs) {
     unsigned long nextUntil = now + holdMs;
     if (nextUntil > webForegroundUntilMs) {
         webForegroundUntilMs = nextUntil;
+    }
+
+    // 请求突增跟踪
+    if (webConfigManager) {
+        webConfigManager->trackWebRequest();
     }
 
     FastBeeFramework* framework = FastBeeFramework::getInstance();

@@ -1,5 +1,4 @@
 #include "./security/UserManager.h"
-#include "security/RoleManager.h"
 #include "systems/LoggerSystem.h"
 #include "core/FeatureFlags.h"
 #include <mbedtls/md5.h>
@@ -45,7 +44,6 @@ static String base64Encode(const uint8_t* data, size_t length) {
 }
 
 UserManager::UserManager() {
-    // JSON 文件存储，无需初始化 NVS
 }
 
 UserManager::~UserManager() {
@@ -58,20 +56,18 @@ bool UserManager::initialize() {
     }
 
     if (!loadUsersFromStorage() || users.empty()) {
-        LOG_INFO("UserManager: No user data found, creating default users");
+        LOG_INFO("UserManager: No user data found, creating default admin");
         initializeDefaultAdmin();
     }
 
-#if !FASTBEE_ENABLE_USER_ADMIN
+#if FASTBEE_SINGLE_ADMIN_MODE
+    // 单管理员模式：确保仅存在 admin 用户
     auto adminIt = users.find(DEFAULT_ADMIN_USER);
     if (adminIt == users.end()) {
         users.clear();
         initializeDefaultAdmin();
-    } else if (users.size() != 1 || adminIt->second.role != UserRole::ADMIN ||
-               !adminIt->second.hasRole(BuiltinRoles::ADMIN) || !adminIt->second.enabled) {
+    } else if (users.size() != 1 || !adminIt->second.enabled) {
         User admin = adminIt->second;
-        admin.role = UserRole::ADMIN;
-        admin.roles = { BuiltinRoles::ADMIN };
         admin.enabled = true;
         admin.lastModified = millis();
         users.clear();
@@ -88,36 +84,15 @@ bool UserManager::initialize() {
 }
 
 void UserManager::initializeDefaultAdmin() {
-    // 创建默认管理员用户
     User admin;
     admin.username     = DEFAULT_ADMIN_USER;
     admin.salt         = generateSalt();
     admin.passwordHash = hashPassword(DEFAULT_ADMIN_PASS, admin.salt);
-    admin.role         = UserRole::ADMIN;
-    admin.roles        = { BuiltinRoles::ADMIN };  // 绑定内置 admin 角色
     admin.enabled      = true;
     admin.createTime   = millis();
     admin.lastModified = millis();
-    admin.createBy     = "system";
 
     users[DEFAULT_ADMIN_USER] = admin;
-    
-    // 创建默认查看者用户
-#if FASTBEE_ENABLE_USER_ADMIN
-    User viewer;
-    viewer.username     = "viewer";
-    viewer.salt         = generateSalt();
-    viewer.passwordHash = hashPassword(DEFAULT_ADMIN_PASS, viewer.salt);  // 使用相同的默认密码 admin123
-    viewer.role         = UserRole::VIEWER;
-    viewer.roles        = { BuiltinRoles::VIEWER };  // 绑定内置 viewer 角色
-    viewer.enabled      = true;
-    viewer.createTime   = millis();
-    viewer.lastModified = millis();
-    viewer.createBy     = "system";
-
-    users["viewer"] = viewer;
-#endif
-    
     saveUsersToStorage();
 }
 
@@ -128,7 +103,6 @@ String UserManager::generateSalt() {
 }
 
 String UserManager::hashPassword(const String& password, const String& salt) {
-    // 使用SHA256哈希
     String data = salt + password + salt;
     
     uint8_t hash[32];
@@ -179,13 +153,38 @@ void UserManager::updateUserLastModified(const String& username) {
 
 // ============ 用户管理方法 ============
 
+bool UserManager::addUser(const String& username, const String& password) {
+#if FASTBEE_SINGLE_ADMIN_MODE
+    (void)username;
+    (void)password;
+    return false;
+#else
+    if (users.find(username) != users.end()) {
+        return false;
+    }
 
+    if (!validatePasswordStrength(password)) {
+        return false;
+    }
+
+    User newUser;
+    newUser.username     = username;
+    newUser.salt         = generateSalt();
+    newUser.passwordHash = hashPassword(password, newUser.salt);
+    newUser.enabled      = true;
+    newUser.createTime   = millis();
+    newUser.lastModified = millis();
+
+    users[username] = newUser;
+    return saveUsersToStorage();
+#endif
+}
 
 bool UserManager::deleteUser(const String& username) {
 #if FASTBEE_SINGLE_ADMIN_MODE
     (void)username;
     return false;
-#endif
+#else
     // 不能删除默认管理员
     if (username == DEFAULT_ADMIN_USER) {
         return false;
@@ -198,19 +197,12 @@ bool UserManager::deleteUser(const String& username) {
     
     users.erase(it);
     loginAttempts.erase(username);
-    
     return saveUsersToStorage();
+#endif
 }
 
 bool UserManager::updateUser(const String& username, const String& newPassword,
-                           const String& newRole, bool enabled) {
-#if FASTBEE_SINGLE_ADMIN_MODE
-    if (username != DEFAULT_ADMIN_USER) {
-        return false;
-    }
-    (void)newRole;
-    (void)enabled;
-#endif
+                           bool enabled) {
     auto it = users.find(username);
     if (it == users.end()) {
         return false;
@@ -227,23 +219,15 @@ bool UserManager::updateUser(const String& username, const String& newPassword,
         user.passwordHash = hashPassword(newPassword, user.salt);
     }
     
-    // 更新角色
 #if !FASTBEE_SINGLE_ADMIN_MODE
-    if (!newRole.isEmpty()) {
-        user.role = stringToRole(newRole);
-    }
-    
     // 更新启用状态
     user.enabled = enabled;
 #else
-    user.role = UserRole::ADMIN;
-    user.roles = { BuiltinRoles::ADMIN };
+    (void)enabled;
     user.enabled = true;
 #endif
     
-    // 更新修改时间
     user.lastModified = millis();
-    
     return saveUsersToStorage();
 }
 
@@ -256,17 +240,14 @@ bool UserManager::changePassword(const String& username, const String& oldPasswo
     
     User& user = it->second;
     
-    // 验证旧密码
     if (!verifyPassword(oldPassword, user.passwordHash, user.salt)) {
         return false;
     }
     
-    // 验证新密码强度
     if (!validatePasswordStrength(newPassword)) {
         return false;
     }
     
-    // 更新密码
     user.salt = generateSalt();
     user.passwordHash = hashPassword(newPassword, user.salt);
     user.lastModified = millis();
@@ -292,8 +273,6 @@ bool UserManager::resetPassword(const String& username, const String& newPasswor
     return saveUsersToStorage();
 }
 
-
-
 // ============ 用户查询方法 ============
 
 User* UserManager::getUser(const String& username) {
@@ -309,8 +288,6 @@ std::vector<String> UserManager::getAllUsernames() {
     return usernames;
 }
 
-
-
 bool UserManager::userExists(const String& username) {
     return users.find(username) != users.end();
 }
@@ -320,8 +297,6 @@ bool UserManager::isUserEnabled(const String& username) {
     return (it != users.end()) ? it->second.enabled : false;
 }
 
-
-
 // ============ 登录保护方法 ============
 
 void UserManager::recordLoginFailure(const String& username) {
@@ -329,7 +304,6 @@ void UserManager::recordLoginFailure(const String& username) {
     
     loginAttempts[username]++;
     
-    // 如果超过最大尝试次数，记录锁定时间（在AuthManager中处理）
     if (loginAttempts[username] >= config.maxLoginAttempts) {
         char buf[72];
         snprintf(buf, sizeof(buf), "UserManager: Account %s locked (too many failures)", username.c_str());
@@ -365,7 +339,6 @@ UserStats UserManager::getUserStats(const String& username) {
     
     auto it = users.find(username);
     if (it != users.end()) {
-        stats.role = it->second.role;
         stats.createTime = it->second.createTime;
     }
     
@@ -418,6 +391,24 @@ bool UserManager::saveUsersToStorage() {
     adminObj["salt"]         = admin.salt;
     adminObj["lastLogin"]    = admin.lastLogin;
     adminObj["lastModified"] = admin.lastModified;
+#else
+    JsonDocument doc;
+    doc["version"] = "1.0";
+
+    JsonArray usersArr = doc["users"].to<JsonArray>();
+    for (const auto& pair : users) {
+        const User& user = pair.second;
+        JsonObject userObj = usersArr.add<JsonObject>();
+        userObj["username"]     = user.username;
+        userObj["passwordHash"] = user.passwordHash;
+        userObj["salt"]         = user.salt;
+        userObj["enabled"]      = user.enabled;
+        userObj["description"]  = user.description;
+        userObj["createTime"]   = user.createTime;
+        userObj["lastLogin"]    = user.lastLogin;
+        userObj["lastModified"] = user.lastModified;
+    }
+#endif
 
     JsonObject security = doc["security"].to<JsonObject>();
     security["maxLoginAttempts"]        = config.maxLoginAttempts;
@@ -439,211 +430,47 @@ bool UserManager::saveUsersToStorage() {
         return false;
     }
 
-    File file = LittleFS.open(ADMIN_AUTH_CONFIG_FILE, "w");
+    const char* savePath = FASTBEE_SINGLE_ADMIN_MODE ? ADMIN_AUTH_CONFIG_FILE : USERS_CONFIG_FILE;
+    File file = LittleFS.open(savePath, "w");
     if (!file) {
-        LOG_ERROR("UserManager: Failed to open auth file for writing");
+        LOG_ERROR("UserManager: Failed to open file for writing");
         return false;
     }
 
     size_t written = serializeJson(doc, file);
     file.close();
     if (written == 0) {
-        LOG_ERROR("UserManager: Failed to write auth file");
+        LOG_ERROR("UserManager: Failed to write file");
         return false;
     }
 
-    if (LittleFS.exists(USERS_CONFIG_FILE)) {
-        LittleFS.remove(USERS_CONFIG_FILE);
-    }
     return true;
-#else
-    FastBeeJsonDocLarge doc;
-    doc["version"] = "2.0";
-    
-    // 保存用户数据
-    JsonArray usersArray = doc["users"].to<JsonArray>();
-    for (const auto& pair : users) {
-        const User& user = pair.second;
-        JsonObject userObj = usersArray.add<JsonObject>();
-
-        userObj["username"]     = user.username;
-        userObj["passwordHash"] = user.passwordHash;
-        userObj["salt"]         = user.salt;
-        userObj["role"]         = static_cast<int>(user.role);
-        userObj["enabled"]      = user.enabled;
-        userObj["createTime"]   = user.createTime;
-        userObj["lastLogin"]    = user.lastLogin;
-        userObj["lastModified"] = user.lastModified;
-        userObj["email"]        = user.email;
-        userObj["remark"]       = user.remark;
-        userObj["createBy"]     = user.createBy;
-
-        // 多角色列表
-        JsonArray rolesArr = userObj["roles"].to<JsonArray>();
-        for (const String& r : user.roles) {
-            rolesArr.add(r);
-        }
-    }
-    
-    // 保存安全配置
-    JsonObject security = doc["security"].to<JsonObject>();
-    security["maxLoginAttempts"]        = config.maxLoginAttempts;
-    security["loginLockoutTime"]        = config.loginLockoutTime;
-    security["minPasswordLength"]       = config.minPasswordLength;
-    security["maxPasswordLength"]       = config.maxPasswordLength;
-    security["requireStrongPasswords"]  = config.requireStrongPasswords;
-    security["allowMultipleSessions"]   = config.allowMultipleSessions;
-    security["sessionTimeout"]          = config.sessionTimeout;
-    security["sessionCleanupInterval"]  = config.sessionCleanupInterval;
-    security["enableSessionPersistence"]= config.enableSessionPersistence;
-    security["cookieName"]              = config.cookieName;
-    security["cookieMaxAge"]            = config.cookieMaxAge;
-    security["cookieHttpOnly"]          = config.cookieHttpOnly;
-    security["cookieSecure"]            = config.cookieSecure;
-
-    // 确保目录存在
-    if (!LittleFS.exists("/config")) {
-        if (!LittleFS.mkdir("/config")) {
-            LOG_ERROR("UserManager: Failed to create /config directory");
-            return false;
-        }
-    }
-    
-    // 写入文件
-    File file = LittleFS.open(USERS_CONFIG_FILE, "w");
-    if (!file) {
-        LOG_ERROR("UserManager: Failed to open users file for writing");
-        return false;
-    }
-    
-    size_t written = serializeJson(doc, file);
-    file.close();
-    
-    if (written > 0) {
-        LOG_DEBUG("UserManager: Users saved to file");
-        return true;
-    } else {
-        LOG_ERROR("UserManager: Failed to write users to file");
-        return false;
-    }
-#endif
 }
 
 bool UserManager::loadUsersFromStorage() {
-#if FASTBEE_SINGLE_ADMIN_MODE
+    const bool hasUsersFile = LittleFS.exists(USERS_CONFIG_FILE);
     const bool hasAuthFile = LittleFS.exists(ADMIN_AUTH_CONFIG_FILE);
-    const bool migrateLegacyUsers = !hasAuthFile && LittleFS.exists(USERS_CONFIG_FILE);
-    const char* loadPath = hasAuthFile ? ADMIN_AUTH_CONFIG_FILE : USERS_CONFIG_FILE;
 
-    if (!hasAuthFile && !migrateLegacyUsers) {
-        LOG_INFO("UserManager: Auth file not found");
+#if FASTBEE_SINGLE_ADMIN_MODE
+    const char* loadPath = hasAuthFile ? ADMIN_AUTH_CONFIG_FILE : (hasUsersFile ? USERS_CONFIG_FILE : nullptr);
+#else
+    const char* loadPath = hasUsersFile ? USERS_CONFIG_FILE : (hasAuthFile ? ADMIN_AUTH_CONFIG_FILE : nullptr);
+#endif
+
+    if (!loadPath) {
+        LOG_INFO("UserManager: No user data file found");
         return false;
     }
 
     File file = LittleFS.open(loadPath, "r");
     if (!file) {
-        LOG_ERROR("UserManager: Failed to open auth file for reading");
+        LOG_ERROR("UserManager: Failed to open user data file");
         return false;
     }
 
     FastBeeJsonDocLarge doc;
     DeserializationError error = deserializeJson(doc, file);
     file.close();
-    if (error) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), "UserManager: Failed to parse auth data: %s", error.c_str());
-        LOG_ERROR(buf);
-        return false;
-    }
-
-    User admin;
-    admin.username = DEFAULT_ADMIN_USER;
-    admin.role = UserRole::ADMIN;
-    admin.roles = { BuiltinRoles::ADMIN };
-    admin.enabled = true;
-    admin.createBy = "system";
-    admin.createTime = millis();
-    admin.lastModified = millis();
-
-    if (migrateLegacyUsers) {
-        JsonArray usersArray = doc["users"];
-        bool foundAdmin = false;
-        for (JsonObject userObj : usersArray) {
-            String username = userObj["username"].as<String>();
-            if (username != DEFAULT_ADMIN_USER) {
-                continue;
-            }
-            admin.passwordHash = userObj["passwordHash"].as<String>();
-            admin.salt = userObj["salt"].as<String>();
-            admin.lastLogin = userObj["lastLogin"] | 0UL;
-            admin.lastModified = userObj["lastModified"] | millis();
-            admin.createTime = userObj["createTime"] | millis();
-            foundAdmin = true;
-            break;
-        }
-        if (!foundAdmin || admin.passwordHash.isEmpty() || admin.salt.isEmpty()) {
-            LOG_ERROR("UserManager: Legacy admin user missing during auth migration");
-            return false;
-        }
-    } else {
-        JsonObject adminObj = doc["admin"];
-        if (adminObj.isNull()) {
-            LOG_ERROR("UserManager: Auth file missing admin object");
-            return false;
-        }
-        admin.passwordHash = adminObj["passwordHash"].as<String>();
-        admin.salt = adminObj["salt"].as<String>();
-        admin.lastLogin = adminObj["lastLogin"] | 0UL;
-        admin.lastModified = adminObj["lastModified"] | millis();
-        if (admin.passwordHash.isEmpty() || admin.salt.isEmpty()) {
-            LOG_ERROR("UserManager: Auth file missing admin credential");
-            return false;
-        }
-    }
-
-    users.clear();
-    users[DEFAULT_ADMIN_USER] = admin;
-
-    JsonObject security = doc["security"];
-    if (!security.isNull()) {
-        config.maxLoginAttempts        = security["maxLoginAttempts"] | 5;
-        config.loginLockoutTime        = security["loginLockoutTime"] | 300000UL;
-        config.minPasswordLength       = security["minPasswordLength"] | 6;
-        config.maxPasswordLength       = security["maxPasswordLength"] | 32;
-        config.requireStrongPasswords  = security["requireStrongPasswords"] | false;
-        config.allowMultipleSessions   = security["allowMultipleSessions"] | true;
-        config.sessionTimeout          = security["sessionTimeout"] | 3600000UL;
-        config.sessionCleanupInterval  = security["sessionCleanupInterval"] | 60000UL;
-        config.enableSessionPersistence= security["enableSessionPersistence"] | false;
-        config.cookieName              = security["cookieName"] | "sessionId";
-        config.cookieMaxAge            = security["cookieMaxAge"] | 3600UL;
-        config.cookieHttpOnly          = security["cookieHttpOnly"] | true;
-        config.cookieSecure            = security["cookieSecure"] | false;
-    }
-
-    if (migrateLegacyUsers) {
-        saveUsersToStorage();
-        LOG_INFO("UserManager: Migrated legacy users.json to single-admin auth.json");
-    }
-
-    LOG_INFO("UserManager: Loaded single-admin auth");
-    return true;
-#else
-    if (!LittleFS.exists(USERS_CONFIG_FILE)) {
-        LOG_INFO("UserManager: Users file not found");
-        return false;
-    }
-    
-    File file = LittleFS.open(USERS_CONFIG_FILE, "r");
-    if (!file) {
-        LOG_ERROR("UserManager: Failed to open users file for reading");
-        return false;
-    }
-
-    FastBeeJsonDocLarge doc;
-    DeserializationError error = deserializeJson(doc, file);
-    file.close();
-    
     if (error) {
         char buf[64];
         snprintf(buf, sizeof(buf), "UserManager: Failed to parse user data: %s", error.c_str());
@@ -653,40 +480,41 @@ bool UserManager::loadUsersFromStorage() {
 
     users.clear();
 
-    // 加载用户数据
+    // 尝试从 "users" 数组加载（多用户格式）
     JsonArray usersArray = doc["users"];
-    for (JsonObject userObj : usersArray) {
-        User user;
-        user.username     = userObj["username"].as<String>();
-        user.passwordHash = userObj["passwordHash"].as<String>();
-        user.salt         = userObj["salt"].as<String>();
-        user.role         = static_cast<UserRole>(userObj["role"].as<int>());
-        user.enabled      = userObj["enabled"] | true;
-        user.createTime   = userObj["createTime"] | 0UL;
-        user.lastLogin    = userObj["lastLogin"]  | 0UL;
-        user.lastModified = userObj["lastModified"] | 0UL;
-        user.email        = userObj["email"].as<String>();
-        user.remark       = userObj["remark"].as<String>();
-        user.createBy     = userObj["createBy"].as<String>();
-
-        // 多角色列表（向下兼容：无 roles 字段时从旧枚举生成）
-        JsonArray rolesArr = userObj["roles"];
-        if (!rolesArr.isNull() && rolesArr.size() > 0) {
-            for (const auto& r : rolesArr) {
-                String roleId = r.as<String>();
-                // 迁移旧数据：将 'user' 转换为 'operator'
-                if (roleId == "user") {
-                    roleId = "operator";
-                }
-                user.roles.push_back(roleId);
+    if (!usersArray.isNull() && usersArray.size() > 0) {
+        for (JsonObject userObj : usersArray) {
+            User user;
+            user.username     = userObj["username"].as<String>();
+            user.passwordHash = userObj["passwordHash"].as<String>();
+            user.salt         = userObj["salt"].as<String>();
+            user.enabled      = userObj["enabled"] | true;
+            user.description  = userObj["description"] | "";
+            user.createTime   = userObj["createTime"] | 0UL;
+            user.lastLogin    = userObj["lastLogin"] | 0UL;
+            user.lastModified = userObj["lastModified"] | 0UL;
+            if (!user.username.isEmpty() && !user.passwordHash.isEmpty()) {
+                users[user.username] = user;
             }
-        } else {
-            user.roles.push_back(roleToString(user.role));
         }
-
-        users[user.username] = user;
+    } else {
+        // 从 "admin" 对象加载（单管理员格式 / 迁移）
+        JsonObject adminObj = doc["admin"];
+        if (!adminObj.isNull()) {
+            User admin;
+            admin.username     = DEFAULT_ADMIN_USER;
+            admin.passwordHash = adminObj["passwordHash"].as<String>();
+            admin.salt         = adminObj["salt"].as<String>();
+            admin.enabled      = true;
+            admin.lastLogin    = adminObj["lastLogin"] | 0UL;
+            admin.lastModified = adminObj["lastModified"] | millis();
+            admin.createTime   = millis();
+            if (!admin.passwordHash.isEmpty() && !admin.salt.isEmpty()) {
+                users[DEFAULT_ADMIN_USER] = admin;
+            }
+        }
     }
-    
+
     // 加载安全配置
     JsonObject security = doc["security"];
     if (!security.isNull()) {
@@ -706,20 +534,16 @@ bool UserManager::loadUsersFromStorage() {
     }
 
     char buf[48];
-    snprintf(buf, sizeof(buf), "UserManager: Loaded %u users from file", (unsigned)users.size());
+    snprintf(buf, sizeof(buf), "UserManager: Loaded %u users", (unsigned)users.size());
     LOG_INFO(buf);
-    return true;
-#endif
+    return !users.empty();
 }
 
 bool UserManager::saveConfig() {
-    // 安全配置已集成到 saveUsersToStorage() 中统一保存
     return saveUsersToStorage();
 }
 
 bool UserManager::loadConfig() {
-    // 安全配置已集成到 loadUsersFromStorage() 中统一加载
-    // 此处仅返回 true，实际加载在 loadUsersFromStorage() 中完成
     return true;
 }
 
@@ -738,20 +562,6 @@ bool UserManager::updateSecurityConfig(uint32_t sessionTimeout, uint32_t session
 
 // ============ 静态工具方法 ============
 
-String UserManager::roleToString(UserRole role) {
-    switch (role) {
-        case UserRole::ADMIN: return "admin";
-        case UserRole::USER: return "operator";  // 前端使用 operator 表示操作员
-        case UserRole::VIEWER: return "viewer";
-        default: return "viewer";
-    }
-}
-
-UserRole UserManager::stringToRole(const String& roleStr) {
-    if (roleStr == "admin") return UserRole::ADMIN;
-    if (roleStr == "user" || roleStr == "operator") return UserRole::USER;  // 兼容 user 和 operator
-    return UserRole::VIEWER;
-}
 
 String UserManager::generateRandomSalt() {
     uint8_t randomBytes[16];
@@ -780,110 +590,13 @@ bool UserManager::validatePassword(const String& password, uint8_t minLength,
     return true;
 }
 
-// ============ 多角色管理方法 ============
-
-bool UserManager::assignRole(const String& username, const String& roleId) {
-#if FASTBEE_SINGLE_ADMIN_MODE
-    (void)username;
-    (void)roleId;
-    return false;
-#endif
+bool UserManager::setUserDescription(const String& username, const String& description) {
     auto it = users.find(username);
     if (it == users.end()) return false;
-    if (!it->second.hasRole(roleId)) {
-        it->second.roles.push_back(roleId);
-    }
-    return saveUsersToStorage();
-}
 
-bool UserManager::removeRole(const String& username, const String& roleId) {
-#if FASTBEE_SINGLE_ADMIN_MODE
-    (void)username;
-    (void)roleId;
-    return false;
-#endif
-    auto it = users.find(username);
-    if (it == users.end()) return false;
-    auto& roleVec = it->second.roles;
-    for (auto rit = roleVec.begin(); rit != roleVec.end(); ++rit) {
-        if (*rit == roleId) {
-            roleVec.erase(rit);
-            return saveUsersToStorage();
-        }
-    }
-    return false;
-}
-
-bool UserManager::setRoles(const String& username, const std::vector<String>& roleIds) {
-#if FASTBEE_SINGLE_ADMIN_MODE
-    (void)username;
-    (void)roleIds;
-    return false;
-#endif
-    auto it = users.find(username);
-    if (it == users.end()) return false;
-    it->second.roles = roleIds;
-    // 同步旧枚举字段（取第一个角色）
-    if (!roleIds.empty()) {
-        it->second.role = stringToRole(roleIds[0]);
-    }
-    return saveUsersToStorage();
-}
-
-std::vector<String> UserManager::getUserRoles(const String& username) const {
-    auto it = users.find(username);
-    return (it != users.end()) ? it->second.roles : std::vector<String>{};
-}
-
-bool UserManager::hasRole(const String& username, const String& roleId) const {
-    auto it = users.find(username);
-    return (it != users.end()) && it->second.hasRole(roleId);
-}
-
-bool UserManager::updateUserMeta(const String& username, const String& email, const String& remark) {
-#if FASTBEE_SINGLE_ADMIN_MODE
-    (void)username;
-    (void)email;
-    (void)remark;
-    return false;
-#endif
-    auto it = users.find(username);
-    if (it == users.end()) return false;
-    if (!email.isEmpty())  it->second.email  = email;
-    if (!remark.isEmpty()) it->second.remark = remark;
+    // 截断为最大64字符
+    it->second.description = description.substring(0, 64);
     it->second.lastModified = millis();
-    return saveUsersToStorage();
-}
-
-// IUserManager 接口实现
-
-bool UserManager::addUser(const String& username, const String& password, const String& role) {
-#if FASTBEE_SINGLE_ADMIN_MODE
-    (void)username;
-    (void)password;
-    (void)role;
-    return false;
-#endif
-    UserRole userRole = stringToRole(role);
-    if (users.find(username) != users.end()) {
-        return false;
-    }
-
-    if (!validatePasswordStrength(password)) {
-        return false;
-    }
-
-    User newUser;
-    newUser.username     = username;
-    newUser.salt         = generateSalt();
-    newUser.passwordHash = hashPassword(password, newUser.salt);
-    newUser.role         = userRole;
-    newUser.roles        = { role };   // 同步多角色列表
-    newUser.enabled      = true;
-    newUser.createTime   = millis();
-    newUser.lastModified = millis();
-
-    users[username] = newUser;
     return saveUsersToStorage();
 }
 
@@ -894,42 +607,28 @@ bool UserManager::updatePassword(const String& username, const String& newPasswo
 bool UserManager::validateUser(const String& username, const String& password) {
     auto it = users.find(username);
     if (it == users.end()) {
-        Serial.printf("[AUTH] User '%s' not found\n", username.c_str());
         recordLoginFailure(username);
         return false;
     }
     
     const User& user = it->second;
     
-    // 检查用户是否启用
     if (!user.enabled) {
-        Serial.printf("[AUTH] User '%s' disabled\n", username.c_str());
         recordLoginFailure(username);
         return false;
     }
     
-    // 验证密码
     if (!verifyPassword(password, user.passwordHash, user.salt)) {
-        Serial.printf("[AUTH] Password mismatch for '%s'\n", username.c_str());
-        Serial.printf("[AUTH] salt='%s'\n", user.salt.c_str());
-        Serial.printf("[AUTH] stored_hash='%s'\n", user.passwordHash.c_str());
-        Serial.printf("[AUTH] calc_hash  ='%s'\n", hashPassword(password, user.salt).c_str());
         recordLoginFailure(username);
         return false;
     }
     
-    // 验证成功，重置登录尝试
     resetLoginAttempts(username);
     updateLastLogin(username);
     
     return true;
 }
 
-String UserManager::getUserRole(const String& username) {
-    auto it = users.find(username);
-    UserRole role = (it != users.end()) ? it->second.role : UserRole::VIEWER;
-    return roleToString(role);
-}
 
 String UserManager::getAllUsers() {
     FastBeeJsonDocLarge doc;
@@ -938,20 +637,11 @@ String UserManager::getAllUsers() {
     for (const auto& pair : users) {
         const User& user = pair.second;
         JsonObject userObj = usersArray.add<JsonObject>();
-        userObj["username"]   = user.username;
-        // 优先使用 roles 数组的首个角色（权威来源），避免旧枚举 role 字段数值不匹配
-        userObj["role"]       = user.roles.empty() ? roleToString(user.role) : user.roles[0];
-        userObj["enabled"]    = user.enabled;
-        userObj["createTime"] = user.createTime;
-        userObj["lastLogin"]  = user.lastLogin;
-        userObj["email"]      = user.email;
-        userObj["remark"]     = user.remark;
-        userObj["createBy"]   = user.createBy;
-
-        JsonArray rolesArr = userObj["roles"].to<JsonArray>();
-        for (const String& r : user.roles) {
-            rolesArr.add(r);
-        }
+        userObj["username"]    = user.username;
+        userObj["enabled"]     = user.enabled;
+        userObj["description"] = user.description;
+        userObj["createTime"]  = user.createTime;
+        userObj["lastLogin"]   = user.lastLogin;
     }
 
     String jsonStr;

@@ -1,5 +1,5 @@
 /**
- *@description: 
+ *@description:
  *@author: kerwincui
  *@copyright:FastBee All rights reserved.
  *@date: 2025-12-02 17:30:53
@@ -14,7 +14,7 @@
 #include "systems/ConfigStorage.h"
 
 
-HTTPClientWrapper::HTTPClientWrapper() 
+HTTPClientWrapper::HTTPClientWrapper()
     : isInitialized(false) {
 }
 
@@ -25,9 +25,13 @@ HTTPClientWrapper::~HTTPClientWrapper() {
 bool HTTPClientWrapper::begin(const HTTPConfig& config) {
     this->config = config;
     isInitialized = true;
-    
-    Serial.printf("[HTTPClient] Initialized with baseURL: %s, timeout: %dms\n", 
-                  config.baseURL.c_str(), config.timeout);
+    // HTTPS baseURL 时初始化 secureClient
+    if (isBaseUrlHttps()) {
+        secureClient.setInsecure();  // 跳过 CA 证书验证（嵌入式设备通常不存储证书）
+    }
+
+    Serial.printf("[HTTPClient] Initialized with baseURL: %s, timeout: %dms, HTTPS: %s\n",
+                  config.baseURL.c_str(), config.timeout, isBaseUrlHttps() ? "yes" : "no");
     return true;
 }
 
@@ -112,23 +116,23 @@ bool HTTPClientWrapper::get(const String& endpoint, String& response) {
     String url = buildURL(endpoint);
     Serial.printf("[HTTPClient] GET: %s\n", url.c_str());
 
-    httpClient.begin(wifiClient, url);
+    httpClient.begin(isBaseUrlHttps() ? secureClient : wifiClient, url);
     httpClient.setTimeout(config.timeout);
     applyAuthHeaders(httpClient, config);
 
     int httpCode = httpClient.GET();
     bool success = (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_CREATED);
-    
+
     if (success) {
         response = httpClient.getString();
         Serial.printf("[HTTPClient] GET success, response length: %d\n", response.length());
-        
+
         // 触发回调
         if (responseCallback) {
             responseCallback(endpoint, response);
         }
     } else {
-        Serial.printf("[HTTPClient] GET failed, code: %d, error: %s\n", 
+        Serial.printf("[HTTPClient] GET failed, code: %d, error: %s\n",
                       httpCode, httpClient.errorToString(httpCode).c_str());
         response = httpClient.getString(); // 可能包含错误信息
     }
@@ -146,23 +150,23 @@ bool HTTPClientWrapper::post(const String& endpoint, const String& data, String&
     String url = buildURL(endpoint);
     Serial.printf("[HTTPClient] POST: %s, data: %s\n", url.c_str(), data.c_str());
 
-    httpClient.begin(wifiClient, url);
+    httpClient.begin(isBaseUrlHttps() ? secureClient : wifiClient, url);
     httpClient.setTimeout(config.timeout);
     applyAuthHeaders(httpClient, config);
 
     int httpCode = httpClient.POST(data);
     bool success = (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_CREATED);
-    
+
     if (success) {
         response = httpClient.getString();
         Serial.printf("[HTTPClient] POST success, response length: %d\n", response.length());
-        
+
         // 触发回调
         if (responseCallback) {
             responseCallback(endpoint, response);
         }
     } else {
-        Serial.printf("[HTTPClient] POST failed, code: %d, error: %s\n", 
+        Serial.printf("[HTTPClient] POST failed, code: %d, error: %s\n",
                       httpCode, httpClient.errorToString(httpCode).c_str());
         response = httpClient.getString();
     }
@@ -185,23 +189,23 @@ bool HTTPClientWrapper::put(const String& endpoint, const String& data, String& 
     String url = buildURL(endpoint);
     Serial.printf("[HTTPClient] PUT: %s, data: %s\n", url.c_str(), data.c_str());
 
-    httpClient.begin(wifiClient, url);
+    httpClient.begin(isBaseUrlHttps() ? secureClient : wifiClient, url);
     httpClient.setTimeout(config.timeout);
     applyAuthHeaders(httpClient, config);
 
     int httpCode = httpClient.PUT(data);
     bool success = (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_CREATED);
-    
+
     if (success) {
         response = httpClient.getString();
         Serial.printf("[HTTPClient] PUT success, response length: %d\n", response.length());
-        
+
         // 触发回调
         if (responseCallback) {
             responseCallback(endpoint, response);
         }
     } else {
-        Serial.printf("[HTTPClient] PUT failed, code: %d, error: %s\n", 
+        Serial.printf("[HTTPClient] PUT failed, code: %d, error: %s\n",
                       httpCode, httpClient.errorToString(httpCode).c_str());
         response = httpClient.getString();
     }
@@ -219,23 +223,23 @@ bool HTTPClientWrapper::del(const String& endpoint, String& response) {
     String url = buildURL(endpoint);
     Serial.printf("[HTTPClient] DELETE: %s\n", url.c_str());
 
-    httpClient.begin(wifiClient, url);
+    httpClient.begin(isBaseUrlHttps() ? secureClient : wifiClient, url);
     httpClient.setTimeout(config.timeout);
     applyAuthHeaders(httpClient, config);
 
     int httpCode = httpClient.sendRequest("DELETE");
     bool success = (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_NO_CONTENT);
-    
+
     if (success) {
         response = httpClient.getString();
         Serial.printf("[HTTPClient] DELETE success, response length: %d\n", response.length());
-        
+
         // 触发回调
         if (responseCallback) {
             responseCallback(endpoint, response);
         }
     } else {
-        Serial.printf("[HTTPClient] DELETE failed, code: %d, error: %s\n", 
+        Serial.printf("[HTTPClient] DELETE failed, code: %d, error: %s\n",
                       httpCode, httpClient.errorToString(httpCode).c_str());
         response = httpClient.getString();
     }
@@ -253,7 +257,7 @@ String HTTPClientWrapper::getStatus() const {
     if (!isInitialized) {
         return "Not initialized";
     }
-    
+
     String status = "Initialized - BaseURL: " + config.baseURL;
     status += ", Timeout: " + String(config.timeout);
     status += ", ContentType: " + config.contentType;

@@ -99,7 +99,8 @@
         25
       ],
       "params": {
-        "channel": 1
+        "channel": 1,
+        "defaultValue": 0
       }
     },
     {
@@ -110,7 +111,10 @@
       "pins": [
         27
       ],
-      "params": {}
+      "params": {
+        "sensorType": 1,
+        "sampleInterval": 2000
+      }
     },
     {
       "id": "ds18b20_01",
@@ -120,7 +124,10 @@
       "pins": [
         28
       ],
-      "params": {}
+      "params": {
+        "sensorType": 2,
+        "sampleInterval": 1000
+      }
     },
     {
       "id": "encoder",
@@ -131,7 +138,10 @@
         34,
         35
       ],
-      "params": {}
+      "params": {
+        "resolution": 20,
+        "useInterrupt": false
+      }
     },
     {
       "id": "ethernet",
@@ -377,7 +387,11 @@
         5,
         27
       ],
-      "params": {}
+      "params": {
+        "width": 128,
+        "height": 160,
+        "interface": 1
+      }
     },
     {
       "id": "modbus_rtu",
@@ -440,7 +454,11 @@
         21,
         22
       ],
-      "params": {}
+      "params": {
+        "width": 128,
+        "height": 64,
+        "interface": 2
+      }
     },
     {
       "id": "oled_ssd1306",
@@ -451,7 +469,11 @@
         21,
         22
       ],
-      "params": {}
+      "params": {
+        "width": 128,
+        "height": 64,
+        "interface": 2
+      }
     },
     {
       "id": "oled_ssd1306_32",
@@ -462,7 +484,11 @@
         21,
         22
       ],
-      "params": {}
+      "params": {
+        "width": 128,
+        "height": 32,
+        "interface": 2
+      }
     },
     {
       "id": "oled_ssd1306_c3",
@@ -487,7 +513,10 @@
       "pins": [
         4
       ],
-      "params": {}
+      "params": {
+        "sensorType": 2,
+        "sampleInterval": 1000
+      }
     },
     {
       "id": "relay",
@@ -528,7 +557,10 @@
       "pins": [
         4
       ],
-      "params": {}
+      "params": {
+        "sensorType": 0,
+        "sampleInterval": 5000
+      }
     },
     {
       "id": "servo",
@@ -538,7 +570,13 @@
       "pins": [
         13
       ],
-      "params": {}
+      "params": {
+        "initialState": 0,
+        "pwmChannel": 0,
+        "pwmFrequency": 50,
+        "pwmResolution": 16,
+        "defaultDuty": 4915
+      }
     },
     {
       "id": "spi",
@@ -654,6 +692,61 @@
         19,
         20
       ],
+      "params": {}
+    },
+    {
+      "id": "rf_module",
+      "name": "433MHz射频模块",
+      "type": 48,
+      "enabled": false,
+      "pins": [
+        4
+      ],
+      "params": {
+        "mode": 0,
+        "pulseWidth": 350,
+        "repeat": 3,
+        "bitLength": 24,
+        "activeHigh": true
+      }
+    },
+    {
+      "id": "radar_sensor",
+      "name": "RCWL-0516雷达感应",
+      "type": 49,
+      "enabled": false,
+      "pins": [
+        4
+      ],
+      "params": {
+        "mode": 0,
+        "activeHigh": true,
+        "debounceMs": 200,
+        "holdMs": 2000
+      }
+    },
+    {
+      "id": "modbus_device",
+      "name": "Modbus子设备-继电器",
+      "type": 51,
+      "enabled": false,
+      "pins": [],
+      "params": {
+        "slaveAddress": 1,
+        "channelCount": 8,
+        "coilBase": 0,
+        "ncMode": false,
+        "controlProtocol": 0,
+        "deviceType": 0,
+        "deviceIndex": 0
+      }
+    },
+    {
+      "id": "device_event",
+      "name": "设备事件(虚拟)",
+      "type": 60,
+      "enabled": false,
+      "pins": [],
       "params": {}
     }
   ]

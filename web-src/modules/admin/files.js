@@ -25,20 +25,12 @@
             // 导出配置按钮
             const exportBtn = document.getElementById('fs-export-config-btn');
             if (exportBtn) exportBtn.onclick = function() {
-                if (!AppState.hasPermission('config.edit')) {
-                    Notification.warning('没有操作权限', '权限不足');
-                    return;
-                }
                 self.exportConfigFile();
             };
 
             // 导入配置按钮
             const importBtn = document.getElementById('fs-import-config-btn');
             if (importBtn) importBtn.onclick = function() {
-                if (!AppState.hasPermission('config.edit')) {
-                    Notification.warning('没有操作权限', '权限不足');
-                    return;
-                }
                 self.importConfigFile();
             };
         },
@@ -281,7 +273,7 @@
          * - raw=1：后端 chunked 流式返回原始字节，无 JSON 包装、设备内存占用 ~数百 B，
          *   即使 MemGuard CRITICAL 级也能下载，根本不依赖文件是否成功打开。
          * - 脱敏（清空 deviceId / clientId）在浏览器本地完成，不消耗设备内存。
-         * - 如果 raw 也失败（如权限不足），冒着降级操作使用编辑器内容。
+         * - 如果 raw 也失败，冒着降级操作使用编辑器内容。
          */
         exportConfigFile() {
             var self = this;
@@ -458,7 +450,7 @@
                     }
 
                     // 上传到设备
-                    // 注意：后端实现的写入接口是 /api/files/save（需要 config.edit 权限），
+                    // 注意：后端实现的写入接口是 /api/files/save，
                     // 保存 device.json / protocol.json 时后端会自动回填空的 deviceId / mqtt.clientId
                     apiPost('/api/files/save', { path: filePath, content: content })
                         .then(function(res) {

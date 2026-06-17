@@ -110,6 +110,9 @@
                     <a href="#" class="menu-item" data-page="device-control">
                         <span class="menu-icon">📺</span> <span id="menu-device-control" data-i18n="menu-device-control">设备大屏</span>
                     </a>
+                    <a href="#" class="menu-item" data-page="rule-script">
+                        <span class="menu-icon">📜</span> <span id="menu-rule-script" data-i18n="menu-rule-script">规则脚本</span>
+                    </a>
                     <a href="#" class="menu-item" data-page="logs">
                         <span class="menu-icon">📜</span> <span id="menu-logs" data-i18n="menu-logs">设备日志</span>
                     </a>
@@ -118,12 +121,6 @@
                     </a>
                     <a href="#" class="menu-item" data-page="users">
                         <span class="menu-icon">👥</span> <span id="menu-users" data-i18n="menu-users">用户管理</span>
-                    </a>
-                    <a href="#" class="menu-item" data-page="roles">
-                        <span class="menu-icon">🔐</span> <span id="menu-roles" data-i18n="menu-roles">角色权限</span>
-                    </a>
-                    <a href="#" class="menu-item" data-page="rule-script">
-                        <span class="menu-icon">📜</span> <span id="menu-rule-script" data-i18n="menu-rule-script">规则脚本</span>
                     </a>
                 </div>
 
@@ -212,19 +209,19 @@
                 var s = document.createElement('script');
                 s.src = window.__fastbeeResolveAssetUrl(files[i++]);
                 s.async = false;
-                s.onload = function() { setTimeout(loadNext, delayMs || 30); };
+                s.onload = function() { setTimeout(loadNext, delayMs || 80); };
                 s.onerror = function() {
                     console.error('[FastBee] chunk failed:', this.src);
                     setTimeout(loadNext, 300);
                 };
                 document.head.appendChild(s);
             }
-            setTimeout(loadNext, 60);
+            setTimeout(loadNext, 100);
         }
         function startChunkLoad() {
             if (started) return;
             started = true;
-            loadSequence(bootChunks, 30);
+            loadSequence(bootChunks, 80);
         }
         window.__fastbeeStartChunks = startChunkLoad;
         window.__fastbeeLoadZhChunks = function(cb) { if (cb) cb(true); };
@@ -330,11 +327,11 @@
         }
     })();
     </script>
-    <!-- Service Worker 注册 -->
+    <!-- Service Worker 注册：延迟到页面完全加载后5秒，避免与初始API请求叠加压床ESP32 -->
     <script>
     (function() {
         if (!('serviceWorker' in navigator)) return;
-        window.addEventListener('load', function() {
+        setTimeout(function() {
             var version = window.__fastbeeAssetVersion || 'dev';
             try {
                 var key = 'fastbeeAssetVersion';
@@ -352,7 +349,7 @@
             } catch (_) {}
             navigator.serviceWorker.register(window.__fastbeeResolveAssetUrl('/sw.js'))
                 .catch(function(err) { console.warn('[FastBee] service worker register failed:', err); });
-        }, { once: true });
+        }, 5000);
     })();
     </script>
 </body>

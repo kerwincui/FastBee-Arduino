@@ -84,7 +84,7 @@ void PeripheralRouteHandler::setupRoutes(AsyncWebServer* server) {
 }
 
 void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     PeripheralManager& pm = PeripheralManager::getInstance();
 
@@ -193,13 +193,10 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
         if (pageSize > (compact ? 50 : 20)) pageSize = compact ? 50 : 20;
     }
 
-    // degraded 模式：统一使用 effectivePageSize 作为分页步长，
-    // startIdx/endIdx/返回pageSize 三者一致，避免数据间隙（items被跳过无法显示）。
-    // 前端通过响应中的 pageSize 字段重新计算 totalPages，确保所有数据可达。
+    // 分页步长始终与前端请求保持一致，避免数据间隙（items被跳过无法显示）。
+    // 内存不足时由 compact 模式减少每项序列化字段来节省空间，而非减少条数。
+    // 如果连单条序列化都无法完成，由下方 isListMemoryCriticallyLow() 返回 503。
     int effectivePageSize = pageSize;
-    if (degraded && effectivePageSize > 5) {
-        effectivePageSize = 5;
-    }
 
     // 计算分页范围（统一使用 effectivePageSize）
     int startIdx = (page - 1) * effectivePageSize;
@@ -300,7 +297,7 @@ void PeripheralRouteHandler::handleGetPeripherals(AsyncWebServerRequest* request
 }
 
 void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     JsonDocument doc;
     doc["success"] = true;
@@ -379,7 +376,7 @@ void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* req
 }
 
 void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -476,7 +473,7 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
 }
 
 void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     PeripheralConfig config;
@@ -592,7 +589,7 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
 }
 
 void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
@@ -723,7 +720,7 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
 }
 
 void PeripheralRouteHandler::handleDeletePeripheral(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
@@ -742,7 +739,7 @@ void PeripheralRouteHandler::handleDeletePeripheral(AsyncWebServerRequest* reque
 }
 
 void PeripheralRouteHandler::handleEnablePeripheral(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
@@ -765,7 +762,7 @@ void PeripheralRouteHandler::handleEnablePeripheral(AsyncWebServerRequest* reque
 }
 
 void PeripheralRouteHandler::handleDisablePeripheral(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
@@ -784,7 +781,7 @@ void PeripheralRouteHandler::handleDisablePeripheral(AsyncWebServerRequest* requ
 }
 
 void PeripheralRouteHandler::handleGetPeripheralStatus(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -822,7 +819,7 @@ void PeripheralRouteHandler::handleGetPeripheralStatus(AsyncWebServerRequest* re
 }
 
 void PeripheralRouteHandler::handleReadPeripheral(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -929,7 +926,7 @@ void PeripheralRouteHandler::handleReadPeripheral(AsyncWebServerRequest* request
 }
 
 void PeripheralRouteHandler::handleValidatePins(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String typeStr = ctx->getParamValue(request, "type", "");
     String pinsStr = ctx->getParamValue(request, "pins", "");
@@ -1004,7 +1001,7 @@ void PeripheralRouteHandler::handleValidatePins(AsyncWebServerRequest* request) 
 }
 
 void PeripheralRouteHandler::handleWritePeripheral(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
     if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");

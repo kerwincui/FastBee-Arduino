@@ -74,6 +74,12 @@ Supported chips: `ESP32`, `ESP32-S3`, `ESP32-C3`, `ESP32-C6`.
 
 ## Quick Flash
 
+### Online Flash (Recommended for Quick Try)
+
+No tools required — open your browser and flash the firmware instantly to try the system:
+
+👉 **[Online Flash Tool](https://fastbee.cn/doc/device/esp32-flasher.html)**
+
 ### Build and Flash from Source
 
 1. Install VSCode + PlatformIO, or install PlatformIO CLI.

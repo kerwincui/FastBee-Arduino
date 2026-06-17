@@ -28,7 +28,7 @@
                             self._setProtocolFragmentError(tabId);
                         }
                         reject(new Error('Modbus RTU module load timeout'));
-                    }, 15000);
+                    }, 30000);
                     ModuleLoader.loadModule('protocol-modbus-rtu', function() {
                         clearTimeout(timer);
                         Promise.resolve(self.loadProtocolConfig(tabId, options)).then(resolve, reject);
@@ -156,6 +156,8 @@
                 this._setValue('mqtt-auth-code', mqtt.authCode || '');
                 this._loadMqttPublishTopics(mqtt.publishTopics || []);
                 this._loadMqttSubscribeTopics(mqtt.subscribeTopics || []);
+                // 重置自动重连标志，确保切换页面后首次状态检测能正确触发
+                this._mqttAutoReconnectTriggered = false;
                 // MQTT 启用时自动开始状态轮询，确保顶部状态指示器反映实际连接状态
                 if (mqtt.enabled) {
                     this._startMqttStatusPolling({ initialDelayMs: 1500 });

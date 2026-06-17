@@ -42,7 +42,7 @@ void DeviceRouteHandler::setupRoutes(AsyncWebServer* server) {
     // Device time
     server->on("/api/device/time", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->requirePermission(request, "system.view")) return;
+        if (!ctx->requireAuth(request)) return;
         JsonDocument doc;
         time_t now = TimeUtils::getTimestamp();
             
@@ -81,7 +81,7 @@ void DeviceRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/device/time/sync", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->requirePermission(request, "config.edit")) return;
+        if (!ctx->requireAuth(request)) return;
             
         // 检查网络状态
         bool internetAvailable = false;
@@ -148,7 +148,7 @@ void DeviceRouteHandler::setupRoutes(AsyncWebServer* server) {
 }
 
 void DeviceRouteHandler::handleSaveDeviceConfigJson(AsyncWebServerRequest* request, JsonVariant& json) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
     JsonObject obj = json.as<JsonObject>();
     JsonDocument doc;
     // Read existing config first
@@ -215,7 +215,7 @@ void DeviceRouteHandler::handleSaveDeviceConfigJson(AsyncWebServerRequest* reque
 }
 
 void DeviceRouteHandler::handleGetDeviceConfig(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
         File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
@@ -245,7 +245,7 @@ void DeviceRouteHandler::handleGetDeviceConfig(AsyncWebServerRequest* request) {
 }
 
 void DeviceRouteHandler::handleSetDeveloperMode(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String password = ctx->getParamValue(request, "password", "");
     if (!ctx->verifyCurrentUserPassword(request, password)) {
@@ -275,6 +275,9 @@ void DeviceRouteHandler::handleSetDeveloperMode(AsyncWebServerRequest* request) 
     serializeJsonPretty(doc, f);
     f.close();
 
+    // 开发环境模式变更后失效缓存，下次请求重新读取
+    ctx->devModeCacheValid = false;
+
     JsonDocument resp;
     resp["success"] = true;
     resp["message"] = enabled ? "Developer mode enabled" : "Developer mode disabled";
@@ -283,7 +286,7 @@ void DeviceRouteHandler::handleSetDeveloperMode(AsyncWebServerRequest* request) 
 }
 
 void DeviceRouteHandler::handleSaveDeviceConfig(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
 
     JsonDocument doc;
     doc["deviceName"] = ctx->getParamValue(request, "deviceName", "FastBee-ESP32");
@@ -311,7 +314,7 @@ void DeviceRouteHandler::handleSaveDeviceConfig(AsyncWebServerRequest* request) 
 }
 
 void DeviceRouteHandler::handleGetDeviceInfo(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     JsonDocument doc;
 

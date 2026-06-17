@@ -14,43 +14,19 @@ static const char* USERS_CONFIG_FILE = "/config/users.json";
 static const char* ADMIN_AUTH_CONFIG_FILE = "/config/auth.json";
 
 /**
- * @brief 用户角色枚举
- */
-enum class UserRole {
-    VIEWER = 0,     // 查看者 - 只读权限
-    USER = 1,       // 用户 - 基本读写权限
-    ADMIN = 2       // 管理员 - 所有权限
-};
-
-/**
  * @brief 用户结构体
  */
 struct User {
     String username;
     String passwordHash;
     String salt;
-    UserRole role;                      ///< 兼容旧接口，等同于 roles[0]
-    std::vector<String> roles;          ///< 多角色列表（角色 ID，对应 RoleManager）
+    String description;         ///< 用户描述（可选，最大64字符）
     bool enabled;
     unsigned long createTime;
     unsigned long lastLogin;
     unsigned long lastModified;
 
-    // 扩展元数据
-    String email;       ///< 邮箱（可选）
-    String remark;      ///< 备注
-    String createBy;    ///< 创建人（username）
-
-    User() : role(UserRole::VIEWER), enabled(true),
-             createTime(0), lastLogin(0), lastModified(0) {}
-
-    /** 检查是否拥有指定角色 */
-    bool hasRole(const String& roleId) const {
-        for (const String& r : roles) {
-            if (r == roleId) return true;
-        }
-        return false;
-    }
+    User() : enabled(true), createTime(0), lastLogin(0), lastModified(0) {}
 };
 
 /**
@@ -58,7 +34,6 @@ struct User {
  */
 struct UserStats {
     String username;
-    UserRole role;
     bool isOnline;
     bool isLocked;
     uint8_t loginAttempts;
@@ -70,6 +45,7 @@ struct UserStats {
 /**
  * @brief 用户管理器类
  * 负责用户数据的增删改查和存储管理
+ * 单管理员模式：仅支持一个 admin 用户的密码认证
  */
 class UserManager : public IUserManager {
 private:
@@ -79,7 +55,7 @@ private:
     // 登录尝试记录
     std::map<String, uint8_t> loginAttempts;
     
-    // 配置（包含安全配置，统一存储到 users.json）
+    // 配置（包含安全配置，统一存储到 auth.json）
     struct UserConfig {
         // 用户安全配置
         uint8_t maxLoginAttempts = 5;
@@ -121,23 +97,13 @@ public:
      */
     bool initialize();
     
-    // ============ 用户管理 ============
+    // ============ IUserManager 接口实现 ============
     
-    /**
-     * @brief 添加用户
-     * @param username 用户名
-     * @param password 密码
-     * @param role 角色
-     * @return 是否成功
-     */
-
-    
-    // IUserManager 接口实现
-    bool addUser(const String& username, const String& password, const String& role) override;
+    bool addUser(const String& username, const String& password) override;
     bool deleteUser(const String& username) override;
     bool updatePassword(const String& username, const String& newPassword) override;
     bool validateUser(const String& username, const String& password) override;
-    String getUserRole(const String& username) override;
+
     bool userExists(const String& username) override;
     String getAllUsers() override;
     User* getUser(const String& username) override;
@@ -147,58 +113,8 @@ public:
     void unlockAccount(const String& username) override;
     bool changePassword(const String& username, const String& oldPassword, const String& newPassword) override;
     bool resetPassword(const String& username, const String& newPassword) override;
-    bool updateUser(const String& username, const String& newPassword, const String& newRole, bool enabled) override;
+    bool updateUser(const String& username, const String& newPassword, bool enabled) override;
     size_t getUserCount() override;
-    
-    // ============ 多角色管理 ============
-
-    /**
-     * @brief 为用户追加角色（不重复）
-     * @param username 用户名
-     * @param roleId   角色 ID
-     * @return 是否成功
-     */
-    bool assignRole(const String& username, const String& roleId);
-
-    /**
-     * @brief 从用户移除角色
-     * @param username 用户名
-     * @param roleId   角色 ID
-     * @return 是否成功
-     */
-    bool removeRole(const String& username, const String& roleId);
-
-    /**
-     * @brief 替换用户的完整角色列表
-     * @param username 用户名
-     * @param roleIds  新角色列表
-     * @return 是否成功
-     */
-    bool setRoles(const String& username, const std::vector<String>& roleIds);
-
-    /**
-     * @brief 获取用户角色列表
-     * @param username 用户名
-     * @return 角色 ID 列表
-     */
-    std::vector<String> getUserRoles(const String& username) const;
-
-    /**
-     * @brief 检查用户是否拥有指定角色
-     * @param username 用户名
-     * @param roleId   角色 ID
-     * @return 是否拥有
-     */
-    bool hasRole(const String& username, const String& roleId) const;
-
-    /**
-     * @brief 更新用户元数据（email/remark）
-     * @param username 用户名
-     * @param email    新邮箱（空则不修改）
-     * @param remark   新备注（空则不修改）
-     * @return 是否成功
-     */
-    bool updateUserMeta(const String& username, const String& email, const String& remark);
 
     // ============ 用户查询 ============
 
@@ -214,6 +130,14 @@ public:
      * @return 是否启用
      */
     bool isUserEnabled(const String& username);
+
+    /**
+     * @brief 设置用户描述
+     * @param username 用户名
+     * @param description 描述（最大64字符）
+     * @return 是否成功
+     */
+    bool setUserDescription(const String& username, const String& description);
     
     // ============ 登录保护 ============
     
@@ -238,8 +162,6 @@ public:
      */
     std::vector<UserStats> getAllUserStats();
     
-
-    
     /**
      * @brief 更新用户最后登录时间
      * @param username 用户名
@@ -248,120 +170,35 @@ public:
     
     // ============ 持久化 ============
     
-    /**
-     * @brief 保存用户数据
-     * @return 是否成功
-     */
     bool saveUsersToStorage();
-    
-    /**
-     * @brief 加载用户数据
-     * @return 是否成功
-     */
     bool loadUsersFromStorage();
-    
-    /**
-     * @brief 保存配置
-     * @return 是否成功
-     */
     bool saveConfig();
-    
-    /**
-     * @brief 加载配置
-     * @return 是否成功
-     */
     bool loadConfig();
     
     // ============ 安全配置访问（供 AuthManager 使用） ============
     
-    /**
-     * @brief 获取会话超时时间（毫秒）
-     */
     uint32_t getSessionTimeout() const { return config.sessionTimeout; }
-    
-    /**
-     * @brief 获取会话清理间隔（毫秒）
-     */
     uint32_t getSessionCleanupInterval() const { return config.sessionCleanupInterval; }
-    
-    /**
-     * @brief 是否启用会话持久化
-     */
     bool isSessionPersistenceEnabled() const { return config.enableSessionPersistence; }
-    
-    /**
-     * @brief 获取 Cookie 名称
-     */
     const String& getCookieName() const { return config.cookieName; }
-    
-    /**
-     * @brief 获取 Cookie 最大存活时间（秒）
-     */
     uint32_t getCookieMaxAge() const { return config.cookieMaxAge; }
-    
-    /**
-     * @brief 是否启用 HttpOnly Cookie
-     */
     bool isCookieHttpOnly() const { return config.cookieHttpOnly; }
-    
-    /**
-     * @brief 是否启用 Secure Cookie
-     */
     bool isCookieSecure() const { return config.cookieSecure; }
-    
-    /**
-     * @brief 获取最大登录尝试次数
-     */
     uint8_t getMaxLoginAttempts() const { return config.maxLoginAttempts; }
-    
-    /**
-     * @brief 获取登录锁定时间（毫秒）
-     */
     uint32_t getLoginLockoutTime() const { return config.loginLockoutTime; }
-
-    /**
-     * @brief Whether the same user may keep multiple active sessions.
-     */
     bool allowsMultipleSessions() const { return config.allowMultipleSessions; }
     
-    /**
-     * @brief 更新安全配置
-     */
     bool updateSecurityConfig(uint32_t sessionTimeout, uint32_t sessionCleanupInterval,
                               bool enableSessionPersistence, const String& cookieName,
                               uint32_t cookieMaxAge, bool cookieHttpOnly, bool cookieSecure);
     
     // ============ 工具方法 ============
     
-    /**
-     * @brief 角色转字符串
-     * @param role 角色
-     * @return 字符串
-     */
-    static String roleToString(UserRole role);
-    
-    /**
-     * @brief 字符串转角色
-     * @param roleStr 角色字符串
-     * @return 角色
-     */
-    static UserRole stringToRole(const String& roleStr);
-    
-    /**
-     * @brief 生成随机盐值
-     * @return 盐值字符串
-     */
     static String generateRandomSalt();
-    
-    /**
-     * @brief 验证密码强度
-     * @param password 密码
-     * @param minLength 最小长度
-     * @param requireComplexity 需要复杂度
-     * @return 是否有效
-     */
     static bool validatePassword(const String& password, uint8_t minLength = 6, 
                                 bool requireComplexity = false);
+    
+
 };
 
 #endif

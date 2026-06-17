@@ -14,7 +14,7 @@ constexpr const char* LOG_DIR = "/logs";
 constexpr const char* DEFAULT_LOG_FILE = "system.log";
 
 bool hasLogPermission(WebHandlerContext* ctx, AsyncWebServerRequest* request) {
-    return ctx && ctx->checkPermission(request, "system.view");
+    return ctx && ctx->requiresAuth(request);
 }
 
 void sendLowMemoryLogPlaceholder(AsyncWebServerRequest* request) {
@@ -60,7 +60,7 @@ void LogRouteHandler::setupRoutes(AsyncWebServer* server) {
 }
 
 void LogRouteHandler::handleInfo(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     auto doc = FastBee::makeJsonDocument();
     doc["success"] = true;
@@ -84,7 +84,7 @@ void LogRouteHandler::handleInfo(AsyncWebServerRequest* request) {
 }
 
 void LogRouteHandler::handleList(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     auto doc = FastBee::makeJsonDocument();
     doc["success"] = true;
@@ -114,7 +114,7 @@ void LogRouteHandler::handleList(AsyncWebServerRequest* request) {
 }
 
 void LogRouteHandler::handleRead(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     const bool psramBacked = HandlerUtils::psramCanServeJson(8192);
     auto* fw = FastBeeFramework::getInstance();
@@ -209,7 +209,7 @@ void LogRouteHandler::handleRead(AsyncWebServerRequest* request) {
 }
 
 void LogRouteHandler::handleClear(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String name = sanitizeLogFileName(ctx, request);
     if (name.isEmpty()) name = DEFAULT_LOG_FILE;

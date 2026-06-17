@@ -111,7 +111,7 @@
 
     const REQUEST_PROFILE_MAP = Object.freeze({
         '/api/auth/session': { tier: 'cheap', cost: 1, priority: 3, timeoutMs: 8000 },
-        '/api/batch': { tier: 'heavy', cost: 3, priority: 2, timeoutMs: 15000 },
+        '/api/batch': { tier: 'heavy', cost: 2, priority: 2, timeoutMs: 15000 },
         '/api/system/status': { tier: 'cheap', cost: 1, batchSafe: true, cacheTtl: 5000, priority: 3, timeoutMs: 8000 },
         '/api/system/info': { tier: 'cheap', cost: 1, batchSafe: true, cacheTtl: 30000, priority: 3, timeoutMs: 10000 },
         '/api/health': { tier: 'cheap', cost: 1, batchSafe: true, cacheTtl: 5000, priority: 2, timeoutMs: 8000 },
@@ -274,7 +274,7 @@
                 }
                 break;
             case 403:
-                Notification.warning('权限不足，无法执行此操作', '权限拒绝');
+                Notification.warning('请求被拒绝', '访问受限');
                 break;
             case 404:
                 Notification.warning('请求的资源不存在', '未找到');
@@ -330,7 +330,7 @@
         },
 
         MAX_CONCURRENT: 2,
-        MAX_INFLIGHT_WEIGHT: 3,
+        MAX_INFLIGHT_WEIGHT: 2,
         MAX_HEAVY_INFLIGHT: 1,
         BATCH_WINDOW_MS: 25,
 
@@ -433,8 +433,12 @@
             var limits = this._getEffectiveLimits();
             if (limits.blockSilent && entry.priority <= 0) return false;
             if (this._inflight >= limits.maxConcurrent) return false;
-            if ((this._inflightWeight + entry.cost) > limits.maxWeight) return false;
             if (entry.profile && entry.profile.tier === 'heavy' && this._heavyInflight >= limits.maxHeavy) return false;
+            // Prevent starvation: always allow at least one request to start
+            // when nothing is in-flight, regardless of its cost.
+            // This avoids deadlock when entry.cost > maxWeight (e.g. batch cost=2, limit=2).
+            if (this._inflightWeight === 0) return true;
+            if ((this._inflightWeight + entry.cost) > limits.maxWeight) return false;
             return true;
         },
 
@@ -974,7 +978,7 @@
     };
 
     window.apiMqttTest = function (data) {
-        return request('POST', '/api/mqtt/test', {
+        return Governor.enqueue('POST', '/api/mqtt/test', {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: toUrlEncoded(data || {}),
             silent: true

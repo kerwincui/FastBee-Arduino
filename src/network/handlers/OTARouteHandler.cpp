@@ -44,13 +44,13 @@ void OTARouteHandler::setupRoutes(AsyncWebServer* server) {
 }
 
 void OTARouteHandler::handleOtaUpdate(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "ota.update")) return;
+    if (!ctx->requireAuth(request)) return;
 
     ctx->sendSuccess(request, "OTA update started");
 }
 
 void OTARouteHandler::handleOtaStatus(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     JsonDocument doc;
 
@@ -66,7 +66,7 @@ void OTARouteHandler::handleOtaStatus(AsyncWebServerRequest* request) {
 }
 
 void OTARouteHandler::handleOtaUrl(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "ota.update")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String url = ctx->getParamValue(request, "url", "");
 
@@ -105,7 +105,7 @@ void OTARouteHandler::handleOtaUrl(AsyncWebServerRequest* request) {
 
 void OTARouteHandler::handleOtaUpload(AsyncWebServerRequest* request, const String& filename,
                                        size_t index, uint8_t* data, size_t len, bool final) {
-    if (!ctx->checkPermission(request, "ota.update")) {
+    if (!ctx->requiresAuth(request)) {
         return;
     }
 

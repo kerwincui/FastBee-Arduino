@@ -286,7 +286,7 @@ static void test_c3_i2c_pins_invalid_negative() {
 
 static void test_oled_exec_action_type_exists() {
     // 验证 ActionType 包含 OLED_DISPLAY（镜像自定义显示动作）
-    // ActionType::OLED_CUSTOM_DISPLAY 在真实代码中的值
+    // ActionType::OLED_DISPLAY 在真实代码中的值
     // 这里通过 MockPeriphExecManager 验证规则可添加
     MockPeriphExecManager& mgr = MockPeriphExecManager::getInstance();
     mgr.initialize();
@@ -296,7 +296,7 @@ static void test_oled_exec_action_type_exists() {
     rule.name = "OLED Show Temp";
     rule.enabled = true;
     rule.triggerType = TriggerType::TIMER_SCHEDULE;
-    rule.actionType = ActionType::OLED_CUSTOM;  // OLED 自定义显示
+    rule.actionType = ActionType::OLED_DISPLAY;  // OLED 自定义显示
     rule.actionValue = "# Env\nTemp:${dht_01.temperature}";
     rule.targetPeriphId = "oled_display";
     
@@ -304,7 +304,7 @@ static void test_oled_exec_action_type_exists() {
     
     PeriphExecRule* fetched = mgr.getRule("oled_display_rule");
     TEST_ASSERT_NOT_NULL(fetched);
-    TEST_ASSERT_EQUAL(ActionType::OLED_CUSTOM, fetched->actionType);
+    TEST_ASSERT_EQUAL(ActionType::OLED_DISPLAY, fetched->actionType);
     TEST_ASSERT_TRUE(fetched->actionValue.indexOf("temperature") >= 0);
 }
 

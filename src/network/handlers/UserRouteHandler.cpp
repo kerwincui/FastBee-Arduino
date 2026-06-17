@@ -25,7 +25,7 @@ void UserRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/users/unlock-account", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->requirePermission(request, "user.edit")) return;
+        if (!ctx->requireAuth(request)) return;
         String username = ctx->getParamValue(request, "username", "");
         if (username.isEmpty()) {
             ctx->sendBadRequest(request, "Username is required");
@@ -70,8 +70,8 @@ void UserRouteHandler::setupRoutes(AsyncWebServer* server) {
         }
         auto doc = FastBee::makeJsonDocument();
         doc["username"] = user->username;
-        doc["role"] = UserManager::roleToString(user->role);
         doc["enabled"] = user->enabled;
+        doc["description"] = user->description;
         doc["createTime"] = user->createTime;
         doc["lastLogin"] = user->lastLogin;
         doc["lastModified"] = user->lastModified;
@@ -87,7 +87,7 @@ void UserRouteHandler::setupRoutes(AsyncWebServer* server) {
 }
 
 void UserRouteHandler::handleGetUsers(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "user.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     if (HandlerUtils::rejectHeavyRequestOnPressure(request, "User list", MemoryGuardLevel::SEVERE, 8)) {
         return;
@@ -135,8 +135,8 @@ void UserRouteHandler::handleGetUsers(AsyncWebServerRequest* request) {
 
         JsonObject newUserObj = usersArray.add<JsonObject>();
         newUserObj["username"] = username;
-        newUserObj["role"] = userObj["role"];
         newUserObj["enabled"] = userObj["enabled"];
+        newUserObj["description"] = userObj["description"] | "";
         newUserObj["createTime"] = userObj["createTime"];
         newUserObj["lastLogin"] = userObj["lastLogin"];
         newUserObj["lastModified"] = userObj["lastModified"];
@@ -159,11 +159,10 @@ void UserRouteHandler::handleGetUsers(AsyncWebServerRequest* request) {
 }
 
 void UserRouteHandler::handleAddUser(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "user.create")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String username = ctx->getParamValue(request, "username", "");
     String password = ctx->getParamValue(request, "password", "");
-    String roleStr  = ctx->getParamValue(request, "role", "user");
 
     if (username.isEmpty()) {
         ctx->sendBadRequest(request, "Username is required");
@@ -182,14 +181,17 @@ void UserRouteHandler::handleAddUser(AsyncWebServerRequest* request) {
         return;
     }
 
-    UserRole role = UserManager::stringToRole(roleStr);
-
     if (!ctx->userManager) {
         ctx->sendError(request, 500, "User service unavailable");
         return;
     }
 
-    if (ctx->userManager->addUser(username, password, UserManager::roleToString(role))) {
+    if (ctx->userManager->addUser(username, password)) {
+        // 设置描述字段（可选）
+        String description = ctx->getParamValue(request, "description", "");
+        if (!description.isEmpty()) {
+            ctx->userManager->setUserDescription(username, description);
+        }
         ctx->sendSuccess(request, "User added successfully");
     } else {
         ctx->sendError(request, 400, "Failed to add user (username may already exist)");
@@ -197,7 +199,7 @@ void UserRouteHandler::handleAddUser(AsyncWebServerRequest* request) {
 }
 
 void UserRouteHandler::handleUpdateUser(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "user.edit")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String username = ctx->getParamValue(request, "username", "");
     if (username.isEmpty()) {
@@ -214,7 +216,6 @@ void UserRouteHandler::handleUpdateUser(AsyncWebServerRequest* request) {
     }
 
     String newPassword = ctx->getParamValue(request, "password", "");
-    String newRole = ctx->getParamValue(request, "role", "");
     bool enabled = ctx->getParamBool(request, "enabled", true);
 
     if (!ctx->userManager) {
@@ -228,7 +229,13 @@ void UserRouteHandler::handleUpdateUser(AsyncWebServerRequest* request) {
         return;
     }
 
-    bool success = ctx->userManager->updateUser(username, newPassword, newRole, enabled);
+    bool success = ctx->userManager->updateUser(username, newPassword, enabled);
+
+    // 处理描述字段
+    String description = ctx->getParamValue(request, "description", "");
+    if (request->hasParam("description") || request->hasParam("description", true)) {
+        ctx->userManager->setUserDescription(username, description);
+    }
 
     if (success) {
         ctx->sendSuccess(request, "User updated successfully");
@@ -238,7 +245,7 @@ void UserRouteHandler::handleUpdateUser(AsyncWebServerRequest* request) {
 }
 
 void UserRouteHandler::handleDeleteUser(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "user.delete")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String path = request->url();
     int lastSlash = path.lastIndexOf('/');
@@ -277,7 +284,7 @@ void UserRouteHandler::handleDeleteUser(AsyncWebServerRequest* request) {
 
 
 void UserRouteHandler::handleGetOnlineUsers(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "user.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Online user list", MemoryGuardLevel::SEVERE, 8)) {
         return;
@@ -297,7 +304,6 @@ void UserRouteHandler::handleGetOnlineUsers(AsyncWebServerRequest* request) {
     for (const UserSession& session : sessions) {
         JsonObject userObj = onlineUsersArray.add<JsonObject>();
         userObj["username"] = session.username;
-        userObj["role"] = UserManager::roleToString(session.role);
         userObj["loginTime"] = session.loginTime;
         userObj["lastAccessTime"] = session.lastAccessTime;
         userObj["ipAddress"] = session.ipAddress;
@@ -312,7 +318,7 @@ void UserRouteHandler::handleGetOnlineUsers(AsyncWebServerRequest* request) {
 }
 
 void UserRouteHandler::handleResetPassword(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "user.edit")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String username = ctx->getParamValue(request, "username", "");
     String newPassword = ctx->getParamValue(request, "newPassword", "");

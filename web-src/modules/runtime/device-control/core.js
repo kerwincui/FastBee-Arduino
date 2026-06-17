@@ -517,6 +517,8 @@
             this._dcInitCancelled = false;
             var devices = this._modbusDevices || [];
             try {
+                // 等待页面主请求完成后再开始Modbus轮询，让 Governor 缓冲区排空
+                await new Promise(function(resolve) { setTimeout(resolve, 1500); });
                 for (var i = 0; i < devices.length; i++) {
                     if (this.currentPage !== 'device-control') break;
                     if (this._dcInitCancelled) break;
@@ -525,7 +527,8 @@
                     else if (dt === 'pwm') await this._dcRefreshPwmStatus(i);
                     else if (dt === 'pid') await this._dcRefreshPidStatus(i);
                     else if (dt === 'motor') await this._dcRefreshMotorStatus(i);
-                    if (i < devices.length - 1) await new Promise(function(resolve) { setTimeout(resolve, 150); });
+                    // 每次请求间留足够间隔，避免触发 Request Governor overload
+                    if (i < devices.length - 1) await new Promise(function(resolve) { setTimeout(resolve, 600); });
                 }
             } finally {
                 this._dcModbusInitRunning = false;

@@ -12,7 +12,7 @@ void StaticRouteHandler::setupRoutes(AsyncWebServer* server) {
     const char* spaRoutes[] = {
         "/login", "/dashboard", "/users",
         "/device", "/network", "/data", "/logs",
-        "/roles", "/protocol", "/peripheral", "/gpio"
+        "/protocol", "/peripheral", "/gpio"
     };
     for (const char* route : spaRoutes) {
         server->on(route, HTTP_GET,

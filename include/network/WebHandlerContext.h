@@ -14,11 +14,11 @@
 // 前向声明
 class AuthManager;
 class UserManager;
-class RoleManager;
 class FBNetworkManager;
 class OTAManager;
 class ProtocolManager;
 class SSERouteHandler;
+class WebConfigManager;
 
 // JSON 文档大小限制
 #define JSON_DOC_SMALL  512
@@ -38,7 +38,6 @@ public:
     AsyncWebServer* server;
     IAuthManager*   authManager;
     IUserManager*   userManager;
-    RoleManager*    roleManager;
     FBNetworkManager* networkManager;
     OTAManager*     otaManager;
     ProtocolManager* protocolManager;
@@ -52,6 +51,14 @@ public:
 
     bool   webForegroundModeActive;
     unsigned long webForegroundUntilMs;
+
+    // 开发环境模式缓存（减少每次请求的文件IO）
+    bool   devModeCacheValid;
+    bool   devModeCacheValue;
+    unsigned long devModeCacheExpiryMs;
+
+    // WebConfigManager 反向指针（用于请求突增跟踪）
+    WebConfigManager* webConfigManager;
 
     WebHandlerContext(AsyncWebServer* srv, IAuthManager* authMgr, IUserManager* userMgr);
     ~WebHandlerContext() = default;
@@ -73,9 +80,7 @@ public:
     AuthResult authenticateRequest(AsyncWebServerRequest* request);
     String     getClientIP(AsyncWebServerRequest* request);
     String     getUserAgent(AsyncWebServerRequest* request);
-    bool       checkPermission(AsyncWebServerRequest* request, const String& permission);
-    bool       requirePermission(AsyncWebServerRequest* request, const String& permission);
-    bool       requireAnyPermission(AsyncWebServerRequest* request, const String& perm1, const String& perm2);
+    bool       requireAuth(AsyncWebServerRequest* request);
     bool       isDeveloperModeEnabled();
     bool       verifyCurrentUserPassword(AsyncWebServerRequest* request, const String& password);
     bool       requireDeveloperMode(AsyncWebServerRequest* request);

@@ -26,7 +26,7 @@
                             self._setProtocolFragmentError(tabId);
                         }
                         reject(new Error('Protocol module load timeout'));
-                    }, 15000);
+                    }, 30000);
                     ModuleLoader.loadModule(sequence, function() {
                         clearTimeout(timer);
                         if (self.loadProtocolConfig === liteLoader) {
@@ -128,6 +128,45 @@
             this._setValue('mqtt-auth-code', mqtt.authCode || '');
             this._loadMqttPublishTopics(mqtt.publishTopics || []);
             this._loadMqttSubscribeTopics(mqtt.subscribeTopics || []);
+            // 重置自动重连标志，确保切换页面后首次状态检测能正确触发
+            this._mqttAutoReconnectTriggered = false;
+            // MQTT 启用时做有限次状态轮询（不用SSE持久连接，避免耗尽ESP32 socket池）
+            // 使用递归setTimeout而非定时器，轮询10次后自动停止
+            // 覆盖窗口：3s起始 + 9*5s = 48s，充分覆盖MQTT 30-40s连接时间
+            if (mqtt.enabled !== false && typeof this._loadMqttStatus === 'function') {
+                var self = this;
+                self._mqttLitePollCount = 0;
+                self._mqttConnectingStartTime = 0; // 重置超时计时，防止旧值干扰
+                var mqttMaxPolls = 10;
+                function mqttPollOnce() {
+                    // 检查是否已被取消（页面离开时 _stopMqttStatusPolling 会清除标志）
+                    if (self._mqttLitePollStopped) return;
+                    // 若前次轮询已检测到连接成功，立即停止后续轮询
+                    var badge = document.getElementById('mqtt-status-badge');
+                    if (badge && badge.classList.contains('mqtt-status-online')) {
+                        return;
+                    }
+                    self._loadMqttStatus();
+                    self._mqttLitePollCount++;
+                    if (self._mqttLitePollCount < mqttMaxPolls && !self._mqttLitePollStopped) {
+                        self._mqttLitePollTimer = setTimeout(mqttPollOnce, 5000);
+                    } else if (self._mqttLitePollCount >= mqttMaxPolls) {
+                        // 所有轮询耗尽，等待最后一次API响应后做最终判断
+                        self._mqttLitePollTimer = setTimeout(function() {
+                            if (self._mqttLitePollStopped) return;
+                            var finalBadge = document.getElementById('mqtt-status-badge');
+                            if (finalBadge && !finalBadge.classList.contains('mqtt-status-online')) {
+                                if (finalBadge.classList.contains('mqtt-status-connecting')) {
+                                    finalBadge.className = 'mqtt-status-badge mqtt-status-offline';
+                                    finalBadge.textContent = '连接超时';
+                                }
+                            }
+                        }, 3000);
+                    }
+                }
+                self._mqttLitePollStopped = false;
+                self._mqttLitePollTimer = setTimeout(mqttPollOnce, 3000);
+            }
         },
 
         saveProtocolConfig: function(formId) {

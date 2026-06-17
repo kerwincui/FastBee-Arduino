@@ -2,7 +2,8 @@
  * @file MockPeripheral.h
  * @brief 外设管理模拟对象
  * 
- * 提供外设管理功能的模拟实现，支持外设CRUD、GPIO控制、执行规则等
+ * 提供外设管理功能的模拟实现，支持外设CRUD、GPIO控制、执行规则等。
+ * 枚举值与生产代码 PeripheralTypes.h / PeripheralExecution.h 保持一致。
  */
 
 #ifndef MOCK_PERIPHERAL_H
@@ -13,19 +14,49 @@
 #include <map>
 #include <functional>
 
-// 外设类型枚举
+// 外设类型枚举 — 与生产代码 PeripheralTypes.h 保持一致
 enum class PeripheralType {
-    GPIO_DIGITAL_INPUT = 0,
-    GPIO_DIGITAL_OUTPUT = 1,
-    GPIO_ANALOG_INPUT = 2,
-    GPIO_PWM_OUTPUT = 3,
-    GPIO_DAC_OUTPUT = 4,
-    I2C_DEVICE = 10,
-    SPI_DEVICE = 11,
-    UART_DEVICE = 12,
-    ONE_WIRE = 20,
-    DHT_SENSOR = 21,
-    DS18B20_SENSOR = 22,
+    UNCONFIGURED = 0,
+    // 通信接口 (1-10)
+    UART = 1,
+    I2C = 2,
+    SPI = 3,
+    CAN = 4,
+    USB = 5,
+    // GPIO接口 (11-25)
+    GPIO_DIGITAL_INPUT = 11,
+    GPIO_DIGITAL_OUTPUT = 12,
+    GPIO_DIGITAL_INPUT_PULLUP = 13,
+    GPIO_DIGITAL_INPUT_PULLDOWN = 14,
+    GPIO_ANALOG_INPUT = 15,
+    GPIO_ANALOG_OUTPUT = 16,
+    GPIO_PWM_OUTPUT = 17,
+    GPIO_INTERRUPT_RISING = 18,
+    GPIO_INTERRUPT_FALLING = 19,
+    GPIO_INTERRUPT_CHANGE = 20,
+    GPIO_TOUCH = 21,
+    // 模拟信号 (26-30)
+    ADC = 26,
+    DAC = 27,
+    // 专用外设
+    LCD = 36,
+    SENSOR = 38,
+    PWM_SERVO = 41,
+    STEPPER_MOTOR = 42,
+    ENCODER = 43,
+    ONE_WIRE = 44,
+    NEO_PIXEL = 45,
+    SEVEN_SEGMENT_TM1637 = 47,
+    RF_MODULE = 48,
+    RADAR_SENSOR = 49,
+    // Modbus
+    MODBUS_DEVICE = 51,
+    // 虚拟
+    DEVICE_EVENT = 60,
+
+    // 保留旧名兼容测试
+    DHT_SENSOR = 38,
+    DS18B20_SENSOR = 44,
     CUSTOM = 99
 };
 
@@ -38,27 +69,41 @@ enum class GPIOState {
     STATE_UNKNOWN = -1
 };
 
-// 触发类型枚举
+// 触发类型枚举 — 与生产代码 ExecTriggerType 保持一致
 enum class TriggerType {
-    PLATFORM_MQTT = 0,      // 平台触发（MQTT）
-    DEVICE_LOCAL = 1,       // 设备触发
-    TIMER_SCHEDULE = 2,     // 定时触发
-    CONDITION_TRIGGER = 3   // 条件触发
+    PLATFORM_MQTT = 0,       // 平台触发（MQTT）
+    TIMER_SCHEDULE = 1,      // 定时触发
+    EVENT_TRIGGER = 4,       // 事件触发
+    POLL_TRIGGER = 5         // 轮询触发
 };
 
-// 动作类型枚举
+// 动作类型枚举 — 与生产代码 ExecActionType 保持一致
 enum class ActionType {
-    SET_HIGH = 0,           // 设置高电平
-    SET_LOW = 1,            // 设置低电平
-    SET_PWM = 2,            // 设置PWM
-    SET_DAC = 3,            // 设置DAC
-    TOGGLE = 4,             // 翻转
-    PULSE = 5,              // 脉冲
-    SCRIPT_EXECUTE = 10,    // 执行脚本
-    OLED_CUSTOM = 27        // OLED 自定义多行显示
+    SET_HIGH = 0,              // 设置高电平
+    SET_LOW = 1,               // 设置低电平
+    BLINK = 2,                 // 闪烁
+    BREATHE = 3,               // 呼吸灯
+    SET_PWM = 4,               // 设置PWM占空比
+    SET_DAC = 5,               // 设置DAC值
+    SYS_RESTART = 6,           // 系统重启
+    SYS_FACTORY_RESET = 7,     // 恢复出厂设置
+    SYS_NTP_SYNC = 8,          // NTP时间同步
+    SYS_OTA = 9,               // OTA升级
+    CALL_PERIPHERAL = 10,      // 调用其他外设
+    HIGH_INVERTED = 13,        // 设置高电平(反转)
+    LOW_INVERTED = 14,         // 设置低电平(反转)
+    SCRIPT = 15,               // 命令序列脚本
+    SENSOR_READ = 19,          // 传感器数据读取
+    TRIGGER_EVENT = 21,        // 触发设备事件
+    ENABLE_EXEC_RULE = 22,     // 启用执行规则
+    DISABLE_EXEC_RULE = 23,    // 禁用执行规则
+    DISPLAY_NUMBER = 24,       // 数码管显示数字
+    DISPLAY_TEXT = 25,         // 数码管显示文本
+    DISPLAY_CLEAR = 26,        // 数码管清屏
+    OLED_DISPLAY = 27          // OLED自定义多行显示
 };
 
-// 外设配置结构
+// 外设配置结构（简化版，测试用）
 struct PeripheralConfig {
     String id;
     String name;
@@ -71,7 +116,7 @@ struct PeripheralConfig {
                          pin(-1), enabled(true) {}
 };
 
-// 执行规则结构
+// 执行规则结构（简化版，测试用）
 struct PeriphExecRule {
     String id;
     String name;
@@ -120,21 +165,23 @@ public:
         if (_type == PeripheralType::GPIO_PWM_OUTPUT) {
             _pwmValue = constrain(value, 0, 255);
             _state = GPIOState::STATE_PWM;
-        } else if (_type == PeripheralType::GPIO_DAC_OUTPUT) {
+        } else if (_type == PeripheralType::DAC) {
             _analogValue = constrain(value, 0, 255);
             _state = GPIOState::STATE_ANALOG;
         }
     }
 
     int analogRead() {
-        if (_type == PeripheralType::GPIO_ANALOG_INPUT) {
+        if (_type == PeripheralType::GPIO_ANALOG_INPUT ||
+            _type == PeripheralType::ADC) {
             return _analogValue;
         }
         return 0;
     }
 
     void setPWM(int dutyCycle, int frequency = 1000) {
-        if (_type == PeripheralType::GPIO_PWM_OUTPUT) {
+        if (_type == PeripheralType::GPIO_PWM_OUTPUT ||
+            _type == PeripheralType::PWM_SERVO) {
             _pwmValue = constrain(dutyCycle, 0, 255);
             _pwmFrequency = frequency;
             _state = GPIOState::STATE_PWM;
@@ -156,7 +203,8 @@ public:
     }
 
     void simulateAnalogInput(int value) {
-        if (_type == PeripheralType::GPIO_ANALOG_INPUT) {
+        if (_type == PeripheralType::GPIO_ANALOG_INPUT ||
+            _type == PeripheralType::ADC) {
             _analogValue = constrain(value, 0, 1023);
         }
     }
@@ -365,7 +413,7 @@ public:
             case ActionType::SET_LOW:
                 pm.writePin(rule.targetPeriphId, LOW);
                 break;
-            case ActionType::TOGGLE: {
+            case ActionType::BLINK: {
                 int current = pm.readPin(rule.targetPeriphId);
                 pm.writePin(rule.targetPeriphId, current == HIGH ? LOW : HIGH);
                 break;
@@ -408,19 +456,14 @@ public:
     bool evaluateCondition(const String& value, const String& condition) {
         if (condition.isEmpty()) return true;
         
-        // 简化实现：支持基本的比较操作
-        // 格式: "operator,threshold" 例如: ">,20" 或 "==,ON"
-        
         int commaIndex = condition.indexOf(',');
         if (commaIndex < 0) {
-            // 简单相等比较
             return value == condition;
         }
         
         String op = condition.substring(0, commaIndex);
         String threshold = condition.substring(commaIndex + 1);
         
-        // 数值比较
         float val = value.toFloat();
         float thresh = threshold.toFloat();
         
@@ -454,7 +497,6 @@ private:
 // 脚本引擎模拟
 class MockScriptEngine {
 public:
-    // 脚本解析
     static std::vector<String> parse(const String& script) {
         std::vector<String> commands;
         
@@ -471,7 +513,6 @@ public:
             end = script.indexOf('\n', start);
         }
         
-        // 处理最后一行
         if (start < script.length()) {
             String cmd = script.substring(start);
             cmd.trim();
@@ -483,12 +524,8 @@ public:
         return commands;
     }
 
-    // 命令执行
     static bool executeCommand(const String& command, 
                                MockPeripheralManager& pm) {
-        // 解析命令
-        // 格式: "COMMAND param1 param2 ..."
-        
         std::vector<String> parts = splitCommand(command);
         if (parts.empty()) return false;
         
@@ -496,25 +533,21 @@ public:
         cmd.toUpperCase();
         
         if (cmd == "GPIO" && parts.size() >= 3) {
-            // GPIO <pin> <HIGH/LOW>
             String periphId = parts[1];
             int value = (parts[2] == "HIGH" || parts[2] == "1") ? HIGH : LOW;
             return pm.writePin(periphId, value);
         }
         else if (cmd == "PWM" && parts.size() >= 3) {
-            // PWM <pin> <duty>
             String periphId = parts[1];
             int duty = parts[2].toInt();
             return pm.writePWM(periphId, duty);
         }
         else if (cmd == "DELAY" && parts.size() >= 2) {
-            // DELAY <ms>
             int ms = parts[1].toInt();
             delay(ms);
             return true;
         }
         else if (cmd == "LOG" && parts.size() >= 2) {
-            // LOG <message>
             String msg = command.substring(4);
             Serial.println("[SCRIPT] " + msg);
             return true;
@@ -523,7 +556,6 @@ public:
         return false;
     }
 
-    // 执行完整脚本
     static bool executeScript(const String& script, 
                               MockPeripheralManager& pm) {
         std::vector<String> commands = parse(script);

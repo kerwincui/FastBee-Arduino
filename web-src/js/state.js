@@ -10,7 +10,7 @@
 var AppState = typeof AppState !== 'undefined' ? AppState : {
     currentPage: 'dashboard',
     configTab: 'modbus',
-    currentUser: { name: '', role: '', canManageFs: false, permissions: [] },
+    currentUser: { name: '' },
     developerModeEnabled: true,
     sidebarCollapsed: false,
     _pageNavSeq: 0,
@@ -29,7 +29,6 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
         'logs-page': 'logs',
         'data-page': 'admin',
         'users-page': 'admin',
-        'roles-page': 'admin',
         'rule-script-page': 'rule-script'
     },
 
@@ -79,7 +78,16 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
 
     _refreshDeveloperModeState(options) {
         options = options || {};
-        var getter = options.noCache === true && typeof apiGetFresh === 'function' ? apiGetFresh : apiGet;
+        var getter;
+        if (options.silent && options.noCache && typeof apiGetSilentFresh === 'function') {
+            getter = apiGetSilentFresh;
+        } else if (options.noCache && typeof apiGetFresh === 'function') {
+            getter = apiGetFresh;
+        } else if (options.silent && typeof apiGetSilent === 'function') {
+            getter = apiGetSilent;
+        } else {
+            getter = apiGet;
+        }
         return getter('/api/device/config')
             .then((res) => {
                 if (res && res.success && res.data) {
@@ -334,7 +342,6 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             logs: 'logs',
             data: 'files',
             users: 'users',
-            roles: 'roles',
             'rule-script': 'rule-script'
         };
     },
@@ -356,11 +363,10 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             device: () => { this.loadDeviceConfig({ deferHardware: true }); },
             peripheral: () => { this.loadPeripherals(); },
             'periph-exec': () => { this.loadPeriphExecPage(); },
-            protocol: () => { this.loadProtocolConfig('mqtt'); if (this._startMqttStatusPolling) this._startMqttStatusPolling(); },
+            protocol: () => { this.loadProtocolConfig('mqtt'); },
             logs: () => { this.loadLogsPage({ noCache: true }); },
             data: () => { this.loadFileSystemInfo({ noCache: true }); this.loadFileTree('/', { noCache: true }); },
             users: () => { this.loadUsers({ noCache: true }); },
-            roles: () => { this.loadRoles({ noCache: true }); },
             'rule-script': () => { this.loadRuleScriptPage({ noCache: true }); },
             'device-control': () => {
                 if (typeof this.loadDeviceControlPage === 'function') {
@@ -523,12 +529,11 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             'page-title-device': '设备配置',
             'page-title-data': '文件管理',
             'page-title-system': '系统监控',
-            'page-title-users': '用户管理',
-            'page-title-roles': '角色管理',
             'page-title-logs': '设备日志',
             'page-title-gpio': 'GPIO配置',
             'page-title-peripheral': '外设配置',
             'page-title-periph-exec': '外设执行',
+            'page-title-users': '用户管理',
             'page-title-device-control': '设备大屏'
         };
         if (titleEl) titleEl.textContent = _pageTitleMap[titleKey] || normalizedPage;
@@ -600,7 +605,7 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
             m.style.display = 'none';
         });
 
-        // 2. 关闭动态创建的全屏浮层（如角色权限详情弹窗）
+        // 2. 关闭动态创建的全屏浮层
         document.querySelectorAll('div[style*="position: fixed"][style*="z-index"]').forEach(function (el) {
             // 排除 Notification 容器等非弹窗元素
             if (el.querySelector('.modal-content, [onclick*="remove"]')) {

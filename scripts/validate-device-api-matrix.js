@@ -65,11 +65,7 @@ const REQUIRED_PROFILE_CHECKS = [
     { name: 'rule-scripts', profiles: ['full'] },
     { name: 'rule-scripts-unavailable', profiles: ['lite', 'standard'] },
     { name: 'users', profiles: ['full'] },
-    { name: 'users-unavailable', profiles: ['lite', 'standard'] },
-    { name: 'roles', profiles: ['full'] },
-    { name: 'roles-unavailable', profiles: ['lite', 'standard'] },
-    { name: 'permissions', profiles: ['full'] },
-    { name: 'permissions-unavailable', profiles: ['lite', 'standard'] }
+    { name: 'users-unavailable', profiles: ['lite', 'standard'] }
 ];
 
 function readJson(filePath) {

@@ -35,7 +35,7 @@ struct MockHTTPResponse {
 // Mock Web API Handler
 class MockWebAPIHandler {
 public:
-    MockWebAPIHandler() : _authMgr(nullptr), _userMgr(nullptr), _roleMgr(nullptr) {}
+    MockWebAPIHandler() : _authMgr(nullptr), _userMgr(nullptr) {}
 
     void setAuthManager(MockAuthManager* authMgr) {
         _authMgr = authMgr;
@@ -43,10 +43,6 @@ public:
 
     void setUserManager(MockUserManager* userMgr) {
         _userMgr = userMgr;
-    }
-
-    void setRoleManager(MockRoleManager* roleMgr) {
-        _roleMgr = roleMgr;
     }
 
     MockHTTPResponse handleLogin(const MockHTTPRequest& req) {
@@ -139,9 +135,10 @@ public:
     }
 
     /**
-     * 模拟 requirePermission 行为：认证失败返回401，权限拒绝返回403
+     * 模拟 requireAuth 行为（单管理员模式）：
+     * 认证失败返回401，认证成功即授权（返回200）
      */
-    int requirePermission(const MockHTTPRequest& req, const String& permission) {
+    int requireAuth(const MockHTTPRequest& req) {
         if (!_authMgr) return 500;
 
         // 提取 sessionId
@@ -164,25 +161,13 @@ public:
             return 401;
         }
 
-        // 获取用户名并检查权限
-        String username = _authMgr->getSessionUser(sessionId);
-        if (username.isEmpty()) {
-            return 401;
-        }
-
-        // 权限拒绝：返回 403
-        if (!_authMgr->userHasPermission(username, permission)) {
-            return 403;
-        }
-
-        // 通过
+        // 单管理员模式：认证即授权，始终返回200
         return 200;
     }
 
 private:
     MockAuthManager* _authMgr;
     MockUserManager* _userMgr;
-    MockRoleManager* _roleMgr;
 
     // 从简单 JSON 字符串中提取字段值
     static String extractJsonField(const String& json, const String& field) {
@@ -338,32 +323,35 @@ void test_unauthorized_access() {
     TestLog::testEnd(true);
 }
 
-// Test permission control
-void test_permission_control() {
-    TestLog::testStart("Permission Control");
-
-    MockRoleManager& roleMgr = MockRoleMgr;
-    roleMgr.initialize();
+// Test single-admin auth model (authenticated = authorized)
+void test_auth_control() {
+    TestLog::testStart("Single Admin Auth Model");
 
     MockUserManager& userMgr = MockUserMgr;
     userMgr.initialize();
 
-    userMgr.createUser("operator", "pass123", {"operator"});
-
-    MockAuthManager authMgr(&userMgr, &roleMgr);
+    MockAuthManager authMgr(&userMgr);
     authMgr.initialize();
 
-    String sessionId = authMgr.authenticate("operator", "pass123");
+    MockWebAPIHandler apiHandler;
+    apiHandler.setAuthManager(&authMgr);
+
+    // Authenticate as admin
+    String sessionId = authMgr.authenticate("admin", "admin123");
     TEST_ASSERT_FALSE(sessionId.isEmpty());
 
-    TEST_ASSERT_TRUE(authMgr.sessionHasPermission(sessionId, "device.view"));
-    TestLog::step("Operator has device.view permission");
+    MockHTTPRequest req;
+    req.sessionId = sessionId;
 
-    TEST_ASSERT_TRUE(authMgr.sessionHasPermission(sessionId, "device.control"));
-    TestLog::step("Operator has device.control permission");
+    // In single-admin mode, any authenticated user passes auth check
+    TEST_ASSERT_EQUAL(200, apiHandler.requireAuth(req));
+    TestLog::step("Authenticated user passes auth check");
 
-    TEST_ASSERT_FALSE(authMgr.sessionHasPermission(sessionId, "user.create"));
-    TestLog::step("Operator does NOT have user.create permission");
+    TEST_ASSERT_EQUAL(200, apiHandler.requireAuth(req));
+    TestLog::step("Authenticated user passes second auth check");
+
+    TEST_ASSERT_EQUAL(200, apiHandler.requireAuth(req));
+    TestLog::step("Authenticated user passes third auth check");
 
     TestLog::testEnd(true);
 }
@@ -415,9 +403,9 @@ void test_concurrent_sessions() {
     MockUserManager& userMgr = MockUserMgr;
     userMgr.initialize();
 
-    userMgr.createUser("user1", "pass1", {"operator"});
-    userMgr.createUser("user2", "pass2", {"viewer"});
-    userMgr.createUser("user3", "pass3", {"operator"});
+    userMgr.createUser("user1", "pass1");
+    userMgr.createUser("user2", "pass2");
+    userMgr.createUser("user3", "pass3");
 
     MockAuthManager authMgr(&userMgr);
     authMgr.initialize();
@@ -436,8 +424,7 @@ void test_concurrent_sessions() {
     TEST_ASSERT_TRUE(authMgr.validateSession(session3));
     TestLog::step("All sessions valid");
 
-    auto onlineUsers = authMgr.getOnlineUsers();
-    TEST_ASSERT_EQUAL(3, onlineUsers.size());
+    TEST_ASSERT_EQUAL(3, authMgr.getOnlineUserCount());
     TestLog::step("Online user count: 3");
 
     TestLog::testEnd(true);
@@ -451,7 +438,6 @@ void test_factory_reset_writes_defaults() {
     g_mockFiles["/config/device.json"] = "{\"deviceId\":\"CUSTOM_ID\",\"deviceName\":\"MyDevice\"}";
     g_mockFiles["/config/network.json"] = "{\"staSSID\":\"home-wifi\",\"staPassword\":\"secret123\"}";
     g_mockFiles["/config/users.json"] = "{\"users\":[{\"username\":\"custom_admin\"}]}";
-    g_mockFiles["/config/roles.json"] = "{\"roles\":[]}";
     g_mockFiles["/config/protocol.json"] = "{\"mqtt\":{\"enabled\":true,\"server\":\"my.mqtt.com\"}}";
     g_mockFiles["/config/peripherals.json"] = "{\"peripherals\":[{\"id\":\"led1\"}]}";
     g_mockFiles["/config/periph_exec.json"] = "{\"version\":3,\"rules\":[{\"id\":\"rule1\"}]}";
@@ -478,12 +464,8 @@ void test_factory_reset_writes_defaults() {
     if (writeDefault("/config/network.json", DEFAULT_NETWORK)) resetCount++;
 
     // Write default users.json
-    const char* DEFAULT_USERS = "{\"version\":\"2.0\",\"users\":[{\"username\":\"admin\"},{\"username\":\"viewer\"}]}";
+    const char* DEFAULT_USERS = "{\"version\":\"2.0\",\"users\":[{\"username\":\"admin\"}]}";
     if (writeDefault("/config/users.json", DEFAULT_USERS)) resetCount++;
-
-    // Write default roles.json
-    const char* DEFAULT_ROLES = "{\"roles\":[{\"id\":\"admin\"},{\"id\":\"operator\"},{\"id\":\"viewer\"}]}";
-    if (writeDefault("/config/roles.json", DEFAULT_ROLES)) resetCount++;
 
     // Write default protocol.json
     const char* DEFAULT_PROTOCOL = "{\"version\":2,\"mqtt\":{\"enabled\":false},\"modbusRtu\":{\"enabled\":false}}";
@@ -501,15 +483,14 @@ void test_factory_reset_writes_defaults() {
     LittleFS.remove("/config/auth.json");
     LittleFS.remove("/config/mqtt.json");
 
-    // Verify: all 7 core files written successfully
-    TEST_ASSERT_EQUAL(7, resetCount);
-    TestLog::step("All 7 core config files reset successfully");
+    // Verify: all 6 core files written successfully
+    TEST_ASSERT_EQUAL(6, resetCount);
+    TestLog::step("All 6 core config files reset successfully");
 
     // Verify: core config files exist with default content
     TEST_ASSERT_TRUE(LittleFS.exists("/config/device.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/network.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/users.json"));
-    TEST_ASSERT_TRUE(LittleFS.exists("/config/roles.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/protocol.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/peripherals.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/periph_exec.json"));
@@ -576,7 +557,6 @@ void test_factory_reset_no_file_missing() {
     writeDefault("/config/device.json", "{\"deviceId\":\"FBE100900001\"}");
     writeDefault("/config/network.json", "{\"mode\":0}");
     writeDefault("/config/users.json", "{\"users\":[]}");
-    writeDefault("/config/roles.json", "{\"roles\":[]}");
     writeDefault("/config/protocol.json", "{\"version\":2}");
     writeDefault("/config/peripherals.json", "{\"peripherals\":[]}");
     writeDefault("/config/periph_exec.json", "{\"version\":3,\"rules\":[]}");
@@ -585,7 +565,6 @@ void test_factory_reset_no_file_missing() {
     TEST_ASSERT_TRUE(LittleFS.exists("/config/device.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/network.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/users.json"));
-    TEST_ASSERT_TRUE(LittleFS.exists("/config/roles.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/protocol.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/peripherals.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/periph_exec.json"));
@@ -609,48 +588,47 @@ void test_factory_reset_no_file_missing() {
     TestLog::testEnd(true);
 }
 
-// Test factory reset permission requirement
-void test_factory_reset_requires_permission() {
-    TestLog::testStart("Factory Reset Permission");
-
-    MockRoleManager& roleMgr = MockRoleMgr;
-    roleMgr.initialize();
+// Test factory reset requires authentication (single-admin mode)
+void test_factory_reset_requires_auth() {
+    TestLog::testStart("Factory Reset Requires Auth");
 
     MockUserManager& userMgr = MockUserMgr;
     userMgr.initialize();
 
-    // Create a viewer user (no system.restart permission)
-    userMgr.createUser("readonly", "pass123", {"viewer"});
-
-    MockAuthManager authMgr(&userMgr, &roleMgr);
+    MockAuthManager authMgr(&userMgr);
     authMgr.initialize();
 
-    // Admin should have system.restart permission (required for factory reset)
+    MockWebAPIHandler apiHandler;
+    apiHandler.setAuthManager(&authMgr);
+
+    // Unauthenticated should be rejected
+    MockHTTPRequest noAuthReq;
+    noAuthReq.sessionId = "";
+    int status = apiHandler.requireAuth(noAuthReq);
+    TEST_ASSERT_EQUAL(401, status);
+    TestLog::step("Unauthenticated -> 401");
+
+    // Admin authenticated should pass (single-admin: auth = authorized)
     String adminSession = authMgr.authenticate("admin", "admin123");
     TEST_ASSERT_FALSE(adminSession.isEmpty());
-    TEST_ASSERT_TRUE(authMgr.sessionHasPermission(adminSession, "system.restart"));
-    TestLog::step("Admin has system.restart permission");
 
-    // Viewer should NOT have system.restart permission
-    String viewerSession = authMgr.authenticate("readonly", "pass123");
-    TEST_ASSERT_FALSE(viewerSession.isEmpty());
-    TEST_ASSERT_FALSE(authMgr.sessionHasPermission(viewerSession, "system.restart"));
-    TestLog::step("Viewer does NOT have system.restart permission");
+    MockHTTPRequest adminReq;
+    adminReq.sessionId = adminSession;
+    status = apiHandler.requireAuth(adminReq);
+    TEST_ASSERT_EQUAL(200, status);
+    TestLog::step("Authenticated admin -> 200 (authorized)");
 
     TestLog::testEnd(true);
 }
 
-// Test requirePermission returns 401 for unauthenticated requests
-void test_require_permission_returns_401_for_unauthenticated() {
-    TestLog::testStart("RequirePermission 401 Unauthenticated");
-
-    MockRoleManager& roleMgr = MockRoleMgr;
-    roleMgr.initialize();
+// Test requireAuth returns 401 for unauthenticated requests
+void test_require_auth_returns_401_for_unauthenticated() {
+    TestLog::testStart("RequireAuth 401 Unauthenticated");
 
     MockUserManager& userMgr = MockUserMgr;
     userMgr.initialize();
 
-    MockAuthManager authMgr(&userMgr, &roleMgr);
+    MockAuthManager authMgr(&userMgr);
     authMgr.initialize();
 
     MockWebAPIHandler apiHandler;
@@ -659,78 +637,62 @@ void test_require_permission_returns_401_for_unauthenticated() {
     // No session ID
     MockHTTPRequest noSessionReq;
     noSessionReq.sessionId = "";
-    int status = apiHandler.requirePermission(noSessionReq, "device.view");
+    int status = apiHandler.requireAuth(noSessionReq);
     TEST_ASSERT_EQUAL(401, status);
     TestLog::step("No session -> 401 Unauthorized");
 
     // Invalid session ID
     MockHTTPRequest invalidSessionReq;
     invalidSessionReq.sessionId = "invalid_session";
-    status = apiHandler.requirePermission(invalidSessionReq, "device.view");
+    status = apiHandler.requireAuth(invalidSessionReq);
     TEST_ASSERT_EQUAL(401, status);
     TestLog::step("Invalid session -> 401 Unauthorized");
 
     TestLog::testEnd(true);
 }
 
-// Test requirePermission returns 403 for authenticated but unauthorized requests
-void test_require_permission_returns_403_for_forbidden() {
-    TestLog::testStart("RequirePermission 403 Forbidden");
-
-    MockRoleManager& roleMgr = MockRoleMgr;
-    roleMgr.initialize();
+// Test single-admin mode: all authenticated users get full access (no 403)
+void test_single_admin_no_403() {
+    TestLog::testStart("Single Admin Mode No 403");
 
     MockUserManager& userMgr = MockUserMgr;
     userMgr.initialize();
 
-    // Create a viewer user with only read permissions
-    userMgr.createUser("viewer_user", "pass123", {"viewer"});
+    // Create a non-admin user
+    userMgr.createUser("regular_user", "pass123");
 
-    MockAuthManager authMgr(&userMgr, &roleMgr);
+    MockAuthManager authMgr(&userMgr);
     authMgr.initialize();
 
     MockWebAPIHandler apiHandler;
     apiHandler.setAuthManager(&authMgr);
 
-    // Viewer has device.view, should get 200
-    String viewerSession = authMgr.authenticate("viewer_user", "pass123");
-    TEST_ASSERT_FALSE(viewerSession.isEmpty());
+    // Any authenticated user passes auth check in single-admin mode
+    String userSession = authMgr.authenticate("regular_user", "pass123");
+    TEST_ASSERT_FALSE(userSession.isEmpty());
 
-    MockHTTPRequest viewerReq;
-    viewerReq.sessionId = viewerSession;
-    int status = apiHandler.requirePermission(viewerReq, "device.view");
-    TEST_ASSERT_EQUAL(200, status);
-    TestLog::step("Viewer with device.view -> 200 OK");
+    MockHTTPRequest req;
+    req.sessionId = userSession;
 
-    // Viewer does NOT have device.control, should get 403
-    status = apiHandler.requirePermission(viewerReq, "device.control");
-    TEST_ASSERT_EQUAL(403, status);
-    TestLog::step("Viewer without device.control -> 403 Forbidden");
-
-    // Viewer does NOT have user.create, should get 403
-    status = apiHandler.requirePermission(viewerReq, "user.create");
-    TEST_ASSERT_EQUAL(403, status);
-    TestLog::step("Viewer without user.create -> 403 Forbidden");
-
-    // Viewer does NOT have system.reboot, should get 403
-    status = apiHandler.requirePermission(viewerReq, "system.reboot");
-    TEST_ASSERT_EQUAL(403, status);
-    TestLog::step("Viewer without system.reboot -> 403 Forbidden");
+    // All auth checks should return 200 (no role-based restrictions)
+    TEST_ASSERT_EQUAL(200, apiHandler.requireAuth(req));
+    TEST_ASSERT_EQUAL(200, apiHandler.requireAuth(req));
+    TEST_ASSERT_EQUAL(200, apiHandler.requireAuth(req));
+    TEST_ASSERT_EQUAL(200, apiHandler.requireAuth(req));
+    TEST_ASSERT_EQUAL(200, apiHandler.requireAuth(req));
+    TestLog::step("Authenticated user passes all auth checks (single-admin)");
 
     TestLog::testEnd(true);
 }
 
-// Test admin user passes all permission checks
-void test_admin_passes_all_permissions() {
-    TestLog::testStart("Admin Passes All Permissions");
-
-    MockRoleManager& roleMgr = MockRoleMgr;
-    roleMgr.initialize();
+// Test admin user passes all auth checks
+void test_admin_passes_all_auth() {
+    TestLog::testStart("Admin Passes All Auth");
 
     MockUserManager& userMgr = MockUserMgr;
     userMgr.initialize();
 
-    MockAuthManager authMgr(&userMgr, &roleMgr);
+    MockAuthManager authMgr(&userMgr);
     authMgr.initialize();
 
     MockWebAPIHandler apiHandler;
@@ -742,59 +704,15 @@ void test_admin_passes_all_permissions() {
     MockHTTPRequest adminReq;
     adminReq.sessionId = adminSession;
 
-    // Admin should pass all permission checks
-    TEST_ASSERT_EQUAL(200, apiHandler.requirePermission(adminReq, "device.view"));
-    TEST_ASSERT_EQUAL(200, apiHandler.requirePermission(adminReq, "device.control"));
-    TEST_ASSERT_EQUAL(200, apiHandler.requirePermission(adminReq, "user.create"));
-    TEST_ASSERT_EQUAL(200, apiHandler.requirePermission(adminReq, "user.delete"));
-    TEST_ASSERT_EQUAL(200, apiHandler.requirePermission(adminReq, "role.create"));
-    TEST_ASSERT_EQUAL(200, apiHandler.requirePermission(adminReq, "system.restart"));
-    TEST_ASSERT_EQUAL(200, apiHandler.requirePermission(adminReq, "config.edit"));
-    TEST_ASSERT_EQUAL(200, apiHandler.requirePermission(adminReq, "fs.manage"));
-    TestLog::step("Admin passed all 8 permission checks");
-
-    TestLog::testEnd(true);
-}
-
-// Test operator role permission boundaries
-void test_operator_permission_boundary() {
-    TestLog::testStart("Operator Permission Boundary");
-
-    MockRoleManager& roleMgr = MockRoleMgr;
-    roleMgr.initialize();
-
-    MockUserManager& userMgr = MockUserMgr;
-    userMgr.initialize();
-
-    userMgr.createUser("operator_user", "pass123", {"operator"});
-
-    MockAuthManager authMgr(&userMgr, &roleMgr);
-    authMgr.initialize();
-
-    MockWebAPIHandler apiHandler;
-    apiHandler.setAuthManager(&authMgr);
-
-    String operatorSession = authMgr.authenticate("operator_user", "pass123");
-    TEST_ASSERT_FALSE(operatorSession.isEmpty());
-
-    MockHTTPRequest operatorReq;
-    operatorReq.sessionId = operatorSession;
-
-    // Operator should have these permissions
-    TEST_ASSERT_EQUAL(200, apiHandler.requirePermission(operatorReq, "device.view"));
-    TEST_ASSERT_EQUAL(200, apiHandler.requirePermission(operatorReq, "device.control"));
-    TEST_ASSERT_EQUAL(200, apiHandler.requirePermission(operatorReq, "peripheral.view"));
-    TEST_ASSERT_EQUAL(200, apiHandler.requirePermission(operatorReq, "peripheral.control"));
-    TEST_ASSERT_EQUAL(200, apiHandler.requirePermission(operatorReq, "log.view"));
-    TestLog::step("Operator has expected permissions");
-
-    // Operator should NOT have these permissions
-    TEST_ASSERT_EQUAL(403, apiHandler.requirePermission(operatorReq, "user.create"));
-    TEST_ASSERT_EQUAL(403, apiHandler.requirePermission(operatorReq, "user.delete"));
-    TEST_ASSERT_EQUAL(403, apiHandler.requirePermission(operatorReq, "role.create"));
-    TEST_ASSERT_EQUAL(403, apiHandler.requirePermission(operatorReq, "system.reboot"));
-    TEST_ASSERT_EQUAL(403, apiHandler.requirePermission(operatorReq, "config.edit"));
-    TestLog::step("Operator correctly denied admin-only permissions");
+    // Admin should pass all auth checks
+    TEST_ASSERT_EQUAL(200, apiHandler.requireAuth(adminReq));
+    TEST_ASSERT_EQUAL(200, apiHandler.requireAuth(adminReq));
+    TEST_ASSERT_EQUAL(200, apiHandler.requireAuth(adminReq));
+    TEST_ASSERT_EQUAL(200, apiHandler.requireAuth(adminReq));
+    TEST_ASSERT_EQUAL(200, apiHandler.requireAuth(adminReq));
+    TEST_ASSERT_EQUAL(200, apiHandler.requireAuth(adminReq));
+    TEST_ASSERT_EQUAL(200, apiHandler.requireAuth(adminReq));
+    TestLog::step("Admin passed all 7 auth checks");
 
     TestLog::testEnd(true);
 }
@@ -808,19 +726,18 @@ void test_web_api_group() {
     RUN_TEST(test_api_network_status);
     RUN_TEST(test_api_system_info);
     RUN_TEST(test_unauthorized_access);
-    RUN_TEST(test_permission_control);
+    RUN_TEST(test_auth_control);
     RUN_TEST(test_api_error_handling);
     RUN_TEST(test_session_expiration);
     RUN_TEST(test_concurrent_sessions);
     RUN_TEST(test_factory_reset_writes_defaults);
     RUN_TEST(test_factory_reset_no_file_missing);
-    RUN_TEST(test_factory_reset_requires_permission);
+    RUN_TEST(test_factory_reset_requires_auth);
 
-    // requirePermission 401/403 区分测试
-    RUN_TEST(test_require_permission_returns_401_for_unauthenticated);
-    RUN_TEST(test_require_permission_returns_403_for_forbidden);
-    RUN_TEST(test_admin_passes_all_permissions);
-    RUN_TEST(test_operator_permission_boundary);
+    // 单管理员模式认证测试（认证即授权，无角色区分）
+    RUN_TEST(test_require_auth_returns_401_for_unauthenticated);
+    RUN_TEST(test_single_admin_no_403);
+    RUN_TEST(test_admin_passes_all_auth);
 
     TestLog::groupEnd();
 }

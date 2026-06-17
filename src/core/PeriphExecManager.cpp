@@ -919,6 +919,8 @@ bool PeriphExecManager::loadConfiguration() {
         // 数据转换管道字段
         r.protocolType = obj["protocolType"] | 0;
         r.scriptContent = obj["scriptContent"].as<String>();
+        // 兼容处理：旧版序列化可能将 null 存储为字符串 "null"
+        if (r.scriptContent == "null") r.scriptContent = "";
         r.reportAfterExec = obj["reportAfterExec"] | true;
 
         if (configVersion >= 3) {

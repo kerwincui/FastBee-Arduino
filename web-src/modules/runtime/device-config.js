@@ -4,7 +4,7 @@
  */
 (function() {
     const MAX_CONFIG_TRANSFER_BYTES = 128 * 1024;
-    const CONFIG_IMPORT_CHUNK_BYTES = 6 * 1024;
+    const CONFIG_IMPORT_CHUNK_BYTES = 4 * 1024;  // 4KB raw → ~8-10KB URL-encoded, backend limit 16KB
     const MAX_CONFIG_BUNDLE_BYTES = 512 * 1024;
     const CONFIG_TRANSFER_LABELS = {
         'all': '全部配置包',
@@ -14,7 +14,7 @@
         'periph_exec.json': '外设执行',
         'protocol.json': '通信协议',
         'users.json': '用户配置',
-        'roles.json': '角色配置'
+        'rule_scripts.json': '规则脚本'
     };
 
     AppState.registerModule('device-config', {

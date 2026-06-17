@@ -294,6 +294,120 @@ static void test_wifi_scan_networks() {
     TEST_ASSERT_TRUE(count > 0);
 }
 
+// 辅助函数：将 wifi_auth_mode_t 映射为字符串，与 WiFiManager.cpp 逻辑一致
+static const char* authModeToEncString(wifi_auth_mode_t mode) {
+    switch (mode) {
+        case WIFI_AUTH_OPEN:          return "open";
+        case WIFI_AUTH_WEP:           return "wep";
+        case WIFI_AUTH_WPA_PSK:       return "wpa";
+        case WIFI_AUTH_WPA2_PSK:      return "wpa2";
+        case WIFI_AUTH_WPA_WPA2_PSK:  return "wpa2";  // WPA/WPA2混合归并为wpa2
+        case WIFI_AUTH_WPA3_PSK:      return "wpa3";
+        case WIFI_AUTH_WPA2_WPA3_PSK: return "wpa3";  // WPA2/WPA3混合归并为wpa3
+        default:                      return "wpa2";  // 未知默认wpa2
+    }
+}
+
+// 辅助函数：将加密字符串转为前端安全下拉值，与 network.js 逻辑一致
+static const char* encStringToSecurityValue(const char* enc) {
+    // open → "none"，其他直接使用
+    if (strcmp(enc, "open") == 0) return "none";
+    return enc;  // "wpa", "wpa2", "wpa3" 直接使用
+}
+
+// 测试：WiFi 扫描返回不同加密类型的网络
+static void test_wifi_scan_encryption_types() {
+    // 配置混合加密类型的扫描结果
+    const char* ssids[]    = {"OpenNet", "WPA2-Home", "WPA3-Office", "WPA-Mixed", "WEP-Old"};
+    const int32_t rssis[]  = {-40, -55, -65, -70, -80};
+    const wifi_auth_mode_t encs[] = {
+        WIFI_AUTH_OPEN, WIFI_AUTH_WPA2_PSK, WIFI_AUTH_WPA3_PSK,
+        WIFI_AUTH_WPA_WPA2_PSK, WIFI_AUTH_WEP
+    };
+    const uint8_t chs[]    = {1, 6, 11, 3, 9};
+    const char* bssids[]   = {"11:11:11:11:11:11", "22:22:22:22:22:22", "33:33:33:33:33:33",
+                              "44:44:44:44:44:44", "55:55:55:55:55:55"};
+    MockWiFi.setScanResults(ssids, rssis, encs, chs, bssids, 5);
+
+    int8_t count = MockWiFi.scanNetworks();
+    TEST_ASSERT_EQUAL(5, count);
+
+    // 验证每个网络的加密类型
+    TEST_ASSERT_EQUAL(WIFI_AUTH_OPEN,          MockWiFi.encryptionType(0));
+    TEST_ASSERT_EQUAL(WIFI_AUTH_WPA2_PSK,      MockWiFi.encryptionType(1));
+    TEST_ASSERT_EQUAL(WIFI_AUTH_WPA3_PSK,      MockWiFi.encryptionType(2));
+    TEST_ASSERT_EQUAL(WIFI_AUTH_WPA_WPA2_PSK,  MockWiFi.encryptionType(3));
+    TEST_ASSERT_EQUAL(WIFI_AUTH_WEP,           MockWiFi.encryptionType(4));
+}
+
+// 测试：加密类型枚举到字符串的映射（与后端 WiFiManager.cpp 逻辑保持一致）
+static void test_wifi_encryption_to_string_mapping() {
+    // 开放网络
+    TEST_ASSERT_EQUAL_STRING("open", authModeToEncString(WIFI_AUTH_OPEN));
+    // WEP（老旧加密）
+    TEST_ASSERT_EQUAL_STRING("wep",  authModeToEncString(WIFI_AUTH_WEP));
+    // 纯 WPA
+    TEST_ASSERT_EQUAL_STRING("wpa",  authModeToEncString(WIFI_AUTH_WPA_PSK));
+    // WPA2（最常见）
+    TEST_ASSERT_EQUAL_STRING("wpa2", authModeToEncString(WIFI_AUTH_WPA2_PSK));
+    // WPA/WPA2 混合 → 归并为 wpa2
+    TEST_ASSERT_EQUAL_STRING("wpa2", authModeToEncString(WIFI_AUTH_WPA_WPA2_PSK));
+    // WPA3
+    TEST_ASSERT_EQUAL_STRING("wpa3", authModeToEncString(WIFI_AUTH_WPA3_PSK));
+    // WPA2/WPA3 混合 → 归并为 wpa3
+    TEST_ASSERT_EQUAL_STRING("wpa3", authModeToEncString(WIFI_AUTH_WPA2_WPA3_PSK));
+}
+
+// 测试：加密字符串到前端安全下拉选项值的映射
+static void test_wifi_encryption_to_security_select() {
+    // open → "none"
+    TEST_ASSERT_EQUAL_STRING("none", encStringToSecurityValue(authModeToEncString(WIFI_AUTH_OPEN)));
+    // WPA → "wpa"
+    TEST_ASSERT_EQUAL_STRING("wpa",  encStringToSecurityValue(authModeToEncString(WIFI_AUTH_WPA_PSK)));
+    // WPA2 → "wpa2"
+    TEST_ASSERT_EQUAL_STRING("wpa2", encStringToSecurityValue(authModeToEncString(WIFI_AUTH_WPA2_PSK)));
+    // WPA/WPA2 混合 → "wpa2"
+    TEST_ASSERT_EQUAL_STRING("wpa2", encStringToSecurityValue(authModeToEncString(WIFI_AUTH_WPA_WPA2_PSK)));
+    // WPA3 → "wpa3"
+    TEST_ASSERT_EQUAL_STRING("wpa3", encStringToSecurityValue(authModeToEncString(WIFI_AUTH_WPA3_PSK)));
+    // WPA2/WPA3 混合 → "wpa3"
+    TEST_ASSERT_EQUAL_STRING("wpa3", encStringToSecurityValue(authModeToEncString(WIFI_AUTH_WPA2_WPA3_PSK)));
+}
+
+// 测试：扫描结果的信道和 BSSID 正确返回
+static void test_wifi_scan_channel_and_bssid() {
+    const char* ssids[]    = {"Net-A", "Net-B"};
+    const int32_t rssis[]  = {-50, -60};
+    const wifi_auth_mode_t encs[] = {WIFI_AUTH_WPA2_PSK, WIFI_AUTH_OPEN};
+    const uint8_t chs[]    = {6, 11};
+    const char* bssids[]   = {"DE:AD:BE:EF:00:01", "DE:AD:BE:EF:00:02"};
+    MockWiFi.setScanResults(ssids, rssis, encs, chs, bssids, 2);
+
+    TEST_ASSERT_EQUAL(2, MockWiFi.scanNetworks());
+    TEST_ASSERT_EQUAL(6,  MockWiFi.channel(0));
+    TEST_ASSERT_EQUAL(11, MockWiFi.channel(1));
+    TEST_ASSERT_EQUAL_STRING("DE:AD:BE:EF:00:01", MockWiFi.BSSIDstr(0).c_str());
+    TEST_ASSERT_EQUAL_STRING("DE:AD:BE:EF:00:02", MockWiFi.BSSIDstr(1).c_str());
+}
+
+// 测试：扫描结果索引越界时返回安全默认值
+static void test_wifi_scan_out_of_bounds() {
+    const char* ssids[]    = {"Only-Net"};
+    const int32_t rssis[]  = {-50};
+    const wifi_auth_mode_t encs[] = {WIFI_AUTH_WPA2_PSK};
+    const uint8_t chs[]    = {1};
+    const char* bssids[]   = {"00:00:00:00:00:00"};
+    MockWiFi.setScanResults(ssids, rssis, encs, chs, bssids, 1);
+
+    TEST_ASSERT_EQUAL(1, MockWiFi.scanNetworks());
+    // 越界索引应返回安全默认值
+    TEST_ASSERT_EQUAL(WIFI_AUTH_OPEN, MockWiFi.encryptionType(5));
+    TEST_ASSERT_EQUAL_STRING("", MockWiFi.SSID(5).c_str());
+    TEST_ASSERT_EQUAL(-100, MockWiFi.RSSI(5));
+    TEST_ASSERT_EQUAL(1,    MockWiFi.channel(5));
+    TEST_ASSERT_EQUAL_STRING("", MockWiFi.BSSIDstr(5).c_str());
+}
+
 static void test_wifi_hostname() {
     TEST_ASSERT_TRUE(MockWiFi.setHostname("fastbee-device"));
     TEST_ASSERT_EQUAL_STRING("fastbee-device", MockWiFi.getHostname().c_str());
@@ -521,6 +635,11 @@ void test_wifi_ip_dns_group() {
     
     // WiFi 扫描和主机名
     RUN_TEST(test_wifi_scan_networks);
+    RUN_TEST(test_wifi_scan_encryption_types);
+    RUN_TEST(test_wifi_encryption_to_string_mapping);
+    RUN_TEST(test_wifi_encryption_to_security_select);
+    RUN_TEST(test_wifi_scan_channel_and_bssid);
+    RUN_TEST(test_wifi_scan_out_of_bounds);
     RUN_TEST(test_wifi_hostname);
     RUN_TEST(test_wifi_auto_reconnect);
     

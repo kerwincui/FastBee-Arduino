@@ -90,7 +90,6 @@ function shouldSkipProdDataPath(relPath) {
     const normalized = normalizeRelativePath(relPath);
     return normalized === 'config/users.json'
         || normalized === 'config/auth.json'
-        || normalized === 'config/roles.json'
         || normalized.startsWith('logs/');
 }
 

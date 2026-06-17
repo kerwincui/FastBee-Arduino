@@ -35,7 +35,7 @@ void RuleScriptRouteHandler::setupRoutes(AsyncWebServer* server) {
 // ========== 获取所有规则 ==========
 
 void RuleScriptRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Script rule list", MemoryGuardLevel::SEVERE, 8)) {
         return;
@@ -102,7 +102,7 @@ void RuleScriptRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
 // ========== 新增规则 ==========
 
 void RuleScriptRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
 
     RuleScript rule;
     rule.id = ctx->getParamValue(request, "id", "");
@@ -129,7 +129,7 @@ void RuleScriptRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
 // ========== 更新规则 ==========
 
 void RuleScriptRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -163,7 +163,7 @@ void RuleScriptRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
 // ========== 删除规则 ==========
 
 void RuleScriptRouteHandler::handleDeleteRule(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -183,7 +183,7 @@ void RuleScriptRouteHandler::handleDeleteRule(AsyncWebServerRequest* request) {
 // ========== 启用规则 ==========
 
 void RuleScriptRouteHandler::handleEnableRule(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -203,7 +203,7 @@ void RuleScriptRouteHandler::handleEnableRule(AsyncWebServerRequest* request) {
 // ========== 禁用规则 ==========
 
 void RuleScriptRouteHandler::handleDisableRule(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "config.edit")) return;
+    if (!ctx->requireAuth(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {

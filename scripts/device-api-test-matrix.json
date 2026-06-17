@@ -309,34 +309,6 @@
       "path": "/api/users?page=1&limit=20",
       "profiles": ["lite", "standard"],
       "allowedStatuses": [404, 405, 501]
-    },
-    {
-      "name": "roles",
-      "method": "GET",
-      "path": "/api/roles",
-      "profiles": ["full"]
-    },
-    {
-      "name": "roles-unavailable",
-      "type": "expect-unavailable",
-      "method": "GET",
-      "path": "/api/roles",
-      "profiles": ["lite", "standard"],
-      "allowedStatuses": [404, 405, 501]
-    },
-    {
-      "name": "permissions",
-      "method": "GET",
-      "path": "/api/permissions?compact=1",
-      "profiles": ["full"]
-    },
-    {
-      "name": "permissions-unavailable",
-      "type": "expect-unavailable",
-      "method": "GET",
-      "path": "/api/permissions?compact=1",
-      "profiles": ["lite", "standard"],
-      "allowedStatuses": [404, 405, 501]
     }
   ]
 }

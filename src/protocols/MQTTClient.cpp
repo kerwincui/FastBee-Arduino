@@ -26,6 +26,7 @@
 #include <core/ConfigDefines.h>
 #include <LittleFS.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <esp_heap_caps.h>
 #include <mbedtls/aes.h>
 #include <core/FeatureFlags.h>
@@ -1459,11 +1460,11 @@ bool MQTTClient::reconnect() {
 
 void MQTTClient::reconnectTaskEntry(void* param) {
     MQTTClient* client = (MQTTClient*)param;
-    // 启动期延迟 15s 才允许首次重连：让 Web 路由/SSE/HealthMonitor 先稳定，
-    // 避免 boot 早期 MQTT DNS+TCP 抢占内存导致 web 无法访问
-    // 注：doReconnect() 内部有堆内存保护（<49KB 跳过），无需过长延迟
-    LOG_INFO("[MQTT] Reconnect task armed, holding 15s for web boot stabilization");
-    vTaskDelay(pdMS_TO_TICKS(15000));
+    // 启动期延迟 3s：让 Web 路由注册完成即可
+    // doReconnect() 内部有堆内存保护（<49KB 跳过），不会在内存不足时强行连接
+    // 之前 15s 导致用户点测试后长时间看到"连接中"，体验极差
+    LOG_INFO("[MQTT] Reconnect task armed, holding 3s for web boot");
+    vTaskDelay(pdMS_TO_TICKS(3000));
     LOG_INFO("[MQTT] Reconnect task active");
     while (true) {
         if (client->_reconnectPending && !client->_reconnectRunning) {
@@ -1480,10 +1481,10 @@ void MQTTClient::doReconnect() {
     // 重连次数保护：连续失败超过 20 次后拉长间隔至 5 分钟，降低内存压力
     constexpr uint32_t MAX_FAST_RETRIES = 20;
     constexpr uint32_t SLOW_RETRY_INTERVAL = 300000;  // 5分钟
-    // 单次 TCP/DNS 超时即视为网络不可用，立即切换慢模式（5 分钟）
-    // 历史 3 次门槛在 iot.fastbee.cn 不可达场景下会在 15s 内反复 DNS 解析+wifiClient.stop，
-    // 累计 6-8KB 堆碎片导致 web 不可访问。1 次失败立即慢模式可避免反复抖动。
-    constexpr uint8_t  DNS_FAIL_THRESHOLD = 1;
+    // DNS/TCP 连续失败阈值：达到此次数后切换慢模式（5 分钟）
+    // 阈值=3 在保护内存（避免反复 DNS+stop 碎片化）与容忍临时网络抖动之间取平衡
+    // 阈值=1 过于激进：MQTT broker 偶发一次超时就等 5 分钟，用户感知为"永远连接中"
+    constexpr uint8_t  DNS_FAIL_THRESHOLD = 3;
     
     bool slowMode = (reconnectCount > MAX_FAST_RETRIES) ||
                     (consecutiveTimeouts >= DNS_FAIL_THRESHOLD);
@@ -1661,8 +1662,8 @@ String MQTTClient::getNtpTime(unsigned long& outDeviceSendTime) {
         return "";
     }
 
-    HTTPClient http;
     String url = config.ntpServer;
+    bool isHttps = url.startsWith("https://");
     
     // FastBee平台需要 deviceSendTime 参数
     outDeviceSendTime = millis();
@@ -1674,11 +1675,23 @@ String MQTTClient::getNtpTime(unsigned long& outDeviceSendTime) {
     }
     url += "deviceSendTime=" + String(outDeviceSendTime);
 
-    char buf[128];
+    char buf[160];
     snprintf(buf, sizeof(buf), "MQTT: Fetching NTP time from %s", url.c_str());
     LOG_DEBUG(buf);
 
-    if (!http.begin(url)) {
+    HTTPClient http;
+    bool beginOk = false;
+
+    if (isHttps) {
+        static WiFiClientSecure secureClient;
+        secureClient.setInsecure();  // 跳过 CA 证书验证
+        beginOk = http.begin(secureClient, url);
+    } else {
+        static WiFiClient plainClient;
+        beginOk = http.begin(plainClient, url);
+    }
+
+    if (!beginOk) {
         LOG_WARNING("MQTT: HTTP begin failed for NTP");
         return "";
     }

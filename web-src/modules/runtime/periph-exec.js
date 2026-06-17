@@ -98,8 +98,7 @@
             // 刷新按钮
             var peRefreshBtn = document.getElementById('periph-exec-refresh-btn');
             if (peRefreshBtn) peRefreshBtn.addEventListener('click', () => this._refreshPeriphExecList());
-            var peResultsRefreshBtn = document.getElementById('periph-exec-results-refresh-btn');
-            if (peResultsRefreshBtn) peResultsRefreshBtn.addEventListener('click', () => this._refreshPeriphExecResults());
+
             this._peEventsBound = true;
         },
 
@@ -782,11 +781,6 @@
                         if (res && res.success) {
                             Notification.success('执行已提交', '外设执行');
                             if (self.currentPage === 'periph-exec') self.loadPeriphExecPage();
-                            setTimeout(function() {
-                                if (typeof self.loadPeriphExecResults === 'function') {
-                                    self.loadPeriphExecResults({ noCache: true });
-                                }
-                            }, 1200);
                         } else {
                             Notification.error(res?.error || '规则执行失败', '外设执行');
                         }
@@ -842,7 +836,6 @@
             const filterVal = filterSel ? filterSel.value : '';
 
             this.renderEmptyTableRow(tbody, 7, '加载中...');
-            this.loadPeriphExecResults({ noCache: true });
 
             const self = this;
             const apiUrl = '/api/periph-exec?page=' + this._peCurrentPage + '&pageSize=' + this._pePageSize;
@@ -940,18 +933,7 @@
         },
 
         _refreshPeriphExecResults() {
-            var btn = document.getElementById('periph-exec-results-refresh-btn');
-            if (btn && btn.disabled) return;
-            if (btn) {
-                btn.disabled = true;
-                btn.textContent = '读取中...';
-            }
-            this.loadPeriphExecResults({ noCache: true }).finally(function() {
-                if (btn) {
-                    btn.disabled = false;
-                    btn.textContent = '刷新结果';
-                }
-            });
+            // 已删除“最近执行结果”功能
         },
 
         _formatPeriphExecResultStatus(statusName) {
@@ -971,43 +953,12 @@
         },
 
         _renderPeriphExecResults(results) {
-            var host = document.getElementById('periph-exec-results-list');
-            if (!host) return;
-            var list = Array.isArray(results) ? results : [];
-            if (!list.length) {
-                host.innerHTML = '<div class="u-empty-cell">暂无执行结果</div>';
-                return;
-            }
-            host.innerHTML = list.map((item) => {
-                var meta = this._formatPeriphExecResultStatus(item.statusName);
-                var duration = Number(item.durationMs || 0);
-                var durationText = duration > 0 ? (duration + ' ms') : '--';
-                return '<div class="pe-result-item">' +
-                    '<div class="pe-result-main">' +
-                        '<div class="pe-result-name">' + escapeHtml(item.ruleName || item.ruleId || '-') + '</div>' +
-                        '<div class="pe-result-meta">启动: ' + escapeHtml(this._formatPeriphExecUptimeMs(item.startTime)) + ' · 耗时: ' + escapeHtml(durationText) + '</div>' +
-                    '</div>' +
-                    '<span class="badge ' + meta.className + '">' + escapeHtml(meta.text) + '</span>' +
-                '</div>';
-            }).join('');
+            // 已删除“最近执行结果”功能
         },
 
         loadPeriphExecResults(options) {
-            var host = document.getElementById('periph-exec-results-list');
-            if (!host) return Promise.resolve();
-            var getter = (options && options.noCache && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
-            return getter('/api/periph-exec/results', { limit: 10 })
-                .then(res => {
-                    if (!res || !res.success) {
-                        host.innerHTML = '<div class="u-empty-cell u-text-danger">执行结果读取失败</div>';
-                        return;
-                    }
-                    this._renderPeriphExecResults(res.data || []);
-                })
-                .catch(err => {
-                    console.warn('Load periph exec results failed:', err);
-                    host.innerHTML = '<div class="u-empty-cell u-text-danger">执行结果读取失败</div>';
-                });
+            // 已删除“最近执行结果”功能
+            return Promise.resolve();
         },
 
         _populatePeriphExecFilter() {

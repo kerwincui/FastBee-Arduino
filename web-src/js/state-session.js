@@ -31,9 +31,6 @@
             .then(res => {
                 if (res && res.success && res.data && res.data.sessionValid) {
                     this.currentUser.name = res.data.username || 'Admin';
-                    this.currentUser.role = res.data.role || 'VIEWER';
-                    this.currentUser.canManageFs = res.data.canManageFs === true;
-                    this.currentUser.permissions = res.data.permissions || [];
                     this._bootDashboardAfterAuth();
                 } else {
                     // 会话无效，尝试使用保存的凭据重新登录
@@ -68,15 +65,6 @@
 
                         this.currentUser.name = res.username || username;
                         sessionStorage.setItem('currentUsername', this.currentUser.name);
-
-                        // 获取角色和权限信息
-                        apiGet('/api/auth/session').then(sr => {
-                            if (sr && sr.success && sr.data) {
-                                this.currentUser.role = sr.data.role || 'VIEWER';
-                                this.currentUser.canManageFs = sr.data.canManageFs === true;
-                                this.currentUser.permissions = sr.data.permissions || [];
-                            }
-                        }).catch(() => {});
 
                         this._bootDashboardAfterAuth();
                     } else {
@@ -158,15 +146,15 @@
                         'network-page',
                         'peripheral-page',
                         'protocol-page'
-                    ], self._pageMapping, { delayMs: 220 }).catch(function() {});
+                    ], self._pageMapping, { delayMs: 800 }).catch(function() {});
                 }
-            }, 1600);
+            }, 5000);
         });
 
         var self = this;
         setTimeout(function() {
             self._loadModals();
-        }, 900);
+        }, 3000);
     };
 
     /**
@@ -190,7 +178,7 @@
             if (!sidebarLogo || sidebarLogo.getAttribute('src')) return;
             var lazySrc = sidebarLogo.getAttribute('data-lazy-src');
             if (lazySrc) sidebarLogo.setAttribute('src', lazySrc);
-        }, 1500);
+        }, 2000);
         if (typeof this._applyUrlParams === 'function') this._applyUrlParams();
     };
 
@@ -254,15 +242,6 @@
 
                     this.currentUser.name = res.username || username;
                     sessionStorage.setItem('currentUsername', this.currentUser.name);
-
-                    // 获取角色和权限信息
-                    apiGet('/api/auth/session').then(sr => {
-                        if (sr && sr.success && sr.data) {
-                            this.currentUser.role = sr.data.role || 'VIEWER';
-                            this.currentUser.canManageFs = sr.data.canManageFs === true;
-                            this.currentUser.permissions = sr.data.permissions || [];
-                        }
-                    }).catch(() => {});
 
                     this._bootDashboardAfterAuth();
                     Notification.success('登录成功', '欢迎');
@@ -354,38 +333,6 @@
                 sessionStorage.removeItem('currentUsername');
                 Notification.success('已成功退出登录', '退出登录');
             });
-    };
-
-    // ============ 权限工具方法 ============
-
-    /**
-     * 检查当前用户是否拥有指定权限
-     * @param {string} permission - 权限标识符，如 'user.admin', 'config.edit'
-     * @returns {boolean}
-     */
-    AppState.hasPermission = function(permission) {
-        if (!permission) return false;
-        var role = this.currentUser.role;
-        // admin 角色拥有所有权限
-        if (role === 'ADMIN') return true;
-        var perms = this.currentUser.permissions;
-        if (!perms || !perms.length) return false;
-        return perms.indexOf(permission) !== -1;
-    };
-
-    /**
-     * 检查当前用户是否拥有任一指定权限
-     * @param {...string} permissions - 权限标识符列表
-     * @returns {boolean}
-     */
-    AppState.hasAnyPermission = function() {
-        if (this.currentUser.role === 'ADMIN') return true;
-        var perms = this.currentUser.permissions;
-        if (!perms || !perms.length) return false;
-        for (var i = 0; i < arguments.length; i++) {
-            if (perms.indexOf(arguments[i]) !== -1) return true;
-        }
-        return false;
     };
 
 })();

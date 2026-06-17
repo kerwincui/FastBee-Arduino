@@ -98,7 +98,6 @@ const FLAG_SECTION_REQUIREMENTS = {
         '-DFASTBEE_ENABLE_RULE_SCRIPT=0',
         '-DFASTBEE_ENABLE_COMMAND_SCRIPT=0',
         '-DFASTBEE_ENABLE_USER_ADMIN=0',
-        '-DFASTBEE_ENABLE_ROLE_ADMIN=0',
         '-DFASTBEE_ENABLE_FILE_MANAGER=0',
         '-DFASTBEE_ENABLE_BLE=0',
         '-DFASTBEE_ENABLE_I2C_SENSORS=0',
@@ -126,29 +125,28 @@ const FLAG_SECTION_REQUIREMENTS = {
         '-DFASTBEE_ENABLE_OTA_FS=1',
         '-DFASTBEE_ENABLE_RULE_SCRIPT=1',
         '-DFASTBEE_ENABLE_USER_ADMIN=1',
-        '-DFASTBEE_ENABLE_ROLE_ADMIN=1',
         '-DFASTBEE_ENABLE_FILE_MANAGER=1',
         '-DFASTBEE_ENABLE_BLE=1',
         '-DFASTBEE_ENABLE_LORA=1',
         '-DFASTBEE_ENABLE_I18N=1'
     ],
     esp32c3_runtime_flags: [
-        '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=1',
+        '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=4',
         '-DCONFIG_ASYNC_TCP_QUEUE_SIZE=4',
         '-DARDUINO_LOOP_STACK_SIZE=12288',
         '-DSCRIPT_TASK_STACK=6144',
         '-DSIMPLE_TASK_STACK=4096'
     ],
     esp32c6_runtime_flags: [
-        '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=3',
+        '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=6',
         '-DCONFIG_ASYNC_TCP_QUEUE_SIZE=8',
         '-DARDUINO_LOOP_STACK_SIZE=12288',
         '-DSCRIPT_TASK_STACK=6144',
         '-DSIMPLE_TASK_STACK=4096'
     ],
     esp32_runtime_flags: [
-        '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=2',
-        '-DCONFIG_ASYNC_TCP_QUEUE_SIZE=4',
+        '-DCONFIG_ASYNC_TCP_MAX_CONNECTIONS=6',
+        '-DCONFIG_ASYNC_TCP_QUEUE_SIZE=8',
         '-DARDUINO_LOOP_STACK_SIZE=16384',
         '-DSCRIPT_TASK_STACK=8192',
         '-DSIMPLE_TASK_STACK=6144'
@@ -164,9 +162,9 @@ const FEATURE_FLAG_TO_SOURCES = {
     FASTBEE_ENABLE_OTA: ['network/OTAManager.cpp', 'network/handlers/OTARouteHandler.cpp'],
     FASTBEE_ENABLE_TCP: ['protocols/TCPHandler.cpp'],
     FASTBEE_ENABLE_HTTP: ['protocols/HTTPClientWrapper.cpp'],
-    FASTBEE_ENABLE_COAP: ['protocols/CoAPHandler.cpp'],
-    FASTBEE_ENABLE_USER_ADMIN: ['network/handlers/UserRouteHandler.cpp'],
-    FASTBEE_ENABLE_ROLE_ADMIN: ['network/handlers/RoleRouteHandler.cpp']
+    FASTBEE_ENABLE_COAP: ['protocols/CoAPHandler.cpp']
+    // NOTE: FASTBEE_ENABLE_USER_ADMIN / FASTBEE_ENABLE_ROLE_ADMIN removed —
+    // multi-role management was removed (single-admin mode only).
 };
 
 function readText(filePath) {

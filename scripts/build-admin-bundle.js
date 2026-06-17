@@ -22,7 +22,6 @@ const OUTPUT_FILE = path.join(PUBLISH_MODULE_DIR, 'admin-bundle.js');
 const ALL_SOURCE_FILES = [
     'logs.js',
     'users.js',
-    'roles.js',
     'files.js',
     'rule-script.js'
 ];

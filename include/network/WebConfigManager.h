@@ -6,13 +6,14 @@
 #include <memory>
 
 #include "core/FeatureFlags.h"
+#include "core/ChipConfig.h"
+#include "core/ResourceProfile.h"
 
 // 接口包含
 #include "core/interfaces/IAuthManager.h"
 #include "core/interfaces/IUserManager.h"
 
 // 前向声明
-class RoleManager;
 class FBNetworkManager;
 class OTAManager;
 class ProtocolManager;
@@ -21,9 +22,6 @@ class StaticRouteHandler;
 class AuthRouteHandler;
 #if FASTBEE_ENABLE_USER_ADMIN
 class UserRouteHandler;
-#endif
-#if FASTBEE_ENABLE_ROLE_ADMIN
-class RoleRouteHandler;
 #endif
 class LogRouteHandler;
 class SystemRouteHandler;
@@ -71,13 +69,16 @@ public:
     void stop();
     bool isServerRunning() const;
 
-    void setRoleManager(RoleManager* roleMgr);
     void setNetworkManager(FBNetworkManager* netMgr);
     void setOTAManager(OTAManager* otaMgr);
     void setProtocolManager(ProtocolManager* protoMgr);
 
     AsyncWebServer* getWebServer() const;
     void performMaintenance();
+
+    /// 请求突增跟踪（由 WebHandlerContext::noteWebRequestActivity 调用）
+    void trackWebRequest();
+    bool isRequestBurst() const;
 
     /// 暴露 SSE 路由处理器（供 HealthMonitor 在内存严重不足时强制断开 SSE 客户端）
     SSERouteHandler* getSseRouteHandler() const { return sseRouteHandler.get(); }
@@ -105,9 +106,6 @@ private:
     std::unique_ptr<AuthRouteHandler>       authHandler;
 #if FASTBEE_ENABLE_USER_ADMIN
     std::unique_ptr<UserRouteHandler>       userHandler;
-#endif
-#if FASTBEE_ENABLE_ROLE_ADMIN
-    std::unique_ptr<RoleRouteHandler>       roleHandler;
 #endif
 #if FASTBEE_ENABLE_LOG_VIEWER || FASTBEE_ENABLE_FILE_LOGGING
     std::unique_ptr<LogRouteHandler>        logHandler;
@@ -156,6 +154,34 @@ private:
                                              uint8_t fragmentation,
                                              unsigned long delayMs = 3000UL);
     void copyText(char* dest, size_t destSize, const char* text) const;
+
+    // ── TCP 连接池健康监测与 Web 服务自动恢复 ──
+    void checkAndRecoverWebServer();
+    uint16_t countTcpConnections(uint8_t* outTimeWait = nullptr) const;
+    bool softRestartWebServer(const char* reason);
+
+    // TCP PCB 耗尽阈值：统一引用 ResourceProfile（单一真相来源）
+    // 必须保证 < MEMP_NUM_TCP_PCB(16)，编译期 static_assert 保护
+    static constexpr uint16_t TCP_CONN_EXHAUSTION_THRESHOLD =
+        FastBee::ResourceProfile::TCP_CONN_EXHAUSTION_THRESHOLD;
+    static constexpr uint8_t  UNHEALTHY_COUNT_TRIGGER = 3;         // 连续不健康次数触发恢复
+    static constexpr unsigned long RECOVERY_COOLDOWN_MS = 30000UL; // 恢复冷却期 30s
+    static constexpr unsigned long CHECK_INTERVAL_MS = 10000UL;    // 检查间隔 10s
+
+    uint8_t  tcpUnhealthyCount = 0;       // 连续检测到TCP不健康的次数
+    unsigned long lastTcpCheckMs = 0;     // 上次TCP健康检查时间
+    unsigned long lastWebRecoveryMs = 0;  // 上次Web服务恢复时间
+    uint32_t webRecoveryCount = 0;        // Web服务软重启累计次数
+
+    // ── 请求突增检测与主动恢复 ──
+
+    static constexpr unsigned long BURST_WINDOW_MS = 5000UL;   // 突增检测窗口 5s
+    static constexpr uint16_t BURST_THRESHOLD = 20;           // 5s 内超过 20 次请求视为突增
+    static constexpr uint8_t  BURST_RECOVERY_TRIGGER = 2;     // 连续 2 次检测到突增+低内存触发恢复
+
+    uint16_t requestCountInWindow = 0;           // 当前窗口内请求数
+    unsigned long burstWindowStartMs = 0;        // 当前窗口起始时间
+    uint8_t  burstWithPressureCount = 0;         // 连续检测到突增+内存压力的次数
 };
 
 #endif // WEB_CONFIG_MANAGER_H

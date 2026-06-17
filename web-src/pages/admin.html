@@ -56,9 +56,9 @@
                     <thead>
                         <tr>
                             <th id="user-username-col" data-i18n="user-username-col">用户名</th>
-                            <th id="user-role-col" data-i18n="user-role-col">角色</th>
                             <th id="user-lastlogin-col" data-i18n="user-lastlogin-col">最后登录</th>
                             <th id="user-status-col" data-i18n="user-status-col">状态</th>
+                            <th id="user-desc-col" data-i18n="user-desc-col">描述</th>
                             <th id="user-actions-col" data-i18n="user-actions-col">操作</th>
                         </tr>
                     </thead>
@@ -70,41 +70,3 @@
         </div>
     </div>
 </div>
-
-<!-- 角色管理页面 -->
-<div id="roles-page" class="page page-layout-flat">
-    <div class="fb-card">
-        <div class="fb-card-header u-header-between">
-            <h2 class="fb-card-title" id="roles-title" data-i18n="roles-title">角色管理</h2>
-            <div class="u-toolbar-sm">
-                <button class="fb-btn fb-btn-refresh" id="roles-refresh-btn"><span data-i18n="refresh-btn">刷新</span></button>
-                <button class="fb-btn fb-btn-primary" id="add-role-btn"
-                    data-i18n="add-role-btn-text">
-                    新增角色
-                </button>
-            </div>
-        </div>
-        <div class="fb-card-body">
-            <p class="u-text-secondary u-mb-20" data-i18n="roles-admin-hint">
-                超级管理员(admin)角色不可编辑或删除，其他角色可进行管理操作。</p>
-            <div class="u-table-wrap">
-                <table class="fb-table fb-table-bordered u-table-fill">
-                    <thead>
-                        <tr>
-                            <th data-i18n="role-id-col">角色ID</th>
-                            <th data-i18n="role-name-col">角色名称</th>
-                            <th data-i18n="role-desc-col">描述</th>
-                            <th data-i18n="role-perm-count-col">权限数</th>
-                            <th data-i18n="role-type-col">类型</th>
-                            <th data-i18n="role-actions-col">操作</th>
-                        </tr>
-                    </thead>
-                    <tbody id="roles-table-body">
-                        <!-- 角色数据将通过JS动态生成 -->
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-</div>
-

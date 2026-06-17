@@ -39,6 +39,7 @@ extern void test_config_storage_group();
 extern void test_task_manager_group();
 extern void test_health_monitor_group();
 extern void test_regression_guard_group();
+extern void test_tcp_page_loading_group();
 
 // 测试夹具
 void setUp() {
@@ -160,6 +161,9 @@ void setup() {
 
     Serial.println("\n[TEST] Running Regression Guard Tests...");
     test_regression_guard_group();
+
+    Serial.println("\n[TEST] Running TCP & Page Loading Tests...");
+    test_tcp_page_loading_group();
 
     // 结束测试并输出结果
     int result = UNITY_END();

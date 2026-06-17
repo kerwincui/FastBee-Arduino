@@ -1330,9 +1330,6 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
                 RULE_SCRIPT_CONFIG_FILE,
 #endif
                 "/config/peripherals.json",
-#if FASTBEE_ENABLE_ROLE_ADMIN
-                "/config/roles.json",
-#endif
             };
             for (int i = 0; i < (int)(sizeof(configFiles) / sizeof(configFiles[0])); i++) {
                 if (LittleFS.exists(configFiles[i])) {

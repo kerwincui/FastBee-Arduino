@@ -21,6 +21,38 @@ import subprocess
 Import("env")  # type: ignore[name-defined]
 
 # ---------------------------------------------------------------------------
+# Phase 0: Ensure toolchain is in PATH
+# The pioarduino platform's idf_tools.py sometimes fails to set PATH
+# (especially after toolchain reinstallation). This ensures the compiler
+# is always findable regardless of PlatformIO's tool resolution state.
+# Works on all OS (Windows/Linux/macOS) and any user.
+# ---------------------------------------------------------------------------
+def _ensure_toolchain_in_path():
+    """Add toolchain bin directories to PATH if not already present."""
+    # Respect PLATFORMIO_HOME_DIR env var; fall back to ~/.platformio
+    pio_home = os.environ.get(
+        "PLATFORMIO_HOME_DIR",
+        os.path.join(os.path.expanduser("~"), ".platformio")
+    )
+    # Xtensa (ESP32, ESP32-S2, ESP32-S3) and RISC-V (ESP32-C3, C6, H2)
+    toolchain_dirs = [
+        # Xtensa toolchain
+        os.path.join(pio_home, "tools", "toolchain-xtensa-esp-elf", "xtensa-esp-elf", "bin"),
+        os.path.join(pio_home, "packages", "toolchain-xtensa-esp-elf", "xtensa-esp-elf", "bin"),
+        # RISC-V toolchain
+        os.path.join(pio_home, "tools", "toolchain-riscv32-esp", "riscv32-esp-elf", "bin"),
+        os.path.join(pio_home, "packages", "toolchain-riscv32-esp", "riscv32-esp-elf", "bin"),
+    ]
+    current_path = os.environ.get("PATH", "")
+    for toolchain_bin in toolchain_dirs:
+        if os.path.isdir(toolchain_bin) and toolchain_bin not in current_path:
+            os.environ["PATH"] = toolchain_bin + os.pathsep + current_path
+            current_path = os.environ["PATH"]
+            print(f"[FastBee] Toolchain PATH injected: {toolchain_bin}")
+
+_ensure_toolchain_in_path()
+
+# ---------------------------------------------------------------------------
 # Stale compiler process names that should be safe to kill unconditionally.
 # These are specific to the xtensa / esp-riscv cross-compilation toolchain
 # and are never legitimate long-running processes.

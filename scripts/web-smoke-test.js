@@ -8,6 +8,10 @@ const { createWebAssetReport, formatBytes } = require('./web-asset-report');
 const ROOT_DIR = path.join(__dirname, '..');
 const WWW_DIR = path.join(ROOT_DIR, 'data', 'www');
 
+function read(relPath) {
+    return fs.readFileSync(path.join(ROOT_DIR, relPath), 'utf8');
+}
+
 const REQUIRED_GZIP_ASSETS = [
     'index.html.gz',
     'css/main.css.gz',
@@ -48,7 +52,6 @@ const STANDARD_GZIP_ASSETS = [
 const FULL_GZIP_ASSETS = [
     'js/modules/files.js.gz',
     'js/modules/logs.js.gz',
-    'js/modules/roles.js.gz',
     'js/modules/rule-script.js.gz',
     'js/modules/users.js.gz',
     'pages/admin.html.gz',
@@ -119,6 +122,12 @@ function walkDir(dir, files) {
 function fail(message) {
     failures.push(message);
     console.error(`FAIL ${message}`);
+}
+
+function snippetAround(source, needle, before = 300, after = 500) {
+    const index = source.indexOf(needle);
+    if (index < 0) return '';
+    return source.slice(Math.max(0, index - before), index + after);
 }
 
 function assert(condition, message) {
@@ -323,6 +332,189 @@ function checkFirstPaintPath(profile) {
     assert(i18nLangRefs === 0, 'i18n language bundles should be loaded on demand, not in index.html');
 }
 
+function checkRoleCaseRegressionGuards() {
+    // 2025-06: 角色管理已移除，单管理员模式 —— hasPermission/hasAnyPermission 已完全移除
+    const stateSession = read('web-src/js/state-session.js');
+    assert(!stateSession.includes('hasPermission'), 'state-session.js must NOT export hasPermission (roles/permissions removed)');
+    assert(!stateSession.includes('hasAnyPermission'), 'state-session.js must NOT export hasAnyPermission (roles/permissions removed)');
+    // 单管理员模式：不应有角色检查逻辑
+    assert(!stateSession.includes("role === 'ADMIN'"), 'state-session.js must NOT use uppercase role comparison (roles removed)');
+    assert(!stateSession.includes("role === 'VIEWER'"), 'state-session.js must NOT reference VIEWER role (roles removed)');
+}
+
+function checkMenuOrderRegressionGuards() {
+    // 2025-06 修复: 规则脚本菜单应放在设备大屏后面
+    const indexHtml = read('web-src/index.html');
+    const controlIdx = indexHtml.indexOf('data-page="device-control"');
+    const ruleIdx = indexHtml.indexOf('data-page="rule-script"');
+    assert(controlIdx > 0, 'index.html should contain device-control menu item');
+    assert(ruleIdx > 0, 'index.html should contain rule-script menu item');
+    assert(ruleIdx > controlIdx, 'rule-script menu should appear AFTER device-control');
+}
+
+function checkButtonColorRegressionGuards() {
+    // 2025-06 修复: 设备配置保存按钮应使用 fb-btn-primary 而非 fb-btn-warning
+    const deviceHtml = read('web-src/pages/device.html');
+    assert(deviceHtml.includes('fb-btn-primary fb-btn-action'), 'device save button should use fb-btn-primary');
+    // 确保保存按钮区域不包含 fb-btn-warning
+    const saveBtnSnippet = snippetAround(deviceHtml, '保存信息', 100, 200);
+    assert(!saveBtnSnippet.includes('fb-btn-warning'), 'device "保存信息" button must NOT use fb-btn-warning');
+    const ntpBtnSnippet = snippetAround(deviceHtml, '保存NTP配置', 100, 200);
+    assert(!ntpBtnSnippet.includes('fb-btn-warning'), 'device "保存NTP配置" button must NOT use fb-btn-warning');
+}
+
+function checkGovernorOverloadRegressionGuards() {
+    // 2025-06 修复: Modbus 初始化前应等待 1500ms cooldown，请求间隔 600ms
+    const coreJs = read('web-src/modules/runtime/device-control/core.js');
+    assert(coreJs.includes('setTimeout(resolve, 1500)'), 'Modbus init should start with 1500ms initial cooldown');
+    assert(coreJs.includes('setTimeout(resolve, 600)'), 'Modbus inter-request delay should be 600ms');
+    assert(!/setTimeout\(resolve, (150|300|800)\)/.test(coreJs), 'Modbus timing must NOT use old values (150/300/800ms)');
+
+    // apiMqttTest 应通过 Governor.enqueue 调度，避免绕过请求调度器
+    const govJs = read('web-src/js/request-governor.js');
+    const mqttTestMatch = govJs.match(/apiMqttTest\s*=\s*function[\s\S]{0,200}/);
+    assert(mqttTestMatch && mqttTestMatch[0].includes('Governor.enqueue'), 'apiMqttTest must use Governor.enqueue (not direct request)');
+}
+
+function checkPeriphExecResultsRemoved() {
+    // 2025-06 修复: 外设执行页面应已删除“最近执行结果”功能
+    const periphHtml = read('web-src/pages/peripheral.html');
+    assert(!periphHtml.includes('pe-results-panel'), 'peripheral.html must NOT have pe-results-panel');
+    assert(!periphHtml.includes('periph-exec-results-list'), 'peripheral.html must NOT have periph-exec-results-list');
+    assert(!periphHtml.includes('periph-exec-results-refresh-btn'), 'peripheral.html must NOT have results refresh button');
+
+    const peJs = read('web-src/modules/runtime/periph-exec.js');
+    assert(!peJs.includes("getElementById('periph-exec-results-list')"), 'periph-exec.js must NOT query periph-exec-results-list');
+    assert(!peJs.includes('/api/periph-exec/results'), 'periph-exec.js must NOT call /api/periph-exec/results API');
+}
+
+function checkModuleLoaderResilience() {
+    // 2025-06 修复: 模块加载器应使用指数退避重试，而非固定延迟
+    const mlJs = read('web-src/js/module-loader.js');
+    assert(mlJs.includes('Math.pow(2, retries)'), 'Module loader should use exponential backoff');
+    assert(mlJs.includes('retries < 3'), 'Module loader should retry up to 4 attempts');
+
+    // MQTT 状态轮询应有定期 setInterval 备份
+    const mqttJs = read('web-src/modules/runtime/protocol/mqtt-config.js');
+    assert(mqttJs.includes('_mqttPollInterval'), 'MQTT status polling should have _mqttPollInterval');
+    assert(mqttJs.includes('setInterval'), 'MQTT status polling should use setInterval as backup');
+}
+
+function checkBootTimingRegressionGuards() {
+    // 2025-06 修复: 首次访问卡顿 - 请求加载应充分错开，避免压垂ESP32
+    const indexHtml = read('web-src/index.html');
+    // chunk加载间隔应为80ms而非30ms
+    assert(indexHtml.includes('delayMs || 80'), 'chunk loading delay should be 80ms (not 30ms)');
+    assert(indexHtml.includes("loadSequence(bootChunks, 80)"), 'boot chunk sequence should use 80ms interval');
+    // SW注册应延迟5秒
+    assert(indexHtml.includes('setTimeout') && indexHtml.includes('5000'), 'SW registration should be delayed 5000ms');
+    // SW注册不应使用 window.addEventListener('load') 模式
+    assert(!indexHtml.includes("window.addEventListener('load'"), 'SW registration should NOT use load event listener');
+
+    const sessionJs = read('web-src/js/state-session.js');
+    // 页面预加载应延迟5000ms，间隔800ms
+    assert(sessionJs.includes('delayMs: 800'), 'page preload interval should be 800ms');
+    assert(sessionJs.includes('}, 5000)'), 'page preload should be delayed 5000ms');
+    // modals加载应延迟3000ms
+    assert(sessionJs.includes('}, 3000)'), 'modals loading should be delayed 3000ms');
+}
+
+function checkNetworkNotificationRegressionGuards() {
+    // 2025-06 修复: 网络设置保存提示应使用“网络设置保存成功”而非“WiFi配置保存成功”
+    const networkJs = read('web-src/modules/runtime/network.js');
+    assert(!networkJs.includes('WiFi配置保存成功'), 'network.js must NOT contain WiFi配置保存成功');
+    assert(networkJs.includes('网络设置保存成功'), 'network.js should contain 网络设置保存成功');
+
+    // 2025-06 修复: loadNetworkStatus 应检测DNS解析错误并跳过重试
+    assert(networkJs.includes('_isDnsError'), 'network.js should have _isDnsError helper');
+    assert(networkJs.includes('DNS resolution failed'), 'loadNetworkStatus should log DNS errors');
+
+    const i18nZh = read('web-src/i18n/i18n-zh-CN.js');
+    assert(!i18nZh.includes("'wifi-save-ok': 'WiFi配置保存成功"), 'i18n zh wifi-save-ok should not say WiFi配置保存成功');
+
+    // 2025-06 修复: 4G 蜂窝面板应包含访问方式提示
+    const networkHtml = read('web-src/pages/network.html');
+    assert(networkHtml.includes('cellular-access-hint'), 'cellular panel should have access hint');
+    assert(networkHtml.includes('fastbee-ap'), 'cellular hint should mention AP SSID');
+    assert(networkHtml.includes('192.168.4.1'), 'cellular hint should mention AP IP');
+    // 4G 访问提示不应包含 fastbee.local（AP 无 DNS 服务器，mDNS 不可靠）
+    const cellularPanel = networkHtml.match(/id="cellular-panel"[\s\S]*?id="lora-panel"/);
+    assert(cellularPanel, 'cellular panel section should exist');
+    assert(!cellularPanel[0].includes('fastbee.local'), 'cellular access hint should NOT reference mDNS domain');
+
+    // 2025-06 修复: 后端 4G 混合模式必须启动 mDNS
+    const nmCpp = read('src/network/NetworkManager.cpp');
+    // 4G 初始化路径应包含 startMDNS 调用
+    const fourGSection = nmCpp.match(/NET_4G[\s\S]{0,2500}isInitialized = true[\s\S]{0,20}return true/);
+    assert(fourGSection, '4G init section should exist');
+    assert(fourGSection[0].includes('startMDNS'), '4G hybrid mode must call dnsManager->startMDNS()');
+}
+
+function checkWifiSecurityRegressionGuards() {
+    // 2025-06: WiFi扫描返回具体加密类型字符串，前端安全下拉选项已细化为 wpa/wpa2/wpa3
+    const networkHtml = read('web-src/pages/network.html');
+    assert(networkHtml.includes('value="wpa2"'), 'wifi-security select must have wpa2 option');
+    assert(networkHtml.includes('data-i18n="wifi-security-wpa2"'), 'wifi-security wpa2 option must have i18n key');
+    assert(networkHtml.includes('selected') && networkHtml.includes('wpa2'), 'wpa2 should be the default security option');
+
+    const networkJs = read('web-src/modules/runtime/network.js');
+    // 扫描结果显示具体加密标签映射
+    assert(networkJs.includes("encryptLabels"), 'network.js should have encryptLabels mapping');
+    assert(networkJs.includes("'WPA2'"), 'encryptLabels should include WPA2 label');
+    // 选择处理逻辑使用 encryption 字符串直接赋值，不再使用 '0'/'1'
+    assert(networkJs.includes("secValue"), 'scan handler should use secValue variable');
+    assert(!networkJs.includes("encryption === 'none' ? '0' : '1'"), 'scan handler must NOT use old 0/1 values');
+    // 后端扫描返回具体加密类型，不再是 "open"/"secured" 二值
+    const wmCpp = read('src/network/WiFiManager.cpp');
+    assert(wmCpp.includes('WIFI_AUTH_WPA2_PSK'), 'WiFiManager scan should map WPA2_PSK');
+    assert(wmCpp.includes('WIFI_AUTH_WPA3_PSK'), 'WiFiManager scan should map WPA3_PSK');
+    assert(!wmCpp.includes('? "open" : "secured"'), 'WiFiManager scan must NOT return just open/secured');
+}
+
+function checkRoleManagementRemoved() {
+    // 2025-06: 多角色管理功能已移除，系统运行在单管理员模式
+    // 确保角色管理相关文件不会被误加回来
+    const removedSrcFiles = [
+        'include/security/RoleManager.h',
+        'src/security/RoleManager.cpp',
+        'include/network/handlers/RoleRouteHandler.h',
+        'src/network/handlers/RoleRouteHandler.cpp',
+        'data/config/roles.json'
+    ];
+    removedSrcFiles.forEach(f => {
+        assert(!fs.existsSync(path.join(ROOT_DIR, f)),
+            `[REGRESSION] 已移除的角色管理文件不应存在: ${f}`);
+    });
+
+    // 前端角色模块不应存在
+    const removedWebModules = [
+        'web-src/modules/admin/roles.js'
+    ];
+    removedWebModules.forEach(f => {
+        assert(!fs.existsSync(path.join(ROOT_DIR, f)),
+            `[REGRESSION] 已移除的角色管理前端模块不应存在: ${f}`);
+    });
+
+    // 角色管理压缩资产不应存在
+    const removedGzipAssets = [
+        'data/www/js/modules/roles.js.gz'
+    ];
+    removedGzipAssets.forEach(f => {
+        assert(!fs.existsSync(path.join(ROOT_DIR, f)),
+            `[REGRESSION] 已移除的角色管理压缩资产不应存在: ${f}`);
+    });
+
+    // admin.html 不应包含 roles-page
+    if (fs.existsSync(path.join(ROOT_DIR, 'web-src/pages/admin.html'))) {
+        const adminHtml = read('web-src/pages/admin.html');
+        assert(!adminHtml.includes('roles-page'), 'admin.html must NOT contain roles-page');
+    }
+
+    // index.html 不应包含 data-page="roles"
+    const indexHtml = read('web-src/index.html');
+    assert(!indexHtml.includes('data-page="roles"'), 'index.html must NOT contain data-page="roles"');
+}
+
 function run() {
     const files = [];
     walkDir(WWW_DIR, files);
@@ -333,6 +525,16 @@ function run() {
     checkJavascriptSyntax(files);
     checkUiRegressionGuards(files);
     checkPaginationRegressionGuards(files);
+    checkRoleCaseRegressionGuards();
+    checkMenuOrderRegressionGuards();
+    checkButtonColorRegressionGuards();
+    checkGovernorOverloadRegressionGuards();
+    checkPeriphExecResultsRemoved();
+    checkModuleLoaderResilience();
+    checkBootTimingRegressionGuards();
+    checkNetworkNotificationRegressionGuards();
+    checkWifiSecurityRegressionGuards();
+    checkRoleManagementRemoved();
     checkAssetBudgets(profile);
     checkFirstPaintPath(profile);
 

@@ -313,7 +313,22 @@ String WiFiManager::scanNetworks() {
         network["rssi"] = WiFi.RSSI(i);
         network["strength"] = NetworkUtils::rssiToPercentage(WiFi.RSSI(i));
         network["channel"] = WiFi.channel(i);
-        network["encryption"] = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "open" : "secured";
+        // 返回具体加密类型，便于前端自动匹配安全类型下拉选项
+        wifi_auth_mode_t authMode = WiFi.encryptionType(i);
+        const char* enc;
+        switch (authMode) {
+            case WIFI_AUTH_OPEN:             enc = "open"; break;
+            case WIFI_AUTH_WEP:              enc = "wep";  break;
+            case WIFI_AUTH_WPA_PSK:          enc = "wpa";  break;
+            case WIFI_AUTH_WPA2_PSK:         enc = "wpa2"; break;
+            case WIFI_AUTH_WPA_WPA2_PSK:     enc = "wpa2"; break;  // WPA/WPA2混合，归类为wpa2
+#if defined(WIFI_AUTH_WPA3_PSK)
+            case WIFI_AUTH_WPA3_PSK:         enc = "wpa3"; break;
+            case WIFI_AUTH_WPA2_WPA3_PSK:    enc = "wpa3"; break;  // WPA2/WPA3混合，归类为wpa3
+#endif
+            default:                         enc = "wpa2"; break;  // 未知加密默认wpa2
+        }
+        network["encryption"] = enc;
         network["bssid"] = WiFi.BSSIDstr(i);
     }
 

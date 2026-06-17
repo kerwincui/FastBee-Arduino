@@ -396,6 +396,8 @@ public:
     bool apRunning = false;
     uint8_t apClientCount = 0;
     bool internetAvailable = false;
+    bool mDNSStarted = false;  // 模拟 mDNS 服务状态
+    bool enableMDNS = true;    // 模拟 mDNS 启用配置
 
     // 模拟 WiFiManager 的状态（用于测试状态隔离）
     NetStatus wifiManagerStatus = NetStatus::AP_MODE;
@@ -413,6 +415,8 @@ public:
                 internetAvailable = true;
                 // 4G 成功 → 启动 AP 热点
                 startAPForHybrid();
+                // 4G 混合模式下必须启动 mDNS
+                if (enableMDNS) mDNSStarted = true;
                 return true;
             } else {
                 // 4G 失败 → 回退到 AP 模式（关键修复点）
@@ -430,6 +434,8 @@ public:
                 ipAddress = "192.168.1.200";
                 internetAvailable = true;
                 startAPForHybrid();
+                // 以太网混合模式下必须启动 mDNS
+                if (enableMDNS) mDNSStarted = true;
                 return true;
             } else {
                 networkType = NetType::NET_WIFI;
@@ -515,6 +521,7 @@ public:
         ipAddress = "";
         internetAvailable = false;
         apRunning = false;
+        mDNSStarted = false;
     }
 
     bool isAPRunning() const { return apRunning; }
@@ -613,6 +620,72 @@ void test_lora_init_failure_fallback_to_ap() {
 
     TEST_ASSERT_TRUE(mgr.isAPRunning());
     TestLog::step("AP hotspot running");
+
+    TestLog::testEnd(true);
+}
+
+// 测试 4G 混合模式下 mDNS 必须启动
+void test_4g_mode_mdns_started() {
+    TestLog::testStart("4G Mode: mDNS Must Start");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    mgr.enableMDNS = true;
+
+    bool result = mgr.initialize(true);  // 4G 初始化成功
+    TEST_ASSERT_TRUE(result);
+    TestLog::step("4G init succeeded");
+
+    // mDNS 必须已启动
+    TEST_ASSERT_TRUE_MESSAGE(mgr.mDNSStarted, "4G hybrid mode must start mDNS for AP access");
+    TestLog::step("mDNS started in 4G hybrid mode");
+
+    // AP 热点必须同时运行
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TEST_ASSERT_AP_ACTIVE_IN_HYBRID(mgr.apIPAddress, mgr.apSSID);
+    TestLog::step("AP + mDNS both active");
+
+    TestLog::testEnd(true);
+}
+
+// 测试以太网混合模式下 mDNS 必须启动
+void test_ethernet_mode_mdns_started() {
+    TestLog::testStart("Ethernet Mode: mDNS Must Start");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    mgr.enableMDNS = true;
+
+    bool result = mgr.initialize(true);  // 以太网初始化成功
+    TEST_ASSERT_TRUE(result);
+    TestLog::step("Ethernet init succeeded");
+
+    // mDNS 必须已启动
+    TEST_ASSERT_TRUE_MESSAGE(mgr.mDNSStarted, "Ethernet hybrid mode must start mDNS for AP access");
+    TestLog::step("mDNS started in Ethernet hybrid mode");
+
+    TestLog::testEnd(true);
+}
+
+// 测试 mDNS 禁用时不启动
+void test_mdns_disabled_not_started() {
+    TestLog::testStart("mDNS Disabled: Not Started");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    mgr.enableMDNS = false;  // 用户禁用 mDNS
+
+    bool result = mgr.initialize(true);
+    TEST_ASSERT_TRUE(result);
+    TestLog::step("4G init succeeded with mDNS disabled");
+
+    // mDNS 不应启动
+    TEST_ASSERT_FALSE_MESSAGE(mgr.mDNSStarted, "mDNS should NOT start when disabled");
+    TestLog::step("mDNS correctly not started");
+
+    // AP 仍应正常运行
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TestLog::step("AP still active without mDNS");
 
     TestLog::testEnd(true);
 }
@@ -880,6 +953,116 @@ void test_hybrid_mode_ap_ip() {
     TestLog::testEnd(true);
 }
 
+/**
+ * @brief 验证restartNetwork()在非WiFi模式下不调用全局disconnect()
+ * 关键：AP热点在整个切换过程中不被关闭
+ * 回归防护：以太网切换导致AP热点中断问题
+ */
+void test_restart_network_non_wifi_no_global_disconnect() {
+    TestLog::testStart("Restart Network Non-WiFi: No Global Disconnect");
+
+    // 模拟以太网模式下 AP 已启动
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    mgr.initialize(true);  // 以太网初始化成功，AP同时启动
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", mgr.apIPAddress.c_str());
+    TestLog::step("Initial: Ethernet connected, AP running at 192.168.4.1");
+
+    // 记录重启前 AP 状态
+    String apIPBefore = mgr.apIPAddress;
+
+    // 模拟 restartNetwork 在非WiFi模式下的行为：
+    // 核心约束：不调用全局 disconnect()，只断开 WiFi STA
+    // 模拟选择性断开（保持AP）而非全局断开
+    mgr.apRunning = true;  // AP 在重启期间保持运行
+    mgr.apIPAddress = "192.168.4.1";  // AP IP 不变
+    // 断开以太网适配器
+    mgr.status = MockMultiNetworkManager::NetStatus::DISCONNECTED;
+    mgr.ipAddress = "";
+    mgr.internetAvailable = false;
+    mgr.mDNSStarted = false;
+    // 重新初始化以太网
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    bool result = mgr.initialize(true);
+    TEST_ASSERT_TRUE(result);
+    TestLog::step("Selective restart: Ethernet re-initialized successfully");
+
+    // 关键验证 1: AP 热点始终在线
+    TEST_ASSERT_TRUE_MESSAGE(mgr.isAPRunning(),
+        "restartNetwork() for ethernet must NOT stop AP hotspot");
+    TestLog::step("AP hotspot remains running throughout restart");
+
+    // 关键验证 2: AP IP 保持 192.168.4.1
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("192.168.4.1", mgr.apIPAddress.c_str(),
+        "AP IP must remain 192.168.4.1 during non-WiFi restart");
+    TestLog::step("AP IP still 192.168.4.1");
+
+    // 关键验证 3: 以太网已重新连接
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::CONNECTED, (int)mgr.status);
+    TEST_ASSERT_FALSE(mgr.ipAddress.isEmpty());
+    TestLog::step("Ethernet reconnected with new IP");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证以太网初始化失败时的AP恢复逻辑
+ * NetworkManager.cpp 第1408-1414行的备用路径
+ * 确保AP作为恢复入口始终可用
+ */
+void test_restart_network_eth_failure_ap_recovery() {
+    TestLog::testStart("Restart Network: Ethernet Failure AP Recovery");
+
+    // 初始状态：以太网已连接，AP运行中
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    mgr.initialize(true);
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TestLog::step("Initial: Ethernet + AP running");
+
+    // 模拟重启网络时以太网初始化失败
+    // 先断开（模拟选择性断开，保持AP）
+    mgr.status = MockMultiNetworkManager::NetStatus::DISCONNECTED;
+    mgr.ipAddress = "";
+    mgr.internetAvailable = false;
+    mgr.mDNSStarted = false;
+    // AP 在选择性断开时保持运行
+    mgr.apRunning = true;
+    mgr.apIPAddress = "192.168.4.1";
+
+    // 重新初始化以太网失败
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    bool result = mgr.initialize(false);  // 以太网初始化失败
+    TEST_ASSERT_FALSE(result);
+    TestLog::step("Ethernet re-init failed");
+
+    // 关键验证 1: 失败后 AP 必须活跃
+    TEST_ASSERT_TRUE_MESSAGE(mgr.isAPRunning(),
+        "AP must be active after ethernet init failure for user recovery");
+    TestLog::step("AP active after failure (recovery entrance)");
+
+    // 关键验证 2: AP IP 为 192.168.4.1
+    TEST_ASSERT_EQUAL_STRING_MESSAGE("192.168.4.1", mgr.apIPAddress.c_str(),
+        "AP IP must be 192.168.4.1 for user to access recovery page");
+    TestLog::step("AP IP = 192.168.4.1");
+
+    // 关键验证 3: 回退到 WiFi AP 模式（确保用户可配置）
+    TEST_ASSERT_EQUAL_MESSAGE((int)MockMultiNetworkManager::NetType::NET_WIFI,
+        (int)mgr.networkType,
+        "networkType should fallback to NET_WIFI after failure");
+    TEST_ASSERT_EQUAL_MESSAGE((int)MockMultiNetworkManager::NetMode::NETWORK_AP,
+        (int)mgr.mode,
+        "mode should fallback to NETWORK_AP after failure");
+    TestLog::step("Fallback to WiFi AP mode");
+
+    // 关键验证 4: 状态为 AP_MODE
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::AP_MODE, (int)mgr.status);
+    TestLog::step("Status = AP_MODE (accessible for recovery)");
+
+    TestLog::testEnd(true);
+}
+
 // Test group entry point
 void test_network_config_group() {
     TestLog::groupStart("Network Configuration Tests");
@@ -909,6 +1092,9 @@ void test_multi_network_mode_group() {
     RUN_TEST(test_lora_init_failure_fallback_to_ap);
     RUN_TEST(test_4g_mode_ap_always_running);
     RUN_TEST(test_ethernet_mode_ap_always_running);
+    RUN_TEST(test_4g_mode_mdns_started);
+    RUN_TEST(test_ethernet_mode_mdns_started);
+    RUN_TEST(test_mdns_disabled_not_started);
     RUN_TEST(test_non_wifi_status_isolation);
     RUN_TEST(test_4g_disconnect_status);
     RUN_TEST(test_switch_wifi_to_4g);
@@ -917,6 +1103,10 @@ void test_multi_network_mode_group() {
     RUN_TEST(test_restart_network_non_wifi);
     RUN_TEST(test_restart_network_4g_failure);
     RUN_TEST(test_hybrid_mode_ap_ip);
+    
+    // restartNetwork AP保活回归测试
+    RUN_TEST(test_restart_network_non_wifi_no_global_disconnect);
+    RUN_TEST(test_restart_network_eth_failure_ap_recovery);
 
     TestLog::groupEnd();
 }

@@ -43,7 +43,7 @@ static bool configureMqttTransport(MQTTClient* mqttClient) {
 }
 #endif
 
-ProtocolManager::ProtocolManager() 
+ProtocolManager::ProtocolManager()
     : isInitialized(false)
 #if FASTBEE_ENABLE_MODBUS
     , modbusRestartPending(false)
@@ -59,7 +59,7 @@ bool ProtocolManager::initialize() {
     if (isInitialized) {
         return true;
     }
-    
+
     LOG_INFO("Protocol Manager: Initializing...");
     isInitialized = true;
     return true;
@@ -84,7 +84,7 @@ bool ProtocolManager::setProtocolConfig(ProtocolType type, void* config) {
     for (auto& protocol : protocols) {
         if (protocol.type == type) {
             protocol.config = config;
-            
+
             // 根据协议类型初始化
             switch (type) {
 #if FASTBEE_ENABLE_MQTT
@@ -125,31 +125,31 @@ bool ProtocolManager::startAll() {
         bool started = false;
         switch (protocol.type) {
 #if FASTBEE_ENABLE_MQTT
-            case ProtocolType::MQTT:   
+            case ProtocolType::MQTT:
                 started = mqttClient && mqttClient->begin();
                 if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_ENABLED, "");
                 break;
 #endif
 #if FASTBEE_ENABLE_MODBUS
-            case ProtocolType::MODBUS: 
+            case ProtocolType::MODBUS:
                 started = modbusHandler && modbusHandler->begin();
                 if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MODBUS_RTU_ENABLED, "");
                 break;
 #endif
 #if FASTBEE_ENABLE_TCP
-            case ProtocolType::TCP:    
+            case ProtocolType::TCP:
                 started = tcpHandler && tcpHandler->beginFromConfig();
                 if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_TCP_ENABLED, "");
                 break;
 #endif
 #if FASTBEE_ENABLE_HTTP
-            case ProtocolType::HTTP:   
+            case ProtocolType::HTTP:
                 started = httpClientWrapper && httpClientWrapper->beginFromConfig();
                 if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_HTTP_ENABLED, "");
                 break;
 #endif
 #if FASTBEE_ENABLE_COAP
-            case ProtocolType::COAP:   
+            case ProtocolType::COAP:
                 started = coapHandler && coapHandler->beginFromConfig();
                 if (started) PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_COAP_ENABLED, "");
                 break;
@@ -418,13 +418,13 @@ void ProtocolManager::dispatchModbusData(uint8_t slaveAddress, const String& dat
 #if FASTBEE_ENABLE_MQTT
 bool ProtocolManager::restartMQTT() {
     LOG_INFO("Protocol Manager: Restarting MQTT...");
-    
+
     // 断开现有连接
     if (mqttClient) {
         mqttClient->disconnect();
         mqttClient.reset();
     }
-    
+
     // 重新创建并初始化
     mqttClient = std::unique_ptr<MQTTClient>(new MQTTClient());
     mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
@@ -435,7 +435,7 @@ bool ProtocolManager::restartMQTT() {
         mqttClient.reset();
         return false;
     }
-    
+
     // 设置状态变化回调（SSE 推送用）
     if (mqttStatusSSECallback) {
         mqttClient->setStatusChangeCallback([this](const String& data) {
@@ -467,12 +467,12 @@ bool ProtocolManager::restartMQTT() {
         result.concat(']');
         return result;
     });
-    
+
     if (!mqttClient->begin()) {
         LOG_WARNING("Protocol Manager: MQTT restart begin() failed");
         return false;
     }
-    
+
     // 尝试连接
     bool ok = mqttClient->connect();
     if (ok) {
@@ -485,21 +485,22 @@ bool ProtocolManager::restartMQTT() {
 
 bool ProtocolManager::restartMQTTDeferred() {
     LOG_INFO("Protocol Manager: Restarting MQTT (deferred connect)...");
-    
-    // 堆保护：防止低内存时对象创建触发 abort()
+
+    // 先释放旧客户端，然后再检查堆内存
+    // 之前在释放前检查导致误判（旧客户端占用 ~12KB，释放后堆足够）
+    if (mqttClient) {
+        mqttClient->disconnect();
+        mqttClient.reset();
+    }
+
+    // 堆保护：释放旧客户端后仍不足，放弃重建
     uint32_t freeHeap = ESP.getFreeHeap();
     if (freeHeap < 25000) {
         LOG_WARNINGF("Protocol Manager: Heap too low for MQTT deferred restart (heap=%lu), skipping",
                      (unsigned long)freeHeap);
         return false;
     }
-    
-    // 断开现有连接
-    if (mqttClient) {
-        mqttClient->disconnect();
-        mqttClient.reset();
-    }
-    
+
     // 重新创建并初始化（仅加载配置，不阻塞连接）
     mqttClient = std::unique_ptr<MQTTClient>(new MQTTClient());
     mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
@@ -510,7 +511,7 @@ bool ProtocolManager::restartMQTTDeferred() {
         mqttClient.reset();
         return false;
     }
-    
+
     // 设置状态变化回调（SSE 推送用）
     if (mqttStatusSSECallback) {
         mqttClient->setStatusChangeCallback([this](const String& data) {
@@ -542,12 +543,12 @@ bool ProtocolManager::restartMQTTDeferred() {
         result.concat(']');
         return result;
     });
-    
+
     if (!mqttClient->begin()) {
         LOG_WARNING("Protocol Manager: MQTT deferred restart begin() failed");
         return false;
     }
-    
+
     // 不调用 connect()，由 MQTTClient::handle() 的 auto-reconnect 在 loop 中异步连接
     LOG_INFO("Protocol Manager: MQTT config reloaded, will auto-connect in loop");
     return true;
@@ -564,7 +565,7 @@ void ProtocolManager::stopMQTT() {
 #if FASTBEE_ENABLE_MODBUS
 bool ProtocolManager::restartModbus() {
     LOG_INFO("Protocol Manager: Restarting Modbus...");
-    
+
     // 堆保护：防止低内存时 JSON 解析/对象创建触发 abort()
     uint32_t freeHeap = ESP.getFreeHeap();
     if (freeHeap < 25000) {
@@ -572,13 +573,13 @@ bool ProtocolManager::restartModbus() {
                      (unsigned long)freeHeap);
         return false;
     }
-    
+
     // 停止现有实例
     if (modbusHandler) {
         modbusHandler->end();
         modbusHandler.reset();
     }
-    
+
     // 读取 protocol.json 配置
     if (!LittleFS.exists("/config/protocol.json")) {
         LOG_WARNING("Protocol Manager: No protocol config found for Modbus");
@@ -608,10 +609,10 @@ bool ProtocolManager::restartModbus() {
         LOG_WARNING("Protocol Manager: No modbusRtu config found");
         return false;
     }
-    
+
     // 从嵌套的 modbusRtu 配置构建 ModbusConfig
     ModbusConfig modbusConfig;
-    
+
     // 从外设管理器获取串口配置（引脚 + 波特率）
     String peripheralId = rtu["peripheralId"] | "";
     if (peripheralId.isEmpty()) {
@@ -645,17 +646,17 @@ bool ProtocolManager::restartModbus() {
     modbusConfig.responseTimeout = rtu["timeout"] | (uint16_t)1000;
     modbusConfig.transferType = rtu["transferType"] | (uint8_t)0;
     // workMode 已移除：由 ModbusHandler::getWorkMode() 根据轮询任务配置动态推导
-    
+
     String modeStr = rtu["mode"] | "slave";
     modbusConfig.mode = (modeStr == "master") ? MODBUS_MASTER : MODBUS_SLAVE;
-    
+
     // 解析 Master 配置
     if (rtu.containsKey("master")) {
         JsonObject masterObj = rtu["master"];
         modbusConfig.master.responseTimeout = masterObj["responseTimeout"] | (uint16_t)1000;
         modbusConfig.master.maxRetries = masterObj["maxRetries"] | (uint8_t)2;
         modbusConfig.master.interPollDelay = masterObj["interPollDelay"] | (uint16_t)100;
-        
+
         if (masterObj.containsKey("tasks")) {
             JsonArray tasksArr = masterObj["tasks"];
             modbusConfig.master.taskCount = 0;
@@ -672,7 +673,7 @@ bool ProtocolManager::restartModbus() {
                 // 向后兼容：优先读取 name，回退到 label
                 const char* taskName = t["name"] | (t["label"] | "");
                 strlcpy(task.name, taskName, sizeof(task.name));
-                
+
                 // 解析寄存器映射
                 task.mappingCount = 0;
                 if (t.containsKey("mappings")) {
@@ -694,11 +695,11 @@ bool ProtocolManager::restartModbus() {
                         task.mappingCount++;
                     }
                 }
-                
+
                 modbusConfig.master.taskCount++;
             }
         }
-        
+
         // 解析子设备
         if (masterObj.containsKey("devices")) {
             JsonArray devicesArr = masterObj["devices"];
@@ -753,43 +754,43 @@ bool ProtocolManager::restartModbus() {
     }
 
     ModbusHandler::sanitizeConfig(modbusConfig);
-    
+
     // 创建新实例并设置回调
     modbusHandler = std::unique_ptr<ModbusHandler>(new ModbusHandler());
-    
+
     modbusHandler->setDataCallback([this](uint8_t address, const String& data) {
         // 统一通过 dispatchModbusData 分发（LiveCallback 路径：MQTT + SSE + 规则匹配）
         dispatchModbusData(address, data, ModbusDataSource::LiveCallback);
     });
-    
+
     // 注册 Modbus 一次性读取回调到 PeriphExec
     PeriphExecManager::getInstance().setModbusReadCallback(
         [this](const String& params) -> String {
             return this->executeModbusRead(params);
         }
     );
-    
+
     // 注册 Modbus 原始 HEX 帧透传回调到 PeriphExec
     PeriphExecManager::getInstance().setModbusRawSendCallback(
         [this](const String& hexPayload) -> String {
             return this->executeModbusRawSend(hexPayload);
         }
     );
-    
+
     // 设置状态变化回调（SSE 推送用）
     if (modbusStatusSSECallback) {
         modbusHandler->setStatusChangeCallback([this](const String& data) {
             if (modbusStatusSSECallback) modbusStatusSSECallback(data);
         });
     }
-    
+
     bool ok = modbusHandler->begin(modbusConfig);
     if (ok) {
         LOG_INFOF("Protocol Manager: Modbus restarted in %s mode, %d tasks, %d devices",
                   (modbusConfig.mode == MODBUS_MASTER) ? "Master" : "Slave",
                   modbusConfig.master.taskCount,
                   modbusConfig.master.deviceCount);
-        
+
         // 注册 Modbus 子设备为标准外设并设置通信回调
         registerModbusSubDevices(modbusConfig);
     } else {
@@ -803,10 +804,10 @@ void ProtocolManager::stopModbus() {
     modbusRestartPending = false;  // 取消待执行的延迟重启
     PeriphExecManager::getInstance().setModbusReadCallback(nullptr);
     PeriphExecManager::getInstance().setModbusRawSendCallback(nullptr);
-    
+
     // 注销 Modbus 外设和通信回调
     unregisterModbusSubDevices();
-    
+
     if (modbusHandler) {
         modbusHandler->end();
     }
@@ -926,7 +927,7 @@ String ProtocolManager::executeModbusRead(const String& paramsJson) {
 
         // 读取成功，根据传输类型决定上报格式
         uint8_t transferType = modbusHandler->getConfig().transferType;
-        
+
         if (transferType == 1) {
             // 透传模式(RAW HEX)：重构响应帧为十六进制字符串
             String hexStr = modbusHandler->formatRawHex(slaveAddr, fc, readResult.data, readResult.count);
@@ -1094,12 +1095,12 @@ String ProtocolManager::executeModbusRawSend(const String& hexPayload) {
 #if FASTBEE_ENABLE_MQTT
 bool ProtocolManager::initMQTT(void* config) {
     if (!config) return false;
-    
+
     MQTTConfig* mqttConfig = static_cast<MQTTConfig*>(config);
-    
+
     // 使用自定义的 make_unique 实现
     mqttClient = std::unique_ptr<MQTTClient>(new MQTTClient());
-    
+
     // 设置回调
     mqttClient->setMessageCallback([this](const String& topic, const String& message, MqttTopicType tType) {
         handleMessage(ProtocolType::MQTT, topic, message);
@@ -1150,10 +1151,10 @@ bool ProtocolManager::initMQTT(void* config) {
 #if FASTBEE_ENABLE_MODBUS
 bool ProtocolManager::initModbus(void* config) {
     if (!config) return false;
-    
+
     ModbusConfig* modbusConfig = static_cast<ModbusConfig*>(config);
     modbusHandler = std::unique_ptr<ModbusHandler>(new ModbusHandler());
-    
+
     // 设置回调
     modbusHandler->setDataCallback([this](uint8_t address, const String& data) {
         // 统一通过 dispatchModbusData 分发（LiveCallback 路径：MQTT + SSE + 规则匹配）
@@ -1179,15 +1180,15 @@ bool ProtocolManager::initModbus(void* config) {
 #if FASTBEE_ENABLE_TCP
 bool ProtocolManager::initTCP(void* config) {
     if (!config) return false;
-    
+
     TCPConfig* tcpConfig = static_cast<TCPConfig*>(config);
     tcpHandler = std::unique_ptr<TCPHandler>(new TCPHandler());
-    
+
     // 设置回调
     tcpHandler->setMessageCallback([this](const String& message) {
         handleMessage(ProtocolType::TCP, "tcp", message);
     });
-    
+
     return tcpHandler->begin(*tcpConfig);
 }
 #endif
@@ -1195,15 +1196,15 @@ bool ProtocolManager::initTCP(void* config) {
 #if FASTBEE_ENABLE_HTTP
 bool ProtocolManager::initHTTP(void* config) {
     if (!config) return false;
-    
+
     HTTPConfig* httpConfig = static_cast<HTTPConfig*>(config);
     httpClientWrapper = std::unique_ptr<HTTPClientWrapper>(new HTTPClientWrapper());
-    
+
     // 设置回调
     httpClientWrapper->setResponseCallback([this](const String& endpoint, const String& response) {
         handleMessage(ProtocolType::HTTP, endpoint, response);
     });
-    
+
     return httpClientWrapper->begin(*httpConfig);
 }
 #endif
@@ -1211,15 +1212,15 @@ bool ProtocolManager::initHTTP(void* config) {
 #if FASTBEE_ENABLE_COAP
 bool ProtocolManager::initCoAP(void* config) {
     if (!config) return false;
-    
+
     CoAPConfig* coapConfig = static_cast<CoAPConfig*>(config);
     coapHandler = std::unique_ptr<CoAPHandler>(new CoAPHandler());
-    
+
     // 设置回调
     coapHandler->setMessageCallback([this](const String& resource, const String& message) {
         handleMessage(ProtocolType::COAP, resource, message);
     });
-    
+
     return coapHandler->begin(*coapConfig);
 }
 #endif
@@ -1229,20 +1230,20 @@ bool ProtocolManager::initCoAP(void* config) {
 #if FASTBEE_ENABLE_MODBUS
 void ProtocolManager::registerModbusSubDevices(const ModbusConfig& config) {
     PeripheralManager& pm = PeripheralManager::getInstance();
-    
+
     // 先清理旧的 Modbus 外设（重启 Modbus 时需要先注销）
     unregisterModbusSubDevices();
-    
+
     if (config.mode != MODBUS_MASTER || config.master.deviceCount == 0) {
         return;
     }
-    
+
     // 透传模式下不注册子设备（纯转发，不需要控制类子设备）
     if (config.transferType == 1) {
         LOG_INFO("Protocol Manager: Transparent mode, skip sub-device registration");
         return;
     }
-    
+
     // 设置 Modbus 通信回调（通过闭包捕获 modbusHandler）
     ModbusHandler* mb = modbusHandler.get();
     if (mb) {
@@ -1259,19 +1260,19 @@ void ProtocolManager::registerModbusSubDevices(const ModbusConfig& config) {
             }
         );
     }
-    
+
     // 逐个注册子设备为标准外设
     for (uint8_t i = 0; i < config.master.deviceCount; i++) {
         const ModbusSubDevice& dev = config.master.devices[i];
         if (!dev.enabled) continue;
-        
+
         PeripheralConfig pCfg;
         pCfg.id = "modbus:" + String(i);
         pCfg.name = String(dev.name);
         pCfg.type = PeripheralType::MODBUS_DEVICE;
         pCfg.enabled = true;
         pCfg.pinCount = 0;  // Modbus 外设不使用 GPIO 引脚
-        
+
         // 设置 Modbus 特定参数
         pCfg.params.modbus.slaveAddress    = dev.slaveAddress;
         pCfg.params.modbus.channelCount    = dev.channelCount;
@@ -1284,7 +1285,7 @@ void ProtocolManager::registerModbusSubDevices(const ModbusConfig& config) {
         pCfg.params.modbus.pwmResolution   = dev.pwmResolution;
         strncpy(pCfg.params.modbus.sensorId, dev.sensorId, sizeof(pCfg.params.modbus.sensorId) - 1);
         pCfg.params.modbus.sensorId[sizeof(pCfg.params.modbus.sensorId) - 1] = '\0';
-        
+
         // 确定设备类型
         String devType(dev.deviceType);
         if (devType == "relay")          pCfg.params.modbus.deviceType = 0;
@@ -1292,7 +1293,7 @@ void ProtocolManager::registerModbusSubDevices(const ModbusConfig& config) {
         else if (devType == "pid")      pCfg.params.modbus.deviceType = 2;
         else if (devType == "motor")    pCfg.params.modbus.deviceType = 3;
         else                            pCfg.params.modbus.deviceType = 0;
-        
+
         // 电机参数
         memcpy(pCfg.params.modbus.motorRegs, dev.motorRegs, sizeof(dev.motorRegs));
         pCfg.params.modbus.motorDecimals = dev.motorDecimals;
@@ -1301,7 +1302,7 @@ void ProtocolManager::registerModbusSubDevices(const ModbusConfig& config) {
         pCfg.params.modbus.motorCurrentPosition = dev.motorCurrentPosition;
         pCfg.params.modbus.motorMoveStep = dev.motorMoveStep;
         pCfg.params.modbus.motorLastPulse = dev.motorLastPulse;
-        
+
         if (pm.addPeripheral(pCfg)) {
             LOG_INFOF("Protocol Manager: Registered Modbus sub-device '%s' as peripheral 'modbus:%d'",
                       dev.name, i);
@@ -1313,10 +1314,10 @@ void ProtocolManager::registerModbusSubDevices(const ModbusConfig& config) {
 
 void ProtocolManager::unregisterModbusSubDevices() {
     PeripheralManager& pm = PeripheralManager::getInstance();
-    
+
     // 清除通信回调
     pm.clearModbusCallbacks();
-    
+
     // 移除所有 MODBUS_DEVICE 类型的外设
     auto allPeriphs = pm.getPeripheralsByType(PeripheralType::MODBUS_DEVICE);
     for (const auto& p : allPeriphs) {

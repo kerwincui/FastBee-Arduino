@@ -392,6 +392,173 @@ void test_day_of_week_month_year() {
     TestLog::testEnd(true);
 }
 
+// ========== NTP 双模式（UDP / HTTP / HTTPS）URL 解析测试 ==========
+
+/**
+ * @brief 验证 NTP URL 协议识别逻辑
+ * 与 TimeUtils::initialize() 和 MQTTClient::getNtpTime() 保持一致
+ */
+void test_ntp_url_protocol_detection() {
+    TestLog::testStart("NTP URL Protocol Detection");
+
+    // 1. 标准 NTP 域名（UDP 协议）
+    String udp1 = "ntp.aliyun.com";
+    bool isHttp1 = udp1.startsWith("http://") || udp1.startsWith("https://");
+    TEST_ASSERT_FALSE(isHttp1);
+    TestLog::step("ntp.aliyun.com → UDP mode");
+
+    String udp2 = "cn.pool.ntp.org";
+    bool isHttp2 = udp2.startsWith("http://") || udp2.startsWith("https://");
+    TEST_ASSERT_FALSE(isHttp2);
+    TestLog::step("cn.pool.ntp.org → UDP mode");
+
+    // 2. HTTP URL
+    String http1 = "http://iot.fastbee.cn:8080/iot/tool/ntp";
+    bool isHttp3 = http1.startsWith("http://");
+    bool isHttps3 = http1.startsWith("https://");
+    TEST_ASSERT_TRUE(isHttp3);
+    TEST_ASSERT_FALSE(isHttps3);
+    TestLog::step("http://... → HTTP mode (WiFiClient)");
+
+    // 3. HTTPS URL（新支持的格式）
+    String https1 = "https://iot.fastbee.cn/prod-api/iot/tool/ntp";
+    bool isHttps4 = https1.startsWith("https://");
+    bool isHttp4 = https1.startsWith("http://");
+    TEST_ASSERT_TRUE(isHttps4);
+    TEST_ASSERT_FALSE(isHttp4);
+    TestLog::step("https://... → HTTPS mode (WiFiClientSecure)");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 HTTP NTP URL 的 deviceSendTime 参数拼接逻辑
+ * 与 TimeUtils::syncNTPFromHTTPWithTimestamp() 和 MQTTClient::getNtpTime() 保持一致
+ */
+void test_ntp_url_device_send_time_concat() {
+    TestLog::testStart("NTP URL deviceSendTime Concat");
+
+    unsigned long deviceSendTime = 12345;
+
+    // 场景1: 无查询参数的 URL
+    String url1 = "https://iot.fastbee.cn/prod-api/iot/tool/ntp";
+    int idx1 = url1.indexOf("?deviceSendTime=");
+    if (idx1 >= 0) {
+        url1 = url1.substring(0, idx1 + 16);
+    } else if (url1.indexOf("?") >= 0) {
+        url1 += "&deviceSendTime=";
+    } else {
+        url1 += "?deviceSendTime=";
+    }
+    url1 += String(deviceSendTime);
+    TEST_ASSERT_EQUAL_STRING(
+        "https://iot.fastbee.cn/prod-api/iot/tool/ntp?deviceSendTime=12345",
+        url1.c_str());
+    TestLog::step("No query → append ?deviceSendTime=12345");
+
+    // 场景2: URL 已含 deviceSendTime（旧格式，需截断重拼）
+    String url2 = "http://iot.fastbee.cn:8080/iot/tool/ntp?deviceSendTime=99999";
+    int idx2 = url2.indexOf("?deviceSendTime=");
+    if (idx2 >= 0) {
+        url2 = url2.substring(0, idx2 + 16);  // 截断到 ?deviceSendTime=
+    }
+    url2 += String(deviceSendTime);
+    TEST_ASSERT_EQUAL_STRING(
+        "http://iot.fastbee.cn:8080/iot/tool/ntp?deviceSendTime=12345",
+        url2.c_str());
+    TestLog::step("Existing deviceSendTime=99999 → truncate & replace with 12345");
+
+    // 场景3: URL 含其他查询参数
+    String url3 = "https://iot.fastbee.cn/api?token=abc";
+    int idx3 = url3.indexOf("?deviceSendTime=");
+    if (idx3 >= 0) {
+        url3 = url3.substring(0, idx3 + 16);
+    } else if (url3.indexOf("?") >= 0) {
+        url3 += "&deviceSendTime=";
+    } else {
+        url3 += "?deviceSendTime=";
+    }
+    url3 += String(deviceSendTime);
+    TEST_ASSERT_EQUAL_STRING(
+        "https://iot.fastbee.cn/api?token=abc&deviceSendTime=12345",
+        url3.c_str());
+    TestLog::step("Existing ?token=abc → append &deviceSendTime=12345");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 HTTPS 不再被降级为 HTTP
+ * 旧逻辑: fullUrl = "http://" + fullUrl.substring(8)  → 丢失加密
+ * 新逻辑: 根据 isHttps 选择 WiFiClientSecure
+ */
+void test_ntp_https_not_downgraded() {
+    TestLog::testStart("NTP HTTPS Not Downgraded");
+
+    String url = "https://iot.fastbee.cn/prod-api/iot/tool/ntp";
+    bool isHttps = url.startsWith("https://");
+
+    // 新逻辑：识别为 HTTPS，使用 WiFiClientSecure
+    TEST_ASSERT_TRUE(isHttps);
+    TestLog::step("https://... detected as HTTPS (WiFiClientSecure)");
+
+    // 旧逻辑会降级："http://" + url.substring(8)
+    String oldLogicResult = "http://" + url.substring(8);
+    TEST_ASSERT_EQUAL_STRING(
+        "http://iot.fastbee.cn/prod-api/iot/tool/ntp",
+        oldLogicResult.c_str());
+    TestLog::step("Old logic would downgrade to: http://iot.fastbee.cn/... (INSECURE!)");
+
+    // 新逻辑保留原始 URL 不变
+    // URL 不会被修改，只是选择不同的 WiFiClient
+    TEST_ASSERT_TRUE(url.startsWith("https://"));
+    TestLog::step("New logic: URL stays https://, uses WiFiClientSecure");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 FastBee 平台 NTP 响应格式解析
+ * 支持 serverRecvTime/serverSendTime 和 data.serverTime 两种格式
+ */
+void test_ntp_response_format_parsing() {
+    TestLog::testStart("NTP Response Format Parsing");
+
+    // 格式1: 标准 NTP 四报文响应 { serverRecvTime, serverSendTime }
+    // 注意：毫秒级时间戳超出 float 精度（~7位有效数字），必须用 double
+    double serverRecvTime1 = 1700000000000.0;  // 毫秒时间戳
+    double serverSendTime1 = 1700000000100.0;
+    TEST_ASSERT_TRUE(serverRecvTime1 > 1000000000000.0);
+    TEST_ASSERT_TRUE(serverSendTime1 > 1000000000000.0);
+    TestLog::step("Standard format: serverRecvTime+serverSendTime valid");
+
+    // 格式2: FastBee 平台精简格式 { data: { serverTime } }
+    // 代码中: serverRecvTime = doc["data"]["serverTime"]; serverSendTime = serverRecvTime;
+    double serverTime = 1700000000000.0;
+    double serverRecvTime2 = serverTime;
+    double serverSendTime2 = serverTime;  // 两者相同
+    TEST_ASSERT_TRUE(serverRecvTime2 > 1000000000000.0);
+    TEST_ASSERT_TRUE(serverSendTime2 > 1000000000000.0);
+    TestLog::step("FastBee format: data.serverTime used for both");
+
+    // NTP 算法: now = (serverRecvTime + serverSendTime + deviceRecvTime - deviceSendTime) / 2
+    double deviceSendTime = 100000.0;
+    double deviceRecvTime = 100200.0;  // 200ms RTT
+    double nowMs = (serverRecvTime2 + serverSendTime2 + deviceRecvTime - deviceSendTime) / 2.0;
+    // 预期: (1700000000000 + 1700000000000 + 100200 - 100000) / 2 = 1700000000100
+    TEST_ASSERT_TRUE(nowMs > 1700000000000.0);
+    TestLog::step("NTP algorithm: nowMs computed correctly");
+
+    // 格式3: 秒级时间戳（< 10000000000）需转为毫秒
+    double secTimestamp = 1700000000.0;  // 秒级
+    TEST_ASSERT_TRUE(secTimestamp < 10000000000.0);
+    double msTimestamp = secTimestamp * 1000.0;  // 转为毫秒
+    TEST_ASSERT_TRUE(msTimestamp > 1000000000000.0);
+    TestLog::step("Seconds timestamp < 10B → converted to ms > 1T");
+
+    TestLog::testEnd(true);
+}
+
 // ========== 测试组入口 ==========
 
 void test_time_utils_group() {
@@ -426,6 +593,12 @@ void test_time_utils_group() {
     // 日计算
     RUN_TEST(test_day_start_end);
     RUN_TEST(test_day_of_week_month_year);
+
+    // NTP 双模式测试
+    RUN_TEST(test_ntp_url_protocol_detection);
+    RUN_TEST(test_ntp_url_device_send_time_concat);
+    RUN_TEST(test_ntp_https_not_downgraded);
+    RUN_TEST(test_ntp_response_format_parsing);
 
     TestLog::groupEnd();
 }

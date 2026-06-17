@@ -24,10 +24,9 @@ public:
      * @brief 添加用户
      * @param username 用户名
      * @param password 密码
-     * @param role 角色
      * @return 是否添加成功
      */
-    virtual bool addUser(const String& username, const String& password, const String& role) = 0;
+    virtual bool addUser(const String& username, const String& password) = 0;
     
     /**
      * @brief 删除用户
@@ -52,12 +51,7 @@ public:
      */
     virtual bool validateUser(const String& username, const String& password) = 0;
     
-    /**
-     * @brief 获取用户角色
-     * @param username 用户名
-     * @return 用户角色
-     */
-    virtual String getUserRole(const String& username) = 0;
+
     
     /**
      * @brief 检查用户是否存在
@@ -126,11 +120,18 @@ public:
      * @brief 更新用户
      * @param username 用户名
      * @param newPassword 新密码（空则不修改）
-     * @param newRole 新角色（空则不修改）
      * @param enabled 是否启用
      * @return 是否成功
      */
-    virtual bool updateUser(const String& username, const String& newPassword = "", const String& newRole = "", bool enabled = true) = 0;
+    virtual bool updateUser(const String& username, const String& newPassword = "", bool enabled = true) = 0;
+    
+    /**
+     * @brief 设置用户描述
+     * @param username 用户名
+     * @param description 描述内容
+     * @return 是否设置成功
+     */
+    virtual bool setUserDescription(const String& username, const String& description) = 0;
     
     /**
      * @brief 获取用户数量

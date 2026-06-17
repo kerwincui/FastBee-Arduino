@@ -3,7 +3,7 @@
  * @brief 分页修复验证测试 + 外设启用错误 + 缓冲区边界 + MutexGuard 超时
  *
  * 覆盖修复:
- * 1. PeripheralRouteHandler: degraded模式分页startIdx一致性
+ * 1. PeripheralRouteHandler: degraded 模式不再削减 pageSize，统一为前端请求值
  * 2. PeriphExecRouteHandler: 低内存阈值3072 + MutexGuard 2s超时
  * 3. pendingBuf[130] 缓冲区边界保护
  * 4. 外设启用400错误详细信息(lastEnableError)
@@ -45,6 +45,8 @@ struct PaginationResult {
 };
 
 // 复现修复后的分页逻辑
+// 2025-06修复: degraded 模式不再削减 effectivePageSize
+// 内存不足时改为 compact 模式（减少每项序列化字段），而非减少条数
 PaginationResult calculatePagination(const PaginationParams& params, int total) {
     PaginationResult result;
     result.total = total;
@@ -55,15 +57,12 @@ PaginationResult calculatePagination(const PaginationParams& params, int total) 
     if (pageSize < 1) pageSize = 1;
     if (pageSize > 20) pageSize = 20;
 
-    // 修复核心: degraded 模式统一使用 effectivePageSize 作为分页步长，
-    // startIdx/endIdx/返回的pageSize 三者一致，确保所有数据可达。
+    // 修复核心: degraded 模式不再削减 effectivePageSize，始终与前端请求一致
+    // 内存不足时由 compact 模式减少每项序列化字段来节省空间
     int effectivePageSize = pageSize;
-    if (params.degraded && effectivePageSize > 5) {
-        effectivePageSize = 5;
-    }
 
     result.effectivePageSize = effectivePageSize;
-    result.startIdx = (page - 1) * effectivePageSize;  // 使用 effectivePageSize
+    result.startIdx = (page - 1) * effectivePageSize;
     result.endIdx = (result.startIdx < total)
                     ? std::min(result.startIdx + effectivePageSize, total)
                     : result.startIdx;
@@ -72,6 +71,7 @@ PaginationResult calculatePagination(const PaginationParams& params, int total) 
 
 // 旧版有bug的分页逻辑（用于对比）
 // 原始 bug: startIdx 使用客户端 pageSize，但 endIdx 限制为 effectivePageSize 条
+// 另一旧逻辑: degraded 时 effectivePageSize 降为 5，导致前端收到 pageSize=5
 PaginationResult calculatePaginationOldBug(const PaginationParams& params, int total) {
     PaginationResult result;
     result.total = total;
@@ -83,13 +83,13 @@ PaginationResult calculatePaginationOldBug(const PaginationParams& params, int t
     if (pageSize > 20) pageSize = 20;
 
     int effectivePageSize = pageSize;
+    // 旧逻辑: degraded 时削减 pageSize 到 5
     if (params.degraded && effectivePageSize > 5) {
         effectivePageSize = 5;
     }
 
     result.effectivePageSize = effectivePageSize;
     // BUG: startIdx 使用客户端原始 pageSize，但只返回 effectivePageSize 条
-    // 导致 page2 从startIdx=10开始，items 5-9 永远无法显示
     result.startIdx = (page - 1) * pageSize;
     result.endIdx = (result.startIdx < total)
                     ? std::min(result.startIdx + effectivePageSize, total)
@@ -101,44 +101,47 @@ PaginationResult calculatePaginationOldBug(const PaginationParams& params, int t
 // Test: 分页在 degraded 模式下 startIdx 保持客户端 pageSize 一致
 // ==============================================================
 
-void test_pagination_degraded_startIdx_consistency() {
-    TestLog::testStart("Pagination: degraded mode uses effectivePageSize consistently");
+void test_pagination_degraded_no_pageSize_cut() {
+    TestLog::testStart("Pagination: degraded mode NO longer cuts pageSize");
 
-    // 场景: 15 个外设，客户端 pageSize=10，degraded模式将 effectivePageSize 限制为5
-    // 正确行为: page1: items 0-4, page2: items 5-9, page3: items 10-14
-    // Bug行为(旧): startIdx=10 (page2*clientPageSize10) -> items 5-9 丢失
+    // 场景: 15 个外设，客户端 pageSize=10，degraded模式不再削减 pageSize
+    // 新行为: effectivePageSize 始终等于请求 pageSize，不受 degraded 影响
+    // 旧行为(bug): degraded 时 effectivePageSize=5, 导致前端有时收到5条有时收到10条
 
-    PaginationParams params = {2, 10, true};  // page=2, pageSize=10, degraded=true
+    PaginationParams params = {1, 10, true};  // page=1, pageSize=10, degraded=true
     int total = 15;
 
     PaginationResult fixed = calculatePagination(params, total);
     PaginationResult buggy = calculatePaginationOldBug(params, total);
 
-    // 修复后: effectivePageSize=5, startIdx=(2-1)*5=5, endIdx=10（第2页看到item 5-9）
-    TEST_ASSERT_EQUAL(5, fixed.startIdx);
+    // 修复后: effectivePageSize=10 (不再削减), startIdx=0, endIdx=10
+    TEST_ASSERT_EQUAL(10, fixed.effectivePageSize);  // 不受 degraded 影响
+    TEST_ASSERT_EQUAL(0, fixed.startIdx);
     TEST_ASSERT_EQUAL(10, fixed.endIdx);
-    TEST_ASSERT_EQUAL(5, fixed.effectivePageSize);
-    TestLog::step("Fixed: page2 startIdx=5, endIdx=10 (items 5-9, no gap!)");
+    TestLog::step("Fixed: effectivePageSize=10 (no cut), items 0-9 on page1");
 
-    // Bug版本(旧fix): startIdx=(2-1)*10=10，导致items 5-9永远无法显示
-    TEST_ASSERT_EQUAL(10, buggy.startIdx);
-    TEST_ASSERT_EQUAL(15, buggy.endIdx);
-    TestLog::step("Bug (old fix): page2 startIdx=10 → items 5-9 LOST!");
+    // Bug版本(旧): degraded 时 effectivePageSize=5
+    TEST_ASSERT_EQUAL(5, buggy.effectivePageSize);
+    TestLog::step("Bug (old): effectivePageSize=5 (inconsistent pageSize)");
 
-    // 验证修复后第1页
-    PaginationParams page1 = {1, 10, true};
-    PaginationResult p1 = calculatePagination(page1, total);
-    TEST_ASSERT_EQUAL(0, p1.startIdx);
-    TEST_ASSERT_EQUAL(5, p1.endIdx);
-    TestLog::step("Fixed page1: startIdx=0, endIdx=5 (items 0-4)");
+    // 验证修复后第2页也正常
+    PaginationParams page2 = {2, 10, true};
+    PaginationResult p2 = calculatePagination(page2, total);
+    TEST_ASSERT_EQUAL(10, p2.effectivePageSize);
+    TEST_ASSERT_EQUAL(10, p2.startIdx);
+    TEST_ASSERT_EQUAL(15, p2.endIdx);
+    TestLog::step("Fixed page2: items 10-14, consistent pageSize=10");
 
-    // 验证修复后第3页
-    PaginationParams page3 = {3, 10, true};
-    PaginationResult p3 = calculatePagination(page3, total);
-    TEST_ASSERT_EQUAL(10, p3.startIdx);
-    TEST_ASSERT_EQUAL(15, p3.endIdx);
-    TestLog::step("Fixed page3: startIdx=10, endIdx=15 (items 10-14)");
+    // 验证修复后非 degraded 模式完全一致
+    PaginationParams normalP1 = {1, 10, false};
+    PaginationResult np1 = calculatePagination(normalP1, total);
+    TEST_ASSERT_EQUAL(10, np1.effectivePageSize);
+    TEST_ASSERT_EQUAL(0, np1.startIdx);
+    TEST_ASSERT_EQUAL(10, np1.endIdx);
+    TestLog::step("Normal mode: identical behavior, pageSize=10");
 
+    // 关键: degraded 和 normal 模式下 effectivePageSize 相同
+    TEST_ASSERT_EQUAL(fixed.effectivePageSize, np1.effectivePageSize);
     TestLog::testEnd(true);
 }
 
@@ -187,13 +190,14 @@ void test_pagination_boundary_conditions() {
 // ==============================================================
 
 void test_pagination_no_overlap_no_gap() {
-    TestLog::testStart("Pagination: No overlap/gap across all pages (degraded)");
+    TestLog::testStart("Pagination: No overlap/gap across all pages (degraded=no cut)");
 
     int total = 23;
     int clientPageSize = 10;
     std::vector<int> allItems;
 
     // 遍历所有页面，收集返回的项索引
+    // degraded 模式不再削减 pageSize，始终为10
     for (int page = 1; page <= 10; page++) {
         PaginationResult r = calculatePagination({page, clientPageSize, true}, total);
         if (r.startIdx >= total) break;
@@ -202,11 +206,9 @@ void test_pagination_no_overlap_no_gap() {
         }
     }
 
-    // degraded 模式: effectivePageSize=5
-    // page1: 0-4, page2: 5-9, page3: 10-14, page4: 15-19, page5: 20-22
-    // 所有 23 个项都应被覆盖，无重叠无间隙
+    // degraded + pageSize=10: page1: 0-9, page2: 10-19, page3: 20-22
     TEST_ASSERT_EQUAL(total, (int)allItems.size());
-    TestLog::step("Degraded mode covers ALL 23 items (no gap!)");
+    TestLog::step("Degraded mode covers ALL 23 items (pageSize=10, no cut)");
 
     // 验证无重复
     std::vector<int> sorted = allItems;
@@ -643,16 +645,17 @@ void test_pagination_invalid_params() {
 // ==============================================================
 
 void test_smoke_degraded_mode_trigger() {
-    TestLog::testStart("Smoke: Degraded mode trigger conditions");
+    TestLog::testStart("Smoke: Degraded mode trigger conditions (compact only)");
 
     // shouldForceCompactList() 逻辑: heap < 16KB || maxAlloc < 8192
+    // degraded 模式仅触发 compact（减少每项序列化字段），不再削减 pageSize
     constexpr uint32_t DEGRADED_HEAP_THRESHOLD = 16384;
 
-    // 正常: 堆 80KB → 非 degraded
+    // 正常: 堆 80KB → 非 degraded → 非 compact
     ESP.setFreeHeap(80000);
     bool degraded = (ESP.getFreeHeap() < DEGRADED_HEAP_THRESHOLD);
     TEST_ASSERT_FALSE(degraded);
-    TestLog::step("Heap=80KB: NOT degraded");
+    TestLog::step("Heap=80KB: NOT degraded, full response fields");
 
     // 堆 20KB → 非 degraded（边界之上）
     ESP.setFreeHeap(20000);
@@ -666,21 +669,17 @@ void test_smoke_degraded_mode_trigger() {
     TEST_ASSERT_FALSE(degraded);
     TestLog::step("Heap=16384: NOT degraded (boundary)");
 
-    // 堆 15KB → degraded
+    // 堆 15KB → degraded → compact 模式，但 pageSize 不变
     ESP.setFreeHeap(15000);
     degraded = (ESP.getFreeHeap() < DEGRADED_HEAP_THRESHOLD);
     TEST_ASSERT_TRUE(degraded);
-    TestLog::step("Heap=15KB: DEGRADED mode active");
-
-    // 堆 8KB → 严重 degraded
-    ESP.setFreeHeap(8000);
-    degraded = (ESP.getFreeHeap() < DEGRADED_HEAP_THRESHOLD);
-    TEST_ASSERT_TRUE(degraded);
-    TestLog::step("Heap=8KB: DEGRADED (severe)");
+    // 验证: 即使 degraded，pageSize 仍为 10
+    PaginationResult r = calculatePagination({1, 10, true}, 23);
+    TEST_ASSERT_EQUAL(10, r.effectivePageSize);  // 不削减
+    TestLog::step("Heap=15KB: DEGRADED but pageSize still 10 (compact only)");
 
     // maxAlloc 检查
-    // MockESP getMaxAllocHeap() = getFreeHeap() / 2
-    ESP.setFreeHeap(20000);  // maxAlloc = 10000 > 8192, heap > 16KB
+    ESP.setFreeHeap(20000);  // maxAlloc = 10000 > 8192
     uint32_t maxAlloc = ESP.getMaxAllocHeap();
     bool allocDegraded = (maxAlloc < 8192);
     TEST_ASSERT_FALSE(allocDegraded);
@@ -690,7 +689,9 @@ void test_smoke_degraded_mode_trigger() {
     maxAlloc = ESP.getMaxAllocHeap();
     allocDegraded = (maxAlloc < 8192);
     TEST_ASSERT_TRUE(allocDegraded);
-    TestLog::step("maxAlloc=7000 < 8192: DEGRADED by fragmentation");
+    r = calculatePagination({1, 10, true}, 23);
+    TEST_ASSERT_EQUAL(10, r.effectivePageSize);  // 即使 alloc degraded
+    TestLog::step("maxAlloc=7000: DEGRADED, pageSize still 10");
 
     ESP.resetHeapOverride();
     TestLog::testEnd(true);
@@ -737,23 +738,24 @@ void test_smoke_pagination_full_workflow() {
     TEST_ASSERT_EQUAL(15, p2.endIdx);
     TestLog::step("Page 2 (normal): items 10-14");
 
-    // 第1页 (degraded mode) - effectivePageSize=5
+    // 第1页 (degraded mode) - effectivePageSize 不再削减，与 normal 相同
     PaginationResult dp1 = calculatePagination({1, 10, true}, total);
     TEST_ASSERT_EQUAL(0, dp1.startIdx);
-    TEST_ASSERT_EQUAL(5, dp1.endIdx);
-    TestLog::step("Page 1 (degraded): items 0-4");
+    TEST_ASSERT_EQUAL(10, dp1.endIdx);  // degraded 不削减 pageSize
+    TestLog::step("Page 1 (degraded): items 0-9 (same as normal, no cut)");
 
-    // 第2页 (degraded mode) - 关键修复验证
+    // 第2页 (degraded mode) - 关键: 与 normal 模式完全一致
     PaginationResult dp2 = calculatePagination({2, 10, true}, total);
-    TEST_ASSERT_EQUAL(5, dp2.startIdx);   // 基于 effectivePageSize=5
-    TEST_ASSERT_EQUAL(10, dp2.endIdx);
-    TestLog::step("Page 2 (degraded): items 5-9 (no gap!)");
+    TEST_ASSERT_EQUAL(10, dp2.startIdx);  // 基于 effectivePageSize=10
+    TEST_ASSERT_EQUAL(15, dp2.endIdx);
+    TestLog::step("Page 2 (degraded): items 10-14 (identical to normal)");
 
-    // 第3页 (degraded mode)
-    PaginationResult dp3 = calculatePagination({3, 10, true}, total);
-    TEST_ASSERT_EQUAL(10, dp3.startIdx);
-    TEST_ASSERT_EQUAL(15, dp3.endIdx);
-    TestLog::step("Page 3 (degraded): items 10-14");
+    // degraded 与 normal 模式结果完全相同
+    TEST_ASSERT_EQUAL(p1.startIdx, dp1.startIdx);
+    TEST_ASSERT_EQUAL(p1.endIdx, dp1.endIdx);
+    TEST_ASSERT_EQUAL(p2.startIdx, dp2.startIdx);
+    TEST_ASSERT_EQUAL(p2.endIdx, dp2.endIdx);
+    TestLog::step("Degraded == Normal: identical pagination across all pages");
 
     pm.clearAll();
     TestLog::testEnd(true);
@@ -826,7 +828,7 @@ void test_pagination_fixes_group() {
     TestLog::groupStart("Pagination Fixes & Smoke Tests");
 
     // 核心分页修复验证
-    RUN_TEST(test_pagination_degraded_startIdx_consistency);
+    RUN_TEST(test_pagination_degraded_no_pageSize_cut);
     RUN_TEST(test_pagination_boundary_conditions);
     RUN_TEST(test_pagination_no_overlap_no_gap);
     RUN_TEST(test_pagination_invalid_params);

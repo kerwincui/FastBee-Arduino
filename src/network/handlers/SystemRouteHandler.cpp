@@ -26,7 +26,11 @@ namespace {
 // Larger config files are transferred through /api/config/transfer/import-chunk.
 constexpr size_t kMaxConfigTransferBytes = 128 * 1024;
 constexpr size_t kMaxConfigInlineImportBytes = 24 * 1024;
-constexpr size_t kMaxConfigTransferChunkBytes = 8 * 1024;
+// Chunk limit raised from 8 KB to 16 KB: the frontend sends chunks via
+// application/x-www-form-urlencoded, so a 4 KB raw JSON chunk expands to
+// ~8-10 KB after URL-encoding.  The handler already requires 24 KB free
+// heap before writing, so 16 KB decoded chunk is safe.
+constexpr size_t kMaxConfigTransferChunkBytes = 16 * 1024;
 constexpr int kMaxConfigTransferChunks = 32;
 
 bool isSafeConfigFileName(const String& name) {
@@ -43,9 +47,7 @@ bool isSafeConfigFileName(const String& name) {
 
 bool isAllowedConfigTransferFileName(const String& name) {
     if (!isSafeConfigFileName(name)) return false;
-#if !FASTBEE_ENABLE_ROLE_ADMIN
     if (name == "roles.json") return false;
-#endif
 #if FASTBEE_SINGLE_ADMIN_MODE || !FASTBEE_ENABLE_USER_ADMIN
     if (name == "users.json") return false;
 #endif
@@ -53,9 +55,7 @@ bool isAllowedConfigTransferFileName(const String& name) {
 }
 
 bool isIgnoredConfigImportFileName(const String& name) {
-#if !FASTBEE_ENABLE_ROLE_ADMIN
     if (name == "roles.json") return true;
-#endif
 #if FASTBEE_SINGLE_ADMIN_MODE || !FASTBEE_ENABLE_USER_ADMIN
     if (name == "users.json") return true;
 #endif
@@ -190,7 +190,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     server->on("/api/network/status", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
         // Network status handler - critical endpoint, bypass heavy memory guard
-                if (!ctx->requirePermission(request, "network.view")) return;
+                if (!ctx->requireAuth(request)) return;
         auto doc = FastBee::makeJsonDocument();
         doc["success"] = true;
         if (ctx->networkManager) {
@@ -298,7 +298,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     // JSON body handler for network config update
     auto* networkJsonHandler = new AsyncCallbackJsonWebHandler("/api/network/config",
         [this](AsyncWebServerRequest* request, JsonVariant& json) {
-            if (!ctx->requirePermission(request, "network.edit")) return;
+            if (!ctx->requireAuth(request)) return;
             if (!ctx->networkManager) {
                 ctx->sendError(request, 500, "Network service unavailable");
                 return;
@@ -402,7 +402,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 #if FASTBEE_ENABLE_CONFIG_TRANSFER
     server->on("/api/config/transfer/list", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->requirePermission(request, "config.view")) return;
+        if (!ctx->requireAuth(request)) return;
         if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config list", MemoryGuardLevel::SEVERE, 8)) return;
         if (HandlerUtils::checkLowMemory(request, 8192)) return;
 
@@ -434,7 +434,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/config/transfer/export", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->requirePermission(request, "config.view")) return;
+        if (!ctx->requireAuth(request)) return;
         if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config export", MemoryGuardLevel::SEVERE, 8)) return;
         if (!request->hasParam("name")) { ctx->sendError(request, 400, "Missing name parameter"); return; }
         String name = request->getParam("name")->value();
@@ -474,7 +474,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/config/transfer/import", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->requirePermission(request, "config.edit")) return;
+        if (!ctx->requireAuth(request)) return;
         if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config import", MemoryGuardLevel::SEVERE, 8)) return;
         if (!request->hasParam("name", true) || !request->hasParam("content", true)) {
             ctx->sendError(request, 400, "Missing name or content parameter");
@@ -524,7 +524,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/config/transfer/import-chunk", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->requirePermission(request, "config.edit")) return;
+        if (!ctx->requireAuth(request)) return;
         if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config chunk import", MemoryGuardLevel::SEVERE, 8)) return;
         if (!request->hasParam("name", true) || !request->hasParam("chunk", true)
             || !request->hasParam("index", true) || !request->hasParam("total", true)) {
@@ -603,7 +603,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/files/content", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->requirePermission(request, "system.view")) return;
+        if (!ctx->requireAuth(request)) return;
         if (!request->hasParam("path")) { ctx->sendError(request, 400, "Missing path parameter"); return; }
         String path = request->getParam("path")->value();
         if (!path.startsWith("/")) path = "/" + path;
@@ -797,7 +797,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/files/save", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->requirePermission(request, "config.edit")) return;
+        if (!ctx->requireAuth(request)) return;
         if (!request->hasParam("path", true)) { ctx->sendError(request, 400, "Missing path parameter"); return; }
         String path = request->getParam("path", true)->value();
         if (!path.startsWith("/")) path = "/" + path;
@@ -837,7 +837,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     // Filesystem info
     server->on("/api/filesystem", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->requirePermission(request, "fs.view")) return;
+        if (!ctx->requireAuth(request)) return;
         if (ESP.getFreeHeap() < 2048 || ESP.getMaxAllocHeap() < 1024) {
             HandlerUtils::sendJsonError(request, 503, "Critical memory - filesystem info unavailable", 5);
             return;
@@ -856,7 +856,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     // Factory reset - 恢复默认配置而非删除文件，避免 Web 系统因文件缺失报错
     server->on("/api/system/factory-reset", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->requirePermission(request, "system.restart")) return;
+        if (!ctx->requireAuth(request)) return;
         LOGGER.info("Factory reset initiated by user");
 
         // 写入默认配置内容的辅助 lambda
@@ -896,13 +896,13 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         static const char DEFAULT_USERS[] PROGMEM =
             "{\"version\":\"2.0\",\"users\":["
             "{\"username\":\"admin\",\"passwordHash\":\"MMqroQgcopTMz5bU/x3brwufT38Ks6YAWGPRkmE5jDw=\","
-            "\"salt\":\"RmFzdEJlZURlZmF1bHQhIQ==\",\"role\":2,\"enabled\":true,"
+            "\"salt\":\"RmFzdEJlZURlZmF1bHQhIQ==\",\"enabled\":true,"
             "\"createTime\":0,\"lastLogin\":0,\"lastModified\":0,"
-            "\"email\":\"\",\"remark\":\"\",\"createBy\":\"system\",\"roles\":[\"admin\"]},"
+            "\"email\":\"\",\"remark\":\"\",\"createBy\":\"system\"},"
             "{\"username\":\"viewer\",\"passwordHash\":\"8GzolfPWya4MDDWln2gLrhPhcitJHQGboXspAgr1CDU=\","
-            "\"salt\":\"Vmlld2VyRGVmYXVsdCEhIQ==\",\"role\":0,\"enabled\":true,"
+            "\"salt\":\"Vmlld2VyRGVmYXVsdCEhIQ==\",\"enabled\":true,"
             "\"createTime\":0,\"lastLogin\":0,\"lastModified\":0,"
-            "\"email\":\"\",\"remark\":\"\",\"createBy\":\"system\",\"roles\":[\"viewer\"]}],"
+            "\"email\":\"\",\"remark\":\"\",\"createBy\":\"system\"}],"
             "\"security\":{\"maxLoginAttempts\":5,\"loginLockoutTime\":300000,"
             "\"minPasswordLength\":6,\"maxPasswordLength\":32,\"requireStrongPasswords\":false,"
             "\"allowMultipleSessions\":true,\"sessionTimeout\":3600000,"
@@ -910,24 +910,6 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             "\"cookieName\":\"session\",\"cookieMaxAge\":3600,"
             "\"cookieHttpOnly\":true,\"cookieSecure\":false}}";
         if (writeDefault("/config/users.json", DEFAULT_USERS)) { resetCount++; }
-
-        // roles.json - 恢复默认角色权限
-        static const char DEFAULT_ROLES[] PROGMEM =
-            "{\"roles\":["
-            "{\"id\":\"admin\",\"name\":\"超级管理员\",\"description\":\"拥有所有操作权限\",\"isBuiltin\":true,"
-            "\"permissions\":[\"user.view\",\"user.create\",\"user.edit\",\"user.delete\","
-            "\"role.view\",\"role.create\",\"role.edit\",\"role.delete\","
-            "\"system.view\",\"system.restart\",\"config.view\",\"config.edit\","
-            "\"network.view\",\"network.edit\",\"device.view\",\"device.control\","
-            "\"ota.update\",\"fs.view\",\"fs.manage\",\"audit.view\",\"audit.clear\"]},"
-            "{\"id\":\"operator\",\"name\":\"操作员\",\"description\":\"可操作设备和修改配置\",\"isBuiltin\":true,"
-            "\"permissions\":[\"system.view\",\"system.restart\",\"config.view\",\"config.edit\","
-            "\"network.view\",\"network.edit\",\"device.view\",\"device.control\","
-            "\"ota.update\",\"fs.view\",\"audit.view\",\"user.view\",\"role.view\"]},"
-            "{\"id\":\"viewer\",\"name\":\"查看者\",\"description\":\"只读权限\",\"isBuiltin\":true,"
-            "\"permissions\":[\"system.view\",\"config.view\",\"network.view\","
-            "\"device.view\",\"fs.view\",\"audit.view\",\"user.view\",\"role.view\"]}]}";
-        if (writeDefault("/config/roles.json", DEFAULT_ROLES)) { resetCount++; }
 
         // protocol.json - 所有协议禁用，用户需重新配置
         static const char DEFAULT_PROTOCOL[] PROGMEM =
@@ -993,7 +975,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
     // Config
     server->on("/api/config", HTTP_GET,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->requirePermission(request, "config.view")) return;
+        if (!ctx->requireAuth(request)) return;
         JsonDocument doc;
         Preferences prefs;
         prefs.begin("webconfig", true);
@@ -1007,7 +989,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
     server->on("/api/config", HTTP_POST,
               [this](AsyncWebServerRequest* request) {
-        if (!ctx->requirePermission(request, "config.edit")) return;
+        if (!ctx->requireAuth(request)) return;
         Preferences prefs;
         prefs.begin("webconfig", false);
         uint32_t webPort = ctx->getParamInt(request, "webPort", 0);
@@ -1043,7 +1025,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 }
 
 void SystemRouteHandler::handleSystemInfo(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     if (request->hasParam("probe")) {
         char json[512];
@@ -1229,7 +1211,7 @@ void SystemRouteHandler::handleSystemStatus(AsyncWebServerRequest* request) {
 }
 
 void SystemRouteHandler::handleSystemRestart(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.restart")) return;
+    if (!ctx->requireAuth(request)) return;
 
     int delaySeconds = ctx->getParamInt(request, "delay", 3);
     delaySeconds = constrain(delaySeconds, 1, 30);
@@ -1261,7 +1243,7 @@ void SystemRouteHandler::handleSystemRestart(AsyncWebServerRequest* request) {
 }
 
 void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "network.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     auto doc = FastBee::makeJsonDocument(8192);
 
@@ -1340,13 +1322,13 @@ void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
 }
 
 void SystemRouteHandler::handleSaveNetworkConfig(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "network.edit")) return;
+    if (!ctx->requireAuth(request)) return;
     ctx->sendSuccess(request, "Use JSON body for network config update");
 }
 
 #if FASTBEE_ENABLE_FILE_MANAGER
 void SystemRouteHandler::handleGetFilesList(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     const bool psramBacked = FastBee::psramAvailableForJson(32768);
     if (!psramBacked) {
@@ -1418,7 +1400,7 @@ void SystemRouteHandler::handleGetHealth(AsyncWebServerRequest* request) {
 }
 
 void SystemRouteHandler::handleSystemMetrics(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     FastBeeFramework* fw = FastBeeFramework::getInstance();
     if (!fw || !fw->getHealthMonitor()) {
@@ -1433,7 +1415,7 @@ void SystemRouteHandler::handleSystemMetrics(AsyncWebServerRequest* request) {
 }
 
 void SystemRouteHandler::handleWebRuntime(AsyncWebServerRequest* request) {
-    if (!ctx->requirePermission(request, "system.view")) return;
+    if (!ctx->requireAuth(request)) return;
 
     if (request->hasParam("probe")) {
         char json[512];

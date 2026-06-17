@@ -7,14 +7,10 @@
 
         // ============ 事件绑定 ============
         setupUsersEvents() {
-            // 添加用户按钮（权限检查）
+            // 添加用户按钮
             const addUserBtn = document.getElementById('add-user-btn');
             if (addUserBtn) {
-                if (AppState.hasPermission('user.admin')) {
-                    addUserBtn.addEventListener('click', () => this.showAddUserModal());
-                } else {
-                    addUserBtn.style.display = 'none';
-                }
+                addUserBtn.addEventListener('click', () => this.showAddUserModal());
             }
 
             // 关闭用户添加/编辑 modal 时重置状态
@@ -91,9 +87,6 @@
                     return cell;
                 };
 
-                // 角色标签本地化
-                const roleMap = { admin: '管理员', operator: '操作员', viewer: '查看者' };
-                const roleText = roleMap[user.role] || user.role || '—';
                 const lastLogin = user.lastLogin ? new Date(user.lastLogin * 1000).toLocaleString() : '—';
 
                 // 状态标志
@@ -114,52 +107,33 @@
                 const actionCell = document.createElement('td');
                 actionCell.className = 'u-toolbar-sm';
 
-                const canManageUsers = AppState.hasPermission('user.admin');
-
                 const editBtn = document.createElement('button');
                 editBtn.className = 'fb-btn fb-btn-sm fb-btn-primary fb-btn-action-edit';
-                editBtn.textContent = '编辑';
-                if (canManageUsers) {
-                    editBtn.addEventListener('click', () => this.showEditUserModal(user));
-                } else {
-                    editBtn.disabled = true;
-                    editBtn.title = '没有操作权限';
-                }
+                editBtn.textContent = '修改密码';
+                editBtn.addEventListener('click', () => this.showEditUserModal(user));
                 actionCell.appendChild(editBtn);
 
-                const toggleBtn = document.createElement('button');
-                if (user.enabled && !user.isLocked) {
-                    toggleBtn.className = 'fb-btn fb-btn-sm fb-btn-warning';
-                    toggleBtn.textContent = '禁用';
-                    if (canManageUsers) {
+                // 超级管理员(admin)不显示禁用/启用按钮，必须始终保持可用
+                if (user.username !== 'admin') {
+                    const toggleBtn = document.createElement('button');
+                    if (user.enabled && !user.isLocked) {
+                        toggleBtn.className = 'fb-btn fb-btn-sm fb-btn-warning';
+                        toggleBtn.textContent = '禁用';
                         toggleBtn.addEventListener('click', () => this.toggleUserStatus(user.username, false));
                     } else {
-                        toggleBtn.disabled = true;
-                        toggleBtn.title = '没有操作权限';
-                    }
-                } else {
-                    toggleBtn.className = 'fb-btn fb-btn-sm fb-btn-success';
-                    toggleBtn.textContent = '启用';
-                    if (canManageUsers) {
+                        toggleBtn.className = 'fb-btn fb-btn-sm fb-btn-success';
+                        toggleBtn.textContent = '启用';
                         toggleBtn.addEventListener('click', () => this.toggleUserStatus(user.username, true));
-                    } else {
-                        toggleBtn.disabled = true;
-                        toggleBtn.title = '没有操作权限';
                     }
+                    actionCell.appendChild(toggleBtn);
                 }
-                actionCell.appendChild(toggleBtn);
 
                 // 解锁按钮
                 if (user.isLocked) {
                     const unlockBtn = document.createElement('button');
                     unlockBtn.className = 'fb-btn fb-btn-sm fb-btn-success';
                     unlockBtn.textContent = '解锁';
-                    if (canManageUsers) {
-                        unlockBtn.addEventListener('click', () => this.unlockUser(user.username));
-                    } else {
-                        unlockBtn.disabled = true;
-                        unlockBtn.title = '没有操作权限';
-                    }
+                    unlockBtn.addEventListener('click', () => this.unlockUser(user.username));
                     actionCell.appendChild(unlockBtn);
                 }
 
@@ -168,23 +142,18 @@
                     const delBtn = document.createElement('button');
                     delBtn.className = 'fb-btn fb-btn-sm fb-btn-danger';
                     delBtn.textContent = '删除';
-                    if (canManageUsers) {
-                        delBtn.addEventListener('click', () => {
-                            if (confirm(`确定要删除用户 ${user.username} 吗？`)) {
-                                this.deleteUser(user.username);
-                            }
-                        });
-                    } else {
-                        delBtn.disabled = true;
-                        delBtn.title = '没有操作权限';
-                    }
+                    delBtn.addEventListener('click', () => {
+                        if (confirm(`确定要删除用户 ${user.username} 吗？`)) {
+                            this.deleteUser(user.username);
+                        }
+                    });
                     actionCell.appendChild(delBtn);
                 }
 
                 row.appendChild(td(user.username));
-                row.appendChild(td(roleText));
                 row.appendChild(td(lastLogin));
                 row.appendChild(td(badge));
+                row.appendChild(td(user.description || ''));
                 row.appendChild(actionCell);
                 tbody.appendChild(row);
             });
@@ -209,7 +178,7 @@
             if (confirmBtn) confirmBtn.textContent = '确认添加';
 
             // 清空输入框
-            ['add-username-input', 'add-password-input', 'add-confirm-password-input'].forEach(id => {
+            ['add-username-input', 'add-password-input', 'add-confirm-password-input', 'add-description-input'].forEach(id => {
                 const el = document.getElementById(id); if (el) el.value = '';
             });
 
@@ -217,8 +186,6 @@
             const usernameInput = document.getElementById('add-username-input');
             if (usernameInput) usernameInput.disabled = false;
 
-            const sel = document.getElementById('add-role-select');
-            if (sel) sel.value = 'operator';
             AppState.clearInlineError('add-user-error');
         },
 
@@ -231,7 +198,7 @@
             const username = isEditMode ? editUsername : ((document.getElementById('add-username-input') || {}).value || '').trim();
             const password = (document.getElementById('add-password-input') || {}).value || '';
             const confirmPwd = (document.getElementById('add-confirm-password-input') || {}).value || '';
-            const role = (document.getElementById('add-role-select') || {}).value || 'operator';
+            const description = ((document.getElementById('add-description-input') || {}).value || '').trim();
             const errDiv = document.getElementById('add-user-error');
 
             const showErr = (msg) => {
@@ -258,10 +225,10 @@
             let apiCall;
             if (isEditMode) {
                 // 编辑模式：使用 POST /api/users/update
-                apiCall = apiPost('/api/users/update', { username, password, role, enabled: 'true' });
+                apiCall = apiPost('/api/users/update', { username, password, enabled: 'true', description });
             } else {
                 // 添加模式
-                apiCall = apiPost('/api/users', { username, password, role });
+                apiCall = apiPost('/api/users', { username, password, description });
             }
 
             apiCall
@@ -303,7 +270,7 @@
 
             // 修改标题
             const title = document.getElementById('add-user-title');
-            if (title) title.textContent = '编辑用户';
+            if (title) title.textContent = '修改密码';
 
             // 填充用户信息
             const usernameInput = document.getElementById('add-username-input');
@@ -312,15 +279,15 @@
                 usernameInput.disabled = true;  // 用户名不可修改
             }
 
+            // 填充描述
+            const descInput = document.getElementById('add-description-input');
+            if (descInput) descInput.value = user.description || '';
+
             // 清空密码字段（编辑时密码可选）
             const pwdInput = document.getElementById('add-password-input');
             const confirmInput = document.getElementById('add-confirm-password-input');
             if (pwdInput) pwdInput.value = '';
             if (confirmInput) confirmInput.value = '';
-
-            // 设置角色
-            const roleSelect = document.getElementById('add-role-select');
-            if (roleSelect) roleSelect.value = user.role || 'operator';
 
             // 修改确认按钮文本
             const confirmBtn = document.getElementById('confirm-add-user-btn');

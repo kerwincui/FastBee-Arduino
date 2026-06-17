@@ -83,7 +83,6 @@ const PROD_IGNORED_ORPHAN_MODULES = new Set([
     'i18n-engine.js',
     'i18n-zh-CN.js',
     'logs.js',
-    'roles.js',
     'users.js',
     'dashboard-fullscreen.js'
 ]);
@@ -164,7 +163,6 @@ function stripProdOnlyCssRules(content) {
         /^\.log-content/,
         /^\.log-/,
         /^\.file-tree-/,
-        /^\.role-/,
         /^\.ota-/,
         /^\.ota-inline-/,
         /^body\.fullscreen-page/,
@@ -175,7 +173,6 @@ function stripProdOnlyCssRules(content) {
         /^\[data-theme="dark"\]\s+\.logs-/,
         /^\[data-theme="dark"\]\s+\.log-/,
         /^\[data-theme="dark"\]\s+\.file-tree-/,
-        /^\[data-theme="dark"\]\s+\.role-/,
         /^\[data-theme="dark"\]\s+\.ota-/
     ];
 
@@ -232,7 +229,7 @@ function transformStaticAssetContent(relPath, content) {
     }
 
     if (normalized === 'index.html') {
-        let next = ['logs', 'data', 'users', 'roles']
+        let next = ['logs', 'data', 'users']
             .reduce((acc, page) => stripMenuItemByPage(acc, page), content);
         if (isLiteWebProfile()) {
             next = stripMenuItemByPage(next, 'rule-script');

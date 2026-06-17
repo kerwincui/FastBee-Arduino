@@ -286,8 +286,8 @@ public:
     void setStopped(bool s) { _stopped = s; }
     bool isStopped() const { return _stopped; }
 
-    // 后台重连延迟常量 (与生产代码同步)
-    static constexpr uint32_t BOOT_STABILIZATION_DELAY_MS = 15000;
+    // 后台重连延迟常量 (与生产代码同步: reconnectTaskEntry 中 vTaskDelay 3s)
+    static constexpr uint32_t BOOT_STABILIZATION_DELAY_MS = 3000;
 
 private:
     bool validateAuth() {

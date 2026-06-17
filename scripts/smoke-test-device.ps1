@@ -348,12 +348,6 @@ function Test-CheckSemantics {
         "users" {
             if ($null -eq $data) { return "missing data" }
         }
-        "roles" {
-            if ($null -eq $data) { return "missing data" }
-        }
-        "permissions" {
-            if ($null -eq $data) { return "missing data" }
-        }
         "batch-basic" {
             $rawResults = Get-ObjectValue -Object $Response -Name "results"
             if ($null -eq $rawResults) { return "missing batch results" }

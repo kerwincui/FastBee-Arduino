@@ -4,14 +4,15 @@
 #include "protocols/ProtocolManager.h"
 #include <esp_heap_caps.h>
 #include <cstdio>
+#include "lwip/tcp.h"
+#include "lwip/priv/tcp_priv.h"
+#include "lwip/tcpip.h"  // LOCK_TCPIP_CORE / UNLOCK_TCPIP_CORE
 #include "./network/handlers/StaticRouteHandler.h"
 #include "./network/handlers/AuthRouteHandler.h"
 #if FASTBEE_ENABLE_USER_ADMIN
 #include "./network/handlers/UserRouteHandler.h"
 #endif
-#if FASTBEE_ENABLE_ROLE_ADMIN
-#include "./network/handlers/RoleRouteHandler.h"
-#endif
+
 #if FASTBEE_ENABLE_LOG_VIEWER || FASTBEE_ENABLE_FILE_LOGGING
 #include "./network/handlers/LogRouteHandler.h"
 #endif
@@ -38,6 +39,8 @@ WebConfigManager::WebConfigManager(AsyncWebServer* webServer,
                                    IAuthManager* authMgr, IUserManager* userMgr)
     : server(webServer), isRunning(false) {
     ctx = std::unique_ptr<WebHandlerContext>(new WebHandlerContext(webServer, authMgr, userMgr));
+    // 设置反向指针，使 WebHandlerContext 能通知请求突增跟踪
+    if (ctx) ctx->webConfigManager = this;
 }
 
 WebConfigManager::~WebConfigManager() {
@@ -58,9 +61,7 @@ bool WebConfigManager::initialize() {
 #if FASTBEE_ENABLE_USER_ADMIN
     userHandler        = std::unique_ptr<UserRouteHandler>(new UserRouteHandler(ctx.get()));
 #endif
-#if FASTBEE_ENABLE_ROLE_ADMIN
-    roleHandler        = std::unique_ptr<RoleRouteHandler>(new RoleRouteHandler(ctx.get()));
-#endif
+
 #if FASTBEE_ENABLE_LOG_VIEWER || FASTBEE_ENABLE_FILE_LOGGING
     logHandler         = std::unique_ptr<LogRouteHandler>(new LogRouteHandler(ctx.get()));
 #endif
@@ -120,9 +121,7 @@ bool WebConfigManager::isServerRunning() const { return isRunning; }
 
 // ============ 管理器注入 ============
 
-void WebConfigManager::setRoleManager(RoleManager* roleMgr) {
-    if (ctx) ctx->roleManager = roleMgr;
-}
+
 
 void WebConfigManager::setNetworkManager(FBNetworkManager* netMgr) {
     if (ctx) ctx->networkManager = netMgr;
@@ -203,6 +202,55 @@ void WebConfigManager::performMaintenance() {
     const bool inStartupGrace = (maintenanceNow < 120000UL);
     static unsigned long safeSoftRestartSince = 0;
 
+    // ── Web 服务意外停止后的自动重启 ──
+    // 如果 isRunning 为 false 但 server 实例有效，尝试重新启动（带冷却期保护）
+    if (!isRunning && server) {
+        if (lastWebRecoveryMs == 0 || (maintenanceNow - lastWebRecoveryMs >= RECOVERY_COOLDOWN_MS)) {
+            LOG_WARNING("[WebConfig] Web server is stopped, attempting auto-restart");
+            server->begin();
+            isRunning = true;
+            lastWebRecoveryMs = maintenanceNow;
+            webRecoveryCount++;
+            recordRecoveryEvent("auto_restart",
+                                "server_was_stopped",
+                                maintenanceNow,
+                                ESP.getFreeHeap(),
+                                heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT),
+                                0);
+        } else {
+            LOG_DEBUG("[WebConfig] Web server stopped, waiting for recovery cooldown");
+        }
+        // 停止状态下不执行后续压力检测
+        safeSoftRestartSince = 0;
+        severePressureSinceMs = 0;
+        return;
+    }
+
+    // TCP 连接池健康监测与 Web 服务自动恢复
+    checkAndRecoverWebServer();
+
+    // 定期清理 TIME_WAIT 连接（每 30s 一次）
+    // 不等到软重启才清理，主动释放 TCP PCB 槽位给新请求
+    {
+        static unsigned long lastTwCleanupMs = 0;
+        if (maintenanceNow - lastTwCleanupMs >= 30000UL) {
+            lastTwCleanupMs = maintenanceNow;
+            uint8_t aborted = 0;
+            LOCK_TCPIP_CORE();
+            struct tcp_pcb* pcb = tcp_tw_pcbs;
+            while (pcb != nullptr) {
+                struct tcp_pcb* next = pcb->next;
+                tcp_abort(pcb);
+                aborted++;
+                pcb = next;
+            }
+            UNLOCK_TCPIP_CORE();
+            if (aborted > 0) {
+                LOG_INFOF("[WebConfig] Periodic TIME_WAIT cleanup: aborted %u connections", (unsigned)aborted);
+            }
+        }
+    }
+
     if (!isRunning) {
         safeSoftRestartSince = 0;
         severePressureSinceMs = 0;
@@ -241,15 +289,25 @@ void WebConfigManager::performMaintenance() {
                          (unsigned long)maintenanceFreeHeap,
                          (unsigned long)maintenanceLargestBlock,
                          (unsigned int)maintenanceFrag);
-        } else if (maintenanceNow - safeSoftRestartSince >= 120000UL) {
-            LOG_WARNING("[WebConfig] Scheduling device restart after sustained web pressure");
-            scheduleDeviceRestartForWebRecovery("sustained_web_pressure",
-                                                maintenanceNow,
-                                                maintenanceFreeHeap,
-                                                maintenanceLargestBlock,
-                                                maintenanceFrag);
-            safeSoftRestartSince = 0;
-            severePressureSinceMs = 0;
+        } else {
+            const unsigned long pressureDuration = maintenanceNow - safeSoftRestartSince;
+            // 持续 30s 严重压力：先尝试轻量软重启 Web 服务（比设备重启更温和）
+            if (pressureDuration >= 30000UL && pressureDuration < 35000UL) {
+                LOG_WARNING("[WebConfig] Sustained pressure 30s, trying soft-restart before device restart");
+                softRestartWebServer("sustained_pressure_soft_restart");
+                // softRestart 后重置计时器，给予恢复观察期
+                safeSoftRestartSince = maintenanceNow;
+            } else if (pressureDuration >= 120000UL) {
+                // 120s 仍未恢复：调度设备重启
+                LOG_WARNING("[WebConfig] Scheduling device restart after sustained web pressure");
+                scheduleDeviceRestartForWebRecovery("sustained_web_pressure",
+                                                    maintenanceNow,
+                                                    maintenanceFreeHeap,
+                                                    maintenanceLargestBlock,
+                                                    maintenanceFrag);
+                safeSoftRestartSince = 0;
+                severePressureSinceMs = 0;
+            }
         }
     } else {
         if (severePressureSinceMs != 0) {
@@ -265,6 +323,180 @@ void WebConfigManager::performMaintenance() {
     }
 
     return;
+}
+
+// ============ TCP 连接池健康监测与自动恢复 ============
+
+uint16_t WebConfigManager::countTcpConnections(uint8_t* outTimeWait) const {
+    uint16_t total = 0;
+    uint8_t timeWait = 0;
+
+    // 必须持有 TCPIP 核心锁才能安全遍历 lwIP PCB 链表
+    // 否则 AsyncTCP 任务并发访问会触发 tcp_abandon 断言
+    LOCK_TCPIP_CORE();
+
+    // 遍历 lwIP 活跃 TCP PCB 链表
+    for (struct tcp_pcb* pcb = tcp_active_pcbs; pcb != nullptr; pcb = pcb->next) {
+        total++;
+        if (pcb->state == TIME_WAIT) {
+            timeWait++;
+        }
+    }
+    // 遍历 TIME_WAIT 专用链表
+    for (struct tcp_pcb* pcb = tcp_tw_pcbs; pcb != nullptr; pcb = pcb->next) {
+        total++;
+        timeWait++;
+    }
+
+    UNLOCK_TCPIP_CORE();
+
+    if (outTimeWait) {
+        *outTimeWait = timeWait;
+    }
+    return total;
+}
+
+void WebConfigManager::checkAndRecoverWebServer() {
+    if (!isRunning) return;
+
+    const unsigned long now = millis();
+
+    // 启动保护期：前 120 秒不做 TCP 健康检查（系统初始化 TCP 连接多属正常）
+    if (now < 120000UL) return;
+
+    // 按间隔执行检查
+    if (now - lastTcpCheckMs < CHECK_INTERVAL_MS) return;
+    lastTcpCheckMs = now;
+
+    // 冷却期内不检查
+    if (lastWebRecoveryMs > 0 && (now - lastWebRecoveryMs < RECOVERY_COOLDOWN_MS)) {
+        tcpUnhealthyCount = 0;
+        burstWithPressureCount = 0;
+        return;
+    }
+
+    uint8_t timeWaitCount = 0;
+    uint16_t totalConn = countTcpConnections(&timeWaitCount);
+
+    // 判断 TCP 连接池是否处于耗尽状态
+    const bool tcpExhausted = (totalConn >= TCP_CONN_EXHAUSTION_THRESHOLD) ||
+                               (timeWaitCount >= (TCP_CONN_EXHAUSTION_THRESHOLD - 2));
+
+    // 检查请求突增 + 内存压力组合
+    const bool burst = isRequestBurst();
+    const uint32_t freeHeap = ESP.getFreeHeap();
+    const uint32_t maxAlloc = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    const bool memPressure = (freeHeap < 16384U) || (maxAlloc < 6144U);
+
+    if (burst && memPressure) {
+        burstWithPressureCount++;
+        LOG_WARNINGF("[WebConfig] Burst + memory pressure: heap=%lu maxAlloc=%u requests=%u/%us count=%u/%u",
+                     (unsigned long)freeHeap, (unsigned)maxAlloc,
+                     (unsigned)requestCountInWindow, (unsigned)(BURST_WINDOW_MS / 1000),
+                     (unsigned)burstWithPressureCount, (unsigned)BURST_RECOVERY_TRIGGER);
+
+        if (burstWithPressureCount >= BURST_RECOVERY_TRIGGER) {
+            char reason[64];
+            snprintf(reason, sizeof(reason), "burst_pressure:heap=%lu,req=%u",
+                     (unsigned long)freeHeap, (unsigned)requestCountInWindow);
+            softRestartWebServer(reason);
+            burstWithPressureCount = 0;
+        }
+    } else {
+        if (burstWithPressureCount > 0 && !burst) {
+            LOG_INFOF("[WebConfig] Burst pressure cleared: heap=%lu requests=%u",
+                      (unsigned long)freeHeap, (unsigned)requestCountInWindow);
+        }
+        burstWithPressureCount = 0;
+    }
+
+    if (tcpExhausted) {
+        tcpUnhealthyCount++;
+        LOG_WARNINGF("[WebConfig] TCP pool unhealthy: total=%u timeWait=%u count=%u/%u",
+                     (unsigned)totalConn, (unsigned)timeWaitCount,
+                     (unsigned)tcpUnhealthyCount, (unsigned)UNHEALTHY_COUNT_TRIGGER);
+
+        if (tcpUnhealthyCount >= UNHEALTHY_COUNT_TRIGGER) {
+            char reason[64];
+            snprintf(reason, sizeof(reason), "tcp_exhausted:total=%u,tw=%u",
+                     (unsigned)totalConn, (unsigned)timeWaitCount);
+            softRestartWebServer(reason);
+            tcpUnhealthyCount = 0;
+        }
+    } else {
+        if (tcpUnhealthyCount > 0) {
+            LOG_INFOF("[WebConfig] TCP pool recovered: total=%u timeWait=%u",
+                      (unsigned)totalConn, (unsigned)timeWaitCount);
+        }
+        tcpUnhealthyCount = 0;
+    }
+}
+
+bool WebConfigManager::softRestartWebServer(const char* reason) {
+    if (!server) return false;
+
+    const unsigned long now = millis();
+    const uint32_t freeHeap = ESP.getFreeHeap();
+    const uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+    const uint8_t frag = calculateHeapFragmentationPercent(freeHeap, largestBlock);
+
+    LOG_WARNINGF("[WebConfig] Soft-restarting web server: reason=%s heap=%lu largest=%lu",
+                 reason, (unsigned long)freeHeap, (unsigned long)largestBlock);
+
+    // 步骤1：断开所有 SSE 客户端（释放 TCP 缓冲区）
+    if (sseRouteHandler) {
+        size_t closed = sseRouteHandler->closeAllClients();
+        LOG_INFOF("[WebConfig] Closed %u SSE clients before restart", (unsigned)closed);
+    }
+
+    // 步骤2：停止 Web 服务器
+    server->end();
+    isRunning = false;
+
+    // 步骤3：等待 TCP 栈处理 FIN/RST
+    delay(200);
+
+    // 步骤4：强制清理 TIME_WAIT 连接（通过 tcp_abort）
+    // 必须持有 TCPIP 核心锁，否则并发 TCP 操作触发 tcp_abandon 断言
+    uint8_t aborted = 0;
+    LOCK_TCPIP_CORE();
+    struct tcp_pcb* pcb = tcp_tw_pcbs;
+    while (pcb != nullptr) {
+        struct tcp_pcb* next = pcb->next;
+        tcp_abort(pcb);
+        aborted++;
+        pcb = next;
+    }
+    UNLOCK_TCPIP_CORE();
+    if (aborted > 0) {
+        LOG_INFOF("[WebConfig] Aborted %u TIME_WAIT connections", (unsigned)aborted);
+    }
+
+    // 步骤5：短暂延迟让 lwIP 完成清理
+    delay(100);
+
+    // 步骤6：重新启动 Web 服务器
+    server->begin();
+    isRunning = true;
+
+    // 记录恢复事件
+    lastWebRecoveryMs = millis();
+    webRecoveryCount++;
+
+    recordRecoveryEvent("web_soft_restart", reason, now, freeHeap, largestBlock, frag);
+
+    // 更新 soft restart 统计信息
+    lastSoftRestartAtMs = now;
+    lastSoftRestartReason = reason ? reason : "tcp_exhaustion";
+    lastSoftRestartFreeHeap = freeHeap;
+    lastSoftRestartLargestBlock = largestBlock;
+    lastSoftRestartFrag = frag;
+    softRestartCount++;
+
+    LOG_WARNINGF("[WebConfig] Web server soft-restarted successfully (total=%lu, cooldown=%lus)",
+                 (unsigned long)webRecoveryCount, (unsigned long)(RECOVERY_COOLDOWN_MS / 1000));
+
+    return true;
 }
 
 // ============ 路由注册（严格顺序）============
@@ -337,6 +569,27 @@ void WebConfigManager::copyText(char* dest, size_t destSize, const char* text) c
     snprintf(dest, destSize, "%s", text ? text : "");
 }
 
+// ============ 请求突增检测 ============
+
+void WebConfigManager::trackWebRequest() {
+    unsigned long now = millis();
+    // 滑动窗口重置
+    if (burstWindowStartMs == 0 || (now - burstWindowStartMs) >= BURST_WINDOW_MS) {
+        burstWindowStartMs = now;
+        requestCountInWindow = 1;
+        return;
+    }
+    requestCountInWindow++;
+}
+
+bool WebConfigManager::isRequestBurst() const {
+    if (burstWindowStartMs == 0) return false;
+    unsigned long now = millis();
+    // 仅在当前窗口内有效
+    if ((now - burstWindowStartMs) >= BURST_WINDOW_MS) return false;
+    return requestCountInWindow >= BURST_THRESHOLD;
+}
+
 void WebConfigManager::setupAllRoutes() {
     // 注册顺序严格遵循 ESPAsyncWebServer 前缀匹配规则：
     // 子路径必须在父路径之前注册
@@ -370,11 +623,6 @@ void WebConfigManager::setupAllRoutes() {
     // 2. 用户路由（/api/users/*）
 #if FASTBEE_ENABLE_USER_ADMIN
     userHandler->setupRoutes(server);                        ROUTE_PROBE("User");
-#endif
-
-    // 3. 角色路由（/api/roles/*, /api/permissions, /api/audit/*）
-#if FASTBEE_ENABLE_ROLE_ADMIN
-    roleHandler->setupRoutes(server);                        ROUTE_PROBE("Role");
 #endif
 
     // 4. 系统路由（/api/system/*, /api/network/*, /api/files/*, /api/config, /api/health）

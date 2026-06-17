@@ -273,11 +273,6 @@ namespace Protocols {
 // 安全配置常量
 // ============================================================================
 namespace Security {
-    // 用户角色
-    constexpr const char* ROLE_ADMIN = "admin";
-    constexpr const char* ROLE_USER = "user";
-    constexpr const char* ROLE_VIEWER = "viewer";
-    
     // 认证配置
     constexpr uint8_t MAX_LOGIN_ATTEMPTS = 5;
     constexpr uint32_t LOGIN_LOCKOUT_TIME = 300000; // 5分钟
@@ -390,7 +385,6 @@ namespace ErrorCodes {
     
     // 安全错误
     constexpr int AUTH_FAILED = -300;
-    constexpr int PERMISSION_DENIED = -301;
     constexpr int SESSION_EXPIRED = -302;
     
     // OTA错误

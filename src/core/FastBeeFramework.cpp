@@ -24,9 +24,6 @@
 #include "systems/HealthMonitor.h"
 #include "systems/RestartDiagnostics.h"
 #include "security/UserManager.h"
-#if FASTBEE_ENABLE_ROLE_ADMIN
-#include "security/RoleManager.h"
-#endif
 #include "security/AuthManager.h"
 #include "protocols/ProtocolManager.h"
 #include "systems/ConfigStorage.h"
@@ -162,32 +159,15 @@ bool FastBeeFramework::initialize() {
     }
     Serial.println("[STEP4-E] User manager OK");
 
-    // 步骤4-E.5: 初始化角色管理器（提前，Web服务需要）
-#if FASTBEE_ENABLE_ROLE_ADMIN
-    Serial.println("[STEP4-E.5] Initializing RoleManager...");
-    roleManager.reset(new RoleManager());
-    if (!roleManager || !roleManager->initialize()) {
-        Serial.println("[STEP4-E.5] FATAL: Failed to init role manager");
-        return false;
-    }
-    Serial.println("[STEP4-E.5] Role manager OK");
-#else
-    Serial.println("[STEP4-E.5] RoleManager disabled");
-#endif
-
-    // 步骤5-E: 初始化认证管理器（提前，Web服务需要）
+    // 步骤5-E: 初始化认证管理器
     Serial.println("[STEP5-E] Initializing AuthManager...");
-#if FASTBEE_ENABLE_ROLE_ADMIN
-    authManager.reset(new AuthManager(userManager.get(), roleManager.get()));
-#else
     authManager.reset(new AuthManager(userManager.get(), nullptr));
-#endif
     if (!authManager || !authManager->initialize()) {
         Serial.println("[STEP5-E] FATAL: Failed to initialize auth manager!");
         return false;
     }
     Serial.println("[STEP5-E] Auth manager OK");
-    Serial.printf("[Boot] User/Role/AuthManager (early): %lu ms\n", millis() - stepStart);
+    Serial.printf("[Boot] User/AuthManager (early): %lu ms\n", millis() - stepStart);
 
     // 步骤6-E: 初始化 Web配置管理器（仅注册路由，暂不调用 server->begin()）
     // 注意：server->begin() 需要 LwIP TCP/IP 栈就绪，必须先等 NetworkManager 初始化 WiFi，
@@ -199,9 +179,6 @@ bool FastBeeFramework::initialize() {
         Serial.println("[STEP6-E] FATAL: Failed to init web config manager");
         return false;
     }
-#if FASTBEE_ENABLE_ROLE_ADMIN
-    webConfig->setRoleManager(roleManager.get());
-#endif
     // NetworkManager 尚未创建，暂不注入，在步骤7-E中注入
     Serial.printf("[Boot] WebConfigManager routes: %lu ms\n", millis() - stepStart);
     LOG_BOOT_HEAP("WebConfigManager-routes");
@@ -282,32 +259,15 @@ bool FastBeeFramework::initialize() {
     }
     Serial.println("[STEP5] User manager OK");
 
-    // 步骤5.5: 初始化角色管理器
-#if FASTBEE_ENABLE_ROLE_ADMIN
-    Serial.println("[STEP5.5] Initializing RoleManager...");
-    roleManager.reset(new RoleManager());
-    if (!roleManager || !roleManager->initialize()) {
-        Serial.println("[STEP5.5] FATAL: Failed to initialize role manager");
-        return false;
-    }
-    Serial.println("[STEP5.5] Role manager OK");
-#else
-    Serial.println("[STEP5.5] RoleManager disabled");
-#endif
-
-    // 步骤6: 初始化认证管理器（注入 RoleManager）
+    // 步骤6: 初始化认证管理器
     Serial.println("[STEP6] Initializing AuthManager...");
-#if FASTBEE_ENABLE_ROLE_ADMIN
-    authManager.reset(new AuthManager(userManager.get(), roleManager.get()));
-#else
     authManager.reset(new AuthManager(userManager.get(), nullptr));
-#endif
     if (!authManager || !authManager->initialize()) {
         Serial.println("[STEP6] FATAL: Failed to initialize auth manager!");
         return false;
     }
     Serial.println("[STEP6] Auth manager OK");
-    Serial.printf("[Boot] User/Role/AuthManager: %lu ms\n", millis() - stepStart);
+    Serial.printf("[Boot] User/AuthManager: %lu ms\n", millis() - stepStart);
 
     // 步骤 7: 初始化 Web配置管理器
     stepStart = millis();
@@ -317,10 +277,6 @@ bool FastBeeFramework::initialize() {
         Serial.println("[STEP7] FATAL: Failed to init web config manager");
         return false;
     }
-    // 注入 RoleManager 和 NetworkManager 给 WebConfigManager
-#if FASTBEE_ENABLE_ROLE_ADMIN
-    webConfig->setRoleManager(roleManager.get());
-#endif
     webConfig->setNetworkManager(network.get());
     // 启动 HTTP 服务器（监听端口 80）
     if (!webConfig->start()) {
@@ -1197,9 +1153,7 @@ TaskManager* FastBeeFramework::getTaskManager() const { return taskManager.get()
 HealthMonitor* FastBeeFramework::getHealthMonitor() const { return healthMonitor.get(); }
 UserManager* FastBeeFramework::getUserManager() const { return userManager.get(); }
 AuthManager* FastBeeFramework::getAuthManager() const { return authManager.get(); }
-#if FASTBEE_ENABLE_ROLE_ADMIN
-RoleManager* FastBeeFramework::getRoleManager() const { return roleManager.get(); }
-#endif
+
 ProtocolManager* FastBeeFramework::getProtocolManager() const { return protocolManager.get(); }
 
 // 检查系统是否已初始化

@@ -82,14 +82,6 @@ public:
     virtual bool revokeToken(const String& token) = 0;
     
     /**
-     * @brief 检查用户权限
-     * @param username 用户名
-     * @param permission 权限
-     * @return 是否有权限
-     */
-    virtual bool checkPermission(const String& username, const String& permission) = 0;
-    
-    /**
      * @brief 关闭认证管理器
      */
     virtual void shutdown() = 0;
@@ -125,14 +117,6 @@ public:
      * @return 是否成功
      */
     virtual bool forceLogout(const String& username) = 0;
-    
-    /**
-     * @brief 检查会话权限
-     * @param sessionId 会话ID
-     * @param permission 权限
-     * @return 是否有权限
-     */
-    virtual bool checkSessionPermission(const String& sessionId, const String& permission) = 0;
     
     /**
      * @brief 检查用户是否在线

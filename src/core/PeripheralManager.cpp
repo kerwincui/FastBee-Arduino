@@ -1741,10 +1741,119 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
     }
 #endif
 
-    // 未实现的外设类型（CAN/USB/SDIO/CAMERA/ETHERNET/ENCODER等）
-    // 当前策略：注册成功但不做硬件初始化，待后续驱动实现
-    LOG_WARNINGF("Peripheral Manager: Type %d ('%s') registered - hardware driver not yet implemented",
-              static_cast<int>(config.type), config.id.c_str());
+    // ========== I2C 总线初始化 ==========
+    if (config.type == PeripheralType::I2C) {
+        if (config.pinCount < 2) {
+            LOG_WARNINGF("Peripheral Manager: I2C '%s' requires 2 pins (SDA, SCL)", config.id.c_str());
+            return false;
+        }
+        uint8_t sda = config.pins[0];
+        uint8_t scl = config.pins[1];
+        if (isReservedPin(sda) || isReservedPin(scl)) {
+            LOG_ERRORF("Peripheral Manager: I2C '%s' rejects reserved pins SDA=%d SCL=%d on %s",
+                       config.id.c_str(), sda, scl, CHIP_NAME);
+            return false;
+        }
+        uint32_t freq = config.params.i2c.frequency;
+        if (freq == 0) freq = 100000;  // 默认 100kHz
+        Wire.begin(static_cast<int>(sda), static_cast<int>(scl), freq);
+        LOG_INFOF("Peripheral Manager: I2C '%s' initialized SDA=%d SCL=%d freq=%u master=%d addr=0x%02X",
+                  config.id.c_str(), sda, scl, (unsigned)freq,
+                  config.params.i2c.isMaster ? 1 : 0, config.params.i2c.address);
+        return true;
+    }
+
+    // ========== SPI 总线初始化 ==========
+    if (config.type == PeripheralType::SPI) {
+        if (config.pinCount < 4) {
+            LOG_WARNINGF("Peripheral Manager: SPI '%s' requires 4 pins (MISO, MOSI, SCK, CS)", config.id.c_str());
+            return false;
+        }
+        uint8_t miso = config.pins[0];
+        uint8_t mosi = config.pins[1];
+        uint8_t sck  = config.pins[2];
+        uint8_t cs   = config.pins[3];
+        // 校验 CS 引脚（MISO 可为输入专用引脚）
+        if (isReservedPin(cs)) {
+            LOG_ERRORF("Peripheral Manager: SPI '%s' rejects reserved CS GPIO%d on %s",
+                       config.id.c_str(), cs, CHIP_NAME);
+            return false;
+        }
+        pinMode(cs, OUTPUT);
+        digitalWrite(cs, HIGH);  // CS 默认高（未选中）
+        uint32_t freq = config.params.spi.frequency;
+        if (freq == 0) freq = 1000000;  // 默认 1MHz
+        SPI.begin(sck, miso, mosi, cs);
+        LOG_INFOF("Peripheral Manager: SPI '%s' initialized MISO=%d MOSI=%d SCK=%d CS=%d freq=%u mode=%d",
+                  config.id.c_str(), miso, mosi, sck, cs, (unsigned)freq, config.params.spi.mode);
+        return true;
+    }
+
+    // ========== DAC 数模转换初始化 ==========
+    if (config.type == PeripheralType::DAC) {
+        return setupDACPin(config);
+    }
+
+    // ========== ADC 模数转换初始化 ==========
+    if (config.type == PeripheralType::ADC) {
+        uint8_t pin = config.getPrimaryPin();
+        if (pin == 255) {
+            LOG_WARNINGF("Peripheral Manager: ADC '%s' requires a valid analog pin", config.id.c_str());
+            return false;
+        }
+        // 设置 ADC 分辨率（衰减在 PeriphExecExecutor 的传感器读取中按需配置）
+#if defined(SOC_ADC_MAX_BITWIDTH) && SOC_ADC_MAX_BITWIDTH >= 9
+        analogReadResolution(config.params.adc.resolution);
+#endif
+        // 执行一次空读以稳定 ADC
+        analogRead(pin);
+        LOG_INFOF("Peripheral Manager: ADC '%s' initialized pin=%d atten=%d res=%d",
+                  config.id.c_str(), pin, config.params.adc.attenuation, config.params.adc.resolution);
+        return true;
+    }
+
+    // ========== PWM_SERVO 舵机初始化（使用 LEDC，但不在 GPIO 类型范围内）==========
+    if (config.type == PeripheralType::PWM_SERVO) {
+        return setupPWMPin(config);
+    }
+
+    // ========== ONE_WIRE 单总线初始化 ==========
+    if (config.type == PeripheralType::ONE_WIRE) {
+        uint8_t pin = config.getPrimaryPin();
+        if (pin == 255) {
+            LOG_WARNINGF("Peripheral Manager: OneWire '%s' requires a valid pin", config.id.c_str());
+            return false;
+        }
+        // OneWire 需要外部上拉，启用内部上拉作为辅助
+        pinMode(pin, INPUT_PULLUP);
+        LOG_INFOF("Peripheral Manager: OneWire '%s' initialized pin=%d (internal pull-up)",
+                  config.id.c_str(), pin);
+        return true;
+    }
+
+    // ========== SENSOR 通用传感器初始化 ==========
+    if (config.type == PeripheralType::SENSOR) {
+        uint8_t pin = config.getPrimaryPin();
+        if (pin != 255) {
+            // 根据传感器类型设置引脚模式
+            pinMode(pin, INPUT_PULLUP);
+            LOG_INFOF("Peripheral Manager: Sensor '%s' initialized pin=%d sensorType=%d interval=%ums",
+                      config.id.c_str(), pin, config.params.sensor.sensorType,
+                      (unsigned)config.params.sensor.sampleInterval);
+        } else {
+            LOG_INFOF("Peripheral Manager: Sensor '%s' registered (no local pin) sensorType=%d",
+                      config.id.c_str(), config.params.sensor.sensorType);
+        }
+        return true;
+    }
+
+    // 未实现硬件驱动的外设类型：CAN/USB/JTAG/SWD/SDIO/CAMERA/ETHERNET/ENCODER
+    // 注册成功但不做硬件初始化，记录警告以便前端“待驱动”标记一致
+    int typeVal = static_cast<int>(config.type);
+    bool isUnimplemented = (typeVal == 4 || typeVal == 5 || typeVal == 31 || typeVal == 32 ||
+                            typeVal == 37 || typeVal == 39 || typeVal == 40 || typeVal == 43);
+    LOG_WARNINGF("Peripheral Manager: Type %d ('%s') registered - hardware driver not yet implemented%s",
+              typeVal, config.id.c_str(), isUnimplemented ? " (前端已标记为“待驱动”)" : "");
     return true;
 }
 
@@ -1765,6 +1874,27 @@ bool PeripheralManager::teardownHardware(const PeripheralConfig& config) {
             }
             uartPortById.erase(it);
         }
+        return true;
+    }
+
+    // I2C 总线清理
+    if (config.type == PeripheralType::I2C) {
+        Wire.end();
+        LOG_INFOF("Peripheral Manager: I2C '%s' bus released", config.id.c_str());
+        return true;
+    }
+
+    // SPI 总线清理
+    if (config.type == PeripheralType::SPI) {
+        SPI.end();
+        // 释放 CS 引脚
+        if (config.pinCount >= 4) {
+            uint8_t cs = config.pins[3];
+            if (cs != 255 && !isReservedPin(cs)) {
+                pinMode(cs, INPUT);
+            }
+        }
+        LOG_INFOF("Peripheral Manager: SPI '%s' bus released", config.id.c_str());
         return true;
     }
 
@@ -1834,6 +1964,24 @@ bool PeripheralManager::teardownHardware(const PeripheralConfig& config) {
                 ledcDetachPin(config.pins[0]);
             #endif
             pinMode(config.pins[0], INPUT);
+        }
+    }
+
+    // DAC 清理：输出归零后释放引脚
+#if CHIP_HAS_DAC
+    if (config.type == PeripheralType::DAC) {
+        uint8_t pin = config.getPrimaryPin();
+        if (pin != 255 && (pin == 25 || pin == 26)) {
+            dacWrite(pin, 0);
+        }
+    }
+#endif
+
+    // ONE_WIRE 单总线清理：释放上拉
+    if (config.type == PeripheralType::ONE_WIRE) {
+        uint8_t pin = config.getPrimaryPin();
+        if (pin != 255) {
+            pinMode(pin, INPUT);
         }
     }
 

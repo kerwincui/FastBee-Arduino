@@ -125,6 +125,10 @@ var ModuleLoader = {
             console.error('[Module] Giving up loading sequence:', name);
             delete self._sequenceLoading[name];
             delete self._moduleCallbacks[name];
+            // 通知用户加载失败，提供刷新建议
+            if (typeof Notification !== 'undefined') {
+                Notification.warning('模块加载失败，请刷新页面重试', '模块加载');
+            }
         }
 
         function loadNext(index, retries) {
@@ -145,11 +149,13 @@ var ModuleLoader = {
                     loadNext(index + 1, 0);
                 },
                 function() {
-                    console.warn('[Module] Failed to load sequence file: ' + fileName + ' (attempt ' + (retries + 1) + '/3)');
-                    if (retries < 2) {
+                    // 指数退避重试: 2s → 4s → 8s，给ESP32 mDNS和服务器初始化留出时间
+                    var retryDelay = Math.min(2000 * Math.pow(2, retries), 8000);
+                    console.warn('[Module] Failed to load sequence file: ' + fileName + ' (attempt ' + (retries + 1) + '/4, retry in ' + retryDelay + 'ms)');
+                    if (retries < 3) {
                         setTimeout(function() {
                             loadNext(index, retries + 1);
-                        }, 1000);
+                        }, retryDelay);
                         return;
                     }
                     failSequence();
@@ -218,14 +224,18 @@ var ModuleLoader = {
                 setTimeout(function() { self._processQueue(); }, 10);
             },
             function() {
-                console.warn('[Module] Failed to load: ' + fileName + ' (attempt ' + (item.retries + 1) + '/3)');
+                var retryDelay = Math.min(2000 * Math.pow(2, item.retries), 8000);
+                console.warn('[Module] Failed to load: ' + fileName + ' (attempt ' + (item.retries + 1) + '/4, retry in ' + retryDelay + 'ms)');
                 item.loading = false;
 
-                if (item.retries < 2) {
+                if (item.retries < 3) {
                     item.retries++;
-                    setTimeout(function() { self._processQueue(); }, 1000);
+                    setTimeout(function() { self._processQueue(); }, retryDelay);
                 } else {
                     console.error('[Module] Giving up loading: ' + fileName);
+                    if (typeof Notification !== 'undefined') {
+                        Notification.warning('模块 ' + fileName + ' 加载失败，请刷新页面重试', '模块加载');
+                    }
                     self._moduleLoadQueue = self._moduleLoadQueue.filter(function(q) { return q.name !== item.name; });
                     setTimeout(function() { self._processQueue(); }, 200);
                 }

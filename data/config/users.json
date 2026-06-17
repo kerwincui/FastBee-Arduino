@@ -5,29 +5,25 @@
       "username": "admin",
       "passwordHash": "MMqroQgcopTMz5bU/x3brwufT38Ks6YAWGPRkmE5jDw=",
       "salt": "RmFzdEJlZURlZmF1bHQhIQ==",
-      "role": 2,
       "enabled": true,
       "createTime": 0,
       "lastLogin": 0,
       "lastModified": 0,
       "email": "",
       "remark": "",
-      "createBy": "system",
-      "roles": ["admin"]
+      "createBy": "system"
     },
     {
       "username": "viewer",
       "passwordHash": "8GzolfPWya4MDDWln2gLrhPhcitJHQGboXspAgr1CDU=",
       "salt": "Vmlld2VyRGVmYXVsdCEhIQ==",
-      "role": 0,
       "enabled": true,
       "createTime": 0,
       "lastLogin": 0,
       "lastModified": 0,
       "email": "",
       "remark": "",
-      "createBy": "system",
-      "roles": ["viewer"]
+      "createBy": "system"
     }
   ],
   "security": {

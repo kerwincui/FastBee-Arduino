@@ -176,7 +176,7 @@ void BatchRouteHandler::handleBatchRequest(AsyncWebServerRequest* request, JsonV
 
 bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const String& url, JsonObject out) {
     if (url == "/api/system/info") {
-        if (!ctx->checkPermission(request, "system.view")) {
+        if (!ctx->requiresAuth(request)) {
             out["success"] = false;
             out["error"] = "Unauthorized";
             return true;
@@ -190,7 +190,7 @@ bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const S
     }
 
     if (url == "/api/system/status") {
-        if (!ctx->checkPermission(request, "system.view")) {
+        if (!ctx->requiresAuth(request)) {
             out["success"] = false;
             out["error"] = "Unauthorized";
             return true;
@@ -238,7 +238,7 @@ bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const S
     }
 
     if (url == "/api/network/status") {
-        if (!ctx->checkPermission(request, "network.view")) {
+        if (!ctx->requiresAuth(request)) {
             out["success"] = false;
             out["error"] = "Unauthorized";
             return true;
@@ -320,7 +320,7 @@ bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const S
     }
 
     if (url == "/api/network/config") {
-        if (!ctx->checkPermission(request, "network.view")) {
+        if (!ctx->requiresAuth(request)) {
             out["success"] = false;
             out["error"] = "Unauthorized";
             return true;
@@ -379,7 +379,7 @@ bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const S
     }
 
     if (url == "/api/device/config") {
-        if (!ctx->checkPermission(request, "system.view")) {
+        if (!ctx->requiresAuth(request)) {
             out["success"] = false;
             out["error"] = "Unauthorized";
             return true;
@@ -406,7 +406,7 @@ bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const S
     }
 
     if (url == "/api/device/time") {
-        if (!ctx->checkPermission(request, "system.view")) {
+        if (!ctx->requiresAuth(request)) {
             out["success"] = false;
             out["error"] = "Unauthorized";
             return true;
@@ -454,7 +454,7 @@ bool BatchRouteHandler::buildSubResponse(AsyncWebServerRequest* request, const S
     }
 
     if (url == "/api/system/health") {
-        if (!ctx->checkPermission(request, "system.view")) {
+        if (!ctx->requiresAuth(request)) {
             out["success"] = false;
             out["error"] = "Unauthorized";
             return true;

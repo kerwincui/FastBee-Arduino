@@ -222,10 +222,9 @@
                                     data-i18n="wifi-security-label">安全类型</label>
                                 <select id="wifi-security" class="">
                                     <option value="none" data-i18n="wifi-security-none">无</option>
-                                    <option value="wpa" selected data-i18n="wifi-security-wpa">
-                                        WPA/WPA2</option>
-                                    <option value="wpa3" data-i18n="wifi-security-wpa3">WPA3
-                                    </option>
+                                    <option value="wpa" data-i18n="wifi-security-wpa">WPA</option>
+                                    <option value="wpa2" selected data-i18n="wifi-security-wpa2">WPA2</option>
+                                    <option value="wpa3" data-i18n="wifi-security-wpa3">WPA3</option>
                                 </select>
                             </div>
 
@@ -241,10 +240,10 @@
 
                     <div class="message message-success fb-hidden fb-mt-3" id="wifi-success"
                         data-i18n="wifi-save-ok">
-                        Wifi配置保存成功！</div>
+                        网络设置保存成功！</div>
                     <div class="message message-error fb-hidden fb-mt-3" id="wifi-error"
                         data-i18n="wifi-save-fail">
-                        Wifi配置保存失败！</div>
+                        网络设置保存失败！</div>
                     <!-- 网络模式切换提醒区域 -->
                     <div class="message message-info fb-hidden fb-mt-3" id="wifi-mode-notice">
                         <span id="wifi-mode-notice-text"></span>
@@ -304,6 +303,10 @@
                 <!-- 4G 蜂窝配置面板 -->
                 <div id="cellular-panel" class="fb-hidden">
                     <form id="cellular-form" class="fb-form">
+                        <div class="fb-info-box fb-info-box-tip">
+                            <strong data-i18n="cellular-access-hint-title">访问方式</strong>：
+                            <span data-i18n="cellular-access-hint-text">4G模式下请连接设备热点（如 fastbee-ap），然后通过 <code>http://192.168.4.1</code> 访问本系统。</span>
+                        </div>
                         <h4 class="fb-section-title" data-i18n="cellular-config">EC801E-CN 4G 配置</h4>
                         <div class="config-form-grid">
                             <div class="config-form-column">

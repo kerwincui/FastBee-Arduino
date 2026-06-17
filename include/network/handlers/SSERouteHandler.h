@@ -3,6 +3,8 @@
 
 #include <ESPAsyncWebServer.h>
 #include <AsyncEventSource.h>
+#include "core/ChipConfig.h"
+#include "core/ResourceProfile.h"
 
 class WebHandlerContext;
 class HealthMonitor;
@@ -48,8 +50,8 @@ public:
     /// @return 实际被关闭的客户端数
     size_t closeAllClients();
 
-    // 最大 SSE 客户端数，防止多客户端导致内存压力
-    static constexpr size_t MAX_SSE_CLIENTS = 2;
+    // 最大 SSE 客户端数：统一引用 ResourceProfile::TCP_SSE_BUDGET（单一真相来源）
+    static constexpr size_t MAX_SSE_CLIENTS = FastBee::ResourceProfile::TCP_SSE_BUDGET;
     // 单次消息最大字节数，超过则截断
     static constexpr size_t MAX_SSE_MESSAGE_SIZE = 512;
     // 心跳间隔（毫秒）

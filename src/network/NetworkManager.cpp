@@ -32,6 +32,41 @@
 
 static const char* NETWORK_CONFIG_FILE = "/config/network.json";
 
+// ESP32 NVS key 长度不能超过 15 字符（含结尾 null 共 16 字节）
+// 下方 static_assert 在编译期检查所有 NVS key，防止运行时出现 KEY_TOO_LONG 错误
+namespace NvsKeys {
+    static_assert(sizeof("mode")-1            <= 15, "NVS key too long");
+    static_assert(sizeof("device_name")-1     <= 15, "NVS key too long");
+    static_assert(sizeof("ap_ssid")-1         <= 15, "NVS key too long");
+    static_assert(sizeof("ap_password")-1     <= 15, "NVS key too long");
+    static_assert(sizeof("ap_channel")-1      <= 15, "NVS key too long");
+    static_assert(sizeof("ap_hidden")-1       <= 15, "NVS key too long");
+    static_assert(sizeof("ap_max_conn")-1     <= 15, "NVS key too long");
+    static_assert(sizeof("sta_ssid")-1        <= 15, "NVS key too long");
+    static_assert(sizeof("sta_password")-1    <= 15, "NVS key too long");
+    static_assert(sizeof("ip_config")-1       <= 15, "NVS key too long");
+    static_assert(sizeof("static_ip")-1       <= 15, "NVS key too long");
+    static_assert(sizeof("gateway")-1         <= 15, "NVS key too long");
+    static_assert(sizeof("subnet")-1          <= 15, "NVS key too long");
+    static_assert(sizeof("dns1")-1            <= 15, "NVS key too long");
+    static_assert(sizeof("dns2")-1            <= 15, "NVS key too long");
+    static_assert(sizeof("conf_detect")-1     <= 15, "NVS key too long");
+    static_assert(sizeof("fail_strategy")-1   <= 15, "NVS key too long");
+    static_assert(sizeof("auto_failover")-1   <= 15, "NVS key too long");
+    static_assert(sizeof("conf_chk_intv")-1   <= 15, "NVS key too long");
+    static_assert(sizeof("max_fail_try")-1    <= 15, "NVS key too long");
+    static_assert(sizeof("conf_thresh")-1     <= 15, "NVS key too long");
+    static_assert(sizeof("fallbk_dhcp")-1     <= 15, "NVS key too long");
+    static_assert(sizeof("backup_ip_count")-1 <= 15, "NVS key too long");
+    static_assert(sizeof("connect_timeout")-1 <= 15, "NVS key too long");
+    static_assert(sizeof("reconn_intv")-1     <= 15, "NVS key too long");
+    static_assert(sizeof("max_reconnect")-1   <= 15, "NVS key too long");
+    static_assert(sizeof("custom_domain")-1   <= 15, "NVS key too long");
+    static_assert(sizeof("enable_mdns")-1     <= 15, "NVS key too long");
+    static_assert(sizeof("initialized")-1     <= 15, "NVS key too long");
+    static_assert(sizeof("network_type")-1    <= 15, "NVS key too long");
+}
+
 FBNetworkManager::FBNetworkManager(AsyncWebServer* webServerPtr) 
     : webServer(webServerPtr),
       lastReconnectAttempt(0),
@@ -205,6 +240,11 @@ bool FBNetworkManager::initialize() {
                 LOG_INFO("NetworkManager: Hybrid mode active (4G + WiFi AP)");
             } else {
                 LOG_WARNING("NetworkManager: Failed to start WiFi AP, 4G only mode");
+            }
+            
+            // 启动 mDNS（需在 AP 启动后，使 mDNS 绑定到 AP 接口）
+            if (wifiConfig.enableMDNS) {
+                dnsManager->startMDNS(wifiConfig.customDomain);
             }
             
             isInitialized = true;
@@ -708,19 +748,19 @@ bool FBNetworkManager::loadNetworkConfig() {
 
         // IP冲突检测配置
         wifiConfig.conflictDetection = static_cast<IPConflictMode>(
-            preferences.getUInt("conflict_detection", 
+            preferences.getUInt("conf_detect", 
             static_cast<uint8_t>(IPConflictMode::ARP)));
         wifiConfig.failoverStrategy = static_cast<IPFailoverStrategy>(
-            preferences.getUInt("failover_strategy", 
+            preferences.getUInt("fail_strategy", 
             static_cast<uint8_t>(IPFailoverStrategy::SMART)));
         wifiConfig.autoFailover = preferences.getBool("auto_failover", true);
         wifiConfig.conflictCheckInterval = preferences.getUShort(
-            "conflict_check_interval", 30000);
+            "conf_chk_intv", 30000);
         wifiConfig.maxFailoverAttempts = preferences.getUChar(
-            "max_failover_attempts", 3);
+            "max_fail_try", 3);
         wifiConfig.conflictThreshold = preferences.getUChar(
-            "conflict_threshold", 2);
-        wifiConfig.fallbackToDHCP = preferences.getBool("fallback_to_dhcp", true);
+            "conf_thresh", 2);
+        wifiConfig.fallbackToDHCP = preferences.getBool("fallbk_dhcp", true);
 
         // 加载备用IP列表
         wifiConfig.backupIPs.clear();
@@ -736,7 +776,7 @@ bool FBNetworkManager::loadNetworkConfig() {
 
         // 高级配置
         wifiConfig.connectTimeout = preferences.getULong("connect_timeout", 10000);
-        wifiConfig.reconnectInterval = preferences.getULong("reconnect_interval", 5000);
+        wifiConfig.reconnectInterval = preferences.getULong("reconn_intv", 5000);
         wifiConfig.maxReconnectAttempts = preferences.getUChar("max_reconnect", 5);
 
         // 域名配置
@@ -856,18 +896,18 @@ bool FBNetworkManager::saveNetworkConfig() {
         preferences.putString("dns2", wifiConfig.dns2);
 
         // IP冲突检测配置
-        preferences.putUInt("conflict_detection", 
+        preferences.putUInt("conf_detect", 
             static_cast<uint8_t>(wifiConfig.conflictDetection));
-        preferences.putUInt("failover_strategy", 
+        preferences.putUInt("fail_strategy", 
             static_cast<uint8_t>(wifiConfig.failoverStrategy));
         preferences.putBool("auto_failover", wifiConfig.autoFailover);
-        preferences.putUShort("conflict_check_interval", 
+        preferences.putUShort("conf_chk_intv", 
             wifiConfig.conflictCheckInterval);
-        preferences.putUChar("max_failover_attempts", 
+        preferences.putUChar("max_fail_try", 
             wifiConfig.maxFailoverAttempts);
-        preferences.putUChar("conflict_threshold", 
+        preferences.putUChar("conf_thresh", 
             wifiConfig.conflictThreshold);
-        preferences.putBool("fallback_to_dhcp", wifiConfig.fallbackToDHCP);
+        preferences.putBool("fallbk_dhcp", wifiConfig.fallbackToDHCP);
 
         // 保存备用IP列表
         preferences.putUInt("backup_ip_count", wifiConfig.backupIPs.size());
@@ -879,7 +919,7 @@ bool FBNetworkManager::saveNetworkConfig() {
 
         // 高级配置
         preferences.putULong("connect_timeout", wifiConfig.connectTimeout);
-        preferences.putULong("reconnect_interval", wifiConfig.reconnectInterval);
+        preferences.putULong("reconn_intv", wifiConfig.reconnectInterval);
         preferences.putUChar("max_reconnect", wifiConfig.maxReconnectAttempts);
 
         // 域名配置
@@ -1245,7 +1285,22 @@ String FBNetworkManager::scanNetworks() {
         network["rssi"] = WiFi.RSSI(i);
         network["strength"] = NetworkUtils::rssiToPercentage(WiFi.RSSI(i));
         network["channel"] = WiFi.channel(i);
-        network["encryption"] = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "open" : "secured";
+        // 返回具体加密类型，便于前端自动匹配安全类型下拉选项
+        wifi_auth_mode_t authMode = WiFi.encryptionType(i);
+        const char* enc;
+        switch (authMode) {
+            case WIFI_AUTH_OPEN:             enc = "open"; break;
+            case WIFI_AUTH_WEP:              enc = "wep";  break;
+            case WIFI_AUTH_WPA_PSK:          enc = "wpa";  break;
+            case WIFI_AUTH_WPA2_PSK:         enc = "wpa2"; break;
+            case WIFI_AUTH_WPA_WPA2_PSK:     enc = "wpa2"; break;
+#if defined(WIFI_AUTH_WPA3_PSK)
+            case WIFI_AUTH_WPA3_PSK:         enc = "wpa3"; break;
+            case WIFI_AUTH_WPA2_WPA3_PSK:    enc = "wpa3"; break;
+#endif
+            default:                         enc = "wpa2"; break;
+        }
+        network["encryption"] = enc;
         network["bssid"] = WiFi.BSSIDstr(i);
     }
     
@@ -1318,13 +1373,45 @@ bool FBNetworkManager::restartNetwork() {
         return true;
     }
     
-    // 对于非WiFi联网方式（4G/以太网/LoRa），完全重新初始化
+    // 对于非WiFi联网方式（4G/以太网/LoRa），选择性断开，保持AP热点在线
     if (wifiConfig.networkType != NetworkType::NET_WIFI) {
-        LOG_INFO("NetworkManager: Full network restart for non-WiFi type...");
-        disconnect();
+        LOG_INFO("NetworkManager: Non-WiFi network restart, keeping AP as safety net...");
+        
+        // 仅断开非AP接口（保持AP热点作为配置回退入口）
+        dnsManager->stopMDNS();
+#if FASTBEE_ENABLE_ETHERNET
+        if (ethernetAdapter) {
+            ethernetAdapter->disconnect();
+            ethernetAdapter.reset();
+        }
+#endif
+#if FASTBEE_ENABLE_CELLULAR
+        if (cellularAdapter) {
+            cellularAdapter->disconnect();
+            cellularAdapter.reset();
+        }
+#endif
+#if FASTBEE_ENABLE_LORA
+        if (loraAdapter) {
+            loraAdapter->disconnect();
+            loraAdapter.reset();
+        }
+#endif
+        // 断开WiFi STA但不关闭AP
+        wifiManager->disconnectWiFi();
+        
         autoReconnectEnabled = keepAutoReconnect;
         delay(500);
+        
         bool ok = initialize();
+        if (!ok) {
+            // 初始化失败，确保AP热点可用作为恢复入口
+            LOG_WARNING("NetworkManager: Non-WiFi init failed, ensuring AP is available for recovery");
+            if (!(WiFi.getMode() & WIFI_AP)) {
+                startAPMode();
+            }
+            dnsManager->startMDNS(wifiConfig.customDomain);
+        }
         wifiManager->setModeTransitioning(false);
         return ok;
     }

@@ -643,7 +643,7 @@
         <div class="modal-footer">
             <button class="fb-btn" id="cancel-gpio-btn" type="button" data-i18n="cancel">取消</button>
             <button class="fb-btn fb-btn-primary" id="save-gpio-btn" type="button"
-                data-i18n="role-save-btn">保存</button>
+                data-i18n="save">保存</button>
         </div>
     </div>
 </div>
@@ -677,14 +677,11 @@
                     </div>
 
                     <div class="fb-form-group">
-                        <label for="add-role-select" id="add-role-label" data-i18n="add-role-label">角色</label>
-                        <select id="add-role-select" class="">
-                            <option value="admin" data-i18n="role-admin">管理员</option>
-                            <option value="operator" selected data-i18n="role-operator">操作员</option>
-                            <option value="viewer" data-i18n="role-viewer">查看者</option>
-                        </select>
+                        <label for="add-description-input" id="add-description-label" data-i18n="add-description-label">描述</label>
+                        <input type="text" id="add-description-input" class=""
+                            placeholder="可选，最多64字符" maxlength="64"
+                            data-i18n-placeholder="add-description-placeholder">
                     </div>
-
                     <div id="add-user-error" class="message message-error is-hidden"></div>
                 </fieldset>
             </form>
@@ -693,52 +690,6 @@
             <button class="fb-btn" id="cancel-add-user-btn" type="button" data-i18n="cancel">取消</button>
             <button class="fb-btn fb-btn-primary" id="confirm-add-user-btn" type="button"
                 data-i18n="add-user-confirm">添加</button>
-        </div>
-    </div>
-</div>
-
-<!-- 角色管理模态窗 -->
-<div id="role-modal" class="modal">
-    <div class="modal-content u-modal-content-700">
-        <div class="modal-header">
-            <h2 class="modal-title" id="role-modal-title" data-i18n="role-add-modal-title">新增角色</h2>
-            <button id="close-role-modal" class="modal-close-btn">×</button>
-        </div>
-        <div class="modal-body">
-            <form id="role-form" class="fb-form">
-                <fieldset>
-                    <div class="fb-form-group">
-                        <label for="role-id-input" data-i18n="role-id-label">角色ID</label>
-                        <input type="text" id="role-id-input" class="" placeholder="请输入角色ID（英文）"
-                            required>
-                        <small data-i18n="role-id-hint">角色ID为唯一标识，创建后不可修改</small>
-                    </div>
-
-                    <div class="fb-form-group">
-                        <label for="role-name-input" data-i18n="role-name-label">角色名称</label>
-                        <input type="text" id="role-name-input" class="" placeholder="请输入角色名称" required>
-                    </div>
-
-                    <div class="fb-form-group">
-                        <label for="role-desc-input" data-i18n="role-desc-label">角色描述</label>
-                        <input type="text" id="role-desc-input" class="" placeholder="请输入角色描述">
-                    </div>
-
-                    <div class="fb-form-group">
-                        <label data-i18n="role-perms-label">权限配置</label>
-                        <div id="role-permissions-container" class="role-permissions-panel">
-                            <!-- 权限列表将通过JS动态生成 -->
-                        </div>
-                    </div>
-
-                    <div id="role-error" class="message message-error is-hidden"></div>
-                </fieldset>
-            </form>
-        </div>
-        <div class="modal-footer">
-            <button class="fb-btn" id="cancel-role-btn" type="button" data-i18n="cancel">取消</button>
-            <button class="fb-btn fb-btn-primary" id="confirm-role-btn" type="button"
-                data-i18n="role-save-btn">保存</button>
         </div>
     </div>
 </div>

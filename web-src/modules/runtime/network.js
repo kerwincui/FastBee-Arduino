@@ -348,7 +348,7 @@
                         this._showMessage('wifi-success', true);
 
                         const data = res.data || {};
-                        let message = 'WiFi配置保存成功！';
+                        let message = '网络设置保存成功！';
                         let noticeMessage = '网络模式切换提醒：';
 
                         if (data.restartRequired) {
@@ -377,6 +377,7 @@
                             type: 'success',
                             title: '网络配置已保存',
                             message: message,
+                            html: true,
                             duration: 8000
                         });
 
@@ -430,7 +431,8 @@
                         Notification.show({
                             type: 'success',
                             title: '网络配置已保存',
-                            message: 'WiFi配置保存成功！<br>' + this._renderWifiNote('网络配置变更需要重启网络服务才能生效，请等待约10秒...'),
+                            message: '网络设置保存成功！<br>' + this._renderWifiNote('网络配置变更需要重启网络服务才能生效，请等待约10秒...'),
+                            html: true,
                             duration: 8000
                         });
                     } else {
@@ -550,7 +552,7 @@
             apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success('WiFi配置保存成功！', '网络设置');
+                        Notification.success('网络设置保存成功', '网络设置');
                         this._refreshNetworkStatusSoon(1200);
                     } else {
                         Notification.error(res?.error || '保存失败', '网络设置');
@@ -576,7 +578,7 @@
             apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success('WiFi配置保存成功！', '网络设置');
+                        Notification.success('网络设置保存成功', '网络设置');
                         this._refreshNetworkStatusSoon(1200);
                     } else {
                         Notification.error(res?.error || '保存失败', '网络设置');
@@ -601,7 +603,7 @@
             apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success('WiFi配置保存成功！', '网络设置');
+                        Notification.success('网络设置保存成功', '网络设置');
                         this._refreshNetworkStatusSoon(1200);
                     } else {
                         Notification.error(res?.error || '保存失败', '网络设置');
@@ -652,18 +654,22 @@
 
                     networks.sort((a, b) => b.rssi - a.rssi);
 
+                    // 加密类型显示标签映射（后端返回 "open"/"wpa"/"wpa2"/"wpa3" 等字符串）
+                    const encryptLabels = { open: '开放', wep: 'WEP', wpa: 'WPA', wpa2: 'WPA2', wpa3: 'WPA3' };
+
                     let html = '<div class="wifi-grid">';
                     networks.forEach((net) => {
                         const signalClass = net.rssi > -50 ? 'strong' : net.rssi > -70 ? 'medium' : 'weak';
-                        const encryptIcon = this._getWifiLockIcon(net.encryption > 0);
-                        const securityType = net.encryption > 0 ? 'wpa' : 'none';
+                        const isOpen = net.encryption === 'open';
+                        const encryptIcon = this._getWifiLockIcon(!isOpen);
+                        const encLabel = encryptLabels[net.encryption] || net.encryption;
 
                         html += `
-                            <div class="wifi-grid-item" data-ssid="${net.ssid}" data-encryption="${securityType}">
+                            <div class="wifi-grid-item" data-ssid="${net.ssid}" data-encryption="${net.encryption}">
                                 <div class="wifi-info">
                                     <div class="wifi-ssid">${net.ssid}</div>
                                     <div class="wifi-meta">
-                                        ${encryptIcon} ${net.encryption > 0 ? '加密' : '开放'}
+                                        ${encryptIcon} ${encLabel}
                                     </div>
                                 </div>
                                 <div class="wifi-signal ${signalClass}">
@@ -684,9 +690,13 @@
                             const ssidInput = document.getElementById('wifi-ssid');
                             if (ssidInput) ssidInput.value = ssid;
 
+                            // 根据扫描结果自动设置安全类型（open→none，其他直接使用字符串）
                             const securitySelect = document.getElementById('wifi-security');
                             if (securitySelect) {
-                                securitySelect.value = encryption === 'none' ? '0' : '1';
+                                const secValue = encryption === 'open' ? 'none' : encryption;
+                                securitySelect.value = secValue;
+                                // 如果设置失败（无匹配选项），回退到默认 wpa2
+                                if (securitySelect.value !== secValue) securitySelect.value = 'wpa2';
                             }
 
                             const passwordInput = document.getElementById('wifi-password');
@@ -732,13 +742,31 @@
                 })
                 .catch(err => {
                     console.error('Failed to load network status:', err);
-                    // 网络错误时重试（可能是内存压力导致503）
+                    // DNS解析失败（如4G模式关闭WiFi后mDNS不可用）无需重试
+                    if (this._isDnsError(err)) {
+                        console.warn('[Network] DNS resolution failed, device may be unreachable via current hostname');
+                        return;
+                    }
+                    // 其他网络错误时重试（可能是内存压力导致503）
                     if (retryCount < 2) {
                         setTimeout(() => this.loadNetworkStatus(retryCount + 1), 3000);
                     } else {
                         this._loadNetworkStatusFallback();
                     }
                 });
+        },
+
+        /**
+         * 检测是否为DNS解析失败
+         * 4G/以太网模式下mDNS可能不可用，重试无意义
+         */
+        _isDnsError(err) {
+            if (!err) return false;
+            // TypeError: Failed to fetch 且无 status 字段，通常是DNS/网络层错误
+            if (err instanceof TypeError && !err.status) return true;
+            // AbortError 也可能是DNS超时
+            if (err.name === 'AbortError') return true;
+            return false;
         },
 
         _loadNetworkStatusFallback() {

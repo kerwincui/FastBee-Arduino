@@ -32,6 +32,19 @@ enum wl_status_t {
     WL_DISCONNECTED = 6
 };
 
+// WiFi加密类型枚举（与 ESP-IDF wifi_auth_mode_t 对齐）
+typedef enum {
+    WIFI_AUTH_OPEN = 0,
+    WIFI_AUTH_WEP,
+    WIFI_AUTH_WPA_PSK,
+    WIFI_AUTH_WPA2_PSK,
+    WIFI_AUTH_WPA_WPA2_PSK,
+    WIFI_AUTH_WAPI_PSK,
+    WIFI_AUTH_WPA3_PSK,
+    WIFI_AUTH_WPA2_WPA3_PSK,
+    WIFI_AUTH_MAX
+} wifi_auth_mode_t;
+
 // 模拟WiFi类
 class MockWiFiClass {
 public:
@@ -168,19 +181,50 @@ public:
     // 扫描网络
     int8_t scanNetworks(bool async = false, bool show_hidden = false, 
                         bool passive = false, uint32_t max_ms_per_chan = 300) {
-        return 3;  // 模拟发现3个网络
+        return _scanCount;  // 模拟发现的网络数量
     }
 
     String SSID(uint8_t networkItem) {
-        const char* networks[] = {"TestWiFi1", "TestWiFi2", "TestWiFi3"};
-        if (networkItem < 3) return networks[networkItem];
+        if (networkItem < _scanCount) return _scanSSIDs[networkItem];
         return "";
     }
 
     int32_t RSSI(uint8_t networkItem) {
-        int32_t rssis[] = {-45, -60, -75};
-        if (networkItem < 3) return rssis[networkItem];
+        if (networkItem < _scanCount) return _scanRSSIs[networkItem];
         return -100;
+    }
+
+    // 返回扫描结果中指定网络的加密类型
+    wifi_auth_mode_t encryptionType(uint8_t networkItem) {
+        if (networkItem < _scanCount) return _scanEncTypes[networkItem];
+        return WIFI_AUTH_OPEN;
+    }
+
+    // 返回扫描结果中指定网络的信道
+    uint8_t channel(uint8_t networkItem) {
+        if (networkItem < _scanCount) return _scanChannels[networkItem];
+        return 1;
+    }
+
+    // 返回扫描结果中指定网络的 BSSID 字符串
+    String BSSIDstr(uint8_t networkItem) {
+        if (networkItem < _scanCount) return _scanBSSIDs[networkItem];
+        return "";
+    }
+
+    // 配置模拟扫描结果（测试辅助方法）
+    void setScanResults(const char* ssids[], const int32_t rssis[],
+                        const wifi_auth_mode_t encTypes[],
+                        const uint8_t channels[], const char* bssids[],
+                        uint8_t count) {
+        _scanCount = (count > 5) ? 5 : count;
+        for (uint8_t i = 0; i < _scanCount; i++) {
+            _scanSSIDs[i]    = ssids[i];
+            _scanRSSIs[i]    = rssis[i];
+            _scanEncTypes[i] = encTypes[i];
+            _scanChannels[i] = channels[i];
+            _scanBSSIDs[i]   = bssids[i];
+        }
     }
 
     // 测试控制方法
@@ -252,6 +296,19 @@ private:
     int _apChannel;
     bool _apHidden;
     uint8_t _apClients;
+
+    // 扫描结果模拟数据
+    static const uint8_t _maxScan = 5;
+    uint8_t _scanCount = 3;
+    String _scanSSIDs[_maxScan]    = {"TestWiFi1", "TestWiFi2", "TestWiFi3", "", ""};
+    int32_t _scanRSSIs[_maxScan]   = {-45, -60, -75, 0, 0};
+    wifi_auth_mode_t _scanEncTypes[_maxScan] = {
+        WIFI_AUTH_WPA2_PSK, WIFI_AUTH_OPEN, WIFI_AUTH_WPA_WPA2_PSK, WIFI_AUTH_OPEN, WIFI_AUTH_OPEN
+    };
+    uint8_t _scanChannels[_maxScan] = {1, 6, 11, 1, 1};
+    String _scanBSSIDs[_maxScan] = {
+        "AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02", "AA:BB:CC:DD:EE:03", "", ""
+    };
 };
 
 // 全局Mock WiFi实例

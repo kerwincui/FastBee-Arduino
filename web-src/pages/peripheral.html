@@ -29,7 +29,7 @@
                             <th data-i18n="peripheral-name-col">名称</th>
                             <th data-i18n="peripheral-type-col">类型</th>
                             <th data-i18n="peripheral-pins-col">引脚</th>
-                            <th data-i18n="peripheral-status-col">状态</th>
+                            <th data-i18n="peripheral-status-col" style="width:92px;">状态</th>
                             <th data-i18n="peripheral-actions-col">操作</th>
                         </tr>
                     </thead>
@@ -79,7 +79,7 @@
                     <thead>
                         <tr>
                             <th data-i18n="periph-exec-col-name">名称</th>
-                            <th data-i18n="periph-exec-col-status" style="width:72px;">状态</th>
+                            <th data-i18n="periph-exec-col-status" style="width:92px;">状态</th>
                             <th data-i18n="periph-exec-col-flow">执行流程</th>
                             <th data-i18n="periph-exec-col-stats" style="width:80px;">触发</th>
                             <th data-i18n="periph-exec-col-ops">操作</th>
@@ -94,15 +94,7 @@
                 </table>
                 <div id="periph-exec-pagination" class="u-pagination-host"></div>
             </div>
-            <div class="pe-results-panel">
-                <div class="u-header-between-wrap pe-results-title-row">
-                    <h3 class="pe-results-title">最近执行结果</h3>
-                    <button class="fb-btn fb-btn-sm" id="periph-exec-results-refresh-btn" type="button">刷新结果</button>
-                </div>
-                <div id="periph-exec-results-list" class="pe-results-list">
-                    <div class="u-empty-cell">暂无执行结果</div>
-                </div>
-            </div>
+
         </div>
     </div>
 </div>

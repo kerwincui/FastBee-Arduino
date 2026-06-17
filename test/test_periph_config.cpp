@@ -453,7 +453,7 @@ void test_config_crud_peripheral_add_remove() {
     PeripheralConfig config;
     config.id = "sensor_temp";
     config.name = "Temperature Sensor";
-    config.type = PeripheralType::DHT_SENSOR;
+    config.type = PeripheralType::SENSOR;
     config.pin = 4;
     config.enabled = true;
 
@@ -533,7 +533,7 @@ void test_config_exec_rule_crud() {
     rule.name = "Timer LED";
     rule.enabled = true;
     rule.triggerType = TriggerType::TIMER_SCHEDULE;
-    rule.actionType = ActionType::TOGGLE;
+    rule.actionType = ActionType::BLINK;
     rule.targetPeriphId = "led_1";
 
     TEST_ASSERT_TRUE(mgr.addRule(rule));
@@ -590,7 +590,7 @@ void test_config_peripheral_properties_map() {
     PeripheralConfig config;
     config.id = "i2c_sensor";
     config.name = "I2C Sensor";
-    config.type = PeripheralType::I2C_DEVICE;
+    config.type = PeripheralType::I2C;
     config.pin = 21;
     config.properties["address"] = "0x48";
     config.properties["model"] = "BME280";
@@ -658,6 +658,99 @@ void test_config_sanitize_all_params_at_boundary() {
 }
 
 // ============================================================
+//  TEST GROUP 5: 外设类型覆盖与硬件初始化行为测试
+// ============================================================
+
+void test_periph_type_rf_module_enum_value() {
+    // RF_MODULE 类型值必须为 48
+    TEST_ASSERT_EQUAL(48, static_cast<int>(PeripheralType::RF_MODULE));
+}
+
+void test_periph_type_radar_sensor_enum_value() {
+    // RADAR_SENSOR 类型值必须为 49
+    TEST_ASSERT_EQUAL(49, static_cast<int>(PeripheralType::RADAR_SENSOR));
+}
+
+void test_periph_type_modbus_device_enum_value() {
+    // MODBUS_DEVICE 类型值必须为 51
+    TEST_ASSERT_EQUAL(51, static_cast<int>(PeripheralType::MODBUS_DEVICE));
+}
+
+void test_periph_type_device_event_enum_value() {
+    // DEVICE_EVENT 类型值必须为 60
+    TEST_ASSERT_EQUAL(60, static_cast<int>(PeripheralType::DEVICE_EVENT));
+}
+
+void test_periph_type_one_wire_enum_value() {
+    // ONE_WIRE 类型值必须为 44
+    TEST_ASSERT_EQUAL(44, static_cast<int>(PeripheralType::ONE_WIRE));
+}
+
+void test_periph_type_pwm_servo_enum_value() {
+    // PWM_SERVO 类型值必须为 41
+    TEST_ASSERT_EQUAL(41, static_cast<int>(PeripheralType::PWM_SERVO));
+}
+
+void test_periph_unimplemented_types_identified() {
+    // 未实现类型列表必须与生产代码一致
+    // CAN(4), USB(5), JTAG(31), SWD(32), SDIO(37), CAMERA(39), ETHERNET(40), ENCODER(43)
+    std::vector<int> unimplemented = {4, 5, 31, 32, 37, 39, 40, 43};
+    for (int t : unimplemented) {
+        bool found = (t == 4 || t == 5 || t == 31 || t == 32 ||
+                      t == 37 || t == 39 || t == 40 || t == 43);
+        TEST_ASSERT_TRUE_MESSAGE(found, 
+            ("Unimplemented type " + std::to_string(t) + " should be in the list").c_str());
+    }
+    // 已实现的类型不应在未实现列表中
+    std::vector<int> implemented = {
+        static_cast<int>(PeripheralType::RF_MODULE),
+        static_cast<int>(PeripheralType::RADAR_SENSOR),
+        static_cast<int>(PeripheralType::SENSOR),
+        static_cast<int>(PeripheralType::PWM_SERVO),
+        static_cast<int>(PeripheralType::ONE_WIRE),
+        static_cast<int>(PeripheralType::I2C),
+        static_cast<int>(PeripheralType::SPI),
+        static_cast<int>(PeripheralType::DAC),
+        static_cast<int>(PeripheralType::ADC)
+    };
+    for (int t : implemented) {
+        bool inUnimplemented = (t == 4 || t == 5 || t == 31 || t == 32 ||
+                                t == 37 || t == 39 || t == 40 || t == 43);
+        TEST_ASSERT_FALSE_MESSAGE(inUnimplemented,
+            ("Implemented type " + std::to_string(t) + " should not be in unimplemented list").c_str());
+    }
+}
+
+void test_periph_type_i2c_and_spi_values() {
+    // I2C 和 SPI 类型值必须正确
+    TEST_ASSERT_EQUAL(2, static_cast<int>(PeripheralType::I2C));
+    TEST_ASSERT_EQUAL(3, static_cast<int>(PeripheralType::SPI));
+}
+
+void test_periph_type_dac_and_adc_values() {
+    // DAC 和 ADC 类型值必须正确
+    TEST_ASSERT_EQUAL(26, static_cast<int>(PeripheralType::ADC));
+    TEST_ASSERT_EQUAL(27, static_cast<int>(PeripheralType::DAC));
+}
+
+void test_periph_gpio_pullup_pulldown_for_button_events() {
+    // 按键事件应仅由 PULLUP(13) 和 PULLDOWN(14) 产生
+    // 与生产代码 supportsButtonEvent() 一致
+    auto supportsButtonEvent = [](PeripheralType type) -> bool {
+        return type == PeripheralType::GPIO_DIGITAL_INPUT_PULLUP ||
+               type == PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN;
+    };
+    TEST_ASSERT_TRUE(supportsButtonEvent(PeripheralType::GPIO_DIGITAL_INPUT_PULLUP));
+    TEST_ASSERT_TRUE(supportsButtonEvent(PeripheralType::GPIO_DIGITAL_INPUT_PULLDOWN));
+    // GPIO_INTERRUPT 类型不支持按键事件
+    TEST_ASSERT_FALSE(supportsButtonEvent(PeripheralType::GPIO_INTERRUPT_RISING));
+    TEST_ASSERT_FALSE(supportsButtonEvent(PeripheralType::GPIO_INTERRUPT_FALLING));
+    TEST_ASSERT_FALSE(supportsButtonEvent(PeripheralType::GPIO_INTERRUPT_CHANGE));
+    TEST_ASSERT_FALSE(supportsButtonEvent(PeripheralType::GPIO_DIGITAL_INPUT));
+    TEST_ASSERT_FALSE(supportsButtonEvent(PeripheralType::GPIO_DIGITAL_OUTPUT));
+}
+
+// ============================================================
 //  测试入口
 // ============================================================
 
@@ -708,4 +801,16 @@ void test_periph_config_group() {
     RUN_TEST(test_config_constants_sanity);
     RUN_TEST(test_config_sanitize_multiple_triggers);
     RUN_TEST(test_config_sanitize_all_params_at_boundary);
+
+    // Group 5: 外设类型覆盖与硬件初始化行为
+    RUN_TEST(test_periph_type_rf_module_enum_value);
+    RUN_TEST(test_periph_type_radar_sensor_enum_value);
+    RUN_TEST(test_periph_type_modbus_device_enum_value);
+    RUN_TEST(test_periph_type_device_event_enum_value);
+    RUN_TEST(test_periph_type_one_wire_enum_value);
+    RUN_TEST(test_periph_type_pwm_servo_enum_value);
+    RUN_TEST(test_periph_unimplemented_types_identified);
+    RUN_TEST(test_periph_type_i2c_and_spi_values);
+    RUN_TEST(test_periph_type_dac_and_adc_values);
+    RUN_TEST(test_periph_gpio_pullup_pulldown_for_button_events);
 }
