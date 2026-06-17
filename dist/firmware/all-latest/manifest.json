@@ -1,0 +1,161 @@
+{
+    "generatedAt":  "2026-06-17T04:05:51.5254414Z",
+    "gitSha":  "7c55cd280b35",
+    "outputDir":  "dist/firmware/all-latest",
+    "environments":  [
+                         {
+                             "environment":  "esp32-F4R0",
+                             "filesystemProfile":  "standard",
+                             "hardware":  "ESP32 4MB Flash",
+                             "releaseFile":  "fastbee-esp32-F4R0.bin",
+                             "deployCommand":  "powershell -ExecutionPolicy Bypass -File scripts\\deploy.ps1 -Env esp32-F4R0 -Port COMx",
+                             "sourceDir":  "dist/firmware/esp32-F4R0",
+                             "smokeTest":  {
+                                               "required":  true,
+                                               "command":  "powershell -ExecutionPolicy Bypass -File scripts\\smoke-test-device.ps1 -BaseUrl http://\u003cdevice-ip\u003e -Profile standard",
+                                               "status":  "not-run"
+                                           },
+                             "files":  {
+                                           "factory-with-fs.bin":  "fastbee-esp32-F4R0.bin"
+                                       },
+                             "sizes":  {
+                                           "fastbee-esp32-F4R0.bin":  4194304
+                                       },
+                             "sha256":  {
+                                            "fastbee-esp32-F4R0.bin":  "fb832701e95068b57b27ab0971cb0fb60e77f760e03df46d3a20cabf0b1b5b9c"
+                                        }
+                         },
+                         {
+                             "environment":  "esp32-F8R4",
+                             "filesystemProfile":  "full",
+                             "hardware":  "ESP32 8MB Flash + 4MB PSRAM",
+                             "releaseFile":  "fastbee-esp32-F8R4.bin",
+                             "deployCommand":  "powershell -ExecutionPolicy Bypass -File scripts\\deploy.ps1 -Env esp32-F8R4 -Port COMx",
+                             "sourceDir":  "dist/firmware/esp32-F8R4",
+                             "smokeTest":  {
+                                               "required":  true,
+                                               "command":  "powershell -ExecutionPolicy Bypass -File scripts\\smoke-test-device.ps1 -BaseUrl http://\u003cdevice-ip\u003e -Profile full",
+                                               "status":  "not-run"
+                                           },
+                             "files":  {
+                                           "factory-with-fs.bin":  "fastbee-esp32-F8R4.bin"
+                                       },
+                             "sizes":  {
+                                           "fastbee-esp32-F8R4.bin":  8388608
+                                       },
+                             "sha256":  {
+                                            "fastbee-esp32-F8R4.bin":  "99accc26d706e64cd1709d1932bb949a6c4237566a825c8a56a43115aec99dd5"
+                                        }
+                         },
+                         {
+                             "environment":  "esp32c3-F4R0",
+                             "filesystemProfile":  "lite",
+                             "hardware":  "ESP32-C3 4MB Flash",
+                             "releaseFile":  "fastbee-esp32c3-F4R0.bin",
+                             "deployCommand":  "powershell -ExecutionPolicy Bypass -File scripts\\deploy.ps1 -Env esp32c3-F4R0 -Port COMx",
+                             "sourceDir":  "dist/firmware/esp32c3-F4R0",
+                             "smokeTest":  {
+                                               "required":  true,
+                                               "command":  "powershell -ExecutionPolicy Bypass -File scripts\\smoke-test-device.ps1 -BaseUrl http://\u003cdevice-ip\u003e -Profile lite",
+                                               "status":  "not-run"
+                                           },
+                             "files":  {
+                                           "factory-with-fs.bin":  "fastbee-esp32c3-F4R0.bin"
+                                       },
+                             "sizes":  {
+                                           "fastbee-esp32c3-F4R0.bin":  4194304
+                                       },
+                             "sha256":  {
+                                            "fastbee-esp32c3-F4R0.bin":  "1bdab2fe007c8b3f862142021b70343ffaf3a56819832416e1149dfc941a1b11"
+                                        }
+                         },
+                         {
+                             "environment":  "esp32c6-F4R0",
+                             "filesystemProfile":  "lite",
+                             "hardware":  "ESP32-C6 4MB Flash",
+                             "releaseFile":  "fastbee-esp32c6-F4R0.bin",
+                             "deployCommand":  "powershell -ExecutionPolicy Bypass -File scripts\\deploy.ps1 -Env esp32c6-F4R0 -Port COMx",
+                             "sourceDir":  "dist/firmware/esp32c6-F4R0",
+                             "smokeTest":  {
+                                               "required":  true,
+                                               "command":  "powershell -ExecutionPolicy Bypass -File scripts\\smoke-test-device.ps1 -BaseUrl http://\u003cdevice-ip\u003e -Profile lite",
+                                               "status":  "not-run"
+                                           },
+                             "files":  {
+                                           "factory-with-fs.bin":  "fastbee-esp32c6-F4R0.bin"
+                                       },
+                             "sizes":  {
+                                           "fastbee-esp32c6-F4R0.bin":  4194304
+                                       },
+                             "sha256":  {
+                                            "fastbee-esp32c6-F4R0.bin":  "550221151bc9eb0f4ac0e2dcdd9dd59fb5b30ea7963e8ce85b93ec6fb23dc359"
+                                        }
+                         },
+                         {
+                             "environment":  "esp32s3-F8R0",
+                             "filesystemProfile":  "standard",
+                             "hardware":  "ESP32-S3 8MB Flash",
+                             "releaseFile":  "fastbee-esp32s3-F8R0.bin",
+                             "deployCommand":  "powershell -ExecutionPolicy Bypass -File scripts\\deploy.ps1 -Env esp32s3-F8R0 -Port COMx",
+                             "sourceDir":  "dist/firmware/esp32s3-F8R0",
+                             "smokeTest":  {
+                                               "required":  true,
+                                               "command":  "powershell -ExecutionPolicy Bypass -File scripts\\smoke-test-device.ps1 -BaseUrl http://\u003cdevice-ip\u003e -Profile standard",
+                                               "status":  "not-run"
+                                           },
+                             "files":  {
+                                           "factory-with-fs.bin":  "fastbee-esp32s3-F8R0.bin"
+                                       },
+                             "sizes":  {
+                                           "fastbee-esp32s3-F8R0.bin":  8388608
+                                       },
+                             "sha256":  {
+                                            "fastbee-esp32s3-F8R0.bin":  "b4bf6ca818f7fb6a1e86850797faba6dbe38d38f0e3afddc94664993e3961ab4"
+                                        }
+                         },
+                         {
+                             "environment":  "esp32s3-F8R4",
+                             "filesystemProfile":  "full",
+                             "hardware":  "ESP32-S3 8MB Flash + 4MB PSRAM",
+                             "releaseFile":  "fastbee-esp32s3-F8R4.bin",
+                             "deployCommand":  "powershell -ExecutionPolicy Bypass -File scripts\\deploy.ps1 -Env esp32s3-F8R4 -Port COMx",
+                             "sourceDir":  "dist/firmware/esp32s3-F8R4",
+                             "smokeTest":  {
+                                               "required":  true,
+                                               "command":  "powershell -ExecutionPolicy Bypass -File scripts\\smoke-test-device.ps1 -BaseUrl http://\u003cdevice-ip\u003e -Profile full",
+                                               "status":  "not-run"
+                                           },
+                             "files":  {
+                                           "factory-with-fs.bin":  "fastbee-esp32s3-F8R4.bin"
+                                       },
+                             "sizes":  {
+                                           "fastbee-esp32s3-F8R4.bin":  8388608
+                                       },
+                             "sha256":  {
+                                            "fastbee-esp32s3-F8R4.bin":  "14ff256439d8af7c77c89c3a1ba3e772bf6ec3946d858950a58e39938d7c5f1f"
+                                        }
+                         },
+                         {
+                             "environment":  "esp32s3-F16R8",
+                             "filesystemProfile":  "full",
+                             "hardware":  "ESP32-S3 16MB Flash + 8MB PSRAM",
+                             "releaseFile":  "fastbee-esp32s3-F16R8.bin",
+                             "deployCommand":  "powershell -ExecutionPolicy Bypass -File scripts\\deploy.ps1 -Env esp32s3-F16R8 -Port COMx",
+                             "sourceDir":  "dist/firmware/esp32s3-F16R8",
+                             "smokeTest":  {
+                                               "required":  true,
+                                               "command":  "powershell -ExecutionPolicy Bypass -File scripts\\smoke-test-device.ps1 -BaseUrl http://\u003cdevice-ip\u003e -Profile full",
+                                               "status":  "not-run"
+                                           },
+                             "files":  {
+                                           "factory-with-fs.bin":  "fastbee-esp32s3-F16R8.bin"
+                                       },
+                             "sizes":  {
+                                           "fastbee-esp32s3-F16R8.bin":  16777216
+                                       },
+                             "sha256":  {
+                                            "fastbee-esp32s3-F16R8.bin":  "16d4dba7a3b018cbb1e3b8a195229a664080237d84dbf7349b6be8b450425025"
+                                        }
+                         }
+                     ]
+}
