@@ -1,6 +1,6 @@
 {
-    "generatedAt":  "2026-06-17T04:05:51.5254414Z",
-    "gitSha":  "7c55cd280b35",
+    "generatedAt":  "2026-06-17T04:28:12.6932287Z",
+    "gitSha":  "05e352dd1c82",
     "outputDir":  "dist/firmware/all-latest",
     "environments":  [
                          {
@@ -22,7 +22,7 @@
                                            "fastbee-esp32-F4R0.bin":  4194304
                                        },
                              "sha256":  {
-                                            "fastbee-esp32-F4R0.bin":  "fb832701e95068b57b27ab0971cb0fb60e77f760e03df46d3a20cabf0b1b5b9c"
+                                            "fastbee-esp32-F4R0.bin":  "2c40a513b397785b84b42e539d8d66ef25e51a15b34d0c0729abb6e3f7902be0"
                                         }
                          },
                          {
@@ -44,7 +44,7 @@
                                            "fastbee-esp32-F8R4.bin":  8388608
                                        },
                              "sha256":  {
-                                            "fastbee-esp32-F8R4.bin":  "99accc26d706e64cd1709d1932bb949a6c4237566a825c8a56a43115aec99dd5"
+                                            "fastbee-esp32-F8R4.bin":  "820f37641e5f51bbebabd561000955f3dbc21d95d9cccbd3ff24eb153a4e5fb3"
                                         }
                          },
                          {
@@ -66,7 +66,7 @@
                                            "fastbee-esp32c3-F4R0.bin":  4194304
                                        },
                              "sha256":  {
-                                            "fastbee-esp32c3-F4R0.bin":  "1bdab2fe007c8b3f862142021b70343ffaf3a56819832416e1149dfc941a1b11"
+                                            "fastbee-esp32c3-F4R0.bin":  "5f404495771a25c78265fbb18b4e449ea6b7cede76b9e3a2a42122490382c036"
                                         }
                          },
                          {
@@ -88,7 +88,7 @@
                                            "fastbee-esp32c6-F4R0.bin":  4194304
                                        },
                              "sha256":  {
-                                            "fastbee-esp32c6-F4R0.bin":  "550221151bc9eb0f4ac0e2dcdd9dd59fb5b30ea7963e8ce85b93ec6fb23dc359"
+                                            "fastbee-esp32c6-F4R0.bin":  "3fcd6d55cd0b83327eb6fffaeda08c1ee876fecd812a10e66017db81f42bd875"
                                         }
                          },
                          {
@@ -110,7 +110,7 @@
                                            "fastbee-esp32s3-F8R0.bin":  8388608
                                        },
                              "sha256":  {
-                                            "fastbee-esp32s3-F8R0.bin":  "b4bf6ca818f7fb6a1e86850797faba6dbe38d38f0e3afddc94664993e3961ab4"
+                                            "fastbee-esp32s3-F8R0.bin":  "2a8879f29aee7e20c30789ec267b1ccfea916fc5bea5de4111dfe4c536846be6"
                                         }
                          },
                          {
@@ -132,7 +132,7 @@
                                            "fastbee-esp32s3-F8R4.bin":  8388608
                                        },
                              "sha256":  {
-                                            "fastbee-esp32s3-F8R4.bin":  "14ff256439d8af7c77c89c3a1ba3e772bf6ec3946d858950a58e39938d7c5f1f"
+                                            "fastbee-esp32s3-F8R4.bin":  "3ad3d2b30cdf53226dcd4626890f0fd09d4b9df31e7ec37d2c0acefe97fab04c"
                                         }
                          },
                          {
@@ -154,7 +154,7 @@
                                            "fastbee-esp32s3-F16R8.bin":  16777216
                                        },
                              "sha256":  {
-                                            "fastbee-esp32s3-F16R8.bin":  "16d4dba7a3b018cbb1e3b8a195229a664080237d84dbf7349b6be8b450425025"
+                                            "fastbee-esp32s3-F16R8.bin":  "6f6f1bb0688909928918a65db1ea14a6c18248e84968fbe0b848f44e43d045f5"
                                         }
                          }
                      ]

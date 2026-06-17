@@ -313,17 +313,49 @@ String ProtocolManager::getProtocolStatus(ProtocolType type) {
 }
 
 void ProtocolManager::handle() {
-    // 内存保护：堆低于安全阈值时跳过协议处理，避免 JSON 序列化 OOM → abort()
-    // MQTT publishDeviceInfo / processQueuedCommands 等操作需要 String 动态分配，
-    // 在堆不足时执行会导致 new 失败 → lock_init_generic → abort()
+    // 无条件周期调试（每10秒），确认 handle() 被调用
+    {
+        static unsigned long _pmAliveMs = 0;
+        if (millis() - _pmAliveMs > 10000) {
+            _pmAliveMs = millis();
+            ets_printf("[PROTO-ALIVE] handle called heap=%lu mqtt=%p\n",
+                (unsigned long)ESP.getFreeHeap(),
+#if FASTBEE_ENABLE_MQTT
+                (void*)mqttClient.get()
+#else
+                (void*)0
+#endif
+            );
+        }
+    }
+    // 内存保护：堆低于安全阈值时跳过重型协议处理（JSON 序列化、Modbus 等），避免 OOM
+    // 但 MQTT handle() 必须始终运行：它负责连接状态维护和后台重连调度，
+    // 内部已有堆保护（doReconnect() 检查 25KB），不会在堆不足时强行连接
+    // 设备堆内存常在 25-35KB 波动（Web 服务器 + 多任务），
+    // 30KB 阈值会导致 MQTT 永远无法建立连接
     uint32_t freeHeap = ESP.getFreeHeap();
-    if (freeHeap < 30000) {
-        // 每 10 秒打印一次警告，避免刷屏
+    bool heapSufficient = (freeHeap >= 30000);
+
+    // MQTT handle() 始终运行：内部有堆保护，不会在内存不足时 OOM
+#if FASTBEE_ENABLE_MQTT
+    if (mqttClient) {
+        mqttClient->handle();
+        // 周期性 ets_printf 调试（每10秒），直接写UART不经过Serial缓冲区
+        static unsigned long _pmDbgMs = 0;
+        if (millis() - _pmDbgMs > 10000) {
+            _pmDbgMs = millis();
+            ets_printf("[PROTO] MQTT handle alive heap=%lu\n", (unsigned long)freeHeap);
+        }
+    }
+#endif
+
+    // 堆保护：低于阈值时跳过其余重型协议处理
+    if (!heapSufficient) {
         static unsigned long lastWarnMs = 0;
         unsigned long now = millis();
         if (now - lastWarnMs > 10000) {
             lastWarnMs = now;
-            Serial.printf("[PROTO] Heap too low (%lu), skipping protocol handle\n", (unsigned long)freeHeap);
+            Serial.printf("[PROTO] Heap low (%lu), skipping heavy protocol handlers\n", (unsigned long)freeHeap);
         }
         return;
     }
@@ -335,9 +367,6 @@ void ProtocolManager::handle() {
         LOG_INFO("[Modbus] Executing deferred restart in loopTask...");
         restartModbus();
     }
-#endif
-#if FASTBEE_ENABLE_MQTT
-    if (mqttClient) mqttClient->handle();
 #endif
 #if FASTBEE_ENABLE_MODBUS
     if (modbusHandler) modbusHandler->handle();
@@ -493,9 +522,13 @@ bool ProtocolManager::restartMQTTDeferred() {
         mqttClient.reset();
     }
 
+    // FreeRTOS vTaskDelete 不会立即释放任务栈内存，需等待 idle 任务清理
+    // 短暂延迟让 idle 任务有机会回收内存，避免堆内存检查误判
+    delay(10);
+
     // 堆保护：释放旧客户端后仍不足，放弃重建
     uint32_t freeHeap = ESP.getFreeHeap();
-    if (freeHeap < 25000) {
+    if (freeHeap < 15000) {
         LOG_WARNINGF("Protocol Manager: Heap too low for MQTT deferred restart (heap=%lu), skipping",
                      (unsigned long)freeHeap);
         return false;
@@ -568,7 +601,7 @@ bool ProtocolManager::restartModbus() {
 
     // 堆保护：防止低内存时 JSON 解析/对象创建触发 abort()
     uint32_t freeHeap = ESP.getFreeHeap();
-    if (freeHeap < 25000) {
+    if (freeHeap < 15000) {
         LOG_WARNINGF("Protocol Manager: Heap too low for Modbus restart (heap=%lu), skipping",
                      (unsigned long)freeHeap);
         return false;

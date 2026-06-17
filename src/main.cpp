@@ -82,11 +82,14 @@ void setup() {
 #ifdef BOARD_HAS_PSRAM
     Serial.printf("[BOOT] PSRAM size: %lu bytes\n", (unsigned long)ESP.getPsramSize());
     Serial.printf("[BOOT] Free PSRAM: %lu bytes\n", (unsigned long)ESP.getFreePsram());
-    // 启用 PSRAM 分配策略：当内部 DRAM 不足时自动 fallback 到 PSRAM
-    // 这对 ArduinoJson serializeJson → String 分配至关重要，
-    // 否则内部 DRAM 耗尽时 String realloc 失败 → abort()
-    heap_caps_malloc_extmem_enable(4096);  // ≥ 4KB 的分配请求优先用 PSRAM
-    Serial.println("[BOOT] PSRAM malloc enabled (threshold=4096)");
+    // 启用 PSRAM 分配策略：≥ 512字节的分配优先使用 PSRAM
+    // 为什么 512 而不是 4096？
+    // - ESP32-S3 内部 DRAM 仅 ~320KB，WiFi+MQTT+WebServer 后只剩 ~18KB
+    // - AsyncWebServer 每个 HTTP 请求缓冲区 ~1-2KB，4096 阈值太高无法卸载到 PSRAM
+    // - lwIP TCP PCB (~200B) 和 FreeRTOS 栈必须在内部 DRAM，其它大部分分配可用 PSRAM
+    // - PSRAM 延迟比 DRAM 高 ~3x，但对 HTTP/JSON 响应构建无感知影响
+    heap_caps_malloc_extmem_enable(512);  // ≥ 512B 的分配请求优先用 PSRAM
+    Serial.println("[BOOT] PSRAM malloc enabled (threshold=512)");
 #else
     Serial.println("[BOOT] PSRAM: disabled (no-PSRAM build)");
 #endif
@@ -139,6 +142,13 @@ void setup() {
 void loop() {
     // 运行框架主循环
     framework->run();
+    
+    // 周期性确认 loop 运行
+    static unsigned long _loopDbg = 0;
+    if (millis() - _loopDbg > 15000) {
+        _loopDbg = millis();
+        ets_printf("[LOOP-ALIVE] heap=%lu\n", (unsigned long)ESP.getFreeHeap());
+    }
     
     // 让出 CPU 时间，平衡响应和功耗，提升稳定性
     delay(10); 

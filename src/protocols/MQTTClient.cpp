@@ -26,7 +26,6 @@
 #include <core/ConfigDefines.h>
 #include <LittleFS.h>
 #include <HTTPClient.h>
-#include <WiFiClientSecure.h>
 #include <esp_heap_caps.h>
 #include <mbedtls/aes.h>
 #include <core/FeatureFlags.h>
@@ -836,13 +835,18 @@ bool MQTTClient::subscribeAll() {
 }
 
 void MQTTClient::handle() {
-    if (stopped) return;  // 被显式停止时不做任何操作
+    if (stopped) {
+        static unsigned long _hStopWarn = 0;
+        if (millis() - _hStopWarn > 30000) { _hStopWarn = millis(); Serial.println("[MQTT-DBG] handle() skipped: stopped"); }
+        return;  // 被显式停止时不做任何操作
+    }
 
     // 检查网络连接状态：若使用外部 Client 则跳过 WiFi 状态检查
     if (!_externalClient && WiFi.status() != WL_CONNECTED) {
         if (isConnected) {
             isConnected = false;
             LOG_WARNING("MQTT: WiFi disconnected, marking MQTT offline");
+            Serial.println("[MQTT-DBG] WiFi disconnected");
         }
         return;
     }
@@ -855,6 +859,7 @@ void MQTTClient::handle() {
             // 立即关闭底层 socket，避免后续 write() 对死 socket 阻塞 10s+
             wifiClient.stop();
             LOG_WARNING("MQTT: Connection lost");
+            Serial.println("[MQTT-DBG] Connection lost, socket stopped");
             _notifyStatusChange();  // 通知状态变化：连接断开
             // 触发MQTT断开连接系统事件
 #if FASTBEE_ENABLE_PERIPH_EXEC
@@ -862,22 +867,29 @@ void MQTTClient::handle() {
 #endif
         }
 
-        if (!config.autoReconnect) return;
+        if (!config.autoReconnect) {
+            static unsigned long _arWarn = 0;
+            if (millis() - _arWarn > 30000) { _arWarn = millis(); Serial.println("[MQTT-DBG] autoReconnect disabled"); }
+            return;
+        }
 
         unsigned long now = millis();
         if (now - lastReconnectAttempt >= reconnectInterval) {
             lastReconnectAttempt = now;
             // WiFi 未连接时跳过重连（仅当未使用外部 Client 时检查）
             if (!_externalClient && WiFi.status() != WL_CONNECTED) {
-                LOGGER.infof("[MQTT] WiFi not connected (status=%d), skipping reconnect", WiFi.status());
+                Serial.printf("[MQTT-DBG] WiFi not connected (status=%d), skipping reconnect\n", WiFi.status());
                 return;
             }
             // 调度后台任务执行重连（避免 reconnect() 阻塞 loopTask 7秒+）
             if (!_reconnectPending && !_reconnectRunning) {
                 _reconnectPending = true;
+                ets_printf("[MQTT] Reconnect scheduled (heap=%lu cnt=%lu interval=%lu)\n",
+                    (unsigned long)ESP.getFreeHeap(), (unsigned long)reconnectCount, (unsigned long)reconnectInterval);
                 LOG_INFO("[MQTT] Reconnect scheduled in background task");
             } else if (_reconnectRunning) {
-                LOG_INFO("[MQTT] Background reconnect still in progress, skipping");
+                static unsigned long _rrWarn = 0;
+                if (millis() - _rrWarn > 10000) { _rrWarn = millis(); Serial.println("[MQTT-DBG] Background reconnect still running"); }
             }
         }
     } else {
@@ -1405,6 +1417,8 @@ bool MQTTClient::reconnect() {
     LOG_INFO(logBuf);
 
     bool ok;
+    ets_printf("[MQTT] Connecting to %s:%d clientId=%s\n",
+                 config.server.c_str(), config.port, connClientId.c_str());
     if (!config.willTopic.isEmpty()) {
         ok = mqttClient.connect(
             connClientId.c_str(),
@@ -1425,6 +1439,7 @@ bool MQTTClient::reconnect() {
         isConnected = true;
         lastConnectedTime = millis();
         lastErrorCode = 0;
+        ets_printf("[MQTT] *** MQTT CONNECTED! ***\n");
         LOG_INFO("MQTT: Connected");
         _notifyStatusChange();  // 通知状态变化：连接成功
         // 触发MQTT连接成功系统事件
@@ -1444,6 +1459,8 @@ bool MQTTClient::reconnect() {
         }
         lastErrorCode = mqttClient.state();
         reconnectCount++;
+        ets_printf("[MQTT] Connect FAILED rc=%d (cnt=%lu)\n",
+                     lastErrorCode, (unsigned long)reconnectCount);
         char buf2[48];
         snprintf(buf2, sizeof(buf2), "MQTT: Connect failed rc=%d", lastErrorCode);
         LOG_WARNING(buf2);
@@ -1500,9 +1517,15 @@ void MQTTClient::doReconnect() {
     }
 
     // 内存保护：堆内存严重不足时跳过重连，避免加剧内存压力
+    // 阈值说明：MQTT reconnect 需要 WiFiClient TCP 连接(~6KB) + PubSubClient 缓冲(1KB) + String 临时操作(~2KB)
+    // 总需求约 10KB。ESP32-S3 运行 Web 服务器 + MQTT 后台任务时，
+    // 空闲堆常在 16-20KB 波动，设 15KB 阈值保留足够裕度。
+    // PSRAM 设备的大块分配会自动 fallback 到外部内存，无需担心大块分配失败。
     uint32_t reconnectFreeHeap = ESP.getFreeHeap();
     uint32_t reconnectLargestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
-    if (reconnectFreeHeap < 49152 || reconnectLargestBlock < 12288) {
+    if (reconnectFreeHeap < 15000 || reconnectLargestBlock < 4096) {
+        ets_printf("[MQTT] doReconnect: heap too low (heap=%lu largest=%lu), skipping\n",
+                     (unsigned long)reconnectFreeHeap, (unsigned long)reconnectLargestBlock);
         LOG_WARNINGF("[MQTT] Memory too low for reconnect, skipping (heap=%lu largest=%lu)",
                      (unsigned long)reconnectFreeHeap,
                      (unsigned long)reconnectLargestBlock);
@@ -1510,6 +1533,8 @@ void MQTTClient::doReconnect() {
         return;
     }
 
+    ets_printf("[MQTT] doReconnect: starting (heap=%lu largest=%lu)\n",
+                 (unsigned long)reconnectFreeHeap, (unsigned long)reconnectLargestBlock);
     LOG_INFO("[MQTT] Background reconnect starting...");
 
     bool ok = reconnect();
@@ -1663,8 +1688,12 @@ String MQTTClient::getNtpTime(unsigned long& outDeviceSendTime) {
     }
 
     String url = config.ntpServer;
-    bool isHttps = url.startsWith("https://");
-    
+
+    // NTP 时间同步无需加密，强制降级 HTTPS → HTTP 避免 SSL 内存分配失败
+    if (url.startsWith("https://")) {
+        url = "http://" + url.substring(8);
+    }
+
     // FastBee平台需要 deviceSendTime 参数
     outDeviceSendTime = millis();
     
@@ -1680,16 +1709,8 @@ String MQTTClient::getNtpTime(unsigned long& outDeviceSendTime) {
     LOG_DEBUG(buf);
 
     HTTPClient http;
-    bool beginOk = false;
-
-    if (isHttps) {
-        static WiFiClientSecure secureClient;
-        secureClient.setInsecure();  // 跳过 CA 证书验证
-        beginOk = http.begin(secureClient, url);
-    } else {
-        static WiFiClient plainClient;
-        beginOk = http.begin(plainClient, url);
-    }
+    static WiFiClient plainClient;
+    bool beginOk = http.begin(plainClient, url);
 
     if (!beginOk) {
         LOG_WARNING("MQTT: HTTP begin failed for NTP");

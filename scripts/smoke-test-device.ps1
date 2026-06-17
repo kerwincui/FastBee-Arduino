@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$BaseUrl = "http://192.168.4.1",
 
@@ -247,6 +247,20 @@ function Test-CheckSemantics {
                 }
             }
         }
+        "mqtt-initialization" {
+            if ($null -eq $data) { return "missing data" }
+            $initialized = Get-ObjectValue -Object $data -Name "initialized"
+            if ($null -eq $initialized) { return "missing initialized flag" }
+            # MQTT 客户端应在启动时由 FastBeeFramework::initialize() 显式创建
+            # 若 initialized=false 说明懒加载逻辑未触发或配置未加载
+            if (-not [bool]$initialized) {
+                $error = Get-ObjectValue -Object $data -Name "error"
+                if ([string]$error) {
+                    return "MQTT not initialized at boot: $error"
+                }
+                return "MQTT not initialized at boot (lazy-load may have failed)"
+            }
+        }
         "protocol-config" {
             if ($null -eq $data) { return "missing data" }
             if ($Profile -ne "lite" -and $null -eq (Get-ObjectValue -Object $data -Name "modbusRtu")) {
@@ -358,6 +372,19 @@ function Test-CheckSemantics {
             })
             if ($failed.Count -gt 0) {
                 return "batch contains failed sub-response(s)"
+            }
+        }
+        "batch-stress" {
+            # 并发压力测试：6 个 API 同时调用，验证 PSRAM 阈值修改后 HTTP 并发不崩溃
+            $rawResults = Get-ObjectValue -Object $Response -Name "results"
+            if ($null -eq $rawResults) { return "missing batch results" }
+            $results = @($rawResults)
+            if ($results.Count -lt 6) { return "expected 6 sub-responses, got $($results.Count)" }
+            $failed = @($results | Where-Object {
+                $null -eq $_ -or ($_.PSObject.Properties.Name -contains "success" -and $_.success -eq $false)
+            })
+            if ($failed.Count -gt 0) {
+                return "stress batch contains $($failed.Count) failed sub-response(s) (possible OOM under concurrent load)"
             }
         }
     }
@@ -657,6 +684,96 @@ function Add-BearerOverCookieCheck {
     }
 }
 
+function Add-MqttNtpSyncCheck {
+    # MQTT NTP 同步测试：允许 MQTT 未连接时返回 success=false
+    # 此测试验证 NTP 调用不会崩溃（HTTPS→HTTP 降级生效），而非必须成功同步
+    $response = $null
+    $ok = $false
+    $message = "not checked"
+
+    for ($attempt = 0; $attempt -le $RetryCount; $attempt++) {
+        $response = Invoke-FastBeeApi -Method POST -Path "/api/mqtt/ntp-sync"
+        $ok = $true
+        $message = "OK"
+
+        if ($null -eq $response) {
+            $ok = $false
+            $message = "empty response"
+        }
+        elseif ($response.PSObject.Properties.Name -contains "success" -and $response.success -eq $false) {
+            $errorMsg = ""
+            if ($response.PSObject.Properties.Name -contains "error") { $errorMsg = [string]$response.error }
+            if ($response.PSObject.Properties.Name -contains "message") { $errorMsg = [string]$response.message }
+            # MQTT 未连接是可接受的失败原因（测试环境可能无 MQTT broker）
+            if ($errorMsg -match "MQTT not connected|not initialized|not available") {
+                $ok = $true
+                $message = "skipped (MQTT not connected, but endpoint did not crash)"
+            } else {
+                $ok = $false
+                $message = "ntp-sync failed: $errorMsg"
+            }
+        }
+
+        if ($ok) { break }
+        if ($attempt -lt $RetryCount) {
+            Start-Sleep -Milliseconds ([Math]::Max($DelayMs, 100))
+        }
+    }
+
+    $script:Results += [pscustomobject]@{
+        Name = "mqtt-ntp-sync"
+        Method = "POST"
+        Path = "/api/mqtt/ntp-sync"
+        Passed = $ok
+        Attempts = $attempt + 1
+        Message = $message
+    }
+
+    if ($DelayMs -gt 0) {
+        Start-Sleep -Milliseconds $DelayMs
+    }
+}
+
+function Add-HeapAfterStressCheck {
+    # 压力测试后堆内存检查：验证并发请求后堆未耗尽
+    $response = Invoke-FastBeeApi -Method GET -Path "/api/system/metrics"
+    $ok = $false
+    $message = "not checked"
+
+    if ($null -eq $response) {
+        $message = "empty metrics response"
+    } else {
+        $heap = Get-ObjectValue -Object $response -Name "heap"
+        $heapFree = Get-ObjectValue -Object $heap -Name "free"
+        if ($null -eq $heapFree) {
+            $message = "missing heap.free in metrics"
+        } else {
+            $freeKB = [math]::Round([int64]$heapFree / 1024, 1)
+            # 压力后堆不应低于 10KB（说明 PSRAM 阈值生效，HTTP 缓冲卸载到 PSRAM）
+            if ([int64]$heapFree -lt 10240) {
+                $ok = $false
+                $message = "heap critically low after stress: ${freeKB}KB (expected > 10KB)"
+            } else {
+                $ok = $true
+                $message = "heap OK after stress: ${freeKB}KB free"
+            }
+        }
+    }
+
+    $script:Results += [pscustomobject]@{
+        Name = "heap-after-stress"
+        Method = "GET"
+        Path = "/api/system/metrics"
+        Passed = $ok
+        Attempts = 1
+        Message = $message
+    }
+
+    if ($DelayMs -gt 0) {
+        Start-Sleep -Milliseconds $DelayMs
+    }
+}
+
 function Add-MultiSessionCheck {
     $firstSession = $script:SessionId
     $ok = $false
@@ -730,6 +847,10 @@ foreach ($check in Get-MatrixChecks) {
         Add-BearerOverCookieCheck
         continue
     }
+    if ($type -eq "mqtt-ntp-sync") {
+        Add-MqttNtpSyncCheck
+        continue
+    }
     if ($type -eq "expect-unavailable" -or $type -eq "expect-error") {
         Add-ExpectedStatusCheck `
             -Name ([string]$check.name) `
@@ -740,6 +861,7 @@ foreach ($check in Get-MatrixChecks) {
             -JsonBody:([bool](Get-CheckValue -Check $check -Name "jsonBody" -DefaultValue $false))
         continue
     }
+    # batch-stress 和普通类型均通过 Add-Check 处理（语义检查由 Test-CheckSemantics 执行）
 
     Add-Check `
         -Name ([string]$check.name) `
@@ -747,6 +869,13 @@ foreach ($check in Get-MatrixChecks) {
         -Path ([string]$check.path) `
         -Body (Get-CheckValue -Check $check -Name "body") `
         -JsonBody:([bool](Get-CheckValue -Check $check -Name "jsonBody" -DefaultValue $false))
+}
+
+# 压力测试后堆内存检查（仅 full profile，验证 PSRAM 阈值生效后并发 HTTP 不会耗尽内部 DRAM）
+if ($Profile -eq "full") {
+    Write-Host "" -NoNewline
+    Write-Host "Running heap-after-stress check..." -ForegroundColor Cyan
+    Add-HeapAfterStressCheck
 }
 
 # Configuration transfer end-to-end tests

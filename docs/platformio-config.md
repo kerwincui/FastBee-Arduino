@@ -161,12 +161,16 @@ extra_scripts =
 
 | 参数 | ESP32 | ESP32-C3 | ESP32-C6 | ESP32-S3 | 说明 |
 |------|:-----:|:--------:|:--------:|:--------:|------|
-| `CONFIG_ASYNC_TCP_MAX_CONNECTIONS` | 2 | 1 | 3 | 4 | AsyncTCP 最大并发连接数 |
-| `CONFIG_ASYNC_TCP_QUEUE_SIZE` | 4 | 4 | 8 | 16 | TCP 事件队列深度 |
+| `CONFIG_ASYNC_TCP_MAX_CONNECTIONS` | 2 | 1 | 3 | **14** | AsyncTCP 最大并发连接数 |
+| `CONFIG_ASYNC_TCP_QUEUE_SIZE` | 4 | 4 | 8 | **24** | TCP 事件队列深度 |
 | `ARDUINO_LOOP_STACK_SIZE` | 16384 | 12288 | 12288 | 16384 | Arduino loopTask 栈大小（字节） |
 | `CONFIG_ASYNC_TCP_TASK_WDT_TIMEOUT` | 10 | 10 | 10 | 10 | AsyncTCP 任务看门狗超时（秒） |
 | `SCRIPT_TASK_STACK` | 8192 | 6144 | 6144 | 8192 | 规则脚本任务栈大小 |
 | `SIMPLE_TASK_STACK` | 6144 | 4096 | 4096 | 6144 | 简单定时任务栈大小 |
+
+> **S3 参数说明**：ESP32-S3 配 8MB+ PSRAM，内部 DRAM 在 WiFi+MQTT+WebServer 全开后仅剩 ~18-35KB。
+> 将 TCP 连接数提升至 14、队列深度提升至 24，可支撑多标签页并发访问（峰值 10-14 PCB）。
+> 配合 PSRAM 阈值（见下文）将 HTTP 缓冲区卸载到 PSRAM，内部 DRAM 专供 lwIP TCP PCB（~172B/个，必须内部 DRAM）。
 
 ESP32-C3/C6 还额外配置 USB 串口模式：
 ```ini
@@ -174,7 +178,56 @@ ESP32-C3/C6 还额外配置 USB 串口模式：
 -DARDUINO_USB_CDC_ON_BOOT=1    ; 启用 USB CDC 串口
 ```
 
-> **调优提示**：如遇栈溢出崩溃（`Guru Meditation Error: Stack canary watchpoint triggered`），可增大对应 `*_STACK` 值。增大 `CONFIG_ASYNC_TCP_MAX_CONNECTIONS` 可支持更多并发 Web 请求，但会占用更多 RAM。
+> **调优提示**：
+> - 如遇栈溢出崩溃（`Guru Meditation Error: Stack canary watchpoint triggered`），可增大对应 `*_STACK` 值。
+> - 增大 `CONFIG_ASYNC_TCP_MAX_CONNECTIONS` 可支持更多并发 Web 请求，但会占用更多 RAM。
+> - S3 有 PSRAM 时建议同步降低 PSRAM 阈值（见 PSRAM 配置段），释放内部 DRAM 供 TCP PCB 使用。
+
+---
+
+## PSRAM 配置
+
+### 背景
+
+ESP32-S3 内部 DRAM 仅 ~320KB，WiFi 协议栈 + MQTT + AsyncWebServer 全开后，内部 DRAM 可用空间常仅剩 **18-35KB**。
+若 HTTP 请求缓冲区、ArduinoJson 序列化 `String` 等大分配无法卸载到 PSRAM，会导致 `new` 失败 → `abort()`。
+
+### 阈值配置
+
+通过 `heap_caps_malloc_extmem_enable(threshold)` 控制分配策略：
+
+```cpp
+// src/main.cpp — setup() 中调用
+heap_caps_malloc_extmem_enable(512);  // ≥ 512B 的分配请求优先用 PSRAM
+```
+
+| 阈值 | 效果 | 适用场景 |
+|------|------|----------|
+| `4096`（旧默认） | 仅 ≥ 4KB 的分配用 PSRAM | PSRAM 较小或无 HTTP 并发压力 |
+| **`512`（当前）** | ≥ 512B 的分配用 PSRAM | ESP32-S3 + PSRAM，AsyncWebServer 并发场景 |
+
+### 为什么是 512 而不是 4096？
+
+| 分配类型 | 典型大小 | 能否用 PSRAM |
+|----------|----------|-------------|
+| AsyncWebServer HTTP 缓冲区 | 1-2 KB | ✅ 可以（512 阈值命中，4096 阈值无法命中） |
+| ArduinoJson String 序列化 | 200B - 2KB | ✅ 可以 |
+| lwIP TCP PCB 结构体 | ~172 B | ❌ 必须内部 DRAM（硬件要求） |
+| FreeRTOS 任务栈 | 2-16 KB | ⚠️ 可以但延迟略高 |
+| WiFi 协议栈缓冲 | 不等 | ❌ 内部 DRAM |
+
+> **PSRAM 延迟**：PSRAM 通过 SPI 访问，延迟比内部 DRAM 高约 3x，但对 HTTP/JSON 响应构建无感知影响（瓶颈在网络 I/O）。
+
+### 构建时启用 PSRAM
+
+`esp32s3-F8R4` 和 `esp32s3-F16R8` 环境通过 `board_build.arduino.memory_type` 自动启用 PSRAM：
+
+```ini
+; 在 [env:esp32s3-F8R4] / [env:esp32s3-F16R8] 中
+board_build.arduino.memory_type = qio_opi   ; OPI PSRAM（8线，速度更快）
+```
+
+无 PSRAM 的环境（`esp32s3-F8R0`、`esp32-F4R0` 等）不设置此项，`main.cpp` 中 `#ifdef BOARD_HAS_PSRAM` 分支不会编译。
 
 ---
 

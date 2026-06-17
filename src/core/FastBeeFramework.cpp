@@ -73,14 +73,11 @@ bool FastBeeFramework::initialize() {
     unsigned long startTime = millis();
     unsigned long stepStart;  // 分步骤计时
 
-    Serial.println();
-    Serial.println("========================================");
-    Serial.println("  FastBee IoT Platform Starting...");
-    Serial.printf("  Version: %s (%s)\n", SystemInfo::VERSION, SystemInfo::FIRMWARE_TYPE);
-    Serial.printf("  Build: %s %s\n", __DATE__, __TIME__);
-    Serial.println("========================================");
-    Serial.println();
-    ets_printf("[BOOT] FastBee IoT Platform v%s Starting...\n", SystemInfo::VERSION);
+    ets_printf("\n========================================\n");
+    ets_printf("  FastBee IoT Platform Starting...\n");
+    ets_printf("  Version: %s (%s)\n", SystemInfo::VERSION, SystemInfo::FIRMWARE_TYPE);
+    ets_printf("  Build: %s %s\n", __DATE__, __TIME__);
+    ets_printf("========================================\n\n");
 
     // 步骤1: 初始化配置存储（Logger 之前，只能用 Serial）
     stepStart = millis();
@@ -338,6 +335,32 @@ bool FastBeeFramework::initialize() {
         return false;
     }
     Serial.printf("[Boot] ProtocolManager: %lu ms\n", millis() - stepStart);
+
+    // 步骤11.1: 启动协议客户端（MQTT、Modbus 等）
+    // ProtocolManager::initialize() 只设置标志位，不创建协议客户端
+    // 必须显式调用 restartMQTTDeferred() / restartModbus() 来加载配置并创建客户端
+#if FASTBEE_ENABLE_MQTT
+    {
+        unsigned long mqttStart = millis();
+        ets_printf("[STEP11.1] Starting MQTT client...\n");
+        if (protocolManager->restartMQTTDeferred()) {
+            ets_printf("[Boot] MQTT client created: %lu ms\n", millis() - mqttStart);
+        } else {
+            ets_printf("[STEP11.1] WARN: MQTT deferred restart failed (will retry on API query)\n");
+        }
+    }
+#endif
+#if FASTBEE_ENABLE_MODBUS
+    {
+        unsigned long modbusStart = millis();
+        ets_printf("[STEP11.2] Starting Modbus handler...\n");
+        if (protocolManager->restartModbus()) {
+            ets_printf("[Boot] Modbus handler created: %lu ms\n", millis() - modbusStart);
+        } else {
+            ets_printf("[STEP11.2] WARN: Modbus restart failed\n");
+        }
+    }
+#endif
 
     // 注入 ProtocolManager 到 WebConfig，供 API 路由访问
     if (webConfig && protocolManager) {
@@ -619,12 +642,12 @@ bool FastBeeFramework::initialize() {
     systemInitialized = true;
 
     // 输出 Boot Performance Report
-    Serial.println("[Boot] === Performance Report ===");
-    Serial.printf("[Boot] Total boot time: %lu ms\n", bootTime);
+    ets_printf("[Boot] === Performance Report ===\n");
+    ets_printf("[Boot] Total boot time: %lu ms\n", bootTime);
     if (networkMs > 1000) {
-        Serial.printf("[Boot] WARNING: NetworkManager took %lu ms (may block on WiFi connect)\n", networkMs);
+        ets_printf("[Boot] WARNING: NetworkManager took %lu ms (may block on WiFi connect)\n", networkMs);
     }
-    Serial.println("[Boot] === End Report ===");
+    ets_printf("[Boot] === End Report ===\n");
 
     // 将启动耗时记录到 HealthMonitor
 #if FASTBEE_ENABLE_HEALTH_MONITOR
@@ -634,27 +657,24 @@ bool FastBeeFramework::initialize() {
 #endif
 
     Serial.println("========================================");
-    Serial.printf("  System initialized in %lu ms\n", bootTime);
-    Serial.println("========================================");
-    Serial.printf("[BOOT] Platform ready! Heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
+    ets_printf("  System initialized in %lu ms\n", bootTime);
+    ets_printf("========================================\n");
     ets_printf("[BOOT] Platform ready! Heap: %lu bytes\n", (unsigned long)ESP.getFreeHeap());
-
-    // 输出访问信息（同时输出到串口和日志）
-    Serial.println("========================================");
-    Serial.println("  FastBee IoT Platform Ready!");
-    Serial.println("========================================");
+    ets_printf("========================================\n");
+    ets_printf("  FastBee IoT Platform Ready!\n");
+    ets_printf("========================================\n");
 
     if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("Mode: STA (WiFi Client)");
-        Serial.printf("SSID: %s\n", WiFi.SSID().c_str());
-        Serial.printf("IP Address: %s\n", WiFi.localIP().toString().c_str());
-        Serial.printf("Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
-        Serial.printf("DNS: %s\n", WiFi.dnsIP(0).toString().c_str());
-        Serial.printf("RSSI: %d dBm\n", WiFi.RSSI());
-        Serial.printf("Access URL: http://%s\n", WiFi.localIP().toString().c_str());
-        Serial.println("mDNS URL: http://fastbee.local");
+        ets_printf("Mode: STA (WiFi Client)\n");
+        ets_printf("SSID: %s\n", WiFi.SSID().c_str());
+        ets_printf("IP Address: %s\n", WiFi.localIP().toString().c_str());
+        ets_printf("Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
+        ets_printf("DNS: %s\n", WiFi.dnsIP(0).toString().c_str());
+        ets_printf("RSSI: %d dBm\n", WiFi.RSSI());
+        ets_printf("Access URL: http://%s\n", WiFi.localIP().toString().c_str());
+        ets_printf("mDNS URL: http://fastbee.local\n");
     } else if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
-        Serial.println("Mode: AP (Access Point)");
+        ets_printf("Mode: AP (Access Point)\n");
         // 以 NetworkManager 的实际配置为准，避免误导用户
         String apSSID = NetConst::DEFAULT_AP_SSID;
         String apPass = NetConst::DEFAULT_AP_PASSWORD;
@@ -663,17 +683,17 @@ bool FastBeeFramework::initialize() {
             if (cfg.apSSID.length() > 0) apSSID = cfg.apSSID;
             if (cfg.apPassword.length() > 0) apPass = cfg.apPassword;
         }
-        Serial.printf("WiFi Name: %s\n", apSSID.c_str());
-        Serial.printf("WiFi Pass: %s\n", apPass.c_str());
-        Serial.printf("IP Address: %s\n", WiFi.softAPIP().toString().c_str());
-        Serial.printf("Setup URL: http://%s/setup\n", WiFi.softAPIP().toString().c_str());
+        ets_printf("WiFi Name: %s\n", apSSID.c_str());
+        ets_printf("WiFi Pass: %s\n", apPass.c_str());
+        ets_printf("IP Address: %s\n", WiFi.softAPIP().toString().c_str());
+        ets_printf("Setup URL: http://%s/setup\n", WiFi.softAPIP().toString().c_str());
     } else {
-        Serial.println("Network: Not connected");
+        ets_printf("Network: Not connected\n");
     }
 
-    Serial.println("----------------------------------------");
-    Serial.println("Default Login: admin / admin123");
-    Serial.println("========================================");
+    ets_printf("----------------------------------------\n");
+    ets_printf("Default Login: admin / admin123\n");
+    ets_printf("========================================\n");
 
     return true;
 }
@@ -992,23 +1012,23 @@ void FastBeeFramework::run() {
         // 内存状态
         uint32_t freeHeap = ESP.getFreeHeap();
         uint32_t maxBlock = ESP.getMaxAllocHeap();
-        Serial.printf("[STATUS] uptime=%luh%lum%lus heap=%lu/%lu",
+        ets_printf("[STATUS] uptime=%luh%lum%lus heap=%lu/%lu",
                       hours, mins, secs, (unsigned long)freeHeap, (unsigned long)maxBlock);
 #ifdef BOARD_HAS_PSRAM
-        Serial.printf(" psram=%lu", (unsigned long)ESP.getFreePsram());
+        ets_printf(" psram=%lu", (unsigned long)ESP.getFreePsram());
 #endif
-        Serial.println();
+        ets_printf("\n");
 
         // 网络状态
         wl_status_t wifiSt = WiFi.status();
         if (wifiSt == WL_CONNECTED) {
-            Serial.printf("[STATUS] WiFi=CONNECTED ssid=%s ip=%s rssi=%d ch=%d\n",
+            ets_printf("[STATUS] WiFi=CONNECTED ssid=%s ip=%s rssi=%d ch=%d\n",
                           WiFi.SSID().c_str(),
                           WiFi.localIP().toString().c_str(),
                           WiFi.RSSI(),
                           WiFi.channel());
         } else if (WiFi.getMode() & WIFI_AP) {
-            Serial.printf("[STATUS] WiFi=AP_MODE ap_ip=%s clients=%d\n",
+            ets_printf("[STATUS] WiFi=AP_MODE ap_ip=%s clients=%d\n",
                           WiFi.softAPIP().toString().c_str(),
                           WiFi.softAPgetStationNum());
         } else {
@@ -1020,7 +1040,7 @@ void FastBeeFramework::run() {
                 case WL_DISCONNECTED:  stStr = "DISCONNECTED"; break;
                 default: break;
             }
-            Serial.printf("[STATUS] WiFi=%s mode=%d\n", stStr, (int)WiFi.getMode());
+            ets_printf("[STATUS] WiFi=%s mode=%d\n", stStr, (int)WiFi.getMode());
         }
     }
 

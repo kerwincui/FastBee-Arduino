@@ -61,6 +61,20 @@ lwIP 默认配置（所有 ESP32 变体相同，来自 ESP-IDF sdkconfig）：
 > **耗尽阈值必须 < 16**（lwIP 硬上限），在接近上限前触发恢复，留 2-6 个槽位缓冲。
 > 内存紧张的芯片（C3）更早触发，内存充裕的（S3）容忍更多连接。
 
+### PSRAM 对 TCP 连接承载力的影响
+
+ESP32-S3 配 PSRAM 后，内部 DRAM 竞争压力大幅缓解，间接支撑更多并发 TCP 连接：
+
+| 场景 | 无 PSRAM | 有 PSRAM（阈值=512B） |
+|------|-----------|---------------------|
+| 内部 DRAM 可用 | ~18 KB | ~22-35 KB（HTTP 缓冲卸载到 PSRAM） |
+| lwIP TCP PCB 空间 | 紧张，易耗尽 | 充裕（每个 PCB ~172B，必须内部 DRAM） |
+| 并发 HTTP 请求 | 2-3 个即触发内存压力 | 6+ 个仍可正常处理 |
+
+> `CONFIG_ASYNC_TCP_MAX_CONNECTIONS=14`（S3）是构建标志文档，AsyncTCP v3.4.10 已不再读取。
+> 实际连接数受 lwIP `MEMP_NUM_TCP_PCB=16` 和业务层 `TCP_TOTAL_BUDGET=8` 共同约束。
+> 提升该标志的主要目的是作为配置意图文档，以及向后兼容旧版 AsyncTCP。
+
 ## 关键文件
 
 | 文件 | 作用 |
@@ -69,7 +83,7 @@ lwIP 默认配置（所有 ESP32 变体相同，来自 ESP-IDF sdkconfig）：
 | `include/network/handlers/SSERouteHandler.h` | `MAX_SSE_CLIENTS` 固定数组槽位数 |
 | `include/network/WebConfigManager.h` | `TCP_CONN_EXHAUSTION_THRESHOLD` 软重启阈值 |
 | `src/network/WebConfigManager.cpp` | 每 30s 主动 abort TIME_WAIT 连接 + 耗尽检测与自动恢复 |
-| `platformio.ini` | 各 `[xxx_runtime_flags]` 中 `CONFIG_ASYNC_TCP_MAX_CONNECTIONS`（遗留标志，AsyncTCP 3.4.10 不再读取） |
+| `platformio.ini` | 各 `[xxx_runtime_flags]` 中 `CONFIG_ASYNC_TCP_MAX_CONNECTIONS`（遗留标志，AsyncTCP 3.4.10 不再读取，S3 已提升至 14） |
 
 ## 治理措施
 

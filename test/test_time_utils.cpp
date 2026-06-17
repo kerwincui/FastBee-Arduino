@@ -488,31 +488,33 @@ void test_ntp_url_device_send_time_concat() {
 }
 
 /**
- * @brief 验证 HTTPS 不再被降级为 HTTP
- * 旧逻辑: fullUrl = "http://" + fullUrl.substring(8)  → 丢失加密
- * 新逻辑: 根据 isHttps 选择 WiFiClientSecure
+ * @brief 验证 HTTPS 被降级为 HTTP（避免 ESP32 SSL 内存分配失败）
+ * NTP 时间同步是只读公开接口，无需 TLS 加密
  */
-void test_ntp_https_not_downgraded() {
-    TestLog::testStart("NTP HTTPS Not Downgraded");
+void test_ntp_https_downgraded() {
+    TestLog::testStart("NTP HTTPS Downgraded to HTTP");
 
     String url = "https://iot.fastbee.cn/prod-api/iot/tool/ntp";
-    bool isHttps = url.startsWith("https://");
 
-    // 新逻辑：识别为 HTTPS，使用 WiFiClientSecure
-    TEST_ASSERT_TRUE(isHttps);
-    TestLog::step("https://... detected as HTTPS (WiFiClientSecure)");
+    // 强制降级 HTTPS → HTTP
+    if (url.startsWith("https://")) {
+        url = "http://" + url.substring(8);
+    }
 
-    // 旧逻辑会降级："http://" + url.substring(8)
-    String oldLogicResult = "http://" + url.substring(8);
+    TEST_ASSERT_TRUE(url.startsWith("http://"));
     TEST_ASSERT_EQUAL_STRING(
         "http://iot.fastbee.cn/prod-api/iot/tool/ntp",
-        oldLogicResult.c_str());
-    TestLog::step("Old logic would downgrade to: http://iot.fastbee.cn/... (INSECURE!)");
+        url.c_str());
+    TestLog::step("HTTPS URL downgraded to HTTP for NTP (avoids SSL memory alloc failure)");
 
-    // 新逻辑保留原始 URL 不变
-    // URL 不会被修改，只是选择不同的 WiFiClient
-    TEST_ASSERT_TRUE(url.startsWith("https://"));
-    TestLog::step("New logic: URL stays https://, uses WiFiClientSecure");
+    // HTTP URL 不会被修改
+    String httpUrl = "http://example.com/ntp";
+    String original = httpUrl;
+    if (httpUrl.startsWith("https://")) {
+        httpUrl = "http://" + httpUrl.substring(8);
+    }
+    TEST_ASSERT_EQUAL_STRING(original.c_str(), httpUrl.c_str());
+    TestLog::step("HTTP URL stays unchanged");
 
     TestLog::testEnd(true);
 }
@@ -597,7 +599,7 @@ void test_time_utils_group() {
     // NTP 双模式测试
     RUN_TEST(test_ntp_url_protocol_detection);
     RUN_TEST(test_ntp_url_device_send_time_concat);
-    RUN_TEST(test_ntp_https_not_downgraded);
+    RUN_TEST(test_ntp_https_downgraded);
     RUN_TEST(test_ntp_response_format_parsing);
 
     TestLog::groupEnd();

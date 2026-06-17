@@ -11,7 +11,6 @@
 #include <Ticker.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
-#include <WiFiClientSecure.h>
 #include <WiFi.h>
 
 // 定时器管理
@@ -54,10 +53,12 @@ bool TimeUtils::syncNTP(unsigned long timeout) {
 bool TimeUtils::syncNTPFromHTTPWithTimestamp(const String& url, long long& outTimestampMs, unsigned long timeout) {
     float deviceSendTime = (float)millis();
     String fullUrl = url;
-    
-    // 不再强制降级 HTTPS → HTTP，根据协议自动选择 WiFiClientSecure / WiFiClient
-    bool isHttps = fullUrl.startsWith("https://");
-    
+
+    // NTP 时间同步无需加密，强制降级 HTTPS → HTTP 避免 SSL 内存分配失败
+    if (fullUrl.startsWith("https://")) {
+        fullUrl = "http://" + fullUrl.substring(8);
+    }
+
     // 截断已有 deviceSendTime 参数，重新拼接当前时间戳
     int idx = fullUrl.indexOf("?deviceSendTime=");
     if (idx >= 0) {
@@ -69,19 +70,9 @@ bool TimeUtils::syncNTPFromHTTPWithTimestamp(const String& url, long long& outTi
     }
     fullUrl += String((unsigned long)deviceSendTime);
 
-    // HTTPS 使用 WiFiClientSecure（跳过证书验证，嵌入式设备通常不存储 CA 证书）
-    // HTTP  使用 WiFiClient
     HTTPClient http;
-    bool beginOk = false;
-
-    if (isHttps) {
-        static WiFiClientSecure secureClient;
-        secureClient.setInsecure();  // 跳过 CA 证书验证
-        beginOk = http.begin(secureClient, fullUrl);
-    } else {
-        static WiFiClient plainClient;
-        beginOk = http.begin(plainClient, fullUrl);
-    }
+    static WiFiClient plainClient;
+    bool beginOk = http.begin(plainClient, fullUrl);
 
     if (!beginOk) {
         return false;

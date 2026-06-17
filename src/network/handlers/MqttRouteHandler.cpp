@@ -130,6 +130,11 @@ static String fetchNtpTimeForMqttTest(const String& ntpServer, unsigned long& ou
     HTTPClient http;
     String url = ntpServer;
 
+    // NTP 时间同步无需加密，强制降级 HTTPS → HTTP 避免 SSL 内存分配失败
+    if (url.startsWith("https://")) {
+        url = "http://" + url.substring(8);
+    }
+
     // FastBee平台需要 deviceSendTime 参数
     outDeviceSendTime = millis();
 

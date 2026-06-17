@@ -101,6 +101,40 @@
       "profiles": ["lite", "standard", "full"]
     },
     {
+      "name": "mqtt-initialization",
+      "method": "GET",
+      "path": "/api/mqtt/status",
+      "profiles": ["lite", "standard", "full"],
+      "description": "验证 MQTT 客户端在启动时已初始化（非懒加载）"
+    },
+    {
+      "name": "mqtt-ntp-sync",
+      "type": "mqtt-ntp-sync",
+      "method": "POST",
+      "path": "/api/mqtt/ntp-sync",
+      "profiles": ["lite", "standard", "full"],
+      "description": "触发 NTP 时间同步（HTTPS 降级为 HTTP，避免 SSL 内存分配失败）"
+    },
+    {
+      "name": "batch-stress",
+      "type": "batch-stress",
+      "method": "POST",
+      "path": "/api/batch",
+      "jsonBody": true,
+      "profiles": ["full"],
+      "description": "并发压力测试：6 个 API 同时调用，验证 PSRAM 阈值修改后 HTTP 并发不崩溃",
+      "body": {
+        "requests": [
+          { "url": "/api/system/status" },
+          { "url": "/api/system/info" },
+          { "url": "/api/network/status" },
+          { "url": "/api/device/info" },
+          { "url": "/api/mqtt/status" },
+          { "url": "/api/device/time" }
+        ]
+      }
+    },
+    {
       "name": "protocol-config",
       "method": "GET",
       "path": "/api/protocol/config?compact=1&section=runtime",

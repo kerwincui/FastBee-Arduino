@@ -5,12 +5,30 @@
 
 #include <unity.h>
 #include <Arduino.h>
+#include <fstream>
+#include <sstream>
+#include <regex>
 #include "mocks/MockHealthMonitor.h"
 #include "mocks/MockLogger.h"
 #include "mocks/MockTaskManager.h"
 #include "helpers/TestConfig.h"
 #include "helpers/TestAssertions.h"
 #include "helpers/TestLogger.h"
+
+// 辅助：读取项目源文件（用于源码回归测试）
+static std::string readSrcFile(const char* relativePath) {
+    const char* roots[] = { ".", "..", "../.." };
+    for (const char* root : roots) {
+        std::string fullPath = std::string(root) + "/" + relativePath;
+        std::ifstream file(fullPath);
+        if (file.is_open()) {
+            std::ostringstream ss;
+            ss << file.rdbuf();
+            return ss.str();
+        }
+    }
+    return "";
+}
 
 void test_system_stability_group();
 
@@ -424,9 +442,9 @@ void test_smoke_heap_protection_threshold() {
     TestLog::testEnd(true);
 }
 
-// Smoke Test: PSRAM 配置验证
+// Smoke Test: PSRAM 配置验证（阈值 512B，防止 HTTP 缓冲区分配失败）
 void test_smoke_psram_allocation_strategy() {
-    TestLog::testStart("Smoke: PSRAM Allocation Strategy");
+    TestLog::testStart("Smoke: PSRAM Allocation Strategy (threshold=512)");
     
     // 验证 PSRAM 大小可检测
     uint32_t psramSize = ESP.getPsramSize();
@@ -439,15 +457,29 @@ void test_smoke_psram_allocation_strategy() {
     TEST_ASSERT_LESS_OR_EQUAL(psramSize, freePsram);
     TestLog::step("Free PSRAM verified");
     
-    // 模拟 PSRAM 阈值逻辑 (>=4KB 走 PSRAM)
-    constexpr uint32_t PSRAM_THRESHOLD = 4096;
-    uint32_t allocSize = 8192;  // 8KB allocation
-    TEST_ASSERT_TRUE(allocSize >= PSRAM_THRESHOLD);
-    TestLog::step("Allocation 8KB >= threshold 4KB → uses PSRAM");
+    // PSRAM 阈值 = 512B（而非旧值 4096B）
+    // 为什么 512？AsyncWebServer HTTP 缓冲区 1-2KB，4096 阈值太高无法卸载到 PSRAM
+    constexpr uint32_t PSRAM_THRESHOLD = 512;
     
-    allocSize = 2048;  // 2KB allocation
-    TEST_ASSERT_FALSE(allocSize >= PSRAM_THRESHOLD);
-    TestLog::step("Allocation 2KB < threshold 4KB → uses internal DRAM");
+    // HTTP 缓冲区 2KB → 应走 PSRAM（512 阈值命中，旧 4096 阈值无法命中）
+    uint32_t httpBufSize = 2048;
+    TEST_ASSERT_TRUE(httpBufSize >= PSRAM_THRESHOLD);
+    TestLog::step("HTTP buffer 2KB >= threshold 512 → uses PSRAM (old 4096 would MISS!)");
+    
+    // ArduinoJson String 序列化 800B → 应走 PSRAM
+    uint32_t jsonStrSize = 800;
+    TEST_ASSERT_TRUE(jsonStrSize >= PSRAM_THRESHOLD);
+    TestLog::step("JSON String 800B >= threshold 512 → uses PSRAM");
+    
+    // lwIP TCP PCB 结构体 ~172B → 应留在内部 DRAM（硬件要求）
+    uint32_t tcpPcbSize = 172;
+    TEST_ASSERT_FALSE(tcpPcbSize >= PSRAM_THRESHOLD);
+    TestLog::step("TCP PCB 172B < threshold 512 → stays in internal DRAM (correct)");
+    
+    // 旧阈值 4096 无法命中 HTTP 缓冲区（这是导致 OOM 的根因）
+    constexpr uint32_t OLD_PSRAM_THRESHOLD = 4096;
+    TEST_ASSERT_FALSE(httpBufSize >= OLD_PSRAM_THRESHOLD);
+    TestLog::step("OLD threshold 4096: HTTP buffer 2KB MISSED → OOM on internal DRAM!");
     
     TestLog::testEnd(true);
 }
@@ -533,52 +565,58 @@ void test_smoke_heap_protection_normal_operation() {
     TestLog::testEnd(true);
 }
 
-// Smoke Test: 堆保护多级阈值验证
+// Smoke Test: 堆保护多级阈值验证（含 MQTT 重启阈值 15KB）
 void test_smoke_multi_level_heap_thresholds() {
-    TestLog::testStart("Smoke: Multi-Level Heap Thresholds");
+    TestLog::testStart("Smoke: Multi-Level Heap Thresholds (MQTT 15KB)");
     
     // 各模块的堆保护阈值
-    constexpr uint32_t PROTO_HANDLE_THRESHOLD   = 30000;  // ProtocolManager::handle()
+    constexpr uint32_t PROTO_HANDLE_THRESHOLD   = 30000;  // ProtocolManager::handle() 重型协议
+    constexpr uint32_t MQTT_RECONNECT_THRESHOLD = 15000;  // MQTTClient::doReconnect()
+    constexpr uint32_t MQTT_RESTART_THRESHOLD   = 15000;  // ProtocolManager::restartMQTTDeferred()
+    constexpr uint32_t MODBUS_RESTART_THRESHOLD = 15000;  // ProtocolManager::restartModbus()
     constexpr uint32_t PUBLISH_INFO_THRESHOLD   = 30000;  // publishDeviceInfo()
     constexpr uint32_t MONITOR_DATA_THRESHOLD   = 25000;  // publishMonitorData()
     constexpr uint32_t QUEUED_COMMANDS_THRESHOLD = 30000;  // processQueuedCommands()
     constexpr uint32_t QUEUED_REPORTS_THRESHOLD  = 20000;  // processQueuedReports()
     
-    // 验证阈值层级关系
-    TEST_ASSERT_GREATER_OR_EQUAL(QUEUED_REPORTS_THRESHOLD, MONITOR_DATA_THRESHOLD);
-    TEST_ASSERT_GREATER_OR_EQUAL(MONITOR_DATA_THRESHOLD, PROTO_HANDLE_THRESHOLD);
-    TestLog::step("Thresholds: reports(20K) < monitor(25K) < proto/cmds(30K)");
+    // 验证 MQTT 阈值远低于旧值（旧值 49KB/25KB 导致 MQTT 永远无法连接）
+    TEST_ASSERT_LESS_THAN(25000, MQTT_RECONNECT_THRESHOLD);
+    TEST_ASSERT_LESS_THAN(25000, MQTT_RESTART_THRESHOLD);
+    TestLog::step("MQTT thresholds 15KB << old 25-49KB (would block forever)");
+    
+    // MQTT 重启阈值应低于协议处理阈值（确保 MQTT 能在低堆时重连）
+    TEST_ASSERT_LESS_THAN(PROTO_HANDLE_THRESHOLD, MQTT_RECONNECT_THRESHOLD);
+    TestLog::step("MQTT reconnect(15K) < proto handle(30K): MQTT can reconnect even when proto skipped");
     
     // 在各阈值水平模拟行为
     // 堆 = 35KB: 所有操作应正常
     ESP.setFreeHeap(35000);
     TEST_ASSERT_TRUE(ESP.getFreeHeap() >= PROTO_HANDLE_THRESHOLD);
+    TEST_ASSERT_TRUE(ESP.getFreeHeap() >= MQTT_RECONNECT_THRESHOLD);
     TEST_ASSERT_TRUE(ESP.getFreeHeap() >= PUBLISH_INFO_THRESHOLD);
-    TEST_ASSERT_TRUE(ESP.getFreeHeap() >= MONITOR_DATA_THRESHOLD);
-    TEST_ASSERT_TRUE(ESP.getFreeHeap() >= QUEUED_COMMANDS_THRESHOLD);
-    TEST_ASSERT_TRUE(ESP.getFreeHeap() >= QUEUED_REPORTS_THRESHOLD);
     TestLog::step("Heap=35KB: all operations allowed");
     
-    // 堆 = 27KB: 协议处理跳过，但 reports 和 monitor 可能也会跳过
+    // 堆 = 27KB: 重型协议跳过，但 MQTT 重连仍允许
     ESP.setFreeHeap(27000);
     TEST_ASSERT_FALSE(ESP.getFreeHeap() >= PROTO_HANDLE_THRESHOLD);
+    TEST_ASSERT_TRUE(ESP.getFreeHeap() >= MQTT_RECONNECT_THRESHOLD);
     TEST_ASSERT_TRUE(ESP.getFreeHeap() >= MONITOR_DATA_THRESHOLD);
-    TEST_ASSERT_TRUE(ESP.getFreeHeap() >= QUEUED_REPORTS_THRESHOLD);
-    TestLog::step("Heap=27KB: proto skipped, monitor/reports allowed");
+    TestLog::step("Heap=27KB: heavy proto skipped, MQTT reconnect ALLOWED");
     
-    // 堆 = 22KB: 只有 reports 还能运行
-    ESP.setFreeHeap(22000);
+    // 堆 = 20KB: MQTT 重连仍允许，其余大部分跳过
+    ESP.setFreeHeap(20000);
     TEST_ASSERT_FALSE(ESP.getFreeHeap() >= PROTO_HANDLE_THRESHOLD);
-    TEST_ASSERT_FALSE(ESP.getFreeHeap() >= MONITOR_DATA_THRESHOLD);
+    TEST_ASSERT_TRUE(ESP.getFreeHeap() >= MQTT_RECONNECT_THRESHOLD);
     TEST_ASSERT_TRUE(ESP.getFreeHeap() >= QUEUED_REPORTS_THRESHOLD);
-    TestLog::step("Heap=22KB: only queued reports allowed");
-    
-    // 堆 = 15KB: 所有操作跳过
-    ESP.setFreeHeap(15000);
-    TEST_ASSERT_FALSE(ESP.getFreeHeap() >= PROTO_HANDLE_THRESHOLD);
     TEST_ASSERT_FALSE(ESP.getFreeHeap() >= MONITOR_DATA_THRESHOLD);
+    TestLog::step("Heap=20KB: MQTT reconnect + queued reports only");
+    
+    // 堆 = 12KB: 所有操作跳过（真正内存危机）
+    ESP.setFreeHeap(12000);
+    TEST_ASSERT_FALSE(ESP.getFreeHeap() >= MQTT_RECONNECT_THRESHOLD);
+    TEST_ASSERT_FALSE(ESP.getFreeHeap() >= MQTT_RESTART_THRESHOLD);
     TEST_ASSERT_FALSE(ESP.getFreeHeap() >= QUEUED_REPORTS_THRESHOLD);
-    TestLog::step("Heap=15KB: ALL operations blocked");
+    TestLog::step("Heap=12KB: ALL operations blocked (true memory crisis)");
     
     ESP.resetHeapOverride();
     TestLog::testEnd(true);

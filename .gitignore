@@ -8,11 +8,7 @@
 .qoder
 .cursor
 .codex
-dist/*
-!dist/firmware/
-dist/firmware/*
-!dist/firmware/all-latest/
-!dist/firmware/all-latest/**
+dist/
 *.pyc
 compile_commands.json
 upload_log.txt
