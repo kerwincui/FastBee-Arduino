@@ -138,6 +138,7 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     bool nested = !mqttObj.isNull() && mqttObj.is<JsonObject>();
     JsonVariant cfg = nested ? mqttObj : doc.as<JsonVariant>();
 
+    config.scheme      = cfg["scheme"]      | "mqtt";
     config.server      = cfg["server"]      | "";
     config.port        = cfg["port"]        | 1883;
     config.username    = cfg["username"]    | "";
@@ -274,9 +275,9 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
         config.clientId = cfg["clientId"].as<String>();
     }
 
-    char buf[96];
-    snprintf(buf, sizeof(buf), "MQTT: Config loaded server=%s:%d client=%s",
-             config.server.c_str(), config.port, config.clientId.c_str());
+    char buf[128];
+    snprintf(buf, sizeof(buf), "MQTT: Config loaded scheme=%s server=%s:%d client=%s",
+             config.scheme.c_str(), config.server.c_str(), config.port, config.clientId.c_str());
     LOG_INFO(buf);
     return true;
 }
@@ -290,8 +291,14 @@ bool MQTTClient::begin(uint32_t taskStartupDelayMs) {
     if (_externalClient) {
         mqttClient.setClient(*_externalClient);
         LOG_INFO("MQTT: Using external transport client");
+    } else if (config.scheme == "mqtts") {
+        // MQTTS (TLS) 传输层：跳过证书验证（IoT 场景常用，平衡安全与资源）
+        wifiClientSecure.setInsecure();
+        mqttClient.setClient(wifiClientSecure);
+        LOG_INFO("MQTT: Using WiFiClientSecure (mqtts://) transport");
     } else {
         mqttClient.setClient(wifiClient);
+        LOG_INFO("MQTT: Using WiFiClient (mqtt://) transport");
     }
     mqttClient.setServer(config.server.c_str(), config.port);
     mqttClient.setBufferSize(1024);
@@ -344,6 +351,7 @@ void MQTTClient::disconnect() {
     }
     // 确保底层 TCP socket 完全关闭释放
     wifiClient.stop();
+    wifiClientSecure.stop();
     isConnected = false;
     reconnectInterval = 5000;
     consecutiveTimeouts = 0;
@@ -860,6 +868,7 @@ void MQTTClient::handle() {
             consecutiveTimeouts = 0;
             // 立即关闭底层 socket，避免后续 write() 对死 socket 阻塞 10s+
             wifiClient.stop();
+            wifiClientSecure.stop();
             LOG_WARNING("MQTT: Connection lost");
             Serial.println("[MQTT-DBG] Connection lost, socket stopped");
             _notifyStatusChange();  // 通知状态变化：连接断开
@@ -1375,9 +1384,10 @@ void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
 }
 
 bool MQTTClient::reconnect() {
-    // 显式关闭旧 TCP socket（仅对默认 WiFiClient）
+    // 显式关闭旧 TCP socket（仅对默认 WiFiClient/WiFiClientSecure）
     if (!_externalClient) {
         wifiClient.stop();
+        wifiClientSecure.stop();
     }
 
     LOG_INFO("MQTT: Connecting...");
@@ -1455,9 +1465,10 @@ bool MQTTClient::reconnect() {
         // 连接成功后发起 NTP 时间同步
         publishNtpSync();
     } else {
-        // 连接失败时立即关闭 socket（仅默认 WiFiClient）
+        // 连接失败时立即关闭 socket（仅默认 WiFiClient/WiFiClientSecure）
         if (!_externalClient) {
             wifiClient.stop();
+            wifiClientSecure.stop();
         }
         lastErrorCode = mqttClient.state();
         reconnectCount++;
@@ -1480,7 +1491,7 @@ bool MQTTClient::reconnect() {
 void MQTTClient::reconnectTaskEntry(void* param) {
     MQTTClient* client = (MQTTClient*)param;
     // 启动期延迟：让 Web 路由注册完成即可
-    // doReconnect() 内部有堆内存保护（<49KB 跳过），不会在内存不足时强行连接
+    // doReconnect() 内部有堆内存保护（<8KB 跳过），不会在内存不足时强行连接
     // 首次启动用 3000ms（等 Web 路由就绪），deferred 重启用 500ms（Web 已在运行）
     LOG_INFOF("[MQTT] Reconnect task armed, holding %lums for web boot",
               (unsigned long)client->_taskStartupDelayMs);
@@ -1520,13 +1531,15 @@ void MQTTClient::doReconnect() {
     }
 
     // 内存保护：堆内存严重不足时跳过重连，避免加剧内存压力
-    // 阈值说明：MQTT reconnect 需要 WiFiClient TCP 连接(~6KB) + PubSubClient 缓冲(1KB) + String 临时操作(~2KB)
-    // 总需求约 10KB。ESP32-S3 运行 Web 服务器 + MQTT 后台任务时，
-    // 空闲堆常在 16-20KB 波动，设 15KB 阈值保留足够裕度。
-    // PSRAM 设备的大块分配会自动 fallback 到外部内存，无需担心大块分配失败。
+    // 阈值说明：MQTT reconnect 需要 WiFiClient TCP 连接(~4KB) + PubSubClient 缓冲(1KB) + String 临时操作(~1KB)
+    // 总需求约 6KB。ESP32-S3 运行 Web 服务器 + MQTT 后台任务时，
+    // PSRAM 设备（heap_caps_malloc_extmem_enable(512)）将 ≥512B 分配卸载到 PSRAM，
+    // 但 WiFi/lwIP/FreeRTOS 栈必须在内部 DRAM，稳态堆常在 10-12KB。
+    // 设 8KB 阈值：高于实际 6KB 需求（1.3x 裕度），低于稳态 10KB（允许正常重连）。
+    // PSRAM 设备的大块分配会自动 fallback 到外部内存，largest block 阈值仅需 2KB。
     uint32_t reconnectFreeHeap = ESP.getFreeHeap();
     uint32_t reconnectLargestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
-    if (reconnectFreeHeap < 15000 || reconnectLargestBlock < 4096) {
+    if (reconnectFreeHeap < 8000 || reconnectLargestBlock < 2048) {
         ets_printf("[MQTT] doReconnect: heap too low (heap=%lu largest=%lu), skipping\n",
                      (unsigned long)reconnectFreeHeap, (unsigned long)reconnectLargestBlock);
         LOG_WARNINGF("[MQTT] Memory too low for reconnect, skipping (heap=%lu largest=%lu)",

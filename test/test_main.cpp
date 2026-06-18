@@ -14,6 +14,7 @@
 // 前置声明所有测试组
 extern void test_network_config_group();
 extern void test_multi_network_mode_group();
+extern void test_mdns_domain_group();
 extern void test_mqtt_protocol_group();
 extern void test_system_stability_group();
 extern void test_web_api_group();
@@ -86,6 +87,9 @@ void setup() {
 
     Serial.println("\n[TEST] Running Multi-Network Mode Tests...");
     test_multi_network_mode_group();
+
+    Serial.println("\n[TEST] Running mDNS Custom Domain Tests...");
+    test_mdns_domain_group();
 
     Serial.println("\n[TEST] Running MQTT Protocol Tests...");
     test_mqtt_protocol_group();

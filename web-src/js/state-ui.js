@@ -173,6 +173,9 @@
         };
 
         if (totalPages <= 1) {
+            appendButton('\u2039', 1, true, false);
+            appendButton('1', 1, true, true);
+            appendButton('\u203a', 1, true, false);
             appendSummary();
             container.appendChild(wrap);
             return wrap;

@@ -565,28 +565,28 @@ void test_smoke_heap_protection_normal_operation() {
     TestLog::testEnd(true);
 }
 
-// Smoke Test: 堆保护多级阈值验证（含 MQTT 重启阈值 15KB）
+// Smoke Test: 堆保护多级阈值验证（含 MQTT 重启阈值 8KB）
 void test_smoke_multi_level_heap_thresholds() {
-    TestLog::testStart("Smoke: Multi-Level Heap Thresholds (MQTT 15KB)");
+    TestLog::testStart("Smoke: Multi-Level Heap Thresholds (MQTT 8KB)");
     
     // 各模块的堆保护阈值
     constexpr uint32_t PROTO_HANDLE_THRESHOLD   = 30000;  // ProtocolManager::handle() 重型协议
-    constexpr uint32_t MQTT_RECONNECT_THRESHOLD = 15000;  // MQTTClient::doReconnect()
-    constexpr uint32_t MQTT_RESTART_THRESHOLD   = 15000;  // ProtocolManager::restartMQTTDeferred()
+    constexpr uint32_t MQTT_RECONNECT_THRESHOLD = 8000;   // MQTTClient::doReconnect()
+    constexpr uint32_t MQTT_RESTART_THRESHOLD   = 8000;   // ProtocolManager::restartMQTTDeferred()
     constexpr uint32_t MODBUS_RESTART_THRESHOLD = 15000;  // ProtocolManager::restartModbus()
     constexpr uint32_t PUBLISH_INFO_THRESHOLD   = 30000;  // publishDeviceInfo()
     constexpr uint32_t MONITOR_DATA_THRESHOLD   = 25000;  // publishMonitorData()
     constexpr uint32_t QUEUED_COMMANDS_THRESHOLD = 30000;  // processQueuedCommands()
     constexpr uint32_t QUEUED_REPORTS_THRESHOLD  = 20000;  // processQueuedReports()
     
-    // 验证 MQTT 阈值远低于旧值（旧值 49KB/25KB 导致 MQTT 永远无法连接）
-    TEST_ASSERT_LESS_THAN(25000, MQTT_RECONNECT_THRESHOLD);
-    TEST_ASSERT_LESS_THAN(25000, MQTT_RESTART_THRESHOLD);
-    TestLog::step("MQTT thresholds 15KB << old 25-49KB (would block forever)");
+    // 验证 MQTT 阈值远低于旧值（旧值 15KB/49KB 导致 MQTT 永远无法连接）
+    TEST_ASSERT_LESS_THAN(15000, MQTT_RECONNECT_THRESHOLD);
+    TEST_ASSERT_LESS_THAN(15000, MQTT_RESTART_THRESHOLD);
+    TestLog::step("MQTT thresholds 8KB << old 15-49KB (would block PSRAM devices)");
     
     // MQTT 重启阈值应低于协议处理阈值（确保 MQTT 能在低堆时重连）
     TEST_ASSERT_LESS_THAN(PROTO_HANDLE_THRESHOLD, MQTT_RECONNECT_THRESHOLD);
-    TestLog::step("MQTT reconnect(15K) < proto handle(30K): MQTT can reconnect even when proto skipped");
+    TestLog::step("MQTT reconnect(8K) < proto handle(30K): MQTT can reconnect even when proto skipped");
     
     // 在各阈值水平模拟行为
     // 堆 = 35KB: 所有操作应正常
@@ -603,20 +603,20 @@ void test_smoke_multi_level_heap_thresholds() {
     TEST_ASSERT_TRUE(ESP.getFreeHeap() >= MONITOR_DATA_THRESHOLD);
     TestLog::step("Heap=27KB: heavy proto skipped, MQTT reconnect ALLOWED");
     
-    // 堆 = 20KB: MQTT 重连仍允许，其余大部分跳过
-    ESP.setFreeHeap(20000);
+    // 堆 = 11KB: PSRAM 设备稳态，MQTT 重连仍允许
+    ESP.setFreeHeap(11000);
     TEST_ASSERT_FALSE(ESP.getFreeHeap() >= PROTO_HANDLE_THRESHOLD);
     TEST_ASSERT_TRUE(ESP.getFreeHeap() >= MQTT_RECONNECT_THRESHOLD);
-    TEST_ASSERT_TRUE(ESP.getFreeHeap() >= QUEUED_REPORTS_THRESHOLD);
-    TEST_ASSERT_FALSE(ESP.getFreeHeap() >= MONITOR_DATA_THRESHOLD);
-    TestLog::step("Heap=20KB: MQTT reconnect + queued reports only");
+    TEST_ASSERT_TRUE(ESP.getFreeHeap() >= MQTT_RESTART_THRESHOLD);
+    TEST_ASSERT_FALSE(ESP.getFreeHeap() >= QUEUED_REPORTS_THRESHOLD);
+    TestLog::step("Heap=11KB (PSRAM steady): MQTT reconnect ALLOWED (key fix!)");
     
-    // 堆 = 12KB: 所有操作跳过（真正内存危机）
-    ESP.setFreeHeap(12000);
+    // 堆 = 5KB: 真正内存危机，所有操作跳过
+    ESP.setFreeHeap(5000);
     TEST_ASSERT_FALSE(ESP.getFreeHeap() >= MQTT_RECONNECT_THRESHOLD);
     TEST_ASSERT_FALSE(ESP.getFreeHeap() >= MQTT_RESTART_THRESHOLD);
     TEST_ASSERT_FALSE(ESP.getFreeHeap() >= QUEUED_REPORTS_THRESHOLD);
-    TestLog::step("Heap=12KB: ALL operations blocked (true memory crisis)");
+    TestLog::step("Heap=5KB: ALL operations blocked (true memory crisis)");
     
     ESP.resetHeapOverride();
     TestLog::testEnd(true);
@@ -669,36 +669,37 @@ void test_source_code_mqtt_handle_before_heap_check() {
 }
 
 /**
- * @brief 源码回归：验证 MQTT doReconnect 和 restartMQTTDeferred 堆阈值为 15000
- * 防止回退到旧值 49152/25000（导致 MQTT 永远无法连接）
+ * @brief 源码回归：验证 MQTT doReconnect 和 restartMQTTDeferred 堆阈值为 8000
+ * 防止回退到旧值 49152/25000/15000（导致 PSRAM 设备 MQTT 永远无法连接）
  */
-void test_source_code_mqtt_thresholds_15kb() {
-    TestLog::testStart("Source: MQTT heap thresholds = 15000");
+void test_source_code_mqtt_thresholds_8kb() {
+    TestLog::testStart("Source: MQTT heap thresholds = 8000");
 
     // 检查 MQTTClient.cpp 中 doReconnect 阈值
     std::string mqttCpp = readSrcFile("src/protocols/MQTTClient.cpp");
     TEST_ASSERT_TRUE_MESSAGE(!mqttCpp.empty(),
         "Failed to read MQTTClient.cpp");
 
-    // doReconnect 堆检查应为 15000（而非旧值 49152）
-    TEST_ASSERT_TRUE_MESSAGE(mqttCpp.find("15000") != std::string::npos,
-        "MQTTClient::doReconnect() heap threshold must be 15000 (not old 49152)");
+    // doReconnect 堆检查应为 8000（而非旧值 49152 或 15000）
+    TEST_ASSERT_TRUE_MESSAGE(mqttCpp.find("8000") != std::string::npos,
+        "MQTTClient::doReconnect() heap threshold must be 8000 (not old 15000/49152)");
     TEST_ASSERT_TRUE_MESSAGE(mqttCpp.find("49152") == std::string::npos,
         "OLD threshold 49152 must NOT exist in MQTTClient.cpp (would block MQTT forever)");
-    TestLog::step("MQTTClient.cpp: threshold=15000, old 49152 absent");
+    // 验证 "reconnectFreeHeap < 15000" 不存在（避免回退到旧值）
+    std::regex oldDoReconnectRe("reconnectFreeHeap\\s*<\\s*15000");
+    TEST_ASSERT_TRUE_MESSAGE(!std::regex_search(mqttCpp, oldDoReconnectRe),
+        "OLD threshold 'reconnectFreeHeap < 15000' must NOT exist in MQTTClient.cpp");
+    TestLog::step("MQTTClient.cpp: threshold=8000, old 15000/49152 absent");
 
-    // 检查 ProtocolManager.cpp 中 restartMQTTDeferred 和 restartModbus 阈值
+    // 检查 ProtocolManager.cpp 中 restartMQTTDeferred 阈值
     std::string pmCpp = readSrcFile("src/protocols/ProtocolManager.cpp");
     TEST_ASSERT_TRUE_MESSAGE(!pmCpp.empty(),
         "Failed to read ProtocolManager.cpp");
 
-    // restartMQTTDeferred 和 restartModbus 堆检查应为 15000（而非旧值 25000）
-    // 注意：25000 可能在注释中出现，所以只检查不存在 25000 作为阈值代码
-    // 检查 “< 25000” 不存在（作为阈值判断）
-    std::regex oldThresholdRe("freeHeap\\s*<\\s*25000");
-    TEST_ASSERT_TRUE_MESSAGE(!std::regex_search(pmCpp, oldThresholdRe),
-        "OLD threshold 'freeHeap < 25000' must NOT exist in ProtocolManager.cpp "
-        "(restartMQTTDeferred/restartModbus must use 15000)");
+    // restartMQTTDeferred 堆检查应为 8000（而非旧值 25000/15000）
+    std::regex oldDeferredRe("freeHeap\\s*<\\s*25000");
+    TEST_ASSERT_TRUE_MESSAGE(!std::regex_search(pmCpp, oldDeferredRe),
+        "OLD threshold 'freeHeap < 25000' must NOT exist in ProtocolManager.cpp");
     TestLog::step("ProtocolManager.cpp: no 'freeHeap < 25000' (old threshold removed)");
 
     TestLog::testEnd(true);
@@ -918,7 +919,7 @@ void test_system_stability_group() {
     
     // Source Code Regression Tests: 防止关键修复被意外回退
     RUN_TEST(test_source_code_mqtt_handle_before_heap_check);
-    RUN_TEST(test_source_code_mqtt_thresholds_15kb);
+    RUN_TEST(test_source_code_mqtt_thresholds_8kb);
     RUN_TEST(test_source_code_ntp_https_downgrade);
     RUN_TEST(test_source_code_psram_threshold_512);
     

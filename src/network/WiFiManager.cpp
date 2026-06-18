@@ -69,12 +69,14 @@ bool WiFiManager::connectToWiFi() {
     WiFiMode_t currentMode = WiFi.getMode();
 
     if (wifiConfig.mode == NetworkMode::NETWORK_STA) {
-        // 纯 STA 模式：只在当前模式不包含 STA 时才设置
+        // STA 模式策略：
+        // - 如果当前是 AP+STA 双模式，保持不变（AP 回退正在使用）
+        // - 如果当前不包含 STA（如纯 AP 或 NULL），才切换到 STA
         if (!(currentMode & WIFI_STA)) {
             WiFi.mode(WIFI_STA);
         }
+        // AP+STA 模式保持原样：WiFi.begin() 在 AP+STA 下同样有效
     }
-    // 纯 AP 模式不需要在这里处理，由 startAPMode() 负责
 
     // 配置网络
     if (wifiConfig.ipConfigType == IPConfigType::STATIC) {

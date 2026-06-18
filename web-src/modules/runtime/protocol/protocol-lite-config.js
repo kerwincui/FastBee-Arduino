@@ -106,6 +106,7 @@
             var mqtt = config && config.mqtt;
             if (!mqtt) return;
             this._setCheckbox('mqtt-enabled', mqtt.enabled ?? true);
+            this._setValue('mqtt-scheme', mqtt.scheme || 'mqtt');
             this._setValue('mqtt-broker', mqtt.server || 'iot.fastbee.cn');
             this._setValue('mqtt-port', mqtt.port || 1883);
             this._setValue('mqtt-client-id', mqtt.clientId || '');

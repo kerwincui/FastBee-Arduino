@@ -294,6 +294,10 @@ bool FBNetworkManager::initialize() {
     // 2. NETWORK_AP (1): 直接启动热点
     bool success = false;
     
+    // 调试：打印实际加载的WiFi配置
+    Serial.printf("[NET] Config: mode=%d staSSID=[%s] networkType=%d\n",
+        (int)wifiConfig.mode, wifiConfig.staSSID.c_str(), (int)wifiConfig.networkType);
+    
     switch (wifiConfig.mode) {
         case NetworkMode::NETWORK_STA:
             LOG_INFO("NetworkManager: Starting in STA mode");
@@ -303,22 +307,25 @@ bool FBNetworkManager::initialize() {
                     LOG_INFO("NetworkManager: STA connected successfully");
                     LOGGER.infof(">>> STA IP: %s <<<", WiFi.localIP().toString().c_str());
                 } else {
-                    LOG_WARNING("NetworkManager: STA connection failed, falling back to AP mode");
-                    Serial.println("[NET] STA failed, switching to AP mode...");
-                    ets_printf("[NET] STA failed, switching to AP mode...\n");
+                    LOG_WARNING("NetworkManager: STA connection failed, falling back to AP+STA mode");
+                    Serial.println("[NET] STA failed, switching to AP+STA mode...");
+                    ets_printf("[NET] STA failed, switching to AP+STA mode...\n");
                     wifiManager->setModeTransitioning(false);
                     // Keep the configured mode as STA so auto-reconnect can recover
                     // after a temporary router/signal failure. AP is only a fallback
                     // management surface here.
                     success = startAPMode();
                     if (success) {
-                        Serial.printf("[NET] AP started: %s  IP: %s\n",
+                        // AP+STA 双模式：保持 AP 热点始终可用，STA 继续后台尝试重连
+                        WiFi.mode(WIFI_MODE_APSTA);
+                        delay(50);
+                        Serial.printf("[NET] AP+STA started: %s  IP: %s\n",
                             wifiConfig.apSSID.c_str(),
                             WiFi.softAPIP().toString().c_str());
-                        ets_printf("[NET] AP started: %s  IP: %s\n",
+                        ets_printf("[NET] AP+STA started: %s  IP: %s\n",
                             wifiConfig.apSSID.c_str(),
                             WiFi.softAPIP().toString().c_str());
-                        LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:[%s] <<<",
+                        LOGGER.infof(">>> AP+STA fallback: AP IP=%s  SSID=[%s] pwd=[%s] <<<",
                             WiFi.softAPIP().toString().c_str(),
                             wifiConfig.apSSID.c_str(),
                             wifiConfig.apPassword.c_str());
@@ -342,6 +349,23 @@ bool FBNetworkManager::initialize() {
                     WiFi.softAPIP().toString().c_str(),
                     wifiConfig.apSSID.c_str(),
                     wifiConfig.apPassword.c_str());
+                
+                // 如果有已配置的 STA SSID，启用 AP+STA 双模式：
+                // AP 保持在线供用户访问，STA 在后台尝试连接路由器。
+                // 一旦 STA 连上，设备可通过 fastbee.local 访问。
+                if (!wifiConfig.staSSID.isEmpty()) {
+                    WiFi.mode(WIFI_MODE_APSTA);
+                    delay(50);
+                    Serial.printf("[NET] AP+STA mode: AP=[%s] STA connecting to [%s]...\n",
+                        wifiConfig.apSSID.c_str(), wifiConfig.staSSID.c_str());
+                    // 同步配置并发起非阻塞 STA 连接
+                    wifiManager->setNetworkConfig(wifiConfig);
+                    WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
+                    connecting = true;
+                    connectingStartTime = millis();
+                    statusInfo.status = NetworkStatus::CONNECTING;
+                    LOG_INFO("NetworkManager: AP+STA: STA connecting to " + wifiConfig.staSSID);
+                }
             }
             break;
             
@@ -355,11 +379,15 @@ bool FBNetworkManager::initialize() {
     isInitialized = success;
     if (success) {
         LOG_INFO("NetworkManager: Initialized successfully");
+        // 初始化成功，清除连续失败计数器
+        preferences.putInt("init_fail_cnt", 0);
     } else {
         LOG_ERROR("NetworkManager: All network modes failed (check AP config)");
+        // === 最后保障：强制以出厂默认配置启动 AP ===
+        ensureLastResortAP();
     }
 
-    return success;
+    return isInitialized;
 }
 
 void FBNetworkManager::disconnect() {
@@ -520,6 +548,11 @@ void FBNetworkManager::update() {
                                  (unsigned long)(ETH_RECONNECT_INTERVAL_MS / 1000));
                 } else {
                     LOG_WARNING("NetworkManager: Ethernet auto-reconnect exhausted, will not retry");
+                    // 确保 AP 热点始终可用，作为用户回退配置的入口
+                    ensureLastResortAP();
+                    if (wifiConfig.enableMDNS) {
+                        dnsManager->startMDNS(wifiConfig.customDomain);
+                    }
                 }
             }
         }
@@ -590,7 +623,14 @@ void FBNetworkManager::update() {
         LOG_WARNING("NetworkManager: Connection timeout");
         connecting = false;
         
-        if (wifiConfig.autoFailover) {
+        // AP+STA 模式下，超时后不执行 failover，让自动重连继续尝试
+        WiFiMode_t currentMode = WiFi.getMode();
+        if ((currentMode & WIFI_AP) && (currentMode & WIFI_STA)) {
+            LOG_INFO("NetworkManager: AP+STA timeout, AP stays online, STA will retry");
+            Serial.println("[WiFi] AP+STA timeout - AP online, STA will retry");
+            statusInfo.status = NetworkStatus::DISCONNECTED;
+            lastReconnectAttempt = millis();  // 让自动重连下一个周期触发
+        } else if (wifiConfig.autoFailover) {
             LOG_INFO("NetworkManager: Attempting failover...");
             ipManager->performFailover();
         } else {
@@ -599,13 +639,16 @@ void FBNetworkManager::update() {
         }
     }
 
-    // 自动重连逻辑（仅在STA模式下）
+    // 自动重连逻辑（STA 模式 或 AP+STA 回退模式）
     if (autoReconnectEnabled && 
         !connecting &&
         !isConnected &&
         currentTime - lastReconnectAttempt >= wifiConfig.reconnectInterval) {
         
-        if (wifiConfig.mode == NetworkMode::NETWORK_STA) {
+        // STA 模式直接重连；AP+STA 模式下 AP 已在运行，STA 继续后台重试
+        WiFiMode_t currentMode = WiFi.getMode();
+        if (wifiConfig.mode == NetworkMode::NETWORK_STA ||
+            ((currentMode & WIFI_AP) && (currentMode & WIFI_STA))) {
             attemptReconnect();
         }
     }
@@ -1037,6 +1080,44 @@ void FBNetworkManager::stopAPMode() {
     }
 }
 
+bool FBNetworkManager::ensureLastResortAP() {
+    // 如果 AP 已经在运行，直接返回成功
+    if (WiFi.getMode() & WIFI_AP) {
+        IPAddress apIP = WiFi.softAPIP();
+        if (apIP != IPAddress(0, 0, 0, 0)) {
+            return true;
+        }
+    }
+
+    LOG_WARNING("NetworkManager: All network paths failed. Starting last-resort AP...");
+    WiFi.mode(WIFI_AP);
+    delay(100);
+    if (WiFi.softAP("fastbee-ap", "12345678", 6, 0, 4)) {
+        IPAddress apIP(192, 168, 4, 1);
+        WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+        statusInfo.apIPAddress = apIP.toString();
+        isInitialized = true;
+        LOGGER.infof(">>> LAST-RESORT AP: fastbee-ap  IP: %s <<<", apIP.toString().c_str());
+        LOG_INFO("NetworkManager: Last-resort AP started - connect to 'fastbee-ap' (pwd: 12345678)");
+        preferences.putInt("init_fail_cnt", 0);
+        return true;
+    }
+
+    // AP 也失败，记录失败次数并重启重试
+    LOG_ERROR("NetworkManager: CRITICAL - Last-resort AP failed, scheduling restart...");
+    int failCount = preferences.getInt("init_fail_cnt", 0) + 1;
+    preferences.putInt("init_fail_cnt", failCount);
+    if (failCount >= 3) {
+        LOG_ERROR("NetworkManager: 3 consecutive init failures, clearing network config to factory defaults...");
+        preferences.clear();
+        preferences.putInt("init_fail_cnt", 0);
+    }
+    ets_printf("[NET] CRITICAL: All network modes failed. Restarting in 5s...\n");
+    delay(5000);
+    ESP.restart();
+    return false;  // 永远不会执行到
+}
+
 bool FBNetworkManager::connectToWiFi() {
     if (wifiConfig.staSSID.isEmpty()) {
         LOG_INFO("NetworkManager: No STA SSID configured");
@@ -1272,23 +1353,31 @@ void FBNetworkManager::updateStatusInfo() {
 // IP 冲突检测和故障转移方法已移至 IPManager 类
 
 void FBNetworkManager::attemptReconnect() {
-    // 重连次数限制：达到最大次数后开启 AP 配置入口，但继续保留 STA 自动重试
+    // 重连次数限制：达到最大次数后开启 AP 配置入口，同时保留 STA 自动重试
     if (statusInfo.reconnectAttempts >= wifiConfig.maxReconnectAttempts) {
-        LOG_WARNING("NetworkManager: Max reconnect attempts reached; starting AP fallback and keeping STA retry enabled");
+        LOG_WARNING("NetworkManager: Max reconnect attempts reached; starting AP+STA fallback");
         
         // 断开当前STA连接
         wifiManager->disconnectWiFi();
         
         // 启动AP模式
         if (startAPMode()) {
-            LOGGER.infof(">>> AP IP: %s  Connect to [%s] pwd:[%s] <<<",
+            // 关键修复：切换到 AP+STA 双模式
+            // startAPMode() 内部设置了 WIFI_MODE_AP（纯AP），会杀死 STA 接口。
+            // 下一次 attemptReconnect() 调用 connectToWiFi() 时又会切回 WIFI_MODE_STA，
+            // 导致 AP 被销毁。设备在 AP-only 和 STA-only 之间震荡，用户几乎无法访问。
+            // 使用 WIFI_MODE_APSTA 让 AP 热点始终保持在线，STA 继续在后台尝试重连。
+            WiFi.mode(WIFI_MODE_APSTA);
+            delay(50);  // 等待模式切换生效
+            
+            LOGGER.infof(">>> AP+STA fallback: AP IP=%s  SSID=[%s] pwd=[%s] <<<",
                 WiFi.softAPIP().toString().c_str(),
                 wifiConfig.apSSID.c_str(),
                 wifiConfig.apPassword.c_str());
-            LOG_INFO("NetworkManager: AP fallback active, STA retry remains enabled");
+            Serial.println("[WiFi] AP+STA fallback active - AP stays online, STA retry continues");
+            LOG_INFO("NetworkManager: AP+STA fallback active, AP persistent, STA retry enabled");
             
-            // 重置重连计数器
-            statusInfo.reconnectAttempts = 0;
+            // 重置重连计数器，让 STA 在下一个周期继续尝试
             statusInfo.reconnectAttempts = 0;
             lastReconnectAttempt = millis();
         } else {
@@ -1525,10 +1614,7 @@ bool FBNetworkManager::restartNetwork() {
             } else {
                 LOG_WARNING("NetworkManager: Ethernet reconnect failed, falling back to AP");
                 ethernetAdapter.reset();
-                // 恢复 AP 热点作为用户重新配置的入口
-                if (!(WiFi.getMode() & WIFI_AP)) {
-                    startAPMode();
-                }
+                ensureLastResortAP();
                 dnsManager->startMDNS(wifiConfig.customDomain);
                 ok = false;
             }
@@ -1570,9 +1656,7 @@ bool FBNetworkManager::restartNetwork() {
             } else {
                 LOG_WARNING("NetworkManager: 4G reconnect failed, falling back to AP");
                 cellularAdapter.reset();
-                if (!(WiFi.getMode() & WIFI_AP)) {
-                    startAPMode();
-                }
+                ensureLastResortAP();
                 dnsManager->startMDNS(wifiConfig.customDomain);
                 ok = false;
             }
@@ -1590,9 +1674,7 @@ bool FBNetworkManager::restartNetwork() {
             } else {
                 LOG_WARNING("NetworkManager: LoRa reconnect failed, falling back to AP");
                 loraAdapter.reset();
-                if (!(WiFi.getMode() & WIFI_AP)) {
-                    startAPMode();
-                }
+                ensureLastResortAP();
                 dnsManager->startMDNS(wifiConfig.customDomain);
                 ok = false;
             }
@@ -1747,6 +1829,10 @@ bool FBNetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStor
         restartRequired = true;
     }
     
+    // 检查 mDNS/域名配置变更（不需要重启网络，但需立即重启 mDNS 服务）
+    bool mdnsConfigChanged = (newConfig.customDomain != wifiConfig.customDomain ||
+                              newConfig.enableMDNS != wifiConfig.enableMDNS);
+    
     wifiConfig = newConfig;
     
     // 保存配置到存储
@@ -1758,6 +1844,19 @@ bool FBNetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStor
             return false;
         }
         LOG_INFO("NetworkManager: Configuration saved successfully");
+    }
+    
+    // mDNS 配置变更：立即重启 mDNS 服务（不等待网络重启）
+    if (mdnsConfigChanged && !restartRequired && dnsManager) {
+        if (wifiConfig.enableMDNS) {
+            LOG_INFOF("NetworkManager: mDNS config changed, restarting mDNS with hostname '%s'",
+                      wifiConfig.customDomain.c_str());
+            dnsManager->setCustomDomain(wifiConfig.customDomain);
+            dnsManager->restartMDNS(wifiConfig.customDomain);
+        } else {
+            LOG_INFO("NetworkManager: mDNS disabled by config change, stopping mDNS");
+            dnsManager->setMDNSEnabled(false);
+        }
     }
     
     // 如果需要重启网络，异步执行（不影响保存结果）

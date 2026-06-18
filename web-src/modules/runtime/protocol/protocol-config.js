@@ -134,6 +134,7 @@
             if (tabId === 'mqtt' && config.mqtt) {
                 const mqtt = config.mqtt;
                 this._setCheckbox('mqtt-enabled', mqtt.enabled ?? true);
+                this._setValue('mqtt-scheme', mqtt.scheme || 'mqtt');
                 this._setValue('mqtt-broker', mqtt.server || 'iot.fastbee.cn');
                 this._setValue('mqtt-port', mqtt.port || 1883);
                 this._setValue('mqtt-client-id', mqtt.clientId || '');
@@ -191,6 +192,7 @@
             }
             if (isMqttForm) {
                 data.mqtt_enabled = document.getElementById('mqtt-enabled')?.checked ? 'true' : 'false';
+                data.mqtt_scheme = document.getElementById('mqtt-scheme')?.value || 'mqtt';
                 data.mqtt_server = document.getElementById('mqtt-broker')?.value || 'iot.fastbee.cn';
                 data.mqtt_port = document.getElementById('mqtt-port')?.value || '1883';
                 data.mqtt_clientId = document.getElementById('mqtt-client-id')?.value || '';

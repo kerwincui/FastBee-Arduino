@@ -9,12 +9,6 @@
         // ============ 事件绑定 ============
         setupRuleScriptEvents() {
             if (this._ruleScriptEventsBound) return;
-            const closeRuleScriptModal = document.getElementById('close-rule-script-modal');
-            if (closeRuleScriptModal) closeRuleScriptModal.addEventListener('click', () => this.closeRuleScriptModal());
-            const cancelRuleScriptBtn = document.getElementById('cancel-rule-script-btn');
-            if (cancelRuleScriptBtn) cancelRuleScriptBtn.addEventListener('click', () => this.closeRuleScriptModal());
-            const saveRuleScriptBtn = document.getElementById('save-rule-script-btn');
-            if (saveRuleScriptBtn) saveRuleScriptBtn.addEventListener('click', () => this.saveRuleScript());
             const tableBody = document.getElementById('rule-script-table-body');
             if (tableBody) {
                 tableBody.addEventListener('click', (event) => this._handleRuleScriptTableClick(event));
@@ -22,7 +16,25 @@
             // 刷新按钮
             const rsRefreshBtn = document.getElementById('rule-script-refresh-btn');
             if (rsRefreshBtn) rsRefreshBtn.addEventListener('click', () => this._refreshRuleScriptList());
+            // 注册模态窗事件绑定器
+            if (typeof this._registerModalBinder === 'function') {
+                this._registerModalBinder('rule-script', () => this._bindRuleScriptModalEvents());
+            }
             this._ruleScriptEventsBound = true;
+        },
+
+        /**
+         * 绑定模态窗内的事件（模态窗 DOM 已就绪后调用）
+         */
+        _bindRuleScriptModalEvents() {
+            if (this._ruleScriptModalBound) return;
+            const closeRuleScriptModal = document.getElementById('close-rule-script-modal');
+            if (closeRuleScriptModal) closeRuleScriptModal.addEventListener('click', () => this.closeRuleScriptModal());
+            const cancelRuleScriptBtn = document.getElementById('cancel-rule-script-btn');
+            if (cancelRuleScriptBtn) cancelRuleScriptBtn.addEventListener('click', () => this.closeRuleScriptModal());
+            const saveRuleScriptBtn = document.getElementById('save-rule-script-btn');
+            if (saveRuleScriptBtn) saveRuleScriptBtn.addEventListener('click', () => this.saveRuleScript());
+            this._ruleScriptModalBound = true;
         },
 
         _handleRuleScriptTableClick(event) {
@@ -96,6 +108,10 @@
             if (addBtn) {
                 addBtn.style.display = '';
             }
+            // Show/hide developer mode hint banner
+            this.applyDeveloperModeState();
+            var devHint = document.getElementById('rule-script-dev-mode-hint');
+            if (devHint) devHint.style.display = this.isDeveloperModeEnabled() ? 'none' : 'block';
 
             const tbody = document.getElementById('rule-script-table-body');
             if (!tbody) return;

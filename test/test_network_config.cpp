@@ -1258,6 +1258,412 @@ void test_ethernet_failure_fallback_multi_chip() {
     TestLog::testEnd(true);
 }
 
+// 测试以太网断连后自动调度重连
+void test_ethernet_auto_reconnect_scheduled_on_disconnect() {
+    TestLog::testStart("Ethernet Auto-Reconnect: Scheduled on Disconnect");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    mgr.initialize(true);
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::CONNECTED, (int)mgr.status);
+    TEST_ASSERT_FALSE(mgr.ethReconnectPending);
+    TEST_ASSERT_EQUAL(0, mgr.ethReconnectAttempts);
+    TestLog::step("Ethernet connected, no reconnect pending");
+
+    // 模拟断连
+    unsigned long t = 5000;
+    bool result = mgr.simulateEthReconnectUpdate(false, t);
+    TEST_ASSERT_FALSE(result);
+    TEST_ASSERT_TRUE(mgr.ethReconnectPending);
+    TEST_ASSERT_EQUAL((int)(t + MockMultiNetworkManager::ETH_RECONNECT_INTERVAL_MS), (int)mgr.ethReconnectTime);
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::DISCONNECTED, (int)mgr.status);
+    TestLog::step("Ethernet disconnected, reconnect scheduled");
+
+    TestLog::testEnd(true);
+}
+
+// 测试以太网重连达到最大次数后停止，且 AP 始终可用
+void test_ethernet_auto_reconnect_max_attempts() {
+    TestLog::testStart("Ethernet Auto-Reconnect: Max Attempts Exhausted");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    mgr.initialize(true);
+    // 混合模式下 AP 应该已启动
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TestLog::step("Hybrid mode: Ethernet + AP active");
+
+    unsigned long t = 5000;
+    // 模拟断连
+    mgr.simulateEthReconnectUpdate(false, t);
+    TEST_ASSERT_TRUE(mgr.ethReconnectPending);
+    TestLog::step("Initial disconnect, reconnect scheduled");
+
+    // 执行最大次数次重连尝试（每次都失败）
+    for (int i = 0; i < MockMultiNetworkManager::ETH_MAX_RECONNECT_ATTEMPTS; i++) {
+        t = mgr.ethReconnectTime; // 跳到重连时间
+        bool result = mgr.simulateEthReconnectUpdate(false, t);
+        TEST_ASSERT_FALSE(result);
+    }
+    TEST_ASSERT_EQUAL(MockMultiNetworkManager::ETH_MAX_RECONNECT_ATTEMPTS, mgr.ethReconnectAttempts);
+    TestLog::step("Max attempts reached");
+
+    // 不再调度新重连
+    TEST_ASSERT_FALSE(mgr.ethReconnectPending);
+    TestLog::step("No more reconnects scheduled after max attempts");
+
+    // AP 必须始终可用（重连耗尽后的回退入口）
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", mgr.apIPAddress.c_str());
+    TestLog::step("AP still running as fallback access point");
+
+    TestLog::testEnd(true);
+}
+
+// 测试以太网重连成功后重置计数器
+void test_ethernet_auto_reconnect_resets_on_success() {
+    TestLog::testStart("Ethernet Auto-Reconnect: Resets on Success");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    mgr.initialize(true);
+
+    unsigned long t = 5000;
+    // 模拟断连
+    mgr.simulateEthReconnectUpdate(false, t);
+    TEST_ASSERT_TRUE(mgr.ethReconnectPending);
+
+    // 执行 3 次失败重连
+    for (int i = 0; i < 3; i++) {
+        t = mgr.ethReconnectTime;
+        mgr.simulateEthReconnectUpdate(false, t);
+    }
+    TEST_ASSERT_EQUAL(3, mgr.ethReconnectAttempts);
+    TestLog::step("3 failed reconnect attempts");
+
+    // 第 4 次重连成功
+    t = mgr.ethReconnectTime;
+    bool result = mgr.simulateEthReconnectUpdate(true, t);
+    TEST_ASSERT_TRUE(result);
+    TEST_ASSERT_EQUAL(0, mgr.ethReconnectAttempts);
+    TEST_ASSERT_FALSE(mgr.ethReconnectPending);
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::CONNECTED, (int)mgr.status);
+    TestLog::step("Reconnect succeeded, counters reset");
+
+    TestLog::testEnd(true);
+}
+
+// 测试初始断连状态也能触发重连调度
+void test_ethernet_auto_reconnect_initial_disconnect() {
+    TestLog::testStart("Ethernet Auto-Reconnect: Initial Disconnect State");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    // 初始状态：DISCONNECTED（从未连接过）
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::DISCONNECTED, (int)mgr.status);
+    TEST_ASSERT_FALSE(mgr.ethReconnectPending);
+    TestLog::step("Initial state: disconnected, no reconnect pending");
+
+    // 第一次 update：wasConnected=false, adapterConnected=false
+    unsigned long t = 1000;
+    bool result = mgr.simulateEthReconnectUpdate(false, t);
+    TEST_ASSERT_FALSE(result);
+    TEST_ASSERT_TRUE(mgr.ethReconnectPending);
+    TEST_ASSERT_EQUAL(0, mgr.ethReconnectAttempts);
+    TestLog::step("Initial disconnect detected, reconnect scheduled despite wasConnected=false");
+
+    TestLog::testEnd(true);
+}
+
+// 回归测试：以太网重连耗尽后 AP 回退必须可用
+void test_regression_eth_reconnect_exhausted_ap_fallback() {
+    TestLog::testStart("Regression: Ethernet Reconnect Exhausted → AP Fallback");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    mgr.initialize(true);
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TestLog::step("Initial: Ethernet + AP hybrid mode");
+
+    // 模拟以太网断连
+    unsigned long t = 10000;
+    mgr.simulateEthReconnectUpdate(false, t);
+
+    // 人工关闭 AP（模拟异常场景：AP 意外停止）
+    mgr.apRunning = false;
+    TEST_ASSERT_FALSE(mgr.isAPRunning());
+    TestLog::step("Simulated: AP lost during reconnect attempts");
+
+    // 耗尽所有重连尝试
+    for (int i = 0; i < MockMultiNetworkManager::ETH_MAX_RECONNECT_ATTEMPTS; i++) {
+        t = mgr.ethReconnectTime;
+        mgr.simulateEthReconnectUpdate(false, t);
+    }
+    TEST_ASSERT_EQUAL(MockMultiNetworkManager::ETH_MAX_RECONNECT_ATTEMPTS, mgr.ethReconnectAttempts);
+    TestLog::step("All reconnect attempts exhausted");
+
+    // AP 必须被恢复（重连耗尽后的最后保障）
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", mgr.apIPAddress.c_str());
+    TestLog::step("AP restored as last-resort access point");
+
+    TestLog::testEnd(true);
+}
+
+// ========== 最后保障 AP 测试 ==========
+
+void test_last_resort_ap_starts_when_all_modes_fail() {
+    TestLog::testStart("Last-Resort AP: starts when all configured modes fail");
+
+    MockMultiNetworkManager mgr;
+    // 场景：以太网连接失败 + 正常 AP 回退也失败（模拟 AP 配置损坏）
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    // 初始化失败，回退到 AP，但正常 AP 也不可用
+    bool ok = mgr.initialize(false);
+    // 此时正常 AP 回退已启动（mock 中 startAP() 始终成功），所以模拟 AP 也丢失的场景
+    TEST_ASSERT_FALSE(ok);
+    TEST_ASSERT_TRUE(mgr.isAPRunning());  // mock 中 startAP() 仍会启动
+    TestLog::step("First: normal AP fallback succeeded");
+
+    // 模拟更极端场景：AP 运行但因配置损坏而 IP 异常
+    mgr.apRunning = false;
+    mgr.apIPAddress = "";
+    TEST_ASSERT_FALSE(mgr.isAPRunning());
+    TestLog::step("Simulated: AP lost (corrupted config)");
+
+    // 调用最后保障
+    bool lrOk = mgr.ensureLastResortAP();
+    TEST_ASSERT_TRUE(lrOk);
+    TEST_ASSERT_TRUE(mgr.lastResortAPStarted);
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", mgr.apIPAddress.c_str());
+    TestLog::step("Last-resort AP started successfully");
+
+    TestLog::testEnd(true);
+}
+
+void test_last_resort_ap_already_running_returns_true() {
+    TestLog::testStart("Last-Resort AP: returns true if AP already running");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    mgr.initialize(true);
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TestLog::step("Initial: AP running in hybrid mode");
+
+    // 调用 ensureLastResortAP()，AP 已运行，应直接返回 true
+    bool ok = mgr.ensureLastResortAP();
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_FALSE(mgr.lastResortAPStarted);  // 不应重新启动
+    TestLog::step("ensureLastResortAP returned true without restart");
+
+    TestLog::testEnd(true);
+}
+
+void test_last_resort_ap_factory_reset_after_3_failures() {
+    TestLog::testStart("Last-Resort AP: factory reset after 3 consecutive failures");
+
+    MockMultiNetworkManager mgr;
+    mgr.forceLastResortAPFail = true;
+
+    // 第1次失败
+    bool ok1 = mgr.ensureLastResortAP();
+    TEST_ASSERT_FALSE(ok1);
+    TEST_ASSERT_FALSE(mgr.factoryResetTriggered);
+    TEST_ASSERT_EQUAL(1, mgr.initFailCount);
+    TestLog::step("Failure #1 recorded");
+
+    // 第2次失败
+    bool ok2 = mgr.ensureLastResortAP();
+    TEST_ASSERT_FALSE(ok2);
+    TEST_ASSERT_FALSE(mgr.factoryResetTriggered);
+    TEST_ASSERT_EQUAL(2, mgr.initFailCount);
+    TestLog::step("Failure #2 recorded");
+
+    // 第3次失败 → 触发出厂重置
+    bool ok3 = mgr.ensureLastResortAP();
+    TEST_ASSERT_FALSE(ok3);
+    TEST_ASSERT_TRUE(mgr.factoryResetTriggered);
+    TEST_ASSERT_EQUAL(0, mgr.initFailCount);  // 重置后计数归零
+    TestLog::step("Factory reset triggered after 3 failures");
+
+    TestLog::testEnd(true);
+}
+
+void test_last_resort_ap_restart_network_ethernet_failure() {
+    TestLog::testStart("Last-Resort AP: restartNetwork Ethernet failure → AP guaranteed");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    bool ok = mgr.initialize(true);
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TestLog::step("Initial: Ethernet + AP hybrid mode");
+
+    // 模拟 AP 意外丢失 + 以太网重连失败
+    mgr.apRunning = false;
+    mgr.apIPAddress = "";
+    bool restartOk = mgr.restartNetwork(false);
+    TEST_ASSERT_FALSE(restartOk);
+    // restartNetwork 内部已调用 ensureLastResortAP（mock 中 startAP 成功）
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", mgr.apIPAddress.c_str());
+    TestLog::step("Last-resort AP ensures device accessible");
+
+    TestLog::testEnd(true);
+}
+
+// ========== 最后保障 AP 增强测试 ==========
+
+void test_last_resort_ap_wifi_sta_both_fail() {
+    TestLog::testStart("Last-Resort AP: WiFi STA + AP both fail → last-resort AP");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    mgr.forceAPFail = true;  // 正常 AP 启动失败（配置损坏）
+
+    bool ok = mgr.initialize(false);  // STA 也失败
+    TEST_ASSERT_FALSE(ok);
+    // initialize() 内部已自动调用 ensureLastResortAP()
+    // 注意：ensureLastResortAP 使用硬编码配置，不受 forceAPFail 影响
+    TEST_ASSERT_TRUE(mgr.lastResortAPStarted);  // 确认是 last-resort AP 启动的
+    TEST_ASSERT_TRUE(mgr.isAPRunning());        // AP 已在运行（last-resort 挽救）
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", mgr.apIPAddress.c_str());
+    TestLog::step("STA + normal AP failed, last-resort AP saved the device");
+
+    TestLog::testEnd(true);
+}
+
+void test_last_resort_ap_4g_restart_failure() {
+    TestLog::testStart("Last-Resort AP: restartNetwork 4G failure → AP guaranteed");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    mgr.forceAPFail = true;  // 正常 AP 启动失败
+
+    bool ok = mgr.restartNetwork(false);
+    TEST_ASSERT_FALSE(ok);
+    // restartNetwork 内部已调用 ensureLastResortAP
+    // ensureLastResortAP 使用硬编码配置，不受 forceAPFail 影响
+    TEST_ASSERT_TRUE(mgr.lastResortAPStarted);
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", mgr.apIPAddress.c_str());
+    TestLog::step("4G restart + normal AP failed, last-resort AP ensured access");
+
+    TestLog::testEnd(true);
+}
+
+void test_last_resort_ap_lora_restart_failure() {
+    TestLog::testStart("Last-Resort AP: restartNetwork LoRa failure → AP guaranteed");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_LORA;
+    mgr.forceAPFail = true;  // 正常 AP 启动失败
+
+    bool ok = mgr.restartNetwork(false);
+    TEST_ASSERT_FALSE(ok);
+    TestLog::step("LoRa restart + normal AP both failed");
+
+    // ensureLastResortAP 必须挽救局面
+    TEST_ASSERT_TRUE(mgr.lastResortAPStarted);
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", mgr.apIPAddress.c_str());
+    TestLog::step("Last-resort AP ensures LoRa device accessible");
+
+    TestLog::testEnd(true);
+}
+
+void test_last_resort_ap_success_clears_fail_count() {
+    TestLog::testStart("Last-Resort AP: successful init clears fail count");
+
+    MockMultiNetworkManager mgr;
+    // 第1次启动失败（4G + AP 都失败）
+    mgr.forceAPFail = true;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    bool ok1 = mgr.initialize(false);
+    TEST_ASSERT_FALSE(ok1);
+    // lastResortAPStarted 应为 true（ensureLastResortAP 成功挽救）
+    TEST_ASSERT_TRUE(mgr.lastResortAPStarted);
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TestLog::step("First boot: failed but last-resort AP saved");
+
+    // 第2次启动成功
+    mgr.forceAPFail = false;  // AP 恢复正常
+    mgr.lastResortAPStarted = false;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    bool ok2 = mgr.initialize(true);
+    TEST_ASSERT_TRUE(ok2);
+    TEST_ASSERT_EQUAL(0, mgr.initFailCount);  // 计数已清除
+    TEST_ASSERT_FALSE(mgr.factoryResetTriggered);  // 未触发出厂重置
+    TestLog::step("Second boot: success, fail count cleared");
+
+    TestLog::testEnd(true);
+}
+
+void test_last_resort_ap_eth_reconnect_exhausted() {
+    TestLog::testStart("Last-Resort AP: update() eth reconnect exhausted → ensureLastResortAP");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    mgr.initialize(true);
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TestLog::step("Initial: Ethernet + AP hybrid mode");
+
+    // 模拟以太网断连
+    unsigned long t = 10000;
+    mgr.simulateEthReconnectUpdate(false, t);
+
+    // 人为关闭 AP（模拟 AP 意外停止）
+    mgr.apRunning = false;
+    mgr.apIPAddress = "";
+    TestLog::step("Simulated: AP lost + Ethernet disconnected");
+
+    // 耗尽所有重连尝试
+    for (int i = 0; i < MockMultiNetworkManager::ETH_MAX_RECONNECT_ATTEMPTS; i++) {
+        t = mgr.ethReconnectTime;
+        mgr.simulateEthReconnectUpdate(false, t);
+    }
+
+    // 重连耗尽后 ensureLastResortAP 必须被调用
+    TEST_ASSERT_EQUAL(MockMultiNetworkManager::ETH_MAX_RECONNECT_ATTEMPTS, mgr.ethReconnectAttempts);
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", mgr.apIPAddress.c_str());
+    TestLog::step("Reconnect exhausted: ensureLastResortAP restored AP");
+
+    TestLog::testEnd(true);
+}
+
+void test_last_resort_ap_permanent_wifi_failure() {
+    TestLog::testStart("Last-Resort AP: permanent WiFi failure → factory reset path");
+
+    MockMultiNetworkManager mgr;
+    mgr.forceAPFail = true;           // 正常 AP 启动失败
+    mgr.forceLastResortAPFail = true;  // 最后保障 AP 也失败
+
+    // WiFi STA 连接失败，AP 失败，最后保障 AP 也失败
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    bool ok = mgr.initialize(false);
+    TEST_ASSERT_FALSE(ok);
+    TEST_ASSERT_FALSE(mgr.isAPRunning());
+    TEST_ASSERT_EQUAL(1, mgr.initFailCount);
+    TestLog::step("Complete network failure: initFailCount=1");
+
+    // 模拟第2、3次重启也都失败
+    mgr.initialize(false);
+    TEST_ASSERT_EQUAL(2, mgr.initFailCount);
+    TEST_ASSERT_FALSE(mgr.factoryResetTriggered);
+    TestLog::step("Second failure: initFailCount=2");
+
+    mgr.initialize(false);
+    TEST_ASSERT_TRUE(mgr.factoryResetTriggered);
+    TEST_ASSERT_EQUAL(0, mgr.initFailCount);
+    TestLog::step("Third failure: factory reset triggered");
+
+    TestLog::testEnd(true);
+}
+
 // Test group entry point
 void test_network_config_group() {
     TestLog::groupStart("Network Configuration Tests");
@@ -1274,6 +1680,389 @@ void test_network_config_group() {
     RUN_TEST(test_ip_configuration);
     RUN_TEST(test_network_reconnect);
     
+    TestLog::groupEnd();
+}
+
+// ========== mDNS 自定义域名功能测试 ==========
+
+/**
+ * @brief mDNS 启用时使用自定义域名作为 hostname
+ * 回归：修复前 customDomain 保存后不重启 mDNS，导致仍然只能通过 fastbee.local 访问
+ */
+void test_mdns_custom_domain_applied() {
+    TestLog::testStart("mDNS Custom Domain Applied");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    mgr.customDomain = "mydevice";
+    mgr.enableMDNS = true;
+
+    bool result = mgr.initialize(true);
+    TEST_ASSERT_TRUE(result);
+    TestLog::step("WiFi STA initialized with customDomain='mydevice'");
+
+    // mDNS 应已启动，且 hostname 为自定义域名
+    TEST_ASSERT_TRUE(mgr.mDNSStarted);
+    TEST_ASSERT_EQUAL_STRING("mydevice", mgr.getActualHostname().c_str());
+    TestLog::step("mDNS started with hostname 'mydevice'");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief mDNS 禁用时服务不启动
+ * 确保 enableMDNS=false 时 mDNS 服务不会运行
+ */
+void test_mdns_disabled_no_service() {
+    TestLog::testStart("mDNS Disabled: No Service");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    mgr.enableMDNS = false;
+    mgr.customDomain = "mydevice";
+
+    bool result = mgr.initialize(true);
+    TEST_ASSERT_TRUE(result);
+    TestLog::step("WiFi STA initialized with enableMDNS=false");
+
+    TEST_ASSERT_FALSE(mgr.mDNSStarted);
+    TEST_ASSERT_TRUE(mgr.getActualHostname().isEmpty());
+    TestLog::step("mDNS not started, no hostname registered");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief mDNS 运行时修改自定义域名，自动重启 mDNS 应用新域名
+ * 回归：对应 DNSManager::setCustomDomain() 修复
+ */
+void test_mdns_domain_change_triggers_restart() {
+    TestLog::testStart("mDNS Domain Change Triggers Restart");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    mgr.customDomain = "fastbee";
+    mgr.enableMDNS = true;
+
+    mgr.initialize(true);
+    TEST_ASSERT_TRUE(mgr.mDNSStarted);
+    TEST_ASSERT_EQUAL_STRING("fastbee", mgr.getActualHostname().c_str());
+    TestLog::step("Initial: mDNS running with hostname 'fastbee'");
+
+    // 用户修改自定义域名为 "myhome"
+    mgr.setCustomDomain("myhome");
+    TEST_ASSERT_EQUAL_STRING("myhome", mgr.customDomain.c_str());
+    TEST_ASSERT_EQUAL_STRING("myhome", mgr.getActualHostname().c_str());
+    TestLog::step("After setCustomDomain('myhome'): hostname updated");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief mDNS 配置变更通过 updateMDNSConfig 立即生效
+ * 回归：对应 NetworkManager::updateConfig() 中 mdnsConfigChanged 分支
+ */
+void test_update_mdns_config_applies_immediately() {
+    TestLog::testStart("updateMDNSConfig Applies Immediately");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    mgr.enableMDNS = true;
+    mgr.customDomain = "fastbee";
+
+    mgr.initialize(true);
+    TEST_ASSERT_TRUE(mgr.mDNSStarted);
+    TEST_ASSERT_EQUAL_STRING("fastbee", mgr.getActualHostname().c_str());
+    TestLog::step("Ethernet + mDNS started with 'fastbee'");
+
+    // 用户通过高级配置修改域名为 "smartgateway"
+    bool result = mgr.updateMDNSConfig("smartgateway", true);
+    TEST_ASSERT_TRUE(result);
+    TEST_ASSERT_TRUE(mgr.mDNSStarted);
+    TEST_ASSERT_EQUAL_STRING("smartgateway", mgr.customDomain.c_str());
+    TEST_ASSERT_EQUAL_STRING("smartgateway", mgr.getActualHostname().c_str());
+    TestLog::step("updateMDNSConfig: domain changed to 'smartgateway'");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 通过 updateMDNSConfig 禁用 mDNS 立即停止服务
+ */
+void test_update_mdns_disable_stops_service() {
+    TestLog::testStart("updateMDNSConfig Disable Stops Service");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    mgr.enableMDNS = true;
+    mgr.customDomain = "fastbee";
+
+    mgr.initialize(true);
+    TEST_ASSERT_TRUE(mgr.mDNSStarted);
+    TestLog::step("mDNS running");
+
+    // 用户禁用 mDNS
+    bool result = mgr.updateMDNSConfig("fastbee", false);
+    TEST_ASSERT_TRUE(result);
+    TEST_ASSERT_FALSE(mgr.mDNSStarted);
+    TEST_ASSERT_TRUE(mgr.getActualHostname().isEmpty());
+    TestLog::step("mDNS stopped after disable");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 以太网混合模式下自定义域名正确应用
+ */
+void test_ethernet_hybrid_mdns_custom_domain() {
+    TestLog::testStart("Ethernet Hybrid: Custom Domain Applied");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    mgr.enableMDNS = true;
+    mgr.customDomain = "mygateway";
+
+    bool result = mgr.initialize(true);
+    TEST_ASSERT_TRUE(result);
+    TestLog::step("Ethernet hybrid mode initialized");
+
+    TEST_ASSERT_TRUE(mgr.mDNSStarted);
+    TEST_ASSERT_EQUAL_STRING("mygateway", mgr.getActualHostname().c_str());
+    TestLog::step("mDNS hostname = 'mygateway'");
+
+    // AP 同时运行
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", mgr.apIPAddress.c_str());
+    TestLog::step("AP running at 192.168.4.1");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 4G 混合模式下自定义域名正确应用
+ */
+void test_4g_hybrid_mdns_custom_domain() {
+    TestLog::testStart("4G Hybrid: Custom Domain Applied");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    mgr.enableMDNS = true;
+    mgr.customDomain = "sensorhub";
+
+    bool result = mgr.initialize(true);
+    TEST_ASSERT_TRUE(result);
+    TestLog::step("4G hybrid mode initialized");
+
+    TEST_ASSERT_TRUE(mgr.mDNSStarted);
+    TEST_ASSERT_EQUAL_STRING("sensorhub", mgr.getActualHostname().c_str());
+    TestLog::step("mDNS hostname = 'sensorhub'");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 域名不变时 updateMDNSConfig 不触发多余操作
+ */
+void test_mdns_config_no_change_no_op() {
+    TestLog::testStart("mDNS Config No-Change: No-Op");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    mgr.customDomain = "fastbee";
+    mgr.enableMDNS = true;
+
+    mgr.initialize(true);
+    String hostnameBefore = mgr.getActualHostname();
+
+    // 相同配置再次调用
+    bool result = mgr.updateMDNSConfig("fastbee", true);
+    TEST_ASSERT_TRUE(result);
+    TEST_ASSERT_EQUAL_STRING(hostnameBefore.c_str(), mgr.getActualHostname().c_str());
+    TestLog::step("No change: hostname unchanged");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief mDNS 禁用后重新启用，hostname 正确恢复
+ * 回归：浏览器验证中切换 mDNS 禁用→启用后功能正常
+ */
+void test_mdns_reenable_after_disable() {
+    TestLog::testStart("mDNS Re-Enable After Disable");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    mgr.customDomain = "fastbee";
+    mgr.enableMDNS = true;
+
+    mgr.initialize(true);
+    TEST_ASSERT_TRUE(mgr.mDNSStarted);
+    TEST_ASSERT_EQUAL_STRING("fastbee", mgr.getActualHostname().c_str());
+    TestLog::step("mDNS running with 'fastbee'");
+
+    // 用户禁用 mDNS
+    bool result = mgr.updateMDNSConfig("fastbee", false);
+    TEST_ASSERT_TRUE(result);
+    TEST_ASSERT_FALSE(mgr.mDNSStarted);
+    TEST_ASSERT_TRUE(mgr.getActualHostname().isEmpty());
+    TestLog::step("mDNS disabled");
+
+    // 用户重新启用 mDNS
+    result = mgr.updateMDNSConfig("fastbee", true);
+    TEST_ASSERT_TRUE(result);
+    TEST_ASSERT_TRUE(mgr.mDNSStarted);
+    TEST_ASSERT_EQUAL_STRING("fastbee", mgr.getActualHostname().c_str());
+    TestLog::step("mDNS re-enabled, hostname restored to 'fastbee'");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief mDNS 快速切换开关不崩溃、状态一致
+ * 模拟用户在 UI 上快速反复切换 mDNS 开关
+ */
+void test_mdns_rapid_toggle_stability() {
+    TestLog::testStart("mDNS Rapid Toggle Stability");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    mgr.customDomain = "fastbee";
+    mgr.enableMDNS = true;
+
+    mgr.initialize(true);
+    TEST_ASSERT_TRUE(mgr.mDNSStarted);
+    TestLog::step("mDNS initially running");
+
+    // 快速切换 10 次
+    for (int i = 0; i < 10; i++) {
+        bool enable = (i % 2 == 0);  // 交替 true/false
+        mgr.updateMDNSConfig("fastbee", enable);
+    }
+
+    // 第10次 i=9 → enable=false → mDNS 应该是禁用状态
+    TEST_ASSERT_FALSE(mgr.mDNSStarted);
+    TEST_ASSERT_TRUE(mgr.getActualHostname().isEmpty());
+    TestLog::step("After 10 toggles (last=disable): mDNS stopped");
+
+    // 最终启用
+    mgr.updateMDNSConfig("fastbee", true);
+    TEST_ASSERT_TRUE(mgr.mDNSStarted);
+    TEST_ASSERT_EQUAL_STRING("fastbee", mgr.getActualHostname().c_str());
+    TestLog::step("Final enable: mDNS restored");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief updateMDNSConfig 同时修改域名和启用状态
+ * 验证同时变更两个参数时结果正确
+ */
+void test_mdns_config_simultaneous_change() {
+    TestLog::testStart("mDNS Config Simultaneous Change");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    mgr.enableMDNS = true;
+    mgr.customDomain = "fastbee";
+
+    mgr.initialize(true);
+    TEST_ASSERT_EQUAL_STRING("fastbee", mgr.getActualHostname().c_str());
+    TestLog::step("Ethernet mDNS: 'fastbee'");
+
+    // 同时修改域名和禁用
+    bool result = mgr.updateMDNSConfig("newdevice", false);
+    TEST_ASSERT_TRUE(result);
+    TEST_ASSERT_FALSE(mgr.mDNSStarted);
+    TEST_ASSERT_EQUAL_STRING("newdevice", mgr.customDomain.c_str());
+    TEST_ASSERT_TRUE(mgr.getActualHostname().isEmpty());
+    TestLog::step("Simultaneous domain+disable: domain saved, mDNS stopped");
+
+    // 同时修改域名和启用
+    result = mgr.updateMDNSConfig("smartgateway", true);
+    TEST_ASSERT_TRUE(result);
+    TEST_ASSERT_TRUE(mgr.mDNSStarted);
+    TEST_ASSERT_EQUAL_STRING("smartgateway", mgr.getActualHostname().c_str());
+    TestLog::step("Simultaneous domain+enable: new hostname applied");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 4G 模式下域名配置不影响实际 hostname
+ * 对应 UI 行为：4G 模式隐藏域名配置，用户无法修改域名
+ * 验证：即使后端存储了 customDomain，在 4G 混合模式重启后
+ *       mDNS 仍使用存储的域名（因为 UI 不允许修改）
+ */
+void test_4g_mode_domain_unchanged_after_restart() {
+    TestLog::testStart("4G Mode: Domain Unchanged After Restart");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    mgr.enableMDNS = true;
+    mgr.customDomain = "fastbee";
+
+    mgr.initialize(true);
+    TEST_ASSERT_TRUE(mgr.mDNSStarted);
+    TEST_ASSERT_EQUAL_STRING("fastbee", mgr.getActualHostname().c_str());
+    TestLog::step("4G mode: mDNS with 'fastbee'");
+
+    // 模拟重启网络（4G 模式下 UI 不允许修改域名，所以 customDomain 保持不变）
+    bool result = mgr.restartNetwork(true);
+    TEST_ASSERT_TRUE(result);
+    TEST_ASSERT_EQUAL_STRING("fastbee", mgr.customDomain.c_str());
+    TEST_ASSERT_EQUAL_STRING("fastbee", mgr.getActualHostname().c_str());
+    TestLog::step("After restart: domain unchanged (UI blocked modification)");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief LoRa 模式下不启动 mDNS 和 AP
+ * LoRa 模式无 IP 网络，mDNS 不适用
+ */
+void test_lora_mode_no_mdns() {
+    TestLog::testStart("LoRa Mode: No mDNS Service");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_LORA;
+    mgr.enableMDNS = true;
+    mgr.customDomain = "fastbee";
+
+    bool result = mgr.initialize(true);
+    TEST_ASSERT_TRUE(result);
+    TEST_ASSERT_FALSE(mgr.mDNSStarted);
+    TEST_ASSERT_TRUE(mgr.getActualHostname().isEmpty());
+    TEST_ASSERT_FALSE(mgr.isAPRunning());
+    TestLog::step("LoRa mode: no mDNS, no AP (IP-less network)");
+
+    TestLog::testEnd(true);
+}
+
+// mDNS 自定义域名测试组
+void test_mdns_domain_group() {
+    TestLog::groupStart("mDNS Custom Domain Tests");
+
+    RUN_TEST(test_mdns_custom_domain_applied);
+    RUN_TEST(test_mdns_disabled_no_service);
+    RUN_TEST(test_mdns_domain_change_triggers_restart);
+    RUN_TEST(test_update_mdns_config_applies_immediately);
+    RUN_TEST(test_update_mdns_disable_stops_service);
+    RUN_TEST(test_ethernet_hybrid_mdns_custom_domain);
+    RUN_TEST(test_4g_hybrid_mdns_custom_domain);
+    RUN_TEST(test_mdns_config_no_change_no_op);
+    RUN_TEST(test_mdns_reenable_after_disable);
+    RUN_TEST(test_mdns_rapid_toggle_stability);
+    RUN_TEST(test_mdns_config_simultaneous_change);
+    RUN_TEST(test_4g_mode_domain_unchanged_after_restart);
+    RUN_TEST(test_lora_mode_no_mdns);
+
     TestLog::groupEnd();
 }
 
@@ -1316,6 +2105,25 @@ void test_multi_network_mode_group() {
     RUN_TEST(test_wifi_ap_sta_hybrid_stability);
     RUN_TEST(test_4g_failure_fallback_multi_chip);
     RUN_TEST(test_ethernet_failure_fallback_multi_chip);
+
+    // 以太网自动重连回归测试
+    RUN_TEST(test_ethernet_auto_reconnect_scheduled_on_disconnect);
+    RUN_TEST(test_ethernet_auto_reconnect_max_attempts);
+    RUN_TEST(test_ethernet_auto_reconnect_resets_on_success);
+    RUN_TEST(test_ethernet_auto_reconnect_initial_disconnect);
+    RUN_TEST(test_regression_eth_reconnect_exhausted_ap_fallback);
+
+    // 最后保障 AP 回归测试
+    RUN_TEST(test_last_resort_ap_starts_when_all_modes_fail);
+    RUN_TEST(test_last_resort_ap_already_running_returns_true);
+    RUN_TEST(test_last_resort_ap_factory_reset_after_3_failures);
+    RUN_TEST(test_last_resort_ap_restart_network_ethernet_failure);
+    RUN_TEST(test_last_resort_ap_wifi_sta_both_fail);
+    RUN_TEST(test_last_resort_ap_4g_restart_failure);
+    RUN_TEST(test_last_resort_ap_lora_restart_failure);
+    RUN_TEST(test_last_resort_ap_success_clears_fail_count);
+    RUN_TEST(test_last_resort_ap_eth_reconnect_exhausted);
+    RUN_TEST(test_last_resort_ap_permanent_wifi_failure);
 
     TestLog::groupEnd();
 }

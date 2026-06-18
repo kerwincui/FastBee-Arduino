@@ -68,6 +68,20 @@
             boundAny = bindOnce(pidGrid, 'click', '__fbProtocolPidClick', (event) => this._handlePidGridClick(event)) || boundAny;
             var coilGrid = document.getElementById('coil-status-grid');
             boundAny = bindOnce(coilGrid, 'click', '__fbProtocolCoilClick', (event) => this._handleCoilGridClick(event)) || boundAny;
+            // MQTT 协议切换：scheme 下拉框变更时自动更新端口默认值
+            var mqttScheme = document.getElementById('mqtt-scheme');
+            boundAny = bindOnce(mqttScheme, 'change', '__fbMqttSchemeChange', (event) => {
+                var portEl = document.getElementById('mqtt-port');
+                if (!portEl) return;
+                var newScheme = event.target.value;
+                // 仅在端口为默认值时自动切换，避免覆盖用户自定义端口
+                var currentPort = parseInt(portEl.value, 10);
+                if (newScheme === 'mqtts' && (currentPort === 1883 || !portEl.value)) {
+                    portEl.value = 8883;
+                } else if (newScheme === 'mqtt' && (currentPort === 8883 || !portEl.value)) {
+                    portEl.value = 1883;
+                }
+            }) || boundAny;
             if (boundAny) this._protocolEventsBound = true;
         },
 

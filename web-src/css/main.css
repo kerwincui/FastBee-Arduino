@@ -160,7 +160,7 @@ a:hover { text-decoration: underline; }
 .dropdown-divider { height: 1px; background: var(--border); margin: var(--space-1) 0; }
 
 /* Content Area */
-.content { flex: 1; padding: var(--space-6); overflow-y: auto; background: var(--bg-content); width: 100%; position: relative; z-index: 1; max-height: calc(100vh - 60px - 40px); }
+.content { flex: 1; padding: var(--space-6); overflow-y: auto; overflow-x: hidden; background: var(--bg-content); width: 100%; min-width: 0; box-sizing: border-box; position: relative; z-index: 1; max-height: calc(100vh - 60px - 40px); }
 
 /* Page Container */
 .page { display: none; }
@@ -518,7 +518,7 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
    10. Tabs System
    ============================================ */
 .config-tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: var(--space-5); flex-wrap: wrap; }
-.config-tab { padding: var(--space-3) var(--space-5); cursor: pointer; border: 1px solid transparent; border-bottom: none; border-radius: var(--rounded) var(--rounded) 0 0; background: var(--slate-50); margin-right: 2px; transition: all var(--transition); font-weight: 500; color: var(--text-secondary); }
+.config-tab { padding: var(--space-2) var(--space-4); cursor: pointer; border: 1px solid transparent; border-bottom: none; border-radius: var(--rounded) var(--rounded) 0 0; background: var(--slate-50); margin-right: 2px; transition: all var(--transition); font-weight: 500; font-size: 13px; color: var(--text-secondary); }
 .config-tab:hover { background: var(--slate-100); color: var(--primary); }
 .config-tab.active { background: var(--bg-card); color: var(--primary); border-color: var(--border); border-bottom-color: var(--bg-card); }
 .config-content { display: none; }
@@ -1381,7 +1381,7 @@ body.fullscreen-page .fullscreen-toolbar-actions { display: flex; align-items: c
 [data-theme="dark"] .page .fb-card-header { background: color-mix(in srgb, var(--glass-bg) 84%, #0f172a 16%) !important; }
 [data-theme="dark"] .file-tree-item:hover { background: color-mix(in srgb, var(--primary) 18%, transparent); }
 [data-theme="dark"] .file-tree-item.is-active { background: color-mix(in srgb, var(--primary) 26%, transparent); }
-.config-tab { border-color: transparent; min-height: 38px; }
+.config-tab { border-color: transparent; min-height: 32px; }
 small, small[style] { color: var(--text-muted) !important; }
 .page .fb-table { background: transparent; }
 .page .fb-table td, .page .fb-table th { border-color: var(--border) !important; }

@@ -165,10 +165,12 @@ function Invoke-PioCmd {
     param([string[]]$PioArgs)
 
     # 强制 PlatformIO (Python) 使用 UTF-8 编码，防止中文 Windows (GBK) 下
-    # 进度条等 Unicode 字符输出触发 UnicodeEncodeError
+    # 进度条等 Unicode 字符输出触发 UnicodeEncodeError 或显示乱码
     $prevEnc = $env:PYTHONIOENCODING
     $prevUtf8 = $env:PYTHONUTF8
     $prevChcp = $null
+    $prevConsoleEnc = $null
+    $prevOutputEnc = $null
     $env:PYTHONIOENCODING = 'utf-8'
     $env:PYTHONUTF8 = '1'
     # 切换控制台代码页到 UTF-8 (65001)，确保 pio 进度条 Unicode 字符
@@ -177,6 +179,12 @@ function Invoke-PioCmd {
         $chcpOut = chcp 2>$null
         if ($chcpOut -match '\d+') { $prevChcp = $Matches[0] }
         chcp 65001 | Out-Null
+        # 同步 PowerShell 自身的输出编码，避免 Write-Host 管道将 UTF-8
+        # 字节流按 GBK 解码导致乱码（鈻堚枅 ← █）
+        $prevConsoleEnc = [Console]::OutputEncoding
+        $prevOutputEnc = $OutputEncoding
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $OutputEncoding = [System.Text.Encoding]::UTF8
     } catch { }
     try {
         Write-Host "pio $($PioArgs -join ' ')" -ForegroundColor Cyan
@@ -199,6 +207,8 @@ function Invoke-PioCmd {
     }
     finally {
         if ($prevChcp) { try { chcp $prevChcp | Out-Null } catch {} }
+        if ($prevConsoleEnc) { try { [Console]::OutputEncoding = $prevConsoleEnc } catch {} }
+        if ($prevOutputEnc) { try { $OutputEncoding = $prevOutputEnc } catch {} }
         if ($null -ne $prevEnc) { $env:PYTHONIOENCODING = $prevEnc } else { Remove-Item Env:\PYTHONIOENCODING -ErrorAction SilentlyContinue }
         if ($null -ne $prevUtf8) { $env:PYTHONUTF8 = $prevUtf8 } else { Remove-Item Env:\PYTHONUTF8 -ErrorAction SilentlyContinue }
     }

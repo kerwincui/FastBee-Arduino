@@ -100,6 +100,7 @@ void sendCompactMqttConfigFromFile(AsyncWebServerRequest* request) {
     JsonObject mqttIn = source["mqtt"].as<JsonObject>();
 
     mqttOut["enabled"] = mqttIn["enabled"] | true;
+    mqttOut["scheme"] = mqttIn["scheme"] | "mqtt";
     mqttOut["server"] = mqttIn["server"] | "iot.fastbee.cn";
     mqttOut["port"] = mqttIn["port"] | 1883;
     mqttOut["clientId"] = mqttIn["clientId"] | "";
@@ -518,6 +519,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                            hasProtocolParam(request, "modbusRtu_master_tasks") ||
                            hasProtocolParam(request, "modbusRtu_master_devices");
     bool updateMqtt = hasProtocolParam(request, "mqtt_enabled") ||
+                      hasProtocolParam(request, "mqtt_scheme") ||
                       hasProtocolParam(request, "mqtt_server") ||
                       hasProtocolParam(request, "mqtt_publishTopics") ||
                       hasProtocolParam(request, "mqtt_subscribeTopics");
@@ -665,6 +667,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     // MQTT
     if (updateMqtt) {
     doc["mqtt"]["enabled"] = GP("mqtt_enabled", "true") == "true";
+    doc["mqtt"]["scheme"] = GP("mqtt_scheme", "mqtt");
     doc["mqtt"]["server"] = GP("mqtt_server", "iot.fastbee.cn");
     doc["mqtt"]["port"] = GPI("mqtt_port", "1883");
 

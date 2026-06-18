@@ -54,6 +54,35 @@ var AppState = typeof AppState !== 'undefined' ? AppState : {
                 confirmPwd._modalBound = true;
                 confirmPwd.addEventListener('click', function() { self.changePassword(); });
             }
+            // 通知各模块重新绑定模态窗内的事件（模态窗 DOM 此时已就绪）
+            self._rebindAllModalEvents();
+            self._modalsLoaded = true;
+        });
+    },
+
+    /**
+     * 模态窗 DOM 加载完成后，通知所有已注册模块重新绑定模态内事件。
+     * 各模块通过 _registerModalBinder() 注册绑定函数。
+     */
+    _modalBinders: [],
+    _modalsLoaded: false,
+    _registerModalBinder(name, fn) {
+        if (typeof fn !== 'function') return;
+        this._modalBinders.push({ name: name, fn: fn });
+        // If modals DOM already loaded, bind immediately to avoid race condition
+        // (each binder has its own guard to prevent duplicate binding)
+        if (this._modalsLoaded) {
+            try { fn.call(this); } catch (e) {
+                console.warn('[ModalBind] late-bind ' + name + ' failed:', e);
+            }
+        }
+    },
+    _rebindAllModalEvents() {
+        var self = this;
+        this._modalBinders.forEach(function(binder) {
+            try { binder.fn.call(self); } catch (e) {
+                console.warn('[ModalBind] ' + binder.name + ' failed:', e);
+            }
         });
     },
 

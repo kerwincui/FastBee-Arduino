@@ -162,7 +162,14 @@ bool DNSManager::isMDNSStarted() const {
 }
 
 void DNSManager::setCustomDomain(const String& domain) {
-    customDomain = domain;
+    if (customDomain != domain) {
+        customDomain = domain;
+        // 如果 mDNS 正在运行且 hostname 变化，立即重启以应用新域名
+        if (mdnsStarted && actualHostname != domain) {
+            LOG_INFOF("DNSManager: Custom domain changed to '%s', restarting mDNS", domain.c_str());
+            restartMDNS(domain);
+        }
+    }
 }
 
 String DNSManager::getCustomDomain() const {

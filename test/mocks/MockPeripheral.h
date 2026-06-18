@@ -38,6 +38,9 @@ enum class PeripheralType {
     // 模拟信号 (26-30)
     ADC = 26,
     DAC = 27,
+    // 调试接口 (31-35)
+    JTAG = 31,
+    SWD = 32,
     // 专用外设
     LCD = 36,
     SENSOR = 38,
@@ -59,6 +62,35 @@ enum class PeripheralType {
     DS18B20_SENSOR = 44,
     CUSTOM = 99
 };
+
+// 外设状态枚举 — 与生产代码 PeripheralTypes.h 保持一致
+enum class PeripheralStatus {
+    PERIPHERAL_DISABLED = 0,
+    PERIPHERAL_ENABLED,
+    PERIPHERAL_INITIALIZED,
+    PERIPHERAL_RUNNING,
+    PERIPHERAL_ERROR
+};
+
+// 外设类别 — 与生产代码 PeripheralTypes.h 保持一致
+enum class PeripheralCategory {
+    CATEGORY_COMMUNICATION = 1,
+    CATEGORY_GPIO,
+    CATEGORY_ANALOG_SIGNAL,
+    CATEGORY_DEBUG,
+    CATEGORY_SPECIAL
+};
+
+inline PeripheralCategory getPeripheralCategory(PeripheralType type) {
+    int typeValue = static_cast<int>(type);
+    if (typeValue >= 1 && typeValue <= 10) return PeripheralCategory::CATEGORY_COMMUNICATION;
+    if (typeValue >= 11 && typeValue <= 25) return PeripheralCategory::CATEGORY_GPIO;
+    if (typeValue >= 26 && typeValue <= 30) return PeripheralCategory::CATEGORY_ANALOG_SIGNAL;
+    if (typeValue >= 31 && typeValue <= 35) return PeripheralCategory::CATEGORY_DEBUG;
+    if (typeValue >= 36 && typeValue <= 55) return PeripheralCategory::CATEGORY_SPECIAL;
+    if (typeValue == 60) return PeripheralCategory::CATEGORY_SPECIAL;
+    return PeripheralCategory::CATEGORY_GPIO;
+}
 
 // GPIO状态枚举
 enum class GPIOState {
@@ -111,6 +143,34 @@ struct PeripheralConfig {
     int pin;
     bool enabled;
     std::map<String, String> properties;
+
+    // UART参数
+    struct { uint32_t baudRate = 115200; uint8_t dataBits = 8; uint8_t stopBits = 1; uint8_t parity = 0; } uart;
+    // I2C参数
+    struct { uint32_t frequency = 100000; uint8_t address = 0; bool isMaster = true; } i2c;
+    // SPI参数
+    struct { uint32_t frequency = 1000000; uint8_t mode = 0; bool msbFirst = true; } spi;
+    // GPIO参数
+    struct { uint8_t initialState = 0; uint8_t pwmChannel = 0; uint32_t pwmFrequency = 1000; uint8_t pwmResolution = 8; uint16_t defaultDuty = 0; } gpio;
+    // ADC参数
+    struct { uint8_t attenuation = 0; uint8_t resolution = 12; uint16_t sampleRate = 1000; } adc;
+    // DAC参数
+    struct { uint8_t channel = 1; uint8_t defaultValue = 0; } dac;
+    // LCD 参数
+    struct { uint8_t width = 128; uint8_t height = 64; uint8_t interface = 2; } lcd;
+    // 数码管参数
+    struct { uint8_t brightness = 2; } segment;
+    // NeoPixel 参数
+    struct { uint16_t count = 1; uint8_t brightness = 64; } neopixel;
+    // RF 参数
+    struct { uint8_t mode = 0; uint16_t pulseWidth = 350; uint8_t repeat = 8; uint8_t bitLength = 24; bool activeHigh = true; } rf;
+    // Radar 参数
+    struct { uint8_t mode = 0; bool activeHigh = true; uint16_t debounceMs = 50; uint16_t holdMs = 2000; } radar;
+    // 步进电机参数
+    struct { uint16_t stepsPerRevolution = 2048; uint16_t speed = 8; } stepper;
+
+    // 运行时状态（用于模拟 PERIPHERAL_ERROR 等）
+    PeripheralStatus status = PeripheralStatus::PERIPHERAL_DISABLED;
     
     PeripheralConfig() : type(PeripheralType::GPIO_DIGITAL_OUTPUT), 
                          pin(-1), enabled(true) {}

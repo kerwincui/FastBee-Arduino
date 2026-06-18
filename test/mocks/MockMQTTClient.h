@@ -23,6 +23,7 @@ enum MQTTQoS {
 // MQTT配置结构
 struct MQTTConfig {
     bool enabled;
+    String scheme;     // "mqtt" 或 "mqtts"
     String server;
     uint16_t port;
     String clientId;
@@ -37,7 +38,7 @@ struct MQTTConfig {
     uint16_t keepAlive;
     uint16_t socketTimeout;
     
-    MQTTConfig() : enabled(false), port(1883), autoReconnect(true),
+    MQTTConfig() : enabled(false), scheme("mqtt"), port(1883), autoReconnect(true),
                    reconnectInterval(5000), willQos(0), willRetain(false),
                    keepAlive(60), socketTimeout(15) {}
 };

@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <esp_random.h>
 #include <vector>
@@ -74,6 +75,7 @@ struct MqttSubscribeTopic {
 
 // MQTT配置结构体
 struct MQTTConfig {
+    String scheme;              // 协议: "mqtt"(默认) 或 "mqtts"(TLS)
     String server;
     uint16_t port;
     String clientId;
@@ -109,7 +111,7 @@ struct MQTTConfig {
     std::vector<MqttSubscribeTopic> subscribeTopics;
 
     // 默认构造函数
-    MQTTConfig() : port(1883), keepAlive(60),
+    MQTTConfig() : scheme("mqtt"), port(1883), keepAlive(60),
                    autoReconnect(true), 
                    connectionTimeout(30000), authType(MqttAuthType::SIMPLE),
                    willQos(0), willRetain(false) {}
@@ -175,6 +177,7 @@ public:
 
 private:
     WiFiClient wifiClient;
+    WiFiClientSecure wifiClientSecure;   // MQTTS (TLS) 传输层
     Client* _externalClient = nullptr;  // 外部注入的 Client（非 WiFi 时使用）
     PubSubClient mqttClient;
     MQTTConfig config;

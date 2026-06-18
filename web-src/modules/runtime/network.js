@@ -84,6 +84,22 @@
                 });
             }
 
+            // mDNS 启用/禁用切换
+            const enableMdns = document.getElementById('enable-mdns');
+            if (enableMdns) {
+                enableMdns.addEventListener('change', (e) => {
+                    this._updateMDNSNotice();
+                });
+            }
+
+            // 自定义域名输入时更新预览
+            const customDomain = document.getElementById('custom-domain');
+            if (customDomain) {
+                customDomain.addEventListener('input', () => {
+                    this._updateMDNSUrlPreview();
+                });
+            }
+
         },
 
         /**
@@ -110,23 +126,48 @@
                 }
             }
 
-            // 动态调整高级配置内容显示
             // IP配置部分：仅WiFi和以太网需要DHCP/静态IP配置
-            const ipConfigSection = document.querySelector('#advance .fb-section-title');
+            const ipConfigSection = document.querySelector('#advance > .fb-section-title');
             if (ipConfigSection) {
-                const ipContainer = ipConfigSection.parentElement;
                 const ipGrid = ipConfigSection.nextElementSibling;
                 const showIpConfig = (value === '0' || value === '1');
-                if (ipConfigSection) ipConfigSection.style.display = showIpConfig ? '' : 'none';
+                ipConfigSection.style.display = showIpConfig ? '' : 'none';
                 if (ipGrid && ipGrid.classList.contains('config-form-grid')) {
                     ipGrid.style.display = showIpConfig ? '' : 'none';
                 }
             }
 
+            // 域名配置部分：4G/LoRa模式下隐藏，WiFi/以太网通显示
+            const domainSection = document.getElementById('domain-config-section');
+            const domainUnavailable = document.getElementById('domain-unavailable-notice');
+            const isDomainSupported = (value === '0' || value === '1');
+            if (domainSection) {
+                // 域名配置标题和表单网格（前两个子元素：h4 + grid）
+                const domainTitle = domainSection.querySelector('.fb-section-title-mt');
+                const domainGrid = domainSection.querySelector('.config-form-grid');
+                const mdnsNotice = document.getElementById('mdns-disabled-notice');
+                if (isDomainSupported) {
+                    // WiFi/以太网：显示域名配置表单，隐藏不可用提示
+                    if (domainTitle) domainTitle.style.display = '';
+                    if (domainGrid) domainGrid.style.display = '';
+                    if (domainUnavailable) this.hideElement(domainUnavailable);
+                    // 更新 mDNS 提示状态
+                    this._updateMDNSNotice();
+                } else {
+                    // 4G/LoRa：隐藏域名配置表单，显示不可用提示
+                    if (domainTitle) domainTitle.style.display = 'none';
+                    if (domainGrid) domainGrid.style.display = 'none';
+                    if (mdnsNotice) this.hideElement(mdnsNotice);
+                    if (domainUnavailable) this.showElement(domainUnavailable, 'block');
+                }
+            }
+
             // 连接设置部分：仅WiFi模式需要超时/重连配置
             const connSettings = document.querySelectorAll('#advance .fb-section-title-mt');
-            if (connSettings.length >= 2) {
-                const connTitle = connSettings[1];
+            // 注意：域名配置被包在 #domain-config-section 中，连接设置是 #advance 的直接子元素
+            const connTitles = Array.from(connSettings).filter(el => !el.closest('#domain-config-section'));
+            if (connTitles.length >= 1) {
+                const connTitle = connTitles[0];
                 const connGrid = connTitle.nextElementSibling;
                 const showConnConfig = (value === '0');
                 if (connTitle) connTitle.style.display = showConnConfig ? '' : 'none';
@@ -240,6 +281,8 @@
                     // 域名配置
                     this._setValue('enable-mdns', network.enableMDNS ? '1' : '0');
                     this._setValue('custom-domain', network.customDomain || '');
+                    this._updateMDNSUrlPreview();
+                    this._updateMDNSNotice();
 
                     // 连接设置
                     this._setValue('connect-timeout', advanced.connectTimeout !== undefined ? advanced.connectTimeout.toString() : '10000');
@@ -506,6 +549,72 @@
         },
 
         /**
+         * 更新 mDNS URL 预览文本
+         */
+        _updateMDNSUrlPreview() {
+            const domain = document.getElementById('custom-domain')?.value || 'fastbee';
+            const preview = document.getElementById('mdns-url-preview');
+            if (preview) {
+                preview.textContent = (domain || 'fastbee') + '.local';
+            }
+        },
+
+        /**
+         * 更新 mDNS 禁用提示：显示/隐藏警告并附带当前 IP
+         */
+        _updateMDNSNotice() {
+            const enableMdns = document.getElementById('enable-mdns');
+            const notice = document.getElementById('mdns-disabled-notice');
+            const ipDisplay = document.getElementById('mdns-disabled-ip-display');
+            const networkType = document.getElementById('network-type')?.value || '0';
+
+            if (!notice || !enableMdns) return;
+
+            // 4G/LoRa 模式下不显示 mDNS 提示（整个域名区域已隐藏）
+            if (networkType === '2' || networkType === '3') {
+                this.hideElement(notice);
+                return;
+            }
+
+            if (enableMdns.value === '0') {
+                // mDNS 禁用：显示警告
+                // 尝试获取当前设备 IP
+                const currentIP = this._getCurrentDeviceIP();
+                if (ipDisplay) {
+                    ipDisplay.textContent = currentIP ? ('http://' + currentIP) : 'http://<设备IP>';
+                }
+                this.showElement(notice, 'block');
+            } else {
+                this.hideElement(notice);
+            }
+        },
+
+        /**
+         * 获取当前设备 IP 地址（从状态面板中提取）
+         */
+        _getCurrentDeviceIP() {
+            // 依次从各状态面板获取 IP
+            const wifiIP = document.getElementById('wifi-ip-display');
+            if (wifiIP && wifiIP.textContent && wifiIP.textContent !== '--') {
+                return wifiIP.textContent.trim();
+            }
+            const ethIP = document.getElementById('eth-ip-display');
+            if (ethIP && ethIP.textContent && ethIP.textContent !== '--') {
+                return ethIP.textContent.trim();
+            }
+            const cellIP = document.getElementById('cell-ip-display');
+            if (cellIP && cellIP.textContent && cellIP.textContent !== '--') {
+                return cellIP.textContent.trim();
+            }
+            // AP IP
+            const apIP = document.getElementById('eth-ap-ip-display') || document.getElementById('cell-ap-ip-display');
+            if (apIP && apIP.textContent && apIP.textContent !== '--') {
+                return apIP.textContent.trim();
+            }
+            return '';
+        },
+
+        /**
          * 保存高级配置
          */
         saveAdvancedConfig() {
@@ -535,7 +644,35 @@
                 .then(res => {
                     if (res && res.success) {
                         this._showMessage('advanced-success', true);
-                        Notification.success('高级配置保存成功！', '网络设置');
+
+                        const data = res.data || {};
+                        let message = '高级配置保存成功！';
+
+                        // mDNS 相关提示
+                        const mdnsEnabled = config.enableMDNS === '1';
+                        const domain = config.customDomain || 'fastbee';
+
+                        if (mdnsEnabled) {
+                            message += '<br><small class="wifi-note-inline">mDNS 已启用，可通过 http://' + domain + '.local 访问系统</small>';
+                        } else {
+                            const currentIP = this._getCurrentDeviceIP();
+                            message += '<br><small class="wifi-note-inline">mDNS 已禁用，请通过 IP 地址访问系统：' + (currentIP || '请查看设备状态') + '</small>';
+                        }
+
+                        if (data.restartRequired) {
+                            message += '<br><small class="wifi-note-inline">配置变更需要重启网络服务才能生效，请等待约10秒...</small>';
+                        }
+
+                        Notification.show({
+                            type: 'success',
+                            title: '高级配置已保存',
+                            message: message,
+                            html: true,
+                            duration: 8000
+                        });
+
+                        // 更新 mDNS 提示
+                        this._updateMDNSNotice();
                     } else {
                         Notification.error(res?.error || '保存失败', '网络设置');
                     }

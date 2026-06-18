@@ -330,9 +330,9 @@ void ProtocolManager::handle() {
     }
     // 内存保护：堆低于安全阈值时跳过重型协议处理（JSON 序列化、Modbus 等），避免 OOM
     // 但 MQTT handle() 必须始终运行：它负责连接状态维护和后台重连调度，
-    // 内部已有堆保护（doReconnect() 检查 25KB），不会在堆不足时强行连接
-    // 设备堆内存常在 25-35KB 波动（Web 服务器 + 多任务），
-    // 30KB 阈值会导致 MQTT 永远无法建立连接
+    // 内部已有堆保护（doReconnect() 检查 8KB），不会在堆不足时强行连接
+    // PSRAM 设备稳态堆常在 10-12KB（WiFi/lwIP/FreeRTOS 必须在内部 DRAM），
+    // 30KB 阈值会导致重型协议永远跳过，MQTT 仍可运行（8KB 阈值足够）
     uint32_t freeHeap = ESP.getFreeHeap();
     bool heapSufficient = (freeHeap >= 30000);
 
@@ -527,8 +527,9 @@ bool ProtocolManager::restartMQTTDeferred() {
     delay(10);
 
     // 堆保护：释放旧客户端后仍不足，放弃重建
+    // PSRAM 设备稳态堆常在 10-12KB，8KB 阈值保留安全裕度
     uint32_t freeHeap = ESP.getFreeHeap();
-    if (freeHeap < 15000) {
+    if (freeHeap < 8000) {
         LOG_WARNINGF("Protocol Manager: Heap too low for MQTT deferred restart (heap=%lu), skipping",
                      (unsigned long)freeHeap);
         return false;

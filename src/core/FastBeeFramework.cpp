@@ -1082,9 +1082,10 @@ void FastBeeFramework::run() {
                               WiFi.RSSI(),
                               WiFi.channel());
             } else if (WiFi.getMode() & WIFI_AP) {
-                ets_printf("[STATUS] WiFi=AP_MODE ap_ip=%s clients=%d\n",
+                ets_printf("[STATUS] WiFi=AP_MODE ap_ip=%s clients=%d wifi_mode=%d\n",
                               WiFi.softAPIP().toString().c_str(),
-                              WiFi.softAPgetStationNum());
+                              WiFi.softAPgetStationNum(),
+                              (int)WiFi.getMode());
             } else {
                 const char* stStr = "UNKNOWN";
                 switch (wifiSt) {

@@ -515,6 +515,101 @@ function checkRoleManagementRemoved() {
     assert(!indexHtml.includes('data-page="roles"'), 'index.html must NOT contain data-page="roles"');
 }
 
+function checkDeveloperModeAndModalEventBinding() {
+    // 2025-06 修复: 模态窗事件必须在 _loadModals 后重新绑定，
+    // 否则新增外设/新增规则等按钮打开模态窗后无法保存/取消/关闭
+
+    // 1. state.js 必须包含模态窗事件重绑定机制
+    const stateJs = read('web-src/js/state.js');
+    assert(stateJs.includes('_registerModalBinder'),
+        'state.js must provide _registerModalBinder for modal event rebinding');
+    assert(stateJs.includes('_rebindAllModalEvents'),
+        'state.js must provide _rebindAllModalEvents to trigger all modal binders');
+    assert(stateJs.includes('self._rebindAllModalEvents()'),
+        '_loadModals must call _rebindAllModalEvents after modals DOM is ready');
+
+    // 2. peripherals.js 必须将模态窗事件分离并通过 binder 注册
+    const peripheralsJs = read('web-src/modules/runtime/peripherals.js');
+    assert(peripheralsJs.includes('_bindPeripheralModalEvents'),
+        'peripherals.js must have _bindPeripheralModalEvents method for modal events');
+    assert(peripheralsJs.includes("_registerModalBinder('peripherals'"),
+        'peripherals.js must register modal binder via _registerModalBinder');
+    // 确保 setupPeripheralsEvents 不再绑定模态窗内按钮事件
+    const setupSnippet = snippetAround(peripheralsJs, 'setupPeripheralsEvents', 0, 800);
+    assert(!setupSnippet.includes('close-peripheral-modal'),
+        'setupPeripheralsEvents must NOT bind close-peripheral-modal (moved to _bindPeripheralModalEvents)');
+    assert(!setupSnippet.includes('save-peripheral-btn'),
+        'setupPeripheralsEvents must NOT bind save-peripheral-btn (moved to _bindPeripheralModalEvents)');
+
+    // 3. periph-exec.js 必须将模态窗事件分离并通过 binder 注册
+    const periphExecJs = read('web-src/modules/runtime/periph-exec.js');
+    assert(periphExecJs.includes('_bindPeriphExecModalEvents'),
+        'periph-exec.js must have _bindPeriphExecModalEvents method for modal events');
+    assert(periphExecJs.includes("_registerModalBinder('periph-exec'"),
+        'periph-exec.js must register modal binder via _registerModalBinder');
+
+    // 4. rule-script.js 必须将模态窗事件分离并通过 binder 注册
+    const ruleScriptJs = read('web-src/modules/admin/rule-script.js');
+    assert(ruleScriptJs.includes('_bindRuleScriptModalEvents'),
+        'rule-script.js must have _bindRuleScriptModalEvents method for modal events');
+    assert(ruleScriptJs.includes("_registerModalBinder('rule-script'"),
+        'rule-script.js must register modal binder via _registerModalBinder');
+
+    // 5. 外设配置页面必须有开发环境禁用提示条
+    const peripheralHtml = read('web-src/pages/peripheral.html');
+    assert(peripheralHtml.includes('peripheral-dev-mode-hint'),
+        'peripheral.html must have developer-mode-disabled hint bar');
+    assert(peripheralsJs.includes('peripheral-dev-mode-hint'),
+        'peripherals.js must show/hide developer mode hint bar');
+
+    // 6. 开发环境状态管理: applyDeveloperModeState 必须覆盖关键按钮
+    assert(stateJs.includes("'#add-peripheral-btn'"),
+        'applyDeveloperModeState must target #add-peripheral-btn');
+    assert(stateJs.includes("'#periph-exec-page-add-btn'"),
+        'applyDeveloperModeState must target #periph-exec-page-add-btn');
+
+    // 7. 角色权限已移除，前端不应有任何权限检查
+    assert(!peripheralsJs.includes('hasPermission') && !peripheralsJs.includes('checkPermission'),
+        'peripherals.js must NOT contain permission checks (roles removed)');
+    assert(!periphExecJs.includes('hasPermission') && !periphExecJs.includes('checkPermission'),
+        'periph-exec.js must NOT contain permission checks (roles removed)');
+
+    // 8. CSS 双态: dev-mode-locked 类必须存在
+    const mainCss = read('web-src/css/main.css');
+    assert(mainCss.includes('.dev-mode-locked'),
+        'main.css must define .dev-mode-locked class for disabled-state styling');
+
+    // 9. state.js 必须包含开发环境状态管理三件套
+    assert(stateJs.includes('isDeveloperModeEnabled'),
+        'state.js must provide isDeveloperModeEnabled() method');
+    assert(stateJs.includes('setDeveloperModeState'),
+        'state.js must provide setDeveloperModeState() method');
+    assert(stateJs.includes('guardDeveloperModeAction'),
+        'state.js must provide guardDeveloperModeAction() method');
+    // setDeveloperModeState 必须操作 developer-mode-disabled 类 (双态切换)
+    const setDmSnippet = snippetAround(stateJs, 'setDeveloperModeState', 0, 400);
+    assert(setDmSnippet.includes('developer-mode-disabled'),
+        'setDeveloperModeState must toggle developer-mode-disabled CSS class');
+
+    // 10. periph-exec 提示条嵌入在 peripheral.html 中（非独立页面）
+    assert(peripheralHtml.includes('periph-exec-dev-mode-hint'),
+        'peripheral.html must have periph-exec developer-mode-disabled hint bar');
+    assert(periphExecJs.includes('periph-exec-dev-mode-hint'),
+        'periph-exec.js must show/hide developer mode hint bar');
+
+    const ruleScriptHtml = read('web-src/pages/rule-script.html');
+    assert(ruleScriptHtml.includes('rule-script-dev-mode-hint'),
+        'rule-script.html must have developer-mode-disabled hint bar');
+    assert(ruleScriptJs.includes('rule-script-dev-mode-hint'),
+        'rule-script.js must show/hide developer mode hint bar');
+
+    // 11. 容量锁定函数存在于各自模块中（非 state.js）
+    assert(peripheralsJs.includes('_setPeripheralCapacity'),
+        'peripherals.js must provide _setPeripheralCapacity for profile-based button limits');
+    assert(periphExecJs.includes('_setPeriphExecCapacity'),
+        'periph-exec.js must provide _setPeriphExecCapacity for profile-based button limits');
+}
+
 function run() {
     const files = [];
     walkDir(WWW_DIR, files);
@@ -535,6 +630,7 @@ function run() {
     checkNetworkNotificationRegressionGuards();
     checkWifiSecurityRegressionGuards();
     checkRoleManagementRemoved();
+    checkDeveloperModeAndModalEventBinding();
     checkAssetBudgets(profile);
     checkFirstPaintPath(profile);
 

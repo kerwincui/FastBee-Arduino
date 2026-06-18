@@ -198,6 +198,9 @@ struct ExecTrigger {
     // 运行时字段（不持久化）
     unsigned long lastTriggerTime = 0;
     uint32_t triggerCount = 0;
+    // 缓存解析值（由 sanitizeTriggerForSafety 填充，避免热路径重复解析字符串）
+    int8_t _cachedHour = -1;     // timePoint 解析后的小时（-1=无效）
+    int8_t _cachedMinute = -1;   // timePoint 解析后的分钟（-1=无效）
 };
 
 // 动作结构体（一条规则可包含多个动作，顺序执行）
@@ -237,6 +240,10 @@ struct PeriphExecRule {
 
     // 数据上报控制
     bool reportAfterExec = true; // 执行完成后是否上报设备数据（默认启用）
+
+    // 缓存标志（由 sanitizeRuleForSafety 计算，避免热路径重复遍历 actions）
+    bool _cachedNeedsModbus = false;           // 规则是否需要 Modbus 可用
+    bool _cachedHasPollCollectionAction = false; // 规则是否包含 ACTION_MODBUS_POLL 动作
 };
 
 // 配置文件路径

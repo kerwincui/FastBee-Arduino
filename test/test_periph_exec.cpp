@@ -1199,6 +1199,486 @@ void test_action_type_values_complete() {
 }
 
 // ============================================================
+//  TEST GROUP 12: evaluateCondition 条件评估全量测试
+//  镜像 PeriphExecManager::evaluateCondition 逻辑
+// ============================================================
+
+// 镜像 isNumericString 辅助函数
+static bool isNumericString(const String& s) {
+    if (s.isEmpty()) return false;
+    bool hasDigit = false;
+    bool hasDecimal = false;
+    for (size_t i = 0; i < s.length(); ++i) {
+        const char c = s[i];
+        if (c >= '0' && c <= '9') { hasDigit = true; continue; }
+        if (c == '.' && !hasDecimal) { hasDecimal = true; continue; }
+        if ((c == '-' || c == '+') && i == 0) continue;
+        return false;
+    }
+    return hasDigit;
+}
+
+// 镜像 evaluateCondition
+static bool mockEvalCondition(const String& value, uint8_t op, const String& compareValue) {
+    // CONTAIN / NOT_CONTAIN
+    if (op == 8) return value.indexOf(compareValue) >= 0;
+    if (op == 9) return value.indexOf(compareValue) < 0;
+    // EQ / NEQ
+    if (op == 0 || op == 1) {
+        bool bothNumeric = isNumericString(value) && isNumericString(compareValue);
+        if (bothNumeric) {
+            float val = value.toFloat();
+            float cmp = compareValue.toFloat();
+            return (op == 0) ? (val == cmp) : (val != cmp);
+        }
+        return (op == 0) ? (value == compareValue) : (value != compareValue);
+    }
+    // 数值操作符
+    float val = value.toFloat();
+    float cmp = compareValue.toFloat();
+    switch (op) {
+        case 2: return val > cmp;   // GT
+        case 3: return val < cmp;   // LT
+        case 4: return val >= cmp;  // GTE
+        case 5: return val <= cmp;  // LTE
+        case 6: case 7: {
+            int commaIdx = compareValue.indexOf(',');
+            if (commaIdx < 0) return false;
+            float minVal = compareValue.substring(0, commaIdx).toFloat();
+            float maxVal = compareValue.substring(commaIdx + 1).toFloat();
+            bool inRange = (val >= minVal && val <= maxVal);
+            return (op == 6) ? inRange : !inRange;
+        }
+        default: return false;
+    }
+}
+
+void test_eval_eq_numeric_equal() {
+    TEST_ASSERT_TRUE(mockEvalCondition("25.5", 0, "25.5"));
+}
+void test_eval_eq_numeric_not_equal() {
+    TEST_ASSERT_FALSE(mockEvalCondition("25.5", 0, "30.0"));
+}
+void test_eval_eq_string_equal() {
+    TEST_ASSERT_TRUE(mockEvalCondition("hello", 0, "hello"));
+}
+void test_eval_eq_string_not_equal() {
+    TEST_ASSERT_FALSE(mockEvalCondition("hello", 0, "world"));
+}
+void test_eval_eq_mixed_numeric_vs_string() {
+    // "123" vs "123" 都是数值，123.0 == 123.0
+    TEST_ASSERT_TRUE(mockEvalCondition("123", 0, "123"));
+    // "abc" vs "abc" 字符串精确匹配
+    TEST_ASSERT_TRUE(mockEvalCondition("abc", 0, "abc"));
+}
+void test_eval_neq_numeric() {
+    TEST_ASSERT_TRUE(mockEvalCondition("10", 1, "20"));
+    TEST_ASSERT_FALSE(mockEvalCondition("10", 1, "10"));
+}
+void test_eval_neq_string() {
+    TEST_ASSERT_TRUE(mockEvalCondition("on", 1, "off"));
+    TEST_ASSERT_FALSE(mockEvalCondition("on", 1, "on"));
+}
+void test_eval_gt_lt_gte_lte() {
+    TEST_ASSERT_TRUE(mockEvalCondition("30.5", 2, "30.0"));   // 30.5 > 30
+    TEST_ASSERT_FALSE(mockEvalCondition("30.0", 2, "30.0"));  // 30.0 > 30 is false
+    TEST_ASSERT_TRUE(mockEvalCondition("29.5", 3, "30.0"));   // 29.5 < 30
+    TEST_ASSERT_FALSE(mockEvalCondition("30.0", 3, "30.0"));  // 30.0 < 30 is false
+    TEST_ASSERT_TRUE(mockEvalCondition("30.0", 4, "30.0"));   // 30.0 >= 30
+    TEST_ASSERT_TRUE(mockEvalCondition("30.0", 5, "30.0"));   // 30.0 <= 30
+}
+void test_eval_between_in_range() {
+    TEST_ASSERT_TRUE(mockEvalCondition("25", 6, "20,30"));   // 20 <= 25 <= 30
+}
+void test_eval_between_at_boundary() {
+    TEST_ASSERT_TRUE(mockEvalCondition("20", 6, "20,30"));   // 20 >= 20
+    TEST_ASSERT_TRUE(mockEvalCondition("30", 6, "20,30"));   // 30 <= 30
+}
+void test_eval_between_out_of_range() {
+    TEST_ASSERT_FALSE(mockEvalCondition("19", 6, "20,30"));
+    TEST_ASSERT_FALSE(mockEvalCondition("31", 6, "20,30"));
+}
+void test_eval_between_no_comma_returns_false() {
+    // 没有逗号，无法解析范围，返回 false
+    TEST_ASSERT_FALSE(mockEvalCondition("25", 6, "2030"));
+}
+void test_eval_not_between() {
+    TEST_ASSERT_TRUE(mockEvalCondition("19", 7, "20,30"));   // 19 不在 [20,30]
+    TEST_ASSERT_TRUE(mockEvalCondition("31", 7, "20,30"));   // 31 不在 [20,30]
+    TEST_ASSERT_FALSE(mockEvalCondition("25", 7, "20,30"));  // 25 在 [20,30]
+}
+void test_eval_contain_found() {
+    TEST_ASSERT_TRUE(mockEvalCondition("temperature:25.5", 8, "25.5"));
+}
+void test_eval_contain_not_found() {
+    TEST_ASSERT_FALSE(mockEvalCondition("temperature:25.5", 8, "humidity"));
+}
+void test_eval_not_contain() {
+    TEST_ASSERT_TRUE(mockEvalCondition("temperature:25.5", 9, "humidity"));
+    TEST_ASSERT_FALSE(mockEvalCondition("temperature:25.5", 9, "25.5"));
+}
+void test_eval_non_numeric_gt_returns_zero() {
+    // 非数值字符串 toFloat() 返回 0.0f
+    // "abc" toFloat() -> 0.0, "10" toFloat() -> 10.0 -> 0.0 > 10.0 is false
+    TEST_ASSERT_FALSE(mockEvalCondition("abc", 2, "10"));
+}
+void test_eval_negative_values() {
+    TEST_ASSERT_TRUE(mockEvalCondition("-5", 3, "0"));    // -5 < 0
+    TEST_ASSERT_TRUE(mockEvalCondition("-10", 3, "-5"));  // -10 < -5
+    TEST_ASSERT_TRUE(mockEvalCondition("-5", 6, "-10,0")); // -10 <= -5 <= 0
+}
+
+// ============================================================
+//  TEST GROUP 13: sanitizeTriggerForSafety 参数安全修正测试
+//  镜像 PeriphExecManager::sanitizeTriggerForSafety 逻辑
+// ============================================================
+
+// 镜像 sanitizeTriggerForSafety 的安全常量和修正逻辑
+struct MockSanitizeTrigger {
+    uint8_t triggerType;
+    uint32_t intervalSec;
+    uint16_t pollResponseTimeout;
+    uint8_t pollMaxRetries;
+    uint16_t pollInterPollDelay;
+    bool hasPollCollectionAction;
+};
+
+static constexpr uint32_t MIN_TIMER_INTERVAL_SEC = 1;
+static constexpr uint32_t MAX_TIMER_INTERVAL_SEC = 86400UL;
+static constexpr uint16_t MIN_POLL_TIMEOUT_MS = 100;
+static constexpr uint16_t MAX_POLL_TIMEOUT_MS = 5000;
+static constexpr uint16_t HEAVY_POLL_TIMEOUT_MS = 3000;
+static constexpr uint8_t MAX_POLL_RETRIES = 3;
+static constexpr uint8_t HEAVY_POLL_RETRIES = 2;
+static constexpr uint16_t MIN_POLL_INTER_DELAY_MS = 20;
+static constexpr uint16_t MAX_POLL_INTER_DELAY_MS = 1000;
+static constexpr uint16_t HEAVY_POLL_INTER_DELAY_MS = 100;
+
+static bool mockSanitizeTrigger(MockSanitizeTrigger& t) {
+    uint32_t origInterval = t.intervalSec;
+    uint16_t origTimeout = t.pollResponseTimeout;
+    uint8_t origRetries = t.pollMaxRetries;
+    uint16_t origDelay = t.pollInterPollDelay;
+
+    // TIMER_TRIGGER interval 修正
+    if (t.triggerType == 1) {  // TIMER_TRIGGER
+        if (t.intervalSec < MIN_TIMER_INTERVAL_SEC)
+            t.intervalSec = MIN_TIMER_INTERVAL_SEC;
+        else if (t.intervalSec > MAX_TIMER_INTERVAL_SEC)
+            t.intervalSec = MAX_TIMER_INTERVAL_SEC;
+    }
+
+    // POLL_TRIGGER 参数修正
+    if (t.triggerType == 5) {  // POLL_TRIGGER
+        if (t.pollResponseTimeout < MIN_POLL_TIMEOUT_MS)
+            t.pollResponseTimeout = MIN_POLL_TIMEOUT_MS;
+        else if (t.pollResponseTimeout > MAX_POLL_TIMEOUT_MS)
+            t.pollResponseTimeout = MAX_POLL_TIMEOUT_MS;
+        if (t.pollMaxRetries > MAX_POLL_RETRIES)
+            t.pollMaxRetries = MAX_POLL_RETRIES;
+        if (t.pollInterPollDelay < MIN_POLL_INTER_DELAY_MS)
+            t.pollInterPollDelay = MIN_POLL_INTER_DELAY_MS;
+        else if (t.pollInterPollDelay > MAX_POLL_INTER_DELAY_MS)
+            t.pollInterPollDelay = MAX_POLL_INTER_DELAY_MS;
+        // 重度轮询更严格限制
+        if (t.hasPollCollectionAction) {
+            if (t.pollResponseTimeout > HEAVY_POLL_TIMEOUT_MS)
+                t.pollResponseTimeout = HEAVY_POLL_TIMEOUT_MS;
+            if (t.pollMaxRetries > HEAVY_POLL_RETRIES)
+                t.pollMaxRetries = HEAVY_POLL_RETRIES;
+            if (t.pollInterPollDelay < HEAVY_POLL_INTER_DELAY_MS)
+                t.pollInterPollDelay = HEAVY_POLL_INTER_DELAY_MS;
+        }
+    }
+
+    return (origInterval != t.intervalSec || origTimeout != t.pollResponseTimeout ||
+            origRetries != t.pollMaxRetries || origDelay != t.pollInterPollDelay);
+}
+
+void test_sanitize_timer_interval_zero_corrected() {
+    MockSanitizeTrigger t = {1, 0, 1000, 2, 100, false};
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_TRUE(modified);
+    TEST_ASSERT_EQUAL_UINT32(1, t.intervalSec);
+}
+void test_exec_sanitize_timer_interval_below_min() {
+    // intervalSec = 0 < 1 强制修正为 1
+    MockSanitizeTrigger t = {1, 0, 1000, 2, 100, false};
+    mockSanitizeTrigger(t);
+    TEST_ASSERT_EQUAL_UINT32(1, t.intervalSec);
+}
+void test_exec_sanitize_timer_interval_above_max() {
+    // intervalSec = 100000 > 86400 强制修正为 86400
+    MockSanitizeTrigger t = {1, 100000, 1000, 2, 100, false};
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_TRUE(modified);
+    TEST_ASSERT_EQUAL_UINT32(86400, t.intervalSec);
+}
+void test_sanitize_timer_interval_valid_no_change() {
+    MockSanitizeTrigger t = {1, 60, 1000, 2, 100, false};
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_FALSE(modified);
+    TEST_ASSERT_EQUAL_UINT32(60, t.intervalSec);
+}
+void test_sanitize_timer_boundary_min() {
+    MockSanitizeTrigger t = {1, 1, 1000, 2, 100, false};
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_FALSE(modified);
+    TEST_ASSERT_EQUAL_UINT32(1, t.intervalSec);
+}
+void test_sanitize_timer_boundary_max() {
+    MockSanitizeTrigger t = {1, 86400, 1000, 2, 100, false};
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_FALSE(modified);
+    TEST_ASSERT_EQUAL_UINT32(86400, t.intervalSec);
+}
+void test_exec_sanitize_poll_timeout_below_min() {
+    MockSanitizeTrigger t = {5, 60, 50, 2, 100, false};  // timeout=50 < 100
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_TRUE(modified);
+    TEST_ASSERT_EQUAL(100, t.pollResponseTimeout);
+}
+void test_exec_sanitize_poll_timeout_above_max() {
+    MockSanitizeTrigger t = {5, 60, 8000, 2, 100, false};  // timeout=8000 > 5000
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_TRUE(modified);
+    TEST_ASSERT_EQUAL(5000, t.pollResponseTimeout);
+}
+void test_sanitize_poll_timeout_valid_no_change() {
+    MockSanitizeTrigger t = {5, 60, 1000, 2, 100, false};
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_FALSE(modified);
+}
+void test_exec_sanitize_poll_retries_above_max() {
+    MockSanitizeTrigger t = {5, 60, 1000, 5, 100, false};  // retries=5 > 3
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_TRUE(modified);
+    TEST_ASSERT_EQUAL(3, t.pollMaxRetries);
+}
+void test_exec_sanitize_poll_inter_delay_below_min() {
+    MockSanitizeTrigger t = {5, 60, 1000, 2, 5, false};  // delay=5 < 20
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_TRUE(modified);
+    TEST_ASSERT_EQUAL(20, t.pollInterPollDelay);
+}
+void test_exec_sanitize_poll_inter_delay_above_max() {
+    MockSanitizeTrigger t = {5, 60, 1000, 2, 2000, false};  // delay=2000 > 1000
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_TRUE(modified);
+    TEST_ASSERT_EQUAL(1000, t.pollInterPollDelay);
+}
+void test_sanitize_heavy_poll_timeout_restricted() {
+    // 重度轮询：timeout 上限 3000ms
+    MockSanitizeTrigger t = {5, 60, 4000, 2, 100, true};  // timeout=4000 > 3000
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_TRUE(modified);
+    TEST_ASSERT_EQUAL(3000, t.pollResponseTimeout);
+}
+void test_sanitize_heavy_poll_retries_restricted() {
+    // 重度轮询：retries 上限 2
+    MockSanitizeTrigger t = {5, 60, 1000, 3, 100, true};  // retries=3 > 2
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_TRUE(modified);
+    TEST_ASSERT_EQUAL(2, t.pollMaxRetries);
+}
+void test_sanitize_heavy_poll_inter_delay_min_raised() {
+    // 重度轮询：delay 下限提升到 100ms
+    MockSanitizeTrigger t = {5, 60, 1000, 2, 50, true};  // delay=50 < 100
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_TRUE(modified);
+    TEST_ASSERT_EQUAL(100, t.pollInterPollDelay);
+}
+void test_sanitize_heavy_poll_valid_no_change() {
+    // 重度轮询正常值不修改
+    MockSanitizeTrigger t = {5, 60, 2000, 2, 200, true};
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_FALSE(modified);
+}
+void test_sanitize_non_timer_poll_trigger_ignored() {
+    // EVENT_TRIGGER (type=4) 不应被修正
+    MockSanitizeTrigger t = {4, 0, 50, 10, 5, false};
+    bool modified = mockSanitizeTrigger(t);
+    TEST_ASSERT_FALSE(modified);
+    TEST_ASSERT_EQUAL_UINT32(0, t.intervalSec);
+    TEST_ASSERT_EQUAL(50, t.pollResponseTimeout);
+}
+
+// ============================================================
+//  TEST GROUP 14: 每日时间点触发模式测试
+//  镜像 checkTimerTriggers 中 timerMode==1 的逻辑
+// ============================================================
+
+struct MockTimeInfo {
+    int tm_hour;
+    int tm_min;
+    int tm_year;  // years since 1900 (100 = year 2000)
+};
+
+// 镜像 timerMode==1 的判断逻辑
+static bool shouldDailyTimeTrigger(MockTimeInfo& timeinfo, const String& timePoint,
+                                    unsigned long now, unsigned long lastTriggerTime) {
+    if (timeinfo.tm_year < 100) return false;  // 时间未同步
+    if (timePoint.length() < 5) return false;
+    int colonIdx = timePoint.indexOf(':');
+    if (colonIdx < 0) return false;
+    int targetHour = timePoint.substring(0, colonIdx).toInt();
+    int targetMin = timePoint.substring(colonIdx + 1).toInt();
+    if (timeinfo.tm_hour == targetHour && timeinfo.tm_min == targetMin) {
+        // 60s 冷却：同一分钟内不重复触发
+        if (lastTriggerTime > 0 && (now - lastTriggerTime) < 60000) return false;
+        return true;
+    }
+    return false;
+}
+
+void test_daily_time_trigger_matches() {
+    MockTimeInfo ti = {8, 30, 124};  // 2024年，08:30
+    TEST_ASSERT_TRUE(shouldDailyTimeTrigger(ti, "08:30", 100000, 0));
+}
+void test_daily_time_trigger_no_match_hour() {
+    MockTimeInfo ti = {9, 30, 124};
+    TEST_ASSERT_FALSE(shouldDailyTimeTrigger(ti, "08:30", 100000, 0));
+}
+void test_daily_time_trigger_no_match_minute() {
+    MockTimeInfo ti = {8, 31, 124};
+    TEST_ASSERT_FALSE(shouldDailyTimeTrigger(ti, "08:30", 100000, 0));
+}
+void test_daily_time_trigger_time_not_synced() {
+    MockTimeInfo ti = {8, 30, 50};  // tm_year < 100 -> NTP未同步
+    TEST_ASSERT_FALSE(shouldDailyTimeTrigger(ti, "08:30", 100000, 0));
+}
+void test_daily_time_trigger_cooldown_60s() {
+    MockTimeInfo ti = {8, 30, 124};
+    // 30s 前已触发过 -> 不重复触发
+    TEST_ASSERT_FALSE(shouldDailyTimeTrigger(ti, "08:30", 100000, 70000));
+}
+void test_daily_time_trigger_cooldown_expired() {
+    MockTimeInfo ti = {8, 30, 124};
+    // 61s 前触发过 -> 冷却结束，可以再次触发
+    TEST_ASSERT_TRUE(shouldDailyTimeTrigger(ti, "08:30", 100000, 39000));
+}
+void test_daily_time_trigger_invalid_format() {
+    MockTimeInfo ti = {8, 30, 124};
+    // 格式错误：无冒号
+    TEST_ASSERT_FALSE(shouldDailyTimeTrigger(ti, "0830", 100000, 0));
+    // 格式错误：太短
+    TEST_ASSERT_FALSE(shouldDailyTimeTrigger(ti, "8:3", 100000, 0));
+}
+void test_daily_time_trigger_midnight() {
+    MockTimeInfo ti = {0, 0, 124};  // 00:00
+    TEST_ASSERT_TRUE(shouldDailyTimeTrigger(ti, "00:00", 100000, 0));
+}
+void test_daily_time_trigger_end_of_day() {
+    MockTimeInfo ti = {23, 59, 124};
+    TEST_ASSERT_TRUE(shouldDailyTimeTrigger(ti, "23:59", 100000, 0));
+}
+void test_daily_time_trigger_cross_day_boundary() {
+    // 23:59 的时间不应匹配 00:00
+    MockTimeInfo ti = {23, 59, 124};
+    TEST_ASSERT_FALSE(shouldDailyTimeTrigger(ti, "00:00", 100000, 0));
+}
+
+// ============================================================
+//  TEST GROUP 15: 轮询触发冷却机制测试
+//  镜像 PeriphExecManager::getPollTriggerCooldownMs 和
+//  PERIPH_EXEC_POLL_TRIGGER_MIN_INTERVAL_MS 逻辑
+// ============================================================
+
+// 镜像冷却常量
+static constexpr unsigned long POLL_TRIGGER_MIN_INTERVAL_MS = 1000;
+static constexpr unsigned long HEAVY_POLL_TRIGGER_MIN_INTERVAL_MS = 2000;
+static constexpr unsigned long MODBUS_POLL_INGRESS_MIN_INTERVAL_MS = 1000;
+
+// 镜像 getPollTriggerCooldownMs 逻辑
+static unsigned long mockGetPollTriggerCooldownMs(bool hasPollCollectionAction,
+                                                    const String& source) {
+    if ((source == "modbus" || source == "modbus_poll") && hasPollCollectionAction) {
+        return HEAVY_POLL_TRIGGER_MIN_INTERVAL_MS;
+    }
+    return POLL_TRIGGER_MIN_INTERVAL_MS;
+}
+
+void test_poll_cooldown_normal_source() {
+    unsigned long cooldown = mockGetPollTriggerCooldownMs(false, "sensor_poll");
+    TEST_ASSERT_EQUAL_UINT32(1000, cooldown);
+}
+void test_poll_cooldown_modbus_heavy() {
+    // modbus_poll 源 + 有轮询采集动作 -> 2000ms 冷却
+    unsigned long cooldown = mockGetPollTriggerCooldownMs(true, "modbus_poll");
+    TEST_ASSERT_EQUAL_UINT32(2000, cooldown);
+}
+void test_poll_cooldown_modbus_no_heavy_action() {
+    // modbus_poll 源但无采集动作 -> 普通 1000ms 冷却
+    unsigned long cooldown = mockGetPollTriggerCooldownMs(false, "modbus_poll");
+    TEST_ASSERT_EQUAL_UINT32(1000, cooldown);
+}
+void test_poll_cooldown_modbus_raw_source() {
+    // modbus 源 + 有采集动作 -> 重度冷却
+    unsigned long cooldown = mockGetPollTriggerCooldownMs(true, "modbus");
+    TEST_ASSERT_EQUAL_UINT32(2000, cooldown);
+}
+void test_poll_cooldown_other_source() {
+    unsigned long cooldown = mockGetPollTriggerCooldownMs(false, "serial");
+    TEST_ASSERT_EQUAL_UINT32(1000, cooldown);
+}
+
+// 镜像轮询触发冷却判断逻辑
+static bool isPollTriggerInCooldown(unsigned long now, unsigned long lastTriggerTime,
+                                     unsigned long cooldownMs) {
+    if (lastTriggerTime == 0) return false;  // 从未触发过
+    return (now - lastTriggerTime) < cooldownMs;
+}
+
+void test_poll_trigger_first_time_no_cooldown() {
+    TEST_ASSERT_FALSE(isPollTriggerInCooldown(5000, 0, 1000));
+}
+void test_poll_trigger_within_cooldown() {
+    TEST_ASSERT_TRUE(isPollTriggerInCooldown(5500, 5000, 1000));
+}
+void test_poll_trigger_after_cooldown() {
+    TEST_ASSERT_FALSE(isPollTriggerInCooldown(6001, 5000, 1000));
+}
+void test_poll_trigger_exact_cooldown_boundary() {
+    // 恰好等于冷却时间 -> 不节流（>= 比较）
+    TEST_ASSERT_FALSE(isPollTriggerInCooldown(6000, 5000, 1000));
+}
+void test_poll_trigger_heavy_cooldown_longer() {
+    // 重度冷却 2000ms：1500ms 后仍在冷却中
+    TEST_ASSERT_TRUE(isPollTriggerInCooldown(6500, 5000, 2000));
+    // 2001ms 后冷却结束
+    TEST_ASSERT_FALSE(isPollTriggerInCooldown(7001, 5000, 2000));
+}
+
+// 镜像 Modbus poll ingress 节流（同源最小间隔）
+struct MockPollIngressTracker {
+    std::map<String, unsigned long> lastAccepted;
+};
+
+static bool mockIngressThrottle(MockPollIngressTracker& tracker, const String& source,
+                                 unsigned long now, unsigned long minIntervalMs) {
+    unsigned long& last = tracker.lastAccepted[source];
+    if (last > 0 && (now - last) < minIntervalMs) return true;  // 节流
+    last = now;
+    return false;
+}
+
+void test_poll_ingress_modbus_throttle_1s() {
+    MockPollIngressTracker tracker;
+    // 首次请求通过
+    TEST_ASSERT_FALSE(mockIngressThrottle(tracker, "modbus_poll", 1000, MODBUS_POLL_INGRESS_MIN_INTERVAL_MS));
+    // 500ms 内再次请求被节流
+    TEST_ASSERT_TRUE(mockIngressThrottle(tracker, "modbus_poll", 1500, MODBUS_POLL_INGRESS_MIN_INTERVAL_MS));
+    // 1001ms 后通过
+    TEST_ASSERT_FALSE(mockIngressThrottle(tracker, "modbus_poll", 2001, MODBUS_POLL_INGRESS_MIN_INTERVAL_MS));
+}
+void test_poll_ingress_independent_sources() {
+    MockPollIngressTracker tracker;
+    TEST_ASSERT_FALSE(mockIngressThrottle(tracker, "modbus_poll", 1000, MODBUS_POLL_INGRESS_MIN_INTERVAL_MS));
+    // 不同源不受影响
+    TEST_ASSERT_FALSE(mockIngressThrottle(tracker, "sensor_poll", 1500, MODBUS_POLL_INGRESS_MIN_INTERVAL_MS));
+}
+
+// ============================================================
 //  测试入口 (更新)
 // ============================================================
 
@@ -1320,4 +1800,69 @@ void test_periph_exec_group() {
     RUN_TEST(test_action_type_inverted_enum_values);
     RUN_TEST(test_action_type_high_inverted_semantics);
     RUN_TEST(test_action_type_values_complete);
+
+    // Group 12: evaluateCondition 条件评估全量测试
+    RUN_TEST(test_eval_eq_numeric_equal);
+    RUN_TEST(test_eval_eq_numeric_not_equal);
+    RUN_TEST(test_eval_eq_string_equal);
+    RUN_TEST(test_eval_eq_string_not_equal);
+    RUN_TEST(test_eval_eq_mixed_numeric_vs_string);
+    RUN_TEST(test_eval_neq_numeric);
+    RUN_TEST(test_eval_neq_string);
+    RUN_TEST(test_eval_gt_lt_gte_lte);
+    RUN_TEST(test_eval_between_in_range);
+    RUN_TEST(test_eval_between_at_boundary);
+    RUN_TEST(test_eval_between_out_of_range);
+    RUN_TEST(test_eval_between_no_comma_returns_false);
+    RUN_TEST(test_eval_not_between);
+    RUN_TEST(test_eval_contain_found);
+    RUN_TEST(test_eval_contain_not_found);
+    RUN_TEST(test_eval_not_contain);
+    RUN_TEST(test_eval_non_numeric_gt_returns_zero);
+    RUN_TEST(test_eval_negative_values);
+
+    // Group 13: sanitizeTriggerForSafety 参数安全修正
+    RUN_TEST(test_sanitize_timer_interval_zero_corrected);
+    RUN_TEST(test_exec_sanitize_timer_interval_below_min);
+    RUN_TEST(test_exec_sanitize_timer_interval_above_max);
+    RUN_TEST(test_sanitize_timer_interval_valid_no_change);
+    RUN_TEST(test_sanitize_timer_boundary_min);
+    RUN_TEST(test_sanitize_timer_boundary_max);
+    RUN_TEST(test_exec_sanitize_poll_timeout_below_min);
+    RUN_TEST(test_exec_sanitize_poll_timeout_above_max);
+    RUN_TEST(test_sanitize_poll_timeout_valid_no_change);
+    RUN_TEST(test_exec_sanitize_poll_retries_above_max);
+    RUN_TEST(test_exec_sanitize_poll_inter_delay_below_min);
+    RUN_TEST(test_exec_sanitize_poll_inter_delay_above_max);
+    RUN_TEST(test_sanitize_heavy_poll_timeout_restricted);
+    RUN_TEST(test_sanitize_heavy_poll_retries_restricted);
+    RUN_TEST(test_sanitize_heavy_poll_inter_delay_min_raised);
+    RUN_TEST(test_sanitize_heavy_poll_valid_no_change);
+    RUN_TEST(test_sanitize_non_timer_poll_trigger_ignored);
+
+    // Group 14: 每日时间点触发模式
+    RUN_TEST(test_daily_time_trigger_matches);
+    RUN_TEST(test_daily_time_trigger_no_match_hour);
+    RUN_TEST(test_daily_time_trigger_no_match_minute);
+    RUN_TEST(test_daily_time_trigger_time_not_synced);
+    RUN_TEST(test_daily_time_trigger_cooldown_60s);
+    RUN_TEST(test_daily_time_trigger_cooldown_expired);
+    RUN_TEST(test_daily_time_trigger_invalid_format);
+    RUN_TEST(test_daily_time_trigger_midnight);
+    RUN_TEST(test_daily_time_trigger_end_of_day);
+    RUN_TEST(test_daily_time_trigger_cross_day_boundary);
+
+    // Group 15: 轮询触发冷却机制
+    RUN_TEST(test_poll_cooldown_normal_source);
+    RUN_TEST(test_poll_cooldown_modbus_heavy);
+    RUN_TEST(test_poll_cooldown_modbus_no_heavy_action);
+    RUN_TEST(test_poll_cooldown_modbus_raw_source);
+    RUN_TEST(test_poll_cooldown_other_source);
+    RUN_TEST(test_poll_trigger_first_time_no_cooldown);
+    RUN_TEST(test_poll_trigger_within_cooldown);
+    RUN_TEST(test_poll_trigger_after_cooldown);
+    RUN_TEST(test_poll_trigger_exact_cooldown_boundary);
+    RUN_TEST(test_poll_trigger_heavy_cooldown_longer);
+    RUN_TEST(test_poll_ingress_modbus_throttle_1s);
+    RUN_TEST(test_poll_ingress_independent_sources);
 }

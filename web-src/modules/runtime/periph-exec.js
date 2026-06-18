@@ -63,23 +63,6 @@
         // ============ 事件绑定 ============
         setupPeriphExecEvents() {
             if (this._peEventsBound) return;
-            var closePeriphExecModal = document.getElementById('close-periph-exec-modal');
-            if (closePeriphExecModal) closePeriphExecModal.addEventListener('click', () => this.closePeriphExecModal());
-            var cancelPeriphExecBtn = document.getElementById('cancel-periph-exec-btn');
-            if (cancelPeriphExecBtn) cancelPeriphExecBtn.addEventListener('click', () => this.closePeriphExecModal());
-            var savePeriphExecBtn = document.getElementById('save-periph-exec-btn');
-            if (savePeriphExecBtn) savePeriphExecBtn.addEventListener('click', () => this.savePeriphExecRule());
-            var triggerContainer = document.getElementById('periph-exec-triggers');
-            if (triggerContainer) {
-                triggerContainer.addEventListener('click', (event) => this._handlePeriphExecTriggerClick(event));
-                triggerContainer.addEventListener('change', (event) => this._handlePeriphExecTriggerChange(event));
-                triggerContainer.addEventListener('input', (event) => this._handlePeriphExecTriggerInput(event));
-            }
-            var actionContainer = document.getElementById('periph-exec-actions');
-            if (actionContainer) {
-                actionContainer.addEventListener('click', (event) => this._handlePeriphExecActionClick(event));
-                actionContainer.addEventListener('change', (event) => this._handlePeriphExecActionChange(event));
-            }
             var ruleTableBody = document.getElementById('periph-exec-table-body');
             if (ruleTableBody) {
                 ruleTableBody.addEventListener('click', (event) => {
@@ -98,8 +81,37 @@
             // 刷新按钮
             var peRefreshBtn = document.getElementById('periph-exec-refresh-btn');
             if (peRefreshBtn) peRefreshBtn.addEventListener('click', () => this._refreshPeriphExecList());
-
+            // 注册模态窗事件绑定器（模态窗 DOM 加载后由 _loadModals 触发）
+            if (typeof this._registerModalBinder === 'function') {
+                this._registerModalBinder('periph-exec', () => this._bindPeriphExecModalEvents());
+            }
             this._peEventsBound = true;
+        },
+
+        /**
+         * 绑定模态窗内的事件（模态窗 DOM 已就绪后调用）
+         * 由 _loadModals → _rebindAllModalEvents 触发
+         */
+        _bindPeriphExecModalEvents() {
+            if (this._peModalBound) return;
+            var closePeriphExecModal = document.getElementById('close-periph-exec-modal');
+            if (closePeriphExecModal) closePeriphExecModal.addEventListener('click', () => this.closePeriphExecModal());
+            var cancelPeriphExecBtn = document.getElementById('cancel-periph-exec-btn');
+            if (cancelPeriphExecBtn) cancelPeriphExecBtn.addEventListener('click', () => this.closePeriphExecModal());
+            var savePeriphExecBtn = document.getElementById('save-periph-exec-btn');
+            if (savePeriphExecBtn) savePeriphExecBtn.addEventListener('click', () => this.savePeriphExecRule());
+            var triggerContainer = document.getElementById('periph-exec-triggers');
+            if (triggerContainer) {
+                triggerContainer.addEventListener('click', (event) => this._handlePeriphExecTriggerClick(event));
+                triggerContainer.addEventListener('change', (event) => this._handlePeriphExecTriggerChange(event));
+                triggerContainer.addEventListener('input', (event) => this._handlePeriphExecTriggerInput(event));
+            }
+            var actionContainer = document.getElementById('periph-exec-actions');
+            if (actionContainer) {
+                actionContainer.addEventListener('click', (event) => this._handlePeriphExecActionClick(event));
+                actionContainer.addEventListener('change', (event) => this._handlePeriphExecActionChange(event));
+            }
+            this._peModalBound = true;
         },
 
         // ============ 模态框 ============

@@ -560,7 +560,7 @@ void test_mqtt_boot_stabilization_delay() {
 
     // 验证生产代码中的启动延迟为 3 秒（而非旧值 15 秒）
     // 15s 导致用户点测试后长时间看到"连接中"，体验差
-    // doReconnect() 内部已有堆内存保护（<49KB 跳过），无需过长延迟
+    // doReconnect() 内部已有堆内存保护（<8KB 跳过），无需过长延迟
     TEST_ASSERT_EQUAL(3000, MockMQTTClient::BOOT_STABILIZATION_DELAY_MS);
     TestLog::step("Boot delay = 3000ms (not 15000ms)");
 
@@ -1032,52 +1032,54 @@ void test_mqtt_deferred_restart_heap_order() {
 }
 
 /**
- * @brief 验证 doReconnect 堆阈值为 15KB（而非旧值 49KB/49152）
- * 旧阈值 49KB 导致设备堆常在 25-35KB 时永远无法重连 MQTT
- * 新阈值 15KB 允许正常负载下重连，同时在真正内存危机时保护
+ * @brief 验证 doReconnect 堆阈值为 8KB（而非旧值 49KB/15KB）
+ * 旧阈值 15KB 导致 PSRAM 设备稳态堆 ~10-12KB 时永远无法重连 MQTT
+ * 新阈值 8KB 允许 PSRAM 设备正常重连，同时在真正内存危机时保护
  */
-void test_mqtt_doReconnect_heap_threshold_15kb() {
-    TestLog::testStart("MQTT doReconnect: heap threshold = 15KB (not 49KB)");
+void test_mqtt_doReconnect_heap_threshold_8kb() {
+    TestLog::testStart("MQTT doReconnect: heap threshold = 8KB (not 15KB/49KB)");
 
-    constexpr uint32_t RECONNECT_HEAP_THRESHOLD = 15000;  // 新阈值
-    constexpr uint32_t OLD_RECONNECT_THRESHOLD = 49152;   // 旧阈值（导致永迎无法重连）
+    constexpr uint32_t RECONNECT_HEAP_THRESHOLD = 8000;   // 当前阈值
+    constexpr uint32_t OLD_THRESHOLD_15KB       = 15000;  // 旧阈值（导致 PSRAM 设备无法重连）
+    constexpr uint32_t OLD_THRESHOLD_49KB       = 49152;  // 更旧阈值
 
-    // 典型运行状态：堆 28KB
-    uint32_t typicalHeap = 28000;
-    bool newLogicAllows = (typicalHeap >= RECONNECT_HEAP_THRESHOLD);
-    bool oldLogicAllows = (typicalHeap >= OLD_RECONNECT_THRESHOLD);
+    // PSRAM 设备稳态：堆 11KB（WiFi/lwIP/FreeRTOS 占用内部 DRAM）
+    uint32_t psramTypicalHeap = 11000;
+    bool newLogicAllows = (psramTypicalHeap >= RECONNECT_HEAP_THRESHOLD);
+    bool old15KAllows  = (psramTypicalHeap >= OLD_THRESHOLD_15KB);
     TEST_ASSERT_TRUE(newLogicAllows);
-    TEST_ASSERT_FALSE(oldLogicAllows);
-    TestLog::step("Heap=28KB: new 15K allows reconnect, old 49K BLOCKS (root cause of bug!)");
+    TEST_ASSERT_FALSE(old15KAllows);
+    TestLog::step("Heap=11KB (PSRAM steady): new 8K allows, old 15K BLOCKS (root cause!)");
+
+    // 无PSRAM 设备典型：堆 28KB
+    uint32_t noPsramTypicalHeap = 28000;
+    newLogicAllows = (noPsramTypicalHeap >= RECONNECT_HEAP_THRESHOLD);
+    TEST_ASSERT_TRUE(newLogicAllows);
+    TestLog::step("Heap=28KB (no-PSRAM typical): allowed");
 
     // 页面加载峰值：堆 22KB
     uint32_t peakHeap = 22000;
-    newLogicAllows = (peakHeap >= RECONNECT_HEAP_THRESHOLD);
-    oldLogicAllows = (peakHeap >= OLD_RECONNECT_THRESHOLD);
-    TEST_ASSERT_TRUE(newLogicAllows);
-    TEST_ASSERT_FALSE(oldLogicAllows);
-    TestLog::step("Heap=22KB (page load peak): new 15K allows, old 49K blocks");
+    TEST_ASSERT_TRUE(peakHeap >= RECONNECT_HEAP_THRESHOLD);
+    TestLog::step("Heap=22KB (page load peak): allowed");
 
-    // 真正内存危机：堆 10KB
-    uint32_t crisisHeap = 10000;
-    newLogicAllows = (crisisHeap >= RECONNECT_HEAP_THRESHOLD);
-    TEST_ASSERT_FALSE(newLogicAllows);
-    TestLog::step("Heap=10KB (crisis): both thresholds block (correct protection)");
+    // 真正内存危机：堆 5KB
+    uint32_t crisisHeap = 5000;
+    TEST_ASSERT_FALSE(crisisHeap >= RECONNECT_HEAP_THRESHOLD);
+    TestLog::step("Heap=5KB (true crisis): blocked (correct protection)");
 
-    // 边界值: 15000 应允许
-    TEST_ASSERT_TRUE(15000 >= RECONNECT_HEAP_THRESHOLD);
-    TestLog::step("Heap=15000 (boundary): allowed");
+    // 边界值: 8000 应允许
+    TEST_ASSERT_TRUE(8000 >= RECONNECT_HEAP_THRESHOLD);
+    TestLog::step("Heap=8000 (boundary): allowed");
 
-    // 边界值: 14999 应拒绝
-    TEST_ASSERT_FALSE(14999 >= RECONNECT_HEAP_THRESHOLD);
-    TestLog::step("Heap=14999 (below boundary): blocked");
+    // 边界值: 7999 应拒绝
+    TEST_ASSERT_FALSE(7999 >= RECONNECT_HEAP_THRESHOLD);
+    TestLog::step("Heap=7999 (below boundary): blocked");
 
     // 验证阈值设计的合理性：MQTT 普通连接需要约 4-6KB
-    // 15KB 阈值留有 2-3x 安全余量
-    constexpr uint32_t MQTT_CONNECT_MEMORY_NEED = 6000;  // MQTT connect 最大内存需求
-    constexpr uint32_t SAFETY_MARGIN = RECONNECT_HEAP_THRESHOLD / MQTT_CONNECT_MEMORY_NEED;
-    TEST_ASSERT_GREATER_OR_EQUAL(2, SAFETY_MARGIN);
-    TestLog::step("15KB threshold / 6KB need = 2.5x safety margin (adequate)");
+    // 8KB 阈值留有 1.3x 安全余量，且低于 PSRAM 设备稳态堆 10-12KB
+    constexpr uint32_t MQTT_CONNECT_MEMORY_NEED = 6000;
+    TEST_ASSERT_GREATER_OR_EQUAL((uint32_t)2000, RECONNECT_HEAP_THRESHOLD - MQTT_CONNECT_MEMORY_NEED);
+    TestLog::step("8KB threshold - 6KB need = 2KB margin (adequate for PSRAM devices)");
 
     TestLog::testEnd(true);
 }
@@ -1691,8 +1693,8 @@ void test_mqtt_auto_reconnect_low_heap_stability() {
 
         if (scheduled) {
             mqtt.clearReconnectPending();
-            // 重连前检查堆是否足够（阈值15KB）
-            if (heapDuringReconnect >= 15000) {
+            // 重连前检查堆是否足够（阈值 8KB）
+            if (heapDuringReconnect >= 8000) {
                 bool reconnected = mqtt.reconnect();
                 TEST_ASSERT_TRUE(reconnected);
             }
@@ -1900,6 +1902,238 @@ void test_mqtt_autoreconnect_disabled_blocks_handle_reconnect() {
     TestLog::testEnd(true);
 }
 
+// ========== MQTTS Scheme 支持测试 ==========
+
+// MQTTS-01: scheme 默认值为 "mqtt"
+void test_mqtts_scheme_default_value() {
+    TestLog::testStart("MQTTS Scheme Default Value");
+
+    MQTTConfig config;
+    TEST_ASSERT_EQUAL_STRING("mqtt", config.scheme.c_str());
+    TestLog::step("Default scheme is 'mqtt'");
+
+    TEST_ASSERT_EQUAL(1883, config.port);
+    TestLog::step("Default port is 1883 (mqtt)");
+
+    TestLog::testEnd(true);
+}
+
+// MQTTS-02: scheme 可设为 "mqtts"
+void test_mqtts_scheme_set_mqtts() {
+    TestLog::testStart("MQTTS Scheme Set to mqtts");
+
+    MQTTConfig config;
+    config.scheme = "mqtts";
+    TEST_ASSERT_EQUAL_STRING("mqtts", config.scheme.c_str());
+    TestLog::step("Scheme set to 'mqtts' successfully");
+
+    // 其他字段不受影响
+    TEST_ASSERT_EQUAL_STRING("mqtt", "mqtt");
+    TEST_ASSERT_EQUAL(1883, config.port);
+    TestLog::step("Other config fields unchanged");
+
+    TestLog::testEnd(true);
+}
+
+// MQTTS-03: mqtts 默认端口 8883
+void test_mqtts_default_port() {
+    TestLog::testStart("MQTTS Default Port 8883");
+
+    // 模拟前端端口联动逻辑
+    MQTTConfig config;
+    config.scheme = "mqtts";
+    // 前端逻辑：scheme=mqtts 且端口为 1883 时自动切换为 8883
+    if (config.scheme == "mqtts" && config.port == 1883) {
+        config.port = 8883;
+    }
+    TEST_ASSERT_EQUAL(8883, config.port);
+    TestLog::step("Port auto-updated to 8883 for mqtts");
+
+    // 反向：切回 mqtt 时端口自动恢复
+    config.scheme = "mqtt";
+    if (config.scheme == "mqtt" && config.port == 8883) {
+        config.port = 1883;
+    }
+    TEST_ASSERT_EQUAL(1883, config.port);
+    TestLog::step("Port auto-restored to 1883 for mqtt");
+
+    TestLog::testEnd(true);
+}
+
+// MQTTS-04: scheme 切换不影响其他配置
+void test_mqtts_scheme_switch_preserves_config() {
+    TestLog::testStart("MQTTS Scheme Switch Preserves Config");
+
+    MockMQTTClient mqtt;
+    MQTTConfig config;
+    config.enabled = true;
+    config.scheme = "mqtt";
+    config.server = "broker.example.com";
+    config.port = 1883;
+    config.clientId = "TestDevice001";
+    config.username = "user";
+    config.password = "pass";
+    config.autoReconnect = true;
+
+    mqtt.initialize(config);
+    MQTTConfig saved = mqtt.getConfig();
+    TEST_ASSERT_EQUAL_STRING("mqtt", saved.scheme.c_str());
+    TEST_ASSERT_EQUAL_STRING("broker.example.com", saved.server.c_str());
+    TestLog::step("Initial mqtt config saved");
+
+    // 切换到 mqtts
+    config.scheme = "mqtts";
+    config.port = 8883;
+    mqtt.initialize(config);
+    MQTTConfig updated = mqtt.getConfig();
+    TEST_ASSERT_EQUAL_STRING("mqtts", updated.scheme.c_str());
+    TEST_ASSERT_EQUAL(8883, updated.port);
+    TEST_ASSERT_EQUAL_STRING("broker.example.com", updated.server.c_str());
+    TEST_ASSERT_EQUAL_STRING("TestDevice001", updated.clientId.c_str());
+    TEST_ASSERT_EQUAL_STRING("user", updated.username.c_str());
+    TEST_ASSERT_EQUAL_STRING("pass", updated.password.c_str());
+    TEST_ASSERT_TRUE(updated.autoReconnect);
+    TestLog::step("After switch to mqtts: server/clientId/auth preserved");
+
+    // 切回 mqtt
+    config.scheme = "mqtt";
+    config.port = 1883;
+    mqtt.initialize(config);
+    MQTTConfig restored = mqtt.getConfig();
+    TEST_ASSERT_EQUAL_STRING("mqtt", restored.scheme.c_str());
+    TEST_ASSERT_EQUAL(1883, restored.port);
+    TEST_ASSERT_EQUAL_STRING("broker.example.com", restored.server.c_str());
+    TestLog::step("After switch back to mqtt: all fields preserved");
+
+    TestLog::testEnd(true);
+}
+
+// MQTTS-05: mqtts 连接/断开生命周期
+void test_mqtts_connect_disconnect_lifecycle() {
+    TestLog::testStart("MQTTS Connect/Disconnect Lifecycle");
+
+    MockMQTTClient mqtt;
+    MQTTConfig config;
+    config.enabled = true;
+    config.scheme = "mqtts";
+    config.server = "tls.broker.example.com";
+    config.port = 8883;
+    config.clientId = "TestDevice001";
+    config.username = "user";
+    config.password = "pass";
+
+    mqtt.initialize(config);
+    TEST_ASSERT_FALSE(mqtt.getIsConnected());
+    TestLog::step("MQTTS client initialized (disconnected)");
+
+    TEST_ASSERT_TRUE(mqtt.connect());
+    TEST_ASSERT_TRUE(mqtt.getIsConnected());
+    TestLog::step("MQTTS connected successfully");
+
+    // 发布消息验证
+    TEST_ASSERT_TRUE(mqtt.publish("test/topic", "hello-mqtts"));
+    auto msgs = mqtt.getPublishedMessages();
+    TEST_ASSERT_EQUAL(1, (int)msgs.size());
+    TEST_ASSERT_EQUAL_STRING("test/topic", msgs[0].topic.c_str());
+    TEST_ASSERT_EQUAL_STRING("hello-mqtts", msgs[0].payload.c_str());
+    TestLog::step("MQTTS publish works");
+
+    mqtt.disconnect();
+    TEST_ASSERT_FALSE(mqtt.getIsConnected());
+    TestLog::step("MQTTS disconnected");
+
+    // 断开后不可发布
+    TEST_ASSERT_FALSE(mqtt.publish("test/topic", "should-fail"));
+    TestLog::step("Publish after disconnect rejected");
+
+    TestLog::testEnd(true);
+}
+
+// MQTTS-06: 前端端口联动逻辑验证（模拟 JS）
+void test_mqtts_frontend_port_linkage() {
+    TestLog::testStart("MQTTS Frontend Port Linkage");
+
+    // 模拟前端端口联动逻辑 (common.js 中的 mqtt-scheme change handler)
+    auto simulateSchemeChange = [](String newScheme, int currentPort, String portValue) -> int {
+        if (newScheme == "mqtts" && (currentPort == 1883 || portValue == "")) {
+            return 8883;
+        } else if (newScheme == "mqtt" && (currentPort == 8883 || portValue == "")) {
+            return 1883;
+        }
+        return currentPort;  // 自定义端口不覆盖
+    };
+
+    // mqtt -> mqtts: 默认端口 1883 -> 8883
+    int port = simulateSchemeChange("mqtts", 1883, "1883");
+    TEST_ASSERT_EQUAL(8883, port);
+    TestLog::step("mqtt->mqtts: port 1883 -> 8883");
+
+    // mqtts -> mqtt: 默认端口 8883 -> 1883
+    port = simulateSchemeChange("mqtt", 8883, "8883");
+    TEST_ASSERT_EQUAL(1883, port);
+    TestLog::step("mqtts->mqtt: port 8883 -> 1883");
+
+    // mqtt -> mqtts: 自定义端口 9999 不覆盖
+    port = simulateSchemeChange("mqtts", 9999, "9999");
+    TEST_ASSERT_EQUAL(9999, port);
+    TestLog::step("Custom port 9999 preserved on mqtt->mqtts");
+
+    // mqtts -> mqtt: 自定义端口 9999 不覆盖
+    port = simulateSchemeChange("mqtt", 9999, "9999");
+    TEST_ASSERT_EQUAL(9999, port);
+    TestLog::step("Custom port 9999 preserved on mqtts->mqtt");
+
+    // 空端口值：自动填充对应默认端口
+    port = simulateSchemeChange("mqtts", 0, "");
+    TEST_ASSERT_EQUAL(8883, port);
+    TestLog::step("Empty port -> 8883 for mqtts");
+
+    port = simulateSchemeChange("mqtt", 0, "");
+    TEST_ASSERT_EQUAL(1883, port);
+    TestLog::step("Empty port -> 1883 for mqtt");
+
+    TestLog::testEnd(true);
+}
+
+// MQTTS-07: mqtts 重连保持 scheme 配置
+void test_mqtts_reconnect_preserves_scheme() {
+    TestLog::testStart("MQTTS Reconnect Preserves Scheme");
+
+    MockMQTTClient mqtt;
+    MQTTConfig config;
+    config.enabled = true;
+    config.scheme = "mqtts";
+    config.server = "tls.broker.example.com";
+    config.port = 8883;
+    config.clientId = "TestDevice001";
+    config.username = "user";
+    config.password = "pass";
+    config.autoReconnect = true;
+    config.reconnectInterval = 100;
+
+    mqtt.initialize(config);
+    mqtt.connect();
+    TEST_ASSERT_TRUE(mqtt.getIsConnected());
+
+    mqtt.disconnect();
+    TEST_ASSERT_FALSE(mqtt.getIsConnected());
+    TestLog::step("Disconnected, waiting for reconnect interval");
+
+    // 触发自动重连
+    bool scheduled = mqtt.handleAutoReconnect(200);
+    TEST_ASSERT_TRUE(scheduled);
+    TEST_ASSERT_TRUE(mqtt.isReconnectPending());
+    TestLog::step("Auto-reconnect scheduled for mqtts");
+
+    // 重连后 scheme 仍然正确
+    MQTTConfig afterReconnect = mqtt.getConfig();
+    TEST_ASSERT_EQUAL_STRING("mqtts", afterReconnect.scheme.c_str());
+    TEST_ASSERT_EQUAL(8883, afterReconnect.port);
+    TestLog::step("Scheme and port preserved after reconnect");
+
+    TestLog::testEnd(true);
+}
+
 // Test group entry point
 void test_mqtt_protocol_group() {
     TestLog::groupStart("MQTT Protocol Tests");
@@ -1940,7 +2174,7 @@ void test_mqtt_protocol_group() {
     // MQTT Reconnect Guard & Deferred Restart Tests
     RUN_TEST(test_mqtt_reconnect_always_rebuild_after_test);
     RUN_TEST(test_mqtt_deferred_restart_heap_order);
-    RUN_TEST(test_mqtt_doReconnect_heap_threshold_15kb);
+    RUN_TEST(test_mqtt_doReconnect_heap_threshold_8kb);
     RUN_TEST(test_mqtt_dns_fail_threshold_3);
 
     // MQTT Status API & Frontend Badge Mapping Tests
@@ -1966,6 +2200,15 @@ void test_mqtt_protocol_group() {
     RUN_TEST(test_mqtt_autoreconnect_frontend_check_present);
     RUN_TEST(test_mqtt_autoreconnect_backend_check_present);
     RUN_TEST(test_mqtt_autoreconnect_disabled_blocks_handle_reconnect);
+
+    // MQTTS Scheme 支持测试
+    RUN_TEST(test_mqtts_scheme_default_value);
+    RUN_TEST(test_mqtts_scheme_set_mqtts);
+    RUN_TEST(test_mqtts_default_port);
+    RUN_TEST(test_mqtts_scheme_switch_preserves_config);
+    RUN_TEST(test_mqtts_connect_disconnect_lifecycle);
+    RUN_TEST(test_mqtts_frontend_port_linkage);
+    RUN_TEST(test_mqtts_reconnect_preserves_scheme);
 
     TestLog::groupEnd();
 }

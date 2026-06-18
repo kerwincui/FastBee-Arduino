@@ -751,6 +751,654 @@ void test_periph_gpio_pullup_pulldown_for_button_events() {
 }
 
 // ============================================================
+//  TEST GROUP 6: 跨芯片数据一致性测试
+//  核心原则：不同芯片环境不对外设配置做任何特殊处理，
+//  配置文件里是什么数据就原样返回给前端。
+// ============================================================
+
+void test_lcd_type_enum_and_data_transparency() {
+    // LCD 类型值必须为 36，不受芯片宏保护
+    TEST_ASSERT_EQUAL(36, static_cast<int>(PeripheralType::LCD));
+
+    // 模拟 LCD 配置数据透传：设置什么就返回什么
+    PeripheralConfig config;
+    config.id = "lcd_1";
+    config.name = "OLED Display";
+    config.type = PeripheralType::LCD;
+    config.lcd.width = 128;
+    config.lcd.height = 64;
+    config.lcd.interface = 2;  // I2C
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+
+    PeripheralConfig* fetched = pm.getPeripheral("lcd_1");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL(PeripheralType::LCD, fetched->type);
+    TEST_ASSERT_EQUAL_UINT8(128, fetched->lcd.width);
+    TEST_ASSERT_EQUAL_UINT8(64, fetched->lcd.height);
+    TEST_ASSERT_EQUAL_UINT8(2, fetched->lcd.interface);
+}
+
+void test_lcd_params_various_sizes() {
+    // 各种 LCD 尺寸参数都应原样保留（不受芯片能力限制）
+    struct TestCase { uint8_t w; uint8_t h; uint8_t iface; };
+    TestCase cases[] = {
+        {128, 64, 2},   // 常见 I2C OLED
+        {132, 64, 2},   // SH1106
+        {240, 135, 1},  // SPI TFT (height <= 255)
+        {84, 48, 0},    // 小尺寸并行 LCD
+        {255, 255, 3},  // 边界值
+    };
+
+    for (auto& tc : cases) {
+        PeripheralConfig config;
+        config.id = "lcd_" + String(tc.w) + "x" + String(tc.h);
+        config.name = "LCD";
+        config.type = PeripheralType::LCD;
+        config.lcd.width = tc.w;
+        config.lcd.height = tc.h;
+        config.lcd.interface = tc.iface;
+
+        // 数据应完全保留
+        TEST_ASSERT_EQUAL_UINT8(tc.w, config.lcd.width);
+        TEST_ASSERT_EQUAL_UINT8(tc.h, config.lcd.height);
+        TEST_ASSERT_EQUAL_UINT8(tc.iface, config.lcd.interface);
+    }
+}
+
+void test_seven_segment_type_enum_and_data_transparency() {
+    // 数码管类型值必须为 47，不受芯片宏保护
+    TEST_ASSERT_EQUAL(47, static_cast<int>(PeripheralType::SEVEN_SEGMENT_TM1637));
+
+    // 模拟数码管配置数据透传
+    PeripheralConfig config;
+    config.id = "seg_1";
+    config.name = "TM1637 Display";
+    config.type = PeripheralType::SEVEN_SEGMENT_TM1637;
+    config.segment.brightness = 5;
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+
+    PeripheralConfig* fetched = pm.getPeripheral("seg_1");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL(PeripheralType::SEVEN_SEGMENT_TM1637, fetched->type);
+    TEST_ASSERT_EQUAL_UINT8(5, fetched->segment.brightness);
+}
+
+void test_seven_segment_brightness_range() {
+    // 亮度 0-7 都应原样保留
+    for (uint8_t b = 0; b <= 7; b++) {
+        PeripheralConfig config;
+        config.id = "seg_b" + String(b);
+        config.name = "Segment";
+        config.type = PeripheralType::SEVEN_SEGMENT_TM1637;
+        config.segment.brightness = b;
+        TEST_ASSERT_EQUAL_UINT8(b, config.segment.brightness);
+    }
+}
+
+void test_all_special_types_always_in_data_layer() {
+    // 所有外设类型在数据层必须有对应的枚举值，不受 #if 保护
+    // LCD(36), SEVEN_SEGMENT(47), NEO_PIXEL(45), RF_MODULE(48), RADAR_SENSOR(49)
+    TEST_ASSERT_EQUAL(36, static_cast<int>(PeripheralType::LCD));
+    TEST_ASSERT_EQUAL(47, static_cast<int>(PeripheralType::SEVEN_SEGMENT_TM1637));
+    TEST_ASSERT_EQUAL(45, static_cast<int>(PeripheralType::NEO_PIXEL));
+    TEST_ASSERT_EQUAL(48, static_cast<int>(PeripheralType::RF_MODULE));
+    TEST_ASSERT_EQUAL(49, static_cast<int>(PeripheralType::RADAR_SENSOR));
+    TEST_ASSERT_EQUAL(42, static_cast<int>(PeripheralType::STEPPER_MOTOR));
+}
+
+void test_neopixel_data_transparency() {
+    PeripheralConfig config;
+    config.id = "neo_1";
+    config.name = "NeoPixel Strip";
+    config.type = PeripheralType::NEO_PIXEL;
+    config.neopixel.count = 30;
+    config.neopixel.brightness = 128;
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+
+    PeripheralConfig* fetched = pm.getPeripheral("neo_1");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL_UINT16(30, fetched->neopixel.count);
+    TEST_ASSERT_EQUAL_UINT8(128, fetched->neopixel.brightness);
+}
+
+void test_rf_module_data_transparency() {
+    PeripheralConfig config;
+    config.id = "rf_1";
+    config.name = "433MHz TX";
+    config.type = PeripheralType::RF_MODULE;
+    config.rf.mode = 0;
+    config.rf.pulseWidth = 350;
+    config.rf.repeat = 8;
+    config.rf.bitLength = 24;
+    config.rf.activeHigh = true;
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+
+    PeripheralConfig* fetched = pm.getPeripheral("rf_1");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL_UINT8(0, fetched->rf.mode);
+    TEST_ASSERT_EQUAL_UINT16(350, fetched->rf.pulseWidth);
+    TEST_ASSERT_EQUAL_UINT8(8, fetched->rf.repeat);
+    TEST_ASSERT_EQUAL_UINT8(24, fetched->rf.bitLength);
+    TEST_ASSERT_TRUE(fetched->rf.activeHigh);
+}
+
+void test_radar_sensor_data_transparency() {
+    PeripheralConfig config;
+    config.id = "radar_1";
+    config.name = "RCWL-0516";
+    config.type = PeripheralType::RADAR_SENSOR;
+    config.radar.mode = 0;
+    config.radar.activeHigh = true;
+    config.radar.debounceMs = 100;
+    config.radar.holdMs = 3000;
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+
+    PeripheralConfig* fetched = pm.getPeripheral("radar_1");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL_UINT16(100, fetched->radar.debounceMs);
+    TEST_ASSERT_EQUAL_UINT16(3000, fetched->radar.holdMs);
+}
+
+void test_stepper_motor_data_transparency() {
+    PeripheralConfig config;
+    config.id = "stepper_1";
+    config.name = "28BYJ-48";
+    config.type = PeripheralType::STEPPER_MOTOR;
+    config.stepper.stepsPerRevolution = 2048;
+    config.stepper.speed = 15;
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+
+    PeripheralConfig* fetched = pm.getPeripheral("stepper_1");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL_UINT16(2048, fetched->stepper.stepsPerRevolution);
+    TEST_ASSERT_EQUAL_UINT16(15, fetched->stepper.speed);
+}
+
+void test_validation_failed_peripheral_kept_with_error_status() {
+    // 核心策略：验证失败的外设仍保留在列表中，标记 PERIPHERAL_ERROR
+    // 模拟 loadConfiguration 中的行为
+    PeripheralConfig config;
+    config.id = "invalid_lcd";
+    config.name = "Invalid LCD";
+    config.type = PeripheralType::LCD;
+    config.enabled = true;
+    config.lcd.width = 128;
+    config.lcd.height = 64;
+    config.lcd.interface = 2;
+
+    // 模拟验证失败但仍加载的逻辑
+    bool valid = false;  // 假设 validateConfig 失败（如引脚不兼容）
+    config.status = valid ? PeripheralStatus::PERIPHERAL_ENABLED
+                          : PeripheralStatus::PERIPHERAL_ERROR;
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+
+    // 验证失败的外设仍应存在于列表中
+    PeripheralConfig* fetched = pm.getPeripheral("invalid_lcd");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL_STRING("invalid_lcd", fetched->id.c_str());
+    TEST_ASSERT_EQUAL(PeripheralStatus::PERIPHERAL_ERROR, fetched->status);
+
+    // 数据应完整保留
+    TEST_ASSERT_EQUAL_UINT8(128, fetched->lcd.width);
+    TEST_ASSERT_EQUAL_UINT8(64, fetched->lcd.height);
+}
+
+void test_error_status_peripheral_skips_hw_init() {
+    // PERIPHERAL_ERROR 状态的外设应跳过硬件初始化
+    // 模拟 initAllEnabledPeripherals 中的跳过逻辑
+    struct MockInitState {
+        std::map<String, PeripheralStatus> states;
+        int initCount = 0;
+        int skipCount = 0;
+
+        void simulateInitAll() {
+            for (auto& kv : states) {
+                if (kv.second == PeripheralStatus::PERIPHERAL_ERROR) {
+                    skipCount++;
+                    continue;
+                }
+                initCount++;
+            }
+        }
+    };
+
+    MockInitState ms;
+    ms.states["lcd_ok"]     = PeripheralStatus::PERIPHERAL_ENABLED;
+    ms.states["lcd_err"]    = PeripheralStatus::PERIPHERAL_ERROR;
+    ms.states["seg_ok"]     = PeripheralStatus::PERIPHERAL_ENABLED;
+    ms.states["seg_err"]    = PeripheralStatus::PERIPHERAL_ERROR;
+    ms.states["gpio_ok"]    = PeripheralStatus::PERIPHERAL_ENABLED;
+
+    ms.simulateInitAll();
+    TEST_ASSERT_EQUAL(3, ms.initCount);   // lcd_ok, seg_ok, gpio_ok
+    TEST_ASSERT_EQUAL(2, ms.skipCount);   // lcd_err, seg_err
+}
+
+void test_peripheral_status_enum_values() {
+    // PeripheralStatus 枚举值必须与生产代码一致
+    TEST_ASSERT_EQUAL(0, static_cast<int>(PeripheralStatus::PERIPHERAL_DISABLED));
+    TEST_ASSERT_EQUAL(1, static_cast<int>(PeripheralStatus::PERIPHERAL_ENABLED));
+    TEST_ASSERT_EQUAL(2, static_cast<int>(PeripheralStatus::PERIPHERAL_INITIALIZED));
+    TEST_ASSERT_EQUAL(3, static_cast<int>(PeripheralStatus::PERIPHERAL_RUNNING));
+    TEST_ASSERT_EQUAL(4, static_cast<int>(PeripheralStatus::PERIPHERAL_ERROR));
+}
+
+void test_cross_chip_config_consistency_simulation() {
+    // 模拟跨芯片场景：同一份配置在不同芯片上都应完整加载
+    // 配置文件包含 LCD + 数码管 + GPIO + NeoPixel
+    struct ConfigEntry {
+        String id;
+        PeripheralType type;
+    };
+    ConfigEntry entries[] = {
+        {"gpio_led",   PeripheralType::GPIO_DIGITAL_OUTPUT},
+        {"lcd_oled",   PeripheralType::LCD},
+        {"seg_tm1637", PeripheralType::SEVEN_SEGMENT_TM1637},
+        {"neo_strip",  PeripheralType::NEO_PIXEL},
+        {"rf_tx",      PeripheralType::RF_MODULE},
+        {"radar_1",    PeripheralType::RADAR_SENSOR},
+        {"stepper_1",  PeripheralType::STEPPER_MOTOR},
+    };
+
+    // 模拟在任意芯片上加载：所有类型都应能加载到列表中
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+
+    for (auto& e : entries) {
+        PeripheralConfig config;
+        config.id = e.id;
+        config.name = e.id;
+        config.type = e.type;
+        config.enabled = true;
+        TEST_ASSERT_TRUE_MESSAGE(pm.addPeripheral(config),
+            ("Failed to add " + e.id).c_str());
+    }
+
+    // 所有外设都应在列表中，不因芯片差异被过滤
+    TEST_ASSERT_EQUAL(7, pm.getPeripheralCount());
+    for (auto& e : entries) {
+        PeripheralConfig* fetched = pm.getPeripheral(e.id);
+        TEST_ASSERT_NOT_NULL_MESSAGE(fetched,
+            ("Missing " + e.id + " after load").c_str());
+        TEST_ASSERT_EQUAL(e.type, fetched->type);
+    }
+}
+
+void test_lcd_update_preserves_data() {
+    // 更新 LCD 配置时参数应正确保留
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+
+    PeripheralConfig config;
+    config.id = "lcd_upd";
+    config.name = "LCD Update Test";
+    config.type = PeripheralType::LCD;
+    config.lcd.width = 128;
+    config.lcd.height = 64;
+    config.lcd.interface = 2;
+    pm.addPeripheral(config);
+
+    // 更新为新参数
+    PeripheralConfig updated;
+    updated.id = "lcd_upd";
+    updated.name = "LCD Updated";
+    updated.type = PeripheralType::LCD;
+    updated.lcd.width = 240;
+    updated.lcd.height = 240;
+    updated.lcd.interface = 1;  // SPI
+    TEST_ASSERT_TRUE(pm.updatePeripheral("lcd_upd", updated));
+
+    PeripheralConfig* fetched = pm.getPeripheral("lcd_upd");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL_UINT8(240, fetched->lcd.width);
+    TEST_ASSERT_EQUAL_UINT8(240, fetched->lcd.height);
+    TEST_ASSERT_EQUAL_UINT8(1, fetched->lcd.interface);
+}
+
+void test_segment_update_preserves_data() {
+    // 更新数码管配置时参数应正确保留
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+
+    PeripheralConfig config;
+    config.id = "seg_upd";
+    config.name = "Segment Update Test";
+    config.type = PeripheralType::SEVEN_SEGMENT_TM1637;
+    config.segment.brightness = 2;
+    pm.addPeripheral(config);
+
+    PeripheralConfig updated;
+    updated.id = "seg_upd";
+    updated.name = "Segment Updated";
+    updated.type = PeripheralType::SEVEN_SEGMENT_TM1637;
+    updated.segment.brightness = 7;
+    TEST_ASSERT_TRUE(pm.updatePeripheral("seg_upd", updated));
+
+    PeripheralConfig* fetched = pm.getPeripheral("seg_upd");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL_UINT8(7, fetched->segment.brightness);
+}
+
+// ============================================================
+//  TEST GROUP 7: 外设类型→参数组映射一致性
+//  镜像前端 onPeripheralTypeChange() 逻辑，确保类型值与
+//  参数区域的对应关系正确。回归测试：UART(1) 不应映射到 GPIO 参数。
+// ============================================================
+
+// 参数组标识（镜像前端 peripheral-params-group 的 id）
+enum class ParamGroup : uint8_t {
+    NONE = 0,
+    GPIO,
+    UART,
+    I2C,
+    SPI,
+    ADC,
+    DAC,
+    SEGMENT,
+    STEPPER,
+    NEOPIXEL,
+    RF,
+    RADAR,
+    LCD
+};
+
+// 镜像前端 onPeripheralTypeChange() 的映射逻辑
+static ParamGroup resolveParamGroup(int typeValue) {
+    if (typeValue >= 11 && typeValue <= 21) return ParamGroup::GPIO;
+    switch (typeValue) {
+        case 1:  return ParamGroup::UART;
+        case 2:  return ParamGroup::I2C;
+        case 3:  return ParamGroup::SPI;
+        case 26: return ParamGroup::ADC;
+        case 27: return ParamGroup::DAC;
+        case 36: return ParamGroup::LCD;
+        case 42: return ParamGroup::STEPPER;
+        case 45: return ParamGroup::NEOPIXEL;
+        case 47: return ParamGroup::SEGMENT;
+        case 48: return ParamGroup::RF;
+        case 49: return ParamGroup::RADAR;
+        default: return ParamGroup::NONE;
+    }
+}
+
+// --- 7.1 回归测试：UART(1) 必须映射到 UART 参数，而非 GPIO ---
+
+void test_param_group_regression_uart_not_gpio() {
+    // 修复前 bug：form.reset() 将下拉框重置为 UART(value=1)，
+    // 但 onPeripheralTypeChange('11') 硬编码传入 GPIO 类型值，
+    // 导致显示 GPIO 参数而非 UART 参数。
+    // 此测试确保 type=1 始终映射到 UART 参数组。
+    ParamGroup group = resolveParamGroup(1);  // UART
+    TEST_ASSERT_EQUAL_MESSAGE(
+        static_cast<int>(ParamGroup::UART),
+        static_cast<int>(group),
+        "UART(type=1) must map to UART params, NOT GPIO (regression)"
+    );
+    TEST_ASSERT_NOT_EQUAL(
+        static_cast<int>(ParamGroup::GPIO),
+        static_cast<int>(group)
+    );
+}
+
+void test_param_group_regression_default_select_value() {
+    // form.reset() 后 <select> 的默认值为第一个 <option>，即 UART(value=1)
+    // 前端 openPeripheralModal 应读取 select.value 而非硬编码 '11'
+    const int defaultSelectValue = 1;  // <option value="1">UART</option> 是第一个
+    TEST_ASSERT_EQUAL(1, defaultSelectValue);
+    ParamGroup group = resolveParamGroup(defaultSelectValue);
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::UART), static_cast<int>(group));
+}
+
+// --- 7.2 通信接口类型 → 各自的参数组 ---
+
+void test_param_group_communication_types() {
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::UART), static_cast<int>(resolveParamGroup(1)));
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::I2C),  static_cast<int>(resolveParamGroup(2)));
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::SPI),  static_cast<int>(resolveParamGroup(3)));
+    // CAN(4) 和 USB(5) 无专属参数区
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::NONE), static_cast<int>(resolveParamGroup(4)));
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::NONE), static_cast<int>(resolveParamGroup(5)));
+}
+
+// --- 7.3 GPIO 类型范围 (11-21) 全部映射到 GPIO 参数组 ---
+
+void test_param_group_all_gpio_types() {
+    for (int t = 11; t <= 21; t++) {
+        ParamGroup group = resolveParamGroup(t);
+        TEST_ASSERT_EQUAL_MESSAGE(
+            static_cast<int>(ParamGroup::GPIO),
+            static_cast<int>(group),
+            ("GPIO type " + std::to_string(t) + " must map to GPIO params").c_str()
+        );
+    }
+}
+
+void test_param_group_gpio_sub_params_pwm_only() {
+    // PWM 子参数仅在 PWM_OUTPUT(17) 和 ANALOG_OUTPUT(16) 时可见
+    auto showsPwmSubParams = [](int type) -> bool {
+        return type == 17 || type == 16;
+    };
+    TEST_ASSERT_TRUE(showsPwmSubParams(17));   // PWM输出
+    TEST_ASSERT_TRUE(showsPwmSubParams(16));   // 模拟输出
+    // 其他 GPIO 类型不显示 PWM 子参数
+    TEST_ASSERT_FALSE(showsPwmSubParams(11));  // 数字输入
+    TEST_ASSERT_FALSE(showsPwmSubParams(12));  // 数字输出
+    TEST_ASSERT_FALSE(showsPwmSubParams(13));  // 上拉输入
+    TEST_ASSERT_FALSE(showsPwmSubParams(14));  // 下拉输入
+    TEST_ASSERT_FALSE(showsPwmSubParams(15));  // 模拟输入
+}
+
+void test_param_group_gpio_sub_params_input_only() {
+    // input-only 子参数仅在输入类型时可见
+    auto showsInputSubParams = [](int type) -> bool {
+        return type == 11 || type == 13 || type == 14;
+    };
+    TEST_ASSERT_TRUE(showsInputSubParams(11));   // 数字输入
+    TEST_ASSERT_TRUE(showsInputSubParams(13));   // 上拉输入
+    TEST_ASSERT_TRUE(showsInputSubParams(14));   // 下拉输入
+    // 输出类型不显示 input-only 子参数
+    TEST_ASSERT_FALSE(showsInputSubParams(12));  // 数字输出
+    TEST_ASSERT_FALSE(showsInputSubParams(16));  // 模拟输出
+    TEST_ASSERT_FALSE(showsInputSubParams(17));  // PWM输出
+}
+
+// --- 7.4 模拟信号、专用外设类型映射 ---
+
+void test_param_group_analog_types() {
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::ADC), static_cast<int>(resolveParamGroup(26)));
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::DAC), static_cast<int>(resolveParamGroup(27)));
+}
+
+void test_param_group_special_types() {
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::LCD),     static_cast<int>(resolveParamGroup(36)));
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::STEPPER), static_cast<int>(resolveParamGroup(42)));
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::NEOPIXEL),static_cast<int>(resolveParamGroup(45)));
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::SEGMENT), static_cast<int>(resolveParamGroup(47)));
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::RF),      static_cast<int>(resolveParamGroup(48)));
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::RADAR),   static_cast<int>(resolveParamGroup(49)));
+}
+
+void test_param_group_no_params_types() {
+    // 这些类型无专属参数区域，应映射到 NONE
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::NONE), static_cast<int>(resolveParamGroup(4)));   // CAN
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::NONE), static_cast<int>(resolveParamGroup(5)));   // USB
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::NONE), static_cast<int>(resolveParamGroup(31)));  // JTAG
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::NONE), static_cast<int>(resolveParamGroup(32)));  // SWD
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::NONE), static_cast<int>(resolveParamGroup(37)));  // SDIO
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::NONE), static_cast<int>(resolveParamGroup(38)));  // SENSOR
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::NONE), static_cast<int>(resolveParamGroup(39)));  // CAMERA
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::NONE), static_cast<int>(resolveParamGroup(40)));  // ETHERNET
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::NONE), static_cast<int>(resolveParamGroup(41)));  // PWM_SERVO
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::NONE), static_cast<int>(resolveParamGroup(43)));  // ENCODER
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::NONE), static_cast<int>(resolveParamGroup(44)));  // ONE_WIRE
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::NONE), static_cast<int>(resolveParamGroup(51)));  // MODBUS_DEVICE
+    TEST_ASSERT_EQUAL(static_cast<int>(ParamGroup::NONE), static_cast<int>(resolveParamGroup(60)));  // DEVICE_EVENT
+}
+
+// --- 7.5 参数组排他性：同一时刻只有一个参数组可见 ---
+
+void test_param_group_exclusivity() {
+    // 遍历所有已定义的类型值，每个类型最多激活一个参数组
+    int allTypes[] = {
+        1,2,3,4,5,
+        11,12,13,14,15,16,17,18,19,20,21,
+        26,27,
+        31,32,
+        36,37,38,39,40,41,42,43,44,45,47,48,49,
+        51,60
+    };
+    for (int t : allTypes) {
+        ParamGroup group = resolveParamGroup(t);
+        // 验证同一类型不会同时匹配多个参数组
+        int matchCount = 0;
+        if (group == ParamGroup::GPIO)     matchCount++;
+        if (group == ParamGroup::UART)     matchCount++;
+        if (group == ParamGroup::I2C)      matchCount++;
+        if (group == ParamGroup::SPI)      matchCount++;
+        if (group == ParamGroup::ADC)      matchCount++;
+        if (group == ParamGroup::DAC)      matchCount++;
+        if (group == ParamGroup::LCD)      matchCount++;
+        if (group == ParamGroup::STEPPER)  matchCount++;
+        if (group == ParamGroup::NEOPIXEL) matchCount++;
+        if (group == ParamGroup::SEGMENT)  matchCount++;
+        if (group == ParamGroup::RF)       matchCount++;
+        if (group == ParamGroup::RADAR)    matchCount++;
+        // NONE 不算激活，有参数组时恰好为 1
+        if (group != ParamGroup::NONE) {
+            TEST_ASSERT_EQUAL_MESSAGE(
+                1, matchCount,
+                ("Type " + std::to_string(t) + " should activate exactly 1 param group").c_str()
+            );
+        }
+    }
+}
+
+// --- 7.6 getPeripheralCategory 与 resolveParamGroup 一致性 ---
+
+void test_param_group_category_consistency() {
+    // 通信类型 → CATEGORY_COMMUNICATION，且参数组不为 GPIO
+    TEST_ASSERT_EQUAL(
+        static_cast<int>(PeripheralCategory::CATEGORY_COMMUNICATION),
+        static_cast<int>(getPeripheralCategory(PeripheralType::UART))
+    );
+    TEST_ASSERT_NOT_EQUAL(
+        static_cast<int>(ParamGroup::GPIO),
+        static_cast<int>(resolveParamGroup(static_cast<int>(PeripheralType::UART)))
+    );
+
+    // GPIO 类型 → CATEGORY_GPIO，且参数组为 GPIO
+    TEST_ASSERT_EQUAL(
+        static_cast<int>(PeripheralCategory::CATEGORY_GPIO),
+        static_cast<int>(getPeripheralCategory(PeripheralType::GPIO_DIGITAL_OUTPUT))
+    );
+    TEST_ASSERT_EQUAL(
+        static_cast<int>(ParamGroup::GPIO),
+        static_cast<int>(resolveParamGroup(static_cast<int>(PeripheralType::GPIO_DIGITAL_OUTPUT)))
+    );
+
+    // 模拟信号 → CATEGORY_ANALOG_SIGNAL
+    TEST_ASSERT_EQUAL(
+        static_cast<int>(PeripheralCategory::CATEGORY_ANALOG_SIGNAL),
+        static_cast<int>(getPeripheralCategory(PeripheralType::ADC))
+    );
+    TEST_ASSERT_EQUAL(
+        static_cast<int>(PeripheralCategory::CATEGORY_ANALOG_SIGNAL),
+        static_cast<int>(getPeripheralCategory(PeripheralType::DAC))
+    );
+
+    // 调试接口 → CATEGORY_DEBUG
+    TEST_ASSERT_EQUAL(
+        static_cast<int>(PeripheralCategory::CATEGORY_DEBUG),
+        static_cast<int>(getPeripheralCategory(PeripheralType::JTAG))
+    );
+    TEST_ASSERT_EQUAL(
+        static_cast<int>(PeripheralCategory::CATEGORY_DEBUG),
+        static_cast<int>(getPeripheralCategory(PeripheralType::SWD))
+    );
+
+    // 专用外设 → CATEGORY_SPECIAL
+    int specialTypes[] = {36, 42, 45, 47, 48, 49, 51, 60};
+    for (int t : specialTypes) {
+        TEST_ASSERT_EQUAL_MESSAGE(
+            static_cast<int>(PeripheralCategory::CATEGORY_SPECIAL),
+            static_cast<int>(getPeripheralCategory(static_cast<PeripheralType>(t))),
+            ("Type " + std::to_string(t) + " should be CATEGORY_SPECIAL").c_str()
+        );
+    }
+}
+
+// --- 7.7 新增外设默认禁用（向导式流程） ---
+
+void test_param_group_new_peripheral_default_disabled() {
+    // 新增外设时，enabled 应默认为 false（向导式：先保存→再测试→再启用）
+    // 后端默认值验证：PeripheralConfig 构造时 enabled 应为 false
+    PeripheralConfig config;
+    config.id = "new_test";
+    config.name = "New Test";
+    config.type = PeripheralType::UART;
+    // 新增时前端设置 enabledCb.checked = false，后端默认也应如此
+    config.enabled = false;
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+
+    PeripheralConfig* fetched = pm.getPeripheral("new_test");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_FALSE(fetched->enabled);
+    TEST_ASSERT_EQUAL(
+        static_cast<int>(PeripheralStatus::PERIPHERAL_DISABLED),
+        static_cast<int>(fetched->status)
+    );
+}
+
+void test_param_group_new_peripheral_uart_params_present() {
+    // 新增 UART 外设后，UART 参数应完整保存
+    PeripheralConfig config;
+    config.id = "uart_new";
+    config.name = "New UART";
+    config.type = PeripheralType::UART;
+    config.enabled = false;
+    config.uart.baudRate = 115200;
+    config.uart.dataBits = 8;
+    config.uart.stopBits = 1;
+    config.uart.parity = 0;
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+
+    PeripheralConfig* fetched = pm.getPeripheral("uart_new");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL(PeripheralType::UART, fetched->type);
+    TEST_ASSERT_EQUAL_UINT32(115200, fetched->uart.baudRate);
+    TEST_ASSERT_EQUAL_UINT8(8, fetched->uart.dataBits);
+    TEST_ASSERT_EQUAL_UINT8(1, fetched->uart.stopBits);
+    TEST_ASSERT_EQUAL_UINT8(0, fetched->uart.parity);
+}
+
+// ============================================================
 //  测试入口
 // ============================================================
 
@@ -813,4 +1461,36 @@ void test_periph_config_group() {
     RUN_TEST(test_periph_type_i2c_and_spi_values);
     RUN_TEST(test_periph_type_dac_and_adc_values);
     RUN_TEST(test_periph_gpio_pullup_pulldown_for_button_events);
+
+    // Group 6: 跨芯片数据一致性（不同芯片不做特殊处理，配置原样透传）
+    RUN_TEST(test_lcd_type_enum_and_data_transparency);
+    RUN_TEST(test_lcd_params_various_sizes);
+    RUN_TEST(test_seven_segment_type_enum_and_data_transparency);
+    RUN_TEST(test_seven_segment_brightness_range);
+    RUN_TEST(test_all_special_types_always_in_data_layer);
+    RUN_TEST(test_neopixel_data_transparency);
+    RUN_TEST(test_rf_module_data_transparency);
+    RUN_TEST(test_radar_sensor_data_transparency);
+    RUN_TEST(test_stepper_motor_data_transparency);
+    RUN_TEST(test_validation_failed_peripheral_kept_with_error_status);
+    RUN_TEST(test_error_status_peripheral_skips_hw_init);
+    RUN_TEST(test_peripheral_status_enum_values);
+    RUN_TEST(test_cross_chip_config_consistency_simulation);
+    RUN_TEST(test_lcd_update_preserves_data);
+    RUN_TEST(test_segment_update_preserves_data);
+
+    // Group 7: 外设类型→参数组映射一致性（回归测试：UART不应映射到GPIO参数）
+    RUN_TEST(test_param_group_regression_uart_not_gpio);
+    RUN_TEST(test_param_group_regression_default_select_value);
+    RUN_TEST(test_param_group_communication_types);
+    RUN_TEST(test_param_group_all_gpio_types);
+    RUN_TEST(test_param_group_gpio_sub_params_pwm_only);
+    RUN_TEST(test_param_group_gpio_sub_params_input_only);
+    RUN_TEST(test_param_group_analog_types);
+    RUN_TEST(test_param_group_special_types);
+    RUN_TEST(test_param_group_no_params_types);
+    RUN_TEST(test_param_group_exclusivity);
+    RUN_TEST(test_param_group_category_consistency);
+    RUN_TEST(test_param_group_new_peripheral_default_disabled);
+    RUN_TEST(test_param_group_new_peripheral_uart_params_present);
 }

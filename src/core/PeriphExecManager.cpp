@@ -375,6 +375,20 @@ void PeriphExecManager::sanitizeTriggerForSafety(ExecTrigger& trigger,
         } else if (trigger.intervalSec > PERIPH_EXEC_MAX_TIMER_INTERVAL_SEC) {
             trigger.intervalSec = PERIPH_EXEC_MAX_TIMER_INTERVAL_SEC;
         }
+        // 缓存 timePoint 解析结果，避免 checkTimerTriggers 每秒在锁内重复解析字符串
+        if (trigger.timerMode == 1 && trigger.timePoint.length() >= 5) {
+            int colonIdx = trigger.timePoint.indexOf(':');
+            if (colonIdx > 0) {
+                trigger._cachedHour = static_cast<int8_t>(trigger.timePoint.substring(0, colonIdx).toInt());
+                trigger._cachedMinute = static_cast<int8_t>(trigger.timePoint.substring(colonIdx + 1).toInt());
+            } else {
+                trigger._cachedHour = -1;
+                trigger._cachedMinute = -1;
+            }
+        } else {
+            trigger._cachedHour = -1;
+            trigger._cachedMinute = -1;
+        }
     }
 
     if (trigger.triggerType == static_cast<uint8_t>(ExecTriggerType::POLL_TRIGGER)) {
@@ -426,10 +440,13 @@ void PeriphExecManager::sanitizeRuleForSafety(PeriphExecRule& rule) const {
     for (auto& trigger : rule.triggers) {
         sanitizeTriggerForSafety(trigger, hasPollCollectionAction, rule.name);
     }
+    // 缓存规则级别标志，避免热路径重复遍历 actions
+    rule._cachedHasPollCollectionAction = hasPollCollectionAction;
+    rule._cachedNeedsModbus = ruleNeedsModbus(rule);
 }
 
 unsigned long PeriphExecManager::getPollTriggerCooldownMs(const PeriphExecRule& rule, const String& source) const {
-    if ((source == "modbus" || source == "modbus_poll") && ruleHasPollCollectionAction(rule)) {
+    if ((source == "modbus" || source == "modbus_poll") && rule._cachedHasPollCollectionAction) {
         return PERIPH_EXEC_HEAVY_POLL_TRIGGER_MIN_INTERVAL_MS;
     }
     return PERIPH_EXEC_POLL_TRIGGER_MIN_INTERVAL_MS;
@@ -1794,17 +1811,13 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
                         shouldTrigger = true;
                     }
                 } else if (trigger.timerMode == 1) {
-                    // 每日时间点模式
+                    // 每日时间点模式：使用缓存的解析值，避免锁内重复解析字符串
+                    if (trigger._cachedHour < 0 || trigger._cachedMinute < 0) continue;
+
                     struct tm timeinfo;
                     if (!getLocalTime(&timeinfo, 0) || timeinfo.tm_year < 100) continue;
 
-                    if (trigger.timePoint.length() < 5) continue;
-                    int colonIdx = trigger.timePoint.indexOf(':');
-                    if (colonIdx < 0) continue;
-                    int targetHour = trigger.timePoint.substring(0, colonIdx).toInt();
-                    int targetMin = trigger.timePoint.substring(colonIdx + 1).toInt();
-
-                    if (timeinfo.tm_hour == targetHour && timeinfo.tm_min == targetMin) {
+                    if (timeinfo.tm_hour == trigger._cachedHour && timeinfo.tm_min == trigger._cachedMinute) {
                         if (trigger.lastTriggerTime > 0 && (now - trigger.lastTriggerTime) < 60000) continue;
                         shouldTrigger = true;
                     }
@@ -1814,7 +1827,7 @@ void PeriphExecManager::checkTimerTriggers(unsigned long now, bool modbusAvailab
                     CandidateRule c;
                     c.id = rule.id;
                     c.name = rule.name;
-                    c.needsModbus = ruleNeedsModbus(rule);
+                    c.needsModbus = rule._cachedNeedsModbus;
                     c.triggerIdx = ti;
                     candidates.push_back(c);
                     break;  // 一个触发器匹配即可触发该规则
@@ -2145,7 +2158,7 @@ void PeriphExecManager::processPollDataMatch(JsonArray& arr, const String& sourc
             for (auto& pair : rules) {
                 PeriphExecRule& rule = pair.second;
                 if (!rule.enabled) continue;
-                bool hasPollCollectionAction = ruleHasPollCollectionAction(rule);
+                bool hasPollCollectionAction = rule._cachedHasPollCollectionAction;
 
                 // 遍历所有触发器（OR 关系）
                 bool triggerMatched = false;
@@ -2508,13 +2521,12 @@ bool PeriphExecManager::evaluateCondition(const String& value, uint8_t op, const
 
     // 数值操作符（GT/LT/GTE/LTE/BETWEEN/NOT_BETWEEN）
     float val = value.toFloat();
-    float cmp = compareValue.toFloat();
 
     switch (oper) {
-        case ExecOperator::GT:  return val > cmp;
-        case ExecOperator::LT:  return val < cmp;
-        case ExecOperator::GTE: return val >= cmp;
-        case ExecOperator::LTE: return val <= cmp;
+        case ExecOperator::GT:  return val > compareValue.toFloat();
+        case ExecOperator::LT:  return val < compareValue.toFloat();
+        case ExecOperator::GTE: return val >= compareValue.toFloat();
+        case ExecOperator::LTE: return val <= compareValue.toFloat();
         case ExecOperator::BETWEEN:
         case ExecOperator::NOT_BETWEEN: {
             int commaIdx = compareValue.indexOf(',');

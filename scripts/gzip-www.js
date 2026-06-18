@@ -151,10 +151,11 @@ function addWhitelistAbsolute(files, absPath) {
 
 function shouldKeepProfilePeripheral(item) {
     const id = String((item && item.id) || '');
+    // 硬件不支持的外设始终排除
     if (id === 'modbus_tcp') return false;
     if (isLiteWebProfile() && (id === 'modbus_rtu' || id === 'ethernet')) return false;
-    if (id === 'stepper' || id === 'adc' || id === 'ws2812b' || id === 'uart_debug') return true;
-    return item && item.enabled !== false;
+    // 保留所有外设（包括 disabled），由设备 ResourceProfile 限制实际上限
+    return true;
 }
 
 function getProfilePeripheralIds() {
@@ -237,18 +238,15 @@ function transformProdConfigFile(sourcePath, normalizedRel) {
         const unsupportedProtocols = new Set([2, 3, 4, 5]); // Modbus TCP, HTTP, CoAP, TCP
         const profilePeripheralIds = getProfilePeripheralIds();
         if (isLiteWebProfile()) {
-            [15, 16, 17, 18].forEach((actionType) => unsupportedActions.add(actionType)); // script and Modbus control/poll
+            [16, 17, 18].forEach((actionType) => unsupportedActions.add(actionType)); // Modbus control/poll
             unsupportedProtocols.add(1); // Modbus RTU
         }
         const rules = Array.isArray(doc.rules) ? doc.rules : [];
         doc.rules = rules
             .map((rule) => {
                 const ruleId = String((rule && rule.id) || '');
-                const keepDisabledTemplate = ruleId.startsWith('exec_stepper_') ||
-                    ruleId.startsWith('exec_adc_voltage_') ||
-                    ruleId.startsWith('exec_ws2812b_') ||
-                    ruleId.startsWith('exec_uart_debug_');
-                if (rule && rule.enabled === false && !keepDisabledTemplate) return null;
+                // 保留所有规则（包括 disabled），由设备 ResourceProfile 限制实际上限
+                // if (rule && rule.enabled === false && !keepDisabledTemplate) return null;
                 if (unsupportedProtocols.has(Number(rule.protocolType))) return null;
                 const actions = Array.isArray(rule.actions)
                     ? rule.actions.filter((action) => {

@@ -12,6 +12,7 @@
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <PubSubClient.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <mbedtls/aes.h>
 #include <mbedtls/base64.h>
@@ -23,7 +24,7 @@ static const char* MQTT_AES_IV = "wumei-smart-open";
 // ============================================================================
 static bool saveMqttTestConfig(const String& server, int port, const String& username,
                                const String& password, const String& authCode,
-                               int authType, const String& mqttSecret) {
+                               int authType, const String& mqttSecret, const String& scheme = "mqtt") {
     JsonDocument doc;
     if (!ConfigStorage::getInstance().loadProtocolConfig(doc)) {
         LOG_WARNING("[MQTT Test] Failed to load protocol.json for saving test config");
@@ -32,6 +33,7 @@ static bool saveMqttTestConfig(const String& server, int port, const String& use
 
     JsonObject mqtt = doc["mqtt"].to<JsonObject>();
     // 仅更新测试表单中用户可能修改的字段
+    mqtt["scheme"]   = scheme;
     mqtt["server"]   = server;
     mqtt["port"]     = port;
     mqtt["username"] = username;
@@ -54,6 +56,12 @@ static bool saveMqttTestConfig(const String& server, int port, const String& use
 // ============================================================================
 
 static Client* selectMqttTestClient(WebHandlerContext* ctx, WiFiClient& fallbackClient, String& errorMessage) {
+    return selectMqttTestClient(ctx, fallbackClient, errorMessage, "mqtt");
+}
+
+// scheme 参数版本：支持 mqtt/mqtts 协议选择
+static Client* selectMqttTestClient(WebHandlerContext* ctx, WiFiClient& fallbackClient,
+                                     String& errorMessage, const String& scheme) {
     errorMessage = "";
     FBNetworkManager* netMgr = (ctx && ctx->networkManager)
                                  ? static_cast<FBNetworkManager*>(ctx->networkManager)
@@ -369,6 +377,7 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
 
     String server = ctx->getParamValue(request, "server", "");
     int port = ctx->getParamInt(request, "port", 1883);
+    String scheme = ctx->getParamValue(request, "scheme", "mqtt");
     String clientId = ctx->getParamValue(request, "clientId", "");
     String username = ctx->getParamValue(request, "username", "");
     String password = ctx->getParamValue(request, "password", "");
@@ -477,8 +486,15 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
             // 在 restartMQTTDeferred() 之前完全释放，避免堆内存不足
             {
                 WiFiClient testWifi;
+                WiFiClientSecure testWifiSecure;
                 String transportError;
-                Client* testTransport = selectMqttTestClient(ctx, testWifi, transportError);
+                Client* testTransport = nullptr;
+                if (scheme == "mqtts") {
+                    testWifiSecure.setInsecure();
+                    testTransport = &testWifiSecure;
+                } else {
+                    testTransport = selectMqttTestClient(ctx, testWifi, transportError, scheme);
+                }
                 if (!testTransport) {
                     doc["data"]["connected"] = false;
                     doc["data"]["error"] = -9;
@@ -515,7 +531,7 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
             //   - mqttHasValidRuntimeConfig() 只检查 server/port 非空，不验证凭据是否匹配
             //   - restartMQTTDeferred() 会先释放旧客户端（~12KB），再从 protocol.json 加载最新配置
             if (connected) {
-                saveMqttTestConfig(server, port, username, password, authCode, authType, mqttSecret);
+                saveMqttTestConfig(server, port, username, password, authCode, authType, mqttSecret, scheme);
                 ProtocolManager* pm = ctx->protocolManager;
                 if (pm) {
                     bool deferred = pm->restartMQTTDeferred();
@@ -556,8 +572,15 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
     // 在 restartMQTTDeferred() 之前完全释放，避免堆内存不足
     {
         WiFiClient testWifi;
+        WiFiClientSecure testWifiSecure;
         String transportError;
-        Client* testTransport = selectMqttTestClient(ctx, testWifi, transportError);
+        Client* testTransport = nullptr;
+        if (scheme == "mqtts") {
+            testWifiSecure.setInsecure();
+            testTransport = &testWifiSecure;
+        } else {
+            testTransport = selectMqttTestClient(ctx, testWifi, transportError, scheme);
+        }
         if (!testTransport) {
             doc["data"]["connected"] = false;
             doc["data"]["error"] = -9;
@@ -590,7 +613,7 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
     // 测试成功后，先保存表单参数到 protocol.json，再重建客户端
     // 原因同上：确保 restartMQTTDeferred 加载与测试一致的配置
     if (connected) {
-        saveMqttTestConfig(server, port, username, password, authCode, authType, mqttSecret);
+        saveMqttTestConfig(server, port, username, password, authCode, authType, mqttSecret, scheme);
         ProtocolManager* pm = ctx->protocolManager;
         if (pm) {
             bool deferred = pm->restartMQTTDeferred();

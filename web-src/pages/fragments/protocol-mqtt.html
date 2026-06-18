@@ -45,9 +45,15 @@
     <div class="config-form-grid">
         <div class="config-form-column">
             <div class="fb-form-group">
-                <label for="mqtt-broker">MQTT Broker</label>
-                <input type="text" id="mqtt-broker" class=""
-                    value="iot.fastbee.cn">
+                <label data-i18n="mqtt-broker-label">MQTT Broker</label>
+                <div style="display:flex;gap:0.4em;align-items:stretch;">
+                    <select id="mqtt-scheme" style="width:6.5em;flex-shrink:0;">
+                        <option value="mqtt">mqtt://</option>
+                        <option value="mqtts">mqtts://</option>
+                    </select>
+                    <input type="text" id="mqtt-broker" class=""
+                        value="iot.fastbee.cn" style="flex:1;min-width:0;">
+                </div>
             </div>
 
             <div class="fb-form-group">

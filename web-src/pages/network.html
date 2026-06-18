@@ -518,27 +518,41 @@
                     </div>
 
                     <!-- 域名配置 -->
-                    <h4 class="fb-section-title-mt"
-                        data-i18n="domain-config-title">域名配置</h4>
-                    <div class="config-form-grid">
-                        <div class="config-form-column">
-                            <div class="fb-form-group">
-                                <label for="enable-mdns" data-i18n="wifi-mdns-label">mDNS</label>
-                                <select id="enable-mdns" class="">
-                                    <option value="1" selected data-i18n="wifi-enable">启用</option>
-                                    <option value="0" data-i18n="wifi-disable">禁用</option>
-                                </select>
+                    <div id="domain-config-section">
+                        <h4 class="fb-section-title-mt"
+                            data-i18n="domain-config-title">域名配置</h4>
+                        <div class="config-form-grid">
+                            <div class="config-form-column">
+                                <div class="fb-form-group">
+                                    <label for="enable-mdns" data-i18n="wifi-mdns-label">mDNS</label>
+                                    <select id="enable-mdns" class="">
+                                        <option value="1" selected data-i18n="wifi-enable">启用</option>
+                                        <option value="0" data-i18n="wifi-disable">禁用</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="config-form-column">
+                                <div class="fb-form-group">
+                                    <label for="custom-domain"
+                                        data-i18n="custom-domain-label">自定义域名</label>
+                                    <input type="text" id="custom-domain" class=""
+                                        placeholder="fastbee">
+                                    <small class="fb-text-muted">访问地址：<span id="mdns-url-preview">fastbee.local</span></small>
+                                </div>
                             </div>
                         </div>
 
-                        <div class="config-form-column">
-                            <div class="fb-form-group">
-                                <label for="custom-domain"
-                                    data-i18n="custom-domain-label">自定义域名</label>
-                                <input type="text" id="custom-domain" class=""
-                                    placeholder="fastbee">
-                                <small class="fb-text-muted">访问地址：fastbee.local</small>
-                            </div>
+                        <!-- mDNS 禁用提示 -->
+                        <div class="message message-warning fb-hidden fb-mt-2" id="mdns-disabled-notice">
+                            <strong data-i18n="mdns-disabled-notice-title">提示：</strong>
+                            <span data-i18n="mdns-disabled-notice-text">mDNS 已禁用，您将无法通过自定义域名访问系统。请通过设备 IP 地址访问：</span>
+                            <code id="mdns-disabled-ip-display"></code>
+                        </div>
+
+                        <!-- 4G/LoRa 模式域名配置不可用提示 -->
+                        <div class="message message-info fb-hidden fb-mt-2" id="domain-unavailable-notice">
+                            <span data-i18n="domain-unavailable-notice-text">当前联网方式下域名配置不可用。4G/LoRa 模式仅支持通过 AP 热点 IP 地址访问系统。</span>
                         </div>
                     </div>
 

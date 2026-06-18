@@ -246,6 +246,13 @@ public:
     // 内部方法
     bool startAPMode();
     void stopAPMode();
+    /**
+     * @brief 最后保障：强制以出厂默认配置启动 AP
+     * 当所有联网方式（包括正常 AP 回退）都失败时调用，
+     * 确保设备始终有一个入口访问和配置 Web 服务。
+     * 若连最后保障 AP 也失败，则重启重试（连续3次失败则清除配置）。
+     */
+    bool ensureLastResortAP();
     bool connectToWiFi();
     /**
      * @brief 阻塞等待 WiFi 连接（带超时）

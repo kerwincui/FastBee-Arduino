@@ -17,36 +17,15 @@
         // ============ 事件绑定 ============
         setupPeripheralsEvents() {
             if (this._periphEventsBound) return;
-            // 新增外设按钮
+            // 新增外设按钮（页面元素，非模态窗内）
             var addPeripheralBtn = document.getElementById('add-peripheral-btn');
             if (addPeripheralBtn) addPeripheralBtn.addEventListener('click', () => this.openPeripheralModal());
-            // 关闭外设模态框
-            var closePeripheralModal = document.getElementById('close-peripheral-modal');
-            if (closePeripheralModal) closePeripheralModal.addEventListener('click', () => this.closePeripheralModal());
-            // 取消外设按钮
-            var cancelPeripheralBtn = document.getElementById('cancel-peripheral-btn');
-            if (cancelPeripheralBtn) cancelPeripheralBtn.addEventListener('click', () => this.closePeripheralModal());
-            // 保存外设按钮
-            var savePeripheralBtn = document.getElementById('save-peripheral-btn');
-            if (savePeripheralBtn) savePeripheralBtn.addEventListener('click', () => this.savePeripheralConfig());
-            // 外设类型选择变化
-            var peripheralTypeInput = document.getElementById('peripheral-type-input');
-            if (peripheralTypeInput) peripheralTypeInput.addEventListener('change', (e) => this.onPeripheralTypeChange(e.target.value));
-            // 引脚实时校验
-            var pinsInput = document.getElementById('peripheral-pins-input');
-            if (pinsInput) pinsInput.addEventListener('blur', (e) => this._validatePinsInline());
             // 外设过滤器
             var peripheralFilter = document.getElementById('peripheral-filter-type');
             if (peripheralFilter) peripheralFilter.addEventListener('change', (e) => { this._periphCurrentPage = 1; this.loadPeripherals(e.target.value); });
-            // 兼容旧版：GPIO配置事件绑定
+            // 兼容旧版：GPIO 新增按钮
             var addGpioBtn = document.getElementById('add-gpio-btn');
             if (addGpioBtn) addGpioBtn.addEventListener('click', () => this.openPeripheralModal());
-            var closeGpioModal = document.getElementById('close-gpio-modal');
-            if (closeGpioModal) closeGpioModal.addEventListener('click', () => this.closePeripheralModal());
-            var cancelGpioBtn = document.getElementById('cancel-gpio-btn');
-            if (cancelGpioBtn) cancelGpioBtn.addEventListener('click', () => this.closePeripheralModal());
-            var saveGpioBtn = document.getElementById('save-gpio-btn');
-            if (saveGpioBtn) saveGpioBtn.addEventListener('click', () => this.savePeripheralConfig());
             var tableBody = document.getElementById('peripheral-table-body');
             if (tableBody) {
                 tableBody.addEventListener('click', (event) => this._handlePeripheralTableClick(event));
@@ -54,7 +33,38 @@
             // 刷新按钮
             var refreshBtn = document.getElementById('peripheral-refresh-btn');
             if (refreshBtn) refreshBtn.addEventListener('click', () => this._refreshPeripheralList());
+            // 注册模态窗事件绑定器（模态窗 DOM 加载后由 _loadModals 触发）
+            if (typeof this._registerModalBinder === 'function') {
+                this._registerModalBinder('peripherals', () => this._bindPeripheralModalEvents());
+            }
             this._periphEventsBound = true;
+        },
+
+        /**
+         * 绑定模态窗内的事件（模态窗 DOM 已就绪后调用）
+         * 由 _loadModals → _rebindAllModalEvents 触发
+         */
+        _bindPeripheralModalEvents() {
+            if (this._periphModalBound) return;
+            // 外设模态框
+            var closePeripheralModal = document.getElementById('close-peripheral-modal');
+            if (closePeripheralModal) closePeripheralModal.addEventListener('click', () => this.closePeripheralModal());
+            var cancelPeripheralBtn = document.getElementById('cancel-peripheral-btn');
+            if (cancelPeripheralBtn) cancelPeripheralBtn.addEventListener('click', () => this.closePeripheralModal());
+            var savePeripheralBtn = document.getElementById('save-peripheral-btn');
+            if (savePeripheralBtn) savePeripheralBtn.addEventListener('click', () => this.savePeripheralConfig());
+            var peripheralTypeInput = document.getElementById('peripheral-type-input');
+            if (peripheralTypeInput) peripheralTypeInput.addEventListener('change', (e) => this.onPeripheralTypeChange(e.target.value));
+            var pinsInput = document.getElementById('peripheral-pins-input');
+            if (pinsInput) pinsInput.addEventListener('blur', (e) => this._validatePinsInline());
+            // 兼容旧版 GPIO 模态框
+            var closeGpioModal = document.getElementById('close-gpio-modal');
+            if (closeGpioModal) closeGpioModal.addEventListener('click', () => this.closePeripheralModal());
+            var cancelGpioBtn = document.getElementById('cancel-gpio-btn');
+            if (cancelGpioBtn) cancelGpioBtn.addEventListener('click', () => this.closePeripheralModal());
+            var saveGpioBtn = document.getElementById('save-gpio-btn');
+            if (saveGpioBtn) saveGpioBtn.addEventListener('click', () => this.savePeripheralConfig());
+            this._periphModalBound = true;
         },
 
         _handlePeripheralTableClick(event) {
@@ -124,6 +134,9 @@
             const tbody = document.getElementById('peripheral-table-body');
             if (!tbody) return;
             this.applyDeveloperModeState();
+            // Show/hide developer mode hint banner
+            var devHint = document.getElementById('peripheral-dev-mode-hint');
+            if (devHint) devHint.style.display = this.isDeveloperModeEnabled() ? 'none' : 'block';
             this.renderEmptyTableRow(tbody, 6, '加载中...');
             var getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
             var params = {
@@ -237,7 +250,9 @@
                 // 新增外设默认禁用（向导式：先保存再测试再启用）
                 var enabledCb = document.getElementById('peripheral-enabled-input');
                 if (enabledCb) enabledCb.checked = false;
-                this.onPeripheralTypeChange('11');
+                // 根据 form.reset() 后的实际下拉值初始化参数区域，避免类型与参数不匹配
+                var typeSelect = document.getElementById('peripheral-type-input');
+                this.onPeripheralTypeChange(typeSelect ? typeSelect.value : '1');
             }
             this.showModal(modal);
         },

@@ -204,6 +204,8 @@ function Test-CheckSemantics {
         "device-config" {
             if ($null -eq $data) { return "missing data" }
             if ($null -eq (Get-ObjectValue -Object $data -Name "deviceName")) { return "missing deviceName" }
+            $devMode = Get-ObjectValue -Object $data -Name "developerModeEnabled"
+            if ($null -eq $devMode) { return "missing developerModeEnabled" }
         }
         "device-info" {
             if ($null -eq $data) { return "missing data" }
