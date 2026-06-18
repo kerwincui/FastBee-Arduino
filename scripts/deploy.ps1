@@ -168,15 +168,37 @@ function Invoke-PioCmd {
     # 进度条等 Unicode 字符输出触发 UnicodeEncodeError
     $prevEnc = $env:PYTHONIOENCODING
     $prevUtf8 = $env:PYTHONUTF8
+    $prevChcp = $null
     $env:PYTHONIOENCODING = 'utf-8'
     $env:PYTHONUTF8 = '1'
+    # 切换控制台代码页到 UTF-8 (65001)，确保 pio 进度条 Unicode 字符
+    # 不会因子进程继承 GBK 控制台而触发 UnicodeEncodeError
     try {
-        $cmdStr = "pio $($PioArgs -join ' ')"
-        Write-Host $cmdStr -ForegroundColor Cyan
-        cmd /c $cmdStr
+        $chcpOut = chcp 2>$null
+        if ($chcpOut -match '\d+') { $prevChcp = $Matches[0] }
+        chcp 65001 | Out-Null
+    } catch { }
+    try {
+        Write-Host "pio $($PioArgs -join ' ')" -ForegroundColor Cyan
+        # 使用临时 ErrorActionPreference 防止 pio stderr 输出（进度条等）
+        # 在 $ErrorActionPreference=Stop 下被误判为终止错误
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & pio @PioArgs 2>&1 | ForEach-Object {
+                if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                    Write-Host $_.Exception.Message -ForegroundColor DarkGray
+                } else {
+                    Write-Host $_
+                }
+            }
+        } finally {
+            $ErrorActionPreference = $prevEAP
+        }
         return $LASTEXITCODE
     }
     finally {
+        if ($prevChcp) { try { chcp $prevChcp | Out-Null } catch {} }
         if ($null -ne $prevEnc) { $env:PYTHONIOENCODING = $prevEnc } else { Remove-Item Env:\PYTHONIOENCODING -ErrorAction SilentlyContinue }
         if ($null -ne $prevUtf8) { $env:PYTHONUTF8 = $prevUtf8 } else { Remove-Item Env:\PYTHONUTF8 -ErrorAction SilentlyContinue }
     }

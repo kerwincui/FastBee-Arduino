@@ -291,6 +291,15 @@ private:
     unsigned long connectingStartTime; // 连接开始时间
     unsigned long pendingRestartTime;  // 延迟重启时间
     
+    // 以太网自动重连
+#if FASTBEE_ENABLE_ETHERNET
+    bool ethReconnectPending;         // 以太网重连待执行
+    unsigned long ethReconnectTime;   // 以太网重连计划时间
+    int ethReconnectAttempts;         // 以太网重连尝试次数
+    static constexpr unsigned long ETH_RECONNECT_INTERVAL_MS = 10000;  // 重连间隔
+    static constexpr int ETH_MAX_RECONNECT_ATTEMPTS = 10;             // 最大重连次数
+#endif
+    
     // 时间相关
     unsigned long lastReconnectAttempt;
     unsigned long lastStatusUpdate;

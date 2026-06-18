@@ -260,7 +260,7 @@ void EthernetAdapter::onEthEvent(arduino_event_id_t event, arduino_event_info_t 
             break;
         case ARDUINO_EVENT_ETH_DISCONNECTED:
             _instance->_connected = false;
-            LOG_WARNING("EthernetAdapter: ETH Disconnected");
+            LOG_WARNING("EthernetAdapter: ETH Disconnected (was connected, link lost or DHCP lease expired)");
             break;
         default:
             break;

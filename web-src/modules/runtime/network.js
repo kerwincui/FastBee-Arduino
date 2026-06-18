@@ -318,6 +318,24 @@
             setTimeout(() => this.loadNetworkStatus(), delayMs || 800);
         },
 
+        /**
+         * 保存按钮倒计时禁用（网络重启后自动恢复）
+         */
+        _startSaveBtnCountdown(btn, btnTextEl, originalText, seconds) {
+            let countdown = seconds;
+            const interval = setInterval(() => {
+                countdown--;
+                if (countdown <= 0) {
+                    clearInterval(interval);
+                    if (btn) btn.disabled = false;
+                    if (btnTextEl) btnTextEl.textContent = originalText;
+                } else {
+                    if (btnTextEl) btnTextEl.textContent = '网络模式切换中... (' + countdown + 's)';
+                }
+            }, 1000);
+            this._refreshNetworkStatusSoon(3000);
+        },
+
         saveNetworkConfig() {
             const config = {
                 networkType: document.getElementById('network-type')?.value || '0',
@@ -549,16 +567,39 @@
                     intPin: parseInt(document.getElementById('eth-int')?.value || '14')
                 }
             };
+
+            const submitBtn = document.getElementById('ethernet-save-btn');
+            const submitBtnText = document.getElementById('ethernet-save-btn-text');
+            const originalText = submitBtnText?.textContent || '保存配置';
+            if (submitBtn) submitBtn.disabled = true;
+            if (submitBtnText) submitBtnText.textContent = '网络模式切换中...';
+
             apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success('网络设置保存成功', '网络设置');
-                        this._refreshNetworkStatusSoon(1200);
+                        const message = '网络设置保存成功！'
+                            + '<br>网络配置变更需要重启网络服务才能生效，请等待约10秒...'
+                            + '<br>以太网连接成功后，可通过以太网 IP 访问；'
+                            + '如连接失败，AP 热点将始终可用：http://192.168.4.1';
+                        Notification.show({
+                            type: 'success',
+                            title: '网络配置已保存',
+                            message: message,
+                            html: true,
+                            duration: 12000
+                        });
+                        this._startSaveBtnCountdown(submitBtn, submitBtnText, originalText, 15);
                     } else {
                         Notification.error(res?.error || '保存失败', '网络设置');
+                        if (submitBtn) submitBtn.disabled = false;
+                        if (submitBtnText) submitBtnText.textContent = originalText;
                     }
                 })
-                .catch(() => Notification.error('保存失败', '网络设置'));
+                .catch(() => {
+                    Notification.error('保存失败', '网络设置');
+                    if (submitBtn) submitBtn.disabled = false;
+                    if (submitBtnText) submitBtnText.textContent = originalText;
+                });
         },
 
         /**
@@ -575,16 +616,38 @@
                     apn: document.getElementById('cell-apn')?.value || 'CMNET'
                 }
             };
+
+            const submitBtn = document.getElementById('cellular-save-btn');
+            const submitBtnText = document.getElementById('cellular-save-btn-text');
+            const originalText = submitBtnText?.textContent || '保存配置';
+            if (submitBtn) submitBtn.disabled = true;
+            if (submitBtnText) submitBtnText.textContent = '网络模式切换中...';
+
             apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success('网络设置保存成功', '网络设置');
-                        this._refreshNetworkStatusSoon(1200);
+                        const message = '网络设置保存成功！'
+                            + '<br>网络配置变更需要重启网络服务才能生效，请等待约15秒...'
+                            + '<br>4G 连接后，可通过设备 AP 热点 http://192.168.4.1 访问本系统';
+                        Notification.show({
+                            type: 'success',
+                            title: '网络配置已保存',
+                            message: message,
+                            html: true,
+                            duration: 12000
+                        });
+                        this._startSaveBtnCountdown(submitBtn, submitBtnText, originalText, 15);
                     } else {
                         Notification.error(res?.error || '保存失败', '网络设置');
+                        if (submitBtn) submitBtn.disabled = false;
+                        if (submitBtnText) submitBtnText.textContent = originalText;
                     }
                 })
-                .catch(() => Notification.error('保存失败', '网络设置'));
+                .catch(() => {
+                    Notification.error('保存失败', '网络设置');
+                    if (submitBtn) submitBtn.disabled = false;
+                    if (submitBtnText) submitBtnText.textContent = originalText;
+                });
         },
 
         /**
@@ -600,16 +663,38 @@
                     baudRate: parseInt(document.getElementById('lora-baud')?.value || '9600')
                 }
             };
+
+            const submitBtn = document.getElementById('lora-save-btn');
+            const submitBtnText = document.getElementById('lora-save-btn-text');
+            const originalText = submitBtnText?.textContent || '保存配置';
+            if (submitBtn) submitBtn.disabled = true;
+            if (submitBtnText) submitBtnText.textContent = '网络模式切换中...';
+
             apiPut('/api/network/config', config)
                 .then(res => {
                     if (res && res.success) {
-                        Notification.success('网络设置保存成功', '网络设置');
-                        this._refreshNetworkStatusSoon(1200);
+                        const message = '网络设置保存成功！'
+                            + '<br>网络配置变更需要重启网络服务才能生效，请等待约10秒...'
+                            + '<br>LoRa 模式下请通过设备 AP 热点 http://192.168.4.1 访问本系统';
+                        Notification.show({
+                            type: 'success',
+                            title: '网络配置已保存',
+                            message: message,
+                            html: true,
+                            duration: 12000
+                        });
+                        this._startSaveBtnCountdown(submitBtn, submitBtnText, originalText, 15);
                     } else {
                         Notification.error(res?.error || '保存失败', '网络设置');
+                        if (submitBtn) submitBtn.disabled = false;
+                        if (submitBtnText) submitBtnText.textContent = originalText;
                     }
                 })
-                .catch(() => Notification.error('保存失败', '网络设置'));
+                .catch(() => {
+                    Notification.error('保存失败', '网络设置');
+                    if (submitBtn) submitBtn.disabled = false;
+                    if (submitBtnText) submitBtnText.textContent = originalText;
+                });
         },
 
         /**

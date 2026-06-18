@@ -677,14 +677,24 @@ bool FastBeeFramework::initialize() {
 #if FASTBEE_ENABLE_ETHERNET
     if (network && network->getNetworkType() == NetworkType::NET_ETHERNET && network->getEthernetAdapter()) {
         auto* eth = network->getEthernetAdapter();
+        IPAddress ethIP = eth->localIP();
+        bool ethHasIP = (ethIP != IPAddress(0,0,0,0) && ethIP != INADDR_NONE);
         ets_printf("Mode: Ethernet (W5500)\n");
-        ets_printf("Ethernet IP: %s\n", eth->localIP().toString().c_str());
-        ets_printf("Access URL: http://%s\n", eth->localIP().toString().c_str());
+        if (ethHasIP && eth->isConnected()) {
+            ets_printf("Ethernet IP: %s\n", ethIP.toString().c_str());
+            ets_printf("Access URL: http://%s\n", ethIP.toString().c_str());
+            if (network->getConfig().enableMDNS) {
+                ets_printf("mDNS URL: http://%s.local\n", network->getConfig().customDomain.c_str());
+            }
+        } else {
+            ets_printf("Ethernet IP: %s (LINK DOWN - auto-reconnecting)\n", ethIP.toString().c_str());
+            ets_printf("WARNING: Ethernet link is down, web access only via AP\n");
+        }
         if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
             ets_printf("Config AP: %s (IP: %s)\n", WiFi.softAPSSID().c_str(), WiFi.softAPIP().toString().c_str());
-        }
-        if (network->getConfig().enableMDNS) {
-            ets_printf("mDNS URL: http://%s.local\n", network->getConfig().customDomain.c_str());
+            if (!ethHasIP) {
+                ets_printf("AP Access: http://%s\n", WiFi.softAPIP().toString().c_str());
+            }
         }
     } else
 #endif

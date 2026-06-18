@@ -796,6 +796,13 @@ bool PeripheralManager::initAllEnabledPeripherals() {
 
     for (auto& pair : peripherals) {
         if (pair.second.enabled) {
+            // 跳过验证失败的外设（已标记为 PERIPHERAL_ERROR），仅保留配置展示
+            auto* rtState = getRuntimeState(pair.first);
+            if (rtState && rtState->status == PeripheralStatus::PERIPHERAL_ERROR) {
+                LOG_WARNINGF("Peripheral Manager: Skipping init for '%s' (validation failed)", pair.first.c_str());
+                failCount++;
+                continue;
+            }
             if (initHardware(pair.first)) {
                 successCount++;
             } else {
@@ -1091,18 +1098,14 @@ bool PeripheralManager::saveConfiguration() {
             params["stepsPerRevolution"] = config.params.stepper.stepsPerRevolution;
             params["speed"] = config.params.stepper.speed;
         }
-#if FASTBEE_ENABLE_LCD
         else if (config.type == PeripheralType::LCD) {
             params["width"]     = config.params.lcd.width;
             params["height"]    = config.params.lcd.height;
             params["interface"] = config.params.lcd.interface;
         }
-#endif
-#if FASTBEE_ENABLE_SEVEN_SEGMENT
         else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
             params["brightness"] = config.params.segment.brightness;
         }
-#endif
         else if (config.type == PeripheralType::NEO_PIXEL) {
             params["count"] = clampNeoPixelCount(config.params.neopixel.count);
             params["brightness"] = config.params.neopixel.brightness;
@@ -1267,7 +1270,6 @@ bool PeripheralManager::loadConfiguration() {
                 config.params.stepper.stepsPerRevolution = params["stepsPerRevolution"] | STEPPER_DEFAULT_STEPS_PER_REV;
                 config.params.stepper.speed = clampStepperSpeed(params["speed"] | STEPPER_DEFAULT_RPM);
             }
-#if FASTBEE_ENABLE_LCD
             else if (config.type == PeripheralType::LCD) {
                 // 支持扩展宽度/高度（用 int 读取避免 uint8_t 默认值裁剪）
                 int w = params["width"]  | 128;
@@ -1277,15 +1279,12 @@ bool PeripheralManager::loadConfiguration() {
                 config.params.lcd.height    = (uint8_t)(h > 255 ? 255 : (h < 0 ? 0 : h));
                 config.params.lcd.interface = (uint8_t)(iface < 0 ? 2 : iface);
             }
-#endif
-#if FASTBEE_ENABLE_SEVEN_SEGMENT
             else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
                 int b = params["brightness"] | 2;
                 if (b < 0) b = 0;
                 if (b > 7) b = 7;
                 config.params.segment.brightness = (uint8_t)b;
             }
-#endif
             else if (config.type == PeripheralType::NEO_PIXEL) {
                 int count = params["count"] | NEOPIXEL_DEFAULT_COUNT;
                 int brightness = params["brightness"] | NEOPIXEL_DEFAULT_BRIGHTNESS;
@@ -1310,18 +1309,22 @@ bool PeripheralManager::loadConfiguration() {
 
         if (!config.id.isEmpty() && config.type != PeripheralType::UNCONFIGURED) {
             String errorMsg;
-            if (!validateConfig(config, errorMsg)) {
-                LOG_WARNINGF("Peripheral Manager: Skipping invalid config '%s': %s",
+            bool valid = validateConfig(config, errorMsg);
+            if (!valid) {
+                LOG_WARNINGF("Peripheral Manager: Invalid config '%s' loaded with error status: %s",
                              config.id.c_str(),
                              errorMsg.c_str());
-                continue;
             }
 
             peripherals[config.id] = config;
 
             PeripheralRuntimeState state;
             state.id = config.id;
-            state.status = config.enabled ? PeripheralStatus::PERIPHERAL_ENABLED : PeripheralStatus::PERIPHERAL_DISABLED;
+            if (valid) {
+                state.status = config.enabled ? PeripheralStatus::PERIPHERAL_ENABLED : PeripheralStatus::PERIPHERAL_DISABLED;
+            } else {
+                state.status = PeripheralStatus::PERIPHERAL_ERROR;
+            }
             runtimeStates[config.id] = state;
 
             updatePinMapping(config.id, config);

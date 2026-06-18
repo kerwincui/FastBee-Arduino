@@ -77,7 +77,13 @@ FBNetworkManager::FBNetworkManager(AsyncWebServer* webServerPtr)
       connecting(false),
       pendingRestart(false),
       connectingStartTime(0),
-      pendingRestartTime(0) {
+      pendingRestartTime(0)
+#if FASTBEE_ENABLE_ETHERNET
+      , ethReconnectPending(false)
+      , ethReconnectTime(0)
+      , ethReconnectAttempts(0)
+#endif
+{
     
     wifiConfig = WiFiConfig();
     statusInfo = NetworkStatusInfo();
@@ -195,6 +201,8 @@ bool FBNetworkManager::initialize() {
                 dnsManager->startMDNS(wifiConfig.customDomain);
             }
             
+            ethReconnectAttempts = 0;
+            ethReconnectPending = false;
             isInitialized = true;
             return true;
         } else {
@@ -438,12 +446,84 @@ void FBNetworkManager::update() {
             statusInfo.status = NetworkStatus::CONNECTED;
             statusInfo.lastConnectionTime = millis();
             triggerEvent(NetworkStatus::CONNECTED, statusInfo.ipAddress);
+#if FASTBEE_ENABLE_ETHERNET
+            // 以太网重连成功后重置计数器
+            if (wifiConfig.networkType == NetworkType::NET_ETHERNET) {
+                ethReconnectAttempts = 0;
+                ethReconnectPending = false;
+                LOGGER.infof("NetworkManager: Ethernet reconnected, IP: %s",
+                             ethernetAdapter ? ethernetAdapter->localIP().toString().c_str() : "?");
+                // 重连成功后重启mDNS确保绑定正确接口
+                if (wifiConfig.enableMDNS) {
+                    dnsManager->stopMDNS();
+                    dnsManager->startMDNS(wifiConfig.customDomain);
+                }
+            }
+#endif
         } else if (!activeConnected && wasConnected) {
             LOG_WARNING("NetworkManager: active network disconnected");
             statusInfo.status = NetworkStatus::DISCONNECTED;
             triggerEvent(NetworkStatus::DISCONNECTED, "Network disconnected");
+#if FASTBEE_ENABLE_ETHERNET
+            // 以太网断连后调度自动重连
+            if (wifiConfig.networkType == NetworkType::NET_ETHERNET && ethernetAdapter) {
+                if (ethReconnectAttempts < ETH_MAX_RECONNECT_ATTEMPTS) {
+                    ethReconnectPending = true;
+                    ethReconnectTime = currentTime + ETH_RECONNECT_INTERVAL_MS;
+                    LOGGER.infof("NetworkManager: Ethernet reconnect scheduled in %lus (attempt %d/%d)",
+                                 (unsigned long)(ETH_RECONNECT_INTERVAL_MS / 1000),
+                                 ethReconnectAttempts + 1, ETH_MAX_RECONNECT_ATTEMPTS);
+                } else {
+                    LOG_WARNING("NetworkManager: Ethernet max reconnect attempts reached, giving up auto-reconnect");
+                }
+            }
+#endif
         }
         wasConnected = activeConnected;
+
+#if FASTBEE_ENABLE_ETHERNET
+        // 处理以太网初始断连状态（启动时连接过但第一次update前就已断开）
+        // 此时 wasConnected=false, activeConnected=false，状态转换检测无法触发
+        if (!activeConnected && !ethReconnectPending &&
+            wifiConfig.networkType == NetworkType::NET_ETHERNET && ethernetAdapter &&
+            !ethernetAdapter->isConnected() &&
+            ethReconnectAttempts < ETH_MAX_RECONNECT_ATTEMPTS) {
+            // 首次检测到断连或重连后仍断连，调度重连
+            if (ethReconnectAttempts == 0 || currentTime - lastStatusUpdate >= ETH_RECONNECT_INTERVAL_MS) {
+                ethReconnectPending = true;
+                ethReconnectTime = currentTime + ETH_RECONNECT_INTERVAL_MS;
+                LOGGER.infof("NetworkManager: Ethernet disconnected, reconnect scheduled in %lus (attempt %d/%d)",
+                             (unsigned long)(ETH_RECONNECT_INTERVAL_MS / 1000),
+                             ethReconnectAttempts + 1, ETH_MAX_RECONNECT_ATTEMPTS);
+            }
+        }
+#endif
+
+#if FASTBEE_ENABLE_ETHERNET
+        // 以太网自动重连执行
+        if (ethReconnectPending && wifiConfig.networkType == NetworkType::NET_ETHERNET &&
+            currentTime >= ethReconnectTime) {
+            ethReconnectPending = false;
+            ethReconnectAttempts++;
+            LOG_INFO("NetworkManager: Attempting Ethernet auto-reconnect...");
+            // 使用 restartNetwork 重新初始化以太网适配器
+            restartNetwork();
+            // restartNetwork 是同步的，检查结果
+            if (ethernetAdapter && ethernetAdapter->isConnected()) {
+                LOG_INFO("NetworkManager: Ethernet auto-reconnect succeeded");
+            } else {
+                // 重连失败，调度下一次重试
+                if (ethReconnectAttempts < ETH_MAX_RECONNECT_ATTEMPTS) {
+                    ethReconnectPending = true;
+                    ethReconnectTime = currentTime + ETH_RECONNECT_INTERVAL_MS;
+                    LOGGER.infof("NetworkManager: Ethernet reconnect failed, next attempt in %lus",
+                                 (unsigned long)(ETH_RECONNECT_INTERVAL_MS / 1000));
+                } else {
+                    LOG_WARNING("NetworkManager: Ethernet auto-reconnect exhausted, will not retry");
+                }
+            }
+        }
+#endif
 
         if (currentTime - lastStatusUpdate >= 1000) {
             updateStatusInfo();
@@ -1419,6 +1499,8 @@ bool FBNetworkManager::restartNetwork() {
                 statusInfo.status = NetworkStatus::CONNECTED;
                 statusInfo.ipAddress = ethernetAdapter->localIP().toString();
                 statusInfo.lastConnectionTime = millis();
+                ethReconnectAttempts = 0;  // 重置重连计数
+                ethReconnectPending = false;
                 
                 // ========== 混合模式：以太网 + WiFi AP（与 initialize() 一致）==========
                 // 启动WiFi AP热点，用于本地Web配置访问和mDNS服务

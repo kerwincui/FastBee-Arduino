@@ -439,6 +439,10 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
     } else if (config->type == PeripheralType::STEPPER_MOTOR) {
         params["stepsPerRevolution"] = config->params.stepper.stepsPerRevolution;
         params["speed"] = config->params.stepper.speed;
+    } else if (config->type == PeripheralType::LCD) {
+        params["width"]     = config->params.lcd.width;
+        params["height"]    = config->params.lcd.height;
+        params["interface"] = config->params.lcd.interface;
     } else if (config->type == PeripheralType::NEO_PIXEL) {
         params["count"] = config->params.neopixel.count;
         params["brightness"] = config->params.neopixel.brightness;
@@ -453,12 +457,9 @@ void PeripheralRouteHandler::handleGetPeripheral(AsyncWebServerRequest* request)
         params["activeHigh"] = config->params.radar.activeHigh;
         params["debounceMs"] = config->params.radar.debounceMs;
         params["holdMs"] = config->params.radar.holdMs;
-    }
-#if FASTBEE_ENABLE_SEVEN_SEGMENT
-    else if (config->type == PeripheralType::SEVEN_SEGMENT_TM1637) {
+    } else if (config->type == PeripheralType::SEVEN_SEGMENT_TM1637) {
         params["brightness"] = config->params.segment.brightness;
     }
-#endif
 
     auto runtimeState = pm.getRuntimeState(id);
     if (runtimeState) {
@@ -525,6 +526,13 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
     } else if (config.type == PeripheralType::STEPPER_MOTOR) {
         config.params.stepper.stepsPerRevolution = ctx->getParamInt(request, "stepsPerRevolution", 2048);
         config.params.stepper.speed = ctx->getParamInt(request, "speed", 8);
+    } else if (config.type == PeripheralType::LCD) {
+        int w = ctx->getParamInt(request, "width", 128);
+        int h = ctx->getParamInt(request, "height", 64);
+        int iface = ctx->getParamInt(request, "interface", 2);
+        config.params.lcd.width     = (uint8_t)(w > 255 ? 255 : (w < 0 ? 0 : w));
+        config.params.lcd.height    = (uint8_t)(h > 255 ? 255 : (h < 0 ? 0 : h));
+        config.params.lcd.interface = (uint8_t)(iface < 0 ? 2 : iface);
     } else if (config.type == PeripheralType::NEO_PIXEL) {
         int count = ctx->getParamInt(request, "count", 1);
         int brightness = ctx->getParamInt(request, "brightness", 64);
@@ -563,14 +571,12 @@ void PeripheralRouteHandler::handleAddPeripheral(AsyncWebServerRequest* request)
         config.params.radar.debounceMs = (uint16_t)debounceMs;
         config.params.radar.holdMs = (uint16_t)holdMs;
     }
-#if FASTBEE_ENABLE_SEVEN_SEGMENT
     else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
         int b = ctx->getParamInt(request, "brightness", 2);
         if (b < 0) b = 0;
         if (b > 7) b = 7;
         config.params.segment.brightness = (uint8_t)b;
     }
-#endif
 
     if (config.id.isEmpty()) {
         config.id = "periph_" + String(millis());
@@ -664,6 +670,13 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
     } else if (config.type == PeripheralType::STEPPER_MOTOR) {
         config.params.stepper.stepsPerRevolution = ctx->getParamInt(request, "stepsPerRevolution", config.params.stepper.stepsPerRevolution ? config.params.stepper.stepsPerRevolution : 2048);
         config.params.stepper.speed = ctx->getParamInt(request, "speed", config.params.stepper.speed ? config.params.stepper.speed : 8);
+    } else if (config.type == PeripheralType::LCD) {
+        int w = ctx->getParamInt(request, "width", config.params.lcd.width ? config.params.lcd.width : 128);
+        int h = ctx->getParamInt(request, "height", config.params.lcd.height ? config.params.lcd.height : 64);
+        int iface = ctx->getParamInt(request, "interface", config.params.lcd.interface);
+        config.params.lcd.width     = (uint8_t)(w > 255 ? 255 : (w < 0 ? 0 : w));
+        config.params.lcd.height    = (uint8_t)(h > 255 ? 255 : (h < 0 ? 0 : h));
+        config.params.lcd.interface = (uint8_t)(iface < 0 ? 2 : iface);
     } else if (config.type == PeripheralType::NEO_PIXEL) {
         int count = ctx->getParamInt(request, "count", config.params.neopixel.count ? config.params.neopixel.count : 1);
         int brightness = ctx->getParamInt(request, "brightness", config.params.neopixel.brightness);
@@ -702,14 +715,12 @@ void PeripheralRouteHandler::handleUpdatePeripheral(AsyncWebServerRequest* reque
         config.params.radar.debounceMs = (uint16_t)debounceMs;
         config.params.radar.holdMs = (uint16_t)holdMs;
     }
-#if FASTBEE_ENABLE_SEVEN_SEGMENT
     else if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
         int b = ctx->getParamInt(request, "brightness", config.params.segment.brightness);
         if (b < 0) b = 0;
         if (b > 7) b = 7;
         config.params.segment.brightness = (uint8_t)b;
     }
-#endif
 
     if (pm.updatePeripheral(id, config)) {
         pm.saveConfiguration();
