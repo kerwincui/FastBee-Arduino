@@ -55,10 +55,6 @@ static bool saveMqttTestConfig(const String& server, int port, const String& use
 // MQTT 测试辅助函数
 // ============================================================================
 
-static Client* selectMqttTestClient(WebHandlerContext* ctx, WiFiClient& fallbackClient, String& errorMessage) {
-    return selectMqttTestClient(ctx, fallbackClient, errorMessage, "mqtt");
-}
-
 // scheme 参数版本：支持 mqtt/mqtts 协议选择
 static Client* selectMqttTestClient(WebHandlerContext* ctx, WiFiClient& fallbackClient,
                                      String& errorMessage, const String& scheme) {

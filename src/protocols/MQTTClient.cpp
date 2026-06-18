@@ -141,6 +141,13 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     config.scheme      = cfg["scheme"]      | "mqtt";
     config.server      = cfg["server"]      | "";
     config.port        = cfg["port"]        | 1883;
+
+    // 向后兼容：如果配置中没有 scheme 字段但端口为 8883，自动推断为 mqtts
+    // 旧版固件没有保存 scheme，用户通过 Web UI 仅更新了 port，此时应自动启用 TLS
+    if (!cfg["scheme"].is<const char*>() && config.port == 8883) {
+        config.scheme = "mqtts";
+        LOG_INFO("MQTT: Auto-detected mqtts from port 8883");
+    }
     config.username    = cfg["username"]    | "";
     config.password    = cfg["password"]    | "";
     config.topicPrefix = cfg["topicPrefix"] | "";
@@ -303,19 +310,30 @@ bool MQTTClient::begin(uint32_t taskStartupDelayMs) {
     mqttClient.setServer(config.server.c_str(), config.port);
     mqttClient.setBufferSize(1024);
     mqttClient.setKeepAlive(config.keepAlive);
-    // socketTimeout 设置为 5 秒，加速 publish/connect 失败检测
-    // 过大的值（如 60s）会导致 WiFiClient::write() 对死 socket 阻塞数十秒
-    mqttClient.setSocketTimeout(5);
+    // MQTTS (TLS) 握手在 ESP32-C6 等低主频芯片上需要 5~15 秒
+    // 使用较长的连接超时，连接成功后在 reconnect() 中恢复短超时
+    bool isMqtts = (config.scheme == "mqtts");
+    if (isMqtts) {
+        mqttClient.setSocketTimeout(30);  // TLS 握手需要更长时间
+        LOG_INFO("MQTT: Socket timeout set to 30s for MQTTS TLS handshake");
+    } else {
+        mqttClient.setSocketTimeout(5);
+    }
     mqttClient.setCallback([this](char* topic, byte* payload, unsigned int length) {
         this->mqttCallback(topic, payload, length);
     });
 
     // 启动后台重连任务（避免 reconnect() 阻塞 loopTask）
     if (_reconnectTaskHandle == nullptr) {
+        // MQTTS (TLS) 握手需要更大的栈空间：mbedtls 内部缓冲 ~6KB + WiFiClientSecure ~2KB
+        // ESP32-C6 等低内存芯片 SIMPLE_TASK_STACK 可能只有 4096，不够 TLS 使用
+        const uint32_t reconnStackSize = (config.scheme == "mqtts")
+            ? 10240  // 10KB: TLS 握手安全裕量
+            : SIMPLE_TASK_STACK;
         BaseType_t ret = xTaskCreate(
             reconnectTaskEntry,
             "mqtt_reconn",
-            SIMPLE_TASK_STACK,
+            reconnStackSize,
             this,
             1,
             &_reconnectTaskHandle
@@ -1431,6 +1449,13 @@ bool MQTTClient::reconnect() {
     bool ok;
     ets_printf("[MQTT] Connecting to %s:%d clientId=%s\n",
                  config.server.c_str(), config.port, connClientId.c_str());
+
+    // MQTTS: 连接前临时加大 socket timeout（TLS 握手在 C6 上需要 5~15s）
+    // 连接成功后恢复 5s 短超时，避免 publish/write 对死 socket 长时间阻塞
+    bool isMqtts = (config.scheme == "mqtts");
+    if (isMqtts) {
+        mqttClient.setSocketTimeout(30);
+    }
     if (!config.willTopic.isEmpty()) {
         ok = mqttClient.connect(
             connClientId.c_str(),
@@ -1448,6 +1473,10 @@ bool MQTTClient::reconnect() {
     }
 
     if (ok) {
+        // MQTTS 连接成功：恢复短超时（5s），用于后续 publish/write 死 socket 快速检测
+        if (isMqtts) {
+            mqttClient.setSocketTimeout(5);
+        }
         isConnected = true;
         lastConnectedTime = millis();
         lastErrorCode = 0;
@@ -1465,6 +1494,10 @@ bool MQTTClient::reconnect() {
         // 连接成功后发起 NTP 时间同步
         publishNtpSync();
     } else {
+        // 连接失败：恢复短超时
+        if (isMqtts) {
+            mqttClient.setSocketTimeout(5);
+        }
         // 连接失败时立即关闭 socket（仅默认 WiFiClient/WiFiClientSecure）
         if (!_externalClient) {
             wifiClient.stop();

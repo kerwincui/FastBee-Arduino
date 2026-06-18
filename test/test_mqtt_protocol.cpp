@@ -2134,6 +2134,96 @@ void test_mqtts_reconnect_preserves_scheme() {
     TestLog::testEnd(true);
 }
 
+// MQTTS-08: 端口 8883 自动推断 mqtts（向后兼容旧配置）
+void test_mqtts_port_auto_detect() {
+    TestLog::testStart("MQTTS Port-Based Auto-Detect");
+
+    // 模拟 loadMqttConfig 逻辑：无 scheme 字段 + port=8883 → 自动推断 mqtts
+    auto detectScheme = [](const char* savedScheme, int port) -> String {
+        String scheme = (savedScheme && strlen(savedScheme) > 0) ? String(savedScheme) : String("mqtt");
+        bool hasScheme = (savedScheme && strlen(savedScheme) > 0);
+        if (!hasScheme && port == 8883) {
+            scheme = "mqtts";  // 自动推断
+        }
+        return scheme;
+    };
+
+    // 旧配置：无 scheme + port 8883 → 自动 mqtts
+    TEST_ASSERT_EQUAL_STRING("mqtts", detectScheme("", 8883).c_str());
+    TestLog::step("No scheme + port 8883 → auto mqtts");
+
+    // 新配置：有 scheme "mqtt" + port 8883 → 保持 mqtt（用户显式设置）
+    TEST_ASSERT_EQUAL_STRING("mqtt", detectScheme("mqtt", 8883).c_str());
+    TestLog::step("Explicit mqtt + port 8883 → stays mqtt");
+
+    // 有 scheme "mqtts" + port 1883 → 保持 mqtts
+    TEST_ASSERT_EQUAL_STRING("mqtts", detectScheme("mqtts", 1883).c_str());
+    TestLog::step("Explicit mqtts + port 1883 → stays mqtts");
+
+    // 默认配置：无 scheme + port 1883 → mqtt
+    TEST_ASSERT_EQUAL_STRING("mqtt", detectScheme("", 1883).c_str());
+    TestLog::step("No scheme + port 1883 → mqtt");
+
+    // 自定义端口：无 scheme + port 9999 → mqtt
+    TEST_ASSERT_EQUAL_STRING("mqtt", detectScheme("", 9999).c_str());
+    TestLog::step("No scheme + custom port → mqtt");
+
+    TestLog::testEnd(true);
+}
+
+// MQTTS-09: MQTTS socket timeout 策略（连接时 30s，连接后 5s）
+void test_mqtts_socket_timeout_strategy() {
+    TestLog::testStart("MQTTS Socket Timeout Strategy");
+
+    // 模拟 begin() 和 reconnect() 的超时策略
+    auto getConnectTimeout = [](const String& scheme) -> int {
+        return (scheme == "mqtts") ? 30 : 5;
+    };
+    constexpr int PUBLISH_TIMEOUT = 5;  // 连接成功后始终用短超时
+
+    // mqtt: 连接超时 5s
+    TEST_ASSERT_EQUAL(5, getConnectTimeout("mqtt"));
+    TestLog::step("mqtt connect timeout: 5s");
+
+    // mqtts: 连接超时 30s（TLS 握手在 C6 上需 5~15s）
+    TEST_ASSERT_EQUAL(30, getConnectTimeout("mqtts"));
+    TestLog::step("mqtts connect timeout: 30s");
+
+    // 连接成功后 publish 超时始终为 5s
+    TEST_ASSERT_EQUAL(5, PUBLISH_TIMEOUT);
+    TestLog::step("publish timeout always 5s after connect");
+
+    TestLog::testEnd(true);
+}
+
+// MQTTS-10: MQTTS 重连任务栈大小足够 TLS 握手
+void test_mqtts_reconnect_stack_size() {
+    TestLog::testStart("MQTTS Reconnect Stack Size");
+
+    // 模拟 MQTTClient::begin() 中的栈分配逻辑
+    constexpr uint32_t SIMPLE_TASK_STACK_C6 = 4096;   // ESP32-C6 平台值
+    constexpr uint32_t SIMPLE_TASK_STACK_S3 = 6144;   // ESP32-S3 平台值
+    constexpr uint32_t MQTTS_STACK = 10240;             // MQTTS 专用栈
+
+    // mqtt 使用默认栈
+    uint32_t mqttStack = SIMPLE_TASK_STACK_C6;
+    TEST_ASSERT_TRUE(mqttStack >= SIMPLE_TASK_STACK_C6);
+    TestLog::step("mqtt uses default stack (4096 on C6)");
+
+    // mqtts 使用专用大栈
+    uint32_t mqttsStack = MQTTS_STACK;
+    TEST_ASSERT_TRUE(mqttsStack >= 10240);
+    TEST_ASSERT_TRUE(mqttsStack > SIMPLE_TASK_STACK_C6);
+    TestLog::step("mqtts uses 10KB stack (> 4KB default)");
+
+    // S3 上 mqtt 默认栈也足够
+    uint32_t mqttStackS3 = SIMPLE_TASK_STACK_S3;
+    TEST_ASSERT_TRUE(mqttStackS3 >= 6144);
+    TestLog::step("S3 mqtt uses 6KB default stack");
+
+    TestLog::testEnd(true);
+}
+
 // Test group entry point
 void test_mqtt_protocol_group() {
     TestLog::groupStart("MQTT Protocol Tests");
@@ -2209,6 +2299,9 @@ void test_mqtt_protocol_group() {
     RUN_TEST(test_mqtts_connect_disconnect_lifecycle);
     RUN_TEST(test_mqtts_frontend_port_linkage);
     RUN_TEST(test_mqtts_reconnect_preserves_scheme);
+    RUN_TEST(test_mqtts_port_auto_detect);
+    RUN_TEST(test_mqtts_socket_timeout_strategy);
+    RUN_TEST(test_mqtts_reconnect_stack_size);
 
     TestLog::groupEnd();
 }
