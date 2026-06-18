@@ -560,11 +560,12 @@
                 const autoStarted = !!(d.autoStartStarted);  // 后端已发起自动启动
                 const hasError = d.lastError && d.lastError !== 0;
 
-                // 自动重连：首次检测到 MQTT 已启用但未连接时，触发非阻塞 deferred 重连
+                // 自动重连：首次检测到 MQTT 已启用且 autoReconnect 为 true 但未连接时，触发非阻塞 deferred 重连
                 // ⚠️ 绝对不能加 !connecting 条件！autoStartStarted/connecting=true 仅表示
                 // 后端做了 deferred restart（初始化 MQTTClient + begin()），实际连接由
                 // loop 异步完成且不可靠。必须调用 /api/mqtt/reconnect 让后端重置并重新启动
-                if (!this._mqttAutoReconnectTriggered && d.enabled !== false) {
+                // ⚠️ 必须检查 d.autoReconnect！用户取消勾选自动重连后不应触发重连
+                if (!this._mqttAutoReconnectTriggered && d.enabled !== false && d.autoReconnect !== false) {
                     this._mqttAutoReconnectTriggered = true;
                     if (!d.connected) {
                         var self = this;

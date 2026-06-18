@@ -199,6 +199,16 @@ bool FastBeeFramework::initialize() {
 
     unsigned long networkMs = millis() - stepStart;
     // 检查网络状态
+#if FASTBEE_ENABLE_ETHERNET
+    if (network->getNetworkType() == NetworkType::NET_ETHERNET && network->getEthernetAdapter()) {
+        auto* eth = network->getEthernetAdapter();
+        if (eth->isConnected()) {
+            Serial.printf("[STEP7-E] Ethernet Connected! IP: %s\n", eth->localIP().toString().c_str());
+        } else {
+            Serial.println("[STEP7-E] WARN: Ethernet link down");
+        }
+    } else
+#endif
     if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("[STEP7-E] WiFi Connected! IP: %s\n", WiFi.localIP().toString().c_str());
     } else if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
@@ -664,6 +674,20 @@ bool FastBeeFramework::initialize() {
     ets_printf("  FastBee IoT Platform Ready!\n");
     ets_printf("========================================\n");
 
+#if FASTBEE_ENABLE_ETHERNET
+    if (network && network->getNetworkType() == NetworkType::NET_ETHERNET && network->getEthernetAdapter()) {
+        auto* eth = network->getEthernetAdapter();
+        ets_printf("Mode: Ethernet (W5500)\n");
+        ets_printf("Ethernet IP: %s\n", eth->localIP().toString().c_str());
+        ets_printf("Access URL: http://%s\n", eth->localIP().toString().c_str());
+        if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
+            ets_printf("Config AP: %s (IP: %s)\n", WiFi.softAPSSID().c_str(), WiFi.softAPIP().toString().c_str());
+        }
+        if (network->getConfig().enableMDNS) {
+            ets_printf("mDNS URL: http://%s.local\n", network->getConfig().customDomain.c_str());
+        }
+    } else
+#endif
     if (WiFi.status() == WL_CONNECTED) {
         ets_printf("Mode: STA (WiFi Client)\n");
         ets_printf("SSID: %s\n", WiFi.SSID().c_str());
@@ -675,7 +699,6 @@ bool FastBeeFramework::initialize() {
         ets_printf("mDNS URL: http://fastbee.local\n");
     } else if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
         ets_printf("Mode: AP (Access Point)\n");
-        // 以 NetworkManager 的实际配置为准，避免误导用户
         String apSSID = NetConst::DEFAULT_AP_SSID;
         String apPass = NetConst::DEFAULT_AP_PASSWORD;
         if (network) {
@@ -751,15 +774,17 @@ bool FastBeeFramework::addSystemTasks() {
         if (framework && framework->network) {
             framework->network->update();
 
-            // 标记WiFi已连接，触发NTP同步任务（仅执行一次）
+            // 标记网络已连接，触发NTP同步任务（仅执行一次）
+            // 支持 WiFi STA / 以太网 / 4G 等所有联网方式
+            bool networkReady = framework->network->isNetworkConnected();
             if (!framework->ntpSynced && !framework->ntpSyncPending && !framework->ntpSyncStarted &&
-                framework->ntpRetryCount == 0 && WiFi.status() == WL_CONNECTED) {
-                static unsigned long wifiConnectedTime = 0;
-                if (wifiConnectedTime == 0) {
-                    wifiConnectedTime = millis();
-                } else if (millis() - wifiConnectedTime > 3000) {
-                    // WiFi连接稳定3秒后标记需要同步
-                    LOG_INFO("[NTP] WiFi connected, NTP sync scheduled");
+                framework->ntpRetryCount == 0 && networkReady) {
+                static unsigned long netConnectedTime = 0;
+                if (netConnectedTime == 0) {
+                    netConnectedTime = millis();
+                } else if (millis() - netConnectedTime > 3000) {
+                    // 网络连接稳定3秒后标记需要同步
+                    LOG_INFO("[NTP] Network connected, NTP sync scheduled");
                     framework->ntpSyncPending = true;
                 }
             }
@@ -862,8 +887,8 @@ bool FastBeeFramework::addSystemTasks() {
         FastBeeFramework* framework = (FastBeeFramework*)param;
         if (!framework) return;
 
-        // 检查是否需要启动同步
-        if (framework->ntpSyncPending && WiFi.status() == WL_CONNECTED) {
+        // 检查是否需要启动同步（支持所有联网方式）
+        if (framework->ntpSyncPending && framework->network && framework->network->isNetworkConnected()) {
             framework->ntpSyncPending = false;
             LOG_INFO("[NTP] Starting NTP sync...");
             framework->syncTimeFromConfig();
@@ -1020,27 +1045,47 @@ void FastBeeFramework::run() {
         ets_printf("\n");
 
         // 网络状态
-        wl_status_t wifiSt = WiFi.status();
-        if (wifiSt == WL_CONNECTED) {
-            ets_printf("[STATUS] WiFi=CONNECTED ssid=%s ip=%s rssi=%d ch=%d\n",
-                          WiFi.SSID().c_str(),
-                          WiFi.localIP().toString().c_str(),
-                          WiFi.RSSI(),
-                          WiFi.channel());
-        } else if (WiFi.getMode() & WIFI_AP) {
-            ets_printf("[STATUS] WiFi=AP_MODE ap_ip=%s clients=%d\n",
-                          WiFi.softAPIP().toString().c_str(),
-                          WiFi.softAPgetStationNum());
-        } else {
-            const char* stStr = "UNKNOWN";
-            switch (wifiSt) {
-                case WL_IDLE_STATUS:    stStr = "IDLE"; break;
-                case WL_NO_SSID_AVAIL: stStr = "NO_SSID"; break;
-                case WL_CONNECT_FAILED:stStr = "CONN_FAIL"; break;
-                case WL_DISCONNECTED:  stStr = "DISCONNECTED"; break;
-                default: break;
+#if FASTBEE_ENABLE_ETHERNET
+        if (network && network->getNetworkType() == NetworkType::NET_ETHERNET) {
+            auto* eth = network->getEthernetAdapter();
+            if (eth && eth->isConnected()) {
+                ets_printf("[STATUS] ETH=CONNECTED ip=%s", eth->localIP().toString().c_str());
+                if (WiFi.getMode() & WIFI_AP) {
+                    ets_printf(" ap=%s", WiFi.softAPIP().toString().c_str());
+                }
+                ets_printf("\n");
+            } else {
+                ets_printf("[STATUS] ETH=DISCONNECTED");
+                if (WiFi.getMode() & WIFI_AP) {
+                    ets_printf(" ap=%s", WiFi.softAPIP().toString().c_str());
+                }
+                ets_printf("\n");
             }
-            ets_printf("[STATUS] WiFi=%s mode=%d\n", stStr, (int)WiFi.getMode());
+        } else
+#endif
+        {
+            wl_status_t wifiSt = WiFi.status();
+            if (wifiSt == WL_CONNECTED) {
+                ets_printf("[STATUS] WiFi=CONNECTED ssid=%s ip=%s rssi=%d ch=%d\n",
+                              WiFi.SSID().c_str(),
+                              WiFi.localIP().toString().c_str(),
+                              WiFi.RSSI(),
+                              WiFi.channel());
+            } else if (WiFi.getMode() & WIFI_AP) {
+                ets_printf("[STATUS] WiFi=AP_MODE ap_ip=%s clients=%d\n",
+                              WiFi.softAPIP().toString().c_str(),
+                              WiFi.softAPgetStationNum());
+            } else {
+                const char* stStr = "UNKNOWN";
+                switch (wifiSt) {
+                    case WL_IDLE_STATUS:    stStr = "IDLE"; break;
+                    case WL_NO_SSID_AVAIL: stStr = "NO_SSID"; break;
+                    case WL_CONNECT_FAILED:stStr = "CONN_FAIL"; break;
+                    case WL_DISCONNECTED:  stStr = "DISCONNECTED"; break;
+                    default: break;
+                }
+                ets_printf("[STATUS] WiFi=%s mode=%d\n", stStr, (int)WiFi.getMode());
+            }
         }
     }
 

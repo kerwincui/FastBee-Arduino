@@ -577,13 +577,13 @@ bool ProtocolManager::restartMQTTDeferred() {
         return result;
     });
 
-    if (!mqttClient->begin()) {
+    if (!mqttClient->begin(500)) {  // deferred 重启：Web 已在运行，仅留 500ms 让任务初始化
         LOG_WARNING("Protocol Manager: MQTT deferred restart begin() failed");
         return false;
     }
 
     // 不调用 connect()，由 MQTTClient::handle() 的 auto-reconnect 在 loop 中异步连接
-    LOG_INFO("Protocol Manager: MQTT config reloaded, will auto-connect in loop");
+    LOG_INFO("Protocol Manager: MQTT config reloaded, will auto-connect in loop (500ms startup)");
     return true;
 }
 

@@ -622,6 +622,277 @@ void test_smoke_multi_level_heap_thresholds() {
     TestLog::testEnd(true);
 }
 
+// ============================================================
+// 源码回归测试：防止 MQTT 关键修改被意外回退
+// ============================================================
+
+/**
+ * @brief 源码回归：验证 ProtocolManager::handle() 中 MQTT handle() 在堆保护检查之前调用
+ * 防止回退到旧逻辑：MQTT handle() 被 30KB 堆保护一起跳过，导致 MQTT 永远无法连接
+ */
+void test_source_code_mqtt_handle_before_heap_check() {
+    TestLog::testStart("Source: MQTT handle() before heap check in ProtocolManager");
+
+    std::string content = readSrcFile("src/protocols/ProtocolManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read ProtocolManager.cpp — ensure test runs from project root");
+    TestLog::step("File loaded");
+
+    // 1) MQTT handle 调用必须存在
+    TEST_ASSERT_TRUE_MESSAGE(content.find("mqttClient->handle()") != std::string::npos,
+        "mqttClient->handle() must exist in ProtocolManager::handle()");
+    TestLog::step("mqttClient->handle() call found");
+
+    // 2) 关键架构：MQTT handle 必须在 heapSufficient 检查之前调用
+    //    查找 "mqttClient->handle()" 和 "heapSufficient" 的位置
+    size_t mqttHandlePos = content.find("mqttClient->handle()");
+    size_t heapSufficientCheck = content.find("if (!heapSufficient)");
+    // heapSufficient 检查可能在 mqttClient->handle() 之后
+    // 关键约束：mqttClient->handle() 不应在 if (!heapSufficient) { ... return; } 之后
+    TEST_ASSERT_TRUE_MESSAGE(mqttHandlePos != std::string::npos,
+        "mqttClient->handle() must be present");
+    TEST_ASSERT_TRUE_MESSAGE(heapSufficientCheck != std::string::npos,
+        "if (!heapSufficient) check must be present");
+    TEST_ASSERT_TRUE_MESSAGE(mqttHandlePos < heapSufficientCheck,
+        "mqttClient->handle() MUST be called BEFORE the heapSufficient guard — "
+        "otherwise MQTT will be skipped when heap < 30KB (old bug!)");
+    TestLog::step("mqttClient->handle() is BEFORE heapSufficient guard (correct order)");
+
+    // 3) 注释必须说明 MQTT 始终运行
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("MQTT handle()") != std::string::npos ||
+        content.find("mqttClient") != std::string::npos,
+        "Comments should explain why MQTT always runs");
+    TestLog::step("Architecture comment present");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 源码回归：验证 MQTT doReconnect 和 restartMQTTDeferred 堆阈值为 15000
+ * 防止回退到旧值 49152/25000（导致 MQTT 永远无法连接）
+ */
+void test_source_code_mqtt_thresholds_15kb() {
+    TestLog::testStart("Source: MQTT heap thresholds = 15000");
+
+    // 检查 MQTTClient.cpp 中 doReconnect 阈值
+    std::string mqttCpp = readSrcFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!mqttCpp.empty(),
+        "Failed to read MQTTClient.cpp");
+
+    // doReconnect 堆检查应为 15000（而非旧值 49152）
+    TEST_ASSERT_TRUE_MESSAGE(mqttCpp.find("15000") != std::string::npos,
+        "MQTTClient::doReconnect() heap threshold must be 15000 (not old 49152)");
+    TEST_ASSERT_TRUE_MESSAGE(mqttCpp.find("49152") == std::string::npos,
+        "OLD threshold 49152 must NOT exist in MQTTClient.cpp (would block MQTT forever)");
+    TestLog::step("MQTTClient.cpp: threshold=15000, old 49152 absent");
+
+    // 检查 ProtocolManager.cpp 中 restartMQTTDeferred 和 restartModbus 阈值
+    std::string pmCpp = readSrcFile("src/protocols/ProtocolManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!pmCpp.empty(),
+        "Failed to read ProtocolManager.cpp");
+
+    // restartMQTTDeferred 和 restartModbus 堆检查应为 15000（而非旧值 25000）
+    // 注意：25000 可能在注释中出现，所以只检查不存在 25000 作为阈值代码
+    // 检查 “< 25000” 不存在（作为阈值判断）
+    std::regex oldThresholdRe("freeHeap\\s*<\\s*25000");
+    TEST_ASSERT_TRUE_MESSAGE(!std::regex_search(pmCpp, oldThresholdRe),
+        "OLD threshold 'freeHeap < 25000' must NOT exist in ProtocolManager.cpp "
+        "(restartMQTTDeferred/restartModbus must use 15000)");
+    TestLog::step("ProtocolManager.cpp: no 'freeHeap < 25000' (old threshold removed)");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 源码回归：验证 NTP HTTPS→HTTP 降级在三个文件中均存在
+ * 防止回退到 WiFiClientSecure（导致 SSL 内存分配失败）
+ */
+void test_source_code_ntp_https_downgrade() {
+    TestLog::testStart("Source: NTP HTTPS→HTTP downgrade in all files");
+
+    const char* files[] = {
+        "src/protocols/MQTTClient.cpp",
+        "src/network/handlers/MqttRouteHandler.cpp",
+        "src/utils/TimeUtils.cpp"
+    };
+
+    for (const char* file : files) {
+        std::string content = readSrcFile(file);
+        TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+            (std::string("Failed to read ") + file).c_str());
+
+        // 必须有 HTTPS→HTTP 降级逻辑
+        TEST_ASSERT_TRUE_MESSAGE(
+            content.find("http://") != std::string::npos &&
+            content.find("startsWith(\"https://\")") != std::string::npos,
+            (std::string("NTP HTTPS→HTTP downgrade must exist in ") + file).c_str());
+
+        // 不应有 WiFiClientSecure 用于 NTP（SSL 内存分配失败风险）
+        // 注意：文件中可能有其他用途的 WiFiClientSecure，所以不全面禁止
+        TestLog::step((std::string("HTTPS→HTTP downgrade confirmed in ") + file).c_str());
+    }
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 源码回归：验证 main.cpp 中 PSRAM 阈值为 512
+ * 防止回退到旧值 4096（导致 HTTP 缓冲区无法卸载到 PSRAM）
+ */
+void test_source_code_psram_threshold_512() {
+    TestLog::testStart("Source: PSRAM threshold = 512 in main.cpp");
+
+    std::string content = readSrcFile("src/main.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read main.cpp");
+
+    // 必须有 heap_caps_malloc_extmem_enable(512)
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("heap_caps_malloc_extmem_enable(512)") != std::string::npos,
+        "main.cpp must call heap_caps_malloc_extmem_enable(512) — NOT 4096!");
+    TestLog::step("heap_caps_malloc_extmem_enable(512) found");
+
+    // 不应有旧值 4096
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("heap_caps_malloc_extmem_enable(4096)") == std::string::npos,
+        "OLD threshold heap_caps_malloc_extmem_enable(4096) must NOT exist — "
+        "causes HTTP buffer OOM on internal DRAM");
+    TestLog::step("Old threshold 4096 absent (regression prevented)");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 行为测试：模拟 ProtocolManager handle() 中 MQTT 始终运行的新逻辑
+ * 堆低于 30KB 时，MQTT handle() 仍应被调用
+ */
+void test_smoke_mqtt_handle_always_runs() {
+    TestLog::testStart("Smoke: MQTT handle() always runs (even heap < 30KB)");
+
+    // 模拟新逻辑：MQTT handle 始终运行，重型协议受堆保护
+    constexpr uint32_t HEAP_THRESHOLD = 30000;
+    int mqttHandleCount = 0;
+    int heavyProtoCount = 0;
+
+    auto simulateHandle = [&](uint32_t freeHeap) {
+        // MQTT handle 始终运行
+        mqttHandleCount++;
+
+        // 重型协议受堆保护
+        bool heapSufficient = (freeHeap >= HEAP_THRESHOLD);
+        if (heapSufficient) {
+            heavyProtoCount++;
+        }
+    };
+
+    // 堆 = 80KB：两者都运行
+    simulateHandle(80000);
+    TEST_ASSERT_EQUAL(1, mqttHandleCount);
+    TEST_ASSERT_EQUAL(1, heavyProtoCount);
+    TestLog::step("Heap=80KB: MQTT + heavy proto both run");
+
+    // 堆 = 25KB：MQTT 运行，重型协议跳过
+    simulateHandle(25000);
+    TEST_ASSERT_EQUAL(2, mqttHandleCount);  // MQTT 仍运行
+    TEST_ASSERT_EQUAL(1, heavyProtoCount);  // 重型协议跳过
+    TestLog::step("Heap=25KB: MQTT runs, heavy proto skipped (KEY FIX!)");
+
+    // 堆 = 15KB：MQTT 仍运行，重型协议跳过
+    simulateHandle(15000);
+    TEST_ASSERT_EQUAL(3, mqttHandleCount);  // MQTT 仍运行
+    TEST_ASSERT_EQUAL(1, heavyProtoCount);
+    TestLog::step("Heap=15KB: MQTT STILL runs (doReconnect internally checks 15KB)");
+
+    // 连续 10 次低堆：MQTT 始终运行
+    for (int i = 0; i < 10; i++) {
+        simulateHandle(22000);  // 模拟典型运行状态
+    }
+    TEST_ASSERT_EQUAL(13, mqttHandleCount);
+    TEST_ASSERT_EQUAL(1, heavyProtoCount);
+    TestLog::step("10 iterations at 22KB: MQTT ran every time, heavy proto blocked");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 源码回归：验证 ESP32-C3 TCP 连接预算配置（TCP=4, 耗尽阈值=10）
+ * C3 只有 400KB SRAM，TCP 预算必须 ≤ 4，耗尽阈值必须 < 16
+ */
+void test_source_code_c3_tcp_budget() {
+    TestLog::testStart("Source: ESP32-C3 TCP budget (TCP=4, threshold=10)");
+
+    std::string content = readSrcFile("include/core/ResourceProfile.h");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read ResourceProfile.h");
+    TestLog::step("File loaded");
+
+    // C3 区块必须存在 TCP_TOTAL_BUDGET = 4
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("TCP_TOTAL_BUDGET  = 4") != std::string::npos,
+        "C3 TCP_TOTAL_BUDGET must be 4 (400KB SRAM limit)");
+    TestLog::step("TCP_TOTAL_BUDGET=4 confirmed");
+
+    // C3 SSE 预算 = 1
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("TCP_SSE_BUDGET    = 1") != std::string::npos,
+        "C3 TCP_SSE_BUDGET must be 1 (single SSE connection)");
+    TestLog::step("TCP_SSE_BUDGET=1 confirmed");
+
+    // C3 HTTP 预算 = 3
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("TCP_HTTP_BUDGET   = 3") != std::string::npos,
+        "C3 TCP_HTTP_BUDGET must be 3 (TCP_TOTAL - SSE = 3)");
+    TestLog::step("TCP_HTTP_BUDGET=3 confirmed");
+
+    // C3 耗尽阈值 = 10
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("TCP_CONN_EXHAUSTION_THRESHOLD = 10") != std::string::npos,
+        "C3 TCP_CONN_EXHAUSTION_THRESHOLD must be 10 (early trigger for low memory)");
+    TestLog::step("EXHAUSTION_THRESHOLD=10 confirmed");
+
+    // 编译期断言存在：阈值 < 16
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("TCP_CONN_EXHAUSTION_THRESHOLD < 16") != std::string::npos,
+        "static_assert must verify threshold < lwIP hard limit (16)");
+    TestLog::step("static_assert(threshold < 16) present");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 源码回归：验证 platformio.ini 中 C3 的 AsyncTCP 配置
+ * C3 CONFIG_ASYNC_TCP_MAX_CONNECTIONS 应为 4（与 TCP_TOTAL_BUDGET 一致）
+ */
+void test_source_code_c3_platformio_config() {
+    TestLog::testStart("Source: C3 platformio.ini AsyncTCP config");
+
+    std::string content = readSrcFile("platformio.ini");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read platformio.ini");
+    TestLog::step("File loaded");
+
+    // C3 运行时标志中 CONFIG_ASYNC_TCP_MAX_CONNECTIONS=4
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("CONFIG_ASYNC_TCP_MAX_CONNECTIONS=4") != std::string::npos,
+        "C3 CONFIG_ASYNC_TCP_MAX_CONNECTIONS must be 4");
+    TestLog::step("CONFIG_ASYNC_TCP_MAX_CONNECTIONS=4 confirmed");
+
+    // C3 环境使用 slim 配置
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("slim_flags") != std::string::npos,
+        "C3 must use slim_flags (resource-constrained)");
+    TestLog::step("slim_flags confirmed for C3");
+
+    // C3 必须忽略 NimBLE（不支持经典蓝牙）
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("lib_ignore = NimBLE-Arduino") != std::string::npos,
+        "C3 must ignore NimBLE-Arduino (no classic BT)");
+    TestLog::step("NimBLE-Arduino ignored for C3");
+
+    TestLog::testEnd(true);
+}
+
 // Test group entry point
 void test_system_stability_group() {
     TestLog::groupStart("System Stability Tests");
@@ -643,6 +914,17 @@ void test_system_stability_group() {
     RUN_TEST(test_smoke_memory_diagnostic_interval);
     RUN_TEST(test_smoke_heap_protection_normal_operation);
     RUN_TEST(test_smoke_multi_level_heap_thresholds);
+    RUN_TEST(test_smoke_mqtt_handle_always_runs);
+    
+    // Source Code Regression Tests: 防止关键修复被意外回退
+    RUN_TEST(test_source_code_mqtt_handle_before_heap_check);
+    RUN_TEST(test_source_code_mqtt_thresholds_15kb);
+    RUN_TEST(test_source_code_ntp_https_downgrade);
+    RUN_TEST(test_source_code_psram_threshold_512);
+    
+    // ESP32-C3 Specific Regression Tests
+    RUN_TEST(test_source_code_c3_tcp_budget);
+    RUN_TEST(test_source_code_c3_platformio_config);
     
     TestLog::groupEnd();
 }

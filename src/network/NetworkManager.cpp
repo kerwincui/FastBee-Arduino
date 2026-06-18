@@ -174,11 +174,6 @@ bool FBNetworkManager::initialize() {
             statusInfo.ipAddress = ethernetAdapter->localIP().toString();
             statusInfo.lastConnectionTime = millis();
             
-            // 启动 mDNS
-            if (wifiConfig.enableMDNS) {
-                dnsManager->startMDNS(wifiConfig.customDomain);
-            }
-            
             // ========== 混合模式：以太网 + WiFi AP本地配置 ==========
             // 启动WiFi AP热点，用于本地Web配置访问
             LOG_INFO("NetworkManager: Starting WiFi AP for local config access...");
@@ -193,6 +188,11 @@ bool FBNetworkManager::initialize() {
                 LOG_INFO("NetworkManager: Hybrid mode active (Ethernet + WiFi AP)");
             } else {
                 LOG_WARNING("NetworkManager: Failed to start WiFi AP, Ethernet only mode");
+            }
+            
+            // 启动 mDNS（必须在所有 netif 就绪后启动，确保绑定到正确的网络接口）
+            if (wifiConfig.enableMDNS) {
+                dnsManager->startMDNS(wifiConfig.customDomain);
             }
             
             isInitialized = true;
@@ -1403,15 +1403,119 @@ bool FBNetworkManager::restartNetwork() {
         autoReconnectEnabled = keepAutoReconnect;
         delay(500);
         
-        bool ok = initialize();
-        if (!ok) {
-            // 初始化失败，确保AP热点可用作为恢复入口
-            LOG_WARNING("NetworkManager: Non-WiFi init failed, ensuring AP is available for recovery");
-            if (!(WiFi.getMode() & WIFI_AP)) {
-                startAPMode();
+        // 直接重新初始化网络适配器，不调用 initialize()（因为 isInitialized 仍为 true）
+        // initialize() 会跳过已初始化状态，导致以太网/4G/LoRa 适配器永远不会被重新创建
+        bool ok = true;
+#if FASTBEE_ENABLE_ETHERNET
+        if (wifiConfig.networkType == NetworkType::NET_ETHERNET) {
+            LOG_INFO("NetworkManager: Re-initializing Ethernet (W5500)...");
+            ethernetAdapter.reset(new EthernetAdapter());
+            bool ethOk = ethernetAdapter->begin(wifiConfig);
+            if (ethOk) {
+                ethOk = ethernetAdapter->waitForConnection(10000);
             }
-            dnsManager->startMDNS(wifiConfig.customDomain);
+            if (ethOk) {
+                LOG_INFO("NetworkManager: Ethernet reconnected, IP: " + ethernetAdapter->localIP().toString());
+                statusInfo.status = NetworkStatus::CONNECTED;
+                statusInfo.ipAddress = ethernetAdapter->localIP().toString();
+                statusInfo.lastConnectionTime = millis();
+                
+                // ========== 混合模式：以太网 + WiFi AP（与 initialize() 一致）==========
+                // 启动WiFi AP热点，用于本地Web配置访问和mDNS服务
+                if (!(WiFi.getMode() & WIFI_AP)) {
+                    LOG_INFO("NetworkManager: Starting WiFi AP for hybrid mode (Ethernet + AP)...");
+                    wifiManager->setNetworkConfig(wifiConfig);
+                    if (wifiManager->startAPMode()) {
+                        statusInfo.apIPAddress = WiFi.softAPIP().toString();
+                        LOGGER.infof(">>> Config AP: %s  IP: %s <<<",
+                            wifiConfig.apSSID.c_str(), WiFi.softAPIP().toString().c_str());
+                        LOG_INFO("NetworkManager: Hybrid mode active (Ethernet + WiFi AP)");
+                    } else {
+                        LOG_WARNING("NetworkManager: Failed to start WiFi AP, Ethernet only mode");
+                    }
+                }
+                // 确保状态保持 CONNECTED（以太网是主网络，不受 AP 状态影响）
+                statusInfo.status = NetworkStatus::CONNECTED;
+                
+                if (wifiConfig.enableMDNS) {
+                    dnsManager->startMDNS(wifiConfig.customDomain);
+                }
+            } else {
+                LOG_WARNING("NetworkManager: Ethernet reconnect failed, falling back to AP");
+                ethernetAdapter.reset();
+                // 恢复 AP 热点作为用户重新配置的入口
+                if (!(WiFi.getMode() & WIFI_AP)) {
+                    startAPMode();
+                }
+                dnsManager->startMDNS(wifiConfig.customDomain);
+                ok = false;
+            }
         }
+#endif
+#if FASTBEE_ENABLE_CELLULAR
+        if (wifiConfig.networkType == NetworkType::NET_4G) {
+            LOG_INFO("NetworkManager: Re-initializing 4G Cellular...");
+            cellularAdapter.reset(new CellularAdapter());
+            bool cellOk = cellularAdapter->begin(wifiConfig);
+            if (cellOk) {
+                LOG_INFO("NetworkManager: 4G reconnected");
+                statusInfo.status = NetworkStatus::CONNECTED;
+                statusInfo.lastConnectionTime = millis();
+                if (cellularAdapter) {
+                    IPAddress cellIP = cellularAdapter->localIP();
+                    if (cellIP != IPAddress(0, 0, 0, 0)) {
+                        statusInfo.ipAddress = cellIP.toString();
+                    }
+                }
+                
+                // ========== 混合模式：4G + WiFi AP（与 initialize() 一致）==========
+                if (!(WiFi.getMode() & WIFI_AP)) {
+                    LOG_INFO("NetworkManager: Starting WiFi AP for hybrid mode (4G + AP)...");
+                    wifiManager->setNetworkConfig(wifiConfig);
+                    if (wifiManager->startAPMode()) {
+                        statusInfo.apIPAddress = WiFi.softAPIP().toString();
+                        LOG_INFO("NetworkManager: Hybrid mode active (4G + WiFi AP)");
+                    } else {
+                        LOG_WARNING("NetworkManager: Failed to start WiFi AP, 4G only mode");
+                    }
+                }
+                // 确保状态保持 CONNECTED（4G是主网络）
+                statusInfo.status = NetworkStatus::CONNECTED;
+                
+                if (wifiConfig.enableMDNS) {
+                    dnsManager->startMDNS(wifiConfig.customDomain);
+                }
+            } else {
+                LOG_WARNING("NetworkManager: 4G reconnect failed, falling back to AP");
+                cellularAdapter.reset();
+                if (!(WiFi.getMode() & WIFI_AP)) {
+                    startAPMode();
+                }
+                dnsManager->startMDNS(wifiConfig.customDomain);
+                ok = false;
+            }
+        }
+#endif
+#if FASTBEE_ENABLE_LORA
+        if (wifiConfig.networkType == NetworkType::NET_LORA) {
+            LOG_INFO("NetworkManager: Re-initializing LoRa...");
+            loraAdapter.reset(new LoRaAdapter());
+            bool loraOk = loraAdapter->begin(wifiConfig);
+            if (loraOk) {
+                LOG_INFO("NetworkManager: LoRa reconnected");
+                statusInfo.status = NetworkStatus::CONNECTED;
+                statusInfo.lastConnectionTime = millis();
+            } else {
+                LOG_WARNING("NetworkManager: LoRa reconnect failed, falling back to AP");
+                loraAdapter.reset();
+                if (!(WiFi.getMode() & WIFI_AP)) {
+                    startAPMode();
+                }
+                dnsManager->startMDNS(wifiConfig.customDomain);
+                ok = false;
+            }
+        }
+#endif
         wifiManager->setModeTransitioning(false);
         return ok;
     }

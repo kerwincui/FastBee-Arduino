@@ -63,6 +63,7 @@ MQTTClient::MQTTClient()
       lastConnectedTime(0), lastErrorCode(0), reconnectCount(0),
       reconnectInterval(5000), consecutiveTimeouts(0), lastLoopTime(0),
       _reconnectPending(false), _reconnectRunning(false), _reconnectTaskHandle(nullptr),
+      _taskStartupDelayMs(3000),
       _slotWriteIndex(0), _slotReadIndex(0), _slotCount(0) {
     _publishMutex = xSemaphoreCreateRecursiveMutex();
     _dataCommandQueue = xQueueCreate(4, sizeof(String*));
@@ -280,8 +281,9 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     return true;
 }
 
-bool MQTTClient::begin() {
+bool MQTTClient::begin(uint32_t taskStartupDelayMs) {
     stopped = false;
+    _taskStartupDelayMs = taskStartupDelayMs;
     loadMqttConfig();
 
     // 根据是否有外部 Client 注入来选择传输层
@@ -1477,11 +1479,12 @@ bool MQTTClient::reconnect() {
 
 void MQTTClient::reconnectTaskEntry(void* param) {
     MQTTClient* client = (MQTTClient*)param;
-    // 启动期延迟 3s：让 Web 路由注册完成即可
+    // 启动期延迟：让 Web 路由注册完成即可
     // doReconnect() 内部有堆内存保护（<49KB 跳过），不会在内存不足时强行连接
-    // 之前 15s 导致用户点测试后长时间看到"连接中"，体验极差
-    LOG_INFO("[MQTT] Reconnect task armed, holding 3s for web boot");
-    vTaskDelay(pdMS_TO_TICKS(3000));
+    // 首次启动用 3000ms（等 Web 路由就绪），deferred 重启用 500ms（Web 已在运行）
+    LOG_INFOF("[MQTT] Reconnect task armed, holding %lums for web boot",
+              (unsigned long)client->_taskStartupDelayMs);
+    vTaskDelay(pdMS_TO_TICKS(client->_taskStartupDelayMs));
     LOG_INFO("[MQTT] Reconnect task active");
     while (true) {
         if (client->_reconnectPending && !client->_reconnectRunning) {

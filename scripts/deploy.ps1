@@ -35,13 +35,36 @@ function Kill-StaleProcesses {
             $killed++
         }
     }
+
+    # 清理从 .pio\build\ 目录运行的任意进程（如 native 测试产物 program.exe）
+    Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Path -and ($_.Path -like '*\.pio\build\*')
+    } | ForEach-Object {
+        Write-Host "  Killing stale build output $($_.ProcessName) (PID $($_.Id))" -ForegroundColor Yellow
+        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+        $killed++
+    }
+
     if ($killed -gt 0) {
         Write-Host "  Cleaned $killed stale process(es), waiting for file locks to release..." -ForegroundColor Yellow
-        Start-Sleep -Seconds 1
+        Start-Sleep -Seconds 2
     }
 }
 
 Kill-StaleProcesses
+
+# 清理 native 测试产物（防止 .pio\build\native\program.exe 被锁定
+# 导致 PlatformIO 无法清理构建目录，报 WinError 5 拒绝访问）
+$nativeDir = Join-Path $ProjectDir ".pio\build\native"
+if (Test-Path -LiteralPath $nativeDir -PathType Container) {
+    Remove-Item -LiteralPath $nativeDir -Recurse -Force -ErrorAction SilentlyContinue
+    # 如果删除失败（文件被杀毒软件/索引服务锁定），等待后重试
+    if (Test-Path -LiteralPath $nativeDir -PathType Container) {
+        Write-Host "  Waiting 3s for native build dir lock to release..." -ForegroundColor Yellow
+        Start-Sleep -Seconds 3
+        Remove-Item -LiteralPath $nativeDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
 
 function Initialize-PlatformIoDataDir {
     if ([string]::IsNullOrWhiteSpace($DataDir)) {
@@ -82,6 +105,21 @@ function Test-BuildCacheIntegrity {
     $buildDir = Join-Path $ProjectDir ".pio\build\$BuildEnv"
     if (-not (Test-Path -LiteralPath $buildDir -PathType Container)) { return }
 
+    # .sconsign*.dblite 缺失 → SCons 签名数据库损坏（常见于进程被强杀/中断）
+    $sconsignFiles = Get-ChildItem -LiteralPath $buildDir -Filter ".sconsign*.dblite" -ErrorAction SilentlyContinue
+    if (-not $sconsignFiles -or $sconsignFiles.Count -eq 0) {
+        Write-Host "[Integrity] Build cache corrupted for $BuildEnv (sconsign database missing)." -ForegroundColor Yellow
+        Write-Host "[Integrity] Removing build directory to recover..." -ForegroundColor Yellow
+        Remove-Item -LiteralPath $buildDir -Recurse -Force -ErrorAction SilentlyContinue
+        # 如果删除失败（如文件被锁定），重新清理进程后再试
+        if (Test-Path -LiteralPath $buildDir -PathType Container) {
+            Write-Host "[Integrity] Directory locked, re-cleaning stale processes..." -ForegroundColor Yellow
+            Kill-StaleProcesses
+            Remove-Item -LiteralPath $buildDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        return
+    }
+
     $libFile = Join-Path $buildDir "libFrameworkArduino.a"
     $hasArchive = Test-Path -LiteralPath $libFile -PathType Leaf
     $hasObjects = @(
@@ -110,11 +148,44 @@ function Test-BuildCacheIntegrity {
     }
 }
 
+# ─── SCons 签名数据库完整性快速检测 ────────────────────────────────────
+function Test-SconsignIntact {
+    param([string]$BuildEnv)
+
+    $buildDir = Join-Path $ProjectDir ".pio\build\$BuildEnv"
+    if (-not (Test-Path -LiteralPath $buildDir -PathType Container)) { return $true }
+    $sconsignFiles = Get-ChildItem -LiteralPath $buildDir -Filter ".sconsign*.dblite" -ErrorAction SilentlyContinue
+    return ($sconsignFiles -and $sconsignFiles.Count -gt 0)
+}
+
 # ─── 带自动重试的 PlatformIO 构建/上传 ──────────────────────────────────
+# 使用 cmd /c 调用 pio 以绕过 PowerShell $ErrorActionPreference="Stop" 对
+# 原生命令 stderr 的拦截（PowerShell 会将 stderr 包装为终止性错误）。
+function Invoke-PioCmd {
+    param([string[]]$PioArgs)
+
+    # 强制 PlatformIO (Python) 使用 UTF-8 编码，防止中文 Windows (GBK) 下
+    # 进度条等 Unicode 字符输出触发 UnicodeEncodeError
+    $prevEnc = $env:PYTHONIOENCODING
+    $prevUtf8 = $env:PYTHONUTF8
+    $env:PYTHONIOENCODING = 'utf-8'
+    $env:PYTHONUTF8 = '1'
+    try {
+        $cmdStr = "pio $($PioArgs -join ' ')"
+        Write-Host $cmdStr -ForegroundColor Cyan
+        cmd /c $cmdStr
+        return $LASTEXITCODE
+    }
+    finally {
+        if ($null -ne $prevEnc) { $env:PYTHONIOENCODING = $prevEnc } else { Remove-Item Env:\PYTHONIOENCODING -ErrorAction SilentlyContinue }
+        if ($null -ne $prevUtf8) { $env:PYTHONUTF8 = $prevUtf8 } else { Remove-Item Env:\PYTHONUTF8 -ErrorAction SilentlyContinue }
+    }
+}
+
 function Invoke-FastBeePioBuild {
     param([string[]]$Arguments)
 
-    # 判断是否为上传目标（upload / uploadfs），上传失败时不清理编译缓存
+    # 判断是否为上传目标（upload / uploadfs）
     $isUpload = $false
     $envArg = $null
     for ($i = 0; $i -lt $Arguments.Count; $i++) {
@@ -128,37 +199,62 @@ function Invoke-FastBeePioBuild {
     }
 
     Write-Host ""
-    Write-Host "pio $($Arguments -join ' ')" -ForegroundColor Cyan
-    & pio @Arguments
-    if ($LASTEXITCODE -eq 0) { return }
+    $exitCode = Invoke-PioCmd -PioArgs $Arguments
+    if ($exitCode -eq 0) { return }
 
     if ($isUpload) {
-        # 上传失败 → 等串口稳定后直接重试（不清理编译缓存）
+        # 检测是否为编译阶段错误（upload 命令内部会先触发编译）
+        $sconsignCorrupted = -not (Test-SconsignIntact -BuildEnv $envArg)
+
+        if ($sconsignCorrupted) {
+            # 编译缓存损坏 → 删除构建目录后重新编译再上传
+            Write-Host ""
+            Write-Host "[Retry] Build cache corrupted during upload (sconsign missing), cleaning and rebuilding..." -ForegroundColor Yellow
+            if ($envArg) {
+                $buildDir = Join-Path $ProjectDir ".pio\build\$envArg"
+                if (Test-Path -LiteralPath $buildDir -PathType Container) {
+                    Remove-Item -LiteralPath $buildDir -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+            Kill-StaleProcesses
+            Write-Host ""
+            $exitCode = Invoke-PioCmd -PioArgs $Arguments
+            if ($exitCode -ne 0) {
+                throw "Upload failed after clean rebuild: pio $($Arguments -join ' ')"
+            }
+            Write-Host "[Retry] Upload succeeded after clean rebuild." -ForegroundColor Green
+            return
+        }
+
+        # 纯上传失败（串口/连接问题）→ 等串口稳定后直接重试
+        # 注意：此处不能调用 Kill-StaleProcesses，否则会杀掉正在维护
+        # sconsign 数据库的 python 进程，导致重试时编译缓存损坏。
         Write-Host ""
         Write-Host "[Retry] Upload failed, waiting 5s for serial port to stabilize..." -ForegroundColor Yellow
         Start-Sleep -Seconds 5
-        Kill-StaleProcesses
-        Write-Host "[Retry] pio $($Arguments -join ' ')" -ForegroundColor Cyan
-        & pio @Arguments
-        if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        $exitCode = Invoke-PioCmd -PioArgs $Arguments
+        if ($exitCode -ne 0) {
             throw "Upload failed after retry: pio $($Arguments -join ' ')"
         }
         Write-Host "[Retry] Upload succeeded on second attempt." -ForegroundColor Green
         return
     }
 
-    # 编译失败 → 清理缓存后重试一次
+    # 编译失败 → 删除构建目录后重试一次
     Write-Host ""
     Write-Host "[Retry] Build failed, cleaning cache and rebuilding..." -ForegroundColor Yellow
     if ($envArg) {
-        & pio run -e $envArg -t clean 2>$null | Out-Null
+        $buildDir = Join-Path $ProjectDir ".pio\build\$envArg"
+        if (Test-Path -LiteralPath $buildDir -PathType Container) {
+            Remove-Item -LiteralPath $buildDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
     Kill-StaleProcesses
 
     Write-Host ""
-    Write-Host "[Retry] pio $($Arguments -join ' ')" -ForegroundColor Cyan
-    & pio @Arguments
-    if ($LASTEXITCODE -ne 0) {
+    $exitCode = Invoke-PioCmd -PioArgs $Arguments
+    if ($exitCode -ne 0) {
         throw "Build failed after retry: pio $($Arguments -join ' ')"
     }
     Write-Host "[Retry] Build succeeded after clean rebuild." -ForegroundColor Green

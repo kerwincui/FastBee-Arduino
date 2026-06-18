@@ -8,6 +8,9 @@
 #include "network/DNSManager.h"
 #include "systems/LoggerSystem.h"
 #include <WiFi.h>
+#if FASTBEE_ENABLE_ETHERNET
+#include <ETH.h>
+#endif
 // DNS服务器已移除，仅保留mDNS功能
 // 注意：ESP-IDF 内置 mDNS 组件自带 hostname 冲突检测和自动重命名（RFC 6762），
 // 无需手动 UDP 探测。ESP-IDF 5.5.4 加强了 lwIP TCPIP 核心锁断言，
@@ -39,19 +42,41 @@ bool DNSManager::startMDNS(const String& hostname) {
     WiFiMode_t currentMode = WiFi.getMode();
     
     // 检查网络模式：AP、STA或AP+STA都可以启动mDNS
-    if (currentMode != WIFI_MODE_STA && 
-        currentMode != WIFI_MODE_AP && 
-        currentMode != WIFI_MODE_APSTA) {
-        LOG_WARNING("DNSManager: Cannot start mDNS - invalid WiFi mode");
+    bool wifiModeValid = (currentMode == WIFI_MODE_STA || 
+                          currentMode == WIFI_MODE_AP || 
+                          currentMode == WIFI_MODE_APSTA);
+    
+    // 以太网模式：即使 WiFi 模式为 NULL，只要以太网有有效 IP 也允许启动 mDNS
+    // ESP-IDF mDNS 组件会自动在所有活跃的网络接口上广播
+    bool ethModeValid = false;
+#if FASTBEE_ENABLE_ETHERNET
+    IPAddress ethIP = ETH.localIP();
+    if (ethIP != IPAddress(0,0,0,0) && ethIP != INADDR_NONE) {
+        ethModeValid = true;
+        LOG_DEBUGF("DNSManager: Ethernet IP available for mDNS: %s", ethIP.toString().c_str());
+    }
+#endif
+    
+    if (!wifiModeValid && !ethModeValid) {
+        LOG_WARNING("DNSManager: Cannot start mDNS - no valid WiFi mode and no Ethernet IP");
         return false;
     }
     
     // 确定使用哪个IP地址
-    // 在AP+STA模式下，优先使用STA IP，如果不可用则使用AP IP
+    // 优先级：以太网IP > STA IP > AP IP
     IPAddress bindIP;
     bool hasValidIP = false;
     
-    if (currentMode == WIFI_MODE_APSTA || currentMode == WIFI_MODE_STA) {
+#if FASTBEE_ENABLE_ETHERNET
+    // 以太网模式优先
+    if (ethModeValid) {
+        bindIP = ETH.localIP();
+        hasValidIP = true;
+        LOG_DEBUGF("DNSManager: Using Ethernet IP for mDNS: %s", bindIP.toString().c_str());
+    }
+#endif
+    
+    if (!hasValidIP && (currentMode == WIFI_MODE_APSTA || currentMode == WIFI_MODE_STA)) {
         // 尝试使用STA IP
         if (WiFi.status() == WL_CONNECTED) {
             IPAddress staIP = WiFi.localIP();
@@ -157,6 +182,8 @@ bool DNSManager::checkMDNSHealth() {
         // mDNS未启动，检查是否应该启动
         WiFiMode_t currentMode = WiFi.getMode();
         
+        bool shouldStart = false;
+        
         // 在AP、STA或AP+STA模式下，如果有有效IP就应该启动mDNS
         if (currentMode == WIFI_MODE_AP || 
             currentMode == WIFI_MODE_STA || 
@@ -182,10 +209,22 @@ bool DNSManager::checkMDNSHealth() {
                 }
             }
             
-            if (hasValidIP && mdnsEnabled) {
-                LOG_INFO("DNSManager: Health check - mDNS not running, attempting restart");
-                return startMDNS(actualHostname.isEmpty() ? customDomain : actualHostname);
+            if (hasValidIP) shouldStart = true;
+        }
+        
+        // 以太网模式：即使WiFi模式为NULL，以太网有IP也应启动mDNS
+#if FASTBEE_ENABLE_ETHERNET
+        if (!shouldStart) {
+            IPAddress ethIP = ETH.localIP();
+            if (ethIP != IPAddress(0,0,0,0) && ethIP != INADDR_NONE) {
+                shouldStart = true;
             }
+        }
+#endif
+        
+        if (shouldStart && mdnsEnabled) {
+            LOG_INFO("DNSManager: Health check - mDNS not running, attempting restart");
+            return startMDNS(actualHostname.isEmpty() ? customDomain : actualHostname);
         }
         return false;
     }
@@ -196,8 +235,19 @@ bool DNSManager::checkMDNSHealth() {
     // 检查是否有任一有效IP
     bool hasValidIP = false;
     
+    // 检查以太网IP
+#if FASTBEE_ENABLE_ETHERNET
+    {
+        IPAddress ethIP = ETH.localIP();
+        if (ethIP != IPAddress(0,0,0,0) && ethIP != INADDR_NONE) {
+            hasValidIP = true;
+        }
+    }
+#endif
+    
     // 检查STA IP
-    if ((currentMode == WIFI_MODE_STA || currentMode == WIFI_MODE_APSTA) &&
+    if (!hasValidIP &&
+        (currentMode == WIFI_MODE_STA || currentMode == WIFI_MODE_APSTA) &&
         WiFi.status() == WL_CONNECTED) {
         IPAddress staIP = WiFi.localIP();
         if (staIP != INADDR_NONE && staIP != IPAddress(0,0,0,0)) {

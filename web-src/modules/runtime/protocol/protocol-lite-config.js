@@ -171,7 +171,50 @@
 
         saveProtocolConfig: function(formId) {
             var self = this;
+            // 快照当前表单值：_loadFullProtocolConfig 会从服务器重新填充表单，
+            // 覆盖用户正在编辑的数据（尤其是主题列表），必须先保存再恢复
+            var snapshot = {};
+            var form = document.getElementById('mqtt-form');
+            if (form) {
+                var inputs = form.querySelectorAll('input, select, textarea');
+                for (var i = 0; i < inputs.length; i++) {
+                    var el = inputs[i];
+                    var key = el.id || el.className;
+                    if (!key) continue;
+                    if (el.type === 'checkbox') {
+                        snapshot[key] = { type: 'checkbox', checked: el.checked };
+                    } else {
+                        snapshot[key] = { type: 'value', value: el.value };
+                    }
+                }
+                // 快照动态主题容器的完整 HTML
+                var pubTopics = document.getElementById('mqtt-publish-topics');
+                var subTopics = document.getElementById('mqtt-subscribe-topics');
+                snapshot['__publishTopicsHTML'] = pubTopics ? pubTopics.innerHTML : '';
+                snapshot['__subscribeTopicsHTML'] = subTopics ? subTopics.innerHTML : '';
+            }
             return this._loadFullProtocolConfig('mqtt').then(function() {
+                // 恢复用户编辑的表单值
+                if (form) {
+                    var inputs = form.querySelectorAll('input, select, textarea');
+                    for (var i = 0; i < inputs.length; i++) {
+                        var el = inputs[i];
+                        var key = el.id || el.className;
+                        if (!key || !snapshot[key]) continue;
+                        if (el.type === 'checkbox') {
+                            el.checked = snapshot[key].checked;
+                        } else {
+                            el.value = snapshot[key].value;
+                        }
+                    }
+                    // 恢复动态主题容器
+                    if (snapshot['__publishTopicsHTML'] !== undefined && pubTopics) {
+                        pubTopics.innerHTML = snapshot['__publishTopicsHTML'];
+                    }
+                    if (snapshot['__subscribeTopicsHTML'] !== undefined && subTopics) {
+                        subTopics.innerHTML = snapshot['__subscribeTopicsHTML'];
+                    }
+                }
                 return self.saveProtocolConfig(formId);
             });
         }

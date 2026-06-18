@@ -17,6 +17,9 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include <fstream>
+#include <sstream>
+#include <regex>
 #include "mocks/MockConfigStorage.h"
 #include "mocks/MockTaskManager.h"
 #include "mocks/MockHealthMonitor.h"
@@ -26,6 +29,21 @@
 #include "helpers/TestLogger.h"
 
 void test_regression_guard_group();
+
+// 辅助：读取项目源文件（用于源码回归测试）
+static std::string readRegressionSrcFile(const char* relativePath) {
+    const char* roots[] = { ".", "..", "../.." };
+    for (const char* root : roots) {
+        std::string fullPath = std::string(root) + "/" + relativePath;
+        std::ifstream file(fullPath);
+        if (file.is_open()) {
+            std::ostringstream ss;
+            ss << file.rdbuf();
+            return ss.str();
+        }
+    }
+    return "";
+}
 
 // ========== 配置往返完整性 ==========
 
@@ -402,6 +420,454 @@ void test_nvs_key_isolation() {
     TestLog::testEnd(true);
 }
 
+// ========== 以太网模式源码回归保护 ==========
+
+/**
+ * @brief 验证 FastBeeFramework.cpp 中 NTP 触发条件使用 isNetworkConnected()
+ * 回归：原代码用 WiFi.status() == WL_CONNECTED，以太网模式下永远为 false
+ * 修复：改用 framework->network->isNetworkConnected() 支持所有联网方式
+ */
+void test_regression_ntp_uses_is_network_connected() {
+    TestLog::testStart("Regression: NTP Uses isNetworkConnected()");
+
+    std::string src = readRegressionSrcFile("src/core/FastBeeFramework.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read FastBeeFramework.cpp");
+    TestLog::step("Loaded FastBeeFramework.cpp");
+
+    // NTP 触发条件必须使用 isNetworkConnected()
+    // 查找源码中 isNetworkConnected() 的使用次数
+    size_t pos = 0;
+    int isNetworkConnectedCount = 0;
+    std::string target = "isNetworkConnected()";
+    while ((pos = src.find(target, pos)) != std::string::npos) {
+        isNetworkConnectedCount++;
+        pos += target.length();
+    }
+
+    TEST_ASSERT_GREATER_OR_EQUAL(2, isNetworkConnectedCount);
+    TestLog::step("isNetworkConnected() found >= 2 times (NTP trigger + MQTT trigger)");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 NetworkManager.cpp 中以太网模式 mDNS 在 AP 之后启动
+ * 回归：原代码 mDNS 在 AP 之前启动，导致 mDNS 绑定到错误的 netif
+ * 检查源码中 "startAPMode" 出现在 "startMDNS" 之前
+ */
+void test_regression_ethernet_mdns_after_ap_in_source() {
+    TestLog::testStart("Regression: Ethernet mDNS After AP in Source");
+
+    std::string src = readRegressionSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read NetworkManager.cpp");
+    TestLog::step("Loaded NetworkManager.cpp");
+
+    // 查找以太网初始化块中的 startAPMode 和 startMDNS
+    // 通过 "Ethernet connected" 定位以太网成功连接后的代码块
+    size_t ethInitPos = src.find("NET_ETHERNET");
+    TEST_ASSERT_TRUE(ethInitPos != std::string::npos);
+    TestLog::step("Found NET_ETHERNET in source");
+
+    size_t ethConnectedPos = src.find("Ethernet connected", ethInitPos);
+    TEST_ASSERT_TRUE(ethConnectedPos != std::string::npos);
+    TestLog::step("Found 'Ethernet connected' log");
+
+    // 查找以太网块结束标记 "isInitialized = true"
+    size_t ethEndPos = src.find("isInitialized = true", ethConnectedPos);
+    TEST_ASSERT_TRUE(ethEndPos != std::string::npos);
+    TestLog::step("Found 'isInitialized = true' (block end marker)");
+
+    // 提取以太网块并验证顺序
+    std::string ethBlock = src.substr(ethConnectedPos, ethEndPos - ethConnectedPos);
+
+    // 关键验证：两个函数调用都在块内，且顺序正确
+    // 使用精确模式匹配实际函数调用，避免匹配注释文本
+    size_t apPos = ethBlock.find("= startAPMode()");
+    size_t mdnsPos = ethBlock.find("->startMDNS(");
+    TEST_ASSERT_TRUE(apPos != std::string::npos);
+    TestLog::step("startAPMode found in Ethernet block");
+    TEST_ASSERT_TRUE(mdnsPos != std::string::npos);
+    TestLog::step("startMDNS found in Ethernet block");
+
+    // 验证顺序：startAPMode 必须在 startMDNS 之前出现
+    // 这确保 AP 先启动，mDNS 在所有 netif 就绪后启动
+    // Unity: TEST_ASSERT_LESS_THAN(upper, actual) 断言 actual < upper
+    TEST_ASSERT_LESS_THAN((int)mdnsPos, (int)apPos);
+    TestLog::step("startAPMode position < startMDNS position (correct init order)");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 FastBeeFramework.cpp 启动报告包含以太网模式输出
+ * 回归：原代码以太网模式下启动日志不显示以太网信息
+ */
+void test_regression_boot_report_includes_ethernet() {
+    TestLog::testStart("Regression: Boot Report Includes Ethernet");
+
+    std::string src = readRegressionSrcFile("src/core/FastBeeFramework.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read FastBeeFramework.cpp");
+
+    // 启动报告中必须包含以太网模式的关键字
+    TEST_ASSERT_TRUE(src.find("Ethernet (W5500)") != std::string::npos);
+    TestLog::step("Boot report contains 'Ethernet (W5500)'");
+
+    TEST_ASSERT_TRUE(src.find("Ethernet IP:") != std::string::npos);
+    TestLog::step("Boot report contains 'Ethernet IP:'");
+
+    TEST_ASSERT_TRUE(src.find("mDNS URL:") != std::string::npos);
+    TestLog::step("Boot report contains 'mDNS URL:'");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 FastBeeFramework.cpp 周期性状态包含以太网信息
+ * 回归：原代码 [STATUS] 打印不包含以太网状态
+ */
+void test_regression_periodic_status_includes_ethernet() {
+    TestLog::testStart("Regression: Periodic Status Includes Ethernet");
+
+    std::string src = readRegressionSrcFile("src/core/FastBeeFramework.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read FastBeeFramework.cpp");
+
+    // 周期性状态输出中必须包含以太网状态
+    TEST_ASSERT_TRUE(src.find("ETH=CONNECTED") != std::string::npos);
+    TestLog::step("Periodic status contains 'ETH=CONNECTED'");
+
+    TEST_ASSERT_TRUE(src.find("NET_ETHERNET") != std::string::npos);
+    TestLog::step("Periodic status contains 'NET_ETHERNET' check");
+
+    TestLog::testEnd(true);
+}
+
+// ========== Bug Fix 回归测试：MQTT保存不清空主题 (Bug #2) ==========
+
+/**
+ * @brief 验证 saveProtocolConfig 在加载完整模块前快照表单，加载后恢复
+ * 回归：旧代码调用 _loadFullProtocolConfig 后表单被服务器数据覆盖，
+ *       导致用户编辑的发布/订阅主题列表丢失
+ */
+void test_regression_mqtt_save_preserves_topics_snapshot() {
+    TestLog::testStart("Regression: MQTT Save Preserves Topics Snapshot");
+
+    std::string content = readRegressionSrcFile("web-src/modules/runtime/protocol/protocol-lite-config.js");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read protocol-lite-config.js");
+    TestLog::step("File loaded");
+
+    // 1) saveProtocolConfig 必须在调用 _loadFullProtocolConfig 前创建快照对象
+    TEST_ASSERT_TRUE_MESSAGE(content.find("var snapshot = {}") != std::string::npos,
+        "saveProtocolConfig must create snapshot object before loading full module");
+    TestLog::step("Snapshot object creation present");
+
+    // 2) 必须快照发布主题容器的 HTML
+    TEST_ASSERT_TRUE_MESSAGE(content.find("mqtt-publish-topics") != std::string::npos,
+        "Must snapshot mqtt-publish-topics container");
+    TestLog::step("Publish topics snapshot present");
+
+    // 3) 必须快照订阅主题容器的 HTML
+    TEST_ASSERT_TRUE_MESSAGE(content.find("mqtt-subscribe-topics") != std::string::npos,
+        "Must snapshot mqtt-subscribe-topics container");
+    TestLog::step("Subscribe topics snapshot present");
+
+    // 4) 快照必须保存 innerHTML（而非仅 value）
+    TEST_ASSERT_TRUE_MESSAGE(content.find("__publishTopicsHTML") != std::string::npos,
+        "Must save publish topics as __publishTopicsHTML key");
+    TEST_ASSERT_TRUE_MESSAGE(content.find("__subscribeTopicsHTML") != std::string::npos,
+        "Must save subscribe topics as __subscribeTopicsHTML key");
+    TestLog::step("Topic HTML keys present");
+
+    // 5) 加载后必须恢复 innerHTML
+    std::regex restoreRe("innerHTML\\s*=\\s*snapshot\\[");
+    TEST_ASSERT_TRUE_MESSAGE(std::regex_search(content, restoreRe),
+        "Must restore innerHTML from snapshot after _loadFullProtocolConfig");
+    TestLog::step("innerHTML restore from snapshot present");
+
+    // 6) 在 saveProtocolConfig 函数体内验证快照/恢复序列
+    // _loadFullProtocolConfig 在文件中有两处出现（定义 + 调用），
+    // 必须在 saveProtocolConfig 函数体内验证调用位置在 snapshot 和 restore 之间
+    size_t saveFuncPos = content.find("saveProtocolConfig: function");
+    TEST_ASSERT_TRUE_MESSAGE(saveFuncPos != std::string::npos,
+        "saveProtocolConfig function not found");
+    std::string saveBody = content.substr(saveFuncPos, 3000);
+    size_t snapshotInSave = saveBody.find("var snapshot = {}");
+    size_t loadInSave = saveBody.find("this._loadFullProtocolConfig");
+    // 恢复块中的 innerHTML 赋值仅出现在 _loadFullProtocolConfig 之后
+    size_t restoreInSave = saveBody.find("pubTopics.innerHTML = snapshot");
+    TEST_ASSERT_TRUE_MESSAGE(snapshotInSave != std::string::npos,
+        "snapshot creation not found in saveProtocolConfig");
+    TEST_ASSERT_TRUE_MESSAGE(loadInSave != std::string::npos,
+        "_loadFullProtocolConfig call not found in saveProtocolConfig");
+    TEST_ASSERT_TRUE_MESSAGE(restoreInSave != std::string::npos,
+        "pubTopics.innerHTML restore not found in saveProtocolConfig");
+    TEST_ASSERT_TRUE(snapshotInSave < loadInSave);
+    TestLog::step("Snapshot created BEFORE _loadFullProtocolConfig in saveProtocolConfig");
+    TEST_ASSERT_TRUE(loadInSave < restoreInSave);
+    TestLog::step("Topics restored AFTER _loadFullProtocolConfig in saveProtocolConfig");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 saveProtocolConfig 同时快照/恢复普通表单字段（checkbox 和 input）
+ * 防止仅恢复主题列表而忽略其他字段
+ */
+void test_regression_mqtt_save_preserves_all_form_fields() {
+    TestLog::testStart("Regression: MQTT Save Preserves All Form Fields");
+
+    std::string content = readRegressionSrcFile("web-src/modules/runtime/protocol/protocol-lite-config.js");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read protocol-lite-config.js");
+
+    // 快照必须处理 checkbox 类型
+    TEST_ASSERT_TRUE_MESSAGE(content.find("el.type === 'checkbox'") != std::string::npos,
+        "Snapshot must handle checkbox elements");
+    TestLog::step("Checkbox snapshot logic present");
+
+    // 快照必须保存 checked 属性
+    TEST_ASSERT_TRUE_MESSAGE(content.find("el.checked") != std::string::npos,
+        "Snapshot must save checkbox.checked state");
+    TestLog::step("Checkbox checked state saved");
+
+    // 恢复时必须还原 checked 属性
+    TEST_ASSERT_TRUE_MESSAGE(content.find("el.checked = snapshot[key].checked") != std::string::npos,
+        "Restore must set el.checked from snapshot");
+    TestLog::step("Checkbox checked state restored");
+
+    // 快照必须保存 value 属性
+    TEST_ASSERT_TRUE_MESSAGE(content.find("el.value") != std::string::npos,
+        "Snapshot must save input.value");
+    TestLog::step("Input value saved");
+
+    // 恢复时必须还原 value 属性
+    TEST_ASSERT_TRUE_MESSAGE(content.find("el.value = snapshot[key].value") != std::string::npos,
+        "Restore must set el.value from snapshot");
+    TestLog::step("Input value restored");
+
+    TestLog::testEnd(true);
+}
+
+// ========== Bug Fix 回归测试：以太网重启重建适配器 (Bug #3) ==========
+
+/**
+ * @brief 验证 restartNetwork() 在以太网路径不调用 initialize()
+ * 回归：旧代码调用 initialize()，但因 isInitialized=true 导致提前返回，
+ *       以太网适配器永远不被重建，Web 不可访问
+ */
+void test_regression_restart_network_no_initialize_for_ethernet() {
+    TestLog::testStart("Regression: restartNetwork No initialize() for Ethernet");
+
+    std::string content = readRegressionSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read NetworkManager.cpp");
+    TestLog::step("File loaded");
+
+    // 定位 restartNetwork 函数定义（而非调用点）
+    size_t restartPos = content.find("FBNetworkManager::restartNetwork");
+    TEST_ASSERT_TRUE_MESSAGE(restartPos != std::string::npos, "restartNetwork function not found");
+    TestLog::step("restartNetwork found");
+
+    // 取 restartNetwork 后的代码片段（函数体约 170 行，需要 ~7000 字符完整覆盖）
+    std::string restartBody = content.substr(restartPos, 7000);
+
+    // 关键检查：以太网路径必须用 ethernetAdapter.reset(new EthernetAdapter()) 重建
+    TEST_ASSERT_TRUE_MESSAGE(restartBody.find("ethernetAdapter.reset(new EthernetAdapter())") != std::string::npos,
+        "Ethernet path must use ethernetAdapter.reset(new EthernetAdapter()) to recreate adapter");
+    TestLog::step("Ethernet adapter recreated via reset(new EthernetAdapter())");
+
+    // 注释中必须说明不调用 initialize() 的原因
+    TEST_ASSERT_TRUE_MESSAGE(restartBody.find("isInitialized") != std::string::npos,
+        "Comment must explain why initialize() is not called (isInitialized still true)");
+    TestLog::step("Comment explains initialize() bypass reason");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 restartNetwork() 在 4G 路径也直接重建适配器
+ */
+void test_regression_restart_network_rebuilds_cellular_adapter() {
+    TestLog::testStart("Regression: restartNetwork Rebuilds Cellular Adapter");
+
+    std::string content = readRegressionSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read NetworkManager.cpp");
+
+    size_t restartPos = content.find("FBNetworkManager::restartNetwork");
+    TEST_ASSERT_TRUE(restartPos != std::string::npos);
+    std::string restartBody = content.substr(restartPos, 7000);
+
+    // 4G 路径必须用 cellularAdapter.reset(new CellularAdapter()) 重建
+    TEST_ASSERT_TRUE_MESSAGE(restartBody.find("cellularAdapter.reset(new CellularAdapter())") != std::string::npos,
+        "4G path must use cellularAdapter.reset(new CellularAdapter()) to recreate adapter");
+    TestLog::step("Cellular adapter recreated via reset(new CellularAdapter())");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 restartNetwork() 以太网失败时回退到 AP 模式
+ * 确保用户在以太网失败时仍可通过 AP 热点访问 Web 配置页
+ */
+void test_regression_restart_network_eth_failure_ap_fallback() {
+    TestLog::testStart("Regression: restartNetwork Eth Failure → AP Fallback");
+
+    std::string content = readRegressionSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read NetworkManager.cpp");
+
+    size_t restartPos = content.find("FBNetworkManager::restartNetwork");
+    TEST_ASSERT_TRUE(restartPos != std::string::npos);
+    std::string restartBody = content.substr(restartPos, 7000);
+
+    // 以太网失败后必须检查 AP 模式并启动
+    TEST_ASSERT_TRUE_MESSAGE(restartBody.find("startAPMode") != std::string::npos,
+        "Ethernet failure must call startAPMode() as recovery entrance");
+    TestLog::step("startAPMode() called on Ethernet failure");
+
+    // 失败后必须启动 mDNS（确保用户可通过 fastbee.local 访问）
+    TEST_ASSERT_TRUE_MESSAGE(restartBody.find("startMDNS") != std::string::npos,
+        "mDNS must be started after Ethernet failure for user recovery");
+    TestLog::step("mDNS started after Ethernet failure");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 restartNetwork() 以太网成功路径启动 AP 混合模式
+ * Bug Fix: 切换为以太网后 fastbee.local 无法访问、MQTT连不上
+ * 原因是 restartNetwork() 以太网成功后没有启动 WiFi AP（混合模式），
+ * 导致 WiFi 模式为 NULL，mDNS 拒绝启动。
+ */
+void test_regression_restart_network_eth_success_starts_hybrid_ap() {
+    TestLog::testStart("Regression: restartNetwork Eth Success -> Hybrid AP Mode");
+
+    std::string content = readRegressionSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read NetworkManager.cpp");
+
+    size_t restartPos = content.find("FBNetworkManager::restartNetwork");
+    TEST_ASSERT_TRUE(restartPos != std::string::npos);
+    std::string restartBody = content.substr(restartPos, 7000);
+
+    // 定位以太网重连成功后的代码块
+    size_t ethReconnected = restartBody.find("Ethernet reconnected, IP:");
+    TEST_ASSERT_TRUE_MESSAGE(ethReconnected != std::string::npos,
+        "Must have 'Ethernet reconnected' log in restartNetwork");
+
+    // 以太网成功后必须启动 WiFi AP（混合模式）
+    std::string afterEthOk = restartBody.substr(ethReconnected);
+    TEST_ASSERT_TRUE_MESSAGE(
+        afterEthOk.find("Starting WiFi AP for hybrid mode") != std::string::npos,
+        "Ethernet success path must start WiFi AP for hybrid mode (Ethernet + AP)");
+    TestLog::step("WiFi AP started in Ethernet success path");
+
+    // 混合模式后必须启动 mDNS
+    TEST_ASSERT_TRUE_MESSAGE(afterEthOk.find("startMDNS") != std::string::npos,
+        "mDNS must be started after Ethernet+AP hybrid mode setup");
+    TestLog::step("mDNS started after hybrid mode setup");
+
+    // 状态必须保持 CONNECTED（不能被 AP 状态覆盖）
+    size_t hybridMode = afterEthOk.find("Hybrid mode active");
+    if (hybridMode != std::string::npos) {
+        std::string afterHybrid = afterEthOk.substr(hybridMode);
+        TEST_ASSERT_TRUE_MESSAGE(
+            afterHybrid.find("CONNECTED") != std::string::npos,
+            "Status must be reset to CONNECTED after AP mode start");
+        TestLog::step("Status preserved as CONNECTED in hybrid mode");
+    }
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 restartNetwork() 4G 成功路径也启动 AP 混合模式
+ */
+void test_regression_restart_network_4g_success_starts_hybrid_ap() {
+    TestLog::testStart("Regression: restartNetwork 4G Success -> Hybrid AP Mode");
+
+    std::string content = readRegressionSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read NetworkManager.cpp");
+
+    size_t restartPos = content.find("FBNetworkManager::restartNetwork");
+    TEST_ASSERT_TRUE(restartPos != std::string::npos);
+    std::string restartBody = content.substr(restartPos, 9000);
+
+    // 定位 4G 重连成功后的代码块
+    size_t cellReconnected = restartBody.find("4G reconnected");
+    TEST_ASSERT_TRUE_MESSAGE(cellReconnected != std::string::npos,
+        "Must have '4G reconnected' log in restartNetwork");
+
+    // 4G 成功后必须启动 WiFi AP（混合模式）
+    std::string afterCellOk = restartBody.substr(cellReconnected);
+    TEST_ASSERT_TRUE_MESSAGE(
+        afterCellOk.find("Starting WiFi AP for hybrid mode") != std::string::npos,
+        "4G success path must start WiFi AP for hybrid mode (4G + AP)");
+    TestLog::step("WiFi AP started in 4G success path");
+
+    // mDNS 必须在 AP 启动后启动
+    TEST_ASSERT_TRUE_MESSAGE(afterCellOk.find("startMDNS") != std::string::npos,
+        "mDNS must be started after 4G+AP hybrid mode setup");
+    TestLog::step("mDNS started after 4G hybrid mode");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 DNSManager::startMDNS() 支持以太网模式（WiFi 模式为 NULL 时仍可启动）
+ * Bug Fix: 以太网连接后 WiFi 模式可能为 NULL，mDNS 不应拒绝启动
+ */
+void test_regression_dns_mdns_supports_ethernet_mode() {
+    TestLog::testStart("Regression: DNSManager startMDNS supports Ethernet mode");
+
+    std::string content = readRegressionSrcFile("src/network/DNSManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read DNSManager.cpp");
+
+    // 验证 DNSManager 包含 ETH.h 头文件（以太网支持）
+    TEST_ASSERT_TRUE_MESSAGE(content.find("#include <ETH.h>") != std::string::npos,
+        "DNSManager must include ETH.h for Ethernet IP detection");
+    TestLog::step("ETH.h included in DNSManager");
+
+    // 验证 startMDNS 中有以太网 IP 检查逻辑
+    size_t startMDNSPos = content.find("DNSManager::startMDNS");
+    TEST_ASSERT_TRUE(startMDNSPos != std::string::npos);
+    std::string mdnsBody = content.substr(startMDNSPos, 3000);
+
+    // 必须检查 ETH.localIP()
+    TEST_ASSERT_TRUE_MESSAGE(mdnsBody.find("ETH.localIP()") != std::string::npos,
+        "startMDNS must check ETH.localIP() for Ethernet mode support");
+    TestLog::step("ETH.localIP() check present in startMDNS");
+
+    // 必须有 ethModeValid 标志
+    TEST_ASSERT_TRUE_MESSAGE(mdnsBody.find("ethModeValid") != std::string::npos,
+        "Must have ethModeValid flag to allow mDNS with Ethernet-only");
+    TestLog::step("ethModeValid flag present");
+
+    // 验证新的组合检查逻辑
+    TEST_ASSERT_TRUE_MESSAGE(mdnsBody.find("!wifiModeValid && !ethModeValid") != std::string::npos,
+        "mDNS should only fail when BOTH WiFi mode invalid AND no Ethernet IP");
+    TestLog::step("Combined WiFi+Ethernet check logic verified");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 DNSManager::checkMDNSHealth() 也支持以太网模式
+ */
+void test_regression_dns_health_check_supports_ethernet() {
+    TestLog::testStart("Regression: DNSManager checkMDNSHealth supports Ethernet");
+
+    std::string content = readRegressionSrcFile("src/network/DNSManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read DNSManager.cpp");
+
+    size_t healthPos = content.find("DNSManager::checkMDNSHealth");
+    TEST_ASSERT_TRUE(healthPos != std::string::npos);
+    std::string healthBody = content.substr(healthPos, 3000);
+
+    // 健康检查也必须能处理以太网模式
+    TEST_ASSERT_TRUE_MESSAGE(healthBody.find("ETH.localIP()") != std::string::npos,
+        "checkMDNSHealth must check Ethernet IP for Ethernet mode support");
+    TestLog::step("ETH.localIP() check in health check");
+
+    TestLog::testEnd(true);
+}
+
 // ========== 测试组入口 ==========
 
 void test_regression_guard_group() {
@@ -429,6 +895,27 @@ void test_regression_guard_group() {
 
     // 路径链一致性
     RUN_TEST(test_path_operation_chain_consistency);
+
+    // 以太网模式源码回归保护
+    RUN_TEST(test_regression_ntp_uses_is_network_connected);
+    RUN_TEST(test_regression_ethernet_mdns_after_ap_in_source);
+    RUN_TEST(test_regression_boot_report_includes_ethernet);
+    RUN_TEST(test_regression_periodic_status_includes_ethernet);
+
+    // Bug Fix 回归：MQTT保存不清空主题
+    RUN_TEST(test_regression_mqtt_save_preserves_topics_snapshot);
+    RUN_TEST(test_regression_mqtt_save_preserves_all_form_fields);
+
+    // Bug Fix 回归：以太网重启重建适配器
+    RUN_TEST(test_regression_restart_network_no_initialize_for_ethernet);
+    RUN_TEST(test_regression_restart_network_rebuilds_cellular_adapter);
+    RUN_TEST(test_regression_restart_network_eth_failure_ap_fallback);
+
+    // Bug Fix 回归：以太网成功后启动混合模式 + mDNS支持以太网
+    RUN_TEST(test_regression_restart_network_eth_success_starts_hybrid_ap);
+    RUN_TEST(test_regression_restart_network_4g_success_starts_hybrid_ap);
+    RUN_TEST(test_regression_dns_mdns_supports_ethernet_mode);
+    RUN_TEST(test_regression_dns_health_check_supports_ethernet);
 
     TestLog::groupEnd();
 }

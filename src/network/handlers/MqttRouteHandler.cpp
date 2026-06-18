@@ -729,6 +729,20 @@ void MqttRouteHandler::handleMqttReconnect(AsyncWebServerRequest* request) {
         return;
     }
 
+    // 检查 autoReconnect 配置：用户关闭自动重连时，不应自动触发重连
+    // 前端状态轮询可能在 autoReconnect=false 时仍误调用此接口，后端需徽底
+    {
+        MQTTConfig cfg = mqtt ? mqtt->getConfig() : MQTTConfig();
+        if (mqtt && !cfg.autoReconnect) {
+            JsonDocument doc;
+            doc["success"] = true;
+            doc["data"]["connected"] = false;
+            doc["data"]["autoReconnectDisabled"] = true;
+            HandlerUtils::sendJsonStream(request, doc);
+            return;
+        }
+    }
+
     // 未连接时，始终走 restartMQTTDeferred() 重建客户端
     // 原因：现有客户端可能用错误凭据进入了慢重连模式，
     // 只重置 stopped 标志无法清除慢重连间隔和连续失败计数器

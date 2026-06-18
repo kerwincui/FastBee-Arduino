@@ -121,7 +121,7 @@ public:
     ~MQTTClient();
 
     bool loadMqttConfig(const String& filename = FileSystem::PROTOCOL_CONFIG_FILE); 
-    bool begin();
+    bool begin(uint32_t taskStartupDelayMs = 3000);
     void shutdown();  // 关闭后台任务（在系统关闭前调用）
     bool connect();
     void disconnect();
@@ -208,6 +208,7 @@ private:
     volatile bool _reconnectPending;
     volatile bool _reconnectRunning;
     TaskHandle_t _reconnectTaskHandle;
+    uint32_t _taskStartupDelayMs;  // 重连任务启动延迟（ms），首次启动 3000ms，deferred 重启 500ms
     static void reconnectTaskEntry(void* param);
     void doReconnect();  // 实际执行重连（在后台任务中调用）
 

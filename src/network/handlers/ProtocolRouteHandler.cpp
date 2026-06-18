@@ -89,124 +89,6 @@ void copyMqttTopicList(JsonArray dst, JsonArray src, bool publishList) {
     }
 }
 
-void copyMqttPublishTopicList(JsonArray dst, const std::vector<MqttPublishTopic>& src) {
-    for (const MqttPublishTopic& topic : src) {
-        JsonObject out = dst.add<JsonObject>();
-        out["topic"] = topic.topic;
-        out["qos"] = topic.qos;
-        out["retain"] = topic.retain;
-        out["enabled"] = topic.enabled;
-        out["autoPrefix"] = topic.autoPrefix;
-        out["topicType"] = static_cast<uint8_t>(topic.topicType);
-    }
-}
-
-void copyMqttSubscribeTopicList(JsonArray dst, const std::vector<MqttSubscribeTopic>& src) {
-    for (const MqttSubscribeTopic& topic : src) {
-        JsonObject out = dst.add<JsonObject>();
-        out["topic"] = topic.topic;
-        out["qos"] = topic.qos;
-        out["enabled"] = topic.enabled;
-        out["autoPrefix"] = topic.autoPrefix;
-        out["topicType"] = static_cast<uint8_t>(topic.topicType);
-    }
-}
-
-void fillCompactMqttDefaults(JsonObject mqttOut) {
-    mqttOut["enabled"] = false;
-    mqttOut["server"] = "iot.fastbee.cn";
-    mqttOut["port"] = 1883;
-    mqttOut["clientId"] = "";
-    mqttOut["username"] = "";
-    mqttOut["password"] = "";
-    mqttOut["keepAlive"] = 60;
-    mqttOut["autoReconnect"] = true;
-    mqttOut["connectionTimeout"] = 30000;
-    mqttOut["authType"] = 0;
-    mqttOut["mqttSecret"] = "";
-    mqttOut["authCode"] = "";
-    mqttOut["willTopic"] = "";
-    mqttOut["willPayload"] = "";
-    mqttOut["willQos"] = 0;
-    mqttOut["willRetain"] = false;
-    mqttOut["longitude"] = 0;
-    mqttOut["latitude"] = 0;
-    mqttOut["iccid"] = "";
-    mqttOut["cardPlatformId"] = 0;
-    mqttOut["summary"] = "";
-    mqttOut["publishTopics"].to<JsonArray>();
-    mqttOut["subscribeTopics"].to<JsonArray>();
-}
-
-void copyMqttRuntimeConfig(JsonObject mqttOut, const MQTTConfig& cfg) {
-    mqttOut["enabled"] = true;
-    mqttOut["server"] = cfg.server;
-    mqttOut["port"] = cfg.port;
-    mqttOut["clientId"] = cfg.clientId;
-    mqttOut["username"] = cfg.username;
-    mqttOut["password"] = cfg.password;
-    mqttOut["keepAlive"] = cfg.keepAlive;
-    mqttOut["autoReconnect"] = cfg.autoReconnect;
-    mqttOut["connectionTimeout"] = cfg.connectionTimeout;
-    mqttOut["authType"] = static_cast<uint8_t>(cfg.authType);
-    mqttOut["mqttSecret"] = cfg.mqttSecret;
-    mqttOut["authCode"] = cfg.authCode;
-    mqttOut["willTopic"] = cfg.willTopic;
-    mqttOut["willPayload"] = cfg.willPayload;
-    mqttOut["willQos"] = cfg.willQos;
-    mqttOut["willRetain"] = cfg.willRetain;
-    mqttOut["longitude"] = cfg.longitude;
-    mqttOut["latitude"] = cfg.latitude;
-    mqttOut["iccid"] = cfg.iccid;
-    mqttOut["cardPlatformId"] = cfg.cardPlatformId;
-    mqttOut["summary"] = cfg.summary;
-    copyMqttPublishTopicList(mqttOut["publishTopics"].to<JsonArray>(), cfg.publishTopics);
-    copyMqttSubscribeTopicList(mqttOut["subscribeTopics"].to<JsonArray>(), cfg.subscribeTopics);
-}
-
-void sendCompactMqttConfig(AsyncWebServerRequest* request, ProtocolManager* protocolManager) {
-    bool enabled = false;
-#if FASTBEE_ENABLE_MQTT
-    MQTTClient* mqtt = protocolManager ? protocolManager->getMQTTClient() : nullptr;
-    if (mqtt) {
-        enabled = true;
-    }
-#endif
-    char json[768];
-    snprintf(json, sizeof(json),
-        "{\"success\":true,\"data\":{\"mqtt\":{"
-        "\"enabled\":%s,"
-        "\"server\":\"iot.fastbee.cn\","
-        "\"port\":1883,"
-        "\"clientId\":\"\","
-        "\"username\":\"\","
-        "\"password\":\"\","
-        "\"keepAlive\":60,"
-        "\"autoReconnect\":true,"
-        "\"connectionTimeout\":30000,"
-        "\"authType\":0,"
-        "\"mqttSecret\":\"K451265A72244J79\","
-        "\"authCode\":\"\","
-        "\"willTopic\":\"\","
-        "\"willPayload\":\"\","
-        "\"willQos\":0,"
-        "\"willRetain\":false,"
-        "\"longitude\":0,"
-        "\"latitude\":0,"
-        "\"iccid\":\"\","
-        "\"cardPlatformId\":0,"
-        "\"summary\":\"\","
-        "\"publishTopics\":[],"
-        "\"subscribeTopics\":[],"
-        "\"compact\":true,"
-        "\"degraded\":true"
-        "}}}",
-        enabled ? "true" : "false");
-    AsyncWebServerResponse* response = request->beginResponse(200, "application/json", json);
-    response->addHeader("Connection", "close");
-    request->send(response);
-}
-
 void sendCompactMqttConfigFromFile(AsyncWebServerRequest* request) {
     auto source = FastBee::makeJsonDocument(32768);
     loadProtocolConfigDocument(source);
@@ -851,10 +733,10 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["mqtt"]["cardPlatformId"] = GPI("mqtt_cardPlatformId", "0");
     doc["mqtt"]["summary"]   = GP("mqtt_summary", "");
 
-    // 发布主题配置
+    // 发布主题配置（仅在前端实际发送了主题数据时才清空重建，避免覆盖已有配置）
     String publishTopicsJson = GP("mqtt_publishTopics", "[]");
-    JsonArray publishTopics = doc["mqtt"]["publishTopics"].to<JsonArray>();
-    if (publishTopicsJson.length() > 2) {
+    if (hasProtocolParam(request, "mqtt_publishTopics") && publishTopicsJson.length() > 2) {
+        JsonArray publishTopics = doc["mqtt"]["publishTopics"].to<JsonArray>();
         JsonDocument topicsDoc;
         DeserializationError err = deserializeJson(topicsDoc, publishTopicsJson);
         if (!err && topicsDoc.is<JsonArray>()) {
@@ -870,20 +752,15 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
             }
         }
     }
-    if (publishTopics.size() == 0) {
-        JsonObject defaultTopic = publishTopics.add<JsonObject>();
-        defaultTopic["topic"] = "";
-        defaultTopic["qos"] = 0;
-        defaultTopic["retain"] = false;
-        defaultTopic["enabled"] = true;
-        defaultTopic["autoPrefix"] = false;
-        defaultTopic["topicType"] = 0;
+    // 如果文件中完全没有 publishTopics 字段，初始化一个空数组
+    if (doc["mqtt"]["publishTopics"].isNull()) {
+        doc["mqtt"]["publishTopics"].to<JsonArray>();
     }
 
-    // 订阅主题配置
+    // 订阅主题配置（同上：仅在前端发送了数据时才清空重建）
     String subscribeTopicsJson = GP("mqtt_subscribeTopics", "[]");
-    JsonArray subscribeTopics = doc["mqtt"]["subscribeTopics"].to<JsonArray>();
-    if (subscribeTopicsJson.length() > 2) {
+    if (hasProtocolParam(request, "mqtt_subscribeTopics") && subscribeTopicsJson.length() > 2) {
+        JsonArray subscribeTopics = doc["mqtt"]["subscribeTopics"].to<JsonArray>();
         JsonDocument subTopicsDoc;
         DeserializationError err = deserializeJson(subTopicsDoc, subscribeTopicsJson);
         if (!err && subTopicsDoc.is<JsonArray>()) {
@@ -898,13 +775,8 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
             }
         }
     }
-    if (subscribeTopics.size() == 0) {
-        JsonObject defaultTopic = subscribeTopics.add<JsonObject>();
-        defaultTopic["topic"] = "";
-        defaultTopic["qos"] = 0;
-        defaultTopic["enabled"] = true;
-        defaultTopic["autoPrefix"] = false;
-        defaultTopic["topicType"] = 1;
+    if (doc["mqtt"]["subscribeTopics"].isNull()) {
+        doc["mqtt"]["subscribeTopics"].to<JsonArray>();
     }
     } // end: updateMqtt
 
