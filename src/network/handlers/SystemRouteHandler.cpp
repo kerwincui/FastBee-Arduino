@@ -927,7 +927,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         if (writeDefault("/config/peripherals.json", DEFAULT_PERIPHERALS)) { resetCount++; }
 
         // periph_exec.json - 清空执行规则
-        static const char DEFAULT_PERIPH_EXEC[] PROGMEM = "{\"version\":3,\"rules\":[]}";
+        static const char DEFAULT_PERIPH_EXEC[] PROGMEM = "{\"rules\":[]}";
         if (writeDefault("/config/periph_exec.json", DEFAULT_PERIPH_EXEC)) { resetCount++; }
 
         // ── 运行时可选配置文件：直接删除（各模块已处理文件不存在的情况）────

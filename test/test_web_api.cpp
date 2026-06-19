@@ -476,7 +476,7 @@ void test_factory_reset_writes_defaults() {
     if (writeDefault("/config/peripherals.json", DEFAULT_PERIPHERALS)) resetCount++;
 
     // Write default periph_exec.json
-    const char* DEFAULT_PERIPH_EXEC = "{\"version\":3,\"rules\":[]}";
+    const char* DEFAULT_PERIPH_EXEC = "{\"rules\":[]}";
     if (writeDefault("/config/periph_exec.json", DEFAULT_PERIPH_EXEC)) resetCount++;
 
     // Delete optional files
@@ -528,7 +528,7 @@ void test_factory_reset_writes_defaults() {
 
     // Verify: periph_exec.json is empty rules
     String execContent = g_mockFiles["/config/periph_exec.json"];
-    TEST_ASSERT_EQUAL_STRING("{\"version\":3,\"rules\":[]}", execContent.c_str());
+    TEST_ASSERT_EQUAL_STRING("{\"rules\":[]}", execContent.c_str());
     TestLog::step("periph_exec.json cleared to empty rules");
 
     // Cleanup
@@ -559,7 +559,7 @@ void test_factory_reset_no_file_missing() {
     writeDefault("/config/users.json", "{\"users\":[]}");
     writeDefault("/config/protocol.json", "{\"version\":2}");
     writeDefault("/config/peripherals.json", "{\"peripherals\":[]}");
-    writeDefault("/config/periph_exec.json", "{\"version\":3,\"rules\":[]}");
+    writeDefault("/config/periph_exec.json", "{\"rules\":[]}");
 
     // All config files should exist - web system can read them without errors
     TEST_ASSERT_TRUE(LittleFS.exists("/config/device.json"));
