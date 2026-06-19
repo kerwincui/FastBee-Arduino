@@ -2224,6 +2224,358 @@ void test_mqtts_reconnect_stack_size() {
     TestLog::testEnd(true);
 }
 
+// ============================================================
+// Group 8: 测试连接快速路径 (alreadyConnected) 回归测试
+// 修复：MQTTS测试按钮显示CONNECTION_TIMEOUT但状态栏显示已连接
+// 根因：scheme参数未传递 + 重复连接clientId冲突 + TLS超时不足
+// ============================================================
+
+/**
+ * @brief 后端快速路径：主客户端已连接且配置匹配时直接返回 alreadyConnected
+ * 回归：修复前每次点击测试都创建新连接，导致华为云踢掉已有连接或MQTTS超时
+ */
+void test_mqtt_test_fast_path_already_connected() {
+    TestLog::testStart("Test Connection Fast Path: alreadyConnected");
+
+    std::string content = readProjectFile("src/network/handlers/MqttRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read MqttRouteHandler.cpp");
+
+    // 1. 快速路径检查主客户端是否已连接
+    TEST_ASSERT_TRUE_MESSAGE(content.find("alreadyConnected") != std::string::npos,
+        "handleTestMqttConnection must have alreadyConnected fast path");
+    TestLog::step("alreadyConnected field present in response");
+
+    // 2. 检查主客户端连接状态
+    TEST_ASSERT_TRUE_MESSAGE(content.find("getIsConnected") != std::string::npos,
+        "Fast path must check existingMqtt->getIsConnected()");
+    TestLog::step("getIsConnected() check present");
+
+    // 3. 检查主客户端未被停止
+    TEST_ASSERT_TRUE_MESSAGE(content.find("isStopped") != std::string::npos,
+        "Fast path must check !existingMqtt->isStopped()");
+    TestLog::step("isStopped() check present");
+
+    // 4. 配置匹配检查：server + port + scheme
+    TEST_ASSERT_TRUE_MESSAGE(content.find("serverMatch") != std::string::npos,
+        "Fast path must verify server:port match");
+    TEST_ASSERT_TRUE_MESSAGE(content.find("schemeMatch") != std::string::npos,
+        "Fast path must verify scheme match");
+    TestLog::step("server + port + scheme matching present");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 快速路径模拟：已连接 + 配置匹配 → 返回 alreadyConnected
+ * 模拟后端快速路径的判断逻辑
+ */
+void test_mqtt_test_fast_path_simulation() {
+    TestLog::testStart("Fast Path Logic Simulation");
+
+    // 模拟后端快速路径判断
+    struct MockMqttState {
+        bool isConnected;
+        bool isStopped;
+        String server;
+        int port;
+        String scheme;
+    };
+
+    auto shouldReturnAlreadyConnected = [](const MockMqttState& state,
+            const String& reqServer, int reqPort, const String& reqScheme) -> bool {
+        if (!state.isConnected || state.isStopped) return false;
+        bool serverMatch = (state.server == reqServer && state.port == reqPort);
+        bool schemeMatch = (state.scheme == reqScheme);
+        return serverMatch && schemeMatch;
+    };
+
+    // Case 1: 已连接 + 配置完全匹配 → true
+    MockMqttState s1 = {true, false, "iot.fastbee.cn", 1883, "mqtt"};
+    TEST_ASSERT_TRUE(shouldReturnAlreadyConnected(s1, "iot.fastbee.cn", 1883, "mqtt"));
+    TestLog::step("Connected + matching config → alreadyConnected");
+
+    // Case 2: 已连接 + server不匹配 → false
+    TEST_ASSERT_FALSE(shouldReturnAlreadyConnected(s1, "other.broker.com", 1883, "mqtt"));
+    TestLog::step("Connected + different server → NOT alreadyConnected");
+
+    // Case 3: 已连接 + port不匹配 → false
+    TEST_ASSERT_FALSE(shouldReturnAlreadyConnected(s1, "iot.fastbee.cn", 8883, "mqtt"));
+    TestLog::step("Connected + different port → NOT alreadyConnected");
+
+    // Case 4: 已连接 + scheme不匹配 → false (关键：MQTTS vs MQTT)
+    TEST_ASSERT_FALSE(shouldReturnAlreadyConnected(s1, "iot.fastbee.cn", 1883, "mqtts"));
+    TestLog::step("Connected + different scheme → NOT alreadyConnected");
+
+    // Case 5: 未连接 → false
+    MockMqttState s2 = {false, false, "iot.fastbee.cn", 1883, "mqtt"};
+    TEST_ASSERT_FALSE(shouldReturnAlreadyConnected(s2, "iot.fastbee.cn", 1883, "mqtt"));
+    TestLog::step("Not connected → NOT alreadyConnected");
+
+    // Case 6: 已停止 → false
+    MockMqttState s3 = {true, true, "iot.fastbee.cn", 1883, "mqtt"};
+    TEST_ASSERT_FALSE(shouldReturnAlreadyConnected(s3, "iot.fastbee.cn", 1883, "mqtt"));
+    TestLog::step("Stopped → NOT alreadyConnected");
+
+    // Case 7: MQTTS 已连接 + MQTTS 匹配 → true
+    MockMqttState s4 = {true, false, "huaweicloud.com", 8883, "mqtts"};
+    TEST_ASSERT_TRUE(shouldReturnAlreadyConnected(s4, "huaweicloud.com", 8883, "mqtts"));
+    TestLog::step("MQTTS connected + matching → alreadyConnected");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 前端 testMqttConnection 必须传递 scheme 参数
+ * 回归：修复前未传递 scheme，后端默认 mqtt，MQTTS 时用了 WiFiClient 而非 WiFiClientSecure
+ */
+void test_mqtt_test_frontend_scheme_param() {
+    TestLog::testStart("Frontend: testMqttConnection Passes scheme");
+
+    std::string content = readProjectFile("web-src/modules/runtime/protocol/mqtt-config.js");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read mqtt-config.js");
+
+    // 1. testMqttConnection 中必须读取 mqtt-scheme 下拉框值
+    TEST_ASSERT_TRUE_MESSAGE(content.find("mqtt-scheme") != std::string::npos,
+        "testMqttConnection must read mqtt-scheme dropdown value");
+    TestLog::step("mqtt-scheme element read present");
+
+    // 2. apiMqttTest 调用参数中必须包含 scheme
+    // 匹配 apiMqttTest({ ... scheme ... })
+    std::regex apiCallRe("apiMqttTest\\([^)]*scheme");
+    TEST_ASSERT_TRUE_MESSAGE(std::regex_search(content, apiCallRe),
+        "apiMqttTest call must include scheme parameter");
+    TestLog::step("scheme parameter passed to apiMqttTest");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 前端处理 alreadyConnected 响应：显示"连接正常"而非创建新连接
+ */
+void test_mqtt_test_frontend_already_connected_handler() {
+    TestLog::testStart("Frontend: alreadyConnected Response Handler");
+
+    std::string content = readProjectFile("web-src/modules/runtime/protocol/mqtt-config.js");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read mqtt-config.js");
+
+    // 1. 检查 alreadyConnected 条件判断
+    TEST_ASSERT_TRUE_MESSAGE(content.find("alreadyConnected") != std::string::npos,
+        "Frontend must handle alreadyConnected response field");
+    TestLog::step("alreadyConnected check present");
+
+    // 2. alreadyConnected 时应显示成功信息（绿色）
+    TEST_ASSERT_TRUE_MESSAGE(content.find("连接正常") != std::string::npos ||
+                             content.find("无需重新测试") != std::string::npos,
+        "alreadyConnected must show success message");
+    TestLog::step("Success message for alreadyConnected present");
+
+    // 3. alreadyConnected 时应更新 badge 为"已连接"
+    //    检查 alreadyConnected 块中包含 mqtt-status-online
+    auto alreadyConnectedPos = content.find("alreadyConnected");
+    auto badgeOnlinePos = content.find("mqtt-status-online");
+    TEST_ASSERT_TRUE_MESSAGE(alreadyConnectedPos != std::string::npos &&
+                             badgeOnlinePos != std::string::npos &&
+                             badgeOnlinePos > alreadyConnectedPos,
+        "alreadyConnected block must contain mqtt-status-online badge update");
+    TestLog::step("Badge update to online for alreadyConnected");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 后端 MQTTS 测试客户端使用 setSocketTimeout(30)
+ * 回归：默认 15s 在 ESP32-C6 上 TLS 握手超时
+ */
+void test_mqtt_test_backend_mqtts_socket_timeout() {
+    TestLog::testStart("Backend: MQTTS Socket Timeout via Main Client");
+
+    // MQTTS socket timeout 现在由主客户端 MQTTClient.cpp 处理
+    // （测试连接已改为 save+restart 方式，不再创建独立的 PubSubClient）
+    std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read MQTTClient.cpp");
+
+    // 1. 必须有 setSocketTimeout 调用
+    TEST_ASSERT_TRUE_MESSAGE(content.find("setSocketTimeout") != std::string::npos,
+        "Main client must call setSocketTimeout for MQTTS");
+    TestLog::step("setSocketTimeout call present in main client");
+
+    // 2. 超时值为 30（MQTTS TLS 握手需要更多时间）
+    std::regex timeoutRe("setSocketTimeout\\(30\\)");
+    TEST_ASSERT_TRUE_MESSAGE(std::regex_search(content, timeoutRe),
+        "MQTTS main client socket timeout must be 30 seconds");
+    TestLog::step("Socket timeout set to 30s for MQTTS in main client");
+
+    // 3. 连接后恢复为 5s（避免 publish/write 对死 socket 长时间阻塞）
+    std::regex restoreRe("setSocketTimeout\\(5\\)");
+    TEST_ASSERT_TRUE_MESSAGE(std::regex_search(content, restoreRe),
+        "Must restore socket timeout to 5s after MQTTS connection");
+    TestLog::step("Socket timeout restored to 5s after connection");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MQTT_TEST_TIMEOUT 必须 >= 45s，覆盖 MQTTS TLS 握手时间
+ * 回归：原来 30s 在 ESP32-C6 上不够
+ */
+void test_mqtt_test_frontend_timeout_extended() {
+    TestLog::testStart("Frontend: MQTT_TEST_TIMEOUT >= 45s");
+
+    std::string content = readProjectFile("web-src/js/request-governor.js");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read request-governor.js");
+
+    // 1. MQTT_TEST_TIMEOUT 常量存在
+    TEST_ASSERT_TRUE_MESSAGE(content.find("MQTT_TEST_TIMEOUT") != std::string::npos,
+        "MQTT_TEST_TIMEOUT constant must exist");
+    TestLog::step("MQTT_TEST_TIMEOUT constant present");
+
+    // 2. 值 >= 45000ms
+    std::regex timeoutRe("MQTT_TEST_TIMEOUT\\s*=\\s*(\\d+)");
+    std::smatch match;
+    TEST_ASSERT_TRUE_MESSAGE(std::regex_search(content, match, timeoutRe),
+        "MQTT_TEST_TIMEOUT must have a numeric value");
+    if (match.size() > 1) {
+        int timeoutMs = std::stoi(match[1].str());
+        TEST_ASSERT_GREATER_OR_EQUAL(45000, timeoutMs);
+        TestLog::step(("MQTT_TEST_TIMEOUT = " + match[1].str() + "ms (>= 45000)").c_str());
+    }
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 快速路径不影响配置不匹配时的正常测试流程
+ * 当 server/port/scheme 任一不匹配时，仍走原始测试路径
+ */
+void test_mqtt_test_fast_path_no_false_positive() {
+    TestLog::testStart("Fast Path No False Positive");
+
+    std::string content = readProjectFile("src/network/handlers/MqttRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read MqttRouteHandler.cpp");
+
+    // 快速路径返回后必须直接 return，不继续走 save+restart 流程
+    auto acPos = content.find("alreadyConnected");
+    auto retPos = content.find("return;", acPos);
+    TEST_ASSERT_TRUE_MESSAGE(acPos != std::string::npos &&
+                             retPos != std::string::npos &&
+                             retPos - acPos < 900,
+        "Fast path must return immediately after sending alreadyConnected response");
+    TestLog::step("Fast path returns immediately, no save+restart triggered");
+
+    // 配置不匹配时走 save+restart 路径（不再创建独立 PubSubClient）
+    TEST_ASSERT_TRUE_MESSAGE(content.find("saveMqttTestConfig") != std::string::npos,
+        "Non-matching config must use save+restart approach");
+    TestLog::step("Save+restart path used for non-matching configs");
+
+    // 确认不再有独立的测试客户端
+    TEST_ASSERT_TRUE_MESSAGE(content.find("WiFiClientSecure testWifiSecure") == std::string::npos,
+        "No separate WiFiClientSecure for testing (eliminated MQTT_BAD_CLIENT_ID)");
+    TestLog::step("No separate test client created");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 简单认证模式尊重表单传递的clientId
+ * 回归：修复前总是用 S&deviceNum&productId&userId 覆盖，导致自定义clientId被替换
+ */
+void test_mqtt_test_simple_auth_respects_form_clientid() {
+    TestLog::testStart("Simple Auth Respects Form clientId");
+
+    std::string content = readProjectFile("src/network/handlers/MqttRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read MqttRouteHandler.cpp");
+
+    // 简单认证路径必须在 clientId.isEmpty() 时才构建 S& 格式
+    // 而非无条件覆盖
+    TEST_ASSERT_TRUE_MESSAGE(content.find("if (clientId.isEmpty())") != std::string::npos,
+        "Simple auth must check if clientId is empty before auto-generating S& format");
+    TestLog::step("clientId.isEmpty() check present before S& generation");
+
+    // S& 格式构建必须在 isEmpty 检查内部
+    auto emptyCheckPos = content.find("if (clientId.isEmpty())");
+    auto sFormatPos = content.find("\"S&\" + deviceNum");
+    TEST_ASSERT_TRUE_MESSAGE(emptyCheckPos != std::string::npos &&
+                             sFormatPos != std::string::npos &&
+                             sFormatPos > emptyCheckPos &&
+                             sFormatPos - emptyCheckPos < 200,
+        "S& clientId generation must be inside clientId.isEmpty() block");
+    TestLog::step("S& generation is inside isEmpty() guard");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 快速路径覆盖“正在连接中”状态，避免重复clientId导致MQTT_BAD_CLIENT_ID
+ * 回归：修复前只检查 getIsConnected()，主客户端正在连接时测试创建重复连接被broker拒绝
+ */
+void test_mqtt_test_fast_path_connecting_state() {
+    TestLog::testStart("Fast Path Covers Connecting State");
+
+    std::string content = readProjectFile("src/network/handlers/MqttRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read MqttRouteHandler.cpp");
+
+    // 快速路径必须检查 !isStopped() 而非仅 getIsConnected()
+    // 这样主客户端正在连接时也会命中快速路径
+    TEST_ASSERT_TRUE_MESSAGE(content.find("!existingMqtt->isStopped()") != std::string::npos,
+        "Fast path must check !isStopped() to cover connecting state");
+    TestLog::step("!isStopped() check present in fast path");
+
+    // 快速路径应区分已连接和连接中两种状态
+    TEST_ASSERT_TRUE_MESSAGE(content.find("alreadyConnected") != std::string::npos,
+        "Fast path must return alreadyConnected when main client is connected");
+    TEST_ASSERT_TRUE_MESSAGE(content.find("deferred") != std::string::npos,
+        "Fast path must return deferred when main client is connecting");
+    TestLog::step("Fast path distinguishes connected vs connecting states");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief saveMqttTestConfig 保存 clientId 到 protocol.json
+ * 回归：修复前测试成功后不保存clientId，导致下次加载时clientId丢失
+ */
+void test_mqtt_test_save_config_includes_clientid() {
+    TestLog::testStart("saveMqttTestConfig Includes clientId");
+
+    std::string content = readProjectFile("src/network/handlers/MqttRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read MqttRouteHandler.cpp");
+
+    // saveMqttTestConfig 函数签名应包含 clientId 参数
+    std::regex sigRe("saveMqttTestConfig.*clientId");
+    TEST_ASSERT_TRUE_MESSAGE(std::regex_search(content, sigRe),
+        "saveMqttTestConfig must accept clientId parameter");
+    TestLog::step("saveMqttTestConfig signature includes clientId");
+
+    // saveMqttTestConfig 内部应将 clientId 写入 JSON
+    TEST_ASSERT_TRUE_MESSAGE(content.find("mqtt[\"clientId\"]") != std::string::npos,
+        "saveMqttTestConfig must write clientId to protocol.json");
+    TestLog::step("clientId written to protocol.json mqtt object");
+
+    // 两处 saveMqttTestConfig 调用都应传入 clientId
+    // 统计包含 "saveMqttTestConfig(" 且同一行或附近有 clientId 的调用
+    int callsWithClientId = 0;
+    size_t pos = 0;
+    while ((pos = content.find("saveMqttTestConfig(", pos)) != std::string::npos) {
+        // 检查接下来 500 字符内是否有 clientId
+        std::string snippet = content.substr(pos, std::min((size_t)500, content.size() - pos));
+        if (snippet.find("clientId") != std::string::npos) callsWithClientId++;
+        pos += 20;
+    }
+    TEST_ASSERT_GREATER_OR_EQUAL(2, callsWithClientId);
+    TestLog::step("Both saveMqttTestConfig calls pass clientId");
+
+    TestLog::testEnd(true);
+}
+
 // Test group entry point
 void test_mqtt_protocol_group() {
     TestLog::groupStart("MQTT Protocol Tests");
@@ -2302,6 +2654,18 @@ void test_mqtt_protocol_group() {
     RUN_TEST(test_mqtts_port_auto_detect);
     RUN_TEST(test_mqtts_socket_timeout_strategy);
     RUN_TEST(test_mqtts_reconnect_stack_size);
+
+    // Group 8: 测试连接快速路径 (alreadyConnected) 回归测试
+    RUN_TEST(test_mqtt_test_fast_path_already_connected);
+    RUN_TEST(test_mqtt_test_fast_path_simulation);
+    RUN_TEST(test_mqtt_test_frontend_scheme_param);
+    RUN_TEST(test_mqtt_test_frontend_already_connected_handler);
+    RUN_TEST(test_mqtt_test_backend_mqtts_socket_timeout);
+    RUN_TEST(test_mqtt_test_frontend_timeout_extended);
+    RUN_TEST(test_mqtt_test_fast_path_no_false_positive);
+    RUN_TEST(test_mqtt_test_simple_auth_respects_form_clientid);
+    RUN_TEST(test_mqtt_test_fast_path_connecting_state);
+    RUN_TEST(test_mqtt_test_save_config_includes_clientid);
 
     TestLog::groupEnd();
 }

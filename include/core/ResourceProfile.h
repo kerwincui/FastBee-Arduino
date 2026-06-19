@@ -13,6 +13,11 @@ static constexpr const char* NAME = "esp32c3-slim";
 static constexpr size_t MAX_PERIPHERALS = 16;             // 硬性上限（受 GPIO/内存限制）
 static constexpr size_t MAX_PERIPH_EXEC_RULES = 12;       // 推荐值（软性限制，超限只警告）
 static constexpr size_t SENSOR_CACHE_MAX_ENTRIES = 16;
+#elif defined(CONFIG_IDF_TARGET_ESP32C6)
+static constexpr const char* NAME = "esp32c6-mid";
+static constexpr size_t MAX_PERIPHERALS = 24;             // 硬性上限（C6有30个GPIO）
+static constexpr size_t MAX_PERIPH_EXEC_RULES = 24;       // 推荐值（软性限制，超限只警告）
+static constexpr size_t SENSOR_CACHE_MAX_ENTRIES = 24;
 #elif FASTBEE_ENABLE_RULE_SCRIPT || FASTBEE_ENABLE_OTA || FASTBEE_ENABLE_ETHERNET || FASTBEE_ENABLE_CELLULAR || FASTBEE_ENABLE_LORA
 static constexpr const char* NAME = "esp32s3-full";
 static constexpr size_t MAX_PERIPHERALS = 32;             // 硬性上限

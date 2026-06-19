@@ -8,6 +8,7 @@
 #include "./network/NetworkManager.h"
 #include "./protocols/ProtocolManager.h"
 #include "./protocols/MQTTClient.h"
+#include "./core/FastBeeFramework.h"
 #include "./systems/ConfigStorage.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
@@ -18,13 +19,123 @@
 #include <mbedtls/base64.h>
 
 static const char* MQTT_AES_IV = "wumei-smart-open";
+static const char* MQTT_TEST_BACKUP_PATH = "/config/mqtt-backup.json";
+
+// 测试连接后需要恢复原配置的标志
+static bool s_mqttTestPendingRestore = false;
+static unsigned long s_mqttTestStartTime = 0;
+static bool s_mqttTestWasConnected = false;   // 记录测试连接是否成功
+static bool s_mqttTestJustRestored = false;   // 标记刚刚执行了恢复
+
+// ============================================================================
+// 备份/恢复 MQTT 配置（测试连接不永久修改 protocol.json）
+// ============================================================================
+static bool backupMqttConfig() {
+    JsonDocument doc;
+    if (!ConfigStorage::getInstance().loadProtocolConfig(doc)) {
+        LOG_WARNING("[MQTT Test] Failed to load protocol.json for backup");
+        return false;
+    }
+
+    // 只保存 MQTT 部分到备份文件
+    JsonDocument backupDoc;
+    if (doc["mqtt"].is<JsonObject>()) {
+        backupDoc["mqtt"] = doc["mqtt"];
+    }
+
+    File f = LittleFS.open(MQTT_TEST_BACKUP_PATH, "w");
+    if (!f) return false;
+    serializeJson(backupDoc, f);
+    f.close();
+    // DEBUG: log what was backed up
+    {
+        String bs = backupDoc["mqtt"]["server"].as<String>();
+        char dbgBuf[100];
+        snprintf(dbgBuf, sizeof(dbgBuf), "[MQTT Test DEBUG] Backup server: %s", bs.c_str());
+        LOG_INFO(dbgBuf);
+    }
+    LOG_INFO("[MQTT Test] Original MQTT config backed up");
+    return true;
+}
+
+static bool restoreMqttConfigFromBackup() {
+    if (!LittleFS.exists(MQTT_TEST_BACKUP_PATH)) return false;
+
+    JsonDocument backupDoc;
+    {
+        File f = LittleFS.open(MQTT_TEST_BACKUP_PATH, "r");
+        if (!f) return false;
+        DeserializationError err = deserializeJson(backupDoc, f);
+        f.close();
+        if (err) return false;
+    }
+
+    // 加载当前 protocol.json
+    JsonDocument protoDoc;
+    if (!ConfigStorage::getInstance().loadProtocolConfig(protoDoc)) return false;
+
+    // 用备份覆盖 MQTT 部分
+    if (backupDoc["mqtt"].is<JsonObject>()) {
+        protoDoc["mqtt"] = backupDoc["mqtt"];
+    }
+
+    bool ok = ConfigStorage::getInstance().saveProtocolConfig(protoDoc);
+    if (ok) {
+        LittleFS.remove(MQTT_TEST_BACKUP_PATH);
+        LOG_INFO("[MQTT Test] Original MQTT config restored from backup");
+    }
+    return ok;
+}
+
+// ============================================================================
+// 自动恢复检查（在主循环中周期调用）
+// 当测试连接成功或超时后，自动恢复原始 MQTT 配置并重启客户端
+// ============================================================================
+static unsigned long s_lastRestoreCheck = 0;
+
+void MqttRouteHandler::checkPendingTestRestore() {
+    if (!s_mqttTestPendingRestore) return;
+
+    // 每 2 秒检查一次，避免频繁检查
+    unsigned long now = millis();
+    if (now - s_lastRestoreCheck < 2000UL) return;
+    s_lastRestoreCheck = now;
+
+    unsigned long elapsed = now - s_mqttTestStartTime;
+
+    // 检查 MQTT 连接状态
+    bool connected = false;
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    if (fw && fw->getProtocolManager()) {
+        MQTTClient* mqtt = fw->getProtocolManager()->getMQTTClient();
+        connected = mqtt && mqtt->getIsConnected() && !mqtt->isStopped();
+    }
+
+    // 连接成功 或 超过 20 秒 时恢复原配置
+    if (connected || elapsed > 20000UL) {
+        s_mqttTestWasConnected = connected;
+        s_mqttTestPendingRestore = false;
+        if (restoreMqttConfigFromBackup()) {
+            s_mqttTestJustRestored = true;
+            if (fw && fw->getProtocolManager()) {
+                MQTTClient* mqtt = fw->getProtocolManager()->getMQTTClient();
+                if (mqtt && !mqtt->isStopped()) {
+                    mqtt->stop();
+                }
+                fw->getProtocolManager()->restartMQTTDeferred();
+            }
+            LOG_INFO("[MQTT Test] Auto-restore: config restored, main client restarting");
+        }
+    }
+}
 
 // ============================================================================
 // 保存测试成功的 MQTT 参数到 protocol.json（确保 restartMQTTDeferred 加载最新配置）
 // ============================================================================
 static bool saveMqttTestConfig(const String& server, int port, const String& username,
                                const String& password, const String& authCode,
-                               int authType, const String& mqttSecret, const String& scheme = "mqtt") {
+                               int authType, const String& mqttSecret, const String& scheme = "mqtt",
+                               const String& clientId = "") {
     JsonDocument doc;
     if (!ConfigStorage::getInstance().loadProtocolConfig(doc)) {
         LOG_WARNING("[MQTT Test] Failed to load protocol.json for saving test config");
@@ -39,6 +150,7 @@ static bool saveMqttTestConfig(const String& server, int port, const String& use
     mqtt["username"] = username;
     mqtt["password"] = password;
     mqtt["authType"] = authType;
+    if (!clientId.isEmpty())   mqtt["clientId"]   = clientId;
     if (!authCode.isEmpty())   mqtt["authCode"]   = authCode;
     if (!mqttSecret.isEmpty()) mqtt["mqttSecret"] = mqttSecret;
 
@@ -444,13 +556,61 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
     // 如果仍未确定 authType，默认为简单认证
     if (authType < 0) authType = 0;
 
-    // AES 加密认证：使用当前表单参数直接构建加密密码并进行一次真实连接测试
-    // 避免依赖"已保存配置"，防止出现"点击测试无响应/结果与当前输入不一致"
-    if (authType == 1) {
-        JsonDocument doc;
+    // ====== 快速路径：主客户端已连接或正在连接且配置匹配时，直接返回 ======
+    // 避免创建重复测试连接导致：
+    //   1. 华为云IoT等平台因相同clientId踢掉已有连接 (MQTT_BAD_CLIENT_ID)
+    //   2. MQTTS TLS握手在ESP32-C6上耗时较长导致测试超时
+    //   3. 额外TCP连接占用有限的socket资源
+    //   4. 主客户端正在连接中（尚未connected）时重复clientId导致被broker拒绝
+    {
+        ProtocolManager* pm = ctx->protocolManager;
+        if (pm) {
+            MQTTClient* existingMqtt = pm->getMQTTClient();
+            if (existingMqtt && !existingMqtt->isStopped()) {
+                MQTTConfig cfg = existingMqtt->getConfig();
+                // 检查当前表单的 server:port 和 scheme 是否与已连接配置一致
+                bool serverMatch = (cfg.server == server && cfg.port == port);
+                bool schemeMatch = (cfg.scheme == scheme);
+                if (serverMatch && schemeMatch) {
+                    JsonDocument doc;
+                    doc["success"] = true;
+                    if (existingMqtt->getIsConnected()) {
+                        // 已连接：直接返回成功
+                        doc["data"]["connected"] = true;
+                        doc["data"]["alreadyConnected"] = true;
+                    } else {
+                        // 正在连接/重连中：返回deferred，让前端等状态轮询确认
+                        doc["data"]["connected"] = false;
+                        doc["data"]["deferred"] = true;
+                    }
+                    doc["data"]["server"] = cfg.server;
+                    doc["data"]["port"] = cfg.port;
+                    doc["data"]["clientId"] = cfg.clientId;
+                    doc["data"]["scheme"] = cfg.scheme;
+                    HandlerUtils::sendJsonStream(request, doc);
+                    return;
+                }
+            }
+        }
+    }
 
+    // ====== 测试连接：保存配置 + 重启主客户端 ======
+    // 不再创建独立的 PubSubClient 进行测试，原因：
+    //   1. 独立测试客户端与主客户端使用不同的 WiFiClient/PubSubClient 实例，
+    //      在部分 broker（如华为云IoT）上可能因 DNS 解析、TCP 路由等差异导致
+    //      测试返回 MQTT_BAD_CLIENT_ID 而保存后主客户端却能正常连接
+    //   2. 华为云IoT等平台在相同 clientId 并发连接时返回 CONNACK code 2，
+    //      即使先停主客户端也可能因 broker session 未清理而失败
+    //   3. 保存后通过主客户端重连（与"保存"按钮完全相同的路径），
+    //      确保测试行为与保存行为一致，消除歧义
+    // 前端通过 deferred + 状态轮询确认最终连接结果
+
+    JsonDocument doc;
+    doc["success"] = true;
+
+    // AES 加密认证：验证 clientId 格式和密码生成（轻量级本地校验）
+    if (authType == 1) {
         // 优先使用前端传递的clientId（如果已经是E开头格式）
-        // 否则根据deviceNum/productId/userId构建
         if (!clientId.isEmpty() && clientId.startsWith("E&")) {
             // 使用前端传递的E认证clientId
         } else if (!deviceNum.isEmpty() && !productId.isEmpty() && !userId.isEmpty()) {
@@ -458,7 +618,6 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
         }
 
         if (clientId.isEmpty() || !clientId.startsWith("E&")) {
-            doc["success"] = true;
             doc["data"]["connected"] = false;
             doc["data"]["error"] = -8;
             doc["data"]["errorMessage"] = "AES clientId requires E&deviceNum&productId&userId format";
@@ -466,158 +625,107 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
             return;
         }
 
+        // 验证AES密码能否正常生成（不依赖网络）
         String aesErr;
         String encryptedPassword = buildEncryptedPasswordForMqttTest(password, authCode, mqttSecret, ntpServer, &aesErr);
-        doc["success"] = true;
-        doc["data"]["clientId"] = clientId;  // 返回实际使用的clientId
-        doc["data"]["authType"] = "AES";     // 标识认证类型
         if (encryptedPassword.isEmpty()) {
             doc["data"]["connected"] = false;
             doc["data"]["error"] = -7;
             doc["data"]["errorMessage"] = aesErr.isEmpty() ? "AES password generation failed" : aesErr;
-        } else {
-            bool connected = false;
-            int testState = 0;
-            // 限定测试客户端作用域，确保 WiFiClient/PubSubClient 资源
-            // 在 restartMQTTDeferred() 之前完全释放，避免堆内存不足
-            {
-                WiFiClient testWifi;
-                WiFiClientSecure testWifiSecure;
-                String transportError;
-                Client* testTransport = nullptr;
-                if (scheme == "mqtts") {
-                    testWifiSecure.setInsecure();
-                    testTransport = &testWifiSecure;
-                } else {
-                    testTransport = selectMqttTestClient(ctx, testWifi, transportError, scheme);
-                }
-                if (!testTransport) {
-                    doc["data"]["connected"] = false;
-                    doc["data"]["error"] = -9;
-                    doc["data"]["errorMessage"] = transportError;
-                    HandlerUtils::sendJsonStream(request, doc);
-                    return;
-                }
-
-                PubSubClient testClient(*testTransport);
-                testClient.setServer(server.c_str(), port);
-                testClient.setBufferSize(512);
-
-                connected = testClient.connect(
-                    clientId.c_str(),
-                    username.isEmpty() ? nullptr : username.c_str(),
-                    encryptedPassword.c_str());
-                if (!connected) {
-                    testState = testClient.state();
-                }
-                if (testClient.connected()) {
-                    testClient.disconnect();
-                }
-            } // testWifi + testClient 析构，释放 TCP socket 和缓冲区
-
-            doc["data"]["connected"] = connected;
-            if (!connected) {
-                doc["data"]["error"] = testState;
-            }
-
-            // 测试成功后，确保实际 MQTT 客户端使用最新配置连接
-            // 步骤1: 保存测试参数到 protocol.json（确保 restartMQTTDeferred 加载最新配置）
-            // 步骤2: 始终走 restartMQTTDeferred() 重建客户端，原因：
-            //   - 现有客户端可能用错误凭据进入了慢重连模式（5分钟/次），永远不会成功
-            //   - mqttHasValidRuntimeConfig() 只检查 server/port 非空，不验证凭据是否匹配
-            //   - restartMQTTDeferred() 会先释放旧客户端（~12KB），再从 protocol.json 加载最新配置
-            if (connected) {
-                saveMqttTestConfig(server, port, username, password, authCode, authType, mqttSecret, scheme);
-                ProtocolManager* pm = ctx->protocolManager;
-                if (pm) {
-                    bool deferred = pm->restartMQTTDeferred();
-                    doc["data"]["realConnected"] = deferred;
-                    if (!deferred) {
-                        doc["data"]["realError"] = "deferred restart failed (heap or config)";
-                    }
-                }
-            }
-        }
-        HandlerUtils::sendJsonStream(request, doc);
-        return;
-    }
-
-    // 简单认证模式：构建 FastBee 认证格式的 clientId: S&deviceNum&productId&userId
-    if (!deviceNum.isEmpty() && !productId.isEmpty()) {
-        clientId = "S&" + deviceNum + "&" + productId + "&" + userId;
-    } else if (clientId.isEmpty()) {
-        char id[20];
-        snprintf(id, sizeof(id), "TEST-%04X", (unsigned)esp_random() & 0xFFFF);
-        clientId = id;
-    }
-
-    // 构建简单认证密码: password 或 password&authCode
-    String connPassword = password;
-    if (!authCode.isEmpty()) {
-        connPassword = password + "&" + authCode;
-    }
-
-    JsonDocument doc;
-    doc["success"] = true;
-    doc["data"]["clientId"] = clientId;  // 返回实际使用的clientId
-    doc["data"]["authType"] = "Simple";  // 标识认证类型
-
-    bool connected = false;
-    int testState = 0;
-    // 限定测试客户端作用域，确保 WiFiClient/PubSubClient 资源
-    // 在 restartMQTTDeferred() 之前完全释放，避免堆内存不足
-    {
-        WiFiClient testWifi;
-        WiFiClientSecure testWifiSecure;
-        String transportError;
-        Client* testTransport = nullptr;
-        if (scheme == "mqtts") {
-            testWifiSecure.setInsecure();
-            testTransport = &testWifiSecure;
-        } else {
-            testTransport = selectMqttTestClient(ctx, testWifi, transportError, scheme);
-        }
-        if (!testTransport) {
-            doc["data"]["connected"] = false;
-            doc["data"]["error"] = -9;
-            doc["data"]["errorMessage"] = transportError;
             HandlerUtils::sendJsonStream(request, doc);
             return;
         }
 
-        PubSubClient testClient(*testTransport);
-        testClient.setServer(server.c_str(), port);
-        testClient.setBufferSize(512);
-
-        connected = testClient.connect(
-            clientId.c_str(),
-            username.isEmpty() ? nullptr : username.c_str(),
-            connPassword.isEmpty() ? nullptr : connPassword.c_str());
-        if (!connected) {
-            testState = testClient.state();
-        }
-        if (testClient.connected()) {
-            testClient.disconnect();
-        }
-    } // testWifi + testClient 析构，释放 TCP socket 和缓冲区
-
-    doc["data"]["connected"] = connected;
-    if (!connected) {
-        doc["data"]["error"] = testState;
-    }
-
-    // 测试成功后，先保存表单参数到 protocol.json，再重建客户端
-    // 原因同上：确保 restartMQTTDeferred 加载与测试一致的配置
-    if (connected) {
-        saveMqttTestConfig(server, port, username, password, authCode, authType, mqttSecret, scheme);
-        ProtocolManager* pm = ctx->protocolManager;
-        if (pm) {
-            bool deferred = pm->restartMQTTDeferred();
-            doc["data"]["realConnected"] = deferred;
-            if (!deferred) {
-                doc["data"]["realError"] = "deferred restart failed (heap or config)";
+        doc["data"]["clientId"] = clientId;
+        doc["data"]["authType"] = "AES";
+        // AES 校验通过，走保存+重启流程
+    } else {
+        // 简单认证模式：构建 clientId
+        if (clientId.isEmpty()) {
+            if (!deviceNum.isEmpty() && !productId.isEmpty()) {
+                clientId = "S&" + deviceNum + "&" + productId + "&" + userId;
+            } else {
+                char id[20];
+                snprintf(id, sizeof(id), "TEST-%04X", (unsigned)esp_random() & 0xFFFF);
+                clientId = id;
             }
         }
+        doc["data"]["clientId"] = clientId;
+        doc["data"]["authType"] = "Simple";
+    }
+
+    // 日志：记录测试连接参数
+    {
+        char logBuf[160];
+        snprintf(logBuf, sizeof(logBuf),
+                 "[MQTT Test] Save+Restart: server=%s:%d scheme=%s authType=%d clientId=%s",
+                 server.c_str(), port, scheme.c_str(), authType, clientId.c_str());
+        LOG_INFO(logBuf);
+    }
+
+    // 步骤1: 备份当前 MQTT 配置（测试完成后自动恢复，不永久修改 protocol.json）
+    bool backed = backupMqttConfig();
+    if (!backed) {
+        LOG_WARNING("[MQTT Test] Backup failed, proceeding without backup");
+    }
+
+    // 步骤2: 保存测试表单配置到 protocol.json（临时，供主客户端读取）
+    bool saved = saveMqttTestConfig(server, port, username, password, authCode, authType, mqttSecret, scheme, clientId);
+    if (!saved) {
+        doc["data"]["connected"] = false;
+        doc["data"]["error"] = -10;
+        doc["data"]["errorMessage"] = "Failed to save config to protocol.json";
+        HandlerUtils::sendJsonStream(request, doc);
+        return;
+    }
+
+    // DEBUG: 验证 protocol.json 已更新
+    {
+        File dbgF = LittleFS.open("/config/protocol.json", "r");
+        if (dbgF) {
+            JsonDocument dbgDoc;
+            deserializeJson(dbgDoc, dbgF);
+            dbgF.close();
+            String dbgServer = dbgDoc["mqtt"]["server"].as<String>();
+            char dbgBuf[120];
+            snprintf(dbgBuf, sizeof(dbgBuf), "[MQTT Test DEBUG] protocol.json server after save: %s", dbgServer.c_str());
+            LOG_INFO(dbgBuf);
+        }
+    }
+
+    // 设置恢复标志：status handler 检测到测试结果后自动恢复原配置
+    s_mqttTestPendingRestore = true;
+    s_mqttTestStartTime = millis();
+
+    // 步骤3: 停止主客户端（防止旧连接占用相同 clientId 导致 broker 拒绝）
+    {
+        ProtocolManager* pm = ctx->protocolManager;
+        if (pm) {
+            MQTTClient* existingMqtt = pm->getMQTTClient();
+            if (existingMqtt && !existingMqtt->isStopped()) {
+                LOG_INFO("[MQTT Test] Stopping main client before deferred restart");
+                existingMqtt->stop();
+            }
+        }
+    }
+
+    // 步骤4: 通过 restartMQTTDeferred 重建主客户端（与"保存"按钮完全相同的路径）
+    // 主客户端在 loop 中使用新配置重连，前端通过状态轮询确认连接结果
+    bool deferred = false;
+    {
+        ProtocolManager* pm = ctx->protocolManager;
+        if (pm) {
+            deferred = pm->restartMQTTDeferred();
+        }
+    }
+
+    doc["data"]["connected"] = false;
+    doc["data"]["deferred"] = deferred;
+    doc["data"]["server"] = server;
+    doc["data"]["port"] = port;
+    if (!deferred) {
+        doc["data"]["error"] = -11;
+        doc["data"]["errorMessage"] = "Deferred restart failed (heap or config)";
     }
 
     HandlerUtils::sendJsonStream(request, doc);
@@ -670,12 +778,25 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
         mqtt = pm->getMQTTClient();
     }
 
+    // 读取测试连接结果标志（由主循环 checkPendingTestRestore 设置）
+    bool testWasConnected = s_mqttTestWasConnected;
+    bool testJustRestored = s_mqttTestJustRestored;
+    if (testJustRestored) {
+        s_mqttTestJustRestored = false;  // 清除标志，只报告一次
+    }
+
     JsonDocument doc;
     doc["success"] = true;
     JsonObject data = doc["data"].to<JsonObject>();
     data["enabled"] = mqttConfigLoaded ? mqttConfigEnabled : false;
     data["autoStartAttempted"] = autoStartAttempted;
     data["autoStartStarted"] = autoStartStarted;
+
+    // 测试连接结果：在restore前记录的连接状态
+    if (testWasConnected || testJustRestored) {
+        data["testConnected"] = testWasConnected;
+        data["testRestored"] = testJustRestored;
+    }
 
     if (mqtt) {
         // 防御性检查：确保 MQTT 对象已完全初始化

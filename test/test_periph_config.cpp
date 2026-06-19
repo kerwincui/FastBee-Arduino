@@ -1348,10 +1348,10 @@ void test_param_group_category_consistency() {
     }
 }
 
-// --- 7.7 新增外设默认禁用（向导式流程） ---
+// --- 7.7 新增外设默认禁用 ---
 
 void test_param_group_new_peripheral_default_disabled() {
-    // 新增外设时，enabled 应默认为 false（向导式：先保存→再测试→再启用）
+    // 新增外设时，enabled 应默认为 false（保存后由用户手动 toggle 启用）
     // 后端默认值验证：PeripheralConfig 构造时 enabled 应为 false
     PeripheralConfig config;
     config.id = "new_test";

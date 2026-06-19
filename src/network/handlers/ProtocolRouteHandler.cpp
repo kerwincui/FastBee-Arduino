@@ -851,6 +851,12 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     // 让出 CPU 时间，避免文件 I/O + 后续协议重启累计阻塞太久
     yield();
 
+    // 用户显式保存配置后，删除测试连接的 MQTT 备份文件
+    // （测试连接的自动恢复机制不应覆盖用户显式保存的配置）
+    if (LittleFS.exists("/config/mqtt-backup.json")) {
+        LittleFS.remove("/config/mqtt-backup.json");
+    }
+
     // 保存成功后，根据MQTT启用状态处理连接
     bool mqttReconnected = false;
     bool mqttDisconnected = false;

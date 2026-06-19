@@ -231,6 +231,7 @@
             const btn = document.querySelector('#mqtt-form .mqtt-test-btn');
             const server = document.getElementById('mqtt-broker')?.value || '';
             const port = document.getElementById('mqtt-port')?.value || '1883';
+            const scheme = document.getElementById('mqtt-scheme')?.value || 'mqtt';
             const clientId = document.getElementById('mqtt-client-id')?.value || '';
             const username = document.getElementById('mqtt-username')?.value || '';
             const password = document.getElementById('mqtt-password')?.value || '';
@@ -252,7 +253,7 @@
             }
             if (btn) { btn.disabled = true; btn.textContent = '测试中...'; btn.classList.remove('mqtt-test-success', 'mqtt-test-fail'); }
             if (resultEl) { resultEl.textContent = '测试中...'; resultEl.style.color = '#909399'; }
-            apiMqttTest({ server, port, clientId, username, password, authCode, authType, mqttSecret })
+            apiMqttTest({ server, port, scheme, clientId, username, password, authCode, authType, mqttSecret })
                 .then(res => {
                     if (res && res.success && res.data) {
                         if (res.data.deferred) {
@@ -262,7 +263,14 @@
                             return;
                         }
                         if (res.data.connected) {
-                            if (res.data.realConnected) {
+                            if (res.data.alreadyConnected) {
+                                // 主客户端已连接且配置匹配，无需重复测试
+                                if (resultEl) { resultEl.textContent = '连接正常，无需重新测试'; resultEl.style.color = '#67c23a'; }
+                                if (btn) btn.classList.add('mqtt-test-success');
+                                // 确保badge显示已连接
+                                var badge = document.getElementById('mqtt-status-badge');
+                                if (badge) { badge.className = 'mqtt-status-badge mqtt-status-online'; badge.textContent = '已连接'; }
+                            } else if (res.data.realConnected) {
                                 // realConnected 只表示 restartMQTTDeferred 已发起，不代表真正连接
                                 // 显示“正在连接”，等状态轮询确认实际连接后才显示“已连接”
                                 if (resultEl) { resultEl.textContent = '凭证验证成功，MQTT 正在连接...'; resultEl.style.color = '#67c23a'; }
@@ -408,10 +416,20 @@
                 var nextPollCount = pollCount + 1;
                 self._loadMqttStatus();
 
+                // 测试连接成功：检查 badge 或存储的标志
                 const badge = document.getElementById('mqtt-status-badge');
                 if (badge && badge.classList.contains('mqtt-status-online')) {
                     if (resultEl) {
                         resultEl.textContent = '连接成功！';
+                        resultEl.style.color = '#67c23a';
+                    }
+                    return;
+                }
+                // 检查 _updateMqttStatusUI 是否检测到 testConnected
+                if (self._mqttTestConnectedDetected) {
+                    self._mqttTestConnectedDetected = false;
+                    if (resultEl) {
+                        resultEl.textContent = '测试连接成功！';
                         resultEl.style.color = '#67c23a';
                     }
                     return;
@@ -594,7 +612,13 @@
                     }
                 }
 
-                if (d.connected) {
+                if (d.testConnected) {
+                    // 测试连接成功（后端已自动恢复原配置）
+                    badge.className = 'mqtt-status-badge mqtt-status-online';
+                    badge.textContent = '测试成功';
+                    this._mqttConnectingStartTime = 0;
+                    this._mqttTestConnectedDetected = true;  // 通知 deferred poll 停止
+                } else if (d.connected) {
                     badge.className = 'mqtt-status-badge mqtt-status-online';
                     badge.textContent = '已连接';
                     this._mqttConnectingStartTime = 0; // 重置超时计时

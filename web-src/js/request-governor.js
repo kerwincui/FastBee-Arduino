@@ -9,7 +9,7 @@
         : (location.origin || 'http://fastbee.local');
     const DEFAULT_TIMEOUT = 15000;
     const RESTART_TIMEOUT = 15000;
-    const MQTT_TEST_TIMEOUT = 30000;
+    const MQTT_TEST_TIMEOUT = 45000;
     const CONTROL_PRIORITY = 3;
     const PRESSURE_INTERVAL_PROFILES = Object.freeze({
         modbusControl: [8000, 10000, 15000, 25000],

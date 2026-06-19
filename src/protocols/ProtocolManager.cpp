@@ -12,6 +12,7 @@
 #include "core/PeriphExecManager.h"
 #include "core/FeatureFlags.h"
 #include "network/NetworkManager.h"
+#include "network/handlers/MqttRouteHandler.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <memory>
@@ -340,6 +341,8 @@ void ProtocolManager::handle() {
 #if FASTBEE_ENABLE_MQTT
     if (mqttClient) {
         mqttClient->handle();
+        // 测试连接自动恢复检查：不依赖前端轮询，主循环自动检测并恢复原配置
+        MqttRouteHandler::checkPendingTestRestore();
         // 周期性 ets_printf 调试（每10秒），直接写UART不经过Serial缓冲区
         static unsigned long _pmDbgMs = 0;
         if (millis() - _pmDbgMs > 10000) {

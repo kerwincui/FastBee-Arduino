@@ -226,15 +226,14 @@
             this._peProfile = profile || null;
             var btn = document.getElementById('periph-exec-page-add-btn');
             if (!btn) return;
-            var locked = this._isPeriphExecCapacityFull();
-            if (locked) {
-                btn.setAttribute('data-resource-locked', 'true');
-                btn.disabled = true;
-                btn.title = '当前资源档位执行规则数量已达上限';
-            } else {
-                btn.removeAttribute('data-resource-locked');
-                if (this.isDeveloperModeEnabled()) {
-                    btn.disabled = false;
+            // 执行规则是软限制，不锁定按钮，仅在超限时显示警告提示
+            var overLimit = profile && (profile.used || 0) > profile.max;
+            btn.removeAttribute('data-resource-locked');
+            if (this.isDeveloperModeEnabled()) {
+                btn.disabled = false;
+                if (overLimit) {
+                    btn.title = '执行规则已超出推荐上限(' + profile.max + ')，但仍可新增';
+                } else {
                     btn.removeAttribute('title');
                 }
             }
@@ -245,6 +244,9 @@
             var profile = this._peProfile;
             if (profile && profile.max !== undefined) {
                 summary += ' (' + (profile.used || 0) + '/' + profile.max + ')';
+                if ((profile.used || 0) > profile.max) {
+                    summary += ' ⚠️ 已超出推荐上限';
+                }
             }
             return summary;
         },

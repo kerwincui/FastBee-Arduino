@@ -14,6 +14,7 @@
         'periph_exec.json': '外设执行',
         'protocol.json': '通信协议',
         'users.json': '用户配置',
+        'auth.json': '安全认证',
         'rule_scripts.json': '规则脚本'
     };
 

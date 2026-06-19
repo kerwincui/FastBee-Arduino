@@ -388,7 +388,8 @@ void PeriphExecRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
     // 复用 HandlerUtils::sendJsonListChunked（与 handleGetPeripherals 同模式）
     String header;
     const int profileMax = static_cast<int>(FastBee::ResourceProfile::MAX_PERIPH_EXEC_RULES);
-    const int profileRemaining = std::max(0, profileMax - total);
+    // 执行规则是软限制（“推荐值，超限只警告”），remaining至少为1，不锁定新增按钮
+    const int profileRemaining = std::max(1, profileMax - total);
 
     header.reserve(220 + sensorSources.length());
     header = F("{\"success\":true,\"total\":");

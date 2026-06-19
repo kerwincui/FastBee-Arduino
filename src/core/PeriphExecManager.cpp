@@ -161,115 +161,6 @@ static bool executeDirectOutputCommand(PeripheralManager& pm,
     return false;
 }
 
-#if !FASTBEE_ENABLE_COMMAND_SCRIPT
-static uint16_t clampLegacyDelay(long delayMs) {
-    if (delayMs <= 0) return 0;
-    if (delayMs > 10000) return 10000;
-    return static_cast<uint16_t>(delayMs);
-}
-
-static ExecAction makeDisplayAction(const String& target, uint8_t type, const String& value,
-                                    uint16_t syncDelayMs, uint8_t execMode) {
-    ExecAction action;
-    action.targetPeriphId = target;
-    action.actionType = type;
-    action.actionValue = value;
-    action.useReceivedValue = false;
-    action.syncDelayMs = syncDelayMs;
-    action.execMode = execMode;
-    return action;
-}
-
-static bool migrateLegacyDisplayScriptRule(PeriphExecRule& rule) {
-    bool changed = false;
-    std::vector<ExecAction> migratedActions;
-    migratedActions.reserve(rule.actions.size() + 1);
-
-    for (const auto& action : rule.actions) {
-        if (action.actionType != static_cast<uint8_t>(ExecActionType::ACTION_SCRIPT)) {
-            migratedActions.push_back(action);
-            continue;
-        }
-
-        String script = action.actionValue;
-        script.replace("\r\n", "\n");
-        script.replace('\r', '\n');
-
-        std::vector<ExecAction> displayActions;
-        uint16_t pendingDelayMs = 0;
-        int start = 0;
-
-        while (start <= script.length()) {
-            int end = script.indexOf('\n', start);
-            if (end < 0) end = script.length();
-
-            String line = script.substring(start, end);
-            line.trim();
-            String upperLine = line;
-            upperLine.toUpperCase();
-
-            if (upperLine.startsWith("DELAY ")) {
-                pendingDelayMs = clampLegacyDelay(line.substring(6).toInt());
-            } else if (upperLine.startsWith("PERIPH ")) {
-                int displayIdx = upperLine.indexOf(" DISPLAY ");
-                int showIdx = upperLine.indexOf(" SHOW");
-
-                if (displayIdx > 7) {
-                    String target = line.substring(7, displayIdx);
-                    target.trim();
-                    String value = line.substring(displayIdx + 9);
-                    value.trim();
-
-                    if (!target.isEmpty() && !value.isEmpty()) {
-                        displayActions.push_back(makeDisplayAction(
-                            target,
-                            static_cast<uint8_t>(ExecActionType::ACTION_DISPLAY_NUMBER),
-                            value,
-                            pendingDelayMs,
-                            action.execMode
-                        ));
-                        pendingDelayMs = 0;
-                    }
-                } else if (showIdx > 7) {
-                    String target = line.substring(7, showIdx);
-                    target.trim();
-                    String targetLower = target;
-                    targetLower.toLowerCase();
-
-                    if (!target.isEmpty() && targetLower.indexOf("oled") >= 0) {
-                        displayActions.push_back(makeDisplayAction(
-                            target,
-                            static_cast<uint8_t>(ExecActionType::ACTION_OLED_DISPLAY),
-                            "# 环境监测\n温度:${dht_01.temperature}°C\n湿度:${dht_01.humidity}%\n状态:运行中",
-                            pendingDelayMs,
-                            action.execMode
-                        ));
-                        pendingDelayMs = 0;
-                    }
-                }
-            }
-
-            if (end >= script.length()) break;
-            start = end + 1;
-        }
-
-        if (displayActions.empty()) {
-            migratedActions.push_back(action);
-            continue;
-        }
-
-        migratedActions.insert(migratedActions.end(), displayActions.begin(), displayActions.end());
-        changed = true;
-    }
-
-    if (changed) {
-        rule.actions = migratedActions;
-        LOGGER.infof("[PeriphExec] Migrated legacy display script rule: %s", rule.id.c_str());
-    }
-
-    return changed;
-}
-#endif
 }
 
 PeriphExecManager& PeriphExecManager::getInstance() {
@@ -811,7 +702,6 @@ bool PeriphExecManager::saveConfiguration() {
     MutexGuard lock(_rulesMutex);
 
     JsonDocument doc;
-    doc["version"] = 3;  // v3: triggers[]/actions[] 数组格式
     JsonArray arr = doc["rules"].to<JsonArray>();
 
     for (const auto& pair : rules) {
@@ -910,8 +800,6 @@ bool PeriphExecManager::loadConfiguration() {
         return true;
     }
 
-    int configVersion = doc["version"] | 1;
-    bool legacyScriptMigrated = false;
     rules.clear();
     JsonArray arr = doc["rules"].as<JsonArray>();
 
@@ -940,117 +828,38 @@ bool PeriphExecManager::loadConfiguration() {
         if (r.scriptContent == "null") r.scriptContent = "";
         r.reportAfterExec = obj["reportAfterExec"] | true;
 
-        if (configVersion >= 3) {
-            // ===== v3 原生格式：读取 triggers[] 和 actions[] 数组 =====
-            JsonArray trigArr = obj["triggers"].as<JsonArray>();
-            for (JsonObject tObj : trigArr) {
-                ExecTrigger t;
-                t.triggerType = tObj["triggerType"] | 0;
-                t.triggerPeriphId = tObj["triggerPeriphId"].as<String>();
-                t.operatorType = tObj["operatorType"] | 0;
-                t.compareValue = tObj["compareValue"].as<String>();
-                t.timerMode = tObj["timerMode"] | 0;
-                t.intervalSec = tObj["intervalSec"] | 60;
-                t.timePoint = tObj["timePoint"].as<String>();
-                t.eventId = tObj["eventId"].as<String>();
-                // 轮询触发通信参数
-                t.pollResponseTimeout = tObj["pollResponseTimeout"] | 1000;
-                t.pollMaxRetries = tObj["pollMaxRetries"] | 2;
-                t.pollInterPollDelay = tObj["pollInterPollDelay"] | 100;
-                t.lastTriggerTime = 0;
-                t.triggerCount = 0;
-                r.triggers.push_back(t);
-            }
-            JsonArray actArr = obj["actions"].as<JsonArray>();
-            for (JsonObject aObj : actArr) {
-                ExecAction a;
-                a.targetPeriphId = aObj["targetPeriphId"].as<String>();
-                a.actionType = aObj["actionType"] | 0;
-                a.actionValue = aObj["actionValue"].as<String>();
-                a.useReceivedValue = aObj["useReceivedValue"] | false;
-                a.syncDelayMs = aObj["syncDelayMs"] | 0;
-                a.execMode = aObj["execMode"] | 0;
-                r.actions.push_back(a);
-            }
-            // 向后兼容：旧配置中 execMode 在规则级别，迁移到每个动作
-            if (r.execMode != 0) {
-                bool anyActionHasMode = false;
-                for (const auto& a : r.actions) {
-                    if (a.execMode != 0) { anyActionHasMode = true; break; }
-                }
-                if (!anyActionHasMode) {
-                    for (auto& a : r.actions) {
-                        a.execMode = r.execMode;
-                    }
-                }
-            }
-            sanitizeRuleForSafety(r);
-        } else {
-            // ===== v1/v2 旧格式迁移：平铺字段 → 单元素 triggers[]/actions[] =====
+        // 读取 triggers[] 和 actions[] 数组
+        JsonArray trigArr = obj["triggers"].as<JsonArray>();
+        for (JsonObject tObj : trigArr) {
             ExecTrigger t;
-            t.triggerType = obj["triggerType"] | 0;
-            // v1/v2 无 triggerPeriphId，用 targetPeriphId 作为数据源（旧行为兼容）
-            t.triggerPeriphId = obj["targetPeriphId"].as<String>();
-            t.operatorType = obj["operatorType"] | 0;
-            t.compareValue = obj["compareValue"].as<String>();
-            t.timerMode = obj["timerMode"] | 0;
-            t.intervalSec = obj["intervalSec"] | 60;
-            t.timePoint = obj["timePoint"].as<String>();
-            t.lastTriggerTime = millis();  // 初始化为当前时间，避免启动时立即触发
+            t.triggerType = tObj["triggerType"] | 0;
+            t.triggerPeriphId = tObj["triggerPeriphId"].as<String>();
+            t.operatorType = tObj["operatorType"] | 0;
+            t.compareValue = tObj["compareValue"].as<String>();
+            t.timerMode = tObj["timerMode"] | 0;
+            t.intervalSec = tObj["intervalSec"] | 60;
+            t.timePoint = tObj["timePoint"].as<String>();
+            t.eventId = tObj["eventId"].as<String>();
+            // 轮询触发通信参数
+            t.pollResponseTimeout = tObj["pollResponseTimeout"] | 1000;
+            t.pollMaxRetries = tObj["pollMaxRetries"] | 2;
+            t.pollInterPollDelay = tObj["pollInterPollDelay"] | 100;
+            t.lastTriggerTime = 0;
             t.triggerCount = 0;
-
-            // 事件 ID 迁移（v1→v2 逻辑）
-            if (configVersion >= 2) {
-                t.eventId = obj["eventId"].as<String>();
-            } else {
-                uint8_t oldTriggerType = obj["triggerType"] | 0;
-                String oldSystemEventId = obj["systemEventId"].as<String>();
-                if (oldTriggerType == 5 || oldTriggerType == 6) {
-                    t.triggerType = static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER);
-                    if (!oldSystemEventId.isEmpty()) {
-                        t.eventId = oldSystemEventId;
-                        if (t.eventId.startsWith("sys_")) {
-                            t.eventId = t.eventId.substring(4);
-                        }
-                    }
-                } else if (oldTriggerType == 2) {
-                    t.triggerType = static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER);
-                    t.eventId = "data_receive";
-                } else if (oldTriggerType == 3) {
-                    t.triggerType = static_cast<uint8_t>(ExecTriggerType::EVENT_TRIGGER);
-                    t.eventId = "data_report";
-                }
-            }
-
             r.triggers.push_back(t);
-
-            // 动作迁移
+        }
+        JsonArray actArr = obj["actions"].as<JsonArray>();
+        for (JsonObject aObj : actArr) {
             ExecAction a;
-            a.targetPeriphId = obj["targetPeriphId"].as<String>();
-            a.actionType = obj["actionType"] | 0;
-            a.actionValue = obj["actionValue"].as<String>();
-            a.useReceivedValue = false;
-            a.syncDelayMs = 0;
-
-            // 向后兼容：旧版 inverted 字段迁移到新的 actionType
-            bool oldInverted = obj["inverted"] | false;
-            if (oldInverted) {
-                if (a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_HIGH)) {
-                    a.actionType = static_cast<uint8_t>(ExecActionType::ACTION_HIGH_INVERTED);
-                } else if (a.actionType == static_cast<uint8_t>(ExecActionType::ACTION_LOW)) {
-                    a.actionType = static_cast<uint8_t>(ExecActionType::ACTION_LOW_INVERTED);
-                }
-            }
-
+            a.targetPeriphId = aObj["targetPeriphId"].as<String>();
+            a.actionType = aObj["actionType"] | 0;
+            a.actionValue = aObj["actionValue"].as<String>();
+            a.useReceivedValue = aObj["useReceivedValue"] | false;
+            a.syncDelayMs = aObj["syncDelayMs"] | 0;
+            a.execMode = aObj["execMode"] | 0;
             r.actions.push_back(a);
-            sanitizeRuleForSafety(r);
         }
-
-#if !FASTBEE_ENABLE_COMMAND_SCRIPT
-        if (migrateLegacyDisplayScriptRule(r)) {
-            legacyScriptMigrated = true;
-        }
-#endif
+        sanitizeRuleForSafety(r);
 
         if (r.triggers.size() > MAX_TRIGGERS_PER_RULE) {
             LOGGER.warningf("[PeriphExec] Rule '%s' has too many triggers in config, truncating to %u",
@@ -1074,17 +883,11 @@ bool PeriphExecManager::loadConfiguration() {
         }
     }
 
-    LOGGER.infof("[PeriphExec] Loaded %d rules (config v%d)", (int)rules.size(), configVersion);
+    LOGGER.infof("[PeriphExec] Loaded %d rules", (int)rules.size());
 
     // 重建按键规则缓存（初始化时无锁竞争，安全调用）
     rebuildButtonEventCache();
     rebuildDataSourceCache();
-
-    // v1/v2 自动升级为 v3
-    if (configVersion < 3 || legacyScriptMigrated) {
-        LOGGER.info("[PeriphExec] Persisting migrated config...");
-        saveConfiguration();
-    }
 
     return true;
 }

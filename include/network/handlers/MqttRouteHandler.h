@@ -21,6 +21,12 @@ public:
 
     void setupRoutes(AsyncWebServer* server);
 
+    /**
+     * @brief 检查并执行测试连接后的自动配置恢复
+     * 需要在主循环中周期调用。当测试连接成功或超时后，自动恢复原始MQTT配置。
+     */
+    static void checkPendingTestRestore();
+
 private:
     WebHandlerContext* ctx;
 
