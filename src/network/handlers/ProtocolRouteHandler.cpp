@@ -43,9 +43,6 @@ void normalizeProtocolConfig(JsonDocument& doc) {
     if (!doc["modbusRtu"]["mode"].is<const char*>()) {
         doc["modbusRtu"]["mode"] = "master";
     }
-    if (!doc["modbusRtu"]["timeout"].is<int>()) {
-        doc["modbusRtu"]["timeout"] = 1000;
-    }
     if (!doc["mqtt"]["enabled"].is<bool>()) {
         doc["mqtt"]["enabled"] = true;
     }
@@ -82,7 +79,7 @@ void copyMqttTopicList(JsonArray dst, JsonArray src, bool publishList) {
         topicOut["qos"] = topicIn["qos"] | 0;
         topicOut["enabled"] = topicIn["enabled"] | true;
         topicOut["autoPrefix"] = topicIn["autoPrefix"] | true;
-        topicOut["topicType"] = topicIn["topicType"] | 0;
+        topicOut["topicType"] = topicIn["topicType"] | (publishList ? 0 : 1);
         if (publishList) {
             topicOut["retain"] = topicIn["retain"] | false;
         }
@@ -108,7 +105,6 @@ void sendCompactMqttConfigFromFile(AsyncWebServerRequest* request) {
     mqttOut["password"] = mqttIn["password"] | "";
     mqttOut["keepAlive"] = mqttIn["keepAlive"] | 60;
     mqttOut["autoReconnect"] = mqttIn["autoReconnect"] | true;
-    mqttOut["connectionTimeout"] = mqttIn["connectionTimeout"] | 30000;
     mqttOut["authType"] = mqttIn["authType"] | 0;
     mqttOut["mqttSecret"] = mqttIn["mqttSecret"] | "";
     mqttOut["authCode"] = mqttIn["authCode"] | "";
@@ -166,6 +162,23 @@ void copyModbusDeviceSummary(JsonObject out, JsonObject in) {
     copyJsonMember(out, in, "batchRegType");
     copyJsonMember(out, in, "pwmRegBase");
     copyJsonMember(out, in, "pidDecimals");
+    // 电机参数透传
+    copyJsonMember(out, in, "motorDecimals");
+    copyJsonMember(out, in, "motorMinPosition");
+    copyJsonMember(out, in, "motorMaxPosition");
+    copyJsonMember(out, in, "motorCurrentPosition");
+    copyJsonMember(out, in, "motorMoveStep");
+    copyJsonMember(out, in, "motorLastPulse");
+    if (in["motorRegs"].is<JsonArray>()) {
+        JsonArray mrOut = out["motorRegs"].to<JsonArray>();
+        for (JsonVariant mv : in["motorRegs"].as<JsonArray>())
+            mrOut.add(mv.as<int>());
+    }
+    if (in["pidAddrs"].is<JsonArray>()) {
+        JsonArray paOut = out["pidAddrs"].to<JsonArray>();
+        for (JsonVariant pv : in["pidAddrs"].as<JsonArray>())
+            paOut.add(pv.as<int>());
+    }
 }
 
 void copyPeriphExecModbusSummary(JsonObject out, JsonObject in) {
@@ -174,6 +187,11 @@ void copyPeriphExecModbusSummary(JsonObject out, JsonObject in) {
 
     JsonObject masterOut = out["master"].to<JsonObject>();
     JsonObject masterIn = in["master"].as<JsonObject>();
+
+    // Master 高级参数透传
+    masterOut["responseTimeout"] = masterIn["responseTimeout"] | 1000;
+    masterOut["maxRetries"] = masterIn["maxRetries"] | 2;
+    masterOut["interPollDelay"] = masterIn["interPollDelay"] | 100;
 
     JsonArray tasksOut = masterOut["tasks"].to<JsonArray>();
     JsonArray tasksIn = masterIn["tasks"].as<JsonArray>();
@@ -196,6 +214,11 @@ void copyPeriphExecModbusSummary(JsonObject out, const ModbusConfig& cfg, bool e
     out["transferType"] = cfg.transferType;
 
     JsonObject masterOut = out["master"].to<JsonObject>();
+
+    // Master 高级参数透传
+    masterOut["responseTimeout"] = cfg.master.responseTimeout;
+    masterOut["maxRetries"] = cfg.master.maxRetries;
+    masterOut["interPollDelay"] = cfg.master.interPollDelay;
 
     JsonArray tasksOut = masterOut["tasks"].to<JsonArray>();
     for (uint8_t i = 0; i < cfg.master.taskCount && i < Protocols::MODBUS_MAX_POLL_TASKS; ++i) {
@@ -237,6 +260,17 @@ void copyPeriphExecModbusSummary(JsonObject out, const ModbusConfig& cfg, bool e
         deviceOut["batchRegType"] = device.batchRegType;
         deviceOut["pwmRegBase"] = device.pwmRegBase;
         deviceOut["pidDecimals"] = device.pidDecimals;
+        // 电机参数透传
+        deviceOut["motorDecimals"] = device.motorDecimals;
+        deviceOut["motorMinPosition"] = device.motorMinPosition;
+        deviceOut["motorMaxPosition"] = device.motorMaxPosition;
+        deviceOut["motorCurrentPosition"] = device.motorCurrentPosition;
+        deviceOut["motorMoveStep"] = device.motorMoveStep;
+        deviceOut["motorLastPulse"] = device.motorLastPulse;
+        JsonArray mrOut = deviceOut["motorRegs"].to<JsonArray>();
+        for (uint8_t j = 0; j < 5; j++) mrOut.add(device.motorRegs[j]);
+        JsonArray paOut = deviceOut["pidAddrs"].to<JsonArray>();
+        for (uint8_t j = 0; j < 6; j++) paOut.add(device.pidAddrs[j]);
     }
 }
 #endif // FASTBEE_ENABLE_MODBUS
@@ -544,19 +578,18 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
 
     doc["modbusRtu"]["enabled"] = GP("modbusRtu_enabled", currentEnabled ? "true" : "false") == "true";
     doc["modbusRtu"]["peripheralId"] = GP("modbusRtu_peripheralId", currentPeripheralId);
-    doc["modbusRtu"]["timeout"] = 1000; // 硬编码默认值，前端已移除此字段
     doc["modbusRtu"]["mode"] = GP("modbusRtu_mode", currentMode);
     doc["modbusRtu"]["dePin"] = GPI("modbusRtu_dePin", String(currentDePin));
     doc["modbusRtu"]["transferType"] = GPI("modbusRtu_transferType", String(currentTransferType));
     // workMode 已移除：由轮询任务配置自动推导，不再保存
 
-    // Modbus RTU Master 配置（仅在配置中不存在时写入默认值，不覆盖已有配置）
-    if (!doc["modbusRtu"]["master"].containsKey("responseTimeout"))
-        doc["modbusRtu"]["master"]["responseTimeout"] = 1000;
-    if (!doc["modbusRtu"]["master"].containsKey("maxRetries"))
-        doc["modbusRtu"]["master"]["maxRetries"] = 2;
-    if (!doc["modbusRtu"]["master"].containsKey("interPollDelay"))
-        doc["modbusRtu"]["master"]["interPollDelay"] = 100;
+    // Modbus RTU Master 高级参数（支持前端覆盖，未发送时保持已有配置，无配置则写入默认值）
+    int currentRespTimeout = doc["modbusRtu"]["master"]["responseTimeout"] | 1000;
+    int currentMaxRetries = doc["modbusRtu"]["master"]["maxRetries"] | 2;
+    int currentInterPoll = doc["modbusRtu"]["master"]["interPollDelay"] | 100;
+    doc["modbusRtu"]["master"]["responseTimeout"] = GPI("modbusRtu_responseTimeout", String(currentRespTimeout));
+    doc["modbusRtu"]["master"]["maxRetries"] = GPI("modbusRtu_maxRetries", String(currentMaxRetries));
+    doc["modbusRtu"]["master"]["interPollDelay"] = GPI("modbusRtu_interPollDelay", String(currentInterPoll));
 
     // Modbus RTU Master 轮询任务
     // 仅在前端实际发送了 tasks 数据时才清空并重建数组，避免从其他标签页保存时误删现有配置
@@ -718,7 +751,6 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["mqtt"]["password"] = GP("mqtt_password", "");
     doc["mqtt"]["keepAlive"] = GPI("mqtt_keepAlive", "60");
     doc["mqtt"]["autoReconnect"] = GP("mqtt_autoReconnect", "true") == "true";
-    doc["mqtt"]["connectionTimeout"] = GPI("mqtt_connectionTimeout", "30000");
     // MQTT 认证配置
     doc["mqtt"]["authType"] = authType;
     doc["mqtt"]["mqttSecret"] = GP("mqtt_mqttSecret", "");
@@ -750,7 +782,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                 topicObj["qos"] = v["qos"] | 0;
                 topicObj["retain"] = v["retain"] | false;
                 topicObj["enabled"] = v["enabled"] | true;
-                topicObj["autoPrefix"] = v["autoPrefix"] | false;
+                topicObj["autoPrefix"] = v["autoPrefix"] | true;
                 topicObj["topicType"] = v["topicType"] | 0;
             }
         }
@@ -773,7 +805,7 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
                 topicObj["topic"] = v["topic"] | "";
                 topicObj["qos"] = v["qos"] | 0;
                 topicObj["enabled"] = v["enabled"] | true;
-                topicObj["autoPrefix"] = v["autoPrefix"] | false;
+                topicObj["autoPrefix"] = v["autoPrefix"] | true;
                 topicObj["topicType"] = v["topicType"] | 1;
             }
         }

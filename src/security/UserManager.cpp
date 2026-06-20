@@ -1,6 +1,7 @@
 #include "./security/UserManager.h"
 #include "systems/LoggerSystem.h"
 #include "core/FeatureFlags.h"
+#include "utils/TimeUtils.h"
 #include <mbedtls/md5.h>
 #include <mbedtls/sha256.h>
 #include <esp_random.h>
@@ -366,8 +367,11 @@ size_t UserManager::getUserCount() {
 void UserManager::updateLastLogin(const String& username) {
     auto it = users.find(username);
     if (it != users.end()) {
-        it->second.lastLogin = millis();
+        time_t now = TimeUtils::getTimestamp();
+        // NTP 同步前时间戳可能很小，用 >2020-01-01 判断是否有效
+        it->second.lastLogin = (now > 1577836800) ? (unsigned long)now : millis();
         updateUserLastModified(username);
+        saveUsersToStorage();
     }
 }
 
@@ -414,16 +418,7 @@ bool UserManager::saveUsersToStorage() {
     security["maxLoginAttempts"]        = config.maxLoginAttempts;
     security["loginLockoutTime"]        = config.loginLockoutTime;
     security["minPasswordLength"]       = config.minPasswordLength;
-    security["maxPasswordLength"]       = config.maxPasswordLength;
     security["requireStrongPasswords"]  = config.requireStrongPasswords;
-    security["allowMultipleSessions"]   = config.allowMultipleSessions;
-    security["sessionTimeout"]          = config.sessionTimeout;
-    security["sessionCleanupInterval"]  = config.sessionCleanupInterval;
-    security["enableSessionPersistence"]= config.enableSessionPersistence;
-    security["cookieName"]              = config.cookieName;
-    security["cookieMaxAge"]            = config.cookieMaxAge;
-    security["cookieHttpOnly"]          = config.cookieHttpOnly;
-    security["cookieSecure"]            = config.cookieSecure;
 
     if (!LittleFS.exists("/config") && !LittleFS.mkdir("/config")) {
         LOG_ERROR("UserManager: Failed to create /config directory");
@@ -558,6 +553,15 @@ bool UserManager::updateSecurityConfig(uint32_t sessionTimeout, uint32_t session
     config.cookieHttpOnly = cookieHttpOnly;
     config.cookieSecure = cookieSecure;
     return saveUsersToStorage();
+}
+
+void UserManager::updatePasswordPolicy(uint8_t maxAttempts, uint32_t lockoutTime,
+                                       uint8_t minPwdLen, bool requireStrong) {
+    config.maxLoginAttempts       = maxAttempts;
+    config.loginLockoutTime       = lockoutTime;
+    config.minPasswordLength      = minPwdLen;
+    config.requireStrongPasswords = requireStrong;
+    saveUsersToStorage();
 }
 
 // ============ 静态工具方法 ============

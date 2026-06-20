@@ -255,6 +255,8 @@
         'mdns-disabled-notice-title': 'Notice:',
         'mdns-disabled-notice-text': 'mDNS is disabled. You cannot access the system via custom domain. Please use the device IP address:',
         'domain-unavailable-notice-text': 'Domain config is not available for the current network type. 4G/LoRa mode only supports access via AP hotspot IP address.',
+        'cellular-access-hint-title': 'Access Method',
+        'cellular-access-hint-text': 'In 4G mode, connect to the device hotspot (e.g. fastbee-ap), then access the system via <code>http://192.168.4.1</code>.',
         'connection-settings-title': 'Connection Settings',
         'connect-timeout-label': 'Conn Timeout (ms)',
         'reconnect-interval-label': 'Reconnect Interval (ms)',
@@ -289,9 +291,24 @@
         'dev-cache-hint': 'Browser cache TTL for JS/CSS. Applies to new requests.',
         'dev-cache-clear-btn': 'Clear Browser Cache',
         'dev-cache-clear-ok': 'Cache cleared, refreshing...',
+
+        // Security policy
+        'dev-sec-title': 'Security Policy',
+        'dev-sec-max-attempts': 'Max Login Attempts',
+        'dev-sec-lockout-time': 'Lockout Duration (seconds)',
+        'dev-sec-min-pwd-len': 'Min Password Length',
+        'dev-sec-require-strong': 'Require Strong Password',
+        'dev-sec-save-btn': 'Save Policy',
+        'dev-sec-save-ok': 'Security policy saved!',
+
         'dev-name-label': 'Device Name',
         'dev-location-label': 'Location',
         'dev-description-label': 'Description',
+        'dev-log-level-label': 'Log Level',
+        'log-level-debug': 'DEBUG',
+        'log-level-info': 'INFO',
+        'log-level-warning': 'WARNING',
+        'log-level-error': 'ERROR',
         'dev-basic-save-btn': 'Save Info',
         'dev-basic-save-ok': 'Device info saved!',
 

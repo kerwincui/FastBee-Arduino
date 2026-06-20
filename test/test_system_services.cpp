@@ -5,13 +5,15 @@
  * 测试内容：
  * - ConfigStorage: NVS 读写、JSON 配置保存/加载/备份/恢复、损坏恢复、版本迁移
  * - HealthMonitor: 健康状态检查、阈值判定、报告生成
- * - LoggerSystem: 日志级别过滤、模块黑名单、文件轮转、查询统计
+ * - LoggerSystem: 日志级别过滤、模块黑名单、文件轮转、查询统计、logLevel字符串解析
  * - TaskManager: 任务 CRUD、优先级调度、暂停/恢复、统计
  */
 
 #include <unity.h>
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <string.h>
+#include "helpers/TestLogger.h"
 #include "mocks/MockConfigStorage.h"
 #include "mocks/MockHealthMonitor.h"
 #include "mocks/MockLogger.h"
@@ -540,6 +542,45 @@ static void test_logger_export() {
     TEST_ASSERT_TRUE(exported.indexOf("System started") >= 0);
 }
 
+/**
+ * @brief 验证 logLevel 字符串到枚举的解析逻辑
+ * 镜像 FastBeeFramework.cpp 和 DeviceRouteHandler.cpp 中的解析逻辑
+ */
+static void test_loglevel_string_parsing() {
+    // 模拟源码中的解析函数（与 FastBeeFramework.cpp 一致）
+    auto parseLogLevel = [](const char* str) -> LogLevel {
+        if (strcmp(str, "DEBUG")   == 0) return LOG_DEBUG;
+        if (strcmp(str, "INFO")    == 0) return LOG_INFO;
+        if (strcmp(str, "WARNING") == 0) return LOG_WARNING;
+        if (strcmp(str, "ERROR")   == 0) return LOG_ERROR;
+        return LOG_INFO;  // 默认值
+    };
+
+    TEST_ASSERT_EQUAL(LOG_DEBUG,   parseLogLevel("DEBUG"));
+    TEST_ASSERT_EQUAL(LOG_INFO,    parseLogLevel("INFO"));
+    TEST_ASSERT_EQUAL(LOG_WARNING, parseLogLevel("WARNING"));
+    TEST_ASSERT_EQUAL(LOG_ERROR,   parseLogLevel("ERROR"));
+    TestLog::step("All 4 valid logLevel strings parsed correctly");
+
+    // 未知字符串应回退到默认 INFO
+    TEST_ASSERT_EQUAL(LOG_INFO, parseLogLevel("UNKNOWN"));
+    TEST_ASSERT_EQUAL(LOG_INFO, parseLogLevel(""));
+    TEST_ASSERT_EQUAL(LOG_INFO, parseLogLevel("debug"));  // 大小写敏感
+    TestLog::step("Unknown/invalid strings fall back to INFO");
+
+    // 验证解析后能正确设置日志级别
+    auto& logger = MockLoggerSystem::getInstance();
+    logger.initialize();
+
+    logger.setLogLevel(parseLogLevel("WARNING"));
+    TEST_ASSERT_EQUAL(LOG_WARNING, logger.getLogLevel());
+    TestLog::step("Parsed logLevel applied to logger");
+
+    logger.setLogLevel(parseLogLevel("DEBUG"));
+    TEST_ASSERT_EQUAL(LOG_DEBUG, logger.getLogLevel());
+    TestLog::step("LogLevel can be changed at runtime");
+}
+
 // ========== TaskManager 测试 ==========
 
 static int taskExecutionCounter = 0;
@@ -773,6 +814,7 @@ void test_system_services_group() {
     RUN_TEST(test_logger_recent_entries);
     RUN_TEST(test_logger_clear_and_rotate);
     RUN_TEST(test_logger_export);
+    RUN_TEST(test_loglevel_string_parsing);
     
     // TaskManager 测试
     RUN_TEST(test_task_add_and_get);

@@ -10,6 +10,7 @@ param(
     [switch]$SkipFirmware,
     [switch]$Monitor,
     [switch]$SkipDoctor,
+    [switch]$FullOutput,
 
     [string]$DataDir = "",
 
@@ -164,7 +165,7 @@ function Test-SconsignIntact {
 function Invoke-PioCmd {
     param([string[]]$PioArgs)
 
-    # 强制 PlatformIO (Python) 使用 UTF-8 编码，防止中文 Windows (GBK) 下
+    # 强制 PlatformIO (Python) 使用 UTF-8 编码,防止中文 Windows (GBK) 下
     # 进度条等 Unicode 字符输出触发 UnicodeEncodeError 或显示乱码
     $prevEnc = $env:PYTHONIOENCODING
     $prevUtf8 = $env:PYTHONUTF8
@@ -173,14 +174,14 @@ function Invoke-PioCmd {
     $prevOutputEnc = $null
     $env:PYTHONIOENCODING = 'utf-8'
     $env:PYTHONUTF8 = '1'
-    # 切换控制台代码页到 UTF-8 (65001)，确保 pio 进度条 Unicode 字符
+    # 切换控制台代码页到 UTF-8 (65001),确保 pio 进度条 Unicode 字符
     # 不会因子进程继承 GBK 控制台而触发 UnicodeEncodeError
     try {
         $chcpOut = chcp 2>$null
         if ($chcpOut -match '\d+') { $prevChcp = $Matches[0] }
         chcp 65001 | Out-Null
-        # 同步 PowerShell 自身的输出编码，避免 Write-Host 管道将 UTF-8
-        # 字节流按 GBK 解码导致乱码（鈻堚枅 ← █）
+        # 同步 PowerShell 自身的输出编码,避免 Write-Host 管道将 UTF-8
+        # 字节流按 GBK 解码导致乱码(鈻堚枅 ← █)
         $prevConsoleEnc = [Console]::OutputEncoding
         $prevOutputEnc = $OutputEncoding
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -188,16 +189,55 @@ function Invoke-PioCmd {
     } catch { }
     try {
         Write-Host "pio $($PioArgs -join ' ')" -ForegroundColor Cyan
-        # 使用临时 ErrorActionPreference 防止 pio stderr 输出（进度条等）
+
+        # 检测是否为编译相关操作,显示预估时间提示
+        $isBuild = $false
+        foreach ($arg in $PioArgs) {
+            if ($arg -eq 'run' -or $arg -eq '--target') {
+                $isBuild = $true
+                break
+            }
+        }
+
+        if ($isBuild) {
+            $buildDir = Join-Path $ProjectDir ".pio\build"
+            $hasCache = Test-Path -LiteralPath $buildDir -PathType Container
+            if (-not $hasCache) {
+                Write-Host "[Info] First build detected, this may take 3-5 minutes..." -ForegroundColor Yellow
+            } else {
+                Write-Host "[Info] Using build cache, estimated time: 1-2 minutes..." -ForegroundColor Green
+            }
+        }
+
+        # 使用临时 ErrorActionPreference 防止 pio stderr 输出(进度条等)
         # 在 $ErrorActionPreference=Stop 下被误判为终止错误
         $prevEAP = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
             & pio @PioArgs 2>&1 | ForEach-Object {
                 if ($_ -is [System.Management.Automation.ErrorRecord]) {
-                    Write-Host $_.Exception.Message -ForegroundColor DarkGray
+                    # FullOutput 模式下显示错误详情
+                    if ($FullOutput) {
+                        Write-Host $_.Exception.Message -ForegroundColor DarkGray
+                    }
                 } else {
-                    Write-Host $_
+                    # FullOutput 模式下显示所有输出
+                    if ($FullOutput) {
+                        Write-Host $_
+                    } else {
+                        # 非 FullOutput 模式:过滤编译进度行,只显示关键信息
+                        $line = $_.ToString()
+                        # 显示: 开始/结束标记、错误、警告、SUCCESS/FAILED
+                        if ($line -match '^(Processing|Verbose|\[FastBee\]|========|\[SUCCESS\]|\[FAILED\]|ERROR|WARNING)' -or
+                            $line -match '(Compiling|Linking|Building|Writing|Hard resetting)' -or
+                            $line -match '(Success|Failed|Error)') {
+                            Write-Host $_
+                        }
+                        # 显示上传进度(包含百分比)
+                        elseif ($line -match '\d+\.\d+%') {
+                            Write-Host $_
+                        }
+                    }
                 }
             }
         } finally {
@@ -217,7 +257,7 @@ function Invoke-PioCmd {
 function Invoke-FastBeePioBuild {
     param([string[]]$Arguments)
 
-    # 判断是否为上传目标（upload / uploadfs）
+    # 判断是否为上传目标(upload / uploadfs)
     $isUpload = $false
     $envArg = $null
     for ($i = 0; $i -lt $Arguments.Count; $i++) {
@@ -230,12 +270,19 @@ function Invoke-FastBeePioBuild {
         }
     }
 
+    # 记录开始时间
+    $startTime = Get-Date
+
     Write-Host ""
     $exitCode = Invoke-PioCmd -PioArgs $Arguments
-    if ($exitCode -eq 0) { return }
+    if ($exitCode -eq 0) {
+        $elapsed = (Get-Date) - $startTime
+        Write-Host "[Time] Operation completed in $($elapsed.TotalSeconds.ToString('0.0'))s" -ForegroundColor Green
+        return
+    }
 
     if ($isUpload) {
-        # 检测是否为编译阶段错误（upload 命令内部会先触发编译）
+        # 检测是否为编译阶段错误(upload 命令内部会先触发编译)
         $sconsignCorrupted = -not (Test-SconsignIntact -BuildEnv $envArg)
 
         if ($sconsignCorrupted) {
@@ -250,26 +297,30 @@ function Invoke-FastBeePioBuild {
             }
             Kill-StaleProcesses
             Write-Host ""
+            $retryStart = Get-Date
             $exitCode = Invoke-PioCmd -PioArgs $Arguments
             if ($exitCode -ne 0) {
                 throw "Upload failed after clean rebuild: pio $($Arguments -join ' ')"
             }
-            Write-Host "[Retry] Upload succeeded after clean rebuild." -ForegroundColor Green
+            $retryElapsed = (Get-Date) - $retryStart
+            Write-Host "[Retry] Upload succeeded after clean rebuild ($($retryElapsed.TotalSeconds.ToString('0.0'))s)." -ForegroundColor Green
             return
         }
 
-        # 纯上传失败（串口/连接问题）→ 等串口稳定后直接重试
-        # 注意：此处不能调用 Kill-StaleProcesses，否则会杀掉正在维护
-        # sconsign 数据库的 python 进程，导致重试时编译缓存损坏。
+        # 纯上传失败(串口/连接问题) → 等串口稳定后直接重试
+        # 注意:此处不能调用 Kill-StaleProcesses,否则会杀掉正在维护
+        # sconsign 数据库的 python 进程,导致重试时编译缓存损坏。
         Write-Host ""
         Write-Host "[Retry] Upload failed, waiting 5s for serial port to stabilize..." -ForegroundColor Yellow
         Start-Sleep -Seconds 5
         Write-Host ""
+        $retryStart = Get-Date
         $exitCode = Invoke-PioCmd -PioArgs $Arguments
         if ($exitCode -ne 0) {
             throw "Upload failed after retry: pio $($Arguments -join ' ')"
         }
-        Write-Host "[Retry] Upload succeeded on second attempt." -ForegroundColor Green
+        $retryElapsed = (Get-Date) - $retryStart
+        Write-Host "[Retry] Upload succeeded on second attempt ($($retryElapsed.TotalSeconds.ToString('0.0'))s)." -ForegroundColor Green
         return
     }
 
@@ -285,11 +336,13 @@ function Invoke-FastBeePioBuild {
     Kill-StaleProcesses
 
     Write-Host ""
+    $retryStart = Get-Date
     $exitCode = Invoke-PioCmd -PioArgs $Arguments
     if ($exitCode -ne 0) {
         throw "Build failed after retry: pio $($Arguments -join ' ')"
     }
-    Write-Host "[Retry] Build succeeded after clean rebuild." -ForegroundColor Green
+    $retryElapsed = (Get-Date) - $retryStart
+    Write-Host "[Retry] Build succeeded after clean rebuild ($($retryElapsed.TotalSeconds.ToString('0.0'))s)." -ForegroundColor Green
 }
 
 function Add-UploadPort {

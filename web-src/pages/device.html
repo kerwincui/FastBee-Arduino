@@ -101,10 +101,19 @@
                         </div>
                     </div>
                     <div class="dev-basic-footer-row">
+                        <div class="fb-form-group">
+                            <label for="dev-log-level" data-i18n="dev-log-level-label">日志级别</label>
+                            <select id="dev-log-level">
+                                <option value="DEBUG" data-i18n="log-level-debug">DEBUG (调试)</option>
+                                <option value="INFO" selected data-i18n="log-level-info">INFO (信息)</option>
+                                <option value="WARNING" data-i18n="log-level-warning">WARNING (警告)</option>
+                                <option value="ERROR" data-i18n="log-level-error">ERROR (错误)</option>
+                            </select>
+                        </div>
                         <div class="fb-form-group dev-basic-footer-field">
                             <label for="dev-description"
                                 data-i18n="dev-description-label">设备描述</label>
-                            <textarea id="dev-description" class="" rows="3"
+                            <textarea id="dev-description" class="" rows="1"
                                 placeholder="输入设备描述"
                                 data-i18n-placeholder="dev-description-label"></textarea>
                         </div>
@@ -232,7 +241,7 @@
                             <p style="margin:0 0 10px;font-size:12px;color:var(--text-secondary)" data-i18n="dev-mode-hint">禁用后，外设配置、外设执行和 Modbus 子设备的新增、删除、编辑、映射入口将不可用。</p>
                             <div style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap">
                                 <input type="password" id="dev-mode-password" class="u-input-w-100"
-                                    data-i18n-placeholder="password-placeholder" placeholder="请输入密码" style="font-size:12px;flex:1;min-width:100px">
+                                    data-i18n-placeholder="password-placeholder" placeholder="请输入密码">
                                 <button id="dev-mode-toggle-btn" type="button" class="fb-btn fb-btn-warning fb-btn-compact">
                                     <span data-i18n="dev-mode-disable-btn">禁用开发环境</span>
                                 </button>
@@ -247,33 +256,16 @@
                                 <span data-i18n="dev-sys-restart-title">重启设备</span>
                             </h4>
                             <p style="margin:0 0 10px;font-size:12px;color:var(--text-secondary)" data-i18n="dev-sys-restart-hint">重启设备将会断开所有连接，配置数据将保留。</p>
-                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                                <label style="font-size:12px;white-space:nowrap" data-i18n="dev-sys-restart-delay">延迟（秒）：</label>
-                                <select id="dev-restart-delay" style="width:60px;height:30px;font-size:12px;padding:2px 6px;border:1px solid var(--border);border-radius:4px">
-                                    <option value="1">1</option>
-                                    <option value="3" selected>3</option>
-                                    <option value="5">5</option>
-                                    <option value="10">10</option>
+                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap">
+                                <label style="font-size:12px;white-space:nowrap" data-i18n="dev-sys-restart-delay">延迟：</label>
+                                <select id="dev-restart-delay">
+                                    <option value="1">1秒</option>
+                                    <option value="3" selected>3秒</option>
+                                    <option value="5">5秒</option>
+                                    <option value="10">10秒</option>
                                 </select>
                                 <button id="dev-restart-btn" type="button" class="fb-btn fb-btn-warning fb-btn-compact">
                                     <span data-i18n="dev-sys-restart-btn">立即重启</span>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-            
-                    <!-- 恢复出厂设置 -->
-                    <div class="fb-panel u-flex-1-min-280">
-                        <div class="fb-card-body" style="padding:14px 18px">
-                            <h4 style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--danger)">
-                                <span data-i18n="dev-sys-factory-title">恢复出厂设置</span>
-                            </h4>
-                            <p style="margin:0 0 10px;font-size:12px;color:var(--danger);font-weight:500" data-i18n="dev-sys-factory-warning">警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！</p>
-                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                                <label style="font-size:12px;white-space:nowrap" data-i18n="dev-sys-factory-confirm-label">输入“RESET”确认：</label>
-                                <input type="text" id="dev-factory-confirm" placeholder="RESET" style="width:56px;height:30px;font-size:12px;padding:2px 8px;border:1px solid var(--border);border-radius:4px">
-                                <button id="dev-factory-btn" type="button" class="fb-btn fb-btn-danger fb-btn-compact">
-                                    <span data-i18n="dev-sys-factory-btn">恢复出厂设置</span>
                                 </button>
                             </div>
                         </div>
@@ -289,8 +281,9 @@
                                 <span data-i18n="dev-cache-title">缓存管理</span>
                             </h4>
                             <p style="margin:0 0 10px;font-size:12px;color:var(--text-secondary)" data-i18n="dev-cache-hint">设置浏览器缓存JS/CSS资源的有效期，修改后新请求生效。</p>
-                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                                <select id="dev-cache-duration" style="width:90px;height:30px;font-size:12px;padding:2px 6px;border:1px solid var(--border);border-radius:4px">
+                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap">
+                                <label style="font-size:12px;white-space:nowrap">有效期：</label>
+                                <select id="dev-cache-duration">
                                     <option value="3600" data-i18n="dev-cache-1h">1小时</option>
                                     <option value="21600" data-i18n="dev-cache-6h">6小时</option>
                                     <option value="43200" data-i18n="dev-cache-12h">12小时</option>
@@ -302,7 +295,7 @@
                                     <span data-i18n="dev-cache-save-btn">保存</span>
                                 </button>
                                 <button type="button" class="fb-btn fb-btn-warning fb-btn-compact" data-action="clearBrowserCache">
-                                    <span data-i18n="dev-cache-clear-btn">清除浏览器缓存</span>
+                                    <span data-i18n="dev-cache-clear-btn">清除缓存</span>
                                 </button>
                             </div>
                         </div>
@@ -329,6 +322,69 @@
                                 </button>
                             </div>
                             <div id="dev-config-transfer-status" style="font-size:12px;color:var(--text-secondary)">--</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 底部区域：安全策略（左） + 恢复出厂设置（右） -->
+                <div class="u-flex-wrap-gap-20" style="margin-top:16px">
+                    <!-- 安全策略（左侧） -->
+                    <div class="fb-panel u-flex-1-min-280">
+                        <div class="fb-card-body" style="padding:14px 18px">
+                            <h4 style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--warning)">
+                                <span data-i18n="dev-sec-title">安全策略</span>
+                            </h4>
+                            <form id="device-security-form" class="fb-form" style="margin:0">
+                                <div class="config-form-grid">
+                                    <div class="config-form-column">
+                                        <div class="fb-form-group">
+                                            <label for="dev-sec-max-attempts" data-i18n="dev-sec-max-attempts">最大登录尝试次数</label>
+                                            <input type="number" id="dev-sec-max-attempts" min="1" max="10" value="5">
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="dev-sec-lockout-time" data-i18n="dev-sec-lockout-time">锁定时长（秒）</label>
+                                            <input type="number" id="dev-sec-lockout-time" min="60" max="3600" value="300" step="60">
+                                        </div>
+                                    </div>
+                                    <div class="config-form-column">
+                                        <div class="fb-form-group">
+                                            <label for="dev-sec-min-pwd-len" data-i18n="dev-sec-min-pwd-len">最小密码长度</label>
+                                            <input type="number" id="dev-sec-min-pwd-len" min="4" max="32" value="6">
+                                        </div>
+                                        <div class="fb-form-group">
+                                            <label for="dev-sec-require-strong" data-i18n="dev-sec-require-strong">要求强密码</label>
+                                            <select id="dev-sec-require-strong">
+                                                <option value="0" selected data-i18n="wifi-disable">禁用</option>
+                                                <option value="1" data-i18n="wifi-enable">启用</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="message message-success is-hidden u-mt-15" id="dev-sec-success"
+                                    data-i18n="dev-sec-save-ok">安全策略保存成功！</div>
+                                <div class="u-mt-15 device-form-actions">
+                                    <button type="submit" class="fb-btn fb-btn-primary fb-btn-action fb-btn-action-wide">
+                                        <span data-i18n="dev-sec-save-btn">保存安全策略</span>
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+
+                    <!-- 恢复出厂设置（右侧） -->
+                    <div class="fb-panel u-flex-1-min-280">
+                        <div class="fb-card-body" style="padding:14px 18px">
+                            <h4 style="margin:0 0 8px;font-size:13px;font-weight:600;color:var(--danger)">
+                                <span data-i18n="dev-sys-factory-title">恢复出厂设置</span>
+                            </h4>
+                            <p style="margin:0 0 10px;font-size:12px;color:var(--danger);font-weight:500" data-i18n="dev-sys-factory-warning">警告：此操作将清除所有用户配置和数据，恢复到出厂默认状态！</p>
+                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                                <label style="font-size:12px;white-space:nowrap" data-i18n="dev-sys-factory-confirm-label">输入“RESET”确认：</label>
+                                <input type="text" id="dev-factory-confirm" placeholder="RESET" style="width:72px">
+                                <button id="dev-factory-btn" type="button" class="fb-btn fb-btn-danger fb-btn-compact">
+                                    <span data-i18n="dev-sys-factory-btn">恢复出厂设置</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>

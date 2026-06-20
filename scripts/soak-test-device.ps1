@@ -405,6 +405,18 @@ function Test-CheckSemantics {
                 if (-not [bool]$connected) { return "MQTT is not connected" }
             }
         }
+        "mqtt-initialization" {
+            if ($null -eq $data) { return "missing data" }
+            $initialized = Get-ObjectValue -Object $data -Name "initialized"
+            if ($null -eq $initialized) { return "missing initialized flag" }
+            if (-not [bool]$initialized) {
+                $error = Get-ObjectValue -Object $data -Name "error"
+                if ([string]$error) {
+                    return "MQTT not initialized at boot: $error"
+                }
+                return "MQTT not initialized at boot (lazy-load may have failed)"
+            }
+        }
         "protocol-config" {
             if ($null -eq $data) { return "missing data" }
             if ($Profile -ne "lite" -and $null -eq (Get-ObjectValue -Object $data -Name "modbusRtu")) {
@@ -514,6 +526,19 @@ function Test-CheckSemantics {
                 $null -eq $_ -or ($_.PSObject.Properties.Name -contains "success" -and $_.success -eq $false)
             })
             if ($failed.Count -gt 0) { return "batch contains failed sub-response(s)" }
+        }
+        "batch-stress" {
+            # 并发压力测试：6 个 API 同时调用，验证 PSRAM 阈值修改后 HTTP 并发不崩溃
+            $rawResults = Get-ObjectValue -Object $Response -Name "results"
+            if ($null -eq $rawResults) { return "missing batch results" }
+            $results = @($rawResults)
+            if ($results.Count -lt 6) { return "expected 6 sub-responses, got $($results.Count)" }
+            $failed = @($results | Where-Object {
+                $null -eq $_ -or ($_.PSObject.Properties.Name -contains "success" -and $_.success -eq $false)
+            })
+            if ($failed.Count -gt 0) {
+                return "stress batch contains $($failed.Count) failed sub-response(s) (possible OOM under concurrent load)"
+            }
         }
     }
 

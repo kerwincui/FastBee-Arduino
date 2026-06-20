@@ -314,54 +314,6 @@ void RuleScriptManager::populateDefaults() {
         _rules[r.id] = r;
     }
 
-    // 示例4: Modbus TCP接收转换
-    {
-        RuleScript r;
-        r.id = "rs_tcpmod_recv";
-        r.name = "ModbusTCP接收转换";
-        r.enabled = false;
-        r.triggerType = 0;  // DATA_RECEIVE
-        r.protocolType = 2; // MODBUS_TCP
-        r.scriptContent = "[{\"id\":\"temperature\",\"value\":\"${temperature}\",\"remark\":\"\"},{\"id\":\"humidity\",\"value\":\"${humidity}\",\"remark\":\"\"}]";
-        _rules[r.id] = r;
-    }
-
-    // 示例5: HTTP上报 — 自定义JSON格式
-    {
-        RuleScript r;
-        r.id = "rs_http_report";
-        r.name = "HTTP上报:自定义格式";
-        r.enabled = false;
-        r.triggerType = 1;  // DATA_REPORT
-        r.protocolType = 3; // HTTP
-        r.scriptContent = "{\"device\":\"esp32\",\"temp\":${temperature},\"humi\":${humidity}}";
-        _rules[r.id] = r;
-    }
-
-    // 示例6: CoAP接收转换
-    {
-        RuleScript r;
-        r.id = "rs_coap_recv";
-        r.name = "CoAP接收转换";
-        r.enabled = false;
-        r.triggerType = 0;  // DATA_RECEIVE
-        r.protocolType = 4; // COAP
-        r.scriptContent = "[{\"id\":\"temperature\",\"value\":\"${temperature}\",\"remark\":\"\"},{\"id\":\"humidity\",\"value\":\"${humidity}\",\"remark\":\"\"}]";
-        _rules[r.id] = r;
-    }
-
-    // 示例7: TCP上报 — 精简文本格式
-    {
-        RuleScript r;
-        r.id = "rs_tcp_report";
-        r.name = "TCP上报:精简格式";
-        r.enabled = false;
-        r.triggerType = 1;  // DATA_REPORT
-        r.protocolType = 5; // TCP
-        r.scriptContent = "T:${temperature},H:${humidity}";
-        _rules[r.id] = r;
-    }
-
-    LOGGER.infof("[RuleScript] Populated %d default rules", 7);
+    LOGGER.infof("[RuleScript] Populated %d default rules", 3);
 }
 #endif // FASTBEE_ENABLE_RULE_SCRIPT

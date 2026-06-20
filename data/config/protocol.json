@@ -2,8 +2,7 @@
   "version": 2,
   "modbusRtu": {
     "enabled": true,
-    "peripheralId": "modbus_rtu",
-    "timeout": 1000,
+    "peripheralId": "",
     "mode": "master",
     "dePin": 14,
     "transferType": 1,
@@ -11,319 +10,28 @@
       "responseTimeout": 500,
       "maxRetries": 1,
       "interPollDelay": 50,
-      "tasks": [
-        {
-          "slaveAddress": 2,
-          "functionCode": 4,
-          "startAddress": 0,
-          "quantity": 2,
-          "pollInterval": 60,
-          "enabled": true,
-          "name": "温湿度",
-          "mappings": [
-            {
-              "regOffset": 0,
-              "dataType": 1,
-              "scaleFactor": 0.1,
-              "decimalPlaces": 1,
-              "sensorId": "temperature",
-              "unit": "°C"
-            },
-            {
-              "regOffset": 1,
-              "dataType": 1,
-              "scaleFactor": 0.1,
-              "decimalPlaces": 1,
-              "sensorId": "humidity",
-              "unit": "%RH"
-            }
-          ]
-        },
-        {
-          "slaveAddress": 1,
-          "functionCode": 3,
-          "startAddress": 0,
-          "quantity": 2,
-          "pollInterval": 300,
-          "enabled": true,
-          "name": "PM25-10",
-          "mappings": [
-            {
-              "regOffset": 0,
-              "dataType": 0,
-              "scaleFactor": 1,
-              "decimalPlaces": 1,
-              "sensorId": "pm25",
-              "unit": "μg/m³"
-            },
-            {
-              "regOffset": 1,
-              "dataType": 0,
-              "scaleFactor": 1,
-              "decimalPlaces": 1,
-              "sensorId": "pm10",
-              "unit": "μg/m³"
-            }
-          ]
-        },
-        {
-          "slaveAddress": 4,
-          "functionCode": 3,
-          "startAddress": 500,
-          "quantity": 8,
-          "pollInterval": 60,
-          "enabled": true,
-          "name": "气象百叶箱",
-          "mappings": [
-            {
-              "regOffset": 0,
-              "dataType": 1,
-              "scaleFactor": 0.1,
-              "decimalPlaces": 1,
-              "sensorId": "humidity1",
-              "unit": "%RH"
-            },
-            {
-              "regOffset": 1,
-              "dataType": 1,
-              "scaleFactor": 0.1,
-              "decimalPlaces": 1,
-              "sensorId": "temperature1",
-              "unit": "°C"
-            },
-            {
-              "regOffset": 2,
-              "dataType": 1,
-              "scaleFactor": 0.1,
-              "decimalPlaces": 1,
-              "sensorId": "noise",
-              "unit": "dB"
-            },
-            {
-              "regOffset": 3,
-              "dataType": 0,
-              "scaleFactor": 1,
-              "decimalPlaces": 1,
-              "sensorId": "co2",
-              "unit": "ppm"
-            },
-            {
-              "regOffset": 5,
-              "dataType": 1,
-              "scaleFactor": 0.1,
-              "decimalPlaces": 1,
-              "sensorId": "pressure",
-              "unit": "kPa"
-            },
-            {
-              "regOffset": 6,
-              "dataType": 2,
-              "scaleFactor": 1,
-              "decimalPlaces": 1,
-              "sensorId": "lux",
-              "unit": "Lux"
-            }
-          ]
-        }
-      ],
-      "devices": [
-        {
-          "name": "电机运转",
-          "sensorId": "motor",
-          "deviceType": "pid",
-          "slaveAddress": 5,
-          "channelCount": 2,
-          "coilBase": 0,
-          "ncMode": true,
-          "controlProtocol": 0,
-          "batchRegister": 0,
-          "pwmRegBase": 0,
-          "pwmResolution": 8,
-          "pidDecimals": 1,
-          "enabled": false,
-          "pidAddrs": [
-            0,
-            1,
-            2,
-            3,
-            4,
-            5
-          ]
-        },
-        {
-          "name": "继电器板模块",
-          "sensorId": "relay",
-          "deviceType": "relay",
-          "slaveAddress": 3,
-          "channelCount": 2,
-          "coilBase": 0,
-          "ncMode": false,
-          "controlProtocol": 0,
-          "batchRegister": 0,
-          "pwmRegBase": 0,
-          "pwmResolution": 8,
-          "pidDecimals": 1,
-          "enabled": true,
-          "pidAddrs": [
-            0,
-            1,
-            2,
-            3,
-            4,
-            5
-          ]
-        },
-        {
-          "name": "调速",
-          "sensorId": "speed",
-          "deviceType": "pwm",
-          "slaveAddress": 6,
-          "channelCount": 2,
-          "coilBase": 0,
-          "ncMode": true,
-          "controlProtocol": 0,
-          "batchRegister": 0,
-          "pwmRegBase": 0,
-          "pwmResolution": 8,
-          "pidDecimals": 1,
-          "enabled": false,
-          "pidAddrs": [
-            0,
-            1,
-            2,
-            3,
-            4,
-            5
-          ]
-        },
-        {
-          "name": "M88继电器",
-          "sensorId": "m88",
-          "deviceType": "relay",
-          "slaveAddress": 11,
-          "channelCount": 8,
-          "coilBase": 8,
-          "ncMode": false,
-          "controlProtocol": 1,
-          "batchRegister": 1,
-          "pwmRegBase": 0,
-          "pwmResolution": 8,
-          "pidDecimals": 1,
-          "enabled": true,
-          "pidAddrs": [
-            0,
-            1,
-            2,
-            3,
-            4,
-            5
-          ]
-        },
-        {
-          "name": "网络继电器",
-          "sensorId": "network",
-          "deviceType": "relay",
-          "slaveAddress": 12,
-          "channelCount": 8,
-          "coilBase": 8,
-          "ncMode": false,
-          "controlProtocol": 1,
-          "batchRegister": 1,
-          "pwmRegBase": 0,
-          "pwmResolution": 8,
-          "pidDecimals": 1,
-          "enabled": true,
-          "pidAddrs": [
-            0,
-            1,
-            2,
-            3,
-            4,
-            5
-          ]
-        },
-        {
-          "name": "4路继电器",
-          "sensorId": "relay4ch",
-          "deviceType": "relay",
-          "slaveAddress": 10,
-          "channelCount": 4,
-          "coilBase": 0,
-          "ncMode": false,
-          "controlProtocol": 1,
-          "batchRegister": 52,
-          "batchRegType": 1,
-          "pwmRegBase": 0,
-          "pwmResolution": 8,
-          "pidDecimals": 1,
-          "enabled": true,
-          "pidAddrs": [
-            0,
-            1,
-            2,
-            3,
-            4,
-            5
-          ]
-        },
-        {
-          "name": "电机",
-          "sensorId": "motor",
-          "deviceType": "motor",
-          "slaveAddress": 8,
-          "channelCount": 1,
-          "coilBase": 0,
-          "ncMode": false,
-          "controlProtocol": 1,
-          "batchRegister": 0,
-          "pwmRegBase": 0,
-          "pwmResolution": 8,
-          "pidDecimals": 1,
-          "motorDecimals": 0,
-          "motorMinPosition": 0,
-          "motorMaxPosition": 10000,
-          "motorCurrentPosition": 0,
-          "motorMoveStep": 1600,
-          "motorLastPulse": 1600,
-          "enabled": true,
-          "pidAddrs": [
-            0,
-            1,
-            2,
-            3,
-            4,
-            5
-          ],
-          "motorRegs": [
-            0,
-            1,
-            2,
-            5,
-            7
-          ]
-        }
-      ]
+      "tasks": [],
+      "devices": []
     }
   },
   "modbusTcp": {
     "enabled": false,
-    "server": "192.168.1.100",
+    "server": "",
     "port": 502,
     "slaveId": 1,
     "timeout": 5000
   },
   "mqtt": {
-    "enabled": true,
-    "server": "iot.fastbee.cn",
+    "enabled": false,
+    "server": "",
     "port": 1883,
-    "clientId": "S&FBE100900001&1070&1",
-    "username": "admin",
-    "password": "PE6987BNXN4NW98O",
+    "clientId": "",
+    "username": "",
+    "password": "",
     "keepAlive": 60,
     "autoReconnect": true,
-    "connectionTimeout": 30000,
     "authType": 0,
-    "mqttSecret": "K451265A72244J79",
+    "mqttSecret": "",
     "authCode": "",
     "willTopic": "",
     "willPayload": "",
@@ -333,7 +41,7 @@
     "latitude": 0,
     "iccid": "",
     "cardPlatformId": 0,
-    "summary": "",
+    "summary": "{\"name\":\"fastbee\",\"chip\":\"ESP32\"}",
     "publishTopics": [
       {
         "topic": "/property/post",
@@ -439,7 +147,7 @@
   },
   "http": {
     "enabled": false,
-    "url": "https://api.example.com",
+    "url": "",
     "port": 80,
     "method": "POST",
     "timeout": 30,
@@ -452,7 +160,7 @@
   },
   "coap": {
     "enabled": false,
-    "server": "coap://example.com",
+    "server": "",
     "port": 5683,
     "method": "POST",
     "path": "sensors/temperature",
@@ -462,7 +170,7 @@
   },
   "tcp": {
     "enabled": false,
-    "server": "192.168.1.200",
+    "server": "",
     "port": 5000,
     "timeout": 5000,
     "keepAlive": 60,

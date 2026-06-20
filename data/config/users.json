@@ -9,36 +9,13 @@
       "createTime": 0,
       "lastLogin": 0,
       "lastModified": 0,
-      "email": "",
-      "remark": "",
-      "createBy": "system"
-    },
-    {
-      "username": "viewer",
-      "passwordHash": "8GzolfPWya4MDDWln2gLrhPhcitJHQGboXspAgr1CDU=",
-      "salt": "Vmlld2VyRGVmYXVsdCEhIQ==",
-      "enabled": true,
-      "createTime": 0,
-      "lastLogin": 0,
-      "lastModified": 0,
-      "email": "",
-      "remark": "",
-      "createBy": "system"
+      "description": ""
     }
   ],
   "security": {
     "maxLoginAttempts": 5,
     "loginLockoutTime": 300000,
     "minPasswordLength": 6,
-    "maxPasswordLength": 32,
-    "requireStrongPasswords": false,
-    "allowMultipleSessions": true,
-    "sessionTimeout": 3600000,
-    "sessionCleanupInterval": 60000,
-    "enableSessionPersistence": false,
-    "cookieName": "session",
-    "cookieMaxAge": 3600,
-    "cookieHttpOnly": true,
-    "cookieSecure": false
+    "requireStrongPasswords": false
   }
 }

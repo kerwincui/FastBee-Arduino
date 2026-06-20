@@ -37,7 +37,7 @@ vprintf_like_t LoggerSystem::originalEspLogFunc = nullptr;
 // ── 构造 / 初始化 ─────────────────────────────────────────────────────────
 
 LoggerSystem::LoggerSystem()
-    : currentLevel(LOG_DEBUG),  // 调试阶段显示所有日志
+    : currentLevel(LOG_INFO),  // 生产默认 INFO 级别（启动后由 device.json 覆盖）
       outputStream(&Serial),
       serialEnabled(true),
       fileLoggingEnabled(FASTBEE_ENABLE_FILE_LOGGING != 0),

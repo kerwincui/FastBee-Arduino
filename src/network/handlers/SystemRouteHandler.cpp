@@ -873,11 +873,11 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         // ── 核心配置文件：写入默认 JSON ──────────────────────────────────────
         // device.json - 设备基本信息（清除个性化配置，保留合理默认值）
         static const char DEFAULT_DEVICE[] PROGMEM =
-            "{\"deviceId\":\"FBE100900001\",\"productNumber\":1070,\"userId\":\"1\","
+            "{\"deviceId\":\"\",\"productNumber\":0,\"userId\":\"1\","
             "\"deviceName\":\"FastBee-Device\",\"location\":\"\",\"description\":\"FastBee-Arduino\","
             "\"enableNTP\":true,\"ntpServer1\":\"ntp.aliyun.com\",\"ntpServer2\":\"cn.pool.ntp.org\","
             "\"timezone\":\"CST-8\",\"syncInterval\":3600,\"logLevel\":\"INFO\","
-            "\"autoStart\":true,\"developerModeEnabled\":true}";
+            "\"developerModeEnabled\":true}";
         if (writeDefault("/config/device.json", DEFAULT_DEVICE)) { resetCount++; }
 
         // network.json - 网络配置（清除WiFi凭据，恢复AP模式以便用户重新配网）
@@ -889,7 +889,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             "\"ipConfigType\":0,\"staticIP\":\"\",\"gateway\":\"\",\"subnet\":\"\","
             "\"dns1\":\"8.8.8.8\",\"dns2\":\"8.8.4.4\",\"connectTimeout\":20000,"
             "\"reconnectInterval\":5000,\"maxReconnectAttempts\":5,"
-            "\"customDomain\":\"fastbee\",\"enableMDNS\":true,\"enableDNS\":true}";
+            "\"customDomain\":\"fastbee\",\"enableMDNS\":true}";
         if (writeDefault("/config/network.json", DEFAULT_NETWORK)) { resetCount++; }
 
         // users.json - 恢复默认用户（admin/viewer）
@@ -898,25 +898,21 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             "{\"username\":\"admin\",\"passwordHash\":\"MMqroQgcopTMz5bU/x3brwufT38Ks6YAWGPRkmE5jDw=\","
             "\"salt\":\"RmFzdEJlZURlZmF1bHQhIQ==\",\"enabled\":true,"
             "\"createTime\":0,\"lastLogin\":0,\"lastModified\":0,"
-            "\"email\":\"\",\"remark\":\"\",\"createBy\":\"system\"},"
+            "\"description\":\"\"},"
             "{\"username\":\"viewer\",\"passwordHash\":\"8GzolfPWya4MDDWln2gLrhPhcitJHQGboXspAgr1CDU=\","
             "\"salt\":\"Vmlld2VyRGVmYXVsdCEhIQ==\",\"enabled\":true,"
             "\"createTime\":0,\"lastLogin\":0,\"lastModified\":0,"
-            "\"email\":\"\",\"remark\":\"\",\"createBy\":\"system\"}],"
+            "\"description\":\"\"}],"
             "\"security\":{\"maxLoginAttempts\":5,\"loginLockoutTime\":300000,"
-            "\"minPasswordLength\":6,\"maxPasswordLength\":32,\"requireStrongPasswords\":false,"
-            "\"allowMultipleSessions\":true,\"sessionTimeout\":3600000,"
-            "\"sessionCleanupInterval\":60000,\"enableSessionPersistence\":false,"
-            "\"cookieName\":\"session\",\"cookieMaxAge\":3600,"
-            "\"cookieHttpOnly\":true,\"cookieSecure\":false}}";
+            "\"minPasswordLength\":6,\"requireStrongPasswords\":false}}";
         if (writeDefault("/config/users.json", DEFAULT_USERS)) { resetCount++; }
 
         // protocol.json - 所有协议禁用，用户需重新配置
         static const char DEFAULT_PROTOCOL[] PROGMEM =
             "{\"version\":2,"
-            "\"modbusRtu\":{\"enabled\":false,\"peripheralId\":\"modbus_rtu\",\"timeout\":1000,\"mode\":\"master\",\"dePin\":14,\"transferType\":1,\"master\":{\"responseTimeout\":500,\"maxRetries\":1,\"interPollDelay\":50,\"tasks\":[],\"devices\":[]}},"
+            "\"modbusRtu\":{\"enabled\":false,\"peripheralId\":\"modbus_rtu\",\"mode\":\"master\",\"dePin\":14,\"transferType\":0,\"master\":{\"responseTimeout\":500,\"maxRetries\":1,\"interPollDelay\":50,\"tasks\":[],\"devices\":[]}},"
             "\"modbusTcp\":{\"enabled\":false,\"server\":\"\",\"port\":502,\"slaveId\":1,\"timeout\":5000},"
-            "\"mqtt\":{\"enabled\":false,\"server\":\"\",\"port\":1883,\"clientId\":\"\",\"username\":\"\",\"password\":\"\",\"keepAlive\":60,\"autoReconnect\":true,\"connectionTimeout\":30000,\"authType\":0,\"publishTopics\":[],\"subscribeTopics\":[]},"
+            "\"mqtt\":{\"enabled\":false,\"server\":\"\",\"port\":1883,\"clientId\":\"\",\"username\":\"\",\"password\":\"\",\"mqttSecret\":\"\",\"keepAlive\":60,\"autoReconnect\":true,\"authType\":0,\"publishTopics\":[],\"subscribeTopics\":[]},"
             "\"http\":{\"enabled\":false,\"url\":\"\",\"port\":80,\"method\":\"POST\",\"timeout\":30,\"interval\":60},"
             "\"coap\":{\"enabled\":false,\"server\":\"\",\"port\":5683},"
             "\"tcp\":{\"enabled\":false,\"server\":\"\",\"port\":5000,\"timeout\":5000}}";

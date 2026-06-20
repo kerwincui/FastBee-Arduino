@@ -138,7 +138,9 @@ void DeviceRouteHandler::setupRoutes(AsyncWebServer* server) {
         doc["data"]["synced"] = synced;
         doc["data"]["internetAvailable"] = internetAvailable;
         doc["data"]["uptime"] = millis();
-        if (synced) { LOGGER.info("NTP sync triggered via web"); }
+        if (synced) {
+            LOGGER.info("NTP sync triggered via web");
+        }
         HandlerUtils::sendJsonStream(request, doc);
     });
 
@@ -191,6 +193,17 @@ void DeviceRouteHandler::handleSaveDeviceConfigJson(AsyncWebServerRequest* reque
         doc["enableNTP"] = (v == "1" || v == "true" || obj["enableNTP"].as<bool>());
     }
     if (obj["syncInterval"].is<String>() || obj["syncInterval"].is<int>()) doc["syncInterval"] = obj["syncInterval"].as<int>();
+    if (obj["logLevel"].is<String>()) {
+        String lv = obj["logLevel"].as<String>();
+        // 即时应用日志级别
+        LogLevel level = LOG_INFO;
+        if      (lv == "DEBUG")   level = LOG_DEBUG;
+        else if (lv == "INFO")    level = LOG_INFO;
+        else if (lv == "WARNING") level = LOG_WARNING;
+        else if (lv == "ERROR")   level = LOG_ERROR;
+        LOGGER.setLogLevel(level);
+        doc["logLevel"] = lv;
+    }
     if (obj["cacheDuration"].is<int>() || obj["cacheDuration"].is<String>()) {
         int cd = obj["cacheDuration"].as<int>();
         doc["cacheDuration"] = cd;
@@ -198,6 +211,39 @@ void DeviceRouteHandler::handleSaveDeviceConfigJson(AsyncWebServerRequest* reque
     }
     if (!doc["developerModeEnabled"].is<bool>()) {
         doc["developerModeEnabled"] = true;
+    }
+
+    // 安全策略字段：转发到 UserManager 持久化到 users.json
+    bool hasSecurityFields = false;
+    uint8_t  sMaxAttempts  = 5;
+    uint32_t sLockoutTime  = 300000UL;
+    uint8_t  sMinPwdLen    = 6;
+    bool     sRequireStrong = false;
+    // 先读取 users.json 当前值作为默认值
+    if (LittleFS.exists("/config/users.json")) {
+        File uf = LittleFS.open("/config/users.json", "r");
+        if (uf) {
+            JsonDocument usersDoc;
+            if (deserializeJson(usersDoc, uf) == DeserializationError::Ok) {
+                JsonObject sec = usersDoc["security"];
+                if (!sec.isNull()) {
+                    sMaxAttempts   = sec["maxLoginAttempts"] | 5;
+                    sLockoutTime   = sec["loginLockoutTime"] | 300000UL;
+                    sMinPwdLen     = sec["minPasswordLength"] | 6;
+                    sRequireStrong = sec["requireStrongPasswords"] | false;
+                }
+            }
+            uf.close();
+        }
+    }
+    if (obj["maxLoginAttempts"].is<int>())  { sMaxAttempts  = (uint8_t)obj["maxLoginAttempts"].as<int>();  hasSecurityFields = true; }
+    if (obj["loginLockoutTime"].is<int>() || obj["loginLockoutTime"].is<long>()) {
+        sLockoutTime = (uint32_t)obj["loginLockoutTime"].as<long>(); hasSecurityFields = true;
+    }
+    if (obj["minPasswordLength"].is<int>()) { sMinPwdLen    = (uint8_t)obj["minPasswordLength"].as<int>(); hasSecurityFields = true; }
+    if (obj["requireStrongPasswords"].is<bool>()) { sRequireStrong = obj["requireStrongPasswords"].as<bool>(); hasSecurityFields = true; }
+    if (hasSecurityFields && ctx->userManager) {
+        ctx->userManager->updatePasswordPolicy(sMaxAttempts, sLockoutTime, sMinPwdLen, sRequireStrong);
     }
 
     File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
@@ -227,6 +273,23 @@ void DeviceRouteHandler::handleGetDeviceConfig(AsyncWebServerRequest* request) {
                 if (!fileCfg["developerModeEnabled"].is<bool>()) {
                     fileCfg["developerModeEnabled"] = true;
                 }
+                // 从 users.json 读取安全策略配置（4个UI可配置字段）
+                if (LittleFS.exists("/config/users.json")) {
+                    File uf = LittleFS.open("/config/users.json", "r");
+                    if (uf) {
+                        JsonDocument usersDoc;
+                        if (deserializeJson(usersDoc, uf) == DeserializationError::Ok) {
+                            JsonObject sec = usersDoc["security"];
+                            if (!sec.isNull()) {
+                                fileCfg["maxLoginAttempts"]       = sec["maxLoginAttempts"] | 5;
+                                fileCfg["loginLockoutTime"]       = sec["loginLockoutTime"] | 300000UL;
+                                fileCfg["minPasswordLength"]      = sec["minPasswordLength"] | 6;
+                                fileCfg["requireStrongPasswords"] = sec["requireStrongPasswords"] | false;
+                            }
+                        }
+                        uf.close();
+                    }
+                }
                 JsonDocument doc;
                 doc["success"] = true;
                 doc["data"] = fileCfg;
@@ -241,6 +304,12 @@ void DeviceRouteHandler::handleGetDeviceConfig(AsyncWebServerRequest* request) {
     doc["data"]["deviceName"] = "FastBee-ESP32";
     doc["data"]["deviceId"] = String((uint32_t)ESP.getEfuseMac(), HEX);
     doc["data"]["developerModeEnabled"] = true;
+    doc["data"]["logLevel"] = "INFO";
+    doc["data"]["syncInterval"] = 3600;
+    doc["data"]["maxLoginAttempts"]       = 5;
+    doc["data"]["loginLockoutTime"]       = 300000;
+    doc["data"]["minPasswordLength"]      = 6;
+    doc["data"]["requireStrongPasswords"] = false;
     HandlerUtils::sendJsonStream(request, doc);
 }
 

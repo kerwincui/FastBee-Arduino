@@ -197,6 +197,11 @@ function Invoke-Doctor {
 
 function Invoke-NativeTests {
     Ensure-NativeToolchainPath
+    # Ensure build directory exists (may be removed by clean operations)
+    $nativeBuildDir = Join-Path $ProjectDir ".pio\build\native"
+    if (-not (Test-Path $nativeBuildDir)) {
+        New-Item -ItemType Directory -Force -Path $nativeBuildDir | Out-Null
+    }
     Invoke-External @("pio", "test", "-e", "native")
 }
 

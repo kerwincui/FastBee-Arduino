@@ -36,6 +36,7 @@
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <time.h>
+#include <esp_sntp.h>
 #include <esp_task_wdt.h>
 
 // 启动期 heap 采样：定位哪个 STEP 吞掉了堆（OOM 排查辅助）
@@ -108,8 +109,27 @@ bool FastBeeFramework::initialize() {
         Serial.println("[FATAL] Failed to initialize logger system!");
         return false;
     }
-    LOGGER.setLogLevel(LOG_DEBUG);
+    LOGGER.setLogLevel(LOG_INFO);  // 默认 INFO，随后从 device.json 覆盖
     unsigned long loggerMs = millis() - stepStart;
+
+    // 从 device.json 读取运行时 logLevel 并应用
+    {
+        File cfgFile = LittleFS.open("/config/device.json", "r");
+        if (cfgFile) {
+            JsonDocument cfg;
+            if (deserializeJson(cfg, cfgFile) == DeserializationError::Ok) {
+                const char* lv = cfg["logLevel"] | "INFO";
+                LogLevel level = LOG_INFO;
+                if      (strcmp(lv, "DEBUG")   == 0) level = LOG_DEBUG;
+                else if (strcmp(lv, "INFO")    == 0) level = LOG_INFO;
+                else if (strcmp(lv, "WARNING") == 0) level = LOG_WARNING;
+                else if (strcmp(lv, "ERROR")   == 0) level = LOG_ERROR;
+                LOGGER.setLogLevel(level);
+                Serial.printf("[Boot] logLevel=%s applied\n", lv);
+            }
+            cfgFile.close();
+        }
+    }
 
     // 日志系统初始化完成后，补充记录早期启动信息到日志文件
     LOGGER.info("========================================");
@@ -1270,13 +1290,19 @@ void FastBeeFramework::syncTimeFromConfig() {
     const char* s1 = cfg["ntpServer1"] | "cn.pool.ntp.org";
     const char* s2 = cfg["ntpServer2"] | "time.windows.com";
 
+    // NTP 同步间隔（秒），默认 3600（1小时），范围 60~86400
+    int syncInterval = cfg["syncInterval"] | 3600;
+    if (syncInterval < 60)    syncInterval = 60;
+    if (syncInterval > 86400) syncInterval = 86400;
+    sntp_set_sync_interval((uint32_t)syncInterval * 1000UL);
+
     // 设置时区 - 使用 POSIX 格式 CST-8 (中国标准时间, UTC+8)
     // 注意：POSIX 格式中，负号表示东时区，正号表示西时区
     // 先设置环境变量，configTzTime 会使用这个设置
     setenv("TZ", tz, 1);
     tzset();
 
-    LOG_INFOF("[NTP] Timezone set to: %s", tz);
+    LOG_INFOF("[NTP] Timezone set to: %s, syncInterval=%ds", tz, syncInterval);
 
     String s1Str = s1;
     if (s1Str.startsWith("http://") || s1Str.startsWith("https://")) {

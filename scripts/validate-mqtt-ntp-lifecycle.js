@@ -78,9 +78,10 @@ function checkMqttLifecycle() {
     assert(ui.includes('d.autoStartStarted'), 'MQTT UI should read autoStartStarted state');
     assert(ui.includes('mqtt-status-connecting'), 'MQTT UI should render connecting badge class');
 
-    // 2025-06 修复: MQTT 启用后但未初始化时应显示“初始化中”而非“未初始化”
-    assert(ui.includes('d.enabled && !d.initialized'), 'MQTT should handle enabled-but-not-initialized transition state');
-    assert(ui.includes('!d.initialized && !d.enabled'), 'MQTT "未初始化" should only show when NOT enabled');
+    // 2025-06 修复: MQTT 启用后但未初始化时应显示"初始化中"而非"未初始化"
+    // 当前实现使用 else-if 链：!d.enabled 先于 !d.initialized 检查，确保未启用时显示"未连接"，启用但未初始化时显示"初始化中"
+    assert(ui.includes('!d.enabled'), 'MQTT UI should check !d.enabled to short-circuit when MQTT is disabled');
+    assert(ui.includes('!d.initialized'), 'MQTT UI should check !d.initialized to show initializing state');
 
     // 2025-06 修复: _loadMqttStatus 不应在 401/503 时停止轮询或显示“未授权”
     const loadStatusFn = ui.match(/_loadMqttStatus\(\)\s*\{[\s\S]{0,800}/);
@@ -113,7 +114,7 @@ function checkMqttLifecycle() {
     assert(ui.includes('mqtt-status-detecting'), '_ensureBadgeNotStuck should check for detecting class');
 
     // 2025-06 修复: _updateMqttStatusUI 应利用 lastError 区分"连接中"和"连接失败"
-    const updateUIFn = ui.match(/_updateMqttStatusUI[\s\S]{0,100}function\s*\(data\)\s*\{[\s\S]{0,5000}/);
+    const updateUIFn = ui.match(/_updateMqttStatusUI[\s\S]{0,100}function\s*\(data\)\s*\{[\s\S]{0,6000}/);
     assert(updateUIFn, '_updateMqttStatusUI function should exist');
     assert(updateUIFn[0].includes('lastError'), '_updateMqttStatusUI should check lastError field');
     assert(updateUIFn[0].includes('连接失败'), '_updateMqttStatusUI should show 连接失败 when hasError');
@@ -294,7 +295,7 @@ function checkMqttStatusPollingFix() {
     // 必须包含 _mqttConnectingStartTime、60秒超时、显示"连接超时"
     // 超时阈值必须 > lite路径轮询窗口(48s)，避免轮询期间提前触发超时
     // ═══════════════════════════════════════════════════════════════════════
-    const updateUIFnR12 = ui.match(/_updateMqttStatusUI[\s\S]{0,100}function\s*\(data\)\s*\{[\s\S]{0,4000}/);
+    const updateUIFnR12 = ui.match(/_updateMqttStatusUI[\s\S]{0,100}function\s*\(data\)\s*\{[\s\S]{0,6000}/);
     assert(updateUIFnR12, '[Rule12] _updateMqttStatusUI 函数应存在');
     if (updateUIFnR12) {
         const updateUIBody = updateUIFnR12[0];

@@ -192,8 +192,15 @@ public:
                               bool enableSessionPersistence, const String& cookieName,
                               uint32_t cookieMaxAge, bool cookieHttpOnly, bool cookieSecure);
     
+    /**
+     * @brief 更新密码策略配置（4个UI可配置字段）
+     * @details 更新后自动持久化到 users.json
+     */
+    void updatePasswordPolicy(uint8_t maxAttempts, uint32_t lockoutTime,
+                              uint8_t minPwdLen, bool requireStrong);
+
     // ============ 工具方法 ============
-    
+
     static String generateRandomSalt();
     static bool validatePassword(const String& password, uint8_t minLength = 6, 
                                 bool requireComplexity = false);

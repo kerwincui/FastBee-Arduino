@@ -107,13 +107,12 @@
             if (!mqtt) return;
             this._setCheckbox('mqtt-enabled', mqtt.enabled ?? true);
             this._setValue('mqtt-scheme', mqtt.scheme || 'mqtt');
-            this._setValue('mqtt-broker', mqtt.server || 'iot.fastbee.cn');
+            this._setValue('mqtt-broker', mqtt.server ?? '');
             this._setValue('mqtt-port', mqtt.port || 1883);
-            this._setValue('mqtt-client-id', mqtt.clientId || '');
+            this._setValue('mqtt-client-id', mqtt.clientId ?? '');
             this._setValue('mqtt-username', mqtt.username || '');
             this._setValue('mqtt-password', mqtt.password || '');
             this._setValue('mqtt-alive', mqtt.keepAlive || 60);
-            this._setValue('mqtt-conn-timeout', mqtt.connectionTimeout ?? 30000);
             this._setCheckbox('mqtt-auto-reconnect', mqtt.autoReconnect ?? true);
             this._setValue('mqtt-will-topic', mqtt.willTopic || '');
             this._setValue('mqtt-will-payload', mqtt.willPayload || '');
@@ -123,9 +122,9 @@
             this._setValue('mqtt-latitude', mqtt.latitude ?? 0);
             this._setValue('mqtt-iccid', mqtt.iccid || '');
             this._setValue('mqtt-card-platform-id', mqtt.cardPlatformId ?? 0);
-            this._setValue('mqtt-summary', mqtt.summary || '');
+            this._setValue('mqtt-summary', mqtt.summary ?? '{"name":"fastbee","chip":"ESP32"}');
             this._setValue('mqtt-auth-type', mqtt.authType ?? 0);
-            this._setValue('mqtt-secret', mqtt.mqttSecret || 'K451265A72244J79');
+            this._setValue('mqtt-secret', mqtt.mqttSecret ?? '');
             this._setValue('mqtt-auth-code', mqtt.authCode || '');
             this._loadMqttPublishTopics(mqtt.publishTopics || []);
             this._loadMqttSubscribeTopics(mqtt.subscribeTopics || []);
@@ -167,6 +166,16 @@
                 }
                 self._mqttLitePollStopped = false;
                 self._mqttLitePollTimer = setTimeout(mqttPollOnce, 3000);
+            } else if (mqtt.enabled === false) {
+                // MQTT 未启用时，直接显示"未连接"，不进行状态检测
+                if (typeof this._stopMqttStatusPolling === 'function') {
+                    this._stopMqttStatusPolling();
+                }
+                var badge = document.getElementById('mqtt-status-badge');
+                if (badge) {
+                    badge.className = 'mqtt-status-badge mqtt-status-offline';
+                    badge.textContent = '未连接';
+                }
             }
         },
 

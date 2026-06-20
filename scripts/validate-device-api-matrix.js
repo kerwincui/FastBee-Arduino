@@ -10,7 +10,7 @@ const SOAK_SCRIPT_PATH = path.join(ROOT_DIR, 'scripts', 'soak-test-device.ps1');
 const HANDLER_DIR = path.join(ROOT_DIR, 'src', 'network', 'handlers');
 const PROFILES = new Set(['lite', 'standard', 'full']);
 const METHODS = new Set(['GET', 'POST']);
-const TYPES = new Set(['', 'multi-session', 'bearer-over-cookie', 'expect-unavailable', 'expect-error']);
+const TYPES = new Set(['', 'multi-session', 'bearer-over-cookie', 'expect-unavailable', 'expect-error', 'mqtt-ntp-sync', 'batch-stress']);
 const SEMANTIC_ONLY_CHECKS = new Set([
     'config-transfer-export',
     'config-transfer-import'

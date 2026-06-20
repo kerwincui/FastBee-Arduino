@@ -17,6 +17,8 @@
 struct User {
     String username;
     String passwordHash;
+    String salt;
+    String description;
     bool enabled;
     int failedLoginAttempts;
     time_t lockedUntil;
@@ -163,8 +165,26 @@ public:
         user->lastLogin = time(nullptr);
     }
 
+    // 密码策略配置
+    void updatePasswordPolicy(uint8_t maxAttempts, uint32_t lockoutTime,
+                              uint8_t minPwdLen, bool requireStrong) {
+        _maxLoginAttempts = maxAttempts;
+        _loginLockoutTime = lockoutTime;
+        _minPasswordLength = minPwdLen;
+        _requireStrongPasswords = requireStrong;
+        _policyUpdated = true;
+    }
+
+    uint8_t getMaxLoginAttempts() const { return _maxLoginAttempts; }
+    uint32_t getLoginLockoutTime() const { return _loginLockoutTime; }
+    uint8_t getMinPasswordLength() const { return _minPasswordLength; }
+    bool getRequireStrongPasswords() const { return _requireStrongPasswords; }
+    bool wasPolicyUpdated() const { return _policyUpdated; }
+
 private:
-    MockUserManager() {}
+    MockUserManager() : _policyUpdated(false),
+        _maxLoginAttempts(5), _loginLockoutTime(300000),
+        _minPasswordLength(6), _requireStrongPasswords(false) {}
 
     String hashPassword(const String& password) {
         unsigned long hash = 5381;
@@ -175,6 +195,11 @@ private:
     }
 
     std::map<String, User> _users;
+    bool _policyUpdated;
+    uint8_t _maxLoginAttempts;
+    uint32_t _loginLockoutTime;
+    uint8_t _minPasswordLength;
+    bool _requireStrongPasswords;
 };
 
 // 模拟认证管理器

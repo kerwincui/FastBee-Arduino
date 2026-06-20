@@ -32,7 +32,7 @@ void test_regression_guard_group();
 
 // 辅助：读取项目源文件（用于源码回归测试）
 static std::string readRegressionSrcFile(const char* relativePath) {
-    const char* roots[] = { ".", "..", "../.." };
+    const char* roots[] = { ".", "..", "../..", "../../..", "../../../.." };
     for (const char* root : roots) {
         std::string fullPath = std::string(root) + "/" + relativePath;
         std::ifstream file(fullPath);
@@ -868,7 +868,1012 @@ void test_regression_dns_health_check_supports_ethernet() {
     TestLog::testEnd(true);
 }
 
-// ========== 测试组入口 ==========
+// ========== logLevel 运行时配置 + syncInterval 回归保护 ==========
+
+/**
+ * @brief 验证 FastBeeFramework.cpp 启动时从 device.json 读取 logLevel 并应用
+ * 回归：旧代码硬编码 LOGGER.setLogLevel(LOG_DEBUG)，忽略 device.json 中的 logLevel
+ */
+void test_regression_boot_reads_loglevel_from_device_json() {
+    TestLog::testStart("Regression: Boot Reads logLevel from device.json");
+
+    std::string src = readRegressionSrcFile("src/core/FastBeeFramework.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read FastBeeFramework.cpp");
+
+    // 启动时必须读取 device.json
+    TEST_ASSERT_TRUE_MESSAGE(src.find("\"/config/device.json\"") != std::string::npos,
+        "Boot must open /config/device.json for logLevel");
+    TestLog::step("device.json opened at boot");
+
+    // 必须读取 logLevel 字段
+    TEST_ASSERT_TRUE_MESSAGE(src.find("\"logLevel\"") != std::string::npos,
+        "Boot must read logLevel field from device.json");
+    TestLog::step("logLevel field read at boot");
+
+    // 必须调用 setLogLevel 应用
+    TEST_ASSERT_TRUE_MESSAGE(src.find("LOGGER.setLogLevel") != std::string::npos,
+        "Boot must call LOGGER.setLogLevel() with parsed value");
+    TestLog::step("LOGGER.setLogLevel() called at boot");
+
+    // 必须支持 DEBUG/INFO/WARNING/ERROR 四种级别
+    TEST_ASSERT_TRUE(src.find("LOG_DEBUG") != std::string::npos);
+    TEST_ASSERT_TRUE(src.find("LOG_INFO") != std::string::npos);
+    TEST_ASSERT_TRUE(src.find("LOG_WARNING") != std::string::npos);
+    TEST_ASSERT_TRUE(src.find("LOG_ERROR") != std::string::npos);
+    TestLog::step("All 4 log levels supported (DEBUG/INFO/WARNING/ERROR)");
+
+    // 不应硬编码 LOG_DEBUG 作为启动级别
+    // 查找 "setLogLevel(LOG_DEBUG)" 应不存在（已改为从配置文件读取）
+    TEST_ASSERT_TRUE_MESSAGE(src.find("setLogLevel(LOG_DEBUG)") == std::string::npos,
+        "Boot must NOT hardcode LOG_DEBUG — read from device.json instead");
+    TestLog::step("No hardcoded LOG_DEBUG at boot");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 FastBeeFramework.cpp syncTimeFromConfig 调用 sntp_set_sync_interval
+ * 回归：旧代码忽略 syncInterval 字段，使用 ESP-IDF 默认 1 小时同步间隔
+ */
+void test_regression_sync_interval_applied_to_sntp() {
+    TestLog::testStart("Regression: syncInterval Applied to SNTP");
+
+    std::string src = readRegressionSrcFile("src/core/FastBeeFramework.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read FastBeeFramework.cpp");
+
+    // 必须包含 esp_sntp.h 头文件
+    TEST_ASSERT_TRUE_MESSAGE(src.find("#include <esp_sntp.h>") != std::string::npos,
+        "Must include esp_sntp.h for sntp_set_sync_interval()");
+    TestLog::step("esp_sntp.h included");
+
+    // 必须读取 syncInterval 字段
+    TEST_ASSERT_TRUE_MESSAGE(src.find("\"syncInterval\"") != std::string::npos,
+        "syncTimeFromConfig must read syncInterval from device.json");
+    TestLog::step("syncInterval field read");
+
+    // 必须调用 sntp_set_sync_interval
+    TEST_ASSERT_TRUE_MESSAGE(src.find("sntp_set_sync_interval") != std::string::npos,
+        "Must call sntp_set_sync_interval() to apply sync interval");
+    TestLog::step("sntp_set_sync_interval() called");
+
+    // 必须有范围保护（60~86400 秒）
+    TEST_ASSERT_TRUE_MESSAGE(src.find("< 60") != std::string::npos,
+        "syncInterval must have lower bound guard (< 60)");
+    TEST_ASSERT_TRUE_MESSAGE(src.find("> 86400") != std::string::npos,
+        "syncInterval must have upper bound guard (> 86400)");
+    TestLog::step("syncInterval range guard (60~86400) present");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 DeviceRouteHandler.cpp 保存 logLevel 时即时应用
+ * 回归：保存 logLevel 后应立刻调用 LOGGER.setLogLevel()，而非重启后生效
+ */
+void test_regression_device_handler_loglevel_immediate_apply() {
+    TestLog::testStart("Regression: Device Handler logLevel Immediate Apply");
+
+    std::string src = readRegressionSrcFile("src/network/handlers/DeviceRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read DeviceRouteHandler.cpp");
+
+    // 保存时必须读取 logLevel 字段
+    TEST_ASSERT_TRUE_MESSAGE(src.find("\"logLevel\"") != std::string::npos,
+        "Device save handler must handle logLevel field");
+    TestLog::step("logLevel field handled in save");
+
+    // 保存时必须调用 LOGGER.setLogLevel() 即时生效
+    TEST_ASSERT_TRUE_MESSAGE(src.find("LOGGER.setLogLevel") != std::string::npos,
+        "Device save handler must call LOGGER.setLogLevel() for immediate effect");
+    TestLog::step("LOGGER.setLogLevel() called on save");
+
+    // fallback GET 必须返回 logLevel 默认值
+    TEST_ASSERT_TRUE_MESSAGE(src.find("\"INFO\"") != std::string::npos,
+        "Fallback GET must return logLevel=INFO as default");
+    TestLog::step("Fallback GET returns logLevel default");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 autoStart 死字段已从出厂配置和恢复出厂逻辑中移除
+ */
+void test_regression_auto_start_removed() {
+    TestLog::testStart("Regression: autoStart Dead Field Removed");
+
+    // 1. device.json 默认文件不包含 autoStart
+    std::string devJson = readRegressionSrcFile("data/config/device.json");
+    TEST_ASSERT_FALSE_MESSAGE(devJson.empty(), "Cannot read data/config/device.json");
+    TEST_ASSERT_TRUE_MESSAGE(devJson.find("autoStart") == std::string::npos,
+        "data/config/device.json must NOT contain autoStart");
+    TestLog::step("device.json: autoStart removed");
+
+    // 2. SystemRouteHandler.cpp 恢复出厂默认不包含 autoStart
+    std::string src = readRegressionSrcFile("src/network/handlers/SystemRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read SystemRouteHandler.cpp");
+
+    // 定位 DEFAULT_DEVICE 常量
+    size_t pos = src.find("DEFAULT_DEVICE");
+    TEST_ASSERT_TRUE(pos != std::string::npos);
+    std::string deviceBlock = src.substr(pos, 500);
+    TEST_ASSERT_TRUE_MESSAGE(deviceBlock.find("autoStart") == std::string::npos,
+        "Factory reset DEFAULT_DEVICE must NOT contain autoStart");
+    TestLog::step("SystemRouteHandler: autoStart removed from factory reset");
+
+    // 3. 前端 device-config.js 不引用 autoStart
+    std::string js = readRegressionSrcFile("web-src/modules/runtime/device-config.js");
+    TEST_ASSERT_FALSE_MESSAGE(js.empty(), "Cannot read device-config.js");
+    TEST_ASSERT_TRUE_MESSAGE(js.find("autoStart") == std::string::npos,
+        "device-config.js must NOT reference autoStart");
+    TestLog::step("device-config.js: autoStart not referenced");
+
+    TestLog::testEnd(true);
+}
+
+// ========== network.json 死字段清理 + IPManager 同步回归保护 ==========
+
+/**
+ * @brief 验证 enableDNS 死字段已从所有配置和代码中移除
+ * 回归：enableDNS 在整个代码库中零业务引用，仅为默认模板中的残留
+ */
+void test_regression_enable_dns_removed() {
+    TestLog::testStart("Regression: enableDNS Dead Field Removed");
+
+    // 1. network.json 默认文件不包含 enableDNS
+    std::string netJson = readRegressionSrcFile("data/config/network.json");
+    TEST_ASSERT_FALSE_MESSAGE(netJson.empty(), "Cannot read data/config/network.json");
+    TEST_ASSERT_TRUE_MESSAGE(netJson.find("enableDNS") == std::string::npos,
+        "data/config/network.json must NOT contain enableDNS");
+    TestLog::step("network.json: enableDNS removed");
+
+    // 2. SystemRouteHandler.cpp 恢复出厂默认不包含 enableDNS
+    std::string src = readRegressionSrcFile("src/network/handlers/SystemRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read SystemRouteHandler.cpp");
+    size_t pos = src.find("DEFAULT_NETWORK");
+    TEST_ASSERT_TRUE(pos != std::string::npos);
+    std::string networkBlock = src.substr(pos, 800);
+    TEST_ASSERT_TRUE_MESSAGE(networkBlock.find("enableDNS") == std::string::npos,
+        "Factory reset DEFAULT_NETWORK must NOT contain enableDNS");
+    TestLog::step("SystemRouteHandler: enableDNS removed from factory reset");
+
+    // 3. 前端不引用 enableDNS
+    std::string js = readRegressionSrcFile("web-src/modules/runtime/network-config.js");
+    if (!js.empty()) {
+        TEST_ASSERT_TRUE_MESSAGE(js.find("enableDNS") == std::string::npos,
+            "network-config.js must NOT reference enableDNS");
+        TestLog::step("network-config.js: enableDNS not referenced");
+    } else {
+        TestLog::step("network-config.js not found (skipped)");
+    }
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 NetworkManager 将冲突检测和故障转移配置同步到 IPManager
+ * 回归：旧 configureStaticIP() 只同步 staticIP/gateway/subnet，遗漏 5 个字段
+ */
+void test_regression_ipmanager_config_sync() {
+    TestLog::testStart("Regression: IPManager Config Sync");
+
+    std::string src = readRegressionSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read NetworkManager.cpp");
+
+    // 必须有 syncIPManagerConfig 方法
+    TEST_ASSERT_TRUE_MESSAGE(src.find("syncIPManagerConfig") != std::string::npos,
+        "NetworkManager must have syncIPManagerConfig() method");
+    TestLog::step("syncIPManagerConfig() method exists");
+
+    // 同步方法必须覆盖所有 5 个字段
+    size_t syncPos = src.find("FBNetworkManager::syncIPManagerConfig");
+    TEST_ASSERT_TRUE_MESSAGE(syncPos != std::string::npos,
+        "syncIPManagerConfig() implementation not found");
+    std::string syncBody = src.substr(syncPos, 500);
+
+    TEST_ASSERT_TRUE_MESSAGE(syncBody.find("autoFailover") != std::string::npos,
+        "syncIPManagerConfig must sync autoFailover");
+    TestLog::step("autoFailover synced");
+
+    TEST_ASSERT_TRUE_MESSAGE(syncBody.find("conflictCheckInterval") != std::string::npos,
+        "syncIPManagerConfig must sync conflictCheckInterval");
+    TestLog::step("conflictCheckInterval synced");
+
+    TEST_ASSERT_TRUE_MESSAGE(syncBody.find("maxFailoverAttempts") != std::string::npos,
+        "syncIPManagerConfig must sync maxFailoverAttempts");
+    TestLog::step("maxFailoverAttempts synced");
+
+    TEST_ASSERT_TRUE_MESSAGE(syncBody.find("conflictThreshold") != std::string::npos,
+        "syncIPManagerConfig must sync conflictThreshold");
+    TestLog::step("conflictThreshold synced");
+
+    TEST_ASSERT_TRUE_MESSAGE(syncBody.find("fallbackToDHCP") != std::string::npos,
+        "syncIPManagerConfig must sync fallbackToDHCP");
+    TestLog::step("fallbackToDHCP synced");
+
+    // initialize() 中加载配置后必须调用 syncIPManagerConfig
+    TEST_ASSERT_TRUE_MESSAGE(src.find("syncIPManagerConfig()") != std::string::npos,
+        "initialize() must call syncIPManagerConfig() after loading config");
+    TestLog::step("syncIPManagerConfig() called during initialization");
+
+    TestLog::testEnd(true);
+}
+
+void test_regression_mqtt_topic_content_action_passthrough() {
+    TestLog::testStart("Regression: MQTT topic topicType default publish-aware");
+
+    std::string src = readRegressionSrcFile("src/network/handlers/ProtocolRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read ProtocolRouteHandler.cpp");
+
+    // copyMqttTopicList topicType 默认值必须根据 publishList 区分: 0 for publish, 1 for subscribe
+    size_t copyPos = src.find("copyMqttTopicList");
+    TEST_ASSERT_TRUE_MESSAGE(copyPos != std::string::npos,
+        "copyMqttTopicList function not found");
+
+    std::string copyBody = src.substr(copyPos, 1000);
+    TEST_ASSERT_TRUE_MESSAGE(copyBody.find("publishList ? 0 : 1") != std::string::npos,
+        "copyMqttTopicList topicType default must distinguish publish (0) vs subscribe (1)");
+    TestLog::step("topicType default is publish-aware");
+
+    // content/action 是隐式字段，由 topicType 决定，不应在读写路径中透传
+    TEST_ASSERT_TRUE_MESSAGE(copyBody.find("\"content\"") == std::string::npos,
+        "copyMqttTopicList must NOT passthrough 'content' (implicit by topicType)");
+    TEST_ASSERT_TRUE_MESSAGE(copyBody.find("\"action\"") == std::string::npos,
+        "copyMqttTopicList must NOT passthrough 'action' (implicit by topicType)");
+    TestLog::step("content/action not in copyMqttTopicList (implicit fields)");
+
+    TestLog::testEnd(true);
+}
+
+void test_regression_mqtt_save_content_action_autoPrefix() {
+    TestLog::testStart("Regression: MQTT save path autoPrefix default consistency");
+
+    std::string src = readRegressionSrcFile("src/network/handlers/ProtocolRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read ProtocolRouteHandler.cpp");
+
+    size_t savePos = src.find("handleSaveProtocolConfig");
+    TEST_ASSERT_TRUE_MESSAGE(savePos != std::string::npos,
+        "handleSaveProtocolConfig not found");
+
+    std::string saveBody = src.substr(savePos);
+
+    // content/action 是隐式字段，保存路径不应包含
+    // 搜索实际的 publishTopics 保存块（使用 GP 函数调用位置）
+    size_t pubSavePos = saveBody.find("GP(\"mqtt_publishTopics\"");
+    TEST_ASSERT_TRUE_MESSAGE(pubSavePos != std::string::npos,
+        "publishTopics save block not found");
+    std::string pubSaveBlock = saveBody.substr(pubSavePos, 1200);
+    TEST_ASSERT_TRUE_MESSAGE(pubSaveBlock.find("\"content\"") == std::string::npos,
+        "Save path must NOT include 'content' field (implicit by topicType)");
+    TestLog::step("Save path does NOT include 'content' (implicit)");
+
+    // autoPrefix 默认值必须为 true (与读取路径一致)
+    size_t pubAutoPrefix = pubSaveBlock.find("autoPrefix");
+    TEST_ASSERT_TRUE_MESSAGE(pubAutoPrefix != std::string::npos,
+        "autoPrefix not found in save path");
+    std::string autoPrefixLine = pubSaveBlock.substr(pubAutoPrefix, 50);
+    TEST_ASSERT_TRUE_MESSAGE(autoPrefixLine.find("true") != std::string::npos,
+        "autoPrefix default must be 'true' in save path (matching read path default)");
+    TestLog::step("autoPrefix default is 'true' in save path");
+
+    TestLog::testEnd(true);
+}
+
+void test_regression_modbus_master_advanced_params() {
+    TestLog::testStart("Regression: Modbus master advanced params");
+
+    std::string src = readRegressionSrcFile("src/network/handlers/ProtocolRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read ProtocolRouteHandler.cpp");
+
+    TEST_ASSERT_TRUE_MESSAGE(src.find("modbusRtu_responseTimeout") != std::string::npos,
+        "Master responseTimeout must be saved from frontend input");
+    TestLog::step("responseTimeout read from frontend input");
+
+    TEST_ASSERT_TRUE_MESSAGE(src.find("modbusRtu_maxRetries") != std::string::npos,
+        "Master maxRetries must be saved from frontend input");
+    TestLog::step("maxRetries read from frontend input");
+
+    TEST_ASSERT_TRUE_MESSAGE(src.find("modbusRtu_interPollDelay") != std::string::npos,
+        "Master interPollDelay must be saved from frontend input");
+    TestLog::step("interPollDelay read from frontend input");
+
+    // copyPeriphExecModbusSummary 必须透传 master 高级参数
+    size_t summaryPos = src.find("copyPeriphExecModbusSummary");
+    TEST_ASSERT_TRUE_MESSAGE(summaryPos != std::string::npos,
+        "copyPeriphExecModbusSummary not found");
+    std::string summaryBody = src.substr(summaryPos, 500);
+    TEST_ASSERT_TRUE_MESSAGE(summaryBody.find("responseTimeout") != std::string::npos,
+        "Summary must include responseTimeout");
+    TEST_ASSERT_TRUE_MESSAGE(summaryBody.find("maxRetries") != std::string::npos,
+        "Summary must include maxRetries");
+    TEST_ASSERT_TRUE_MESSAGE(summaryBody.find("interPollDelay") != std::string::npos,
+        "Summary must include interPollDelay");
+    TestLog::step("Master params included in compact response");
+
+    TestLog::testEnd(true);
+}
+
+void test_regression_modbus_motor_device_summary() {
+    TestLog::testStart("Regression: Modbus motor device summary passthrough");
+
+    std::string src = readRegressionSrcFile("src/network/handlers/ProtocolRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read ProtocolRouteHandler.cpp");
+
+    size_t devSummaryPos = src.find("copyModbusDeviceSummary");
+    TEST_ASSERT_TRUE_MESSAGE(devSummaryPos != std::string::npos,
+        "copyModbusDeviceSummary not found");
+    std::string devSummaryBody = src.substr(devSummaryPos, 1200);
+
+    TEST_ASSERT_TRUE_MESSAGE(devSummaryBody.find("motorMinPosition") != std::string::npos,
+        "Device summary must include motorMinPosition");
+    TEST_ASSERT_TRUE_MESSAGE(devSummaryBody.find("motorMaxPosition") != std::string::npos,
+        "Device summary must include motorMaxPosition");
+    TEST_ASSERT_TRUE_MESSAGE(devSummaryBody.find("motorCurrentPosition") != std::string::npos,
+        "Device summary must include motorCurrentPosition");
+    TEST_ASSERT_TRUE_MESSAGE(devSummaryBody.find("motorMoveStep") != std::string::npos,
+        "Device summary must include motorMoveStep");
+    TEST_ASSERT_TRUE_MESSAGE(devSummaryBody.find("motorLastPulse") != std::string::npos,
+        "Device summary must include motorLastPulse");
+    TEST_ASSERT_TRUE_MESSAGE(devSummaryBody.find("motorRegs") != std::string::npos,
+        "Device summary must include motorRegs");
+    TestLog::step("All motor params included in device summary");
+
+    TestLog::testEnd(true);
+}
+
+void test_regression_mqtt_topic_struct_no_content_action() {
+    TestLog::testStart("Regression: MQTT topic struct has no content/action fields");
+
+    // MqttPublishTopic 结构体不应包含 content 字段（隐式字段，由 topicType 决定）
+    std::string hdr = readRegressionSrcFile("include/protocols/MQTTClient.h");
+    TEST_ASSERT_FALSE_MESSAGE(hdr.empty(), "Cannot read MQTTClient.h");
+
+    // 查找 MqttPublishTopic 结构体定义
+    size_t pubPos = hdr.find("struct MqttPublishTopic");
+    TEST_ASSERT_TRUE_MESSAGE(pubPos != std::string::npos,
+        "MqttPublishTopic struct not found");
+    // 查找结构体结束 (下一个 };)
+    size_t pubEnd = hdr.find("};", pubPos);
+    std::string pubStruct = hdr.substr(pubPos, pubEnd - pubPos);
+    TEST_ASSERT_TRUE_MESSAGE(pubStruct.find("content") == std::string::npos,
+        "MqttPublishTopic must NOT have 'content' field (implicit by topicType)");
+    TestLog::step("MqttPublishTopic has no 'content' field");
+
+    // MqttSubscribeTopic 结构体不应包含 action 字段
+    size_t subPos = hdr.find("struct MqttSubscribeTopic");
+    TEST_ASSERT_TRUE_MESSAGE(subPos != std::string::npos,
+        "MqttSubscribeTopic struct not found");
+    size_t subEnd = hdr.find("};", subPos);
+    std::string subStruct = hdr.substr(subPos, subEnd - subPos);
+    TEST_ASSERT_TRUE_MESSAGE(subStruct.find("action") == std::string::npos,
+        "MqttSubscribeTopic must NOT have 'action' field (implicit by topicType)");
+    TestLog::step("MqttSubscribeTopic has no 'action' field");
+
+    // MQTTClient.cpp 加载代码不应读取 content/action
+    std::string cpp = readRegressionSrcFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(cpp.empty(), "Cannot read MQTTClient.cpp");
+
+    // 搜索 publishTopics 加载块
+    size_t loadPubPos = cpp.find("publishTopics");
+    TEST_ASSERT_TRUE_MESSAGE(loadPubPos != std::string::npos,
+        "publishTopics loading block not found");
+    std::string loadPubBlock = cpp.substr(loadPubPos, 400);
+    TEST_ASSERT_TRUE_MESSAGE(loadPubBlock.find("\"content\"") == std::string::npos,
+        "MQTTClient must NOT load 'content' from config");
+    TestLog::step("MQTTClient does not load 'content'");
+
+    // 搜索 subscribeTopics 加载块
+    size_t loadSubPos = cpp.find("subscribeTopics");
+    TEST_ASSERT_TRUE_MESSAGE(loadSubPos != std::string::npos,
+        "subscribeTopics loading block not found");
+    std::string loadSubBlock = cpp.substr(loadSubPos, 400);
+    TEST_ASSERT_TRUE_MESSAGE(loadSubBlock.find("\"action\"") == std::string::npos,
+        "MQTTClient must NOT load 'action' from config");
+    TestLog::step("MQTTClient does not load 'action'");
+
+    TestLog::testEnd(true);
+}
+
+void test_regression_mqtt_topictype_enum_values() {
+    TestLog::testStart("Regression: MqttTopicType enum values must match protocol.json");
+
+    std::string hdr = readRegressionSrcFile("include/protocols/MQTTClient.h");
+    TEST_ASSERT_FALSE_MESSAGE(hdr.empty(), "Cannot read MQTTClient.h");
+
+    // 检查枚举值定义，确保与 protocol.json 中的 topicType 值一致
+    size_t enumPos = hdr.find("enum class MqttTopicType");
+    TEST_ASSERT_TRUE_MESSAGE(enumPos != std::string::npos,
+        "MqttTopicType enum not found");
+    size_t enumEnd = hdr.find("};", enumPos);
+    std::string enumBody = hdr.substr(enumPos, enumEnd - enumPos);
+
+    // DATA_REPORT = 0 (发布主题默认)
+    TEST_ASSERT_TRUE_MESSAGE(enumBody.find("DATA_REPORT") != std::string::npos,
+        "MqttTopicType must have DATA_REPORT");
+    // DATA_COMMAND = 1 (订阅主题默认)
+    TEST_ASSERT_TRUE_MESSAGE(enumBody.find("DATA_COMMAND") != std::string::npos,
+        "MqttTopicType must have DATA_COMMAND");
+    // DEVICE_INFO = 2
+    TEST_ASSERT_TRUE_MESSAGE(enumBody.find("DEVICE_INFO") != std::string::npos,
+        "MqttTopicType must have DEVICE_INFO");
+    // REALTIME_MON = 3
+    TEST_ASSERT_TRUE_MESSAGE(enumBody.find("REALTIME_MON") != std::string::npos,
+        "MqttTopicType must have REALTIME_MON");
+    // DEVICE_EVENT = 4
+    TEST_ASSERT_TRUE_MESSAGE(enumBody.find("DEVICE_EVENT") != std::string::npos,
+        "MqttTopicType must have DEVICE_EVENT");
+    // OTA_UPGRADE = 5
+    TEST_ASSERT_TRUE_MESSAGE(enumBody.find("OTA_UPGRADE") != std::string::npos,
+        "MqttTopicType must have OTA_UPGRADE");
+    // OTA_BINARY = 6
+    TEST_ASSERT_TRUE_MESSAGE(enumBody.find("OTA_BINARY") != std::string::npos,
+        "MqttTopicType must have OTA_BINARY");
+    // NTP_SYNC = 7
+    TEST_ASSERT_TRUE_MESSAGE(enumBody.find("NTP_SYNC") != std::string::npos,
+        "MqttTopicType must have NTP_SYNC");
+
+    // 检查 publish/subscribe 默认 topicType 区分
+    std::string src = readRegressionSrcFile("src/network/handlers/ProtocolRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read ProtocolRouteHandler.cpp");
+
+    size_t copyPos = src.find("copyMqttTopicList");
+    TEST_ASSERT_TRUE_MESSAGE(copyPos != std::string::npos,
+        "copyMqttTopicList not found");
+    std::string copyBody = src.substr(copyPos, 600);
+
+    // publishList 参数用于区分默认值：publish=0, subscribe=1
+    TEST_ASSERT_TRUE_MESSAGE(copyBody.find("publishList ? 0 : 1") != std::string::npos,
+        "copyMqttTopicList must use publishList-aware topicType default");
+    TestLog::step("MqttTopicType enum and defaults verified");
+
+    TestLog::testEnd(true);
+}
+
+void test_regression_modbus_master_params_consistency() {
+    TestLog::testStart("Regression: Modbus master advanced params consistency");
+
+    std::string src = readRegressionSrcFile("src/network/handlers/ProtocolRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read ProtocolRouteHandler.cpp");
+
+    // 1. 保存路径必须使用 GPI 读取前端输入（而非 containsKey 守卫）
+    size_t savePos = src.find("handleSaveProtocolConfig");
+    TEST_ASSERT_TRUE_MESSAGE(savePos != std::string::npos,
+        "handleSaveProtocolConfig not found");
+    std::string saveBody = src.substr(savePos, 25000);
+
+    TEST_ASSERT_TRUE_MESSAGE(saveBody.find("GPI(\"modbusRtu_responseTimeout\"") != std::string::npos,
+        "Save path must use GPI for responseTimeout (frontend-aware)");
+    TEST_ASSERT_TRUE_MESSAGE(saveBody.find("GPI(\"modbusRtu_maxRetries\"") != std::string::npos,
+        "Save path must use GPI for maxRetries (frontend-aware)");
+    TEST_ASSERT_TRUE_MESSAGE(saveBody.find("GPI(\"modbusRtu_interPollDelay\"") != std::string::npos,
+        "Save path must use GPI for interPollDelay (frontend-aware)");
+    TestLog::step("Save path uses GPI for master params");
+
+    // 2. compact 响应必须包含 master 高级参数（文件版 copyPeriphExecModbusSummary）
+    size_t compactPos = src.find("void copyPeriphExecModbusSummary(JsonObject out, JsonObject in)");
+    TEST_ASSERT_TRUE_MESSAGE(compactPos != std::string::npos,
+        "File-based copyPeriphExecModbusSummary not found");
+    std::string compactBody = src.substr(compactPos, 1000);
+
+    TEST_ASSERT_TRUE_MESSAGE(compactBody.find("responseTimeout") != std::string::npos,
+        "Compact response must include responseTimeout");
+    TEST_ASSERT_TRUE_MESSAGE(compactBody.find("maxRetries") != std::string::npos,
+        "Compact response must include maxRetries");
+    TEST_ASSERT_TRUE_MESSAGE(compactBody.find("interPollDelay") != std::string::npos,
+        "Compact response must include interPollDelay");
+    TestLog::step("Compact response includes master params");
+
+    // 3. 运行时版 copyPeriphExecModbusSummary 也必须包含
+    size_t runtimePos = src.find("copyPeriphExecModbusSummary(JsonObject out, const ModbusConfig&");
+    TEST_ASSERT_TRUE_MESSAGE(runtimePos != std::string::npos,
+        "Runtime copyPeriphExecModbusSummary not found");
+    std::string runtimeBody = src.substr(runtimePos, 1500);
+
+    TEST_ASSERT_TRUE_MESSAGE(runtimeBody.find("responseTimeout") != std::string::npos,
+        "Runtime response must include responseTimeout");
+    TEST_ASSERT_TRUE_MESSAGE(runtimeBody.find("maxRetries") != std::string::npos,
+        "Runtime response must include maxRetries");
+    TEST_ASSERT_TRUE_MESSAGE(runtimeBody.find("interPollDelay") != std::string::npos,
+        "Runtime response must include interPollDelay");
+    TestLog::step("Runtime response includes master params");
+
+    TestLog::testEnd(true);
+}
+
+void test_regression_users_json_field_consistency() {
+    TestLog::testStart("Regression: users.json field consistency (email/remark/createBy removed, description kept)");
+
+    // 1. User 结构体不应有 createBy/email/remark，应有 description
+    std::string hdr = readRegressionSrcFile("include/security/UserManager.h");
+    TEST_ASSERT_FALSE_MESSAGE(hdr.empty(), "Cannot read UserManager.h");
+
+    size_t userStructPos = hdr.find("struct User {");
+    TEST_ASSERT_TRUE_MESSAGE(userStructPos != std::string::npos,
+        "User struct not found");
+    size_t userStructEnd = hdr.find("};", userStructPos);
+    std::string userStruct = hdr.substr(userStructPos, userStructEnd - userStructPos);
+
+    TEST_ASSERT_TRUE_MESSAGE(userStruct.find("createBy") == std::string::npos,
+        "User struct must NOT have 'createBy' field (removed)");
+    TEST_ASSERT_TRUE_MESSAGE(userStruct.find("description") != std::string::npos,
+        "User struct must have 'description' field");
+    TEST_ASSERT_TRUE_MESSAGE(userStruct.find("email") == std::string::npos,
+        "User struct must NOT have 'email' field (removed)");
+    TEST_ASSERT_TRUE_MESSAGE(userStruct.find("remark") == std::string::npos,
+        "User struct must NOT have 'remark' field (removed)");
+    TestLog::step("User struct: description present, createBy/email/remark removed");
+
+    // 2. 加载代码不应读写 createBy/email/remark
+    std::string cpp = readRegressionSrcFile("src/security/UserManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(cpp.empty(), "Cannot read UserManager.cpp");
+
+    size_t loadPos = cpp.find("bool UserManager::loadUsersFromStorage");
+    TEST_ASSERT_TRUE_MESSAGE(loadPos != std::string::npos,
+        "loadUsersFromStorage not found");
+    std::string loadBody = cpp.substr(loadPos, 4000);
+
+    TEST_ASSERT_TRUE_MESSAGE(loadBody.find("\"createBy\"") == std::string::npos,
+        "loadUsersFromStorage must NOT read 'createBy' (removed)");
+    TEST_ASSERT_TRUE_MESSAGE(loadBody.find("\"email\"") == std::string::npos,
+        "loadUsersFromStorage must NOT read 'email'");
+    TEST_ASSERT_TRUE_MESSAGE(loadBody.find("\"remark\"") == std::string::npos,
+        "loadUsersFromStorage must NOT read 'remark'");
+    TestLog::step("Load code: no createBy/email/remark");
+
+    // 3. 保存代码不应写入 createBy/email/remark
+    size_t savePos = cpp.find("bool UserManager::saveUsersToStorage");
+    TEST_ASSERT_TRUE_MESSAGE(savePos != std::string::npos,
+        "saveUsersToStorage not found");
+    std::string saveBody = cpp.substr(savePos, 2000);
+
+    TEST_ASSERT_TRUE_MESSAGE(saveBody.find("\"createBy\"") == std::string::npos,
+        "saveUsersToStorage must NOT write 'createBy' (removed)");
+    TEST_ASSERT_TRUE_MESSAGE(saveBody.find("\"email\"") == std::string::npos,
+        "saveUsersToStorage must NOT write 'email'");
+    TEST_ASSERT_TRUE_MESSAGE(saveBody.find("\"remark\"") == std::string::npos,
+        "saveUsersToStorage must NOT write 'remark'");
+    TestLog::step("Save code: no createBy/email/remark");
+
+    // 4. NTP 同步不应再挂钩 updateCreateByFromNtp
+    std::string fw = readRegressionSrcFile("src/core/FastBeeFramework.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(fw.empty(), "Cannot read FastBeeFramework.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(fw.find("updateCreateByFromNtp") == std::string::npos,
+        "FastBeeFramework must NOT call updateCreateByFromNtp (removed)");
+    TestLog::step("NTP sync: no updateCreateByFromNtp hook");
+
+    // 5. 出厂模板不应包含 createBy/email/remark，应包含 description
+    std::string sysHandler = readRegressionSrcFile("src/network/handlers/SystemRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(sysHandler.empty(), "Cannot read SystemRouteHandler.cpp");
+
+    size_t defaultUsersPos = sysHandler.find("DEFAULT_USERS");
+    TEST_ASSERT_TRUE_MESSAGE(defaultUsersPos != std::string::npos,
+        "DEFAULT_USERS not found");
+    std::string defaultUsersBlock = sysHandler.substr(defaultUsersPos, 800);
+
+    TEST_ASSERT_TRUE_MESSAGE(defaultUsersBlock.find("createBy") == std::string::npos,
+        "DEFAULT_USERS must NOT include 'createBy' (removed)");
+    TEST_ASSERT_TRUE_MESSAGE(defaultUsersBlock.find("description") != std::string::npos,
+        "DEFAULT_USERS must include 'description'");
+    TEST_ASSERT_TRUE_MESSAGE(defaultUsersBlock.find("\"email\"") == std::string::npos,
+        "DEFAULT_USERS must NOT include 'email'");
+    TEST_ASSERT_TRUE_MESSAGE(defaultUsersBlock.find("\"remark\"") == std::string::npos,
+        "DEFAULT_USERS must NOT include 'remark'");
+    TestLog::step("Factory default: description present, createBy/email/remark removed");
+
+    TestLog::testEnd(true);
+}
+
+// ============ security 精简回归：仅4个UI可配置字段，9个硬编码字段已删除 ============
+
+static void test_regression_security_json_slim() {
+    TestLog::testStart("regression: security section slim - only 4 UI fields");
+
+    // 1. users.json 配置文件：security 仅含 4 个字段
+    std::string usersJson = readRegressionSrcFile("data/config/users.json");
+    TEST_ASSERT_FALSE_MESSAGE(usersJson.empty(), "Cannot read users.json");
+
+    // 必须包含 4 个 UI 可配置字段
+    TEST_ASSERT_TRUE_MESSAGE(usersJson.find("maxLoginAttempts") != std::string::npos,
+        "users.json must contain 'maxLoginAttempts'");
+    TEST_ASSERT_TRUE_MESSAGE(usersJson.find("loginLockoutTime") != std::string::npos,
+        "users.json must contain 'loginLockoutTime'");
+    TEST_ASSERT_TRUE_MESSAGE(usersJson.find("minPasswordLength") != std::string::npos,
+        "users.json must contain 'minPasswordLength'");
+    TEST_ASSERT_TRUE_MESSAGE(usersJson.find("requireStrongPasswords") != std::string::npos,
+        "users.json must contain 'requireStrongPasswords'");
+
+    // 9 个硬编码字段必须不存在
+    TEST_ASSERT_TRUE_MESSAGE(usersJson.find("maxPasswordLength") == std::string::npos,
+        "users.json must NOT contain 'maxPasswordLength'");
+    TEST_ASSERT_TRUE_MESSAGE(usersJson.find("allowMultipleSessions") == std::string::npos,
+        "users.json must NOT contain 'allowMultipleSessions'");
+    TEST_ASSERT_TRUE_MESSAGE(usersJson.find("sessionTimeout") == std::string::npos,
+        "users.json must NOT contain 'sessionTimeout'");
+    TEST_ASSERT_TRUE_MESSAGE(usersJson.find("sessionCleanupInterval") == std::string::npos,
+        "users.json must NOT contain 'sessionCleanupInterval'");
+    TEST_ASSERT_TRUE_MESSAGE(usersJson.find("enableSessionPersistence") == std::string::npos,
+        "users.json must NOT contain 'enableSessionPersistence'");
+    TEST_ASSERT_TRUE_MESSAGE(usersJson.find("cookieName") == std::string::npos,
+        "users.json must NOT contain 'cookieName'");
+    TEST_ASSERT_TRUE_MESSAGE(usersJson.find("cookieMaxAge") == std::string::npos,
+        "users.json must NOT contain 'cookieMaxAge'");
+    TEST_ASSERT_TRUE_MESSAGE(usersJson.find("cookieHttpOnly") == std::string::npos,
+        "users.json must NOT contain 'cookieHttpOnly'");
+    TEST_ASSERT_TRUE_MESSAGE(usersJson.find("cookieSecure") == std::string::npos,
+        "users.json must NOT contain 'cookieSecure'");
+    TestLog::step("users.json: 4 UI fields present, 9 hardcoded fields removed");
+
+    // 2. 出厂模板 DEFAULT_USERS 同步精简
+    std::string sysHandler = readRegressionSrcFile("src/network/handlers/SystemRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(sysHandler.empty(), "Cannot read SystemRouteHandler.cpp");
+
+    size_t defaultPos = sysHandler.find("DEFAULT_USERS");
+    TEST_ASSERT_TRUE_MESSAGE(defaultPos != std::string::npos, "DEFAULT_USERS not found");
+    std::string defaultBlock = sysHandler.substr(defaultPos, 1200);
+
+    TEST_ASSERT_TRUE_MESSAGE(defaultBlock.find("maxLoginAttempts") != std::string::npos,
+        "DEFAULT_USERS must contain 'maxLoginAttempts'");
+    TEST_ASSERT_TRUE_MESSAGE(defaultBlock.find("requireStrongPasswords") != std::string::npos,
+        "DEFAULT_USERS must contain 'requireStrongPasswords'");
+    TEST_ASSERT_TRUE_MESSAGE(defaultBlock.find("maxPasswordLength") == std::string::npos,
+        "DEFAULT_USERS must NOT contain 'maxPasswordLength'");
+    TEST_ASSERT_TRUE_MESSAGE(defaultBlock.find("cookieName") == std::string::npos,
+        "DEFAULT_USERS must NOT contain 'cookieName'");
+    TEST_ASSERT_TRUE_MESSAGE(defaultBlock.find("sessionTimeout") == std::string::npos,
+        "DEFAULT_USERS must NOT contain 'sessionTimeout'");
+    TestLog::step("DEFAULT_USERS factory: 4 UI fields only");
+
+    // 3. UserManager 保存代码只写 4 个字段
+    std::string userMgrCpp = readRegressionSrcFile("src/security/UserManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(userMgrCpp.empty(), "Cannot read UserManager.cpp");
+
+    size_t savePos = userMgrCpp.find("bool UserManager::saveUsersToStorage");
+    if (savePos == std::string::npos) savePos = userMgrCpp.find("UserManager::saveUsersToStorage");
+    TEST_ASSERT_TRUE_MESSAGE(savePos != std::string::npos, "saveUsersToStorage not found");
+    std::string saveBlock = userMgrCpp.substr(savePos, 3000);
+
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("maxLoginAttempts") != std::string::npos,
+        "save must write 'maxLoginAttempts'");
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("loginLockoutTime") != std::string::npos,
+        "save must write 'loginLockoutTime'");
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("minPasswordLength") != std::string::npos,
+        "save must write 'minPasswordLength'");
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("requireStrongPasswords") != std::string::npos,
+        "save must write 'requireStrongPasswords'");
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("maxPasswordLength") == std::string::npos,
+        "save must NOT write 'maxPasswordLength'");
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("cookieName") == std::string::npos,
+        "save must NOT write 'cookieName'");
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("allowMultipleSessions") == std::string::npos,
+        "save must NOT write 'allowMultipleSessions'");
+    TestLog::step("UserManager save: only 4 security fields written");
+
+    // 4. IUserManager 接口必须有 updatePasswordPolicy
+    std::string iUserMgr = readRegressionSrcFile("include/core/interfaces/IUserManager.h");
+    TEST_ASSERT_FALSE_MESSAGE(iUserMgr.empty(), "Cannot read IUserManager.h");
+    TEST_ASSERT_TRUE_MESSAGE(iUserMgr.find("updatePasswordPolicy") != std::string::npos,
+        "IUserManager must declare 'updatePasswordPolicy'");
+    TestLog::step("IUserManager: updatePasswordPolicy declared");
+
+    // 5. DeviceRouteHandler GET 必须读取 security 字段
+    std::string devHandler = readRegressionSrcFile("src/network/handlers/DeviceRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(devHandler.empty(), "Cannot read DeviceRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(devHandler.find("maxLoginAttempts") != std::string::npos,
+        "DeviceRouteHandler must reference 'maxLoginAttempts'");
+    TEST_ASSERT_TRUE_MESSAGE(devHandler.find("updatePasswordPolicy") != std::string::npos,
+        "DeviceRouteHandler must call 'updatePasswordPolicy'");
+    TestLog::step("DeviceRouteHandler: security fields wired to GET/PUT");
+
+    TestLog::testEnd(true);
+}
+
+// ============ lastLogin 持久化 + createBy 移除回归保护 ============
+
+static void test_regression_last_login_and_createby_cleanup() {
+    TestLog::testStart("Regression: lastLogin uses TimeUtils + createBy fully removed");
+
+    // 1. updateLastLogin 必须使用 TimeUtils::getTimestamp 而非 millis()
+    std::string cpp = readRegressionSrcFile("src/security/UserManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(cpp.empty(), "Cannot read UserManager.cpp");
+
+    size_t updatePos = cpp.find("void UserManager::updateLastLogin");
+    TEST_ASSERT_TRUE_MESSAGE(updatePos != std::string::npos,
+        "updateLastLogin not found");
+    std::string updateBlock = cpp.substr(updatePos, 500);
+
+    TEST_ASSERT_TRUE_MESSAGE(updateBlock.find("TimeUtils::getTimestamp") != std::string::npos,
+        "updateLastLogin must use TimeUtils::getTimestamp()");
+    TEST_ASSERT_TRUE_MESSAGE(updateBlock.find("saveUsersToStorage") != std::string::npos,
+        "updateLastLogin must call saveUsersToStorage()");
+    TestLog::step("updateLastLogin: uses TimeUtils, persists on each login");
+
+    // 2. getAllUsers 不应包含 createBy，应包含 lastLogin
+    size_t getAllPos = cpp.find("String UserManager::getAllUsers");
+    TEST_ASSERT_TRUE_MESSAGE(getAllPos != std::string::npos,
+        "getAllUsers not found");
+    std::string getAllBlock = cpp.substr(getAllPos, 500);
+
+    TEST_ASSERT_TRUE_MESSAGE(getAllBlock.find("\"createBy\"") == std::string::npos,
+        "getAllUsers must NOT include 'createBy'");
+    TEST_ASSERT_TRUE_MESSAGE(getAllBlock.find("lastLogin") != std::string::npos,
+        "getAllUsers must include 'lastLogin'");
+    TestLog::step("getAllUsers: lastLogin included, createBy removed");
+
+    // 3. UserRouteHandler API 响应不应包含 createBy
+    std::string userHandler = readRegressionSrcFile("src/network/handlers/UserRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(userHandler.empty(), "Cannot read UserRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(userHandler.find("createBy") == std::string::npos,
+        "UserRouteHandler must NOT include 'createBy' in API response");
+    TestLog::step("UserRouteHandler: createBy not in API response");
+
+    // 4. DeviceRouteHandler 不应再引用 updateCreateByFromNtp
+    std::string devHandler = readRegressionSrcFile("src/network/handlers/DeviceRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(devHandler.empty(), "Cannot read DeviceRouteHandler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(devHandler.find("updateCreateByFromNtp") == std::string::npos,
+        "DeviceRouteHandler must NOT call updateCreateByFromNtp");
+    TestLog::step("DeviceRouteHandler: no updateCreateByFromNtp reference");
+
+    // 5. users.json 不包含 createBy
+    std::string usersJson = readRegressionSrcFile("data/config/users.json");
+    TEST_ASSERT_FALSE_MESSAGE(usersJson.empty(), "Cannot read users.json");
+    TEST_ASSERT_TRUE_MESSAGE(usersJson.find("createBy") == std::string::npos,
+        "users.json must NOT contain 'createBy'");
+    TestLog::step("users.json: createBy removed");
+
+    TestLog::testEnd(true);
+}
+
+// ========== WiFi 安全类型默认值 + MQTT 数据同步 + 状态显示 + 摘要默认值回归测试 ==========
+
+/**
+ * @brief WiFi 安全类型下拉框默认值必须为 WPA2
+ * 回归：旧代码默认值为 'wpa'，应改为 'wpa2'
+ */
+static void test_regression_wifi_security_default_wpa2() {
+    TestLog::testStart("Regression: WiFi Security Default is WPA2");
+
+    std::string js = readRegressionSrcFile("web-src/modules/runtime/network.js");
+    TEST_ASSERT_FALSE_MESSAGE(js.empty(), "Cannot read network.js");
+
+    // 查找 WiFi 安全类型设置行
+    size_t pos = js.find("wifi-security");
+    TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos, "wifi-security not found in network.js");
+
+    // 提取该行附近的内容
+    std::string block = js.substr(pos, 100);
+
+    // 默认值必须包含 wpa2
+    TEST_ASSERT_TRUE_MESSAGE(block.find("'wpa2'") != std::string::npos,
+        "WiFi security default must be 'wpa2'");
+    TestLog::step("WiFi security default: wpa2");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MQTT 配置加载不应使用硬编码默认值
+ * 回归：旧代码 server 默认 'iot.fastbee.cn'，mqttSecret 默认 'K451265A72244J79'
+ */
+static void test_regression_mqtt_no_hardcoded_defaults() {
+    TestLog::testStart("Regression: MQTT Config No Hardcoded Defaults");
+
+    // 1. protocol-config.js 不应包含硬编码默认 broker
+    std::string config = readRegressionSrcFile("web-src/modules/runtime/protocol/protocol-config.js");
+    TEST_ASSERT_FALSE_MESSAGE(config.empty(), "Cannot read protocol-config.js");
+
+    TEST_ASSERT_TRUE_MESSAGE(config.find("iot.fastbee.cn") == std::string::npos,
+        "protocol-config.js must NOT hardcode 'iot.fastbee.cn' as MQTT broker default");
+    TestLog::step("protocol-config.js: no hardcoded broker");
+
+    TEST_ASSERT_TRUE_MESSAGE(config.find("K451265A72244J79") == std::string::npos,
+        "protocol-config.js must NOT hardcode 'K451265A72244J79' as MQTT secret default");
+    TestLog::step("protocol-config.js: no hardcoded secret");
+
+    // mqtt.server 必须使用 ?? '' 而不是 || 'default'
+    size_t brokerPos = config.find("mqtt-broker");
+    TEST_ASSERT_TRUE_MESSAGE(brokerPos != std::string::npos, "mqtt-broker not found");
+    std::string brokerLine = config.substr(brokerPos, 80);
+    TEST_ASSERT_TRUE_MESSAGE(brokerLine.find("??") != std::string::npos,
+        "mqtt.server must use ?? operator (nullish coalescing) for empty string support");
+    TestLog::step("mqtt.server uses ?? for empty string support");
+
+    // 2. protocol-lite-config.js 同样不应包含硬编码默认值
+    std::string lite = readRegressionSrcFile("web-src/modules/runtime/protocol/protocol-lite-config.js");
+    TEST_ASSERT_FALSE_MESSAGE(lite.empty(), "Cannot read protocol-lite-config.js");
+
+    TEST_ASSERT_TRUE_MESSAGE(lite.find("iot.fastbee.cn") == std::string::npos,
+        "protocol-lite-config.js must NOT hardcode 'iot.fastbee.cn'");
+    TEST_ASSERT_TRUE_MESSAGE(lite.find("K451265A72244J79") == std::string::npos,
+        "protocol-lite-config.js must NOT hardcode 'K451265A72244J79'");
+    TestLog::step("protocol-lite-config.js: no hardcoded defaults");
+
+    // 3. protocol-mqtt.html 模板不应包含硬编码示例值
+    std::string html = readRegressionSrcFile("web-src/pages/fragments/protocol-mqtt.html");
+    TEST_ASSERT_FALSE_MESSAGE(html.empty(), "Cannot read protocol-mqtt.html");
+
+    TEST_ASSERT_TRUE_MESSAGE(html.find("iot.fastbee.cn") == std::string::npos,
+        "protocol-mqtt.html must NOT hardcode 'iot.fastbee.cn' in template");
+    TEST_ASSERT_TRUE_MESSAGE(html.find("K451265A72244J79") == std::string::npos,
+        "protocol-mqtt.html must NOT hardcode secret in template");
+    TEST_ASSERT_TRUE_MESSAGE(html.find("S&FB100900001") == std::string::npos,
+        "protocol-mqtt.html must NOT hardcode clientId in template");
+    TEST_ASSERT_TRUE_MESSAGE(html.find("P47T6OD5IPFWHUM6") == std::string::npos,
+        "protocol-mqtt.html must NOT hardcode password in template");
+    TestLog::step("protocol-mqtt.html: no hardcoded example values");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MQTT 未启用时必须直接显示"未连接"而非"检测中"
+ * 回归：旧代码 MQTT 未启用时仍进行状态检测，显示"检测中..."
+ */
+static void test_regression_mqtt_disabled_shows_offline() {
+    TestLog::testStart("Regression: MQTT Disabled Shows Offline");
+
+    // 1. protocol-config.js 中 mqtt.enabled=false 时应停止轮询并显示未连接
+    std::string config = readRegressionSrcFile("web-src/modules/runtime/protocol/protocol-config.js");
+    TEST_ASSERT_FALSE_MESSAGE(config.empty(), "Cannot read protocol-config.js");
+
+    // 查找 mqtt.enabled 检查后的 else 分支
+    size_t enabledPos = config.find("if (mqtt.enabled)");
+    TEST_ASSERT_TRUE_MESSAGE(enabledPos != std::string::npos,
+        "mqtt.enabled check not found");
+
+    std::string block = config.substr(enabledPos, 500);
+    TEST_ASSERT_TRUE_MESSAGE(block.find("_stopMqttStatusPolling") != std::string::npos,
+        "When mqtt.enabled=false, must call _stopMqttStatusPolling()");
+    TEST_ASSERT_TRUE_MESSAGE(block.find("mqtt-status-offline") != std::string::npos,
+        "When mqtt.enabled=false, must set badge to offline");
+    TestLog::step("protocol-config.js: mqtt disabled -> stop polling + show offline");
+
+    // 2. mqtt-config.js _updateMqttStatusUI 中 !d.enabled 应直接显示"未连接"
+    std::string mqtt = readRegressionSrcFile("web-src/modules/runtime/protocol/mqtt-config.js");
+    TEST_ASSERT_FALSE_MESSAGE(mqtt.empty(), "Cannot read mqtt-config.js");
+
+    size_t updatePos = mqtt.find("_updateMqttStatusUI: function");
+    TEST_ASSERT_TRUE_MESSAGE(updatePos != std::string::npos,
+        "_updateMqttStatusUI not found");
+
+    std::string updateBlock = mqtt.substr(updatePos, 6000);
+    // !d.enabled 分支必须在 !d.initialized 分支之前
+    size_t disabledPos = updateBlock.find("!d.enabled");
+    size_t initPos = updateBlock.find("!d.initialized");
+    TEST_ASSERT_TRUE_MESSAGE(disabledPos != std::string::npos,
+        "!d.enabled check must exist in _updateMqttStatusUI");
+    TEST_ASSERT_TRUE_MESSAGE(initPos != std::string::npos,
+        "!d.initialized check must exist");
+    TestLog::step("mqtt-config.js: !d.enabled and !d.initialized checks both exist");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MQTT 摘要字段默认值必须为 JSON 格式
+ * 回归：旧代码 mqtt.summary 默认为空字符串，应为有效 JSON 示例
+ */
+static void test_regression_mqtt_summary_default_json() {
+    TestLog::testStart("Regression: MQTT Summary Default JSON");
+
+    std::string config = readRegressionSrcFile("web-src/modules/runtime/protocol/protocol-config.js");
+    TEST_ASSERT_FALSE_MESSAGE(config.empty(), "Cannot read protocol-config.js");
+
+    // 查找 mqtt-summary 设置行
+    size_t pos = config.find("mqtt-summary");
+    TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos, "mqtt-summary not found");
+
+    std::string block = config.substr(pos, 120);
+    // 必须包含默认 JSON 格式
+    TEST_ASSERT_TRUE_MESSAGE(block.find("fastbee") != std::string::npos,
+        "mqtt.summary default must contain 'fastbee'");
+    TEST_ASSERT_TRUE_MESSAGE(block.find("ESP32") != std::string::npos,
+        "mqtt.summary default must contain 'ESP32'");
+    TestLog::step("mqtt.summary default: JSON with fastbee + ESP32");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief device.html 高级配置布局：安全策略和恢复出厂设置在底部
+ * 回归：确保安全策略和恢复出厂设置不在顶部系统操作区
+ */
+static void test_regression_device_layout_security_factory_at_bottom() {
+    TestLog::testStart("Regression: Device Layout Security+Factory at Bottom");
+
+    std::string html = readRegressionSrcFile("web-src/pages/device.html");
+    TEST_ASSERT_FALSE_MESSAGE(html.empty(), "Cannot read device.html");
+
+    // 1. 系统操作区不包含恢复出厂设置
+    size_t sysOpsPos = html.find("<!-- \xE7\xB3\xBB\xE7\xBB\x9F\xE6\x93\x8D\xE4\xBD\x9C\xE5\x8C\xBA -->");
+    TEST_ASSERT_TRUE_MESSAGE(sysOpsPos != std::string::npos,
+        "System operations section not found");
+
+    // 找到系统操作区的结束
+    size_t dataMgmtPos = html.find("<!-- \xE6\x95\xB0\xE6\x8D\xAE\xE7\xAE\xA1\xE7\x90\x86\xE5\x8C\xBA -->", sysOpsPos);
+    TEST_ASSERT_TRUE_MESSAGE(dataMgmtPos != std::string::npos,
+        "Data management section not found");
+
+    std::string sysOpsBlock = html.substr(sysOpsPos, dataMgmtPos - sysOpsPos);
+    TEST_ASSERT_TRUE_MESSAGE(sysOpsBlock.find("dev-sys-factory-title") == std::string::npos,
+        "Factory reset must NOT be in system operations section");
+    TestLog::step("Factory reset not in system operations section");
+
+    // 2. 底部区域必须同时包含安全策略和恢复出厂设置
+    size_t bottomPos = html.find("<!-- \xE5\xBA\x95\xE9\x83\xA8\xE5\x8C\xBA\xE5\x9F\x9F");
+    TEST_ASSERT_TRUE_MESSAGE(bottomPos != std::string::npos,
+        "Bottom section comment not found");
+
+    std::string bottomBlock = html.substr(bottomPos, 6000);
+    TEST_ASSERT_TRUE_MESSAGE(bottomBlock.find("dev-sec-title") != std::string::npos,
+        "Security policy must be in bottom section");
+    TEST_ASSERT_TRUE_MESSAGE(bottomBlock.find("dev-sys-factory-title") != std::string::npos,
+        "Factory reset must be in bottom section");
+    TestLog::step("Security policy + factory reset both in bottom section");
+
+    // 3. 安全策略必须在恢复出厂设置之前
+    size_t secPos = bottomBlock.find("dev-sec-title");
+    size_t factoryPos = bottomBlock.find("dev-sys-factory-title");
+    TEST_ASSERT_LESS_THAN((int)factoryPos, (int)secPos);
+    TestLog::step("Security policy appears before factory reset (left position)");
+
+    // 4. 安全策略 inputs 不应有自定义行高样式
+    TEST_ASSERT_TRUE_MESSAGE(html.find("style=\"font-size:12px;height:30px\"") == std::string::npos,
+        "Security policy inputs must NOT have custom height/font-size inline styles");
+    TestLog::step("Security policy inputs: no custom inline styles");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief mDNS 重启必须异步延迟执行，不阻塞 HTTP 响应
+ * 回归：旧代码 restartMDNS 是同步的，阻塞了 HTTP 响应返回
+ */
+static void test_regression_mdns_async_restart() {
+    TestLog::testStart("Regression: mDNS Async Restart (Non-blocking)");
+
+    std::string cpp = readRegressionSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(cpp.empty(), "Cannot read NetworkManager.cpp");
+
+    // 1. updateConfig 中 mDNS 变更应设置 pendingMDNSRestart 标志，而不是同步调用 restartMDNS
+    size_t updatePos = cpp.find("bool FBNetworkManager::updateConfig");
+    TEST_ASSERT_TRUE_MESSAGE(updatePos != std::string::npos,
+        "updateConfig not found");
+    std::string updateBlock = cpp.substr(updatePos, 4000);
+
+    TEST_ASSERT_TRUE_MESSAGE(updateBlock.find("pendingMDNSRestart = true") != std::string::npos,
+        "updateConfig must set pendingMDNSRestart flag for async restart");
+    TestLog::step("updateConfig: sets pendingMDNSRestart flag");
+
+    // updateConfig 中的 mdnsConfigChanged 块不应直接调用 restartMDNS
+    size_t mdnsChangedPos = updateBlock.find("mdnsConfigChanged");
+    TEST_ASSERT_TRUE_MESSAGE(mdnsChangedPos != std::string::npos,
+        "mdnsConfigChanged check must exist");
+    std::string mdnsBlock = updateBlock.substr(mdnsChangedPos, 500);
+    TEST_ASSERT_TRUE_MESSAGE(mdnsBlock.find("restartMDNS") == std::string::npos,
+        "updateConfig mdnsConfigChanged block must NOT call restartMDNS synchronously");
+    TestLog::step("updateConfig: no synchronous restartMDNS in mdnsConfigChanged block");
+
+    // 2. update() 循环必须处理 pendingMDNSRestart
+    size_t updateLoopPos = cpp.find("void FBNetworkManager::update()");
+    TEST_ASSERT_TRUE_MESSAGE(updateLoopPos != std::string::npos,
+        "update() not found");
+    std::string updateLoop = cpp.substr(updateLoopPos, 2000);
+
+    TEST_ASSERT_TRUE_MESSAGE(updateLoop.find("pendingMDNSRestart") != std::string::npos,
+        "update() must check pendingMDNSRestart flag");
+    TEST_ASSERT_TRUE_MESSAGE(updateLoop.find("restartMDNS") != std::string::npos,
+        "update() must call restartMDNS for deferred execution");
+    TestLog::step("update(): handles pendingMDNSRestart with deferred restartMDNS");
+
+    // 3. 头文件必须声明 pendingMDNSRestart 和 pendingMDNSRestartTime
+    std::string hdr = readRegressionSrcFile("include/network/NetworkManager.h");
+    TEST_ASSERT_FALSE_MESSAGE(hdr.empty(), "Cannot read NetworkManager.h");
+    TEST_ASSERT_TRUE_MESSAGE(hdr.find("pendingMDNSRestart") != std::string::npos,
+        "NetworkManager.h must declare pendingMDNSRestart");
+    TEST_ASSERT_TRUE_MESSAGE(hdr.find("pendingMDNSRestartTime") != std::string::npos,
+        "NetworkManager.h must declare pendingMDNSRestartTime");
+    TestLog::step("NetworkManager.h: pendingMDNSRestart + pendingMDNSRestartTime declared");
+
+    TestLog::testEnd(true);
+}
 
 void test_regression_guard_group() {
     TestLog::groupStart("Regression Guard Tests");
@@ -916,6 +1921,50 @@ void test_regression_guard_group() {
     RUN_TEST(test_regression_restart_network_4g_success_starts_hybrid_ap);
     RUN_TEST(test_regression_dns_mdns_supports_ethernet_mode);
     RUN_TEST(test_regression_dns_health_check_supports_ethernet);
+
+    // logLevel 运行时配置 + syncInterval 回归保护
+    RUN_TEST(test_regression_boot_reads_loglevel_from_device_json);
+    RUN_TEST(test_regression_sync_interval_applied_to_sntp);
+    RUN_TEST(test_regression_device_handler_loglevel_immediate_apply);
+    RUN_TEST(test_regression_auto_start_removed);
+
+    // network.json 死字段清理 + IPManager 同步回归保护
+    RUN_TEST(test_regression_enable_dns_removed);
+    RUN_TEST(test_regression_ipmanager_config_sync);
+
+    // MQTT topicType 默认值 + autoPrefix 默认值一致性 + content/action 隐式保护
+    RUN_TEST(test_regression_mqtt_topic_content_action_passthrough);
+    RUN_TEST(test_regression_mqtt_save_content_action_autoPrefix);
+
+    // Modbus master 高级参数 + 电机参数透传
+    RUN_TEST(test_regression_modbus_master_advanced_params);
+    RUN_TEST(test_regression_modbus_motor_device_summary);
+
+    // MQTT content/action 隐式字段已从结构体和加载代码中删除
+    RUN_TEST(test_regression_mqtt_topic_struct_no_content_action);
+
+    // MQTT topicType 枚举值与 topicType 默认值一致性
+    RUN_TEST(test_regression_mqtt_topictype_enum_values);
+
+    // Modbus master 高级参数保存/响应一致性
+    RUN_TEST(test_regression_modbus_master_params_consistency);
+
+    // users.json 字段一致性：email/remark/createBy 已删除，description 保留
+    RUN_TEST(test_regression_users_json_field_consistency);
+
+    // security 精简：仅 4 个 UI 可配置字段，9 个硬编码字段已删除
+    RUN_TEST(test_regression_security_json_slim);
+
+    // lastLogin 持久化 + createBy 完全移除回归保护
+    RUN_TEST(test_regression_last_login_and_createby_cleanup);
+
+    // WiFi 安全类型默认值 + MQTT 数据同步 + 状态显示 + 摘要默认值回归保护
+    RUN_TEST(test_regression_wifi_security_default_wpa2);
+    RUN_TEST(test_regression_mqtt_no_hardcoded_defaults);
+    RUN_TEST(test_regression_mqtt_disabled_shows_offline);
+    RUN_TEST(test_regression_mqtt_summary_default_json);
+    RUN_TEST(test_regression_device_layout_security_factory_at_bottom);
+    RUN_TEST(test_regression_mdns_async_restart);
 
     TestLog::groupEnd();
 }

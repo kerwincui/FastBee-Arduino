@@ -93,6 +93,30 @@
         </div>
     </div>
 
+    <!-- Master 高级参数 -->
+    <div id="master-advanced-section" class="fb-mt-2">
+        <details>
+            <summary data-i18n="modbus-master-advanced-title" class="fb-cursor-pointer fb-text-muted">Master 高级参数</summary>
+            <div class="fb-grid-3 fb-mt-1">
+                <div class="fb-form-group">
+                    <label data-i18n="modbus-master-response-timeout">响应超时 (ms)</label>
+                    <input type="number" id="rtu-response-timeout" class="" min="100" max="10000" value="1000">
+                    <small class="field-hint">默认1000ms</small>
+                </div>
+                <div class="fb-form-group">
+                    <label data-i18n="modbus-master-max-retries">最大重试次数</label>
+                    <input type="number" id="rtu-max-retries" class="" min="0" max="10" value="2">
+                    <small class="field-hint">默认2次</small>
+                </div>
+                <div class="fb-form-group">
+                    <label data-i18n="modbus-master-inter-poll-delay">轮询间隔 (ms)</label>
+                    <input type="number" id="rtu-inter-poll-delay" class="" min="10" max="5000" value="100">
+                    <small class="field-hint">两次请求间最小间隔，默认100ms</small>
+                </div>
+            </div>
+        </details>
+    </div>
+
     <!-- Master 模式配置区：统一子设备列表 -->
     <div id="master-config-section" class="u-mt-20">
         <h4 class="u-title-indigo" data-i18n="modbus-all-devices-title">Modbus 子设备</h4>
@@ -257,6 +281,13 @@
                             <div class="fb-form-group"><label data-i18n="modbus-motor-reg-speed">速度寄存器</label><input type="number" id="mdev-edit-motor-speed" class="" min="0" max="65535" value="5"></div>
                             <div class="fb-form-group"><label data-i18n="modbus-motor-reg-pulse">脉冲数寄存器</label><input type="number" id="mdev-edit-motor-pulse" class="" min="0" max="65535" value="7"></div>
                             <div class="fb-form-group"><label data-i18n="modbus-motor-decimals">小数位</label><select id="mdev-edit-motor-decimals" class=""><option value="0" selected>0位</option><option value="1">1位</option><option value="2">2位</option></select></div>
+                        </div>
+                        <div class="fb-grid-3 fb-mt-1">
+                            <div class="fb-form-group"><label data-i18n="modbus-motor-min-pos">最小位置</label><input type="number" id="mdev-edit-motor-min-pos" class="" min="-2147483648" max="2147483647" value="0"></div>
+                            <div class="fb-form-group"><label data-i18n="modbus-motor-max-pos">最大位置</label><input type="number" id="mdev-edit-motor-max-pos" class="" min="-2147483648" max="2147483647" value="10000"></div>
+                            <div class="fb-form-group"><label data-i18n="modbus-motor-cur-pos">当前位置</label><input type="number" id="mdev-edit-motor-cur-pos" class="" min="-2147483648" max="2147483647" value="0"></div>
+                            <div class="fb-form-group"><label data-i18n="modbus-motor-move-step">移动步长</label><input type="number" id="mdev-edit-motor-move-step" class="" min="0" max="2147483647" value="100"></div>
+                            <div class="fb-form-group"><label data-i18n="modbus-motor-last-pulse">上次脉冲数</label><input type="number" id="mdev-edit-motor-last-pulse" class="" min="0" max="65535" value="0"></div>
                         </div>
                         <small class="field-hint" data-i18n="modbus-motor-reg-hint">寄存器地址参考设备说明书，默认值兼容YF-53步进电机控制器</small>
                     </div>

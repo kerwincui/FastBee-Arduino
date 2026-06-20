@@ -55,7 +55,6 @@ struct MqttPublishTopic {
     bool retain;
     bool enabled;
     bool autoPrefix;    // 是否启用自动前缀（拼接topicPrefix到主题前）
-    String content;
     MqttTopicType topicType;
 
     MqttPublishTopic() : qos(0), retain(false), enabled(true), autoPrefix(false), topicType(MqttTopicType::DATA_REPORT) {}
@@ -67,7 +66,6 @@ struct MqttSubscribeTopic {
     uint8_t qos;        // QoS等级
     bool enabled;       // 是否启用此订阅
     bool autoPrefix;    // 是否启用自动前缀（拼接topicPrefix到主题前）
-    String action;      // 执行字段，定义接收到消息时的处理逻辑
     MqttTopicType topicType;
     
     MqttSubscribeTopic() : qos(0), enabled(true), autoPrefix(false), topicType(MqttTopicType::DATA_COMMAND) {}
@@ -85,7 +83,6 @@ struct MQTTConfig {
     String subscribeTopic;      // 兼容旧配置的单一订阅主题
     uint16_t keepAlive;
     bool autoReconnect;        // 自动重连
-    uint32_t connectionTimeout;// 连接超时（毫秒）
     // 认证配置
     MqttAuthType authType;     // 认证类型: 简单认证(S) / 加密认证(E)
     String deviceNum;          // 设备编号
@@ -112,8 +109,7 @@ struct MQTTConfig {
 
     // 默认构造函数
     MQTTConfig() : scheme("mqtt"), port(1883), keepAlive(60),
-                   autoReconnect(true), 
-                   connectionTimeout(30000), authType(MqttAuthType::SIMPLE),
+                   autoReconnect(true), authType(MqttAuthType::SIMPLE),
                    willQos(0), willRetain(false) {}
 };
 

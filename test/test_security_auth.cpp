@@ -34,8 +34,12 @@ static void resetAuthState() {
             userMgr->deleteUser(name);
         }
     }
-    // 重置 admin 密码
+    // 重置 admin 密码和 lastLogin
     userMgr->resetPassword("admin", "admin123");
+    User* admin = userMgr->getUser("admin");
+    if (admin) admin->lastLogin = 0;
+    // 重置密码策略到默认值
+    userMgr->updatePasswordPolicy(5, 300000, 6, false);
 
     // 重新创建 AuthManager
     if (authMgr) delete authMgr;
@@ -350,6 +354,97 @@ static void test_single_admin_mode_no_roles() {
     TEST_ASSERT_EQUAL_STRING("admin", username.c_str());
 }
 
+// ========== lastLogin 字段测试 ==========
+
+static void test_last_login_default_zero() {
+    resetAuthState();
+
+    // 新建用户 lastLogin 默认为 0
+    User* admin = userMgr->getUser("admin");
+    TEST_ASSERT_NOT_NULL(admin);
+    TEST_ASSERT_EQUAL(0, admin->lastLogin);
+}
+
+static void test_last_login_updated_on_auth() {
+    resetAuthState();
+
+    // 认证成功应更新 lastLogin
+    String sessionId = authMgr->authenticate("admin", "admin123");
+    TEST_ASSERT_FALSE(sessionId.isEmpty());
+
+    User* admin = userMgr->getUser("admin");
+    TEST_ASSERT_NOT_NULL(admin);
+    TEST_ASSERT_TRUE(admin->lastLogin > 0);
+}
+
+static void test_last_login_not_updated_on_failure() {
+    resetAuthState();
+
+    // 认证失败不应更新 lastLogin
+    String sessionId = authMgr->authenticate("admin", "wrongpass");
+    TEST_ASSERT_TRUE(sessionId.isEmpty());
+
+    User* admin = userMgr->getUser("admin");
+    TEST_ASSERT_NOT_NULL(admin);
+    TEST_ASSERT_EQUAL(0, admin->lastLogin);
+}
+
+static void test_last_login_updates_each_time() {
+    resetAuthState();
+
+    // 第一次登录
+    String session1 = authMgr->authenticate("admin", "admin123");
+    TEST_ASSERT_FALSE(session1.isEmpty());
+    User* admin = userMgr->getUser("admin");
+    TEST_ASSERT_NOT_NULL(admin);
+    time_t firstLogin = admin->lastLogin;
+    TEST_ASSERT_TRUE(firstLogin > 0);
+
+    // 注销后重新登录，lastLogin 应再次更新
+    authMgr->invalidateSession(session1);
+    String session2 = authMgr->authenticate("admin", "admin123");
+    TEST_ASSERT_FALSE(session2.isEmpty());
+    time_t secondLogin = admin->lastLogin;
+    TEST_ASSERT_TRUE(secondLogin >= firstLogin);
+}
+
+// ========== 密码策略配置测试 ==========
+
+static void test_password_policy_update() {
+    resetAuthState();
+
+    userMgr->updatePasswordPolicy(3, 600000, 8, true);
+    TEST_ASSERT_TRUE(userMgr->wasPolicyUpdated());
+    TEST_ASSERT_EQUAL_UINT8(3, userMgr->getMaxLoginAttempts());
+    TEST_ASSERT_EQUAL_UINT32(600000, userMgr->getLoginLockoutTime());
+    TEST_ASSERT_EQUAL_UINT8(8, userMgr->getMinPasswordLength());
+    TEST_ASSERT_TRUE(userMgr->getRequireStrongPasswords());
+}
+
+static void test_password_policy_default_values() {
+    resetAuthState();
+
+    // 默认值应保持不变
+    TEST_ASSERT_EQUAL_UINT8(5, userMgr->getMaxLoginAttempts());
+    TEST_ASSERT_EQUAL_UINT32(300000, userMgr->getLoginLockoutTime());
+    TEST_ASSERT_EQUAL_UINT8(6, userMgr->getMinPasswordLength());
+    TEST_ASSERT_FALSE(userMgr->getRequireStrongPasswords());
+}
+
+static void test_password_policy_multiple_updates() {
+    resetAuthState();
+
+    userMgr->updatePasswordPolicy(3, 600000, 8, true);
+    TEST_ASSERT_EQUAL_UINT8(3, userMgr->getMaxLoginAttempts());
+
+    // 第二次更新应覆盖第一次
+    userMgr->updatePasswordPolicy(10, 120000, 4, false);
+    TEST_ASSERT_EQUAL_UINT8(10, userMgr->getMaxLoginAttempts());
+    TEST_ASSERT_EQUAL_UINT32(120000, userMgr->getLoginLockoutTime());
+    TEST_ASSERT_EQUAL_UINT8(4, userMgr->getMinPasswordLength());
+    TEST_ASSERT_FALSE(userMgr->getRequireStrongPasswords());
+}
+
 // ========== 测试组入口 ==========
 
 void test_security_auth_group() {
@@ -360,39 +455,50 @@ void test_security_auth_group() {
     RUN_TEST(test_delete_user_success);
     RUN_TEST(test_delete_admin_protected);
     RUN_TEST(test_delete_nonexistent_user);
-    
+
     // 密码管理
     RUN_TEST(test_verify_password_correct);
     RUN_TEST(test_verify_password_incorrect);
     RUN_TEST(test_change_password_success);
     RUN_TEST(test_change_password_wrong_old);
     RUN_TEST(test_reset_password);
-    
+
     // 账户锁定
     RUN_TEST(test_account_lock_after_failures);
     RUN_TEST(test_account_not_locked_before_threshold);
     RUN_TEST(test_successful_login_resets_counter);
-    
+
     // 认证流程
     RUN_TEST(test_authenticate_success);
     RUN_TEST(test_authenticate_wrong_password);
     RUN_TEST(test_authenticate_nonexistent_user);
     RUN_TEST(test_authenticate_locked_account);
-    
+
     // 会话管理
     RUN_TEST(test_session_create_and_validate);
     RUN_TEST(test_session_invalidate);
     RUN_TEST(test_session_invalidate_all);
     RUN_TEST(test_session_expired);
     RUN_TEST(test_session_nonexistent);
-    
+
     // 在线用户与持久化
     RUN_TEST(test_online_user_count);
     RUN_TEST(test_session_persistence);
     
     // 单管理员模式回归防护
     RUN_TEST(test_single_admin_mode_no_roles);
-    
+
+    // lastLogin 字段
+    RUN_TEST(test_last_login_default_zero);
+    RUN_TEST(test_last_login_updated_on_auth);
+    RUN_TEST(test_last_login_not_updated_on_failure);
+    RUN_TEST(test_last_login_updates_each_time);
+
+    // 密码策略配置
+    RUN_TEST(test_password_policy_update);
+    RUN_TEST(test_password_policy_default_values);
+    RUN_TEST(test_password_policy_multiple_updates);
+
     // 清理
     if (authMgr) {
         delete authMgr;

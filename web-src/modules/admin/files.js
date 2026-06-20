@@ -432,8 +432,9 @@
                     var content = evt.target.result;
 
                     // JSON 格式验证
+                    var parsed;
                     try {
-                        var parsed = JSON.parse(content);
+                        parsed = JSON.parse(content);
                         // 验证必须是对象类型
                         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
                             Notification.error('配置文件必须是 JSON 对象格式');
@@ -449,25 +450,52 @@
                         return;
                     }
 
-                    // 上传到设备
-                    // 注意：后端实现的写入接口是 /api/files/save，
-                    // 保存 device.json / protocol.json 时后端会自动回填空的 deviceId / mqtt.clientId
-                    apiPost('/api/files/save', { path: filePath, content: content })
-                        .then(function(res) {
-                            if (res && res.success) {
-                                Notification.success('配置导入成功');
-                                // 刷新编辑器显示（会读到已回填的身份字段）
-                                self.openFile(filePath);
-                            } else {
-                                Notification.error(
-                                    (res && res.message) || '配置导入失败'
-                                );
-                            }
-                        })
-                        .catch(function(err) {
-                            console.error('Import config failed:', err);
-                            Notification.error('配置导入失败');
-                        });
+                    // 字段过滤容错：读取设备当前配置作为 schema，过滤多余字段
+                    var doImport = function(finalContent) {
+                        apiPost('/api/files/save', { path: filePath, content: finalContent })
+                            .then(function(res) {
+                                if (res && res.success) {
+                                    Notification.success('配置导入成功');
+                                    // 刷新编辑器显示（会读到已回填的身份字段）
+                                    self.openFile(filePath);
+                                } else {
+                                    Notification.error(
+                                        (res && res.message) || '配置导入失败'
+                                    );
+                                }
+                            })
+                            .catch(function(err) {
+                                console.error('Import config failed:', err);
+                                Notification.error('配置导入失败');
+                            });
+                    };
+
+                    // 尝试获取当前配置进行字段过滤
+                    if (typeof window.filterConfigFields === 'function') {
+                        var rawUrl = '/api/files/content?path=' + encodeURIComponent(filePath) + '&raw=1';
+                        var headers = {};
+                        try {
+                            var token = localStorage.getItem('auth_token');
+                            if (token) headers['Authorization'] = 'Bearer ' + token;
+                        } catch (tokErr) {}
+                        fetch(rawUrl, { credentials: 'include', headers: headers, cache: 'no-store' })
+                            .then(function(resp) {
+                                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                                return resp.text();
+                            })
+                            .then(function(currentText) {
+                                var currentObj = JSON.parse(currentText);
+                                var filtered = window.filterConfigFields(parsed, currentObj);
+                                doImport(JSON.stringify(filtered));
+                            })
+                            .catch(function(filterErr) {
+                                // 过滤失败不影响导入，继续使用原始内容
+                                console.warn('[files] field filter skipped:', filterErr);
+                                doImport(content);
+                            });
+                    } else {
+                        doImport(content);
+                    }
                 };
                 reader.readAsText(file);
             };

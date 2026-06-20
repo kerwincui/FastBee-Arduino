@@ -258,6 +258,8 @@
         'mdns-disabled-notice-title': '提示：',
         'mdns-disabled-notice-text': 'mDNS 已禁用，您将无法通过自定义域名访问系统。请通过设备 IP 地址访问：',
         'domain-unavailable-notice-text': '当前联网方式下域名配置不可用。4G/LoRa 模式仅支持通过 AP 热点 IP 地址访问系统。',
+        'cellular-access-hint-title': '访问方式',
+        'cellular-access-hint-text': '4G模式下请连接设备热点（如 fastbee-ap），然后通过 <code>http://192.168.4.1</code> 访问本系统。',
         'connection-settings-title': '连接设置',
         'connect-timeout-label': '连接超时 (毫秒)',
         'reconnect-interval-label': '重连间隔 (毫秒)',
@@ -292,9 +294,24 @@
         'dev-cache-hint': '设置浏览器缓存JS/CSS资源的有效期，修改后新请求生效。',
         'dev-cache-clear-btn': '清除浏览器缓存',
         'dev-cache-clear-ok': '浏览器缓存已清除，即将刷新页面...',
+
+        // 安全策略
+        'dev-sec-title': '安全策略',
+        'dev-sec-max-attempts': '最大登录尝试次数',
+        'dev-sec-lockout-time': '锁定时长（秒）',
+        'dev-sec-min-pwd-len': '最小密码长度',
+        'dev-sec-require-strong': '要求强密码',
+        'dev-sec-save-btn': '保存安全策略',
+        'dev-sec-save-ok': '安全策略保存成功！',
+
         'dev-name-label': '设备名称',
         'dev-location-label': '安装位置',
         'dev-description-label': '设备描述',
+        'dev-log-level-label': '日志级别',
+        'log-level-debug': 'DEBUG (调试)',
+        'log-level-info': 'INFO (信息)',
+        'log-level-warning': 'WARNING (警告)',
+        'log-level-error': 'ERROR (错误)',
         'dev-basic-save-btn': '保存信息',
         'dev-basic-save-ok': '设备信息保存成功！',
         

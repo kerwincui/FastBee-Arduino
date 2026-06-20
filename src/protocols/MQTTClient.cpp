@@ -154,7 +154,6 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     config.subscribeTopic = cfg["subscribeTopic"] | "";
     config.keepAlive   = cfg["keepAlive"]   | 60;
     config.autoReconnect     = cfg["autoReconnect"]     | true;
-    config.connectionTimeout = cfg["connectionTimeout"] | 30000;
     // 遗嘱消息配置
     config.willTopic   = cfg["willTopic"]   | "";
     config.willPayload = cfg["willPayload"] | "";
@@ -214,7 +213,6 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
             topic.retain = v["retain"] | false;
             topic.enabled = v["enabled"] | true;
             topic.autoPrefix = v["autoPrefix"] | false;
-            topic.content = v["content"] | "";
             topic.topicType = static_cast<MqttTopicType>(v["topicType"] | 0);
             config.publishTopics.push_back(topic);
         }
@@ -243,7 +241,6 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
             topic.qos = v["qos"] | 0;
             topic.enabled = v["enabled"] | true;
             topic.autoPrefix = v["autoPrefix"] | false;
-            topic.action = v["action"] | "";
             topic.topicType = static_cast<MqttTopicType>(v["topicType"] | 1);
             config.subscribeTopics.push_back(topic);
         }

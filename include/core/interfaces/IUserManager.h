@@ -138,6 +138,12 @@ public:
      * @return 用户数量
      */
     virtual size_t getUserCount() = 0;
+
+    /**
+     * @brief 更新密码策略配置（4个UI可配置字段）
+     */
+    virtual void updatePasswordPolicy(uint8_t maxAttempts, uint32_t lockoutTime,
+                                      uint8_t minPwdLen, bool requireStrong) = 0;
 };
 
 #endif // I_USER_MANAGER_H

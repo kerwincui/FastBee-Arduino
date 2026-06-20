@@ -89,4 +89,55 @@
         if (obj == null || typeof obj !== 'object') return obj;
         return JSON.parse(JSON.stringify(obj));
     };
+
+    /**
+     * 配置导入字段过滤：以 reference（当前设备配置）为 schema，
+     * 过滤 imported 中的多余/不匹配字段，只保留 reference 中已有的字段。
+     * - 嵌套对象：递归过滤
+     * - 数组字段：保留导入的数组（用户数据如 Modbus 任务列表）
+     * - 导入中缺失的字段：保留 reference 中的当前值
+     * - 多余字段：静默丢弃
+     *
+     * @param {object} imported - 导入的配置对象
+     * @param {object} reference - 当前设备上的配置对象（作为 schema）
+     * @returns {object} 过滤后的配置对象
+     */
+    window.filterConfigFields = function(imported, reference) {
+        // 非对象无法过滤，直接返回导入值
+        if (typeof imported !== 'object' || imported === null ||
+            typeof reference !== 'object' || reference === null) {
+            return imported;
+        }
+        // reference 是数组 → 保留导入的数组
+        if (Array.isArray(reference)) {
+            return Array.isArray(imported) ? imported : reference;
+        }
+        // imported 不是普通对象 → 返回 reference
+        if (Array.isArray(imported)) {
+            return reference;
+        }
+        var result = {};
+        for (var key in reference) {
+            if (!reference.hasOwnProperty(key)) continue;
+            // 导入中没有该字段 → 保留当前值
+            if (!(key in imported)) {
+                result[key] = reference[key];
+                continue;
+            }
+            var refVal = reference[key];
+            var impVal = imported[key];
+            // 两侧都是普通对象 → 递归过滤
+            if (refVal !== null && typeof refVal === 'object' && !Array.isArray(refVal) &&
+                impVal !== null && typeof impVal === 'object' && !Array.isArray(impVal)) {
+                result[key] = window.filterConfigFields(impVal, refVal);
+            } else if (Array.isArray(refVal)) {
+                // reference 侧是数组 → 保留导入的数组（允许用户自定义列表）
+                result[key] = Array.isArray(impVal) ? impVal : refVal;
+            } else {
+                // 基本类型字段 → 使用导入的值
+                result[key] = impVal;
+            }
+        }
+        return result;
+    };
 })();

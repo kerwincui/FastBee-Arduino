@@ -297,6 +297,8 @@ private:
     bool pendingRestart;          // 是否有待处理的网络重启
     unsigned long connectingStartTime; // 连接开始时间
     unsigned long pendingRestartTime;  // 延迟重启时间
+    bool pendingMDNSRestart;      // 是否有待处理的 mDNS 重启
+    unsigned long pendingMDNSRestartTime; // mDNS 延迟重启时间
     
     // 以太网自动重连
 #if FASTBEE_ENABLE_ETHERNET
@@ -321,6 +323,7 @@ private:
     bool initializeFileSystem();
     bool loadNetworkConfig();
     bool saveNetworkConfig();
+    void syncIPManagerConfig();
     void attemptReconnect();
     void triggerEvent(NetworkStatus status, const String& message);
 };

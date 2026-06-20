@@ -495,6 +495,11 @@
                 if (me) me.value = motorRegs[mi] != null ? motorRegs[mi] : [0,1,2,5,7][mi];
             }
             document.getElementById('mdev-edit-motor-decimals').value = String(dev ? (dev.motorDecimals || 0) : 0);
+            document.getElementById('mdev-edit-motor-min-pos').value = dev ? (dev.motorMinPosition || 0) : 0;
+            document.getElementById('mdev-edit-motor-max-pos').value = dev ? (dev.motorMaxPosition || 10000) : 10000;
+            document.getElementById('mdev-edit-motor-cur-pos').value = dev ? (dev.motorCurrentPosition || 0) : 0;
+            document.getElementById('mdev-edit-motor-move-step').value = dev ? (dev.motorMoveStep || 100) : 100;
+            document.getElementById('mdev-edit-motor-last-pulse').value = dev ? (dev.motorLastPulse || 0) : 0;
             this._onEditTypeChange();
             var title = document.getElementById('modbus-edit-modal-title');
             if (title) title.textContent = (idx >= 0)
@@ -570,6 +575,11 @@
                 dev.motorRegs.push(parseInt(document.getElementById('mdev-edit-motor-' + motorFields[mi]).value) || [0,1,2,5,7][mi]);
             }
             dev.motorDecimals = parseInt(document.getElementById('mdev-edit-motor-decimals').value) || 0;
+            dev.motorMinPosition = parseInt(document.getElementById('mdev-edit-motor-min-pos').value) || 0;
+            dev.motorMaxPosition = parseInt(document.getElementById('mdev-edit-motor-max-pos').value) || 10000;
+            dev.motorCurrentPosition = parseInt(document.getElementById('mdev-edit-motor-cur-pos').value) || 0;
+            dev.motorMoveStep = parseInt(document.getElementById('mdev-edit-motor-move-step').value) || 100;
+            dev.motorLastPulse = parseInt(document.getElementById('mdev-edit-motor-last-pulse').value) || 0;
             this._renderAllDevices();
             this._closeEditModal();
         },

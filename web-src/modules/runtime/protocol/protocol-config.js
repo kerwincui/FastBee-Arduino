@@ -112,6 +112,12 @@
                 this._loadUartPeripherals(rtu.peripheralId || '', options);
                 this._setValue('rtu-de-pin', rtu.dePin ?? 14);
                 this._setValue('rtu-transfer-type', rtu.transferType ?? 0);
+                // Master 高级参数
+                if (rtu.master) {
+                    this._setValue('rtu-response-timeout', rtu.master.responseTimeout ?? 1000);
+                    this._setValue('rtu-max-retries', rtu.master.maxRetries ?? 2);
+                    this._setValue('rtu-inter-poll-delay', rtu.master.interPollDelay ?? 100);
+                }
                 this.onModbusModeChange('master');
                 if (rtu.master) {
                     this._masterTasks = rtu.master.tasks || [];
@@ -135,13 +141,12 @@
                 const mqtt = config.mqtt;
                 this._setCheckbox('mqtt-enabled', mqtt.enabled ?? true);
                 this._setValue('mqtt-scheme', mqtt.scheme || 'mqtt');
-                this._setValue('mqtt-broker', mqtt.server || 'iot.fastbee.cn');
+                this._setValue('mqtt-broker', mqtt.server ?? '');
                 this._setValue('mqtt-port', mqtt.port || 1883);
-                this._setValue('mqtt-client-id', mqtt.clientId || '');
+                this._setValue('mqtt-client-id', mqtt.clientId ?? '');
                 this._setValue('mqtt-username', mqtt.username || '');
                 this._setValue('mqtt-password', mqtt.password || '');
                 this._setValue('mqtt-alive', mqtt.keepAlive || 60);
-                this._setValue('mqtt-conn-timeout', mqtt.connectionTimeout ?? 30000);
                 this._setCheckbox('mqtt-auto-reconnect', mqtt.autoReconnect ?? true);
                 this._setValue('mqtt-will-topic', mqtt.willTopic || '');
                 this._setValue('mqtt-will-payload', mqtt.willPayload || '');
@@ -151,9 +156,9 @@
                 this._setValue('mqtt-latitude', mqtt.latitude ?? 0);
                 this._setValue('mqtt-iccid', mqtt.iccid || '');
                 this._setValue('mqtt-card-platform-id', mqtt.cardPlatformId ?? 0);
-                this._setValue('mqtt-summary', mqtt.summary || '');
+                this._setValue('mqtt-summary', mqtt.summary ?? '{"name":"fastbee","chip":"ESP32"}');
                 this._setValue('mqtt-auth-type', mqtt.authType ?? 0);
-                this._setValue('mqtt-secret', mqtt.mqttSecret || 'K451265A72244J79');
+                this._setValue('mqtt-secret', mqtt.mqttSecret ?? '');
                 this._setValue('mqtt-auth-code', mqtt.authCode || '');
                 this._loadMqttPublishTopics(mqtt.publishTopics || []);
                 this._loadMqttSubscribeTopics(mqtt.subscribeTopics || []);
@@ -162,6 +167,14 @@
                 // MQTT 启用时自动开始状态轮询，确保顶部状态指示器反映实际连接状态
                 if (mqtt.enabled) {
                     this._startMqttStatusPolling({ initialDelayMs: 1500 });
+                } else {
+                    // MQTT 未启用时，直接显示"未连接"，不进行状态检测
+                    this._stopMqttStatusPolling();
+                    var badge = document.getElementById('mqtt-status-badge');
+                    if (badge) {
+                        badge.className = 'mqtt-status-badge mqtt-status-offline';
+                        badge.textContent = '未连接';
+                    }
                 }
             }
         },
@@ -183,6 +196,10 @@
                 data.modbusRtu_mode = 'master';
                 data.modbusRtu_dePin = document.getElementById('rtu-de-pin')?.value || '14';
                 data.modbusRtu_transferType = document.getElementById('rtu-transfer-type')?.value || '0';
+                // Master 高级参数
+                data.modbusRtu_responseTimeout = document.getElementById('rtu-response-timeout')?.value || '1000';
+                data.modbusRtu_maxRetries = document.getElementById('rtu-max-retries')?.value || '2';
+                data.modbusRtu_interPollDelay = document.getElementById('rtu-inter-poll-delay')?.value || '100';
                 if (data.modbusRtu_enabled === 'true' && !data.modbusRtu_peripheralId) {
                     Notification.warning('未找到已启用的UART外设，请先在外设管理中配置');
                     return;
@@ -193,13 +210,12 @@
             if (isMqttForm) {
                 data.mqtt_enabled = document.getElementById('mqtt-enabled')?.checked ? 'true' : 'false';
                 data.mqtt_scheme = document.getElementById('mqtt-scheme')?.value || 'mqtt';
-                data.mqtt_server = document.getElementById('mqtt-broker')?.value || 'iot.fastbee.cn';
+                data.mqtt_server = document.getElementById('mqtt-broker')?.value ?? '';
                 data.mqtt_port = document.getElementById('mqtt-port')?.value || '1883';
                 data.mqtt_clientId = document.getElementById('mqtt-client-id')?.value || '';
                 data.mqtt_username = document.getElementById('mqtt-username')?.value || '';
                 data.mqtt_password = document.getElementById('mqtt-password')?.value || '';
                 data.mqtt_keepAlive = document.getElementById('mqtt-alive')?.value || '60';
-                data.mqtt_connectionTimeout = document.getElementById('mqtt-conn-timeout')?.value || '30000';
                 data.mqtt_autoReconnect = document.getElementById('mqtt-auto-reconnect')?.checked ?? true;
                 data.mqtt_authType = document.getElementById('mqtt-auth-type')?.value || '0';
                 data.mqtt_mqttSecret = document.getElementById('mqtt-secret')?.value || '';

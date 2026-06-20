@@ -69,6 +69,15 @@
                 });
             }
 
+            // 安全策略表单提交
+            const deviceSecurityForm = document.getElementById('device-security-form');
+            if (deviceSecurityForm) {
+                deviceSecurityForm.addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    this.saveSecurityPolicy();
+                });
+            }
+
         },
 
         // ============ 设备配置 ============
@@ -100,8 +109,14 @@
                     this._setValue('dev-timezone', d.timezone || 'CST-8');
                     this._setValue('dev-sync-interval', d.syncInterval !== undefined ? String(d.syncInterval) : '3600');
                     this._setValue('dev-cache-duration', d.cacheDuration !== undefined ? String(d.cacheDuration) : '86400');
+                    this._setValue('dev-log-level', d.logLevel || 'INFO');
                     this.setDeveloperModeState(d.developerModeEnabled !== false);
                     this._renderDeveloperModeState();
+                    // 安全策略字段
+                    this._setValue('dev-sec-max-attempts', d.maxLoginAttempts !== undefined ? String(d.maxLoginAttempts) : '5');
+                    this._setValue('dev-sec-lockout-time', d.loginLockoutTime !== undefined ? String(Math.round(d.loginLockoutTime / 1000)) : '300');
+                    this._setValue('dev-sec-min-pwd-len', d.minPasswordLength !== undefined ? String(d.minPasswordLength) : '6');
+                    this._setValue('dev-sec-require-strong', d.requireStrongPasswords ? '1' : '0');
                 })
                 .catch(err => console.error('Load device config failed:', err));
             setTimeout(function() {
@@ -160,6 +175,7 @@
                 enableNTP: document.getElementById('dev-ntp-enable')?.value || '1',
                 syncInterval: document.getElementById('dev-sync-interval')?.value || '3600',
                 cacheDuration: parseInt(document.getElementById('dev-cache-duration')?.value || '86400'),
+                logLevel: document.getElementById('dev-log-level')?.value || 'INFO',
             };
             apiPut('/api/device/config', config)
                 .then(res => {
@@ -276,6 +292,29 @@
                     }
                 })
                 .catch(() => Notification.error('保存失败', 'NTP配置'));
+        },
+
+        saveSecurityPolicy() {
+            const lockoutSeconds = parseInt(document.getElementById('dev-sec-lockout-time')?.value || '300');
+            const config = {
+                maxLoginAttempts: parseInt(document.getElementById('dev-sec-max-attempts')?.value || '5'),
+                loginLockoutTime: lockoutSeconds * 1000,
+                minPasswordLength: parseInt(document.getElementById('dev-sec-min-pwd-len')?.value || '6'),
+                requireStrongPasswords: document.getElementById('dev-sec-require-strong')?.value === '1',
+            };
+            apiPut('/api/device/config', config)
+                .then(res => {
+                    if (res && res.success) {
+                        if (typeof window.apiInvalidateCache === 'function') {
+                            window.apiInvalidateCache('/api/device/config');
+                        }
+                        this._showMessage('dev-sec-success', true);
+                        Notification.success('安全策略保存成功', '设备配置');
+                    } else {
+                        Notification.error(res?.error || '保存失败', '安全策略');
+                    }
+                })
+                .catch(() => Notification.error('保存失败', '安全策略'));
         },
 
         loadDeviceTime(options) {
@@ -696,7 +735,28 @@
 
         async _importConfigTransferEntry(item) {
             const entry = this._validateConfigTransferEntry(item);
-            const chunks = this._splitConfigTransferChunks(entry.content, CONFIG_IMPORT_CHUNK_BYTES);
+
+            // 字段过滤容错：读取设备当前配置作为 schema，过滤导入文件中的多余字段
+            let filteredContent = entry.content;
+            if (typeof window.filterConfigFields === 'function') {
+                try {
+                    const url = new URL('/api/config/transfer/export', window.location.origin);
+                    url.searchParams.set('name', entry.name);
+                    const resp = await this._configTransferFetch(url.toString());
+                    if (resp.ok) {
+                        const currentText = await resp.text();
+                        const currentObj = JSON.parse(currentText);
+                        const importedObj = JSON.parse(entry.content);
+                        const filtered = window.filterConfigFields(importedObj, currentObj);
+                        filteredContent = JSON.stringify(filtered);
+                    }
+                } catch (filterErr) {
+                    // 过滤失败不影响正常导入流程，继续使用原始内容
+                    console.warn('[device-config] field filter skipped for', entry.name, filterErr);
+                }
+            }
+
+            const chunks = this._splitConfigTransferChunks(filteredContent, CONFIG_IMPORT_CHUNK_BYTES);
             const total = chunks.length;
             for (let i = 0; i < total; i++) {
                 const res = await apiPost('/api/config/transfer/import-chunk', {

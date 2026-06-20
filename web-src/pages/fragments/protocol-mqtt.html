@@ -52,7 +52,7 @@
                         <option value="mqtts">mqtts://</option>
                     </select>
                     <input type="text" id="mqtt-broker" class=""
-                        value="iot.fastbee.cn" style="flex:1;min-width:0;">
+                        value="" style="flex:1;min-width:0;">
                 </div>
             </div>
 
@@ -60,20 +60,20 @@
                 <label for="mqtt-client-id"
                     data-i18n="mqtt-client-id-label">客户端ID</label>
                 <input type="text" id="mqtt-client-id" class=""
-                    value="S&FB100900001&1&1">
+                    value="" placeholder="自动生成或手动填写">
             </div>
 
             <div class="fb-form-group">
                 <label for="mqtt-username"
                     data-i18n="mqtt-username-label">用户名</label>
                 <input type="text" id="mqtt-username" class=""
-                    value="FastBee">
+                    value="" placeholder="输入用户名">
             </div>
 
             <div class="fb-form-group">
                 <label for="mqtt-secret" data-i18n="mqtt-secret-label">产品秘钥</label>
                 <input type="password" id="mqtt-secret" class=""
-                    value="K451265A72244J79" placeholder="AES加密用16字节密钥">
+                    value="" placeholder="AES加密用16字节密钥">
             </div>
 
         </div>
@@ -97,7 +97,7 @@
             <div class="fb-form-group">
                 <label for="mqtt-password" data-i18n="mqtt-password-label">密码</label>
                 <input type="password" id="mqtt-password" class=""
-                    value="P47T6OD5IPFWHUM6">
+                    value="" placeholder="输入密码">
             </div>
 
             <div class="fb-form-group">
@@ -141,13 +141,6 @@
                 </div>
                 <div class="config-form-column">
 
-                    <div class="fb-form-group">
-                        <label for="mqtt-conn-timeout"
-                            data-i18n="mqtt-conn-timeout-label">连接超时(毫秒)</label>
-                        <input type="number" id="mqtt-conn-timeout"
-                            class="" value="30000" min="1000"
-                            max="120000">
-                    </div>
                     <div class="fb-form-group">
                         <label for="mqtt-latitude"
                             data-i18n="mqtt-latitude-label">纬度</label>

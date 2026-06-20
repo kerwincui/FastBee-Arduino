@@ -456,7 +456,7 @@ void test_factory_reset_writes_defaults() {
     int resetCount = 0;
 
     // Write default device.json
-    const char* DEFAULT_DEVICE = "{\"deviceId\":\"FBE100900001\",\"productNumber\":1070,\"deviceName\":\"FastBee-Device\"}";
+    const char* DEFAULT_DEVICE = "{\"deviceId\":\"\",\"productNumber\":0,\"logLevel\":\"INFO\",\"deviceName\":\"FastBee-Device\"}";
     if (writeDefault("/config/device.json", DEFAULT_DEVICE)) resetCount++;
 
     // Write default network.json (WiFi cleared)
@@ -501,11 +501,13 @@ void test_factory_reset_writes_defaults() {
     TEST_ASSERT_FALSE(LittleFS.exists("/config/mqtt.json"));
     TestLog::step("Optional config files removed");
 
-    // Verify: device.json has default deviceId (not custom)
+    // Verify: device.json has empty deviceId (factory reset clears device identity)
     String deviceContent = g_mockFiles["/config/device.json"];
-    TEST_ASSERT_TRUE(deviceContent.indexOf("FBE100900001") >= 0);
+    TEST_ASSERT_TRUE(deviceContent.indexOf("\"deviceId\":\"\"") >= 0);
+    TEST_ASSERT_FALSE(deviceContent.indexOf("FBE100900001") >= 0);
     TEST_ASSERT_FALSE(deviceContent.indexOf("CUSTOM_ID") >= 0);
-    TestLog::step("device.json restored to default deviceId");
+    TEST_ASSERT_TRUE(deviceContent.indexOf("\"logLevel\":\"INFO\"") >= 0);
+    TestLog::step("device.json restored to factory default (empty deviceId, logLevel=INFO)");
 
     // Verify: network.json has empty WiFi credentials
     String networkContent = g_mockFiles["/config/network.json"];
@@ -513,7 +515,8 @@ void test_factory_reset_writes_defaults() {
     TEST_ASSERT_TRUE(networkContent.indexOf("\"staPassword\":\"\"") >= 0);
     TEST_ASSERT_TRUE(networkContent.indexOf("fastbee-ap") >= 0);
     TEST_ASSERT_FALSE(networkContent.indexOf("home-wifi") >= 0);
-    TestLog::step("network.json WiFi cleared, AP mode restored");
+    TEST_ASSERT_TRUE(networkContent.indexOf("enableDNS") == -1);  // 死字段已移除
+    TestLog::step("network.json WiFi cleared, AP mode restored, no enableDNS");
 
     // Verify: protocol.json has MQTT disabled
     String protocolContent = g_mockFiles["/config/protocol.json"];
@@ -554,7 +557,7 @@ void test_factory_reset_no_file_missing() {
     };
 
     // Write all defaults
-    writeDefault("/config/device.json", "{\"deviceId\":\"FBE100900001\"}");
+    writeDefault("/config/device.json", "{\"deviceId\":\"\",\"productNumber\":0}");
     writeDefault("/config/network.json", "{\"mode\":0}");
     writeDefault("/config/users.json", "{\"users\":[]}");
     writeDefault("/config/protocol.json", "{\"version\":2}");

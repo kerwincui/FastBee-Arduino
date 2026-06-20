@@ -31,7 +31,11 @@ struct IPConfig {
 
 class MockIPManager {
 public:
-    MockIPManager() : _configured(false), _hasConflict(false) {}
+    MockIPManager() : _configured(false), _hasConflict(false),
+        autoFailover(true), conflictCheckInterval(30000),
+        maxFailoverAttempts(3), conflictThreshold(2),
+        fallbackToDHCP(true), _conflictCount(0), _failoverCount(0),
+        _switchedToDHCP(false) {}
 
     bool configure(const IPConfig& config) {
         if (!config.useDHCP && config.staticIP.isEmpty()) {
@@ -71,14 +75,72 @@ public:
                subnet == "255.0.0.0";
     }
 
+    // 模拟 IP 冲突检测+故障转移行为
+    // 每次调用算一次冲突检测，达到 conflictThreshold 后触发故障转移
+    bool simulateConflictCycle() {
+        if (_hasConflict) {
+            _conflictCount++;
+            if (_conflictCount >= conflictThreshold) {
+                if (autoFailover) {
+                    return performFailover();
+                }
+                return false;  // 冲突但未启用故障转移
+            }
+        } else {
+            _conflictCount = 0;
+        }
+        return true;  // 无冲突
+    }
+
+    bool performFailover() {
+        if (_failoverCount >= maxFailoverAttempts) {
+            if (fallbackToDHCP) {
+                _switchedToDHCP = true;
+                _config.useDHCP = true;
+                return true;
+            }
+            return false;  // 达到上限且不允许 DHCP 回退
+        }
+        _failoverCount++;
+        return true;
+    }
+
+    // 配置同步方法（镜像 NetworkManager::syncIPManagerConfig）
+    void syncFromConfig(bool af, uint16_t cci, uint8_t mfa, uint8_t ct, bool ftd) {
+        autoFailover = af;
+        conflictCheckInterval = cci;
+        maxFailoverAttempts = mfa;
+        conflictThreshold = ct;
+        fallbackToDHCP = ftd;
+    }
+
+    int getConflictCount() { return _conflictCount; }
+    int getFailoverCount() { return _failoverCount; }
+    bool isSwitchedToDHCP() { return _switchedToDHCP; }
+
     // 测试控制
     void setHasConflict(bool conflict) { _hasConflict = conflict; }
-    void reset() { _configured = false; _hasConflict = false; _config = IPConfig(); }
+    void reset() {
+        _configured = false; _hasConflict = false; _config = IPConfig();
+        autoFailover = true; conflictCheckInterval = 30000;
+        maxFailoverAttempts = 3; conflictThreshold = 2; fallbackToDHCP = true;
+        _conflictCount = 0; _failoverCount = 0; _switchedToDHCP = false;
+    }
+
+    // 配置属性（镜像 IPManager.h 的 public 字段）
+    bool autoFailover;
+    uint16_t conflictCheckInterval;
+    uint8_t maxFailoverAttempts;
+    uint8_t conflictThreshold;
+    bool fallbackToDHCP;
 
 private:
     IPConfig _config;
     bool _configured;
     bool _hasConflict;
+    int _conflictCount;
+    int _failoverCount;
+    bool _switchedToDHCP;
 };
 
 // ========== Mock: DNS 管理器 ==========
@@ -521,6 +583,106 @@ static void test_ip_conflict_detection() {
     TEST_ASSERT_TRUE(ipMgr.checkIPConflict("192.168.1.50"));
 }
 
+/**
+ * @brief 验证 IP 冲突阈值：达到阈值后才触发故障转移
+ */
+static void test_ip_conflict_threshold() {
+    ipMgr.reset();
+    ipMgr.conflictThreshold = 3;
+    ipMgr.setHasConflict(true);
+
+    // 第 1、2 次冲突未达阈值，不触发故障转移
+    TEST_ASSERT_TRUE(ipMgr.simulateConflictCycle());
+    TEST_ASSERT_EQUAL(1, ipMgr.getConflictCount());
+    TEST_ASSERT_TRUE(ipMgr.simulateConflictCycle());
+    TEST_ASSERT_EQUAL(2, ipMgr.getConflictCount());
+
+    // 第 3 次达到阈值，触发故障转移
+    TEST_ASSERT_TRUE(ipMgr.simulateConflictCycle());
+    TEST_ASSERT_EQUAL(1, ipMgr.getFailoverCount());
+}
+
+/**
+ * @brief 验证故障转移次数限制：达到上限后不再转移
+ */
+static void test_ip_failover_max_attempts() {
+    ipMgr.reset();
+    ipMgr.maxFailoverAttempts = 2;
+    ipMgr.fallbackToDHCP = false;  // 不允许回退 DHCP
+    ipMgr.setHasConflict(true);
+    ipMgr.conflictThreshold = 1;
+
+    // 第 1、2 次故障转移成功
+    TEST_ASSERT_TRUE(ipMgr.simulateConflictCycle());
+    TEST_ASSERT_EQUAL(1, ipMgr.getFailoverCount());
+    TEST_ASSERT_TRUE(ipMgr.simulateConflictCycle());
+    TEST_ASSERT_EQUAL(2, ipMgr.getFailoverCount());
+
+    // 第 3 次达到上限且不允许 DHCP 回退，返回失败
+    TEST_ASSERT_FALSE(ipMgr.simulateConflictCycle());
+    TEST_ASSERT_FALSE(ipMgr.isSwitchedToDHCP());
+}
+
+/**
+ * @brief 验证故障转移 DHCP 回退：达到上限后自动切换到 DHCP
+ */
+static void test_ip_failover_fallback_to_dhcp() {
+    ipMgr.reset();
+    ipMgr.maxFailoverAttempts = 1;
+    ipMgr.fallbackToDHCP = true;
+    ipMgr.conflictThreshold = 1;
+    ipMgr.setHasConflict(true);
+
+    // 第 1 次故障转移成功
+    TEST_ASSERT_TRUE(ipMgr.simulateConflictCycle());
+    TEST_ASSERT_EQUAL(1, ipMgr.getFailoverCount());
+
+    // 第 2 次达到上限，自动回退到 DHCP
+    TEST_ASSERT_TRUE(ipMgr.simulateConflictCycle());
+    TEST_ASSERT_TRUE(ipMgr.isSwitchedToDHCP());
+    TEST_ASSERT_TRUE(ipMgr.getConfig().useDHCP);
+}
+
+/**
+ * @brief 验证 autoFailover 禁用时冲突不触发故障转移
+ */
+static void test_ip_auto_failover_disabled() {
+    ipMgr.reset();
+    ipMgr.autoFailover = false;
+    ipMgr.conflictThreshold = 1;
+    ipMgr.setHasConflict(true);
+
+    // 冲突达到阈值但 autoFailover 关闭，不触发转移
+    TEST_ASSERT_FALSE(ipMgr.simulateConflictCycle());
+    TEST_ASSERT_EQUAL(0, ipMgr.getFailoverCount());
+}
+
+/**
+ * @brief 验证配置同步：模拟 NetworkManager::syncIPManagerConfig 行为
+ */
+static void test_ip_config_sync() {
+    ipMgr.reset();
+
+    // 模拟 syncFromConfig（镜像 NetworkManager::syncIPManagerConfig）
+    ipMgr.syncFromConfig(false, 60000, 5, 4, false);
+
+    TEST_ASSERT_FALSE(ipMgr.autoFailover);
+    TEST_ASSERT_EQUAL(60000, ipMgr.conflictCheckInterval);
+    TEST_ASSERT_EQUAL(5, ipMgr.maxFailoverAttempts);
+    TEST_ASSERT_EQUAL(4, ipMgr.conflictThreshold);
+    TEST_ASSERT_FALSE(ipMgr.fallbackToDHCP);
+
+    // 同步后的配置应影响行为
+    ipMgr.setHasConflict(true);
+    // 前 3 次不触发（阈值 = 4）
+    TEST_ASSERT_TRUE(ipMgr.simulateConflictCycle());
+    TEST_ASSERT_TRUE(ipMgr.simulateConflictCycle());
+    TEST_ASSERT_TRUE(ipMgr.simulateConflictCycle());
+    // 第 4 次达到阈值，但 autoFailover=false
+    TEST_ASSERT_FALSE(ipMgr.simulateConflictCycle());
+    TEST_ASSERT_EQUAL(0, ipMgr.getFailoverCount());
+}
+
 // ========== DNS 管理器测试 ==========
 
 static MockDNSManager dnsMgr;
@@ -656,6 +818,11 @@ void test_wifi_ip_dns_group() {
     RUN_TEST(test_ip_validate_invalid);
     RUN_TEST(test_ip_validate_subnet);
     RUN_TEST(test_ip_conflict_detection);
+    RUN_TEST(test_ip_conflict_threshold);
+    RUN_TEST(test_ip_failover_max_attempts);
+    RUN_TEST(test_ip_failover_fallback_to_dhcp);
+    RUN_TEST(test_ip_auto_failover_disabled);
+    RUN_TEST(test_ip_config_sync);
     
     // DNS 管理器
     RUN_TEST(test_dns_resolve_known_host);

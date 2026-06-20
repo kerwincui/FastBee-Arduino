@@ -77,7 +77,9 @@ FBNetworkManager::FBNetworkManager(AsyncWebServer* webServerPtr)
       connecting(false),
       pendingRestart(false),
       connectingStartTime(0),
-      pendingRestartTime(0)
+      pendingRestartTime(0),
+      pendingMDNSRestart(false),
+      pendingMDNSRestartTime(0)
 #if FASTBEE_ENABLE_ETHERNET
       , ethReconnectPending(false)
       , ethReconnectTime(0)
@@ -130,6 +132,9 @@ bool FBNetworkManager::initialize() {
         saveNetworkConfig();
     }
     
+    // 同步冲突检测和故障转移配置到 IPManager
+    syncIPManagerConfig();
+
     LOG_INFOF("NetworkManager: Config loaded - enableMDNS=%s, customDomain=%s", 
               wifiConfig.enableMDNS ? "true" : "false", 
               wifiConfig.customDomain.c_str());
@@ -446,6 +451,22 @@ void FBNetworkManager::update() {
             pendingRestartTime = 0;
             restartNetwork();
             return; // 重启后返回，下次循环再更新状态
+        }
+    }
+
+    // 处理延迟 mDNS 重启（域名配置变更后延迟1500ms执行，确保HTTP响应已返回）
+    if (pendingMDNSRestart) {
+        if (pendingMDNSRestartTime == 0) {
+            pendingMDNSRestartTime = currentTime;
+        } else if (currentTime - pendingMDNSRestartTime >= 1500) {
+            LOG_INFOF("NetworkManager: Executing delayed mDNS restart with hostname '%s'",
+                      wifiConfig.customDomain.c_str());
+            pendingMDNSRestart = false;
+            pendingMDNSRestartTime = 0;
+            if (dnsManager) {
+                dnsManager->setCustomDomain(wifiConfig.customDomain);
+                dnsManager->restartMDNS(wifiConfig.customDomain);
+            }
         }
     }
 
@@ -1261,7 +1282,18 @@ bool FBNetworkManager::configureStaticIP() {
     ipManager->gateway = wifiConfig.gateway;
     ipManager->subnet = wifiConfig.subnet;
     
+    // 同步冲突检测和故障转移配置
+    syncIPManagerConfig();
+
     return wifiManager->configureStaticIP();
+}
+
+void FBNetworkManager::syncIPManagerConfig() {
+    ipManager->autoFailover = wifiConfig.autoFailover;
+    ipManager->conflictCheckInterval = wifiConfig.conflictCheckInterval;
+    ipManager->maxFailoverAttempts = wifiConfig.maxFailoverAttempts;
+    ipManager->conflictThreshold = wifiConfig.conflictThreshold;
+    ipManager->fallbackToDHCP = wifiConfig.fallbackToDHCP;
 }
 
 bool FBNetworkManager::configureDHCP() {
@@ -1846,13 +1878,13 @@ bool FBNetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStor
         LOG_INFO("NetworkManager: Configuration saved successfully");
     }
     
-    // mDNS 配置变更：立即重启 mDNS 服务（不等待网络重启）
+    // mDNS 配置变更：设置延迟重启标志（让HTTP响应先返回，在 update() 中异步执行）
     if (mdnsConfigChanged && !restartRequired && dnsManager) {
         if (wifiConfig.enableMDNS) {
-            LOG_INFOF("NetworkManager: mDNS config changed, restarting mDNS with hostname '%s'",
+            LOG_INFOF("NetworkManager: mDNS config changed, scheduling delayed restart with hostname '%s'",
                       wifiConfig.customDomain.c_str());
-            dnsManager->setCustomDomain(wifiConfig.customDomain);
-            dnsManager->restartMDNS(wifiConfig.customDomain);
+            pendingMDNSRestart = true;
+            pendingMDNSRestartTime = 0;  // 在 update() 中记录时间戳
         } else {
             LOG_INFO("NetworkManager: mDNS disabled by config change, stopping mDNS");
             dnsManager->setMDNSEnabled(false);

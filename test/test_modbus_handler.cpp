@@ -101,15 +101,20 @@ struct TestModbusSubDevice {
     uint8_t  channelCount;
     bool     ncMode;
     uint8_t  controlProtocol;
+    uint8_t  motorDecimals;
     int32_t  motorMinPosition;
     int32_t  motorMaxPosition;
     int32_t  motorCurrentPosition;
+    int32_t  motorMoveStep;
+    uint16_t motorLastPulse;
     bool     enabled;
 
     TestModbusSubDevice()
         : slaveAddress(1), channelCount(2), ncMode(false),
-          controlProtocol(0), motorMinPosition(0), motorMaxPosition(0),
-          motorCurrentPosition(0), enabled(true) {
+          controlProtocol(0), motorDecimals(0),
+          motorMinPosition(0), motorMaxPosition(0),
+          motorCurrentPosition(0), motorMoveStep(0), motorLastPulse(0),
+          enabled(true) {
         memset(name, 0, sizeof(name));
         strncpy(name, "Device", sizeof(name) - 1);
     }
@@ -393,6 +398,32 @@ static void test_subdevice_motor_soft_limit_equal() {
     TEST_ASSERT_FALSE(dev.hasMotorSoftLimit());  // max 必须 > min
 }
 
+static void test_subdevice_motor_new_fields_defaults() {
+    TestModbusSubDevice dev;
+    // motorDecimals/motorMoveStep/motorLastPulse 默认值均为 0
+    TEST_ASSERT_EQUAL(0, dev.motorDecimals);
+    TEST_ASSERT_EQUAL(0, dev.motorMoveStep);
+    TEST_ASSERT_EQUAL(0, dev.motorLastPulse);
+}
+
+static void test_subdevice_motor_new_fields_assignment() {
+    TestModbusSubDevice dev;
+    dev.motorDecimals = 2;
+    dev.motorMinPosition = -5000;
+    dev.motorMaxPosition = 5000;
+    dev.motorCurrentPosition = 100;
+    dev.motorMoveStep = 1600;
+    dev.motorLastPulse = 800;
+
+    TEST_ASSERT_EQUAL(2, dev.motorDecimals);
+    TEST_ASSERT_EQUAL(-5000, dev.motorMinPosition);
+    TEST_ASSERT_EQUAL(5000, dev.motorMaxPosition);
+    TEST_ASSERT_EQUAL(100, dev.motorCurrentPosition);
+    TEST_ASSERT_EQUAL(1600, dev.motorMoveStep);
+    TEST_ASSERT_EQUAL(800, dev.motorLastPulse);
+    TEST_ASSERT_TRUE(dev.hasMotorSoftLimit());  // 5000 > -5000
+}
+
 // ========== 寄存器值类型转换测试 ==========
 
 static void test_convert_uint16() {
@@ -509,6 +540,8 @@ void test_modbus_handler_group() {
     RUN_TEST(test_subdevice_motor_soft_limit_disabled);
     RUN_TEST(test_subdevice_motor_soft_limit_enabled);
     RUN_TEST(test_subdevice_motor_soft_limit_equal);
+    RUN_TEST(test_subdevice_motor_new_fields_defaults);
+    RUN_TEST(test_subdevice_motor_new_fields_assignment);
     
     // 寄存器值类型转换
     RUN_TEST(test_convert_uint16);

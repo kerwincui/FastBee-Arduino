@@ -256,7 +256,7 @@
                     // STA 配置
                     this._setValue('wifi-ssid', sta.ssid || '');
                     this._setValue('wifi-password', sta.password || '');
-                    this._setValue('wifi-security', sta.security || 'wpa');
+                    this._setValue('wifi-security', sta.security || 'wpa2');
 
                     // ========== 热点配置 ==========
                     this._setValue('ap-ssid', ap.ssid || '');
@@ -426,9 +426,9 @@
                                 noticeMessage += '切换到STA模式后，可通过 http://' + data.mdnsDomain + ' 访问';
                             }
                         } else if (mode === 1 || modeText === 'AP') {
-                            const hint = '请先连接热点 [' + (data.apSSID || 'fastbee-ap') + ']，然后访问 http://' + (data.apIP || '192.168.4.1');
+                            const hint = '请先连接热点 [' + (data.apSSID || 'fastbee-ap') + ']，然后访问 http://' + (data.apIP || '192.168.4.1') + ' 或 http://fastbee.local';
                             message += '<br>' + this._renderWifiNote(hint);
-                            noticeMessage += '切换到AP模式后，请连接热点 [' + (data.apSSID || 'fastbee-ap') + '] 访问 http://' + (data.apIP || '192.168.4.1');
+                            noticeMessage += '切换到AP模式后，请连接热点 [' + (data.apSSID || 'fastbee-ap') + '] 访问 http://' + (data.apIP || '192.168.4.1') + ' 或 http://fastbee.local';
                         }
 
                         message += '<br>' + this._renderWifiNote('如无法访问，请刷新页面或重新连接网络。');
@@ -653,7 +653,7 @@
                         const domain = config.customDomain || 'fastbee';
 
                         if (mdnsEnabled) {
-                            message += '<br><small class="wifi-note-inline">mDNS 已启用，可通过 http://' + domain + '.local 访问系统</small>';
+                            message += '<br><small class="wifi-note-inline">mDNS 已启用，域名变更需等待约 15 秒生效。如无法访问 <code>http://' + domain + '.local</code>，请刷新浏览器页面或清除 DNS 缓存。</small>';
                         } else {
                             const currentIP = this._getCurrentDeviceIP();
                             message += '<br><small class="wifi-note-inline">mDNS 已禁用，请通过 IP 地址访问系统：' + (currentIP || '请查看设备状态') + '</small>';
@@ -716,8 +716,8 @@
                     if (res && res.success) {
                         const message = '网络设置保存成功！'
                             + '<br>网络配置变更需要重启网络服务才能生效，请等待约10秒...'
-                            + '<br>以太网连接成功后，可通过以太网 IP 访问；'
-                            + '如连接失败，AP 热点将始终可用：http://192.168.4.1';
+                            + '<br>以太网连接成功后，可通过以太网 IP 或 http://fastbee.local 访问；'
+                            + '如连接失败，AP 热点将始终可用：http://192.168.4.1 或 http://fastbee.local';
                         Notification.show({
                             type: 'success',
                             title: '网络配置已保存',
@@ -765,7 +765,7 @@
                     if (res && res.success) {
                         const message = '网络设置保存成功！'
                             + '<br>网络配置变更需要重启网络服务才能生效，请等待约15秒...'
-                            + '<br>4G 连接后，可通过设备 AP 热点 http://192.168.4.1 访问本系统';
+                            + '<br>4G 连接后，可通过设备 AP 热点 http://192.168.4.1 或 http://fastbee.local 访问本系统';
                         Notification.show({
                             type: 'success',
                             title: '网络配置已保存',
@@ -812,7 +812,7 @@
                     if (res && res.success) {
                         const message = '网络设置保存成功！'
                             + '<br>网络配置变更需要重启网络服务才能生效，请等待约10秒...'
-                            + '<br>LoRa 模式下请通过设备 AP 热点 http://192.168.4.1 访问本系统';
+                            + '<br>LoRa 模式下请通过设备 AP 热点 http://192.168.4.1 或 http://fastbee.local 访问本系统';
                         Notification.show({
                             type: 'success',
                             title: '网络配置已保存',

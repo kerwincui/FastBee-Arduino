@@ -680,7 +680,7 @@ bool ProtocolManager::restartModbus() {
     int dePin = rtu["dePin"] | -1;
     modbusConfig.dePin = (dePin < 0) ? 255 : (uint8_t)dePin;
     modbusConfig.slaveAddress = rtu["slaveAddress"] | (uint8_t)1;
-    modbusConfig.responseTimeout = rtu["timeout"] | (uint16_t)1000;
+    modbusConfig.responseTimeout = 1000;  // 固定默认值，实际由 master.responseTimeout 控制
     modbusConfig.transferType = rtu["transferType"] | (uint8_t)0;
     // workMode 已移除：由 ModbusHandler::getWorkMode() 根据轮询任务配置动态推导
 

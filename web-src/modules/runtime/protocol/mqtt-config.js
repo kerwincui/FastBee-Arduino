@@ -641,11 +641,12 @@
                     badge.className = 'mqtt-status-badge mqtt-status-offline';
                     badge.textContent = '连接失败';
                     this._mqttConnectingStartTime = 0;
-                } else if (!d.initialized && !d.enabled) {
+                } else if (!d.enabled) {
+                    // MQTT 未启用，直接显示"未连接"
                     badge.className = 'mqtt-status-badge mqtt-status-offline';
-                    badge.textContent = '未初始化';
+                    badge.textContent = '未连接';
                     this._mqttConnectingStartTime = 0;
-                } else if (d.enabled && !d.initialized) {
+                } else if (!d.initialized) {
                     badge.className = 'mqtt-status-badge mqtt-status-connecting';
                     badge.textContent = '初始化中';
                 } else {

@@ -112,9 +112,18 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F16R8 -
 
 # 只编译，不烧录
 powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F16R8 -BuildOnly
+
+# 显示详细编译输出（调试用）
+powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F16R8 -Port COM6 -FullOutput
 ```
 
 `deploy.ps1` 会先上传与 `-Env` 匹配的 LittleFS Web 文件系统，再烧录固件。加 `-Monitor` 可在部署完成后自动打开串口监视器查看启动日志。脚本启动时会自动清理残留的 esptool/python 进程，避免"文件被占用"错误。
+
+**新增特性：**
+- 📊 **智能输出过滤**：默认模式只显示关键信息（开始/结束、错误、警告、上传进度），减少干扰
+- ⏱️ **编译时间预估**：自动检测缓存状态，显示预估编译时间
+- ⏱️ **耗时统计**：每个步骤完成后显示实际耗时
+- 🔍 **FullOutput 模式**：使用 `-FullOutput` 参数显示完整编译输出（调试用）
 
 ### 直接烧录发布包
 
