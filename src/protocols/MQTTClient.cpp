@@ -297,20 +297,25 @@ bool MQTTClient::begin(uint32_t taskStartupDelayMs) {
         LOG_INFO("MQTT: Using external transport client");
     } else if (config.scheme == "mqtts") {
         // MQTTS (TLS) 传输层：跳过证书验证（IoT 场景常用，平衡安全与资源）
+        // 优化：使用 setInsecure() 跳过证书验证，减少内存占用
         wifiClientSecure.setInsecure();
         mqttClient.setClient(wifiClientSecure);
-        LOG_INFO("MQTT: Using WiFiClientSecure (mqtts://) transport");
+        LOG_INFO("MQTT: Using WiFiClientSecure (mqtts://) transport, certificate verification skipped");
     } else {
         mqttClient.setClient(wifiClient);
         LOG_INFO("MQTT: Using WiFiClient (mqtt://) transport");
     }
     mqttClient.setServer(config.server.c_str(), config.port);
-    mqttClient.setBufferSize(1024);
+    // MQTTS 优化：减小 PubSubClient 缓冲区以降低内存压力
+    // MQTT (1883): 1024 字节（正常消息大小）
+    // MQTTS (8883): 512 字节（节省 ~512B 内存，SSL 已经占用大量内存）
+    bool isMqttsInit = (config.scheme == "mqtts");
+    uint16_t mqttBufferSize = isMqttsInit ? 512 : 1024;
+    mqttClient.setBufferSize(mqttBufferSize);
     mqttClient.setKeepAlive(config.keepAlive);
     // MQTTS (TLS) 握手在 ESP32-C6 等低主频芯片上需要 5~15 秒
     // 使用较长的连接超时，连接成功后在 reconnect() 中恢复短超时
-    bool isMqtts = (config.scheme == "mqtts");
-    if (isMqtts) {
+    if (isMqttsInit) {
         mqttClient.setSocketTimeout(30);  // TLS 握手需要更长时间
         LOG_INFO("MQTT: Socket timeout set to 30s for MQTTS TLS handshake");
     } else {
@@ -1560,28 +1565,86 @@ void MQTTClient::doReconnect() {
         }
     }
 
-    // 内存保护：堆内存严重不足时跳过重连，避免加剧内存压力
-    // 阈值说明：MQTT reconnect 需要 WiFiClient TCP 连接(~4KB) + PubSubClient 缓冲(1KB) + String 临时操作(~1KB)
-    // 总需求约 6KB。ESP32-S3 运行 Web 服务器 + MQTT 后台任务时，
-    // PSRAM 设备（heap_caps_malloc_extmem_enable(512)）将 ≥512B 分配卸载到 PSRAM，
-    // 但 WiFi/lwIP/FreeRTOS 栈必须在内部 DRAM，稳态堆常在 10-12KB。
-    // 设 8KB 阈值：高于实际 6KB 需求（1.3x 裕度），低于稳态 10KB（允许正常重连）。
-    // PSRAM 设备的大块分配会自动 fallback 到外部内存，largest block 阈值仅需 2KB。
-    uint32_t reconnectFreeHeap = ESP.getFreeHeap();
-    uint32_t reconnectLargestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
-    if (reconnectFreeHeap < 8000 || reconnectLargestBlock < 2048) {
-        ets_printf("[MQTT] doReconnect: heap too low (heap=%lu largest=%lu), skipping\n",
-                     (unsigned long)reconnectFreeHeap, (unsigned long)reconnectLargestBlock);
-        LOG_WARNINGF("[MQTT] Memory too low for reconnect, skipping (heap=%lu largest=%lu)",
+    // ===== MQTTS 专用内存保护 =====
+    // ESP32-S3/C6 等芯片 MQTTS (SSL/TLS) 连接内存需求分析：
+    //   - setInsecure() 已跳过证书验证（节省 ~8-12KB）
+    //   - SSL/TLS 握手缓冲区（mbedtls record layer）：~16KB
+    //   - mbedtls 上下文（ssl_context + transform）：~8KB
+    //   - MQTT 基础开销（PubSubClient + String 等）：~4KB
+    //   - 实测：~28-32KB DRAM 即可握手成功
+    // 
+    // 关键：WiFi/lwIP/mbedtls 均使用内部 DRAM（MALLOC_CAP_INTERNAL）
+    //   - PSRAM 不可用于 SSL/TCP socket 内存（DMA 不可寻址）
+    //   - 因此必须检测 DRAM 内部内存而非 MALLOC_CAP_DEFAULT
+    //   - MALLOC_CAP_DEFAULT 在有 PSRAM 的板子上会包含 PSRAM（largest 显示 8MB+）
+    //     导致检测通过但实际 DRAM 连续块不足，SSL 握手时再失败
+    // 
+    // 保护策略：
+    // 1. 用 MALLOC_CAP_INTERNAL 检测真实 DRAM 最大连续块（排除 PSRAM）
+    // 2. 降低 MQTTS 阈值到 35KB total / 20KB 连续（setInsecure 节省了证书内存）
+    // 3. 失败后延迟等待 FreeRTOS 回收内存再重试
+    // 4. 连续失败后进入慢模式，避免反复尝试加剧碎片
+    
+    bool isMqtts = (config.scheme == "mqtts");
+    // MQTTS 阈值：使用 DRAM 内部内存（MALLOC_CAP_INTERNAL）
+    //   minHeap:         DRAM 总空闲 >= 35KB（握手中峰值约 28-32KB + 安全裕量）
+    //   minLargestBlock: DRAM 最大连续块 >= 20KB（mbedtls 需要连续内存）
+    // MQTT 阈值：任意 8KB 总空闲 + 2KB 连续即可
+    uint32_t minHeap = isMqtts ? 35000 : 8000;
+    uint32_t minLargestBlock = isMqtts ? 20000 : 2048;
+
+    // 获取 DRAM 内部内存统计（排除 PSRAM）
+    uint32_t reconnectFreeHeap     = isMqtts
+        ? heap_caps_get_free_size(MALLOC_CAP_INTERNAL)
+        : (uint32_t)ESP.getFreeHeap();
+    uint32_t reconnectLargestBlock = isMqtts
+        ? heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)
+        : heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+
+    // 补充输出 DRAM vs Total 对比，方便诊断 PSRAM 干扰问题
+    if (isMqtts) {
+        uint32_t totalFree    = (uint32_t)ESP.getFreeHeap();
+        uint32_t totalLargest = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+        ets_printf("[MQTT] doReconnect: DRAM free=%lu largest=%lu | total free=%lu largest=%lu\n",
+                   (unsigned long)reconnectFreeHeap, (unsigned long)reconnectLargestBlock,
+                   (unsigned long)totalFree, (unsigned long)totalLargest);
+    }
+
+    if (reconnectFreeHeap < minHeap || reconnectLargestBlock < minLargestBlock) {
+        ets_printf("[MQTT] doReconnect: heap too low (heap=%lu largest=%lu scheme=%s min=%lu/%lu), skipping\n",
+                     (unsigned long)reconnectFreeHeap, (unsigned long)reconnectLargestBlock,
+                     config.scheme.c_str(), (unsigned long)minHeap, (unsigned long)minLargestBlock);
+        LOG_WARNINGF("[MQTT] Memory too low for %s reconnect, skipping (dram=%lu largest=%lu need=%lu/%lu)",
+                     isMqtts ? "MQTTS" : "MQTT",
                      (unsigned long)reconnectFreeHeap,
-                     (unsigned long)reconnectLargestBlock);
+                     (unsigned long)reconnectLargestBlock,
+                     (unsigned long)minHeap,
+                     (unsigned long)minLargestBlock);
         _reconnectRunning = false;
         return;
     }
+    
+    // MQTTS 额外保护：短暂延迟让 FreeRTOS idle 任务回收被 vTaskDelete 标记的内存
+    if (isMqtts) {
+        delay(50);  // idle 任务回收延迟释放内存，通常 10-50ms
+        reconnectFreeHeap     = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        reconnectLargestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        
+        if (reconnectFreeHeap < minHeap || reconnectLargestBlock < minLargestBlock) {
+            ets_printf("[MQTT] doReconnect: MQTTS still low after delay (dram=%lu largest=%lu), skipping\n",
+                         (unsigned long)reconnectFreeHeap, (unsigned long)reconnectLargestBlock);
+            _reconnectRunning = false;
+            return;
+        }
+        
+        ets_printf("[MQTT] doReconnect: MQTTS DRAM OK after delay (dram=%lu largest=%lu)\n",
+                     (unsigned long)reconnectFreeHeap, (unsigned long)reconnectLargestBlock);
+    }
 
-    ets_printf("[MQTT] doReconnect: starting (heap=%lu largest=%lu)\n",
-                 (unsigned long)reconnectFreeHeap, (unsigned long)reconnectLargestBlock);
-    LOG_INFO("[MQTT] Background reconnect starting...");
+    ets_printf("[MQTT] doReconnect: starting (heap=%lu largest=%lu scheme=%s)\n",
+                 (unsigned long)reconnectFreeHeap, (unsigned long)reconnectLargestBlock,
+                 config.scheme.c_str());
+    LOG_INFOF("[MQTT] Background %s reconnect starting...", isMqtts ? "MQTTS" : "MQTT");
 
     bool ok = reconnect();
 

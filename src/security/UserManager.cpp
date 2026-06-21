@@ -387,7 +387,6 @@ bool UserManager::saveUsersToStorage() {
 
     const User& admin = adminIt->second;
     JsonDocument doc;
-    doc["version"] = "1.0";
 
     JsonObject adminObj = doc["admin"].to<JsonObject>();
     adminObj["username"]     = DEFAULT_ADMIN_USER;
@@ -397,7 +396,6 @@ bool UserManager::saveUsersToStorage() {
     adminObj["lastModified"] = admin.lastModified;
 #else
     JsonDocument doc;
-    doc["version"] = "1.0";
 
     JsonArray usersArr = doc["users"].to<JsonArray>();
     for (const auto& pair : users) {

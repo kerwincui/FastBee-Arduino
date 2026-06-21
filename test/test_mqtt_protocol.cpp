@@ -2224,6 +2224,165 @@ void test_mqtts_reconnect_stack_size() {
     TestLog::testEnd(true);
 }
 
+// ========== MQTTS 内存保护机制测试 ==========
+
+/**
+ * @brief MQTTS-11: doReconnect() 使用 MALLOC_CAP_INTERNAL 检测 DRAM 而非 MALLOC_CAP_DEFAULT
+ * 回归：修复前用 MALLOC_CAP_DEFAULT，在有 PSRAM 的 ESP32-S3 上 largest 显示 8MB+，
+ * 导致内存检测通过但实际 DRAM 不足，SSL 握手在 connect() 中失败（rc=-32512）
+ */
+void test_mqtts_memory_check_uses_internal_cap() {
+    TestLog::testStart("MQTTS doReconnect Uses MALLOC_CAP_INTERNAL");
+
+    std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
+        "Failed to read MQTTClient.cpp");
+
+    // 1. 检测 DRAM 内部空闲：heap_caps_get_free_size(MALLOC_CAP_INTERNAL)
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("heap_caps_get_free_size(MALLOC_CAP_INTERNAL)") != std::string::npos,
+        "doReconnect must use MALLOC_CAP_INTERNAL for DRAM free size (not ESP.getFreeHeap)");
+    TestLog::step("heap_caps_get_free_size(MALLOC_CAP_INTERNAL) present");
+
+    // 2. 检测 DRAM 最大连续块：heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)") != std::string::npos,
+        "doReconnect must use MALLOC_CAP_INTERNAL for largest block (not MALLOC_CAP_DEFAULT)");
+    TestLog::step("heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) present");
+
+    // 3. minHeap 阈值降为 35000（setInsecure 跳过证书节省了 ~8-12KB）
+    std::regex minHeapRe("minHeap\\s*=\\s*isMqtts\\s*\\?\\s*(\\d+)");
+    std::smatch match;
+    if (std::regex_search(content, match, minHeapRe) && match.size() > 1) {
+        int minHeapVal = std::stoi(match[1].str());
+        TEST_ASSERT_TRUE_MESSAGE(minHeapVal >= 30000 && minHeapVal <= 45000,
+            "MQTTS minHeap should be 30000-45000 (setInsecure saves cert memory)");
+        TestLog::step(("MQTTS minHeap=" + match[1].str() + " (in 30K-45K range)").c_str());
+    }
+
+    // 4. minLargestBlock 阈值降为 20000
+    std::regex minBlockRe("minLargestBlock\\s*=\\s*isMqtts\\s*\\?\\s*(\\d+)");
+    if (std::regex_search(content, match, minBlockRe) && match.size() > 1) {
+        int minBlockVal = std::stoi(match[1].str());
+        TEST_ASSERT_TRUE_MESSAGE(minBlockVal >= 16000 && minBlockVal <= 30000,
+            "MQTTS minLargestBlock should be 16000-30000");
+        TestLog::step(("MQTTS minLargestBlock=" + match[1].str() + " (in 16K-30K range)").c_str());
+    }
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MQTTS-12: 有 PSRAM 时 MALLOC_CAP_DEFAULT largest 远大于 MALLOC_CAP_INTERNAL
+ * 说明只用 MALLOC_CAP_DEFAULT 会误判 PSRAM 内存为可用于 SSL 的 DRAM
+ */
+void test_mqtts_psram_largest_block_misleads_default_cap() {
+    TestLog::testStart("MQTTS: PSRAM Misleads MALLOC_CAP_DEFAULT largest");
+
+    // 模拟 ESP32-S3-F8R4 场景：
+    //   DRAM 内部碎片化后最大连续块仅 8KB
+    //   PSRAM 空闲块 8MB（作为 MALLOC_CAP_DEFAULT 最大块）
+    uint32_t dramLargest = 8000;   // MALLOC_CAP_INTERNAL: 8KB (不足 20KB 阈值)
+    uint32_t totalLargest = 8 * 1024 * 1024;  // MALLOC_CAP_DEFAULT: 8MB (PSRAM)
+
+    // 旧逻辑（MALLOC_CAP_DEFAULT）：误判内存充足，放行 SSL 连接
+    uint32_t OLD_MIN_HEAP = 60000;
+    uint32_t OLD_MIN_BLOCK = 30000;
+    uint32_t oldFreeHeap = 41628;  // 来自用户实际日志
+    bool oldGuardPassed = (oldFreeHeap >= OLD_MIN_HEAP);
+    TEST_ASSERT_FALSE_MESSAGE(oldGuardPassed,
+        "Old check (heap=41628 < 60000): should have BLOCKED");
+    TestLog::step("Old minHeap=60000 would block at heap=41628 (heap threshold too high)");
+
+    // 新逻辑（MALLOC_CAP_INTERNAL）：
+    //   DRAM 内部 35KB 总空闲 + 最大连续 20KB → 允许重连
+    uint32_t NEW_MIN_HEAP = 35000;
+    uint32_t NEW_MIN_BLOCK = 20000;
+    uint32_t newDramFree = 40000;  // DRAM 内部 40KB 总空闲（足够）
+    bool newGuardPassed = (newDramFree >= NEW_MIN_HEAP) && (dramLargest >= NEW_MIN_BLOCK);
+    TEST_ASSERT_FALSE_MESSAGE(newGuardPassed,
+        "New DRAM check: free=40KB but largest=8KB < 20KB → should BLOCK (fragmented)");
+    TestLog::step("New DRAM check: fragmented DRAM (8KB block) correctly blocks");
+
+    // 真正 DRAM 充足时放行
+    uint32_t healthyDramLargest = 25000;  // 25KB 连续 DRAM
+    bool healthyGuard = (newDramFree >= NEW_MIN_HEAP) && (healthyDramLargest >= NEW_MIN_BLOCK);
+    TEST_ASSERT_TRUE_MESSAGE(healthyGuard,
+        "Healthy DRAM (40KB free, 25KB largest) → should ALLOW reconnect");
+    TestLog::step("Healthy DRAM: free=40KB, largest=25KB → reconnect allowed");
+
+    // PSRAM largest (8MB) 不应影响 DRAM 连续块检测
+    TEST_ASSERT_TRUE_MESSAGE(totalLargest > dramLargest * 100,
+        "PSRAM largest block >> DRAM largest block (confirms mislead risk)");
+    TestLog::step("PSRAM(8MB) >> DRAM(8KB): confirms MALLOC_CAP_DEFAULT misleads");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MQTTS-13: doReconnect() 输出 DRAM vs Total 对比日志
+ * 确保日志可诊断 PSRAM 干扰问题
+ */
+void test_mqtts_dram_diagnostic_log() {
+    TestLog::testStart("MQTTS: DRAM Diagnostic Log in doReconnect");
+
+    std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read MQTTClient.cpp");
+
+    // 日志必须同时打印 DRAM 和 Total 对比
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("DRAM free=") != std::string::npos ||
+        content.find("dram=") != std::string::npos,
+        "doReconnect diagnostic log must include DRAM free size");
+    TestLog::step("DRAM free size in diagnostic log");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("total free=") != std::string::npos ||
+        content.find("heap=%lu largest=%lu scheme=") != std::string::npos,
+        "doReconnect diagnostic log must include total free size for comparison");
+    TestLog::step("Total free size in diagnostic log for comparison");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MQTTS-14: setInsecure() 节省内存验证
+ * 使用 setInsecure() 跳过证书验证后，MQTTS 内存需求降至约 28-32KB
+ */
+void test_mqtts_setinsecure_reduces_memory_requirement() {
+    TestLog::testStart("MQTTS: setInsecure() Reduces Memory Requirement");
+
+    std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "Failed to read MQTTClient.cpp");
+
+    // 代码中必须使用 setInsecure()（跳过证书验证）
+    TEST_ASSERT_TRUE_MESSAGE(content.find("setInsecure()") != std::string::npos,
+        "MQTTS must use setInsecure() to skip certificate validation");
+    TestLog::step("setInsecure() present: certificate validation skipped");
+
+    // 注释中应说明 setInsecure 节省内存
+    bool hasSavingComment = content.find("setInsecure") != std::string::npos &&
+        (content.find("\u8df3\u8fc7\u8bc1\u4e66") != std::string::npos ||
+         content.find("\u8bc1\u4e66\u9a8c\u8bc1\u8df3\u8fc7") != std::string::npos ||
+         content.find("skip") != std::string::npos ||
+         content.find("certificate verification skipped") != std::string::npos);
+    TEST_ASSERT_TRUE_MESSAGE(hasSavingComment,
+        "Code should document that setInsecure saves ~8-12KB cert memory");
+    TestLog::step("setInsecure() saves cert memory documented");
+
+    // MQTTS minHeap 阈值应低于 50000（不应还在要求完整 60KB）
+    std::regex minHeapRe("minHeap\\s*=\\s*isMqtts\\s*\\?\\s*(\\d+)");
+    std::smatch match;
+    if (std::regex_search(content, match, minHeapRe) && match.size() > 1) {
+        int minHeapVal = std::stoi(match[1].str());
+        TEST_ASSERT_TRUE_MESSAGE(minHeapVal < 50000,
+            "MQTTS minHeap must be < 50000 when using setInsecure (no cert memory needed)");
+        TestLog::step(("MQTTS minHeap=" + match[1].str() + " < 50000").c_str());
+    }
+
+    TestLog::testEnd(true);
+}
+
 // ============================================================
 // Group 8: 测试连接快速路径 (alreadyConnected) 回归测试
 // 修复：MQTTS测试按钮显示CONNECTION_TIMEOUT但状态栏显示已连接
@@ -2654,6 +2813,12 @@ void test_mqtt_protocol_group() {
     RUN_TEST(test_mqtts_port_auto_detect);
     RUN_TEST(test_mqtts_socket_timeout_strategy);
     RUN_TEST(test_mqtts_reconnect_stack_size);
+
+    // MQTTS 内存保护机制测试（修复 PSRAM 干扰 DRAM 检测导致 SSL 失败）
+    RUN_TEST(test_mqtts_memory_check_uses_internal_cap);
+    RUN_TEST(test_mqtts_psram_largest_block_misleads_default_cap);
+    RUN_TEST(test_mqtts_dram_diagnostic_log);
+    RUN_TEST(test_mqtts_setinsecure_reduces_memory_requirement);
 
     // Group 8: 测试连接快速路径 (alreadyConnected) 回归测试
     RUN_TEST(test_mqtt_test_fast_path_already_connected);

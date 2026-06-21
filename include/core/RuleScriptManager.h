@@ -60,9 +60,6 @@ private:
     // 模板引擎
     static String applyTemplate(const String& templateStr, const String& jsonInput);
 
-    // 默认示例数据
-    void populateDefaults();
-
     // ID 生成
     String generateUniqueId();
 };

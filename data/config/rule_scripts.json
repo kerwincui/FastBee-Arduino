@@ -1,0 +1,28 @@
+{
+  "rules": [
+    {
+      "id": "rs_mqtt_report",
+      "name": "MQTT上报:数组转对象",
+      "enabled": false,
+      "triggerType": 1,
+      "protocolType": 0,
+      "scriptContent": "{\"temperature\": ${temperature}, \"humidity\": ${humidity}}"
+    },
+    {
+      "id": "rs_mqtt_recv",
+      "name": "MQTT接收:对象转数组",
+      "enabled": false,
+      "triggerType": 0,
+      "protocolType": 0,
+      "scriptContent": "[{\"id\":\"temperature\",\"value\":\"${temperature}\",\"remark\":\"\"},{\"id\":\"humidity\",\"value\":\"${humidity}\",\"remark\":\"\"}]"
+    },
+    {
+      "id": "rs_rtu_recv",
+      "name": "ModbusRTU接收转换",
+      "enabled": false,
+      "triggerType": 0,
+      "protocolType": 1,
+      "scriptContent": "[{\"id\":\"temperature\",\"value\":\"${temperature}\",\"remark\":\"\"},{\"id\":\"humidity\",\"value\":\"${humidity}\",\"remark\":\"\"}]"
+    }
+  ]
+}

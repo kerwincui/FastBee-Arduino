@@ -530,11 +530,31 @@ bool ProtocolManager::restartMQTTDeferred() {
     delay(10);
 
     // 堆保护：释放旧客户端后仍不足，放弃重建
-    // PSRAM 设备稳态堆常在 10-12KB，8KB 阈值保留安全裕度
+    // MQTTS 需要更多内存（SSL/TLS 握手约 42KB），MQTT 仅需约 6KB
+    // 检查配置中的 scheme 字段动态调整阈值
     uint32_t freeHeap = ESP.getFreeHeap();
-    if (freeHeap < 8000) {
-        LOG_WARNINGF("Protocol Manager: Heap too low for MQTT deferred restart (heap=%lu), skipping",
-                     (unsigned long)freeHeap);
+    
+    // 尝试从配置读取 scheme（如果 MQTT 客户端未创建，从配置文件读取）
+    bool isMqtts = false;
+    if (LittleFS.exists(FileSystem::PROTOCOL_CONFIG_FILE)) {
+        File file = LittleFS.open(FileSystem::PROTOCOL_CONFIG_FILE, "r");
+        if (file) {
+            JsonDocument doc;
+            DeserializationError err = deserializeJson(doc, file);
+            file.close();
+            if (!err && doc.containsKey("mqtt")) {
+                String scheme = doc["mqtt"]["scheme"].as<String>();
+                isMqtts = (scheme == "mqtts");
+            }
+        }
+    }
+    
+    uint32_t minHeap = isMqtts ? 50000 : 8000;  // MQTTS: 50KB, MQTT: 8KB
+    if (freeHeap < minHeap) {
+        LOG_WARNINGF("Protocol Manager: Heap too low for %s deferred restart (heap=%lu need=%lu), skipping",
+                     isMqtts ? "MQTTS" : "MQTT",
+                     (unsigned long)freeHeap,
+                     (unsigned long)minHeap);
         return false;
     }
 

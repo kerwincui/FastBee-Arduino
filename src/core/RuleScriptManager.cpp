@@ -108,7 +108,6 @@ bool RuleScriptManager::saveConfiguration() {
     MutexGuard lock(_mutex);
 
     JsonDocument doc;
-    doc["version"] = 1;
     JsonArray arr = doc["rules"].to<JsonArray>();
 
     for (const auto& pair : _rules) {
@@ -137,9 +136,19 @@ bool RuleScriptManager::saveConfiguration() {
 
 bool RuleScriptManager::loadConfiguration() {
     if (!LittleFS.exists(RULE_SCRIPT_CONFIG_FILE)) {
-        LOGGER.info("[RuleScript] No config file found, populating defaults");
-        populateDefaults();
-        saveConfiguration();
+        LOGGER.info("[RuleScript] No config file found, creating empty config");
+        // 创建空配置文件，不预设任何默认规则
+        JsonDocument doc;
+        doc["rules"] = JsonArray();
+        
+        File file = LittleFS.open(RULE_SCRIPT_CONFIG_FILE, "w");
+        if (!file) {
+            LOGGER.error("[RuleScript] Failed to create config file");
+            return false;
+        }
+        serializeJson(doc, file);
+        file.close();
+        LOGGER.info("[RuleScript] Created empty config file");
         return true;
     }
 
@@ -273,47 +282,5 @@ String RuleScriptManager::applyReportTransform(uint8_t protocolType, const Strin
 
 String RuleScriptManager::generateUniqueId() {
     return "rs_" + String(millis());
-}
-
-// ========== 默认规则脚本示例 ==========
-
-void RuleScriptManager::populateDefaults() {
-    // 示例1: MQTT上报 — 数组格式转对象格式
-    {
-        RuleScript r;
-        r.id = "rs_mqtt_report";
-        r.name = "MQTT上报:数组转对象";
-        r.enabled = false;
-        r.triggerType = 1;  // DATA_REPORT
-        r.protocolType = 0; // MQTT
-        r.scriptContent = "{\"temperature\": ${temperature}, \"humidity\": ${humidity}}";
-        _rules[r.id] = r;
-    }
-
-    // 示例2: MQTT接收 — 对象格式转数组格式
-    {
-        RuleScript r;
-        r.id = "rs_mqtt_recv";
-        r.name = "MQTT接收:对象转数组";
-        r.enabled = false;
-        r.triggerType = 0;  // DATA_RECEIVE
-        r.protocolType = 0; // MQTT
-        r.scriptContent = "[{\"id\":\"temperature\",\"value\":\"${temperature}\",\"remark\":\"\"},{\"id\":\"humidity\",\"value\":\"${humidity}\",\"remark\":\"\"}]";
-        _rules[r.id] = r;
-    }
-
-    // 示例3: Modbus RTU接收转换
-    {
-        RuleScript r;
-        r.id = "rs_rtu_recv";
-        r.name = "ModbusRTU接收转换";
-        r.enabled = false;
-        r.triggerType = 0;  // DATA_RECEIVE
-        r.protocolType = 1; // MODBUS_RTU
-        r.scriptContent = "[{\"id\":\"temperature\",\"value\":\"${temperature}\",\"remark\":\"\"},{\"id\":\"humidity\",\"value\":\"${humidity}\",\"remark\":\"\"}]";
-        _rules[r.id] = r;
-    }
-
-    LOGGER.infof("[RuleScript] Populated %d default rules", 3);
 }
 #endif // FASTBEE_ENABLE_RULE_SCRIPT
