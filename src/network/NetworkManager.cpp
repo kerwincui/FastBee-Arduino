@@ -1203,11 +1203,12 @@ bool FBNetworkManager::connectToWiFiBlocking() {
     WiFiMode_t currentMode = WiFi.getMode();
     if (!(currentMode & WIFI_STA)) {
         WiFi.mode(WIFI_MODE_STA);
+        delay(500);  // AP→STA 模式切换后等待 WiFi 子系统重新就绪
     }
 
     // 发起连接
     WiFi.disconnect(false);
-    delay(150);
+    delay(200);
     WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
     statusInfo.status = NetworkStatus::CONNECTING;
 

@@ -880,11 +880,11 @@ void test_source_code_c3_platformio_config() {
         "C3 CONFIG_ASYNC_TCP_MAX_CONNECTIONS must be 4");
     TestLog::step("CONFIG_ASYNC_TCP_MAX_CONNECTIONS=4 confirmed");
 
-    // C3 环境使用 slim 配置
+    // C3 环境使用 lite 配置
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("slim_flags") != std::string::npos,
-        "C3 must use slim_flags (resource-constrained)");
-    TestLog::step("slim_flags confirmed for C3");
+        content.find("lite_flags") != std::string::npos,
+        "C3 must use lite_flags (resource-constrained)");
+    TestLog::step("lite_flags confirmed for C3");
 
     // C3 必须忽略 NimBLE（不支持经典蓝牙）
     TEST_ASSERT_TRUE_MESSAGE(

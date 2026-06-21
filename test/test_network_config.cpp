@@ -13,6 +13,7 @@
 #include "helpers/TestLogger.h"
 
 void test_network_config_group();
+void test_ap_to_sta_mode_transition();
 
 // Test WiFi mode switching
 void test_wifi_mode_switching() {
@@ -1679,8 +1680,59 @@ void test_network_config_group() {
     RUN_TEST(test_network_mode_auto_switch);
     RUN_TEST(test_ip_configuration);
     RUN_TEST(test_network_reconnect);
+    RUN_TEST(test_ap_to_sta_mode_transition);
     
     TestLog::groupEnd();
+}
+
+// ========== AP→STA 模式切换时序测试 ==========
+
+/**
+ * @brief 测试 AP→STA 模式切换的正确行为
+ * 
+ * 回归测试：修复 AP 模式下配置 WiFi 保存后无法连接的问题。
+ * 原因：`disconnect()` 后 WiFi 进入 OFF 状态，直接调用 `WiFi.mode(WIFI_STA)` + `WiFi.begin()`
+ * 没有给 ESP32 WiFi 子系统足够的时间重新初始化，导致首次连接失败。
+ * 重启后 `initialize()` 从初始状态启动，所以成功。
+ * 
+ * 修复：在 `WiFi.mode(WIFI_STA)` 后增加 `delay(500)`，确保 WiFi 子系统就绪。
+ */
+void test_ap_to_sta_mode_transition() {
+    TestLog::testStart("AP to STA Mode Transition");
+    
+    MockWiFiClass wifi;
+    
+    // 模拟设备初始在 AP 模式
+    wifi.mode(WIFI_AP);
+    wifi.softAP("fastbee-ap", "12345678");
+    TEST_ASSERT_EQUAL(WIFI_AP, wifi.getMode());
+    TestLog::step("Initial state: AP mode active");
+    
+    // 模拟 `disconnect()` 调用：断开 AP 和 STA
+    wifi.softAPdisconnect(true);  // true = wifioff, 关闭整个 WiFi 子系统
+    TEST_ASSERT_EQUAL(WIFI_OFF, wifi.getMode());
+    TEST_ASSERT_EQUAL(WL_DISCONNECTED, wifi.status());
+    TestLog::step("After disconnect(): WiFi in OFF state");
+    
+    // 模拟 AP→STA 模式切换
+    wifi.mode(WIFI_STA);
+    TEST_ASSERT_EQUAL(WIFI_STA, wifi.getMode());
+    TestLog::step("Mode switched to STA (修复后应有 delay(500) 等待 WiFi 子系统就绪)");
+    
+    // 验证 STA 模式可以成功连接
+    wifi.setShouldFail(false);
+    int result = wifi.begin("MyHomeWiFi", "SecretPassword");
+    TEST_ASSERT_EQUAL(WL_CONNECTED, result);
+    TEST_ASSERT_EQUAL(WIFI_STA, wifi.getMode());
+    TEST_ASSERT_EQUAL_STRING("MyHomeWiFi", wifi.SSID().c_str());
+    TestLog::step("STA connection succeeded after mode transition");
+    
+    // 断开连接
+    wifi.disconnect(true);
+    TEST_ASSERT_EQUAL(WIFI_OFF, wifi.getMode());
+    TestLog::step("Disconnected, WiFi back to OFF state");
+    
+    TestLog::testEnd(true);
 }
 
 // ========== mDNS 自定义域名功能测试 ==========

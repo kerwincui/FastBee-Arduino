@@ -74,6 +74,7 @@ bool WiFiManager::connectToWiFi() {
         // - 如果当前不包含 STA（如纯 AP 或 NULL），才切换到 STA
         if (!(currentMode & WIFI_STA)) {
             WiFi.mode(WIFI_STA);
+            delay(500);  // AP→STA 模式切换后等待 WiFi 子系统重新就绪
         }
         // AP+STA 模式保持原样：WiFi.begin() 在 AP+STA 下同样有效
     }

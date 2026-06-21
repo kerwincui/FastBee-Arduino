@@ -46,7 +46,7 @@ foreach ($File in $UniqueFiles) {
     $ParseErrors = $null
     [System.Management.Automation.Language.Parser]::ParseFile($File, [ref]$Tokens, [ref]$ParseErrors) | Out-Null
     foreach ($ParseError in $ParseErrors) {
-        $RelPath = [System.IO.Path]::GetRelativePath($ProjectDir, $File).Replace("\", "/")
+        $RelPath = $File.Substring($ProjectDir.TrimEnd('\','/').Length + 1).Replace('\', '/')
         $Issues.Add(("{0}:{1}:{2}: {3}" -f `
             $RelPath, `
             $ParseError.Extent.StartLineNumber, `
