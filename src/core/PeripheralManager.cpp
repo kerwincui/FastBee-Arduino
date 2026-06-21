@@ -871,6 +871,15 @@ GPIOState PeripheralManager::readPin(const String& peripheralId) {
         return detected ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
     }
 
+    // 编码器：返回计数值（转换为GPIOState，HIGH表示非零计数）
+    if (config->type == PeripheralType::ENCODER) {
+        auto it = encoderCounters.find(peripheralId);
+        if (it == encoderCounters.end()) {
+            return GPIOState::STATE_UNDEFINED;
+        }
+        return it->second != 0 ? GPIOState::STATE_HIGH : GPIOState::STATE_LOW;
+    }
+
     if (config->type == PeripheralType::RF_MODULE && config->params.rf.mode == RF_MODE_RX) {
         bool level = false;
         if (!readRfLevel(peripheralId, level)) return GPIOState::STATE_UNDEFINED;
@@ -925,6 +934,15 @@ bool PeripheralManager::writePin(const String& peripheralId, GPIOState state) {
     // Modbus 外设：通过委托回调写入
     if (config->isModbusPeripheral()) {
         return writeModbusPin(peripheralId, *config, state);
+    }
+
+    // 编码器：支持重置计数器（写入LOW表示重置）
+    if (config->type == PeripheralType::ENCODER) {
+        if (state == GPIOState::STATE_LOW) {
+            encoderCounters[peripheralId] = 0;
+            LOG_INFOF("Peripheral Manager: Encoder '%s' counter reset to 0", peripheralId.c_str());
+        }
+        return true;
     }
 
     if (!config->isGPIOPeripheral()) {
@@ -1526,6 +1544,34 @@ bool PeripheralManager::validateConfig(const PeripheralConfig& config, String& e
             }
             break;
 
+        case PeripheralType::ENCODER:
+            // 编码器参数验证
+            if (config.pinCount < 2) {
+                errorMsg = "编码器需要 2 个引脚 (A相, B相)";
+                return false;
+            }
+            if (config.params.encoder.resolution == 0) {
+                errorMsg = "编码器每转脉冲数不能为0";
+                return false;
+            }
+            break;
+
+        case PeripheralType::SDIO:
+            // SD卡参数验证
+            {
+                if (config.params.sdcard.interface > 1) {
+                    errorMsg = "SD卡接口模式无效 (0=SDMMC, 1=SPI)";
+                    return false;
+                }
+                // SPI模式至少需要4个引脚,SDMMC模式需要6个引脚
+                uint8_t minPins = (config.params.sdcard.interface == 0) ? 6 : 4;
+                if (config.pinCount < minPins) {
+                    errorMsg = "SD卡需要 " + String(minPins) + " 个引脚";
+                    return false;
+                }
+            }
+            break;
+
         case PeripheralType::NEO_PIXEL:
             if (config.pinCount < 1) {
                 errorMsg = "WS2812B 需要 1 个数据引脚";
@@ -1699,6 +1745,113 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
         return true;
     }
 
+    // ========== 编码器初始化 ==========
+    // 注意：当前版本使用GPIO中断方式实现编码器计数
+    // 未来优化方向：使用ESP32 PCNT（Pulse Counter）硬件模块
+    //   - PCNT优势：硬件级计数，无需CPU干预，精度更高
+    //   - 适用芯片：ESP32/ESP32-S3支持PCNT，ESP32-C3/C6不支持
+    //   - 实现方式：pcnt_unit_config() + pcnt_chan_config()
+    if (config.type == PeripheralType::ENCODER) {
+        if (config.pinCount < 2) {
+            LOG_WARNINGF("Peripheral Manager: Encoder '%s' requires 2 pins (A, B)", config.id.c_str());
+            return false;
+        }
+        uint8_t pinA = config.pins[0];
+        uint8_t pinB = config.pins[1];
+        if (isReservedPin(pinA) || isReservedPin(pinB)) {
+            LOG_ERRORF("Peripheral Manager: Encoder '%s' rejects reserved pins A=%d B=%d on %s",
+                       config.id.c_str(), pinA, pinB, CHIP_NAME);
+            return false;
+        }
+        
+        // 配置两个GPIO为输入模式（上拉）
+        // A相和B相都需要上拉电阻以确保稳定读取
+        pinMode(pinA, INPUT_PULLUP);
+        pinMode(pinB, INPUT_PULLUP);
+        
+        // 如果启用中断模式，附加GPIO中断
+        // 中断处理函数将在PeripheralManager::attachEncoderInterrupt()中实现
+        if (config.params.encoder.useInterrupt) {
+            // 初始化计数器
+            encoderCounters[config.id] = 0;
+            
+            // 附加中断到A相（上升沿和下降沿都触发）
+            attachInterruptArg(pinA, handleEncoderInterrupt, 
+                               const_cast<PeripheralConfig*>(&config), CHANGE);
+            
+            LOG_INFOF("Peripheral Manager: Encoder '%s' using GPIO interrupt mode (A=%d, B=%d)",
+                      config.id.c_str(), pinA, pinB);
+        }
+        
+        LOG_INFOF("Peripheral Manager: Encoder '%s' initialized A=%d B=%d resolution=%d interrupt=%d",
+                  config.id.c_str(), pinA, pinB,
+                  config.params.encoder.resolution,
+                  config.params.encoder.useInterrupt ? 1 : 0);
+        return true;
+    }
+
+    // ========== SD卡初始化 ==========
+    // 设计说明：采用延迟挂载策略（Lazy Mount）
+    //   1. 初始化阶段仅配置GPIO，不立即挂载文件系统
+    //   2. 首次文件操作时触发实际挂载（节省内存）
+    //   3. 避免未使用SD卡时浪费PSRAM/DRAM资源
+    // 
+    // 文件系统挂载流程：
+    //   - SPI模式：esp_vfs_fat_sdspi_mount()
+    //   - SDMMC模式：esp_vfs_fat_sdmmc_mount()
+    //   - 挂载点：/sdcard
+    //
+    // 内存考虑：
+    //   - FATFS挂载约占用 5-10KB RAM
+    //   - 低内存设备（ESP32-C3无PSRAM）应谨慎使用
+    if (config.type == PeripheralType::SDIO) {
+        // 当前版本仅支持SPI模式，SDMMC需要ESP-IDF底层驱动
+        if (config.params.sdcard.interface == 1) {
+            // SPI模式：需要CLK, MOSI, MISO, CS四个引脚
+            if (config.pinCount < 4) {
+                LOG_WARNINGF("Peripheral Manager: SD card SPI '%s' requires 4 pins", config.id.c_str());
+                return false;
+            }
+            uint8_t clk  = config.pins[0];
+            uint8_t mosi = config.pins[1];
+            uint8_t miso = config.pins[2];
+            uint8_t cs   = config.pins[3];
+            
+            if (isReservedPin(cs)) {
+                LOG_ERRORF("Peripheral Manager: SD card SPI '%s' rejects reserved CS GPIO%d on %s",
+                           config.id.c_str(), cs, CHIP_NAME);
+                return false;
+            }
+            
+            // 配置引脚
+            pinMode(clk, OUTPUT);
+            pinMode(mosi, OUTPUT);
+            pinMode(miso, INPUT);
+            pinMode(cs, OUTPUT);
+            digitalWrite(cs, HIGH);  // CS默认高（未选中）
+            
+            uint32_t freq = config.params.sdcard.frequency;
+            if (freq == 0) freq = 20000000;  // 默认20MHz
+            
+            LOG_INFOF("Peripheral Manager: SD card SPI '%s' initialized CLK=%d MOSI=%d MISO=%d CS=%d freq=%u (lazy mount)",
+                      config.id.c_str(), clk, mosi, miso, cs, (unsigned)freq);
+            // 注意：采用延迟挂载策略，文件系统将在首次读写时挂载
+            // 调用 SDCardManager::mount(config.id) 触发实际挂载
+            return true;
+        } else {
+            // SDMMC模式（仅部分ESP32支持）
+            LOG_WARNINGF("Peripheral Manager: SD card SDMMC '%s' not fully supported on %s, using GPIO init only (lazy mount)",
+                         config.id.c_str(), CHIP_NAME);
+            // 初始化SDMMC所需引脚（CMD, CLK, D0-D3）
+            for (uint8_t i = 0; i < config.pinCount && i < 8; i++) {
+                if (!isReservedPin(config.pins[i])) {
+                    pinMode(config.pins[i], INPUT_PULLUP);
+                }
+            }
+            return true;
+        }
+    }
+
 #if FASTBEE_ENABLE_SEVEN_SEGMENT
     // TM1637 数码管：使用 CLK + DIO 两个引脚，bit-bang 初始化
     if (config.type == PeripheralType::SEVEN_SEGMENT_TM1637) {
@@ -1834,17 +1987,17 @@ bool PeripheralManager::setupHardware(const PeripheralConfig& config) {
         return true;
     }
 
-    // ========== SENSOR 通用传感器初始化 ==========
-    if (config.type == PeripheralType::SENSOR) {
+    // ========== SENSOR_GENERIC 通用传感器容器初始化 ==========
+    if (config.type == PeripheralType::SENSOR_GENERIC) {
         uint8_t pin = config.getPrimaryPin();
         if (pin != 255) {
             // 根据传感器类型设置引脚模式
             pinMode(pin, INPUT_PULLUP);
-            LOG_INFOF("Peripheral Manager: Sensor '%s' initialized pin=%d sensorType=%d interval=%ums",
+            LOG_INFOF("Peripheral Manager: Generic Sensor '%s' initialized pin=%d sensorType=%d interval=%ums",
                       config.id.c_str(), pin, config.params.sensor.sensorType,
                       (unsigned)config.params.sensor.sampleInterval);
         } else {
-            LOG_INFOF("Peripheral Manager: Sensor '%s' registered (no local pin) sensorType=%d",
+            LOG_INFOF("Peripheral Manager: Generic Sensor '%s' registered (no local pin) sensorType=%d",
                       config.id.c_str(), config.params.sensor.sensorType);
         }
         return true;
@@ -3274,4 +3427,40 @@ bool PeripheralManager::writeModbusReg(const String& id, uint16_t regAddr, uint1
               id.c_str(), config->params.modbus.slaveAddress, regAddr, value,
               success ? "OK" : "FAIL");
     return success;
+}
+
+// ========== 编码器中断处理 ==========
+// 编码器使用正交解码原理：
+// - A相和B相相差90度相位
+// - 根据A相上升/下降沿时B相的状态判断转向
+// - 顺时针：计数+1；逆时针：计数-1
+
+void IRAM_ATTR PeripheralManager::handleEncoderInterrupt(void* arg) {
+    // arg指向PeripheralConfig结构体
+    PeripheralConfig* config = static_cast<PeripheralConfig*>(arg);
+    if (!config || config->type != PeripheralType::ENCODER) return;
+    
+    uint8_t pinA = config->pins[0];
+    uint8_t pinB = config->pins[1];
+    
+    // 读取A相和B相的当前状态
+    int stateA = digitalRead(pinA);
+    int stateB = digitalRead(pinB);
+    
+    // 使用简化的方向判断：
+    // 当A相发生中断时，根据B相状态判断方向
+    // B相为HIGH时顺时针，B相为LOW时逆时针
+    int32_t direction = stateB ? 1 : -1;
+    
+    // 获取当前外设ID
+    String peripheralId = config->id;
+    
+    // 更新计数器（在中断上下文中使用volatile变量）
+    auto& pm = PeripheralManager::getInstance();
+    auto it = pm.encoderCounters.find(peripheralId);
+    if (it != pm.encoderCounters.end()) {
+        it->second += direction;
+    } else {
+        pm.encoderCounters[peripheralId] = direction;
+    }
 }

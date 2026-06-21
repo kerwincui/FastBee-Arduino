@@ -38,7 +38,7 @@ enum class PeripheralType {
     // 专用外设接口 (36-50)
     LCD = 36,           // LCD显示
     SDIO,               // SD卡接口
-    SENSOR,             // 通用传感器
+    SENSOR_GENERIC,     // 通用传感器容器（逻辑数据源、外部传感器）
     CAMERA,             // 摄像头接口
     ETHERNET,           // 以太网
     PWM_SERVO,          // 舵机PWM
@@ -50,6 +50,8 @@ enum class PeripheralType {
     SEVEN_SEGMENT_TM1637 = 47, // TM1637 4位数码管（2个引脚：CLK/DIO，bit-bang 驱动）
     RF_MODULE = 48,     // 433MHz OOK/EV1527 style RF module
     RADAR_SENSOR = 49,  // RCWL-0516 / 5.8GHz radar digital presence sensor
+    DS1302_RTC = 50,    // DS1302 实时时钟模块（3线接口：CE/IO/SCLK）
+    LCD1602 = 52,       // LCD1602 I2C 字符液晶（通过 PCF8574 扩展板）
 
     // Modbus外设 (51-55)
     MODBUS_DEVICE = 51, // Modbus子设备（继电器/PWM/PID等）
@@ -136,7 +138,7 @@ inline const char* getPeripheralTypeName(PeripheralType type) {
         // 专用外设
         case PeripheralType::LCD: return "LCD";
         case PeripheralType::SDIO: return "SDIO";
-        case PeripheralType::SENSOR: return "Sensor";
+        case PeripheralType::SENSOR_GENERIC: return "Generic Sensor";
         case PeripheralType::CAMERA: return "Camera";
         case PeripheralType::ETHERNET: return "Ethernet";
         case PeripheralType::PWM_SERVO: return "Servo";
@@ -148,6 +150,8 @@ inline const char* getPeripheralTypeName(PeripheralType type) {
         case PeripheralType::SEVEN_SEGMENT_TM1637: return "TM1637 7-Segment";
         case PeripheralType::RF_MODULE: return "RF Module";
         case PeripheralType::RADAR_SENSOR: return "Radar Sensor";
+        case PeripheralType::DS1302_RTC: return "DS1302 RTC";
+        case PeripheralType::LCD1602: return "LCD1602";
 
         // Modbus外设
         case PeripheralType::MODBUS_DEVICE: return "Modbus Device";
@@ -187,11 +191,16 @@ inline uint8_t getPeripheralPinCount(PeripheralType type) {
         case PeripheralType::I2C:
         case PeripheralType::ENCODER:
         case PeripheralType::SEVEN_SEGMENT_TM1637:  // CLK + DIO
+        case PeripheralType::LCD1602:               // SDA + SCL
             return 2;
             
         // 三引脚
         case PeripheralType::SPI:
             return 4;  // MISO, MOSI, SCK, CS
+        
+        // DS1302 需要 3 个引脚：CE, IO, SCLK
+        case PeripheralType::DS1302_RTC:
+            return 3;
             
         // 四引脚
         case PeripheralType::STEPPER_MOTOR:
@@ -206,7 +215,7 @@ inline uint8_t getPeripheralPinCount(PeripheralType type) {
         case PeripheralType::SWD:
         case PeripheralType::CAN:
         case PeripheralType::USB:
-        case PeripheralType::SENSOR:
+        case PeripheralType::SENSOR_GENERIC:
         case PeripheralType::PWM_SERVO:
             return 8;  // 最大支持8个引脚
         
@@ -258,7 +267,8 @@ inline PeripheralType parsePeripheralType(const char* typeStr) {
     // 专用外设
     if (strcasecmp(typeStr, "LCD") == 0) return PeripheralType::LCD;
     if (strcasecmp(typeStr, "SDIO") == 0) return PeripheralType::SDIO;
-    if (strcasecmp(typeStr, "SENSOR") == 0) return PeripheralType::SENSOR;
+    if (strcasecmp(typeStr, "SENSOR_GENERIC") == 0 ||
+        strcasecmp(typeStr, "GENERIC_SENSOR") == 0) return PeripheralType::SENSOR_GENERIC;
     if (strcasecmp(typeStr, "CAMERA") == 0) return PeripheralType::CAMERA;
     if (strcasecmp(typeStr, "ETHERNET") == 0) return PeripheralType::ETHERNET;
     if (strcasecmp(typeStr, "PWM_SERVO") == 0) return PeripheralType::PWM_SERVO;
@@ -275,6 +285,11 @@ inline PeripheralType parsePeripheralType(const char* typeStr) {
         strcasecmp(typeStr, "RADAR") == 0 ||
         strcasecmp(typeStr, "RCWL_0516") == 0 ||
         strcasecmp(typeStr, "RCWL-0516") == 0) return PeripheralType::RADAR_SENSOR;
+    if (strcasecmp(typeStr, "DS1302_RTC") == 0 ||
+        strcasecmp(typeStr, "DS1302") == 0 ||
+        strcasecmp(typeStr, "RTC_DS1302") == 0) return PeripheralType::DS1302_RTC;
+    if (strcasecmp(typeStr, "LCD1602") == 0 ||
+        strcasecmp(typeStr, "LCD_1602") == 0) return PeripheralType::LCD1602;
 
     // Modbus外设
     if (strcasecmp(typeStr, "MODBUS_DEVICE") == 0) return PeripheralType::MODBUS_DEVICE;
@@ -287,7 +302,7 @@ inline PeripheralType parsePeripheralType(const char* typeStr) {
 
 // 从整数值解析外设类型
 inline PeripheralType peripheralTypeFromInt(int value) {
-    if ((value >= 0 && value <= 50) || (value >= 51 && value <= 55) || value == 60) {
+    if ((value >= 0 && value <= 55) || value == 60) {
         return static_cast<PeripheralType>(value);
     }
     return PeripheralType::UNCONFIGURED;

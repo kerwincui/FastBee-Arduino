@@ -14,6 +14,7 @@ namespace TestConfig {
     constexpr const char* TEST_WIFI_PASSWORD = "TestPassword123";
     constexpr const char* TEST_MQTT_SERVER = "test.mqtt.server";
     constexpr int TEST_MQTT_PORT = 1883;
+    constexpr int TEST_MQTTS_PORT = 8883;
     
     // 超时配置（毫秒）
     constexpr unsigned long NETWORK_TIMEOUT = 30000;
@@ -33,6 +34,17 @@ namespace TestConfig {
     // 测试阈值
     constexpr uint32_t MIN_FREE_HEAP = 10000;  // 10KB
     constexpr uint32_t MAX_HEAP_LEAK = 5000;   // 5KB
+    
+    // 测试IP地址
+    constexpr const char* TEST_LOCAL_IP = "192.168.1.100";
+    constexpr const char* TEST_GATEWAY_IP = "192.168.1.1";
+    constexpr const char* TEST_SUBNET_MASK = "255.255.255.0";
+    constexpr const char* TEST_DNS_SERVER = "8.8.8.8";
+    
+    // 测试客户端ID
+    constexpr const char* TEST_CLIENT_ID = "TestClient001";
+    constexpr const char* TEST_USERNAME = "testuser";
+    constexpr const char* TEST_PASSWORD = "testpass";
 }
 
 #endif // TEST_CONFIG_H

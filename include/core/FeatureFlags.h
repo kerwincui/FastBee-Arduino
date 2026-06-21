@@ -428,6 +428,29 @@
     #define FASTBEE_ENABLE_IR_REMOTE 0
 #endif
 
+/**
+ * @brief DS1302 实时时钟模块支持
+ * 默认：禁用
+ * 占用：约 2KB Flash
+ * RAM：约 100B
+ * 说明：3线接口（CE/IO/SCLK），支持时间读取/设置、涓流充电、31字节RAM
+ */
+#ifndef FASTBEE_ENABLE_DS1302
+    #define FASTBEE_ENABLE_DS1302 0
+#endif
+
+/**
+ * @brief LCD1602 I2C 字符液晶支持
+ * 默认：禁用
+ * 占用：约 3KB Flash
+ * RAM：约 100B
+ * 需要：Wire 库（内置）
+ * 说明：通过 PCF8574/PCF8574A 扩展板，支持 16x2 和 20x4 液晶
+ */
+#ifndef FASTBEE_ENABLE_LCD1602
+    #define FASTBEE_ENABLE_LCD1602 0
+#endif
+
 // ============================================================================
 // 调试功能开关
 // ============================================================================

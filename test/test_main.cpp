@@ -45,6 +45,8 @@ extern void test_network_utils_group();
 extern void test_script_engine_group();
 extern void test_restart_diagnostics_group();
 extern void test_modbus_handler_group();
+extern void test_ds1302_group();
+extern void test_lcd1602_group();
 
 // 测试夹具
 void setUp() {
@@ -184,6 +186,12 @@ void setup() {
 
     Serial.println("\n[TEST] Running Modbus Handler Tests...");
     test_modbus_handler_group();
+
+    Serial.println("\n[TEST] Running DS1302 RTC Tests...");
+    test_ds1302_group();
+
+    Serial.println("\n[TEST] Running LCD1602 Tests...");
+    test_lcd1602_group();
 
     // 结束测试并输出结果
     int result = UNITY_END();

@@ -25,7 +25,7 @@ const ENV_EXPECTATIONS = {
         board: 'esp32-c3-devkitm-1',
         partition: 'partitions/fastbee.csv',
         psram: false,
-        buildFlags: ['${esp32c3_runtime_flags.build_flags}', '${slim_flags.build_flags}'],
+        buildFlags: ['${esp32c3_runtime_flags.build_flags}', '${lite_flags.build_flags}'],
         forbiddenBuildFlags: ['${standard_flags.build_flags}', '${full_flags.build_flags}'],
         libIgnore: ['NimBLE-Arduino']
     },
@@ -34,7 +34,7 @@ const ENV_EXPECTATIONS = {
         board: 'esp32-c6-devkitc-1',
         partition: 'partitions/fastbee.csv',
         psram: false,
-        buildFlags: ['${esp32c6_runtime_flags.build_flags}', '${slim_flags.build_flags}', '-DFASTBEE_ENABLE_DS18B20=0'],
+        buildFlags: ['${esp32c6_runtime_flags.build_flags}', '${lite_flags.build_flags}', '-DFASTBEE_ENABLE_DS18B20=0'],
         forbiddenBuildFlags: ['${standard_flags.build_flags}', '${full_flags.build_flags}'],
         libIgnore: ['NimBLE-Arduino', 'OneWire', 'DallasTemperature']
     },
@@ -45,7 +45,7 @@ const ENV_EXPECTATIONS = {
         partition: 'partitions/fastbee.csv',
         psram: false,
         buildFlags: ['${esp32_runtime_flags.build_flags}', '${standard_flags.build_flags}', '-DFASTBEE_ENABLE_OTA=0', '-DFASTBEE_ENABLE_OTA_FS=0'],
-        forbiddenBuildFlags: ['${slim_flags.build_flags}', '${full_flags.build_flags}'],
+        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${full_flags.build_flags}'],
         libIgnore: ['NimBLE-Arduino']
     },
     'esp32-F8R4': {
@@ -56,7 +56,7 @@ const ENV_EXPECTATIONS = {
         flashSize: '8MB',
         psram: true,
         buildFlags: ['${esp32_runtime_flags.build_flags}', '${full_flags.build_flags}', '-DFASTBEE_ENABLE_IR_REMOTE=1'],
-        forbiddenBuildFlags: ['${slim_flags.build_flags}', '${standard_flags.build_flags}']
+        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${standard_flags.build_flags}']
     },
     'esp32s3-F8R0': {
         profile: 'standard',
@@ -65,7 +65,7 @@ const ENV_EXPECTATIONS = {
         flashSize: '8MB',
         psram: false,
         buildFlags: ['${esp32s3_runtime_flags.build_flags}', '${standard_flags.build_flags}', '-DFASTBEE_ENABLE_OTA=1', '-DFASTBEE_ENABLE_OTA_FS=1'],
-        forbiddenBuildFlags: ['${slim_flags.build_flags}', '${full_flags.build_flags}']
+        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${full_flags.build_flags}']
     },
     'esp32s3-F8R4': {
         profile: 'full',
@@ -74,7 +74,7 @@ const ENV_EXPECTATIONS = {
         flashSize: '8MB',
         psram: true,
         buildFlags: ['${esp32s3_runtime_flags.build_flags}', '${full_flags.build_flags}', '-DFASTBEE_ENABLE_IR_REMOTE=0'],
-        forbiddenBuildFlags: ['${slim_flags.build_flags}', '${standard_flags.build_flags}']
+        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${standard_flags.build_flags}']
     },
     'esp32s3-F16R8': {
         profile: 'full',
@@ -83,12 +83,12 @@ const ENV_EXPECTATIONS = {
         flashSize: '16MB',
         psram: true,
         buildFlags: ['${esp32s3_runtime_flags.build_flags}', '${full_flags.build_flags}', '-DFASTBEE_ENABLE_IR_REMOTE=0'],
-        forbiddenBuildFlags: ['${slim_flags.build_flags}', '${standard_flags.build_flags}']
+        forbiddenBuildFlags: ['${lite_flags.build_flags}', '${standard_flags.build_flags}']
     }
 };
 
 const FLAG_SECTION_REQUIREMENTS = {
-    slim_flags: [
+    lite_flags: [
         '-DFASTBEE_USE_PSRAM=0',
         '-DFASTBEE_ENABLE_TCP=0',
         '-DFASTBEE_ENABLE_HTTP=0',

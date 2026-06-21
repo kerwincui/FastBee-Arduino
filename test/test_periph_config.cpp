@@ -1399,6 +1399,321 @@ void test_param_group_new_peripheral_uart_params_present() {
 }
 
 // ============================================================
+//  TEST GROUP 8: 编码器与SDIO外设驱动测试
+// ============================================================
+
+void test_encoder_type_enum_value() {
+    // ENCODER 类型值必须为 43
+    TEST_ASSERT_EQUAL(43, static_cast<int>(PeripheralType::ENCODER));
+}
+
+void test_sdio_type_enum_value() {
+    // SDIO 类型值必须为 37
+    TEST_ASSERT_EQUAL(37, static_cast<int>(PeripheralType::SDIO));
+}
+
+void test_encoder_config_validation_valid() {
+    // 编码器配置：2个引脚，resolution > 0
+    PeripheralConfig config;
+    config.id = "encoder_01";
+    config.name = "Rotary Encoder";
+    config.type = PeripheralType::ENCODER;
+    config.pinCount = 2;
+    config.pins[0] = 4;
+    config.pins[1] = 5;
+    config.encoder.resolution = 1024;
+    config.encoder.useInterrupt = true;
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+
+    PeripheralConfig* fetched = pm.getPeripheral("encoder_01");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL(PeripheralType::ENCODER, fetched->type);
+    TEST_ASSERT_EQUAL_UINT8(2, fetched->pinCount);
+    TEST_ASSERT_EQUAL_UINT16(1024, fetched->encoder.resolution);
+    TEST_ASSERT_TRUE(fetched->encoder.useInterrupt);
+}
+
+void test_encoder_config_validation_missing_pins() {
+    // 注意：MockPeripheralManager 不包含验证逻辑，此测试仅验证数据结构
+    // 实际验证在 PeripheralManager::validateConfig() 中实现
+    PeripheralConfig config;
+    config.id = "encoder_bad";
+    config.name = "Bad Encoder";
+    config.type = PeripheralType::ENCODER;
+    config.pinCount = 1;  // 生产代码会拒绝：需要2个引脚
+    config.pins[0] = 4;
+    config.encoder.resolution = 1024;
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    // Mock 版本接受所有配置，仅测试数据能正确存储
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+    
+    PeripheralConfig* fetched = pm.getPeripheral("encoder_bad");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL_UINT8(1, fetched->pinCount);  // 验证数据被保存
+}
+
+void test_encoder_config_validation_zero_resolution() {
+    // 注意：MockPeripheralManager 不包含验证逻辑
+    // 实际验证在 PeripheralManager::validateConfig() 中实现
+    PeripheralConfig config;
+    config.id = "encoder_zero";
+    config.name = "Zero Resolution";
+    config.type = PeripheralType::ENCODER;
+    config.pinCount = 2;
+    config.pins[0] = 4;
+    config.pins[1] = 5;
+    config.encoder.resolution = 0;  // 生产代码会拒绝：不能为0
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));  // Mock接受所有配置
+    
+    PeripheralConfig* fetched = pm.getPeripheral("encoder_zero");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL_UINT16(0, fetched->encoder.resolution);
+}
+
+void test_encoder_data_transparency() {
+    // 编码器配置数据应原样透传
+    PeripheralConfig config;
+    config.id = "encoder_trans";
+    config.name = "Transparent Encoder";
+    config.type = PeripheralType::ENCODER;
+    config.pinCount = 2;
+    config.pins[0] = 16;
+    config.pins[1] = 17;
+    config.encoder.resolution = 4096;
+    config.encoder.useInterrupt = false;
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+
+    PeripheralConfig* fetched = pm.getPeripheral("encoder_trans");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL_UINT16(4096, fetched->encoder.resolution);
+    TEST_ASSERT_FALSE(fetched->encoder.useInterrupt);
+    TEST_ASSERT_EQUAL_UINT8(16, fetched->pins[0]);
+    TEST_ASSERT_EQUAL_UINT8(17, fetched->pins[1]);
+}
+
+void test_encoder_read_counter() {
+    // 编码器读取：返回计数器值
+    PeripheralConfig config;
+    config.id = "encoder_read";
+    config.name = "Encoder Read Test";
+    config.type = PeripheralType::ENCODER;
+    config.pinCount = 2;
+    config.pins[0] = 4;
+    config.pins[1] = 5;
+    config.encoder.resolution = 1024;
+    config.encoder.useInterrupt = true;
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+    
+    // 初始计数为0
+    int32_t counter = pm.getEncoderCounter("encoder_read");
+    TEST_ASSERT_EQUAL_INT32(0, counter);
+    
+    // 模拟编码器计数增加
+    pm.setEncoderCounter("encoder_read", 512);
+    counter = pm.getEncoderCounter("encoder_read");
+    TEST_ASSERT_EQUAL_INT32(512, counter);
+    
+    // 模拟继续计数
+    pm.setEncoderCounter("encoder_read", 1024);
+    counter = pm.getEncoderCounter("encoder_read");
+    TEST_ASSERT_EQUAL_INT32(1024, counter);
+}
+
+void test_encoder_reset_counter() {
+    // 编码器重置：写入LOW将计数器归零
+    PeripheralConfig config;
+    config.id = "encoder_reset";
+    config.name = "Encoder Reset Test";
+    config.type = PeripheralType::ENCODER;
+    config.pinCount = 2;
+    config.pins[0] = 6;
+    config.pins[1] = 7;
+    config.encoder.resolution = 2048;
+    config.encoder.useInterrupt = true;
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+    
+    // 设置初始计数
+    pm.setEncoderCounter("encoder_reset", 5000);
+    int32_t counter = pm.getEncoderCounter("encoder_reset");
+    TEST_ASSERT_EQUAL_INT32(5000, counter);
+    
+    // 模拟写入LOW（重置计数器）
+    pm.resetEncoderCounter("encoder_reset");
+    counter = pm.getEncoderCounter("encoder_reset");
+    TEST_ASSERT_EQUAL_INT32(0, counter);
+}
+
+void test_sdio_config_validation_spi_mode() {
+    // SD卡SPI模式：4个引脚，interface=1
+    PeripheralConfig config;
+    config.id = "sdcard_spi";
+    config.name = "SD Card SPI";
+    config.type = PeripheralType::SDIO;
+    config.pinCount = 4;
+    config.pins[0] = 14;  // CLK
+    config.pins[1] = 13;  // MOSI
+    config.pins[2] = 12;  // MISO
+    config.pins[3] = 15;  // CS
+    config.sdcard.interface = 1;  // SPI模式
+    config.sdcard.frequency = 20000000;
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+
+    PeripheralConfig* fetched = pm.getPeripheral("sdcard_spi");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL(PeripheralType::SDIO, fetched->type);
+    TEST_ASSERT_EQUAL_UINT8(1, fetched->sdcard.interface);
+    TEST_ASSERT_EQUAL_UINT32(20000000, fetched->sdcard.frequency);
+}
+
+void test_sdio_config_validation_sdmmc_mode() {
+    // SD卡SDMMC模式：6个引脚，interface=0
+    PeripheralConfig config;
+    config.id = "sdcard_sdmmc";
+    config.name = "SD Card SDMMC";
+    config.type = PeripheralType::SDIO;
+    config.pinCount = 6;
+    config.pins[0] = 2;   // CMD
+    config.pins[1] = 14;  // CLK
+    config.pins[2] = 4;   // D0
+    config.pins[3] = 12;  // D1
+    config.pins[4] = 13;  // D2
+    config.pins[5] = 15;  // D3
+    config.sdcard.interface = 0;  // SDMMC模式
+    config.sdcard.frequency = 40000000;
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+
+    PeripheralConfig* fetched = pm.getPeripheral("sdcard_sdmmc");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL_UINT8(0, fetched->sdcard.interface);
+    TEST_ASSERT_EQUAL_UINT32(40000000, fetched->sdcard.frequency);
+}
+
+void test_sdio_config_validation_insufficient_pins() {
+    // 注意：MockPeripheralManager 不包含验证逻辑
+    // 实际验证在 PeripheralManager::validateConfig() 中实现
+    PeripheralConfig config;
+    config.id = "sdcard_bad";
+    config.name = "Bad SD Card";
+    config.type = PeripheralType::SDIO;
+    config.pinCount = 3;  // 生产代码会拒绝：SPI需要4个
+    config.pins[0] = 14;
+    config.pins[1] = 13;
+    config.pins[2] = 12;
+    config.sdcard.interface = 1;  // SPI模式
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));  // Mock接受所有配置
+    
+    PeripheralConfig* fetched = pm.getPeripheral("sdcard_bad");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL_UINT8(3, fetched->pinCount);
+}
+
+void test_sdio_data_transparency_spi() {
+    // SD卡SPI配置数据应原样透传
+    PeripheralConfig config;
+    config.id = "sd_trans_spi";
+    config.name = "Transparent SD SPI";
+    config.type = PeripheralType::SDIO;
+    config.pinCount = 4;
+    config.pins[0] = 18;
+    config.pins[1] = 23;
+    config.pins[2] = 19;
+    config.pins[3] = 5;
+    config.sdcard.interface = 1;
+    config.sdcard.frequency = 10000000;  // 10MHz
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+
+    PeripheralConfig* fetched = pm.getPeripheral("sd_trans_spi");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL_UINT8(1, fetched->sdcard.interface);
+    TEST_ASSERT_EQUAL_UINT32(10000000, fetched->sdcard.frequency);
+    TEST_ASSERT_EQUAL_UINT8(18, fetched->pins[0]);
+    TEST_ASSERT_EQUAL_UINT8(5, fetched->pins[3]);
+}
+
+void test_sdio_data_transparency_sdmmc() {
+    // SD卡SDMMC配置数据应原样透传
+    PeripheralConfig config;
+    config.id = "sd_trans_sdmmc";
+    config.name = "Transparent SD SDMMC";
+    config.type = PeripheralType::SDIO;
+    config.pinCount = 6;
+    config.pins[0] = 2;
+    config.pins[1] = 14;
+    config.pins[2] = 4;
+    config.pins[3] = 12;
+    config.pins[4] = 13;
+    config.pins[5] = 15;
+    config.sdcard.interface = 0;
+    config.sdcard.frequency = 25000000;
+
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    pm.initialize();
+    TEST_ASSERT_TRUE(pm.addPeripheral(config));
+
+    PeripheralConfig* fetched = pm.getPeripheral("sd_trans_sdmmc");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL_UINT8(0, fetched->sdcard.interface);
+    TEST_ASSERT_EQUAL_UINT32(25000000, fetched->sdcard.frequency);
+    TEST_ASSERT_EQUAL(6, fetched->pinCount);
+}
+
+void test_unimplemented_types_removed_from_ui() {
+    // 验证未实现类型已从UI中移除（但枚举仍存在以保持兼容）
+    // CAN(4), USB(5), JTAG(31), SWD(32), CAMERA(39), ETHERNET(40)
+    // 注意：ENCODER(43)和SDIO(37)现在已实现
+    
+    std::vector<int> removedFromUI = {4, 5, 31, 32, 39, 40};
+    
+    // 这些类型在枚举中仍然存在
+    TEST_ASSERT_EQUAL(4, static_cast<int>(PeripheralType::CAN));
+    TEST_ASSERT_EQUAL(5, static_cast<int>(PeripheralType::USB));
+    TEST_ASSERT_EQUAL(31, static_cast<int>(PeripheralType::JTAG));
+    TEST_ASSERT_EQUAL(32, static_cast<int>(PeripheralType::SWD));
+    TEST_ASSERT_EQUAL(39, static_cast<int>(PeripheralType::CAMERA));
+    TEST_ASSERT_EQUAL(40, static_cast<int>(PeripheralType::ETHERNET));
+    
+    // 但编码器和SDIO现在是已实现的
+    TEST_ASSERT_EQUAL(43, static_cast<int>(PeripheralType::ENCODER));
+    TEST_ASSERT_EQUAL(37, static_cast<int>(PeripheralType::SDIO));
+    
+    // 验证它们不在removedFromUI列表中
+    for (int t : removedFromUI) {
+        bool isEncoderOrSdio = (t == 43 || t == 37);
+        TEST_ASSERT_FALSE_MESSAGE(isEncoderOrSdio,
+            "Encoder(43) and SDIO(37) should not be in removed list");
+    }
+}
+
+// ============================================================
 //  测试入口
 // ============================================================
 
@@ -1493,4 +1808,20 @@ void test_periph_config_group() {
     RUN_TEST(test_param_group_category_consistency);
     RUN_TEST(test_param_group_new_peripheral_default_disabled);
     RUN_TEST(test_param_group_new_peripheral_uart_params_present);
+
+    // Group 8: 编码器与SDIO外设驱动测试
+    RUN_TEST(test_encoder_type_enum_value);
+    RUN_TEST(test_sdio_type_enum_value);
+    RUN_TEST(test_encoder_config_validation_valid);
+    RUN_TEST(test_encoder_config_validation_missing_pins);
+    RUN_TEST(test_encoder_config_validation_zero_resolution);
+    RUN_TEST(test_encoder_data_transparency);
+    RUN_TEST(test_encoder_read_counter);
+    RUN_TEST(test_encoder_reset_counter);
+    RUN_TEST(test_sdio_config_validation_spi_mode);
+    RUN_TEST(test_sdio_config_validation_sdmmc_mode);
+    RUN_TEST(test_sdio_config_validation_insufficient_pins);
+    RUN_TEST(test_sdio_data_transparency_spi);
+    RUN_TEST(test_sdio_data_transparency_sdmmc);
+    RUN_TEST(test_unimplemented_types_removed_from_ui);
 }

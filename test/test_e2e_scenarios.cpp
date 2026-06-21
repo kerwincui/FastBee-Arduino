@@ -1187,6 +1187,299 @@ void test_e2e_ethernet_mqtt_ntp_full_chain_stability() {
     TestLog::testEnd(true);
 }
 
+// ============================================================
+//  编码器与SDIO外设E2E场景测试
+// ============================================================
+
+void test_e2e_encoder_peripheral_workflow() {
+    TestLog::testStart("E2E: Encoder Peripheral Workflow");
+    
+    E2EFastBeeFramework fw;
+    fw.initialize();
+    
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    
+    // Step 1: 创建编码器外设
+    TestLog::step("Creating encoder peripheral");
+    PeripheralConfig encoder;
+    encoder.id = "encoder_01";
+    encoder.name = "Rotary Encoder";
+    encoder.type = PeripheralType::ENCODER;
+    encoder.pinCount = 2;
+    encoder.pins[0] = 4;
+    encoder.pins[1] = 5;
+    encoder.encoder.resolution = 1024;
+    encoder.encoder.useInterrupt = true;
+    encoder.enabled = true;
+    
+    TEST_ASSERT_TRUE(pm.addPeripheral(encoder));
+    TestLog::step("Encoder added: pins 4,5 resolution=1024");
+    
+    // Step 2: 验证配置数据
+    TestLog::step("Verifying configuration");
+    PeripheralConfig* fetched = pm.getPeripheral("encoder_01");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL(PeripheralType::ENCODER, fetched->type);
+    TEST_ASSERT_EQUAL_UINT8(2, fetched->pinCount);
+    TEST_ASSERT_EQUAL_UINT8(4, fetched->pins[0]);
+    TEST_ASSERT_EQUAL_UINT8(5, fetched->pins[1]);
+    TEST_ASSERT_EQUAL_UINT16(1024, fetched->encoder.resolution);
+    TEST_ASSERT_TRUE(fetched->encoder.useInterrupt);
+    TestLog::step("Configuration verified");
+    
+    // Step 3: 更新编码器参数
+    TestLog::step("Updating encoder resolution");
+    encoder.encoder.resolution = 2048;
+    TEST_ASSERT_TRUE(pm.updatePeripheral("encoder_01", encoder));
+    
+    fetched = pm.getPeripheral("encoder_01");
+    TEST_ASSERT_EQUAL_UINT16(2048, fetched->encoder.resolution);
+    TestLog::step("Resolution updated to 2048");
+    
+    // Step 4: 初始化编码器计数器
+    TestLog::step("Initializing encoder counter");
+    pm.setEncoderCounter("encoder_01", 0);
+    int32_t counter = pm.getEncoderCounter("encoder_01");
+    TEST_ASSERT_EQUAL_INT32(0, counter);
+    TestLog::step("Counter initialized to 0");
+    
+    // Step 5: 模拟编码器计数增加
+    TestLog::step("Simulating encoder rotation");
+    pm.setEncoderCounter("encoder_01", 512);
+    counter = pm.getEncoderCounter("encoder_01");
+    TEST_ASSERT_EQUAL_INT32(512, counter);
+    TestLog::step("Counter incremented to 512");
+    
+    // Step 6: 继续计数
+    TestLog::step("Continuing rotation");
+    pm.setEncoderCounter("encoder_01", 1024);
+    counter = pm.getEncoderCounter("encoder_01");
+    TEST_ASSERT_EQUAL_INT32(1024, counter);
+    TestLog::step("Counter incremented to 1024 (full revolution)");
+    
+    // Step 7: 重置计数器
+    TestLog::step("Resetting encoder counter");
+    pm.resetEncoderCounter("encoder_01");
+    counter = pm.getEncoderCounter("encoder_01");
+    TEST_ASSERT_EQUAL_INT32(0, counter);
+    TestLog::step("Counter reset to 0");
+    
+    TestLog::testEnd(true);
+}
+
+void test_e2e_sdcard_spi_peripheral_workflow() {
+    TestLog::testStart("E2E: SD Card SPI Peripheral Workflow");
+    
+    E2EFastBeeFramework fw;
+    fw.initialize();
+    
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    
+    // Step 1: 创建SD卡SPI外设
+    TestLog::step("Creating SD card SPI peripheral");
+    PeripheralConfig sdcard;
+    sdcard.id = "sdcard_spi";
+    sdcard.name = "SD Card SPI";
+    sdcard.type = PeripheralType::SDIO;
+    sdcard.pinCount = 4;
+    sdcard.pins[0] = 14;  // CLK
+    sdcard.pins[1] = 13;  // MOSI
+    sdcard.pins[2] = 12;  // MISO
+    sdcard.pins[3] = 15;  // CS
+    sdcard.sdcard.interface = 1;  // SPI模式
+    sdcard.sdcard.frequency = 20000000;
+    sdcard.enabled = true;
+    
+    TEST_ASSERT_TRUE(pm.addPeripheral(sdcard));
+    TestLog::step("SD card SPI added: CLK=14, MOSI=13, MISO=12, CS=15");
+    
+    // Step 2: 验证配置
+    TestLog::step("Verifying SD card configuration");
+    PeripheralConfig* fetched = pm.getPeripheral("sdcard_spi");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL(PeripheralType::SDIO, fetched->type);
+    TEST_ASSERT_EQUAL_UINT8(4, fetched->pinCount);
+    TEST_ASSERT_EQUAL_UINT8(1, fetched->sdcard.interface);
+    TEST_ASSERT_EQUAL_UINT32(20000000, fetched->sdcard.frequency);
+    TestLog::step("Configuration verified");
+    
+    // Step 3: 修改频率
+    TestLog::step("Updating SD card frequency");
+    sdcard.sdcard.frequency = 10000000;  // 降频到10MHz
+    TEST_ASSERT_TRUE(pm.updatePeripheral("sdcard_spi", sdcard));
+    
+    fetched = pm.getPeripheral("sdcard_spi");
+    TEST_ASSERT_EQUAL_UINT32(10000000, fetched->sdcard.frequency);
+    TestLog::step("Frequency updated to 10MHz");
+    
+    TestLog::testEnd(true);
+}
+
+void test_e2e_sdcard_sdmmc_peripheral_workflow() {
+    TestLog::testStart("E2E: SD Card SDMMC Peripheral Workflow");
+    
+    E2EFastBeeFramework fw;
+    fw.initialize();
+    
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    
+    // Step 1: 创建SD卡SDMMC外设
+    TestLog::step("Creating SD card SDMMC peripheral");
+    PeripheralConfig sdcard;
+    sdcard.id = "sdcard_sdmmc";
+    sdcard.name = "SD Card SDMMC";
+    sdcard.type = PeripheralType::SDIO;
+    sdcard.pinCount = 6;
+    sdcard.pins[0] = 2;   // CMD
+    sdcard.pins[1] = 14;  // CLK
+    sdcard.pins[2] = 4;   // D0
+    sdcard.pins[3] = 12;  // D1
+    sdcard.pins[4] = 13;  // D2
+    sdcard.pins[5] = 15;  // D3
+    sdcard.sdcard.interface = 0;  // SDMMC模式
+    sdcard.sdcard.frequency = 40000000;
+    sdcard.enabled = true;
+    
+    TEST_ASSERT_TRUE(pm.addPeripheral(sdcard));
+    TestLog::step("SD card SDMMC added: 6 pins, 40MHz");
+    
+    // Step 2: 验证配置
+    TestLog::step("Verifying SDMMC configuration");
+    PeripheralConfig* fetched = pm.getPeripheral("sdcard_sdmmc");
+    TEST_ASSERT_NOT_NULL(fetched);
+    TEST_ASSERT_EQUAL_UINT8(0, fetched->sdcard.interface);
+    TEST_ASSERT_EQUAL_UINT8(6, fetched->pinCount);
+    TEST_ASSERT_EQUAL_UINT32(40000000, fetched->sdcard.frequency);
+    TestLog::step("SDMMC configuration verified");
+    
+    TestLog::testEnd(true);
+}
+
+void test_e2e_encoder_mqtt_integration() {
+    TestLog::testStart("E2E: Encoder + MQTT Integration");
+    
+    E2EFastBeeFramework fw;
+    fw.initialize();
+    
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    MockMQTTClient mqtt;
+    
+    // Step 1: 创建编码器
+    TestLog::step("Setting up encoder");
+    PeripheralConfig encoder;
+    encoder.id = "encoder_01";
+    encoder.name = "Rotary Encoder";
+    encoder.type = PeripheralType::ENCODER;
+    encoder.pinCount = 2;
+    encoder.pins[0] = 4;
+    encoder.pins[1] = 5;
+    encoder.encoder.resolution = 1024;
+    encoder.enabled = true;
+    
+    TEST_ASSERT_TRUE(pm.addPeripheral(encoder));
+    
+    // Step 2: 连接MQTT
+    TestLog::step("Connecting to MQTT");
+    MQTTConfig mqttConfig;
+    mqttConfig.enabled = true;
+    mqttConfig.server = "broker.example.com";
+    mqttConfig.port = 1883;
+    mqttConfig.clientId = "test_client";
+    mqttConfig.username = "testuser";
+    mqttConfig.password = "testpass";
+    mqtt.initialize(mqttConfig);
+    mqtt.setConnected(true);
+    TEST_ASSERT_TRUE(mqtt.getIsConnected());
+    
+    // Step 3: 模拟编码器数据并通过MQTT发布
+    TestLog::step("Publishing encoder data via MQTT");
+    String payload = "{\"encoder\":\"encoder_01\",\"position\":512,\"resolution\":1024}";
+    TEST_ASSERT_TRUE(mqtt.publish("fastbee/peripherals/encoder_01", payload.c_str()));
+    
+    // Step 4: 验证MQTT消息已发布
+    TestLog::step("Verifying MQTT message");
+    auto messages = mqtt.getPublishedMessages();
+    TEST_ASSERT_TRUE(messages.size() > 0);
+    TEST_ASSERT_EQUAL_STRING("fastbee/peripherals/encoder_01", messages[0].topic.c_str());
+    TEST_ASSERT_TRUE(messages[0].payload.indexOf("encoder_01") >= 0);
+    TEST_ASSERT_TRUE(messages[0].payload.indexOf("512") >= 0);
+    
+    // Step 5: 模拟通过MQTT控制编码器重置
+    TestLog::step("Receiving MQTT command to reset encoder");
+    String commandPayload = "{\"action\":\"reset\"}";
+    mqtt.simulateMessage("fastbee/peripherals/encoder_01/cmd", commandPayload.c_str());
+    
+    TestLog::testEnd(true);
+}
+
+void test_e2e_sdcard_file_operations() {
+    TestLog::testStart("E2E: SD Card File Operations");
+    
+    E2EFastBeeFramework fw;
+    fw.initialize();
+    
+    MockPeripheralManager& pm = MockPeripheralManager::getInstance();
+    
+    // Step 1: 创建SD卡外设
+    TestLog::step("Setting up SD card");
+    PeripheralConfig sdcard;
+    sdcard.id = "sdcard_01";
+    sdcard.name = "SD Card";
+    sdcard.type = PeripheralType::SDIO;
+    sdcard.pinCount = 4;
+    sdcard.pins[0] = 14;
+    sdcard.pins[1] = 13;
+    sdcard.pins[2] = 12;
+    sdcard.pins[3] = 15;
+    sdcard.sdcard.interface = 1;
+    sdcard.sdcard.frequency = 20000000;
+    sdcard.enabled = true;
+    
+    TEST_ASSERT_TRUE(pm.addPeripheral(sdcard));
+    
+    // Step 2: 模拟SD卡文件系统操作
+    TestLog::step("Testing file operations on SD card");
+    
+    // 创建文件
+    MockLittleFS.mkdir("/sdcard");
+    MockFile file = MockLittleFS.open("/sdcard/test.txt", "w");
+    TEST_ASSERT_TRUE(file);
+    file.print("Encoder Position: 1024\n");
+    file.print("Timestamp: 2026-01-01 12:00:00\n");
+    file.close();
+    TestLog::step("File created: /sdcard/test.txt");
+    
+    // 读取文件
+    file = MockLittleFS.open("/sdcard/test.txt", "r");
+    TEST_ASSERT_TRUE(file);
+    String content = file.readString();
+    file.close();
+    
+    TEST_ASSERT_TRUE(content.indexOf("1024") >= 0);
+    TEST_ASSERT_TRUE(content.indexOf("2026-01-01") >= 0);
+    TestLog::step("File read successful");
+    
+    // Step 3: 列出SD卡文件
+    TestLog::step("Listing SD card files");
+    MockFile root = MockLittleFS.open("/sdcard");
+    TEST_ASSERT_TRUE(root);
+    TEST_ASSERT_TRUE(root.isDirectory());
+    
+    MockFile childFile = root.openNextFile();
+    TEST_ASSERT_TRUE(childFile);
+    TEST_ASSERT_TRUE(String(childFile.name()).indexOf("test.txt") >= 0);
+    childFile.close();
+    root.close();
+    TestLog::step("File listing successful");
+    
+    // Step 4: 清理
+    TestLog::step("Cleaning up test files");
+    MockLittleFS.remove("/sdcard/test.txt");
+    TEST_ASSERT_FALSE(MockLittleFS.exists("/sdcard/test.txt"));
+    
+    TestLog::testEnd(true);
+}
+
 void test_e2e_scenarios_group() {
     TestLog::groupStart("End-to-End Scenario Tests");
     RUN_TEST(test_e2e_first_boot);
@@ -1227,6 +1520,13 @@ void test_e2e_scenarios_group() {
     RUN_TEST(test_e2e_network_type_switch_stress);
     RUN_TEST(test_e2e_all_chip_all_network_combination);
     RUN_TEST(test_e2e_ethernet_mqtt_ntp_full_chain_stability);
+
+    // 编码器与SDIO外设E2E测试
+    RUN_TEST(test_e2e_encoder_peripheral_workflow);
+    RUN_TEST(test_e2e_sdcard_spi_peripheral_workflow);
+    RUN_TEST(test_e2e_sdcard_sdmmc_peripheral_workflow);
+    RUN_TEST(test_e2e_encoder_mqtt_integration);
+    RUN_TEST(test_e2e_sdcard_file_operations);
 
     TestLog::groupEnd();
 }

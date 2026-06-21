@@ -43,7 +43,10 @@ enum class PeripheralType {
     SWD = 32,
     // 专用外设
     LCD = 36,
+    SDIO = 37,
     SENSOR = 38,
+    CAMERA = 39,
+    ETHERNET = 40,
     PWM_SERVO = 41,
     STEPPER_MOTOR = 42,
     ENCODER = 43,
@@ -168,6 +171,14 @@ struct PeripheralConfig {
     struct { uint8_t mode = 0; bool activeHigh = true; uint16_t debounceMs = 50; uint16_t holdMs = 2000; } radar;
     // 步进电机参数
     struct { uint16_t stepsPerRevolution = 2048; uint16_t speed = 8; } stepper;
+    // 编码器参数
+    struct { uint16_t resolution = 1024; bool useInterrupt = true; } encoder;
+    // SD卡参数
+    struct { uint8_t interface = 1; uint32_t frequency = 20000000; } sdcard;
+
+    // 多引脚支持（用于编码器、SDIO等）
+    uint8_t pinCount = 0;
+    uint8_t pins[8];
 
     // 运行时状态（用于模拟 PERIPHERAL_ERROR 等）
     PeripheralStatus status = PeripheralStatus::PERIPHERAL_DISABLED;
@@ -396,6 +407,23 @@ public:
             return &(it->second);
         }
         return nullptr;
+    }
+
+    // 编码器计数器存储（用于测试）
+    std::map<String, int32_t> encoderCounters;
+    
+    // 编码器计数器操作方法
+    int32_t getEncoderCounter(const String& id) {
+        auto it = encoderCounters.find(id);
+        return it != encoderCounters.end() ? it->second : 0;
+    }
+    
+    void setEncoderCounter(const String& id, int32_t value) {
+        encoderCounters[id] = value;
+    }
+    
+    void resetEncoderCounter(const String& id) {
+        encoderCounters[id] = 0;
     }
 
 private:

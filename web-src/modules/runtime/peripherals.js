@@ -317,11 +317,56 @@
             } else if (type === 36) {
                 const lcdParams = document.getElementById('lcd-params');
                 if (lcdParams) this.showElement(lcdParams);
+            } else if (type === 43) {
+                // 编码器参数
+                const encoderParams = document.getElementById('encoder-params');
+                if (encoderParams) this.showElement(encoderParams);
+            } else if (type === 37) {
+                // SD卡参数
+                const sdcardParams = document.getElementById('sdcard-params');
+                if (sdcardParams) this.showElement(sdcardParams);
+                // 根据接口模式切换引脚提示
+                const sdcardInterface = document.getElementById('sdcard-interface');
+                if (sdcardInterface) {
+                    const hintSpi = document.getElementById('sdcard-pin-hint-spi');
+                    const hintSdmmc = document.getElementById('sdcard-pin-hint-sdmmc');
+                    const updateHint = () => {
+                        const isSpi = sdcardInterface.value === '1';
+                        if (hintSpi) isSpi ? this.showElement(hintSpi) : this.hideElement(hintSpi);
+                        if (hintSdmmc) isSpi ? this.hideElement(hintSdmmc) : this.showElement(hintSdmmc);
+                    };
+                    sdcardInterface.addEventListener('change', updateHint);
+                    updateHint();
+                }
             }
             // DEVICE_EVENT (60) 和 Modbus (51) 无引脚配置，隐藏 pins 字段
             const pinsGroup = document.getElementById('peripheral-pins-group');
             if (pinsGroup) {
                 (type === 60 || type === 51) ? this.hideElement(pinsGroup) : this.showElement(pinsGroup);
+            }
+            
+            // 设备事件提示信息显示/隐藏
+            const deviceEventHint = document.getElementById('device-event-hint');
+            if (deviceEventHint) {
+                (type === 60) ? this.showElement(deviceEventHint) : this.hideElement(deviceEventHint);
+            }
+            
+            // 通用传感器提示信息显示/隐藏
+            const genericSensorHint = document.getElementById('generic-sensor-hint');
+            if (genericSensorHint) {
+                (type === 38) ? this.showElement(genericSensorHint) : this.hideElement(genericSensorHint);
+            }
+
+            // DS1302 实时时钟提示信息显示/隐藏
+            const ds1302Hint = document.getElementById('ds1302-hint');
+            if (ds1302Hint) {
+                (type === 50) ? this.showElement(ds1302Hint) : this.hideElement(ds1302Hint);
+            }
+
+            // LCD1602 字符液晶提示信息显示/隐藏
+            const lcd1602Hint = document.getElementById('lcd1602-hint');
+            if (lcd1602Hint) {
+                (type === 52) ? this.showElement(lcd1602Hint) : this.hideElement(lcd1602Hint);
             }
         },
 
@@ -387,6 +432,12 @@
                             if (data.params.width !== undefined) { const el = document.getElementById('lcd-width'); if (el) el.value = data.params.width; }
                             if (data.params.height !== undefined) { const el = document.getElementById('lcd-height'); if (el) el.value = data.params.height; }
                             if (data.params.interface !== undefined) { const el = document.getElementById('lcd-interface'); if (el) el.value = data.params.interface; }
+                            // 编码器参数回填
+                            if (data.params.resolution !== undefined) { const el = document.getElementById('encoder-resolution'); if (el) el.value = data.params.resolution; }
+                            if (data.params.useInterrupt !== undefined) { const el = document.getElementById('encoder-use-interrupt'); if (el) el.checked = !!data.params.useInterrupt; }
+                            // SD卡参数回填
+                            if (data.params.sdcard && data.params.sdcard.interface !== undefined) { const el = document.getElementById('sdcard-interface'); if (el) el.value = data.params.sdcard.interface; }
+                            if (data.params.sdcard && data.params.sdcard.frequency !== undefined) { const el = document.getElementById('sdcard-frequency'); if (el) el.value = data.params.sdcard.frequency; }
                         }
                     } else {
                         Notification.error('加载失败', '外设配置');
@@ -531,6 +582,14 @@
                 data.width = document.getElementById('lcd-width')?.value || '128';
                 data.height = document.getElementById('lcd-height')?.value || '64';
                 data.interface = document.getElementById('lcd-interface')?.value || '2';
+            } else if (typeNum === 43) {
+                // 编码器参数
+                data.resolution = document.getElementById('encoder-resolution')?.value || '1024';
+                data.useInterrupt = document.getElementById('encoder-use-interrupt')?.checked ? '1' : '0';
+            } else if (typeNum === 37) {
+                // SD卡参数
+                data.interface = document.getElementById('sdcard-interface')?.value || '1';
+                data.frequency = document.getElementById('sdcard-frequency')?.value || '20000000';
             }
             const saveBtn = document.getElementById('save-peripheral-btn');
             const origText = saveBtn?.textContent;

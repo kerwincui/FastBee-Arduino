@@ -341,15 +341,15 @@ void PeripheralRouteHandler::handleGetPeripheralTypes(AsyncWebServerRequest* req
         typeObj["pinCount"] = getPeripheralPinCount(type);
     }
 
-    // 调试接口
-    JsonArray debugTypes = data["debug"].to<JsonArray>();
-    for (int i = 31; i <= 32; i++) {
-        PeripheralType type = static_cast<PeripheralType>(i);
-        JsonObject typeObj = debugTypes.add<JsonObject>();
-        typeObj["value"] = i;
-        typeObj["name"] = getPeripheralTypeName(type);
-        typeObj["pinCount"] = getPeripheralPinCount(type);
-    }
+    // 调试接口（已隐藏，JTAG/SWD未实现驱动）
+    // JsonArray debugTypes = data["debug"].to<JsonArray>();
+    // for (int i = 31; i <= 32; i++) {
+    //     PeripheralType type = static_cast<PeripheralType>(i);
+    //     JsonObject typeObj = debugTypes.add<JsonObject>();
+    //     typeObj["value"] = i;
+    //     typeObj["name"] = getPeripheralTypeName(type);
+    //     typeObj["pinCount"] = getPeripheralPinCount(type);
+    // }
 
     // 专用外设
     JsonArray specialTypes = data["special"].to<JsonArray>();

@@ -87,8 +87,6 @@
                                         <option value="1">UART</option>
                                         <option value="2">I2C</option>
                                         <option value="3">SPI</option>
-                                        <option value="4">CAN (待驱动)</option>
-                                        <option value="5">USB (待驱动)</option>
                                     </optgroup>
                                     <optgroup label="GPIO接口" data-i18n-label="peripheral-cat-gpio">
                                         <option value="11">数字输入</option>
@@ -107,24 +105,21 @@
                                         <option value="26">ADC</option>
                                         <option value="27">DAC</option>
                                     </optgroup>
-                                    <optgroup label="调试接口" data-i18n-label="peripheral-cat-debug">
-                                        <option value="31">JTAG</option>
-                                        <option value="32">SWD</option>
-                                    </optgroup>
+                                    <!-- 调试接口分类已隐藏（JTAG/SWD未实现驱动） -->
                                     <optgroup label="专用外设" data-i18n-label="peripheral-cat-special">
                                         <option value="36" data-i18n="peripheral-type-lcd">LCD/OLED 显示屏</option>
-                                        <option value="37">SDIO (待驱动)</option>
-                                        <option value="38">传感器</option>
-                                        <option value="39">摄像头 (待驱动)</option>
-                                        <option value="40">以太网 (待驱动)</option>
+                                        <option value="37">SDIO</option>
+                                        <option value="38" data-i18n="periph-opt-generic-sensor">通用传感器</option>
                                         <option value="41">舵机</option>
                                         <option value="42" data-i18n="periph-opt-stepper">步进电机</option>
-                                        <option value="43">编码器 (待驱动)</option>
+                                        <option value="43">编码器</option>
                                         <option value="44">单总线</option>
                                         <option value="45" data-i18n="periph-opt-neopixel">WS2812B 灯珠</option>
                                         <option value="47" data-i18n="periph-opt-seven-segment">TM1637 数码管</option>
                                         <option value="48" data-i18n="periph-opt-rf-module">433MHz 射频模块</option>
                                         <option value="49" data-i18n="periph-opt-radar-sensor">雷达感应模块</option>
+<option value="50" data-i18n="periph-opt-ds1302">DS1302 实时时钟</option>
+<option value="52" data-i18n="periph-opt-lcd1602">LCD1602 字符液晶</option>
                                         <option value="60" data-i18n="peripheral-type-device-event">设备事件</option>
                                     </optgroup>
                                 </select>
@@ -141,6 +136,50 @@
 
                         <!-- 右列：引脚和参数 -->
                         <div class="config-form-column">
+                            <!-- 设备事件提示信息 -->
+                            <div id="device-event-hint" class="u-hint-bar u-hint-bar-info" style="display:none;margin-bottom:12px;padding:10px 12px;font-size:12px;background:#e6f7ff;border:1px solid #91d5ff;border-radius:4px;color:#0050b3;">
+                                <div style="margin-bottom:6px;font-weight:500;" data-i18n="device-event-hint-title">📡 设备事件外设说明</div>
+                                <ul style="margin:0;padding-left:16px;line-height:1.8;">
+                                    <li data-i18n="device-event-hint-1">无GPIO引脚，纯逻辑虚拟外设</li>
+                                    <li data-i18n="device-event-hint-2">用于触发系统事件（启动/重启/恢复出厂等）</li>
+                                    <li data-i18n="device-event-hint-3">可在"外设执行"中配置规则触发MQTT广播</li>
+                                    <li data-i18n="device-event-hint-4">适合作为平台触发源，联动其他设备</li>
+                                </ul>
+                            </div>
+                                                    
+                            <!-- 通用传感器提示信息 -->
+                            <div id="generic-sensor-hint" class="u-hint-bar u-hint-bar-info" style="display:none;margin-bottom:12px;padding:10px 12px;font-size:12px;background:#f0f5ff;border:1px solid #adc6ff;border-radius:4px;color:#003a8c;">
+                                <div style="margin-bottom:6px;font-weight:500;" data-i18n="generic-sensor-hint-title">🔌 通用传感器容器说明</div>
+                                <ul style="margin:0;padding-left:16px;line-height:1.8;">
+                                    <li data-i18n="generic-sensor-hint-1">逻辑数据源，用于外部传感器或虚拟传感器</li>
+                                    <li data-i18n="generic-sensor-hint-2">不代表具体物理传感器驱动</li>
+                                    <li data-i18n="generic-sensor-hint-3">具体传感器请使用专用类型（DHT11/DS18B20/SHT31等）</li>
+                                    <li data-i18n="generic-sensor-hint-4">可在"外设执行"中配置数据读取和上报规则</li>
+                                </ul>
+                            </div>
+
+                            <!-- DS1302 实时时钟提示信息 -->
+<div id="ds1302-hint" class="u-hint-bar u-hint-bar-info" style="display:none;margin-bottom:12px;padding:10px 12px;font-size:12px;background:#fff7e6;border:1px solid #ffd591;border-radius:4px;color:#613400;">
+<div style="margin-bottom:6px;font-weight:500;" data-i18n="ds1302-hint-title">⏰ DS1302 实时时钟说明</div>
+                                <ul style="margin:0;padding-left:16px;line-height:1.8;">
+<li data-i18n="ds1302-hint-1">3线接口（CE/IO/SCLK），非标准SPI</li>
+<li data-i18n="ds1302-hint-2">支持时间读取/设置，断电后由纽扣电池维持计时</li>
+<li data-i18n="ds1302-hint-3">支持涓流充电（可给超级电容充电）</li>
+<li data-i18n="ds1302-hint-4">内置31字节用户RAM可存储少量配置数据</li>
+                                </ul>
+                            </div>
+
+                            <!-- LCD1602 字符液晶提示信息 -->
+<div id="lcd1602-hint" class="u-hint-bar u-hint-bar-info" style="display:none;margin-bottom:12px;padding:10px 12px;font-size:12px;background:#f6ffed;border:1px solid #b7eb8f;border-radius:4px;color:#135200;">
+<div style="margin-bottom:6px;font-weight:500;" data-i18n="lcd1602-hint-title">📺 LCD1602 字符液晶说明</div>
+                                <ul style="margin:0;padding-left:16px;line-height:1.8;">
+<li data-i18n="lcd1602-hint-1">I2C接口（通过PCF8574/PCF8574A扩展板）</li>
+<li data-i18n="lcd1602-hint-2">支持16x2和20x4字符液晶</li>
+<li data-i18n="lcd1602-hint-3">仅支持ASCII字符，不支持中文</li>
+<li data-i18n="lcd1602-hint-4">常见I2C地址：0x27（PCF8574）或0x3F（PCF8574A）</li>
+                                </ul>
+                            </div>
+
                             <div class="fb-form-group" id="peripheral-pins-group">
                                 <label for="peripheral-pins-input" data-i18n="peripheral-pins-label">引脚配置</label>
                                 <input type="text" id="peripheral-pins-input" class=""
@@ -331,6 +370,50 @@
                                     </div>
                                     <div class="fb-form-group">
                                         <small data-i18n="stepper-pin-hint">引脚顺序：IN1, IN2, IN3, IN4；ULN2003 示例为 11,10,9,13</small>
+                                    </div>
+                                </div>
+
+                                <!-- 编码器参数 -->
+                                <div id="encoder-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10" data-i18n="encoder-params-title">编码器参数</h4>
+                                    <div class="fb-form-group">
+                                        <label for="encoder-resolution" data-i18n="encoder-resolution-label">每转脉冲数</label>
+                                        <input type="number" id="encoder-resolution" class="" value="1024"
+                                            min="1" max="65535">
+                                        <small data-i18n="encoder-resolution-help">常用值：600, 1024, 2048, 4096</small>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label class="fb-checkbox fb-m-0">
+                                            <input type="checkbox" id="encoder-use-interrupt" checked>
+                                            <span data-i18n="encoder-interrupt-label">使用硬件中断</span>
+                                        </label>
+                                        <small data-i18n="encoder-interrupt-help">中断模式可提高采样精度</small>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <small data-i18n="encoder-pin-hint">引脚顺序：A相, B相；例如 GPIO4, GPIO5</small>
+                                    </div>
+                                </div>
+
+                                <!-- SD卡参数 -->
+                                <div id="sdcard-params" class="peripheral-params-group is-hidden">
+                                    <h4 class="u-mb-10" data-i18n="sdcard-params-title">SD卡参数</h4>
+                                    <div class="fb-form-group">
+                                        <label for="sdcard-interface" data-i18n="sdcard-interface-label">接口模式</label>
+                                        <select id="sdcard-interface" class="">
+                                            <option value="1" selected>SPI 模式</option>
+                                            <option value="0">SDMMC 模式 (仅部分ESP32)</option>
+                                        </select>
+                                        <small data-i18n="sdcard-interface-help">SPI模式兼容性更好，SDMMC速度更快</small>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <label for="sdcard-frequency" data-i18n="sdcard-frequency-label">通信频率 (Hz)</label>
+                                        <input type="number" id="sdcard-frequency" class="" value="20000000"
+                                            min="100000" max="40000000" step="100000">
+                                        <small data-i18n="sdcard-frequency-help">SPI常用 20MHz，SDMMC可达 40MHz</small>
+                                    </div>
+                                    <div class="fb-form-group">
+                                        <small id="sdcard-pin-hint-spi" data-i18n="sdcard-pin-hint-spi">SPI引脚顺序：CLK, MOSI, MISO, CS</small>
+                                        <small id="sdcard-pin-hint-sdmmc" class="is-hidden" data-i18n="sdcard-pin-hint-sdmmc">SDMMC引脚顺序：CMD, CLK, D0, D1, D2, D3</small>
                                     </div>
                                 </div>
 

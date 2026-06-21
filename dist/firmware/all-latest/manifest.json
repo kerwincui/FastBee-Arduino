@@ -1,6 +1,6 @@
 {
-    "generatedAt":  "2026-06-20T17:48:16.9585021Z",
-    "gitSha":  "1d44b749c49d",
+    "generatedAt":  "2026-06-20T19:21:59.5242562Z",
+    "gitSha":  "8d530b78c322",
     "outputDir":  "dist/firmware/all-latest",
     "environments":  [
                          {
@@ -22,7 +22,7 @@
                                            "fastbee-esp32-F4R0.bin":  4194304
                                        },
                              "sha256":  {
-                                            "fastbee-esp32-F4R0.bin":  "c5a2b516fb70a78b99c53a910e2abff781d1f3fe84dc656d6ba838816b353d1d"
+                                            "fastbee-esp32-F4R0.bin":  "227e5477285d0a9ba2cca62366f648586db5bffcd1b71203c890b618d16445ce"
                                         }
                          },
                          {
@@ -44,7 +44,7 @@
                                            "fastbee-esp32-F8R4.bin":  8388608
                                        },
                              "sha256":  {
-                                            "fastbee-esp32-F8R4.bin":  "1b60092d629c5df865ea26ae6f60a6cec4ee615801735063a2e06ef7844dcd19"
+                                            "fastbee-esp32-F8R4.bin":  "f43c36077cd401020c17b0140e6521f07c5be288ccd0846c7c5a54ab0484011f"
                                         }
                          },
                          {
@@ -66,7 +66,7 @@
                                            "fastbee-esp32c3-F4R0.bin":  4194304
                                        },
                              "sha256":  {
-                                            "fastbee-esp32c3-F4R0.bin":  "1885e7504218345bcd478c03852fcd0f194c39a4efa49750357d2a7ac62781ce"
+                                            "fastbee-esp32c3-F4R0.bin":  "d23771dd7194f57cc47a1aaf96ff7051d0fba5a3b041a20af73d2c2d842698e7"
                                         }
                          },
                          {
@@ -88,7 +88,7 @@
                                            "fastbee-esp32c6-F4R0.bin":  4194304
                                        },
                              "sha256":  {
-                                            "fastbee-esp32c6-F4R0.bin":  "452b89c40fdf5460bd4184de16e708e51d0ed6f07d5cad44ce2c7f3cc25b7b44"
+                                            "fastbee-esp32c6-F4R0.bin":  "2626c8f5b40755cf1e7e30115956ba5b2ee60095a8cf5a973427da611dda8479"
                                         }
                          },
                          {
@@ -110,7 +110,7 @@
                                            "fastbee-esp32s3-F8R0.bin":  8388608
                                        },
                              "sha256":  {
-                                            "fastbee-esp32s3-F8R0.bin":  "db2ad54bd30226777feaffc4e30ea0cd5c69d465617242dab3de8e0b40281845"
+                                            "fastbee-esp32s3-F8R0.bin":  "124c541837a5b530bd24614fbdef9c66a060fbe15ecf5915773f454f460c7f1b"
                                         }
                          },
                          {
@@ -132,7 +132,7 @@
                                            "fastbee-esp32s3-F8R4.bin":  8388608
                                        },
                              "sha256":  {
-                                            "fastbee-esp32s3-F8R4.bin":  "261baabd9f0c6d80164e2b6fc25a1b6d976039eb1e208074382ab0249b51bfc4"
+                                            "fastbee-esp32s3-F8R4.bin":  "4b759404229e02d9ed3c1b2669bbc9892b14b8959fd5ce4570d86e7e115685b8"
                                         }
                          },
                          {
@@ -154,7 +154,7 @@
                                            "fastbee-esp32s3-F16R8.bin":  16777216
                                        },
                              "sha256":  {
-                                            "fastbee-esp32s3-F16R8.bin":  "2f2529fe18dc3418729cee0b0276fbf892a41092335a2c409a70404dcfa2f1b6"
+                                            "fastbee-esp32s3-F16R8.bin":  "2ff1279f7a74b102991c9810bc46c3a4b968d98310fc9a574384b516d76f62b4"
                                         }
                          }
                      ]

@@ -7,13 +7,14 @@
 - [配置结构概览](#配置结构概览)
 - [公共基础配置 esp32_base](#公共基础配置-esp32_base)
 - [功能版本 Flag 段](#功能版本-flag-段)
-  - [slim_flags（精简版）](#slim_flags精简版)
+  - [lite_flags（精简版）](#lite_flags精简版)
   - [standard_flags（标准版）](#standard_flags标准版)
   - [full_flags（完整版）](#full_flags完整版)
 - [运行时参数配置](#运行时参数配置)
 - [源码过滤器 src_filter](#源码过滤器-src_filter)
 - [构建环境 env](#构建环境-env)
 - [功能开关速查表](#功能开关速查表)
+- [按需编译策略](#按需编译策略)
 - [日志等级配置](#日志等级配置)
 - [库依赖说明](#库依赖说明)
 - [常用构建命令](#常用构建命令)
@@ -26,10 +27,10 @@
 platformio.ini
 ├── [platformio]              ← 全局默认环境
 ├── [esp32_base]              ← ESP32 系列公共配置（平台、框架、库依赖）
-├── [slim_flags]              ← 精简版功能开关
+├── [lite_flags]              ← 精简版功能开关
 ├── [standard_flags]          ← 标准版功能开关
 ├── [full_flags]              ← 完整版功能开关
-├── [slim_src_filter]         ← 精简版源码过滤（排除不需要的 .cpp）
+├── [lite_src_filter]         ← 精简版源码过滤（排除不需要的 .cpp）
 ├── [standard_src_filter]     ← 标准版源码过滤
 ├── [standard_ota_src_filter] ← 标准版+OTA 源码过滤
 ├── [esp32_runtime_flags]     ← ESP32 运行时参数（TCP/栈大小）
@@ -112,7 +113,7 @@ extra_scripts =
 
 项目提供三个功能级别，通过 `build_flags` 引用切换：
 
-### slim_flags（精简版）
+### lite_flags（精简版）
 
 适用于 4MB Flash 的小容量设备（ESP32-C3/C6），关闭所有高级功能以节省固件空间。
 
@@ -126,7 +127,7 @@ extra_scripts =
 
 **版本对比矩阵：**
 
-| 功能 | slim | standard | full |
+| 功能 | lite | standard | full |
 |------|:----:|:--------:|:----:|
 | TCP 客户端 | ✗ | ✗ | ✓ |
 | HTTP 客户端 | ✗ | ✗ | ✓ |
@@ -148,6 +149,8 @@ extra_scripts =
 | RFID | ✗ | ✓ | ✓ |
 | 红外遥控 | ✗ | ✓ | ✗¹ |
 | NeoPixel | ✓ | ✓ | ✓ |
+| DS1302 RTC | ✗ | ✗ | ✓ |
+| LCD1602 字符液晶 | ✗ | ✗ | ✓ |
 | PSRAM | ✗ | ✗ | ✓ |
 | 国际化 i18n | ✗ | ✗ | ✓ |
 
@@ -235,7 +238,7 @@ board_build.arduino.memory_type = qio_opi   ; OPI PSRAM（8线，速度更快）
 
 通过 `build_src_filter` 排除不参与编译的 `.cpp` 文件，减小固件体积：
 
-### slim_src_filter（精简版）
+### lite_src_filter（精简版）
 
 排除最多文件：OTA、用户/角色管理、日志、规则脚本、TCP/HTTP/CoAP 协议。
 
@@ -268,9 +271,9 @@ board_build.arduino.memory_type = qio_opi   ; OPI PSRAM（8线，速度更快）
 |------|------|-------|-------|----------|--------|
 | `esp32-F4R0` | ESP32 | 4MB | 无 | standard | fastbee.csv |
 | `esp32-F8R4` | ESP32 | 8MB | 4MB | full | fastbee-8MB.csv |
-| `esp32c3-F4R0` | ESP32-C3 | 4MB | 无 | slim | fastbee.csv |
+| `esp32c3-F4R0` | ESP32-C3 | 4MB | 无 | lite | fastbee.csv |
 | `esp32s3-F8R0` | ESP32-S3 | 8MB | 无 | standard+OTA | fastbee-8MB.csv |
-| `esp32c6-F4R0` | ESP32-C6 | 4MB | 无 | slim | fastbee.csv |
+| `esp32c6-F4R0` | ESP32-C6 | 4MB | 无 | lite | fastbee.csv |
 | `esp32s3-F8R4` | ESP32-S3 | 8MB | 4MB | full | fastbee-8MB.csv |
 | `esp32s3-F16R8` | ESP32-S3 | 16MB | 8MB | full | fastbee-16MB.csv |
 | `native` | 本机 | - | - | 单元测试 | - |
@@ -349,6 +352,8 @@ test_build_src = no           ; 不自动编译 src/，由测试手动引入
 | `FASTBEE_ENABLE_LED_SCREEN` | LED 点阵屏 |
 | `FASTBEE_ENABLE_SEVEN_SEGMENT` | 七段数码管 |
 | `FASTBEE_ENABLE_NEOPIXEL` | WS2812 NeoPixel LED |
+| `FASTBEE_ENABLE_DS1302` | DS1302 实时时钟（3线） |
+| `FASTBEE_ENABLE_LCD1602` | LCD1602 I2C 字符液晶 |
 | `FASTBEE_ENABLE_BLE` | BLE 蓝牙（NimBLE） |
 
 ### 脚本引擎
@@ -368,6 +373,91 @@ test_build_src = no           ; 不自动编译 src/，由测试手动引入
 | `FASTBEE_ENABLE_STORAGE_CACHE` | 存储缓存层 |
 | `FASTBEE_USE_PSRAM` | 启用 PSRAM 外部 RAM |
 | `FASTBEE_ENABLE_I18N` | 国际化多语言 |
+
+---
+
+## 按需编译策略
+
+按需编译通过 `FASTBEE_ENABLE_*` 宏控制各驱动/功能是否编译进固件，实现 **Flash/RAM 资源按需分配**。
+
+### 设计原则
+
+1. **资源有限**：ESP32 系列 Flash 为 4-16MB，RAM 仅 320KB-8MB，不是每个设备都需要所有功能
+2. **编译隔离**：禁用的功能不编译，节省 Flash 空间；对应驱动实例不创建，节省 RAM
+3. **配置灵活**：在 `platformio.ini` 的 `build_flags` 中通过 `-DFASTBEE_ENABLE_XXX=1` 启用
+4. **默认值分层**：基础功能（GPIO/传感器）默认启用；外设驱动按需启用
+
+### 资源配置影响分析
+
+| 驱动 | Flash 占用 | RAM 占用 | 默认值 | 建议 |
+|------|-----------|---------|--------|------|
+| **MQTT** | ~15KB | ~2KB | 1 | 基础功能，保持启用 |
+| **Modbus RTU** | ~20KB | ~1KB | 1 | 工业场景常用，保持启用 |
+| **mDNS** | ~5KB | ~200B | 1 | 基础网络功能，保持启用 |
+| **GPIO** | ~3KB | ~100B | 1 | 基础功能，保持启用 |
+| **传感器驱动** | ~8KB | ~200B | 1 | 基础功能，保持启用 |
+| **Web 服务器** | ~25KB | ~2KB | 1 | 基础功能，保持启用 |
+| **认证/会话** | ~8KB | ~500B | 1 | 安全基础，保持启用 |
+| **健康监控** | ~4KB | ~200B | 1 | 稳定性基础，保持启用 |
+| NeoPixel | ~12KB | ~300B | **1**² | 可改为 0，多数设备不需要 |
+| DS1302 RTC | ~2KB | ~100B | 0 | 按需启用（有 NTP 可替代） |
+| LCD1602 | ~3KB | ~100B | 0 | 按需启用（有 OLED 可替代） |
+| LCD/OLED | ~20KB | ~1.2KB | 0 | 按需启用（需 U8g2 库） |
+| 七段数码管 | ~3KB | ~32B/实例 | 0 | 按需启用 |
+| LED 点阵屏 | ~10KB | ~500B | 0 | 按需启用 |
+| RFID MFRC522 | ~12KB | ~200B | 0 | 按需启用 |
+| 红外遥控 | ~8KB | ~300B | 0 | 按需启用 |
+| I2C 传感器 | ~15KB | ~500B | 0 | 按需启用 |
+| BLE 蓝牙 | ~80KB | ~4KB | 0 | 资源占用最大，按需启用 |
+| 以太网 W5500 | ~8KB | ~500B | 0 | 按需启用 |
+| 4G 蜂窝 | ~15KB | ~1KB | 0 | 按需启用 |
+| LoRa 网关 | ~5KB | ~200B | 0 | 按需启用 |
+| TCP 客户端 | ~10KB | ~500B | 0 | 按需启用 |
+| HTTP 客户端 | ~8KB | ~300B | 0 | 按需启用 |
+| CoAP 协议 | ~12KB | ~500B | 0 | 按需启用 |
+| 规则脚本 | ~8KB | ~2KB | 0 | 按需启用 |
+| 命令脚本 | ~4KB | ~500B | 0 | 按需启用 |
+| 用户管理 | ~4KB | ~200B | 0 | 按需启用 |
+| 文件管理 | ~3KB | ~200B | 0 | 按需启用 |
+| 日志查看器 | ~2KB | ~100B | 0 | 按需启用 |
+| 文件日志 | ~2KB | ~200B | 0 | 按需启用 |
+
+> ² **NEOPIXEL 优化建议**：NeoPixel LED 驱动占用 ~12KB Flash，在 lite 精简版本中也是默认启用的。
+> 如果设备不使用 WS2812/NeoPixel 灯带，可在 `lite_flags` 中设置为 0 节省空间：
+> ```ini
+> -DFASTBEE_ENABLE_NEOPIXEL=0
+> ```
+
+### 资源节省效果
+
+**Lite 版本（ESP32-C3/C6 4MB）** 按需编译后，仅保留基础功能：
+
+| 类别 | 启用模块 | Flash 占用 |
+|------|---------|----------|
+| 协议 | MQTT + Modbus | ~35KB |
+| 网络 | mDNS + DNS + AP | ~10KB |
+| Web | Server + Static + API | ~25KB |
+| 安全 | Auth + Session | ~8KB |
+| 系统 | Logger + Task + Health + Exec | ~17KB |
+| 外设 | GPIO + Sensor | ~11KB |
+| **合计基础** | | **~106KB** |
+
+如启用全部可选驱动，Flash 增加约 **75KB**（NeoPixel 12KB + LCD 20KB + RFID 12KB + 红外 8KB + I2C 传感器 15KB + 其他 ~8KB）。
+
+### 启用新驱动的方法
+
+在 `platformio.ini` 对应环境段添加 `build_flags`：
+
+```ini
+[env:esp32s3-F16R8]
+extends = esp32_base
+build_flags =
+    ${full_flags.build_flags}
+    -DFASTBEE_ENABLE_DS1302=1    ; 启用 DS1302 实时时钟
+    -DFASTBEE_ENABLE_LCD1602=1   ; 启用 LCD1602 字符液晶
+```
+
+或直接在 `FeatureFlags.h` 中修改默认值（影响所有环境）。
 
 ---
 

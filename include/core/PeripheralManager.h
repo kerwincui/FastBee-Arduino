@@ -267,6 +267,12 @@ private:
     std::map<String, uint8_t, std::less<String>,
              FastBee::SmallNodeAllocator<std::pair<const String, uint8_t>>> uartPortById;
 
+    // 编码器计数器存储（外设ID -> 当前计数值）
+    std::map<String, volatile int32_t> encoderCounters;
+
+    // 编码器中断处理函数
+    static void IRAM_ATTR handleEncoderInterrupt(void* arg);
+
     // Modbus 通信委托
     ModbusCoilWriteFunc _modbusCoilWrite = nullptr;
     ModbusRegWriteFunc  _modbusRegWrite  = nullptr;

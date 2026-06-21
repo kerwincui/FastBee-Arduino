@@ -85,6 +85,12 @@ struct PeripheralConfig {
             bool useInterrupt;        // 是否使用中断
         } encoder;
         
+        // SD卡参数
+        struct {
+            uint8_t interface;        // 0=SDMMC, 1=SPI模式
+            uint32_t frequency;       // 通信频率 (默认 20MHz)
+        } sdcard;
+        
         // LCD参数
         struct {
             uint8_t width;            // 宽度
@@ -92,7 +98,7 @@ struct PeripheralConfig {
             uint8_t interface;        // 0=Parallel, 1=SPI, 2=I2C
         } lcd;
         
-        // 通用传感器参数
+        // 通用传感器容器参数（逻辑数据源、外部传感器）
         struct {
             uint8_t sensorType;       // 传感器类型ID
             uint32_t sampleInterval;  // 采样间隔(ms)
