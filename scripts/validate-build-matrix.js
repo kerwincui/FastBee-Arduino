@@ -89,6 +89,7 @@ const ENV_EXPECTATIONS = {
 
 const FLAG_SECTION_REQUIREMENTS = {
     lite_flags: [
+        '-DFASTBEE_PROFILE_LITE=1',
         '-DFASTBEE_USE_PSRAM=0',
         '-DFASTBEE_ENABLE_TCP=0',
         '-DFASTBEE_ENABLE_HTTP=0',
@@ -102,10 +103,10 @@ const FLAG_SECTION_REQUIREMENTS = {
         '-DFASTBEE_ENABLE_BLE=0',
         '-DFASTBEE_ENABLE_I2C_SENSORS=0',
         '-DFASTBEE_ENABLE_RFID=0',
-        '-DFASTBEE_ENABLE_IR_REMOTE=0',
-        '-DFASTBEE_ENABLE_LORA=0'
+        '-DFASTBEE_ENABLE_IR_REMOTE=0'
     ],
     standard_flags: [
+        '-DFASTBEE_PROFILE_STANDARD=1',
         '-DFASTBEE_USE_PSRAM=0',
         '-DFASTBEE_ENABLE_MODBUS=1',
         '-DFASTBEE_ENABLE_COMMAND_SCRIPT=1',
@@ -114,6 +115,7 @@ const FLAG_SECTION_REQUIREMENTS = {
         '-DFASTBEE_ENABLE_FILE_MANAGER=0'
     ],
     full_flags: [
+        '-DFASTBEE_PROFILE_FULL=1',
         '-DFASTBEE_USE_PSRAM=1',
         '-DBOARD_HAS_PSRAM',
         '-DFASTBEE_ENABLE_TCP=1',
@@ -127,7 +129,6 @@ const FLAG_SECTION_REQUIREMENTS = {
         '-DFASTBEE_ENABLE_USER_ADMIN=1',
         '-DFASTBEE_ENABLE_FILE_MANAGER=1',
         '-DFASTBEE_ENABLE_BLE=1',
-        '-DFASTBEE_ENABLE_LORA=1',
         '-DFASTBEE_ENABLE_I18N=1'
     ],
     esp32c3_runtime_flags: [

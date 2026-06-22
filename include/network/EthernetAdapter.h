@@ -85,6 +85,7 @@ public:
 private:
     SPIClass* _spi = nullptr;
     WiFiClient _ethClient;  // ETH 使用 WiFiClient 兼容接口
+    wifi_event_id_t _ethEventId = 0;  // WiFi 事件回调 ID（用于 removeEvent）
     bool _initialized = false;
     bool _connected = false;
     EthernetConfig _pinConfig;

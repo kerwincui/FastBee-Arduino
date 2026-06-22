@@ -9,6 +9,8 @@
 #include "systems/LoggerSystem.h"
 #include "utils/NetworkUtils.h"
 #include "core/FeatureFlags.h"
+#include <esp_heap_caps.h>  // heap_caps_get_free_size(MALLOC_CAP_INTERNAL)
+#include "systems/HealthMonitor.h"  // WIFI_CONNECT_MIN_DRAM / WIFI_RECONN_MIN_DRAM
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include "core/PeriphExecManager.h"
 #endif
@@ -37,6 +39,20 @@ bool WiFiManager::initialize() {
 }
 
 bool WiFiManager::connectToWiFi() {
+    // ── DRAM 内存保护：检查 DRAM 内部空闲（排除 PSRAM）──────────────────
+    // WiFi.begin() 会引发 lwIP TCP/IP 栈 + 驱动初始化，需要约 12-16KB DRAM
+    // PSRAM 不能用于 WiFi 内部缓冲区，必须检测 MALLOC_CAP_INTERNAL
+    {
+        uint32_t dramFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        if (dramFree < WIFI_CONNECT_MIN_DRAM) {
+            Serial.printf("[WiFi] connectToWiFi: DRAM too low (dram=%lu < %lu), skipping\n",
+                          (unsigned long)dramFree, (unsigned long)WIFI_CONNECT_MIN_DRAM);
+            LOG_WARNINGF("[WiFi] DRAM too low for WiFi.begin (dram=%lu need=%lu)",
+                         (unsigned long)dramFree, (unsigned long)WIFI_CONNECT_MIN_DRAM);
+            return false;
+        }
+        Serial.printf("[WiFi] connectToWiFi: DRAM OK (dram=%lu)\n", (unsigned long)dramFree);
+    }
     // 多 SSID 择优逻辑：如果配置了 networks 列表，扫描并选择最佳网络
     String targetSSID = wifiConfig.staSSID;
     String targetPassword = wifiConfig.staPassword;
@@ -57,26 +73,28 @@ bool WiFiManager::connectToWiFi() {
         return false;
     }
 
-    // 在纯 STA 模式下，断开已有连接再重新连接
-    wl_status_t currentStatus = WiFi.status();
-    if (currentStatus == WL_CONNECTED || currentStatus == WL_IDLE_STATUS) {
-        LOG_DEBUG("WiFiManager: Disconnecting before new connection attempt");
-        WiFi.disconnect(false);
-        delay(50);  // 短暂延迟确保断开完成
+    // 断开已有连接再重新连接
+    // 必须在 WiFi.begin() 前确保 STA 不在连接中状态，否则 ESP-IDF 会报
+    // "sta is connecting, cannot set config" (ESP_ERR_WIFI_STATE)
+    {
+        wl_status_t currentStatus = WiFi.status();
+        if (currentStatus != WL_DISCONNECTED) {
+            LOGGER.debugf("WiFiManager: Disconnecting before new connection attempt (status=%d)", (int)currentStatus);
+            WiFi.disconnect(false);
+            delay(100);  // 等待 STA 状态机退出 connecting 状态
+        }
     }
 
     // 确保 WiFi 模式正确
     WiFiMode_t currentMode = WiFi.getMode();
 
     if (wifiConfig.mode == NetworkMode::NETWORK_STA) {
-        // STA 模式策略：
-        // - 如果当前是 AP+STA 双模式，保持不变（AP 回退正在使用）
-        // - 如果当前不包含 STA（如纯 AP 或 NULL），才切换到 STA
+        // STA 模式：确保 WiFi 包含 STA 接口
+        // 如果当前是纯 AP 模式（回退状态），切换到 STA
         if (!(currentMode & WIFI_STA)) {
             WiFi.mode(WIFI_STA);
             delay(500);  // AP→STA 模式切换后等待 WiFi 子系统重新就绪
         }
-        // AP+STA 模式保持原样：WiFi.begin() 在 AP+STA 下同样有效
     }
 
     // 配置网络
@@ -590,6 +608,17 @@ void WiFiManager::attemptReconnect() {
         LOG_ERROR("WiFiManager: Max reconnect attempts reached");
         autoReconnectEnabled = false;
         return;
+    }
+
+    // ── DRAM 内存保护（轻量检查）────────────────────────────
+    {
+        uint32_t dramFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        if (dramFree < WIFI_RECONN_MIN_DRAM) {
+            Serial.printf("[WiFi] attemptReconnect: DRAM too low (dram=%lu < %lu), deferring\n",
+                          (unsigned long)dramFree, (unsigned long)WIFI_RECONN_MIN_DRAM);
+            // 延迟重连而非失败，等内存回收后再试
+            return;
+        }
     }
 
     lastReconnectAttempt = millis();

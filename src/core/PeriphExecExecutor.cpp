@@ -22,6 +22,7 @@
 #endif
 #include "systems/LoggerSystem.h"
 #include "systems/HealthMonitor.h"
+#include "systems/SystemRebooter.h"
 #include "core/PeripheralManager.h"
 #include "core/ChipConfig.h"
 #if FASTBEE_ENABLE_SENSOR_DRIVER
@@ -1298,8 +1299,7 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
             LOGGER.info("[PeriphExec] Executing system restart...");
             // 触发 restart 事件以便 DEVICE_EVENT 主题上报
             PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_SYS_RESTART, "");
-            delay(500);
-            ESP.restart();
+            SystemRebooter::scheduleReboot("PeriphExec system restart", 1000UL, RestartReason::USER_COMMAND);
             return true;
 
         case ExecActionType::ACTION_SYS_FACTORY_RESET: {
@@ -1336,8 +1336,7 @@ bool PeriphExecExecutor::executeSystemAction(const ExecAction& action) {
                     LittleFS.remove(configFiles[i]);
                 }
             }
-            delay(500);
-            ESP.restart();
+            SystemRebooter::scheduleReboot("PeriphExec factory reset", 1000UL, RestartReason::FACTORY_RESET);
             return true;
         }
 

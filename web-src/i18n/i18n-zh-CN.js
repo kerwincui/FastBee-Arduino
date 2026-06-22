@@ -257,7 +257,7 @@
         'domain-config-title': '域名配置',
         'mdns-disabled-notice-title': '提示：',
         'mdns-disabled-notice-text': 'mDNS 已禁用，您将无法通过自定义域名访问系统。请通过设备 IP 地址访问：',
-        'domain-unavailable-notice-text': '当前联网方式下域名配置不可用。4G/LoRa 模式仅支持通过 AP 热点 IP 地址访问系统。',
+        'domain-unavailable-notice-text': '当前联网方式下域名配置不可用。4G 模式仅支持通过 AP 热点 IP 地址访问系统。',
         'cellular-access-hint-title': '访问方式',
         'cellular-access-hint-text': '4G模式下请连接设备热点（如 fastbee-ap），然后通过 <code>http://192.168.4.1</code> 访问本系统。',
         'connection-settings-title': '连接设置',

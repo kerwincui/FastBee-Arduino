@@ -1,6 +1,7 @@
 #include "./network/WebConfigManager.h"
 #include "./network/WebHandlerContext.h"
 #include "systems/HealthMonitor.h"
+#include "systems/SystemRebooter.h"
 #include "protocols/ProtocolManager.h"
 #include <esp_heap_caps.h>
 #include <cstdio>
@@ -184,11 +185,8 @@ size_t WebConfigManager::copyRecoveryEvents(WebRecoveryEvent* out, size_t maxEve
 // ============ 维护 ============
 
 void WebConfigManager::performMaintenance() {
-    if (ctx && ctx->scheduleRestart && millis() >= ctx->scheduledRestartTime) {
-        LOG_INFO("[WebConfig] Executing scheduled restart");
-        delay(100);
-        ESP.restart();
-    }
+    // 统一重启机制：由 SystemRebooter::update() 执行待处理的重启
+    SystemRebooter::update();
 
     if (sseRouteHandler) {
         sseRouteHandler->performMaintenance();
@@ -543,16 +541,11 @@ void WebConfigManager::scheduleDeviceRestartForWebRecovery(const char* reason,
                         largestBlock,
                         fragmentation);
 
-    if (!ctx) {
-        LOG_ERRORF("[WebConfig] Cannot schedule web recovery restart: %s",
-                   lastSoftRestartReason.c_str());
-        return;
-    }
-
-    if (!ctx->scheduleRestart) {
-        ctx->scheduleRestart = true;
-        ctx->scheduledRestartTime = atMs + delayMs;
-    }
+    // 使用统一的 SystemRebooter 调度重启（自动记录 RestartDiagnostics）
+    SystemRebooter::scheduleReboot(
+        lastSoftRestartReason.c_str(),
+        delayMs,
+        RestartReason::WEB_RECOVERY);
 
     LOG_WARNINGF("[WebConfig] Device restart scheduled for web recovery: reason=%s delay=%lums heap=%lu largest=%lu frag=%u%%",
                  lastSoftRestartReason.c_str(),

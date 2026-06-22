@@ -67,15 +67,6 @@
                 });
             }
 
-            // LoRa 配置表单提交
-            const loraForm = document.getElementById('lora-form');
-            if (loraForm) {
-                loraForm.addEventListener('submit', (e) => {
-                    e.preventDefault();
-                    this.saveLoRaConfig();
-                });
-            }
-
             // DHCP/静态IP切换
             const wifiDhcp = document.getElementById('wifi-dhcp');
             if (wifiDhcp) {
@@ -106,13 +97,13 @@
          * 联网方式切换处理
          */
         _onNetworkTypeChange(value) {
-            const panels = ['wifi-panel', 'ethernet-panel', 'cellular-panel', 'lora-panel'];
+            const panels = ['wifi-panel', 'ethernet-panel', 'cellular-panel'];
             panels.forEach(id => {
                 const el = document.getElementById(id);
                 if (el) this.hideElement(el);
             });
 
-            const panelMap = { '0': 'wifi-panel', '1': 'ethernet-panel', '2': 'cellular-panel', '3': 'lora-panel' };
+            const panelMap = { '0': 'wifi-panel', '1': 'ethernet-panel', '2': 'cellular-panel' };
             const target = document.getElementById(panelMap[value] || 'wifi-panel');
             if (target) this.showElement(target, 'block');
 
@@ -137,7 +128,7 @@
                 }
             }
 
-            // 域名配置部分：4G/LoRa模式下隐藏，WiFi/以太网通显示
+            // 域名配置部分：4G模式下隐藏，WiFi/以太网通显示
             const domainSection = document.getElementById('domain-config-section');
             const domainUnavailable = document.getElementById('domain-unavailable-notice');
             const isDomainSupported = (value === '0' || value === '1');
@@ -154,7 +145,7 @@
                     // 更新 mDNS 提示状态
                     this._updateMDNSNotice();
                 } else {
-                    // 4G/LoRa：隐藏域名配置表单，显示不可用提示
+                    // 4G：隐藏域名配置表单，显示不可用提示
                     if (domainTitle) domainTitle.style.display = 'none';
                     if (domainGrid) domainGrid.style.display = 'none';
                     if (mdnsNotice) this.hideElement(mdnsNotice);
@@ -307,12 +298,6 @@
                     this._setValue('cell-baud', cell.baudRate !== undefined ? cell.baudRate.toString() : '115200');
                     this._setValue('cell-apn', cell.apn || 'CMNET');
 
-                    // ========== LoRa 配置 ==========
-                    const lora = data.lora || {};
-                    this._setValue('lora-tx', lora.txPin !== undefined ? lora.txPin.toString() : '39');
-                    this._setValue('lora-rx', lora.rxPin !== undefined ? lora.rxPin.toString() : '40');
-                    this._setValue('lora-m1', lora.m1Pin !== undefined ? lora.m1Pin.toString() : '41');
-                    this._setValue('lora-baud', lora.baudRate !== undefined ? lora.baudRate.toString() : '9600');
                 })
                 .catch(err => {
                     console.error('Load network config failed:', err);
@@ -350,8 +335,6 @@
                     return this.saveEthernetConfig();
                 case '2':
                     return this.saveCellularConfig();
-                case '3':
-                    return this.saveLoRaConfig();
                 default:
                     return this.saveNetworkConfig();
             }
@@ -570,8 +553,8 @@
 
             if (!notice || !enableMdns) return;
 
-            // 4G/LoRa 模式下不显示 mDNS 提示（整个域名区域已隐藏）
-            if (networkType === '2' || networkType === '3') {
+            // 4G 模式下不显示 mDNS 提示（整个域名区域已隐藏）
+            if (networkType === '2') {
                 this.hideElement(notice);
                 return;
             }
@@ -788,53 +771,6 @@
         },
 
         /**
-         * 保存LoRa配置
-         */
-        saveLoRaConfig() {
-            const config = {
-                networkType: '3',
-                lora: {
-                    txPin: parseInt(document.getElementById('lora-tx')?.value || '39'),
-                    rxPin: parseInt(document.getElementById('lora-rx')?.value || '40'),
-                    m1Pin: parseInt(document.getElementById('lora-m1')?.value || '41'),
-                    baudRate: parseInt(document.getElementById('lora-baud')?.value || '9600')
-                }
-            };
-
-            const submitBtn = document.getElementById('lora-save-btn');
-            const submitBtnText = document.getElementById('lora-save-btn-text');
-            const originalText = submitBtnText?.textContent || '保存配置';
-            if (submitBtn) submitBtn.disabled = true;
-            if (submitBtnText) submitBtnText.textContent = '网络模式切换中...';
-
-            apiPut('/api/network/config', config)
-                .then(res => {
-                    if (res && res.success) {
-                        const message = '网络设置保存成功！'
-                            + '<br>网络配置变更需要重启网络服务才能生效，请等待约10秒...'
-                            + '<br>LoRa 模式下请通过设备 AP 热点 http://192.168.4.1 或 http://fastbee.local 访问本系统';
-                        Notification.show({
-                            type: 'success',
-                            title: '网络配置已保存',
-                            message: message,
-                            html: true,
-                            duration: 12000
-                        });
-                        this._startSaveBtnCountdown(submitBtn, submitBtnText, originalText, 15);
-                    } else {
-                        Notification.error(res?.error || '保存失败', '网络设置');
-                        if (submitBtn) submitBtn.disabled = false;
-                        if (submitBtnText) submitBtnText.textContent = originalText;
-                    }
-                })
-                .catch(() => {
-                    Notification.error('保存失败', '网络设置');
-                    if (submitBtn) submitBtn.disabled = false;
-                    if (submitBtnText) submitBtnText.textContent = originalText;
-                });
-        },
-
-        /**
          * 扫描 WiFi 网络
          */
         scanWifiNetworks() {
@@ -1026,7 +962,7 @@
                 : (networkType ? networkType.value : '0');
 
             // 隐藏所有状态面板
-            ['wifi-status-panel', 'ethernet-status-panel', 'cellular-status-panel', 'lora-status-panel'].forEach(id => {
+            ['wifi-status-panel', 'ethernet-status-panel', 'cellular-status-panel'].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) el.classList.add('fb-hidden');
             });
@@ -1044,10 +980,6 @@
                 case '2': // 4G
                     this._updateCellularStatus(data);
                     document.getElementById('cellular-status-panel')?.classList.remove('fb-hidden');
-                    break;
-                case '3': // LoRa
-                    this._updateLoRaStatus(data);
-                    document.getElementById('lora-status-panel')?.classList.remove('fb-hidden');
                     break;
             }
         },
@@ -1195,29 +1127,6 @@
         },
 
         /**
-         * 更新LoRa状态显示
-         */
-        _updateLoRaStatus(data) {
-            const statusBadge = document.getElementById('lora-status-badge');
-            if (statusBadge) {
-                statusBadge.className = 'status-badge';
-                if (data.status === 'connected') {
-                    statusBadge.classList.add('status-connected');
-                    statusBadge.textContent = '已连接';
-                } else {
-                    statusBadge.classList.add('status-disconnected');
-                    statusBadge.textContent = '未连接';
-                }
-            }
-
-            document.getElementById('lora-mode-display').textContent = data.loraMode || '透传模式';
-            document.getElementById('lora-address').textContent = data.loraAddress || '--';
-            document.getElementById('lora-frequency').textContent = data.loraFrequency || '470MHz';
-            document.getElementById('lora-airrate').textContent = data.loraAirRate || '2.4kbps';
-            document.getElementById('lora-channel').textContent = data.loraChannel || '--';
-        },
-
-        /**
          * 初始化网络状态刷新按钮
          */
         setupStatusRefresh() {
@@ -1262,7 +1171,7 @@
             var caps = res.data;
             var select = document.getElementById('network-type');
             if (!select) return;
-            // value="1" = 以太网 W5500, value="2" = 4G EC801E, value="3" = LoRa 透传
+            // value="1" = 以太网 W5500, value="2" = 4G EC801E
             if (!caps.ethernet) {
                 var opt1 = select.querySelector('option[value="1"]');
                 if (opt1) opt1.remove();
@@ -1270,10 +1179,6 @@
             if (!caps.cellular) {
                 var opt2 = select.querySelector('option[value="2"]');
                 if (opt2) opt2.remove();
-            }
-            if (!caps.lora) {
-                var opt3 = select.querySelector('option[value="3"]');
-                if (opt3) opt3.remove();
             }
         }).catch(function() { /* 静默失败，保留所有选项 */ });
     })();

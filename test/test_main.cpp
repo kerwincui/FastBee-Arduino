@@ -14,6 +14,7 @@
 // 前置声明所有测试组
 extern void test_network_config_group();
 extern void test_multi_network_mode_group();
+extern void test_network_mqtt_integration_group();
 extern void test_mdns_domain_group();
 extern void test_mqtt_protocol_group();
 extern void test_system_stability_group();
@@ -44,9 +45,11 @@ extern void test_tcp_page_loading_group();
 extern void test_network_utils_group();
 extern void test_script_engine_group();
 extern void test_restart_diagnostics_group();
+extern void test_system_rebooter_group();
 extern void test_modbus_handler_group();
 extern void test_ds1302_group();
 extern void test_lcd1602_group();
+extern void test_cellular_adapter_group();
 
 // 测试夹具
 void setUp() {
@@ -93,6 +96,9 @@ void setup() {
 
     Serial.println("\n[TEST] Running Multi-Network Mode Tests...");
     test_multi_network_mode_group();
+
+    Serial.println("\n[TEST] Running Network-MQTT Integration Tests...");
+    test_network_mqtt_integration_group();
 
     Serial.println("\n[TEST] Running mDNS Custom Domain Tests...");
     test_mdns_domain_group();
@@ -184,6 +190,9 @@ void setup() {
     Serial.println("\n[TEST] Running RestartDiagnostics Tests...");
     test_restart_diagnostics_group();
 
+    Serial.println("\n[TEST] Running SystemRebooter Tests...");
+    test_system_rebooter_group();
+
     Serial.println("\n[TEST] Running Modbus Handler Tests...");
     test_modbus_handler_group();
 
@@ -192,6 +201,9 @@ void setup() {
 
     Serial.println("\n[TEST] Running LCD1602 Tests...");
     test_lcd1602_group();
+
+    Serial.println("\n[TEST] Running CellularAdapter EC801E Tests...");
+    test_cellular_adapter_group();
 
     // 结束测试并输出结果
     int result = UNITY_END();

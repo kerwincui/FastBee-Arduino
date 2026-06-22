@@ -314,15 +314,10 @@ bool ModbusHandler::loadConfigFromFile(const String& configPath) {
     // workMode 已移除：由轮询任务配置自动推导，忽略旧配置文件中的值
     
     // 解析Master模式配置
+    // 注： responseTimeout/maxRetries/interPollDelay 已从构造函数硬编码默认值，
+    //      实际执行时由外设执行-轮询触发器覆盖，不再从 JSON 读取。
     if (doc.containsKey("master")) {
         JsonObject masterObj = doc["master"];
-        if (masterObj.containsKey("responseTimeout"))
-            config.master.responseTimeout = masterObj["responseTimeout"].as<uint16_t>();
-        if (masterObj.containsKey("maxRetries"))
-            config.master.maxRetries = masterObj["maxRetries"].as<uint8_t>();
-        if (masterObj.containsKey("interPollDelay"))
-            config.master.interPollDelay = masterObj["interPollDelay"].as<uint16_t>();
-        
         if (masterObj.containsKey("tasks")) {
             JsonArray tasksArr = masterObj["tasks"];
             config.master.taskCount = 0;

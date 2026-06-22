@@ -667,7 +667,7 @@ void test_regression_restart_network_no_initialize_for_ethernet() {
     TestLog::step("restartNetwork found");
 
     // 取 restartNetwork 后的代码片段（函数体约 170 行，需要 ~7000 字符完整覆盖）
-    std::string restartBody = content.substr(restartPos, 7000);
+    std::string restartBody = content.substr(restartPos, 9000);
 
     // 关键检查：以太网路径必须用 ethernetAdapter.reset(new EthernetAdapter()) 重建
     TEST_ASSERT_TRUE_MESSAGE(restartBody.find("ethernetAdapter.reset(new EthernetAdapter())") != std::string::npos,
@@ -693,7 +693,7 @@ void test_regression_restart_network_rebuilds_cellular_adapter() {
 
     size_t restartPos = content.find("FBNetworkManager::restartNetwork");
     TEST_ASSERT_TRUE(restartPos != std::string::npos);
-    std::string restartBody = content.substr(restartPos, 7000);
+    std::string restartBody = content.substr(restartPos, 9000);
 
     // 4G 路径必须用 cellularAdapter.reset(new CellularAdapter()) 重建
     TEST_ASSERT_TRUE_MESSAGE(restartBody.find("cellularAdapter.reset(new CellularAdapter())") != std::string::npos,
@@ -715,7 +715,7 @@ void test_regression_restart_network_eth_failure_ap_fallback() {
 
     size_t restartPos = content.find("FBNetworkManager::restartNetwork");
     TEST_ASSERT_TRUE(restartPos != std::string::npos);
-    std::string restartBody = content.substr(restartPos, 7000);
+    std::string restartBody = content.substr(restartPos, 9000);
 
     // 以太网失败后必须检查 AP 模式并启动
     TEST_ASSERT_TRUE_MESSAGE(restartBody.find("startAPMode") != std::string::npos,
@@ -744,7 +744,7 @@ void test_regression_restart_network_eth_success_starts_hybrid_ap() {
 
     size_t restartPos = content.find("FBNetworkManager::restartNetwork");
     TEST_ASSERT_TRUE(restartPos != std::string::npos);
-    std::string restartBody = content.substr(restartPos, 7000);
+    std::string restartBody = content.substr(restartPos, 9000);
 
     // 定位以太网重连成功后的代码块
     size_t ethReconnected = restartBody.find("Ethernet reconnected, IP:");
@@ -1158,35 +1158,45 @@ void test_regression_mqtt_save_content_action_autoPrefix() {
 }
 
 void test_regression_modbus_master_advanced_params() {
-    TestLog::testStart("Regression: Modbus master advanced params");
+    TestLog::testStart("Regression: Modbus master advanced params hardcoded");
 
+    // 1. ProtocolRouteHandler compact 响应中必须使用硬编码常量（不再从 JSON 透传）
     std::string src = readRegressionSrcFile("src/network/handlers/ProtocolRouteHandler.cpp");
     TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read ProtocolRouteHandler.cpp");
 
-    TEST_ASSERT_TRUE_MESSAGE(src.find("modbusRtu_responseTimeout") != std::string::npos,
-        "Master responseTimeout must be saved from frontend input");
-    TestLog::step("responseTimeout read from frontend input");
+    // 不得再出现从前端表单读取的字段名
+    TEST_ASSERT_FALSE_MESSAGE(src.find("modbusRtu_responseTimeout") != std::string::npos,
+        "responseTimeout must NOT be read from frontend form (UI removed)");
+    TEST_ASSERT_FALSE_MESSAGE(src.find("modbusRtu_maxRetries") != std::string::npos,
+        "maxRetries must NOT be read from frontend form (UI removed)");
+    TEST_ASSERT_FALSE_MESSAGE(src.find("modbusRtu_interPollDelay") != std::string::npos,
+        "interPollDelay must NOT be read from frontend form (UI removed)");
+    TestLog::step("No frontend form read for master advanced params");
 
-    TEST_ASSERT_TRUE_MESSAGE(src.find("modbusRtu_maxRetries") != std::string::npos,
-        "Master maxRetries must be saved from frontend input");
-    TestLog::step("maxRetries read from frontend input");
-
-    TEST_ASSERT_TRUE_MESSAGE(src.find("modbusRtu_interPollDelay") != std::string::npos,
-        "Master interPollDelay must be saved from frontend input");
-    TestLog::step("interPollDelay read from frontend input");
-
-    // copyPeriphExecModbusSummary 必须透传 master 高级参数
+    // 2. copyPeriphExecModbusSummary 必须包含 master 参数（硬编码常量形式）
     size_t summaryPos = src.find("copyPeriphExecModbusSummary");
     TEST_ASSERT_TRUE_MESSAGE(summaryPos != std::string::npos,
         "copyPeriphExecModbusSummary not found");
-    std::string summaryBody = src.substr(summaryPos, 500);
+    std::string summaryBody = src.substr(summaryPos, 600);
     TEST_ASSERT_TRUE_MESSAGE(summaryBody.find("responseTimeout") != std::string::npos,
-        "Summary must include responseTimeout");
+        "Summary must include responseTimeout hardcoded constant");
     TEST_ASSERT_TRUE_MESSAGE(summaryBody.find("maxRetries") != std::string::npos,
-        "Summary must include maxRetries");
+        "Summary must include maxRetries hardcoded constant");
     TEST_ASSERT_TRUE_MESSAGE(summaryBody.find("interPollDelay") != std::string::npos,
-        "Summary must include interPollDelay");
-    TestLog::step("Master params included in compact response");
+        "Summary must include interPollDelay hardcoded constant");
+    TestLog::step("Master params included in compact response as hardcoded constants");
+
+    // 3. MasterConfig 构造函数默认值必须一致（1000/2/100）
+    std::string header = readRegressionSrcFile("include/protocols/ModbusHandler.h");
+    TEST_ASSERT_FALSE_MESSAGE(header.empty(), "Cannot read ModbusHandler.h");
+    size_t ctorPos = header.find("MasterConfig()");
+    TEST_ASSERT_TRUE_MESSAGE(ctorPos != std::string::npos, "MasterConfig ctor not found");
+    std::string ctorBody = header.substr(ctorPos, 200);
+    TEST_ASSERT_TRUE_MESSAGE(ctorBody.find("responseTimeout(1000)") != std::string::npos,
+        "MasterConfig default responseTimeout must be 1000");
+    TEST_ASSERT_TRUE_MESSAGE(ctorBody.find("maxRetries(2)") != std::string::npos,
+        "MasterConfig default maxRetries must be 2");
+    TestLog::step("MasterConfig ctor defaults are 1000/2/100");
 
     TestLog::testEnd(true);
 }
@@ -1328,24 +1338,25 @@ void test_regression_mqtt_topictype_enum_values() {
 }
 
 void test_regression_modbus_master_params_consistency() {
-    TestLog::testStart("Regression: Modbus master advanced params consistency");
+    TestLog::testStart("Regression: Modbus master params consistency (hardcoded)");
 
     std::string src = readRegressionSrcFile("src/network/handlers/ProtocolRouteHandler.cpp");
     TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read ProtocolRouteHandler.cpp");
 
-    // 1. 保存路径必须使用 GPI 读取前端输入（而非 containsKey 守卫）
+    // 1. 保存路径不得再用 GPI 读取前端输入的高级参数：
+    //    responseTimeout/maxRetries/interPollDelay 已移除 UI，写死在构造函数。
     size_t savePos = src.find("handleSaveProtocolConfig");
     TEST_ASSERT_TRUE_MESSAGE(savePos != std::string::npos,
         "handleSaveProtocolConfig not found");
     std::string saveBody = src.substr(savePos, 25000);
 
-    TEST_ASSERT_TRUE_MESSAGE(saveBody.find("GPI(\"modbusRtu_responseTimeout\"") != std::string::npos,
-        "Save path must use GPI for responseTimeout (frontend-aware)");
-    TEST_ASSERT_TRUE_MESSAGE(saveBody.find("GPI(\"modbusRtu_maxRetries\"") != std::string::npos,
-        "Save path must use GPI for maxRetries (frontend-aware)");
-    TEST_ASSERT_TRUE_MESSAGE(saveBody.find("GPI(\"modbusRtu_interPollDelay\"") != std::string::npos,
-        "Save path must use GPI for interPollDelay (frontend-aware)");
-    TestLog::step("Save path uses GPI for master params");
+    TEST_ASSERT_FALSE_MESSAGE(saveBody.find("GPI(\"modbusRtu_responseTimeout\"") != std::string::npos,
+        "Save path must NOT use GPI for responseTimeout (UI removed, hardcoded in ctor)");
+    TEST_ASSERT_FALSE_MESSAGE(saveBody.find("GPI(\"modbusRtu_maxRetries\"") != std::string::npos,
+        "Save path must NOT use GPI for maxRetries (UI removed, hardcoded in ctor)");
+    TEST_ASSERT_FALSE_MESSAGE(saveBody.find("GPI(\"modbusRtu_interPollDelay\"") != std::string::npos,
+        "Save path must NOT use GPI for interPollDelay (UI removed, hardcoded in ctor)");
+    TestLog::step("Save path does not use GPI for master params");
 
     // 2. compact 响应必须包含 master 高级参数（文件版 copyPeriphExecModbusSummary）
     size_t compactPos = src.find("void copyPeriphExecModbusSummary(JsonObject out, JsonObject in)");
@@ -1374,6 +1385,23 @@ void test_regression_modbus_master_params_consistency() {
     TEST_ASSERT_TRUE_MESSAGE(runtimeBody.find("interPollDelay") != std::string::npos,
         "Runtime response must include interPollDelay");
     TestLog::step("Runtime response includes master params");
+
+    // 4. ModbusHandler.cpp 不得再从 JSON 读取这三个参数
+    std::string modbusImpl = readRegressionSrcFile("src/protocols/ModbusHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(modbusImpl.empty(), "Cannot read ModbusHandler.cpp");
+    size_t loadPos = modbusImpl.find("loadConfigFromFile");
+    TEST_ASSERT_TRUE_MESSAGE(loadPos != std::string::npos, "loadConfigFromFile not found");
+    std::string loadBody = modbusImpl.substr(loadPos, 3000);
+    TEST_ASSERT_FALSE_MESSAGE(
+        loadBody.find("masterObj[\"responseTimeout\"]") != std::string::npos,
+        "ModbusHandler must NOT read responseTimeout from JSON (hardcoded in ctor)");
+    TEST_ASSERT_FALSE_MESSAGE(
+        loadBody.find("masterObj[\"maxRetries\"]") != std::string::npos,
+        "ModbusHandler must NOT read maxRetries from JSON (hardcoded in ctor)");
+    TEST_ASSERT_FALSE_MESSAGE(
+        loadBody.find("masterObj[\"interPollDelay\"]") != std::string::npos,
+        "ModbusHandler must NOT read interPollDelay from JSON (hardcoded in ctor)");
+    TestLog::step("ModbusHandler does not read master params from JSON");
 
     TestLog::testEnd(true);
 }
@@ -1463,8 +1491,8 @@ void test_regression_users_json_field_consistency() {
 
 // ============ security 精简回归：仅4个UI可配置字段，9个硬编码字段已删除 ============
 
-static void test_regression_security_json_slim() {
-    TestLog::testStart("regression: security section slim - only 4 UI fields");
+static void test_regression_security_json_lite() {
+    TestLog::testStart("regression: security section lite - only 4 UI fields");
 
     // 1. users.json 配置文件：security 仅含 4 个字段
     std::string usersJson = readRegressionSrcFile("data/config/users.json");
@@ -1733,7 +1761,7 @@ static void test_regression_mqtt_disabled_shows_offline() {
     TEST_ASSERT_TRUE_MESSAGE(updatePos != std::string::npos,
         "_updateMqttStatusUI not found");
 
-    std::string updateBlock = mqtt.substr(updatePos, 6000);
+    std::string updateBlock = mqtt.substr(updatePos, 8000);
     // !d.enabled 分支必须在 !d.initialized 分支之前
     size_t disabledPos = updateBlock.find("!d.enabled");
     size_t initPos = updateBlock.find("!d.initialized");
@@ -1953,7 +1981,7 @@ void test_regression_guard_group() {
     RUN_TEST(test_regression_users_json_field_consistency);
 
     // security 精简：仅 4 个 UI 可配置字段，9 个硬编码字段已删除
-    RUN_TEST(test_regression_security_json_slim);
+    RUN_TEST(test_regression_security_json_lite);
 
     // lastLogin 持久化 + createBy 完全移除回归保护
     RUN_TEST(test_regression_last_login_and_createby_cleanup);

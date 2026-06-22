@@ -25,12 +25,11 @@
 #if FASTBEE_ENABLE_CELLULAR
 #include "network/CellularAdapter.h"
 #endif
-#if FASTBEE_ENABLE_LORA
-#include "network/LoRaAdapter.h"
-#endif
 
 // 事件回调类型
 typedef std::function<void(NetworkStatus, const String&)> NetworkEventCallback;
+// 网络切换前回调：在销毁网络适配器之前调用，用于停止依赖适配器 Client 的协议（如 MQTT）
+typedef std::function<void()> PreNetworkSwitchCallback;
 
 class AsyncWebServer;
 
@@ -89,6 +88,12 @@ public:
     bool updateConfig(const WiFiConfig& newConfig, bool saveToStorage = true);
     
     /**
+     * @brief 清除待处理的网络重启标志
+     * 用于配置保存后改为设备重启时，取消运行时 restartNetwork()
+     */
+    void clearPendingRestart() { pendingRestart = false; }
+
+    /**
      * @brief 获取网络状态信息
      * @return 网络状态信息
      */
@@ -143,6 +148,14 @@ public:
      */
     void setIPConflictCallback(NetworkEventCallback callback);
     
+    /**
+     * @brief 设置网络切换前回调
+     * @details 在 restartNetwork() 销毁网络适配器之前调用，
+     *          用于停止依赖适配器 Client 指针的协议（如 MQTT），防止 use-after-free
+     * @param callback 回调函数
+     */
+    void setPreNetworkSwitchCallback(PreNetworkSwitchCallback callback) { _preNetworkSwitchCb = callback; }
+
     /**
      * @brief 设置自动重连
      * @param enabled 是否启用自动重连
@@ -231,9 +244,6 @@ public:
 #if FASTBEE_ENABLE_CELLULAR
     CellularAdapter* getCellularAdapter() { return cellularAdapter.get(); }
 #endif
-#if FASTBEE_ENABLE_LORA
-    LoRaAdapter* getLoRaAdapter() { return loraAdapter.get(); }
-#endif
     
     // 静态工具方法
     static bool isValidIP(const String& ip);
@@ -286,9 +296,6 @@ private:
 #if FASTBEE_ENABLE_CELLULAR
     std::unique_ptr<CellularAdapter> cellularAdapter;
 #endif
-#if FASTBEE_ENABLE_LORA
-    std::unique_ptr<LoRaAdapter> loraAdapter;
-#endif
     
     // 连接状态
     bool isInitialized;
@@ -308,6 +315,15 @@ private:
     static constexpr unsigned long ETH_RECONNECT_INTERVAL_MS = 10000;  // 重连间隔
     static constexpr int ETH_MAX_RECONNECT_ATTEMPTS = 10;             // 最大重连次数
 #endif
+
+#if FASTBEE_ENABLE_CELLULAR
+    bool cellReconnectPending;         // 4G 重连待执行
+    unsigned long cellReconnectTime;   // 4G 重连计划时间
+    int cellReconnectAttempts;         // 4G 重连尝试次数
+    static constexpr unsigned long CELL_RECONNECT_INTERVAL_MS = 15000; // 4G 注册较慢，间隔略长
+    static constexpr int CELL_MAX_RECONNECT_ATTEMPTS = 8;
+    static constexpr int CELL_FULL_RESTART_EVERY = 3;                 // 每 3 次重建适配器，释放串口/Modem 状态
+#endif
     
     // 时间相关
     unsigned long lastReconnectAttempt;
@@ -318,6 +334,7 @@ private:
     NetworkEventCallback connectionCallback;
     NetworkEventCallback disconnectionCallback;
     NetworkEventCallback ipConflictCallback;
+    PreNetworkSwitchCallback _preNetworkSwitchCb;  // 网络切换前回调（停止 MQTT 等依赖适配器的协议）
     
     // 私有方法
     bool initializeFileSystem();

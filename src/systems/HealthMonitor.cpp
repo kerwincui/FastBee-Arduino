@@ -14,6 +14,7 @@
 #include "systems/HealthMonitor.h"
 #include "systems/LoggerSystem.h"
 #include "systems/RestartDiagnostics.h"
+#include "systems/SystemRebooter.h"
 #include <esp_heap_caps.h>
 #include <LittleFS.h>
 #include <WiFi.h>
@@ -33,6 +34,7 @@ HealthMonitor::HealthMonitor()
       lastMetricsLogTime(0),
       heapWatermark(UINT32_MAX),
       consecutiveLowMemCount(0),
+      consecutiveFragmentationCriticalCount(0),
       running(false),
       _compactionTriggered(false),
       mqttQueueDepth(0),
@@ -78,6 +80,11 @@ void HealthMonitor::update() {
 
 void HealthMonitor::performHealthCheck() {
     // ── 内存状态 ─────────────────────────────────────────────────────────
+    // ── DRAM 内部内存（排除 PSRAM，用于 WiFi/MQTT/SSL 保护决策）─────────
+    currentHealth.dramFreeHeap     = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    currentHealth.dramLargestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+
+    // ── 内存状态（含 PSRAM 的全局视图）───────────────────────
     currentHealth.freeHeap    = esp_get_free_heap_size();
     currentHealth.minFreeHeap = heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT);
 
@@ -85,12 +92,12 @@ void HealthMonitor::performHealthCheck() {
         heapWatermark = currentHealth.freeHeap;
     }
 
-    // 碎片率 = 1 - (最大连续块 / 总空闲)
-    size_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
-    currentHealth.largestFreeBlock = largestBlock;
+    // 碎片率 = 1 - (最大连续块 / 总空闲)，基于 DRAM 内部数据（排除 PSRAM 干扰）
+    // DRAM 的碎片率才是影响 WiFi/TCP/SSL 分配的真实指标
+    currentHealth.largestFreeBlock = currentHealth.dramLargestBlock;
     currentHealth.heapFragmentation = calculateHeapFragmentationPercent(
-        currentHealth.freeHeap,
-        static_cast<uint32_t>(largestBlock));
+        currentHealth.dramFreeHeap,
+        currentHealth.dramLargestBlock);
 
     // ── 文件系统状态（检测挂载而非特定文件）──────────────────────────────
     // LittleFS 挂载后 totalBytes() > 0 即为正常
@@ -137,37 +144,66 @@ bool HealthMonitor::isSystemHealthy() const {
 
 // 低内存保护：连续多次检测到严重低内存时重启设备
 void HealthMonitor::checkCriticalMemory() {
-    // 严重低内存阈值：8KB 以下很可能导致崩溃
-    constexpr uint32_t CRITICAL_HEAP_THRESHOLD = 8192;
-    // 危险低内存阈值：16KB 以下开始警告
-    constexpr uint32_t WARNING_HEAP_THRESHOLD = 16384;
+    // 使用 DRAM 内部内存进行检测（排除 PSRAM）
+    // WiFi/MQTT/SSL 都不能用 PSRAM，使用 DRAM 空闲来评估真实风险
+    const uint32_t checkHeap = currentHealth.dramFreeHeap;
+
+    // 根据 PSRAM 容量动态调整阈值
+    // F8R0 (无 PSRAM): DRAM 总量 ~200KB，8KB 临界合理
+    // F8R4 (4MB PSRAM): DRAM 总量 ~320KB，10KB 临界更宽松
+    // F16R8 (8MB PSRAM): DRAM 总量 ~320KB，12KB 临界更宽松
+    static uint32_t criticalThreshold = 0;
+    static uint32_t warningThreshold = 0;
+    if (criticalThreshold == 0) {
+        // 仅在首次调用时计算一次（PSRAM 大小在运行时不会变化）
+        size_t psramSize = ESP.getPsramSize();
+        if (psramSize >= 8 * 1024 * 1024) {
+            // 8MB PSRAM (F16R8): DRAM 压力较轻，阈值更宽松
+            criticalThreshold = 12288;  // 12KB
+            warningThreshold  = 24576;  // 24KB
+        } else if (psramSize >= 4 * 1024 * 1024) {
+            // 4MB PSRAM (F8R4): 中等阈值
+            criticalThreshold = 10240;  // 10KB
+            warningThreshold  = 20480;  // 20KB
+        } else {
+            // 无 PSRAM (F8R0): 保守阈值
+            criticalThreshold = 8192;   // 8KB
+            warningThreshold  = 16384;  // 16KB
+        }
+    }
     // 连续严重低内存次数阈值：连续 3 次（15秒）就重启
     constexpr uint32_t CRITICAL_COUNT_THRESHOLD = 3;
 
-    if (currentHealth.freeHeap < CRITICAL_HEAP_THRESHOLD) {
+    if (checkHeap < criticalThreshold) {
         consecutiveLowMemCount++;
-        char buf[96];
-        snprintf(buf, sizeof(buf), "Health: CRITICAL low memory! heap=%lu maxBlock=%lu count=%lu",
+        char buf[128];
+        snprintf(buf, sizeof(buf), "Health: CRITICAL low DRAM! dram=%lu total=%lu maxBlock=%lu count=%lu threshold=%lu",
+                 (unsigned long)checkHeap,
                  (unsigned long)currentHealth.freeHeap,
-                 (unsigned long)currentHealth.largestFreeBlock,
-                 (unsigned long)consecutiveLowMemCount);
+                 (unsigned long)currentHealth.dramLargestBlock,
+                 (unsigned long)consecutiveLowMemCount,
+                 (unsigned long)criticalThreshold);
         LOG_ERROR(buf);
 
         if (consecutiveLowMemCount >= CRITICAL_COUNT_THRESHOLD) {
-            LOG_ERROR("Health: Memory critically low for too long, rebooting!");
+            char reasonBuf[48];
+            snprintf(reasonBuf, sizeof(reasonBuf), "DRAM < %luKB for 15s",
+                     (unsigned long)(criticalThreshold / 1024));
+            LOG_ERROR("Health: DRAM critically low for too long, rebooting!");
             // 保存重启前状态快照到 RTC 内存，供下次启动诊断
             RestartDiagnostics::savePreRestartState(
                 RestartReason::CRITICAL_LOW_MEMORY,
-                "HealthMonitor: heap < 8KB for 15s");
+                reasonBuf);
             delay(100);
             ESP.restart();
         }
-    } else if (currentHealth.freeHeap < WARNING_HEAP_THRESHOLD) {
+    } else if (checkHeap < warningThreshold) {
         consecutiveLowMemCount = 0;
-        char buf[80];
-        snprintf(buf, sizeof(buf), "Health: Low memory warning heap=%lu maxBlock=%lu",
+        char buf[96];
+        snprintf(buf, sizeof(buf), "Health: Low DRAM warning dram=%lu total=%lu maxBlock=%lu",
+                 (unsigned long)checkHeap,
                  (unsigned long)currentHealth.freeHeap,
-                 (unsigned long)currentHealth.largestFreeBlock);
+                 (unsigned long)currentHealth.dramLargestBlock);
         LOG_WARNING(buf);
     } else {
         consecutiveLowMemCount = 0;
@@ -204,7 +240,10 @@ void HealthMonitor::logTaskStackWatermarks() {
 
 void HealthMonitor::updateMemoryGuardLevel() {
     uint32_t freeHeap = currentHealth.freeHeap;
-    uint32_t largestBlock = currentHealth.largestFreeBlock;
+    // 使用 DRAM 内部连续块做等级判断（排除 PSRAM 干扰）
+    // MALLOC_CAP_DEFAULT 在有 PSRAM 的设备上会包含 PSRAM 的巨大连续块（如 8MB）
+    // 导致 CRITICAL 判断永远不会触发，实际 DRAM 被消耗却检测不到
+    uint32_t largestBlock = currentHealth.dramLargestBlock;  // DRAM 内部连续块
     MemoryGuardLevel newLevel;
 
     // 启动期 grace period：前 90 秒为框架 + lwip + AsyncTCP + NTP + 日志 flush 等
@@ -309,6 +348,36 @@ void HealthMonitor::updateMemoryGuardLevel() {
         }
     } else {
         _compactionTriggered = false;  // 碎片率恢复正常，重置标志
+    }
+
+    const bool severeFragmentation =
+        !inStartupGrace &&
+        currentHealth.heapFragmentation >= FRAG_THRESHOLD_REBOOT &&
+        currentHealth.dramLargestBlock > 0 &&
+        currentHealth.dramLargestBlock < FRAG_REBOOT_MAX_BLOCK;
+
+    if (severeFragmentation) {
+        consecutiveFragmentationCriticalCount++;
+        if (consecutiveFragmentationCriticalCount == 1 ||
+            consecutiveFragmentationCriticalCount == FRAG_REBOOT_COUNT) {
+            LOG_WARNINGF("[MEMGUARD] Severe fragmentation persists: frag=%u%% dramLargest=%lu count=%lu/%lu",
+                         (unsigned)currentHealth.heapFragmentation,
+                         (unsigned long)currentHealth.dramLargestBlock,
+                         (unsigned long)consecutiveFragmentationCriticalCount,
+                         (unsigned long)FRAG_REBOOT_COUNT);
+        }
+
+        if (consecutiveFragmentationCriticalCount >= FRAG_REBOOT_COUNT &&
+            !SystemRebooter::isScheduled()) {
+            char reason[48];
+            snprintf(reason, sizeof(reason), "DRAM frag=%u%% block=%lu",
+                     (unsigned)currentHealth.heapFragmentation,
+                     (unsigned long)currentHealth.dramLargestBlock);
+            LOG_ERROR("[MEMGUARD] Fragmentation unrecoverable, scheduling reboot");
+            SystemRebooter::scheduleReboot(reason, 2000UL, RestartReason::MEMORY_COMPACTION);
+        }
+    } else {
+        consecutiveFragmentationCriticalCount = 0;
     }
 }
 
@@ -468,6 +537,9 @@ String HealthMonitor::getMetricsJson() {
     doc["heap"]["min"]           = currentHealth.minFreeHeap;
     doc["heap"]["largest_block"] = currentHealth.largestFreeBlock;
     doc["heap"]["fragmentation"] = currentHealth.heapFragmentation;
+    // DRAM 内部内存（排除 PSRAM，用于 WiFi/MQTT/SSL 保护决策）
+    doc["heap"]["dram_free"]     = currentHealth.dramFreeHeap;
+    doc["heap"]["dram_largest"]  = currentHealth.dramLargestBlock;
     doc["mqtt"]["queue_depth"]   = mqttQueueDepth;
     doc["sse"]["client_count"]   = sseClientCount;
     doc["poll"]["duration_ms"]   = pollDurationMs;
@@ -488,9 +560,12 @@ String HealthMonitor::getMetricsJson() {
 
 // ── 定期串口输出关键指标摘要 ─────────────────────────────────────────
 void HealthMonitor::logMetricsSummary() {
-    Serial.printf("[METRICS] heap=%lu min=%lu largest=%lu frag=%d%% mqtt_q=%d sse=%d poll=%lums up=%lus\n",
+    // 同时输出 DRAM 内部内存 vs 全局内存，方便诊断 PSRAM 干扰问题
+    Serial.printf("[METRICS] heap=%lu min=%lu dram=%lu dram_blk=%lu total_blk=%lu frag=%d%% mqtt_q=%d sse=%d poll=%lums up=%lus\n",
         (unsigned long)currentHealth.freeHeap,
         (unsigned long)currentHealth.minFreeHeap,
+        (unsigned long)currentHealth.dramFreeHeap,
+        (unsigned long)currentHealth.dramLargestBlock,
         (unsigned long)currentHealth.largestFreeBlock,
         (int)currentHealth.heapFragmentation,
         (int)mqttQueueDepth,

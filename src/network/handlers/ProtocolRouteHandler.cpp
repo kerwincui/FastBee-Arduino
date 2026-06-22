@@ -10,6 +10,7 @@
 #include "./network/WebHandlerContext.h"
 #include "./network/NetworkManager.h"
 #include "./protocols/ProtocolManager.h"
+#include "systems/SystemRebooter.h"
 #include "utils/PsramJsonDocument.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
@@ -188,10 +189,10 @@ void copyPeriphExecModbusSummary(JsonObject out, JsonObject in) {
     JsonObject masterOut = out["master"].to<JsonObject>();
     JsonObject masterIn = in["master"].as<JsonObject>();
 
-    // Master 高级参数透传
-    masterOut["responseTimeout"] = masterIn["responseTimeout"] | 1000;
-    masterOut["maxRetries"] = masterIn["maxRetries"] | 2;
-    masterOut["interPollDelay"] = masterIn["interPollDelay"] | 100;
+    // Master 高级参数使用硬编码常量（不再从 JSON 读取）
+    masterOut["responseTimeout"] = 1000;
+    masterOut["maxRetries"] = 2;
+    masterOut["interPollDelay"] = 100;
 
     JsonArray tasksOut = masterOut["tasks"].to<JsonArray>();
     JsonArray tasksIn = masterIn["tasks"].as<JsonArray>();
@@ -583,13 +584,8 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     doc["modbusRtu"]["transferType"] = GPI("modbusRtu_transferType", String(currentTransferType));
     // workMode 已移除：由轮询任务配置自动推导，不再保存
 
-    // Modbus RTU Master 高级参数（支持前端覆盖，未发送时保持已有配置，无配置则写入默认值）
-    int currentRespTimeout = doc["modbusRtu"]["master"]["responseTimeout"] | 1000;
-    int currentMaxRetries = doc["modbusRtu"]["master"]["maxRetries"] | 2;
-    int currentInterPoll = doc["modbusRtu"]["master"]["interPollDelay"] | 100;
-    doc["modbusRtu"]["master"]["responseTimeout"] = GPI("modbusRtu_responseTimeout", String(currentRespTimeout));
-    doc["modbusRtu"]["master"]["maxRetries"] = GPI("modbusRtu_maxRetries", String(currentMaxRetries));
-    doc["modbusRtu"]["master"]["interPollDelay"] = GPI("modbusRtu_interPollDelay", String(currentInterPoll));
+    // Modbus RTU Master 通信参数（responseTimeout/maxRetries/interPollDelay）已从构造函数硬编码，
+    // 实际执行时由外设执行-轮询触发器覆盖，不写入 protocol.json。
 
     // Modbus RTU Master 轮询任务
     // 仅在前端实际发送了 tasks 数据时才清空并重建数组，避免从其他标签页保存时误删现有配置
@@ -889,38 +885,24 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         LittleFS.remove("/config/mqtt-backup.json");
     }
 
-    // 保存成功后，根据MQTT启用状态处理连接
-    bool mqttReconnected = false;
-    bool mqttDisconnected = false;
-    int mqttError = 0;
+    // 保存成功后，根据MQTT启用状态处理
+    // 策略：MQTT 配置变更采用设备重启（而非运行时 destroy/rebuild）
+    // 原因：运行时重建 MQTT 客户端会导致 DRAM 碎片化，TLS 握手失败
+    bool mqttWillReboot = false;
 #if FASTBEE_ENABLE_MQTT
-    if (updateMqtt && doc["mqtt"]["enabled"].as<bool>()) {
-        ProtocolManager* pm = ctx->protocolManager;
-        if (pm) {
-            // 使用非阻塞重启：仅重载配置，由 loop 自动重连
-            // 避免 PubSubClient::connect() 阻塞 Web 服务器
-            mqttReconnected = pm->restartMQTTDeferred();
-            if (!mqttReconnected) {
-                mqttError = -1;  // begin() 失败
-            }
-        }
-    } else if (updateMqtt) {
-        // MQTT未启用，断开现有连接
-        ProtocolManager* pm = ctx->protocolManager;
-        if (pm) {
-            pm->stopMQTT();
-            mqttDisconnected = true;
-        }
+    if (updateMqtt) {
+        // MQTT 配置已保存到文件，调度设备重启
+        // 重启后 ProtocolManager::initialize() 会读取新配置并启动/停止 MQTT
+        mqttWillReboot = true;
     }
 #endif
 
-    // 保存成功后，根据Modbus启用状态处理
+    // Modbus 保持运行时重启（不涉及 TLS/网络栈，无内存碎片风险）
     bool modbusRestarted = false;
 #if FASTBEE_ENABLE_MODBUS
     if (updateModbusRtu && doc["modbusRtu"]["enabled"].as<bool>()) {
         ProtocolManager* pm = ctx->protocolManager;
         if (pm) {
-            // 延迟重启：避免在 AsyncTCP 小栈任务中执行 restartModbus()
             modbusRestarted = pm->restartModbusDeferred();
         }
     } else if (updateModbusRtu) {
@@ -933,17 +915,19 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
 
     JsonDocument resp;
     resp["success"] = true;
-    resp["message"] = "Protocol configuration saved";
-    resp["data"]["mqttReconnected"] = mqttReconnected;
-    resp["data"]["mqttDeferred"] = mqttReconnected;  // 标识为延迟连接模式
-    resp["data"]["mqttDisconnected"] = mqttDisconnected;
+    resp["message"] = mqttWillReboot
+        ? "Protocol configuration saved, device will reboot"
+        : "Protocol configuration saved";
+    resp["data"]["restartRequired"] = mqttWillReboot;
     resp["data"]["modbusRestarted"] = modbusRestarted;
     // 如果 clientId 是自动生成的，返回给前端
     if (clientIdGenerated) {
         resp["data"]["mqttClientId"] = clientId;
     }
-    if (updateMqtt && !mqttReconnected && doc["mqtt"]["enabled"].as<bool>()) {
-        resp["data"]["mqttError"] = mqttError;
-    }
     HandlerUtils::sendJsonStream(request, resp);
+
+    // HTTP 响应已发送，如果 MQTT 配置变更则调度延迟重启
+    if (mqttWillReboot) {
+        SystemRebooter::scheduleConfigReboot("MQTT config changed");
+    }
 }

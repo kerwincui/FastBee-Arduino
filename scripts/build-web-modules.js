@@ -586,7 +586,7 @@ function validateSourceCoverage() {
     } else {
         console.log(`  Source coverage: all ${actualFiles.length} output modules traced to web-src/`);
         if (ignoredProdOrphans.length > 0) {
-            console.log(`  Slim ignored stale module(s): ${ignoredProdOrphans.length}`);
+            console.log(`  Lite ignored stale module(s): ${ignoredProdOrphans.length}`);
         }
     }
 }

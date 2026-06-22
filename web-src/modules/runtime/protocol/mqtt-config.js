@@ -622,6 +622,12 @@
                     badge.className = 'mqtt-status-badge mqtt-status-online';
                     badge.textContent = '已连接';
                     this._mqttConnectingStartTime = 0; // 重置超时计时
+                } else if (d.internetAvailable === false && d.enabled !== false) {
+                    // 网络本身不可用时（如 4G 失败回退 AP、以太网断线），
+                    // 显示“网络未连接”而非泛泛的“未连接”，帮助用户定位根因
+                    badge.className = 'mqtt-status-badge mqtt-status-offline';
+                    badge.textContent = '网络未连接';
+                    this._mqttConnectingStartTime = 0;
                 } else if (connecting && !hasError) {
                     // 跟踪"连接中"状态持续时间
                     if (!this._mqttConnectingStartTime) {

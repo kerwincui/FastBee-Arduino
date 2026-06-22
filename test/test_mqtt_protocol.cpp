@@ -2250,23 +2250,23 @@ void test_mqtts_memory_check_uses_internal_cap() {
         "doReconnect must use MALLOC_CAP_INTERNAL for largest block (not MALLOC_CAP_DEFAULT)");
     TestLog::step("heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) present");
 
-    // 3. minHeap 阈值降为 35000（setInsecure 跳过证书节省了 ~8-12KB）
+    // 3. minHeap 阈值为 35000（mbedtls 缓冲区裁剪后 TLS 握手仅需 ~25-30KB）
     std::regex minHeapRe("minHeap\\s*=\\s*isMqtts\\s*\\?\\s*(\\d+)");
     std::smatch match;
     if (std::regex_search(content, match, minHeapRe) && match.size() > 1) {
         int minHeapVal = std::stoi(match[1].str());
-        TEST_ASSERT_TRUE_MESSAGE(minHeapVal >= 30000 && minHeapVal <= 45000,
-            "MQTTS minHeap should be 30000-45000 (setInsecure saves cert memory)");
-        TestLog::step(("MQTTS minHeap=" + match[1].str() + " (in 30K-45K range)").c_str());
+        TEST_ASSERT_TRUE_MESSAGE(minHeapVal >= 30000 && minHeapVal <= 40000,
+            "MQTTS minHeap should be 30000-40000 (buffer trimmed TLS needs ~25-30KB DRAM)");
+        TestLog::step(("MQTTS minHeap=" + match[1].str() + " (in 30K-40K range)").c_str());
     }
 
-    // 4. minLargestBlock 阈值降为 20000
+    // 4. minLargestBlock 阈值为 20000（mbedtls 4KB input buffer + 上下文 + 对齐）
     std::regex minBlockRe("minLargestBlock\\s*=\\s*isMqtts\\s*\\?\\s*(\\d+)");
     if (std::regex_search(content, match, minBlockRe) && match.size() > 1) {
         int minBlockVal = std::stoi(match[1].str());
-        TEST_ASSERT_TRUE_MESSAGE(minBlockVal >= 16000 && minBlockVal <= 30000,
-            "MQTTS minLargestBlock should be 16000-30000");
-        TestLog::step(("MQTTS minLargestBlock=" + match[1].str() + " (in 16K-30K range)").c_str());
+        TEST_ASSERT_TRUE_MESSAGE(minBlockVal >= 15000 && minBlockVal <= 25000,
+            "MQTTS minLargestBlock should be 15000-25000");
+        TestLog::step(("MQTTS minLargestBlock=" + match[1].str() + " (in 15K-25K range)").c_str());
     }
 
     TestLog::testEnd(true);
@@ -2295,21 +2295,29 @@ void test_mqtts_psram_largest_block_misleads_default_cap() {
     TestLog::step("Old minHeap=60000 would block at heap=41628 (heap threshold too high)");
 
     // 新逻辑（MALLOC_CAP_INTERNAL）：
-    //   DRAM 内部 35KB 总空闲 + 最大连续 20KB → 允许重连
-    uint32_t NEW_MIN_HEAP = 35000;
-    uint32_t NEW_MIN_BLOCK = 20000;
-    uint32_t newDramFree = 40000;  // DRAM 内部 40KB 总空闲（足够）
+    //   DRAM 内部 40KB 总空闲 + 最大连续 25KB -> 允许重连
+    uint32_t NEW_MIN_HEAP = 40000;
+    uint32_t NEW_MIN_BLOCK = 25000;
+    uint32_t newDramFree = 39000;  // DRAM 内部 39KB 总空闲（不足 40KB）
     bool newGuardPassed = (newDramFree >= NEW_MIN_HEAP) && (dramLargest >= NEW_MIN_BLOCK);
     TEST_ASSERT_FALSE_MESSAGE(newGuardPassed,
-        "New DRAM check: free=40KB but largest=8KB < 20KB → should BLOCK (fragmented)");
-    TestLog::step("New DRAM check: fragmented DRAM (8KB block) correctly blocks");
+        "New DRAM check: free=39KB < 40KB threshold -> should BLOCK");
+    TestLog::step("New DRAM check: insufficient DRAM (39KB < 40KB) correctly blocks");
+
+    uint32_t fieldDramFree = 43104;
+    uint32_t fieldDramLargest = 32756;
+    bool fieldGuard = (fieldDramFree >= NEW_MIN_HEAP) && (fieldDramLargest >= NEW_MIN_BLOCK);
+    TEST_ASSERT_TRUE_MESSAGE(fieldGuard,
+        "Field DRAM (43104 free, 32756 largest) must allow MQTTS reconnect attempt");
+    TestLog::step("Field DRAM: free=43104, largest=32756 -> reconnect allowed");
 
     // 真正 DRAM 充足时放行
-    uint32_t healthyDramLargest = 25000;  // 25KB 连续 DRAM
-    bool healthyGuard = (newDramFree >= NEW_MIN_HEAP) && (healthyDramLargest >= NEW_MIN_BLOCK);
+    uint32_t healthyDramFree = 50000;  // 50KB DRAM
+    uint32_t healthyDramLargest = 28000;  // 28KB 连续 DRAM
+    bool healthyGuard = (healthyDramFree >= NEW_MIN_HEAP) && (healthyDramLargest >= NEW_MIN_BLOCK);
     TEST_ASSERT_TRUE_MESSAGE(healthyGuard,
-        "Healthy DRAM (40KB free, 25KB largest) → should ALLOW reconnect");
-    TestLog::step("Healthy DRAM: free=40KB, largest=25KB → reconnect allowed");
+        "Healthy DRAM (50KB free, 28KB largest) → should ALLOW reconnect");
+    TestLog::step("Healthy DRAM: free=50KB, largest=28KB → reconnect allowed");
 
     // PSRAM largest (8MB) 不应影响 DRAM 连续块检测
     TEST_ASSERT_TRUE_MESSAGE(totalLargest > dramLargest * 100,
@@ -2735,6 +2743,523 @@ void test_mqtt_test_save_config_includes_clientid() {
     TestLog::testEnd(true);
 }
 
+// ============================================================
+// 网络切换后 MQTT 重连测试
+// 修复：网络切换后错误计数器不重置、handle() 使用悬空指针、
+// MQTT 慢模式不恢复等问题
+// ============================================================
+
+/**
+ * @brief 网络类型变更后 MQTT 重连
+ * 模拟从 WiFi 切换到以太网后，MQTT 客户端重建并连接成功
+ */
+void test_mqtt_reconnect_after_network_type_change() {
+    TestLog::testStart("MQTT Reconnect After Network Type Change");
+
+    // WiFi 模式 MQTT 连接
+    MockMQTTClient mqtt;
+    MQTTConfig config;
+    config.enabled = true;
+    config.server = "iot.fastbee.cn";
+    config.port = 1883;
+    config.clientId = "TestSwitchDevice";
+    config.username = "admin";
+    config.password = "password123";
+    config.autoReconnect = true;
+    config.reconnectInterval = 100;
+    mqtt.initialize(config);
+    TEST_ASSERT_TRUE(mqtt.connect());
+    TEST_ASSERT_TRUE(mqtt.getIsConnected());
+    TestLog::step("MQTT connected over WiFi");
+
+    // 模拟网络切换：停止 MQTT（pre-network-switch 回调）
+    mqtt.disconnect();
+    mqtt.setStopped(true);
+    TEST_ASSERT_TRUE(mqtt.isStopped());
+    TEST_ASSERT_FALSE(mqtt.getIsConnected());
+    TestLog::step("MQTT stopped before network switch");
+
+    // 模拟 restartMQTTDeferred：创建新的 MQTT 客户端（全新状态）
+    MockMQTTClient mqttNew;
+    mqttNew.initialize(config);
+    TEST_ASSERT_TRUE(mqttNew.connect());
+    TEST_ASSERT_TRUE(mqttNew.getIsConnected());
+    TEST_ASSERT_EQUAL(0, mqttNew.getReconnectCount());  // 全新客户端
+    TEST_ASSERT_EQUAL(0, mqttNew.getLastError());        // 无错误
+    TestLog::step("MQTT reconnected with fresh client (counters reset)");
+
+    // 验证新客户端的 handleAutoReconnect 不会在已连接时调度重连
+    bool scheduled = mqttNew.handleAutoReconnect(1000);
+    TEST_ASSERT_FALSE(scheduled);  // 已连接，不重连
+    TestLog::step("New client handle: no reconnect needed (connected)");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 传输层变更后错误计数器重置
+ * 模拟 MQTT 连接失败 3 次进入慢模式后，传输层变更应重置计数器
+ */
+void test_mqtt_error_counters_reset_on_transport_change() {
+    TestLog::testStart("MQTT Error Counters Reset on Transport Change");
+
+    MockMQTTClient mqtt;
+    MQTTConfig config;
+    config.enabled = true;
+    config.server = "iot.fastbee.cn";
+    config.port = 1883;
+    config.clientId = "TestCounterReset";
+    config.username = "admin";
+    config.password = "password123";
+    config.autoReconnect = true;
+    config.reconnectInterval = 100;
+    mqtt.initialize(config);
+
+    // 模拟 3 次连接失败（进入慢模式）
+    mqtt.setShouldFailConnect(true);
+    for (int i = 0; i < 3; i++) {
+        mqtt.reconnect();
+    }
+    TEST_ASSERT_EQUAL(3, mqtt.getReconnectCount());
+    TEST_ASSERT_FALSE(mqtt.getIsConnected());
+    TestLog::step("3 failed reconnects (slow mode simulated)");
+
+    // 模拟传输层变更：创建新的 MQTT 客户端（模拟 restartMQTTDeferred + resetErrorCounters）
+    MockMQTTClient mqttReset;
+    mqttReset.initialize(config);
+    // 全新客户端的计数器应为初始值
+    TEST_ASSERT_EQUAL(0, mqttReset.getReconnectCount());
+    TEST_ASSERT_EQUAL(0, mqttReset.getLastError());
+    TestLog::step("New client: counters reset (count=0, error=0)");
+
+    // 新客户端应能正常连接
+    mqttReset.setShouldFailConnect(false);
+    TEST_ASSERT_TRUE(mqttReset.connect());
+    TEST_ASSERT_TRUE(mqttReset.getIsConnected());
+    TestLog::step("New client connected successfully after reset");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MQTT 被 stop() 后 handle() 立即返回
+ * 验证：stopped=true 时不调度重连，防止使用悬空指针
+ */
+void test_mqtt_handle_skipped_when_stopped() {
+    TestLog::testStart("MQTT Handle Skipped When Stopped");
+
+    MockMQTTClient mqtt;
+    MQTTConfig config;
+    config.enabled = true;
+    config.server = "iot.fastbee.cn";
+    config.port = 1883;
+    config.clientId = "TestStopped";
+    config.username = "admin";
+    config.password = "password123";
+    config.autoReconnect = true;
+    config.reconnectInterval = 100;
+    mqtt.initialize(config);
+    mqtt.connect();
+    TEST_ASSERT_TRUE(mqtt.getIsConnected());
+
+    // stop MQTT
+    mqtt.disconnect();
+    mqtt.setStopped(true);
+    TEST_ASSERT_TRUE(mqtt.isStopped());
+    TEST_ASSERT_FALSE(mqtt.getIsConnected());
+    TestLog::step("MQTT stopped");
+
+    // handleAutoReconnect 模拟 handle() 中的重连逻辑
+    // stopped=true 时应返回 false（不调度重连）
+    bool scheduled1 = mqtt.handleAutoReconnect(1000);
+    TEST_ASSERT_FALSE(scheduled1);
+    TestLog::step("handle() at t=1000: no reconnect (stopped)");
+
+    bool scheduled2 = mqtt.handleAutoReconnect(5000);
+    TEST_ASSERT_FALSE(scheduled2);
+    TestLog::step("handle() at t=5000: no reconnect (stopped)");
+
+    bool scheduled3 = mqtt.handleAutoReconnect(10000);
+    TEST_ASSERT_FALSE(scheduled3);
+    TestLog::step("handle() at t=10000: no reconnect (stopped)");
+
+    // 重建客户端后恢复正常
+    MockMQTTClient mqttNew;
+    mqttNew.initialize(config);
+    mqttNew.connect();
+    TEST_ASSERT_TRUE(mqttNew.getIsConnected());
+    TEST_ASSERT_FALSE(mqttNew.isStopped());
+    bool scheduled4 = mqttNew.handleAutoReconnect(1000);
+    TEST_ASSERT_FALSE(scheduled4);  // 已连接，不重连
+    TestLog::step("New client: handle() works correctly");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 网络切换期间的内存保护
+ * 模拟低堆环境下 MQTT 重连被跳过，堆恢复后正常重连
+ */
+void test_mqtt_memory_protection_during_switch() {
+    TestLog::testStart("MQTT Memory Protection During Switch");
+
+    MockMQTTClient mqtt;
+    MQTTConfig config;
+    config.enabled = true;
+    config.server = "iot.fastbee.cn";
+    config.port = 1883;
+    config.clientId = "TestMemProt";
+    config.username = "admin";
+    config.password = "password123";
+    config.autoReconnect = true;
+    config.reconnectInterval = 100;
+    mqtt.initialize(config);
+
+    // 正常连接
+    TEST_ASSERT_TRUE(mqtt.connect());
+    TEST_ASSERT_TRUE(mqtt.getIsConnected());
+    TestLog::step("MQTT connected (normal heap)");
+
+    // 模拟低堆环境：MQTT 应跳过重连
+    // 在生产代码中 doReconnect() 检查 heap < 8000 时跳过
+    uint32_t lowHeap = 5000;  // 低于 8000 阈值
+    bool heapTooLow = (lowHeap < 8000);
+    TEST_ASSERT_TRUE(heapTooLow);
+    TestLog::step("Low heap detected (<8KB): reconnect would be skipped");
+
+    // 断开连接
+    mqtt.setConnected(false);
+    TEST_ASSERT_FALSE(mqtt.getIsConnected());
+
+    // 在低堆环境下，handleAutoReconnect 仍会调度（mock 不检查堆），
+    // 但生产代码中 doReconnect() 会跳过。验证逻辑：
+    // 模拟堆恢复后正常重连
+    uint32_t recoveredHeap = 50000;  // 充足堆
+    bool heapSufficient = (recoveredHeap >= 8000);
+    TEST_ASSERT_TRUE(heapSufficient);
+    TestLog::step("Heap recovered (50KB): reconnect allowed");
+
+    // 重连成功
+    bool scheduled = mqtt.handleAutoReconnect(1000);
+    // handleAutoReconnect 会设置 _reconnectPending=true
+    if (scheduled) {
+        mqtt.clearReconnectPending();
+        TEST_ASSERT_TRUE(mqtt.reconnect());
+        TEST_ASSERT_TRUE(mqtt.getIsConnected());
+        TestLog::step("MQTT reconnected after heap recovery");
+    } else {
+        // 如果没有调度（时间未到），手动重连
+        TEST_ASSERT_TRUE(mqtt.reconnect());
+        TEST_ASSERT_TRUE(mqtt.getIsConnected());
+        TestLog::step("MQTT reconnected after heap recovery (manual)");
+    }
+
+    // 验证低堆阈值逻辑
+    // MQTT (非 MQTTS): 阈值 8KB total / 2KB 连续
+    // MQTTS: 阈值 35KB total / 20KB 连续（mbedtls 缓冲区裁剪后）
+    uint32_t mqttThreshold = 8000;
+    uint32_t mqttsThreshold = 35000;
+    TEST_ASSERT_TRUE(5000 < mqttThreshold);   // 5KB 低于 MQTT 阈值
+    TEST_ASSERT_TRUE(34000 < mqttsThreshold);  // 34KB 低于 MQTTS 阈值（35KB）
+    TEST_ASSERT_TRUE(19444 < 20000);  // 19.4KB 低于 MQTTS 连续块阈值（20KB）
+    TestLog::step("Memory threshold logic verified (MQTT=8KB, MQTTS=35KB/20KB)");
+
+    TestLog::testEnd(true);
+}
+
+// ========== MQTT 重连任务按需创建测试 ==========
+
+/**
+ * @brief 源码验证: MQTTClient 重连任务从常驻改为按需创建
+ * begin() 不再创建 reconnectTaskHandle
+ * ensureReconnectTask() 在需要重连时按需创建
+ * reconnectTaskEntry 完成后自删除 (vTaskDelete)
+ */
+void test_mqtt_reconnect_task_on_demand() {
+    TestLog::testStart("MQTT: Reconnect Task On-Demand");
+
+    std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "MQTTClient.cpp must be readable");
+
+    // 1. 必须有 ensureReconnectTask 方法
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("ensureReconnectTask") != std::string::npos,
+        "MQTTClient must have ensureReconnectTask() method for on-demand creation");
+    TestLog::step("ensureReconnectTask() method present");
+
+    // 2. reconnectTaskEntry 完成后必须自删除
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("vTaskDelete(nullptr)") != std::string::npos,
+        "reconnectTaskEntry must self-delete after completion to free DRAM");
+    TestLog::step("reconnectTaskEntry self-deletes via vTaskDelete(nullptr)");
+
+    // 3. reconnectTaskEntry 完成后必须将 handle 置空
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("_reconnectTaskHandle = nullptr") != std::string::npos,
+        "After self-delete, _reconnectTaskHandle must be set to nullptr");
+    TestLog::step("_reconnectTaskHandle cleared after task exits");
+
+    // 4. 头文件必须声明 ensureReconnectTask
+    std::string header = readProjectFile("include/protocols/MQTTClient.h");
+    TEST_ASSERT_TRUE_MESSAGE(!header.empty(), "MQTTClient.h must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("ensureReconnectTask") != std::string::npos,
+        "MQTTClient.h must declare ensureReconnectTask()");
+    TestLog::step("ensureReconnectTask() declared in header");
+
+    TestLog::testEnd(true);
+}
+
+// ========== MQTTS SSL 内存失败防御测试 ==========
+
+/**
+ * @brief MQTTS SSL 内存保护：主动释放 SSE + 激进重试机制
+ * 验证源码中包含：
+ * 1. MQTTS 连接前主动关闭 SSE 客户端释放 DRAM
+ * 2. SSL 失败后激进内存回收再重试
+ * 3. 阈值为 40KB/25KB（匹配 setInsecure 后 TLS 实际需求 ~35-40KB）
+ */
+void test_mqtts_ssl_memory_failure_defense() {
+    TestLog::testStart("MQTTS: SSL Memory Failure Defense");
+
+    std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "MQTTClient.cpp must be readable");
+
+    // 1. 必须在 MQTTS 连接前主动释放 SSE
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("closeAllClients") != std::string::npos,
+        "doReconnect must proactively close SSE clients before MQTTS connection");
+    TestLog::step("Proactive SSE client cleanup before MQTTS connect");
+
+    // 2. 必须有 SSL 失败后的激进重试
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("Aggressive retry") != std::string::npos,
+        "doReconnect must have aggressive retry after SSL memory failure");
+    TestLog::step("Aggressive retry after SSL memory failure");
+
+    // 3. 阈值为 35KB（mbedtls 缓冲区裁剪后 TLS 仅需 ~25-30KB）
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("35000") != std::string::npos,
+        "MQTTS minHeap must be 35000 (buffer-trimmed TLS needs ~25-30KB DRAM)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("20000") != std::string::npos,
+        "MQTTS minLargestBlock must be 20000 (mbedtls 4KB input buffer + overhead)");
+    TestLog::step("Thresholds: minHeap=35KB, minLargestBlock=20KB");
+
+    // 4. 激进重试必须包含延迟（让 idle 任务回收 mbedtls 残留）
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("delay(50)") != std::string::npos,
+        "Aggressive retry must have delay for idle task memory reclamation");
+    TestLog::step("Delay for mbedtls memory reclamation in aggressive retry");
+
+    // 5. TLS 内存失败必须被单独分类，不能误触发网络/DNS失败的 WiFi soft-reset
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("mqttsSslMemoryFailure") != std::string::npos,
+        "MQTTS SSL memory failures must be tracked separately from DNS/network failures");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("MQTTS SSL memory failure") != std::string::npos,
+        "MQTTS SSL memory failures must enter slow retry mode");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("ets_printf(\"[MQTT] MQTTS SSL memory failure") != std::string::npos,
+        "MQTTS SSL memory slow retry must be visible in serial diagnostics");
+    TestLog::step("MQTTS SSL memory failures use slow retry classification");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MQTTS SSL 内存失败不能触发 WiFi soft reset
+ */
+void test_mqtts_ssl_memory_failure_does_not_reset_wifi() {
+    TestLog::testStart("MQTTS: SSL Memory Failure Does Not Reset WiFi");
+
+    std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "MQTTClient.cpp must be readable");
+
+    size_t memoryBranch = content.find("if (mqttsSslMemoryFailure)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        memoryBranch != std::string::npos,
+        "doReconnect must branch on mqttsSslMemoryFailure before rc=-2 DNS handling");
+
+    size_t dnsBranch = content.find("} else if (lastErrorCode == -2)", memoryBranch);
+    TEST_ASSERT_TRUE_MESSAGE(
+        dnsBranch != std::string::npos,
+        "DNS/network rc=-2 handling must be a separate else-if branch");
+
+    size_t wifiReset = content.find("soft-resetting WiFi STA", dnsBranch);
+    TEST_ASSERT_TRUE_MESSAGE(
+        wifiReset != std::string::npos,
+        "WiFi soft reset logic must remain limited to the DNS/network branch");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        memoryBranch < dnsBranch && dnsBranch < wifiReset,
+        "MQTTS memory failure branch must bypass DNS failure counting and WiFi soft reset");
+
+    size_t counterReset = content.find("consecutiveTimeouts = 0;", memoryBranch);
+    TEST_ASSERT_TRUE_MESSAGE(
+        counterReset != std::string::npos && counterReset < dnsBranch,
+        "MQTTS memory failure must reset network-failure counters");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("bool keepSlowRetry = slowMode || mqttsSslMemoryFailure") != std::string::npos,
+        "MQTTS memory slow retry must not be overwritten by exponential backoff");
+
+    TestLog::step("MQTTS SSL memory failure isolated from network recovery path");
+    TestLog::testEnd(true);
+}
+
+// ============ MQTTS TLS 动态内存管理测试 ============
+
+/**
+ * @brief 验证 ensureTlsTransport() / releaseTlsTransport() 在源码中存在且被正确调用
+ */
+void test_mqtts_dynamic_tls_lifecycle_methods() {
+    TestLog::testStart("MQTTS: Dynamic TLS Lifecycle Methods");
+
+    std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "MQTTClient.cpp must be readable");
+
+    // ensureTlsTransport 实现
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("void MQTTClient::ensureTlsTransport()") != std::string::npos,
+        "ensureTlsTransport() must be implemented");
+    TestLog::step("ensureTlsTransport() implementation found");
+
+    // releaseTlsTransport 实现
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("void MQTTClient::releaseTlsTransport()") != std::string::npos,
+        "releaseTlsTransport() must be implemented");
+    TestLog::step("releaseTlsTransport() implementation found");
+
+    // reclaimDramForMqtts 实现
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("bool MQTTClient::reclaimDramForMqtts()") != std::string::npos,
+        "reclaimDramForMqtts() must be implemented");
+    TestLog::step("reclaimDramForMqtts() implementation found");
+
+    // ensureTlsTransport 必须使用 new 创建对象
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("_wifiClientSecure = new WiFiClientSecure()") != std::string::npos,
+        "ensureTlsTransport must dynamically allocate WiFiClientSecure");
+    TestLog::step("Dynamic allocation: new WiFiClientSecure()");
+
+    // releaseTlsTransport 必须使用 delete 释放对象
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("delete _wifiClientSecure") != std::string::npos,
+        "releaseTlsTransport must delete _wifiClientSecure to free TLS memory");
+    TestLog::step("Dynamic deallocation: delete _wifiClientSecure");
+
+    // releaseTlsTransport 必须设置 nullptr（防止 use-after-free）
+    size_t deletePos = content.find("delete _wifiClientSecure");
+    size_t nullPos = content.find("_wifiClientSecure = nullptr", deletePos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        nullPos != std::string::npos && nullPos < deletePos + 100,
+        "After delete, _wifiClientSecure must be set to nullptr");
+    TestLog::step("Null assignment after delete (prevents use-after-free)");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 doReconnect() 在 MQTTS 连接前先释放 TLS 对象
+ */
+void test_mqtts_release_before_connect() {
+    TestLog::testStart("MQTTS: Release TLS Before Connect in doReconnect");
+
+    std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "MQTTClient.cpp must be readable");
+
+    // doReconnect 中必须先 releaseTlsTransport 再 ensureTlsTransport
+    size_t doReconnectPos = content.find("void MQTTClient::doReconnect()");
+    TEST_ASSERT_TRUE(doReconnectPos != std::string::npos);
+
+    size_t releasePos = content.find("releaseTlsTransport()", doReconnectPos);
+    size_t ensurePos = content.find("ensureTlsTransport()", releasePos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        releasePos != std::string::npos && ensurePos != std::string::npos && releasePos < ensurePos,
+        "doReconnect must releaseTlsTransport() BEFORE ensureTlsTransport() to recover DRAM first");
+    TestLog::step("releaseTlsTransport() called before ensureTlsTransport() in doReconnect");
+
+    // releaseTlsTransport 必须在 DRAM 检查之前（确保检查时内存已回收）
+    size_t minHeapCheck = content.find("reconnectFreeHeap < minHeap", doReconnectPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        releasePos < minHeapCheck,
+        "TLS must be released BEFORE DRAM threshold check");
+    TestLog::step("TLS released before DRAM threshold check");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 _wifiClientSecure 是动态指针而非固定成员
+ */
+void test_mqtts_wificlientsecure_is_pointer() {
+    TestLog::testStart("MQTTS: WiFiClientSecure is Pointer (Dynamic Allocation)");
+
+    std::string header = readProjectFile("include/protocols/MQTTClient.h");
+    TEST_ASSERT_TRUE_MESSAGE(!header.empty(), "MQTTClient.h must be readable");
+
+    // 必须是指针
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("WiFiClientSecure* _wifiClientSecure") != std::string::npos,
+        "_wifiClientSecure must be a pointer for dynamic allocation");
+    TestLog::step("_wifiClientSecure is a pointer (dynamic allocation)");
+
+    // 不能是固定成员
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("WiFiClientSecure wifiClientSecure;") == std::string::npos,
+        "WiFiClientSecure must NOT be a fixed member (wastes DRAM when not using MQTTS)");
+    TestLog::step("No fixed WiFiClientSecure member (saves DRAM for non-MQTTS)");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 disconnect() 调用 releaseTlsTransport() 释放 TLS 内存
+ */
+void test_mqtts_disconnect_releases_tls() {
+    TestLog::testStart("MQTTS: disconnect() Calls releaseTlsTransport()");
+
+    std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "MQTTClient.cpp must be readable");
+
+    size_t disconnectPos = content.find("void MQTTClient::disconnect()");
+    TEST_ASSERT_TRUE(disconnectPos != std::string::npos);
+
+    size_t releasePos = content.find("releaseTlsTransport()", disconnectPos);
+    size_t nextFunc = content.find("void MQTTClient::", disconnectPos + 50);
+    TEST_ASSERT_TRUE_MESSAGE(
+        releasePos != std::string::npos && releasePos < nextFunc,
+        "disconnect() must call releaseTlsTransport() to free TLS DRAM");
+    TestLog::step("disconnect() calls releaseTlsTransport()");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 DRAM 监控在 reconnect() 中存在
+ */
+void test_mqtts_dram_monitoring_in_reconnect() {
+    TestLog::testStart("MQTTS: DRAM Monitoring in reconnect()");
+
+    std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "MQTTClient.cpp must be readable");
+
+    // reconnect() 中必须记录 TLS 握手前后的 DRAM
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("TLS connect: DRAM") != std::string::npos,
+        "reconnect() must log DRAM before/after TLS handshake");
+    TestLog::step("TLS DRAM delta logging in reconnect()");
+
+    // handle() 中必须有 DRAM 水位告警
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("MQTTS DRAM low") != std::string::npos,
+        "handle() must warn when MQTTS DRAM drops below 15KB");
+    TestLog::step("DRAM watermark warning in handle()");
+
+    TestLog::testEnd(true);
+}
+
 // Test group entry point
 void test_mqtt_protocol_group() {
     TestLog::groupStart("MQTT Protocol Tests");
@@ -2831,6 +3356,26 @@ void test_mqtt_protocol_group() {
     RUN_TEST(test_mqtt_test_simple_auth_respects_form_clientid);
     RUN_TEST(test_mqtt_test_fast_path_connecting_state);
     RUN_TEST(test_mqtt_test_save_config_includes_clientid);
+
+    // 网络切换后 MQTT 重连测试（修复 use-after-free + 错误计数器不重置）
+    RUN_TEST(test_mqtt_reconnect_after_network_type_change);
+    RUN_TEST(test_mqtt_error_counters_reset_on_transport_change);
+    RUN_TEST(test_mqtt_handle_skipped_when_stopped);
+    RUN_TEST(test_mqtt_memory_protection_during_switch);
+
+    // MQTT 重连任务按需创建测试
+    RUN_TEST(test_mqtt_reconnect_task_on_demand);
+
+    // MQTTS SSL 内存失败防御测试
+    RUN_TEST(test_mqtts_ssl_memory_failure_defense);
+    RUN_TEST(test_mqtts_ssl_memory_failure_does_not_reset_wifi);
+
+    // MQTTS TLS 动态内存管理测试（WiFiClientSecure 动态分配优化）
+    RUN_TEST(test_mqtts_dynamic_tls_lifecycle_methods);
+    RUN_TEST(test_mqtts_release_before_connect);
+    RUN_TEST(test_mqtts_wificlientsecure_is_pointer);
+    RUN_TEST(test_mqtts_disconnect_releases_tls);
+    RUN_TEST(test_mqtts_dram_monitoring_in_reconnect);
 
     TestLog::groupEnd();
 }

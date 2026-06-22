@@ -283,9 +283,6 @@ function transformProdConfigFile(sourcePath, normalizedRel) {
             doc.networkType = 0;
             delete doc.ethernet;
             delete doc.cellular;
-            delete doc.lora;
-        } else if (isStandardWebProfile()) {
-            delete doc.lora;
         }
         return JSON.stringify(doc, null, 2) + '\n';
     }

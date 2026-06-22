@@ -11,6 +11,18 @@
 #ifndef FEATURE_FLAGS_H
 #define FEATURE_FLAGS_H
 
+#ifndef FASTBEE_PROFILE_LITE
+#define FASTBEE_PROFILE_LITE 0
+#endif
+
+#ifndef FASTBEE_PROFILE_STANDARD
+#define FASTBEE_PROFILE_STANDARD 0
+#endif
+
+#ifndef FASTBEE_PROFILE_FULL
+#define FASTBEE_PROFILE_FULL 0
+#endif
+
 // ============================================================================
 // 协议功能开关
 // ============================================================================
@@ -103,7 +115,7 @@
 
 /**
  * @brief 以太网 W5500 SPI 支持
- * 默认：禁用（Standard/Full 构建启用；Lite 为稳定性默认关闭）
+ * 默认：禁用（Lite/Standard 为稳定性默认关闭；Full 构建按需启用）
  * 占用：约 8KB Flash
  * 需要：硬件连接 W5500 芯片到 SPI2 接口
  */
@@ -113,7 +125,7 @@
 
 /**
  * @brief 4G 蜂窝模块支持 (EC801E-CN)
- * 默认：禁用（Standard/Full 构建启用；Lite 为稳定性默认关闭）
+ * 默认：禁用（Lite/Standard 为稳定性默认关闭；Full 构建按需启用）
  * 占用：约 15KB Flash
  * 需要：硬件连接 EC801E-CN 模块到 UART2
  * 依赖：TinyGSM 库
@@ -123,18 +135,8 @@
 #endif
 
 /**
- * @brief LoRa 网关透传支持 (E22-400T22D)
- * 默认：禁用（仅 ESP32-S3 full 构建启用）
- * 占用：约 5KB Flash
- * 需要：硬件连接 E22-400T22D 模块到 UART
- */
-#ifndef FASTBEE_ENABLE_LORA
-    #define FASTBEE_ENABLE_LORA 0
-#endif
-
-/**
- * @brief BLE 蓝牙通信支持（保留通用 BLE 能力；配网已统一由 AP+STA 双模自动切换处理）
- * 默认：禁用（standard 预设已 lib_ignore NimBLE-Arduino）
+ * @brief BLE 蓝牙通信支持（预设已移除；配网统一由 AP+STA 双模自动切换处理）
+ * 默认：禁用（所有预设均为 0，宏仅保留用于兼容旧配置）
  * 占用：约 80KB Flash（NimBLE 库）
  * 需要：NimBLE-Arduino 库
  */
@@ -307,7 +309,7 @@
 
 /**
  * @brief Command script action for PeriphExec ACTION_SCRIPT.
- * This is independent from RuleScript pages/API so slim builds can keep
+ * This is independent from RuleScript pages/API so lite builds can keep
  * local command scripts without restoring the full rule-script module.
  */
 #ifndef FASTBEE_ENABLE_COMMAND_SCRIPT

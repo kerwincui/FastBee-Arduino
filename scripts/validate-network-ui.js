@@ -44,8 +44,6 @@ const REQUIRED_BUTTON_IDS = [
     { id: 'ethernet-save-btn-text', label: '以太网保存按钮文字 span' },
     { id: 'cellular-save-btn',   label: '4G 保存按钮' },
     { id: 'cellular-save-btn-text', label: '4G 保存按钮文字 span' },
-    { id: 'lora-save-btn',       label: 'LoRa 保存按钮' },
-    { id: 'lora-save-btn-text',  label: 'LoRa 保存按钮文字 span' },
 ];
 
 for (const { id, label } of REQUIRED_BUTTON_IDS) {
@@ -69,7 +67,6 @@ const REQUIRED_SAVE_FUNCTIONS = [
     { fn: 'saveNetworkConfig',    label: 'WiFi 保存函数' },
     { fn: 'saveEthernetConfig',   label: '以太网保存函数' },
     { fn: 'saveCellularConfig',   label: '4G 保存函数' },
-    { fn: 'saveLoRaConfig',       label: 'LoRa 保存函数' },
     { fn: 'saveActiveNetworkConfig', label: '统一保存入口函数' },
 ];
 
@@ -104,18 +101,12 @@ check(
     'saveCellularConfig 引用 cellular-save-btn'
 );
 
-// LoRa 保存函数必须引用 lora-save-btn
-check(
-    jsContent.includes('lora-save-btn'),
-    'saveLoRaConfig 引用 lora-save-btn'
-);
-
 // 各保存函数调用 _startSaveBtnCountdown
 const countdownCallCount = (jsContent.match(/_startSaveBtnCountdown\s*\(/g) || []).length;
-// 定义 1 次 + 调用 3 次（ethernet/cellular/lora）= 至少 4 处
+// 定义 1 次 + 调用 2 次（ethernet/cellular）= 至少 3 处
 check(
-    countdownCallCount >= 4,
-    `_startSaveBtnCountdown 出现次数 (${countdownCallCount} >= 4，含 1 处定义 + 3 处调用)`
+    countdownCallCount >= 3,
+    `_startSaveBtnCountdown 出现次数 (${countdownCallCount} >= 3，含 1 处定义 + 2 处调用)`
 );
 
 // ─── 4. 按钮禁用逻辑验证 ────────────────────────────────────────────────────

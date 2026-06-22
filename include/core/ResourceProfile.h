@@ -9,7 +9,7 @@ namespace FastBee {
 namespace ResourceProfile {
 
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
-static constexpr const char* NAME = "esp32c3-slim";
+static constexpr const char* NAME = "esp32c3-lite";
 static constexpr size_t MAX_PERIPHERALS = 16;             // 硬性上限（受 GPIO/内存限制）
 static constexpr size_t MAX_PERIPH_EXEC_RULES = 12;       // 推荐值（软性限制，超限只警告）
 static constexpr size_t SENSOR_CACHE_MAX_ENTRIES = 16;
@@ -18,13 +18,18 @@ static constexpr const char* NAME = "esp32c6-mid";
 static constexpr size_t MAX_PERIPHERALS = 24;             // 硬性上限（C6有30个GPIO）
 static constexpr size_t MAX_PERIPH_EXEC_RULES = 24;       // 推荐值（软性限制，超限只警告）
 static constexpr size_t SENSOR_CACHE_MAX_ENTRIES = 24;
-#elif FASTBEE_ENABLE_RULE_SCRIPT || FASTBEE_ENABLE_OTA || FASTBEE_ENABLE_ETHERNET || FASTBEE_ENABLE_CELLULAR || FASTBEE_ENABLE_LORA
+#elif FASTBEE_PROFILE_FULL
 static constexpr const char* NAME = "esp32s3-full";
 static constexpr size_t MAX_PERIPHERALS = 32;             // 硬性上限
 static constexpr size_t MAX_PERIPH_EXEC_RULES = 32;       // 推荐值（软性限制，超限只警告）
 static constexpr size_t SENSOR_CACHE_MAX_ENTRIES = 32;
+#elif FASTBEE_PROFILE_STANDARD
+static constexpr const char* NAME = "esp32-standard";
+static constexpr size_t MAX_PERIPHERALS = 24;             // no-PSRAM Standard: below Full profile
+static constexpr size_t MAX_PERIPH_EXEC_RULES = 24;       // 推荐值（软性限制，超限只警告）
+static constexpr size_t SENSOR_CACHE_MAX_ENTRIES = 24;
 #else
-static constexpr const char* NAME = "esp32-slim";
+static constexpr const char* NAME = "esp32-lite";
 static constexpr size_t MAX_PERIPHERALS = 24;             // 硬性上限
 static constexpr size_t MAX_PERIPH_EXEC_RULES = 16;       // 推荐值（软性限制，超限只警告）
 static constexpr size_t SENSOR_CACHE_MAX_ENTRIES = 24;

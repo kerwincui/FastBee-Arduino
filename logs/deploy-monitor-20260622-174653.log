@@ -1,0 +1,46 @@
+--- Terminal on COM6 | 115200 8-N-1
+--- Available filters and text transformations: debug, default, direct, esp32_exception_decoder, hexlify, log2file, nocontrol, printable, send_on_enter, time
+--- More details at https://bit.ly/pio-monitor-filters
+--- Quit: Ctrl+C | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
+[LOOP-ALIVE] heap=54708
+[MQTT] Reconnect scheduled (heap=43580 cnt=0 interval=5000)
+[MQTT] doReconnect: DRAM free=43580 largest=32756 | total free=43580 largest=8257524
+[MQTT] doReconnect: MQTTS DRAM OK after delay (dram=43580 largest=32756)
+[MQTT] doReconnect: starting (heap=43580 largest=32756 scheme=mqtts)
+[MQTT] Connecting to d23de4e7b2.st1.iotda-device.cn-east-3.myhuaweicloud.com:8883 clientId=6a03ed2d18855b39c518fbc7_xfxt_esp32_0_0_2026061809
+[ 17076][E][ssl_client.cpp:36] _handle_error(): [start_ssl_client():303]: (-32512) SSL - Memory allocation failed
+[ 17086][E][NetworkClientSecure.cpp:159] connect(): start_ssl_client: connect failed: -32512
+[MQTT] Connect FAILED rc=-2 (cnt=1)
+[MQTT] MQTTS failed (rc=-2), DRAM=43144 largest=32756. Aggressive retry...
+[MQTT] Aggressive retry: DRAM=43408 largest=32756
+[MQTT] Connecting to d23de4e7b2.st1.iotda-device.cn-east-3.myhuaweicloud.com:8883 clientId=6a03ed2d18855b39c518fbc7_xfxt_esp32_0_0_2026061809
+[ 19015][E][ssl_client.cpp:36] _handle_error(): [start_ssl_client():303]: (-32512) SSL - Memory allocation failed
+[ 19025][E][NetworkClientSecure.cpp:159] connect(): start_ssl_client: connect failed: -32512
+[MQTT] Connect FAILED rc=-2 (cnt=2)
+[MQTT] MQTTS SSL memory failure, slow mode (next retry 300s)
+[PROTO-ALIVE] handle called heap=54708 mqtt=0x3c294558
+[STATUS] uptime=0h0m30s heap=54708/42996 psram=8361780
+[STATUS] WiFi=CONNECTED ssid=fastbee ip=192.168.5.116 rssi=-51 ch=11
+[LOOP-ALIVE] heap=54660
+[PROTO-ALIVE] handle called heap=54708 mqtt=0x3c294558
+[PROTO-ALIVE] handle called heap=54660 mqtt=0x3c294558
+[LOOP-ALIVE] heap=54708
+[PROTO-ALIVE] handle called heap=54708 mqtt=0x3c294558
+[STATUS] uptime=0h1m0s heap=54708/42996 psram=8362816
+[STATUS] WiFi=CONNECTED ssid=fastbee ip=192.168.5.116 rssi=-52 ch=11
+[LOOP-ALIVE] heap=54660
+[PROTO-ALIVE] handle called heap=54708 mqtt=0x3c294558
+[PROTO-ALIVE] handle called heap=54708 mqtt=0x3c294558
+[LOOP-ALIVE] heap=54708
+[PROTO-ALIVE] handle called heap=54660 mqtt=0x3c294558
+[STATUS] uptime=0h1m30s heap=54708/42996 psram=8363104
+[STATUS] WiFi=CONNECTED ssid=fastbee ip=192.168.5.116 rssi=-54 ch=11
+[LOOP-ALIVE] heap=54708
+[PROTO-ALIVE] handle called heap=54708 mqtt=0x3c294558
+[PROTO-ALIVE] handle called heap=54708 mqtt=0x3c294558
+[LOOP-ALIVE] heap=54708
+[PROTO-ALIVE] handle called heap=54660 mqtt=0x3c294558
+[STATUS] uptime=0h2m0s heap=54708/42996 psram=8363104
+[STATUS] WiFi=CONNECTED ssid=fastbee ip=192.168.5.116 rssi=-51 ch=11
+[LOOP-ALIVE] heap=54708
+[PROTO-ALIVE] handle called heap=54708 mqtt=0x3c294558

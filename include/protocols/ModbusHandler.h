@@ -184,8 +184,9 @@ struct MasterConfig {
     ModbusSubDevice devices[Protocols::MODBUS_MAX_SUB_DEVICES];
     uint8_t  deviceCount;
 
+    // 硬编码默认值：不再从 protocol.json 读取，由外设执行-轮询触发器覆盖实际执行参数
     MasterConfig()
-        : responseTimeout(500), maxRetries(1),
+        : responseTimeout(1000), maxRetries(2),
           interPollDelay(100), taskCount(0), deviceCount(0) {
         memset(tasks, 0, sizeof(tasks));
         memset(devices, 0, sizeof(devices));

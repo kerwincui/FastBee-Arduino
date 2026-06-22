@@ -55,6 +55,10 @@ enum class RestartReason : uint8_t {
     MEMORY_COMPACTION   = 8,
     PERIPHERAL_FAULT    = 9,
     CONFIG_CORRUPTION   = 10,
+    CONFIG_CHANGE       = 11,
+    WEB_RECOVERY        = 12,
+    AP_FALLBACK         = 13,
+    FACTORY_RESET       = 14,
 };
 
 // 镜像 PreRestartSnapshot 结构体（精简版）
@@ -124,6 +128,10 @@ static const char* getRestartReasonString(RestartReason reason) {
         case RestartReason::MEMORY_COMPACTION:    return "Irrecoverable fragmentation";
         case RestartReason::PERIPHERAL_FAULT:     return "Peripheral hardware fault";
         case RestartReason::CONFIG_CORRUPTION:    return "Configuration file corrupted";
+        case RestartReason::CONFIG_CHANGE:        return "Configuration changed (network/MQTT)";
+        case RestartReason::WEB_RECOVERY:         return "Web server recovery (TCP exhaustion)";
+        case RestartReason::AP_FALLBACK:          return "Emergency AP fallback (all networks failed)";
+        case RestartReason::FACTORY_RESET:        return "Factory reset completed";
         default:                                  return "Unknown reason code";
     }
 }
@@ -278,6 +286,26 @@ static void test_restart_reason_config_corruption() {
                              getRestartReasonString(RestartReason::CONFIG_CORRUPTION));
 }
 
+static void test_restart_reason_config_change() {
+    TEST_ASSERT_EQUAL_STRING("Configuration changed (network/MQTT)",
+                             getRestartReasonString(RestartReason::CONFIG_CHANGE));
+}
+
+static void test_restart_reason_web_recovery() {
+    TEST_ASSERT_EQUAL_STRING("Web server recovery (TCP exhaustion)",
+                             getRestartReasonString(RestartReason::WEB_RECOVERY));
+}
+
+static void test_restart_reason_ap_fallback() {
+    TEST_ASSERT_EQUAL_STRING("Emergency AP fallback (all networks failed)",
+                             getRestartReasonString(RestartReason::AP_FALLBACK));
+}
+
+static void test_restart_reason_factory_reset() {
+    TEST_ASSERT_EQUAL_STRING("Factory reset completed",
+                             getRestartReasonString(RestartReason::FACTORY_RESET));
+}
+
 static void test_restart_reason_invalid_code() {
     TEST_ASSERT_EQUAL_STRING("Unknown reason code",
                              getRestartReasonString((RestartReason)255));
@@ -330,6 +358,54 @@ static void test_normal_reasons_not_abnormal() {
     TEST_ASSERT_FALSE(isAbnormalResetReason(g_mockResetReason));
 }
 
+// 验证新增 reason 的异常判定分类
+static void test_new_reasons_abnormal_classification() {
+    // 镜像 wasAbnormalRestart 中 ESP_RST_SW 时的自定义原因判定逻辑
+    auto isAbnormalCustomReason = [](RestartReason r) -> bool {
+        return r == RestartReason::CRITICAL_LOW_MEMORY ||
+               r == RestartReason::FRAMEWORK_LOW_MEMORY ||
+               r == RestartReason::UNCAUGHT_EXCEPTION ||
+               r == RestartReason::STACK_OVERFLOW ||
+               r == RestartReason::MEMORY_COMPACTION ||
+               r == RestartReason::PERIPHERAL_FAULT;
+    };
+
+    // 新增 reason 应属于“正常”重启（非异常）
+    TEST_ASSERT_FALSE(isAbnormalCustomReason(RestartReason::CONFIG_CHANGE));
+    TEST_ASSERT_FALSE(isAbnormalCustomReason(RestartReason::WEB_RECOVERY));
+    TEST_ASSERT_FALSE(isAbnormalCustomReason(RestartReason::AP_FALLBACK));
+    TEST_ASSERT_FALSE(isAbnormalCustomReason(RestartReason::FACTORY_RESET));
+
+    // 已有 reason 分类确认
+    TEST_ASSERT_FALSE(isAbnormalCustomReason(RestartReason::USER_COMMAND));
+    TEST_ASSERT_FALSE(isAbnormalCustomReason(RestartReason::OTA_UPDATE));
+    TEST_ASSERT_FALSE(isAbnormalCustomReason(RestartReason::WATCHDOG_TIMEOUT));
+    TEST_ASSERT_FALSE(isAbnormalCustomReason(RestartReason::CONFIG_CORRUPTION));
+
+    // 异常 reason 确认
+    TEST_ASSERT_TRUE(isAbnormalCustomReason(RestartReason::CRITICAL_LOW_MEMORY));
+    TEST_ASSERT_TRUE(isAbnormalCustomReason(RestartReason::FRAMEWORK_LOW_MEMORY));
+    TEST_ASSERT_TRUE(isAbnormalCustomReason(RestartReason::UNCAUGHT_EXCEPTION));
+    TEST_ASSERT_TRUE(isAbnormalCustomReason(RestartReason::STACK_OVERFLOW));
+    TEST_ASSERT_TRUE(isAbnormalCustomReason(RestartReason::MEMORY_COMPACTION));
+    TEST_ASSERT_TRUE(isAbnormalCustomReason(RestartReason::PERIPHERAL_FAULT));
+}
+
+// 验证所有枚举值都有非空字符串映射
+static void test_all_reasons_have_string_mapping() {
+    // 确保每个枚举值映射到非 "Unknown" 字符串
+    for (uint8_t i = 0; i <= 14; i++) {
+        const char* str = getRestartReasonString(static_cast<RestartReason>(i));
+        TEST_ASSERT_NOT_NULL(str);
+        TEST_ASSERT_TRUE_MESSAGE(
+            strlen(str) > 0,
+            "All RestartReason values must have non-empty string mapping");
+        TEST_ASSERT_FALSE_MESSAGE(
+            strcmp(str, "Unknown reason code") == 0,
+            "All RestartReason values must have a specific description");
+    }
+}
+
 // ========== RestartReason 枚举完整性 ==========
 
 static void test_restart_reason_enum_values() {
@@ -345,6 +421,10 @@ static void test_restart_reason_enum_values() {
     TEST_ASSERT_EQUAL(8,  (int)RestartReason::MEMORY_COMPACTION);
     TEST_ASSERT_EQUAL(9,  (int)RestartReason::PERIPHERAL_FAULT);
     TEST_ASSERT_EQUAL(10, (int)RestartReason::CONFIG_CORRUPTION);
+    TEST_ASSERT_EQUAL(11, (int)RestartReason::CONFIG_CHANGE);
+    TEST_ASSERT_EQUAL(12, (int)RestartReason::WEB_RECOVERY);
+    TEST_ASSERT_EQUAL(13, (int)RestartReason::AP_FALLBACK);
+    TEST_ASSERT_EQUAL(14, (int)RestartReason::FACTORY_RESET);
 }
 
 // ========== PreRestartSnapshot 结构体 ==========
@@ -393,11 +473,17 @@ void test_restart_diagnostics_group() {
     RUN_TEST(test_restart_reason_watchdog);
     RUN_TEST(test_restart_reason_stack_overflow);
     RUN_TEST(test_restart_reason_config_corruption);
+    RUN_TEST(test_restart_reason_config_change);
+    RUN_TEST(test_restart_reason_web_recovery);
+    RUN_TEST(test_restart_reason_ap_fallback);
+    RUN_TEST(test_restart_reason_factory_reset);
     RUN_TEST(test_restart_reason_invalid_code);
     
     // 异常重启判定
     RUN_TEST(test_abnormal_reasons_detected);
     RUN_TEST(test_normal_reasons_not_abnormal);
+    RUN_TEST(test_new_reasons_abnormal_classification);
+    RUN_TEST(test_all_reasons_have_string_mapping);
     
     // 枚举完整性
     RUN_TEST(test_restart_reason_enum_values);

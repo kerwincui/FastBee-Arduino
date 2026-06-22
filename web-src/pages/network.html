@@ -130,35 +130,6 @@
                     </div>
                 </div>
 
-                <!-- LoRa 状态面板 -->
-                <div id="lora-status-panel" class="status-panel fb-hidden">
-                    <div class="status-grid">
-                        <div class="status-item">
-                            <span class="status-label" data-i18n="net-status-connection">连接状态</span>
-                            <span id="lora-status-badge" class="status-badge status-disconnected">未连接</span>
-                        </div>
-                        <div class="status-item">
-                            <span class="status-label">工作模式</span>
-                            <span id="lora-mode-display" class="status-value">--</span>
-                        </div>
-                        <div class="status-item">
-                            <span class="status-label">设备地址</span>
-                            <span id="lora-address" class="status-value">--</span>
-                        </div>
-                        <div class="status-item">
-                            <span class="status-label">频率</span>
-                            <span id="lora-frequency" class="status-value">--</span>
-                        </div>
-                        <div class="status-item">
-                            <span class="status-label">空中速率</span>
-                            <span id="lora-airrate" class="status-value">--</span>
-                        </div>
-                        <div class="status-item">
-                            <span class="status-label">信道</span>
-                            <span id="lora-channel" class="status-value">--</span>
-                        </div>
-                    </div>
-                </div>
             </div>
 
             <div class="config-tabs">
@@ -178,7 +149,6 @@
                                 <option value="0" selected data-i18n="net-type-wifi">WiFi</option>
                                 <option value="1" data-i18n="net-type-ethernet">以太网 (W5500)</option>
                                 <option value="2" data-i18n="net-type-4g">4G蜂窝 (EC801E)</option>
-                                <option value="3" data-i18n="net-type-lora">LoRa 网关透传</option>
                             </select>
                         </div>
                     </div>
@@ -186,7 +156,7 @@
                         <!-- WiFi选择按钮（仅WiFi模式显示） -->
                         <div id="wifi-scan-group" class="fb-form-group">
                             <label data-i18n="wifi-scan-label">选择网络</label>
-                            <button id="wifi-scan-btn" type="button" class="fb-btn fb-btn-refresh"
+                            <button id="wifi-scan-btn" type="button" style="min-height:38px;" class="fb-btn fb-btn-refresh"
                                 data-i18n="wifi-scan-btn">
                                 选择Wifi网络
                             </button>
@@ -337,40 +307,6 @@
                         <div class="fb-mt-4 u-action-row">
                             <button type="submit" id="cellular-save-btn" class="fb-btn fb-btn-primary fb-btn-compact">
                                 <span id="cellular-save-btn-text" data-i18n="save-config-btn">保存配置</span>
-                            </button>
-                        </div>
-                    </form>
-                </div>
-
-                <!-- LoRa 配置面板 -->
-                <div id="lora-panel" class="fb-hidden">
-                    <form id="lora-form" class="fb-form">
-                        <h4 class="fb-section-title" data-i18n="lora-config">E22-400T22D LoRa 配置</h4>
-                        <div class="config-form-grid">
-                            <div class="config-form-column">
-                                <div class="fb-form-group">
-                                    <label for="lora-tx">TX Pin</label>
-                                    <input type="number" id="lora-tx" class="" value="39" min="0" max="48">
-                                </div>
-                                <div class="fb-form-group">
-                                    <label for="lora-rx">RX Pin</label>
-                                    <input type="number" id="lora-rx" class="" value="40" min="0" max="48">
-                                </div>
-                            </div>
-                            <div class="config-form-column">
-                                <div class="fb-form-group">
-                                    <label for="lora-m1">M1 Pin</label>
-                                    <input type="number" id="lora-m1" class="" value="41" min="0" max="48">
-                                </div>
-                                <div class="fb-form-group">
-                                    <label for="lora-baud" data-i18n="lora-baud">波特率</label>
-                                    <input type="number" id="lora-baud" class="" value="9600">
-                                </div>
-                            </div>
-                        </div>
-                        <div class="fb-mt-4 u-action-row">
-                            <button type="submit" id="lora-save-btn" class="fb-btn fb-btn-primary fb-btn-compact">
-                                <span id="lora-save-btn-text" data-i18n="save-config-btn">保存配置</span>
                             </button>
                         </div>
                     </form>
@@ -550,9 +486,9 @@
                             <code id="mdns-disabled-ip-display"></code>
                         </div>
 
-                        <!-- 4G/LoRa 模式域名配置不可用提示 -->
+                        <!-- 4G 模式域名配置不可用提示 -->
                         <div class="message message-info fb-hidden fb-mt-2" id="domain-unavailable-notice">
-                            <span data-i18n="domain-unavailable-notice-text">当前联网方式下域名配置不可用。4G/LoRa 模式仅支持通过 AP 热点 IP 地址访问系统。</span>
+                            <span data-i18n="domain-unavailable-notice-text">当前联网方式下域名配置不可用。4G 模式仅支持通过 AP 热点 IP 地址访问系统。</span>
                         </div>
                     </div>
 

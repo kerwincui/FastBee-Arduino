@@ -199,7 +199,6 @@ a:hover { text-decoration: underline; }
 .fb-btn:active { transform: scale(0.97); }
 .fb-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 /* 确保所有按钮都有可见边框 */
-.fb-btn:not(.fb-btn-primary):not(.fb-btn-success):not(.fb-btn-danger):not(.fb-btn-warning) { border: 1px solid var(--slate-300) !important; }
 .fb-btn.dev-mode-locked,
 button.dev-mode-locked,
 .protocol-action-btn.dev-mode-locked {
@@ -843,7 +842,7 @@ body { background-image: radial-gradient(1200px 500px at -10% -20%, color-mix(in
 .sidebar-menu .menu-item.active { background: var(--sidebar-active-bg); color: var(--sidebar-text); box-shadow: inset 2px 0 0 var(--sidebar-active-border); }
 .header { background: color-mix(in srgb, var(--bg-card) 92%, transparent); border-bottom: 1px solid var(--border-secondary); backdrop-filter: blur(6px); }
 .fb-btn, button, select, input, textarea { border-radius: var(--rounded-md); }
-.fb-btn { border: 1px solid transparent; transition: var(--transition-colors), var(--transition-transform), var(--transition-shadow); min-height: 38px; padding-top: 0; padding-bottom: 0; }
+.fb-btn { border: 1px solid transparent; transition: var(--transition-colors), var(--transition-transform), var(--transition-shadow); min-height: 31px; padding-top: 0; padding-bottom: 0; }
 .fb-btn-sm { min-height: 32px; }
 .fb-btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
 .fb-btn:active { transform: translateY(0); }

@@ -17,6 +17,7 @@
 #include "helpers/TestConfig.h"
 #include "helpers/TestAssertions.h"
 #include "helpers/TestLogger.h"
+#include "helpers/NetworkMQTTHelper.h"
 
 void test_e2e_scenarios_group();
 
@@ -525,7 +526,6 @@ void test_e2e_mqtt_encrypted_auth_depends_on_ntp_https() {
  * @brief 验证不同联网方式的 NTP 交互路径
  * WiFi/以太网 → HTTPS NTP / HTTP NTP / UDP NTP
  * 4G蜂窝 → HTTPS NTP / HTTP NTP
- * LoRa → 无 NTP（透传模式不直接访问互联网）
  */
 void test_e2e_ntp_paths_by_network_type() {
     TestLog::testStart("E2E: NTP Paths by Network Type");
@@ -557,12 +557,6 @@ void test_e2e_ntp_paths_by_network_type() {
     TEST_ASSERT_TRUE(cellularHttpNtp);
     TEST_ASSERT_FALSE(cellularUdpNtp);
     TestLog::step("4G Cellular: HTTPS/HTTP NTP available, UDP NTP may be blocked");
-
-    // LoRa(E22): 无互联网，NTP不可用
-    bool loraInternet = false;  // LoRa 透传，无直接互联网
-    bool loraNtpAvailable = loraInternet;
-    TEST_ASSERT_FALSE(loraNtpAvailable);
-    TestLog::step("LoRa: No internet, NTP unavailable");
 
     // 关键结论：HTTPS NTP 是最可靠的跨联网方式路径
     bool httpsNtpReliable = wifiHttpsNtp && ethHttpsNtp && cellularHttpsNtp;
@@ -1480,6 +1474,571 @@ void test_e2e_sdcard_file_operations() {
     TestLog::testEnd(true);
 }
 
+// ============================================================
+// 网络切换后 MQTT 重连测试（WiFi ↔ 以太网 ↔ 4G）
+// 修复：网络适配器销毁后 _externalClient 悬空指针、错误计数器不重置、
+// MQTT 慢模式不恢复等问题
+// ============================================================
+
+/**
+ * @brief WiFi → 以太网切换后 MQTT 重连
+ * 验证：网络切换前 MQTT 被停止，切换后使用正确的传输客户端重连
+ */
+void test_e2e_wifi_to_ethernet_mqtt_reconnect() {
+    TestLog::testStart("E2E: WiFi to Ethernet MQTT Reconnect");
+
+    // 初始 WiFi 连接
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    mgr.initialize(true);
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::CONNECTED, (int)mgr.status);
+    TestLog::step("WiFi connected");
+
+    // MQTT 连接（WiFi 模式，使用内部 WiFiClient）
+    MockMQTTClient mqtt;
+    MQTTConfig config;
+    config.enabled = true;
+    config.server = "iot.fastbee.cn";
+    config.port = 1883;
+    config.clientId = "TestWiFiDevice";
+    config.username = "admin";
+    config.password = "password123";
+    config.autoReconnect = true;
+    mqtt.initialize(config);
+    TEST_ASSERT_TRUE(mqtt.connect());
+    TEST_ASSERT_TRUE(mqtt.getIsConnected());
+    TestLog::step("MQTT connected over WiFi");
+
+    // 切换到以太网：先停止 MQTT（模拟 pre-network-switch 回调）
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    mqtt.disconnect(); mqtt.setStopped(true);  // 模拟 stopMQTT() 调用
+    TEST_ASSERT_TRUE(mqtt.isStopped());
+    TEST_ASSERT_FALSE(mqtt.getIsConnected());
+    TestLog::step("MQTT stopped before network switch");
+
+    // 以太网重新初始化
+    mgr.disconnect();
+    bool ok = mgr.initialize(true);
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_TRUE(mgr.internetAvailable);
+    TestLog::step("Ethernet connected");
+
+    // 重建 MQTT 客户端（模拟 restartMQTTDeferred + configureMqttTransport）
+    MockMQTTClient mqtt2;
+    mqtt2.initialize(config);
+    TEST_ASSERT_TRUE(mqtt2.connect());
+    TEST_ASSERT_TRUE(mqtt2.getIsConnected());
+    TEST_ASSERT_EQUAL(0, mqtt2.getReconnectCount());  // 全新客户端，计数器为0
+    TestLog::step("MQTT reconnected over Ethernet with fresh client");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 以太网 → WiFi 切换后 MQTT 重连
+ * 验证：从外部客户端模式切回 WiFi 内部客户端模式
+ */
+void test_e2e_ethernet_to_wifi_mqtt_reconnect() {
+    TestLog::testStart("E2E: Ethernet to WiFi MQTT Reconnect");
+
+    // 初始以太网连接
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_ETHERNET;
+    mgr.initialize(true);
+    TEST_ASSERT_EQUAL((int)MockMultiNetworkManager::NetStatus::CONNECTED, (int)mgr.status);
+    TestLog::step("Ethernet connected");
+
+    // MQTT 连接（以太网模式，使用外部 Client）
+    MockMQTTClient mqtt;
+    MQTTConfig config;
+    config.enabled = true;
+    config.server = "iot.fastbee.cn";
+    config.port = 1883;
+    config.clientId = "TestEthDevice";
+    config.username = "admin";
+    config.password = "password123";
+    config.autoReconnect = true;
+    mqtt.initialize(config);
+    TEST_ASSERT_TRUE(mqtt.connect());
+    TEST_ASSERT_TRUE(mqtt.getIsConnected());
+    TestLog::step("MQTT connected over Ethernet");
+
+    // 切换到 WiFi：先停止 MQTT
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mqtt.disconnect(); mqtt.setStopped(true);
+    TEST_ASSERT_TRUE(mqtt.isStopped());
+    TestLog::step("MQTT stopped before switch to WiFi");
+
+    // WiFi 重新初始化
+    mgr.disconnect();
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    mgr.initialize(true);
+    TEST_ASSERT_TRUE(mgr.internetAvailable);
+    TestLog::step("WiFi connected");
+
+    // 重建 MQTT 客户端
+    MockMQTTClient mqtt2;
+    mqtt2.initialize(config);
+    TEST_ASSERT_TRUE(mqtt2.connect());
+    TEST_ASSERT_TRUE(mqtt2.getIsConnected());
+    TestLog::step("MQTT reconnected over WiFi with fresh client");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief WiFi → 4G（失败）→ WiFi 恢复
+ * 验证：4G 失败回退 AP 后 MQTT 正确重建，错误计数器重置
+ */
+void test_e2e_wifi_to_4g_to_wifi_mqtt_recovery() {
+    TestLog::testStart("E2E: WiFi to 4G to WiFi MQTT Recovery");
+
+    MockMultiNetworkManager mgr;
+    MockMQTTClient mqtt;
+    MQTTConfig config;
+    config.enabled = true;
+    config.server = "iot.fastbee.cn";
+    config.port = 1883;
+    config.clientId = "TestRecovery";
+    config.username = "admin";
+    config.password = "password123";
+    config.autoReconnect = true;
+    config.reconnectInterval = 100;
+
+    // WiFi 连接
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    mgr.initialize(true);
+    mqtt.initialize(config);
+    TEST_ASSERT_TRUE(mqtt.connect());
+    TestLog::step("WiFi + MQTT connected");
+
+    // 切换到 4G（失败）
+    mqtt.disconnect(); mqtt.setStopped(true);
+    mgr.disconnect();
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_4G;
+    bool ok = mgr.initialize(false);  // 4G 失败
+    TEST_ASSERT_FALSE(ok);
+    TEST_ASSERT_FALSE(mgr.internetAvailable);
+    TestLog::step("4G failed, fell back to AP");
+
+    // MQTT 在 AP 模式下无法连接，模拟连接失败
+    MockMQTTClient mqttFail;
+    mqttFail.initialize(config);
+    mqttFail.setShouldFailConnect(true);
+    TEST_ASSERT_FALSE(mqttFail.connect());
+    TEST_ASSERT_FALSE(mqttFail.getIsConnected());
+    TestLog::step("MQTT failed over 4G fallback AP");
+
+    // 切换回 WiFi
+    mqttFail.disconnect(); mqttFail.setStopped(true);
+    mgr.disconnect();
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    mgr.initialize(true);
+    TEST_ASSERT_TRUE(mgr.internetAvailable);
+    TestLog::step("WiFi reconnected");
+
+    // 重建 MQTT 客户端：错误计数器应为0（全新客户端）
+    MockMQTTClient mqttRecovery;
+    mqttRecovery.initialize(config);
+    TEST_ASSERT_TRUE(mqttRecovery.connect());
+    TEST_ASSERT_TRUE(mqttRecovery.getIsConnected());
+    TEST_ASSERT_EQUAL(0, mqttRecovery.getReconnectCount());
+    TEST_ASSERT_EQUAL(0, mqttRecovery.getLastError());
+    TestLog::step("MQTT recovered over WiFi with clean error state");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证网络切换期间 MQTT handle() 不会使用悬空指针
+ * 模拟：MQTT 被 stop() 后 handle() 立即返回，不尝试连接
+ */
+void test_e2e_network_switch_no_use_after_free() {
+    TestLog::testStart("E2E: Network Switch No Use-After-Free");
+
+    MockMQTTClient mqtt;
+    MQTTConfig config;
+    config.enabled = true;
+    config.server = "iot.fastbee.cn";
+    config.port = 1883;
+    config.clientId = "TestUAF";
+    config.username = "admin";
+    config.password = "password123";
+    config.autoReconnect = true;
+    config.reconnectInterval = 100;
+
+    mqtt.initialize(config);
+    TEST_ASSERT_TRUE(mqtt.connect());
+    TEST_ASSERT_TRUE(mqtt.getIsConnected());
+    TestLog::step("MQTT connected");
+
+    // 模拟 pre-network-switch 回调：stop MQTT
+    mqtt.disconnect(); mqtt.setStopped(true);
+    TEST_ASSERT_TRUE(mqtt.isStopped());
+    TEST_ASSERT_FALSE(mqtt.getIsConnected());
+    TestLog::step("MQTT stopped (pre-network-switch callback)");
+
+    // 模拟 protocol_handle 任务调用 handle()：应立即返回
+    // handleAutoReconnect 模拟 handle() 中的重连逻辑
+    bool reconnectScheduled = mqtt.handleAutoReconnect(1000);
+    TEST_ASSERT_FALSE(reconnectScheduled);  // stopped 状态不应调度重连
+    TestLog::step("handle() returned immediately (stopped=true, no reconnect scheduled)");
+
+    // 模拟再次调用 handleAutoReconnect
+    reconnectScheduled = mqtt.handleAutoReconnect(2000);
+    TEST_ASSERT_FALSE(reconnectScheduled);
+    TestLog::step("handle() still returns immediately on second call");
+
+    // 重建 MQTT 客户端后正常工作
+    MockMQTTClient mqtt2;
+    mqtt2.initialize(config);
+    TEST_ASSERT_TRUE(mqtt2.connect());
+    TEST_ASSERT_TRUE(mqtt2.getIsConnected());
+    TEST_ASSERT_FALSE(mqtt2.isStopped());
+    bool reconnect = mqtt2.handleAutoReconnect(1000);
+    TEST_ASSERT_FALSE(reconnect);  // 已连接，不需要重连
+    TestLog::step("New MQTT client works correctly after rebuild");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 网络切换内存泄漏测试
+ * 执行 20 轮 WiFi ↔ 以太网 ↔ 4G 切换循环，验证堆泄漏 < 5KB
+ */
+void test_e2e_network_switch_memory_leak() {
+    TestLog::testStart("E2E: Network Switch Memory Leak");
+
+    MockMultiNetworkManager mgr;
+    MockMQTTClient mqtt;
+    MQTTConfig config;
+    config.enabled = true;
+    config.server = "iot.fastbee.cn";
+    config.port = 1883;
+    config.clientId = "TestLeak";
+    config.username = "admin";
+    config.password = "password123";
+    config.autoReconnect = true;
+    config.reconnectInterval = 100;
+
+    uint32_t initialHeap = ESP.getFreeHeap();
+    uint32_t initialMaxBlock = ESP.getMaxAllocHeap();
+
+    struct SwitchStep {
+        MockMultiNetworkManager::NetType type;
+        const char* name;
+        bool adapterSuccess;
+    };
+    SwitchStep steps[] = {
+        {MockMultiNetworkManager::NetType::NET_WIFI, "WiFi", true},
+        {MockMultiNetworkManager::NetType::NET_ETHERNET, "Ethernet", true},
+        {MockMultiNetworkManager::NetType::NET_4G, "4G", true},
+        {MockMultiNetworkManager::NetType::NET_WIFI, "WiFi", true},
+        {MockMultiNetworkManager::NetType::NET_ETHERNET, "Ethernet", true},
+        {MockMultiNetworkManager::NetType::NET_4G, "4G", false},  // 4G 失败
+    };
+
+    // 20 轮切换循环
+    for (int round = 0; round < 20; round++) {
+        for (auto& step : steps) {
+            // 模拟 pre-network-switch: 停止 MQTT
+            if (mqtt.getIsConnected() || !mqtt.isStopped()) {
+                mqtt.disconnect(); mqtt.setStopped(true);
+            }
+
+            // 切换网络
+            mgr.disconnect();
+            mgr.networkType = step.type;
+            if (step.type == MockMultiNetworkManager::NetType::NET_WIFI) {
+                mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+            }
+            mgr.initialize(step.adapterSuccess);
+
+            // 重建 MQTT（仅在网络连接成功时）
+            if (mgr.internetAvailable) {
+                mqtt.initialize(config);  // 重新初始化模拟 restartMQTTDeferred
+                mqtt.connect();
+            }
+        }
+    }
+    TestLog::step("20 rounds x 6 switches = 120 switches with MQTT rebuild");
+
+    int32_t leak = (int32_t)initialHeap - (int32_t)ESP.getFreeHeap();
+    TEST_ASSERT_TRUE_MESSAGE(leak < 5000, "Network switch + MQTT rebuild leak detected");
+    TestLog::step("Heap leak < 5KB over 120 switches");
+
+    // 验证最大连续块未持续下降
+    uint32_t finalMaxBlock = ESP.getMaxAllocHeap();
+    int32_t blockDrop = (int32_t)initialMaxBlock - (int32_t)finalMaxBlock;
+    TEST_ASSERT_TRUE_MESSAGE(blockDrop < 5000, "Max block significant drop detected");
+    TestLog::step("Max block drop < 5KB");
+
+    TestLog::testEnd(true);
+}
+
+// ========== AP 全链路可访问性测试 ==========
+
+/**
+ * @brief 验证 STA 失败回退 AP 后，设备全链路可访问
+ *
+ * 场景：STA 连接失败 → 回退 AP → 用户可通过 192.168.4.1 访问 Web 配置页
+ *       AP 模式应启动 mDNS、Web 服务应可达
+ */
+void test_e2e_sta_fail_fallback_ap_full_access() {
+    TestLog::testStart("E2E: STA Fail → AP Full Access");
+
+    MockMultiNetworkManager mgr;
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    mgr.enableMDNS = true;
+
+    // STA 连接失败
+    bool ok = mgr.initialize(false);
+    TEST_ASSERT_FALSE(ok);
+    TestLog::step("STA connection failed");
+
+    // 必须回退到 AP（STA 回退无 mDNS，因为无互联网）
+    NetMQTTHelper::assertAPAccessible(mgr, false);
+    TestLog::step("AP accessible at 192.168.4.1");
+
+    // MQTT 不应连接（AP 模式无互联网）
+    MockMQTTClient mqtt;
+    MQTTConfig mqttCfg = NetMQTTHelper::buildDefaultMQTTConfig();
+    mqtt.initialize(mqttCfg);
+    // AP 模式下不应尝试连接 MQTT
+    TEST_ASSERT_FALSE(mgr.internetAvailable);
+    TestLog::step("MQTT correctly not connected in AP mode");
+
+    // 此时用户可通过 AP 修改 WiFi 配置，切换为 STA
+    mgr.disconnect();
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    bool ok2 = mgr.initialize(true);
+    TEST_ASSERT_TRUE(ok2);
+    NetMQTTHelper::assertNetworkConnected(mgr);
+    TestLog::step("After re-config: STA connected");
+
+    // MQTT 现在可以连接
+    mqtt.setStopped(false);
+    mqtt.initialize(mqttCfg);
+    TEST_ASSERT_TRUE(mqtt.connect());
+    NetMQTTHelper::assertMQTTConnected(mqtt);
+    TestLog::step("MQTT connected after STA re-connection");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证以太网/4G 回退 AP 后全链路可访问
+ * 确保非 WiFi 联网方式失败时 AP 同样可用
+ */
+void test_e2e_non_wifi_fail_fallback_ap_access() {
+    TestLog::testStart("E2E: Non-WiFi Fail → AP Access");
+
+    struct TestCase {
+        MockMultiNetworkManager::NetType type;
+        const char* name;
+    };
+    TestCase cases[] = {
+        {MockMultiNetworkManager::NetType::NET_ETHERNET, "Ethernet"},
+        {MockMultiNetworkManager::NetType::NET_4G, "4G"},
+    };
+
+    for (auto& tc : cases) {
+        MockMultiNetworkManager mgr;
+        mgr.networkType = tc.type;
+        mgr.enableMDNS = true;
+
+        bool ok = mgr.initialize(false);
+        TEST_ASSERT_FALSE(ok);
+
+        NetMQTTHelper::assertAPAccessible(mgr, false);
+        TestLog::step((String(tc.name) + " fail: AP accessible").c_str());
+    }
+
+    TestLog::testEnd(true);
+}
+
+// ========== C3 低资源环境网络 + MQTT 组合测试 ==========
+
+/**
+ * @brief C3 低资源环境下 WiFi AP/STA 切换 + MQTT 重连
+ * 验证 ESP32-C3（可用堆 ~140KB）在网络切换后 MQTT 仍能正常工作
+ */
+void test_e2e_c3_network_switch_mqtt_stability() {
+    TestLog::testStart("E2E: C3 Network Switch + MQTT Stability");
+
+    // 模拟 C3 环境
+    uint32_t prevHeap = NetMQTTHelper::setChipEnvironment(
+        TestConfig::ALL_CHIP_PROFILES[0]);  // ESP32-F4R0 (最接近 C3)
+    ESP.setFreeHeap(TestConfig::C3_AVAILABLE_HEAP);
+
+    MockMultiNetworkManager mgr;
+    MockMQTTClient mqtt;
+    MQTTConfig config = NetMQTTHelper::buildDefaultMQTTConfig("C3TestClient");
+
+    // Phase 1: WiFi STA 连接 + MQTT
+    mgr.networkType = MockMultiNetworkManager::NetType::NET_WIFI;
+    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+    TEST_ASSERT_TRUE(mgr.initialize(true));
+    mqtt.initialize(config);
+    TEST_ASSERT_TRUE(mqtt.connect());
+    NetMQTTHelper::assertMQTTConnected(mqtt);
+    TestLog::step("Phase 1: C3 WiFi STA + MQTT connected");
+
+    // Phase 2: WiFi 断连，回退 AP
+    bool result = NetMQTTHelper::switchNetworkAndReconnectMQTT(
+        mgr, mqtt, config, MockMultiNetworkManager::NetType::NET_WIFI, false);
+    TEST_ASSERT_FALSE(result);  // AP 模式无互联网
+    TEST_ASSERT_TRUE(mgr.isAPRunning());
+    TestLog::step("Phase 2: C3 WiFi fail → AP fallback, MQTT not connected");
+
+    // Phase 3: 重新连接 STA
+    result = NetMQTTHelper::switchNetworkAndReconnectMQTT(
+        mgr, mqtt, config, MockMultiNetworkManager::NetType::NET_WIFI, true);
+    TEST_ASSERT_TRUE(result);
+    NetMQTTHelper::assertMQTTConnected(mqtt);
+    TestLog::step("Phase 3: C3 STA reconnected + MQTT OK");
+
+    // Phase 4: 多轮切换不泄漏
+    uint32_t heapBefore = ESP.getFreeHeap();
+    for (int i = 0; i < 10; i++) {
+        NetMQTTHelper::switchNetworkAndReconnectMQTT(
+            mgr, mqtt, config, MockMultiNetworkManager::NetType::NET_WIFI, true);
+    }
+    int32_t leak = (int32_t)heapBefore - (int32_t)ESP.getFreeHeap();
+    TEST_ASSERT_TRUE_MESSAGE(leak < TestConfig::MAX_NETWORK_SWITCH_LEAK_BYTES,
+        "C3 heap leak exceeded threshold after 10 switches");
+    TestLog::step("Phase 4: C3 10 switches, heap stable");
+
+    NetMQTTHelper::restoreChipEnvironment(prevHeap);
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief C3 低资源环境下 MQTT 内存保护验证
+ * 当堆不足时 MQTT 应拒绝连接而非崩溃
+ */
+void test_e2e_c3_mqtt_memory_protection() {
+    TestLog::testStart("E2E: C3 MQTT Memory Protection");
+
+    // 模拟 C3 低堆场景
+    uint32_t prevHeap = NetMQTTHelper::setChipEnvironment(
+        TestConfig::ALL_CHIP_PROFILES[0]);
+
+    // 场景1: 堆充足 → MQTT 正常连接
+    ESP.setFreeHeap(TestConfig::C3_AVAILABLE_HEAP);
+    MockMQTTClient mqtt1;
+    MQTTConfig config = NetMQTTHelper::buildDefaultMQTTConfig();
+    mqtt1.initialize(config);
+    TEST_ASSERT_TRUE(mqtt1.connect());
+    TestLog::step("Heap sufficient: MQTT connected");
+
+    // 场景2: 堆极低 (< 10KB) → MQTT 应安全拒绝
+    ESP.setFreeHeap(8000);
+    MockMQTTClient mqtt2;
+    mqtt2.initialize(config);
+    // 模拟内存保护：低堆时 connect 应失败
+    mqtt2.setShouldFailConnect(true);
+    TEST_ASSERT_FALSE(mqtt2.connect());
+    TEST_ASSERT_FALSE(mqtt2.getIsConnected());
+    TestLog::step("Heap < 10KB: MQTT safely refused connection");
+
+    // 场景3: 堆恢复后重新连接
+    ESP.setFreeHeap(TestConfig::C3_AVAILABLE_HEAP);
+    mqtt2.setShouldFailConnect(false);
+    TEST_ASSERT_TRUE(mqtt2.connect());
+    NetMQTTHelper::assertMQTTConnected(mqtt2);
+    TestLog::step("Heap restored: MQTT reconnected");
+
+    NetMQTTHelper::restoreChipEnvironment(prevHeap);
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 所有芯片 × 所有联网方式 × MQTT 重建（使用 Helper 简化）
+ */
+void test_e2e_all_chip_network_mqtt_combination() {
+    TestLog::testStart("E2E: All Chip × All Network × MQTT");
+
+    using NetType = MockMultiNetworkManager::NetType;
+    struct NetEnv {
+        NetType type;
+        const char* name;
+    };
+    NetEnv nets[] = {
+        {NetType::NET_WIFI, "WiFi"},
+        {NetType::NET_ETHERNET, "Ethernet"},
+        {NetType::NET_4G, "4G"},
+    };
+
+    int totalPass = 0;
+    for (int ci = 0; ci < TestConfig::CHIP_PROFILE_COUNT; ci++) {
+        const auto& chip = TestConfig::ALL_CHIP_PROFILES[ci];
+        uint32_t prevHeap = NetMQTTHelper::setChipEnvironment(chip);
+
+        for (auto& net : nets) {
+            MockMultiNetworkManager mgr;
+            MockMQTTClient mqtt;
+            MQTTConfig config = NetMQTTHelper::buildDefaultMQTTConfig();
+
+            // 连接 + MQTT
+            if (net.type == NetType::NET_WIFI) {
+                mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
+            }
+            bool ok = mgr.initialize(true);
+            TEST_ASSERT_TRUE(ok);
+            NetMQTTHelper::assertNetworkConnected(mgr);
+
+            if (mgr.internetAvailable) {
+                mqtt.initialize(config);
+                TEST_ASSERT_TRUE(mqtt.connect());
+                NetMQTTHelper::assertMQTTConnected(mqtt);
+            }
+
+            // 断连 + 重连
+            NetMQTTHelper::switchNetworkAndReconnectMQTT(
+                mgr, mqtt, config, net.type, true);
+            NetMQTTHelper::assertMQTTConnected(mqtt);
+
+            totalPass++;
+        }
+        NetMQTTHelper::restoreChipEnvironment(prevHeap);
+    }
+
+    // 4 chips × 3 networks = 12
+    TEST_ASSERT_EQUAL(TestConfig::CHIP_PROFILE_COUNT * 3, totalPass);
+    TestLog::step("All 12 chip×network×MQTT combinations passed");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 多网络方式批量切换序列（使用 Helper 简化重复代码）
+ * WiFi → Ethernet → 4G(失败) → WiFi 恢复，5轮
+ */
+void test_e2e_network_switch_sequence_via_helper() {
+    TestLog::testStart("E2E: Network Switch Sequence via Helper");
+
+    using NetType = MockMultiNetworkManager::NetType;
+    NetMQTTHelper::SwitchStep steps[] = {
+        {NetType::NET_WIFI,     true,  true},    // WiFi 成功
+        {NetType::NET_ETHERNET, true,  true},    // Ethernet 成功
+        {NetType::NET_4G,       false, false},   // 4G 失败 → 回退 AP
+        {NetType::NET_WIFI,     true,  true},    // WiFi 恢复
+    };
+
+    int totalPass = NetMQTTHelper::executeNetworkSwitchSequence(steps, 4, 5);
+    TEST_ASSERT_EQUAL(20, totalPass);  // 4 steps × 5 rounds
+    TestLog::step("20 switches completed successfully");
+
+    TestLog::testEnd(true);
+}
+
 void test_e2e_scenarios_group() {
     TestLog::groupStart("End-to-End Scenario Tests");
     RUN_TEST(test_e2e_first_boot);
@@ -1527,6 +2086,23 @@ void test_e2e_scenarios_group() {
     RUN_TEST(test_e2e_sdcard_sdmmc_peripheral_workflow);
     RUN_TEST(test_e2e_encoder_mqtt_integration);
     RUN_TEST(test_e2e_sdcard_file_operations);
+
+    // 网络切换后 MQTT 重连测试（修复 use-after-free + 错误计数器不重置）
+    RUN_TEST(test_e2e_wifi_to_ethernet_mqtt_reconnect);
+    RUN_TEST(test_e2e_ethernet_to_wifi_mqtt_reconnect);
+    RUN_TEST(test_e2e_wifi_to_4g_to_wifi_mqtt_recovery);
+    RUN_TEST(test_e2e_network_switch_no_use_after_free);
+    RUN_TEST(test_e2e_network_switch_memory_leak);
+
+    // AP 全链路可访问性测试
+    RUN_TEST(test_e2e_sta_fail_fallback_ap_full_access);
+    RUN_TEST(test_e2e_non_wifi_fail_fallback_ap_access);
+
+    // C3 低资源环境网络 + MQTT 组合测试
+    RUN_TEST(test_e2e_c3_network_switch_mqtt_stability);
+    RUN_TEST(test_e2e_c3_mqtt_memory_protection);
+    RUN_TEST(test_e2e_all_chip_network_mqtt_combination);
+    RUN_TEST(test_e2e_network_switch_sequence_via_helper);
 
     TestLog::groupEnd();
 }

@@ -67,6 +67,10 @@ enum class RestartReason : uint8_t {
     MEMORY_COMPACTION   = 8,   // 碎片化严重无法恢复
     PERIPHERAL_FAULT    = 9,   // 外设异常
     CONFIG_CORRUPTION   = 10,  // 配置文件损坏
+    CONFIG_CHANGE       = 11,  // 用户修改网络/MQTT配置后重启
+    WEB_RECOVERY        = 12,  // Web 服务器恢复重启（TCP耗尽/崩溃恢复）
+    AP_FALLBACK         = 13,  // WiFi 紧急 AP 回退重启（所有联网方式失败）
+    FACTORY_RESET       = 14,  // 恢复出厂设置后重启
 };
 
 // ========== RestartDiagnostics 类 ==========

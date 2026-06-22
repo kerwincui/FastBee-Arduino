@@ -10,6 +10,7 @@
 #include "./protocols/MQTTClient.h"
 #include "./core/FastBeeFramework.h"
 #include "./systems/ConfigStorage.h"
+#include "./systems/SystemRebooter.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <PubSubClient.h>
@@ -883,19 +884,18 @@ void MqttRouteHandler::handleMqttReconnect(AsyncWebServerRequest* request) {
         }
     }
 
-    // 未连接时，始终走 restartMQTTDeferred() 重建客户端
-    // 原因：现有客户端可能用错误凭据进入了慢重连模式，
-    // 只重置 stopped 标志无法清除慢重连间隔和连续失败计数器
-    bool deferred = pm->restartMQTTDeferred();
-
+    // 未连接时，使用 SystemRebooter 重启设备（避免运行时 destroy/rebuild MQTT 客户端导致 DRAM 碎片化）
+    // 重启后 MQTT 会在 boot 流程中自动连接，确保干净的堆状态
     JsonDocument doc;
     doc["success"] = true;
-    doc["data"]["connected"] = deferred;
-    if (!deferred) {
-        doc["data"]["error"] = "deferred restart failed (check heap or config)";
-    }
+    doc["data"]["connected"] = false;
+    doc["data"]["rebooting"] = true;
+    doc["data"]["message"] = "Device will reboot to reconnect MQTT cleanly";
 
     HandlerUtils::sendJsonStream(request, doc);
+
+    // HTTP 响应已发送，调度延迟重启
+    SystemRebooter::scheduleConfigReboot("MQTT manual reconnect");
 }
 
 // ============================================================================

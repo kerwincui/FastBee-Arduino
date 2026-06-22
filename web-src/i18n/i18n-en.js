@@ -254,7 +254,7 @@
         'domain-config-title': 'Domain Config',
         'mdns-disabled-notice-title': 'Notice:',
         'mdns-disabled-notice-text': 'mDNS is disabled. You cannot access the system via custom domain. Please use the device IP address:',
-        'domain-unavailable-notice-text': 'Domain config is not available for the current network type. 4G/LoRa mode only supports access via AP hotspot IP address.',
+        'domain-unavailable-notice-text': 'Domain config is not available for the current network type. 4G mode only supports access via AP hotspot IP address.',
         'cellular-access-hint-title': 'Access Method',
         'cellular-access-hint-text': 'In 4G mode, connect to the device hotspot (e.g. fastbee-ap), then access the system via <code>http://192.168.4.1</code>.',
         'connection-settings-title': 'Connection Settings',

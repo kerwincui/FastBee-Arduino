@@ -7,6 +7,8 @@
 
 #include "network/NetworkManager.h"
 #include "systems/LoggerSystem.h"
+#include "systems/RestartDiagnostics.h"
+#include "systems/SystemRebooter.h"
 #include "utils/NetworkUtils.h"
 #include "core/FeatureFlags.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
@@ -17,9 +19,6 @@
 #endif
 #if FASTBEE_ENABLE_CELLULAR
 #include "network/CellularAdapter.h"
-#endif
-#if FASTBEE_ENABLE_LORA
-#include "network/LoRaAdapter.h"
 #endif
 #include <WiFi.h>
 #include <WiFiUdp.h>
@@ -85,6 +84,11 @@ FBNetworkManager::FBNetworkManager(AsyncWebServer* webServerPtr)
       , ethReconnectTime(0)
       , ethReconnectAttempts(0)
 #endif
+#if FASTBEE_ENABLE_CELLULAR
+      , cellReconnectPending(false)
+      , cellReconnectTime(0)
+      , cellReconnectAttempts(0)
+#endif
 {
     
     wifiConfig = WiFiConfig();
@@ -114,6 +118,7 @@ void FBNetworkManager::setWiFiCredentials(const String& ssid, const String& pass
 }
 
 bool FBNetworkManager::initialize() {
+    ets_printf("[NET] FBNetworkManager::initialize() called\n");
     if (isInitialized) {
         return true;
     }
@@ -125,8 +130,9 @@ bool FBNetworkManager::initialize() {
     }
 
     // 加载网络配置
+    ets_printf("[NET] Loading network config...\n");
     if (!loadNetworkConfig()) {
-        LOG_WARNING("NetworkManager: Using default network configuration");
+        ets_printf("[NET] Using default network configuration\n");
         // 生成默认备用IP
         ipManager->generateBackupIPs();
         saveNetworkConfig();
@@ -171,6 +177,12 @@ bool FBNetworkManager::initialize() {
     });
 
     // ========== 非 WiFi 联网方式初始化 ==========
+    ets_printf("[NET] networkType=%d (WIFI=0, ETH=1, 4G=2)\n", (int)wifiConfig.networkType);
+#if FASTBEE_ENABLE_CELLULAR
+    ets_printf("[NET] CELLULAR=1, checking 4G (type==%d?=%d)\n", (int)wifiConfig.networkType, (int)NetworkType::NET_4G);
+#else
+    ets_printf("[NET] CELLULAR=0 (4G not compiled)\n");
+#endif
 #if FASTBEE_ENABLE_ETHERNET
     if (wifiConfig.networkType == NetworkType::NET_ETHERNET) {
         LOG_INFO("NetworkManager: Initializing Ethernet (W5500)...");
@@ -222,9 +234,10 @@ bool FBNetworkManager::initialize() {
 
 #if FASTBEE_ENABLE_CELLULAR
     if (wifiConfig.networkType == NetworkType::NET_4G) {
-        LOG_INFO("NetworkManager: Initializing 4G Cellular (EC801E-CN)...");
+        ets_printf("[NET-4G] Starting 4G Cellular init (type=%d)...\n", (int)wifiConfig.networkType);
         cellularAdapter.reset(new CellularAdapter());
         bool cellOk = cellularAdapter->begin(wifiConfig);
+        ets_printf("[NET-4G] CellularAdapter::begin() returned: %s\n", cellOk ? "true" : "false");
         if (cellOk) {
             LOG_INFO("NetworkManager: 4G connected");
             statusInfo.status = NetworkStatus::CONNECTED;
@@ -263,29 +276,9 @@ bool FBNetworkManager::initialize() {
             isInitialized = true;
             return true;
         } else {
+            ets_printf("[NET-4G] 4G failed, falling back to AP mode\n");
             LOG_WARNING("NetworkManager: 4G failed, falling back to AP mode for reconfiguration");
             cellularAdapter.reset();
-            // 不切换到 WiFi STA，保持 AP 模式让用户通过热点重新配置
-            wifiConfig.networkType = NetworkType::NET_WIFI;
-            wifiConfig.mode = NetworkMode::NETWORK_AP;
-        }
-    }
-#endif
-
-#if FASTBEE_ENABLE_LORA
-    if (wifiConfig.networkType == NetworkType::NET_LORA) {
-        LOG_INFO("NetworkManager: Initializing LoRa (E22-400T22D)...");
-        loraAdapter.reset(new LoRaAdapter());
-        bool loraOk = loraAdapter->begin(wifiConfig);
-        if (loraOk) {
-            LOG_INFO("NetworkManager: LoRa adapter ready");
-            statusInfo.status = NetworkStatus::CONNECTED;
-            statusInfo.lastConnectionTime = millis();
-            isInitialized = true;
-            return true;
-        } else {
-            LOG_WARNING("NetworkManager: LoRa failed, falling back to AP mode for reconfiguration");
-            loraAdapter.reset();
             // 不切换到 WiFi STA，保持 AP 模式让用户通过热点重新配置
             wifiConfig.networkType = NetworkType::NET_WIFI;
             wifiConfig.mode = NetworkMode::NETWORK_AP;
@@ -312,28 +305,26 @@ bool FBNetworkManager::initialize() {
                     LOG_INFO("NetworkManager: STA connected successfully");
                     LOGGER.infof(">>> STA IP: %s <<<", WiFi.localIP().toString().c_str());
                 } else {
-                    LOG_WARNING("NetworkManager: STA connection failed, falling back to AP+STA mode");
-                    Serial.println("[NET] STA failed, switching to AP+STA mode...");
-                    ets_printf("[NET] STA failed, switching to AP+STA mode...\n");
+                    LOG_WARNING("NetworkManager: STA connection failed, falling back to AP mode");
+                    Serial.println("[NET] STA failed, switching to AP mode...");
+                    ets_printf("[NET] STA failed, switching to AP mode...\n");
                     wifiManager->setModeTransitioning(false);
-                    // Keep the configured mode as STA so auto-reconnect can recover
-                    // after a temporary router/signal failure. AP is only a fallback
-                    // management surface here.
+                    // STA 失败后回退到纯 AP 模式，供用户通过 Web 重新配置
+                    // 不使用 AP+STA 双模式，避免频繁模式切换导致 arduino_events 栈溢出
                     success = startAPMode();
                     if (success) {
-                        // AP+STA 双模式：保持 AP 热点始终可用，STA 继续后台尝试重连
-                        WiFi.mode(WIFI_MODE_APSTA);
-                        delay(50);
-                        Serial.printf("[NET] AP+STA started: %s  IP: %s\n",
+                        Serial.printf("[NET] AP started: %s  IP: %s\n",
                             wifiConfig.apSSID.c_str(),
                             WiFi.softAPIP().toString().c_str());
-                        ets_printf("[NET] AP+STA started: %s  IP: %s\n",
+                        ets_printf("[NET] AP started: %s  IP: %s\n",
                             wifiConfig.apSSID.c_str(),
                             WiFi.softAPIP().toString().c_str());
-                        LOGGER.infof(">>> AP+STA fallback: AP IP=%s  SSID=[%s] pwd=[%s] <<<",
+                        LOGGER.infof(">>> AP fallback: AP IP=%s  SSID=[%s] pwd=[%s] <<<",
                             WiFi.softAPIP().toString().c_str(),
                             wifiConfig.apSSID.c_str(),
                             wifiConfig.apPassword.c_str());
+                        // 回退到 AP 模式后更新配置模式
+                        wifiConfig.mode = NetworkMode::NETWORK_AP;
                     } else {
                         Serial.println("[NET] AP start FAILED!");
                     }
@@ -355,22 +346,8 @@ bool FBNetworkManager::initialize() {
                     wifiConfig.apSSID.c_str(),
                     wifiConfig.apPassword.c_str());
                 
-                // 如果有已配置的 STA SSID，启用 AP+STA 双模式：
-                // AP 保持在线供用户访问，STA 在后台尝试连接路由器。
-                // 一旦 STA 连上，设备可通过 fastbee.local 访问。
-                if (!wifiConfig.staSSID.isEmpty()) {
-                    WiFi.mode(WIFI_MODE_APSTA);
-                    delay(50);
-                    Serial.printf("[NET] AP+STA mode: AP=[%s] STA connecting to [%s]...\n",
-                        wifiConfig.apSSID.c_str(), wifiConfig.staSSID.c_str());
-                    // 同步配置并发起非阻塞 STA 连接
-                    wifiManager->setNetworkConfig(wifiConfig);
-                    WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
-                    connecting = true;
-                    connectingStartTime = millis();
-                    statusInfo.status = NetworkStatus::CONNECTING;
-                    LOG_INFO("NetworkManager: AP+STA: STA connecting to " + wifiConfig.staSSID);
-                }
+                // AP 模式下仅启动纯 AP 热点，不使用 AP+STA 双模式
+                // 避免模式切换导致 arduino_events 任务栈溢出崩溃
             }
             break;
             
@@ -400,6 +377,7 @@ void FBNetworkManager::disconnect() {
     
     // 停止mDNS
     dnsManager->stopMDNS();
+    delay(200);  // 等待 mDNS 完全停止
 
 #if FASTBEE_ENABLE_ETHERNET
     if (ethernetAdapter) {
@@ -411,12 +389,6 @@ void FBNetworkManager::disconnect() {
     if (cellularAdapter) {
         cellularAdapter->disconnect();
         cellularAdapter.reset();
-    }
-#endif
-#if FASTBEE_ENABLE_LORA
-    if (loraAdapter) {
-        loraAdapter->disconnect();
-        loraAdapter.reset();
     }
 #endif
     
@@ -482,11 +454,6 @@ void FBNetworkManager::update() {
             cellularAdapter->update();
         }
 #endif
-#if FASTBEE_ENABLE_LORA
-        if (wifiConfig.networkType == NetworkType::NET_LORA && loraAdapter) {
-            loraAdapter->update();
-        }
-#endif
 
         bool activeConnected = isNetworkConnected();
         if (activeConnected && !wasConnected) {
@@ -503,6 +470,18 @@ void FBNetworkManager::update() {
                 LOGGER.infof("NetworkManager: Ethernet reconnected, IP: %s",
                              ethernetAdapter ? ethernetAdapter->localIP().toString().c_str() : "?");
                 // 重连成功后重启mDNS确保绑定正确接口
+                if (wifiConfig.enableMDNS) {
+                    dnsManager->stopMDNS();
+                    dnsManager->startMDNS(wifiConfig.customDomain);
+                }
+            }
+#endif
+#if FASTBEE_ENABLE_CELLULAR
+            if (wifiConfig.networkType == NetworkType::NET_4G) {
+                cellReconnectAttempts = 0;
+                cellReconnectPending = false;
+                LOGGER.infof("NetworkManager: 4G reconnected, IP: %s",
+                             cellularAdapter ? cellularAdapter->localIP().toString().c_str() : "?");
                 if (wifiConfig.enableMDNS) {
                     dnsManager->stopMDNS();
                     dnsManager->startMDNS(wifiConfig.customDomain);
@@ -527,6 +506,20 @@ void FBNetworkManager::update() {
                 }
             }
 #endif
+#if FASTBEE_ENABLE_CELLULAR
+            if (wifiConfig.networkType == NetworkType::NET_4G && cellularAdapter) {
+                if (cellReconnectAttempts < CELL_MAX_RECONNECT_ATTEMPTS) {
+                    cellReconnectPending = true;
+                    cellReconnectTime = currentTime + CELL_RECONNECT_INTERVAL_MS;
+                    LOGGER.infof("NetworkManager: 4G reconnect scheduled in %lus (attempt %d/%d)",
+                                 (unsigned long)(CELL_RECONNECT_INTERVAL_MS / 1000),
+                                 cellReconnectAttempts + 1, CELL_MAX_RECONNECT_ATTEMPTS);
+                } else {
+                    LOG_WARNING("NetworkManager: 4G max reconnect attempts reached, keeping AP fallback only");
+                    ensureLastResortAP();
+                }
+            }
+#endif
         }
         wasConnected = activeConnected;
 
@@ -544,6 +537,21 @@ void FBNetworkManager::update() {
                 LOGGER.infof("NetworkManager: Ethernet disconnected, reconnect scheduled in %lus (attempt %d/%d)",
                              (unsigned long)(ETH_RECONNECT_INTERVAL_MS / 1000),
                              ethReconnectAttempts + 1, ETH_MAX_RECONNECT_ATTEMPTS);
+            }
+        }
+#endif
+
+#if FASTBEE_ENABLE_CELLULAR
+        if (!activeConnected && !cellReconnectPending &&
+            wifiConfig.networkType == NetworkType::NET_4G && cellularAdapter &&
+            !cellularAdapter->isConnected() &&
+            cellReconnectAttempts < CELL_MAX_RECONNECT_ATTEMPTS) {
+            if (cellReconnectAttempts == 0 || currentTime - lastStatusUpdate >= CELL_RECONNECT_INTERVAL_MS) {
+                cellReconnectPending = true;
+                cellReconnectTime = currentTime + CELL_RECONNECT_INTERVAL_MS;
+                LOGGER.infof("NetworkManager: 4G disconnected, reconnect scheduled in %lus (attempt %d/%d)",
+                             (unsigned long)(CELL_RECONNECT_INTERVAL_MS / 1000),
+                             cellReconnectAttempts + 1, CELL_MAX_RECONNECT_ATTEMPTS);
             }
         }
 #endif
@@ -570,6 +578,55 @@ void FBNetworkManager::update() {
                 } else {
                     LOG_WARNING("NetworkManager: Ethernet auto-reconnect exhausted, will not retry");
                     // 确保 AP 热点始终可用，作为用户回退配置的入口
+                    ensureLastResortAP();
+                    if (wifiConfig.enableMDNS) {
+                        dnsManager->startMDNS(wifiConfig.customDomain);
+                    }
+                }
+            }
+        }
+#endif
+
+#if FASTBEE_ENABLE_CELLULAR
+        if (cellReconnectPending && wifiConfig.networkType == NetworkType::NET_4G &&
+            currentTime >= cellReconnectTime) {
+            cellReconnectPending = false;
+            cellReconnectAttempts++;
+            LOG_INFO("NetworkManager: Attempting 4G auto-reconnect...");
+
+            bool cellOk = false;
+            if (cellularAdapter && (cellReconnectAttempts % CELL_FULL_RESTART_EVERY) != 0) {
+                cellOk = cellularAdapter->reconnect();
+            } else {
+                LOG_INFO("NetworkManager: Recreating 4G adapter for full reconnect");
+                restartNetwork();
+                cellOk = (wifiConfig.networkType == NetworkType::NET_4G &&
+                          cellularAdapter && cellularAdapter->isConnected());
+            }
+
+            if (cellOk) {
+                LOG_INFO("NetworkManager: 4G auto-reconnect succeeded");
+                cellReconnectAttempts = 0;
+                cellReconnectPending = false;
+                statusInfo.status = NetworkStatus::CONNECTED;
+                statusInfo.lastConnectionTime = millis();
+                if (cellularAdapter) {
+                    IPAddress cellIP = cellularAdapter->localIP();
+                    if (cellIP != IPAddress(0, 0, 0, 0)) {
+                        statusInfo.ipAddress = cellIP.toString();
+                    }
+                }
+                if (wifiConfig.enableMDNS) {
+                    dnsManager->startMDNS(wifiConfig.customDomain);
+                }
+            } else if (wifiConfig.networkType == NetworkType::NET_4G) {
+                if (cellReconnectAttempts < CELL_MAX_RECONNECT_ATTEMPTS) {
+                    cellReconnectPending = true;
+                    cellReconnectTime = currentTime + CELL_RECONNECT_INTERVAL_MS;
+                    LOGGER.infof("NetworkManager: 4G reconnect failed, next attempt in %lus",
+                                 (unsigned long)(CELL_RECONNECT_INTERVAL_MS / 1000));
+                } else {
+                    LOG_WARNING("NetworkManager: 4G auto-reconnect exhausted, keeping AP fallback available");
                     ensureLastResortAP();
                     if (wifiConfig.enableMDNS) {
                         dnsManager->startMDNS(wifiConfig.customDomain);
@@ -644,14 +701,9 @@ void FBNetworkManager::update() {
         LOG_WARNING("NetworkManager: Connection timeout");
         connecting = false;
         
-        // AP+STA 模式下，超时后不执行 failover，让自动重连继续尝试
-        WiFiMode_t currentMode = WiFi.getMode();
-        if ((currentMode & WIFI_AP) && (currentMode & WIFI_STA)) {
-            LOG_INFO("NetworkManager: AP+STA timeout, AP stays online, STA will retry");
-            Serial.println("[WiFi] AP+STA timeout - AP online, STA will retry");
-            statusInfo.status = NetworkStatus::DISCONNECTED;
-            lastReconnectAttempt = millis();  // 让自动重连下一个周期触发
-        } else if (wifiConfig.autoFailover) {
+        // 连接超时处理（纯 AP 模式下不会有 AP+STA 分支）
+        LOG_WARNING("NetworkManager: Connection timeout");
+        if (wifiConfig.autoFailover) {
             LOG_INFO("NetworkManager: Attempting failover...");
             ipManager->performFailover();
         } else {
@@ -660,18 +712,13 @@ void FBNetworkManager::update() {
         }
     }
 
-    // 自动重连逻辑（STA 模式 或 AP+STA 回退模式）
+    // 自动重连逻辑（仅 STA 模式）
     if (autoReconnectEnabled && 
         !connecting &&
         !isConnected &&
+        wifiConfig.mode == NetworkMode::NETWORK_STA &&
         currentTime - lastReconnectAttempt >= wifiConfig.reconnectInterval) {
-        
-        // STA 模式直接重连；AP+STA 模式下 AP 已在运行，STA 继续后台重试
-        WiFiMode_t currentMode = WiFi.getMode();
-        if (wifiConfig.mode == NetworkMode::NETWORK_STA ||
-            ((currentMode & WIFI_AP) && (currentMode & WIFI_STA))) {
-            attemptReconnect();
-        }
+        attemptReconnect();
     }
     
     // mDNS 健康检查（每 30 秒）
@@ -788,7 +835,12 @@ bool FBNetworkManager::loadNetworkConfig() {
         if (doc.containsKey("fallbackToDHCP"))       wifiConfig.fallbackToDHCP = doc["fallbackToDHCP"].as<bool>();
 
         // 联网方式
-        if (doc.containsKey("networkType"))            wifiConfig.networkType = static_cast<NetworkType>(doc["networkType"].as<uint8_t>());
+        if (doc.containsKey("networkType")) {
+            uint8_t rawNetworkType = doc["networkType"].as<uint8_t>();
+            wifiConfig.networkType = rawNetworkType <= static_cast<uint8_t>(NetworkType::NET_4G)
+                ? static_cast<NetworkType>(rawNetworkType)
+                : NetworkType::NET_WIFI;
+        }
 
         // 以太网配置
         if (doc.containsKey("ethernet") && doc["ethernet"].is<JsonObject>()) {
@@ -809,15 +861,6 @@ bool FBNetworkManager::loadNetworkConfig() {
             if (cell.containsKey("pwrPin"))   wifiConfig.cellular.pwrPin   = cell["pwrPin"].as<int8_t>();
             if (cell.containsKey("baudRate")) wifiConfig.cellular.baudRate = cell["baudRate"].as<uint32_t>();
             if (cell.containsKey("apn"))      wifiConfig.cellular.apn      = cell["apn"].as<String>();
-        }
-
-        // LoRa 配置
-        if (doc.containsKey("lora") && doc["lora"].is<JsonObject>()) {
-            JsonObject lora = doc["lora"];
-            if (lora.containsKey("txPin"))    wifiConfig.lora.txPin    = lora["txPin"].as<int8_t>();
-            if (lora.containsKey("rxPin"))    wifiConfig.lora.rxPin    = lora["rxPin"].as<int8_t>();
-            if (lora.containsKey("m1Pin"))    wifiConfig.lora.m1Pin    = lora["m1Pin"].as<int8_t>();
-            if (lora.containsKey("baudRate")) wifiConfig.lora.baudRate = lora["baudRate"].as<uint32_t>();
         }
 
         // 多 SSID 列表解析（向下兼容：无 networks 字段时使用 staSSID/staPassword）
@@ -842,6 +885,8 @@ bool FBNetworkManager::loadNetworkConfig() {
             LOG_INFO("NetworkManager: Loaded " + String(wifiConfig.networks.size()) + " WiFi networks");
         }
         LOGGER.infof("NetworkManager: Config loaded from %s", path);
+        ets_printf("[NET] Config loaded: networkType=%d mode=%d staSSID=[%s]\n",
+            (int)wifiConfig.networkType, (int)wifiConfig.mode, wifiConfig.staSSID.c_str());
         return true;
     };
 
@@ -982,13 +1027,6 @@ bool FBNetworkManager::saveNetworkConfig() {
     cellObj["pwrPin"]   = wifiConfig.cellular.pwrPin;
     cellObj["baudRate"] = wifiConfig.cellular.baudRate;
     cellObj["apn"]      = wifiConfig.cellular.apn;
-
-    // LoRa 配置
-    JsonObject loraObj = doc["lora"].to<JsonObject>();
-    loraObj["txPin"]    = wifiConfig.lora.txPin;
-    loraObj["rxPin"]    = wifiConfig.lora.rxPin;
-    loraObj["m1Pin"]    = wifiConfig.lora.m1Pin;
-    loraObj["baudRate"] = wifiConfig.lora.baudRate;
 
     // 辅助写文件函数
     auto writeToFile = [&doc](const char* path) -> bool {
@@ -1134,6 +1172,9 @@ bool FBNetworkManager::ensureLastResortAP() {
         preferences.putInt("init_fail_cnt", 0);
     }
     ets_printf("[NET] CRITICAL: All network modes failed. Restarting in 5s...\n");
+    RestartDiagnostics::savePreRestartState(
+        RestartReason::AP_FALLBACK,
+        "All network modes failed after 3 attempts");
     delay(5000);
     ESP.restart();
     return false;  // 永远不会执行到
@@ -1206,34 +1247,54 @@ bool FBNetworkManager::connectToWiFiBlocking() {
         delay(500);  // AP→STA 模式切换后等待 WiFi 子系统重新就绪
     }
 
-    // 发起连接
-    WiFi.disconnect(false);
-    delay(200);
-    WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
-    statusInfo.status = NetworkStatus::CONNECTING;
-
+    // 发起连接（最多重试 2 次，应对首次扫描超时）
+    const int MAX_WIFI_RETRIES = 2;
+    bool wifiConnected = false;
     char buf[80];
-    snprintf(buf, sizeof(buf), "[NET] Connecting to WiFi [%s]...", wifiConfig.staSSID.c_str());
-    Serial.println(buf);
-    ets_printf("%s\n", buf);
-    LOG_INFO(buf);
-    // 调试：打印实际使用的连接凭据
-    LOGGER.debugf("NetworkManager: staSSID=[%s] len=%d", wifiConfig.staSSID.c_str(), wifiConfig.staSSID.length());
-    LOGGER.debugf("NetworkManager: staPassword=[%s] len=%d", wifiConfig.staPassword.c_str(), wifiConfig.staPassword.length());
 
-    // 阻塞等待，每 500ms 打印一个点，超时后退出
-    uint32_t deadline = millis() + wifiConfig.connectTimeout;
-    uint32_t dotTime  = 0;
-    while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
-        if (millis() - dotTime >= 500) {
-            dotTime = millis();
-            Serial.print('.');
+    for (int attempt = 1; attempt <= MAX_WIFI_RETRIES; attempt++) {
+        WiFi.disconnect(false);
+        delay(200);
+        WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
+        statusInfo.status = NetworkStatus::CONNECTING;
+
+        snprintf(buf, sizeof(buf), "[NET] Connecting to WiFi [%s] (attempt %d/%d)...",
+                 wifiConfig.staSSID.c_str(), attempt, MAX_WIFI_RETRIES);
+        Serial.println(buf);
+        ets_printf("%s\n", buf);
+        LOG_INFO(buf);
+        // 调试：打印实际使用的连接凭据
+        if (attempt == 1) {
+            LOGGER.debugf("NetworkManager: staSSID=[%s] len=%d", wifiConfig.staSSID.c_str(), wifiConfig.staSSID.length());
+            LOGGER.debugf("NetworkManager: staPassword=[%s] len=%d", wifiConfig.staPassword.c_str(), wifiConfig.staPassword.length());
         }
-        delay(50);
-    }
-    Serial.println();
 
-    if (WiFi.status() == WL_CONNECTED) {
+        // 阻塞等待，每 500ms 打印一个点，超时后退出
+        uint32_t deadline = millis() + wifiConfig.connectTimeout;
+        uint32_t dotTime  = 0;
+        while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
+            if (millis() - dotTime >= 500) {
+                dotTime = millis();
+                Serial.print('.');
+            }
+            delay(50);
+        }
+        Serial.println();
+
+        if (WiFi.status() == WL_CONNECTED) {
+            wifiConnected = true;
+            break;
+        }
+
+        // 重试前短暂等待
+        if (attempt < MAX_WIFI_RETRIES) {
+            Serial.printf("[NET] WiFi attempt %d failed, retrying...\n", attempt);
+            WiFi.disconnect(false);
+            delay(1000);
+        }
+    }
+
+    if (wifiConnected) {
         connecting = false;
         statusInfo.status = NetworkStatus::CONNECTED;
         statusInfo.ipAddress = WiFi.localIP().toString();
@@ -1361,19 +1422,6 @@ void FBNetworkManager::updateStatusInfo() {
         }
 #endif
 
-#if FASTBEE_ENABLE_LORA
-        if (wifiConfig.networkType == NetworkType::NET_LORA && loraAdapter) {
-            bool connected = loraAdapter->isConnected();
-            statusInfo.status = connected ? NetworkStatus::CONNECTED : NetworkStatus::DISCONNECTED;
-            statusInfo.internetAvailable = connected;
-            // 更新 LoRa 状态
-            statusInfo.loraMode = loraAdapter->isTransparentMode() ? "透传模式" : "配置模式";
-            statusInfo.loraAddress = String(loraAdapter->getAddress());
-            statusInfo.loraFrequency = loraAdapter->getFrequencyString();
-            statusInfo.loraAirRate = loraAdapter->getAirRateString();
-            statusInfo.loraChannel = loraAdapter->getChannel();
-        }
-#endif
         return;  // 非 WiFi 联网方式状态更新完成
     }
 
@@ -1386,36 +1434,28 @@ void FBNetworkManager::updateStatusInfo() {
 // IP 冲突检测和故障转移方法已移至 IPManager 类
 
 void FBNetworkManager::attemptReconnect() {
-    // 重连次数限制：达到最大次数后开启 AP 配置入口，同时保留 STA 自动重试
+    // 重连次数限制：达到最大次数后回退到纯 AP 模式供用户配置
     if (statusInfo.reconnectAttempts >= wifiConfig.maxReconnectAttempts) {
-        LOG_WARNING("NetworkManager: Max reconnect attempts reached; starting AP+STA fallback");
+        LOG_WARNING("NetworkManager: Max reconnect attempts reached; switching to AP mode");
         
-        // 断开当前STA连接
+        // 断开当前 STA 连接
         wifiManager->disconnectWiFi();
         
-        // 启动AP模式
+        // 启动纯 AP 模式（不使用 AP+STA，避免模式切换导致栈溢出）
         if (startAPMode()) {
-            // 关键修复：切换到 AP+STA 双模式
-            // startAPMode() 内部设置了 WIFI_MODE_AP（纯AP），会杀死 STA 接口。
-            // 下一次 attemptReconnect() 调用 connectToWiFi() 时又会切回 WIFI_MODE_STA，
-            // 导致 AP 被销毁。设备在 AP-only 和 STA-only 之间震荡，用户几乎无法访问。
-            // 使用 WIFI_MODE_APSTA 让 AP 热点始终保持在线，STA 继续在后台尝试重连。
-            WiFi.mode(WIFI_MODE_APSTA);
-            delay(50);  // 等待模式切换生效
-            
-            LOGGER.infof(">>> AP+STA fallback: AP IP=%s  SSID=[%s] pwd=[%s] <<<",
+            LOGGER.infof(">>> AP fallback: AP IP=%s  SSID=[%s] pwd=[%s] <<<",
                 WiFi.softAPIP().toString().c_str(),
                 wifiConfig.apSSID.c_str(),
                 wifiConfig.apPassword.c_str());
-            Serial.println("[WiFi] AP+STA fallback active - AP stays online, STA retry continues");
-            LOG_INFO("NetworkManager: AP+STA fallback active, AP persistent, STA retry enabled");
+            Serial.println("[WiFi] AP fallback active - STA reconnect disabled until user reconfigures");
+            LOG_INFO("NetworkManager: AP fallback active, STA reconnect paused");
             
-            // 重置重连计数器，让 STA 在下一个周期继续尝试
-            statusInfo.reconnectAttempts = 0;
-            lastReconnectAttempt = millis();
+            // 切换到 AP 模式，停止自动重连
+            wifiConfig.mode = NetworkMode::NETWORK_AP;
+            autoReconnectEnabled = false;
+            statusInfo.status = NetworkStatus::AP_MODE;
         } else {
             LOG_ERROR("NetworkManager: Failed to start AP mode after STA failure");
-            // 如果AP启动失败，重置计数器，等待更长时间后再试
             statusInfo.reconnectAttempts = 0;
             lastReconnectAttempt = millis() + 55000;  // 等待 60 秒
         }
@@ -1575,12 +1615,22 @@ bool FBNetworkManager::restartNetwork() {
         return true;
     }
     
-    // 对于非WiFi联网方式（4G/以太网/LoRa），选择性断开，保持AP热点在线
+    // 对于非WiFi联网方式（4G/以太网），选择性断开，保持AP热点在线
     if (wifiConfig.networkType != NetworkType::NET_WIFI) {
         LOG_INFO("NetworkManager: Non-WiFi network restart, keeping AP as safety net...");
         
+        // 网络切换前回调：停止依赖适配器 Client 指针的协议（如 MQTT），防止 use-after-free
+        // 必须在销毁适配器之前调用，因为适配器的 Client 对象会被析构
+        if (_preNetworkSwitchCb) {
+            LOG_INFO("NetworkManager: Pre-network-switch callback invoked (stopping dependent protocols)");
+            _preNetworkSwitchCb();
+        }
+
         // 仅断开非AP接口（保持AP热点作为配置回退入口）
         dnsManager->stopMDNS();
+        // 关键：mDNS 停止后需要短暂等待，确保其 UDP socket 和 FreeRTOS 任务完全清理
+        // 否则销毁适配器时 mDNS 可能仍在访问已销毁的 netif → xQueueSemaphoreTake 崩溃
+        delay(200);
 #if FASTBEE_ENABLE_ETHERNET
         if (ethernetAdapter) {
             ethernetAdapter->disconnect();
@@ -1593,20 +1643,20 @@ bool FBNetworkManager::restartNetwork() {
             cellularAdapter.reset();
         }
 #endif
-#if FASTBEE_ENABLE_LORA
-        if (loraAdapter) {
-            loraAdapter->disconnect();
-            loraAdapter.reset();
-        }
-#endif
         // 断开WiFi STA但不关闭AP
         wifiManager->disconnectWiFi();
-        
+
         autoReconnectEnabled = keepAutoReconnect;
-        delay(500);
+        delay(100);  // 缩短延迟（500ms→100ms），减少网络切换期间的不可用时间
+
+        // 销毁旧适配器后让 FreeRTOS idle 任务回收内存，减少堆碎片化
+        uint32_t postDestroyHeap = ESP.getFreeHeap();
+        uint32_t postDestroyMaxBlock = ESP.getMaxAllocHeap();
+        LOG_INFOF("NetworkManager: Adapters destroyed, heap=%lu maxBlock=%lu",
+                  (unsigned long)postDestroyHeap, (unsigned long)postDestroyMaxBlock);
         
         // 直接重新初始化网络适配器，不调用 initialize()（因为 isInitialized 仍为 true）
-        // initialize() 会跳过已初始化状态，导致以太网/4G/LoRa 适配器永远不会被重新创建
+        // initialize() 会跳过已初始化状态，导致以太网/4G 适配器永远不会被重新创建
         bool ok = true;
 #if FASTBEE_ENABLE_ETHERNET
         if (wifiConfig.networkType == NetworkType::NET_ETHERNET) {
@@ -1647,6 +1697,11 @@ bool FBNetworkManager::restartNetwork() {
             } else {
                 LOG_WARNING("NetworkManager: Ethernet reconnect failed, falling back to AP");
                 ethernetAdapter.reset();
+                // 与 initialize() 一致：回退时更新 networkType 为 NET_WIFI
+                // 否则 isNetworkConnected() 仍检查以太网适配器 → 始终返回 false
+                // → MQTT 永远无法重启，Web UI 始终显示“未连接”
+                wifiConfig.networkType = NetworkType::NET_WIFI;
+                wifiConfig.mode = NetworkMode::NETWORK_AP;
                 ensureLastResortAP();
                 dnsManager->startMDNS(wifiConfig.customDomain);
                 ok = false;
@@ -1662,6 +1717,8 @@ bool FBNetworkManager::restartNetwork() {
                 LOG_INFO("NetworkManager: 4G reconnected");
                 statusInfo.status = NetworkStatus::CONNECTED;
                 statusInfo.lastConnectionTime = millis();
+                cellReconnectAttempts = 0;
+                cellReconnectPending = false;
                 if (cellularAdapter) {
                     IPAddress cellIP = cellularAdapter->localIP();
                     if (cellIP != IPAddress(0, 0, 0, 0)) {
@@ -1689,24 +1746,10 @@ bool FBNetworkManager::restartNetwork() {
             } else {
                 LOG_WARNING("NetworkManager: 4G reconnect failed, falling back to AP");
                 cellularAdapter.reset();
-                ensureLastResortAP();
-                dnsManager->startMDNS(wifiConfig.customDomain);
-                ok = false;
-            }
-        }
-#endif
-#if FASTBEE_ENABLE_LORA
-        if (wifiConfig.networkType == NetworkType::NET_LORA) {
-            LOG_INFO("NetworkManager: Re-initializing LoRa...");
-            loraAdapter.reset(new LoRaAdapter());
-            bool loraOk = loraAdapter->begin(wifiConfig);
-            if (loraOk) {
-                LOG_INFO("NetworkManager: LoRa reconnected");
-                statusInfo.status = NetworkStatus::CONNECTED;
-                statusInfo.lastConnectionTime = millis();
-            } else {
-                LOG_WARNING("NetworkManager: LoRa reconnect failed, falling back to AP");
-                loraAdapter.reset();
+                // 与 initialize() 一致：回退时更新 networkType 为 NET_WIFI
+                wifiConfig.networkType = NetworkType::NET_WIFI;
+                wifiConfig.mode = NetworkMode::NETWORK_AP;
+                cellReconnectPending = false;
                 ensureLastResortAP();
                 dnsManager->startMDNS(wifiConfig.customDomain);
                 ok = false;
@@ -1823,13 +1866,6 @@ String FBNetworkManager::getConfigJSON() {
     cellCfg["baudRate"] = wifiConfig.cellular.baudRate;
     cellCfg["apn"]      = wifiConfig.cellular.apn;
 
-    // LoRa 配置
-    JsonObject loraCfg = doc.createNestedObject("lora");
-    loraCfg["txPin"]    = wifiConfig.lora.txPin;
-    loraCfg["rxPin"]    = wifiConfig.lora.rxPin;
-    loraCfg["m1Pin"]    = wifiConfig.lora.m1Pin;
-    loraCfg["baudRate"] = wifiConfig.lora.baudRate;
-    
     String result;
     serializeJson(doc, result);
     return result;
@@ -1854,11 +1890,7 @@ bool FBNetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStor
         newConfig.cellular.rxPin != wifiConfig.cellular.rxPin ||
         newConfig.cellular.pwrPin != wifiConfig.cellular.pwrPin ||
         newConfig.cellular.baudRate != wifiConfig.cellular.baudRate ||
-        newConfig.cellular.apn != wifiConfig.cellular.apn ||
-        newConfig.lora.txPin != wifiConfig.lora.txPin ||
-        newConfig.lora.rxPin != wifiConfig.lora.rxPin ||
-        newConfig.lora.m1Pin != wifiConfig.lora.m1Pin ||
-        newConfig.lora.baudRate != wifiConfig.lora.baudRate) {
+        newConfig.cellular.apn != wifiConfig.cellular.apn) {
         restartRequired = true;
     }
     
@@ -1879,9 +1911,11 @@ bool FBNetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStor
         LOG_INFO("NetworkManager: Configuration saved successfully");
     }
     
-    // mDNS 配置变更：设置延迟重启标志（让HTTP响应先返回，在 update() 中异步执行）
+    // mDNS 配置变更：如果已有设备重启调度，跳过 mDNS 运行时重启（重启后 mDNS 会自动初始化）
     if (mdnsConfigChanged && !restartRequired && dnsManager) {
-        if (wifiConfig.enableMDNS) {
+        if (SystemRebooter::isScheduled()) {
+            LOG_INFO("NetworkManager: mDNS config changed but device reboot already scheduled, skipping mDNS runtime restart");
+        } else if (wifiConfig.enableMDNS) {
             LOG_INFOF("NetworkManager: mDNS config changed, scheduling delayed restart with hostname '%s'",
                       wifiConfig.customDomain.c_str());
             pendingMDNSRestart = true;
@@ -1892,12 +1926,14 @@ bool FBNetworkManager::updateConfig(const WiFiConfig& newConfig, bool saveToStor
         }
     }
     
-    // 如果需要重启网络，异步执行（不影响保存结果）
+    // 如果需要重启网络，仅在无设备级重启调度时设置运行时网络重启
     if (restartRequired) {
-        LOG_INFO("NetworkManager: Network restart required, restarting...");
-        // 延迟重启，让HTTP响应先返回
-        // 使用标志位在update()中处理重启
-        pendingRestart = true;
+        if (SystemRebooter::isScheduled()) {
+            LOG_INFO("NetworkManager: Network restart required but device reboot already scheduled");
+        } else {
+            LOG_INFO("NetworkManager: Network restart required, scheduling runtime restart...");
+            pendingRestart = true;
+        }
     }
     
     // 返回保存结果（不等待网络重启完成）
@@ -1990,8 +2026,12 @@ bool FBNetworkManager::updateConfigFromJSON(const String& jsonConfig) {
         newConfig.enableMDNS = doc["enableMDNS"].as<bool>();
 
     // 联网方式
-    if (doc.containsKey("networkType"))
-        newConfig.networkType = static_cast<NetworkType>(doc["networkType"].as<uint8_t>());
+    if (doc.containsKey("networkType")) {
+        uint8_t rawNetworkType = doc["networkType"].as<uint8_t>();
+        newConfig.networkType = rawNetworkType <= static_cast<uint8_t>(NetworkType::NET_4G)
+            ? static_cast<NetworkType>(rawNetworkType)
+            : NetworkType::NET_WIFI;
+    }
 
     // 以太网配置
     if (doc.containsKey("ethernet") && doc["ethernet"].is<JsonObject>()) {
@@ -2014,15 +2054,6 @@ bool FBNetworkManager::updateConfigFromJSON(const String& jsonConfig) {
         if (cell.containsKey("apn"))      newConfig.cellular.apn      = cell["apn"].as<String>();
     }
 
-    // LoRa 配置
-    if (doc.containsKey("lora") && doc["lora"].is<JsonObject>()) {
-        JsonObject lora = doc["lora"];
-        if (lora.containsKey("txPin"))    newConfig.lora.txPin    = lora["txPin"].as<int8_t>();
-        if (lora.containsKey("rxPin"))    newConfig.lora.rxPin    = lora["rxPin"].as<int8_t>();
-        if (lora.containsKey("m1Pin"))    newConfig.lora.m1Pin    = lora["m1Pin"].as<int8_t>();
-        if (lora.containsKey("baudRate")) newConfig.lora.baudRate = lora["baudRate"].as<uint32_t>();
-    }
-    
     return updateConfig(newConfig, true);
 }
 
@@ -2129,14 +2160,6 @@ Client* FBNetworkManager::getActiveClient() {
             return nullptr;
 #endif
 
-#if FASTBEE_ENABLE_LORA
-        case NetworkType::NET_LORA:
-            if (loraAdapter && loraAdapter->isConnected()) {
-                return loraAdapter->getClient();
-            }
-            return nullptr;
-#endif
-
         default:
             return nullptr;
     }
@@ -2155,11 +2178,6 @@ bool FBNetworkManager::isNetworkConnected() {
 #if FASTBEE_ENABLE_CELLULAR
         case NetworkType::NET_4G:
             return cellularAdapter && cellularAdapter->isConnected();
-#endif
-
-#if FASTBEE_ENABLE_LORA
-        case NetworkType::NET_LORA:
-            return loraAdapter && loraAdapter->isConnected();
 #endif
 
         default:

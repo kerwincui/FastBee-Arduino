@@ -25,7 +25,7 @@ Supported chips: `ESP32`, `ESP32-S3`, `ESP32-C3`, `ESP32-C6`.
 | `esp32c6-F4R0` | Lite | ESP32-C6 | 4MB | None | Same as above, WiFi 6 support |
 | `esp32-F4R0` | Standard | ESP32 | 4MB | None | Lite + command script, Modbus, I2C sensors, RFID, IR, Ethernet, 4G |
 | `esp32s3-F8R0` | Standard | ESP32-S3 | 8MB | None | Same as esp32 Standard + **OTA**, dual-core higher performance |
-| `esp32-F8R4` | Full | ESP32 | 8MB | 4MB | Standard + OTA, rule script, file management, logs, multi-user, BLE, LoRa |
+| `esp32-F8R4` | Full | ESP32 | 8MB | 4MB | Standard + OTA, rule script, file management, logs, multi-user, BLE |
 | `esp32s3-F8R4` | Full | ESP32-S3 | 8MB | 4MB | Same as above, dual-core higher performance |
 | `esp32s3-F16R8` | Full | ESP32-S3 | 16MB | 8MB | Same as above, larger storage and memory headroom |
 
@@ -37,7 +37,7 @@ Supported chips: `ESP32`, `ESP32-S3`, `ESP32-C3`, `ESP32-C6`.
 | --- | --- | :---: | :---: | :---: |
 | **Network** | WiFi (AP/STA), MQTT, mDNS | Yes | Yes | Yes |
 | | Ethernet (W5500), 4G (EC801E) | No | Yes | Yes |
-| | LoRa, BLE Provisioning | No | No | Yes |
+| | BLE Provisioning | No | No | Yes |
 | **Protocol** | MQTT Protocol | Yes | Yes | Yes |
 | | Modbus RTU Master | No | Yes | Yes |
 | | Modbus Slave, TCP, HTTP, CoAP | No | No | Yes |

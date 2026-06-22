@@ -335,26 +335,26 @@ function buildI18nZhChunk(spec) {
     return `(function(){if(typeof i18n==='undefined')return;i18n.addTranslations('zh-CN',${jsonStr});${tail}})();\n`;
 }
 
-function buildSlimI18nEngine() {
+function buildLiteI18nEngine() {
     const criticalJson = JSON.stringify(CRITICAL_ZH_TRANSLATIONS);
     return `var __fastbeeCriticalZh=${criticalJson};var i18n=typeof i18n!=='undefined'?i18n:{currentLang:'zh-CN',translations:{'zh-CN':Object.assign({},__fastbeeCriticalZh)},t:function(key){var translated=this.translations['zh-CN']&&this.translations['zh-CN'][key];if(!translated&&typeof console!=='undefined'&&console.warn){if(window.DEBUG||location.hostname==='localhost'||location.hostname==='127.0.0.1'||location.hostname==='192.168.4.1'){console.warn('[i18n] Missing key:',key);}}return translated||key;},addTranslations:function(lang,data){if(!this.translations['zh-CN'])this.translations['zh-CN']={};Object.assign(this.translations['zh-CN'],data||{});},mergeTranslations:function(lang,data){this.addTranslations('zh-CN',data);},isLanguageLoaded:function(lang){return lang==='zh-CN'&&!!this._zhLoaded;},isLanguageLoading:function(){return false;},loadLanguagePack:function(lang,callback){this.currentLang='zh-CN';if(callback)callback(true);},setLanguage:function(){this.currentLang='zh-CN';this.updatePageText();return true;},updatePageText:function(root){var scope=root&&root.querySelectorAll?root:document;var self=this;var each=function(selector,handler){if(scope.matches&&scope.matches(selector))handler(scope);scope.querySelectorAll(selector).forEach(handler);};each('[data-i18n]',function(element){var key=element.getAttribute('data-i18n');var translation=self.t(key);if(translation&&translation!==key){if(element.tagName==='INPUT'||element.tagName==='TEXTAREA'){if(element.type==='button'||element.type==='submit'){element.value=translation;}else{element.placeholder=translation;}}else if(element.tagName==='SELECT'){return;}else if(element.tagName==='OPTION'){element.textContent=translation;var select=element.parentElement;if(select&&select.tagName==='SELECT'){var idx=select.selectedIndex;select.selectedIndex=idx;}}else{element.textContent=translation;}}});each('[data-i18n-placeholder]',function(element){var key=element.getAttribute('data-i18n-placeholder');var translation=self.t(key);if(translation&&translation!==key){element.placeholder=translation;}});each('[data-i18n-title]',function(element){var key=element.getAttribute('data-i18n-title');var translation=self.t(key);if(translation&&translation!==key){element.title=translation;}});document.documentElement.lang=this.currentLang;}};i18n.addTranslations('zh-CN',__fastbeeCriticalZh);\n`;
 }
 
 function buildProdStateSource() {
     const source = readUtf8(path.join(JS_SRC_DIR, 'state.js')).trim();
-    const slimmed = source.replace(
+    const lightened = source.replace(
         /setupLanguage\(\)\s*\{[\s\S]*?\r?\n    \},\r?\n\r?\n    _getPageModuleMap/,
         "setupLanguage() { if (typeof i18n !== 'undefined' && i18n.updatePageText) i18n.updatePageText(); },\n\n    _getPageModuleMap"
     );
-    if (slimmed === source) {
-        throw new Error('Failed to slim state.js setupLanguage() for single-language web profile');
+    if (lightened === source) {
+        throw new Error('Failed to lite state.js setupLanguage() for single-language web profile');
     }
-    return slimmed;
+    return lightened;
 }
 
 function readChunkSource(dir, file) {
     if (isCompactWebProfile() && dir === I18N_SRC_DIR && file === 'i18n-engine.js') {
-        return buildSlimI18nEngine();
+        return buildLiteI18nEngine();
     }
     if (isCompactWebProfile() && dir === JS_SRC_DIR && file === 'state.js') {
         return buildProdStateSource();

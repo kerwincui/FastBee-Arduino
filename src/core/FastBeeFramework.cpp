@@ -23,6 +23,7 @@
 #include "systems/TaskManager.h"
 #include "systems/HealthMonitor.h"
 #include "systems/RestartDiagnostics.h"
+#include "systems/SystemRebooter.h"
 #include "security/UserManager.h"
 #include "security/AuthManager.h"
 #include "protocols/ProtocolManager.h"
@@ -261,20 +262,21 @@ bool FastBeeFramework::initialize() {
     }
 
     // 初始化网络（会从 network.json 加载配置）
+    ets_printf("[STEP4] Calling network->initialize()...\n");
     if (!network->initialize()) {
-        Serial.println("[STEP4] WARN: Network initialization returned false");
+        ets_printf("[STEP4] WARN: Network initialization returned false\n");
     }
 
     unsigned long networkMs = millis() - stepStart;
     // 检查网络状态
     if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("[STEP4] WiFi Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+        ets_printf("[STEP4] WiFi Connected! IP: %s\n", WiFi.localIP().toString().c_str());
     } else if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
-        Serial.printf("[STEP4] AP Mode IP: %s\n", WiFi.softAPIP().toString().c_str());
+        ets_printf("[STEP4] AP Mode IP: %s\n", WiFi.softAPIP().toString().c_str());
     } else {
-        Serial.println("[STEP4] WARN: Network not connected");
+        ets_printf("[STEP4] WARN: Network not connected\n");
     }
-    Serial.printf("[Boot] NetworkManager: %lu ms\n", networkMs);
+    ets_printf("[Boot] NetworkManager: %lu ms\n", networkMs);
 
     // 步骤5: 初始化用户管理器
     stepStart = millis();
@@ -402,6 +404,16 @@ bool FastBeeFramework::initialize() {
         FBNetworkManager* netMgr = network.get();
         protocolManager->setTxCallback([netMgr]() { netMgr->incrementTxCount(); });
         protocolManager->setRxCallback([netMgr]() { netMgr->incrementRxCount(); });
+
+        // 注册网络切换前回调：在 restartNetwork() 销毁适配器之前停止 MQTT
+        // 防止 protocol_handle 任务并发使用已释放的 Client 指针（use-after-free）
+        ProtocolManager* pm = protocolManager.get();
+        netMgr->setPreNetworkSwitchCallback([pm]() {
+            if (pm) {
+                LOG_INFO("[Framework] Pre-network-switch: stopping MQTT to prevent use-after-free");
+                pm->stopMQTT();
+            }
+        });
     }
 
     // 步骤11.5: 初始化外设执行管理器
@@ -824,6 +836,7 @@ bool FastBeeFramework::addSystemTasks() {
             static unsigned long protocolWaitStart = 0;
             static bool lastProtocolNetworkReady = false;
             static NetworkType lastProtocolNetworkType = NetworkType::NET_WIFI;
+            static bool protocolTypeChanged = false;  // 网络类型是否发生变更（非首次连接）
             bool protocolNetworkReady = framework->network->isNetworkConnected();
             NetworkType protocolNetworkType = framework->network->getNetworkType();
 
@@ -831,18 +844,26 @@ bool FastBeeFramework::addSystemTasks() {
                 protocolWaitStart = 0;
                 lastProtocolNetworkReady = false;
             } else if (!lastProtocolNetworkReady || protocolNetworkType != lastProtocolNetworkType) {
+                // 网络类型变更时 MQTT 已被 pre-network-switch 回调停止，
+                // 使用更短的等待时间（1秒 vs 首次启动的5秒），加快恢复速度
+                protocolTypeChanged = lastProtocolNetworkReady && (protocolNetworkType != lastProtocolNetworkType);
                 framework->mqttAutoStarted = false;
                 protocolWaitStart = millis();
                 lastProtocolNetworkReady = true;
                 lastProtocolNetworkType = protocolNetworkType;
+                if (protocolTypeChanged) {
+                    LOG_INFOF("[Protocol] Network type changed, fast restart in 1s (type=%d)",
+                              (int)protocolNetworkType);
+                }
             }
 
             if ((!framework->mqttAutoStarted || !framework->modbusAutoStarted)
                 && protocolNetworkReady && framework->protocolManager) {
                 if (protocolWaitStart == 0) {
                     protocolWaitStart = millis();
-                } else if (millis() - protocolWaitStart > 5000) {
-                    // WiFi稳定5秒后，一次性读取 protocol.json 并启动所有协议
+                } else if (millis() - protocolWaitStart > (protocolTypeChanged ? 1000 : 5000)) {
+                    // 网络类型变更后等待1秒，首次启动等待5秒，确保网络稳定后再启动协议
+                    protocolTypeChanged = false;  // 重置标志
                     bool shouldStartMqtt = !framework->mqttAutoStarted;
                     bool shouldStartModbus = !framework->modbusAutoStarted;
                     framework->mqttAutoStarted = true;
@@ -1124,6 +1145,9 @@ void FastBeeFramework::run() {
     if (taskManager) {
         taskManager->run();
     }
+
+    // 检查是否有配置变更触发的待执行重启
+    SystemRebooter::update();
 
     // 定期健康检查（除了任务调度中的检查外）
     unsigned long currentTime = millis();

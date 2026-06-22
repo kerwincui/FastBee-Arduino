@@ -7,6 +7,7 @@
 
 #include "Network/OTAManager.h"
 #include "systems/LoggerSystem.h"
+#include "systems/RestartDiagnostics.h"
 #include "core/FeatureFlags.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include "core/PeriphExecManager.h"
@@ -189,6 +190,9 @@ void OTAManager::handleOTAUpload(AsyncWebServerRequest *request, const String& f
                 
                 // 延迟重启，让客户端有时间收到响应
                 delay(3000);
+                RestartDiagnostics::savePreRestartState(
+                    RestartReason::OTA_UPDATE,
+                    "OTA firmware upload completed");
                 LOG_INFO("OTAManager: Restarting device...");
                 ESP.restart();
             } else {
@@ -353,6 +357,9 @@ bool OTAManager::startOTA(const String& url) {
             progress = 100;
             
             // 延迟重启
+            RestartDiagnostics::savePreRestartState(
+                RestartReason::OTA_UPDATE,
+                "OTA URL update completed");
             delay(1000);
             ESP.restart();
             return true;

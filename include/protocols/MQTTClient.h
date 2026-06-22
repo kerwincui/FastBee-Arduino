@@ -155,6 +155,10 @@ public:
     // 设置外部 Transport Client（由 NetworkManager 注入，用于非 WiFi 联网方式）
     void setTransportClient(Client* client);
 
+    // 重置错误计数器（网络类型切换后调用，清除慢模式状态）
+    // 重置 consecutiveTimeouts、reconnectInterval、reconnectCount、lastErrorCode
+    void resetErrorCounters();
+
     // 设置消息回调（topic, message, topicType）
     void setMessageCallback(std::function<void(const String&, const String&, MqttTopicType)> callback);
 
@@ -173,7 +177,7 @@ public:
 
 private:
     WiFiClient wifiClient;
-    WiFiClientSecure wifiClientSecure;   // MQTTS (TLS) 传输层
+    WiFiClientSecure* _wifiClientSecure = nullptr;  // MQTTS (TLS) 传输层（动态分配，失败时销毁释放 ~20KB TLS 内存）
     Client* _externalClient = nullptr;  // 外部注入的 Client（非 WiFi 时使用）
     PubSubClient mqttClient;
     MQTTConfig config;
@@ -209,7 +213,15 @@ private:
     TaskHandle_t _reconnectTaskHandle;
     uint32_t _taskStartupDelayMs;  // 重连任务启动延迟（ms），首次启动 3000ms，deferred 重启 500ms
     static void reconnectTaskEntry(void* param);
+    bool ensureReconnectTask();  // 按需创建重连任务（连接时任务已删除，断开时重新创建）
     void doReconnect();  // 实际执行重连（在后台任务中调用）
+
+    // MQTTS TLS 内存管理：动态创建/销毁 WiFiClientSecure，确保失败后释放全部 TLS DRAM
+    void ensureTlsTransport();    // 按需创建 _wifiClientSecure（已存在则跳过）
+    void releaseTlsTransport();   // 销毁 _wifiClientSecure 释放 TLS 上下文和缓冲区
+    bool reclaimDramForMqtts();   // 激进回收 DRAM：停止 Web 服务器/mDNS、关闭 SSE、释放 TLS、强制 GC
+    void resumeWebServices();     // TLS 连接后重启 Web 服务器和 mDNS
+    bool _webServerPaused = false; // TLS 连接期间临时停止了 Web 服务器
 
     // 线程安全：递归互斥量保护 publish 操作（PubSubClient 非线程安全）
     SemaphoreHandle_t _publishMutex = nullptr;

@@ -24,6 +24,9 @@ static constexpr uint32_t MEM_THRESHOLD_SEVERE  =  6144;  //  6KB
 // largestFreeBlock 健康反证：连续块 >= 12KB 足以响应 HTTP 响应，强制维持 NORMAL
 static constexpr uint32_t MEM_LARGEST_HEALTHY    = 12288;  // 12KB
 static constexpr uint8_t  FRAG_THRESHOLD_COMPACT = 80;    // 碎片率80%触发紧凑化
+static constexpr uint8_t  FRAG_THRESHOLD_REBOOT  = 85;    // sustained severe fragmentation triggers reboot
+static constexpr uint32_t FRAG_REBOOT_MAX_BLOCK  = 4096;  // 4KB largest DRAM block is too small for stable TCP/Web
+static constexpr uint32_t FRAG_REBOOT_COUNT      = 12;    // 12 * 5s health checks = 60s
 
 // 任务栈水位信息
 struct TaskStackInfo {
@@ -31,18 +34,26 @@ struct TaskStackInfo {
     uint32_t highWaterMark;  // 剩余栈空间（字节）
 };
 
+// WiFi 连接内存保护阈值（DRAM，排除 PSRAM）
+// WiFi.begin() 触发驱动初始化、lwIP TCP/IP 栈等需要约 12-16KB DRAM
+static constexpr uint32_t WIFI_CONNECT_MIN_DRAM  = 16384;  // 16KB — connectToWiFi() 入口检查
+static constexpr uint32_t WIFI_RECONN_MIN_DRAM   = 12288;  // 12KB — attemptReconnect() 轻量检查
+
 // 系统健康状态快照
 struct SystemHealth {
-    uint32_t     freeHeap;           // 当前空闲堆（字节）
-    uint32_t     minFreeHeap;        // 历史最小空闲堆（字节）
-    uint8_t      heapFragmentation;  // 堆碎片率（0-100%）
+    uint32_t     freeHeap;           // 当前空闲堆（字节，含 PSRAM）
+    uint32_t     minFreeHeap;        // 历史最小空闲堆（字节，含 PSRAM）
+    uint8_t      heapFragmentation;  // 堆碎片率（0-100%，基于 DRAM）
     bool         fileSystemOK;       // 文件系统是否正常
     bool         wifiConnected;      // WiFi 是否已连接
     int8_t       wifiStrength;       // WiFi RSSI（dBm）
     unsigned long uptime;            // 系统运行时间（毫秒）
     uint8_t      cpuUsage;           // CPU 估算占用（0-100%）
-    uint32_t     largestFreeBlock;   // 最大连续可用块（字节）
+    uint32_t     largestFreeBlock;   // 最大连续可用块（字节，DRAM 内部）
     unsigned long bootTimeMs;        // 启动耗时（毫秒）
+    // ── DRAM 专项字段（排除 PSRAM，用于 WiFi/MQTT/SSL 内存保护决策）──
+    uint32_t     dramFreeHeap;       // DRAM 内部空闲（MALLOC_CAP_INTERNAL）
+    uint32_t     dramLargestBlock;   // DRAM 内部最大连续块（MALLOC_CAP_INTERNAL）
 };
 
 class HealthMonitor {
@@ -96,6 +107,7 @@ private:
     unsigned long lastMetricsLogTime; // 上次输出指标摘要的时间
     uint32_t      heapWatermark;
     uint32_t      consecutiveLowMemCount;  // 连续低内存计数
+    uint32_t      consecutiveFragmentationCriticalCount;  // sustained fragmentation counter
     bool          running;
 
     // 内存保护等级

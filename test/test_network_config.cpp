@@ -388,9 +388,6 @@ void test_network_type_enum_values() {
     TEST_ASSERT_EQUAL(2, (int)MockMultiNetworkManager::NetType::NET_4G);
     TestLog::step("NET_4G = 2");
 
-    TEST_ASSERT_EQUAL(3, (int)MockMultiNetworkManager::NetType::NET_LORA);
-    TestLog::step("NET_LORA = 3");
-
     TestLog::testEnd(true);
 }
 
@@ -429,27 +426,6 @@ void test_ethernet_init_failure_fallback_to_ap() {
     bool result = mgr.initialize(false);  // 以太网初始化失败
     TEST_ASSERT_FALSE(result);
     TestLog::step("Ethernet init returned false");
-
-    TEST_ASSERT_FALLBACK_TO_AP(mgr.networkType, mgr.mode);
-    TestLog::step("Fallback: networkType=NET_WIFI, mode=NETWORK_AP");
-
-    TEST_ASSERT_TRUE(mgr.isAPRunning());
-    TestLog::step("AP hotspot running");
-
-    TestLog::testEnd(true);
-}
-
-// 测试 LoRa 初始化失败回退到 AP 模式
-void test_lora_init_failure_fallback_to_ap() {
-    TestLog::testStart("LoRa Init Failure → AP Fallback");
-
-    MockMultiNetworkManager mgr;
-    mgr.networkType = MockMultiNetworkManager::NetType::NET_LORA;
-    mgr.mode = MockMultiNetworkManager::NetMode::NETWORK_STA;
-
-    bool result = mgr.initialize(false);  // LoRa 初始化失败
-    TEST_ASSERT_FALSE(result);
-    TestLog::step("LoRa init returned false");
 
     TEST_ASSERT_FALLBACK_TO_AP(mgr.networkType, mgr.mode);
     TestLog::step("Fallback: networkType=NET_WIFI, mode=NETWORK_AP");
@@ -1555,26 +1531,6 @@ void test_last_resort_ap_4g_restart_failure() {
     TestLog::testEnd(true);
 }
 
-void test_last_resort_ap_lora_restart_failure() {
-    TestLog::testStart("Last-Resort AP: restartNetwork LoRa failure → AP guaranteed");
-
-    MockMultiNetworkManager mgr;
-    mgr.networkType = MockMultiNetworkManager::NetType::NET_LORA;
-    mgr.forceAPFail = true;  // 正常 AP 启动失败
-
-    bool ok = mgr.restartNetwork(false);
-    TEST_ASSERT_FALSE(ok);
-    TestLog::step("LoRa restart + normal AP both failed");
-
-    // ensureLastResortAP 必须挽救局面
-    TEST_ASSERT_TRUE(mgr.lastResortAPStarted);
-    TEST_ASSERT_TRUE(mgr.isAPRunning());
-    TEST_ASSERT_EQUAL_STRING("192.168.4.1", mgr.apIPAddress.c_str());
-    TestLog::step("Last-resort AP ensures LoRa device accessible");
-
-    TestLog::testEnd(true);
-}
-
 void test_last_resort_ap_success_clears_fail_count() {
     TestLog::testStart("Last-Resort AP: successful init clears fail count");
 
@@ -2075,28 +2031,6 @@ void test_4g_mode_domain_unchanged_after_restart() {
     TestLog::testEnd(true);
 }
 
-/**
- * @brief LoRa 模式下不启动 mDNS 和 AP
- * LoRa 模式无 IP 网络，mDNS 不适用
- */
-void test_lora_mode_no_mdns() {
-    TestLog::testStart("LoRa Mode: No mDNS Service");
-
-    MockMultiNetworkManager mgr;
-    mgr.networkType = MockMultiNetworkManager::NetType::NET_LORA;
-    mgr.enableMDNS = true;
-    mgr.customDomain = "fastbee";
-
-    bool result = mgr.initialize(true);
-    TEST_ASSERT_TRUE(result);
-    TEST_ASSERT_FALSE(mgr.mDNSStarted);
-    TEST_ASSERT_TRUE(mgr.getActualHostname().isEmpty());
-    TEST_ASSERT_FALSE(mgr.isAPRunning());
-    TestLog::step("LoRa mode: no mDNS, no AP (IP-less network)");
-
-    TestLog::testEnd(true);
-}
-
 // mDNS 自定义域名测试组
 void test_mdns_domain_group() {
     TestLog::groupStart("mDNS Custom Domain Tests");
@@ -2113,8 +2047,6 @@ void test_mdns_domain_group() {
     RUN_TEST(test_mdns_rapid_toggle_stability);
     RUN_TEST(test_mdns_config_simultaneous_change);
     RUN_TEST(test_4g_mode_domain_unchanged_after_restart);
-    RUN_TEST(test_lora_mode_no_mdns);
-
     TestLog::groupEnd();
 }
 
@@ -2125,7 +2057,6 @@ void test_multi_network_mode_group() {
     RUN_TEST(test_network_type_enum_values);
     RUN_TEST(test_4g_init_failure_fallback_to_ap);
     RUN_TEST(test_ethernet_init_failure_fallback_to_ap);
-    RUN_TEST(test_lora_init_failure_fallback_to_ap);
     RUN_TEST(test_4g_mode_ap_always_running);
     RUN_TEST(test_ethernet_mode_ap_always_running);
     RUN_TEST(test_4g_mode_mdns_started);
@@ -2172,7 +2103,6 @@ void test_multi_network_mode_group() {
     RUN_TEST(test_last_resort_ap_restart_network_ethernet_failure);
     RUN_TEST(test_last_resort_ap_wifi_sta_both_fail);
     RUN_TEST(test_last_resort_ap_4g_restart_failure);
-    RUN_TEST(test_last_resort_ap_lora_restart_failure);
     RUN_TEST(test_last_resort_ap_success_clears_fail_count);
     RUN_TEST(test_last_resort_ap_eth_reconnect_exhausted);
     RUN_TEST(test_last_resort_ap_permanent_wifi_failure);

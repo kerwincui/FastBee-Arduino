@@ -12,8 +12,7 @@
 enum class NetworkType : uint8_t {
     NET_WIFI     = 0,   // WiFi（默认）
     NET_ETHERNET = 1,   // 以太网 W5500 SPI
-    NET_4G       = 2,   // 4G蜂窝 EC801E-CN
-    NET_LORA     = 3    // LoRa 网关透传 E22-400T22D
+    NET_4G       = 2    // 4G蜂窝 EC801E-CN
 };
 
 /**
@@ -96,16 +95,6 @@ struct CellularConfig {
 };
 
 /**
- * @brief LoRa 模块配置 (E22-400T22D)
- */
-struct LoRaConfig {
-    int8_t txPin   = 39;
-    int8_t rxPin   = 40;
-    int8_t m1Pin   = 41;
-    uint32_t baudRate = 9600;
-};
-
-/**
  * @brief 网络配置结构体
  */
 struct WiFiConfig {
@@ -165,8 +154,6 @@ struct WiFiConfig {
     // 4G 蜂窝模块配置 (EC801E-CN)
     CellularConfig cellular;
     
-    // LoRa 模块配置 (E22-400T22D)
-    LoRaConfig lora;
 };
 
 /**
@@ -202,12 +189,6 @@ struct NetworkStatusInfo {
     String iccid = "";             // SIM卡ICCID
     int cellularSignalQuality = 0; // 信号质量 (0-31, 99=未知)
 
-    // ========== LoRa 状态 ==========
-    String loraMode = "";          // 工作模式: "透传"/"配置"
-    String loraAddress = "";       // 设备地址
-    String loraFrequency = "";     // 工作频率
-    String loraAirRate = "";       // 空中速率
-    uint8_t loraChannel = 0;       // 信道
 };
 
 /**

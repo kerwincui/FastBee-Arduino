@@ -438,7 +438,7 @@ function checkNetworkNotificationRegressionGuards() {
     assert(networkHtml.includes('fastbee-ap'), 'cellular hint should mention AP SSID');
     assert(networkHtml.includes('192.168.4.1'), 'cellular hint should mention AP IP');
     // 4G 访问提示不应包含 fastbee.local（AP 无 DNS 服务器，mDNS 不可靠）
-    const cellularPanel = networkHtml.match(/id="cellular-panel"[\s\S]*?id="lora-panel"/);
+    const cellularPanel = networkHtml.match(/id="cellular-panel"[\s\S]*?id="ap-config"/);
     assert(cellularPanel, 'cellular panel section should exist');
     assert(!cellularPanel[0].includes('fastbee.local'), 'cellular access hint should NOT reference mDNS domain');
 

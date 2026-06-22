@@ -93,31 +93,9 @@
         </div>
     </div>
 
-    <!-- Master 高级参数 -->
-    <div id="master-advanced-section" class="fb-mt-2">
-        <details>
-            <summary data-i18n="modbus-master-advanced-title" class="fb-cursor-pointer fb-text-muted">Master 高级参数</summary>
-            <div class="fb-grid-3 fb-mt-1">
-                <div class="fb-form-group">
-                    <label data-i18n="modbus-master-response-timeout">响应超时 (ms)</label>
-                    <input type="number" id="rtu-response-timeout" class="" min="100" max="10000" value="1000">
-                    <small class="field-hint">默认1000ms</small>
-                </div>
-                <div class="fb-form-group">
-                    <label data-i18n="modbus-master-max-retries">最大重试次数</label>
-                    <input type="number" id="rtu-max-retries" class="" min="0" max="10" value="2">
-                    <small class="field-hint">默认2次</small>
-                </div>
-                <div class="fb-form-group">
-                    <label data-i18n="modbus-master-inter-poll-delay">轮询间隔 (ms)</label>
-                    <input type="number" id="rtu-inter-poll-delay" class="" min="10" max="5000" value="100">
-                    <small class="field-hint">两次请求间最小间隔，默认100ms</small>
-                </div>
-            </div>
-        </details>
-    </div>
-
-    <!-- Master 模式配置区：统一子设备列表 -->
+    <!-- Master 模式配置区：统一子设备列表
+         注：响应超时/最大重试/轮询间隔等通信参数由外设执行-轮询触发器独立配置，
+         不在此处展示，保存时直接保留 protocol.json 中已有的默认值。-->
     <div id="master-config-section" class="u-mt-20">
         <h4 class="u-title-indigo" data-i18n="modbus-all-devices-title">Modbus 子设备</h4>
         <div class="u-flex u-gap-5 u-mb-10 fb-mt-1 fb-relative">

@@ -188,6 +188,11 @@ private:
     volatile bool modbusRestartPending;  // 延迟重启标志，由 handle() 在 loopTask 中检查
 #endif
     
+    // 网络类型追踪：用于在 handle() 中检测网络类型变更并立即重启 MQTT
+    // 存储为 uint8_t 避免在头文件中引入 NetworkType 依赖
+    uint8_t _lastNetworkType = 0;  // 默认 NET_WIFI=0
+    bool _mqttRestartOnTypeChange = false;  // 网络类型变更后需要重启 MQTT 的标志
+
     // 初始化具体协议
 #if FASTBEE_ENABLE_MQTT
     bool initMQTT(void* config);

@@ -3,7 +3,7 @@
  * @brief 多网络模式模拟器，用于非WiFi联网方式测试
  * 
  * 模拟 NetworkManager 中多网络模式切换、失败回退、状态隔离的核心逻辑。
- * 支持 4G/以太网/LoRa 等非 WiFi 联网方式的测试。
+ * 支持 4G/以太网等非 WiFi 联网方式的测试。
  */
 
 #ifndef MOCK_MULTI_NETWORK_H
@@ -15,7 +15,7 @@
 
 class MockMultiNetworkManager {
 public:
-    enum class NetType : uint8_t { NET_WIFI = 0, NET_ETHERNET = 1, NET_4G = 2, NET_LORA = 3 };
+    enum class NetType : uint8_t { NET_WIFI = 0, NET_ETHERNET = 1, NET_4G = 2 };
     enum class NetMode : uint8_t { NETWORK_STA = 0, NETWORK_AP = 1 };
     enum class NetStatus : uint8_t {
         DISCONNECTED = 0, CONNECTING = 1, CONNECTED = 2,
@@ -92,20 +92,6 @@ public:
                     actualHostname = customDomain;
                     initSequence.push_back("MDNS_STARTED");
                 }
-                return true;
-            } else {
-                networkType = NetType::NET_WIFI;
-                mode = NetMode::NETWORK_AP;
-                startAP();
-                if (!apRunning) ensureLastResortAP();  // 模拟真实代码中的最后保障
-                return false;
-            }
-        }
-
-        if (networkType == NetType::NET_LORA) {
-            if (adapterSuccess) {
-                status = NetStatus::CONNECTED;
-                internetAvailable = false;
                 return true;
             } else {
                 networkType = NetType::NET_WIFI;

@@ -132,6 +132,10 @@ const char* RestartDiagnostics::getRestartReasonString(RestartReason reason) {
         case RestartReason::MEMORY_COMPACTION:   return "Irrecoverable fragmentation";
         case RestartReason::PERIPHERAL_FAULT:    return "Peripheral hardware fault";
         case RestartReason::CONFIG_CORRUPTION:   return "Configuration file corrupted";
+        case RestartReason::CONFIG_CHANGE:       return "Configuration changed (network/MQTT)";
+        case RestartReason::WEB_RECOVERY:        return "Web server recovery (TCP exhaustion)";
+        case RestartReason::AP_FALLBACK:         return "Emergency AP fallback (all networks failed)";
+        case RestartReason::FACTORY_RESET:       return "Factory reset completed";
         default:                                 return "Unknown reason code";
     }
 }

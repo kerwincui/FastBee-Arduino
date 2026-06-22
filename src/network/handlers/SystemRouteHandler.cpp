@@ -5,6 +5,7 @@
 #include "systems/LoggerSystem.h"
 #include "systems/ConfigStorage.h"
 #include "systems/HealthMonitor.h"
+#include "systems/SystemRebooter.h"
 #include "core/FastBeeFramework.h"
 #include "core/SystemConstants.h"
 #include "utils/NetworkUtils.h"
@@ -255,15 +256,6 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 doc["data"]["gateway"]       = info.currentGateway;
             }
 
-            // LoRa 鐘舵€侊紙浠呭湪 LoRa 妯″紡鏃惰繑鍥烇級
-            if (cfg.networkType == NetworkType::NET_LORA) {
-                doc["data"]["loraMode"]          = info.loraMode;
-                doc["data"]["loraAddress"]       = info.loraAddress;
-                doc["data"]["loraFrequency"]     = info.loraFrequency;
-                doc["data"]["loraAirRate"]       = info.loraAirRate;
-                doc["data"]["loraChannel"]       = info.loraChannel;
-            }
-
             const char* modeText = "unknown";
             switch (cfg.mode) {
                 case NetworkMode::NETWORK_STA:    modeText = "STA"; break;
@@ -328,7 +320,12 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             if (obj["maxReconnectAttempts"].is<String>() || obj["maxReconnectAttempts"].is<int>()) cfg.maxReconnectAttempts = obj["maxReconnectAttempts"].as<int>();
             if (obj["conflictDetection"].is<String>() || obj["conflictDetection"].is<int>()) cfg.conflictDetection = static_cast<IPConflictMode>(obj["conflictDetection"].as<int>());
             // 鑱旂綉鏂瑰紡
-            if (obj["networkType"].is<String>() || obj["networkType"].is<int>()) cfg.networkType = static_cast<NetworkType>(obj["networkType"].as<String>().toInt());
+            if (obj["networkType"].is<String>() || obj["networkType"].is<int>()) {
+                uint8_t rawNetworkType = obj["networkType"].as<String>().toInt();
+                cfg.networkType = rawNetworkType <= static_cast<uint8_t>(NetworkType::NET_4G)
+                    ? static_cast<NetworkType>(rawNetworkType)
+                    : NetworkType::NET_WIFI;
+            }
             // 浠ュお缃戦厤缃?
             if (obj["ethernet"].is<JsonObject>()) {
                 JsonObject eth = obj["ethernet"];
@@ -348,23 +345,20 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 if (cell.containsKey("baudRate")) cfg.cellular.baudRate = cell["baudRate"].as<uint32_t>();
                 if (cell.containsKey("apn"))      cfg.cellular.apn      = cell["apn"].as<String>();
             }
-            // LoRa 閰嶇疆
-            if (obj["lora"].is<JsonObject>()) {
-                JsonObject lora = obj["lora"];
-                if (lora.containsKey("txPin"))    cfg.lora.txPin    = lora["txPin"].as<int8_t>();
-                if (lora.containsKey("rxPin"))    cfg.lora.rxPin    = lora["rxPin"].as<int8_t>();
-                if (lora.containsKey("m1Pin"))    cfg.lora.m1Pin    = lora["m1Pin"].as<int8_t>();
-                if (lora.containsKey("baudRate")) cfg.lora.baudRate = lora["baudRate"].as<uint32_t>();
-            }
             if (netMgr->updateConfig(cfg, true)) {
                 LOGGER.info("Network configuration updated via web");
                 
-                // 鏋勫缓璇︾粏鍝嶅簲锛屽寘鍚綉缁滄ā寮忓拰璁块棶淇℃伅
+                // 配置保存成功，取消运行时网络重启（改为设备重启）
+                // updateConfig() 可能已设置 pendingRestart=true，这里清除它
+                // 设备重启比运行时 destroy/rebuild 更可靠：干净堆状态，无内存碎片
+                netMgr->clearPendingRestart();
+
+                // 构建详细响应，包含网络模式和访问信息
                 auto respDoc = FastBee::makeJsonDocument();
                 respDoc["success"] = true;
-                respDoc["message"] = "Network configuration saved successfully";
+                respDoc["message"] = "Network configuration saved, device will reboot";
                 
-                // 缃戠粶妯″紡淇℃伅
+                // 网络模式信息
                 respDoc["data"]["networkType"] = static_cast<uint8_t>(cfg.networkType);
                 respDoc["data"]["mode"] = static_cast<uint8_t>(cfg.mode);
                 const char* modeText = "unknown";
@@ -375,23 +369,26 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
                 }
                 respDoc["data"]["modeText"] = modeText;
                 
-                // AP淇℃伅锛圓P妯″紡闇€瑕侊級
+                // AP信息（AP模式需要）
                 if (cfg.mode == NetworkMode::NETWORK_AP) {
                     respDoc["data"]["apSSID"] = cfg.apSSID;
                     respDoc["data"]["apPassword"] = cfg.apPassword;
-                    respDoc["data"]["apIP"] = cfg.apIP;  // 閰嶇疆鐨凙P IP
+                    respDoc["data"]["apIP"] = cfg.apIP;
                 }
                 
-                // mDNS淇℃伅锛圫TA妯″紡闇€瑕侊級
+                // mDNS信息（STA模式需要）
                 if (cfg.mode == NetworkMode::NETWORK_STA && cfg.enableMDNS) {
                     String domain = cfg.customDomain.length() > 0 ? cfg.customDomain : "fastbee";
                     respDoc["data"]["mdnsDomain"] = domain + ".local";
                 }
                 
-                // 鎻愮ず缃戠粶閲嶅惎闇€瑕佹椂闂?
+                // 提示设备将重启
                 respDoc["data"]["restartRequired"] = true;
-                
+
                 HandlerUtils::sendJsonStream(request, respDoc);
+
+                // HTTP 响应已发送，调度延迟重启（2秒后 ESP.restart）
+                SystemRebooter::scheduleConfigReboot("Network config changed");
             } else {
                 ctx->sendError(request, 500, "Failed to save network configuration");
             }
@@ -910,7 +907,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         // protocol.json - 所有协议禁用，用户需重新配置
         static const char DEFAULT_PROTOCOL[] PROGMEM =
             "{\"version\":2,"
-            "\"modbusRtu\":{\"enabled\":false,\"peripheralId\":\"modbus_rtu\",\"mode\":\"master\",\"dePin\":14,\"transferType\":0,\"master\":{\"responseTimeout\":500,\"maxRetries\":1,\"interPollDelay\":50,\"tasks\":[],\"devices\":[]}},"
+            "\"modbusRtu\":{\"enabled\":false,\"peripheralId\":\"modbus_rtu\",\"mode\":\"master\",\"dePin\":14,\"transferType\":0,\"master\":{\"tasks\":[],\"devices\":[]}},"
             "\"modbusTcp\":{\"enabled\":false,\"server\":\"\",\"port\":502,\"slaveId\":1,\"timeout\":5000},"
             "\"mqtt\":{\"enabled\":false,\"server\":\"\",\"port\":1883,\"clientId\":\"\",\"username\":\"\",\"password\":\"\",\"mqttSecret\":\"\",\"keepAlive\":60,\"autoReconnect\":true,\"authType\":0,\"publishTopics\":[],\"subscribeTopics\":[]},"
             "\"http\":{\"enabled\":false,\"url\":\"\",\"port\":80,\"method\":\"POST\",\"timeout\":30,\"interval\":60},"
@@ -961,9 +958,9 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         AsyncWebServerResponse* response = request->beginResponse(200, "application/json", jsonStr);
         response->addHeader("Connection", "close");
         request->onDisconnect([this]() {
-            LOGGER.info("Factory reset response sent, scheduling restart in 2 seconds");
-            ctx->scheduleRestart = true;
-            ctx->scheduledRestartTime = millis() + 2000;
+            LOGGER.info("Factory reset response sent, scheduling restart via SystemRebooter");
+            SystemRebooter::scheduleReboot("Factory reset completed", 2000,
+                                           RestartReason::FACTORY_RESET);
         });
         request->send(response);
     });
@@ -1230,9 +1227,10 @@ void SystemRouteHandler::handleSystemRestart(AsyncWebServerRequest* request) {
     savedDelay = delaySeconds;
 
     request->onDisconnect([this]() {
-        ctx->scheduleRestart = true;
-        ctx->scheduledRestartTime = millis() + (savedDelay * 1000);
-        LOG_INFO("[System] Connection closed, restart scheduled");
+        SystemRebooter::scheduleReboot("User requested system restart",
+                                       savedDelay * 1000UL,
+                                       RestartReason::USER_COMMAND);
+        LOG_INFO("[System] Connection closed, restart scheduled via SystemRebooter");
     });
 
     request->send(response);
@@ -1293,12 +1291,6 @@ void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
         doc["data"]["cellular"]["pwrPin"]   = cfg.cellular.pwrPin;
         doc["data"]["cellular"]["baudRate"] = cfg.cellular.baudRate;
         doc["data"]["cellular"]["apn"]      = cfg.cellular.apn;
-
-        // LoRa 閰嶇疆
-        doc["data"]["lora"]["txPin"]    = cfg.lora.txPin;
-        doc["data"]["lora"]["rxPin"]    = cfg.lora.rxPin;
-        doc["data"]["lora"]["m1Pin"]    = cfg.lora.m1Pin;
-        doc["data"]["lora"]["baudRate"] = cfg.lora.baudRate;
 
         NetworkStatusInfo info = netMgr->getStatusInfo();
         doc["data"]["status"]["connected"] = (info.status == NetworkStatus::CONNECTED);
@@ -1601,8 +1593,6 @@ void SystemRouteHandler::handleGetCapabilities(AsyncWebServerRequest* request) {
 
     doc["data"]["ethernet"]     = (bool)FASTBEE_ENABLE_ETHERNET;
     doc["data"]["cellular"]     = (bool)FASTBEE_ENABLE_CELLULAR;
-    doc["data"]["lora"]         = (bool)FASTBEE_ENABLE_LORA;
-
     doc["data"]["ota"]           = (bool)FASTBEE_ENABLE_OTA;
     doc["data"]["auth"]         = (bool)FASTBEE_ENABLE_AUTH;
     doc["data"]["webServer"]    = (bool)FASTBEE_ENABLE_WEB_SERVER;

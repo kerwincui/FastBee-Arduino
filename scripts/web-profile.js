@@ -15,7 +15,6 @@ function normalizeWebProfile(value) {
     const profile = String(value || '').trim().toLowerCase();
     if (!profile) return 'full';
     if (profile === 'prod' || profile === 'production') return 'lite';
-    if (profile === 'slim') return 'lite';
     if (profile === 'lite') return 'lite';
     if (profile === 'std' || profile === 'standard') return 'standard';
     if (profile === 'full') return 'full';
@@ -26,8 +25,6 @@ function getWebProfile() {
     if (
         process.argv.includes('--web-lite') ||
         process.argv.includes('--lite') ||
-        process.argv.includes('--web-slim') ||
-        process.argv.includes('--slim') ||
         process.argv.includes('--web-prod') ||
         process.argv.includes('--prod')
     ) {
@@ -54,10 +51,6 @@ function isLiteWebProfile() {
     return getWebProfile() === 'lite';
 }
 
-function isSlimWebProfile() {
-    return isLiteWebProfile();
-}
-
 function isStandardWebProfile() {
     return getWebProfile() === 'standard';
 }
@@ -78,7 +71,6 @@ module.exports = {
     getWebProfile,
     normalizeWebProfile,
     isLiteWebProfile,
-    isSlimWebProfile,
     isStandardWebProfile,
     isCompactWebProfile,
     isProdWebProfile,

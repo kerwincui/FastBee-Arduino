@@ -45,8 +45,11 @@ EthernetAdapter::EthernetAdapter() {
 }
 
 EthernetAdapter::~EthernetAdapter() {
+    // 必须在 SPI 销毁之前调用 disconnect()，因为 disconnect() 会调用 ETH.end()
+    // ETH.end() 停止以太网驱动任务，否则任务会继续访问已销毁的 SPI 总线导致崩溃
     disconnect();
     if (_spi) {
+        delay(100);  // 等待以太网驱动任务完全退出
         _spi->end();
         delete _spi;
         _spi = nullptr;
@@ -68,8 +71,8 @@ bool EthernetAdapter::begin(const WiFiConfig& config) {
     LOGGER.infof("EthernetAdapter: Control pins - CS:%d, RST:%d, INT:%d",
                  _pinConfig.csPin, _pinConfig.rstPin, _pinConfig.intPin);
 
-    // 注册以太网事件回调
-    WiFi.onEvent(onEthEvent);
+    // 注册以太网事件回调（保存 ID 以便 disconnect 时注销）
+    _ethEventId = WiFi.onEvent(onEthEvent);
 
     // 初始化 SPI
     _spi = new SPIClass(SPI2_HOST);
@@ -224,9 +227,25 @@ String EthernetAdapter::macAddress() const {
 }
 
 void EthernetAdapter::disconnect() {
+    if (!_initialized && !_connected) {
+        // 已经断开，避免重复调用 ETH.end()（虽然 ETH.end() 本身是幂等的）
+        return;
+    }
     _connected = false;
     _initialized = false;
-    LOG_INFO("EthernetAdapter: Disconnected");
+
+    // 注销以太网事件回调，防止销毁后触发回调
+    if (_ethEventId > 0) {
+        WiFi.removeEvent(_ethEventId);
+        _ethEventId = 0;
+    }
+
+    // 关键修复：必须在 SPI 销毁之前调用 ETH.end()
+    // ETH.end() 会停止以太网 MAC 任务、卸载驱动、销毁 netif
+    // 如果不调用，以太网驱动任务会继续访问已销毁的 SPI 总线
+    // → xQueueSemaphoreTake assert failed (pxQueue->uxItemSize == 0)
+    ETH.end();
+    LOG_INFO("EthernetAdapter: ETH.end() called, driver stopped");
 }
 
 Client* EthernetAdapter::getClient() {

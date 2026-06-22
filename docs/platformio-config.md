@@ -119,11 +119,11 @@ extra_scripts =
 
 ### standard_flags（标准版）
 
-适用于中等容量设备，保留 Modbus、规则脚本、以太网、4G 等实用功能，关闭用户/角色管理和 BLE。
+适用于中等容量设备，保留 WiFi、MQTT、Modbus、规则脚本和常用外设，默认关闭 TCP/HTTP/CoAP、OTA、用户/角色管理、BLE、以太网和 4G，优先保证无 PSRAM ESP32 的内部 DRAM 余量。
 
 ### full_flags（完整版）
 
-适用于 8MB+ Flash + PSRAM 的高端设备（ESP32-S3），启用全部功能。
+适用于 8MB+ Flash + PSRAM 的高端设备，启用 TCP/HTTP/CoAP、OTA、用户管理、以太网、4G 等完整功能。BLE 已从所有预设移除，`FASTBEE_ENABLE_BLE` 默认仍为 `0`。
 
 **版本对比矩阵：**
 
@@ -141,10 +141,9 @@ extra_scripts =
 | 文件管理 | ✗ | ✗ | ✓ |
 | 日志查看器 | ✗ | ✗ | ✓ |
 | 文件日志 | ✗ | ✗ | ✓ |
-| BLE 蓝牙 | ✗ | ✗ | ✓ |
-| 以太网 W5500 | ✗ | ✓ | ✓ |
-| 4G 蜂窝 | ✗ | ✓ | ✓ |
-| LoRa 网关 | ✗ | ✗ | ✓ |
+| BLE 蓝牙 | ✗ | ✗ | ✗ |
+| 以太网 W5500 | ✗ | ✗ | ✓ |
+| 4G 蜂窝 | ✗ | ✗ | ✓ |
 | I2C 传感器 | ✗ | ✓ | ✓ |
 | RFID | ✗ | ✓ | ✓ |
 | 红外遥控 | ✗ | ✓ | ✗¹ |
@@ -155,6 +154,8 @@ extra_scripts =
 | 国际化 i18n | ✗ | ✗ | ✓ |
 
 > ¹ ESP32-S3 的 RMT 驱动与 IRremoteESP8266 冲突，S3 环境显式禁用红外。
+>
+> 当前预设策略：标准版关闭以太网、4G 和 BLE；完整版保留以太网/4G，但 BLE 仍关闭。如确需恢复 BLE，需要重新加入 NimBLE 依赖并重新评估 Flash/RAM 余量。
 
 ---
 
@@ -164,8 +165,8 @@ extra_scripts =
 
 | 参数 | ESP32 | ESP32-C3 | ESP32-C6 | ESP32-S3 | 说明 |
 |------|:-----:|:--------:|:--------:|:--------:|------|
-| `CONFIG_ASYNC_TCP_MAX_CONNECTIONS` | 2 | 1 | 3 | **14** | AsyncTCP 最大并发连接数 |
-| `CONFIG_ASYNC_TCP_QUEUE_SIZE` | 4 | 4 | 8 | **24** | TCP 事件队列深度 |
+| `CONFIG_ASYNC_TCP_MAX_CONNECTIONS` | 6 | 4 | 6 | **14** | AsyncTCP 最大并发连接数 |
+| `CONFIG_ASYNC_TCP_QUEUE_SIZE` | 8 | 4 | 8 | **24** | TCP 事件队列深度 |
 | `ARDUINO_LOOP_STACK_SIZE` | 16384 | 12288 | 12288 | 16384 | Arduino loopTask 栈大小（字节） |
 | `CONFIG_ASYNC_TCP_TASK_WDT_TIMEOUT` | 10 | 10 | 10 | 10 | AsyncTCP 任务看门狗超时（秒） |
 | `SCRIPT_TASK_STACK` | 8192 | 6144 | 6144 | 8192 | 规则脚本任务栈大小 |
@@ -223,11 +224,16 @@ heap_caps_malloc_extmem_enable(512);  // ≥ 512B 的分配请求优先用 PSRAM
 
 ### 构建时启用 PSRAM
 
-`esp32s3-F8R4` 和 `esp32s3-F16R8` 环境通过 `board_build.arduino.memory_type` 自动启用 PSRAM：
+`esp32-F8R4`、`esp32s3-F8R4` 和 `esp32s3-F16R8` 环境通过 `board_build.psram = enabled` 启用 PSRAM；`full_flags` 同时定义 `FASTBEE_USE_PSRAM=1` 和 `BOARD_HAS_PSRAM`：
 
 ```ini
-; 在 [env:esp32s3-F8R4] / [env:esp32s3-F16R8] 中
-board_build.arduino.memory_type = qio_opi   ; OPI PSRAM（8线，速度更快）
+[full_flags]
+build_flags =
+    -DFASTBEE_USE_PSRAM=1
+    -DBOARD_HAS_PSRAM
+
+; 在 [env:esp32-F8R4] / [env:esp32s3-F8R4] / [env:esp32s3-F16R8] 中
+board_build.psram = enabled
 ```
 
 无 PSRAM 的环境（`esp32s3-F8R0`、`esp32-F4R0` 等）不设置此项，`main.cpp` 中 `#ifdef BOARD_HAS_PSRAM` 分支不会编译。
@@ -310,7 +316,8 @@ test_build_src = no           ; 不自动编译 src/，由测试手动引入
 | `FASTBEE_MODBUS_SLAVE_ENABLE` | Modbus RTU 从站 | - |
 | `FASTBEE_ENABLE_ETHERNET` | W5500 以太网 | - |
 | `FASTBEE_ENABLE_CELLULAR` | EC801E 4G 蜂窝 | TinyGSM |
-| `FASTBEE_ENABLE_LORA` | E22 LoRa 网关 | - |
+
+> 标准版中 `FASTBEE_ENABLE_ETHERNET=0`、`FASTBEE_ENABLE_CELLULAR=0`，前端能力接口会据此隐藏以太网/4G 选项；完整版保留二者为 `1`。
 
 ### Web 服务
 
@@ -354,7 +361,9 @@ test_build_src = no           ; 不自动编译 src/，由测试手动引入
 | `FASTBEE_ENABLE_NEOPIXEL` | WS2812 NeoPixel LED |
 | `FASTBEE_ENABLE_DS1302` | DS1302 实时时钟（3线） |
 | `FASTBEE_ENABLE_LCD1602` | LCD1602 I2C 字符液晶 |
-| `FASTBEE_ENABLE_BLE` | BLE 蓝牙（NimBLE） |
+| `FASTBEE_ENABLE_BLE` | BLE 蓝牙（NimBLE，当前预设已移除） |
+
+> `FASTBEE_ENABLE_BLE` 当前所有预设均为 `0`，NimBLE-Arduino 已从 `lib_deps` 移除；宏保留用于兼容旧分支和私有配置。
 
 ### 脚本引擎
 
@@ -387,6 +396,26 @@ test_build_src = no           ; 不自动编译 src/，由测试手动引入
 3. **配置灵活**：在 `platformio.ini` 的 `build_flags` 中通过 `-DFASTBEE_ENABLE_XXX=1` 启用
 4. **默认值分层**：基础功能（GPIO/传感器）默认启用；外设驱动按需启用
 
+### 开关使用规则
+
+功能开关的原则是：**设备实际不用的外设、驱动、协议和管理功能就关闭；设备确实接了硬件、业务流程确实依赖时再打开**。这样可以减少编译进固件的代码、全局对象、任务栈、协议缓冲区和第三方库依赖，直接节省 Flash 和运行时 RAM，降低长期运行时内存碎片、堆不足和任务栈紧张的风险。
+
+| 场景 | 建议配置 | 说明 |
+|------|----------|------|
+| 没有接对应硬件 | `-DFASTBEE_ENABLE_XXX=0` | 不编译对应驱动，不创建运行时对象，节省 RAM/Flash |
+| 硬件只是预留，当前版本不用 | `-DFASTBEE_ENABLE_XXX=0` | 预留硬件不等于软件必须启用，量产默认应关闭 |
+| 已接硬件且业务要使用 | `-DFASTBEE_ENABLE_XXX=1` | 同时确认依赖库、引脚、UI/API 和配置项可用 |
+| 仅开发调试使用 | 开发环境开，生产环境关 | 例如文件管理、日志查看器、详细日志、OTA 等 |
+| RAM 占用高的通信模块 | 默认关闭，按项目打开 | 例如 BLE、4G、以太网、TCP/HTTP/CoAP |
+
+建议先选择最接近硬件资源的预设：
+
+- 4MB、无 PSRAM、功能少：优先 `lite_flags`
+- ESP32 4MB/8MB、无 PSRAM、常规网关：优先 `standard_flags`
+- ESP32-S3/ESP32 带 PSRAM、需要完整联网能力：优先 `full_flags`
+
+然后只在具体 `[env:*]` 里覆盖少量差异。不要因为“以后可能会用”提前打开模块；后续需要时再把对应宏改为 `1` 重新编译即可。
+
 ### 资源配置影响分析
 
 | 驱动 | Flash 占用 | RAM 占用 | 默认值 | 建议 |
@@ -408,10 +437,9 @@ test_build_src = no           ; 不自动编译 src/，由测试手动引入
 | RFID MFRC522 | ~12KB | ~200B | 0 | 按需启用 |
 | 红外遥控 | ~8KB | ~300B | 0 | 按需启用 |
 | I2C 传感器 | ~15KB | ~500B | 0 | 按需启用 |
-| BLE 蓝牙 | ~80KB | ~4KB | 0 | 资源占用最大，按需启用 |
-| 以太网 W5500 | ~8KB | ~500B | 0 | 按需启用 |
-| 4G 蜂窝 | ~15KB | ~1KB | 0 | 按需启用 |
-| LoRa 网关 | ~5KB | ~200B | 0 | 按需启用 |
+| BLE 蓝牙 | ~80KB | ~20-30KB | 0 | 已从所有预设移除，默认不要启用 |
+| 以太网 W5500 | ~8KB | ~8KB | 0 | 标准版关闭；仅 Full/实际硬件需要时启用 |
+| 4G 蜂窝 | ~15KB | ~10-15KB | 0 | 标准版关闭；RAM 占用高，仅 Full/实际硬件需要时启用 |
 | TCP 客户端 | ~10KB | ~500B | 0 | 按需启用 |
 | HTTP 客户端 | ~8KB | ~300B | 0 | 按需启用 |
 | CoAP 协议 | ~12KB | ~500B | 0 | 按需启用 |
@@ -422,6 +450,8 @@ test_build_src = no           ; 不自动编译 src/，由测试手动引入
 | 日志查看器 | ~2KB | ~100B | 0 | 按需启用 |
 | 文件日志 | ~2KB | ~200B | 0 | 按需启用 |
 
+> 该表的“默认值”是保守基准；具体预设以 `lite_flags` / `standard_flags` / `full_flags` 为准。当前标准版关闭 Ethernet/Cellular/BLE，完整版开启 Ethernet/Cellular 但 BLE 仍关闭。
+>
 > ² **NEOPIXEL 优化建议**：NeoPixel LED 驱动占用 ~12KB Flash，在 lite 精简版本中也是默认启用的。
 > 如果设备不使用 WS2812/NeoPixel 灯带，可在 `lite_flags` 中设置为 0 节省空间：
 > ```ini
@@ -434,30 +464,36 @@ test_build_src = no           ; 不自动编译 src/，由测试手动引入
 
 | 类别 | 启用模块 | Flash 占用 |
 |------|---------|----------|
-| 协议 | MQTT + Modbus | ~35KB |
+| 协议 | MQTT | ~15KB |
 | 网络 | mDNS + DNS + AP | ~10KB |
 | Web | Server + Static + API | ~25KB |
 | 安全 | Auth + Session | ~8KB |
 | 系统 | Logger + Task + Health + Exec | ~17KB |
 | 外设 | GPIO + Sensor | ~11KB |
-| **合计基础** | | **~106KB** |
+| **合计基础** | | **~86KB** |
 
 如启用全部可选驱动，Flash 增加约 **75KB**（NeoPixel 12KB + LCD 20KB + RFID 12KB + 红外 8KB + I2C 传感器 15KB + 其他 ~8KB）。
 
-### 启用新驱动的方法
+### 启用/关闭功能的方法
 
-在 `platformio.ini` 对应环境段添加 `build_flags`：
+在 `platformio.ini` 对应环境段添加或覆盖 `build_flags`。启用使用 `1`，关闭使用 `0`：
 
 ```ini
 [env:esp32s3-F16R8]
-extends = esp32_base
 build_flags =
+    ${esp32_base.build_flags}
+    ${esp32s3_runtime_flags.build_flags}
     ${full_flags.build_flags}
     -DFASTBEE_ENABLE_DS1302=1    ; 启用 DS1302 实时时钟
     -DFASTBEE_ENABLE_LCD1602=1   ; 启用 LCD1602 字符液晶
+    -DFASTBEE_ENABLE_CELLULAR=0  ; 未接 4G 模块则关闭，节省 RAM
+    -DFASTBEE_ENABLE_ETHERNET=0  ; 未接 W5500 则关闭，节省 RAM
+    -DFASTBEE_ENABLE_FILE_MANAGER=0 ; 生产环境不需要文件管理则关闭
 ```
 
-或直接在 `FeatureFlags.h` 中修改默认值（影响所有环境）。
+也可以在 `[lite_flags]`、`[standard_flags]`、`[full_flags]` 中统一调整某个版本的默认值。直接修改 `FeatureFlags.h` 会影响所有未显式覆盖的环境，建议只用于定义全局兜底默认值。
+
+> 注意：关闭宏主要影响编译和运行时对象创建；设备上已保存的历史配置数据可能仍在 LittleFS/NVS 中，但对应功能关闭后不会再创建驱动实例或执行相关逻辑。需要彻底清理配置时，再配合配置迁移或恢复出厂设置处理。
 
 ---
 
@@ -527,7 +563,6 @@ LOG_VERBOSE → LOG_DEBUG → LOG_INFO → LOG_WARNING → LOG_ERROR → LOG_FAT
 | PubSubClient | ^2.8 | MQTT 客户端 |
 | ESPAsyncWebServer | ^3.6.0 | 异步 Web 服务器 |
 | AsyncTCP | ^3.3.2 | 异步 TCP（ESPAsyncWebServer 底层） |
-| NimBLE-Arduino | ^2.2.0 | BLE 低功耗蓝牙 |
 | U8g2 | ^2.35.9 | LCD/OLED 显示驱动 |
 | Adafruit NeoPixel | ^1.12.0 | WS2812 LED 控制 |
 | DHT sensor library | ^1.4.6 | DHT11/22 温湿度传感器 |
@@ -535,7 +570,9 @@ LOG_VERBOSE → LOG_DEBUG → LOG_INFO → LOG_WARNING → LOG_ERROR → LOG_FAT
 | OneWire | ^2.3.8 | 单总线协议（DS18B20） |
 | DallasTemperature | ^3.9.0 | DS18B20 温度传感器 |
 
-### 扩展依赖（standard/full 环境）
+> BLE 已从所有预设移除，核心依赖中不再包含 NimBLE-Arduino。旧分支如需恢复 BLE，需要同时恢复依赖、设置 `FASTBEE_ENABLE_BLE=1`，并重新评估约 80KB Flash 和 20-30KB RAM 的占用。
+
+### 扩展依赖（按环境声明，功能仍受宏控制）
 
 | 库名 | 版本 | 用途 |
 |------|------|------|
@@ -543,7 +580,7 @@ LOG_VERBOSE → LOG_DEBUG → LOG_INFO → LOG_WARNING → LOG_ERROR → LOG_FAT
 | Adafruit MPU6050 | ^2.2.6 | 六轴姿态传感器 |
 | MFRC522 | ^1.4.11 | RFID 读卡器 |
 | IRremoteESP8266 | ^2.8.6 | 红外遥控（ESP32 原生） |
-| TinyGSM | ^0.11.7 | 4G 蜂窝模块驱动 |
+| TinyGSM | ^0.11.7 | 4G 蜂窝模块驱动；标准预设关闭 `FASTBEE_ENABLE_CELLULAR`，完整版启用 |
 
 ### 单元测试依赖（native 环境）
 
@@ -554,13 +591,13 @@ LOG_VERBOSE → LOG_DEBUG → LOG_INFO → LOG_WARNING → LOG_ERROR → LOG_FAT
 
 ### lib_ignore
 
-部分环境排除不兼容的库：
+部分环境排除不兼容或已移除的库：
 
 | 环境 | 排除的库 | 原因 |
 |------|----------|------|
-| `esp32-F4R0` | NimBLE-Arduino | 4MB Flash 空间不足 |
+| `esp32-F4R0` | NimBLE-Arduino | BLE 已移除，保留排除项防止旧依赖被拉入；4MB Flash 空间不足 |
 | `esp32c3-F4R0` | NimBLE-Arduino | 同上 |
-| `esp32c6-F4R0` | NimBLE, OneWire, DallasTemperature | C6 不支持 |
+| `esp32c6-F4R0` | NimBLE-Arduino, OneWire, DallasTemperature | BLE 已移除；C6 不支持 OneWire/DS18B20 |
 | `esp32s3-F8R4/F16R8` | IRremoteESP8266 | ESP32-S3 RMT 驱动冲突 |
 
 ---

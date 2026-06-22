@@ -493,6 +493,62 @@ static void test_invalid_slave_addresses() {
     TEST_ASSERT_FALSE(248 >= 1 && 248 <= 247);
 }
 
+// ========== MasterConfig 硬编码默认值测试 ==========
+
+// 内联复现 MasterConfig（符合实际硬编码默认值）
+struct TestMasterConfig {
+    uint16_t responseTimeout;
+    uint8_t  maxRetries;
+    uint16_t interPollDelay;
+    uint8_t  taskCount;
+
+    // 硬编码默认值：不再从 protocol.json 读取，由外设执行-轮询触发器覆盖实际执行参数
+    TestMasterConfig()
+        : responseTimeout(1000), maxRetries(2), interPollDelay(100), taskCount(0) {}
+};
+
+static void test_master_config_default_response_timeout() {
+    TestMasterConfig cfg;
+    TEST_ASSERT_EQUAL_UINT16(1000, cfg.responseTimeout);
+}
+
+static void test_master_config_default_max_retries() {
+    TestMasterConfig cfg;
+    TEST_ASSERT_EQUAL_UINT8(2, cfg.maxRetries);
+}
+
+static void test_master_config_default_inter_poll_delay() {
+    TestMasterConfig cfg;
+    TEST_ASSERT_EQUAL_UINT16(100, cfg.interPollDelay);
+}
+
+static void test_master_config_defaults_in_valid_range() {
+    // 默认值在合理范围内：[100, 5000] / [0, 3] / [20, 1000]
+    TestMasterConfig cfg;
+    TEST_ASSERT_TRUE(cfg.responseTimeout >= 100 && cfg.responseTimeout <= 5000);
+    TEST_ASSERT_TRUE(cfg.maxRetries <= 3);
+    TEST_ASSERT_TRUE(cfg.interPollDelay >= 20 && cfg.interPollDelay <= 1000);
+}
+
+static void test_master_config_periph_exec_override_pattern() {
+    // 验证覆盖模式： PeriphExec 传入的参数可替代默认值执行，完成后恢复
+    TestMasterConfig cfg;
+    uint16_t origTimeout = cfg.responseTimeout;
+    uint8_t origRetries  = cfg.maxRetries;
+
+    // 模拟 PeriphExec 临时覆盖
+    cfg.responseTimeout = 500;
+    cfg.maxRetries      = 1;
+    TEST_ASSERT_EQUAL_UINT16(500, cfg.responseTimeout);
+    TEST_ASSERT_EQUAL_UINT8(1, cfg.maxRetries);
+
+    // 执行完成后恢复默认值
+    cfg.responseTimeout = origTimeout;
+    cfg.maxRetries      = origRetries;
+    TEST_ASSERT_EQUAL_UINT16(1000, cfg.responseTimeout);
+    TEST_ASSERT_EQUAL_UINT8(2, cfg.maxRetries);
+}
+
 // ========== 测试组入口 ==========
 
 void test_modbus_handler_group() {
@@ -556,4 +612,11 @@ void test_modbus_handler_group() {
     // 从站地址
     RUN_TEST(test_valid_slave_addresses);
     RUN_TEST(test_invalid_slave_addresses);
+
+    // MasterConfig 硬编码默认值
+    RUN_TEST(test_master_config_default_response_timeout);
+    RUN_TEST(test_master_config_default_max_retries);
+    RUN_TEST(test_master_config_default_inter_poll_delay);
+    RUN_TEST(test_master_config_defaults_in_valid_range);
+    RUN_TEST(test_master_config_periph_exec_override_pattern);
 }

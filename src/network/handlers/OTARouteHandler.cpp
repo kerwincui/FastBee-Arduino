@@ -6,6 +6,7 @@
 #include "./network/WebHandlerContext.h"
 #include "./network/OTAManager.h"
 #include "systems/LoggerSystem.h"
+#include "systems/RestartDiagnostics.h"
 #include <ArduinoJson.h>
 #include <Update.h>
 
@@ -149,6 +150,9 @@ void OTARouteHandler::handleOtaUpload(AsyncWebServerRequest* request, const Stri
                 HandlerUtils::sendJsonStream(request, doc);
 
                 delay(3000);
+                RestartDiagnostics::savePreRestartState(
+                    RestartReason::OTA_UPDATE,
+                    "OTA firmware uploaded via Web");
                 ESP.restart();
             } else {
                 LOGGER.error("OTA: Firmware verification failed");

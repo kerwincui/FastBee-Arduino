@@ -146,6 +146,26 @@ private:
      * @brief 激活 PDP 上下文
      */
     bool activateNetwork();
+
+    /**
+     * @brief 发送AT命令并打印响应（诊断用）
+     */
+    void sendATDiag(const char* cmd);
+
+    /**
+     * @brief 发送AT命令（不打印响应）
+     */
+    void sendATCmd(const char* cmd);
+
+    /**
+     * @brief 发送AT命令并返回响应字符串
+     */
+    String readATResponse(const char* cmd);
+
+    /**
+     * @brief 检查PDP上下文是否仍活跃（使用AT+CGPADDR）
+     */
+    bool checkPdpActive();
 };
 
 #endif // FASTBEE_ENABLE_CELLULAR
