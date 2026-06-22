@@ -549,7 +549,7 @@ bool ProtocolManager::restartMQTTDeferred() {
         }
     }
     
-    uint32_t minHeap = isMqtts ? 50000 : 8000;  // MQTTS: 50KB, MQTT: 8KB
+    uint32_t minHeap = isMqtts ? 42000 : 8000;  // MQTTS: 50KB, MQTT: 8KB
     if (freeHeap < minHeap) {
         LOG_WARNINGF("Protocol Manager: Heap too low for %s deferred restart (heap=%lu need=%lu), skipping",
                      isMqtts ? "MQTTS" : "MQTT",

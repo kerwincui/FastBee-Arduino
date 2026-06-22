@@ -28,6 +28,8 @@
 #include <HTTPClient.h>
 #include <esp_heap_caps.h>
 #include <mbedtls/aes.h>
+#include "network/WebConfigManager.h"
+#include "network/handlers/SSERouteHandler.h"
 #include <core/FeatureFlags.h>
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include <core/PeriphExecManager.h>
@@ -296,10 +298,8 @@ bool MQTTClient::begin(uint32_t taskStartupDelayMs) {
         mqttClient.setClient(*_externalClient);
         LOG_INFO("MQTT: Using external transport client");
     } else if (config.scheme == "mqtts") {
-        // MQTTS (TLS) 传输层：跳过证书验证（IoT 场景常用，平衡安全与资源）
-        // 优化：使用 setInsecure() 跳过证书验证，减少内存占用
-        wifiClientSecure.setInsecure();
-        mqttClient.setClient(wifiClientSecure);
+        // MQTTS (TLS): 延迟创建 WiFiClientSecure，在 doReconnect() 中按需分配
+        ensureTlsTransport();
         LOG_INFO("MQTT: Using WiFiClientSecure (mqtts://) transport, certificate verification skipped");
     } else {
         mqttClient.setClient(wifiClient);
@@ -371,7 +371,7 @@ void MQTTClient::disconnect() {
     }
     // 确保底层 TCP socket 完全关闭释放
     wifiClient.stop();
-    wifiClientSecure.stop();
+    if (_wifiClientSecure) _wifiClientSecure->stop();
     isConnected = false;
     reconnectInterval = 5000;
     consecutiveTimeouts = 0;
@@ -888,7 +888,7 @@ void MQTTClient::handle() {
             consecutiveTimeouts = 0;
             // 立即关闭底层 socket，避免后续 write() 对死 socket 阻塞 10s+
             wifiClient.stop();
-            wifiClientSecure.stop();
+            if (_wifiClientSecure) _wifiClientSecure->stop();
             LOG_WARNING("MQTT: Connection lost");
             Serial.println("[MQTT-DBG] Connection lost, socket stopped");
             _notifyStatusChange();  // 通知状态变化：连接断开
@@ -1407,7 +1407,7 @@ bool MQTTClient::reconnect() {
     // 显式关闭旧 TCP socket（仅对默认 WiFiClient/WiFiClientSecure）
     if (!_externalClient) {
         wifiClient.stop();
-        wifiClientSecure.stop();
+        if (_wifiClientSecure) _wifiClientSecure->stop();
     }
 
     LOG_INFO("MQTT: Connecting...");
@@ -1503,7 +1503,7 @@ bool MQTTClient::reconnect() {
         // 连接失败时立即关闭 socket（仅默认 WiFiClient/WiFiClientSecure）
         if (!_externalClient) {
             wifiClient.stop();
-            wifiClientSecure.stop();
+            if (_wifiClientSecure) _wifiClientSecure->stop();
         }
         lastErrorCode = mqttClient.state();
         reconnectCount++;
@@ -1519,6 +1519,88 @@ bool MQTTClient::reconnect() {
 #endif
     }
     return ok;
+}
+
+
+// ============ MQTTS TLS 内存管理 ============
+
+void MQTTClient::ensureTlsTransport() {
+    if (!_wifiClientSecure) {
+        _wifiClientSecure = new WiFiClientSecure();
+        _wifiClientSecure->setInsecure();
+        if (!_externalClient) {
+            mqttClient.setClient(*_wifiClientSecure);
+        }
+        ets_printf("[MQTT] WiFiClientSecure created (heap=%lu)\n",
+                   (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    }
+}
+
+void MQTTClient::releaseTlsTransport() {
+    if (_wifiClientSecure) {
+        _wifiClientSecure->stop();
+        delete _wifiClientSecure;
+        _wifiClientSecure = nullptr;
+        if (!_externalClient) {
+            mqttClient.setClient(wifiClient);
+        }
+        ets_printf("[MQTT] WiFiClientSecure destroyed, TLS memory freed (dram=%lu)\n",
+                   (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    }
+}
+
+bool MQTTClient::reclaimDramForMqtts() {
+    // Step 1: 释放 TLS 上下文
+    releaseTlsTransport();
+    delay(20);
+    heap_caps_check_integrity_all(true);
+
+    // Step 2: 停止 Web 服务器（AsyncTCP 任务栈 ~4KB + socket 缓冲 ~2-3KB）
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    WebConfigManager* wcm = fw ? fw->getWebConfigManager() : nullptr;
+    if (wcm && wcm->isServerRunning()) {
+        wcm->stop();
+        _webServerPaused = true;
+        delay(50);
+    }
+
+    // Step 3: 关闭 SSE 客户端连接
+    size_t closed = 0;
+    SSERouteHandler* sse = wcm ? wcm->getSseRouteHandler() : nullptr;
+    if (sse && sse->clientCount() > 0) {
+        closed = sse->closeAllClients();
+        if (closed > 0) delay(100);
+    }
+
+    // Step 4: 停止 mDNS（需通过 FBNetworkManager 内部 API）
+    // 注意：INetworkManager 接口未暴露 getDNSManager()，暂时跳过
+    // TODO: 在 INetworkManager 接口中添加 stopMDNS/restartMDNS 方法
+
+    // 强制 GC
+    heap_caps_check_integrity_all(true);
+
+    uint32_t dramFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    uint32_t dramLargest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    ets_printf("[MQTT] reclaimDram: web=%s sse=%u dram=%lu largest=%lu\n",
+               _webServerPaused ? "stopped" : "kept",
+               (unsigned)closed, (unsigned long)dramFree, (unsigned long)dramLargest);
+
+    // 预编译 mbedtls 需要 ~42KB DRAM（16KB in + 16KB out + ~10KB context）
+    return (dramFree >= 42000 && dramLargest >= 38000);
+}
+
+void MQTTClient::resumeWebServices() {
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    if (!fw) return;
+    if (_webServerPaused) {
+        WebConfigManager* wcm = fw->getWebConfigManager();
+        if (wcm) {
+            wcm->start();
+            _webServerPaused = false;
+        }
+    }
+    // mDNS 重启：INetworkManager 接口未暴露，暂时跳过
+    // TODO: 在 INetworkManager 接口中添加 restartMDNS 方法
 }
 
 // ============ 后台重连任务 ============
@@ -1586,12 +1668,13 @@ void MQTTClient::doReconnect() {
     // 4. 连续失败后进入慢模式，避免反复尝试加剧碎片
     
     bool isMqtts = (config.scheme == "mqtts");
-    // MQTTS 阈值：使用 DRAM 内部内存（MALLOC_CAP_INTERNAL）
-    //   minHeap:         DRAM 总空闲 >= 35KB（握手中峰值约 28-32KB + 安全裕量）
-    //   minLargestBlock: DRAM 最大连续块 >= 20KB（mbedtls 需要连续内存）
+    // MQTTS 阈值：预编译 libmbedtls.a 使用 CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN=16384
+    //   需要 ~42KB DRAM（16KB in + 16KB out + ~10KB context/transform）
+    //   minHeap:         DRAM 总空闲 >= 42KB
+    //   minLargestBlock: DRAM 最大连续块 >= 38KB（mbedtls 单次最大分配）
     // MQTT 阈值：任意 8KB 总空闲 + 2KB 连续即可
-    uint32_t minHeap = isMqtts ? 35000 : 8000;
-    uint32_t minLargestBlock = isMqtts ? 20000 : 2048;
+    uint32_t minHeap = isMqtts ? 42000 : 8000;
+    uint32_t minLargestBlock = isMqtts ? 38000 : 2048;
 
     // 获取 DRAM 内部内存统计（排除 PSRAM）
     uint32_t reconnectFreeHeap     = isMqtts
@@ -1620,6 +1703,10 @@ void MQTTClient::doReconnect() {
                      (unsigned long)reconnectLargestBlock,
                      (unsigned long)minHeap,
                      (unsigned long)minLargestBlock);
+        // MQTTS: 确保 Web 服务恢复（可能之前在 reclaim 中停止了）
+        if (isMqtts) {
+            resumeWebServices();
+        }
         _reconnectRunning = false;
         return;
     }
@@ -1630,15 +1717,20 @@ void MQTTClient::doReconnect() {
         reconnectFreeHeap     = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         reconnectLargestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
         
-        if (reconnectFreeHeap < minHeap || reconnectLargestBlock < minLargestBlock) {
-            ets_printf("[MQTT] doReconnect: MQTTS still low after delay (dram=%lu largest=%lu), skipping\n",
-                         (unsigned long)reconnectFreeHeap, (unsigned long)reconnectLargestBlock);
-            _reconnectRunning = false;
-            return;
+        // 激进回收：DRAM < 50KB 或最大连续块 < 40KB 时尝试停止 Web 服务释放内存
+        uint32_t postReleaseDram = reconnectFreeHeap;
+        uint32_t postReleaseLargest = reconnectLargestBlock;
+        if (postReleaseDram < 50000 || postReleaseLargest < 40000) {
+            ets_printf("[MQTT] doReconnect: DRAM marginal (dram=%lu largest=%lu), trying reclaim\n",
+                       (unsigned long)postReleaseDram, (unsigned long)postReleaseLargest);
+            if (reclaimDramForMqtts()) {
+                ets_printf("[MQTT] doReconnect: reclaimDramForMqtts SUCCESS\n");
+            } else {
+                ets_printf("[MQTT] doReconnect: reclaimDramForMqtts FAILED, skipping\n");
+                _reconnectRunning = false;
+                return;
+            }
         }
-        
-        ets_printf("[MQTT] doReconnect: MQTTS DRAM OK after delay (dram=%lu largest=%lu)\n",
-                     (unsigned long)reconnectFreeHeap, (unsigned long)reconnectLargestBlock);
     }
 
     ets_printf("[MQTT] doReconnect: starting (heap=%lu largest=%lu scheme=%s)\n",
@@ -1652,6 +1744,10 @@ void MQTTClient::doReconnect() {
         reconnectInterval = 5000;  // 连接成功，重置间隔
         consecutiveTimeouts = 0;
         LOG_INFO("[MQTT] Background reconnect successful");
+        // MQTTS TLS 连接成功：重启之前临时停止的 Web 服务器和 mDNS
+        if (isMqtts) {
+            resumeWebServices();
+        }
     } else {
         // 检测连续 TCP/DNS 连接失败（rc=-2: MQTT_CONNECT_FAILED）
         // DNS 解析失败时 WiFiClient::connect() 返回 0，PubSubClient 报告 rc=-2
