@@ -1,5 +1,6 @@
 #include "./network/WebConfigManager.h"
 #include "./network/WebHandlerContext.h"
+#include "core/MemoryBudget.h"
 #include "systems/HealthMonitor.h"
 #include "systems/SystemRebooter.h"
 #include "protocols/ProtocolManager.h"
@@ -101,14 +102,44 @@ bool WebConfigManager::initialize() {
     return true;
 }
 
+bool WebConfigManager::isPortListening(uint16_t port) const {
+    bool found = false;
+    LOCK_TCPIP_CORE();
+    // tcp_listen_pcbs 是 union，需用 .listen_pcbs 访问 tcp_pcb_listen* 指针
+    for (struct tcp_pcb_listen* pcb = tcp_listen_pcbs.listen_pcbs; pcb != nullptr; pcb = pcb->next) {
+        if (pcb->local_port == port) {
+            found = true;
+            break;
+        }
+    }
+    UNLOCK_TCPIP_CORE();
+    return found;
+}
+
 bool WebConfigManager::start() {
     if (isRunning) return true;
     if (!server) return false;
 
+    // 给 AsyncTCP 额外时间释放旧 socket（如果之前 end() 后立即调用 begin()）
+    delay(50);
+
     server->begin();
+    // 等待 AsyncTCP 任务处理 begin() 请求
+    delay(100);
+
+    // 验证服务器是否真的在监听端口 80
+    // AsyncWebServer 没有公开的 isListening() 方法，
+    // 但我们可以直接检查 lwIP 的 tcp_listen_pcbs 链表
+    if (!isPortListening(80)) {
+        LOG_ERROR("[WebConfig] Web server begin() succeeded but port 80 NOT listening (bind error?)");
+        isRunning = false;
+        return false;
+    }
+
     isRunning = true;
     webPauseReason = WebServicePauseReason::None;
     webPauseUntilMs = 0;
+    lastRequestSeenMs = millis();
     LOG_INFO("[WebConfig] Web server started");
     return true;
 }
@@ -168,22 +199,49 @@ bool WebConfigManager::resumeFromMqttsHandshake() {
 
     webPauseReason = WebServicePauseReason::None;
     webPauseUntilMs = 0;
+
+    // 确保 AsyncTCP 完全释放监听 socket（避免 bind error: -8）
+    // server->end() 后需要等待底层 TCP 状态机清理完成
     const unsigned long delayMs = FastBee::MemoryBudget::MQTTS_WEB_RESUME_DELAY_MS;
-    if (delayMs > 0) {
-        LOG_INFOF("[WebConfig] Waiting %lums before Web resume after MQTTS pause",
-                  (unsigned long)delayMs);
-        delay(delayMs);
+    LOG_INFOF("[WebConfig] Waiting %lums for TCP port release after MQTTS pause",
+              (unsigned long)delayMs);
+    delay(delayMs);
+
+    // 尝试启动 Web 服务器，带重试机制
+    const int maxRetries = 3;
+    for (int attempt = 1; attempt <= maxRetries; attempt++) {
+        const bool started = start();
+        lastWebRecoveryMs = millis();
+
+        if (started) {
+            recordRecoveryEvent("manual_resume",
+                                "mqtts_handshake",
+                                lastWebRecoveryMs,
+                                heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                                0);
+            LOG_INFO("[WebConfig] Web server resumed successfully after MQTTS pause");
+            return true;
+        }
+
+        // 启动失败：可能端口仍未释放，等待后重试
+        if (attempt < maxRetries) {
+            const unsigned long retryDelay = 500 * attempt; // 500ms, 1000ms, 1500ms
+            LOG_WARNINGF("[WebConfig] Web resume attempt %d failed, retrying in %lums",
+                         attempt, (unsigned long)retryDelay);
+            delay(retryDelay);
+        } else {
+            LOG_ERROR("[WebConfig] Web server resume failed after MQTTS pause (all retries exhausted)");
+            recordRecoveryEvent("resume_failed",
+                                "mqtts_handshake",
+                                lastWebRecoveryMs,
+                                heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                                0);
+        }
     }
 
-    const bool started = start();
-    lastWebRecoveryMs = millis();
-    recordRecoveryEvent(started ? "manual_resume" : "resume_failed",
-                        "mqtts_handshake",
-                        lastWebRecoveryMs,
-                        heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-                        0);
-    return started;
+    return false;
 }
 
 bool WebConfigManager::isWebRecoverySuppressed(unsigned long now) const {
@@ -292,16 +350,25 @@ void WebConfigManager::performMaintenance() {
         }
         if (lastWebRecoveryMs == 0 || (maintenanceNow - lastWebRecoveryMs >= RECOVERY_COOLDOWN_MS)) {
             LOG_WARNING("[WebConfig] Web server is stopped, attempting auto-restart");
-            server->begin();
-            isRunning = true;
+            const bool restarted = start();  // start() 现在会验证端口监听
             lastWebRecoveryMs = maintenanceNow;
-            webRecoveryCount++;
-            recordRecoveryEvent("auto_restart",
-                                "server_was_stopped",
-                                maintenanceNow,
-                                ESP.getFreeHeap(),
-                                heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT),
-                                0);
+            if (restarted) {
+                webRecoveryCount++;
+                recordRecoveryEvent("auto_restart",
+                                    "server_was_stopped",
+                                    maintenanceNow,
+                                    ESP.getFreeHeap(),
+                                    heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT),
+                                    0);
+            } else {
+                LOG_ERROR("[WebConfig] Web auto-restart FAILED (port 80 not listening)");
+                recordRecoveryEvent("auto_restart_failed",
+                                    "bind_error",
+                                    maintenanceNow,
+                                    ESP.getFreeHeap(),
+                                    heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT),
+                                    0);
+            }
         } else {
             LOG_DEBUG("[WebConfig] Web server stopped, waiting for recovery cooldown");
         }
@@ -346,6 +413,62 @@ void WebConfigManager::performMaintenance() {
         safeSoftRestartSince = 0;
         severePressureSinceMs = 0;
         return;
+    }
+
+    // ── 端口监听看门狗：检测 isRunning=true 但端口 80 实际未监听的情况 ──
+    // 这会在 server->begin() 报 bind error: -8 后触发
+    if (maintenanceNow - lastListenCheckMs >= LISTEN_CHECK_INTERVAL_MS) {
+        lastListenCheckMs = maintenanceNow;
+        if (isRunning && !isPortListening(80)) {
+            listenCheckFailCount++;
+            LOG_WARNINGF("[WebConfig] Port 80 not listening but isRunning=true (fail=%u/%u)",
+                         listenCheckFailCount, LISTEN_CHECK_FAIL_TRIGGER);
+            if (listenCheckFailCount >= LISTEN_CHECK_FAIL_TRIGGER) {
+                LOG_ERROR("[WebConfig] Port 80 watchdog triggered: server claims running but not listening");
+                isRunning = false;
+                listenCheckFailCount = 0;
+                recordRecoveryEvent("listen_watchdog",
+                                    "port_not_listening",
+                                    maintenanceNow,
+                                    ESP.getFreeHeap(),
+                                    heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT),
+                                    0);
+                // 尝试立即重启
+                if (start()) {
+                    webRecoveryCount++;
+                    recordRecoveryEvent("watchdog_restart",
+                                        "port_watchdog_recovered",
+                                        maintenanceNow,
+                                        ESP.getFreeHeap(),
+                                        heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT),
+                                        0);
+                    LOG_INFO("[WebConfig] Port watchdog restart succeeded");
+                } else {
+                    LOG_ERROR("[WebConfig] Port watchdog restart FAILED, scheduling device reboot");
+                    scheduleDeviceRestartForWebRecovery("watchdog_restart_failed",
+                                                       maintenanceNow,
+                                                       ESP.getFreeHeap(),
+                                                       heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT),
+                                                       0);
+                }
+                return;
+            }
+        } else {
+            listenCheckFailCount = 0;
+        }
+    }
+
+    // ── 无请求看门狗：isRunning=true 但长时间未收到任何 HTTP 请求 ──
+    // 表明 Web 服务可能处于僵尸状态（接受连接但不处理请求）
+    if (lastRequestSeenMs > 0 && isRunning) {
+        const unsigned long noRequestDuration = maintenanceNow - lastRequestSeenMs;
+        if (noRequestDuration >= NO_REQUEST_WATCHDOG_MS) {
+            LOG_WARNINGF("[WebConfig] No HTTP requests for %lus, triggering soft restart",
+                         (unsigned long)(noRequestDuration / 1000));
+            lastRequestSeenMs = millis();  // 重置避免连续触发
+            softRestartWebServer("no_request_watchdog");
+            return;
+        }
     }
 
     const uint32_t maintenanceFreeHeap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
@@ -653,6 +776,7 @@ void WebConfigManager::copyText(char* dest, size_t destSize, const char* text) c
 
 void WebConfigManager::trackWebRequest() {
     unsigned long now = millis();
+    lastRequestSeenMs = now;  // 记录最后一次请求时间（看门狗用）
     // 滑动窗口重置
     if (burstWindowStartMs == 0 || (now - burstWindowStartMs) >= BURST_WINDOW_MS) {
         burstWindowStartMs = now;

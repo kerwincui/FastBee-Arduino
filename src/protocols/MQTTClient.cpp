@@ -2147,6 +2147,12 @@ void MQTTClient::doReconnect() {
                        (unsigned long)failDramLargest,
                        (unsigned long)(SLOW_RETRY_INTERVAL / 1000));
         } else if (lastErrorCode == -2) {
+            // rc=-2: TCP/DNS/TLS 连接失败（包括证书解析错误如 mbedtls -15104）
+            // 无论失败原因，MQTTS 都必须恢复 Web 服务（之前可能被 reclaim 暂停）
+            if (isMqtts) {
+                releaseTlsTransport();
+                resumeWebServices();
+            }
             _mqttsMemoryBackoffActive = false;
             consecutiveTimeouts++;
             if (consecutiveTimeouts >= DNS_FAIL_THRESHOLD) {
@@ -2171,6 +2177,11 @@ void MQTTClient::doReconnect() {
                 WiFi.reconnect();
             }
         } else {
+            // 其他错误码（如 rc=4 认证失败等）
+            if (isMqtts) {
+                releaseTlsTransport();
+                resumeWebServices();
+            }
             _mqttsMemoryBackoffActive = false;
             consecutiveTimeouts = 0;
         }

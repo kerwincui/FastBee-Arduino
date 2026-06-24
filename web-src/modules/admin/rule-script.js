@@ -43,6 +43,7 @@
             const action = button.getAttribute('data-rule-script-action');
             const id = button.getAttribute('data-id');
             if (!action || !id) return;
+            if (!this.guardDeveloperModeAction()) return;
             if (action === 'edit') this.editRuleScript(id);
             else if (action === 'toggle') this.toggleRuleScript(id, button.getAttribute('data-enabled') === 'true');
             else if (action === 'delete') this.deleteRuleScript(id);
@@ -55,10 +56,13 @@
         },
 
         _renderRuleScriptActionButton(action, id, label, className, enabledValue) {
-            let attrs = 'data-rule-script-action="' + action + '" data-id="' + escapeHtml(id) + '"';
+            var locked = !this.isDeveloperModeEnabled();
+            var attrs = 'data-rule-script-action="' + action + '" data-id="' + escapeHtml(id) + '"';
             if (enabledValue !== undefined) attrs += ' data-enabled="' + (enabledValue ? 'true' : 'false') + '"';
-            const actionClass = action === 'edit' ? ' fb-btn-action-edit' : '';
-            return '<button class="fb-btn fb-btn-sm ' + className + actionClass + '" ' + attrs + '>' + label + '</button>';
+            if (locked) attrs += ' disabled title="' + escapeHtml(this.getDeveloperModeDisabledText()) + '"';
+            var actionClass = action === 'edit' ? ' fb-btn-action-edit' : '';
+            var lockClass = locked ? ' dev-mode-locked' : '';
+            return '<button class="fb-btn fb-btn-sm ' + className + actionClass + lockClass + '" ' + attrs + '>' + label + '</button>';
         },
 
         _renderRuleScriptActions(rule) {
@@ -115,6 +119,16 @@
             const addBtn = document.querySelector('[data-action="openRuleScriptModal"]');
             if (addBtn) {
                 addBtn.style.display = '';
+                // 开发模式禁用时禁用新增按钮
+                if (!this.isDeveloperModeEnabled()) {
+                    addBtn.disabled = true;
+                    addBtn.title = this.getDeveloperModeDisabledText();
+                    addBtn.classList.add('dev-mode-locked');
+                } else {
+                    addBtn.disabled = false;
+                    addBtn.removeAttribute('title');
+                    addBtn.classList.remove('dev-mode-locked');
+                }
             }
             // Show/hide developer mode hint banner
             this.applyDeveloperModeState();
@@ -141,12 +155,14 @@
                     html += this._renderRuleScriptRow(r, triggerLabels, protocolLabels);
                 });
                 tbody.innerHTML = html;
+                this.applyDeveloperModeState(tbody);
             }).catch(() => {
                 this.renderEmptyTableRow(tbody, 6, '暂无规则脚本');
             });
         },
 
         openRuleScriptModal(editId) {
+            if (!this.guardDeveloperModeAction()) return;
             const modal = document.getElementById('rule-script-modal');
             if (!modal) return;
             const titleEl = document.getElementById('rule-script-modal-title');
@@ -185,6 +201,7 @@
         },
 
         saveRuleScript() {
+            if (!this.guardDeveloperModeAction()) return;
             this.clearInlineError('rule-script-error');
             const originalId = document.getElementById('rule-script-original-id').value;
             const isEdit = originalId !== '';
@@ -220,6 +237,7 @@
         },
 
         editRuleScript(id) {
+            if (!this.guardDeveloperModeAction()) return;
             this.openRuleScriptModal(id);
             const getter = (typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
             getter('/api/rule-script').then(res => {
@@ -241,6 +259,7 @@
         },
 
         toggleRuleScript(id, enable) {
+            if (!this.guardDeveloperModeAction()) return;
             const url = enable ? '/api/rule-script/enable' : '/api/rule-script/disable';
             apiPost(url, { id: id }).then(res => {
                 if (res && res.success) {
@@ -253,6 +272,7 @@
         },
 
         deleteRuleScript(id) {
+            if (!this.guardDeveloperModeAction()) return;
             if (!confirm('确定要删除此规则吗？')) return;
             apiDelete('/api/rule-script/', { id: id }).then(res => {
                 if (res && res.success) {

@@ -874,7 +874,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         static const char DEFAULT_DEVICE[] PROGMEM =
             "{\"deviceId\":\"\",\"productNumber\":0,\"userId\":\"1\","
             "\"deviceName\":\"FastBee-Device\",\"location\":\"\",\"description\":\"FastBee-Arduino\","
-            "\"enableNTP\":true,\"ntpServer1\":\"ntp.aliyun.com\",\"ntpServer2\":\"cn.pool.ntp.org\","
+            "\"enableNTP\":true,\"ntpServer1\":\"http://iot.fastbee.cn/prod-api/iot/tool/ntp\",\"ntpServer2\":\"cn.pool.ntp.org\","
             "\"timezone\":\"CST-8\",\"syncInterval\":3600,\"logLevel\":\"INFO\","
             "\"developerModeEnabled\":true}";
         if (writeDefault("/config/device.json", DEFAULT_DEVICE)) { resetCount++; }
@@ -882,24 +882,25 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         // network.json - 网络配置（清除WiFi凭据，恢复AP模式以便用户重新配网）
         static const char DEFAULT_NETWORK[] PROGMEM =
             "{\"mode\":0,\"networkType\":0,"
-            "\"apSSID\":\"fastbee-ap\",\"apPassword\":\"12345678\",\"apIP\":\"192.168.4.1\","
+            "\"apSSID\":\"fastbee-ap\",\"apPassword\":\"admin123\",\"apIP\":\"192.168.4.1\","
             "\"apChannel\":1,\"apHidden\":false,\"apMaxConnections\":4,"
             "\"staSSID\":\"\",\"staPassword\":\"\",\"networks\":[],"
             "\"ipConfigType\":0,\"staticIP\":\"\",\"gateway\":\"\",\"subnet\":\"\","
             "\"dns1\":\"8.8.8.8\",\"dns2\":\"8.8.4.4\",\"connectTimeout\":20000,"
             "\"reconnectInterval\":5000,\"maxReconnectAttempts\":5,"
-            "\"customDomain\":\"fastbee\",\"enableMDNS\":true}";
+            "\"customDomain\":\"fastbee\",\"enableMDNS\":true,"
+            "\"conflictDetection\":2,\"failoverStrategy\":2,\"autoFailover\":true,"
+            "\"conflictCheckInterval\":30000,\"maxFailoverAttempts\":3,"
+            "\"conflictThreshold\":2,\"fallbackToDHCP\":true,"
+            "\"ethernet\":{\"spiMosi\":11,\"spiMiso\":13,\"spiSck\":12,\"csPin\":47,\"rstPin\":48,\"intPin\":14},"
+            "\"cellular\":{\"txPin\":39,\"rxPin\":40,\"pwrPin\":38,\"baudRate\":115200,\"apn\":\"CMNET\"}}";
         if (writeDefault("/config/network.json", DEFAULT_NETWORK)) { resetCount++; }
 
-        // users.json - 恢复默认用户（admin/viewer）
+        // users.json - 恢复默认用户（仅 admin）
         static const char DEFAULT_USERS[] PROGMEM =
-            "{\"version\":\"2.0\",\"users\":["
+            "{\"users\":["
             "{\"username\":\"admin\",\"passwordHash\":\"MMqroQgcopTMz5bU/x3brwufT38Ks6YAWGPRkmE5jDw=\","
             "\"salt\":\"RmFzdEJlZURlZmF1bHQhIQ==\",\"enabled\":true,"
-            "\"createTime\":0,\"lastLogin\":0,\"lastModified\":0,"
-            "\"description\":\"\"},"
-            "{\"username\":\"viewer\",\"passwordHash\":\"8GzolfPWya4MDDWln2gLrhPhcitJHQGboXspAgr1CDU=\","
-            "\"salt\":\"Vmlld2VyRGVmYXVsdCEhIQ==\",\"enabled\":true,"
             "\"createTime\":0,\"lastLogin\":0,\"lastModified\":0,"
             "\"description\":\"\"}],"
             "\"security\":{\"maxLoginAttempts\":5,\"loginLockoutTime\":300000,"
@@ -908,13 +909,35 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
         // protocol.json - 所有协议禁用，用户需重新配置
         static const char DEFAULT_PROTOCOL[] PROGMEM =
-            "{\"version\":2,"
-            "\"modbusRtu\":{\"enabled\":false,\"peripheralId\":\"modbus_rtu\",\"mode\":\"master\",\"dePin\":14,\"transferType\":0,\"master\":{\"tasks\":[],\"devices\":[]}},"
+            "{\"modbusRtu\":{\"enabled\":false,\"peripheralId\":\"\",\"mode\":\"master\",\"dePin\":14,\"transferType\":0,\"master\":{\"tasks\":[],\"devices\":[]}},"
             "\"modbusTcp\":{\"enabled\":false,\"server\":\"\",\"port\":502,\"slaveId\":1,\"timeout\":5000},"
-            "\"mqtt\":{\"enabled\":false,\"server\":\"\",\"port\":1883,\"clientId\":\"\",\"username\":\"\",\"password\":\"\",\"mqttSecret\":\"\",\"keepAlive\":60,\"autoReconnect\":true,\"authType\":0,\"publishTopics\":[],\"subscribeTopics\":[]},"
-            "\"http\":{\"enabled\":false,\"url\":\"\",\"port\":80,\"method\":\"POST\",\"timeout\":30,\"interval\":60},"
-            "\"coap\":{\"enabled\":false,\"server\":\"\",\"port\":5683},"
-            "\"tcp\":{\"enabled\":false,\"server\":\"\",\"port\":5000,\"timeout\":5000}}";
+            "\"mqtt\":{\"enabled\":false,\"scheme\":\"mqtt\",\"server\":\"\",\"port\":1883,\"clientId\":\"\",\"username\":\"\",\"password\":\"\","
+            "\"keepAlive\":60,\"autoReconnect\":true,\"authType\":0,\"mqttSecret\":\"\",\"authCode\":\"\","
+            "\"willTopic\":\"\",\"willPayload\":\"\",\"willQos\":0,\"willRetain\":false,"
+            "\"longitude\":0,\"latitude\":0,\"iccid\":\"\",\"cardPlatformId\":0,"
+            "\"summary\":\"{\\\"name\\\":\\\"fastbee\\\",\\\"chip\\\":\\\"ESP32\\\"}\","
+            "\"publishTopics\":["
+            "{\"topic\":\"/property/post\",\"qos\":0,\"retain\":false,\"enabled\":true,\"autoPrefix\":true,\"topicType\":0},"
+            "{\"topic\":\"/info/post\",\"qos\":0,\"retain\":false,\"enabled\":true,\"autoPrefix\":true,\"topicType\":2},"
+            "{\"topic\":\"/event/post\",\"qos\":0,\"retain\":false,\"enabled\":true,\"autoPrefix\":true,\"topicType\":4},"
+            "{\"topic\":\"/monitor/post\",\"qos\":0,\"retain\":false,\"enabled\":true,\"autoPrefix\":true,\"topicType\":3},"
+            "{\"topic\":\"/ntp/post\",\"qos\":0,\"retain\":false,\"enabled\":true,\"autoPrefix\":true,\"topicType\":7},"
+            "{\"topic\":\"/http/upgrade/reply\",\"qos\":0,\"retain\":false,\"enabled\":true,\"autoPrefix\":true,\"topicType\":5},"
+            "{\"topic\":\"/fetch/upgrade/reply\",\"qos\":0,\"retain\":false,\"enabled\":true,\"autoPrefix\":true,\"topicType\":6}],"
+            "\"subscribeTopics\":["
+            "{\"topic\":\"/function/get\",\"qos\":0,\"enabled\":true,\"autoPrefix\":true,\"topicType\":1},"
+            "{\"topic\":\"/info/get\",\"qos\":0,\"enabled\":true,\"autoPrefix\":true,\"topicType\":2},"
+            "{\"topic\":\"/monitor/get\",\"qos\":0,\"enabled\":true,\"autoPrefix\":true,\"topicType\":3},"
+            "{\"topic\":\"/ntp/get\",\"qos\":0,\"enabled\":true,\"autoPrefix\":true,\"topicType\":7},"
+            "{\"topic\":\"/http/upgrade/set\",\"qos\":0,\"enabled\":true,\"autoPrefix\":true,\"topicType\":5},"
+            "{\"topic\":\"/fetch/upgrade/set\",\"qos\":0,\"enabled\":true,\"autoPrefix\":true,\"topicType\":6}],"
+            "\"http\":{\"enabled\":false,\"url\":\"\",\"port\":80,\"method\":\"POST\",\"timeout\":30,\"interval\":60,"
+            "\"retry\":3,\"authType\":\"none\",\"authUser\":\"\",\"authToken\":\"\",\"contentType\":\"application/json\"},"
+            "\"coap\":{\"enabled\":false,\"server\":\"\",\"port\":5683,\"method\":\"POST\","
+            "\"path\":\"sensors/temperature\",\"msgType\":\"CON\",\"retransmit\":3,\"timeout\":5000},"
+            "\"tcp\":{\"enabled\":false,\"server\":\"\",\"port\":5000,\"timeout\":5000,"
+            "\"keepAlive\":60,\"maxRetry\":5,\"reconnectInterval\":10,\"mode\":\"client\","
+            "\"heartbeatMsg\":\"\\\\n\",\"maxClients\":5,\"idleTimeout\":120,\"localPort\":8080}}";
         if (writeDefault("/config/protocol.json", DEFAULT_PROTOCOL)) { resetCount++; }
 
         // peripherals.json - 清空外设配置（用户按需添加）
@@ -924,6 +947,18 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         // periph_exec.json - 清空执行规则
         static const char DEFAULT_PERIPH_EXEC[] PROGMEM = "{\"rules\":[]}";
         if (writeDefault("/config/periph_exec.json", DEFAULT_PERIPH_EXEC)) { resetCount++; }
+
+        // rule_scripts.json - 恢复默认规则脚本
+        static const char DEFAULT_RULE_SCRIPTS[] PROGMEM =
+            "{\"rules\":["
+            "{\"id\":\"rs_mqtt_report\",\"name\":\"MQTT\xe4\xb8\x8a\xe6\x8a\xa5:\xe6\x95\xb0\xe7\xbb\x84\xe8\xbd\xac\xe5\xaf\xb9\xe8\xb1\xa1\","
+            "\"enabled\":false,\"triggerType\":1,\"protocolType\":0,\"sourceTopic\":\"\",\"targetTopic\":\"\","
+            "\"scriptContent\":\"{\\\"temperature\\\": ${temperature}, \\\"humidity\\\": ${humidity}}\"},"
+            "{\"id\":\"rs_mqtt_recv\",\"name\":\"MQTT\xe6\x8e\xa5\xe6\x94\xb6:\xe5\xaf\xb9\xe8\xb1\xa1\xe8\xbd\xac\xe6\x95\xb0\xe7\xbb\x84\","
+            "\"enabled\":false,\"triggerType\":0,\"protocolType\":0,\"sourceTopic\":\"\",\"targetTopic\":\"\","
+            "\"scriptContent\":\"[{\\\"id\\\":\\\"temperature\\\",\\\"value\\\":\\\"${temperature}\\\",\\\"remark\\\":\\\"\\\"},{\\\"id\\\":\\\"humidity\\\",\\\"value\\\":\\\"${humidity}\\\",\\\"remark\\\":\\\"\\\"}]\"}"
+            "]}";
+        if (writeDefault("/config/rule_scripts.json", DEFAULT_RULE_SCRIPTS)) { resetCount++; }
 
         // ── 运行时可选配置文件：直接删除（各模块已处理文件不存在的情况）────
         const char* optionalFiles[] = {

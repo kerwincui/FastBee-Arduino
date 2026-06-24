@@ -259,16 +259,12 @@
     <div class="fb-mt-4 u-action-row protocol-form-actions">
         <button type="submit" class="fb-btn fb-btn-primary"
             data-i18n="btn-save-config">保存配置</button>
-        <button type="button" class="fb-btn fb-btn-warning u-ml-8"
-            data-action="testMqttConnection"
-            data-i18n="mqtt-test-conn-btn">测试连接</button>
-        <button type="button" class="fb-btn fb-btn-danger u-ml-8"
-            data-action="disconnectMqtt"
-            data-i18n="mqtt-disconnect-btn">断开连接</button>
+        <button type="button" class="fb-btn fb-btn-secondary u-ml-8"
+            data-action="refreshMqttStatus"
+            data-i18n="mqtt-refresh-btn">刷新状态</button>
         <button type="button" class="fb-btn fb-btn-secondary u-ml-8"
             data-action="mqttNtpSync"
             data-i18n="mqtt-ntp-sync-btn">MQTT时间同步</button>
         <span id="mqtt-test-result" class="u-ml-10 u-fs-13"></span>
-        <span id="mqtts-memory-hint" class="u-ml-10 u-fs-13" style="display:none;color:#e67e22;"></span>
     </div>
 </form>

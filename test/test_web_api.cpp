@@ -435,12 +435,13 @@ void test_factory_reset_writes_defaults() {
     TestLog::testStart("Factory Reset Writes Defaults");
 
     // Setup: pre-populate config files with user-modified content
-    g_mockFiles["/config/device.json"] = "{\"deviceId\":\"CUSTOM_ID\",\"deviceName\":\"MyDevice\"}";
-    g_mockFiles["/config/network.json"] = "{\"staSSID\":\"home-wifi\",\"staPassword\":\"secret123\"}";
-    g_mockFiles["/config/users.json"] = "{\"users\":[{\"username\":\"custom_admin\"}]}";
-    g_mockFiles["/config/protocol.json"] = "{\"mqtt\":{\"enabled\":true,\"server\":\"my.mqtt.com\"}}";
+    g_mockFiles["/config/device.json"] = "{\"deviceId\":\"CUSTOM_ID\",\"deviceName\":\"MyDevice\",\"ntpServer1\":\"ntp.aliyun.com\"}";
+    g_mockFiles["/config/network.json"] = "{\"staSSID\":\"home-wifi\",\"staPassword\":\"secret123\",\"apPassword\":\"oldpwd\"}";
+    g_mockFiles["/config/users.json"] = "{\"version\":\"2.0\",\"users\":[{\"username\":\"custom_admin\"},{\"username\":\"viewer\"}]}";
+    g_mockFiles["/config/protocol.json"] = "{\"version\":2,\"mqtt\":{\"enabled\":true,\"server\":\"my.mqtt.com\"}}";
     g_mockFiles["/config/peripherals.json"] = "{\"peripherals\":[{\"id\":\"led1\"}]}";
     g_mockFiles["/config/periph_exec.json"] = "{\"version\":3,\"rules\":[{\"id\":\"rule1\"}]}";
+    g_mockFiles["/config/rule_scripts.json"] = "{\"rules\":[{\"id\":\"custom_rule\"}]}";
     g_mockFiles["/config/auth.json"] = "{\"sessions\":[]}";
     g_mockFiles["/config/mqtt.json"] = "{\"enabled\":true}";
 
@@ -455,20 +456,20 @@ void test_factory_reset_writes_defaults() {
 
     int resetCount = 0;
 
-    // Write default device.json
-    const char* DEFAULT_DEVICE = "{\"deviceId\":\"\",\"productNumber\":0,\"logLevel\":\"INFO\",\"deviceName\":\"FastBee-Device\"}";
+    // Write default device.json (FastBee NTP server)
+    const char* DEFAULT_DEVICE = "{\"deviceId\":\"\",\"productNumber\":0,\"logLevel\":\"INFO\",\"deviceName\":\"FastBee-Device\",\"ntpServer1\":\"http://iot.fastbee.cn/prod-api/iot/tool/ntp\"}";
     if (writeDefault("/config/device.json", DEFAULT_DEVICE)) resetCount++;
 
-    // Write default network.json (WiFi cleared)
-    const char* DEFAULT_NETWORK = "{\"mode\":0,\"apSSID\":\"fastbee-ap\",\"apPassword\":\"12345678\",\"staSSID\":\"\",\"staPassword\":\"\",\"networks\":[]}";
+    // Write default network.json (WiFi cleared, apPassword=admin123, includes ethernet/cellular)
+    const char* DEFAULT_NETWORK = "{\"mode\":0,\"apSSID\":\"fastbee-ap\",\"apPassword\":\"admin123\",\"staSSID\":\"\",\"staPassword\":\"\",\"networks\":[],\"ethernet\":{\"csPin\":47},\"cellular\":{\"apn\":\"CMNET\"}}";
     if (writeDefault("/config/network.json", DEFAULT_NETWORK)) resetCount++;
 
-    // Write default users.json
-    const char* DEFAULT_USERS = "{\"version\":\"2.0\",\"users\":[{\"username\":\"admin\"}]}";
+    // Write default users.json (no version field, only admin user)
+    const char* DEFAULT_USERS = "{\"users\":[{\"username\":\"admin\"}]}";
     if (writeDefault("/config/users.json", DEFAULT_USERS)) resetCount++;
 
-    // Write default protocol.json
-    const char* DEFAULT_PROTOCOL = "{\"version\":2,\"mqtt\":{\"enabled\":false},\"modbusRtu\":{\"enabled\":false}}";
+    // Write default protocol.json (no version, includes MQTT topics)
+    const char* DEFAULT_PROTOCOL = "{\"mqtt\":{\"enabled\":false,\"publishTopics\":[],\"subscribeTopics\":[]},\"modbusRtu\":{\"enabled\":false}}";
     if (writeDefault("/config/protocol.json", DEFAULT_PROTOCOL)) resetCount++;
 
     // Write default peripherals.json
@@ -479,13 +480,17 @@ void test_factory_reset_writes_defaults() {
     const char* DEFAULT_PERIPH_EXEC = "{\"rules\":[]}";
     if (writeDefault("/config/periph_exec.json", DEFAULT_PERIPH_EXEC)) resetCount++;
 
+    // Write default rule_scripts.json
+    const char* DEFAULT_RULE_SCRIPTS = "{\"rules\":[{\"id\":\"rs_mqtt_report\",\"name\":\"MQTT上报\"},{\"id\":\"rs_mqtt_recv\",\"name\":\"MQTT接收\"}]}";
+    if (writeDefault("/config/rule_scripts.json", DEFAULT_RULE_SCRIPTS)) resetCount++;
+
     // Delete optional files
     LittleFS.remove("/config/auth.json");
     LittleFS.remove("/config/mqtt.json");
 
-    // Verify: all 6 core files written successfully
-    TEST_ASSERT_EQUAL(6, resetCount);
-    TestLog::step("All 6 core config files reset successfully");
+    // Verify: all 7 core files written successfully
+    TEST_ASSERT_EQUAL(7, resetCount);
+    TestLog::step("All 7 core config files reset successfully");
 
     // Verify: core config files exist with default content
     TEST_ASSERT_TRUE(LittleFS.exists("/config/device.json"));
@@ -494,6 +499,7 @@ void test_factory_reset_writes_defaults() {
     TEST_ASSERT_TRUE(LittleFS.exists("/config/protocol.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/peripherals.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/periph_exec.json"));
+    TEST_ASSERT_TRUE(LittleFS.exists("/config/rule_scripts.json"));
     TestLog::step("All core config files exist after reset");
 
     // Verify: optional files deleted
@@ -501,28 +507,41 @@ void test_factory_reset_writes_defaults() {
     TEST_ASSERT_FALSE(LittleFS.exists("/config/mqtt.json"));
     TestLog::step("Optional config files removed");
 
-    // Verify: device.json has empty deviceId (factory reset clears device identity)
+    // Verify: device.json has empty deviceId and FastBee NTP server
     String deviceContent = g_mockFiles["/config/device.json"];
     TEST_ASSERT_TRUE(deviceContent.indexOf("\"deviceId\":\"\"") >= 0);
     TEST_ASSERT_FALSE(deviceContent.indexOf("FBE100900001") >= 0);
     TEST_ASSERT_FALSE(deviceContent.indexOf("CUSTOM_ID") >= 0);
     TEST_ASSERT_TRUE(deviceContent.indexOf("\"logLevel\":\"INFO\"") >= 0);
-    TestLog::step("device.json restored to factory default (empty deviceId, logLevel=INFO)");
+    TEST_ASSERT_TRUE(deviceContent.indexOf("http://iot.fastbee.cn/prod-api/iot/tool/ntp") >= 0);
+    TestLog::step("device.json restored to factory default (FastBee NTP, empty deviceId)");
 
-    // Verify: network.json has empty WiFi credentials
+    // Verify: network.json has empty WiFi credentials and admin123 AP password
     String networkContent = g_mockFiles["/config/network.json"];
     TEST_ASSERT_TRUE(networkContent.indexOf("\"staSSID\":\"\"") >= 0);
     TEST_ASSERT_TRUE(networkContent.indexOf("\"staPassword\":\"\"") >= 0);
     TEST_ASSERT_TRUE(networkContent.indexOf("fastbee-ap") >= 0);
+    TEST_ASSERT_TRUE(networkContent.indexOf("\"apPassword\":\"admin123\"") >= 0);
     TEST_ASSERT_FALSE(networkContent.indexOf("home-wifi") >= 0);
-    TEST_ASSERT_TRUE(networkContent.indexOf("enableDNS") == -1);  // 死字段已移除
-    TestLog::step("network.json WiFi cleared, AP mode restored, no enableDNS");
+    TEST_ASSERT_TRUE(networkContent.indexOf("\"ethernet\":") >= 0);
+    TEST_ASSERT_TRUE(networkContent.indexOf("\"cellular\":") >= 0);
+    TestLog::step("network.json WiFi cleared, AP password=admin123, includes ethernet/cellular");
 
-    // Verify: protocol.json has MQTT disabled
+    // Verify: users.json has no version field and only admin user
+    String usersContent = g_mockFiles["/config/users.json"];
+    TEST_ASSERT_TRUE(usersContent.indexOf("\"username\":\"admin\"") >= 0);
+    TEST_ASSERT_FALSE(usersContent.indexOf("\"version\"") >= 0);
+    TEST_ASSERT_FALSE(usersContent.indexOf("viewer") >= 0);
+    TestLog::step("users.json no version field, only admin user");
+
+    // Verify: protocol.json has no version field and MQTT topics
     String protocolContent = g_mockFiles["/config/protocol.json"];
     TEST_ASSERT_TRUE(protocolContent.indexOf("\"enabled\":false") >= 0);
     TEST_ASSERT_FALSE(protocolContent.indexOf("my.mqtt.com") >= 0);
-    TestLog::step("protocol.json all protocols disabled");
+    TEST_ASSERT_FALSE(protocolContent.indexOf("\"version\"") >= 0);
+    TEST_ASSERT_TRUE(protocolContent.indexOf("publishTopics") >= 0);
+    TEST_ASSERT_TRUE(protocolContent.indexOf("subscribeTopics") >= 0);
+    TestLog::step("protocol.json no version, includes MQTT topics");
 
     // Verify: peripherals.json is empty array
     String periphContent = g_mockFiles["/config/peripherals.json"];
@@ -533,6 +552,13 @@ void test_factory_reset_writes_defaults() {
     String execContent = g_mockFiles["/config/periph_exec.json"];
     TEST_ASSERT_EQUAL_STRING("{\"rules\":[]}", execContent.c_str());
     TestLog::step("periph_exec.json cleared to empty rules");
+
+    // Verify: rule_scripts.json restored to defaults
+    String ruleContent = g_mockFiles["/config/rule_scripts.json"];
+    TEST_ASSERT_TRUE(ruleContent.indexOf("rs_mqtt_report") >= 0);
+    TEST_ASSERT_TRUE(ruleContent.indexOf("rs_mqtt_recv") >= 0);
+    TEST_ASSERT_FALSE(ruleContent.indexOf("custom_rule") >= 0);
+    TestLog::step("rule_scripts.json restored to defaults");
 
     // Cleanup
     g_mockFiles.clear();
@@ -556,13 +582,14 @@ void test_factory_reset_no_file_missing() {
         return true;
     };
 
-    // Write all defaults
+    // Write all defaults (7 core config files)
     writeDefault("/config/device.json", "{\"deviceId\":\"\",\"productNumber\":0}");
-    writeDefault("/config/network.json", "{\"mode\":0}");
+    writeDefault("/config/network.json", "{\"mode\":0,\"apPassword\":\"admin123\"}");
     writeDefault("/config/users.json", "{\"users\":[]}");
-    writeDefault("/config/protocol.json", "{\"version\":2}");
+    writeDefault("/config/protocol.json", "{\"mqtt\":{\"enabled\":false}}");
     writeDefault("/config/peripherals.json", "{\"peripherals\":[]}");
     writeDefault("/config/periph_exec.json", "{\"rules\":[]}");
+    writeDefault("/config/rule_scripts.json", "{\"rules\":[]}");
 
     // All config files should exist - web system can read them without errors
     TEST_ASSERT_TRUE(LittleFS.exists("/config/device.json"));
@@ -571,7 +598,8 @@ void test_factory_reset_no_file_missing() {
     TEST_ASSERT_TRUE(LittleFS.exists("/config/protocol.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/peripherals.json"));
     TEST_ASSERT_TRUE(LittleFS.exists("/config/periph_exec.json"));
-    TestLog::step("All config files available for web system after reset");
+    TEST_ASSERT_TRUE(LittleFS.exists("/config/rule_scripts.json"));
+    TestLog::step("All 7 config files available for web system after reset");
 
     // Simulate web API reading config (should not fail)
     for (const auto& entry : g_mockFiles) {

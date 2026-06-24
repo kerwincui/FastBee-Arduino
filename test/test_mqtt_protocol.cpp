@@ -2621,61 +2621,114 @@ void test_mqtt_test_fast_path_simulation() {
 }
 
 /**
- * @brief 前端 testMqttConnection 必须传递 scheme 参数
- * 回归：修复前未传递 scheme，后端默认 mqtt，MQTTS 时用了 WiFiClient 而非 WiFiClientSecure
+ * @brief 前端 refreshMqttStatus 必须调用 _loadMqttStatus 和 _startMqttStatusPolling
+ * 回归：testMqttConnection 已重构为 refreshMqttStatus，不再直接测试连接
  */
-void test_mqtt_test_frontend_scheme_param() {
-    TestLog::testStart("Frontend: testMqttConnection Passes scheme");
+void test_mqtt_refresh_status_method() {
+    TestLog::testStart("Frontend: refreshMqttStatus Method");
 
     std::string content = readProjectFile("web-src/modules/runtime/protocol/mqtt-config.js");
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
         "Failed to read mqtt-config.js");
 
-    // 1. testMqttConnection 中必须读取 mqtt-scheme 下拉框值
-    TEST_ASSERT_TRUE_MESSAGE(content.find("mqtt-scheme") != std::string::npos,
-        "testMqttConnection must read mqtt-scheme dropdown value");
-    TestLog::step("mqtt-scheme element read present");
+    // 1. refreshMqttStatus 方法必须存在
+    TEST_ASSERT_TRUE_MESSAGE(content.find("refreshMqttStatus()") != std::string::npos ||
+                             content.find("refreshMqttStatus ()") != std::string::npos,
+        "refreshMqttStatus method must exist");
+    TestLog::step("refreshMqttStatus method present");
 
-    // 2. apiMqttTest 调用参数中必须包含 scheme
-    // 匹配 apiMqttTest({ ... scheme ... })
-    std::regex apiCallRe("apiMqttTest\\([^)]*scheme");
-    TEST_ASSERT_TRUE_MESSAGE(std::regex_search(content, apiCallRe),
-        "apiMqttTest call must include scheme parameter");
-    TestLog::step("scheme parameter passed to apiMqttTest");
+    // 2. 必须调用 _loadMqttStatus 获取当前状态
+    TEST_ASSERT_TRUE_MESSAGE(content.find("_loadMqttStatus()") != std::string::npos,
+        "refreshMqttStatus must call _loadMqttStatus");
+    TestLog::step("_loadMqttStatus call present");
+
+    // 3. 必须调用 _startMqttStatusPolling 启动轮询
+    TEST_ASSERT_TRUE_MESSAGE(content.find("_startMqttStatusPolling") != std::string::npos,
+        "refreshMqttStatus must call _startMqttStatusPolling");
+    TestLog::step("_startMqttStatusPolling call present");
+
+    // 4. 按钮文本应为"刷新状态"而非"测试连接"
+    TEST_ASSERT_TRUE_MESSAGE(content.find("刷新状态") != std::string::npos,
+        "Button text must be '刷新状态'");
+    TestLog::step("Button text is '刷新状态'");
+
+    // 5. 不应再有 apiMqttTest 调用（连接测试已移除）
+    TEST_ASSERT_TRUE_MESSAGE(content.find("apiMqttTest") == std::string::npos,
+        "apiMqttTest call must be removed (connection test replaced by status refresh)");
+    TestLog::step("apiMqttTest call removed");
 
     TestLog::testEnd(true);
 }
 
 /**
- * @brief 前端处理 alreadyConnected 响应：显示"连接正常"而非创建新连接
+ * @brief 前端不应再包含已移除的 testMqttConnection 和 disconnectMqtt 方法
+ * 回归：MQTT 连接测试已重构为状态刷新，断开连接功能也已移除
  */
-void test_mqtt_test_frontend_already_connected_handler() {
-    TestLog::testStart("Frontend: alreadyConnected Response Handler");
+void test_mqtt_old_methods_removed() {
+    TestLog::testStart("Frontend: Old Methods Removed");
 
     std::string content = readProjectFile("web-src/modules/runtime/protocol/mqtt-config.js");
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
         "Failed to read mqtt-config.js");
 
-    // 1. 检查 alreadyConnected 条件判断
-    TEST_ASSERT_TRUE_MESSAGE(content.find("alreadyConnected") != std::string::npos,
-        "Frontend must handle alreadyConnected response field");
-    TestLog::step("alreadyConnected check present");
+    // 1. testMqttConnection 方法应已移除
+    TEST_ASSERT_TRUE_MESSAGE(content.find("testMqttConnection()") == std::string::npos &&
+                             content.find("testMqttConnection ()") == std::string::npos,
+        "testMqttConnection method must be removed (replaced by refreshMqttStatus)");
+    TestLog::step("testMqttConnection removed");
 
-    // 2. alreadyConnected 时应显示成功信息（绿色）
-    TEST_ASSERT_TRUE_MESSAGE(content.find("连接正常") != std::string::npos ||
-                             content.find("无需重新测试") != std::string::npos,
-        "alreadyConnected must show success message");
-    TestLog::step("Success message for alreadyConnected present");
+    // 2. disconnectMqtt 方法应已移除
+    TEST_ASSERT_TRUE_MESSAGE(content.find("disconnectMqtt()") == std::string::npos &&
+                             content.find("disconnectMqtt ()") == std::string::npos,
+        "disconnectMqtt method must be removed");
+    TestLog::step("disconnectMqtt removed");
 
-    // 3. alreadyConnected 时应更新 badge 为"已连接"
-    //    检查 alreadyConnected 块中包含 mqtt-status-online
-    auto alreadyConnectedPos = content.find("alreadyConnected");
-    auto badgeOnlinePos = content.find("mqtt-status-online");
-    TEST_ASSERT_TRUE_MESSAGE(alreadyConnectedPos != std::string::npos &&
-                             badgeOnlinePos != std::string::npos &&
-                             badgeOnlinePos > alreadyConnectedPos,
-        "alreadyConnected block must contain mqtt-status-online badge update");
-    TestLog::step("Badge update to online for alreadyConnected");
+    // 3. 不应有 mqtt-test-btn 选择器（按钮已改为 data-action）
+    TEST_ASSERT_TRUE_MESSAGE(content.find("mqtt-test-btn") == std::string::npos,
+        "mqtt-test-btn selector must be removed");
+    TestLog::step("mqtt-test-btn selector removed");
+
+    // 4. 不应有 mqtt-disconnect-btn 选择器
+    TEST_ASSERT_TRUE_MESSAGE(content.find("mqtt-disconnect-btn") == std::string::npos,
+        "mqtt-disconnect-btn selector must be removed");
+    TestLog::step("mqtt-disconnect-btn selector removed");
+
+    // 5. HTML 文件中也不应有断开连接按钮和测试连接按钮
+    std::string html = readProjectFile("web-src/pages/fragments/protocol-mqtt.html");
+    TEST_ASSERT_TRUE_MESSAGE(!html.empty(),
+        "Failed to read protocol-mqtt.html");
+    TEST_ASSERT_TRUE_MESSAGE(html.find("disconnectMqtt") == std::string::npos &&
+                             html.find("mqtt-disconnect") == std::string::npos,
+        "HTML must not contain disconnectMqtt action or mqtt-disconnect button");
+    TestLog::step("HTML disconnect button removed");
+    TEST_ASSERT_TRUE_MESSAGE(html.find("testMqttConnection") == std::string::npos &&
+                             html.find("mqtt-test-conn") == std::string::npos,
+        "HTML must not contain testMqttConnection action or mqtt-test-conn button");
+    TestLog::step("HTML test connection button removed");
+
+    // 6. HTML 中应有刷新状态按钮
+    TEST_ASSERT_TRUE_MESSAGE(html.find("refreshMqttStatus") != std::string::npos &&
+                             html.find("mqtt-refresh-btn") != std::string::npos,
+        "HTML must contain refreshMqttStatus action and mqtt-refresh-btn i18n key");
+    TestLog::step("HTML refresh status button present");
+
+    // 7. i18n 键应已更新：mqtt-refresh-btn 存在，mqtt-test-conn-btn 移除
+    std::string i18nZh = readProjectFile("web-src/i18n/i18n-zh-CN.js");
+    if (!i18nZh.empty()) {
+        TEST_ASSERT_TRUE_MESSAGE(i18nZh.find("mqtt-refresh-btn") != std::string::npos,
+            "i18n-zh-CN must contain mqtt-refresh-btn key");
+        TEST_ASSERT_TRUE_MESSAGE(i18nZh.find("mqtt-test-conn-btn") == std::string::npos,
+            "i18n-zh-CN must not contain deprecated mqtt-test-conn-btn key");
+        TestLog::step("i18n zh-CN keys updated");
+    }
+    std::string i18nEn = readProjectFile("web-src/i18n/i18n-en.js");
+    if (!i18nEn.empty()) {
+        TEST_ASSERT_TRUE_MESSAGE(i18nEn.find("mqtt-refresh-btn") != std::string::npos,
+            "i18n-en must contain mqtt-refresh-btn key");
+        TEST_ASSERT_TRUE_MESSAGE(i18nEn.find("mqtt-test-conn-btn") == std::string::npos,
+            "i18n-en must not contain deprecated mqtt-test-conn-btn key");
+        TestLog::step("i18n en keys updated");
+    }
 
     TestLog::testEnd(true);
 }
@@ -3801,9 +3854,14 @@ void test_mqtts_mbedtls_allocator_uses_psram() {
 
 /**
  * @brief Source regression: Web resume after MQTTS pause must avoid port bind races.
+ *
+ * 回归测试：修复 AsyncTCP bind error: -8 问题
+ * - resumeFromMqttsHandshake() 必须等待足够时间让 AsyncTCP 释放端口
+ * - 必须有重试机制（3 次重试，间隔递增）
+ * - start() 必须在 server->begin() 前后增加延迟
  */
 void test_mqtts_web_resume_waits_for_async_tcp_release() {
-    TestLog::testStart("MQTTS: Web Resume Waits for AsyncTCP Release");
+    TestLog::testStart("MQTTS: Web Resume Waits for AsyncTCP Release (bind error -8 fix)");
 
     std::string web = readProjectFile("src/network/WebConfigManager.cpp");
     std::string budget = readProjectFile("include/core/MemoryBudget.h");
@@ -3815,6 +3873,7 @@ void test_mqtts_web_resume_waits_for_async_tcp_release() {
         "MemoryBudget must define a 300ms Web resume delay after MQTTS pause");
     TestLog::step("Web resume delay budget found");
 
+    // 1. pauseForMqttsHandshake 必须正确关闭 SSE 和 server
     size_t pausePos = web.find("bool WebConfigManager::pauseForMqttsHandshake");
     size_t pauseEnd = web.find("\nbool WebConfigManager::resumeFromMqttsHandshake", pausePos);
     TEST_ASSERT_TRUE(pausePos != std::string::npos && pauseEnd != std::string::npos);
@@ -3844,22 +3903,185 @@ void test_mqtts_web_resume_waits_for_async_tcp_release() {
         "WebConfigManager must expose foreground Web activity for MQTTS arbitration");
     TestLog::step("Foreground Web activity helper found");
 
+    // 2. resumeFromMqttsHandshake 必须有端口释放等待和重试机制
     size_t resumePos = web.find("bool WebConfigManager::resumeFromMqttsHandshake");
     size_t resumeEnd = web.find("\nbool WebConfigManager::isWebRecoverySuppressed", resumePos);
     TEST_ASSERT_TRUE(resumePos != std::string::npos && resumeEnd != std::string::npos);
     std::string resumeBlock = web.substr(resumePos, resumeEnd - resumePos);
-    TEST_ASSERT_TRUE_MESSAGE(
-        resumeBlock.find("MemoryBudget::MQTTS_WEB_RESUME_DELAY_MS") != std::string::npos &&
-        resumeBlock.find("delay(delayMs)") != std::string::npos &&
-        resumeBlock.find("start()") != std::string::npos,
-        "resumeFromMqttsHandshake must wait before calling start() to avoid bind error -8");
-    TestLog::step("Resume waits before start()");
 
+    // 必须有端口释放延迟（使用 MemoryBudget::MQTTS_WEB_RESUME_DELAY_MS）
+    TEST_ASSERT_TRUE_MESSAGE(
+        resumeBlock.find("FastBee::MemoryBudget::MQTTS_WEB_RESUME_DELAY_MS") != std::string::npos &&
+        resumeBlock.find("delay(delayMs)") != std::string::npos,
+        "resumeFromMqttsHandshake must wait for TCP port release using MemoryBudget delay");
+    TestLog::step("Resume waits for TCP port release");
+
+    // 必须有重试机制（3 次）
+    TEST_ASSERT_TRUE_MESSAGE(
+        resumeBlock.find("maxRetries = 3") != std::string::npos &&
+        resumeBlock.find("for (int attempt = 1") != std::string::npos,
+        "resumeFromMqttsHandshake must have 3-retry mechanism for Web server start");
+    TestLog::step("Resume has 3-retry mechanism");
+
+    // 重试间隔必须递增（500ms, 1000ms, 1500ms）
+    TEST_ASSERT_TRUE_MESSAGE(
+        resumeBlock.find("retryDelay = 500 * attempt") != std::string::npos,
+        "resumeFromMqttsHandshake must use progressive retry delays (500ms * attempt)");
+    TestLog::step("Resume uses progressive retry delays");
+
+    // 必须记录成功和失败事件
     TEST_ASSERT_TRUE_MESSAGE(
         resumeBlock.find("manual_resume") != std::string::npos &&
         resumeBlock.find("resume_failed") != std::string::npos,
         "resumeFromMqttsHandshake must record Web resume recovery events");
     TestLog::step("Resume recovery event recorded");
+
+    // 3. start() 必须在 server->begin() 前后增加延迟
+    size_t startPos = web.find("bool WebConfigManager::start()");
+    size_t startEnd = web.find("\nvoid WebConfigManager::stop()", startPos);
+    TEST_ASSERT_TRUE(startPos != std::string::npos && startEnd != std::string::npos);
+    std::string startBlock = web.substr(startPos, startEnd - startPos);
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        startBlock.find("delay(50)") != std::string::npos &&
+        startBlock.find("server->begin()") != std::string::npos &&
+        startBlock.find("delay(100)") != std::string::npos,
+        "start() must add delay(50) before and delay(100) after server->begin() to avoid bind error");
+    TestLog::step("start() adds delays around server->begin()");
+
+    // 4. start() 必须验证端口 80 是否真正监听（bind error: -8 修复）
+    TEST_ASSERT_TRUE_MESSAGE(
+        startBlock.find("isPortListening(80)") != std::string::npos,
+        "start() must verify port 80 is listening after server->begin()");
+    TestLog::step("start() verifies port listening");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        startBlock.find("isRunning = false") != std::string::npos &&
+        startBlock.find("return false") != std::string::npos,
+        "start() must set isRunning=false and return false when port not listening");
+    TestLog::step("start() returns false on bind failure");
+
+    // 5. isPortListening 必须检查 lwIP tcp_listen_pcbs 链表
+    TEST_ASSERT_TRUE_MESSAGE(
+        web.find("bool WebConfigManager::isPortListening") != std::string::npos &&
+        web.find("tcp_listen_pcbs.listen_pcbs") != std::string::npos &&
+        web.find("pcb->local_port == port") != std::string::npos,
+        "isPortListening() must iterate tcp_listen_pcbs.listen_pcbs and check local_port");
+    TestLog::step("isPortListening() checks lwIP listen PCBs");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief Source regression: Web server watchdog mechanisms for silent failures.
+ *
+ * 回归测试：确保 Web 服务在静默失败时能自动恢复
+ * - 端口监听看门狗：检测 isRunning=true 但端口 80 未监听
+ * - 无请求看门狗：5 分钟无 HTTP 请求触发软重启
+ * - 自动重启使用 start() 而非直接 server->begin()
+ */
+void test_web_server_watchdog_mechanisms() {
+    TestLog::testStart("Web Server: Watchdog Mechanisms for Silent Failures");
+
+    std::string web = readProjectFile("src/network/WebConfigManager.cpp");
+    std::string header = readProjectFile("include/network/WebConfigManager.h");
+    TEST_ASSERT_TRUE_MESSAGE(!web.empty(), "WebConfigManager.cpp must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(!header.empty(), "WebConfigManager.h must be readable");
+
+    // 1. 看门狗常量定义
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("LISTEN_CHECK_INTERVAL_MS = 30000UL") != std::string::npos,
+        "Header must define LISTEN_CHECK_INTERVAL_MS = 30000UL (30s check interval)");
+    TestLog::step("LISTEN_CHECK_INTERVAL_MS defined");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("LISTEN_CHECK_FAIL_TRIGGER = 3") != std::string::npos,
+        "Header must define LISTEN_CHECK_FAIL_TRIGGER = 3 (3 consecutive failures)");
+    TestLog::step("LISTEN_CHECK_FAIL_TRIGGER defined");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("NO_REQUEST_WATCHDOG_MS = 300000UL") != std::string::npos,
+        "Header must define NO_REQUEST_WATCHDOG_MS = 300000UL (5 minutes)");
+    TestLog::step("NO_REQUEST_WATCHDOG_MS defined");
+
+    // 2. 看门狗状态字段
+    TEST_ASSERT_TRUE_MESSAGE(
+        header.find("lastRequestSeenMs") != std::string::npos &&
+        header.find("lastListenCheckMs") != std::string::npos &&
+        header.find("listenCheckFailCount") != std::string::npos,
+        "Header must define watchdog state fields");
+    TestLog::step("Watchdog state fields defined");
+
+    // 3. 端口监听看门狗实现
+    size_t maintPos = web.find("void WebConfigManager::performMaintenance()");
+    TEST_ASSERT_TRUE_MESSAGE(maintPos != std::string::npos,
+        "performMaintenance() must exist");
+    size_t maintEnd = web.find("\nvoid WebConfigManager::trackWebRequest()", maintPos);
+    TEST_ASSERT_TRUE(maintEnd != std::string::npos);
+    std::string maintBlock = web.substr(maintPos, maintEnd - maintPos);
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        maintBlock.find("isRunning && !isPortListening(80)") != std::string::npos,
+        "Port watchdog must check isRunning=true AND port 80 not listening");
+    TestLog::step("Port watchdog condition check found");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        maintBlock.find("listenCheckFailCount >= LISTEN_CHECK_FAIL_TRIGGER") != std::string::npos,
+        "Port watchdog must trigger after consecutive failures reach threshold");
+    TestLog::step("Port watchdog threshold check found");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        maintBlock.find("listen_watchdog") != std::string::npos &&
+        maintBlock.find("port_not_listening") != std::string::npos,
+        "Port watchdog must record recovery event");
+    TestLog::step("Port watchdog records recovery event");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        maintBlock.find("watchdog_restart") != std::string::npos &&
+        maintBlock.find("port_watchdog_recovered") != std::string::npos,
+        "Port watchdog must record success recovery event");
+    TestLog::step("Port watchdog records success event");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        maintBlock.find("scheduleDeviceRestartForWebRecovery") != std::string::npos &&
+        maintBlock.find("watchdog_restart_failed") != std::string::npos,
+        "Port watchdog must schedule device reboot if restart fails");
+    TestLog::step("Port watchdog schedules device reboot on failure");
+
+    // 4. 无请求看门狗实现
+    TEST_ASSERT_TRUE_MESSAGE(
+        maintBlock.find("noRequestDuration >= NO_REQUEST_WATCHDOG_MS") != std::string::npos,
+        "No-request watchdog must check duration against NO_REQUEST_WATCHDOG_MS");
+    TestLog::step("No-request watchdog threshold check found");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        maintBlock.find("softRestartWebServer(\"no_request_watchdog\")") != std::string::npos,
+        "No-request watchdog must call softRestartWebServer");
+    TestLog::step("No-request watchdog calls softRestartWebServer");
+
+    // 5. trackWebRequest 必须更新 lastRequestSeenMs
+    size_t trackPos = web.find("void WebConfigManager::trackWebRequest()");
+    TEST_ASSERT_TRUE(trackPos != std::string::npos);
+    size_t trackEnd = web.find("\nbool WebConfigManager::isRequestBurst()", trackPos);
+    TEST_ASSERT_TRUE(trackEnd != std::string::npos);
+    std::string trackBlock = web.substr(trackPos, trackEnd - trackPos);
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        trackBlock.find("lastRequestSeenMs = now") != std::string::npos,
+        "trackWebRequest() must update lastRequestSeenMs for watchdog");
+    TestLog::step("trackWebRequest updates lastRequestSeenMs");
+
+    // 6. 自动重启必须使用 start() 而非 server->begin()
+    TEST_ASSERT_TRUE_MESSAGE(
+        maintBlock.find("const bool restarted = start()") != std::string::npos,
+        "Auto-restart must use start() (which verifies port listening) instead of server->begin()");
+    TestLog::step("Auto-restart uses start() with verification");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        maintBlock.find("auto_restart_failed") != std::string::npos &&
+        maintBlock.find("bind_error") != std::string::npos,
+        "Auto-restart must record failure event when start() returns false");
+    TestLog::step("Auto-restart records failure event");
 
     TestLog::testEnd(true);
 }
@@ -3952,6 +4174,95 @@ void test_mqtts_recoverable_low_dram_uses_short_retry() {
         "Recoverable MQTTS low DRAM must short-retry before falling back to 300s slow backoff");
 
     TestLog::step("Ethernet restore can retry quickly after adaptive Web/SSE memory reclaim");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 doReconnect() 所有 MQTTS 失败分支都调用 resumeWebServices()
+ *
+ * 回归测试：之前 rc==-2（TLS 证书错误如 mbedtls -15104）和其他错误码分支
+ * 缺少 resumeWebServices() 调用，导致 Web 服务器被永久暂停。
+ * 修复后所有失败分支对 MQTTS 都必须调用 releaseTlsTransport() + resumeWebServices()。
+ */
+void test_mqtts_all_failure_branches_resume_web() {
+    TestLog::testStart("MQTTS: All doReconnect() Failure Branches Resume Web Services");
+
+    std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "MQTTClient.cpp must be readable");
+
+    size_t doReconnectPos = content.find("void MQTTClient::doReconnect()");
+    TEST_ASSERT_TRUE_MESSAGE(doReconnectPos != std::string::npos, "doReconnect() must exist");
+    size_t doReconnectEnd = content.find("\nString MQTTClient::buildClientId()", doReconnectPos);
+    TEST_ASSERT_TRUE_MESSAGE(doReconnectEnd != std::string::npos, "doReconnect() end marker must exist");
+    std::string doBlock = content.substr(doReconnectPos, doReconnectEnd - doReconnectPos);
+
+    // 1. 成功分支：已有 resumeWebServices()
+    size_t successPos = doBlock.find("Background reconnect successful");
+    TEST_ASSERT_TRUE_MESSAGE(successPos != std::string::npos, "success path must exist");
+    size_t successResume = doBlock.find("resumeWebServices()", successPos);
+    size_t successEnd = doBlock.find("} else {", successPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        successResume != std::string::npos && successResume < successEnd,
+        "doReconnect() success path must call resumeWebServices()");
+    TestLog::step("Success path calls resumeWebServices()");
+
+    // 2. mqttsSslMemoryFailure 分支：必须有 resumeWebServices()
+    size_t sslMemFailPos = doBlock.find("if (mqttsSslMemoryFailure)");
+    TEST_ASSERT_TRUE_MESSAGE(sslMemFailPos != std::string::npos, "mqttsSslMemoryFailure branch must exist");
+    size_t sslBranchEnd = doBlock.find("} else if (lastErrorCode == -2)", sslMemFailPos);
+    std::string sslBranch = doBlock.substr(sslMemFailPos, sslBranchEnd - sslMemFailPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        sslBranch.find("releaseTlsTransport()") != std::string::npos &&
+        sslBranch.find("resumeWebServices()") != std::string::npos,
+        "mqttsSslMemoryFailure branch must call releaseTlsTransport() + resumeWebServices()");
+    TestLog::step("mqttsSslMemoryFailure branch resumes web services");
+
+    // 3. rc==-2 分支（TLS/DNS/TCP 连接失败）：必须有 isMqtts 保护的 resumeWebServices()
+    size_t rc2Pos = doBlock.find("} else if (lastErrorCode == -2)", sslMemFailPos);
+    TEST_ASSERT_TRUE_MESSAGE(rc2Pos != std::string::npos, "rc==-2 branch must exist");
+    // 找到 rc==-2 分支的结束（下一个 else 或结束括号）
+    size_t rc2InnerIf = doBlock.find("if (isMqtts)", rc2Pos);
+    size_t rc2BranchEnd = doBlock.find("} else {", rc2Pos + 30);
+    std::string rc2Branch = doBlock.substr(rc2Pos, rc2BranchEnd - rc2Pos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        rc2InnerIf != std::string::npos && rc2InnerIf < rc2BranchEnd,
+        "rc==-2 branch must have isMqtts guard for TLS cleanup");
+    // rc==-2 的 isMqtts 块内必须同时有 releaseTlsTransport 和 resumeWebServices
+    size_t rc2Release = doBlock.find("releaseTlsTransport()", rc2InnerIf);
+    size_t rc2Resume = doBlock.find("resumeWebServices()", rc2InnerIf);
+    TEST_ASSERT_TRUE_MESSAGE(
+        rc2Release != std::string::npos && rc2Release < rc2BranchEnd &&
+        rc2Resume != std::string::npos && rc2Resume < rc2BranchEnd,
+        "rc==-2 branch: isMqtts block must call releaseTlsTransport() + resumeWebServices() "
+        "(regression: web server was permanently paused after TLS cert error)");
+    TestLog::step("rc==-2 branch resumes web services (TLS cert error regression)");
+
+    // 4. else 分支（其他错误码如 rc=4 认证失败）：必须有 isMqtts 保护的 resumeWebServices()
+    size_t elsePos = doBlock.find("} else {", rc2Pos + 30);
+    TEST_ASSERT_TRUE_MESSAGE(elsePos != std::string::npos, "else branch must exist");
+    size_t elseEnd = doBlock.find("bool keepSlowRetry", elsePos);
+    std::string elseBranch = doBlock.substr(elsePos, elseEnd - elsePos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        elseBranch.find("if (isMqtts)") != std::string::npos,
+        "else branch must have isMqtts guard for TLS cleanup");
+    TEST_ASSERT_TRUE_MESSAGE(
+        elseBranch.find("releaseTlsTransport()") != std::string::npos &&
+        elseBranch.find("resumeWebServices()") != std::string::npos,
+        "else branch: isMqtts block must call releaseTlsTransport() + resumeWebServices() "
+        "(regression: web server was permanently paused after non-memory errors)");
+    TestLog::step("else branch resumes web services (other error codes)");
+
+    // 5. 所有 MQTTS TLS 管理路径都确保 Web 服务最终恢复（幂等性）
+    // resumeWebServices() 内部有 _webServerPaused 检查，多次调用安全
+    size_t resumeImplPos = content.find("void MQTTClient::resumeWebServices()");
+    TEST_ASSERT_TRUE_MESSAGE(resumeImplPos != std::string::npos, "resumeWebServices() must exist");
+    std::string resumeImpl = content.substr(resumeImplPos, 500);
+    TEST_ASSERT_TRUE_MESSAGE(
+        resumeImpl.find("if (_webServerPaused)") != std::string::npos &&
+        resumeImpl.find("_webServerPaused = false") != std::string::npos,
+        "resumeWebServices() must be idempotent (check flag before acting)");
+    TestLog::step("resumeWebServices() is idempotent (safe for multi-call)");
+
     TestLog::testEnd(true);
 }
 
@@ -4146,11 +4457,11 @@ void test_mqtt_protocol_group() {
     RUN_TEST(test_mqtts_dram_diagnostic_log);
     RUN_TEST(test_mqtts_setinsecure_reduces_memory_requirement);
 
-    // Group 8: 测试连接快速路径 (alreadyConnected) 回归测试
+    // Group 8: MQTT 连接测试快速路径 + 前端重构回归测试
     RUN_TEST(test_mqtt_test_fast_path_already_connected);
     RUN_TEST(test_mqtt_test_fast_path_simulation);
-    RUN_TEST(test_mqtt_test_frontend_scheme_param);
-    RUN_TEST(test_mqtt_test_frontend_already_connected_handler);
+    RUN_TEST(test_mqtt_refresh_status_method);
+    RUN_TEST(test_mqtt_old_methods_removed);
     RUN_TEST(test_mqtt_test_backend_mqtts_socket_timeout);
     RUN_TEST(test_mqtt_test_frontend_timeout_extended);
     RUN_TEST(test_mqtt_test_fast_path_no_false_positive);
@@ -4190,8 +4501,10 @@ void test_mqtt_protocol_group() {
     RUN_TEST(test_mqtts_pubsubclient_setclient_sync);
     RUN_TEST(test_mqtts_mbedtls_allocator_uses_psram);
     RUN_TEST(test_mqtts_web_resume_waits_for_async_tcp_release);
+    RUN_TEST(test_web_server_watchdog_mechanisms);
     RUN_TEST(test_mqtts_memory_backoff_preserved);
     RUN_TEST(test_mqtts_recoverable_low_dram_uses_short_retry);
+    RUN_TEST(test_mqtts_all_failure_branches_resume_web);
     RUN_TEST(test_mqtts_external_transport_skips_internal_tls);
     RUN_TEST(test_mqtts_protocol_manager_reads_section_scheme_for_cellular_secure);
     RUN_TEST(test_mqtts_ethernet_uses_internal_secure_transport);

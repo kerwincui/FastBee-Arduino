@@ -6,6 +6,8 @@
       "enabled": false,
       "triggerType": 1,
       "protocolType": 0,
+      "sourceTopic": "",
+      "targetTopic": "",
       "scriptContent": "{\"temperature\": ${temperature}, \"humidity\": ${humidity}}"
     },
     {
@@ -14,14 +16,8 @@
       "enabled": false,
       "triggerType": 0,
       "protocolType": 0,
-      "scriptContent": "[{\"id\":\"temperature\",\"value\":\"${temperature}\",\"remark\":\"\"},{\"id\":\"humidity\",\"value\":\"${humidity}\",\"remark\":\"\"}]"
-    },
-    {
-      "id": "rs_rtu_recv",
-      "name": "ModbusRTU接收转换",
-      "enabled": false,
-      "triggerType": 0,
-      "protocolType": 1,
+      "sourceTopic": "",
+      "targetTopic": "",
       "scriptContent": "[{\"id\":\"temperature\",\"value\":\"${temperature}\",\"remark\":\"\"},{\"id\":\"humidity\",\"value\":\"${humidity}\",\"remark\":\"\"}]"
     }
   ]

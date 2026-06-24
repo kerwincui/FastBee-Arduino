@@ -2,6 +2,26 @@
 const CACHE_NAME = 'fastbee-' + '/*CACHE_VERSION*/';
 const PRECACHE_URLS = /*PRECACHE_URLS*/;
 
+/**
+ * Stamp cached responses with an `sw-cached-at` header so the client
+ * can determine when a resource was placed in the cache.
+ */
+function withCacheTimestamp(response) {
+  if (!response || response.status !== 200) return response;
+  if (response.headers.get('date') || response.headers.get('sw-cached-at')) return response;
+  try {
+    const headers = new Headers(response.headers);
+    headers.set('sw-cached-at', new Date().toUTCString());
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: headers
+    });
+  } catch (_) {
+    return response;
+  }
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE_URLS))
@@ -28,7 +48,7 @@ self.addEventListener('fetch', (event) => {
       return fetch(event.request).then((response) => {
         if (!response || response.status !== 200) return response;
         const clone = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, withCacheTimestamp(clone)));
         return response;
       });
     }).catch(() => caches.match('/'))

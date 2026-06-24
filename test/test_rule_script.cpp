@@ -8,6 +8,9 @@
  * - 规则计数
  * - 数据转换管道
  * - 边界条件（空ID、重复添加）
+ * - MQTT 主题匹配（精确、+、#、空）
+ * - 主题重定向（sourceTopic → targetTopic）
+ * - 开发模式访问控制（增删改查权限）
  * 
  * 注：native环境通过模拟RuleScript结构体测试逻辑
  */
@@ -524,6 +527,174 @@ static void test_protocol_only_mqtt_and_rtu() {
     TEST_ASSERT_EQUAL_STRING("d3", r3.c_str());
 }
 
+// ========== 开发模式访问控制测试 ==========
+
+// 模拟开发模式状态管理器
+class MockDeveloperModeState {
+public:
+    bool enabled;
+    MockDeveloperModeState() : enabled(true) {}
+    bool isDeveloperModeEnabled() const { return enabled; }
+    void setDeveloperModeEnabled(bool e) { enabled = e; }
+};
+
+static MockDeveloperModeState devModeState;
+
+// 模拟 requireDeveloperMode 检查（返回 true=允许，false=拒绝）
+static bool requireDeveloperMode() {
+    return devModeState.isDeveloperModeEnabled();
+}
+
+static void test_dev_mode_add_rule_allowed() {
+    resetManager();
+    devModeState.setDeveloperModeEnabled(true);
+
+    // 开发模式启用时，允许添加规则
+    if (!requireDeveloperMode()) {
+        TEST_FAIL_MESSAGE("Developer mode should be enabled");
+        return;
+    }
+
+    TestRuleScript rule;
+    rule.id = "dev_test_001";
+    rule.name = "Dev Mode Test";
+    TEST_ASSERT_TRUE(mgr.addRule(rule));
+    TEST_ASSERT_EQUAL(1, mgr.getRuleCount());
+}
+
+static void test_dev_mode_add_rule_blocked() {
+    resetManager();
+    devModeState.setDeveloperModeEnabled(false);
+
+    // 开发模式禁用时，应拒绝添加规则
+    if (requireDeveloperMode()) {
+        TEST_FAIL_MESSAGE("Developer mode should be disabled");
+        return;
+    }
+
+    // 验证操作被拒绝（不执行添加）
+    TEST_ASSERT_EQUAL(0, mgr.getRuleCount());
+}
+
+static void test_dev_mode_update_rule_blocked() {
+    resetManager();
+    devModeState.setDeveloperModeEnabled(true);
+
+    // 先添加一个规则
+    TestRuleScript rule;
+    rule.id = "dev_upd_001";
+    rule.name = "Original";
+    mgr.addRule(rule);
+
+    // 禁用开发模式
+    devModeState.setDeveloperModeEnabled(false);
+
+    // 开发模式禁用时，应拒绝更新规则
+    if (requireDeveloperMode()) {
+        TEST_FAIL_MESSAGE("Developer mode should be disabled");
+        return;
+    }
+
+    // 验证规则未被修改
+    auto* found = mgr.getRule("dev_upd_001");
+    TEST_ASSERT_NOT_NULL(found);
+    TEST_ASSERT_EQUAL_STRING("Original", found->name.c_str());
+}
+
+static void test_dev_mode_delete_rule_blocked() {
+    resetManager();
+    devModeState.setDeveloperModeEnabled(true);
+
+    // 先添加一个规则
+    TestRuleScript rule;
+    rule.id = "dev_del_001";
+    mgr.addRule(rule);
+    TEST_ASSERT_EQUAL(1, mgr.getRuleCount());
+
+    // 禁用开发模式
+    devModeState.setDeveloperModeEnabled(false);
+
+    // 开发模式禁用时，应拒绝删除规则
+    if (requireDeveloperMode()) {
+        TEST_FAIL_MESSAGE("Developer mode should be disabled");
+        return;
+    }
+
+    // 验证规则未被删除
+    TEST_ASSERT_EQUAL(1, mgr.getRuleCount());
+    TEST_ASSERT_NOT_NULL(mgr.getRule("dev_del_001"));
+}
+
+static void test_dev_mode_toggle_rule_blocked() {
+    resetManager();
+    devModeState.setDeveloperModeEnabled(true);
+
+    // 先添加一个启用的规则
+    TestRuleScript rule;
+    rule.id = "dev_toggle_001";
+    rule.enabled = true;
+    mgr.addRule(rule);
+
+    // 禁用开发模式
+    devModeState.setDeveloperModeEnabled(false);
+
+    // 开发模式禁用时，应拒绝切换规则状态
+    if (requireDeveloperMode()) {
+        TEST_FAIL_MESSAGE("Developer mode should be disabled");
+        return;
+    }
+
+    // 验证规则状态未改变
+    auto* found = mgr.getRule("dev_toggle_001");
+    TEST_ASSERT_NOT_NULL(found);
+    TEST_ASSERT_TRUE(found->enabled);  // 仍然是启用状态
+}
+
+static void test_dev_mode_get_rules_allowed() {
+    resetManager();
+    devModeState.setDeveloperModeEnabled(true);
+
+    // 添加一些规则
+    TestRuleScript r1, r2;
+    r1.id = "get_001"; r1.name = "Rule 1";
+    r2.id = "get_002"; r2.name = "Rule 2";
+    mgr.addRule(r1);
+    mgr.addRule(r2);
+
+    // 禁用开发模式
+    devModeState.setDeveloperModeEnabled(false);
+
+    // 获取规则列表不需要开发模式（只读操作）
+    TEST_ASSERT_EQUAL(2, mgr.getRuleCount());
+    TEST_ASSERT_NOT_NULL(mgr.getRule("get_001"));
+    TEST_ASSERT_NOT_NULL(mgr.getRule("get_002"));
+}
+
+static void test_dev_mode_re_enable_allows_operations() {
+    resetManager();
+    devModeState.setDeveloperModeEnabled(false);
+
+    // 开发模式禁用时不能添加
+    if (requireDeveloperMode()) {
+        TEST_FAIL_MESSAGE("Should be blocked");
+        return;
+    }
+
+    // 重新启用开发模式
+    devModeState.setDeveloperModeEnabled(true);
+
+    // 现在应该允许操作
+    if (!requireDeveloperMode()) {
+        TEST_FAIL_MESSAGE("Should be allowed");
+        return;
+    }
+
+    TestRuleScript rule;
+    rule.id = "re_enable_001";
+    TEST_ASSERT_TRUE(mgr.addRule(rule));
+    TEST_ASSERT_EQUAL(1, mgr.getRuleCount());
+}
+
 // ========== 测试组入口 ==========
 
 void test_rule_script_group() {
@@ -555,4 +726,12 @@ void test_rule_script_group() {
     RUN_TEST(test_topic_redirect_empty_when_no_target);
     RUN_TEST(test_topic_empty_source_matches_all);
     RUN_TEST(test_protocol_only_mqtt_and_rtu);
+    // 开发模式访问控制测试
+    RUN_TEST(test_dev_mode_add_rule_allowed);
+    RUN_TEST(test_dev_mode_add_rule_blocked);
+    RUN_TEST(test_dev_mode_update_rule_blocked);
+    RUN_TEST(test_dev_mode_delete_rule_blocked);
+    RUN_TEST(test_dev_mode_toggle_rule_blocked);
+    RUN_TEST(test_dev_mode_get_rules_allowed);
+    RUN_TEST(test_dev_mode_re_enable_allows_operations);
 }

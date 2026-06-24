@@ -510,6 +510,7 @@ input[readonly]:focus, input[disabled]:focus, textarea[readonly]:focus, textarea
 .modal-body { flex: 1; padding: var(--space-6); overflow-y: auto; }
 .modal-footer { flex-shrink: 0; padding: var(--space-4) var(--space-6); border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: var(--space-3); flex-wrap: nowrap; overflow-x: auto; background: var(--bg-card); }
 .modal-footer .fb-btn { width: auto; min-width: 88px; flex: 0 0 auto; padding-left: 14px; padding-right: 14px; }
+.modal-footer .fb-btn:not(.fb-btn-primary) { border: 1px solid var(--slate-300); }
 .modal-footer .fb-btn-primary { min-width: 96px; }
 .modal-footer .fb-btn + .fb-btn { margin-left: 0 !important; }
 

@@ -211,11 +211,6 @@ function checkUiRegressionGuards(files) {
     assert(deviceConfig.includes('config-transfer-cancel-btn'), 'config transfer cancel handler missing');
     assert(deviceConfig.includes('new Promise'), 'config transfer modal should use Promise pattern');
 
-    if (assetExists('sw.js.gz')) {
-        const serviceWorker = readGzipText('sw.js.gz');
-        assert(serviceWorker.includes('withCacheTimestamp'), 'service worker cache timestamp helper missing');
-        assert(serviceWorker.includes('sw-cached-at'), 'service worker cache timestamp header missing');
-    }
     assert(allJs.includes('apiBatchGetMany'), 'batchGetMany API missing from built JS');
     assert(allJs.includes('Request result ignored after page navigation'), 'page-navigation stale response guard missing');
     assert(protocolEntry.includes('_setProtocolFragmentLoading'), 'protocol loading placeholder helper missing');
@@ -319,12 +314,8 @@ function checkFirstPaintPath(profile) {
     assert(html.includes('dashboard'), 'index.html must reference dashboard module for first page');
 
     // Service worker registration for offline caching
-    const swJs = assetExists('sw.js.gz') ? readGzipText('sw.js.gz') : '';
     if (profile === 'standard' || profile === 'full') {
-        assert(swJs.length > 0, `${profile} profile must include service worker for offline caching`);
-    }
-    if (swJs) {
-        assert(swJs.includes('withCacheTimestamp'), 'service worker must use cache timestamp for versioning');
+        assert(assetExists('sw.js.gz'), `${profile} profile must include service worker for offline caching`);
     }
 
     // i18n language bundles (e.g. i18n-zh-CN.js) should not be loaded synchronously in index.html

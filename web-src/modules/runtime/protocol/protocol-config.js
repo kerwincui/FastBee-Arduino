@@ -141,7 +141,7 @@
                 const mqtt = config.mqtt;
                 this._setCheckbox('mqtt-enabled', mqtt.enabled ?? true);
                 this._setValue('mqtt-scheme', mqtt.scheme || 'mqtt');
-                // 无 PSRAM 设备选择 mqtts 时显示内存不足提示
+                // 无 PSRAM 设备选择 mqtts 时在状态信息后追加内存提示
                 var schemeEl = document.getElementById('mqtt-scheme');
                 if (schemeEl) {
                     this._updateMqttsMemoryHint(mqtt.tlsSupported, schemeEl.value);
@@ -185,32 +185,17 @@
         },
 
         /**
-         * 无 PSRAM 设备选择 mqtts 时显示内存不足提示
-         * @param {boolean} tlsSupported 后端返回的 TLS 支持状态
-         * @param {string} currentScheme 当前选中的协议
+         * 存储 tlsSupported 和当前 scheme，供状态 badge 追加内存提示
          */
         _updateMqttsMemoryHint(tlsSupported, currentScheme) {
-            const schemeEl = document.getElementById('mqtt-scheme');
-            if (!schemeEl) return;
-
-            // 存储 tlsSupported 供后续事件使用
             this._mqttTlsSupported = tlsSupported;
+            this._mqttCurrentScheme = currentScheme;
 
-            // 使用 HTML 中已有的 span#mqtts-memory-hint（位于底部按钮组右侧）
-            const hintEl = document.getElementById('mqtts-memory-hint');
-            if (hintEl) {
-                if (tlsSupported === false && currentScheme === 'mqtts') {
-                    hintEl.textContent = '\u26a0\ufe0f \u6b64\u8bbe\u5907\u5185\u5b58\u6709\u9650\uff0cmqtts(TLS)\u8fde\u63a5\u53ef\u80fd\u56e0\u5185\u5b58\u4e0d\u8db3\u800c\u5931\u8d25\u3002\u5982\u679c\u8fde\u63a5\u5931\u8d25\uff0c\u5efa\u8bae\u5207\u6362\u4e3a mqtt\u3002';
-                    hintEl.style.display = '';
-                } else {
-                    hintEl.style.display = 'none';
-                }
-            }
-
-            // 绑定 change 事件（仅首次）
-            if (!this._mqttSchemeBound) {
+            // 绑定 scheme change 事件（仅首次）
+            const schemeEl = document.getElementById('mqtt-scheme');
+            if (schemeEl && !this._mqttSchemeBound) {
                 schemeEl.addEventListener('change', () => {
-                    this._updateMqttsMemoryHint(this._mqttTlsSupported, schemeEl.value);
+                    this._mqttCurrentScheme = schemeEl.value;
                 });
                 this._mqttSchemeBound = true;
             }

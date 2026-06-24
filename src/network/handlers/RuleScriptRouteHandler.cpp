@@ -113,6 +113,7 @@ void RuleScriptRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
 
 void RuleScriptRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!ctx->requireDeveloperMode(request)) return;
 
     RuleScript rule;
     rule.id = ctx->getParamValue(request, "id", "");
@@ -142,6 +143,7 @@ void RuleScriptRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
 
 void RuleScriptRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -178,6 +180,7 @@ void RuleScriptRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
 
 void RuleScriptRouteHandler::handleDeleteRule(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -198,6 +201,7 @@ void RuleScriptRouteHandler::handleDeleteRule(AsyncWebServerRequest* request) {
 
 void RuleScriptRouteHandler::handleEnableRule(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {
@@ -218,6 +222,7 @@ void RuleScriptRouteHandler::handleEnableRule(AsyncWebServerRequest* request) {
 
 void RuleScriptRouteHandler::handleDisableRule(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
+    if (!ctx->requireDeveloperMode(request)) return;
 
     String id = ctx->getParamValue(request, "id", "");
     if (id.isEmpty()) {

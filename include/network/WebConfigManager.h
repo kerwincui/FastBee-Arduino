@@ -169,6 +169,7 @@ private:
     void checkAndRecoverWebServer();
     uint16_t countTcpConnections(uint8_t* outTimeWait = nullptr) const;
     bool softRestartWebServer(const char* reason);
+    bool isPortListening(uint16_t port = 80) const;
 
     // TCP PCB 耗尽阈值：统一引用 ResourceProfile（单一真相来源）
     // 必须保证 < MEMP_NUM_TCP_PCB(16)，编译期 static_assert 保护
@@ -195,6 +196,14 @@ private:
     uint16_t requestCountInWindow = 0;           // 当前窗口内请求数
     unsigned long burstWindowStartMs = 0;        // 当前窗口起始时间
     uint8_t  burstWithPressureCount = 0;         // 连续检测到突增+内存压力的次数
+
+    // ── Web 服务看门狗：检测 isRunning=true 但端口未监听的情况 ──
+    unsigned long lastRequestSeenMs = 0;           // 上次收到 HTTP 请求的时间
+    unsigned long lastListenCheckMs = 0;           // 上次端口监听检查时间
+    uint8_t  listenCheckFailCount = 0;             // 连续检测到端口未监听的次数
+    static constexpr unsigned long LISTEN_CHECK_INTERVAL_MS = 30000UL;  // 30s 检查一次
+    static constexpr uint8_t LISTEN_CHECK_FAIL_TRIGGER = 3;  // 连续 3 次失败触发恢复
+    static constexpr unsigned long NO_REQUEST_WATCHDOG_MS = 300000UL;   // 5 分钟无请求触发重启
 };
 
 #endif // WEB_CONFIG_MANAGER_H

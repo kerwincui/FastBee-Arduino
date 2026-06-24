@@ -572,12 +572,7 @@ String HealthMonitor::getMetricsJson() {
     // PSRAM 信息（用于前端判断 MQTTS 支持）
     doc["heap"]["psram_total"] = (unsigned long)(ESP.getPsramSize() / 1024);
     doc["heap"]["psram_free"]  = (unsigned long)(ESP.getFreePsram() / 1024);
-    doc["heap"]["tls_supported"] =
-#if defined(BOARD_HAS_PSRAM)
-        true;
-#else
-        false;
-#endif
+    doc["heap"]["tls_supported"] = (psramFound() && ESP.getPsramSize() > 0);
 
     String json;
     serializeJson(doc, json);
