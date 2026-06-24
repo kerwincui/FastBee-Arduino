@@ -15,6 +15,7 @@
 #include "core/PeriphExecManager.h"
 #endif
 #include <ArduinoJson.h>
+#include <LittleFS.h>
 
 WiFiManager::WiFiManager() {
     wifiConfig = WiFiConfig();
@@ -148,12 +149,15 @@ bool WiFiManager::startAPMode() {
     WiFiMode_t currentMode = WiFi.getMode();
     WiFiMode_t targetMode = WIFI_MODE_AP;
 
+    // 从设备配置(device.json)读取设备名称，用于 AP SSID 自动生成
+    String devName = _readDeviceName();
+
     if (currentMode == targetMode && WiFi.softAPIP() != IPAddress(0, 0, 0, 0)) {
         // 模式正确且IP有效，检查热点是否真正在广播
         // 通过检查是否能获取SSID来验证
         String currentSSID = WiFi.softAPSSID();
         String expectedSSID = wifiConfig.apSSID.isEmpty() ?
-            (wifiConfig.deviceName + "_" + getChipID().substring(0, 6)) : wifiConfig.apSSID;
+            (devName + "_" + getChipID().substring(0, 6)) : wifiConfig.apSSID;
 
         if (currentSSID.length() > 0 && currentSSID == expectedSSID) {
             LOG_INFO("WiFiManager: AP mode already active with correct configuration");
@@ -221,7 +225,7 @@ bool WiFiManager::startAPMode() {
     // 配置 AP 参数
     String apSSID;
     if (wifiConfig.apSSID.isEmpty()) {
-        apSSID = wifiConfig.deviceName;
+        apSSID = devName;
         apSSID += "_";
         apSSID += getChipID().substring(0, 6);
     } else {
@@ -689,6 +693,28 @@ String WiFiManager::getWiFiModeString() {
 
 String WiFiManager::getMACAddress() {
     return WiFi.macAddress();
+}
+
+String WiFiManager::_readDeviceName() {
+    // 从设备配置(device.json)读取设备名称，用于 AP SSID 自动生成
+    // deviceName 已移至设备配置统一管理，不再存储在 network.json 中
+    const char* devicePath = "/config/device.json";
+    if (LittleFS.exists(devicePath)) {
+        File f = LittleFS.open(devicePath, "r");
+        if (f) {
+            JsonDocument doc;
+            if (!deserializeJson(doc, f)) {
+                f.close();
+                if (doc["deviceName"].is<String>()) {
+                    String name = doc["deviceName"].as<String>();
+                    if (name.length() > 0) return name;
+                }
+            } else {
+                f.close();
+            }
+        }
+    }
+    return "FastBee";  // 默认值
 }
 
 String WiFiManager::getChipID() {

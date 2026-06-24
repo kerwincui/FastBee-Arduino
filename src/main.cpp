@@ -82,14 +82,15 @@ void setup() {
 #ifdef BOARD_HAS_PSRAM
     Serial.printf("[BOOT] PSRAM size: %lu bytes\n", (unsigned long)ESP.getPsramSize());
     Serial.printf("[BOOT] Free PSRAM: %lu bytes\n", (unsigned long)ESP.getFreePsram());
-    // 启用 PSRAM 分配策略：≥ 512字节的分配优先使用 PSRAM
-    // 为什么 512 而不是 4096？
+    // 启用 PSRAM 分配策略：≥ 256字节的分配优先使用 PSRAM
+    // 为什么 256 而不是 512？
     // - ESP32-S3 内部 DRAM 仅 ~320KB，WiFi+MQTT+WebServer 后只剩 ~18KB
     // - AsyncWebServer 每个 HTTP 请求缓冲区 ~1-2KB，4096 阈值太高无法卸载到 PSRAM
     // - lwIP TCP PCB (~200B) 和 FreeRTOS 栈必须在内部 DRAM，其它大部分分配可用 PSRAM
     // - PSRAM 延迟比 DRAM 高 ~3x，但对 HTTP/JSON 响应构建无感知影响
-    heap_caps_malloc_extmem_enable(512);  // ≥ 512B 的分配请求优先用 PSRAM
-    Serial.println("[BOOT] PSRAM malloc enabled (threshold=512)");
+    // - 256 比 512 更积极地将中等分配卸载到 PSRAM，为 MQTT/TLS 释放更多 DRAM
+    heap_caps_malloc_extmem_enable(256);  // ≥ 256B 的分配请求优先用 PSRAM
+    Serial.println("[BOOT] PSRAM malloc enabled (threshold=256)");
 #else
     Serial.println("[BOOT] PSRAM: disabled (no-PSRAM build)");
 #endif

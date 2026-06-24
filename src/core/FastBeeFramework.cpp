@@ -9,6 +9,7 @@
 #include "core/FastBeeFramework.h"
 #include "core/SystemConstants.h"
 #include "core/FeatureFlags.h"
+#include "core/MemoryBudget.h"
 #include "core/PeripheralManager.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include "core/PeriphExecManager.h"
@@ -38,6 +39,7 @@
 #include <LittleFS.h>
 #include <time.h>
 #include <esp_sntp.h>
+#include <esp_heap_caps.h>
 #include <esp_task_wdt.h>
 
 // 启动期 heap 采样：定位哪个 STEP 吞掉了堆（OOM 排查辅助）
@@ -871,8 +873,8 @@ bool FastBeeFramework::addSystemTasks() {
                     LOG_INFO("[Protocol] Network stable, auto-starting protocols...");
 
                     // 堆保护：内部堆低于安全阈值时跳过协议启动，防止 new/malloc 失败触发 abort()
-                    uint32_t protoStartHeap = ESP.getFreeHeap();
-                    uint32_t protoStartMaxBlock = ESP.getMaxAllocHeap();
+                    uint32_t protoStartHeap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+                    uint32_t protoStartMaxBlock = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
                     if (protoStartHeap < 30000 || protoStartMaxBlock < 8192) {
                         LOG_WARNINGF("[Protocol] Heap too low for protocol start, deferring (heap=%lu maxBlock=%lu)",
                                      (unsigned long)protoStartHeap, (unsigned long)protoStartMaxBlock);
@@ -881,7 +883,7 @@ bool FastBeeFramework::addSystemTasks() {
                         framework->modbusAutoStarted = !shouldStartModbus;
                     } else {
 
-                    // 单次读取 protocol.json，同时检查 MQTT 和 Modbus 配置
+                    // 分段读取 protocol.json，避免整文件 JSON 在协议启动期造成堆峰值
 #if FASTBEE_ENABLE_MQTT
                     bool mqttEnabled = false;
 #endif
@@ -889,28 +891,32 @@ bool FastBeeFramework::addSystemTasks() {
                     bool modbusEnabled = false;
 #endif
                     if (LittleFS.exists("/config/protocol.json")) {
-                        File f = LittleFS.open("/config/protocol.json", "r");
-                        if (f) {
-                            FastBeeJsonDocLarge doc;
-                            DeserializationError err = deserializeJson(doc, f);
-                            f.close();
-                            if (!err) {
 #if FASTBEE_ENABLE_MQTT
-                                mqttEnabled = doc["mqtt"]["enabled"].as<bool>();
-#endif
-#if FASTBEE_ENABLE_MODBUS
-                                modbusEnabled = doc["modbusRtu"]["enabled"].as<bool>();
-#endif
+                        {
+                            JsonDocument mqttDoc;
+                            if (ConfigStorage::getInstance().loadProtocolSection("mqtt", mqttDoc)) {
+                                mqttEnabled = mqttDoc["mqtt"]["enabled"].as<bool>();
                             }
                         }
-                    }  // doc 在此处销毁，释放 8KB 栈空间
+#endif
+#if FASTBEE_ENABLE_MODBUS
+                        {
+                            JsonDocument modbusDoc;
+                            if (ConfigStorage::getInstance().loadProtocolSection("modbusRtu", modbusDoc)) {
+                                modbusEnabled = modbusDoc["modbusRtu"]["enabled"].as<bool>();
+                            }
+                        }
+#endif
+                    }
 
                     // 启动 MQTT（延迟连接：仅 begin，由 reconnectTask 30s 后发起首次连接）
                     // 避免 boot 期同步 connect() 抢占资源导致 web/SSE 不可访问
 #if FASTBEE_ENABLE_MQTT
                     if (shouldStartMqtt && mqttEnabled) {
                         LOG_INFO("[MQTT] MQTT enabled, auto-starting (deferred connect)...");
-                        framework->protocolManager->restartMQTTDeferred();
+                        if (!framework->protocolManager->restartMQTTDeferred()) {
+                            framework->mqttAutoStarted = false;
+                        }
                     } else if (!mqttEnabled) {
                         LOG_INFO("[MQTT] MQTT not enabled in config, skipping auto-start");
                     }
@@ -920,7 +926,9 @@ bool FastBeeFramework::addSystemTasks() {
 #if FASTBEE_ENABLE_MODBUS
                     if (shouldStartModbus && modbusEnabled) {
                         LOG_INFO("[Modbus] Modbus enabled, auto-starting...");
-                        framework->protocolManager->restartModbus();
+                        if (!framework->protocolManager->restartModbus()) {
+                            framework->modbusAutoStarted = false;
+                        }
                     } else if (!modbusEnabled) {
                         LOG_INFO("[Modbus] Modbus not enabled in config, skipping auto-start");
                     }

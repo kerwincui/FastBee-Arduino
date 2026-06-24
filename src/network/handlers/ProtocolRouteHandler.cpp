@@ -1,6 +1,7 @@
 #include "./network/handlers/ProtocolRouteHandler.h"
 #include "./network/handlers/HandlerUtils.h"
 #include "core/FeatureFlags.h"
+#include "systems/LoggerSystem.h"
 #if FASTBEE_ENABLE_MODBUS
 #include "./network/handlers/ModbusRouteHandler.h"
 #endif
@@ -97,6 +98,9 @@ void sendCompactMqttConfigFromFile(AsyncWebServerRequest* request) {
     JsonObject mqttOut = data["mqtt"].to<JsonObject>();
     JsonObject mqttIn = source["mqtt"].as<JsonObject>();
 
+    // 运行时检测 PSRAM：有 PSRAM 则 TLS 可用，比编译期 BOARD_HAS_PSRAM 更准确
+    // esp32-F4R0 固件部署到带 PSRAM 的板子时也能正确报告 TLS 支持
+    mqttOut["tlsSupported"] = (psramFound() && ESP.getPsramSize() > 0);
     mqttOut["enabled"] = mqttIn["enabled"] | true;
     mqttOut["scheme"] = mqttIn["scheme"] | "mqtt";
     mqttOut["server"] = mqttIn["server"] | "iot.fastbee.cn";
@@ -530,7 +534,8 @@ void ProtocolRouteHandler::handleGetProtocolConfig(AsyncWebServerRequest* reques
 void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* request) {
     if (!ctx->requireAuth(request)) return;
 
-    JsonDocument doc;
+    // Task 3.3: 完整 protocol.json 加载使用 PSRAM 分配器（有 PSRAM 时），降低 DRAM 峰值
+    JsonDocument doc = FastBee::makeJsonDocument(8192);
 
     // 增量更新：先加载现有配置
     if (LittleFS.exists(PROTOCOL_CONFIG_PATH)) {
@@ -696,7 +701,8 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     // MQTT
     if (updateMqtt) {
     doc["mqtt"]["enabled"] = GP("mqtt_enabled", "true") == "true";
-    doc["mqtt"]["scheme"] = GP("mqtt_scheme", "mqtt");
+    String requestedScheme = GP("mqtt_scheme", "mqtt");
+    doc["mqtt"]["scheme"] = requestedScheme;
     doc["mqtt"]["server"] = GP("mqtt_server", "iot.fastbee.cn");
     doc["mqtt"]["port"] = GPI("mqtt_port", "1883");
 

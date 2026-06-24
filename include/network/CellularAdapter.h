@@ -21,10 +21,72 @@
 
 // TinyGSM 配置 - 在 include 之前定义
 // EC801E-CN 的 AT 指令集与 SIM7600 系列（LTE Cat-4）兼容
-#define TINY_GSM_MODEM_SIM7600
+#define TINY_GSM_MODEM_BG96
 #define TINY_GSM_RX_BUFFER 1024
 
 #include <TinyGsmClient.h>
+
+class CellularTrackedClient;
+class CellularSoftwareTlsClient;
+
+class QuectelSslClient : public Client {
+public:
+    explicit QuectelSslClient(HardwareSerial& serial,
+                              uint8_t contextId = 1,
+                              uint8_t connectId = 1,
+                              uint8_t sslContextId = 0);
+
+    void setApn(const String& apn);
+    bool isBusy() const { return _busy; }
+
+    int connect(IPAddress ip, uint16_t port) override;
+    int connect(const char* host, uint16_t port) override;
+    size_t write(uint8_t value) override;
+    size_t write(const uint8_t* buf, size_t size) override;
+    int available() override;
+    int read() override;
+    int read(uint8_t* buf, size_t size) override;
+    int peek() override;
+    void flush() override;
+    void stop() override;
+    uint8_t connected() override;
+    operator bool() override;
+
+private:
+    static constexpr size_t RX_BUFFER_SIZE = 768;
+
+    HardwareSerial* _serial;
+    String _apn;
+    String _host;
+    uint16_t _port = 0;
+    uint8_t _contextId;
+    uint8_t _connectId;
+    uint8_t _sslContextId;
+    bool _connected = false;
+    bool _hasPendingData = false;
+    bool _busy = false;
+    unsigned long _lastPollMs = 0;
+    uint8_t _rxBuffer[RX_BUFFER_SIZE];
+    size_t _rxPos = 0;
+    size_t _rxLen = 0;
+
+    bool configureSsl();
+    bool ensureInternetContext();
+    bool queryInternetContextActive();
+    bool sendCommandExpectOk(const char* cmd, uint32_t timeoutMs = 5000);
+    bool sendCommandCollect(const char* cmd, String& response, uint32_t timeoutMs = 5000);
+    bool waitForPrompt(uint32_t timeoutMs = 5000);
+    bool waitForSendDone(uint32_t timeoutMs = 15000);
+    bool waitForOpenResult(uint32_t timeoutMs = 90000);
+    bool fetchRx(size_t wanted, uint32_t timeoutMs);
+    int bufferedAvailable() const;
+    void resetRx();
+    void drainInput(uint32_t maxMs = 20);
+    String readLine(uint32_t timeoutMs);
+    void handleUrc(const String& line);
+    static String sanitizeToken(String value);
+    static bool parseLastInteger(const String& line, int& value);
+};
 
 /**
  * @class CellularAdapter
@@ -59,6 +121,11 @@ public:
      * @brief 获取 Arduino Client 指针（用于 PubSubClient）
      */
     Client* getClient();
+
+    /**
+     * @brief 获取 TLS Arduino Client 指针（用于 MQTTS over 4G）
+     */
+    Client* getSecureClient();
 
     /**
      * @brief 获取信号质量 (CSQ)
@@ -120,11 +187,15 @@ private:
     HardwareSerial* _serial = nullptr;
     TinyGsm* _modem = nullptr;
     TinyGsmClient* _gsmClient = nullptr;
+    CellularTrackedClient* _trackedClient = nullptr;
+    CellularSoftwareTlsClient* _softwareTlsClient = nullptr;
+    QuectelSslClient* _qsslClient = nullptr;
     
     CellularConfig _pinConfig;
     String _apn;
     bool _initialized = false;
     bool _connected = false;
+    bool _clientBusy = false;
     unsigned long _lastCheckTime = 0;
 
     /**

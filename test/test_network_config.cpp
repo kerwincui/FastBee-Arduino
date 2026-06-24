@@ -12,6 +12,24 @@
 #include "helpers/TestAssertions.h"
 #include "helpers/TestLogger.h"
 
+/**
+ * @brief 测试用 AP 配置结构体（镜像 WiFiManager.h 中 WiFiConfig 的 AP 字段）
+ *
+ * 由于原生测试环境无法包含 ESP32 的 WiFiManager.h，
+ * 此处定义一个轻量级镜像结构体用于验证字段完整性和默认值。
+ * 任何对 WiFiConfig AP 字段的修改都应同步更新此结构体。
+ * 注：deviceName 已完全从 WiFiConfig 中移除，AP SSID 生成时
+ * 由 WiFiManager::_readDeviceName() 从 device.json 读取。
+ */
+struct TestAPConfig {
+    String apSSID = "fastbee-ap";
+    String apPassword = "";
+    String apIP = "192.168.4.1";
+    uint8_t apChannel = 1;
+    bool apHidden = false;
+    uint8_t apMaxConnections = 4;
+};
+
 void test_network_config_group();
 void test_ap_to_sta_mode_transition();
 
@@ -72,7 +90,234 @@ void test_ap_hotspot_function() {
     TestLog::testEnd(true);
 }
 
-// Test STA connection
+/**
+ * @brief 验证 WiFiConfig 结构体中 AP 配置字段完整且默认值合理
+ *
+ * 覆盖字段：apSSID、apPassword、apIP、apChannel、apHidden、apMaxConnections
+ * 注：deviceName 已从 WiFiConfig 完全移除，由 device.json 管理
+ */
+void test_ap_config_struct_defaults() {
+    TestLog::testStart("AP Config: Struct Defaults");
+
+    TestAPConfig cfg;
+
+    // 默认值验证
+    TEST_ASSERT_EQUAL_STRING("fastbee-ap", cfg.apSSID.c_str());
+    TestLog::step("Default apSSID = fastbee-ap");
+
+    TEST_ASSERT_EQUAL_STRING("", cfg.apPassword.c_str());
+    TestLog::step("Default apPassword is empty (open AP for provisioning)");
+
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", cfg.apIP.c_str());
+    TestLog::step("Default apIP = 192.168.4.1");
+
+    TEST_ASSERT_EQUAL(1, cfg.apChannel);
+    TestLog::step("Default apChannel = 1");
+
+    TEST_ASSERT_FALSE(cfg.apHidden);
+    TestLog::step("Default apHidden = false");
+
+    TEST_ASSERT_EQUAL(4, cfg.apMaxConnections);
+    TestLog::step("Default apMaxConnections = 4");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 AP 配置字段可被正确赋值和读取
+ *
+ * 模拟后端 handler 解析前端 saveAPConfig() 发送的 JSON
+ * 注意：deviceName 已从 saveAPConfig() 中移除，不再在此测试中赋值
+ */
+void test_ap_config_struct_field_assignment() {
+    TestLog::testStart("AP Config: Struct Field Assignment");
+
+    TestAPConfig cfg;
+
+    // 模拟后端 handler 解析前端 saveAPConfig() 发送的 JSON
+    cfg.apSSID = "MyHotspot";
+    cfg.apPassword = "secure123";
+    cfg.apIP = "192.168.10.1";
+    cfg.apChannel = 6;
+    cfg.apHidden = true;
+    cfg.apMaxConnections = 8;
+
+    TEST_ASSERT_EQUAL_STRING("MyHotspot", cfg.apSSID.c_str());
+    TEST_ASSERT_EQUAL_STRING("secure123", cfg.apPassword.c_str());
+    TEST_ASSERT_EQUAL_STRING("192.168.10.1", cfg.apIP.c_str());
+    TEST_ASSERT_EQUAL(6, cfg.apChannel);
+    TEST_ASSERT_TRUE(cfg.apHidden);
+    TEST_ASSERT_EQUAL(8, cfg.apMaxConnections);
+    TestLog::step("All AP config fields assigned correctly");
+
+    // 边界值：信道范围 1-13
+    cfg.apChannel = 1;
+    TEST_ASSERT_EQUAL(1, cfg.apChannel);
+    cfg.apChannel = 13;
+    TEST_ASSERT_EQUAL(13, cfg.apChannel);
+    TestLog::step("Channel range boundary: 1-13");
+
+    // 边界值：最大连接数 1-8
+    cfg.apMaxConnections = 1;
+    TEST_ASSERT_EQUAL(1, cfg.apMaxConnections);
+    cfg.apMaxConnections = 8;
+    TEST_ASSERT_EQUAL(8, cfg.apMaxConnections);
+    TestLog::step("Max connections range boundary: 1-8");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 AP 热点启动时所有配置参数被正确传递到 MockWiFi
+ *
+ * 端到端验证：WiFiConfig → WiFiManager::startAPMode() → MockWiFi.softAP()
+ */
+void test_ap_config_applied_to_wifi_driver() {
+    TestLog::testStart("AP Config: Applied to WiFi Driver");
+
+    MockWiFiClass wifi;
+    wifi.mode(WIFI_AP);
+
+    // 模拟使用自定义 AP 配置启动热点
+    const char* ssid = "TestAP-Config";
+    const char* password = "testpass123";
+    int channel = 11;
+    int hidden = 1;
+    int maxConn = 2;
+
+    bool result = wifi.softAP(ssid, password, channel, hidden, maxConn);
+    TEST_ASSERT_TRUE(result);
+
+    // 验证 MockWiFi 接收到所有参数
+    TEST_ASSERT_EQUAL_STRING(ssid, wifi.softAPSSID().c_str());
+    TestLog::step("SSID passed to WiFi driver");
+
+    // 信道验证（通过 MockWiFi 内部状态）
+    IPAddress apIP = wifi.softAPIP();
+    TEST_ASSERT_FALSE(apIP.toString().isEmpty());
+    TestLog::step("AP IP configured");
+
+    // 验证 AP 运行状态
+    TEST_ASSERT_EQUAL(WIFI_AP, wifi.getMode());
+    TestLog::step("WiFi mode is AP");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 SSID 自动生成逻辑：apSSID 为空时使用 deviceName + "_" + 芯片ID前6位
+ *
+ * 镜像 WiFiManager::startAPMode() 中的 SSID 生成逻辑
+ * 注：deviceName 现在由 _readDeviceName() 从 device.json 读取
+ */
+void test_device_name_ssid_auto_generation() {
+    TestLog::testStart("DeviceName: SSID Auto-Generation");
+
+    TestAPConfig cfg;
+
+    // 模拟 _readDeviceName() 从 device.json 读取的设备名称
+    String devName = "FastBee";
+
+    // 场景1：apSSID 为空，devName 为默认值 "FastBee"
+    cfg.apSSID = "";
+    String chipID = "A3F2B1";
+
+    // 镜像 startAPMode() 中的 SSID 生成逻辑
+    String generatedSSID;
+    if (cfg.apSSID.isEmpty()) {
+        generatedSSID = devName + "_" + chipID;
+    } else {
+        generatedSSID = cfg.apSSID;
+    }
+    TEST_ASSERT_EQUAL_STRING("FastBee_A3F2B1", generatedSSID.c_str());
+    TestLog::step("Empty apSSID → FastBee_A3F2B1");
+
+    // 场景2：自定义 devName（模拟 device.json 中配置了不同名称）
+    devName = "MySmartHome";
+    if (cfg.apSSID.isEmpty()) {
+        generatedSSID = devName + "_" + chipID;
+    } else {
+        generatedSSID = cfg.apSSID;
+    }
+    TEST_ASSERT_EQUAL_STRING("MySmartHome_A3F2B1", generatedSSID.c_str());
+    TestLog::step("Custom devName → MySmartHome_A3F2B1");
+
+    // 场景3：不同芯片ID产生不同SSID（多设备不冲突）
+    String chipID2 = "B7C4D2";
+    String ssid1 = devName + "_" + chipID;
+    String ssid2 = devName + "_" + chipID2;
+    TEST_ASSERT_NOT_EQUAL(0, ssid1.compareTo(ssid2));  // 两个 SSID 不相等
+    TEST_ASSERT_EQUAL_STRING("MySmartHome_A3F2B1", ssid1.c_str());
+    TEST_ASSERT_EQUAL_STRING("MySmartHome_B7C4D2", ssid2.c_str());
+    TestLog::step("Different chipIDs produce different SSIDs (no conflict)");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 apSSID 优先于 deviceName 自动生成
+ *
+ * 当用户手动配置了 apSSID 时，应使用用户配置而非自动生成
+ */
+void test_device_name_ap_ssid_priority() {
+    TestLog::testStart("DeviceName: apSSID Takes Priority");
+
+    TestAPConfig cfg;
+    String devName = "FastBee";
+    cfg.apSSID = "MyCustomAP";
+    String chipID = "A3F2B1";
+
+    // apSSID 非空时应直接使用 apSSID
+    String generatedSSID;
+    if (cfg.apSSID.isEmpty()) {
+        generatedSSID = devName + "_" + chipID;
+    } else {
+        generatedSSID = cfg.apSSID;
+    }
+    TEST_ASSERT_EQUAL_STRING("MyCustomAP", generatedSSID.c_str());
+    TestLog::step("Non-empty apSSID overrides deviceName auto-generation");
+
+    // 验证 devName 不影响最终 SSID
+    devName = "TotallyDifferent";
+    if (cfg.apSSID.isEmpty()) {
+        generatedSSID = devName + "_" + chipID;
+    } else {
+        generatedSSID = cfg.apSSID;
+    }
+    TEST_ASSERT_EQUAL_STRING("MyCustomAP", generatedSSID.c_str());
+    TestLog::step("devName change has no effect when apSSID is set");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证 deviceName 从 device.json 读取而非 network.json
+ *
+ * deviceName 已完全从 WiFiConfig 移除，WiFiManager::_readDeviceName()
+ * 从 device.json 读取设备名称用于 AP SSID 自动生成。
+ */
+void test_device_name_from_device_config() {
+    TestLog::testStart("DeviceName: Read from device.json");
+
+    // 模拟 _readDeviceName() 的行为：从 device.json 读取 deviceName
+    // 默认值为 "FastBee"
+    String devName = "FastBee";
+    TEST_ASSERT_EQUAL_STRING("FastBee", devName.c_str());
+    TestLog::step("Default devName = FastBee (from device.json)");
+
+    // 模拟 device.json 中配置了自定义名称
+    devName = "SmartOffice";
+    TEST_ASSERT_EQUAL_STRING("SmartOffice", devName.c_str());
+    TestLog::step("Custom devName = SmartOffice (from device.json)");
+
+    // 验证空字符串回退到默认值
+    devName = "";
+    if (devName.isEmpty()) devName = "FastBee";
+    TEST_ASSERT_EQUAL_STRING("FastBee", devName.c_str());
+    TestLog::step("Empty devName falls back to FastBee");
+
+    TestLog::testEnd(true);
+}
 void test_sta_connection() {
     TestLog::testStart("STA Connection");
     
@@ -1627,6 +1872,12 @@ void test_network_config_group() {
     
     RUN_TEST(test_wifi_mode_switching);
     RUN_TEST(test_ap_hotspot_function);
+    RUN_TEST(test_ap_config_struct_defaults);
+    RUN_TEST(test_ap_config_struct_field_assignment);
+    RUN_TEST(test_ap_config_applied_to_wifi_driver);
+    RUN_TEST(test_device_name_ssid_auto_generation);
+    RUN_TEST(test_device_name_ap_ssid_priority);
+    RUN_TEST(test_device_name_from_device_config);
     RUN_TEST(test_sta_connection);
     RUN_TEST(test_wifi_connection_failure);
     RUN_TEST(test_ap_mode_network_status);

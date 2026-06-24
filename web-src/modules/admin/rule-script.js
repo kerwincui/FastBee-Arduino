@@ -75,11 +75,19 @@
             const triggerText = triggerLabels[rule.triggerType] || '?';
             const protocolText = protocolLabels[rule.protocolType] || '-';
             const statsText = '触发次数: ' + (rule.triggerCount || 0);
+            // 主题映射显示
+            let topicText = '-';
+            if (rule.protocolType === 0) { // MQTT
+                const src = rule.sourceTopic || '*';
+                const tgt = rule.targetTopic || '';
+                topicText = tgt ? (src + ' → ' + tgt) : src;
+            }
             let html = '<tr>';
             html += '<td>' + escapeHtml(rule.name || '') + '</td>';
             html += '<td>' + this._renderRuleScriptStatusBadge(rule.enabled) + '</td>';
             html += '<td>' + escapeHtml(triggerText) + '</td>';
             html += '<td>' + escapeHtml(protocolText) + '</td>';
+            html += '<td>' + escapeHtml(topicText) + '</td>';
             html += '<td class="rule-script-stats-cell">' + escapeHtml(statsText) + '</td>';
             html += '<td class="u-toolbar-sm">';
             html += this._renderRuleScriptActions(rule);
@@ -118,16 +126,16 @@
             var getter = (options && options.noCache === true && typeof apiGetFresh === 'function') ? apiGetFresh : apiGet;
             getter('/api/rule-script').then(res => {
                 if (!res || !res.success || !res.data) {
-                    this.renderEmptyTableRow(tbody, 6, '暂无规则脚本');
+                    this.renderEmptyTableRow(tbody, 7, '暂无规则脚本');
                     return;
                 }
                 const rules = res.data;
                 if (rules.length === 0) {
-                    this.renderEmptyTableRow(tbody, 6, '暂无规则脚本');
+                    this.renderEmptyTableRow(tbody, 7, '暂无规则脚本');
                     return;
                 }
                 const triggerLabels = { 0: '数据接收', 1: '数据上报' };
-                const protocolLabels = { 0: 'MQTT', 1: 'Modbus RTU', 2: 'Modbus TCP', 3: 'HTTP', 4: 'CoAP', 5: 'TCP' };
+                const protocolLabels = { 0: 'MQTT', 1: 'Modbus RTU' };
                 let html = '';
                 rules.forEach(r => {
                     html += this._renderRuleScriptRow(r, triggerLabels, protocolLabels);
@@ -151,7 +159,24 @@
                 document.getElementById('rule-script-form').reset();
                 document.getElementById('rule-script-protocol-type').value = '0';
                 document.getElementById('rule-script-content').value = '';
+                document.getElementById('rule-script-source-topic').value = '';
+                document.getElementById('rule-script-target-topic').value = '';
             }
+            // 绑定协议类型切换事件（仅一次）
+            if (!this._ruleScriptProtocolBound) {
+                var protoSelect = document.getElementById('rule-script-protocol-type');
+                if (protoSelect) {
+                    protoSelect.addEventListener('change', function() {
+                        var topicFields = document.getElementById('rule-script-topic-fields');
+                        if (topicFields) topicFields.style.display = (this.value === '0') ? '' : 'none';
+                    });
+                    this._ruleScriptProtocolBound = true;
+                }
+            }
+            // 初始状态：根据当前协议类型显示/隐藏主题字段
+            var protoVal = document.getElementById('rule-script-protocol-type').value;
+            var topicFields = document.getElementById('rule-script-topic-fields');
+            if (topicFields) topicFields.style.display = (protoVal === '0') ? '' : 'none';
             this.showModal(modal);
         },
 
@@ -168,7 +193,9 @@
                 enabled: document.getElementById('rule-script-enabled').checked ? '1' : '0',
                 triggerType: document.getElementById('rule-script-trigger-type').value,
                 protocolType: document.getElementById('rule-script-protocol-type').value,
-                scriptContent: document.getElementById('rule-script-content').value
+                scriptContent: document.getElementById('rule-script-content').value,
+                sourceTopic: document.getElementById('rule-script-source-topic').value.trim(),
+                targetTopic: document.getElementById('rule-script-target-topic').value.trim()
             };
             if (!ruleData.name) {
                 this.showInlineError('rule-script-error', '请输入规则名称');
@@ -204,6 +231,12 @@
                 document.getElementById('rule-script-trigger-type').value = String(rule.triggerType);
                 document.getElementById('rule-script-protocol-type').value = String(rule.protocolType || 0);
                 document.getElementById('rule-script-content').value = rule.scriptContent || '';
+                document.getElementById('rule-script-source-topic').value = rule.sourceTopic || '';
+                document.getElementById('rule-script-target-topic').value = rule.targetTopic || '';
+                // 触发协议类型切换以更新主题字段可见性
+                var protoVal = String(rule.protocolType || 0);
+                var topicFields = document.getElementById('rule-script-topic-fields');
+                if (topicFields) topicFields.style.display = (protoVal === '0') ? '' : 'none';
             });
         },
 

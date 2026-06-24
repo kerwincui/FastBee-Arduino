@@ -109,7 +109,7 @@ public:
      * @brief 非阻塞重启MQTT（重新加载配置，由loop自动重连）
      * 用于HTTP handler中避免阻塞Web服务器
      */
-    bool restartMQTTDeferred();
+    bool restartMQTTDeferred(bool forceRebuild = false);
 
     /**
      * @brief 停止MQTT连接

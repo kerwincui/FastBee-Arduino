@@ -101,12 +101,50 @@
                 });
         },
 
+        /**
+         * 无 PSRAM 设备选择 mqtts 时显示内存不足提示
+         * @param {boolean} tlsSupported 后端返回的 TLS 支持状态
+         * @param {string} currentScheme 当前选中的协议
+         */
+        _updateMqttsMemoryHint: function(tlsSupported, currentScheme) {
+            var schemeEl = document.getElementById('mqtt-scheme');
+            if (!schemeEl) return;
+
+            // 存储 tlsSupported 供后续事件使用
+            this._mqttTlsSupported = tlsSupported;
+
+            // 使用 HTML 中已有的 span#mqtts-memory-hint（位于底部按钮组右侧）
+            var hintEl = document.getElementById('mqtts-memory-hint');
+            if (hintEl) {
+                if (tlsSupported === false && currentScheme === 'mqtts') {
+                    hintEl.textContent = '\u26a0\ufe0f \u6b64\u8bbe\u5907\u5185\u5b58\u6709\u9650\uff0cmqtts(TLS)\u8fde\u63a5\u53ef\u80fd\u56e0\u5185\u5b58\u4e0d\u8db3\u800c\u5931\u8d25\u3002\u5982\u679c\u8fde\u63a5\u5931\u8d25\uff0c\u5efa\u8bae\u5207\u6362\u4e3a mqtt\u3002';
+                    hintEl.style.display = '';
+                } else {
+                    hintEl.style.display = 'none';
+                }
+            }
+
+            // 绑定 change 事件（仅首次）
+            if (!this._mqttSchemeBound) {
+                var self = this;
+                schemeEl.addEventListener('change', function() {
+                    self._updateMqttsMemoryHint(self._mqttTlsSupported, this.value);
+                });
+                this._mqttSchemeBound = true;
+            }
+        },
+
         _fillProtocolForm: function(tabId, config) {
             if (tabId !== 'mqtt') return;
             var mqtt = config && config.mqtt;
             if (!mqtt) return;
             this._setCheckbox('mqtt-enabled', mqtt.enabled ?? true);
             this._setValue('mqtt-scheme', mqtt.scheme || 'mqtt');
+            // 无 PSRAM 设备选择 mqtts 时显示内存不足提示
+            var schemeEl = document.getElementById('mqtt-scheme');
+            if (schemeEl) {
+                this._updateMqttsMemoryHint(mqtt.tlsSupported, schemeEl.value);
+            }
             this._setValue('mqtt-broker', mqtt.server ?? '');
             this._setValue('mqtt-port', mqtt.port || 1883);
             this._setValue('mqtt-client-id', mqtt.clientId ?? '');

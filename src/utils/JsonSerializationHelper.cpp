@@ -8,7 +8,7 @@
 
 bool JsonSerializationHelper::wifiConfigToJson(const WiFiConfig& config, JsonObject& jsonObj) {
     // 基本配置
-    jsonObj["deviceName"] = config.deviceName;
+    // deviceName 已移至设备配置(device.json)
     jsonObj["mode"] = static_cast<uint8_t>(config.mode);
     jsonObj["apSSID"] = config.apSSID;
     jsonObj["apPassword"] = config.apPassword;
@@ -40,7 +40,7 @@ bool JsonSerializationHelper::wifiConfigToJson(const WiFiConfig& config, JsonObj
 
 bool JsonSerializationHelper::wifiConfigFromJson(JsonObject& jsonObj, WiFiConfig& config) {
     // 基本配置
-    if (jsonObj.containsKey("deviceName")) config.deviceName = jsonObj["deviceName"].as<String>();
+    // deviceName 已移至设备配置(device.json)，不再从网络配置解析
         if (jsonObj.containsKey("mode")) config.mode = static_cast<NetworkMode>(jsonObj["mode"].as<uint8_t>());
         if (jsonObj.containsKey("apSSID")) config.apSSID = jsonObj["apSSID"].as<String>();
         if (jsonObj.containsKey("apPassword")) config.apPassword = jsonObj["apPassword"].as<String>();

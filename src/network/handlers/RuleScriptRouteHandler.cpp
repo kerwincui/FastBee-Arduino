@@ -87,6 +87,16 @@ void RuleScriptRouteHandler::handleGetRules(AsyncWebServerRequest* request) {
             item += String(rule.lastTriggerTime);
             item += F(",\"triggerCount\":");
             item += String(rule.triggerCount);
+            // 主题转换字段
+            String safeSrcTopic = rule.sourceTopic;
+            safeSrcTopic.replace("\"", "\\\"");
+            String safeTgtTopic = rule.targetTopic;
+            safeTgtTopic.replace("\"", "\\\"");
+            item += F(",\"sourceTopic\":\"");
+            item += safeSrcTopic;
+            item += F("\",\"targetTopic\":\"");
+            item += safeTgtTopic;
+            item += F("\"");
             item += F("}");
             items.emplace_back(std::move(item));
         }
@@ -111,6 +121,8 @@ void RuleScriptRouteHandler::handleAddRule(AsyncWebServerRequest* request) {
     rule.triggerType = ctx->getParamInt(request, "triggerType", 0);
     rule.protocolType = ctx->getParamInt(request, "protocolType", 0);
     rule.scriptContent = ctx->getParamValue(request, "scriptContent", "");
+    rule.sourceTopic = ctx->getParamValue(request, "sourceTopic", "");
+    rule.targetTopic = ctx->getParamValue(request, "targetTopic", "");
 
     if (rule.name.isEmpty()) {
         ctx->sendBadRequest(request, "Name is required");
@@ -151,6 +163,8 @@ void RuleScriptRouteHandler::handleUpdateRule(AsyncWebServerRequest* request) {
     rule.triggerType = ctx->getParamInt(request, "triggerType", existing->triggerType);
     rule.protocolType = ctx->getParamInt(request, "protocolType", existing->protocolType);
     rule.scriptContent = ctx->getParamValue(request, "scriptContent", existing->scriptContent);
+    rule.sourceTopic = ctx->getParamValue(request, "sourceTopic", existing->sourceTopic);
+    rule.targetTopic = ctx->getParamValue(request, "targetTopic", existing->targetTopic);
 
     if (mgr.updateRule(id, rule)) {
         mgr.saveConfiguration();

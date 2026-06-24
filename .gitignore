@@ -8,11 +8,15 @@
 .qoder
 .cursor
 .codex
+.codex-logs
 dist/
 *.pyc
+*.log
 compile_commands.json
 upload_log.txt
 nul
+tmp/
+logs/
 
 # ESP-IDF sdkconfig generated files
 sdkconfig*

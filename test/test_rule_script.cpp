@@ -24,9 +24,11 @@ struct TestRuleScript {
     String name;
     String description;
     bool enabled;
-    uint8_t protocolType;  // 0=MQTT, 1=HTTP, 2=Modbus
+    uint8_t protocolType;  // 0=MQTT, 1=ModbusRTU
     String receiveTemplate;
     String reportTemplate;
+    String sourceTopic;    // 源主题过滤（空=匹配所有）
+    String targetTopic;    // 目标主题（空=不重定向）
     
     TestRuleScript() : enabled(true), protocolType(0) {}
 };
@@ -88,12 +90,61 @@ public:
         return result;
     }
     
+    // MQTT 主题匹配（支持 + 单级通配符和 # 多级通配符）
+    static bool matchTopic(const String& pattern, const String& topic) {
+        if (pattern.isEmpty()) return true;
+        if (pattern == topic) return true;
+        if (pattern.indexOf('+') < 0 && pattern.indexOf('#') < 0) return false;
+
+        int pLen = pattern.length();
+        int tLen = topic.length();
+        int pi = 0, ti = 0;
+
+        while (pi < pLen && ti < tLen) {
+            int pSlash = pattern.indexOf('/', pi);
+            if (pSlash < 0) pSlash = pLen;
+            String pPart = pattern.substring(pi, pSlash);
+
+            if (pPart == "#") return true;
+
+            int tSlash = topic.indexOf('/', ti);
+            if (tSlash < 0) tSlash = tLen;
+            String tPart = topic.substring(ti, tSlash);
+
+            if (pPart != "+" && pPart != tPart) return false;
+
+            pi = pSlash + 1;
+            ti = tSlash + 1;
+        }
+
+        if (pi < pLen && pattern.substring(pi) == "#") return true;
+        return (pi >= pLen && ti >= tLen);
+    }
+    
     String applyReceiveTransform(uint8_t protocolType, const String& rawData) {
         for (auto& pair : _rules) {
             auto& rule = pair.second;
             if (rule.enabled && rule.protocolType == protocolType && !rule.receiveTemplate.isEmpty()) {
                 return applyTemplate(rule.receiveTemplate, rawData);
             }
+        }
+        return rawData;
+    }
+
+    // 主题感知接收转换
+    String applyReceiveTransform(uint8_t protocolType, const String& rawData,
+                                 const String& topic, String* outTargetTopic) {
+        for (auto& pair : _rules) {
+            auto& rule = pair.second;
+            if (!rule.enabled || rule.protocolType != protocolType) continue;
+            if (rule.receiveTemplate.isEmpty()) continue;
+            if (!rule.sourceTopic.isEmpty() && !matchTopic(rule.sourceTopic, topic)) continue;
+
+            String result = applyTemplate(rule.receiveTemplate, rawData);
+            if (outTargetTopic && !rule.targetTopic.isEmpty()) {
+                *outTargetTopic = rule.targetTopic;
+            }
+            return result;
         }
         return rawData;
     }
@@ -311,6 +362,168 @@ static void test_multiple_rules() {
     TEST_ASSERT_EQUAL(5, mgr.getRuleCount());
 }
 
+// ========== MQTT 主题匹配测试 ==========
+
+static void test_topic_match_exact() {
+    TEST_ASSERT_TRUE(TestRuleManager::matchTopic("/device/sensor/data", "/device/sensor/data"));
+    TEST_ASSERT_FALSE(TestRuleManager::matchTopic("/device/sensor/data", "/device/sensor/other"));
+    TEST_ASSERT_FALSE(TestRuleManager::matchTopic("/device/sensor/data", "/device/sensor"));
+}
+
+static void test_topic_match_single_wildcard() {
+    // + 匹配单个层级
+    TEST_ASSERT_TRUE(TestRuleManager::matchTopic("/device/+/data", "/device/sensor/data"));
+    TEST_ASSERT_TRUE(TestRuleManager::matchTopic("/device/+/data", "/device/actuator/data"));
+    TEST_ASSERT_FALSE(TestRuleManager::matchTopic("/device/+/data", "/device/sensor/other"));
+    TEST_ASSERT_FALSE(TestRuleManager::matchTopic("/device/+/data", "/device/a/b/data"));
+}
+
+static void test_topic_match_multi_wildcard() {
+    // # 匹配剩余所有层级
+    TEST_ASSERT_TRUE(TestRuleManager::matchTopic("/device/#", "/device/sensor/data"));
+    TEST_ASSERT_TRUE(TestRuleManager::matchTopic("/device/#", "/device/a/b/c"));
+    TEST_ASSERT_TRUE(TestRuleManager::matchTopic("/device/#", "/device/"));
+    TEST_ASSERT_TRUE(TestRuleManager::matchTopic("#", "/any/topic/here"));
+    TEST_ASSERT_FALSE(TestRuleManager::matchTopic("/other/#", "/device/sensor/data"));
+}
+
+static void test_topic_match_empty_pattern() {
+    // 空模式匹配所有主题
+    TEST_ASSERT_TRUE(TestRuleManager::matchTopic("", "/device/sensor/data"));
+    TEST_ASSERT_TRUE(TestRuleManager::matchTopic("", ""));
+}
+
+static void test_topic_filter_match() {
+    resetManager();
+    TestRuleScript rule;
+    rule.id = "topic_001";
+    rule.enabled = true;
+    rule.protocolType = 0;
+    rule.sourceTopic = "/device/sensor/data";
+    rule.receiveTemplate = "TRANSFORMED:{{data}}";
+    mgr.addRule(rule);
+
+    // 精确匹配
+    String result = mgr.applyReceiveTransform(0, "raw", "/device/sensor/data", nullptr);
+    TEST_ASSERT_EQUAL_STRING("TRANSFORMED:raw", result.c_str());
+}
+
+static void test_topic_filter_no_match() {
+    resetManager();
+    TestRuleScript rule;
+    rule.id = "topic_002";
+    rule.enabled = true;
+    rule.protocolType = 0;
+    rule.sourceTopic = "/device/sensor/data";
+    rule.receiveTemplate = "TRANSFORMED:{{data}}";
+    mgr.addRule(rule);
+
+    // 主题不匹配，返回原始数据
+    String result = mgr.applyReceiveTransform(0, "raw", "/device/actuator/cmd", nullptr);
+    TEST_ASSERT_EQUAL_STRING("raw", result.c_str());
+}
+
+static void test_topic_filter_wildcard() {
+    resetManager();
+    TestRuleScript rule;
+    rule.id = "topic_003";
+    rule.enabled = true;
+    rule.protocolType = 0;
+    rule.sourceTopic = "/device/+/data";
+    rule.receiveTemplate = "W:{{data}}";
+    mgr.addRule(rule);
+
+    String result1 = mgr.applyReceiveTransform(0, "v1", "/device/sensor/data", nullptr);
+    TEST_ASSERT_EQUAL_STRING("W:v1", result1.c_str());
+
+    String result2 = mgr.applyReceiveTransform(0, "v2", "/device/other/cmd", nullptr);
+    TEST_ASSERT_EQUAL_STRING("v2", result2.c_str());
+}
+
+static void test_topic_redirect() {
+    resetManager();
+    TestRuleScript rule;
+    rule.id = "topic_004";
+    rule.enabled = true;
+    rule.protocolType = 0;
+    rule.sourceTopic = "/sensor/temp";
+    rule.targetTopic = "/cloud/telemetry";
+    rule.receiveTemplate = "{{data}}";
+    mgr.addRule(rule);
+
+    String redirectTopic;
+    String result = mgr.applyReceiveTransform(0, "25.5", "/sensor/temp", &redirectTopic);
+    TEST_ASSERT_EQUAL_STRING("25.5", result.c_str());
+    TEST_ASSERT_EQUAL_STRING("/cloud/telemetry", redirectTopic.c_str());
+}
+
+static void test_topic_redirect_empty_when_no_target() {
+    resetManager();
+    TestRuleScript rule;
+    rule.id = "topic_005";
+    rule.enabled = true;
+    rule.protocolType = 0;
+    rule.sourceTopic = "/sensor/temp";
+    rule.targetTopic = "";  // 无目标主题
+    rule.receiveTemplate = "{{data}}";
+    mgr.addRule(rule);
+
+    String redirectTopic;
+    String result = mgr.applyReceiveTransform(0, "25.5", "/sensor/temp", &redirectTopic);
+    TEST_ASSERT_EQUAL_STRING("25.5", result.c_str());
+    TEST_ASSERT_TRUE(redirectTopic.isEmpty());  // 不应重定向
+}
+
+static void test_topic_empty_source_matches_all() {
+    resetManager();
+    TestRuleScript rule;
+    rule.id = "topic_006";
+    rule.enabled = true;
+    rule.protocolType = 0;
+    rule.sourceTopic = "";  // 空=匹配所有
+    rule.receiveTemplate = "ALL:{{data}}";
+    mgr.addRule(rule);
+
+    String result1 = mgr.applyReceiveTransform(0, "x", "/any/topic", nullptr);
+    TEST_ASSERT_EQUAL_STRING("ALL:x", result1.c_str());
+
+    String result2 = mgr.applyReceiveTransform(0, "y", "/other/path/data", nullptr);
+    TEST_ASSERT_EQUAL_STRING("ALL:y", result2.c_str());
+}
+
+static void test_protocol_only_mqtt_and_rtu() {
+    // 验证仅有 MQTT(0) 和 ModbusRTU(1) 两种协议类型
+    resetManager();
+
+    TestRuleScript mqttRule;
+    mqttRule.id = "proto_mqtt";
+    mqttRule.enabled = true;
+    mqttRule.protocolType = 0;
+    mqttRule.receiveTemplate = "MQTT:{{data}}";
+    mgr.addRule(mqttRule);
+
+    TestRuleScript rtuRule;
+    rtuRule.id = "proto_rtu";
+    rtuRule.enabled = true;
+    rtuRule.protocolType = 1;
+    rtuRule.receiveTemplate = "RTU:{{data}}";
+    mgr.addRule(rtuRule);
+
+    TEST_ASSERT_EQUAL(2, mgr.getRuleCount());
+
+    // MQTT 匹配
+    String r1 = mgr.applyReceiveTransform(0, "d1");
+    TEST_ASSERT_EQUAL_STRING("MQTT:d1", r1.c_str());
+
+    // ModbusRTU 匹配
+    String r2 = mgr.applyReceiveTransform(1, "d2");
+    TEST_ASSERT_EQUAL_STRING("RTU:d2", r2.c_str());
+
+    // 不存在的协议类型，不应匹配
+    String r3 = mgr.applyReceiveTransform(3, "d3");
+    TEST_ASSERT_EQUAL_STRING("d3", r3.c_str());
+}
+
 // ========== 测试组入口 ==========
 
 void test_rule_script_group() {
@@ -330,4 +543,16 @@ void test_rule_script_group() {
     RUN_TEST(test_transform_disabled_rule);
     RUN_TEST(test_transform_protocol_mismatch);
     RUN_TEST(test_multiple_rules);
+    // MQTT 主题匹配测试
+    RUN_TEST(test_topic_match_exact);
+    RUN_TEST(test_topic_match_single_wildcard);
+    RUN_TEST(test_topic_match_multi_wildcard);
+    RUN_TEST(test_topic_match_empty_pattern);
+    RUN_TEST(test_topic_filter_match);
+    RUN_TEST(test_topic_filter_no_match);
+    RUN_TEST(test_topic_filter_wildcard);
+    RUN_TEST(test_topic_redirect);
+    RUN_TEST(test_topic_redirect_empty_when_no_target);
+    RUN_TEST(test_topic_empty_source_matches_all);
+    RUN_TEST(test_protocol_only_mqtt_and_rtu);
 }

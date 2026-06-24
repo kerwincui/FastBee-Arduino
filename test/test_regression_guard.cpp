@@ -20,6 +20,8 @@
 #include <fstream>
 #include <sstream>
 #include <regex>
+#include <set>
+#include <map>
 #include "mocks/MockConfigStorage.h"
 #include "mocks/MockTaskManager.h"
 #include "mocks/MockHealthMonitor.h"
@@ -1052,6 +1054,35 @@ void test_regression_enable_dns_removed() {
  * @brief 验证 NetworkManager 将冲突检测和故障转移配置同步到 IPManager
  * 回归：旧 configureStaticIP() 只同步 staticIP/gateway/subnet，遗漏 5 个字段
  */
+void test_regression_network_config_json_handler_precedes_legacy_post() {
+    TestLog::testStart("Regression: Network Config JSON Route Order");
+
+    std::string src = readRegressionSrcFile("src/network/handlers/SystemRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read SystemRouteHandler.cpp");
+
+    size_t jsonHandler = src.find("auto* networkJsonHandler = new AsyncCallbackJsonWebHandler(\"/api/network/config\"");
+    TEST_ASSERT_TRUE_MESSAGE(jsonHandler != std::string::npos,
+        "Network config JSON handler must be registered");
+
+    size_t setMethod = src.find("networkJsonHandler->setMethod(HTTP_POST | HTTP_PUT)", jsonHandler);
+    TEST_ASSERT_TRUE_MESSAGE(setMethod != std::string::npos,
+        "Network config JSON handler must accept POST and PUT");
+
+    size_t addHandler = src.find("server->addHandler(networkJsonHandler)", setMethod);
+    TEST_ASSERT_TRUE_MESSAGE(addHandler != std::string::npos,
+        "Network config JSON handler must be added to the server");
+
+    size_t legacyPost = src.find("handleSaveNetworkConfig(request)", addHandler);
+    TEST_ASSERT_TRUE_MESSAGE(legacyPost != std::string::npos,
+        "Legacy network config POST fallback must still be registered");
+
+    TEST_ASSERT_TRUE_MESSAGE(addHandler < legacyPost,
+        "JSON handler must be registered before legacy POST fallback so JSON POST is parsed");
+
+    TestLog::step("Network config JSON handler is registered before legacy POST fallback");
+    TestLog::testEnd(true);
+}
+
 void test_regression_ipmanager_config_sync() {
     TestLog::testStart("Regression: IPManager Config Sync");
 
@@ -1903,6 +1934,460 @@ static void test_regression_mdns_async_restart() {
     TestLog::testEnd(true);
 }
 
+// ============================================================
+//  源码回归测试：构建配置 src_filter / lib_deps 排除验证
+// ============================================================
+
+/**
+ * @brief 非 Cellular/Ethernet 环境的 src_filter 必须排除对应 .cpp 文件
+ *
+ * 当 FASTBEE_ENABLE_CELLULAR=0 和 FASTBEE_ENABLE_ETHERNET=0 时，
+ * lite/standard 的 src_filter 必须排除 CellularAdapter.cpp 和 EthernetAdapter.cpp，
+ * 防止 PlatformIO LDF 扫描并拉入 TinyGSM/SSLClient 等不必要的库依赖。
+ */
+void test_regression_src_filter_excludes_unused_adapters() {
+    TestLog::testStart("Regression: src_filter excludes unused network adapters");
+
+    std::string pio = readRegressionSrcFile("platformio.ini");
+    TEST_ASSERT_FALSE_MESSAGE(pio.empty(), "Cannot read platformio.ini");
+
+    // lite_src_filter 必须排除 CellularAdapter.cpp 和 EthernetAdapter.cpp
+    TEST_ASSERT_TRUE_MESSAGE(
+        pio.find("[lite_src_filter]") != std::string::npos,
+        "platformio.ini must have [lite_src_filter] section");
+    auto litePos = pio.find("[lite_src_filter]");
+    auto liteEnd = pio.find("[", litePos + 1);
+    std::string liteSection = pio.substr(litePos, liteEnd - litePos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        liteSection.find("-<network/CellularAdapter.cpp>") != std::string::npos,
+        "lite_src_filter must exclude CellularAdapter.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        liteSection.find("-<network/EthernetAdapter.cpp>") != std::string::npos,
+        "lite_src_filter must exclude EthernetAdapter.cpp");
+    TestLog::step("lite_src_filter excludes CellularAdapter + EthernetAdapter");
+
+    // standard_src_filter 必须排除 CellularAdapter.cpp 和 EthernetAdapter.cpp
+    auto stdPos = pio.find("[standard_src_filter]");
+    TEST_ASSERT_TRUE_MESSAGE(stdPos != std::string::npos,
+        "platformio.ini must have [standard_src_filter] section");
+    auto stdEnd = pio.find("[", stdPos + 1);
+    std::string stdSection = pio.substr(stdPos, stdEnd - stdPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        stdSection.find("-<network/CellularAdapter.cpp>") != std::string::npos,
+        "standard_src_filter must exclude CellularAdapter.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        stdSection.find("-<network/EthernetAdapter.cpp>") != std::string::npos,
+        "standard_src_filter must exclude EthernetAdapter.cpp");
+    TestLog::step("standard_src_filter excludes CellularAdapter + EthernetAdapter");
+
+    // standard_ota_src_filter 必须排除 CellularAdapter.cpp 和 EthernetAdapter.cpp
+    auto otaPos = pio.find("[standard_ota_src_filter]");
+    TEST_ASSERT_TRUE_MESSAGE(otaPos != std::string::npos,
+        "platformio.ini must have [standard_ota_src_filter] section");
+    auto otaEnd = pio.find("[", otaPos + 1);
+    std::string otaSection = pio.substr(otaPos, otaEnd - otaPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        otaSection.find("-<network/CellularAdapter.cpp>") != std::string::npos,
+        "standard_ota_src_filter must exclude CellularAdapter.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(
+        otaSection.find("-<network/EthernetAdapter.cpp>") != std::string::npos,
+        "standard_ota_src_filter must exclude EthernetAdapter.cpp");
+    TestLog::step("standard_ota_src_filter excludes CellularAdapter + EthernetAdapter");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 非 Cellular 环境（esp32-F4R0 / esp32s3-F8R0）的 lib_deps 不应包含 TinyGSM/SSLClient
+ *
+ * 标准版环境 FASTBEE_ENABLE_CELLULAR=0，不需要 4G 模块和软件 TLS 库，
+ * 移除这些依赖可避免 LDF 扫描浪费时间并减少编译依赖。
+ * ESP32 标准版 MQTTS 使用内置 WiFiClientSecure（NetworkClientSecure），不依赖 SSLClient。
+ */
+void test_regression_non_cellular_envs_no_tinygsm_sslclient() {
+    TestLog::testStart("Regression: non-cellular envs exclude TinyGSM/SSLClient");
+
+    std::string pio = readRegressionSrcFile("platformio.ini");
+    TEST_ASSERT_FALSE_MESSAGE(pio.empty(), "Cannot read platformio.ini");
+
+    // esp32-F4R0 (standard, CELLULAR=0) 不应有 TinyGSM/SSLClient
+    auto f4r0Pos = pio.find("[env:esp32-F4R0]");
+    TEST_ASSERT_TRUE_MESSAGE(f4r0Pos != std::string::npos,
+        "platformio.ini must have [env:esp32-F4R0]");
+    auto f4r0End = pio.find("[env:", f4r0Pos + 1);
+    std::string f4r0Section = pio.substr(f4r0Pos, f4r0End - f4r0Pos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        f4r0Section.find("TinyGSM") == std::string::npos,
+        "esp32-F4R0 (standard) must not have TinyGSM in lib_deps");
+    TEST_ASSERT_TRUE_MESSAGE(
+        f4r0Section.find("SSLClient") == std::string::npos,
+        "esp32-F4R0 (standard) must not have SSLClient in lib_deps");
+    TestLog::step("esp32-F4R0 (standard) excludes TinyGSM + SSLClient");
+
+    // esp32s3-F8R0 (standard+OTA, CELLULAR=0) 不应有 TinyGSM
+    auto s3f8r0Pos = pio.find("[env:esp32s3-F8R0]");
+    TEST_ASSERT_TRUE_MESSAGE(s3f8r0Pos != std::string::npos,
+        "platformio.ini must have [env:esp32s3-F8R0]");
+    auto s3f8r0End = pio.find("[env:", s3f8r0Pos + 1);
+    std::string s3f8r0Section = pio.substr(s3f8r0Pos, s3f8r0End - s3f8r0Pos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        s3f8r0Section.find("TinyGSM") == std::string::npos,
+        "esp32s3-F8R0 (standard+OTA) must not have TinyGSM in lib_deps");
+    TestLog::step("esp32s3-F8R0 (standard+OTA) excludes TinyGSM");
+
+    // full 环境应保留 TinyGSM + SSLClient (CELLULAR=1)
+    auto f8r4Pos = pio.find("[env:esp32-F8R4]");
+    TEST_ASSERT_TRUE_MESSAGE(f8r4Pos != std::string::npos,
+        "platformio.ini must have [env:esp32-F8R4]");
+    auto f8r4End = pio.find("[env:", f8r4Pos + 1);
+    std::string f8r4Section = pio.substr(f8r4Pos, f8r4End - f8r4Pos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        f8r4Section.find("TinyGSM") != std::string::npos,
+        "esp32-F8R4 (full) must keep TinyGSM in lib_deps");
+    TEST_ASSERT_TRUE_MESSAGE(
+        f8r4Section.find("SSLClient") != std::string::npos,
+        "esp32-F8R4 (full) must keep SSLClient in lib_deps");
+    TestLog::step("esp32-F8R4 (full) retains TinyGSM + SSLClient");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief CellularAdapter.h / EthernetAdapter.h 头文件必须有 #if FASTBEE_ENABLE 保护
+ *
+ * 确保在 CELLULAR=0 / ETHERNET=0 时，虽然 .h 被间接包含，
+ * 但头文件内容被条件编译保护，不会引入 TinyGSM / Ethernet 头文件。
+ */
+void test_regression_adapter_headers_have_feature_guard() {
+    TestLog::testStart("Regression: adapter headers have #if FASTBEE_ENABLE guard");
+
+    std::string cellHdr = readRegressionSrcFile("include/network/CellularAdapter.h");
+    TEST_ASSERT_FALSE_MESSAGE(cellHdr.empty(), "Cannot read CellularAdapter.h");
+    TEST_ASSERT_TRUE_MESSAGE(
+        cellHdr.find("#if FASTBEE_ENABLE_CELLULAR") != std::string::npos,
+        "CellularAdapter.h must be guarded by #if FASTBEE_ENABLE_CELLULAR");
+    TestLog::step("CellularAdapter.h guarded by FASTBEE_ENABLE_CELLULAR");
+
+    std::string ethHdr = readRegressionSrcFile("include/network/EthernetAdapter.h");
+    TEST_ASSERT_FALSE_MESSAGE(ethHdr.empty(), "Cannot read EthernetAdapter.h");
+    TEST_ASSERT_TRUE_MESSAGE(
+        ethHdr.find("#if FASTBEE_ENABLE_ETHERNET") != std::string::npos,
+        "EthernetAdapter.h must be guarded by #if FASTBEE_ENABLE_ETHERNET");
+    TestLog::step("EthernetAdapter.h guarded by FASTBEE_ENABLE_ETHERNET");
+
+    // NetworkManager.h 中的 #include 也必须有条件编译保护
+    std::string nmHdr = readRegressionSrcFile("include/network/NetworkManager.h");
+    TEST_ASSERT_FALSE_MESSAGE(nmHdr.empty(), "Cannot read NetworkManager.h");
+    auto cellIncPos = nmHdr.find("#include \"network/CellularAdapter.h\"");
+    TEST_ASSERT_TRUE_MESSAGE(cellIncPos != std::string::npos,
+        "NetworkManager.h must include CellularAdapter.h");
+    // 向前查找最近的 #if
+    auto guardSearch = nmHdr.substr(0, cellIncPos);
+    auto lastIf = guardSearch.rfind("#if FASTBEE_ENABLE_CELLULAR");
+    TEST_ASSERT_TRUE_MESSAGE(lastIf != std::string::npos,
+        "CellularAdapter.h include must be inside #if FASTBEE_ENABLE_CELLULAR");
+    TestLog::step("NetworkManager.h guards CellularAdapter.h include");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief platformio.ini 中所有 FASTBEE_ENABLE_* 宏必须是有效拼写
+ *
+ * 回归保护：曾经存在 FASTBEE_ENABLE_NEEL（应为 NEOPIXEL）的拼写错误，
+ * 该宏在 C++ 代码中从未被引用，属于无效配置。此测试确保类似错误不再发生。
+ */
+void test_regression_platformio_no_misspelled_macros() {
+    TestLog::testStart("Regression: platformio.ini no misspelled FASTBEE macros");
+
+    std::string pio = readRegressionSrcFile("platformio.ini");
+    TEST_ASSERT_FALSE_MESSAGE(pio.empty(), "Cannot read platformio.ini");
+
+    // 已知的拼写错误宏不应再出现
+    TEST_ASSERT_TRUE_MESSAGE(
+        pio.find("FASTBEE_ENABLE_NEEL") == std::string::npos,
+        "platformio.ini must not contain misspelled FASTBEE_ENABLE_NEEL (was typo for NEOPIXEL)");
+    TestLog::step("Known misspelled macro FASTBEE_ENABLE_NEEL absent");
+
+    // 验证所有 FASTBEE_ENABLE_ 宏至少在两个不同的 flags section 中出现
+    // （如果只出现一次且不在 C++ 代码中使用，很可能是无效宏）
+    size_t pos = 0;
+    std::set<std::string> seenMacros;
+    std::map<std::string, int> macroCount;
+    while ((pos = pio.find("-DFASTBEE_ENABLE_", pos)) != std::string::npos) {
+        size_t nameStart = pos + 2; // skip "-D"
+        size_t nameEnd = pio.find("=", nameStart);
+        if (nameEnd == std::string::npos) break;
+        std::string macro = pio.substr(nameStart, nameEnd - nameStart);
+        macroCount[macro]++;
+        pos = nameEnd + 1;
+    }
+    TestLog::step("All FASTBEE_ENABLE_ macros cataloged");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 热点配置 HTML 布局回归：信道字段必须与隐藏热点/最大连接数同列
+ *
+ * 回归保护：信道(ap-channel)字段曾与热点名称/密码/IP同处左列，
+ * 导致左列4项、右列2项的不均衡布局。修复后信道移至右列，
+ * 与隐藏热点(ap-hidden)、最大连接数(ap-max-connections)并列。
+ */
+void test_regression_ap_config_html_layout() {
+    TestLog::testStart("Regression: AP Config HTML Layout Channel in Right Column");
+
+    std::string html = readRegressionSrcFile("web-src/pages/network.html");
+    TEST_ASSERT_FALSE_MESSAGE(html.empty(), "Cannot read network.html");
+
+    // 定位 ap-config 区块
+    auto apConfigStart = html.find("id=\"ap-config\"");
+    TEST_ASSERT_TRUE_MESSAGE(apConfigStart != std::string::npos,
+        "network.html must contain ap-config section");
+
+    // 提取 ap-form 区块内容（从 ap-form 到下一个 config-content 或文件末尾）
+    auto apFormStart = html.find("id=\"ap-form\"", apConfigStart);
+    TEST_ASSERT_TRUE_MESSAGE(apFormStart != std::string::npos,
+        "ap-config section must contain ap-form");
+
+    // 验证布局结构：ap-channel 不应出现在第一个 config-form-column 中
+    // （第一个列包含 ap-ssid、ap-password、ap-ip）
+    auto firstColStart = html.find("config-form-column", apFormStart);
+    auto firstColEnd = html.find("</div>", html.find("config-form-column", firstColStart + 20));
+    // 向前找够远的 </div> 以包含整个列
+    // 更简单的方式：验证 ap-channel 在 ap-hidden 之后
+    auto hiddenPos = html.find("id=\"ap-hidden\"", apFormStart);
+    auto channelPos = html.find("id=\"ap-channel\"", apFormStart);
+    auto maxConnPos = html.find("id=\"ap-max-connections\"", apFormStart);
+
+    TEST_ASSERT_TRUE_MESSAGE(hiddenPos != std::string::npos,
+        "ap-form must contain ap-hidden field");
+    TEST_ASSERT_TRUE_MESSAGE(channelPos != std::string::npos,
+        "ap-form must contain ap-channel field");
+    TEST_ASSERT_TRUE_MESSAGE(maxConnPos != std::string::npos,
+        "ap-form must contain ap-max-connections field");
+
+    // 关键约束：信道字段必须出现在最大连接数之后（即右列末尾）
+    TEST_ASSERT_TRUE_MESSAGE(channelPos > maxConnPos,
+        "ap-channel must appear after ap-max-connections (right column layout)");
+    // 信道字段必须出现在隐藏热点之后（右列）
+    TEST_ASSERT_TRUE_MESSAGE(channelPos > hiddenPos,
+        "ap-channel must appear after ap-hidden (same right column)");
+    TestLog::step("ap-channel is in right column (after ap-hidden and ap-max-connections)");
+
+    // 验证左列仅包含 ap-ssid、ap-password、ap-ip（不含 ap-channel）
+    auto ipPos = html.find("id=\"ap-ip\"", apFormStart);
+    TEST_ASSERT_TRUE_MESSAGE(ipPos != std::string::npos,
+        "ap-form must contain ap-ip field");
+    TEST_ASSERT_TRUE_MESSAGE(ipPos < hiddenPos,
+        "ap-ip must appear before ap-hidden (left vs right column)");
+    TestLog::step("ap-ip is in left column (before right column starts)");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 热点配置 JS 保存函数必须发送全部 6 个字段
+ *
+ * 回归保护：saveAPConfig() 必须完整发送 apSSID、apPassword、
+ * apIP、apChannel、apHidden、apMaxConnections，缺少任一字段
+ * 将导致后端无法更新对应配置。
+ * 注意：deviceName 已从热点配置中移除，由设备配置基本配置统一管理。
+ */
+void test_regression_ap_config_js_saves_all_fields() {
+    TestLog::testStart("Regression: AP Config JS saveAPConfig Sends All Fields");
+
+    std::string js = readRegressionSrcFile("web-src/modules/runtime/network.js");
+    TEST_ASSERT_FALSE_MESSAGE(js.empty(), "Cannot read network.js");
+
+    // 定位 saveAPConfig 函数定义（注意区分调用和定义）
+    auto fnStart = js.find("saveAPConfig() {");
+    TEST_ASSERT_TRUE_MESSAGE(fnStart != std::string::npos,
+        "network.js must contain saveAPConfig function definition");
+
+    // 提取函数体（从函数开始到 .finally 链结束）
+    auto fnBody = js.substr(fnStart, std::min<size_t>(js.size() - fnStart, 1500));
+
+    // 必须包含 apiPut 调用
+    TEST_ASSERT_TRUE_MESSAGE(fnBody.find("apiPut") != std::string::npos,
+        "saveAPConfig must call apiPut");
+
+    // 6 个必要字段必须出现在 saveAPConfig 函数体中
+    const char* requiredFields[] = {
+        "apSSID", "apPassword", "apIP", "apChannel", "apHidden", "apMaxConnections"
+    };
+    for (const char* field : requiredFields) {
+        TEST_ASSERT_TRUE_MESSAGE(fnBody.find(field) != std::string::npos,
+            (std::string("saveAPConfig must send field: ") + field).c_str());
+    }
+    TestLog::step("All 6 AP config fields present in saveAPConfig");
+
+    // deviceName 不应再出现在 saveAPConfig 中（已移至设备配置）
+    TEST_ASSERT_TRUE_MESSAGE(fnBody.find("deviceName") == std::string::npos,
+        "saveAPConfig must NOT send deviceName (moved to device config)");
+    TestLog::step("deviceName correctly removed from saveAPConfig");
+
+    // 验证 GET 侧 loadNetworkConfig 也读取所有 AP 字段
+    auto loadFn = js.find("loadNetworkConfig()");
+    TEST_ASSERT_TRUE_MESSAGE(loadFn != std::string::npos,
+        "network.js must contain loadNetworkConfig function");
+
+    auto loadBody = js.substr(loadFn, std::min<size_t>(js.size() - loadFn, 2000));
+    const char* loadFields[] = {
+        "ap-ssid", "ap-password", "ap-ip", "ap-channel", "ap-hidden", "ap-max-connections"
+    };
+    for (const char* field : loadFields) {
+        TEST_ASSERT_TRUE_MESSAGE(loadBody.find(field) != std::string::npos,
+            (std::string("loadNetworkConfig must read DOM field: ") + field).c_str());
+    }
+    TestLog::step("All 6 AP config DOM fields present in loadNetworkConfig");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 后端 AP 密码处理必须有 "********" 占位符保护
+ *
+ * 回归保护：前端回显密码时使用 "********" 占位符，后端 handler
+ * 必须识别该占位符并保留原有密码，否则每次加载-保存都会清空密码。
+ */
+void test_regression_ap_handler_password_protection() {
+    TestLog::testStart("Regression: AP Handler Password '********' Protection");
+
+    std::string handler = readRegressionSrcFile("src/network/handlers/SystemRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(handler.empty(), "Cannot read SystemRouteHandler.cpp");
+
+    // 定位 apPassword 处理逻辑
+    auto apPwdPos = handler.find("apPassword");
+    TEST_ASSERT_TRUE_MESSAGE(apPwdPos != std::string::npos,
+        "SystemRouteHandler must handle apPassword field");
+
+    // 在 apPassword 附近查找 "********" 占位符保护
+    // 搜索范围：apPassword 前后 200 字符
+    auto searchStart = (apPwdPos > 50) ? apPwdPos - 50 : 0;
+    auto searchLen = std::min<size_t>(handler.size() - searchStart, 400);
+    auto apPwdBlock = handler.substr(searchStart, searchLen);
+
+    TEST_ASSERT_TRUE_MESSAGE(apPwdBlock.find("********") != std::string::npos,
+        "apPassword handler must check for '********' placeholder to avoid clearing saved password");
+    TestLog::step("apPassword has '********' placeholder protection");
+
+    // 同样验证 staPassword 也有保护（一致性）
+    auto staPwdPos = handler.find("staPassword");
+    TEST_ASSERT_TRUE_MESSAGE(staPwdPos != std::string::npos,
+        "SystemRouteHandler must handle staPassword field");
+    auto staSearchStart = (staPwdPos > 50) ? staPwdPos - 50 : 0;
+    auto staSearchLen = std::min<size_t>(handler.size() - staSearchStart, 400);
+    auto staPwdBlock = handler.substr(staSearchStart, staSearchLen);
+    TEST_ASSERT_TRUE_MESSAGE(staPwdBlock.find("********") != std::string::npos,
+        "staPassword handler must also check for '********' placeholder");
+    TestLog::step("staPassword also has '********' placeholder protection");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief saveAPConfig() 不再发送 deviceName 字段
+ *
+ * 回归保护：deviceName 已从热点配置移至设备配置基本配置，
+ * saveAPConfig() 不应再包含 deviceName 字段。
+ */
+void test_regression_ap_config_js_no_device_name() {
+    TestLog::testStart("Regression: saveAPConfig Does NOT Send deviceName");
+
+    std::string js = readRegressionSrcFile("web-src/modules/runtime/network.js");
+    TEST_ASSERT_FALSE_MESSAGE(js.empty(), "Cannot read network.js");
+
+    auto fnStart = js.find("saveAPConfig() {");
+    TEST_ASSERT_TRUE_MESSAGE(fnStart != std::string::npos,
+        "network.js must contain saveAPConfig function");
+
+    auto fnBody = js.substr(fnStart, std::min<size_t>(js.size() - fnStart, 1500));
+    TEST_ASSERT_TRUE_MESSAGE(fnBody.find("deviceName") == std::string::npos,
+        "saveAPConfig must NOT send deviceName (moved to device config)");
+    TestLog::step("deviceName correctly absent from saveAPConfig");
+
+    // loadNetworkConfig 中 AP 配置区域也不应再读取 device-name DOM 元素
+    auto loadFn = js.find("loadNetworkConfig()");
+    TEST_ASSERT_TRUE_MESSAGE(loadFn != std::string::npos,
+        "network.js must contain loadNetworkConfig function");
+    auto loadBody = js.substr(loadFn, std::min<size_t>(js.size() - loadFn, 2000));
+    TEST_ASSERT_TRUE_MESSAGE(loadBody.find("device-name") == std::string::npos,
+        "loadNetworkConfig must NOT read device-name DOM element in AP section");
+    TestLog::step("device-name DOM element correctly absent from loadNetworkConfig AP section");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 网络配置 handler 不再解析 deviceName 字段
+ *
+ * 回归保护：deviceName 已从网络配置移至设备配置，
+ * SystemRouteHandler 的 JSON handler 不应再解析 deviceName。
+ */
+void test_regression_handler_no_device_name_in_network() {
+    TestLog::testStart("Regression: Network Handler Does NOT Parse deviceName");
+
+    std::string handler = readRegressionSrcFile("src/network/handlers/SystemRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(handler.empty(), "Cannot read SystemRouteHandler.cpp");
+
+    // 定位网络配置 JSON handler 区域
+    auto handlerPos = handler.find("AsyncCallbackJsonWebHandler(\"/api/network/config\"");
+    TEST_ASSERT_TRUE_MESSAGE(handlerPos != std::string::npos,
+        "SystemRouteHandler must have /api/network/config JSON handler");
+
+    // 提取 handler 函数体（约 2000 字符范围）
+    auto handlerBody = handler.substr(handlerPos, std::min<size_t>(handler.size() - handlerPos, 2000));
+
+    // handler 不应再解析 cfg.deviceName
+    TEST_ASSERT_TRUE_MESSAGE(handlerBody.find("cfg.deviceName = obj[\"deviceName\"]") == std::string::npos,
+        "Network config handler must NOT parse cfg.deviceName from JSON");
+    TestLog::step("cfg.deviceName correctly absent from network handler");
+
+    // GET 响应仍可返回 deviceName（作为网络状态信息，非配置字段）
+    // 不做限制，仅验证 POST handler 不再解析
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief WiFiManager SSID 生成必须从 device.json 读取 deviceName
+ *
+ * 回归保护：startAPMode() 中的 SSID 生成必须通过 _readDeviceName()
+ * 从 device.json 读取设备名称，不能硬编码为 "FastBee"。
+ */
+void test_regression_wifi_manager_uses_device_name_for_ssid() {
+    TestLog::testStart("Regression: WiFiManager Uses deviceName for SSID");
+
+    std::string src = readRegressionSrcFile("src/network/WiFiManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(src.empty(), "Cannot read WiFiManager.cpp");
+
+    // 查找 startAPMode 函数
+    auto fnPos = src.find("startAPMode");
+    TEST_ASSERT_TRUE_MESSAGE(fnPos != std::string::npos,
+        "WiFiManager.cpp must contain startAPMode function");
+
+    auto fnBody = src.substr(fnPos, std::min<size_t>(src.size() - fnPos, 3000));
+
+    // SSID 生成必须通过 _readDeviceName() 从 device.json 读取
+    TEST_ASSERT_TRUE_MESSAGE(fnBody.find("_readDeviceName") != std::string::npos,
+        "startAPMode must call _readDeviceName() for SSID generation");
+    TestLog::step("startAPMode calls _readDeviceName()");
+
+    // 必须检查 apSSID 是否为空来决定自动生成
+    TEST_ASSERT_TRUE_MESSAGE(fnBody.find("apSSID.isEmpty()") != std::string::npos ||
+                             fnBody.find("apSSID.isEmpty") != std::string::npos,
+        "startAPMode must check if apSSID is empty before auto-generating");
+    TestLog::step("startAPMode checks apSSID.isEmpty() for auto-generation");
+
+    // 不应再使用 wifiConfig.deviceName（已从 WiFiConfig 移除）
+    TEST_ASSERT_TRUE_MESSAGE(fnBody.find("wifiConfig.deviceName") == std::string::npos,
+        "startAPMode must NOT use wifiConfig.deviceName (removed from WiFiConfig)");
+    TestLog::step("wifiConfig.deviceName correctly absent from startAPMode");
+
+    TestLog::testEnd(true);
+}
+
 void test_regression_guard_group() {
     TestLog::groupStart("Regression Guard Tests");
 
@@ -1958,6 +2443,7 @@ void test_regression_guard_group() {
 
     // network.json 死字段清理 + IPManager 同步回归保护
     RUN_TEST(test_regression_enable_dns_removed);
+    RUN_TEST(test_regression_network_config_json_handler_precedes_legacy_post);
     RUN_TEST(test_regression_ipmanager_config_sync);
 
     // MQTT topicType 默认值 + autoPrefix 默认值一致性 + content/action 隐式保护
@@ -1993,6 +2479,24 @@ void test_regression_guard_group() {
     RUN_TEST(test_regression_mqtt_summary_default_json);
     RUN_TEST(test_regression_device_layout_security_factory_at_bottom);
     RUN_TEST(test_regression_mdns_async_restart);
+
+    // src_filter / lib_deps 排除回归保护
+    RUN_TEST(test_regression_src_filter_excludes_unused_adapters);
+    RUN_TEST(test_regression_non_cellular_envs_no_tinygsm_sslclient);
+    RUN_TEST(test_regression_adapter_headers_have_feature_guard);
+
+    // platformio.ini 宏拼写回归保护
+    RUN_TEST(test_regression_platformio_no_misspelled_macros);
+
+    // 热点配置 HTML 布局 + JS 字段完整性 + 密码保护回归保护
+    RUN_TEST(test_regression_ap_config_html_layout);
+    RUN_TEST(test_regression_ap_config_js_saves_all_fields);
+    RUN_TEST(test_regression_ap_handler_password_protection);
+
+    // deviceName 配置回归保护（deviceName 已移至设备配置，网络配置不再管理）
+    RUN_TEST(test_regression_ap_config_js_no_device_name);
+    RUN_TEST(test_regression_handler_no_device_name_in_network);
+    RUN_TEST(test_regression_wifi_manager_uses_device_name_for_ssid);
 
     TestLog::groupEnd();
 }

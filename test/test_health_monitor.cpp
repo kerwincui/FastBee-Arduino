@@ -868,6 +868,49 @@ void test_source_dynamic_threshold_in_code() {
     TestLog::testEnd(true);
 }
 
+/**
+ * @brief HM-24: MEMGUARD 日志使用动态阈值而非硬编码字符串
+ *
+ * 验证 HealthMonitor.cpp 中的 MEMGUARD 日志格式使用 %uB 动态引用
+ * GUARD_CRITICAL_LARGEST_BLOCK / GUARD_SEVERE_LARGEST_BLOCK 常量，
+ * 而非硬编码 "2KB" / "3KB" 字符串。
+ */
+void test_memguard_log_uses_dynamic_thresholds() {
+    TestLog::testStart("HealthMonitor: MEMGUARD Log Uses Dynamic Thresholds");
+
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    // 1. 日志中不应出现硬编码的 "2KB" 或 "3KB" 阈值字符串
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("<2KB") == std::string::npos,
+        "MEMGUARD log must NOT use hardcoded '<2KB' - use dynamic GUARD_CRITICAL_LARGEST_BLOCK value");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("<3KB") == std::string::npos,
+        "MEMGUARD log must NOT use hardcoded '<3KB' - use dynamic GUARD_SEVERE_LARGEST_BLOCK value");
+    TestLog::step("No hardcoded '<2KB' or '<3KB' in MEMGUARD logs");
+
+    // 2. CRITICAL 分支日志必须引用 GUARD_CRITICAL_LARGEST_BLOCK 常量
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("GUARD_CRITICAL_LARGEST_BLOCK") != std::string::npos,
+        "MEMGUARD CRITICAL log must reference GUARD_CRITICAL_LARGEST_BLOCK constant");
+    TestLog::step("CRITICAL log references GUARD_CRITICAL_LARGEST_BLOCK");
+
+    // 3. SEVERE 分支日志必须引用 GUARD_SEVERE_LARGEST_BLOCK 常量
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("GUARD_SEVERE_LARGEST_BLOCK") != std::string::npos,
+        "MEMGUARD SEVERE log must reference GUARD_SEVERE_LARGEST_BLOCK constant");
+    TestLog::step("SEVERE log references GUARD_SEVERE_LARGEST_BLOCK");
+
+    // 4. 日志格式应使用 %uB 动态格式而非固定字符串
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("%uB") != std::string::npos,
+        "MEMGUARD log must use %uB format specifier for dynamic threshold display");
+    TestLog::step("Dynamic %uB format specifier used in MEMGUARD logs");
+
+    TestLog::testEnd(true);
+}
+
 // ========== 测试组入口 ==========
 
 void test_health_monitor_group() {
@@ -911,6 +954,9 @@ void test_health_monitor_group() {
     // 动态 PSRAM 阈值测试
     RUN_TEST(test_dynamic_psram_threshold_tiers);
     RUN_TEST(test_source_dynamic_threshold_in_code);
+
+    // MEMGUARD 日志动态阈值测试
+    RUN_TEST(test_memguard_log_uses_dynamic_thresholds);
 
     TestLog::groupEnd();
 }

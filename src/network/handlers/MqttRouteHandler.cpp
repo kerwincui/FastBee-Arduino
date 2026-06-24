@@ -123,7 +123,7 @@ void MqttRouteHandler::checkPendingTestRestore() {
                 if (mqtt && !mqtt->isStopped()) {
                     mqtt->stop();
                 }
-                fw->getProtocolManager()->restartMQTTDeferred();
+                fw->getProtocolManager()->restartMQTTDeferred(true);
             }
             LOG_INFO("[MQTT Test] Auto-restore: config restored, main client restarting");
         }
@@ -184,7 +184,16 @@ static Client* selectMqttTestClient(WebHandlerContext* ctx, WiFiClient& fallback
         return nullptr;
     }
 
-    Client* activeClient = netMgr->getActiveClient();
+    Client* activeClient = nullptr;
+#if FASTBEE_ENABLE_CELLULAR
+    if (scheme == "mqtts" && netMgr->getNetworkType() == NetworkType::NET_4G) {
+        CellularAdapter* cell = netMgr->getCellularAdapter();
+        activeClient = cell ? cell->getSecureClient() : nullptr;
+    } else
+#endif
+    {
+        activeClient = netMgr->getActiveClient();
+    }
     if (!activeClient) {
         errorMessage = "Active network client is unavailable";
         return nullptr;
@@ -716,7 +725,7 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
     {
         ProtocolManager* pm = ctx->protocolManager;
         if (pm) {
-            deferred = pm->restartMQTTDeferred();
+            deferred = pm->restartMQTTDeferred(true);
         }
     }
 
@@ -820,6 +829,9 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
             data["lastError"] = mqtt->getLastErrorCode();
             data["reconnectCount"] = mqtt->getReconnectCount();
             data["autoReconnect"] = cfg.autoReconnect;
+            data["scheme"] = cfg.scheme;
+            data["tlsAllocated"] = mqtt->isTlsTransportAllocated();
+            data["webPausedForMqtts"] = mqtt->isWebPausedForMqtts();
             unsigned long connTime = mqtt->getLastConnectedTime();
             data["lastConnectedMs"] = connTime > 0 ? (millis() - connTime) / 1000 : 0;
         } else {

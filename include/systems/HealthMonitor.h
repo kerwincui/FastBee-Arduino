@@ -6,6 +6,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include "utils/HeapFragmentation.h"
+#include "core/MemoryBudget.h"
 #include "core/interfaces/ILoggerSystem.h"  // LogLevel 枚举
 
 // 内存保护等级（ESP32 D0WD-V3 no-PSRAM 实测：WiFi+WebServer+外设常态吃掉 ~210KB，
@@ -18,11 +19,11 @@ enum class MemoryGuardLevel : uint8_t {
 };
 
 // 阈值常量（贴合 ESP32 no-PSRAM 实际：空闲 heap~27KB，web服务时临时降至 10-15KB 是正常行为）
-static constexpr uint32_t MEM_THRESHOLD_NORMAL  = 20480;  // 20KB
-static constexpr uint32_t MEM_THRESHOLD_WARN    = 10240;  // 10KB
-static constexpr uint32_t MEM_THRESHOLD_SEVERE  =  6144;  //  6KB
+static constexpr uint32_t MEM_THRESHOLD_NORMAL  = FastBee::MemoryBudget::GUARD_WARN_DRAM_FREE;
+static constexpr uint32_t MEM_THRESHOLD_WARN    = FastBee::MemoryBudget::GUARD_SEVERE_DRAM_FREE;
+static constexpr uint32_t MEM_THRESHOLD_SEVERE  = FastBee::MemoryBudget::GUARD_CRITICAL_DRAM_FREE;
 // largestFreeBlock 健康反证：连续块 >= 12KB 足以响应 HTTP 响应，强制维持 NORMAL
-static constexpr uint32_t MEM_LARGEST_HEALTHY    = 12288;  // 12KB
+static constexpr uint32_t MEM_LARGEST_HEALTHY    = FastBee::MemoryBudget::GUARD_WARN_LARGEST_BLOCK;
 static constexpr uint8_t  FRAG_THRESHOLD_COMPACT = 80;    // 碎片率80%触发紧凑化
 static constexpr uint8_t  FRAG_THRESHOLD_REBOOT  = 85;    // sustained severe fragmentation triggers reboot
 static constexpr uint32_t FRAG_REBOOT_MAX_BLOCK  = 4096;  // 4KB largest DRAM block is too small for stable TCP/Web

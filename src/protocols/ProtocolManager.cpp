@@ -11,10 +11,12 @@
 #include "core/FastBeeFramework.h"
 #include "core/PeriphExecManager.h"
 #include "core/FeatureFlags.h"
+#include "core/MemoryBudget.h"
 #include "network/NetworkManager.h"
 #include "network/handlers/MqttRouteHandler.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
+#include <esp_heap_caps.h>
 #include <memory>
 
 #if FASTBEE_ENABLE_MQTT
@@ -33,7 +35,35 @@ static bool configureMqttTransport(MQTTClient* mqttClient) {
         return false;
     }
 
-    Client* transport = netMgr->getActiveClient();
+    bool wantsMqtts = false;
+    {
+        JsonDocument doc;
+        if (ConfigStorage::getInstance().loadProtocolSection("mqtt", doc)) {
+            JsonVariant mqttSection = doc["mqtt"];
+            JsonVariant cfg = mqttSection.is<JsonObject>() ? mqttSection : doc.as<JsonVariant>();
+            wantsMqtts = (cfg["scheme"].as<String>() == "mqtts");
+        }
+    }
+
+    Client* transport = nullptr;
+    if (wantsMqtts && netMgr->getNetworkType() == NetworkType::NET_ETHERNET) {
+        // WiFiClientSecure is backed by Arduino-ESP32 NetworkClientSecure and
+        // can use the active Ethernet route. Injecting the plain W5500 client
+        // here would send cleartext MQTT to port 8883 and timeout.
+        mqttClient->setTransportClient(nullptr);
+        LOG_INFO("Protocol Manager: Using internal secure transport for Ethernet MQTTS");
+        return true;
+    }
+#if FASTBEE_ENABLE_CELLULAR
+    if (wantsMqtts && netMgr->getNetworkType() == NetworkType::NET_4G) {
+        CellularAdapter* cell = netMgr->getCellularAdapter();
+        transport = cell ? cell->getSecureClient() : nullptr;
+        LOG_INFO("Protocol Manager: Using cellular secure transport for MQTTS");
+    } else
+#endif
+    {
+        transport = netMgr->getActiveClient();
+    }
     if (!transport) {
         LOG_WARNING("Protocol Manager: MQTT transport unavailable, active Client is null");
         return false;
@@ -334,18 +364,39 @@ void ProtocolManager::handle() {
     // 内部已有堆保护（doReconnect() 检查 8KB），不会在堆不足时强行连接
     // PSRAM 设备稳态堆常在 10-12KB（WiFi/lwIP/FreeRTOS 必须在内部 DRAM），
     // 30KB 阈值会导致重型协议永远跳过，MQTT 仍可运行（8KB 阈值足够）
-    uint32_t freeHeap = ESP.getFreeHeap();
-    bool heapSufficient = (freeHeap >= 30000);
+    bool networkReady = true;
+    {
+        FastBeeFramework* fw = FastBeeFramework::getInstance();
+        FBNetworkManager* netMgr = fw ? static_cast<FBNetworkManager*>(fw->getNetworkManager()) : nullptr;
+        if (netMgr) {
+            networkReady = netMgr->isNetworkConnected();
+        }
+    }
+
+    uint32_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    bool heapSufficient =
+        (freeHeap >= FastBee::MemoryBudget::GUARD_WARN_DRAM_FREE) &&
+        (largestBlock >= FastBee::MemoryBudget::GUARD_WARN_LARGEST_BLOCK);
 
     // MQTT handle() 始终运行：内部有堆保护，不会在内存不足时 OOM
 #if FASTBEE_ENABLE_MQTT
     if (mqttClient) {
-        mqttClient->handle();
+        if (networkReady || mqttClient->getIsConnected()) {
+            mqttClient->handle();
+        } else {
+            static unsigned long lastMqttNetworkSkipMs = 0;
+            unsigned long now = millis();
+            if (now - lastMqttNetworkSkipMs > 10000) {
+                lastMqttNetworkSkipMs = now;
+                LOG_INFO("Protocol Manager: Network not connected, MQTT handle skipped");
+            }
+        }
         // 测试连接自动恢复检查：不依赖前端轮询，主循环自动检测并恢复原配置
         MqttRouteHandler::checkPendingTestRestore();
         // 周期性 ets_printf 调试（每10秒），直接写UART不经过Serial缓冲区
         static unsigned long _pmDbgMs = 0;
-        if (millis() - _pmDbgMs > 10000) {
+        if (mqttClient->getIsConnected() && millis() - _pmDbgMs > 10000) {
             _pmDbgMs = millis();
             ets_printf("[PROTO] MQTT handle alive heap=%lu\n", (unsigned long)freeHeap);
         }
@@ -453,7 +504,7 @@ bool ProtocolManager::restartMQTT() {
 
     // 断开现有连接
     if (mqttClient) {
-        mqttClient->disconnect();
+        mqttClient->stop();
         mqttClient.reset();
     }
 
@@ -515,13 +566,23 @@ bool ProtocolManager::restartMQTT() {
     return ok;
 }
 
-bool ProtocolManager::restartMQTTDeferred() {
+bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
     LOG_INFO("Protocol Manager: Restarting MQTT (deferred connect)...");
+
+    if (!forceRebuild && mqttClient && !mqttClient->isStopped()) {
+        MQTTConfig currentConfig = mqttClient->getConfig();
+        if (!currentConfig.server.isEmpty() && currentConfig.port > 0) {
+            ets_printf("[MQTT] Deferred restart skipped: client already active (connected=%u)\n",
+                       mqttClient->getIsConnected() ? 1U : 0U);
+            LOG_INFO("Protocol Manager: MQTT deferred restart skipped, active client preserved");
+            return true;
+        }
+    }
 
     // 先释放旧客户端，然后再检查堆内存
     // 之前在释放前检查导致误判（旧客户端占用 ~12KB，释放后堆足够）
     if (mqttClient) {
-        mqttClient->disconnect();
+        mqttClient->stop();
         mqttClient.reset();
     }
 
@@ -532,30 +593,43 @@ bool ProtocolManager::restartMQTTDeferred() {
     // 堆保护：释放旧客户端后仍不足，放弃重建
     // MQTTS 需要更多内存（SSL/TLS 握手约 42KB），MQTT 仅需约 6KB
     // 检查配置中的 scheme 字段动态调整阈值
-    uint32_t freeHeap = ESP.getFreeHeap();
+    uint32_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
     
     // 尝试从配置读取 scheme（如果 MQTT 客户端未创建，从配置文件读取）
     bool isMqtts = false;
-    if (LittleFS.exists(FileSystem::PROTOCOL_CONFIG_FILE)) {
-        File file = LittleFS.open(FileSystem::PROTOCOL_CONFIG_FILE, "r");
-        if (file) {
-            JsonDocument doc;
-            DeserializationError err = deserializeJson(doc, file);
-            file.close();
-            if (!err && doc.containsKey("mqtt")) {
-                String scheme = doc["mqtt"]["scheme"].as<String>();
-                isMqtts = (scheme == "mqtts");
-            }
+    {
+        JsonDocument doc;
+        if (ConfigStorage::getInstance().loadProtocolSection("mqtt", doc)) {
+            String scheme = doc["mqtt"]["scheme"].as<String>();
+            isMqtts = (scheme == "mqtts");
         }
     }
     
-    uint32_t minHeap = isMqtts ? 42000 : 8000;  // MQTTS: 50KB, MQTT: 8KB
-    if (freeHeap < minHeap) {
-        LOG_WARNINGF("Protocol Manager: Heap too low for %s deferred restart (heap=%lu need=%lu), skipping",
-                     isMqtts ? "MQTTS" : "MQTT",
-                     (unsigned long)freeHeap,
-                     (unsigned long)minHeap);
-        return false;
+    uint32_t minHeap = isMqtts
+        ? FastBee::MemoryBudget::MQTTS_MIN_DRAM_FREE
+        : FastBee::MemoryBudget::MQTT_MIN_HEAP;
+    uint32_t minLargestBlock = isMqtts
+        ? FastBee::MemoryBudget::MQTTS_MIN_LARGEST_BLOCK
+        : FastBee::MemoryBudget::MQTT_MIN_LARGEST_BLOCK;
+    if (freeHeap < minHeap || largestBlock < minLargestBlock) {
+        if (isMqtts &&
+            freeHeap >= FastBee::MemoryBudget::GUARD_CRITICAL_DRAM_FREE &&
+            largestBlock >= FastBee::MemoryBudget::GUARD_CRITICAL_LARGEST_BLOCK) {
+            LOG_WARNINGF("Protocol Manager: DRAM marginal for MQTTS deferred restart (dram=%lu largest=%lu need=%lu/%lu), creating client and deferring reconnect",
+                         (unsigned long)freeHeap,
+                         (unsigned long)largestBlock,
+                         (unsigned long)minHeap,
+                         (unsigned long)minLargestBlock);
+        } else {
+            LOG_WARNINGF("Protocol Manager: DRAM too low for %s deferred restart (dram=%lu largest=%lu need=%lu/%lu), skipping",
+                         isMqtts ? "MQTTS" : "MQTT",
+                         (unsigned long)freeHeap,
+                         (unsigned long)largestBlock,
+                         (unsigned long)minHeap,
+                         (unsigned long)minLargestBlock);
+            return false;
+        }
     }
 
     // 重新创建并初始化（仅加载配置，不阻塞连接）

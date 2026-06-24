@@ -806,7 +806,7 @@ bool FBNetworkManager::loadNetworkConfig() {
         }
         LOG_DEBUG("NetworkManager: JSON parsed successfully");
         if (doc.containsKey("mode"))                 wifiConfig.mode = static_cast<NetworkMode>(doc["mode"].as<uint8_t>());
-        if (doc.containsKey("deviceName"))           wifiConfig.deviceName = doc["deviceName"].as<String>();
+        // deviceName 已移至设备配置(device.json)，不再从 network.json 加载
         if (doc.containsKey("apSSID"))               wifiConfig.apSSID = doc["apSSID"].as<String>();
         if (doc.containsKey("apPassword"))           wifiConfig.apPassword = doc["apPassword"].as<String>();
         if (doc.containsKey("apIP"))                 wifiConfig.apIP = doc["apIP"].as<String>();
@@ -913,7 +913,7 @@ bool FBNetworkManager::loadNetworkConfig() {
     // 基本配置
     wifiConfig.mode = static_cast<NetworkMode>(preferences.getUInt("mode", 
         static_cast<uint8_t>(NetworkMode::NETWORK_STA)));
-        wifiConfig.deviceName = preferences.getString("device_name", "FBE10000001");
+    // deviceName 已移至设备配置(device.json)，不再从 NVS 加载
 
         // AP配置
         wifiConfig.apSSID = preferences.getString("ap_ssid", "");
@@ -980,7 +980,7 @@ bool FBNetworkManager::saveNetworkConfig() {
     // 构建 JSON内容共用
     JsonDocument doc;
     doc["mode"] = static_cast<uint8_t>(wifiConfig.mode);
-    doc["deviceName"] = wifiConfig.deviceName;
+    // deviceName 已移至设备配置(device.json)，不再保存到 network.json
     doc["apSSID"] = wifiConfig.apSSID;
     doc["apPassword"] = wifiConfig.apPassword;
     doc["apIP"] = wifiConfig.apIP;
@@ -1056,7 +1056,7 @@ bool FBNetworkManager::saveNetworkConfig() {
     // ===== 同步写入 NVS（备份） =====
     // 基本配置
     preferences.putUInt("mode", static_cast<uint8_t>(wifiConfig.mode));
-        preferences.putString("device_name", wifiConfig.deviceName);
+    // deviceName 已移至设备配置(device.json)，不再保存到 NVS
 
         // AP配置
         preferences.putString("ap_ssid", wifiConfig.apSSID);
@@ -1801,7 +1801,7 @@ String FBNetworkManager::getConfigJSON() {
     
     // 基本配置
     doc["mode"] = static_cast<uint8_t>(wifiConfig.mode);
-    doc["deviceName"] = wifiConfig.deviceName;
+    // deviceName 已移至设备配置，getConfigJSON 不再返回
     
     // AP配置
     doc["apSSID"] = wifiConfig.apSSID;
@@ -1954,9 +1954,8 @@ bool FBNetworkManager::updateConfigFromJSON(const String& jsonConfig) {
     // 更新配置
     if (doc.containsKey("mode")) 
         newConfig.mode = static_cast<NetworkMode>(doc["mode"].as<uint8_t>());
-    if (doc.containsKey("deviceName")) 
-        newConfig.deviceName = doc["deviceName"].as<String>();
-    
+    // deviceName 已移至设备配置，updateConfigFromJSON 不再解析
+        
     if (doc.containsKey("apSSID")) 
         newConfig.apSSID = doc["apSSID"].as<String>();
     if (doc.containsKey("apPassword")) 

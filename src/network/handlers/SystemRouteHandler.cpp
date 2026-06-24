@@ -284,9 +284,6 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         HandlerUtils::sendJsonStream(request, doc);
     });
 
-    server->on("/api/network/config", HTTP_POST,
-              [this](AsyncWebServerRequest* request) { handleSaveNetworkConfig(request); });
-
     // JSON body handler for network config update
     auto* networkJsonHandler = new AsyncCallbackJsonWebHandler("/api/network/config",
         [this](AsyncWebServerRequest* request, JsonVariant& json) {
@@ -395,6 +392,11 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         });
     networkJsonHandler->setMethod(HTTP_POST | HTTP_PUT);
     server->addHandler(networkJsonHandler);
+
+    // Legacy form fallback. Register after the JSON handler so application/json
+    // POST requests are parsed instead of returning the fallback hint.
+    server->on("/api/network/config", HTTP_POST,
+              [this](AsyncWebServerRequest* request) { handleSaveNetworkConfig(request); });
 
 #if FASTBEE_ENABLE_CONFIG_TRANSFER
     server->on("/api/config/transfer/list", HTTP_GET,
@@ -879,7 +881,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
 
         // network.json - 网络配置（清除WiFi凭据，恢复AP模式以便用户重新配网）
         static const char DEFAULT_NETWORK[] PROGMEM =
-            "{\"mode\":0,\"networkType\":0,\"deviceName\":\"FastBee-Device\","
+            "{\"mode\":0,\"networkType\":0,"
             "\"apSSID\":\"fastbee-ap\",\"apPassword\":\"12345678\",\"apIP\":\"192.168.4.1\","
             "\"apChannel\":1,\"apHidden\":false,\"apMaxConnections\":4,"
             "\"staSSID\":\"\",\"staPassword\":\"\",\"networks\":[],"
@@ -1246,6 +1248,7 @@ void SystemRouteHandler::handleNetworkConfig(AsyncWebServerRequest* request) {
         WiFiConfig cfg = netMgr->getConfig();
 
         doc["data"]["device"]["macAddress"] = WiFi.macAddress();
+        // deviceName 已移至设备配置，网络配置 GET 不再返回
         doc["data"]["network"]["mode"] = static_cast<uint8_t>(cfg.mode);
         doc["data"]["network"]["networkType"] = static_cast<uint8_t>(cfg.networkType);
         doc["data"]["network"]["ipConfigType"] = static_cast<uint8_t>(cfg.ipConfigType);

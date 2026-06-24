@@ -50,6 +50,8 @@ extern void test_modbus_handler_group();
 extern void test_ds1302_group();
 extern void test_lcd1602_group();
 extern void test_cellular_adapter_group();
+extern void test_memory_budget_group();
+extern void test_modbus_mqtt_interaction_group();
 
 // 测试夹具
 void setUp() {
@@ -204,6 +206,12 @@ void setup() {
 
     Serial.println("\n[TEST] Running CellularAdapter EC801E Tests...");
     test_cellular_adapter_group();
+
+    Serial.println("\n[TEST] Running MemoryBudget Tests...");
+    test_memory_budget_group();
+
+    Serial.println("\n[TEST] Running Modbus-MQTT Interaction Tests...");
+    test_modbus_mqtt_interaction_group();
 
     // 结束测试并输出结果
     int result = UNITY_END();

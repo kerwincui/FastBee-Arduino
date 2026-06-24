@@ -163,9 +163,20 @@ const FEATURE_FLAG_TO_SOURCES = {
     FASTBEE_ENABLE_OTA: ['network/OTAManager.cpp', 'network/handlers/OTARouteHandler.cpp'],
     FASTBEE_ENABLE_TCP: ['protocols/TCPHandler.cpp'],
     FASTBEE_ENABLE_HTTP: ['protocols/HTTPClientWrapper.cpp'],
-    FASTBEE_ENABLE_COAP: ['protocols/CoAPHandler.cpp']
+    FASTBEE_ENABLE_COAP: ['protocols/CoAPHandler.cpp'],
+    FASTBEE_ENABLE_CELLULAR: ['network/CellularAdapter.cpp'],
+    FASTBEE_ENABLE_ETHERNET: ['network/EthernetAdapter.cpp']
     // NOTE: FASTBEE_ENABLE_USER_ADMIN / FASTBEE_ENABLE_ROLE_ADMIN removed —
     // multi-role management was removed (single-admin mode only).
+};
+
+/**
+ * Feature flag -> lib_deps tokens that must NOT appear when flag is disabled (=0).
+ * Prevents PlatformIO LDF from scanning unused third-party libraries.
+ */
+const FEATURE_FLAG_FORBID_LIBS = {
+    FASTBEE_ENABLE_CELLULAR: ['TinyGSM', 'SSLClient'],
+    FASTBEE_ENABLE_ETHERNET: []
 };
 
 function readText(filePath) {
@@ -502,6 +513,57 @@ function validateFeatureFlagSourceConsistency(platformioText, allPlatformioEnvs,
                     }
                 });
             }
+        });
+    });
+}
+
+/**
+ * When a feature flag is disabled (=0), the corresponding source files MUST be
+ * excluded from build_src_filter, and forbidden lib_deps must NOT be declared.
+ * This prevents PlatformIO LDF from scanning unused .cpp files and pulling in
+ * unnecessary third-party libraries (e.g. TinyGSM/SSLClient for non-cellular envs).
+ */
+function validateDisabledFeatureExclusions(platformioText, allPlatformioEnvs, issues) {
+    allPlatformioEnvs.forEach((envName) => {
+        if (envName === 'native') return;
+        const sectionName = `env:${envName}`;
+        const flags = resolveIniBuildFlags(platformioText, sectionName);
+        const excluded = extractExcludedSources(platformioText, sectionName);
+        const label = `${rel(PLATFORMIO_PATH)} [${sectionName}]`;
+
+        Object.entries(FEATURE_FLAG_TO_SOURCES).forEach(([flagName, sourceFiles]) => {
+            const flagMatch = flags.find((flag) => {
+                const m = flag.match(new RegExp(`^-D${escapeRegex(flagName)}=(.*)$`));
+                return m;
+            });
+            // Only check when flag is explicitly set to 0
+            if (!flagMatch) return;
+            const valueMatch = flagMatch.match(new RegExp(`^-D${escapeRegex(flagName)}=(.*)$`));
+            if (!valueMatch || valueMatch[1] !== '0') return;
+
+            sourceFiles.forEach((srcFile) => {
+                if (!excluded.includes(srcFile)) {
+                    issues.push(`${label}: ${flagName}=0 but build_src_filter does not exclude '${srcFile}'`);
+                }
+            });
+        });
+
+        Object.entries(FEATURE_FLAG_FORBID_LIBS).forEach(([flagName, forbiddenLibs]) => {
+            if (forbiddenLibs.length === 0) return;
+            const flagMatch = flags.find((flag) => {
+                const m = flag.match(new RegExp(`^-D${escapeRegex(flagName)}=(.*)$`));
+                return m;
+            });
+            if (!flagMatch) return;
+            const valueMatch = flagMatch.match(new RegExp(`^-D${escapeRegex(flagName)}=(.*)$`));
+            if (!valueMatch || valueMatch[1] !== '0') return;
+
+            const libDeps = extractIniList(platformioText, sectionName, 'lib_deps');
+            forbiddenLibs.forEach((lib) => {
+                if (libDeps.some((dep) => dep.includes(lib))) {
+                    issues.push(`${label}: ${flagName}=0 but lib_deps declares '${lib}'`);
+                }
+            });
         });
     });
 }
@@ -858,6 +920,7 @@ function main() {
     validateGzipWwwEnvironmentFallback(gzipWwwText, firmwareEnvs, defaultEnvs, issues);
     validatePartitionTables(platformioText, issues);
     validateFeatureFlagSourceConsistency(platformioText, allPlatformioEnvs, issues);
+    validateDisabledFeatureExclusions(platformioText, allPlatformioEnvs, issues);
 
     if (issues.length > 0) {
         console.error('FastBee build matrix validation failed:');

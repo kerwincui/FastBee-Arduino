@@ -27,6 +27,7 @@ public:
     NetStatus status = NetStatus::DISCONNECTED;
     String ipAddress = "";
     String apIPAddress = "";
+    String deviceName = "FastBee";
     String apSSID = "fastbee-ap";
     bool apRunning = false;
     uint8_t apClientCount = 0;

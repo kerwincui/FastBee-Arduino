@@ -647,11 +647,23 @@
                         <select id="rule-script-protocol-type" class="">
                             <option value="0" data-i18n="rule-script-protocol-mqtt">MQTT</option>
                             <option value="1" data-i18n="rule-script-protocol-modbus-rtu">Modbus RTU</option>
-                            <option value="2" data-i18n="rule-script-protocol-modbus-tcp">Modbus TCP</option>
-                            <option value="3" data-i18n="rule-script-protocol-http">HTTP</option>
-                            <option value="4" data-i18n="rule-script-protocol-coap">CoAP</option>
-                            <option value="5" data-i18n="rule-script-protocol-tcp">TCP</option>
                         </select>
+                    </div>
+                    <div id="rule-script-topic-fields" style="display:none;">
+                        <div class="fb-form-group">
+                            <label for="rule-script-source-topic"
+                                data-i18n="rule-script-source-topic-label">源主题</label>
+                            <input type="text" id="rule-script-source-topic" class=""
+                                placeholder="例如: /device/sensor/data 或 /device/+/data">
+                            <small data-i18n="rule-script-source-topic-help">留空匹配所有 MQTT 消息，支持 + (单级) / # (多级) 通配符</small>
+                        </div>
+                        <div class="fb-form-group">
+                            <label for="rule-script-target-topic"
+                                data-i18n="rule-script-target-topic-label">目标主题</label>
+                            <input type="text" id="rule-script-target-topic" class=""
+                                placeholder="例如: /cloud/telemetry">
+                            <small data-i18n="rule-script-target-topic-help">留空不重定向，转换后发布到此主题</small>
+                        </div>
                     </div>
                     <div class="fb-form-group">
                         <label for="rule-script-content" data-i18n="rule-script-content-label">脚本内容</label>

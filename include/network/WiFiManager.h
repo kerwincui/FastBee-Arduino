@@ -103,7 +103,7 @@ struct WiFiConfig {
     
     // 基本配置
     NetworkMode mode = NetworkMode::NETWORK_STA;      // 默认 STA 模式
-    String deviceName = "FastBee";
+    // 注：deviceName 已移至设备配置(device.json)，AP SSID 生成时从 device.json 读取
     
     // AP 配置（首次启动或 STA 失败时的配网热点）
     String apSSID = "fastbee-ap";  // 默认 AP 热点名称，确保不为空
@@ -384,6 +384,12 @@ private:
     WiFiConfig wifiConfig;
     NetworkStatusInfo statusInfo;
     NetworkEventCallback connectionCallback = nullptr;
+    
+    /**
+     * @brief 从设备配置(device.json)读取设备名称
+     * @return 设备名称，默认 "FastBee"
+     */
+    String _readDeviceName();
     NetworkEventCallback disconnectionCallback = nullptr;
     NetworkEventCallback ipConflictCallback = nullptr;
     

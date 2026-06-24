@@ -23,6 +23,8 @@
 #include "systems/LoggerSystem.h"
 #include "systems/HealthMonitor.h"
 #include "systems/SystemRebooter.h"
+#include "core/MemoryBudget.h"
+#include <esp_heap_caps.h>
 #include "core/PeripheralManager.h"
 #include "core/ChipConfig.h"
 #if FASTBEE_ENABLE_SENSOR_DRIVER
@@ -309,22 +311,23 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
     std::vector<ActionExecResult> reportableResults;
 
     for (const auto& action : rule.actions) {
-        // MemGuard 堆守卫：基于等级决定是否继续执行
+        // MemGuard 堆守卫：使用 DRAM（MALLOC_CAP_INTERNAL）而非总堆，避免 PSRAM 干扰判断
         auto* fw = FastBeeFramework::getInstance();
         HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+        uint32_t dramFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         if (monitor) {
             if (monitor->isMemoryCritical()) {
                 LOGGER.warning("[PeriphExec] Heap CRITICAL, skipping remaining actions");
                 break;
             }
-            if (monitor->isMemorySevere() && ESP.getFreeHeap() < MEM_THRESHOLD_SEVERE) {
-                LOGGER.warningf("[PeriphExec] Heap SEVERE (%d), skipping remaining actions",
-                                (int)ESP.getFreeHeap());
+            if (monitor->isMemorySevere() && dramFree < FastBee::MemoryBudget::PERIPH_EXEC_MIN_DRAM) {
+                LOGGER.warningf("[PeriphExec] DRAM SEVERE (%lu), skipping remaining actions",
+                                (unsigned long)dramFree);
                 break;
             }
-        } else if (ESP.getFreeHeap() < 15000) {
-            LOGGER.warningf("[PeriphExec] Heap too low (%d), skipping remaining actions",
-                            (int)ESP.getFreeHeap());
+        } else if (dramFree < FastBee::MemoryBudget::PERIPH_EXEC_MIN_DRAM) {
+            LOGGER.warningf("[PeriphExec] DRAM too low (%lu), skipping remaining actions",
+                            (unsigned long)dramFree);
             break;
         }
 
@@ -664,22 +667,25 @@ bool PeriphExecExecutor::executeModbusPollAction(const ExecAction& action,
         return false;
     }
 
-    // MemGuard 等级检查：替代原来的 25KB 硬编码阈值
+    // MemGuard 等级检查：使用 DRAM（非总堆），避免 PSRAM 干扰 Modbus 轮询判断
     {
         auto* fw = FastBeeFramework::getInstance();
         HealthMonitor* monitor = fw ? fw->getHealthMonitor() : nullptr;
+        uint32_t modbusDramFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         if (monitor) {
             if (monitor->isMemoryCritical()) {
-                Serial.println("[PeriphExec] Modbus poll skipped - memory CRITICAL");
+                Serial.printf("[PeriphExec] Modbus poll skipped - DRAM CRITICAL (dram=%lu)\n",
+                              (unsigned long)modbusDramFree);
                 return false;
             }
-            if (monitor->isMemorySevere()) {
-                Serial.printf("[PeriphExec] Modbus poll skipped - memory SEVERE (heap=%d)\n",
-                              (int)ESP.getFreeHeap());
+            if (monitor->isMemorySevere() && modbusDramFree < FastBee::MemoryBudget::MODBUS_POLL_MIN_DRAM) {
+                Serial.printf("[PeriphExec] Modbus poll skipped - DRAM SEVERE (dram=%lu)\n",
+                              (unsigned long)modbusDramFree);
                 return false;
             }
-        } else if (ESP.getFreeHeap() < 25000) {
-            Serial.printf("[PeriphExec] Insufficient heap for Modbus poll: %d bytes free\n", ESP.getFreeHeap());
+        } else if (modbusDramFree < FastBee::MemoryBudget::MODBUS_POLL_MIN_DRAM) {
+            Serial.printf("[PeriphExec] Insufficient DRAM for Modbus poll: %lu bytes free\n",
+                          (unsigned long)modbusDramFree);
             return false;
         }
     }

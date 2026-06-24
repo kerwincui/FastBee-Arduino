@@ -119,6 +119,8 @@ bool RuleScriptManager::saveConfiguration() {
         obj["triggerType"] = r.triggerType;
         obj["protocolType"] = r.protocolType;
         obj["scriptContent"] = r.scriptContent;
+        obj["sourceTopic"] = r.sourceTopic;
+        obj["targetTopic"] = r.targetTopic;
     }
 
     File file = LittleFS.open(RULE_SCRIPT_CONFIG_FILE, "w");
@@ -177,6 +179,8 @@ bool RuleScriptManager::loadConfiguration() {
         r.triggerType = obj["triggerType"] | 0;
         r.protocolType = obj["protocolType"] | 0;
         r.scriptContent = obj["scriptContent"].as<String>();
+        r.sourceTopic = obj["sourceTopic"].as<String>();
+        r.targetTopic = obj["targetTopic"].as<String>();
         r.lastTriggerTime = 0;
         r.triggerCount = 0;
 
@@ -276,6 +280,93 @@ String RuleScriptManager::applyReportTransform(uint8_t protocolType, const Strin
 
     if (scriptCopy.isEmpty()) return rawData;
     return applyTemplate(scriptCopy, rawData);
+}
+
+// ========== MQTT 主题匹配 ==========
+
+bool RuleScriptManager::matchTopic(const String& pattern, const String& topic) {
+    // 空模式匹配所有主题
+    if (pattern.isEmpty()) return true;
+    // 完全相等快速路径
+    if (pattern == topic) return true;
+    // 没有通配符，不相等则不匹配
+    if (pattern.indexOf('+') < 0 && pattern.indexOf('#') < 0) return false;
+
+    // 按 / 分割逐级比较
+    int pLen = pattern.length();
+    int tLen = topic.length();
+    int pi = 0, ti = 0;
+
+    while (pi < pLen && ti < tLen) {
+        // 提取 pattern 当前级
+        int pSlash = pattern.indexOf('/', pi);
+        if (pSlash < 0) pSlash = pLen;
+        String pPart = pattern.substring(pi, pSlash);
+
+        if (pPart == "#") {
+            // # 匹配剩余所有级
+            return true;
+        }
+
+        // 提取 topic 当前级
+        int tSlash = topic.indexOf('/', ti);
+        if (tSlash < 0) tSlash = tLen;
+        String tPart = topic.substring(ti, tSlash);
+
+        if (pPart != "+" && pPart != tPart) {
+            return false;
+        }
+
+        pi = pSlash + 1;
+        ti = tSlash + 1;
+    }
+
+    // pattern 末尾是 # 时匹配
+    if (pi < pLen && pattern.substring(pi) == "#") return true;
+
+    // 两边都结束才匹配
+    return (pi >= pLen && ti >= tLen);
+}
+
+// ========== 主题感知接收转换 ==========
+
+String RuleScriptManager::applyReceiveTransform(uint8_t protocolType, const String& rawData,
+                                                 const String& topic, String* outTargetTopic) {
+    String scriptCopy;
+    String targetTopicCopy;
+    {
+        MutexGuard lock(_mutex);
+        if (!lock.isLocked()) return rawData;
+
+        for (auto& pair : _rules) {
+            RuleScript& rule = pair.second;
+            if (!rule.enabled || rule.triggerType != 0) continue;  // 0=DATA_RECEIVE
+            if (rule.protocolType != protocolType) continue;
+            if (rule.scriptContent.isEmpty()) continue;
+
+            // 主题过滤：sourceTopic 为空时匹配所有
+            if (!rule.sourceTopic.isEmpty() && !matchTopic(rule.sourceTopic, topic)) {
+                continue;
+            }
+
+            rule.lastTriggerTime = millis();
+            rule.triggerCount++;
+            scriptCopy = rule.scriptContent;
+            targetTopicCopy = rule.targetTopic;
+            break;
+        }
+    }
+
+    if (scriptCopy.isEmpty()) return rawData;
+
+    String result = applyTemplate(scriptCopy, rawData);
+
+    // 写入目标主题（调用方根据此值决定是否重定向发布）
+    if (outTargetTopic && !targetTopicCopy.isEmpty()) {
+        *outTargetTopic = targetTopicCopy;
+    }
+
+    return result;
 }
 
 // ========== 工具 ==========

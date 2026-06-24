@@ -239,7 +239,7 @@ void HealthMonitor::logTaskStackWatermarks() {
 // ── MemGuard 等级判断 ────────────────────────────────────────────────
 
 void HealthMonitor::updateMemoryGuardLevel() {
-    uint32_t freeHeap = currentHealth.freeHeap;
+    uint32_t freeHeap = currentHealth.dramFreeHeap;
     // 使用 DRAM 内部连续块做等级判断（排除 PSRAM 干扰）
     // MALLOC_CAP_DEFAULT 在有 PSRAM 的设备上会包含 PSRAM 的巨大连续块（如 8MB）
     // 导致 CRITICAL 判断永远不会触发，实际 DRAM 被消耗却检测不到
@@ -273,35 +273,39 @@ void HealthMonitor::updateMemoryGuardLevel() {
     // 基于 largestFreeBlock 的强制提升：即使 freeHeap 看起来正常，
     // 如果最大可分配块过小，系统无法工作。
     // 注意：MAX_CONNECTIONS=4 + Connection:close 时正常 web 服务期间 largest 会临时降到 3-8KB，
-    // 因此 CRITICAL 阈值设为 2KB，SEVERE 设为 3KB，避免访问网页时误触发降级。
-    if (largestBlock < 2048) {
-        // 最大块 < 2KB：无法分配 TCP segment，系统基本不可用
+    // 因此 CRITICAL 阈值设为 8KB，SEVERE 设为 12KB，避免访问网页时误触发降级。
+    if (largestBlock < FastBee::MemoryBudget::GUARD_CRITICAL_LARGEST_BLOCK) {
+        // 最大块 < 8KB：内存碎片严重，系统分配能力受限
         if (inStartupGrace) {
             static uint32_t lastGraceWarnCrit = 0;
             uint32_t now = millis();
             if (now - lastGraceWarnCrit > 10000UL) {
                 lastGraceWarnCrit = now;
-                Serial.printf("[MEMGUARD] startup-grace(%lus): largestBlock=%lu<2KB (skip CRITICAL)\n",
-                              (unsigned long)(now / 1000), (unsigned long)largestBlock);
+                Serial.printf("[MEMGUARD] startup-grace(%lus): largestBlock=%lu<%uB (skip CRITICAL)\n",
+                              (unsigned long)(now / 1000), (unsigned long)largestBlock,
+                              (unsigned)FastBee::MemoryBudget::GUARD_CRITICAL_LARGEST_BLOCK);
             }
         } else if (newLevel != MemoryGuardLevel::CRITICAL) {
-            Serial.printf("[MEMGUARD] largestFreeBlock=%lu < 2KB, elevating to CRITICAL\n",
-                          (unsigned long)largestBlock);
+            Serial.printf("[MEMGUARD] largestFreeBlock=%lu < %uB, elevating to CRITICAL\n",
+                          (unsigned long)largestBlock,
+                          (unsigned)FastBee::MemoryBudget::GUARD_CRITICAL_LARGEST_BLOCK);
             newLevel = MemoryGuardLevel::CRITICAL;
         }
-    } else if (largestBlock < 3072) {
-        // 最大块 < 3KB：只能响应小请求
+    } else if (largestBlock < FastBee::MemoryBudget::GUARD_SEVERE_LARGEST_BLOCK) {
+        // 最大块 < 12KB：内存压力较大
         if (inStartupGrace) {
             static uint32_t lastGraceWarnSev = 0;
             uint32_t now = millis();
             if (now - lastGraceWarnSev > 10000UL) {
                 lastGraceWarnSev = now;
-                Serial.printf("[MEMGUARD] startup-grace(%lus): largestBlock=%lu<3KB (skip SEVERE)\n",
-                              (unsigned long)(now / 1000), (unsigned long)largestBlock);
+                Serial.printf("[MEMGUARD] startup-grace(%lus): largestBlock=%lu<%uB (skip SEVERE)\n",
+                              (unsigned long)(now / 1000), (unsigned long)largestBlock,
+                              (unsigned)FastBee::MemoryBudget::GUARD_SEVERE_LARGEST_BLOCK);
             }
         } else if (newLevel < MemoryGuardLevel::SEVERE) {
-            Serial.printf("[MEMGUARD] largestFreeBlock=%lu < 3KB, elevating to SEVERE\n",
-                          (unsigned long)largestBlock);
+            Serial.printf("[MEMGUARD] largestFreeBlock=%lu < %uB, elevating to SEVERE\n",
+                          (unsigned long)largestBlock,
+                          (unsigned)FastBee::MemoryBudget::GUARD_SEVERE_LARGEST_BLOCK);
             newLevel = MemoryGuardLevel::SEVERE;
         }
     }
@@ -323,7 +327,8 @@ void HealthMonitor::updateMemoryGuardLevel() {
             newLevel = MemoryGuardLevel::WARN;
             Serial.printf("[MEMGUARD] High fragmentation (%d%%), elevating to WARN\n",
                           (int)currentHealth.heapFragmentation);
-        } else if (newLevel == MemoryGuardLevel::WARN && largestBlock < 3072) {
+        } else if (newLevel == MemoryGuardLevel::WARN &&
+                   largestBlock < FastBee::MemoryBudget::GUARD_SEVERE_LARGEST_BLOCK) {
             newLevel = MemoryGuardLevel::SEVERE;
             Serial.printf("[MEMGUARD] High fragmentation (%d%%) + small block=%lu, elevating to SEVERE\n",
                           (int)currentHealth.heapFragmentation, (unsigned long)largestBlock);
@@ -481,15 +486,26 @@ void HealthMonitor::compactMemory() {
                   (unsigned long)currentHealth.freeHeap,
                   (unsigned long)currentHealth.largestFreeBlock);
 
-    // 策略3: 尝试通过分配+释放一个较大块来促使堆合并相邻空闲块
-    // 注意：ESP32 没有直接的内存紧凑化 API，这只是一个尽力而为的尝试
-    size_t trySize = currentHealth.largestFreeBlock / 2;
-    if (trySize > 1024) {
-        void* tmp = malloc(trySize);
+    // 策略3: 多尺寸梯度分配+释放，促使堆合并相邻空闲块
+    // ESP32 没有直接的内存紧凑化 API，通过“试探性分配”引导堆管理器合并碎片
+    // 从大到小尝试：大块分配优先合并相邻空闲块，小块分配清理零碎空洞
+    static const size_t compactSizes[] = { 8192, 4096, 2048, 1024, 512, 256 };
+    size_t largestBefore = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+
+    for (size_t i = 0; i < sizeof(compactSizes) / sizeof(compactSizes[0]); i++) {
+        size_t trySize = compactSizes[i];
+        if (trySize > currentHealth.largestFreeBlock / 2) continue;
+        void* tmp = heap_caps_malloc(trySize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         if (tmp) {
-            free(tmp);
+            heap_caps_free(tmp);
         }
     }
+
+    size_t largestAfter = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    Serial.printf("[MEMGUARD] Compaction result: largestBlock %lu -> %lu (delta=%+d)\n",
+                  (unsigned long)largestBefore,
+                  (unsigned long)largestAfter,
+                  (int)(largestAfter - largestBefore));
 }
 
 MemoryGuardLevel HealthMonitor::getMemoryGuardLevel() const {
@@ -552,6 +568,16 @@ String HealthMonitor::getMetricsJson() {
     doc["memguard"]["level"]              = lvl;
     doc["memguard"]["level_name"]         = levelNames[lvl < 4 ? lvl : 0];
     doc["memguard"]["fragmentation_high"] = isFragmentationHigh();
+
+    // PSRAM 信息（用于前端判断 MQTTS 支持）
+    doc["heap"]["psram_total"] = (unsigned long)(ESP.getPsramSize() / 1024);
+    doc["heap"]["psram_free"]  = (unsigned long)(ESP.getFreePsram() / 1024);
+    doc["heap"]["tls_supported"] =
+#if defined(BOARD_HAS_PSRAM)
+        true;
+#else
+        false;
+#endif
 
     String json;
     serializeJson(doc, json);

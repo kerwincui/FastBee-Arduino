@@ -743,24 +743,28 @@ void test_source_code_ntp_https_downgrade() {
  * 防止回退到旧值 4096（导致 HTTP 缓冲区无法卸载到 PSRAM）
  */
 void test_source_code_psram_threshold_512() {
-    TestLog::testStart("Source: PSRAM threshold = 512 in main.cpp");
+    TestLog::testStart("Source: PSRAM threshold = 256 in main.cpp");
 
     std::string content = readSrcFile("src/main.cpp");
     TEST_ASSERT_TRUE_MESSAGE(!content.empty(),
         "Failed to read main.cpp");
 
-    // 必须有 heap_caps_malloc_extmem_enable(512)
+    // 必须有 heap_caps_malloc_extmem_enable(256) —— 比 512 更积极地卸载到 PSRAM
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("heap_caps_malloc_extmem_enable(512)") != std::string::npos,
-        "main.cpp must call heap_caps_malloc_extmem_enable(512) — NOT 4096!");
-    TestLog::step("heap_caps_malloc_extmem_enable(512) found");
+        content.find("heap_caps_malloc_extmem_enable(256)") != std::string::npos,
+        "main.cpp must call heap_caps_malloc_extmem_enable(256) — lower threshold frees more DRAM");
+    TestLog::step("heap_caps_malloc_extmem_enable(256) found");
 
-    // 不应有旧值 4096
+    // 不应有旧值 4096 或 512
     TEST_ASSERT_TRUE_MESSAGE(
         content.find("heap_caps_malloc_extmem_enable(4096)") == std::string::npos,
         "OLD threshold heap_caps_malloc_extmem_enable(4096) must NOT exist — "
         "causes HTTP buffer OOM on internal DRAM");
-    TestLog::step("Old threshold 4096 absent (regression prevented)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("heap_caps_malloc_extmem_enable(512)") == std::string::npos,
+        "OLD threshold heap_caps_malloc_extmem_enable(512) must NOT exist — "
+        "256 is preferred for more aggressive PSRAM offloading");
+    TestLog::step("Old thresholds 4096 and 512 absent (regression prevented)");
 
     TestLog::testEnd(true);
 }

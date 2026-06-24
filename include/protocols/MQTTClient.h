@@ -148,6 +148,8 @@ public:
     int  getLastErrorCode() const { return lastErrorCode; }
     uint32_t getReconnectCount() const { return reconnectCount; }
     unsigned long getLastConnectedTime() const { return lastConnectedTime; }
+    bool isTlsTransportAllocated() const { return _wifiClientSecure != nullptr; }
+    bool isWebPausedForMqtts() const { return _webServerPaused; }
     
     // MQTT 上报降采样：设置最小上报间隔（毫秒），0 表示无限制
     void setMinReportInterval(uint32_t ms);
@@ -212,6 +214,8 @@ private:
     volatile bool _reconnectRunning;
     TaskHandle_t _reconnectTaskHandle;
     uint32_t _taskStartupDelayMs;  // 重连任务启动延迟（ms），首次启动 3000ms，deferred 重启 500ms
+    bool _lastMqttsTlsMemoryFailure = false;
+    bool _mqttsMemoryBackoffActive = false;
     static void reconnectTaskEntry(void* param);
     bool ensureReconnectTask();  // 按需创建重连任务（连接时任务已删除，断开时重新创建）
     void doReconnect();  // 实际执行重连（在后台任务中调用）
@@ -219,15 +223,18 @@ private:
     // MQTTS TLS 内存管理：动态创建/销毁 WiFiClientSecure，确保失败后释放全部 TLS DRAM
     void ensureTlsTransport();    // 按需创建 _wifiClientSecure（已存在则跳过）
     void releaseTlsTransport();   // 销毁 _wifiClientSecure 释放 TLS 上下文和缓冲区
-    bool reclaimDramForMqtts();   // 激进回收 DRAM：停止 Web 服务器/mDNS、关闭 SSE、释放 TLS、强制 GC
-    void resumeWebServices();     // TLS 连接后重启 Web 服务器和 mDNS
-    bool _webServerPaused = false; // TLS 连接期间临时停止了 Web 服务器
+    bool reclaimDramForMqtts(bool pauseWeb = false);   // 回收 TLS/SSE 内存；以太网 MQTTS 可短暂暂停 Web 换取连续 DRAM
+    void resumeWebServices();     // 显式暂停路径使用后恢复 Web 服务
+    bool _webServerPaused = false; // MQTTS 深度回收时短暂停止 Web，握手后恢复
+    bool _mdnsPausedForMqtts = false;
 
     // 线程安全：递归互斥量保护 publish 操作（PubSubClient 非线程安全）
     SemaphoreHandle_t _publishMutex = nullptr;
 
     // DATA_COMMAND 延迟处理队列（避免在 MQTT 回调中同步执行重操作）
     QueueHandle_t _dataCommandQueue = nullptr;
+    uint32_t _cmdQueueTotalBytes = 0;  // Task 4.3: 队列当前总内存占用跟踪
+    static constexpr uint32_t MQTT_CMD_QUEUE_MAX_BYTES = 4096U;  // 队列总内存上限
     void processQueuedCommands();
 
     // 异步任务上报环形缓冲区（PubSubClient 非线程安全，publish 必须在主循环执行）

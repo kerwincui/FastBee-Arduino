@@ -45,6 +45,13 @@ public:
     // 数据接收转换（由各协议接收回调调用）
     String applyReceiveTransform(uint8_t protocolType, const String& rawData);
 
+    // 主题感知接收转换（MQTT 专用）：
+    //   - 按 protocolType + sourceTopic 匹配规则
+    //   - 返回转换后 payload
+    //   - 若匹配规则含 targetTopic，则写入 *outTargetTopic（调用方负责重定向发布）
+    String applyReceiveTransform(uint8_t protocolType, const String& rawData,
+                                 const String& topic, String* outTargetTopic);
+
     // 数据上报转换（由各协议发送方法调用）
     String applyReportTransform(uint8_t protocolType, const String& rawData);
 
@@ -59,6 +66,9 @@ private:
 
     // 模板引擎
     static String applyTemplate(const String& templateStr, const String& jsonInput);
+
+    // MQTT 主题匹配（支持 + 单级通配符和 # 多级通配符）
+    static bool matchTopic(const String& pattern, const String& topic);
 
     // ID 生成
     String generateUniqueId();

@@ -107,6 +107,8 @@ bool WebConfigManager::start() {
 
     server->begin();
     isRunning = true;
+    webPauseReason = WebServicePauseReason::None;
+    webPauseUntilMs = 0;
     LOG_INFO("[WebConfig] Web server started");
     return true;
 }
@@ -115,10 +117,84 @@ void WebConfigManager::stop() {
     if (!isRunning) return;
     if (server) server->end();
     isRunning = false;
+    webPauseReason = WebServicePauseReason::None;
+    webPauseUntilMs = 0;
     LOG_INFO("[WebConfig] Web server stopped");
 }
 
 bool WebConfigManager::isServerRunning() const { return isRunning; }
+
+bool WebConfigManager::pauseForMqttsHandshake(unsigned long holdMs) {
+    if (!server) return false;
+    if (isForegroundRequestActive()) {
+        LOG_INFO("[WebConfig] Keeping Web online for active foreground request; MQTTS deep pause skipped");
+        return false;
+    }
+
+    const unsigned long now = millis();
+    webPauseReason = WebServicePauseReason::MqttsHandshake;
+    webPauseUntilMs = (holdMs == 0) ? 0 : (now + holdMs);
+
+    size_t closedSse = 0;
+    if (sseRouteHandler && sseRouteHandler->clientCount() > 0) {
+        closedSse = sseRouteHandler->closeAllClients();
+        if (closedSse > 0) {
+            delay(50);
+        }
+    }
+
+    if (isRunning) {
+        server->end();
+        isRunning = false;
+        delay(50);
+    }
+
+    lastWebRecoveryMs = now;
+    recordRecoveryEvent("manual_pause",
+                        "mqtts_handshake",
+                        now,
+                        heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                        0);
+    LOG_WARNINGF("[WebConfig] Web server paused for MQTTS handshake (sseClosed=%u)",
+                 (unsigned)closedSse);
+    return true;
+}
+
+bool WebConfigManager::resumeFromMqttsHandshake() {
+    if (webPauseReason != WebServicePauseReason::MqttsHandshake) {
+        return isRunning;
+    }
+
+    webPauseReason = WebServicePauseReason::None;
+    webPauseUntilMs = 0;
+    const unsigned long delayMs = FastBee::MemoryBudget::MQTTS_WEB_RESUME_DELAY_MS;
+    if (delayMs > 0) {
+        LOG_INFOF("[WebConfig] Waiting %lums before Web resume after MQTTS pause",
+                  (unsigned long)delayMs);
+        delay(delayMs);
+    }
+
+    const bool started = start();
+    lastWebRecoveryMs = millis();
+    recordRecoveryEvent(started ? "manual_resume" : "resume_failed",
+                        "mqtts_handshake",
+                        lastWebRecoveryMs,
+                        heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                        0);
+    return started;
+}
+
+bool WebConfigManager::isWebRecoverySuppressed(unsigned long now) const {
+    if (webPauseReason == WebServicePauseReason::None) {
+        return false;
+    }
+    if (webPauseUntilMs == 0) {
+        return true;
+    }
+    return (int32_t)(webPauseUntilMs - now) > 0;
+}
 
 // ============ 管理器注入 ============
 
@@ -203,6 +279,17 @@ void WebConfigManager::performMaintenance() {
     // ── Web 服务意外停止后的自动重启 ──
     // 如果 isRunning 为 false 但 server 实例有效，尝试重新启动（带冷却期保护）
     if (!isRunning && server) {
+        if (isWebRecoverySuppressed(maintenanceNow)) {
+            LOG_DEBUG("[WebConfig] Web auto-restart suppressed by active pause");
+            safeSoftRestartSince = 0;
+            severePressureSinceMs = 0;
+            return;
+        }
+        if (webPauseReason != WebServicePauseReason::None) {
+            LOG_WARNING("[WebConfig] Web pause window expired, allowing auto-restart");
+            webPauseReason = WebServicePauseReason::None;
+            webPauseUntilMs = 0;
+        }
         if (lastWebRecoveryMs == 0 || (maintenanceNow - lastWebRecoveryMs >= RECOVERY_COOLDOWN_MS)) {
             LOG_WARNING("[WebConfig] Web server is stopped, attempting auto-restart");
             server->begin();
@@ -261,17 +348,17 @@ void WebConfigManager::performMaintenance() {
         return;
     }
 
-    const uint32_t maintenanceFreeHeap = ESP.getFreeHeap();
+    const uint32_t maintenanceFreeHeap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     const uint32_t maintenanceLargestBlock =
-        heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
     const uint8_t maintenanceFrag = calculateHeapFragmentationPercent(
         maintenanceFreeHeap,
         maintenanceLargestBlock);
 
-    const bool severeWebPressure =
-        (maintenanceFreeHeap < 16384U) ||
-        (maintenanceLargestBlock < 6144U) ||
-        (maintenanceFrag >= 65U && maintenanceLargestBlock < 8192U);
+    const bool severeWebPressure = FastBee::MemoryBudget::isSevereWebPressure(
+        maintenanceFreeHeap,
+        maintenanceLargestBlock,
+        maintenanceFrag);
 
     if (severeWebPressure) {
         if (safeSoftRestartSince == 0) {
@@ -581,6 +668,12 @@ bool WebConfigManager::isRequestBurst() const {
     // 仅在当前窗口内有效
     if ((now - burstWindowStartMs) >= BURST_WINDOW_MS) return false;
     return requestCountInWindow >= BURST_THRESHOLD;
+}
+
+bool WebConfigManager::isForegroundRequestActive() const {
+    if (!ctx) return false;
+    if (ctx->webForegroundModeActive) return true;
+    return (int32_t)(ctx->webForegroundUntilMs - millis()) > 0;
 }
 
 void WebConfigManager::setupAllRoutes() {

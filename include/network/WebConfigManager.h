@@ -7,6 +7,7 @@
 
 #include "core/FeatureFlags.h"
 #include "core/ChipConfig.h"
+#include "core/MemoryBudget.h"
 #include "core/ResourceProfile.h"
 
 // 接口包含
@@ -49,6 +50,11 @@ struct WebRecoveryEvent {
     char reason[32] = "";
 };
 
+enum class WebServicePauseReason : uint8_t {
+    None = 0,
+    MqttsHandshake = 1
+};
+
 /**
  * @brief Web配置管理器 - 瘦协调器
  * 
@@ -68,6 +74,9 @@ public:
     bool start();
     void stop();
     bool isServerRunning() const;
+    bool pauseForMqttsHandshake(unsigned long holdMs = FastBee::MemoryBudget::MQTTS_WEB_PAUSE_HOLD_MS);
+    bool resumeFromMqttsHandshake();
+    bool isPausedForMqttsHandshake() const { return webPauseReason == WebServicePauseReason::MqttsHandshake; }
 
     void setNetworkManager(FBNetworkManager* netMgr);
     void setOTAManager(OTAManager* otaMgr);
@@ -79,6 +88,7 @@ public:
     /// 请求突增跟踪（由 WebHandlerContext::noteWebRequestActivity 调用）
     void trackWebRequest();
     bool isRequestBurst() const;
+    bool isForegroundRequestActive() const;
 
     /// 暴露 SSE 路由处理器（供 HealthMonitor 在内存严重不足时强制断开 SSE 客户端）
     SSERouteHandler* getSseRouteHandler() const { return sseRouteHandler.get(); }
@@ -172,6 +182,9 @@ private:
     unsigned long lastTcpCheckMs = 0;     // 上次TCP健康检查时间
     unsigned long lastWebRecoveryMs = 0;  // 上次Web服务恢复时间
     uint32_t webRecoveryCount = 0;        // Web服务软重启累计次数
+    WebServicePauseReason webPauseReason = WebServicePauseReason::None;
+    unsigned long webPauseUntilMs = 0;
+    bool isWebRecoverySuppressed(unsigned long now) const;
 
     // ── 请求突增检测与主动恢复 ──
 

@@ -11,7 +11,12 @@ class PeriphExecManager;
 class MQTTClient;
 
 // ========== Modbus 寄存器缓冲池 — 消除轮询路径动态分配 ==========
-static constexpr uint8_t MODBUS_BUFFER_POOL_SIZE = 4;   // 4 个缓冲区（与最大并发轮询任务数一致）
+// Task 4.2: PSRAM 设备扩展到 8 个缓冲区，支持更多并发轮询任务
+#if defined(BOARD_HAS_PSRAM)
+static constexpr uint8_t MODBUS_BUFFER_POOL_SIZE = 8;   // PSRAM 设备：8 个缓冲区
+#else
+static constexpr uint8_t MODBUS_BUFFER_POOL_SIZE = 4;   // 无 PSRAM：4 个缓冲区
+#endif
 static constexpr uint8_t MODBUS_MAX_REGISTERS = 64;     // 每个缓冲区最大寄存器数
 
 struct ModbusBuffer {
