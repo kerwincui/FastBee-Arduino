@@ -1,0 +1,294 @@
+{
+    "BaseUrl":  "http://192.168.5.116",
+    "Profile":  "full",
+    "Rounds":  30,
+    "Total":  1232,
+    "Failed":  224,
+    "FailureRatePercent":  18.18,
+    "AverageMs":  869,
+    "P95Ms":  5947,
+    "MaxConsecutiveFailures":  31,
+    "StabilityPreset":  "disabled",
+    "StabilityThresholds":  {
+                                "MaxFailureRatePercent":  0,
+                                "MaxP95LatencyMs":  0,
+                                "MaxConsecutiveFailures":  0,
+                                "MaxEndpointFailureRatePercent":  0,
+                                "MaxUptimeResetCount":  -1,
+                                "MinHeapFreeBytes":  0,
+                                "MinHeapMaxAllocBytes":  0,
+                                "MaxHeapFreeDropBytes":  0,
+                                "MaxHeapMaxAllocDropBytes":  0,
+                                "MinPsramFreeBytes":  0,
+                                "MaxPsramFreeDropBytes":  0
+                            },
+    "StabilityThresholdSources":  {
+
+                                  },
+    "Uptime":  {
+                   "Samples":  53,
+                   "ResetCount":  4,
+                   "Min":  16855,
+                   "Max":  485566
+               },
+    "HeapFree":  {
+                     "Count":  111,
+                     "First":  44816,
+                     "Last":  54496,
+                     "Min":  38772,
+                     "Max":  55416,
+                     "Drop":  0
+                 },
+    "HeapMaxAlloc":  {
+                         "Count":  111,
+                         "First":  29684,
+                         "Last":  34804,
+                         "Min":  25588,
+                         "Max":  38900,
+                         "Drop":  0
+                     },
+    "PsramFree":  {
+                      "Count":  84,
+                      "First":  8334440,
+                      "Last":  8344928,
+                      "Min":  8323700,
+                      "Max":  8355012,
+                      "Drop":  0
+                  },
+    "EndpointFailures":  [
+                             {
+                                 "Name":  "batch-stress",
+                                 "Total":  30,
+                                 "Failed":  30,
+                                 "FailureRatePercent":  100
+                             },
+                             {
+                                 "Name":  "mqtt-ntp-sync",
+                                 "Total":  30,
+                                 "Failed":  30,
+                                 "FailureRatePercent":  100
+                             },
+                             {
+                                 "Name":  "peripherals",
+                                 "Total":  30,
+                                 "Failed":  30,
+                                 "FailureRatePercent":  100
+                             },
+                             {
+                                 "Name":  "mqtt-initialization",
+                                 "Total":  30,
+                                 "Failed":  30,
+                                 "FailureRatePercent":  100
+                             },
+                             {
+                                 "Name":  "periph-exec-rules",
+                                 "Total":  30,
+                                 "Failed":  30,
+                                 "FailureRatePercent":  100
+                             },
+                             {
+                                 "Name":  "system-metrics",
+                                 "Total":  30,
+                                 "Failed":  4,
+                                 "FailureRatePercent":  13.33
+                             },
+                             {
+                                 "Name":  "device-config",
+                                 "Total":  30,
+                                 "Failed":  4,
+                                 "FailureRatePercent":  13.33
+                             },
+                             {
+                                 "Name":  "device-info",
+                                 "Total":  30,
+                                 "Failed":  4,
+                                 "FailureRatePercent":  13.33
+                             },
+                             {
+                                 "Name":  "device-time",
+                                 "Total":  30,
+                                 "Failed":  4,
+                                 "FailureRatePercent":  13.33
+                             },
+                             {
+                                 "Name":  "system-capabilities",
+                                 "Total":  30,
+                                 "Failed":  4,
+                                 "FailureRatePercent":  13.33
+                             },
+                             {
+                                 "Name":  "mqtt-status",
+                                 "Total":  30,
+                                 "Failed":  4,
+                                 "FailureRatePercent":  13.33
+                             },
+                             {
+                                 "Name":  "protocol-mqtt-config",
+                                 "Total":  30,
+                                 "Failed":  3,
+                                 "FailureRatePercent":  10
+                             },
+                             {
+                                 "Name":  "protocol-periph-exec-config",
+                                 "Total":  30,
+                                 "Failed":  3,
+                                 "FailureRatePercent":  10
+                             },
+                             {
+                                 "Name":  "protocol-config",
+                                 "Total":  30,
+                                 "Failed":  3,
+                                 "FailureRatePercent":  10
+                             },
+                             {
+                                 "Name":  "network-config",
+                                 "Total":  30,
+                                 "Failed":  3,
+                                 "FailureRatePercent":  10
+                             },
+                             {
+                                 "Name":  "system-status",
+                                 "Total":  30,
+                                 "Failed":  3,
+                                 "FailureRatePercent":  10
+                             },
+                             {
+                                 "Name":  "system-web-runtime",
+                                 "Total":  30,
+                                 "Failed":  3,
+                                 "FailureRatePercent":  10
+                             },
+                             {
+                                 "Name":  "network-status",
+                                 "Total":  30,
+                                 "Failed":  3,
+                                 "FailureRatePercent":  10
+                             },
+                             {
+                                 "Name":  "peripheral-status-missing-id",
+                                 "Total":  30,
+                                 "Failed":  2,
+                                 "FailureRatePercent":  6.67
+                             },
+                             {
+                                 "Name":  "peripheral-types",
+                                 "Total":  30,
+                                 "Failed":  2,
+                                 "FailureRatePercent":  6.67
+                             },
+                             {
+                                 "Name":  "periph-exec-trigger-types",
+                                 "Total":  30,
+                                 "Failed":  2,
+                                 "FailureRatePercent":  6.67
+                             },
+                             {
+                                 "Name":  "periph-exec-controls",
+                                 "Total":  30,
+                                 "Failed":  2,
+                                 "FailureRatePercent":  6.67
+                             },
+                             {
+                                 "Name":  "modbus-status",
+                                 "Total":  30,
+                                 "Failed":  2,
+                                 "FailureRatePercent":  6.67
+                             },
+                             {
+                                 "Name":  "system-health",
+                                 "Total":  30,
+                                 "Failed":  2,
+                                 "FailureRatePercent":  6.67
+                             },
+                             {
+                                 "Name":  "system-health-alias",
+                                 "Total":  30,
+                                 "Failed":  2,
+                                 "FailureRatePercent":  6.67
+                             },
+                             {
+                                 "Name":  "system-info",
+                                 "Total":  30,
+                                 "Failed":  2,
+                                 "FailureRatePercent":  6.67
+                             },
+                             {
+                                 "Name":  "auth-multi-session",
+                                 "Total":  1,
+                                 "Failed":  1,
+                                 "FailureRatePercent":  100
+                             },
+                             {
+                                 "Name":  "logs-tail",
+                                 "Total":  30,
+                                 "Failed":  1,
+                                 "FailureRatePercent":  3.33
+                             },
+                             {
+                                 "Name":  "logs-info",
+                                 "Total":  30,
+                                 "Failed":  1,
+                                 "FailureRatePercent":  3.33
+                             },
+                             {
+                                 "Name":  "batch-basic",
+                                 "Total":  30,
+                                 "Failed":  1,
+                                 "FailureRatePercent":  3.33
+                             },
+                             {
+                                 "Name":  "rule-scripts",
+                                 "Total":  30,
+                                 "Failed":  1,
+                                 "FailureRatePercent":  3.33
+                             },
+                             {
+                                 "Name":  "users",
+                                 "Total":  30,
+                                 "Failed":  1,
+                                 "FailureRatePercent":  3.33
+                             },
+                             {
+                                 "Name":  "ota-status",
+                                 "Total":  30,
+                                 "Failed":  1,
+                                 "FailureRatePercent":  3.33
+                             },
+                             {
+                                 "Name":  "config-transfer-list",
+                                 "Total":  30,
+                                 "Failed":  1,
+                                 "FailureRatePercent":  3.33
+                             },
+                             {
+                                 "Name":  "periph-exec-static-events",
+                                 "Total":  30,
+                                 "Failed":  1,
+                                 "FailureRatePercent":  3.33
+                             },
+                             {
+                                 "Name":  "periph-exec-dynamic-events",
+                                 "Total":  30,
+                                 "Failed":  1,
+                                 "FailureRatePercent":  3.33
+                             },
+                             {
+                                 "Name":  "auth-session",
+                                 "Total":  30,
+                                 "Failed":  1,
+                                 "FailureRatePercent":  3.33
+                             },
+                             {
+                                 "Name":  "periph-exec-results",
+                                 "Total":  30,
+                                 "Failed":  1,
+                                 "FailureRatePercent":  3.33
+                             },
+                             {
+                                 "Name":  "periph-exec-events",
+                                 "Total":  30,
+                                 "Failed":  1,
+                                 "FailureRatePercent":  3.33
+                             }
+                         ]
+}

@@ -85,6 +85,16 @@ public:
     bool isMemoryCritical() const;
     bool isFragmentationHigh() const;  // 碎片率>75%
 
+    // ── 内存恢复状态查询（供 API 和外部模块使用）──
+    bool isMqttsDowngraded() const { return _mqttsMemoryDowngrade; }
+    bool isMqttStoppedForMemory() const { return _mqttStoppedForMemory; }
+    bool isMqttDisabledForMemory() const { return _mqttDisabledForMemory; }
+    bool isModbusStoppedForMemory() const { return _modbusStoppedForMemory; }
+    bool isPeriphExecPausedForMemory() const { return _periphExecPausedForMemory; }
+    unsigned long getCriticalDurationMs() const {
+        return _criticalStartTime > 0 ? (millis() - _criticalStartTime) : 0;
+    }
+
     // ── 外部模块上报指标 setter ──
     void setMqttQueueDepth(uint8_t depth);
     void setSseClientCount(uint8_t count);
@@ -122,6 +132,21 @@ private:
     LogLevel _savedLogLevel = LOG_INFO;
     bool     _savedFileLogging = true;
     bool     _degradationActive = false;  // 是否正处于降级状态
+
+    // ── 内存恢复状态跟踪（防砖机制）──
+    bool _mqttsMemoryDowngrade = false;      // MQTTS 已降级为 MQTT（scheme 已写入配置文件）
+    bool _mqttStoppedForMemory = false;      // MQTT 因内存不足被完全停止
+    bool _mqttDisabledForMemory = false;     // MQTT 因内存不足被永久禁用（写入配置 enabled=false）
+    bool _modbusStoppedForMemory = false;    // Modbus 因内存不足被停止
+    bool _periphExecPausedForMemory = false; // PeriphExec 因内存不足被暂停
+    unsigned long _criticalStartTime = 0;    // CRITICAL 级别开始时间（0=未进入）
+    static constexpr unsigned long CRITICAL_MQTT_STOP_DELAY_MS = 30000;   // 30s 后禁用 MQTT
+    static constexpr unsigned long CRITICAL_REBOOT_DELAY_MS    = 90000;   // 90s 后重启
+
+    void performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuardLevel newLevel);
+    void downgradeMqttsToMqtt();      // 将 scheme 从 mqtts 切换为 mqtt 并重启 MQTT
+    void disableMqttForMemory();      // 写入 mqtt.enabled=false 到 protocol.json + stopMQTT
+    void restoreMemoryRecovery();     // NORMAL 恢复时重启已停止的服务（MQTT 被禁用除外）
 
     // 外部上报指标（预留接口）
     uint8_t  mqttQueueDepth;   // MQTT 队列深度

@@ -92,71 +92,6 @@ powershell -ExecutionPolicy Bypass -File scripts\doctor.ps1 -Port COM6
 powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32-F4R0 -Port COM6
 ```
 
-常用烧录命令：
-
-```powershell
-# ESP32 标准版 (4MB Flash)
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32-F4R0 -Port COM6
-
-# ESP32 全功能版 (8MB Flash + 4MB PSRAM)
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32-F8R4 -Port COM6
-
-# ESP32-S3 标准版 (8MB Flash)
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F8R0 -Port COM6
-
-# ESP32-S3 全功能版 (16MB Flash + 8MB PSRAM)
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F16R8 -Port COM6
-
-# 部署完成后自动打开串口监视器
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F16R8 -Port COM6 -Monitor
-
-# 只编译，不烧录
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F16R8 -BuildOnly
-
-# 显示详细编译输出（调试用）
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F16R8 -Port COM6 -FullOutput
-```
-
-`deploy.ps1` 会先上传与 `-Env` 匹配的 LittleFS Web 文件系统，再烧录固件。加 `-Monitor` 可在部署完成后自动打开串口监视器查看启动日志。脚本启动时会自动清理残留的 esptool/python 进程，避免"文件被占用"错误。
-
-**新增特性：**
-- 📊 **智能输出过滤**：默认模式只显示关键信息（开始/结束、错误、警告、上传进度），减少干扰
-- ⏱️ **编译时间预估**：自动检测缓存状态，显示预估编译时间
-- ⏱️ **耗时统计**：每个步骤完成后显示实际耗时
-- 🔍 **FullOutput 模式**：使用 `-FullOutput` 参数显示完整编译输出（调试用）
-
-### 直接烧录发布包
-
-仓库保留 `dist/firmware/all-latest/` 下的合并固件，适合不想本地编译的用户直接烧录。合并镜像已经包含 bootloader、分区表、应用固件和 LittleFS Web 文件系统，烧录地址固定为 `0x0`。
-
-| 固件文件 | 目标硬件 |
-| --- | --- |
-| `fastbee-esp32-F4R0.bin` | ESP32 4MB Flash |
-| `fastbee-esp32-F8R4.bin` | ESP32 8MB Flash + 4MB PSRAM |
-| `fastbee-esp32c3-F4R0.bin` | ESP32-C3 4MB Flash |
-| `fastbee-esp32c6-F4R0.bin` | ESP32-C6 4MB Flash |
-| `fastbee-esp32s3-F8R0.bin` | ESP32-S3 8MB Flash |
-| `fastbee-esp32s3-F8R4.bin` | ESP32-S3 8MB Flash + 4MB PSRAM |
-| `fastbee-esp32s3-F16R8.bin` | ESP32-S3 16MB Flash + 8MB PSRAM |
-
-命令行烧录示例：
-
-```powershell
-# 可选：先擦除整片 Flash
-esptool.py --chip auto --port COM6 erase_flash
-
-# ESP32 标准版合并镜像，从 0x0 写入
-esptool.py --chip auto --port COM6 --baud 921600 write_flash -z 0x0 dist\firmware\all-latest\fastbee-esp32-F4R0.bin
-
-# ESP32-S3 全功能版合并镜像，必须使用 16MB Flash + PSRAM 硬件
-esptool.py --chip auto --port COM6 --baud 921600 write_flash -z 0x0 dist\firmware\all-latest\fastbee-esp32s3-F16R8.bin
-
-# ESP32 全功能版合并镜像，必须使用 8MB Flash + 4MB PSRAM 硬件
-esptool.py --chip auto --port COM6 --baud 921600 write_flash -z 0x0 dist\firmware\all-latest\fastbee-esp32-F8R4.bin
-```
-
-也可以使用 Espressif Flash Download Tool：选择对应 `.bin` 文件，地址填 `0x0`，先 `ERASE` 再 `START`。如果烧录后页面异常，优先确认固件文件与实际芯片/Flash/PSRAM 规格一致。
-
 ## 首次访问
 
 设备首次启动或未配置 WiFi 时会进入 AP 模式：
@@ -216,53 +151,17 @@ graph LR
   </tr>
 </table>
 
----
-
-## 验证测试
-
-本项目提供统一测试入口，用于保证不同芯片、不同版本和 Web 页面产物可用。
-
-```powershell
-# 提交前快速检查：配置、i18n、Web 资源、全芯片编译
-powershell -ExecutionPolicy Bypass -Command ".\scripts\test-all.ps1 -Checks static,build"
-
-# 本地完整矩阵，不访问真实设备
-powershell -ExecutionPolicy Bypass -Command ".\scripts\test-all.ps1 -Checks static,native,build,artifacts"
-
-# 烧录真实设备后的 API 冒烟
-powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl http://192.168.4.1 -Profile standard
-
-# 长时间稳定性测试，输出 CSV
-powershell -ExecutionPolicy Bypass -File scripts\soak-test-device.ps1 -BaseUrl http://设备IP -Profile full -Rounds 100
-```
-
-设备测试按 `lite`、`standard`、`full` 档位检查登录、系统、网络、设备配置、协议、MQTT、外设、外设执行和 Full 管理接口。Web 静态冒烟会检查 gzip 资源、页面/模块完整性、JS 语法和首屏资源预算，避免页面访问变慢或资源缺失。
-
-## 发布产物
-
-一次生成所有版本合并固件：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-all-artifacts.ps1 -CleanOutput
-```
-
-输出目录：
-
-```text
-dist/firmware/all-latest/
-```
-
-产物是包含 bootloader、分区表、应用固件和 LittleFS 的合并镜像，适合量产烧录工具使用。
-
 ## 项目结构
 
 ```text
-src/          固件源码
-include/      头文件和功能开关
-data/         LittleFS 默认配置与 Web 产物
-web-src/      Web 前端源码
-scripts/      构建、烧录、测试、发布脚本
-test/         PlatformIO native 测试
+src/              固件源码
+include/          头文件和功能开关
+data/             LittleFS 默认配置与 Web 产物
+web-src/          Web 前端源码
+scripts/          构建、烧录、测试、发布脚本
+test/             PlatformIO native 测试
+test/browser/     Playwright 浏览器自动化测试（18 套件 / 625 用例）
+docs/             测试方案与功能设计文档
 ```
 
 ## 常用文档

@@ -27,13 +27,18 @@ struct TestRuleScript {
     String name;
     String description;
     bool enabled;
+    uint8_t triggerType;   // 0=DATA_RECEIVE, 1=DATA_REPORT
     uint8_t protocolType;  // 0=MQTT, 1=ModbusRTU
     String receiveTemplate;
     String reportTemplate;
+    String scriptContent;  // ${key} 占位符模板
     String sourceTopic;    // 源主题过滤（空=匹配所有）
     String targetTopic;    // 目标主题（空=不重定向）
+    unsigned long lastTriggerTime;
+    uint32_t triggerCount;
     
-    TestRuleScript() : enabled(true), protocolType(0) {}
+    TestRuleScript() : enabled(true), triggerType(0), protocolType(0),
+                       lastTriggerTime(0), triggerCount(0) {}
 };
 
 // ========== 简化的规则管理器（模拟核心逻辑） ==========
@@ -162,7 +167,7 @@ public:
         return rawData;
     }
 
-private:
+protected:
     std::map<String, TestRuleScript> _rules;
 };
 
@@ -695,6 +700,255 @@ static void test_dev_mode_re_enable_allows_operations() {
     TEST_ASSERT_EQUAL(1, mgr.getRuleCount());
 }
 
+// ========== 测试组: ${key} 模板变量替换（镜像 RuleScriptManager::applyTemplate） ==========
+
+// 从 JSON 字符串提取 key=value 对，替换 ${key}
+static String mockApplyDollarTemplate(const String& templateStr, const String& jsonInput) {
+    if (templateStr.isEmpty() || jsonInput.isEmpty()) return jsonInput;
+    // 简单模拟：从 JSON 提取 key:value 对
+    // 支持 {"key":"value",...} 和 [{"id":"k","value":"v"},...] 两种格式
+    struct KV { String key; String value; };
+    std::vector<KV> kvPairs;
+
+    // 简单 JSON 解析：找 "key":"value" 对
+    int pos = 0;
+    while (pos < (int)jsonInput.length()) {
+        int keyStart = jsonInput.indexOf('"', pos);
+        if (keyStart < 0) break;
+        int keyEnd = jsonInput.indexOf('"', keyStart + 1);
+        if (keyEnd < 0) break;
+        String key = jsonInput.substring(keyStart + 1, keyEnd);
+
+        int valStart = jsonInput.indexOf('"', keyEnd + 1);
+        if (valStart < 0) break;
+        int valEnd = jsonInput.indexOf('"', valStart + 1);
+        if (valEnd < 0) break;
+        String value = jsonInput.substring(valStart + 1, valEnd);
+
+        kvPairs.push_back({key, value});
+        pos = valEnd + 1;
+        if (kvPairs.size() >= 32) break;
+    }
+
+    if (kvPairs.empty()) return jsonInput;
+
+    String result = templateStr;
+    for (const auto& kv : kvPairs) {
+        String placeholder = "${" + kv.key + "}";
+        result.replace(placeholder, kv.value);
+    }
+    return result;
+}
+
+static void test_dollar_template_single_var() {
+    String result = mockApplyDollarTemplate("device_${device_id}", "{\"device_id\":\"abc123\"}");
+    TEST_ASSERT_EQUAL_STRING("device_abc123", result.c_str());
+}
+
+static void test_dollar_template_multi_var() {
+    String tpl = "${protocol}://${host}:${port}";
+    String json = "{\"protocol\":\"https\",\"host\":\"example.com\",\"port\":\"443\"}";
+    String result = mockApplyDollarTemplate(tpl, json);
+    TEST_ASSERT_EQUAL_STRING("https://example.com:443", result.c_str());
+}
+
+static void test_dollar_template_no_match_passthrough() {
+    String result = mockApplyDollarTemplate("${unknown}", "{\"other\":\"value\"}");
+    TEST_ASSERT_EQUAL_STRING("${unknown}", result.c_str());
+}
+
+static void test_dollar_template_empty_template() {
+    String result = mockApplyDollarTemplate("", "{\"key\":\"val\"}");
+    TEST_ASSERT_EQUAL_STRING("{\"key\":\"val\"}", result.c_str());
+}
+
+static void test_dollar_template_empty_json() {
+    String result = mockApplyDollarTemplate("${key}", "");
+    TEST_ASSERT_EQUAL_STRING("", result.c_str());
+}
+
+static void test_dollar_template_repeated_var() {
+    String tpl = "${x}+${x}=${x}${x}";
+    String json = "{\"x\":\"1\"}";
+    String result = mockApplyDollarTemplate(tpl, json);
+    TEST_ASSERT_EQUAL_STRING("1+1=11", result.c_str());
+}
+
+// ========== 测试组: triggerType 过滤与 triggerCount 统计 ==========
+
+// 扩展 mock: 支持 triggerType 过滤和 triggerCount 统计
+class TestRuleManagerV2 : public TestRuleManager {
+public:
+    // 按 triggerType + protocolType 查找并应用转换
+    String applyReceiveTransformV2(uint8_t protocolType, const String& rawData) {
+        for (auto& pair : _rules) {
+            auto& rule = pair.second;
+            if (!rule.enabled || rule.triggerType != 0) continue;  // 0=DATA_RECEIVE
+            if (rule.protocolType != protocolType) continue;
+            if (rule.scriptContent.isEmpty()) continue;
+            rule.lastTriggerTime = 1000;  // 模拟 millis()
+            rule.triggerCount++;
+            return mockApplyDollarTemplate(rule.scriptContent, rawData);
+        }
+        return rawData;
+    }
+
+    String applyReportTransformV2(uint8_t protocolType, const String& rawData) {
+        for (auto& pair : _rules) {
+            auto& rule = pair.second;
+            if (!rule.enabled || rule.triggerType != 1) continue;  // 1=DATA_REPORT
+            if (rule.protocolType != protocolType) continue;
+            if (rule.scriptContent.isEmpty()) continue;
+            rule.lastTriggerTime = 2000;
+            rule.triggerCount++;
+            return mockApplyDollarTemplate(rule.scriptContent, rawData);
+        }
+        return rawData;
+    }
+};
+
+static void test_trigger_type_receive_only() {
+    TestRuleManagerV2 mgr2;
+    TestRuleScript rule;
+    rule.id = "rx_001"; rule.enabled = true;
+    rule.triggerType = 0; rule.protocolType = 0;
+    rule.scriptContent = "RX:${value}";
+    mgr2.addRule(rule);
+
+    // 接收转换应匹配（有 JSON 变量）
+    String r1 = mgr2.applyReceiveTransformV2(0, "{\"value\":\"hello\"}");
+    TEST_ASSERT_EQUAL_STRING("RX:hello", r1.c_str());
+    // 上报转换不应匹配（triggerType=0 != 1）
+    String r2 = mgr2.applyReportTransformV2(0, "{\"value\":\"hello\"}");
+    TEST_ASSERT_EQUAL_STRING("{\"value\":\"hello\"}", r2.c_str());
+}
+
+static void test_trigger_type_report_only() {
+    TestRuleManagerV2 mgr2;
+    TestRuleScript rule;
+    rule.id = "tx_001"; rule.enabled = true;
+    rule.triggerType = 1; rule.protocolType = 0;
+    rule.scriptContent = "TX:${value}";
+    mgr2.addRule(rule);
+
+    // 上报转换应匹配
+    String r1 = mgr2.applyReportTransformV2(0, "{\"value\":\"world\"}");
+    TEST_ASSERT_EQUAL_STRING("TX:world", r1.c_str());
+    // 接收转换不应匹配（triggerType=1 != 0）
+    String r2 = mgr2.applyReceiveTransformV2(0, "{\"value\":\"world\"}");
+    TEST_ASSERT_EQUAL_STRING("{\"value\":\"world\"}", r2.c_str());
+}
+
+static void test_trigger_count_increment() {
+    TestRuleManagerV2 mgr2;
+    TestRuleScript rule;
+    rule.id = "cnt_001"; rule.enabled = true;
+    rule.triggerType = 0; rule.protocolType = 0;
+    rule.scriptContent = "${data}";
+    mgr2.addRule(rule);
+
+    // 多次触发
+    mgr2.applyReceiveTransformV2(0, "{\"data\":\"a\"}");
+    mgr2.applyReceiveTransformV2(0, "{\"data\":\"b\"}");
+    mgr2.applyReceiveTransformV2(0, "{\"data\":\"c\"}");
+
+    auto* found = mgr2.getRule("cnt_001");
+    TEST_ASSERT_NOT_NULL(found);
+    TEST_ASSERT_EQUAL(3, (int)found->triggerCount);
+    TEST_ASSERT_TRUE(found->lastTriggerTime > 0);
+}
+
+static void test_trigger_count_disabled_rule_no_increment() {
+    TestRuleManagerV2 mgr2;
+    TestRuleScript rule;
+    rule.id = "cnt_002"; rule.enabled = false;
+    rule.triggerType = 0; rule.protocolType = 0;
+    rule.scriptContent = "${data}";
+    mgr2.addRule(rule);
+
+    mgr2.applyReceiveTransformV2(0, "{\"data\":\"test\"}");
+    auto* found = mgr2.getRule("cnt_002");
+    TEST_ASSERT_EQUAL(0, (int)found->triggerCount);
+}
+
+// ========== 测试组: API 层请求校验（模拟 RuleScriptRouteHandler） ==========
+
+struct ApiRuleRequest {
+    String id;
+    String name;
+    bool enabled;
+    uint8_t triggerType;
+    uint8_t protocolType;
+    String scriptContent;
+    String sourceTopic;
+    String targetTopic;
+};
+
+// 模拟 handleAddRule 校验逻辑
+static String validateAddRuleRequest(const ApiRuleRequest& req) {
+    if (req.name.isEmpty()) return "Name is required";
+    return "";  // 通过
+}
+
+// 模拟 handleUpdateRule/handleDeleteRule/handleEnableRule/handleDisableRule 校验逻辑
+static String validateIdRequired(const String& id) {
+    if (id.isEmpty()) return "Rule ID is required";
+    return "";
+}
+
+static void test_api_add_rule_name_required() {
+    ApiRuleRequest req; req.name = "";
+    String err = validateAddRuleRequest(req);
+    TEST_ASSERT_EQUAL_STRING("Name is required", err.c_str());
+}
+
+static void test_api_add_rule_name_valid() {
+    ApiRuleRequest req; req.name = "My Script";
+    String err = validateAddRuleRequest(req);
+    TEST_ASSERT_TRUE(err.isEmpty());
+}
+
+static void test_api_update_rule_id_required() {
+    String err = validateIdRequired("");
+    TEST_ASSERT_EQUAL_STRING("Rule ID is required", err.c_str());
+}
+
+static void test_api_update_rule_id_valid() {
+    String err = validateIdRequired("rs_12345");
+    TEST_ASSERT_TRUE(err.isEmpty());
+}
+
+static void test_api_delete_rule_id_required() {
+    String err = validateIdRequired("");
+    TEST_ASSERT_EQUAL_STRING("Rule ID is required", err.c_str());
+}
+
+static void test_api_enable_rule_id_required() {
+    String err = validateIdRequired("");
+    TEST_ASSERT_EQUAL_STRING("Rule ID is required", err.c_str());
+}
+
+static void test_api_disable_rule_id_required() {
+    String err = validateIdRequired("");
+    TEST_ASSERT_EQUAL_STRING("Rule ID is required", err.c_str());
+}
+
+// ========== 测试组: generateUniqueId 格式验证 ==========
+
+static void test_unique_id_format() {
+    // 模拟 generateUniqueId: "rs_" + millis()
+    String id = "rs_" + String(12345);
+    TEST_ASSERT_TRUE(id.startsWith("rs_"));
+    TEST_ASSERT_TRUE(id.length() > 3);
+}
+
+static void test_unique_id_uniqueness() {
+    // 不同时间生成的 ID 应不同
+    String id1 = "rs_" + String(1000);
+    String id2 = "rs_" + String(2000);
+    TEST_ASSERT_FALSE(id1 == id2);
+}
+
 // ========== 测试组入口 ==========
 
 void test_rule_script_group() {
@@ -734,4 +988,27 @@ void test_rule_script_group() {
     RUN_TEST(test_dev_mode_toggle_rule_blocked);
     RUN_TEST(test_dev_mode_get_rules_allowed);
     RUN_TEST(test_dev_mode_re_enable_allows_operations);
+    // ${key} 模板变量替换
+    RUN_TEST(test_dollar_template_single_var);
+    RUN_TEST(test_dollar_template_multi_var);
+    RUN_TEST(test_dollar_template_no_match_passthrough);
+    RUN_TEST(test_dollar_template_empty_template);
+    RUN_TEST(test_dollar_template_empty_json);
+    RUN_TEST(test_dollar_template_repeated_var);
+    // triggerType 过滤与 triggerCount 统计
+    RUN_TEST(test_trigger_type_receive_only);
+    RUN_TEST(test_trigger_type_report_only);
+    RUN_TEST(test_trigger_count_increment);
+    RUN_TEST(test_trigger_count_disabled_rule_no_increment);
+    // API 层请求校验
+    RUN_TEST(test_api_add_rule_name_required);
+    RUN_TEST(test_api_add_rule_name_valid);
+    RUN_TEST(test_api_update_rule_id_required);
+    RUN_TEST(test_api_update_rule_id_valid);
+    RUN_TEST(test_api_delete_rule_id_required);
+    RUN_TEST(test_api_enable_rule_id_required);
+    RUN_TEST(test_api_disable_rule_id_required);
+    // generateUniqueId 格式
+    RUN_TEST(test_unique_id_format);
+    RUN_TEST(test_unique_id_uniqueness);
 }

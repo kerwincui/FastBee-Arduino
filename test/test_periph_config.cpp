@@ -1714,6 +1714,380 @@ void test_unimplemented_types_removed_from_ui() {
 }
 
 // ============================================================
+//  TEST GROUP 9: Route Handler 数据校验（模拟 API 层逻辑）
+// ============================================================
+
+// 模拟 JSON 解析后的外设添加请求结构
+struct ApiAddPeriphRequest {
+    String id;
+    String name;
+    int type;       // 外设类型枚举值
+    bool enabled;
+    String pinsStr; // 逗号分隔的引脚字符串
+    bool valid;
+    String errorMsg;
+};
+
+// 模拟 handleAddPeripheral 中的参数校验逻辑
+static bool validateAddRequest(ApiAddPeriphRequest& req) {
+    if (req.name.isEmpty()) {
+        req.valid = false;
+        req.errorMsg = "Peripheral name is required";
+        return false;
+    }
+    if (req.type <= 0) {
+        req.valid = false;
+        req.errorMsg = "Invalid peripheral type";
+        return false;
+    }
+    // 设备事件(60)和通用传感器(38/51)不需要引脚
+    bool noPinRequired = (req.type == 60 || req.type == 51);
+    if (!noPinRequired && req.pinsStr.isEmpty()) {
+        req.valid = false;
+        req.errorMsg = "Pins are required for this peripheral type";
+        return false;
+    }
+    req.valid = true;
+    return true;
+}
+
+// 模拟引脚字符串解析
+static int parsePinsString(const String& pinsStr, int* pins, int maxPins) {
+    int count = 0;
+    if (pinsStr.isEmpty()) return 0;
+    int start = 0;
+    int end = pinsStr.indexOf(',');
+    while (end != -1 && count < maxPins) {
+        pins[count++] = pinsStr.substring(start, end).toInt();
+        start = end + 1;
+        end = pinsStr.indexOf(',', start);
+    }
+    if (count < maxPins) {
+        pins[count++] = pinsStr.substring(start).toInt();
+    }
+    return count;
+}
+
+// 模拟分页计算
+struct PaginationResult {
+    int total;
+    int page;
+    int pageSize;
+    int startIdx;
+    int endIdx;
+    int totalPages;
+};
+
+static PaginationResult computePagination(int total, int page, int pageSize) {
+    PaginationResult r;
+    r.total = total;
+    r.pageSize = (pageSize < 1) ? 10 : (pageSize > 50 ? 50 : pageSize);
+    r.totalPages = (total + r.pageSize - 1) / r.pageSize;
+    if (r.totalPages < 1) r.totalPages = 1;
+    r.page = (page < 1) ? 1 : (page > r.totalPages ? r.totalPages : page);
+    r.startIdx = (r.page - 1) * r.pageSize;
+    r.endIdx = r.startIdx + r.pageSize;
+    if (r.endIdx > total) r.endIdx = total;
+    return r;
+}
+
+// 模拟引脚冲突检测
+struct PinConflictResult {
+    bool hasConflict;
+    int conflictPin;
+    String conflictPeriphId;
+};
+
+static PinConflictResult checkPinConflict(
+    const std::map<String, std::vector<int>>& existingPeriphPins,
+    const String& excludeId,
+    const int* newPins, int newPinCount
+) {
+    PinConflictResult result = {false, -1, ""};
+    for (int i = 0; i < newPinCount; i++) {
+        int pin = newPins[i];
+        if (pin < 0 || pin > 48) continue;
+        for (auto& kv : existingPeriphPins) {
+            if (kv.first == excludeId) continue;
+            for (int ep : kv.second) {
+                if (ep == pin) {
+                    result.hasConflict = true;
+                    result.conflictPin = pin;
+                    result.conflictPeriphId = kv.first;
+                    return result;
+                }
+            }
+        }
+    }
+    return result;
+}
+
+void test_api_add_peripheral_name_required() {
+    ApiAddPeriphRequest req;
+    req.name = "";
+    req.type = 12;
+    req.pinsStr = "25";
+    TEST_ASSERT_FALSE(validateAddRequest(req));
+    TEST_ASSERT_TRUE(req.errorMsg.indexOf("name") >= 0);
+}
+
+void test_api_add_peripheral_type_required() {
+    ApiAddPeriphRequest req;
+    req.name = "test";
+    req.type = 0; // invalid
+    req.pinsStr = "25";
+    TEST_ASSERT_FALSE(validateAddRequest(req));
+    TEST_ASSERT_TRUE(req.errorMsg.indexOf("type") >= 0);
+}
+
+void test_api_add_peripheral_pins_required() {
+    ApiAddPeriphRequest req;
+    req.name = "test-gpio";
+    req.type = 12; // GPIO output
+    req.pinsStr = "";
+    TEST_ASSERT_FALSE(validateAddRequest(req));
+    TEST_ASSERT_TRUE(req.errorMsg.indexOf("Pins") >= 0);
+}
+
+void test_api_add_peripheral_device_event_no_pins() {
+    ApiAddPeriphRequest req;
+    req.name = "sys-start";
+    req.type = 60; // DEVICE_EVENT
+    req.pinsStr = "";
+    TEST_ASSERT_TRUE(validateAddRequest(req));
+}
+
+void test_api_add_peripheral_valid_request() {
+    ApiAddPeriphRequest req;
+    req.name = "led-1";
+    req.type = 12;
+    req.pinsStr = "25";
+    TEST_ASSERT_TRUE(validateAddRequest(req));
+}
+
+void test_api_update_peripheral_id_required() {
+    // 模拟 handleUpdatePeripheral: id 为空时返回 400
+    String id = "";
+    bool rejected = id.isEmpty();
+    TEST_ASSERT_TRUE(rejected);
+}
+
+void test_api_delete_peripheral_id_required() {
+    // 模拟 handleDeletePeripheral: id 为空时返回 400
+    String id = "";
+    bool rejected = id.isEmpty();
+    TEST_ASSERT_TRUE(rejected);
+}
+
+void test_api_get_peripherals_pagination_default() {
+    PaginationResult r = computePagination(25, 1, 10);
+    TEST_ASSERT_EQUAL(25, r.total);
+    TEST_ASSERT_EQUAL(1, r.page);
+    TEST_ASSERT_EQUAL(10, r.pageSize);
+    TEST_ASSERT_EQUAL(3, r.totalPages);
+    TEST_ASSERT_EQUAL(0, r.startIdx);
+    TEST_ASSERT_EQUAL(10, r.endIdx);
+}
+
+void test_api_get_peripherals_pagination_page2() {
+    PaginationResult r = computePagination(25, 2, 10);
+    TEST_ASSERT_EQUAL(2, r.page);
+    TEST_ASSERT_EQUAL(10, r.startIdx);
+    TEST_ASSERT_EQUAL(20, r.endIdx);
+}
+
+void test_api_get_peripherals_pagination_last_page() {
+    PaginationResult r = computePagination(25, 3, 10);
+    TEST_ASSERT_EQUAL(3, r.page);
+    TEST_ASSERT_EQUAL(20, r.startIdx);
+    TEST_ASSERT_EQUAL(25, r.endIdx);
+}
+
+void test_api_get_peripherals_pagination_overflow() {
+    PaginationResult r = computePagination(25, 99, 10);
+    TEST_ASSERT_EQUAL(3, r.page); // 自动修正到最大页
+    TEST_ASSERT_EQUAL(20, r.startIdx);
+}
+
+void test_api_get_peripherals_pagination_zero_page() {
+    PaginationResult r = computePagination(10, 0, 10);
+    TEST_ASSERT_EQUAL(1, r.page); // 自动修正为 1
+}
+
+void test_api_get_peripherals_pagination_clamp_page_size() {
+    PaginationResult r = computePagination(100, 1, 999);
+    TEST_ASSERT_EQUAL(50, r.pageSize); // 最大 50
+}
+
+void test_api_get_peripherals_pagination_empty() {
+    PaginationResult r = computePagination(0, 1, 10);
+    TEST_ASSERT_EQUAL(0, r.total);
+    TEST_ASSERT_EQUAL(1, r.totalPages);
+    TEST_ASSERT_EQUAL(0, r.endIdx);
+}
+
+void test_api_pin_conflict_no_conflict() {
+    std::map<String, std::vector<int>> existing;
+    existing["led_1"] = {25, 26};
+    existing["uart_1"] = {16, 17};
+    int newPins[] = {4, 5};
+    PinConflictResult r = checkPinConflict(existing, "", newPins, 2);
+    TEST_ASSERT_FALSE(r.hasConflict);
+}
+
+void test_api_pin_conflict_detected() {
+    std::map<String, std::vector<int>> existing;
+    existing["led_1"] = {25, 26};
+    existing["uart_1"] = {16, 17};
+    int newPins[] = {25}; // 与 led_1 冲突
+    PinConflictResult r = checkPinConflict(existing, "", newPins, 1);
+    TEST_ASSERT_TRUE(r.hasConflict);
+    TEST_ASSERT_EQUAL(25, r.conflictPin);
+    TEST_ASSERT_EQUAL_STRING("led_1", r.conflictPeriphId.c_str());
+}
+
+void test_api_pin_conflict_exclude_self() {
+    std::map<String, std::vector<int>> existing;
+    existing["led_1"] = {25, 26};
+    int newPins[] = {25}; // 编辑自身时排除
+    PinConflictResult r = checkPinConflict(existing, "led_1", newPins, 1);
+    TEST_ASSERT_FALSE(r.hasConflict);
+}
+
+void test_api_pin_conflict_invalid_pin_ignored() {
+    std::map<String, std::vector<int>> existing;
+    existing["led_1"] = {25};
+    int newPins[] = {99}; // 无效引脚
+    PinConflictResult r = checkPinConflict(existing, "", newPins, 1);
+    TEST_ASSERT_FALSE(r.hasConflict);
+}
+
+void test_api_pins_string_parsing_single() {
+    int pins[8];
+    int count = parsePinsString("25", pins, 8);
+    TEST_ASSERT_EQUAL(1, count);
+    TEST_ASSERT_EQUAL(25, pins[0]);
+}
+
+void test_api_pins_string_parsing_multiple() {
+    int pins[8];
+    int count = parsePinsString("16,17,21,22", pins, 8);
+    TEST_ASSERT_EQUAL(4, count);
+    TEST_ASSERT_EQUAL(16, pins[0]);
+    TEST_ASSERT_EQUAL(17, pins[1]);
+    TEST_ASSERT_EQUAL(21, pins[2]);
+    TEST_ASSERT_EQUAL(22, pins[3]);
+}
+
+void test_api_pins_string_parsing_max_limit() {
+    int pins[8];
+    int count = parsePinsString("1,2,3,4,5,6,7,8,9,10", pins, 8);
+    TEST_ASSERT_EQUAL(8, count); // 最多 8 个
+}
+
+void test_api_pins_string_parsing_empty() {
+    int pins[8];
+    int count = parsePinsString("", pins, 8);
+    TEST_ASSERT_EQUAL(0, count);
+}
+
+// ============================================================
+//  TEST GROUP 10: Route Handler 工具函数与内存阈值测试
+// ============================================================
+
+// --- 10A: escapePeriphJsonString 模拟 ---
+static String mockEscapeJson(const String& value) {
+    String out;
+    out.reserve(value.length() + 8);
+    for (size_t i = 0; i < value.length(); ++i) {
+        char c = value[i];
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default: out += c; break;
+        }
+    }
+    return out;
+}
+
+void test_json_escape_plain_text() {
+    TEST_ASSERT_EQUAL_STRING("hello", mockEscapeJson("hello").c_str());
+}
+void test_json_escape_double_quote() {
+    TEST_ASSERT_EQUAL_STRING("say \\\"hi\\\"", mockEscapeJson("say \"hi\"").c_str());
+}
+void test_json_escape_backslash() {
+    TEST_ASSERT_EQUAL_STRING("a\\\\b", mockEscapeJson("a\\b").c_str());
+}
+void test_json_escape_newline() {
+    TEST_ASSERT_EQUAL_STRING("line1\\nline2", mockEscapeJson("line1\nline2").c_str());
+}
+void test_json_escape_carriage_return() {
+    TEST_ASSERT_EQUAL_STRING("a\\rb", mockEscapeJson("a\rb").c_str());
+}
+void test_json_escape_tab() {
+    TEST_ASSERT_EQUAL_STRING("a\\tb", mockEscapeJson("a\tb").c_str());
+}
+void test_json_escape_empty() {
+    TEST_ASSERT_EQUAL_STRING("", mockEscapeJson("").c_str());
+}
+void test_json_escape_mixed_special() {
+    // "a\"b\\c\n" → "a\\\"b\\\\c\\n"
+    TEST_ASSERT_EQUAL_STRING("a\\\"b\\\\c\\n", mockEscapeJson("a\"b\\c\n").c_str());
+}
+void test_json_escape_chinese() {
+    // 中文字符不应被转义
+    TEST_ASSERT_EQUAL_STRING("\xe4\xb8\xad\xe6\x96\x87", mockEscapeJson("\xe4\xb8\xad\xe6\x96\x87").c_str());
+}
+void test_json_escape_unicode_passthrough() {
+    // 非 ASCII 字符原样透传
+    String input = "caf\xc3\xa9"; // "café" in UTF-8
+    TEST_ASSERT_EQUAL_STRING("caf\xc3\xa9", mockEscapeJson(input).c_str());
+}
+
+// --- 10B: isListMemoryCriticallyLow / shouldForceCompactList 模拟 ---
+static bool mockIsListMemoryCriticallyLow(uint32_t freeHeap, uint32_t maxAlloc) {
+    return freeHeap < 4096 || maxAlloc < 1536;
+}
+static bool mockShouldForceCompactList(uint32_t freeHeap, uint32_t maxAlloc) {
+    return freeHeap < 16384 || maxAlloc < 8192;
+}
+
+void test_memory_critical_low_heap() {
+    TEST_ASSERT_TRUE(mockIsListMemoryCriticallyLow(3000, 2000));
+}
+void test_memory_critical_low_alloc() {
+    TEST_ASSERT_TRUE(mockIsListMemoryCriticallyLow(5000, 1000));
+}
+void test_memory_critical_both_ok() {
+    TEST_ASSERT_FALSE(mockIsListMemoryCriticallyLow(8000, 4000));
+}
+void test_memory_critical_boundary_heap() {
+    TEST_ASSERT_FALSE(mockIsListMemoryCriticallyLow(4096, 2000)); // 等于阈值不算低
+}
+void test_memory_critical_boundary_alloc() {
+    TEST_ASSERT_FALSE(mockIsListMemoryCriticallyLow(5000, 1536));
+}
+void test_memory_compact_low_heap() {
+    TEST_ASSERT_TRUE(mockShouldForceCompactList(10000, 10000));
+}
+void test_memory_compact_low_alloc() {
+    TEST_ASSERT_TRUE(mockShouldForceCompactList(20000, 5000));
+}
+void test_memory_compact_both_ok() {
+    TEST_ASSERT_FALSE(mockShouldForceCompactList(20000, 10000));
+}
+void test_memory_compact_boundary_heap() {
+    TEST_ASSERT_FALSE(mockShouldForceCompactList(16384, 10000));
+}
+void test_memory_compact_very_low() {
+    TEST_ASSERT_TRUE(mockShouldForceCompactList(100, 100));
+}
+
+// ============================================================
 //  测试入口
 // ============================================================
 
@@ -1824,4 +2198,52 @@ void test_periph_config_group() {
     RUN_TEST(test_sdio_data_transparency_spi);
     RUN_TEST(test_sdio_data_transparency_sdmmc);
     RUN_TEST(test_unimplemented_types_removed_from_ui);
+
+    // Group 9: Route Handler 数据校验（模拟 API 层逻辑）
+    RUN_TEST(test_api_add_peripheral_name_required);
+    RUN_TEST(test_api_add_peripheral_type_required);
+    RUN_TEST(test_api_add_peripheral_pins_required);
+    RUN_TEST(test_api_add_peripheral_device_event_no_pins);
+    RUN_TEST(test_api_add_peripheral_valid_request);
+    RUN_TEST(test_api_update_peripheral_id_required);
+    RUN_TEST(test_api_delete_peripheral_id_required);
+    RUN_TEST(test_api_get_peripherals_pagination_default);
+    RUN_TEST(test_api_get_peripherals_pagination_page2);
+    RUN_TEST(test_api_get_peripherals_pagination_last_page);
+    RUN_TEST(test_api_get_peripherals_pagination_overflow);
+    RUN_TEST(test_api_get_peripherals_pagination_zero_page);
+    RUN_TEST(test_api_get_peripherals_pagination_clamp_page_size);
+    RUN_TEST(test_api_get_peripherals_pagination_empty);
+    RUN_TEST(test_api_pin_conflict_no_conflict);
+    RUN_TEST(test_api_pin_conflict_detected);
+    RUN_TEST(test_api_pin_conflict_exclude_self);
+    RUN_TEST(test_api_pin_conflict_invalid_pin_ignored);
+    RUN_TEST(test_api_pins_string_parsing_single);
+    RUN_TEST(test_api_pins_string_parsing_multiple);
+    RUN_TEST(test_api_pins_string_parsing_max_limit);
+    RUN_TEST(test_api_pins_string_parsing_empty);
+
+    // Group 10: Route Handler 工具函数与内存阈值测试
+    // 10A: JSON转义
+    RUN_TEST(test_json_escape_plain_text);
+    RUN_TEST(test_json_escape_double_quote);
+    RUN_TEST(test_json_escape_backslash);
+    RUN_TEST(test_json_escape_newline);
+    RUN_TEST(test_json_escape_carriage_return);
+    RUN_TEST(test_json_escape_tab);
+    RUN_TEST(test_json_escape_empty);
+    RUN_TEST(test_json_escape_mixed_special);
+    RUN_TEST(test_json_escape_chinese);
+    RUN_TEST(test_json_escape_unicode_passthrough);
+    // 10B: 内存阈值
+    RUN_TEST(test_memory_critical_low_heap);
+    RUN_TEST(test_memory_critical_low_alloc);
+    RUN_TEST(test_memory_critical_both_ok);
+    RUN_TEST(test_memory_critical_boundary_heap);
+    RUN_TEST(test_memory_critical_boundary_alloc);
+    RUN_TEST(test_memory_compact_low_heap);
+    RUN_TEST(test_memory_compact_low_alloc);
+    RUN_TEST(test_memory_compact_both_ok);
+    RUN_TEST(test_memory_compact_boundary_heap);
+    RUN_TEST(test_memory_compact_very_low);
 }

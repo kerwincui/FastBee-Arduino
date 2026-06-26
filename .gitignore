@@ -10,12 +10,14 @@
 .codex
 .codex-logs
 dist/
+node_modules/
 *.pyc
 *.log
 compile_commands.json
 upload_log.txt
 nul
 tmp/
+test-results/
 logs/
 
 # ESP-IDF sdkconfig generated files

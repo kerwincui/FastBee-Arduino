@@ -20,12 +20,19 @@
 #include <WiFi.h>
 #include <core/SystemConstants.h>
 #include <core/FeatureFlags.h>
-#if FASTBEE_ENABLE_MQTT
 #include "core/FastBeeFramework.h"
+#include "core/PeriphExecManager.h"
+#include "core/PeriphExecScheduler.h"
+#include "network/handlers/HandlerUtils.h"
+#if FASTBEE_ENABLE_MQTT
 #include "protocols/ProtocolManager.h"
 #include "protocols/MQTTClient.h"
 #include "network/WebConfigManager.h"
 #include "network/handlers/SSERouteHandler.h"
+#endif
+#if FASTBEE_ENABLE_MODBUS
+#include "protocols/ProtocolManager.h"
+#include "protocols/ModbusHandler.h"
 #endif
 
 HealthMonitor::HealthMonitor()
@@ -142,7 +149,10 @@ bool HealthMonitor::isSystemHealthy() const {
         && currentHealth.fileSystemOK;
 }
 
-// 低内存保护：连续多次检测到严重低内存时重启设备
+// 低内存保护：分级恢复机制（替代原有的 15s 硬重启）
+// EMERGENCY: DRAM < 4KB → 立即禁用 MQTT + 停止所有非 Web 服务
+// CRITICAL 持续 30s → 写入配置禁用 MQTT（重启后也不连）
+// CRITICAL 持续 90s → 安全重启（boot loop 保护：启动 < 120s 不重启）
 void HealthMonitor::checkCriticalMemory() {
     // 使用 DRAM 内部内存进行检测（排除 PSRAM）
     // WiFi/MQTT/SSL 都不能用 PSRAM，使用 DRAM 空闲来评估真实风险
@@ -171,34 +181,98 @@ void HealthMonitor::checkCriticalMemory() {
             warningThreshold  = 16384;  // 16KB
         }
     }
-    // 连续严重低内存次数阈值：连续 3 次（15秒）就重启
-    constexpr uint32_t CRITICAL_COUNT_THRESHOLD = 3;
+
+    // ── 紧急兜底：DRAM < 4KB，系统随时可能 crash，不等计时立即执行所有恢复 ──
+    static constexpr uint32_t EMERGENCY_DRAM_THRESHOLD = 4096;
+    if (checkHeap < EMERGENCY_DRAM_THRESHOLD && !_mqttDisabledForMemory) {
+        Serial.printf("[MEMRECOVER] EMERGENCY: DRAM=%lu < 4KB, immediate full recovery\n",
+                      (unsigned long)checkHeap);
+        // 立即执行 SEVERE 恢复（如果还没做）
+        performMemoryRecovery(MemoryGuardLevel::NORMAL, MemoryGuardLevel::CRITICAL);
+        // 立即禁用 MQTT
+        _mqttDisabledForMemory = true;
+        _mqttStoppedForMemory = true;
+        disableMqttForMemory();
+        Serial.printf("[MEMRECOVER] EMERGENCY complete: DRAM=%lu, Web stays available\n",
+                      (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    }
 
     if (checkHeap < criticalThreshold) {
         consecutiveLowMemCount++;
+
+        // 开始 CRITICAL 计时（首次进入）
+        if (_criticalStartTime == 0) {
+            _criticalStartTime = millis();
+            Serial.printf("[MEMRECOVER] CRITICAL DRAM detected: dram=%lu threshold=%lu, starting recovery timer\n",
+                          (unsigned long)checkHeap, (unsigned long)criticalThreshold);
+        }
+        unsigned long criticalDuration = millis() - _criticalStartTime;
+
         char buf[128];
-        snprintf(buf, sizeof(buf), "Health: CRITICAL low DRAM! dram=%lu total=%lu maxBlock=%lu count=%lu threshold=%lu",
+        snprintf(buf, sizeof(buf),
+                 "Health: CRITICAL low DRAM! dram=%lu maxBlock=%lu count=%lu duration=%lus",
                  (unsigned long)checkHeap,
-                 (unsigned long)currentHealth.freeHeap,
                  (unsigned long)currentHealth.dramLargestBlock,
                  (unsigned long)consecutiveLowMemCount,
-                 (unsigned long)criticalThreshold);
+                 (unsigned long)(criticalDuration / 1000));
         LOG_ERROR(buf);
 
-        if (consecutiveLowMemCount >= CRITICAL_COUNT_THRESHOLD) {
+        // 确保 SEVERE 恢复措施已执行（兜底：等级可能跳过 SEVERE 直达 CRITICAL）
+        if (!_mqttsMemoryDowngrade && !_modbusStoppedForMemory && !_periphExecPausedForMemory) {
+            Serial.println("[MEMRECOVER] SEVERE fallback: executing recovery from CRITICAL path");
+            performMemoryRecovery(MemoryGuardLevel::WARN, MemoryGuardLevel::CRITICAL);
+        }
+
+#if FASTBEE_ENABLE_MQTT
+        // 30s: 写入配置禁用 MQTT（重启后也不连）+ 立即停止
+        if (criticalDuration >= CRITICAL_MQTT_STOP_DELAY_MS && !_mqttDisabledForMemory) {
+            _mqttDisabledForMemory = true;
+            _mqttStoppedForMemory = true;
+            Serial.printf("[MEMRECOVER] === CRITICAL %lus: disabling MQTT permanently ===\n",
+                          (unsigned long)(criticalDuration / 1000));
+            disableMqttForMemory();
+            Serial.println("[MEMRECOVER]   User must re-enable MQTT via Web UI after memory recovers");
+        }
+#endif
+
+        // 90s: 安全重启（boot loop 保护 + 恢复轨迹总结）
+        if (criticalDuration >= CRITICAL_REBOOT_DELAY_MS && !SystemRebooter::isScheduled()) {
+            // 重启循环保护：启动 < 120s 不重启，防止 boot loop
+            if (millis() < 120000UL) {
+                static unsigned long lastBootLoopWarn = 0;
+                if (millis() - lastBootLoopWarn > 30000UL) {
+                    Serial.println("[MEMRECOVER] Skip reboot: recent boot (<120s), possible boot loop. Web stays available.");
+                    lastBootLoopWarn = millis();
+                }
+                return;  // 不重启，保持 Web 可用
+            }
+
+            // 输出恢复轨迹总结
+            Serial.println("[MEMRECOVER] === Recovery summary before reboot ===");
+            Serial.printf("[MEMRECOVER]   Uptime: %lus, CRITICAL duration: %lus\n",
+                          (unsigned long)(millis() / 1000),
+                          (unsigned long)(criticalDuration / 1000));
+            Serial.printf("[MEMRECOVER]   Actions taken: %s%s%s%s\n",
+                          _mqttsMemoryDowngrade ? "MQTTS->MQTT(SEVERE) " : "",
+                          _modbusStoppedForMemory ? "Modbus stopped " : "",
+                          _periphExecPausedForMemory ? "PeriphExec paused " : "",
+                          _mqttDisabledForMemory ? "MQTT disabled(30s)" : "");
+            Serial.printf("[MEMRECOVER]   DRAM: current=%lu largest=%lu\n",
+                          (unsigned long)checkHeap,
+                          (unsigned long)currentHealth.dramLargestBlock);
+            Serial.printf("[MEMRECOVER]   Reboot reason: DRAM<%luKB for %lus, all recovery exhausted\n",
+                          (unsigned long)(criticalThreshold / 1024),
+                          (unsigned long)(criticalDuration / 1000));
+
             char reasonBuf[48];
-            snprintf(reasonBuf, sizeof(reasonBuf), "DRAM < %luKB for 15s",
-                     (unsigned long)(criticalThreshold / 1024));
-            LOG_ERROR("Health: DRAM critically low for too long, rebooting!");
-            // 保存重启前状态快照到 RTC 内存，供下次启动诊断
-            RestartDiagnostics::savePreRestartState(
-                RestartReason::CRITICAL_LOW_MEMORY,
-                reasonBuf);
-            delay(100);
-            ESP.restart();
+            snprintf(reasonBuf, sizeof(reasonBuf), "DRAM<%luKB for %lus",
+                     (unsigned long)(criticalThreshold / 1024),
+                     (unsigned long)(criticalDuration / 1000));
+            SystemRebooter::scheduleReboot(reasonBuf, 3000, RestartReason::CRITICAL_LOW_MEMORY);
         }
     } else if (checkHeap < warningThreshold) {
         consecutiveLowMemCount = 0;
+        // _criticalStartTime 由 applyDegradation() NORMAL 路径和 restoreMemoryRecovery() 统一管理
         char buf[96];
         snprintf(buf, sizeof(buf), "Health: Low DRAM warning dram=%lu total=%lu maxBlock=%lu",
                  (unsigned long)checkHeap,
@@ -207,6 +281,7 @@ void HealthMonitor::checkCriticalMemory() {
         LOG_WARNING(buf);
     } else {
         consecutiveLowMemCount = 0;
+        // _criticalStartTime 由 applyDegradation() NORMAL 路径和 restoreMemoryRecovery() 统一管理
     }
 }
 
@@ -409,7 +484,10 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
                 }
             }
 #endif
+            // 恢复因内存压力停止的服务（Modbus、PeriphExec、MQTT）
+            restoreMemoryRecovery();
         }
+        _criticalStartTime = 0;  // 重置 CRITICAL 计时
         return;
     }
 
@@ -459,6 +537,11 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
             }
         }
 #endif
+        // 内存恢复：MQTTS→MQTT 降级 + 停止 Modbus + 暂停 PeriphExec
+        // 仅在首次进入 SEVERE 或从低级别跳入时执行（避免重复操作）
+        if (oldLevel < MemoryGuardLevel::SEVERE) {
+            performMemoryRecovery(oldLevel, newLevel);
+        }
     }
 
     // ── CRITICAL 级：提升日志级别到 ERROR，确保文件日志已禁用 ──────────
@@ -568,6 +651,13 @@ String HealthMonitor::getMetricsJson() {
     doc["memguard"]["level"]              = lvl;
     doc["memguard"]["level_name"]         = levelNames[lvl < 4 ? lvl : 0];
     doc["memguard"]["fragmentation_high"] = isFragmentationHigh();
+    // 内存恢复状态（防砖机制进度）
+    doc["memguard"]["mqtts_downgraded"]    = _mqttsMemoryDowngrade;
+    doc["memguard"]["mqtt_stopped"]        = _mqttStoppedForMemory;
+    doc["memguard"]["mqtt_disabled"]       = _mqttDisabledForMemory;
+    doc["memguard"]["modbus_stopped"]      = _modbusStoppedForMemory;
+    doc["memguard"]["periph_exec_paused"]  = _periphExecPausedForMemory;
+    doc["memguard"]["critical_duration_s"] = (unsigned long)(getCriticalDurationMs() / 1000);
 
     // PSRAM 信息（用于前端判断 MQTTS 支持）
     doc["heap"]["psram_total"] = (unsigned long)(ESP.getPsramSize() / 1024);
@@ -608,4 +698,165 @@ size_t HealthMonitor::getTaskStackInfo(TaskStackInfo* outInfo, size_t maxTasks) 
         }
     }
     return count;
+}
+
+// ── 内存恢复：SEVERE 级别服务降级 ─────────────────────────────────────
+void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuardLevel newLevel) {
+    uint32_t dramBefore = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    uint8_t largestBlock = (currentHealth.dramLargestBlock > 0)
+        ? (uint8_t)((currentHealth.dramLargestBlock * 100) / dramBefore)
+        : 0;
+    Serial.printf("[MEMRECOVER] === SEVERE recovery triggered === dram=%lu largest=%lu frag=%d%%\n",
+                  (unsigned long)dramBefore,
+                  (unsigned long)currentHealth.dramLargestBlock,
+                  (int)largestBlock);
+
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
+
+    // Step 1: MQTTS → MQTT 降级（释放 ~30-50KB TLS DRAM）
+#if FASTBEE_ENABLE_MQTT
+    if (pm && !_mqttsMemoryDowngrade) {
+        MQTTClient* mqtt = pm->getMQTTClient();
+        if (mqtt && mqtt->getConfig().scheme == "mqtts") {
+            Serial.println("[MEMRECOVER] Step 1/3: MQTTS -> MQTT downgrade (releasing ~35KB TLS DRAM)");
+            downgradeMqttsToMqtt();
+        }
+    }
+#endif
+
+    // Step 2: 停止 Modbus RTU（释放串口缓冲 + 停止轮询 CPU 开销）
+#if FASTBEE_ENABLE_MODBUS
+    if (pm && !_modbusStoppedForMemory) {
+        ModbusHandler* modbus = pm->getModbusHandler();
+        if (modbus && modbus->isRunning()) {
+            Serial.println("[MEMRECOVER] Step 2/3: Modbus stopped (was running)");
+            pm->stopModbus();
+            _modbusStoppedForMemory = true;
+        }
+    }
+#endif
+
+    // Step 3: 暂停 PeriphExec 定时器（减少 CPU 和内存峰值）
+    if (!_periphExecPausedForMemory) {
+        PeriphExecManager& execMgr = PeriphExecManager::getInstance();
+        PeriphExecScheduler* scheduler = execMgr.getScheduler();
+        if (scheduler) {
+            Serial.println("[MEMRECOVER] Step 3/3: PeriphExec timers paused");
+            scheduler->setMemoryPaused(true);
+            _periphExecPausedForMemory = true;
+        }
+    }
+
+    uint32_t dramAfter = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    Serial.printf("[MEMRECOVER] === SEVERE recovery complete === dram=%lu (gained %ld bytes)\n",
+                  (unsigned long)dramAfter, (long)(dramAfter - dramBefore));
+}
+
+// ── MQTTS → MQTT 降级：修改配置文件并重启 MQTT ───────────────────────
+void HealthMonitor::downgradeMqttsToMqtt() {
+    Serial.println("[MEMRECOVER]   protocol.json updating: scheme=mqtt, port=1883");
+
+    // 写入配置文件：scheme=mqtt, port=1883
+    const char* configPath = FileSystem::PROTOCOL_CONFIG_FILE;
+    bool configUpdated = HandlerUtils::updateJsonConfig(configPath,
+        [](JsonDocument& doc) {
+            if (doc["mqtt"].is<JsonObject>()) {
+                doc["mqtt"]["scheme"] = "mqtt";
+                doc["mqtt"]["port"] = 1883;
+            }
+        });
+
+    if (!configUpdated) {
+        Serial.println("[MEMRECOVER]   WARN: failed to update protocol.json, skip MQTT restart");
+        return;  // 配置写入失败，不标记已降级，不重启 MQTT
+    }
+    Serial.println("[MEMRECOVER]   protocol.json updated: scheme=mqtt, port=1883");
+
+    // 标记已降级（防止重复操作）
+    _mqttsMemoryDowngrade = true;
+
+    // 停止当前 MQTT（释放 TLS 传输层）并延迟重启（使用新配置 mqtt://）
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
+    if (pm) {
+        pm->stopMQTT();
+        // 延迟重启：配置文件已更新为 mqtt，重启后使用非加密连接
+        pm->restartMQTTDeferred();
+        Serial.println("[MEMRECOVER]   MQTT stopped + deferred restart with plain scheme");
+    }
+
+    // 记录 DRAM 变化用于诊断
+    uint32_t dramAfter = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    Serial.printf("[MEMRECOVER]   DRAM after downgrade: %lu bytes\n", (unsigned long)dramAfter);
+}
+
+// ── NORMAL 恢复：重启因内存停止的服务 ────────────────────────────────
+void HealthMonitor::restoreMemoryRecovery() {
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
+
+    Serial.println("[MEMRECOVER] === NORMAL: restoring services ===");
+
+    // 恢复 Modbus（如果被内存停止过）
+#if FASTBEE_ENABLE_MODBUS
+    if (_modbusStoppedForMemory && pm) {
+        pm->restartModbusDeferred();
+        _modbusStoppedForMemory = false;
+        Serial.println("[MEMRECOVER]   Modbus restart deferred");
+    }
+#endif
+
+    // 恢复 PeriphExec 定时器
+    if (_periphExecPausedForMemory) {
+        PeriphExecManager& execMgr = PeriphExecManager::getInstance();
+        PeriphExecScheduler* scheduler = execMgr.getScheduler();
+        if (scheduler) {
+            scheduler->setMemoryPaused(false);
+        }
+        _periphExecPausedForMemory = false;
+        Serial.println("[MEMRECOVER]   PeriphExec timers resumed");
+    }
+
+    // 恢复 MQTT：被禁用时不自动恢复，用户需手动在 Web 界面开启
+#if FASTBEE_ENABLE_MQTT
+    if (_mqttDisabledForMemory) {
+        Serial.println("[MEMRECOVER]   MQTT stays DISABLED (config: enabled=false), user must re-enable manually");
+        // 不重置 _mqttDisabledForMemory，不重启 MQTT
+    } else if (_mqttStoppedForMemory && pm) {
+        pm->restartMQTTDeferred();
+        _mqttStoppedForMemory = false;
+        Serial.println("[MEMRECOVER]   MQTT restart deferred");
+    }
+#endif
+
+    // 重置 CRITICAL 计时
+    _criticalStartTime = 0;
+
+    Serial.println("[MEMRECOVER] === NORMAL restore complete ===");
+}
+
+// ── 永久禁用 MQTT：写入配置 + 停止（CRITICAL 30s 最后手段）────────────
+void HealthMonitor::disableMqttForMemory() {
+    Serial.println("[MEMRECOVER]   Disabling MQTT in config (memory critical)");
+    const char* configPath = FileSystem::PROTOCOL_CONFIG_FILE;
+    bool ok = HandlerUtils::updateJsonConfig(configPath,
+        [](JsonDocument& doc) {
+            if (doc["mqtt"].is<JsonObject>()) {
+                doc["mqtt"]["enabled"] = false;
+            }
+        });
+    if (!ok) {
+        Serial.println("[MEMRECOVER]   WARN: failed to disable MQTT in config");
+        return;
+    }
+    Serial.println("[MEMRECOVER]   protocol.json updated: mqtt.enabled=false");
+
+    // 立即停止 MQTT（配置已更新，重启后也不会重连）
+    FastBeeFramework* fw = FastBeeFramework::getInstance();
+    ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;
+    if (pm) {
+        pm->stopMQTT();
+        Serial.println("[MEMRECOVER]   MQTT stopped (will NOT reconnect after reboot)");
+    }
 }

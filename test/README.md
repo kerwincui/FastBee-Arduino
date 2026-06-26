@@ -16,7 +16,6 @@
 | `test_system_stability.cpp` | 系统稳定性、资源保护和边界条件测试 |
 | `test_e2e_scenarios.cpp` | 端到端场景组合测试 |
 | `test_command_bus.cpp` | CommandBus 命令总线测试 |
-| `test_error_handler.cpp` | 错误处理模块测试 |
 | `test_ota_manager.cpp` | OTA 管理器测试 |
 | `test_batch_sse.cpp` | 批量请求与 SSE 推送测试 |
 | `test_periph_exec.cpp` | 外设执行引擎测试 |

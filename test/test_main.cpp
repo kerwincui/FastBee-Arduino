@@ -23,7 +23,6 @@ extern void test_e2e_scenarios_group();
 extern void test_pagination_fixes_group();
 extern void test_periph_exec_group();
 extern void test_command_bus_group();
-extern void test_error_handler_group();
 extern void test_ota_manager_group();
 extern void test_rule_script_group();
 extern void test_batch_sse_group();
@@ -52,6 +51,11 @@ extern void test_lcd1602_group();
 extern void test_cellular_adapter_group();
 extern void test_memory_budget_group();
 extern void test_modbus_mqtt_interaction_group();
+extern void test_sensor_driver_group();
+extern void test_seven_segment_group();
+extern void test_gpio_validation_group();
+extern void test_driver_registry_group();
+extern void test_ethernet_adapter_group();
 
 // 测试夹具
 void setUp() {
@@ -125,9 +129,6 @@ void setup() {
 
     Serial.println("\n[TEST] Running CommandBus Tests...");
     test_command_bus_group();
-
-    Serial.println("\n[TEST] Running ErrorHandler Tests...");
-    test_error_handler_group();
 
     Serial.println("\n[TEST] Running OTA Manager Tests...");
     test_ota_manager_group();
@@ -212,6 +213,21 @@ void setup() {
 
     Serial.println("\n[TEST] Running Modbus-MQTT Interaction Tests...");
     test_modbus_mqtt_interaction_group();
+
+    Serial.println("\n[TEST] Running SensorDriver Tests...");
+    test_sensor_driver_group();
+
+    Serial.println("\n[TEST] Running SevenSegment (TM1637) Tests...");
+    test_seven_segment_group();
+
+    Serial.println("\n[TEST] Running GPIO Validation Tests...");
+    test_gpio_validation_group();
+
+    Serial.println("\n[TEST] Running DriverRegistry Tests...");
+    test_driver_registry_group();
+
+    Serial.println("\n[TEST] Running EthernetAdapter (W5500) Tests...");
+    test_ethernet_adapter_group();
 
     // 结束测试并输出结果
     int result = UNITY_END();

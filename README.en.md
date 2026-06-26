@@ -92,62 +92,6 @@ powershell -ExecutionPolicy Bypass -File scripts\doctor.ps1 -Port COM6
 powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32-F4R0 -Port COM6
 ```
 
-Common flash commands:
-
-```powershell
-# ESP32 Standard (4MB Flash)
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32-F4R0 -Port COM6
-
-# ESP32 Full (8MB Flash + 4MB PSRAM)
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32-F8R4 -Port COM6
-
-# ESP32-S3 Standard (8MB Flash)
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F8R0 -Port COM6
-
-# ESP32-S3 Full (16MB Flash + 8MB PSRAM)
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F16R8 -Port COM6
-
-# Auto-open serial monitor after deploy
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F16R8 -Port COM6 -Monitor
-
-# Build only, no flash
-powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32s3-F16R8 -BuildOnly
-```
-
-`deploy.ps1` uploads the LittleFS Web filesystem matching the `-Env` first, then flashes the firmware. Add `-Monitor` to auto-open the serial monitor after deployment. The script automatically cleans stale esptool/python processes to avoid "file in use" errors.
-
-### Flash Pre-built Release Images
-
-The repository keeps merged firmware under `dist/firmware/all-latest/`, suitable for users who don't want to compile locally. The merged images include bootloader, partition table, application firmware, and LittleFS Web filesystem; flash address is always `0x0`.
-
-| Firmware File | Target Hardware |
-| --- | --- |
-| `fastbee-esp32-F4R0.bin` | ESP32 4MB Flash |
-| `fastbee-esp32-F8R4.bin` | ESP32 8MB Flash + 4MB PSRAM |
-| `fastbee-esp32c3-F4R0.bin` | ESP32-C3 4MB Flash |
-| `fastbee-esp32c6-F4R0.bin` | ESP32-C6 4MB Flash |
-| `fastbee-esp32s3-F8R0.bin` | ESP32-S3 8MB Flash |
-| `fastbee-esp32s3-F8R4.bin` | ESP32-S3 8MB Flash + 4MB PSRAM |
-| `fastbee-esp32s3-F16R8.bin` | ESP32-S3 16MB Flash + 8MB PSRAM |
-
-Command-line flash examples:
-
-```powershell
-# Optional: erase entire Flash first
-esptool.py --chip auto --port COM6 erase_flash
-
-# ESP32 Standard merged image, write from 0x0
-esptool.py --chip auto --port COM6 --baud 921600 write_flash -z 0x0 dist\firmware\all-latest\fastbee-esp32-F4R0.bin
-
-# ESP32-S3 Full merged image, requires 16MB Flash + PSRAM hardware
-esptool.py --chip auto --port COM6 --baud 921600 write_flash -z 0x0 dist\firmware\all-latest\fastbee-esp32s3-F16R8.bin
-
-# ESP32 Full merged image, requires 8MB Flash + 4MB PSRAM hardware
-esptool.py --chip auto --port COM6 --baud 921600 write_flash -z 0x0 dist\firmware\all-latest\fastbee-esp32-F8R4.bin
-```
-
-You can also use the Espressif Flash Download Tool: select the `.bin` file, set address to `0x0`, click `ERASE` then `START`. If pages display abnormally after flashing, first verify the firmware file matches the actual chip/Flash/PSRAM specs.
-
 ## First Access
 
 The device enters AP mode on first boot or when WiFi is not configured:
@@ -207,53 +151,17 @@ graph LR
   </tr>
 </table>
 
----
-
-## Verification & Testing
-
-This project provides a unified test entry to ensure different chips, editions, and Web artifacts work correctly.
-
-```powershell
-# Pre-commit quick check: config, i18n, Web assets, all-chip build
-powershell -ExecutionPolicy Bypass -Command ".\scripts\test-all.ps1 -Checks static,build"
-
-# Full local matrix without real device
-powershell -ExecutionPolicy Bypass -Command ".\scripts\test-all.ps1 -Checks static,native,build,artifacts"
-
-# API smoke test after flashing a real device
-powershell -ExecutionPolicy Bypass -File scripts\smoke-test-device.ps1 -BaseUrl http://192.168.4.1 -Profile standard
-
-# Long-running stability test with CSV output
-powershell -ExecutionPolicy Bypass -File scripts\soak-test-device.ps1 -BaseUrl http://<device-ip> -Profile full -Rounds 100
-```
-
-Device tests check login, system, network, device config, protocol, MQTT, peripherals, peripheral execution, and Full admin APIs by `lite`, `standard`, `full` profile. Web static smoke tests verify gzip resources, page/module integrity, JS syntax, and first-screen resource budget.
-
-## Release Artifacts
-
-Generate all-edition merged firmware in one command:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-all-artifacts.ps1 -CleanOutput
-```
-
-Output directory:
-
-```text
-dist/firmware/all-latest/
-```
-
-Artifacts are merged images containing bootloader, partition table, application firmware, and LittleFS — ready for mass-production flash tools.
-
 ## Project Structure
 
 ```text
-src/          Firmware source code
-include/      Headers and feature switches
-data/         LittleFS default config and Web artifacts
-web-src/      Web frontend source
-scripts/      Build, flash, test, and release scripts
-test/         PlatformIO native tests
+src/              Firmware source code
+include/          Headers and feature switches
+data/             LittleFS default config and Web artifacts
+web-src/          Web frontend source
+scripts/          Build, flash, test, and release scripts
+test/             PlatformIO native tests
+test/browser/     Playwright browser automation (18 suites / 625 cases)
+docs/             Test plans and design documents
 ```
 
 ## Documentation

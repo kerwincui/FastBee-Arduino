@@ -1,0 +1,112 @@
+{
+    "BaseUrl":  "http://192.168.5.85",
+    "Profile":  "lite",
+    "Rounds":  30,
+    "Total":  1112,
+    "Failed":  210,
+    "FailureRatePercent":  18.88,
+    "AverageMs":  134.1,
+    "P95Ms":  210,
+    "MaxConsecutiveFailures":  2,
+    "StabilityPreset":  "release",
+    "StabilityThresholds":  {
+                                "MaxFailureRatePercent":  0,
+                                "MaxP95LatencyMs":  5000,
+                                "MaxConsecutiveFailures":  1,
+                                "MaxEndpointFailureRatePercent":  0,
+                                "MaxUptimeResetCount":  0,
+                                "MinHeapFreeBytes":  16000,
+                                "MinHeapMaxAllocBytes":  8000,
+                                "MaxHeapFreeDropBytes":  20000,
+                                "MaxHeapMaxAllocDropBytes":  12000,
+                                "MinPsramFreeBytes":  0,
+                                "MaxPsramFreeDropBytes":  0
+                            },
+    "StabilityThresholdSources":  {
+                                      "MaxFailureRatePercent":  "preset",
+                                      "MaxP95LatencyMs":  "preset",
+                                      "MaxConsecutiveFailures":  "preset",
+                                      "MaxEndpointFailureRatePercent":  "preset",
+                                      "MaxUptimeResetCount":  "preset",
+                                      "MinHeapFreeBytes":  "preset",
+                                      "MinHeapMaxAllocBytes":  "preset",
+                                      "MaxHeapFreeDropBytes":  "preset",
+                                      "MaxHeapMaxAllocDropBytes":  "preset",
+                                      "MinPsramFreeBytes":  "preset",
+                                      "MaxPsramFreeDropBytes":  "preset"
+                                  },
+    "Uptime":  {
+                   "Samples":  60,
+                   "ResetCount":  0,
+                   "Min":  7465835,
+                   "Max":  7949868
+               },
+    "HeapFree":  {
+                     "Count":  120,
+                     "First":  80640,
+                     "Last":  80528,
+                     "Min":  78788,
+                     "Max":  81596,
+                     "Drop":  112
+                 },
+    "HeapMaxAlloc":  {
+                         "Count":  120,
+                         "First":  47092,
+                         "Last":  45044,
+                         "Min":  45044,
+                         "Max":  49140,
+                         "Drop":  2048
+                     },
+    "PsramFree":  {
+                      "Count":  30,
+                      "First":  0,
+                      "Last":  0,
+                      "Min":  0,
+                      "Max":  0,
+                      "Drop":  0
+                  },
+    "EndpointFailures":  [
+                             {
+                                 "Name":  "periph-exec-rules",
+                                 "Total":  30,
+                                 "Failed":  30,
+                                 "FailureRatePercent":  100
+                             },
+                             {
+                                 "Name":  "system-capabilities",
+                                 "Total":  30,
+                                 "Failed":  30,
+                                 "FailureRatePercent":  100
+                             },
+                             {
+                                 "Name":  "mqtt-initialization",
+                                 "Total":  30,
+                                 "Failed":  30,
+                                 "FailureRatePercent":  100
+                             },
+                             {
+                                 "Name":  "mqtt-ntp-sync",
+                                 "Total":  30,
+                                 "Failed":  30,
+                                 "FailureRatePercent":  100
+                             },
+                             {
+                                 "Name":  "rule-scripts-unavailable",
+                                 "Total":  30,
+                                 "Failed":  30,
+                                 "FailureRatePercent":  100
+                             },
+                             {
+                                 "Name":  "peripherals",
+                                 "Total":  30,
+                                 "Failed":  30,
+                                 "FailureRatePercent":  100
+                             },
+                             {
+                                 "Name":  "modbus-unavailable",
+                                 "Total":  30,
+                                 "Failed":  30,
+                                 "FailureRatePercent":  100
+                             }
+                         ]
+}

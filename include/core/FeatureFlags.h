@@ -395,6 +395,16 @@
 #endif
 
 /**
+ * @brief DS18B20 数字温度传感器支持 (OneWire)
+ * 默认：启用（依赖 OneWire + DallasTemperature 库）
+ * 占用：约 5KB Flash
+ * 说明：ESP32-C6 等无 OneWire 库的构建可通过 platformio.ini 设为 0
+ */
+#ifndef FASTBEE_ENABLE_DS18B20
+    #define FASTBEE_ENABLE_DS18B20 1
+#endif
+
+/**
  * @brief I2C 高级传感器支持（BMP280 气压/MPU6050 陀螺仪等）
  * 默认：禁用（仅 ESP32-S3 full 构建启用）
  * 占用：约 15KB Flash（BMP280 ~5KB + MPU6050 ~10KB）

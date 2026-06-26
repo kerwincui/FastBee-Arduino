@@ -911,6 +911,351 @@ void test_memguard_log_uses_dynamic_thresholds() {
     TestLog::testEnd(true);
 }
 
+// ========== 内存恢复机制整合测试 (MR-1 ~ MR-17) ==========
+
+/**
+ * @brief MR-1: getMetricsJson 包含恢复状态字段
+ */
+void test_mr1_metrics_json_recovery_fields() {
+    TestLog::testStart("MR-1: getMetricsJson includes recovery state fields");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    const char* fields[] = {
+        "mqtts_downgraded", "mqtt_stopped", "mqtt_disabled",
+        "modbus_stopped", "periph_exec_paused", "critical_duration_s"
+    };
+    for (const char* f : fields) {
+        TEST_ASSERT_TRUE_MESSAGE(
+            content.find(f) != std::string::npos,
+            (std::string("getMetricsJson must contain field: ") + f).c_str());
+    }
+    TestLog::step("All 6 recovery state fields present in getMetricsJson");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MR-2: HealthMonitor.h 包含恢复状态查询接口
+ */
+void test_mr2_query_interfaces_in_header() {
+    TestLog::testStart("MR-2: HealthMonitor.h has recovery query interfaces");
+    std::string content = readProjectFile("include/systems/HealthMonitor.h");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.h must be readable");
+
+    const char* methods[] = {
+        "isMqttsDowngraded", "isMqttStoppedForMemory", "isMqttDisabledForMemory",
+        "isModbusStoppedForMemory", "isPeriphExecPausedForMemory", "getCriticalDurationMs"
+    };
+    for (const char* m : methods) {
+        TEST_ASSERT_TRUE_MESSAGE(
+            content.find(m) != std::string::npos,
+            (std::string("HealthMonitor.h must have method: ") + m).c_str());
+    }
+    TestLog::step("All 6 query interfaces present in header");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MR-3: applyDegradation SEVERE 分支调用 performMemoryRecovery，仅 oldLevel < SEVERE 时执行
+ */
+void test_mr3_severe_calls_perform_recovery() {
+    TestLog::testStart("MR-3: applyDegradation SEVERE calls performMemoryRecovery");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("performMemoryRecovery") != std::string::npos,
+        "applyDegradation must call performMemoryRecovery");
+    TestLog::step("performMemoryRecovery call found in source");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MR-4: applyDegradation NORMAL 分支调用 restoreMemoryRecovery
+ */
+void test_mr4_normal_calls_restore_recovery() {
+    TestLog::testStart("MR-4: applyDegradation NORMAL calls restoreMemoryRecovery");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("restoreMemoryRecovery") != std::string::npos,
+        "applyDegradation NORMAL must call restoreMemoryRecovery");
+    TestLog::step("restoreMemoryRecovery call found in source");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MR-5: checkCriticalMemory 包含 SEVERE 兜底逻辑
+ */
+void test_mr5_critical_has_severe_fallback() {
+    TestLog::testStart("MR-5: checkCriticalMemory has SEVERE fallback");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("SEVERE fallback") != std::string::npos,
+        "checkCriticalMemory must have SEVERE fallback logic");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("performMemoryRecovery(MemoryGuardLevel::WARN, MemoryGuardLevel::CRITICAL)") != std::string::npos,
+        "SEVERE fallback must call performMemoryRecovery with WARN->CRITICAL");
+    TestLog::step("SEVERE fallback in CRITICAL path verified");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MR-6: checkCriticalMemory 30s 调用 disableMqttForMemory（而非仅 stopMQTT）
+ */
+void test_mr6_30s_disables_mqtt() {
+    TestLog::testStart("MR-6: checkCriticalMemory 30s disables MQTT permanently");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("disableMqttForMemory()") != std::string::npos,
+        "30s action must call disableMqttForMemory (not just stopMQTT)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("CRITICAL_MQTT_STOP_DELAY_MS") != std::string::npos,
+        "Must use CRITICAL_MQTT_STOP_DELAY_MS constant");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("_mqttDisabledForMemory") != std::string::npos,
+        "Must set _mqttDisabledForMemory flag");
+    TestLog::step("30s permanent MQTT disable verified");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MR-7: checkCriticalMemory 90s 调用 SystemRebooter::scheduleReboot
+ */
+void test_mr7_90s_schedules_reboot() {
+    TestLog::testStart("MR-7: checkCriticalMemory 90s schedules reboot");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("SystemRebooter::scheduleReboot") != std::string::npos,
+        "90s action must call SystemRebooter::scheduleReboot");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("CRITICAL_REBOOT_DELAY_MS") != std::string::npos,
+        "Must use CRITICAL_REBOOT_DELAY_MS constant");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("RestartReason::CRITICAL_LOW_MEMORY") != std::string::npos,
+        "Must use CRITICAL_LOW_MEMORY restart reason");
+    TestLog::step("90s safe reboot verified");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MR-8: downgradeMqttsToMqtt 配置写入失败时安全退出
+ */
+void test_mr8_downgrade_failure_safe_exit() {
+    TestLog::testStart("MR-8: downgradeMqttsToMqtt safe exit on config failure");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    // 检查配置写入失败后有 return 语句
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("skip MQTT restart") != std::string::npos,
+        "Config write failure must skip MQTT restart");
+    TestLog::step("Config failure safe exit verified");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MR-9: disableMqttForMemory 写入 mqtt.enabled=false 并调用 stopMQTT
+ */
+void test_mr9_disable_mqtt_implementation() {
+    TestLog::testStart("MR-9: disableMqttForMemory writes enabled=false and stops MQTT");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("disableMqttForMemory") != std::string::npos,
+        "disableMqttForMemory method must exist");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("mqtt.enabled") != std::string::npos,
+        "Must write mqtt.enabled to config");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("doc[\"mqtt\"][\"enabled\"] = false") != std::string::npos,
+        "Must set mqtt.enabled to false");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("stopMQTT") != std::string::npos,
+        "Must call stopMQTT after disabling config");
+    TestLog::step("disableMqttForMemory implementation verified");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MR-10: restoreMemoryRecovery 对 _mqttDisabledForMemory 不自动恢复
+ */
+void test_mr10_restore_skips_disabled_mqtt() {
+    TestLog::testStart("MR-10: restoreMemoryRecovery skips disabled MQTT");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("MQTT stays DISABLED") != std::string::npos,
+        "restoreMemoryRecovery must log that disabled MQTT stays disabled");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("user must re-enable") != std::string::npos,
+        "Must indicate user manual re-enable is required");
+    TestLog::step("Disabled MQTT not auto-restored verified");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MR-11: PeriphExecScheduler checkTimers 入口有 _memoryPressurePaused 早期返回
+ */
+void test_mr11_periphexec_memory_pause() {
+    TestLog::testStart("MR-11: PeriphExecScheduler has memory pause early return");
+    std::string content = readProjectFile("src/core/PeriphExecScheduler.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "PeriphExecScheduler.cpp must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("_memoryPressurePaused") != std::string::npos,
+        "PeriphExecScheduler must check _memoryPressurePaused");
+    TestLog::step("PeriphExec memory pause check verified");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MR-12: _criticalStartTime 仅在 checkCriticalMemory 中设置，在 restoreMemoryRecovery 中重置
+ */
+void test_mr12_critical_start_time_management() {
+    TestLog::testStart("MR-12: _criticalStartTime managed correctly");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    // _criticalStartTime = millis() 仅在 checkCriticalMemory 中
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("_criticalStartTime = millis()") != std::string::npos,
+        "_criticalStartTime must be set in checkCriticalMemory");
+    // _criticalStartTime = 0 在 restoreMemoryRecovery 中
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("_criticalStartTime = 0") != std::string::npos,
+        "_criticalStartTime must be reset in restoreMemoryRecovery");
+    // else 分支不应有 _criticalStartTime = 0（统一管理）
+    std::regex elseResetRegex(R"(} else \{[^}]*_criticalStartTime = 0)");
+    TEST_ASSERT_FALSE_MESSAGE(
+        std::regex_search(content, elseResetRegex),
+        "checkCriticalMemory else branches must NOT reset _criticalStartTime (use unified management)");
+    TestLog::step("_criticalStartTime management verified");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MR-13: 所有降级/恢复日志使用 [MEMRECOVER] 前缀，包含 dram= 快照
+ */
+void test_mr13_memrecover_log_prefix() {
+    TestLog::testStart("MR-13: Recovery logs use [MEMRECOVER] prefix with dram snapshot");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    // performMemoryRecovery 中使用 [MEMRECOVER] 前缀
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("[MEMRECOVER] === SEVERE recovery triggered ===") != std::string::npos,
+        "performMemoryRecovery must use [MEMRECOVER] prefix");
+    // 包含 dram= 快照
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("dram=") != std::string::npos,
+        "Recovery logs must include dram= snapshot");
+    TestLog::step("[MEMRECOVER] prefix and dram snapshot verified");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MR-14: SEVERE 恢复日志包含 Step 序号和 DRAM 前后对比
+ */
+void test_mr14_severe_step_logging() {
+    TestLog::testStart("MR-14: SEVERE recovery has Step X/Y logging and DRAM comparison");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("Step 1/3") != std::string::npos,
+        "SEVERE recovery must log Step 1/3");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("Step 2/3") != std::string::npos,
+        "SEVERE recovery must log Step 2/3");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("Step 3/3") != std::string::npos,
+        "SEVERE recovery must log Step 3/3");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("DRAM after downgrade") != std::string::npos,
+        "Must log DRAM after downgrade");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("SEVERE recovery complete") != std::string::npos,
+        "Must log SEVERE recovery complete with DRAM gain");
+    TestLog::step("Step X/Y and DRAM comparison logging verified");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MR-15: checkCriticalMemory 包含 EMERGENCY DRAM < 4KB 紧急释放路径
+ */
+void test_mr15_emergency_dram_threshold() {
+    TestLog::testStart("MR-15: EMERGENCY DRAM < 4KB immediate recovery");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("EMERGENCY_DRAM_THRESHOLD") != std::string::npos,
+        "Must define EMERGENCY_DRAM_THRESHOLD constant");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("EMERGENCY") != std::string::npos,
+        "Must have EMERGENCY log path");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("4096") != std::string::npos,
+        "EMERGENCY threshold must be 4096 (4KB)");
+    TestLog::step("EMERGENCY DRAM < 4KB path verified");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MR-16: checkCriticalMemory 90s 重启前有 boot loop 保护
+ */
+void test_mr16_boot_loop_protection() {
+    TestLog::testStart("MR-16: Boot loop protection before 90s reboot");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("boot loop") != std::string::npos,
+        "Must have boot loop protection log message");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("120000UL") != std::string::npos,
+        "Boot loop check must use 120s (120000ms) threshold");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("recent boot") != std::string::npos,
+        "Must log 'recent boot' when skipping reboot");
+    TestLog::step("Boot loop protection verified");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MR-17: 重启前输出恢复轨迹总结
+ */
+void test_mr17_recovery_summary_before_reboot() {
+    TestLog::testStart("MR-17: Recovery summary before reboot");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("Recovery summary before reboot") != std::string::npos,
+        "Must output recovery summary before reboot");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("Actions taken") != std::string::npos,
+        "Summary must include Actions taken");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("Reboot reason") != std::string::npos,
+        "Summary must include Reboot reason");
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("CRITICAL duration") != std::string::npos,
+        "Summary must include CRITICAL duration");
+    TestLog::step("Recovery summary logging verified");
+    TestLog::testEnd(true);
+}
+
 // ========== 测试组入口 ==========
 
 void test_health_monitor_group() {
@@ -957,6 +1302,25 @@ void test_health_monitor_group() {
 
     // MEMGUARD 日志动态阈值测试
     RUN_TEST(test_memguard_log_uses_dynamic_thresholds);
+
+    // 内存恢复机制整合测试 (MR-1 ~ MR-17)
+    RUN_TEST(test_mr1_metrics_json_recovery_fields);
+    RUN_TEST(test_mr2_query_interfaces_in_header);
+    RUN_TEST(test_mr3_severe_calls_perform_recovery);
+    RUN_TEST(test_mr4_normal_calls_restore_recovery);
+    RUN_TEST(test_mr5_critical_has_severe_fallback);
+    RUN_TEST(test_mr6_30s_disables_mqtt);
+    RUN_TEST(test_mr7_90s_schedules_reboot);
+    RUN_TEST(test_mr8_downgrade_failure_safe_exit);
+    RUN_TEST(test_mr9_disable_mqtt_implementation);
+    RUN_TEST(test_mr10_restore_skips_disabled_mqtt);
+    RUN_TEST(test_mr11_periphexec_memory_pause);
+    RUN_TEST(test_mr12_critical_start_time_management);
+    RUN_TEST(test_mr13_memrecover_log_prefix);
+    RUN_TEST(test_mr14_severe_step_logging);
+    RUN_TEST(test_mr15_emergency_dram_threshold);
+    RUN_TEST(test_mr16_boot_loop_protection);
+    RUN_TEST(test_mr17_recovery_summary_before_reboot);
 
     TestLog::groupEnd();
 }

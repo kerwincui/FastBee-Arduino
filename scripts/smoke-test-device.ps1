@@ -26,7 +26,20 @@ function Get-MatrixChecks {
         throw "Device API test matrix not found: $matrixPath"
     }
 
-    $matrix = Get-Content -LiteralPath $matrixPath -Raw | ConvertFrom-Json
+    # Use explicit UTF-8 encoding to avoid PowerShell 5.x GBK locale issues
+    # with ConvertFrom-Json on files containing CJK characters.
+    $jsonText = [System.IO.File]::ReadAllText($matrixPath, [System.Text.Encoding]::UTF8)
+    try {
+        $matrix = $jsonText | ConvertFrom-Json
+    } catch {
+        # Fallback: use .NET JavaScriptSerializer for PS 5.x compatibility
+        Add-Type -AssemblyName System.Web.Extensions
+        $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+        $ser.MaxJsonLength = [int]::MaxValue
+        $dict = $ser.DeserializeObject($jsonText)
+        # Convert dictionary back to PSObject via JSON roundtrip
+        $matrix = $dict | ConvertTo-Json -Depth 10 -Compress | ConvertFrom-Json
+    }
     return @($matrix.checks | Where-Object {
         $profiles = @($_.profiles)
         $profiles.Count -eq 0 -or ($profiles -contains $Profile)

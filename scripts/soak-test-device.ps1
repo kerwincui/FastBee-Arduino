@@ -46,10 +46,22 @@ function Get-MatrixChecks {
         throw "Device API test matrix not found: $matrixPath"
     }
 
-    $matrix = Get-Content -LiteralPath $matrixPath -Raw | ConvertFrom-Json
+        # Use explicit UTF-8 encoding to avoid PowerShell 5.x GBK locale issues
+    $jsonText = [System.IO.File]::ReadAllText($matrixPath, [System.Text.Encoding]::UTF8)
+    try {
+        $matrix = $jsonText | ConvertFrom-Json
+    } catch {
+        Add-Type -AssemblyName System.Web.Extensions
+        $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+        $ser.MaxJsonLength = [int]::MaxValue
+        $dict = $ser.DeserializeObject($jsonText)
+        $matrix = $dict | ConvertTo-Json -Depth 10 -Compress | ConvertFrom-Json
+    }
     return @($matrix.checks | Where-Object {
         $profiles = @($_.profiles)
-        $profiles.Count -eq 0 -or ($profiles -contains $Profile)
+        $skipSoak = $false
+        if ($_.PSObject.Properties.Name -contains "skipSoak") { $skipSoak = [bool]$_.skipSoak }
+        ($profiles.Count -eq 0 -or ($profiles -contains $Profile)) -and (-not $skipSoak)
     })
 }
 
@@ -137,7 +149,16 @@ function Apply-StabilityPreset {
         throw "Device stability threshold matrix not found: $thresholdPath"
     }
 
-    $doc = Get-Content -LiteralPath $thresholdPath -Raw | ConvertFrom-Json
+        $jsonText2 = [System.IO.File]::ReadAllText($thresholdPath, [System.Text.Encoding]::UTF8)
+        try {
+            $doc = $jsonText2 | ConvertFrom-Json
+        } catch {
+            Add-Type -AssemblyName System.Web.Extensions -ErrorAction SilentlyContinue
+            $ser2 = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+            $ser2.MaxJsonLength = [int]::MaxValue
+            $dict2 = $ser2.DeserializeObject($jsonText2)
+            $doc = $dict2 | ConvertTo-Json -Depth 10 -Compress | ConvertFrom-Json
+        }
     $preset = $doc.presets.$StabilityPreset
     if ($null -eq $preset) {
         throw "Unknown stability preset: $StabilityPreset"

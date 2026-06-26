@@ -1,0 +1,21 @@
+{
+  "name": "fastbee-browser-tests",
+  "version": "1.0.0",
+  "description": "FastBee-Arduino 浏览器自动化测试 (Playwright)",
+  "private": true,
+  "scripts": {
+    "test": "npx playwright test",
+    "test:smoke": "npx playwright test --project=smoke",
+    "test:core": "npx playwright test --project=core",
+    "test:features": "npx playwright test --project=features",
+    "test:perf": "npx playwright test --project=perf",
+    "test:linkage": "npx playwright test --project=linkage",
+    "test:all": "npx playwright test",
+    "test:headed": "npx playwright test --headed",
+    "test:debug": "npx playwright test --debug",
+    "report": "npx playwright show-report reports/html"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.0"
+  }
+}

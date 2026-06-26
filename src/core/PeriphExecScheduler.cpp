@@ -169,6 +169,9 @@ uint32_t PeriphExecScheduler::getDynamicCheckPeriod(MemoryGuardLevel level) {
 }
 
 void PeriphExecScheduler::checkTimers() {
+    // 内存保护暂停：HealthMonitor 检测到内存压力时暂停所有定时器
+    if (_memoryPressurePaused) return;
+
     unsigned long now = millis();
 
     if (!_manager) return;

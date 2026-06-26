@@ -30,6 +30,8 @@ function walkMarkdown(target, files) {
     if (!fs.existsSync(target)) return;
     const stat = fs.statSync(target);
     if (stat.isDirectory()) {
+        const baseName = path.basename(target);
+        if (baseName === 'node_modules' || baseName === '.git') return;
         fs.readdirSync(target).forEach((entry) => walkMarkdown(path.join(target, entry), files));
         return;
     }

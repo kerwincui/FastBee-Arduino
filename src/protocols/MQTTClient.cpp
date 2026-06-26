@@ -24,7 +24,6 @@
 #include "systems/HealthMonitor.h"
 #endif
 #include <ArduinoJson.h>
-#include <core/ConfigDefines.h>
 #include <LittleFS.h>
 #include <HTTPClient.h>
 #include <esp_heap_caps.h>

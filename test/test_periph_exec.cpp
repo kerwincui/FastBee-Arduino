@@ -1679,6 +1679,740 @@ void test_poll_ingress_independent_sources() {
 }
 
 // ============================================================
+//  TEST GROUP 16: 动作分发测试（模拟 executeActionItem 逻辑）
+// ============================================================
+
+// 模拟动作分发结果
+struct MockActionResult {
+    bool success;
+    uint8_t physicalPinState;  // 0=LOW, 1=HIGH, 2=PWM, 3=UNCHANGED
+    uint16_t pwmDuty;
+    bool systemRestartTriggered;
+    bool scriptExecuted;
+    String scriptContent;
+    String callPeriphTarget;
+    String callPeriphCommand;
+    String ruleControlTarget;
+    bool ruleControlEnable;
+};
+
+// 模拟 executeActionItem 的分发逻辑
+static MockActionResult mockExecuteAction(
+    uint8_t actionType,
+    const String& targetPeriphId,
+    const String& actionValue,
+    bool targetExists,
+    bool scriptEnabled
+) {
+    MockActionResult result = {};
+    result.physicalPinState = 3; // UNCHANGED
+
+    // 调用其他外设 (actionType 10) 必须先于系统动作判断
+    if (actionType == 10) { // ACTION_CALL_PERIPHERAL
+        if (targetPeriphId.isEmpty()) { result.success = false; return result; }
+        if (!targetExists) { result.success = false; return result; }
+        result.callPeriphTarget = targetPeriphId;
+        result.callPeriphCommand = actionValue;
+        result.success = true;
+        return result;
+    }
+
+    // 系统功能 (actionType 6-11)
+    if (actionType >= 6 && actionType <= 11) {
+        if (actionType == 6) { // SYS_RESTART
+            result.systemRestartTriggered = true;
+            result.success = true;
+        } else if (actionType == 7) { // FACTORY_RESET
+            result.success = true;
+        } else {
+            result.success = true; // NTP_SYNC, OTA 等
+        }
+        return result;
+    }
+
+    // 脚本命令 (actionType 15)
+    if (actionType == 15) { // ACTION_SCRIPT
+        if (!scriptEnabled) { result.success = false; return result; }
+        if (actionValue.isEmpty()) { result.success = false; return result; }
+        result.scriptExecuted = true;
+        result.scriptContent = actionValue;
+        result.success = true;
+        return result;
+    }
+
+    // 规则控制 (actionType 22/23)
+    if (actionType == 22 || actionType == 23) {
+        if (targetPeriphId.isEmpty()) { result.success = false; return result; }
+        result.ruleControlTarget = targetPeriphId;
+        result.ruleControlEnable = (actionType == 22);
+        result.success = true;
+        return result;
+    }
+
+    // GPIO 动作 (actionType 0-5)
+    if (targetPeriphId.isEmpty() || !targetExists) {
+        result.success = false;
+        return result;
+    }
+
+    switch (actionType) {
+        case 0: // ACTION_HIGH
+            result.physicalPinState = 1; // HIGH
+            result.success = true;
+            break;
+        case 1: // ACTION_LOW
+            result.physicalPinState = 0; // LOW
+            result.success = true;
+            break;
+        case 4: // ACTION_SET_PWM
+            result.physicalPinState = 2; // PWM
+            result.pwmDuty = (uint16_t)actionValue.toInt();
+            result.success = true;
+            break;
+        case 13: // ACTION_HIGH_INVERTED -> 物理低电平
+            result.physicalPinState = 0; // physical LOW
+            result.success = true;
+            break;
+        case 14: // ACTION_LOW_INVERTED -> 物理高电平
+            result.physicalPinState = 1; // physical HIGH
+            result.success = true;
+            break;
+        default:
+            result.success = false;
+            break;
+    }
+    return result;
+}
+
+void test_action_dispatch_gpio_high() {
+    MockActionResult r = mockExecuteAction(0, "led_1", "", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_UINT8(1, r.physicalPinState); // HIGH
+}
+
+void test_action_dispatch_gpio_low() {
+    MockActionResult r = mockExecuteAction(1, "led_1", "", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_UINT8(0, r.physicalPinState); // LOW
+}
+
+void test_action_dispatch_pwm_value() {
+    MockActionResult r = mockExecuteAction(4, "pwm_1", "128", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_UINT8(2, r.physicalPinState); // PWM
+    TEST_ASSERT_EQUAL_UINT16(128, r.pwmDuty);
+}
+
+void test_action_dispatch_inverted_high() {
+    // ACTION_HIGH_INVERTED(13): 逻辑高 -> 物理低电平
+    MockActionResult r = mockExecuteAction(13, "relay_1", "", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_UINT8(0, r.physicalPinState); // physical LOW
+}
+
+void test_action_dispatch_inverted_low() {
+    // ACTION_LOW_INVERTED(14): 逻辑低 -> 物理高电平
+    MockActionResult r = mockExecuteAction(14, "relay_1", "", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_UINT8(1, r.physicalPinState); // physical HIGH
+}
+
+void test_action_dispatch_system_restart() {
+    MockActionResult r = mockExecuteAction(6, "", "", false, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_TRUE(r.systemRestartTriggered);
+}
+
+void test_action_dispatch_system_factory_reset() {
+    MockActionResult r = mockExecuteAction(7, "", "", false, false);
+    TEST_ASSERT_TRUE(r.success);
+}
+
+void test_action_dispatch_script() {
+    MockActionResult r = mockExecuteAction(15, "", "mqtt_publish topic1 hello", false, true);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_TRUE(r.scriptExecuted);
+    TEST_ASSERT_EQUAL_STRING("mqtt_publish topic1 hello", r.scriptContent.c_str());
+}
+
+void test_action_dispatch_script_disabled() {
+    MockActionResult r = mockExecuteAction(15, "", "some script", false, false);
+    TEST_ASSERT_FALSE(r.success);
+}
+
+void test_action_dispatch_script_empty() {
+    MockActionResult r = mockExecuteAction(15, "", "", false, true);
+    TEST_ASSERT_FALSE(r.success);
+}
+
+void test_action_dispatch_call_peripheral() {
+    MockActionResult r = mockExecuteAction(10, "stepper_1", "forward", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("stepper_1", r.callPeriphTarget.c_str());
+    TEST_ASSERT_EQUAL_STRING("forward", r.callPeriphCommand.c_str());
+}
+
+void test_action_dispatch_call_peripheral_no_target() {
+    MockActionResult r = mockExecuteAction(10, "", "forward", true, false);
+    TEST_ASSERT_FALSE(r.success);
+}
+
+void test_action_dispatch_call_peripheral_not_found() {
+    MockActionResult r = mockExecuteAction(10, "nonexist", "forward", false, false);
+    TEST_ASSERT_FALSE(r.success);
+}
+
+void test_action_dispatch_rule_enable() {
+    MockActionResult r = mockExecuteAction(22, "rule_abc", "", false, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("rule_abc", r.ruleControlTarget.c_str());
+    TEST_ASSERT_TRUE(r.ruleControlEnable);
+}
+
+void test_action_dispatch_rule_disable() {
+    MockActionResult r = mockExecuteAction(23, "rule_abc", "", false, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("rule_abc", r.ruleControlTarget.c_str());
+    TEST_ASSERT_FALSE(r.ruleControlEnable);
+}
+
+void test_action_dispatch_rule_control_no_target() {
+    MockActionResult r = mockExecuteAction(22, "", "", false, false);
+    TEST_ASSERT_FALSE(r.success);
+}
+
+void test_action_dispatch_unknown_type() {
+    MockActionResult r = mockExecuteAction(255, "led_1", "", true, false);
+    TEST_ASSERT_FALSE(r.success);
+}
+
+void test_action_dispatch_gpio_no_target() {
+    MockActionResult r = mockExecuteAction(0, "", "", false, false);
+    TEST_ASSERT_FALSE(r.success);
+}
+
+void test_action_dispatch_gpio_target_not_found() {
+    MockActionResult r = mockExecuteAction(0, "nonexist", "", false, false);
+    TEST_ASSERT_FALSE(r.success);
+}
+
+void test_action_dispatch_enum_values_match() {
+    // 确保测试中的动作类型值与枚举定义一致
+    TEST_ASSERT_EQUAL(0, static_cast<int>(ActionType::SET_HIGH));
+    TEST_ASSERT_EQUAL(1, static_cast<int>(ActionType::SET_LOW));
+    TEST_ASSERT_EQUAL(4, static_cast<int>(ActionType::SET_PWM));
+    TEST_ASSERT_EQUAL(6, static_cast<int>(ActionType::SYS_RESTART));
+    TEST_ASSERT_EQUAL(7, static_cast<int>(ActionType::SYS_FACTORY_RESET));
+    TEST_ASSERT_EQUAL(10, static_cast<int>(ActionType::CALL_PERIPHERAL));
+    TEST_ASSERT_EQUAL(13, static_cast<int>(ActionType::HIGH_INVERTED));
+    TEST_ASSERT_EQUAL(14, static_cast<int>(ActionType::LOW_INVERTED));
+    TEST_ASSERT_EQUAL(15, static_cast<int>(ActionType::SCRIPT));
+    TEST_ASSERT_EQUAL(22, static_cast<int>(ActionType::ENABLE_EXEC_RULE));
+    TEST_ASSERT_EQUAL(23, static_cast<int>(ActionType::DISABLE_EXEC_RULE));
+}
+
+// ============================================================
+//  TEST GROUP 17: trigger→condition→action 全链路联动测试
+// ============================================================
+
+// 模拟完整规则执行链路
+struct ChainTrigger {
+    uint8_t triggerType;  // 0=platform, 1=timer, 4=event, 5=poll
+    uint8_t operatorType; // 0=EQ, 1=NEQ, 2=GT, 3=LT, 4=GTE, 5=LTE
+    String compareValue;
+};
+
+struct ChainAction {
+    uint8_t actionType;
+    String targetPeriphId;
+    String actionValue;
+};
+
+struct ChainRule {
+    String id;
+    String name;
+    bool enabled;
+    std::vector<ChainTrigger> triggers;
+    std::vector<ChainAction> actions;
+};
+
+// 模拟规则执行结果
+struct ChainResult {
+    bool triggered;          // 触发器是否匹配
+    bool conditionPassed;    // 条件是否通过
+    int actionsExecuted;     // 执行的动作数
+    std::vector<uint8_t> executedActionTypes; // 已执行的动作类型
+    bool systemRestartFlag;  // 是否触发系统重启
+};
+
+// 模拟完整的规则执行链路: trigger match → condition eval → action dispatch
+static ChainResult mockExecuteRuleChain(
+    const ChainRule& rule,
+    uint8_t incomingTriggerType,  // 本次触发的类型
+    const String& receivedValue,  // 接收到的值（用于条件评估）
+    const std::map<String, bool>& targetPeriphExists // 目标外设是否存在
+) {
+    ChainResult result = {};
+    if (!rule.enabled) return result;
+
+    // Step 1: 触发器匹配
+    bool triggerMatched = false;
+    uint8_t matchedTriggerOp = 0;
+    String matchedCompareValue;
+    for (const auto& t : rule.triggers) {
+        if (t.triggerType == incomingTriggerType) {
+            triggerMatched = true;
+            matchedTriggerOp = t.operatorType;
+            matchedCompareValue = t.compareValue;
+            break;
+        }
+    }
+    result.triggered = triggerMatched;
+    if (!triggerMatched) return result;
+
+    // Step 2: 条件评估
+    // 定时触发(operatorType=0 且 compareValue为空)无条件通过
+    // 其他触发类型若有比较值则进行条件评估
+    if (!matchedCompareValue.isEmpty()) {
+        result.conditionPassed = mockEvalCondition(receivedValue, matchedTriggerOp, matchedCompareValue);
+    } else {
+        // 无比较值时，无条件通过（如定时触发）
+        result.conditionPassed = true;
+    }
+    if (!result.conditionPassed) return result;
+
+    // Step 3: 动作分发
+    for (const auto& a : rule.actions) {
+        // 系统动作(6-11)不需要目标外设
+        if (a.actionType >= 6 && a.actionType <= 11) {
+            if (a.actionType == 6) result.systemRestartFlag = true;
+            result.executedActionTypes.push_back(a.actionType);
+            result.actionsExecuted++;
+            continue;
+        }
+        // 规则控制(22/23)不需要目标外设存在
+        if (a.actionType == 22 || a.actionType == 23) {
+            result.executedActionTypes.push_back(a.actionType);
+            result.actionsExecuted++;
+            continue;
+        }
+        // GPIO/PWM 等需要目标外设存在
+        auto it = targetPeriphExists.find(a.targetPeriphId);
+        if (it != targetPeriphExists.end() && it->second) {
+            result.executedActionTypes.push_back(a.actionType);
+            result.actionsExecuted++;
+        }
+    }
+    return result;
+}
+
+// --- 链路测试用例 ---
+
+void test_chain_platform_trigger_eq_condition_gpio_action() {
+    // 平台触发 + EQ条件 + GPIO HIGH动作
+    ChainRule rule;
+    rule.id = "r1"; rule.name = "MQTT控制LED"; rule.enabled = true;
+    rule.triggers.push_back({0, 0, "on"}); // EQ "on"
+    rule.actions.push_back({0, "led_1", ""}); // ACTION_HIGH
+
+    std::map<String, bool> periphs = {{"led_1", true}};
+    ChainResult r = mockExecuteRuleChain(rule, 0, "on", periphs);
+    TEST_ASSERT_TRUE(r.triggered);
+    TEST_ASSERT_TRUE(r.conditionPassed);
+    TEST_ASSERT_EQUAL(1, r.actionsExecuted);
+    TEST_ASSERT_EQUAL(0, r.executedActionTypes[0]); // HIGH
+}
+
+void test_chain_platform_trigger_condition_fails() {
+    // 平台触发 + GT条件 + 收到值不满足条件 → 动作不执行
+    ChainRule rule;
+    rule.id = "r2"; rule.name = "温度报警"; rule.enabled = true;
+    rule.triggers.push_back({0, 2, "50"}); // GT 50
+    rule.actions.push_back({0, "alarm_1", ""}); // ACTION_HIGH
+
+    std::map<String, bool> periphs = {{"alarm_1", true}};
+    ChainResult r = mockExecuteRuleChain(rule, 0, "30", periphs); // 30 不大于 50
+    TEST_ASSERT_TRUE(r.triggered);
+    TEST_ASSERT_FALSE(r.conditionPassed);
+    TEST_ASSERT_EQUAL(0, r.actionsExecuted);
+}
+
+void test_chain_timer_trigger_no_condition_multi_actions() {
+    // 定时触发 + 无条件 + 多个动作
+    ChainRule rule;
+    rule.id = "r3"; rule.name = "定时巡检"; rule.enabled = true;
+    rule.triggers.push_back({1, 0, ""}); // TIMER, 无条件
+    rule.actions.push_back({0, "led_1", ""});   // HIGH
+    rule.actions.push_back({4, "pwm_1", "128"}); // PWM
+    rule.actions.push_back({1, "relay_1", ""}); // LOW
+
+    std::map<String, bool> periphs = {{"led_1", true}, {"pwm_1", true}, {"relay_1", true}};
+    ChainResult r = mockExecuteRuleChain(rule, 1, "", periphs);
+    TEST_ASSERT_TRUE(r.triggered);
+    TEST_ASSERT_TRUE(r.conditionPassed);
+    TEST_ASSERT_EQUAL(3, r.actionsExecuted);
+    TEST_ASSERT_EQUAL(0, r.executedActionTypes[0]); // HIGH
+    TEST_ASSERT_EQUAL(4, r.executedActionTypes[1]); // PWM
+    TEST_ASSERT_EQUAL(1, r.executedActionTypes[2]); // LOW
+}
+
+void test_chain_event_trigger_with_condition() {
+    // 事件触发 + 条件 + 动作
+    ChainRule rule;
+    rule.id = "r4"; rule.name = "按键事件"; rule.enabled = true;
+    rule.triggers.push_back({4, 0, "pressed"}); // EVENT, EQ "pressed"
+    rule.actions.push_back({0, "buzzer_1", ""}); // HIGH
+
+    std::map<String, bool> periphs = {{"buzzer_1", true}};
+    // 匹配
+    ChainResult r1 = mockExecuteRuleChain(rule, 4, "pressed", periphs);
+    TEST_ASSERT_TRUE(r1.conditionPassed);
+    TEST_ASSERT_EQUAL(1, r1.actionsExecuted);
+    // 不匹配
+    ChainResult r2 = mockExecuteRuleChain(rule, 4, "released", periphs);
+    TEST_ASSERT_FALSE(r2.conditionPassed);
+    TEST_ASSERT_EQUAL(0, r2.actionsExecuted);
+}
+
+void test_chain_trigger_type_mismatch() {
+    // 规则配置为定时触发，但实际收到平台触发 → 不匹配
+    ChainRule rule;
+    rule.id = "r5"; rule.name = "定时规则"; rule.enabled = true;
+    rule.triggers.push_back({1, 0, ""}); // TIMER
+    rule.actions.push_back({0, "led_1", ""});
+
+    std::map<String, bool> periphs = {{"led_1", true}};
+    ChainResult r = mockExecuteRuleChain(rule, 0, "", periphs); // platform trigger
+    TEST_ASSERT_FALSE(r.triggered);
+    TEST_ASSERT_EQUAL(0, r.actionsExecuted);
+}
+
+void test_chain_disabled_rule_not_executed() {
+    ChainRule rule;
+    rule.id = "r6"; rule.name = "已禁用规则"; rule.enabled = false;
+    rule.triggers.push_back({0, 0, ""});
+    rule.actions.push_back({0, "led_1", ""});
+
+    std::map<String, bool> periphs = {{"led_1", true}};
+    ChainResult r = mockExecuteRuleChain(rule, 0, "", periphs);
+    TEST_ASSERT_FALSE(r.triggered);
+    TEST_ASSERT_EQUAL(0, r.actionsExecuted);
+}
+
+void test_chain_system_restart_action_sync() {
+    // 包含系统重启动作的规则，应标记为同步执行
+    ChainRule rule;
+    rule.id = "r7"; rule.name = "紧急重启"; rule.enabled = true;
+    rule.triggers.push_back({0, 0, "emergency"}); // EQ "emergency"
+    rule.actions.push_back({0, "led_1", ""});  // HIGH
+    rule.actions.push_back({6, "", ""});        // SYS_RESTART
+
+    std::map<String, bool> periphs = {{"led_1", true}};
+    ChainResult r = mockExecuteRuleChain(rule, 0, "emergency", periphs);
+    TEST_ASSERT_TRUE(r.conditionPassed);
+    TEST_ASSERT_EQUAL(2, r.actionsExecuted);
+    TEST_ASSERT_TRUE(r.systemRestartFlag);
+}
+
+void test_chain_action_target_missing_skipped() {
+    // 目标外设不存在时，该动作被跳过，其他动作正常执行
+    ChainRule rule;
+    rule.id = "r8"; rule.name = "部分外设缺失"; rule.enabled = true;
+    rule.triggers.push_back({1, 0, ""}); // TIMER
+    rule.actions.push_back({0, "led_1", ""});     // 存在
+    rule.actions.push_back({0, "missing_1", ""}); // 不存在
+    rule.actions.push_back({1, "relay_1", ""});   // 存在
+
+    std::map<String, bool> periphs = {{"led_1", true}, {"relay_1", true}};
+    ChainResult r = mockExecuteRuleChain(rule, 1, "", periphs);
+    TEST_ASSERT_EQUAL(2, r.actionsExecuted); // missing_1 被跳过
+    TEST_ASSERT_EQUAL(0, r.executedActionTypes[0]); // HIGH (led_1)
+    TEST_ASSERT_EQUAL(1, r.executedActionTypes[1]); // LOW (relay_1)
+}
+
+void test_chain_rule_control_action() {
+    // 规则控制动作：禁用另一条规则
+    ChainRule rule;
+    rule.id = "r9"; rule.name = "联动控制"; rule.enabled = true;
+    rule.triggers.push_back({0, 0, "disable_all"}); // EQ
+    rule.actions.push_back({23, "rule_target", ""}); // DISABLE_EXEC_RULE
+
+    std::map<String, bool> periphs;
+    ChainResult r = mockExecuteRuleChain(rule, 0, "disable_all", periphs);
+    TEST_ASSERT_EQUAL(1, r.actionsExecuted);
+    TEST_ASSERT_EQUAL(23, r.executedActionTypes[0]);
+}
+
+void test_chain_poll_trigger_numeric_condition() {
+    // 轮询触发 + 数值区间条件
+    ChainRule rule;
+    rule.id = "r10"; rule.name = "温度区间报警"; rule.enabled = true;
+    rule.triggers.push_back({5, 6, "20,40"}); // POLL, BETWEEN 20-40
+    rule.actions.push_back({0, "alarm_1", ""}); // HIGH
+
+    std::map<String, bool> periphs = {{"alarm_1", true}};
+    // 25 在区间内
+    ChainResult r1 = mockExecuteRuleChain(rule, 5, "25", periphs);
+    TEST_ASSERT_TRUE(r1.conditionPassed);
+    TEST_ASSERT_EQUAL(1, r1.actionsExecuted);
+    // 50 不在区间内
+    ChainResult r2 = mockExecuteRuleChain(rule, 5, "50", periphs);
+    TEST_ASSERT_FALSE(r2.conditionPassed);
+    TEST_ASSERT_EQUAL(0, r2.actionsExecuted);
+}
+
+void test_chain_multi_trigger_first_matches() {
+    // 多触发器规则，第一个匹配的触发器生效
+    ChainRule rule;
+    rule.id = "r11"; rule.name = "多触发源"; rule.enabled = true;
+    rule.triggers.push_back({0, 0, "cmd"});  // platform EQ "cmd"
+    rule.triggers.push_back({1, 0, ""});      // timer (无条件)
+    rule.actions.push_back({0, "led_1", ""});
+
+    std::map<String, bool> periphs = {{"led_1", true}};
+    // 平台触发匹配
+    ChainResult r1 = mockExecuteRuleChain(rule, 0, "cmd", periphs);
+    TEST_ASSERT_TRUE(r1.triggered);
+    TEST_ASSERT_EQUAL(1, r1.actionsExecuted);
+    // 定时触发也匹配
+    ChainResult r2 = mockExecuteRuleChain(rule, 1, "", periphs);
+    TEST_ASSERT_TRUE(r2.triggered);
+    TEST_ASSERT_EQUAL(1, r2.actionsExecuted);
+}
+
+void test_chain_mixed_system_and_gpio_actions() {
+    // 混合系统动作和GPIO动作
+    ChainRule rule;
+    rule.id = "r12"; rule.name = "混合动作"; rule.enabled = true;
+    rule.triggers.push_back({0, 0, "go"}); // EQ "go"
+    rule.actions.push_back({0, "led_1", ""});   // HIGH
+    rule.actions.push_back({8, "", ""});         // NTP_SYNC (系统动作)
+    rule.actions.push_back({1, "relay_1", ""}); // LOW
+
+    std::map<String, bool> periphs = {{"led_1", true}, {"relay_1", true}};
+    ChainResult r = mockExecuteRuleChain(rule, 0, "go", periphs);
+    TEST_ASSERT_EQUAL(3, r.actionsExecuted);
+    // 系统动作(NTP_SYNC)不需要外设，也应执行
+    TEST_ASSERT_EQUAL(8, r.executedActionTypes[1]);
+}
+
+// ============================================================
+//  TEST GROUP 18: PeriphExecExecutor 工具函数与上报构建测试
+// ============================================================
+
+// --- 18A: tryParseBoolLike 模拟 ---
+// 镜像 PeriphExecExecutor.cpp:43 的 tryParseBoolLike
+static bool mockTryParseBoolLike(const String& rawValue, bool& outValue) {
+    String value = rawValue;
+    value.trim();
+    value.toLowerCase();
+    if (value.isEmpty()) return false;
+    if (value == "1" || value == "true" || value == "on" ||
+        value == "high" || value == "open") {
+        outValue = true; return true;
+    }
+    if (value == "0" || value == "false" || value == "off" ||
+        value == "low" || value == "close") {
+        outValue = false; return true;
+    }
+    if (value == "+1") { outValue = true; return true; }
+    if (value == "-1") { outValue = false; return true; }
+    bool isNumeric = true;
+    bool hasDigit = false;
+    for (size_t i = 0; i < value.length(); ++i) {
+        const char c = value[i];
+        if (c >= '0' && c <= '9') { hasDigit = true; continue; }
+        if ((c == '+' || c == '-') && i == 0) continue;
+        isNumeric = false; break;
+    }
+    if (isNumeric && hasDigit) {
+        outValue = value.toInt() != 0;
+        return true;
+    }
+    return false;
+}
+
+void test_bool_parse_digit_one() { bool v = false; TEST_ASSERT_TRUE(mockTryParseBoolLike("1", v)); TEST_ASSERT_TRUE(v); }
+void test_bool_parse_digit_zero() { bool v = true; TEST_ASSERT_TRUE(mockTryParseBoolLike("0", v)); TEST_ASSERT_FALSE(v); }
+void test_bool_parse_true() { bool v = false; TEST_ASSERT_TRUE(mockTryParseBoolLike("true", v)); TEST_ASSERT_TRUE(v); }
+void test_bool_parse_false() { bool v = true; TEST_ASSERT_TRUE(mockTryParseBoolLike("false", v)); TEST_ASSERT_FALSE(v); }
+void test_bool_parse_on() { bool v = false; TEST_ASSERT_TRUE(mockTryParseBoolLike("on", v)); TEST_ASSERT_TRUE(v); }
+void test_bool_parse_off() { bool v = true; TEST_ASSERT_TRUE(mockTryParseBoolLike("off", v)); TEST_ASSERT_FALSE(v); }
+void test_bool_parse_high() { bool v = false; TEST_ASSERT_TRUE(mockTryParseBoolLike("high", v)); TEST_ASSERT_TRUE(v); }
+void test_bool_parse_low() { bool v = true; TEST_ASSERT_TRUE(mockTryParseBoolLike("low", v)); TEST_ASSERT_FALSE(v); }
+void test_bool_parse_open() { bool v = false; TEST_ASSERT_TRUE(mockTryParseBoolLike("open", v)); TEST_ASSERT_TRUE(v); }
+void test_bool_parse_close() { bool v = true; TEST_ASSERT_TRUE(mockTryParseBoolLike("close", v)); TEST_ASSERT_FALSE(v); }
+void test_bool_parse_plus_one() { bool v = false; TEST_ASSERT_TRUE(mockTryParseBoolLike("+1", v)); TEST_ASSERT_TRUE(v); }
+void test_bool_parse_minus_one() { bool v = true; TEST_ASSERT_TRUE(mockTryParseBoolLike("-1", v)); TEST_ASSERT_FALSE(v); }
+void test_bool_parse_numeric_nonzero() { bool v = false; TEST_ASSERT_TRUE(mockTryParseBoolLike("42", v)); TEST_ASSERT_TRUE(v); }
+void test_bool_parse_numeric_zero() { bool v = true; TEST_ASSERT_TRUE(mockTryParseBoolLike("00", v)); TEST_ASSERT_FALSE(v); }
+void test_bool_parse_case_insensitive() { bool v = false; TEST_ASSERT_TRUE(mockTryParseBoolLike("TRUE", v)); TEST_ASSERT_TRUE(v); }
+void test_bool_parse_mixed_case() { bool v = false; TEST_ASSERT_TRUE(mockTryParseBoolLike("On", v)); TEST_ASSERT_TRUE(v); }
+void test_bool_parse_whitespace_trim() { bool v = false; TEST_ASSERT_TRUE(mockTryParseBoolLike("  1  ", v)); TEST_ASSERT_TRUE(v); }
+void test_bool_parse_empty_fails() { bool v = true; TEST_ASSERT_FALSE(mockTryParseBoolLike("", v)); }
+void test_bool_parse_garbage_fails() { bool v = true; TEST_ASSERT_FALSE(mockTryParseBoolLike("abc", v)); }
+void test_bool_parse_partial_digit_fails() { bool v = true; TEST_ASSERT_FALSE(mockTryParseBoolLike("12abc", v)); }
+
+// --- 18B: looksLikeHexPayload 模拟 ---
+static bool mockLooksLikeHex(const String& rawValue) {
+    String value = rawValue;
+    value.trim();
+    if (value.length() < 4 || (value.length() % 2) != 0) return false;
+    for (size_t i = 0; i < value.length(); ++i) {
+        char c = value[i];
+        bool isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        if (!isHex) return false;
+    }
+    return true;
+}
+
+void test_hex_valid_4chars() { TEST_ASSERT_TRUE(mockLooksLikeHex("01FF")); }
+void test_hex_valid_8chars() { TEST_ASSERT_TRUE(mockLooksLikeHex("DEADBEEF")); }
+void test_hex_valid_lowercase() { TEST_ASSERT_TRUE(mockLooksLikeHex("0123abcd")); }
+void test_hex_valid_mixedcase() { TEST_ASSERT_TRUE(mockLooksLikeHex("Aa01")); }
+void test_hex_too_short() { TEST_ASSERT_FALSE(mockLooksLikeHex("AB")); }
+void test_hex_odd_length() { TEST_ASSERT_FALSE(mockLooksLikeHex("ABC")); }
+void test_hex_nonhex_chars() { TEST_ASSERT_FALSE(mockLooksLikeHex("GHIJ")); }
+void test_hex_empty() { TEST_ASSERT_FALSE(mockLooksLikeHex("")); }
+void test_hex_whitespace_trimmed() { TEST_ASSERT_TRUE(mockLooksLikeHex("  A1B2  ")); }
+void test_hex_mixed_valid_invalid() { TEST_ASSERT_FALSE(mockLooksLikeHex("01G2")); }
+
+// --- 18C: normalizeBinaryReportValue / normalizeScalarReportValue 模拟 ---
+static String mockNormalizeBinary(const String& preferred, const String& fallback, bool defaultState) {
+    bool parsedState = defaultState;
+    if (mockTryParseBoolLike(preferred, parsedState) || mockTryParseBoolLike(fallback, parsedState)) {
+        return parsedState ? "1" : "0";
+    }
+    return defaultState ? "1" : "0";
+}
+
+static String mockNormalizeScalar(const String& preferred, const String& fallback, const char* def = "") {
+    String r = preferred; r.trim();
+    if (!r.isEmpty()) return r;
+    r = fallback; r.trim();
+    if (!r.isEmpty()) return r;
+    return String(def);
+}
+
+void test_binary_normalize_preferred_on() {
+    TEST_ASSERT_EQUAL_STRING("1", mockNormalizeBinary("on", "", false).c_str());
+}
+void test_binary_normalize_preferred_off() {
+    TEST_ASSERT_EQUAL_STRING("0", mockNormalizeBinary("off", "", true).c_str());
+}
+void test_binary_normalize_fallback_used() {
+    TEST_ASSERT_EQUAL_STRING("1", mockNormalizeBinary("", "true", false).c_str());
+}
+void test_binary_normalize_default_used() {
+    TEST_ASSERT_EQUAL_STRING("0", mockNormalizeBinary("", "", false).c_str());
+    TEST_ASSERT_EQUAL_STRING("1", mockNormalizeBinary("", "", true).c_str());
+}
+void test_binary_normalize_preferred_priority() {
+    // preferred 优先于 fallback
+    TEST_ASSERT_EQUAL_STRING("1", mockNormalizeBinary("1", "0", false).c_str());
+}
+
+void test_scalar_normalize_preferred_used() {
+    TEST_ASSERT_EQUAL_STRING("128", mockNormalizeScalar("128", "").c_str());
+}
+void test_scalar_normalize_fallback_used() {
+    TEST_ASSERT_EQUAL_STRING("50", mockNormalizeScalar("", "50").c_str());
+}
+void test_scalar_normalize_default_used() {
+    TEST_ASSERT_EQUAL_STRING("0", mockNormalizeScalar("", "", "0").c_str());
+}
+void test_scalar_normalize_whitespace_trimmed() {
+    TEST_ASSERT_EQUAL_STRING("42", mockNormalizeScalar("  42  ", "").c_str());
+}
+
+// --- 18D: buildActionReportValue 模拟 ---
+// 简化版镜像，只测试 HIGH/LOW/PWM/MODBUS_COIL/MODBUS_REG 分支
+struct MockExecAction { uint8_t actionType; };
+
+static String mockBuildActionReport(const MockExecAction& a, const String& eff, const String& recv) {
+    switch (a.actionType) {
+        case 0: case 13: return mockNormalizeBinary(eff, recv, true);   // HIGH / HIGH_INVERTED
+        case 1: case 14: return mockNormalizeBinary(eff, recv, false);  // LOW / LOW_INVERTED
+        case 4: case 5:  return mockNormalizeScalar(eff, recv, "0");    // PWM / DAC
+        case 16: { // MODBUS_COIL_WRITE
+            String raw = mockNormalizeScalar(eff, recv, "");
+            uint16_t ch = 0;
+            String sv = raw;
+            int sep = raw.indexOf(':');
+            if (sep > 0) { ch = raw.substring(0, sep).toInt(); sv = raw.substring(sep + 1); }
+            // buildModbusReportValue
+            return String(ch) + ":" + mockNormalizeBinary(sv, recv, false).c_str();
+        }
+        case 17: { // MODBUS_REG_WRITE
+            String raw = mockNormalizeScalar(eff, recv, "0");
+            int sep = raw.indexOf(':');
+            if (sep > 0) {
+                uint16_t ch = raw.substring(0, sep).toInt();
+                String rv = raw.substring(sep + 1); rv.trim();
+                return String(ch) + ":" + rv;
+            }
+            return raw;
+        }
+        default: return mockNormalizeScalar(eff, recv, "");
+    }
+}
+
+void test_report_high_action() {
+    MockExecAction a = {0};
+    TEST_ASSERT_EQUAL_STRING("1", mockBuildActionReport(a, "on", "").c_str());
+}
+void test_report_low_action() {
+    MockExecAction a = {1};
+    TEST_ASSERT_EQUAL_STRING("0", mockBuildActionReport(a, "off", "").c_str());
+}
+void test_report_pwm_action() {
+    MockExecAction a = {4};
+    TEST_ASSERT_EQUAL_STRING("128", mockBuildActionReport(a, "128", "").c_str());
+}
+void test_report_modbus_coil_write() {
+    MockExecAction a = {16};
+    // "2:1" → channel=2, state=1
+    TEST_ASSERT_EQUAL_STRING("2:1", mockBuildActionReport(a, "2:1", "").c_str());
+}
+void test_report_modbus_reg_write() {
+    MockExecAction a = {17};
+    // "100:255" → channel=100, value=255
+    TEST_ASSERT_EQUAL_STRING("100:255", mockBuildActionReport(a, "100:255", "").c_str());
+}
+void test_report_modbus_coil_no_channel() {
+    MockExecAction a = {16};
+    // 无分隔符，channel=0
+    TEST_ASSERT_EQUAL_STRING("0:1", mockBuildActionReport(a, "1", "").c_str());
+}
+void test_report_high_inverted() {
+    MockExecAction a = {13}; // HIGH_INVERTED
+    TEST_ASSERT_EQUAL_STRING("1", mockBuildActionReport(a, "1", "").c_str());
+}
+void test_report_default_scalar() {
+    MockExecAction a = {255};
+    TEST_ASSERT_EQUAL_STRING("42", mockBuildActionReport(a, "42", "").c_str());
+}
+
+// --- 18E: effectiveValue 选择逻辑 ---
+// 镜像 executeAllActions 中的 effectiveValue 计算
+static String mockEffectiveValue(bool useReceived, const String& received, const String& actionValue) {
+    return (useReceived && !received.isEmpty()) ? received : actionValue;
+}
+
+void test_effective_value_use_received() {
+    TEST_ASSERT_EQUAL_STRING("MQTT_data", mockEffectiveValue(true, "MQTT_data", "default").c_str());
+}
+void test_effective_value_empty_received_use_action() {
+    TEST_ASSERT_EQUAL_STRING("default", mockEffectiveValue(true, "", "default").c_str());
+}
+void test_effective_value_not_use_received() {
+    TEST_ASSERT_EQUAL_STRING("action_val", mockEffectiveValue(false, "mqtt_val", "action_val").c_str());
+}
+void test_effective_value_both_empty() {
+    TEST_ASSERT_EQUAL_STRING("", mockEffectiveValue(true, "", "").c_str());
+}
+
+// ============================================================
 //  测试入口 (更新)
 // ============================================================
 
@@ -1865,4 +2599,98 @@ void test_periph_exec_group() {
     RUN_TEST(test_poll_trigger_heavy_cooldown_longer);
     RUN_TEST(test_poll_ingress_modbus_throttle_1s);
     RUN_TEST(test_poll_ingress_independent_sources);
+
+    // Group 16: 动作分发测试
+    RUN_TEST(test_action_dispatch_gpio_high);
+    RUN_TEST(test_action_dispatch_gpio_low);
+    RUN_TEST(test_action_dispatch_pwm_value);
+    RUN_TEST(test_action_dispatch_inverted_high);
+    RUN_TEST(test_action_dispatch_inverted_low);
+    RUN_TEST(test_action_dispatch_system_restart);
+    RUN_TEST(test_action_dispatch_system_factory_reset);
+    RUN_TEST(test_action_dispatch_script);
+    RUN_TEST(test_action_dispatch_script_disabled);
+    RUN_TEST(test_action_dispatch_script_empty);
+    RUN_TEST(test_action_dispatch_call_peripheral);
+    RUN_TEST(test_action_dispatch_call_peripheral_no_target);
+    RUN_TEST(test_action_dispatch_call_peripheral_not_found);
+    RUN_TEST(test_action_dispatch_rule_enable);
+    RUN_TEST(test_action_dispatch_rule_disable);
+    RUN_TEST(test_action_dispatch_rule_control_no_target);
+    RUN_TEST(test_action_dispatch_unknown_type);
+    RUN_TEST(test_action_dispatch_gpio_no_target);
+    RUN_TEST(test_action_dispatch_gpio_target_not_found);
+    RUN_TEST(test_action_dispatch_enum_values_match);
+
+    // Group 17: trigger→condition→action 全链路联动测试
+    RUN_TEST(test_chain_platform_trigger_eq_condition_gpio_action);
+    RUN_TEST(test_chain_platform_trigger_condition_fails);
+    RUN_TEST(test_chain_timer_trigger_no_condition_multi_actions);
+    RUN_TEST(test_chain_event_trigger_with_condition);
+    RUN_TEST(test_chain_trigger_type_mismatch);
+    RUN_TEST(test_chain_disabled_rule_not_executed);
+    RUN_TEST(test_chain_system_restart_action_sync);
+    RUN_TEST(test_chain_action_target_missing_skipped);
+    RUN_TEST(test_chain_rule_control_action);
+    RUN_TEST(test_chain_poll_trigger_numeric_condition);
+    RUN_TEST(test_chain_multi_trigger_first_matches);
+    RUN_TEST(test_chain_mixed_system_and_gpio_actions);
+
+    // Group 18: 工具函数与上报构建测试
+    // 18A: tryParseBoolLike
+    RUN_TEST(test_bool_parse_digit_one);
+    RUN_TEST(test_bool_parse_digit_zero);
+    RUN_TEST(test_bool_parse_true);
+    RUN_TEST(test_bool_parse_false);
+    RUN_TEST(test_bool_parse_on);
+    RUN_TEST(test_bool_parse_off);
+    RUN_TEST(test_bool_parse_high);
+    RUN_TEST(test_bool_parse_low);
+    RUN_TEST(test_bool_parse_open);
+    RUN_TEST(test_bool_parse_close);
+    RUN_TEST(test_bool_parse_plus_one);
+    RUN_TEST(test_bool_parse_minus_one);
+    RUN_TEST(test_bool_parse_numeric_nonzero);
+    RUN_TEST(test_bool_parse_numeric_zero);
+    RUN_TEST(test_bool_parse_case_insensitive);
+    RUN_TEST(test_bool_parse_mixed_case);
+    RUN_TEST(test_bool_parse_whitespace_trim);
+    RUN_TEST(test_bool_parse_empty_fails);
+    RUN_TEST(test_bool_parse_garbage_fails);
+    RUN_TEST(test_bool_parse_partial_digit_fails);
+    // 18B: looksLikeHexPayload
+    RUN_TEST(test_hex_valid_4chars);
+    RUN_TEST(test_hex_valid_8chars);
+    RUN_TEST(test_hex_valid_lowercase);
+    RUN_TEST(test_hex_valid_mixedcase);
+    RUN_TEST(test_hex_too_short);
+    RUN_TEST(test_hex_odd_length);
+    RUN_TEST(test_hex_nonhex_chars);
+    RUN_TEST(test_hex_empty);
+    RUN_TEST(test_hex_whitespace_trimmed);
+    RUN_TEST(test_hex_mixed_valid_invalid);
+    // 18C: normalizeBinary/ScalarReportValue
+    RUN_TEST(test_binary_normalize_preferred_on);
+    RUN_TEST(test_binary_normalize_preferred_off);
+    RUN_TEST(test_binary_normalize_fallback_used);
+    RUN_TEST(test_binary_normalize_default_used);
+    RUN_TEST(test_binary_normalize_preferred_priority);
+    RUN_TEST(test_scalar_normalize_preferred_used);
+    RUN_TEST(test_scalar_normalize_fallback_used);
+    RUN_TEST(test_scalar_normalize_default_used);
+    RUN_TEST(test_scalar_normalize_whitespace_trimmed);
+    // 18D: buildActionReportValue
+    RUN_TEST(test_report_high_action);
+    RUN_TEST(test_report_low_action);
+    RUN_TEST(test_report_pwm_action);
+    RUN_TEST(test_report_modbus_coil_write);
+    RUN_TEST(test_report_modbus_reg_write);
+    RUN_TEST(test_report_modbus_coil_no_channel);
+    RUN_TEST(test_report_high_inverted);
+    RUN_TEST(test_report_default_scalar);
+    // 18E: effectiveValue 选择逻辑
+    RUN_TEST(test_effective_value_use_received);
+    RUN_TEST(test_effective_value_empty_received_use_action);
+    RUN_TEST(test_effective_value_not_use_received);
+    RUN_TEST(test_effective_value_both_empty);
 }
