@@ -16,7 +16,7 @@ test.describe('Suite-10: 规则脚本', () => {
   test('RULE-002: 新增脚本弹窗', async ({ authPage }) => {
     await authPage.click('button:has-text("新增规则")');
     await authPage.waitForTimeout(1000);
-    const modal = authPage.locator('.modal, .modal-overlay').first();
+    const modal = authPage.locator('#rule-script-modal');
     await expect(modal).toBeVisible({ timeout: 5000 });
   });
 

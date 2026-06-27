@@ -6,7 +6,9 @@ test.describe('Suite-08: Modbus RTU', () => {
     await navigateTo('protocol');
     // 切换到 Modbus RTU Tab
     await authPage.click('.config-tab[data-tab="modbus-rtu"]');
-    await authPage.waitForTimeout(2000);
+    // 等待 Modbus 分片异步加载完成
+    await authPage.locator('#modbus-rtu-form').waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
+    await authPage.waitForTimeout(500);
   });
 
   // ========== 场景A: Modbus基本配置 ==========
@@ -163,34 +165,36 @@ test.describe('Suite-08: Modbus RTU', () => {
     }
   });
 
-  // ========== 场景E: 主站运行状态 ==========
+  // ========== 场景E: 主站运行状态（合并为单测试 + test.step） ==========
 
-  test('MOD-038: 主站状态刷新', async ({ authPage }) => {
-    const refreshBtn = authPage.locator('[data-action="refreshMasterStatusFresh"]').first();
-    if (await refreshBtn.isVisible()) {
-      await refreshBtn.click();
-      await authPage.waitForTimeout(2000);
-    }
-    // 状态字段应可见
-    await expect(authPage.locator('#master-enabled-task-count')).toBeVisible();
-  });
+  test('MOD-038~042: 主站状态与统计信息', async ({ authPage }) => {
 
-  test('MOD-039: 风险等级展示', async ({ authPage }) => {
-    await expect(authPage.locator('#master-risk-badge')).toBeVisible();
-  });
+    await test.step('主站状态刷新', async () => {
+      const refreshBtn = authPage.locator('[data-action="refreshMasterStatusFresh"]').first();
+      if (await refreshBtn.isVisible()) {
+        await refreshBtn.click();
+        await authPage.waitForTimeout(2000);
+      }
+      await expect(authPage.locator('#master-enabled-task-count')).toBeVisible();
+    });
 
-  test('MOD-040: 最小间隔展示', async ({ authPage }) => {
-    await expect(authPage.locator('#master-min-interval')).toBeVisible();
-  });
+    await test.step('风险等级展示', async () => {
+      await expect(authPage.locator('#master-risk-badge')).toBeVisible();
+    });
 
-  test('MOD-041: 超时率展示', async ({ authPage }) => {
-    await expect(authPage.locator('#master-timeout-rate')).toBeVisible();
-  });
+    await test.step('最小间隔展示', async () => {
+      await expect(authPage.locator('#master-min-interval')).toBeVisible();
+    });
 
-  test('MOD-042: 总轮询统计', async ({ authPage }) => {
-    await expect(authPage.locator('#master-stat-total')).toBeVisible();
-    await expect(authPage.locator('#master-stat-success')).toBeVisible();
-    await expect(authPage.locator('#master-stat-failed')).toBeVisible();
+    await test.step('超时率展示', async () => {
+      await expect(authPage.locator('#master-timeout-rate')).toBeVisible();
+    });
+
+    await test.step('总轮询统计', async () => {
+      await expect(authPage.locator('#master-stat-total')).toBeVisible();
+      await expect(authPage.locator('#master-stat-success')).toBeVisible();
+      await expect(authPage.locator('#master-stat-failed')).toBeVisible();
+    });
   });
 
   // ========== 场景F: 综合验证 ==========

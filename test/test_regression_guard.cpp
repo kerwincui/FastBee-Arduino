@@ -2388,6 +2388,106 @@ void test_regression_wifi_manager_uses_device_name_for_ssid() {
     TestLog::testEnd(true);
 }
 
+// ========== P1 改进验证测试 ==========
+
+/**
+ * @brief WEB-ASYNC-1: softRestartWebServer 使用异步状态机替代阻塞 delay
+ * 验证：源码中不再有 delay(200)+delay(100) 的阻塞等待，改为状态机驱动
+ */
+void test_regression_web_soft_restart_async_state_machine() {
+    TestLog::testStart("WEB-ASYNC-1: softRestartWebServer async state machine");
+
+    std::string wcm = readRegressionSrcFile("src/network/WebConfigManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!wcm.empty(), "WebConfigManager.cpp must be readable");
+
+    std::string wch = readRegressionSrcFile("include/network/WebConfigManager.h");
+    TEST_ASSERT_TRUE_MESSAGE(!wch.empty(), "WebConfigManager.h must be readable");
+
+    // 1. 头文件必须定义异步状态机枚举
+    TEST_ASSERT_TRUE_MESSAGE(
+        wch.find("SoftRestartPhase") != std::string::npos,
+        "Header must define SoftRestartPhase enum for async state machine");
+    TEST_ASSERT_TRUE_MESSAGE(
+        wch.find("WAIT_TCP_CLOSE") != std::string::npos,
+        "State machine must have WAIT_TCP_CLOSE phase");
+    TEST_ASSERT_TRUE_MESSAGE(
+        wch.find("WAIT_LWIP_CLEANUP") != std::string::npos,
+        "State machine must have WAIT_LWIP_CLEANUP phase");
+
+    // 2. 必须有 driveSoftRestartStateMachine 方法
+    TEST_ASSERT_TRUE_MESSAGE(
+        wch.find("driveSoftRestartStateMachine") != std::string::npos,
+        "Header must declare driveSoftRestartStateMachine()");
+    TEST_ASSERT_TRUE_MESSAGE(
+        wcm.find("driveSoftRestartStateMachine") != std::string::npos,
+        "Implementation must define driveSoftRestartStateMachine()");
+
+    // 3. softRestartWebServer 不应包含阻塞 delay(200) 和 delay(100)
+    // 查找 softRestartWebServer 函数实现
+    auto pos = wcm.find("bool WebConfigManager::softRestartWebServer(");
+    TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos,
+        "softRestartWebServer must be defined");
+
+    // 截取函数体（~2500字符，覆盖完整函数）
+    std::string funcBody = wcm.substr(pos, 2500);
+
+    // 不应包含阻塞 delay 调用（原来有 delay(200) 和 delay(100)）
+    // 注意：注释中可能提到 "delay(200)"，所以检查带分号的实际调用
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("delay(200);") == std::string::npos,
+        "softRestartWebServer must NOT use blocking delay(200) call");
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("delay(100);") == std::string::npos,
+        "softRestartWebServer must NOT use blocking delay(100) call");
+
+    // 应该设置状态机阶段而非等待
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("WAIT_TCP_CLOSE") != std::string::npos,
+        "softRestartWebServer must set phase to WAIT_TCP_CLOSE (async)");
+
+    // 4. performMaintenance 必须驱动状态机
+    TEST_ASSERT_TRUE_MESSAGE(
+        wcm.find("driveSoftRestartStateMachine()") != std::string::npos,
+        "performMaintenance must call driveSoftRestartStateMachine()");
+
+    TestLog::step("softRestartWebServer uses async state machine (300ms blocking eliminated)");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief NET-MQTT-1: 4G/以太网重连后通知 MQTT 立即重连
+ * 验证 NetworkManager 在非 WiFi 网络恢复后调用 MQTT resetErrorCounters
+ */
+void test_regression_4g_ethernet_mqtt_reconnect_notification() {
+    TestLog::testStart("NET-MQTT-1: 4G/Ethernet MQTT reconnect notification");
+
+    std::string nm = readRegressionSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!nm.empty(), "NetworkManager.cpp must be readable");
+
+    // 4G 重连后必须有 MQTT 通知
+    TEST_ASSERT_TRUE_MESSAGE(
+        nm.find("MQTT reconnect triggered after 4G") != std::string::npos,
+        "4G reconnection must trigger MQTT resetErrorCounters notification");
+
+    // 以太网重连后必须有 MQTT 通知
+    TEST_ASSERT_TRUE_MESSAGE(
+        nm.find("MQTT reconnect triggered after Ethernet") != std::string::npos,
+        "Ethernet reconnection must trigger MQTT resetErrorCounters notification");
+
+    // 通知使用 resetErrorCounters（非其他方法）
+    auto resetCount = 0;
+    size_t searchPos = 0;
+    while ((searchPos = nm.find("resetErrorCounters", searchPos)) != std::string::npos) {
+        resetCount++;
+        searchPos++;
+    }
+    // 至少有 3 处调用：4G reconnect + Ethernet reconnect + 4G re-init
+    TEST_ASSERT_GREATER_OR_EQUAL(3, resetCount);
+    TestLog::step("NetworkManager calls MQTT resetErrorCounters on 4G/Ethernet reconnection");
+
+    TestLog::testEnd(true);
+}
+
 void test_regression_guard_group() {
     TestLog::groupStart("Regression Guard Tests");
 
@@ -2497,6 +2597,10 @@ void test_regression_guard_group() {
     RUN_TEST(test_regression_ap_config_js_no_device_name);
     RUN_TEST(test_regression_handler_no_device_name_in_network);
     RUN_TEST(test_regression_wifi_manager_uses_device_name_for_ssid);
+
+    // P1 改进验证：WebConfigManager 异步软重启状态机
+    RUN_TEST(test_regression_web_soft_restart_async_state_machine);
+    RUN_TEST(test_regression_4g_ethernet_mqtt_reconnect_notification);
 
     TestLog::groupEnd();
 }

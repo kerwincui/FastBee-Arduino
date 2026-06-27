@@ -10,6 +10,7 @@ param(
     [switch]$SkipFirmware,
     [switch]$Monitor,
     [switch]$SkipDoctor,
+    [switch]$SkipWeb,
     [switch]$FullOutput,
 
     [string]$DataDir = "",
@@ -19,27 +20,33 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# 平台检测：$IsWindows 在 PowerShell 7+ 内置，Windows PowerShell 5.1 中不存在（默认 true）
+$IsWin = if (Test-Path Variable:IsWindows) { $IsWindows } else { $true }
+
 $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 Set-Location $ProjectDir
 
-# ─── 清理残留进程（避免“另一个程序正在使用此文件”错误）───────────────
+# ─── 清理残留进程（避免"另一个程序正在使用此文件"错误）───────────────
 function Kill-StaleProcesses {
+    # 文件锁冲突主要发生在 Windows，Linux/macOS 下进程结束后文件锁自动释放
+    if (-not $IsWin) { return }
+
     $killed = 0
     # 进程名称列表：esptool、PlatformIO python、xtensa 工具链（gcc/ar/ld 等）
     $procNames = @('esptool', 'python', 'xtensa-esp-elf-gcc', 'xtensa-esp-elf-g++', 'xtensa-esp-elf-ar', 'xtensa-esp-elf-ld')
     foreach ($name in $procNames) {
         Get-Process -Name $name -ErrorAction SilentlyContinue | ForEach-Object {
             # python 仅清理 .platformio 路径下的，避免误杀用户进程
-            if ($name -eq 'python' -and ($_.Path -notlike '*\.platformio\*')) { return }
+            if ($name -eq 'python' -and ($_.Path -notlike '*\.platformio*')) { return }
             Write-Host "  Killing stale $name (PID $($_.Id))" -ForegroundColor Yellow
             Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
             $killed++
         }
     }
 
-    # 清理从 .pio\build\ 目录运行的任意进程（如 native 测试产物 program.exe）
+    # 清理从 .pio/build/ 目录运行的任意进程（如 native 测试产物 program.exe）
     Get-Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.Path -and ($_.Path -like '*\.pio\build\*')
+        $_.Path -and ($_.Path -like '*\.pio*build*')
     } | ForEach-Object {
         Write-Host "  Killing stale build output $($_.ProcessName) (PID $($_.Id))" -ForegroundColor Yellow
         Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
@@ -54,9 +61,9 @@ function Kill-StaleProcesses {
 
 Kill-StaleProcesses
 
-# 清理 native 测试产物（防止 .pio\build\native\program.exe 被锁定
+# 清理 native 测试产物（防止 .pio/build/native/program 被锁定
 # 导致 PlatformIO 无法清理构建目录，报 WinError 5 拒绝访问）
-$nativeDir = Join-Path $ProjectDir ".pio\build\native"
+$nativeDir = Join-Path (Join-Path (Join-Path $ProjectDir ".pio") "build") "native"
 if (Test-Path -LiteralPath $nativeDir -PathType Container) {
     Remove-Item -LiteralPath $nativeDir -Recurse -Force -ErrorAction SilentlyContinue
     # 如果删除失败（文件被杀毒软件/索引服务锁定），等待后重试
@@ -103,7 +110,7 @@ function Invoke-FastBeePio {
 function Test-BuildCacheIntegrity {
     param([string]$BuildEnv)
 
-    $buildDir = Join-Path $ProjectDir ".pio\build\$BuildEnv"
+    $buildDir = Join-Path (Join-Path (Join-Path $ProjectDir ".pio") "build") $BuildEnv
     if (-not (Test-Path -LiteralPath $buildDir -PathType Container)) { return }
 
     # .sconsign*.dblite 缺失 → SCons 签名数据库损坏（常见于进程被强杀/中断）
@@ -153,20 +160,20 @@ function Test-BuildCacheIntegrity {
 function Test-SconsignIntact {
     param([string]$BuildEnv)
 
-    $buildDir = Join-Path $ProjectDir ".pio\build\$BuildEnv"
+    $buildDir = Join-Path (Join-Path (Join-Path $ProjectDir ".pio") "build") $BuildEnv
     if (-not (Test-Path -LiteralPath $buildDir -PathType Container)) { return $true }
     $sconsignFiles = Get-ChildItem -LiteralPath $buildDir -Filter ".sconsign*.dblite" -ErrorAction SilentlyContinue
     return ($sconsignFiles -and $sconsignFiles.Count -gt 0)
 }
 
 # ─── 带自动重试的 PlatformIO 构建/上传 ──────────────────────────────────
-# 使用 cmd /c 调用 pio 以绕过 PowerShell $ErrorActionPreference="Stop" 对
+# Windows 上使用 cmd /c 调用 pio 以绕过 PowerShell $ErrorActionPreference="Stop" 对
 # 原生命令 stderr 的拦截（PowerShell 会将 stderr 包装为终止性错误）。
+# Linux/macOS 直接调用 pio。
 function Invoke-PioCmd {
     param([string[]]$PioArgs)
 
-    # 强制 PlatformIO (Python) 使用 UTF-8 编码,防止中文 Windows (GBK) 下
-    # 进度条等 Unicode 字符输出触发 UnicodeEncodeError 或显示乱码
+    # 强制 PlatformIO (Python) 使用 UTF-8 编码
     $prevEnc = $env:PYTHONIOENCODING
     $prevUtf8 = $env:PYTHONUTF8
     $prevChcp = $null
@@ -174,19 +181,21 @@ function Invoke-PioCmd {
     $prevOutputEnc = $null
     $env:PYTHONIOENCODING = 'utf-8'
     $env:PYTHONUTF8 = '1'
-    # 切换控制台代码页到 UTF-8 (65001),确保 pio 进度条 Unicode 字符
+    # Windows: 切换控制台代码页到 UTF-8 (65001),确保 pio 进度条 Unicode 字符
     # 不会因子进程继承 GBK 控制台而触发 UnicodeEncodeError
-    try {
-        $chcpOut = chcp 2>$null
-        if ($chcpOut -match '\d+') { $prevChcp = $Matches[0] }
-        chcp 65001 | Out-Null
-        # 同步 PowerShell 自身的输出编码,避免 Write-Host 管道将 UTF-8
-        # 字节流按 GBK 解码导致乱码(鈻堚枅 ← █)
-        $prevConsoleEnc = [Console]::OutputEncoding
-        $prevOutputEnc = $OutputEncoding
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        $OutputEncoding = [System.Text.Encoding]::UTF8
-    } catch { }
+    if ($IsWin) {
+        try {
+            $chcpOut = chcp 2>$null
+            if ($chcpOut -match '\d+') { $prevChcp = $Matches[0] }
+            chcp 65001 | Out-Null
+            # 同步 PowerShell 自身的输出编码,避免 Write-Host 管道将 UTF-8
+            # 字节流按 GBK 解码导致乱码
+            $prevConsoleEnc = [Console]::OutputEncoding
+            $prevOutputEnc = $OutputEncoding
+            [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+            $OutputEncoding = [System.Text.Encoding]::UTF8
+        } catch { }
+    }
     try {
         Write-Host "pio $($PioArgs -join ' ')" -ForegroundColor Cyan
 
@@ -200,7 +209,7 @@ function Invoke-PioCmd {
         }
 
         if ($isBuild) {
-            $buildDir = Join-Path $ProjectDir ".pio\build"
+            $buildDir = Join-Path (Join-Path $ProjectDir ".pio") "build"
             $hasCache = Test-Path -LiteralPath $buildDir -PathType Container
             if (-not $hasCache) {
                 Write-Host "[Info] First build detected, this may take 3-5 minutes..." -ForegroundColor Yellow
@@ -246,7 +255,7 @@ function Invoke-PioCmd {
         return $LASTEXITCODE
     }
     finally {
-        if ($prevChcp) { try { chcp $prevChcp | Out-Null } catch {} }
+        if ($IsWin -and $prevChcp) { try { chcp $prevChcp | Out-Null } catch {} }
         if ($prevConsoleEnc) { try { [Console]::OutputEncoding = $prevConsoleEnc } catch {} }
         if ($prevOutputEnc) { try { $OutputEncoding = $prevOutputEnc } catch {} }
         if ($null -ne $prevEnc) { $env:PYTHONIOENCODING = $prevEnc } else { Remove-Item Env:\PYTHONIOENCODING -ErrorAction SilentlyContinue }
@@ -290,7 +299,7 @@ function Invoke-FastBeePioBuild {
             Write-Host ""
             Write-Host "[Retry] Build cache corrupted during upload (sconsign missing), cleaning and rebuilding..." -ForegroundColor Yellow
             if ($envArg) {
-                $buildDir = Join-Path $ProjectDir ".pio\build\$envArg"
+                $buildDir = Join-Path (Join-Path (Join-Path $ProjectDir ".pio") "build") $envArg
                 if (Test-Path -LiteralPath $buildDir -PathType Container) {
                     Remove-Item -LiteralPath $buildDir -Recurse -Force -ErrorAction SilentlyContinue
                 }
@@ -328,7 +337,7 @@ function Invoke-FastBeePioBuild {
     Write-Host ""
     Write-Host "[Retry] Build failed, cleaning cache and rebuilding..." -ForegroundColor Yellow
     if ($envArg) {
-        $buildDir = Join-Path $ProjectDir ".pio\build\$envArg"
+        $buildDir = Join-Path (Join-Path (Join-Path $ProjectDir ".pio") "build") $envArg
         if (Test-Path -LiteralPath $buildDir -PathType Container) {
             Remove-Item -LiteralPath $buildDir -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -361,7 +370,8 @@ if ($SkipFs -and $SkipFirmware) {
 Initialize-PlatformIoDataDir
 
 if (-not $SkipDoctor) {
-    $doctorArgs = @("powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts\doctor.ps1")
+    $psExe = if ($IsWin) { "powershell" } else { "pwsh" }
+    $doctorArgs = @($psExe, "-ExecutionPolicy", "Bypass", "-File", (Join-Path "scripts" "doctor.ps1"))
     if ($Port) {
         $doctorArgs += @("-Port", $Port)
     }
@@ -387,6 +397,19 @@ if ($Port) {
 Write-Host "  Mode        : $(if ($BuildOnly) { 'build only' } else { 'build and upload' })"
 
 Test-BuildCacheIntegrity -BuildEnv $Env
+
+# ─── Web 资源检查：若 data/www 缺少 .gz 文件则自动生成 ──────────────
+if (-not $SkipFs -and -not $SkipWeb) {
+    $swGz = Join-Path (Join-Path (Join-Path $ProjectDir "data") "www") "sw.js.gz"
+    if (-not (Test-Path -LiteralPath $swGz -PathType Leaf)) {
+        Write-Host "[Web] data/www/*.gz not found, generating web assets..." -ForegroundColor Yellow
+        & node scripts/gzip-www.js
+        if ($LASTEXITCODE -ne 0) {
+            throw "Web asset generation failed. Run 'node scripts/gzip-www.js' manually and retry."
+        }
+        Write-Host "[Web] Web assets generated successfully." -ForegroundColor Green
+    }
+}
 
 if (-not $SkipFs) {
     if ($BuildOnly) {

@@ -106,6 +106,19 @@ public:
     // 返回完整指标 JSON 字符串
     String getMetricsJson();
 
+    // ── 内存池统计注册（碎片预防监控）──
+    struct PoolStatsEntry {
+        const char* name;           // 池名称（如 "mqtt_publish"）
+        uint16_t blockSize;         // 单块大小（字节）
+        uint8_t  capacity;          // 总容量
+        // 回调函数获取运行时指标
+        uint8_t  (*getUsed)();      // 当前已用槽位
+        uint32_t (*getExhaust)();   // 累计耗尽次数
+    };
+    static constexpr uint8_t MAX_TRACKED_POOLS = 4;
+    void registerPool(const PoolStatsEntry& entry);
+    void logPoolStats();  // 定期输出池使用率（在 logMetricsSummary 中调用）
+
 private:
     void performHealthCheck();
     void checkCriticalMemory();  // 低内存保护
@@ -152,6 +165,20 @@ private:
     uint8_t  mqttQueueDepth;   // MQTT 队列深度
     uint8_t  sseClientCount;   // SSE 客户端数
     uint32_t pollDurationMs;   // 轮询耗时(ms)
+
+    // ── 内存池注册表 ──
+    PoolStatsEntry _trackedPools[MAX_TRACKED_POOLS];
+    uint8_t _trackedPoolCount = 0;
+
+    // ── DRAM 水位趋势追踪（泄漏检测）──
+    static constexpr uint8_t WATERMARK_HISTORY_SIZE = 24;  // 保存 24 个小时采样点
+    static constexpr unsigned long WATERMARK_SAMPLE_INTERVAL_MS = 3600000UL;  // 1 小时
+    uint32_t _dramWatermarkHistory[WATERMARK_HISTORY_SIZE];  // 每小时 DRAM 最低水位
+    uint8_t  _dramHistoryCount = 0;    // 已收集的采样数
+    uint8_t  _dramHistoryIndex = 0;    // 环形缓冲区写入位置
+    unsigned long _lastWatermarkSampleMs = 0;
+    uint32_t _dramWatermarkSinceLastSample = UINT32_MAX;  // 当前采样周期内 DRAM 最低值
+    bool detectMemoryLeak() const;  // 分析趋势判断是否有内存泄漏
 };
 
 #endif

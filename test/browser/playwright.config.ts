@@ -6,8 +6,7 @@ import { defineConfig, devices } from '@playwright/test';
  * 用法:
  *   DEVICE_IP=192.168.1.100 npx playwright test          # 全部测试
  *   DEVICE_IP=192.168.1.100 npx playwright test --project=smoke  # 仅冒烟测试
- *   DEVICE_IP=192.168.1.100 npx playwright test --project=readonly  # 只读测试（可 2 workers）
- *   DEVICE_IP=192.168.1.100 npx playwright test --project=write  # 写操作测试（必须 1 worker）
+ *   DEVICE_IP=192.168.1.100 npx playwright test --project=core   # 仅核心功能
  *   npx playwright test --headed                          # 有头模式（可视化）
  *
  * 环境变量:
@@ -21,7 +20,12 @@ import { defineConfig, devices } from '@playwright/test';
  *   MQTT_PASSWORD   - MQTT 密码
  *   DEVICE_SERIAL   - 设备串口端口（用于崩溃自动复位）
  *   DEVICE_AUTO_RESET - 启用崩溃自动复位（设为 1）
- *   TEST_DELAY_MS   - 测试间隔延迟（默认 3000ms）
+ *   TEST_DELAY_MS   - 测试间隔延迟（默认 1500ms）
+ *
+ * 性能优化:
+ *   - storageState 登录态复用：首次登录缓存后，后续测试跳过登录表单
+ *   - 健康检查节流：30s 内跳过完整健康检查，仅做 5s 快速探针
+ *   - 自适应等待：检测设备 API 就绪而非固定等待
  */
 
 const deviceIp = process.env.DEVICE_IP || '192.168.1.1';
@@ -34,7 +38,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 1,
   workers: 1, // 单 worker，设备资源有限
-  timeout: 120_000, // 嵌入式设备测试需要更长时间（登录+导航+API+等待）
+  timeout: 60_000, // 单测试超时：大多数测试应在 30s 内完成
   reporter: [
     ['html', { outputFolder: 'reports/html', open: 'never' }],
     ['json', { outputFile: 'reports/results.json' }],
@@ -44,15 +48,14 @@ export default defineConfig({
     baseURL: `http://${deviceIp}:${devicePort}`,
     screenshot: 'on',
     trace: 'on-first-retry',
-    actionTimeout: 30_000,
-    navigationTimeout: 60_000,
-    // 嵌入式设备 API 响应较慢
+    actionTimeout: 20_000,
+    navigationTimeout: 30_000,
     extraHTTPHeaders: {
       'Accept-Language': 'zh-CN',
     },
   },
   projects: [
-    // ─── 优先级分层项目（向后兼容） ───────────────
+    // ─── 优先级分层项目（P0-P4） ─────────────────
 
     // P0 - 冒烟测试：每次构建必跑
     {
@@ -85,23 +88,6 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
 
-    // ─── 读写分离项目（优化并发策略） ───────────────
-
-    // 只读测试：仅读取设备状态/信息，不修改配置
-    // 理论上可用 2 workers（但嵌入式设备仍建议 1）
-    {
-      name: 'readonly',
-      testMatch: /08-modbus|09-fullscreen|11-logs|12-files|13-users|14-integration|15-ui-regression|17-perf/,
-      use: { ...devices['Desktop Chrome'] },
-    },
-    // 写操作测试：修改设备配置（网络/外设/MQTT/规则/联动）
-    // 必须 1 worker，防止并发修改导致设备崩溃
-    {
-      name: 'write',
-      testMatch: /03-network|04-device|05-peripheral|06-periph-exec|07-mqtt|10-rule-script|16-net-mqtt-switch|18-linkage/,
-      use: { ...devices['Desktop Chrome'] },
-    },
-
     // ─── 独立项目（专用） ──────────────────────────
 
     // 性能专用
@@ -118,3 +104,4 @@ export default defineConfig({
     },
   ],
 });
+

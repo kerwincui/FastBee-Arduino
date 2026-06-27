@@ -761,12 +761,13 @@ bool CellularAdapter::begin(const WiFiConfig& config) {
     return true;
 }
 
-bool CellularAdapter::isConnected() {
+bool CellularAdapter::isConnected() const {
     if (!_initialized || !_modem) return false;
     if (_clientBusy) return _connected;
     if (_qsslClient && _qsslClient->isBusy()) return _connected;
-    // EC801E status is validated through CGPADDR to avoid stale modem state.
-    return _connected && checkPdpActive();
+    // 使用缓存的 _connected 状态（由 update() 每 30s 通过 checkPdpActive() 刷新）
+    // 需要实时验证的调用方应先调用 update()
+    return _connected;
 }
 
 void CellularAdapter::disconnect() {
@@ -848,7 +849,7 @@ String CellularAdapter::getStatusString() const {
     return "connected";
 }
 
-IPAddress CellularAdapter::localIP() {
+IPAddress CellularAdapter::localIP() const {
     if (!_modem || !_connected) return IPAddress(0, 0, 0, 0);
     return _modem->localIP();
 }

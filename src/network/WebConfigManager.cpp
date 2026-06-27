@@ -322,6 +322,9 @@ void WebConfigManager::performMaintenance() {
     // 统一重启机制：由 SystemRebooter::update() 执行待处理的重启
     SystemRebooter::update();
 
+    // 驱动异步软重启状态机（非阻塞）
+    driveSoftRestartStateMachine();
+
     if (sseRouteHandler) {
         sseRouteHandler->performMaintenance();
     }
@@ -459,15 +462,39 @@ void WebConfigManager::performMaintenance() {
     }
 
     // ── 无请求看门狗：isRunning=true 但长时间未收到任何 HTTP 请求 ──
-    // 表明 Web 服务可能处于僵尸状态（接受连接但不处理请求）
+    // 仅在以下组合条件下触发，避免设备正常运行但无人访问时产生不必要的重启：
+    //   1. WiFi 已连接（排除断网场景下的误判）
+    //   2. 端口 80 确实在监听（排除 bind 失败）
+    //   3. 存在 TIME_WAIT 或异常 TCP 连接堆积（表明之前有连接但当前僵死）
+    // 如果端口正常监听且无异常连接，说明 Web 服务健康，仅因无人访问而已，无需重启
     if (lastRequestSeenMs > 0 && isRunning) {
         const unsigned long noRequestDuration = maintenanceNow - lastRequestSeenMs;
         if (noRequestDuration >= NO_REQUEST_WATCHDOG_MS) {
-            LOG_WARNINGF("[WebConfig] No HTTP requests for %lus, triggering soft restart",
-                         (unsigned long)(noRequestDuration / 1000));
-            lastRequestSeenMs = millis();  // 重置避免连续触发
-            softRestartWebServer("no_request_watchdog");
-            return;
+            // 检查 WiFi 连接状态（未联网时无请求是正常的）
+            const bool wifiConnected = (WiFi.status() == WL_CONNECTED);
+            if (!wifiConnected) {
+                // WiFi 未连接，无人访问是正常的，重置计时器跳过
+                lastRequestSeenMs = millis();
+                LOG_DEBUG("[WebConfig] No-request watchdog skipped: WiFi not connected");
+            } else {
+                // WiFi 已连接，进一步检查是否有僵死连接
+                uint8_t timeWaitCount = 0;
+                const uint16_t activeConns = countTcpConnections(&timeWaitCount);
+                if (activeConns == 0 && timeWaitCount == 0) {
+                    // 没有任何 TCP 连接，端口正常监听，仅因无人访问 → 不重启
+                    lastRequestSeenMs = millis();
+                    LOG_DEBUGF("[WebConfig] No-request watchdog skipped: port healthy, no stale connections (%lus idle)",
+                               (unsigned long)(noRequestDuration / 1000));
+                } else {
+                    // 有僵死连接或异常堆积 → 触发软重启清理
+                    LOG_WARNINGF("[WebConfig] No HTTP requests for %lus with %u active/%u TIME_WAIT connections, triggering soft restart",
+                                 (unsigned long)(noRequestDuration / 1000),
+                                 (unsigned)activeConns, (unsigned)timeWaitCount);
+                    lastRequestSeenMs = millis();  // 重置避免连续触发
+                    softRestartWebServer("no_request_watchdog");
+                    return;
+                }
+            }
         }
     }
 
@@ -643,6 +670,9 @@ void WebConfigManager::checkAndRecoverWebServer() {
 bool WebConfigManager::softRestartWebServer(const char* reason) {
     if (!server) return false;
 
+    // 如果已有软重启在进行，忽略重复请求
+    if (_softRestartPhase != SoftRestartPhase::IDLE) return false;
+
     const unsigned long now = millis();
     const uint32_t freeHeap = ESP.getFreeHeap();
     const uint32_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT);
@@ -650,6 +680,19 @@ bool WebConfigManager::softRestartWebServer(const char* reason) {
 
     LOG_WARNINGF("[WebConfig] Soft-restarting web server: reason=%s heap=%lu largest=%lu",
                  reason, (unsigned long)freeHeap, (unsigned long)largestBlock);
+
+    // 记录恢复事件（在启动前记录，startMs 用于冷却期计算）
+    lastWebRecoveryMs = now;
+    webRecoveryCount++;
+    recordRecoveryEvent("web_soft_restart", reason, now, freeHeap, largestBlock, frag);
+
+    // 更新 soft restart 统计信息
+    lastSoftRestartAtMs = now;
+    lastSoftRestartReason = reason ? reason : "tcp_exhaustion";
+    lastSoftRestartFreeHeap = freeHeap;
+    lastSoftRestartLargestBlock = largestBlock;
+    lastSoftRestartFrag = frag;
+    softRestartCount++;
 
     // 步骤1：断开所有 SSE 客户端（释放 TCP 缓冲区）
     if (sseRouteHandler) {
@@ -661,50 +704,67 @@ bool WebConfigManager::softRestartWebServer(const char* reason) {
     server->end();
     isRunning = false;
 
-    // 步骤3：等待 TCP 栈处理 FIN/RST
-    delay(200);
+    // 保存 reason 供状态机使用
+    strncpy(_softRestartReason, reason ? reason : "unknown", sizeof(_softRestartReason) - 1);
+    _softRestartReason[sizeof(_softRestartReason) - 1] = '\0';
 
-    // 步骤4：强制清理 TIME_WAIT 连接（通过 tcp_abort）
-    // 必须持有 TCPIP 核心锁，否则并发 TCP 操作触发 tcp_abandon 断言
-    uint8_t aborted = 0;
-    LOCK_TCPIP_CORE();
-    struct tcp_pcb* pcb = tcp_tw_pcbs;
-    while (pcb != nullptr) {
-        struct tcp_pcb* next = pcb->next;
-        tcp_abort(pcb);
-        aborted++;
-        pcb = next;
-    }
-    UNLOCK_TCPIP_CORE();
-    if (aborted > 0) {
-        LOG_INFOF("[WebConfig] Aborted %u TIME_WAIT connections", (unsigned)aborted);
-    }
+    // 步骤3：进入异步状态机，等待 TCP 栈处理 FIN/RST（原 delay(200)）
+    _softRestartPhase = SoftRestartPhase::WAIT_TCP_CLOSE;
+    _softRestartPhaseStartMs = now;
 
-    // 步骤5：短暂延迟让 lwIP 完成清理
-    delay(100);
-
-    // 步骤6：重新启动 Web 服务器
-    server->begin();
-    isRunning = true;
-
-    // 记录恢复事件
-    lastWebRecoveryMs = millis();
-    webRecoveryCount++;
-
-    recordRecoveryEvent("web_soft_restart", reason, now, freeHeap, largestBlock, frag);
-
-    // 更新 soft restart 统计信息
-    lastSoftRestartAtMs = now;
-    lastSoftRestartReason = reason ? reason : "tcp_exhaustion";
-    lastSoftRestartFreeHeap = freeHeap;
-    lastSoftRestartLargestBlock = largestBlock;
-    lastSoftRestartFrag = frag;
-    softRestartCount++;
-
-    LOG_WARNINGF("[WebConfig] Web server soft-restarted successfully (total=%lu, cooldown=%lus)",
+    // 实际重启由 driveSoftRestartStateMachine() 在 performMaintenance() 中异步完成
+    LOG_WARNINGF("[WebConfig] Web server soft-restart scheduled (total=%lu, cooldown=%lus)",
                  (unsigned long)webRecoveryCount, (unsigned long)(RECOVERY_COOLDOWN_MS / 1000));
 
     return true;
+}
+
+// 异步软重启状态机：由 performMaintenance() 定期驱动
+// 将原来的 delay(200) + delay(100) 共 300ms 阻塞拆分为非阻塞阶段
+void WebConfigManager::driveSoftRestartStateMachine() {
+    if (_softRestartPhase == SoftRestartPhase::IDLE) return;
+    if (!server) { _softRestartPhase = SoftRestartPhase::IDLE; return; }
+
+    const unsigned long now = millis();
+    const unsigned long elapsed = now - _softRestartPhaseStartMs;
+
+    switch (_softRestartPhase) {
+        case SoftRestartPhase::WAIT_TCP_CLOSE:
+            if (elapsed >= 200) {
+                // 步骤4：强制清理 TIME_WAIT 连接（通过 tcp_abort）
+                uint8_t aborted = 0;
+                LOCK_TCPIP_CORE();
+                struct tcp_pcb* pcb = tcp_tw_pcbs;
+                while (pcb != nullptr) {
+                    struct tcp_pcb* next = pcb->next;
+                    tcp_abort(pcb);
+                    aborted++;
+                    pcb = next;
+                }
+                UNLOCK_TCPIP_CORE();
+                if (aborted > 0) {
+                    LOG_INFOF("[WebConfig] Aborted %u TIME_WAIT connections", (unsigned)aborted);
+                }
+                // 进入 lwIP 清理等待（原 delay(100)）
+                _softRestartPhase = SoftRestartPhase::WAIT_LWIP_CLEANUP;
+                _softRestartPhaseStartMs = millis();
+            }
+            break;
+
+        case SoftRestartPhase::WAIT_LWIP_CLEANUP:
+            if (elapsed >= 100) {
+                // 步骤6：重新启动 Web 服务器
+                server->begin();
+                isRunning = true;
+                _softRestartPhase = SoftRestartPhase::IDLE;
+                LOG_INFO("[WebConfig] Web server soft-restart completed (async)");
+            }
+            break;
+
+        default:
+            _softRestartPhase = SoftRestartPhase::IDLE;
+            break;
+    }
 }
 
 // ============ 路由注册（严格顺序）============
@@ -877,32 +937,9 @@ void WebConfigManager::setupAllRoutes() {
     // 11. SSE 事件推送路由（/api/events）
     sseRouteHandler->setupRoutes(server);                    ROUTE_PROBE("SSE");
     ctx->sseHandler = sseRouteHandler.get();
-    if (ctx->protocolManager) {
-        SSERouteHandler* ssePtr = sseRouteHandler.get();
-        ctx->protocolManager->setSSECallback(
-            [ssePtr](uint8_t address, const String& data) {
-                if (ssePtr && ssePtr->clientCount() > 0) {
-                    ssePtr->broadcastModbusData(data);
-                }
-            }
-        );
-        // 注册 MQTT 状态 SSE 回调
-        ctx->protocolManager->setMQTTStatusSSECallback(
-            [ssePtr](const String& data) {
-                if (ssePtr && ssePtr->clientCount() > 0) {
-                    ssePtr->broadcastMqttStatus(data);
-                }
-            }
-        );
-        // 注册 Modbus 状态 SSE 回调
-        ctx->protocolManager->setModbusStatusSSECallback(
-            [ssePtr](const String& data) {
-                if (ssePtr && ssePtr->clientCount() > 0) {
-                    ssePtr->broadcastModbusStatus(data);
-                }
-            }
-        );
-    }
+    // 注意：ProtocolManager 的 SSE 回调（Modbus/MQTT 状态推送）统一在
+    // setProtocolManager() 中注册，避免此处和 setProtocolManager() 双重注册
+    // 导致 SSE 客户端收到重复数据。
 
     // 注册传感器数据 SSE 回调（PeriphExec 传感器读取后推送）
 #if FASTBEE_ENABLE_PERIPH_EXEC

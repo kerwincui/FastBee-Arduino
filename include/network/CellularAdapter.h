@@ -18,6 +18,7 @@
 #include <Arduino.h>
 #include <HardwareSerial.h>
 #include "network/WiFiManager.h"
+#include "core/interfaces/INetworkAdapter.h"
 
 // TinyGSM 配置 - 在 include 之前定义
 // EC801E-CN 的 AT 指令集与 SIM7600 系列（LTE Cat-4）兼容
@@ -95,7 +96,7 @@ private:
  * 通过 AT 指令激活 PDP 上下文，使用 TinyGSM 提供的 Client 接口
  * 与 PubSubClient 对接实现 MQTT over 4G。
  */
-class CellularAdapter {
+class CellularAdapter : public INetworkAdapter {
 public:
     CellularAdapter();
     ~CellularAdapter();
@@ -105,22 +106,22 @@ public:
      * @param config 网络配置（含 cellular 引脚配置）
      * @return 初始化是否成功
      */
-    bool begin(const WiFiConfig& config);
+    bool begin(const WiFiConfig& config) override;
 
     /**
      * @brief 检查是否已连接网络
      */
-    bool isConnected();
+    bool isConnected() const override;
 
     /**
      * @brief 断开连接并关闭模块
      */
-    void disconnect();
+    void disconnect() override;
 
     /**
      * @brief 获取 Arduino Client 指针（用于 PubSubClient）
      */
-    Client* getClient();
+    Client* getClient() override;
 
     /**
      * @brief 获取 TLS Arduino Client 指针（用于 MQTTS over 4G）
@@ -166,17 +167,17 @@ public:
     /**
      * @brief 获取连接状态字符串
      */
-    String getStatusString() const;
+    String getStatusString() const override;
 
     /**
      * @brief 获取 4G 模块分配的 IP 地址
      */
-    IPAddress localIP();
+    IPAddress localIP() const override;
 
     /**
      * @brief 更新状态（在主循环中调用）
      */
-    void update();
+    void update() override;
 
     /**
      * @brief 重连网络

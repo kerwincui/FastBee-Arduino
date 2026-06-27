@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$Port = "",
     [switch]$RequireNativeToolchain,
@@ -6,6 +6,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# 平台检测：$IsWindows 在 PowerShell 7+ 内置，Windows PowerShell 5.1 中不存在（默认 true）
+$IsWin = if (Test-Path Variable:IsWindows) { $IsWindows } else { $true }
 
 $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 Set-Location $ProjectDir
@@ -56,14 +59,17 @@ function Get-NativeToolchainBinCandidates {
         $candidates += $env:FASTBEE_NATIVE_TOOLCHAIN_BIN
     }
 
-    $candidates += @(
-        "D:\msys64\ucrt64\bin",
-        "C:\msys64\ucrt64\bin",
-        "D:\msys64\mingw64\bin",
-        "C:\msys64\mingw64\bin",
-        "D:\msys64\clang64\bin",
-        "C:\msys64\clang64\bin"
-    )
+    # MSYS2/MinGW 路径仅在 Windows 下有效
+    if ($IsWin) {
+        $candidates += @(
+            "D:\msys64\ucrt64\bin",
+            "C:\msys64\ucrt64\bin",
+            "D:\msys64\mingw64\bin",
+            "C:\msys64\mingw64\bin",
+            "D:\msys64\clang64\bin",
+            "C:\msys64\clang64\bin"
+        )
+    }
 
     return $candidates | Where-Object {
         -not [string]::IsNullOrWhiteSpace($_)
@@ -71,6 +77,10 @@ function Get-NativeToolchainBinCandidates {
 }
 
 function Add-NativeToolchainPathIfFound {
+    # Windows 下可执行文件带 .exe 后缀，Linux/macOS 不带
+    $gccExe = if ($IsWin) { "gcc.exe" } else { "gcc" }
+    $gppExe = if ($IsWin) { "g++.exe" } else { "g++" }
+
     foreach ($candidate in Get-NativeToolchainBinCandidates) {
         $resolved = ""
         try {
@@ -80,8 +90,8 @@ function Add-NativeToolchainPathIfFound {
             continue
         }
 
-        if ((Test-Path (Join-Path $resolved "gcc.exe")) -and
-            (Test-Path (Join-Path $resolved "g++.exe"))) {
+        if ((Test-Path (Join-Path $resolved $gccExe)) -and
+            (Test-Path (Join-Path $resolved $gppExe))) {
             $pathParts = $env:Path -split [System.IO.Path]::PathSeparator
             if ($pathParts -notcontains $resolved) {
                 $env:Path = "$resolved$([System.IO.Path]::PathSeparator)$env:Path"
@@ -125,11 +135,12 @@ if ([string]::IsNullOrWhiteSpace($gccVersion) -or [string]::IsNullOrWhiteSpace($
     }
 }
 $nativeOk = (-not [string]::IsNullOrWhiteSpace($gccVersion)) -and (-not [string]::IsNullOrWhiteSpace($gppVersion))
+$nativeHint = if ($IsWin) { "Install MSYS2/MinGW, set FASTBEE_NATIVE_TOOLCHAIN_BIN, or reopen the terminal after updating PATH." } else { "Install gcc/g++ via system package manager (e.g. apt install build-essential, brew install gcc)." }
 Add-DoctorCheck `
     -Name "native-toolchain" `
     -Passed ($nativeOk -or -not $RequireNativeToolchain) `
     -Message $(if ($nativeOk -and $nativeToolchainPath) { "gcc/g++ available at $nativeToolchainPath" } elseif ($nativeOk) { "gcc/g++ available in PATH" } else { "gcc/g++ not found" }) `
-    -Hint "Install MSYS2/MinGW, set FASTBEE_NATIVE_TOOLCHAIN_BIN, or reopen the terminal after updating PATH."
+    -Hint $nativeHint
 
 try {
     $ports = [System.IO.Ports.SerialPort]::GetPortNames() | Sort-Object
@@ -138,7 +149,7 @@ try {
             -Name "serial-port" `
             -Passed ($ports -contains $Port) `
             -Message $(if ($ports.Count) { "available: $($ports -join ', ')" } else { "no serial ports detected" }) `
-            -Hint "Reconnect the board or pass the detected port to scripts\deploy.ps1 -Port."
+            -Hint "Reconnect the board or pass the detected port to $(Join-Path scripts deploy.ps1) -Port."
     }
     else {
         Add-DoctorCheck `

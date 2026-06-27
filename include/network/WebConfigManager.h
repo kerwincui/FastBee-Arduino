@@ -169,6 +169,7 @@ private:
     void checkAndRecoverWebServer();
     uint16_t countTcpConnections(uint8_t* outTimeWait = nullptr) const;
     bool softRestartWebServer(const char* reason);
+    void driveSoftRestartStateMachine();  // 异步软重启状态机驱动
     bool isPortListening(uint16_t port = 80) const;
 
     // TCP PCB 耗尽阈值：统一引用 ResourceProfile（单一真相来源）
@@ -186,6 +187,16 @@ private:
     WebServicePauseReason webPauseReason = WebServicePauseReason::None;
     unsigned long webPauseUntilMs = 0;
     bool isWebRecoverySuppressed(unsigned long now) const;
+
+    // ── 异步软重启状态机（替代阻塞 delay）──
+    enum class SoftRestartPhase : uint8_t {
+        IDLE,                // 无进行中的软重启
+        WAIT_TCP_CLOSE,      // 等待 TCP FIN/RST 处理 (200ms)
+        WAIT_LWIP_CLEANUP   // 等待 lwIP 完成 TIME_WAIT 清理 (100ms)
+    };
+    SoftRestartPhase _softRestartPhase = SoftRestartPhase::IDLE;
+    unsigned long _softRestartPhaseStartMs = 0;
+    char _softRestartReason[48] = {0};
 
     // ── 请求突增检测与主动恢复 ──
 

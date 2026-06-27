@@ -2,6 +2,8 @@
 
 `scripts` 目录放置项目构建、部署、Web 资源处理、设备冒烟测试和维护诊断脚本。日常开发优先使用下面的统一入口，单用途脚本只在定位问题时使用。
 
+> **跨平台提示**：以下 PowerShell 脚本支持 Windows / Linux / macOS，后两者需安装 [PowerShell Core](https://learn.microsoft.com/powershell/scripting/install/installing-powershell) 并使用 `pwsh` 替代 `powershell`。
+
 ## 推荐入口
 
 | 脚本 | 用途 | 常用命令 |

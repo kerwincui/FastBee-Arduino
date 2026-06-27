@@ -1,5 +1,6 @@
 {
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "canvas": "^3.2.3",
     "docx": "^9.7.1"
   }

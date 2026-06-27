@@ -41,6 +41,7 @@
 #endif
 #include <mbedtls/base64.h>
 #include <new>
+#include "core/StringBufferPool.h"
 
 #if FASTBEE_ENABLE_MQTT
 
@@ -48,6 +49,10 @@ namespace {
 
 constexpr size_t MQTTS_MBEDTLS_PSRAM_MIN_ALLOC = 256U;
 constexpr size_t MQTTS_MBEDTLS_PSRAM_RESERVE = 64U * 1024U;
+
+// MQTT 发布路径共享缓冲池：避免 processQueuedReports 中频繁 String(payload, length) 分配
+// 512 字节 × 4 槽 = 2KB DRAM 预分配，与 MqttSlot.payload 尺寸对齐
+FastBee::StringBufferPool<512, 4> g_mqttPublishPool;
 
 bool g_mqttsMbedtlsAllocatorInstalled = false;
 
@@ -427,7 +432,7 @@ bool MQTTClient::begin(uint32_t taskStartupDelayMs) {
         _mqttsMemoryBackoffActive = false;
         _lastMqttsTlsMemoryFailure = false;
     }
-    uint16_t mqttBufferSize = isMqttsInit ? 512 : 1024;
+    uint16_t mqttBufferSize = 1024;
     mqttClient.setBufferSize(mqttBufferSize);
     mqttClient.setKeepAlive(config.keepAlive);
     // MQTTS (TLS) 握手在 ESP32-C6 等低主频芯片上需要 5~15 秒
@@ -444,6 +449,22 @@ bool MQTTClient::begin(uint32_t taskStartupDelayMs) {
 
     _reconnectPending = false;
     _reconnectRunning = false;
+
+    // 注册 MQTT 发布缓冲池到 HealthMonitor（碎片预防监控）
+#if FASTBEE_ENABLE_HEALTH_MONITOR
+    {
+        HealthMonitor* hm = FastBeeFramework::getInstance()->getHealthMonitor();
+        if (hm) {
+            HealthMonitor::PoolStatsEntry entry;
+            entry.name = "mqtt_pub";
+            entry.blockSize = 512;
+            entry.capacity = 4;
+            entry.getUsed = []() -> uint8_t { return g_mqttPublishPool.usedCount(); };
+            entry.getExhaust = []() -> uint32_t { return g_mqttPublishPool.exhaustTotal(); };
+            hm->registerPool(entry);
+        }
+    }
+#endif
 
     LOG_INFO("MQTT: Client initialized");
     return true;
@@ -525,6 +546,16 @@ void MQTTClient::stop() {
     disconnect();
     _notifyStatusChange();  // 通知状态变化：主动停止
     LOG_INFO("MQTT: Stopped (auto-reconnect disabled)");
+}
+
+// 重置错误计数器：网络恢复或切换后调用，立即触发重连
+void MQTTClient::resetErrorCounters() {
+    consecutiveTimeouts = 0;
+    reconnectInterval = 5000;   // 重置为初始退避值
+    lastReconnectAttempt = 0;   // 强制下次 handle() 立即尝试重连
+    lastErrorCode = 0;
+    _mqttsMemoryBackoffActive = false;
+    LOG_INFO("[MQTT] Error counters reset — immediate reconnect on next handle()");
 }
 
 bool MQTTClient::publish(const String& topic, const String& message) {
@@ -1051,9 +1082,14 @@ void MQTTClient::handle() {
             LOG_WARNING("MQTT: Connection lost");
             Serial.println("[MQTT-DBG] Connection lost, socket stopped");
             _notifyStatusChange();  // 通知状态变化：连接断开
-            // 触发MQTT断开连接系统事件
+            // 触发MQTT断开连接系统事件（仅前3次触发，避免无限循环重启）
 #if FASTBEE_ENABLE_PERIPH_EXEC
-            PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_DISCONNECTED, "");
+            if (reconnectCount <= 3) {
+                PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_MQTT_DISCONNECTED, "");
+            } else {
+                Serial.printf("[MQTT-DBG] Skip EVENT_MQTT_DISCONNECTED (reconnectCount=%lu > 3)\n",
+                              (unsigned long)reconnectCount);
+            }
 #endif
         }
 
@@ -1146,12 +1182,20 @@ void MQTTClient::processQueuedCommands() {
 
 void MQTTClient::processQueuedReports() {
     // 内存保护：publishReportData 构造 String + MQTT publish
-    if (ESP.getFreeHeap() < 20000) return;
+    // 使用 DRAM 内部内存检测（排除 PSRAM），与 mqttHasInternalDram() 保持一致
+    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < 20000) return;
+    
+    // 背压机制：队列深度 >= HIGH_WATERMARK 时加速排空（处理更多批次）
+    const uint8_t maxBatch = (_slotCount >= BACKPRESSURE_HIGH_WATERMARK)
+        ? BACKPRESSURE_DRAIN_BATCH : 4;
+    
     int processed = 0;
-    while (processed < 4 && _slotCount > 0) {
+    while (processed < maxBatch && _slotCount > 0) {
         MqttSlot& slot = _reportSlots[_slotReadIndex];
         if (slot.occupied) {
-            publishReportData(String(slot.payload, slot.length));
+            if (publishReportData(String(slot.payload, slot.length))) {
+                _queueStats.publishTotal++;
+            }
             slot.clear();
             _slotReadIndex = (_slotReadIndex + 1) % MQTT_REPORT_SLOTS;
             _slotCount--;
@@ -1189,6 +1233,7 @@ bool MQTTClient::queueReportData(const char* payload, uint16_t length) {
     if (_minReportInterval > 0) {
         unsigned long now = millis();
         if (now - _lastReportQueueTime < _minReportInterval) {
+            _queueStats.throttleDrops++;
             return false;  // 降采样丢弃
         }
         _lastReportQueueTime = now;
@@ -1200,12 +1245,13 @@ bool MQTTClient::queueReportData(const char* payload, uint16_t length) {
         length = MQTT_SLOT_MAX_PAYLOAD - 1;
     }
     
-    // 缓冲区满时丢弃最旧的
+    // 缓冲区满时丢弃最旧的（背压：队列深度 >= HIGH_WATERMARK 时也拒绝新数据入队）
     if (_slotCount >= MQTT_REPORT_SLOTS) {
         LOGGER.warning("[MQTT] Report queue full, dropping oldest");
         _reportSlots[_slotReadIndex].clear();
         _slotReadIndex = (_slotReadIndex + 1) % MQTT_REPORT_SLOTS;
         _slotCount--;
+        _queueStats.dropTotal++;
     }
     
     // 拷贝到下一个空闲 slot
@@ -1217,6 +1263,7 @@ bool MQTTClient::queueReportData(const char* payload, uint16_t length) {
     
     _slotWriteIndex = (_slotWriteIndex + 1) % MQTT_REPORT_SLOTS;
     _slotCount++;
+    _queueStats.enqueueTotal++;
 
 #if FASTBEE_ENABLE_HEALTH_MONITOR
     HealthMonitor* hm = FastBeeFramework::getInstance()->getHealthMonitor();
@@ -1273,6 +1320,11 @@ void MQTTClient::_notifyStatusChange() {
     data["scheme"] = config.scheme;
     data["tlsAllocated"] = (_wifiClientSecure != nullptr);
     data["webPausedForMqtts"] = _webServerPaused;
+    // 队列背压统计（消费者侧监控用）
+    data["queueDepth"] = _slotCount;
+    data["queueEnqueue"] = _queueStats.enqueueTotal;
+    data["queueDrops"] = _queueStats.dropTotal;
+    data["queuePublished"] = _queueStats.publishTotal;
 
     String json;
     serializeJson(doc, json);
@@ -1718,9 +1770,9 @@ bool MQTTClient::reconnect() {
     }
 
     if (ok) {
-        // MQTTS 连接成功：恢复短超时（5s），用于后续 publish/write 死 socket 快速检测
+        // MQTTS 连接成功：从30s缩短到15s（仍足够处理TLS读，同时防止死socket阻塞）
         if (isMqtts) {
-            mqttClient.setSocketTimeout(5);
+            mqttClient.setSocketTimeout(15);
         }
         isConnected = true;
         lastConnectedTime = millis();
@@ -1734,14 +1786,16 @@ bool MQTTClient::reconnect() {
 #endif
         // 连接成功后订阅所有主题
         subscribeAll();
+        mqttClient.loop();
         // 连接成功后发布一次设备信息
         publishDeviceInfo();
+        mqttClient.loop();
         // 连接成功后发起 NTP 时间同步
         publishNtpSync();
     } else {
         // 连接失败：恢复短超时
         if (isMqtts) {
-            mqttClient.setSocketTimeout(5);
+            mqttClient.setSocketTimeout(15);
         }
         // 连接失败时立即关闭 socket（仅默认 WiFiClient/WiFiClientSecure）
         if (!_externalClient) {

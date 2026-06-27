@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet("doctor", "static", "native", "build", "artifacts", "device-smoke", "device-soak", "all")]
     [string[]]$Checks = @("static", "native", "build"),
@@ -48,9 +48,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# 平台检测：$IsWindows 在 PowerShell 7+ 内置，Windows PowerShell 5.1 中不存在（默认 true）
+$IsWin = if (Test-Path Variable:IsWindows) { $IsWindows } else { $true }
+$psExe = if ($IsWin) { "powershell" } else { "pwsh" }
+
 $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $script:RootBoundParameters = @{} + $PSBoundParameters
 Set-Location $ProjectDir
+
+# 非 Windows 平台规范化路径分隔符
+if (-not $IsWin) {
+    $ReportDir = $ReportDir -replace '\\', '/'
+}
 
 if ($Checks -contains "all") {
     $Checks = @("doctor", "static", "native", "build", "artifacts", "device-smoke", "device-soak")
@@ -129,14 +138,17 @@ function Get-NativeToolchainBinCandidates {
         $candidates += $env:FASTBEE_NATIVE_TOOLCHAIN_BIN
     }
 
-    $candidates += @(
-        "D:\msys64\ucrt64\bin",
-        "C:\msys64\ucrt64\bin",
-        "D:\msys64\mingw64\bin",
-        "C:\msys64\mingw64\bin",
-        "D:\msys64\clang64\bin",
-        "C:\msys64\clang64\bin"
-    )
+    # MSYS2/MinGW 路径仅在 Windows 下有效
+    if ($IsWin) {
+        $candidates += @(
+            "D:\msys64\ucrt64\bin",
+            "C:\msys64\ucrt64\bin",
+            "D:\msys64\mingw64\bin",
+            "C:\msys64\mingw64\bin",
+            "D:\msys64\clang64\bin",
+            "C:\msys64\clang64\bin"
+        )
+    }
 
     return $candidates | Where-Object {
         -not [string]::IsNullOrWhiteSpace($_)
@@ -148,6 +160,10 @@ function Ensure-NativeToolchainPath {
         return
     }
 
+    # Windows 下可执行文件带 .exe 后缀，Linux/macOS 不带
+    $gccExe = if ($IsWin) { "gcc.exe" } else { "gcc" }
+    $gppExe = if ($IsWin) { "g++.exe" } else { "g++" }
+
     foreach ($candidate in Get-NativeToolchainBinCandidates) {
         $resolved = ""
         try {
@@ -157,8 +173,8 @@ function Ensure-NativeToolchainPath {
             continue
         }
 
-        if ((Test-Path (Join-Path $resolved "gcc.exe")) -and
-            (Test-Path (Join-Path $resolved "g++.exe"))) {
+        if ((Test-Path (Join-Path $resolved $gccExe)) -and
+            (Test-Path (Join-Path $resolved $gppExe))) {
             $pathParts = $env:Path -split [System.IO.Path]::PathSeparator
             if ($pathParts -notcontains $resolved) {
                 $env:Path = "$resolved$([System.IO.Path]::PathSeparator)$env:Path"
@@ -170,22 +186,28 @@ function Ensure-NativeToolchainPath {
 }
 
 function Invoke-StaticChecks {
-    Invoke-External @("node", "scripts\check-utf8-text.js", "README.md", "README.en.md", "docs", "scripts", "test", "web-src", "include", "src", "data\config\peripherals.json", "data\config\periph_exec.json", "data\config\users.json")
-    Invoke-External @("node", "scripts\validate-test-coverage.js")
-    Invoke-External @("node", "scripts\validate-device-api-matrix.js")
-    Invoke-External @("node", "scripts\validate-mqtt-ntp-lifecycle.js")
-    Invoke-External @("node", "scripts\validate-build-matrix.js")
-    Invoke-External @("node", "scripts\validate-doc-links.js")
-    Invoke-External @("node", "scripts\validate-stability-thresholds.js")
-    Invoke-External @("powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts\validate-powershell-syntax.ps1")
-    Invoke-External @("node", "scripts\validate-config-defaults.js")
-    Invoke-External @("node", "scripts\validate-i18n.js")
-    Invoke-External @("node", "scripts\web-smoke-test.js")
+    $configDir = Join-Path (Join-Path "data" "config")
+    Invoke-External @("node", (Join-Path "scripts" "check-utf8-text.js"), "README.md", "README.en.md", "docs", "scripts", "test", "web-src", "include", "src", (Join-Path $configDir "peripherals.json"), (Join-Path $configDir "periph_exec.json"), (Join-Path $configDir "users.json"))
+    Invoke-External @("node", (Join-Path "scripts" "validate-test-coverage.js"))
+    Invoke-External @("node", (Join-Path "scripts" "validate-device-api-matrix.js"))
+    Invoke-External @("node", (Join-Path "scripts" "validate-mqtt-ntp-lifecycle.js"))
+    Invoke-External @("node", (Join-Path "scripts" "validate-build-matrix.js"))
+    Invoke-External @("node", (Join-Path "scripts" "validate-doc-links.js"))
+    Invoke-External @("node", (Join-Path "scripts" "validate-stability-thresholds.js"))
+    $psArgs = @($psExe)
+    if ($IsWin) { $psArgs += @("-ExecutionPolicy", "Bypass") }
+    $psArgs += @("-File", (Join-Path "scripts" "validate-powershell-syntax.ps1"))
+    Invoke-External $psArgs
+    Invoke-External @("node", (Join-Path "scripts" "validate-config-defaults.js"))
+    Invoke-External @("node", (Join-Path "scripts" "validate-i18n.js"))
+    Invoke-External @("node", (Join-Path "scripts" "web-smoke-test.js"))
     Invoke-External @("git", "diff", "--check")
 }
 
 function Invoke-Doctor {
-    $args = @("powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts\doctor.ps1")
+    $args = @($psExe)
+    if ($IsWin) { $args += @("-ExecutionPolicy", "Bypass") }
+    $args += @("-File", (Join-Path "scripts" "doctor.ps1"))
     if (-not [string]::IsNullOrWhiteSpace($Port)) {
         $args += @("-Port", $Port)
     }
@@ -198,7 +220,7 @@ function Invoke-Doctor {
 function Invoke-NativeTests {
     Ensure-NativeToolchainPath
     # Ensure build directory exists (may be removed by clean operations)
-    $nativeBuildDir = Join-Path $ProjectDir ".pio\build\native"
+    $nativeBuildDir = Join-Path (Join-Path (Join-Path $ProjectDir ".pio") "build") "native"
     if (-not (Test-Path $nativeBuildDir)) {
         New-Item -ItemType Directory -Force -Path $nativeBuildDir | Out-Null
     }
@@ -214,7 +236,7 @@ function Invoke-BuildMatrix {
 }
 
 function Invoke-ArtifactMatrix {
-    $scriptPath = Join-Path $ProjectDir "scripts\build-all-artifacts.ps1"
+    $scriptPath = Join-Path (Join-Path $ProjectDir "scripts") "build-all-artifacts.ps1"
     $params = @{
         Environments = $Environments
     }
@@ -228,13 +250,16 @@ function Invoke-ArtifactMatrix {
     $switches = @()
     if ($CleanArtifacts) { $switches += "-CleanOutput" }
     if ($SkipBuildForArtifacts) { $switches += "-SkipBuild" }
-    Write-Host "powershell -ExecutionPolicy Bypass -File scripts\build-all-artifacts.ps1 -Environments $($Environments -join ',') $($switches -join ' ')" -ForegroundColor DarkCyan
+    $execPolicyArg = if ($IsWin) { "-ExecutionPolicy Bypass " } else { "" }
+    Write-Host "${psExe} ${execPolicyArg}-File $(Join-Path scripts build-all-artifacts.ps1) -Environments $($Environments -join ',') $($switches -join ' ')" -ForegroundColor DarkCyan
     & $scriptPath @params
 }
 
 function Invoke-DeviceSmoke {
-    $args = @(
-        "powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts\smoke-test-device.ps1",
+    $args = @($psExe)
+    if ($IsWin) { $args += @("-ExecutionPolicy", "Bypass") }
+    $args += @(
+        "-File", (Join-Path "scripts" "smoke-test-device.ps1"),
         "-BaseUrl", $BaseUrl,
         "-Profile", $DeviceProfile,
         "-Username", $Username,
@@ -262,8 +287,10 @@ function Add-BoundExternalArgument {
 
 function Invoke-DeviceSoak {
     $reportPath = Join-Path $ReportDir ("soak-{0}-{1}.csv" -f $DeviceProfile, (Get-Date -Format "yyyyMMdd-HHmmss"))
-    $args = @(
-        "powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts\soak-test-device.ps1",
+    $args = @($psExe)
+    if ($IsWin) { $args += @("-ExecutionPolicy", "Bypass") }
+    $args += @(
+        "-File", (Join-Path "scripts" "soak-test-device.ps1"),
         "-BaseUrl", $BaseUrl,
         "-Profile", $DeviceProfile,
         "-Username", $Username,

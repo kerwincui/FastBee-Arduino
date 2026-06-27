@@ -46,16 +46,12 @@ No tools required — open your browser and flash the firmware instantly to try 
 3. Run from the project root:
 
 ```powershell
-cd D:\project\gitee\FastBee-Arduino
-powershell -ExecutionPolicy Bypass -File scripts\doctor.ps1 -Port COM6
+# Windows
 powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32-F4R0 -Port COM6
+
+# Linux / macOS (requires PowerShell Core: pwsh)
+pwsh -File scripts/deploy.ps1 -Env esp32-F4R0 -Port /dev/ttyUSB0
 ```
-
-**doctor.ps1 parameters** (environment diagnostics):
-
-| Parameter | Description |
-|-----------|-------------|
-| `-Port` | Serial port, e.g. `COM6` |
 
 **deploy.ps1 parameters** (build + flash):
 

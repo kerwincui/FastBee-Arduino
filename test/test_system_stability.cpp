@@ -880,11 +880,11 @@ void test_source_code_c3_platformio_config() {
         "Failed to read platformio.ini");
     TestLog::step("File loaded");
 
-    // C3 运行时标志中 CONFIG_ASYNC_TCP_MAX_CONNECTIONS=4
+    // C3 运行时标志中 CONFIG_ASYNC_TCP_MAX_CONNECTIONS=6（从 4 提升至 6，支持 2+ tab 浏览）
     TEST_ASSERT_TRUE_MESSAGE(
-        content.find("CONFIG_ASYNC_TCP_MAX_CONNECTIONS=4") != std::string::npos,
-        "C3 CONFIG_ASYNC_TCP_MAX_CONNECTIONS must be 4");
-    TestLog::step("CONFIG_ASYNC_TCP_MAX_CONNECTIONS=4 confirmed");
+        content.find("CONFIG_ASYNC_TCP_MAX_CONNECTIONS=6") != std::string::npos,
+        "C3 CONFIG_ASYNC_TCP_MAX_CONNECTIONS must be 6 (SSE + multi-tab support)");
+    TestLog::step("CONFIG_ASYNC_TCP_MAX_CONNECTIONS=6 confirmed");
 
     // C3 环境使用 lite 配置
     TEST_ASSERT_TRUE_MESSAGE(
@@ -2157,19 +2157,16 @@ void test_source_code_4g_reconnect_and_non_wifi_gate() {
     auto funcPos = nmc.find("bool FBNetworkManager::isNetworkConnected()");
     TEST_ASSERT_TRUE_MESSAGE(funcPos != std::string::npos,
         "isNetworkConnected() function must exist");
-    std::string isConnectedBody = nmc.substr(funcPos, 1200);
+    std::string isConnectedBody = nmc.substr(funcPos, 800);
+    // 重构后 isNetworkConnected() 使用 getActiveAdapter() 多态调度
     TEST_ASSERT_TRUE_MESSAGE(
-        isConnectedBody.find("case NetworkType::NET_ETHERNET") != std::string::npos &&
-        isConnectedBody.find("return ethernetAdapter && ethernetAdapter->isConnected();") != std::string::npos,
-        "Ethernet connectivity must be based on W5500 adapter state, not WiFi STA");
+        isConnectedBody.find("getActiveAdapter()") != std::string::npos &&
+        isConnectedBody.find("adapter->isConnected()") != std::string::npos,
+        "Non-WiFi connectivity must use INetworkAdapter interface (getActiveAdapter)");
     TEST_ASSERT_TRUE_MESSAGE(
-        isConnectedBody.find("case NetworkType::NET_4G") != std::string::npos &&
-        isConnectedBody.find("return cellularAdapter && cellularAdapter->isConnected();") != std::string::npos,
-        "4G connectivity must be based on cellular adapter state, not WiFi STA");
-    TEST_ASSERT_TRUE_MESSAGE(
-        isConnectedBody.find("WiFi.status() == WL_CONNECTED") < isConnectedBody.find("case NetworkType::NET_ETHERNET"),
-        "WiFi.status() fallback must only apply to NET_WIFI case");
-    TestLog::step("Non-WiFi network gate uses active adapter");
+        isConnectedBody.find("WiFi.status() == WL_CONNECTED") != std::string::npos,
+        "WiFi.status() fallback must apply to NET_WIFI case");
+    TestLog::step("Non-WiFi network gate uses active adapter interface");
 
     TEST_ASSERT_TRUE_MESSAGE(
         cell.find("_modem->gprsDisconnect()") != std::string::npos &&
@@ -2177,18 +2174,17 @@ void test_source_code_4g_reconnect_and_non_wifi_gate() {
         "CellularAdapter::reconnect() must perform PDP reset then activate network");
     TestLog::step("Cellular reconnect resets PDP context");
 
-    // EC801E 兼容性: checkPdpActive 替代 isGprsConnected
+    // EC801E 兼容性: isConnected() 使用缓存状态（由 update() 每 30s 通过 checkPdpActive 刷新）
     TEST_ASSERT_TRUE_MESSAGE(
         cell.find("checkPdpActive()") != std::string::npos,
         "CellularAdapter must have checkPdpActive() for EC801E AT+CGPADDR compatibility");
     TEST_ASSERT_TRUE_MESSAGE(
-        cell.find("CellularAdapter::isConnected()") != std::string::npos &&
-        cell.find("checkPdpActive()") != std::string::npos,
-        "isConnected must use checkPdpActive instead of isGprsConnected (EC801E fix)");
+        cell.find("CellularAdapter::isConnected() const") != std::string::npos,
+        "isConnected must be const (INetworkAdapter interface compliance)");
     TEST_ASSERT_TRUE_MESSAGE(
         cell.find("AT+CGPADDR=1") != std::string::npos,
         "checkPdpActive must query AT+CGPADDR=1 for PDP context IP");
-    TestLog::step("EC801E: checkPdpActive replaces isGprsConnected");
+    TestLog::step("EC801E: isConnected uses cached state, update() calls checkPdpActive");
 
     TestLog::testEnd(true);
 }
@@ -2302,6 +2298,116 @@ void test_smoke_web_recovery_long_running_policy() {
     TestLog::testEnd(true);
 }
 
+// ========== P0 改进验证测试 ==========
+
+/**
+ * @brief WDT-DYN-1: 看门狗 trigger_panic 动态升级
+ * 验证 main.cpp 中 loop() 在启动 120s 后将 TWDT 从 trigger_panic=false 升级为 true
+ */
+void test_source_wdt_dynamic_panic_upgrade() {
+    TestLog::testStart("WDT-DYN-1: WDT dynamic trigger_panic upgrade");
+    std::string content = readSrcFile("src/main.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "main.cpp must be readable");
+
+    // 启动阶段：trigger_panic = false
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find(".trigger_panic = false") != std::string::npos,
+        "Boot phase: TWDT must start with trigger_panic=false (safe during init)");
+
+    // 动态升级逻辑：120s 后升级为 trigger_panic = true
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find(".trigger_panic = true") != std::string::npos,
+        "Stable phase: TWDT must upgrade to trigger_panic=true after 120s");
+
+    // 必须有 millis() > 120000 的时间检查
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("120000") != std::string::npos,
+        "WDT upgrade must check millis() > 120000 (120s stability period)");
+
+    // 必须有 _wdtPanicUpgraded 标志防止重复升级
+    TEST_ASSERT_TRUE_MESSAGE(
+        content.find("_wdtPanicUpgraded") != std::string::npos,
+        "WDT upgrade must track state to avoid repeated reconfiguration");
+
+    TestLog::step("WDT: boot=false → 120s stable → upgrade=true (deadlock recovery enabled)");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief LOOP-EXC-1: loop() 函数异常保护
+ * 验证 main.cpp 中 loop() 包含 try/catch 包裹 framework->run()
+ */
+void test_source_loop_exception_protection() {
+    TestLog::testStart("LOOP-EXC-1: loop() exception protection");
+    std::string content = readSrcFile("src/main.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "main.cpp must be readable");
+
+    // 查找 loop() 函数
+    auto pos = content.find("void loop()");
+    TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos, "loop() must be defined");
+
+    // 截取 loop 函数体（~2000字符）
+    std::string loopBody = content.substr(pos, 2000);
+
+    // 必须有 try/catch 包裹
+    TEST_ASSERT_TRUE_MESSAGE(
+        loopBody.find("try {") != std::string::npos || loopBody.find("try{") != std::string::npos,
+        "loop() must have try block wrapping framework->run()");
+
+    // 必须捕获 std::exception
+    TEST_ASSERT_TRUE_MESSAGE(
+        loopBody.find("catch (const std::exception") != std::string::npos,
+        "loop() must catch std::exception");
+
+    // 必须捕获未知异常
+    TEST_ASSERT_TRUE_MESSAGE(
+        loopBody.find("catch (...)") != std::string::npos,
+        "loop() must catch unknown exceptions with catch(...)");
+
+    // 连续异常触发安全重启
+    TEST_ASSERT_TRUE_MESSAGE(
+        loopBody.find("SystemRebooter::scheduleReboot") != std::string::npos,
+        "loop() must schedule safe reboot after consecutive exceptions");
+
+    TestLog::step("loop() has try/catch with std::exception and catch(...) layers");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief LOOP-BAD-1: loop() bad_alloc 专用捕获
+ * 验证 bad_alloc 异常被单独捕获（跳过周期而非重启）
+ */
+void test_source_loop_bad_alloc_handling() {
+    TestLog::testStart("LOOP-BAD-1: loop() bad_alloc handling");
+    std::string content = readSrcFile("src/main.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "main.cpp must be readable");
+
+    // 查找 loop() 函数
+    auto pos = content.find("void loop()");
+    TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos, "loop() must be defined");
+
+    std::string loopBody = content.substr(pos, 2000);
+
+    // 必须有专门的 bad_alloc 捕获
+    TEST_ASSERT_TRUE_MESSAGE(
+        loopBody.find("catch (const std::bad_alloc") != std::string::npos,
+        "loop() must catch std::bad_alloc separately (non-fatal: skip cycle)");
+
+    // bad_alloc 不应触发重启（仅跳过周期）
+    // 验证 bad_alloc catch 块中不包含 scheduleReboot
+    auto badAllocPos = loopBody.find("catch (const std::bad_alloc");
+    auto nextCatch = loopBody.find("} catch", badAllocPos + 10);
+    if (badAllocPos != std::string::npos && nextCatch != std::string::npos) {
+        std::string badAllocBlock = loopBody.substr(badAllocPos, nextCatch - badAllocPos);
+        TEST_ASSERT_TRUE_MESSAGE(
+            badAllocBlock.find("scheduleReboot") == std::string::npos,
+            "bad_alloc catch must NOT schedule reboot (non-fatal, just skip cycle)");
+    }
+
+    TestLog::step("loop() catches bad_alloc separately (skip cycle, no reboot)");
+    TestLog::testEnd(true);
+}
+
 // Test group entry point
 void test_system_stability_group() {
     TestLog::groupStart("System Stability Tests");
@@ -2376,6 +2482,11 @@ void test_system_stability_group() {
     RUN_TEST(test_source_code_mqtt_deferred_restart_uses_dram_guard);
     RUN_TEST(test_source_code_web_long_stability_recovery_policy);
     RUN_TEST(test_smoke_web_recovery_long_running_policy);
+
+    // P0 改进验证测试：WDT 动态升级 + loop() 异常保护
+    RUN_TEST(test_source_wdt_dynamic_panic_upgrade);
+    RUN_TEST(test_source_loop_exception_protection);
+    RUN_TEST(test_source_loop_bad_alloc_handling);
     
     TestLog::groupEnd();
 }

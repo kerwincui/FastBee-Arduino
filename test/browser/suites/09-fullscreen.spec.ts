@@ -18,17 +18,19 @@ test.describe('Suite-09: 设备大屏', () => {
   test('SCR-003: 全屏页面独立访问', async ({ page, baseURL }) => {
     // 设备大屏有独立HTML页面
     await page.goto(`${baseURL}/pages/fullscreen.html`);
-    await page.waitForLoadState('networkidle', { timeout: 15_000 });
+    await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
+    await page.waitForTimeout(3000);
     // 全屏页面应有自动刷新指示器
-    await expect(page.locator('#auto-refresh-indicator')).toBeVisible();
+    await expect(page.locator('#auto-refresh-indicator')).toBeVisible({ timeout: 10_000 });
   });
-
+  
   test('SCR-004: 全屏资源使用率显示', async ({ page, baseURL }) => {
     await page.goto(`${baseURL}/pages/fullscreen.html`);
-    await page.waitForLoadState('networkidle', { timeout: 15_000 });
-    await expect(page.locator('#monitor-flash-percent')).toBeVisible();
-    await expect(page.locator('#monitor-heap-percent')).toBeVisible();
-    await expect(page.locator('#monitor-fs-percent')).toBeVisible();
+    await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
+    await page.waitForTimeout(3000);
+    await expect(page.locator('#monitor-flash-percent')).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('#monitor-heap-percent')).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('#monitor-fs-percent')).toBeVisible({ timeout: 5_000 });
   });
 
   test('SCR-005: 全屏网络状态展示', async ({ page, baseURL }) => {
@@ -50,7 +52,8 @@ test.describe('Suite-09: 设备大屏', () => {
 
   test('SCR-007: 大屏暗色主题', async ({ page, baseURL }) => {
     await page.goto(`${baseURL}/pages/fullscreen.html`);
-    await page.waitForLoadState('networkidle', { timeout: 15_000 });
+    await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
+    await page.waitForTimeout(2000);
     // 全屏页面使用 fullscreen-page class
     await expect(page.locator('body')).toHaveClass(/fullscreen/);
   });
@@ -58,7 +61,8 @@ test.describe('Suite-09: 设备大屏', () => {
   test('SCR-008: 响应式布局-大屏 1920x1080', async ({ page, baseURL }) => {
     await page.setViewportSize({ width: 1920, height: 1080 });
     await page.goto(`${baseURL}/pages/fullscreen.html`);
-    await page.waitForLoadState('networkidle', { timeout: 15_000 });
+    await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
+    await page.waitForTimeout(2000);
     const statsGrid = page.locator('.stats-grid');
     if (await statsGrid.isVisible()) {
       const box = await statsGrid.boundingBox();
@@ -69,19 +73,22 @@ test.describe('Suite-09: 设备大屏', () => {
   test('SCR-009: 响应式布局-中屏 1366x768', async ({ page, baseURL }) => {
     await page.setViewportSize({ width: 1366, height: 768 });
     await page.goto(`${baseURL}/pages/fullscreen.html`);
-    await page.waitForLoadState('networkidle', { timeout: 15_000 });
-    await expect(page.locator('.fullscreen-container')).toBeVisible();
+    await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
+    await page.waitForTimeout(2000);
+    await expect(page.locator('.fullscreen-container')).toBeVisible({ timeout: 10_000 });
   });
 
   test('SCR-010: 关闭标签页按钮', async ({ page, baseURL }) => {
     await page.goto(`${baseURL}/pages/fullscreen.html`);
-    await page.waitForLoadState('networkidle', { timeout: 15_000 });
+    await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
+    await page.waitForTimeout(2000);
     await expect(page.locator('#fullscreen-close-btn')).toBeVisible();
   });
 
   test('SCR-011: 大屏无交互超时(2分钟)', async ({ page, baseURL }) => {
     await page.goto(`${baseURL}/pages/fullscreen.html`);
-    await page.waitForLoadState('networkidle', { timeout: 15_000 });
+    await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
+    await page.waitForTimeout(3000);
     // 等待2分钟不操作
     await page.waitForTimeout(120_000);
     // 页面应仍可用
@@ -99,7 +106,8 @@ test.describe('Suite-09: 设备大屏', () => {
     // 大屏页面
     const page2 = await page.context().newPage();
     await page2.goto(`${baseURL}/pages/fullscreen.html`);
-    await page2.waitForLoadState('networkidle', { timeout: 15_000 });
+    await page2.waitForLoadState('domcontentloaded', { timeout: 15_000 });
+    await page2.waitForTimeout(3000);
     const fullUptime = await page2.locator('#monitor-uptime').textContent();
     await page2.close();
 

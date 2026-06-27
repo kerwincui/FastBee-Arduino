@@ -2,6 +2,8 @@
 
 `test` 目录用于 PlatformIO Test Runner 的 host/native 测试。设备在线 API 冒烟和稳定性测试放在 `scripts` 目录，由 `scripts\test-all.ps1` 统一调度。
 
+> **跨平台提示**：以下 PowerShell 脚本支持 Windows / Linux / macOS，后两者需安装 [PowerShell Core](https://learn.microsoft.com/powershell/scripting/install/installing-powershell) 并使用 `pwsh` 替代 `powershell`。
+
 ## 目录结构
 
 | 路径 | 说明 |

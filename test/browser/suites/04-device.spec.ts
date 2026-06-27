@@ -112,35 +112,25 @@ test.describe('Suite-04: 设备配置', () => {
 
   // ========== 场景B: NTP时间配置 ==========
 
-  test('DEV-015: NTP Tab切换', async ({ authPage, navigateTo }) => {
+  test('DEV-015~018: NTP Tab查看（切换/时间/同步/运行时间）', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
     await authPage.click('.config-tab[data-tab="dev-ntp"]');
     await expect(authPage.locator('#dev-ntp')).toHaveClass(/active/, { timeout: 5000 });
-  });
 
-  test('DEV-016: 当前时间显示', async ({ authPage, navigateTo }) => {
-    await navigateTo('device');
-    await authPage.click('.config-tab[data-tab="dev-ntp"]');
-    await expect(authPage.locator('#dev-ntp')).toHaveClass(/active/, { timeout: 5000 });
-    await waitForDeviceReady(authPage, 5000);
-    const datetime = await authPage.locator('#dev-time-datetime').textContent();
-    expect(datetime).not.toBe('--');
-  });
+    await test.step('当前时间显示', async () => {
+      await waitForDeviceReady(authPage, 5000);
+      const datetime = await authPage.locator('#dev-time-datetime').textContent();
+      expect(datetime).not.toBe('--');
+    });
 
-  test('DEV-017: NTP同步状态', async ({ authPage, navigateTo }) => {
-    await navigateTo('device');
-    await authPage.click('.config-tab[data-tab="dev-ntp"]');
-    await expect(authPage.locator('#dev-ntp')).toHaveClass(/active/, { timeout: 5000 });
-    await expect(authPage.locator('#dev-time-synced')).toBeVisible({ timeout: 8000 });
-  });
+    await test.step('NTP同步状态', async () => {
+      await expect(authPage.locator('#dev-time-synced')).toBeVisible({ timeout: 8000 });
+    });
 
-  test('DEV-018: 设备运行时间', async ({ authPage, navigateTo }) => {
-    await navigateTo('device');
-    await authPage.click('.config-tab[data-tab="dev-ntp"]');
-    await expect(authPage.locator('#dev-ntp')).toHaveClass(/active/, { timeout: 5000 });
-    await waitForDeviceReady(authPage, 5000);
-    const uptime = await authPage.locator('#dev-time-uptime').textContent();
-    expect(uptime).not.toBe('--');
+    await test.step('设备运行时间', async () => {
+      const uptime = await authPage.locator('#dev-time-uptime').textContent();
+      expect(uptime).not.toBe('--');
+    });
   });
 
   test('DEV-019: 刷新时间按钮', async ({ authPage, navigateTo }) => {
@@ -206,12 +196,56 @@ test.describe('Suite-04: 设备配置', () => {
     await expect(authPage.locator('#dev-ntp-success')).not.toHaveClass(/is-hidden/);
   });
 
-  // ========== 场景C: 开发环境功能 ==========
+  // ========== 场景C~I: 高级 Tab 只读查看（合并为单测试 + test.step） ==========
 
-  test('DEV-027: 开发环境状态检查', async ({ authPage, navigateTo }) => {
+  test('DEV-027~056: 高级Tab只读面板查看（开发/缓存/导入导出/安全/恢复/OTA）', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
     await authPage.click('.config-tab[data-tab="dev-advanced"]');
     await expect(authPage.locator('#dev-mode-status')).toBeVisible({ timeout: 8000 });
+
+    await test.step('开发环境状态检查', async () => {
+      await expect(authPage.locator('#dev-mode-status')).toBeVisible();
+    });
+
+    await test.step('重启延迟选择', async () => {
+      await expect(authPage.locator('#dev-restart-delay')).toBeVisible({ timeout: 8000 });
+      const opts = await authPage.locator('#dev-restart-delay option').allTextContents();
+      expect(opts.length).toBeGreaterThanOrEqual(2);
+    });
+
+    await test.step('设备重启按钮可见', async () => {
+      await expect(authPage.locator('#dev-restart-btn')).toBeVisible({ timeout: 8000 });
+    });
+
+    await test.step('缓存有效期选择', async () => {
+      const opts = await authPage.locator('#dev-cache-duration option').allTextContents();
+      expect(opts.length).toBeGreaterThanOrEqual(4);
+    });
+
+    await test.step('配置导出按钮可见', async () => {
+      await expect(authPage.locator('#dev-config-export-btn')).toBeVisible();
+    });
+
+    await test.step('配置导入文件选择', async () => {
+      await expect(authPage.locator('#dev-config-import-file')).toBeAttached();
+    });
+
+    await test.step('导入按钮可见', async () => {
+      await expect(authPage.locator('#dev-config-import-btn')).toBeVisible();
+    });
+
+    await test.step('安全策略面板展示', async () => {
+      await expect(authPage.locator('#dev-sec-max-attempts')).toBeVisible();
+      await expect(authPage.locator('#dev-sec-lockout-time')).toBeVisible();
+    });
+
+    await test.step('恢复出厂按钮可见', async () => {
+      await expect(authPage.locator('#dev-factory-btn')).toBeVisible();
+    });
+
+    await test.step('OTA在线检查区域可见', async () => {
+      await expect(authPage.locator('#dev-advanced')).toBeVisible();
+    });
   });
 
   test('DEV-028: 禁用开发环境', async ({ authPage, navigateTo }) => {
@@ -260,20 +294,6 @@ test.describe('Suite-04: 设备配置', () => {
 
   // ========== 场景D: 设备重启 ==========
 
-  test('DEV-034: 重启延迟选择', async ({ authPage, navigateTo }) => {
-    await navigateTo('device');
-    await authPage.click('.config-tab[data-tab="dev-advanced"]');
-    await expect(authPage.locator('#dev-restart-delay')).toBeVisible({ timeout: 8000 });
-    const opts = await authPage.locator('#dev-restart-delay option').allTextContents();
-    expect(opts.length).toBeGreaterThanOrEqual(2);
-  });
-
-  test('DEV-035: 设备重启', async ({ authPage, navigateTo }) => {
-    await navigateTo('device');
-    await authPage.click('.config-tab[data-tab="dev-advanced"]');
-    await expect(authPage.locator('#dev-restart-btn')).toBeVisible({ timeout: 8000 });
-  });
-
   test('DEV-036: 重启后服务恢复', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
     await authPage.click('.config-tab[data-tab="dev-advanced"]');
@@ -303,15 +323,7 @@ test.describe('Suite-04: 设备配置', () => {
     expect(name).toBeTruthy();
   });
 
-  // ========== 场景E: 缓存管理 ==========
-
-  test('DEV-038: 缓存有效期选择', async ({ authPage, navigateTo }) => {
-    await navigateTo('device');
-    await authPage.click('.config-tab[data-tab="dev-advanced"]');
-    await authPage.waitForTimeout(500);
-    const opts = await authPage.locator('#dev-cache-duration option').allTextContents();
-    expect(opts.length).toBeGreaterThanOrEqual(4);
-  });
+  // ========== 场景E: 缓存管理（写操作） ==========
 
   test('DEV-039: 修改缓存有效期', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
@@ -331,21 +343,7 @@ test.describe('Suite-04: 设备配置', () => {
     await waitForDevice(authPage, 2000);
   });
 
-  // ========== 场景F: 配置导入/导出 ==========
-
-  test('DEV-041: 导出配置', async ({ authPage, navigateTo }) => {
-    await navigateTo('device');
-    await authPage.click('.config-tab[data-tab="dev-advanced"]');
-    await authPage.waitForTimeout(500);
-    await expect(authPage.locator('#dev-config-export-btn')).toBeVisible();
-  });
-
-  test('DEV-042: 导入配置文件选择', async ({ authPage, navigateTo }) => {
-    await navigateTo('device');
-    await authPage.click('.config-tab[data-tab="dev-advanced"]');
-    await authPage.waitForTimeout(500);
-    await expect(authPage.locator('#dev-config-import-file')).toBeAttached();
-  });
+  // ========== 场景F: 配置导入/导出（写操作） ==========
 
   test('DEV-043: 导出按钮点击', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
@@ -368,15 +366,7 @@ test.describe('Suite-04: 设备配置', () => {
     await expect(authPage.locator('#dev-config-import-btn')).toBeVisible();
   });
 
-  // ========== 场景G: 安全策略 ==========
-
-  test('DEV-047: 安全策略面板展示', async ({ authPage, navigateTo }) => {
-    await navigateTo('device');
-    await authPage.click('.config-tab[data-tab="dev-advanced"]');
-    await authPage.waitForTimeout(500);
-    await expect(authPage.locator('#dev-sec-max-attempts')).toBeVisible();
-    await expect(authPage.locator('#dev-sec-lockout-time')).toBeVisible();
-  });
+  // ========== 场景G: 安全策略（写操作） ==========
 
   test('DEV-048: 最大登录尝试修改', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
@@ -426,15 +416,7 @@ test.describe('Suite-04: 设备配置', () => {
     expect(result.body.success).toBe(true);
   });
 
-  // ========== 场景H: 恢复出厂设置 ==========
-
-  test('DEV-052: 恢复出厂-输入框为空', async ({ authPage, navigateTo }) => {
-    await navigateTo('device');
-    await authPage.click('.config-tab[data-tab="dev-advanced"]');
-    await authPage.waitForTimeout(500);
-    // 不输入任何内容
-    await expect(authPage.locator('#dev-factory-btn')).toBeVisible();
-  });
+  // ========== 场景H: 恢复出厂设置（写操作） ==========
 
   test('DEV-053: 恢复出厂-输入错误', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
@@ -448,15 +430,5 @@ test.describe('Suite-04: 设备配置', () => {
       try { return (await fetch('/api/health')).ok; } catch { return false; }
     });
     expect(healthOk).toBeTruthy();
-  });
-
-  // ========== 场景I: OTA固件升级 ==========
-
-  test('DEV-056: OTA在线检查', async ({ authPage, navigateTo }) => {
-    await navigateTo('device');
-    await authPage.click('.config-tab[data-tab="dev-advanced"]');
-    await authPage.waitForTimeout(500);
-    // OTA 区域可见性检查
-    await expect(authPage.locator('#dev-advanced')).toBeVisible();
   });
 });

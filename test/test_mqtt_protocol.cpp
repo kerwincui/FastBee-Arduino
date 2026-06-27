@@ -2306,7 +2306,7 @@ void test_mqtts_socket_timeout_strategy() {
     auto getConnectTimeout = [](const String& scheme) -> int {
         return (scheme == "mqtts") ? 30 : 5;
     };
-    constexpr int PUBLISH_TIMEOUT = 5;  // 连接成功后始终用短超时
+    constexpr int POST_CONNECT_TIMEOUT = 15;  // 连接成功后 MQTTS 用 15s（兼顾 TLS 读和解耦死 socket）
 
     // mqtt: 连接超时 5s
     TEST_ASSERT_EQUAL(5, getConnectTimeout("mqtt"));
@@ -2316,9 +2316,9 @@ void test_mqtts_socket_timeout_strategy() {
     TEST_ASSERT_EQUAL(30, getConnectTimeout("mqtts"));
     TestLog::step("mqtts connect timeout: 30s");
 
-    // 连接成功后 publish 超时始终为 5s
-    TEST_ASSERT_EQUAL(5, PUBLISH_TIMEOUT);
-    TestLog::step("publish timeout always 5s after connect");
+    // 连接成功后 MQTTS 超时为 15s（不是 5s，防止 TLS 读超时误断连）
+    TEST_ASSERT_EQUAL(15, POST_CONNECT_TIMEOUT);
+    TestLog::step("mqtts post-connect timeout: 15s");
 
     TestLog::testEnd(true);
 }
@@ -4369,6 +4369,218 @@ void test_mqtts_ethernet_uses_internal_secure_transport() {
     TestLog::testEnd(true);
 }
 
+// ========== 修复回归测试：MQTTS 缓冲区/超时/loop/事件循环 ==========
+
+// 修复1: MQTTS 缓冲区统一为 1024 字节（不再为 MQTTS 缩小到 512）
+void test_mqtts_buffer_size_unified_1024() {
+    TestLog::testStart("MQTTS Buffer Size Unified 1024");
+
+    // 模拟 begin() 中缓冲区设置逻辑（修复后不再按 scheme 区分）
+    auto getBufferSize = [](const String& scheme) -> uint16_t {
+        (void)scheme;
+        return 1024;  // 修复：统一为 1024
+    };
+
+    // mqtt 缓冲区 1024
+    TEST_ASSERT_EQUAL(1024, getBufferSize("mqtt"));
+    TestLog::step("mqtt buffer: 1024 bytes");
+
+    // mqtts 缓冲区也是 1024（修复前是 512）
+    TEST_ASSERT_EQUAL(1024, getBufferSize("mqtts"));
+    TestLog::step("mqtts buffer: 1024 bytes (was 512, fixed)");
+
+    // 验证源码中确实已移除 512 缓冲区条件
+    std::string mqtt = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!mqtt.empty(), "MQTTClient.cpp must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqtt.find("uint16_t mqttBufferSize = 1024;") != std::string::npos,
+        "MQTTS buffer must be unified to 1024 (not 512)");
+
+    TestLog::testEnd(true);
+}
+
+// 修复2: MQTTS 连接成功后 socket timeout 为 15s（不是 5s）
+void test_mqtts_post_connect_timeout_15s() {
+    TestLog::testStart("MQTTS Post-Connect Timeout 15s");
+
+    // 模拟 reconnect() 中连接成功后的 timeout 设置
+    auto getPostConnectTimeout = [](const String& scheme, bool connectOk) -> int {
+        if (scheme == "mqtts" && connectOk) return 15;  // 修复：5 → 15
+        if (scheme == "mqtts" && !connectOk) return 15;  // 失败也恢复 15s
+        return 5;  // mqtt 不受影响
+    };
+
+    // mqtts 连接成功：15s
+    TEST_ASSERT_EQUAL(15, getPostConnectTimeout("mqtts", true));
+    TestLog::step("mqtts post-connect timeout: 15s");
+
+    // mqtts 连接失败：也是 15s（不是 5s）
+    TEST_ASSERT_EQUAL(15, getPostConnectTimeout("mqtts", false));
+    TestLog::step("mqtts post-fail timeout: 15s");
+
+    // mqtt 不受影响：5s
+    TEST_ASSERT_EQUAL(5, getPostConnectTimeout("mqtt", true));
+    TestLog::step("mqtt post-connect timeout: 5s (unchanged)");
+
+    // 验证源码
+    std::string mqtt = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!mqtt.empty(), "MQTTClient.cpp must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqtt.find("mqttClient.setSocketTimeout(15);") != std::string::npos,
+        "MQTTS post-connect timeout must be 15s");
+
+    TestLog::testEnd(true);
+}
+
+// 修复3: 连接成功后 subscribeAll/publishDeviceInfo 之间插入 mqttClient.loop()
+void test_mqtts_loop_between_post_connect_ops() {
+    TestLog::testStart("MQTT Loop Between Post-Connect Ops");
+
+    // 模拟连接成功后的操作序列，验证 loop() 在 subscribeAll 和 publishDeviceInfo 之间被调用
+    std::string mqtt = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!mqtt.empty(), "MQTTClient.cpp must be readable");
+
+    // 查找 subscribeAll() 后紧跟 mqttClient.loop()
+    std::string subscribeAllLoop = "subscribeAll();\n        mqttClient.loop();";
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqtt.find(subscribeAllLoop) != std::string::npos,
+        "mqttClient.loop() must be called after subscribeAll() to process SUBACK");
+
+    // 查找 publishDeviceInfo() 后紧跟 mqttClient.loop()
+    std::string publishDevLoop = "publishDeviceInfo();\n        mqttClient.loop();";
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqtt.find(publishDevLoop) != std::string::npos,
+        "mqttClient.loop() must be called after publishDeviceInfo() to process PUBACK");
+
+    TestLog::step("loop() inserted between post-connect operations");
+    TestLog::testEnd(true);
+}
+
+// 修复4: EVENT_MQTT_DISCONNECTED 仅在 reconnectCount <= 3 时触发，防止无限循环
+void test_mqtt_disconnect_event_guarded() {
+    TestLog::testStart("MQTT Disconnect Event Guarded");
+
+    // 模拟 handle() 中 EVENT_MQTT_DISCONNECTED 触发条件
+    auto shouldTriggerDisconnectEvent = [](uint32_t reconnectCount) -> bool {
+        return reconnectCount <= 3;  // 修复：仅前 3 次触发
+    };
+
+    // 前 3 次断连：触发事件
+    TEST_ASSERT_TRUE(shouldTriggerDisconnectEvent(0));
+    TEST_ASSERT_TRUE(shouldTriggerDisconnectEvent(1));
+    TEST_ASSERT_TRUE(shouldTriggerDisconnectEvent(2));
+    TEST_ASSERT_TRUE(shouldTriggerDisconnectEvent(3));
+    TestLog::step("reconnectCount 0-3: event triggered");
+
+    // 第 4 次及以后：不触发，防止无限循环
+    TEST_ASSERT_FALSE(shouldTriggerDisconnectEvent(4));
+    TEST_ASSERT_FALSE(shouldTriggerDisconnectEvent(10));
+    TEST_ASSERT_FALSE(shouldTriggerDisconnectEvent(100));
+    TestLog::step("reconnectCount > 3: event suppressed (prevents infinite loop)");
+
+    // 验证源码包含保护条件
+    std::string mqtt = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!mqtt.empty(), "MQTTClient.cpp must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(
+        mqtt.find("reconnectCount <= 3") != std::string::npos,
+        "EVENT_MQTT_DISCONNECTED must be guarded by reconnectCount <= 3");
+
+    TestLog::testEnd(true);
+}
+
+// ========== P0/P1 改进验证测试 ==========
+
+/**
+ * @brief RESET-1: resetErrorCounters() 实现验证
+ * 验证源码中 resetErrorCounters() 正确重置所有退避相关状态
+ */
+void test_reset_error_counters_implementation() {
+    TestLog::testStart("RESET-1: resetErrorCounters implementation");
+    std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "MQTTClient.cpp must be readable");
+
+    // 查找函数实现
+    auto pos = content.find("void MQTTClient::resetErrorCounters()");
+    TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos,
+        "resetErrorCounters() must be defined in MQTTClient.cpp");
+
+    // 截取函数体（~500字符）
+    std::string funcBody = content.substr(pos, 500);
+
+    // 必须重置的关键字段
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("consecutiveTimeouts") != std::string::npos,
+        "resetErrorCounters must reset consecutiveTimeouts");
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("reconnectInterval") != std::string::npos,
+        "resetErrorCounters must reset reconnectInterval");
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("lastReconnectAttempt") != std::string::npos,
+        "resetErrorCounters must reset lastReconnectAttempt to 0 (force immediate reconnect)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("lastErrorCode") != std::string::npos,
+        "resetErrorCounters must reset lastErrorCode");
+
+    TestLog::step("resetErrorCounters resets all backoff state for immediate reconnect");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief DRAM-PROC: processQueuedReports 使用 DRAM 内部内存检测
+ * 验证源码使用 heap_caps_get_free_size(MALLOC_CAP_INTERNAL) 而非 ESP.getFreeHeap()
+ */
+void test_process_queued_reports_uses_dram() {
+    TestLog::testStart("DRAM-PROC: processQueuedReports uses DRAM check");
+    std::string content = readProjectFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "MQTTClient.cpp must be readable");
+
+    // 查找 processQueuedReports 函数
+    auto pos = content.find("void MQTTClient::processQueuedReports()");
+    TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos,
+        "processQueuedReports() must be defined");
+
+    // 截取函数开头（~400字符）
+    std::string funcHead = content.substr(pos, 400);
+
+    // 必须使用 MALLOC_CAP_INTERNAL（DRAM 内部内存）
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcHead.find("MALLOC_CAP_INTERNAL") != std::string::npos,
+        "processQueuedReports must use heap_caps_get_free_size(MALLOC_CAP_INTERNAL) for DRAM check");
+
+    // 不应使用 ESP.getFreeHeap()（含 PSRAM，保护永不触发）
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcHead.find("ESP.getFreeHeap()") == std::string::npos,
+        "processQueuedReports must NOT use ESP.getFreeHeap() (includes PSRAM)");
+
+    TestLog::step("processQueuedReports correctly uses DRAM memory check");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief WIFI-MQTT-1: WiFi GOT_IP 事件通知 MQTT 立即重连
+ * 验证 WiFiManager 在 WiFi 连接成功（GOT_IP）后调用 MQTT 的 resetErrorCounters
+ */
+void test_wifi_got_ip_notifies_mqtt() {
+    TestLog::testStart("WIFI-MQTT-1: WiFi GOT_IP notifies MQTT reconnect");
+    std::string content = readProjectFile("src/network/WiFiManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "WiFiManager.cpp must be readable");
+
+    // 查找 GOT_IP 事件处理
+    auto pos = content.find("ARDUINO_EVENT_WIFI_STA_GOT_IP");
+    TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos,
+        "WiFiManager must handle ARDUINO_EVENT_WIFI_STA_GOT_IP");
+
+    // 在 GOT_IP 处理段中必须调用 resetErrorCounters
+    // 搜索 GOT_IP 后的 2000 字符范围
+    std::string gotIpSection = content.substr(pos, 2000);
+    TEST_ASSERT_TRUE_MESSAGE(
+        gotIpSection.find("resetErrorCounters") != std::string::npos,
+        "GOT_IP handler must call MQTT resetErrorCounters for immediate reconnect");
+
+    TestLog::step("WiFi GOT_IP event correctly notifies MQTT to reset backoff and reconnect");
+    TestLog::testEnd(true);
+}
+
 // Test group entry point
 void test_mqtt_protocol_group() {
     TestLog::groupStart("MQTT Protocol Tests");
@@ -4508,6 +4720,17 @@ void test_mqtt_protocol_group() {
     RUN_TEST(test_mqtts_external_transport_skips_internal_tls);
     RUN_TEST(test_mqtts_protocol_manager_reads_section_scheme_for_cellular_secure);
     RUN_TEST(test_mqtts_ethernet_uses_internal_secure_transport);
+
+    // 修复回归测试：MQTTS 缓冲区/超时/loop/事件循环
+    RUN_TEST(test_mqtts_buffer_size_unified_1024);
+    RUN_TEST(test_mqtts_post_connect_timeout_15s);
+    RUN_TEST(test_mqtts_loop_between_post_connect_ops);
+    RUN_TEST(test_mqtt_disconnect_event_guarded);
+
+    // P0/P1 改进验证测试
+    RUN_TEST(test_reset_error_counters_implementation);
+    RUN_TEST(test_process_queued_reports_uses_dram);
+    RUN_TEST(test_wifi_got_ip_notifies_mqtt);
 
     TestLog::groupEnd();
 }

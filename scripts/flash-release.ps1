@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet("esp32-F4R0", "esp32-F8R4", "esp32c3-F4R0", "esp32c6-F4R0", "esp32s3-F8R0", "esp32s3-F8R4", "esp32s3-F16R8")]
     [string]$Env = "esp32-F4R0",
@@ -13,8 +13,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# 平台检测：$IsWindows 在 PowerShell 7+ 内置，Windows PowerShell 5.1 中不存在（默认 true）
+$IsWin = if (Test-Path Variable:IsWindows) { $IsWindows } else { $true }
+
 $ProjectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 Set-Location $ProjectDir
+
+# 非 Windows 平台规范化路径分隔符
+if (-not $IsWin) {
+    $ImageDir = $ImageDir -replace '\\', '/'
+}
 
 function Get-ChipName {
     param([string]$Environment)
@@ -26,12 +34,20 @@ function Get-ChipName {
 }
 
 function Get-PythonForEsptool {
-    $pioPython = Join-Path $env:USERPROFILE ".platformio\penv\Scripts\python.exe"
+    # PlatformIO Python 路径因平台而异
+    if ($IsWin) {
+        $pioPython = Join-Path (Join-Path (Join-Path $env:USERPROFILE ".platformio") "penv") "Scripts\python.exe"
+    } else {
+        $pioPython = Join-Path (Join-Path (Join-Path $HOME ".platformio") "penv") "bin/python"
+    }
     if (Test-Path -LiteralPath $pioPython -PathType Leaf) {
         return $pioPython
     }
 
     $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $cmd) {
+        $cmd = Get-Command python3 -ErrorAction SilentlyContinue
+    }
     if ($cmd) {
         return $cmd.Source
     }
@@ -42,7 +58,7 @@ function Get-PythonForEsptool {
 $resolvedImageDir = [System.IO.Path]::GetFullPath((Join-Path $ProjectDir $ImageDir))
 $manifestPath = Join-Path $resolvedImageDir "manifest.json"
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-    throw "Release manifest not found: $manifestPath. Run scripts\build-all-artifacts.ps1 first."
+    throw "Release manifest not found: $manifestPath. Run $(Join-Path scripts build-all-artifacts.ps1) first."
 }
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json

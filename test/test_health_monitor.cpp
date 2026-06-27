@@ -1256,6 +1256,156 @@ void test_mr17_recovery_summary_before_reboot() {
     TestLog::testEnd(true);
 }
 
+// ========== P0/P1 改进验证测试 ==========
+
+/**
+ * @brief FRAG-1: isFragmentationHigh() 统一使用 DRAM 指标
+ * 验证：源码中 isFragmentationHigh 使用 dramFreeHeap/dramLargestBlock，
+ *       而非 freeHeap/largestFreeBlock（含 PSRAM，会掩盖 DRAM 碎片问题）
+ */
+void test_frag_high_uses_dram_metrics() {
+    TestLog::testStart("FRAG-1: isFragmentationHigh uses DRAM metrics");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    // 查找 isFragmentationHigh 函数实现
+    auto pos = content.find("bool HealthMonitor::isFragmentationHigh()");
+    TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos,
+        "isFragmentationHigh() must be defined");
+
+    // 截取函数体（~500字符足够）
+    std::string funcBody = content.substr(pos, 500);
+
+    // 必须使用 DRAM 指标
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("dramFreeHeap") != std::string::npos,
+        "isFragmentationHigh must use dramFreeHeap (not freeHeap)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("dramLargestBlock") != std::string::npos,
+        "isFragmentationHigh must use dramLargestBlock (not largestFreeBlock)");
+
+    // 不应使用含 PSRAM 的指标
+    // 注意：只检查在函数体内不含 ".freeHeap" 和 ".largestFreeBlock" 的使用
+    // dramFreeHeap 包含 "FreeHeap" 子串，所以用更精确的匹配
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("currentHealth.freeHeap") == std::string::npos,
+        "isFragmentationHigh must NOT use currentHealth.freeHeap (includes PSRAM)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("currentHealth.largestFreeBlock") == std::string::npos,
+        "isFragmentationHigh must NOT use currentHealth.largestFreeBlock (includes PSRAM)");
+
+    TestLog::step("isFragmentationHigh correctly uses DRAM metrics");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief FRAG-2: DRAM vs PSRAM 碎片率差异验证
+ * 在 PSRAM 设备上，DRAM 碎片率高但总碎片率低，isFragmentationHigh 应返回 true
+ */
+void test_frag_high_dram_vs_total_difference() {
+    TestLog::testStart("FRAG-2: DRAM vs total fragmentation difference");
+
+    // 模拟 PSRAM 设备：DRAM 严重碎片化但 PSRAM 大块空闲
+    uint32_t dramFree = 42 * 1024;       // 42KB DRAM 空闲
+    uint32_t dramLargest = 3 * 1024;      // 3KB 最大连续块 → 碎片率 93%
+    uint32_t totalFree = dramFree + 8 * 1024 * 1024;   // 含 8MB PSRAM
+    uint32_t totalLargest = 8 * 1024 * 1024;             // PSRAM 大块
+
+    uint8_t dramFrag = calculateHeapFragmentationPercent(dramFree, dramLargest);
+    uint8_t totalFrag = calculateHeapFragmentationPercent(totalFree, totalLargest);
+
+    // DRAM 碎片率应该很高（>75%）
+    TEST_ASSERT_GREATER_THAN(75, (int)dramFrag);
+    TestLog::step("DRAM fragmentation is high (93%)");
+
+    // 总碎片率应该很低（<1%），因为有 PSRAM 大块
+    TEST_ASSERT_LESS_THAN(5, (int)totalFrag);
+    TestLog::step("Total fragmentation is low due to PSRAM");
+
+    // 如果使用 DRAM 指标判断（正确行为），应该检测到高碎片
+    // 阈值 FRAG_THRESHOLD_COMPACT 通常约 75%
+    TEST_ASSERT_TRUE(dramFrag > 75);
+    TestLog::step("DRAM-based check correctly detects high fragmentation");
+
+    // 如果使用 total 指标（旧行为），会漏检
+    TEST_ASSERT_FALSE(totalFrag > 75);
+    TestLog::step("Total-based check would MISS fragmentation (old behavior)");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief COMPACT-1: compactMemory() 使用主动释放策略而非试探性分配
+ * 验证：源码中不再包含 malloc/free 循环，改为刷新日志缓冲、关闭 SSE、清除缓存
+ */
+void test_compact_memory_targeted_reclamation() {
+    TestLog::testStart("COMPACT-1: compactMemory uses targeted reclamation");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    // 查找 compactMemory 函数实现
+    auto pos = content.find("void HealthMonitor::compactMemory()");
+    TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos,
+        "compactMemory() must be defined");
+
+    // 截取函数体（~1500字符）
+    std::string funcBody = content.substr(pos, 1500);
+
+    // 新策略：必须包含主动释放操作
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("flushBuffer") != std::string::npos,
+        "compactMemory must flush log buffer (LoggerSystem::flushBuffer)");
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("closeAllClients") != std::string::npos ||
+        funcBody.find("SSE") != std::string::npos,
+        "compactMemory must close SSE clients for defragmentation");
+
+    // 旧策略：不应包含试探性分配循环
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcBody.find("compactSizes") == std::string::npos,
+        "compactMemory must NOT use old compactSizes probe array");
+
+    TestLog::step("compactMemory uses targeted reclamation (flush/SSE/cache), not probe allocation");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief RECOVER-1: performMemoryRecovery 使用 calculateHeapFragmentationPercent
+ * 验证：不再使用 (dramLargestBlock * 100) / dramBefore 的手动计算，
+ *       避免 uint8_t 截断和乘法溢出风险
+ */
+void test_perform_memory_recovery_uses_helper_function() {
+    TestLog::testStart("RECOVER-1: performMemoryRecovery uses helper function");
+    std::string content = readProjectFile("src/systems/HealthMonitor.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!content.empty(), "HealthMonitor.cpp must be readable");
+
+    // 查找 performMemoryRecovery 函数实现
+    auto pos = content.find("void HealthMonitor::performMemoryRecovery(");
+    TEST_ASSERT_TRUE_MESSAGE(pos != std::string::npos,
+        "performMemoryRecovery() must be defined");
+
+    // 截取函数开头（~600字符，覆盖变量声明部分）
+    std::string funcHead = content.substr(pos, 600);
+
+    // 必须使用 calculateHeapFragmentationPercent
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcHead.find("calculateHeapFragmentationPercent") != std::string::npos,
+        "performMemoryRecovery must use calculateHeapFragmentationPercent()");
+
+    // 不应使用旧的手动计算方式
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcHead.find("dramLargestBlock * 100") == std::string::npos,
+        "performMemoryRecovery must NOT use manual (largest * 100) / dram calculation");
+
+    // 变量类型不应是 uint8_t largestBlock（截断风险）
+    TEST_ASSERT_TRUE_MESSAGE(
+        funcHead.find("uint8_t largestBlock") == std::string::npos,
+        "performMemoryRecovery must NOT use uint8_t largestBlock (truncation risk)");
+
+    TestLog::step("performMemoryRecovery uses calculateHeapFragmentationPercent (no overflow risk)");
+    TestLog::testEnd(true);
+}
+
 // ========== 测试组入口 ==========
 
 void test_health_monitor_group() {
@@ -1321,6 +1471,12 @@ void test_health_monitor_group() {
     RUN_TEST(test_mr15_emergency_dram_threshold);
     RUN_TEST(test_mr16_boot_loop_protection);
     RUN_TEST(test_mr17_recovery_summary_before_reboot);
+
+    // P0/P1 改进验证测试
+    RUN_TEST(test_frag_high_uses_dram_metrics);
+    RUN_TEST(test_frag_high_dram_vs_total_difference);
+    RUN_TEST(test_compact_memory_targeted_reclamation);
+    RUN_TEST(test_perform_memory_recovery_uses_helper_function);
 
     TestLog::groupEnd();
 }

@@ -20,7 +20,7 @@
  *   - IR 接收器 VCC → 3.3V
  *   - IR 接收器 GND → GND
  * 
- * 编译条件：FASTBEE_ENABLE_IR_REMOTE=1（仅 esp32s3-full）
+ * 编译条件：FASTBEE_ENABLE_IR_REMOTE=1（Full 版本默认启用，Standard 版本启用，Lite 版本禁用）
  */
 class IRRemoteDriver {
 public:

@@ -28,6 +28,9 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <algorithm>
+#include "core/FastBeeFramework.h"  // 网络恢复 → MQTT 立即重连通知
+#include "protocols/ProtocolManager.h"
+#include "protocols/MQTTClient.h"
 
 static const char* NETWORK_CONFIG_FILE = "/config/network.json";
 
@@ -474,6 +477,18 @@ void FBNetworkManager::update() {
                     dnsManager->stopMDNS();
                     dnsManager->startMDNS(wifiConfig.customDomain);
                 }
+                // 通知 MQTT 客户端网络已恢复，立即尝试重连
+#if FASTBEE_ENABLE_MQTT
+                {
+                    auto* fw = FastBeeFramework::getInstance();
+                    auto* pm = fw ? fw->getProtocolManager() : nullptr;
+                    MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
+                    if (mqtt) {
+                        mqtt->resetErrorCounters();
+                        LOG_INFO("[NET] MQTT reconnect triggered after Ethernet reconnection");
+                    }
+                }
+#endif
             }
 #endif
 #if FASTBEE_ENABLE_CELLULAR
@@ -486,6 +501,18 @@ void FBNetworkManager::update() {
                     dnsManager->stopMDNS();
                     dnsManager->startMDNS(wifiConfig.customDomain);
                 }
+                // 通知 MQTT 客户端网络已恢复，立即尝试重连
+#if FASTBEE_ENABLE_MQTT
+                {
+                    auto* fw = FastBeeFramework::getInstance();
+                    auto* pm = fw ? fw->getProtocolManager() : nullptr;
+                    MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
+                    if (mqtt) {
+                        mqtt->resetErrorCounters();
+                        LOG_INFO("[NET] MQTT reconnect triggered after 4G reconnection");
+                    }
+                }
+#endif
             }
 #endif
         } else if (!activeConnected && wasConnected) {
@@ -1743,6 +1770,18 @@ bool FBNetworkManager::restartNetwork() {
                 if (wifiConfig.enableMDNS) {
                     dnsManager->startMDNS(wifiConfig.customDomain);
                 }
+                // 通知 MQTT 客户端 4G 网络已恢复，立即尝试重连
+#if FASTBEE_ENABLE_MQTT
+                {
+                    auto* fw2 = FastBeeFramework::getInstance();
+                    auto* pm2 = fw2 ? fw2->getProtocolManager() : nullptr;
+                    MQTTClient* mqtt = pm2 ? pm2->getMQTTClient() : nullptr;
+                    if (mqtt) {
+                        mqtt->resetErrorCounters();
+                        LOG_INFO("[NET] MQTT reconnect triggered after 4G re-init");
+                    }
+                }
+#endif
             } else {
                 LOG_WARNING("NetworkManager: 4G reconnect failed, falling back to AP");
                 cellularAdapter.reset();
@@ -2137,30 +2176,31 @@ void FBNetworkManager::incrementRxCount() { statusInfo.rxCount++; }
 
 // ============ 多网络类型支持 ============
 
+INetworkAdapter* FBNetworkManager::getActiveAdapter() {
+    switch (wifiConfig.networkType) {
+#if FASTBEE_ENABLE_ETHERNET
+        case NetworkType::NET_ETHERNET:
+            return ethernetAdapter.get();
+#endif
+#if FASTBEE_ENABLE_CELLULAR
+        case NetworkType::NET_4G:
+            return cellularAdapter.get();
+#endif
+        default:
+            return nullptr;  // WiFi 模式无适配器
+    }
+}
+
 Client* FBNetworkManager::getActiveClient() {
     switch (wifiConfig.networkType) {
         case NetworkType::NET_WIFI:
             // WiFi 使用默认的 WiFiClient（由 MQTTClient 内部创建）
             return nullptr;  // 返回 nullptr 表示使用默认 WiFiClient
 
-#if FASTBEE_ENABLE_ETHERNET
-        case NetworkType::NET_ETHERNET:
-            if (ethernetAdapter && ethernetAdapter->isConnected()) {
-                return ethernetAdapter->getClient();
-            }
-            return nullptr;
-#endif
-
-#if FASTBEE_ENABLE_CELLULAR
-        case NetworkType::NET_4G:
-            if (cellularAdapter && cellularAdapter->isConnected()) {
-                return cellularAdapter->getClient();
-            }
-            return nullptr;
-#endif
-
-        default:
-            return nullptr;
+        default: {
+            INetworkAdapter* adapter = getActiveAdapter();
+            return (adapter && adapter->isConnected()) ? adapter->getClient() : nullptr;
+        }
     }
 }
 
@@ -2169,17 +2209,9 @@ bool FBNetworkManager::isNetworkConnected() {
         case NetworkType::NET_WIFI:
             return WiFi.status() == WL_CONNECTED;
 
-#if FASTBEE_ENABLE_ETHERNET
-        case NetworkType::NET_ETHERNET:
-            return ethernetAdapter && ethernetAdapter->isConnected();
-#endif
-
-#if FASTBEE_ENABLE_CELLULAR
-        case NetworkType::NET_4G:
-            return cellularAdapter && cellularAdapter->isConnected();
-#endif
-
-        default:
-            return false;
+        default: {
+            INetworkAdapter* adapter = getActiveAdapter();
+            return adapter && adapter->isConnected();
+        }
     }
 }

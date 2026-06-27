@@ -13,7 +13,10 @@
     "test:all": "npx playwright test",
     "test:headed": "npx playwright test --headed",
     "test:debug": "npx playwright test --debug",
-    "report": "npx playwright show-report reports/html"
+    "test:stability": "npx playwright test -c playwright.stability.config.ts",
+    "test:stability:long": "cross-env STABILITY_ROUNDS=10 npx playwright test -c playwright.stability.config.ts",
+    "report": "npx playwright show-report reports/html",
+    "report:stability": "npx playwright show-report reports/stability-html"
   },
   "devDependencies": {
     "@playwright/test": "^1.50.0"

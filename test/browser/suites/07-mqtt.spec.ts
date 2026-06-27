@@ -4,6 +4,9 @@ test.describe('Suite-07: MQTT/MQTTS通信协议', () => {
 
   test.beforeEach(async ({ authPage, navigateTo }) => {
     await navigateTo('protocol');
+    // 等待 MQTT 分片异步加载完成
+    await authPage.locator('#mqtt-enabled').waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
+    await authPage.waitForTimeout(500);
   });
 
   // ========== 场景A: MQTT基本配置 ==========

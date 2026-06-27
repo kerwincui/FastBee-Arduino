@@ -99,7 +99,7 @@ test.describe('Suite-05: 外设配置', () => {
     await expect(authPage.locator('#peripheral-name-input')).toBeVisible();
     await expect(authPage.locator('#peripheral-type-input')).toBeVisible();
     await expect(authPage.locator('#peripheral-pins-input')).toBeVisible();
-    await expect(authPage.locator('.toggle-switch')).toBeVisible(); // toggle wraps checkbox, checkbox itself is hidden
+    await expect(authPage.locator('#peripheral-modal .toggle-switch').first()).toBeVisible(); // toggle wraps checkbox, checkbox itself is hidden
   });
 
   test('PER-004: 关闭弹窗按钮', async ({ authPage }) => {
@@ -114,191 +114,208 @@ test.describe('Suite-05: 外设配置', () => {
     await expect(authPage.locator('#peripheral-modal')).not.toBeVisible({ timeout: 5000 });
   });
 
-  // ========== 场景B: 类型下拉完整性 ==========
+  // ========== 场景B: 类型下拉完整性（合并为单测试 + test.step） ==========
 
-  test('PER-010: 外设类型下拉完整性 - 通信接口', async ({ authPage }) => {
-    await openAddModal(authPage);
+  test('PER-010~013: 外设类型下拉完整性（通信/GPIO/模拟/专用）', async ({ authPage }) => {
     const typeSelect = authPage.locator('#peripheral-type-input');
-    const options = await typeSelect.locator('option').evaluateAll((els: Element[]) => els.map(e => (e as HTMLOptionElement).value));
-    // 通信接口: UART(1), I2C(2), SPI(3)
-    expect(options).toContain('1');
-    expect(options).toContain('2');
-    expect(options).toContain('3');
+
+    await test.step('通信接口: UART(1), I2C(2), SPI(3)', async () => {
+      await openAddModal(authPage);
+      const options = await typeSelect.locator('option').evaluateAll((els: Element[]) => els.map(e => (e as HTMLOptionElement).value));
+      expect(options).toContain('1');
+      expect(options).toContain('2');
+      expect(options).toContain('3');
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('GPIO接口: 数字输入(11), 数字输出(12), PWM输出(17), 触摸(21)', async () => {
+      await openAddModal(authPage);
+      const options = await typeSelect.locator('option').evaluateAll((els: Element[]) => els.map(e => (e as HTMLOptionElement).value));
+      expect(options).toContain('11');
+      expect(options).toContain('12');
+      expect(options).toContain('17');
+      expect(options).toContain('21');
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('模拟信号: ADC(26), DAC(27)', async () => {
+      await openAddModal(authPage);
+      const options = await typeSelect.locator('option').evaluateAll((els: Element[]) => els.map(e => (e as HTMLOptionElement).value));
+      expect(options).toContain('26');
+      expect(options).toContain('27');
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('专用外设: 编码器(43), WS2812B(45), TM1637(47), RF(48), 雷达(49), 设备事件(60)', async () => {
+      await openAddModal(authPage);
+      const options = await typeSelect.locator('option').evaluateAll((els: Element[]) => els.map(e => (e as HTMLOptionElement).value));
+      expect(options).toContain('43');
+      expect(options).toContain('45');
+      expect(options).toContain('47');
+      expect(options).toContain('48');
+      expect(options).toContain('49');
+      expect(options).toContain('60');
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
   });
 
-  test('PER-011: 外设类型下拉完整性 - GPIO接口', async ({ authPage }) => {
-    await openAddModal(authPage);
-    const typeSelect = authPage.locator('#peripheral-type-input');
-    const options = await typeSelect.locator('option').evaluateAll((els: Element[]) => els.map(e => (e as HTMLOptionElement).value));
-    // GPIO 接口: 数字输入(11), 数字输出(12), 数字输入上拉(13), PWM输出(17), 触摸(21) 等
-    expect(options).toContain('11');
-    expect(options).toContain('12');
-    expect(options).toContain('17');
-    expect(options).toContain('21');
-  });
+  // ========== 场景C: 类型切换参数联动（合并为单测试 + test.step） ==========
 
-  test('PER-012: 外设类型下拉完整性 - 模拟信号', async ({ authPage }) => {
-    await openAddModal(authPage);
-    const typeSelect = authPage.locator('#peripheral-type-input');
-    const options = await typeSelect.locator('option').evaluateAll((els: Element[]) => els.map(e => (e as HTMLOptionElement).value));
-    // 模拟信号: ADC(26), DAC(27)
-    expect(options).toContain('26');
-    expect(options).toContain('27');
-  });
+  test('PER-037~042g: 类型切换参数区域联动（全类型）', async ({ authPage }) => {
 
-  test('PER-013: 外设类型下拉完整性 - 专用外设', async ({ authPage }) => {
-    await openAddModal(authPage);
-    const typeSelect = authPage.locator('#peripheral-type-input');
-    const options = await typeSelect.locator('option').evaluateAll((els: Element[]) => els.map(e => (e as HTMLOptionElement).value));
-    // 专用外设: 编码器(43), WS2812B(45), TM1637(47), RF(48), 雷达(49), 设备事件(60)
-    expect(options).toContain('43');
-    expect(options).toContain('45');
-    expect(options).toContain('47');
-    expect(options).toContain('48');
-    expect(options).toContain('49');
-    expect(options).toContain('60');
-  });
+    await test.step('UART → UART参数可见, GPIO隐藏', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '1');
+      await expect(authPage.locator('#uart-params')).toBeVisible();
+      await expect(authPage.locator('#gpio-params')).not.toBeVisible();
+      await expect(authPage.locator('#uart-baudrate')).toBeVisible();
+      await expect(authPage.locator('#uart-databits')).toBeVisible();
+      await expect(authPage.locator('#uart-stopbits')).toBeVisible();
+      await expect(authPage.locator('#uart-parity')).toBeVisible();
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  // ========== 场景C: 类型切换参数联动 ==========
+    await test.step('GPIO(数字输出) → GPIO参数可见, UART隐藏', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '12');
+      await expect(authPage.locator('#gpio-params')).toBeVisible();
+      await expect(authPage.locator('#uart-params')).not.toBeVisible();
+      await expect(authPage.locator('#gpio-initial-state')).toBeVisible();
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-037: 选择 UART -> UART参数区域可见, GPIO参数隐藏', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '1'); // UART
-    const uartParams = authPage.locator('#uart-params');
-    const gpioParams = authPage.locator('#gpio-params');
-    await expect(uartParams).toBeVisible();
-    await expect(gpioParams).not.toBeVisible();
-    // UART 子字段
-    await expect(authPage.locator('#uart-baudrate')).toBeVisible();
-    await expect(authPage.locator('#uart-databits')).toBeVisible();
-    await expect(authPage.locator('#uart-stopbits')).toBeVisible();
-    await expect(authPage.locator('#uart-parity')).toBeVisible();
-  });
+    await test.step('I2C → I2C参数可见', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '2');
+      await expect(authPage.locator('#i2c-params')).toBeVisible();
+      await expect(authPage.locator('#i2c-frequency')).toBeVisible();
+      await expect(authPage.locator('#i2c-address')).toBeVisible();
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-038: 选择 GPIO -> GPIO参数区域可见, UART参数隐藏', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '12'); // 数字输出
-    const gpioParams = authPage.locator('#gpio-params');
-    const uartParams = authPage.locator('#uart-params');
-    await expect(gpioParams).toBeVisible();
-    await expect(uartParams).not.toBeVisible();
-    // GPIO 子字段
-    await expect(authPage.locator('#gpio-initial-state')).toBeVisible();
-  });
+    await test.step('SPI → SPI参数可见', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '3');
+      await expect(authPage.locator('#spi-params')).toBeVisible();
+      await expect(authPage.locator('#spi-frequency')).toBeVisible();
+      await expect(authPage.locator('#spi-mode')).toBeVisible();
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-039: 选择 I2C -> I2C参数区域可见', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '2'); // I2C
-    const i2cParams = authPage.locator('#i2c-params');
-    await expect(i2cParams).toBeVisible();
-    await expect(authPage.locator('#i2c-frequency')).toBeVisible();
-    await expect(authPage.locator('#i2c-address')).toBeVisible();
-  });
+    await test.step('ADC → ADC参数可见', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '26');
+      await expect(authPage.locator('#adc-params')).toBeVisible();
+      await expect(authPage.locator('#adc-resolution')).toBeVisible();
+      await expect(authPage.locator('#adc-attenuation')).toBeVisible();
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-039b: 选择 SPI -> SPI参数区域可见', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '3'); // SPI
-    const spiParams = authPage.locator('#spi-params');
-    await expect(spiParams).toBeVisible();
-    await expect(authPage.locator('#spi-frequency')).toBeVisible();
-    await expect(authPage.locator('#spi-mode')).toBeVisible();
-  });
+    await test.step('DAC → DAC参数可见', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '27');
+      await expect(authPage.locator('#dac-params')).toBeVisible();
+      await expect(authPage.locator('#dac-default-value')).toBeVisible();
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-039c: 选择 ADC -> ADC参数区域可见', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '26'); // ADC
-    const adcParams = authPage.locator('#adc-params');
-    await expect(adcParams).toBeVisible();
-    await expect(authPage.locator('#adc-resolution')).toBeVisible();
-    await expect(authPage.locator('#adc-attenuation')).toBeVisible();
-  });
+    await test.step('TM1637数码管 → 亮度参数可见', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '47');
+      await expect(authPage.locator('#segment-params')).toBeVisible();
+      await expect(authPage.locator('#segment-brightness')).toBeVisible();
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-039d: 选择 DAC -> DAC参数区域可见', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '27'); // DAC
-    const dacParams = authPage.locator('#dac-params');
-    await expect(dacParams).toBeVisible();
-    await expect(authPage.locator('#dac-default-value')).toBeVisible();
-  });
+    await test.step('编码器 → 分辨率和中断参数可见', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '43');
+      await expect(authPage.locator('#encoder-params')).toBeVisible();
+      await expect(authPage.locator('#encoder-resolution')).toBeVisible();
+      await expect(authPage.locator('#encoder-use-interrupt')).toBeVisible();
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-040: 选择 TM1637 数码管 -> 亮度参数可见', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '47'); // TM1637
-    const segmentParams = authPage.locator('#segment-params');
-    await expect(segmentParams).toBeVisible();
-    await expect(authPage.locator('#segment-brightness')).toBeVisible();
-  });
+    await test.step('SD卡 → 接口模式和频率参数可见', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '37');
+      await expect(authPage.locator('#sdcard-params')).toBeVisible();
+      await expect(authPage.locator('#sdcard-interface')).toBeVisible();
+      await expect(authPage.locator('#sdcard-frequency')).toBeVisible();
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-041: 选择编码器 -> 分辨率和中断参数可见', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '43'); // 编码器
-    const encoderParams = authPage.locator('#encoder-params');
-    await expect(encoderParams).toBeVisible();
-    await expect(authPage.locator('#encoder-resolution')).toBeVisible();
-    await expect(authPage.locator('#encoder-use-interrupt')).toBeVisible();
-  });
+    await test.step('WS2812B → 灯珠数量和亮度参数可见', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '45');
+      await expect(authPage.locator('#neopixel-params')).toBeVisible();
+      await expect(authPage.locator('#neopixel-count')).toBeVisible();
+      await expect(authPage.locator('#neopixel-brightness')).toBeVisible();
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-042: 选择 SD卡 -> 接口模式和频率参数可见', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '37'); // SDIO/SD卡
-    const sdcardParams = authPage.locator('#sdcard-params');
-    await expect(sdcardParams).toBeVisible();
-    await expect(authPage.locator('#sdcard-interface')).toBeVisible();
-    await expect(authPage.locator('#sdcard-frequency')).toBeVisible();
-  });
+    await test.step('RF模块 → 射频参数可见', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '48');
+      await expect(authPage.locator('#rf-params')).toBeVisible();
+      await expect(authPage.locator('#rf-mode')).toBeVisible();
+      await expect(authPage.locator('#rf-bit-length')).toBeVisible();
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-042b: 选择 WS2812B -> 灯珠数量和亮度参数可见', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '45'); // WS2812B
-    const neopixelParams = authPage.locator('#neopixel-params');
-    await expect(neopixelParams).toBeVisible();
-    await expect(authPage.locator('#neopixel-count')).toBeVisible();
-    await expect(authPage.locator('#neopixel-brightness')).toBeVisible();
-  });
+    await test.step('雷达 → 雷达参数可见', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '49');
+      await expect(authPage.locator('#radar-params')).toBeVisible();
+      await expect(authPage.locator('#radar-debounce-ms')).toBeVisible();
+      await expect(authPage.locator('#radar-hold-ms')).toBeVisible();
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-042c: 选择 RF模块 -> 射频参数可见', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '48'); // 433MHz RF
-    const rfParams = authPage.locator('#rf-params');
-    await expect(rfParams).toBeVisible();
-    await expect(authPage.locator('#rf-mode')).toBeVisible();
-    await expect(authPage.locator('#rf-bit-length')).toBeVisible();
-  });
+    await test.step('LCD → 显示屏参数可见', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '36');
+      await expect(authPage.locator('#lcd-params')).toBeVisible();
+      await expect(authPage.locator('#lcd-width')).toBeVisible();
+      await expect(authPage.locator('#lcd-height')).toBeVisible();
+      await expect(authPage.locator('#lcd-interface')).toBeVisible();
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-042d: 选择雷达 -> 雷达参数可见', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '49'); // 雷达
-    const radarParams = authPage.locator('#radar-params');
-    await expect(radarParams).toBeVisible();
-    await expect(authPage.locator('#radar-debounce-ms')).toBeVisible();
-    await expect(authPage.locator('#radar-hold-ms')).toBeVisible();
-  });
+    await test.step('步进电机 → 步进参数可见', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '42');
+      await expect(authPage.locator('#stepper-params')).toBeVisible();
+      await expect(authPage.locator('#stepper-steps-per-rev')).toBeVisible();
+      await expect(authPage.locator('#stepper-speed')).toBeVisible();
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-042e: 选择 LCD -> 显示屏参数可见', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '36'); // LCD/OLED
-    const lcdParams = authPage.locator('#lcd-params');
-    await expect(lcdParams).toBeVisible();
-    await expect(authPage.locator('#lcd-width')).toBeVisible();
-    await expect(authPage.locator('#lcd-height')).toBeVisible();
-    await expect(authPage.locator('#lcd-interface')).toBeVisible();
-  });
-
-  test('PER-042f: 选择步进电机 -> 步进参数可见', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '42'); // 步进电机
-    const stepperParams = authPage.locator('#stepper-params');
-    await expect(stepperParams).toBeVisible();
-    await expect(authPage.locator('#stepper-steps-per-rev')).toBeVisible();
-    await expect(authPage.locator('#stepper-speed')).toBeVisible();
-  });
-
-  test('PER-042g: 选择设备事件 -> 无参数区域, 引脚输入隐藏', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '60'); // 设备事件
-    // 设备事件无引脚、无参数组
-    const deviceEventHint = authPage.locator('#device-event-hint');
-    await expect(deviceEventHint).toBeVisible();
+    await test.step('设备事件 → 无参数区域, 引脚输入隐藏', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '60');
+      await expect(authPage.locator('#device-event-hint')).toBeVisible();
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
   });
 
   // ========== 场景D: 端到端 CRUD 闭环 ==========
@@ -582,90 +599,100 @@ test.describe('Suite-05: 外设配置', () => {
     await expect(authPage.locator('#gpio-pwm-resolution')).not.toBeVisible();
   });
 
-  // ========== 场景K: 子参数默认值验证 ==========
+  // ========== 场景K: 子参数默认值验证（合并为单测试 + test.step） ==========
 
-  test('PER-060: UART参数默认值验证', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '1'); // UART
-    // 波特率默认 115200
-    const baudVal = await authPage.locator('#uart-baudrate').inputValue();
-    expect(baudVal).toBe('115200');
-    // 数据位默认 8
-    const dataBits = await authPage.locator('#uart-databits').inputValue();
-    expect(dataBits).toBe('8');
-    // 停止位默认 1
-    const stopBits = await authPage.locator('#uart-stopbits').inputValue();
-    expect(stopBits).toBe('1');
-    // 校验位默认 无(0)
-    const parity = await authPage.locator('#uart-parity').inputValue();
-    expect(parity).toBe('0');
-  });
+  test('PER-060~067: 各类型子参数默认值验证', async ({ authPage }) => {
 
-  test('PER-061: GPIO参数默认值验证', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '12'); // 数字输出
-    // 初始状态默认低电平(0)
-    const initVal = await authPage.locator('#gpio-initial-state').inputValue();
-    expect(initVal).toBe('0');
-  });
+    await test.step('UART参数默认值', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '1');
+      expect(await authPage.locator('#uart-baudrate').inputValue()).toBe('115200');
+      expect(await authPage.locator('#uart-databits').inputValue()).toBe('8');
+      expect(await authPage.locator('#uart-stopbits').inputValue()).toBe('1');
+      expect(await authPage.locator('#uart-parity').inputValue()).toBe('0');
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-062: I2C参数默认值验证', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '2'); // I2C
-    // 频率默认 100kHz
-    const freqVal = await authPage.locator('#i2c-frequency').inputValue();
-    expect(freqVal).toBe('100000');
-    // 地址默认 0
-    const addrVal = await authPage.locator('#i2c-address').inputValue();
-    expect(addrVal).toBe('0');
-  });
+    await test.step('GPIO参数默认值', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '12');
+      expect(await authPage.locator('#gpio-initial-state').inputValue()).toBe('0');
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-063: ADC参数默认值验证', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '26'); // ADC
-    // 分辨率默认 12位
-    const resVal = await authPage.locator('#adc-resolution').inputValue();
-    expect(resVal).toBe('12');
-    // 衰减默认 11dB(3)
-    const attVal = await authPage.locator('#adc-attenuation').inputValue();
-    expect(attVal).toBe('3');
-  });
+    await test.step('I2C参数默认值', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '2');
+      expect(await authPage.locator('#i2c-frequency').inputValue()).toBe('100000');
+      expect(await authPage.locator('#i2c-address').inputValue()).toBe('0');
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-064: TM1637亮度默认值验证', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '47'); // TM1637
-    const brightness = await authPage.locator('#segment-brightness').inputValue();
-    expect(brightness).toBe('3');
-  });
+    await test.step('ADC参数默认值', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '26');
+      expect(await authPage.locator('#adc-resolution').inputValue()).toBe('12');
+      expect(await authPage.locator('#adc-attenuation').inputValue()).toBe('3');
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-065: NeoPixel默认值验证', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '45'); // WS2812B
-    const count = await authPage.locator('#neopixel-count').inputValue();
-    expect(count).toBe('1');
-    const brightness = await authPage.locator('#neopixel-brightness').inputValue();
-    expect(brightness).toBe('64');
-  });
+    await test.step('TM1637亮度默认值', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '47');
+      expect(await authPage.locator('#segment-brightness').inputValue()).toBe('3');
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-066: 编码器默认值验证', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '43'); // 编码器
-    const resolution = await authPage.locator('#encoder-resolution').inputValue();
-    expect(resolution).toBe('1024');
-    // 默认使用中断
-    const useInterrupt = await authPage.locator('#encoder-use-interrupt').isChecked();
-    expect(useInterrupt).toBe(true);
-  });
+    await test.step('NeoPixel默认值', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '45');
+      expect(await authPage.locator('#neopixel-count').inputValue()).toBe('1');
+      expect(await authPage.locator('#neopixel-brightness').inputValue()).toBe('64');
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
 
-  test('PER-067: SD卡默认值验证', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '37'); // SDIO
-    // 默认 SPI 模式(1)
-    const iface = await authPage.locator('#sdcard-interface').inputValue();
-    expect(iface).toBe('1');
-    // 默认频率 20MHz
-    const freq = await authPage.locator('#sdcard-frequency').inputValue();
-    expect(freq).toBe('20000000');
+    await test.step('编码器默认值', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '43');
+      expect(await authPage.locator('#encoder-resolution').inputValue()).toBe('1024');
+      expect(await authPage.locator('#encoder-use-interrupt').isChecked()).toBe(true);
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('SD卡默认值', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '37');
+      expect(await authPage.locator('#sdcard-interface').inputValue()).toBe('1');
+      expect(await authPage.locator('#sdcard-frequency').inputValue()).toBe('20000000');
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('SPI参数默认值', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '3');
+      expect(await authPage.locator('#spi-frequency').inputValue()).toBe('1000000');
+      expect(await authPage.locator('#spi-mode').inputValue()).toBe('0');
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('LCD参数默认值', async () => {
+      await openAddModal(authPage);
+      await selectPeriphType(authPage, '36');
+      expect(await authPage.locator('#lcd-width').inputValue()).toBe('128');
+      expect(await authPage.locator('#lcd-height').inputValue()).toBe('64');
+      expect(await authPage.locator('#lcd-interface').inputValue()).toBe('2');
+      await authPage.locator('#cancel-peripheral-btn').click();
+      await authPage.waitForTimeout(500);
+    });
   });
 
   // ========== 场景L: 操作鲁棒性 ==========
@@ -695,25 +722,5 @@ test.describe('Suite-05: 外设配置', () => {
     await expect(authPage.locator('#i2c-params')).toBeVisible();
     await expect(authPage.locator('#uart-params')).not.toBeVisible();
     await expect(authPage.locator('#gpio-params')).not.toBeVisible();
-  });
-
-  test('PER-072: SPI参数默认值验证', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '3'); // SPI
-    const freq = await authPage.locator('#spi-frequency').inputValue();
-    expect(freq).toBe('1000000');
-    const mode = await authPage.locator('#spi-mode').inputValue();
-    expect(mode).toBe('0');
-  });
-
-  test('PER-073: LCD参数默认值验证', async ({ authPage }) => {
-    await openAddModal(authPage);
-    await selectPeriphType(authPage, '36'); // LCD
-    const width = await authPage.locator('#lcd-width').inputValue();
-    expect(width).toBe('128');
-    const height = await authPage.locator('#lcd-height').inputValue();
-    expect(height).toBe('64');
-    const iface = await authPage.locator('#lcd-interface').inputValue();
-    expect(iface).toBe('2'); // I2C
   });
 });

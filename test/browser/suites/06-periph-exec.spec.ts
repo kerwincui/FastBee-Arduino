@@ -112,227 +112,238 @@ test.describe('Suite-06: 外设执行', () => {
     await expect(authPage.locator('#periph-exec-modal')).not.toBeVisible();
   });
 
-  // ========== 场景B: 触发条件配置 ==========
+  // ========== 场景B: 触发条件配置（合并为单测试 + test.step） ==========
 
-  test('EXEC-010: 默认触发类型为平台触发', async ({ authPage }) => {
-    await openExecModal(authPage);
-    const container = triggersContainer(authPage);
-    // 新增时默认创建一个触发块
-    const triggerItems = container.locator('.periph-exec-config-item');
-    expect(await triggerItems.count()).toBeGreaterThanOrEqual(1);
-    // 默认选中"平台触发"
-    const triggerType = triggerItems.first().locator('.pe-trigger-type');
-    expect(await triggerType.inputValue()).toBe('0');
-  });
+  test('EXEC-010~017: 触发条件配置（全类型）', async ({ authPage }) => {
 
-  test('EXEC-011: 切换为定时触发', async ({ authPage }) => {
-    await openExecModal(authPage);
-    const triggerType = triggersContainer(authPage).locator('.pe-trigger-type').first();
-    await triggerType.selectOption('1'); // 定时触发
-    await authPage.waitForTimeout(500);
-    // 定时配置区域应可见
-    const timerConfig = triggersContainer(authPage).locator('.pe-timer-config').first();
-    await expect(timerConfig).toBeVisible();
-    // 间隔模式默认可见
-    const intervalField = triggersContainer(authPage).locator('.pe-interval-fields').first();
-    await expect(intervalField).toBeVisible();
-  });
-
-  test('EXEC-012: 定时触发-间隔设置', async ({ authPage }) => {
-    await openExecModal(authPage);
-    const triggerType = triggersContainer(authPage).locator('.pe-trigger-type').first();
-    await triggerType.selectOption('1'); // 定时触发
-    await authPage.waitForTimeout(300);
-    const interval = triggersContainer(authPage).locator('.pe-interval').first();
-    if (await interval.isVisible()) {
-      await interval.fill('30');
-      expect(await interval.inputValue()).toBe('30');
-    }
-  });
-
-  test('EXEC-013: 定时触发-每日时间点模式', async ({ authPage }) => {
-    await openExecModal(authPage);
-    const triggerType = triggersContainer(authPage).locator('.pe-trigger-type').first();
-    await triggerType.selectOption('1'); // 定时触发
-    await authPage.waitForTimeout(300);
-    // 切换为每日时间点模式
-    const timerMode = triggersContainer(authPage).locator('.pe-timer-mode').first();
-    if (await timerMode.isVisible()) {
-      await timerMode.selectOption('1'); // 每日时间点
-      await authPage.waitForTimeout(300);
-      const timepoint = triggersContainer(authPage).locator('.pe-timepoint').first();
-      await expect(timepoint).toBeVisible();
-    }
-  });
-
-  test('EXEC-014: 切换为事件触发', async ({ authPage }) => {
-    await openExecModal(authPage);
-    const triggerType = triggersContainer(authPage).locator('.pe-trigger-type').first();
-    await triggerType.selectOption('4'); // 事件触发
-    await authPage.waitForTimeout(500);
-    // 事件分类和事件选择应可见
-    const eventGroup = triggersContainer(authPage).locator('.pe-event-group').first();
-    await expect(eventGroup).toBeVisible();
-    const eventCategory = triggersContainer(authPage).locator('.pe-event-category').first();
-    await expect(eventCategory).toBeVisible();
-  });
-
-  test('EXEC-015: 切换为轮询触发', async ({ authPage }) => {
-    await openExecModal(authPage);
-    const triggerType = triggersContainer(authPage).locator('.pe-trigger-type').first();
-    await triggerType.selectOption('5'); // 轮询触发
-    await authPage.waitForTimeout(500);
-    // 轮询参数区域应可见
-    const pollParams = triggersContainer(authPage).locator('.pe-poll-params').first();
-    await expect(pollParams).toBeVisible();
-    // 轮询间隔、超时、重试、请求间隔都应可见
-    await expect(pollParams.locator('.pe-poll-interval').first()).toBeVisible();
-    await expect(pollParams.locator('.pe-poll-timeout').first()).toBeVisible();
-    await expect(pollParams.locator('.pe-poll-retries').first()).toBeVisible();
-    await expect(pollParams.locator('.pe-poll-inter-delay').first()).toBeVisible();
-  });
-
-  test('EXEC-016: 添加多个触发器', async ({ authPage }) => {
-    await openExecModal(authPage);
-    const addTriggerBtn = authPage.locator('[data-action="addPeriphExecTrigger"]');
-    if (await addTriggerBtn.isVisible()) {
-      await addTriggerBtn.click();
+    await test.step('默认触发类型为平台触发', async () => {
+      await openExecModal(authPage);
+      const container = triggersContainer(authPage);
+      const triggerItems = container.locator('.periph-exec-config-item');
+      expect(await triggerItems.count()).toBeGreaterThanOrEqual(1);
+      const triggerType = triggerItems.first().locator('.pe-trigger-type');
+      expect(await triggerType.inputValue()).toBe('0');
+      await authPage.locator('#cancel-periph-exec-btn').click();
       await authPage.waitForTimeout(500);
-      const items = triggersContainer(authPage).locator('.periph-exec-config-item');
-      expect(await items.count()).toBeGreaterThanOrEqual(2);
-    }
-  });
+    });
 
-  test('EXEC-017: 删除触发器', async ({ authPage }) => {
-    await openExecModal(authPage);
-    // 先添加第二个触发器
-    const addTriggerBtn = authPage.locator('[data-action="addPeriphExecTrigger"]');
-    if (await addTriggerBtn.isVisible()) {
-      await addTriggerBtn.click();
-      await authPage.waitForTimeout(300);
-    }
-    // 删除第一个触发器
-    const deleteBtn = triggersContainer(authPage).locator('.mqtt-topic-delete').first();
-    if (await deleteBtn.isVisible()) {
-      await deleteBtn.click();
-      await authPage.waitForTimeout(300);
-      const items = triggersContainer(authPage).locator('.periph-exec-config-item');
-      expect(await items.count()).toBeGreaterThanOrEqual(0);
-    }
-  });
-
-  // ========== 场景C: 执行动作配置 ==========
-
-  test('EXEC-020: 默认动作类型-设置高电平', async ({ authPage }) => {
-    await openExecModal(authPage);
-    const actionItems = actionsContainer(authPage).locator('.periph-exec-config-item');
-    expect(await actionItems.count()).toBeGreaterThanOrEqual(1);
-    const actionType = actionItems.first().locator('.pe-action-type');
-    if (await actionType.isVisible()) {
-      expect(await actionType.inputValue()).toBe('0'); // 设置高电平
-    }
-  });
-
-  test('EXEC-021: 切换动作类型-系统重启', async ({ authPage }) => {
-    await openExecModal(authPage);
-    const actionType = actionsContainer(authPage).locator('.pe-action-type').first();
-    if (await actionType.isVisible()) {
-      await actionType.selectOption('6'); // 系统重启
-      await authPage.waitForTimeout(300);
-      // 系统功能不需要目标外设选择
-      // 验证动作类型已更新
-      expect(await actionType.inputValue()).toBe('6');
-    }
-  });
-
-  test('EXEC-022: 切换动作类型-PWM', async ({ authPage }) => {
-    await openExecModal(authPage);
-    const actionType = actionsContainer(authPage).locator('.pe-action-type').first();
-    if (await actionType.isVisible()) {
-      await actionType.selectOption('4'); // 设置PWM
-      await authPage.waitForTimeout(300);
-      // 动作参数输入框应可见
-      const valueGroup = actionsContainer(authPage).locator('.pe-action-value-group').first();
-      await expect(valueGroup).toBeVisible();
-    }
-  });
-
-  test('EXEC-023: 切换动作类型-命令脚本', async ({ authPage }) => {
-    await openExecModal(authPage);
-    const actionType = actionsContainer(authPage).locator('.pe-action-type').first();
-    if (await actionType.isVisible()) {
-      await actionType.selectOption('15'); // 命令脚本
-      await authPage.waitForTimeout(300);
-      // 脚本输入区域应可见
-      const scriptTextarea = actionsContainer(authPage).locator('.pe-action-value-script').first();
-      await expect(scriptTextarea).toBeVisible();
-    }
-  });
-
-  test('EXEC-024: 切换动作类型-调用外设', async ({ authPage }) => {
-    await openExecModal(authPage);
-    const actionType = actionsContainer(authPage).locator('.pe-action-type').first();
-    if (await actionType.isVisible()) {
-      await actionType.selectOption('10'); // 调用外设
-      await authPage.waitForTimeout(300);
-      // 目标外设选择应可见
-      const targetGroup = actionsContainer(authPage).locator('.pe-target-group').first();
-      await expect(targetGroup).toBeVisible();
-    }
-  });
-
-  test('EXEC-025: 切换动作类型-启用执行规则', async ({ authPage }) => {
-    await openExecModal(authPage);
-    const actionType = actionsContainer(authPage).locator('.pe-action-type').first();
-    if (await actionType.isVisible()) {
-      await actionType.selectOption('22'); // 启用执行规则
-      await authPage.waitForTimeout(300);
-      // 目标执行规则选择应可见
-      const targetGroup = actionsContainer(authPage).locator('.pe-target-group').first();
-      await expect(targetGroup).toBeVisible();
-    }
-  });
-
-  test('EXEC-026: 添加多个动作', async ({ authPage }) => {
-    await openExecModal(authPage);
-    const addActionBtn = authPage.locator('[data-action="addPeriphExecAction"]');
-    if (await addActionBtn.isVisible()) {
-      await addActionBtn.click();
+    await test.step('切换为定时触发 → 定时配置区域可见', async () => {
+      await openExecModal(authPage);
+      const triggerType = triggersContainer(authPage).locator('.pe-trigger-type').first();
+      await triggerType.selectOption('1');
       await authPage.waitForTimeout(500);
-      const items = actionsContainer(authPage).locator('.periph-exec-config-item');
-      expect(await items.count()).toBeGreaterThanOrEqual(2);
-    }
+      await expect(triggersContainer(authPage).locator('.pe-timer-config').first()).toBeVisible();
+      await expect(triggersContainer(authPage).locator('.pe-interval-fields').first()).toBeVisible();
+      await authPage.locator('#cancel-periph-exec-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('定时触发-间隔设置', async () => {
+      await openExecModal(authPage);
+      const triggerType = triggersContainer(authPage).locator('.pe-trigger-type').first();
+      await triggerType.selectOption('1');
+      await authPage.waitForTimeout(300);
+      const interval = triggersContainer(authPage).locator('.pe-interval').first();
+      if (await interval.isVisible()) {
+        await interval.fill('30');
+        expect(await interval.inputValue()).toBe('30');
+      }
+      await authPage.locator('#cancel-periph-exec-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('定时触发-每日时间点模式', async () => {
+      await openExecModal(authPage);
+      const triggerType = triggersContainer(authPage).locator('.pe-trigger-type').first();
+      await triggerType.selectOption('1');
+      await authPage.waitForTimeout(300);
+      const timerMode = triggersContainer(authPage).locator('.pe-timer-mode').first();
+      if (await timerMode.isVisible()) {
+        await timerMode.selectOption('1');
+        await authPage.waitForTimeout(300);
+        await expect(triggersContainer(authPage).locator('.pe-timepoint').first()).toBeVisible();
+      }
+      await authPage.locator('#cancel-periph-exec-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('切换为事件触发 → 事件分类和选择可见', async () => {
+      await openExecModal(authPage);
+      const triggerType = triggersContainer(authPage).locator('.pe-trigger-type').first();
+      await triggerType.selectOption('4');
+      await authPage.waitForTimeout(500);
+      await expect(triggersContainer(authPage).locator('.pe-event-group').first()).toBeVisible();
+      await expect(triggersContainer(authPage).locator('.pe-event-category').first()).toBeVisible();
+      await authPage.locator('#cancel-periph-exec-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('切换为轮询触发 → 轮询参数区域可见', async () => {
+      await openExecModal(authPage);
+      const triggerType = triggersContainer(authPage).locator('.pe-trigger-type').first();
+      await triggerType.selectOption('5');
+      await authPage.waitForTimeout(500);
+      const pollParams = triggersContainer(authPage).locator('.pe-poll-params').first();
+      await expect(pollParams).toBeVisible();
+      await expect(pollParams.locator('.pe-poll-interval').first()).toBeVisible();
+      await expect(pollParams.locator('.pe-poll-timeout').first()).toBeVisible();
+      await expect(pollParams.locator('.pe-poll-retries').first()).toBeVisible();
+      await expect(pollParams.locator('.pe-poll-inter-delay').first()).toBeVisible();
+      await authPage.locator('#cancel-periph-exec-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('添加多个触发器', async () => {
+      await openExecModal(authPage);
+      const addTriggerBtn = authPage.locator('[data-action="addPeriphExecTrigger"]');
+      if (await addTriggerBtn.isVisible()) {
+        await addTriggerBtn.click();
+        await authPage.waitForTimeout(500);
+        const items = triggersContainer(authPage).locator('.periph-exec-config-item');
+        expect(await items.count()).toBeGreaterThanOrEqual(2);
+      }
+      await authPage.locator('#cancel-periph-exec-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('删除触发器', async () => {
+      await openExecModal(authPage);
+      const addTriggerBtn = authPage.locator('[data-action="addPeriphExecTrigger"]');
+      if (await addTriggerBtn.isVisible()) {
+        await addTriggerBtn.click();
+        await authPage.waitForTimeout(300);
+      }
+      const deleteBtn = triggersContainer(authPage).locator('.mqtt-topic-delete').first();
+      if (await deleteBtn.isVisible()) {
+        await deleteBtn.click();
+        await authPage.waitForTimeout(300);
+        const items = triggersContainer(authPage).locator('.periph-exec-config-item');
+        expect(await items.count()).toBeGreaterThanOrEqual(0);
+      }
+      await authPage.locator('#cancel-periph-exec-btn').click();
+      await authPage.waitForTimeout(500);
+    });
   });
 
-  test('EXEC-027: 删除动作', async ({ authPage }) => {
-    await openExecModal(authPage);
-    // 先添加第二个动作
-    const addActionBtn = authPage.locator('[data-action="addPeriphExecAction"]');
-    if (await addActionBtn.isVisible()) {
-      await addActionBtn.click();
-      await authPage.waitForTimeout(300);
-    }
-    // 删除第一个动作
-    const deleteBtn = actionsContainer(authPage).locator('.mqtt-topic-delete').first();
-    if (await deleteBtn.isVisible()) {
-      await deleteBtn.click();
-      await authPage.waitForTimeout(300);
-      const items = actionsContainer(authPage).locator('.periph-exec-config-item');
-      expect(await items.count()).toBeGreaterThanOrEqual(0);
-    }
-  });
+  // ========== 场景C: 执行动作配置（合并为单测试 + test.step） ==========
 
-  test('EXEC-028: 执行模式选择-同步/异步', async ({ authPage }) => {
-    await openExecModal(authPage);
-    const execMode = actionsContainer(authPage).locator('.pe-exec-mode').first();
-    if (await execMode.isVisible()) {
-      // 默认异步
-      expect(await execMode.inputValue()).toBe('0');
-      // 切换为同步
-      await execMode.selectOption('1');
-      await authPage.waitForTimeout(300);
-      expect(await execMode.inputValue()).toBe('1');
-    }
+  test('EXEC-020~028: 执行动作配置（全类型）', async ({ authPage }) => {
+
+    await test.step('默认动作类型-设置高电平', async () => {
+      await openExecModal(authPage);
+      const actionItems = actionsContainer(authPage).locator('.periph-exec-config-item');
+      expect(await actionItems.count()).toBeGreaterThanOrEqual(1);
+      const actionType = actionItems.first().locator('.pe-action-type');
+      if (await actionType.isVisible()) {
+        expect(await actionType.inputValue()).toBe('0');
+      }
+      await authPage.locator('#cancel-periph-exec-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('切换动作类型-系统重启', async () => {
+      await openExecModal(authPage);
+      const actionType = actionsContainer(authPage).locator('.pe-action-type').first();
+      if (await actionType.isVisible()) {
+        await actionType.selectOption('6');
+        await authPage.waitForTimeout(300);
+        expect(await actionType.inputValue()).toBe('6');
+      }
+      await authPage.locator('#cancel-periph-exec-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('切换动作类型-PWM → 参数输入框可见', async () => {
+      await openExecModal(authPage);
+      const actionType = actionsContainer(authPage).locator('.pe-action-type').first();
+      if (await actionType.isVisible()) {
+        await actionType.selectOption('4');
+        await authPage.waitForTimeout(300);
+        await expect(actionsContainer(authPage).locator('.pe-action-value-group').first()).toBeVisible();
+      }
+      await authPage.locator('#cancel-periph-exec-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('切换动作类型-命令脚本 → 脚本输入区可见', async () => {
+      await openExecModal(authPage);
+      const actionType = actionsContainer(authPage).locator('.pe-action-type').first();
+      if (await actionType.isVisible()) {
+        await actionType.selectOption('15');
+        await authPage.waitForTimeout(300);
+        await expect(actionsContainer(authPage).locator('.pe-action-value-script').first()).toBeVisible();
+      }
+      await authPage.locator('#cancel-periph-exec-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('切换动作类型-调用外设 → 目标外设选择可见', async () => {
+      await openExecModal(authPage);
+      const actionType = actionsContainer(authPage).locator('.pe-action-type').first();
+      if (await actionType.isVisible()) {
+        await actionType.selectOption('10');
+        await authPage.waitForTimeout(300);
+        await expect(actionsContainer(authPage).locator('.pe-target-group').first()).toBeVisible();
+      }
+      await authPage.locator('#cancel-periph-exec-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('切换动作类型-启用执行规则 → 目标规则选择可见', async () => {
+      await openExecModal(authPage);
+      const actionType = actionsContainer(authPage).locator('.pe-action-type').first();
+      if (await actionType.isVisible()) {
+        await actionType.selectOption('22');
+        await authPage.waitForTimeout(300);
+        await expect(actionsContainer(authPage).locator('.pe-target-group').first()).toBeVisible();
+      }
+      await authPage.locator('#cancel-periph-exec-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('添加多个动作', async () => {
+      await openExecModal(authPage);
+      const addActionBtn = authPage.locator('[data-action="addPeriphExecAction"]');
+      if (await addActionBtn.isVisible()) {
+        await addActionBtn.click();
+        await authPage.waitForTimeout(500);
+        const items = actionsContainer(authPage).locator('.periph-exec-config-item');
+        expect(await items.count()).toBeGreaterThanOrEqual(2);
+      }
+      await authPage.locator('#cancel-periph-exec-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('删除动作', async () => {
+      await openExecModal(authPage);
+      const addActionBtn = authPage.locator('[data-action="addPeriphExecAction"]');
+      if (await addActionBtn.isVisible()) {
+        await addActionBtn.click();
+        await authPage.waitForTimeout(300);
+      }
+      const deleteBtn = actionsContainer(authPage).locator('.mqtt-topic-delete').first();
+      if (await deleteBtn.isVisible()) {
+        await deleteBtn.click();
+        await authPage.waitForTimeout(300);
+        const items = actionsContainer(authPage).locator('.periph-exec-config-item');
+        expect(await items.count()).toBeGreaterThanOrEqual(0);
+      }
+      await authPage.locator('#cancel-periph-exec-btn').click();
+      await authPage.waitForTimeout(500);
+    });
+
+    await test.step('执行模式选择-同步/异步', async () => {
+      await openExecModal(authPage);
+      const execMode = actionsContainer(authPage).locator('.pe-exec-mode').first();
+      if (await execMode.isVisible()) {
+        expect(await execMode.inputValue()).toBe('0');
+        await execMode.selectOption('1');
+        await authPage.waitForTimeout(300);
+        expect(await execMode.inputValue()).toBe('1');
+      }
+      await authPage.locator('#cancel-periph-exec-btn').click();
+      await authPage.waitForTimeout(500);
+    });
   });
 
   // ========== 场景D: 执行规则 CRUD 闭环 ==========
@@ -443,50 +454,48 @@ test.describe('Suite-06: 外设执行', () => {
     }
   });
 
-  // ========== 场景F: 过滤器 ==========
+  // ========== 场景F: 过滤器（合并为单测试 + test.step） ==========
 
-  test('EXEC-044: 过滤器-定时触发', async ({ authPage }) => {
+  test('EXEC-044~045e: 过滤器全类型验证', async ({ authPage }) => {
     const filter = authPage.locator('#periph-exec-filter-periph');
-    await filter.selectOption('trigger:1'); // 定时触发
-    await authPage.waitForTimeout(2000);
-    await expect(authPage.locator('#periph-exec-page')).toBeVisible();
-  });
 
-  test('EXEC-045: 过滤器-事件触发', async ({ authPage }) => {
-    const filter = authPage.locator('#periph-exec-filter-periph');
-    await filter.selectOption('trigger:4'); // 事件触发
-    await authPage.waitForTimeout(2000);
-    await expect(authPage.locator('#periph-exec-page')).toBeVisible();
-  });
+    await test.step('过滤器-定时触发', async () => {
+      await filter.selectOption('trigger:1');
+      await authPage.waitForTimeout(2000);
+      await expect(authPage.locator('#periph-exec-page')).toBeVisible();
+    });
 
-  test('EXEC-045b: 过滤器-轮询触发', async ({ authPage }) => {
-    const filter = authPage.locator('#periph-exec-filter-periph');
-    await filter.selectOption('trigger:5'); // 轮询触发
-    await authPage.waitForTimeout(2000);
-    await expect(authPage.locator('#periph-exec-page')).toBeVisible();
-  });
+    await test.step('过滤器-事件触发', async () => {
+      await filter.selectOption('trigger:4');
+      await authPage.waitForTimeout(2000);
+      await expect(authPage.locator('#periph-exec-page')).toBeVisible();
+    });
 
-  test('EXEC-045c: 过滤器-平台触发', async ({ authPage }) => {
-    const filter = authPage.locator('#periph-exec-filter-periph');
-    await filter.selectOption('trigger:0'); // 平台触发
-    await authPage.waitForTimeout(2000);
-    await expect(authPage.locator('#periph-exec-page')).toBeVisible();
-  });
+    await test.step('过滤器-轮询触发', async () => {
+      await filter.selectOption('trigger:5');
+      await authPage.waitForTimeout(2000);
+      await expect(authPage.locator('#periph-exec-page')).toBeVisible();
+    });
 
-  test('EXEC-045d: 过滤器-规则联动', async ({ authPage }) => {
-    const filter = authPage.locator('#periph-exec-filter-periph');
-    await filter.selectOption('trigger:6'); // 规则联动
-    await authPage.waitForTimeout(2000);
-    await expect(authPage.locator('#periph-exec-page')).toBeVisible();
-  });
+    await test.step('过滤器-平台触发', async () => {
+      await filter.selectOption('trigger:0');
+      await authPage.waitForTimeout(2000);
+      await expect(authPage.locator('#periph-exec-page')).toBeVisible();
+    });
 
-  test('EXEC-045e: 过滤器-全部规则', async ({ authPage }) => {
-    const filter = authPage.locator('#periph-exec-filter-periph');
-    await filter.selectOption('trigger:1');
-    await authPage.waitForTimeout(1000);
-    await filter.selectOption(''); // 全部
-    await authPage.waitForTimeout(2000);
-    await expect(authPage.locator('#periph-exec-page')).toBeVisible();
+    await test.step('过滤器-规则联动', async () => {
+      await filter.selectOption('trigger:6');
+      await authPage.waitForTimeout(2000);
+      await expect(authPage.locator('#periph-exec-page')).toBeVisible();
+    });
+
+    await test.step('过滤器-全部规则', async () => {
+      await filter.selectOption('trigger:1');
+      await authPage.waitForTimeout(1000);
+      await filter.selectOption('');
+      await authPage.waitForTimeout(2000);
+      await expect(authPage.locator('#periph-exec-page')).toBeVisible();
+    });
   });
 
   // ========== 场景G: 开发者模式 ==========

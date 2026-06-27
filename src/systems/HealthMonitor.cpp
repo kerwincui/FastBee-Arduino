@@ -34,6 +34,9 @@
 #include "protocols/ProtocolManager.h"
 #include "protocols/ModbusHandler.h"
 #endif
+#if FASTBEE_ENABLE_STORAGE_CACHE
+#include "systems/ConfigStorage.h"
+#endif
 
 HealthMonitor::HealthMonitor()
     : lastCheckTime(0),
@@ -97,6 +100,27 @@ void HealthMonitor::performHealthCheck() {
 
     if (currentHealth.freeHeap < heapWatermark) {
         heapWatermark = currentHealth.freeHeap;
+    }
+
+    // DRAM 水位趋势采样（泄漏检测）
+    if (currentHealth.dramFreeHeap < _dramWatermarkSinceLastSample) {
+        _dramWatermarkSinceLastSample = currentHealth.dramFreeHeap;
+    }
+    unsigned long nowMs = millis();
+    if (_lastWatermarkSampleMs == 0) {
+        _lastWatermarkSampleMs = nowMs;  // 首次初始化
+    } else if (nowMs - _lastWatermarkSampleMs >= WATERMARK_SAMPLE_INTERVAL_MS) {
+        // 记录过去 1 小时的 DRAM 最低水位
+        _dramWatermarkHistory[_dramHistoryIndex] = _dramWatermarkSinceLastSample;
+        _dramHistoryIndex = (_dramHistoryIndex + 1) % WATERMARK_HISTORY_SIZE;
+        if (_dramHistoryCount < WATERMARK_HISTORY_SIZE) _dramHistoryCount++;
+        _dramWatermarkSinceLastSample = UINT32_MAX;
+        _lastWatermarkSampleMs = nowMs;
+
+        // 每次采样后检查泄漏趋势
+        if (_dramHistoryCount >= 6 && detectMemoryLeak()) {
+            LOG_WARNING("[HealthMonitor] Possible memory leak detected: DRAM watermark declining trend");
+        }
     }
 
     // 碎片率 = 1 - (最大连续块 / 总空闲)，基于 DRAM 内部数据（排除 PSRAM 干扰）
@@ -554,41 +578,52 @@ void HealthMonitor::applyDegradation(MemoryGuardLevel oldLevel, MemoryGuardLevel
 }
 
 void HealthMonitor::compactMemory() {
-    char logBuf[96];
+    char logBuf[128];
     snprintf(logBuf, sizeof(logBuf),
-             "[HealthMonitor] High fragmentation (%d%%), triggering compaction",
+             "[MEMGUARD] High fragmentation (%d%%), performing targeted reclamation",
              (int)currentHealth.heapFragmentation);
     LOG_WARNING(logBuf);
 
-    // 策略1: 释放日志缓冲区（如果 LoggerSystem 提供了相关接口）
-    // LoggerSystem 的文件写入缓冲在低内存时已由 MemGuard SEVERE 级别停止
+    const size_t largestBefore = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    const uint32_t dramBefore = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
 
-    // 策略2: 记录碎片化事件用于诊断
-    Serial.printf("[MEMGUARD] Compaction triggered: frag=%d%% freeHeap=%lu largestBlock=%lu\n",
-                  (int)currentHealth.heapFragmentation,
-                  (unsigned long)currentHealth.freeHeap,
-                  (unsigned long)currentHealth.largestFreeBlock);
+    // 策略1: 刷新日志缓冲区（释放待写入文件的日志数据占用的堆内存）
+    LoggerSystem::getInstance().flushBuffer();
 
-    // 策略3: 多尺寸梯度分配+释放，促使堆合并相邻空闲块
-    // ESP32 没有直接的内存紧凑化 API，通过“试探性分配”引导堆管理器合并碎片
-    // 从大到小尝试：大块分配优先合并相邻空闲块，小块分配清理零碎空洞
-    static const size_t compactSizes[] = { 8192, 4096, 2048, 1024, 512, 256 };
-    size_t largestBefore = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-
-    for (size_t i = 0; i < sizeof(compactSizes) / sizeof(compactSizes[0]); i++) {
-        size_t trySize = compactSizes[i];
-        if (trySize > currentHealth.largestFreeBlock / 2) continue;
-        void* tmp = heap_caps_malloc(trySize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        if (tmp) {
-            heap_caps_free(tmp);
+    // 策略2: 关闭残留 SSE 客户端（lwIP TCP 缓冲区是碎片化最大来源）
+    // MemGuard SEVERE 级别已关闭 SSE，但碎片化可能在 WARN 级别就触发，
+    // 此时仍可能有 SSE 长连接持有大块 TCP 缓冲区
+    {
+        FastBeeFramework* fw = FastBeeFramework::getInstance();
+        WebConfigManager* wcm = fw ? fw->getWebConfigManager() : nullptr;
+        SSERouteHandler* sse = wcm ? wcm->getSseRouteHandler() : nullptr;
+        if (sse && sse->clientCount() > 0) {
+            size_t closed = sse->closeAllClients();
+            Serial.printf("[MEMGUARD] Closed %u SSE clients for defragmentation\n",
+                          (unsigned)closed);
+            // 给 lwIP 短暂时间释放 TCP PCB
+            delay(50);
         }
     }
 
-    size_t largestAfter = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    Serial.printf("[MEMGUARD] Compaction result: largestBlock %lu -> %lu (delta=%+d)\n",
+    // 策略3: 清除 ConfigStorage 缓存（如果启用）
+#if FASTBEE_ENABLE_STORAGE_CACHE
+    ConfigStorage::getInstance().clearCache();
+#endif
+
+    const size_t largestAfter = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    const uint32_t dramAfter = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    Serial.printf("[MEMGUARD] Compaction result: dram=%lu->%lu largest=%lu->%lu (delta=%+d)\n",
+                  (unsigned long)dramBefore,
+                  (unsigned long)dramAfter,
                   (unsigned long)largestBefore,
                   (unsigned long)largestAfter,
                   (int)(largestAfter - largestBefore));
+
+    // 记录碎片化事件用于重启后诊断
+    if (largestAfter <= largestBefore) {
+        Serial.println("[MEMGUARD] Compaction did not improve largest block — relying on reboot watchdog");
+    }
 }
 
 MemoryGuardLevel HealthMonitor::getMemoryGuardLevel() const {
@@ -614,9 +649,11 @@ bool HealthMonitor::isMemoryCritical() const {
 }
 
 bool HealthMonitor::isFragmentationHigh() const {
+    // 统一使用 DRAM 指标计算碎片率，与 performHealthCheck() 保持一致
+    // 避免 PSRAM 设备因 PSRAM 大块空闲而掩盖 DRAM 碎片问题
     uint8_t frag = calculateHeapFragmentationPercent(
-        currentHealth.freeHeap,
-        currentHealth.largestFreeBlock);
+        currentHealth.dramFreeHeap,
+        currentHealth.dramLargestBlock);
     return frag > FRAG_THRESHOLD_COMPACT;
 }
 
@@ -627,6 +664,74 @@ void HealthMonitor::setPollDurationMs(uint32_t ms)   { pollDurationMs = ms; }
 
 void HealthMonitor::setBootTime(unsigned long bootMs) {
     currentHealth.bootTimeMs = bootMs;
+}
+
+// ── 内存池注册与监控（碎片预防）──────────────────────────────────────────
+void HealthMonitor::registerPool(const PoolStatsEntry& entry) {
+    if (_trackedPoolCount >= MAX_TRACKED_POOLS) {
+        LOG_WARNING("[HealthMonitor] Pool registry full, cannot register more pools");
+        return;
+    }
+    _trackedPools[_trackedPoolCount++] = entry;
+    char buf[64];
+    snprintf(buf, sizeof(buf), "[HealthMonitor] Pool registered: %s (%uB × %u)",
+             entry.name, (unsigned)entry.blockSize, (unsigned)entry.capacity);
+    LOG_INFO(buf);
+}
+
+void HealthMonitor::logPoolStats() {
+    for (uint8_t i = 0; i < _trackedPoolCount; i++) {
+        const PoolStatsEntry& p = _trackedPools[i];
+        uint8_t used = p.getUsed ? p.getUsed() : 0;
+        uint32_t exhaust = p.getExhaust ? p.getExhaust() : 0;
+        if (used > 0 || exhaust > 0) {
+            char buf[96];
+            snprintf(buf, sizeof(buf), "[Pool] %s: used=%u/%u exhaust_count=%lu",
+                     p.name, (unsigned)used, (unsigned)p.capacity, (unsigned long)exhaust);
+            LOG_INFO(buf);
+        }
+    }
+}
+
+// ── DRAM 水位趋势泄漏检测 ──────────────────────────────────────────────
+// 比较前一半采样与后一半采样的平均水位，如果后半段显著低于前半段（>8KB），
+// 表明 DRAM 有持续下降趋势，可能存在内存泄漏。
+bool HealthMonitor::detectMemoryLeak() const {
+    if (_dramHistoryCount < 6) return false;
+
+    // 按时间顺序遍历环形缓冲区，分为前半和后半
+    uint8_t n = _dramHistoryCount;
+    uint8_t half = n / 2;
+
+    // 计算最早 half 个采样的平均值
+    uint64_t earlySum = 0;
+    for (uint8_t i = 0; i < half; i++) {
+        // 环形缓冲区：最早的采样在 (_dramHistoryIndex - n + i) mod SIZE
+        uint8_t idx = (_dramHistoryIndex + WATERMARK_HISTORY_SIZE - n + i) % WATERMARK_HISTORY_SIZE;
+        earlySum += _dramWatermarkHistory[idx];
+    }
+    uint32_t earlyAvg = (uint32_t)(earlySum / half);
+
+    // 计算最新 half 个采样的平均值
+    uint64_t lateSum = 0;
+    for (uint8_t i = half; i < n; i++) {
+        uint8_t idx = (_dramHistoryIndex + WATERMARK_HISTORY_SIZE - n + i) % WATERMARK_HISTORY_SIZE;
+        lateSum += _dramWatermarkHistory[idx];
+    }
+    uint32_t lateAvg = (uint32_t)(lateSum / (n - half));
+
+    // 如果后半段平均水位比前半段低 8KB 以上，判定为疑似泄漏
+    static constexpr uint32_t LEAK_THRESHOLD_BYTES = 8192;
+    if (earlyAvg > lateAvg && (earlyAvg - lateAvg) > LEAK_THRESHOLD_BYTES) {
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "[HealthMonitor] Leak suspect: early_avg=%lu late_avg=%lu drop=%lu over %u hours",
+                 (unsigned long)earlyAvg, (unsigned long)lateAvg,
+                 (unsigned long)(earlyAvg - lateAvg), (unsigned)n);
+        LOG_WARNING(buf);
+        return true;
+    }
+    return false;
 }
 
 // ── 返回完整指标 JSON ────────────────────────────────────────────────
@@ -659,10 +764,24 @@ String HealthMonitor::getMetricsJson() {
     doc["memguard"]["periph_exec_paused"]  = _periphExecPausedForMemory;
     doc["memguard"]["critical_duration_s"] = (unsigned long)(getCriticalDurationMs() / 1000);
 
+    // DRAM 水位趋势（泄漏检测）
+    doc["stability"]["dram_history_count"] = _dramHistoryCount;
+    doc["stability"]["leak_suspect"] = (_dramHistoryCount >= 6) ? detectMemoryLeak() : false;
+    doc["stability"]["uptime_hours"] = (unsigned long)(currentHealth.uptime / 3600000UL);
+
     // PSRAM 信息（用于前端判断 MQTTS 支持）
     doc["heap"]["psram_total"] = (unsigned long)(ESP.getPsramSize() / 1024);
     doc["heap"]["psram_free"]  = (unsigned long)(ESP.getFreePsram() / 1024);
     doc["heap"]["tls_supported"] = (psramFound() && ESP.getPsramSize() > 0);
+
+    // 内存池统计（碎片预防监控）
+    for (uint8_t i = 0; i < _trackedPoolCount; i++) {
+        const PoolStatsEntry& p = _trackedPools[i];
+        String key = String("pools.") + p.name;
+        doc[key]["used"] = p.getUsed ? p.getUsed() : 0;
+        doc[key]["capacity"] = p.capacity;
+        doc[key]["exhaust"] = p.getExhaust ? (unsigned long)p.getExhaust() : 0UL;
+    }
 
     String json;
     serializeJson(doc, json);
@@ -683,6 +802,8 @@ void HealthMonitor::logMetricsSummary() {
         (int)sseClientCount,
         (unsigned long)pollDurationMs,
         (unsigned long)(currentHealth.uptime / 1000UL));
+    // 输出内存池使用率（碎片预防）
+    logPoolStats();
 }
 
 size_t HealthMonitor::getTaskStackInfo(TaskStackInfo* outInfo, size_t maxTasks) const {
@@ -703,13 +824,14 @@ size_t HealthMonitor::getTaskStackInfo(TaskStackInfo* outInfo, size_t maxTasks) 
 // ── 内存恢复：SEVERE 级别服务降级 ─────────────────────────────────────
 void HealthMonitor::performMemoryRecovery(MemoryGuardLevel oldLevel, MemoryGuardLevel newLevel) {
     uint32_t dramBefore = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    uint8_t largestBlock = (currentHealth.dramLargestBlock > 0)
-        ? (uint8_t)((currentHealth.dramLargestBlock * 100) / dramBefore)
+    // 使用已有的碎片率计算函数（基于 DRAM），避免 uint8_t 截断和乘法溢出风险
+    uint8_t fragPercent = (dramBefore > 0)
+        ? calculateHeapFragmentationPercent(currentHealth.dramFreeHeap, currentHealth.dramLargestBlock)
         : 0;
     Serial.printf("[MEMRECOVER] === SEVERE recovery triggered === dram=%lu largest=%lu frag=%d%%\n",
                   (unsigned long)dramBefore,
                   (unsigned long)currentHealth.dramLargestBlock,
-                  (int)largestBlock);
+                  (int)fragPercent);
 
     FastBeeFramework* fw = FastBeeFramework::getInstance();
     ProtocolManager* pm = fw ? fw->getProtocolManager() : nullptr;

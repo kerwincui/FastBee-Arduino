@@ -15,6 +15,7 @@
 #include <core/SystemConstants.h>
 #include <ArduinoJson.h>
 #include "core/interfaces/INetworkManager.h"
+#include "core/interfaces/INetworkAdapter.h"
 #include "core/FeatureFlags.h"
 #include "network/WiFiManager.h"
 #include "network/IPManager.h"
@@ -227,6 +228,13 @@ public:
      * @return Client 指针，用于 PubSubClient 等协议层
      */
     Client* getActiveClient();
+
+    /**
+     * @brief 获取当前活动的网络适配器接口
+     * @details 根据 networkType 返回对应的 INetworkAdapter*，WiFi 返回 nullptr
+     * @return 活动适配器指针，WiFi 模式或无适配器时返回 nullptr
+     */
+    INetworkAdapter* getActiveAdapter();
 
     /**
      * @brief 获取当前联网方式类型

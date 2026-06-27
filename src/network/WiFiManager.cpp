@@ -11,6 +11,9 @@
 #include "core/FeatureFlags.h"
 #include <esp_heap_caps.h>  // heap_caps_get_free_size(MALLOC_CAP_INTERNAL)
 #include "systems/HealthMonitor.h"  // WIFI_CONNECT_MIN_DRAM / WIFI_RECONN_MIN_DRAM
+#include "core/FastBeeFramework.h"  // WiFi GOT_IP → MQTT 立即重连通知
+#include "protocols/ProtocolManager.h"
+#include "protocols/MQTTClient.h"
 #if FASTBEE_ENABLE_PERIPH_EXEC
 #include "core/PeriphExecManager.h"
 #endif
@@ -531,6 +534,19 @@ void WiFiManager::handleWiFiEvent(arduino_event_id_t event) {
             // 触发WiFi连接成功系统事件
 #if FASTBEE_ENABLE_PERIPH_EXEC
             PeriphExecManager::getInstance().triggerEvent(EventType::EVENT_WIFI_CONNECTED, statusInfo.ipAddress);
+#endif
+
+            // WiFi 重连成功后，通知 MQTT 客户端重置退避计数器并立即尝试重连
+            // 避免等待定时器的 5-300s 延迟（原 MQTT 需等到次 handle() 周期才发现 WiFi 已就绪）
+#if FASTBEE_ENABLE_MQTT
+            {
+                auto* fw = FastBeeFramework::getInstance();
+                auto* pm = fw ? fw->getProtocolManager() : nullptr;
+                MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
+                if (mqtt) {
+                    mqtt->resetErrorCounters();
+                }
+            }
 #endif
 
             char buffer[100];

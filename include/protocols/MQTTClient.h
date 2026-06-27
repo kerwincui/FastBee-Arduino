@@ -133,6 +133,14 @@ public:
     bool queueReportData(const String& payload);   // 线程安全入队上报数据（异步任务调用）
     bool queueReportData(const char* payload, uint16_t length); // 零拷贝版本
     uint8_t getQueueDepth() const { return _slotCount; } // 获取上报队列深度
+    // ── 队列背压统计 ──
+    struct QueueStats {
+        uint32_t enqueueTotal;    // 累计入队请求数
+        uint32_t dropTotal;       // 累计丢弃数（队列满时丢弃最旧）
+        uint32_t publishTotal;    // 累计成功发布数
+        uint32_t throttleDrops;   // 背压限流丢弃数
+    };
+    QueueStats getQueueStats() const { return _queueStats; }
     bool publishNtpSync();             // 发布 NTP 时间同步请求到 topicType=NTP_SYNC 的主题
     bool subscribe(const String& topic);
     bool subscribeAll();  // 订阅所有配置的主题
@@ -245,6 +253,11 @@ private:
     uint32_t _minReportInterval = 0;            // 最小上报间隔（ms），0=无限制
     unsigned long _lastReportQueueTime = 0;     // 上次入队上报数据的时间
     void processQueuedReports();
+    
+    // ── 队列背压统计与限流 ──
+    QueueStats _queueStats = {};
+    static constexpr uint8_t BACKPRESSURE_HIGH_WATERMARK = 6;  // 队列深度 >= 6 时启用加速排空
+    static constexpr uint8_t BACKPRESSURE_DRAIN_BATCH = 6;     // 背压模式下每次排空数量（正常为 4）
 
     void mqttCallback(char* topic, byte* payload, unsigned int length);
     bool reconnect();  // 同步重连（供 doReconnect 调用）

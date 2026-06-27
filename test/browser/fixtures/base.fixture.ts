@@ -24,8 +24,8 @@ export const env = {
   serialPort: process.env.DEVICE_SERIAL || '',
 };
 
-/** 测试间隔延迟（防止设备过载） */
-const INTER_TEST_DELAY_MS = parseInt(process.env.TEST_DELAY_MS || '3000', 10);
+/** 测试间隔延迟（防止设备过载，默认 1500ms，可通过 TEST_DELAY_MS 覆盖） */
+const INTER_TEST_DELAY_MS = parseInt(process.env.TEST_DELAY_MS || '1500', 10);
 
 /** 崩溃自动复位开关（默认关闭，设置 DEVICE_AUTO_RESET=1 启用） */
 const AUTO_RESET_ENABLED = process.env.DEVICE_AUTO_RESET === '1';
@@ -37,15 +37,15 @@ let crashCount = 0;
 /** 上次成功的 uptime（用于检测重启） */
 let lastUptime = 0;
 
-/** 检查 API 健康状态 */
-export async function waitForHealth(baseURL: string, timeout = 60_000): Promise<boolean> {
+/** 检查 API 健康状态（轮询间隔 1s，更快检测恢复） */
+export async function waitForHealth(baseURL: string, timeout = 30_000): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < timeout) {
     try {
       const resp = await fetch(`${baseURL}/api/health`);
       if (resp.ok) return true;
     } catch { /* ignore */ }
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise(r => setTimeout(r, 1000));
   }
   return false;
 }
@@ -72,7 +72,7 @@ export async function detectCrashAndReset(baseURL: string): Promise<boolean> {
     if (AUTO_RESET_ENABLED && env.serialPort) {
       console.log(`[RECOVERY] Device unreachable, attempting serial reset on ${env.serialPort}`);
       serialResetDevice(env.serialPort);
-      await waitForHealth(baseURL, 120_000);
+      await waitForHealth(baseURL, 60_000);
     }
     return true;
   }
@@ -191,55 +191,154 @@ export type TestFixtures = {
   navigateTo: (page: string) => Promise<void>;
 };
 
-export const test = base.extend<TestFixtures>({
-  /** 已认证的页面（自动登录 + 全局 dialog mock + 崩溃恢复） */
-  authPage: async ({ page }, use) => {
-    const baseURL = `http://${env.deviceIp}`;
+// ─── 性能优化：登录态复用 + 健康检查节流 ─────────────
 
-    // 1. 主动健康探针：检测崩溃并尝试自动恢复
-    await detectCrashAndReset(baseURL);
+/** 缓存的 storageState（首次登录后保存，后续测试直接注入） */
+let cachedAuthState: { cookies: Array<Record<string, unknown>>; origins: Array<Record<string, unknown>> } | null = null;
+/** 上次完整健康检查时间戳（节流：30s 内跳过完整检查） */
+let lastFullHealthCheck = 0;
+/** 健康检查节流间隔（毫秒） */
+const HEALTH_CHECK_INTERVAL_MS = 30_000;
 
-    // 2. 健康检查，等待设备就绪
-    const healthy = await waitForHealth(baseURL, 120_000);
-    if (!healthy) {
-      // 最后手段：串口复位
-      if (AUTO_RESET_ENABLED && env.serialPort) {
-        console.log('[FATAL] Device unreachable after 120s, forcing serial reset');
-        serialResetDevice(env.serialPort);
-        await waitForHealth(baseURL, 120_000);
-      }
+/**
+ * 执行完整登录流程（首次调用时）并缓存 storageState
+ * 后续测试通过注入缓存状态跳过登录
+ */
+async function performLoginAndCapture(page: Page): Promise<void> {
+  const baseURL = `http://${env.deviceIp}`;
+
+  // 完整健康检查 + 崩溃恢复
+  await detectCrashAndReset(baseURL);
+  const healthy = await waitForHealth(baseURL, 30_000);
+  if (!healthy) {
+    if (AUTO_RESET_ENABLED && env.serialPort) {
+      console.log('[FATAL] Device unreachable after 30s, forcing serial reset');
+      serialResetDevice(env.serialPort);
+      await waitForHealth(baseURL, 60_000);
     }
+  }
 
-    // 3. 全局 dialog 自动接受（防止 confirm()/alert() 阻塞测试）
+  // 全局 dialog 自动接受
+  page.on('dialog', async (dialog) => {
+    await dialog.accept();
+  });
+
+  // 导航到登录页
+  await page.goto('/');
+  await page.waitForSelector('#login-page', { state: 'visible', timeout: 30_000 });
+
+  // 填写登录表单
+  await page.fill('#username', env.auth.username);
+  await page.waitForTimeout(300);
+  await page.fill('#password', env.auth.password);
+  await page.waitForTimeout(300);
+
+  // 点击登录，等待应用容器出现
+  await page.click('#login-button');
+  await page.waitForSelector('#app-container', { state: 'visible', timeout: 40_000 });
+  await expect(page.locator('#login-page')).toBeHidden();
+
+  // 自适应等待：设备处理完毕 + modals 片段加载
+  await waitForDeviceReady(page, 5000);
+  await page.waitForFunction(
+    () => document.querySelector('.modal') !== null,
+    { timeout: 15_000 }
+  ).catch(() => {});
+
+  // 缓存 storageState（cookies + localStorage）
+  cachedAuthState = await page.context().storageState();
+}
+
+/**
+ * 通过缓存的 storageState 快速恢复登录态（跳过登录表单）
+ * 如果恢复后未认证（设备 session 过期），自动降级为完整登录
+ */
+async function restoreAuthState(page: Page): Promise<boolean> {
+  if (!cachedAuthState) return false;
+
+  // 快速探针：检测设备是否可达（5s 超时，不做完整健康检查）
+  try {
+    const resp = await fetch(`http://${env.deviceIp}/api/health`, { signal: AbortSignal.timeout(5_000) });
+    if (!resp.ok) {
+      // 设备可能崩溃，需要完整健康检查
+      return false;
+    }
+  } catch {
+    return false;
+  }
+
+  // 注入缓存的 cookies
+  if (cachedAuthState.cookies.length > 0) {
+    await page.context().addCookies(cachedAuthState.cookies as any);
+  }
+
+  // 导航到首页，检查是否已认证
+  await page.goto('/');
+
+  // 如果直接显示 app-container（未重定向到登录页），说明 session 有效
+  try {
+    await page.waitForFunction(
+      () => {
+        const appVisible = document.querySelector('#app-container')?.getAttribute('style') !== 'display: none'
+          && !document.querySelector('#app-container')?.classList.contains('is-hidden');
+        const loginVisible = document.querySelector('#login-page')?.getAttribute('style') !== 'display: none'
+          && !document.querySelector('#login-page')?.classList.contains('is-hidden');
+        return appVisible && !loginVisible;
+      },
+      { timeout: 8_000 }
+    );
+
+    // 全局 dialog 自动接受
     page.on('dialog', async (dialog) => {
       await dialog.accept();
     });
 
-    // 4. 导航到登录页
-    await page.goto('/');
-    await page.waitForSelector('#login-page', { state: 'visible', timeout: 30_000 });
-
-    // 5. 填写登录表单（短延迟保证输入完成）
-    await page.fill('#username', env.auth.username);
-    await page.waitForTimeout(300);
-    await page.fill('#password', env.auth.password);
-    await page.waitForTimeout(300);
-
-    // 6. 点击登录，等待应用容器出现
-    await page.click('#login-button');
-    await page.waitForSelector('#app-container', { state: 'visible', timeout: 40_000 });
-    await expect(page.locator('#login-page')).toBeHidden();
-
-    // 7. 自适应等待：设备处理完毕 + modals 片段加载
-    await waitForDeviceReady(page, 5000);
+    // 自适应等待 modals 片段加载
     await page.waitForFunction(
       () => document.querySelector('.modal') !== null,
-      { timeout: 15_000 }
+      { timeout: 10_000 }
     ).catch(() => {});
+
+    return true;
+  } catch {
+    // Session 失效，需要完整登录
+    return false;
+  }
+}
+
+export const test = base.extend<TestFixtures>({
+  /**
+   * 已认证的页面（登录态复用 + 健康检查节流 + 崩溃恢复）
+   *
+   * 优化策略：
+   * - 首次调用：完整健康检查 + 登录 + 缓存 storageState
+   * - 后续调用：快速探针 + 注入缓存状态（跳过登录表单）
+   * - 健康检查节流：30s 内跳过完整检查，仅做 5s 快速探针
+   * - 降级保障：缓存状态失效时自动回退到完整登录
+   */
+  authPage: async ({ page }, use) => {
+    let authenticated = false;
+
+    // 尝试通过缓存状态快速恢复
+    if (cachedAuthState) {
+      // 健康检查节流：距上次完整检查不到 30s 则跳过
+      const now = Date.now();
+      if (now - lastFullHealthCheck > HEALTH_CHECK_INTERVAL_MS) {
+        authenticated = false; // 需要完整检查，不用快速恢复
+      } else {
+        authenticated = await restoreAuthState(page);
+      }
+    }
+
+    // 缓存未命中或失效：执行完整登录
+    if (!authenticated) {
+      await performLoginAndCapture(page);
+      lastFullHealthCheck = Date.now();
+    }
 
     await use(page);
 
-    // 测试结束后：自适应等待设备恢复（替代固定 INTER_TEST_DELAY_MS）
+    // 测试结束后：自适应等待设备恢复
     await waitForDeviceReady(page, INTER_TEST_DELAY_MS);
   },
 

@@ -1,6 +1,7 @@
 // main.cpp
 #include "core/FastBeeFramework.h"
 #include "systems/RestartDiagnostics.h"
+#include "systems/SystemRebooter.h"
 #include <esp_heap_caps.h>
 #include <esp_bt.h>
 #include <esp_chip_info.h>
@@ -141,9 +142,67 @@ void setup() {
 }
 
 void loop() {
-    // 运行框架主循环
-    framework->run();
+    // 运行框架主循环（异常保护：捕获非致命异常避免整个设备重启）
+    try {
+        framework->run();
+    } catch (const std::bad_alloc& e) {
+        // 内存分配失败：跳过本周期，让 MemGuard 处理内存恢复
+        static unsigned long _badAllocWarn = 0;
+        if (millis() - _badAllocWarn > 30000) {
+            _badAllocWarn = millis();
+            Serial.printf("[LOOP] bad_alloc caught, heap=%lu — skipping cycle\n",
+                          (unsigned long)ESP.getFreeHeap());
+        }
+    } catch (const std::exception& e) {
+        // 标准异常：记录日志并计数，连续异常触发安全重启
+        static uint32_t _loopExceptionCount = 0;
+        _loopExceptionCount++;
+        static unsigned long _excWarn = 0;
+        if (millis() - _excWarn > 10000) {
+            _excWarn = millis();
+            Serial.printf("[LOOP] Exception in run() (#%lu): %s\n",
+                          (unsigned long)_loopExceptionCount, e.what());
+        }
+        // 连续 10 次异常说明系统性故障，调度安全重启
+        if (_loopExceptionCount >= 10 && !SystemRebooter::isScheduled()) {
+            Serial.println("[LOOP] 10 consecutive exceptions, scheduling safe reboot");
+            SystemRebooter::scheduleReboot("loop_exception_loop", 3000,
+                                            RestartReason::UNCAUGHT_EXCEPTION);
+        }
+    } catch (...) {
+        // 未知异常：最危险的情况，立即调度重启
+        static uint32_t _unknownExcCount = 0;
+        _unknownExcCount++;
+        Serial.printf("[LOOP] Unknown exception in run() (#%lu)\n",
+                      (unsigned long)_unknownExcCount);
+        if (_unknownExcCount >= 3 && !SystemRebooter::isScheduled()) {
+            Serial.println("[LOOP] 3 consecutive unknown exceptions, scheduling reboot");
+            SystemRebooter::scheduleReboot("loop_unknown_exception", 3000,
+                                            RestartReason::UNCAUGHT_EXCEPTION);
+        }
+    }
     
+    // 启动稳定后（120s），将 TWDT 升级为 trigger_panic=true
+    // 启动阶段允许 WDT 超时仅告警（库初始化可能耗时），稳定后死锁必须触发重启
+    static bool _wdtPanicUpgraded = false;
+    if (!_wdtPanicUpgraded && millis() > 120000) {
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+        esp_task_wdt_config_t wdt_cfg_panic = {
+            .timeout_ms = 60000,
+            .idle_core_mask = 0,
+            .trigger_panic = true
+        };
+        if (esp_task_wdt_reconfigure(&wdt_cfg_panic) == ESP_OK) {
+            Serial.println("[WDT] Upgraded to trigger_panic=true (stable boot confirmed)");
+            _wdtPanicUpgraded = true;
+        }
+#else
+        esp_task_wdt_init(60, true);
+        Serial.println("[WDT] Upgraded to trigger_panic=true (stable boot confirmed)");
+        _wdtPanicUpgraded = true;
+#endif
+    }
+
     // 周期性确认 loop 运行
     static unsigned long _loopDbg = 0;
     if (millis() - _loopDbg > 15000) {
