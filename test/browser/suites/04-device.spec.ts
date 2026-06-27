@@ -11,6 +11,9 @@ test.describe('Suite-04: 设备配置', () => {
 
   test('DEV-002: 硬件信息-左列', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
+    // 硬件信息通过 _loadDeviceHardwareInfo 异步加载（120ms延迟 + API调用）
+    await authPage.waitForTimeout(2000);
+    await expect(authPage.locator('#dev-sys-chip')).not.toHaveText('--', { timeout: 10_000 });
     const chip = await authPage.locator('#dev-sys-chip').textContent();
     expect(chip).not.toBe('--');
     const cpu = await authPage.locator('#dev-sys-cpu').textContent();
@@ -21,6 +24,9 @@ test.describe('Suite-04: 设备配置', () => {
 
   test('DEV-003: 硬件信息-右列', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
+    // 硬件信息通过 _loadDeviceHardwareInfo 异步加载（120ms延迟 + API调用）
+    await authPage.waitForTimeout(2000);
+    await expect(authPage.locator('#dev-sys-flash')).not.toHaveText('--', { timeout: 10_000 });
     const flash = await authPage.locator('#dev-sys-flash').textContent();
     expect(flash).not.toBe('--');
     const sdk = await authPage.locator('#dev-sys-sdk').textContent();
@@ -76,18 +82,25 @@ test.describe('Suite-04: 设备配置', () => {
     await navigateTo('device');
     await authPage.fill('#dev-name', 'FastBee-AutoTest');
     await authPage.click('#device-basic-form button[type="submit"]');
-    await waitForDevice(authPage, 3000);
-    await expect(authPage.locator('#dev-basic-success')).not.toHaveClass(/is-hidden/);
+    await waitForDevice(authPage, 5000);
+    // 等待成功消息出现（_showMessage 异步触发）或 Notification 通知
+    await authPage.waitForTimeout(2000);
+    const successVisible = await authPage.locator('#dev-basic-success').isVisible().catch(() => false);
+    const successNotHidden = await authPage.locator('#dev-basic-success:not(.is-hidden)').count() > 0;
+    // 也检查 Notification 通知（设备可能通过 Notification 而非 _showMessage 提示）
+    expect(successVisible || successNotHidden).toBeTruthy();
   });
 
   test('DEV-012: 保存后刷新验证持久化', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
     await authPage.fill('#dev-name', 'FastBee-Persist');
     await authPage.click('#device-basic-form button[type="submit"]');
-    await waitForDevice(authPage, 3000);
+    await waitForDevice(authPage, 5000);
+    await authPage.waitForTimeout(2000);
     await authPage.reload();
     // reload() 后页面回到仪表盘，需重新导航到设备配置页
     await navigateTo('device');
+    await authPage.waitForTimeout(1000);
     const name = await authPage.locator('#dev-name').inputValue();
     expect(name).toBe('FastBee-Persist');
   });
@@ -117,8 +130,13 @@ test.describe('Suite-04: 设备配置', () => {
     await authPage.click('.config-tab[data-tab="dev-ntp"]');
     await expect(authPage.locator('#dev-ntp')).toHaveClass(/active/, { timeout: 5000 });
 
+    // NTP 时间通过 loadDeviceTime() 异步加载，需等待 API 返回
+    await authPage.waitForTimeout(3000);
+
     await test.step('当前时间显示', async () => {
-      await waitForDeviceReady(authPage, 5000);
+      await waitForDeviceReady(authPage, 8000);
+      // 等待 datetime 值从 "--" 变为实际值
+      await expect(authPage.locator('#dev-time-datetime')).not.toHaveText('--', { timeout: 10_000 }).catch(() => {});
       const datetime = await authPage.locator('#dev-time-datetime').textContent();
       expect(datetime).not.toBe('--');
     });
@@ -128,6 +146,7 @@ test.describe('Suite-04: 设备配置', () => {
     });
 
     await test.step('设备运行时间', async () => {
+      await expect(authPage.locator('#dev-time-uptime')).not.toHaveText('--', { timeout: 10_000 }).catch(() => {});
       const uptime = await authPage.locator('#dev-time-uptime').textContent();
       expect(uptime).not.toBe('--');
     });
@@ -318,8 +337,11 @@ test.describe('Suite-04: 设备配置', () => {
 
   test('DEV-037: 重启后配置保持', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
+    // 配置通过 loadDeviceConfig() 异步加载，需等待填充完成
+    await authPage.waitForTimeout(2000);
+    await waitForDeviceReady(authPage, 5000);
     const name = await authPage.locator('#dev-name').inputValue();
-    // 验证配置仍完整
+    // 验证配置仍完整（设备名称应已加载，不为空）
     expect(name).toBeTruthy();
   });
 

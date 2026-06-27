@@ -111,6 +111,49 @@ graph LR
   </tr>
 </table>
 
+## Case Showcase
+
+FastBee-Arduino in action across different chips and hardware platforms.
+
+<table>
+<tr>
+<td align="center" width="33%">
+<a href="https://fastbee.cn/doc/device/examples/esp32c6-blink-quickstart.html"><img src="./images/case-esp32c6.png" alt="ESP32-C6 Blink" width="100%"/></a>
+<br/><a href="https://fastbee.cn/doc/device/examples/esp32c6-blink-quickstart.html"><b>ESP32-C6 Full-Color LED Quick Start</b></a>
+<br/><sub>Flash firmware on an ESP32-C6 dev board and run an LED blink test within 5 minutes — experience the zero-code onboarding flow.</sub>
+</td>
+<td align="center" width="33%">
+<a href="https://fastbee.cn/doc/device/examples/esp32c3-temperature-humidity.html"><img src="./images/case-esp32c3.png" alt="ESP32-C3 Temp & Humidity" width="100%"/></a>
+<br/><a href="https://fastbee.cn/doc/device/examples/esp32c3-temperature-humidity.html"><b>ESP32-C3 Temperature & Humidity Monitor</b></a>
+<br/><sub>Collect ambient temperature and humidity via a DHT11 sensor, display on OLED in real time, and trigger alarms on threshold breach.</sub>
+</td>
+<td align="center" width="33%">
+<a href="https://fastbee.cn/doc/device/examples/hardware-showcase.html"><img src="./images/case-device-modbus.png" alt="ESP32 Modbus" width="100%"/></a>
+<br/><a href="https://fastbee.cn/doc/device/examples/hardware-showcase.html"><b>ESP32 Modbus Monitoring & Control</b></a>
+<br/><sub>ESP32 IoT terminal collects Modbus RTU slave data via RS485 for industrial sensor monitoring and remote control.</sub>
+</td>
+</tr>
+<tr>
+<td align="center" width="33%">
+<a href="https://fastbee.cn/doc/device/examples/ecm50a-networking.html"><img src="./images/case-ecm50a.png" alt="ECM50-A Networking" width="100%"/></a>
+<br/><a href="https://fastbee.cn/doc/device/examples/ecm50a-networking.html"><b>ECM50-A 4G/Ethernet/WiFi Networking</b></a>
+<br/><sub>ESP32-S3 based ECM50-A industrial device with auto-switching between 4G cellular, W5500 Ethernet, and WiFi connectivity.</sub>
+</td>
+<td align="center" width="33%">
+<a href="https://fastbee.cn/doc/device/examples/puzhong-esp32-test.html"><img src="./images/case-puzhong.png" alt="Puzhong Dev Board" width="100%"/></a>
+<br/><a href="https://fastbee.cn/doc/device/examples/puzhong-esp32-test.html"><b>ESP32 Puzhong Board Full Feature Test</b></a>
+<br/><sub>Comprehensive testing of GPIO, ADC, PWM, I2C, SPI, UART, display, and other peripherals on the Puzhong ESP32 dev board.</sub>
+</td>
+<td align="center" width="33%">
+<a href="https://fastbee.cn/doc/device/examples/waveshare-esp32s3.html"><img src="./images/case-weixue.png" alt="WaveShare" width="100%"/></a>
+<br/><a href="https://fastbee.cn/doc/device/examples/waveshare-esp32s3.html"><b>ESP32-S3 WaveShare Industrial Relay</b></a>
+<br/><sub>WaveShare ESP32-S3 board adaptation covering WiFi, sensor acquisition, display driving, and MQTT reporting.</sub>
+</td>
+</tr>
+</table>
+
+See the [Example Tutorials](https://fastbee.cn/doc/device/examples/) directory for more cases.
+
 ## Project Structure
 
 ```text

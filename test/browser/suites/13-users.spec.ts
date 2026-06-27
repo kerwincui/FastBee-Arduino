@@ -151,11 +151,14 @@ test.describe('Suite-13: 用户管理', () => {
   // ========== 多用户场景 ==========
 
   test('USER-012: 用户列表刷新一致性', async ({ authPage }) => {
+    // 等待用户列表加载完成（异步加载）
+    await authPage.waitForTimeout(3000);
+    await expect(authPage.locator('#users-table-body tr')).toHaveCount(await authPage.locator('#users-table-body tr').count() || 1, { timeout: 10_000 }).catch(() => {});
     // 首次获取用户数
     const count1 = await authPage.locator('#users-table-body tr').count();
     // 刷新
     await authPage.locator('#users-refresh-btn').click();
-    await authPage.waitForTimeout(2000);
+    await authPage.waitForTimeout(3000);
     const count2 = await authPage.locator('#users-table-body tr').count();
     // 刷新前后数量应一致
     expect(count1).toBe(count2);

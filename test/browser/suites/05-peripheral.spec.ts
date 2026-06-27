@@ -332,19 +332,22 @@ test.describe('Suite-05: 外设配置', () => {
 
     // 3. 编辑改名
     const editBtn = authPage.locator('#peripheral-table-body .btn-edit, #peripheral-table-body button:has-text("编辑")').first();
-    if (await editBtn.isVisible()) {
+    if (await editBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
       await editBtn.click();
       await expect(authPage.locator('#peripheral-modal')).toBeVisible({ timeout: 8000 });
       const nameInput = authPage.locator('#peripheral-name-input');
+      // 清空并填写新名称
+      await nameInput.clear();
       await nameInput.fill('test-crud-renamed');
       await savePeriphModal(authPage);
-      // 4. 验证名称更新
-      await expect(tableBody).toContainText('test-crud-renamed', { timeout: 10000 });
+      // 4. 等待表格刷新后验证名称更新
+      await authPage.waitForTimeout(2000);
+      await expect(tableBody).toContainText('test-crud-renamed', { timeout: 15000 });
     }
 
     // 5. 删除（绕过原生 confirm 对话框）
     const deleteBtn = authPage.locator('#peripheral-table-body .btn-delete, #peripheral-table-body button:has-text("删除")').first();
-    if (await deleteBtn.isVisible()) {
+    if (await deleteBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
       // Mock confirm() 使其返回 true，绕过原生对话框
       await authPage.evaluate(() => {
         (window as any).confirm = () => true;

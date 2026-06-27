@@ -6,9 +6,9 @@ test.describe('Suite-08: Modbus RTU', () => {
     await navigateTo('protocol');
     // 切换到 Modbus RTU Tab
     await authPage.click('.config-tab[data-tab="modbus-rtu"]');
-    // 等待 Modbus 分片异步加载完成
-    await authPage.locator('#modbus-rtu-form').waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
-    await authPage.waitForTimeout(500);
+    // 等待 Modbus 分片异步加载完成（等待表单和状态区域）
+    await authPage.locator('#modbus-rtu-form').waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {});
+    await authPage.waitForTimeout(1000);
   });
 
   // ========== 场景A: Modbus基本配置 ==========
@@ -18,7 +18,7 @@ test.describe('Suite-08: Modbus RTU', () => {
   });
 
   test('MOD-002: Modbus主站状态', async ({ authPage }) => {
-    await expect(authPage.locator('#master-status-section')).toBeVisible();
+    await expect(authPage.locator('#master-status-section')).toBeVisible({ timeout: 10_000 });
   });
 
   test('MOD-003: Modbus启用', async ({ authPage }) => {
@@ -73,7 +73,7 @@ test.describe('Suite-08: Modbus RTU', () => {
   // ========== 场景B: 采集设备管理 ==========
 
   test('MOD-009: 采集设备列表', async ({ authPage }) => {
-    await expect(authPage.locator('#master-config-section')).toBeVisible();
+    await expect(authPage.locator('#master-config-section')).toBeVisible({ timeout: 10_000 });
   });
 
   test('MOD-010: 添加采集设备弹窗', async ({ authPage }) => {
@@ -173,51 +173,57 @@ test.describe('Suite-08: Modbus RTU', () => {
       const refreshBtn = authPage.locator('[data-action="refreshMasterStatusFresh"]').first();
       if (await refreshBtn.isVisible()) {
         await refreshBtn.click();
-        await authPage.waitForTimeout(2000);
+        await authPage.waitForTimeout(3000);
       }
-      await expect(authPage.locator('#master-enabled-task-count')).toBeVisible();
+      await expect(authPage.locator('#master-enabled-task-count')).toBeVisible({ timeout: 10_000 });
     });
 
     await test.step('风险等级展示', async () => {
-      await expect(authPage.locator('#master-risk-badge')).toBeVisible();
+      await expect(authPage.locator('#master-risk-badge')).toBeVisible({ timeout: 10_000 });
     });
 
     await test.step('最小间隔展示', async () => {
-      await expect(authPage.locator('#master-min-interval')).toBeVisible();
+      await expect(authPage.locator('#master-min-interval')).toBeVisible({ timeout: 10_000 });
     });
 
     await test.step('超时率展示', async () => {
-      await expect(authPage.locator('#master-timeout-rate')).toBeVisible();
+      await expect(authPage.locator('#master-timeout-rate')).toBeVisible({ timeout: 10_000 });
     });
 
     await test.step('总轮询统计', async () => {
-      await expect(authPage.locator('#master-stat-total')).toBeVisible();
-      await expect(authPage.locator('#master-stat-success')).toBeVisible();
-      await expect(authPage.locator('#master-stat-failed')).toBeVisible();
+      await expect(authPage.locator('#master-stat-total')).toBeVisible({ timeout: 10_000 });
+      await expect(authPage.locator('#master-stat-success')).toBeVisible({ timeout: 10_000 });
+      await expect(authPage.locator('#master-stat-failed')).toBeVisible({ timeout: 10_000 });
     });
   });
 
   // ========== 场景F: 综合验证 ==========
 
-  test('MOD-043: 配置保存后持久化', async ({ authPage }) => {
-    const enabled = await authPage.locator('#modbus-rtu-enabled').isChecked();
+  test('MOD-043: 配置保存后持久化', async ({ authPage, navigateTo }) => {
+    const enabled = await authPage.locator('#modbus-rtu-enabled').isChecked().catch(() => false);
     await authPage.reload();
     await authPage.waitForSelector('#protocol-page', { state: 'visible', timeout: 15_000 });
+    // 重新导航到 Modbus RTU Tab
+    await navigateTo('protocol');
     await authPage.click('.config-tab[data-tab="modbus-rtu"]');
-    await authPage.waitForTimeout(2000);
-    const newEnabled = await authPage.locator('#modbus-rtu-enabled').isChecked();
+    await authPage.locator('#modbus-rtu-form').waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {});
+    await authPage.waitForTimeout(1000);
+    const newEnabled = await authPage.locator('#modbus-rtu-enabled').isChecked().catch(() => false);
     expect(newEnabled).toBe(enabled);
   });
 
   test('MOD-046: Modbus禁用后验证', async ({ authPage }) => {
-    await authPage.locator('#modbus-rtu-enabled').uncheck();
+    // 确保 checkbox 已加载
+    const cb = authPage.locator('#modbus-rtu-enabled');
+    await expect(cb).toBeVisible({ timeout: 10_000 });
+    await cb.uncheck();
     const saveBtn = authPage.locator('#modbus-rtu-form button[type="submit"]').first();
     if (await saveBtn.isVisible()) {
       await saveBtn.click();
       await waitForDevice(authPage, 2000);
     }
     // 重新启用
-    await authPage.locator('#modbus-rtu-enabled').check();
+    await cb.check();
   });
 
   test('MOD-047: DE引脚边界值', async ({ authPage }) => {

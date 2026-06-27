@@ -35,14 +35,16 @@ test.describe('Suite-09: 设备大屏', () => {
 
   test('SCR-005: 全屏网络状态展示', async ({ page, baseURL }) => {
     await page.goto(`${baseURL}/pages/fullscreen.html`);
-    await page.waitForLoadState('networkidle', { timeout: 15_000 });
-    await expect(page.locator('#ns-status')).toBeVisible();
-    await expect(page.locator('#ns-ap-ssid')).toBeVisible();
+    await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
+    await page.waitForTimeout(3000);
+    await expect(page.locator('#ns-status')).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator('#ns-ap-ssid')).toBeVisible({ timeout: 5_000 });
   });
 
   test('SCR-006: 手动刷新按钮', async ({ page, baseURL }) => {
     await page.goto(`${baseURL}/pages/fullscreen.html`);
-    await page.waitForLoadState('networkidle', { timeout: 15_000 });
+    await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
+    await page.waitForTimeout(3000);
     await page.click('#fullscreen-refresh-btn');
     await page.waitForTimeout(3000);
     // 刷新后数据应更新
@@ -86,6 +88,7 @@ test.describe('Suite-09: 设备大屏', () => {
   });
 
   test('SCR-011: 大屏无交互超时(2分钟)', async ({ page, baseURL }) => {
+    test.setTimeout(180_000); // 2分钟等待 + 验证
     await page.goto(`${baseURL}/pages/fullscreen.html`);
     await page.waitForLoadState('domcontentloaded', { timeout: 15_000 });
     await page.waitForTimeout(3000);
