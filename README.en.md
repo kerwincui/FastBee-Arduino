@@ -68,6 +68,7 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32-F4R0 -Por
 | `-SkipFs` | Skip filesystem (LittleFS) upload |
 | `-SkipFirmware` | Skip firmware flash, only upload filesystem |
 | `-SkipDoctor` | Skip environment diagnostics check |
+| `-SkipWeb` | Skip automatic Web asset generation (has no effect if `.gz` files already exist) |
 
 ## Quick Start
 
