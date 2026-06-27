@@ -31,54 +31,13 @@ Supported chips: `ESP32`, `ESP32-S3`, `ESP32-C3`, `ESP32-C6`.
 
 > Edition selection is primarily based on **Flash capacity** and **PSRAM availability**. Environments with Flash ≥ 8MB support OTA upgrades (4MB environments cannot due to space constraints). Modules with PSRAM (e.g., ESP32-WROVER, ESP32-S3-N8R2/N16R8) can use the Full edition.
 
-### Lite / Standard / Full Feature Comparison
-
-| Feature Category | Feature | Lite | Standard | Full |
-| --- | --- | :---: | :---: | :---: |
-| **Network** | WiFi (AP/STA), MQTT, mDNS | Yes | Yes | Yes |
-| | Ethernet (W5500), 4G (EC801E) | No | Yes | Yes |
-| | BLE Provisioning | No | No | Yes |
-| **Protocol** | MQTT Protocol | Yes | Yes | Yes |
-| | Modbus RTU Master | No | Yes | Yes |
-| | Modbus Slave, TCP, HTTP, CoAP | No | No | Yes |
-| **Peripheral** | GPIO, DHT11/22, DS18B20 | Yes | Yes | Yes |
-| | OLED, TM1637 Display | Yes | Yes | Yes |
-| | NeoPixel / WS2812B | Yes | Yes | Yes |
-| | Command Script | No | Yes | Yes |
-| | I2C Sensors (BMP280/MPU6050) | No | Yes | Yes |
-| | RFID (MFRC522), IR Remote | No | Yes | Yes |
-| | Rule Script Engine | No | No | Yes |
-| **Execution** | Timer / Button / Condition / MQTT Trigger | Yes | Yes | Yes |
-| | GPIO / Display / Delay Actions | Yes | Yes | Yes |
-| | Modbus Read/Write Actions | No | Yes | Yes |
-| **Web** | Dashboard, Peripheral / Protocol / Network Config | Yes | Yes | Yes |
-| | SSE Real-time Push, Config Import/Export | Yes | Yes | Yes |
-| | Multi-user, File Manager, Log Viewer | No | No | Yes |
-| | Multi-language (i18n) | No | No | Yes |
-| **System** | Health Monitor, Memory Guard, Task Manager | Yes | Yes | Yes |
-| | NTP Time Sync, DNS Service | Yes | Yes | Yes |
-| | OTA Firmware / Filesystem Upgrade | No | Optional | Yes |
-| | File Logging | No | No | Yes |
-| **Limits** | Max Peripherals | 16 | 24 | 32 |
-| | Recommended Execution Rules | 12 | 16 | 32 |
-
-> Standard edition OTA is only supported on `esp32s3-F8R0` (8MB Flash); `esp32-F4R0` (4MB Flash) lacks OTA due to space constraints.
-
-### Partition Tables
-
-| Partition File | Flash | App Slot | OTA | FS | Applicable Environments |
-| --- | --- | --- | --- | --- | --- |
-| `fastbee.csv` | 4MB | 2.88MB × 1 | No | 1MB | `esp32c3-F4R0`, `esp32c6-F4R0`, `esp32-F4R0` |
-| `fastbee-8MB.csv` | 8MB | 3.5MB × 2 | Yes | 960KB | `esp32s3-F8R0`, `esp32-F8R4`, `esp32s3-F8R4` |
-| `fastbee-16MB.csv` | 16MB | 4MB × 2 | Yes | 7.9MB | `esp32s3-F16R8` |
+> For detailed feature comparison and partition tables, see [Edition Comparison](https://fastbee.cn/doc/device/getting-started/edition-comparison.html).
 
 ## Quick Flash
 
 ### Online Flash (Recommended for Quick Try)
 
-No tools required — open your browser and flash the firmware instantly to try the system:
-
-👉 **[Online Flash Tool](https://fastbee.cn/doc/device/esp32-flasher.html)**
+No tools required — open your browser and flash the firmware instantly to try the system: 👉 **[Online Flash Tool](https://fastbee.cn/doc/device/esp32-flasher.html)**
 
 ### Build and Flash from Source
 
@@ -92,7 +51,25 @@ powershell -ExecutionPolicy Bypass -File scripts\doctor.ps1 -Port COM6
 powershell -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Env esp32-F4R0 -Port COM6
 ```
 
-## First Access
+**doctor.ps1 parameters** (environment diagnostics):
+
+| Parameter | Description |
+|-----------|-------------|
+| `-Port` | Serial port, e.g. `COM6` |
+
+**deploy.ps1 parameters** (build + flash):
+
+| Parameter | Description |
+|-----------|-------------|
+| `-Env` | PlatformIO build environment, e.g. `esp32-F4R0`, see predefined environments above |
+| `-Port` | Serial port, e.g. `COM6` |
+| `-Monitor` | Open serial monitor automatically after flashing |
+| `-BuildOnly` | Compile only without flashing, for CI or quick verification |
+| `-SkipFs` | Skip filesystem (LittleFS) upload |
+| `-SkipFirmware` | Skip firmware flash, only upload filesystem |
+| `-SkipDoctor` | Skip environment diagnostics check |
+
+## Quick Start
 
 The device enters AP mode on first boot or when WiFi is not configured:
 
@@ -102,20 +79,6 @@ The device enters AP mode on first boot or when WiFi is not configured:
 | Browser Address | `http://192.168.4.1` or `http://fastbee.local` |
 | Username | `admin` |
 | Password | `admin123` |
-
-After login, complete the following in order:
-
-1. Configure WiFi, Ethernet, or 4G in "Network Settings".
-2. Confirm device ID, product ID, and time settings in "Device Settings".
-3. Configure MQTT, Modbus RTU, and other protocols in "Communication Protocols".
-4. Add and enable wired peripherals in "Peripheral Configuration".
-5. Configure timer, event, or sensor-linked rules in "Peripheral Execution".
-
-Default peripheral templates and execution rules are safely disabled. After wiring, confirm pins, power supply, and peripheral IDs before enabling each item.
-
-## Usage Flow
-
-From flashing to cloud connection, just 5 steps to turn an ESP32 into a controllable IoT terminal:
 
 ```mermaid
 graph LR
@@ -130,9 +93,9 @@ graph LR
 
 | Step | Phase | What to Do | Page |
 |------|-------|------------|------|
-| 1 | **Flash Firmware** | Flash FastBee-Arduino firmware to ESP32 using PlatformIO | — |
+| 1 | **Flash Firmware** | Flash FastBee-Arduino firmware to ESP32 using PlatformIO | [Online Flash Tool](https://fastbee.cn/doc/device/esp32-flasher.html) |
 | 2 | **Peripheral Config** | Select peripheral types and assign pins in the Web UI to initialize hardware | Peripheral Config |
-| 3 | **Network Config** | Choose connectivity (WiFi / Ethernet / 4G), enter parameters and save; AP+STA dual-mode auto-switches online | Network Config |
+| 3 | **Network Config** | Choose connectivity (WiFi / Ethernet / 4G), enter parameters and save | Network Config |
 | 4 | **Communication Protocol** | Configure MQTT / Modbus RTU protocols to connect to IoT platform | Communication Protocol |
 | 5 | **Peripheral Execution** | Set trigger conditions and actions for button-controlled lights, timed linkage, sensor-driven control, etc. | Peripheral Execution |
 
