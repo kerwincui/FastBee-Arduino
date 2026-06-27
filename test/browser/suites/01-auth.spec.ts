@@ -4,13 +4,13 @@ test.describe('Suite-01: 登录与认证', () => {
 
   // ========== 场景A: 正常登录流程 ==========
 
-  test('AUTH-001: 首次访问重定向到登录页', async ({ page }) => {
+  test('AUTH-001: 首次访问重定向到登录页 @quick', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('#login-page')).toBeVisible();
     await expect(page.locator('#app-container')).toBeHidden();
   });
 
-  test('AUTH-002: 默认管理员登录', async ({ page }) => {
+  test('AUTH-002: 默认管理员登录 @quick', async ({ page }) => {
     await page.goto('/');
     await page.fill('#username', env.auth.username);
     await page.fill('#password', env.auth.password);
@@ -98,7 +98,7 @@ test.describe('Suite-01: 登录与认证', () => {
     await expect(page.locator('#login-page')).toBeVisible();
   });
 
-  test('AUTH-010: 超长用户名输入', async ({ page }) => {
+  test('AUTH-010: 超长用户名输入 @quick', async ({ page }) => {
     await page.goto('/');
     await page.fill('#username', 'A'.repeat(200));
     await page.fill('#password', env.auth.password);
@@ -186,7 +186,7 @@ test.describe('Suite-01: 登录与认证', () => {
 
   // ========== 场景D: 登录后操作 ==========
 
-  test('AUTH-016: 退出登录', async ({ page, authPage }) => {
+  test('AUTH-016: 退出登录 @quick', async ({ page, authPage }) => {
     // authPage 已登录
     await authPage.click('#user-dropdown-btn');
     await authPage.waitForTimeout(500);
@@ -208,7 +208,7 @@ test.describe('Suite-01: 登录与认证', () => {
     }
   });
 
-  test('AUTH-017: 退出后无法直接访问', async ({ page }) => {
+  test('AUTH-017: 退出后无法直接访问 @quick', async ({ page }) => {
     test.setTimeout(90_000);
     // 先登录
     await page.goto('/');

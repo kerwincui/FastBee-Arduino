@@ -13,7 +13,7 @@ test.describe('Suite-08: Modbus RTU', () => {
 
   // ========== 场景A: Modbus基本配置 ==========
 
-  test('MOD-001: 切换到Modbus Tab', async ({ authPage }) => {
+  test('MOD-001: 切换到Modbus Tab @quick', async ({ authPage }) => {
     await expect(authPage.locator('#modbus-rtu')).toHaveClass(/active/);
   });
 
@@ -76,7 +76,7 @@ test.describe('Suite-08: Modbus RTU', () => {
     await expect(authPage.locator('#master-config-section')).toBeVisible({ timeout: 10_000 });
   });
 
-  test('MOD-010: 添加采集设备弹窗', async ({ authPage }) => {
+  test('MOD-010: 添加采集设备弹窗 @quick', async ({ authPage }) => {
     const addBtn = authPage.locator('[data-action*="addDevice"], button:has-text("添加设备")').first();
     if (await addBtn.isVisible()) {
       await addBtn.click();
@@ -121,7 +121,7 @@ test.describe('Suite-08: Modbus RTU', () => {
     }
   });
 
-  test('MOD-020: 编辑采集设备', async ({ authPage }) => {
+  test('MOD-020: 编辑采集设备 @quick', async ({ authPage }) => {
     const editBtn = authPage.locator('#master-config-section button:has-text("编辑")').first();
     if (await editBtn.isVisible()) {
       await editBtn.click();

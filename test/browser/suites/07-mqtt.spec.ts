@@ -4,6 +4,12 @@ test.describe('Suite-07: MQTT/MQTTS通信协议', () => {
 
   test.beforeEach(async ({ authPage, navigateTo }) => {
     await navigateTo('protocol');
+    // 验证确实在通信协议页面
+    const protocolVisible = await authPage.locator('#protocol-page').isVisible({ timeout: 10_000 }).catch(() => false);
+    if (!protocolVisible) {
+      // 重试导航
+      await navigateTo('protocol');
+    }
     // 等待 MQTT 分片异步加载完成
     await authPage.locator('#mqtt-enabled').waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
     await authPage.waitForTimeout(500);
@@ -11,7 +17,7 @@ test.describe('Suite-07: MQTT/MQTTS通信协议', () => {
 
   // ========== 场景A: MQTT基本配置 ==========
 
-  test('MQTT-001: 进入通信协议页', async ({ authPage }) => {
+  test('MQTT-001: 进入通信协议页 @quick', async ({ authPage }) => {
     await expect(authPage.locator('#protocol-page')).toBeVisible();
   });
 
@@ -37,7 +43,7 @@ test.describe('Suite-07: MQTT/MQTTS通信协议', () => {
     await authPage.waitForTimeout(500);
   });
 
-  test('MQTT-005: 自动重连开关', async ({ authPage }) => {
+  test('MQTT-005: 自动重连开关 @quick', async ({ authPage }) => {
     const autoReconnect = authPage.locator('#mqtt-auto-reconnect');
     await expect(autoReconnect).toBeVisible();
     if (!(await autoReconnect.isChecked())) {
@@ -83,7 +89,7 @@ test.describe('Suite-07: MQTT/MQTTS通信协议', () => {
     expect(value).toBe(env.mqtt.clientId);
   });
 
-  test('MQTT-011: 认证方式选择', async ({ authPage }) => {
+  test('MQTT-011: 认证方式选择 @quick', async ({ authPage }) => {
     const authType = authPage.locator('#mqtt-auth-type');
     await expect(authType).toBeVisible();
     await authType.selectOption('0'); // 简单认证
@@ -191,7 +197,7 @@ test.describe('Suite-07: MQTT/MQTTS通信协议', () => {
     }
   });
 
-  test('MQTT-020: 添加订阅主题', async ({ authPage }) => {
+  test('MQTT-020: 添加订阅主题 @quick', async ({ authPage }) => {
     const addBtn = authPage.locator('#add-mqtt-subscribe-btn');
     if (await addBtn.isVisible()) {
       const header = authPage.locator('[data-args="mqtt-subscribe-body"]').first();
@@ -302,7 +308,7 @@ test.describe('Suite-07: MQTT/MQTTS通信协议', () => {
     }
   });
 
-  test('MQTT-030: MQTTS连接验证', async ({ authPage }) => {
+  test('MQTT-030: MQTTS连接验证 @quick', async ({ authPage }) => {
     await authPage.locator('#mqtt-scheme').selectOption('mqtts');
     await authPage.waitForTimeout(500);
     await authPage.click('#mqtt-form button[type="submit"]');
@@ -376,7 +382,7 @@ test.describe('Suite-07: MQTT/MQTTS通信协议', () => {
     }
   });
 
-  test('MQTT-036: mqtt://错误Broker地址', async ({ authPage }) => {
+  test('MQTT-036: mqtt://错误Broker地址 @quick', async ({ authPage }) => {
     test.setTimeout(90_000);
     await authPage.fill('#mqtt-broker', 'invalid.broker.test');
     await authPage.click('#mqtt-form button[type="submit"]');

@@ -4,7 +4,7 @@ test.describe('Suite-16: 联网方式切换 + MQTT联动', () => {
 
   // ========== 场景A: WiFi环境下MQTT联动 ==========
 
-  test('NWMS-001: WiFi连接后mqtt://首次连接', async ({ authPage, navigateTo }) => {
+  test('NWMS-001: WiFi连接后mqtt://首次连接 @quick', async ({ authPage, navigateTo }) => {
     // 1. 配置 WiFi STA
     await navigateTo('network');
     await authPage.fill('#wifi-ssid', env.wifi.ssid);
@@ -129,7 +129,7 @@ test.describe('Suite-16: 联网方式切换 + MQTT联动', () => {
 
   // ========== 场景B: 以太网环境下MQTT联动 ==========
 
-  test('NWMS-010: 以太网连接后mqtt://连接', async ({ authPage, navigateTo }) => {
+  test('NWMS-010: 以太网连接后mqtt://连接 @quick', async ({ authPage, navigateTo }) => {
     // 切换到以太网
     await navigateTo('network');
     const networkType = authPage.locator('#network-type');
@@ -233,7 +233,7 @@ test.describe('Suite-16: 联网方式切换 + MQTT联动', () => {
     await expect(authPage.locator('#protocol-page')).toBeVisible();
   });
 
-  test('NWMS-020: 4G APN切换后MQTT重连', async ({ authPage, navigateTo }) => {
+  test('NWMS-020: 4G APN切换后MQTT重连 @quick', async ({ authPage, navigateTo }) => {
     await navigateTo('network');
     const networkType = authPage.locator('#network-type');
     if (await networkType.isVisible()) {

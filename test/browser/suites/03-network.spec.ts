@@ -8,7 +8,7 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
 
   // ========== 场景A: WiFi基本配置 ==========
 
-  test('NET-001: 进入网络设置页', async ({ authPage }) => {
+  test('NET-001: 进入网络设置页 @quick', async ({ authPage }) => {
     await expect(authPage.locator('#network-page')).toBeVisible();
     await expect(authPage.locator('#network-title')).toContainText(/网络|Network/);
   });
@@ -35,7 +35,7 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
     expect(value).toBe('0'); // WiFi
   });
 
-  test('NET-005: WiFi扫描弹窗打开', async ({ authPage }) => {
+  test('NET-005: WiFi扫描弹窗打开 @quick', async ({ authPage }) => {
     const scanBtn = authPage.locator('#wifi-scan-btn');
     if (await scanBtn.isVisible()) {
       await scanBtn.click();
@@ -98,7 +98,7 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
     expect(value).toBe('0');
   });
 
-  test('NET-010: 网络模式-AP选择', async ({ authPage }) => {
+  test('NET-010: 网络模式-AP选择 @quick', async ({ authPage }) => {
     const wifiMode = authPage.locator('#wifi-mode');
     await wifiMode.selectOption('1'); // AP
     await authPage.waitForTimeout(1000);
@@ -197,7 +197,7 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
     await expect(wifiPanel).toBeHidden();
   });
 
-  test('NET-020: 以太网引脚输入', async ({ authPage }) => {
+  test('NET-020: 以太网引脚输入 @quick', async ({ authPage }) => {
     await authPage.locator('#network-type').selectOption('1');
     await authPage.waitForTimeout(500);
     await authPage.fill('#eth-mosi', '11');
@@ -290,7 +290,7 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
     expect(value).toBe('test12345678');
   });
 
-  test('NET-030: 热点IP地址修改', async ({ authPage }) => {
+  test('NET-030: 热点IP地址修改 @quick', async ({ authPage }) => {
     await authPage.locator('[data-tab="ap-config"]').click();
     await authPage.waitForTimeout(500);
     await authPage.fill('#ap-ip', '192.168.5.1');
@@ -379,7 +379,7 @@ test.describe('Suite-03: 网络设置 — WiFi/以太网/4G连通性', () => {
     expect(ipVal).toBe('192.168.1.200');
   });
 
-  test('NET-040: 切回DHCP', async ({ authPage }) => {
+  test('NET-040: 切回DHCP @quick', async ({ authPage }) => {
     await authPage.locator('[data-tab="advance"]').click();
     await authPage.waitForTimeout(500);
     await authPage.locator('#wifi-dhcp').selectOption('0');

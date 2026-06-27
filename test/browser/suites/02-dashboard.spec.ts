@@ -4,7 +4,7 @@ test.describe('Suite-02: 设备监控仪表盘', () => {
 
   // ========== 场景A: 仪表盘数据加载与展示 ==========
 
-  test('DASH-001: 仪表盘初始加载', async ({ authPage, navigateTo }) => {
+  test('DASH-001: 仪表盘初始加载 @quick', async ({ authPage, navigateTo }) => {
     await navigateTo('dashboard');
     // 三个顶部统计卡片
     await expect(authPage.locator('#monitor-chip-model')).toBeVisible();
@@ -44,7 +44,7 @@ test.describe('Suite-02: 设备监控仪表盘', () => {
     expect(netStatus).not.toBe('--');
   });
 
-  test('DASH-005: Flash存储进度条', async ({ authPage, navigateTo }) => {
+  test('DASH-005: Flash存储进度条 @quick', async ({ authPage, navigateTo }) => {
     await navigateTo('dashboard');
     await authPage.click('#monitor-refresh-btn');
     await authPage.waitForTimeout(5000); // 等待设备数据加载
@@ -111,7 +111,7 @@ test.describe('Suite-02: 设备监控仪表盘', () => {
     }
   });
 
-  test('DASH-010: AP热点信息卡', async ({ authPage, navigateTo }) => {
+  test('DASH-010: AP热点信息卡 @quick', async ({ authPage, navigateTo }) => {
     await navigateTo('dashboard');
     await expect(authPage.locator('#ns-ap-ssid')).toBeVisible();
     await expect(authPage.locator('#ns-ap-ip')).toBeVisible();
@@ -160,7 +160,7 @@ test.describe('Suite-02: 设备监控仪表盘', () => {
     expect(flashPct).toMatch(/\d+%/);
   });
 
-  test('DASH-015: 网络状态刷新按钮', async ({ authPage, navigateTo }) => {
+  test('DASH-015: 网络状态刷新按钮 @quick', async ({ authPage, navigateTo }) => {
     await navigateTo('dashboard');
     await authPage.click('#dashboard-net-refresh-btn');
     await authPage.waitForTimeout(3000);

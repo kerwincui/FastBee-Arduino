@@ -8,7 +8,7 @@ test.describe('Suite-10: 规则脚本', () => {
 
   // ========== 场景A: 规则脚本列表与创建 ==========
 
-  test('RULE-001: 进入规则脚本页', async ({ authPage }) => {
+  test('RULE-001: 进入规则脚本页 @quick', async ({ authPage }) => {
     await expect(authPage.locator('#rule-script-page')).toBeVisible();
     await expect(authPage.locator('button:has-text("新增规则")')).toBeVisible();
   });
@@ -39,7 +39,7 @@ test.describe('Suite-10: 规则脚本', () => {
     }
   });
 
-  test('RULE-005: 触发类型选择', async ({ authPage }) => {
+  test('RULE-005: 触发类型选择 @quick', async ({ authPage }) => {
     await authPage.click('button:has-text("新增规则")');
     await authPage.waitForTimeout(1000);
     const triggerSelect = authPage.locator('.modal select[id*="trigger"], .modal select[name*="trigger"]').first();
@@ -95,7 +95,7 @@ test.describe('Suite-10: 规则脚本', () => {
     }
   });
 
-  test('RULE-010: 保存规则脚本', async ({ authPage }) => {
+  test('RULE-010: 保存规则脚本 @quick', async ({ authPage }) => {
     await authPage.click('button:has-text("新增规则")');
     await authPage.waitForTimeout(1000);
     const nameInput = authPage.locator('.modal input[id*="name"]').first();

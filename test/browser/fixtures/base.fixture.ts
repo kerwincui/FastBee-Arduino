@@ -24,8 +24,11 @@ export const env = {
   serialPort: process.env.DEVICE_SERIAL || '',
 };
 
-/** 测试间隔延迟（防止设备过载，默认 1500ms，可通过 TEST_DELAY_MS 覆盖） */
-const INTER_TEST_DELAY_MS = parseInt(process.env.TEST_DELAY_MS || '1500', 10);
+/** 测试间隔延迟（防止设备过载，默认 800ms，可通过 TEST_DELAY_MS 覆盖） */
+const INTER_TEST_DELAY_MS = parseInt(process.env.TEST_DELAY_MS || '800', 10);
+
+/** 快速模式开关（环境变量 FAST_MODE=1 启用，减少等待和重试） */
+export const FAST_MODE = process.env.FAST_MODE === '1';
 
 /** 崩溃自动复位开关（默认关闭，设置 DEVICE_AUTO_RESET=1 启用） */
 const AUTO_RESET_ENABLED = process.env.DEVICE_AUTO_RESET === '1';
@@ -146,7 +149,8 @@ export async function waitForDeviceReady(page: Page, maxMs = 5000): Promise<void
  * 等待页面内容就绪：检测目标页面容器内是否有内容
  * 替代 navigateTo 中的固定 3000ms 等待
  */
-export async function waitForPageContent(page: Page, selector: string, maxMs = 8000): Promise<void> {
+export async function waitForPageContent(page: Page, selector: string, maxMs?: number): Promise<boolean> {
+  const timeout = maxMs ?? (FAST_MODE ? 5000 : 8000);
   try {
     await page.waitForFunction(
       (sel) => {
@@ -156,11 +160,13 @@ export async function waitForPageContent(page: Page, selector: string, maxMs = 8
         return el.children.length > 0 || el.textContent!.trim().length > 0;
       },
       selector,
-      { timeout: maxMs }
+      { timeout }
     );
+    return true;
   } catch {
     // 降级为短固定等待
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(FAST_MODE ? 1500 : 2000);
+    return false;
   }
 }
 
@@ -342,14 +348,22 @@ export const test = base.extend<TestFixtures>({
     await waitForDeviceReady(page, INTER_TEST_DELAY_MS);
   },
 
-  /** 导航到指定菜单页面（自适应等待内容加载） */
+  /** 导航到指定菜单页面（自适应等待内容加载 + 失败重试） */
   navigateTo: async ({ authPage: page }, use) => {
     await use(async (pageName: string) => {
-      await page.click(`.menu-item[data-page="${pageName}"]`);
-      // 等待页面框架加载
-      await page.waitForLoadState('domcontentloaded', { timeout: 20_000 });
-      // 自适应等待：检测目标页面容器有内容
-      await waitForPageContent(page, `#${pageName}-page`, 8000);
+      const maxRetries = FAST_MODE ? 1 : 2;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        await page.click(`.menu-item[data-page="${pageName}"]`);
+        // 等待页面框架加载
+        await page.waitForLoadState('domcontentloaded', { timeout: 20_000 });
+        // 自适应等待：检测目标页面容器有内容
+        const ok = await waitForPageContent(page, `#${pageName}-page`, 8000);
+        if (ok) return; // 导航成功
+        // 导航失败，短暂等待后重试
+        if (attempt < maxRetries) {
+          await page.waitForTimeout(2000);
+        }
+      }
     });
   },
 });

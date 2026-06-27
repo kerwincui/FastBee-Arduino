@@ -4,7 +4,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
 
   // ========== 登录页布局 ==========
 
-  test('UI-001: 登录页布局', async ({ page }) => {
+  test('UI-001: 登录页布局 @quick', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('#login-page')).toBeVisible();
     // 截图存档
@@ -123,7 +123,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
     console.log(`进度条数量: ${count}`);
   });
 
-  test('UI-010: 按钮组排列', async ({ authPage, navigateTo }) => {
+  test('UI-010: 按钮组排列 @quick', async ({ authPage, navigateTo }) => {
     await navigateTo('network');
     const buttons = authPage.locator('#network-page .fb-btn, #network-page button');
     const count = await buttons.count();
@@ -241,7 +241,7 @@ test.describe('Suite-15: UI布局与视觉回归', () => {
     }
   });
 
-  test('UI-020: 错误提示显示', async ({ page }) => {
+  test('UI-020: 错误提示显示 @quick', async ({ page }) => {
     await page.goto('/');
     await page.fill('#username', 'admin');
     await page.fill('#password', 'wrong_password');

@@ -46,8 +46,8 @@ export default defineConfig({
   ],
   use: {
     baseURL: `http://${deviceIp}:${devicePort}`,
-    screenshot: 'on',
-    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+    trace: 'off',
     actionTimeout: 20_000,
     navigationTimeout: 30_000,
     extraHTTPHeaders: {

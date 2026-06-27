@@ -8,7 +8,7 @@ test.describe('Suite-13: 用户管理', () => {
 
   // ========== 页面加载与展示 ==========
 
-  test('USER-001: 进入用户管理页', async ({ authPage }) => {
+  test('USER-001: 进入用户管理页 @quick', async ({ authPage }) => {
     await expect(authPage.locator('#users-page')).toBeVisible();
     await expect(authPage.locator('#users-title')).toContainText(/用户管理|User/);
   });
@@ -39,7 +39,7 @@ test.describe('Suite-13: 用户管理', () => {
 
   // ========== 表头验证 ==========
 
-  test('USER-005: 表头列完整', async ({ authPage }) => {
+  test('USER-005: 表头列完整 @quick', async ({ authPage }) => {
     const thead = authPage.locator('#users-page thead');
     await expect(thead).toBeVisible();
     const headers = await thead.textContent();
@@ -150,7 +150,7 @@ test.describe('Suite-13: 用户管理', () => {
 
   // ========== 多用户场景 ==========
 
-  test('USER-012: 用户列表刷新一致性', async ({ authPage }) => {
+  test('USER-012: 用户列表刷新一致性 @quick', async ({ authPage }) => {
     // 等待用户列表加载完成（异步加载）
     await authPage.waitForTimeout(3000);
     await expect(authPage.locator('#users-table-body tr')).toHaveCount(await authPage.locator('#users-table-body tr').count() || 1, { timeout: 10_000 }).catch(() => {});

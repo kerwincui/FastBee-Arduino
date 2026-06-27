@@ -8,7 +8,7 @@ test.describe('Suite-12: 文件管理', () => {
 
   // ========== 页面加载与展示 ==========
 
-  test('FILE-001: 进入文件管理页', async ({ authPage }) => {
+  test('FILE-001: 进入文件管理页 @quick', async ({ authPage }) => {
     await expect(authPage.locator('#data-page')).toBeVisible();
     await expect(authPage.locator('#data-page .fb-card-title')).toContainText(/文件管理|File/);
   });
@@ -41,7 +41,7 @@ test.describe('Suite-12: 文件管理', () => {
 
   // ========== 文件操作按钮 ==========
 
-  test('FILE-005: 刷新按钮', async ({ authPage }) => {
+  test('FILE-005: 刷新按钮 @quick', async ({ authPage }) => {
     const refreshBtn = authPage.locator('#fs-refresh-btn');
     await expect(refreshBtn).toBeVisible();
     await refreshBtn.click();
@@ -87,7 +87,7 @@ test.describe('Suite-12: 文件管理', () => {
     }
   });
 
-  test('FILE-010: 导入配置按钮存在', async ({ authPage }) => {
+  test('FILE-010: 导入配置按钮存在 @quick', async ({ authPage }) => {
     const importBtn = authPage.locator('#fs-import-config-btn');
     if (await importBtn.isVisible()) {
       await expect(importBtn).toBeVisible();

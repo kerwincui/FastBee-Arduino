@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("doctor", "static", "native", "build", "artifacts", "device-smoke", "device-soak", "all")]
+    [ValidateSet("doctor", "static", "native", "build", "artifacts", "device-smoke", "device-soak", "browser-quick", "browser", "all")]
     [string[]]$Checks = @("static", "native", "build"),
 
     [string[]]$Environments = @(
@@ -43,6 +43,8 @@ param(
     [switch]$RequireMqttConnected,
     [switch]$CleanArtifacts,
     [switch]$SkipBuildForArtifacts,
+    [string]$DeviceSerial = "",
+    [switch]$BrowserHeaded,
     [switch]$ContinueOnError
 )
 
@@ -62,7 +64,7 @@ if (-not $IsWin) {
 }
 
 if ($Checks -contains "all") {
-    $Checks = @("doctor", "static", "native", "build", "artifacts", "device-smoke", "device-soak")
+    $Checks = @("doctor", "static", "native", "build", "artifacts", "device-smoke", "device-soak", "browser-quick")
 }
 
 $Results = @()
@@ -318,6 +320,36 @@ function Invoke-DeviceSoak {
     Invoke-External $args
 }
 
+function Invoke-BrowserQuick {
+    $browserDir = Join-Path $ProjectDir "test\browser"
+    Push-Location $browserDir
+    try {
+        $env:DEVICE_IP = $BaseUrl -replace "^https?://", "" -replace ":\d+$", ""
+        $env:DEVICE_PORT = if ($Port) { $Port } else { "80" }
+        $env:TEST_DELAY_MS = "500"
+        $env:FAST_MODE = "1"
+        if ($DeviceSerial) { $env:DEVICE_SERIAL = $DeviceSerial }
+        Write-Host "运行快速浏览器测试（~62 个核心用例）..." -ForegroundColor Yellow
+        Invoke-External @("npx", "playwright", "test", "-c", "playwright.quick.config.ts")
+    } finally {
+        Pop-Location
+    }
+}
+
+function Invoke-BrowserFull {
+    $browserDir = Join-Path $ProjectDir "test\browser"
+    Push-Location $browserDir
+    try {
+        $env:DEVICE_IP = $BaseUrl -replace "^https?://", "" -replace ":\d+$", ""
+        $env:DEVICE_PORT = if ($Port) { $Port } else { "80" }
+        if ($DeviceSerial) { $env:DEVICE_SERIAL = $DeviceSerial }
+        Write-Host "运行完整浏览器测试（273 个用例）..." -ForegroundColor Yellow
+        Invoke-External @("npx", "playwright", "test")
+    } finally {
+        Pop-Location
+    }
+}
+
 Write-Host "FastBee test matrix" -ForegroundColor Green
 Write-Host "  Checks       : $($Checks -join ', ')"
 Write-Host "  Environments : $($Environments -join ', ')"
@@ -347,6 +379,12 @@ if ($Checks -contains "device-smoke") {
 }
 if ($Checks -contains "device-soak") {
     Invoke-TestStep -Name "device-soak" -Action { Invoke-DeviceSoak }
+}
+if ($Checks -contains "browser-quick") {
+    Invoke-TestStep -Name "browser-quick" -Action { Invoke-BrowserQuick }
+}
+if ($Checks -contains "browser") {
+    Invoke-TestStep -Name "browser" -Action { Invoke-BrowserFull }
 }
 
 Write-Host ""

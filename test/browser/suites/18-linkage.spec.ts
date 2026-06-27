@@ -4,7 +4,7 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
 
   // ========== 场景A：外设→执行→MQTT→规则脚本 全链路联动 ==========
 
-  test('LNK-001: 外设创建→执行规则控制→MQTT上报', async ({ authPage, navigateTo }) => {
+  test('LNK-001: 外设创建→执行规则控制→MQTT上报 @quick', async ({ authPage, navigateTo }) => {
     // 1. 获取已启用外设
     await navigateTo('peripheral');
     const periphs = await authPage.evaluate(async () => {
@@ -298,7 +298,7 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
     await expect(authPage.locator('#app-container')).toBeVisible();
   });
 
-  test('LNK-010: Modbus多设备轮询→多主题发布', async ({ authPage, navigateTo }) => {
+  test('LNK-010: Modbus多设备轮询→多主题发布 @quick', async ({ authPage, navigateTo }) => {
     await navigateTo('protocol');
 
     const modbusDevices = await authPage.evaluate(async () => {
@@ -600,7 +600,7 @@ test.describe('Suite-18: 多模块综合联动测试', () => {
     }
   });
 
-  test('LNK-020: 修改设备名称→MQTT主题变量替换', async ({ authPage, navigateTo }) => {
+  test('LNK-020: 修改设备名称→MQTT主题变量替换 @quick', async ({ authPage, navigateTo }) => {
     await navigateTo('device');
     const deviceName = await authPage.locator('#device-name, input[name="deviceName"]').first().inputValue().catch(() => '');
     console.log(`设备名: ${deviceName}`);

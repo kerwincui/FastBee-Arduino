@@ -15,10 +15,10 @@ param(
     [switch]$InstallOnly,           # 仅安装依赖
     [string]$WiFiSSID = "fastbee",
     [string]$WiFiPassword = "15208747707",
-    [string]$MQTTBroker = "d23de4e7b2.st1.iotda-device.cn-east-3.myhuaweicloud.com",
-    [string]$MQTTClientId = "6a03ed2d18855b39c518fbc7_xfxt_esp32_0_0_2026061809",
-    [string]$MQTTUsername = "6a03ed2d18855b39c518fbc7_xfxt_esp32",
-    [string]$MQTTPassword = "e027294c696eff9a35b9f950a1b6d2a2cf9832b74206afee7dfbb552d2e58bb3"
+    [string]$MQTTBroker = "",
+    [string]$MQTTClientId = "",
+    [string]$MQTTUsername = "",
+    [string]$MQTTPassword = ""
 )
 
 $ErrorActionPreference = "Stop"

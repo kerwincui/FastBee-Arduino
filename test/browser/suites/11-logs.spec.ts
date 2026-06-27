@@ -6,7 +6,7 @@ test.describe('Suite-11: 设备日志', () => {
     await navigateTo('logs');
   });
 
-  test('LOG-001: 进入设备日志页', async ({ authPage }) => {
+  test('LOG-001: 进入设备日志页 @quick', async ({ authPage }) => {
     await expect(authPage.locator('#logs-page')).toBeVisible();
   });
 
@@ -31,7 +31,7 @@ test.describe('Suite-11: 设备日志', () => {
     expect(content).toBeTruthy();
   });
 
-  test('LOG-005: 日志刷新列表按钮', async ({ authPage }) => {
+  test('LOG-005: 日志刷新列表按钮 @quick', async ({ authPage }) => {
     await authPage.click('#log-refresh-list-btn');
     await authPage.waitForTimeout(2000);
     await expect(authPage.locator('#log-file-select')).toBeVisible();

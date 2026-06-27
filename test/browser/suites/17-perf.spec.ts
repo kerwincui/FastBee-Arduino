@@ -4,7 +4,7 @@ test.describe('Suite-17: Web流畅性与性能测试', () => {
 
   // ========== 场景A：页面加载性能 ==========
 
-  test('PERF-001: 登录页首次加载时间 < 5秒', async ({ page }) => {
+  test('PERF-001: 登录页首次加载时间 < 5秒 @quick', async ({ page }) => {
     await page.context().clearCookies();
     const start = Date.now();
     await page.goto('/', { waitUntil: 'load' });
@@ -179,7 +179,7 @@ test.describe('Suite-17: Web流畅性与性能测试', () => {
     }
   });
 
-  test('PERF-010: 模态框打开/关闭动画 < 300ms', async ({ authPage }) => {
+  test('PERF-010: 模态框打开/关闭动画 < 300ms @quick', async ({ authPage }) => {
     // 外设页新建模态框
     await authPage.click('.menu-item[data-page="peripheral"]');
     await authPage.waitForLoadState('networkidle');
@@ -434,7 +434,7 @@ test.describe('Suite-17: Web流畅性与性能测试', () => {
 
   // ========== 场景D：资源与内存监控 ==========
 
-  test('PERF-020: 设备Heap内存稳定性(2分钟)', async ({ authPage }) => {
+  test('PERF-020: 设备Heap内存稳定性(2分钟) @quick', async ({ authPage }) => {
     await authPage.click('.menu-item[data-page="dashboard"]');
     await authPage.waitForLoadState('networkidle');
 

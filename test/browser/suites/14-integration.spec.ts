@@ -4,7 +4,7 @@ test.describe('Suite-14: 跨页面集成测试', () => {
 
   // ========== 完整配置流程 ==========
 
-  test('INT-001: 完整WiFi配置流程', async ({ authPage, navigateTo }) => {
+  test('INT-001: 完整WiFi配置流程 @quick', async ({ authPage, navigateTo }) => {
     // 1. 登录 → 网络设置 → 配置 WiFi → 保存
     await navigateTo('network');
     await authPage.fill('#wifi-ssid', env.wifi.ssid);
@@ -67,7 +67,7 @@ test.describe('Suite-14: 跨页面集成测试', () => {
     console.log(`原始设备名称: ${originalName}`);
   });
 
-  test('INT-005: 设备重启后全功能验证', async ({ authPage, navigateTo }) => {
+  test('INT-005: 设备重启后全功能验证 @quick', async ({ authPage, navigateTo }) => {
     // 不实际重启，验证健康检查机制
     const healthOk = await authPage.evaluate(async () => {
       try {
@@ -149,7 +149,7 @@ test.describe('Suite-14: 跨页面集成测试', () => {
     }
   });
 
-  test('INT-010: 日志记录操作验证', async ({ authPage, navigateTo }) => {
+  test('INT-010: 日志记录操作验证 @quick', async ({ authPage, navigateTo }) => {
     // 1. 执行一些操作（网络设置）
     await navigateTo('network');
     await authPage.waitForLoadState('domcontentloaded');

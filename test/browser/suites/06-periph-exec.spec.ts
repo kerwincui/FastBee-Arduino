@@ -57,7 +57,7 @@ test.describe('Suite-06: 外设执行', () => {
 
   // ========== 场景A: 执行规则列表与页面结构 ==========
 
-  test('EXEC-001: 进入外设执行页', async ({ authPage }) => {
+  test('EXEC-001: 进入外设执行页 @quick', async ({ authPage }) => {
     await expect(authPage.locator('#periph-exec-page')).toBeVisible();
     await expect(authPage.locator('#periph-exec-page-add-btn')).toBeVisible();
     await expect(authPage.locator('#periph-exec-refresh-btn')).toBeVisible();
@@ -348,7 +348,7 @@ test.describe('Suite-06: 外设执行', () => {
 
   // ========== 场景D: 执行规则 CRUD 闭环 ==========
 
-  test('EXEC-030: 完整规则创建流程', async ({ authPage }) => {
+  test('EXEC-030: 完整规则创建流程 @quick', async ({ authPage }) => {
     const uniqueName = 'exec-crud-' + Date.now().toString(36).slice(-6);
 
     // 1. 新增规则
