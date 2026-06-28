@@ -1178,13 +1178,15 @@ bool FBNetworkManager::ensureLastResortAP() {
     LOG_WARNING("NetworkManager: All network paths failed. Starting last-resort AP...");
     WiFi.mode(WIFI_AP);
     delay(100);
-    if (WiFi.softAP("fastbee-ap", "12345678", 6, 0, 4)) {
+    // 生成唯一 SSID，避免多台设备同名热点在 WiFi 列表中只显示一个
+    String lastResortSSID = "fastbee-" + String(wifiManager->getChipID().substring(0, 6));
+    if (WiFi.softAP(lastResortSSID.c_str(), "12345678", 6, 0, 4)) {
         IPAddress apIP(192, 168, 4, 1);
         WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
         statusInfo.apIPAddress = apIP.toString();
         isInitialized = true;
-        LOGGER.infof(">>> LAST-RESORT AP: fastbee-ap  IP: %s <<<", apIP.toString().c_str());
-        LOG_INFO("NetworkManager: Last-resort AP started - connect to 'fastbee-ap' (pwd: 12345678)");
+        LOGGER.infof(">>> LAST-RESORT AP: %s  IP: %s <<<", lastResortSSID.c_str(), apIP.toString().c_str());
+        LOG_INFO("NetworkManager: Last-resort AP started - connect to '" + lastResortSSID + "' (pwd: 12345678)");
         preferences.putInt("init_fail_cnt", 0);
         return true;
     }

@@ -461,7 +461,7 @@ void test_factory_reset_writes_defaults() {
     if (writeDefault("/config/device.json", DEFAULT_DEVICE)) resetCount++;
 
     // Write default network.json (WiFi cleared, apPassword=admin123, includes ethernet/cellular)
-    const char* DEFAULT_NETWORK = "{\"mode\":0,\"apSSID\":\"fastbee-ap\",\"apPassword\":\"admin123\",\"staSSID\":\"\",\"staPassword\":\"\",\"networks\":[],\"ethernet\":{\"csPin\":47},\"cellular\":{\"apn\":\"CMNET\"}}";
+    const char* DEFAULT_NETWORK = "{\"mode\":0,\"apSSID\":\"\",\"apPassword\":\"admin123\",\"staSSID\":\"\",\"staPassword\":\"\",\"networks\":[],\"ethernet\":{\"csPin\":47},\"cellular\":{\"apn\":\"CMNET\"}}";
     if (writeDefault("/config/network.json", DEFAULT_NETWORK)) resetCount++;
 
     // Write default users.json (no version field, only admin user)
@@ -520,7 +520,7 @@ void test_factory_reset_writes_defaults() {
     String networkContent = g_mockFiles["/config/network.json"];
     TEST_ASSERT_TRUE(networkContent.indexOf("\"staSSID\":\"\"") >= 0);
     TEST_ASSERT_TRUE(networkContent.indexOf("\"staPassword\":\"\"") >= 0);
-    TEST_ASSERT_TRUE(networkContent.indexOf("fastbee-ap") >= 0);
+    TEST_ASSERT_TRUE(networkContent.indexOf("\"apSSID\":\"\"") >= 0);
     TEST_ASSERT_TRUE(networkContent.indexOf("\"apPassword\":\"admin123\"") >= 0);
     TEST_ASSERT_FALSE(networkContent.indexOf("home-wifi") >= 0);
     TEST_ASSERT_TRUE(networkContent.indexOf("\"ethernet\":") >= 0);

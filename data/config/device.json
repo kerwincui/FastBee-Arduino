@@ -2,7 +2,7 @@
   "deviceId": "",
   "productNumber": 0,
   "userId": "1",
-  "deviceName": "FastBee-Device",
+  "deviceName": "fastbee",
   "location": "",
   "description": "FastBee-Arduino",
   "enableNTP": true,

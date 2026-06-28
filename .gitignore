@@ -38,9 +38,7 @@ sdkconfig*
 
 # Web frontend: source lives in web-src/, build artifacts are generated per-profile (lite/standard/full).
 # Run `node scripts/gzip-www.js` or use `deploy.ps1` (auto-generates if missing).
-data/www/**/*.html
-data/www/**/*.js
-data/www/**/*.css
-data/www/**/*.gz
-data/www/js/modules/device-control/
-data/www/js/modules/protocol/
+# All files in data/www are dynamically generated except assets directory
+data/www/
+!data/www/assets/
+!data/www/assets/**

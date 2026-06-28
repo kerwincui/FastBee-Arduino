@@ -1,7 +1,7 @@
 {
   "mode": 0,
   "networkType": 0,
-  "apSSID": "fastbee-ap",
+  "apSSID": "",
   "apPassword": "admin123",
   "apIP": "192.168.4.1",
   "apChannel": 1,

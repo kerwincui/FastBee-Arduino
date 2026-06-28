@@ -106,7 +106,7 @@ struct WiFiConfig {
     // 注：deviceName 已移至设备配置(device.json)，AP SSID 生成时从 device.json 读取
     
     // AP 配置（首次启动或 STA 失败时的配网热点）
-    String apSSID = "fastbee-ap";  // 默认 AP 热点名称，确保不为空
+    String apSSID = "";                // 留空时自动生成唯一 SSID：deviceName_芯片ID前6位
     String apPassword = "";            // 开放热点，方便首次配网
     String apIP = "192.168.4.1";       // AP 固定IP，冲突时自动切换备用网段
     uint8_t apChannel = 1;

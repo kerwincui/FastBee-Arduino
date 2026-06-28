@@ -22,7 +22,7 @@
  * 由 WiFiManager::_readDeviceName() 从 device.json 读取。
  */
 struct TestAPConfig {
-    String apSSID = "fastbee-ap";
+    String apSSID = "";
     String apPassword = "";
     String apIP = "192.168.4.1";
     uint8_t apChannel = 1;
@@ -102,8 +102,8 @@ void test_ap_config_struct_defaults() {
     TestAPConfig cfg;
 
     // 默认值验证
-    TEST_ASSERT_EQUAL_STRING("fastbee-ap", cfg.apSSID.c_str());
-    TestLog::step("Default apSSID = fastbee-ap");
+    TEST_ASSERT_EQUAL_STRING("", cfg.apSSID.c_str());
+    TestLog::step("Default apSSID is empty (auto-generate unique SSID with chipID)");
 
     TEST_ASSERT_EQUAL_STRING("", cfg.apPassword.c_str());
     TestLog::step("Default apPassword is empty (open AP for provisioning)");

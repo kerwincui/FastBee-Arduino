@@ -743,11 +743,11 @@ bool FastBeeFramework::initialize() {
         ets_printf("mDNS URL: http://fastbee.local\n");
     } else if (WiFi.softAPIP() != IPAddress(0,0,0,0)) {
         ets_printf("Mode: AP (Access Point)\n");
-        String apSSID = NetConst::DEFAULT_AP_SSID;
+        String apSSID = WiFi.softAPSSID();  // 优先读取实际广播的 SSID
+        if (apSSID.isEmpty()) apSSID = NetConst::DEFAULT_AP_SSID;
         String apPass = NetConst::DEFAULT_AP_PASSWORD;
         if (network) {
             WiFiConfig cfg = network->getConfig();
-            if (cfg.apSSID.length() > 0) apSSID = cfg.apSSID;
             if (cfg.apPassword.length() > 0) apPass = cfg.apPassword;
         }
         ets_printf("WiFi Name: %s\n", apSSID.c_str());
