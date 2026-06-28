@@ -169,7 +169,15 @@
 
             const saveBtn = document.getElementById('network-type-save-btn');
             if (saveBtn) saveBtn.disabled = false;
-            setTimeout(() => this.loadNetworkStatus(), 300);
+            setTimeout(() => {
+                if (value === '2' || value === '1') {
+                    // 4G或以太网：启动状态轮询（4G最长4分钟，以太网1分钟）
+                    var pollDuration = (value === '2') ? 240000 : 60000;
+                    this._startNetworkStatusPolling(pollDuration, null, null, null, 5000);
+                } else {
+                    this.loadNetworkStatus();
+                }
+            }, 300);
         },
 
         _renderWifiNote(text) {
@@ -342,6 +350,83 @@
 
         _refreshNetworkStatusSoon(delayMs) {
             setTimeout(() => this.loadNetworkStatus(), delayMs || 800);
+        },
+
+        /**
+         * 停止网络状态轮询
+         */
+        _stopNetworkStatusPolling() {
+            if (this._networkStatusPollingTimer) {
+                clearInterval(this._networkStatusPollingTimer);
+                this._networkStatusPollingTimer = null;
+            }
+            if (this._networkStatusPollingCountdown) {
+                clearInterval(this._networkStatusPollingCountdown);
+                this._networkStatusPollingCountdown = null;
+            }
+            this._networkStatusPollingRemaining = 0;
+        },
+
+        /**
+         * 启动网络状态自动轮询（4G/以太网模式保存配置后使用）
+         * @param {number} durationMs - 轮询总持续时间（毫秒），默认 240000 (4分钟)
+         * @param {HTMLButtonElement} btn - 保存按钮元素
+         * @param {HTMLElement} btnTextEl - 按钮文本元素
+         * @param {string} originalText - 按钮原始文本
+         * @param {number} intervalMs - 轮询间隔（毫秒），默认 5000
+         */
+        _startNetworkStatusPolling(durationMs, btn, btnTextEl, originalText, intervalMs) {
+            this._stopNetworkStatusPolling();
+            durationMs = durationMs || 240000;
+            intervalMs = intervalMs || 5000;
+            var self = this;
+            var elapsed = 0;
+            var totalSec = Math.ceil(durationMs / 1000);
+            this._networkStatusPollingRemaining = totalSec;
+
+            // 倒计时：每秒更新按钮文字
+            this._networkStatusPollingCountdown = setInterval(function() {
+                self._networkStatusPollingRemaining--;
+                var remaining = self._networkStatusPollingRemaining;
+                if (remaining <= 0) {
+                    self._stopNetworkStatusPolling();
+                    if (btn) btn.disabled = false;
+                    if (btnTextEl) btnTextEl.textContent = originalText;
+                } else {
+                    if (btnTextEl) btnTextEl.textContent = '网络连接中... (' + remaining + 's)';
+                }
+            }, 1000);
+
+            // 轮询：每 intervalMs 毫秒刷新一次网络状态
+            this._networkStatusPollingTimer = setInterval(function() {
+                elapsed += intervalMs;
+                self.loadNetworkStatus();
+                // 检查状态面板是否已显示"已连接"
+                var connected = self._isAnyStatusPanelConnected();
+                if (connected || elapsed >= durationMs) {
+                    self._stopNetworkStatusPolling();
+                    if (btn) btn.disabled = false;
+                    if (btnTextEl) btnTextEl.textContent = originalText;
+                    if (connected) {
+                        Notification.success('网络连接成功！', '网络设置');
+                    }
+                }
+            }, intervalMs);
+
+            // 首次立即刷新
+            setTimeout(function() { self.loadNetworkStatus(); }, 1000);
+        },
+
+        /**
+         * 检测当前是否有任何状态面板显示"已连接"
+         */
+        _isAnyStatusPanelConnected() {
+            var badges = ['wifi-status-badge', 'eth-status-badge', 'cell-status-badge'];
+            for (var i = 0; i < badges.length; i++) {
+                var el = document.getElementById(badges[i]);
+                if (el && el.classList.contains('status-connected')) return true;
+            }
+            return false;
         },
 
         /**
@@ -708,7 +793,7 @@
                             html: true,
                             duration: 12000
                         });
-                        this._startSaveBtnCountdown(submitBtn, submitBtnText, originalText, 15);
+                        this._startNetworkStatusPolling(60000, submitBtn, submitBtnText, originalText);
                     } else {
                         Notification.error(res?.error || '保存失败', '网络设置');
                         if (submitBtn) submitBtn.disabled = false;
@@ -756,7 +841,7 @@
                             html: true,
                             duration: 12000
                         });
-                        this._startSaveBtnCountdown(submitBtn, submitBtnText, originalText, 15);
+                        this._startNetworkStatusPolling(240000, submitBtn, submitBtnText, originalText);
                     } else {
                         Notification.error(res?.error || '保存失败', '网络设置');
                         if (submitBtn) submitBtn.disabled = false;

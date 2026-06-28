@@ -807,6 +807,330 @@ void test_ec801e_all_clients_use_nothrow_alloc() {
 }
 
 // ============================================================
+//  源码回归测试：4G 状态轮询实时性修复
+// ============================================================
+
+/**
+ * @brief forceUpdate() 方法存在且使用 checkPdpActive
+ */
+void test_ec801e_forceUpdate_exists() {
+    TestLog::testStart("EC801E: forceUpdate() exists and uses checkPdpActive");
+
+    std::string cell = readSrc("src/network/CellularAdapter.cpp");
+    std::string hdr = readSrc("include/network/CellularAdapter.h");
+    TEST_ASSERT_TRUE_MESSAGE(!cell.empty(), "CellularAdapter.cpp must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(!hdr.empty(), "CellularAdapter.h must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        hdr.find("forceUpdate()") != std::string::npos,
+        "Header must declare forceUpdate()");
+
+    std::string body = extractFuncBody(cell, "CellularAdapter::forceUpdate()", 1500);
+    TEST_ASSERT_TRUE_MESSAGE(!body.empty(), "forceUpdate() implementation must exist");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("checkPdpActive()") != std::string::npos,
+        "forceUpdate must use checkPdpActive() for real-time PDP check");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("_lastCheckTime = millis()") != std::string::npos,
+        "forceUpdate must update _lastCheckTime to avoid rapid duplicate checks");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("_connected = true") != std::string::npos,
+        "forceUpdate must set _connected = true when PDP is active");
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("_connected = false") != std::string::npos,
+        "forceUpdate must set _connected = false when PDP is inactive");
+
+    TestLog::step("forceUpdate uses checkPdpActive and updates _connected flag");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief update() 使用 10 秒检查间隔（而非之前的 30 秒）
+ */
+void test_ec801e_update_interval_10s() {
+    TestLog::testStart("EC801E: update() uses 10s check interval");
+
+    std::string cell = readSrc("src/network/CellularAdapter.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!cell.empty(), "CellularAdapter.cpp must be readable");
+
+    std::string body = extractFuncBody(cell, "CellularAdapter::update()", 2000);
+    TEST_ASSERT_TRUE_MESSAGE(!body.empty(), "update() must exist");
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("10000") != std::string::npos,
+        "update() must use 10000ms (10s) check interval for faster status updates");
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("30000") == std::string::npos,
+        "update() must NOT use 30000ms interval (reduced to 10s)");
+
+    TestLog::step("update() uses 10s interval (reduced from 30s)");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief updateStatusInfo() 在读取 isConnected() 前调用 forceUpdate()
+ */
+void test_ec801e_updateStatusInfo_calls_forceUpdate() {
+    TestLog::testStart("EC801E: updateStatusInfo calls forceUpdate before isConnected");
+
+    std::string nmc = readSrc("src/network/NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!nmc.empty(), "NetworkManager.cpp must be readable");
+
+    // 锚定 updateStatusInfo 函数，而非第一个 NET_4G 块
+    auto funcPos = nmc.find("FBNetworkManager::updateStatusInfo()");
+    TEST_ASSERT_TRUE_MESSAGE(funcPos != std::string::npos, "updateStatusInfo() must exist");
+
+    auto cell4gPos = nmc.find("if (wifiConfig.networkType == NetworkType::NET_4G && cellularAdapter)", funcPos);
+    TEST_ASSERT_TRUE_MESSAGE(cell4gPos != std::string::npos, "NET_4G block must exist after updateStatusInfo");
+
+    auto blockEnd = nmc.find("#endif", cell4gPos);
+    std::string block4g = nmc.substr(cell4gPos, blockEnd - cell4gPos);
+
+    size_t forceUpdatePos = block4g.find("forceUpdate()");
+    size_t isConnectedPos = block4g.find("isConnected()");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        forceUpdatePos != std::string::npos,
+        "updateStatusInfo NET_4G block must call cellularAdapter->forceUpdate()");
+    TEST_ASSERT_TRUE_MESSAGE(
+        isConnectedPos != std::string::npos,
+        "updateStatusInfo NET_4G block must call cellularAdapter->isConnected()");
+    TEST_ASSERT_TRUE_MESSAGE(
+        forceUpdatePos < isConnectedPos,
+        "forceUpdate() must be called BEFORE isConnected() for real-time status");
+
+    TestLog::step("forceUpdate() called before isConnected() in updateStatusInfo");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 前端 saveCellularConfig 保存后启动状态自动轮询
+ */
+void test_frontend_cellular_save_polling() {
+    TestLog::testStart("Frontend: saveCellularConfig starts status polling");
+
+    std::string js = readSrc("web-src/modules/runtime/network.js");
+    TEST_ASSERT_TRUE_MESSAGE(!js.empty(), "network.js must be readable");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        js.find("_startNetworkStatusPolling(") != std::string::npos,
+        "network.js must have _startNetworkStatusPolling() method");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        js.find("_stopNetworkStatusPolling(") != std::string::npos,
+        "network.js must have _stopNetworkStatusPolling() method");
+
+    // 在整个文件中搜索 _startNetworkStatusPolling(240000 调用
+    TEST_ASSERT_TRUE_MESSAGE(
+        js.find("_startNetworkStatusPolling(240000") != std::string::npos,
+        "saveCellularConfig must start 4-minute polling after successful save");
+
+    // 验证 240000 调用在 _startSaveBtnCountdown 之后（即不是旧代码）
+    auto pollingPos = js.find("_startNetworkStatusPolling(240000");
+    auto cellSavePos = js.find("saveCellularConfig()");
+    TEST_ASSERT_TRUE_MESSAGE(
+        cellSavePos != std::string::npos && pollingPos > cellSavePos,
+        "The 240000 polling call must appear after saveCellularConfig");
+
+    TestLog::step("saveCellularConfig starts 4-minute status polling");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 前端联网方式切换到 4G/以太网时启动状态轮询
+ */
+void test_frontend_network_type_change_polling() {
+    TestLog::testStart("Frontend: _onNetworkTypeChange starts polling for 4G/Ethernet");
+
+    std::string js = readSrc("web-src/modules/runtime/network.js");
+    TEST_ASSERT_TRUE_MESSAGE(!js.empty(), "network.js must be readable");
+
+    // 验证 _onNetworkTypeChange 定义中存在 240000 和 _startNetworkStatusPolling
+    auto defPos = js.find("_onNetworkTypeChange(value)");
+    TEST_ASSERT_TRUE_MESSAGE(defPos != std::string::npos, "_onNetworkTypeChange definition must exist");
+
+    // 找到下一个函数定义边界（“        _renderWifiNote” 或 “        _setWifiMode”）
+    auto nextFunc = js.find("_renderWifiNote(", defPos);
+    TEST_ASSERT_TRUE_MESSAGE(nextFunc != std::string::npos, "Next function after _onNetworkTypeChange must exist");
+    std::string changeBlock = js.substr(defPos, nextFunc - defPos);
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        changeBlock.find("_startNetworkStatusPolling") != std::string::npos,
+        "_onNetworkTypeChange must start polling for 4G/ethernet modes");
+    TEST_ASSERT_TRUE_MESSAGE(
+        changeBlock.find("240000") != std::string::npos,
+        "4G mode must use 240000ms (4 min) polling duration");
+
+    TestLog::step("Network type change starts polling for 4G/ethernet");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 前端 _isAnyStatusPanelConnected 检测方法
+ */
+void test_frontend_status_panel_connected_detection() {
+    TestLog::testStart("Frontend: _isAnyStatusPanelConnected detects connected state");
+
+    std::string js = readSrc("web-src/modules/runtime/network.js");
+    TEST_ASSERT_TRUE_MESSAGE(!js.empty(), "network.js must be readable");
+
+    // 搜索函数定义而非调用点
+    auto defPos = js.find("_isAnyStatusPanelConnected() {");
+    TEST_ASSERT_TRUE_MESSAGE(
+        defPos != std::string::npos,
+        "network.js must have _isAnyStatusPanelConnected() method definition");
+
+    // 提取足够大的块覆盖完整函数体
+    auto blockEnd = js.find("\n        },", defPos);
+    std::string block = js.substr(defPos, blockEnd - defPos);
+    TEST_ASSERT_TRUE_MESSAGE(
+        block.find("status-connected") != std::string::npos,
+        "_isAnyStatusPanelConnected must check for status-connected class");
+
+    TEST_ASSERT_TRUE_MESSAGE(
+        block.find("wifi-status-badge") != std::string::npos,
+        "Must check WiFi status badge");
+    TEST_ASSERT_TRUE_MESSAGE(
+        block.find("eth-status-badge") != std::string::npos,
+        "Must check Ethernet status badge");
+    TEST_ASSERT_TRUE_MESSAGE(
+        block.find("cell-status-badge") != std::string::npos,
+        "Must check Cellular status badge");
+
+    TestLog::step("_isAnyStatusPanelConnected checks all three badges");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief forceUpdate() 安全守卫：未初始化/模块忙时不执行 PDP 检查
+ */
+void test_ec801e_forceUpdate_safety_guards() {
+    TestLog::testStart("EC801E: forceUpdate() has safety guards");
+
+    std::string cell = readSrc("src/network/CellularAdapter.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!cell.empty(), "CellularAdapter.cpp must be readable");
+
+    std::string body = extractFuncBody(cell, "CellularAdapter::forceUpdate()", 1500);
+    TEST_ASSERT_TRUE_MESSAGE(!body.empty(), "forceUpdate() must exist");
+
+    // 必须有 _initialized 和 _modem 守卫
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("!_initialized") != std::string::npos &&
+        body.find("!_modem") != std::string::npos,
+        "forceUpdate must guard against uninitialized state and null modem");
+
+    // 必须有 _clientBusy 守卫（避免与 MQTT AT 会话冲突）
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("_clientBusy") != std::string::npos,
+        "forceUpdate must skip when AT client is busy");
+
+    // 必须有 _qsslClient->isBusy() 守卫
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("_qsslClient") != std::string::npos &&
+        body.find("isBusy()") != std::string::npos,
+        "forceUpdate must skip when QSSL AT session is busy");
+
+    // PDP 丢失时必须清理所有客户端
+    TEST_ASSERT_TRUE_MESSAGE(
+        body.find("_softwareTlsClient->stop()") != std::string::npos &&
+        body.find("_trackedClient->stop()") != std::string::npos &&
+        body.find("_gsmClient->stop()") != std::string::npos &&
+        body.find("_qsslClient->stop()") != std::string::npos,
+        "forceUpdate must stop all cellular clients when PDP is lost");
+
+    TestLog::step("forceUpdate has init/busy guards and cleans up all clients on PDP loss");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief saveEthernetConfig 保存后启动 60 秒状态轮询
+ */
+void test_frontend_ethernet_save_polling() {
+    TestLog::testStart("Frontend: saveEthernetConfig starts 60s status polling");
+
+    std::string js = readSrc("web-src/modules/runtime/network.js");
+    TEST_ASSERT_TRUE_MESSAGE(!js.empty(), "network.js must be readable");
+
+    // 验证 saveEthernetConfig 保存成功后调用 _startNetworkStatusPolling(60000
+    TEST_ASSERT_TRUE_MESSAGE(
+        js.find("_startNetworkStatusPolling(60000") != std::string::npos,
+        "saveEthernetConfig must start 60s polling after successful save");
+
+    // 验证 60000 调用在 saveEthernetConfig 函数范围内
+    auto ethSavePos = js.find("saveEthernetConfig()");
+    auto polling60Pos = js.find("_startNetworkStatusPolling(60000");
+    TEST_ASSERT_TRUE_MESSAGE(
+        ethSavePos != std::string::npos && polling60Pos != std::string::npos,
+        "Both saveEthernetConfig and 60000 polling must exist");
+
+    TestLog::step("saveEthernetConfig starts 60s status polling");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief _startNetworkStatusPolling 检测到 connected 后自动停止
+ */
+void test_frontend_polling_auto_stop_on_connected() {
+    TestLog::testStart("Frontend: polling auto-stops when connected detected");
+
+    std::string js = readSrc("web-src/modules/runtime/network.js");
+    TEST_ASSERT_TRUE_MESSAGE(!js.empty(), "network.js must be readable");
+
+    // 锚定 _startNetworkStatusPolling 函数定义
+    auto defPos = js.find("_startNetworkStatusPolling(durationMs");
+    TEST_ASSERT_TRUE_MESSAGE(defPos != std::string::npos, "_startNetworkStatusPolling definition must exist");
+
+    // 提取函数体：找到函数结束标记 "}," 后的下一个函数注释 "/**"
+    auto commentAfter = js.find("/**", defPos + 50);
+    TEST_ASSERT_TRUE_MESSAGE(commentAfter != std::string::npos, "Next function comment must exist");
+    std::string pollingBlock = js.substr(defPos, commentAfter - defPos);
+
+    // 必须在轮询回调中调用 _isAnyStatusPanelConnected 检测连接状态
+    TEST_ASSERT_TRUE_MESSAGE(
+        pollingBlock.find("_isAnyStatusPanelConnected()") != std::string::npos,
+        "Polling must check _isAnyStatusPanelConnected() for auto-stop");
+
+    // 检测到连接后必须调用 _stopNetworkStatusPolling
+    TEST_ASSERT_TRUE_MESSAGE(
+        pollingBlock.find("_stopNetworkStatusPolling()") != std::string::npos,
+        "Polling must call _stopNetworkStatusPolling() when connected");
+
+    // 必须恢复按钮状态
+    TEST_ASSERT_TRUE_MESSAGE(
+        pollingBlock.find("btn.disabled = false") != std::string::npos,
+        "Polling must re-enable the save button after stopping");
+
+    TestLog::step("Polling auto-stops on connected and restores button state");
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief _onNetworkTypeChange 切换到 WiFi 时停止轮询并加载状态
+ */
+void test_frontend_network_type_change_wifi_stops_polling() {
+    TestLog::testStart("Frontend: _onNetworkTypeChange stops polling for WiFi");
+
+    std::string js = readSrc("web-src/modules/runtime/network.js");
+    TEST_ASSERT_TRUE_MESSAGE(!js.empty(), "network.js must be readable");
+
+    auto defPos = js.find("_onNetworkTypeChange(value)");
+    TEST_ASSERT_TRUE_MESSAGE(defPos != std::string::npos, "_onNetworkTypeChange definition must exist");
+
+    auto nextFunc = js.find("_renderWifiNote(", defPos);
+    std::string changeBlock = js.substr(defPos, nextFunc - defPos);
+
+    // WiFi 模式下必须调用 loadNetworkStatus（即时加载，不轮询）
+    TEST_ASSERT_TRUE_MESSAGE(
+        changeBlock.find("loadNetworkStatus()") != std::string::npos,
+        "WiFi mode must call loadNetworkStatus() for immediate status");
+
+    TestLog::step("WiFi mode uses immediate loadNetworkStatus, not polling");
+    TestLog::testEnd(true);
+}
+
+// ============================================================
 //  测试组注册
 // ============================================================
 
@@ -831,6 +1155,18 @@ void test_cellular_adapter_group() {
     // NetworkManager 4G 初始化路径
     RUN_TEST(test_ec801e_network_manager_4g_init_path);
     RUN_TEST(test_ec801e_diagnostic_uses_ets_printf);
+
+    // 4G 状态轮询实时性修复
+    RUN_TEST(test_ec801e_forceUpdate_exists);
+    RUN_TEST(test_ec801e_forceUpdate_safety_guards);
+    RUN_TEST(test_ec801e_update_interval_10s);
+    RUN_TEST(test_ec801e_updateStatusInfo_calls_forceUpdate);
+    RUN_TEST(test_frontend_cellular_save_polling);
+    RUN_TEST(test_frontend_ethernet_save_polling);
+    RUN_TEST(test_frontend_network_type_change_polling);
+    RUN_TEST(test_frontend_network_type_change_wifi_stops_polling);
+    RUN_TEST(test_frontend_polling_auto_stop_on_connected);
+    RUN_TEST(test_frontend_status_panel_connected_detection);
 
     // MockMultiNetwork 4G 行为测试
     RUN_TEST(test_4g_success_hybrid_mode);

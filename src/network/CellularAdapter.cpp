@@ -857,9 +857,9 @@ IPAddress CellularAdapter::localIP() const {
 void CellularAdapter::update() {
     if (!_initialized || !_modem) return;
 
-    // 每 30 秒检查连接状态
+    // 每 10 秒检查连接状态
     unsigned long now = millis();
-    if (now - _lastCheckTime < 30000) return;
+    if (now - _lastCheckTime < 10000) return;
     _lastCheckTime = now;
     if (_clientBusy) {
         ets_printf("[4G] Skipping PDP check while cellular client AT session is busy\n");
@@ -885,6 +885,26 @@ void CellularAdapter::update() {
     } else if (!_connected) {
         _connected = true;
         ets_printf("[4G] GPRS connection restored\n");
+    }
+}
+
+void CellularAdapter::forceUpdate() {
+    if (!_initialized || !_modem) return;
+    _lastCheckTime = millis();
+    if (_clientBusy || (_qsslClient && _qsslClient->isBusy())) return;
+    bool gprsOk = checkPdpActive();
+    if (!gprsOk) {
+        if (_connected) {
+            _connected = false;
+            if (_softwareTlsClient) _softwareTlsClient->stop();
+            if (_trackedClient) _trackedClient->stop();
+            if (_gsmClient) _gsmClient->stop();
+            if (_qsslClient) _qsslClient->stop();
+            ets_printf("[4G] GPRS connection lost (PDP no IP, forced check)\n");
+        }
+    } else if (!_connected) {
+        _connected = true;
+        ets_printf("[4G] GPRS connection restored (forced check)\n");
     }
 }
 

@@ -180,6 +180,11 @@ public:
     void update() override;
 
     /**
+     * @brief 强制刷新PDP状态（API请求时调用，跳过30秒间隔）
+     */
+    void forceUpdate();
+
+    /**
      * @brief 重连网络
      */
     bool reconnect();

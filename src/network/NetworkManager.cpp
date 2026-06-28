@@ -1427,6 +1427,7 @@ void FBNetworkManager::updateStatusInfo() {
 
 #if FASTBEE_ENABLE_CELLULAR
         if (wifiConfig.networkType == NetworkType::NET_4G && cellularAdapter) {
+            cellularAdapter->forceUpdate();  // API请求时强制刷新PDP状态
             bool connected = cellularAdapter->isConnected();
             statusInfo.status = connected ? NetworkStatus::CONNECTED : NetworkStatus::DISCONNECTED;
             statusInfo.ipAddress = connected ? cellularAdapter->localIP().toString() : "";
