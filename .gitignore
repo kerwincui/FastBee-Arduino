@@ -2,6 +2,7 @@
 .qoderignore
 .qoder
 .cursor
+.vscode
 .codex
 .codex-logs
 dist/
