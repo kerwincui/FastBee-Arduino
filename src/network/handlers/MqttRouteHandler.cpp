@@ -92,6 +92,7 @@ static bool restoreMqttConfigFromBackup() {
 // 自动恢复检查（在主循环中周期调用）
 // 当测试连接成功或超时后，自动恢复原始 MQTT 配置并重启客户端
 // ============================================================================
+static bool loadMqttStatusConfig(bool& enabled, String& server, int& port, String& clientId); // forward decl
 static unsigned long s_lastRestoreCheck = 0;
 
 void MqttRouteHandler::checkPendingTestRestore() {
@@ -119,13 +120,27 @@ void MqttRouteHandler::checkPendingTestRestore() {
         if (restoreMqttConfigFromBackup()) {
             s_mqttTestJustRestored = true;
             if (fw && fw->getProtocolManager()) {
+                // 检查恢复后的配置是否启用 MQTT
+                bool mqttEnabled = false;
+                String dummyServer;
+                int dummyPort = 0;
+                String dummyClientId;
+                loadMqttStatusConfig(mqttEnabled, dummyServer, dummyPort, dummyClientId);
+
                 MQTTClient* mqtt = fw->getProtocolManager()->getMQTTClient();
                 if (mqtt && !mqtt->isStopped()) {
                     mqtt->stop();
                 }
-                fw->getProtocolManager()->restartMQTTDeferred(true);
+
+                // 仅在 MQTT 启用时才重启客户端
+                // 禁用时仅恢复配置并停止客户端，避免禁用状态下意外重连
+                if (mqttEnabled) {
+                    fw->getProtocolManager()->restartMQTTDeferred(true);
+                    LOG_INFO("[MQTT Test] Auto-restore: config restored, main client restarting");
+                } else {
+                    LOG_INFO("[MQTT Test] Auto-restore: config restored, MQTT disabled - not restarting");
+                }
             }
-            LOG_INFO("[MQTT Test] Auto-restore: config restored, main client restarting");
         }
     }
 }
@@ -536,7 +551,8 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
             f.close();
         }
     }
-    // 也尝试从 protocol.json 读取（protocol.json 中的值优先级更高）
+    // 也尝试从 protocol.json 读取（protocol.json 中的 deviceNum/userId 优先级更高）
+    // 注意：productId 只从 device.json 获取，不从 protocol.json 覆盖
     if (LittleFS.exists("/config/protocol.json")) {
         File f = LittleFS.open("/config/protocol.json", "r");
         if (f) {
@@ -545,10 +561,8 @@ void MqttRouteHandler::handleTestMqttConnection(AsyncWebServerRequest* request) 
                 JsonVariant mqtt = protoDoc["mqtt"];
                 if (mqtt.is<JsonObject>()) {
                     String dn = jsonVariantToString(mqtt["deviceNum"]);
-                    String pi = jsonVariantToString(mqtt["productId"]);
                     String ui = jsonVariantToString(mqtt["userId"]);
                     if (!dn.isEmpty()) deviceNum = dn;
-                    if (!pi.isEmpty()) productId = pi;
                     if (!ui.isEmpty()) userId    = ui;
                     String ns = jsonVariantToString(mqtt["ntpServer"]);
                     String ms = jsonVariantToString(mqtt["mqttSecret"]);
@@ -774,6 +788,13 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
     );
 
     MQTTClient* mqtt = pm->getMQTTClient();
+
+    // 防御性检查：MQTT 配置已禁用但客户端仍在运行（如保存配置后重启前的窗口期）
+    // 立即停止客户端，确保不会在禁用状态下继续保持与 Broker 的连接
+    if (mqttConfigLoaded && !mqttConfigEnabled && mqtt && !mqtt->isStopped()) {
+        pm->stopMQTT();
+    }
+
     bool autoStartAttempted = false;
     bool autoStartStarted = false;
     tryAutoStartMqttForStatus(
@@ -817,10 +838,11 @@ void MqttRouteHandler::handleGetMqttStatus(AsyncWebServerRequest* request) {
         if (hasValidConfig) {
             data["initialized"] = true;
 
-            // MQTT连接状态：返回实际连接状态，internetAvailable 作为参考信息
-            bool mqttConnected = mqtt->getIsConnected() && !mqtt->isStopped();
+            // MQTT连接状态：配置禁用时强制报告未连接，即使客户端对象仍存在
+            // 防止 mqtt.enabled=false 时前端错误显示"已连接"
+            bool mqttConnected = mqttConfigEnabled && mqtt->getIsConnected() && !mqtt->isStopped();
             data["connected"] = mqttConnected;
-            data["connecting"] = !mqttConnected && cfg.autoReconnect && !mqtt->isStopped();
+            data["connecting"] = mqttConfigEnabled && !mqttConnected && cfg.autoReconnect && !mqtt->isStopped();
             data["stopped"] = mqtt->isStopped();
             data["internetAvailable"] = internetAvailable;
             data["server"] = cfg.server;
@@ -880,6 +902,27 @@ void MqttRouteHandler::handleMqttReconnect(AsyncWebServerRequest* request) {
         doc["data"]["reconnecting"] = false;
         HandlerUtils::sendJsonStream(request, doc);
         return;
+    }
+
+    // 检查 MQTT 是否已启用：禁用时拒绝重连/重启
+    // 前端自动重连逻辑可能在禁用状态下误调用此接口（如轮询时序竞态）
+    // 后端必须兜底：禁用时不触发任何重连或设备重启
+    {
+        bool mqttEnabled = false;
+        String dummyServer;
+        int dummyPort = 0;
+        String dummyClientId;
+        if (loadMqttStatusConfig(mqttEnabled, dummyServer, dummyPort, dummyClientId)) {
+            if (!mqttEnabled) {
+                JsonDocument doc;
+                doc["success"] = true;
+                doc["data"]["connected"] = false;
+                doc["data"]["mqttDisabled"] = true;
+                doc["data"]["message"] = "MQTT is disabled, reconnect rejected";
+                HandlerUtils::sendJsonStream(request, doc);
+                return;
+            }
+        }
     }
 
     // 检查 autoReconnect 配置：用户关闭自动重连时，不应自动触发重连

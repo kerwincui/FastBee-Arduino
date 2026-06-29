@@ -128,8 +128,8 @@
             const isDisplayAction = (actionTypeInt === 24 || actionTypeInt === 25 || actionTypeInt === 26);
             const isOledDisplay = (actionTypeInt === 27);
             const showPeriphGroup = isPollMode || isRuleCtrlAction || (isModbusTarget || !((actionTypeInt >= 6 && actionTypeInt <= 9) || isModbusPoll || isTriggerEvent));
-            const needsValue = !isPollMode && !isModbusTarget && !isRuleCtrlAction && ((actionTypeInt >= 2 && actionTypeInt <= 5) || actionTypeInt === 10 || actionTypeInt === 24 || actionTypeInt === 25 || isOledDisplay || isScriptAction);
-            const showRecv = !isPollMode && !isModbusTarget && !isRuleCtrlAction && this._hasSetModeTrigger() && needsValue && !isOledDisplay && !isScriptAction;
+            const needsValue = !isPollMode && !isModbusTarget && !isRuleCtrlAction && ((actionTypeInt >= 2 && actionTypeInt <= 5) || actionTypeInt === 10 || actionTypeInt === 11 || actionTypeInt === 12 || actionTypeInt === 24 || actionTypeInt === 25 || actionTypeInt === 28 || actionTypeInt === 29 || isOledDisplay || isScriptAction || isTriggerEvent);
+            const showRecv = !isPollMode && !isModbusTarget && !isRuleCtrlAction && this._hasSetModeTrigger() && needsValue && !isOledDisplay && !isScriptAction && !isTriggerEvent;
             const showActionType = !isPollMode && !isModbusTarget;
             const showExecRow = true;
             const execMode = parseInt(data.execMode ?? 0);
@@ -182,7 +182,11 @@
                         '<option value="7" ' + sel(7) + '>' + '恢复出厂' + '</option>' +
                         '<option value="8" ' + sel(8) + '>' + 'NTP同步' + '</option></optgroup>' +
                         '<optgroup label="' + '高级功能' + '">' +
-                        '<option value="10" ' + sel(10) + '>' + '调用外设' + '</option>' +
+                        '<option value="11" ' + sel(11) + '>' + '灯效控制' + '</option>' +
+                        '<option value="12" ' + sel(12) + '>' + '电机控制' + '</option>' +
+                        '<option value="28" ' + sel(28) + '>' + '射频发送' + '</option>' +
+                        '<option value="29" ' + sel(29) + '>' + '串口发送' + '</option>' +
+                        '<option value="10" ' + sel(10) + '>' + '发送指令' + '</option>' +
                         '<option value="19" ' + sel(19) + '>' + '传感器数据读取' + '</option>' +
                         '<option value="21" ' + sel(21) + '>' + '触发设备事件' + '</option>' +
                         '<option value="15" ' + sel(15) + '>' + '命令脚本' + '</option></optgroup>' +
@@ -204,7 +208,75 @@
                     '<input type="text" class="pe-action-value' + ((isOledDisplay || isScriptAction) ? ' is-hidden' : '') + '" value="' + ((isOledDisplay || isScriptAction) ? '' : escapeHtml(data.actionValue)) + '" placeholder="' + escapeHtml(isDisplayAction ? '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值' : '如: PWM值、闪烁间隔ms') + '"' + (showRecv && data.useReceivedValue !== false ? ' readonly' : '') + '>' +
                     '<textarea class="pe-action-value-oled pe-script-textarea' + (isOledDisplay ? '' : ' is-hidden') + '" rows="6" maxlength="512" placeholder="' + escapeHtml('多行文本，每行一条。首行以 # 开头为居中标题。支持 ${periphId.field}（传感器缓存）和 $value（下发变量）模板。例：\n# 环境监测\n温度:${dht_01.temperature}°C\n湿度:${dht_01.humidity}%\n设备:$value') + '">' + (isOledDisplay ? escapeHtml(data.actionValue || '') : '') + '</textarea>' +
                     '<textarea class="pe-action-value-script pe-script-textarea' + (isScriptAction ? '' : ' is-hidden') + '" rows="7" maxlength="1024" placeholder="' + escapeHtml('每行一条命令，如:\nGPIO 2 HIGH\nDELAY 500\nGPIO 2 LOW\nLOG 执行完成') + '">' + (isScriptAction ? escapeHtml(data.actionValue || '') : '') + '</textarea>' +
-                    '<small class="pe-help-text">' + (actionTypeInt === 10 ? '调用外设 JSON，例如 {"periphId":"stepper","action":"forward"}、{"periphId":"ws2812b","action":"color","value":"#ff0000"}、{"periphId":"uart_debug","action":"send","value":"hello"}；UART 目标也可直接填写要发送的文本' : (isScriptAction ? '可用: GPIO pin HIGH/LOW, DELAY ms, PWM pin duty, DAC pin val, LOG msg, PERIPH id 动作' : (isOledDisplay ? '最多 6 行、可自动适配 OLED 显示。\n 换行。首行 # 开头为居中标题带分隔线。支持变量：${外设id.字段} 从传感器缓存取值，$value 取 MQTT/规则下发的原始值' : (isDisplayAction ? '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值' : '闪烁/呼吸灯填间隔ms, PWM填占空比, DAC填0-255')))) + '</small></div>' +
+                    '<small class="pe-help-text">' + (actionTypeInt === 10 ? '支持 JSON 格式或纯文本发送指令。支持 $value 占位符接收平台下发的值' : actionTypeInt === 11 ? '选择预设灯效或输入自定义颜色，支持 $value 占位符接收平台下发的值' : actionTypeInt === 12 ? '输入电机指令: forward(正转)、reverse(反转)、stop(停止)、数字(步数)' : actionTypeInt === 28 ? '输入射频编码，如十六进制编码字符串' : actionTypeInt === 29 ? '输入要发送的文本，支持 $value 占位符' : (isScriptAction ? '可用: GPIO pin HIGH/LOW, DELAY ms, PWM pin duty, DAC pin val, LOG msg, PERIPH id 动作' : (isOledDisplay ? '最多 6 行、可自动适配 OLED 显示。\n 换行。首行 # 开头为居中标题带分隔线。支持变量：${外设id.字段} 从传感器缓存取值，$value 取 MQTT/规则下发的原始值' : (isDisplayAction ? '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值' : '闪烁/呼吸灯填间隔ms, PWM填占空比, DAC填0-255')))) + '</small>' +
+                    '<select class="pe-neopixel-preset is-hidden">' +
+                    '<option value="">-- 选择灯效 --</option>' +
+                    '<option value="red">red-红色</option>' +
+                    '<option value="green">green-绿色</option>' +
+                    '<option value="blue">blue-蓝色</option>' +
+                    '<option value="yellow">yellow-黄色</option>' +
+                    '<option value="orange">orange-橙色</option>' +
+                    '<option value="purple">purple-紫色</option>' +
+                    '<option value="cyan">cyan-青色</option>' +
+                    '<option value="white">white-白色</option>' +
+                    '<option value="off">off-关闭</option>' +
+                    '<option value="rainbow">rainbow-彩虹循环</option>' +
+                    '<option value="chase">chase-流水灯</option>' +
+                    '<option value="theater_chase">theater_chase-剧院追逐</option>' +
+                    '<option value="strobe">strobe-频闪</option>' +
+                    '<option value="twinkle">twinkle-闪烁</option>' +
+                    '<option value="fade">fade-渐变</option>' +
+                    '<option value="breathing">breathing-呼吸</option>' +
+                    '<option value="color_wipe">color_wipe-色彩擦除</option>' +
+                    '<option value="fire">fire-火焰</option>' +
+                    '<option value="platform_color">$value-平台下发</option>' +
+                    '<option value="custom">custom-自定义</option>' +
+                    '</select>' +
+                    '<small class="pe-neopixel-help is-hidden">选择预设灯效，或在“自定义”中输入 JSON 参数</small>' +
+                    '<select class="pe-trigger-event-select is-hidden">' +
+                    '<option value="">-- 选择事件 --</option>' +
+                    '<optgroup label="WiFi">' +
+                    '<option value="wifi_connected">WiFi连接成功</option>' +
+                    '<option value="wifi_disconnected">WiFi断开连接</option>' +
+                    '<option value="wifi_conn_failed">WiFi连接失败</option></optgroup>' +
+                    '<optgroup label="MQTT">' +
+                    '<option value="mqtt_connected">MQTT连接成功</option>' +
+                    '<option value="mqtt_disconnected">MQTT断开连接</option>' +
+                    '<option value="mqtt_conn_failed">MQTT连接失败</option>' +
+                    '<option value="mqtt_enabled">MQTT协议启用</option></optgroup>' +
+                    '<optgroup label="系统">' +
+                    '<option value="system_boot">系统启动</option>' +
+                    '<option value="system_ready">系统就绪</option>' +
+                    '<option value="system_error">系统错误</option>' +
+                    '<option value="factory_reset">恢复出厂设置</option>' +
+                    '<option value="ntp_synced">NTP同步完成</option>' +
+                    '<option value="ota_start">OTA升级开始</option>' +
+                    '<option value="ota_success">OTA升级成功</option>' +
+                    '<option value="ota_failed">OTA升级失败</option>' +
+                    '<option value="break_down">设备故障</option>' +
+                    '<option value="restart">设备重启</option>' +
+                    '<option value="device_alarm">设备告警</option>' +
+                    '<option value="low_power">低电量预警</option></optgroup>' +
+                    '<optgroup label="按键">' +
+                    '<option value="button_click">按键单击</option>' +
+                    '<option value="button_double_click">按键双击</option>' +
+                    '<option value="button_long_press_2s">按键长按2秒</option>' +
+                    '<option value="button_long_press_5s">按键长按5秒</option>' +
+                    '<option value="button_long_press_10s">按键长按10秒</option>' +
+                    '<option value="button_press">按键按下</option>' +
+                    '<option value="button_release">按键释放</option></optgroup>' +
+                    '<optgroup label="数据">' +
+                    '<option value="data_receive">数据接收</option>' +
+                    '<option value="data_report">数据上报</option></optgroup>' +
+                    '<optgroup label="外设执行">' +
+                    '<option value="periph_exec_completed">外设执行完成</option></optgroup>' +
+                    '<optgroup label="RFID/红外">' +
+                    '<option value="rfid_card_detected">RFID卡片检测</option>' +
+                    '<option value="rfid_card_removed">RFID卡片移开</option>' +
+                    '<option value="ir_code_received">红外编码接收</option></optgroup>' +
+                    '</select>' +
+                    '<small class="pe-trigger-event-help is-hidden">选择要模拟触发的设备事件</small>' +
+                    '</div>' +
                     '<div class="fb-form-group pe-use-received-value-group' + this._hiddenClass(showRecv) + '">' +
                     '<label class="pe-checkbox-label pe-check-align"><input type="checkbox" class="pe-use-received-value"' + (showRecv && data.useReceivedValue !== false ? ' checked' : '') + '>' +
                     '勾选后动作参数将使用平台下发或触发源的值' + '</label></div>' +
@@ -256,6 +328,23 @@
             }
             if (!isPollMode && isModbusPoll && !isModbusTarget) this._populateModbusDevicePanel(div.querySelector('.pe-poll-tasks-list'), data.actionValue || '');
             if (isModbusTarget) this._showModbusCtrlPanel(div.querySelector('.pe-modbus-ctrl-panel'), data.targetPeriphId, data.actionValue || '');
+            // 触发设备事件(actionType=21): 初始化事件下拉框
+            if (isTriggerEvent && data.actionValue) {
+                var evtSel = div.querySelector('.pe-trigger-event-select');
+                if (evtSel) evtSel.value = data.actionValue;
+            }
+            // NeoPixel 预设灯效：初始化下拉框并同步显示状态
+            if ((data.actionType ?? 0) == 11) {
+                this._initNeoPixelPresetFromData(div, data.actionValue, 11);
+            } else if (this._isNeoPixelTarget(data.targetPeriphId) && (data.actionType ?? 0) == 10) {
+                // 自动迁移：NeoPixel 目标的 actionType=10（旧格式）→ 11（灯效控制）
+                var actSel = div.querySelector('.pe-action-type');
+                if (actSel) actSel.value = '11';
+                // 同步 UI 状态（帮助文本、显隐等）
+                this.onPeriphExecActionTypeChangeInBlock('11', Array.from(container.children).indexOf(div));
+                this._initNeoPixelPresetFromData(div, data.actionValue, 11);
+            }
+            this._updateNeoPixelPresetVisibility(div);
             this._updatePeriphExecAddButtons();
         },
 
@@ -505,8 +594,9 @@
                 var labelEl = targetGroup.querySelector('label');
                 if (labelEl) labelEl.textContent = isRuleCtrlAction ? '目标执行规则' : '执行外设';
             }
-            const needsValue = !isRuleCtrlAction && ((actionType >= 2 && actionType <= 5) || actionType === 10 || actionType === 15 || actionType === 24 || actionType === 25 || actionType === 27);
-            this._setSectionVisible(valueGroup, needsValue);
+            const needsValue = !isRuleCtrlAction && ((actionType >= 2 && actionType <= 5) || actionType === 10 || actionType === 11 || actionType === 12 || actionType === 15 || actionType === 24 || actionType === 25 || actionType === 27 || actionType === 28 || actionType === 29);
+            // 触发设备事件(21)也需要显示 value-group（内含事件下拉框）
+            this._setSectionVisible(valueGroup, needsValue || isTriggerEvent);
             // OLED 自定义显示：在 value-group 内 input / textarea 两种控件互斥显示
             if (valueGroup) {
                 const singleEl = valueGroup.querySelector('.pe-action-value');
@@ -529,7 +619,11 @@
                 // 提示文案同步切换
                 const helpEl = valueGroup.querySelector('.pe-help-text');
                 if (helpEl) {
-                    if (actionType === 10) helpEl.textContent = '调用外设 JSON，例如 {"periphId":"stepper","action":"forward"}、{"periphId":"ws2812b","action":"color","value":"#ff0000"}、{"periphId":"uart_debug","action":"send","value":"hello"}；UART 目标也可直接填写要发送的文本';
+                    if (actionType === 10) helpEl.textContent = '支持 JSON 格式或纯文本发送指令。支持 $value 占位符接收平台下发的值';
+                    else if (actionType === 11) helpEl.textContent = '选择预设灯效或输入自定义颜色，支持 $value 占位符接收平台下发的值';
+                    else if (actionType === 12) helpEl.textContent = '输入电机指令: forward(正转)、reverse(反转)、stop(停止)、数字(步数)';
+                    else if (actionType === 28) helpEl.textContent = '输入射频编码，如十六进制编码字符串';
+                    else if (actionType === 29) helpEl.textContent = '输入要发送的文本，支持 $value 占位符';
                     else if (isScript) helpEl.textContent = '可用: GPIO pin HIGH/LOW, DELAY ms, PWM pin duty, DAC pin val, LOG msg, PERIPH id 动作';
                     else if (isOled) helpEl.textContent = '最多 6 行、可自动适配 OLED 显示。\n 换行。首行 # 开头为居中标题带分隔线。支持变量：${外设id.字段} 从传感器缓存取值，$value 取 MQTT/规则下发的原始值';
                     else if (actionType === 24 || actionType === 25 || actionType === 26) helpEl.textContent = '支持 ${periphId.field} 模板（例如 ${dht_01.temperature} / ${adc.voltage}），将从传感器缓存取最新值';
@@ -544,6 +638,19 @@
             }
             const sensorGroup = block.querySelector('.pe-sensor-group');
             this._setSectionVisible(sensorGroup, isSensorRead);
+            // 触发设备事件(actionType=21): 显示/隐藏事件选择下拉框
+            var triggerEventSelect = block.querySelector('.pe-trigger-event-select');
+            var triggerEventHelp = block.querySelector('.pe-trigger-event-help');
+            if (triggerEventSelect) {
+                this._setSectionVisible(triggerEventSelect, isTriggerEvent);
+                this._setSectionVisible(triggerEventHelp, isTriggerEvent);
+                if (isTriggerEvent && valueGroup) {
+                    var singleEl21 = valueGroup.querySelector('.pe-action-value');
+                    var helpTextEl21 = valueGroup.querySelector('.pe-help-text');
+                    if (singleEl21) singleEl21.classList.add('is-hidden');
+                    if (helpTextEl21) helpTextEl21.classList.add('is-hidden');
+                }
+            }
             // 切换动作类型时，隐藏 Modbus 控制面板（ctrlPanel 仅在选择 modbus:xxx 目标时由 _onTargetPeriphChange 管理）
             const ctrlPanel = block.querySelector('.pe-modbus-ctrl-panel');
             this._setSectionVisible(ctrlPanel, false);
@@ -566,6 +673,143 @@
                 if (showRecv) valueInput.setAttribute('readonly', '');
                 else valueInput.removeAttribute('readonly');
             }
+            // NeoPixel 预设灯效：当 actionType=10 且目标是 NeoPixel 时显示下拉框
+            this._updateNeoPixelPresetVisibility(block);
+            // 切换动作类型时，重新映射预设下拉框，确保旧 actionValue 正确迁移到新格式
+            if (actionType === 11 || actionType === 10) {
+                var oldVal = block.querySelector('.pe-action-value')?.value || '';
+                if (oldVal) this._initNeoPixelPresetFromData(block, oldVal, actionType);
+                // 重新同步显隐状态（_initNeoPixelPresetFromData 只设值，不控制显隐）
+                var presetSel = block.querySelector('.pe-neopixel-preset');
+                if (presetSel) this._onNeoPixelPresetChange(presetSel, index);
+            }
+        },
+
+        // ============ NeoPixel 预设灯效 ============
+
+        _isNeoPixelTarget(periphId) {
+            if (!periphId) return false;
+            return (this._pePeripherals || []).some(function(p) {
+                return p.id === periphId && p.type === 45;
+            });
+        },
+
+        _updateNeoPixelPresetVisibility(block) {
+            var dropdown = block.querySelector('.pe-neopixel-preset');
+            var helpEl = block.querySelector('.pe-neopixel-help');
+            var singleEl = block.querySelector('.pe-action-value');
+            var helpTextEl = block.querySelector('.pe-help-text');
+            if (!dropdown) return;
+            var actionType = parseInt(block.querySelector('.pe-action-type')?.value || '0');
+            var targetId = block.querySelector('.pe-target-periph')?.value || '';
+            // 灯效控制(11) 始终显示预设下拉框；发送指令(10) + NeoPixel目标 向后兼容
+            var showPreset = actionType === 11 || (actionType === 10 && this._isNeoPixelTarget(targetId));
+            this._setSectionVisible(dropdown, showPreset);
+            this._setSectionVisible(helpEl, showPreset);
+            if (showPreset) {
+                var presetVal = dropdown.value;
+                // 输入框始终可见，但选择预设时禁用，选择 custom 时启用
+                if (singleEl) {
+                    singleEl.classList.remove('is-hidden');
+                    if (presetVal && presetVal !== 'custom' && presetVal !== '') {
+                        singleEl.disabled = true;
+                        singleEl.value = presetVal;
+                    } else {
+                        singleEl.disabled = false;
+                    }
+                }
+                if (helpTextEl) helpTextEl.classList.add('is-hidden');
+            } else {
+                // 触发设备事件(21): 隐藏输入框和帮助文本，只显示事件下拉框
+                var curActionType = parseInt(block.querySelector('.pe-action-type')?.value || '0');
+                if (curActionType === 21) {
+                    if (singleEl) singleEl.classList.add('is-hidden');
+                    if (helpTextEl) helpTextEl.classList.add('is-hidden');
+                } else {
+                    if (singleEl) singleEl.classList.remove('is-hidden');
+                    if (helpTextEl) helpTextEl.classList.remove('is-hidden');
+                }
+            }
+        },
+
+        _onNeoPixelPresetChange(selectEl, index) {
+            var block = this._getPeriphExecBlock('periph-exec-actions', index);
+            if (!block) return;
+            var presetVal = selectEl.value;
+            var singleEl = block.querySelector('.pe-action-value');
+            var helpTextEl = block.querySelector('.pe-help-text');
+            // 输入框始终可见，选择预设时禁用并显示预设值，选择 custom 时启用编辑
+            if (presetVal === 'custom' || presetVal === '') {
+                if (singleEl) {
+                    singleEl.classList.remove('is-hidden');
+                    singleEl.disabled = false;
+                    singleEl.value = '';
+                }
+                if (helpTextEl) helpTextEl.classList.remove('is-hidden');
+            } else {
+                if (singleEl) {
+                    singleEl.classList.remove('is-hidden');
+                    singleEl.disabled = true;
+                    singleEl.value = presetVal;
+                }
+                if (helpTextEl) helpTextEl.classList.add('is-hidden');
+            }
+        },
+
+        _initNeoPixelPresetFromData(block, actionValue, actionType) {
+            var dropdown = block.querySelector('.pe-neopixel-preset');
+            if (!dropdown) return;
+            // 统一的简单文本映射（供 actionType 11 和 10 的纯文本向后兼容）
+            var simpleMap = {
+                'red': 'red', 'orange': 'orange', 'yellow': 'yellow',
+                'green': 'green', 'cyan': 'cyan', 'blue': 'blue',
+                'purple': 'purple', 'white': 'white',
+                'off': 'off', 'clear': 'off', 'black': 'off',
+                'rainbow': 'rainbow', 'cycle': 'rainbow', 'next': 'rainbow',
+                'chase': 'chase', 'theater_chase': 'theater_chase',
+                'strobe': 'strobe', 'twinkle': 'twinkle',
+                'fade': 'fade', 'breathing': 'breathing',
+                'color_wipe': 'color_wipe', 'fire': 'fire',
+                '$value': 'platform_color'
+            };
+            // actionType 11 (灯效控制): actionValue 为简单文本 ("red", "rainbow", "$value" 等)
+            if (actionType === 11) {
+                if (!actionValue) return;
+                var preset = simpleMap[actionValue.toLowerCase()];
+                if (preset) {
+                    dropdown.value = preset;
+                } else {
+                    dropdown.value = 'custom';
+                }
+                return;
+            }
+            // actionType 10 (发送指令): 优先解析 JSON，回退到纯文本（向后兼容动画预设）
+            if (!actionValue) return;
+            if (actionValue.startsWith('{')) {
+                try {
+                    var parsed = JSON.parse(actionValue);
+                    var action = parsed.action || '';
+                    var color = parsed.color || parsed.value || '';
+                    var presetMap = {
+                        'color:red': 'red', 'color:orange': 'orange', 'color:yellow': 'yellow',
+                        'color:green': 'green', 'color:cyan': 'cyan', 'color:blue': 'blue',
+                        'color:purple': 'purple', 'color:white': 'white',
+                        'off': 'off', 'clear': 'off', 'black': 'off',
+                        'rainbow': 'rainbow', 'cycle': 'rainbow', 'next': 'rainbow'
+                    };
+                    var key = (action === 'off' || action === 'clear' || action === 'black')
+                        ? action : (action + ':' + color);
+                    var preset = presetMap[key];
+                    if (color === '$value') preset = 'platform_color';
+                    if (preset) dropdown.value = preset;
+                    return;
+                } catch(e) {
+                    // JSON 解析失败，回退到纯文本匹配
+                }
+            }
+            // actionType 10 纯文本回退：兼容 actionType=11 保存的动画预设名
+            var textPreset = simpleMap[actionValue.toLowerCase()];
+            if (textPreset) dropdown.value = textPreset;
         },
 
         // ============ Event population ============
@@ -1055,8 +1299,40 @@
                     action.actionValue = item.querySelector('.pe-action-value-oled')?.value || '';
                 } else if (action.actionType === 15) {
                     action.actionValue = item.querySelector('.pe-action-value-script')?.value || '';
+                } else if (action.actionType === 21) {
+                    // 触发设备事件: 从事件下拉框获取事件 ID
+                    var evtSelect = item.querySelector('.pe-trigger-event-select');
+                    action.actionValue = evtSelect ? (evtSelect.value || '') : '';
+                } else if (action.actionType === 11) {
+                    // 灯效控制: 从预设下拉框生成简单文本值
+                    var neoPreset = item.querySelector('.pe-neopixel-preset');
+                    if (neoPreset && !neoPreset.classList.contains('is-hidden') && neoPreset.value && neoPreset.value !== 'custom') {
+                        var pv = neoPreset.value;
+                        if (pv === 'platform_color') {
+                            action.actionValue = '$value';
+                        } else {
+                            action.actionValue = pv; // "red", "green", "off", "rainbow", "chase" 等
+                        }
+                    } else {
+                        action.actionValue = item.querySelector('.pe-action-value')?.value?.trim() || '';
+                    }
                 } else {
-                    action.actionValue = item.querySelector('.pe-action-value')?.value?.trim() || '';
+                    // NeoPixel 预设灯效：从下拉框生成 JSON
+                    var neoPreset = item.querySelector('.pe-neopixel-preset');
+                    if (neoPreset && !neoPreset.classList.contains('is-hidden') && neoPreset.value && neoPreset.value !== 'custom') {
+                        var pv = neoPreset.value;
+                        if (pv === 'off') {
+                            action.actionValue = JSON.stringify({action: 'off'});
+                        } else if (pv === 'rainbow') {
+                            action.actionValue = JSON.stringify({action: 'rainbow'});
+                        } else if (pv === 'platform_color') {
+                            action.actionValue = JSON.stringify({action: 'color', color: '$value'});
+                        } else {
+                            action.actionValue = JSON.stringify({action: 'color', color: pv});
+                        }
+                    } else {
+                        action.actionValue = item.querySelector('.pe-action-value')?.value?.trim() || '';
+                    }
                 }
                 action.useReceivedValue = item.querySelector('.pe-use-received-value')?.checked || false;
                 action.syncDelayMs = parseInt(item.querySelector('.pe-sync-delay')?.value || '0', 10) || 0;

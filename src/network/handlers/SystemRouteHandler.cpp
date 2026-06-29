@@ -63,6 +63,26 @@ bool isIgnoredConfigImportFileName(const String& name) {
     return false;
 }
 
+// 配置导入白名单：只允许导入已知的配置文件，防止在 /config/ 下生成非预期文件
+static const char* const kAllowedImportConfigFiles[] = {
+    "device.json",
+    "network.json",
+    "peripherals.json",
+    "periph_exec.json",
+    "protocol.json",
+    "users.json",
+    "auth.json",
+    "rule_scripts.json"
+};
+constexpr int kAllowedImportConfigFilesCount = 8;
+
+bool isAllowedConfigImportFileName(const String& name) {
+    for (int i = 0; i < kAllowedImportConfigFilesCount; ++i) {
+        if (name == kAllowedImportConfigFiles[i]) return true;
+    }
+    return false;
+}
+
 String configPathForName(const String& name) {
     return String("/config/") + name;
 }
@@ -72,6 +92,44 @@ String basenameOfFile(const char* path) {
     int slash = name.lastIndexOf('/');
     if (slash >= 0) name = name.substring(slash + 1);
     return name;
+}
+
+// 清理 /config/ 目录中不在白名单内的残留文件（如之前错误命名的导入文件）
+int cleanupStaleConfigFiles() {
+    int removed = 0;
+    File root = LittleFS.open("/config");
+    if (!root || !root.isDirectory()) return 0;
+
+    File file = root.openNextFile();
+    while (file) {
+        if (!file.isDirectory()) {
+            String name = basenameOfFile(file.name());
+            if (!isAllowedConfigImportFileName(name) && !isIgnoredConfigImportFileName(name)) {
+                String path = configPathForName(name);
+                file.close();  // 先关闭文件句柄再删除
+                if (LittleFS.remove(path)) {
+                    removed++;
+                    LOGGER.infof("[ConfigTransfer] Cleaned stale file: %s", name.c_str());
+                }
+                root = LittleFS.open("/config");  // 重新打开目录（删除后迭代器失效）
+                if (!root) break;
+            }
+        }
+        file = root.openNextFile();
+    }
+    root.close();
+    return removed;
+}
+
+// 验证 JSON 内容格式：必须是有效的 JSON 对象或数组
+bool isValidJsonContent(const String& content) {
+    if (content.isEmpty()) return false;
+    // 快速检查首尾字符，避免解析纯文本
+    char first = content.charAt(0);
+    if (first != '{' && first != '[') return false;
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, content.c_str());
+    return err == DeserializationError::Ok;
 }
 
 bool shouldUseCompactSystemInfo(bool explicitBrief) {
@@ -481,7 +539,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         }
         String name = request->getParam("name", true)->value();
         const String& content = request->getParam("content", true)->value();
-        if (!isSafeConfigFileName(name)) { ctx->sendError(request, 403, "Invalid config file name"); return; }
+        if (!isSafeConfigFileName(name)) { ctx->sendError(request, 403, "文件名非法（只允许字母、数字、下划线、短横线和 .json 后缀）"); return; }
         if (isIgnoredConfigImportFileName(name)) {
             JsonDocument skipped;
             skipped["name"] = name;
@@ -489,11 +547,36 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             ctx->sendSuccess(request, skipped);
             return;
         }
-        if (content.isEmpty() || content.length() > kMaxConfigInlineImportBytes) {
-            ctx->sendError(request, 413, "Config content too large for inline import");
+        // 白名单检查：只允许导入已知的配置文件，防止在 /config/ 下生成非预期文件
+        if (!isAllowedConfigImportFileName(name)) {
+            ctx->sendError(request, 403,
+                ("不允许导入配置文件：" + name + "。允许的文件：device.json, network.json, peripherals.json, periph_exec.json, protocol.json, auth.json, rule_scripts.json").c_str());
+            return;
+        }
+        if (content.isEmpty()) {
+            ctx->sendError(request, 413, "配置文件内容为空");
+            return;
+        }
+        if (content.length() > kMaxConfigInlineImportBytes) {
+            ctx->sendError(request, 413,
+                ("配置文件过大（" + String(content.length()) + " 字节），单文件最大 " + String(kMaxConfigInlineImportBytes / 1024) + " KB，请使用分片导入").c_str());
+            return;
+        }
+        // JSON 内容格式验证
+        if (!isValidJsonContent(content)) {
+            ctx->sendError(request, 422, "配置文件内容不是有效的 JSON 格式，请检查文件内容");
             return;
         }
         if (HandlerUtils::checkLowMemory(request, 24576)) return;
+
+        // Flash 空间检查：确保有足够空间写入，防止存储空间耗尽
+        size_t freeSpace = LittleFS.totalBytes() > LittleFS.usedBytes()
+                         ? LittleFS.totalBytes() - LittleFS.usedBytes() : 0;
+        if (freeSpace < content.length() * 2 + 4096) {  // 2x 安全余量 + 4KB 缓冲
+            ctx->sendError(request, 507,
+                ("Flash 存储空间不足（剩余 " + String(freeSpace) + " 字节），请先清理不需要的配置").c_str());
+            return;
+        }
 
         if (!LittleFS.exists("/config") && !LittleFS.mkdir("/config")) {
             ctx->sendError(request, 500, "Failed to create config directory");
@@ -506,7 +589,8 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         size_t written = out.print(content);
         out.close();
         if (written != content.length()) {
-            ctx->sendError(request, 500, "Failed to write complete config file");
+            LittleFS.remove(path);  // 写入不完整则删除损坏文件，防止残留
+            ctx->sendError(request, 500, "配置文件写入不完整，已回滚");
             return;
         }
 
@@ -527,7 +611,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         if (HandlerUtils::rejectHeavyRequestOnPressure(request, "Config chunk import", MemoryGuardLevel::SEVERE, 8)) return;
         if (!request->hasParam("name", true) || !request->hasParam("chunk", true)
             || !request->hasParam("index", true) || !request->hasParam("total", true)) {
-            ctx->sendError(request, 400, "Missing chunk import parameter");
+            ctx->sendError(request, 400, "缺少分片导入参数（name/chunk/index/total）");
             return;
         }
 
@@ -536,7 +620,7 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         int index = request->getParam("index", true)->value().toInt();
         int total = request->getParam("total", true)->value().toInt();
 
-        if (!isSafeConfigFileName(name)) { ctx->sendError(request, 403, "Invalid config file name"); return; }
+        if (!isSafeConfigFileName(name)) { ctx->sendError(request, 403, "文件名非法"); return; }
         if (isIgnoredConfigImportFileName(name)) {
             JsonDocument skipped;
             skipped["name"] = name;
@@ -544,12 +628,19 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             ctx->sendSuccess(request, skipped);
             return;
         }
+        // 白名单检查（与 inline import 一致）
+        if (!isAllowedConfigImportFileName(name)) {
+            ctx->sendError(request, 403,
+                ("不允许导入配置文件：" + name + "。允许的文件：device.json, network.json, peripherals.json, periph_exec.json, protocol.json, auth.json, rule_scripts.json").c_str());
+            return;
+        }
         if (total <= 0 || total > kMaxConfigTransferChunks || index < 0 || index >= total) {
-            ctx->sendError(request, 400, "Invalid chunk index");
+            ctx->sendError(request, 400, "分片索引无效");
             return;
         }
         if (chunk.isEmpty() || chunk.length() > kMaxConfigTransferChunkBytes) {
-            ctx->sendError(request, 413, "Config chunk too large or empty");
+            ctx->sendError(request, 413,
+                ("分片过大（" + String(chunk.length()) + " 字节），最大 " + String(kMaxConfigTransferChunkBytes / 1024) + " KB").c_str());
             return;
         }
         if (HandlerUtils::checkLowMemory(request, 24576)) return;
@@ -572,12 +663,14 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
         out.close();
 
         if (written != chunk.length()) {
-            ctx->sendError(request, 500, "Failed to write complete config chunk");
+            if (index == 0) LittleFS.remove(path);  // 首分片写入失败则清理
+            ctx->sendError(request, 500, "分片写入不完整");
             return;
         }
         if (fileSize > kMaxConfigTransferBytes) {
             LittleFS.remove(path);
-            ctx->sendError(request, 413, "Config file too large");
+            ctx->sendError(request, 413,
+                ("配置文件过大（" + String(fileSize) + " 字节），最大 " + String(kMaxConfigTransferBytes / 1024) + " KB").c_str());
             return;
         }
 
@@ -586,11 +679,18 @@ void SystemRouteHandler::setupRoutes(AsyncWebServer* server) {
             if (fw) fw->ensureDeviceIdentity();
         }
 
+        // 最后一个分片写入完成后，清理 /config/ 目录中的残留文件
+        int cleaned = 0;
+        if (index == total - 1) {
+            cleaned = cleanupStaleConfigFiles();
+        }
+
         JsonDocument doc;
         doc["name"] = name;
         doc["index"] = index;
         doc["total"] = total;
         doc["size"] = fileSize;
+        if (cleaned > 0) doc["cleaned"] = cleaned;
         ctx->sendSuccess(request, doc);
     });
 #endif

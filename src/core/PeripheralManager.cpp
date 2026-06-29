@@ -2512,6 +2512,132 @@ bool PeripheralManager::controlNeoPixel(const String& id, const String& action, 
         return true;
     }
 
+    // === 动画灯效命令（非阻塞，每次调用推进一步）===
+#if FASTBEE_ENABLE_NEOPIXEL
+    if (cmd == "chase" || cmd == "theater_chase" || cmd == "strobe" ||
+        cmd == "twinkle" || cmd == "fade" || cmd == "breathing" ||
+        cmd == "color_wipe" || cmd == "fire") {
+        uint16_t count = clampNeoPixelCount(config->params.neopixel.count);
+        uint8_t brightness = config->params.neopixel.brightness;
+        uint8_t& idx = neopixelRainbowIndex[id];
+        Adafruit_NeoPixel* strip = getNeoPixelInstance(pin, count);
+        if (!strip) return false;
+        bool ok = true;
+
+        if (cmd == "chase") {
+            // 流水灯: 每次前进一灯，彩色循环
+            NeoPixelRgb c = rainbowColorAt(idx);
+            NeoPixelRgb bc = applyNeoPixelBrightness(c, brightness);
+            uint32_t col = strip->Color(bc.r, bc.g, bc.b);
+            for (uint16_t i = 0; i < count; i++) {
+                strip->setPixelColor(i, (i == (idx % count)) ? col : 0);
+            }
+            strip->show();
+            idx++;
+        } else if (cmd == "theater_chase") {
+            // 剧院追逐: 每3灯亮1灯，每次偏移；单灯珠时退化为彩色闪烁
+            NeoPixelRgb c = rainbowColorAt(idx);
+            NeoPixelRgb bc = applyNeoPixelBrightness(c, brightness);
+            uint32_t col = strip->Color(bc.r, bc.g, bc.b);
+            if (count <= 1) {
+                // 单灯珠: 每2步交替亮/灭，产生明显闪烁效果
+                strip->setPixelColor(0, (idx % 2 == 0) ? col : 0);
+            } else {
+                uint8_t offset = idx % 3;
+                for (uint16_t i = 0; i < count; i++) {
+                    strip->setPixelColor(i, ((i % 3) == offset) ? col : 0);
+                }
+            }
+            strip->show();
+            idx++;
+        } else if (cmd == "strobe") {
+            // 频闪: 奇偶交替全亮/全灭
+            NeoPixelRgb c = rainbowColorAt(idx / 8);
+            NeoPixelRgb bc = (idx % 2 == 0) ? applyNeoPixelBrightness(c, brightness) : NeoPixelRgb{0,0,0};
+            uint32_t col = strip->Color(bc.r, bc.g, bc.b);
+            for (uint16_t i = 0; i < count; i++) strip->setPixelColor(i, col);
+            strip->show();
+            idx++;
+        } else if (cmd == "twinkle") {
+            // 闪烁: 随机灯珠亮随机颜色
+            for (uint16_t i = 0; i < count; i++) {
+                if (rand() % 3 == 0) {
+                    NeoPixelRgb rc = rainbowColorAt(rand() % 7);
+                    NeoPixelRgb bc = applyNeoPixelBrightness(rc, brightness);
+                    strip->setPixelColor(i, strip->Color(bc.r, bc.g, bc.b));
+                } else {
+                    strip->setPixelColor(i, 0);
+                }
+            }
+            strip->show();
+            idx++;
+        } else if (cmd == "fade") {
+            // 渐变: 亮度从0渐增到目标色
+            NeoPixelRgb base = rainbowColorAt(idx / 32);
+            uint8_t step = idx % 32;
+            uint8_t fadeBri = (uint16_t)brightness * step / 31;
+            NeoPixelRgb bc = applyNeoPixelBrightness(base, fadeBri);
+            uint32_t col = strip->Color(bc.r, bc.g, bc.b);
+            for (uint16_t i = 0; i < count; i++) strip->setPixelColor(i, col);
+            strip->show();
+            idx++;
+        } else if (cmd == "breathing") {
+            // 呼吸: 亮度来回循环
+            NeoPixelRgb base = rainbowColorAt(idx / 32);
+            uint8_t phase = idx % 64;
+            uint8_t fadeBri = (phase < 32)
+                ? (uint16_t)brightness * phase / 31
+                : (uint16_t)brightness * (63 - phase) / 31;
+            NeoPixelRgb bc = applyNeoPixelBrightness(base, fadeBri);
+            uint32_t col = strip->Color(bc.r, bc.g, bc.b);
+            for (uint16_t i = 0; i < count; i++) strip->setPixelColor(i, col);
+            strip->show();
+            idx++;
+        } else if (cmd == "color_wipe") {
+            // 色彩擦除: 逐灯填充，每次多亮一颗；单灯珠时退化为彩虹渐变
+            if (count <= 1) {
+                // 单灯珠: 每次调用切换颜色，产生彩虹轮播效果
+                NeoPixelRgb c = rainbowColorAt(idx);
+                NeoPixelRgb bc = applyNeoPixelBrightness(c, brightness);
+                uint32_t col = strip->Color(bc.r, bc.g, bc.b);
+                strip->setPixelColor(0, col);
+            } else {
+                NeoPixelRgb c = rainbowColorAt(idx / count);
+                NeoPixelRgb bc = applyNeoPixelBrightness(c, brightness);
+                uint32_t col = strip->Color(bc.r, bc.g, bc.b);
+                uint16_t litCount = (idx % count) + 1;
+                for (uint16_t i = 0; i < count; i++) {
+                    strip->setPixelColor(i, (i < litCount) ? col : 0);
+                }
+            }
+            strip->show();
+            idx++;
+        } else if (cmd == "fire") {
+            // 火焰: 随机红/橙/黄色填充随机灯珠
+            for (uint16_t i = 0; i < count; i++) {
+                if (rand() % 3 != 0) {
+                    uint8_t r = 160 + (rand() % 96);
+                    uint8_t g = (rand() % 120);
+                    NeoPixelRgb fc = applyNeoPixelBrightness({r, g, 0}, brightness);
+                    strip->setPixelColor(i, strip->Color(fc.r, fc.g, fc.b));
+                } else {
+                    strip->setPixelColor(i, 0);
+                }
+            }
+            strip->show();
+            idx++;
+        }
+
+        if (runtimeStates.find(id) != runtimeStates.end()) {
+            runtimeStates[id].status = ok ? PeripheralStatus::PERIPHERAL_RUNNING : PeripheralStatus::PERIPHERAL_ERROR;
+            runtimeStates[id].lastActivity = millis();
+        }
+        LOG_INFOF("Peripheral Manager: NeoPixel '%s' animation=%s step=%d count=%d -> %s",
+                  id.c_str(), action.c_str(), idx, count, ok ? "ok" : "fail");
+        return ok;
+    }
+#endif
+
     NeoPixelRgb color = {0, 0, 0};
     if (cmd == "rainbow" || cmd == "cycle" || cmd == "next") {
         uint8_t& index = neopixelRainbowIndex[id];

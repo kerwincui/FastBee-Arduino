@@ -276,7 +276,7 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     // 认证配置
     config.authType    = static_cast<MqttAuthType>(cfg["authType"] | 0);
     config.deviceNum   = cfg["deviceNum"]   | "";
-    config.productId   = cfg["productId"]   | "";
+    // productId 只从 device.json 获取，不从 protocol.json 读取
     config.userId      = cfg["userId"]      | "";
     config.mqttSecret  = cfg["mqttSecret"]  | "";
     config.authCode    = cfg["authCode"]    | "";
@@ -288,7 +288,8 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
     config.cardPlatformId = cfg["cardPlatformId"] | 0;
     config.summary        = cfg["summary"]        | "";
 
-    // 如果deviceNum/productId/userId/ntpServer为空，尝试从device.json中读取
+    // 如果deviceNum/userId/ntpServer为空，尝试从device.json中读取
+    // productId 始终从 device.json 的 productNumber 获取
     if (config.deviceNum.isEmpty() || config.productId.isEmpty() || config.userId.isEmpty()
         || config.ntpServer.isEmpty()) {
         if (LittleFS.exists("/config/device.json")) {
@@ -366,25 +367,25 @@ bool MQTTClient::loadMqttConfig(const String& filename) {
         config.subscribeTopics.push_back(topic);
     }
 
+    // 无论 clientId 是否已配置，确保 deviceNum/productId/userId 都有有效默认值
+    // （修复：之前这些默认值仅在 clientId 为空时才设置，导致已有 clientId 时 productId 为空，
+    //  主题前缀缺失 productId，平台下发的消息无法匹配设备订阅的主题）
+    if (config.deviceNum.isEmpty()) {
+        String mac = WiFi.macAddress();
+        mac.replace(":", "");
+        config.deviceNum = "FBE" + mac;
+        LOG_WARNINGF("[MQTT] deviceNum empty after loadConfig, fallback to %s (check device.json)",
+                     config.deviceNum.c_str());
+    }
+    if (config.productId.isEmpty()) {
+        config.productId = "1";
+    }
+    if (config.userId.isEmpty()) {
+        config.userId = "1";
+    }
+
     // clientId 若配置文件未指定，按 FastBee 认证格式自动生成：认证类型&设备编号&产品编号&用户ID
     if (cfg["clientId"].isNull() || cfg["clientId"].as<String>().isEmpty()) {
-        // 如果 deviceNum 仍为空，生成 FBE+MAC（启动期 ensureDeviceIdentity() 应已保证非空，
-        // 此处进入说明 device.json 的 deviceId 字段缺失或被异常清空，追加警告帮助诊断）
-        if (config.deviceNum.isEmpty()) {
-            String mac = WiFi.macAddress();
-            mac.replace(":", "");
-            config.deviceNum = "FBE" + mac;
-            LOG_WARNINGF("[MQTT] deviceNum empty after loadConfig, fallback to %s (check device.json)",
-                         config.deviceNum.c_str());
-        }
-        // productId 为空时使用默认值 "1"
-        if (config.productId.isEmpty()) {
-            config.productId = "1";
-        }
-        // userId 为空时使用默认值 "1"
-        if (config.userId.isEmpty()) {
-            config.userId = "1";
-        }
         // 根据认证类型构建 clientId
         String prefix = (config.authType == MqttAuthType::ENCRYPTED) ? "E" : "S";
         config.clientId = prefix + "&" + config.deviceNum + "&" + config.productId + "&" + config.userId;
@@ -528,9 +529,22 @@ void MQTTClient::disconnect() {
     _reconnectPending = false;
     if (mqttClient.connected()) {
         mqttClient.disconnect();
+        // 确保 DISCONNECT 报文在关闭 socket 前已发送出去
+        // PubSubClient::disconnect() 将报文写入 Client 缓冲区，但不保证立即发送
+        // 如果不 flush，平台可能检测为异常断连而非正常离线
+        if (_externalClient) {
+            _externalClient->flush();
+        } else {
+            wifiClient.flush();
+        }
+        // 给 TCP 栈一点时间发送缓冲区数据
+        delay(50);
     }
     // 确保底层 TCP socket 完全关闭释放
     wifiClient.stop();
+    if (_externalClient) {
+        _externalClient->stop();
+    }
     releaseTlsTransport();
     isConnected = false;
     reconnectInterval = 5000;
@@ -1007,16 +1021,20 @@ bool MQTTClient::subscribe(const String& topic) {
 
 bool MQTTClient::subscribeAll() {
     if (!isConnected) {
+        ets_printf("[MQTT] subscribeAll: not connected\n");
         return false;
     }
     
     bool allOk = true;
+    ets_printf("[MQTT] subscribeAll: %d topics\n", (int)config.subscribeTopics.size());
     
     // 订阅所有配置的主题
     for (const auto& st : config.subscribeTopics) {
         if (!st.topic.isEmpty() && st.enabled) {
             String fullTopic = buildFullTopicWithType(st.topic, st.autoPrefix, st.topicType);
             bool ok = mqttClient.subscribe(fullTopic.c_str(), st.qos);
+            ets_printf("[MQTT] %s topic=%s qos=%d\n",
+                       ok ? "Subscribed" : "SUB_FAIL", fullTopic.c_str(), st.qos);
             
             char buf[96];
             snprintf(buf, sizeof(buf), "MQTT: %s topic=%s qos=%d",
@@ -1024,6 +1042,8 @@ bool MQTTClient::subscribeAll() {
             ok ? LOG_INFO(buf) : LOG_WARNING(buf);
             
             if (!ok) allOk = false;
+        } else {
+            ets_printf("[MQTT] skip topic='%s' enabled=%d\n", st.topic.c_str(), st.enabled);
         }
     }
     
@@ -1031,7 +1051,7 @@ bool MQTTClient::subscribeAll() {
     if (config.subscribeTopics.empty() && !config.subscribeTopic.isEmpty()) {
         allOk = subscribe(config.subscribeTopic);
     }
-    
+
     return allOk;
 }
 
@@ -1405,10 +1425,11 @@ String MQTTClient::buildFullTopicWithType(const String& topic, bool autoPrefix, 
 }
 
 void MQTTClient::mqttCallback(char* topic, byte* payload, unsigned int length) {
+    ets_printf("[MQTT] CALLBACK ENTERED topic=%s len=%u\n", topic, length);
     // DRAM 内存保护：低于阈值时丢弃入站消息，防止低内存时 JSON 解析/外设执行崩溃
     uint32_t rxDramFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     if (rxDramFree < FastBee::MemoryBudget::MQTT_RECEIVE_MIN_DRAM) {
-        Serial.printf("[MQTT] RX dropped: DRAM too low (%lu < %u) topic=%s\n",
+        ets_printf("[MQTT] RX dropped: DRAM too low (%lu < %u) topic=%s\n",
                       (unsigned long)rxDramFree,
                       (unsigned)FastBee::MemoryBudget::MQTT_RECEIVE_MIN_DRAM,
                       topic);

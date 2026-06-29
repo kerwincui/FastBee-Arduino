@@ -895,8 +895,19 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
     // 策略：MQTT 配置变更采用设备重启（而非运行时 destroy/rebuild）
     // 原因：运行时重建 MQTT 客户端会导致 DRAM 碎片化，TLS 握手失败
     bool mqttWillReboot = false;
+    bool mqttStoppedNow = false;
 #if FASTBEE_ENABLE_MQTT
     if (updateMqtt) {
+        bool mqttEnabledNow = doc["mqtt"]["enabled"].as<bool>();
+        if (!mqttEnabledNow) {
+            // MQTT 已禁用：立即停止客户端，不等重启
+            // 确保在重启前的窗口期内不会继续保持与 Broker 的连接
+            ProtocolManager* pm = ctx->protocolManager;
+            if (pm) {
+                pm->stopMQTT();
+                mqttStoppedNow = true;
+            }
+        }
         // MQTT 配置已保存到文件，调度设备重启
         // 重启后 ProtocolManager::initialize() 会读取新配置并启动/停止 MQTT
         mqttWillReboot = true;
@@ -926,6 +937,10 @@ void ProtocolRouteHandler::handleSaveProtocolConfig(AsyncWebServerRequest* reque
         : "Protocol configuration saved";
     resp["data"]["restartRequired"] = mqttWillReboot;
     resp["data"]["modbusRestarted"] = modbusRestarted;
+    // MQTT 断开/重连状态：前端依赖这些字段显示正确的通知
+    if (mqttStoppedNow) {
+        resp["data"]["mqttDisconnected"] = true;
+    }
     // 如果 clientId 是自动生成的，返回给前端
     if (clientIdGenerated) {
         resp["data"]["mqttClientId"] = clientId;

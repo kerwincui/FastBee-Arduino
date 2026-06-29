@@ -147,6 +147,8 @@ public:
     IPAddress softAPIP() { return _apIP; }
     uint8_t softAPgetStationNum() { return _apClients; }
     String softAPSSID() { return _apSSID; }
+    String softAPPassword() { return _apPassword; }
+    bool softAPHidden() { return _apHidden; }
 
     // 信号强度
     int8_t RSSI() { 

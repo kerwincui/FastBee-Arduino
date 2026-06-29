@@ -281,10 +281,17 @@ bool PeriphExecExecutor::executeActionItem(const ExecAction& action, const Strin
                                            const String& receivedValue) {
     // 调用其他外设 (actionType 10) 必须先于系统动作范围判断。
     if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_CALL_PERIPHERAL)) {
-        return executeCallPeripheralAction(action, effectiveValue);
+        return executeCallPeripheralAction(action, effectiveValue, receivedValue);
     }
-    // 系统功能 (actionType 6-11)
-    if (action.actionType >= 6 && action.actionType <= 11) {
+    // 专用外设控制动作 (11=灯效控制, 12=电机控制, 28=射频发送, 29=串口发送)
+    if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_NEOPIXEL_EFFECT) ||
+        action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_STEPPER_CONTROL) ||
+        action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_RF_SEND) ||
+        action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_UART_SEND)) {
+        return executeCallPeripheralAction(action, effectiveValue, receivedValue);
+    }
+    // 系统功能 (actionType 6-9)
+    if (action.actionType >= 6 && action.actionType <= 9) {
         return executeSystemAction(action);
     }
     // 命令脚本 (actionType 15)
@@ -362,16 +369,13 @@ std::vector<ActionExecResult> PeriphExecExecutor::executeAllActions(
             }
             isReportableAction = true;
         } else if (action.actionType == static_cast<uint8_t>(ExecActionType::ACTION_TRIGGER_EVENT)) {
-            // 触发设备事件：直接以当前规则为事件源
-            //   eventId   = rule.id   (例如 exec_1745678901)
-            //   eventName = rule.name (规则显示名称)
-            //   eventData = effectiveValue (可选，利用 actionValue 传送额外数据)
-            // 当 reportAfterExec 开启时，MQTT 自动切换到 DEVICE_EVENT 类型主题广播事件；
-            // 否则仅做规则内联动，不向外上报。
+            // 触发设备事件：优先使用用户在 UI 中选择的事件 ID（effectiveValue）
+            // 若未指定事件则回退为当前规则 ID（向后兼容）
+            String triggerEventId = effectiveValue.isEmpty() ? rule.id : effectiveValue;
             LOGGER.infof("[PeriphExec] Trigger device event: id=%s name=%s (data=%s)",
-                         rule.id.c_str(), rule.name.c_str(), effectiveValue.c_str());
+                         triggerEventId.c_str(), rule.name.c_str(), effectiveValue.c_str());
             // 分发给规则（供其他规则订阅事件作为触发源），不受 reportAfterExec 控制
-            PeriphExecManager::getInstance().triggerEventById(rule.id, effectiveValue);
+            PeriphExecManager::getInstance().triggerEventById(triggerEventId, effectiveValue);
             // 仅在勾选“是否上报数据”且未被外部抑制时，通过 DEVICE_EVENT 主题上报
             if (rule.reportAfterExec && !suppressReport) {
                 PeriphExecManager::getInstance().notifyMqttEventPublish(rule.id, rule.name, effectiveValue);
@@ -1394,7 +1398,8 @@ bool PeriphExecExecutor::executeScriptAction(const ExecAction& action) {
 #endif
 }
 
-bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, const String& effectiveValue) {
+bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, const String& effectiveValue,
+                                                      const String& receivedValue) {
     // 支持两种格式:
     //   1) actionValue JSON: {"periphId":"xxx","action":"forward","value":"2"}
     //   2) targetPeriphId + actionValue 文本: forward / reverse / stop / faster / slower
@@ -1405,9 +1410,21 @@ bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, c
     uint16_t rfPulseWidth = 0;
     uint8_t rfRepeat = 0;
 
+    // $value 替换优先级：receivedValue（平台下发值） > effectiveValue
+    String substituteValue = !receivedValue.isEmpty() ? receivedValue : effectiveValue;
+
     if (!action.actionValue.isEmpty() && action.actionValue.charAt(0) == '{') {
+        // JSON 格式: 支持 $value 模板替换
+        String jsonStr = action.actionValue;
+        if (!substituteValue.isEmpty() && substituteValue != action.actionValue) {
+            int pos = jsonStr.indexOf("$value");
+            while (pos >= 0) {
+                jsonStr = jsonStr.substring(0, pos) + substituteValue + jsonStr.substring(pos + 6);
+                pos = jsonStr.indexOf("$value", pos + substituteValue.length());
+            }
+        }
         JsonDocument doc;
-        DeserializationError err = deserializeJson(doc, action.actionValue);
+        DeserializationError err = deserializeJson(doc, jsonStr);
         if (err) {
             LOGGER.warningf("[PeriphExec] Call peripheral: JSON parse failed: %s", err.c_str());
             return false;
@@ -1428,14 +1445,26 @@ bool PeriphExecExecutor::executeCallPeripheralAction(const ExecAction& action, c
         if (valueString.isEmpty()) {
             valueString = doc["message"] | "";
         }
-        if (valueString.isEmpty() && effectiveValue != action.actionValue) {
-            valueString = effectiveValue;
+        if (valueString.isEmpty() && !substituteValue.isEmpty() && substituteValue != action.actionValue) {
+            valueString = substituteValue;
         }
         rfBits = doc["bits"] | (doc["bitLength"] | 0);
         rfPulseWidth = doc["pulseWidth"] | 0;
         rfRepeat = doc["repeat"] | 0;
     } else {
-        actionCmdStr = effectiveValue.isEmpty() ? action.actionValue : effectiveValue;
+        // 纯文本格式: 支持 $value 占位符替换 (灯效控制/电机控制/射频发送/串口发送)
+        actionCmdStr = action.actionValue;
+        if (!substituteValue.isEmpty() && substituteValue != action.actionValue) {
+            int pos = actionCmdStr.indexOf("$value");
+            while (pos >= 0) {
+                actionCmdStr = actionCmdStr.substring(0, pos) + substituteValue + actionCmdStr.substring(pos + 6);
+                pos = actionCmdStr.indexOf("$value", pos + substituteValue.length());
+            }
+        }
+        // 如果 actionValue 为空或纯 $value 已被替换，直接用 effectiveValue
+        if (actionCmdStr.isEmpty()) {
+            actionCmdStr = effectiveValue;
+        }
     }
 
     if (targetId.isEmpty()) {

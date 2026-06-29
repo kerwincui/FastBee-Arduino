@@ -492,6 +492,7 @@
             else if (target.classList.contains('pe-sensor-category')) this.onSensorCategoryChange(target, index);
             else if (target.classList.contains('pe-modbus-device-select')) this._onPeriphDeviceSelect(target);
             else if (target.classList.contains('pe-modbus-channel-select')) this._onPeriphChannelSelect(target);
+            else if (target.classList.contains('pe-neopixel-preset')) this._onNeoPixelPresetChange(target, index);
             this._refreshPeriphExecRiskNotice({ allowFetch: true });
         },
 
@@ -905,7 +906,9 @@
                         4: '设置PWM', 5: '设置DAC',
                         6: '系统重启', 7: '恢复出厂',
                         8: 'NTP同步', 9: 'OTA升级',
-                        10: '调用外设',
+                        10: '发送指令',
+                        11: '灯效控制',
+                        12: '电机控制',
                         13: '高电平反转', 14: '低电平反转',
                         15: '命令脚本',
                         16: 'Modbus线圈写入', 17: 'Modbus寄存器写入',
@@ -917,7 +920,9 @@
                         24: '显示数字',
                         25: '显示文本',
                         26: '数码管清屏',
-                        27: 'OLED自定义显示'
+                        27: 'OLED自定义显示',
+                        28: '射频发送',
+                        29: '串口发送'
                     };
                     let html = '';
                     rules.forEach(r => {

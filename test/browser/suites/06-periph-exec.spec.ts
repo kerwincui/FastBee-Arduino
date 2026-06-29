@@ -756,4 +756,173 @@ test.describe('Suite-06: 外设执行', () => {
     const modalVisible = await authPage.locator('#periph-exec-modal').isVisible();
     expect(errorText.length > 0 || modalVisible).toBeTruthy();
   });
+
+  // ---------- 专用外设控制动作 (灯效控制/电机控制/射频发送/串口发送) ----------
+
+  test('EXEC-080: 高级功能分组应包含灯效控制/电机控制/射频发送/串口发送选项', async ({ authPage }) => {
+    await openExecModal(authPage);
+    await authPage.waitForTimeout(500);
+    const actionSelect = actionsContainer(authPage).locator('.pe-action-type').first();
+    // 检查新选项是否存在
+    const option11 = await actionSelect.locator('option[value="11"]').textContent();
+    expect(option11).toContain('灯效控制');
+    const option12 = await actionSelect.locator('option[value="12"]').textContent();
+    expect(option12).toContain('电机控制');
+    const option28 = await actionSelect.locator('option[value="28"]').textContent();
+    expect(option28).toContain('射频发送');
+    const option29 = await actionSelect.locator('option[value="29"]').textContent();
+    expect(option29).toContain('串口发送');
+  });
+
+  test('EXEC-081: 灯效控制应显示预设灯效下拉框', async ({ authPage }) => {
+    await openExecModal(authPage);
+    await authPage.waitForTimeout(500);
+    const block = actionsContainer(authPage).locator('.pe-action').first();
+    await block.locator('.pe-action-type').selectOption('11');
+    await authPage.waitForTimeout(500);
+    // 预设灯效下拉框应可见
+    const presetDropdown = block.locator('.pe-neopixel-preset');
+    await expect(presetDropdown).toBeVisible();
+    // 帮助文字应可见
+    const helpEl = block.locator('.pe-neopixel-help');
+    await expect(helpEl).toBeVisible();
+  });
+
+  test('EXEC-082: 灯效控制预设选项应隐藏JSON输入框', async ({ authPage }) => {
+    await openExecModal(authPage);
+    await authPage.waitForTimeout(500);
+    const block = actionsContainer(authPage).locator('.pe-action').first();
+    await block.locator('.pe-action-type').selectOption('11');
+    await authPage.waitForTimeout(500);
+    // 选择"红色"预设
+    await block.locator('.pe-neopixel-preset').selectOption('red');
+    await authPage.waitForTimeout(300);
+    // JSON 输入框应被隐藏
+    const valueInput = block.locator('.pe-action-value');
+    const isVisible = await valueInput.isVisible().catch(() => false);
+    expect(isVisible).toBeFalsy();
+  });
+
+  test('EXEC-083: 灯效控制自定义选项应显示输入框', async ({ authPage }) => {
+    await openExecModal(authPage);
+    await authPage.waitForTimeout(500);
+    const block = actionsContainer(authPage).locator('.pe-action').first();
+    await block.locator('.pe-action-type').selectOption('11');
+    await authPage.waitForTimeout(500);
+    // 选择"自定义"预设
+    await block.locator('.pe-neopixel-preset').selectOption('custom');
+    await authPage.waitForTimeout(300);
+    // JSON 输入框应可见
+    const valueInput = block.locator('.pe-action-value');
+    await expect(valueInput).toBeVisible();
+  });
+
+  test('EXEC-084: 电机控制应显示目标外设和动作参数', async ({ authPage }) => {
+    await openExecModal(authPage);
+    await authPage.waitForTimeout(500);
+    const block = actionsContainer(authPage).locator('.pe-action').first();
+    await block.locator('.pe-action-type').selectOption('12');
+    await authPage.waitForTimeout(500);
+    // 目标外设应可见
+    const targetGroup = block.locator('.pe-target-group');
+    await expect(targetGroup).toBeVisible();
+    // 动作参数应可见
+    const valueGroup = block.locator('.pe-action-value-group');
+    await expect(valueGroup).toBeVisible();
+  });
+
+  test('EXEC-085: 射频发送应显示目标外设和动作参数', async ({ authPage }) => {
+    await openExecModal(authPage);
+    await authPage.waitForTimeout(500);
+    const block = actionsContainer(authPage).locator('.pe-action').first();
+    await block.locator('.pe-action-type').selectOption('28');
+    await authPage.waitForTimeout(500);
+    const targetGroup = block.locator('.pe-target-group');
+    await expect(targetGroup).toBeVisible();
+    const valueGroup = block.locator('.pe-action-value-group');
+    await expect(valueGroup).toBeVisible();
+  });
+
+  test('EXEC-086: 切换为非发送指令动作后预设灯效应隐藏', async ({ authPage }) => {
+    await openExecModal(authPage);
+    await authPage.waitForTimeout(500);
+    const block = actionsContainer(authPage).locator('.pe-action').first();
+    await block.locator('.pe-action-type').selectOption('11');
+    await authPage.waitForTimeout(500);
+    // 切换到“系统重启”
+    await block.locator('.pe-action-type').selectOption('6');
+    await authPage.waitForTimeout(500);
+    // 预设灯效下拉框应隐藏
+    const presetDropdown = block.locator('.pe-neopixel-preset');
+    const isVisible = await presetDropdown.isVisible().catch(() => false);
+    expect(isVisible).toBeFalsy();
+  });
+
+  // ---------- 新灯效预设格式和动画效果 ----------
+
+  test('EXEC-087: 灯效预设下拉框应采用 id-name 格式显示', async ({ authPage }) => {
+    await openExecModal(authPage);
+    await authPage.waitForTimeout(500);
+    const block = actionsContainer(authPage).locator('.pe-action').first();
+    await block.locator('.pe-action-type').selectOption('11');
+    await authPage.waitForTimeout(500);
+    const preset = block.locator('.pe-neopixel-preset');
+    // 检查新动画效果选项存在且格式为 id-name
+    const redText = await preset.locator('option[value="red"]').textContent();
+    expect(redText).toContain('red-');
+    const chaseText = await preset.locator('option[value="chase"]').textContent();
+    expect(chaseText).toContain('chase-');
+    const fireText = await preset.locator('option[value="fire"]').textContent();
+    expect(fireText).toContain('fire-');
+    const breathingText = await preset.locator('option[value="breathing"]').textContent();
+    expect(breathingText).toContain('breathing-');
+  });
+
+  test('EXEC-088: 新灯效动画选项应全部存在', async ({ authPage }) => {
+    await openExecModal(authPage);
+    await authPage.waitForTimeout(500);
+    const block = actionsContainer(authPage).locator('.pe-action').first();
+    await block.locator('.pe-action-type').selectOption('11');
+    await authPage.waitForTimeout(500);
+    const preset = block.locator('.pe-neopixel-preset');
+    const effects = ['chase', 'theater_chase', 'strobe', 'twinkle', 'fade', 'breathing', 'color_wipe', 'fire'];
+    for (const effect of effects) {
+      const opt = preset.locator(`option[value="${effect}"]`);
+      await expect(opt).toBeAttached();
+    }
+  });
+
+  test('EXEC-089: 触发设备事件(actionType=21)应显示事件选择下拉框', async ({ authPage }) => {
+    await openExecModal(authPage);
+    await authPage.waitForTimeout(500);
+    const block = actionsContainer(authPage).locator('.pe-action').first();
+    await block.locator('.pe-action-type').selectOption('21');
+    await authPage.waitForTimeout(500);
+    // 事件选择下拉框应可见
+    const eventSelect = block.locator('.pe-trigger-event-select');
+    await expect(eventSelect).toBeVisible();
+    // 目标外设应隐藏
+    const targetGroup = block.locator('.pe-target-group');
+    const targetVisible = await targetGroup.isVisible().catch(() => false);
+    expect(targetVisible).toBeFalsy();
+    // 检查事件选项存在
+    const wifiOpt = eventSelect.locator('option[value="wifi_connected"]');
+    await expect(wifiOpt).toBeAttached();
+    const mqttOpt = eventSelect.locator('option[value="mqtt_connected"]');
+    await expect(mqttOpt).toBeAttached();
+  });
+
+  test('EXEC-090: 触发设备事件切换回其他动作后事件下拉框应隐藏', async ({ authPage }) => {
+    await openExecModal(authPage);
+    await authPage.waitForTimeout(500);
+    const block = actionsContainer(authPage).locator('.pe-action').first();
+    await block.locator('.pe-action-type').selectOption('21');
+    await authPage.waitForTimeout(500);
+    // 切换回灯效控制
+    await block.locator('.pe-action-type').selectOption('11');
+    await authPage.waitForTimeout(500);
+    const eventSelect = block.locator('.pe-trigger-event-select');
+    const isVisible = await eventSelect.isVisible().catch(() => false);
+    expect(isVisible).toBeFalsy();
+  });
 });

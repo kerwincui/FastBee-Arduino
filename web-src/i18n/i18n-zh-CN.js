@@ -1018,8 +1018,8 @@
         'periph-exec-action-ntp': 'NTP同步',
         'periph-exec-action-ota': 'OTA升级',
         
-        'periph-exec-action-call-periph': '调用外设',
-        'periph-exec-action-call-help': '调用外设 JSON，例如 {"periphId":"stepper","action":"forward"}、{"periphId":"ws2812b","action":"color","value":"#ff0000"}、{"periphId":"uart_debug","action":"send","value":"hello"}；UART 目标也可直接填写要发送的文本',
+        'periph-exec-action-call-periph': '发送指令',
+        'periph-exec-action-call-help': '选择目标外设后，可通过预设选项或 JSON 格式发送指令。支持 $value 占位符接收平台下发的值',
         'periph-exec-action-cat-advanced': '高级功能',
         'periph-exec-action-cat-rule': '规则控制',
         'periph-exec-action-enable-rule': '启用执行规则',

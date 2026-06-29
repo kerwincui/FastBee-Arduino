@@ -500,6 +500,21 @@ void ProtocolManager::dispatchModbusData(uint8_t slaveAddress, const String& dat
 
 #if FASTBEE_ENABLE_MQTT
 bool ProtocolManager::restartMQTT() {
+    // MQTT 启用检查：禁用时不创建客户端
+    {
+        JsonDocument enabledDoc;
+        if (ConfigStorage::getInstance().loadProtocolSection("mqtt", enabledDoc)) {
+            if (!enabledDoc["mqtt"]["enabled"].as<bool>()) {
+                LOG_INFO("Protocol Manager: MQTT disabled, skipping restart");
+                if (mqttClient) {
+                    mqttClient->stop();
+                    mqttClient.reset();
+                }
+                return false;
+            }
+        }
+    }
+
     LOG_INFO("Protocol Manager: Restarting MQTT...");
 
     // 断开现有连接
@@ -567,6 +582,29 @@ bool ProtocolManager::restartMQTT() {
 }
 
 bool ProtocolManager::restartMQTTDeferred(bool forceRebuild) {
+    // ===== MQTT 启用检查：禁用时不创建客户端、不连接 =====
+    // 这是所有 MQTT 启动路径的统一入口守卫：
+    //   1. 设备启动（FastBeeFramework STEP 11.1）无条件调用
+    //   2. 网络就绪后自动启动任务
+    //   3. 保存协议配置时
+    //   4. 测试连接自动恢复时
+    // 禁用 MQTT 后，任何路径都不应创建客户端或发起连接
+    {
+        JsonDocument enabledDoc;
+        if (ConfigStorage::getInstance().loadProtocolSection("mqtt", enabledDoc)) {
+            bool mqttEnabled = enabledDoc["mqtt"]["enabled"].as<bool>();
+            if (!mqttEnabled) {
+                LOG_INFO("Protocol Manager: MQTT disabled in config, skipping deferred restart");
+                // 如果已有运行中的客户端，停止它
+                if (mqttClient) {
+                    mqttClient->stop();
+                    mqttClient.reset();
+                }
+                return false;
+            }
+        }
+    }
+
     LOG_INFO("Protocol Manager: Restarting MQTT (deferred connect)...");
 
     if (!forceRebuild && mqttClient && !mqttClient->isStopped()) {

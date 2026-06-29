@@ -30,7 +30,9 @@ enum class ExecActionType : uint8_t {
     ACTION_SYS_FACTORY_RESET = 7, // 恢复出厂设置
     ACTION_SYS_NTP_SYNC = 8,     // NTP时间同步
     ACTION_SYS_OTA = 9,          // OTA升级
-    ACTION_CALL_PERIPHERAL = 10,  // 调用其他外设
+    ACTION_CALL_PERIPHERAL = 10,  // 发送指令（通用，支持 JSON 或纯文本）
+    ACTION_NEOPIXEL_EFFECT = 11,  // 灯效控制（NeoPixel 预设灯效，actionValue: 颜色名/命令/JSON）
+    ACTION_STEPPER_CONTROL = 12,  // 电机控制（步进电机，actionValue: forward/reverse/stop/steps）
     ACTION_HIGH_INVERTED = 13,    // 设置高电平(反转) - 物理输出低电平
     ACTION_LOW_INVERTED = 14,     // 设置低电平(反转) - 物理输出高电平
     ACTION_SCRIPT = 15,           // 命令序列脚本
@@ -45,7 +47,9 @@ enum class ExecActionType : uint8_t {
     ACTION_DISPLAY_NUMBER = 24,     // 数码管/显示屏显示数字（actionValue: "12.34" / "12:34" / "1234"）
     ACTION_DISPLAY_TEXT = 25,       // 数码管/显示屏显示文本（actionValue: "PLAY" 等）
     ACTION_DISPLAY_CLEAR = 26,      // 数码管/显示屏清屏
-    ACTION_OLED_DISPLAY = 27        // OLED 自定义多行显示（actionValue: 多行文本 + ${id.field} + $value 模板，首行 # 开头为居中标题）
+    ACTION_OLED_DISPLAY = 27,       // OLED 自定义多行显示（actionValue: 多行文本 + ${id.field} + $value 模板，首行 # 开头为居中标题）
+    ACTION_RF_SEND = 28,            // 射频发送（RF模块，actionValue: 编码字符串）
+    ACTION_UART_SEND = 29           // 串口发送（UART，actionValue: 文本/数据）
 };
 
 // 传感器类别枚举

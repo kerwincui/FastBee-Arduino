@@ -594,6 +594,24 @@
                 .replace(/\s+\(\d+\)(?=\.json$)/i, '');
         },
 
+        /**
+         * 根据 JSON 内容自动检测配置文件类型，返回规范文件名
+         * 当文件名不是已知配置名时，用于 AI 生成配置等场景的自动识别
+         */
+        _detectConfigFileName(name, parsed) {
+            // 已经是已知配置文件名，无需检测
+            if (CONFIG_TRANSFER_LABELS[name]) return name;
+            if (!parsed || typeof parsed !== 'object') return name;
+
+            // 按内容特征匹配
+            if (Array.isArray(parsed.peripherals)) return 'peripherals.json';
+            if (Array.isArray(parsed.rules)) return 'periph_exec.json';
+            if (parsed.staSSID !== undefined || parsed.apSSID !== undefined || parsed.mode !== undefined) return 'network.json';
+            if (parsed.deviceName !== undefined || parsed.chipType !== undefined) return 'device.json';
+            if (parsed.mqtt !== undefined || parsed.server !== undefined) return 'protocol.json';
+            return name;
+        },
+
         _getConfigTransferLabel(name) {
             return CONFIG_TRANSFER_LABELS[name] || name || '--';
         },
@@ -758,6 +776,7 @@
 
             const chunks = this._splitConfigTransferChunks(filteredContent, CONFIG_IMPORT_CHUNK_BYTES);
             const total = chunks.length;
+            let cleanedCount = 0;
             for (let i = 0; i < total; i++) {
                 const res = await apiPost('/api/config/transfer/import-chunk', {
                     name: entry.name,
@@ -766,8 +785,16 @@
                     chunk: chunks[i]
                 }, 30000);
                 if (!res || !res.success) {
-                    throw new Error((res && res.error) || ('分片导入失败：' + entry.name));
+                    const serverMsg = (res && res.error) || ('分片导入失败：' + entry.name);
+                    throw new Error(serverMsg);
                 }
+                // 最后一个分片可能包含清理信息
+                if (res.data && res.data.cleaned) {
+                    cleanedCount = res.data.cleaned;
+                }
+            }
+            if (cleanedCount > 0) {
+                Notification.info(`已自动清理 ${cleanedCount} 个残留配置文件`, '配置导入');
             }
             return { success: true, name: entry.name };
         },
@@ -789,8 +816,24 @@
                             return;
                         }
 
+                        // 自动检测：文件名不是已知配置名时，根据 JSON 内容推断正确的配置文件名
+                        const normalizedName = this._normalizeConfigFileName(file.name);
+                        const detectedName = this._detectConfigFileName(normalizedName, parsed);
+                        if (detectedName !== normalizedName) {
+                            console.info(`[device-config] Auto-detected config type: ${file.name} → ${detectedName}`);
+                            // 在页面上显示自动重命名提示
+                            this._setConfigTransferStatus(
+                                `已自动识别：${file.name} → ${CONFIG_TRANSFER_LABELS[detectedName] || detectedName}`
+                            );
+                        }
+
+                        // JSON 格式预检查
+                        if (!parsed || typeof parsed !== 'object') {
+                            throw new Error(`文件 ${file.name} 不是有效的 JSON 格式`);
+                        }
+
                         entries.push({
-                            name: file.name,
+                            name: detectedName,
                             content: text
                         });
                     });
@@ -918,9 +961,10 @@
                         this._setConfigTransferStatus('--');
                         return;
                     }
+                    const errMsg = err && err.message ? err.message : '配置导入失败';
                     console.error('[device-config] import config bundle failed:', err);
-                    this._setConfigTransferStatus('配置导入失败');
-                    Notification.error(err && err.message ? err.message : '配置导入失败', '配置导入/导出');
+                    this._setConfigTransferStatus('配置导入失败：' + errMsg);
+                    Notification.error(errMsg, '配置导入/导出');
                 })
                 .finally(() => {
                     if (btn) btn.disabled = false;

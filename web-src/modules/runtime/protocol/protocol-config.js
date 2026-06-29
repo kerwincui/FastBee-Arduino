@@ -295,7 +295,19 @@
                         if (this.currentPage === 'protocol') {
                             var mqttTab = document.getElementById('mqtt-tab');
                             if (mqttTab && mqttTab.classList.contains('active')) {
-                                this._startMqttStatusPolling({ initialDelayMs: 2000 });
+                                // 仅当 MQTT 已启用时才启动状态轮询
+                                // 禁用时启动轮询会导致后端返回 connected=true（重启前窗口期）
+                                var mqttEnabledCb = document.getElementById('mqtt-enabled');
+                                if (mqttEnabledCb && mqttEnabledCb.checked) {
+                                    this._startMqttStatusPolling({ initialDelayMs: 2000 });
+                                } else {
+                                    this._stopMqttStatusPolling();
+                                    var badge = document.getElementById('mqtt-status-badge');
+                                    if (badge) {
+                                        badge.className = 'mqtt-status-badge mqtt-status-offline';
+                                        badge.textContent = '未连接';
+                                    }
+                                }
                             }
                         }
                     } else {

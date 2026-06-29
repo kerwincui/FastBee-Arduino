@@ -229,6 +229,23 @@
         refreshMqttStatus() {
             const btn = document.querySelector('#mqtt-form [data-action="refreshMqttStatus"]');
             const resultEl = document.getElementById('mqtt-test-result');
+
+            // MQTT 已禁用时，直接显示“未连接”，不调用后端 API
+            // 避免后端返回 connected=true（客户端可能仍在运行的窗口期）
+            var enabledCheckbox = document.getElementById('mqtt-enabled');
+            if (enabledCheckbox && !enabledCheckbox.checked) {
+                if (btn) { btn.disabled = false; btn.textContent = '刷新状态'; }
+                if (resultEl) { resultEl.textContent = 'MQTT已禁用'; resultEl.style.color = '#909399'; }
+                this._stopMqttStatusPolling();
+                var badge = document.getElementById('mqtt-status-badge');
+                if (badge) {
+                    badge.className = 'mqtt-status-badge mqtt-status-offline';
+                    badge.textContent = '未连接';
+                }
+                setTimeout(() => { if (resultEl) resultEl.textContent = ''; }, 3000);
+                return;
+            }
+
             if (btn) { btn.disabled = true; btn.textContent = '刷新中...'; }
             if (resultEl) { resultEl.textContent = '正在刷新状态...'; resultEl.style.color = '#909399'; }
             this._stopMqttStatusPolling();
@@ -513,11 +530,17 @@
                     badge.textContent = '测试成功';
                     this._mqttConnectingStartTime = 0;
                     this._mqttTestConnectedDetected = true;  // 通知 deferred poll 停止
+                } else if (!d.enabled) {
+                    // MQTT 已禁用：优先显示“未连接”，不检查 connected 字段
+                    // 即使后端客户端仍在运行（重启前窗口期），前端也必须显示禁用状态
+                    badge.className = 'mqtt-status-badge mqtt-status-offline';
+                    badge.textContent = '未连接';
+                    this._mqttConnectingStartTime = 0;
                 } else if (d.connected) {
                     badge.className = 'mqtt-status-badge mqtt-status-online';
                     badge.textContent = '已连接';
                     this._mqttConnectingStartTime = 0; // 重置超时计时
-                } else if (d.internetAvailable === false && d.enabled !== false) {
+                } else if (d.internetAvailable === false) {
                     // 网络本身不可用时（如 4G 失败回退 AP、以太网断线），
                     // 显示“网络未连接”而非泛泛的“未连接”，帮助用户定位根因
                     badge.className = 'mqtt-status-badge mqtt-status-offline';
@@ -539,10 +562,6 @@
                 } else if (connecting && hasError) {
                     badge.className = 'mqtt-status-badge mqtt-status-offline';
                     badge.textContent = '连接失败';
-                    this._mqttConnectingStartTime = 0;
-                } else if (!d.enabled) {
-                    badge.className = 'mqtt-status-badge mqtt-status-offline';
-                    badge.textContent = '未连接';
                     this._mqttConnectingStartTime = 0;
                 } else if (!d.initialized) {
                     badge.className = 'mqtt-status-badge mqtt-status-connecting';

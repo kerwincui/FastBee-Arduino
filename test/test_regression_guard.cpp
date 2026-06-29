@@ -1762,8 +1762,8 @@ static void test_regression_mqtt_no_hardcoded_defaults() {
 }
 
 /**
- * @brief MQTT 未启用时必须直接显示"未连接"而非"检测中"
- * 回归：旧代码 MQTT 未启用时仍进行状态检测，显示"检测中..."
+ * @brief MQTT 未启用时必须直接显示“未连接”而非“检测中”
+ * 回归：旧代码 MQTT 未启用时仍进行状态检测，显示“检测中...”
  */
 static void test_regression_mqtt_disabled_shows_offline() {
     TestLog::testStart("Regression: MQTT Disabled Shows Offline");
@@ -1784,7 +1784,7 @@ static void test_regression_mqtt_disabled_shows_offline() {
         "When mqtt.enabled=false, must set badge to offline");
     TestLog::step("protocol-config.js: mqtt disabled -> stop polling + show offline");
 
-    // 2. mqtt-config.js _updateMqttStatusUI 中 !d.enabled 应直接显示"未连接"
+    // 2. mqtt-config.js _updateMqttStatusUI 中 !d.enabled 必须在 d.connected 之前
     std::string mqtt = readRegressionSrcFile("web-src/modules/runtime/protocol/mqtt-config.js");
     TEST_ASSERT_FALSE_MESSAGE(mqtt.empty(), "Cannot read mqtt-config.js");
 
@@ -1793,14 +1793,236 @@ static void test_regression_mqtt_disabled_shows_offline() {
         "_updateMqttStatusUI not found");
 
     std::string updateBlock = mqtt.substr(updatePos, 8000);
-    // !d.enabled 分支必须在 !d.initialized 分支之前
+    // !d.enabled 分支必须在 d.connected badge 条件之前，确保禁用时不显示“已连接”
+    // 注意：使用 "else if (d.connected)" 而非 "d.connected"，避免匹配自动重连逻辑中的 "!d.connected"
     size_t disabledPos = updateBlock.find("!d.enabled");
+    size_t connectedPos = updateBlock.find("else if (d.connected)");
     size_t initPos = updateBlock.find("!d.initialized");
     TEST_ASSERT_TRUE_MESSAGE(disabledPos != std::string::npos,
         "!d.enabled check must exist in _updateMqttStatusUI");
+    TEST_ASSERT_TRUE_MESSAGE(connectedPos != std::string::npos,
+        "d.connected check must exist");
+    TEST_ASSERT_TRUE_MESSAGE(disabledPos < connectedPos,
+        "!d.enabled must be checked BEFORE d.connected to prevent disabled MQTT showing 'connected'");
     TEST_ASSERT_TRUE_MESSAGE(initPos != std::string::npos,
         "!d.initialized check must exist");
-    TestLog::step("mqtt-config.js: !d.enabled and !d.initialized checks both exist");
+    TestLog::step("mqtt-config.js: !d.enabled before d.connected in condition chain");
+
+    // 3. refreshMqttStatus 必须在 MQTT 禁用时跳过 API 调用
+    size_t refreshPos = mqtt.find("refreshMqttStatus()");
+    TEST_ASSERT_TRUE_MESSAGE(refreshPos != std::string::npos,
+        "refreshMqttStatus not found");
+    std::string refreshBlock = mqtt.substr(refreshPos, 2000);
+    TEST_ASSERT_TRUE_MESSAGE(refreshBlock.find("mqtt-enabled") != std::string::npos,
+        "refreshMqttStatus must check mqtt-enabled checkbox before API call");
+    TEST_ASSERT_TRUE_MESSAGE(refreshBlock.find("_stopMqttStatusPolling") != std::string::npos,
+        "refreshMqttStatus must stop polling when MQTT is disabled");
+    TEST_ASSERT_TRUE_MESSAGE(refreshBlock.find("mqtt-status-offline") != std::string::npos,
+        "refreshMqttStatus must set badge to offline when disabled");
+    TEST_ASSERT_TRUE_MESSAGE(refreshBlock.find("_loadMqttStatus") == std::string::npos ||
+        refreshBlock.find("return") < refreshBlock.find("_loadMqttStatus"),
+        "refreshMqttStatus must return early (before _loadMqttStatus) when disabled");
+    TestLog::step("mqtt-config.js: refreshMqttStatus skips API call + sets offline badge when disabled");
+
+    // 4. saveProtocolConfig 保存后必须根据 enabled 状态决定是否轮询
+    size_t savePos = config.find("saveProtocolConfig");
+    TEST_ASSERT_TRUE_MESSAGE(savePos != std::string::npos,
+        "saveProtocolConfig not found");
+    std::string saveBlock = config.substr(savePos, 8000);
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("mqtt-enabled") != std::string::npos,
+        "saveProtocolConfig must check mqtt-enabled before starting polling");
+    // 禁用分支必须调用 _stopMqttStatusPolling 并设置 badge
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("_stopMqttStatusPolling") != std::string::npos,
+        "saveProtocolConfig must stop polling when MQTT is disabled after save");
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("mqtt-status-offline") != std::string::npos,
+        "saveProtocolConfig must set badge to offline when MQTT is disabled after save");
+    TestLog::step("protocol-config.js: saveProtocolConfig checks enabled + stops polling + sets offline");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MQTT 禁用时后端必须停止客户端并报告 connected=false
+ * 回归：旧代码 MQTT 禁用后客户端仍在运行，状态 API 返回 connected=true
+ */
+static void test_regression_mqtt_disabled_stops_backend_client() {
+    TestLog::testStart("Regression: MQTT Disabled Stops Backend Client");
+
+    // 1. MqttRouteHandler::handleGetMqttStatus 必须在 mqttConfigEnabled=false 时停止客户端
+    std::string handler = readRegressionSrcFile("src/network/handlers/MqttRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(handler.empty(), "Cannot read MqttRouteHandler.cpp");
+
+    // 查找 handleGetMqttStatus 函数定义（不是 lambda 调用）
+    size_t statusPos = handler.find("MqttRouteHandler::handleGetMqttStatus");
+    TEST_ASSERT_TRUE_MESSAGE(statusPos != std::string::npos,
+        "handleGetMqttStatus function definition not found");
+
+    // 在 handleGetMqttStatus 函数体内查找关键逻辑
+    std::string statusBlock = handler.substr(statusPos, 4000);
+    TEST_ASSERT_TRUE_MESSAGE(statusBlock.find("stopMQTT") != std::string::npos,
+        "handleGetMqttStatus must call stopMQTT when config says disabled");
+    TEST_ASSERT_TRUE_MESSAGE(statusBlock.find("!mqttConfigEnabled") != std::string::npos,
+        "handleGetMqttStatus must check !mqttConfigEnabled before stopping");
+    // 停止条件必须同时包含 mqttConfigLoaded 和 !mqttConfigEnabled
+    // 避免配置未加载时误停客户端
+    TEST_ASSERT_TRUE_MESSAGE(statusBlock.find("mqttConfigLoaded && !mqttConfigEnabled") != std::string::npos,
+        "stopMQTT condition must require BOTH mqttConfigLoaded AND !mqttConfigEnabled");
+    TestLog::step("MqttRouteHandler: stops MQTT client when config disabled (with loaded guard)");
+
+    // 2. connected 字段必须包含 mqttConfigEnabled 守卫
+    TEST_ASSERT_TRUE_MESSAGE(statusBlock.find("mqttConfigEnabled &&") != std::string::npos,
+        "connected must include mqttConfigEnabled guard");
+    TestLog::step("MqttRouteHandler: connected field guarded by mqttConfigEnabled");
+
+    // 2b. connecting 字段也必须包含 mqttConfigEnabled 守卫
+    // 查找 "mqttConfigEnabled && !mqttConnected" 确保 connecting 也受 enabled 状态保护
+    TEST_ASSERT_TRUE_MESSAGE(statusBlock.find("mqttConfigEnabled && !mqttConnected") != std::string::npos,
+        "connecting field must also include mqttConfigEnabled guard to prevent false 'connecting' state");
+    TestLog::step("MqttRouteHandler: connecting field also guarded by mqttConfigEnabled");
+
+    // 2c. 防御性检查必须在 tryAutoStartMqttForStatus 之前
+    // 确保禁用时先停止客户端，再尝试自动启动（自动启动也会被 configEnabled=false 阻止）
+    size_t stopPos = statusBlock.find("stopMQTT");
+    size_t autoStartPos = statusBlock.find("tryAutoStartMqttForStatus");
+    TEST_ASSERT_TRUE_MESSAGE(stopPos != std::string::npos && autoStartPos != std::string::npos,
+        "Both stopMQTT and tryAutoStartMqttForStatus must exist in handleGetMqttStatus");
+    TEST_ASSERT_TRUE_MESSAGE(stopPos < autoStartPos,
+        "stopMQTT must be called BEFORE tryAutoStartMqttForStatus");
+    TestLog::step("MqttRouteHandler: stopMQTT before tryAutoStartMqttForStatus");
+
+    // 3. ProtocolRouteHandler::handleSaveProtocolConfig 必须在 MQTT 禁用时立即停止客户端
+    std::string proto = readRegressionSrcFile("src/network/handlers/ProtocolRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(proto.empty(), "Cannot read ProtocolRouteHandler.cpp");
+
+    // 查找函数定义（不是 lambda 调用）
+    size_t saveMqttPos = proto.find("ProtocolRouteHandler::handleSaveProtocolConfig");
+    TEST_ASSERT_TRUE_MESSAGE(saveMqttPos != std::string::npos,
+        "handleSaveProtocolConfig function definition not found");
+
+    std::string saveBlock = proto.substr(saveMqttPos, 20000);
+    // 必须在 mqttWillReboot 前检查 mqttEnabledNow 并调用 stopMQTT
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("mqttEnabledNow") != std::string::npos,
+        "handleSaveProtocolConfig must read mqtt enabled state after save");
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("!mqttEnabledNow") != std::string::npos,
+        "handleSaveProtocolConfig must check !mqttEnabledNow");
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("stopMQTT") != std::string::npos,
+        "handleSaveProtocolConfig must call stopMQTT when MQTT is disabled");
+    TestLog::step("ProtocolRouteHandler: stops MQTT immediately when disabled in save");
+
+    // 4. 保存响应必须包含 mqttDisconnected 标志
+    TEST_ASSERT_TRUE_MESSAGE(saveBlock.find("mqttDisconnected") != std::string::npos,
+        "Response must include mqttDisconnected flag for frontend notification");
+    TestLog::step("ProtocolRouteHandler: response includes mqttDisconnected flag");
+
+    // 5. stopMQTT 必须在 scheduleConfigReboot 之前执行
+    // 确保客户端在重启调度前已停止，避免窗口期内继续连接
+    size_t stopInSave = saveBlock.find("stopMQTT");
+    size_t rebootInSave = saveBlock.find("scheduleConfigReboot");
+    TEST_ASSERT_TRUE_MESSAGE(stopInSave != std::string::npos,
+        "stopMQTT must exist in save handler");
+    TEST_ASSERT_TRUE_MESSAGE(rebootInSave != std::string::npos,
+        "scheduleConfigReboot must exist in save handler");
+    TEST_ASSERT_TRUE_MESSAGE(stopInSave < rebootInSave,
+        "stopMQTT must be called BEFORE scheduleConfigReboot to prevent connection during reboot window");
+    TestLog::step("ProtocolRouteHandler: stopMQTT before scheduleConfigReboot");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief MQTT 禁用时 reconnect 接口必须拒绝重连/重启
+ * 回归：旧代码 handleMqttReconnect 未检查 mqtt.enabled，前端自动重连可能触发设备重启
+ */
+static void test_regression_mqtt_disabled_rejects_reconnect() {
+    TestLog::testStart("Regression: MQTT Disabled Rejects Reconnect");
+
+    // 1. handleMqttReconnect 必须检查 mqttConfigEnabled
+    std::string handler = readRegressionSrcFile("src/network/handlers/MqttRouteHandler.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(handler.empty(), "Cannot read MqttRouteHandler.cpp");
+
+    size_t reconnectPos = handler.find("handleMqttReconnect(AsyncWebServerRequest");
+    TEST_ASSERT_TRUE_MESSAGE(reconnectPos != std::string::npos,
+        "handleMqttReconnect function definition not found");
+
+    std::string reconnectBlock = handler.substr(reconnectPos, 2000);
+    // 必须在 scheduleConfigReboot 之前检查 mqttEnabled
+    TEST_ASSERT_TRUE_MESSAGE(reconnectBlock.find("mqttEnabled") != std::string::npos,
+        "handleMqttReconnect must check mqttEnabled from config");
+    TEST_ASSERT_TRUE_MESSAGE(reconnectBlock.find("!mqttEnabled") != std::string::npos ||
+        reconnectBlock.find("mqttDisabled") != std::string::npos,
+        "handleMqttReconnect must reject reconnect when MQTT is disabled");
+    TestLog::step("MqttRouteHandler: handleMqttReconnect rejects reconnect when disabled");
+
+    // 2. checkPendingTestRestore 必须检查 mqttEnabled 后才调用 restartMQTTDeferred
+    size_t testRestorePos = handler.find("checkPendingTestRestore()");
+    TEST_ASSERT_TRUE_MESSAGE(testRestorePos != std::string::npos,
+        "checkPendingTestRestore function definition not found");
+
+    std::string testRestoreBlock = handler.substr(testRestorePos, 2000);
+    TEST_ASSERT_TRUE_MESSAGE(testRestoreBlock.find("mqttEnabled") != std::string::npos,
+        "checkPendingTestRestore must check mqttEnabled before restarting");
+    // 必须在 restartMQTTDeferred 前检查 enabled
+    size_t enabledCheckPos = testRestoreBlock.find("mqttEnabled");
+    size_t restartPos = testRestoreBlock.find("restartMQTTDeferred");
+    TEST_ASSERT_TRUE_MESSAGE(enabledCheckPos != std::string::npos && restartPos != std::string::npos,
+        "Both mqttEnabled check and restartMQTTDeferred must exist");
+    TEST_ASSERT_TRUE_MESSAGE(enabledCheckPos < restartPos,
+        "mqttEnabled check must be BEFORE restartMQTTDeferred");
+    TestLog::step("MqttRouteHandler: checkPendingTestRestore checks enabled before restart");
+
+    // 3. MQTTClient::disconnect() 必须 flush 确保 DISCONNECT 报文发出
+    std::string client = readRegressionSrcFile("src/protocols/MQTTClient.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(client.empty(), "Cannot read MQTTClient.cpp");
+
+    size_t disconnectPos = client.find("void MQTTClient::disconnect()");
+    TEST_ASSERT_TRUE_MESSAGE(disconnectPos != std::string::npos,
+        "MQTTClient::disconnect() not found");
+
+    std::string disconnectBlock = client.substr(disconnectPos, 800);
+    TEST_ASSERT_TRUE_MESSAGE(disconnectBlock.find("flush()") != std::string::npos,
+        "disconnect() must call flush() before closing TCP socket");
+    // flush 必须在 stop 之前
+    size_t flushPos = disconnectBlock.find("flush()");
+    size_t stopPos = disconnectBlock.find(".stop()");
+    TEST_ASSERT_TRUE_MESSAGE(flushPos != std::string::npos && stopPos != std::string::npos,
+        "Both flush() and stop() must exist in disconnect()");
+    TEST_ASSERT_TRUE_MESSAGE(flushPos < stopPos,
+        "flush() must be called BEFORE stop() to ensure DISCONNECT packet is sent");
+    TestLog::step("MQTTClient: disconnect() flushes before closing TCP socket");
+
+    // 4. restartMQTTDeferred 必须检查 mqtt.enabled（这是设备启动时的唯一守卫）
+    //    设备重启时 FastBeeFramework STEP 11.1 无条件调用 restartMQTTDeferred()
+    //    如果不检查 enabled，禁用状态下 MQTT 客户端仍会被创建并自动连接
+    std::string pm = readRegressionSrcFile("src/protocols/ProtocolManager.cpp");
+    TEST_ASSERT_FALSE_MESSAGE(pm.empty(), "Cannot read ProtocolManager.cpp");
+
+    size_t deferredPos = pm.find("ProtocolManager::restartMQTTDeferred(bool forceRebuild)");
+    TEST_ASSERT_TRUE_MESSAGE(deferredPos != std::string::npos,
+        "restartMQTTDeferred implementation not found");
+
+    std::string deferredBlock = pm.substr(deferredPos, 1500);
+    // mqtt.enabled 检查必须在 active-client guard 之前
+    size_t enabledPos = deferredBlock.find("\"mqtt\"");
+    size_t activeGuardPos = deferredBlock.find("!forceRebuild && mqttClient");
+    TEST_ASSERT_TRUE_MESSAGE(enabledPos != std::string::npos,
+        "restartMQTTDeferred must check mqtt.enabled from config");
+    TEST_ASSERT_TRUE_MESSAGE(activeGuardPos != std::string::npos,
+        "restartMQTTDeferred must have active-client guard");
+    TEST_ASSERT_TRUE_MESSAGE(enabledPos < activeGuardPos,
+        "mqtt.enabled check must run BEFORE active-client guard");
+    // 禁用时必须 stop 并 reset
+    TEST_ASSERT_TRUE_MESSAGE(deferredBlock.find("mqttClient->stop()") != std::string::npos,
+        "restartMQTTDeferred must stop existing client when disabled");
+    TestLog::step("ProtocolManager: restartMQTTDeferred checks mqtt.enabled before creating client");
+
+    // 5. restartMQTT (non-deferred) 也必须检查 mqtt.enabled
+    size_t restartNonDefPos = pm.find("ProtocolManager::restartMQTT()");
+    TEST_ASSERT_TRUE_MESSAGE(restartNonDefPos != std::string::npos,
+        "restartMQTT implementation not found");
+    std::string restartBlock = pm.substr(restartNonDefPos, 800);
+    TEST_ASSERT_TRUE_MESSAGE(restartBlock.find("\"mqtt\"") != std::string::npos,
+        "restartMQTT must also check mqtt.enabled");
+    TestLog::step("ProtocolManager: restartMQTT also checks mqtt.enabled");
 
     TestLog::testEnd(true);
 }
@@ -2575,7 +2797,10 @@ void test_regression_guard_group() {
     // WiFi 安全类型默认值 + MQTT 数据同步 + 状态显示 + 摘要默认值回归保护
     RUN_TEST(test_regression_wifi_security_default_wpa2);
     RUN_TEST(test_regression_mqtt_no_hardcoded_defaults);
+    // MQTT 禁用状态全链路回归保护
     RUN_TEST(test_regression_mqtt_disabled_shows_offline);
+    RUN_TEST(test_regression_mqtt_disabled_stops_backend_client);
+    RUN_TEST(test_regression_mqtt_disabled_rejects_reconnect);
     RUN_TEST(test_regression_mqtt_summary_default_json);
     RUN_TEST(test_regression_device_layout_security_factory_at_bottom);
     RUN_TEST(test_regression_mdns_async_restart);

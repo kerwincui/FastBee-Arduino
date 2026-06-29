@@ -1694,6 +1694,7 @@ struct MockActionResult {
     String callPeriphCommand;
     String ruleControlTarget;
     bool ruleControlEnable;
+    String triggerEventId;  // actionType=21 触发的事件 ID
 };
 
 // 模拟 executeActionItem 的分发逻辑
@@ -1717,8 +1718,25 @@ static MockActionResult mockExecuteAction(
         return result;
     }
 
-    // 系统功能 (actionType 6-11)
-    if (actionType >= 6 && actionType <= 11) {
+    // 专用外设控制动作 (11=灯效控制, 12=电机控制, 28=射频发送, 29=串口发送)
+    if (actionType == 11 || actionType == 12 || actionType == 28 || actionType == 29) {
+        if (targetPeriphId.isEmpty()) { result.success = false; return result; }
+        if (!targetExists) { result.success = false; return result; }
+        result.callPeriphTarget = targetPeriphId;
+        result.callPeriphCommand = actionValue;
+        result.success = true;
+        return result;
+    }
+
+    // 触发设备事件 (actionType 21)
+    if (actionType == 21) {
+        result.triggerEventId = actionValue;
+        result.success = true;
+        return result;
+    }
+
+    // 系统功能 (actionType 6-9)
+    if (actionType >= 6 && actionType <= 9) {
         if (actionType == 6) { // SYS_RESTART
             result.systemRestartTriggered = true;
             result.success = true;
@@ -2413,6 +2431,298 @@ void test_effective_value_both_empty() {
 }
 
 // ============================================================
+//  TEST GROUP 18F: $value 模板替换逻辑
+//  镜像 executeCallPeripheralAction 中的 $value 替换
+// ============================================================
+
+/**
+ * 模拟固件中 executeCallPeripheralAction 的 $value 模板替换逻辑（修复后版本）：
+ * 优先使用 receivedValue（平台下发值）进行替换，
+ * 当 receivedValue 为空时回退到 effectiveValue。
+ */
+static String mockApplyValueTemplateWithReceived(const String& actionValue,
+                                                   const String& effectiveValue,
+                                                   const String& receivedValue) {
+    // substituteValue 优先级：receivedValue > effectiveValue
+    String substituteValue = !receivedValue.isEmpty() ? receivedValue : effectiveValue;
+    String jsonStr = actionValue;
+    if (!substituteValue.isEmpty() && substituteValue != actionValue) {
+        int pos = jsonStr.indexOf("$value");
+        while (pos >= 0) {
+            jsonStr = jsonStr.substring(0, pos) + substituteValue + jsonStr.substring(pos + 6);
+            pos = jsonStr.indexOf("$value", pos + substituteValue.length());
+        }
+    }
+    return jsonStr;
+}
+
+static String mockApplyValueTemplate(const String& actionValue, const String& effectiveValue) {
+    return mockApplyValueTemplateWithReceived(actionValue, effectiveValue, "");
+}
+
+void test_value_template_color_replacement() {
+    String actionValue = "{\"action\":\"color\",\"color\":\"$value\"}";
+    String result = mockApplyValueTemplate(actionValue, "red");
+    TEST_ASSERT_EQUAL_STRING("{\"action\":\"color\",\"color\":\"red\"}", result.c_str());
+}
+
+void test_value_template_hex_color() {
+    String actionValue = "{\"action\":\"color\",\"color\":\"$value\"}";
+    String result = mockApplyValueTemplate(actionValue, "#FF8800");
+    TEST_ASSERT_EQUAL_STRING("{\"action\":\"color\",\"color\":\"#FF8800\"}", result.c_str());
+}
+
+void test_value_template_no_placeholder() {
+    String actionValue = "{\"action\":\"color\",\"color\":\"red\"}";
+    String result = mockApplyValueTemplate(actionValue, "blue");
+    // effectiveValue != actionValue 且没有 $value 占位符，JSON 不变
+    TEST_ASSERT_EQUAL_STRING("{\"action\":\"color\",\"color\":\"red\"}", result.c_str());
+}
+
+void test_value_template_same_value_no_replace() {
+    String actionValue = "{\"action\":\"color\",\"color\":\"$value\"}";
+    // effectiveValue == actionValue 时不替换
+    String result = mockApplyValueTemplate(actionValue, actionValue);
+    TEST_ASSERT_EQUAL_STRING(actionValue.c_str(), result.c_str());
+}
+
+void test_value_template_empty_effective_no_replace() {
+    String actionValue = "{\"action\":\"color\",\"color\":\"$value\"}";
+    String result = mockApplyValueTemplate(actionValue, "");
+    // effectiveValue 为空时不替换
+    TEST_ASSERT_EQUAL_STRING(actionValue.c_str(), result.c_str());
+}
+
+void test_value_template_multiple_placeholders() {
+    String actionValue = "{\"action\":\"$value\",\"color\":\"$value\"}";
+    String result = mockApplyValueTemplate(actionValue, "green");
+    TEST_ASSERT_EQUAL_STRING("{\"action\":\"green\",\"color\":\"green\"}", result.c_str());
+}
+
+void test_value_template_brightness() {
+    String actionValue = "{\"action\":\"brightness\",\"value\":\"$value\"}";
+    String result = mockApplyValueTemplate(actionValue, "128");
+    TEST_ASSERT_EQUAL_STRING("{\"action\":\"brightness\",\"value\":\"128\"}", result.c_str());
+}
+
+void test_value_template_non_json_passthrough() {
+    // 非 JSON 的 actionValue 不触发模板替换（由外层 else 分支处理）
+    String actionValue = "forward";
+    String result = mockApplyValueTemplate(actionValue, "reverse");
+    // 虽然执行了替换，但 forward 中没有 $value，所以不变
+    TEST_ASSERT_EQUAL_STRING("forward", result.c_str());
+}
+
+void test_value_template_plain_text_dollar_value() {
+    // 纯文本 actionValue 中的 $value 应被替换 (灯效控制/电机控制等新类型)
+    String actionValue = "$value";
+    String result = mockApplyValueTemplate(actionValue, "red");
+    TEST_ASSERT_EQUAL_STRING("red", result.c_str());
+}
+
+void test_value_template_plain_text_empty_effective() {
+    String actionValue = "$value";
+    String result = mockApplyValueTemplate(actionValue, "");
+    // effectiveValue 为空时不替换
+    TEST_ASSERT_EQUAL_STRING("$value", result.c_str());
+}
+
+// ============================================================
+//  TEST GROUP 18F2: receivedValue 模板替换回归测试
+//  修复前：useReceivedValue=false 时 effectiveValue==actionValue，
+//          $value 不会被替换（导致 NeoPixel 收到字面量 "$value"）
+//  修复后：receivedValue 优先用于替换，无论 useReceivedValue 设置
+// ============================================================
+
+void test_value_template_receivedValue_replaces_even_when_effective_equals_action() {
+    // 回归核心场景：actionValue 含 $value，useReceivedValue=false
+    // effectiveValue == actionValue（因为未启用 useReceivedValue）
+    // 但 receivedValue="FF0000"，应该成功替换
+    String actionValue = "{\"action\":\"color\",\"color\":\"$value\"}";
+    String effectiveValue = actionValue;  // useReceivedValue=false 时两者相等
+    String receivedValue = "#FF0000";
+    String result = mockApplyValueTemplateWithReceived(actionValue, effectiveValue, receivedValue);
+    TEST_ASSERT_EQUAL_STRING("{\"action\":\"color\",\"color\":\"#FF0000\"}", result.c_str());
+}
+
+void test_value_template_receivedValue_priority_over_effective() {
+    // receivedValue 优先于 effectiveValue
+    String actionValue = "{\"color\":\"$value\"}";
+    String result = mockApplyValueTemplateWithReceived(actionValue, "from_effective", "from_received");
+    TEST_ASSERT_EQUAL_STRING("{\"color\":\"from_received\"}", result.c_str());
+}
+
+void test_value_template_empty_receivedValue_falls_back_to_effective() {
+    // receivedValue 为空时回退到 effectiveValue
+    String actionValue = "{\"color\":\"$value\"}";
+    String result = mockApplyValueTemplateWithReceived(actionValue, "effective_val", "");
+    TEST_ASSERT_EQUAL_STRING("{\"color\":\"effective_val\"}", result.c_str());
+}
+
+void test_value_template_plain_text_receivedValue_replaces() {
+    // 纯文本格式（非 JSON）也应使用 receivedValue 替换
+    String actionValue = "$value";
+    String result = mockApplyValueTemplateWithReceived(actionValue, actionValue, "#00FF00");
+    TEST_ASSERT_EQUAL_STRING("#00FF00", result.c_str());
+}
+
+void test_value_template_platform_mqtt_command_scenario() {
+    // 完整场景：平台下发 [{"id":"rgb_led","value":"#FF0000"}]
+    // 规则配置：actionValue="{\"action\":\"color\",\"color\":\"$value\"}"，useReceivedValue=false
+    // receivedValue="#FF0000"（从 MQTT 消息中提取的 value 字段）
+    String actionValue = "{\"action\":\"color\",\"color\":\"$value\"}";
+    String effectiveValue = actionValue;  // useReceivedValue=false
+    String receivedValue = "#FF0000";
+    String result = mockApplyValueTemplateWithReceived(actionValue, effectiveValue, receivedValue);
+    // 验证 $value 被替换为实际颜色值，不再是字面量 "$value"
+    TEST_ASSERT_EQUAL(-1, result.indexOf("$value"));
+    TEST_ASSERT_NOT_EQUAL(-1, result.indexOf("#FF0000"));
+}
+
+void test_value_template_multiple_dollar_values_with_receivedValue() {
+    // 多个 $value 占位符全部替换
+    String actionValue = "{\"action\":\"$value\",\"color\":\"$value\"}";
+    String result = mockApplyValueTemplateWithReceived(actionValue, actionValue, "blue");
+    TEST_ASSERT_EQUAL_STRING("{\"action\":\"blue\",\"color\":\"blue\"}", result.c_str());
+}
+
+// ============================================================
+//  TEST GROUP 18G: 专用外设控制动作 dispatch (actionType 11/12/28/29)
+// ============================================================
+
+void test_action_dispatch_neopixel_effect() {
+    MockActionResult r = mockExecuteAction(11, "ws2812b", "red", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("ws2812b", r.callPeriphTarget.c_str());
+    TEST_ASSERT_EQUAL_STRING("red", r.callPeriphCommand.c_str());
+}
+
+void test_action_dispatch_neopixel_effect_rainbow() {
+    MockActionResult r = mockExecuteAction(11, "ws2812b", "rainbow", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("rainbow", r.callPeriphCommand.c_str());
+}
+
+void test_action_dispatch_neopixel_effect_no_target() {
+    MockActionResult r = mockExecuteAction(11, "", "red", true, false);
+    TEST_ASSERT_FALSE(r.success);
+}
+
+void test_action_dispatch_stepper_control() {
+    MockActionResult r = mockExecuteAction(12, "stepper_1", "forward", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("stepper_1", r.callPeriphTarget.c_str());
+    TEST_ASSERT_EQUAL_STRING("forward", r.callPeriphCommand.c_str());
+}
+
+void test_action_dispatch_rf_send() {
+    MockActionResult r = mockExecuteAction(28, "rf_1", "AABBCC", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("rf_1", r.callPeriphTarget.c_str());
+    TEST_ASSERT_EQUAL_STRING("AABBCC", r.callPeriphCommand.c_str());
+}
+
+void test_action_dispatch_uart_send() {
+    MockActionResult r = mockExecuteAction(29, "uart_1", "hello", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("uart_1", r.callPeriphTarget.c_str());
+    TEST_ASSERT_EQUAL_STRING("hello", r.callPeriphCommand.c_str());
+}
+
+void test_action_dispatch_uart_send_not_found() {
+    MockActionResult r = mockExecuteAction(29, "nonexist", "hello", false, false);
+    TEST_ASSERT_FALSE(r.success);
+}
+
+// ============================================================
+//  TEST GROUP 18H: 新灯效动画命令 dispatch (actionType=11)
+// ============================================================
+
+void test_action_dispatch_neopixel_chase() {
+    MockActionResult r = mockExecuteAction(11, "ws2812b", "chase", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("ws2812b", r.callPeriphTarget.c_str());
+    TEST_ASSERT_EQUAL_STRING("chase", r.callPeriphCommand.c_str());
+}
+
+void test_action_dispatch_neopixel_theater_chase() {
+    MockActionResult r = mockExecuteAction(11, "ws2812b", "theater_chase", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("theater_chase", r.callPeriphCommand.c_str());
+}
+
+void test_action_dispatch_neopixel_strobe() {
+    MockActionResult r = mockExecuteAction(11, "ws2812b", "strobe", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("strobe", r.callPeriphCommand.c_str());
+}
+
+void test_action_dispatch_neopixel_twinkle() {
+    MockActionResult r = mockExecuteAction(11, "ws2812b", "twinkle", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("twinkle", r.callPeriphCommand.c_str());
+}
+
+void test_action_dispatch_neopixel_fade() {
+    MockActionResult r = mockExecuteAction(11, "ws2812b", "fade", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("fade", r.callPeriphCommand.c_str());
+}
+
+void test_action_dispatch_neopixel_breathing() {
+    MockActionResult r = mockExecuteAction(11, "ws2812b", "breathing", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("breathing", r.callPeriphCommand.c_str());
+}
+
+void test_action_dispatch_neopixel_color_wipe() {
+    MockActionResult r = mockExecuteAction(11, "ws2812b", "color_wipe", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("color_wipe", r.callPeriphCommand.c_str());
+}
+
+void test_action_dispatch_neopixel_fire() {
+    MockActionResult r = mockExecuteAction(11, "ws2812b", "fire", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("fire", r.callPeriphCommand.c_str());
+}
+
+// ============================================================
+//  TEST GROUP 18I: 触发设备事件 (actionType=21)
+// ============================================================
+
+void test_action_dispatch_trigger_event_wifi() {
+    MockActionResult r = mockExecuteAction(21, "", "wifi_connected", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("wifi_connected", r.triggerEventId.c_str());
+}
+
+void test_action_dispatch_trigger_event_mqtt() {
+    MockActionResult r = mockExecuteAction(21, "", "mqtt_connected", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("mqtt_connected", r.triggerEventId.c_str());
+}
+
+void test_action_dispatch_trigger_event_button() {
+    MockActionResult r = mockExecuteAction(21, "", "button_click", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("button_click", r.triggerEventId.c_str());
+}
+
+void test_action_dispatch_trigger_event_system() {
+    MockActionResult r = mockExecuteAction(21, "", "system_boot", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("system_boot", r.triggerEventId.c_str());
+}
+
+void test_action_dispatch_trigger_event_empty() {
+    // 空事件 ID 仍可执行（固件回退为 rule.id）
+    MockActionResult r = mockExecuteAction(21, "", "", true, false);
+    TEST_ASSERT_TRUE(r.success);
+    TEST_ASSERT_EQUAL_STRING("", r.triggerEventId.c_str());
+}
+
+// ============================================================
 //  测试入口 (更新)
 // ============================================================
 
@@ -2693,4 +3003,50 @@ void test_periph_exec_group() {
     RUN_TEST(test_effective_value_empty_received_use_action);
     RUN_TEST(test_effective_value_not_use_received);
     RUN_TEST(test_effective_value_both_empty);
+
+    // Group 18F: $value 模板替换逻辑
+    RUN_TEST(test_value_template_color_replacement);
+    RUN_TEST(test_value_template_hex_color);
+    RUN_TEST(test_value_template_no_placeholder);
+    RUN_TEST(test_value_template_same_value_no_replace);
+    RUN_TEST(test_value_template_empty_effective_no_replace);
+    RUN_TEST(test_value_template_multiple_placeholders);
+    RUN_TEST(test_value_template_brightness);
+    RUN_TEST(test_value_template_non_json_passthrough);
+
+    // Group 18F2: receivedValue 模板替换回归测试
+    RUN_TEST(test_value_template_receivedValue_replaces_even_when_effective_equals_action);
+    RUN_TEST(test_value_template_receivedValue_priority_over_effective);
+    RUN_TEST(test_value_template_empty_receivedValue_falls_back_to_effective);
+    RUN_TEST(test_value_template_plain_text_receivedValue_replaces);
+    RUN_TEST(test_value_template_platform_mqtt_command_scenario);
+    RUN_TEST(test_value_template_multiple_dollar_values_with_receivedValue);
+
+    // Group 18G: 专用外设控制动作 dispatch
+    RUN_TEST(test_value_template_plain_text_dollar_value);
+    RUN_TEST(test_value_template_plain_text_empty_effective);
+    RUN_TEST(test_action_dispatch_neopixel_effect);
+    RUN_TEST(test_action_dispatch_neopixel_effect_rainbow);
+    RUN_TEST(test_action_dispatch_neopixel_effect_no_target);
+    RUN_TEST(test_action_dispatch_stepper_control);
+    RUN_TEST(test_action_dispatch_rf_send);
+    RUN_TEST(test_action_dispatch_uart_send);
+    RUN_TEST(test_action_dispatch_uart_send_not_found);
+
+    // Group 18H: 新灯效动画命令 dispatch
+    RUN_TEST(test_action_dispatch_neopixel_chase);
+    RUN_TEST(test_action_dispatch_neopixel_theater_chase);
+    RUN_TEST(test_action_dispatch_neopixel_strobe);
+    RUN_TEST(test_action_dispatch_neopixel_twinkle);
+    RUN_TEST(test_action_dispatch_neopixel_fade);
+    RUN_TEST(test_action_dispatch_neopixel_breathing);
+    RUN_TEST(test_action_dispatch_neopixel_color_wipe);
+    RUN_TEST(test_action_dispatch_neopixel_fire);
+
+    // Group 18I: 触发设备事件
+    RUN_TEST(test_action_dispatch_trigger_event_wifi);
+    RUN_TEST(test_action_dispatch_trigger_event_mqtt);
+    RUN_TEST(test_action_dispatch_trigger_event_button);
+    RUN_TEST(test_action_dispatch_trigger_event_system);
+    RUN_TEST(test_action_dispatch_trigger_event_empty);
 }

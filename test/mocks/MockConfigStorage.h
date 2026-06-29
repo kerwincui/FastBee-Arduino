@@ -215,7 +215,125 @@ public:
     }
 
     size_t getFreeSpace() {
+        if (_lowSpaceMode) return 512;  // 低空间模式模拟不足
         return 100000 - getUsedSpace();  // 模拟100KB存储
+    }
+
+    // 配置导入白名单（与 SystemRouteHandler.cpp 保持一致）
+    static inline const char* const kAllowedImportFiles[8] = {
+        "device.json",
+        "network.json",
+        "peripherals.json",
+        "periph_exec.json",
+        "protocol.json",
+        "users.json",
+        "auth.json",
+        "rule_scripts.json"
+    };
+    static constexpr int kAllowedImportFilesCount = 8;
+
+    static bool isAllowedImportFileName(const String& name) {
+        for (int i = 0; i < kAllowedImportFilesCount; ++i) {
+            if (name == kAllowedImportFiles[i]) return true;
+        }
+        return false;
+    }
+
+    // 带完整验证的配置导入（模拟后端白名单+JSON验证+大小限制）
+    String lastImportError;
+
+    bool importConfigValidated(const String& name, const String& jsonData,
+                               size_t maxSize = 24576) {
+        lastImportError = "";
+
+        // 1. 文件名安全检查
+        if (name.isEmpty() || name.length() > 48) {
+            lastImportError = "文件名过长或为空";
+            return false;
+        }
+        if (name.indexOf('/') >= 0 || name.indexOf("\\\\") >= 0 || name.indexOf("..") >= 0) {
+            lastImportError = "文件名包含非法字符";
+            return false;
+        }
+        if (!name.endsWith(".json")) {
+            lastImportError = "文件名必须以 .json 结尾";
+            return false;
+        }
+
+        // 2. 白名单检查
+        if (!isAllowedImportFileName(name)) {
+            lastImportError = "不允许导入配置文件：" + name;
+            return false;
+        }
+
+        // 3. 内容空检查
+        if (jsonData.isEmpty()) {
+            lastImportError = "配置文件内容为空";
+            return false;
+        }
+
+        // 4. 大小限制
+        if (jsonData.length() > maxSize) {
+            lastImportError = "配置文件过大（" + String(jsonData.length()) + " 字节）";
+            return false;
+        }
+
+        // 5. JSON 格式验证（必须为对象或数组，排除纯字符串/数字等标量）
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, jsonData.c_str());
+        if (err != DeserializationError::Ok || !doc.is<JsonObject>() && !doc.is<JsonArray>()) {
+            lastImportError = "配置文件内容不是有效的 JSON 格式";
+            return false;
+        }
+
+        // 6. 存储空间检查
+        if (getFreeSpace() < jsonData.length() * 2 + 1024) {
+            lastImportError = "存储空间不足";
+            return false;
+        }
+
+        String path = "/config/" + name;
+        _jsonFiles[path] = jsonData;
+        return true;
+    }
+
+    // 列举当前存储中的所有配置文件名
+    std::vector<String> listConfigFiles() const {
+        std::vector<String> names;
+        for (auto& entry : _jsonFiles) {
+            if (entry.first.startsWith("/config/")) {
+                String name = entry.first.substring(8);  // 去除 /config/ 前缀
+                names.push_back(name);
+            }
+        }
+        return names;
+    }
+
+    size_t getConfigFileCount() const {
+        size_t count = 0;
+        for (auto& entry : _jsonFiles) {
+            if (entry.first.startsWith("/config/")) count++;
+        }
+        return count;
+    }
+
+    // 清理不在白名单中的残留文件
+    int cleanupStaleFiles() {
+        int removed = 0;
+        std::vector<String> toRemove;
+        for (auto& entry : _jsonFiles) {
+            if (entry.first.startsWith("/config/")) {
+                String name = entry.first.substring(8);
+                if (!isAllowedImportFileName(name)) {
+                    toRemove.push_back(entry.first);
+                }
+            }
+        }
+        for (auto& path : toRemove) {
+            _jsonFiles.erase(path);
+            removed++;
+        }
+        return removed;
     }
 
     // 配置导出导入

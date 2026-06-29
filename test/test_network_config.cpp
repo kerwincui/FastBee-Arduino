@@ -1866,6 +1866,227 @@ void test_last_resort_ap_permanent_wifi_failure() {
     TestLog::testEnd(true);
 }
 
+// ========== AP 密码配置同步回归测试 ==========
+// 回归: FBNetworkManager::wifiConfig 与 WiFiManager::wifiConfig 是两个独立副本，
+//       initialize() 中加载了 network.json 的密码后必须同步到 WiFiManager，
+//       否则 AP 以空密码启动 = 开放热点。
+
+/**
+ * @brief 模拟两层配置的同步模式（FBNetworkManager + WiFiManager）
+ *
+ * 回归测试：修复 initialize() 中未调用 wifiManager->setNetworkConfig()
+ * 导致 AP 密码为空的缺陷。
+ */
+struct MockWiFiManagerDriver {
+    // 模拟 WiFiManager 的独立 wifiConfig 副本
+    String apSSID = "";
+    String apPassword = "";   // 默认空字符串，与 WiFiManager.h 一致
+    String apIP = "192.168.4.1";
+    uint8_t apChannel = 1;
+    bool apHidden = false;
+    uint8_t apMaxConnections = 4;
+
+    // 模拟 setNetworkConfig()
+    void setNetworkConfig(const TestAPConfig& cfg) {
+        apSSID = cfg.apSSID;
+        apPassword = cfg.apPassword;
+        apIP = cfg.apIP;
+        apChannel = cfg.apChannel;
+        apHidden = cfg.apHidden;
+        apMaxConnections = cfg.apMaxConnections;
+    }
+
+    // 模拟 startAPMode()：使用自己的配置副本启动 AP
+    bool startAP(MockWiFiClass& wifi) {
+        String ssid = apSSID.isEmpty() ? "fastbee-default" : apSSID;
+        return wifi.softAP(ssid.c_str(), apPassword.c_str(), apChannel, apHidden, apMaxConnections);
+    }
+};
+
+/**
+ * @brief 无同步时 AP 密码为空（开放热点）—— 复现 bug
+ */
+void test_ap_password_without_sync_open_hotspot() {
+    TestLog::testStart("AP Password: Without Sync = Open Hotspot (Bug)");
+
+    // 模拟 FBNetworkManager 从 network.json 加载的配置
+    TestAPConfig loadedConfig;
+    loadedConfig.apSSID = "FastBee-Device";
+    loadedConfig.apPassword = "admin123";  // network.json 中的默认值
+
+    // 模拟 WiFiManager 的独立配置（未同步）
+    MockWiFiManagerDriver driver;
+    // 注意：此处故意不调用 driver.setNetworkConfig(loadedConfig)
+    // 模拟 initialize() 中的 bug 路径
+
+    MockWiFiClass wifi;
+    wifi.mode(WIFI_AP);
+    driver.startAP(wifi);
+
+    // BUG: WiFiManager 的 apPassword 仍为空，AP 是开放热点
+    TEST_ASSERT_EQUAL_STRING("", wifi.softAPPassword().c_str());
+    TestLog::step("Without sync: AP password is empty (open hotspot)");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 有同步时 AP 密码正确 —— 验证修复
+ */
+void test_ap_password_with_sync_correct() {
+    TestLog::testStart("AP Password: With Sync = Correct (Fix)");
+
+    // 模拟 FBNetworkManager 从 network.json 加载的配置
+    TestAPConfig loadedConfig;
+    loadedConfig.apSSID = "FastBee-Device";
+    loadedConfig.apPassword = "admin123";
+
+    // 模拟 WiFiManager 的独立配置
+    MockWiFiManagerDriver driver;
+
+    // 修复：在启动 AP 之前同步配置
+    driver.setNetworkConfig(loadedConfig);
+
+    MockWiFiClass wifi;
+    wifi.mode(WIFI_AP);
+    driver.startAP(wifi);
+
+    // FIX: 密码已同步，AP 是 WPA2 加密热点
+    TEST_ASSERT_EQUAL_STRING("admin123", wifi.softAPPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("FastBee-Device", wifi.softAPSSID().c_str());
+    TestLog::step("With sync: AP password = 'admin123' (WPA2 protected)");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 模拟完整 initialize() 流程：加载 → 同步 → 启动 AP
+ *
+ * 验证 network.json 中的 apPassword 在整个启动链路中正确传递
+ */
+void test_ap_password_full_initialize_flow() {
+    TestLog::testStart("AP Password: Full Initialize Flow");
+
+    // Step 1: 模拟从 network.json 加载配置（FBNetworkManager::loadNetworkConfig）
+    TestAPConfig fbConfig;  // FBNetworkManager 的配置
+    fbConfig.apSSID = "";   // 空时自动生成
+    fbConfig.apPassword = "admin123";  // network.json 默认值
+    fbConfig.apIP = "192.168.4.1";
+    fbConfig.apChannel = 1;
+    fbConfig.apHidden = false;
+    fbConfig.apMaxConnections = 4;
+    TestLog::step("Step 1: Loaded config from network.json, apPassword='admin123'");
+
+    // Step 2: WiFiManager 的独立配置（默认值）
+    MockWiFiManagerDriver driver;
+    TEST_ASSERT_EQUAL_STRING("", driver.apPassword.c_str());
+    TestLog::step("Step 2: WiFiManager default apPassword='' (empty)");
+
+    // Step 3: 同步配置（修复后的 initialize() 中添加的调用）
+    driver.setNetworkConfig(fbConfig);
+    TEST_ASSERT_EQUAL_STRING("admin123", driver.apPassword.c_str());
+    TestLog::step("Step 3: setNetworkConfig() synced apPassword='admin123'");
+
+    // Step 4: 启动 AP
+    MockWiFiClass wifi;
+    wifi.mode(WIFI_AP);
+    bool apResult = driver.startAP(wifi);
+    TEST_ASSERT_TRUE(apResult);
+
+    // 验证：AP 使用正确的密码
+    TEST_ASSERT_EQUAL_STRING("admin123", wifi.softAPPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("192.168.4.1", wifi.softAPIP().toString().c_str());
+    TestLog::step("Step 4: AP started with correct password and IP");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief AP 密码为 "admin123" 时满足 WPA2 最小长度要求（≥8字符）
+ */
+void test_ap_password_wpa2_minimum_length() {
+    TestLog::testStart("AP Password: WPA2 Minimum Length");
+
+    String password = "admin123";
+    TEST_ASSERT_TRUE(password.length() >= 8);
+    TestLog::step("'admin123' length=8, meets WPA2 minimum");
+
+    // 短于 8 字符的密码会导致 ESP32 创建开放热点
+    String shortPassword = "admin12";
+    TEST_ASSERT_TRUE(shortPassword.length() < 8);
+    TestLog::step("'admin12' length=7, would create open hotspot on ESP32");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 空密码创建开放热点（ESP32 softAP 行为验证）
+ */
+void test_ap_empty_password_creates_open_hotspot() {
+    TestLog::testStart("AP Empty Password: Open Hotspot");
+
+    MockWiFiClass wifi;
+    wifi.mode(WIFI_AP);
+
+    // 空密码 → 开放热点
+    wifi.softAP("open-hotspot", "", 1, 0, 4);
+    TEST_ASSERT_EQUAL_STRING("", wifi.softAPPassword().c_str());
+    TEST_ASSERT_EQUAL_STRING("open-hotspot", wifi.softAPSSID().c_str());
+    TestLog::step("Empty password: AP is open hotspot");
+
+    // 非空密码 → WPA2 加密
+    wifi.softAP("secure-ap", "admin123", 1, 0, 4);
+    TEST_ASSERT_EQUAL_STRING("admin123", wifi.softAPPassword().c_str());
+    TestLog::step("Non-empty password: AP is WPA2 protected");
+
+    // nullptr 密码 → 开放热点
+    wifi.softAP("null-pass-ap", nullptr, 1, 0, 4);
+    TEST_ASSERT_EQUAL_STRING("", wifi.softAPPassword().c_str());
+    TestLog::step("nullptr password: AP is open hotspot");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief AP 所有配置参数通过同步正确传递（不仅是密码）
+ */
+void test_ap_full_config_sync_all_fields() {
+    TestLog::testStart("AP Full Config Sync: All Fields");
+
+    TestAPConfig cfg;
+    cfg.apSSID = "MyFastBee";
+    cfg.apPassword = "securePass123";
+    cfg.apIP = "192.168.44.1";
+    cfg.apChannel = 6;
+    cfg.apHidden = true;
+    cfg.apMaxConnections = 2;
+
+    MockWiFiManagerDriver driver;
+    driver.setNetworkConfig(cfg);
+
+    // 验证所有字段都同步了
+    TEST_ASSERT_EQUAL_STRING("MyFastBee", driver.apSSID.c_str());
+    TEST_ASSERT_EQUAL_STRING("securePass123", driver.apPassword.c_str());
+    TEST_ASSERT_EQUAL_STRING("192.168.44.1", driver.apIP.c_str());
+    TEST_ASSERT_EQUAL(6, driver.apChannel);
+    TEST_ASSERT_TRUE(driver.apHidden);
+    TEST_ASSERT_EQUAL(2, driver.apMaxConnections);
+    TestLog::step("All AP config fields synced correctly");
+
+    // 启动 AP 并验证参数传递
+    MockWiFiClass wifi;
+    wifi.mode(WIFI_AP);
+    wifi.softAPConfig(IPAddress(192, 168, 44, 1), IPAddress(192, 168, 44, 1), IPAddress(255, 255, 255, 0));
+    driver.startAP(wifi);
+
+    TEST_ASSERT_EQUAL_STRING("MyFastBee", wifi.softAPSSID().c_str());
+    TEST_ASSERT_EQUAL_STRING("securePass123", wifi.softAPPassword().c_str());
+    TEST_ASSERT_TRUE(wifi.softAPHidden());
+    TestLog::step("AP started with all synced parameters");
+
+    TestLog::testEnd(true);
+}
+
 // Test group entry point
 void test_network_config_group() {
     TestLog::groupStart("Network Configuration Tests");
@@ -1888,6 +2109,14 @@ void test_network_config_group() {
     RUN_TEST(test_ip_configuration);
     RUN_TEST(test_network_reconnect);
     RUN_TEST(test_ap_to_sta_mode_transition);
+
+    // AP 密码配置同步回归测试
+    RUN_TEST(test_ap_password_without_sync_open_hotspot);
+    RUN_TEST(test_ap_password_with_sync_correct);
+    RUN_TEST(test_ap_password_full_initialize_flow);
+    RUN_TEST(test_ap_password_wpa2_minimum_length);
+    RUN_TEST(test_ap_empty_password_creates_open_hotspot);
+    RUN_TEST(test_ap_full_config_sync_all_fields);
     
     TestLog::groupEnd();
 }

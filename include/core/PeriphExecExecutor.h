@@ -88,8 +88,9 @@ public:
     // 执行脚本动作
     bool executeScriptAction(const ExecAction& action);
 
-    // 执行调用其他外设动作
-    bool executeCallPeripheralAction(const ExecAction& action, const String& effectiveValue);
+    // 执行调用其他外设动作（receivedValue 用于 $value 模板替换）
+    bool executeCallPeripheralAction(const ExecAction& action, const String& effectiveValue,
+                                     const String& receivedValue = "");
 
     // 执行规则控制动作（启用/禁用外设执行规则）
     bool executeRuleControlAction(const ExecAction& action);

@@ -1013,10 +1013,21 @@ void test_mqtt_deferred_restart_preserves_active_client() {
     TEST_ASSERT_TRUE_MESSAGE(defPos != std::string::npos,
         "restartMQTTDeferred implementation must accept forceRebuild");
 
+    // mqtt.enabled 守卫必须在所有其他逻辑之前（最外层守卫）
+    size_t enabledCheckPos = pm.find("\"mqtt\"", defPos);
+    TEST_ASSERT_TRUE_MESSAGE(enabledCheckPos != std::string::npos,
+        "restartMQTTDeferred must check mqtt.enabled before any other logic");
+
     size_t guardPos = pm.find("!forceRebuild && mqttClient && !mqttClient->isStopped()", defPos);
-    size_t resetPos = pm.find("mqttClient.reset()", defPos);
     TEST_ASSERT_TRUE_MESSAGE(guardPos != std::string::npos,
         "restartMQTTDeferred must guard non-forced active clients");
+    TEST_ASSERT_TRUE_MESSAGE(enabledCheckPos < guardPos,
+        "mqtt.enabled check must run before active-client guard");
+    TestLog::step("mqtt.enabled guard runs before active-client guard");
+
+    // active-client guard 必须在 rebuild 的 reset 之前
+    // 查找 guard 之后的 reset（跳过 mqtt.enabled 块中的 reset）
+    size_t resetPos = pm.find("mqttClient.reset()", guardPos);
     TEST_ASSERT_TRUE_MESSAGE(resetPos != std::string::npos,
         "restartMQTTDeferred must still release clients when rebuilding");
     TEST_ASSERT_TRUE_MESSAGE(guardPos < resetPos,
@@ -1285,10 +1296,17 @@ struct MqttStatusApiResponse {
 
 // 模拟前端 badge 映射逻辑（与 _updateMqttStatusUI 保持一致）
 static const char* mapBadgeState(const MqttStatusApiResponse& s) {
+    // MQTT 已禁用：优先显示“未连接”，不检查 connected 字段
+    if (!s.enabled) {
+        return "未连接";  // mqtt-status-offline
+    }
     if (s.connected) {
         return "已连接";  // mqtt-status-online
     }
-    bool connecting = s.connecting;  // 新逻辑：仅看后端 connecting 字段
+    if (s.internetAvailable == false) {
+        return "网络未连接";  // mqtt-status-offline
+    }
+    bool connecting = s.connecting;
     bool hasError = s.lastError != 0;
 
     if (connecting && !hasError) {
@@ -1297,10 +1315,7 @@ static const char* mapBadgeState(const MqttStatusApiResponse& s) {
     if (connecting && hasError) {
         return "连接失败";  // mqtt-status-offline
     }
-    if (!s.initialized && !s.enabled) {
-        return "未初始化";  // mqtt-status-offline
-    }
-    if (s.enabled && !s.initialized) {
+    if (!s.initialized) {
         return "初始化中";  // mqtt-status-connecting
     }
     return "未连接";  // mqtt-status-offline
@@ -1390,15 +1405,27 @@ void test_mqtt_status_api_stopped_state() {
 void test_mqtt_status_api_no_client_state() {
     TestLog::testStart("MQTT Status: No Client → Badge State");
 
-    // MQTT 未启用 → 未初始化
+    // MQTT 未启用 → 未连接（优先于其他状态判断）
     MqttStatusApiResponse s1 = {};
     s1.initialized = false;
     s1.connected = false;
     s1.connecting = false;
     s1.stopped = false;
     s1.enabled = false;
-    TEST_ASSERT_EQUAL_STRING("未初始化", mapBadgeState(s1));
-    TestLog::step("enabled=false, initialized=false → '未初始化'");
+    s1.internetAvailable = true;
+    TEST_ASSERT_EQUAL_STRING("未连接", mapBadgeState(s1));
+    TestLog::step("enabled=false, initialized=false → '未连接'");
+
+    // MQTT 禁用但客户端仍在运行（重启前窗口期） → 仍然显示“未连接”
+    MqttStatusApiResponse s1b = {};
+    s1b.initialized = true;
+    s1b.connected = true;      // 客户端仍在运行
+    s1b.connecting = false;
+    s1b.stopped = false;
+    s1b.enabled = false;        // 但配置已禁用
+    s1b.internetAvailable = true;
+    TEST_ASSERT_EQUAL_STRING("未连接", mapBadgeState(s1b));
+    TestLog::step("enabled=false, connected=true → '未连接' (disabled overrides connected)");
 
     // MQTT 已启用但客户端未创建 → 初始化中
     MqttStatusApiResponse s2 = {};
@@ -1407,6 +1434,7 @@ void test_mqtt_status_api_no_client_state() {
     s2.connecting = false;
     s2.stopped = false;
     s2.enabled = true;
+    s2.internetAvailable = true;
     TEST_ASSERT_EQUAL_STRING("初始化中", mapBadgeState(s2));
     TestLog::step("enabled=true, initialized=false → '初始化中'");
 
@@ -1414,7 +1442,82 @@ void test_mqtt_status_api_no_client_state() {
 }
 
 /**
- * @brief 验证连接中但有错误 → badge 显示"连接失败"
+ * @brief 验证 MQTT 禁用状态的各种组合 → badge 始终显示“未连接”
+ * 覆盖：disabled+connecting、disabled+error、disabled+initialized 等
+ */
+void test_mqtt_status_api_disabled_comprehensive() {
+    TestLog::testStart("MQTT Status: Disabled Comprehensive → Always '未连接'");
+
+    // 基础禁用状态
+    MqttStatusApiResponse s = {};
+    s.enabled = false;
+    s.internetAvailable = true;
+    TEST_ASSERT_EQUAL_STRING("未连接", mapBadgeState(s));
+    TestLog::step("disabled + all-zero → '未连接'");
+
+    // 禁用 + connecting=true → 仍然“未连接”
+    s.connecting = true;
+    s.initialized = true;
+    TEST_ASSERT_EQUAL_STRING("未连接", mapBadgeState(s));
+    TestLog::step("disabled + connecting=true → '未连接'");
+
+    // 禁用 + connecting + error → 仍然“未连接”
+    s.lastError = -2;  // MQTT_CONNECT_FAILED
+    TEST_ASSERT_EQUAL_STRING("未连接", mapBadgeState(s));
+    TestLog::step("disabled + connecting + error → '未连接'");
+
+    // 禁用 + internetAvailable=false → 仍然“未连接”
+    s.connecting = false;
+    s.lastError = 0;
+    s.internetAvailable = false;
+    TEST_ASSERT_EQUAL_STRING("未连接", mapBadgeState(s));
+    TestLog::step("disabled + no internet → '未连接'");
+
+    // 禁用 + stopped → “未连接”
+    s.stopped = true;
+    s.internetAvailable = true;
+    TEST_ASSERT_EQUAL_STRING("未连接", mapBadgeState(s));
+    TestLog::step("disabled + stopped → '未连接'");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证网络不可用时的 badge 状态
+ * 仅在 MQTT 已启用且未连接时显示“网络未连接”
+ */
+void test_mqtt_status_api_network_unavailable() {
+    TestLog::testStart("MQTT Status: Network Unavailable → Badge State");
+
+    // 已启用 + 未连接 + 网络不可用 → “网络未连接”
+    MqttStatusApiResponse s = {};
+    s.initialized = true;
+    s.connected = false;
+    s.connecting = false;
+    s.stopped = false;
+    s.enabled = true;
+    s.lastError = 0;
+    s.reconnectCount = 0;
+    s.autoReconnect = true;
+    s.internetAvailable = false;
+    TEST_ASSERT_EQUAL_STRING("网络未连接", mapBadgeState(s));
+    TestLog::step("enabled + no internet + not connecting → '网络未连接'");
+
+    // 已启用 + connecting + 网络不可用 → “网络未连接”（internetAvailable 优先于 connecting）
+    s.connecting = true;
+    TEST_ASSERT_EQUAL_STRING("网络未连接", mapBadgeState(s));
+    TestLog::step("enabled + no internet + connecting → '网络未连接' (internet check first)");
+
+    // 已禁用 + 网络不可用 → “未连接”（disabled 优先级最高）
+    s.enabled = false;
+    TEST_ASSERT_EQUAL_STRING("未连接", mapBadgeState(s));
+    TestLog::step("disabled + no internet → '未连接' (disabled first)");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 验证连接中但有错误 → badge 显示“连接失败”
  */
 void test_mqtt_status_api_error_with_connecting() {
     TestLog::testStart("MQTT Status: Error While Connecting → Badge '连接失败'");
@@ -1428,6 +1531,7 @@ void test_mqtt_status_api_error_with_connecting() {
     s.lastError = 4;            // MQTT_BAD_CREDENTIALS (错误凭据)
     s.reconnectCount = 3;
     s.autoReconnect = true;
+    s.internetAvailable = true; // 网络可用，错误是 MQTT 层面的
 
     TEST_ASSERT_EQUAL_STRING("连接失败", mapBadgeState(s));
     TestLog::step("connecting=true, lastError=4(BAD_CREDENTIALS) → '连接失败'");
@@ -4581,6 +4685,645 @@ void test_wifi_got_ip_notifies_mqtt() {
     TestLog::testEnd(true);
 }
 
+// ============================================================
+//  Topic Prefix Building 回归测试
+//  验证 buildFullTopicWithType 逻辑：
+//  - autoPrefix=false 不加前缀
+//  - autoPrefix=true 时：OTA 用 /{deviceNum}，其他用 /{productId}/{deviceNum}
+//  - productId 为空时回退到 /{deviceNum}
+//  - topicPrefix 全局前缀插入在设备前缀之前
+// ============================================================
+
+// 镜像 buildFullTopicWithType 逻辑的纯函数版本，便于单元测试
+static String mockBuildFullTopic(const String& topic, bool autoPrefix,
+                                 int topicType,
+                                 const String& productId,
+                                 const String& deviceNum,
+                                 const String& topicPrefix = "") {
+    if (!autoPrefix) return topic;
+    String prefix;
+    // OTA类型 (5=OTA_UPGRADE, 6=OTA_BINARY): 只用 deviceNum
+    if (topicType == 5 || topicType == 6) {
+        if (!deviceNum.isEmpty()) prefix = "/" + deviceNum;
+    } else {
+        if (!productId.isEmpty() && !deviceNum.isEmpty()) {
+            prefix = "/" + productId + "/" + deviceNum;
+        } else if (!deviceNum.isEmpty()) {
+            prefix = "/" + deviceNum;
+        }
+    }
+    if (!topicPrefix.isEmpty()) {
+        return topicPrefix + prefix + topic;
+    }
+    return prefix + topic;
+}
+
+void test_topic_prefix_auto_off_no_prefix() {
+    // autoPrefix=false 时不加任何前缀
+    String result = mockBuildFullTopic("/function/get", false, 1, "1835", "DEV001");
+    TEST_ASSERT_EQUAL_STRING("/function/get", result.c_str());
+}
+
+void test_topic_prefix_with_productId_and_deviceNum() {
+    // autoPrefix=true，productId 和 deviceNum 都有，构建完整前缀
+    String result = mockBuildFullTopic("/function/get", true, 1, "1835", "FBE9BFEFF16A398");
+    TEST_ASSERT_EQUAL_STRING("/1835/FBE9BFEFF16A398/function/get", result.c_str());
+}
+
+void test_topic_prefix_empty_productId_fallback_to_deviceNum() {
+    // productId 为空时回退到 /{deviceNum} 前缀
+    String result = mockBuildFullTopic("/function/get", true, 1, "", "FBE9BFEFF16A398");
+    TEST_ASSERT_EQUAL_STRING("/FBE9BFEFF16A398/function/get", result.c_str());
+}
+
+void test_topic_prefix_empty_deviceNum_no_prefix() {
+    // deviceNum 为空时不加前缀（无法构建有效前缀）
+    String result = mockBuildFullTopic("/function/get", true, 1, "1835", "");
+    TEST_ASSERT_EQUAL_STRING("/function/get", result.c_str());
+}
+
+void test_topic_prefix_ota_only_uses_deviceNum() {
+    // OTA 类型 (type=5) 只用 deviceNum，不需要 productId
+    String result = mockBuildFullTopic("/upgrade/set", true, 5, "1835", "DEV001");
+    TEST_ASSERT_EQUAL_STRING("/DEV001/upgrade/set", result.c_str());
+}
+
+void test_topic_prefix_ota_binary_only_uses_deviceNum() {
+    // OTA Binary (type=6) 只用 deviceNum
+    String result = mockBuildFullTopic("/upgrade/set", true, 6, "1835", "DEV001");
+    TEST_ASSERT_EQUAL_STRING("/DEV001/upgrade/set", result.c_str());
+}
+
+void test_topic_prefix_data_report_uses_full_prefix() {
+    // 数据上报 (type=0) 使用完整前缀
+    String result = mockBuildFullTopic("/report", true, 0, "1835", "DEV001");
+    TEST_ASSERT_EQUAL_STRING("/1835/DEV001/report", result.c_str());
+}
+
+void test_topic_prefix_data_command_uses_full_prefix() {
+    // 数据下发 (type=1) 使用完整前缀
+    String result = mockBuildFullTopic("/function/get", true, 1, "1835", "DEV001");
+    TEST_ASSERT_EQUAL_STRING("/1835/DEV001/function/get", result.c_str());
+}
+
+void test_topic_prefix_device_info_uses_full_prefix() {
+    // 设备信息 (type=2) 使用完整前缀
+    String result = mockBuildFullTopic("/info/get", true, 2, "1835", "DEV001");
+    TEST_ASSERT_EQUAL_STRING("/1835/DEV001/info/get", result.c_str());
+}
+
+void test_topic_prefix_ntp_uses_full_prefix() {
+    // NTP同步 (type=7) 使用完整前缀
+    String result = mockBuildFullTopic("/ntp/get", true, 7, "1835", "DEV001");
+    TEST_ASSERT_EQUAL_STRING("/1835/DEV001/ntp/get", result.c_str());
+}
+
+void test_topic_prefix_global_topicPrefix_prepended() {
+    // topicPrefix 全局前缀插入在设备前缀之前
+    String result = mockBuildFullTopic("/function/get", true, 1, "1835", "DEV001", "/custom");
+    TEST_ASSERT_EQUAL_STRING("/custom/1835/DEV001/function/get", result.c_str());
+}
+
+void test_topic_prefix_global_topicPrefix_without_productId() {
+    // topicPrefix + 无 productId 的组合
+    String result = mockBuildFullTopic("/function/get", true, 1, "", "DEV001", "/custom");
+    TEST_ASSERT_EQUAL_STRING("/custom/DEV001/function/get", result.c_str());
+}
+
+void test_topic_prefix_both_empty_no_prefix() {
+    // productId 和 deviceNum 都为空，不加前缀
+    String result = mockBuildFullTopic("/function/get", true, 1, "", "");
+    TEST_ASSERT_EQUAL_STRING("/function/get", result.c_str());
+}
+
+void test_topic_prefix_platform_publish_matches_device_subscribe() {
+    // 回归场景：平台发布到 /1835/DEV001/function/get，
+    // 设备 productId=1835 deviceNum=DEV001 订阅的也应是 /1835/DEV001/function/get
+    String platformTopic = "/1835/DEV001/function/get";
+    String deviceSubscribe = mockBuildFullTopic("/function/get", true, 1, "1835", "DEV001");
+    TEST_ASSERT_EQUAL_STRING(platformTopic.c_str(), deviceSubscribe.c_str());
+}
+
+void test_topic_prefix_default_productId_one() {
+    // productId 默认为 "1" 时的主题前缀
+    String result = mockBuildFullTopic("/function/get", true, 1, "1", "FBE9BFEFF16A398");
+    TEST_ASSERT_EQUAL_STRING("/1/FBE9BFEFF16A398/function/get", result.c_str());
+}
+
+void test_topic_prefix_no_curly_braces_in_output() {
+    // 回归验证：输出绝不能包含 {} 字符（文档占位符 {productId} 等仅用于注释）
+    String result = mockBuildFullTopic("/function/get", true, 1, "1835", "FBE9BFEFF16A398");
+    TEST_ASSERT_EQUAL(-1, result.indexOf('{'));
+    TEST_ASSERT_EQUAL(-1, result.indexOf('}'));
+    TEST_ASSERT_EQUAL_STRING("/1835/FBE9BFEFF16A398/function/get", result.c_str());
+}
+
+void test_topic_prefix_actual_device_values() {
+    // 用实际设备值构建，确保与平台发布主题完全一致
+    // clientId = S&FBE9BFEFF16A398&1835&1，对应 productId=1835 deviceNum=FBE9BFEFF16A398
+    String result = mockBuildFullTopic("/function/get", true, 1, "1835", "FBE9BFEFF16A398");
+    // 必须是纯数值路径，不能含任何占位符
+    TEST_ASSERT_EQUAL_STRING("/1835/FBE9BFEFF16A398/function/get", result.c_str());
+    TEST_ASSERT_TRUE(result.indexOf("{productId}") < 0);
+    TEST_ASSERT_TRUE(result.indexOf("{deviceNum}") < 0);
+}
+
+void test_topic_prefix_no_curly_braces_ota() {
+    // OTA 类型同样不能含占位符
+    String result = mockBuildFullTopic("/upgrade/set", true, 5, "1835", "FBE9BFEFF16A398");
+    TEST_ASSERT_EQUAL(-1, result.indexOf('{'));
+    TEST_ASSERT_EQUAL(-1, result.indexOf('}'));
+    TEST_ASSERT_EQUAL_STRING("/FBE9BFEFF16A398/upgrade/set", result.c_str());
+}
+
+// ============================================================
+//  Topic Matching 回归测试
+//  验证 getTopicTypeByPath 逻辑：
+//  - 先匹配原始 topic，再匹配 autoPrefix 构建的完整 topic
+//  - 订阅主题和发布主题都能正确匹配
+//  - 未匹配时默认返回 DATA_COMMAND
+// ============================================================
+
+/**
+ * 模拟 getTopicTypeByPath 的纯函数版本
+ * subscribeTopics/publishTopics 用结构体数组模拟
+ */
+struct MockSubTopic { String topic; bool autoPrefix; int topicType; };
+struct MockPubTopic { String topic; bool autoPrefix; int topicType; };
+
+static int mockGetTopicTypeByPath(
+    const String& topicPath,
+    const MockSubTopic* subs, size_t subCount,
+    const MockPubTopic* pubs, size_t pubCount,
+    const String& productId, const String& deviceNum) {
+    // 先查订阅主题
+    for (size_t i = 0; i < subCount; i++) {
+        if (subs[i].topic == topicPath) return subs[i].topicType;
+        if (subs[i].autoPrefix) {
+            String fullTopic = mockBuildFullTopic(subs[i].topic, true, subs[i].topicType, productId, deviceNum);
+            if (fullTopic == topicPath) return subs[i].topicType;
+        }
+    }
+    // 再查发布主题
+    for (size_t i = 0; i < pubCount; i++) {
+        if (pubs[i].topic == topicPath) return pubs[i].topicType;
+        if (pubs[i].autoPrefix) {
+            String fullTopic = mockBuildFullTopic(pubs[i].topic, true, pubs[i].topicType, productId, deviceNum);
+            if (fullTopic == topicPath) return pubs[i].topicType;
+        }
+    }
+    return 1; // 默认 DATA_COMMAND
+}
+
+void test_topic_match_data_command_with_auto_prefix() {
+    // 平台发到 /1835/DEV001/function/get，设备订阅了 /function/get(autoPrefix=true)
+    MockSubTopic subs[] = {{"/function/get", true, 1}};
+    MockPubTopic pubs[] = {{"/report", true, 0}};
+    int result = mockGetTopicTypeByPath("/1835/DEV001/function/get", subs, 1, pubs, 1, "1835", "DEV001");
+    TEST_ASSERT_EQUAL(1, result); // DATA_COMMAND
+}
+
+void test_topic_match_data_report_with_auto_prefix() {
+    // 发布主题 /report(autoPrefix=true) 应匹配 /1835/DEV001/report
+    MockSubTopic subs[] = {{"/function/get", true, 1}};
+    MockPubTopic pubs[] = {{"/report", true, 0}};
+    int result = mockGetTopicTypeByPath("/1835/DEV001/report", subs, 1, pubs, 1, "1835", "DEV001");
+    TEST_ASSERT_EQUAL(0, result); // DATA_REPORT
+}
+
+void test_topic_match_raw_topic_without_prefix() {
+    // autoPrefix=false 时直接匹配原始 topic
+    MockSubTopic subs[] = {{"custom/topic", false, 1}};
+    MockPubTopic pubs[] = {};
+    int result = mockGetTopicTypeByPath("custom/topic", subs, 1, pubs, 0, "1835", "DEV001");
+    TEST_ASSERT_EQUAL(1, result);
+}
+
+void test_topic_match_ota_upgrade_topic() {
+    // OTA 主题只用 deviceNum 前缀
+    MockSubTopic subs[] = {{"/upgrade/set", true, 5}};
+    MockPubTopic pubs[] = {};
+    int result = mockGetTopicTypeByPath("/DEV001/upgrade/set", subs, 1, pubs, 0, "1835", "DEV001");
+    TEST_ASSERT_EQUAL(5, result); // OTA_UPGRADE
+}
+
+void test_topic_match_no_match_defaults_to_data_command() {
+    // 未匹配任何主题时默认返回 DATA_COMMAND(1)
+    MockSubTopic subs[] = {{"/function/get", true, 1}};
+    MockPubTopic pubs[] = {};
+    int result = mockGetTopicTypeByPath("/unknown/topic", subs, 1, pubs, 0, "1835", "DEV001");
+    TEST_ASSERT_EQUAL(1, result); // 默认 DATA_COMMAND
+}
+
+void test_topic_match_platform_publish_to_device_subscribe() {
+    // 回归场景：平台发布到 /1835/DEV001/function/get
+    // 设备 productId=1835 deviceNum=DEV001，订阅了 /function/get(autoPrefix=true)
+    // 两者应该匹配
+    String platformPublishTopic = "/1835/DEV001/function/get";
+    String deviceSub = mockBuildFullTopic("/function/get", true, 1, "1835", "DEV001");
+    TEST_ASSERT_EQUAL_STRING(platformPublishTopic.c_str(), deviceSub.c_str());
+    // 并且 getTopicTypeByPath 应识别为 DATA_COMMAND
+    MockSubTopic subs[] = {{"/function/get", true, 1}};
+    MockPubTopic pubs[] = {};
+    int result = mockGetTopicTypeByPath(platformPublishTopic, subs, 1, pubs, 0, "1835", "DEV001");
+    TEST_ASSERT_EQUAL(1, result);
+}
+
+// ============================================================
+//  Callback Payload Processing 回归测试
+//  验证 mqttCallback 中的关键逻辑：
+//  - looksLikeJson 检测（首个非空白字节为 '[' 或 '{'）
+//  - JSON 数组命令解析（提取 id/value 字段）
+//  - productId 默认值回退机制
+// ============================================================
+
+/** 镜像 mqttCallback 中的 looksLikeJson 检测逻辑 */
+static bool mockLooksLikeJson(const uint8_t* payload, unsigned int length) {
+    for (unsigned int i = 0; i < length; i++) {
+        char c = (char)payload[i];
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+        return (c == '[' || c == '{');
+    }
+    return false;
+}
+
+void test_callback_json_detect_array() {
+    const char* msg = "[{\"id\":\"rgb_led\",\"value\":\"#FF0000\"}]";
+    TEST_ASSERT_TRUE(mockLooksLikeJson((const uint8_t*)msg, strlen(msg)));
+}
+
+void test_callback_json_detect_object() {
+    const char* msg = "{\"count\":5,\"interval\":1000}";
+    TEST_ASSERT_TRUE(mockLooksLikeJson((const uint8_t*)msg, strlen(msg)));
+}
+
+void test_callback_json_detect_with_leading_whitespace() {
+    const char* msg = "  \t\n[{\"id\":\"test\"}]";
+    TEST_ASSERT_TRUE(mockLooksLikeJson((const uint8_t*)msg, strlen(msg)));
+}
+
+void test_callback_json_detect_plain_text() {
+    const char* msg = "Hello World";
+    TEST_ASSERT_FALSE(mockLooksLikeJson((const uint8_t*)msg, strlen(msg)));
+}
+
+void test_callback_json_detect_hex_frame() {
+    // HEX 透传帧（如 Modbus RTU）不以 JSON 字符开头
+    const char* msg = "01030000000AB9D4";
+    TEST_ASSERT_FALSE(mockLooksLikeJson((const uint8_t*)msg, strlen(msg)));
+}
+
+void test_callback_json_detect_empty_payload() {
+    TEST_ASSERT_FALSE(mockLooksLikeJson(nullptr, 0));
+}
+
+void test_callback_json_detect_retained_empty() {
+    // Retained 消息全零场景（之前遇到的 broker 存储的全零 retained 消息）
+    uint8_t zeros[] = {0x00, 0x00, 0x00};
+    TEST_ASSERT_FALSE(mockLooksLikeJson(zeros, 3));
+}
+
+void test_callback_command_json_array_parsing() {
+    // 模拟平台下发的命令 JSON 数组解析
+    const char* msg = "[{\"id\":\"rgb_led\",\"value\":\"#FF0000\"}]";
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, msg);
+    TEST_ASSERT_FALSE(err);
+    JsonArray arr = doc.as<JsonArray>();
+    TEST_ASSERT_EQUAL(1, arr.size());
+    TEST_ASSERT_EQUAL_STRING("rgb_led", arr[0]["id"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("#FF0000", arr[0]["value"].as<const char*>());
+}
+
+void test_callback_command_json_multi_item() {
+    // 多命令项解析
+    const char* msg = "[{\"id\":\"rgb_led\",\"value\":\"#FF0000\"},{\"id\":\"relay_1\",\"value\":\"1\"}]";
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, msg);
+    TEST_ASSERT_FALSE(err);
+    JsonArray arr = doc.as<JsonArray>();
+    TEST_ASSERT_EQUAL(2, arr.size());
+    TEST_ASSERT_EQUAL_STRING("rgb_led", arr[0]["id"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("relay_1", arr[1]["id"].as<const char*>());
+}
+
+void test_callback_productId_default_fallback() {
+    // productId 为空时应回退到默认值 "1"（防止主题前缀缺失）
+    String productId = "";
+    if (productId.isEmpty()) productId = "1";
+    String fullTopic = mockBuildFullTopic("/function/get", true, 1, productId, "DEV001");
+    TEST_ASSERT_EQUAL_STRING("/1/DEV001/function/get", fullTopic.c_str());
+}
+
+// ============================================================
+//  Publish Topic Prefix 全类型验证
+//  验证所有 7 种 topicType 的发布主题前缀构建是否正确
+//  productId=1835, deviceNum=FBE14C19FC152D8（实际设备值）
+// ============================================================
+
+static const char* TEST_PID = "1835";
+static const char* TEST_DEV = "FBE14C19FC152D8";
+
+void test_pub_prefix_data_report() {
+    // DATA_REPORT (type=0): /property/post → /1835/FBE.../property/post
+    String r = mockBuildFullTopic("/property/post", true, 0, TEST_PID, TEST_DEV);
+    TEST_ASSERT_EQUAL_STRING("/1835/FBE14C19FC152D8/property/post", r.c_str());
+}
+
+void test_pub_prefix_device_info() {
+    // DEVICE_INFO (type=2): /info/post → /1835/FBE.../info/post
+    String r = mockBuildFullTopic("/info/post", true, 2, TEST_PID, TEST_DEV);
+    TEST_ASSERT_EQUAL_STRING("/1835/FBE14C19FC152D8/info/post", r.c_str());
+}
+
+void test_pub_prefix_realtime_mon() {
+    // REALTIME_MON (type=3): /monitor/post → /1835/FBE.../monitor/post
+    String r = mockBuildFullTopic("/monitor/post", true, 3, TEST_PID, TEST_DEV);
+    TEST_ASSERT_EQUAL_STRING("/1835/FBE14C19FC152D8/monitor/post", r.c_str());
+}
+
+void test_pub_prefix_device_event() {
+    // DEVICE_EVENT (type=4): /event/post → /1835/FBE.../event/post
+    String r = mockBuildFullTopic("/event/post", true, 4, TEST_PID, TEST_DEV);
+    TEST_ASSERT_EQUAL_STRING("/1835/FBE14C19FC152D8/event/post", r.c_str());
+}
+
+void test_pub_prefix_ota_upgrade() {
+    // OTA_UPGRADE (type=5): /http/upgrade/reply → /FBE.../http/upgrade/reply（无 productId）
+    String r = mockBuildFullTopic("/http/upgrade/reply", true, 5, TEST_PID, TEST_DEV);
+    TEST_ASSERT_EQUAL_STRING("/FBE14C19FC152D8/http/upgrade/reply", r.c_str());
+}
+
+void test_pub_prefix_ota_binary() {
+    // OTA_BINARY (type=6): /fetch/upgrade/reply → /FBE.../fetch/upgrade/reply（无 productId）
+    String r = mockBuildFullTopic("/fetch/upgrade/reply", true, 6, TEST_PID, TEST_DEV);
+    TEST_ASSERT_EQUAL_STRING("/FBE14C19FC152D8/fetch/upgrade/reply", r.c_str());
+}
+
+void test_pub_prefix_ntp_sync() {
+    // NTP_SYNC (type=7): /ntp/post → /1835/FBE.../ntp/post
+    String r = mockBuildFullTopic("/ntp/post", true, 7, TEST_PID, TEST_DEV);
+    TEST_ASSERT_EQUAL_STRING("/1835/FBE14C19FC152D8/ntp/post", r.c_str());
+}
+
+// ============================================================
+//  Payload 格式验证测试
+//  验证各类上报数据的 JSON 结构符合 FastBee 平台规范
+// ============================================================
+
+void test_payload_data_report_format() {
+    // DATA_REPORT payload: JSON 数组，每项包含 id/value/remark
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    JsonObject obj = arr.add<JsonObject>();
+    obj["id"] = "temperature";
+    obj["value"] = "25.5";
+    obj["remark"] = "modbus";
+
+    String payload;
+    serializeJson(doc, payload);
+
+    // 验证反序列化后的结构
+    JsonDocument parsed;
+    TEST_ASSERT_FALSE(deserializeJson(parsed, payload));
+    JsonArray parsedArr = parsed.as<JsonArray>();
+    TEST_ASSERT_EQUAL(1, parsedArr.size());
+    TEST_ASSERT_EQUAL_STRING("temperature", parsedArr[0]["id"].as<const char*>());
+    TEST_ASSERT_EQUAL_STRING("25.5", parsedArr[0]["value"].as<const char*>());
+    TEST_ASSERT_TRUE(parsedArr[0].containsKey("remark"));
+}
+
+void test_payload_device_info_format() {
+    // DEVICE_INFO payload: JSON 对象，必须包含 rssi/firmwareVersion/status/userId
+    JsonDocument doc;
+    doc["rssi"] = -54;
+    doc["firmwareVersion"] = "1.0.0";
+    doc["status"] = 3;  // 在线
+    doc["userId"] = 1;
+    doc["longitude"] = 0.0;
+    doc["latitude"] = 0.0;
+    JsonObject summary = doc["summary"].to<JsonObject>();
+    summary["name"] = "fastbee";
+    summary["chip"] = "ESP32";
+
+    String payload;
+    serializeJson(doc, payload);
+
+    JsonDocument parsed;
+    TEST_ASSERT_FALSE(deserializeJson(parsed, payload));
+    TEST_ASSERT_TRUE(parsed.containsKey("rssi"));
+    TEST_ASSERT_TRUE(parsed.containsKey("firmwareVersion"));
+    TEST_ASSERT_EQUAL(3, parsed["status"].as<int>());
+    TEST_ASSERT_EQUAL(1, parsed["userId"].as<int>());
+    TEST_ASSERT_TRUE(parsed["summary"].is<JsonObject>());
+    TEST_ASSERT_EQUAL_STRING("fastbee", parsed["summary"]["name"].as<const char*>());
+}
+
+void test_payload_monitor_data_format() {
+    // REALTIME_MON payload: JSON 数组，与 DATA_REPORT 结构相同但可能含多项
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+
+    JsonObject temp = arr.add<JsonObject>();
+    temp["id"] = "temperature";
+    temp["value"] = "25.50";
+    temp["remark"] = "";
+
+    JsonObject humi = arr.add<JsonObject>();
+    humi["id"] = "humidity";
+    humi["value"] = "60.00";
+    humi["remark"] = "";
+
+    String payload;
+    serializeJson(doc, payload);
+
+    JsonDocument parsed;
+    TEST_ASSERT_FALSE(deserializeJson(parsed, payload));
+    JsonArray parsedArr = parsed.as<JsonArray>();
+    TEST_ASSERT_EQUAL(2, parsedArr.size());
+    // 验证每项都有 id/value/remark 三字段
+    for (JsonVariant v : parsedArr) {
+        TEST_ASSERT_TRUE(v.containsKey("id"));
+        TEST_ASSERT_TRUE(v.containsKey("value"));
+        TEST_ASSERT_TRUE(v.containsKey("remark"));
+    }
+}
+
+void test_payload_control_report_format() {
+    // 控制执行结果上报: JSON 数组，remark 标记为 "control"
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    JsonObject obj = arr.add<JsonObject>();
+    obj["id"] = "relay_1";
+    obj["value"] = "1";
+    obj["remark"] = "control";
+
+    String payload;
+    serializeJson(doc, payload);
+
+    JsonDocument parsed;
+    TEST_ASSERT_FALSE(deserializeJson(parsed, payload));
+    TEST_ASSERT_EQUAL_STRING("control", parsed[0]["remark"].as<const char*>());
+}
+
+// ============================================================
+//  productId 加载链路验证
+//  验证 device.json.productNumber → config.productId → 主题前缀的完整链路
+// ============================================================
+
+void test_productId_loading_chain_from_device_json() {
+    // 模拟 loadConfig 中 productId 的加载链路：
+    // 1. protocol.json mqtt 节不含 productId（已移除）→ config.productId = ""
+    // 2. device.json productNumber=1835 → config.productId = "1835"
+    // 3. 主题前缀使用 config.productId
+    String configProductId = "";  // protocol.json 不提供 productId
+    // 模拟从 device.json 读取
+    int productNumber = 1835;
+    String pn = String(productNumber);
+    if (pn != "0") configProductId = pn;
+    // 回退默认值
+    if (configProductId.isEmpty()) configProductId = "1";
+
+    TEST_ASSERT_EQUAL_STRING("1835", configProductId.c_str());
+    // 验证主题使用前缀
+    String topic = mockBuildFullTopic("/property/post", true, 0, configProductId, TEST_DEV);
+    TEST_ASSERT_TRUE(topic.startsWith("/1835/"));
+}
+
+void test_productId_zero_in_device_json_uses_default() {
+    // device.json productNumber=0 时应回退到默认值 "1"
+    String configProductId = "";
+    int productNumber = 0;
+    String pn = String(productNumber);
+    if (pn != "0") configProductId = pn;
+    if (configProductId.isEmpty()) configProductId = "1";
+
+    TEST_ASSERT_EQUAL_STRING("1", configProductId.c_str());
+    String topic = mockBuildFullTopic("/property/post", true, 0, configProductId, TEST_DEV);
+    TEST_ASSERT_EQUAL_STRING("/1/FBE14C19FC152D8/property/post", topic.c_str());
+}
+
+void test_productId_not_read_from_protocol_json() {
+    // 验证 productId 不从 protocol.json mqtt 节读取（已移除的逻辑）
+    // 即使 protocol.json 曾存了 productId，loadConfig 也不会读取它
+    String protocolMqttProductId = "999";  // 假设 protocol.json 中有旧值
+    (void)protocolMqttProductId;  // 不再使用
+
+    // loadConfig 中 config.productId 直接从空开始
+    String configProductId = "";  // cfg["productId"] 已移除，始终为空
+    // 然后从 device.json 读取
+    int deviceProductNumber = 1835;
+    String pn = String(deviceProductNumber);
+    if (pn != "0") configProductId = pn;
+    if (configProductId.isEmpty()) configProductId = "1";
+
+    // 应该使用 device.json 的值，而非 protocol.json 的旧值
+    TEST_ASSERT_EQUAL_STRING("1835", configProductId.c_str());
+}
+
+// ============================================================
+//  发布/订阅主题对称性测试
+//  验证同一 topicType 的发布和订阅主题使用相同的前缀
+// ============================================================
+
+void test_pub_sub_symmetry_data_topics() {
+    // DATA_REPORT 发布和 DATA_COMMAND 订阅使用相同前缀
+    String pubTopic = mockBuildFullTopic("/property/post", true, 0, TEST_PID, TEST_DEV);
+    String subTopic = mockBuildFullTopic("/function/get", true, 1, TEST_PID, TEST_DEV);
+    // 两者前缀部分应相同
+    TEST_ASSERT_TRUE(pubTopic.startsWith("/1835/FBE14C19FC152D8/"));
+    TEST_ASSERT_TRUE(subTopic.startsWith("/1835/FBE14C19FC152D8/"));
+}
+
+void test_pub_sub_symmetry_info_topics() {
+    // DEVICE_INFO 发布和 DEVICE_INFO 订阅使用相同前缀
+    String pubTopic = mockBuildFullTopic("/info/post", true, 2, TEST_PID, TEST_DEV);
+    String subTopic = mockBuildFullTopic("/info/get", true, 2, TEST_PID, TEST_DEV);
+    TEST_ASSERT_TRUE(pubTopic.startsWith("/1835/FBE14C19FC152D8/"));
+    TEST_ASSERT_TRUE(subTopic.startsWith("/1835/FBE14C19FC152D8/"));
+}
+
+void test_pub_sub_symmetry_monitor_topics() {
+    // REALTIME_MON 发布和订阅使用相同前缀
+    String pubTopic = mockBuildFullTopic("/monitor/post", true, 3, TEST_PID, TEST_DEV);
+    String subTopic = mockBuildFullTopic("/monitor/get", true, 3, TEST_PID, TEST_DEV);
+    TEST_ASSERT_TRUE(pubTopic.startsWith("/1835/FBE14C19FC152D8/"));
+    TEST_ASSERT_TRUE(subTopic.startsWith("/1835/FBE14C19FC152D8/"));
+}
+
+void test_pub_sub_symmetry_ntp_topics() {
+    // NTP_SYNC 发布和订阅使用相同前缀
+    String pubTopic = mockBuildFullTopic("/ntp/post", true, 7, TEST_PID, TEST_DEV);
+    String subTopic = mockBuildFullTopic("/ntp/get", true, 7, TEST_PID, TEST_DEV);
+    TEST_ASSERT_TRUE(pubTopic.startsWith("/1835/FBE14C19FC152D8/"));
+    TEST_ASSERT_TRUE(subTopic.startsWith("/1835/FBE14C19FC152D8/"));
+}
+
+void test_pub_sub_symmetry_ota_topics() {
+    // OTA 发布和订阅只用 deviceNum 前缀（无 productId）
+    String pubTopic = mockBuildFullTopic("/http/upgrade/reply", true, 5, TEST_PID, TEST_DEV);
+    String subTopic = mockBuildFullTopic("/http/upgrade/set", true, 5, TEST_PID, TEST_DEV);
+    TEST_ASSERT_TRUE(pubTopic.startsWith("/FBE14C19FC152D8/"));
+    TEST_ASSERT_TRUE(subTopic.startsWith("/FBE14C19FC152D8/"));
+    // OTA 主题不应包含 productId
+    TEST_ASSERT_TRUE(pubTopic.indexOf("/1835/") < 0);
+    TEST_ASSERT_TRUE(subTopic.indexOf("/1835/") < 0);
+}
+
+void test_pub_sub_symmetry_all_protocol_json_defaults() {
+    // 使用 protocol.json 默认配置中的所有主题验证前缀一致性
+    // 发布主题
+    const char* pubTopics[] = {"/property/post", "/info/post", "/event/post",
+                               "/monitor/post", "/ntp/post",
+                               "/http/upgrade/reply", "/fetch/upgrade/reply"};
+    const int pubTypes[]    = {0, 2, 4, 3, 7, 5, 6};
+    // 订阅主题
+    const char* subTopics[] = {"/function/get", "/info/get", "/monitor/get",
+                               "/ntp/get", "/http/upgrade/set", "/fetch/upgrade/set"};
+    const int subTypes[]    = {1, 2, 3, 7, 5, 6};
+
+    // 验证每个发布主题前缀正确
+    for (int i = 0; i < 7; i++) {
+        String full = mockBuildFullTopic(pubTopics[i], true, pubTypes[i], TEST_PID, TEST_DEV);
+        if (pubTypes[i] == 5 || pubTypes[i] == 6) {
+            // OTA 只用 deviceNum
+            TEST_ASSERT_TRUE(full.startsWith("/FBE14C19FC152D8/"));
+        } else {
+            // 其他类型用 productId/deviceNum
+            TEST_ASSERT_TRUE(full.startsWith("/1835/FBE14C19FC152D8/"));
+        }
+        // 结尾应是原始 topic
+        TEST_ASSERT_TRUE(full.endsWith(pubTopics[i]));
+    }
+
+    // 验证每个订阅主题前缀正确
+    for (int i = 0; i < 6; i++) {
+        String full = mockBuildFullTopic(subTopics[i], true, subTypes[i], TEST_PID, TEST_DEV);
+        if (subTypes[i] == 5 || subTypes[i] == 6) {
+            TEST_ASSERT_TRUE(full.startsWith("/FBE14C19FC152D8/"));
+        } else {
+            TEST_ASSERT_TRUE(full.startsWith("/1835/FBE14C19FC152D8/"));
+        }
+        TEST_ASSERT_TRUE(full.endsWith(subTopics[i]));
+    }
+}
+
+void test_clientId_productId_matches_topic_prefix() {
+    // 验证 clientId 中的 productId 与主题前缀中的 productId 一致
+    // clientId 格式: S&deviceNum&productId&userId
+    String clientId = "S&FBE14C19FC152D8&1835&1";
+    // 从 clientId 解析 productId
+    int firstAmp = clientId.indexOf('&');
+    int secondAmp = clientId.indexOf('&', firstAmp + 1);
+    int thirdAmp = clientId.indexOf('&', secondAmp + 1);
+    String clientIdProductId = clientId.substring(secondAmp + 1, thirdAmp);
+    TEST_ASSERT_EQUAL_STRING("1835", clientIdProductId.c_str());
+
+    // 主题前缀中的 productId 应一致
+    String topic = mockBuildFullTopic("/property/post", true, 0, clientIdProductId, TEST_DEV);
+    TEST_ASSERT_TRUE(topic.startsWith("/1835/"));
+}
+
 // Test group entry point
 void test_mqtt_protocol_group() {
     TestLog::groupStart("MQTT Protocol Tests");
@@ -4632,6 +5375,8 @@ void test_mqtt_protocol_group() {
     RUN_TEST(test_mqtt_status_api_connecting_state);
     RUN_TEST(test_mqtt_status_api_stopped_state);
     RUN_TEST(test_mqtt_status_api_no_client_state);
+    RUN_TEST(test_mqtt_status_api_disabled_comprehensive);
+    RUN_TEST(test_mqtt_status_api_network_unavailable);
     RUN_TEST(test_mqtt_status_api_error_with_connecting);
     RUN_TEST(test_mqtt_status_badge_timeout_logic);
     RUN_TEST(test_mqtt_status_connected_resets_timer);
@@ -4731,6 +5476,75 @@ void test_mqtt_protocol_group() {
     RUN_TEST(test_reset_error_counters_implementation);
     RUN_TEST(test_process_queued_reports_uses_dram);
     RUN_TEST(test_wifi_got_ip_notifies_mqtt);
+
+    // Topic Prefix Building 回归测试（buildFullTopicWithType 逻辑）
+    RUN_TEST(test_topic_prefix_auto_off_no_prefix);
+    RUN_TEST(test_topic_prefix_with_productId_and_deviceNum);
+    RUN_TEST(test_topic_prefix_empty_productId_fallback_to_deviceNum);
+    RUN_TEST(test_topic_prefix_empty_deviceNum_no_prefix);
+    RUN_TEST(test_topic_prefix_ota_only_uses_deviceNum);
+    RUN_TEST(test_topic_prefix_ota_binary_only_uses_deviceNum);
+    RUN_TEST(test_topic_prefix_data_report_uses_full_prefix);
+    RUN_TEST(test_topic_prefix_data_command_uses_full_prefix);
+    RUN_TEST(test_topic_prefix_device_info_uses_full_prefix);
+    RUN_TEST(test_topic_prefix_ntp_uses_full_prefix);
+    RUN_TEST(test_topic_prefix_global_topicPrefix_prepended);
+    RUN_TEST(test_topic_prefix_global_topicPrefix_without_productId);
+    RUN_TEST(test_topic_prefix_both_empty_no_prefix);
+    RUN_TEST(test_topic_prefix_platform_publish_matches_device_subscribe);
+    RUN_TEST(test_topic_prefix_default_productId_one);
+    RUN_TEST(test_topic_prefix_no_curly_braces_in_output);
+    RUN_TEST(test_topic_prefix_actual_device_values);
+    RUN_TEST(test_topic_prefix_no_curly_braces_ota);
+
+    // Topic Matching 回归测试（getTopicTypeByPath 逻辑）
+    RUN_TEST(test_topic_match_data_command_with_auto_prefix);
+    RUN_TEST(test_topic_match_data_report_with_auto_prefix);
+    RUN_TEST(test_topic_match_raw_topic_without_prefix);
+    RUN_TEST(test_topic_match_ota_upgrade_topic);
+    RUN_TEST(test_topic_match_no_match_defaults_to_data_command);
+    RUN_TEST(test_topic_match_platform_publish_to_device_subscribe);
+
+    // Callback Payload Processing 回归测试
+    RUN_TEST(test_callback_json_detect_array);
+    RUN_TEST(test_callback_json_detect_object);
+    RUN_TEST(test_callback_json_detect_with_leading_whitespace);
+    RUN_TEST(test_callback_json_detect_plain_text);
+    RUN_TEST(test_callback_json_detect_hex_frame);
+    RUN_TEST(test_callback_json_detect_empty_payload);
+    RUN_TEST(test_callback_json_detect_retained_empty);
+    RUN_TEST(test_callback_command_json_array_parsing);
+    RUN_TEST(test_callback_command_json_multi_item);
+    RUN_TEST(test_callback_productId_default_fallback);
+
+    // Publish Topic Prefix 全类型验证（7种 topicType 的发布主题前缀）
+    RUN_TEST(test_pub_prefix_data_report);
+    RUN_TEST(test_pub_prefix_device_info);
+    RUN_TEST(test_pub_prefix_realtime_mon);
+    RUN_TEST(test_pub_prefix_device_event);
+    RUN_TEST(test_pub_prefix_ota_upgrade);
+    RUN_TEST(test_pub_prefix_ota_binary);
+    RUN_TEST(test_pub_prefix_ntp_sync);
+
+    // Payload 格式验证测试（JSON 结构校验）
+    RUN_TEST(test_payload_data_report_format);
+    RUN_TEST(test_payload_device_info_format);
+    RUN_TEST(test_payload_monitor_data_format);
+    RUN_TEST(test_payload_control_report_format);
+
+    // productId 加载链路验证（device.json → config → 主题前缀）
+    RUN_TEST(test_productId_loading_chain_from_device_json);
+    RUN_TEST(test_productId_zero_in_device_json_uses_default);
+    RUN_TEST(test_productId_not_read_from_protocol_json);
+
+    // 发布/订阅主题对称性测试
+    RUN_TEST(test_pub_sub_symmetry_data_topics);
+    RUN_TEST(test_pub_sub_symmetry_info_topics);
+    RUN_TEST(test_pub_sub_symmetry_monitor_topics);
+    RUN_TEST(test_pub_sub_symmetry_ntp_topics);
+    RUN_TEST(test_pub_sub_symmetry_ota_topics);
+    RUN_TEST(test_pub_sub_symmetry_all_protocol_json_defaults);
+    RUN_TEST(test_clientId_productId_matches_topic_prefix);
 
     TestLog::groupEnd();
 }

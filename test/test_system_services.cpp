@@ -314,6 +314,191 @@ static void test_config_transfer_export_nonexistent() {
     TEST_ASSERT_TRUE(result.isEmpty());
 }
 
+// ========== 配置导入安全性测试 ==========
+
+// 测试：白名单检查 - 未知文件名应被拒绝
+static void test_config_import_whitelist_rejects_unknown() {
+    auto& store = MockConfigStorage::getInstance();
+    store.clearAll();
+    store.initialize();
+
+    // 模拟 AI 生成的任意命名文件（之前导致配置丢失的根因）
+    TEST_ASSERT_FALSE(store.importConfigValidated(
+        "deepseek_json_20260629.json",
+        "{\"peripherals\":[]}"));
+    TEST_ASSERT_TRUE(store.lastImportError.indexOf("不允许导入") >= 0);
+
+    // 确保没有在文件系统中创建该文件
+    TEST_ASSERT_FALSE(store.configExists("/config/deepseek_json_20260629.json"));
+    TEST_ASSERT_EQUAL(0, (int)store.getConfigFileCount());
+}
+
+// 测试：白名单检查 - 已知文件名应被接受
+static void test_config_import_whitelist_accepts_known() {
+    auto& store = MockConfigStorage::getInstance();
+    store.clearAll();
+    store.initialize();
+
+    // 白名单中的文件名均应导入成功
+    const char* allowedFiles[] = {
+        "device.json", "network.json", "peripherals.json",
+        "periph_exec.json", "protocol.json", "auth.json", "rule_scripts.json"
+    };
+    const char* validJson[] = {
+        "{\"deviceName\":\"test\"}", "{\"mode\":0}", "{\"peripherals\":[]}",
+        "{\"rules\":[]}", "{\"mqtt\":{}}", "{\"token\":\"\"}", "{\"scripts\":[]}"
+    };
+    for (int i = 0; i < 7; i++) {
+        bool ok = store.importConfigValidated(allowedFiles[i], validJson[i]);
+        TEST_ASSERT_TRUE_MESSAGE(ok, (String("Failed for: ") + allowedFiles[i]).c_str());
+    }
+    TEST_ASSERT_EQUAL(7, (int)store.getConfigFileCount());
+}
+
+// 测试：JSON 格式验证 - 无效 JSON 应被拒绝
+static void test_config_import_invalid_json_rejected() {
+    auto& store = MockConfigStorage::getInstance();
+    store.clearAll();
+    store.initialize();
+
+    // 非 JSON 文本
+    TEST_ASSERT_FALSE(store.importConfigValidated("device.json", "this is not json"));
+    TEST_ASSERT_TRUE(store.lastImportError.indexOf("JSON") >= 0);
+
+    // 不完整的 JSON
+    TEST_ASSERT_FALSE(store.importConfigValidated("device.json", "{incomplete"));
+    TEST_ASSERT_TRUE(store.lastImportError.indexOf("JSON") >= 0);
+
+    // 纯数字
+    TEST_ASSERT_FALSE(store.importConfigValidated("device.json", "12345"));
+    TEST_ASSERT_TRUE(store.lastImportError.indexOf("JSON") >= 0);
+
+    TEST_ASSERT_EQUAL(0, (int)store.getConfigFileCount());
+}
+
+// 测试：空内容应被拒绝
+static void test_config_import_empty_content_rejected() {
+    auto& store = MockConfigStorage::getInstance();
+    store.clearAll();
+    store.initialize();
+
+    TEST_ASSERT_FALSE(store.importConfigValidated("device.json", ""));
+    TEST_ASSERT_TRUE(store.lastImportError.indexOf("为空") >= 0);
+}
+
+// 测试：超大配置文件应被拒绝
+static void test_config_import_oversize_rejected() {
+    auto& store = MockConfigStorage::getInstance();
+    store.clearAll();
+    store.initialize();
+
+    // 构造超过限制的内容
+    String oversize = "{\"data\":\"";
+    for (int i = 0; i < 5000; i++) oversize += "AAAAAAAAAA";  // 50KB
+    oversize += "\"}";
+
+    TEST_ASSERT_FALSE(store.importConfigValidated("protocol.json", oversize, 24576));
+    TEST_ASSERT_TRUE(store.lastImportError.indexOf("过大") >= 0);
+}
+
+// 测试：文件系统完整性 - 导入后只应有白名单内的文件
+static void test_config_import_no_stale_files() {
+    auto& store = MockConfigStorage::getInstance();
+    store.clearAll();
+    store.initialize();
+
+    // 导入白名单文件
+    store.importConfigValidated("peripherals.json", "{\"peripherals\":[]}");
+    store.importConfigValidated("periph_exec.json", "{\"rules\":[]}");
+
+    // 检查只有这两个文件
+    TEST_ASSERT_EQUAL(2, (int)store.getConfigFileCount());
+    auto files = store.listConfigFiles();
+    bool hasPeriph = false, hasExec = false;
+    for (auto& name : files) {
+        if (name == "peripherals.json") hasPeriph = true;
+        if (name == "periph_exec.json") hasExec = true;
+    }
+    TEST_ASSERT_TRUE(hasPeriph);
+    TEST_ASSERT_TRUE(hasExec);
+}
+
+// 测试：清理残留文件功能
+static void test_config_cleanup_stale_files() {
+    auto& store = MockConfigStorage::getInstance();
+    store.clearAll();
+    store.initialize();
+
+    // 模拟之前错误导入创建的残留文件
+    store.importConfig("/config/deepseek_json_abc.json", "{\"data\":1}");
+    store.importConfig("/config/random_file.json", "{\"x\":2}");
+    store.importConfig("/config/peripherals.json", "{\"peripherals\":[]}");
+
+    // 清理前应有3个文件
+    TEST_ASSERT_EQUAL(3, (int)store.getConfigFileCount());
+
+    // 执行清理
+    int removed = store.cleanupStaleFiles();
+    TEST_ASSERT_EQUAL(2, removed);  // 2个非白名单文件被清理
+    TEST_ASSERT_EQUAL(1, (int)store.getConfigFileCount());
+
+    // 只有白名单文件保留
+    TEST_ASSERT_TRUE(store.configExists("/config/peripherals.json"));
+    TEST_ASSERT_FALSE(store.configExists("/config/deepseek_json_abc.json"));
+    TEST_ASSERT_FALSE(store.configExists("/config/random_file.json"));
+}
+
+// 测试：文件名安全检查 - 非法字符应被拒绝
+static void test_config_import_illegal_filename() {
+    auto& store = MockConfigStorage::getInstance();
+    store.clearAll();
+    store.initialize();
+
+    // 包含路径穿越
+    TEST_ASSERT_FALSE(store.importConfigValidated("../etc/passwd.json", "{}"));
+    TEST_ASSERT_TRUE(store.lastImportError.indexOf("非法") >= 0);
+
+    // 包含反斜杠
+    TEST_ASSERT_FALSE(store.importConfigValidated("..\\config.json", "{}"));
+    TEST_ASSERT_TRUE(store.lastImportError.indexOf("非法") >= 0);
+
+    // 非 .json 后缀
+    TEST_ASSERT_FALSE(store.importConfigValidated("device.txt", "{}"));
+    TEST_ASSERT_TRUE(store.lastImportError.indexOf(".json") >= 0);
+
+    // 空文件名
+    TEST_ASSERT_FALSE(store.importConfigValidated("", "{}"));
+}
+
+// 测试：存储空间不足时应被拒绝
+static void test_config_import_low_space_rejected() {
+    auto& store = MockConfigStorage::getInstance();
+    store.clearAll();
+    store.initialize();
+    store.setLowSpaceMode(true);
+
+    // 填充大量数据占用空间
+    String bigData = "X";
+    for (int i = 0; i < 10; i++) bigData += bigData;
+    store.putString("big_key", bigData);
+
+    TEST_ASSERT_FALSE(store.importConfigValidated("device.json", "{\"name\":\"test\"}"));
+    TEST_ASSERT_TRUE(store.lastImportError.indexOf("不足") >= 0);
+
+    store.setLowSpaceMode(false);
+}
+
+// 测试：白名单检查 - roles.json 应被拒绝（安全保护）
+static void test_config_import_roles_json_rejected() {
+    auto& store = MockConfigStorage::getInstance();
+    store.clearAll();
+    store.initialize();
+
+    // roles.json 不在白名单中
+    TEST_ASSERT_FALSE(store.importConfigValidated("roles.json", "[]"));
+    TEST_ASSERT_TRUE(store.lastImportError.indexOf("不允许") >= 0);
+}
+
 // ========== HealthMonitor 测试 ==========
 
 static void test_health_initialize() {
@@ -793,6 +978,18 @@ void test_system_services_group() {
     RUN_TEST(test_config_transfer_empty_content_rejected);
     RUN_TEST(test_config_transfer_large_valid_json);
     RUN_TEST(test_config_transfer_export_nonexistent);
+
+    // 配置导入安全性测试
+    RUN_TEST(test_config_import_whitelist_rejects_unknown);
+    RUN_TEST(test_config_import_whitelist_accepts_known);
+    RUN_TEST(test_config_import_invalid_json_rejected);
+    RUN_TEST(test_config_import_empty_content_rejected);
+    RUN_TEST(test_config_import_oversize_rejected);
+    RUN_TEST(test_config_import_no_stale_files);
+    RUN_TEST(test_config_cleanup_stale_files);
+    RUN_TEST(test_config_import_illegal_filename);
+    RUN_TEST(test_config_import_low_space_rejected);
+    RUN_TEST(test_config_import_roles_json_rejected);
     
     // HealthMonitor 测试
     RUN_TEST(test_health_initialize);

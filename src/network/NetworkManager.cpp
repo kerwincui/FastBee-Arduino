@@ -179,6 +179,10 @@ bool FBNetworkManager::initialize() {
         wifiManager->handleWiFiEvent(event);
     });
 
+    // 同步配置到 WiFiManager（确保 AP 密码等参数从 network.json 传递到底层驱动）
+    // 必须在所有网络路径（以太网+AP、4G+AP、WiFi STA/AP）之前执行
+    wifiManager->setNetworkConfig(wifiConfig);
+
     // ========== 非 WiFi 联网方式初始化 ==========
     ets_printf("[NET] networkType=%d (WIFI=0, ETH=1, 4G=2)\n", (int)wifiConfig.networkType);
 #if FASTBEE_ENABLE_CELLULAR
