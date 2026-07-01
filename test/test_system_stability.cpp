@@ -2408,6 +2408,229 @@ void test_source_loop_bad_alloc_handling() {
     TestLog::testEnd(true);
 }
 
+// ============================================================
+// WiFi AP 探测恢复机制回归测试
+// ============================================================
+
+/**
+ * @brief 源码回归：_apFallbackAuto 标志区分“用户主动 AP”和“STA 失败自动回退 AP”
+ * 回归：旧代码在 AP 模式下无条件探测 WiFi，导致用户主动设置的 AP 也被干扰
+ */
+void test_source_code_ap_fallback_auto_flag() {
+    TestLog::testStart("Source: _apFallbackAuto flag for AP probe gating");
+
+    std::string nmh = readSrcFile("include/network/NetworkManager.h");
+    std::string nmc = readSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!nmh.empty(), "NetworkManager.h must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(!nmc.empty(), "NetworkManager.cpp must be readable");
+    TestLog::step("Files loaded");
+
+    // 1) 头文件必须声明 _apFallbackAuto 成员
+    TEST_ASSERT_TRUE_MESSAGE(
+        nmh.find("_apFallbackAuto") != std::string::npos,
+        "NetworkManager.h must declare _apFallbackAuto member");
+    TestLog::step("_apFallbackAuto declared in header");
+
+    // 2) initialize() 入口必须重置 _apFallbackAuto = false
+    auto initPos = nmc.find("bool FBNetworkManager::initialize()");
+    TEST_ASSERT_TRUE_MESSAGE(initPos != std::string::npos, "initialize() must exist");
+    std::string initHead = nmc.substr(initPos, 600);
+    TEST_ASSERT_TRUE_MESSAGE(
+        initHead.find("_apFallbackAuto = false") != std::string::npos,
+        "initialize() must reset _apFallbackAuto = false at entry");
+    TestLog::step("initialize() resets _apFallbackAuto");
+
+    // 3) STA→AP 回退路径必须设置 _apFallbackAuto = true
+    //    在 initialize() 中查找 STA 失败回退到 AP 的代码块
+    auto staFallbackComment = nmc.find("回退到 AP 模式后更新配置模式", initPos);
+    TEST_ASSERT_TRUE_MESSAGE(staFallbackComment != std::string::npos,
+        "STA→AP fallback must have comment about updating config mode");
+    std::string staFallbackCtx = nmc.substr(staFallbackComment, 300);
+    TEST_ASSERT_TRUE_MESSAGE(
+        staFallbackCtx.find("_apFallbackAuto = true") != std::string::npos,
+        "STA→AP fallback in initialize() must set _apFallbackAuto = true");
+    TestLog::step("STA→AP fallback in initialize() sets _apFallbackAuto = true");
+
+    // 4) attemptReconnect() AP 回退路径必须设置 _apFallbackAuto = true
+    auto reconnectPos = nmc.find("void FBNetworkManager::attemptReconnect()");
+    TEST_ASSERT_TRUE_MESSAGE(reconnectPos != std::string::npos,
+        "attemptReconnect() must exist");
+    auto reconnectAP = nmc.find("_apFallbackAuto = true", reconnectPos);
+    TEST_ASSERT_TRUE_MESSAGE(reconnectAP != std::string::npos &&
+                             reconnectAP - reconnectPos < 1500,
+        "attemptReconnect() AP fallback must set _apFallbackAuto = true");
+    TestLog::step("attemptReconnect() AP fallback sets _apFallbackAuto = true");
+
+    // 5) update() 中探测调度必须检查 _apFallbackAuto 门控
+    TEST_ASSERT_TRUE_MESSAGE(
+        nmc.find("_apFallbackAuto &&") != std::string::npos ||
+        nmc.find("_apFallbackAuto &&\n") != std::string::npos,
+        "update() probe scheduling must gate on _apFallbackAuto");
+    TestLog::step("update() probe gated on _apFallbackAuto");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 源码回归：AP 探测退避机制（连续失败后增加探测间隔）
+ * 回归：旧代码探测失败后始终以 2min 间隔重试，频繁打断 AP 热点
+ */
+void test_source_code_ap_probe_backoff_mechanism() {
+    TestLog::testStart("Source: AP probe backoff mechanism");
+
+    std::string nmh = readSrcFile("include/network/NetworkManager.h");
+    std::string nmc = readSrcFile("src/network/NetworkManager.cpp");
+    TEST_ASSERT_TRUE_MESSAGE(!nmh.empty(), "NetworkManager.h must be readable");
+    TEST_ASSERT_TRUE_MESSAGE(!nmc.empty(), "NetworkManager.cpp must be readable");
+    TestLog::step("Files loaded");
+
+    // 1) 必须定义正常探测间隔 2min
+    TEST_ASSERT_TRUE_MESSAGE(
+        nmh.find("AP_PROBE_INTERVAL_MS") != std::string::npos &&
+        nmh.find("120000") != std::string::npos,
+        "Must define AP_PROBE_INTERVAL_MS = 120000 (2 min)");
+    TestLog::step("AP_PROBE_INTERVAL_MS = 120000 defined");
+
+    // 2) 必须定义退避探测间隔 10min
+    TEST_ASSERT_TRUE_MESSAGE(
+        nmh.find("AP_PROBE_BACKOFF_MS") != std::string::npos &&
+        nmh.find("600000") != std::string::npos,
+        "Must define AP_PROBE_BACKOFF_MS = 600000 (10 min)");
+    TestLog::step("AP_PROBE_BACKOFF_MS = 600000 defined");
+
+    // 3) 必须定义退避阈值（连续失败 5 次）
+    TEST_ASSERT_TRUE_MESSAGE(
+        nmh.find("AP_PROBE_BACKOFF_THRESHOLD") != std::string::npos,
+        "Must define AP_PROBE_BACKOFF_THRESHOLD");
+    TestLog::step("AP_PROBE_BACKOFF_THRESHOLD defined");
+
+    // 4) update() 中必须根据 _apProbeFailCount 动态选择间隔
+    TEST_ASSERT_TRUE_MESSAGE(
+        nmc.find("_apProbeFailCount >= AP_PROBE_BACKOFF_THRESHOLD") != std::string::npos,
+        "update() must dynamically select probe interval based on fail count");
+    TestLog::step("Dynamic probe interval selection in update()");
+
+    // 5) handleApModeWifiProbe() 失败路径必须累计 _apProbeFailCount
+    auto probeFunc = nmc.find("void FBNetworkManager::handleApModeWifiProbe()");
+    TEST_ASSERT_TRUE_MESSAGE(probeFunc != std::string::npos,
+        "handleApModeWifiProbe() must exist");
+    auto failPath = nmc.find("_apProbeFailCount++", probeFunc);
+    TEST_ASSERT_TRUE_MESSAGE(failPath != std::string::npos,
+        "handleApModeWifiProbe() failure path must increment _apProbeFailCount");
+    TestLog::step("_apProbeFailCount incremented on probe failure");
+
+    // 6) handleApModeWifiProbe() 成功路径必须重置 _apProbeFailCount = 0
+    auto successReset = nmc.find("_apProbeFailCount = 0", probeFunc);
+    TEST_ASSERT_TRUE_MESSAGE(successReset != std::string::npos &&
+                             successReset < failPath,
+        "handleApModeWifiProbe() success path must reset _apProbeFailCount = 0");
+    TestLog::step("_apProbeFailCount reset on probe success");
+
+    TestLog::testEnd(true);
+}
+
+/**
+ * @brief 行为测试：模拟 AP 探测恢复状态机
+ * 验证：用户主动 AP 不探测、自动回退 AP 探测、退避机制、成功恢复 STA
+ */
+void test_smoke_ap_probe_recovery_state_machine() {
+    TestLog::testStart("Smoke: AP Probe Recovery State Machine");
+
+    enum MockNetMode { MODE_STA = 0, MODE_AP = 1 };
+    struct ProbeState {
+        MockNetMode configMode;
+        bool apFallbackAuto;
+        int apProbeFailCount;
+        bool probeInProgress;
+        bool staSSIDPresent;
+    };
+
+    // 模拟探测调度逻辑
+    auto shouldProbe = [](const ProbeState& s, unsigned long elapsed) -> bool {
+        if (s.configMode != MODE_AP) return false;
+        if (!s.apFallbackAuto) return false;
+        if (s.probeInProgress) return false;
+        if (!s.staSSIDPresent) return false;
+        unsigned long interval = (s.apProbeFailCount >= 5) ? 600000UL : 120000UL;
+        return elapsed >= interval;
+    };
+
+    // 模拟探测成功
+    auto probeSuccess = [](ProbeState& s) {
+        s.configMode = MODE_STA;
+        s.apFallbackAuto = false;
+        s.apProbeFailCount = 0;
+    };
+
+    // 模拟探测失败
+    auto probeFailure = [](ProbeState& s) {
+        s.apProbeFailCount++;
+        s.configMode = MODE_AP;
+    };
+
+    // === 场景 1：用户主动设置 AP 模式 → 不探测 ===
+    {
+        ProbeState s = { MODE_AP, false, 0, false, true };
+        TEST_ASSERT_FALSE(shouldProbe(s, 300000));  // 即使等了 5 分钟也不探测
+        TestLog::step("User-configured AP: no probe regardless of time");
+    }
+
+    // === 场景 2：STA 失败自动回退 AP → 2 分钟后探测 ===
+    {
+        ProbeState s = { MODE_AP, true, 0, false, true };
+        TEST_ASSERT_FALSE(shouldProbe(s, 60000));   // 1 分钟不探测
+        TEST_ASSERT_TRUE(shouldProbe(s, 120000));    // 2 分钟触发探测
+        TestLog::step("Auto-fallback AP: probe at 2min interval");
+    }
+
+    // === 场景 3：探测成功 → 恢复 STA ===
+    {
+        ProbeState s = { MODE_AP, true, 3, false, true };
+        probeSuccess(s);
+        TEST_ASSERT_EQUAL(MODE_STA, s.configMode);
+        TEST_ASSERT_FALSE(s.apFallbackAuto);
+        TEST_ASSERT_EQUAL(0, s.apProbeFailCount);
+        TestLog::step("Probe success: back to STA, counters reset");
+    }
+
+    // === 场景 4：连续失败 5 次后进入退避（10 分钟间隔） ===
+    {
+        ProbeState s = { MODE_AP, true, 0, false, true };
+        // 连续失败 5 次
+        for (int i = 0; i < 5; i++) {
+            probeFailure(s);
+        }
+        TEST_ASSERT_EQUAL(5, s.apProbeFailCount);
+        // 退避后：2 分钟不再探测，10 分钟才探测
+        TEST_ASSERT_FALSE(shouldProbe(s, 120000));   // 2 分钟不探测
+        TEST_ASSERT_FALSE(shouldProbe(s, 300000));   // 5 分钟不探测
+        TEST_ASSERT_TRUE(shouldProbe(s, 600000));     // 10 分钟触发
+        TestLog::step("Backoff: 5 failures → 10min interval");
+    }
+
+    // === 场景 5：退避后探测成功 → 重置退避 ===
+    {
+        ProbeState s = { MODE_AP, true, 8, false, true };
+        probeSuccess(s);
+        TEST_ASSERT_EQUAL(MODE_STA, s.configMode);
+        TEST_ASSERT_EQUAL(0, s.apProbeFailCount);
+        // 下次回退时应该回到 2 分钟间隔
+        s.configMode = MODE_AP;
+        s.apFallbackAuto = true;
+        TEST_ASSERT_TRUE(shouldProbe(s, 120000));
+        TestLog::step("Post-backoff success: interval resets to 2min");
+    }
+
+    // === 场景 6：无 staSSID 配置 → 不探测 ===
+    {
+        ProbeState s = { MODE_AP, true, 0, false, false };
+        TEST_ASSERT_FALSE(shouldProbe(s, 300000));
+        TestLog::step("No staSSID: probe skipped");
+    }
+
+    TestLog::testEnd(true);
+}
+
 // Test group entry point
 void test_system_stability_group() {
     TestLog::groupStart("System Stability Tests");
@@ -2487,6 +2710,11 @@ void test_system_stability_group() {
     RUN_TEST(test_source_wdt_dynamic_panic_upgrade);
     RUN_TEST(test_source_loop_exception_protection);
     RUN_TEST(test_source_loop_bad_alloc_handling);
+
+    // WiFi AP 探测恢复机制回归测试
+    RUN_TEST(test_source_code_ap_fallback_auto_flag);
+    RUN_TEST(test_source_code_ap_probe_backoff_mechanism);
+    RUN_TEST(test_smoke_ap_probe_recovery_state_machine);
     
     TestLog::groupEnd();
 }

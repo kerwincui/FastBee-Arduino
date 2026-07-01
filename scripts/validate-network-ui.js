@@ -101,12 +101,12 @@ check(
     'saveCellularConfig 引用 cellular-save-btn'
 );
 
-// 各保存函数调用 _startSaveBtnCountdown
-const countdownCallCount = (jsContent.match(/_startSaveBtnCountdown\s*\(/g) || []).length;
-// 定义 1 次 + 调用 2 次（ethernet/cellular）= 至少 3 处
+// 各保存函数调用 _startNetworkStatusPolling（含定义 + 调用）
+const pollingCallCount = (jsContent.match(/_startNetworkStatusPolling\s*\(/g) || []).length;
+// 定义 1 次 + 调用至少 2 次（ethernet/cellular）= 至少 3 处
 check(
-    countdownCallCount >= 3,
-    `_startSaveBtnCountdown 出现次数 (${countdownCallCount} >= 3，含 1 处定义 + 2 处调用)`
+    pollingCallCount >= 3,
+    `_startNetworkStatusPolling 出现次数 (${pollingCallCount} >= 3，含 1 处定义 + 2 处调用)`
 );
 
 // ─── 4. 按钮禁用逻辑验证 ────────────────────────────────────────────────────

@@ -72,13 +72,13 @@ void ProvisionRouteHandler::handleWiFiScan(AsyncWebServerRequest* request) {
         return;
     }
 
-    JsonArray data = doc["data"].to<JsonArray>();
+    JsonArray networks = doc["networks"].to<JsonArray>();
     for (int i = 0; i < n && i < 20; i++) {
-        JsonObject net = data.add<JsonObject>();
+        JsonObject net = networks.add<JsonObject>();
         net["ssid"] = WiFi.SSID(i);
         net["rssi"] = WiFi.RSSI(i);
         net["channel"] = WiFi.channel(i);
-        net["encryption"] = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN) ? 1 : 0;
+        net["encrypted"] = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
     }
     WiFi.scanDelete();
 
@@ -100,6 +100,18 @@ void ProvisionRouteHandler::handleWiFiConnect(AsyncWebServerRequest* request) {
     }
 
     LOG_INFOF("[Provision] WiFi connect request: SSID=%s", ssid.c_str());
+
+    // 解析可选的扩展配网参数（仅当参数存在时才更新 device.json）
+    String userId    = ctx->getParamValue(request, "userId", "");
+    String deviceNum = ctx->getParamValue(request, "deviceNum", "");
+    String extra     = ctx->getParamValue(request, "extra", "");
+
+    bool hasExtParam = !userId.isEmpty() || !deviceNum.isEmpty() || !extra.isEmpty();
+    if (hasExtParam) {
+        LOG_INFOF("[Provision] Extended params: userId=%s deviceNum=%s extra=%s",
+                  userId.c_str(), deviceNum.c_str(), extra.c_str());
+        _updateDeviceConfig(userId, deviceNum, extra);
+    }
 
     // 通过 NetworkManager 保存配置并连接
     if (ctx->networkManager) {
@@ -136,4 +148,61 @@ void ProvisionRouteHandler::handleWiFiConnect(AsyncWebServerRequest* request) {
     ctx->sendSuccess(request, "Connecting to WiFi...");
     delay(100);
     WiFi.begin(ssid.c_str(), password.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// 内部工具：将配网下发的扩展参数写入 device.json（仅更新提供的字段）
+// ---------------------------------------------------------------------------
+void ProvisionRouteHandler::_updateDeviceConfig(const String& userId,
+                                                 const String& deviceNum,
+                                                 const String& extra) {
+    JsonDocument doc;
+
+    // 读取现有 device.json
+    if (LittleFS.exists(DEVICE_CONFIG_FILE)) {
+        File f = LittleFS.open(DEVICE_CONFIG_FILE, "r");
+        if (f) {
+            deserializeJson(doc, f);
+            f.close();
+        }
+    }
+
+    bool changed = false;
+
+    // userId → device.json.userId
+    if (!userId.isEmpty()) {
+        doc["userId"] = userId;
+        changed = true;
+        LOG_INFOF("[Provision] device.json: userId=%s", userId.c_str());
+    }
+
+    // deviceNum → device.json.deviceId
+    if (!deviceNum.isEmpty()) {
+        doc["deviceId"] = deviceNum;
+        changed = true;
+        LOG_INFOF("[Provision] device.json: deviceId=%s", deviceNum.c_str());
+    }
+
+    // extra → device.json.productNumber（仅当 extra 为有效正整数时保存）
+    if (!extra.isEmpty()) {
+        long pn = extra.toInt();
+        if (pn > 0) {
+            doc["productNumber"] = (int)pn;
+            changed = true;
+            LOG_INFOF("[Provision] device.json: productNumber=%d", (int)pn);
+        } else {
+            LOG_WARNINGF("[Provision] extra='%s' is not a valid positive integer, discarded", extra.c_str());
+        }
+    }
+
+    if (changed) {
+        File f = LittleFS.open(DEVICE_CONFIG_FILE, "w");
+        if (f) {
+            serializeJsonPretty(doc, f);
+            f.close();
+            LOG_INFO("[Provision] device.json updated");
+        } else {
+            LOG_ERROR("[Provision] Failed to write device.json");
+        }
+    }
 }

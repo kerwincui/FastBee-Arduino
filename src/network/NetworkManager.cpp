@@ -92,6 +92,10 @@ FBNetworkManager::FBNetworkManager(AsyncWebServer* webServerPtr)
       , cellReconnectTime(0)
       , cellReconnectAttempts(0)
 #endif
+      , _lastApProbeTime(0)
+      , _apProbeInProgress(false)
+      , _apFallbackAuto(false)
+      , _apProbeFailCount(0)
 {
     
     wifiConfig = WiFiConfig();
@@ -125,6 +129,10 @@ bool FBNetworkManager::initialize() {
     if (isInitialized) {
         return true;
     }
+
+    // 重置 AP 回退探测状态（每次重新初始化都从干净状态开始）
+    _apFallbackAuto = false;
+    _apProbeFailCount = 0;
 
     // 初始化Preferences（独立 namespace，避免与 ConfigStorage 的 "fastbee" 冲突）
     if (!preferences.begin("net_cfg", false)) {
@@ -332,6 +340,7 @@ bool FBNetworkManager::initialize() {
                             wifiConfig.apPassword.c_str());
                         // 回退到 AP 模式后更新配置模式
                         wifiConfig.mode = NetworkMode::NETWORK_AP;
+                        _apFallbackAuto = true;  // 标记为自动回退，启用 WiFi 探测恢复
                     } else {
                         Serial.println("[NET] AP start FAILED!");
                     }
@@ -750,6 +759,24 @@ void FBNetworkManager::update() {
         wifiConfig.mode == NetworkMode::NETWORK_STA &&
         currentTime - lastReconnectAttempt >= wifiConfig.reconnectInterval) {
         attemptReconnect();
+    }
+
+    // AP 模式下定期探测 WiFi 是否恢复，成功则自动切回 STA 模式
+    // 仅在 STA 失败自动回退到 AP 时才启用探测（_apFallbackAuto=true）
+    // 用户主动设置的 AP 模式不触发探测，保持 AP 热点稳定运行
+    if (wifiConfig.mode == NetworkMode::NETWORK_AP &&
+        _apFallbackAuto &&
+        !_apProbeInProgress &&
+        !wifiConfig.staSSID.isEmpty()) {
+        // 防震荡退避：连续探测失败超过阈值后，探测间隔从 2min 增加到 10min
+        unsigned long probeInterval = (_apProbeFailCount >= AP_PROBE_BACKOFF_THRESHOLD)
+            ? AP_PROBE_BACKOFF_MS : AP_PROBE_INTERVAL_MS;
+        if (currentTime - _lastApProbeTime >= probeInterval) {
+            _apProbeInProgress = true;
+            _lastApProbeTime = currentTime;
+            handleApModeWifiProbe();
+            _apProbeInProgress = false;
+        }
     }
     
     // mDNS 健康检查（每 30 秒）
@@ -1487,6 +1514,7 @@ void FBNetworkManager::attemptReconnect() {
             // 切换到 AP 模式，停止自动重连
             wifiConfig.mode = NetworkMode::NETWORK_AP;
             autoReconnectEnabled = false;
+            _apFallbackAuto = true;  // 标记为自动回退，启用 WiFi 探测恢复
             statusInfo.status = NetworkStatus::AP_MODE;
         } else {
             LOG_ERROR("NetworkManager: Failed to start AP mode after STA failure");
@@ -1515,6 +1543,94 @@ void FBNetworkManager::attemptReconnect() {
     if (!connectToWiFi()) {
         connecting = false;
         statusInfo.status = NetworkStatus::CONNECTION_FAILED;
+    }
+}
+
+void FBNetworkManager::handleApModeWifiProbe() {
+    // AP 模式 WiFi 探测：短暂切换到 STA 模式检查已配置的 WiFi 是否恢复
+    // 成功 → 自动切回 STA 模式；失败 → 恢复 AP 模式，等待下次探测
+    LOGGER.infof("[WiFi-AP] Probing WiFi [%s] (brief STA switch)...",
+                 wifiConfig.staSSID.c_str());
+    Serial.printf("[WiFi-AP] Probing WiFi [%s]...\n", wifiConfig.staSSID.c_str());
+
+    // 1. 临时关闭 AP 热点（WiFi 子系统同一时间只允许一种工作模式）
+    wifiManager->stopAPMode();
+    delay(200);
+
+    // 2. 切换到 STA 模式并尝试连接（带超时，不阻塞事件栈）
+    WiFi.mode(WIFI_MODE_STA);
+    delay(300);
+
+    wifiManager->setNetworkConfig(wifiConfig);
+    WiFi.begin(wifiConfig.staSSID.c_str(), wifiConfig.staPassword.c_str());
+
+    uint32_t probeStart = millis();
+    bool probeOk = false;
+    while (WiFi.status() != WL_CONNECTED &&
+           (millis() - probeStart < AP_PROBE_TIMEOUT_MS)) {
+        delay(50);
+    }
+    probeOk = (WiFi.status() == WL_CONNECTED);
+
+    if (probeOk) {
+        // 3a. WiFi 已恢复，完全切回 STA 模式
+        Serial.printf("[WiFi-AP] WiFi recovered! IP: %s — switching back to STA mode\n",
+                      WiFi.localIP().toString().c_str());
+        LOGGER.infof("[WiFi-AP] WiFi recovered! IP: %s", WiFi.localIP().toString().c_str());
+
+        wifiConfig.mode = NetworkMode::NETWORK_STA;
+        autoReconnectEnabled = true;
+        statusInfo.status = NetworkStatus::CONNECTED;
+        statusInfo.ipAddress = WiFi.localIP().toString();
+        statusInfo.ssid = WiFi.SSID();
+        statusInfo.reconnectAttempts = 0;
+        statusInfo.lastConnectionTime = millis();
+
+        // 探测成功：重置回退标志和失败计数，回到正常 STA 模式
+        _apFallbackAuto = false;
+        _apProbeFailCount = 0;
+
+        // 启动 mDNS（STA 模式下绑定到 STA IP）
+        if (wifiConfig.enableMDNS) {
+            dnsManager->startMDNS(wifiConfig.customDomain);
+        }
+
+        // 通知 MQTT 客户端网络已恢复，立即重连（与以太网/4G 重连逻辑保持一致）
+#if FASTBEE_ENABLE_MQTT
+        {
+            auto* fw = FastBeeFramework::getInstance();
+            auto* pm = fw ? fw->getProtocolManager() : nullptr;
+            MQTTClient* mqtt = pm ? pm->getMQTTClient() : nullptr;
+            if (mqtt) {
+                mqtt->resetErrorCounters();
+                LOG_INFO("[WiFi-AP] MQTT reconnect triggered after WiFi recovery from AP mode");
+            }
+        }
+#endif
+    } else {
+        // 3b. 探测失败，WiFi 仍不可用，恢复 AP 模式
+        WiFi.disconnect(false);
+        delay(200);
+
+        if (startAPMode()) {
+            LOGGER.infof("[WiFi-AP] Probe failed, AP restored: %s IP=%s",
+                         wifiConfig.apSSID.c_str(),
+                         WiFi.softAPIP().toString().c_str());
+        } else {
+            // AP 重启失败，使用最后保障 AP 确保热点可用
+            LOG_ERROR("[WiFi-AP] AP restart failed after probe, activating last-resort AP");
+            ensureLastResortAP();
+        }
+        // 探测失败：累计失败次数，连续失败过多后自动延长探测间隔
+        _apProbeFailCount++;
+        if (_apProbeFailCount == AP_PROBE_BACKOFF_THRESHOLD) {
+            LOGGER.infof("[WiFi-AP] %d consecutive probe failures, backing off to %lumin",
+                         _apProbeFailCount, (unsigned long)(AP_PROBE_BACKOFF_MS / 60000));
+        }
+        Serial.printf("[WiFi-AP] Probe failed (#%d), AP restored — next probe in %lumin\n",
+                      _apProbeFailCount,
+                      (unsigned long)((_apProbeFailCount >= AP_PROBE_BACKOFF_THRESHOLD
+                          ? AP_PROBE_BACKOFF_MS : AP_PROBE_INTERVAL_MS) / 60000));
     }
 }
 

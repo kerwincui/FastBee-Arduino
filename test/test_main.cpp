@@ -56,6 +56,7 @@ extern void test_seven_segment_group();
 extern void test_gpio_validation_group();
 extern void test_driver_registry_group();
 extern void test_ethernet_adapter_group();
+extern void test_provision_api_group();
 
 // 测试夹具
 void setUp() {
@@ -228,6 +229,9 @@ void setup() {
 
     Serial.println("\n[TEST] Running EthernetAdapter (W5500) Tests...");
     test_ethernet_adapter_group();
+
+    Serial.println("\n[TEST] Running Provision API Tests...");
+    test_provision_api_group();
 
     // 结束测试并输出结果
     int result = UNITY_END();

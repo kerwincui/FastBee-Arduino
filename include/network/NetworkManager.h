@@ -351,6 +351,19 @@ private:
     void syncIPManagerConfig();
     void attemptReconnect();
     void triggerEvent(NetworkStatus status, const String& message);
+
+    // AP 模式下定期探测 WiFi 恢复，成功则自动切回 STA 模式
+    // 仅在 STA 失败自动回退到 AP 时启用（_apFallbackAuto=true），
+    // 用户主动设置的 AP 模式不会触发探测。
+    void handleApModeWifiProbe();
+    unsigned long _lastApProbeTime;   // 上次探测时间戳
+    bool _apProbeInProgress;          // 当前是否正在探测
+    bool _apFallbackAuto;             // true = STA 失败自动回退的 AP；false = 用户主动设置的 AP
+    int  _apProbeFailCount;           // 连续探测失败次数（用于退避）
+    static constexpr unsigned long AP_PROBE_INTERVAL_MS     = 120000;  // 正常探测间隔：2 分钟
+    static constexpr unsigned long AP_PROBE_BACKOFF_MS      = 600000;  // 退避探测间隔：10 分钟
+    static constexpr int AP_PROBE_BACKOFF_THRESHOLD         = 5;       // 连续失败 5 次后进入退避
+    static constexpr unsigned long AP_PROBE_TIMEOUT_MS      = 10000;   // 单次探测超时：10 秒
 };
 
 #endif

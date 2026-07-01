@@ -188,7 +188,7 @@ function Ensure-NativeToolchainPath {
 }
 
 function Invoke-StaticChecks {
-    $configDir = Join-Path (Join-Path "data" "config")
+    $configDir = Join-Path "data" "config"
     Invoke-External @("node", (Join-Path "scripts" "check-utf8-text.js"), "README.md", "README.en.md", "docs", "scripts", "test", "web-src", "include", "src", (Join-Path $configDir "peripherals.json"), (Join-Path $configDir "periph_exec.json"), (Join-Path $configDir "users.json"))
     Invoke-External @("node", (Join-Path "scripts" "validate-test-coverage.js"))
     Invoke-External @("node", (Join-Path "scripts" "validate-device-api-matrix.js"))
@@ -226,7 +226,46 @@ function Invoke-NativeTests {
     if (-not (Test-Path $nativeBuildDir)) {
         New-Item -ItemType Directory -Force -Path $nativeBuildDir | Out-Null
     }
-    Invoke-External @("pio", "test", "-e", "native")
+    # pio test on Windows may exit with -1 even when all tests pass (known PlatformIO issue).
+    # PowerShell pipeline (2>&1, Tee-Object) may not reliably capture pio test output.
+    # Use Start-Process with file redirection for reliable capture.
+    Write-Host "pio test -e native" -ForegroundColor DarkCyan
+    $stdoutFile = Join-Path (Join-Path $ProjectDir ".pio") "native-test-stdout.log"
+    $stderrFile = Join-Path (Join-Path $ProjectDir ".pio") "native-test-stderr.log"
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'SilentlyContinue'
+    try {
+        $proc = Start-Process -FilePath "pio" -ArgumentList "test","-e","native" `
+            -NoNewWindow -PassThru `
+            -RedirectStandardOutput $stdoutFile `
+            -RedirectStandardError $stderrFile
+        $proc.WaitForExit() | Out-Null
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+
+    # Stream stdout to console for visibility
+    if (Test-Path $stdoutFile) { Get-Content $stdoutFile | Write-Host }
+
+    # Parse summary: "=== N test cases: N succeeded in X ==="
+    $logContent = Get-Content -Path $stdoutFile -ErrorAction SilentlyContinue
+    if ($logContent) {
+        $summaryLine = $logContent | Where-Object { [string]$_ -match '===+ \d+ test cases?:' } | Select-Object -Last 1
+        if ($summaryLine) {
+            $summaryLine = [string]$summaryLine
+            if ($summaryLine -match '(\d+) test cases?:\s+(\d+) succeeded') {
+                $total = [int]$Matches[1]
+                $passed = [int]$Matches[2]
+                if ($passed -eq $total -and $total -gt 0) {
+                    Write-Host "All $total tests passed" -ForegroundColor Green
+                    return
+                }
+                $failed = $total - $passed
+                throw "Native tests failed: $failed/$total test case(s) did not pass"
+            }
+        }
+    }
+    throw "Could not parse native test summary from output"
 }
 
 function Invoke-BuildMatrix {
